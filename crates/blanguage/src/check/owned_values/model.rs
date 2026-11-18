@@ -221,5 +221,7 @@ unsafe extern "C" fn push_handle(data:Address,context:Address){unsafe{&mut *cont
 pub(super) fn handles(value:&OwnedValuePayload)->Vec<ValueIdentity>{let mut values=Vec::<ValueIdentity>::new();unsafe{source_handles(pointer(value),(&mut values as *mut Vec<ValueIdentity>).cast(),push_handle,HOST)};values}
 unsafe extern "C" fn push_resource(data:Address,context:Address){unsafe{&mut *context.cast::<Vec<&Data>>()}.push(unsafe{&*data.cast::<Data>()});}
 pub(super) fn resources(value:&OwnedValuePayload)->Vec<&Data>{let mut values=Vec::<&Data>::new();unsafe{source_resources(pointer(value),(&mut values as *mut Vec<&Data>).cast(),push_resource,HOST)};values}
+unsafe extern "C" fn visit_resource<F:FnMut(&Data)>(data:Address,context:Address){(unsafe{&mut *context.cast::<F>()})(unsafe{&*data.cast::<Data>()});}
+pub(super) fn visit_resources<F:FnMut(&Data)>(value:&OwnedValuePayload,visit:&mut F){unsafe{source_resources(pointer(value),(visit as *mut F).cast(),visit_resource::<F>,HOST)};}
 unsafe extern "C" fn visit_mut<F:FnMut(&mut Data)>(data:Address,context:Address){(unsafe{&mut *context.cast::<F>()})(unsafe{&mut *data.cast::<Data>()});}
 pub(super) fn resources_mut<F:FnMut(&mut Data)>(value:&mut OwnedValuePayload,visit:&mut F){unsafe{source_resources(pointer_mut(value),(visit as *mut F).cast(),visit_mut::<F>,MUT_HOST)};}

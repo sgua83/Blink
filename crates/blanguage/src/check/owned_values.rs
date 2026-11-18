@@ -28,6 +28,7 @@ impl OwnedValuePayload {
     pub(super) fn mark_moved(&mut self){model::mark_moved(self)}
     pub(super) fn handles(&self)->Vec<ValueIdentity>{model::handles(self)}
     pub(super) fn resources(&self)->Vec<&Data>{model::resources(self)}
+    pub(super) fn visit_resources(&self,visit:&mut impl FnMut(&Data)){model::visit_resources(self,visit)}
     pub(super) fn resources_mut(&mut self,visit:&mut impl FnMut(&mut Data)){model::resources_mut(self,visit)}
 }
 

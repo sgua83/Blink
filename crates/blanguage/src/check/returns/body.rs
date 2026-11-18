@@ -33,11 +33,9 @@ unsafe extern "C"{
  #[link_name="bootstrap.function_body::parameter"]fn b_parameter(count:u64,context:*mut c_void,equal:unsafe extern "C" fn(*mut c_void,u64)->u32)->u64;
 }
 impl Expected{
- fn kind(&self)->u32{match self{Self::Void=>0,Self::Never=>1,Self::Value(_)=>2,Self::Dataset{..}=>3}}
  fn scalar_count(&self)->usize{match self{Self::Void|Self::Never=>0,Self::Value(ty)=>ty.components.len(),Self::Dataset{..}=>2}}
  fn scalar(&self,index:usize)->Scalar{match self{Self::Value(ty)=>ty.components[index].0,Self::Dataset{..}=>Scalar::U32,_=>unsafe{std::hint::unreachable_unchecked()}}}
 }
-fn model_kind(value:&Returned)->u32{match value{Returned::Unit=>0,Returned::Value(_)=>1,Returned::Dataset(_)=>2,Returned::OwnedValue(_)=>3}}
 fn model_fields(value:&Returned)->usize{match value{Returned::Unit=>0,Returned::Value(value)=>value.ty.components.len(),Returned::OwnedValue(value)=>value.value.ty.components.len(),Returned::Dataset(_)=>2}}
 fn model_scalar(value:&Returned,index:usize)->Scalar{match value{Returned::Value(value)=>value.ty.components[index].0,Returned::OwnedValue(value)=>value.value.ty.components[index].0,Returned::Dataset(data)=>if index==0{data.root.ty.components[0].0}else{Scalar::U32},Returned::Unit=>unsafe{std::hint::unreachable_unchecked()}}}
 unsafe extern "C" fn inspect_exit(code:*const Inst,index:u64)->ExitNode{
@@ -52,7 +50,7 @@ unsafe extern "C" fn inspect_exit(code:*const Inst,index:u64)->ExitNode{
 struct Written<'a,'b,'world>{builder:&'b mut Builder<'world>,entries:std::collections::btree_map::Iter<'a,String,Returned>,current:Option<(&'a String,&'a Returned)>,registers:Vec<Reg>,output:BTreeMap<String,Vec<Reg>>}
 unsafe extern "C" fn next_written(context:*mut c_void)->WrittenItem{
  let c=unsafe{&mut *context.cast::<Written<'_,'_,'_>>()};c.current=c.entries.next();
- c.current.map_or(WrittenItem{present:0,kind:0,fields:0},|(_,value)|WrittenItem{present:1,kind:model_kind(value),fields:model_fields(value)as u64})
+ c.current.map_or(WrittenItem{present:0,kind:0,fields:0},|(_,value)|WrittenItem{present:1,kind:value.kind(),fields:model_fields(value)as u64})
 }
 unsafe extern "C" fn allocate_written(context:*mut c_void,index:u64){
  let c=unsafe{&mut *context.cast::<Written<'_,'_,'_>>()};let scalar=model_scalar(unsafe{c.current.unwrap_unchecked()}.1,index as usize);c.registers.push(c.builder.reg(scalar));
@@ -209,7 +207,7 @@ impl Builder<'_>{
     FinishNeed::OutputStorage=>{returned=result.as_ref().map(|value|self.returned_storage(value));}
     FinishNeed::NextModel=>{
      let value=unsafe{published.as_mut().unwrap_unchecked()}.next();facts.present=u32::from(value.is_some());
-     if let Some((key,value))=value{facts.model=model_kind(&value);name=Some(key);model=Some(value);}
+     if let Some((key,value))=value{facts.model=value.kind();name=Some(key);model=Some(value);}
     }
     FinishNeed::Dataset=>{
      let Returned::Dataset(value)=(unsafe{model.take().unwrap_unchecked()})else{unsafe{std::hint::unreachable_unchecked()}};binding=Some(Binding::ApplicationData(value));

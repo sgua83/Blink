@@ -1,6 +1,7 @@
 //! 返回点检查自己的输出与值；退出后只合流真实可继续路径，函数域不结束并行实例。
 use super::*;
 mod body;
+mod exit;
 
 #[derive(Clone)]
 pub(super) enum Returned {
@@ -17,7 +18,14 @@ enum Expected {
     Value(Ty),
     Dataset { ty: Ty, count: Option<u32> },
 }
+impl Expected{
+ fn kind(&self)->u32{match self{Self::Void=>0,Self::Never=>1,Self::Value(_)=>2,Self::Dataset{..}=>3}}
+}
 impl Returned {
+ fn kind(&self)->u32{match self{Self::Unit=>0,Self::Value(_)=>1,Self::Dataset(_)=>2,Self::OwnedValue(_)=>3}}
+ fn register_count(&self)->usize{match self{Self::Unit=>0,Self::Value(value)=>value.regs.len(),Self::OwnedValue(value)=>value.value.regs.len(),Self::Dataset(_)=>2}}
+ fn register(&self,index:usize)->Reg{match self{Self::Value(value)=>value.regs[index],Self::OwnedValue(value)=>value.value.regs[index],Self::Dataset(data)=>if index==0{data.root.regs[0]}else{data.length.regs[0]},Self::Unit=>unsafe{std::hint::unreachable_unchecked()}}}
+
     pub(super) fn value(value: Value) -> Self { Self::Value(Box::new(value)) }
     pub(super) fn view_value(&self)->Option<&Value>{match self{Self::Value(value)=>Some(value),Self::OwnedValue(value)=>Some(&value.value),_=>None}}
     pub(super) fn view_value_mut(&mut self)->Option<&mut Value>{match self{Self::Value(value)=>Some(value),Self::OwnedValue(value)=>Some(&mut value.value),_=>None}}
@@ -262,53 +270,6 @@ impl Builder<'_> {
             ),
         }
     }
-    pub(super) async fn return_statement(&mut self, expr: Option<&Expr>, span: Span) -> Result<()> {
-        let Some(context) = &self.return_context else {
-            return self.fail(
-                span,
-                "B130",
-                "return 只能结束当前普通函数，不能退出 parallel 实例",
-            );
-        };
-        let expected = context.expected.clone();
-        let value = match (expected.as_ref(), expr) {
-            (Expected::Value(ty), Some(expr)) => {
-                let result = unsafe { self.world.call(self.evaluate_returned(expr,Some(ty))).await }?;
-                if !self.flow.continues() {
-                    return Ok(());
-                }
-                let mut value = result.ok_or_else(|| Diagnostic {
-                    source: self.scope.source().clone(),
-                    span,
-                    code: "B228",
-                    message: "返回需要值或拥有资源".into(),
-                })?;
-                unsafe { self.world.call(self.check_returned_type(&mut value, ty, expr.span())).await }?;
-                Some(value)
-            }
-            (Expected::Dataset { ty, count }, Some(expr)) => {
-                let returned=unsafe { self.world.call(self.evaluate_returned(expr,Some(&Ty::owned_dataset(ty.clone().syntax(),*count)))).await }?;
-                if !self.flow.continues(){return Ok(());}
-                let Some(Returned::Dataset(mut data))=returned else{return self.fail(span,"B224","返回需要实际拥有的dataset")};
-                self.application_data_type(&mut data, ty, *count, span)?;
-                data.count = *count;
-                Some(Returned::Dataset(data))
-            }
-            (Expected::Void, None) => None,
-            (Expected::Never, expr) => {
-            if let Some(expr) = expr {
-                unsafe { self.world.call(self.evaluate_returned(expr, None)).await }?;
-                if !self.flow.continues() {
-                    return Ok(());
-                }
-            }
-            return self.fail(span, "B228", "never 函数不能正常返回");
-        },
-            (Expected::Value(_) | Expected::Dataset { .. }, None) => return self.fail(span, "B228", "有返回值函数不能使用 return;"),
-            (Expected::Void, Some(_)) => return self.fail(span, "B228", "void 函数不能返回普通值"),
-        };
-        unsafe { self.world.call(self.finish_return(value, span)).await }
-    }
     pub(super) fn result_return_type(&self) -> Option<Ty> {
         match self.return_context.as_ref()?.expected.as_ref() {
             Expected::Value(ty) => Some(ty.clone()),
@@ -349,116 +310,6 @@ impl Builder<'_> {
         };
         self.check_view_requirement(view::Requirement::Initialized{borrow:read.borrow(),read,code:"B229",span})?;
         Ok(true)
-    }
-    pub(super) async fn finish_return(&mut self, mut value: Option<Returned>, span: Span) -> Result<()> {
-        if let Some(value)=&mut value {unsafe { self.world.call(self.require_returned_initialized(value,span)).await }?;}
-        if let Some(Returned::Value(value)) = &mut value {
-            value.uniform &= self.control_uniform;
-            value.proof = bounds::Proof::returning(value, &self.env, &self.path);
-        }
-        if let Some(Returned::OwnedValue(value)) = &mut value {
-            value.value.proof = bounds::Proof::returning(&value.value, &self.env, &self.path);
-        }
-        let borrowed=(async ||->Result<BTreeMap<String,Returned>> {
-            let mut borrowed=BTreeMap::new();let instance=self.return_context.as_ref().unwrap().instance.clone();let definition=&instance.definition;
-            let inputs=self.return_context.as_ref().unwrap().inputs.clone();
-            let returned=value.as_ref().map(|value|self.returned_storage(value));
-            for (index,param) in definition.function.params().iter().enumerate() {
-                if param.ty().dataset() && matches!(param.access(),Access::Write|Access::InOut) && let Some(Binding::ApplicationData(data))=self.env.get(param.name()).cloned() {
-                    if outputs::declared(&instance,index) {
-                        let guards=unsafe { self.world.call(outputs::guards(self,&instance,index,&data.ty,&inputs,returned.as_ref())).await }?;
-                        unsafe { self.world.call(self.check_data_output(&data,&guards,span)).await }?;
-                    }else if !self.application_initialized(&data)
-                        && !self.defer_dataset_output(&data,data.ty.components.iter().map(|(_,word)|data.initialization.as_ref().unwrap().application_word(None,*word)).collect(),span)? {
-                        return self.fail(span,"B229",format!("返回前没有完整初始化独占 dataset 参数 {}",param.name()));
-                    }
-                    borrowed.insert(param.name().to_owned(),Returned::Dataset(data));
-                }
-                if param.ty().dataset()&&param.access()==Access::Write&&let Some(Binding::Data(view))=self.env.get(param.name()).cloned() {
-                    let place=self.dataset_element(&view,self.global_index,false);
-                    let guards=unsafe { self.world.call(outputs::guards(self,&instance,index,place.ty(),&inputs,returned.as_ref())).await }?;
-                    let path=self.path.clone();
-                    for(position,when)in self.positions(&place).into_iter().zip(guards) {
-                        self.path=when.condition().assume(&path,true);
-                        if self.path.possible()&&!self.positions_initialized(std::slice::from_ref(&position))
-                            &&!self.defer_position_initialization(vec![position],"B229",span)? {
-                            return self.fail(span,"B229","返回前没有初始化本次dataset借用的输出分量");
-                        }
-                    }
-                    self.path=path;
-                }
-                if matches!(param.access(),Access::Write|Access::InOut) && !param.ty().dataset() && !param.ty().tile() {
-                    let mut model=if outputs::declared(&instance,index) {
-                        let ty=self.env[param.name()].stored_place().unwrap().ty().clone();
-                        let guards=unsafe { self.world.call(outputs::guards(self,&instance,index,&ty,&inputs,returned.as_ref())).await }?;
-                        unsafe { self.world.call(self.conditional_written_model(&param.name(),&guards,span)).await }?
-                    }else{unsafe { self.world.call(self.written_model(&param.name(),span)).await }?};
-                    if let Some(value)=model.view_value_mut(){value.uniform&=self.control_uniform;value.proof.under_path(&value.ty,&self.path);}
-                    borrowed.insert(param.name().to_owned(),model);
-                }
-            }
-            Ok(borrowed)
-        })().await;
-        let mut owned=view::Borrow::default();let mut retained=view::Borrow::default();
-        let outputs=value.iter().chain(borrowed.as_ref().ok().into_iter().flat_map(|written|written.values())).collect::<Vec<_>>();
-        for output in &outputs{
-            let resources=match *output{Returned::Dataset(data)=>vec![data],Returned::OwnedValue(value)=>value.resources(),_=>Vec::new()};
-            for data in resources{owned.union(&self.owned_resource_borrow(data));}
-        }
-        for output in &outputs{unsafe { self.world.call(self.require_element_return_borrows(output,&owned,span)).await }?;}
-        for output in outputs{if let Some(value)=output.view_value(){
-            let mut proof=value.proof.borrow_state();proof.retain_view_borrows(&value.ty);
-            self.require_view_return_proof(&proof,owned.clone(),span)?;
-            retained.union(&proof.borrowed_view());
-        }}
-        // 返回取消外层求值；临时位置已没有后续消费者，拥有临时值仍由原释放点接管。
-        self.env.retain(|name,binding| !name.starts_with('\0') || match binding {
-            Binding::ApplicationData(data)=>data.ownership.may_own(),
-            Binding::OwnedValue(value)=>value.ownership.may_own(),
-            _=>false,
-        });
-        self.view_uses.returning();
-        // 实际返回拥有者保持到同一次清理结束；只有正常完成才交给原ReturnExit。
-        let pending=match &value {
-            Some(Returned::OwnedValue(value))=>Some(self.hold_binding(Binding::OwnedValue(value.clone()))),
-            Some(Returned::Dataset(data))=>Some(self.hold_binding(Binding::ApplicationData(data.clone()))),
-            _=>None,
-        };
-        let keep=pending.iter().cloned().collect();
-        unsafe { self.world.call(self.release_application_data(Some(&keep),retained)).await }?;
-        if let Some(pending)=pending {self.env.remove(&pending);}
-        let mut initialized=self.initialized.clone();
-        if self.scope.execution()==crate::execution::Requirement::Invocation {
-            for parameter in self.scope.parameters() {
-                if unsafe { self.world.call(parameter.bound(self.world)).await }?.ty.dataset&&parameter.access()==Access::Write&&let Some(Binding::ApplicationData(data))=self.env.get(parameter.name()) {
-                    initialized=initialized.iter().map(|position|Self::dataset_output_position(position,data)).collect();
-                }
-            }
-        }
-        let initialized=address::initialization_effects(&initialized,&self.path);
-        let memory=self.view_model.uses.len();
-        self.require_return_borrow(view::Borrow{reads:view::Edges::from([view_contracts::ContentRead::Returned{memory}]),..view::Borrow::default()},owned,span)?;
-        if let Some(address)=self.task_return_source
-            && let Some(value)=value.as_mut().and_then(Returned::view_value_mut) {
-            self.publish_task_return_sources(value,address,span)?;
-        }
-        let context = self.return_context.as_mut().unwrap();
-        if context.scoped {
-            if let Some(value) = &value {
-                for (slot, reg) in context.slots.iter().zip(value.registers()) {
-                    self.code.push(Inst { source_site: self.source_site.clone(), ..Inst::new(InstKind::StoreLocal(*slot, reg)) });
-                }
-            }
-            self.code.push(Inst { source_site: self.source_site.clone(), ..Inst::new(InstKind::Exit) });
-        }
-        context.exits.push(ReturnExit {
-            path: self.path.clone(),
-            value,
-            borrowed,
-            initialized,
-        });
-        self.flow = Flow::RETURN;
-        Ok(())
     }
     fn publish_task_return_sources(&mut self,value:&mut Value,address:[Reg;2],span:Span)->Result<()> {
         let index=self.constant(Scalar::U32,0).regs[0];
