@@ -81,3 +81,13 @@ extern "C" Prepare prepare(u32 stage,Mode mode) on cpu {
 extern "C" u32 return_task_layout(u32 application_entry,u32 c_abi,u32 has_result) on cpu {
     return application_entry & (1 ^ c_abi) & has_result;
 }
+
+extern "C" ReferenceLayout reference_layout(ReferenceFacts facts,usize components,u32 c_abi) on cpu {
+    if (c_abi != 0) { return ReferenceLayout(ReferenceForm::Whole,1u64); }
+    if (components == 0u64) { return ReferenceLayout(ReferenceForm::Empty,0u64); }
+    if (components > 1u64 && facts.array == 0 && facts.record == 0
+        && facts.view == 0 && facts.dataset == 0 && facts.variant == 0 && facts.enumeration == 0) {
+        return ReferenceLayout(ReferenceForm::Split,components);
+    }
+    return ReferenceLayout(ReferenceForm::Whole,1u64);
+}

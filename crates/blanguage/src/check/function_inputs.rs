@@ -188,6 +188,44 @@ fn content_proof(ty: &Ty, index: usize) -> bounds::Proof {
         .view_parameters(ty, &[], |i| ValueIdentity::ParameterContent(index, i))
 }
 
+#[allow(dead_code)] // Values are returned by bootstrap.function_inputs.
+#[derive(Clone, Copy)]
+#[repr(u32)]
+pub(super) enum ReferenceForm { Empty, Whole, Split }
+
+#[repr(C)]
+pub(super) struct ReferenceLayout {
+    pub(super) form: ReferenceForm,
+    pub(super) count: usize,
+}
+
+#[repr(C)]
+struct ReferenceFacts {
+    array: u32,
+    record: u32,
+    view: u32,
+    dataset: u32,
+    variant: u32,
+    enumeration: u32,
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.function_inputs::reference_layout"]
+    fn b_reference_layout(facts: ReferenceFacts, components: usize, c_abi: u32) -> ReferenceLayout;
+}
+
+pub(super) fn reference_layout(ty: &Ty, c_abi: bool) -> ReferenceLayout {
+    let facts = ReferenceFacts {
+        array: u32::from(ty.array.is_some()),
+        record: u32::from(!ty.fields.is_empty()),
+        view: u32::from(ty.view.is_some()),
+        dataset: u32::from(ty.dataset.is_some()),
+        variant: u32::from(ty.has_variants()),
+        enumeration: u32::from(ty.enumeration),
+    };
+    unsafe { b_reference_layout(facts, ty.components.len(), u32::from(c_abi)) }
+}
+
 fn reference_place(
     b: &mut Builder<'_>,
     mode: Mode,
@@ -208,21 +246,21 @@ fn reference_place(
             }
         }
         PlaceForm::CAbi | PlaceForm::Native => {
-            let parts = match form {
-                PlaceForm::CAbi => vec![ty.clone()],
-                _ => native_function::reference_parameters(&ty),
-            };
-            let mut addresses = Vec::new();
-            for part in parts {
+            let layout = reference_layout(&ty, matches!(form, PlaceForm::CAbi));
+            let mut emit = |part, origin| {
                 let address = [b.reg(Scalar::U32), b.reg(Scalar::U32)];
                 inputs.extend(address);
-                addresses.push(address);
-                parameters.push(CallParameter::reference(part, p.access).with_origin(origin.clone()));
-            }
-            let address = if let [address] = addresses.as_slice() {
-                ReferenceAddress::Contiguous(*address)
-            } else {
-                ReferenceAddress::Components(ty.components.iter().map(|(_, offset)| *offset).zip(addresses).collect())
+                parameters.push(CallParameter::reference(part, p.access).with_origin(origin));
+                address
+            };
+            let address = match layout.form {
+                ReferenceForm::Empty => ReferenceAddress::Components(BTreeMap::new()),
+                ReferenceForm::Whole => ReferenceAddress::Contiguous(emit(ty.clone(), origin)),
+                ReferenceForm::Split => ReferenceAddress::Components(
+                    ty.components.iter().map(|&(scalar, offset)| {
+                        (offset, emit(Ty::scalar(scalar), origin.clone()))
+                    }).collect()
+                ),
             };
             Place::Reference {
                 words: ty.components.iter().map(|(_, offset)| *offset).collect(),

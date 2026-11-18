@@ -14,26 +14,6 @@ mod canonical;
 pub(super) use canonical::{canonical,element_inputs};
 pub(super) use model::{rebind_model,translate_returned,translate_in_place};
 
-// Only source vectors admit a different component placement with the same type.
-// Aggregate fields and arrays retain their declared layout.
-pub(super) fn reference_parameters(ty: &Ty) -> Vec<Ty> {
-    if ty.components.is_empty() { return Vec::new(); }
-    if ty.array.is_none()
-        && ty.fields.is_empty()
-        && ty.view.is_none()
-        && ty.dataset.is_none()
-        && !ty.has_variants()
-        && !ty.enumeration
-        && ty.components.len() > 1
-    {
-        ty.components
-            .iter()
-            .map(|(scalar, _)| Ty::scalar(*scalar))
-            .collect()
-    } else {
-        vec![ty.clone()]
-    }
-}
 #[derive(Default)]
 pub(super) struct Module {
     pub(super) units: BTreeMap<String, Option<Unit>>,

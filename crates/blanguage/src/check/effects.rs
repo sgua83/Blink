@@ -901,7 +901,7 @@ impl<'b, 'w> Scope<'b, 'w> {
                 let storage=if storage.empty(){view::Borrow::source(view::Source::Unresolved)}else{storage};
                 inputs.insert(ValueIdentity::ParameterStorage(index),{let mut component_proof=bounds::Proof::default();component_proof.set_view_borrow(0,storage);component_proof});
                 for component in 0..ty.components.len(){inputs.insert(ValueIdentity::ParameterContent(index,component),proof.project(&[component],ty.components.len()));}
-                offset+=native_function::reference_parameters(&ty).len()*application::pointer_type().components.len();
+                offset += function_inputs::reference_layout(&ty, false).count * 2;
             }else{
                 for component in 0..ty.components.len(){inputs.insert(ValueIdentity::Register(offset+component),proof.project(&[component],ty.components.len()));}
                 offset+=ty.components.len();

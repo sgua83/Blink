@@ -115,14 +115,14 @@ impl Builder<'_> {
         if self.atomic_storage(place) && access != Access::Atomic {
             return self.fail(span, "B214", "原子位置只能转借给atomic参数");
         }
-        let (storage, offset, words) = match place {
+        let (storage, offset, word) = match place {
             Place::Reference { address, words, .. } => {
                 let zero=self.constant(Scalar::U32,0).regs[0];
                 let (source,word)=address.source_at(words[0],zero);
                 (
                     CallStorage::Indexed(source),
                     None,
-                    vec![word],
+                    word,
                 )
             }
             Place::Local(_, _, storage) | Place::ReadOnlyLocal(_, _, storage) => (
@@ -131,7 +131,7 @@ impl Builder<'_> {
                     len: storage.len(),
                 },
                 None,
-                reference_words(place, &self.locals).unwrap(),
+                first_reference_word(place, &self.locals),
             ),
             Place::Element {
                 binding,
@@ -154,7 +154,7 @@ impl Builder<'_> {
                         index: *index,
                     }),
                     None,
-                    words.clone(),
+                    words[0],
                 )
             }
             Place::ApplicationElement {
@@ -167,7 +167,7 @@ impl Builder<'_> {
             } => {
                 let components: Vec<_> = place.ty().components.iter().zip(words).map(|(&(scalar, _), &word)| (scalar, word)).collect();
                 let(address,index,stride)=self.application_memory(*handle,*identity,*index,*stride,expose_writes,None,&components,span)?;
-                (CallStorage::Indexed(IndexedSource::View{address,index,stride:ElementStride::Constant(u64::from(stride))}),None,words.clone())
+                (CallStorage::Indexed(IndexedSource::View{address,index,stride:ElementStride::Constant(u64::from(stride))}),None,words[0])
             },
             Place::ViewElement {
                 address,
@@ -182,7 +182,7 @@ impl Builder<'_> {
                     stride: *stride,
                 }),
                 None,
-                words.clone(),
+                words[0],
             ),
             Place::Indexed {
                 base,
@@ -222,7 +222,7 @@ impl Builder<'_> {
                         stride,
                         ..
                     } => {
-                        let words = reference_words(place, &self.locals).unwrap();
+                        let words = reference_word_source(place, &self.locals).unwrap().iter();
                         let components: Vec<_> = place.ty().components.iter().zip(words).map(|(&(scalar, _), word)| (scalar, word)).collect();
                         let(address,index,stride)=self.application_memory(*handle,*identity,*index,*stride,expose_writes,Some(*offset),&components,span)?;
                         CallStorage::Indexed(IndexedSource::View{address,index,stride:ElementStride::Constant(u64::from(stride))})
@@ -242,7 +242,7 @@ impl Builder<'_> {
                 (
                     storage,
                     Some(*offset),
-                    reference_words(place, &self.locals).unwrap(),
+                    first_reference_word(place, &self.locals),
                 )
             }
             _ => return self.fail(span, "B264", "外部引用需要 CPU 普通值的实际存储"),
@@ -251,7 +251,7 @@ impl Builder<'_> {
         Ok(CallReference {
             storage,
             offset,
-            word: words[0],
+            word,
         })
     }
     pub(super) async fn external_reference(
@@ -390,17 +390,34 @@ impl Builder<'_> {
 
 }
 
-// These are views of the existing Place mapping, not another storage owner.
-pub(super) fn reference_words(place: &Place, locals: &BTreeMap<usize, Ty>) -> Option<Vec<u32>> {
+// Read the real Place mapping. Only its owning consumers collect these words.
+enum ReferenceWords<'a> {
+    Physical(&'a [u32], u32),
+    Local(&'a [usize], &'a std::ops::Range<usize>, &'a BTreeMap<usize, Ty>),
+}
+
+impl<'a> ReferenceWords<'a> {
+    fn iter(self) -> impl ExactSizeIterator<Item = u32> + 'a {
+        let count = match &self {
+            Self::Physical(words, _) => words.len(),
+            Self::Local(slots, _, _) => slots.len(),
+        };
+        (0..count).map(move |index| match &self {
+            Self::Physical(words, first) => *first + words[index],
+            Self::Local(slots, storage, locals) => locals[&storage.end].components[slots[index] - storage.start].1,
+        })
+    }
+}
+
+fn reference_word_source<'a>(place: &'a Place, locals: &'a BTreeMap<usize, Ty>) -> Option<ReferenceWords<'a>> {
     Some(match place {
         Place::Reference { words, .. }
         | Place::Element { words, .. }
         | Place::ApplicationElement { words, .. }
-        | Place::ViewElement { words, .. } => words.clone(),
-        Place::Local(_, slots, storage) | Place::ReadOnlyLocal(_, slots, storage) => slots
-            .iter()
-            .map(|slot| locals[&storage.end].components[*slot - storage.start].1)
-            .collect(),
+        | Place::ViewElement { words, .. } => ReferenceWords::Physical(words, 0),
+        Place::Local(_, slots, storage) | Place::ReadOnlyLocal(_, slots, storage) => {
+            ReferenceWords::Local(slots, storage, locals)
+        }
         Place::Indexed { base, words, .. } => {
             let first = match &**base {
                 Place::Local(_, slots, storage) | Place::ReadOnlyLocal(_, slots, storage) => {
@@ -408,10 +425,18 @@ pub(super) fn reference_words(place: &Place, locals: &BTreeMap<usize, Ty>) -> Op
                 }
                 _ => 0,
             };
-            words.iter().map(|word| first + word).collect()
+            ReferenceWords::Physical(words, first)
         }
         _ => return None,
     })
+}
+
+fn first_reference_word(place: &Place, locals: &BTreeMap<usize, Ty>) -> u32 {
+    reference_word_source(place, locals).unwrap().iter().next().unwrap()
+}
+
+pub(super) fn reference_words(place: &Place, locals: &BTreeMap<usize, Ty>) -> Option<Vec<u32>> {
+    Some(reference_word_source(place, locals)?.iter().collect())
 }
 impl Builder<'_> {
     pub(super) async fn native_references(
@@ -424,33 +449,31 @@ impl Builder<'_> {
     ) -> Result<Vec<(Ty, CallReference)>> {
         let expose_writes = access.writes() && expose_writes;
         if c_abi { return Ok(vec![(place.ty().clone(), unsafe { self.world.call(self.external_reference(place, access, expose_writes, span)).await }?)]); }
-        let parameters = native_function::reference_parameters(place.ty());
-        if parameters.is_empty() { return Ok(Vec::new()); }
-        if parameters.len() == 1 {
-            return Ok(vec![(
-                parameters[0].clone(),
-                self.call_reference(place, access, expose_writes, span)?,
-            )]);
+        let ty = place.ty();
+        match function_inputs::reference_layout(ty, false).form {
+            function_inputs::ReferenceForm::Empty => return Ok(Vec::new()),
+            function_inputs::ReferenceForm::Whole => {
+                let reference = self.call_reference(place, access, expose_writes, span)?;
+                return Ok(vec![(ty.clone(), reference)]);
+            }
+            function_inputs::ReferenceForm::Split => {}
         }
-        let Some(words) = reference_words(place, &self.locals) else {
-            return self.fail(span, "B264", "原生借用需要CPU普通值的实际位置");
-        };
         if let Place::Reference { address: ReferenceAddress::Components(_), .. } = place {
-            return parameters.into_iter().enumerate().map(|(component, ty)| {
+            return ty.components.iter().enumerate().map(|(component, &(scalar, _))| {
+                let ty = Ty::scalar(scalar);
                 let part = place.clone().project(ty.clone(), &[component]);
                 Ok((ty, self.call_reference(&part, access, expose_writes, span)?))
             }).collect();
         }
+        let Some(words) = reference_words(place, &self.locals) else {
+            return self.fail(span, "B264", "原生借用需要CPU普通值的实际位置");
+        };
         let base = self.call_reference(place, access, expose_writes, span)?;
-        Ok(parameters
-            .into_iter()
-            .zip(words)
-            .map(|(ty, word)| {
-                let mut address = base.clone();
-                address.word = word;
-                (ty, address)
-            })
-            .collect())
+        Ok(ty.components.iter().zip(words).map(|(&(scalar, _), word)| {
+            let mut address = base.clone();
+            address.word = word;
+            (Ty::scalar(scalar), address)
+        }).collect())
     }
     pub(super) async fn reference_is_contiguous(&self, place: &Place, span: Span) -> Result<bool> {
         let ty = place.ty();
@@ -466,13 +489,13 @@ impl Builder<'_> {
             }
             return unsafe { self.world.call(contracts::contiguous_assumed(self, *scope, words, ty, span)).await };
         }
-        let Some(words) = reference_words(place, &self.locals) else {
+        let Some(words) = reference_word_source(place, &self.locals) else {
             return self.fail(span, "B264", "C ABI借用需要CPU普通值的实际位置");
         };
-        let first = words[0];
+        let mut words = words.iter();
+        let first = words.next().unwrap();
         Ok(first % ty.align == 0
-            && words
-                .iter()
+            && std::iter::once(first).chain(words)
                 .zip(&ty.components)
                 .all(|(word, (_, offset))| word.checked_sub(first) == Some(*offset)))
     }

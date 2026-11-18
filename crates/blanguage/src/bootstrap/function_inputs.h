@@ -20,3 +20,8 @@ extern "C" Reference reference_body(Mode mode,u32 reads,u32 atomic,u32 inout,u32
 extern "C" u32 start_actions(Mode mode) on cpu;
 extern "C" Prepare prepare(u32 stage,Mode mode) on cpu;
 extern "C" u32 return_task_layout(u32 application_entry,u32 c_abi,u32 has_result) on cpu;
+
+enum ReferenceForm:u32 { Empty=0; Whole=1; Split=2; };
+struct ReferenceLayout { ReferenceForm form; usize count; };
+struct ReferenceFacts { u32 array; u32 record; u32 view; u32 dataset; u32 variant; u32 enumeration; };
+extern "C" ReferenceLayout reference_layout(ReferenceFacts facts,usize components,u32 c_abi) on cpu;
