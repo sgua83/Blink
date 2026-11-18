@@ -128,7 +128,7 @@ pub unsafe extern "C" fn blink_create(on_error: unsafe extern "C" fn(*mut c_void
     for index in 0..resources.types.len() {
         writeln!(
             functions,
-            "#[unsafe(no_mangle)]\npub unsafe extern \"C\" fn {prefix}_allocate_{index}(output:*mut u32,frame:*mut c_void,count:u32)->*mut c_void {{ unsafe {{ blink_allocate(output,frame,{prefix}_type_base+{index},count) }} }}"
+            "#[unsafe(no_mangle)]\npub unsafe extern \"C\" fn {prefix}_allocate_{index}(output:*mut u32,frame:*mut c_void,count:u32)->*mut c_void {{ unsafe {{ blink_allocate(output,frame,{prefix}_type_base.wrapping_add({index}),count) }} }}"
         )?;
     }
     for (index, (_, program)) in resources.programs.iter().enumerate() {
@@ -171,7 +171,7 @@ pub unsafe extern "C" fn blink_create(on_error: unsafe extern "C" fn(*mut c_void
         }).collect::<Vec<_>>();
         writeln!(
             functions,
-            "#[unsafe(no_mangle)]\npub unsafe extern \"C\" fn {prefix}_run_{index}({})->*mut c_void {{ let data=[{}];let words=[{}];let textures=[{}];unsafe {{ blink_run(frame,{prefix}_program_base+{index},data.as_ptr(),words.as_ptr(),textures.as_ptr()) }} }}",
+            "#[unsafe(no_mangle)]\npub unsafe extern \"C\" fn {prefix}_run_{index}({})->*mut c_void {{ let data=[{}];let words=[{}];let textures=[{}];unsafe {{ blink_run(frame,{prefix}_program_base.wrapping_add({index}),data.as_ptr(),words.as_ptr(),textures.as_ptr()) }} }}",
             params.join(","),
             handles.join(","),
             words.join(","),
@@ -187,12 +187,17 @@ pub unsafe extern "C" fn blink_create(on_error: unsafe extern "C" fn(*mut c_void
             let (known_mask,known_value) = field.known_bits;
             let values = field.intervals.iter().map(|(lower, upper)| format!("ElementInterval{{lower:{lower},upper:{upper}}}")).collect::<Vec<_>>().join(",");
             let limit_count = field.limits.len();
-            let limits = field.limits.iter().map(|(parameter, distance)| match *distance {
-                0 => format!("count_{parameter}.checked_add(1)"),
-                1 => format!("Some(count_{parameter})"),
-                distance => format!("Some(count_{parameter}.saturating_sub({}))", distance - 1),
-            }).collect::<Vec<_>>().join(",");
-            writeln!(functions, "{{ static INTERVALS:[ElementInterval;{}]=[{values}];let bounds:[Option<u32>;{limit_count}]=[{limits}];let mut limits=[0u32;{limit_count}];let mut count=0;for limit in bounds.into_iter().flatten(){{limits[count]=limit;count+=1;}}unsafe {{ blink_complete_field(frame,data,offset+{offset},INTERVALS.as_ptr(),INTERVALS.len(),limits.as_ptr(),count,{known_mask},{known_value}) }} }}", field.intervals.len())?;
+            writeln!(functions, "{{ static INTERVALS:[ElementInterval;{}]=[{values}];let mut limits=[0u32;{limit_count}];let mut count=0usize;", field.intervals.len())?;
+            // At most one output per input limit fits the fixed C array.
+            let append = "unsafe { limits.as_mut_ptr().add(count).write(limit); } count+=1;";
+            for (parameter, distance) in &field.limits {
+                if *distance == 0 {
+                    writeln!(functions, "if let Some(limit)=count_{parameter}.checked_add(1) {{ {append} }}")?;
+                } else {
+                    writeln!(functions, "{{ let limit=count_{parameter}.saturating_sub({}); {append} }}", distance - 1)?;
+                }
+            }
+            writeln!(functions, "unsafe {{ blink_complete_field(frame,data,offset.wrapping_add({offset}),INTERVALS.as_ptr(),INTERVALS.len(),limits.as_ptr(),count,{known_mask},{known_value}) }} }}")?;
         }
         writeln!(functions, "}}")?;
     }

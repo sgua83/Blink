@@ -853,21 +853,27 @@ impl<'a, Input: AsRef<[u8]> + ?Sized> Reader<'a, Input> {
         let (name, kind, mut bindings, _, _) = read_metadata(
             self.metadata(parts.metadata)?, None, false,
         )?;
+        let mut definitions = BTreeMap::new();
+        self.for_each_definition(|symbol| {
+            let (name, contract) = bindings.remove_entry(symbol).ok_or("导出符号缺少模块接口合同")?;
+            definitions.insert(name, contract);
+            Ok(())
+        })?;
+        definitions.extend(bindings);
+        Ok((name, kind, definitions))
+    }
+
+    pub(super) fn for_each_definition(&self, mut consume: impl FnMut(&str) -> Result<()>) -> Result<()> {
         let input = ReadBytes::new(self.bytes.as_ref());
         let table = unsafe { read_symbols(input) };
         table.error.check()?;
-        let mut definitions = BTreeMap::new();
         let mut index = 0;
         loop {
             let row = unsafe { next_export(input, table, &mut index) };
             row.error.check()?;
-            if row.bytes.bytes.is_null() { break; }
-            let symbol = std::str::from_utf8(unsafe { row.bytes.borrowed() })?;
-            let (name, contract) = bindings.remove_entry(symbol).ok_or("导出符号缺少模块接口合同")?;
-            definitions.insert(name, contract);
+            if row.bytes.bytes.is_null() { return Ok(()); }
+            consume(std::str::from_utf8(unsafe { row.bytes.borrowed() })?)?;
         }
-        definitions.extend(bindings);
-        Ok((name, kind, definitions))
     }
 }
 impl Reader<'_, super::ObjectBytes> {

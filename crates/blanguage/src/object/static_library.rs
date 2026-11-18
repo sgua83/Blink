@@ -74,7 +74,7 @@ impl ObjectBytes {
         Ok(Self { storage: Storage::Captured(Arc::new(bytes)), range })
     }
 
-    fn generated(bytes: Vec<u8>) -> Self {
+    pub(super) fn generated(bytes: Vec<u8>) -> Self {
         let range = 0..bytes.len();
         Self { storage: Storage::Generated(Arc::new(bytes)), range }
     }

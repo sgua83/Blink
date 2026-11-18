@@ -40,8 +40,10 @@ pub(crate) fn compile(
     std::fs::create_dir(&build)?;
     let result = (|| {
         std::fs::create_dir(build.join("src"))?;
+        let wrapper = dependencies.is_empty().then(|| build.join("resource.obj"));
+        let crate_type = if wrapper.is_some() { "rlib" } else { "staticlib" };
         let mut manifest = format!(
-            "[package]\nname={unit:?}\nversion=\"0.0.0\"\nedition=\"2024\"\n[workspace]\n[lib]\nname={unit:?}\ncrate-type=[\"staticlib\"]\n[profile.release]\nlto=false\ncodegen-units=1\npanic=\"abort\"\n",
+            "[package]\nname={unit:?}\nversion=\"0.0.0\"\nedition=\"2024\"\n[workspace]\n[lib]\nname={unit:?}\ncrate-type=[{crate_type:?}]\n[profile.release]\nlto=false\ncodegen-units=1\npanic=\"abort\"\n",
         );
         manifest.push_str("[dependencies]\n");
         for name in dependencies {
@@ -53,14 +55,28 @@ pub(crate) fn compile(
             manifest.push_str("}\n");
         }
         std::fs::write(build.join("Cargo.toml"), manifest)?;
-        std::fs::write(build.join("src/lib.rs"), source)?;
+        {
+            use std::io::Write;
+            let mut file = std::fs::File::create(build.join("src/lib.rs"))?;
+            if wrapper.is_some() {
+                file.write_all(b"#![no_std]\n")?;
+            }
+            file.write_all(source.as_bytes())?;
+        }
         let target = sdk_target.join("dll");
-        let arguments: Vec<OsString> = [
+        let mut arguments: Vec<OsString> = [
             "rustc".into(), "--offline".into(), "--release".into(), "--jobs".into(), "1".into(),
             "--manifest-path".into(), build.join("Cargo.toml").into_os_string(),
             "--target-dir".into(), target.as_os_str().into(), "--color".into(), "never".into(),
-            "--".into(), "--print".into(), "native-static-libs".into(),
+            "--".into(),
         ].into();
+        if let Some(path) = &wrapper {
+            let mut emit = OsString::from("--emit=obj=");
+            emit.push(path);
+            arguments.push(emit);
+        } else {
+            arguments.extend([OsString::from("--print"), OsString::from("native-static-libs")]);
+        }
         let output = worker.cargo_output(&arguments, &build, &sdk)?;
         let compilation = (|| {
             let stderr = String::from_utf8(output.stderr)?;
@@ -71,6 +87,22 @@ pub(crate) fn compile(
                     stderr
                 )
                 .into());
+            }
+            if let Some(wrapper) = wrapper {
+                let bytes = std::fs::read(wrapper)?;
+                let mut symbols = Vec::new();
+                super::coff::Reader::new(bytes.as_slice())?.for_each_definition(|name| {
+                    symbols.push((0, name.to_owned()));
+                    Ok(())
+                })?;
+                let member = super::static_library::Member::new("resource.obj".into(), bytes);
+                let bytes = super::static_library::encode(&[member], &symbols)?;
+                return Ok(Archive {
+                    bytes: super::ObjectBytes::generated(bytes),
+                    libraries: Vec::new(),
+                    exports,
+                    resources: None,
+                });
             }
             let libraries = stderr
                 .lines()
