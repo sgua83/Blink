@@ -626,7 +626,7 @@ impl ContentAtRead {
             || selected.clone(),
             |earlier| bounds::Clause::both(earlier, &selected),
         );
-        self.writes.union(&incoming.restricted(&visible));
+        self.writes.union_restricted(incoming, &visible);
         if complete {
             let unchanged = when.assume(&bounds::Clause::default(), false);
             self.earlier = Some(match self.earlier.take() {
@@ -638,7 +638,7 @@ impl ContentAtRead {
 
     fn with_initial(self, initial: Borrow) -> Borrow {
         let initial = match self.earlier {
-            Some(earlier) => initial.restricted(&earlier),
+            Some(earlier) => initial.restricted_by(&earlier),
             None => initial,
         };
         initial.joined(self.writes)
@@ -822,7 +822,7 @@ impl BorrowEvaluation<'_>{
     }
 
     fn content_at_exit(&mut self, origin: &address::Origin, word: u32, memory: usize) -> Borrow {
-        self.content_before(origin, word, memory, None).restricted(&self.function.uses[memory].path)
+        self.content_before(origin, word, memory, None).restricted_by(&self.function.uses[memory].path)
     }
 
     fn content_read(&mut self,read:&ContentRead,sources:LoopSources)->Borrow{
@@ -832,7 +832,7 @@ impl BorrowEvaluation<'_>{
         let value=match read {
             ContentRead::Relation{memory,graph,root,snapshots}=>{
                 let (graph,root)=graph.bind_incoming(*root,*memory,snapshots.clone(),function,self.state,self.known);
-                graph.solve(root,self).restricted(&function.uses[*memory].path)
+                graph.solve(root,self).restricted_by(&function.uses[*memory].path)
             },
             ContentRead::Returned{memory}=>{
                 let mut value=Borrow::default();
@@ -847,26 +847,26 @@ impl BorrowEvaluation<'_>{
                 let mut value=Borrow::default();
                 for(source,when)in targets.sources.entries(){
                     if let Origin::Position(origin)=source{
-                        value.union(&self.content_before(origin,*word,*memory,Some(snapshots)).restricted(&when));
+                        value.union_restricted(&self.content_before(origin,*word,*memory,Some(snapshots)), &when);
                     }
                 }
-                value.restricted(&function.uses[*memory].path)
+                value.restricted_by(&function.uses[*memory].path)
             },
             ContentRead::Snapshot{memory,position,initial,..}=>{
                 let value=self.evaluate_sources(&initial.view_borrow(0),sources);
                 let mut result=ContentAtRead::default();
                 self.content_event(&mut result,None,Some(position),*memory);
-                result.with_initial(value).restricted(&function.uses[*memory].path)
+                result.with_initial(value).restricted_by(&function.uses[*memory].path)
             },
             ContentRead::Call{memory,origin,word,snapshots}=>{
                 let targets=self.evaluate(&Borrow::source(Origin::Position(origin.clone())));
                 let mut value=Borrow::default();
                 for(source,when)in targets.sources.entries(){
                     if let Origin::Position(origin)=source{
-                        value.union(&self.content_before(origin,*word,*memory,snapshots.as_deref()).restricted(&when));
+                        value.union_restricted(&self.content_before(origin,*word,*memory,snapshots.as_deref()), &when);
                     }
                 }
-                value.restricted(&function.uses[*memory].path)
+                value.restricted_by(&function.uses[*memory].path)
             },
         };
         self.values.insert(key,value.clone());
@@ -922,23 +922,23 @@ impl BorrowEvaluation<'_>{
                 Origin::Contents{origin,word}=>Borrow::source(Origin::Contents{origin:Arc::new(origin.map_borrows(|root|self.evaluate(root))),word:*word}),
                 source=>Borrow::source(source.clone()),
             };
-            value.union(&resolved.restricted(&when));
+            value.union_restricted(&resolved, &when);
         }
         for(input,when)in borrow.inputs.entries(){if matches!(sources,LoopSources::Resolved){
             let bound = self.loop_bindings.iter().rev().find_map(|scope| scope.get(input));
-            let next = match (bound, state.loops.as_ref()) {
-                (Some(bound), _) => bound.clone(),
-                (None, Some(graph)) => self.relation(graph, graph.input_root(*input), sources),
-                (None, None) => Borrow::default(),
-            };
-            value.union(&next.restricted(&when));
+            match (bound, state.loops.as_ref()) {
+                (Some(bound), _) => value.union_restricted(bound, &when),
+                (None, Some(graph)) =>
+                    value.union_restricted(&self.relation(graph, graph.input_root(*input), sources), &when),
+                (None, None) => {}
+            }
         }else{value.inputs.insert_when(*input,when.clone());}}
-        for(read,when)in borrow.reads.entries(){if matches!(sources,LoopSources::Deferred){value.reads.insert_when(read.clone(),when);}else{value.union(&self.content_read(read,sources).restricted(&when));}}
+        for(read,when)in borrow.reads.entries(){if matches!(sources,LoopSources::Deferred){value.reads.insert_when(read.clone(),when);}else{value.union_restricted(&self.content_read(read,sources), &when);}}
         for(result,when)in borrow.calls.entries(){
             let call=&function.calls[result.call];
             let Some(output)=known[&call.function].interface.outputs.get(&result.output)else {value.sources.insert_when(Origin::Unresolved,when.clone());continue;};
             let actual=call_content_sources(output,call,&call.arguments).at_call(&call.arguments);
-            value.union(&self.evaluate(&actual).restricted(&when));
+            value.union_restricted(&self.evaluate(&actual), &when);
         }value
     }
 }

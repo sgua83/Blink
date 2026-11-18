@@ -31,6 +31,12 @@ impl<K:Ord+Clone> Edges<K>{
         }
     }
 
+    pub(in crate::check) fn union_restricted(&mut self, other: &Self, path: &bounds::Clause) {
+        for (key, when) in &other.0 {
+            self.union_when(key.clone(), &bounds::Clause::both(when, path));
+        }
+    }
+
     pub(in crate::check) fn union_when(&mut self, key: K, when: &bounds::Clause) {
         use std::collections::btree_map::Entry;
         match self.0.entry(key) {
@@ -83,12 +89,6 @@ impl<K:Ord+Clone> Edges<K>{
         for when in self.0.values_mut() {
             *when = bounds::Clause::both(when, path);
         }
-    }
-
-    pub(super) fn restricted(&self, path: &bounds::Clause) -> Self {
-        let mut value = self.clone();
-        value.restrict(path);
-        value
     }
 
     fn guards_at_call(&self, bindings: &BTreeMap<ValueIdentity,bounds::Proof>) -> Self {
@@ -346,6 +346,13 @@ impl Borrow{
     })}
     pub fn empty(&self)->bool{self.sources.is_empty()&&self.inputs.is_empty()&&self.calls.is_empty()&&self.reads.is_empty()}
     pub fn union(&mut self,other:&Self){self.sources.union(&other.sources);self.inputs.union(&other.inputs);self.calls.union(&other.calls);self.reads.union(&other.reads);}
+    pub(super) fn union_restricted(&mut self, other: &Self, path: &bounds::Clause) {
+        self.sources.union_restricted(&other.sources, path);
+        self.inputs.union_restricted(&other.inputs, path);
+        self.calls.union_restricted(&other.calls, path);
+        self.reads.union_restricted(&other.reads, path);
+    }
+
     pub fn joined(mut self,other:Self)->Self{self.union(&other);self}
     pub fn pending(&self)->bool{!self.inputs.is_empty()||!self.calls.is_empty()||!self.reads.is_empty()||self.sources.iter().any(|source|match source{Source::Position(origin)|Source::Contents{origin,..}=>origin.pending(),Source::Element{parent,..}|Source::Projection{parent,..}=>parent.pending(),Source::Relation(graph,root)=>graph.pending(*root),Source::Task{captures,outputs,initialized,..}=>captures.pending()||initialized.pending()||outputs.iter().any(Self::pending),Source::TaskOutput{task,projection}=>!matches!(projection,TaskProjection::Returned(..))||task.pending(),_=>false})}
     pub fn active(&self)->bool{self.sources.entries().any(|(_,when)|when.possible())||self.inputs.entries().any(|(_,when)|when.possible())||self.calls.entries().any(|(_,when)|when.possible())||self.reads.entries().any(|(_,when)|when.possible())}

@@ -654,7 +654,7 @@ impl<'g> Query<'g> {
             let from = self.node(edge.from);
             let incoming = self.apply(id, edge.from, &edge.op, from, evaluation);
             let path = edge.when.assume(&bounds::Clause::default(), true);
-            sources.union(&incoming.sources.restricted(&path));
+            sources.union_restricted(&incoming.sources, &path);
         }
         Borrow { sources, ..Borrow::default() }
     }
@@ -697,7 +697,7 @@ impl<'g> Query<'g> {
                                 _ => false,
                             };
                             if affected {
-                                result.seeds.union(&Borrow::source(Origin::External).restricted(&earlier.assume(&yes, true)));
+                                result.seeds.sources.union_when(Origin::External, &earlier.assume(&yes, true));
                             }
                         }
                         continue;
@@ -739,7 +739,7 @@ impl<'g> Query<'g> {
                                 }
                             }
                         } else if matches!(target, Origin::External) {
-                            result.seeds.union(&Borrow::source(Origin::External).restricted(&earlier.assume(&yes, true)));
+                            result.seeds.sources.union_when(Origin::External, &earlier.assume(&yes, true));
                         }
                         if !complete {
                             miss = bounds::Clause::either(&miss, &yes);
@@ -787,11 +787,11 @@ impl<'g> Query<'g> {
                             if let Some(fields)=&write.fields{
                                 for (field,value)in fields{
                                     let(affected,full)=content_write_overlap(Some((origin,word)),position.as_ref(),target,*field,&selected);
-                                    if affected{let v=self.node(*value);if v.empty(){ready=false;break;}incoming.sources.union(&v.sources.restricted(&selected));possible=true;complete|=full;}
+                                    if affected{let v=self.node(*value);if v.empty(){ready=false;break;}incoming.sources.union_restricted(&v.sources, &selected);possible=true;complete|=full;}
                                     else if !full&&(origin.symbolic_input()||target.symbolic_input()||matches!(origin.root,address::Root::Parameter(_))||matches!(target.root,address::Root::Parameter(_))){delayed=true;}
                                 }
-                            }else if position.as_ref().is_some_and(|p|address::MemoryEffect::of(&Borrow::source(Origin::Position(target.clone())).restricted(&selected),super::super::Access::Write,None).written_bytes(p,Scalar::U64,None)!=0){possible=true;incoming.sources.union(&Borrow::source(Origin::External).sources.restricted(&selected));}
-                        }else if matches!(target,Origin::External){possible=true;incoming.sources.union(&Borrow::source(Origin::External).sources.restricted(&selected));}
+                            }else if position.as_ref().is_some_and(|p|address::MemoryEffect::of(&Borrow::source(Origin::Position(target.clone())).restricted(&selected),super::super::Access::Write,None).written_bytes(p,Scalar::U64,None)!=0){possible=true;incoming.sources.union_when(Origin::External, &selected);}
+                        }else if matches!(target,Origin::External){possible=true;incoming.sources.union_when(Origin::External, &selected);}
                         if possible{hit=bounds::Clause::either(&hit,&selected);}if !complete{miss=bounds::Clause::either(&miss,&selected);}
                     }
                     let no=bounds::Clause::either(&write.when.assume(&path,false),&miss);content.write(&incoming,&bounds::Condition::paths(hit,no),true);
@@ -801,7 +801,7 @@ impl<'g> Query<'g> {
             let value=if !ready{Borrow::default()}else if delayed{self.deferred(id)}else if content.earlier.as_ref().is_some_and(|p|!p.possible()){content.with_initial(Borrow::default())}else if origin.symbolic_input(){self.deferred(id)}else{
                 let base=match epoch{Epoch::Input=>input_contents(origin,word),Epoch::Local{memory,snapshots}=>evaluation.content_before(origin,word,*memory,snapshots.as_deref())};
                 if base.sources.iter().any(|s|matches!(s,Origin::Contents{..})){self.deferred(id)}else{content.with_initial(base)}
-            };output.sources.union(&value.sources.restricted(&path));
+            };output.sources.union_restricted(&value.sources, &path);
         }output
     }
 }
