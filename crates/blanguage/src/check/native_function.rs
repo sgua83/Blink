@@ -4,6 +4,7 @@ use cooperative::Argument;
 use returns::Returned;
 mod fallibility;
 mod owned_cleanup;
+mod task_completion;
 mod dependencies;
 mod frame_effects;
 mod failure_lowering;
@@ -659,86 +660,6 @@ impl Builder<'_> {
                     });
                 }
             }
-            Ok(())
-        })).await }
-    }
-
-    pub(super) async fn task_completion_cleanup(
-        &mut self, positions: &[(u32, &Ty, Option<u32>)], datasets: &[(u32, &Ty, &Ty, Access, Option<u32>)],
-        result: &Ty, span: Span,
-    ) -> Result<String> {
-        let name = format!("{}::@task_completion_cleanup{}", self.scope.module(), self.functions.units.len());
-        let pointer = Ty::vector(Scalar::U32, 2);
-        let inputs = [("output", pointer.clone()), ("input", pointer),
-            ("status", Ty::scalar(Scalar::U64)), ("completed", Ty::scalar(Scalar::Bool))];
-        unsafe { self.world.call(self.task_callback(name, &inputs, true, span, async |b, registers| {
-            let [out_low, out_high, in_low, in_high, status, completed] = *registers else { unreachable!() };
-            let (output, input) = ([out_low, out_high], [in_low, in_high]);
-            let slot = b.local_slots(&Ty::scalar(Scalar::U64)).0[0];
-            b.emit(InstKind::StoreLocal(slot, status));
-            b.pending_error = Some(PendingError::Exit(slot));
-            let zero = b.constant(Scalar::U32, 0).regs[0];
-            let load = |b: &mut Builder<'_>, address, scalar, word| {
-                let dst = b.reg(scalar);
-                b.emit(InstKind::LoadIndexed {
-                    dst, source: IndexedSource::Pointer { address, index: zero, stride: 1, aliases: Vec::new() },
-                    offset: zero, word,
-                });
-                dst
-            };
-            let ready_at = |b: &mut Builder<'_>, base, index| {
-                load(b, output, Scalar::Bool, base + index as u32 * Scalar::Bool.size())
-            };
-            let outer = std::mem::take(&mut b.code);
-            if result.owns_resources() {
-                unsafe { b.world.call(b.drop_task_completion_value(result, output, 0, span)).await }?;
-            }
-            for &(packet, ty, ready) in positions {
-                let address = std::array::from_fn(|i| load(b, input, Scalar::U32, packet + i as u32 * 4));
-                if let Some(base) = ready {
-                    for (index, (offset, owner)) in ty.task_output_owners().into_iter().enumerate().rev() {
-                        let condition = ready_at(b, base, index);
-                        let outer = std::mem::take(&mut b.code);
-                        unsafe { b.world.call(b.drop_task_completion_value(owner, address, offset, span)).await }?;
-                        let yes = std::mem::replace(&mut b.code, outer);
-                        b.emit(InstKind::If { condition, yes, no: Vec::new() });
-                    }
-                } else {
-                    unsafe { b.world.call(b.drop_task_completion_value(ty, address, 0, span)).await }?;
-                }
-            }
-            let yes = std::mem::replace(&mut b.code, outer);
-            if !yes.is_empty() {
-                b.emit(InstKind::If { condition: completed, yes, no: Vec::new() });
-            }
-            for &(packet, layout, element, access, ready) in datasets {
-                let outer = std::mem::take(&mut b.code);
-                let descriptor = layout.components.iter().map(|&(scalar, offset)| {
-                    load(b, input, scalar, packet + offset)
-                }).collect::<Vec<_>>();
-                let mut guards = vec![owned_presence::Presence::All; element.components.len()];
-                if let Some(base) = ready {
-                    for (index, (offset, _)) in element.task_output_owners().into_iter().enumerate() {
-                        let condition = ready_at(b, base, index);
-                        let component = element.components.iter().position(|&(_, at)| at == offset).unwrap();
-                        guards[component] = owned_presence::Presence::input(&Value {
-                            ty: Ty::scalar(Scalar::Bool), regs: vec![condition],
-                            proof: bounds::Proof::default().with_identity(ValueIdentity::Register(condition)),
-                            uniform: false, literal: false, constant: None,
-                        });
-                    }
-                }
-                unsafe { b.world.call(b.drop_task_completion_dataset(element, &descriptor, &guards, span)).await }?;
-                if access == Access::Write {
-                    let yes = std::mem::replace(&mut b.code, outer);
-                    b.emit(InstKind::If { condition: completed, yes, no: Vec::new() });
-                } else {
-                    b.code.splice(..0, outer);
-                }
-            }
-            let error = b.reg(Scalar::U64);
-            b.emit(InstKind::LoadLocal(error, slot));
-            b.emit(InstKind::Raise(error));
             Ok(())
         })).await }
     }
