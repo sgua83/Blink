@@ -273,7 +273,42 @@ impl Graph {
             for f in self.frames_at(id){for w in &self.frames[f].writes{todo.push((w.target,read));todo.extend(w.fields.iter().flatten().map(|(_,v)|(*v,read)));}}
         }false
     }
-    fn reachable(&self,root:usize)->BTreeSet<usize>{let mut todo=vec![root];let mut found=BTreeSet::new();while let Some(id)=todo.pop(){if found.insert(id){todo.extend(self.nodes[id].edges.iter().map(|e|e.from));for f in self.frames_at(id){for w in &self.frames[f].writes{todo.push(w.target);todo.extend(w.fields.iter().flatten().map(|(_,v)|*v));}}}}found}
+    fn walk_reachable(
+        &self,
+        root: usize,
+        found: &mut BTreeSet<usize>,
+        mut accepts: impl FnMut(&Node) -> bool,
+    ) -> bool {
+        let mut todo = vec![root];
+        while let Some(id) = todo.pop() {
+            if !found.insert(id) {
+                continue;
+            }
+            let node = &self.nodes[id];
+            if accepts(node) {
+                return true;
+            }
+            todo.extend(node.edges.iter().map(|edge| edge.from));
+            for frame in self.frames_at(id) {
+                for write in &self.frames[frame].writes {
+                    todo.push(write.target);
+                    todo.extend(write.fields.iter().flatten().map(|(_, source)| *source));
+                }
+            }
+        }
+        false
+    }
+
+    fn reachable(&self, root: usize) -> BTreeSet<usize> {
+        let mut found = BTreeSet::new();
+        self.walk_reachable(root, &mut found, |_| false);
+        found
+    }
+
+    fn any_reachable(&self, root: usize, accepts: impl FnMut(&Node) -> bool) -> bool {
+        self.walk_reachable(root, &mut BTreeSet::new(), accepts)
+    }
+
     fn order(&self, reachable: &BTreeSet<usize>) -> Vec<(usize, bool)> {
         let mut counts = BTreeMap::new();
         let mut users: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
@@ -323,11 +358,36 @@ impl Graph {
         let nodes=order.iter().map(|&id|Node{seeds:self.nodes[id].seeds.clone(),edges:self.nodes[id].edges.iter().map(|edge|{let mut op=edge.op.clone();if let Op::Read{frame,..}|Op::Initial{frame,..}=&mut op{*frame=frame.map(|id|fi[&id]);}Edge{from:indices[&edge.from],op,when:edge.when.clone()}}).collect()}).collect();
         let variables=self.variables.iter().filter_map(|id|indices.get(id).copied()).collect();let frames=frames.iter().map(|id|{let f=&self.frames[*id];Frame{parent:f.parent.map(|p|fi[&p]),writes:f.writes.iter().map(|w|Write{target:indices[&w.target],fields:w.fields.as_ref().map(|v|v.iter().map(|(word,id)|(*word,indices[id])).collect()),when:w.when.clone()}).collect()}}).collect();Self{nodes,variables,frames,inputs:BTreeMap::new()}
     }
-    pub(in crate::check) fn has_local(&self,root:usize)->bool{self.reachable(root).iter().any(|&id|self.nodes[id].seeds.has_local())}
-    pub(in crate::check) fn unresolved(&self,root:usize)->bool{self.reachable(root).iter().any(|&id|self.nodes[id].seeds.unresolved())}
-    pub(in crate::check) fn symbolic(&self,root:usize)->bool{self.reachable(root).iter().any(|&id|self.nodes[id].seeds.sources.iter().any(|s|matches!(s,Origin::Parameter(..)|Origin::Contents{..}|Origin::Relation(..))))}
-    pub(in crate::check) fn content_inputs(&self,root:usize)->bool{self.reachable(root).iter().any(|&id|self.nodes[id].edges.iter().any(|e|matches!(e.op,Op::Read{..}))||self.nodes[id].seeds.content_inputs())}
-    pub(in crate::check) fn pending(&self,root:usize)->bool{self.reachable(root).iter().map(|id|&self.nodes[*id]).any(|n|n.seeds.pending()||n.seeds.sources.iter().any(|s|matches!(s,Origin::Relation(..)|Origin::Element{..}|Origin::Projection{..})||matches!(s,Origin::Position(p)if matches!(p.root,address::Root::Derived(_)|address::Root::Resource{..}|address::Root::Dataset{..}|address::Root::External(address::Identity::Storage(_))))))}
+    pub(in crate::check) fn has_local(&self, root: usize) -> bool {
+        self.any_reachable(root, |node| node.seeds.has_local())
+    }
+    pub(in crate::check) fn unresolved(&self, root: usize) -> bool {
+        self.any_reachable(root, |node| node.seeds.unresolved())
+    }
+    pub(in crate::check) fn symbolic(&self, root: usize) -> bool {
+        self.any_reachable(root, |node| {
+            node.seeds.sources.iter().any(|source| {
+                matches!(source, Origin::Parameter(..) | Origin::Contents { .. } | Origin::Relation(..))
+            })
+        })
+    }
+    pub(in crate::check) fn content_inputs(&self, root: usize) -> bool {
+        self.any_reachable(root, |node| {
+            node.edges.iter().any(|edge| matches!(edge.op, Op::Read { .. }))
+                || node.seeds.content_inputs()
+        })
+    }
+    pub(in crate::check) fn pending(&self, root: usize) -> bool {
+        self.any_reachable(root, |node| {
+            node.seeds.pending() || node.seeds.sources.iter().any(|source| {
+                matches!(source, Origin::Relation(..) | Origin::Element { .. } | Origin::Projection { .. })
+                    || matches!(source, Origin::Position(position) if matches!(
+                        position.root, address::Root::Derived(_) | address::Root::Resource { .. }
+                            | address::Root::Dataset { .. } | address::Root::External(address::Identity::Storage(_))
+                    ))
+            })
+        })
+    }
     fn project(self: &Arc<Self>, root: usize, op: Op) -> Borrow {
         let node = &self.nodes[root];
         if matches!(op, Op::Resources | Op::Owners)
