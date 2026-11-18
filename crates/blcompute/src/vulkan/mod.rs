@@ -989,6 +989,7 @@ impl Device {
         };
         let target = Allocation::new(self.inner.clone(), first.size, 2, 6, 4)?;
         let mut remaining = data.bytes();
+        let mut producer = data.dependency();
         for page in &data.pages {
             let bytes = remaining.min(u64::from(data.page_records()) * u64::from(data.stride));
             let commands = Commands::new(self.inner.clone())?;
@@ -1008,8 +1009,10 @@ impl Device {
                 );
             }
             commands.barrier(0x1000, 0x4000, 0x1000, 0x2000);
-            let dependencies =
-                Execution::prepare(data.dependency().cloned().into_iter().collect())?;
+            let dependencies = match producer.take() {
+                Some(source) => Execution::prepare(vec![source.clone()])?,
+                None => Vec::new(),
+            };
             self.submit_transfer(commands, Vec::new(), dependencies)?
                 .wait()?;
             target.read_with(|pointer| unsafe {
