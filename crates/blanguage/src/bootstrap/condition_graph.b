@@ -1570,3 +1570,50 @@ extern "C" void value_condition(address context,ValueConditionInput input,ValueC
   }truth+=1;
  }
 }
+
+void index_condition_constant(address state,u32 value,cfn<void,address,u32,IndexConditionFinish> finish) on cpu
+ requires nonzero(finish) {
+ finish(state,0,value==0 ? IndexConditionFinish::Empty : IndexConditionFinish::Impossible);
+ finish(state,1,value!=0 ? IndexConditionFinish::Empty : IndexConditionFinish::Impossible);
+}
+extern "C" void index_condition_equal(address state,IndexRelationOperand left,IndexRelationOperand right,IndexRelationEqualHost host) on cpu
+ requires nonzero(host.cases.emit) requires nonzero(host.cases.finish) requires nonzero(host.predicate) requires nonzero(host.guard) {
+ if(left.kind==2&&right.kind==2){index_condition_constant(state,left.bits==right.bits ? 1 : 0,host.cases.finish);return;}
+ if(left.kind==1&&right.kind==1){
+  host.predicate(state,left.identity,right.identity);
+  host.cases.emit(state,0,IndexConditionOutput::NotEqual,left.identity,right.identity,0u64);
+  host.cases.emit(state,1,IndexConditionOutput::Equal,left.identity,right.identity,0u64);
+  host.cases.finish(state,0,IndexConditionFinish::Facts);host.cases.finish(state,1,IndexConditionFinish::Facts);return;
+ }
+ IndexRelationOperand value=left.kind==1 ? left : right;IndexRelationOperand constant=left.kind==2 ? left : right;
+ host.cases.emit(state,1,IndexConditionOutput::Minimum,value.identity,address(),constant.bits);
+ host.cases.emit(state,1,IndexConditionOutput::Maximum,value.identity,address(),constant.bits);host.guard(state);
+}
+extern "C" void index_condition_below(address state,address input,IndexRelationInput values,u32 original_strict,IndexRelationBelowHost host) on cpu
+ requires nonzero(host.cases.emit) requires nonzero(host.cases.finish) requires nonzero(host.bounds) requires nonzero(host.constrain) requires nonzero(host.compare) {
+ if(values.left.kind==2&&values.right.kind==2){
+  u32 value=original_strict!=0 ? (values.left.bits<values.right.bits ? 1 : 0) : (values.left.bits<=values.right.bits ? 1 : 0);
+  index_condition_constant(state,value,host.cases.finish);return;
+ }
+ u32 invert=(values.left.kind==0||values.left.kind==2)&&values.right.kind==1 ? 1 : 0;
+ u32 first=invert;u32 second=1-first;u32 strict=invert!=0 ? 1-original_strict : original_strict;
+ IndexRelationOperand a=invert==0 ? values.left : values.right;IndexRelationOperand b=invert==0 ? values.right : values.left;
+ if(a.kind==1&&b.kind==1&&host.compare(a.identity,b.identity)==0){index_condition_constant(state,(1-strict)^invert,host.cases.finish);return;}
+ IndexBounds raw_a=host.bounds(input,first);IndexBounds raw_b=host.bounds(input,second);
+ u32 nonzero_a=invert==0 ? values.left_nonzero : values.right_nonzero;u32 nonzero_b=invert==0 ? values.right_nonzero : values.left_nonzero;
+ IndexBounds a_range=IndexBounds(u64(u32(max(raw_a.lower,u64(nonzero_a)))),u64(u32(raw_a.upper)));
+ IndexBounds b_range=IndexBounds(u64(u32(max(raw_b.lower,u64(nonzero_b)))),u64(u32(raw_b.upper)));
+ u32 possible_false=strict!=0 ? (a_range.upper>=b_range.lower ? 1 : 0) : (a_range.upper>b_range.lower ? 1 : 0);
+ u32 possible_true=strict!=0 ? (a_range.lower<b_range.upper ? 1 : 0) : (a_range.lower<=b_range.upper ? 1 : 0);
+ if(a.kind==1&&(b.kind==0||b.kind==2)){
+  u64 minimum=b.kind==2 ? u64(u32(b.bits)) : b_range.lower;u64 maximum=b.kind==2 ? u64(u32(b.bits)) : b_range.upper;
+  u64 lower=minimum+u64(1-strict);
+  if(lower>4294967295u64){possible_false=0;}else if(possible_false!=0){host.cases.emit(state,invert,IndexConditionOutput::Minimum,a.identity,address(),lower);}
+  if(maximum<u64(strict)){possible_true=0;}else if(possible_true!=0){host.cases.emit(state,1-invert,IndexConditionOutput::Maximum,a.identity,address(),maximum-u64(strict));}
+ }else if(a.kind==1&&b.kind==1){
+  if(possible_false!=0){host.constrain(state,input,invert,first,b.identity,a.identity,raw_b,raw_a,1-strict);}
+  if(possible_true!=0){host.constrain(state,input,1-invert,second,a.identity,b.identity,raw_a,raw_b,strict);}
+ }
+ host.cases.finish(state,invert,possible_false!=0 ? IndexConditionFinish::Facts : IndexConditionFinish::Impossible);
+ host.cases.finish(state,1-invert,possible_true!=0 ? IndexConditionFinish::Facts : IndexConditionFinish::Impossible);
+}

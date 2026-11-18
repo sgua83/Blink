@@ -736,3 +736,27 @@ struct ValueConditionHost {
 };
 extern "C" void value_condition(address context,ValueConditionInput input,ValueConditionHost host) on cpu
  requires nonzero(host.next) requires nonzero(host.domain) requires nonzero(host.bounds) requires nonzero(host.emit) requires nonzero(host.finish);
+
+struct IndexRelationOperand {u32 kind;address identity;u64 bits;};
+struct IndexRelationInput {IndexRelationOperand left;IndexRelationOperand right;u32 left_nonzero;u32 right_nonzero;};
+enum IndexConditionOutput:u32 {Minimum=0;Maximum=1;Equal=2;NotEqual=3;};
+enum IndexConditionFinish:u32 {Impossible=0;Empty=1;Facts=2;};
+struct IndexConditionCaseHost {
+ cfn<void,address,u32,IndexConditionOutput,address,address,u64> emit;
+ cfn<void,address,u32,IndexConditionFinish> finish;
+};
+struct IndexRelationEqualHost {
+ IndexConditionCaseHost cases;
+ cfn<void,address,address,address> predicate;
+ cfn<void,address> guard;
+};
+struct IndexRelationBelowHost {
+ IndexConditionCaseHost cases;
+ cfn<IndexBounds,address,u32> ensures memory(read) bounds;
+ cfn<void,address,address,u32,u32,address,address,IndexBounds,IndexBounds,u32> constrain;
+ cfn<i32,address,address> ensures memory(read) compare;
+};
+extern "C" void index_condition_equal(address state,IndexRelationOperand left,IndexRelationOperand right,IndexRelationEqualHost host) on cpu
+ requires nonzero(host.cases.emit) requires nonzero(host.cases.finish) requires nonzero(host.predicate) requires nonzero(host.guard);
+extern "C" void index_condition_below(address state,address input,IndexRelationInput values,u32 original_strict,IndexRelationBelowHost host) on cpu
+ requires nonzero(host.cases.emit) requires nonzero(host.cases.finish) requires nonzero(host.bounds) requires nonzero(host.constrain) requires nonzero(host.compare);

@@ -13,6 +13,7 @@ mod integer_relations;
 mod index_domains;
 mod comparison_conditions;
 mod value_conditions;
+mod index_conditions;
 use super::*;
 mod floating;
 mod bitwise;
@@ -2531,48 +2532,9 @@ impl Condition {
     pub(super) fn element_index(depth:usize,index:Operand)->Self {
         Self::index_equal(Operand::Value(ValueIdentity::ElementIndex(depth)),index)
     }
-    pub(super) fn index_equal(a:Operand,b:Operand)->Self {
-        let facts=match(a,b){
-            (Operand::Constant(_,a),Operand::Constant(_,b))=>return Self::constant(a==b),
-            (Operand::Value(a),Operand::Value(b))=>{
-                let predicate=ScalarPredicate::new(Comparison::Equal,Scalar::U32,Operand::Value(a),Operand::Value(b));
-                return Self{cases:[
-                    Clause::facts([Fact::NotEqual(a.min(b),a.max(b)),Fact::Predicate(predicate,false)].into()),
-                    Clause::facts([Fact::equal(a,b),Fact::Predicate(predicate,true)].into()),
-                ]};
-            },
-            (Operand::Value(id),Operand::Constant(_,bits))|(Operand::Constant(_,bits),Operand::Value(id))=>[Fact::Minimum(id,Scalar::U32,bits),Fact::Maximum(id,Scalar::U32,bits)].into(),
-        };
-        Self::guard(Clause::facts(facts))
-    }
+    pub(super) fn index_equal(a:Operand,b:Operand)->Self {index_conditions::equal(a,b)}
     pub(super) fn index_below((a,a_proof):(impl Into<Option<Operand>>,&Proof),(b,b_proof):(impl Into<Option<Operand>>,&Proof),strict:bool)->Self {
-        let(a,b)=(a.into(),b.into());
-        let mut possible=if strict{
-            [a_proof.unsigned_maximum(0)>=b_proof.unsigned_minimum(0),a_proof.unsigned_minimum(0)<b_proof.unsigned_maximum(0)]
-        }else{
-            [a_proof.unsigned_maximum(0)>b_proof.unsigned_minimum(0),a_proof.unsigned_minimum(0)<=b_proof.unsigned_maximum(0)]
-        };
-        let mut facts=[Facts::new(),Facts::new()];
-        match(a,b){
-            (Some(Operand::Constant(_,a)),Some(Operand::Constant(_,b)))=>return Self::constant(if strict{a<b}else{a<=b}),
-            (Some(Operand::Constant(..)),Some(Operand::Value(_)))|(None,Some(Operand::Value(_)))=>return Self::index_below((b,b_proof),(a,a_proof),!strict).negate(),
-            (Some(Operand::Value(a)),Some(Operand::Constant(_,b)))=>{
-                let b=b as u32;
-                if let Some(lower)=b.checked_add(u32::from(!strict)){facts[0].insert(Fact::Minimum(a,Scalar::U32,Bits::from(lower)));}else{possible[0]=false;}
-                if let Some(upper)=b.checked_sub(u32::from(strict)){facts[1].insert(Fact::Maximum(a,Scalar::U32,Bits::from(upper)));}else{possible[1]=false;}
-            },
-            (Some(Operand::Value(a)),Some(Operand::Value(b)))=>{
-                if a==b{return Self::constant(!strict);}
-                constrain_proofs(&mut facts[0],(b,b_proof),(a,a_proof),!strict,Scalar::U32);
-                constrain_proofs(&mut facts[1],(a,a_proof),(b,b_proof),strict,Scalar::U32);
-            },
-            (Some(Operand::Value(a)),None)=>{
-                if let Some(lower)=b_proof.unsigned_minimum(0).checked_add(u32::from(!strict)){facts[0].insert(Fact::Minimum(a,Scalar::U32,Bits::from(lower)));}else{possible[0]=false;}
-                if let Some(upper)=b_proof.unsigned_maximum(0).checked_sub(u32::from(strict)){facts[1].insert(Fact::Maximum(a,Scalar::U32,Bits::from(upper)));}else{possible[1]=false;}
-            },
-            _=>{},
-        }
-        Self{cases:std::array::from_fn(|i|if possible[i]{Clause::facts(std::mem::take(&mut facts[i]))}else{Clause::impossible()})}
+        index_conditions::below(a.into(),a_proof,b.into(),b_proof,strict)
     }
     pub(super) fn guard(path:Clause)->Self{Self{cases:[path.negate(),path]}}
     pub(super) fn execution(path:&Clause)->Self {

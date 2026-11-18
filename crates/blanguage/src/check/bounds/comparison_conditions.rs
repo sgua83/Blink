@@ -19,7 +19,7 @@ fn operation(op: Comparison) -> u32 {
 }
 #[derive(Clone, Copy)]
 #[repr(C)]
-struct Bounds {
+pub(super) struct Bounds {
     lower: u64,
     upper: u64,
 }
@@ -169,7 +169,7 @@ struct ConstraintHost {
     next: unsafe extern "C" fn(Slot) -> index_domains::Fields,
     domain: unsafe extern "C" fn(Slot, index_domains::Output, index_domains::Fields),
 }
-fn constrain_parts(
+pub(super) fn constrain_parts(
     facts: &mut Facts,
     ids: [ValueIdentity; 2],
     bounds: [Bounds; 2],
