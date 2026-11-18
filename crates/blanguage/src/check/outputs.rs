@@ -7,6 +7,8 @@ use owned_presence::Presence;
 use returns::Returned;
 #[path="outputs/contract_condition.rs"]
 mod contract_condition;
+#[path="outputs/written.rs"]
+mod written;
 use contract_condition::{bind_constants,condition_type};
 
 #[derive(Clone, Copy)]
@@ -1057,28 +1059,6 @@ impl Builder<'_> {
         let changed=data.words().into_iter().map(|word|scope.application_word(None,word)).collect::<Vec<_>>();
         self.forget_output_positions(&changed,span)
     }
-    pub(super) async fn check_data_output(
-        &mut self,
-        data: &application::Data,
-        guards: &[Presence],
-        span: Span,
-    ) -> Result<()> {
-        let path = self.path.clone();
-        for ((_, offset), when) in data.ty.components.iter().zip(guards) {
-            self.path = when.condition().assume(&path, true);
-            if self.path.possible() && !self.application_field_initialized(data, *offset)
-                && !self.defer_dataset_output(data,vec![data.initialization.as_ref().unwrap().application_word(None,*offset)],span)? {
-                return self.fail(span, "B229", "返回分支没有满足dataset字段的条件初始化合同");
-            }
-        }
-        if data.ty.owns_resources() && data.length.maximum() != 0 {
-            self.path = path.clone();
-            let model = unsafe { self.world.call(self.element_model(&data.ty, &data.elements, (&data.residency, &[]), span)).await }?;
-            unsafe { self.world.call(Self::check_output_resources(self, &model, &data.ty, 0, guards, &path, span)).await }?;
-        }
-        self.path = path;
-        Ok(())
-    }
     pub(super) fn initialize_data_output(&mut self, data: &application::DataReference, guards: &[Presence]) {
         if let Some(scope) = &data.initialization {
             for (offset, when) in data.words().into_iter().zip(guards) {
@@ -1106,145 +1086,7 @@ impl Builder<'_> {
         }
     }
 
-    async fn check_output_resources(
-        builder: &mut Builder<'_>,
-        model: &Returned,
-        root: &Ty,
-        offset: u32,
-        guards: &[Presence],
-        path: &bounds::Clause,
-        span: Span,
-    ) -> Result<()> {
-        match model {
-            Returned::Dataset(data) => {
-                let when = resource_guard(root, offset, guards);
-                builder.path = when.condition().assume(path, true);
-                if builder.path.possible() {
-                    let mut selected = model.clone();
-                    builder.resolve_owned_model(&mut selected, None);
-                    let Returned::Dataset(data) = selected else {
-                        unreachable!()
-                    };
-                    if !data.ownership.available() {
-                        return builder.fail(
-                            span,
-                            "B229",
-                            "条件输出分支没有实际拥有所声明的资源",
-                        );
-                    }
-                    unsafe { builder.world.call(builder.require_application_initialized(&data, span)).await }?;
-                }
-                builder.path = when.condition().assume(path, false);
-                if builder.path.possible()
-                    && builder.resolve_ownership(&data.ownership, None).may_own()
-                {
-                    return builder.fail(
-                        span,
-                        "B229",
-                        "未交付分支仍拥有输出资源；按实际返回关系交付，或由原所有者释放",
-                    );
-                }
-            }
-            Returned::OwnedValue(value) => {
-                if value.value.ty.cleanup.is_some() {
-                    let when=resource_guard(root,offset,guards);
-                    builder.path=when.condition().assume(path,true);
-                    if builder.path.possible()&&!builder.resolve_ownership(&value.ownership,None).available(){return builder.fail(span,"B229","条件输出分支没有实际构造用户拥有值");}
-                    builder.path=when.condition().assume(path,false);
-                    if builder.path.possible()&&builder.resolve_ownership(&value.ownership,None).may_own(){return builder.fail(span,"B229","未交付分支仍拥有用户资源；按实际返回关系交付或由原所有者释放");}
-                }
-                for (index, payload) in value.payloads.iter().enumerate() {
-                    if let Some(payload) = payload {
-                        let at = if value.value.ty.has_variants() {
-                            value.value.ty.variant_payload_offset()
-                        } else {
-                            value.value.ty.aggregate_part(index).0
-                        };
-                        unsafe { builder.world.call(Self::check_output_resources(builder, payload, root, offset + at, guards, path, span)).await }?;
-                    }
-                }
-            }
-            _ => {}
-        }
-        Ok(())
-    }
 
-    pub(super) async fn conditional_written_model(
-        &mut self,
-        name: &str,
-        guards: &[Presence],
-        span: Span,
-    ) -> Result<Returned> {
-        let binding = self.env[name].clone();
-        let place = binding.stored_place().unwrap();
-        let original_path = self.path.clone();
-        let initialized = self.initialized.clone();
-        for (component, when) in guards.iter().enumerate() {
-            self.path = when.condition().assume(&original_path, true);
-            if self.path.possible() {
-                if let Binding::OwnedValue(value) = &binding {
-                    let mut value = Returned::OwnedValue(value.clone());
-                    self.resolve_owned_model(&mut value, None);
-                    self.prepare_owned_read(&value);
-                }
-                let selected = place
-                    .clone()
-                    .project(Ty::scalar(place.ty().components[component].0), &[component]);
-                if !self.is_initialized(&selected)&&!self.defer_initialization(&selected,"B229",span)? {
-                    return self.fail(
-                        span,
-                        "B229",
-                        format!("返回分支没有满足 {name} 的条件输出初始化合同"),
-                    );
-                }
-            }
-            self.initialized = initialized.clone();
-        }
-        self.path = original_path.clone();
-        let mut model = match binding {
-            Binding::Owned(owner) => Returned::value(Value {
-                ty: place.ty().clone(),
-                regs: place
-                    .ty()
-                    .components
-                    .iter()
-                    .map(|(scalar, _)| self.reg(*scalar))
-                    .collect(),
-                proof: owner.proof,
-                uniform: owner.uniform,
-                literal: false,
-                constant: None,
-            }),
-            Binding::OwnedValue(value) => Returned::OwnedValue(value),
-            _ => unreachable!(),
-        };
-        unsafe { self.world.call(Self::check_output_resources(self, &model, place.ty(), 0, guards, &original_path, span)).await }?;
-        self.path = original_path;
-        fn absent(model: &mut Returned) {
-            match model {
-                Returned::Dataset(data) if data.ownership == Ownership::Moved => {
-                    data.residency = residency::Residency::Absent
-                }
-                Returned::OwnedValue(value) => {
-                    for payload in value.payloads.iter_mut().flatten() {
-                        absent(payload);
-                    }
-                }
-                _ => {}
-            }
-        }
-        absent(&mut model);
-        // These registers only name the public output storage. No load from an
-        // uninitialized branch is emitted while constructing its contract.
-        let registers = place
-            .ty()
-            .components
-            .iter()
-            .map(|(scalar, _)| self.reg(*scalar))
-            .collect();
-        native_function::rebind_model(&mut model, registers);
-        Ok(model)
-    }
 }
 
 // Physical construction for the original public contract wire.

@@ -22,7 +22,7 @@ impl Expected{
  fn kind(&self)->u32{match self{Self::Void=>0,Self::Never=>1,Self::Value(_)=>2,Self::Dataset{..}=>3}}
 }
 impl Returned {
- fn kind(&self)->u32{match self{Self::Unit=>0,Self::Value(_)=>1,Self::Dataset(_)=>2,Self::OwnedValue(_)=>3}}
+ pub(super) fn kind(&self)->u32{match self{Self::Unit=>0,Self::Value(_)=>1,Self::Dataset(_)=>2,Self::OwnedValue(_)=>3}}
  fn register_count(&self)->usize{match self{Self::Unit=>0,Self::Value(value)=>value.regs.len(),Self::OwnedValue(value)=>value.value.regs.len(),Self::Dataset(_)=>2}}
  fn register(&self,index:usize)->Reg{match self{Self::Value(value)=>value.regs[index],Self::OwnedValue(value)=>value.value.regs[index],Self::Dataset(data)=>if index==0{data.root.regs[0]}else{data.length.regs[0]},Self::Unit=>unsafe{std::hint::unreachable_unchecked()}}}
 
@@ -190,24 +190,6 @@ fn early_returns(body: &Block) -> bool {
     }
 }
 impl Builder<'_> {
-    pub(super) async fn written_model(&mut self,name:&str,span:Span)->Result<Returned> {
-        match self.env.get(name).cloned().unwrap() {
-            Binding::Owned(owner)=>{
-                if !self.is_initialized(&owner.place)&&!self.defer_initialization(&owner.place,"B229",span)?{return self.fail(span,"B229",format!("返回前没有完整初始化独占参数 {name}"));}
-                let regs=owner.place.ty().components.iter().map(|(scalar,_)|self.reg(*scalar)).collect();
-                Ok(Returned::value(Value{ty:owner.place.ty().clone(),regs,proof:owner.proof,uniform:owner.uniform,literal:false,constant:None}))
-            }
-            Binding::OwnedValue(value)=>{
-                let mut model=Returned::OwnedValue(value);self.resolve_owned_model(&mut model,None);self.prepare_owned_read(&model);let Returned::OwnedValue(mut value)=model else{unreachable!()};
-                if !value.all_available(){return self.fail(span,"B229",format!("返回前没有归还独占参数 {name} 的全部活动拥有资源"));}
-                let place=value.place().unwrap();
-                if !value.value.ty.has_variants() && !self.is_initialized(&place)&&!self.defer_initialization(&place,"B229",span)?{return self.fail(span,"B229",format!("返回前没有完整初始化独占参数 {name}"));}
-                unsafe { self.world.call(self.load_owned_value(&mut value,span)).await }?;
-                let mut model=Returned::OwnedValue(value);unsafe { self.world.call(self.require_returned_initialized(&mut model,span)).await }?;Ok(model)
-            }
-            _=>unreachable!(),
-        }
-    }
     fn bind_return_exit(
         &mut self,
         value: &mut Option<Returned>,
