@@ -645,11 +645,6 @@ impl ContentAtRead {
     }
 }
 
-fn apply_content_write(result:&mut ContentAtRead,query:Option<(&address::Origin,u32)>,position:Option<&Position>,
-    target:&address::Origin,word:u32,incoming:&Borrow,when:&bounds::Clause) {
-    let(affected,complete)=content_write_overlap(query,position,target,word,when);
-    if affected {result.write(incoming,&bounds::Condition::execution(when),complete);}
-}
 fn content_write_overlap(query:Option<(&address::Origin,u32)>,position:Option<&Position>,target:&address::Origin,word:u32,when:&bounds::Clause)->(bool,bool){
     let complete=query.is_some_and(|(origin,at)|origin.base==target.base&&same_content_storage(&origin.root,&target.root)
         &&content_word(origin,at).zip(content_word(target,word)).is_some_and(|((_,a),(_,b))|a==b))
@@ -712,12 +707,16 @@ impl BorrowEvaluation<'_>{
                 let Access::Stored{borrows,word,value:stored,when}=access else{continue;};
                 let when=bounds::Clause::both(&usage.path, &when.projected_case(true, &call.arguments));
                 let target=self.evaluate(&call_content_sources(borrows,call,&call.arguments).at_call(&call.arguments));
-                let stored=self.evaluate(&call_content_sources(stored,call,&call.arguments).at_call(&call.arguments));
+                let stored = std::cell::LazyCell::new(|| {
+                    self.evaluate(&call_content_sources(stored, call, &call.arguments).at_call(&call.arguments))
+                });
                 for(source,selected)in target.sources.entries().rev(){
                     if let Origin::Position(origin) = source {
                         let path = bounds::Clause::both(&when, &selected);
-                        if path.possible() {
-                            apply_content_write(result, query, position, origin, *word, &stored, &path);
+                        if !path.possible() { continue; }
+                        let (affected, complete) = content_write_overlap(query, position, origin, *word, &path);
+                        if affected {
+                            result.write(&stored, &bounds::Condition::execution(&path), complete);
                         }
                     }
                 }
@@ -744,8 +743,11 @@ impl BorrowEvaluation<'_>{
                 Origin::Position(origin)=>{
                     if let Some(written)=written {
                         for &(word,component) in address_fields.iter().rev(){
-                            let stored=self.evaluate(&written.view_borrow(component));
-                            apply_content_write(result,query,position,origin,word,&stored,&when);
+                            let (affected, complete) = content_write_overlap(query, position, origin, word, &when);
+                            if affected {
+                                let stored = self.evaluate(&written.view_borrow(component));
+                                result.write(&stored, &bounds::Condition::execution(&when), complete);
+                            }
                         }
                     }else{
                         let effect=address::MemoryEffect::of(&Borrow::source(source.clone()).restricted(&when),super::Access::Write,None);
