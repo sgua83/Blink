@@ -540,9 +540,6 @@ struct RequiredPending {
     present: u32,
     index: usize,
 }
-unsafe extern "C" fn required_reset(slot: Slot, id: usize) {
-    unsafe { required_evaluation(slot) }.query.nodes[id].value = None;
-}
 unsafe extern "C" fn required_status(slot: Slot, id: usize) -> u32 {
     match &unsafe { required_evaluation(slot) }.query.nodes[id].value {
         None => 0,
@@ -636,7 +633,6 @@ unsafe extern "C" fn required_release(slot: Slot, id: usize, last: u32) -> u32 {
 }
 #[repr(C)]
 struct RequiredHost {
-    reset: unsafe extern "C" fn(Slot, usize),
     status: unsafe extern "C" fn(Slot, usize) -> u32,
     push: unsafe extern "C" fn(Slot, usize),
     pop: unsafe extern "C" fn(Slot) -> RequiredPending,
@@ -699,7 +695,6 @@ impl<'a> RequiredQuery<'a> {
                 graph,
                 (&mut evaluation as *mut RequiredEvaluation<'_, '_, '_>).cast(),
                 RequiredHost {
-                    reset: required_reset,
                     status: required_status,
                     push: required_push,
                     pop: required_pop,

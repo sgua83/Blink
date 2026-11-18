@@ -225,14 +225,14 @@ void required_abandon(RequiredGraph graph,address context,RequiredHost host,usiz
  }
 }
 extern "C" void required_evaluate(RequiredGraph graph,address context,RequiredHost host) on cpu
- requires nonzero(host.reset) requires nonzero(host.status) requires nonzero(host.push)
+ requires nonzero(host.status) requires nonzero(host.push)
  requires nonzero(host.pop) requires nonzero(host.pending_count) requires nonzero(host.impossible)
  requires nonzero(host.leaf) requires nonzero(host.union) requires nonzero(host.common)
  requires nonzero(host.valid_additions) requires nonzero(host.release) {
  usize at=0u64;
  while(at<graph.count){
   RequiredNode node=required_node(graph,at);
-  required_remaining(graph,at,node.users);host.reset(context,at);at+=1u64;
+  required_remaining(graph,at,node.users);at+=1u64;
  }
  host.push(context,0u64);
  while(true){

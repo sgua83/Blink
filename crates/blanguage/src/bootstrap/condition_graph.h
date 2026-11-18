@@ -71,7 +71,6 @@ struct RequiredBuildHost {
  cfn<void,address,usize,u32,usize,usize> define;
 };
 struct RequiredHost {
- cfn<void,address,usize> reset;
  cfn<u32,address,usize> ensures memory(read) status;
  cfn<void,address,usize> push;
  cfn<RequiredPending,address> pop;
@@ -87,7 +86,7 @@ extern "C" void required_build(address root,address context,RequiredBuildHost ho
  requires nonzero(host.index) requires nonzero(host.count)
  requires nonzero(host.inspect) requires nonzero(host.define);
 extern "C" void required_evaluate(RequiredGraph graph,address context,RequiredHost host) on cpu
- requires nonzero(host.reset) requires nonzero(host.status) requires nonzero(host.push)
+ requires nonzero(host.status) requires nonzero(host.push)
  requires nonzero(host.pop) requires nonzero(host.pending_count) requires nonzero(host.impossible)
  requires nonzero(host.leaf) requires nonzero(host.union) requires nonzero(host.common)
  requires nonzero(host.valid_additions) requires nonzero(host.release);
