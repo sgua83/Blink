@@ -23,6 +23,9 @@ iced-x86 = { version = "1.21", optional = true, default-features = false, featur
 
 rspirv = { version = "0.13", optional = true, default-features = false }
 
+[build-dependencies]
+jobserver = "0.1.35"
+
 [features]
 default = ["compiler"]
 compiler = ["dep:iced-x86", "dep:rspirv"]
