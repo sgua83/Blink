@@ -376,10 +376,10 @@ impl Function {
                         });
                         if !borrow.active(){return Borrow::default();}
                     }
-                    canonical(Borrow::source(Origin::Position(Arc::new(origin))),self,None,&BTreeMap::new())
+                    canonical(Borrow::source(Origin::Position(Arc::new(origin))),self,&BTreeMap::new())
                 },
             Origin::Unresolved|Origin::External|Origin::Contents{..}|Origin::Relation(..)
-            |Origin::TaskOutput{projection:view::TaskProjection::Writes|view::TaskProjection::Places,..}=>canonical(Borrow::source(source),self,None,&BTreeMap::new()),
+            |Origin::TaskOutput{projection:view::TaskProjection::Writes|view::TaskProjection::Places,..}=>canonical(Borrow::source(source),self,&BTreeMap::new()),
             _=>Borrow::default(),
         });
         if !selected.active(){return None;}
@@ -392,13 +392,13 @@ impl Function {
             if fact.source.borrow().has_local(){return None;}
             fact.source=match fact.source {
                 address::InitializationSource::Position(origin)=>{
-                    let value=canonical(Borrow::source(Origin::Position(Arc::new(origin))),self,None,&BTreeMap::new());
+                    let value=canonical(Borrow::source(Origin::Position(Arc::new(origin))),self,&BTreeMap::new());
                     if value.unresolved(){return None;}
                     let Origin::Position(origin)=value.sources.iter().next()? else{return None;};
                     address::InitializationSource::Position(origin.as_ref().clone())
                 },
                 address::InitializationSource::Task(borrow)=>{
-                    let value=canonical(borrow,self,None,&BTreeMap::new());
+                    let value=canonical(borrow,self,&BTreeMap::new());
                     if value.unresolved(){return None;}
                     address::InitializationSource::Task(value)
                 },
@@ -436,7 +436,7 @@ impl Function {
                 Origin::Element{parent,fields,index}=>Borrow::element(external(function,*parent,parameters),fields,index.and_then(|index|index.at_call(parameters))),
                 Origin::Projection{parent,fields}=>Borrow::projection(external(function,*parent,parameters),fields),
                 Origin::Position(origin)=>origin.resources(),
-                Origin::Contents{..}|Origin::Relation(..)=>canonical(Borrow::source(source),function,None,&BTreeMap::new()),
+                Origin::Contents{..}|Origin::Relation(..)=>canonical(Borrow::source(source),function,&BTreeMap::new()),
                 Origin::Task{captures,..}=>external(function,*captures,parameters),
                 Origin::TaskOutput{task,projection}=>external(function,*task,parameters).task_projection(projection),
                 Origin::Unresolved=>Borrow::source(source),Origin::Inactive|Origin::External=>Borrow::default(),
@@ -802,11 +802,15 @@ impl BorrowEvaluation<'_>{
         result
     }
 
-    fn stored_at_exit(&mut self,memory:usize)->Vec<(Arc<address::Origin>,u32,Borrow)>{
+    fn stored_at_exit<'p>(
+        &mut self,
+        memory: usize,
+        parameters: impl Fn() -> &'p BTreeMap<ValueIdentity, bounds::Proof>,
+    ) -> Vec<(Arc<address::Origin>, u32, Borrow)> {
         let function=self.function;
         let exposed=exposed_resources(function, |output| self.evaluate(&function.outputs[output]));
         self.stored_candidates().into_iter().filter_map(|(origin,word)|{
-            let target=stored_target(&origin,function,&exposed);
+            let target=stored_target(&origin,function,&exposed,&parameters);
             if !target.active(){return None;}
             let value=self.content_before(&origin,word,memory,None).restricted(&function.uses[memory].path);
             Some((origin,word,value))
@@ -824,7 +828,8 @@ impl BorrowEvaluation<'_>{
             },
             ContentRead::Returned{memory}=>{
                 let mut value=Borrow::default();
-                for(_,_,stored)in self.stored_at_exit(*memory){value.union(&stored);}
+                let parameters = std::cell::LazyCell::new(|| public_parameters(function));
+                for(_,_,stored)in self.stored_at_exit(*memory, || &parameters){value.union(&stored);}
                 value
             },
             ContentRead::Value{memory,word,borrow,snapshots}=>{
@@ -930,7 +935,10 @@ impl BorrowEvaluation<'_>{
 
 // Select storage that survives this function; private stack slots and unreturned
 // owned resources have no caller-side stored output.
-fn stored_target(origin:&address::Origin,function:&Function,exposed:&BTreeMap<Origin,Borrow>)->Borrow{
+fn stored_target<'p>(
+    origin: &address::Origin, function: &Function, exposed: &BTreeMap<Origin, Borrow>,
+    parameters: impl FnOnce() -> &'p BTreeMap<ValueIdentity, bounds::Proof>,
+) -> Borrow {
     fn escaping(borrow:&Borrow,function:&Function,exposed:&BTreeMap<Origin,Borrow>)->Borrow{
         borrow.map_sources(|source|match source{
             Origin::Data(id) if !function.parameters.get(&id).is_some_and(|id|function.input(*id))&&!exposed.contains_key(&Origin::Data(id))=>Borrow::default(),
@@ -943,7 +951,7 @@ fn stored_target(origin:&address::Origin,function:&Function,exposed:&BTreeMap<Or
     if origin.has_local(){return Borrow::default();}
     let origin=origin.map_borrows(|borrow|escaping(borrow,function,exposed));
     if matches!(&origin.root,address::Root::Resource{borrow,..}|address::Root::Dataset{borrow,..}|address::Root::Derived(borrow)|address::Root::External(address::Identity::Storage(borrow)) if !borrow.active()){return Borrow::default();}
-    canonical(Borrow::source(Origin::Position(Arc::new(origin))),function,None,exposed)
+    canonical_relation(Borrow::source(Origin::Position(Arc::new(origin))), function, None, exposed, parameters(), false)
 }
 fn evaluate(borrow:&Borrow,function:&Function,state:&State,known:&States,expand_loops:bool)->Borrow {
     BorrowEvaluation{function,state,known,expand_loops,deferred_reads:false,loop_bindings:Vec::new(),values:BTreeMap::new()}.evaluate(borrow)
@@ -952,11 +960,14 @@ fn evaluate(borrow:&Borrow,function:&Function,state:&State,known:&States,expand_
 fn input_index(index:Option<bounds::Operand>,function:&Function)->Option<bounds::Operand>{
     index.and_then(|index|index.map(|id|match id{ValueIdentity::ElementIndex(_)=>Some(id),_=>function.parameters.get(&id).copied().filter(|id|function.input(*id))}))
 }
-fn canonical(borrow:Borrow,function:&Function,resource:Option<&Borrow>,exposed:&BTreeMap<Origin,Borrow>)->Borrow {
-    let parameters = function.parameters.iter()
-        .map(|(local, input)| (*local, bounds::Proof::default().with_identity(*input)))
-        .collect();
-    canonical_relation(borrow, function, resource, exposed, &parameters, false)
+fn public_parameters(function: &Function) -> BTreeMap<ValueIdentity, bounds::Proof> {
+    function.parameters.iter()
+        .map(|(&local, &formal)| (local, bounds::Proof::default().with_identity(formal)))
+        .collect()
+}
+
+fn canonical(borrow: Borrow, function: &Function, exposed: &BTreeMap<Origin, Borrow>) -> Borrow {
+    canonical_relation(borrow, function, None, exposed, &public_parameters(function), false)
 }
 fn canonical_relation(
     mut borrow: Borrow, function: &Function, resource: Option<&Borrow>, exposed: &BTreeMap<Origin, Borrow>,
@@ -1255,9 +1266,7 @@ struct InitializationExitPaths {
 
 impl InitializationExitPaths {
     fn new(function: &Function) -> Self {
-        let parameters = function.parameters.iter().map(|(source, target)| {
-            (*source, bounds::Proof::default().with_identity(*target))
-        }).collect();
+        let parameters = public_parameters(function);
         let exits = function.initialization.iter().filter_map(|effect| {
             let when = match effect {
                 address::InitializationEffect::Position(fact) => &fact.when,
@@ -1272,6 +1281,11 @@ impl InitializationExitPaths {
 
 fn initializations(function:&Function,state:&State,known:&States,exit_paths:Option<&InitializationExitPaths>)->Vec<address::Initialization> {
     let exposed=exposed_resources(function, |output| evaluate(&function.outputs[output],function,state,known,true));
+    let discovery_parameters = std::cell::LazyCell::new(|| public_parameters(function));
+    let parameters = || match exit_paths {
+        Some(paths) => &paths.parameters,
+        None => &*discovery_parameters,
+    };
     // Reading a fixed input before this function's first write already requires those bytes on entry.
     // Re-exporting the same bytes as newly initialized adds no fact for any legitimate caller.
     let mut required=Vec::new();
@@ -1279,7 +1293,7 @@ fn initializations(function:&Function,state:&State,known:&States,exit_paths:Opti
         if function.calls.iter().any(|call|call.memory==memory)||matches!(&usage.requirement,Requirement::Memory{access:Some(access),..}if access.writes()){break;}
         if let Requirement::Address{borrow,initialized:true,..}=&usage.requirement && !borrow.pending(){
             for(source,when)in borrow.sources.entries(){
-                let value=canonical(Borrow::source(source.clone()),function,None,&exposed);
+                let value=canonical_relation(Borrow::source(source.clone()), function, None, &exposed, parameters(), false);
                 for selected in value.sources.iter(){if let Origin::Position(origin)=selected{required.push((origin.clone(),bounds::Condition::guard(bounds::Clause::both(&usage.path,&when))));}}
             }
         }
@@ -1299,7 +1313,7 @@ fn initializations(function:&Function,state:&State,known:&States,exit_paths:Opti
                     origin=selected.as_ref().clone();
                 }
                 if origin.has_local(){return None;}
-                origin=origin.map_borrows(|borrow|canonical(borrow.clone(),function,None,&exposed));
+                origin=origin.map_borrows(|borrow|canonical_relation(borrow.clone(), function, None, &exposed, parameters(), false));
                 if let address::Root::Resource{index:Some(index),..}|address::Root::Dataset{index:Some(index),..}=&mut origin.root {
                     *index=index.map(|id|function.parameters.get(&id).copied().filter(|id|function.input(*id)))?;
                 }
@@ -1313,7 +1327,7 @@ fn initializations(function:&Function,state:&State,known:&States,exit_paths:Opti
             },
             address::InitializationSource::Task(borrow)=>{
                 if borrow.has_local(){return None;}
-                address::InitializationSource::Task(canonical(borrow,function,None,&exposed))
+                address::InitializationSource::Task(canonical_relation(borrow, function, None, &exposed, parameters(), false))
             },
         };
         if exit_paths.is_none(){fact.when=bounds::Condition::constant(true);}
@@ -1538,16 +1552,19 @@ fn converge_access(functions:&BTreeMap<String,&Function>,known:&mut States,owns_
     }
 }
 
-fn stored_outputs(evaluation:&mut BorrowEvaluation<'_>,exposed:&BTreeMap<Origin,Borrow>)->BTreeSet<Access>{
+fn stored_outputs<'p>(
+    evaluation: &mut BorrowEvaluation<'_>, exposed: &BTreeMap<Origin, Borrow>,
+    parameters: impl Fn() -> &'p BTreeMap<ValueIdentity, bounds::Proof>,
+) -> BTreeSet<Access> {
     let function=evaluation.function;
     let mut stored:BTreeMap<(Borrow,u32),Borrow>=BTreeMap::new();
     for usage in &function.uses{
         let Requirement::Return{borrow,..}=&usage.requirement else{continue;};
         for(read,_)in borrow.reads.entries(){
             let ContentRead::Returned{memory}=read else{continue;};
-            for(origin,word,value)in evaluation.stored_at_exit(*memory){
-                let target=stored_target(&origin,function,exposed);
-                stored.entry((target,word)).or_default().union(&canonical(value,function,None,exposed));
+            for(origin,word,value)in evaluation.stored_at_exit(*memory, &parameters){
+                let target=stored_target(&origin,function,exposed,&parameters);
+                stored.entry((target,word)).or_default().union(&canonical_relation(value, function, None, exposed, parameters(), false));
             }
         }
     }
@@ -1593,12 +1610,13 @@ fn converge(
             }).collect::<Outputs>();
             // 每个真实资源输出命名自己的交付存储；view保留所有可能的实际输出所有者。
             let exposed=exposed_resources(function, |output| &physical[output]);
+            let parameters = std::cell::LazyCell::new(|| public_parameters(function));
             let outputs = physical.into_iter().map(|(output, definition)| {
-                let mut value=canonical(definition,function,function.resource_names.get(&output),&exposed);
+                let mut value = canonical_relation(definition, function, function.resource_names.get(&output), &exposed, &parameters, false);
                 if unknown.contains(&(name.clone(),output.clone())){value.sources.insert(Origin::Unresolved);}
                 (output, value)
             }).collect::<Outputs>();
-            let access = stored_outputs(&mut evaluation,&exposed);
+            let access = stored_outputs(&mut evaluation, &exposed, || &parameters);
             if loops != state.loops || entries != state.entries
                 || outputs != state.interface.outputs || access != state.interface.access
             {
