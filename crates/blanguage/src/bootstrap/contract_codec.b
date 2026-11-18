@@ -1382,3 +1382,54 @@ extern "C" void contract_write_ast_type(address source,address output,Host host)
 extern "C" void contract_write_ast_predicate(address source,address output,Host host) on cpu requires nonzero(host.append) requires nonzero(host.ty) requires nonzero(host.component) requires nonzero(host.field) requires nonzero(host.variant) requires nonzero(host.function) requires nonzero(host.parameter) requires nonzero(host.type_name) requires nonzero(host.argument) requires nonzero(host.shape) requires nonzero(host.expression) requires nonzero(host.predicate) requires nonzero(host.interval) requires nonzero(host.condition) requires nonzero(host.constant){predicate(source,output,host);}
 extern "C" void contract_write_ast_condition(address source,address output,Host host) on cpu requires nonzero(host.append) requires nonzero(host.ty) requires nonzero(host.component) requires nonzero(host.field) requires nonzero(host.variant) requires nonzero(host.function) requires nonzero(host.parameter) requires nonzero(host.type_name) requires nonzero(host.argument) requires nonzero(host.shape) requires nonzero(host.expression) requires nonzero(host.predicate) requires nonzero(host.interval) requires nonzero(host.condition) requires nonzero(host.constant){condition(source,output,host);}
 extern "C" ReadStatus contract_read_ast_condition(Bytes input,inout u64 position,address output,ReadHost host) on cpu requires nonzero(host.type_fields) requires nonzero(host.name_fields) requires nonzero(host.function_fields) requires nonzero(host.constant_fields) requires nonzero(host.text) requires nonzero(host.string_option) requires nonzero(host.push_u32) requires nonzero(host.push_u64) requires nonzero(host.push_component) requires nonzero(host.push_type) requires nonzero(host.push_field) requires nonzero(host.push_variant) requires nonzero(host.push_parameter) requires nonzero(host.push_interval) requires nonzero(host.push_argument) requires nonzero(host.push_expression) requires nonzero(host.push_predicate) requires nonzero(host.type_box) requires nonzero(host.type_name_box) requires nonzero(host.function_box) requires nonzero(host.shape_option) requires nonzero(host.predicates_option) requires nonzero(host.arguments_option) requires nonzero(host.shape_expression) requires nonzero(host.shape_literal) requires nonzero(host.shape_name) requires nonzero(host.expression) requires nonzero(host.condition) requires nonzero(host.predicate) requires nonzero(host.access) requires nonzero(host.target) requires nonzero(host.optional_access) requires nonzero(host.expression_span){return read_condition(input,position,output,host);}
+
+// Same resource bytes; field order and boolean decoding belong to this B format.
+extern "C" void contract_write_subgroup_capabilities(SubgroupFields value,address output,cfn<void,address,address,u64> append) on cpu requires nonzero(append) {
+ contract_write_bool(value.basic,output,append);
+ contract_write_bool(value.vote,output,append);
+ contract_write_bool(value.arithmetic,output,append);
+ contract_write_bool(value.ballot,output,append);
+ contract_write_bool(value.shuffle,output,append);
+ contract_write_bool(value.shuffle_relative,output,append);
+ contract_write_bool(value.extended_types,output,append);
+}
+extern "C" ReadStatus contract_read_subgroup_capabilities(Bytes input,inout u64 position,inout SubgroupFields output) on cpu {
+ ReadStatus status=contract_read_bool(input,position,output.basic);if(status!=ReadStatus::Success){return status;}
+ status=contract_read_bool(input,position,output.vote);if(status!=ReadStatus::Success){return status;}
+ status=contract_read_bool(input,position,output.arithmetic);if(status!=ReadStatus::Success){return status;}
+ status=contract_read_bool(input,position,output.ballot);if(status!=ReadStatus::Success){return status;}
+ status=contract_read_bool(input,position,output.shuffle);if(status!=ReadStatus::Success){return status;}
+ status=contract_read_bool(input,position,output.shuffle_relative);if(status!=ReadStatus::Success){return status;}
+ status=contract_read_bool(input,position,output.extended_types);if(status!=ReadStatus::Success){return status;}
+ return ReadStatus::Success;
+}
+extern "C" void contract_write_device_requirements(DeviceFields value,address output,cfn<void,address,address,u64> append) on cpu requires nonzero(append) {
+ contract_write_bool(value.ray_query,output,append);
+ contract_write_bool(value.float64,output,append);
+ contract_write_bool(value.integer8,output,append);
+ contract_write_bool(value.integer16,output,append);
+ contract_write_bool(value.atomic64,output,append);
+ contract_write_bool(value.shared_atomic64,output,append);
+ contract_write_bool(value.float32_preserve,output,append);
+ contract_write_bool(value.float64_preserve,output,append);
+ contract_write_bool(value.sorting,output,append);
+ contract_write_bool(value.maximal_reconvergence,output,append);
+ contract_write_bool(value.texture_indexing,output,append);
+ contract_write_bool(value.position_fetch,output,append);
+ contract_write_subgroup_capabilities(value.subgroup,output,append);
+}
+extern "C" ReadStatus contract_read_device_requirements(Bytes input,inout u64 position,inout DeviceFields output) on cpu {
+ ReadStatus status=contract_read_bool(input,position,output.ray_query);if(status!=ReadStatus::Success){return status;}
+ status=contract_read_bool(input,position,output.float64);if(status!=ReadStatus::Success){return status;}
+ status=contract_read_bool(input,position,output.integer8);if(status!=ReadStatus::Success){return status;}
+ status=contract_read_bool(input,position,output.integer16);if(status!=ReadStatus::Success){return status;}
+ status=contract_read_bool(input,position,output.atomic64);if(status!=ReadStatus::Success){return status;}
+ status=contract_read_bool(input,position,output.shared_atomic64);if(status!=ReadStatus::Success){return status;}
+ status=contract_read_bool(input,position,output.float32_preserve);if(status!=ReadStatus::Success){return status;}
+ status=contract_read_bool(input,position,output.float64_preserve);if(status!=ReadStatus::Success){return status;}
+ status=contract_read_bool(input,position,output.sorting);if(status!=ReadStatus::Success){return status;}
+ status=contract_read_bool(input,position,output.maximal_reconvergence);if(status!=ReadStatus::Success){return status;}
+ status=contract_read_bool(input,position,output.texture_indexing);if(status!=ReadStatus::Success){return status;}
+ status=contract_read_bool(input,position,output.position_fetch);if(status!=ReadStatus::Success){return status;}
+ return contract_read_subgroup_capabilities(input,position,output.subgroup);
+}

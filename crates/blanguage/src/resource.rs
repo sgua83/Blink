@@ -9,6 +9,8 @@ pub const ABI: &[u8; 8] = b"BLRI\x34\0\0\0";
 pub const RUNTIME_LIBRARY: &str = "@blink.application@";
 // 非根资源静态包装声明的原C ABI，模块专属索引符号仍由原链接器绑定。
 pub(crate) const MODULE_RUNTIME_SYMBOLS: &[&str] = &["blink_allocate", "blink_run", "blink_complete_field", "blink_task_start", "blink_task_wait"];
+#[cfg(feature = "compiler")]
+mod device_requirements;
 mod module_image;
 pub use module_image::{ModuleImage, ModuleFactory};
 /// 字段共同保证的闭区间，按原Scalar有序位编码；仅同步借用，不拥有存储。
@@ -278,6 +280,7 @@ variants!(CollectiveOperator {0=>Sum,1=>Min,2=>Max,3=>BitAnd,4=>BitOr,5=>BitXor}
 record!(ReductionLayout { fields, ty });
 record!(CustomScan<ReductionLayout> { values, head_word });
 record!(CustomSegmentedReduction<ReductionLayout> { values, head_word, count });
+#[cfg(not(feature = "compiler"))]
 record!(SubgroupCapabilities {
     basic,
     vote,
@@ -287,6 +290,7 @@ record!(SubgroupCapabilities {
     shuffle_relative,
     extended_types
 });
+#[cfg(not(feature = "compiler"))]
 record!(DeviceRequirements {
     ray_query, float64, integer8, integer16, atomic64, shared_atomic64,
     float32_preserve, float64_preserve,
