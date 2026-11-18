@@ -957,16 +957,14 @@ fn canonical(borrow:Borrow,function:&Function,resource:Option<&Borrow>,exposed:&
     canonical_relation(borrow, function, resource, exposed, &parameters, false)
 }
 fn canonical_relation(
-    borrow: Borrow, function: &Function, resource: Option<&Borrow>, exposed: &BTreeMap<Origin, Borrow>,
+    mut borrow: Borrow, function: &Function, resource: Option<&Borrow>, exposed: &BTreeMap<Origin, Borrow>,
     parameters: &BTreeMap<ValueIdentity, bounds::Proof>, initialization: bool,
 ) -> Borrow {
     // Impossible source edges carry known absence, not a live private owner.
     // Keep that knowledge in the existing Inactive representation at the ABI.
     let known=!borrow.sources.is_empty();
-    let mut sources=view::Edges::default();
-    for(source,when)in borrow.sources.entries(){if when.possible(){sources.insert_when(source.clone(),when);}}
-    if known&&sources.is_empty(){sources.insert(Origin::Inactive);}
-    let borrow=Borrow{sources,..borrow};
+    borrow.sources.retain_possible();
+    if known&&borrow.sources.is_empty(){borrow.sources.insert(Origin::Inactive);}
     let address=|origin:&address::Origin|{
         let mut value=origin.map_borrows(|borrow|canonical_relation(borrow.clone(),function,None,exposed,parameters,false));
             if let address::Root::External(address::Identity::Value(ids))=&mut value.root {

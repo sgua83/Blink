@@ -63,6 +63,7 @@ impl<K:Ord+Clone> Edges<K>{
     }
 
     pub fn remove(&mut self, key: &K) -> Option<bounds::Clause> { self.0.remove(key) }
+    pub(super) fn retain_possible(&mut self) { self.0.retain(|_, when| when.possible()); }
     pub fn contains(&self, key: &K) -> bool { self.0.get(key).is_some_and(bounds::Clause::possible) }
     pub fn is_empty(&self) -> bool { self.0.is_empty() }
     pub fn iter(&self) -> std::collections::btree_map::Keys<'_, K, bounds::Clause> { self.0.keys() }
