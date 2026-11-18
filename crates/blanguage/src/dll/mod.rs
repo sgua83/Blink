@@ -284,7 +284,7 @@ pub(crate) fn compile_in(worker: &crate::compiler::Worker, program: &ExecutableP
     if let Some(resource) = &resources {
         exports.push(format!("{}_resources", resource.binding.prefix));
     }
-    let archive = crate::object::compile_archive(&source, exports, true, worker)?;
+    let archive = crate::object::compile_archive(Some(&source), None, exports, true, worker)?;
     let mut object = crate::object::Object {
         name: program.name().into(),
         kind: crate::object::Kind::Library {

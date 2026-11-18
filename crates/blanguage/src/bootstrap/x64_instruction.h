@@ -113,6 +113,23 @@ struct ModuleFactoryCode {
 // writes at most 64 bytes and reports the two section-address relocations.
 extern "C" ModuleFactoryCode module_factory_code(u64 bytes, u64 codes, address output) on cpu;
 
+struct FrameCreateCode {
+    u64 length;
+    u64 factory_field;
+    u64 count_field;
+    u64 target_field;
+};
+struct ResourceTailCode {
+    u64 length;
+    u64 base_field;
+    u64 target_field;
+};
+
+// Each caller owns 32 bytes. All fields locate x64 REL32 relocations.
+extern "C" FrameCreateCode frame_create_code(address output) on cpu;
+extern "C" ResourceTailCode resource_allocate_code(u32 index, address output) on cpu;
+extern "C" ResourceTailCode task_start_code(address output) on cpu;
+
 // Call through an existing outgoing stack slot. The caller owns seven bytes.
 extern "C" u64 call_slot(u32 offset, address output) on cpu;
 

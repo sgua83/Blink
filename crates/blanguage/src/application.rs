@@ -114,12 +114,9 @@ pub(crate) fn compile_resources(
         let (image, code, imports) = crate::resource::compile(resources, worker)?;
         let code: Vec<_> = code.into_iter().enumerate()
             .map(|(index, code)| (format!("__blink_range_{prefix}_{index}"), code)).collect();
-        let mut source = crate::dll::application_source(resources, &prefix, root)?;
-        if has_tasks {
-            source.push_str(&include_str!("task.rs.in")
-                .replace("TYPE_BASE", &format!("{prefix}_type_base"))
-                .replace("START_SYMBOL", &format!("{prefix}_task_start")));
-        }
+        let source = crate::dll::application_source(resources, &prefix)?;
+        let types = u32::try_from(resources.types.len())?;
+        let native = factory::wrappers(&prefix, types, root, has_tasks)?;
         let mut exports = if root {
             [
                 "blink_destroy",
@@ -156,11 +153,11 @@ pub(crate) fn compile_resources(
         }
         if has_tasks { exports.push(format!("{prefix}_task_start")); }
         exports.push(format!("{prefix}_resources"));
-        let archive = object::compile_archive(&source, exports, root, worker)?;
+        let archive = object::compile_archive(source.as_deref(), native, exports, root, worker)?;
         let factory = factory::ResourceFactory {
             binding: object::ResourceBinding {
                 prefix,
-                types: u32::try_from(resources.types.len())?,
+                types,
                 programs: u32::try_from(resources.programs.len())?,
                 abi: crate::resource::ABI.to_vec(),
                 code: code.iter().map(|(name, _)| name.clone()).collect(),

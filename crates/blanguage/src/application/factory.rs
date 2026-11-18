@@ -74,3 +74,76 @@ fn read_only(bytes: Vec<u8>, relocations: Vec<Relocation>) -> Section {
         associated: Vec::new(), layout: None,
     }
 }
+
+#[repr(C)]
+struct FrameCreateCode {
+    length: u64,
+    factory_field: u64,
+    count_field: u64,
+    target_field: u64,
+}
+
+#[repr(C)]
+struct ResourceTailCode {
+    length: u64,
+    base_field: u64,
+    target_field: u64,
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.x64_instruction::frame_create_code"]
+    fn frame_create_code(output: *mut u8) -> FrameCreateCode;
+    #[link_name = "bootstrap.x64_instruction::resource_allocate_code"]
+    fn resource_allocate_code(index: u32, output: *mut u8) -> ResourceTailCode;
+    #[link_name = "bootstrap.x64_instruction::task_start_code"]
+    fn task_start_code(output: *mut u8) -> ResourceTailCode;
+}
+
+pub(super) fn wrappers(
+    prefix: &str,
+    types: u32,
+    root: bool,
+    tasks: bool,
+) -> crate::object::Result<Option<Vec<u8>>> {
+    let mut sections = Vec::new();
+    let mut symbols = Vec::new();
+    let mut emit = |name: String, bytes: &[u8], fields: &[(u64, &str)]| {
+        symbols.push(Symbol {
+            name, section: sections.len(), value: 0, contract: Vec::new(), function: true,
+        });
+        sections.push(Section {
+            name: ".text".into(), bytes: bytes.to_vec(), flags: 0x60501020,
+            relocations: fields.iter().map(|&(offset, target)| Relocation {
+                offset: offset as usize, kind: 4, target: Target::Symbol(target.into()),
+            }).collect(),
+            associated: Vec::new(), layout: None,
+        });
+    };
+    let mut code = [0u8; 32];
+    if root {
+        let row = unsafe { frame_create_code(code.as_mut_ptr()) };
+        emit("blink_create".into(), &code[..row.length as usize], &[
+            (row.factory_field, "__blink_module_factories"),
+            (row.count_field, "__blink_module_count"),
+            (row.target_field, "blink_create_frame"),
+        ]);
+    }
+    let base = format!("{prefix}_type_base");
+    for index in 0..types {
+        let row = unsafe { resource_allocate_code(index, code.as_mut_ptr()) };
+        emit(format!("{prefix}_allocate_{index}"), &code[..row.length as usize], &[
+            (row.base_field, &base), (row.target_field, "blink_allocate"),
+        ]);
+    }
+    if tasks {
+        let row = unsafe { task_start_code(code.as_mut_ptr()) };
+        emit(format!("{prefix}_task_start"), &code[..row.length as usize], &[
+            (row.base_field, &base), (row.target_field, "blink_task_start"),
+        ]);
+    }
+    if symbols.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(crate::object::encode_native(prefix, &sections, &symbols)?))
+    }
+}

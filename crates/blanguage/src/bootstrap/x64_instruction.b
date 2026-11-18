@@ -488,6 +488,51 @@ extern "C" ModuleFactoryCode module_factory_code(u64 bytes, u64 codes, address o
     return ModuleFactoryCode(cursor + 1u64 - start, image.field, ranges + table.field - start);
 }
 
+u64 resource_tail_field(u64 at) on cpu {
+    u64 field = jump_field(at);
+    write_word(field, 0);
+    return field;
+}
+
+extern "C" FrameCreateCode frame_create_code(address output) on cpu {
+    u64 start = address_bits(output);
+    MoveLocation slot = MoveLocation(0u64, MOVE_IMMEDIATE, u8(0), NO_INDEX, u8(0));
+    // Move on_error and context ahead of the linker-owned factory table and count.
+    u64 cursor = store_bits(start, move_gpr(u8(9)), u8(2), 8);
+    cursor = store_bits(cursor, move_gpr(u8(8)), u8(1), 8);
+    u64 count_end = load_bits(cursor, u8(2), slot, true);
+    u64 factory_end = encode_operand_instruction(count_end, u16(0x8d), u8(0), true, u8(1), slot);
+    u64 target = resource_tail_field(factory_end) - start;
+    return FrameCreateCode(target + 4u64, factory_end - start - 4u64,
+                           count_end - start - 4u64, target);
+}
+
+extern "C" ResourceTailCode resource_allocate_code(u32 index, address output) on cpu {
+    u64 start = address_bits(output);
+    MoveLocation slot = MoveLocation(0u64, MOVE_IMMEDIATE, u8(0), NO_INDEX, u8(0));
+    u64 cursor = store_bits(start, move_gpr(u8(9)), u8(8), 4);
+    u64 base_end = load_bits(cursor, u8(8), slot, false);
+    cursor = base_end;
+    if (index != 0) {
+        cursor = register_instruction(cursor, u16(0x81), u8(0), false, u8(0), u8(8));
+        write_word(cursor, index);
+        cursor += 4u64;
+    }
+    u64 target = resource_tail_field(cursor) - start;
+    return ResourceTailCode(target + 4u64, base_end - start - 4u64, target);
+}
+
+extern "C" ResourceTailCode task_start_code(address output) on cpu {
+    u64 start = address_bits(output);
+    MoveLocation slot = MoveLocation(0u64, MOVE_IMMEDIATE, u8(0), NO_INDEX, u8(0));
+    // The sixth Win64 argument follows the return address, four home slots and argument five.
+    MoveLocation index = MoveLocation(48u64, MOVE_MEMORY, u8(4), NO_INDEX, u8(0));
+    u64 base_end = load_bits(start, u8(0), slot, false);
+    u64 cursor = encode_operand_instruction(base_end, u16(0x01), u8(0), false, u8(0), index);
+    u64 target = resource_tail_field(cursor) - start;
+    return ResourceTailCode(target + 4u64, base_end - start - 4u64, target);
+}
+
 extern "C" u64 call_slot(u32 offset, address output) on cpu {
     u64 start = address_bits(output);
     MoveLocation target = MoveLocation(u64(offset), MOVE_MEMORY, u8(4), NO_INDEX, u8(0));

@@ -73,58 +73,22 @@ let factory_count = unsafe { __blink_module_count };
 pub(crate) fn application_source(
     resources: &crate::application::Resources,
     prefix: &str,
-    root: bool,
-) -> Result<String, Box<dyn std::error::Error>> {
+) -> Result<Option<String>, Box<dyn std::error::Error>> {
+    if resources.programs.is_empty() && resources.completions.is_empty() {
+        return Ok(None);
+    }
     use std::fmt::Write;
     let mut functions = String::new();
     functions.push_str(r#"
 unsafe extern "C" {
-    fn blink_allocate(output:*mut u32,frame:*mut c_void,ty:u32,count:u32)->*mut c_void;
     fn blink_run(frame:*mut c_void,program:u32,data:*const DatasetBinding,words:*const UniformValue,textures:*const *const c_void)->*mut c_void;
     fn blink_complete_field(frame:*mut c_void,data:u32,offset:u32,intervals:*const ElementInterval,interval_count:usize,limits:*const u32,limit_count:usize,known_mask:u64,known_value:u64);
 }
 "#);
-    if root {
-        functions.push_str(r#"
-unsafe extern "C" {
-    static __blink_module_count: usize;
-    static __blink_module_factories: u8;
-    fn blink_create_frame(
-        factories: *const c_void, count: usize,
-        on_error: unsafe extern "C" fn(*mut c_void, *const u8, usize),
-        context: *mut c_void,
-    ) -> *mut c_void;
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn blink_create(
-    on_error: unsafe extern "C" fn(*mut c_void, *const u8, usize), context: *mut c_void,
-) -> *mut c_void {
-    unsafe {
-        blink_create_frame(
-            core::ptr::addr_of!(__blink_module_factories).cast(), __blink_module_count,
-            on_error, context,
-        )
-    }
-}
-"#);
-    }
-    if !resources.types.is_empty() {
-        writeln!(
-            functions,
-            "unsafe extern \"C\" {{ static {prefix}_type_base:u32; }}"
-        )?;
-    }
     if !resources.programs.is_empty() {
         writeln!(
             functions,
             "unsafe extern \"C\" {{ static {prefix}_program_base:u32; }}"
-        )?;
-    }
-    for index in 0..resources.types.len() {
-        writeln!(
-            functions,
-            "#[unsafe(no_mangle)]\npub unsafe extern \"C\" fn {prefix}_allocate_{index}(output:*mut u32,frame:*mut c_void,count:u32)->*mut c_void {{ unsafe {{ blink_allocate(output,frame,{prefix}_type_base.wrapping_add({index}),count) }} }}"
         )?;
     }
     for (index, (_, program)) in resources.programs.iter().enumerate() {
@@ -197,5 +161,5 @@ pub unsafe extern "C" fn blink_create(
         }
         writeln!(functions, "}}")?;
     }
-    Ok(include_str!("../application/runtime.rs.in").replace("@FUNCTIONS@", &functions))
+    Ok(Some(include_str!("../application/runtime.rs.in").replace("@FUNCTIONS@", &functions)))
 }
