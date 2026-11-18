@@ -198,6 +198,16 @@ struct WriteContext<'a> {
     nodes: Vec<EncodedClause<&'a Facts>>,
     indices: BTreeMap<usize, usize>,
 }
+impl<'a> WriteContext<'a> {
+    fn new(conditions: Conditions<'a>) -> Self {
+        let roots = (0..conditions.len())
+            .filter_map(|i| conditions.at(i))
+            .flat_map(|condition| condition.cases.iter());
+        let mut nodes = Vec::new();
+        let indices = node_ids(roots, |node| nodes.push(node));
+        Self { conditions, nodes, indices }
+    }
+}
 #[repr(C)]
 struct WriteHost {
     append: unsafe extern "C" fn(Slot, *const u8, usize),
@@ -257,6 +267,20 @@ unsafe extern "C" fn write_facts(source: *const c_void, output: Slot) {
         )
     };
 }
+unsafe extern "C" fn compare_facts(left: *const c_void, right: *const c_void) -> i32 {
+    let a = unsafe { &*left.cast::<Facts>() };
+    let b = unsafe { &*right.cast::<Facts>() };
+    if a == b {
+        return 0;
+    }
+    let mut a = Writer(Vec::new());
+    let mut b = Writer(Vec::new());
+    unsafe {
+        write_facts(left, slot(&mut a));
+        write_facts(right, slot(&mut b));
+    }
+    a.0.cmp(&b.0) as i32
+}
 unsafe extern "C" {
     #[link_name = "bootstrap.contract_codec::write_proof_conditions"]
     fn write_conditions(
@@ -274,16 +298,28 @@ unsafe extern "C" {
         host: NumericWriter,
         next: unsafe extern "C" fn(Slot) -> *const c_void,
     );
+    #[link_name = "bootstrap.contract_codec::compare_proof_condition"]
+    fn compare(
+        left: *const c_void,
+        right: *const c_void,
+        left_count: usize,
+        right_count: usize,
+        node: unsafe extern "C" fn(*const c_void, usize) -> NodeFields,
+        root: unsafe extern "C" fn(*const c_void, usize) -> RootFields,
+        index: unsafe extern "C" fn(*const c_void, usize) -> usize,
+        facts: unsafe extern "C" fn(*const c_void, *const c_void) -> i32,
+    ) -> i32;
+}
+pub(in crate::check::bounds) fn order(left: &Condition, right: &Condition) -> std::cmp::Ordering {
+    let left = WriteContext::new(Conditions::One(left));
+    let right = WriteContext::new(Conditions::One(right));
+    unsafe {
+        compare(ptr::from_ref(&left).cast(), ptr::from_ref(&right).cast(),
+            left.nodes.len(), right.nodes.len(), node_at, condition_at, root_index, compare_facts)
+    }.cmp(&0)
 }
 pub(in crate::check::bounds) fn write_borrowed(conditions:Conditions<'_>,writer:&mut Writer){
-    let roots=(0..conditions.len()).filter_map(|i|conditions.at(i)).flat_map(|condition|condition.cases.iter());
-    let mut nodes = Vec::new();
-    let indices = node_ids(roots, |node| nodes.push(node));
-    let state = WriteContext {
-        conditions,
-        nodes,
-        indices,
-    };
+    let state = WriteContext::new(conditions);
     unsafe {
         write_conditions(
             ptr::from_ref(&state).cast(),

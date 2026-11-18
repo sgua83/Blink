@@ -645,10 +645,11 @@ extern "C" void write_proof_conditions(address context,u64 length,u64 count,addr
  u64 index=0u64;
  while(index<count){
   NodeFields value=host.node(context,index);
-  if(value.kind==NodeKind::Impossible){word(0,output,host.append);}
-  else if(value.kind==NodeKind::Facts){word(1,output,host.append);host.facts(value.facts,output);}
-  else if(value.kind==NodeKind::Both){word(2,output,host.append);wide(value.first,output,host.append);wide(value.second,output,host.append);}
-  else{word(3,output,host.append);wide(value.first,output,host.append);wide(value.second,output,host.append);}
+  word(u32(value.kind),output,host.append);
+  if(value.kind==NodeKind::Facts){host.facts(value.facts,output);}
+  else if(value.kind==NodeKind::Both||value.kind==NodeKind::Either){
+   wide(value.first,output,host.append);wide(value.second,output,host.append);
+  }
   index+=1u64;
  }
  wide(width,output,host.append);index=0u64;
@@ -657,6 +658,45 @@ extern "C" void write_proof_conditions(address context,u64 length,u64 count,addr
   if(value.present!=0){wide(host.index(context,value.first),output,host.append);wide(host.index(context,value.second),output,host.append);}
   index+=1u64;
  }
+}
+
+i32 compare_condition_index(u64 left,u64 right) on cpu {
+ u64 a=left;u64 b=right;
+ while(a!=b){
+  u64 x=a&255u64;u64 y=b&255u64;
+  if(x!=y){return x<y?-i32(1):i32(1);}
+  a=a>>8;b=b>>8;
+ }
+ return i32(0);
+}
+
+extern "C" i32 compare_proof_condition(address left,address right,u64 left_count,u64 right_count,
+ cfn<NodeFields,address,u64> node,cfn<RootFields,address,u64> root,cfn<u64,address,u64> index,
+ cfn<i32,address,address> compare_facts) on cpu
+ requires nonzero(node) requires nonzero(root) requires nonzero(index) requires nonzero(compare_facts) {
+ // One condition on each side. The presence, format, and root-count bytes match.
+ i32 order=compare_condition_index(left_count,right_count);
+ if(order!=i32(0)){return order;}
+ u64 i=0u64;
+ while(i<left_count){
+  NodeFields a=node(left,i);NodeFields b=node(right,i);
+  u32 a_kind=u32(a.kind);u32 b_kind=u32(b.kind);
+  if(a_kind!=b_kind){return a_kind<b_kind?-i32(1):i32(1);}
+  if(a.kind==NodeKind::Facts){
+   order=compare_facts(a.facts,b.facts);
+   if(order!=i32(0)){return order;}
+  }else if(a.kind==NodeKind::Both||a.kind==NodeKind::Either){
+   order=compare_condition_index(a.first,b.first);
+   if(order!=i32(0)){return order;}
+   order=compare_condition_index(a.second,b.second);
+   if(order!=i32(0)){return order;}
+  }
+  i+=1u64;
+ }
+ RootFields a=root(left,0u64);RootFields b=root(right,0u64);
+ order=compare_condition_index(index(left,a.first),index(right,b.first));
+ if(order!=i32(0)){return order;}
+ return compare_condition_index(index(left,a.second),index(right,b.second));
 }
 
 extern "C" void write_fact_sequence(u64 count,address iterator,address output,NumericWriter host,cfn<address,address> next) on cpu requires nonzero(host.append) requires nonzero(host.identity) requires nonzero(host.expression) requires nonzero(host.floating) requires nonzero(host.domain) requires nonzero(host.fact) requires nonzero(host.predicate) requires nonzero(next) {

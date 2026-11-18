@@ -632,6 +632,11 @@ extern "C" void condition_node_ids(address context,CanonicalHost host) on cpu re
 
 extern "C" void write_proof_conditions(address context,u64 length,u64 count,address output,ConditionWriter host) on cpu requires nonzero(host.append) requires nonzero(host.condition) requires nonzero(host.node) requires nonzero(host.index) requires nonzero(host.facts);
 
+extern "C" i32 compare_proof_condition(address left,address right,u64 left_count,u64 right_count,
+ cfn<NodeFields,address,u64> node,cfn<RootFields,address,u64> root,cfn<u64,address,u64> index,
+ cfn<i32,address,address> compare_facts) on cpu
+ requires nonzero(node) requires nonzero(root) requires nonzero(index) requires nonzero(compare_facts);
+
 extern "C" void write_fact_sequence(u64 count,address iterator,address output,NumericWriter host,cfn<address,address> next) on cpu requires nonzero(host.append) requires nonzero(host.identity) requires nonzero(host.expression) requires nonzero(host.floating) requires nonzero(host.domain) requires nonzero(host.fact) requires nonzero(host.predicate) requires nonzero(next);
 
 extern "C" ReadStatus read_condition_nodes(Bytes input,inout u64 position,inout u32 present,address output,ConditionReader host) on cpu requires nonzero(host.impossible) requires nonzero(host.facts) requires nonzero(host.both) requires nonzero(host.either);

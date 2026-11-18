@@ -2413,8 +2413,7 @@ impl Ord for Condition {
         if self.cases.iter().zip(&other.cases).all(|(a,b)| Arc::ptr_eq(&a.0,&b.0)) {
             return std::cmp::Ordering::Equal;
         }
-        use crate::module::codec::Encode;
-        self.bytes().cmp(&other.bytes())
+        codec::conditions::order(self, other)
     }
 }
 
