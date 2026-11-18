@@ -553,18 +553,18 @@ extern "C" ProgramCallLayout program_call_layout(u32 datasets, u32 values, u32 t
     return ProgramCallLayout(u32(frame), u32(data_start), u32(values_start), u32(textures_start), capacity);
 }
 
-MoveLocation program_stack(u64 offset) on cpu {
+MoveLocation resource_stack(u64 offset) on cpu {
     return MoveLocation(offset, MOVE_MEMORY, u8(4), NO_INDEX, u8(0));
 }
 
 MoveLocation program_argument(u64 slot, u32 frame, bool float_register) on cpu {
-    if (slot >= 4u64) { return program_stack(u64(frame) + 8u64 + slot * 8u64); }
+    if (slot >= 4u64) { return resource_stack(u64(frame) + 8u64 + slot * 8u64); }
     if (float_register) { return MoveLocation(0u64, MOVE_XMM, u8(slot), NO_INDEX, u8(0)); }
     return move_gpr(argument_gpr(u8(slot)));
 }
 
-u64 program_argument_address(u64 at, u8 register, u32 offset) on cpu {
-    return encode_operand_instruction(at, u16(0x8d), u8(0), true, register, program_stack(u64(offset)));
+u64 resource_stack_address(u64 at, u8 register, u32 offset) on cpu {
+    return encode_operand_instruction(at, u16(0x8d), u8(0), true, register, resource_stack(u64(offset)));
 }
 
 extern "C" ProgramCallCode program_call_code(ProgramCallLayout layout, u32 program_index,
@@ -577,8 +577,8 @@ extern "C" ProgramCallCode program_call_code(ProgramCallLayout layout, u32 progr
     u64 slot = 1u64;
     for (index in 0..datasets) {
         u64 field = u64(layout.datasets) + u64(index) * size_of<ProgramDatasetBinding>();
-        cursor = copy_bits(cursor, program_stack(field), program_argument(slot, layout.frame, false), 4);
-        cursor = copy_bits(cursor, program_stack(field + 4u64), program_argument(slot + 1u64, layout.frame, false), 4);
+        cursor = copy_bits(cursor, resource_stack(field), program_argument(slot, layout.frame, false), 4);
+        cursor = copy_bits(cursor, resource_stack(field + 4u64), program_argument(slot + 1u64, layout.frame, false), 4);
         slot += 2u64;
     }
     for (index in 0..values) {
@@ -595,13 +595,13 @@ extern "C" ProgramCallCode program_call_code(ProgramCallLayout layout, u32 progr
         } else {
             cursor = copy_bits(cursor, accumulator, source, width);
         }
-        cursor = store_immediate(cursor, program_stack(field), u64(argument.tag), 4);
-        cursor = store_bits(cursor, program_stack(field + 8u64), u8(0), 8);
+        cursor = store_immediate(cursor, resource_stack(field), u64(argument.tag), 4);
+        cursor = store_bits(cursor, resource_stack(field + 8u64), u8(0), 8);
         slot += 1u64;
     }
     for (index in 0..textures) {
         u64 field = u64(layout.textures) + u64(index) * 8u64;
-        cursor = copy_bits(cursor, program_stack(field), program_argument(slot, layout.frame, false), 8);
+        cursor = copy_bits(cursor, resource_stack(field), program_argument(slot, layout.frame, false), 8);
         slot += 1u64;
     }
 
@@ -609,20 +609,128 @@ extern "C" ProgramCallCode program_call_code(ProgramCallLayout layout, u32 progr
     cursor = load_bits(cursor, u8(2), base, false);
     u64 base_field = cursor - start - 4u64;
     if (program_index != 0) { cursor = integer_immediate(cursor, u8(0), u8(2), u64(program_index), false); }
-    cursor = program_argument_address(cursor, u8(8), layout.datasets);
-    cursor = program_argument_address(cursor, u8(9), layout.values);
-    cursor = program_argument_address(cursor, u8(0), layout.textures);
-    cursor = store_bits(cursor, program_stack(32u64), u8(0), 8);
+    cursor = resource_stack_address(cursor, u8(8), layout.datasets);
+    cursor = resource_stack_address(cursor, u8(9), layout.values);
+    cursor = resource_stack_address(cursor, u8(0), layout.textures);
+    cursor = store_bits(cursor, resource_stack(32u64), u8(0), 8);
     put_byte(cursor, u8(0xe8));
     u64 call_field = cursor + 1u64 - start;
     write_word(cursor + 1u64, 0);
     cursor += 5u64;
-    cursor += release_frame(layout.frame, unsafe_address(cursor));
+    CompletionCode body = finish_resource_call(output, cursor, layout.frame, prolog);
+    return ProgramCallCode(body.length, body.function_end, body.prolog, base_field, call_field);
+}
+
+
+CompletionCode finish_resource_call(address output, u64 at, u32 frame, FrameEncoding prolog) on cpu {
+    u64 cursor = at + release_frame(frame, unsafe_address(at));
     put_byte(cursor, u8(0xc3));
-    u64 end = cursor + 1u64 - start;
+    u64 end = cursor + 1u64 - address_bits(output);
     u64 length = end;
     if (prolog.probe_field != 0u64) { length = append_stack_probe(output, end, prolog.probe_field); }
-    return ProgramCallCode(length, u32(end), u32(prolog.length), base_field, call_field);
+    return CompletionCode(length, u32(end), u32(prolog.length));
+}
+
+CompletionField completion_at(address fields, u32 index) on cpu {
+    return unsafe_position<CompletionField>(
+        unsafe_address(address_bits(fields) + u64(index) * size_of<CompletionField>()));
+}
+
+CompletionLimit completion_limit(CompletionField field, u32 index) on cpu {
+    return unsafe_position<CompletionLimit>(
+        unsafe_address(address_bits(field.limits) + u64(index) * size_of<CompletionLimit>()));
+}
+
+extern "C" CompletionLayout completion_layout(address fields, u32 count) on cpu {
+    u64 max_limits = 0u64;
+    u64 incoming = 32u64;
+    u64 capacity = 160u64 + u64(count) * 160u64;
+    for (index in 0..count) {
+        CompletionField field = completion_at(fields, index);
+        u64 limits = u64(field.limit_count);
+        if (limits > max_limits) { max_limits = limits; }
+        capacity += limits * 64u64;
+        for (i in 0..field.limit_count) {
+            u64 end = 32u64 + u64(completion_limit(field, i).parameter) * 8u64;
+            if (end > incoming) { incoming = end; }
+        }
+    }
+    // Nine outgoing arguments occupy 72 bytes. Actual limit values follow.
+    u64 end = 72u64 + max_limits * 4u64;
+    u64 frame = ((end + 7u64) / 16u64) * 16u64 + 8u64;
+    if (frame + incoming > 2147483647u64 || capacity > 2147483647u64) {
+        return CompletionLayout(0, 0u64);
+    }
+    return CompletionLayout(u32(frame), capacity);
+}
+
+u64 completion_value(u64 at, u64 slot, u64 bits) on cpu {
+    u64 cursor = move_immediate(at, u8(0), bits, true);
+    return store_bits(cursor, resource_stack(slot), u8(0), 8);
+}
+
+u64 completion_limits(u64 at, u64 incoming, CompletionField field) on cpu {
+    u64 cursor = register_instruction(at, u16(0x31), u8(0), false, u8(10), u8(10));
+    MoveLocation output = MoveLocation(72u64, MOVE_MEMORY, u8(4), u8(10), u8(2));
+    for (i in 0..field.limit_count) {
+        CompletionLimit limit = completion_limit(field, i);
+        u64 input = incoming + 32u64 + u64(limit.parameter) * 8u64;
+        cursor = load_bits(cursor, u8(0), resource_stack(input), false);
+
+        u64 omit = 0u64;
+        if (limit.distance == 0) {
+            // Inclusive u32::MAX has no representable exclusive upper bound.
+            cursor = integer_immediate(cursor, u8(0), u8(0), 1u64, false);
+            omit = condition_field(cursor, u8(0x82));
+            cursor = omit + 4u64;
+        } else if (limit.distance > 1) {
+            // Exclusive distance saturates at zero.
+            cursor = register_instruction(cursor, u16(0x31), u8(0), false, u8(11), u8(11));
+            cursor = integer_immediate(cursor, u8(5), u8(0), u64(limit.distance - 1), false);
+            cursor = register_instruction(cursor, u16(0x420f), u8(0), false, u8(0), u8(11));
+        }
+        cursor = store_bits(cursor, output, u8(0), 4);
+        cursor = integer_immediate(cursor, u8(0), u8(10), 1u64, false);
+        if (omit != 0u64) { patch_relative(unsafe_address(omit), omit, cursor); }
+    }
+    return cursor;
+}
+
+extern "C" CompletionCode completion_code(CompletionLayout layout, address fields, u32 count,
+    address output, address patches) on cpu {
+    u64 start = address_bits(output);
+    FrameEncoding prolog = allocate_frame(layout.frame, output);
+    u64 cursor = start + prolog.length;
+    u64 incoming = u64(layout.frame);
+    cursor = store_bits(cursor, resource_stack(incoming + 8u64), u8(1), 8);
+    cursor = store_bits(cursor, resource_stack(incoming + 16u64), u8(2), 4);
+    cursor = store_bits(cursor, resource_stack(incoming + 24u64), u8(8), 4);
+    cursor = store_bits(cursor, resource_stack(incoming + 32u64), u8(9), 4);
+
+    for (index in 0..count) {
+        CompletionField field = completion_at(fields, index);
+        cursor = completion_limits(cursor, incoming, field);
+        cursor = completion_value(cursor, 32u64, u64(field.interval_count));
+        cursor = resource_stack_address(cursor, u8(0), 72);
+        cursor = store_bits(cursor, resource_stack(40u64), u8(0), 8);
+        cursor = store_bits(cursor, resource_stack(48u64), u8(10), 8);
+        cursor = completion_value(cursor, 56u64, field.known_mask);
+        cursor = completion_value(cursor, 64u64, field.known_value);
+        cursor = load_bits(cursor, u8(1), resource_stack(incoming + 8u64), true);
+        cursor = load_bits(cursor, u8(2), resource_stack(incoming + 16u64), false);
+        cursor = load_bits(cursor, u8(8), resource_stack(incoming + 24u64), false);
+        if (field.offset != 0) { cursor = integer_immediate(cursor, u8(0), u8(8), u64(field.offset), false); }
+        MoveLocation address_slot = MoveLocation(0u64, MOVE_IMMEDIATE, u8(0), NO_INDEX, u8(0));
+        cursor = encode_operand_instruction(cursor, u16(0x8d), u8(0), true, u8(9), address_slot);
+        u64 interval_field = cursor - start - 4u64;
+        put_byte(cursor, u8(0xe8));
+        u64 call_field = cursor + 1u64 - start;
+        write_word(cursor + 1u64, 0);
+        cursor += 5u64;
+        unsafe_position<CompletionPatch>(unsafe_address(address_bits(patches)
+            + u64(index) * size_of<CompletionPatch>())) = CompletionPatch(interval_field, call_field);
+    }
+    return finish_resource_call(output, cursor, layout.frame, prolog);
 }
 
 extern "C" u64 call_slot(u32 offset, address output) on cpu {

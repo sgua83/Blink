@@ -1,4 +1,0 @@
-use core::ffi::c_void;
-#[repr(C)]
-pub struct ElementInterval { pub lower: u64, pub upper: u64 }
-@FUNCTIONS@

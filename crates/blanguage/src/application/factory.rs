@@ -114,6 +114,41 @@ struct ProgramCallCode {
     call_field: u64,
 }
 
+#[repr(C)]
+struct CompletionLimit {
+    parameter: u32,
+    distance: u32,
+}
+
+#[repr(C)]
+struct CompletionField {
+    offset: u32,
+    interval_count: u32,
+    known_mask: u64,
+    known_value: u64,
+    limits: *const CompletionLimit,
+    limit_count: u32,
+}
+
+#[repr(C)]
+struct CompletionLayout {
+    frame: u32,
+    capacity: u64,
+}
+
+#[repr(C)]
+struct CompletionPatch {
+    intervals: u64,
+    call: u64,
+}
+
+#[repr(C)]
+struct CompletionCode {
+    length: u64,
+    function_end: u32,
+    prolog: u32,
+}
+
 unsafe extern "C" {
     #[link_name = "bootstrap.x64_instruction::frame_create_code"]
     fn frame_create_code(output: *mut u8) -> FrameCreateCode;
@@ -133,6 +168,40 @@ unsafe extern "C" {
         textures: u32,
         output: *mut u8,
     ) -> ProgramCallCode;
+    #[link_name = "bootstrap.x64_instruction::completion_layout"]
+    fn completion_layout(fields: *const CompletionField, count: u32) -> CompletionLayout;
+    #[link_name = "bootstrap.x64_instruction::completion_code"]
+    fn completion_code(
+        layout: CompletionLayout,
+        fields: *const CompletionField,
+        count: u32,
+        output: *mut u8,
+        patches: *mut CompletionPatch,
+    ) -> CompletionCode;
+}
+
+fn external(offset: u64, name: &str) -> Relocation {
+    Relocation { offset: offset as usize, kind: 4, target: Target::Symbol(name.into()) }
+}
+
+fn wrapper(
+    sections: &mut Vec<Section>,
+    symbols: &mut Vec<Symbol>,
+    name: String,
+    code: Vec<u8>,
+    relocations: Vec<Relocation>,
+    unwind: Option<(u32, Vec<u8>)>,
+) {
+    let section = crate::object::function_sections(sections, code, unwind, None);
+    symbols.push(Symbol {
+        name, section, value: 0, contract: Vec::new(), function: true,
+    });
+    sections[section].relocations = relocations;
+}
+
+fn call_unwind(prolog: u32, frame: u32) -> Vec<u8> {
+    let prolog = prolog as u8;
+    crate::native::unwind_info(prolog, &[crate::native::UnwindOperation::allocate(prolog, frame)])
 }
 
 pub(super) fn wrappers(
@@ -144,35 +213,26 @@ pub(super) fn wrappers(
 ) -> crate::object::Result<Option<Vec<u8>>> {
     let mut sections = Vec::new();
     let mut symbols = Vec::new();
-    let mut emit = |name: String, code, fields: &[(u64, &str)], unwind| {
-        let section = crate::object::function_sections(&mut sections, code, unwind, None);
-        symbols.push(Symbol {
-            name, section, value: 0, contract: Vec::new(), function: true,
-        });
-        sections[section].relocations.extend(fields.iter().map(|&(offset, target)| Relocation {
-            offset: offset as usize, kind: 4, target: Target::Symbol(target.into()),
-        }));
-    };
     let mut code = [0u8; 32];
     if root {
         let row = unsafe { frame_create_code(code.as_mut_ptr()) };
-        emit("blink_create".into(), code[..row.length as usize].to_vec(), &[
-            (row.factory_field, "__blink_module_factories"),
-            (row.count_field, "__blink_module_count"),
-            (row.target_field, "blink_create_frame"),
+        wrapper(&mut sections, &mut symbols, "blink_create".into(), code[..row.length as usize].to_vec(), vec![
+            external(row.factory_field, "__blink_module_factories"),
+            external(row.count_field, "__blink_module_count"),
+            external(row.target_field, "blink_create_frame"),
         ], None);
     }
     let base = format!("{prefix}_type_base");
     for index in 0..types {
         let row = unsafe { resource_allocate_code(index, code.as_mut_ptr()) };
-        emit(format!("{prefix}_allocate_{index}"), code[..row.length as usize].to_vec(), &[
-            (row.base_field, &base), (row.target_field, "blink_allocate"),
+        wrapper(&mut sections, &mut symbols, format!("{prefix}_allocate_{index}"), code[..row.length as usize].to_vec(), vec![
+            external(row.base_field, &base), external(row.target_field, "blink_allocate"),
         ], None);
     }
     if tasks {
         let row = unsafe { task_start_code(code.as_mut_ptr()) };
-        emit(format!("{prefix}_task_start"), code[..row.length as usize].to_vec(), &[
-            (row.base_field, &base), (row.target_field, "blink_task_start"),
+        wrapper(&mut sections, &mut symbols, format!("{prefix}_task_start"), code[..row.length as usize].to_vec(), vec![
+            external(row.base_field, &base), external(row.target_field, "blink_task_start"),
         ], None);
     }
     let base = format!("{prefix}_program_base");
@@ -197,11 +257,63 @@ pub(super) fn wrappers(
             code.set_len(row.length as usize);
             row
         };
-        let prolog = row.prolog as u8;
-        let unwind = crate::native::unwind_info(prolog, &[crate::native::UnwindOperation::allocate(prolog, frame)]);
-        emit(format!("{prefix}_run_{index}"), code, &[
-            (row.base_field, &base), (row.call_field, "blink_run"),
-        ], Some((row.function_end, unwind)));
+        wrapper(&mut sections, &mut symbols, format!("{prefix}_run_{index}"), code, vec![
+            external(row.base_field, &base), external(row.call_field, "blink_run"),
+        ], Some((row.function_end, call_unwind(row.prolog, frame))));
+    }
+    for (index, fields) in resources.completions.iter().enumerate() {
+        let limits: Vec<Vec<_>> = fields.iter().map(|field| {
+            field.limits.iter().map(|&(parameter, distance)| {
+                Ok::<_, std::num::TryFromIntError>(CompletionLimit {
+                    parameter: u32::try_from(parameter)?,
+                    distance,
+                })
+            }).collect::<Result<Vec<_>, _>>()
+        }).collect::<Result<_, _>>()?;
+        let native_fields: Vec<_> = fields.iter().zip(&limits).map(|(field, limits)| {
+            Ok::<_, std::num::TryFromIntError>(CompletionField {
+                offset: field.offset,
+                interval_count: u32::try_from(field.intervals.len())?,
+                known_mask: field.known_bits.0,
+                known_value: field.known_bits.1,
+                limits: limits.as_ptr(),
+                limit_count: u32::try_from(limits.len())?,
+            })
+        }).collect::<Result<_, _>>()?;
+        let count = u32::try_from(native_fields.len())?;
+        let layout = unsafe { completion_layout(native_fields.as_ptr(), count) };
+        if layout.capacity == 0 {
+            return Err("应用完成包装超出 Windows x64 栈位移或代码范围".into());
+        }
+        let frame = layout.frame;
+        let mut code = Vec::with_capacity(layout.capacity as usize);
+        let mut patches = Vec::with_capacity(fields.len());
+        let row = unsafe {
+            let row = completion_code(layout, native_fields.as_ptr(), count, code.as_mut_ptr(), patches.as_mut_ptr());
+            code.set_len(row.length as usize);
+            patches.set_len(fields.len());
+            row
+        };
+
+        let data_section = sections.len();
+        let mut data = Vec::new();
+        let mut relocations = Vec::with_capacity(fields.len() * 2);
+        for (field, patch) in fields.iter().zip(patches) {
+            relocations.push(Relocation {
+                offset: patch.intervals as usize,
+                kind: 4,
+                target: Target::Section(data_section, u32::try_from(data.len())?),
+            });
+            relocations.push(external(patch.call, "blink_complete_field"));
+            for (lower, upper) in &field.intervals {
+                data.extend(lower.to_le_bytes());
+                data.extend(upper.to_le_bytes());
+            }
+        }
+        if data.is_empty() { data.resize(8, 0); }
+        sections.push(read_only(data, Vec::new()));
+        wrapper(&mut sections, &mut symbols, format!("{prefix}_complete_{index}"), code,
+            relocations, Some((row.function_end, call_unwind(row.prolog, frame))));
     }
     if symbols.is_empty() {
         Ok(None)

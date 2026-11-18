@@ -154,6 +154,37 @@ extern "C" ProgramCallLayout program_call_layout(u32 datasets, u32 values, u32 t
 extern "C" ProgramCallCode program_call_code(ProgramCallLayout layout, u32 program_index,
     u32 datasets, address arguments, u32 values, u32 textures, address output) on cpu;
 
+struct CompletionLimit {
+    u32 parameter;
+    u32 distance;
+};
+struct CompletionField {
+    u32 offset;
+    u32 interval_count;
+    u64 known_mask;
+    u64 known_value;
+    address limits;
+    u32 limit_count;
+};
+struct CompletionLayout {
+    u32 frame;
+    u64 capacity;
+};
+struct CompletionPatch {
+    u64 intervals;
+    u64 call;
+};
+struct CompletionCode {
+    u64 length;
+    u32 function_end;
+    u32 prolog;
+};
+
+extern "C" CompletionLayout completion_layout(address fields, u32 count) on cpu;
+// There is one patch row per field. The interval and call fields are REL32.
+extern "C" CompletionCode completion_code(CompletionLayout layout, address fields, u32 count,
+    address output, address patches) on cpu;
+
 // Call through an existing outgoing stack slot. The caller owns seven bytes.
 extern "C" u64 call_slot(u32 offset, address output) on cpu;
 

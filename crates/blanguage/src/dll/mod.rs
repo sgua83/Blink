@@ -4,7 +4,6 @@ use crate::{
     ExecutableProgram,
     ir::{Scalar, Ty, align_up},
 };
-pub(crate) use source::application_source;
 use std::{fmt::Write, path::Path};
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
