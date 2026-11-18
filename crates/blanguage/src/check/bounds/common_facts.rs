@@ -135,7 +135,7 @@ unsafe extern "C" fn known_bits(
     match KnownBits::facts(
         unsafe { *scalar.cast::<Scalar>() },
         unsafe { *identity.cast::<ValueIdentity>() },
-        [context.environment, context.sides[side as usize]],
+        &[context.environment, context.sides[side as usize]],
     ) {
         Some(bits) => Bits {
             mask: bits.mask,

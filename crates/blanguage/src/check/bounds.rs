@@ -390,7 +390,7 @@ impl KnownBits {
         known_bits::bitwise(scalar,operation,a,b)
     }
     fn common(self,other:Self)->Option<Self> {known_bits::common(self,other)}
-    fn facts(scalar:Scalar,id:ValueIdentity,sets:[&Facts;2])->Option<Self> {
+    fn facts(scalar:Scalar,id:ValueIdentity,sets:&[&Facts])->Option<Self> {
         let (mut lower,mut upper)=(0,scalar.bit_mask());
         for facts in sets {
             if let Some(Fact::Minimum(_,_,bound))=facts.range(Fact::Minimum(id,scalar,0)..=Fact::Minimum(id,scalar,scalar.bit_mask())).next_back(){lower=lower.max(*bound);}
@@ -3816,7 +3816,7 @@ pub(super) fn proof_scope(path: &Clause, env: &BTreeMap<String, Binding>) -> imp
                 for domain in proof.domains(component).into_owned() {
                     if let IndexDomain::CommonRange(id, from, low, extended, to) = domain
                         && [from, low, extended, to].into_iter().all(Scalar::is_integer)
-                        && let Some(bits) = KnownBits::facts(from, id, [&environment, facts])
+                        && let Some(bits) = KnownBits::facts(from, id, &[facts])
                     {
                         let bits = bits.cast(low).cast(extended).cast(to);
                         if bits.mask != 0 {
