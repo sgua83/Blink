@@ -1357,3 +1357,111 @@ extern "C" u32 relation_source_below(address context,address left,address right,
  RelationRange a=host.bounds(context,left);RelationRange b=host.bounds(context,right);
  return range_less(a.upper,a.lower)||range_less(b.upper,b.lower)||range_less(a.upper,b.lower) ? 2 : 1;
 }
+
+struct IndexProjection {u32 present;IndexOutput output;IndexFields fields;};
+IndexProjection index_projection(IndexFields input,u32 strict) on cpu {
+ IndexFields fields=input;
+ if(input.kind==1||input.kind==2||input.kind==3||input.kind==4||input.kind==10){return IndexProjection(1,IndexOutput::Original,fields);}
+ if(input.kind>=5&&input.kind<=8){
+  if(strict==0){return IndexProjection(0,IndexOutput::Original,fields);}
+  if(input.kind==5){return IndexProjection(1,IndexOutput::Data,fields);}
+  if(input.kind==6){return IndexProjection(1,IndexOutput::Tile,fields);}
+  if(input.kind==7){return IndexProjection(1,IndexOutput::View,fields);}
+  return IndexProjection(1,IndexOutput::ApplicationData,fields);
+ }
+ if(input.kind==9||input.kind==11){
+  fields.distance+=u64(strict);
+  if(fields.distance<=4294967295u64){return IndexProjection(1,input.kind==9 ? IndexOutput::Upper : IndexOutput::Shifted,fields);}
+ }
+ return IndexProjection(0,IndexOutput::Original,fields);
+}
+extern "C" void index_domains_below(address context,u32 strict,IndexBelowHost host) on cpu
+ requires nonzero(host.next) requires nonzero(host.emit) {
+ while(true){IndexFields fields=host.next(context);if(fields.present==0){break;}
+  IndexProjection projected=index_projection(fields,strict);if(projected.present!=0){host.emit(context,projected.output,projected.fields);}
+ }
+}
+void arithmetic_index_project(address context,u32 side,u32 strict,
+ cfn<void,address,u32> select,cfn<IndexFields,address> next,cfn<void,address,IndexOutput,IndexFields> emit) on cpu
+ requires nonzero(select) requires nonzero(next) requires nonzero(emit) {
+ select(context,side);index_domains_below(context,strict,IndexBelowHost(next,emit));
+}
+void arithmetic_index_copy(address context,u32 side,
+ cfn<void,address,u32> select,cfn<IndexFields,address> next,cfn<void,address,IndexOutput,IndexFields> emit) on cpu
+ requires nonzero(select) requires nonzero(next) requires nonzero(emit) {
+ select(context,side);while(true){IndexFields fields=next(context);if(fields.present==0){break;}emit(context,IndexOutput::Original,fields);}
+}
+extern "C" void arithmetic_index_domains(address context,u32 operation,ArithmeticIndexHost host) on cpu
+ requires nonzero(host.select) requires nonzero(host.next) requires nonzero(host.emit) requires nonzero(host.same) requires nonzero(host.bounds) requires nonzero(host.constant) requires nonzero(host.nonzero) requires nonzero(host.shift_zero) requires nonzero(host.identity) requires nonzero(host.room) requires nonzero(host.scratch) requires nonzero(host.contains) {
+ if(operation==10||operation==11){
+  if(operation==11){host.scratch(context,1);}
+  arithmetic_index_project(context,0,0,host.select,host.next,host.emit);
+  if(operation==10){arithmetic_index_project(context,1,0,host.select,host.next,host.emit);}
+  else{
+   host.scratch(context,0);host.select(context,1);
+   while(true){IndexFields fields=host.next(context);if(fields.present==0){break;}IndexProjection p=index_projection(fields,0);
+    if(p.present!=0&&host.contains(context,p.output,p.fields)!=0){host.emit(context,p.output,p.fields);}
+   }
+  }return;
+ }
+ if((operation==5||operation==6)&&host.same(context)!=0){
+  arithmetic_index_copy(context,0,host.select,host.next,host.emit);arithmetic_index_copy(context,1,host.select,host.next,host.emit);return;
+ }
+ if(operation==5){
+  arithmetic_index_project(context,0,0,host.select,host.next,host.emit);arithmetic_index_project(context,1,0,host.select,host.next,host.emit);return;
+ }
+ if(operation==4||operation==3){
+  IndexBounds right=host.bounds(context,1);if(right.lower==0u64){return;}
+  u32 strict=operation==3&&host.nonzero(context,0)!=0&&right.lower>1u64 ? 1 : 0;
+  arithmetic_index_project(context,0,strict,host.select,host.next,host.emit);
+  if(operation==4){arithmetic_index_project(context,1,1,host.select,host.next,host.emit);}return;
+ }
+ if(operation==9){
+  u32 strict=host.nonzero(context,0)!=0&&host.shift_zero(context)==0 ? 1 : 0;
+  arithmetic_index_project(context,0,strict,host.select,host.next,host.emit);return;
+ }
+ if(operation!=0&&operation!=1){return;}
+ IndexBounds left=host.bounds(context,0);IndexBounds right=host.bounds(context,1);IndexConstant second=host.constant(context,1);
+ if(operation==1){
+  if(second.present!=0&&left.lower>=second.bits){arithmetic_index_project(context,0,second.bits!=0u64 ? 1 : 0,host.select,host.next,host.emit);}
+  if(left.lower<right.upper){return;}
+  address a=host.identity(context,0);address b=host.identity(context,1);
+  host.emit(context,IndexOutput::Upper,IndexFields(1,0,address(),address(),a,address(),u64(u32(right.lower))));
+  IndexConstant first=host.constant(context,0);
+  if(first.present!=0&&first.bits==4294967295u64){host.emit(context,IndexOutput::Room,IndexFields(1,0,address(),address(),b,address(),0u64));}
+  if(second.present!=0){
+   u64 amount=u64(u32(second.bits));host.select(context,0);
+   while(true){IndexFields input=host.next(context);if(input.present==0){break;}
+    if(input.kind==9||input.kind==11){IndexFields fields=input;fields.distance+=amount;
+     if(fields.distance<=4294967295u64){host.emit(context,input.kind==9 ? IndexOutput::Upper : IndexOutput::Shifted,fields);}
+    }
+   }
+  }return;
+ }
+ address a=host.identity(context,0);address b=host.identity(context,1);IndexConstant first=host.constant(context,0);
+ u32 side=0;
+ while(side<2){address base=side==0 ? a : b;host.select(context,1-side);
+  while(true){IndexFields input=host.next(context);if(input.present==0){break;}
+   if(input.kind==9){IndexFields fields=input;fields.second=input.first;fields.first=base;host.emit(context,IndexOutput::Shifted,fields);}
+  }side+=1;
+ }
+ if(left.upper+right.upper<=4294967295u64||host.room(context,0,b)!=0||host.room(context,1,a)!=0){
+  host.emit(context,IndexOutput::Sum,IndexFields(1,0,address(),address(),a,b,0u64));side=0;
+  while(side<2){IndexConstant constant=side==0 ? second : first;address base=side==0 ? a : b;
+   if(constant.present!=0){u64 amount=u64(u32(constant.bits));if(amount!=0u64){
+    host.emit(context,IndexOutput::Offset,IndexFields(1,0,address(),address(),base,address(),amount));host.select(context,side);
+    while(true){IndexFields input=host.next(context);if(input.present==0){break;}
+     if(input.kind==12){IndexFields fields=input;fields.distance+=amount;if(fields.distance<=4294967295u64){host.emit(context,IndexOutput::Offset,fields);}}
+    }
+   }}side+=1;
+  }
+ }
+ side=0;
+ while(side<2){IndexConstant constant=side==0 ? second : first;
+  if(constant.present!=0){u64 amount=u64(u32(constant.bits));host.select(context,side);
+   while(true){IndexFields input=host.next(context);if(input.present==0){break;}
+    if((input.kind==9||input.kind==11)&&input.distance>=amount){IndexFields fields=input;fields.distance-=amount;host.emit(context,input.kind==9 ? IndexOutput::Upper : IndexOutput::Shifted,fields);}
+   }
+  }side+=1;
+ }
+}

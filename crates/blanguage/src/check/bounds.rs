@@ -10,6 +10,7 @@ mod combination;
 mod canonical;
 mod equality;
 mod integer_relations;
+mod index_domains;
 use super::*;
 mod floating;
 mod bitwise;
@@ -1907,10 +1908,17 @@ impl Value {
             .unwrap_or_else(|| vec![ValueIdentity::Register(self.regs[index])])
     }
     pub(super) fn same_component(&self, index: usize, other: &Self, other_index: usize) -> bool {
-        let other = other.component_origins(other_index);
-        self.component_origins(index)
-            .iter()
-            .any(|origin| other.contains(origin))
+        let first_fallback;
+        let first = match self.proof.origins.get(index).filter(|origins| !origins.is_empty()) {
+            Some(origins) => origins.as_slice(),
+            None => { first_fallback = [ValueIdentity::Register(self.regs[index])]; &first_fallback[..] },
+        };
+        let second_fallback;
+        let second = match other.proof.origins.get(other_index).filter(|origins| !origins.is_empty()) {
+            Some(origins) => origins.as_slice(),
+            None => { second_fallback = [ValueIdentity::Register(other.regs[other_index])]; &second_fallback[..] },
+        };
+        first.iter().any(|origin| second.contains(origin))
     }
     pub(super) fn view_identity(&self) -> [ValueIdentity; 3] {
         std::array::from_fn(|i| self.component_identity(i))
@@ -3156,110 +3164,7 @@ fn arithmetic_source<'a>(
         None
     }
 }
-fn arithmetic_domains(op: &str, a: &Value, b: &Value, component: usize) -> Domains {
-    let ai = component % a.regs.len();
-    let bi = component % b.regs.len();
-    let mut domains = inherited_domains(op, a, b, component);
-    let left = a.proof.domains(ai);
-    let right = b.proof.domains(bi);
-    let a_id = a.component_origins(ai)[0];
-    let b_id = b.component_origins(bi)[0];
-    if op == "+" {
-        for (base, part) in [(a_id, &right), (b_id, &left)] {
-            for relation in part {
-                if let IndexDomain::Upper(limit, distance) = *relation {
-                    domains.insert(IndexDomain::Shifted(base, limit, distance));
-                }
-            }
-        }
-        let no_wrap = u64::from(a.component_range(ai).1) + u64::from(b.component_range(bi).1) <= u64::from(u32::MAX)
-            || left.contains(&IndexDomain::Room(b_id)) || right.contains(&IndexDomain::Room(a_id));
-        if no_wrap {
-            domains.insert(IndexDomain::Sum(a_id, b_id));
-            for (base, source, amount) in [(a_id, &left, b.constant.as_ref().map(|v| v[bi] as u32)), (b_id, &right, a.constant.as_ref().map(|v| v[ai] as u32))] {
-                if let Some(amount) = amount.filter(|amount| *amount != 0) {
-                    domains.insert(IndexDomain::Offset(base, amount));
-                    for relation in source {
-                        if let IndexDomain::Offset(origin, previous) = *relation {
-                            if let Some(amount) = previous.checked_add(amount) { domains.insert(IndexDomain::Offset(origin, amount)); }
-                        }
-                    }
-                }
-            }
-        }
-        for (source, addend) in [(&left, b.constant.as_ref().map(|v| v[bi] as u32)), (&right, a.constant.as_ref().map(|v| v[ai] as u32))] {
-            if let Some(amount) = addend {
-                for relation in source {
-                    let shifted = match *relation {
-                        IndexDomain::Upper(limit, distance) => distance.checked_sub(amount).map(|d| IndexDomain::Upper(limit, d)),
-                        IndexDomain::Shifted(base, limit, distance) => distance.checked_sub(amount).map(|d| IndexDomain::Shifted(base, limit, d)),
-                        _ => None,
-                    };
-                    domains.extend(shifted);
-                }
-            }
-        }
-    }
-    if op == "-" && a.component_range(ai).0 >= b.component_range(bi).1 {
-        domains.insert(IndexDomain::Upper(a_id, b.component_range(bi).0 as u32));
-        if a.constant.as_ref().is_some_and(|v| v[ai] == Bits::from(u32::MAX)) { domains.insert(IndexDomain::Room(b_id)); }
-        if let Some(amount) = b.constant.as_ref().map(|v| v[bi] as u32) {
-            for relation in left {
-                let shifted = match relation {
-                    IndexDomain::Upper(limit, distance) => distance.checked_add(amount).map(|d| IndexDomain::Upper(limit, d)),
-                    IndexDomain::Shifted(base, limit, distance) => distance.checked_add(amount).map(|d| IndexDomain::Shifted(base, limit, d)),
-                    _ => None,
-                };
-                domains.extend(shifted);
-            }
-        }
-    }
-    domains
-}
-fn inherited_domains(op: &str, a: &Value, b: &Value, component: usize) -> Domains {
-    let ai = component % a.regs.len();
-    let bi = component % b.regs.len();
-    let left = a.proof.domains(ai);
-    let right = b.proof.domains(bi);
-    if matches!(op, "min" | "max") {
-        let left = indices_below(&left, false);
-        let right = indices_below(&right, false);
-        return if op == "min" {
-            left.union(&right).copied().collect()
-        } else {
-            left.intersection(&right).copied().collect()
-        };
-    }
-    if matches!(op, "&" | "|") && a.same_component(ai, b, bi) {
-        return left.union(&right).copied().collect();
-    }
-    if op == "&" {
-        let mut domains = indices_below(&left, false);
-        domains.extend(indices_below(&right, false));
-        return domains;
-    }
-    if op == "%" && b.component_range(bi).0 != 0 {
-        let mut domains = indices_below(&left, false);
-        domains.extend(indices_below(&right, true));
-        return domains;
-    }
-    if op == "/" && b.component_range(bi).0 != 0 {
-        let strict = a.component_nonzero(ai) && b.component_range(bi).0 > 1;
-        return indices_below(&left, strict);
-    }
-    if op == ">>" {
-        let strict = a.component_nonzero(ai) && !b.component_ranges(bi).shift_counts(Scalar::U32).contains(0);
-        return indices_below(&left, strict);
-    }
-    let Some(constant) = b.constant.as_ref().map(|values| values[bi]) else {
-        return Domains::new();
-    };
-    let strict = match op {
-        "-" if a.component_range(ai).0 >= constant => constant != 0,
-        _ => return Domains::new(),
-    };
-    indices_below(&left, strict)
-}
+fn arithmetic_domains(op:&str,a:&Value,b:&Value,component:usize)->Domains {index_domains::arithmetic(op,a,b,component)}
 pub(super) fn unary(op: UnaryOp, value: &Value) -> Proof {
     if op == UnaryOp::LogicalNot {
         return Proof::condition(Condition::of(value).negate());
@@ -3282,27 +3187,7 @@ pub(super) fn unary(op: UnaryOp, value: &Value) -> Proof {
 fn integer_result_range(range:(i128,i128),bias:Bits,width:u32)->ScalarRanges {
     integer::project(range,bias,width)
 }
-pub(super) fn indices_below(domains: &Domains, strict: bool) -> Domains {
-    domains
-        .iter()
-        .filter_map(|domain| match *domain {
-            IndexDomain::DataLength(binding) if strict => Some(IndexDomain::Data(binding)),
-            IndexDomain::TileLength if strict => Some(IndexDomain::Tile),
-            IndexDomain::ViewLength(origin) if strict => Some(IndexDomain::View(origin)),
-            IndexDomain::ApplicationLength(handle) if strict => {
-                Some(IndexDomain::ApplicationData(handle))
-            }
-            IndexDomain::Upper(limit, distance) => distance.checked_add(u32::from(strict)).map(|d| IndexDomain::Upper(limit, d)),
-            domain @ IndexDomain::Room(_) => Some(domain),
-            IndexDomain::Shifted(base, limit, distance) => distance.checked_add(u32::from(strict)).map(|d| IndexDomain::Shifted(base, limit, d)),
-            domain @ (IndexDomain::Data(_)
-            | IndexDomain::Tile
-            | IndexDomain::View(_)
-            | IndexDomain::ApplicationData(_)) => Some(domain),
-            _ => None,
-        })
-        .collect()
-}
+pub(super) fn indices_below(domains:&Domains,strict:bool)->Domains {index_domains::below(domains,strict)}
 impl Builder<'_> {
     pub(super) fn length_proofs_equal(&self, a: &Proof, b: &Proof) -> bool {
         let equal = |a: &Proof, b: &Proof| {

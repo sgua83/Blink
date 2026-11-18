@@ -660,3 +660,27 @@ extern "C" u32 relation_source_plan(address context,RelationSourcePlanHost host)
  requires nonzero(host.pop) requires nonzero(host.push) requires nonzero(host.bounds) requires nonzero(host.enter) requires nonzero(host.computed) requires nonzero(host.root) requires nonzero(host.select) requires nonzero(host.emit) requires nonzero(host.clear) requires nonzero(host.compare);
 extern "C" u32 relation_source_below(address context,address left,address right,address source,u64 lower,u64 upper,address scalar,InternalScalar info,RelationSourceBelowHost host) on cpu
  requires nonzero(host.seed) requires nonzero(host.next) requires nonzero(host.bounds) requires nonzero(host.computed) requires nonzero(host.same_scalar) requires nonzero(host.arithmetic) requires nonzero(host.store);
+
+struct IndexFields {u32 present;u32 kind;address original;address payload;address first;address second;u64 distance;};
+enum IndexOutput:u32 {Original=0;Data=1;Tile=2;View=3;ApplicationData=4;Upper=5;Shifted=6;Sum=7;Offset=8;Room=9;};
+struct IndexBelowHost {cfn<IndexFields,address> next;cfn<void,address,IndexOutput,IndexFields> emit;};
+struct IndexBounds {u64 lower;u64 upper;};
+struct IndexConstant {u32 present;u64 bits;};
+struct ArithmeticIndexHost {
+ cfn<void,address,u32> select;
+ cfn<IndexFields,address> next;
+ cfn<void,address,IndexOutput,IndexFields> emit;
+ cfn<u32,address> ensures memory(read) same;
+ cfn<IndexBounds,address,u32> ensures memory(read) bounds;
+ cfn<IndexConstant,address,u32> ensures memory(read) constant;
+ cfn<u32,address,u32> ensures memory(read) nonzero;
+ cfn<u32,address> ensures memory(read) shift_zero;
+ cfn<address,address,u32> identity;
+ cfn<u32,address,u32,address> ensures memory(read) room;
+ cfn<void,address,u32> scratch;
+ cfn<u32,address,IndexOutput,IndexFields> ensures memory(read) contains;
+};
+extern "C" void index_domains_below(address context,u32 strict,IndexBelowHost host) on cpu
+ requires nonzero(host.next) requires nonzero(host.emit);
+extern "C" void arithmetic_index_domains(address context,u32 operation,ArithmeticIndexHost host) on cpu
+ requires nonzero(host.select) requires nonzero(host.next) requires nonzero(host.emit) requires nonzero(host.same) requires nonzero(host.bounds) requires nonzero(host.constant) requires nonzero(host.nonzero) requires nonzero(host.shift_zero) requires nonzero(host.identity) requires nonzero(host.room) requires nonzero(host.scratch) requires nonzero(host.contains);
