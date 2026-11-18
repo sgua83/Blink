@@ -1,4 +1,4 @@
-use std::{env, fs, path::Path, process::Command};
+use std::{env, fs::{self, File}, io::{self, Read, Write}, path::Path, process::Command};
 
 fn sources(path: &Path, files: &mut Vec<std::path::PathBuf>) -> std::io::Result<()> {
     for entry in fs::read_dir(path)? {
@@ -12,7 +12,7 @@ fn sources(path: &Path, files: &mut Vec<std::path::PathBuf>) -> std::io::Result<
     Ok(())
 }
 
-pub fn emit(libraries: &[&[u8]]) -> Result<(), Box<dyn std::error::Error>> {
+pub fn emit(mut identity: Identity) -> Result<(), Box<dyn std::error::Error>> {
     let mut files = Vec::new();
     sources(Path::new("src"), &mut files)?;
     files.extend([
@@ -22,8 +22,6 @@ pub fn emit(libraries: &[&[u8]]) -> Result<(), Box<dyn std::error::Error>> {
         "../../Cargo.toml".into(),
     ]);
     files.sort();
-    let mut identity = Digest::new();
-    for library in libraries { identity.field(library); }
     for path in files {
         println!("cargo:rerun-if-changed={}", path.display());
         identity.field(path.to_str().ok_or("编译器源码路径不是UTF-8")?.as_bytes());
@@ -67,14 +65,14 @@ pub fn emit(libraries: &[&[u8]]) -> Result<(), Box<dyn std::error::Error>> {
 
 // The Cargo build script runs before the compiler can link its B archive.
 // Consume fields in place; only the unfinished block crosses field boundaries.
-struct Digest {
+pub struct Identity {
     state: [u32; 8],
     tail: [u8; 64],
     used: usize,
     length: u64,
 }
-impl Digest {
-    fn new() -> Self {
+impl Identity {
+    pub fn new() -> Self {
         Self {
             state: [
                 0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab,
@@ -84,6 +82,20 @@ impl Digest {
             used: 0,
             length: 0,
         }
+    }
+    pub fn library(&mut self, input: &mut File, mut output: impl Write) -> io::Result<()> {
+        let mut remaining = input.metadata()?.len();
+        self.update(&remaining.to_le_bytes());
+        let mut buffer = [0; 64 * 1024];
+        while remaining != 0 {
+            let count = remaining.min(buffer.len() as u64) as usize;
+            let bytes = &mut buffer[..count];
+            input.read_exact(bytes)?;
+            output.write_all(bytes)?;
+            self.update(bytes);
+            remaining -= count as u64;
+        }
+        Ok(())
     }
     fn field(&mut self, bytes: &[u8]) {
         self.update(&(bytes.len() as u64).to_le_bytes());
