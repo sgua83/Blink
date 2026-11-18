@@ -340,7 +340,8 @@ pub(super) async fn expression(
                         "公开输出条件的模块常量必须在接口中可见",
                     );
                 }
-                let (ty, bits, origin) = unsafe { builder.world.call(constant::evaluate(builder.world, &key, &[])).await }?;
+                let constant = unsafe { builder.world.call(constant::evaluate(builder.world, &key, &[])).await }?;
+                let (ty, bits, origin) = constant.value.clone();
                 Ok(builder.evaluated_constant(ty, bits, origin))
             }
             OutputCondition::Member(base, field) => {

@@ -372,7 +372,8 @@ async fn bind_node(world: &World, definition: Contract<'_>, value: &OutputCondit
             }
             BindingNeed::Constant => {
                 let key=unsafe { borrowed::<String>(cursor.request) };
-                let (ty,bits,generated_origin)=unsafe { world.call(constant::evaluate(world,key,&[])).await }?;
+                let constant=unsafe { world.call(constant::evaluate(world,key,&[])).await }?;
+                let (ty,bits,generated_origin)=constant.value.clone();
                 ctx.nodes[0]=Some(Box::new(OutputCondition::Constant(OutputConstant { ty,bits,generated_origin })));
             }
         }

@@ -20,10 +20,10 @@ impl Node {
 }
 #[derive(Clone, Copy)]
 #[repr(C)]
-struct Span { data: *const c_void, count: usize, stride: usize }
+pub(crate) struct Span { data: *const c_void, count: usize, stride: usize }
 impl Span {
     const EMPTY: Self = Self { data: ptr::null(), count: 0, stride: 0 };
-    fn slice<T>(values: &[T]) -> Self { Self { data: values.as_ptr().cast(), count: values.len(), stride: size_of::<T>() } }
+    pub(crate) fn slice<T>(values: &[T]) -> Self { Self { data: values.as_ptr().cast(), count: values.len(), stride: size_of::<T>() } }
     fn pairs(values: &[(u32, Reg)]) -> Self {
         Self {
             data: values.first().map_or(ptr::null(), |value| ptr::from_ref(&value.1).cast()),

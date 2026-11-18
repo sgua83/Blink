@@ -536,7 +536,7 @@ pub(crate) fn read_world(
     for (key, definition) in &world.functions {
         if definition.function.kind() == FunctionKind::Constant {
             generics::validate_declaration(definition)?;
-            unsafe { world.run(check::constant_value(&world, key)) }?;
+            unsafe { world.run(check::evaluate_constant(&world, key, &[])) }?;
         }
     }
     world.build_declarations = None;

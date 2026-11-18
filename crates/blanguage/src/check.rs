@@ -13,7 +13,7 @@ pub(crate) use bounds::Proof;
 mod compact;
 mod callback;
 mod constant;
-pub(crate) use constant::constant_value;
+pub(crate) use constant::evaluate as evaluate_constant;
 pub(crate) use constant::variant_discriminant;
 mod application;
 mod contracts;
@@ -1473,7 +1473,8 @@ async fn stage_root(
                 .resolve(n, &d.module, &d.imports, true).unique()
                 .filter(|key| world.functions[key].function.kind() == FunctionKind::Constant)
             {
-                let (ty, words, origin) = unsafe { world.call(constant::evaluate(world, &key, &[])).await }?;
+                let constant = unsafe { world.call(constant::evaluate(world, &key, &[])).await }?;
+                let (ty, words, origin) = constant.value.clone();
                 Ok(Root::Literal(ty, words, origin).reference_literal(operation_source(instance, arg.span(), SourceSyntax::Expression, domain_path)))
             } else {
                 d.source
@@ -1644,7 +1645,7 @@ pub(crate) async fn check_function(world: &World, instance: &crate::generics::In
     let name = &instance.name;
     let d = &instance.definition;
     if d.function.kind() == FunctionKind::Constant {
-        return unsafe { world.call(constant_value(world, name)).await }.map(|_| ());
+        return unsafe { world.call(evaluate_constant(world, name, &[])).await }.map(|_| ());
     }
     if d.function.kind() == FunctionKind::Value && d.function.target() == Target::Cpu {
         return unsafe { world.call(native_function::check(world, instance)).await };
