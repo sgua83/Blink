@@ -780,9 +780,13 @@ impl BorrowEvaluation<'_>{
         result.with_initial(input_contents(origin,word))
     }
 
-    fn stored_candidates(&mut self)->BTreeSet<(Arc<address::Origin>,u32)>{
-        let(function,known)=(self.function,self.known);
-        let mut result=BTreeSet::new();
+    fn stored_locations<'p>(
+        &mut self,
+        parameters: impl Fn() -> &'p BTreeMap<ValueIdentity, bounds::Proof>,
+    ) -> BTreeSet<(Arc<address::Origin>, u32)> {
+        let (function, known) = (self.function, self.known);
+        let exposed = exposed_resources(function, |output| self.evaluate(&function.outputs[output]));
+        let mut result = BTreeSet::new();
         for(memory,usage)in function.uses.iter().enumerate(){
             let Requirement::Memory{borrow,written,address_fields,..}=&usage.requirement else{continue;};
             if let Some(call)=function.calls.iter().find(|call|call.memory==memory){
@@ -799,22 +803,12 @@ impl BorrowEvaluation<'_>{
                 }}
             }
         }
+        result.retain(|(origin, _)| stored_target(origin, function, &exposed, &parameters).active());
         result
     }
 
-    fn stored_at_exit<'p>(
-        &mut self,
-        memory: usize,
-        parameters: impl Fn() -> &'p BTreeMap<ValueIdentity, bounds::Proof>,
-    ) -> Vec<(Arc<address::Origin>, u32, Borrow)> {
-        let function=self.function;
-        let exposed=exposed_resources(function, |output| self.evaluate(&function.outputs[output]));
-        self.stored_candidates().into_iter().filter_map(|(origin,word)|{
-            let target=stored_target(&origin,function,&exposed,&parameters);
-            if !target.active(){return None;}
-            let value=self.content_before(&origin,word,memory,None).restricted(&function.uses[memory].path);
-            Some((origin,word,value))
-        }).collect()
+    fn content_at_exit(&mut self, origin: &address::Origin, word: u32, memory: usize) -> Borrow {
+        self.content_before(origin, word, memory, None).restricted(&self.function.uses[memory].path)
     }
 
     fn content_read(&mut self,read:&ContentRead,sources:LoopSources)->Borrow{
@@ -829,7 +823,9 @@ impl BorrowEvaluation<'_>{
             ContentRead::Returned{memory}=>{
                 let mut value=Borrow::default();
                 let parameters = std::cell::LazyCell::new(|| public_parameters(function));
-                for(_,_,stored)in self.stored_at_exit(*memory, || &parameters){value.union(&stored);}
+                for (origin, word) in self.stored_locations(|| &parameters) {
+                    value.union(&self.content_at_exit(&origin, word, *memory));
+                }
                 value
             },
             ContentRead::Value{memory,word,borrow,snapshots}=>{
@@ -1556,19 +1552,31 @@ fn stored_outputs<'p>(
     evaluation: &mut BorrowEvaluation<'_>, exposed: &BTreeMap<Origin, Borrow>,
     parameters: impl Fn() -> &'p BTreeMap<ValueIdentity, bounds::Proof>,
 ) -> BTreeSet<Access> {
-    let function=evaluation.function;
-    let mut stored:BTreeMap<(Borrow,u32),Borrow>=BTreeMap::new();
-    for usage in &function.uses{
-        let Requirement::Return{borrow,..}=&usage.requirement else{continue;};
-        for(read,_)in borrow.reads.entries(){
-            let ContentRead::Returned{memory}=read else{continue;};
-            for(origin,word,value)in evaluation.stored_at_exit(*memory, &parameters){
-                let target=stored_target(&origin,function,exposed,&parameters);
-                stored.entry((target,word)).or_default().union(&canonical_relation(value, function, None, exposed, parameters(), false));
-            }
+    let function = evaluation.function;
+    let mut exits = function.uses.iter().filter_map(|usage| match &usage.requirement {
+        Requirement::Return { borrow, .. } => Some(&borrow.reads),
+        _ => None,
+    }).flat_map(|reads| reads.iter()).filter_map(|read| match read {
+        ContentRead::Returned { memory } => Some(*memory),
+        _ => None,
+    }).peekable();
+    if exits.peek().is_none() {
+        return BTreeSet::new();
+    }
+
+    let locations = evaluation.stored_locations(&parameters);
+    let mut stored: BTreeMap<(Borrow, u32), Borrow> = BTreeMap::new();
+    for memory in exits {
+        for (origin, word) in &locations {
+            let value = evaluation.content_at_exit(origin, *word, memory);
+            let target = stored_target(origin, function, exposed, &parameters);
+            let value = canonical_relation(value, function, None, exposed, parameters(), false);
+            stored.entry((target, *word)).or_default().union(&value);
         }
     }
-    stored.into_iter().map(|((borrows,word),value)|Access::Stored{borrows,word,value,when:bounds::Condition::constant(true)}).collect()
+    stored.into_iter().map(|((borrows, word), value)| Access::Stored {
+        borrows, word, value, when: bounds::Condition::constant(true),
+    }).collect()
 }
 
 fn converge(
