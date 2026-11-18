@@ -1,6 +1,6 @@
 //! 正式COFF对象的构建输入与最终产物复用；链接端不参与。
 use super::{identity, publish, Result};
-use crate::object::Object;
+use crate::{object::Object, source_path};
 use std::{fs, io::{ErrorKind, Error}, path::{Path, PathBuf}};
 /// 与现有三个-c分支相同的产物选择。
 #[derive(Clone, Copy)]
@@ -48,13 +48,13 @@ pub(super) fn compile<'a>(
     dependencies: impl IntoIterator<Item = &'a Object>,
     kind: ObjectKind<'_>, output: &Path, inputs: Option<&super::Inputs>,
 ) -> Result<ObjectCompilation> {
-    let source_path = if inputs.is_some() { path.into() } else { std::path::absolute(path)? };
     // .h是模块来源；纯类型模块不依赖伪造的.b。
-    let mut header_path = path.to_path_buf();
-    header_path.set_extension("h");
-    let path = if inputs.is_some() { header_path } else { header_path.canonicalize()? };
-    let root = if inputs.is_some() { root.into() } else { root.canonicalize()? };
-    let artifact = crate::source_path::absolute(output)?;
+    let header = source_path::with_extension(path, u16::from(b'h'));
+    let (source_path, path, root, artifact) = if inputs.is_some() {
+        (path.to_path_buf(), header, root.to_path_buf(), output.to_path_buf())
+    } else {
+        (source_path::absolute(path)?, header.canonicalize()?, root.canonicalize()?, source_path::absolute(output)?)
+    };
     let imports = crate::module::Imports::new(dependencies).map_err(|value| crate::ast::Diagnostic {
             source: crate::ast::Source { path: source_path.clone(), text: "".into() },
             span: crate::ast::Span::default(), code: "B270", message: value.to_string(),

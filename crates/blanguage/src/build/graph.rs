@@ -1,7 +1,7 @@
 //! 调用方持有的一次编译图；只调度本次真实依赖，不保留后台消费者。
 use super::{Compilation, ObjectCompilation, ObjectKind, Result, inputs::{Capture, ProviderInterface}};
-use crate::{Compiler, ast::Target, object::Object};
-use std::{collections::BTreeMap, path::{Path, PathBuf}, sync::{Arc, Condvar, Mutex}, thread};
+use crate::{Compiler, ast::Target, object::Object, source_path};
+use std::{collections::BTreeMap, ffi::OsStr, os::windows::ffi::OsStrExt, path::{Path, PathBuf}, sync::{Arc, Condvar, Mutex}, thread};
 #[derive(Clone, Copy)]
 pub enum Dependency<'a> {
     Unit(usize),
@@ -265,11 +265,10 @@ impl Compiler {
         let (prepared, inputs, dependency_plan) = self.execute(|_| {
         let dependency_plan = dependency_plan(units)?;
         let prepared = units.iter().map(|unit| {
-            let mut path = unit.path.to_path_buf();
-            path.set_extension("h");
-            let mut path = path.canonicalize()?;
-            path.set_extension(unit.path.extension().unwrap_or_else(|| std::ffi::OsStr::new("b")));
-            Ok(Prepared { path, root: unit.root.canonicalize()?, output: std::path::absolute(unit.output)?,
+            let header = source_path::with_extension(unit.path, u16::from(b'h')).canonicalize()?;
+            let extension: Vec<_> = unit.path.extension().unwrap_or_else(|| OsStr::new("b")).encode_wide().collect();
+            let path = source_path::with_extension_units(&header, &extension);
+            Ok(Prepared { path, root: unit.root.canonicalize()?, output: source_path::absolute(unit.output)?,
                 kind: unit.kind })
         }).collect::<Result<Vec<_>>>()?;
         let mut capture = Capture::default();
