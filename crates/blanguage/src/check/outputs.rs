@@ -798,7 +798,7 @@ fn typed_path(value: &OutputCondition, input: &impl Fn(&str) -> Option<(Access, 
                     Ok(Ty::scalar(Scalar::Bool))
                 } else { source.fail(span, "B225", "输出条件使用声明的返回变体名称") };
             }
-            member_type(&ty, field, source, span).map(|(ty, _)| ty)
+            member_type_only(&ty, field, source, span)
         }
         _ => source.fail(span, "B225", "输出条件的字段来自输入或returned"),
     }
@@ -815,7 +815,7 @@ async fn validate_output(world:&World,value: &str, condition: &OutputCondition,
     // Dataset output positions describe initialized elements; input/return
     // conditions consume the original handle/length storage type.
     if let Some(reference)=&ty.dataset {ty=unsafe { world.call(world.ty(reference,source,span,"",&[])).await }?;}
-    for field in fields { ty = member_type(&ty, field, source, span)?.0; }
+    for field in fields { ty = member_type_only(&ty, field, source, span)?; }
     let path = async |value: &OutputCondition| typed_path(value, input, returned, source, span);
     let (condition, _) = unsafe { world.call(condition_type(world,condition,&path, source, span)).await }?;
     operators::same(&Ty::scalar(Scalar::Bool), &condition, source, span)

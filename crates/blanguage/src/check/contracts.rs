@@ -403,7 +403,7 @@ pub(super) fn validate_nonzero_input(path: &str,
     let Some((Access::Value, mut ty)) = input(root) else {
         return source.fail(span, "B225", "nonzero需要实际按值输入或其字段");
     };
-    for field in fields { ty = member_type(&ty, field, source, span)?.0; }
+    for field in fields { ty = member_type_only(&ty, field, source, span)?; }
     validate_nonzero_type(&ty, source, span)
 }
 pub(super) async fn prove_c_inputs(builder: &Builder<'_>, contract: outputs::Contract<'_>,

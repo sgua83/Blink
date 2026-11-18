@@ -44,7 +44,7 @@ impl World {
             }
             if let Some(ty) = Ty::builtin(&name.name) {
                 let mut ty = ty;
-                for field in fields { ty = crate::check::member_type(&ty, field, source, span)?.0; }
+                for field in fields { ty = crate::check::member_type_only(&ty, field, source, span)?; }
                 return Ok(ty);
             }
             if name.name == "result" && matches!(*field, "Ok" | "Err") {

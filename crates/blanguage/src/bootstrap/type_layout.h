@@ -78,3 +78,22 @@ extern "C" TypePart field(address value, Text path, address words, usize word_co
     u32 active, PathHost host) on cpu
     requires nonzero(host.fields.types.inspect) requires nonzero(host.fields.part)
     requires nonzero(host.entry) requires nonzero(host.tag);
+
+enum MemberKind:u32 {
+    Missing=0;
+    Variant=1;
+    HiddenView=2;
+    Length=3;
+    Declared=4;
+    Swizzle=5;
+    UnknownComponent=6;
+    ComponentBounds=7;
+};
+struct MemberSelection { MemberKind kind; u32 count; TypePart part; array<u32,4> lanes; };
+struct MemberHost {
+    cfn<TypeNode,address> ensures memory(read) inspect;
+    cfn<PathEntry,address,Child,usize> ensures memory(read) entry;
+    cfn<usize,address> ensures memory(read) swizzle_width;
+};
+extern "C" MemberSelection source_member(address value, Text name, MemberHost host) on cpu
+    requires nonzero(host.inspect) requires nonzero(host.entry) requires nonzero(host.swizzle_width);

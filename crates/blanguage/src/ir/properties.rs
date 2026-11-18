@@ -148,3 +148,65 @@ unsafe extern "C" fn entry(value: *const Ty, kind: Child, index: usize) -> PathE
 unsafe extern "C" fn tag(value: *const Ty, bits: u32) -> u32 {
     unsafe { &*value }.variant_tag(bits)
 }
+
+#[repr(u32)]
+enum MemberKind {
+    Missing,
+    Variant,
+    HiddenView,
+    Length,
+    Declared,
+    Swizzle,
+    UnknownComponent,
+    ComponentBounds,
+}
+#[repr(C)]
+struct MemberSelection {
+    kind: MemberKind,
+    count: u32,
+    part: Part,
+    lanes: [u32; 4],
+}
+#[repr(C)]
+struct MemberHost {
+    inspect: unsafe extern "C" fn(*const Ty) -> Node,
+    entry: unsafe extern "C" fn(*const Ty, Child, usize) -> PathEntry,
+    swizzle_width: unsafe extern "C" fn(*const Ty) -> usize,
+}
+
+pub(crate) enum SourceMember<'a> {
+    Missing,
+    Variant,
+    HiddenView,
+    Length,
+    Declared { ty: &'a Ty, offset: u32 },
+    Swizzle { lanes: [u32; 4], count: u32 },
+    UnknownComponent,
+    ComponentBounds,
+}
+unsafe extern "C" {
+    #[link_name = "bootstrap.type_layout::source_member"]
+    fn b_source_member(value: *const Ty, name: Text, host: MemberHost) -> MemberSelection;
+}
+unsafe extern "C" fn swizzle_width(value: *const Ty) -> usize {
+    let ty = unsafe { &*value };
+    if ty.is_handle() { 0 } else { ty.components.len() }
+}
+pub(crate) fn source_member<'a>(value: &'a Ty, name: &str) -> SourceMember<'a> {
+    let selected = unsafe {
+        b_source_member(value, Text { bytes: name.as_ptr(), length: name.len() },
+            MemberHost { inspect, entry, swizzle_width })
+    };
+    match selected.kind {
+        MemberKind::Missing => SourceMember::Missing,
+        MemberKind::Variant => SourceMember::Variant,
+        MemberKind::HiddenView => SourceMember::HiddenView,
+        MemberKind::Length => SourceMember::Length,
+        MemberKind::Declared => SourceMember::Declared {
+            ty: unsafe { &*selected.part.value }, offset: selected.part.offset,
+        },
+        MemberKind::Swizzle => SourceMember::Swizzle { lanes: selected.lanes, count: selected.count },
+        MemberKind::UnknownComponent => SourceMember::UnknownComponent,
+        MemberKind::ComponentBounds => SourceMember::ComponentBounds,
+    }
+}

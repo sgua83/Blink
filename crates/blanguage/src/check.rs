@@ -65,53 +65,46 @@ use std::{
     sync::Arc,
 };
 
-pub(crate) fn member_type(ty: &Ty, field: &str, source: &crate::Source, span: Span) -> Result<(Ty, Vec<usize>)> {
-    if ty.has_variants() {
-        return source.fail(
-            span,
-            "B269",
-            "结果载荷通过 match 或 try 使用，不公开原始判别字／载荷字段",
-        );
-    }
-    if ty.view.is_some() {
-        return if field == "length" {
-            Ok((Ty::scalar(Scalar::U32), vec![2]))
-        } else {
-            source.fail(span, "B185", "view 只公开只读 length，不公开设备地址分量")
-        };
-    }
-    if let Some((_, offset, sub)) = ty.fields.iter().find(|(n, _, _)| n == field) {
-        let indices = sub
-            .components
-            .iter()
-            .map(|(_, o)| {
-                ty.components
-                    .iter()
-                    .position(|(_, v)| *v == offset + o)
-                    .unwrap()
-            })
-            .collect();
-        return Ok(((**sub).clone(), indices));
-    }
-    if !ty.is_handle() && ty.array.is_none() && ty.fields.is_empty() && ty.components.len() > 1 && field.len() <= 4
-    {
-        let mut indices = Vec::new();
-        for c in field.chars() {
-            let i = match c {
-                'x' | 'r' => 0,
-                'y' | 'g' => 1,
-                'z' | 'b' => 2,
-                'w' | 'a' => 3,
-                _ => return source.fail(span, "B139", format!("未知字段 {field}")),
-            };
-            if i >= ty.components.len() {
-                return source.fail(span, "B140", "向量分量越界");
+pub(crate) fn member_type(ty: &Ty, field: &str, source: &Source, span: Span) -> Result<(Ty, Vec<usize>)> {
+    let mut indices = Vec::new();
+    let selected = select_member(ty, field, source, span, Some(&mut indices))?;
+    Ok((selected, indices))
+}
+
+pub(crate) fn member_type_only(ty: &Ty, field: &str, source: &Source, span: Span) -> Result<Ty> {
+    select_member(ty, field, source, span, None)
+}
+
+fn select_member(ty: &Ty, field: &str, source: &Source, span: Span, indices: Option<&mut Vec<usize>>) -> Result<Ty> {
+    use crate::ir::SourceMember;
+    match crate::ir::source_member(ty, field) {
+        SourceMember::Length => {
+            if let Some(indices) = indices {
+                indices.push(2);
             }
-            indices.push(i);
+            Ok(Ty::scalar(Scalar::U32))
         }
-        return Ok((Ty::vector(ty.components[0].0, indices.len()), indices));
+        SourceMember::Declared { ty: selected, offset } => {
+            if let Some(indices) = indices {
+                indices.extend(selected.components.iter().map(|(_, component)| {
+                    ty.components.iter().position(|(_, position)| *position == offset + component).unwrap()
+                }));
+            }
+            Ok(selected.clone())
+        }
+        SourceMember::Swizzle { lanes, count } => {
+            if let Some(indices) = indices {
+                indices.extend(lanes[..count as usize].iter().map(|&lane| lane as usize));
+            }
+            Ok(Ty::vector(ty.components[0].0, count as usize))
+        }
+        SourceMember::Variant => source.fail(span, "B269",
+            "结果载荷通过 match 或 try 使用，不公开原始判别字／载荷字段"),
+        SourceMember::HiddenView => source.fail(span, "B185", "view 只公开只读 length，不公开设备地址分量"),
+        SourceMember::UnknownComponent => source.fail(span, "B139", format!("未知字段 {field}")),
+        SourceMember::ComponentBounds => source.fail(span, "B140", "向量分量越界"),
+        SourceMember::Missing => source.fail(span, "B141", format!("{} 没有字段 {field}", ty.name)),
     }
-    source.fail(span, "B141", format!("{} 没有字段 {field}", ty.name))
 }
 
 #[derive(Clone)]

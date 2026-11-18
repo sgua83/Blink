@@ -163,6 +163,17 @@ bool same_name(Text a, Text b) on cpu {
     }
     return true;
 }
+PathEntry named_entry(address value, Text name, Child kind, usize count,
+    cfn<PathEntry,address,Child,usize> ensures memory(read) entry) on cpu requires nonzero(entry) {
+    usize index=0u64;
+    while (index<count) {
+        PathEntry candidate=entry(value,kind,index);
+        if (same_name(name,candidate.name)) { return candidate; }
+        index+=1u64;
+    }
+    return PathEntry(Text(address(),0u64),TypePart(address(),0),0);
+}
+
 extern "C" TypePart field(address value, Text path, address words, usize word_count,
     u32 active, PathHost host) on cpu
     requires nonzero(host.fields.types.inspect) requires nonzero(host.fields.part)
@@ -181,25 +192,16 @@ extern "C" TypePart field(address value, Text path, address words, usize word_co
             TypeNode node=host.fields.types.inspect(current);
             bool variant=node.variants!=0u64;
             usize count=variant ? node.variants : node.fields;
-            TypePart selected=missing;
-            usize i=0u64;
-            while (i<count) {
-                PathEntry entry=host.entry(current,variant ? Child::Variant : Child::Field,i);
-                if (same_name(name,entry.name)) {
-                    if (variant && active!=0) {
-                        usize at=usize(offset/4);
-                        if (at>=word_count) { return missing; }
-                        u32 bits=unsafe_position<u32>(unsafe_address(address_bits(words)+u64(at)*4u64));
-                        if (host.tag(current,bits)!=entry.discriminant) { return missing; }
-                    }
-                    selected=entry.part;
-                    break;
-                }
-                i+=1u64;
+            PathEntry selected=named_entry(current,name,variant ? Child::Variant : Child::Field,count,host.entry);
+            if (address_bits(selected.part.value)==0u64) { return missing; }
+            if (variant && active!=0) {
+                usize at=usize(offset/4);
+                if (at>=word_count) { return missing; }
+                u32 bits=unsafe_position<u32>(unsafe_address(address_bits(words)+u64(at)*4u64));
+                if (host.tag(current,bits)!=selected.discriminant) { return missing; }
             }
-            if (address_bits(selected.value)==0u64) { return missing; }
-            offset+=selected.offset;
-            current=selected.value;
+            offset+=selected.part.offset;
+            current=selected.part.value;
         } else if (split==end) { return missing; }
         usize cursor=split;
         while (cursor<end) {
@@ -220,4 +222,56 @@ extern "C" TypePart field(address value, Text path, address words, usize word_co
         begin=end+1u64;
     }
     return TypePart(current,offset);
+}
+
+extern "C" MemberSelection source_member(address value, Text name, MemberHost host) on cpu
+    requires nonzero(host.inspect) requires nonzero(host.entry) requires nonzero(host.swizzle_width) {
+    MemberSelection selected;
+    selected.kind=MemberKind::Missing;
+    selected.count=0;
+    selected.part=TypePart(address(),0);
+    selected.lanes=array<u32,4>(0,0,0,0);
+    TypeNode node=host.inspect(value);
+    if (node.variants!=0u64) {
+        selected.kind=MemberKind::Variant;
+        return selected;
+    }
+    if (node.view!=0) {
+        array<u8,6> length_name="length";
+        selected.kind=same_name(name,Text(address_of(length_name[0]),6u64)) ?
+            MemberKind::Length : MemberKind::HiddenView;
+        return selected;
+    }
+    if (node.fields!=0u64) {
+        PathEntry field=named_entry(value,name,Child::Field,node.fields,host.entry);
+        if (address_bits(field.part.value)!=0u64) {
+            selected.kind=MemberKind::Declared;
+            selected.part=field.part;
+        }
+        return selected;
+    }
+    if (node.array!=0 || name.length>4u64) { return selected; }
+    usize width=host.swizzle_width(value);
+    if (width<=1u64) { return selected; }
+    for (index in 0..4) {
+        if (usize(index)==name.length) { break; }
+        u8 letter=path_byte(name,usize(index));
+        u32 lane=0;
+        if (letter==120 || letter==114) { lane=0; }
+        else if (letter==121 || letter==103) { lane=1; }
+        else if (letter==122 || letter==98) { lane=2; }
+        else if (letter==119 || letter==97) { lane=3; }
+        else {
+            selected.kind=MemberKind::UnknownComponent;
+            return selected;
+        }
+        if (u64(lane)>=width) {
+            selected.kind=MemberKind::ComponentBounds;
+            return selected;
+        }
+        selected.lanes[index]=lane;
+    }
+    selected.kind=MemberKind::Swizzle;
+    selected.count=u32(name.length);
+    return selected;
 }
