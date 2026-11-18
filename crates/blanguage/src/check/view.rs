@@ -386,18 +386,47 @@ impl Borrow{
         })
     }
 
-    pub fn guards_at_call(&self,bindings:&BTreeMap<ValueIdentity,bounds::Proof>)->Self{Self{sources:self.sources.guards_at_call(bindings),inputs:self.inputs.guards_at_call(bindings),calls:self.calls.guards_at_call(bindings),reads:self.reads.guards_at_call(bindings)}}
+    pub fn guards_at_call(&self, bindings: &BTreeMap<ValueIdentity, bounds::Proof>) -> Self {
+        Self {
+            sources: self.sources.guards_at_call(bindings),
+            ..self.pending_guards_at_call(bindings)
+        }
+    }
+
+    pub(super) fn map_sources_at_call(
+        &self, bindings: &BTreeMap<ValueIdentity, bounds::Proof>, map: impl Fn(Source) -> Self,
+    ) -> Self {
+        self.map_sources_into(self.pending_guards_at_call(bindings), |source, condition| {
+            let condition = condition.project_guard(bindings);
+            map(source).restricted_by(&condition)
+        })
+    }
+
+    fn pending_guards_at_call(&self, bindings: &BTreeMap<ValueIdentity, bounds::Proof>) -> Self {
+        Self {
+            sources: Edges::default(),
+            inputs: self.inputs.guards_at_call(bindings),
+            calls: self.calls.guards_at_call(bindings),
+            reads: self.reads.guards_at_call(bindings),
+        }
+    }
     pub(super) fn bind_guards(&self,bindings:&BTreeMap<ValueIdentity,ValueIdentity>)->Self {
         Self{sources:self.sources.output_bound(bindings),inputs:self.inputs.output_bound(bindings),
             calls:self.calls.output_bound(bindings),reads:self.reads.output_bound(bindings)}
     }
     pub fn map_sources(&self, map: impl Fn(Source) -> Self) -> Self {
-        let mut result = Self {
+        let result = Self {
             inputs: self.inputs.clone(), calls: self.calls.clone(),
             reads: self.reads.clone(), ..Self::default()
         };
+        self.map_sources_into(result, |source, condition| map(source).restricted_by(condition))
+    }
+
+    fn map_sources_into(
+        &self, mut result: Self, map: impl Fn(Source, &bounds::Clause) -> Self,
+    ) -> Self {
         for (source, condition) in &self.sources.0 {
-            result.union(&map(source.clone()).restricted_by(condition));
+            result.union(&map(source.clone(), condition));
         }
         result
     }
@@ -502,7 +531,9 @@ impl Borrow{
             Source::Position(origin)=>origin.aliases_when(|_|true,||when.possible()), _=>Vec::new(),
         }).collect::<BTreeSet<_>>().into_iter().collect()
     }
-    pub fn at_call(&self,bindings:&BTreeMap<ValueIdentity,bounds::Proof>)->Self{self.guards_at_call(bindings).map_sources(|source|source.at_call(bindings))}
+    pub fn at_call(&self, bindings: &BTreeMap<ValueIdentity, bounds::Proof>) -> Self {
+        self.map_sources_at_call(bindings, |source| source.at_call(bindings))
+    }
     pub fn output_bound(&self,bindings:&BTreeMap<ValueIdentity,ValueIdentity>)->Self{
         let mut result=Self{inputs:self.inputs.output_bound(bindings),calls:self.calls.output_bound(bindings),reads:self.reads.output_bound(bindings),..Self::default()};
         for(source,when)in self.sources.entries(){result.sources.insert_when(source.clone().bind_outputs(bindings),when.output_bound(bindings));}result

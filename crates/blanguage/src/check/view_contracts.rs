@@ -1030,7 +1030,7 @@ fn canonical_relation(
     }
     match resource {
         // 拥有输出的来源改名不附加条件，先投影正式输入关系。
-        Some(_)=>borrow.guards_at_call(parameters).map_sources(renamed),
+        Some(_) => borrow.map_sources_at_call(parameters, renamed),
         // 借用输出需先合成实际拥有者条件，保留来源相关性。
         None=>borrow.map_sources(renamed).guards_at_call(parameters),
     }

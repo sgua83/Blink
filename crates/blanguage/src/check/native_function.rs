@@ -443,7 +443,7 @@ impl Builder<'_> {
             let path=when.projected_case(true, arguments);
             if !path.possible(){continue;}
             if borrows.content_inputs(){return None;}
-            let borrow=borrows.guards_at_call(arguments).map_sources(|source|match &source {
+            let borrow=borrows.map_sources_at_call(arguments, |source| match &source {
                 view::Source::Position(origin)if matches!(&origin.root,address::Root::Parameter(parameter)if project(*parameter))=>view::Borrow::default(),
                 _=>source.at_call(arguments),
             });
@@ -1314,7 +1314,7 @@ impl Builder<'_> {
                     if let Some(selected)=selected {
                         value.proof.set_view_borrow(component,selected);
                     }else if !projected.is_empty(){
-                        let actual=borrow.guards_at_call(&bindings).map_sources(|source|at_call(&source));
+                        let actual=borrow.map_sources_at_call(&bindings, |source| at_call(&source));
                         value.proof.set_view_borrow(component,actual);
                     }
                 }
