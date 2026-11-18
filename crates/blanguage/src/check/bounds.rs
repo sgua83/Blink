@@ -2302,13 +2302,21 @@ impl Clause {
             }
             let required = query.evaluate(&environment, &environment_roots, &environment_members)?;
             let unchanged = required.is_empty();
-            if !unchanged {
-                environment.to_mut().extend(required.iter().copied());
-            }
             // The prior roots already close the original environment. Inherited
             // facts only copy a computed result to an existing member of its group.
-            let merged = extend_equality_roots(&mut environment_roots, required.iter());
-            if merged || required.iter().any(|fact| matches!(fact, Fact::Index(_, IndexDomain::Computed(_)))) {
+            let computed_roots_changed = extend_equality_roots(&mut environment_roots, required.iter())
+                || required.iter().any(|fact| matches!(fact, Fact::Index(_, IndexDomain::Computed(_))));
+            if !unchanged {
+                if environment.is_empty() {
+                    environment = match required {
+                        QueryFacts::Borrowed(facts) => Cow::Borrowed(facts),
+                        QueryFacts::Owned(facts) => Cow::Owned(Arc::unwrap_or_clone(facts)),
+                    };
+                } else {
+                    environment.to_mut().extend(required.iter().copied());
+                }
+            }
+            if computed_roots_changed {
                 extend_computed_roots(&mut environment_roots, environment.iter());
             }
             let numeric = integer_relation_facts(&environment, &environment_roots)?;
