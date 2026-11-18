@@ -127,7 +127,7 @@ pub(crate) fn capture(object: &Object) -> Result<Vec<u8>> {
     }
     let encoded = super::super::encode(object)?;
     let facts = Facts::read(&encoded)?;
-    let (spans, _) = facts.ranges()?;
+    let spans = facts.ranges(|_, _, _, _| {})?;
     let mut writer = crate::codec::Writer(MAGIC.to_vec());
     layouts.clone().count().encode(&mut writer);
     for (index, section) in layouts {

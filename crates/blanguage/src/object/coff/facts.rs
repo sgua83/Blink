@@ -35,6 +35,20 @@ struct Span {
     section: usize, start: usize, end: usize,
     pdata_section: usize, record_offset: usize,
 }
+struct AddressFacts<'a> {
+    resolved: Option<(usize, usize)>,
+    addend: u32,
+    relocation: Option<&'a ReadRelocation>,
+    symbol_name: &'a str,
+    status: &'static str,
+}
+impl AddressFacts<'_> {
+    fn json(&self, facts: &Facts<'_>) -> String {
+        object(&[("addend", self.addend.to_string()), ("status", text(self.status)),
+            ("relocation", self.relocation.map(|row| facts.relocation_named(row, self.symbol_name)).unwrap_or_else(|| "null".into())),
+            ("position", self.resolved.map(|(s, o)| position(s, o)).unwrap_or_else(|| "null".into()))])
+    }
+}
 fn text(value: &str) -> String {
     let mut out = String::new(); crate::json::string(&mut out, value); out
 }
@@ -91,11 +105,15 @@ impl<'a> Facts<'a> {
     }
     fn relocation(&self, row: &ReadRelocation) -> Result<String> {
         let symbol = self.symbols[row.symbol].as_ref().unwrap();
-        Ok(object(&[("offset_bytes", row.offset.to_string()), ("type", row.kind.to_string()),
-            ("symbol_index", row.symbol.to_string()), ("symbol_name", text(&read_text(symbol.name)?)),
-            ("symbol_section_number", symbol.section.to_string()), ("symbol_value", symbol.value.to_string())]))
+        Ok(self.relocation_named(row, &read_text(symbol.name)?))
     }
-    fn address(&self, section: &SectionFacts, at: usize) -> Result<(Option<(usize, usize)>, String)> {
+    fn relocation_named(&self, row: &ReadRelocation, name: &str) -> String {
+        let symbol = self.symbols[row.symbol].as_ref().unwrap();
+        object(&[("offset_bytes", row.offset.to_string()), ("type", row.kind.to_string()),
+            ("symbol_index", row.symbol.to_string()), ("symbol_name", text(name)),
+            ("symbol_section_number", symbol.section.to_string()), ("symbol_value", symbol.value.to_string())])
+    }
+    fn address<'r>(&'r self, section: &'r SectionFacts, at: usize) -> Result<AddressFacts<'r>> {
         let bytes = unsafe { section.row.bytes.borrowed() };
         let addend = u32::from_le_bytes(bytes[at..at + 4].try_into()?);
         let mut relocations = section.relocations.iter().filter(|row| row.offset == at);
@@ -116,21 +134,21 @@ impl<'a> Facts<'a> {
                 }
             }
         };
-        Ok((resolved, object(&[("addend", addend.to_string()), ("status", text(status)),
-            ("relocation", relocation.map(|row| self.relocation(row)).transpose()?.unwrap_or_else(|| "null".into())),
-            ("position", resolved.map(|(s, o)| position(s, o)).unwrap_or_else(|| "null".into()))])))
+        let symbol_name = relocation.map(|row| {
+            let symbol = self.symbols[row.symbol].as_ref().unwrap();
+            std::str::from_utf8(unsafe { symbol.name.borrowed() })
+        }).transpose()?.unwrap_or("");
+        Ok(AddressFacts { resolved, addend, relocation, symbol_name, status })
     }
-    fn ranges(&self) -> Result<(Vec<Span>, String)> {
-        let mut spans = Vec::new(); let mut records = Vec::new();
+    fn ranges(&self, mut record: impl FnMut(usize, usize, &[AddressFacts<'_>; 3], &'static str)) -> Result<Vec<Span>> {
+        let mut spans = Vec::new();
         for (index, section) in self.sections.iter().enumerate() {
             if unsafe { section.row.name.borrowed() } != b".pdata" { continue; }
             let bytes = unsafe { section.row.bytes.borrowed() };
             if bytes.len() % 12 != 0 { return Err("COFF x64 .pdata contains an incomplete function record".into()); }
             for at in (0..bytes.len()).step_by(12) {
-                let (begin, begin_json) = self.address(section, at)?;
-                let (end, end_json) = self.address(section, at + 4)?;
-                let (_, unwind_json) = self.address(section, at + 8)?;
-                let status = match (begin, end) {
+                let addresses = [self.address(section, at)?, self.address(section, at + 4)?, self.address(section, at + 8)?];
+                let status = match (addresses[0].resolved, addresses[1].resolved) {
                     (Some((s, _)), Some((t, _))) if s != t => "cross_section_range",
                     (Some((s, start)), Some((_, end))) => {
                         if start > end { return Err("COFF .pdata function range is reversed".into()); }
@@ -138,12 +156,10 @@ impl<'a> Facts<'a> {
                     }
                     _ => "unresolved",
                 };
-                records.push(object(&[("section_number", (index + 1).to_string()), ("offset_bytes", at.to_string()),
-                    ("record_bytes", hex(&bytes[at..at + 12])), ("status", text(status)),
-                    ("begin", begin_json), ("end", end_json), ("unwind", unwind_json)]));
+                record(index, at, &addresses, status);
             }
         }
-        Ok((spans, array(records)))
+        Ok(spans)
     }
     fn selected(&self, selection: CodeSelection<'_>) -> Result<(Vec<usize>, String)> {
         Ok(match selection {
@@ -244,7 +260,14 @@ pub fn code_facts_with_observations(bytes: &[u8], selection: CodeSelection<'_>, 
 fn query(bytes: &[u8], selection: CodeSelection<'_>, material: Option<&[u8]>) -> Result<String> {
     let facts = Facts::read(bytes)?;
     let (selected, selection_json) = facts.selected(selection)?;
-    let (spans, tables) = facts.ranges()?;
+    let mut records = Vec::new();
+    let spans = facts.ranges(|index, at, addresses, status| {
+        let bytes = unsafe { facts.sections[index].row.bytes.borrowed() };
+        records.push(object(&[("section_number", (index + 1).to_string()), ("offset_bytes", at.to_string()),
+            ("record_bytes", hex(&bytes[at..at + 12])), ("status", text(status)),
+            ("begin", addresses[0].json(&facts)), ("end", addresses[1].json(&facts)), ("unwind", addresses[2].json(&facts))]));
+    })?;
+    let tables = array(records);
     let material = material.map(|bytes| observations::Material::read(&facts, &spans, bytes)).transpose()?;
     let mut values = vec![("kind", text("coff_code")),
         ("artifact_sha256", hex(&hash::digest(bytes))), ("bitness", "64".into()), ("address_basis", text("section_relative")),
@@ -265,7 +288,7 @@ pub fn source_facts(bytes: &[u8], selection: CodeSelection<'_>, range: std::ops:
     if range.start > range.end { return Err("COFF source query range is reversed".into()); }
     let facts = Facts::read(bytes)?;
     let (selected, selection_json) = facts.selected(selection)?;
-    let (spans, _) = facts.ranges()?;
+    let spans = facts.ranges(|_, _, _, _| {})?;
     let material = material.map(|bytes| observations::Material::read(&facts, &spans, bytes)).transpose()?;
     let sections = selected.into_iter().map(|index| {
         let row = facts.sections[index].row;

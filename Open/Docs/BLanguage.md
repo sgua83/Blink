@@ -1124,7 +1124,7 @@ generation保留所选整节真实生成目的，function_abi的definition／ins
 
 ### COFF原生成范围的独立材料
 
-新生成的`Object::code_observations()`显式返回独立BLCF10字节，由调用者保存为`.blcf`；原build::ObjectCompilation.object可直接调用。SDK是当前捕获入口，不新增编译选项或为缓存命中自动重编。原Section仅可选持有生成布局：Function移动同一NativeCode.tail_regions、tail_references与sources，主末端仍由原.pdata交接；原手写生产者分别声明Startup、Print(Scalar)、ImportThunk，职责均覆盖同一整节：启动及结果交接、所选类型的标准输出、实际导入尾跳转。编码及Object::read不保存该字段，已有／缓存Object缺失原事实时明确失败；纯类型／无代码对象可以导出空代码集合。
+新生成的`Object::code_observations()`显式返回独立BLCF10字节，由调用者保存为`.blcf`；原build::ObjectCompilation.object可直接调用。SDK是当前捕获入口，不新增编译选项或为缓存命中自动重编。COFF的共同.pdata解析保留完整字段和错误语义；只有代码事实查询格式化其记录JSON，源码范围查询及观察材料捕获只取得实际范围，不生产未消费JSON。原Section仅可选持有生成布局：Function移动同一NativeCode.tail_regions、tail_references与sources，主末端仍由原.pdata交接；原手写生产者分别声明Startup、Print(Scalar)、ImportThunk，职责均覆盖同一整节：启动及结果交接、所选类型的标准输出、实际导入尾跳转。编码及Object::read不保存该字段，已有／缓存Object缺失原事实时明确失败；纯类型／无代码对象可以导出空代码集合。
 
 显式捕获先确认原事实可取得，再借用同一Layout直接编码，不克隆原布局或引用；ABI定义／形参与操作的语法、声明、生成事实共用source.rs的位置投影，只在此时从原不可变Source快照取得不含文本的只读事实；原生成与变换关系按原字段直接编码，不先展开临时来源树，普通对象生成只移动原FunctionAbi与OperationRange，不提前计算摘要或位置；复用原COFF编码作一次临时序列化，沿原B读取器消费最终节及重定位，不读取源文件或编译／生成第二份机器码。临时编码字节在返回后释放，材料不含代码、源码、执行图、资源拥有表或编译器私有容器。此额外编码／摘要工作只随明确捕获请求发生；普通构建、链接、运行不写入或消费材料。链接组合后的新节及新增导入／资源数据节不冒称持有原生成材料，最终链接观察仍沿.9。
 
