@@ -348,7 +348,7 @@ impl Borrow{
     pub fn joined(mut self,other:Self)->Self{self.union(&other);self}
     pub fn pending(&self)->bool{!self.inputs.is_empty()||!self.calls.is_empty()||!self.reads.is_empty()||self.sources.iter().any(|source|match source{Source::Position(origin)|Source::Contents{origin,..}=>origin.pending(),Source::Element{parent,..}|Source::Projection{parent,..}=>parent.pending(),Source::Relation(graph,root)=>graph.pending(*root),Source::Task{captures,outputs,initialized,..}=>captures.pending()||initialized.pending()||outputs.iter().any(Self::pending),Source::TaskOutput{task,projection}=>!matches!(projection,TaskProjection::Returned(..))||task.pending(),_=>false})}
     pub fn active(&self)->bool{self.sources.entries().any(|(_,when)|when.possible())||self.inputs.entries().any(|(_,when)|when.possible())||self.calls.entries().any(|(_,when)|when.possible())||self.reads.entries().any(|(_,when)|when.possible())}
-    fn restricted_by(mut self, condition: &bounds::Clause) -> Self {
+    pub(in crate::check) fn restricted_by(mut self, condition: &bounds::Clause) -> Self {
         self.sources.restrict(condition);
         self.inputs.restrict(condition);
         self.calls.restrict(condition);
@@ -815,7 +815,7 @@ impl Binding {
         }
         if let Self::ViewElement{view,..}=self {return Ok(view.proof.borrowed_view());}
         let mut borrow=self.view_parts().map(|(ty,proof)|proof.typed_view_borrow(ty)).unwrap_or_default();
-        borrow.union(&unsafe { builder.world.call(user_owned::cleanup_borrow(builder,self,&BTreeSet::new())).await }?);Ok(borrow)
+        unsafe { builder.world.call(user_owned::cleanup_borrow(builder,self,&mut borrow)).await }?;Ok(borrow)
     }
 
 }
@@ -868,7 +868,7 @@ impl Builder<'_> {
         let mut writes=Borrow::default();
         for binding in self.env.values() {
             if let Binding::OwnedValue(value)=binding {
-                value.cleanup_views(&BTreeSet::new(),&mut writes,&|_,field,borrow| {
+                value.cleanup_views(&mut writes,&|_,field,borrow| {
                     if field.task_result().is_some() { borrow.task_projection(TaskProjection::Places) }
                     else { Borrow::default() }
                 });

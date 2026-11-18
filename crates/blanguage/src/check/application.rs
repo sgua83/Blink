@@ -2093,7 +2093,7 @@ impl Builder<'_> {
             let mut remaining=retained.clone();
             for future in &names {
                 if future.starts_with('\0'){
-                    remaining.union(&unsafe { builder.world.call(user_owned::cleanup_borrow(builder,&builder.env[future],&BTreeSet::new())).await }?);
+                    unsafe { builder.world.call(user_owned::cleanup_borrow(builder,&builder.env[future],&mut remaining)).await }?;
                 }
             }
             // Implicit waits can update another destination before its own cleanup.

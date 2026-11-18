@@ -88,7 +88,7 @@ impl Builder<'_>{
    Need::InspectField=>{facts.field_owns=u32::from(owner(&value).value.ty.aggregate_part(cursor.index as usize).1.owns_resources());}
    Need::Unpack=>{field=Some(self.unpack_record(owner(&value),cursor.index as usize));}
    Need::Forget=>{unsafe{owner_mut(&mut value).payloads[cursor.index as usize].as_deref_mut().unwrap_unchecked()}.restrict_owned(&owned_presence::Presence::None);}
-   Need::Borrow=>{remaining=retained.clone();unsafe{self.world.call(owner(&value).cleanup_borrow(self,&BTreeSet::new(),&mut remaining)).await}?;}
+   Need::Borrow=>{remaining=retained.clone();unsafe{self.world.call(owner(&value).cleanup_borrow(self,&mut remaining)).await}?;}
    Need::Recurse=>{unsafe{self.world.call(self.drop_owned_tree_with(field.take().unwrap_unchecked(),&remaining,span,drop_dataset)).await}?;}
    Need::ClearPlace=>{owner_mut(&mut value).place=None;}
    Need::Variant=>return unsafe{self.world.call(self.drop_variant(owner(&value),0,retained,span,drop_dataset)).await},
