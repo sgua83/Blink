@@ -1,6 +1,6 @@
 //! 完整程序的机器码编译由编译器拥有；执行器只装载已生成的范围与集合入口。
 use super::*;
-use std::ops::Deref;
+use std::{collections::BTreeMap, ops::Deref};
 
 pub fn compile_program<P: Deref<Target = Program>>(program: P) -> Result<ProgramImage<P>, String> {
     crate::Compiler::available().map_err(|error| error.to_string())?.native(program)
@@ -37,10 +37,11 @@ impl crate::Compiler {
         let source = &*program;
         self.execute(|worker| {
             let mut image = compile_in(worker, source)?;
+            let link = image.module_link();
             let imports = source.imports.iter().chain(source.resources.iter()
-                .flat_map(|resources| &resources.programs).flat_map(|(_, program)| &program.imports))
-                .map(|(name, contract)| (name.as_str(), contract)).collect();
-            link_inputs(image.module_link(), inputs, &[], &imports)?;
+                .flat_map(|resources| &resources.programs).flat_map(|(_, program)| &program.imports));
+            let contracts = link_contracts(link.external.iter().copied(), imports);
+            link_inputs(link, inputs, &[], &contracts)?;
             Ok::<_, String>(image)
         }).map_err(|error| error.to_string()).map(|mut image| {
             let modules = image.module_code.take();
@@ -61,12 +62,28 @@ pub(crate) struct ModuleLink<'a> {
     pub(crate) output: &'a mut Option<crate::native::ModuleCode>,
 }
 
+pub(crate) fn link_contracts<'a>(
+    names: impl Iterator<Item = &'a str>,
+    definitions: impl Iterator<Item = (&'a String, &'a Vec<u8>)>,
+) -> BTreeMap<&'a str, Option<&'a [u8]>> {
+    let mut contracts: BTreeMap<_, _> = names.map(|name| (name, None)).collect();
+    if !contracts.is_empty() {
+        for (name, bytes) in definitions {
+            if let Some(contract) = contracts.get_mut(name.as_str()) {
+                *contract = Some(bytes.as_slice());
+            }
+        }
+    }
+    contracts
+}
+
 pub(crate) fn link_inputs(
     image: ModuleLink<'_>, inputs: Vec<crate::object::Input>, borrowed: &[&crate::object::Object],
-    imports: &std::collections::BTreeMap<&str, &Vec<u8>>,
+    contracts: &BTreeMap<&str, Option<&[u8]>>,
 ) -> Result<bool, String> {
     let roots = image.external.into_iter().map(|name| {
-        let contract = imports.get(name).ok_or_else(|| format!("缺少模块函数接口 {name}"))?;
+        let contract = contracts.get(name).copied().flatten()
+            .ok_or_else(|| format!("缺少模块函数接口 {name}"))?;
         Ok(crate::linker::RootView::new(name, contract))
     }).collect::<Result<Vec<_>, String>>()?;
     let types = u32::try_from(image.types).map_err(|error| error.to_string())?;
