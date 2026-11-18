@@ -262,21 +262,67 @@ impl Graph {
         }
     }
 
-    fn frames_at(&self,id:usize)->BTreeSet<usize>{let mut found=BTreeSet::new();for edge in &self.nodes[id].edges{if let Op::Read{frame,..}|Op::Initial{frame,..}=edge.op{let mut at=frame;while let Some(id)=at{if !found.insert(id){break;}at=self.frames[id].parent;}}}found}
-    fn read_feedback(&self,root:usize)->bool{
-        let mut todo=vec![(root,false)];let mut seen=BTreeSet::new();
-        while let Some((id,read))=todo.pop(){
-            if id==root&&read{return true;}
-            if !seen.insert((id,read)){continue;}
-            for edge in &self.nodes[id].edges{todo.push((edge.from,read||matches!(edge.op,Op::Read{..})));}
-            let read=read||self.nodes[id].edges.iter().any(|edge|matches!(edge.op,Op::Read{..}));
-            for f in self.frames_at(id){for w in &self.frames[f].writes{todo.push((w.target,read));todo.extend(w.fields.iter().flatten().map(|(_,v)|(*v,read)));}}
-        }false
+    fn visit_frames(
+        &self,
+        node: &Node,
+        visited: &mut BTreeSet<usize>,
+        mut visit: impl FnMut(&Frame),
+    ) {
+        for edge in &node.edges {
+            let (Op::Read { frame, .. } | Op::Initial { frame, .. }) = &edge.op else {
+                continue;
+            };
+            let mut next = *frame;
+            while let Some(id) = next {
+                if !visited.insert(id) {
+                    break;
+                }
+                let frame = &self.frames[id];
+                visit(frame);
+                next = frame.parent;
+            }
+        }
     }
+
+    fn frames_at(&self, id: usize) -> BTreeSet<usize> {
+        let mut frames = BTreeSet::new();
+        self.visit_frames(&self.nodes[id], &mut frames, |_| {});
+        frames
+    }
+
+    fn read_feedback(&self, root: usize) -> bool {
+        let mut todo = vec![(root, false)];
+        let mut seen = BTreeSet::new();
+        let mut frames = [BTreeSet::new(), BTreeSet::new()];
+        while let Some((id, read)) = todo.pop() {
+            if id == root && read {
+                return true;
+            }
+            if !seen.insert((id, read)) {
+                continue;
+            }
+            let node = &self.nodes[id];
+            let mut frame_read = read;
+            for edge in &node.edges {
+                let reads = matches!(edge.op, Op::Read { .. });
+                todo.push((edge.from, read || reads));
+                frame_read |= reads;
+            }
+            self.visit_frames(node, &mut frames[usize::from(frame_read)], |frame| {
+                for write in &frame.writes {
+                    todo.push((write.target, frame_read));
+                    todo.extend(write.fields.iter().flatten().map(|(_, source)| (*source, frame_read)));
+                }
+            });
+        }
+        false
+    }
+
     fn walk_reachable(
         &self,
         root: usize,
         found: &mut BTreeSet<usize>,
+        frames: &mut BTreeSet<usize>,
         mut accepts: impl FnMut(&Node) -> bool,
     ) -> bool {
         let mut todo = vec![root];
@@ -289,24 +335,25 @@ impl Graph {
                 return true;
             }
             todo.extend(node.edges.iter().map(|edge| edge.from));
-            for frame in self.frames_at(id) {
-                for write in &self.frames[frame].writes {
+            self.visit_frames(node, frames, |frame| {
+                for write in &frame.writes {
                     todo.push(write.target);
                     todo.extend(write.fields.iter().flatten().map(|(_, source)| *source));
                 }
-            }
+            });
         }
         false
     }
 
-    fn reachable(&self, root: usize) -> BTreeSet<usize> {
-        let mut found = BTreeSet::new();
-        self.walk_reachable(root, &mut found, |_| false);
-        found
+    fn reachable(&self, root: usize) -> (BTreeSet<usize>, BTreeSet<usize>) {
+        let mut nodes = BTreeSet::new();
+        let mut frames = BTreeSet::new();
+        self.walk_reachable(root, &mut nodes, &mut frames, |_| false);
+        (nodes, frames)
     }
 
     fn any_reachable(&self, root: usize, accepts: impl FnMut(&Node) -> bool) -> bool {
-        self.walk_reachable(root, &mut BTreeSet::new(), accepts)
+        self.walk_reachable(root, &mut BTreeSet::new(), &mut BTreeSet::new(), accepts)
     }
 
     fn order(&self, reachable: &BTreeSet<usize>) -> Vec<(usize, bool)> {
@@ -354,7 +401,11 @@ impl Graph {
         order
     }
     pub(in crate::check) fn selected(&self,root:usize)->Self{
-        let reach=self.reachable(root);let order=std::iter::once(root).chain(reach.iter().copied().filter(|id|*id!=root)).collect::<Vec<_>>();let indices=order.iter().enumerate().map(|(i,id)|(*id,i)).collect::<BTreeMap<_,_>>();let frames=reach.iter().flat_map(|id|self.frames_at(*id)).collect::<BTreeSet<_>>();let fi=frames.iter().enumerate().map(|(i,id)|(*id,i)).collect::<BTreeMap<_,_>>();
+        let (reachable, frames) = self.reachable(root);
+        let order: Vec<_> = std::iter::once(root)
+            .chain(reachable.into_iter().filter(|&id| id != root)).collect();
+        let indices: BTreeMap<_, _> = order.iter().enumerate().map(|(i, &id)| (id, i)).collect();
+        let fi: BTreeMap<_, _> = frames.iter().enumerate().map(|(i, &id)| (id, i)).collect();
         let nodes=order.iter().map(|&id|Node{seeds:self.nodes[id].seeds.clone(),edges:self.nodes[id].edges.iter().map(|edge|{let mut op=edge.op.clone();if let Op::Read{frame,..}|Op::Initial{frame,..}=&mut op{*frame=frame.map(|id|fi[&id]);}Edge{from:indices[&edge.from],op,when:edge.when.clone()}}).collect()}).collect();
         let variables=self.variables.iter().filter_map(|id|indices.get(id).copied()).collect();let frames=frames.iter().map(|id|{let f=&self.frames[*id];Frame{parent:f.parent.map(|p|fi[&p]),writes:f.writes.iter().map(|w|Write{target:indices[&w.target],fields:w.fields.as_ref().map(|v|v.iter().map(|(word,id)|(*word,indices[id])).collect()),when:w.when.clone()}).collect()}}).collect();Self{nodes,variables,frames,inputs:BTreeMap::new()}
     }
@@ -421,7 +472,10 @@ impl Graph {
     pub(in crate::check) fn select(self: &Arc<Self>, root: usize, indices: &[Option<bounds::Operand>]) -> Borrow {
         self.project(root, Op::Select(indices.to_vec()))
     }
-    pub(in crate::check) fn seed_borrows(&self,root:usize)->Vec<&Borrow>{self.reachable(root).iter().map(|&id|&self.nodes[id].seeds).collect()}
+    pub(in crate::check) fn seed_borrows(&self, root: usize) -> Vec<&Borrow> {
+        let (reachable, _) = self.reachable(root);
+        reachable.into_iter().map(|id| &self.nodes[id].seeds).collect()
+    }
     pub(in crate::check) fn at_call(&self,values:&BTreeMap<ValueIdentity,bounds::Proof>)->Self{let mut v=self.clone();for n in &mut v.nodes{n.seeds=n.seeds.at_call(values);for e in &mut n.edges{e.when=e.when.guard_at_call(values);match &mut e.op{Op::Position(p)=>*p=p.bound_at_call(values),Op::Element{index,..}=>*index=Origin::index_at_call(*index,values),_=>{}}}}for f in &mut v.frames{for w in &mut f.writes{w.when=w.when.at_call(values);}}v}
     pub(in crate::check) fn substitute_values(&self,values:&BTreeMap<ValueIdentity,bounds::Proof>)->Self{let mut v=self.clone();for n in &mut v.nodes{n.seeds=n.seeds.substitute_values(values);for e in &mut n.edges{e.when=e.when.substitute_values(values);match &mut e.op{Op::Position(p)=>*p=p.substitute_values(values),Op::Element{index,..}=>*index=Origin::index_substitute(*index,values),_=>{}}}}for f in &mut v.frames{for w in &mut f.writes{w.when=w.when.substitute_values(values);}}v}
     pub(in crate::check) fn output_bound(&self,values:&BTreeMap<ValueIdentity,ValueIdentity>)->Self{let mut v=self.clone();for n in &mut v.nodes{n.seeds=n.seeds.output_bound(values);for e in &mut n.edges{e.when=bounds::Condition::guard(e.when.assume(&bounds::Clause::default(),true).output_bound(values));if let Op::Position(p)=&mut e.op{*p=p.bind_outputs(values);}}}for f in &mut v.frames{for w in &mut f.writes{w.when=w.when.output_bound(values);}}v}
@@ -517,7 +571,7 @@ impl Graph {
         })
     }
     pub(super) fn solve(self: &Arc<Self>, root: usize, evaluation: &mut BorrowEvaluation<'_>) -> Borrow {
-        let reachable = self.reachable(root);
+        let (reachable, _) = self.reachable(root);
         let (mut stable, feedback): (Vec<_>, Vec<_>) =
             self.order(&reachable).into_iter().partition(|&(_, changes)| !changes);
         let mut variables = self.variables.intersection(&reachable)
