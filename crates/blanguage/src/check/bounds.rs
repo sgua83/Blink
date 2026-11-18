@@ -15,6 +15,7 @@ mod comparison_conditions;
 mod value_conditions;
 mod index_conditions;
 mod numeric_bounds;
+mod execution_conditions;
 use super::*;
 mod floating;
 mod bitwise;
@@ -2514,20 +2515,7 @@ impl Condition {
         index_conditions::below(a.into(),a_proof,b.into(),b_proof,strict)
     }
     pub(super) fn guard(path:Clause)->Self{Self{cases:[path.negate(),path]}}
-    pub(super) fn execution(path:&Clause)->Self {
-        let mut conditions:BTreeMap<usize,Self>=BTreeMap::new();
-        for clause in Clause::ordered(std::slice::from_ref(path)){
-            let condition=match &**clause.0 {
-                ClauseNode::Impossible=>Self::constant(false),
-                ClauseNode::Facts(_)=>Self::guard(clause.clone()),
-                ClauseNode::Both(a,b)=>conditions[&a.key()].clone().logical(conditions[&b.key()].clone(),false),
-                ClauseNode::Either(a,b)=>conditions[&a.key()].clone().logical(conditions[&b.key()].clone(),true),
-                ClauseNode::Branch(parent,condition,truth)=>conditions[&parent.key()].clone().logical(if *truth{condition.as_ref().clone()}else{condition.as_ref().clone().negate()},false),
-            };
-            conditions.insert(clause.key(),condition);
-        }
-        conditions.remove(&path.key()).unwrap()
-    }
+    pub(super) fn execution(path:&Clause)->Self {execution_conditions::execution(path)}
     pub(super) fn projected_case(&self, truth: bool, bindings: &BTreeMap<ValueIdentity, Proof>) -> Clause {
         let index = usize::from(truth);
         Clause::at_calls(

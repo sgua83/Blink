@@ -1631,3 +1631,28 @@ extern "C" void numeric_bounds(address context,NumericBoundsHost host) on cpu
   }
  }
 }
+
+extern "C" void execution_condition(address root,address context,ExecutionHost host) on cpu
+ requires nonzero(host.inspect) requires nonzero(host.push) requires nonzero(host.pop)
+ requires nonzero(host.has_result) requires nonzero(host.impossible) requires nonzero(host.guard) requires nonzero(host.compose) {
+ host.push(context,root,0);
+ while(true){
+  NegatePending pending=host.pop(context);if(pending.present==0){return;}
+  if(host.has_result(context,pending.source)!=0){continue;}
+  SourceNode node=host.inspect(pending.source);
+  if(pending.ready==0&&node.kind>=2){
+   host.push(context,pending.source,1);
+   if(node.kind!=4){host.push(context,node.right,0);}
+   host.push(context,node.left,0);continue;
+  }
+  if(node.kind==0){host.impossible(context,pending.source);
+  }else if(node.kind==1){host.guard(context,pending.source);
+  }else{
+   ExecutionCase left_no=ExecutionCase(node.left,0,0);ExecutionCase left_yes=ExecutionCase(node.left,1,0);
+   ExecutionCase right_no=ExecutionCase(node.right,0,0);ExecutionCase right_yes=ExecutionCase(node.right,1,0);
+   u32 no_any=node.kind==3 ? 0 : 1;u32 yes_any=node.kind==3 ? 1 : 0;
+   if(node.kind==4){right_no=ExecutionCase(node.condition,1-node.truth,1);right_yes=ExecutionCase(node.condition,node.truth,1);}
+   host.compose(context,pending.source,ExecutionJoin(left_no,right_no,no_any),ExecutionJoin(left_yes,right_yes,yes_any));
+  }
+ }
+}

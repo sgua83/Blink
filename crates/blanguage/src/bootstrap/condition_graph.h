@@ -771,3 +771,18 @@ struct NumericBoundsHost {
 };
 extern "C" void numeric_bounds(address context,NumericBoundsHost host) on cpu
  requires nonzero(host.next) requires nonzero(host.root) requires nonzero(host.lookup) requires nonzero(host.emit);
+
+struct ExecutionCase {address source;u32 truth;u32 original;};
+struct ExecutionJoin {ExecutionCase left;ExecutionCase right;u32 any;};
+struct ExecutionHost {
+ cfn<SourceNode,address> ensures memory(read) inspect;
+ cfn<void,address,address,u32> push;
+ cfn<NegatePending,address> pop;
+ cfn<u32,address,address> ensures memory(read) has_result;
+ cfn<void,address,address> impossible;
+ cfn<void,address,address> guard;
+ cfn<void,address,address,ExecutionJoin,ExecutionJoin> compose;
+};
+extern "C" void execution_condition(address root,address context,ExecutionHost host) on cpu
+ requires nonzero(host.inspect) requires nonzero(host.push) requires nonzero(host.pop)
+ requires nonzero(host.has_result) requires nonzero(host.impossible) requires nonzero(host.guard) requires nonzero(host.compose);
