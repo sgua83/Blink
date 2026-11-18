@@ -2,7 +2,7 @@
 use super::{Compilation, Result, hash};
 use crate::{native::{CodeSources, NativeCode, Region, RegionKind, SavedSources, TailReference}, resource};
 use crate::codec::{Decode, Encode, Writer, record, variants};
-use std::path::Path;
+use std::{borrow::Cow, fmt::Write, path::Path};
 
 const MAGIC: &[u8; 8] = b"BLCR\x07\0\0\0";
 struct CodeRanges {
@@ -102,52 +102,84 @@ impl resource::Module {
         restore(programs.into_iter().chain(templates).flat_map(image_codes_mut), material)
     }
 }
-fn image_json<P>(images: &[resource::Image<P>], selected: Option<&std::ops::Range<usize>>) -> Result<String> {
-    if selected.is_some_and(|range| range.start > range.end) { return Err("CPU source query range is reversed".into()); }
-    let values = images.iter().enumerate().map(|(index, image)| {
-        Ok(match image {
-            resource::Image::Cpu(image) => format!("{{\"index\":{index},\"target\":\"cpu\",\"code\":{}}}",
-                image.facts_json(selected).map_err(|e| std::io::Error::other(e.to_string()))?),
-            resource::Image::Gpu(_) if selected.is_some() => format!("{{\"index\":{index},\"target\":\"gpu\",\"code\":{{\"status\":\"not_supported\"}}}}"),
-            resource::Image::Gpu(image) => format!("{{\"index\":{index},\"target\":\"gpu\",\"code\":{}}}",
-                image.code_json()?),
-        })
-    }).collect::<Result<Vec<_>>>()?;
-    Ok(format!("[{}]", values.join(",")))
+fn write_images_json<P>(
+    out: &mut String,
+    images: &[resource::Image<P>],
+    selected: Option<&std::ops::Range<usize>>,
+) -> Result<()> {
+    if selected.is_some_and(|range| range.start > range.end) {
+        return Err("CPU source query range is reversed".into());
+    }
+    out.push('[');
+    for (index, image) in images.iter().enumerate() {
+        let (target, code) = match image {
+            resource::Image::Cpu(image) => ("cpu", Cow::Owned(
+                image.facts_json(selected).map_err(|e| std::io::Error::other(e.to_string()))?,
+            )),
+            resource::Image::Gpu(_) if selected.is_some() =>
+                ("gpu", Cow::Borrowed(r#"{"status":"not_supported"}"#)),
+            resource::Image::Gpu(image) => ("gpu", Cow::Owned(image.code_json()?)),
+        };
+        if index != 0 {
+            out.push(',');
+        }
+        write!(out, r#"{{"index":{index},"target":"{target}","code":{code}}}"#)?;
+    }
+    out.push(']');
+    Ok(())
 }
+
+fn compilation_json(
+    mut out: String, compilation: &Compilation, selected: Option<&std::ops::Range<usize>>,
+) -> Result<String> {
+    write_images_json(&mut out, &compilation.programs, selected)?;
+    out.push_str(",\"templates\":");
+    write_images_json(&mut out, &compilation.templates, selected)?;
+    out.push('}');
+    Ok(out)
+}
+
+fn module_json(
+    mut out: String, module: &resource::Module, selected: Option<&std::ops::Range<usize>>,
+) -> Result<String> {
+    write_images_json(&mut out, &module.images, selected)?;
+    out.push('}');
+    Ok(out)
+}
+
 /// Reads saved CPU ranges and original GPU modules without sources, workers or execution.
 /// Pairing checks equality, not authenticity; material must come from the original producer.
 pub fn code_facts(path: &Path, material: Option<&[u8]>) -> Result<String> {
     let (mut compilation, artifact_sha256) = unsafe { super::load_with_sha256(path) }?;
     if let Some(material) = material { compilation.restore_code_observations(material)?; }
-    Ok(format!("{{\"kind\":\"build_code\",\"artifact_sha256\":\"{}\",\"programs\":{},\"templates\":{}}}",
-        artifact_sha256,
-        image_json(&compilation.programs, None)?, image_json(&compilation.templates, None)?))
+    let out = format!(r#"{{"kind":"build_code","artifact_sha256":"{artifact_sha256}","programs":"#);
+    compilation_json(out, &compilation, None)
 }
 /// Reads an explicitly selected BLRI; no executable memory or runtime resource is created.
 pub fn image_code_facts(execution: &[u8], material: Option<&[u8]>) -> Result<String> {
     let mut module = unsafe { resource::from_compiler_output(execution) }
         .map_err(|e| std::io::Error::other(e.to_string()))?;
     if let Some(material) = material { module.restore_code_observations(material)?; }
-    Ok(format!("{{\"kind\":\"execution_image_code\",\"artifact_sha256\":\"{}\",\"images\":{}}}",
-        hash::hex(&hash::digest(execution)),
-        image_json(&module.images, None)?))
+    let artifact_sha256 = hash::hex(&hash::digest(execution));
+    let out = format!(r#"{{"kind":"execution_image_code","artifact_sha256":"{artifact_sha256}","images":"#);
+    module_json(out, &module, None)
 }
 
 /// Queries original CPU sources from a BLBI, retaining each original code container.
 pub fn source_facts(path: &Path, range: std::ops::Range<usize>, material: Option<&[u8]>) -> Result<String> {
     let (mut compilation, artifact_sha256) = unsafe { super::load_with_sha256(path) }?;
     if let Some(material) = material { compilation.restore_code_observations(material)?; }
-    Ok(format!("{{\"kind\":\"build_source_ranges\",\"artifact_sha256\":\"{}\",\"range_unit\":\"byte\",\"range_kind\":\"half_open\",\"start_byte\":{},\"end_byte\":{},\"programs\":{},\"templates\":{}}}",
-        artifact_sha256,
-        range.start, range.end, image_json(&compilation.programs, Some(&range))?, image_json(&compilation.templates, Some(&range))?))
+    let out = format!(r#"{{"kind":"build_source_ranges","artifact_sha256":"{artifact_sha256}","range_unit":"byte","range_kind":"half_open","start_byte":{},"end_byte":{},"programs":"#,
+        range.start, range.end);
+    compilation_json(out, &compilation, Some(&range))
 }
 /// Queries original CPU sources from an explicitly selected BLRI; no executable memory is created.
 pub fn image_source_facts(execution: &[u8], range: std::ops::Range<usize>, material: Option<&[u8]>) -> Result<String> {
     let mut module = unsafe { resource::from_compiler_output(execution) }
         .map_err(|e| std::io::Error::other(e.to_string()))?;
     if let Some(material) = material { module.restore_code_observations(material)?; }
-    Ok(format!("{{\"kind\":\"execution_image_source_ranges\",\"artifact_sha256\":\"{}\",\"range_unit\":\"byte\",\"range_kind\":\"half_open\",\"start_byte\":{},\"end_byte\":{},\"images\":{}}}",
-        hash::hex(&hash::digest(execution)),
-        range.start, range.end, image_json(&module.images, Some(&range))?))
+    let artifact_sha256 = hash::hex(&hash::digest(execution));
+    let out = format!(r#"{{"kind":"execution_image_source_ranges","artifact_sha256":"{artifact_sha256}","range_unit":"byte","range_kind":"half_open","start_byte":{},"end_byte":{},"images":"#,
+        range.start, range.end);
+    module_json(out, &module, Some(&range))
 }
