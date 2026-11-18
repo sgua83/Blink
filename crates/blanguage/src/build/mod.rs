@@ -97,12 +97,9 @@ fn compile_in(
                     .map_err(|e| std::io::Error::other(e.to_string()))?;
                 let links = entry_links(&mut image);
                 if inputs.imports == references(&world.declarations, imported, &links, &inputs.declarations) {
-                    if imported.is_some() {
-                        link_inputs(links, dependencies, borrowed, &imports)?;
+                    if imported.is_some() && link_inputs(links, dependencies, borrowed, &imports)? {
                         let encoded = resource::compiler_output(&image);
-                        if stored_image != encoded {
-                            write_artifact(&artifact, identity, &encoded)?;
-                        }
+                        write_artifact(&artifact, identity, &encoded)?;
                     }
                     return Ok(images(image, artifact, true));
                 }
@@ -177,14 +174,15 @@ fn references(
 fn link_inputs(
     links: Vec<ModuleLink<'_>>, mut inputs: Vec<crate::object::Input>,
     borrowed: &[&crate::object::Object], imports: &crate::module::Imports,
-) -> Result<()> {
+) -> Result<bool> {
     let contracts = imports.modules.values().flat_map(|module| module.definitions.iter())
         .map(|(name, contract)| (name.as_str(), contract)).collect();
+    let mut changed = false;
     for image in links {
-        crate::native::program::link_inputs(image, std::mem::take(&mut inputs), borrowed, &contracts)
+        changed |= crate::native::program::link_inputs(image, std::mem::take(&mut inputs), borrowed, &contracts)
             .map_err(std::io::Error::other)?;
     }
-    Ok(())
+    Ok(changed)
 }
 
 #[repr(C)]

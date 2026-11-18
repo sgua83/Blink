@@ -1,24 +1,24 @@
 //! 已选择COFF模块的编译后材料；运行装入不重新读取对象或选择符号。
 use std::collections::BTreeMap;
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ModuleCode {
     pub sections: Vec<ModuleSection>,
     pub symbols: BTreeMap<String, (usize, u32)>,
 }
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ModuleSection {
     pub name: String,
     pub bytes: Vec<u8>,
     pub flags: u32,
     pub relocations: Vec<ModuleRelocation>,
 }
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ModuleRelocation {
     pub offset: usize,
     pub kind: u16,
     pub target: ModuleTarget,
 }
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ModuleTarget {
     Section { section: usize, value: u32 },
     Import(crate::ast::ExternalName),

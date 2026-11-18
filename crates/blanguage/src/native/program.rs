@@ -64,16 +64,20 @@ pub(crate) struct ModuleLink<'a> {
 pub(crate) fn link_inputs(
     image: ModuleLink<'_>, inputs: Vec<crate::object::Input>, borrowed: &[&crate::object::Object],
     imports: &std::collections::BTreeMap<&str, &Vec<u8>>,
-) -> Result<(), String> {
+) -> Result<bool, String> {
     let roots = image.external.into_iter().map(|name| {
         let contract = imports.get(name).ok_or_else(|| format!("缺少模块函数接口 {name}"))?;
         Ok(crate::linker::RootView::new(name, contract))
     }).collect::<Result<Vec<_>, String>>()?;
     let types = u32::try_from(image.types).map_err(|error| error.to_string())?;
     let programs = u32::try_from(image.programs).map_err(|error| error.to_string())?;
-    *image.output = crate::linker::native::modules(inputs, borrowed, &roots, &image.local, types, programs)
+    let linked = crate::linker::native::modules(inputs, borrowed, &roots, &image.local, types, programs)
         .map_err(|error| error.to_string())?;
-    Ok(())
+    if *image.output == linked {
+        return Ok(false);
+    }
+    *image.output = linked;
+    Ok(true)
 }
 
 pub(crate) fn compile_stage(program: &Program, i: usize) -> Result<StageCode, &'static str> {
