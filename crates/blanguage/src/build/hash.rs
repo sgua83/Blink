@@ -60,5 +60,7 @@ pub(super) fn fields(fields: &[super::ByteField]) -> [u8; 32] {
 }
 
 pub fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
+    let mut output = String::new();
+    crate::text::hexadecimal(&mut output, bytes);
+    output
 }

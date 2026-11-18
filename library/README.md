@@ -62,7 +62,7 @@ target/release/blink.exe --archive target/sequence.obj -o target/sequence.lib
 
 `hexadecimal_bytes(read dataset<u8> data)`返回`result<dataset<u8>,u32>`，按输入顺序为每个字节写出两个小写ASCII十六进制位，包含高位零。空输入得到空序列，不增加前缀、分隔、换行或终止NUL。成功结果独立拥有，输入只读借用到同步返回；改写或释放输入不影响结果。输出需要两倍字节数，若超出现行dataset的u32长度表示，Err保留原输入长度；这是结果容器的实际表示边界，原分配／执行失败继续沿运行库处理。
 
-`blink.text_core`以共享普通CPU算法同步写十六进制字节。原生`write_hexadecimal(address input,u64 count,address output)`借用count个输入字节和可写两倍字节的非重叠输出区，完整写出ASCII，不持有地址或Frame。普通B接口在原Frame分配最终序列；编译查询在原String分配最终文本区，同步写完后提交其有效长度，不另造编码副本或调用宿主格式化。
+`blink.text_core`以共享普通CPU算法同步写十六进制字节。原生`write_hexadecimal(address input,u64 count,address output)`借用count个输入字节和可写两倍字节的非重叠输出区，完整写出ASCII，不持有地址或Frame。普通B接口在原Frame分配最终序列；编译查询与构建／来源摘要在原String分配最终文本区，同步写完后提交其有效长度，不另造编码副本或调用宿主格式化。
 
 可用`blink.sequence`拼接记录，用`blink.windows.file::write_bytes`交给已有输出句柄。源码直接导入仍用`-I library`。分立模块先生成共享核心，再生成text并把二者归档；实际应用通过`--import target/text.lib`编译并与同一库链接，既有十进制函数也沿该同一库交付。
 

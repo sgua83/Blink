@@ -5,6 +5,7 @@ mod image_export;
 mod code_facts;
 mod ir_facts;
 mod json;
+mod text;
 mod layout_facts;
 mod x64_facts;
 mod spirv_facts;

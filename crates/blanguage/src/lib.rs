@@ -22,6 +22,7 @@ mod function_types;
 mod generics;
 pub mod ir;
 mod json;
+mod text;
 #[cfg(feature = "compiler")]
 mod lexer;
 #[cfg(feature = "compiler")]
