@@ -41,3 +41,8 @@ extern "C" NameBytes load(LoadInput input,address context,
     requires nonzero(import_module) requires nonzero(prepare) requires nonzero(insert_type)
     requires nonzero(pair) requires nonzero(signature) requires nonzero(requirement)
     requires nonzero(insert_function) requires nonzero(report);
+
+enum ModuleEntry:u32 { Native=0; DomainProgram=1; Check=2; Reject=3; };
+struct ModuleInstance { ModuleEntry entry; u32 query_domain; u32 publish; };
+extern "C" bool native_module_admission(SignatureNode source,u32 compiled,u32 local) on cpu;
+extern "C" ModuleInstance native_module_instance(SignatureNode source,u32 domain,u32 exported,u32 explicit) on cpu;

@@ -2247,6 +2247,84 @@ pub(super) async fn finish_program(
     Ok(program)
 }
 
+#[allow(dead_code)] // Returned by bootstrap.module_load.
+#[repr(u32)]
+enum ModuleEntry {
+    Native,
+    DomainProgram,
+    Check,
+    Reject,
+}
+
+#[repr(C)]
+struct ModuleInstance {
+    entry: ModuleEntry,
+    query_domain: u32,
+    publish: u32,
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.module_load::native_module_admission"]
+    fn native_module_admission(
+        source: crate::syntax::wire::SignatureNode,
+        compiled: u32,
+        local: u32,
+    ) -> bool;
+
+    #[link_name = "bootstrap.module_load::native_module_instance"]
+    fn native_module_instance(
+        source: crate::syntax::wire::SignatureNode,
+        domain: u32,
+        public: u32,
+        explicit: u32,
+    ) -> ModuleInstance;
+}
+
+async fn module_instance(
+    world: &World,
+    instance: &crate::generics::Instance,
+    functions: &mut Module,
+    roots: &mut BTreeSet<String>,
+    explicit: bool,
+) -> Result<()> {
+    let definition = &instance.definition;
+    let route = unsafe { native_module_instance(
+        definition.function.signature_node(),
+        u32::from(definition.execution == crate::execution::Requirement::Domain),
+        u32::from(definition.public),
+        u32::from(explicit),
+    ) };
+    if route.query_domain != 0
+        && unsafe { world.call(super::kernel_interface(world, instance)).await }?
+    {
+        roots.extend(unsafe { world.call(domain_declaration(world, instance, functions)).await }?);
+        return Ok(());
+    }
+
+    match route.entry {
+        ModuleEntry::Native => {
+            if route.publish != 0 {
+                roots.insert(instance.name.clone());
+            }
+            *functions = unsafe { world.call(declaration(world, instance, std::mem::take(functions))).await }?;
+        }
+        ModuleEntry::DomainProgram => {
+            unsafe { world.call(compile_program(world, instance)).await }?;
+        }
+        ModuleEntry::Check => {
+            unsafe { world.call(check_function(world, instance)).await }?;
+        }
+        ModuleEntry::Reject => {
+            return definition.source.fail(
+                definition.function.span(),
+                "B270",
+                "此普通原生模块入口需要CPU适用的普通函数",
+            );
+        }
+    }
+    Ok(())
+}
+
 pub(crate) async fn compile_module(
     world: &World,
     entry: &str,
@@ -2255,30 +2333,16 @@ pub(crate) async fn compile_module(
 ) -> Result<crate::module::Module> {
     let mut functions = Module::default();
     let mut roots = BTreeSet::new();
-    for (key, d) in &world.functions {
-        if d.compiled.is_some() || d.function.kind() == FunctionKind::Constant
-            || d.function.external().is_some() { continue; }
-        if d.module != entry {
+    for (key, definition) in &world.functions {
+        if !unsafe { native_module_admission(
+            definition.function.signature_node(),
+            u32::from(definition.compiled.is_some()),
+            u32::from(definition.module == entry),
+        ) } {
             continue;
         }
-        for instance in unsafe { world.call(crate::generics::instances(world, key, d)).await }? {
-            if d.execution == crate::execution::Requirement::Domain
-                && unsafe { world.call(super::kernel_interface(world, &instance)).await }?
-            {
-                roots.extend(unsafe { world.call(domain_declaration(world, &instance, &mut functions)).await }?);
-            } else if d.function.external().is_none()
-                && d.function.kind() == FunctionKind::Value
-                && d.function.target() != Target::Gpu
-            {
-                if d.public {
-                    roots.insert(instance.name.clone());
-                }
-                functions = unsafe { world.call(declaration(world, &instance, functions)).await }?;
-            } else if d.execution == crate::execution::Requirement::Domain {
-                unsafe { world.call(compile_program(world, &instance)).await }?;
-            } else {
-                unsafe { world.call(check_function(world, &instance)).await }?;
-            }
+        for instance in unsafe { world.call(crate::generics::instances(world, key, definition)).await }? {
+            unsafe { world.call(module_instance(world, &instance, &mut functions, &mut roots, false)).await }?;
         }
     }
     for request in requests {
@@ -2313,24 +2377,7 @@ pub(crate) async fn compile_module(
             (&source, &d.module, &imports),
             Span { start: 0, end: request.len() },
         )).await }?;
-        if d.execution == crate::execution::Requirement::Domain
-            && unsafe { world.call(super::kernel_interface(world, &instance)).await }?
-        {
-            roots.extend(unsafe { world.call(domain_declaration(world, &instance, &mut functions)).await }?);
-            continue;
-        }
-        if d.function.external().is_some()
-            || d.function.kind() != FunctionKind::Value
-            || d.function.target() == Target::Gpu
-        {
-            return d.source.fail(
-                d.function.span(),
-                "B270",
-                "此普通原生模块入口需要CPU适用的普通函数",
-            );
-        }
-        roots.insert(instance.name.clone());
-        functions = unsafe { world.call(declaration(world, &instance, functions)).await }?;
+        unsafe { world.call(module_instance(world, &instance, &mut functions, &mut roots, true)).await }?;
     }
     let finalized = unsafe { world.call(finalize(world, functions, roots, None, Some(entry), &mut [])).await }?;
     let mut functions = finalized.functions;

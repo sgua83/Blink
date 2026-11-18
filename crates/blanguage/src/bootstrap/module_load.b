@@ -232,3 +232,19 @@ extern "C" NameBytes load(LoadInput input,address context,
     }
     return name;
 }
+
+extern "C" bool native_module_admission(SignatureNode source,u32 compiled,u32 local) on cpu {
+    if (compiled != 0 || local == 0) { return false; }
+    FunctionNode definition = unsafe_position<FunctionNode>(at(source.storage.nodes,source.offset));
+    return definition.kind != 2 && definition.external.present == 0;
+}
+
+extern "C" ModuleInstance native_module_instance(SignatureNode source,u32 domain,u32 exported,u32 explicit) on cpu {
+    FunctionNode definition = unsafe_position<FunctionNode>(at(source.storage.nodes,source.offset));
+    if (definition.kind == 0 && definition.target != 2 && (explicit == 0 || definition.external.present == 0)) {
+        return ModuleInstance(ModuleEntry::Native,domain,exported | explicit);
+    }
+    if (explicit != 0) { return ModuleInstance(ModuleEntry::Reject,domain,0); }
+    if (domain != 0) { return ModuleInstance(ModuleEntry::DomainProgram,domain,0); }
+    return ModuleInstance(ModuleEntry::Check,0,0);
+}
