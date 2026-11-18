@@ -1,0 +1,38 @@
+module bootstrap.call_execution;
+enum CallAccess:u32 {Value=0;Read=1;Write=2;InOut=3;Atomic=4;};
+enum CallTarget:u32 {Cpu=0;Gpu=1;Compute=2;};
+enum CallKind:u32 {Value=0;Cooperative=1;Constant=2;};
+enum ArgumentKind:u32 {Other=0;Acceleration=1;Texture=2;Value=3;Dataset=4;Scoped=5;Tile=6;Atomic=7;Reference=8;};
+struct Phase {u32 phase;};
+struct InvokeFacts {u32 external;u32 compiled;u32 domain;u32 application;u32 entry;CallTarget target;CallTarget callee_target;CallKind kind;u32 kernel;};
+enum InvokeNeed:u32 {External=0;InvalidCompiledTarget=1;Native=2;Kernel=3;Domain=4;InvalidDomain=5;InvalidCooperative=6;InvalidConstant=7;Inline=8;};
+struct CooperateFacts {u32 root;u32 name;CallKind kind;u64 arguments;u64 parameters;u32 present;u32 explicit;};
+enum CooperateNeed:u32 {InvalidRoot=0;Resolve=1;Unknown=2;InvalidKind=3;CountMismatch=4;Arguments=5;Empty=6;Explicit=7;Specialize=8;Inline=9;Return=10;};
+struct ParameterFacts {CallAccess access;u32 tile;CallKind kind;CallTarget target;u32 owns;u32 views;};
+enum ParameterError:u32 {None=0;Owned=1;Tile=2;Atomic=3;};
+struct InlineCursor {u64 index;u64 part;u32 phase;u32 initialization;u32 bounds;};
+struct Count {u32 present;u32 value;};
+struct InlineFacts {
+ CallTarget target;CallTarget callee_target;CallKind kind;u32 recursive;
+ u64 parameters;u64 arguments;CallAccess access;u32 dataset;u32 tile;u32 acceleration;u32 texture;u32 counted;ArgumentKind argument;CallAccess actual_access;
+ Count expected_count;Count actual_count;u32 unit;u32 never;u32 result_ready;u32 result_borrows;u32 result_owns;u32 result_facts;
+ u32 input_plain;u32 continuing;u64 items;u64 held;u64 positions;u32 parameter_position;u32 declared;
+};
+enum InlineNeed:u32 {
+ InvalidTarget=0;Recursion=1;Native=2;InvalidRecursion=3;ResultName=4;Parameter=5;UnwrapScoped=6;MaterializeRead=7;Acceleration=8;InvalidAcceleration=9;Texture=10;InvalidTexture=11;ParameterType=12;
+ DatasetType=13;InvalidDatasetAccess=14;DatasetWrite=15;DatasetAccess=16;DatasetShape=17;InvalidShape=18;Dataset=19;Atomic=20;ReferenceType=21;ReferenceRead=22;ReferenceWrite=23;ReferenceInOut=24;TileType=25;InvalidTileAccess=26;Tile=27;Value=28;InvalidArgument=29;
+ Resolve=30;Prove=31;Assume=32;EnterEnvironment=33;AssignedNames=34;EnterContext=35;InitializationInputs=36;ResultProperties=37;IsolateInitialization=38;Materialize=39;OutputInputs=40;BoundsInputs=41;EnterPath=42;Body=43;RestoreInitialization=44;MarkResult=45;PopCall=46;RestorePath=47;JoinPath=48;ReturnedStorage=49;Update=50;RestoreEnvironment=51;InspectUpdate=52;InspectPosition=53;InsertScope=54;FilterInitialization=55;OutputDeclared=56;ForgetOutput=57;InitializeOutput=58;BeginProofs=59;AssignProof=60;RestoreContext=61;FinishScoped=62;Complete=63;ResultFacts=64;EnterCooperativeContext=65;Next=66;
+};
+struct InlineStep {InlineCursor cursor;InlineNeed need;};
+struct BindingItem {u32 present;address value;};
+struct EnvironmentHost {cfn<BindingItem,address> next;cfn<u32,address> borrows;cfn<u32,address> owns;cfn<u32,address> facts;};
+struct PositionHost {cfn<u32,address,address> next;};
+extern "C" Phase invoke_start() on cpu;
+extern "C" InvokeNeed invoke_step(inout Phase cursor,InvokeFacts facts) on cpu;
+extern "C" Phase cooperate_start() on cpu;
+extern "C" CooperateNeed cooperate_step(inout Phase cursor,CooperateFacts facts) on cpu;
+extern "C" ParameterError parameter_error(ParameterFacts facts) on cpu;
+extern "C" InlineCursor inline_start() on cpu;
+extern "C" InlineStep inline_step(InlineCursor state,InlineFacts facts) on cpu;
+extern "C" u32 environment_plain(address iterator,u32 facts,EnvironmentHost host) on cpu requires nonzero(host.next) requires nonzero(host.borrows) requires nonzero(host.owns) requires nonzero(host.facts);
+extern "C" u32 keep_position(address iterator,address position,PositionHost host) on cpu requires nonzero(host.next);
