@@ -195,7 +195,7 @@ impl Origin {
         self.aliases_when(&|_| true, || true)
     }
     pub(super) fn aliases_when(
-        &self, needed: &impl Fn(&MemoryAlias) -> bool, possible: impl FnOnce() -> bool,
+        &self, needed: &dyn Fn(&MemoryAlias) -> bool, possible: impl FnOnce() -> bool,
     ) -> Vec<MemoryAlias> {
         match &self.root {
             Root::Local { base, len } => {
