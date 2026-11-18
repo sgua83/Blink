@@ -89,9 +89,10 @@ pub struct Object {
 impl Object {
     pub fn stack_report(&self, budget: Option<u64>) -> String { stack::report(self, budget, None, stack::uses_runtime(self)) }
     pub fn write(&self, path: &Path) -> Result<()> {
-        let path = std::path::absolute(path)?;
-        std::fs::create_dir_all(path.parent().unwrap())?;
-        std::fs::write(path, self.coff_bytes()?)?;
+        if let Some(parent) = path.parent() {
+            crate::file_bytes::create_dir_all(parent)?;
+        }
+        crate::file_bytes::write(path, &self.coff_bytes()?)?;
         Ok(())
     }
     pub(crate) fn coff_bytes(&self) -> Result<Vec<u8>> {
