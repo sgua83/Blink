@@ -398,7 +398,6 @@ struct Projection<'a> {
     previous: Option<&'a Roots>,
     cursors: [btree_set::Iter<'a, Fact>; 2],
     group: std::slice::Iter<'a, (&'a ValueIdentity, &'a ValueIdentity)>,
-    candidate: *mut Fact,
     inferred: Facts,
 }
 unsafe fn projection<'a, 'b>(slot: Slot) -> &'a mut Projection<'b> {
@@ -437,23 +436,12 @@ unsafe extern "C" fn member(slot: Slot) -> Borrowed {
         .next()
         .map_or(ptr::null(), |(_, id)| borrowed(*id))
 }
-unsafe extern "C" fn key(slot: Slot, fields: fact_fields::Fields, identity: Borrowed) -> Borrowed {
+unsafe extern "C" fn emit(slot: Slot, fields: fact_fields::Fields, identity: Borrowed) {
     let fact = unsafe { fact_fields::key(fields) }.at(unsafe { *identity.cast::<ValueIdentity>() });
     let context = unsafe { projection(slot) };
-    unsafe { context.candidate.write(fact) };
-    context.candidate.cast()
-}
-unsafe extern "C" fn contains(slot: Slot, side: u32, key: Borrowed) -> u32 {
-    let key = unsafe { *key.cast::<Fact>() };
-    let context = unsafe { projection(slot) };
-    u32::from([context.environment, context.facts][side as usize].contains(&key))
-}
-unsafe extern "C" fn emit(slot: Slot, key: Borrowed) {
-    let key = unsafe { *key.cast::<Fact>() };
-    unsafe { projection(slot) }.inferred.insert(key);
-}
-unsafe extern "C" fn has_inferred(slot: Slot) -> u32 {
-    u32::from(!unsafe { projection(slot) }.inferred.is_empty())
+    if !context.environment.contains(&fact) && !context.facts.contains(&fact) {
+        context.inferred.insert(fact);
+    }
 }
 #[repr(C)]
 struct AliasHost {
@@ -462,15 +450,12 @@ struct AliasHost {
     previous: unsafe extern "C" fn(Slot, Borrowed) -> Borrowed,
     group: unsafe extern "C" fn(Slot, Borrowed),
     member: unsafe extern "C" fn(Slot) -> Borrowed,
-    key: unsafe extern "C" fn(Slot, fact_fields::Fields, Borrowed) -> Borrowed,
-    contains: unsafe extern "C" fn(Slot, u32, Borrowed) -> u32,
-    emit: unsafe extern "C" fn(Slot, Borrowed),
-    has_inferred: unsafe extern "C" fn(Slot) -> u32,
+    emit: unsafe extern "C" fn(Slot, fact_fields::Fields, Borrowed),
     compare: unsafe extern "C" fn(Borrowed, Borrowed) -> i32,
 }
 unsafe extern "C" {
     #[link_name = "bootstrap.condition_graph::alias_facts"]
-    fn b_alias(context: Slot, members: usize, inherited: u32, host: AliasHost) -> u32;
+    fn b_alias(context: Slot, inherited: u32, host: AliasHost);
 }
 pub(super) fn equivalent<'a>(
     environment: &Facts,
@@ -479,8 +464,10 @@ pub(super) fn equivalent<'a>(
     members: &[(&ValueIdentity, &ValueIdentity)],
     inherited: Option<&Roots>,
 ) -> QueryFacts<'a> {
-    let (inferred, produced) = {
-        let mut candidate = MaybeUninit::<Fact>::uninit();
+    if members.is_empty() {
+        return facts;
+    }
+    let inferred = {
         let mut context = Projection {
             environment,
             facts: &facts,
@@ -489,13 +476,11 @@ pub(super) fn equivalent<'a>(
             previous: inherited,
             cursors: [facts.iter(), environment.iter()],
             group: members[0..0].iter(),
-            candidate: candidate.as_mut_ptr(),
             inferred: Facts::new(),
         };
-        let produced = unsafe {
+        unsafe {
             b_alias(
                 (&mut context as *mut Projection<'_>).cast(),
-                members.len(),
                 u32::from(inherited.is_some()),
                 AliasHost {
                     next: alias_next,
@@ -503,17 +488,14 @@ pub(super) fn equivalent<'a>(
                     previous,
                     group,
                     member,
-                    key,
-                    contains,
                     emit,
-                    has_inferred,
                     compare: fact_fields::compare,
                 },
             )
         };
-        (context.inferred, produced)
+        context.inferred
     };
-    if produced != 0 {
+    if !inferred.is_empty() {
         facts.extend(inferred);
     }
     facts

@@ -306,16 +306,12 @@ struct AliasFactHost {
  cfn<address,address,address> ensures memory(read) previous;
  cfn<void,address,address> group;
  cfn<address,address> member;
- cfn<address,address,FactView,address> key;
- cfn<u32,address,u32,address> ensures memory(read) contains;
- cfn<void,address,address> emit;
- cfn<u32,address> ensures memory(read) has_inferred;
+ cfn<void,address,FactView,address> emit;
  cfn<i32,address,address> ensures memory(read) compare;
 };
-extern "C" u32 alias_facts(address context,usize members,u32 inherited,AliasFactHost host) on cpu
+extern "C" void alias_facts(address context,u32 inherited,AliasFactHost host) on cpu
  requires nonzero(host.next) requires nonzero(host.root) requires nonzero(host.previous)
- requires nonzero(host.group) requires nonzero(host.member) requires nonzero(host.key)
- requires nonzero(host.contains) requires nonzero(host.emit) requires nonzero(host.has_inferred)
+ requires nonzero(host.group) requires nonzero(host.member) requires nonzero(host.emit)
  requires nonzero(host.compare);
 
 // Original typed source-path terms remain owned by the synchronous native caller.

@@ -729,12 +729,10 @@ extern "C" void additional_equalities(address context,AdditionalEqualityHost hos
  host.own(context);host.extend(context);host.computed(context);
  if(host.unchanged(context)!=0){host.borrow(context);}
 }
-extern "C" u32 alias_facts(address context,usize members,u32 inherited,AliasFactHost host) on cpu
+extern "C" void alias_facts(address context,u32 inherited,AliasFactHost host) on cpu
  requires nonzero(host.next) requires nonzero(host.root) requires nonzero(host.previous)
- requires nonzero(host.group) requires nonzero(host.member) requires nonzero(host.key)
- requires nonzero(host.contains) requires nonzero(host.emit) requires nonzero(host.has_inferred)
+ requires nonzero(host.group) requires nonzero(host.member) requires nonzero(host.emit)
  requires nonzero(host.compare) {
- if(members==0u64){return 0;}
  u32 side=0;
  while(side<1+inherited){
   while(true){
@@ -752,13 +750,11 @@ extern "C" u32 alias_facts(address context,usize members,u32 inherited,AliasFact
      address old=host.previous(context,member);
      if(old!=address()&&host.compare(old,previous)==0){continue;}
     }
-    address key=host.key(context,fact,member);
-    if(host.contains(context,0,key)==0&&host.contains(context,1,key)==0){host.emit(context,key);}
+    host.emit(context,fact,member);
    }
   }
   side+=1;
  }
- return host.has_inferred(context);
 }
 
 extern "C" CanonicalInsertion canonical_insert(address context,address candidate,u32 empty,CanonicalInsertHost host) on cpu
