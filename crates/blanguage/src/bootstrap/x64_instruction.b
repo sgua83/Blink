@@ -733,6 +733,105 @@ extern "C" CompletionCode completion_code(CompletionLayout layout, address field
     return finish_resource_call(output, cursor, layout.frame, prolog);
 }
 
+LibraryEntryCode library_call(address output, u64 at, u32 frame, FrameEncoding prolog) on cpu {
+    put_byte(at, u8(0xe8));
+    write_word(at + 1u64, 0);
+    CompletionCode body = finish_resource_call(output, at + 5u64, frame, prolog);
+    return LibraryEntryCode(body.length, body.function_end, body.prolog, frame, at + 1u64 - address_bits(output));
+}
+
+extern "C" LibraryCreateCode library_create_code(u32 has_cpu, u32 has_gpu, u32 has_factories, address output) on cpu {
+    u64 start = address_bits(output);
+    u32 frame = 72;
+    FrameEncoding prolog = allocate_frame(frame, output);
+    u64 cursor = start + prolog.length;
+    // Keep the host's out/error/capacity before reusing RDX, R8 and R9.
+    cursor = store_bits(cursor, resource_stack(40u64), u8(2), 8);
+    cursor = store_bits(cursor, resource_stack(48u64), u8(8), 8);
+    cursor = store_bits(cursor, resource_stack(56u64), u8(9), 8);
+
+    MoveLocation rip = MoveLocation(0u64, MOVE_IMMEDIATE, u8(0), NO_INDEX, u8(0));
+    u64 cpu = 0u64;
+    u64 gpu = 0u64;
+    u64 factories = 0u64;
+    u64 count = 0u64;
+    if (has_cpu != 0) {
+        cursor = encode_operand_instruction(cursor, u16(0x8d), u8(0), true, u8(2), rip);
+        cpu = cursor - start - 4u64;
+    } else {
+        cursor = register_instruction(cursor, u16(0x31), u8(0), false, u8(2), u8(2));
+    }
+    if (has_gpu != 0) {
+        cursor = encode_operand_instruction(cursor, u16(0x8d), u8(0), true, u8(8), rip);
+        gpu = cursor - start - 4u64;
+    } else {
+        cursor = register_instruction(cursor, u16(0x31), u8(0), false, u8(8), u8(8));
+    }
+    if (has_factories != 0) {
+        cursor = encode_operand_instruction(cursor, u16(0x8d), u8(0), true, u8(9), rip);
+        factories = cursor - start - 4u64;
+        cursor = load_bits(cursor, u8(0), rip, true);
+        count = cursor - start - 4u64;
+    } else {
+        cursor = register_instruction(cursor, u16(0x31), u8(0), false, u8(9), u8(9));
+        cursor = register_instruction(cursor, u16(0x31), u8(0), false, u8(0), u8(0));
+    }
+    cursor = store_bits(cursor, resource_stack(32u64), u8(0), 8);
+    return LibraryCreateCode(library_call(output, cursor, frame, prolog), cpu, gpu, factories, count);
+}
+
+struct LibraryBuffer { address data; u32 count; };
+
+extern "C" LibraryRunLayout library_run_layout(u32 datasets, u32 dataset_addresses, u32 uniforms) on cpu {
+    // Home slots and the fifth argument, followed by the two borrowed arrays.
+    u64 uniform_start = 40u64 + u64(datasets) * size_of<LibraryBuffer>();
+    u64 end = uniform_start + u64(uniforms) * 8u64;
+    u64 frame = ((end + 7u64) / 16u64) * 16u64 + 8u64;
+    u64 arguments = 3u64 + u64(datasets) + u64(dataset_addresses) + u64(uniforms);
+    u64 capacity = 160u64 + u64(datasets) * 32u64 + u64(uniforms) * 16u64;
+    if (frame + arguments * 8u64 > 2147483647u64 || capacity > 2147483647u64) {
+        return LibraryRunLayout(0, 0, 0u64);
+    }
+    return LibraryRunLayout(u32(frame), u32(uniform_start), capacity);
+}
+
+extern "C" LibraryEntryCode library_run_code(LibraryRunLayout layout, address dataset_addresses,
+    u32 datasets, u32 uniforms, address output) on cpu {
+    u64 start = address_bits(output);
+    FrameEncoding prolog = allocate_frame(layout.frame, output);
+    u64 cursor = start + prolog.length;
+    u64 slot = 1u64;
+    for (index in 0..datasets) {
+        u64 offset = 40u64 + u64(index) * size_of<LibraryBuffer>();
+        u8 has_address = unsafe_position<u8>(unsafe_address(address_bits(dataset_addresses) + u64(index)));
+        if (has_address != u8(0)) {
+            cursor = copy_bits(cursor, resource_stack(offset), program_argument(slot, layout.frame, false), 8);
+            slot += 1u64;
+        } else {
+            cursor = register_instruction(cursor, u16(0x31), u8(0), false, u8(0), u8(0));
+            cursor = store_bits(cursor, resource_stack(offset), u8(0), 8);
+        }
+        cursor = copy_bits(cursor, resource_stack(offset + 8u64), program_argument(slot, layout.frame, false), 4);
+        slot += 1u64;
+    }
+    for (index in 0..uniforms) {
+        u64 offset = u64(layout.uniforms) + u64(index) * 8u64;
+        cursor = copy_bits(cursor, resource_stack(offset), program_argument(slot, layout.frame, false), 8);
+        slot += 1u64;
+    }
+    cursor = copy_bits(cursor, resource_stack(32u64), program_argument(slot + 1u64, layout.frame, false), 8);
+    cursor = copy_bits(cursor, move_gpr(u8(9)), program_argument(slot, layout.frame, false), 8);
+    cursor = resource_stack_address(cursor, u8(2), 40);
+    cursor = resource_stack_address(cursor, u8(8), layout.uniforms);
+    return library_call(output, cursor, layout.frame, prolog);
+}
+
+extern "C" SymbolEncoding library_destroy_code(address output) on cpu {
+    u64 start = address_bits(output);
+    u64 field = resource_tail_field(start) - start;
+    return SymbolEncoding(field + 4u64, field);
+}
+
 extern "C" u64 call_slot(u32 offset, address output) on cpu {
     u64 start = address_bits(output);
     MoveLocation target = MoveLocation(u64(offset), MOVE_MEMORY, u8(4), NO_INDEX, u8(0));

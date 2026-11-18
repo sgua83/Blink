@@ -185,6 +185,34 @@ extern "C" CompletionLayout completion_layout(address fields, u32 count) on cpu;
 extern "C" CompletionCode completion_code(CompletionLayout layout, address fields, u32 count,
     address output, address patches) on cpu;
 
+struct LibraryRunLayout {
+    u32 frame;
+    u32 uniforms;
+    u64 capacity;
+};
+struct LibraryEntryCode {
+    u64 length;
+    u32 function_end;
+    u32 prolog;
+    u32 frame;
+    u64 call;
+};
+struct LibraryCreateCode {
+    LibraryEntryCode entry;
+    u64 cpu;
+    u64 gpu;
+    u64 factories;
+    u64 count;
+};
+
+// The create entry owns a 72-byte Win64 call frame and needs 128 output bytes.
+extern "C" LibraryCreateCode library_create_code(u32 has_cpu, u32 has_gpu, u32 has_factories, address output) on cpu;
+extern "C" LibraryRunLayout library_run_layout(u32 datasets, u32 dataset_addresses, u32 uniforms) on cpu;
+// The caller provides one address flag per dataset and layout.capacity output bytes.
+extern "C" LibraryEntryCode library_run_code(LibraryRunLayout layout, address dataset_addresses,
+    u32 datasets, u32 uniforms, address output) on cpu;
+extern "C" SymbolEncoding library_destroy_code(address output) on cpu;
+
 // Call through an existing outgoing stack slot. The caller owns seven bytes.
 extern "C" u64 call_slot(u32 offset, address output) on cpu;
 

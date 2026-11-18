@@ -27,12 +27,6 @@ pub(crate) fn sdk_root() -> std::io::Result<PathBuf> {
     #[cfg(not(feature = "installed"))]
     { Ok(Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().parent().unwrap().into()) }
 }
-fn build_root(sdk: &Path) -> std::io::Result<PathBuf> {
-    #[cfg(feature = "installed")]
-    { let _ = sdk; Ok(std::env::current_dir()?.join("target")) }
-    #[cfg(not(feature = "installed"))]
-    { Ok(sdk.join("target")) }
-}
 fn finish<T>(result: Result<T>, cleanup: Result<()>) -> Result<T> {
     match (result, cleanup) {
         (Ok(value), Ok(())) => Ok(value),
@@ -78,113 +72,39 @@ fn development_runtime(
     Ok(libraries)
 }
 
-fn compile_wrapper(
-    source: &str,
-    sdk: &Path,
-    target: &Path,
-    build: &Path,
-    unit: &str,
-    worker: &crate::compiler::Worker,
-) -> Result<Vec<u8>> {
-    std::fs::create_dir(build.join("src"))?;
-    let manifest = format!(
-        "[package]\nname={unit:?}\nversion=\"0.0.0\"\nedition=\"2024\"\n[workspace]\n[lib]\nname={unit:?}\ncrate-type=[\"rlib\"]\n[profile.release]\nlto=false\ncodegen-units=1\npanic=\"abort\"\n",
-    );
-    std::fs::write(build.join("Cargo.toml"), manifest)?;
-    {
-        use std::io::Write;
-        let mut file = std::fs::File::create(build.join("src/lib.rs"))?;
-        file.write_all(b"#![no_std]\n")?;
-        file.write_all(source.as_bytes())?;
+fn runtime_libraries(worker: &crate::compiler::Worker) -> Result<Vec<String>> {
+    let sdk = sdk_root()?;
+    if cfg!(feature = "installed") {
+        return Ok(std::fs::read_to_string(sdk.join(SDK_RUNTIME).join("native-static-libs.txt"))?
+            .split_whitespace().map(str::to_owned).collect());
     }
-    let wrapper = build.join("resource.obj");
-    let mut emit = OsString::from("--emit=obj=");
-    emit.push(&wrapper);
-    let arguments: Vec<OsString> = [
-        "rustc".into(), "--offline".into(), "--release".into(), "--jobs".into(), "1".into(),
-        "--manifest-path".into(), build.join("Cargo.toml").into_os_string(),
-        "--target-dir".into(), target.as_os_str().into(), "--color".into(), "never".into(),
-        "--".into(), emit,
-    ].into();
-    let result = (|| {
-        let output = worker.cargo_output(&arguments, build, sdk)?;
-        if !output.status.success() {
-            return Err(format!(
-                "执行库目标代码编译失败：\n{}{}",
-                String::from_utf8_lossy(&output.stdout),
-                String::from_utf8_lossy(&output.stderr)
-            ).into());
-        }
-        Ok(std::fs::read(wrapper)?)
-    })();
-    let cleanup = (|| {
-        let arguments: Vec<OsString> = [
-            "clean".into(), "--offline".into(), "--release".into(), "--manifest-path".into(),
-            build.join("Cargo.toml").into_os_string(), "--target-dir".into(), target.as_os_str().into(),
-            "--package".into(), unit.into(), "--color".into(), "never".into(),
-        ].into();
-        let output = worker.cargo_output(&arguments, build, sdk)?;
-        if !output.status.success() {
-            return Err(format!(
-                "执行库单元产物清理失败：\n{}{}",
-                String::from_utf8_lossy(&output.stdout),
-                String::from_utf8_lossy(&output.stderr)
-            ).into());
-        }
-        Ok(())
-    })();
-    finish(result, cleanup)
+    let sdk_target = sdk.join("target");
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let created = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_nanos();
+    let id = format!("{}-{created}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed));
+    let workspaces = sdk_target.join("blc-object");
+    std::fs::create_dir_all(&workspaces)?;
+    let build = workspaces.join(id);
+    std::fs::create_dir(&build)?;
+    let result = development_runtime(&sdk, &sdk_target.join("dll"), &build, worker);
+    finish(result, std::fs::remove_dir_all(build).map_err(Into::into))
 }
 
 pub(crate) fn compile(
-    source: Option<&str>,
     native: Option<Vec<u8>>,
     exports: Vec<String>,
     runtime: bool,
     worker: &crate::compiler::Worker,
 ) -> Result<Archive> {
-    let sdk = sdk_root()?;
-    let mut libraries = if runtime && cfg!(feature = "installed") {
-        std::fs::read_to_string(sdk.join(SDK_RUNTIME).join("native-static-libs.txt"))?
-            .split_whitespace().map(str::to_owned).collect()
-    } else {
-        Vec::new()
-    };
-    let local_runtime = runtime && !cfg!(feature = "installed");
-    let mut compiled = None;
-    if source.is_some() || local_runtime {
-        let sdk_target = build_root(&sdk)?;
-        static NEXT: AtomicU64 = AtomicU64::new(0);
-        let created = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_nanos();
-        let id = format!("{}-{created}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed));
-        let workspaces = sdk_target.join("blc-object");
-        std::fs::create_dir_all(&workspaces)?;
-        let build = workspaces.join(&id);
-        std::fs::create_dir(&build)?;
-        let result = (|| {
-            let target = sdk_target.join("dll");
-            if local_runtime {
-                libraries = development_runtime(&sdk, &target, &build, worker)?;
-            }
-            if let Some(source) = source {
-                let unit = format!("blink_object_{}", id.replace('-', "_"));
-                compiled = Some(compile_wrapper(source, &sdk, &target, &build, &unit, worker)?);
-            }
-            Ok(())
-        })();
-        finish(result, std::fs::remove_dir_all(build).map_err(Into::into))?;
-    }
-    let entries = [("entry.obj", native), ("resource.obj", compiled)];
+    let libraries = if runtime { runtime_libraries(worker)? } else { Vec::new() };
     let mut symbols = Vec::new();
     let mut members = Vec::new();
-    for (name, bytes) in entries {
-        let Some(bytes) = bytes else { continue };
-        let member = members.len();
+    if let Some(bytes) = native {
         super::coff::Reader::new(bytes.as_slice())?.for_each_definition(|symbol| {
-            symbols.push((member, symbol.to_owned()));
+            symbols.push((0, symbol.to_owned()));
             Ok(())
         })?;
-        members.push(super::static_library::Member::new(name.into(), bytes));
+        members.push(super::static_library::Member::new("entry.obj".into(), bytes));
     }
     let bytes = super::static_library::encode(&members, &symbols)?;
     Ok(Archive {
@@ -225,10 +145,17 @@ pub(crate) fn inputs(runtime: bool) -> std::io::Result<[u8; 32]> {
         }
         Ok(())
     }
-    let sdk = sdk_root()?;
     let mut digest = Digest::new();
-    digest.update(b"BlinkNativeInputs1");
+    digest.update(b"BlinkNativeInputs2");
+    if !runtime { return Ok(digest.finish()); }
+    let sdk = sdk_root()?;
     digest.field(sdk.as_os_str().as_encoded_bytes());
+    if cfg!(feature = "installed") {
+        let link_inputs = sdk.join(SDK_RUNTIME).join("native-static-libs.txt");
+        digest.field(b"installed-native-library");
+        digest.field(&FileBytes::read_path(&link_inputs)?);
+        return Ok(digest.finish());
+    }
     let variables = std::env::vars_os().filter(|(name, _)| {
         let name = name.to_string_lossy().to_ascii_uppercase();
         // compile() fixes jobs, profile and target-dir with explicit Cargo arguments.
@@ -238,7 +165,7 @@ pub(crate) fn inputs(runtime: bool) -> std::io::Result<[u8; 32]> {
                 | "RUSTC_WORKSPACE_WRAPPER" | "RUSTUP_HOME" | "RUSTUP_TOOLCHAIN"
                 | "CARGO_HOME" | "CARGO_INCREMENTAL" | "CARGO_ENCODED_RUSTFLAGS"
                 | "LIB" | "LIBPATH" | "INCLUDE" | "SYSTEMROOT")
-                || (runtime && matches!(name.as_str(), "BLINK_BOOTSTRAP_SDK" | "PROGRAMFILES"))
+                || matches!(name.as_str(), "BLINK_BOOTSTRAP_SDK" | "PROGRAMFILES")
                 || name.starts_with("CARGO_PROFILE_") || name.starts_with("CARGO_TARGET_")
                 || name.starts_with("CARGO_BUILD_"))
     }).collect::<std::collections::BTreeMap<_, _>>();
@@ -265,26 +192,20 @@ pub(crate) fn inputs(runtime: bool) -> std::io::Result<[u8; 32]> {
     let rustup = std::env::var_os("RUSTUP_HOME").map(std::path::PathBuf::from)
         .or_else(|| home.map(|home| home.join(".rustup")));
     if let Some(rustup) = rustup { optional(&mut digest, &sdk.join(rustup).join("settings.toml"))?; }
-    if runtime && cfg!(feature = "installed") {
-        let link_inputs = sdk.join(SDK_RUNTIME).join("native-static-libs.txt");
-        digest.field(b"installed-native-library");
-        digest.field(&FileBytes::read_path(&link_inputs)?);
-    } else if runtime {
-        let mut files = vec![sdk.join("Cargo.toml")];
-        let compiler_sources = sdk.join("crates/blanguage/src/bootstrap");
-        optional(&mut digest, &sdk.join("crates/blanguage/build-sdk.rs"))?;
-        optional(&mut digest, &sdk.join("crates/blanguage/native/blink_value_format.lib"))?;
-        for name in ["blanguage", "blcompute"] {
-            let package = sdk.join("crates").join(name);
-            files.push(package.join("Cargo.toml"));
-            optional(&mut digest, &package.join("build.rs"))?;
-            sources(&package.join("src"), &compiler_sources, &mut files)?;
-        }
-        files.sort();
-        for path in files {
-            digest.field(path.as_os_str().as_encoded_bytes());
-            digest.field(&FileBytes::read_path(&path)?);
-        }
+    let mut files = vec![sdk.join("Cargo.toml")];
+    let compiler_sources = sdk.join("crates/blanguage/src/bootstrap");
+    optional(&mut digest, &sdk.join("crates/blanguage/build-sdk.rs"))?;
+    optional(&mut digest, &sdk.join("crates/blanguage/native/blink_value_format.lib"))?;
+    for name in ["blanguage", "blcompute"] {
+        let package = sdk.join("crates").join(name);
+        files.push(package.join("Cargo.toml"));
+        optional(&mut digest, &package.join("build.rs"))?;
+        sources(&package.join("src"), &compiler_sources, &mut files)?;
+    }
+    files.sort();
+    for path in files {
+        digest.field(path.as_os_str().as_encoded_bytes());
+        digest.field(&FileBytes::read_path(&path)?);
     }
     Ok(digest.finish())
 }

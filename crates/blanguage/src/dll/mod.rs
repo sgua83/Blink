@@ -153,7 +153,7 @@ fn layout(name: &str, ty: &Ty, c: &mut String, r: &mut String) -> Result<()> {
     Ok(())
 }
 
-fn generate(p: &ExecutableProgram, prefix: &str, worker: &crate::compiler::Worker) -> Result<(String, String, String, Vec<(String, crate::native::NativeCode)>, Option<crate::application::factory::ResourceFactory>)> {
+fn generate(p: &ExecutableProgram, prefix: &str, worker: &crate::compiler::Worker) -> Result<(String, String, Vec<u8>, Vec<(String, crate::native::NativeCode)>, Option<crate::application::factory::ResourceFactory>)> {
     if !p.accelerations().is_empty()
         || !p.textures().is_empty()
         || p.buffers().iter().any(|b| !plain(&b.ty))
@@ -171,8 +171,8 @@ fn generate(p: &ExecutableProgram, prefix: &str, worker: &crate::compiler::Worke
     let mut args = Vec::new();
     let mut safe_r = Vec::new();
     let mut safe_args = Vec::new();
-    let mut buffers = Vec::new();
-    let mut uniforms = Vec::new();
+    let mut dataset_addresses = Vec::new();
+    let mut uniforms = 0usize;
     for b in p.buffers() {
         let n = identifier(&b.name)?;
         if let Some(count) = b.count {
@@ -183,10 +183,10 @@ fn generate(p: &ExecutableProgram, prefix: &str, worker: &crate::compiler::Worke
                 constant_name(&n)
             )?;
         }
-        let data = if b.ty.size == 0 {
+        dataset_addresses.push(u8::from(b.ty.size != 0));
+        if b.ty.size == 0 {
             safe_r.push(format!("count_{n}: u32"));
             safe_args.push(format!("count_{n}"));
-            "core::ptr::null_mut()".to_owned()
         } else {
             let t = format!("{prefix}_data_{n}");
             layout(&t, &b.ty, &mut c, &mut types)?;
@@ -207,12 +207,10 @@ fn generate(p: &ExecutableProgram, prefix: &str, worker: &crate::compiler::Worke
             safe_args.push(format!(
                 "u32::try_from(data_{n}.len()).map_err(|e| e.to_string())?"
             ));
-            format!("data_{n}{}.cast()", if write { "" } else { ".cast_mut()" })
-        };
+        }
         cp.push(format!("uint32_t count_{n}"));
         rp.push(format!("count_{n}: u32"));
         args.push(format!("count_{n}"));
-        buffers.push(format!("LibraryBuffer {{data: {data}, count: count_{n}}}"));
     }
     for u in p.uniforms().iter().filter(|u| u.ty.size != 0) {
         let n = identifier(&u.name)?;
@@ -223,12 +221,12 @@ fn generate(p: &ExecutableProgram, prefix: &str, worker: &crate::compiler::Worke
         args.push(format!("param_{n}"));
         safe_r.push(format!("param_{n}: &{t}"));
         safe_args.push(format!("param_{n}"));
-        uniforms.push(format!("param_{n}.cast()"));
+        uniforms += 1;
     }
     let c_run = cp.join(", ");
     let r_run = rp.join(", ");
     let comma = if cp.is_empty() { "" } else { ", " };
-    let (images, functions, resources) = source::constructor(p, prefix, worker)?;
+    let (native, functions, resources) = source::compile(p, prefix, &dataset_addresses, uniforms.try_into()?, worker)?;
     let replacements = [
         ("@PREFIX@", prefix.to_owned()),
         ("@COMMA@", comma.to_owned()),
@@ -238,13 +236,6 @@ fn generate(p: &ExecutableProgram, prefix: &str, worker: &crate::compiler::Worke
         ("@SAFE_PARAMS@", safe_r.join(", ")),
         ("@SAFE_ARGS@", safe_args.join(", ")),
         ("@TYPES@", types),
-        ("@IMAGES@", images),
-        ("@IMAGE_ABI@", include_str!("../resource/module_image.rs").to_owned()),
-        ("@BUFFER_ABI@", include_str!("../resource/library_buffer.rs").to_owned()),
-        ("@BUFFER_COUNT@", buffers.len().to_string()),
-        ("@UNIFORM_COUNT@", uniforms.len().to_string()),
-        ("@UNIFORMS@", uniforms.join(", ")),
-        ("@BUFFERS@", buffers.join(", ")),
     ];
     let render = |template: &str| {
         replacements
@@ -255,8 +246,7 @@ fn generate(p: &ExecutableProgram, prefix: &str, worker: &crate::compiler::Worke
     };
     c.push_str(&render(include_str!("header.h.in")));
     let r = render(include_str!("binding.rs.in"));
-    let dll = render(include_str!("library.rs.in"));
-    Ok((c, r, dll, functions, resources))
+    Ok((c, r, native, functions, resources))
 }
 
 /// 编译算法DLL的CPU代码节、GPU映像、执行框架静态库及C/Rust接口。
@@ -271,7 +261,7 @@ impl crate::Compiler {
 }
 pub(crate) fn compile_in(worker: &crate::compiler::Worker, program: &ExecutableProgram, prefix: &str) -> Result<crate::object::Object> {
     let prefix = identifier(prefix)?;
-    let (header, binding, source, functions, resources) = generate(program, &prefix, worker)?;
+    let (header, binding, native, functions, resources) = generate(program, &prefix, worker)?;
     let mut imports = program.imports.clone();
     imports.extend(program.resources.iter().flat_map(|resources| &resources.programs)
         .flat_map(|(_, program)| program.imports.clone()));
@@ -283,7 +273,7 @@ pub(crate) fn compile_in(worker: &crate::compiler::Worker, program: &ExecutableP
     if let Some(resource) = &resources {
         exports.push(format!("{}_resources", resource.binding.prefix));
     }
-    let archive = crate::object::compile_archive(Some(&source), None, exports, true, worker)?;
+    let archive = crate::object::compile_archive(Some(native), exports, true, worker)?;
     let mut object = crate::object::Object {
         name: program.name().into(),
         kind: crate::object::Kind::Library {

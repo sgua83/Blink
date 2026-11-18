@@ -68,7 +68,7 @@ impl ResourceFactory {
     }
 }
 
-fn read_only(bytes: Vec<u8>, relocations: Vec<Relocation>) -> Section {
+pub(crate) fn read_only(bytes: Vec<u8>, relocations: Vec<Relocation>) -> Section {
     Section {
         name: ".rdata".into(), bytes, flags: 0x40401040, relocations,
         associated: Vec::new(), layout: None,
@@ -180,11 +180,11 @@ unsafe extern "C" {
     ) -> CompletionCode;
 }
 
-fn external(offset: u64, name: &str) -> Relocation {
+pub(crate) fn external(offset: u64, name: &str) -> Relocation {
     Relocation { offset: offset as usize, kind: 4, target: Target::Symbol(name.into()) }
 }
 
-fn wrapper(
+pub(crate) fn wrapper(
     sections: &mut Vec<Section>,
     symbols: &mut Vec<Symbol>,
     name: String,
@@ -199,7 +199,7 @@ fn wrapper(
     sections[section].relocations = relocations;
 }
 
-fn call_unwind(prolog: u32, frame: u32) -> Vec<u8> {
+pub(crate) fn call_unwind(prolog: u32, frame: u32) -> Vec<u8> {
     let prolog = prolog as u8;
     crate::native::unwind_info(prolog, &[crate::native::UnwindOperation::allocate(prolog, frame)])
 }

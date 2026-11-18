@@ -152,7 +152,7 @@ pub(crate) fn compile_resources(
         }
         if has_tasks { exports.push(format!("{prefix}_task_start")); }
         exports.push(format!("{prefix}_resources"));
-        let archive = object::compile_archive(None, native, exports, root, worker)?;
+        let archive = object::compile_archive(native, exports, root, worker)?;
         let factory = factory::ResourceFactory {
             binding: object::ResourceBinding {
                 prefix,
