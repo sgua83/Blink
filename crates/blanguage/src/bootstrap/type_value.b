@@ -41,75 +41,73 @@ extern "C" Request type_step(address state,Host host,address context) on cpu
     requires nonzero(host.set_stride) requires nonzero(host.use_record) requires nonzero(host.facts)
     requires nonzero(host.task) requires nonzero(host.views) {
     Cursor cursor=unsafe_position<Cursor>(state);
-    while(true){
-        if(cursor.stage==Stage::Start){
+    bool starting=cursor.stage==Stage::Start;
+    if(starting){
+        Type value=cursor.value;
+        if((value.flags&16)!=0&&cursor.kind!=BuiltinKind::CFunction){
+            host.failure(context,Site::Root,0u64,Problem::Contracts,0u64);return complete(cursor,host,context,false);
+        }
+        if((value.flags&2)!=0){
+            cursor.wrap=1;
+            value.flags&=~2;
+            cursor.value.flags=value.flags;
+        }
+        if(cursor.kind==BuiltinKind::CFunction&&(value.flags&7)==0){
+            cursor.stage=Stage::FunctionDone;return request(state,cursor,Query::Function,Site::Root,Binding::Representation,0u64);
+        }
+        if(word(value.name,"texture2d")||word(value.name,"texture3d")){
+            host.failure(context,Site::Root,0u64,Problem::Texture,0u64);return complete(cursor,host,context,false);
+        }
+        if(cursor.kind==BuiltinKind::Void){host.failure(context,Site::Root,0u64,Problem::Void,0u64);return complete(cursor,host,context,false);}
+        if(cursor.kind==BuiltinKind::Never){host.failure(context,Site::Root,0u64,Problem::Never,0u64);return complete(cursor,host,context,false);}
+        if((value.flags&4)!=0){host.failure(context,Site::Root,0u64,Problem::Tile,0u64);return complete(cursor,host,context,false);}
+        if(cursor.kind==BuiltinKind::Numeric||cursor.kind==BuiltinKind::Address||cursor.kind==BuiltinKind::Handle||cursor.kind==BuiltinKind::RayHit){
+            if(value.arguments!=0u64){host.failure(context,Site::Root,0u64,Problem::BuiltinArguments,0u64);return complete(cursor,host,context,false);}
+            host.builtin(context);return complete(cursor,host,context,true);
+        }
+    }
+    if(cursor.stage==Stage::FunctionDone){return complete(cursor,host,context,true);}
+
+    // The kind is fixed while World answers this cursor's requests.
+    if(cursor.kind==BuiltinKind::Task||cursor.kind==BuiltinKind::TaskStartError){
+        if(starting){
             Type value=cursor.value;
-            if((value.flags&16)!=0&&cursor.kind!=BuiltinKind::CFunction){
-                host.failure(context,Site::Root,0u64,Problem::Contracts,0u64);return complete(cursor,host,context,false);
-            }
-            if(cursor.kind==BuiltinKind::CFunction&&(value.flags&7)==0){
-                cursor.stage=Stage::FunctionDone;return request(state,cursor,Query::Function,Site::Root,Binding::Representation,0u64);
-            }
-            if(word(value.name,"texture2d")||word(value.name,"texture3d")){
-                host.failure(context,Site::Root,0u64,Problem::Texture,0u64);return complete(cursor,host,context,false);
-            }
-            if(cursor.kind==BuiltinKind::Void){host.failure(context,Site::Root,0u64,Problem::Void,0u64);return complete(cursor,host,context,false);}
-            if(cursor.kind==BuiltinKind::Never){host.failure(context,Site::Root,0u64,Problem::Never,0u64);return complete(cursor,host,context,false);}
-            if((value.flags&4)!=0){host.failure(context,Site::Root,0u64,Problem::Tile,0u64);return complete(cursor,host,context,false);}
-            if((value.flags&2)!=0){cursor.wrap=1;cursor.value.flags&=~2;continue;}
-            if(cursor.kind==BuiltinKind::Task||cursor.kind==BuiltinKind::TaskStartError){
-                if(value.arguments!=1u64){host.failure(context,Site::Root,0u64,Problem::TaskArguments,0u64);return complete(cursor,host,context,false);}
-                cursor.temporary=host.argument(value.value,0u64);
-                if(address_bits(cursor.temporary.value)==0u64){host.failure(context,Site::Root,0u64,Problem::TaskArguments,0u64);return complete(cursor,host,context,false);}
-                cursor.stage=Stage::TaskAfterChild;
-                if(cursor.kind==BuiltinKind::Task&&plain_void(cursor.temporary,false)){host.unit(context);continue;}
+            if(value.arguments!=1u64){host.failure(context,Site::Root,0u64,Problem::TaskArguments,0u64);return complete(cursor,host,context,false);}
+            cursor.temporary=host.argument(value.value,0u64);
+            if(address_bits(cursor.temporary.value)==0u64){host.failure(context,Site::Root,0u64,Problem::TaskArguments,0u64);return complete(cursor,host,context,false);}
+            cursor.stage=Stage::TaskAfterChild;
+            if(cursor.kind==BuiltinKind::Task&&plain_void(cursor.temporary,false)){
+                host.unit(context);
+            }else{
                 return request(state,cursor,Query::Child,Site::Root,Binding::Representation,0u64);
             }
-            if(cursor.kind==BuiltinKind::Owned){
-                if(value.arguments!=2u64){host.failure(context,Site::Root,0u64,Problem::OwnedArguments,0u64);return complete(cursor,host,context,false);}
-                cursor.temporary=host.argument(value.value,0u64);
-                Type release=host.argument(value.value,1u64);
-                if(address_bits(cursor.temporary.value)==0u64||address_bits(release.value)==0u64){
-                    host.failure(context,Site::Root,0u64,Problem::OwnedArguments,0u64);return complete(cursor,host,context,false);
-                }
-                if((release.flags&7)!=0||release.arguments!=0u64){host.failure(context,Site::Root,0u64,Problem::ReleaseForm,0u64);return complete(cursor,host,context,false);}
-                Cleanup cleanup=host.cleanup(context,release);
-                if(cleanup.ready==0){return complete(cursor,host,context,false);}
-                if(cleanup.ordinary==0||cleanup.cpu==0||cleanup.parameters!=1u64||cleanup.value_parameter==0){
-                    host.failure(context,Site::Root,0u64,Problem::ReleaseShape,0u64);return complete(cursor,host,context,false);
-                }
-                cursor.stage=Stage::OwnedAfterChild;return request(state,cursor,Query::Child,Site::Root,Binding::Representation,0u64);
-            }
-            if(cursor.kind==BuiltinKind::Result){
-                if(value.arguments!=2u64){host.failure(context,Site::Root,0u64,Problem::ResultArguments,0u64);return complete(cursor,host,context,false);}
-                cursor.index=0u64;cursor.stage=Stage::ResultItem;continue;
-            }
-            if(cursor.kind==BuiltinKind::Array){
-                if(value.arguments!=2u64){host.failure(context,Site::Root,0u64,Problem::ArrayArguments,0u64);return complete(cursor,host,context,false);}
-                cursor.temporary=host.argument(value.value,0u64);
-                if(address_bits(cursor.temporary.value)==0u64){host.failure(context,Site::Root,0u64,Problem::ArrayType,0u64);return complete(cursor,host,context,false);}
-                if((cursor.temporary.flags&4)!=0){host.failure(context,Site::Root,0u64,Problem::ArrayTile,0u64);return complete(cursor,host,context,false);}
-                cursor.stage=Stage::ArrayAfterChild;return request(state,cursor,Query::Child,Site::Root,Binding::Representation,0u64);
-            }
-            if(cursor.kind==BuiltinKind::Numeric||cursor.kind==BuiltinKind::Address||cursor.kind==BuiltinKind::Handle||cursor.kind==BuiltinKind::RayHit){
-                if(value.arguments!=0u64){host.failure(context,Site::Root,0u64,Problem::BuiltinArguments,0u64);return complete(cursor,host,context,false);}
-                host.builtin(context);return complete(cursor,host,context,true);
-            }
-            cursor.record=host.record(context);
-            if(cursor.record.ready==0){return complete(cursor,host,context,false);}
-            if(cursor.record.types+cursor.record.values!=value.arguments){host.failure(context,Site::Root,0u64,Problem::RecordArguments,0u64);return complete(cursor,host,context,false);}
-            cursor.index=0u64;cursor.stage=Stage::RecordTypeItem;
         }
-        if(cursor.stage==Stage::FunctionDone){return complete(cursor,host,context,true);}
         if(cursor.stage==Stage::TaskAfterChild){
             cursor.stage=Stage::TaskBuild;
             if((cursor.temporary.flags&1)!=0){return request(state,cursor,Query::Dataset,Site::Root,Binding::Representation,0u64);}
         }
-        if(cursor.stage==Stage::TaskBuild){
-            if(!host.task(context,cursor.kind==BuiltinKind::TaskStartError?1:0)){
-                host.failure(context,Site::Root,0u64,Problem::TaskOverflow,0u64);return complete(cursor,host,context,false);
+        if(!host.task(context,cursor.kind==BuiltinKind::TaskStartError?1:0)){
+            host.failure(context,Site::Root,0u64,Problem::TaskOverflow,0u64);return complete(cursor,host,context,false);
+        }
+        return complete(cursor,host,context,true);
+    }
+
+    if(cursor.kind==BuiltinKind::Owned){
+        if(starting){
+            Type value=cursor.value;
+            if(value.arguments!=2u64){host.failure(context,Site::Root,0u64,Problem::OwnedArguments,0u64);return complete(cursor,host,context,false);}
+            cursor.temporary=host.argument(value.value,0u64);
+            Type release=host.argument(value.value,1u64);
+            if(address_bits(cursor.temporary.value)==0u64||address_bits(release.value)==0u64){
+                host.failure(context,Site::Root,0u64,Problem::OwnedArguments,0u64);return complete(cursor,host,context,false);
             }
-            return complete(cursor,host,context,true);
+            if((release.flags&7)!=0||release.arguments!=0u64){host.failure(context,Site::Root,0u64,Problem::ReleaseForm,0u64);return complete(cursor,host,context,false);}
+            Cleanup cleanup=host.cleanup(context,release);
+            if(cleanup.ready==0){return complete(cursor,host,context,false);}
+            if(cleanup.ordinary==0||cleanup.cpu==0||cleanup.parameters!=1u64||cleanup.value_parameter==0){
+                host.failure(context,Site::Root,0u64,Problem::ReleaseShape,0u64);return complete(cursor,host,context,false);
+            }
+            cursor.stage=Stage::OwnedAfterChild;return request(state,cursor,Query::Child,Site::Root,Binding::Representation,0u64);
         }
         if(cursor.stage==Stage::OwnedAfterChild){
             cursor.stage=Stage::OwnedSave;
@@ -137,31 +135,50 @@ extern "C" Request type_step(address state,Host host,address context) on cpu
             cursor.stage=Stage::OwnedFinish;
             if((cursor.temporary.flags&1)!=0){return request(state,cursor,Query::Dataset,Site::CleanupParameter,Binding::Representation,0u64);}
         }
-        if(cursor.stage==Stage::OwnedFinish){
-            host.leave_cleanup(context);
-            if(!host.owner_matches(context)){host.failure(context,Site::Root,0u64,Problem::ReleasePayload,0u64);return complete(cursor,host,context,false);}
-            host.use_owner(context);return complete(cursor,host,context,true);
+        host.leave_cleanup(context);
+        if(!host.owner_matches(context)){host.failure(context,Site::Root,0u64,Problem::ReleasePayload,0u64);return complete(cursor,host,context,false);}
+        host.use_owner(context);return complete(cursor,host,context,true);
+    }
+
+    if(cursor.kind==BuiltinKind::Result){
+        if(starting){
+            Type value=cursor.value;
+            if(value.arguments!=2u64){host.failure(context,Site::Root,0u64,Problem::ResultArguments,0u64);return complete(cursor,host,context,false);}
+            cursor.index=0u64;cursor.stage=Stage::ResultItem;
         }
-        if(cursor.stage==Stage::ResultItem){
-            if(cursor.index==2u64){
-                if(!host.result(context)){host.failure(context,Site::Root,0u64,Problem::ResultOverflow,0u64);return complete(cursor,host,context,false);}
-                return complete(cursor,host,context,true);
+        while(true){
+            if(cursor.stage==Stage::ResultItem){
+                if(cursor.index==2u64){
+                    if(!host.result(context)){host.failure(context,Site::Root,0u64,Problem::ResultOverflow,0u64);return complete(cursor,host,context,false);}
+                    return complete(cursor,host,context,true);
+                }
+                cursor.temporary=host.argument(cursor.value.value,cursor.index);
+                if(address_bits(cursor.temporary.value)==0u64){host.failure(context,Site::Root,0u64,Problem::ResultType,0u64);return complete(cursor,host,context,false);}
+                if((cursor.temporary.flags&4)!=0){host.failure(context,Site::Root,0u64,Problem::ResultTile,0u64);return complete(cursor,host,context,false);}
+                cursor.stage=Stage::ResultAfterChild;
+                if(plain_void(cursor.temporary,true)){host.unit(context);continue;}
+                return request(state,cursor,Query::Child,Site::Root,Binding::Representation,0u64);
             }
-            cursor.temporary=host.argument(cursor.value.value,cursor.index);
-            if(address_bits(cursor.temporary.value)==0u64){host.failure(context,Site::Root,0u64,Problem::ResultType,0u64);return complete(cursor,host,context,false);}
-            if((cursor.temporary.flags&4)!=0){host.failure(context,Site::Root,0u64,Problem::ResultTile,0u64);return complete(cursor,host,context,false);}
-            cursor.stage=Stage::ResultAfterChild;
-            if(plain_void(cursor.temporary,true)){host.unit(context);continue;}
-            return request(state,cursor,Query::Child,Site::Root,Binding::Representation,0u64);
-        }
-        if(cursor.stage==Stage::ResultAfterChild){
-            cursor.stage=Stage::ResultSave;
-            if((cursor.temporary.flags&1)!=0){
-                if(host.views(context)){host.failure(context,Site::Root,0u64,Problem::DatasetViewSpaced,0u64);return complete(cursor,host,context,false);}
-                return request(state,cursor,Query::Dataset,Site::Root,Binding::Representation,0u64);
+            if(cursor.stage==Stage::ResultAfterChild){
+                cursor.stage=Stage::ResultSave;
+                if((cursor.temporary.flags&1)!=0){
+                    if(host.views(context)){host.failure(context,Site::Root,0u64,Problem::DatasetViewSpaced,0u64);return complete(cursor,host,context,false);}
+                    return request(state,cursor,Query::Dataset,Site::Root,Binding::Representation,0u64);
+                }
             }
+            if(cursor.stage==Stage::ResultSave){host.save_payload(context);cursor.index+=1u64;cursor.stage=Stage::ResultItem;}
         }
-        if(cursor.stage==Stage::ResultSave){host.save_payload(context);cursor.index+=1u64;cursor.stage=Stage::ResultItem;}
+    }
+
+    if(cursor.kind==BuiltinKind::Array){
+        if(starting){
+            Type value=cursor.value;
+            if(value.arguments!=2u64){host.failure(context,Site::Root,0u64,Problem::ArrayArguments,0u64);return complete(cursor,host,context,false);}
+            cursor.temporary=host.argument(value.value,0u64);
+            if(address_bits(cursor.temporary.value)==0u64){host.failure(context,Site::Root,0u64,Problem::ArrayType,0u64);return complete(cursor,host,context,false);}
+            if((cursor.temporary.flags&4)!=0){host.failure(context,Site::Root,0u64,Problem::ArrayTile,0u64);return complete(cursor,host,context,false);}
+            cursor.stage=Stage::ArrayAfterChild;return request(state,cursor,Query::Child,Site::Root,Binding::Representation,0u64);
+        }
         if(cursor.stage==Stage::ArrayAfterChild){
             cursor.stage=Stage::ArrayCount;
             if((cursor.temporary.flags&1)!=0){
@@ -175,23 +192,30 @@ extern "C" Request type_step(address state,Host host,address context) on cpu
             if(!is_shape(length)){host.failure(context,Site::Root,0u64,Problem::ArrayLength,0u64);return complete(cursor,host,context,false);}
             cursor.stage=Stage::ArrayBuild;return request(state,cursor,Query::ShapeArgument,Site::Root,Binding::Representation,1u64);
         }
-        if(cursor.stage==Stage::ArrayBuild){
-            Extent extent=host.array_layout(context,cursor.scalar);
-            if(extent.size>4294967295u64){host.failure(context,Site::Root,0u64,Problem::ArrayOverflow,0u64);return complete(cursor,host,context,false);}
-            host.array(context,cursor.scalar,u32(extent.size));
-            if(cursor.components!=0u64){
-                u32 item=0;
-                while(item<cursor.scalar){
-                    u64 component=0u64;
-                    while(component<cursor.components){
-                        u32 offset=item*u32(extent.stride)+host.component_offset(context,component);
-                        host.array_component(context,component,offset);component+=1u64;
-                    }
-                    item+=1;
+        Extent extent=host.array_layout(context,cursor.scalar);
+        if(extent.size>4294967295u64){host.failure(context,Site::Root,0u64,Problem::ArrayOverflow,0u64);return complete(cursor,host,context,false);}
+        host.array(context,cursor.scalar,u32(extent.size));
+        if(cursor.components!=0u64){
+            u32 item=0;
+            while(item<cursor.scalar){
+                u64 component=0u64;
+                while(component<cursor.components){
+                    u32 offset=item*u32(extent.stride)+host.component_offset(context,component);
+                    host.array_component(context,component,offset);component+=1u64;
                 }
+                item+=1;
             }
-            return complete(cursor,host,context,true);
         }
+        return complete(cursor,host,context,true);
+    }
+
+    if(starting){
+        cursor.record=host.record(context);
+        if(cursor.record.ready==0){return complete(cursor,host,context,false);}
+        if(cursor.record.types+cursor.record.values!=cursor.value.arguments){host.failure(context,Site::Root,0u64,Problem::RecordArguments,0u64);return complete(cursor,host,context,false);}
+        cursor.index=0u64;cursor.stage=Stage::RecordTypeItem;
+    }
+    while(true){
         if(cursor.stage==Stage::RecordTypeItem){
             if(cursor.index==cursor.record.types){cursor.index=0u64;cursor.stage=Stage::RecordConstItem;continue;}
             cursor.temporary=host.argument(cursor.value.value,cursor.index);
