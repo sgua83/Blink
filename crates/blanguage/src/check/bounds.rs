@@ -1999,10 +1999,7 @@ impl Clause {
     }
 
     fn has_private_numeric(&self, bindings: &BTreeMap<ValueIdentity, impl std::borrow::Borrow<Proof>>) -> bool {
-        Self::ordered([self]).into_iter().any(|clause| {
-            matches!(&**clause.0, ClauseNode::Facts(facts)
-                if facts.iter().any(|fact| Self::private_numeric(fact, bindings)))
-        })
+        Self::any_fact([self],&|fact|Self::private_numeric(fact,bindings))
     }
 
     pub(super) fn project_guard(&self, bindings: &BTreeMap<ValueIdentity, Proof>) -> Self {
@@ -2198,17 +2195,20 @@ impl Clause {
     pub(super) fn any_scalar_identity<'a>(
         roots:impl IntoIterator<Item=&'a Self>, test:&impl Fn(&ValueIdentity)->bool,
     )->bool {
+        Self::any_fact(roots,&|fact|{
+            let found=std::cell::Cell::new(false);
+            fact.map(&|id|{found.set(found.get()||test(&id));id});
+            found.get()
+        })
+    }
+    fn any_fact<'a>(roots:impl IntoIterator<Item=&'a Self>,test:&impl Fn(&Fact)->bool)->bool {
         let mut pending=Vec::new();let mut visited=HashSet::new();
         for root in roots {
             pending.push(root);
             while let Some(clause)=pending.pop() {
                 if !visited.insert(clause.key()) { continue; }
                 match &**clause.0 {
-                    ClauseNode::Facts(facts)=>for fact in facts {
-                        let found=std::cell::Cell::new(false);
-                        fact.map(&|id|{found.set(found.get()||test(&id));id});
-                        if found.get() { return true; }
-                    },
+                    ClauseNode::Facts(facts)=>if facts.iter().any(test){return true;},
                     ClauseNode::Both(a,b)|ClauseNode::Either(a,b)=>pending.extend([b,a]),
                     ClauseNode::Branch(parent,condition,truth)=>{
                         pending.extend([&condition.cases[usize::from(*truth)],parent]);
@@ -2522,7 +2522,7 @@ impl Condition {
     pub(super) fn truth_in(&self,path:&Clause)->Option<bool>{
         if !self.assume(path,false).possible(){Some(true)}else if !self.assume(path,true).possible(){Some(false)}else{None}
     }
-    pub(super) fn mentions(&self,identity:ValueIdentity)->bool{Clause::ordered(&self.cases).iter().any(|clause|matches!(&**clause.0,ClauseNode::Facts(facts)if facts.iter().any(|fact|match fact{Fact::Equal(a,b)|Fact::NotEqual(a,b)|Fact::Below(a,b,..)=>*a==identity||*b==identity,Fact::Predicate(predicate,_)=>predicate.mentions(identity),Fact::Index(a,_)|Fact::Outside(a,_)|Fact::Zero(a)|Fact::Minimum(a,..)|Fact::Maximum(a,..)|Fact::NonZero(a)|Fact::Boolean(a,_)=>*a==identity})))}
+    pub(super) fn mentions(&self,identity:ValueIdentity)->bool{Clause::any_fact(&self.cases,&|fact|match fact{Fact::Equal(a,b)|Fact::NotEqual(a,b)|Fact::Below(a,b,..)=>*a==identity||*b==identity,Fact::Predicate(predicate,_)=>predicate.mentions(identity),Fact::Index(a,_)|Fact::Outside(a,_)|Fact::Zero(a)|Fact::Minimum(a,..)|Fact::Maximum(a,..)|Fact::NonZero(a)|Fact::Boolean(a,_)=>*a==identity})}
     pub(super) fn constant(truth:bool)->Self{let mut value=Self::default();value.cases[usize::from(!truth)]=Clause::impossible();value}
     pub(super) fn selected(index:ownership::ApplicationIndex,element:usize)->Self{
         let ownership::ApplicationIndex::Value(id,_)=index else{return Self::constant(matches!(index,ownership::ApplicationIndex::Constant(i)if i as usize==element))};
