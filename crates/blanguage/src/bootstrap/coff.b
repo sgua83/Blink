@@ -77,7 +77,6 @@ extern "C" void encode(CoffInput input,CoffLayout layout,address output) on cpu 
         u64 h=20u64+40u64*i;
         copy(output,h,section.name,section.name_length);
         le32(output,h+16u64,section.byte_length);le32(output,h+20u64,section.offset);
-        copy(output,section.offset,section.bytes,section.byte_length);
         le32(output,h+24u64,section.relocation_offset);
         u64 count=section.relocation_count;u64 flags=section.flags;
         u64 at=section.relocation_offset;

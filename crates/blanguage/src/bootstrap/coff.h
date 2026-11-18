@@ -1,10 +1,10 @@
 module bootstrap.coff;
 // Windows x64 C ABI; all borrowed-view fields occupy eight bytes.
-const u64 SECTION_BYTES=72u64;
+const u64 SECTION_BYTES=64u64;
 const u64 SYMBOL_BYTES=80u64;
 const u64 RELOCATION_BYTES=24u64;
 struct CoffSection {
-    address name;u64 name_length;address bytes;u64 byte_length;u64 flags;
+    address name;u64 name_length;u64 byte_length;u64 flags;
     address relocations;u64 relocation_count;u64 offset;u64 relocation_offset;
 };
 struct CoffSymbol {

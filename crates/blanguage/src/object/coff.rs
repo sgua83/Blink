@@ -9,7 +9,7 @@ const FORMAT: u32 = 91;
 #[repr(C)]
 struct CoffSectionView {
     name: *const u8, name_length: usize,
-    bytes: *const u8, byte_length: usize, flags: u64,
+    byte_length: usize, flags: u64,
     relocations: *const CoffRelocationView, relocation_count: usize,
     offset: usize, relocation_offset: usize,
 }
@@ -501,7 +501,7 @@ pub(crate) fn rust_link_binding<'a>(
     Cow::Owned(output)
 }
 
-fn metadata(o: &Object) -> Result<Vec<u8>> {
+fn metadata<T>(o: &Object, consume: impl FnOnce(MetadataInput, usize) -> Result<T>) -> Result<T> {
     let binding = o.archive.as_ref().and_then(|archive| archive.resources.as_ref());
     let empty = MetadataBytes::new(&[]);
     let code = binding.iter().flat_map(|binding| &binding.code)
@@ -594,36 +594,47 @@ fn metadata(o: &Object) -> Result<Vec<u8>> {
         MetadataError::Field => return Err("对象元数据字段超过32位编码".into()),
         MetadataError::SectionSize => return Err("COFF元数据节超过32位长度字段".into()),
     }
-    let mut output = Vec::with_capacity(layout.length);
-    unsafe {
-        metadata_encode(input, output.as_mut_ptr());
-        output.set_len(layout.length);
-    }
-    Ok(output)
+    consume(input, layout.length)
 }
 
 pub(super) fn encode(o: &Object) -> Result<Vec<u8>> {
     encode_build(o, None)
 }
 pub(super) fn encode_build(o: &Object, build: Option<&[u8]>) -> Result<Vec<u8>> {
-    let meta = metadata(o)?;
-    let extra = std::iter::once((META, meta.as_slice(), 0x840, &[][..]))
-        .chain(build.map(|bytes| (BUILD, bytes, 0x840, &[][..])))
-        .chain(o.archive.as_ref().map(|archive| (ARCHIVE, archive.bytes.as_ref(), 0x840, &[][..])));
-    encode_sections(&o.name, &o.sections, &o.symbols, extra)
+    metadata(o, |input, length| {
+        let extra = std::iter::once((META, CoffPayload::Metadata(&input, length), 0x840, &[][..]))
+            .chain(build.map(|bytes| (BUILD, CoffPayload::Borrowed(bytes), 0x840, &[][..])))
+            .chain(o.archive.as_ref().map(|archive| (ARCHIVE, CoffPayload::Borrowed(archive.bytes.as_ref()), 0x840, &[][..])));
+        encode_sections(&o.name, &o.sections, &o.symbols, extra)
+    })
 }
 
 pub(crate) fn encode_native(name: &str, source: &[Section], declared: &[Symbol]) -> Result<Vec<u8>> {
     encode_sections(name, source, declared, std::iter::empty())
 }
 
+enum CoffPayload<'a> {
+    Borrowed(&'a [u8]),
+    Metadata(&'a MetadataInput, usize),
+}
+impl CoffPayload<'_> {
+    fn len(&self) -> usize {
+        match self { Self::Borrowed(bytes) => bytes.len(), Self::Metadata(_, length) => *length }
+    }
+    unsafe fn write(&self, destination: *mut u8) {
+        match self {
+            Self::Borrowed(bytes) => unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), destination, bytes.len()); },
+            Self::Metadata(input, _) => unsafe { metadata_encode(**input, destination); },
+        }
+    }
+}
 fn encode_sections<'a>(
     name: &str, source: &'a [Section], declared: &[Symbol],
-    extra: impl Iterator<Item = (&'a str, &'a [u8], u32, &'a [Relocation])>,
+    extra: impl Iterator<Item = (&'a str, CoffPayload<'a>, u32, &'a [Relocation])>,
 ) -> Result<Vec<u8>> {
     let sections = source.iter().map(|section|
-        (section.name.as_str(), section.bytes.as_slice(), section.flags, section.relocations.as_slice())
-    ).chain(extra);
+        (section.name.as_str(), CoffPayload::Borrowed(section.bytes.as_slice()), section.flags, section.relocations.as_slice())
+    ).chain(extra).collect::<Vec<_>>();
     let input_relocations = source.iter().map(|section| {
         section.relocations.iter().map(|relocation| {
             let empty = BindingBytes::new(&[]);
@@ -667,17 +678,17 @@ fn encode_sections<'a>(
         relocations.set_len(plan.relocations);
     }
     let mut at = 0;
-    let mut sections = sections.map(|(name, bytes, flags, source)| {
+    let mut physical = sections.iter().map(|(name, payload, flags, source)| {
         let bound = &relocations[at..at + source.len()];
         at += source.len();
         CoffSectionView {
             name: name.as_ptr(), name_length: name.len(),
-            bytes: bytes.as_ptr(), byte_length: bytes.len(), flags: u64::from(flags),
+            byte_length: payload.len(), flags: u64::from(*flags),
             relocations: bound.as_ptr(), relocation_count: bound.len(), offset: 0, relocation_offset: 0,
         }
     }).collect::<Vec<_>>();
     let input = CoffInput {
-        sections: sections.as_mut_ptr(), section_count: sections.len(),
+        sections: physical.as_mut_ptr(), section_count: physical.len(),
         symbols: symbols.as_ptr(), symbol_count: symbols.len(),
     };
     let layout = unsafe { coff_layout(input) };
@@ -698,6 +709,9 @@ fn encode_sections<'a>(
     let mut output = Vec::with_capacity(layout.length);
     unsafe {
         coff_encode(input, layout, output.as_mut_ptr());
+        for ((_, payload, _, _), section) in sections.iter().zip(&physical) {
+            payload.write(output.as_mut_ptr().add(section.offset));
+        }
         output.set_len(layout.length);
     }
     Ok(output)
