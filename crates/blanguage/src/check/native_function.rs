@@ -2494,7 +2494,7 @@ async fn build_domain(
 ) -> Result<()> {
     let d = &input.owner().definition;
     let bound_parameters=unsafe { world.call(input.parameters(world)).await }?;
-    let expanded = unsafe { world.call(expand_domain(world, input, functions, element_inputs)).await }?;
+    let (expanded, bound_contracts) = unsafe { world.call(expand_domain(world, input, functions, element_inputs)).await }?;
     let mut signature = expanded.program;
     let mut scopes = expanded.scopes;
     if !signature.accelerations.is_empty() || target == Target::Gpu && !signature.textures.is_empty() {
@@ -2715,7 +2715,7 @@ async fn build_domain(
         element_inputs:BTreeMap::new(),
         returned: None,
         written: vec![None; bound_parameters.len()],
-        requires: input.contracts().into_iter().map(|contract| (contract.kind, contract.predicate)).collect(),
+        requires: bound_contracts.into_owned().into_iter().map(|contract| (contract.kind, contract.predicate)).collect(),
         target: Target::Cpu,
         frame: false,
         domain: Some(interface),

@@ -60,6 +60,7 @@ mod view_contracts;
 use flow::{Flow, LoopContext};
 use ownership::Position;
 use std::{
+    borrow::Cow,
     collections::{BTreeMap, BTreeSet},
     sync::Arc,
 };
@@ -384,7 +385,7 @@ pub(crate) async fn compile_program(
     instance: &crate::generics::Instance,
 ) -> Result<Program> {
     let mut functions = native_function::Module::default();
-    let expanded = unsafe { world.call(expand_domain(world, DomainInput::Declaration(instance), &mut functions, &[])).await }?;
+    let (expanded, _) = unsafe { world.call(expand_domain(world, DomainInput::Declaration(instance), &mut functions, &[])).await }?;
     if !expanded.calls.is_empty() {
         return instance.definition.source.fail(
             instance.definition.function.span(),
@@ -431,8 +432,11 @@ impl<'a> DomainInput<'a> {
             Ok(parameters)
         },Self::Parallel{parameters,..}=>Ok(parameters.to_vec())}
     }
-    fn contracts(self)->Vec<FunctionContract> {
-        match self {Self::Declaration(instance)=>instance.contracts().collect(),Self::Parallel{contracts,..}=>contracts.to_vec()}
+    fn contracts(self) -> Cow<'a, [FunctionContract]> {
+        match self {
+            Self::Declaration(instance) => Cow::Owned(instance.contracts().collect()),
+            Self::Parallel { contracts, .. } => Cow::Borrowed(contracts),
+        }
     }
     fn source_origin(self)->Option<SourceOrigin> {
         match self {Self::Declaration(instance)=>instance.definition.source_origin(),Self::Parallel{..}=>None}
@@ -449,7 +453,12 @@ impl<'a> DomainInput<'a> {
         origin.map(|origin|Arc::new(SourceSite{origin,context:Arc::new(SourceContext{domain_path:path.clone(),..(*context).clone()}),span,syntax}))
     }
 }
-async fn expand_domain(world: &World, input: DomainInput<'_>, functions: &mut native_function::Module, element_inputs: &[ElementFact]) -> Result<ExpandedDomain> {
+async fn expand_domain<'a>(
+    world: &World,
+    input: DomainInput<'a>,
+    functions: &mut native_function::Module,
+    element_inputs: &[ElementFact],
+) -> Result<(ExpandedDomain, Cow<'a, [FunctionContract]>)> {
     let name = input.name();
     let d = &input.owner().definition;
     if let DomainInput::Declaration(instance)=input {
@@ -575,10 +584,11 @@ async fn expand_domain(world: &World, input: DomainInput<'_>, functions: &mut na
         prefix_requirements: Vec::new(),
         prefix_guarantees: Vec::new(), element_requirements: Vec::new(), element_guarantees: Vec::new(), length_requirements: Vec::new(), imports: BTreeMap::new(),
     };
-    program.length_requirements = contracts::root_lengths(&env, d, input.contracts().into_iter())?;
-    program.prefix_requirements = prefix::relations(&program, &env, d, input.contracts().into_iter(), ContractKind::Requires)?;
-    program.prefix_guarantees = prefix::relations(&program, &env, d, input.contracts().into_iter(), ContractKind::Ensures)?;
-    program.element_requirements = unsafe { world.call(prefix::element_requirements(world, &program.buffers, &env, input.owner(), input.contracts().into_iter())).await }?;
+    let bound_contracts = input.contracts();
+    program.length_requirements = contracts::root_lengths(&env, d, &bound_contracts)?;
+    program.prefix_requirements = prefix::relations(&program, &env, d, &bound_contracts, ContractKind::Requires)?;
+    program.prefix_guarantees = prefix::relations(&program, &env, d, &bound_contracts, ContractKind::Ensures)?;
+    program.element_requirements = unsafe { world.call(prefix::element_requirements(world, &program.buffers, &env, input.owner(), &bound_contracts)).await }?;
     program.element_requirements.extend_from_slice(element_inputs);
     program.element_requirements.sort();
     program.element_requirements.dedup();
@@ -597,7 +607,7 @@ async fn expand_domain(world: &World, input: DomainInput<'_>, functions: &mut na
     }
     program.source_stages = program.stages.len();
     program.element_guarantees = program.element_outputs(facts.element_facts(&program));
-    Ok(ExpandedDomain { program, scopes, calls, outputs: facts.outputs, elements: facts.elements })
+    Ok((ExpandedDomain { program, scopes, calls, outputs: facts.outputs, elements: facts.elements }, bound_contracts))
 }
 async fn expand_program(
     world: &World,
@@ -1316,13 +1326,14 @@ async fn expand_stages(
                                 }
                             }
                         }
-                        for (left, right) in contracts::root_lengths(&child, callee, instance.contracts())? {
+                        let bound_contracts: Vec<_> = instance.contracts().collect();
+                        for (left, right) in contracts::root_lengths(&child, callee, &bound_contracts)? {
                             if !program.same_length(left, right) {
                                 return d.source.fail(statement.span(), "B226", "整域调用前未证明same_length数据集长度关系");
                             }
                         }
-                        let required = prefix::relations(program, &child, callee, instance.contracts(), ContractKind::Requires)?;
-                        let elements = unsafe { world.call(prefix::element_requirements(world, &program.buffers, &child, &instance, instance.contracts())).await }?;
+                        let required = prefix::relations(program, &child, callee, &bound_contracts, ContractKind::Requires)?;
+                        let elements = unsafe { world.call(prefix::element_requirements(world, &program.buffers, &child, &instance, &bound_contracts)).await }?;
                         facts.prove_elements(program, &elements, &d.source, statement.span())?;
                         for relation in &required {
                             prefix::prove(
@@ -1404,7 +1415,7 @@ async fn expand_stages(
                             facts.leave();
                         }
                         first_stage = program.stages.len();
-                        for relation in prefix::relations(program, &child, callee, instance.contracts(), ContractKind::Ensures)? {
+                        for relation in prefix::relations(program, &child, callee, &bound_contracts, ContractKind::Ensures)? {
                             facts.grant(relation);
                         }
                         if compiled {

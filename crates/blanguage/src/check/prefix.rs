@@ -156,19 +156,19 @@ pub(super) fn relations(
     program: &Program,
     env: &BTreeMap<String, Root>,
     d: &Definition,
-    contracts: impl Iterator<Item=FunctionContract>,
+    contracts: &[FunctionContract],
     kind: ContractKind,
 ) -> Result<Vec<PrefixRelation>> {
-    let mut result = contracts
+    let mut result = contracts.iter()
         .filter(|c| c.kind == kind && !matches!(c.predicate, ContractPredicate::SameLength { .. } | ContractPredicate::Index { .. } | ContractPredicate::Range { .. } | ContractPredicate::Nonzero(_)))
-        .map(|c| relation(program, env, d, &c))
+        .map(|c| relation(program, env, d, c))
         .collect::<Result<Vec<_>>>()?;
     result.sort();
     result.dedup();
     Ok(result)
 }
 
-pub(super) async fn element_requirements(world: &World, buffers: &[Buffer], env: &BTreeMap<String, Root>, instance:&crate::generics::Instance, contracts:impl Iterator<Item=FunctionContract>) -> Result<Vec<ElementFact>> {
+pub(super) async fn element_requirements(world: &World, buffers: &[Buffer], env: &BTreeMap<String, Root>, instance:&crate::generics::Instance, contracts: &[FunctionContract]) -> Result<Vec<ElementFact>> {
     let d=&instance.definition;
     let mut requirements = Vec::new();
     for contract in contracts {

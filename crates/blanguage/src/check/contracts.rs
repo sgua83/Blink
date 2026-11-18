@@ -4,7 +4,7 @@ use super::*;
 pub(super) fn root_lengths(
     env: &BTreeMap<String, Root>,
     definition: &Definition,
-    contracts: impl Iterator<Item=FunctionContract>,
+    contracts: &[FunctionContract],
 ) -> Result<Vec<(usize, usize)>> {
     let mut relations = BTreeSet::new();
     for contract in contracts {
