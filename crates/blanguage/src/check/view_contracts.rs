@@ -1577,17 +1577,21 @@ fn stored_outputs<'p>(
         return BTreeSet::new();
     }
 
-    let locations = evaluation.stored_locations(&parameters);
-    let mut stored: BTreeMap<(Borrow, u32), Borrow> = BTreeMap::new();
+    let mut stored = BTreeMap::<(Borrow, u32), (Vec<_>, Borrow)>::new();
+    for (origin, word) in evaluation.stored_locations(&parameters) {
+        let target = stored_target(&origin, function, exposed, &parameters);
+        stored.entry((target, word)).or_default().0.push(origin);
+    }
     for memory in exits {
-        for (origin, word) in &locations {
-            let value = evaluation.content_at_exit(origin, *word, memory);
-            let target = stored_target(origin, function, exposed, &parameters);
-            let value = canonical_relation(value, function, None, exposed, parameters(), false);
-            stored.entry((target, *word)).or_default().union(&value);
+        for ((_, word), (origins, value)) in &mut stored {
+            for origin in origins {
+                let incoming = evaluation.content_at_exit(origin, *word, memory);
+                let incoming = canonical_relation(incoming, function, None, exposed, parameters(), false);
+                value.union(&incoming);
+            }
         }
     }
-    stored.into_iter().map(|((borrows, word), value)| Access::Stored {
+    stored.into_iter().map(|((borrows, word), (_, value))| Access::Stored {
         borrows, word, value, when: bounds::Condition::constant(true),
     }).collect()
 }
