@@ -6,39 +6,20 @@ address at(address data, u64 offset) on cpu {
 u64 element(read StorageView storage, Slice values, u64 index) on cpu {
     return unsafe_position<u64>(at(storage.nodes, values.offset + index * 8u64));
 }
-u8 text_byte(read StorageView storage, Text text, u64 index) on cpu {
-    address data = text.kind == 0 ? storage.source : storage.text;
-    return unsafe_position<u8>(at(data, text.range.start + index));
-}
-bool word(read StorageView storage, Text text, read array<u8,8> name) on cpu {
-    if (text.range.end - text.range.start != 8u64) { return false; }
+bool word(address bytes, read array<u8,8> expected) on cpu {
     for (index in 0..8) {
-        if (text_byte(storage, text, u64(index)) != name[index]) { return false; }
+        if (unsafe_position<u8>(at(bytes,u64(index))) != expected[index]) { return false; }
     }
     return true;
 }
-bool positional(read StorageView storage, Text name, u64 count) on cpu {
-    u64 length = name.range.end - name.range.start;
-    if (length <= 8u64 || count == 0u64) { return false; }
-    array<u8,8> prefix = "argument";
-    for (index in 0..8) {
-        if (text_byte(storage, name, u64(index)) != prefix[index]) { return false; }
-    }
-    if (length > 9u64 && text_byte(storage, name, 8u64) == 48) { return false; }
-    // Compare the decimal identity directly against the actual parameter count.
-    // This also leaves names beyond the machine index domain as ordinary consts.
-    u64 maximum = count - 1u64;
-    u64 value = 0u64;
-    u64 index = 8u64;
-    while (index < length) {
-        u8 digit = text_byte(storage, name, index);
-        if (digit < 48 || digit > 57) { return false; }
-        u64 part = u64(digit) - 48u64;
-        if (value > maximum / 10u64 || (value == maximum / 10u64 && part > maximum % 10u64)) { return false; }
-        value = value * 10u64 + part;
-        index += 1u64;
-    }
-    return true;
+extern "C" u64 positional_index(address bytes,u64 length) on cpu {
+    u64 missing=18446744073709551615u64;
+    if (length<=8u64 || !word(bytes,"argument")) { return missing; }
+    address suffix=at(bytes,8u64);
+    u8 first=unsafe_position<u8>(suffix);
+    if (first<48 || first>57 || (first==48 && length>9u64)) { return missing; }
+    ParsedNumber ordinal=decimal_number(suffix,length-8u64,missing);
+    return ordinal.error==NumberError::None ? ordinal.value : missing;
 }
 
 Optional<u32> literal_shape(read StorageView storage, ShapeRef reference) on cpu {
@@ -144,8 +125,11 @@ extern "C" void condition(SignatureNode source, Optional<u64> parameters, u32 ou
     ConditionNode node = unsafe_position<ConditionNode>(at(source.storage.nodes, source.offset));
     match (node) {
         ConditionNode::Name(name) {
-            bool local = (output != 0 && word(source.storage, name, "returned"))
-                || (parameters.present != 0 && positional(source.storage, name, parameters.value));
+            address data=name.kind==0 ? source.storage.source : source.storage.text;
+            address bytes=at(data,name.range.start);
+            u64 length=name.range.end-name.range.start;
+            bool local = (output!=0 && length==8u64 && word(bytes,"returned"))
+                || (parameters.present!=0 && positional_index(bytes,length)<parameters.value);
             if (!local) {
                 Optional<u32> bound = value(context, name);
                 if (bound.present != 0) { construct(context, ConditionNode::StaticU32(bound.value)); return; }

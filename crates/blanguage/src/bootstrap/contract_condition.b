@@ -510,17 +510,3 @@ extern "C" TypeNeed type_step(address state,address context,Host host) on cpu
     }
     return give_type(state,cursor,TypeNeed::Done);
 }
-
-extern "C" u64 positional_index(Bytes name,u64 count) on cpu {
-    if (name.count<=8u64) { return count; }
-    array<u8,8> prefix="argument";
-    for (index in 0..8) {
-        u8 current=unsafe_position<u8>(unsafe_address(address_bits(name.data)+u64(index)));
-        if (current!=prefix[index]) { return count; }
-    }
-    address suffix=unsafe_address(address_bits(name.data)+8u64);
-    u8 first=unsafe_position<u8>(suffix);
-    if (first<48 || first>57 || (first==48 && name.count>9u64)) { return count; }
-    ParsedNumber ordinal=decimal_number(suffix,name.count-8u64,count);
-    return ordinal.error==NumberError::None ? ordinal.value : count;
-}

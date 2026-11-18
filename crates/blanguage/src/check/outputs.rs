@@ -132,7 +132,7 @@ impl<'a> ConditionScope<'a> {
                 instance.definition.function.params().iter().any(|parameter| parameter.name()==name)
             }
             ConditionParameters::Native(parameters) => parameters.iter().any(|parameter| parameter.name==name),
-            ConditionParameters::Positional(parameters) => positional_index(name, parameters.len()) < parameters.len(),
+            ConditionParameters::Positional(parameters) => positional_index(name) < parameters.len(),
         }
     }
 
@@ -150,7 +150,7 @@ impl<'a> ConditionScope<'a> {
                 Ok(parameters.iter().find(|parameter| parameter.name==name).map(|parameter| Cow::Borrowed(&parameter.ty)))
             }
             ConditionParameters::Positional(parameters) => {
-                Ok(parameters.get(positional_index(name, parameters.len())).map(|(_, ty)| Cow::Borrowed(ty)))
+                Ok(parameters.get(positional_index(name)).map(|(_, ty)| Cow::Borrowed(ty)))
             }
         }
     }
@@ -855,7 +855,7 @@ pub(crate) async fn validate_function_contracts(
     world:&World,parameters: &[CallParameter], result: Option<&Ty>, outputs: &[ContractPredicate],
     source: &crate::Source, span: Span,
 ) -> Result<()> {
-    let input = |name: &str| parameters.get(positional_index(name, parameters.len()))
+    let input = |name: &str| parameters.get(positional_index(name))
         .map(|parameter| match &parameter.kind {
             CallParameterKind::Value(ty) => (Access::Value, ty.clone()),
             CallParameterKind::Reference { ty, access } => (*access, ty.clone()),

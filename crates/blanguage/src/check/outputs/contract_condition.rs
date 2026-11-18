@@ -342,8 +342,8 @@ enum IdentityNeed { Done, Child, Type }
 #[repr(u32)]
 enum TypeNeed { Done, Child, Path }
 unsafe extern "C" {
-    #[link_name = "bootstrap.contract_condition::positional_index"]
-    fn b_positional_index(name: Bytes, count: u64) -> u64;
+    #[link_name = "bootstrap.source_bind::positional_index"]
+    fn b_positional_index(bytes: *const u8, length: u64) -> u64;
     #[link_name="bootstrap.contract_condition::bind_start"]
     fn bind_start(value: Address, is_public: u32) -> BindingCursor;
     #[link_name="bootstrap.contract_condition::bind_step"]
@@ -357,8 +357,9 @@ unsafe extern "C" {
     #[link_name="bootstrap.contract_condition::type_step"]
     fn type_step(state: *mut QueryCursor, ctx: Address, host: Host) -> TypeNeed;
 }
-pub(super) fn positional_index(name: &str, count: usize) -> usize {
-    unsafe { b_positional_index(Bytes::of(name), count as u64) as usize }
+pub(super) fn positional_index(name: &str) -> usize {
+    let index = unsafe { b_positional_index(name.as_ptr(), name.len() as u64) };
+    usize::try_from(index).unwrap_or(usize::MAX)
 }
 
 async fn bind_node(world: &World, definition: ConditionScope<'_>, value: &OutputCondition, span: Span) -> Result<Box<OutputCondition>> {

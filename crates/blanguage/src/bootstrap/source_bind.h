@@ -1,6 +1,7 @@
 module bootstrap.source_bind;
 import bootstrap.ast_storage;
 import bootstrap.signatures;
+import bootstrap.cli;
 
 // The original source-binding query owns this cursor and its partial native values.
 // Requests end the native call; the same cursor consumes the actual child result.
@@ -44,3 +45,6 @@ extern "C" void predicate(SignatureNode source, Optional<u64> parameters, addres
 
 extern "C" bool runtime_contract(SignatureNode source, address context,
     cfn<Optional<u32>,address,Text> value) on cpu requires nonzero(value);
+
+// An unrecognized or unrepresentable name returns the maximum u64 index.
+extern "C" u64 positional_index(address bytes,u64 length) on cpu;
