@@ -11,6 +11,8 @@ pub const RUNTIME_LIBRARY: &str = "@blink.application@";
 pub(crate) const MODULE_RUNTIME_SYMBOLS: &[&str] = &["blink_allocate", "blink_run", "blink_complete_field", "blink_task_start", "blink_task_wait"];
 #[cfg(feature = "compiler")]
 mod device_requirements;
+#[cfg(feature = "compiler")]
+mod program_layout;
 mod module_image;
 pub use module_image::{ModuleImage, ModuleFactory};
 /// 字段共同保证的闭区间，按原Scalar有序位编码；仅同步借用，不拥有存储。
@@ -304,6 +306,7 @@ record!(DeviceRequirements {
 record!(ElementRange { binding, offset, scalar, intervals, known_bits });
 #[cfg(not(feature="compiler"))]
 variants!(ElementFact { 0 => Range(range), 1 => Index { binding, offset, target } });
+#[cfg(not(feature = "compiler"))]
 record!(ProgramLayout {
     write_regions,
     name,

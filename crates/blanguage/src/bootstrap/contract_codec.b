@@ -1433,3 +1433,37 @@ extern "C" ReadStatus contract_read_device_requirements(Bytes input,inout u64 po
  status=contract_read_bool(input,position,output.position_fetch);if(status!=ReadStatus::Success){return status;}
  return contract_read_subgroup_capabilities(input,position,output.subgroup);
 }
+
+extern "C" void resource_write_program_layout(address output,ResourceProgramLayoutFields fields,ResourceProgramLayoutWriter host) on cpu requires nonzero(host.write_regions) requires nonzero(host.name) requires nonzero(host.target) requires nonzero(host.buffers) requires nonzero(host.accelerations) requires nonzero(host.textures) requires nonzero(host.uniforms) requires nonzero(host.uniform_bytes) requires nonzero(host.prefix_requirements) requires nonzero(host.prefix_guarantees) requires nonzero(host.element_requirements) requires nonzero(host.element_guarantees) requires nonzero(host.length_requirements) requires nonzero(host.requirements) {
+ host.write_regions(fields.write_regions,output);
+ host.name(fields.name,output);
+ host.target(fields.target,output);
+ host.buffers(fields.buffers,output);
+ host.accelerations(fields.accelerations,output);
+ host.textures(fields.textures,output);
+ host.uniforms(fields.uniforms,output);
+ host.uniform_bytes(fields.uniform_bytes,output);
+ host.prefix_requirements(fields.prefix_requirements,output);
+ host.prefix_guarantees(fields.prefix_guarantees,output);
+ host.element_requirements(fields.element_requirements,output);
+ host.element_guarantees(fields.element_guarantees,output);
+ host.length_requirements(fields.length_requirements,output);
+ host.requirements(fields.requirements,output);
+}
+extern "C" ReadStatus resource_read_program_layout(address context,ResourceProgramLayoutFields fields,ResourceProgramLayoutReader host) on cpu requires nonzero(host.write_regions) requires nonzero(host.name) requires nonzero(host.target) requires nonzero(host.buffers) requires nonzero(host.accelerations) requires nonzero(host.textures) requires nonzero(host.uniforms) requires nonzero(host.uniform_bytes) requires nonzero(host.prefix_requirements) requires nonzero(host.prefix_guarantees) requires nonzero(host.element_requirements) requires nonzero(host.element_guarantees) requires nonzero(host.length_requirements) requires nonzero(host.requirements) {
+ ReadStatus status_0=host.write_regions(context,fields.write_regions);if(status_0!=ReadStatus::Success){return status_0;}
+ ReadStatus status_1=host.name(context,fields.name);if(status_1!=ReadStatus::Success){return status_1;}
+ ReadStatus status_2=host.target(context,fields.target);if(status_2!=ReadStatus::Success){return status_2;}
+ ReadStatus status_3=host.buffers(context,fields.buffers);if(status_3!=ReadStatus::Success){return status_3;}
+ ReadStatus status_4=host.accelerations(context,fields.accelerations);if(status_4!=ReadStatus::Success){return status_4;}
+ ReadStatus status_5=host.textures(context,fields.textures);if(status_5!=ReadStatus::Success){return status_5;}
+ ReadStatus status_6=host.uniforms(context,fields.uniforms);if(status_6!=ReadStatus::Success){return status_6;}
+ ReadStatus status_7=host.uniform_bytes(context,fields.uniform_bytes);if(status_7!=ReadStatus::Success){return status_7;}
+ ReadStatus status_8=host.prefix_requirements(context,fields.prefix_requirements);if(status_8!=ReadStatus::Success){return status_8;}
+ ReadStatus status_9=host.prefix_guarantees(context,fields.prefix_guarantees);if(status_9!=ReadStatus::Success){return status_9;}
+ ReadStatus status_10=host.element_requirements(context,fields.element_requirements);if(status_10!=ReadStatus::Success){return status_10;}
+ ReadStatus status_11=host.element_guarantees(context,fields.element_guarantees);if(status_11!=ReadStatus::Success){return status_11;}
+ ReadStatus status_12=host.length_requirements(context,fields.length_requirements);if(status_12!=ReadStatus::Success){return status_12;}
+ ReadStatus status_13=host.requirements(context,fields.requirements);if(status_13!=ReadStatus::Success){return status_13;}
+ return ReadStatus::Success;
+}

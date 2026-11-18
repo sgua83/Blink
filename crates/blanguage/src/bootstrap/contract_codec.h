@@ -866,3 +866,55 @@ extern "C" ReadStatus contract_read_subgroup_capabilities(Bytes input,inout u64 
 struct DeviceFields { u32 ray_query; u32 float64; u32 integer8; u32 integer16; u32 atomic64; u32 shared_atomic64; u32 float32_preserve; u32 float64_preserve; u32 sorting; u32 maximal_reconvergence; u32 texture_indexing; u32 position_fetch; SubgroupFields subgroup; };
 extern "C" void contract_write_device_requirements(DeviceFields value,address output,cfn<void,address,address,u64> append) on cpu requires nonzero(append);
 extern "C" ReadStatus contract_read_device_requirements(Bytes input,inout u64 position,inout DeviceFields output) on cpu;
+
+// Resource layout projections borrow original fields for one synchronous call.
+struct ResourceProgramLayoutFields {
+ address write_regions;
+ address name;
+ address target;
+ address buffers;
+ address accelerations;
+ address textures;
+ address uniforms;
+ address uniform_bytes;
+ address prefix_requirements;
+ address prefix_guarantees;
+ address element_requirements;
+ address element_guarantees;
+ address length_requirements;
+ address requirements;
+};
+struct ResourceProgramLayoutWriter {
+ cfn<void,address,address> write_regions;
+ cfn<void,address,address> name;
+ cfn<void,address,address> target;
+ cfn<void,address,address> buffers;
+ cfn<void,address,address> accelerations;
+ cfn<void,address,address> textures;
+ cfn<void,address,address> uniforms;
+ cfn<void,address,address> uniform_bytes;
+ cfn<void,address,address> prefix_requirements;
+ cfn<void,address,address> prefix_guarantees;
+ cfn<void,address,address> element_requirements;
+ cfn<void,address,address> element_guarantees;
+ cfn<void,address,address> length_requirements;
+ cfn<void,address,address> requirements;
+};
+struct ResourceProgramLayoutReader {
+ cfn<ReadStatus,address,address> write_regions;
+ cfn<ReadStatus,address,address> name;
+ cfn<ReadStatus,address,address> target;
+ cfn<ReadStatus,address,address> buffers;
+ cfn<ReadStatus,address,address> accelerations;
+ cfn<ReadStatus,address,address> textures;
+ cfn<ReadStatus,address,address> uniforms;
+ cfn<ReadStatus,address,address> uniform_bytes;
+ cfn<ReadStatus,address,address> prefix_requirements;
+ cfn<ReadStatus,address,address> prefix_guarantees;
+ cfn<ReadStatus,address,address> element_requirements;
+ cfn<ReadStatus,address,address> element_guarantees;
+ cfn<ReadStatus,address,address> length_requirements;
+ cfn<ReadStatus,address,address> requirements;
+};
+extern "C" void resource_write_program_layout(address output,ResourceProgramLayoutFields fields,ResourceProgramLayoutWriter host) on cpu requires nonzero(host.write_regions) requires nonzero(host.name) requires nonzero(host.target) requires nonzero(host.buffers) requires nonzero(host.accelerations) requires nonzero(host.textures) requires nonzero(host.uniforms) requires nonzero(host.uniform_bytes) requires nonzero(host.prefix_requirements) requires nonzero(host.prefix_guarantees) requires nonzero(host.element_requirements) requires nonzero(host.element_guarantees) requires nonzero(host.length_requirements) requires nonzero(host.requirements);
+extern "C" ReadStatus resource_read_program_layout(address context,ResourceProgramLayoutFields fields,ResourceProgramLayoutReader host) on cpu requires nonzero(host.write_regions) requires nonzero(host.name) requires nonzero(host.target) requires nonzero(host.buffers) requires nonzero(host.accelerations) requires nonzero(host.textures) requires nonzero(host.uniforms) requires nonzero(host.uniform_bytes) requires nonzero(host.prefix_requirements) requires nonzero(host.prefix_guarantees) requires nonzero(host.element_requirements) requires nonzero(host.element_guarantees) requires nonzero(host.length_requirements) requires nonzero(host.requirements);
