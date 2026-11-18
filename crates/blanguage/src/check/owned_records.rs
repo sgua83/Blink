@@ -3,13 +3,13 @@ use super::*;
 use application::Ownership;
 use owned_values::{OwnedValue, OwnedValuePayload};
 use returns::Returned;
+mod projection;
 
 #[derive(Clone)]
 pub(super) struct OwnedProjection {
     pub root: String,
     pub path: Vec<usize>,
-    pub components: Vec<usize>,
-    pub ty: Ty,
+    pub offset: u32,
 }
 fn metadata_mut<'a>(owner: &'a mut OwnedValue, path: &[usize]) -> &'a mut Returned {
     let item = owner.payloads[path[0]].as_deref_mut().unwrap();
@@ -149,80 +149,13 @@ impl Builder<'_> {
         }))))
     }
     pub(super) fn owned_projection(&self, expr: &Expr) -> Option<OwnedProjection> {
-        match expr.kind() {
-            ExprKind::Name(name) => {
-                let Binding::OwnedValue(owner) = self.env.get(name)? else {
-                    return None;
-                };
-                Some(OwnedProjection {
-                    root: name.to_string(),
-                    path: Vec::new(),
-                    components: (0..owner.value.ty.components.len()).collect(),
-                    ty: owner.value.ty.clone(),
-                })
-            }
-            ExprKind::Index(base, index) => {
-                let mut p = self.owned_projection(&base)?;
-                let i = match index.kind() {
-                    ExprKind::StaticU32(value) => value,
-                    ExprKind::Number(text) => text.parse::<u32>().ok()?,
-                    ExprKind::Name(name) => match self.env.get(name)? {
-                        Binding::Value(value) if value.ty == Ty::scalar(Scalar::U32) => {
-                            value.constant.as_ref()?.first().copied()? as u32
-                        }
-                        Binding::Owned(value)if value.place.ty()==&Ty::scalar(Scalar::U32)=>value.proof.known_value(value.place.ty())?.first().copied()? as u32,
-                        _ => return None,
-                    },
-                    _ => return None,
-                } as usize;
-                if p.ty.array.is_none() || i >= p.ty.aggregate_len() {
-                    return None;
-                }
-                let (offset, ty) = p.ty.aggregate_part(i);
-                p.components = ty
-                    .components
-                    .iter()
-                    .map(|(_, at)| {
-                        p.components[p
-                            .ty
-                            .components
-                            .iter()
-                            .position(|(_, word)| *word == offset + at)
-                            .unwrap()]
-                    })
-                    .collect();
-                p.ty = ty.clone();
-                p.path.push(i);
-                Some(p)
-            }
-            ExprKind::Member(base, name) => {
-                let mut p = self.owned_projection(&base)?;
-                let index = p.ty.fields.iter().position(|(field, _, _)| field == name)?;
-                let (_, offset, ty) = &p.ty.fields[index];
-                p.components = ty
-                    .components
-                    .iter()
-                    .map(|(_, at)| {
-                        p.components[p
-                            .ty
-                            .components
-                            .iter()
-                            .position(|(_, word)| *word == offset + at)
-                            .unwrap()]
-                    })
-                    .collect();
-                p.ty = (**ty).clone();
-                p.path.push(index);
-                Some(p)
-            }
-            _ => None,
-        }
+        projection::owned(self,expr).map(|(value,_)|value)
     }
-    fn projection_place(&self, p: &OwnedProjection) -> Option<Place> {
-        let Binding::OwnedValue(owner) = self.env.get(&p.root)? else {
-            return None;
-        };
-        Some(owner.place()?.project(p.ty.clone(), &p.components))
+    fn projection_place(&self, p: &OwnedProjection, ty:&Ty) -> Option<Place> {
+        let Binding::OwnedValue(owner) = self.env.get(&p.root)? else { return None; };
+        let place=owner.place()?;
+        let components=projection::components(&owner.value.ty,ty,p.offset);
+        Some(place.project(ty.clone(),&components))
     }
     pub(super) async fn projected_owned(&mut self, p: &OwnedProjection, span: Span) -> Result<Returned> {
         let Some(Binding::OwnedValue(root)) = self.env.get(&p.root).cloned() else {
@@ -240,7 +173,7 @@ impl Builder<'_> {
         self.resolve_owned_model(&mut item,None);
         match item {
             Returned::Value(value) => {
-                if let Some(place) = self.projection_place(p) {
+                if let Some(place) = self.projection_place(p,&value.ty) {
                     unsafe { self.world.call(self.read_place(&place, span, None)).await }.map(Returned::value)
                 } else {
                     Ok(Returned::Value(value))
@@ -278,9 +211,8 @@ impl Builder<'_> {
                 data.projection.push(index);return Ok(Some(data));
             }
         }
-        let Some(p) = self
-            .owned_projection(expr)
-            .filter(|p| p.ty.dataset.is_some())
+        let Some(p) = projection::owned(self,expr)
+            .filter(|(_,ty)|ty.dataset.is_some()).map(|(value,_)|value)
         else {
             if !self.owned_element_type(expr).is_some_and(|ty|ty.dataset.is_some())
                 && !unsafe { self.world.call(self.read_expression_type(expr)).await }?.is_some_and(|ty|ty.dataset.is_some()) {
@@ -409,19 +341,8 @@ impl Binding {
 }
 
 impl Builder<'_> {
-    fn owned_expression_type(&self, expr: &Expr) -> Option<Ty> {
-        match expr.kind() {
-            ExprKind::Name(name) => match self.env.get(name)? {
-                Binding::OwnedValue(owner) => Some(owner.value.ty.clone()),
-                _ => None,
-            },
-            ExprKind::Member(base, field) => self
-                .owned_expression_type(&base)?
-                .field(field)
-                .map(|(_, ty)| ty.clone()),
-            ExprKind::Index(base, _) => self.owned_expression_type(&base)?.array.map(|ty| *ty),
-            _ => None,
-        }
+    fn owned_expression_type(&self, expr: &Expr) -> Option<&Ty> {
+        projection::ty(self,expr)
     }
     pub(super) async fn read_expression_type(&self,expr:&Expr)->Result<Option<Ty>> {
         Ok(match expr.kind() {
@@ -447,7 +368,7 @@ impl Builder<'_> {
             _=>None,
         })
     }
-    pub(super) fn owned_element_type(&self, expr: &Expr) -> Option<Ty> {
+    pub(super) fn owned_element_type(&self, expr: &Expr) -> Option<&Ty> {
         self.owned_expression_type(expr)
     }
     #[inline(never)]
@@ -528,16 +449,6 @@ impl Builder<'_> {
 
 impl Builder<'_> {
     pub(super) fn temporary_projection(&self, expr: &Expr) -> bool {
-        match expr.kind() {
-            ExprKind::Index(base, _) | ExprKind::Member(base, _) => self.temporary_projection(&base),
-            ExprKind::Specialize(name, _, _) if name == "unsafe_position" => false,
-            ExprKind::Call(..)
-            | ExprKind::Invoke(..)
-            | ExprKind::Specialize(..)
-            | ExprKind::Construct(..)
-            | ExprKind::Select(..)
-            | ExprKind::Target(..) => true,
-            _ => false,
-        }
+        projection::temporary(expr)
     }
 }
