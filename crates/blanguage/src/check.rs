@@ -1602,12 +1602,11 @@ pub(crate) fn validate_signature(d: &Definition) -> Result<()> {
         if declares_dataset(&p.ty())
             && !p.ty().dataset()
             && !(d.function.kind() == FunctionKind::Value
-                && d.function.target() == Target::Cpu
-                && matches!(p.access(),Access::Value|Access::Read))
+                && d.function.target() == Target::Cpu)
         {
             return d
                 .source
-                .fail(p.span(), "B224", "拥有结果参数属于CPU函数的按值交接");
+                .fail(p.span(), "B224", "拥有聚合参数只支持普通CPU函数");
         }
         if declared_argument_form(&p.ty())==DeclaredArgumentForm::Acceleration {
             if p.access() != Access::Read || d.function.target() != Target::Gpu {
