@@ -2,7 +2,7 @@
 //! native stepping returns; this query retains its actual partial arguments.
 use super::super::*;
 use super::RecordDeclaration;
-use crate::builtin_types::{Builtin,Kind};
+use crate::{builtin_types::{Builtin,Kind},syntax::wire::Optional};
 use std::{collections::BTreeMap,ffi::c_void,mem::{self,MaybeUninit},ptr,slice,str,sync::Arc};
 
 #[repr(C)]
@@ -14,9 +14,9 @@ impl Name {
 }
 #[repr(C)]
 #[derive(Clone,Copy)]
-struct Reference {kind:Kind,wrappers:u32,resource:u32,count:u32,arguments:u64,name:Name}
+struct Reference {kind:Kind,wrappers:u32,resource:u32,pending_count:u32,arguments:u64,name:Name}
 #[repr(C)]
-struct Argument {reference:*const c_void,wrappers:u32,arguments:u64}
+struct Argument {reference:*const c_void,wrappers:u32,arguments:u64,literal:Optional<u32>}
 #[repr(C)]
 struct Parameters {present:u32,types:u64,count:u64}
 #[repr(u32)]
@@ -39,6 +39,7 @@ struct Host {
     record:unsafe extern "C" fn(*mut c_void)->Parameters,
     reserve:unsafe extern "C" fn(*mut c_void,u64),
     argument:unsafe extern "C" fn(*mut c_void,u64)->Argument,
+    append_value:unsafe extern "C" fn(*mut c_void,u32),
     append_release:unsafe extern "C" fn(*mut c_void,*const c_void)->u32,
     fail:unsafe extern "C" fn(*mut c_void,Code,Problem,u64),
     finish:unsafe extern "C" fn(*mut c_void,u32,Name),
@@ -80,9 +81,19 @@ unsafe extern "C" fn reserve(raw:*mut c_void,count:u64) {unsafe{frame(raw)}.argu
 unsafe extern "C" fn argument(raw:*mut c_void,index:u64)->Argument {
     let f=unsafe{frame(raw)};
     match &f.input.arguments[index as usize] {
-        GenericArgument::Type(value)=>Argument{reference:(value as *const TypeName).cast(),wrappers:wrappers(value),arguments:value.arguments.len() as u64},
-        GenericArgument::Value(_)=>Argument{reference:ptr::null(),wrappers:0,arguments:0},
+        GenericArgument::Type(value) => Argument { reference: (value as *const TypeName).cast(),
+            wrappers: wrappers(value), arguments: value.arguments.len() as u64, literal: Optional::none() },
+        GenericArgument::Value(value) => {
+            let literal=match value {
+                Shape::Literal(value) => Optional::some(*value),
+                _ => Optional::none(),
+            };
+            Argument { reference: ptr::null(), wrappers: 0, arguments: 0, literal }
+        }
     }
+}
+unsafe extern "C" fn append_value(raw:*mut c_void, value:u32) {
+    unsafe { frame(raw) }.arguments.push(GenericArgument::Value(Shape::Literal(value)));
 }
 unsafe extern "C" fn append_release(raw:*mut c_void,value:*const c_void)->u32 {
     let f=unsafe{frame(raw)};let value=unsafe{&*value.cast::<TypeName>()};
@@ -117,12 +128,17 @@ pub(super) struct BoundReference<'a> {
 pub(super) async fn bind<'a>(world:&'a World,input:&'a TypeName,source:&'a Source,span:Span,
     module:&'a str,imports:&'a [String],builtin:Builtin)->Result<BoundReference<'a>> {
     let name=builtin.canonical(&input.name).unwrap_or(&input.name);
+    let (count,pending_count)=match input.count.as_ref() {
+        None => (None,0),
+        Some(Shape::Literal(value)) => (Some(*value),0),
+        Some(_) => (None,1),
+    };
     let descriptor=Reference{kind:builtin.kind,wrappers:wrappers(input),resource:u32::from(input.is_texture()||input.is_acceleration()),
-        count:u32::from(input.count.is_some()),arguments:input.arguments.len() as u64,name:Name::new(name)};
-    let mut f=Frame{world,input,source,span,module,imports,name,resolved:None,record:None,arguments:Vec::new(),count:None,result:MaybeUninit::uninit(),error:None};
+        pending_count,arguments:input.arguments.len() as u64,name:Name::new(name)};
+    let mut f=Frame{world,input,source,span,module,imports,name,resolved:None,record:None,arguments:Vec::new(),count,result:MaybeUninit::uninit(),error:None};
     let mut cursor=unsafe{start(descriptor)};
     loop {
-        let need=unsafe{step(&mut cursor,(&mut f as *mut Frame<'_>).cast(),Host{resource,record,reserve,argument,append_release,fail,finish})};
+        let need=unsafe{step(&mut cursor,(&mut f as *mut Frame<'_>).cast(),Host{resource,record,reserve,argument,append_value,append_release,fail,finish})};
         if let Some(error)=f.error.take(){return Err(error);}
         match need {
             Need::Done=>return Ok(BoundReference{name:unsafe{f.result.assume_init()},record:f.record}),

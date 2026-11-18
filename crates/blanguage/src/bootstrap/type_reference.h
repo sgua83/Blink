@@ -1,10 +1,11 @@
 module bootstrap.type_reference;
 import bootstrap.type_families;
+import bootstrap.ast_storage;
 
 // Descriptors borrow the original semantic input until its real query ends.
 struct Name { address bytes; u64 length; };
-struct Reference { BuiltinKind kind; u32 wrappers; u32 resource; u32 count; u64 arguments; Name name; };
-struct Argument { address reference; u32 wrappers; u64 arguments; };
+struct Reference { BuiltinKind kind; u32 wrappers; u32 resource; u32 pending_count; u64 arguments; Name name; };
+struct Argument { address reference; u32 wrappers; u64 arguments; Optional<u32> literal; };
 struct Parameters { u32 present; u64 types; u64 count; };
 enum Code:u32 { Owned=224; Void=228; Ordinary=232; Array=238; Result=269; };
 enum Problem:u32 { Arity=0; Type=1; ReleaseType=2; ReleaseForm=3; };
@@ -15,6 +16,7 @@ struct Host {
     cfn<Parameters,address> record;
     cfn<void,address,u64> reserve;
     cfn<Argument,address,u64> argument;
+    cfn<void,address,u32> append_value;
     cfn<bool,address,address> append_release;
     cfn<void,address,Code,Problem,u64> fail;
     cfn<void,address,u32,Name> finish;
@@ -23,7 +25,7 @@ struct Host {
 extern "C" Cursor start(Reference source) on cpu;
 extern "C" Need step(address state,address context,Host host) on cpu
     requires nonzero(host.resource) requires nonzero(host.record) requires nonzero(host.reserve)
-    requires nonzero(host.argument) requires nonzero(host.append_release)
+    requires nonzero(host.argument) requires nonzero(host.append_value) requires nonzero(host.append_release)
     requires nonzero(host.fail) requires nonzero(host.finish);
 
 enum Projection:u32 { Member=0; Length=1; LengthTail=2; Variant=3; };

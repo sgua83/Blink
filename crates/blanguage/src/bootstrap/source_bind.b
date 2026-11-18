@@ -41,6 +41,16 @@ bool positional(read StorageView storage, Text name, u64 count) on cpu {
     return true;
 }
 
+Optional<u32> literal_shape(read StorageView storage, ShapeRef reference) on cpu {
+    ShapeNode shape=unsafe_position<ShapeNode>(at(storage.nodes,reference.offset));
+    match(shape) {
+        ShapeNode::Literal(value) { return Optional<u32>(1,value); }
+        ShapeNode::Constant(name) {}
+        ShapeNode::Expression(expression) {}
+    }
+    return Optional<u32>(0,0);
+}
+
 extern "C" BindingCursor type_start(SignatureNode source) on cpu {
     TypeNode ty=unsafe_position<TypeNode>(at(source.storage.nodes,source.offset));
     return BindingCursor(source.storage,source.offset,ty.arguments,0u64,0,0,0,Optional<u32>(0,0));
@@ -82,6 +92,10 @@ extern "C" BindingRequest binding_step(address state,address context,BindingHost
                         cursor.stage=3;return binding_request(state,cursor,1,reference.offset);
                     }
                     ArgumentNode::Value(reference){
+                        Optional<u32> literal=literal_shape(cursor.storage,reference);
+                        if(literal.present!=0){
+                            host.append_value(context,literal.value);cursor.index+=1u64;continue;
+                        }
                         cursor.stage=2;return binding_request(state,cursor,2,reference.offset);
                     }
                 }
@@ -91,8 +105,14 @@ extern "C" BindingRequest binding_step(address state,address context,BindingHost
         }
         if(cursor.stage==5){
             TypeNode ty=unsafe_position<TypeNode>(at(cursor.storage.nodes,cursor.offset));
-            if(ty.count.present!=0){cursor.stage=6;return binding_request(state,cursor,2,ty.count.value.offset);}
-            cursor.shape=Optional<u32>(0,0);cursor.stage=7;
+            cursor.shape=Optional<u32>(0,0);
+            if(ty.count.present!=0){
+                cursor.shape=literal_shape(cursor.storage,ty.count.value);
+                if(cursor.shape.present==0){
+                    cursor.stage=6;return binding_request(state,cursor,2,ty.count.value.offset);
+                }
+            }
+            cursor.stage=7;
         }
         if(cursor.stage==6){cursor.stage=7;}
         if(cursor.stage==7){

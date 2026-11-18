@@ -13,7 +13,7 @@ Need give(address state,Cursor cursor,Need need) on cpu {
 }
 extern "C" Need step(address state,address context,Host host) on cpu
     requires nonzero(host.resource) requires nonzero(host.record) requires nonzero(host.reserve)
-    requires nonzero(host.argument) requires nonzero(host.append_release)
+    requires nonzero(host.argument) requires nonzero(host.append_value) requires nonzero(host.append_release)
     requires nonzero(host.fail) requires nonzero(host.finish) {
     Cursor cursor=unsafe_position<Cursor>(state);
     if(cursor.stage==0){
@@ -55,14 +55,19 @@ extern "C" Need step(address state,address context,Host host) on cpu
             cursor.reference=value.reference;cursor.stage=3;
             return give(state,cursor,Need::Type);
         }else{
-            cursor.stage=3;
-            return give(state,cursor,Need::Value);
+            Argument value=host.argument(context,cursor.index);
+            if(value.literal.present==0){
+                cursor.stage=3;
+                return give(state,cursor,Need::Value);
+            }
+            host.append_value(context,value.literal.value);
+            cursor.index+=1u64;
         }
     }
     cursor.stage=2;
-    // The original count is consumed after every actual argument. None needs
-    // no World production; a real count expression keeps its original order.
-    if(cursor.source.count!=0){return give(state,cursor,Need::Count);}
+    // An unresolved count is evaluated after the actual type and const arguments.
+    // An already known count is held by the same result owner.
+    if(cursor.source.pending_count!=0){return give(state,cursor,Need::Count);}
     host.finish(context,cursor.canonical,cursor.source.name);
     return give(state,cursor,Need::Done);
 }
