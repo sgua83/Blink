@@ -1,6 +1,6 @@
 //! Rust 执行框架的静态目标库使用既有 Windows 本机链接工具；不执行源码编译。
 use super::Result;
-use crate::{file_bytes::{self, FileBytes, host_path}, object::Archive, source_path::join};
+use crate::{file_bytes::{self, FileBytes, host_path}, object::{Archive, encode_native}, source_path::join};
 use std::{
     ffi::{OsStr, OsString},
     fs::File,
@@ -278,7 +278,7 @@ pub(super) fn link(archives: &[Archive], objects: &[&crate::object::Object], pat
         }
         for (index, object) in objects.iter().enumerate() {
             let path = join(directory, format!(".blink-link-{id}-code-{index}.obj"));
-            write_input(&mut temporary, path, &object.coff_bytes()?)?;
+            write_input(&mut temporary, path, &encode_native(&object.name, &object.sections, &object.symbols)?)?;
         }
         // Same import-slot owner as the explicit native-host archive product.
         let imports = objects.iter().flat_map(|object| &object.sections)
@@ -296,7 +296,7 @@ pub(super) fn link(archives: &[Archive], objects: &[&crate::object::Object], pat
         }
         if let Some(binding) = binding {
             let path = join(directory, format!(".blink-link-{id}-resources.obj"));
-            write_input(&mut temporary, path, &binding.coff_bytes()?)?;
+            write_input(&mut temporary, path, &encode_native(&binding.name, &binding.sections, &binding.symbols)?)?;
         }
         let stack_reserve = match &objects[0].kind {
             crate::object::Kind::Application { stack_bytes } => super::pe::stack_reserve(*stack_bytes),
