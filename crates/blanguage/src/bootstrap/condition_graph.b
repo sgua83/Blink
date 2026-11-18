@@ -690,16 +690,9 @@ extern "C" u32 equality_extend(address context,EqualityHost host) on cpu
  }
 }
 extern "C" void computed_equalities(address context,ComputedEqualityHost host) on cpu
- requires nonzero(host.next) requires nonzero(host.expression) requires nonzero(host.collect)
  requires nonzero(host.begin) requires nonzero(host.step) requires nonzero(host.produced)
  requires nonzero(host.remember) requires nonzero(host.equate) requires nonzero(host.has_equalities)
  requires nonzero(host.extend) requires nonzero(host.compare) {
- while(true){
-  FactView fact=host.next(context);if(fact.present==0){break;}
-  if(fact.kind!=FactKind::Index){continue;}
-  address expression=host.expression(fact.payload);
-  if(expression!=address()){host.collect(context,fact.first,expression);}
- }
  while(true){
   host.begin(context);
   while(true){

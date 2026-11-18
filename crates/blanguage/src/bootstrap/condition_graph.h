@@ -268,9 +268,6 @@ extern "C" u32 equality_extend(address context,EqualityHost host) on cpu
  requires nonzero(host.merge) requires nonzero(host.insert);
 struct ComputedEqualityStep { u32 present; address result; };
 struct ComputedEqualityHost {
- cfn<FactView,address> next;
- cfn<address,address> ensures memory(read) expression;
- cfn<void,address,address,address> collect;
  cfn<void,address> begin;
  cfn<ComputedEqualityStep,address> step;
  cfn<address,address> ensures memory(read) produced;
@@ -281,7 +278,6 @@ struct ComputedEqualityHost {
  cfn<i32,address,address> ensures memory(read) compare;
 };
 extern "C" void computed_equalities(address context,ComputedEqualityHost host) on cpu
- requires nonzero(host.next) requires nonzero(host.expression) requires nonzero(host.collect)
  requires nonzero(host.begin) requires nonzero(host.step) requires nonzero(host.produced)
  requires nonzero(host.remember) requires nonzero(host.equate) requires nonzero(host.has_equalities)
  requires nonzero(host.extend) requires nonzero(host.compare);

@@ -128,27 +128,17 @@ pub(super) fn extend<'a, I: IntoIterator<Item = &'a Fact>>(roots: &mut Roots, fa
         ) != 0
     }
 }
-struct ComputedContext<'a, I> {
+struct ComputedContext<'a> {
     roots: &'a mut Roots,
-    input: I,
-    expressions: Vec<(ValueIdentity, IntegerExpression)>,
+    expressions: Vec<(&'a ValueIdentity, &'a IntegerExpression)>,
     index: usize,
     produced: BTreeMap<IntegerExpression, ValueIdentity>,
     equalities: Facts,
     expression: *mut IntegerExpression,
     result: *mut ValueIdentity,
 }
-unsafe fn computed_context<'a, 'b, I>(slot: Slot) -> &'a mut ComputedContext<'b, I> {
+unsafe fn computed_context<'a, 'b>(slot: Slot) -> &'a mut ComputedContext<'b> {
     unsafe { &mut *slot.cast() }
-}
-unsafe extern "C" fn computed_next<'a, I: Iterator<Item = &'a Fact>>(
-    slot: Slot,
-) -> fact_fields::Fields {
-    unsafe { computed_context::<I>(slot) }
-        .input
-        .next()
-        .map(fact_fields::Fields::from)
-        .unwrap_or_default()
 }
 unsafe extern "C" fn expression(domain: Borrowed) -> Borrowed {
     match unsafe { &*domain.cast::<IndexDomain>() } {
@@ -156,19 +146,8 @@ unsafe extern "C" fn expression(domain: Borrowed) -> Borrowed {
         _ => ptr::null(),
     }
 }
-unsafe extern "C" fn collect<I>(slot: Slot, result: Borrowed, expression: Borrowed) {
-    let pair = unsafe {
-        (
-            *result.cast::<ValueIdentity>(),
-            *expression.cast::<IntegerExpression>(),
-        )
-    };
-    unsafe { computed_context::<I>(slot) }
-        .expressions
-        .push(pair);
-}
-unsafe extern "C" fn begin<I>(slot: Slot) {
-    let context = unsafe { computed_context::<I>(slot) };
+unsafe extern "C" fn begin(slot: Slot) {
+    let context = unsafe { computed_context(slot) };
     context.index = 0;
     context.produced.clear();
     context.equalities.clear();
@@ -178,8 +157,8 @@ struct ComputedStep {
     present: u32,
     result: Borrowed,
 }
-unsafe extern "C" fn step<I>(slot: Slot) -> ComputedStep {
-    let context = unsafe { computed_context::<I>(slot) };
+unsafe extern "C" fn step(slot: Slot) -> ComputedStep {
+    let context = unsafe { computed_context(slot) };
     let Some(&(result, expression)) = context.expressions.get(context.index) else {
         return ComputedStep {
             present: 0,
@@ -190,7 +169,7 @@ unsafe extern "C" fn step<I>(slot: Slot) -> ComputedStep {
     unsafe {
         context
             .result
-            .write(context.roots.get(&result).copied().unwrap_or(result))
+            .write(context.roots.get(result).copied().unwrap_or(*result))
     };
     unsafe {
         context.expression.write(
@@ -204,42 +183,39 @@ unsafe extern "C" fn step<I>(slot: Slot) -> ComputedStep {
         result: context.result.cast(),
     }
 }
-unsafe extern "C" fn produced<I>(slot: Slot) -> Borrowed {
-    let context = unsafe { computed_context::<I>(slot) };
+unsafe extern "C" fn produced(slot: Slot) -> Borrowed {
+    let context = unsafe { computed_context(slot) };
     context
         .produced
         .get(unsafe { &*context.expression })
         .map_or(ptr::null(), borrowed)
 }
-unsafe extern "C" fn remember<I>(slot: Slot) {
-    let context = unsafe { computed_context::<I>(slot) };
+unsafe extern "C" fn remember(slot: Slot) {
+    let context = unsafe { computed_context(slot) };
     context
         .produced
         .insert(unsafe { *context.expression }, unsafe { *context.result });
 }
-unsafe extern "C" fn equate<I>(slot: Slot, left: Borrowed, right: Borrowed) {
+unsafe extern "C" fn equate(slot: Slot, left: Borrowed, right: Borrowed) {
     let (left, right) = unsafe {
         (
             *left.cast::<ValueIdentity>(),
             *right.cast::<ValueIdentity>(),
         )
     };
-    unsafe { computed_context::<I>(slot) }
+    unsafe { computed_context(slot) }
         .equalities
         .insert(Fact::equal(left, right));
 }
-unsafe extern "C" fn has_equalities<I>(slot: Slot) -> u32 {
-    u32::from(!unsafe { computed_context::<I>(slot) }.equalities.is_empty())
+unsafe extern "C" fn has_equalities(slot: Slot) -> u32 {
+    u32::from(!unsafe { computed_context(slot) }.equalities.is_empty())
 }
-unsafe extern "C" fn extend_computed_equalities<I>(slot: Slot) {
-    let context = unsafe { computed_context::<I>(slot) };
+unsafe extern "C" fn extend_computed_equalities(slot: Slot) {
+    let context = unsafe { computed_context(slot) };
     extend(context.roots, &context.equalities);
 }
 #[repr(C)]
 struct ComputedHost {
-    next: unsafe extern "C" fn(Slot) -> fact_fields::Fields,
-    expression: unsafe extern "C" fn(Borrowed) -> Borrowed,
-    collect: unsafe extern "C" fn(Slot, Borrowed, Borrowed),
     begin: unsafe extern "C" fn(Slot),
     step: unsafe extern "C" fn(Slot) -> ComputedStep,
     produced: unsafe extern "C" fn(Slot) -> Borrowed,
@@ -254,12 +230,21 @@ unsafe extern "C" {
     fn b_computed(context: Slot, host: ComputedHost);
 }
 pub(super) fn computed<'a, I: IntoIterator<Item = &'a Fact>>(roots: &mut Roots, facts: I) {
+    let expressions: Vec<_> = facts
+        .into_iter()
+        .filter_map(|fact| match fact {
+            Fact::Index(result, IndexDomain::Computed(expression)) => Some((result, expression)),
+            _ => None,
+        })
+        .collect();
+    if expressions.is_empty() {
+        return;
+    }
     let mut expression_slot = MaybeUninit::<IntegerExpression>::uninit();
     let mut result = MaybeUninit::<ValueIdentity>::uninit();
     let mut context = ComputedContext {
         roots,
-        input: facts.into_iter(),
-        expressions: Vec::new(),
+        expressions,
         index: 0,
         produced: BTreeMap::new(),
         equalities: Facts::new(),
@@ -268,18 +253,15 @@ pub(super) fn computed<'a, I: IntoIterator<Item = &'a Fact>>(roots: &mut Roots, 
     };
     unsafe {
         b_computed(
-            (&mut context as *mut ComputedContext<'_, I::IntoIter>).cast(),
+            (&mut context as *mut ComputedContext<'_>).cast(),
             ComputedHost {
-                next: computed_next::<I::IntoIter>,
-                expression,
-                collect: collect::<I::IntoIter>,
-                begin: begin::<I::IntoIter>,
-                step: step::<I::IntoIter>,
-                produced: produced::<I::IntoIter>,
-                remember: remember::<I::IntoIter>,
-                equate: equate::<I::IntoIter>,
-                has_equalities: has_equalities::<I::IntoIter>,
-                extend: extend_computed_equalities::<I::IntoIter>,
+                begin: begin,
+                step: step,
+                produced: produced,
+                remember: remember,
+                equate: equate,
+                has_equalities: has_equalities,
+                extend: extend_computed_equalities,
                 compare: fact_fields::compare,
             },
         )
