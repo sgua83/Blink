@@ -87,7 +87,7 @@ pub struct Object {
     pub(crate) stack: Vec<stack::Frame>,
 }
 impl Object {
-    pub fn stack_report(&self, budget: Option<u64>) -> String { stack::report(self, budget, None) }
+    pub fn stack_report(&self, budget: Option<u64>) -> String { stack::report(self, budget, None, stack::uses_runtime(self)) }
     pub fn write(&self, path: &Path) -> Result<()> {
         let path = std::path::absolute(path)?;
         std::fs::create_dir_all(path.parent().unwrap())?;

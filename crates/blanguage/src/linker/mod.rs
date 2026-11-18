@@ -68,10 +68,11 @@ fn prepare(inputs: Inputs<'_>) -> Result<(Vec<Object>, Vec<crate::object::Archiv
     Ok((objects, archives))
 }
 pub fn stack_report_inputs(inputs: &[impl AsRef<Path>], budget: Option<u64>) -> Result<String> {
-    let (mut objects, _) = prepare(read_inputs(inputs)?)?;
+    let mut objects = select(read_inputs(inputs)?, Roots::Entry)?;
+    let runtime = objects.iter().any(crate::object::stack::uses_runtime);
     let reserve = match objects[0].kind { Kind::Application { stack_bytes } => Some(pe::stack_reserve(stack_bytes)), _ => None };
     let object = if objects.len() == 1 { objects.remove(0) } else { combine::objects(objects,None)? };
-    Ok(crate::object::stack::report(&object, budget, reserve))
+    Ok(crate::object::stack::report(&object, budget, reserve, runtime))
 }
 #[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
 fn link_objects(inputs: Inputs<'_>, _: &Path) -> Result<()> {

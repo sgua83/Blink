@@ -14,7 +14,11 @@ pub(crate) enum Call {
     Unreported(String),
 }
 
-pub(crate) fn report(object: &Object, capacity: Option<u64>, reserve: Option<u64>) -> String {
+pub(crate) fn uses_runtime(object: &Object) -> bool {
+    object.archive.as_ref().and_then(|archive| archive.resources.as_ref()).is_some() || matches!(object.kind, Kind::Library { .. })
+}
+
+pub(crate) fn report(object: &Object, capacity: Option<u64>, reserve: Option<u64>, runtime: bool) -> String {
     use std::fmt::Write;
     let positions: BTreeMap<_, _> = object.stack.iter().enumerate()
         .filter_map(|(index, frame)| frame.coff.map(|position| (position, index))).collect();
@@ -102,7 +106,7 @@ pub(crate) fn report(object: &Object, capacity: Option<u64>, reserve: Option<u64
     if object.stack.is_empty() {
         text.push_str("No ordinary CPU function frames in this object. Compute/runtime/native library stack is not established.\n");
     }
-    if object.archive.as_ref().and_then(|archive| archive.resources.as_ref()).is_some() || matches!(object.kind, Kind::Library { .. }) {
+    if runtime {
         text.push_str("Compute and resource execution belongs to its runtime/thread owner; its native/Rust stack is not established by this report.\n");
     }
     text.push_str("\nFunction\tLocal\tKnown path\tUpper\tCapacity comparison\tUnknown / callees\n");
