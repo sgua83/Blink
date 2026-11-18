@@ -458,6 +458,8 @@ application、可写command_line、可选安全属性、environment与directory�
 
 `UpdateProcThreadAttribute(address attributes,u32 flags,usize attribute,address value,usize bytes,address previous_value,address return_size)`的flags为0，后两个保留地址为零。`PROC_THREAD_ATTRIBUTE_HANDLE_LIST`为原指针宽整数键；value指向实际handle数组，bytes为该数组的字节数。列表中的每个真实句柄必须可继承，创建的inherit_handles必须为1；不得列入伪句柄。调用方可通过基础模块SetHandleInformation及HANDLE_FLAG_INHERIT设置／清除原句柄的继承位。清除继承位与设置本次子进程的继承列表是不同操作；并行创建各自以实际列表选择自己的集合，不能用继承全部句柄代替。
 
+`CreateJobObjectW(address security,address name)`直接交回原Job句柄，零表示失败；非零由调用者在最后实际使用后CloseHandle。`SetInformationJobObject(handle job,i32 information_class,address information,u32 bytes)`直接交接原i32 BOOL与即时OS错误；JobObjectGroupInformationEx（14）消费blink.windows.thread的原GroupAffinity数组，不复制其布局或组编号。`PROC_THREAD_ATTRIBUTE_JOB_LIST`的value指向真实Job句柄数组；列表和Job保持到创建结束，子进程及其派生工作由OS沿该Job约束执行。编译器用实际选定的组及CPU掩码，在创建时交接该属性，不在启动后补设亲和性。
+
 属性值及其存储必须保持到`DeleteProcThreadAttributeList(address attributes)`；已初始化的列表存储保持到Delete结束，然后仍由原分配者释放。Delete返回void，只删除列表内部属性，不释放调用方缓冲、不关闭列表中的句柄或进程。创建后可删除该次列表，父进程中的输入／输出句柄按最后实际消费者各自关闭；子进程实际继承的句柄是它自己的OS引用。原始address互操作不为外部API所保留的地址自动建立B借用，调用方负责真实范围、对齐、权限和上述寿命；不能在最后原生消费者前移动、resize或释放存储。没有第二份拥有表、隐式关闭、等待或取消。
 
 纯头接口可直接作为模块编译输入，不需要空实现：
@@ -469,7 +471,7 @@ bc -c library/blink/windows/process_extended.h --import target/process.lib --mod
 blink --archive target/process_extended.obj -o target/process_extended.lib
 ```
 
-独立模块及最终应用分别以--import导入实际接口依赖，链接时交付对应对象／归档；仅有桥接模块不代替process.lib与process_extended.lib。消费这些已编译接口不需要提供者.h／.b或library搜索路径。此处提供原生启动能力，编译器Rust构建代码尚未迁移。依据：[STARTUPINFOEXW](https://learn.microsoft.com/en-us/windows/win32/api/winbase/ns-winbase-startupinfoexw)、[初始化](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-initializeprocthreadattributelist)、[更新属性及值寿命](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-updateprocthreadattribute)、[删除列表](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-deleteprocthreadattributelist)及[句柄属性](https://learn.microsoft.com/en-us/windows/win32/api/handleapi/nf-handleapi-sethandleinformation)。
+独立模块及最终应用分别以--import导入实际接口依赖，链接时交付对应对象／归档；仅有桥接模块不代替process.lib与process_extended.lib。消费这些已编译接口不需要提供者.h／.b或library搜索路径。编译器Cargo启动、处理器组Job交接、等待及原生句柄结束已由bootstrap.host_sdk消费本接口；Rust只持有原参数、路径、stdio文件及最终Output，链接宿主继续共用原B启动接点。依据：[STARTUPINFOEXW](https://learn.microsoft.com/en-us/windows/win32/api/winbase/ns-winbase-startupinfoexw)、[初始化](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-initializeprocthreadattributelist)、[更新属性及值寿命](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-updateprocthreadattribute)、[删除列表](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-deleteprocthreadattributelist)及[句柄属性](https://learn.microsoft.com/en-us/windows/win32/api/handleapi/nf-handleapi-sethandleinformation)。
 
 ## blink.windows.environment
 

@@ -28,3 +28,9 @@ extern "C" i32 CreateProcessW(
     read StartupInfoEx startup,write ProcessInformation info
 ) on cpu ensures initialized(info,returned != 0)
     from "KERNEL32.dll";
+
+const usize PROC_THREAD_ATTRIBUTE_JOB_LIST=usize(0x0002000d);
+extern "C" handle CreateJobObjectW(address security,address name) on cpu
+    from "KERNEL32.dll";
+extern "C" i32 SetInformationJobObject(handle job,i32 information_class,
+    address information,u32 bytes) on cpu from "KERNEL32.dll";

@@ -376,9 +376,11 @@ HostPipe host_pipe() on cpu {
 
 struct HostChild { handle process; u32 status; };
 
-HostChild create_host_child(address executable, address command_line, read array<handle,3> stdio) on cpu {
+HostChild create_host_child(address executable,address command_line,address directory,u32 flags,
+    read array<handle,3> stdio,handle job) on cpu {
     usize size = 0u64;
-    InitializeProcThreadAttributeList(address(), 1, 0, size);
+    u32 count=job==handle() ? 1 : 2;
+    InitializeProcThreadAttributeList(address(), count, 0, size);
     if (size == 0u64) { return HostChild(handle(), GetLastError()); }
 
     handle heap = GetProcessHeap();
@@ -386,7 +388,7 @@ HostChild create_host_child(address executable, address command_line, read array
     if (address_bits(attributes) == 0u64) {
         return HostChild(handle(), u32(ERROR_NOT_ENOUGH_MEMORY));
     }
-    if (InitializeProcThreadAttributeList(attributes, 1, 0, size) == i32(0)) {
+    if (InitializeProcThreadAttributeList(attributes, count, 0, size) == i32(0)) {
         u32 status = GetLastError();
         HeapFree(heap, 0, attributes);
         return HostChild(handle(), status);
@@ -396,14 +398,19 @@ HostChild create_host_child(address executable, address command_line, read array
     if (UpdateProcThreadAttribute(attributes, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
             address_of(stdio[0]), size_of<array<handle,3>>(), address(), address()) == i32(0)) {
         child.status = GetLastError();
-    } else {
+    }
+    if(child.status==0 && job!=handle()){
+        if(UpdateProcThreadAttribute(attributes,0,PROC_THREAD_ATTRIBUTE_JOB_LIST,address_of(job),
+                size_of<handle>(),address(),address())==i32(0)){child.status=GetLastError();}
+    }
+    if(child.status==0){
         StartupInfo startup = StartupInfo(u32(size_of<StartupInfoEx>()), address(), address(), address(),
             0, 0, 0, 0, 0, 0, 0, STARTF_USESTDHANDLES, u16(0), u16(0), address(),
             stdio[0], stdio[1], stdio[2]);
         StartupInfoEx extended = StartupInfoEx(startup, attributes);
         ProcessInformation info;
         if (blink.windows.process_extended::CreateProcessW(executable, command_line, address(), address(),
-                i32(1), EXTENDED_STARTUPINFO_PRESENT | DETACHED_PROCESS, address(), address(),
+                i32(1), EXTENDED_STARTUPINFO_PRESENT | flags, address(), directory,
                 extended, info) == i32(0)) {
             child.status = GetLastError();
         } else {
@@ -508,7 +515,7 @@ HostChild start_host_child(address executable, usize units, address arguments,
             if (address_bits(command_line) == 0u64) {
                 child.status = u32(ERROR_NOT_ENOUGH_MEMORY);
             } else {
-                child = create_host_child(path.name, command_line, stdio);
+                child = create_host_child(path.name,command_line,address(),DETACHED_PROCESS,stdio,handle());
                 release_host_wide(command_line);
             }
         }
@@ -566,18 +573,42 @@ extern "C" HostProcessOutput run_host_process(address executable, usize units,
     WaitForSingleObject(reader, INFINITE);
     CloseHandle(reader);
 
-    u32 exit_code = 0;
-    u32 status = 0;
-    if (WaitForSingleObject(child.process, INFINITE) == WAIT_FAILED) {
-        status = GetLastError();
-    } else {
-        u32 code;
-        if (GetExitCodeProcess(child.process, code) != i32(0)) {
-            exit_code = code;
-        } else {
-            status = GetLastError();
+    HostProcessExit result=finish_host_child(child.process);
+    return HostProcessOutput(output,work.bytes,result.exit_code,result.status);
+}
+
+HostProcessExit finish_host_child(handle process) on cpu {
+    u32 exit_code=0;u32 status=0;
+    if(WaitForSingleObject(process,INFINITE)!=0){status=GetLastError();}
+    else {u32 code;if(GetExitCodeProcess(process,code)!=i32(0)){exit_code=code;}else{status=GetLastError();}}
+    CloseHandle(process);return HostProcessExit(exit_code,status);
+}
+
+extern "C" HostProcessExit run_compiler_process(address directory,address arguments,
+    usize argument_units,address stdio,usize mask,u16 group) on cpu {
+    u32 i=0;while(i<3){
+        handle item=unsafe_position<handle>(unsafe_address(address_bits(stdio)+usize(i)*size_of<handle>()));
+        if(SetHandleInformation(item,HANDLE_FLAG_INHERIT,HANDLE_FLAG_INHERIT)==i32(0)){
+            return HostProcessExit(0,GetLastError());
+        }i+=1;
+    }
+    handle job=handle();
+    if(mask!=0u64){
+        job=CreateJobObjectW(address(),address());
+        if(job==handle()){return HostProcessExit(0,GetLastError());}
+        GroupAffinity affinity=GroupAffinity(mask,group,array<u16,3>(u16(0),u16(0),u16(0)));
+        if(SetInformationJobObject(job,i32(14),address_of(affinity),u32(size_of<GroupAffinity>()))==i32(0)){
+            u32 status=GetLastError();CloseHandle(job);return HostProcessExit(0,status);
         }
     }
-    CloseHandle(child.process);
-    return HostProcessOutput(output, work.bytes, exit_code, status);
+    let cargo=array<u16,10>(u16(99),u16(97),u16(114),u16(103),u16(111),u16(46),u16(101),u16(120),u16(101),u16(0));
+    address command=host_command_line(address_of(cargo[0]),9u64,arguments,argument_units);
+    HostProcessExit result=HostProcessExit(0,u32(ERROR_NOT_ENOUGH_MEMORY));
+    if(address_bits(command)!=0u64){
+        HostChild child=create_host_child(address(),command,directory,CREATE_NO_WINDOW,
+            unsafe_position<array<handle,3>>(stdio),job);
+        release_host_wide(command);
+        result=child.status!=0 ? HostProcessExit(0,child.status) : finish_host_child(child.process);
+    }
+    if(job!=handle()){CloseHandle(job);}return result;
 }

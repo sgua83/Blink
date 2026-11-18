@@ -43,3 +43,9 @@ struct HostFilePart { address data; usize bytes; };
 struct HostPublishResult { HostWriteResult written; u32 replacement; u32 cleanup; };
 extern "C" HostPublishResult publish_host_file(address target,usize target_units,
     address temporary,usize temporary_units,address parts,usize count) on cpu;
+
+struct HostProcessExit { u32 exit_code; u32 status; };
+// Arguments are consecutive NUL-terminated UTF-16 spans. stdio borrows three handles.
+// A zero mask keeps the ordinary process choice; otherwise the Job binds the selected group.
+extern "C" HostProcessExit run_compiler_process(address directory,address arguments,
+    usize argument_units,address stdio,usize mask,u16 group) on cpu;
