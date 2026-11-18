@@ -508,7 +508,7 @@ impl MemoryEffect {
         let Some(first) = writes.next() else {
             return previous.clone();
         };
-        let previous = previous.numeric_facts().at_call(&BTreeMap::new());
+        let previous = previous.numeric_at_call(&BTreeMap::new());
         let mut result = previous.clone();
         let all = ((1u16 << scalar.size()) - 1) as u8;
         for (origin, when, written, bytes) in std::iter::once(first).chain(writes) {
@@ -517,7 +517,7 @@ impl MemoryEffect {
                 for region in regions.iter().filter(|region|region.written_bytes(position,scalar)!=0){
                     let component=origin.layout.parts.iter().position(|part|*part==(scalar,region.word))?;
                     if region.offset!=0||region.size!=scalar.size()||region.written_bytes(position,scalar)!=all{return None;}
-                    let proof=proof.project(&[component],origin.layout.parts.len()).numeric_facts().at_call(&BTreeMap::new());
+                    let proof=proof.project_numeric_at_call(&[component],origin.layout.parts.len(),&BTreeMap::new());
                     if let Some(incoming)=&mut incoming{bounds::Proof::join(incoming,&proof,1,None);}else{incoming=Some(proof);}
                 }
                 incoming

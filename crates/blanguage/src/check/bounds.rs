@@ -787,13 +787,12 @@ impl Proof {
         let bindings = Self::value_bindings(self.scalar_identities(), |id| values.get(&id), |id| {
             Proof::default().with_identity(id)
         });
-        let views = self.views.iter().map(|borrow| borrow.substitute_values(values)).collect();
-        let mut proof = self.project_call(&bindings, views, vec![None; self.addresses.len()]);
-        for (slot, address) in proof.addresses.iter_mut().zip(&self.addresses) {
-            if let Some(address) = address {
-                *slot = Some(address.substitute_values(values));
-            }
-        }
+        let mut proof = self.project_call(&bindings, None);
+        proof.views = self.views.iter().map(|borrow| borrow.substitute_values(values)).collect();
+        proof.addresses = self.call_addresses(&bindings, |component, incoming| {
+            self.addresses.get(component).and_then(Option::as_ref)
+                .map(|address| address.substitute_values(values)).or_else(|| incoming.cloned())
+        });
         proof
     }
     fn call_identity(
@@ -968,36 +967,69 @@ impl Proof {
         translated.map(|fact| Clause::facts([fact].into()))
     }
     pub(super) fn at_call(&self, bindings: &BTreeMap<ValueIdentity, Proof>) -> Self {
-        let views = self.views.iter().map(|borrow| borrow.at_call(bindings)).collect();
-        let addresses = self.addresses.iter().map(|value| {
-            value.as_ref().map(|value| value.at_call(bindings))
-        }).collect();
-        self.project_call(bindings, views, addresses)
+        let mut proof = self.numeric_at_call(bindings);
+        proof.views = self.views.iter().map(|borrow| borrow.at_call(bindings)).collect();
+        proof.addresses = self.call_addresses(bindings, |component, incoming| {
+            incoming.cloned().or_else(|| self.addresses.get(component).and_then(Option::as_ref)
+                .map(|address| address.at_call(bindings)))
+        });
+        proof
+    }
+
+    pub(super) fn numeric_at_call(&self, bindings: &BTreeMap<ValueIdentity, Proof>) -> Self {
+        self.project_call(bindings, None)
+    }
+
+    pub(super) fn project_numeric_at_call(
+        &self, components: &[usize], width: usize, bindings: &BTreeMap<ValueIdentity, Proof>,
+    ) -> Self {
+        let selected = (!components.iter().copied().eq(0..width)).then_some(components);
+        self.project_call(bindings, selected)
+    }
+
+    fn call_addresses(
+        &self,
+        bindings: &BTreeMap<ValueIdentity, impl std::borrow::Borrow<Proof>>,
+        mut address: impl FnMut(usize, Option<&address::Identity>) -> Option<address::Identity>,
+    ) -> Vec<Option<address::Identity>> {
+        let mut addresses = Vec::with_capacity(self.addresses.len());
+        for component in 0..self.addresses.len().max(self.origins.len()) {
+            let incoming = self.origins.get(component).into_iter().flatten()
+                .filter_map(|id| Proof::bound_input(bindings, id)
+                    .and_then(|proof| proof.addresses.first()).and_then(Option::as_ref)).last();
+            let value = address(component, incoming);
+            if component < self.addresses.len() || value.is_some() {
+                addresses.resize_with(component + 1, || None);
+                addresses[component] = value;
+            }
+        }
+        addresses
     }
 
     fn project_call(
         &self,
         bindings: &BTreeMap<ValueIdentity, impl std::borrow::Borrow<Proof>>,
-        views: Vec<view::Borrow>,
-        addresses: Vec<Option<address::Identity>>,
+        components: Option<&[usize]>,
     ) -> Self {
+        let count = |width| components.map_or(width, |selected| selected.len());
+        let source = |component: usize| components.map_or(component, |selected| selected[component]);
         let mut translated = Self {
-            views, addresses,
-            origins: Vec::with_capacity(self.origins.len()),
-            domains: Vec::with_capacity(self.origins.len().max(self.domains.len())),
+            views: Vec::new(), addresses: Vec::new(),
+            origins: Vec::with_capacity(count(self.origins.len())),
+            domains: Vec::with_capacity(count(self.origins.len().max(self.domains.len()))),
             conditions: Vec::new(),
-            ranges: self.ranges.clone(),
-            nonzero: self.nonzero.clone(),
+            ranges: components.map_or_else(|| self.ranges.clone(), |selected| selected.iter().map(|&i| self.range_set(i)).collect()),
+            nonzero: components.map_or_else(|| self.nonzero.clone(), |selected| selected.iter().map(|&i| self.nonzero.get(i) == Some(&true)).collect()),
         };
-        for (i, origins) in self.origins.iter().enumerate() {
+        for i in 0..count(self.origins.len()) {
+            let origins = self.origins.get(source(i)).into_iter().flatten();
             translated.origins.push(Vec::new());
             translated.ranges.resize_with(translated.ranges.len().max(i + 1), ScalarRanges::default);
             translated.nonzero.resize(translated.nonzero.len().max(i + 1), false);
-            translated.domains.push(self.domains.get(i).into_iter().flatten().copied()
+            translated.domains.push(self.domains.get(source(i)).into_iter().flatten().copied()
                 .filter_map(|domain| Self::call_domain(domain, bindings)).collect());
-            for value in origins.iter().filter_map(|id| Proof::bound_input(bindings, id)) {
+            for value in origins.filter_map(|id| Proof::bound_input(bindings, id)) {
                 translated.origins[i].extend(value.origins.first().into_iter().flatten().copied());
-                if let Some(address)=value.addresses.first().cloned().flatten(){translated.addresses.resize_with(translated.addresses.len().max(i+1),||None);translated.addresses[i]=Some(address);}
                 let incoming = value.ranges.first().map_or(&[(0, Bits::MAX)][..], |range| range.0.as_slice());
                 translated.ranges[i] = ScalarRanges::from_sorted_intervals(
                     translated.ranges[i].0.iter().flat_map(|(a, b)| {
@@ -1009,11 +1041,13 @@ impl Proof {
             }
         }
         // A proven domain can exist without a captured origin.
-        for domains in self.domains.iter().skip(self.origins.len()) {
+        for i in count(self.origins.len())..count(self.domains.len()) {
+            let domains = &self.domains[source(i)];
             translated.domains.push(domains.iter().copied()
                 .filter_map(|domain| Self::call_domain(domain, bindings)).collect());
         }
-        for (component, domains) in self.domains.iter().enumerate() {
+        for component in 0..count(self.domains.len()) {
+            let domains = self.domains.get(source(component)).into_iter().flatten();
             for domain in domains {
                 if let IndexDomain::CommonRange(source,from,low,extended,to) = domain {
                     if let Some(incoming) = Proof::bound_input(bindings, source) {
@@ -1047,18 +1081,19 @@ impl Proof {
                 }
             }
         }
-        let roots: Vec<_> = self.conditions.iter().flatten()
+        let roots: Vec<_> = (0..count(self.conditions.len())).filter_map(|i| self.conditions.get(source(i)).and_then(Option::as_ref))
             .flat_map(|condition| condition.cases.iter()).collect();
         let mut projected = if roots.is_empty() { Vec::new() } else {
             Clause::at_calls(&roots, &Clause::ordered(roots.iter().copied()), bindings, |_| false)
         }.into_iter();
-        translated.conditions = self.conditions.iter().map(|condition| condition.as_ref().map(|_| {
+        translated.conditions = (0..count(self.conditions.len())).map(|i| self.conditions.get(source(i)).and_then(Option::as_ref).map(|_| {
             Box::new(Condition { cases: [projected.next().unwrap(), projected.next().unwrap()] })
         })).collect();
         // 输出仍是入口快照时，继续交接调用者已经持有的分量条件。
         // 实参图属于调用者命名空间，不能再次按被调函数的身份替换。
-        for (i, origins) in self.origins.iter().enumerate() {
-            for incoming in origins.iter().filter_map(|id| Proof::bound_input(bindings, id)) {
+        for i in 0..count(self.origins.len()) {
+            let origins = self.origins.get(source(i)).into_iter().flatten();
+            for incoming in origins.filter_map(|id| Proof::bound_input(bindings, id)) {
                 if let Some(condition) = incoming.component_condition(0) {
                     translated
                         .conditions

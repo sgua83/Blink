@@ -4464,7 +4464,7 @@ impl Builder<'_> {
         }
         bindings.insert(ValueIdentity::ElementIndex(0),bounds::Proof::capture(index));
         let components=data.words().iter().map(|word|data.data.ty.components.iter().position(|(_,at)|at==word).unwrap()).collect::<Vec<_>>();
-        let mut proof=value.proof.project(&components,value.regs.len()).at_call(&bindings).numeric_facts();
+        let mut proof=value.proof.project_numeric_at_call(&components,value.regs.len(),&bindings);
         for(output,component)in components.iter().enumerate(){
             for source in value.component_origins(*component).into_iter().filter(|source|matches!(source,ValueIdentity::DatasetContent(..))){
                 let scalar=value.ty.components[*component].0;proof.mark_domain(output,IndexDomain::CommonRange(source,scalar,scalar,scalar,scalar));
