@@ -156,12 +156,7 @@ pub(crate) fn compile_resources(
         }
         if has_tasks { exports.push(format!("{prefix}_task_start")); }
         exports.push(format!("{prefix}_resources"));
-        let dependencies: &[&str] = if root {
-            &["blanguage", "blcompute"]
-        } else {
-            &[]
-        };
-        let archive = object::compile_archive(&source, exports, dependencies, worker)?;
+        let archive = object::compile_archive(&source, exports, root, worker)?;
         let factory = factory::ResourceFactory {
             binding: object::ResourceBinding {
                 prefix,

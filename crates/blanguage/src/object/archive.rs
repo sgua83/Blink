@@ -40,10 +40,48 @@ fn finish<T>(result: Result<T>, cleanup: Result<()>) -> Result<T> {
         (Err(error), Err(cleanup)) => Err(format!("{error}\n编译暂存清理失败：{cleanup}").into()),
     }
 }
+fn development_runtime(
+    sdk: &Path,
+    target: &Path,
+    work: &Path,
+    worker: &crate::compiler::Worker,
+) -> Result<Vec<String>> {
+    let arguments: Vec<OsString> = [
+        "rustc".into(), "--offline".into(), "--locked".into(), "--release".into(),
+        "--jobs".into(), "1".into(), "--manifest-path".into(), sdk.join("Cargo.toml").into_os_string(),
+        "--target-dir".into(), target.as_os_str().into(), "--package".into(), "blcompute".into(),
+        "--no-default-features".into(), "--config".into(), "profile.release.lto=false".into(),
+        "--color".into(), "never".into(), "--".into(), "--print".into(), "native-static-libs".into(),
+    ].into();
+    let output = worker.cargo_output(&arguments, work, sdk)?;
+    let stderr = String::from_utf8(output.stderr)?;
+    if !output.status.success() {
+        return Err(format!("执行库编译失败：\n{}{}", String::from_utf8_lossy(&output.stdout), stderr).into());
+    }
+    let dependencies = stderr.lines()
+        .find_map(|line| line.trim().strip_prefix("note: native-static-libs: "))
+        .ok_or("Rust 未返回静态目标库的本机库依赖")?;
+
+    let product = crate::file_bytes::FileBytes::read_path(&target.join("release/blcompute.lib"))?;
+    let hash = crate::build::hash::hex(&crate::build::hash::digest(&product));
+    let shared = target.join(format!("blink-runtime-{hash}.lib"));
+    if !shared.try_exists()? {
+        if let Err(error) = crate::file_bytes::publish(&shared, &work.join("runtime.lib"), [&product])
+            && !shared.try_exists()?
+        {
+            return Err(error.into());
+        }
+    }
+    let mut libraries = vec![shared.into_os_string().into_string()
+        .map_err(|_| "运行库路径不能编码为 UTF-8")?];
+    libraries.extend(dependencies.split_whitespace().map(str::to_owned));
+    Ok(libraries)
+}
+
 pub(crate) fn compile(
     source: &str,
     exports: Vec<String>,
-    dependencies: &[&str],
+    runtime: bool,
     worker: &crate::compiler::Worker,
 ) -> Result<Archive> {
     let sdk = sdk_root()?;
@@ -58,87 +96,53 @@ pub(crate) fn compile(
     std::fs::create_dir(&build)?;
     let result = (|| {
         std::fs::create_dir(build.join("src"))?;
-        let wrapper = (dependencies.is_empty() || cfg!(feature = "installed"))
-            .then(|| build.join("resource.obj"));
-        let crate_type = if wrapper.is_some() { "rlib" } else { "staticlib" };
-        let mut manifest = format!(
-            "[package]\nname={unit:?}\nversion=\"0.0.0\"\nedition=\"2024\"\n[workspace]\n[lib]\nname={unit:?}\ncrate-type=[{crate_type:?}]\n[profile.release]\nlto=false\ncodegen-units=1\npanic=\"abort\"\n",
+        let target = sdk_target.join("dll");
+        let libraries = if !runtime {
+            Vec::new()
+        } else if cfg!(feature = "installed") {
+            std::fs::read_to_string(sdk.join(SDK_RUNTIME).join("native-static-libs.txt"))?
+                .split_whitespace().map(str::to_owned).collect()
+        } else {
+            development_runtime(&sdk, &target, &build, worker)?
+        };
+        let manifest = format!(
+            "[package]\nname={unit:?}\nversion=\"0.0.0\"\nedition=\"2024\"\n[workspace]\n[lib]\nname={unit:?}\ncrate-type=[\"rlib\"]\n[profile.release]\nlto=false\ncodegen-units=1\npanic=\"abort\"\n",
         );
-        manifest.push_str("[dependencies]\n");
-        for name in dependencies.iter().filter(|_| wrapper.is_none()) {
-            let package = sdk.join("crates").join(name);
-            let path = package.to_str().ok_or("SDK依赖路径不能编码为UTF-8 TOML")?;
-            manifest.push_str(&format!("{name}={{path={path:?},default-features=false"));
-            manifest.push_str("}\n");
-        }
         std::fs::write(build.join("Cargo.toml"), manifest)?;
         {
             use std::io::Write;
             let mut file = std::fs::File::create(build.join("src/lib.rs"))?;
-            if wrapper.is_some() {
-                file.write_all(b"#![no_std]\n")?;
-            }
+            file.write_all(b"#![no_std]\n")?;
             file.write_all(source.as_bytes())?;
-            if wrapper.is_none() {
-                file.write_all(b"\nextern crate blcompute as _;\n")?;
-            }
         }
-        let target = sdk_target.join("dll");
-        let mut arguments: Vec<OsString> = [
+        let wrapper = build.join("resource.obj");
+        let mut emit = OsString::from("--emit=obj=");
+        emit.push(&wrapper);
+        let arguments: Vec<OsString> = [
             "rustc".into(), "--offline".into(), "--release".into(), "--jobs".into(), "1".into(),
             "--manifest-path".into(), build.join("Cargo.toml").into_os_string(),
             "--target-dir".into(), target.as_os_str().into(), "--color".into(), "never".into(),
-            "--".into(),
+            "--".into(), emit,
         ].into();
-        if let Some(path) = &wrapper {
-            let mut emit = OsString::from("--emit=obj=");
-            emit.push(path);
-            arguments.push(emit);
-        } else {
-            arguments.extend([OsString::from("--print"), OsString::from("native-static-libs")]);
-        }
-        let output = worker.cargo_output(&arguments, &build, &sdk)?;
         let compilation = (|| {
-            let stderr = String::from_utf8(output.stderr)?;
+            let output = worker.cargo_output(&arguments, &build, &sdk)?;
             if !output.status.success() {
                 return Err(format!(
                     "执行库目标代码编译失败：\n{}{}",
                     String::from_utf8_lossy(&output.stdout),
-                    stderr
-                )
-                .into());
+                    String::from_utf8_lossy(&output.stderr)
+                ).into());
             }
-            if let Some(wrapper) = wrapper {
-                let bytes = std::fs::read(wrapper)?;
-                let mut symbols = Vec::new();
-                super::coff::Reader::new(bytes.as_slice())?.for_each_definition(|name| {
-                    symbols.push((0, name.to_owned()));
-                    Ok(())
-                })?;
-                let member = super::static_library::Member::new("resource.obj".into(), bytes);
-                let bytes = super::static_library::encode(&[member], &symbols)?;
-                let libraries = if cfg!(feature = "installed") && !dependencies.is_empty() {
-                    std::fs::read_to_string(sdk.join(SDK_RUNTIME).join("native-static-libs.txt"))?
-                        .split_whitespace().map(str::to_owned).collect()
-                } else {
-                    Vec::new()
-                };
-                return Ok(Archive {
-                    bytes: super::ObjectBytes::generated(bytes),
-                    libraries,
-                    exports,
-                    resources: None,
-                });
-            }
-            let libraries = stderr
-                .lines()
-                .find_map(|line| line.trim().strip_prefix("note: native-static-libs: "))
-                .ok_or("Rust 未返回静态目标库的本机库依赖")?
-                .split_whitespace()
-                .map(str::to_owned)
-                .collect();
+            let bytes = std::fs::read(wrapper)?;
+            let mut symbols = Vec::new();
+            super::coff::Reader::new(bytes.as_slice())?.for_each_definition(|name| {
+                symbols.push((0, name.to_owned()));
+                Ok(())
+            })?;
+            let member = super::static_library::Member::new("resource.obj".into(), bytes);
+            let bytes = super::static_library::encode(&[member], &symbols)?;
             Ok(Archive {
-                bytes: super::ObjectBytes::read(&target.join(format!("release/{unit}.lib")))?,
+                bytes: super::ObjectBytes::generated(bytes),
                 libraries,
                 exports,
                 resources: None,
@@ -148,7 +152,7 @@ pub(crate) fn compile(
             let arguments: Vec<OsString> = [
                 "clean".into(), "--offline".into(), "--release".into(), "--manifest-path".into(),
                 build.join("Cargo.toml").into_os_string(), "--target-dir".into(), target.as_os_str().into(),
-                "--package".into(), unit.clone().into(), "--color".into(), "never".into(),
+                "--package".into(), unit.into(), "--color".into(), "never".into(),
             ].into();
             let output = worker.cargo_output(&arguments, &build, &sdk)?;
             if !output.status.success() {
@@ -156,8 +160,7 @@ pub(crate) fn compile(
                     "执行库单元产物清理失败：\n{}{}",
                     String::from_utf8_lossy(&output.stdout),
                     String::from_utf8_lossy(&output.stderr)
-                )
-                .into());
+                ).into());
             }
             Ok(())
         })();
@@ -165,7 +168,6 @@ pub(crate) fn compile(
     })();
     finish(result, std::fs::remove_dir_all(build).map_err(Into::into))
 }
-
 
 // 构建输入来自原原生生产者；不是资源ABI或另一份运行时状态。
 pub(crate) fn inputs(runtime: bool) -> std::io::Result<[u8; 32]> {

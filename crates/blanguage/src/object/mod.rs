@@ -63,6 +63,18 @@ pub(crate) struct Archive {
     pub exports: Vec<String>,
     pub resources: Option<ResourceBinding>,
 }
+
+impl Archive {
+    pub(crate) fn local_libraries_available(&self) -> std::io::Result<bool> {
+        for library in &self.libraries {
+            let path = Path::new(library);
+            if path.is_absolute() && !path.try_exists()? {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+}
 #[derive(Clone)]
 pub(crate) enum Kind {
     Module {
