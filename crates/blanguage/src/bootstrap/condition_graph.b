@@ -374,10 +374,9 @@ FactView internal_key(FactKind kind,address identity,address scalar,u64 value) o
  address nil=unsafe_address(0u64);
  return FactView(1,kind,identity,nil,nil,scalar,value,0u64,0,0);
 }
-BitRange internal_bounds(address context,address identity,address scalar,InternalHost host) on cpu
+BitRange internal_bounds(address context,address identity,address scalar,InternalScalar info,InternalHost host) on cpu
  requires nonzero(host.select) requires nonzero(host.contains) requires nonzero(host.compare)
- requires nonzero(host.same_scalar) requires nonzero(host.scalar) {
- InternalScalar info=host.scalar(scalar);
+ requires nonzero(host.same_scalar) {
  FactView lower_fact=host.select(context,internal_key(FactKind::Minimum,identity,scalar,info.mask),1);
  FactView upper_fact=host.select(context,internal_key(FactKind::Maximum,identity,scalar,0u64),0);
  u64 lower=0u64;u64 upper=info.mask;
@@ -391,12 +390,12 @@ BitRange internal_bounds(address context,address identity,address scalar,Interna
 }
 BitRange internal_operand(address context,InternalOperand operand,address scalar,InternalScalar info,InternalHost host) on cpu
  requires nonzero(host.select) requires nonzero(host.contains) requires nonzero(host.compare)
- requires nonzero(host.same_scalar) requires nonzero(host.scalar) {
+ requires nonzero(host.same_scalar) {
  if(operand.is_constant!=0){
   u64 value=info.kind==2 ? float_order(info.width,operand.bits) : operand.bits^info.bias;
   return BitRange(value,value);
  }
- return internal_bounds(context,operand.identity,scalar,host);
+ return internal_bounds(context,operand.identity,scalar,info,host);
 }
 u32 internal_not_equal(address context,FactView fact,CrossScalars integers,InternalHost host) on cpu
  requires nonzero(host.select) requires nonzero(host.contains) requires nonzero(host.compare)
@@ -413,8 +412,8 @@ u32 internal_not_equal(address context,FactView fact,CrossScalars integers,Inter
  }
  for(i in 0..4){
   address scalar=integers.values[i];InternalScalar info=host.scalar(scalar);
-  BitRange left=left_zero!=0 ? BitRange(info.bias,info.bias) : internal_bounds(context,fact.first,scalar,host);
-  BitRange right=right_zero!=0 ? BitRange(info.bias,info.bias) : internal_bounds(context,fact.second,scalar,host);
+  BitRange left=left_zero!=0 ? BitRange(info.bias,info.bias) : internal_bounds(context,fact.first,scalar,info,host);
+  BitRange right=right_zero!=0 ? BitRange(info.bias,info.bias) : internal_bounds(context,fact.second,scalar,info,host);
   if(left.lower==left.upper&&right.lower==right.upper&&left.lower==right.lower){return 1;}
  }
  return 0;
@@ -450,12 +449,13 @@ extern "C" u32 internal_conflict(address context,CrossScalars integers,InternalH
    key.kind=fact.kind==FactKind::Index ? FactKind::Outside : FactKind::Index;
    if(host.contains(context,key)!=0){return 1;}
   }else if(fact.kind==FactKind::Minimum||fact.kind==FactKind::Maximum){
-   BitRange bounds=internal_bounds(context,fact.first,fact.scalar,host);InternalScalar info=host.scalar(fact.scalar);
+   InternalScalar info=host.scalar(fact.scalar);
+   BitRange bounds=internal_bounds(context,fact.first,fact.scalar,info,host);
    if(bounds.lower>bounds.upper){return 1;}
-   key.kind=FactKind::Zero;
-   if(host.contains(context,key)!=0&&!(bounds.lower<=info.bias&&info.bias<=bounds.upper)){return 1;}
-   key.kind=FactKind::NonZero;
-   if(host.contains(context,key)!=0&&bounds.lower==bounds.upper&&bounds.lower==info.bias){return 1;}
+   if(bounds.lower==bounds.upper&&bounds.lower==info.bias){
+    key.kind=FactKind::NonZero;
+    if(host.contains(context,key)!=0){return 1;}
+   }
   }else if(fact.kind==FactKind::NotEqual){
    if(internal_not_equal(context,fact,integers,host)!=0){return 1;}
   }else if(fact.kind==FactKind::Below){
@@ -463,8 +463,9 @@ extern "C" u32 internal_conflict(address context,CrossScalars integers,InternalH
    key.first=fact.second;key.second=fact.first;key.flag=1;
    if(host.contains(context,key)!=0){return 1;}
    if(fact.flag!=0){key.flag=0;if(host.contains(context,key)!=0){return 1;}}
-   BitRange left=internal_bounds(context,fact.first,fact.scalar,host);
-   BitRange right=internal_bounds(context,fact.second,fact.scalar,host);
+   InternalScalar info=host.scalar(fact.scalar);
+   BitRange left=internal_bounds(context,fact.first,fact.scalar,info,host);
+   BitRange right=internal_bounds(context,fact.second,fact.scalar,info,host);
    if(left.lower>right.upper||(fact.flag!=0&&left.lower==right.upper)){return 1;}
   }
  }
