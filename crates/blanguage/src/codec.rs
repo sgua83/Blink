@@ -218,29 +218,7 @@ impl Decode for ir::Ty {
     }
 }
 
-record!(ir::CFunctionType { result, parameters, contracts });
-record!(ast::TypeName { name, canonical, arguments, dataset, view, tile, count, contracts });
-variants!(ast::Shape { 0=>Literal(value), 1=>Constant(name), 2=>Expression(value) });
 record!(ast::Span { start, end });
-record!(ast::Expr { kind, span });
-variants!(ast::ExprKind {
-    0=>Number(value),1=>StaticU32(value),2=>Bool(value),3=>Name(name),
-    4=>Member(base,field),5=>Index(base,index),6=>Call(name,args),7=>Invoke(callee,args),
-    8=>Construct(ty,args),9=>Specialize(name,types,args),10=>FunctionRef(name,types),
-    11=>Cooperate(name,types,args),12=>Target(target,value),13=>Unary(op,value),
-    14=>Binary(op,a,b),15=>Select(a,b,c)
-});
-variants!(ast::GenericArgument { 0=>Type(ty), 1=>Value(shape) });
-impl Encode for ast::OutputConstant {
-    fn encode(&self, w: &mut Writer) { self.ty.encode(w); self.bits.encode(w); }
-}
-impl Decode for ast::OutputConstant {
-    fn decode(r: &mut Reader<'_>) -> Result<Self> {
-        Ok(Self::new(Decode::decode(r)?, Decode::decode(r)?))
-    }
-}
-
-record!(crate::ir::Variant { name, discriminant, ty });
 
 pub(crate) use types::reading::ReadStatus;
 
