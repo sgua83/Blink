@@ -200,7 +200,7 @@ impl Residency {
     fn index_names(&self)->BTreeSet<ValueIdentity>{
         let mut names=BTreeSet::new();
         match self{
-            Self::Selected(when,a,b)=>{names.extend(bounds::Proof::condition(when.as_ref().clone()).scalar_identities());names.extend(a.index_names());names.extend(b.index_names());},
+            Self::Selected(when,a,b)=>{names.extend(when.scalar_identities());names.extend(a.index_names());names.extend(b.index_names());},
             Self::Origins(origins)=>for origin in origins{match origin{
                 Origin::Input(input)=>names.extend(input.fields.iter().filter_map(|part|match part{Part::Selected(Some(bounds::Operand::Value(id)))=>Some(*id),_=>None})),
                 Origin::Output(output)=>{

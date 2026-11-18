@@ -689,7 +689,7 @@ impl Proof {
         let ids=std::cell::RefCell::new(self.origins.iter().flatten().copied().collect::<BTreeSet<_>>());
         let identity=|id|{ids.borrow_mut().insert(id);id};
         for domain in self.domains.iter().flatten(){map_domain(*domain,&identity);}
-        for condition in self.conditions.iter().flatten(){condition.identities(&identity);}
+        Clause::any_scalar_identity(self.conditions.iter().flatten().flat_map(|condition|condition.cases.iter()),&|id|{identity(*id);false});
         for address in self.addresses.iter().flatten(){if let address::Identity::Value(values)=address{for id in values{identity(*id);}}}
         ids.into_inner()
     }
@@ -2190,6 +2190,11 @@ impl Clause {
     fn key(&self) -> usize {
         Arc::as_ptr(&self.0) as usize
     }
+    pub(super) fn scalar_identities<'a>(roots:impl IntoIterator<Item=&'a Self>)->BTreeSet<ValueIdentity> {
+        let identities=std::cell::RefCell::new(BTreeSet::new());
+        Self::any_scalar_identity(roots,&|id|{identities.borrow_mut().insert(*id);false});
+        identities.into_inner()
+    }
     pub(super) fn any_scalar_identity<'a>(
         roots:impl IntoIterator<Item=&'a Self>, test:&impl Fn(&ValueIdentity)->bool,
     )->bool {
@@ -2433,7 +2438,7 @@ impl Proof{
 }
 impl Condition {
     pub(super) fn scope_element_indices(&self,depth:usize)->Self {
-        let names=Proof::condition(self.clone()).scalar_identities().into_iter().filter_map(|id|match id{
+        let names=self.scalar_identities().into_iter().filter_map(|id|match id{
             ValueIdentity::ElementIndex(index)=>Some((id,ValueIdentity::ElementIndex(index+depth))),_=>None,
         }).collect();
         self.output_bound(&names)
@@ -2453,16 +2458,11 @@ impl Condition {
         match(a.known_identity(0),b.known_identity(0)){(Some(a),Some(b))=>Self::guard(Clause::facts([Fact::Equal(a,b)].into())),_=>Self::default()}
     }
 
-    fn identities(&self,identity:&impl Fn(ValueIdentity)->ValueIdentity) {
-        Clause::visit_identities(&Clause::ordered(&self.cases), identity);
+    pub(super) fn scalar_identities(&self)->BTreeSet<ValueIdentity> {
+        Clause::scalar_identities(&self.cases)
     }
     pub(super) fn value_bindings<'a>(&self, values: impl FnMut(ValueIdentity) -> Option<&'a Proof>) -> BTreeMap<ValueIdentity, Cow<'a, Proof>> {
-        let identities = std::cell::RefCell::new(BTreeSet::new());
-        self.identities(&|id| {
-            identities.borrow_mut().insert(id);
-            id
-        });
-        Proof::value_bindings(identities.into_inner(), values, |id| Proof::default().with_identity(id))
+        Proof::value_bindings(self.scalar_identities(), values, |id| Proof::default().with_identity(id))
     }
 
     pub(super) fn substitute_values(&self, values: &BTreeMap<ValueIdentity, Proof>) -> Self {

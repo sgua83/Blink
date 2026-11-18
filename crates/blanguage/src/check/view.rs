@@ -371,7 +371,7 @@ impl Borrow{
         let mut result=self.clone();
         for when in result.sources.0.values_mut() {
             let condition = bounds::Condition::guard(when.clone());
-            let bindings=bounds::Proof::condition(condition.clone()).scalar_identities().into_iter()
+            let bindings=condition.scalar_identities().into_iter()
                 .filter_map(|id|lookup(id).map(|proof|(id,proof))).collect();
             *when=condition.guaranteed_at_call(&bindings).assume(&bounds::Clause::default(), true);
         }

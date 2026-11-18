@@ -300,7 +300,7 @@ fn disjoint(a:&Borrow,b:&Borrow,independent:&BTreeSet<LoopInput>,active:&BTreeSe
 fn resource_index_values(borrow:&Borrow)->BTreeSet<ValueIdentity>{
     fn visit(borrow:&Borrow,ids:&mut BTreeSet<ValueIdentity>){
         for path in borrow.sources.entries().map(|(_,when)|when).chain(borrow.inputs.entries().map(|(_,when)|when)).chain(borrow.calls.entries().map(|(_,when)|when)){
-            ids.extend(bounds::Proof::condition(bounds::Condition::guard(path)).scalar_identities().into_iter().filter(|id|matches!(id,ValueIdentity::ElementIndex(_))));
+            ids.extend(bounds::Clause::scalar_identities([&path]).into_iter().filter(|id|matches!(id,ValueIdentity::ElementIndex(_))));
         }
         for source in &borrow.sources{match source{
             Origin::Element{parent,index,..}=>{if let Some(bounds::Operand::Value(id))=index{ids.insert(*id);}visit(parent,ids);},
@@ -416,7 +416,7 @@ impl Function {
         }
         let mut parameters=std::borrow::Cow::Borrowed(parameters);
         let mut indices=resource_index_values(&resources);indices.extend(resource_index_values(&borrows));
-        indices.extend(bounds::Proof::condition(bounds::Condition::guard(when.clone())).scalar_identities().into_iter().filter(|id|matches!(id,ValueIdentity::ElementIndex(_))));
+        indices.extend(bounds::Clause::scalar_identities([when]).into_iter().filter(|id|matches!(id,ValueIdentity::ElementIndex(_))));
         let mut next=0;
         for id in indices{
             if let Some(target)=self.parameters.get(&id).copied().filter(|target|self.input(*target)){
@@ -1191,8 +1191,8 @@ fn access_at_call<'a>(access:&Access,call:&Call,path:&bounds::Clause,evaluation:
     match access{
         Access::Resource{resources,borrows,when,..}=>{
             let mut indices=resource_index_values(resources);indices.extend(resource_index_values(borrows));
-            indices.extend(bounds::Proof::condition(when.clone()).scalar_identities());
-            let mut caller=bounds::Proof::condition(bounds::Condition::guard(path.clone())).scalar_identities();
+            indices.extend(when.scalar_identities());
+            let mut caller=bounds::Clause::scalar_identities([path]);
             for value in call.arguments.values(){caller.extend(value.scalar_identities());caller.extend(resource_index_values(&value.borrowed_view()));}
             let mut next=caller.into_iter().filter_map(|id|if let ValueIdentity::ElementIndex(index)=id{Some(index+1)}else{None}).max().unwrap_or(0);
             let mut names=BTreeMap::new();let mut arguments=call.arguments.clone();
