@@ -395,7 +395,7 @@ impl Frame {
             }
         };
         let layout = loaded.layout();
-        let (datasets, domains, result) = match &loaded {
+        let (domains, result) = match &loaded {
             Program::Cpu(program) => {
                 let mut datasets = Vec::new();
                 for &handle in &selected {
@@ -415,7 +415,10 @@ impl Frame {
                     crate::bindings::invalidate(&mut self.data.domains, &layout.write_regions,
                         |i| (bindings[i].handle as usize, bindings[i].offset));
                 });
-                (inputs.datasets,inputs.domains,result)
+                for (&handle, data) in selected.iter().zip(inputs.datasets) {
+                    self.data.datasets[handle as usize] = Some(data);
+                }
+                (inputs.domains, result)
             }
             Program::Gpu(gpu_program) => {
                 let mut datasets = Vec::with_capacity(selected.len());
@@ -452,20 +455,12 @@ impl Frame {
                         (inputs, Err(error))
                     }
                 };
-                (
-                    inputs
-                        .datasets
-                        .into_iter()
-                        .map(ResidentData::Gpu)
-                        .collect::<Vec<_>>(),
-                    inputs.domains,
-                    result,
-                )
+                for (&handle, data) in selected.iter().zip(inputs.datasets) {
+                    self.data.datasets[handle as usize] = Some(ResidentData::Gpu(data));
+                }
+                (inputs.domains, result)
             }
         };
-        for (&handle, data) in selected.iter().zip(datasets) {
-            self.data.datasets[handle as usize] = Some(data);
-        }
         self.data
             .domains
             .extend(domains.into_iter().map(|r| r.into_mapped(|binding| Some(selected[binding] as usize)).unwrap()));
