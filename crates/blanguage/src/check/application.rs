@@ -1442,14 +1442,10 @@ impl Builder<'_> {
         }).collect::<Vec<_>>();
         let formal_frame=usize::from(!matches!(arguments.first(),
             Some(CallArgument::Value{ty,..}) if ty.name=="__blink_frame"))*2;
-        let completed_inputs=native_function::task_completion_parameters(arguments.iter().map(|argument|match argument {
-            CallArgument::Value{ty,..}=>(ty.components.len(),Some(ty)),
-            CallArgument::Reference{..}=>(2,None),
-        }),0);
-        let first_completion=formal_frame+arguments.iter().map(|argument|match argument {
-            CallArgument::Value{ty,..}=>ty.components.len(),
-            CallArgument::Reference{..}=>2,
-        }).sum::<usize>();
+        let (input_width, completed_inputs) = native_function::task_completion_parameters(
+            arguments.iter().map(native_function::task_argument_slots), 0,
+        );
+        let first_completion = formal_frame + input_width;
         let mut packed=self.task_argument_packet(arguments,&borrowed_arguments,span)?;
         let overflow = || Diagnostic {
             source: self.scope.source().clone(), span, code: "B224", message: "任务完成布局过大".into(),
@@ -1482,11 +1478,12 @@ impl Builder<'_> {
         work_output.size=tail;
         let mut completions=Vec::<view::TaskInputCompletion>::new();
         for completion in completed_inputs {
-            let result=completion.result;
-            let task=match completion.parent {
+            let parent = completion.parent();
+            let task=match parent {
                 Some((parent,component))=>completions[parent].task.task_projection(view::TaskProjection::Returned(component,None)),
-                None=>self.view_model.calls[call].arguments[&ValueIdentity::Register(completion.input+formal_frame)].view_borrow(0),
+                None=>self.view_model.calls[call].arguments[&ValueIdentity::Register(completion.input()+formal_frame)].view_borrow(0),
             };
+            let result = completion.result;
             let layout=self.task_wait_output_layout(&result,&task,span)?.task_completion_storage().ok_or_else(&overflow)?;
             let offset = work_output.append_field_layout(&layout).ok_or_else(&overflow)?;
             let input=first_completion+2*completions.len();
@@ -1498,7 +1495,7 @@ impl Builder<'_> {
                     bounds::Proof::default().with_identity(ValueIdentity::TaskWorkCompletion(offset+payload,word-payload)));
             }
             work_output.fields.push((completions.len().to_string(),offset,Box::new(layout.clone())));
-            completions.push(view::TaskInputCompletion{offset,result,layout,task,parent:completion.parent});
+            completions.push(view::TaskInputCompletion{offset,result,layout,task,parent});
         }
         for component in view_contracts::components(&result) {
             let actual=outputs[component].at_call(&self.view_model.calls[call].arguments);

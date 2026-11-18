@@ -335,40 +335,9 @@ impl TaskCompletionOutput {
         },async |_|Ok(()),self.span)).await }
     }
 }
-pub(super) struct TaskCompletionParameter {
-    pub input:usize,
-    pub result:Ty,
-    pub parent:Option<(usize,usize)>,
-}
+mod task_parameters;
+pub(in crate::check) use task_parameters::{task_argument_slots, task_completion_parameters};
 
-pub(super) fn task_completion_parameters<'a>(
-    parameters: impl IntoIterator<Item=(usize,Option<&'a Ty>)>, start:usize,
-)->Vec<TaskCompletionParameter> {
-    fn collect(ty:&Ty,input:usize,parent:Option<usize>,completions:&mut Vec<TaskCompletionParameter>) {
-        let first=completions.len();
-        for (word,field) in ty.borrow_fields() {
-            let Some(result)=field.task_result() else {continue;};
-            let component=ty.components.iter().position(|(_,at)|*at==word).unwrap();
-            let parent=parent.map(|parent|(parent,component));
-            let input=if parent.is_some(){input}else{input+component};
-            if completions[first..].iter().any(|existing|
-                existing.input==input && existing.parent==parent && existing.result==*result) {
-                continue;
-            }
-            let index=completions.len();
-            completions.push(TaskCompletionParameter{input,result:result.clone(),parent});
-            collect(result,input,Some(index),completions);
-        }
-    }
-
-    let mut offset=start;
-    let mut completions=Vec::new();
-    for (width,ty) in parameters {
-        if let Some(ty)=ty {collect(ty,offset,None,&mut completions);}
-        offset+=width;
-    }
-    completions
-}
 pub(super) async fn check(world: &World, instance: &crate::generics::Instance) -> Result<()> {
     let mut functions = unsafe { world.call(declaration(world, instance, Module::default())).await }?;
     unsafe { world.call(lower_module_failures(world,&mut functions,&mut [])).await }?;
@@ -1072,45 +1041,40 @@ impl Builder<'_> {
         }};
         self.check_view_requirement(view::Requirement::Memory{target:address::MemoryTarget::Call(memory_use),borrow,access:Some(Access::InOut),written:None,snapshots:snapshots.clone(),span,address_fields:Arc::from([])})?;
         let source_site = if generated_origin.is_none() { self.source_site.clone() } else { None };
-        let task_results=result.as_ref().map(Ty::task_components).unwrap_or_default();
-        let mut machine_inputs=Vec::new();
-        let mut completion_slots=BTreeMap::new();
-        let mut completion_inputs=BTreeMap::new();
-        if self.application_entry() && !signature.c_abi {
-            let task_parameters=task_completion_parameters(arguments.iter().map(|argument| match argument {
-                CallArgument::Value{ty,..}=>(ty.components.len(),Some(ty)),
-                CallArgument::Reference{..}=>(2,None),
-            }),if implicit{0}else{2});
-            if !task_parameters.is_empty() {
-                machine_inputs.resize(if implicit{0}else{2},None);
-                for argument in &arguments {
-                    match argument {
-                        CallArgument::Value{values,..}=>machine_inputs.extend(values.iter().copied().map(Some)),
-                        CallArgument::Reference{..}=>machine_inputs.extend([None,None]),
-                    }
-                }
-            }
+        let has_task_abi = self.application_entry() && !signature.c_abi;
+        let task_results = if has_task_abi {
+            result.as_ref().map(Ty::task_components).unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        let mut completion_slots = BTreeMap::new();
+        let mut completion_inputs = BTreeMap::new();
+        if has_task_abi {
+            let (_, task_parameters) = task_completion_parameters(
+                arguments.iter().map(task_argument_slots), if implicit { 0 } else { 2 },
+            );
             let first_completion=actual.len();
             let mut completion_sources=Vec::<(view::Borrow,Option<Reg>)>::new();
             for completion in task_parameters {
                 let output=actual.len();
-                let result=completion.result;
-                let (source,forwarded)=match completion.parent {
+                let parent_position = completion.parent();
+                let (source,forwarded)=match parent_position {
                     Some((parent,component))=>{
                         let (parent_source,identity)=&completion_sources[parent];
                         let source=parent_source.task_projection(view::TaskProjection::Returned(component,None));
                         let forwarded=identity.and_then(|parent|
-                            self.task_completion(TaskCompletionSource::Returned(parent,component),&result))
+                            self.task_completion(TaskCompletionSource::Returned(parent,component),&completion.result))
                             .map(|address|(address,Some(address[0])));
                         (source,forwarded)
                     },
                     None=>{
-                        let source=actual[completion.input].as_ref().map_or_else(view::Borrow::default,|proof|proof.view_borrow(0));
-                        let register=machine_inputs[completion.input].unwrap();
-                        let forwarded=self.task_completion_destination(register,&result,&source);
+                        let source=actual[completion.input()].as_ref().map_or_else(view::Borrow::default,|proof|proof.view_borrow(0));
+                        let register=completion.argument_register(&arguments);
+                        let forwarded=self.task_completion_destination(register,&completion.result,&source);
                         (source,forwarded)
                     },
                 };
+                let result = completion.result;
                 completion_sources.push((source.clone(),forwarded.and_then(|(_,identity)|identity)));
                 let layout=self.task_wait_output_layout(&result,&source,span)?.task_completion_storage().ok_or_else(||Diagnostic{
                     source:self.scope.source().clone(),span,code:"B224",message:"任务完成布局过大".into(),
@@ -1126,7 +1090,7 @@ impl Builder<'_> {
                 } else {
                     let (slots,range)=self.local_slots(&layout);
                     self.initialize_task_completion(&layout,&slots);
-                    let parent=completion.parent.and_then(|(parent,component)|completion_slots.get(&(first_completion+2*parent))
+                    let parent=parent_position.and_then(|(parent,component)|completion_slots.get(&(first_completion+2*parent))
                         .map(|output:&Arc<TaskCompletionOutput>|(output.clone(),component)));
                     completion_slots.insert(output,Arc::new(TaskCompletionOutput{result,layout:layout.clone(),slots,task:source,parent,span}));
                     CallStorage::Local{base:range.start,len:range.len()}
@@ -1136,7 +1100,7 @@ impl Builder<'_> {
                 actual.extend([None,None]);
             }
         }
-        let task_return_slots=if !task_results.is_empty()&&self.application_entry()&&!signature.c_abi {
+        let task_return_slots=if !task_results.is_empty() {
             let layout=Ty::task_return_layout(&task_results);
             let (slots,range)=self.local_slots(&layout);
             arguments.push(CallArgument::Reference{origin:None,ty:layout,access:Access::Write,

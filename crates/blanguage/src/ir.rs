@@ -758,6 +758,10 @@ impl Ty {
     /// Borrow-bearing values in this layout, without following their pointees.
     #[cfg(feature = "compiler")]
     pub(crate) fn borrow_fields(&self) -> Vec<(u32, &Ty)> { properties::borrows(self) }
+    #[cfg(feature = "compiler")]
+    pub(crate) fn visit_borrow_fields<'a>(&'a self, visit: impl FnMut(u32, &'a Ty)) {
+        properties::visit_borrows(self, visit);
+    }
     /// 全部可能的view字段，仅用于类型能力；重叠载荷不同时活动。
     pub fn view_fields(&self) -> Vec<(u32, &Ty)> {
         if self.has_variants() {

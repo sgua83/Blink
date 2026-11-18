@@ -376,16 +376,17 @@ fn completion_inputs(
     inputs: &mut Vec<Reg>,
 ) -> Result<()> {
     let first_completion = inputs.len();
-    for completion in native_function::task_completion_parameters(
+    let (_, completions) = native_function::task_completion_parameters(
         parameters.iter().map(|parameter| match &parameter.kind {
             CallParameterKind::Value(ty) => (ty.components.len(), Some(ty)),
             CallParameterKind::Reference { .. } => (2, None),
         }),
         0,
-    ) {
-        let source = match completion.parent {
+    );
+    for completion in completions {
+        let source = match completion.parent() {
             Some((parent, component)) => TaskCompletionSource::Returned(inputs[first_completion + 2 * parent], component),
-            None => TaskCompletionSource::Input(inputs[completion.input]),
+            None => TaskCompletionSource::Input(inputs[completion.input()]),
         };
         let address = [b.reg(Scalar::U32), b.reg(Scalar::U32)];
         let layout = b.task_completion_layout(&completion.result, span)?;

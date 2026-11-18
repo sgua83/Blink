@@ -78,13 +78,24 @@ unsafe extern "C" fn child(value: *const Ty, kind: Child, index: usize) -> *cons
 }
 
 pub(super) fn borrows(value: &Ty) -> Vec<(u32, &Ty)> {
-    let mut output: Vec<(u32, &Ty)> = Vec::new();
-    unsafe {
-        b_borrow_fields(value, 0, FieldHost { types: Host { inspect, child }, part },
-            ptr::from_mut(&mut output).cast(), emit);
-    }
+    let mut output = Vec::new();
+    visit_borrows(value, |offset, value| output.push((offset, value)));
     output
 }
+
+pub(super) fn visit_borrows<'a, F: FnMut(u32, &'a Ty)>(value: &'a Ty, mut visit: F) {
+    unsafe extern "C" fn dispatch<'a, F: FnMut(u32, &'a Ty)>(
+        context: *mut c_void, offset: u32, value: *const Ty,
+    ) {
+        // B visits only the original value and layout children during this call.
+        unsafe { (&mut *context.cast::<F>())(offset, &*value) };
+    }
+    unsafe {
+        b_borrow_fields(value, 0, FieldHost { types: Host { inspect, child }, part },
+            ptr::from_mut(&mut visit).cast(), dispatch::<F>);
+    }
+}
+
 pub(super) fn task_output_owners(value: &Ty) -> Vec<(u32, &Ty)> {
     let mut output: Vec<(u32, &Ty)> = Vec::new();
     unsafe {
