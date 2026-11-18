@@ -38,6 +38,7 @@ mod user_owned;
 mod owned_borrows;
 mod owned_presence;
 mod owned_values;
+mod dataset_drop;
 mod ownership;
 pub(crate) mod outputs;
 mod prefix;

@@ -1,6 +1,7 @@
 //! 应用入口是一次普通 CPU 值函数调用，不伪造 dataset 或 parallel 域。
 use super::cooperative::Argument;
 use super::*;
+mod drops;
 #[derive(Default)]
 pub(super) struct Context {
     pub frame: Option<Vec<Reg>>,
@@ -1919,48 +1920,6 @@ impl Builder<'_> {
         )
     }
 
-    pub(super) async fn application_drop(&mut self, data: &Data, retained: &view::Borrow, span: Span) -> Result<()> {
-        unsafe { self.world.call(self.application_drop_with(data, retained, span, Self::drop_application_elements)).await }
-    }
-
-    pub(super) async fn drop_task_owned_dataset(&mut self, data: &Data, retained: &view::Borrow, span: Span) -> Result<()> {
-        unsafe { self.world.call(self.application_drop_with(data, retained, span, async |builder, data, _, span| {
-            unsafe { builder.world.call(builder.drop_application_elements_with(data, span, async |builder, _, place| {
-                unsafe { builder.world.call(builder.drop_task_completion_element(&place, span)).await }
-            })).await }
-        })).await }
-    }
-
-    async fn application_drop_with(
-        &mut self, data: &Data, retained: &view::Borrow, span: Span,
-        drop_elements: impl std::ops::AsyncFnOnce(&mut Self, &DataReference, &view::Borrow, Span) -> Result<()>,
-    ) -> Result<()> {
-        // Child resources are consumed by their actual element cleanup below.
-        // Releasing this allocation only ends positions in its own storage.
-        self.check_view_requirement(view::Requirement::Unborrowed{resource:view::resource_borrow(data),borrow:retained.clone(),kind:view::Exclusion::Resource,span})?;
-        if self.application_position_borrowed(data.root.identity()) {
-            return self.fail(span,"B227","dataset 的元素仍被当前游标或位置借用，不能结束父存储");
-        }
-        let handle=if data.ty.owns_resources() && data.length.maximum()!=0 {
-            let refreshed;
-            let data=if let Some(place)=&data.place {
-                refreshed=unsafe { self.world.call(self.read_cleanup_storage(place,async |builder|unsafe { builder.world.call(builder.refresh_application_data(data.clone(),span)).await })).await }?;
-                &refreshed
-            } else {
-                data
-            };
-            drop_elements(self, &DataReference::direct(data.clone()), retained, span).await?;
-            data.root.regs[0]
-        } else if let Some(place)=&data.place {
-            let place=place.clone().project(Ty::scalar(Scalar::U32),&[0]);
-            unsafe { self.world.call(self.read_cleanup_storage(&place,async |builder|unsafe { builder.world.call(builder.read_place(&place,span,None)).await })).await }?.regs[0]
-        } else {
-            data.root.regs[0]
-        };
-        let origin=Arc::new(GeneratedOrigin{reason:GenerationReason::DatasetRelease,trigger:self.source_site.clone().map(GenerationAnchor::Syntax)});
-        self.code.push(Inst::generated(self.application_release(handle).kind,origin));
-        Ok(())
-    }
     pub(super) fn application_available(&self, data: &Data, span: Span) -> Result<()> {
         if !self.resolve_ownership(&data.ownership,None).available() {
             return self.fail(
@@ -2763,50 +2722,6 @@ impl Builder<'_> {
         })).await }
     }
 
-    async fn drop_application_elements(
-        &mut self, data: &DataReference, retained: &view::Borrow, span: Span,
-    ) -> Result<()> {
-        unsafe { self.world.call(self.drop_application_elements_with(data, span, async |builder, data, place| {
-            if matches!(&data.elements, ElementFacts::Unknown | ElementFacts::Input(_) | ElementFacts::Cleanup(_)) {
-                let trigger = builder.source_site.clone().map(GenerationAnchor::Syntax);
-                let origin = |reason| Arc::new(GeneratedOrigin { reason, trigger: trigger.clone() });
-                let value = unsafe { builder.world.call(builder.read_cleanup_storage(&place, async |builder| unsafe { builder.world.call(builder.read_storage_value(
-                    &place, span, Some(origin(GenerationReason::DatasetDropElementRead)),
-                )).await })).await }?;
-                let element = unsafe { builder.world.call(builder.materialize_element(data, Some(value), &place)).await }?;
-                unsafe { builder.world.call(builder.native_element_drop(element, retained, span, origin(GenerationReason::DatasetElementDrop))).await }
-            } else {
-                let mut element = unsafe { builder.world.call(builder.materialize_element(data, None, &place)).await }?;
-                owned_borrows::set_storage(&mut element, place);
-                unsafe { builder.world.call(builder.drop_owned_tree(element, retained, span)).await }
-            }
-        })).await }
-    }
-
-    async fn drop_application_elements_with(
-        &mut self, data: &DataReference, span: Span,
-        drop_element: impl std::ops::AsyncFnOnce(&mut Self, &DataReference, Place) -> Result<()>,
-    ) -> Result<()> {
-        self.application_cpu(&data.data,span)?;
-        let trigger=self.source_site.clone().map(GenerationAnchor::Syntax);
-        let origin=|reason|Arc::new(GeneratedOrigin{reason,trigger:trigger.clone()});
-        let scalar=Ty::scalar(Scalar::U32);let slot=self.local_slots(&scalar).0[0];
-        self.code.push(Inst::generated(InstKind::StoreLocal(slot,data.length.regs[0]),origin(GenerationReason::DatasetDropCursor)));
-        let condition_origin=origin(GenerationReason::DatasetDropCondition);
-        let outer=std::mem::take(&mut self.code);
-        let cursor=self.reg(Scalar::U32);self.code.push(Inst::generated(InstKind::LoadLocal(cursor,slot),condition_origin.clone()));
-        let zero=self.constant_with_origin(Scalar::U32,0,Some(condition_origin.clone())).regs[0];let test=self.reg(Scalar::Bool);
-        self.code.push(Inst::generated(InstKind::Binary{dst:test,op:ir::BinaryOp::Compare(ir::Comparison::Greater),a:cursor,b:zero},condition_origin));
-        let condition=std::mem::take(&mut self.code);
-        let index_origin=origin(GenerationReason::DatasetDropIndex);
-        let one=self.constant_with_origin(Scalar::U32,1,Some(index_origin.clone())).regs[0];let index=self.reg(Scalar::U32);
-        self.code.push(Inst::generated(InstKind::Binary{dst:index,op:ir::BinaryOp::ISub,a:cursor,b:one},index_origin));
-        let value_index=Value{ty:scalar,regs:vec![index],proof:bounds::Proof::unsigned(0,data.length.maximum().saturating_sub(1)),uniform:false,literal:false,constant:None};
-        let place = data.element(&value_index, (value_index.minimum(), value_index.maximum()));
-        drop_element(self, data, place).await?;
-        self.code.push(Inst::generated(InstKind::StoreLocal(slot,index),origin(GenerationReason::DatasetDropAdvance)));
-        let body=std::mem::replace(&mut self.code,outer);self.code.push(Inst::generated(InstKind::Loop{condition,test,body},origin(GenerationReason::DatasetDropLoop)));Ok(())
-    }
     pub(super) async fn application_resource_storage(&self,input:&Data,resource:&view::Borrow)->Result<Option<Vec<(effects::StorageWrite,Ty,DataLayout)>>> {unsafe { self.world.call(ApplicationLoads(self).resource_storage(input,resource)).await }}
     pub(super) fn application_element(
         data: &Data,

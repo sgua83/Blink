@@ -51,6 +51,10 @@ fn variant_value(value:&Value,ty:&Ty,offset:u32)->Value{
  unsafe{project_variant(ptr::from_ref(&value.ty).cast(),ptr::from_ref(ty).cast(),offset,ptr::from_mut(&mut output).cast(),VariantHost{count:component_count,component,select,proof:project_proof,selected,forget})};
  Value{ty:ty.clone(),regs:output.components.iter().map(|i|value.regs[*i]).collect(),proof:unsafe{output.proof.take().unwrap_unchecked()},uniform:value.uniform,literal:false,constant:None}
 }
+pub(in crate::check) fn dataset_storage_type(data:&Data)->Ty{
+ let layout=unsafe{dataset_layout(data.root.ty.size,data.root.ty.align,data.length.ty.size,data.length.ty.align)};
+ let mut ty=Ty::owned_dataset(data.ty.syntax(),data.count);ty.components=vec![(data.root.ty.components[0].0,0),(Scalar::U32,layout.length_offset)];ty.align=layout.alignment;ty.size=layout.size;ty
+}
 impl Builder<'_>{
  pub(in crate::check) fn returned_storage(&self,value:&Returned)->Value{
   let mut cursor=unsafe{start()};let k=kind(value);let mut output=None;let mut proof:Option<bounds::Proof>=None;
@@ -62,8 +66,7 @@ impl Builder<'_>{
    StorageNeed::LengthProof=>{let Returned::Dataset(data)=value else{unsafe{std::hint::unreachable_unchecked()}};unsafe{proof.as_mut().unwrap_unchecked()}.append(&data.length);}
    StorageNeed::Data=>{
     let Returned::Dataset(data)=value else{unsafe{std::hint::unreachable_unchecked()}};
-    let layout=unsafe{dataset_layout(data.root.ty.size,data.root.ty.align,data.length.ty.size,data.length.ty.align)};
-    let mut ty=Ty::owned_dataset(data.ty.syntax(),data.count);ty.components=vec![(data.root.ty.components[0].0,0),(Scalar::U32,layout.length_offset)];ty.align=layout.alignment;ty.size=layout.size;
+    let ty=dataset_storage_type(data);
     output=Some(Value{ty,regs:vec![data.root.regs[0],data.length.regs[0]],proof:unsafe{proof.take().unwrap_unchecked()},uniform:data.root.uniform&&data.length.uniform,literal:false,constant:None});
    }
    StorageNeed::Complete=>return unsafe{output.take().unwrap_unchecked()},

@@ -3,6 +3,7 @@ use super::*;
 use cooperative::Argument;
 use returns::Returned;
 mod fallibility;
+mod owned_cleanup;
 mod dependencies;
 mod frame_effects;
 mod failure_lowering;
@@ -531,60 +532,6 @@ pub(super) async fn check(world: &World, instance: &crate::generics::Instance) -
     unsafe { world.call(lower_module_failures(world,&mut functions,&mut [])).await }?;
     resolve_residencies(world,&mut functions).map(|_|())
 }
-async fn element_drop_declaration(world:&World,name:&str,ty:&Ty,lexical:&LexicalScope,
-    parameters:&[Param],contract:outputs::Contract<'_>,functions:Module,span:Span)->Result<Module> {
-    let program=Arc::new(unsafe { world.call(function_program(world,name,parameters.iter().cloned().map(|parameter|async {Ok(parameter)}),
-        (lexical.source(),lexical.module(),lexical.imports(),FunctionKind::Value),Target::Cpu,None)).await }?);
-    let(source_definition,source_context)=lexical.syntax_context(Some(name));
-    let mut b=Box::new(Builder::from_checked(world,lexical,&program,0,source_definition,source_context,BTreeSet::new()));
-    b.in_function=true;
-    b.application=Some(application::Context::default());
-    b.functions=functions;
-    let frame=b.application_frame(span)?;
-    let mut inputs=frame.regs.clone();
-    let mut abi=vec![CallParameter::value(frame.ty).with_origin(Some(Arc::new(ParameterOrigin::Frame)))];
-    b.calls.push(name.to_owned());
-    let origin=Some(Arc::new(ParameterOrigin::Parameter{
-        index:0,name:"value".into(),instance:Arc::from(name),generated:true,site:None}));
-    if parameters[0].ty.dataset {
-        let data=unsafe { b.world.call(b.application_parameter(0,0,Access::Value)).await }?;
-        abi.push(CallParameter::value(Ty::owned_dataset(data.ty.syntax(),data.count)).with_origin(origin));
-        inputs.extend(&data.root.regs);inputs.extend(&data.length.regs);
-        let data=b.application_bind(data,false);
-        b.env.insert("value".into(),Binding::ApplicationData(data));
-    }else{
-        let regs=ty.components.iter().map(|(scalar,_)|b.reg(*scalar)).collect::<Vec<_>>();
-        inputs.extend(&regs);
-        abi.push(CallParameter::value(ty.clone()).with_origin(origin));
-        let proof=bounds::Proof::default().view_parameters(ty,&[],|index|ValueIdentity::Register(regs[index]));
-        let value=Value{ty:ty.clone(),regs,proof,literal:false,uniform:false,constant:None};
-        if ty.owns_resources(){
-            let mut value=unsafe { b.world.call(b.incoming_owned_value(value)).await }?;
-            residency::parameter(&mut value,0);
-            b.bind_owned_value("value",value,span)?;
-        }else{b.env.insert("value".into(),Binding::Value(value));}
-    }
-    let mut environment=std::mem::take(&mut b.env);
-    let paths=unsafe { b.world.call(contracts::element_input_paths(&mut b,contract,&mut environment,None)).await }?;
-    b.env=environment;
-    application::bind_parameter_elements(&mut b,contract,&paths);
-    let resources=match b.env.get("value"){
-        Some(Binding::ApplicationData(data))=>BTreeMap::from([(ValueIdentity::ResourceParameter(0,0),
-            {let mut component_proof=bounds::Proof::default();component_proof.set_view_borrow(0,view::resource_borrow(data));component_proof})]),
-        _=>BTreeMap::new(),
-    };
-    let mut environment=std::mem::take(&mut b.env);
-    let requirements=unsafe { b.world.call(contracts::resolve(&mut b,contract,lexical,&environment,&resources)).await }?;
-    unsafe { b.world.call(contracts::assume(&mut b,contract,&mut environment,&requirements)).await }?;
-    b.env=environment;
-    b.materialize_array_bindings();
-    unsafe { b.world.call(b.release_application_data(None,view::Borrow::default())).await }?;
-    b.view_model.initialization=address::initialization_effects(&b.initialized,&b.path);
-    b.view_model.normal_returns=Some(bounds::Condition::execution(&b.path));
-    let contracts=contract.contracts().map(|contract|(contract.kind,contract.predicate)).collect();
-    let checked=unsafe { world.call(finish_checked_function(b,program.clone(),name,span,None,None,abi,inputs,contracts,None,vec![None])).await }?;
-    finish_declaration(world,lexical,false,checked)
-}
 struct CallSignature<'a> {
     parameters:&'a [Param],
     result:&'a TypeName,
@@ -628,27 +575,6 @@ impl Builder<'_> {
         let lexical=LexicalScope::Function(instance.clone());
         unsafe { self.world.call(self.native_call(&instance.name,CallSignature{parameters:&parameters,result:&result,contract:(&instance).into(),
             lexical:&lexical,kind:d.function.kind(),execution:d.execution,c_abi:d.function.c_abi()},args,span,generated_origin,syntax,launch)).await }
-    }
-    async fn declare_owned_cleanup(&mut self,ty:&Ty,span:Span)
-        -> Result<(String,Arc<[Param]>,LexicalScope,[FunctionContract;1])> {
-        let name = crate::generics::key(&format!("{}::@dataset_element_drop", self.scope.module()), std::iter::once(ty.name.as_str()), &[]);
-        let parameters:Arc<[Param]>=Arc::from([Param{name:"value".into(),ty:ty.syntax(),access:Access::Value,span}]);
-        let contracts=[FunctionContract{kind:ContractKind::Requires,
-            predicate:ContractPredicate::Cleanup{value:"value".into(),condition:OutputCondition::Bool(true)},span}];
-        let lexical=LexicalScope::Values{
-            source:self.scope.source().clone(),module:self.scope.module().to_owned(),imports:self.scope.imports().to_vec(),
-            bindings:self.scope.bindings().clone(),span,parameters:parameters.clone(),source_definition:None,
-            source_context:Arc::new(SourceContext{instance:Some(Arc::from(name.as_str())),inlined_at:Box::default(),domain_path:Arc::from([])}),
-        };
-        let contract=outputs::Contract::native(&lexical,&parameters,&contracts,&name,span);
-        if self.functions.declare(&name){
-            self.functions=unsafe { self.world.call(element_drop_declaration(self.world,&name,ty,&lexical,&parameters,contract,
-                std::mem::take(&mut self.functions),span)).await }?;
-        }
-        Ok((name,parameters,lexical,contracts))
-    }
-    pub(super) async fn task_cleanup(&mut self,ty:&Ty,span:Span) -> Result<String> {
-        unsafe { self.world.call(self.declare_owned_cleanup(ty,span)).await }.map(|(name,_,_,_)|name)
     }
     async fn task_callback(
         &mut self, name: String, arguments: &[(&str, Ty)], frame: bool, span: Span,
@@ -874,22 +800,6 @@ impl Builder<'_> {
         Ok(())
     }
 
-    pub(super) async fn native_element_drop(&mut self, value: Returned, retained: &view::Borrow, span: Span, origin: Arc<GeneratedOrigin>) -> Result<()> {
-        let ty = self.returned_storage(&value).ty;
-        let resources = match &value {
-            Returned::Dataset(data) => vec![data],
-            Returned::OwnedValue(value) => value.resources(),
-            _ => Vec::new(),
-        };
-        for data in resources { self.application_movable(data, retained, span)?; }
-        let (name,parameters,lexical,contracts)=unsafe { self.world.call(self.declare_owned_cleanup(&ty,span)).await }?;
-        let contract=outputs::Contract::native(&lexical,&parameters,&contracts,&name,span);
-        let result=TypeName::named("void");
-        unsafe { self.world.call(self.native_call(&name,CallSignature{parameters:&parameters,result:&result,contract,lexical:&lexical,
-            kind:FunctionKind::Value,execution:crate::execution::Requirement::Invocation,c_abi:false},
-            vec![Argument::resource(value)],span,Some(origin),None,None)).await }?;
-        Ok(())
-    }
     async fn native_dataset_shape(&self,param:&Param,definition:outputs::Contract<'_>,count:Option<u32>,span:Span)->Result<()>{
         if param.ty.count.is_some()&&unsafe { self.world.call(self.world.shape(&param.ty.count,&definition.source,param.span,&definition.module,&definition.imports)).await }?!=count{
             return self.fail(span,"B167","调用方没有声明函数需要的数据形状");
