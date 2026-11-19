@@ -243,6 +243,60 @@ extern "C" void patch_branches(address image, u64 target, address fields, u64 co
     }
 }
 
+extern "C" void emit_control(address context,address emitter,ControlInstruction instruction,ControlHost host) on cpu
+    requires nonzero(host.emit) requires nonzero(host.load) requires nonzero(host.offset)
+    requires nonzero(host.jump) requires nonzero(host.jump_to) requires nonzero(host.patch_here)
+    requires nonzero(host.open) requires nonzero(host.close) requires nonzero(host.defer)
+    requires nonzero(host.continuation) {
+    ControlKind kind=instruction.kind;
+    if(kind==ControlKind::If){
+        host.load(context,emitter,instruction.register);
+        ControlBlock first=instruction.first;
+        ControlBlock other=instruction.second;
+        ControlJump branch=ControlJump::Zero;
+        if(first.count==0u64){
+            first=instruction.second;
+            other=instruction.first;
+            branch=ControlJump::Nonzero;
+        }
+        u64 alternate=host.jump(emitter,branch);
+        if(host.emit(context,emitter,first)==0){return;}
+        if(other.count!=0u64){
+            u64 end=host.jump(emitter,ControlJump::Always);
+            host.patch_here(emitter,alternate);
+            if(host.emit(context,emitter,other)==0){return;}
+            host.patch_here(emitter,end);
+        } else {
+            host.patch_here(emitter,alternate);
+        }
+    } else if(kind==ControlKind::Loop){
+        u64 begin=host.offset(emitter);
+        if(host.emit(context,emitter,instruction.first)==0){return;}
+        host.load(context,emitter,instruction.register);
+        u64 end=host.jump(emitter,ControlJump::Zero);
+        host.open(emitter,ControlScope::Loop,begin);
+        if(host.emit(context,emitter,instruction.second)==0){return;}
+        host.jump_to(emitter,begin);
+        host.patch_here(emitter,end);
+        host.close(emitter,ControlScope::Loop);
+    } else if(kind==ControlKind::Scope){
+        host.open(emitter,ControlScope::Block,0u64);
+        if(host.emit(context,emitter,instruction.first)==0){return;}
+        host.close(emitter,ControlScope::Block);
+    } else if(kind==ControlKind::Continue){
+        host.jump_to(emitter,host.continuation(emitter));
+    } else {
+        ControlTarget target=ControlTarget::Block;
+        if(kind==ControlKind::Break){target=ControlTarget::Loop;}
+        if(kind==ControlKind::Raise){
+            host.load(context,emitter,instruction.register);
+            target=ControlTarget::Function;
+        }
+        u64 field=host.jump(emitter,ControlJump::Always);
+        host.defer(emitter,target,field);
+    }
+}
+
 extern "C" u64 encode_branch(u8 condition, u32 test_bits, address output) on cpu {
     u64 start = address_bits(output);
     u64 cursor = start;

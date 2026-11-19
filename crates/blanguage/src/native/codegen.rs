@@ -39,6 +39,9 @@ mod scan;
 mod segmented_reduce;
 #[path="sort.rs"]
 mod sort;
+#[path="structure.rs"]
+mod structure;
+use structure::Flow;
 #[path="texture.rs"]
 mod texture;
 pub(crate) use application::{
@@ -281,55 +284,6 @@ impl Emitter<'_> {
         self.patch_scope(&fields);
     }
 
-    fn emit_scope<I>(
-        &mut self, body: &[I], emit: impl FnOnce(&mut Self, &[I]) -> Result<(), &'static str>,
-    ) -> Result<(), &'static str> {
-        self.exits.push(Vec::new());
-        emit(self, body)?;
-        self.close_exits();
-        Ok(())
-    }
-
-    fn emit_if<I>(
-        &mut self, yes: &[I], no: &[I], emit: impl Fn(&mut Self, &[I]) -> Result<(), &'static str>,
-    ) -> Result<(), &'static str> {
-        let (body, alternate, condition) = if yes.is_empty() {
-            (no, yes, Branch::Nonzero32)
-        } else {
-            (yes, no, Branch::Zero32)
-        };
-        let other = self.jump(condition);
-        emit(self, body)?;
-        if alternate.is_empty() {
-            self.patch(other, self.code.len());
-        } else {
-            let end = self.jump(Branch::Always);
-            self.patch(other, self.code.len());
-            emit(self, alternate)?;
-            self.patch(end, self.code.len());
-        }
-        Ok(())
-    }
-
-    fn emit_loop<I>(
-        &mut self, condition: &[I], body: &[I],
-        emit: impl Fn(&mut Self, &[I]) -> Result<(), &'static str>,
-        test: impl FnOnce(&mut Self),
-    ) -> Result<(), &'static str> {
-        let begin = self.code.len();
-        emit(self, condition)?;
-        test(self);
-        let end = self.jump(Branch::Zero32);
-        self.breaks.push(Vec::new());
-        self.continues.push(begin);
-        emit(self, body)?;
-        self.continues.pop();
-        self.jump_to(begin);
-        self.patch(end, self.code.len());
-        self.close_breaks();
-        Ok(())
-    }
-
     fn buffer_load(&mut self, offset: u32, target: u8) {
         self.emit_bytes(8, |output| unsafe { encode_buffer_load(offset, target, output) });
     }
@@ -442,11 +396,7 @@ impl Emitter<'_> {
             let first = self.operation_ranges.as_ref().map(Vec::len);
             match &(inst).kind {
                 InstKind::Call(call) => self.native_call(call)?,
-                InstKind::Raise(error) => {
-                    self.load(*error);
-                    let at=self.jump(Branch::Always);
-                    self.exits[0].push(at);
-                }
+                InstKind::Raise(error) => self.lower_control(Flow::Raise(*error), Self::block, Self::load)?,
                 InstKind::Print { dst, value } => {
                     let scalar = self.stage.registers[*value];
                     self.copy_scalar(allocation::Location::Gpr(1), self.location(*value), scalar);
@@ -508,11 +458,8 @@ impl Emitter<'_> {
                         self.read_scalar(*dst, 15, i as u32 * 4);
                     }
                 }
-                InstKind::Scope(body) => self.emit_scope(body, Self::block)?,
-                InstKind::Exit => {
-                    let at = self.jump(Branch::Always);
-                    self.exits.last_mut().unwrap().push(at);
-                }
+                InstKind::Scope(body) => self.lower_control(Flow::Scope(body), Self::block, Self::load)?,
+                InstKind::Exit => self.lower_control(Flow::Exit, Self::block, Self::load)?,
                 InstKind::Append(append) => self.append(append),
                 InstKind::Atomic(atomic) => self.atomic(atomic),
                 // tile_phases 先完成全部有效 lane，再进入下一块内阶段。
@@ -684,19 +631,13 @@ impl Emitter<'_> {
                     self.select(*dst, *condition, *a, *b);
                 }
                 InstKind::If { condition, yes, no } => {
-                    self.load(*condition);
-                    self.emit_if(yes, no, Self::block)?;
+                    self.lower_control(Flow::If(*condition, yes, no), Self::block, Self::load)?;
                 }
                 InstKind::Loop { condition, test, body } => {
-                    self.emit_loop(condition, body, Self::block, |e| e.load(*test))?;
+                    self.lower_control(Flow::Loop(condition, *test, body), Self::block, Self::load)?;
                 }
-                InstKind::Break => {
-                    let at = self.jump(Branch::Always);
-                    self.breaks.last_mut().unwrap().push(at);
-                }
-                InstKind::Continue => {
-                    self.jump_to(*self.continues.last().unwrap());
-                }
+                InstKind::Break => self.lower_control(Flow::Break, Self::block, Self::load)?,
+                InstKind::Continue => self.lower_control(Flow::Continue, Self::block, Self::load)?,
             }
             self.operation_range(inst, start, first);
         }

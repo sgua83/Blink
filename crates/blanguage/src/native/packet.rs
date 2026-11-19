@@ -192,30 +192,18 @@ impl Emitter<'_> {
     fn packet_block(&mut self, code: &[Step<'_>], allocation: &PacketAllocation) -> Result<(), &'static str> {
         use PrivateSlot::Register;
         let sparse = self.stage.selection.is_some();
+        let emit = |emitter: &mut Self, block: &[Step<'_>]| emitter.packet_block(block, allocation);
+        let load = |emitter: &mut Self, reg| emitter.packet_lane(allocation, reg, 0, 0);
         for step in code {
             let start = self.code.len();
             let first = self.operation_ranges.as_ref().map(Vec::len);
             match &step.kind {
-                StepKind::If { condition, yes, no } => {
-                    self.packet_lane(allocation, *condition, 0, 0);
-                    self.emit_if(yes, no, |e, body| e.packet_block(body, allocation))?;
-                }
-                StepKind::Loop { condition, test, body } => {
-                    self.emit_loop(condition, body, |e, code| e.packet_block(code, allocation),
-                        |e| e.packet_lane(allocation, *test, 0, 0))?;
-                }
-                StepKind::Scope(body) => self.emit_scope(body, |e, code| e.packet_block(code, allocation))?,
-                StepKind::Exit => {
-                    let at = self.jump(Branch::Always);
-                    self.exits.last_mut().unwrap().push(at);
-                }
-                StepKind::Break => {
-                    let at = self.jump(Branch::Always);
-                    self.breaks.last_mut().unwrap().push(at);
-                }
-                StepKind::Continue => {
-                    self.jump_to(*self.continues.last().unwrap());
-                }
+                StepKind::If { condition, yes, no } => self.lower_control(Flow::If(*condition, yes, no), emit, load)?,
+                StepKind::Loop { condition, test, body } => self.lower_control(Flow::Loop(condition, *test, body), emit, load)?,
+                StepKind::Scope(body) => self.lower_control(Flow::Scope(body), emit, load)?,
+                StepKind::Exit => self.lower_control(Flow::Exit, emit, load)?,
+                StepKind::Break => self.lower_control(Flow::Break, emit, load)?,
+                StepKind::Continue => self.lower_control(Flow::Continue, emit, load)?,
                 StepKind::Constant(dst, bits) => {
                     let location = allocation.location(Register(*dst)).into();
                     self.emit_bytes(24, |output| unsafe { encode_packet_constant(location, *bits, output) });

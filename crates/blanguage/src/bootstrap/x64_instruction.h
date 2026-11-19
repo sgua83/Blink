@@ -78,6 +78,30 @@ extern "C" void patch_branches(address image, u64 target, address fields, u64 co
 
 // condition is zero for JMP; test_bits is zero for flags, or 32/64 for EAX/RAX.
 // The caller owns nine output bytes. The returned length includes the rel32.
+enum ControlKind:u32 { If=0; Loop=1; Scope=2; Exit=3; Break=4; Continue=5; Raise=6; };
+enum ControlJump:u32 { Always=0; Zero=1; Nonzero=2; };
+enum ControlScope:u32 { Block=0; Loop=1; };
+enum ControlTarget:u32 { Block=0; Loop=1; Function=2; };
+struct ControlBlock { address start; u64 count; };
+struct ControlInstruction { ControlBlock first; ControlBlock second; u64 register; ControlKind kind; };
+struct ControlHost {
+    cfn<u32,address,address,ControlBlock> emit;
+    cfn<void,address,address,u64> load;
+    cfn<u64,address> offset;
+    cfn<u64,address,ControlJump> jump;
+    cfn<void,address,u64> jump_to;
+    cfn<void,address,u64> patch_here;
+    cfn<void,address,ControlScope,u64> open;
+    cfn<void,address,ControlScope> close;
+    cfn<void,address,ControlTarget,u64> defer;
+    cfn<u64,address> continuation;
+};
+extern "C" void emit_control(address context,address emitter,ControlInstruction instruction,ControlHost host) on cpu
+    requires nonzero(host.emit) requires nonzero(host.load) requires nonzero(host.offset)
+    requires nonzero(host.jump) requires nonzero(host.jump_to) requires nonzero(host.patch_here)
+    requires nonzero(host.open) requires nonzero(host.close) requires nonzero(host.defer)
+    requires nonzero(host.continuation);
+
 extern "C" u64 encode_branch(u8 condition, u32 test_bits, address output) on cpu;
 
 struct SymbolEncoding {
