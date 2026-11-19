@@ -475,3 +475,29 @@ extern "C" u32 program_maximal_reconvergence(Span stages,Host host) on cpu requi
 
 // The original program's buffers and type storage are borrowed synchronously.
 extern "C" u32 shader_pages_fit(Span buffers,u32 bytes,Host host) on cpu requires nonzero(host.inspect);
+
+// CPU ordering borrows the real block's pending instructions and storage.
+enum ReadInput:u32 { Value=0; Load=1; ViewLoad=2; LocalRead=3; LocalWrite=4; Memory=5; Uniform=6; Barrier=7; };
+enum ReadQueue:u32 { Immediate=0; Value=1; Shared=2; Local=3; };
+enum ReadWorkKind:u32 { Done=0; Expand=1; Emit=2; };
+enum ReadClear:u32 { All=0; Shared=1; Local=2; };
+struct ReadWork { usize id; ReadWorkKind kind; };
+struct ReadPrivate { usize id; usize first; usize end; bool pending; };
+struct ReadHost {
+ cfn<void,address,usize> expand;
+ cfn<ReadWork,address> pop;
+ cfn<void,address,usize> emit;
+ cfn<usize,address,ReadClear> count;
+ cfn<usize,address,usize> read_at;
+ cfn<ReadPrivate,address,usize> private_at;
+ cfn<void,address,usize,usize> retain;
+ cfn<void,address,ReadClear,usize> clear;
+};
+extern "C" void read_demand(address context,usize id,ReadHost host) on cpu
+ requires nonzero(host.expand) requires nonzero(host.pop) requires nonzero(host.emit);
+extern "C" void read_finish(address context,ReadHost host) on cpu
+ requires nonzero(host.expand) requires nonzero(host.pop) requires nonzero(host.emit) requires nonzero(host.count) requires nonzero(host.clear);
+extern "C" ReadQueue read_prepare(address context,ReadInput input,usize first,usize end,ReadHost host) on cpu
+ requires nonzero(host.expand) requires nonzero(host.pop) requires nonzero(host.emit)
+ requires nonzero(host.count) requires nonzero(host.read_at) requires nonzero(host.private_at)
+ requires nonzero(host.retain) requires nonzero(host.clear);

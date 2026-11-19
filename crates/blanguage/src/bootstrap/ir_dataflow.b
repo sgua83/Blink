@@ -1962,3 +1962,79 @@ extern "C" u32 shader_pages_fit(Span buffers,u32 bytes,Host host) on cpu require
  }
  return 1;
 }
+
+extern "C" void read_demand(address context,usize id,ReadHost host) on cpu
+ requires nonzero(host.expand) requires nonzero(host.pop) requires nonzero(host.emit) {
+ host.expand(context,id);
+ while (true) {
+  ReadWork row=host.pop(context);
+  if (row.kind==ReadWorkKind::Done) { break; }
+  if (row.kind==ReadWorkKind::Emit) {
+   host.emit(context,row.id);
+  } else {
+   host.expand(context,row.id);
+  }
+ }
+}
+
+void finish_shared_reads(address context,ReadHost host) on cpu
+ requires nonzero(host.expand) requires nonzero(host.pop) requires nonzero(host.emit) requires nonzero(host.count) requires nonzero(host.read_at) requires nonzero(host.clear) {
+ usize count=host.count(context,ReadClear::Shared);
+ usize i=0u64;
+ while (i<count) {
+  read_demand(context,host.read_at(context,i),host);
+  i+=1u64;
+ }
+ host.clear(context,ReadClear::Shared,0u64);
+}
+
+void finish_overlapping_reads(address context,usize first,usize end,ReadHost host) on cpu
+ requires nonzero(host.expand) requires nonzero(host.pop) requires nonzero(host.emit) requires nonzero(host.count) requires nonzero(host.private_at)
+ requires nonzero(host.retain) requires nonzero(host.clear) {
+ usize count=host.count(context,ReadClear::Local);
+ usize kept=0u64;
+ usize i=0u64;
+ while (i<count) {
+  ReadPrivate row=host.private_at(context,i);
+  if (row.pending) {
+   if (row.first<end && first<row.end) {
+    read_demand(context,row.id,host);
+   } else {
+    host.retain(context,i,kept);
+    kept+=1u64;
+   }
+  }
+  i+=1u64;
+ }
+ host.clear(context,ReadClear::Local,kept);
+}
+
+extern "C" void read_finish(address context,ReadHost host) on cpu
+ requires nonzero(host.expand) requires nonzero(host.pop) requires nonzero(host.emit) requires nonzero(host.count) requires nonzero(host.clear) {
+ usize count=host.count(context,ReadClear::All);
+ usize i=0u64;
+ while (i<count) {
+  read_demand(context,i,host);
+  i+=1u64;
+ }
+ host.clear(context,ReadClear::All,0u64);
+}
+
+extern "C" ReadQueue read_prepare(address context,ReadInput input,usize first,usize end,ReadHost host) on cpu
+ requires nonzero(host.expand) requires nonzero(host.pop) requires nonzero(host.emit)
+ requires nonzero(host.count) requires nonzero(host.read_at) requires nonzero(host.private_at)
+ requires nonzero(host.retain) requires nonzero(host.clear) {
+ if (input==ReadInput::Value) { return ReadQueue::Value; }
+ if (input==ReadInput::LocalRead) { return ReadQueue::Local; }
+ // For a load, first carries the existing binding's write membership.
+ if (input==ReadInput::ViewLoad || (input==ReadInput::Load && first==0u64)) { return ReadQueue::Shared; }
+ if (input==ReadInput::LocalWrite) {
+  finish_shared_reads(context,host);
+  finish_overlapping_reads(context,first,end,host);
+ } else if (input==ReadInput::Memory || input==ReadInput::Load) {
+  finish_shared_reads(context,host);
+ } else if (input==ReadInput::Barrier) {
+  read_finish(context,host);
+ }
+ return ReadQueue::Immediate;
+}
