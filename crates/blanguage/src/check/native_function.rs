@@ -2743,7 +2743,13 @@ async fn build_domain(
         );
     }
     let write_regions = signature.write_regions();
-    let stages = std::mem::take(&mut signature.stages);
+    let mut stages = std::mem::take(&mut signature.stages).into_iter();
+    let expansion = signature.generated_origin.take();
+    let mut required = std::mem::take(&mut signature.prefix_requirements);
+    let guaranteed = std::mem::take(&mut signature.prefix_guarantees);
+    let element_requirements = std::mem::take(&mut signature.element_requirements);
+    let element_guarantees = std::mem::take(&mut signature.element_guarantees);
+    let mut element_required = Cow::Borrowed(element_requirements.as_slice());
     let mut frame = Ty::vector(Scalar::U32, 2);
     frame.name = "__blink_frame".into();
     let mut registers = vec![Scalar::U32, Scalar::U32];
@@ -2794,14 +2800,12 @@ async fn build_domain(
         buffers: signature.buffers.clone(), textures: signature.textures.clone(), uniforms: signature.uniforms.clone(),
         write_regions,
         length_requirements: signature.length_requirements.clone(),
-        element_requirements: signature.element_requirements.clone(),
-        prefix_guarantees: signature.prefix_guarantees.clone(),
+        element_requirements: element_requirements.clone(),
+        prefix_guarantees: guaranteed.clone(),
         outputs: expanded.outputs,
         elements: expanded.elements,
     };
     let mut start = 0;
-    let mut required = signature.prefix_requirements.clone();
-    let mut element_required = signature.element_requirements.clone();
     let split = !expanded.calls.is_empty();
     let mut part = 0;
     for call in expanded.calls {
@@ -2812,14 +2816,14 @@ async fn build_domain(
             &world.worker,
             &d.source.path,
             entry_context.as_ref(),
-            &signature,
-            &stages[start..call.stage],
+            Cow::Borrowed(&signature),
+            stages.by_ref().take(call.stage - start).collect(),
             &mut scopes,
             start,
-            &required,
-            &call.before,
-            &element_required,
-            &call.element_before,
+            required,
+            call.before,
+            element_required,
+            call.element_before,
             split,
             &mut part,
             functions,
@@ -2886,21 +2890,22 @@ async fn build_domain(
         })) });
         start = call.stage;
         required = call.after;
-        element_required = signature.element_requirements.iter().cloned()
-            .chain(call.element_after).collect();
+        element_required = Cow::Owned(
+            element_requirements.iter().cloned().chain(call.element_after).collect(),
+        );
     }
     emit_domain_part(
         &world.worker,
         &d.source.path,
         entry_context.as_ref(),
-        &signature,
-        &stages[start..],
+        Cow::Owned(signature),
+        stages.collect(),
         &mut scopes,
         start,
-        &required,
-        &signature.prefix_guarantees,
-        &element_required,
-        &signature.element_guarantees,
+        required,
+        guaranteed,
+        element_required,
+        element_guarantees,
         split,
         &mut part,
         functions,
@@ -2920,7 +2925,7 @@ async fn build_domain(
         generated_origin: Some(Arc::new(GeneratedOrigin {
             reason: GenerationReason::DomainEntry,
             trigger: Some(GenerationAnchor::DomainEntry {
-                context: entry_context.map(Box::new), expansion: signature.generated_origin.clone(),
+                context: entry_context.map(Box::new), expansion,
             }),
         })),
         registers,
@@ -2975,14 +2980,14 @@ fn emit_domain_part(
     worker: &crate::compiler::Worker,
     source: &std::path::Path,
     generation: Option<&GenerationAnchor>,
-    signature: &Program,
-    stages: &[Stage],
+    signature: Cow<'_, Program>,
+    stages: Vec<Stage>,
     scopes: &mut BTreeMap<usize, RangeContext>,
     start: usize,
-    required: &[PrefixRelation],
-    guaranteed: &[PrefixRelation],
-    element_required: &[ElementFact],
-    element_guaranteed: &[ElementFact],
+    required: Vec<PrefixRelation>,
+    guaranteed: Vec<PrefixRelation>,
+    element_required: Cow<'_, [ElementFact]>,
+    element_guaranteed: Vec<ElementFact>,
     split: bool,
     part: &mut usize,
     functions: &mut Module,
@@ -2997,19 +3002,19 @@ fn emit_domain_part(
     if stages.is_empty() {
         return Ok(());
     }
-    let mut program = signature.clone();
-    program.generated_origin = None;
+    let mut program = signature.into_owned();
     if split {
-        program.name = format!("{}@part{}", signature.name, *part);
+        program.name = format!("{}@part{}", program.name, *part);
     }
     *part += 1;
-    program.stages = stages.to_vec();
-    program.source_stages = stages.len();
-    program.prefix_requirements = required.to_vec();
-    program.prefix_guarantees = guaranteed.to_vec();
-    program.element_requirements = element_required.to_vec();
-    program.element_guarantees = program.element_outputs(element_guaranteed.to_vec());
-    let scopes = (start..start + stages.len())
+    let stage_count = stages.len();
+    program.source_stages = stage_count;
+    program.stages = stages;
+    program.prefix_requirements = required;
+    program.prefix_guarantees = guaranteed;
+    program.element_requirements = element_required.into_owned();
+    program.element_guarantees = program.element_outputs(element_guaranteed);
+    let scopes = (start..start + stage_count)
         .filter_map(|index| scopes.remove(&index).map(|scope| (index - start, scope)))
         .collect::<BTreeMap<_, _>>();
     let deferred_source = if !scopes.is_empty() {
