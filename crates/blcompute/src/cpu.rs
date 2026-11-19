@@ -1141,26 +1141,22 @@ impl CpuCode {
                                     let k = r.ty.size.div_ceil(4) as usize;
                                     let mut inputs = pointers.clone();
                                     inputs[r.fields.source] = BufferAddress { address: partials.as_mut_ptr(), stride: k * 4 };
-                                    let mut output = vec![0; k];
                                     let failure = unsafe {
+                                        // The tail writes the declared components only on its success path.
+                                        let output = buffers[r.fields.target]
+                                            .pointer
+                                            .cast::<u8>()
+                                            .add(r.fields.target_word as usize)
+                                            .cast::<u32>();
                                         ranges.invoke_serial(
                                             next.address,
                                             inputs.as_ptr(),
                                             range_count as u32,
-                                            output.as_mut_ptr(),
+                                            output,
                                             &mut timings,
                                         )
                                     }?;
                                     unsafe {crate::application::take_errors([failure])}?;
-                                    for (scalar, offset) in &r.ty.components {
-                                        unsafe {
-                                            std::ptr::copy_nonoverlapping(
-                                                output.as_ptr().cast::<u8>().add(*offset as usize),
-                                                buffers[r.fields.target].pointer.cast::<u8>().add((r.fields.target_word + offset) as usize),
-                                                scalar.size() as usize,
-                                            );
-                                        }
-                                    }
                                     None
                                 } else {
                                     if let blanguage::ir::Operation::SegmentedReduce(reduction) =
