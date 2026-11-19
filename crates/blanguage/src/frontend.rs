@@ -459,11 +459,11 @@ pub(crate) fn compile_world(
                             .map_err(|error| instance_error(error, name))?;
                     }
                     SourceRoute::CheckDomain => {
-                        unsafe { world.call(check::check_domain(world, &instance, signature.as_deref())).await }
+                        unsafe { world.call(check::check_domain(world, &instance, signature.as_ref())).await }
                             .map_err(|error| instance_error(error, name))?;
                     }
                     SourceRoute::Program => {
-                        let mut program = unsafe { world.call(check::compile_program(world, &instance, signature.as_deref())).await }
+                        let mut program = unsafe { world.call(check::compile_program(world, &instance, signature)).await }
                             .map_err(|error| instance_error(error, name))?;
                         if publish {
                             optimize::optimize(&mut program, &world.worker)

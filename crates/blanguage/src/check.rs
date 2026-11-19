@@ -376,16 +376,19 @@ struct ExpandedDomain {
 pub(crate) async fn compile_program(
     world: &World,
     instance: &crate::generics::Instance,
-    signature: Option<&[Param]>,
+    signature: Option<KernelSignature>,
 ) -> Result<Program> {
-    let input = DomainInput::Declaration { instance, signature };
-    let parameters = match signature {
-        Some(parameters) => Cow::Borrowed(parameters),
-        None => Cow::Owned(unsafe { world.call(kernel_signature(world, instance)).await }?
-            .ok_or_else(|| invalid_kernel_interface(input))?),
+    let input = DomainInput::Declaration { instance, signature: None };
+    let KernelSignature { parameters, uniform_types } = match signature {
+        Some(signature) => signature,
+        None => unsafe { world.call(kernel_signature(world, instance)).await }?
+            .ok_or_else(|| invalid_kernel_interface(input))?,
     };
+    let mut uniform_types = uniform_types.into_iter();
     let mut functions = native_function::Module::default();
-    let (expanded, _) = unsafe { world.call(expand_domain(world, input, &parameters, &mut functions, &[])).await }?;
+    let (expanded, _) = unsafe {
+        world.call(expand_domain(world, input, &parameters, Some(&mut uniform_types), &mut functions, &[])).await
+    }?;
     if !expanded.calls.is_empty() {
         return instance.definition.source.fail(
             instance.definition.function.span(),
@@ -399,7 +402,7 @@ pub(crate) async fn compile_program(
 enum DomainInput<'a> {
     Declaration {
         instance: &'a crate::generics::Instance,
-        signature: Option<&'a [Param]>,
+        signature: Option<&'a KernelSignature>,
     },
     Parallel {
         owner: &'a crate::generics::Instance,
@@ -428,7 +431,7 @@ impl<'a> DomainInput<'a> {
     }
     async fn parameters(self, world: &World) -> Result<Cow<'a, [Param]>> {
         match self {
-            Self::Declaration { signature: Some(parameters), .. } => Ok(Cow::Borrowed(parameters)),
+            Self::Declaration { signature: Some(signature), .. } => Ok(Cow::Borrowed(&signature.parameters)),
             Self::Declaration { instance, signature: None } => {
                 let mut parameters = Vec::new();
                 for parameter in instance.parameters(world) {
@@ -473,6 +476,7 @@ async fn expand_domain<'a>(
     world: &World,
     input: DomainInput<'a>,
     parameters: &[Param],
+    mut uniform_types: Option<&mut dyn Iterator<Item = Ty>>,
     functions: &mut native_function::Module,
     element_inputs: &[ElementFact],
 ) -> Result<(ExpandedDomain, Cow<'a, [FunctionContract]>)> {
@@ -511,14 +515,19 @@ async fn expand_domain<'a>(
             accelerations.push(p.name.to_owned());
             continue;
         }
-        let ty = unsafe { world.call(world.ty(&p.ty, &d.source, p.span, &d.module, &d.imports)).await }?;
-        if ty.owns_resources() {
-            return d.source.fail(
-                p.span,
-                "B224",
-                "拥有结果属于CPU资源组织，不能成为program的普通存储或uniform",
-            );
-        }
+        let ty = if !p.ty.dataset && let Some(types) = uniform_types.as_deref_mut() {
+            types.next().unwrap()
+        } else {
+            let ty = unsafe { world.call(world.ty(&p.ty, &d.source, p.span, &d.module, &d.imports)).await }?;
+            if ty.owns_resources() {
+                return d.source.fail(
+                    p.span,
+                    "B224",
+                    "拥有结果属于CPU资源组织，不能成为program的普通存储或uniform",
+                );
+            }
+            ty
+        };
         if ty.contains_views() && (!p.ty.dataset || !matches!(p.access, Access::Read | Access::InOut)) {
             return d.source.fail(
                 p.span,
@@ -4831,22 +4840,30 @@ pub(crate) fn stage_intrinsic(name: &str) -> bool {
         || custom_reduce::Kind::from_source(name).is_some()
 }
 
+pub(crate) struct KernelSignature {
+    parameters: Vec<Param>,
+    uniform_types: Vec<Ty>,
+}
+
 pub(crate) fn kernel_interface<'a>(
     world: &'a World,
     instance: &'a crate::generics::Instance,
 ) -> impl std::future::Future<Output = Result<bool>> + 'a {
-    kernel_parameters(world, instance, declared_kernel_parameters(instance), |_| {})
+    kernel_parameters(world, instance, declared_kernel_parameters(instance), |_, _| {})
 }
 
 pub(crate) async fn kernel_signature(
     world: &World,
     instance: &crate::generics::Instance,
-) -> Result<Option<Vec<Param>>> {
-    let mut parameters = Vec::new();
+) -> Result<Option<KernelSignature>> {
+    let mut signature = KernelSignature { parameters: Vec::new(), uniform_types: Vec::new() };
     let eligible = unsafe {
-        world.call(kernel_parameters(world, instance, declared_kernel_parameters(instance), |param| parameters.push(param))).await
+        world.call(kernel_parameters(world, instance, declared_kernel_parameters(instance), |param, layout| {
+            signature.parameters.push(param.into_owned());
+            signature.uniform_types.extend(layout);
+        })).await
     }?;
-    Ok(eligible.then_some(parameters))
+    Ok(eligible.then_some(signature))
 }
 
 fn declared_kernel_parameters(instance: &crate::generics::Instance) -> impl Iterator<Item = ScopeParameter<'_>> {
@@ -4857,7 +4874,7 @@ async fn kernel_parameters<'a>(
     world: &World,
     instance: &crate::generics::Instance,
     parameters: impl Iterator<Item = ScopeParameter<'a>>,
-    mut retain: impl FnMut(Param),
+    mut retain: impl FnMut(Cow<'a, Param>, Option<Ty>),
 ) -> Result<bool> {
     let d=&instance.definition;
     let result=unsafe { world.call(instance.bindings.type_name(world,&d.function.result(),
@@ -4871,8 +4888,8 @@ async fn kernel_parameters<'a>(
                 Cow::Owned(unsafe { world.call(instance.parameter(world, parameter)).await }?),
             ScopeParameter::Bound(parameter) => Cow::Borrowed(parameter),
         };
-        match function_inputs::domain_parameter(&param) {
-            function_inputs::DomainParameter::Accept => {}
+        let layout = match function_inputs::domain_parameter(&param) {
+            function_inputs::DomainParameter::Accept => None,
             function_inputs::DomainParameter::Reject => return Ok(false),
             function_inputs::DomainParameter::PlainLayout => {
                 let ty = unsafe { world.call(world
@@ -4880,11 +4897,10 @@ async fn kernel_parameters<'a>(
                 if ty.owns_resources() {
                     return Ok(false);
                 }
+                Some(ty)
             }
-        }
-        if let Cow::Owned(param) = param {
-            retain(param);
-        }
+        };
+        retain(param, layout);
     }
     Ok(true)
 }
