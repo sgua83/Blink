@@ -35,6 +35,9 @@ pub(super) fn run(
     stage: usize,
     timings: &mut Option<&mut CpuRangeTimings>,
 ) -> Result<()> {
+    if count == 0 {
+        return Ok(());
+    }
     // 原生初始化／scatter在首次读取前完整写入；这里只持有容量，不形成未初始化值切片。
     let mut a = Vec::<u32>::new();
     a.try_reserve_exact(count as usize * 2)?;

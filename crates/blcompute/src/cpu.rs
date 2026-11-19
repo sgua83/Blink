@@ -52,27 +52,36 @@ struct RangeWork<'a> {
     timing: Option<*mut CpuRangeTiming>,
 }
 impl RangeWork<'_> {
+    unsafe fn frame_uniforms(&self) -> Vec<u32> {
+        match self.frame {
+            Some((_, _, words, _, _)) => unsafe {
+                std::slice::from_raw_parts(self.uniforms, words).to_vec()
+            },
+            None => Vec::new(),
+        }
+    }
+
     unsafe fn invoke(
         &self,
         address: *mut c_void,
         buffers: *const BufferAddress,
+        frame_uniforms: &mut [u32],
         end: u32,
         begin: u32,
         output: *mut u32,
         timing: Option<*mut CpuRangeTiming>,
     ) -> *mut c_void {
-        let mut local=self.frame.map(|(definitions,offset,words,inputs,input_domains)|{
-            let frame=unsafe {crate::application::Frame::from_definitions(definitions.clone(),inputs,input_domains)};
-            let values=unsafe {std::slice::from_raw_parts(self.uniforms,words)}.to_vec();
-            (frame,values,offset)
-        });
-        let uniforms=match &mut local {
-            Some((frame,values,offset))=>{
-                let pointer=frame as *mut crate::application::Frame as usize as u64;
-                values[*offset]=pointer as u32;values[*offset+1]=(pointer>>32)as u32;
-                values.as_ptr()
-            },
-            None=>self.uniforms,
+        let mut frame;
+        let uniforms = if let Some((definitions, offset, _, inputs, input_domains)) = self.frame {
+            frame = unsafe {
+                crate::application::Frame::from_definitions(definitions.clone(), inputs, input_domains)
+            };
+            let pointer = std::ptr::from_mut(&mut frame) as usize as u64;
+            frame_uniforms[offset] = pointer as u32;
+            frame_uniforms[offset + 1] = (pointer >> 32) as u32;
+            frame_uniforms.as_ptr()
+        } else {
+            self.uniforms
         };
         let entry:RangeEntry=unsafe {std::mem::transmute(address)};
         unsafe {
@@ -90,7 +99,8 @@ impl RangeWork<'_> {
     ) -> Result<*mut c_void> {
         unsafe {
             observation::capture(timings, self.stage, address as usize, 1, |timing| {
-                Ok(self.invoke(address, buffers, end, 0, output, timing))
+                let mut uniforms = self.frame_uniforms();
+                Ok(self.invoke(address, buffers, &mut uniforms, end, 0, output, timing))
             })
         }
     }
@@ -101,27 +111,31 @@ unsafe extern "system" fn execute_ranges(
     _work: *mut c_void,
 ) {
     let work = unsafe { &*context.cast::<RangeWork>() };
+    let mut begin = work.next.fetch_add(work.grain, Ordering::Relaxed);
+    if begin >= work.count {
+        return;
+    }
+    let mut uniforms = unsafe { work.frame_uniforms() };
     let mut private_buffers = if work.range_parameters.is_null() {
         Vec::new()
     } else {
-        let mut pointers =
-            unsafe { std::slice::from_raw_parts(work.buffers, work.range_parameter_slot).to_vec() };
+        let mut pointers = Vec::with_capacity(work.range_parameter_slot + 1);
+        pointers.extend_from_slice(unsafe {
+            std::slice::from_raw_parts(work.buffers, work.range_parameter_slot)
+        });
         pointers.push(BufferAddress { address: std::ptr::null_mut(), stride: work.range_parameter_words * 4 });
         pointers
     };
-    loop {
-        let begin = work.next.fetch_add(work.grain, Ordering::Relaxed);
-        if begin >= work.count {
-            break;
-        }
+    while begin < work.count {
         let end = (begin + work.grain).min(work.count);
+        let index = begin / work.grain;
         unsafe {
             let buffers = if work.range_parameters.is_null() {
                 work.buffers
             } else {
                 private_buffers[work.range_parameter_slot].address = work
                     .range_parameters
-                    .add(begin / work.grain * work.range_parameter_words)
+                    .add(index * work.range_parameter_words)
                     .cast_mut();
                 private_buffers.as_ptr()
             };
@@ -129,13 +143,14 @@ unsafe extern "system" fn execute_ranges(
             let output = if words == 0 {
                 std::ptr::null_mut()
             } else {
-                work.partials.add(begin / work.grain * words)
+                work.partials.add(index * words)
             };
-            let index = begin / work.grain;
             let timing = work.timing.map(|first| first.add(index));
-            *work.errors.add(index) =
-                work.invoke(work.entry, buffers, end as u32, begin as u32, output, timing);
+            *work.errors.add(index) = work.invoke(
+                work.entry, buffers, &mut uniforms, end as u32, begin as u32, output, timing,
+            );
         }
+        begin = work.next.fetch_add(work.grain, Ordering::Relaxed);
     }
 }
 pub(crate) struct WorkHandle(*mut c_void);
@@ -1245,11 +1260,15 @@ impl CpuCode {
         ranges: &mut RangeWork<'_>,
         timings: &mut Option<&mut CpuRangeTimings>,
     ) -> Result<()> {
-        let mut errors = vec![std::ptr::null_mut(); ranges.count.div_ceil(ranges.grain)];
+        let range_count = ranges.count.div_ceil(ranges.grain);
+        if range_count == 0 {
+            return Ok(());
+        }
+        let mut errors = vec![std::ptr::null_mut(); range_count];
         ranges.errors = errors.as_mut_ptr();
         unsafe {
-            observation::capture(timings, ranges.stage, ranges.entry as usize, errors.len(), |timing| {
-                let submissions = self.workers.min(ranges.count);
+            observation::capture(timings, ranges.stage, ranges.entry as usize, range_count, |timing| {
+                let submissions = self.workers.min(range_count);
                 let work = std::ptr::from_mut(ranges);
                 let handle = WorkHandle::new(execute_ranges, work.cast())?;
                 (*work).timing = timing;
