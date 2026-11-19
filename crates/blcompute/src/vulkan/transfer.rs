@@ -113,13 +113,11 @@ impl Device {
             let bytes = &bytes[start..(start + bytes_per_page).min(bytes.len())];
             self.stage_page(
                 page,
-                bytes,
-                |mapped| {
-                    target.views.encode(
-                        index * bytes_per_page / 4,
-                        mapped,
-                        &headers,
-                    );
+                bytes.len() as u64,
+                |source| {
+                    source.write_with(bytes, |mapped| {
+                        target.views.encode(index * bytes_per_page / 4, mapped, &headers);
+                    })
                 },
                 commands,
                 staging,
@@ -127,20 +125,20 @@ impl Device {
         }
         Ok(())
     }
-    pub(super) fn stage_page<T: Copy>(
+    // The writer initializes the mapped source, including padding to the four-byte copy size.
+    pub(super) fn stage_page(
         &self,
         target: &Allocation,
-        words: &[T],
-        encode: impl FnOnce(&mut [u32]),
+        bytes: u64,
+        write: impl FnOnce(&Allocation) -> Result<()>,
         commands: &mut Commands,
         staging: &mut Vec<Allocation>,
     ) -> Result<()> {
-        if words.is_empty() {
+        if bytes == 0 {
             return Ok(());
         }
-        let bytes = std::mem::size_of_val(words) as u64;
         let source = Allocation::new(self.inner.clone(), bytes, 1, 6, 4)?;
-        source.write_with(words, encode)?;
+        write(&source)?;
         let copy = VkBufferCopy {
             srcOffset: 0,
             dstOffset: 0,

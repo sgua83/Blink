@@ -232,6 +232,10 @@ impl BottomLevel {
     pub fn wait(&self) -> Result<()> {
         self.0.built.wait()
     }
+    fn instance_tail(&self) -> [u32; 4] {
+        let address = self.0.address;
+        [0xff000000, 0, address as u32, (address >> 32) as u32]
+    }
 }
 pub(super) struct InstanceInput {
     pub(super) pointers: Allocation,
@@ -241,6 +245,11 @@ pub struct RayInstance {
     pub model: BottomLevel,
     /// 行主序仿射 3x4，与 Vulkan instance transform 相同。
     pub transform: [f32; 12],
+}
+#[repr(C)]
+struct InstanceRecord {
+    transform: [f32; 12],
+    tail: [u32; 4],
 }
 #[derive(Clone)]
 pub struct Acceleration(Rc<Structure>);
@@ -276,14 +285,19 @@ impl Acceleration {
     }
 }
 impl Device {
-    fn ray_input(&self, words: &[u32], alignment: u64) -> Result<RayInput> {
-        let allocation = Allocation::new(self.inner.clone(), words.len() as u64 * 4, 0xa0002, 1, alignment)?;
-        let ready = if words.is_empty() {
+    fn ray_input(
+        &self,
+        bytes: u64,
+        alignment: u64,
+        write: impl FnOnce(&Allocation) -> Result<()>,
+    ) -> Result<RayInput> {
+        let allocation = Allocation::new(self.inner.clone(), bytes, 0xa0002, 1, alignment)?;
+        let ready = if bytes == 0 {
             None
         } else {
             let mut commands = Commands::new(self.inner.clone())?;
             let mut staging = Vec::new();
-            self.stage_page(&allocation, words, |_| {}, &mut commands, &mut staging)?;
+            self.stage_page(&allocation, bytes, write, &mut commands, &mut staging)?;
             Some(self.submit_transfer(commands, staging, Vec::new())?)
         };
         Ok(RayInput { allocation, ready })
@@ -518,10 +532,12 @@ impl Device {
         indices: &[[u32; 3]],
         operation: BuildOperation<'_>,
     ) -> Result<BottomLevel> {
-        let vertices: Vec<_> = positions.iter().flatten().map(|v| v.to_bits()).collect();
-        let triangles: Vec<_> = indices.iter().flatten().copied().collect();
-        let vertices = self.ray_input(&vertices, 4)?;
-        let triangles = self.ray_input(&triangles, 4)?;
+        let vertices = self.ray_input(std::mem::size_of_val(positions) as u64, 4, |source| {
+            source.write_with(positions, |_| {})
+        })?;
+        let triangles = self.ray_input(std::mem::size_of_val(indices) as u64, 4, |source| {
+            source.write_with(indices, |_| {})
+        })?;
         self.bottom_level_inputs(
             vertices,
             triangles,
@@ -664,20 +680,24 @@ impl Device {
         instances: Vec<RayInstance>,
         operation: BuildOperation<'_>,
     ) -> Result<Acceleration> {
-        let mut words = Vec::with_capacity(instances.len() * 16);
-        for instance in &instances {
-            if !Rc::ptr_eq(&instance.model.0.inner, &self.inner) {
-                return Err(error("BLAS 不属于目标设备"));
-            }
-            words.extend(instance.transform.map(f32::to_bits));
-            words.extend([
-                0xff000000,
-                0,
-                instance.model.0.address as u32,
-                (instance.model.0.address >> 32) as u32,
-            ]);
+        if instances.iter().any(|instance| !Rc::ptr_eq(&instance.model.0.inner, &self.inner)) {
+            return Err(error("BLAS 不属于目标设备"));
         }
-        let input = self.ray_input(&words, 16)?;
+        let count = u32::try_from(instances.len())?;
+        let bytes = u64::from(count) * std::mem::size_of::<InstanceRecord>() as u64;
+        let input = self.ray_input(bytes, 16, |source| {
+            let records = source.mapping()?.cast::<InstanceRecord>();
+            // The mapped range has one full native record for each admitted instance.
+            for (index, instance) in instances.iter().enumerate() {
+                unsafe {
+                    records.add(index).write(InstanceRecord {
+                        transform: instance.transform,
+                        tail: instance.model.instance_tail(),
+                    });
+                }
+            }
+            Ok(())
+        })?;
         let geometry = Geometry {
             kind: 1000150006,
             next: null(),
@@ -700,7 +720,7 @@ impl Device {
             .collect();
         let structure = self.build_acceleration(
             geometry,
-            u32::try_from(words.len() / 16)?,
+            count,
             0,
             Usage::Transfer,
             vec![input],
@@ -730,24 +750,18 @@ impl Device {
         if data.count as usize != models.len() {
             return Err(error("矩阵记录与实际BLAS实例数量不同"));
         }
-        let components: Vec<_> = (0..12)
-            .map(|i| (blanguage::ir::Scalar::F32, i * 4))
-            .collect();
-        if data.stride != 64 || data.ty.components != components {
+        let components = (0..12).map(|i| (blanguage::ir::Scalar::F32, i * 4));
+        let stride = std::mem::size_of::<InstanceRecord>();
+        if data.stride as usize != stride || !data.ty.components.iter().copied().eq(components) {
             return Err(error(
                 "Vulkan 实例输入需要 64 字节 stride 与 offset 0 的 3×4 f32 矩阵",
             ));
         }
-        for (model, record) in models.iter().zip(data.words.chunks_exact_mut(16)) {
+        for (model, record) in models.iter().zip(data.words.chunks_exact_mut(stride / 4)) {
             if !Rc::ptr_eq(&model.0.inner, &self.inner) {
                 return Err(error("BLAS 不属于目标设备"));
             }
-            record[12..16].copy_from_slice(&[
-                0xff000000,
-                0,
-                model.0.address as u32,
-                (model.0.address >> 32) as u32,
-            ]);
+            record[12..].copy_from_slice(&model.instance_tail());
         }
         let mut target = GpuDataset::allocate(
             self.inner.clone(),
@@ -757,15 +771,8 @@ impl Device {
             0x80000,
             16,
         )?;
-        let mut addresses = Vec::with_capacity(models.len() * 2);
-        for page in &target.pages {
-            let base = page.address();
-            for i in 0..page.size / 64 {
-                let address = base + i * 64;
-                addresses.extend([address as u32, (address >> 32) as u32]);
-            }
-        }
-        let pointers = Allocation::new(self.inner.clone(), addresses.len() as u64 * 4, 0xa0002, 1, 8)?;
+        let pointer_bytes = u64::from(data.count) * 8;
+        let pointers = Allocation::new(self.inner.clone(), pointer_bytes, 0xa0002, 1, 8)?;
         target.owned_storage()?.instances = Some(InstanceInput {
             pointers,
             models: models
@@ -781,8 +788,22 @@ impl Device {
             self.stage_payload(&target, &data.words, &mut commands, &mut staging)?;
             self.stage_page(
                 &target.instances.as_ref().unwrap().pointers,
-                &addresses,
-                |_| {},
+                pointer_bytes,
+                |source| {
+                    let mut entry = source.mapping()?.cast::<[u32; 2]>();
+                    // Each page holds whole instance records in the original input order.
+                    for page in &target.pages {
+                        let base = page.address();
+                        for offset in (0..page.size).step_by(stride) {
+                            let address = base + offset;
+                            unsafe {
+                                entry.write([address as u32, (address >> 32) as u32]);
+                                entry = entry.add(1);
+                            }
+                        }
+                    }
+                    Ok(())
+                },
                 &mut commands,
                 &mut staging,
             )?;
