@@ -187,7 +187,7 @@ impl<D> DomainBindings<D> {
         }
         Ok(parts)
     }
-    pub(crate) fn remap(&mut self, order: &[usize], additional: Vec<D>) -> Result<Vec<D>>
+    pub(crate) fn remap(&mut self, order: &[usize], additional: Vec<D>) -> Result<()>
     where
         D: DomainStorage,
     {
@@ -255,7 +255,7 @@ impl<D> DomainBindings<D> {
         }
         self.datasets = datasets;
         self.domains = domains;
-        Ok(slots.into_iter().flatten().collect())
+        Ok(())
     }
     pub(crate) fn completed(
         &mut self,

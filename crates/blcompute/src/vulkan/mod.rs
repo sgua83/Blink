@@ -2171,7 +2171,7 @@ impl GpuProgram {
             }
         }
         owner.bindings.append(extra.datasets);
-        drop(owner.bindings.remap(order, Vec::new())?);
+        owner.bindings.remap(order, Vec::new())?;
         self.submit_owned(owner, values, NonZeroU32::MIN)
     }
     fn submit_owned(
