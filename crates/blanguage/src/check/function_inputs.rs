@@ -49,11 +49,30 @@ struct Reference { initialize: u32, body: RefBody }
 #[derive(Clone, Copy)]
 #[repr(C)]
 struct ResourceStep { need: Resource, next: u32 }
+#[repr(C)]
+struct UniformField {
+    size: u32,
+    alignment: u32,
+}
+
+struct UniformLayout<'a> {
+    uniforms: &'a mut [Uniform],
+    roots: &'a mut BTreeMap<String, Root>,
+}
+
 unsafe extern "C" {
     #[link_name = "bootstrap.function_inputs::resource_step"]
     fn resource_step(stage: u32, facts: Facts) -> ResourceStep;
     #[link_name = "bootstrap.function_inputs::uniform_bytes"]
     fn uniform_bytes(buffers: u32) -> u32;
+    #[link_name = "bootstrap.function_inputs::layout_uniforms"]
+    fn native_layout_uniforms(
+        buffers: u32,
+        count: usize,
+        context: *mut std::ffi::c_void,
+        field: unsafe extern "C" fn(*const std::ffi::c_void, usize) -> UniformField,
+        place: unsafe extern "C" fn(*mut std::ffi::c_void, usize, u32),
+    ) -> u32;
     #[link_name = "bootstrap.function_inputs::parameter_form"]
     fn parameter_form(facts: Facts) -> Parameter;
     #[link_name = "bootstrap.function_inputs::dataset_form"]
@@ -70,6 +89,31 @@ unsafe extern "C" {
     fn prepare(stage: u32, mode: Mode) -> Prepare;
     #[link_name = "bootstrap.function_inputs::return_task_layout"]
     fn return_task_layout(application_entry: u32, c_abi: u32, has_result: u32) -> u32;
+}
+
+unsafe extern "C" fn uniform_field(context: *const std::ffi::c_void, index: usize) -> UniformField {
+    let layout = unsafe { &*context.cast::<UniformLayout<'_>>() };
+    let ty = &layout.uniforms[index].ty;
+    UniformField { size: ty.size, alignment: ty.align }
+}
+
+unsafe extern "C" fn place_uniform(context: *mut std::ffi::c_void, index: usize, offset: u32) {
+    let layout = unsafe { &mut *context.cast::<UniformLayout<'_>>() };
+    let uniform = &mut layout.uniforms[index];
+    uniform.offset = offset;
+    layout.roots.insert(uniform.name.clone(), Root::Uniform(uniform.ty.clone(), offset));
+}
+
+pub(super) fn layout_uniforms(
+    buffers: u32,
+    uniforms: &mut [Uniform],
+    roots: &mut BTreeMap<String, Root>,
+) -> u32 {
+    let count = uniforms.len();
+    let mut layout = UniformLayout { uniforms, roots };
+    unsafe {
+        native_layout_uniforms(buffers, count, std::ptr::from_mut(&mut layout).cast(), uniform_field, place_uniform)
+    }
 }
 
 fn facts(p: &Param) -> Facts {

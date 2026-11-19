@@ -12,6 +12,13 @@ struct Reference {u32 initialize;RefBody body;};
 struct ResourceStep {Resource need;u32 next;};
 extern "C" ResourceStep resource_step(u32 stage,Facts facts) on cpu;
 extern "C" u32 uniform_bytes(u32 buffers) on cpu;
+
+struct UniformField { u32 size; u32 alignment; };
+extern "C" u32 layout_uniforms(u32 buffers, usize count, address context,
+    cfn<UniformField,address,usize> ensures memory(read) field,
+    cfn<void,address,usize,u32> place) on cpu
+    requires nonzero(field) requires nonzero(place);
+
 extern "C" Parameter parameter_form(Facts facts) on cpu;
 extern "C" Dataset dataset_form(u32 ordinary_cpu,u32 by_value) on cpu;
 extern "C" ValueForm value_form(Mode mode,u32 read,u32 atomic,u32 by_value,u32 owned) on cpu;

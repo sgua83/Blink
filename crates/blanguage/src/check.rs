@@ -483,7 +483,6 @@ async fn expand_domain<'a>(
     let mut textures = Vec::new();
     let mut uniforms = Vec::new();
     let mut env = BTreeMap::new();
-    let mut offset = 0;
     for p in parameters {
         if p.ty.is_texture_resource() {
             if p.access != Access::Read {
@@ -558,15 +557,7 @@ async fn expand_domain<'a>(
             });
         }
     }
-    // word 0 为阶段长度，word 1 为设备分区起点，其后是各数据集长度。
-    offset += 4 * (2 + buffers.len() as u32);
-    for u in &mut uniforms {
-        offset = ir::align_up(offset, u.ty.align);
-        u.offset = offset;
-        offset += u.ty.size;
-        env.insert(u.name.clone(), Root::Uniform(u.ty.clone(), u.offset));
-    }
-    offset = ir::align_up(offset, 4);
+    let offset = function_inputs::layout_uniforms(buffers.len() as u32, &mut uniforms, &mut env);
     if offset > world.worker.compiler().max_parameter_bytes() {
         return d.source.fail(
             input.span(),

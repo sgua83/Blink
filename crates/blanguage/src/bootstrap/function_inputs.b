@@ -18,8 +18,29 @@ extern "C" ResourceStep resource_step(u32 stage,Facts facts) on cpu {
     return ResourceStep(Resource::Done, 4);
 }
 
+// Stage length and partition start precede the logical dataset lengths.
 extern "C" u32 uniform_bytes(u32 buffers) on cpu {
     return 8 + 4 * buffers;
+}
+
+u32 align_uniform(u32 bytes, u32 alignment) on cpu {
+    return (bytes + alignment - 1) & ~(alignment - 1);
+}
+
+extern "C" u32 layout_uniforms(u32 buffers, usize count, address context,
+    cfn<UniformField,address,usize> ensures memory(read) field,
+    cfn<void,address,usize,u32> place) on cpu
+    requires nonzero(field) requires nonzero(place) {
+    u32 bytes = uniform_bytes(buffers);
+    usize index = 0u64;
+    while (index < count) {
+        UniformField value = field(context, index);
+        u32 offset = align_uniform(bytes, value.alignment);
+        place(context, index, offset);
+        bytes = offset + value.size;
+        index += 1u64;
+    }
+    return align_uniform(bytes, 4);
 }
 
 extern "C" Parameter parameter_form(Facts facts) on cpu {
