@@ -303,6 +303,9 @@ impl Execution {
         }
     }
     fn release_known(&self) {
+        let Some(resources) = self.resources.take() else {
+            return;
+        };
         // 保留真实原生终态；同队列成功覆盖生产依赖，设备丢失仍是错误。
         let result = self.point.result.get();
         let mut completed = std::mem::take(&mut *self.dependencies.borrow_mut());
@@ -320,12 +323,13 @@ impl Execution {
             index += 1;
         }
         for previous in completed.into_iter().rev() {
-            previous.release_resources();
+            if let Some(resources) = previous.resources.take() {
+                previous.release_resources(resources);
+            }
         }
-        self.release_resources();
+        self.release_resources(resources);
     }
-    fn release_resources(&self) {
-        let resources = self.resources.borrow_mut().take();
+    fn release_resources(&self, resources: ExecutionResources) {
         drop(resources);
         let storage = std::mem::take(&mut *self.discarded.borrow_mut());
         drop(storage);
