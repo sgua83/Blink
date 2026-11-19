@@ -80,23 +80,26 @@ fn positions<'a>(
 }
 
 fn completed_positions<'a>(
-    types:&'a [Ty], input_type:&'a Ty, input:&'a [u8], output:&'a [u8],
-) -> impl Iterator<Item=(&'a Ty,*mut u8)>+'a {
-    positions(types,input_type,input)
-        .flat_map(move |(ty,address,_,ready)| completed_owners(ty, address, ready, output))
+    types: &'a [Ty], input_type: &'a Ty, input: &'a [u8], output: &'a [u8],
+) -> impl Iterator<Item = (&'a Ty, *mut u8)> + 'a {
+    positions(types, input_type, input).flat_map(move |(ty, address, _, ready)| {
+        let whole = ready.is_none().then_some((ty, address));
+        let selected = ready.into_iter().flat_map(move |base| {
+            ready_output_owners(ty, base, output).into_iter()
+                .map(move |(offset, owner)| (owner, address.wrapping_add(offset as usize)))
+        });
+        whole.into_iter().chain(selected)
+    })
 }
 
-fn completed_owners<'a>(ty: &'a Ty, address: *mut u8, ready: Option<usize>, output: &'a [u8])
-    -> impl Iterator<Item = (&'a Ty, *mut u8)> + 'a
-{
-    let whole = ready.is_none().then_some((ty, address));
-    let selected = ready.into_iter().flat_map(move |base| {
-        ty.task_output_owners().into_iter().enumerate().filter_map(move |(index,(offset,owner))| {
-            (output[base+index*Scalar::Bool.size() as usize]!=0)
-                .then(|| (owner, address.wrapping_add(offset as usize)))
-        })
+fn ready_output_owners<'a>(ty: &'a Ty, mut flag: usize, output: &[u8]) -> Vec<(u32, &'a Ty)> {
+    let mut owners = ty.task_output_owners();
+    owners.retain(|_| {
+        let ready = output[flag] != 0;
+        flag += Scalar::Bool.size() as usize;
+        ready
     });
-    whole.into_iter().chain(selected)
+    owners
 }
 
 pub(super) struct InputCompletionWrites {
@@ -409,8 +412,19 @@ unsafe extern "system" fn execute(_: *mut c_void, context: *mut c_void, _: *mut 
         }
         for loan in dataset_loans(input_type, &work.input) {
             if loan.access.writes() && (status.is_null() || loan.access.reads()) && loan.element.contains_dataset() {
-                for address in loan.elements(frame)? {
-                    for (ty, position) in completed_owners(loan.element, address.cast_mut(), loan.ready, &work.output) {
+                let elements = loan.elements(frame)?;
+                if loan.count == 0 {
+                    continue;
+                }
+                let whole = [(0, loan.element)];
+                let ready = loan.ready.map(|base| ready_output_owners(loan.element, base, &work.output));
+                let owners = ready.as_deref().unwrap_or(&whole);
+                if owners.is_empty() {
+                    continue;
+                }
+                for address in elements {
+                    for &(offset, ty) in owners {
+                        let position = address.wrapping_add(offset as usize);
                         unsafe { gather_value(frame, ty, position, &mut selected, false, None, status)? };
                     }
                 }
