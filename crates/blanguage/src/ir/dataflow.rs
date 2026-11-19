@@ -545,6 +545,50 @@ unsafe extern "C" fn emit_word(context: *mut c_void, tile: usize, byte: u32) {
     output.words.insert(output.stage.shared_word(tile, byte));
 }
 
+type TileInputWord = unsafe extern "C" fn(*mut c_void, usize, u32, u32, u32);
+pub(crate) type InputFragments = BTreeMap<(usize, u32), BTreeSet<(u32, Scalar)>>;
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.ir_dataflow::tile_input_words"]
+    fn b_tile_input_words(
+        tiles: Span, host: Host, used: *const c_void,
+        contains: unsafe extern "C" fn(*const c_void, usize, u32) -> u32,
+        output: *mut c_void, emit: TileInputWord,
+    );
+}
+
+pub(super) fn input_fragments(stage: &Stage) -> InputFragments {
+    let mut output = BTreeMap::new();
+    if stage.tiles.is_empty() {
+        return output;
+    }
+    let used = stage.storage_words();
+    unsafe {
+        b_tile_input_words(
+            Span::slice(&stage.tiles), HOST, ptr::from_ref(&used).cast(),
+            contains_input_word, ptr::from_mut(&mut output).cast(), emit_input_fragment,
+        );
+    }
+    output
+}
+
+unsafe extern "C" fn contains_input_word(used: *const c_void, binding: usize, word: u32) -> u32 {
+    let used = unsafe { &*used.cast::<BTreeSet<SharedWord>>() };
+    u32::from(used.contains(&SharedWord::Input { binding, word }))
+}
+
+unsafe extern "C" fn emit_input_fragment(
+    output: *mut c_void, binding: usize, word: u32, byte: u32, bytes: u32,
+) {
+    let output = unsafe { &mut *output.cast::<InputFragments>() };
+    let unit = match bytes {
+        1 => Scalar::U8,
+        2 => Scalar::U16,
+        _ => Scalar::U32,
+    };
+    output.entry((binding, word)).or_default().insert((byte, unit));
+}
+
 #[repr(C)]
 struct SubgroupFlags {
     basic: u32, vote: u32, arithmetic: u32, ballot: u32,

@@ -11,12 +11,8 @@ fn compile_stages(worker: &crate::compiler::Worker, program: &Program) -> Result
     }
     let compiled = crate::parallel::try_map(worker, (0..program.stages().len()).collect(), |_| (),
         |_, index| compile_stage(program, index)).map_err(|error| error.to_string())?;
-    let mut plan = ExecutionPlan::from_program(program);
-    let stages = compiled.into_iter().zip(&mut plan.stages).map(|((code, bytes), stage)| {
-        stage.shared_bytes = bytes;
-        code
-    }).collect();
-    Ok((plan, stages))
+    let (layout, stages) = compiled.into_iter().unzip();
+    Ok((ExecutionPlan::from_program(program, layout), stages))
 }
 pub(crate) fn compile_in<P: Deref<Target = Program>>(
     worker: &crate::compiler::Worker, program: P,
@@ -33,14 +29,16 @@ impl crate::Compiler {
     }
 }
 
-pub(crate) fn compile_stage(program: &Program, i: usize) -> Result<(StageCode, u64), &'static str> {
-    let mut shared_bytes = 0;
+pub(crate) fn compile_stage(program: &Program, i: usize) -> Result<(ExecutionStage, StageCode), &'static str> {
+    let stage = &program.stages()[i];
+    let mut inputs = stage.input_words();
+    // Shader input also includes the physical low half of a wide word.
+    let mut layout = ExecutionStage::from_stage(stage, inputs.keys().copied().collect());
     let mut emit = |pass| {
-        let (words, bytes) = emit_shader(program, i, pass)?;
-        shared_bytes = shared_bytes.max(bytes);
+        let (words, bytes) = emit_shader(program, i, pass, &mut inputs)?;
+        layout.shared_bytes = layout.shared_bytes.max(bytes);
         Ok::<_, &'static str>(words)
     };
-    let stage = &program.stages()[i];
     let selected = stage.selection.is_some();
     let tail = match stage.operation {
         Operation::Reduce(_) | Operation::CustomReduce(_) => Some(Pass::ReductionTail),
@@ -121,5 +119,5 @@ pub(crate) fn compile_stage(program: &Program, i: usize) -> Result<(StageCode, u
             .transpose()?,
         sort,
     };
-    Ok((code, shared_bytes))
+    Ok((layout, code))
 }

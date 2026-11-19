@@ -5,7 +5,9 @@ use std::{collections::BTreeMap, ops::Deref};
 pub fn compile_program<P: Deref<Target = Program>>(program: P) -> Result<ProgramImage<P>, String> {
     crate::Compiler::available().map_err(|error| error.to_string())?.native(program)
 }
-fn compile_stages(worker: &crate::compiler::Worker, program: &Program) -> Result<Vec<StageCode>, String> {
+fn compile_stages(
+    worker: &crate::compiler::Worker, program: &Program,
+) -> Result<Vec<(ExecutionStage, StageCode)>, String> {
     if program.target() == crate::ast::Target::Gpu {
         return Err("GPU 专属程序不能提交给 CPU".into());
     }
@@ -20,11 +22,11 @@ fn compile_functions(worker: &crate::compiler::Worker, program: &Program) -> Res
 pub(crate) fn compile_in<P: Deref<Target = Program>>(
     worker: &crate::compiler::Worker, program: P,
 ) -> Result<ProgramImage<P>, String> {
-    let stages = compile_stages(worker, &program)?;
+    let (layout, stages) = compile_stages(worker, &program)?.into_iter().unzip();
     let functions = compile_functions(worker, &program)?;
     let resources=program.resources.as_ref().map(|resources|
         crate::resource::compile_image(resources,worker).map_err(|error|error.to_string())).transpose()?;
-    Ok(unsafe { ProgramImage::from_compiler_output(ExecutionPlan::from_program(&program), stages, functions,resources) })
+    Ok(unsafe { ProgramImage::from_compiler_output(ExecutionPlan::from_program(&program, layout), stages, functions,resources) })
 }
 impl crate::Compiler {
     pub fn native<P: Deref<Target = Program>>(&self, program: P) -> Result<ProgramImage<P>, String> {
@@ -184,10 +186,12 @@ impl<'a> RangeStage<'a> {
         custom_reduce::emit(self.program, self.index, value, pass, head, count)
     }
 
-    fn first(&self, entries: &RangeEntries) -> Result<NativeCode, &'static str> {
+    fn first(
+        &self, entries: &RangeEntries, inputs: &crate::ir::dataflow::InputFragments,
+    ) -> Result<NativeCode, &'static str> {
         use custom_reduce::Pass;
         match self.operation {
-            RangeOperation::Map => emit_map(self.program, self.index),
+            RangeOperation::Map => emit_map(self.program, self.index, inputs),
             RangeOperation::Reduce => Ok(reduce::emit(self.program, unsafe { self.value() })),
             RangeOperation::CustomReduce => self.custom(unsafe { self.value() }, Pass::Reduce, None, None),
             RangeOperation::CustomScan => {
@@ -210,14 +214,17 @@ impl<'a> RangeStage<'a> {
 
 pub fn emit(program: &Program, index: usize) -> Result<NativeCode, &'static str> {
     let stage = RangeStage::new(program, index);
-    stage.first(&stage.entries(false))
+    stage.first(&stage.entries(false), &program.stages()[index].input_words())
 }
 
-pub(crate) fn compile_stage(program: &Program, index: usize) -> Result<StageCode, &'static str> {
+pub(crate) fn compile_stage(program: &Program, index: usize) -> Result<(ExecutionStage, StageCode), &'static str> {
     use custom_reduce::Pass;
+    let ir = &program.stages()[index];
+    let inputs = ir.input_words();
     let stage = RangeStage::new(program, index);
     let entries = stage.entries(true);
-    let main = stage.first(&entries)?;
+    let main = stage.first(&entries, &inputs)?;
+    let layout = ExecutionStage::from_stage(ir, inputs.into_keys().collect());
     let continuation = match entries.follow {
         RangeFollow::None => None,
         RangeFollow::ReduceTail => Some(ContinuationCode::ReductionTail(
@@ -256,16 +263,16 @@ pub(crate) fn compile_stage(program: &Program, index: usize) -> Result<StageCode
             let initialize = std::iter::once(main)
                 .chain((0..entries.first_key).rev().map(|key| emit_sort_key(program, sort, key)))
                 .collect();
-            return Ok(StageCode::Sort(SortCode {
+            return Ok((layout, StageCode::Sort(SortCode {
                 source: sort.source,
                 target: sort.target,
                 initialize,
                 histogram: emit_sort_histogram(program),
                 scatter: emit_sort_scatter(program),
                 gather: emit_sort_gather(program, sort),
-            }));
+            })));
         }
     };
     let result = if entries.values == 0 { RangeResult::None } else { RangeResult::Values(entries.words) };
-    Ok(StageCode::Element { main, continuation, result })
+    Ok((layout, StageCode::Element { main, continuation, result }))
 }

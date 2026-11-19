@@ -414,6 +414,12 @@ extern "C" void storage_words(Span code,StorageHost host,
  requires nonzero(host.ir.inspect) requires nonzero(host.components)
  requires nonzero(host.scalar_bytes) requires nonzero(emit);
 
+// Borrow the Stage tiles and used words for this call and deliver only matching input fragments.
+extern "C" void tile_input_words(Span tiles,Host host,address used,
+ cfn<u32,address,usize,u32> ensures memory(read) contains,address output,
+ cfn<void,address,usize,u32,u32,u32> emit) on cpu
+ requires nonzero(host.inspect) requires nonzero(contains) requires nonzero(emit);
+
 struct SubgroupFlags {
  u32 basic; u32 vote; u32 arithmetic; u32 ballot;
  u32 shuffle; u32 shuffle_relative; u32 extended_types;

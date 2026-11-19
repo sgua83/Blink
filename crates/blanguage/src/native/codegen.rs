@@ -646,7 +646,9 @@ impl Emitter<'_> {
 }
 /// 所有范围共用RangeEntry：buffers、uniforms、end、begin、output，返回执行状态。
 /// 算法输出（包括计数）只写第五参数，map及无摘要续阶段不读取该指针。
-fn emit_map(program: &Program, index: usize) -> Result<NativeCode, &'static str> {
+fn emit_map(
+    program: &Program, index: usize, inputs: &crate::ir::dataflow::InputFragments,
+) -> Result<NativeCode, &'static str> {
     let mut lowered = program.stages[index].clone();
     texture::lower(&mut lowered);
     reads::place(&mut lowered.code, &lowered.writes);
@@ -706,10 +708,10 @@ fn emit_map(program: &Program, index: usize) -> Result<NativeCode, &'static str>
         skip
     });
     if !phases.is_empty() {
-        e.tile_phases(phases)?;
+        e.tile_phases(phases, inputs)?;
     } else {
         if stage.has_tile_scope() {
-            e.tile_input();
+            e.tile_input(inputs);
         }
         e.block(&stage.code)?;
         if let Some(skip) = skip_selection {

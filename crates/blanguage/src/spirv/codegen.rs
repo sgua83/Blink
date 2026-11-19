@@ -1674,10 +1674,11 @@ pub fn emit_pass(
     stage_index: usize,
     pass: Pass,
 ) -> Result<Vec<u32>, &'static str> {
-    emit_shader(program, stage_index, pass).map(|(words, _)| words)
+    let mut inputs = program.stages[stage_index].input_words();
+    emit_shader(program, stage_index, pass, &mut inputs).map(|(words, _)| words)
 }
 fn emit_shader(
-    program: &Program, stage_index: usize, pass: Pass,
+    program: &Program, stage_index: usize, pass: Pass, inputs: &mut crate::ir::dataflow::InputFragments,
 ) -> Result<(Vec<u32>, u64), &'static str> {
     fn oversized_view(ty: &Ty) -> bool {
         if ty.has_variants() {
@@ -2332,7 +2333,7 @@ fn emit_shader(
         }
     } else {
         if stage.has_tile_scope() {
-            e.tile_input(count, active);
+            e.tile_input(count, active, inputs);
         }
         if stage.has_tile_steps() {
             e.tile_phases(active)?;

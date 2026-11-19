@@ -1570,6 +1570,33 @@ extern "C" void storage_words(Span code,StorageHost host,address context,
  }
 }
 
+extern "C" void tile_input_words(Span tiles,Host host,address used,
+ cfn<u32,address,usize,u32> ensures memory(read) contains,address output,
+ cfn<void,address,usize,u32,u32,u32> emit) on cpu
+ requires nonzero(host.inspect) requires nonzero(contains) requires nonzero(emit) {
+ usize index=0u64;
+ while(index<tiles.count) {
+  View tile=host.inspect(node_at(tiles,index,N_TILE));
+  if(tile.tag==0) {
+   usize component=0u64;
+   while(component<tile.first.count) {
+    View field=host.inspect(node_at(tile.first,component,N_COMPONENT));
+    u32 bytes=u32(field.b);
+    u32 part=0;
+    while(part<(bytes+3)/4) {
+     u32 byte=u32(tile.b)+u32(field.a)+part*4;
+     if(contains(used,tile.a,byte)!=0) {
+      emit(output,tile.a,byte&0xfffffffcu,byte,bytes>4?4:bytes);
+     }
+     part+=1;
+    }
+    component+=1u64;
+   }
+  }
+  index+=1u64;
+ }
+}
+
 u32 collective_presence(Span code,Host host,bool include_subgroups) on cpu requires nonzero(host.inspect) {
  usize index=0u64;
  while(index<code.count) {

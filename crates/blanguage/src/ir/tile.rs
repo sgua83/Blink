@@ -76,23 +76,9 @@ impl Stage {
             TileSource::Published => SharedWord::Published { tile, word },
         }
     }
-    pub(crate) fn input_words(&self) -> BTreeMap<(usize, u32), BTreeSet<(u32, Scalar)>> {
-        let used = self.storage_words();
-        let mut words = BTreeMap::<_, BTreeSet<_>>::new();
-        for tile in &self.tiles {
-            if let TileSource::Input { binding, word: base } = tile.source {
-                for (scalar, byte) in &tile.ty.components {
-                    for part in 0..scalar.size().div_ceil(4) {
-                        let word = base + byte + part * 4;
-                        if used.contains(&SharedWord::Input { binding, word }) {
-                            let unit = match scalar.size() { 1 => Scalar::U8, 2 => Scalar::U16, _ => Scalar::U32 };
-                            words.entry((binding, word & !3)).or_default().insert((word, unit));
-                        }
-                    }
-                }
-            }
-        }
-        words
+    #[cfg(feature = "compiler")]
+    pub(crate) fn input_words(&self) -> dataflow::InputFragments {
+        dataflow::input_fragments(self)
     }
     pub(crate) fn tile_phases(&self) -> Vec<TilePhase<'_>> {
         let mut phases = Vec::new();

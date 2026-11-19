@@ -235,6 +235,45 @@ pub struct ExecutionStage {
     pub shared_bytes: u64,
 }
 impl ExecutionStage {
+    #[cfg(feature = "compiler")]
+    pub(crate) fn from_stage(stage: &Stage, inputs: BTreeSet<(usize, u32)>) -> Self {
+        let operation = match &stage.operation {
+            Operation::Map => Operation::Map,
+            Operation::Reduce(r) => Operation::Reduce(r.clone()),
+            Operation::CustomReduce(r) => Operation::CustomReduce(r.into()),
+            Operation::CustomScan(r) => Operation::CustomScan(CustomScan {
+                values: (&r.values).into(),
+                head_word: r.head_word,
+            }),
+            Operation::CustomSegmentedReduce(r) => {
+                Operation::CustomSegmentedReduce(CustomSegmentedReduction {
+                    values: (&r.values).into(),
+                    head_word: r.head_word,
+                    count: r.count,
+                })
+            }
+            Operation::SegmentedReduce(r) => Operation::SegmentedReduce(r.clone()),
+            Operation::ScanExclusive(r) => Operation::ScanExclusive(r.clone()),
+            Operation::Compact(c) => Operation::Compact(c.clone()),
+            Operation::StableSort(s) => Operation::StableSort(s.clone()),
+        };
+        Self {
+            domain: stage.domain,
+            prefix: stage.prefix,
+            selection: stage.selection,
+            operation,
+            reads: stage.reads.clone(),
+            writes: stage.writes.clone(),
+            write_regions: stage.write_regions.clone(),
+            prefix_guarantees: stage.prefix_guarantees.clone(),
+            element_guarantees: stage.element_guarantees.clone(),
+            inputs,
+            tile_scope: stage.has_tile_scope(),
+            width: stage.workgroup_width(),
+            shared_bytes: 0,
+        }
+    }
+
     pub fn has_tile_scope(&self) -> bool {
         self.tile_scope
     }
@@ -297,49 +336,8 @@ impl ExecutionPlan {
         self.requirements().subgroup
     }
     #[cfg(feature = "compiler")]
-    pub(crate) fn from_program(program: &Program) -> Self {
+    pub(crate) fn from_program(program: &Program, stages: Vec<ExecutionStage>) -> Self {
         let buffers = program.execution_buffers();
-        let stages = program
-            .stages
-            .iter()
-            .map(|stage| {
-                let operation = match &stage.operation {
-                    Operation::Map => Operation::Map,
-                    Operation::Reduce(r) => Operation::Reduce(r.clone()),
-                    Operation::CustomReduce(r) => Operation::CustomReduce(r.into()),
-                    Operation::CustomScan(r) => Operation::CustomScan(CustomScan {
-                        values: (&r.values).into(),
-                        head_word: r.head_word,
-                    }),
-                    Operation::CustomSegmentedReduce(r) => {
-                        Operation::CustomSegmentedReduce(CustomSegmentedReduction {
-                            values: (&r.values).into(),
-                            head_word: r.head_word,
-                            count: r.count,
-                        })
-                    }
-                    Operation::SegmentedReduce(r) => Operation::SegmentedReduce(r.clone()),
-                    Operation::ScanExclusive(r) => Operation::ScanExclusive(r.clone()),
-                    Operation::Compact(c) => Operation::Compact(c.clone()),
-                    Operation::StableSort(s) => Operation::StableSort(s.clone()),
-                };
-                ExecutionStage {
-                    domain: stage.domain,
-                    prefix: stage.prefix,
-                    selection: stage.selection,
-                    operation,
-                    reads: stage.reads.clone(),
-                    writes: stage.writes.clone(),
-                    write_regions: stage.write_regions.clone(),
-                    prefix_guarantees: stage.prefix_guarantees.clone(),
-                    element_guarantees: stage.element_guarantees.clone(),
-                    inputs: stage.input_words().into_keys().collect(),
-                    tile_scope: stage.has_tile_scope(),
-                    width: stage.workgroup_width(),
-                    shared_bytes: 0,
-                }
-            })
-            .collect();
         Self {
             interface: ProgramLayout {
                 write_regions: program.write_regions(),

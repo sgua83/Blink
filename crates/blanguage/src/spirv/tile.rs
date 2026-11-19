@@ -7,7 +7,9 @@ pub(super) enum TileByte {
 }
 
 impl Emitter<'_> {
-    pub(super) fn tile_input(&mut self, count: u32, active: u32) {
+    pub(super) fn tile_input(
+        &mut self, count: u32, active: u32, inputs: &mut crate::ir::dataflow::InputFragments,
+    ) {
         let u = self.types[&Scalar::U32];
         let width = self.constant(Scalar::U32, self.workgroup_width);
         self.tile_lane = self.id();
@@ -17,7 +19,6 @@ impl Emitter<'_> {
         self.emit(176, &[self.types[&Scalar::Bool], tail, remaining, width]);
         self.tile_length = self.id();
         self.select(u, self.tile_length, tail, remaining, width);
-        let mut inputs = self.stage.input_words();
         for (key, (unit, _, part)) in &self.tile_layout {
             if *unit == Scalar::U64 && *part == 0 {
                 if let SharedWord::Input { binding, word } = key {
@@ -33,7 +34,7 @@ impl Emitter<'_> {
         self.emit(247, &[end, 0]);
         self.emit(250, &[active, load, end]);
         self.emit(248, &[load]);
-        for ((source, word), fragments) in inputs {
+        for (&(source, word), fragments) in inputs.iter() {
             let key = SharedWord::Input { binding: source, word };
             let (unit, _, part) = self.tile_layout[&key];
             if unit == Scalar::U64 {
@@ -44,7 +45,7 @@ impl Emitter<'_> {
                 }
                 continue;
             }
-            let components: Vec<_> = fragments.into_iter().map(|(byte, unit)| {
+            let components: Vec<_> = fragments.iter().map(|&(byte, unit)| {
                 let raw = self.load_raw_buffer(unit, source, self.index, byte);
                 (unit, byte % 4, raw)
             }).collect();

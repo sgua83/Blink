@@ -95,17 +95,15 @@ pub(crate) fn compile_image( resources: &crate::application::Resources, worker: 
     let mut cpu = cpu.into_iter();
     let mut gpu = gpu.into_iter();
     let images = resources.programs.iter().map(|(target, program)| {
-        let mut plan = ExecutionPlan::from_program(program);
+        let count = program.stages().len();
         if *target == Target::Cpu {
-            let stages: Vec<_> = program.stages().iter().map(|_| cpu.next().unwrap()).collect();
-            let image = unsafe { native::ProgramImage::from_compiler_output(plan, stages, Vec::new(),None) };
+            let (layout, stages) = (0..count).map(|_| cpu.next().unwrap()).unzip();
+            let plan = ExecutionPlan::from_program(program, layout);
+            let image = unsafe { native::ProgramImage::from_compiler_output(plan, stages, Vec::new(), None) };
             Image::Cpu(image)
         } else {
-            let stages = plan.stages.iter_mut().map(|stage| {
-                let (code, bytes) = gpu.next().unwrap();
-                stage.shared_bytes = bytes;
-                code
-            }).collect();
+            let (layout, stages) = (0..count).map(|_| gpu.next().unwrap()).unzip();
+            let plan = ExecutionPlan::from_program(program, layout);
             Image::Gpu(unsafe { spirv::ProgramImage::from_compiler_output(plan, stages) })
         }
     }).collect();

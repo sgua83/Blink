@@ -148,7 +148,7 @@ impl Emitter<'_> {
             });
         } else { self.read_scalar_address(dst, memory); }
     }
-    pub(super) fn tile_input(&mut self) {
+    pub(super) fn tile_input(&mut self, inputs: &crate::ir::dataflow::InputFragments) {
         let start = self.code.len();
         let width = self.stage.workgroup_width();
         let length_offset = self.tile_length_slot();
@@ -162,11 +162,11 @@ impl Emitter<'_> {
         let skip = start + boundary.skip_field as usize;
         self.parallel_abi(start, ParallelRangePart::TileInputBoundary { width });
 
-        for ((binding, word), fragments) in self.stage.input_words() {
+        for (&(binding, word), fragments) in inputs {
             let data_offset = binding as u32 * BUFFER_BYTES;
             let stride_offset = data_offset + BUFFER_STRIDE;
             let storage = self.shared_stream(SharedWord::Input { binding, word });
-            for (source_offset, unit) in fragments {
+            for &(source_offset, unit) in fragments {
                 let storage_offset = storage + source_offset % 4;
                 let unit_bytes = unit.size();
                 let input = TileInputCopy {
@@ -275,12 +275,14 @@ impl Emitter<'_> {
             }
         }
     }
-    pub(super) fn tile_phases(&mut self, phases: Vec<TilePhase<'_>>) -> Result<(), &'static str> {
+    pub(super) fn tile_phases(
+        &mut self, phases: Vec<TilePhase<'_>>, inputs: &crate::ir::dataflow::InputFragments,
+    ) -> Result<(), &'static str> {
         let start = self.code.len();
         let storage_offset = self.tile_base_slot();
         self.copy(Location::Stack(storage_offset), Location::Gpr(3));
         self.parallel_abi(start, ParallelRangePart::TileBase { storage_offset });
-        self.tile_input();
+        self.tile_input(inputs);
         for (phase_index, phase) in phases.into_iter().enumerate() {
             let start = self.code.len();
             self.copy(Location::Gpr(3), Location::Stack(storage_offset));
