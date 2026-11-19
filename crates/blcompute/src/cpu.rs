@@ -11,7 +11,7 @@ use blanguage::{
 };
 pub use dataset::CpuDataset;
 pub use observation::{CpuRangeCall, CpuRangeTiming, CpuRangeTimings, CpuThreadTime, CpuTimePoint};
-use std::ffi::c_void;
+use std::{collections::{BTreeMap, btree_map::Entry}, ffi::c_void};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 #[link(name = "kernel32")]
@@ -200,18 +200,19 @@ struct Allocation {
     functions: Vec<std::ptr::NonNull<RuntimeFunction>>,
     _libraries: Vec<Library>,
 }
-fn external_symbol(
-    libraries: &mut std::collections::BTreeMap<String, Library>, name: &blanguage::ast::ExternalName,
+fn external_symbol<'image>(
+    libraries: &mut BTreeMap<&'image str, Library>, name: &'image blanguage::ast::ExternalName,
 ) -> Result<*const ()> {
     if name.library == blanguage::resource::RUNTIME_LIBRARY {
         return crate::application::resource_symbol(&name.symbol)
             .ok_or_else(|| error(format!("未知的Blink资源C符号 {}", name.symbol)));
     }
-    if !libraries.contains_key(&name.library) {
-        libraries.insert(name.library.clone(), Library::load(&name.library)
-            .map_err(|error| crate::error(format!("加载 {} 失败：{error}", name.library)))?);
-    }
-    libraries[&name.library].symbol(&std::ffi::CString::new(name.symbol.as_str())?)
+    let library = match libraries.entry(name.library.as_str()) {
+        Entry::Occupied(entry) => entry.into_mut(),
+        Entry::Vacant(entry) => entry.insert(Library::load(&name.library)
+            .map_err(|error| crate::error(format!("加载 {} 失败：{error}", name.library)))?),
+    };
+    library.symbol(&std::ffi::CString::new(name.symbol.as_str())?)
         .map_err(|error| crate::error(format!("解析 {}!{} 失败：{error}", name.library, name.symbol)))
 }
 
@@ -326,7 +327,7 @@ impl Allocation {
                 size += section.bytes.len();
                 for relocation in &section.relocations {
                     if let blanguage::native::ModuleTarget::Import(name) = &relocation.target {
-                        imports.insert(name.clone(), 0usize);
+                        imports.entry(name).or_insert(0usize);
                     }
                 }
             }
@@ -353,7 +354,7 @@ impl Allocation {
         let mut functions = image.functions().iter().map(|(name, code)|
             (name.as_str(), addresses[&(code as *const _ as usize)])).collect::<std::collections::BTreeMap<_, _>>();
         let mut libraries = std::collections::BTreeMap::new();
-        for (name, &offset) in &imports {
+        for (&name, &offset) in &imports {
             let symbol = external_symbol(&mut libraries, name)?;
             unsafe { std::ptr::write_unaligned(address.cast::<u8>().add(offset).cast::<u64>(), symbol as u64); }
         }
