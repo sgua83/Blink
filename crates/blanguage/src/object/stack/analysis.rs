@@ -74,10 +74,10 @@ unsafe extern "C" fn read_call(slot:*mut c_void,index:u64,ordinal:u64)->CallInfo
     match &frame.calls[ordinal as usize] {
         Call::Unreported(reason)=>{value.kind=CallKind::Unreported;value.name=Name::new(reason);}
         Call::Indirect=>{},
-        Call::Reference{offset,tail}=>{
+        Call::Reference { relocation, tail } => {
             value.kind=if *tail{CallKind::Tail}else{CallKind::Reference};
             let relocations = (context.code.relocations)(frame.coff.unwrap().0);
-            let target = &relocations.iter().find(|r| r.offset == *offset).unwrap().target;
+            let target = &relocations[*relocation].target;
             match target {
                 Target::Section(section,start)=>{value.section=*section as u64;value.start=*start;}
                 Target::Symbol(name)=>{value.target=TargetKind::Symbol;value.name=Name::new(name);}

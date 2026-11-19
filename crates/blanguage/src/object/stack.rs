@@ -10,7 +10,7 @@ pub(crate) struct Frame {
     pub calls: Vec<Call>,
 }
 pub(crate) enum Call {
-    Reference { offset: usize, tail: bool },
+    Reference { relocation: usize, tail: bool },
     Indirect,
     Unreported(String),
 }

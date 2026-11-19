@@ -17,13 +17,13 @@ struct CombineSymbol {name:*const u8,name_length:u64,section:u64,value:u64}
 #[repr(C)]
 struct CombineRelocation {source:u64,offset:u64,target_kind:u64,section:u64,value:u64,name:*const u8,name_length:u64}
 #[repr(C)]
-struct CombineFrame {section:u64,start:u64,call_start:u64,call_count:u64,present:u64}
+struct CombineFrame {section:u64,start:u64,present:u64}
 #[derive(Clone,Copy)]
 #[repr(C)]
 struct CombineInput {
     objects:*const CombineObject,object_count:u64,sections:*mut CombineSection,section_count:u64,
     symbols:*mut CombineSymbol,symbol_count:u64,relocations:*mut CombineRelocation,relocation_count:u64,
-    frames:*mut CombineFrame,calls:*mut u64,order:*mut u64,
+    frames:*mut CombineFrame,order:*mut u64,
 }
 #[repr(C)]
 struct CombinePlan {groups:u64,symbols:u64,error:u64,at:u64}
@@ -57,7 +57,7 @@ fn combine<Payload, Output>(
 ) -> Result<(Vec<Output>, Vec<Frame>)> {
     let mut inputs=Vec::with_capacity(objects.len());
     let mut rows=Vec::new();let mut symbols=Vec::new();let mut relocations=Vec::new();
-    let mut frames=Vec::new();let mut calls=Vec::new();
+    let mut frames=Vec::new();
     for (object_index,object) in objects.iter().enumerate(){
         let section_start=rows.len();let symbol_start=symbols.len();let frame_start=frames.len();
         for section in &object.sections {
@@ -81,10 +81,8 @@ fn combine<Payload, Output>(
                 section:symbol.section as u64,value:u64::from(symbol.value)});
         }
         for frame in &object.stack {
-            let call_start=calls.len();
-            if frame.coff.is_some(){for call in &frame.calls {if let Call::Reference{offset,..}=call{calls.push(*offset as u64);}}}
             let (section,start,present)=match frame.coff {Some((section,start))=>(section as u64,u64::from(start),1),None=>(0,0,0)};
-            frames.push(CombineFrame{section,start,present,call_start:call_start as u64,call_count:(calls.len()-call_start) as u64});
+            frames.push(CombineFrame { section, start, present });
         }
         inputs.push(CombineObject{section_start:section_start as u64,section_count:object.sections.len() as u64,
             symbol_start:symbol_start as u64,symbol_count:object.symbols.len() as u64,frame_start:frame_start as u64,frame_count:object.stack.len() as u64});
@@ -94,7 +92,7 @@ fn combine<Payload, Output>(
     let input=CombineInput{objects:inputs.as_ptr(),object_count:inputs.len() as u64,
         sections:rows.as_mut_ptr(),section_count:rows.len() as u64,symbols:symbols.as_mut_ptr(),symbol_count:symbols.len() as u64,
         relocations:relocations.as_mut_ptr(),relocation_count:relocations.len() as u64,frames:frames.as_mut_ptr(),
-        calls:calls.as_mut_ptr(),order:order.as_mut_ptr()};
+        order:order.as_mut_ptr()};
     let local: Vec<_> = module.as_ref().into_iter().flat_map(|(names, _)| names.iter())
         .map(|name| ImportBytes::new(name)).collect();
     let plan = unsafe { combine_prepare(input, local.as_ptr(), local.len()) };
@@ -123,25 +121,45 @@ fn combine<Payload, Output>(
         let name=unsafe{std::str::from_utf8_unchecked(std::slice::from_raw_parts(symbol.name,symbol.name_length as usize))};
         defined.insert(name.to_owned(),(usize::try_from(symbol.section)?,u32::try_from(symbol.value)?));
     }}
-    let mut stack=Vec::with_capacity(frames.len());
-    let mut section_index=0;let mut relocation_index=0;let mut frame_index=0;
+    let mut stack = Vec::with_capacity(frames.len());
+    let mut relocation_bases = Vec::new();
+    let mut section_index = 0;
+    let mut relocation_index = 0;
+    let mut frame_index = 0;
     for object in objects {
+        relocation_bases.clear();
+        let has_frames = !object.stack.is_empty();
+        for section in object.sections {
+            let group = usize::try_from(rows[section_index].group)?;
+            section_index += 1;
+            let output = relocation_output(&mut sections[group]);
+            if has_frames {
+                relocation_bases.push(output.len());
+            }
+            for mut relocation in section.relocations {
+                let row = &relocations[relocation_index];
+                relocation_index += 1;
+                relocation.offset = usize::try_from(row.offset)?;
+                if row.target_kind == 0 {
+                    relocation.target = Target::Section(usize::try_from(row.section)?, u32::try_from(row.value)?);
+                }
+                output.push(relocation);
+            }
+        }
         for mut frame in object.stack {
-            let row=&frames[frame_index];frame_index+=1;
-            if let Some((section,start))=&mut frame.coff {
-                *section=usize::try_from(row.section)?;*start=u32::try_from(row.start)?;
-                let mut index=usize::try_from(row.call_start)?;
-                for call in &mut frame.calls {if let Call::Reference{offset,..}=call{*offset=usize::try_from(calls[index])?;index+=1;}}
+            let row = &frames[frame_index];
+            frame_index += 1;
+            if let Some((section, start)) = &mut frame.coff {
+                let base = relocation_bases[*section];
+                for call in &mut frame.calls {
+                    if let Call::Reference { relocation, .. } = call {
+                        *relocation += base;
+                    }
+                }
+                *section = usize::try_from(row.section)?;
+                *start = u32::try_from(row.start)?;
             }
             stack.push(frame);
-        }
-        for section in object.sections {
-            let group=usize::try_from(rows[section_index].group)?;section_index+=1;
-            for mut relocation in section.relocations {
-                let row=&relocations[relocation_index];relocation_index+=1;relocation.offset=usize::try_from(row.offset)?;
-                if row.target_kind==0{relocation.target=Target::Section(usize::try_from(row.section)?,u32::try_from(row.value)?);}
-                relocation_output(&mut sections[group]).push(relocation);
-            }
         }
     }
     Ok((sections, stack))

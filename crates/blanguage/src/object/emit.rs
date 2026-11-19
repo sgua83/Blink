@@ -160,6 +160,18 @@ pub(crate) fn module(
 ) -> Result<(Vec<Section>, BTreeMap<String, (usize, u32)>, Vec<Frame>)> {
     functions(None, defined, imports, prefix)
 }
+fn native_calls(calls: Vec<Option<usize>>, relocations: &[crate::native::Relocation]) -> Vec<Call> {
+    // The emitter appends both sequences in machine-field order.
+    let mut relocations = relocations.iter().enumerate();
+    calls.into_iter().map(|call| match call {
+        Some(offset) => {
+            let (relocation, _) = relocations.find(|(_, entry)| entry.offset == offset).unwrap();
+            Call::Reference { relocation, tail: false }
+        }
+        None => Call::Indirect,
+    }).collect()
+}
+
 fn functions(
     native: Option<(String, NativeCode)>,
     defined: Vec<(String, NativeCode)>,
@@ -174,12 +186,14 @@ fn functions(
         let mut bytes = vec![0; 17];
         let layout = unsafe { application_entry(bytes.as_mut_ptr()) };
         bytes.truncate(layout.length as usize);
-        let calls = [layout.main_field, layout.exit_field].into_iter()
-            .map(|offset| Call::Reference { offset: offset as usize, tail: false }).collect();
+        let calls = vec![
+            Call::Reference { relocation: 0, tail: false },
+            Call::Reference { relocation: 1, tail: false },
+        ];
         let unwind = unwind_info(layout.prolog as u8, &[UnwindOperation::allocate(layout.prolog as u8, layout.frame)]);
         let entry = function(&mut sections, &mut frames, "mainCRTStartup".into(), layout.frame, calls, bytes,
             Some((layout.length, unwind)), Some(Layout::Startup));
-        let calls = native.calls.into_iter().map(|reference| reference.map_or(Call::Indirect, |offset| Call::Reference { offset, tail: false })).collect();
+        let calls = native_calls(native.calls, &native.relocations);
         let main = function(&mut sections, &mut frames, format!("entry {name}"), native.stack_bytes, calls, native.bytes, Some((native.function_end.try_into()?, native.unwind)), native.tail_regions.map(|tails| Layout::Function { tails, references: native.tail_references, sources: native.sources }));
         symbols.insert("main".into(), (main, 0));
         sections[entry].relocations.extend([
@@ -190,7 +204,7 @@ fn functions(
     }
     let mut targets = BTreeMap::new();
     for (name, code) in defined {
-        let calls = code.calls.into_iter().map(|reference| reference.map_or(Call::Indirect, |offset| Call::Reference { offset, tail: false })).collect();
+        let calls = native_calls(code.calls, &code.relocations);
         let text = function(&mut sections, &mut frames, name.clone(), code.stack_bytes, calls, code.bytes, Some((code.function_end.try_into()?, code.unwind)), code.tail_regions.map(|tails| Layout::Function { tails, references: code.tail_references, sources: code.sources }));
         symbols.insert(name.clone(), (text, 0));
         targets.insert(NativeSymbol::Function(name), text);
@@ -218,14 +232,14 @@ fn functions(
                         format!("{prefix}_{}", name.symbol.strip_prefix("blink_").unwrap())
                     } else { name.symbol.clone() },
                 }, true);
-                let calls = patches.iter().map(|(offset, _)| Call::Reference { offset: *offset, tail: true }).collect();
+                let calls = (0..patches.len()).map(|relocation| Call::Reference { relocation, tail: true }).collect();
                 function(&mut sections, &mut frames, format!("{op:?}"), 0, calls, bytes, None, Some(Layout::ImportThunk))
             }
             NativeSymbol::Print(scalar) => {
                 let helper = print(*scalar);
                 patches = helper.patches;
                 let end = u32::try_from(helper.bytes.len())?;
-                let calls = patches.iter().map(|(offset, _)| Call::Reference { offset: *offset, tail: false }).collect();
+                let calls = (0..patches.len()).map(|relocation| Call::Reference { relocation, tail: false }).collect();
                 function(&mut sections, &mut frames, format!("{op:?}"), helper.local, calls, helper.bytes, Some((end, helper.unwind)), Some(Layout::Print(*scalar)))
             }
         };

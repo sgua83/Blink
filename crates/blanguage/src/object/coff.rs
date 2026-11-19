@@ -346,7 +346,7 @@ unsafe extern "C" {
     #[link_name = "bootstrap.object_read::recover_stack"]
     fn object_recover_stack(
         rows: ObjectRows, frames: *mut MetadataReadFrame, count: usize,
-        calls: *const MetadataReadCall, nodes: *mut [u64; 9], stride: usize, stack_output: u32,
+        calls: *mut MetadataReadCall, nodes: *mut [u64; 9], stride: usize, stack_output: u32,
     ) -> ObjectReadError;
 }
 
@@ -361,16 +361,16 @@ impl StackMetadata {
         let mut nodes = vec![[0; 9]; self.frames.len()];
         unsafe {
             object_recover_stack(rows, self.frames.as_mut_ptr(), self.frames.len(),
-                self.calls.as_ptr(), nodes.as_mut_ptr(), size_of::<Relocation>(), u32::from(stack_output))
+                self.calls.as_mut_ptr(), nodes.as_mut_ptr(), size_of::<Relocation>(), u32::from(stack_output))
         }.check()?;
         if !stack_output { return Ok(Vec::new()); }
-        // read_metadata already checked UTF-8 in these borrowed fields.
+        // The reader checked UTF-8. Recovery replaced each direct call offset with its relocation index.
         let text = |field: ReadBytes| unsafe { std::str::from_utf8_unchecked(field.borrowed()) }.to_owned();
         let mut calls = self.calls.into_iter();
         Ok(self.frames.into_iter().map(|frame| {
             let calls = calls.by_ref().take(frame.calls as usize).map(|call| match call.kind {
-                ReadCallKind::Reference => stack::Call::Reference { offset: call.offset as usize, tail: false },
-                ReadCallKind::Tail => stack::Call::Reference { offset: call.offset as usize, tail: true },
+                ReadCallKind::Reference => stack::Call::Reference { relocation: call.offset as usize, tail: false },
+                ReadCallKind::Tail => stack::Call::Reference { relocation: call.offset as usize, tail: true },
                 ReadCallKind::Indirect => stack::Call::Indirect,
                 ReadCallKind::Unreported => stack::Call::Unreported(text(call.reason)),
             }).collect();
@@ -550,7 +550,11 @@ fn metadata<T>(o: &Object, consume: impl FnOnce(MetadataInput, usize) -> Result<
     let frames = o.stack.iter().map(|frame| {
         calls.extend(frame.calls.iter().map(|call| {
             let (kind, offset, reason) = match call {
-                stack::Call::Reference { offset, tail } => (u64::from(*tail), *offset as u64, empty),
+                stack::Call::Reference { relocation, tail } => {
+                    let (section, _) = frame.coff.unwrap();
+                    let offset = o.sections[section].relocations[*relocation].offset;
+                    (u64::from(*tail), offset as u64, empty)
+                }
                 stack::Call::Indirect => (2, 0, empty),
                 stack::Call::Unreported(reason) => (3, 0, MetadataBytes::new(reason.as_bytes())),
             };

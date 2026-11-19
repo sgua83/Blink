@@ -118,17 +118,17 @@ extern "C" ObjectRelocation object_relocation(
 address stack_frame_address(address frames,u64 index) on cpu {
     return unsafe_address(address_bits(frames)+index*64u64);
 }
-MetaCall stack_call_at(address calls,u64 index) on cpu {
-    return unsafe_position<MetaCall>(unsafe_address(address_bits(calls)+index*40u64));
+address stack_call_address(address calls,u64 index) on cpu {
+    return unsafe_address(address_bits(calls)+index*size_of<MetaCall>());
 }
-bool stack_relocation(ObjectSection section,u64 offset,u64 stride) on cpu {
+u64 stack_relocation(ObjectSection section,u64 offset,u64 stride) on cpu {
     u64 start=address_bits(section.decoded_relocations);
     u64 i=0u64;
     while(i<section.decoded_count){
-        if(unsafe_position<u64>(unsafe_address(start+i*stride))==offset){return true;}
+        if(unsafe_position<u64>(unsafe_address(start+i*stride))==offset){return i;}
         i+=1u64;
     }
-    return false;
+    return section.decoded_count;
 }
 extern "C" u32 recover_stack(ObjectRows rows,address frames,u64 count,address calls,address nodes,u64 stride,u32 stack_output) on cpu {
     // Resolve all section identities before interpreting positions and calls.
@@ -160,12 +160,19 @@ extern "C" u32 recover_stack(ObjectRows rows,address frames,u64 count,address ca
         }
         u64 remaining=frame.calls;
         while(remaining!=0u64){
-            MetaCall call=stack_call_at(calls,next_call);
+            address call_row=stack_call_address(calls,next_call);
+            MetaCall call=unsafe_position<MetaCall>(call_row);
             next_call+=1u64;
             remaining-=1u64;
             if(call.kind<2u64){
                 if(frame.has_coff==0u64){return 13;}
-                if(!stack_relocation(row_at(rows,frame.section),call.offset,stride)){return 14;}
+                ObjectSection section=row_at(rows,frame.section);
+                u64 relocation=stack_relocation(section,call.offset,stride);
+                if(relocation==section.decoded_count){return 14;}
+                if(stack_output!=0){
+                    call.offset=relocation;
+                    unsafe_position<MetaCall>(call_row)=call;
+                }
             }
         }
         i+=1u64;

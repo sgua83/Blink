@@ -7,8 +7,8 @@ CombineSymbol symbol_at(CombineInput input,u64 i) on cpu {return unsafe_position
 void symbol_put(CombineInput input,u64 i,CombineSymbol value) on cpu {unsafe_position<CombineSymbol>(unsafe_address(address_bits(input.symbols)+i*SYMBOL_BYTES))=value;}
 CombineRelocation relocation_at(CombineInput input,u64 i) on cpu {return unsafe_position<CombineRelocation>(unsafe_address(address_bits(input.relocations)+i*RELOCATION_BYTES));}
 void relocation_put(CombineInput input,u64 i,CombineRelocation value) on cpu {unsafe_position<CombineRelocation>(unsafe_address(address_bits(input.relocations)+i*RELOCATION_BYTES))=value;}
-CombineFrame frame_at(CombineInput input,u64 i) on cpu {return unsafe_position<CombineFrame>(unsafe_address(address_bits(input.frames)+i*FRAME_BYTES));}
-void frame_put(CombineInput input,u64 i,CombineFrame value) on cpu {unsafe_position<CombineFrame>(unsafe_address(address_bits(input.frames)+i*FRAME_BYTES))=value;}
+CombineFrame frame_at(CombineInput input,u64 i) on cpu {return unsafe_position<CombineFrame>(unsafe_address(address_bits(input.frames)+i*size_of<CombineFrame>()));}
+void frame_put(CombineInput input,u64 i,CombineFrame value) on cpu {unsafe_position<CombineFrame>(unsafe_address(address_bits(input.frames)+i*size_of<CombineFrame>()))=value;}
 u64 order_at(CombineInput input,u64 i) on cpu {return unsafe_position<u64>(unsafe_address(address_bits(input.order)+i*8u64));}
 void order_put(CombineInput input,u64 i,u64 value) on cpu {unsafe_position<u64>(unsafe_address(address_bits(input.order)+i*8u64))=value;}
 u8 byte_at(address data,u64 i) on cpu {return unsafe_position<u8>(unsafe_address(address_bits(data)+i));}
@@ -76,7 +76,6 @@ extern "C" CombinePlan prepare(CombineInput input, address local, u64 local_coun
             if(row.present!=0u64){
                 CombineSection section=section_at(input,object.section_start+row.section);row.section=section.group;row.start+=section.begin;
                 if(row.start>4294967295u64){return invalid(3u64,i);}
-                u64 j=row.call_start;while(j<row.call_start+row.call_count){address call=unsafe_address(address_bits(input.calls)+j*8u64);unsafe_position<u64>(call)=unsafe_position<u64>(call)+section.begin;j+=1u64;}
                 frame_put(input,i,row);
             }
             i+=1u64;
