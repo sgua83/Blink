@@ -189,20 +189,27 @@ struct DatasetLoan<'a> {
 }
 
 impl DatasetLoan<'_> {
-    fn elements(&self, frame: &mut Frame) -> Result<impl Iterator<Item = *const u8> + '_> {
+    fn require_cpu(&self, frame: &Frame) -> Result<()> {
+        if let DatasetBase::Frame(slot) = self.base
+            && !matches!(frame.data.datasets[slot], Some(ResidentData::Cpu(_) | ResidentData::CpuBorrow(_)))
+        {
+            return Err(error("CPU task read requires CPU storage"));
+        }
+        Ok(())
+    }
+
+    fn elements(&self, frame: &mut Frame) -> impl Iterator<Item = *const u8> + '_ {
         let base = match self.base {
             DatasetBase::Address(address) => address,
+            DatasetBase::Frame(slot) if self.access.writes() => {
+                frame.storage_address(slot as u32) as usize as *const u8
+            }
             DatasetBase::Frame(slot) => {
-                let (_, _, _, pointer) = frame.data.datasets[slot].as_ref().and_then(cpu_storage)
-                    .ok_or_else(|| error("CPU task read requires CPU storage"))?;
-                if self.access.writes() {
-                    frame.storage_address(slot as u32) as usize as *const u8
-                } else {
-                    pointer.cast::<u8>()
-                }
+                let (_, _, _, pointer) = frame.data.datasets[slot].as_ref().and_then(cpu_storage).unwrap();
+                pointer.cast()
             }
         };
-        Ok((0..self.count).map(move |index| base.wrapping_add(self.offset + index * self.stride)))
+        (0..self.count).map(move |index| base.wrapping_add(self.offset + index * self.stride))
     }
 }
 
@@ -243,17 +250,17 @@ fn bind_borrowed_inputs(
     let mut borrowed = Selection::default();
     let mut writable = BTreeSet::new();
     for loan in dataset_loans(layout, bytes) {
-        let elements = loan.elements(source)?;
+        loan.require_cpu(source)?;
         if let DatasetBase::Frame(root) = loan.base {
             borrowed.slots.insert(root);
             if loan.access.writes() {
                 writable.insert(root);
             }
         }
-        if loan.access.reads() && loan.element.contains_dataset() {
+        if loan.access.reads() && loan.count != 0 && loan.element.contains_dataset() {
             let shared = loan.access == Access::Read;
             let selection = if shared { &mut borrowed } else { &mut *owned };
-            for address in elements {
+            for address in loan.elements(source) {
                 // The outer rows stay with the caller. Their child handle words
                 // are stable addresses for the original Frame transfer.
                 unsafe { gather(source, loan.element, address, selection, shared)? };
@@ -412,7 +419,7 @@ unsafe extern "system" fn execute(_: *mut c_void, context: *mut c_void, _: *mut 
         }
         for loan in dataset_loans(input_type, &work.input) {
             if loan.access.writes() && (status.is_null() || loan.access.reads()) && loan.element.contains_dataset() {
-                let elements = loan.elements(frame)?;
+                loan.require_cpu(frame)?;
                 if loan.count == 0 {
                     continue;
                 }
@@ -422,7 +429,7 @@ unsafe extern "system" fn execute(_: *mut c_void, context: *mut c_void, _: *mut 
                 if owners.is_empty() {
                     continue;
                 }
-                for address in elements {
+                for address in loan.elements(frame) {
                     for &(offset, ty) in owners {
                         let position = address.wrapping_add(offset as usize);
                         unsafe { gather_value(frame, ty, position, &mut selected, false, None, status)? };
