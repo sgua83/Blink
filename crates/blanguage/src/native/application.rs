@@ -18,6 +18,7 @@ pub(crate) fn emit_function(function: &FunctionBody) -> Result<NativeCode, &'sta
 use super::external::{AbiMemoryMode, AbiType, ResultLocation};
 use std::ffi::c_void;
 
+#[derive(Clone, Copy)]
 #[repr(C)]
 struct FunctionFrame {
     bytes: u64,
@@ -27,27 +28,176 @@ struct FunctionFrame {
 }
 
 #[repr(C)]
-struct ParameterSlot {
-    index: usize,
-    home: u64,
-    indirect: u32,
-    float_size: u32,
+struct FunctionParameter {
+    abi: AbiType,
+    values: usize,
 }
 
+#[allow(dead_code)]
+#[repr(u32)]
+enum ParameterMoveKind { Home, Direct, Indirect }
+
+#[repr(C)]
+struct ParameterMove {
+    index: usize,
+    slot: usize,
+    offset: u64,
+    first: usize,
+    count: usize,
+    float_size: u32,
+    kind: ParameterMoveKind,
+}
+
+#[allow(dead_code)]
+#[repr(u32)]
+enum FunctionAction {
+    HiddenResultHome, ScratchSave, FrameAllocate, NonvolatileSave, ResultAddressSave,
+    IndirectResult, FallibleResult, FloatResult, IntegerResult, FallibleSuccess,
+    CloseExits, NonvolatileRestore, FrameRelease, ScratchRestore, Return,
+}
+
+type EmitAction = unsafe extern "C" fn(*mut c_void, FunctionAction, u64, u64);
+
+#[repr(C)]
+struct FunctionHost {
+    parameter: unsafe extern "C" fn(*const c_void, usize) -> FunctionParameter,
+    move_parameter: unsafe extern "C" fn(*mut c_void, ParameterMove),
+    action: EmitAction,
+}
+
+const FUNCTION_HOST: FunctionHost = FunctionHost {
+    parameter: function_parameter, move_parameter: emit_parameter, action: emit_action,
+};
+
 unsafe extern "C" {
-    #[link_name = "bootstrap.call_layout::parameter_slots"]
-    fn parameter_slots(context: *const c_void, count: usize, first_slot: u64,
-        parameter: unsafe extern "C" fn(*const c_void, usize) -> AbiType,
-        positions: *mut ParameterSlot) -> usize;
     #[link_name = "bootstrap.call_layout::function_frame"]
     fn function_frame(data_end: u64, result: AbiType, flags: u32) -> FunctionFrame;
+    #[link_name = "bootstrap.call_layout::function_prologue"]
+    fn function_prologue(context: *mut c_void, count: usize, frame: FunctionFrame, flags: u32, host: FunctionHost);
+    #[link_name = "bootstrap.call_layout::function_epilogue"]
+    fn function_epilogue(context: *mut c_void, frame: FunctionFrame, flags: u32, action: EmitAction) -> u64;
 }
-unsafe extern "C" fn parameter_type(context: *const c_void, index: usize) -> AbiType {
-    let parameters = unsafe { &*context.cast::<&[CallParameter]>() };
-    match &parameters[index].kind {
-        CallParameterKind::Value(ty) => AbiType::value(ty),
-        CallParameterKind::Reference { .. } => AbiType::reference(),
+
+struct FunctionEmission<'a, 'ir> {
+    emitter: &'a mut Emitter<'ir>,
+    parameters: &'a [CallParameter],
+    body: &'a ValueCode,
+    result: *const Ty,
+}
+
+unsafe extern "C" fn function_parameter(context: *const c_void, index: usize) -> FunctionParameter {
+    let state = unsafe { &*context.cast::<FunctionEmission<'_, '_>>() };
+    match &state.parameters[index].kind {
+        CallParameterKind::Value(ty) => FunctionParameter { abi: AbiType::value(ty), values: ty.components.len() },
+        CallParameterKind::Reference { .. } => FunctionParameter { abi: AbiType::reference(), values: 2 },
     }
+}
+
+unsafe extern "C" fn emit_parameter(context: *mut c_void, row: ParameterMove) {
+    let state = unsafe { &mut *context.cast::<FunctionEmission<'_, '_>>() };
+    let parameter = &state.parameters[row.index];
+    let e = &mut *state.emitter;
+    let start = e.code.len();
+    let kind = match row.kind {
+        ParameterMoveKind::Home => {
+            e.argument_register(row.slot, row.float_size, true);
+            AbiRangeKind::ParameterHome { slot: row.slot, parameter_index: row.index, origin: parameter.origin.clone() }
+        }
+        ParameterMoveKind::Direct | ParameterMoveKind::Indirect => {
+            let values = &state.body.inputs[row.first..row.first + row.count];
+            let address = row.offset as u32;
+            match &parameter.kind {
+                CallParameterKind::Value(ty) => {
+                    let mode = if matches!(row.kind, ParameterMoveKind::Indirect) {
+                        AbiMemoryMode::IndirectParameter
+                    } else {
+                        AbiMemoryMode::StackLoad
+                    };
+                    e.abi_value(address, ty, values, mode);
+                }
+                CallParameterKind::Reference { .. } => {
+                    e.read_scalar(values[0], 4, address);
+                    e.read_scalar(values[1], 4, address + 4);
+                }
+            }
+            AbiRangeKind::ParameterInput { slot: row.slot, parameter_index: row.index, origin: parameter.origin.clone() }
+        }
+    };
+    e.abi_range(start, kind);
+}
+
+unsafe extern "C" fn emit_action(context: *mut c_void, action: FunctionAction, first: u64, second: u64) {
+    let state = unsafe { &mut *context.cast::<FunctionEmission<'_, '_>>() };
+    let e = &mut *state.emitter;
+    let start = e.code.len();
+    let at = first as u32;
+    let range = match action {
+        FunctionAction::HiddenResultHome => {
+            e.argument_register(0, 0, true);
+            AbiRangeKind::HiddenResultHome { slot: 0 }
+        }
+        FunctionAction::ScratchSave => {
+            e.push_registers(&[first as u8]);
+            AbiRangeKind::ScratchSave
+        }
+        FunctionAction::FrameAllocate => {
+            e.allocate_frame(at);
+            AbiRangeKind::FrameAllocate { bytes: at }
+        }
+        FunctionAction::NonvolatileSave => {
+            e.preserve_registers(false);
+            AbiRangeKind::NonvolatileSave
+        }
+        FunctionAction::ResultAddressSave => {
+            e.copy_scalar(Location::Stack(at), Location::Stack(second as u32), Scalar::U64);
+            AbiRangeKind::ResultAddressSave { stack_offset: at }
+        }
+        FunctionAction::IndirectResult | FunctionAction::FallibleResult => {
+            // The same B frame selects a result action only for the original nonempty type.
+            let ty = unsafe { &*state.result };
+            let mode = if matches!(action, FunctionAction::FallibleResult) {
+                AbiMemoryMode::FallibleResult
+            } else {
+                AbiMemoryMode::IndirectResult
+            };
+            e.abi_value(at, ty, &state.body.outputs, mode);
+            AbiRangeKind::IndirectResult { stack_offset: at }
+        }
+        FunctionAction::FloatResult => {
+            e.float(state.body.outputs[0], 0);
+            AbiRangeKind::FloatResult
+        }
+        FunctionAction::IntegerResult => {
+            let ty = unsafe { &*state.result };
+            e.abi_value(0, ty, &state.body.outputs, AbiMemoryMode::PackIntegerResult);
+            AbiRangeKind::IntegerResult
+        }
+        FunctionAction::FallibleSuccess => {
+            e.bytes(&first.to_le_bytes()[..second as usize]);
+            AbiRangeKind::FallibleSuccessStatus
+        }
+        FunctionAction::CloseExits => {
+            e.close_exits();
+            return;
+        }
+        FunctionAction::NonvolatileRestore => {
+            e.preserve_registers(true);
+            AbiRangeKind::NonvolatileRestore
+        }
+        FunctionAction::FrameRelease => {
+            e.release_frame(at);
+            AbiRangeKind::FrameRelease { bytes: at }
+        }
+        FunctionAction::ScratchRestore => {
+            e.pop_register(first as u8);
+            AbiRangeKind::ScratchRestore
+        }
+        FunctionAction::Return => {
+            e.bytes(&first.to_le_bytes()[..second as usize]);
+            AbiRangeKind::FunctionReturn
+        }
+    };
+    e.abi_range(start, range);
 }
 
 fn emit_value(
@@ -89,13 +239,9 @@ fn emit_value(
     graph.function_inputs(&body.inputs);
     let allocation = Allocation::new(&stage, &mut graph);
     let layout = Frame::new(&allocation, None);
-    const SCRATCH_REGISTER: u8 = 15;
-    let scratch = graph.needs_r15;
-    let flags = u32::from(fallible) | (u32::from(scratch) << 1);
+    let flags = u32::from(fallible) | (u32::from(graph.needs_r15) << 1);
     let plan = unsafe { function_frame(layout.end, AbiType::result(result), flags) };
-    let frame = i32::try_from(plan.bytes).map_err(|_| "应用栈帧超出x64地址编码")? as u32;
-    let hidden = plan.result_location == ResultLocation::Indirect;
-    let result_pointer = hidden.then_some(plan.result as u32);
+    i32::try_from(plan.bytes).map_err(|_| "应用栈帧超出x64地址编码")?;
     let mut e = Emitter {
         used_tile_words: &super::EMPTY_TILE_WORDS,
         unwind: Vec::new(),
@@ -118,114 +264,17 @@ fn emit_value(
         allocation,
         frame: layout,
     };
-    // Home every register argument before allocation, probing or input moves may overwrite it.
-    // These are the Windows x64 caller-provided home slots, not another parameter copy owner.
-    let mut slots = Vec::with_capacity(parameters.len());
-    let context = (&parameters as *const &[CallParameter]).cast();
-    let count = unsafe {
-        parameter_slots(context, parameters.len(), u64::from(hidden), parameter_type, slots.as_mut_ptr())
+    let mut emission = FunctionEmission {
+        emitter: &mut e, parameters, body, result: result.map_or(std::ptr::null(), std::ptr::from_ref),
     };
-    // The B planner initialized one row per parameter with a physical slot.
-    unsafe { slots.set_len(count); }
-    if hidden {
-        let start = e.code.len();
-        e.argument_register(0, 0, true);
-        e.abi_range(start, AbiRangeKind::HiddenResultHome { slot: 0 });
+    unsafe {
+        function_prologue(std::ptr::from_mut(&mut emission).cast(), parameters.len(), plan, flags, FUNCTION_HOST);
     }
-    for row in slots.iter().take_while(|row| row.home < 32) {
-        let start = e.code.len();
-        let parameter = &parameters[row.index];
-        let slot = (row.home / 8) as usize;
-        e.argument_register(slot, row.float_size, true);
-        e.abi_range(start, AbiRangeKind::ParameterHome {
-            slot, parameter_index: row.index, origin: parameter.origin.clone(),
-        });
-    }
-    if scratch {
-        let start = e.code.len();
-        e.push_registers(&[SCRATCH_REGISTER]);
-        e.abi_range(start, AbiRangeKind::ScratchSave);
-    }
-    let start = e.code.len();
-    e.allocate_frame(frame);
-    e.abi_range(start, AbiRangeKind::FrameAllocate { bytes: frame });
-    let start = e.code.len();
-    e.preserve_registers(false);
-    e.abi_range(start, AbiRangeKind::NonvolatileSave);
-    let home = plan.home as u32;
-    if let Some(at) = result_pointer {
-        let start = e.code.len();
-        e.copy_scalar(Location::Stack(at), Location::Stack(home), Scalar::U64);
-        e.abi_range(start, AbiRangeKind::ResultAddressSave { stack_offset: at });
-    }
-    let mut inputs = body.inputs.as_slice();
-    for row in slots {
-        let start = e.code.len();
-        let parameter = &parameters[row.index];
-        let slot = (row.home / 8) as usize;
-        let address = home + row.home as u32;
-        match &parameter.kind {
-            CallParameterKind::Value(ty) => {
-                let (values, rest) = inputs.split_at(ty.components.len());
-                inputs = rest;
-                let mode = if row.indirect != 0 { AbiMemoryMode::IndirectParameter } else { AbiMemoryMode::StackLoad };
-                e.abi_value(address, ty, values, mode);
-            }
-            CallParameterKind::Reference { .. } => {
-                let (values, rest) = inputs.split_at(2);
-                inputs = rest;
-                e.read_scalar(values[0], 4, address);
-                e.read_scalar(values[1], 4, address + 4);
-            }
-        }
-        e.abi_range(start, AbiRangeKind::ParameterInput { slot,
-                parameter_index: row.index, origin: parameter.origin.clone() });
-    }
-    // 最外退出属于本函数，嵌套Scope继续拥有各自的Exit。
-    e.exits.push(Vec::new());
-    e.block(&stage.code)?;
-    if let Some(ty) = result {
-        let start = e.code.len();
-        let kind = match plan.result_location {
-            ResultLocation::None => None,
-            ResultLocation::Indirect => {
-                let at = plan.result as u32;
-                let mode = if fallible { AbiMemoryMode::FallibleResult } else { AbiMemoryMode::IndirectResult };
-                e.abi_value(at, ty, &body.outputs, mode);
-                Some(AbiRangeKind::IndirectResult { stack_offset: at })
-            }
-            ResultLocation::Float => {
-                e.float(body.outputs[0], 0);
-                Some(AbiRangeKind::FloatResult)
-            }
-            ResultLocation::Integer => {
-                e.abi_value(0, ty, &body.outputs, AbiMemoryMode::PackIntegerResult);
-                Some(AbiRangeKind::IntegerResult)
-            }
-        };
-        if let Some(kind) = kind { e.abi_range(start, kind); }
-    }
-    if fallible {
-        let start = e.code.len();
-        e.bytes(&[0x31, 0xc0]);
-        e.abi_range(start, AbiRangeKind::FallibleSuccessStatus);
-    }
-    e.close_exits();
-    let start = e.code.len();
-    e.preserve_registers(true);
-    e.abi_range(start, AbiRangeKind::NonvolatileRestore);
-    if frame != 0 {
-        let start = e.code.len();
-        e.release_frame(frame);
-        e.abi_range(start, AbiRangeKind::FrameRelease { bytes: frame });
-    }
-    if scratch {
-        let start = e.code.len();
-        e.pop_register(SCRATCH_REGISTER);
-        e.abi_range(start, AbiRangeKind::ScratchRestore);
-    }
-    let start = e.code.len();
-    e.bytes(&[0xc3]);
-    e.abi_range(start, AbiRangeKind::FunctionReturn);
-    Ok(e.finish(frame + u32::from(scratch) * 8))
+    // The function owns this exit scope. Nested scopes still own their own exits.
+    emission.emitter.exits.push(Vec::new());
+    emission.emitter.block(&stage.code)?;
+    let stack = unsafe {
+        function_epilogue(std::ptr::from_mut(&mut emission).cast(), plan, flags, emit_action)
+    };
+    Ok(e.finish(stack as u32))
 }

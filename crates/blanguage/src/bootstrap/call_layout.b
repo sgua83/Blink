@@ -89,20 +89,71 @@ extern "C" CallPlan plan(address context, u64 count, AbiType result, u32 flags,
     return CallPlan((bytes + 15u64) & ~15u64, result_at, target, arguments, location);
 }
 
-extern "C" u64 parameter_slots(address context, u64 count, u64 first_slot,
-    cfn<AbiType,address,u64> parameter, address positions) on cpu requires nonzero(parameter) {
-    u64 position = 0u64;
+u64 move_function_parameter(address context, u64 index, u64 slot, u64 home, u64 first,
+    FunctionParameter parameter, FunctionHost host) on cpu requires nonzero(host.move_parameter) {
+    AbiType abi = parameter.abi;
+    ParameterMoveKind kind = abi.value != 0 && indirect(abi.size, abi.alignment)
+        ? ParameterMoveKind::Indirect : ParameterMoveKind::Direct;
+    host.move_parameter(context, ParameterMove(
+        index, slot, home + slot_home(0u64, slot), first, parameter.values, 0, kind));
+    return first + parameter.values;
+}
+
+extern "C" void function_prologue(address context, u64 count, FunctionFrame frame, u32 flags, FunctionHost host)
+    on cpu requires nonzero(host.parameter) requires nonzero(host.move_parameter) requires nonzero(host.action) {
+    bool hidden = frame.result_location == ResultLocation::Indirect;
+    if (hidden) { host.action(context, FunctionAction::HiddenResultHome, 0u64, 0u64); }
+    u64 first_slot = hidden ? 1u64 : 0u64;
+    HomeParameter empty = HomeParameter(0u64, FunctionParameter(AbiType(0,1,0,0),0u64));
+    array<HomeParameter,4> homes = array<HomeParameter,4>(empty,empty,empty,empty);
+    u64 slot = first_slot;
     u64 index = 0u64;
-    while (index < count) {
-        AbiType value = parameter(context, index);
-        if (has_slot(value)) {
-            bool indirect_value = value.value != 0 && indirect(value.size, value.alignment);
-            address row = unsafe_address(address_bits(positions) + position * size_of<ParameterSlot>());
-            unsafe_position<ParameterSlot>(row) = ParameterSlot(
-                index, slot_home(first_slot, position), indirect_value ? 1 : 0, value.float_size);
-            position += 1u64;
+    while (index < count && slot < 4u64) {
+        FunctionParameter parameter = host.parameter(context,index);
+        if (has_slot(parameter.abi)) {
+            homes[u32(slot)] = HomeParameter(index,parameter);
+            host.move_parameter(context, ParameterMove(
+                index, slot, 0u64, 0u64, 0u64, parameter.abi.float_size, ParameterMoveKind::Home));
+            slot += 1u64;
         }
         index += 1u64;
     }
-    return position;
+    if ((flags & 2) != 0) { host.action(context, FunctionAction::ScratchSave, 15u64, 0u64); }
+    host.action(context, FunctionAction::FrameAllocate, frame.bytes, 0u64);
+    host.action(context, FunctionAction::NonvolatileSave, 0u64, 0u64);
+    if (hidden) { host.action(context, FunctionAction::ResultAddressSave, frame.result, frame.home); }
+    u64 value = 0u64;
+    for (home_slot in u32(first_slot)..4) {
+        if (u64(home_slot) == slot) { break; }
+        HomeParameter row = homes[home_slot];
+        value = move_function_parameter(context,row.index,u64(home_slot),frame.home,value,row.parameter,host);
+    }
+    while (index < count) {
+        FunctionParameter parameter = host.parameter(context,index);
+        if (has_slot(parameter.abi)) {
+            value = move_function_parameter(context,index,slot,frame.home,value,parameter,host);
+            slot += 1u64;
+        }
+        index += 1u64;
+    }
+}
+
+extern "C" u64 function_epilogue(address context, FunctionFrame frame, u32 flags,
+    cfn<void,address,FunctionAction,u64,u64> action) on cpu requires nonzero(action) {
+    bool fallible = (flags & 1) != 0;
+    if (frame.result_location == ResultLocation::Indirect) {
+        action(context, fallible ? FunctionAction::FallibleResult : FunctionAction::IndirectResult, frame.result, 0u64);
+    } else if (frame.result_location == ResultLocation::Float) {
+        action(context, FunctionAction::FloatResult, 0u64, 0u64);
+    } else if (frame.result_location == ResultLocation::Integer) {
+        action(context, FunctionAction::IntegerResult, 0u64, 0u64);
+    }
+    if (fallible) { action(context, FunctionAction::FallibleSuccess, 0xc031u64, 2u64); }
+    action(context, FunctionAction::CloseExits, 0u64, 0u64);
+    action(context, FunctionAction::NonvolatileRestore, 0u64, 0u64);
+    if (frame.bytes != 0u64) { action(context, FunctionAction::FrameRelease, frame.bytes, 0u64); }
+    bool scratch = (flags & 2) != 0;
+    if (scratch) { action(context, FunctionAction::ScratchRestore, 15u64, 0u64); }
+    action(context, FunctionAction::Return, 0xc3u64, 1u64);
+    return frame.bytes + (scratch ? 8u64 : 0u64);
 }
