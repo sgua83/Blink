@@ -1,12 +1,11 @@
-//! PE format is produced by the statically compiled B module. Object bytes remain
-//! borrowed until encoding ends; the shared machine relocation owner patches the
-//! same final output, also serving raw VM loading.
+//! B lays out the final PE and writes its headers and directories.
+//! The section writer fills the same file before shared machine relocation.
 use super::{Result, Selected, SelectedKind};
 use crate::object::{Section, Target};
 
 #[repr(C)]
 struct PeSection {
-    name:*const u8, name_length:u64, bytes:*const u8, byte_length:u64,
+    name:*const u8, name_length:u64, byte_length:u64,
     relocation_start:u64, relocation_count:u64, flags:u32, rva:u32, raw:u64,
 }
 #[repr(C)]
@@ -53,7 +52,9 @@ pub(super) fn stack_reserve<Bytes>(entry_stack_bytes: u32, modules: &[Selected<B
     unsafe { pe_stack_reserve(stack_bytes) }
 }
 
-pub(super) fn link(input_sections: &[Section], stack_reserve: u64) -> Result<Vec<u8>> {
+pub(super) fn link(
+    input_sections: &[Section<usize>], stack_reserve: u64, write_sections: impl FnOnce(&[*mut u8]),
+) -> Result<Vec<u8>> {
     let mut sections=Vec::with_capacity(input_sections.len());
     let mut relocations=Vec::new();
     let mut imports=Vec::new();
@@ -81,7 +82,7 @@ pub(super) fn link(input_sections: &[Section], stack_reserve: u64) -> Result<Vec
         }
         sections.push(PeSection{
             name:section.name.as_ptr(),name_length:section.name.len() as u64,
-            bytes:section.bytes.as_ptr(),byte_length:section.bytes.len() as u64,
+            byte_length:section.bytes as u64,
             relocation_start:start as u64,relocation_count:section.relocations.len() as u64,
             flags:section.flags,rva:0,raw:0,
         });
@@ -93,8 +94,7 @@ pub(super) fn link(input_sections: &[Section], stack_reserve: u64) -> Result<Vec
         imports:imports.as_mut_ptr(),import_count:imports.len() as u64,
         absolutes:absolutes.as_mut_ptr(),absolute_count:absolutes.len() as u64,stack_reserve,
     };
-    // Every pointer borrows the combined sections or this call's final metadata
-    // allocation. B cannot retain them, and encoding does not resize any input.
+    // The names and relocation data borrow the grouped layout until writing finishes.
     let layout=unsafe{pe_layout(input)};
     match layout.error {
         0=>{},
@@ -105,6 +105,12 @@ pub(super) fn link(input_sections: &[Section], stack_reserve: u64) -> Result<Vec
     }
     let mut output=vec![0;usize::try_from(layout.length)?];
     unsafe{pe_encode(input,layout,output.as_mut_ptr());}
+    let base = output.as_mut_ptr();
+    let destinations = sections.iter().map(|section| {
+        // Successful layout places every complete group inside this file buffer.
+        unsafe { base.add(section.raw as usize) }
+    }).collect::<Vec<_>>();
+    write_sections(&destinations);
     for section in &sections {
         let raw=usize::try_from(section.raw)?;
         let bytes=&mut output[raw..raw+usize::try_from(section.byte_length)?];

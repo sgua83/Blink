@@ -219,7 +219,7 @@ extern "C" void encode(PeInput input,PeLayout layout,address output) on cpu {
     u64 raw=layout.header;i=0u64;
     while(i<input.section_count){
         PeSection section=section_at(input,i);section_header(output,i,section.name,section.name_length,u64(section.rva),section.byte_length,section.raw,u64(section.flags)&4262461439u64);
-        copy(output,section.raw,section.bytes,section.byte_length);raw=section.raw+align(section.byte_length,512u64);i+=1u64;
+        raw=section.raw+align(section.byte_length,512u64);i+=1u64;
     }
     // Generated section names occupy their actual fixed PE name fields.
     u64 ih=392u64+input.section_count*40u64;

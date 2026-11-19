@@ -1,7 +1,7 @@
 module bootstrap.combine;
 
 CombineObject object_at(CombineInput input,u64 i) on cpu {return unsafe_position<CombineObject>(unsafe_address(address_bits(input.objects)+i*OBJECT_BYTES));}
-CombineSection section_at(CombineInput input,u64 i) on cpu {return unsafe_position<CombineSection>(unsafe_address(address_bits(input.sections)+i*SECTION_BYTES));}
+CombineSection section_at(address sections,u64 i) on cpu {return unsafe_position<CombineSection>(unsafe_address(address_bits(sections)+i*SECTION_BYTES));}
 void section_put(CombineInput input,u64 i,CombineSection value) on cpu {unsafe_position<CombineSection>(unsafe_address(address_bits(input.sections)+i*SECTION_BYTES))=value;}
 CombineSymbol symbol_at(CombineInput input,u64 i) on cpu {return unsafe_position<CombineSymbol>(unsafe_address(address_bits(input.symbols)+i*SYMBOL_BYTES));}
 void symbol_put(CombineInput input,u64 i,CombineSymbol value) on cpu {unsafe_position<CombineSymbol>(unsafe_address(address_bits(input.symbols)+i*SYMBOL_BYTES))=value;}
@@ -22,7 +22,7 @@ bool less(CombineInput input,u64 a,u64 b,bool symbols) on cpu {
         CombineSymbol x=symbol_at(input,a);CombineSymbol y=symbol_at(input,b);i32 name=compare(x.name,x.name_length,y.name,y.name_length);
         if(name!=0){return name<0;}
     }else{
-        CombineSection x=section_at(input,a);CombineSection y=section_at(input,b);i32 name=compare(x.name,x.name_length,y.name,y.name_length);
+        CombineSection x=section_at(input.sections,a);CombineSection y=section_at(input.sections,b);i32 name=compare(x.name,x.name_length,y.name,y.name_length);
         if(name!=0){return name<0;}if(x.flags!=y.flags){return x.flags<y.flags;}
     }
     return a<b;
@@ -45,11 +45,11 @@ bool same_symbol(CombineSymbol a,CombineSymbol b) on cpu {return compare(a.name,
 CombinePlan invalid(u64 error,u64 at) on cpu {return CombinePlan(0u64,0u64,error,at);}
 extern "C" CombinePlan prepare(CombineInput input, address local, u64 local_count) on cpu {
     CombinePlan result=invalid(0u64,0u64);u64 i=0u64;
-    while(i<input.section_count){CombineSection row=section_at(input,i);row.flags=row.flags&4278185983u64;row.size=0u64;section_put(input,i,row);i+=1u64;}
+    while(i<input.section_count){CombineSection row=section_at(input.sections,i);row.flags=row.flags&4278185983u64;row.size=0u64;section_put(input,i,row);i+=1u64;}
     sort(input,input.section_count,false);i=0u64;u64 owner=0u64;
     while(i<input.section_count){
-        u64 index=order_at(input,i);CombineSection row=section_at(input,index);
-        if(i==0u64||!same_section(section_at(input,order_at(input,i-1u64)),row)){owner=index;}
+        u64 index=order_at(input,i);CombineSection row=section_at(input.sections,index);
+        if(i==0u64||!same_section(section_at(input.sections,order_at(input,i-1u64)),row)){owner=index;}
         row.owner=owner;section_put(input,index,row);i+=1u64;
     }
     u64 o=0u64;
@@ -57,7 +57,7 @@ extern "C" CombinePlan prepare(CombineInput input, address local, u64 local_coun
         CombineObject object=object_at(input,o);
         i=object.section_start;
         while(i<object.section_start+object.section_count){
-            CombineSection row=section_at(input,i);CombineSection first=section_at(input,row.owner);
+            CombineSection row=section_at(input.sections,i);CombineSection first=section_at(input.sections,row.owner);
             u64 group=first.group;if(row.owner==i){group=result.groups;result.groups+=1u64;}
             u64 exponent=(row.flags>>20u64)&15u64;if(exponent>0u64){exponent-=1u64;}u64 alignment=1u64<<exponent;
             u64 begin=(first.size+alignment-1u64)&(0u64-alignment);if(begin>4294967295u64){return invalid(1u64,i);}
@@ -67,14 +67,14 @@ extern "C" CombinePlan prepare(CombineInput input, address local, u64 local_coun
         }
         i=object.symbol_start;
         while(i<object.symbol_start+object.symbol_count){
-            CombineSymbol row=symbol_at(input,i);CombineSection section=section_at(input,object.section_start+row.section);
+            CombineSymbol row=symbol_at(input,i);CombineSection section=section_at(input.sections,object.section_start+row.section);
             row.section=section.group;row.value+=section.begin;if(row.value>4294967295u64){return invalid(2u64,i);}symbol_put(input,i,row);i+=1u64;
         }
         i=object.frame_start;
         while(i<object.frame_start+object.frame_count){
             CombineFrame row=frame_at(input,i);
             if(row.present!=0u64){
-                CombineSection section=section_at(input,object.section_start+row.section);row.section=section.group;row.start+=section.begin;
+                CombineSection section=section_at(input.sections,object.section_start+row.section);row.section=section.group;row.start+=section.begin;
                 if(row.start>4294967295u64){return invalid(3u64,i);}
                 frame_put(input,i,row);
             }
@@ -90,9 +90,9 @@ extern "C" CombinePlan prepare(CombineInput input, address local, u64 local_coun
     }
     i=0u64;
     while(i<input.relocation_count){
-        CombineRelocation row=relocation_at(input,i);CombineSection source=section_at(input,row.source);row.offset+=source.begin;
+        CombineRelocation row=relocation_at(input,i);CombineSection source=section_at(input.sections,row.source);row.offset+=source.begin;
         if(row.target_kind==0u64){
-            CombineObject object=object_at(input,source.object);CombineSection target=section_at(input,object.section_start+row.section);
+            CombineObject object=object_at(input,source.object);CombineSection target=section_at(input.sections,object.section_start+row.section);
             row.section=target.group;row.value+=target.begin;if(row.value>4294967295u64){return invalid(4u64,i);}
         }else if(row.target_kind==2u64){
             u64 lo=0u64;u64 hi=result.symbols;
@@ -119,9 +119,9 @@ extern "C" CombinePlan prepare(CombineInput input, address local, u64 local_coun
     return result;
 }
 bool is_text(CombineSection row) on cpu {return row.name_length==5u64&&byte_at(row.name,0u64)==u8(46)&&byte_at(row.name,1u64)==u8(116)&&byte_at(row.name,2u64)==u8(101)&&byte_at(row.name,3u64)==u8(120)&&byte_at(row.name,4u64)==u8(116);}
-extern "C" void encode(CombineInput input,address outputs) on cpu {
-    u64 i=0u64;while(i<input.section_count){
-        CombineSection row=section_at(input,i);address output=unsafe_position<address>(unsafe_address(address_bits(outputs)+row.group*8u64));
+extern "C" void encode(address sections,u64 section_count,address outputs) on cpu {
+    u64 i=0u64;while(i<section_count){
+        CombineSection row=section_at(sections,i);address output=unsafe_position<address>(unsafe_address(address_bits(outputs)+row.group*8u64));
         u8 padding=u8(0);if(is_text(row)){padding=u8(144);}u64 j=row.begin-row.padding;
         while(j<row.begin){byte_put(output,j,padding);j+=1u64;}
         j=0u64;while(j<row.byte_length){byte_put(output,row.begin+j,byte_at(row.bytes,j));j+=1u64;}i+=1u64;

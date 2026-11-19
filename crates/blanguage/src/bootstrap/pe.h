@@ -1,10 +1,10 @@
 module bootstrap.pe;
-const u64 SECTION_BYTES=64u64;
+const u64 SECTION_BYTES=56u64;
 const u64 RELOCATION_BYTES=48u64;
 const u64 IMPORT_BYTES=80u64;
 const u64 ABSOLUTE_BYTES=24u64;
 struct PeSection {
-    address name;u64 name_length;address bytes;u64 byte_length;
+    address name;u64 name_length;u64 byte_length;
     u64 relocation_start;u64 relocation_count;u32 flags;u32 rva;u64 raw;
 };
 struct PeRelocation {

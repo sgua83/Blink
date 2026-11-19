@@ -153,8 +153,7 @@ fn link_objects(inputs: Inputs<'_>, path: &Path) -> Result<()> {
         SelectedKind::Application { stack_bytes } => {
             let reserve = pe::stack_reserve(*stack_bytes, &objects[1..]);
             if archives.is_empty() {
-                let sections = combine::objects(objects, None)?;
-                file_bytes::write(&output, &pe::link(&sections, reserve)?)?;
+                file_bytes::write(&output, &combine::link_pe(objects, reserve)?)?;
             } else {
                 msvc::link(&archives, &objects, &output, reserve, false)?;
             }

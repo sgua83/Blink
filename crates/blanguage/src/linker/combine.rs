@@ -1,7 +1,6 @@
 //! B owns layout and rebasing for both reports and native outputs.
-//! Only native outputs encode bytes, borrowing the selected objects until the
-//! synchronous copy finishes.
-use super::{Result, Selected, resources::ImportBytes};
+//! Native output writes the selected COFF bytes directly into its own sections.
+use super::{Result, Selected, pe, resources::ImportBytes};
 use crate::object::{Relocation, Section, Target, stack::{Call, Frame}};
 use std::collections::BTreeMap;
 
@@ -31,30 +30,57 @@ unsafe extern "C" {
     #[link_name="bootstrap.combine::prepare"]
     fn combine_prepare(input: CombineInput, local: *const ImportBytes, local_count: usize) -> CombinePlan;
     #[link_name="bootstrap.combine::encode"]
-    fn combine_encode(input:CombineInput,outputs:*const *mut u8);
+    fn combine_encode(sections: *const CombineSection, count: usize, outputs: *const *mut u8);
 }
 
 pub(super) fn objects<Payload: AsRef<[u8]>>(
     objects: Vec<Selected<Payload>>, module: Option<(&[&str], &mut BTreeMap<String, (usize, u32)>)>,
 ) -> Result<Vec<Section>> {
-    let (sections, _) = combine(objects, module,
-        |bytes| { let bytes = bytes.as_ref(); (bytes.as_ptr(), bytes.len()) },
-        encode_sections, |section| &mut section.relocations)?;
-    Ok(sections)
+    combine(objects, module, extent,
+        |rows, groups, objects| grouped_sections(rows, groups, objects, Vec::with_capacity),
+        |section| &mut section.relocations,
+        |rows, mut sections, _| {
+            let destinations: Vec<_> = sections.iter_mut().map(|section| section.bytes.as_mut_ptr()).collect();
+            unsafe { combine_encode(rows.as_ptr(), rows.len(), destinations.as_ptr()); }
+            // The writer initializes the requested extent, including each alignment gap.
+            for (i, row) in rows.iter().enumerate() {
+                if row.owner == i as u64 {
+                    unsafe { sections[row.group as usize].bytes.set_len(row.size as usize); }
+                }
+            }
+            Ok(sections)
+        })
+}
+
+pub(super) fn link_pe(objects: Vec<Selected>, stack_reserve: u64) -> Result<Vec<u8>> {
+    combine(objects, None, extent,
+        |rows, groups, objects| grouped_sections(rows, groups, objects, std::convert::identity),
+        |section| &mut section.relocations,
+        |rows, sections, _| pe::link(&sections, stack_reserve, |destinations| {
+            // PE supplies one final byte range for each group in layout order.
+            unsafe { combine_encode(rows.as_ptr(), rows.len(), destinations.as_ptr()); }
+        }))
 }
 
 pub(super) fn report(objects: Vec<Selected<usize>>) -> Result<(Vec<Vec<Relocation>>, Vec<Frame>)> {
     combine(objects, None, |&length| (std::ptr::null(), length),
-        |_, _, groups, _| Ok((0..groups).map(|_| Vec::new()).collect()),
-        |relocations| relocations)
+        |_, groups, _| Ok((0..groups).map(|_| Vec::new()).collect()),
+        |relocations| relocations,
+        |_, relocations, stack| Ok((relocations, stack)))
 }
 
-fn combine<Payload, Output>(
-    objects: Vec<Selected<Payload>>, module: Option<(&[&str], &mut BTreeMap<String, (usize, u32)>)>,
+fn extent(bytes: &impl AsRef<[u8]>) -> (*const u8, usize) {
+    let bytes = bytes.as_ref();
+    (bytes.as_ptr(), bytes.len())
+}
+
+fn combine<Payload, Group, Output>(
+    mut objects: Vec<Selected<Payload>>, module: Option<(&[&str], &mut BTreeMap<String, (usize, u32)>)>,
     extent: impl Fn(&Payload) -> (*const u8, usize),
-    materialize: impl FnOnce(CombineInput, &[CombineSection], usize, &[Selected<Payload>]) -> Result<Vec<Output>>,
-    relocation_output: impl Fn(&mut Output) -> &mut Vec<Relocation>,
-) -> Result<(Vec<Output>, Vec<Frame>)> {
+    groups: impl FnOnce(&[CombineSection], usize, &[Selected<Payload>]) -> Result<Vec<Group>>,
+    relocation_output: impl Fn(&mut Group) -> &mut Vec<Relocation>,
+    finish: impl FnOnce(&[CombineSection], Vec<Group>, Vec<Frame>) -> Result<Output>,
+) -> Result<Output> {
     let mut inputs=Vec::with_capacity(objects.len());
     let mut rows=Vec::new();let mut symbols=Vec::new();let mut relocations=Vec::new();
     let mut frames=Vec::new();
@@ -115,7 +141,7 @@ fn combine<Payload, Output>(
         },
         code=>return Err(format!("COFF节组合失败 {code}").into()),
     }
-    let mut sections = materialize(input, &rows, usize::try_from(plan.groups)?, &objects)?;
+    let mut sections = groups(&rows, usize::try_from(plan.groups)?, &objects)?;
     if let Some((_, defined))=module{for &index in &order[..usize::try_from(plan.symbols)?]{
         let symbol=&symbols[usize::try_from(index)?];
         let name=unsafe{std::str::from_utf8_unchecked(std::slice::from_raw_parts(symbol.name,symbol.name_length as usize))};
@@ -126,17 +152,17 @@ fn combine<Payload, Output>(
     let mut section_index = 0;
     let mut relocation_index = 0;
     let mut frame_index = 0;
-    for object in objects {
+    for object in &mut objects {
         relocation_bases.clear();
         let has_frames = !object.stack.is_empty();
-        for section in object.sections {
+        for section in &mut object.sections {
             let group = usize::try_from(rows[section_index].group)?;
             section_index += 1;
             let output = relocation_output(&mut sections[group]);
             if has_frames {
                 relocation_bases.push(output.len());
             }
-            for mut relocation in section.relocations {
+            for mut relocation in std::mem::take(&mut section.relocations) {
                 let row = &relocations[relocation_index];
                 relocation_index += 1;
                 relocation.offset = usize::try_from(row.offset)?;
@@ -146,7 +172,7 @@ fn combine<Payload, Output>(
                 output.push(relocation);
             }
         }
-        for mut frame in object.stack {
+        for mut frame in std::mem::take(&mut object.stack) {
             let row = &frames[frame_index];
             frame_index += 1;
             if let Some((section, start)) = &mut frame.coff {
@@ -162,31 +188,25 @@ fn combine<Payload, Output>(
             stack.push(frame);
         }
     }
-    Ok((sections, stack))
+    // Selected section names and bytes still back the layout views during writing.
+    finish(&rows, sections, stack)
 }
 
-fn encode_sections<Payload: AsRef<[u8]>>(
-    input: CombineInput, rows: &[CombineSection], groups: usize, objects: &[Selected<Payload>],
-) -> Result<Vec<Section>> {
+fn grouped_sections<Payload, Bytes>(
+    rows: &[CombineSection], groups: usize, objects: &[Selected<Payload>],
+    payload: impl Fn(usize) -> Bytes,
+) -> Result<Vec<Section<Bytes>>> {
     let mut sections = Vec::with_capacity(groups);
     for (i, (section, row)) in objects.iter().flat_map(|object| &object.sections).zip(rows).enumerate() {
         if row.owner == i as u64 {
             sections.push(Section {
                 name: section.name.clone(),
-                bytes: Vec::with_capacity(usize::try_from(row.size)?),
+                bytes: payload(usize::try_from(row.size)?),
                 flags: u32::try_from(row.flags)?,
                 relocations: Vec::new(),
                 associated: Vec::new(),
                 layout: None,
             });
-        }
-    }
-    let outputs: Vec<_> = sections.iter_mut().map(|section| section.bytes.as_mut_ptr()).collect();
-    unsafe { combine_encode(input, outputs.as_ptr()); }
-    // Encoding writes every byte, including the real alignment gaps.
-    for (i, row) in rows.iter().enumerate() {
-        if row.owner == i as u64 {
-            unsafe { sections[row.group as usize].bytes.set_len(row.size as usize); }
         }
     }
     Ok(sections)

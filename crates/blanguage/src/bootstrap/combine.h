@@ -24,4 +24,4 @@ struct CombineInput {
 };
 struct CombinePlan {u64 groups;u64 symbols;u64 error;u64 at;};
 extern "C" CombinePlan prepare(CombineInput input, address local, u64 local_count) on cpu;
-extern "C" void encode(CombineInput input,address outputs) on cpu;
+extern "C" void encode(address sections,u64 section_count,address outputs) on cpu;
