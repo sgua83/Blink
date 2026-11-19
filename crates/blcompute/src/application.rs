@@ -187,32 +187,35 @@ impl Frame {
     }
     fn load_gpu(&mut self, index: usize, image: &blanguage::spirv::ProgramImage<TemplateProgram>) -> Result<()> {
         if self.gpu_programs[index].is_none() {
-            if self.device.is_none() {
-                self.create_device()?;
+            let device = Self::gpu_device(&self.definitions, &mut self.device)?;
+            self.gpu_programs[index] = Some(device.load_template_ref(image)?);
+        }
+        Ok(())
+    }
+    fn gpu_device<'a>(definitions: &Definitions, slot: &'a mut Option<vulkan::Device>) -> Result<&'a vulkan::Device> {
+        Ok(match slot {
+            Some(device) => device,
+            slot @ None => {
+                let programs = definitions.programs.iter().filter_map(|definition| match definition {
+                    ProgramSlot::Gpu(image) => Some(image.program()),
+                    ProgramSlot::Cpu(_) => None,
+                });
+                slot.insert(vulkan::Device::for_programs(programs)?)
             }
-            self.gpu_programs[index] = Some(self.device.as_ref().unwrap().load_template_ref(image)?);
-        }
-        Ok(())
+        })
     }
-    fn create_device(&mut self) -> Result<()> {
-        let programs = self.definitions.programs.iter().filter_map(|definition| match definition {
-            ProgramSlot::Gpu(image) => Some(image.program()),
-            ProgramSlot::Cpu(_) => None,
-        });
-        self.device = Some(vulkan::Device::for_programs(programs)?);
-        Ok(())
-    }
-    /// 上传借用原CPU输入；成功交回GPU存储后替换，原暂存区仍按实际完成释放。
+    /// 先接收原CPU输入，再取得设备；成功上传后替换原槽，暂存区按实际完成释放。
     pub fn upload(&mut self, handle: u32) -> Result<()> {
-        if self.device.is_none() {
-            self.create_device()?;
-        }
         let data=match self.data.datasets[handle as usize].as_ref().unwrap() {
             ResidentData::Cpu(data)=>data,
             ResidentData::CpuBorrow(_)=>return Err(error("借用的CPU输入不拥有驻留转移权")),
             ResidentData::Gpu(_)=>return Err(error("CPU 访问需要先显式 download 数据")),
         };
-        let data = self.device.as_ref().unwrap().upload_cpu(data, &mut std::collections::BTreeMap::new())?;
+        let data = vulkan::Device::upload_cpu(
+            data,
+            || Self::gpu_device(&self.definitions, &mut self.device),
+            &mut std::collections::BTreeMap::new(),
+        )?;
         self.data.datasets[handle as usize] = Some(ResidentData::Gpu(data));
         Ok(())
     }

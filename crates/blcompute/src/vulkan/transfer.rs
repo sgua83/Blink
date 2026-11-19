@@ -3,17 +3,18 @@ use super::*;
 use std::collections::BTreeMap;
 
 impl Device {
-    pub(crate) fn upload_cpu(
-        &self,
+    /// Accept the CPU source before obtaining a device for the upload.
+    pub(crate) fn upload_cpu<'a>(
         data: &crate::cpu::CpuDataset,
+        device: impl FnOnce() -> Result<&'a Self>,
         memo: &mut BTreeMap<usize, ReadDataset>,
     ) -> Result<GpuDataset> {
         match data {
             crate::cpu::CpuDataset::Owned(data) => {
                 data.require_views()?;
-                self.upload_graph(data, memo)
+                device()?.upload_graph(data, memo)
             }
-            crate::cpu::CpuDataset::Read(source) => self
+            crate::cpu::CpuDataset::Read(source) => device()?
                 .upload_read(source, memo)
                 .map(|target| target.binding()),
         }
