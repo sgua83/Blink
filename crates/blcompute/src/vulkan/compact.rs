@@ -1,14 +1,9 @@
 //! 压缩筛选重用扫描的设备层级；完整前缀与原始记录分开驻留。
 use super::*;
-use blanguage::ir::{Compaction, Scalar};
+use blanguage::ir::Compaction;
 pub(super) fn allocate(c: &Compiled, count: u32) -> Result<Scratch> {
     let mut scratch = scan::allocate(c, count, 1)?;
-    scratch.buffers.push(GpuDataset::new(
-        c.inner.clone(),
-        Ty::scalar(Scalar::U32),
-        4,
-        count,
-    )?);
+    scratch.buffers.push(PagedBuffer::words(c.inner.clone(), count, 1)?);
     Ok(scratch)
 }
 pub(super) fn record(
@@ -23,7 +18,7 @@ pub(super) fn record(
     uniforms: &mut [u32],
     partition: NonZeroU32,
 ) -> Result<()> {
-    let prefix = &scratch.buffers.last().unwrap().allocation;
+    let prefix = scratch.buffers.last().unwrap().descriptor();
     scan::record(
         commands,
         c,
@@ -36,7 +31,7 @@ pub(super) fn record(
         &selection.scan(),
         false,
         (data[selection.flags].count, infos[selection.flags]),
-        prefix.descriptor(),
+        prefix,
         &scratch.buffers,
         scratch.arguments.as_ref(),
         infos,
@@ -52,8 +47,8 @@ pub(super) fn record(
         infos,
         &[],
         accelerations,
-        Some((prefix).descriptor()),
-        scratch.arguments.as_ref().map(|a| a.allocation.descriptor()),
+        Some(prefix),
+        scratch.arguments.as_ref().map(PagedBuffer::descriptor),
         None,
         None,
     )?;

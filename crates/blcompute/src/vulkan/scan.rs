@@ -1,17 +1,14 @@
 //! 前缀扫描的全部层级留在设备上，提交拥有其临时数据直到最后一个消费者完成。
 use super::*;
-use blanguage::ir::Scalar;
 pub(super) fn allocate(c: &Compiled, mut count: u32, words: usize) -> Result<Scratch> {
-    let ty = Ty::vector(Scalar::U32, words);
-    let stride = ty.size;
     let mut buffers = Vec::new();
     loop {
         count = count.div_ceil(64).max(1);
-        buffers.push(GpuDataset::new(c.inner.clone(), ty.clone(), stride, count)?);
+        buffers.push(PagedBuffer::words(c.inner.clone(), count, words as u32)?);
         if count == 1 {
             break;
         }
-        buffers.push(GpuDataset::new(c.inner.clone(), ty.clone(), stride, count)?);
+        buffers.push(PagedBuffer::words(c.inner.clone(), count, words as u32)?);
     }
     Ok(Scratch {
         buffers,
@@ -27,8 +24,8 @@ pub(super) fn record(
     segmented: bool,
     source: (u32, VkDescriptorBufferInfo),
     root_target: VkDescriptorBufferInfo,
-    temporary: &[GpuDataset],
-    arguments: Option<&GpuDataset>,
+    temporary: &[PagedBuffer],
+    arguments: Option<&PagedBuffer>,
     infos: &[VkDescriptorBufferInfo],
     accelerations: &[Acceleration],
     uniforms: &mut [u32],
@@ -51,14 +48,14 @@ pub(super) fn record(
         let source = if level == 0 {
             source.1
         } else {
-            temporary[(level - 1) * 2].allocation.descriptor()
+            temporary[(level - 1) * 2].descriptor()
         };
         let target = if level == 0 {
             root_target
         } else {
-            temporary[(level - 1) * 2 + 1].allocation.descriptor()
+            temporary[(level - 1) * 2 + 1].descriptor()
         };
-        let auxiliary = &temporary[level * 2].allocation;
+        let auxiliary = &temporary[level * 2];
         let bindings = [
             (r.source != r.target && (level > 0 || r.target != c.program.selection_buffer()))
                 .then_some((r.source, source)),
@@ -71,7 +68,7 @@ pub(super) fn record(
             &bindings,
             accelerations,
             Some((auxiliary).descriptor()),
-            arguments.map(|a| a.allocation.descriptor()),
+            arguments.map(PagedBuffer::descriptor),
             (r.target == c.program.selection_buffer()).then_some(target),
             (r.source == r.target && level > 0).then_some(source),
         )?;
@@ -90,11 +87,11 @@ pub(super) fn record(
     }
     for level in (0..lengths.len() - 1).rev() {
         commands.barrier(0x800, 0x800, 0x40, 0x60);
-        let source = temporary[level * 2 + 1].allocation.descriptor();
+        let source = temporary[level * 2 + 1].descriptor();
         let target = if level == 0 {
             root_target
         } else {
-            temporary[(level - 1) * 2 + 1].allocation.descriptor()
+            temporary[(level - 1) * 2 + 1].descriptor()
         };
         let bindings = [
             (r.source != r.target).then_some((r.source, source)),
@@ -107,11 +104,11 @@ pub(super) fn record(
             &bindings,
             accelerations,
             if level == 0 && segmented {
-                Some(temporary[0].allocation.descriptor())
+                Some(temporary[0].descriptor())
             } else {
                 None
             },
-            arguments.map(|a| a.allocation.descriptor()),
+            arguments.map(PagedBuffer::descriptor),
             (r.target == c.program.selection_buffer()).then_some(target),
             (r.source == r.target).then_some(source),
         )?;
@@ -135,8 +132,8 @@ pub(super) fn record_segmented_reduce(
     kernels: [VkPipeline; 4],
     r: &blanguage::ir::Reduction,
     input: &GpuDataset,
-    temporary: &[GpuDataset],
-    arguments: Option<&GpuDataset>,
+    temporary: &[PagedBuffer],
+    arguments: Option<&PagedBuffer>,
     infos: &[VkDescriptorBufferInfo],
     accelerations: &[Acceleration],
     uniforms: &mut [u32],
@@ -157,9 +154,9 @@ pub(super) fn record_segmented_reduce(
         }
         let bindings = [
             (level > 0 && r.source != r.target)
-                .then(|| (r.source, temporary[(level - 1) * 2].allocation.descriptor())),
+                .then(|| (r.source, temporary[(level - 1) * 2].descriptor())),
             (level > 0)
-                .then(|| (r.target, temporary[(level - 1) * 2 + 1].allocation.descriptor())),
+                .then(|| (r.target, temporary[(level - 1) * 2 + 1].descriptor())),
         ];
         let set = descriptor_set(
             commands,
@@ -167,10 +164,10 @@ pub(super) fn record_segmented_reduce(
             infos,
             &bindings,
             accelerations,
-            Some((&temporary[level * 2].allocation).descriptor()),
-            arguments.map(|a| a.allocation.descriptor()),
+            Some(temporary[level * 2].descriptor()),
+            arguments.map(PagedBuffer::descriptor),
             None,
-            (r.source == r.target && level > 0).then(|| (temporary[(level - 1) * 2].allocation).descriptor()),
+            (r.source == r.target && level > 0).then(|| temporary[(level - 1) * 2].descriptor()),
         )?;
         dispatch(
             commands,
@@ -189,8 +186,8 @@ pub(super) fn record_segmented_reduce(
         commands.barrier(0x800, 0x800, 0x40, 0x60);
         let bindings = [
             (r.source != r.target)
-                .then(|| (r.source, temporary[level * 2 + 1].allocation.descriptor())),
-            Some((r.target, temporary[(level - 1) * 2 + 1].allocation.descriptor())),
+                .then(|| (r.source, temporary[level * 2 + 1].descriptor())),
+            Some((r.target, temporary[(level - 1) * 2 + 1].descriptor())),
         ];
         let set = descriptor_set(
             commands,
@@ -199,9 +196,9 @@ pub(super) fn record_segmented_reduce(
             &bindings,
             accelerations,
             None,
-            arguments.map(|a| a.allocation.descriptor()),
+            arguments.map(PagedBuffer::descriptor),
             None,
-            (r.source == r.target).then_some((&temporary[level * 2 + 1].allocation).descriptor()),
+            (r.source == r.target).then_some(temporary[level * 2 + 1].descriptor()),
         )?;
         dispatch(
             commands,
@@ -216,7 +213,7 @@ pub(super) fn record_segmented_reduce(
         );
     }
     commands.barrier(0x800, 0x800, 0x40, 0x60);
-    let prefix = &temporary[usize::from(input.count > 64)].allocation;
+    let prefix = &temporary[usize::from(input.count > 64)];
     let set = descriptor_set(
         commands,
         c,
@@ -224,7 +221,7 @@ pub(super) fn record_segmented_reduce(
         &[],
         accelerations,
         Some((prefix).descriptor()),
-        arguments.map(|a| a.allocation.descriptor()),
+        arguments.map(PagedBuffer::descriptor),
         None,
         None,
     )?;
@@ -249,7 +246,7 @@ pub(super) fn dispatch(
     count: u32,
     uniforms: &mut [u32],
     partition: NonZeroU32,
-    arguments: Option<&GpuDataset>,
+    arguments: Option<&PagedBuffer>,
     level: usize,
 ) {
     if let Some(args) = arguments {

@@ -1371,24 +1371,8 @@ impl GpuDataset {
         extra_usage: u32,
         alignment: u64,
     ) -> Result<Self> {
-        let mut pages = Vec::new();
-        let mut remaining = u64::from(count) * u64::from(stride);
-        while remaining > 0 {
-            let capacity = blanguage::spirv::PAGE_BYTES / stride;
-            if capacity == 0 {
-                return Err(error("GPU 页寻址要求单条记录能容纳于一个物理页"));
-            }
-            let bytes = remaining.min(u64::from(capacity) * u64::from(stride));
-            pages.push(Allocation::new(
-                inner.clone(),
-                bytes,
-                0x20023 | extra_usage,
-                1,
-                alignment.max(u64::from(ty.align)),
-            )?);
-            remaining -= bytes;
-        }
-        let allocation = Self::table(inner, &pages, stride)?;
+        let PagedBuffer { table: allocation, pages } =
+            PagedBuffer::new(inner, stride, count, extra_usage, alignment.max(u64::from(ty.align)))?;
         Ok(Self {
             storage: ManuallyDrop::new(DatasetStorage::Owned(GpuStorage {
                 allocation,
@@ -1402,6 +1386,53 @@ impl GpuDataset {
             })),
             last_use: None,
         })
+    }
+    pub fn count(&self) -> u32 {
+        self.count
+    }
+    pub fn bytes(&self) -> u64 {
+        self.stride as u64 * self.count as u64
+    }
+}
+struct PagedBuffer {
+    table: Allocation,
+    pages: Vec<Allocation>,
+}
+impl PagedBuffer {
+    fn words(inner: Rc<Inner>, count: u32, words: u32) -> Result<Self> {
+        let alignment = match words {
+            1 => 4,
+            2 => 8,
+            _ => 16,
+        };
+        Self::new(inner, 4 * words, count, 0, alignment)
+    }
+    fn new(
+        inner: Rc<Inner>,
+        stride: u32,
+        count: u32,
+        extra_usage: u32,
+        alignment: u64,
+    ) -> Result<Self> {
+        let mut pages = Vec::new();
+        let mut remaining = u64::from(count) * u64::from(stride);
+        while remaining > 0 {
+            let capacity = blanguage::spirv::PAGE_BYTES / stride;
+            if capacity == 0 {
+                return Err(error("GPU 页寻址要求单条记录能容纳于一个物理页"));
+            }
+            let bytes = remaining.min(u64::from(capacity) * u64::from(stride));
+            pages.push(Allocation::new(
+                inner.clone(),
+                bytes,
+                0x20023 | extra_usage,
+                1,
+                alignment,
+            )?);
+            remaining -= bytes;
+        }
+        let table = Self::table(inner, &pages, stride)?;
+        Ok(Self { table, pages })
     }
     fn table(inner: Rc<Inner>, pages: &[Allocation], stride: u32) -> Result<Allocation> {
         let header = u64::from(blanguage::spirv::BINDING_BYTES);
@@ -1419,11 +1450,8 @@ impl GpuDataset {
         }
         Ok(table)
     }
-    pub fn count(&self) -> u32 {
-        self.count
-    }
-    pub fn bytes(&self) -> u64 {
-        self.stride as u64 * self.count as u64
+    fn descriptor(&self) -> VkDescriptorBufferInfo {
+        self.table.descriptor()
     }
 }
 fn binding_header(pages: u64, stride: u32, offset: u32) -> [u32; 4] {
@@ -1689,8 +1717,8 @@ impl<P> Drop for Compiled<P> {
     }
 }
 struct Scratch {
-    buffers: Vec<GpuDataset>,
-    arguments: Option<GpuDataset>,
+    buffers: Vec<PagedBuffer>,
+    arguments: Option<PagedBuffer>,
     sorting: Option<sort::Storage>,
 }
 struct ScratchUse {
@@ -2318,13 +2346,11 @@ impl GpuProgram {
                     extra_sets += levels(count) as u64 * steps.get() as u64;
                     if count > 64 {
                         let size = count.div_ceil(64);
-                        let ty =
-                            Ty::vector(blanguage::ir::Scalar::U32, reduction_ty.size.div_ceil(4) as usize);
-                        let stride = ty.size;
+                        let words = reduction_ty.size.div_ceil(4);
                         Some(Scratch {
                             buffers: vec![
-                                GpuDataset::new(c.inner.clone(), ty.clone(), stride, size)?,
-                                GpuDataset::new(c.inner.clone(), ty, stride, size)?,
+                                PagedBuffer::words(c.inner.clone(), size, words)?,
+                                PagedBuffer::words(c.inner.clone(), size, words)?,
                             ],
                             arguments: None,
                             sorting: None,
@@ -2354,11 +2380,15 @@ impl GpuProgram {
                     Some(scan::allocate(c, count, r.summary_words())?)
                 }
                 blanguage::ir::Operation::StableSort(ref s) => {
-                    let histogram = count.div_ceil(64).max(1) * 16;
+                    let sorting = sort::allocate(c, count)?;
                     extra_sets += (1 + s.keys.len() as u64
-                        * (1 + 8 * (2 * levels(histogram) + 1)) as u64)
+                        * (1 + 8 * (2 * levels(sorting.histogram_count) + 1)) as u64)
                         * steps.get() as u64;
-                    Some(sort::allocate(c, count)?)
+                    Some(Scratch {
+                        buffers: Vec::new(),
+                        arguments: None,
+                        sorting: Some(sorting),
+                    })
                 }
                 blanguage::ir::Operation::Map if stage.selection.is_some() => {
                     extra_sets += (levels(count) * 2 + 1) as u64 * steps.get() as u64;
@@ -2522,11 +2552,9 @@ impl GpuProgram {
                             (f.vkCmdWriteTimestamp)(commands.command, 0x800, commands.queries, query);
                         }
                         let usage = uses.next_if(|usage| usage.stage == i);
-                        let mut temporary = usage.map(|usage| &mut scratch[usage.slot]);
-                        let prefix_set = if let Some(args) = temporary
-                            .as_deref_mut()
-                            .and_then(|s| s.arguments.as_mut())
-                        {
+                        let temporary = usage.map(|usage| &scratch[usage.slot]);
+                        let arguments = temporary.and_then(|s| s.arguments.as_ref());
+                        let prefix_set = if let Some(args) = arguments {
                             Some(prefix::prepare(
                                 &mut commands,
                                 c,
@@ -2541,8 +2569,6 @@ impl GpuProgram {
                         } else {
                             None
                         };
-                        let temporary = temporary.as_deref();
-                        let arguments = temporary.and_then(|s| s.arguments.as_ref());
                         match &stage.operation {
                             blanguage::ir::Operation::StableSort(s) => {
                                 let temporary = temporary.unwrap();
@@ -2716,13 +2742,12 @@ impl GpuProgram {
                                     let source = if pass == 0 {
                                         infos[reduction.source]
                                     } else {
-                                        let source = &temporary.unwrap().buffers[(pass - 1) % 2].allocation;
-                                        VkDescriptorBufferInfo { buffer: source.buffer, offset: 0, range: source.size }
+                                        temporary.unwrap().buffers[(pass - 1) % 2].descriptor()
                                     };
                                     let target = if groups == 1 {
                                         infos[reduction.target]
                                     } else {
-                                        temporary.unwrap().buffers[pass % 2].allocation.descriptor()
+                                        temporary.unwrap().buffers[pass % 2].descriptor()
                                     };
                                     let bindings = [
                                         Some((reduction.source, source)),
@@ -2735,7 +2760,7 @@ impl GpuProgram {
                                         &bindings,
                                         &accelerations,
                                         None,
-                                        arguments.map(|a| a.allocation.descriptor()),
+                                        arguments.map(PagedBuffer::descriptor),
                                         None,
                                         None,
                                     )?;

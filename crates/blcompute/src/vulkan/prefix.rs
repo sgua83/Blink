@@ -1,7 +1,7 @@
 //! 当前有效域的全部层级参数一次在设备产生，同一提交持有到最后一个消费者完成。
 use super::*;
-use blanguage::ir::{ExecutionStage as Stage, Operation, Scalar};
-pub(super) fn allocate(c: &Compiled, stage: &Stage) -> Result<GpuDataset> {
+use blanguage::ir::{ExecutionStage as Stage, Operation};
+pub(super) fn allocate(c: &Compiled, stage: &Stage) -> Result<PagedBuffer> {
     let levels = if stage.selection.is_some() {
         blanguage::spirv::PREFIX_LEVELS + 1
     } else {
@@ -11,20 +11,13 @@ pub(super) fn allocate(c: &Compiled, stage: &Stage) -> Result<GpuDataset> {
             _ => blanguage::spirv::PREFIX_LEVELS,
         }
     };
-    GpuDataset::allocate(
-        c.inner.clone(),
-        Ty::scalar(Scalar::U32),
-        4,
-        (levels * 4) as u32,
-        0x100,
-        1,
-    )
+    PagedBuffer::new(c.inner.clone(), 4, (levels * 4) as u32, 0x100, 4)
 }
 pub(super) fn prepare(
     commands: &mut Commands,
     c: &Compiled,
     stage: usize,
-    args: &mut GpuDataset,
+    args: &PagedBuffer,
     infos: &[VkDescriptorBufferInfo],
     accelerations: &[Acceleration],
     uniforms: &mut [u32],
@@ -41,7 +34,7 @@ pub(super) fn prepare(
         &[],
         accelerations,
         None,
-        Some((&args.allocation).descriptor()),
+        Some(args.descriptor()),
         None,
         None,
     )?;
@@ -66,7 +59,6 @@ pub(super) fn prepare(
         (f.vkCmdDispatch)(commands.command, 1, 1, 1);
         commands.barrier(0x800, 0x802, 0x40, 0x21);
     }
-    args.owned_storage()?.producer = Usage::Compute;
     Ok(set)
 }
 pub(super) fn dispatch(
@@ -74,7 +66,7 @@ pub(super) fn dispatch(
     c: &Compiled,
     pipeline: VkPipeline,
     set: u64,
-    args: &GpuDataset,
+    args: &PagedBuffer,
     uniforms: &mut [u32],
     level: usize,
 ) {

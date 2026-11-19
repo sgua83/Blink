@@ -58,42 +58,23 @@ impl Pipelines {
     }
 }
 pub(super) struct Storage {
-    pairs: [GpuDataset; 2],
-    histogram: GpuDataset,
-    prefixes: GpuDataset,
-    scan: Vec<GpuDataset>,
+    pairs: [PagedBuffer; 2],
+    histogram: PagedBuffer,
+    prefixes: PagedBuffer,
+    scan: Vec<PagedBuffer>,
+    pub(super) histogram_count: u32,
 }
-pub(super) fn allocate(c: &Compiled, count: u32) -> Result<Scratch> {
-    use blanguage::ir::Scalar;
-    let pair = Ty {
-        name: "sort-key-index".into(),
-        arguments: Vec::new(),
-        values: Vec::new(),
-        size: 8,
-        align: 8,
-        components: vec![(Scalar::U32, 0), (Scalar::U32, 4)],
-        fields: Vec::new(),
-        view: None,
-        array: None,
-        enumeration: false,
-        result: false,
-        variants: Vec::new(),
-        dataset: None, cleanup: None, function: None,
-    };
-    let scalar = Ty::scalar(Scalar::U32);
-    let n = count.div_ceil(64).max(1) * 16;
-    Ok(Scratch {
-        buffers: Vec::new(),
-        arguments: None,
-        sorting: Some(Storage {
-            pairs: [
-                GpuDataset::new(c.inner.clone(), pair.clone(), 8, count)?,
-                GpuDataset::new(c.inner.clone(), pair, 8, count)?,
-            ],
-            histogram: GpuDataset::new(c.inner.clone(), scalar.clone(), 4, n)?,
-            prefixes: GpuDataset::new(c.inner.clone(), scalar, 4, n)?,
-            scan: scan::allocate(c, n, 1)?.buffers,
-        }),
+pub(super) fn allocate(c: &Compiled, count: u32) -> Result<Storage> {
+    let histogram_count = count.div_ceil(64).max(1) * 16;
+    Ok(Storage {
+        pairs: [
+            PagedBuffer::words(c.inner.clone(), count, 2)?,
+            PagedBuffer::words(c.inner.clone(), count, 2)?,
+        ],
+        histogram: PagedBuffer::words(c.inner.clone(), histogram_count, 1)?,
+        prefixes: PagedBuffer::words(c.inner.clone(), histogram_count, 1)?,
+        scan: scan::allocate(c, histogram_count, 1)?.buffers,
+        histogram_count,
     })
 }
 pub(super) fn record(
@@ -103,7 +84,7 @@ pub(super) fn record(
     s: &blanguage::ir::Sorting,
     data: &impl std::ops::Index<usize, Output = GpuDataset>,
     storage: &Storage,
-    arguments: Option<&GpuDataset>,
+    arguments: Option<&PagedBuffer>,
     infos: &[VkDescriptorBufferInfo],
     accelerations: &[Acceleration],
     uniforms: &mut [u32],
@@ -111,9 +92,9 @@ pub(super) fn record(
 ) -> Result<()> {
     let kernels = c.sorts[stage].as_ref().unwrap();
     let n = data[s.source].count;
-    let args = arguments.map(|a| a.allocation.descriptor());
+    let args = arguments.map(PagedBuffer::descriptor);
     for key in (0..s.keys.len()).rev() {
-        let bindings = [Some((s.target, storage.pairs[0].allocation.descriptor()))];
+        let bindings = [Some((s.target, storage.pairs[0].descriptor()))];
         let set = descriptor_set(
             commands,
             c,
@@ -142,8 +123,8 @@ pub(super) fn record(
         );
         for pass in 0..8 {
             commands.barrier(0x800, 0x800, 0x40, 0x60);
-            let input = &storage.pairs[pass % 2].allocation;
-            let target = &storage.pairs[(pass + 1) % 2].allocation;
+            let input = &storage.pairs[pass % 2];
+            let target = &storage.pairs[(pass + 1) % 2];
             let bindings = [
                 Some((s.source, input.descriptor())),
                 Some((s.target, target.descriptor())),
@@ -154,7 +135,7 @@ pub(super) fn record(
                 infos,
                 &bindings,
                 accelerations,
-                Some((&storage.histogram.allocation).descriptor()),
+                Some(storage.histogram.descriptor()),
                 args,
                 None,
                 None,
@@ -183,8 +164,8 @@ pub(super) fn record(
                 kernels.scan(),
                 &r,
                 false,
-                (storage.histogram.count, storage.histogram.allocation.descriptor()),
-                storage.prefixes.allocation.descriptor(),
+                (storage.histogram_count, storage.histogram.descriptor()),
+                storage.prefixes.descriptor(),
                 &storage.scan,
                 arguments,
                 infos,
@@ -200,7 +181,7 @@ pub(super) fn record(
                 infos,
                 &bindings,
                 accelerations,
-                Some((&storage.prefixes.allocation).descriptor()),
+                Some(storage.prefixes.descriptor()),
                 args,
                 None,
                 None,
@@ -225,7 +206,7 @@ pub(super) fn record(
         infos,
         &[],
         accelerations,
-        Some((&storage.pairs[0].allocation).descriptor()),
+        Some(storage.pairs[0].descriptor()),
         args,
         None,
         None,

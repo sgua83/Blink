@@ -1,14 +1,8 @@
 //! where 的私有索引队列与间接参数沿原命令／完成点持有。
 use super::*;
-use blanguage::ir::Scalar;
 pub(super) fn allocate(c: &Compiled, count: u32) -> Result<Scratch> {
     let mut out = compact::allocate(c, count)?;
-    out.buffers.push(GpuDataset::new(
-        c.inner.clone(),
-        Ty::scalar(Scalar::U32),
-        4,
-        count,
-    )?);
+    out.buffers.push(PagedBuffer::words(c.inner.clone(), count, 1)?);
     Ok(out)
 }
 pub(super) fn record(
@@ -23,8 +17,8 @@ pub(super) fn record(
     partition: NonZeroU32,
 ) -> Result<()> {
     let selected = c.program.stages()[stage].selection.unwrap();
-    let root = &scratch.buffers[scratch.buffers.len() - 2].allocation;
-    let indices = &scratch.buffers.last().unwrap().allocation;
+    let root = scratch.buffers[scratch.buffers.len() - 2].descriptor();
+    let indices = scratch.buffers.last().unwrap().descriptor();
     let args = scratch.arguments.as_ref().unwrap();
     scan::record(
         commands,
@@ -38,7 +32,7 @@ pub(super) fn record(
         &selected.scan(c.program.selection_buffer()),
         false,
         (data[c.program.stages()[stage].domain].count, infos[selected.binding]),
-        root.descriptor(),
+        root,
         &scratch.buffers,
         Some(args),
         infos,
@@ -54,9 +48,9 @@ pub(super) fn record(
         infos,
         &[],
         accelerations,
-        Some((indices).descriptor()),
-        Some((&args.allocation).descriptor()),
-        Some((root).descriptor()),
+        Some(indices),
+        Some(args.descriptor()),
+        Some(root),
         None,
     )?;
     prefix::dispatch(
