@@ -487,12 +487,13 @@ pub(super) async fn source_shape(world:&World,shape:&crate::syntax::Shape,bindin
  };
  Ok(unsafe{shape_value(world,parts,Some(bindings),source,span,module,imports).await?.unwrap_unchecked()})
 }
-pub(super) async fn shape(world:&World,shape:&Option<Shape>,source:&Source,span:Span,module:&str,imports:&[String])->Result<Option<u32>>{
+pub(in crate::check) async fn shape(world:&World,shape:Option<crate::ast::BorrowedShape<'_>>,source:&Source,span:Span,module:&str,imports:&[String])->Result<Option<u32>>{
+ use crate::ast::BorrowedShape;
  let parts=match shape{
   None=>ShapeParts{kind:0,literal:0,name:None,expression:None},
-  Some(Shape::Literal(value))=>ShapeParts{kind:1,literal:*value,name:None,expression:None},
-  Some(Shape::Constant(name))=>ShapeParts{kind:2,literal:0,name:Some(name),expression:None},
-  Some(Shape::Expression(expression))=>ShapeParts{kind:3,literal:0,name:None,expression:Some(ShapeExpression::Reference(expression))},
+  Some(BorrowedShape::Literal(value))=>ShapeParts{kind:1,literal:value,name:None,expression:None},
+  Some(BorrowedShape::Constant(name))=>ShapeParts{kind:2,literal:0,name:Some(name),expression:None},
+  Some(BorrowedShape::Expression(expression))=>ShapeParts{kind:3,literal:0,name:None,expression:Some(ShapeExpression::Reference(expression))},
  };
  shape_value(world,parts,None,source,span,module,imports).await
 }

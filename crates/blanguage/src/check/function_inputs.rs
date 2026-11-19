@@ -173,15 +173,21 @@ pub(super) fn domain_parameter(param: &Param) -> DomainParameter {
     unsafe { native_domain_parameter(facts(param), param.access) }
 }
 
-pub(super) fn domain_binding(param: &Param, gpu: bool, qualified: bool) -> DomainBinding {
-    unsafe { native_domain_binding(facts(param), param.access, u32::from(gpu), u32::from(qualified)) }
+pub(super) fn domain_binding(param: &Param, texture: bool, gpu: bool, qualified: bool) -> DomainBinding {
+    unsafe {
+        native_domain_binding(facts_with_texture(param, texture), param.access, u32::from(gpu), u32::from(qualified))
+    }
 }
 
 fn facts(p: &Param) -> Facts {
+    facts_with_texture(p, p.ty.is_texture_resource())
+}
+
+fn facts_with_texture(p: &Param, texture: bool) -> Facts {
     Facts {
         dataset: u32::from(p.ty.dataset),
         acceleration: u32::from(p.ty.is_acceleration()),
-        texture: u32::from(p.ty.is_texture_resource()),
+        texture: u32::from(texture),
         tile: u32::from(p.ty.tile),
     }
 }
@@ -202,7 +208,8 @@ pub(super) async fn function_program<P: std::borrow::Borrow<Param>>(
     let mut textures = Vec::new();
     for parameter in parameters {
         let parameter = unsafe { world.call(parameter).await }?;
-        let parameter_facts = facts(parameter.borrow());
+        let texture = parameter.borrow().ty.texture_type();
+        let parameter_facts = facts_with_texture(parameter.borrow(), texture.is_some());
         let mut cursor = 0;
         loop {
             let step = unsafe { resource_step(cursor, parameter_facts) };
@@ -222,14 +229,9 @@ pub(super) async fn function_program<P: std::borrow::Borrow<Param>>(
                 }
                 Resource::Acceleration => accelerations.push(parameter.borrow().name.clone()),
                 Resource::Texture => {
-                    let p = parameter.borrow();
-                    let count = unsafe { world.call(texture::shape(world, &p.ty, (source, module, imports), p.span)).await }?;
-                    textures.push(TextureBinding {
-                        name: p.name.clone(),
-                        count,
-                        dimension: p.ty.texture_dimension().unwrap(),
-                        format: p.ty.texture_format(),
-                    });
+                    textures.push(unsafe {
+                        world.call(texture::binding(world, parameter.borrow(), texture.unwrap(), (source, module, imports))).await
+                    }?);
                 }
                 Resource::Keep => {
                     retain(parameter);

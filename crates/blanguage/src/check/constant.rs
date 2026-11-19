@@ -122,6 +122,7 @@ Program {
         }
 }
 pub(crate) use model::evaluate;
+pub(super) use model::shape as borrowed_shape;
 
 impl World {
     pub(crate) async fn source_shape(
@@ -133,7 +134,7 @@ impl World {
     pub(crate) async fn shape(
         &self,shape:&Option<Shape>,source:&Source,span:Span,module:&str,imports:&[String],
     )->Result<Option<u32>>{
-        model::shape(self,shape,source,span,module,imports).await
+        borrowed_shape(self,shape.as_ref().map(Shape::borrowed),source,span,module,imports).await
     }
 }
 

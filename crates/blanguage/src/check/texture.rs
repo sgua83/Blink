@@ -1,5 +1,6 @@
 //! 纹理按只读资源身份传递；采样没有普通值地址或可写别名。
 use super::*;
+use crate::ast::TextureType;
 #[derive(Clone)]
 pub(super) struct TextureReference {
     pub source: TextureSource,
@@ -26,31 +27,61 @@ impl TextureReference {
 }
 pub(super) async fn shape(
     world: &World,
-    ty: &TypeName,
+    texture: TextureType<'_>,
     context: (&Source,&str,&[String]),
     span: Span,
 ) -> Result<Option<u32>> {
-    let(source,module,imports)=context;
-    let Some(length) = ty.texture_array_shape() else {
+    let (source, module, imports) = context;
+    let Some(length) = texture.length else {
         return Ok(None);
     };
-    let count = unsafe { world.call(world
-        .shape(&Some(length), source, span, module, imports)).await }?
-        .unwrap();
+    let count = unsafe {
+        world.call(constant::borrowed_shape(world, Some(length), source, span, module, imports)).await
+    }?.unwrap();
     if count == 0 {
         return source.fail(span, "B239", "纹理资源数组长度必须为正");
     }
     Ok(Some(count))
 }
+pub(super) async fn binding(
+    world: &World,
+    param: &Param,
+    texture: TextureType<'_>,
+    context: (&Source, &str, &[String]),
+) -> Result<TextureBinding> {
+    Ok(TextureBinding {
+        name: param.name.clone(),
+        count: unsafe { world.call(shape(world, texture, context, param.span)).await }?,
+        dimension: texture.dimension,
+        format: texture.format,
+    })
+}
+
+pub(super) async fn compatible(
+    world: &World,
+    param: &Param,
+    binding: &TextureBinding,
+    count: Option<u32>,
+    context: (&Source, &str, &[String]),
+) -> Result<bool> {
+    let Some(texture) = param.ty.texture_type() else {
+        return Ok(false);
+    };
+    if texture.dimension != binding.dimension || texture.format.is_some_and(|format| Some(format) != binding.format) {
+        return Ok(false);
+    }
+    Ok(unsafe { world.call(shape(world, texture, context, param.span)).await }? == count)
+}
+
 impl Builder<'_> {
     pub(super) async fn texture_parameter(&self, param: &Param, resource: &TextureReference, context:(&Source,&str,&[String]), span: Span) -> Result<()> {
         if param.access != Access::Read {
             return self.fail(span, "B239", "纹理只能只读借用");
         }
-        if param.ty.texture_dimension() != Some(self.program.textures[resource.source.binding].dimension)
-            || param.ty.texture_format().is_some_and(|format|
-                Some(format) != self.program.textures[resource.source.binding].format)
-            || resource.shape(self.program) != unsafe { self.world.call(shape(self.world,&param.ty,context,param.span)).await }? {
+        let binding = &self.program.textures[resource.source.binding];
+        if !unsafe {
+            self.world.call(compatible(self.world, param, binding, resource.shape(self.program), context)).await
+        }? {
             return self.fail(span, "B239", "纹理维度、格式或资源数组形状与借用参数不一致");
         }
         Ok(())

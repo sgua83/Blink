@@ -152,6 +152,41 @@ pub enum Shape {
     Constant(String),
     Expression(Box<Expr>),
 }
+
+#[derive(Clone, Copy)]
+pub(crate) enum BorrowedShape<'a> {
+    Literal(u32),
+    Constant(&'a str),
+    Expression(&'a Expr),
+}
+
+impl BorrowedShape<'_> {
+    fn into_owned(self) -> Shape {
+        match self {
+            Self::Literal(value) => Shape::Literal(value),
+            Self::Constant(name) => Shape::Constant(name.into()),
+            Self::Expression(expression) => Shape::Expression(Box::new(expression.clone())),
+        }
+    }
+}
+
+impl Shape {
+    pub(crate) fn borrowed(&self) -> BorrowedShape<'_> {
+        match self {
+            Self::Literal(value) => BorrowedShape::Literal(*value),
+            Self::Constant(name) => BorrowedShape::Constant(name),
+            Self::Expression(expression) => BorrowedShape::Expression(expression),
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct TextureType<'a> {
+    pub dimension: TextureDimension,
+    pub format: Option<TextureFormat>,
+    pub length: Option<BorrowedShape<'a>>,
+}
+
 impl TypeName {
     pub fn is_never(&self) -> bool {
         self.name == "never"
@@ -176,47 +211,63 @@ impl TypeName {
             && !self.view
             && !self.tile
     }
+    fn texture_element(&self) -> Option<TextureType<'_>> {
+        if self.dataset || self.view || self.tile {
+            return None;
+        }
+        let dimension = match self.name.as_str() {
+            "texture2d" => TextureDimension::D2,
+            "texture3d" => TextureDimension::D3,
+            _ => return None,
+        };
+        let format = if self.arguments.is_empty() { None } else { Some(self.texture_format_argument()?) };
+        Some(TextureType { dimension, format, length: None })
+    }
+
+    pub(crate) fn texture_type(&self) -> Option<TextureType<'_>> {
+        if self.name != "array" {
+            return self.texture_element();
+        }
+        if self.dataset || self.view || self.tile {
+            return None;
+        }
+        let [GenericArgument::Type(element), length] = self.arguments.as_slice() else { return None; };
+        let mut texture = element.texture_element()?;
+        texture.length = Some(length.borrowed_shape()?);
+        Some(texture)
+    }
+
     pub fn texture_array_shape(&self) -> Option<Shape> {
-        if self.name == "array"
-            && !self.dataset
-            && !self.view
-            && !self.tile
-            && self.arguments.len() == 2
-            && let GenericArgument::Type(element) = &self.arguments[0]
-            && element.is_texture()
-        {
-            return self.arguments[1].shape();
-        }
-        None
+        self.texture_type()?.length.map(BorrowedShape::into_owned)
     }
+
     pub fn is_texture_resource(&self) -> bool {
-        self.is_texture() || self.texture_array_shape().is_some()
+        self.texture_type().is_some()
     }
+
     pub fn texture_dimension(&self) -> Option<TextureDimension> {
-        match self.name.as_str() {
-            "texture2d" if self.is_texture() => Some(TextureDimension::D2),
-            "texture3d" if self.is_texture() => Some(TextureDimension::D3),
-            "array" if self.texture_array_shape().is_some() => match &self.arguments[0] {
-                GenericArgument::Type(element) => element.texture_dimension(),
-                _ => None,
-            },
-            _ => None,
-        }
+        self.texture_type().map(|texture| texture.dimension)
     }
+
     pub fn texture_format(&self) -> Option<TextureFormat> {
-        if self.name == "array" && self.texture_array_shape().is_some() {
-            if let GenericArgument::Type(element) = &self.arguments[0] { return element.texture_format(); }
+        if self.name == "array" && let Some(texture) = self.texture_type() {
+            return texture.format;
         }
+        self.texture_format_argument()
+    }
+
+    fn texture_format_argument(&self) -> Option<TextureFormat> {
         let [GenericArgument::Type(format)] = self.arguments.as_slice() else { return None; };
-        if *format != TypeName::named(&format.name) { return None; }
+        if format.canonical || !format.arguments.is_empty() || format.dataset || format.view
+            || format.tile || format.count.is_some() || format.contracts.is_some()
+        {
+            return None;
+        }
         TextureFormat::from_name(&format.name)
     }
+
     pub fn is_texture(&self) -> bool {
-        matches!(self.name.as_str(), "texture2d" | "texture3d")
-            && (self.arguments.is_empty() || self.texture_format().is_some())
-            && !self.dataset
-            && !self.view
-            && !self.tile
+        self.texture_element().is_some()
     }
 
     pub fn named(name: impl Into<String>) -> Self {
@@ -381,14 +432,18 @@ pub enum GenericArgument {
     Value(Shape),
 }
 impl GenericArgument {
-    pub(crate) fn shape(&self) -> Option<Shape> {
+    fn borrowed_shape(&self) -> Option<BorrowedShape<'_>> {
         match self {
-            Self::Value(shape) => Some(shape.clone()),
+            Self::Value(shape) => Some(shape.borrowed()),
             Self::Type(ty) if ty.arguments.is_empty() && !ty.dataset && !ty.view && !ty.tile => {
-                Some(Shape::Constant(ty.name.clone()))
+                Some(BorrowedShape::Constant(&ty.name))
             }
             _ => None,
         }
+    }
+
+    pub(crate) fn shape(&self) -> Option<Shape> {
+        self.borrowed_shape().map(BorrowedShape::into_owned)
     }
 }
 #[derive(Clone, Debug)]

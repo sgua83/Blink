@@ -94,8 +94,8 @@ impl<'b, 'w> Scope<'b, 'w> {
         }
         if let Some(param) = self.lexical.parameters().find(|param| param.name() == name) {
             let mut ty = unsafe { self.world.call(param.bound(self.world)).await }?.ty;
-            if ty.is_texture_resource() {
-                return unsafe { self.world.call(texture::shape(self.world, &ty, context, param.span())).await }
+            if let Some(texture) = ty.texture_type() {
+                return unsafe { self.world.call(texture::shape(self.world, texture, context, param.span())).await }
                     .map(|count| Some(ExpressionType::Texture(count)));
             }
             if ty.is_acceleration() {

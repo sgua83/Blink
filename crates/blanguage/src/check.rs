@@ -490,16 +490,14 @@ async fn expand_domain<'a>(
     let gpu = input.target() == Target::Gpu;
     let qualified = uniform_types.is_some();
     for p in parameters {
-        let parameter = function_inputs::domain_binding(p, gpu, qualified);
+        let texture = p.ty.texture_type();
+        let parameter = function_inputs::domain_binding(p, texture.is_some(), gpu, qualified);
         if parameter.form == function_inputs::Parameter::Texture {
             parameter.check_access(&d.source, p.span)?;
             env.insert(p.name.to_owned(), Root::Texture(textures.len()));
-            textures.push(TextureBinding {
-                name: p.name.to_owned(),
-                count: unsafe { world.call(texture::shape(world, &p.ty,(&d.source,&d.module,&d.imports),p.span)).await }?,
-                dimension: p.ty.texture_dimension().unwrap(),
-                format: p.ty.texture_format(),
-            });
+            textures.push(unsafe {
+                world.call(texture::binding(world, p, texture.unwrap(), (&d.source, &d.module, &d.imports))).await
+            }?);
             continue;
         }
         if parameter.form == function_inputs::Parameter::Acceleration {
@@ -1230,13 +1228,12 @@ async fn expand_stages(
                             };
                             let actual_value = match &root {
                                 Root::Texture(i) => {
-                                    if !p.ty.is_texture_resource()
-                                        || p.access != Access::Read
-                                        || p.ty.texture_dimension() != Some(program.textures[*i].dimension)
-                                        || p.ty.texture_format().is_some_and(|format| Some(format) != program.textures[*i].format)
-                                        || unsafe { world.call(texture::shape(world, &p.ty,(&callee.source,&callee.module,&callee.imports),p.span)).await }?
-                                            != program.textures[*i].count
-                                    {
+                                    let binding = &program.textures[*i];
+                                    if p.access != Access::Read || !unsafe {
+                                        world.call(texture::compatible(
+                                            world, &p, binding, binding.count, (&callee.source, &callee.module, &callee.imports),
+                                        )).await
+                                    }? {
                                         return d.source.fail(
                                             arg.span(),
                                             "B239",
