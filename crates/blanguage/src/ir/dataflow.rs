@@ -47,6 +47,27 @@ impl View {
 #[repr(C)]
 pub(crate) struct Host { inspect: unsafe extern "C" fn(Node) -> View }
 pub(crate) const HOST: Host = Host { inspect };
+#[derive(Clone, Copy)]
+#[repr(u32)]
+pub(crate) enum ResultRole { Value, Quotient, Remainder }
+impl ResultRole {
+    pub(crate) fn reuse(self) -> ReuseResult {
+        match self {
+            Self::Value => ReuseResult::Value,
+            Self::Quotient => ReuseResult::Quotient,
+            Self::Remainder => ReuseResult::Remainder,
+        }
+    }
+    pub(crate) fn division(self) -> Option<IntegerDivisionOp> {
+        match self {
+            Self::Value => None,
+            Self::Quotient => Some(IntegerDivisionOp::Quotient),
+            Self::Remainder => Some(IntegerDivisionOp::Remainder),
+        }
+    }
+}
+pub(crate) type ResultOriginVisitor =
+    unsafe extern "C" fn(*mut c_void, Reg, usize, usize, ResultRole) -> u32;
 #[repr(C)]
 struct Word { present: u32, value: usize }
 #[repr(C)]
@@ -61,6 +82,9 @@ unsafe extern "C" {
     fn b_results(source: Node, host: Host) -> Results;
     #[link_name = "bootstrap.ir_dataflow::next_result"]
     fn b_next_result(state: *mut Results) -> Word;
+    #[link_name = "bootstrap.ir_dataflow::result_origins"]
+    fn b_result_origins(source: Node, host: Host, context: *mut c_void, visit: ResultOriginVisitor);
+
     #[link_name = "bootstrap.ir_dataflow::operands"]
     fn b_operands(source: Node, host: Host, context: *mut c_void,
         visit: unsafe extern "C" fn(*mut c_void, usize) -> u32) -> u32;
@@ -96,6 +120,17 @@ pub(crate) fn private_spans(code: &[Inst]) -> BTreeSet<(usize, usize)> {
     let mut spans = BTreeSet::new();
     unsafe { b_private_spans(Span::slice(code), HOST, ptr::from_mut(&mut spans).cast(), insert) };
     spans
+}
+
+pub(crate) fn result_origins<F: FnMut(Reg, ResultRole)>(value: &Inst, mut visit: F) {
+    unsafe extern "C" fn emit<F: FnMut(Reg, ResultRole)>(
+        context: *mut c_void, reg: Reg, _: usize, _: usize, role: ResultRole,
+    ) -> u32 {
+        unsafe { (&mut *context.cast::<F>())(reg, role); }
+        0
+    }
+    unsafe { b_result_origins(Node::of(value, Kind::Instruction), HOST,
+        ptr::from_mut(&mut visit).cast(), emit::<F>); }
 }
 
 pub(super) fn results(value: &Inst) -> impl Iterator<Item = Reg> + '_ {

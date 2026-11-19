@@ -1,6 +1,7 @@
 //! Mutable physical fields of the original compiler IR. B selects field roles,
 //! order and structured recursion; this module only projects concrete storage.
 use super::*;
+use super::dataflow::{self, ResultOriginVisitor};
 use std::{ffi::c_void, mem::size_of, ptr};
 
 #[derive(Clone, Copy)]
@@ -51,6 +52,35 @@ impl View {
 #[derive(Clone, Copy)]
 #[repr(C)]
 struct Host { inspect: unsafe extern "C" fn(Node) -> View }
+#[repr(u32)]
+#[derive(Clone, Copy)]
+pub(crate) enum ResultOriginKind { Expression, LocalRead, IndexedStoreRead, IndexedRead }
+type AttachOrigin = unsafe extern "C" fn(*mut c_void, *mut Inst, ResultOriginKind);
+type PendingOrigins = unsafe extern "C" fn(*mut c_void) -> u32;
+#[repr(C)]
+struct RetainOriginHost {
+    read: dataflow::Host,
+    write: Host,
+    collect: ResultOriginVisitor,
+    attach: AttachOrigin,
+    pending: PendingOrigins,
+}
+unsafe extern "C" {
+    #[link_name = "bootstrap.ir_dataflow::retain_result_origins"]
+    fn b_retain_result_origins(code: Span, context: *mut c_void, host: RetainOriginHost);
+}
+
+// The state is owned by the synchronous caller. Only attach may update the
+// supplied instruction, and its kind and child containers stay in place.
+pub(crate) unsafe fn retain_result_origins(
+    code: &mut [Inst], context: *mut c_void, collect: ResultOriginVisitor,
+    attach: AttachOrigin, pending: PendingOrigins,
+) {
+    let host = RetainOriginHost { read: dataflow::HOST, write: Host { inspect },
+        collect, attach, pending };
+    unsafe { b_retain_result_origins(Span::slice(code), context, host); }
+}
+
 #[repr(C)]
 struct Mapping {
     context: *const c_void,

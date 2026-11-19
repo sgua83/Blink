@@ -36,6 +36,11 @@ struct Locals {
 };
 extern "C" Results results(Node source,Host host) on cpu requires nonzero(host.inspect);
 extern "C" Word next_result(inout Results state) on cpu;
+enum ResultRole:u32 { Value=0; Quotient=1; Remainder=2; };
+extern "C" void result_origins(Node source,Host host,address context,
+ cfn<u32,address,usize,usize,usize,ResultRole> visit) on cpu
+ requires nonzero(host.inspect) requires nonzero(visit);
+
 extern "C" u32 operands(Node source,Host host,address context,cfn<u32,address,usize> visit) on cpu
  requires nonzero(host.inspect) requires nonzero(visit);
 extern "C" Locals locals(Node source,u32 writing,Host host) on cpu requires nonzero(host.inspect);
@@ -219,6 +224,17 @@ extern "C" void rewrite_code(RewriteSpan code,RewriteHost host,RewriteMap mappin
  requires nonzero(host.inspect) requires nonzero(mapping.reg) requires nonzero(mapping.slot);
 extern "C" void rewrite_operands(RewriteNode source,RewriteHost host,RewriteInputMap mapping) on cpu
  requires nonzero(host.inspect) requires nonzero(mapping.reg);
+
+enum ResultOriginKind:u32 { Expression=0; LocalRead=1; IndexedStoreRead=2; IndexedRead=3; };
+struct RetainOriginHost {
+ Host read; RewriteHost write;
+ cfn<u32,address,usize,usize,usize,ResultRole> collect;
+ cfn<void,address,address,ResultOriginKind> attach;
+ cfn<u32,address> pending;
+};
+extern "C" void retain_result_origins(RewriteSpan code,address context,RetainOriginHost host) on cpu
+ requires nonzero(host.read.inspect) requires nonzero(host.write.inspect) requires nonzero(host.collect)
+ requires nonzero(host.attach) requires nonzero(host.pending);
 
 // Synchronous flag sampling and call propagation over the original IR.
 struct EffectSeed { u32 present; u32 enabled; address name; };

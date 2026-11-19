@@ -1,5 +1,8 @@
 //! B owns local value-flow decisions; Rust retains the original IR and origins.
 use super::*;
+use crate::ir::{dataflow::ResultRole, rewrite::{self, ResultOriginKind}};
+use std::{ffi::c_void, ptr, sync::Arc};
+
 mod host;
 
 #[repr(C)]
@@ -24,73 +27,89 @@ enum RetainedUse {
     IndexedStoreRead { store: OperationOrigin, read: OperationOrigin },
 }
 
-fn retain_reuses(code: &mut [Inst], reuses: &mut Reuses) {
-    for inst in code {
-        let mut reused = Vec::new();
-        let mut reads = Vec::new();
-        let mut indexed = Vec::new();
-        let mut indexed_reads = Vec::new();
-        let result_count = inst.results().count();
-        for (result_index, reg) in inst.results().enumerate() {
-            let result = match &inst.kind {
-                InstKind::IntegerDivide { result, .. } => match result {
-                    IntegerDivisionResult::Quotient(_) => ReuseResult::Quotient,
-                    IntegerDivisionResult::Remainder(_) => ReuseResult::Remainder,
-                    IntegerDivisionResult::Both { quotient, .. } if *quotient == reg => ReuseResult::Quotient,
-                    IntegerDivisionResult::Both { .. } => ReuseResult::Remainder,
-                },
-                _ => ReuseResult::Value,
-            };
-            for source in reuses.remove(&reg).into_iter().flatten() {
-                match source {
-                    RetainedUse::Expression(source) => reused.push(source),
-                    RetainedUse::LocalRead(origin) => reads.push(LocalReadForward { result_index, result_count, result, origin }),
-                    RetainedUse::IndexedRead(origin) => indexed_reads.push(origin),
-                    RetainedUse::IndexedStoreRead { store, read } => indexed.push(IndexedStoreReadForward { result_index, result_count, result, store, read }),
-                }
+#[derive(Default)]
+struct Origins {
+    expressions: Vec<ExpressionReuse>,
+    local_reads: Vec<LocalReadForward>,
+    indexed_stores: Vec<IndexedStoreReadForward>,
+    indexed_reads: Vec<OperationOrigin>,
+}
+struct Retention<'a> {
+    pending: &'a mut Reuses,
+    origins: Origins,
+}
+
+unsafe extern "C" fn collect_origin(
+    context: *mut c_void, reg: Reg, result_index: usize, result_count: usize, role: ResultRole,
+) -> u32 {
+    let state = unsafe { &mut *context.cast::<Retention<'_>>() };
+    let Some(sources) = state.pending.remove(&reg) else { return 0; };
+    let mut kinds = 0;
+    for source in sources {
+        let kind = match source {
+            RetainedUse::Expression(source) => {
+                state.origins.expressions.push(source);
+                ResultOriginKind::Expression
             }
-        }
-        if !reused.is_empty() {
-            let retained = OperationOrigin::from_instruction(inst);
-            inst.generated_origin = Some(std::sync::Arc::new(GeneratedOrigin {
-                reason: GenerationReason::ExpressionReuse,
-                trigger: Some(GenerationAnchor::ExpressionReuse { retained, reused }),
-            }));
-        }
-        if !reads.is_empty() {
-            let retained = OperationOrigin::from_instruction(inst);
-            inst.generated_origin = Some(std::sync::Arc::new(GeneratedOrigin {
-                reason: GenerationReason::LocalReadForward,
-                trigger: Some(GenerationAnchor::LocalReadForward { retained, reads }),
-            }));
-        }
-        if !indexed.is_empty() {
-            let retained = OperationOrigin::from_instruction(inst);
-            inst.generated_origin = Some(std::sync::Arc::new(GeneratedOrigin {
-                reason: GenerationReason::IndexedStoreReadForward,
-                trigger: Some(GenerationAnchor::IndexedStoreReadForward { retained, reads: indexed }),
-            }));
-        }
-        if !indexed_reads.is_empty() {
-            let retained = OperationOrigin::from_instruction(inst);
-            inst.generated_origin = Some(std::sync::Arc::new(GeneratedOrigin {
-                reason: GenerationReason::IndexedReadReuse,
-                trigger: Some(GenerationAnchor::IndexedReadReuse { retained, reused: indexed_reads }),
-            }));
-        }
-        match &mut inst.kind {
-            InstKind::Scope(body) => retain_reuses(body, reuses),
-            InstKind::If { yes, no, .. } => {
-                retain_reuses(yes, reuses);
-                retain_reuses(no, reuses);
+            RetainedUse::LocalRead(origin) => {
+                state.origins.local_reads.push(LocalReadForward {
+                    result_index, result_count, result: role.reuse(), origin,
+                });
+                ResultOriginKind::LocalRead
             }
-            InstKind::Loop { condition, body, .. } => {
-                retain_reuses(condition, reuses);
-                retain_reuses(body, reuses);
+            RetainedUse::IndexedStoreRead { store, read } => {
+                state.origins.indexed_stores.push(IndexedStoreReadForward {
+                    result_index, result_count, result: role.reuse(), store, read,
+                });
+                ResultOriginKind::IndexedStoreRead
             }
-            _ => {}
-        }
+            RetainedUse::IndexedRead(origin) => {
+                state.origins.indexed_reads.push(origin);
+                ResultOriginKind::IndexedRead
+            }
+        };
+        kinds |= 1 << kind as u32;
     }
+    kinds
+}
+
+unsafe extern "C" fn attach_origin(context: *mut c_void, inst: *mut Inst, kind: ResultOriginKind) {
+    let state = unsafe { &mut *context.cast::<Retention<'_>>() };
+    let inst = unsafe { &mut *inst };
+    let retained = OperationOrigin {
+        source_site: inst.source_site.clone(),
+        generated_origin: inst.generated_origin.take(),
+    };
+    let (reason, anchor) = match kind {
+        ResultOriginKind::Expression => (
+            GenerationReason::ExpressionReuse,
+            GenerationAnchor::ExpressionReuse { retained, reused: std::mem::take(&mut state.origins.expressions) },
+        ),
+        ResultOriginKind::LocalRead => (
+            GenerationReason::LocalReadForward,
+            GenerationAnchor::LocalReadForward { retained, reads: std::mem::take(&mut state.origins.local_reads) },
+        ),
+        ResultOriginKind::IndexedStoreRead => (
+            GenerationReason::IndexedStoreReadForward,
+            GenerationAnchor::IndexedStoreReadForward { retained, reads: std::mem::take(&mut state.origins.indexed_stores) },
+        ),
+        ResultOriginKind::IndexedRead => (
+            GenerationReason::IndexedReadReuse,
+            GenerationAnchor::IndexedReadReuse { retained, reused: std::mem::take(&mut state.origins.indexed_reads) },
+        ),
+    };
+    inst.generated_origin = Some(Arc::new(GeneratedOrigin { reason, trigger: Some(anchor) }));
+}
+
+unsafe extern "C" fn pending_origins(context: *mut c_void) -> u32 {
+    u32::from(!unsafe { &*context.cast::<Retention<'_>>() }.pending.is_empty())
+}
+
+fn retain_reuses(code: &mut [Inst], reuses: &mut Reuses) {
+    if reuses.is_empty() { return; }
+    let mut state = Retention { pending: reuses, origins: Origins::default() };
+    unsafe { rewrite::retain_result_origins(code, ptr::from_mut(&mut state).cast(),
+        collect_origin, attach_origin, pending_origins); }
 }
 pub(super) fn run(code: &mut Vec<Inst>, registers: &[Scalar]) {
     run_code(code, registers, &mut []);

@@ -21,18 +21,14 @@ Node node_at(Span span,usize index,u32 kind) on cpu {
  return Node(unsafe_address(address_bits(span.data)+u64(index)*u64(span.stride)),kind);
 }
 
-extern "C" Results results(Node source,Host host) on cpu requires nonzero(host.inspect) {
- Results output=Results(empty_span(),empty_span(),0u64,0u64,0u64,0u64);
- View value=host.inspect(source);u32 kind=value.tag;
+void ordinary_results(address value,address output) on cpu {
+ u32 kind=unsafe_position<View>(value).tag;
  if(kind==OP_INVOKE||kind==OP_TEXTURE_SAMPLE||kind==OP_TEXTURE_FETCH||kind==OP_TEXTURE_SIZE
      ||kind==OP_RAY_QUERY||kind==OP_TILE_COLLECTIVE){
-  output.first=value.first;
-  if(kind==OP_INVOKE){output.second=value.second;}
+  unsafe_position<Results>(output).first=unsafe_position<View>(value).first;
+  if(kind==OP_INVOKE){unsafe_position<Results>(output).second=unsafe_position<View>(value).second;}
  }else if(kind==OP_ATOMIC){
-  output.first=value.first;
- }else if(kind==OP_INTEGER_DIVIDE){
-  View result=host.inspect(value.right);output.a=result.a;output.b=result.b;
-  output.inline_count=result.tag==2 ? 2u64 : 1u64;
+  unsafe_position<Results>(output).first=unsafe_position<View>(value).first;
  }else if(kind==OP_TEXTURE_BINDING_ADDRESS||kind==OP_TEXTURE_LEVELS||kind==OP_TEXTURE_ADDRESS
      ||kind==OP_TEXTURE_FORMAT||kind==OP_TEXTURE_READ||kind==OP_APPEND||kind==OP_CONSTANT
      ||kind==OP_FUNCTION_ADDRESS||kind==OP_INDEX_VALUE||kind==OP_UNIFORM||kind==OP_BUFFER_STRIDE
@@ -40,8 +36,22 @@ extern "C" Results results(Node source,Host host) on cpu requires nonzero(host.i
      ||kind==OP_LOAD_INDEXED||kind==OP_LOAD||kind==OP_LOAD_LOCAL_INDEXED||kind==OP_SUBGROUP
      ||kind==OP_PRINT||kind==OP_TILE_LOAD||kind==OP_VIEW_LOAD||kind==OP_UNARY||kind==OP_BINARY
      ||kind==OP_CAST||kind==OP_MATH||kind==OP_SELECT_VALUE){
-  output.a=value.a;output.inline_count=1u64;
+  unsafe_position<Results>(output).a=unsafe_position<View>(value).a;unsafe_position<Results>(output).inline_count=1u64;
  }
+}
+// Both destinations are the result cursor allocated by the actual caller.
+void division_results(usize a,usize b,u32 kind,address output) on cpu {
+ unsafe_position<Results>(output).a=a;
+ unsafe_position<Results>(output).b=b;
+ unsafe_position<Results>(output).inline_count=kind==2 ? 2u64 : 1u64;
+}
+extern "C" Results results(Node source,Host host) on cpu requires nonzero(host.inspect) {
+ View value=host.inspect(source);
+ Results output=Results(empty_span(),empty_span(),0u64,0u64,0u64,0u64);
+ if(value.tag==OP_INTEGER_DIVIDE){
+  View division=host.inspect(value.right);
+  division_results(division.a,division.b,division.tag,address_of(output));
+ }else{ordinary_results(address_of(value),address_of(output));}
  return output;
 }
 extern "C" Word next_result(inout Results state) on cpu {
@@ -52,6 +62,34 @@ extern "C" Word next_result(inout Results state) on cpu {
  index-=state.second.count;
  if(index<state.inline_count){state.index+=1u64;return found(index==0u64 ? state.a : state.b);}
  return absent();
+}
+
+u32 visit_result_origins(address value,Host host,address context,
+ cfn<u32,address,usize,usize,usize,ResultRole> visit) on cpu
+ requires nonzero(host.inspect) requires nonzero(visit) {
+ Results output=Results(empty_span(),empty_span(),0u64,0u64,0u64,0u64);
+ ResultRole role=ResultRole::Value;
+ if(unsafe_position<View>(value).tag==OP_INTEGER_DIVIDE){
+  View division=host.inspect(unsafe_position<View>(value).right);
+  division_results(division.a,division.b,division.tag,address_of(output));
+  role=division.tag==1 ? ResultRole::Remainder : ResultRole::Quotient;
+ }else{ordinary_results(value,address_of(output));}
+ usize count=output.first.count+output.second.count+output.inline_count;
+ usize index=0u64;
+ u32 attached=0;
+ while(index<count){
+  Word entry=next_result(output);
+  attached|=visit(context,entry.value,index,count,role);
+  if(role==ResultRole::Quotient){role=ResultRole::Remainder;}
+  index+=1u64;
+ }
+ return attached;
+}
+extern "C" void result_origins(Node source,Host host,address context,
+ cfn<u32,address,usize,usize,usize,ResultRole> visit) on cpu
+ requires nonzero(host.inspect) requires nonzero(visit) {
+ View value=host.inspect(source);
+ visit_result_origins(address_of(value),host,context,visit);
 }
 
 u32 visit_span(Span values,address context,cfn<u32,address,usize> visit) on cpu requires nonzero(visit) {
@@ -1032,6 +1070,36 @@ extern "C" void rewrite_code(RewriteSpan code,RewriteHost host,RewriteMap mappin
  requires nonzero(host.inspect) requires nonzero(mapping.reg) requires nonzero(mapping.slot) {rewrite_block(code,host,mapping);}
 extern "C" void rewrite_operands(RewriteNode source,RewriteHost host,RewriteInputMap mapping) on cpu
  requires nonzero(host.inspect) requires nonzero(mapping.reg) {rewrite_inputs(host.inspect(source),host,mapping);}
+
+u32 retain_origin_block(RewriteSpan code,address context,RetainOriginHost host) on cpu
+ requires nonzero(host.read.inspect) requires nonzero(host.write.inspect) requires nonzero(host.collect)
+ requires nonzero(host.attach) requires nonzero(host.pending) {
+ usize index=0u64;
+ while(index<code.count){
+  RewriteNode node=rewrite_node_at(code,index,N_INSTRUCTION);
+  View value=host.read.inspect(Node(node.data,N_INSTRUCTION));
+  u32 kinds=visit_result_origins(address_of(value),host.read,context,host.collect);
+  if(kinds!=0){
+   if((kinds&1)!=0){host.attach(context,node.data,ResultOriginKind::Expression);}
+   if((kinds&2)!=0){host.attach(context,node.data,ResultOriginKind::LocalRead);}
+   if((kinds&4)!=0){host.attach(context,node.data,ResultOriginKind::IndexedStoreRead);}
+   if((kinds&8)!=0){host.attach(context,node.data,ResultOriginKind::IndexedRead);}
+   if(host.pending(context)==0){return 0;}
+  }
+  if(value.tag==OP_SCOPE||value.tag==OP_BRANCH||value.tag==OP_LOOP_VALUE){
+   RewriteView storage=host.write.inspect(node);
+   if(retain_origin_block(storage.first,context,host)==0
+     ||retain_origin_block(storage.second,context,host)==0){return 0;}
+  }
+  index+=1u64;
+ }
+ return 1;
+}
+extern "C" void retain_result_origins(RewriteSpan code,address context,RetainOriginHost host) on cpu
+ requires nonzero(host.read.inspect) requires nonzero(host.write.inspect) requires nonzero(host.collect)
+ requires nonzero(host.attach) requires nonzero(host.pending) {
+ retain_origin_block(code,context,host);
+}
 
 extern "C" void seed_effect_flags(EffectSeedHost host) on cpu
  requires nonzero(host.next) requires nonzero(host.remember) {

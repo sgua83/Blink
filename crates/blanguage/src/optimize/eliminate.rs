@@ -99,14 +99,17 @@ unsafe extern "C" fn record(context: *mut Context<'_>, instruction: *const Inst,
     let context = unsafe { &mut *context }; let inst = unsafe { &*instruction };
     let origin = OperationOrigin::from_instruction(inst);
     let operation = match removal.kind {
-        RemovalKind::Values | RemovalKind::Division => EliminatedOperation::ValueResults {
-            result_types: inst.results().map(|reg| context.registers[reg]).collect(),
-            integer_division_results: match &inst.kind {
-                InstKind::IntegerDivide { result, .. } => Some(result.outputs().map(|(role, _)| role).collect()),
-                _ => None,
-            },
-            origin,
-        },
+        RemovalKind::Values | RemovalKind::Division => {
+            let mut result_types = Vec::new();
+            let mut integer_division_results = None;
+            crate::ir::dataflow::result_origins(inst, |reg, role| {
+                result_types.push(context.registers[reg]);
+                if let Some(role) = role.division() {
+                    integer_division_results.get_or_insert_with(Vec::new).push(role);
+                }
+            });
+            EliminatedOperation::ValueResults { result_types, integer_division_results, origin }
+        }
         RemovalKind::DirectWrite => EliminatedOperation::DirectPrivateWrite { scalar: context.registers[removal.value], origin },
         RemovalKind::IndexedWrite => EliminatedOperation::IndexedPrivateWrite { component_count: removal.length,
             index_type: context.registers[removal.index], byte_offset: removal.word as u32,

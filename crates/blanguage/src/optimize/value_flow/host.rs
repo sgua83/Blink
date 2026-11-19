@@ -24,10 +24,9 @@ struct Division { position: usize, quotient: Reg, remainder: Reg, mask: u32, pre
 struct Memory { value: Reg, origin: *const OperationOrigin, present: u32 }
 #[repr(u32)]
 enum ReuseKind { Expression, LocalRead, IndexedRead, IndexedStoreRead }
-#[repr(u32)]
-enum Role { Value, Quotient, Remainder }
+
 #[repr(C)]
-struct Reuse { origin: *const OperationOrigin, kind: ReuseKind, role: Role, paired: u32 }
+struct Reuse { origin: *const OperationOrigin, kind: ReuseKind, role: ResultRole, paired: u32 }
 #[repr(u32)]
 #[derive(Clone, Copy)]
 enum Map { Aliases, Expressions, Memory, Locals }
@@ -258,7 +257,7 @@ unsafe extern "C" fn pair(context: *mut Context<'_>, instruction: *const Inst, p
 unsafe extern "C" fn position(context: *const Context<'_>) -> usize { unsafe { &*context }.output.len() }
 unsafe extern "C" fn note(context: *mut Context<'_>, retained: Reg, instruction: *const Inst, reuse: Reuse) {
     let origin = OperationOrigin::from_instruction(unsafe { &*instruction }); let fact = match reuse.kind {
-        ReuseKind::Expression => RetainedUse::Expression(ExpressionReuse { result: match reuse.role { Role::Value => ReuseResult::Value, Role::Quotient => ReuseResult::Quotient, Role::Remainder => ReuseResult::Remainder }, paired_input: reuse.paired != 0, origin }),
+        ReuseKind::Expression => RetainedUse::Expression(ExpressionReuse { result: reuse.role.reuse(), paired_input: reuse.paired != 0, origin }),
         ReuseKind::LocalRead => RetainedUse::LocalRead(origin), ReuseKind::IndexedRead => RetainedUse::IndexedRead(origin),
         ReuseKind::IndexedStoreRead => RetainedUse::IndexedStoreRead { store: unsafe { &*reuse.origin }.clone(), read: origin },
     }; unsafe { &mut *context }.reuses.entry(retained).or_default().push(fact);
