@@ -36,57 +36,93 @@ extern "C" FunctionFrame function_frame(u64 data_end, AbiType result, u32 flags)
     return FunctionFrame(bytes, home, result_at, location);
 }
 
-extern "C" CallPlan plan(address context, u64 count, AbiType result, u32 flags,
-    cfn<AbiType,address,u64> argument, address positions) on cpu requires nonzero(argument) {
-    ResultLocation location = result_location(result, flags);
-    bool hidden = location == ResultLocation::Indirect;
-    u64 first_slot = hidden ? 1u64 : 0u64;
-    // Payloads are measured from the end of the 16-byte-aligned home area.
-    u64 bytes = hidden ? u64(padded(result.size, result.alignment)) : 0u64;
-    bool emit_positions = address_bits(positions) != 0u64;
-    u64 arguments = 0u64;
+struct CallStack { u64 homes; u64 target; u64 bytes; };
+
+u64 copy_start(u64 end) on cpu { return (end + 15u64) & ~15u64; }
+
+CallStack call_stack(address context, u64 count, AbiType result, u64 first_slot, u32 flags,
+    cfn<AbiType,address,u64> argument, bool count_payloads) on cpu requires nonzero(argument) {
+    u64 slot = first_slot;
+    u64 end = first_slot != 0u64 ? u64(padded(result.size, result.alignment)) : 0u64;
     u64 index = 0u64;
     while (index < count) {
         AbiType value = argument(context, index);
         if (has_slot(value)) {
-            u64 home = slot_home(first_slot, arguments);
-            u64 payload = home;
-            bool copied = value.value != 0 && indirect(value.size, value.alignment);
-            if (copied) {
-                payload = (bytes + 15u64) & ~15u64;
-                bytes = payload + u64(padded(value.size, value.alignment));
+            slot += 1u64;
+            if (count_payloads && value.value != 0 && indirect(value.size, value.alignment)) {
+                end = copy_start(end) + u64(padded(value.size, value.alignment));
             }
-            if (emit_positions) {
-                address row = unsafe_address(address_bits(positions) + arguments * size_of<ArgumentSlot>());
-                unsafe_position<ArgumentSlot>(row) = ArgumentSlot(
-                    index, home, payload, copied ? 1 : 0, value.float_size);
-            }
-            arguments += 1u64;
         }
         index += 1u64;
     }
-    // Windows x64 owns four home slots even when fewer arguments are present.
-    u64 slots = max(4u64, first_slot + arguments);
-    u64 homes = (slots * 8u64 + 15u64) & ~15u64;
-    if (emit_positions) {
-        u64 position = 0u64;
-        while (position < arguments) {
-            address row = unsafe_address(address_bits(positions) + position * size_of<ArgumentSlot>());
-            if (unsafe_position<ArgumentSlot>(row).indirect != 0) {
-                unsafe_position<ArgumentSlot>(row).payload += homes;
-            }
-            position += 1u64;
-        }
-    }
-    u64 result_at = hidden ? homes : 0u64;
-    bytes += homes;
+    // Windows x64 always provides four home slots.
+    u64 homes = copy_start(max(4u64, slot) * 8u64);
+    end += homes;
     u64 target = 0u64;
     if ((flags & 2) != 0) {
-        bytes = (bytes + 7u64) & ~7u64;
-        target = bytes;
-        bytes += 8u64;
+        target = (end + 7u64) & ~7u64;
+        end = target + 8u64;
     }
-    return CallPlan((bytes + 15u64) & ~15u64, result_at, target, arguments, location);
+    return CallStack(homes, target, copy_start(end));
+}
+
+extern "C" u64 outgoing_bytes(address context, u64 count, AbiType result, u32 flags,
+    cfn<AbiType,address,u64> argument) on cpu requires nonzero(argument) {
+    u64 first_slot = result_location(result, flags) == ResultLocation::Indirect ? 1u64 : 0u64;
+    return call_stack(context, count, result, first_slot, flags, argument, true).bytes;
+}
+
+extern "C" void emit_call(address context, u64 count, AbiType result, u32 flags, CallHost host)
+    on cpu requires nonzero(host.argument) requires nonzero(host.place) requires nonzero(host.action) {
+    ResultLocation location = result_location(result, flags);
+    bool hidden = location == ResultLocation::Indirect;
+    bool indirect_target = (flags & 2) != 0;
+    u64 first_slot = hidden ? 1u64 : 0u64;
+    CallStack frame = CallStack(32u64, 0u64, 32u64);
+    if (indirect_target || first_slot + count > 4u64) {
+        frame = call_stack(context, count, result, first_slot, flags, host.argument, indirect_target);
+    }
+    if (indirect_target) { host.action(context, CallAction::SaveTarget, frame.target, 0); }
+    if (hidden) { host.action(context, CallAction::ResultAddress, frame.homes, 0); }
+
+    // The register kinds are used after all real argument homes have been written.
+    array<u32,4> register_widths = array<u32,4>(0, 0, 0, 0);
+    u64 slot = first_slot;
+    u64 end = frame.homes + (hidden ? u64(padded(result.size, result.alignment)) : 0u64);
+    u64 index = 0u64;
+    while (index < count) {
+        AbiType value = host.argument(context, index);
+        if (has_slot(value)) {
+            u64 home = slot_home(0u64, slot);
+            u64 payload = home;
+            bool copied = value.value != 0 && indirect(value.size, value.alignment);
+            if (copied) {
+                payload = copy_start(end);
+                end = payload + u64(padded(value.size, value.alignment));
+            }
+            if (!host.place(context, CallPlace(index, home, payload, copied ? 1 : 0))) { return; }
+            if (slot < 4u64) { register_widths[u32(slot)] = value.float_size; }
+            slot += 1u64;
+        }
+        index += 1u64;
+    }
+    for (reg in 0..4) {
+        if (u64(reg) == slot) { break; }
+        host.action(context, CallAction::LoadRegister, u64(reg), register_widths[reg]);
+    }
+    host.action(context, CallAction::Invoke, frame.target, 0);
+
+    bool fallible = (flags & 1) != 0;
+    u64 failed = 0u64;
+    if (fallible) { failed = host.action(context, CallAction::CaptureError, 0u64, 0); }
+    if (location == ResultLocation::Indirect) {
+        host.action(context, CallAction::ReadIndirect, frame.homes, 0);
+    } else if (location == ResultLocation::Float) {
+        host.action(context, CallAction::ReadFloat, 0u64, 0);
+    } else if (location == ResultLocation::Integer) {
+        host.action(context, CallAction::ReadInteger, 0u64, 0);
+    }
+    if (fallible) { host.action(context, CallAction::CloseError, failed, 0); }
 }
 
 u64 move_function_parameter(address context, u64 index, u64 slot, u64 home, u64 first,

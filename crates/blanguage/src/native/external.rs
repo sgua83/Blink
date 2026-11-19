@@ -29,16 +29,24 @@ impl AbiType {
 pub(super) enum ResultLocation { None, Integer, Float, Indirect }
 
 #[repr(C)]
-struct CallPlan {
-    bytes: u64,
-    result: u64,
-    target: u64,
-    arguments: usize,
-    result_location: ResultLocation,
+struct CallPlace { index: usize, home: u64, payload: u64, copied: u32 }
+
+#[allow(dead_code)]
+#[repr(u32)]
+enum CallAction {
+    SaveTarget, ResultAddress, LoadRegister, Invoke,
+    CaptureError, ReadIndirect, ReadFloat, ReadInteger, CloseError,
 }
 
+type ArgumentType = unsafe extern "C" fn(*const c_void, usize) -> AbiType;
+
 #[repr(C)]
-struct ArgumentSlot { index: usize, home: u64, payload: u64, indirect: u32, float_size: u32 }
+struct CallHost {
+    argument: ArgumentType,
+    place: unsafe extern "C" fn(*mut c_void, CallPlace) -> bool,
+    action: unsafe extern "C" fn(*mut c_void, CallAction, u64, u32) -> u64,
+}
+
 #[repr(C)]
 struct SymbolEncoding { length: u64, field: u64 }
 #[repr(u32)]
@@ -91,26 +99,110 @@ unsafe extern "C" {
     fn encode_symbol_target(invoke: u32, output: *mut u8) -> SymbolEncoding;
     #[link_name = "bootstrap.x64_instruction::call_slot"]
     fn encode_call_slot(offset: u32, output: *mut u8) -> u64;
-    #[link_name = "bootstrap.call_layout::plan"]
-    fn call_plan(context: *const c_void, count: usize, result: AbiType, flags: u32,
-        argument: unsafe extern "C" fn(*const c_void, usize) -> AbiType, positions: *mut ArgumentSlot) -> CallPlan;
+    #[link_name = "bootstrap.call_layout::outgoing_bytes"]
+    fn call_stack_size(context: *const c_void, count: usize, result: AbiType, flags: u32,
+        argument: ArgumentType) -> u64;
+    #[link_name = "bootstrap.call_layout::emit_call"]
+    fn emit_call(context: *mut c_void, count: usize, result: AbiType, flags: u32, host: CallHost);
 }
-unsafe extern "C" fn argument_type(context: *const c_void, index: usize) -> AbiType {
-    match &unsafe { &*context.cast::<Call>() }.arguments[index] {
+
+fn argument_abi(call: &Call, index: usize) -> AbiType {
+    match &call.arguments[index] {
         CallArgument::Value { ty, .. } => AbiType::value(ty),
         CallArgument::Reference { .. } => AbiType::reference(),
     }
 }
-fn plan_call(call: &Call, positions: *mut ArgumentSlot) -> CallPlan {
-    let result = AbiType::result(call.result.as_ref());
-    let flags = u32::from(call.error.is_some()) | (u32::from(matches!(call.target, CallTarget::Indirect(_))) << 1);
-    let context = (call as *const Call).cast();
-    unsafe { call_plan(context, call.arguments.len(), result, flags, argument_type, positions) }
+
+unsafe extern "C" fn argument_type(context: *const c_void, index: usize) -> AbiType {
+    argument_abi(unsafe { &*context.cast::<Call>() }, index)
+}
+
+fn call_flags(call: &Call) -> u32 {
+    u32::from(call.error.is_some()) | (u32::from(matches!(call.target, CallTarget::Indirect(_))) << 1)
 }
 
 pub(super) fn outgoing_bytes(call: &Call) -> u64 {
-    plan_call(call, std::ptr::null_mut()).bytes
+    let context = std::ptr::from_ref(call).cast();
+    unsafe { call_stack_size(context, call.arguments.len(), AbiType::result(call.result.as_ref()),
+        call_flags(call), argument_type) }
 }
+
+struct CallEmission<'a, 'ir> {
+    emitter: &'a mut Emitter<'ir>,
+    call: &'a Call,
+    result: *const Ty,
+    indirect_target: Reg,
+    failure: Option<&'static str>,
+}
+
+unsafe extern "C" fn emission_argument(context: *const c_void, index: usize) -> AbiType {
+    let state = unsafe { &*context.cast::<CallEmission<'_, '_>>() };
+    argument_abi(state.call, index)
+}
+
+unsafe extern "C" fn place_argument(context: *mut c_void, place: CallPlace) -> bool {
+    let state = unsafe { &mut *context.cast::<CallEmission<'_, '_>>() };
+    let e = &mut *state.emitter;
+    let home = place.home as u32;
+    match &state.call.arguments[place.index] {
+        CallArgument::Reference { address, .. } => {
+            if let Err(reason) = e.reference_address(address) {
+                state.failure = Some(reason);
+                return false;
+            }
+            e.copy_scalar(Location::Stack(home), Location::Gpr(0), Scalar::U64);
+        }
+        CallArgument::Value { ty, values, .. } => {
+            let payload = place.payload as u32;
+            e.abi_value(payload, ty, values, AbiMemoryMode::StackStore);
+            if place.copied != 0 {
+                e.abi_stack_pointer(payload, home);
+            }
+        }
+    }
+    true
+}
+
+unsafe extern "C" fn call_action(context: *mut c_void, action: CallAction, value: u64, width: u32) -> u64 {
+    let state = unsafe { &mut *context.cast::<CallEmission<'_, '_>>() };
+    let e = &mut *state.emitter;
+    let call = state.call;
+    let offset = value as u32;
+    match action {
+        CallAction::SaveTarget =>
+            e.copy_scalar(Location::Stack(offset), e.location(state.indirect_target), Scalar::U64),
+        CallAction::ResultAddress => e.abi_stack_pointer(offset, 0),
+        CallAction::LoadRegister => e.argument_register(value as usize, width, false),
+        CallAction::Invoke => match &call.target {
+            CallTarget::External(name) => e.emit_symbol_target(NativeSymbol::External(name.clone()), true),
+            CallTarget::Defined(name) => e.emit_symbol_target(NativeSymbol::Function(name.clone()), true),
+            CallTarget::Indirect(_) => {
+                e.emit_bytes(7, |output| unsafe { encode_call_slot(offset, output) });
+                e.calls.push(None);
+            }
+        },
+        CallAction::CaptureError => {
+            // The B call emits this action only when the original IR has an error result.
+            e.store(call.error.unwrap_or_default());
+            return e.jump(Branch::Nonzero64) as u64;
+        }
+        CallAction::ReadIndirect | CallAction::ReadInteger => {
+            // A payload action is reachable only for the nonempty original result type.
+            let ty = unsafe { &*state.result };
+            let mode = if matches!(action, CallAction::ReadIndirect) { AbiMemoryMode::StackLoad }
+                else { AbiMemoryMode::UnpackIntegerResult };
+            e.abi_value(offset, ty, &call.values, mode);
+        }
+        CallAction::ReadFloat => e.store_float(call.values[0]),
+        CallAction::CloseError => e.patch(value as usize, e.code.len()),
+    }
+    0
+}
+
+const CALL_HOST: CallHost = CallHost {
+    argument: emission_argument, place: place_argument, action: call_action,
+};
+
 impl Emitter<'_> {
     pub(super) fn abi_value(
         &mut self, slot: u32, ty: &Ty, values: &[Reg], mode: AbiMemoryMode,
@@ -186,61 +278,13 @@ impl Emitter<'_> {
         }
     }
     pub(super) fn native_call(&mut self, call: &Call) -> Result<(), &'static str> {
-        let mut arguments = Vec::with_capacity(call.arguments.len());
-        let layout = plan_call(call, arguments.as_mut_ptr());
-        // B initialized only the rows with physical argument slots.
-        unsafe { arguments.set_len(layout.arguments); }
-        if let CallTarget::Indirect(reg) = call.target {
-            self.copy_scalar(Location::Stack(layout.target as u32), self.location(reg), Scalar::U64);
-        }
-        if layout.result_location == ResultLocation::Indirect {
-            self.abi_stack_pointer(layout.result as u32, 0);
-        }
-        for row in &arguments {
-            let home = row.home as u32;
-            match &call.arguments[row.index] {
-                CallArgument::Reference { address, .. } => {
-                    self.reference_address(address)?;
-                    self.copy_scalar(Location::Stack(home), Location::Gpr(0), Scalar::U64);
-                }
-                CallArgument::Value { ty, values, .. } => {
-                    self.abi_value(row.payload as u32, ty, values, AbiMemoryMode::StackStore);
-                    if row.indirect != 0 {
-                        self.abi_stack_pointer(row.payload as u32, home);
-                    }
-                }
-            }
-        }
-        if layout.result_location == ResultLocation::Indirect {
-            self.argument_register(0, 0, false);
-        }
-        for row in arguments.iter().take_while(|row| row.home < 32) {
-            self.argument_register((row.home / 8) as usize, row.float_size, false);
-        }
-        match &call.target {
-            CallTarget::Indirect(_) => {
-                let offset = layout.target as u32;
-                self.emit_bytes(7, |output| unsafe { encode_call_slot(offset, output) });
-                self.calls.push(None);
-            }
-            CallTarget::External(name) => self.emit_symbol_target(NativeSymbol::External(name.clone()), true),
-            CallTarget::Defined(name) => self.emit_symbol_target(NativeSymbol::Function(name.clone()), true),
-        }
-        let failed = if let Some(error) = call.error {
-            self.store(error);
-            Some(self.jump(Branch::Nonzero64))
-        } else { None };
-        if let Some(ty) = &call.result {
-            match layout.result_location {
-                ResultLocation::Indirect =>
-                    self.abi_value(layout.result as u32, ty, &call.values, AbiMemoryMode::StackLoad),
-                ResultLocation::Float => self.store_float(call.values[0]),
-                ResultLocation::Integer =>
-                    self.abi_value(0, ty, &call.values, AbiMemoryMode::UnpackIntegerResult),
-                ResultLocation::None => {}
-            }
-        }
-        if let Some(at) = failed { self.patch(at, self.code.len()); }
-        Ok(())
+        let indirect_target = match call.target { CallTarget::Indirect(reg) => reg, _ => 0 };
+        let mut state = CallEmission {
+            emitter: self, call, result: call.result.as_ref().map_or(std::ptr::null(), std::ptr::from_ref),
+            indirect_target, failure: None,
+        };
+        unsafe { emit_call(std::ptr::from_mut(&mut state).cast(), call.arguments.len(),
+            AbiType::result(call.result.as_ref()), call_flags(call), CALL_HOST); }
+        state.failure.map_or(Ok(()), Err)
     }
 }
