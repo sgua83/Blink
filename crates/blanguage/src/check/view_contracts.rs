@@ -239,39 +239,87 @@ pub(super) fn resource_value_mut(value:&mut returns::Returned,index:usize)->Opti
     returns::Returned::Dataset(value)if index==0=>Some(value),
     returns::Returned::OwnedValue(value)=>{let path=view::resource_paths(&value.value.ty).get(index)?.clone();view::owned_data_at_mut(value,&path)},_=>None,
 }}
-pub(super) fn resource_output_paths(value:&returns::Returned)->Vec<ResourcePath> {
-    fn visit(data:&application::Data,root:usize,parents:&[Vec<usize>],out:&mut Vec<(usize,Vec<Vec<usize>>)>) {
-        for fields in view::resource_paths(&data.ty){
-            if let Some(child)=application::model_data(data.elements.known(),&fields){
-                let mut path=parents.to_vec();path.push(fields);out.push((root,path.clone()));visit(child,root,&path,out);
+fn visit_resource_outputs<'a, const BORROW: bool>(
+    value: &'a returns::Returned,
+    mut visit: impl FnMut(usize, &[Vec<usize>], Option<(&'a application::Data, &'a application::Data)>),
+) {
+    fn children<'a, const BORROW: bool>(
+        root: (usize, &'a application::Data),
+        parent: &'a application::Data,
+        available: bool,
+        path: &mut Vec<Vec<usize>>,
+        visit: &mut impl FnMut(usize, &[Vec<usize>], Option<(&'a application::Data, &'a application::Data)>),
+    ) {
+        let child_available = std::cell::LazyCell::new(|| {
+            available && (!BORROW || parent.length.maximum() != 0)
+        });
+        for fields in view::resource_paths(&parent.ty) {
+            if let Some(child) = application::model_data(parent.elements.known(), &fields) {
+                path.push(fields);
+                visit(root.0, path, (*child_available).then_some((root.1, child)));
+                children::<BORROW>(root, child, *child_available, path, visit);
+                path.pop();
             }
         }
     }
-    let roots=match value{returns::Returned::Dataset(_)=>1,returns::Returned::OwnedValue(value)=>view::resource_paths(&value.value.ty).len(),_=>0};
-    let mut out=(0..roots).map(|root|(root,Vec::new())).collect::<Vec<_>>();
-    for root in 0..roots{if let Some(data)=root_resource(value,root){visit(data,root,&[],&mut out);}}out
+
+    let single;
+    let owned;
+    let roots: &[Option<&application::Data>] = match value {
+        returns::Returned::Dataset(data) => {
+            single = [Some(data)];
+            &single
+        }
+        returns::Returned::OwnedValue(value) => {
+            owned = view::resource_paths(&value.value.ty).into_iter()
+                .map(|path| view::owned_data_at(value, &path)).collect::<Vec<_>>();
+            &owned
+        }
+        _ => return,
+    };
+    // Reserve the original slot identity even when that variant has no data.
+    for (root, data) in roots.iter().copied().enumerate() {
+        visit(root, &[], data.map(|data| (data, data)));
+    }
+    let mut path = Vec::new();
+    for (root, data) in roots.iter().copied().enumerate() {
+        if let Some(data) = data {
+            children::<BORROW>((root, data), data, true, &mut path, &mut visit);
+        }
+    }
 }
+
+pub(super) fn resource_output_paths(value: &returns::Returned) -> Vec<ResourcePath> {
+    let mut paths = Vec::new();
+    visit_resource_outputs::<false>(value, |root, path, _| paths.push((root, path.to_vec())));
+    paths
+}
+
 pub(super) fn root_resource(value:&returns::Returned,index:usize)->Option<&application::Data>{match value{
     returns::Returned::Dataset(data)if index==0=>Some(data),
     returns::Returned::OwnedValue(value)=>view::resource_paths(&value.value.ty).get(index).and_then(|path|view::owned_data_at(value,path)),_=>None,
 }}
-pub(super) fn resource_outputs(value:&returns::Returned)->Vec<(ResourcePath,Borrow)>{
-    resource_output_paths(value).into_iter().map(|resource|{
-        let (root,path)=&resource;
-        let data=path.iter().fold(root_resource(value,*root),|data,fields|{
-            let data=data?;
-            if data.length.maximum()==0{None}else{application::model_data(data.elements.known(),fields)}
-        });
-        let borrow=if let Some(data)=data {
-            let name=resource_output_name(value,&resource).unwrap();
-            view::resource_borrow(data).map_sources(|source|match source{
-                Origin::Data(ValueIdentity::ElementComponent(_)|ValueIdentity::ElementParent(..))=>name.clone(),
-                source=>Borrow::source(source),
-            })
-        }else{Borrow::source(Origin::Inactive)};
-        (resource,borrow)
-    }).collect()
+
+pub(super) fn resource_outputs(
+    value: &returns::Returned,
+    mut output: impl FnMut(ResourcePath, Borrow),
+) {
+    visit_resource_outputs::<true>(value, |root, path, model| {
+        let borrow = match model {
+            Some((root_data, data)) => {
+                let name = std::cell::LazyCell::new(|| resource_output_name(root_data, path));
+                view::resource_borrow(data).map_sources(|source| match source {
+                    Origin::Data(ValueIdentity::ElementComponent(_) | ValueIdentity::ElementParent(..)) =>
+                        (*name).clone(),
+                    source => Borrow::source(source),
+                })
+            }
+            None => Borrow::source(Origin::Inactive),
+        };
+        output((root, path.to_vec()), borrow);
+    });
 }
+
 pub(super) fn resource_output<'a>(value:&'a returns::Returned,resource:&ResourcePath)->Option<&'a application::Data>{
     let(root,path)=resource;let mut data=root_resource(value,*root)?;
     for fields in path{data=application::model_data(data.elements.known(),fields)?;}Some(data)
@@ -280,10 +328,13 @@ pub(super) fn resource_output_mut<'a>(value:&'a mut returns::Returned,resource:&
     let(root,path)=resource;let mut data=resource_value_mut(value,*root)?;
     for fields in path{data=application::model_data_mut(data.elements.known_mut(),fields)?;}Some(data)
 }
-pub(super) fn resource_output_name(value:&returns::Returned,resource:&ResourcePath)->Option<Borrow>{
-    let(root,path)=resource;let data=root_resource(value,*root)?;
-    let mut name=view::resource_borrow(data);
-    let depth=path.len();for(at,fields)in path.iter().enumerate(){name=Borrow::element(name,fields.clone(),Some(bounds::Operand::Value(ValueIdentity::ElementIndex(depth-1-at))));}Some(name)
+fn resource_output_name(root: &application::Data, path: &[Vec<usize>]) -> Borrow {
+    let mut name = view::resource_borrow(root);
+    for (at, fields) in path.iter().enumerate() {
+        let index = ValueIdentity::ElementIndex(path.len() - 1 - at);
+        name = Borrow::element(name, fields.clone(), Some(bounds::Operand::Value(index)));
+    }
+    name
 }
 pub(super) fn set_resource_outputs(value:&mut returns::Returned,mut borrow:impl FnMut(ResourcePath)->Borrow){
     for resource in resource_output_paths(value){if let Some(data)=resource_output_mut(value,&resource){data.root.proof.set_view_borrow(0,borrow(resource));}}
@@ -353,7 +404,9 @@ impl Function {
         Borrow{calls:view::Edges::from([CallResult{call,output}]),..Borrow::default()}
     }
     pub fn capture_resources(&mut self,value:&returns::Returned,output:impl Fn(ResourcePath)->Output){
-        for(resource,borrow)in resource_outputs(value){self.outputs.insert(output(resource),borrow);}
+        resource_outputs(value, |resource, borrow| {
+            self.outputs.insert(output(resource), borrow);
+        });
     }
     pub fn capture(&mut self,proof:&bounds::Proof,ty:&Ty,output:impl Fn(usize)->Output) {
         for component in components(ty) {self.outputs.insert(output(component),proof.view_borrow(component));}

@@ -1466,8 +1466,18 @@ fn view_outputs(contract:&Contract)->view_contracts::Interface {
     for (parameter,model)in contract.written.iter().enumerate() {
         if let Some(value)=model.as_ref().and_then(Returned::view_value){for component in view_contracts::components(&value.ty){outputs.insert(view_contracts::Output::Written(parameter,component),value.proof.view_borrow(component));}}
     }
-    if let Some(value)=&contract.returned{for(resource,borrow)in view_contracts::resource_outputs(value){outputs.insert(view_contracts::Output::ReturnedResource(resource),borrow);}}
-    for(parameter,value)in contract.written.iter().enumerate(){if let Some(value)=value{for(resource,borrow)in view_contracts::resource_outputs(value){outputs.insert(view_contracts::Output::WrittenResource(parameter,resource),borrow);}}}
+    if let Some(value) = &contract.returned {
+        view_contracts::resource_outputs(value, |resource, borrow| {
+            outputs.insert(view_contracts::Output::ReturnedResource(resource), borrow);
+        });
+    }
+    for (parameter, value) in contract.written.iter().enumerate() {
+        if let Some(value) = value {
+            view_contracts::resource_outputs(value, |resource, borrow| {
+                outputs.insert(view_contracts::Output::WrittenResource(parameter, resource), borrow);
+            });
+        }
+    }
     view_contracts::Interface{outputs,access:contract.view_access.as_ref().unwrap().clone(),initialization:contract.initialization.clone().unwrap()}
 }
 // Query the original code and call bindings; the returned Proof remains the owner.
