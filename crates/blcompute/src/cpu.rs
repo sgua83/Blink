@@ -92,17 +92,28 @@ impl RangeWork<'_> {
     unsafe fn invoke_serial(
         &self,
         address: *mut c_void,
-        buffers: *const BufferAddress,
+        buffers: &mut [BufferAddress],
+        replacements: &mut [(usize, BufferAddress)],
         end: u32,
         output: *mut u32,
         timings: &mut Option<&mut CpuRangeTimings>,
     ) -> Result<*mut c_void> {
-        unsafe {
+        // The parallel pass has joined. Only this synchronous entry borrows the
+        // table until the original bindings are restored.
+        for (slot, replacement) in replacements.iter_mut() {
+            std::mem::swap(&mut buffers[*slot], replacement);
+        }
+        let result = unsafe {
             observation::capture(timings, self.stage, address as usize, 1, |timing| {
                 let mut uniforms = self.frame_uniforms();
-                Ok(self.invoke(address, buffers, &mut uniforms, end, 0, output, timing))
+                Ok(self.invoke(address, buffers.as_ptr(), &mut uniforms, end, 0, output, timing))
             })
+        };
+        // The source and target can name the same slot.
+        for (slot, original) in replacements.iter_mut().rev() {
+            std::mem::swap(&mut buffers[*slot], original);
         }
+        result
     }
 }
 unsafe extern "system" fn execute_ranges(
@@ -1045,7 +1056,7 @@ impl CpuCode {
         let frame=self.program.native_frame().map(|offset|
             definitions.map(|definitions|(definitions,offset as usize/4,uniforms.len(),buffers))
                 .ok_or_else(||error("CPU范围映像缺少实际资源定义目录"))).transpose()?;
-        let pointers: Vec<_> = buffers
+        let mut pointers: Vec<_> = buffers
             .iter()
             .map(|d| BufferAddress { address: d.pointer, stride: d.stride as usize })
             .chain(textures.iter().map(|texture| BufferAddress { address: texture.pointer(), stride: 0 }))
@@ -1125,13 +1136,12 @@ impl CpuCode {
                                 source,
                                 target,
                             } => {
-                                let mut inputs = pointers.clone();
-                                inputs[*source] = BufferAddress { address: partials.as_mut_ptr().cast(), stride: result.words() * 4 };
-                                inputs[*target] = inputs[*source];
+                                let summary = BufferAddress { address: partials.as_mut_ptr().cast(), stride: result.words() * 4 };
                                 let failure = unsafe {
                                     ranges.invoke_serial(
                                         prefix.address,
-                                        inputs.as_ptr(),
+                                        &mut pointers,
+                                        &mut [(*source, summary), (*target, summary)],
                                         range_count as u32,
                                         std::ptr::null_mut(),
                                         &mut timings,
@@ -1143,8 +1153,7 @@ impl CpuCode {
                             Continuation::Apply(next) => {
                                 if let blanguage::ir::Operation::CustomReduce(r) = &stage.operation {
                                     let k = r.ty.size.div_ceil(4) as usize;
-                                    let mut inputs = pointers.clone();
-                                    inputs[r.fields.source] = BufferAddress { address: partials.as_mut_ptr().cast(), stride: k * 4 };
+                                    let summary = BufferAddress { address: partials.as_mut_ptr().cast(), stride: k * 4 };
                                     let failure = unsafe {
                                         // The tail writes the declared components only on its success path.
                                         let output = buffers[r.fields.target]
@@ -1154,7 +1163,8 @@ impl CpuCode {
                                             .cast::<u32>();
                                         ranges.invoke_serial(
                                             next.address,
-                                            inputs.as_ptr(),
+                                            &mut pointers,
+                                            &mut [(r.fields.source, summary)],
                                             range_count as u32,
                                             output,
                                             &mut timings,
@@ -1235,6 +1245,7 @@ impl CpuCode {
                         };
                         if let Some(next) = next {
                             ranges.entry = next.address;
+                            ranges.buffers = pointers.as_ptr();
                             ranges.result = RangeResult::None;
                             ranges.next = AtomicUsize::new(0);
                             ranges.range_parameters = partials.as_ptr().cast();
