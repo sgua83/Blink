@@ -1,6 +1,11 @@
 //! Synchronous access to the original native code and the query's native containers.
 use super::{Call, Code, Target};
-use std::{collections::{BTreeMap,BTreeSet},ffi::c_void};
+use std::{
+    cmp::Ordering,
+    collections::{BTreeMap, BTreeSet},
+    ffi::c_void,
+    rc::Rc,
+};
 
 #[repr(C)]
 #[derive(Clone,Copy)]
@@ -56,13 +61,44 @@ unsafe extern "C" {
     fn analyze_graph(context:*mut c_void,frames:u64,symbols:u64,has_budget:u32,budget:u64,
         metrics:*mut Metric,scratch:*mut Scratch,host:Host);
 }
+const EXTERNAL_PREFIX: &str = "external ";
+
+#[derive(Clone)]
+pub(super) enum Label<'a> {
+    Borrowed(&'a str),
+    Generated(Rc<String>),
+    ImportName(Rc<String>),
+}
+
+impl Label<'_> {
+    pub(super) fn as_str(&self) -> &str {
+        match self {
+            Self::Borrowed(text) => text,
+            Self::Generated(text) => text.as_str(),
+            Self::ImportName(text) => &text[EXTERNAL_PREFIX.len()..],
+        }
+    }
+}
+
+// Ordering and equality use the written text, including for reasons read from an object.
+impl PartialEq for Label<'_> {
+    fn eq(&self, other: &Self) -> bool { self.as_str() == other.as_str() }
+}
+impl Eq for Label<'_> {}
+impl PartialOrd for Label<'_> {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> { Some(self.cmp(other)) }
+}
+impl Ord for Label<'_> {
+    fn cmp(&self, other: &Self) -> Ordering { self.as_str().cmp(other.as_str()) }
+}
+
 struct Context<'a> {
     code: Code<'a>,
     positions:BTreeMap<(usize,u32),usize>,
     symbols:BTreeMap<&'a str,(usize,u32)>,
     parents:Vec<Vec<Parent>>,
-    unknown:Vec<BTreeSet<String>>,
-    callees:Vec<BTreeSet<String>>,
+    unknown: Vec<BTreeSet<Label<'a>>>,
+    callees: Vec<BTreeSet<Label<'a>>>,
 }
 unsafe extern "C" fn read_frame(slot:*mut c_void,index:u64)->FrameInfo {
     let context=unsafe{&*slot.cast::<Context<'_>>()};let frame=&context.code.frames[index as usize];
@@ -102,18 +138,32 @@ unsafe extern "C" fn lookup_position(slot:*mut c_void,position:Position)->Index 
 }
 unsafe extern "C" fn edge(slot:*mut c_void,parent:u64,child:u64,tail:u32) {
     let context=unsafe{&mut *slot.cast::<Context<'_>>()};context.parents[child as usize].push(Parent{parent,tail});
-    context.callees[parent as usize].insert(context.code.frames[child as usize].name.clone());
+    let name = context.code.frames[child as usize].name.as_str();
+    context.callees[parent as usize].insert(Label::Borrowed(name));
 }
 unsafe extern "C" fn parent_count(slot:*mut c_void,index:u64)->u64 {unsafe{&*slot.cast::<Context<'_>>()}.parents[index as usize].len() as u64}
 unsafe extern "C" fn read_parent(slot:*mut c_void,index:u64,ordinal:u64)->Parent {unsafe{&*slot.cast::<Context<'_>>()}.parents[index as usize][ordinal as usize]}
 unsafe extern "C" fn notice(slot:*mut c_void,index:u64,notice:Notice,call:CallInfo) {
     let context=unsafe{&mut *slot.cast::<Context<'_>>()};let index=index as usize;
-    let reason=match notice {
-        Notice::Unreported=>unsafe{text(call.name)}.to_owned(),
-        Notice::Indirect=>"indirect target".into(),
-        Notice::UnresolvedModule=>{let name=unsafe{text(call.name)};context.callees[index].insert(name.to_owned());format!("unresolved module {name}")}
-        Notice::External=>{let name=format!("{}!{}",unsafe{text(call.dll)},unsafe{text(call.name)});context.callees[index].insert(name.clone());format!("external {name}")}
-        Notice::MissingBody=>format!("unreported native body section {}+{}",call.section,call.start),
+    // read_call borrows the names from Code, which lives through report rendering.
+    let reason = match notice {
+        Notice::Unreported => Label::Borrowed(unsafe { text(call.name) }),
+        Notice::Indirect => Label::Borrowed("indirect target"),
+        Notice::UnresolvedModule => {
+            let name = unsafe { text(call.name) };
+            context.callees[index].insert(Label::Borrowed(name));
+            Label::Generated(Rc::new(format!("unresolved module {name}")))
+        }
+        Notice::External => {
+            let dll = unsafe { text(call.dll) };
+            let name = unsafe { text(call.name) };
+            let reason = Rc::new(format!("{EXTERNAL_PREFIX}{dll}!{name}"));
+            context.callees[index].insert(Label::ImportName(Rc::clone(&reason)));
+            Label::Generated(reason)
+        }
+        Notice::MissingBody => {
+            Label::Generated(Rc::new(format!("unreported native body section {}+{}", call.section, call.start)))
+        }
     };
     context.unknown[index].insert(reason);
 }
@@ -125,8 +175,12 @@ unsafe extern "C" fn union_unknown(slot:*mut c_void,parent:u64,child:u64) {
     target.extend(source.iter().cloned());
 }
 unsafe extern "C" fn unknown_empty(slot:*mut c_void,index:u64)->u32 {u32::from(unsafe{&*slot.cast::<Context<'_>>()}.unknown[index as usize].is_empty())}
-pub(super) struct Analysis {pub metrics:Vec<Metric>,pub unknown:Vec<BTreeSet<String>>,pub callees:Vec<BTreeSet<String>>}
-pub(super) fn analyze(code: Code<'_>, capacity: Option<u64>) -> Analysis {
+pub(super) struct Analysis<'a> {
+    pub metrics: Vec<Metric>,
+    pub unknown: Vec<BTreeSet<Label<'a>>>,
+    pub callees: Vec<BTreeSet<Label<'a>>>,
+}
+pub(super) fn analyze<'a>(code: Code<'a>, capacity: Option<u64>) -> Analysis<'a> {
     let count = code.frames.len();
     let symbol_count = code.symbols.len();
     let mut context=Context{code,positions:BTreeMap::new(),symbols:BTreeMap::new(),parents:vec![Vec::new();count],unknown:vec![BTreeSet::new();count],callees:vec![BTreeSet::new();count]};

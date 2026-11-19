@@ -1,7 +1,8 @@
 //! Stack information follows the same sections and relocations as native code.
 use super::{Kind, Object, Relocation, Symbol, Target};
 mod analysis;
-use analysis::Budget;
+use analysis::{Budget, Label};
+use std::fmt::Write;
 
 pub(crate) struct Frame {
     pub name: String,
@@ -29,8 +30,26 @@ pub(crate) struct Code<'a> {
     pub symbols: &'a [Symbol],
 }
 
+fn write_amount(text: &mut String, bytes: u128, known: bool) {
+    if known {
+        write!(text, "{bytes}").unwrap();
+    } else {
+        text.push_str("unknown");
+    }
+    text.push('\t');
+}
+
+fn write_joined<'a>(text: &mut String, mut labels: impl Iterator<Item = &'a str>, separator: &str) {
+    if let Some(first) = labels.next() {
+        text.push_str(first);
+        for label in labels {
+            text.push_str(separator);
+            text.push_str(label);
+        }
+    }
+}
+
 pub(crate) fn report(name: &str, code: Code<'_>, capacity: Option<u64>, reserve: Option<u64>, runtime: bool) -> String {
-    use std::fmt::Write;
     let frames = code.frames;
     let analysis::Analysis { metrics, unknown, callees } = analysis::analyze(code, capacity);
     let count = frames.len();
@@ -56,8 +75,6 @@ pub(crate) fn report(name: &str, code: Code<'_>, capacity: Option<u64>, reserve:
         let frame = &frames[index];
         let metric = &metrics[index];
         let bytes = metric.bytes();
-        let path = if metric.closed != 0 { bytes.to_string() } else { "unknown".into() };
-        let upper = if metric.upper != 0 { Some(bytes) } else { None };
         let comparison = match metric.capacity {
             Budget::NotSupplied => "not supplied",
             Budget::LocalExceeds => "local alone exceeds if entered",
@@ -65,11 +82,24 @@ pub(crate) fn report(name: &str, code: Code<'_>, capacity: Option<u64>, reserve:
             Budget::UpperExceeds => "upper exceeds; actual path not established",
             Budget::Unknown => "unknown",
         };
-        let mut reasons = unknown[index].iter().cloned().collect::<Vec<_>>();
-        if metric.closed == 0 { reasons.push("recursion reachable; finite bound not established".into()); }
-        if !callees[index].is_empty() { reasons.push(format!("calls: {}", callees[index].iter().cloned().collect::<Vec<_>>().join(", "))); }
-        writeln!(text, "{}\t{}\t{}\t{}\t{}\t{}", frame.name, frame.local, path,
-            upper.map_or_else(|| "unknown".into(), |bytes| bytes.to_string()), comparison, reasons.join("; ")).unwrap();
+        write!(text, "{}\t{}\t", frame.name, frame.local).unwrap();
+        write_amount(&mut text, bytes, metric.closed != 0);
+        write_amount(&mut text, bytes, metric.upper != 0);
+        write!(text, "{comparison}\t").unwrap();
+
+        let reasons = &unknown[index];
+        write_joined(&mut text, reasons.iter().map(Label::as_str), "; ");
+        if metric.closed == 0 {
+            if !reasons.is_empty() { text.push_str("; "); }
+            text.push_str("recursion reachable; finite bound not established");
+        }
+        let calls = &callees[index];
+        if !calls.is_empty() {
+            if !reasons.is_empty() || metric.closed == 0 { text.push_str("; "); }
+            text.push_str("calls: ");
+            write_joined(&mut text, calls.iter().map(Label::as_str), ", ");
+        }
+        text.push('\n');
     }
     text
 }
