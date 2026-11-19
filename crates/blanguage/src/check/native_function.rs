@@ -2738,13 +2738,13 @@ async fn build_domain(
                 origin: None, dataset_borrow: None, ty: Ty::scalar(Scalar::U64), values: vec![first],
             });
         } else {
-            let ty = unsafe { world.call(cooperative::parameter_type(world,&param,(&d.source,&d.module,&d.imports,d.function.kind()),target)).await }?;
-            registers.extend(ty.components.iter().map(|(s, _)| *s));
-            parameters.push(CallParameter::value(ty.clone()));
-            for (i, (scalar, offset)) in ty.components.iter().enumerate() {
-                uniform_regs.insert(signature.uniforms[ui].offset + offset, first + i);
+            let uniform = &signature.uniforms[ui];
+            registers.extend(uniform.ty.components.iter().map(|(scalar, _)| *scalar));
+            parameters.push(CallParameter::value(uniform.ty.clone()));
+            for (i, &(scalar, offset)) in uniform.ty.components.iter().enumerate() {
+                uniform_regs.insert(uniform.offset + offset, first + i);
                 uniform_values.push(CallArgument::Value { #[cfg(feature = "compiler")] origin: None,
-                    dataset_borrow:None, ty: Ty::scalar(*scalar),
+                    dataset_borrow:None, ty: Ty::scalar(scalar),
                     values: vec![first + i],
                 });
             }
