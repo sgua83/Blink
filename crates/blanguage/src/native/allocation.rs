@@ -66,6 +66,7 @@ pub(super) struct Graph {
     across_call: BTreeSet<usize>,
     outgoing_bytes: u64,
     registers: usize,
+    pub(super) needs_r15: bool,
 }
 #[path = "allocation/graph.rs"]
 mod graph;
@@ -104,10 +105,11 @@ impl Graph {
             across_call: BTreeSet::new(),
             outgoing_bytes: 0,
             registers: stage.registers.len(),
+            needs_r15: false,
         };
         let empty = BTreeSet::new();
         graph.together(&live);
-        graph::analyze(&mut graph, &stage.code, &stage.registers, &mut live,
+        graph.needs_r15 = graph::analyze(&mut graph, &stage.code, &stage.registers, &mut live,
             &empty, &empty, &empty, 1);
         drop(live);
         let phases = if stage.has_tile_steps() { stage.tile_phases() } else { Vec::new() };

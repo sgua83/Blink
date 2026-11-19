@@ -31,7 +31,7 @@ struct GraphScalars { address data; u64 count; };
 struct GraphNode {
     GraphBlock first; GraphBlock second; address instruction; address arguments; u64 count;
     u64 dst; u64 a; u64 b; u64 bits; u64 outgoing;
-    GraphKind kind; u32 flags; u32 operation;
+    GraphKind kind; u32 flags; u32 operation; u32 uses_r15;
 };
 struct GraphEvent { u64 anchor; u64 skip; u32 kind; u32 skip_present; };
 struct GraphDefinition { u64 weight; u64 transfer_dst; u64 transfer_src; u64 bits; u32 transfer; u32 literal; u32 pass; };
@@ -58,7 +58,7 @@ struct GraphHost {
     cfn<void,address,address,address,u64> reads;
 };
 // All sets, graph arrays and IR blocks are this synchronous caller's real containers.
-extern "C" void graph_block(address graph,GraphBlock code,GraphScalars registers,address live,
+extern "C" u32 graph_block(address graph,GraphBlock code,GraphScalars registers,address live,
     address break_live,address continue_live,address exit_live,u64 weight,GraphHost host) on cpu 
     requires nonzero(host.core.addressable) requires nonzero(host.core.relation) requires nonzero(host.core.weight) requires nonzero(host.core.set_weight)
     requires nonzero(host.core.across) requires nonzero(host.core.counter) requires nonzero(host.core.set_outgoing) requires nonzero(host.core.location)

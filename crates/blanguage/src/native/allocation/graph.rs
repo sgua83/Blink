@@ -18,7 +18,7 @@ enum Kind { Ordinary, If, Loop, Scope, Raise, Exit, Break, Continue, LocalLoad, 
 struct Node {
     first: Block, second: Block, instruction: *const Inst, arguments: *const Reg, count: usize,
     dst: Reg, a: Reg, b: Reg, bits: u64, outgoing: u64,
-    kind: Kind, flags: u32, operation: u32,
+    kind: Kind, flags: u32, operation: u32, uses_r15: u32,
 }
 #[repr(u32)]
 #[derive(Clone, Copy)]
@@ -66,7 +66,7 @@ struct Host {
 unsafe extern "C" {
     #[link_name = "bootstrap.coloring::graph_block"]
     fn graph_block(graph: *mut Graph, code: Block, registers: Scalars, live: *mut Slots,
-        break_live: *const Slots, continue_live: *const Slots, exit_live: *const Slots, weight: u64, host: Host);
+        break_live: *const Slots, continue_live: *const Slots, exit_live: *const Slots, weight: u64, host: Host) -> u32;
     #[link_name = "bootstrap.coloring::graph_together"]
     fn graph_together(graph: *mut Graph, live: *const Slots, core: Core);
     #[link_name = "bootstrap.coloring::graph_inputs"]
@@ -80,9 +80,12 @@ unsafe extern "C" {
     fn graph_read(graph: *mut Graph, live: *mut Slots, space: Space, index: usize, weight: u64, core: Core);
 }
 pub(super) fn analyze(graph: &mut Graph, code: &[Inst], registers: &[Scalar], live: &mut Slots,
-    break_live: &Slots, continue_live: &Slots, exit_live: &Slots, weight: u64) {
-    unsafe { graph_block(graph, Block::from(code), Scalars { data: registers.as_ptr(), count: registers.len() },
-        live, break_live, continue_live, exit_live, weight, HOST); }
+    break_live: &Slots, continue_live: &Slots, exit_live: &Slots, weight: u64) -> bool {
+    let uses_r15 = unsafe {
+        graph_block(graph, Block::from(code), Scalars { data: registers.as_ptr(), count: registers.len() },
+            live, break_live, continue_live, exit_live, weight, HOST)
+    };
+    uses_r15 != 0
 }
 pub(super) fn together(graph: &mut Graph, live: &Slots) { unsafe { graph_together(graph, live, CORE) } }
 pub(super) fn inputs(graph: &mut Graph, inputs: &[Reg]) { unsafe { graph_inputs(graph, inputs.as_ptr(), inputs.len(), CORE) } }
@@ -92,7 +95,7 @@ unsafe extern "C" fn read(code: Block, index: usize, registers: Scalars) -> Node
     let registers = unsafe { std::slice::from_raw_parts(registers.data, registers.count) };
     let mut node = Node { first: Block::EMPTY, second: Block::EMPTY, instruction,
         arguments: std::ptr::NonNull::<Reg>::dangling().as_ptr(), count: 0, dst: 0, a: 0, b: 0,
-        bits: 0, outgoing: 0, kind: Kind::Ordinary, flags: 0, operation: 0 };
+        bits: 0, outgoing: 0, kind: Kind::Ordinary, flags: 0, operation: 0, uses_r15: 0 };
     match &inst.kind {
         InstKind::If { condition, yes, no } => { node.kind = Kind::If; node.a = *condition; node.first = Block::from(yes); node.second = Block::from(no); }
         InstKind::Loop { condition, test, body } => { node.kind = Kind::Loop; node.a = *test; node.first = Block::from(condition); node.second = Block::from(body); }
@@ -112,7 +115,23 @@ unsafe extern "C" fn read(code: Block, index: usize, registers: Scalars) -> Node
         InstKind::Math { dst, op, args } => { node.kind = Kind::Math; node.dst = *dst; node.operation = *op as u32; node.arguments = args.as_ptr(); node.count = args.len(); }
         InstKind::Constant(_, _, bits) => { node.kind = Kind::Constant; node.bits = *bits; }
         InstKind::Print { .. } => node.kind = Kind::Print,
-        InstKind::Call(call) => { node.kind = Kind::Call; node.outgoing = super::super::external::outgoing_bytes(call); }
+        InstKind::Call(call) => {
+            node.kind = Kind::Call;
+            node.outgoing = super::super::external::outgoing_bytes(call);
+            node.uses_r15 = u32::from(call.arguments.iter().any(|argument| {
+                matches!(argument, CallArgument::Reference { address, .. } if matches!(address.storage, CallStorage::Indexed(_)))
+            }));
+        }
+        InstKind::PositionAddress { address, .. } => {
+            node.uses_r15 = u32::from(matches!(address.storage, CallStorage::Indexed(_)));
+        }
+        InstKind::TextureBindingAddress { .. } | InstKind::TextureSize { .. }
+        | InstKind::TextureLevels { .. } | InstKind::TextureAddress { .. }
+        | InstKind::TextureFormat { .. } | InstKind::TextureRead { .. }
+        | InstKind::TextureFetch { .. } | InstKind::ViewLoad { .. }
+        | InstKind::LoadIndexed { .. } | InstKind::StoreIndexed { .. } | InstKind::Atomic(_) => {
+            node.uses_r15 = 1;
+        }
         _ => {}
     }
     node

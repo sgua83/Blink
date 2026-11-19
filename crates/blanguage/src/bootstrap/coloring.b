@@ -272,7 +272,7 @@ extern "C" void graph_read(address graph,address live,GraphSpace space,u64 index
     graph_weight(graph,id,weight,core);
     core.slot(live,GraphSlotAction::Insert,space,index);
 }
-extern "C" void graph_block(address graph,GraphBlock code,GraphScalars registers,address live,
+extern "C" u32 graph_block(address graph,GraphBlock code,GraphScalars registers,address live,
     address break_live,address continue_live,address exit_live,u64 weight,GraphHost host) on cpu 
     requires nonzero(host.core.addressable) requires nonzero(host.core.relation) requires nonzero(host.core.weight) requires nonzero(host.core.set_weight)
     requires nonzero(host.core.across) requires nonzero(host.core.counter) requires nonzero(host.core.set_outgoing) requires nonzero(host.core.location)
@@ -280,14 +280,16 @@ extern "C" void graph_block(address graph,GraphBlock code,GraphScalars registers
     requires nonzero(host.drop_set) requires nonzero(host.change) requires nonzero(host.loop_live) requires nonzero(host.definitions)
     requires nonzero(host.reads) {
     address none=unsafe_address(0u64);
+    u32 uses_r15=0;
     u64 remaining=code.count;
     while(remaining!=0u64){
         remaining-=1u64;
         GraphNode node=host.read(code,remaining,registers);
+        uses_r15 |= node.uses_r15;
         if(node.kind==GraphKind::If){
             address yes=host.clone_set(live);
-            graph_block(graph,node.first,registers,yes,break_live,continue_live,exit_live,weight,host);
-            graph_block(graph,node.second,registers,live,break_live,continue_live,exit_live,weight,host);
+            uses_r15 |= graph_block(graph,node.first,registers,yes,break_live,continue_live,exit_live,weight,host);
+            uses_r15 |= graph_block(graph,node.second,registers,live,break_live,continue_live,exit_live,weight,host);
             host.change(GraphSetAction::DrainUnion,live,yes);
             host.drop_set(yes);
             host.core.slot(live,GraphSlotAction::Insert,GraphSpace::Register,node.a);
@@ -296,17 +298,17 @@ extern "C" void graph_block(address graph,GraphBlock code,GraphScalars registers
             address header=host.loop_live(node.first,node.a,node.second,live,break_live,continue_live,exit_live);
             u64 nested=graph_nested_weight(weight);
             address before=host.clone_set(header);
-            graph_block(graph,node.second,registers,before,live,header,exit_live,nested,host);
+            uses_r15 |= graph_block(graph,node.second,registers,before,live,header,exit_live,nested,host);
             host.change(GraphSetAction::DrainUnion,before,live);
             host.core.slot(before,GraphSlotAction::Insert,GraphSpace::Register,node.a);
             graph_weight(graph,node.a,nested,host.core);
-            graph_block(graph,node.first,registers,before,break_live,continue_live,exit_live,nested,host);
+            uses_r15 |= graph_block(graph,node.first,registers,before,break_live,continue_live,exit_live,nested,host);
             host.change(GraphSetAction::Swap,live,before);
             host.drop_set(before);
             host.drop_set(header);
         } else if(node.kind==GraphKind::Scope){
             address before=host.clone_set(live);
-            graph_block(graph,node.first,registers,before,break_live,continue_live,live,weight,host);
+            uses_r15 |= graph_block(graph,node.first,registers,before,break_live,continue_live,live,weight,host);
             host.change(GraphSetAction::Swap,live,before);
             host.drop_set(before);
         } else if(node.kind==GraphKind::Raise){
@@ -358,4 +360,5 @@ extern "C" void graph_block(address graph,GraphBlock code,GraphScalars registers
             host.reads(node.instruction,graph,live,weight);
         }
     }
+    return uses_r15;
 }

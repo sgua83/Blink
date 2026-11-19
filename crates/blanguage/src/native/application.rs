@@ -89,41 +89,8 @@ fn emit_value(
     graph.function_inputs(&body.inputs);
     let allocation = Allocation::new(&stage, &mut graph);
     let layout = Frame::new(&allocation, None);
-    fn scratch(code: &[Inst]) -> bool {
-        code.iter().any(|i| match &(i).kind {
-            InstKind::TextureBindingAddress { .. }
-            | InstKind::TextureSize { .. } | InstKind::TextureLevels { .. }
-            | InstKind::TextureAddress { .. } | InstKind::TextureFormat { .. }
-            | InstKind::TextureRead { .. } | InstKind::TextureFetch { .. }
-            | InstKind::LoadLocalIndexed { .. }
-            | InstKind::StoreLocalIndexed { .. }
-            | InstKind::ViewLoad { .. }
-            | InstKind::LoadIndexed { .. }
-            | InstKind::StoreIndexed { .. }
-            | InstKind::Atomic(_) => true,
-            InstKind::Scope(b) => scratch(b),
-            InstKind::If { yes, no, .. } => scratch(yes) || scratch(no),
-            InstKind::Loop {
-                condition, body, ..
-            } => scratch(condition) || scratch(body),
-            InstKind::PositionAddress { address, .. } => matches!(address.storage, CallStorage::Indexed(_)),
-            InstKind::Call(call) => call.arguments.iter().any(|a| {
-                matches!(
-                    a,
-                    CallArgument::Reference {
-                        address: CallReference {
-                            storage: CallStorage::Indexed(_),
-                            ..
-                        },
-                        ..
-                    }
-                )
-            }),
-            _ => false,
-        })
-    }
     const SCRATCH_REGISTER: u8 = 15;
-    let scratch = scratch(&stage.code);
+    let scratch = graph.needs_r15;
     let flags = u32::from(fallible) | (u32::from(scratch) << 1);
     let plan = unsafe { function_frame(layout.end, AbiType::result(result), flags) };
     let frame = i32::try_from(plan.bytes).map_err(|_| "应用栈帧超出x64地址编码")? as u32;
