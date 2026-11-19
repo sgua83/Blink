@@ -769,7 +769,9 @@ struct BorrowEvaluation<'a>{
 // A replay may visit the same physical write for many words or exits.
 // The callee contracts and argument bindings stay fixed inside this evaluation,
 // including the nested relation scopes that replay its writes.
-type CallWritePaths = std::cell::RefCell<BTreeMap<(usize, usize), bounds::Clause>>;
+type CallWritePaths = std::sync::Mutex<
+    BTreeMap<(usize, usize), Arc<std::sync::OnceLock<bounds::Clause>>>,
+>;
 
 enum StoredPaths<'a> {
     Own(CallWritePaths),
@@ -791,7 +793,9 @@ impl StoredPaths<'_> {
     fn project(&self, call_index: usize, index: usize, guard: &bounds::Condition,
         usage: &Use, call: &Call,
     ) -> bounds::Clause {
-        self.paths().borrow_mut().entry((call_index, index)).or_insert_with(|| {
+        let projected = self.paths().lock().unwrap().entry((call_index, index))
+            .or_default().clone();
+        projected.get_or_init(|| {
             bounds::Clause::both(&usage.path, &guard.projected_case(true, &call.arguments))
         }).clone()
     }
@@ -1690,39 +1694,59 @@ fn converge_access(functions:&BTreeMap<String,&Function>,known:&mut States,owns_
 }
 
 fn stored_outputs<'p>(
+    worker: &crate::compiler::Worker,
     evaluation: &mut BorrowEvaluation<'_>, exposed: &BTreeMap<Origin, Borrow>,
     parameters: impl Fn() -> &'p BTreeMap<ValueIdentity, bounds::Proof>,
-) -> BTreeSet<Access> {
-    let function = evaluation.function;
-    let mut exits = function.uses.iter().filter_map(|usage| match &usage.requirement {
+) -> std::result::Result<BTreeSet<Access>, crate::parallel::Error<crate::ast::Diagnostic>> {
+    let BorrowEvaluation { function, state, known, .. } = *evaluation;
+    let exits: Vec<_> = function.uses.iter().filter_map(|usage| match &usage.requirement {
         Requirement::Return { borrow, .. } => Some(&borrow.reads),
         _ => None,
     }).flat_map(|reads| reads.iter()).filter_map(|read| match read {
         ContentRead::Returned { memory } => Some(*memory),
         _ => None,
-    }).peekable();
-    if exits.peek().is_none() {
-        return BTreeSet::new();
+    }).collect();
+    if exits.is_empty() {
+        return Ok(BTreeSet::new());
     }
 
-    let mut stored = BTreeMap::<(Borrow, u32), (Vec<_>, Borrow)>::new();
-    for (origin, word) in evaluation.stored_locations(&parameters).iter() {
+    let locations = evaluation.stored_locations(&parameters);
+    let mut stored = BTreeMap::<(Borrow, u32), Vec<_>>::new();
+    for (origin, word) in locations.iter() {
         let target = stored_target(origin, function, exposed, &parameters);
-        stored.entry((target, *word)).or_default().0.push(Arc::clone(origin));
+        stored.entry((target, *word)).or_default().push(Arc::clone(origin));
     }
-    let guards = std::cell::LazyCell::new(|| bounds::PublicGuards::stored(parameters()));
-    for memory in exits {
-        for ((_, word), (origins, value)) in &mut stored {
-            for origin in origins {
-                let incoming = evaluation.content_at_exit(origin, *word, memory);
-                let incoming = canonical_with_guards(incoming, function, None, exposed, &guards, false);
+    if stored.is_empty() { return Ok(BTreeSet::new()); }
+
+    let bindings = parameters();
+    let store = |evaluation: &mut BorrowEvaluation<'_>, guards: &bounds::PublicGuards<'_>, ((borrows, word), origins): ((Borrow, u32), Vec<Arc<address::Origin>>)| {
+        let mut value = Borrow::default();
+        for &memory in &exits {
+            for origin in &origins {
+                let incoming = evaluation.content_at_exit(origin, word, memory);
+                let incoming = canonical_with_guards(incoming, function, None, exposed, guards, false);
                 value.union(&incoming);
             }
         }
+        Access::Stored { borrows, word, value, when: bounds::Condition::constant(true) }
+    };
+    if stored.len() == 1 {
+        let guards = bounds::PublicGuards::stored(bindings);
+        return Ok(stored.into_iter().map(|entry| store(evaluation, &guards, entry)).collect());
     }
-    stored.into_iter().map(|((borrows, word), (_, value))| Access::Stored {
-        borrows, word, value, when: bounds::Condition::constant(true),
-    }).collect()
+
+    // Each location owns its result and the original exit/write order.
+    // The write guards have the same bindings in every worker and already have
+    // an owner in this pass. Mutable reads and loop values stay worker-local.
+    let paths = evaluation.stored_paths.paths();
+    let results = crate::parallel::try_map(worker, stored.into_iter().collect(), |_| {
+        (BorrowEvaluation {
+            function, state, known, expand_loops: true, deferred_reads: false,
+            loop_bindings: Vec::new(), values: BTreeMap::new(),
+            stored: Some(locations.clone()), stored_paths: StoredPaths::Borrowed(paths),
+        }, bounds::PublicGuards::stored(bindings))
+    }, |(evaluation, guards), entry| Ok(store(evaluation, guards, entry)))?;
+    Ok(results.into_iter().collect())
 }
 
 fn borrow_worker_error(
@@ -1759,7 +1783,7 @@ fn converge(
     let mut ready: BTreeSet<_> = functions.keys().collect();
     while !ready.is_empty() {
         let tasks: Vec<_> = ready.into_iter().collect();
-        let changed = crate::parallel::try_map(worker, tasks, |_| (), |_, name| {
+        let changed = crate::parallel::try_map(worker, tasks, Clone::clone, |worker, name| {
             let function = functions[name];
             let state = &known[name];
             let mut evaluation=BorrowEvaluation{function,state,known,expand_loops:true,deferred_reads:false,loop_bindings:Vec::new(),values:BTreeMap::new(),stored:None,stored_paths:Default::default()};
@@ -1797,7 +1821,8 @@ fn converge(
                 if unknown.contains(&(name.clone(),output.clone())){value.sources.insert(Origin::Unresolved);}
                 (output, value)
             }).collect::<Outputs>();
-            let access = stored_outputs(&mut evaluation, &exposed, || &parameters);
+            let access = stored_outputs(worker, &mut evaluation, &exposed, || &parameters)
+                .map_err(|error| borrow_worker_error(functions, error))?;
             let local_changed = loops != state.loops || entries != state.entries;
             let interface_changed = outputs != state.interface.outputs || access != state.interface.access;
             Ok((local_changed || interface_changed).then_some(ConvergenceUpdate {
