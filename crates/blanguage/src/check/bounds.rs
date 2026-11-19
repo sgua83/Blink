@@ -3690,39 +3690,7 @@ impl Builder<'_> {
             return Some(0);
         };
         let query = IntegerQuery::new(&facts, &roots);
-        let global = query.root(ValueIdentity::Register(self.global_index));
-        let mut count: Option<u32> = None;
-        for fact in &facts {
-            let Fact::Index(lane, IndexDomain::Computed(IntegerExpression::Binary(
-                IntegerOperation::Remainder, Scalar::U32, Operand::Value(index), Operand::Constant(Scalar::U32, span)
-            ))) = *fact else { continue; };
-            if span != Bits::from(width) || query.root(index) != global { continue; }
-            let (lower, upper) = query.bounds(lane, Scalar::U32);
-            let upper = upper.min(i128::from(maximum.min(width)-1));
-            let mut population = if lower > upper { 0 } else { (upper-lower+1) as u32 };
-            if population != 0 {
-                for fact in &facts {
-                    let Fact::Index(remainder, IndexDomain::Computed(IntegerExpression::Binary(
-                        IntegerOperation::Remainder, Scalar::U32, Operand::Value(source), Operand::Constant(Scalar::U32, period)
-                    ))) = *fact else { continue; };
-                    if query.root(source) != query.root(lane) { continue; }
-                    let (first, last) = query.bounds(remainder, Scalar::U32);
-                    let last = last.min(i128::from(period)-1);
-                    let selected = if first > last { 0 } else {
-                        // Count an integer interval of residues without enumerating lanes.
-                        let (first, last) = (first as u64, last as u64);
-                        let prefix = |end: u64| {
-                            let tail = (end % period).min(last+1);
-                            end / period * (last-first+1) + tail-first.min(tail)
-                        };
-                        (prefix(upper as u64+1)-prefix(lower as u64)) as u32
-                    };
-                    population = population.min(selected);
-                }
-            }
-            count = Some(count.map_or(population, |old| old.min(population)));
-        }
-        count
+        integer::tile_nonzero_count(&facts, query, ValueIdentity::Register(self.global_index), width, maximum)
     }
     pub(super) fn common_tile_proof(&self, tile: usize, words: &[u32]) -> Option<Proof> {
         match &self.tiles[tile].source {

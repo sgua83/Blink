@@ -637,6 +637,39 @@ IntegerWide range_number(u32 width,u32 signed,u64 ordered) on cpu {
 extern "C" IntegerRangePieces integer_range_cast(u32 source_width,u32 source_signed,u32 target_width,u64 target_bias,BitRange value) on cpu {
  return integer_range_project(target_width,target_bias,range_number(source_width,source_signed,value.lower),range_number(source_width,source_signed,value.upper));
 }
+u64 tile_residue_prefix(u64 end,u64 period,u64 first,u64 last) on cpu requires nonzero(period) {
+    u64 tail=min(end%period,last+1u64);
+    return end/period*(last-first+1u64)+tail-min(first,tail);
+}
+
+extern "C" TileNonzeroBound tile_nonzero_bound(address context,u32 width,u32 maximum,
+    cfn<TileLane,address> next_lane,cfn<TileResidue,address> next_residue) on cpu
+    requires nonzero(next_lane) requires nonzero(next_residue) {
+    u64 limit=u64(min(width,maximum))-1u64;
+    TileNonzeroBound bound=TileNonzeroBound(0,maximum);
+    while(true){
+        TileLane lane=next_lane(context);
+        if(lane.present==0){return bound;}
+        u64 lower=u64(lane.lower);
+        u64 upper=min(u64(lane.upper),limit);
+        if(lower>upper){return TileNonzeroBound(1,0);}
+        u32 population=u32(upper-lower+1u64);
+        while(true){
+            TileResidue residue=next_residue(context);
+            u64 period=residue.period;
+            if(period==0u64){break;}
+            u64 first=u64(residue.first);
+            u64 last=min(u64(residue.last),period-1u64);
+            if(first>last){return TileNonzeroBound(1,0);}
+            u64 selected=tile_residue_prefix(upper+1u64,period,first,last)
+                -tile_residue_prefix(lower,period,first,last);
+            population=min(population,u32(selected));
+            if(population==0){return TileNonzeroBound(1,0);}
+        }
+        bound=TileNonzeroBound(1,min(bound.value,population));
+    }
+}
+
 extern "C" IntegerRangePieces integer_range_tile_sum(u32 width,u32 signed,BitRange values,TileSumLanes lanes) on cpu {
     u64 minimum=u64(lanes.minimum);
     u64 maximum=u64(lanes.maximum);

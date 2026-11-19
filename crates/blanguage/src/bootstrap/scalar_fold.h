@@ -86,6 +86,12 @@ struct IntegerRangePieces {BitRange first;BitRange second;u32 count;};
 extern "C" IntegerRangePieces integer_range(IntegerRangeOperation operation,u32 width,u32 signed,BitRange left,BitRange right) on cpu;
 extern "C" IntegerRangePieces integer_range_cast(u32 source_width,u32 source_signed,u32 target_width,u64 target_bias,BitRange value) on cpu;
 struct TileSumLanes { u32 minimum; u32 maximum; u32 has_nonzero; u32 nonzero; };
+struct TileLane { u32 present; u32 lower; u32 upper; };
+struct TileResidue { u64 period; u32 first; u32 last; };
+struct TileNonzeroBound { u32 present; u32 value; };
+extern "C" TileNonzeroBound tile_nonzero_bound(address context,u32 width,u32 maximum,
+    cfn<TileLane,address> next_lane,cfn<TileResidue,address> next_residue) on cpu
+    requires nonzero(next_lane) requires nonzero(next_residue);
 extern "C" IntegerRangePieces integer_range_tile_sum(u32 width,u32 signed,BitRange values,TileSumLanes lanes) on cpu;
 extern "C" IntegerRangePieces integer_range_unary(IntegerRangeUnary operation,u32 width,u32 signed,BitRange value) on cpu;
 extern "C" IntegerRangePieces integer_range_counts(u32 width,u64 bias,BitRange value) on cpu;
