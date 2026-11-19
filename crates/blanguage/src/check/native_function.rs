@@ -2585,14 +2585,14 @@ pub(crate) async fn compile_module(
     })
 }
 
-async fn domain_at(
+async fn ensure_domain<'a>(
     world: &World,
     input: DomainInput<'_>,
-    functions: &mut Module,
+    functions: &'a mut Module,
     target: Target,
     element_inputs: &[ElementFact],
     parameters: Option<&[Param]>,
-) -> Result<crate::module::domain::Interface> {
+) -> Result<&'a crate::module::domain::Interface> {
     let name = crate::module::domain::symbol(input.name(), target);
     if !functions.units.contains_key(&name) {
         if let DomainInput::Declaration { instance, .. } = input
@@ -2609,7 +2609,7 @@ async fn domain_at(
         .unwrap()
         .contract
         .domain
-        .clone()
+        .as_ref()
         .ok_or_else(|| Diagnostic {
             source: input.owner().definition.source.clone(),
             span: input.span(),
@@ -2625,7 +2625,10 @@ impl Builder<'_> {
         element_inputs: &[ElementFact],
         parameters: &[Param],
     ) -> Result<crate::module::domain::Interface> {
-        unsafe { self.world.call(domain_at(self.world, input, &mut self.functions, target, element_inputs, Some(parameters))).await }
+        let interface = unsafe {
+            self.world.call(ensure_domain(self.world, input, &mut self.functions, target, element_inputs, Some(parameters))).await
+        }?;
+        Ok(interface.clone())
     }
     pub(super) fn call_domain(
         &mut self,
@@ -2697,7 +2700,7 @@ async fn domain_declaration(
     let mut roots = BTreeSet::new();
     let input = DomainInput::Declaration { instance, signature: Some(signature) };
     for &target in targets {
-        unsafe { world.call(domain_at(world, input, functions, target, &[], Some(&signature.parameters))).await }?;
+        unsafe { world.call(ensure_domain(world, input, functions, target, &[], Some(&signature.parameters))).await }?;
         if instance.definition.public {
             roots.insert(crate::module::domain::symbol(&instance.name, target));
         }
@@ -2835,7 +2838,7 @@ async fn build_domain(
             &mut registers,
             &mut code,
         )?;
-        unsafe { world.call(domain_at(world, DomainInput::Declaration { instance: &call.instance, signature: None }, functions, target, &[], None)).await }?;
+        unsafe { world.call(ensure_domain(world, DomainInput::Declaration { instance: &call.instance, signature: None }, functions, target, &[], None)).await }?;
         let mut arguments = vec![frame.clone()];
         for root in &call.arguments {
             arguments.push(match root {
