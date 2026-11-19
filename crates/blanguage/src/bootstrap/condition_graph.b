@@ -500,17 +500,23 @@ extern "C" void common_facts(address context,CommonHost host) on cpu
  requires nonzero(host.emit_known) requires nonzero(host.bound_next) requires nonzero(host.range)
  requires nonzero(host.compare) requires nonzero(host.scalar_compare) requires nonzero(host.scalar) {
  host.intersection(context);
- while(true){
-  CommonRoot root=host.root_next(context);if(root.present==0){break;}
-  if(root.matched==0){continue;}
-  address representative=root.left;
-  if(host.compare(root.left,root.right)==i32(0)){
-   if(host.compare(root.identity,root.left)==i32(0)){continue;}
+ CommonRoot left_root=host.root_next(context,0);
+ CommonRoot right_root=host.root_next(context,1);
+ while(left_root.identity!=address()&&right_root.identity!=address()){
+  i32 order=host.compare(left_root.identity,right_root.identity);
+  if(order<i32(0)){left_root=host.root_next(context,0);continue;}
+  if(order>i32(0)){right_root=host.root_next(context,1);continue;}
+  address identity=left_root.identity;
+  address left=left_root.root;address right=right_root.root;
+  left_root=host.root_next(context,0);right_root=host.root_next(context,1);
+  address representative=left;
+  if(host.compare(left,right)==i32(0)){
+   if(host.compare(identity,left)==i32(0)){continue;}
   }else{
-   representative=host.representative(context,root.left,root.right,root.identity);
+   representative=host.representative(context,left,right,identity);
    if(address_bits(representative)==0u64){continue;}
   }
-  FactView fact=internal_key(FactKind::Equal,representative,unsafe_address(0u64),0u64);fact.second=root.identity;
+  FactView fact=internal_key(FactKind::Equal,representative,unsafe_address(0u64),0u64);fact.second=identity;
   fact=fact_equal(fact,host.compare(fact.first,fact.second));
   if(host.contains(context,fact)==0){host.emit(context,fact);}
  }

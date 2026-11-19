@@ -16,8 +16,7 @@ type Slot = *mut c_void;
 struct Context<'a> {
     environment: &'a Facts,
     sides: [&'a Facts; 2],
-    roots: btree_map::Iter<'a, ValueIdentity, ValueIdentity>,
-    right_roots: &'a BTreeMap<ValueIdentity, ValueIdentity>,
+    roots: [btree_map::Iter<'a, ValueIdentity, ValueIdentity>; 2],
     groups: BTreeMap<(ValueIdentity, ValueIdentity), ValueIdentity>,
     union: btree_set::Union<'a, Fact>,
     cursors: [btree_set::Iter<'a, Fact>; 2],
@@ -35,33 +34,17 @@ unsafe extern "C" fn intersection(slot: Slot) {
 }
 #[repr(C)]
 struct Root {
-    present: u32,
-    matched: u32,
     identity: Borrowed,
-    left: Borrowed,
-    right: Borrowed,
+    root: Borrowed,
 }
-unsafe extern "C" fn root_next(slot: Slot) -> Root {
-    let context = unsafe { context(slot) };
-    match context.roots.next() {
-        Some((id, left)) => {
-            let right = context.right_roots.get(id);
-            Root {
-                present: 1,
-                matched: u32::from(right.is_some()),
-                identity: ptr::from_ref(id).cast(),
-                left: ptr::from_ref(left).cast(),
-                right: right.map_or(ptr::null(), |right| ptr::from_ref(right).cast()),
-            }
-        }
-        None => Root {
-            present: 0,
-            matched: 0,
-            identity: ptr::null(),
-            left: ptr::null(),
-            right: ptr::null(),
+unsafe extern "C" fn root_next(slot: Slot, side: u32) -> Root {
+    unsafe { context(slot) }.roots[side as usize].next().map_or(
+        Root { identity: ptr::null(), root: ptr::null() },
+        |(identity, root)| Root {
+            identity: ptr::from_ref(identity).cast(),
+            root: ptr::from_ref(root).cast(),
         },
-    }
+    )
 }
 unsafe extern "C" fn representative(
     slot: Slot,
@@ -202,7 +185,7 @@ unsafe extern "C" fn range(
 #[repr(C)]
 struct Host {
     intersection: unsafe extern "C" fn(Slot),
-    root_next: unsafe extern "C" fn(Slot) -> Root,
+    root_next: unsafe extern "C" fn(Slot, u32) -> Root,
     representative: unsafe extern "C" fn(Slot, Borrowed, Borrowed, Borrowed) -> Borrowed,
     contains: unsafe extern "C" fn(Slot, fact_fields::Fields) -> u32,
     emit: unsafe extern "C" fn(Slot, fact_fields::Fields),
@@ -249,8 +232,7 @@ pub(super) fn either<'a>(
             let mut context = Context {
                 environment,
                 sides: [&a, &b],
-                roots: left.iter(),
-                right_roots: &right,
+                roots: [left.iter(), right.iter()],
                 groups: BTreeMap::new(),
                 union: a.union(&b),
                 cursors: [a.iter(), b.iter()],

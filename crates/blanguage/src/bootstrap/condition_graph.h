@@ -154,13 +154,13 @@ extern "C" u32 internal_conflict(address context,CrossScalars integers,InternalH
  requires nonzero(host.compare) requires nonzero(host.same_scalar) requires nonzero(host.scalar)
  requires nonzero(host.predicate) requires nonzero(host.upper);
 
-struct CommonRoot { u32 present; u32 matched; address identity; address left; address right; };
+struct CommonRoot { address identity; address root; };
 struct CommonKnown { address identity; address scalar; u32 present; };
 struct CommonBits { u64 mask; u64 value; u32 present; };
 struct CommonLimit { FactView value; FactView next; };
 struct CommonHost {
  cfn<void,address> intersection;
- cfn<CommonRoot,address> root_next;
+ cfn<CommonRoot,address,u32> root_next;
  cfn<address,address,address,address,address> representative;
  cfn<u32,address,FactView> ensures memory(read) contains;
  cfn<void,address,FactView> emit;
