@@ -1,7 +1,7 @@
 //! 原始CPU映像只消费原链接器已选择的COFF，不产生函数代码。
 use super::{Inputs, Result, RootView, Roots, Source, combine, selection::select};
-use crate::{native::{ModuleCode, ModuleSection, ModuleRelocation, ModuleTarget}, object::{Input, Target}};
-use std::{borrow::Cow, collections::BTreeMap};
+use crate::{native::ModuleCode, object::Input};
+use std::borrow::Cow;
 pub(crate) fn modules(inputs: Vec<Input>, borrowed: &[&crate::object::Object], roots: &[RootView<'_>], local: &[&str], types: u32, programs: u32) -> Result<Option<ModuleCode>> {
     let mut linked = Inputs::default();
     for input in inputs {
@@ -10,20 +10,5 @@ pub(crate) fn modules(inputs: Vec<Input>, borrowed: &[&crate::object::Object], r
     linked.sources.extend(borrowed.iter().copied().map(Source::Borrowed));
     let objects = select(linked, Roots::Symbols(roots, types, programs), Cow::Owned, |bytes| Cow::Borrowed(bytes.as_slice()))?;
     if objects.is_empty() { return Ok(None); }
-    let mut symbols = BTreeMap::new();
-    let sections = combine::objects(objects, Some((local, &mut symbols)))?;
-    let sections = sections.into_iter().map(|section| {
-        let relocations = section.relocations.into_iter().map(|relocation| {
-            let target = match relocation.target {
-                Target::Section(section, value) => ModuleTarget::Section { section, value },
-                Target::Import(import) => ModuleTarget::Import(crate::ast::ExternalName {
-                    library: import.dll, symbol: import.name,
-                }),
-                Target::Symbol(_) => unreachable!(),
-            };
-            ModuleRelocation { offset: relocation.offset, kind: relocation.kind, target }
-        }).collect();
-        ModuleSection { name: section.name, bytes: section.bytes, flags: section.flags, relocations }
-    }).collect();
-    Ok(Some(ModuleCode { sections, symbols }))
+    combine::module(objects, local).map(Some)
 }

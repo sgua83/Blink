@@ -1,7 +1,10 @@
 //! B owns layout and rebasing for both reports and native outputs.
 //! Native output writes the selected COFF bytes directly into its own sections.
 use super::{Result, Selected, pe, resources::ImportBytes};
-use crate::object::{Relocation, Section, Target, stack::{Call, Frame}};
+use crate::{
+    native::{ModuleCode, ModuleRelocation, ModuleSection, ModuleTarget},
+    object::{Relocation, Section, Target, stack::{Call, Frame}},
+};
 use std::collections::BTreeMap;
 
 #[repr(C)]
@@ -33,11 +36,14 @@ unsafe extern "C" {
     fn combine_encode(sections: *const CombineSection, count: usize, outputs: *const *mut u8);
 }
 
-pub(super) fn objects<Payload: AsRef<[u8]>>(
-    objects: Vec<Selected<Payload>>, module: Option<(&[&str], &mut BTreeMap<String, (usize, u32)>)>,
-) -> Result<Vec<Section>> {
-    combine(objects, module, extent,
-        |rows, groups, objects| grouped_sections(rows, groups, objects, Vec::with_capacity),
+pub(super) fn module<Payload: AsRef<[u8]>>(
+    objects: Vec<Selected<Payload>>, local: &[&str],
+) -> Result<ModuleCode> {
+    let mut symbols = BTreeMap::new();
+    let sections = combine(objects, Some((local, &mut symbols)), extent,
+        |rows, groups, objects| grouped_sections(rows, groups, objects, |name, length, flags| ModuleSection {
+            name, bytes: Vec::with_capacity(length), flags, relocations: Vec::new(),
+        }),
         |section| &mut section.relocations,
         |rows, mut sections, _| {
             let destinations: Vec<_> = sections.iter_mut().map(|section| section.bytes.as_mut_ptr()).collect();
@@ -49,12 +55,15 @@ pub(super) fn objects<Payload: AsRef<[u8]>>(
                 }
             }
             Ok(sections)
-        })
+        })?;
+    Ok(ModuleCode { sections, symbols })
 }
 
 pub(super) fn link_pe(objects: Vec<Selected>, stack_reserve: u64) -> Result<Vec<u8>> {
     combine(objects, None, extent,
-        |rows, groups, objects| grouped_sections(rows, groups, objects, std::convert::identity),
+        |rows, groups, objects| grouped_sections(rows, groups, objects, |name, length, flags| Section {
+            name, bytes: length, flags, relocations: Vec::new(), associated: Vec::new(), layout: None,
+        }),
         |section| &mut section.relocations,
         |rows, sections, _| pe::link(&sections, stack_reserve, |destinations| {
             // PE supplies one final byte range for each group in layout order.
@@ -74,11 +83,11 @@ fn extent(bytes: &impl AsRef<[u8]>) -> (*const u8, usize) {
     (bytes.as_ptr(), bytes.len())
 }
 
-fn combine<Payload, Group, Output>(
+fn combine<Payload, Group, Output, Reference: From<Relocation>>(
     mut objects: Vec<Selected<Payload>>, module: Option<(&[&str], &mut BTreeMap<String, (usize, u32)>)>,
     extent: impl Fn(&Payload) -> (*const u8, usize),
     groups: impl FnOnce(&[CombineSection], usize, &[Selected<Payload>]) -> Result<Vec<Group>>,
-    relocation_output: impl Fn(&mut Group) -> &mut Vec<Relocation>,
+    relocation_output: impl Fn(&mut Group) -> &mut Vec<Reference>,
     finish: impl FnOnce(&[CombineSection], Vec<Group>, Vec<Frame>) -> Result<Output>,
 ) -> Result<Output> {
     let mut inputs=Vec::with_capacity(objects.len());
@@ -169,7 +178,7 @@ fn combine<Payload, Group, Output>(
                 if row.target_kind == 0 {
                     relocation.target = Target::Section(usize::try_from(row.section)?, u32::try_from(row.value)?);
                 }
-                output.push(relocation);
+                output.push(relocation.into());
             }
         }
         for mut frame in std::mem::take(&mut object.stack) {
@@ -192,22 +201,28 @@ fn combine<Payload, Group, Output>(
     finish(&rows, sections, stack)
 }
 
-fn grouped_sections<Payload, Bytes>(
+fn grouped_sections<Payload, Group>(
     rows: &[CombineSection], groups: usize, objects: &[Selected<Payload>],
-    payload: impl Fn(usize) -> Bytes,
-) -> Result<Vec<Section<Bytes>>> {
+    group: impl Fn(String, usize, u32) -> Group,
+) -> Result<Vec<Group>> {
     let mut sections = Vec::with_capacity(groups);
     for (i, (section, row)) in objects.iter().flat_map(|object| &object.sections).zip(rows).enumerate() {
         if row.owner == i as u64 {
-            sections.push(Section {
-                name: section.name.clone(),
-                bytes: payload(usize::try_from(row.size)?),
-                flags: u32::try_from(row.flags)?,
-                relocations: Vec::new(),
-                associated: Vec::new(),
-                layout: None,
-            });
+            sections.push(group(section.name.clone(), usize::try_from(row.size)?, u32::try_from(row.flags)?));
         }
     }
     Ok(sections)
+}
+
+impl From<Relocation> for ModuleRelocation {
+    fn from(Relocation { offset, kind, target }: Relocation) -> Self {
+        let target = match target {
+            Target::Section(section, value) => ModuleTarget::Section { section, value },
+            Target::Import(import) => ModuleTarget::Import(crate::ast::ExternalName {
+                library: import.dll, symbol: import.name,
+            }),
+            Target::Symbol(_) => unreachable!(),
+        };
+        Self { offset, kind, target }
+    }
 }
