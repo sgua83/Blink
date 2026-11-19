@@ -922,6 +922,20 @@ extern "C" void range_set_project(address input,u64 count,cfn<BitRange,address,u
     }
 }
 
+extern "C" bool range_set_project_contains(address input,u64 count,cfn<BitRange,address,u32,u64> get,
+    address output,cfn<void,address,BitRange> push,RangeSetProjection projection,u64 point) on cpu
+    requires nonzero(get) requires nonzero(push) {
+    RangeSetCursor cursor=RangeSetCursor(0u64,RangeSetNext(BitRange(0u64,0u64),0));
+    bool admits_point=projection.exclude==0 || projection.excluded!=point;
+    bool contains=false;
+    while(true){
+        RangeSetNext next=range_set_next(input,count,get,projection,cursor);
+        if(next.present==0){return contains;}
+        if(admits_point && next.value.lower<=point && point<=next.value.upper){contains=true;}
+        range_set_publish(next.value,output,push,projection.excluded,projection.exclude);
+    }
+}
+
 extern "C" BitRange range_set_projected_hull(address input,u64 count,cfn<BitRange,address,u32,u64> get,
     RangeSetProjection projection) on cpu requires nonzero(get) {
     RangeSetCursor cursor=RangeSetCursor(0u64,RangeSetNext(BitRange(0u64,0u64),0));

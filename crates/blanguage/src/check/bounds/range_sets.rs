@@ -23,7 +23,7 @@ struct Output {
     push:Push,
 }
 #[repr(C)]
-struct Projection {
+pub(super) struct Projection {
     lower: u64,
     upper: u64,
     excluded: u64,
@@ -31,7 +31,7 @@ struct Projection {
 }
 
 impl Projection {
-    fn new(lower: u64, upper: u64, excluded: Option<u64>) -> Self {
+    pub(super) fn new(lower: u64, upper: u64, excluded: Option<u64>) -> Self {
         Self { lower, upper, excluded: excluded.unwrap_or_default(), exclude: u32::from(excluded.is_some()) }
     }
 }
@@ -108,6 +108,9 @@ unsafe extern "C" {
     fn clipped(input:Borrowed,count:usize,read:Read,output:Slot,push:Push,lower:u64,upper:u64);
     #[link_name="bootstrap.scalar_fold::range_set_project"]
     fn projected(input:Borrowed,count:usize,read:Read,output:Slot,push:Push,projection:Projection);
+    #[link_name="bootstrap.scalar_fold::range_set_project_contains"]
+    fn projected_contains(input: Borrowed, count: usize, read: Read, output: Slot, push: Push,
+        projection: Projection, point: Bits) -> bool;
     #[link_name="bootstrap.scalar_fold::range_set_projected_hull"]
     fn projected_hull(input: Borrowed, count: usize, read: Read, projection: Projection) -> Range;
     #[link_name="bootstrap.scalar_fold::range_set_covers_projected"]
@@ -133,11 +136,17 @@ pub(super) fn hull(values:&[Pair])->Pair {inputs(values,&[],|s,n,_|unsafe{outer(
 pub(super) fn contains(values:&[Pair],value:u64)->bool {inputs(values,&[],|s,n,_|unsafe{member(s,n,read,value)})}
 pub(super) fn union(left:&[Pair],right:&[Pair])->ScalarRanges {inputs(left,right,|s,n,m|output(|o|unsafe{united(s,n,m,read,o,push)}))}
 pub(super) fn restrict(values:&[Pair],lower:u64,upper:u64)->ScalarRanges {inputs(values,&[],|s,n,_|output(|o|unsafe{clipped(s,n,read,o,push,lower,upper)}))}
-pub(super) fn restrict_excluding(values: &[Pair], lower: u64, upper: u64, excluded: Option<u64>) -> ScalarRanges {
-    let projection = Projection::new(lower, upper, excluded);
+pub(super) fn project(values: &[Pair], projection: Projection) -> ScalarRanges {
     inputs(values, &[], |source, count, _| {
         output(|dest| unsafe { projected(source, count, read, dest, push, projection) })
     })
+}
+pub(super) fn project_contains(values: &[Pair], projection: Projection, point: Bits) -> (ScalarRanges, bool) {
+    let mut result = Vec::<Pair>::new();
+    let contains = inputs(values, &[], |source, count, _| unsafe {
+        projected_contains(source, count, read, ptr::from_mut(&mut result).cast(), push, projection, point)
+    });
+    (ScalarRanges(result), contains)
 }
 pub(super) fn restricted_hull(values: &[Pair], (lower, upper): Pair, excluded: Option<Bits>) -> Pair {
     let projection = Projection::new(lower, upper, excluded);

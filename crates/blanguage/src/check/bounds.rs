@@ -477,7 +477,7 @@ impl Proof {
 
     fn element_range(&self, component: usize, scalar: Scalar) -> ScalarRanges {
         let (source, excluded) = self.element_intervals(component, scalar);
-        range_sets::restrict_excluding(source, 0, scalar.bit_mask(), excluded)
+        range_sets::project(source, range_sets::Projection::new(0, scalar.bit_mask(), excluded))
     }
 
     fn element_hull(&self, component: usize, scalar: Scalar) -> (Bits, Bits) {
@@ -1465,12 +1465,13 @@ impl Proof {
         proof
     }
     pub(super) fn capture(value: &Value) -> Self {
+        let (ranges, nonzero) = (0..value.regs.len()).map(|i| value.component_numeric_facts(i)).unzip();
         Self {
             domains: value.proof.domains.clone(),
             views: value.proof.views.clone(),
             addresses: value.proof.addresses.clone(),
-            ranges: (0..value.regs.len()).map(|i| value.component_ranges(i)).collect(),
-            nonzero: (0..value.regs.len()).map(|i| value.component_nonzero(i)).collect(),
+            ranges,
+            nonzero,
             origins: (0..value.regs.len()).map(|i| value.component_origins(i)).collect(),
             conditions: (0..value.regs.len()).map(|i| Self::value_condition(value, i)).collect(),
         }
@@ -1581,10 +1582,13 @@ impl Proof {
             .extend((0..value.regs.len()).map(|i| Self::value_condition(value, i)));
         self.origins
             .extend((0..value.regs.len()).map(|i| value.component_origins(i)));
-        self.nonzero
-            .extend((0..value.regs.len()).map(|i| value.component_nonzero(i)));
-        self.ranges
-            .extend((0..value.regs.len()).map(|i| value.component_ranges(i)));
+        self.ranges.reserve(value.regs.len());
+        self.nonzero.reserve(value.regs.len());
+        for i in 0..value.regs.len() {
+            let (range, nonzero) = value.component_numeric_facts(i);
+            self.ranges.push(range);
+            self.nonzero.push(nonzero);
+        }
         self.domains
             .extend((0..value.regs.len()).map(|i| value.proof.domains(i).into_owned()));
     }
@@ -1846,13 +1850,26 @@ impl Value {
         let scalar = self.ty.components[component].0;
         if scalar.is_float() { return floating::ranges(self, component); }
         if !scalar.is_integer() { return ScalarRanges::default(); }
+        let (ranges, projection) = self.integer_projection(component, scalar);
+        range_sets::project(ranges, projection)
+    }
+    fn integer_projection(&self, component: usize, scalar: Scalar) -> (&[(Bits, Bits)], range_sets::Projection) {
         let mask = scalar.bit_mask();
         let (lower, upper) = self.constant.as_ref().map_or((0, mask), |bits| {
             let value = bits[component] ^ scalar.order_bias();
             (value, value.min(mask))
         });
         let (ranges, excluded) = self.proof.element_intervals(component, scalar);
-        range_sets::restrict_excluding(ranges, lower, upper, excluded)
+        (ranges, range_sets::Projection::new(lower, upper, excluded))
+    }
+    fn component_numeric_facts(&self, component: usize) -> (ScalarRanges, bool) {
+        let scalar = self.ty.components[component].0;
+        if !scalar.is_integer() {
+            return (self.component_ranges(component), false);
+        }
+        let (ranges, projection) = self.integer_projection(component, scalar);
+        let (ranges, contains_zero) = range_sets::project_contains(ranges, projection, scalar.order_bias());
+        (ranges, !contains_zero)
     }
     pub(super) fn identity(&self) -> ValueIdentity {
         self.component_identity(0)
@@ -1890,6 +1907,7 @@ impl Value {
         std::array::from_fn(|i| self.component_identity(i))
     }
     pub(super) fn projected_proof(&self, indices: &[usize]) -> Proof {
+        let (ranges, nonzero) = indices.iter().map(|&i| self.component_numeric_facts(i)).unzip();
         Proof {
             views: indices.iter().map(|i| self.proof.view_borrow(*i)).collect(),
             addresses: if self.proof.addresses.is_empty(){Vec::new()}else{indices.iter().map(|i|self.proof.addresses.get(*i).cloned().flatten()).collect()},
@@ -1898,8 +1916,8 @@ impl Value {
                 .iter()
                 .map(|i| self.proof.conditions.get(*i).cloned().flatten())
                 .collect(),
-            ranges: indices.iter().map(|i| self.component_ranges(*i)).collect(),
-            nonzero: indices.iter().map(|i| self.component_nonzero(*i)).collect(),
+            ranges,
+            nonzero,
             domains: indices.iter().map(|i| self.proof.domains(*i).into_owned()).collect(),
         }
     }
