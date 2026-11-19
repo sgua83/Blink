@@ -1,5 +1,5 @@
 //! Stack information follows the same sections and relocations as native code.
-use super::{Kind, Object, Relocation, Symbol, Target};
+use super::{Archive, Definition, Relocation, Section, Symbol, Target};
 mod analysis;
 use analysis::{Budget, Label};
 use std::fmt::Write;
@@ -16,18 +16,39 @@ pub(crate) enum Call {
     Unreported(String),
 }
 
-pub(crate) fn uses_runtime<Bytes>(object: &Object<Bytes>) -> bool {
-    object.archive.as_ref().and_then(|archive| archive.resources.as_ref()).is_some()
-        || matches!(object.kind, Kind::Library { .. })
-        || object.sections.iter().flat_map(|section| &section.relocations).any(|relocation| {
+pub(crate) fn uses_runtime<Bytes>(archive: Option<&Archive>, library: bool, sections: &[Section<Bytes>]) -> bool {
+    archive.and_then(|archive| archive.resources.as_ref()).is_some()
+        || library
+        || sections.iter().flat_map(|section| &section.relocations).any(|relocation| {
             matches!(&relocation.target, Target::Import(import) if import.dll == crate::resource::RUNTIME_LIBRARY)
         })
+}
+
+pub(crate) enum Definitions<'a> {
+    Compiled(&'a [Symbol]),
+    Linked(&'a [Definition]),
+}
+
+impl<'a> Definitions<'a> {
+    fn len(&self) -> usize {
+        match self {
+            Self::Compiled(symbols) => symbols.len(),
+            Self::Linked(definitions) => definitions.len(),
+        }
+    }
+
+    fn at(&self, index: usize) -> &'a Definition {
+        match self {
+            Self::Compiled(symbols) => &symbols[index].definition,
+            Self::Linked(definitions) => &definitions[index],
+        }
+    }
 }
 
 pub(crate) struct Code<'a> {
     pub relocations: &'a dyn Fn(usize) -> &'a [Relocation],
     pub frames: &'a [Frame],
-    pub symbols: &'a [Symbol],
+    pub definitions: Definitions<'a>,
 }
 
 fn write_amount(text: &mut String, bytes: u128, known: bool) {

@@ -64,12 +64,17 @@ impl ReadSection for usize {
     }
 }
 
-pub(crate) struct Symbol {
+#[derive(Clone)]
+pub(crate) struct Definition {
     pub name: String,
     pub section: usize,
     pub value: u32,
-    pub contract: Vec<u8>,
     pub function: bool,
+}
+
+pub(crate) struct Symbol {
+    pub definition: Definition,
+    pub contract: Vec<u8>,
 }
 pub(crate) enum Target {
     Symbol(String),
@@ -128,9 +133,12 @@ impl Object {
         let code = stack::Code {
             relocations: &|section| self.sections[section].relocations.as_slice(),
             frames: &self.stack,
-            symbols: &self.symbols,
+            definitions: stack::Definitions::Compiled(&self.symbols),
         };
-        stack::report(&self.name, code, budget, None, stack::uses_runtime(self))
+        let runtime = stack::uses_runtime(
+            self.archive.as_ref(), matches!(self.kind, Kind::Library { .. }), &self.sections,
+        );
+        stack::report(&self.name, code, budget, None, runtime)
     }
     pub fn write(&self, path: &Path) -> Result<()> {
         if let Some(parent) = path.parent() {

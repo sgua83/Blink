@@ -1,8 +1,8 @@
 //! PE format is produced by the statically compiled B module. Object bytes remain
 //! borrowed until encoding ends; the shared machine relocation owner patches the
 //! same final output, also serving raw VM loading.
-use super::Result;
-use crate::object::{Kind, Object, Section, Target};
+use super::{Result, Selected, SelectedKind};
+use crate::object::{Section, Target};
 
 #[repr(C)]
 struct PeSection {
@@ -45,9 +45,9 @@ unsafe extern "C" {
     #[link_name="bootstrap.pe::stack_reserve"]
     fn pe_stack_reserve(stack_bytes:u32)->u64;
 }
-pub(super) fn stack_reserve<Bytes>(entry_stack_bytes: u32, modules: &[Object<Bytes>]) -> u64 {
+pub(super) fn stack_reserve<Bytes>(entry_stack_bytes: u32, modules: &[Selected<Bytes>]) -> u64 {
     let stack_bytes = modules.iter().filter_map(|object| match object.kind {
-        Kind::Module { stack_bytes, .. } => Some(stack_bytes),
+        SelectedKind::Module { stack_bytes } => Some(stack_bytes),
         _ => None,
     }).fold(entry_stack_bytes, u32::max);
     unsafe { pe_stack_reserve(stack_bytes) }

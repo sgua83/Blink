@@ -66,8 +66,10 @@ impl Application {
         let (sections, positions, stack) =
             object::application_code(code, functions, &imports, &resource_prefix(&self.name), &self.name)?;
         let symbols = std::iter::once("main".to_owned()).chain(resource_names).map(|name| object::Symbol {
-            section: positions[&name].0, value: positions[&name].1,
-            name, contract: Vec::new(), function: true,
+            definition: object::Definition {
+                section: positions[&name].0, value: positions[&name].1, name, function: true,
+            },
+            contract: Vec::new(),
         }).collect();
         let (archive, factory) = compiled_resources.unzip();
         let mut object = Object {

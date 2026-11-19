@@ -266,7 +266,7 @@ fn write_input(temporary: &mut Vec<PathBuf>, path: PathBuf, bytes: &[u8]) -> io:
 }
 
 pub(super) fn link(
-    archives: &[Archive], objects: &[crate::object::Object], path: &Path,
+    archives: &[Archive], objects: &[super::Selected], path: &Path,
     stack_reserve: u64, import_library: bool,
 ) -> Result<()> {
     let binding = super::resources::resources(&archives.iter().collect::<Vec<_>>(), 0, 0, std::iter::empty(), std::iter::empty(), None)?;
@@ -296,7 +296,7 @@ pub(super) fn link(
         }
         for (index, object) in objects.iter().enumerate() {
             let path = join(directory, format!(".blink-link-{id}-code-{index}.obj"));
-            write_input(&mut temporary, path, &encode_native(&object.name, &object.sections, &object.symbols)?)?;
+            write_input(&mut temporary, path, &encode_native(&object.name, &object.sections, &object.definitions)?)?;
         }
         // Same import-slot owner as the explicit native-host archive product.
         let imports = objects.iter().flat_map(|object| &object.sections)
@@ -314,7 +314,7 @@ pub(super) fn link(
         }
         if let Some(binding) = binding {
             let path = join(directory, format!(".blink-link-{id}-resources.obj"));
-            write_input(&mut temporary, path, &encode_native(&binding.name, &binding.sections, &binding.symbols)?)?;
+            write_input(&mut temporary, path, &encode_native(super::resources::Generated::NAME, &binding.sections, &binding.definitions)?)?;
         }
         let (status, stdout, stderr) = link_process(
             &linker, path, &temporary, &libraries, archives,

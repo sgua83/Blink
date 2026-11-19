@@ -290,7 +290,8 @@ pub(crate) fn compile_in(worker: &crate::compiler::Worker, program: &ExecutableP
         factory.emit(&mut object, &positions);
     }
     object.symbols.extend(positions.into_iter().map(|(name, (section, value))| crate::object::Symbol {
-        name, section, value, contract: Vec::new(), function: true,
+        definition: crate::object::Definition { name, section, value, function: true },
+        contract: Vec::new(),
     }));
     Ok(object)
 }

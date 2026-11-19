@@ -517,7 +517,7 @@ fn metadata<T>(o: &Object, consume: impl FnOnce(MetadataInput, usize) -> Result<
         code_count: code.len(),
     };
     // B sorts the definition prefix and merges the original ordered, unique imports.
-    let bindings = o.symbols.iter().map(|symbol| (symbol.name.as_str(), symbol.contract.as_slice()))
+    let bindings = o.symbols.iter().map(|symbol| (symbol.definition.name.as_str(), symbol.contract.as_slice()))
         .chain(o.imports.iter().map(|(name, contract)| (name.as_str(), contract.as_slice())))
         .map(|(name, value)| MetadataBinding {
             name: MetadataBytes::new(name.as_bytes()), value: MetadataBytes::new(value),
@@ -610,12 +610,12 @@ pub(super) fn encode_build(o: &Object, build: Option<&[u8]>) -> Result<Vec<u8>> 
         let extra = std::iter::once((META, CoffPayload::Metadata(&input, length), 0x840, &[][..]))
             .chain(build.map(|bytes| (BUILD, CoffPayload::Borrowed(bytes), 0x840, &[][..])))
             .chain(o.archive.as_ref().map(|archive| (ARCHIVE, CoffPayload::Borrowed(archive.bytes.as_ref()), 0x840, &[][..])));
-        encode_sections(&o.name, &o.sections, &o.symbols, extra)
+        encode_sections(&o.name, &o.sections, o.symbols.iter().map(|symbol| &symbol.definition), extra)
     })
 }
 
-pub(crate) fn encode_native(name: &str, source: &[Section], declared: &[Symbol]) -> Result<Vec<u8>> {
-    encode_sections(name, source, declared, std::iter::empty())
+pub(crate) fn encode_native(name: &str, source: &[Section], declared: &[Definition]) -> Result<Vec<u8>> {
+    encode_sections(name, source, declared.iter(), std::iter::empty())
 }
 
 enum CoffPayload<'a> {
@@ -634,7 +634,7 @@ impl CoffPayload<'_> {
     }
 }
 fn encode_sections<'a>(
-    name: &str, source: &'a [Section], declared: &[Symbol],
+    name: &str, source: &'a [Section], declared: impl Iterator<Item = &'a Definition>,
     extra: impl Iterator<Item = (&'a str, CoffPayload<'a>, u32, &'a [Relocation])>,
 ) -> Result<Vec<u8>> {
     let sections = source.iter().map(|section|
@@ -656,15 +656,15 @@ fn encode_sections<'a>(
         relocations: relocations.as_ptr(), relocation_count: relocations.len(),
         associated: section.associated.as_ptr(), associated_count: section.associated.len(), owner: 0, symbol: 0,
     }).collect::<Vec<_>>();
-    let definitions = declared.iter().map(|symbol| BindingDefinition {
+    let definitions = declared.map(|symbol| BindingDefinition {
         name: BindingBytes::new(symbol.name.as_bytes()), section: symbol.section as u64,
         value: u64::from(symbol.value), function: u64::from(symbol.function),
     }).collect::<Vec<_>>();
     let relocation_count: usize = input_relocations.iter().map(Vec::len).sum();
     // At most two symbols per section and one per definition/reference.
     // Each definition/reference contributes at most one shared tree node.
-    let mut symbols = Vec::<CoffSymbolView>::with_capacity(2 * source.len() + declared.len() + relocation_count);
-    let mut nodes = Vec::<[u64; 9]>::with_capacity(declared.len() + relocation_count);
+    let mut symbols = Vec::<CoffSymbolView>::with_capacity(2 * source.len() + definitions.len() + relocation_count);
+    let mut nodes = Vec::<[u64; 9]>::with_capacity(definitions.len() + relocation_count);
     let mut relocations = Vec::<CoffRelocationView>::with_capacity(relocation_count);
     let binding_input = BindingInput {
         name: BindingBytes::new(name.as_bytes()),
@@ -1068,13 +1068,15 @@ fn decode_object<Bytes: super::ReadSection>(
                 } else {
                     bindings.remove_entry(name).ok_or("导出符号缺少模块接口合同")?
                 };
-                Ok(super::Symbol {
-                    function: symbol.function != 0,
-                    name,
+                Ok(Symbol {
+                    definition: Definition {
+                        name,
+                        section: object_index(&raw, symbol.section as usize - 1)
+                            .ok_or("导出符号引用不可装载的节")?,
+                        value: symbol.value,
+                        function: symbol.function != 0,
+                    },
                     contract,
-                    section: object_index(&raw, symbol.section as usize - 1)
-                        .ok_or("导出符号引用不可装载的节")?,
-                    value: symbol.value,
                 })
             })
             .collect::<Result<_>>()?;

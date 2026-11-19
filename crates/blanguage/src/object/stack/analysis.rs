@@ -127,7 +127,7 @@ unsafe extern "C" fn register_frame(slot:*mut c_void,index:u64) {
     let context=unsafe{&mut *slot.cast::<Context<'_>>()};context.positions.insert(context.code.frames[index as usize].coff.unwrap(),index as usize);
 }
 unsafe extern "C" fn register_symbol(slot:*mut c_void,index:u64) {
-    let context=unsafe{&mut *slot.cast::<Context<'_>>()};let symbol=&context.code.symbols[index as usize];
+    let context=unsafe{&mut *slot.cast::<Context<'_>>()};let symbol=context.code.definitions.at(index as usize);
     context.symbols.insert(symbol.name.as_str(),(symbol.section,symbol.value));
 }
 unsafe extern "C" fn lookup_symbol(slot:*mut c_void,name:Name)->Position {
@@ -182,7 +182,7 @@ pub(super) struct Analysis<'a> {
 }
 pub(super) fn analyze<'a>(code: Code<'a>, capacity: Option<u64>) -> Analysis<'a> {
     let count = code.frames.len();
-    let symbol_count = code.symbols.len();
+    let symbol_count = code.definitions.len();
     let mut context=Context{code,positions:BTreeMap::new(),symbols:BTreeMap::new(),parents:vec![Vec::new();count],unknown:vec![BTreeSet::new();count],callees:vec![BTreeSet::new();count]};
     let mut metrics=Vec::with_capacity(count);let mut scratch=Vec::<Scratch>::with_capacity(count);
     let host=Host{frame:read_frame,call:read_call,register_frame,register_symbol,symbol:lookup_symbol,position:lookup_position,edge,parent_count,parent:read_parent,notice,union_unknown,unknown_empty};

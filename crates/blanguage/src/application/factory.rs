@@ -1,5 +1,5 @@
 //! 资源工厂在原编译COFF持有已编码映像和代码地址表。
-use crate::object::{Object, Relocation, ResourceBinding, Section, Symbol, Target, stack::Frame};
+use crate::object::{Definition, Object, Relocation, ResourceBinding, Section, Symbol, Target, stack::Frame};
 use std::collections::BTreeMap;
 
 pub(crate) struct ResourceFactory {
@@ -54,11 +54,13 @@ impl ResourceFactory {
             associated: Vec::new(), layout: None,
         });
         object.symbols.push(Symbol {
-            name: factory.clone(), section, value: 0, contract: Vec::new(), function: true,
+            definition: Definition { name: factory.clone(), section, value: 0, function: true },
+            contract: Vec::new(),
         });
         if let Some(name) = ranges_symbol {
             object.symbols.push(Symbol {
-                name, section: ranges_section, value: 0, contract: Vec::new(), function: false,
+                definition: Definition { name, section: ranges_section, value: 0, function: false },
+                contract: Vec::new(),
             });
         }
         object.stack.push(Frame { name: factory.clone(), coff: Some((section, 0)), local: 0, calls: Vec::new() });
@@ -186,16 +188,14 @@ pub(crate) fn external(offset: u64, name: &str) -> Relocation {
 
 pub(crate) fn wrapper(
     sections: &mut Vec<Section>,
-    symbols: &mut Vec<Symbol>,
+    symbols: &mut Vec<Definition>,
     name: String,
     code: Vec<u8>,
     relocations: Vec<Relocation>,
     unwind: Option<(u32, Vec<u8>)>,
 ) {
     let section = crate::object::function_sections(sections, code, unwind, None);
-    symbols.push(Symbol {
-        name, section, value: 0, contract: Vec::new(), function: true,
-    });
+    symbols.push(Definition { name, section, value: 0, function: true });
     sections[section].relocations = relocations;
 }
 

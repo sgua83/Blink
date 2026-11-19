@@ -1,6 +1,6 @@
 //! B owns this link's definition tree, section queue, resource closure and remapping.
 //! Rust keeps the original objects/libraries and only hands their current borrowed views across the synchronous call.
-use super::{Inputs,Result,Roots,Source,resources};
+use super::{Inputs, Result, Roots, Selected, Source, resources};
 use crate::object::{self, Object, Kind, Target, Library, ReadSection};
 use resources::ImportBytes as Bytes;
 use std::{ffi::c_void, marker::PhantomData};
@@ -97,7 +97,10 @@ impl<'a, Payload> Context<'a, Payload> {
                 self.relocations.push(RelocationView{kind,section,name,dll,rewrite:0});
             }
         }
-        self.symbols.extend(object.symbols.iter().map(|symbol|SymbolView{name:Bytes::new(&symbol.name),contract:borrowed(&symbol.contract),owner:index as u64,section:symbol.section as u64,keep:0}));
+        self.symbols.extend(object.symbols.iter().map(|symbol| SymbolView {
+            name: Bytes::new(&symbol.definition.name), contract: borrowed(&symbol.contract),
+            owner: index as u64, section: symbol.definition.section as u64, keep: 0,
+        }));
         self.imports.extend(object.imports.iter().map(|(name,contract)|ImportView{name:Bytes::new(name),contract:borrowed(contract)}));
         if let Some(archive)=&object.archive{
             row.export_count=archive.exports.len() as u64;self.exports.extend(archive.exports.iter().map(|name|ExportView{name:Bytes::new(name),keep:1}));
@@ -145,18 +148,23 @@ impl<'a, Payload> Context<'a, Payload> {
         &self, source: Source<'a, Payload>, row: ObjectView,
         owned: &impl Fn(Payload) -> Output,
         borrowed: &impl Fn(&'a Payload) -> Output,
-    ) -> Object<Output> {
+    ) -> Selected<Output> {
         let sections=&self.sections[row.section_start as usize..(row.section_start+row.section_count) as usize];
         let symbols=&self.symbols[row.symbol_start as usize..(row.symbol_start+row.symbol_count) as usize];
         let mut object=match source {
             Source::Owned(object) => {
-                let Object { name, kind, sections: input, symbols: mut selected, imports, archive, mut stack } = object;
+                let Object { name, kind, sections: input, symbols: declared, archive, mut stack, .. } = object;
                 let sections = input.into_iter().zip(sections).filter_map(|(mut section, &row)| {
                     if row.live == 0 { return None; }
                     self.section(&mut section, row);
                     Some(section.map_bytes(owned))
                 }).collect();
-                let mut index=0;selected.retain_mut(|symbol|{let row=symbols[index];index+=1;symbol.section=row.section as usize;row.keep!=0});
+                let definitions = declared.into_iter().zip(symbols).filter_map(|(symbol, row)| {
+                    if row.keep == 0 { return None; }
+                    let mut definition = symbol.definition;
+                    definition.section = row.section as usize;
+                    Some(definition)
+                }).collect();
                 if let Some(frames) = &self.frames {
                     let mut index = row.frame_start as usize;
                     stack.retain_mut(|frame| {
@@ -170,10 +178,10 @@ impl<'a, Payload> Context<'a, Payload> {
                 } else {
                     stack = Vec::new();
                 }
-                Object { name, kind, sections, symbols: selected, imports, archive, stack }
+                Selected { name, kind: kind.into(), sections, definitions, archive, stack }
             }
-            Source::Borrowed(object)=>Object{
-                name:object.name.clone(),kind:object.kind.clone(),
+            Source::Borrowed(object)=>Selected{
+                name:object.name.clone(),kind:(&object.kind).into(),
                 sections:object.sections.iter().zip(sections).filter_map(|(section,&row)|{
                     if row.live==0{return None;}
                     let mut section=object::Section{name:section.name.clone(),bytes:borrowed(&section.bytes),flags:section.flags,associated:Vec::new(),layout:None,
@@ -182,9 +190,13 @@ impl<'a, Payload> Context<'a, Payload> {
                         }}).collect()};
                     self.section(&mut section,row);Some(section)
                 }).collect(),
-                symbols:object.symbols.iter().zip(symbols).filter(|(_,row)|row.keep!=0).map(|(symbol,row)|object::Symbol{
-                    name:symbol.name.clone(),section:row.section as usize,value:symbol.value,contract:symbol.contract.clone(),function:symbol.function,
-                }).collect(),imports:object.imports.clone(),archive:None,stack:Vec::new(),
+                definitions: object.symbols.iter().zip(symbols).filter(|(_, row)| row.keep != 0)
+                    .map(|(symbol, row)| {
+                        let mut definition = symbol.definition.clone();
+                        definition.section = row.section as usize;
+                        definition
+                    }).collect(),
+                archive: None, stack: Vec::new(),
             },
         };
         if row.keep_archive==0{object.archive=None;}else if let Some(archive)=&mut object.archive{
@@ -214,19 +226,19 @@ unsafe extern "C" fn binding<Payload: ReadSection>(context:*mut c_void,request:R
     let archives=archives.iter().map(|&index|context.sources[index as usize].archive.as_ref().unwrap()).collect::<Vec<_>>();
     let result=resources::resources(&archives,request.types as u32,request.programs as u32,runtime.iter().map(text),locals.iter().map(|row|(text(&row.slot),text(&row.name))),Some(crate::resource::ABI));
     // The B selector requests generated bindings only for a native image.
-    let result = result.map(|object| object.map(Payload::from_generated));
+    let result = result.map(|code| code.map(|code| Payload::from_generated(code.into_object())));
     context.reply(result)
 }
 pub(super) fn entry<Payload: ReadSection + Clone>(
     inputs: Inputs<'_, Payload>, stack_output: bool,
-) -> Result<Vec<Object<Payload>>> {
+) -> Result<Vec<Selected<Payload>>> {
     select(inputs, Roots::Entry { stack_output }, std::convert::identity, Clone::clone)
 }
 pub(super) fn select<'a, Payload: ReadSection, Output>(
     inputs: Inputs<'a, Payload>, roots: Roots<'_>,
     owned: impl Fn(Payload) -> Output,
     borrowed: impl Fn(&'a Payload) -> Output,
-) -> Result<Vec<Object<Output>>> {
+) -> Result<Vec<Selected<Output>>> {
     let(native_mode,types,programs,roots,stack_output)=match roots{
         Roots::Entry { stack_output }=>(0,0,0,&[][..],stack_output),
         Roots::Symbols(roots,types,programs)=>(1,u64::from(types),u64::from(programs),roots,false),

@@ -1,6 +1,6 @@
 //! 链接期资源基址和工厂地址；只有静态数据与标准重定位，没有运行期注册表。
 use super::Result;
-use crate::object::{Archive, Kind, Object, Relocation, Section, Symbol, Target};
+use crate::object::{Archive, Definition, Kind, Object, Relocation, Section, Symbol, Target};
 #[derive(Clone,Copy)]
 #[repr(C)]
 pub(super) struct ImportBytes {pub(super) bytes:*const u8,pub(super) length:u64}
@@ -48,7 +48,36 @@ unsafe extern "C" {
     #[link_name="bootstrap.native_resources::encode"]
     fn resource_encode(input:ResourceInput,output:ResourceOutput,plan:ResourcePlan);
 }
-pub(super) fn resources<'a>(archives:&[&Archive],types:u32,programs:u32,runtime:impl IntoIterator<Item=&'a str>,local_imports:impl IntoIterator<Item=(&'a str,&'a str)>,root_abi:Option<&[u8]>)->Result<Option<Object>> {
+pub(super) struct Generated {
+    pub sections: Vec<Section>,
+    pub definitions: Vec<Definition>,
+}
+
+impl Generated {
+    pub const NAME: &str = "@blink.resources@";
+
+    pub fn into_object(self) -> Object {
+        let imports = self.sections.iter().flat_map(|section| &section.relocations)
+            .filter_map(|relocation| match &relocation.target {
+                Target::Symbol(name) => Some((name.clone(), Vec::new())),
+                _ => None,
+            }).collect();
+        let symbols = self.definitions.into_iter().map(|definition| Symbol {
+            definition, contract: Vec::new(),
+        }).collect();
+        Object {
+            name: Self::NAME.into(),
+            kind: Kind::Module { interface: "".into(), requirements: Default::default(), stack_bytes: 0 },
+            sections: self.sections,
+            symbols,
+            imports,
+            archive: None,
+            stack: Vec::new(),
+        }
+    }
+}
+
+pub(super) fn resources<'a>(archives:&[&Archive],types:u32,programs:u32,runtime:impl IntoIterator<Item=&'a str>,local_imports:impl IntoIterator<Item=(&'a str,&'a str)>,root_abi:Option<&[u8]>)->Result<Option<Generated>> {
     let borrowed=|bytes:&[u8]|ImportBytes{bytes:bytes.as_ptr(),length:bytes.len() as u64};
     let empty=ImportBytes{bytes:std::ptr::null(),length:0};
     let mut modules=archives.iter().filter_map(|archive|archive.resources.as_ref()).map(|row|ResourceModule{
@@ -83,20 +112,20 @@ pub(super) fn resources<'a>(archives:&[&Archive],types:u32,programs:u32,runtime:
     let mut data=Vec::with_capacity(data_length);let mut code=Vec::with_capacity(text_length);
     unsafe{resource_encode(input,ResourceOutput{data:data.as_mut_ptr(),text:code.as_mut_ptr()},plan);data.set_len(data_length);code.set_len(text_length);}
     let finish=|mut bytes:Vec<u8>,length:u64|{unsafe{bytes.set_len(length as usize);String::from_utf8_unchecked(bytes)}};
-    let mut symbols=vec![
-        Symbol{name:"__blink_module_count".into(),section:0,value:0,contract:Vec::new(),function:false},
-        Symbol{name:"__blink_module_factories".into(),section:0,value:8,contract:Vec::new(),function:false},
+    let mut definitions=vec![
+        Definition{name:"__blink_module_count".into(),section:0,value:0,function:false},
+        Definition{name:"__blink_module_factories".into(),section:0,value:8,function:false},
     ];
-    let mut relocations=Vec::new();let mut imports=std::collections::BTreeMap::new();
+    let mut relocations=Vec::new();
     for(row,[factory,type_name,program_name])in modules.into_iter().zip(names){
-        let factory=finish(factory,row.factory.length);imports.insert(factory.clone(),Vec::new());
+        let factory=finish(factory,row.factory.length);
         relocations.push(Relocation{offset:usize::try_from(row.factory_offset)?,kind:1,target:Target::Symbol(factory)});
-        symbols.push(Symbol{name:finish(type_name,row.type_name.length),section:0,value:u32::try_from(row.type_offset)?,contract:Vec::new(),function:false});
-        symbols.push(Symbol{name:finish(program_name,row.program_name.length),section:0,value:u32::try_from(row.program_offset)?,contract:Vec::new(),function:false});
+        definitions.push(Definition{name:finish(type_name,row.type_name.length),section:0,value:u32::try_from(row.type_offset)?,function:false});
+        definitions.push(Definition{name:finish(program_name,row.program_name.length),section:0,value:u32::try_from(row.program_offset)?,function:false});
     }
     for row in locals{
-        let name=text(row.name);imports.insert(name.clone(),Vec::new());
-        symbols.push(Symbol{name:text(row.slot),section:0,value:u32::try_from(row.value)?,contract:Vec::new(),function:false});
+        let name=text(row.name);
+        definitions.push(Definition{name:text(row.slot),section:0,value:u32::try_from(row.value)?,function:false});
         relocations.push(Relocation{offset:usize::try_from(row.value)?,kind:1,target:Target::Symbol(name)});
     }
     let mut sections=vec![Section{associated:Vec::new(),layout:None,name:".rdata".into(),bytes:data,flags:u32::try_from(plan.data_flags)?,relocations}];
@@ -104,10 +133,10 @@ pub(super) fn resources<'a>(archives:&[&Archive],types:u32,programs:u32,runtime:
         let mut relocations=Vec::new();
         for row in runtime{
             let name=text(row.name);
-            symbols.push(Symbol{name:name.clone(),section:1,value:u32::try_from(row.value)?,contract:Vec::new(),function:true});
+            definitions.push(Definition{name:name.clone(),section:1,value:u32::try_from(row.value)?,function:true});
             relocations.push(Relocation{offset:usize::try_from(row.relocation)?,kind:4,target:Target::Import(crate::object::Import{dll:crate::resource::RUNTIME_LIBRARY.into(),name})});
         }
         sections.push(Section{associated:Vec::new(),layout:None,name:".text".into(),bytes:code,flags:u32::try_from(plan.text_flags)?,relocations});
     }
-    Ok(Some(Object{stack:Vec::new(),name:"@blink.resources@".into(),kind:Kind::Module{interface:"".into(),requirements:Default::default(),stack_bytes:0},sections,symbols,imports,archive:None}))
+    Ok(Some(Generated { sections, definitions }))
 }

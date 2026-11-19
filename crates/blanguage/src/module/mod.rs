@@ -5,7 +5,7 @@ use crate::{
     application::Resources,
     ir::FunctionBody,
     native,
-    object::{self, Kind, Object, Symbol},
+    object::{self, Definition, Kind, Object, Symbol},
 };
 use std::{collections::BTreeMap, path::Path, sync::Arc};
 pub(crate) struct Imported {
@@ -30,7 +30,7 @@ impl Imports {
     }
     pub(crate) fn object(&mut self, object: &Object) -> codec::Result<()> {
         self.insert(object.name.clone(), object.kind.clone(), object.symbols.iter()
-            .map(|symbol| (symbol.name.clone(), symbol.contract.clone()))
+            .map(|symbol| (symbol.definition.name.clone(), symbol.contract.clone()))
             .chain(object.imports.iter().map(|(name,contract)|(name.clone(),contract.clone()))).collect())
     }
     pub(crate) fn insert(&mut self, name: String, kind: Kind, definitions: BTreeMap<String, Vec<u8>>) -> codec::Result<()> {
@@ -100,15 +100,16 @@ impl Module {
             .exports
             .iter()
             .map(|(name, contract)| Symbol {
-                name: name.clone(),
-                section: positions[name].0,
-                value: positions[name].1,
+                definition: Definition {
+                    name: name.clone(), section: positions[name].0, value: positions[name].1, function: true,
+                },
                 contract: contract.clone(),
-                function: true,
             })
             .chain(resource_names.into_iter().map(|name| Symbol {
-                section: positions[&name].0, value: positions[&name].1,
-                name, contract: Vec::new(), function: true,
+                definition: Definition {
+                    section: positions[&name].0, value: positions[&name].1, name, function: true,
+                },
+                contract: Vec::new(),
             }))
             .collect();
         let (archive, factory) = compiled_resources.unzip();

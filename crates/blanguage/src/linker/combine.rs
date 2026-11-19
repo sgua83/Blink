@@ -1,8 +1,8 @@
 //! B owns layout and rebasing for both reports and native outputs.
 //! Only native outputs encode bytes, borrowing the selected objects until the
 //! synchronous copy finishes.
-use super::{Result, resources::ImportBytes};
-use crate::object::{Object, Relocation, Section, Target, stack::{Call, Frame}};
+use super::{Result, Selected, resources::ImportBytes};
+use crate::object::{Relocation, Section, Target, stack::{Call, Frame}};
 use std::collections::BTreeMap;
 
 #[repr(C)]
@@ -35,7 +35,7 @@ unsafe extern "C" {
 }
 
 pub(super) fn objects<Payload: AsRef<[u8]>>(
-    objects: Vec<Object<Payload>>, module: Option<(&[&str], &mut BTreeMap<String, (usize, u32)>)>,
+    objects: Vec<Selected<Payload>>, module: Option<(&[&str], &mut BTreeMap<String, (usize, u32)>)>,
 ) -> Result<Vec<Section>> {
     let (sections, _) = combine(objects, module,
         |bytes| { let bytes = bytes.as_ref(); (bytes.as_ptr(), bytes.len()) },
@@ -43,16 +43,16 @@ pub(super) fn objects<Payload: AsRef<[u8]>>(
     Ok(sections)
 }
 
-pub(super) fn report(objects: Vec<Object<usize>>) -> Result<(Vec<Vec<Relocation>>, Vec<Frame>)> {
+pub(super) fn report(objects: Vec<Selected<usize>>) -> Result<(Vec<Vec<Relocation>>, Vec<Frame>)> {
     combine(objects, None, |&length| (std::ptr::null(), length),
         |_, _, groups, _| Ok((0..groups).map(|_| Vec::new()).collect()),
         |relocations| relocations)
 }
 
 fn combine<Payload, Output>(
-    objects: Vec<Object<Payload>>, module: Option<(&[&str], &mut BTreeMap<String, (usize, u32)>)>,
+    objects: Vec<Selected<Payload>>, module: Option<(&[&str], &mut BTreeMap<String, (usize, u32)>)>,
     extent: impl Fn(&Payload) -> (*const u8, usize),
-    materialize: impl FnOnce(CombineInput, &[CombineSection], usize, &[Object<Payload>]) -> Result<Vec<Output>>,
+    materialize: impl FnOnce(CombineInput, &[CombineSection], usize, &[Selected<Payload>]) -> Result<Vec<Output>>,
     relocation_output: impl Fn(&mut Output) -> &mut Vec<Relocation>,
 ) -> Result<(Vec<Output>, Vec<Frame>)> {
     let mut inputs=Vec::with_capacity(objects.len());
@@ -76,7 +76,7 @@ fn combine<Payload, Output>(
                 bytes,byte_length:length as u64,flags:u64::from(section.flags),object:object_index as u64,
                 owner:0,group:0,begin:0,size:0,padding:0});
         }
-        for symbol in &object.symbols {
+        for symbol in &object.definitions {
             symbols.push(CombineSymbol{name:symbol.name.as_ptr(),name_length:symbol.name.len() as u64,
                 section:symbol.section as u64,value:u64::from(symbol.value)});
         }
@@ -85,7 +85,7 @@ fn combine<Payload, Output>(
             frames.push(CombineFrame { section, start, present });
         }
         inputs.push(CombineObject{section_start:section_start as u64,section_count:object.sections.len() as u64,
-            symbol_start:symbol_start as u64,symbol_count:object.symbols.len() as u64,frame_start:frame_start as u64,frame_count:object.stack.len() as u64});
+            symbol_start:symbol_start as u64,symbol_count:object.definitions.len() as u64,frame_start:frame_start as u64,frame_count:object.stack.len() as u64});
     }
     // The same temporary permutation serves grouping, then final symbol lookup.
     let mut order=vec![0u64;rows.len().max(symbols.len())];
@@ -166,7 +166,7 @@ fn combine<Payload, Output>(
 }
 
 fn encode_sections<Payload: AsRef<[u8]>>(
-    input: CombineInput, rows: &[CombineSection], groups: usize, objects: &[Object<Payload>],
+    input: CombineInput, rows: &[CombineSection], groups: usize, objects: &[Selected<Payload>],
 ) -> Result<Vec<Section>> {
     let mut sections = Vec::with_capacity(groups);
     for (i, (section, row)) in objects.iter().flat_map(|object| &object.sections).zip(rows).enumerate() {

@@ -1,6 +1,6 @@
 //! 原生宿主导入材料；B生成实际IAT及关联，Rust持有最终COFF容器。
 use super::Result;
-use crate::object::{self,Import,LibraryMember,Relocation,Section,Symbol,Target};
+use crate::object::{self, Definition, Import, LibraryMember, Relocation, Section, Target};
 use super::resources::ImportBytes;
 use std::{marker::PhantomData, path::Path};
 
@@ -77,7 +77,7 @@ fn member(import: ImportKey<'_>) -> Result<(LibraryMember, String)> {
         sections[usize::try_from(row.section)?].relocations.push(Relocation{offset:usize::try_from(row.offset)?,kind:u16::try_from(row.kind)?,target});
     }
     for(index,row)in rows.iter().enumerate(){if row.owner!=0{sections[usize::try_from(row.owner-1)?].associated.push(index);}}
-    let symbol=Symbol{name:slot,section:0,value:0,contract:Vec::new(),function:false};
+    let symbol=Definition{name:slot,section:0,value:0,function:false};
     let bytes=object::encode_native(&stem,&sections,std::slice::from_ref(&symbol))?;
     Ok((LibraryMember::new(member,bytes),symbol.name))
 }

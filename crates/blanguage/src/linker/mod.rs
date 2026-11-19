@@ -11,7 +11,7 @@ mod pe;
 mod resources;
 pub(crate) mod native;
 use crate::{
-    object::{Input, Kind, Object, ReadSection, read_input, stack},
+    object::{Archive, Definition, Input, Kind, Object, ReadSection, Section, read_input, stack},
 };
 use std::path::Path;
 pub(crate) type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
@@ -57,6 +57,43 @@ impl<Bytes> std::ops::Deref for Source<'_, Bytes> {
         match self { Self::Owned(object) => object, Self::Borrowed(object) => object }
     }
 }
+struct Selected<Bytes = Vec<u8>> {
+    name: String,
+    kind: SelectedKind,
+    sections: Vec<Section<Bytes>>,
+    definitions: Vec<Definition>,
+    archive: Option<Archive>,
+    stack: Vec<stack::Frame>,
+}
+
+enum SelectedKind {
+    Module { stack_bytes: u32 },
+    Application { stack_bytes: u32 },
+    Library { header: String, binding: String, prefix: String },
+}
+
+impl From<Kind> for SelectedKind {
+    fn from(kind: Kind) -> Self {
+        match kind {
+            Kind::Module { stack_bytes, .. } => Self::Module { stack_bytes },
+            Kind::Application { stack_bytes } => Self::Application { stack_bytes },
+            Kind::Library { header, binding, prefix } => Self::Library { header, binding, prefix },
+        }
+    }
+}
+
+impl From<&Kind> for SelectedKind {
+    fn from(kind: &Kind) -> Self {
+        match kind {
+            Kind::Module { stack_bytes, .. } => Self::Module { stack_bytes: *stack_bytes },
+            Kind::Application { stack_bytes } => Self::Application { stack_bytes: *stack_bytes },
+            Kind::Library { header, binding, prefix } => Self::Library {
+                header: header.clone(), binding: binding.clone(), prefix: prefix.clone(),
+            },
+        }
+    }
+}
+
 enum Roots<'a> {
     Entry { stack_output: bool },
     Symbols(&'a [RootView<'a>], u32, u32),
@@ -64,23 +101,25 @@ enum Roots<'a> {
 pub(crate) fn link_object(object: Object, path: &Path) -> Result<()> {
     link_objects(Inputs { sources: vec![Source::Owned(object)], libraries: Vec::new() }, path)
 }
-fn prepare(inputs: Inputs<'_>) -> Result<(Vec<Object>, Vec<crate::object::Archive>)> {
+fn prepare(inputs: Inputs<'_>) -> Result<(Vec<Selected>, Vec<Archive>)> {
     let mut objects = entry(inputs, false)?;
     let archives = objects.iter_mut().filter_map(|object| object.archive.take()).collect();
     Ok((objects, archives))
 }
 pub fn stack_report_inputs(inputs: &[impl AsRef<Path>], budget: Option<u64>) -> Result<String> {
     let mut objects = entry(read_inputs::<usize>(inputs, true)?, true)?;
-    let runtime = objects.iter().any(stack::uses_runtime);
+    let runtime = objects.iter().any(|object| stack::uses_runtime(
+        object.archive.as_ref(), matches!(object.kind, SelectedKind::Library { .. }), &object.sections,
+    ));
     let reserve = match objects[0].kind {
-        Kind::Application { stack_bytes } => Some(pe::stack_reserve(stack_bytes, &objects[1..])),
+        SelectedKind::Application { stack_bytes } => Some(pe::stack_reserve(stack_bytes, &objects[1..])),
         _ => None,
     };
     let report = if let [object] = objects.as_slice() {
         let code = stack::Code {
             relocations: &|section| object.sections[section].relocations.as_slice(),
             frames: &object.stack,
-            symbols: &object.symbols,
+            definitions: stack::Definitions::Linked(&object.definitions),
         };
         stack::report(&object.name, code, budget, reserve, runtime)
     } else {
@@ -89,7 +128,7 @@ pub fn stack_report_inputs(inputs: &[impl AsRef<Path>], budget: Option<u64>) -> 
         let code = stack::Code {
             relocations: &|section| relocations[section].as_slice(),
             frames: &frames,
-            symbols: &[],
+            definitions: stack::Definitions::Linked(&[]),
         };
         stack::report(&name, code, budget, reserve, runtime)
     };
@@ -110,8 +149,8 @@ fn link_objects(inputs: Inputs<'_>, path: &Path) -> Result<()> {
     let output = source_path::absolute(path)?;
     file_bytes::create_dir_all(output.parent().unwrap())?;
     match &object.kind {
-        Kind::Module { .. } => unreachable!(),
-        Kind::Application { stack_bytes } => {
+        SelectedKind::Module { .. } => unreachable!(),
+        SelectedKind::Application { stack_bytes } => {
             let reserve = pe::stack_reserve(*stack_bytes, &objects[1..]);
             if archives.is_empty() {
                 let sections = combine::objects(objects, None)?;
@@ -120,7 +159,7 @@ fn link_objects(inputs: Inputs<'_>, path: &Path) -> Result<()> {
                 msvc::link(&archives, &objects, &output, reserve, false)?;
             }
         }
-        Kind::Library {
+        SelectedKind::Library {
             header,
             binding,
             prefix,
