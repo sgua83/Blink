@@ -307,18 +307,17 @@ impl Executable {
 impl Allocation {
     fn load<P>(
         image: &blanguage::native::ProgramImage<P>, workers: usize,
-    ) -> Result<(Option<std::sync::Arc<Self>>, BTreeMap<usize, *mut c_void>, Option<crate::application::Definitions>)> {
-        let codes = image.code().collect::<Vec<_>>();
+    ) -> Result<(Option<std::sync::Arc<Self>>, Vec<(u32, u32)>, Option<crate::application::Definitions>)> {
         let module = image.module_code();
-        if codes.is_empty() && module.is_none() { return Ok((None, BTreeMap::new(), None)); }
         let mut size = 0usize;
-        let mut layout = Vec::with_capacity(codes.len());
-        for code in &codes {
+        let mut layout = Vec::new();
+        for code in image.code() {
             let begin = u32::try_from(size.div_ceil(16) * 16)?;
             let unwind = u32::try_from((begin as usize + code.bytes.len()).div_ceil(4) * 4)?;
             size = unwind as usize + code.unwind.len();
             layout.push((begin, unwind));
         }
+        if layout.is_empty() && module.is_none() { return Ok((None, layout, None)); }
         let mut sections = Vec::new();
         let mut imports = std::collections::BTreeMap::new();
         if let Some(module) = module {
@@ -337,24 +336,25 @@ impl Allocation {
         }
         for offset in imports.values_mut() { *offset = size; size += 8; }
         let table_offset = size.div_ceil(4) * 4;
-        let count = u32::try_from(codes.len())?;
-        size = table_offset + codes.len() * std::mem::size_of::<RuntimeFunction>();
+        let count = u32::try_from(layout.len())?;
+        size = table_offset + layout.len() * std::mem::size_of::<RuntimeFunction>();
         let address = unsafe { VirtualAlloc(std::ptr::null_mut(), size, 0x3000, 0x04) };
         if address.is_null() { return Err(std::io::Error::last_os_error().into()); }
         let mut allocation = Self { address, functions: Vec::new(), _libraries: Vec::new() };
         let table = unsafe { address.cast::<u8>().add(table_offset).cast::<RuntimeFunction>() };
-        let mut addresses = std::collections::BTreeMap::new();
-        for (index, (code, &(begin, unwind))) in codes.iter().zip(&layout).enumerate() {
+        for (index, (code, &(begin, unwind))) in image.code().zip(&layout).enumerate() {
             let entry = unsafe { address.cast::<u8>().add(begin as usize) };
-            addresses.insert(*code as *const _ as usize, entry.cast::<c_void>());
             unsafe {
                 std::ptr::copy_nonoverlapping(code.bytes.as_ptr(), entry, code.bytes.len());
                 std::ptr::copy_nonoverlapping(code.unwind.as_ptr(), address.cast::<u8>().add(unwind as usize), code.unwind.len());
                 std::ptr::write(table.add(index), RuntimeFunction { begin, end: begin + u32::try_from(code.function_end)?, unwind });
             }
         }
-        let mut functions = image.functions().iter().map(|(name, code)|
-            (name.as_str(), addresses[&(code as *const _ as usize)])).collect::<std::collections::BTreeMap<_, _>>();
+        let mut functions = image.functions().iter().zip(&layout[image.stage_code_count()..])
+            .map(|((name, _), &(begin, _))| {
+                let entry = unsafe { address.cast::<u8>().add(begin as usize) }.cast::<c_void>();
+                (name.as_str(), entry)
+            }).collect::<BTreeMap<_, _>>();
         let mut libraries = std::collections::BTreeMap::new();
         for (&name, &offset) in &imports {
             let symbol = external_symbol(&mut libraries, name)?;
@@ -387,8 +387,8 @@ impl Allocation {
                 functions.insert(name.as_str(), entry);
             }
         }
-        for code in codes {
-            let entry = addresses[&(code as *const _ as usize)];
+        for (code, &(begin, _)) in image.code().zip(&layout) {
+            let entry = unsafe { address.cast::<u8>().add(begin as usize) };
             for relocation in &code.relocations {
                 let ptr = match &relocation.target {
                     NativeSymbol::Function(name) => *functions.get(name.as_str())
@@ -404,7 +404,7 @@ impl Allocation {
                     },
                 };
                 unsafe {
-                    std::ptr::copy_nonoverlapping((ptr as u64).to_le_bytes().as_ptr(), entry.cast::<u8>().add(relocation.offset), 8);
+                    std::ptr::copy_nonoverlapping((ptr as u64).to_le_bytes().as_ptr(), entry.add(relocation.offset), 8);
                 }
             }
         }
@@ -455,12 +455,12 @@ impl Allocation {
             None
         } else {
             Some(unsafe { crate::application::Definitions::linked(factories, |image| {
-                Ok(CpuTemplate { code: CpuCode::from_image(image, workers, &|address| Executable {
-                    address: address.cast_mut().cast(), _allocation: Some(allocation.clone()),
+                Ok(CpuTemplate { code: CpuCode::from_image(image, workers, &mut |stages, _| {
+                    CpuCode::load_linked_stages(stages, Some(&allocation))
                 }, None) })
             }) }?)
         };
-        Ok((Some(allocation), addresses, definitions))
+        Ok((Some(allocation), layout, definitions))
     }
 }
 impl Drop for Allocation {
@@ -637,9 +637,7 @@ impl CpuProgram {
         factories: &[blanguage::resource::ModuleFactory],
     ) -> Result<Self> {
         let workers = std::thread::available_parallelism()?.get();
-        let stages = CpuCode::load_stages(image.stages(), &|address| Executable {
-            address: address.cast_mut().cast(), _allocation: None,
-        });
+        let stages = CpuCode::load_linked_stages(image.stages(), None);
         let (program, _, _, _) = image.into_parts();
         let definitions = unsafe { crate::application::Definitions::linked(factories, |image| CpuTemplate::from_linked(image).map_err(|(error, _)| error)) }?;
         Ok(Self { code: CpuCode {
@@ -813,26 +811,37 @@ impl CpuCode {
     }
     fn raw<P>(image: blanguage::native::ProgramImage<P>) -> std::result::Result<Self, (Box<dyn std::error::Error + Send + Sync>, blanguage::native::ProgramImage<P>)> {
         let workers=match std::thread::available_parallelism(){Ok(workers)=>workers.get(),Err(error)=>return Err((error.into(),image))};
-        let (allocation, addresses, definitions) = match Allocation::load(&image, workers) {
+        let (allocation, layout, definitions) = match Allocation::load(&image, workers) {
             Ok(code) => code,
             Err(error) => return Err((error, image)),
         };
-        Ok(Self::from_image(image,workers,&|code|Executable{
-            address:addresses[&(code as *const _ as usize)],_allocation:allocation.clone(),
+        let mut remaining = layout.as_slice();
+        Ok(Self::from_image(image, workers, &mut |stages, functions| {
+            let stages = Self::load_stages(stages, &mut |_| {
+                let (&(begin, _), rest) = remaining.split_first().unwrap();
+                remaining = rest;
+                let base = allocation.as_ref().unwrap().address.cast::<u8>();
+                let address = unsafe { base.add(begin as usize) }.cast::<c_void>();
+                Executable { address, _allocation: allocation.clone() }
+            });
+            // These entries were already placed and resolved by Allocation::load.
+            remaining = &remaining[functions..];
+            stages
         }, definitions))
     }
     fn linked<P>(image: blanguage::native::ProgramImage<P, *const u8>) -> std::result::Result<Self, (Box<dyn std::error::Error + Send + Sync>, blanguage::native::ProgramImage<P, *const u8>)> {
         let workers=match std::thread::available_parallelism(){Ok(workers)=>workers.get(),Err(error)=>return Err((error.into(),image))};
-        Ok(Self::from_image(image,workers,&|address|Executable{address:address.cast_mut().cast(),_allocation:None},None))
+        Ok(Self::from_image(image, workers, &mut |stages, _| Self::load_linked_stages(stages, None), None))
     }
     fn from_image<P, C>(
-        image: blanguage::native::ProgramImage<P, C>, workers: usize, load: &impl Fn(&C) -> Executable,
+        image: blanguage::native::ProgramImage<P, C>, workers: usize,
+        load: &mut impl FnMut(&[blanguage::native::StageCode<C>], usize) -> Vec<StageCode>,
         linked: Option<crate::application::Definitions>,
     ) -> Self {
         use blanguage::resource::Image;
         use crate::application::{Definitions, ProgramSlot};
 
-        let stages = Self::load_stages(image.stages(), load);
+        let stages = load(image.stages(), image.functions().len());
         let (program, _, _, resources) = image.into_parts();
         let definitions = match resources {
             Some(module) => {
@@ -856,7 +865,14 @@ impl CpuCode {
         }.map(std::sync::Arc::new);
         Self { program, stages, workers, definitions }
     }
-    fn load_stages<C>(stages:&[blanguage::native::StageCode<C>],load:&impl Fn(&C)->Executable)->Vec<StageCode>{
+    fn load_linked_stages(
+        stages: &[blanguage::native::StageCode<*const u8>], allocation: Option<&std::sync::Arc<Allocation>>,
+    ) -> Vec<StageCode> {
+        Self::load_stages(stages, &mut |address| Executable {
+            address: address.cast_mut().cast(), _allocation: allocation.cloned(),
+        })
+    }
+    fn load_stages<C>(stages: &[blanguage::native::StageCode<C>], load: &mut impl FnMut(&C) -> Executable) -> Vec<StageCode> {
         use blanguage::native::{ContinuationCode,StageCode as ImageStage};
         stages.iter().map(|image|match image{
             ImageStage::Sort(code)=>StageCode::Sort(sort::Code::load(code,load)),

@@ -231,7 +231,7 @@ impl<P, C> ProgramImage<P, C> {
     }
     pub fn functions(&self) -> &[(String, C)] { &self.functions }
     pub fn module_code(&self) -> Option<&super::ModuleCode> { self.module_code.as_ref() }
-    fn own_code<'a>(stages: &'a [StageCode<C>], functions: &'a [(String, C)]) -> impl Iterator<Item = &'a C> {
+    fn stage_code(stages: &[StageCode<C>]) -> impl Iterator<Item = &C> {
         stages.iter().flat_map(|stage| {
             let (initialize, entries): (&[C], [Option<&C>; 3]) = match stage {
                 StageCode::Sort(code) => (&code.initialize, [Some(&code.histogram), Some(&code.scatter), Some(&code.gather)]),
@@ -246,7 +246,15 @@ impl<P, C> ProgramImage<P, C> {
                 }
             };
             initialize.iter().chain(entries.into_iter().flatten())
-        }).chain(functions.iter().map(|(_, code)| code))
+        })
+    }
+    fn own_code<'a>(stages: &'a [StageCode<C>], functions: &'a [(String, C)]) -> impl Iterator<Item = &'a C> {
+        Self::stage_code(stages).chain(functions.iter().map(|(_, code)| code))
+    }
+    /// Number of code entries in this image's stages, before its ordinary functions.
+    #[doc(hidden)]
+    pub fn stage_code_count(&self) -> usize {
+        Self::stage_code(&self.stages).count()
     }
     fn cpu_resources(resources: Option<&crate::resource::Module<C>>) -> impl Iterator<Item = &ProgramImage<crate::TemplateProgram, C>> {
         resources.into_iter().flat_map(|module| &module.images)

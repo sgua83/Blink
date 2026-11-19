@@ -12,14 +12,14 @@ impl Code {
     pub(super) fn executables(&self) -> impl Iterator<Item = &Executable> {
         self.initialize.iter().chain([&self.histogram, &self.scatter, &self.gather])
     }
-    pub fn load<C>(code: &blanguage::native::SortCode<C>, load: &impl Fn(&C) -> Executable) -> Self {
+    pub fn load<C>(code: &blanguage::native::SortCode<C>, load: &mut impl FnMut(&C) -> Executable) -> Self {
         Self {
             source: code.source,
             target: code.target,
             initialize: code
                 .initialize
                 .iter()
-                .map(load)
+                .map(&mut *load)
                 .collect(),
             histogram: load(&code.histogram),
             scatter: load(&code.scatter),
