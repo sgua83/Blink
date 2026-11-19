@@ -11,7 +11,7 @@ use blanguage::{
 };
 pub use dataset::CpuDataset;
 pub use observation::{CpuRangeCall, CpuRangeTiming, CpuRangeTimings, CpuThreadTime, CpuTimePoint};
-use std::{collections::{BTreeMap, btree_map::Entry}, ffi::c_void, ptr::NonNull, sync::Arc};
+use std::{collections::{BTreeMap, btree_map::Entry}, ffi::c_void, mem::MaybeUninit, ptr::NonNull, sync::Arc};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 #[link(name = "kernel32")]
@@ -523,12 +523,14 @@ impl Drop for Allocation {
     }
 }
 
-fn collective_bits(scalar: Scalar, words: &[u32], byte: usize) -> Bits {
+// A summary word may contain both initialized field bytes and padding.
+// The selected scalar must be within the row and initialized by the producer.
+unsafe fn collective_bits(scalar: Scalar, words: &[MaybeUninit<u32>], byte: usize) -> Bits {
     let mut bytes = [0; 8];
     unsafe { std::ptr::copy_nonoverlapping(words.as_ptr().cast::<u8>().add(byte), bytes.as_mut_ptr(), scalar.size() as usize); }
     Bits::from_ne_bytes(bytes)
 }
-fn store_collective_bits(scalar: Scalar, words: &mut [u32], byte: usize, bits: Bits) {
+unsafe fn store_collective_bits(scalar: Scalar, words: &mut [MaybeUninit<u32>], byte: usize, bits: Bits) {
     unsafe { std::ptr::copy_nonoverlapping(bits.to_ne_bytes().as_ptr(), words.as_mut_ptr().cast::<u8>().add(byte), scalar.size() as usize); }
 }
 fn collective_pair(scalar: Scalar, operator: CollectiveOperator, a: Bits, b: Bits) -> Bits {
@@ -1075,11 +1077,10 @@ impl CpuCode {
                         grain
                     };
                     let range_count = (count as usize).div_ceil(grain);
-                    let mut partials = if matches!(result, RangeResult::None) {
-                        Vec::new()
-                    } else {
-                        vec![0u32; range_count * result.words()]
-                    };
+                    let partial_words = range_count * result.words();
+                    let mut storage = Vec::<u32>::new();
+                    storage.try_reserve_exact(partial_words)?;
+                    let partials = &mut storage.spare_capacity_mut()[..partial_words];
                     let mut ranges = RangeWork {
                         frame: frame.map(|(definitions,offset,words,inputs)| (definitions,offset,words,inputs,input_domains.as_slice())),
                         entry: executable.address,
@@ -1090,19 +1091,20 @@ impl CpuCode {
                         grain,
                         next: AtomicUsize::new(0),
                         result,
-                        partials: partials.as_mut_ptr(),
+                        partials: partials.as_mut_ptr().cast(),
                         errors: std::ptr::null_mut(),
                         range_parameters: std::ptr::null(),
                         range_parameter_words: result.words(),
                         stage: stage_index,
                         timing: None,
                     };
+                    // On success every range has written the fields and metadata consumed below.
                     self.execute(&mut ranges, &mut timings)?;
                     if let blanguage::ir::Operation::Reduce(reduction) = &stage.operation {
                         for (scalar, offset) in &reduction.ty.components {
                             let total = partials
                                 .chunks_exact(result.words())
-                                .map(|p| collective_bits(*scalar, p, *offset as usize))
+                                .map(|p| unsafe { collective_bits(*scalar, p, *offset as usize) })
                                 .fold(reduction.operator.identity(*scalar), |a, b| {
                                     collective_pair(*scalar, reduction.operator, a, b)
                                 });
@@ -1122,7 +1124,7 @@ impl CpuCode {
                                 target,
                             } => {
                                 let mut inputs = pointers.clone();
-                                inputs[*source] = BufferAddress { address: partials.as_mut_ptr(), stride: result.words() * 4 };
+                                inputs[*source] = BufferAddress { address: partials.as_mut_ptr().cast(), stride: result.words() * 4 };
                                 inputs[*target] = inputs[*source];
                                 let failure = unsafe {
                                     ranges.invoke_serial(
@@ -1140,7 +1142,7 @@ impl CpuCode {
                                 if let blanguage::ir::Operation::CustomReduce(r) = &stage.operation {
                                     let k = r.ty.size.div_ceil(4) as usize;
                                     let mut inputs = pointers.clone();
-                                    inputs[r.fields.source] = BufferAddress { address: partials.as_mut_ptr(), stride: k * 4 };
+                                    inputs[r.fields.source] = BufferAddress { address: partials.as_mut_ptr().cast(), stride: k * 4 };
                                     let failure = unsafe {
                                         // The tail writes the declared components only on its success path.
                                         let output = buffers[r.fields.target]
@@ -1167,21 +1169,21 @@ impl CpuCode {
                                         let mut prefix: Vec<_> = values.ty.components.iter().map(|(scalar,_)| values.operator.identity(*scalar)).collect();
                                         let mut segments = 0u32;
                                         for total in partials.chunks_mut(reduction.summary_words()) {
-                                            let reset = total[k] != 0;
-                                            let next_segments = segments + total[k + 1];
+                                            let reset = unsafe { total[k].assume_init() } != 0;
+                                            let next_segments = segments + unsafe { total[k + 1].assume_init() };
                                             for (prefix, (scalar, offset)) in prefix.iter_mut().zip(&values.ty.components) {
                                                 let word = *offset as usize;
-                                                let bits = collective_bits(*scalar, total, word);
+                                                let bits = unsafe { collective_bits(*scalar, total, word) };
                                                 let next = if reset {
                                                     bits
                                                 } else {
                                                     collective_pair(*scalar, values.operator, *prefix, bits)
                                                 };
-                                                store_collective_bits(*scalar, total, word, *prefix);
+                                                unsafe { store_collective_bits(*scalar, total, word, *prefix) };
                                                 *prefix = next;
                                             }
-                                            total[k] = count;
-                                            total[k + 1] = segments;
+                                            total[k].write(count);
+                                            total[k + 1].write(segments);
                                             segments = next_segments;
                                         }
                                         unsafe {
@@ -1196,24 +1198,24 @@ impl CpuCode {
                                         let mut prefix: Vec<_> = scan.ty.components.iter().map(|(scalar,_)| scan.operator.identity(*scalar)).collect();
                                         let k = scan.ty.size.div_ceil(4) as usize;
                                         for total in partials.chunks_mut(scan.summary_words()) {
-                                            let reset = scan.head_word.is_some() && total[k] != 0;
+                                            let reset = scan.head_word.is_some() && unsafe { total[k].assume_init() } != 0;
                                             for (prefix, (scalar, offset)) in prefix.iter_mut().zip(&scan.ty.components) {
                                                 let word = *offset as usize;
-                                                let bits = collective_bits(*scalar, total, word);
+                                                let bits = unsafe { collective_bits(*scalar, total, word) };
                                                 let next = if reset {
                                                     bits
                                                 } else {
                                                     collective_pair(*scalar, scan.operator, *prefix, bits)
                                                 };
-                                                store_collective_bits(*scalar, total, word, *prefix);
+                                                unsafe { store_collective_bits(*scalar, total, word, *prefix) };
                                                 *prefix = next;
                                             }
                                         }
                                     } else {
                                         let mut prefix = 0u32;
                                         for total in partials.chunks_mut(result.words()) {
-                                            let next = prefix.wrapping_add(total[0]);
-                                            total[0] = prefix;
+                                            let next = prefix.wrapping_add(unsafe { total[0].assume_init() });
+                                            total[0].write(prefix);
                                             prefix = next;
                                         }
                                         if let blanguage::ir::Operation::Compact(c) = &stage.operation {
@@ -1233,7 +1235,7 @@ impl CpuCode {
                             ranges.entry = next.address;
                             ranges.result = RangeResult::None;
                             ranges.next = AtomicUsize::new(0);
-                            ranges.range_parameters = partials.as_ptr();
+                            ranges.range_parameters = partials.as_ptr().cast();
                             self.execute(&mut ranges, &mut timings)?;
                         }
                     }
