@@ -168,13 +168,13 @@ pub(crate) fn inputs(runtime: bool, worker: &crate::compiler::Worker) -> std::io
     digest.update(b"BlinkNativeInputs2");
     if !runtime { return Ok(digest.finish()); }
     let sdk = sdk_root(worker)?;
-    digest.field(sdk.as_os_str().as_encoded_bytes());
     if cfg!(feature = "installed") {
         let link_inputs = sdk.join(SDK_RUNTIME).join("native-static-libs.txt");
         digest.field(b"installed-native-library");
         digest.field(&FileBytes::read_path(&link_inputs)?);
         return Ok(digest.finish());
     }
+    digest.field(sdk.as_os_str().as_encoded_bytes());
     let variables = std::env::vars_os().filter(|(name, _)| {
         let name = name.to_string_lossy().to_ascii_uppercase();
         // compile() fixes jobs, profile and target-dir with explicit Cargo arguments.
