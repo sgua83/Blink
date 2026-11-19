@@ -764,30 +764,69 @@ struct BorrowEvaluation<'a>{
     loop_bindings:Vec<BTreeMap<LoopInput,Borrow>>,
     values: BTreeMap<(LoopSources, EvaluationInput), Borrow>,
     stored: Option<Arc<StoredLocations>>,
+    stored_paths: StoredPaths<'a>,
 }
+// A replay may visit the same physical write for many words or exits.
+// The callee contracts and argument bindings stay fixed inside this evaluation,
+// including the nested relation scopes that replay its writes.
+type CallWritePaths = std::cell::RefCell<BTreeMap<(usize, usize), bounds::Clause>>;
+
+enum StoredPaths<'a> {
+    Own(CallWritePaths),
+    Borrowed(&'a CallWritePaths),
+}
+
+impl Default for StoredPaths<'_> {
+    fn default() -> Self { Self::Own(Default::default()) }
+}
+
+impl StoredPaths<'_> {
+    fn paths(&self) -> &CallWritePaths {
+        match self {
+            Self::Own(paths) => paths,
+            Self::Borrowed(paths) => paths,
+        }
+    }
+
+    fn project(&self, call_index: usize, index: usize, guard: &bounds::Condition,
+        usage: &Use, call: &Call,
+    ) -> bounds::Clause {
+        self.paths().borrow_mut().entry((call_index, index)).or_insert_with(|| {
+            bounds::Clause::both(&usage.path, &guard.projected_case(true, &call.arguments))
+        }).clone()
+    }
+}
+
 impl BorrowEvaluation<'_>{
     fn content_event(&mut self,result:&mut ContentAtRead,query:Option<(&address::Origin,u32)>,position:Option<&Position>,memory:usize){
         let(function,known)=(self.function,self.known);
         let usage=&function.uses[memory];
         let Requirement::Memory{borrow,access,written,address_fields,..}=&usage.requirement else{return;};
-        if let Some(call)=function.calls.iter().find(|call|!call.deferred&&call.memory==memory){
-            for access in known[&call.function].interface.access.iter().rev(){
-                let Access::Stored{borrows,word,value:stored,when}=access else{continue;};
-                let when = std::cell::LazyCell::new(|| {
-                    bounds::Clause::both(&usage.path, &when.projected_case(true, &call.arguments))
-                });
-                let target=self.evaluate(&call_content_sources(borrows,call,&call.arguments).at_call(&call.arguments));
-                let stored = std::cell::LazyCell::new(|| {
-                    self.evaluate(&call_content_sources(stored, call, &call.arguments).at_call(&call.arguments))
-                });
+        if let Some((call_index, call)) = function.calls.iter().enumerate()
+            .find(|(_, call)| !call.deferred && call.memory == memory)
+        {
+            for (index, access) in known[&call.function].interface.access.iter().enumerate().rev() {
+                let Access::Stored { borrows, word, value, when } = access else { continue; };
+                let target = self.evaluate(&call_content_sources(borrows, call, &call.arguments).at_call(&call.arguments));
+                let projected = std::cell::OnceCell::new();
+                let stored = std::cell::OnceCell::new();
                 for (source, selected) in target.sources.entries().rev() {
-                    if let Origin::Position(origin) = source {
-                        let path = std::cell::LazyCell::new(|| bounds::Clause::both(&when, &selected));
-                        if let Some(complete) = content_write_overlap(
-                            query, position, origin, *word, || path.possible().then_some(&*path),
-                        ) {
-                            result.write(&stored, &bounds::Condition::execution(&path), complete);
-                        }
+                    let Origin::Position(origin) = source else { continue; };
+                    let overlap = {
+                        let path = std::cell::LazyCell::new(|| {
+                            let when = projected.get_or_init(|| {
+                                self.stored_paths.project(call_index, index, when, usage, call)
+                            });
+                            bounds::Clause::both(when, &selected)
+                        });
+                        content_write_overlap(query, position, origin, *word, || path.possible().then_some(&*path))
+                            .map(|complete| (complete, bounds::Condition::execution(&path)))
+                    };
+                    if let Some((complete, path)) = overlap {
+                        let stored = stored.get_or_init(|| {
+                            self.evaluate(&call_content_sources(value, call, &call.arguments).at_call(&call.arguments))
+                        });
+                        result.write(stored, &path, complete);
                     }
                 }
             }
@@ -870,13 +909,11 @@ impl BorrowEvaluation<'_>{
         let mut result = BTreeSet::new();
         for(memory,usage)in function.uses.iter().enumerate(){
             let Requirement::Memory{borrow,written,address_fields,..}=&usage.requirement else{continue;};
-            if let Some(call)=function.calls.iter().find(|call|call.memory==memory){
-                for access in &known[&call.function].interface.access{
+            if let Some((call_index, call)) = function.calls.iter().enumerate().find(|(_, call)| call.memory == memory) {
+                for (index, access) in known[&call.function].interface.access.iter().enumerate() {
                     let Access::Stored{borrows,word,when,..}=access else{continue;};
                     let target = self.evaluate(&call_content_sources(borrows, call, &call.arguments).at_call(&call.arguments));
-                    let path = std::cell::LazyCell::new(|| {
-                        bounds::Clause::both(&usage.path, &when.projected_case(true, &call.arguments))
-                    });
+                    let path = std::cell::LazyCell::new(|| self.stored_paths.project(call_index, index, when, usage, call));
                     for (source, when) in target.sources.entries() {
                         if let Origin::Position(origin) = source
                             && bounds::Clause::both(&when, &path).possible()
@@ -1047,7 +1084,7 @@ fn stored_target<'p>(
     canonical_relation(Borrow::source(Origin::Position(Arc::new(origin))), function, None, exposed, parameters(), false)
 }
 fn evaluate(borrow:&Borrow,function:&Function,state:&State,known:&States,expand_loops:bool)->Borrow {
-    BorrowEvaluation{function,state,known,expand_loops,deferred_reads:false,loop_bindings:Vec::new(),values:BTreeMap::new(),stored:None}.evaluate(borrow)
+    BorrowEvaluation{function,state,known,expand_loops,deferred_reads:false,loop_bindings:Vec::new(),values:BTreeMap::new(),stored:None,stored_paths:Default::default()}.evaluate(borrow)
 }
 
 fn input_index(index:Option<bounds::Operand>,function:&Function)->Option<bounds::Operand>{
@@ -1518,7 +1555,7 @@ fn converge_access(functions:&BTreeMap<String,&Function>,known:&mut States,owns_
         let mut access=BTreeMap::new();
         let mut evaluation = BorrowEvaluation {
             function, state, known, expand_loops: true, deferred_reads: false,
-            loop_bindings: Vec::new(), values: BTreeMap::new(), stored: None,
+            loop_bindings: Vec::new(), values: BTreeMap::new(), stored: None, stored_paths: Default::default(),
         };
         for value in state.interface.access.iter().filter(|access|matches!(access,Access::Stored{..})) {insert(&mut access,value.clone());}
         for usage in &function.uses {
@@ -1567,7 +1604,7 @@ fn converge_access(functions:&BTreeMap<String,&Function>,known:&mut States,owns_
             let mut access=local_access.clone();
             let mut evaluation = BorrowEvaluation {
                 function, state, known, expand_loops: true, deferred_reads: false,
-                loop_bindings: Vec::new(), values: BTreeMap::new(), stored: None,
+                loop_bindings: Vec::new(), values: BTreeMap::new(), stored: None, stored_paths: Default::default(),
             };
             for (index, call) in function.calls.iter().enumerate().filter(|(_, call)| call.function != *name || state.entries.is_none()) {
                 let projection = call_accesses.entry((name.as_str(), index)).or_insert_with(|| CallProjection {
@@ -1725,7 +1762,7 @@ fn converge(
         let changed = crate::parallel::try_map(worker, tasks, |_| (), |_, name| {
             let function = functions[name];
             let state = &known[name];
-            let mut evaluation=BorrowEvaluation{function,state,known,expand_loops:true,deferred_reads:false,loop_bindings:Vec::new(),values:BTreeMap::new(),stored:None};
+            let mut evaluation=BorrowEvaluation{function,state,known,expand_loops:true,deferred_reads:false,loop_bindings:Vec::new(),values:BTreeMap::new(),stored:None,stored_paths:Default::default()};
             let loops = relation::Graph::loops(&loop_inputs[name], function, state, known);
             let entries = relation::Graph::recursive_inputs(name,function,state,known);
             let forwards=|output:&Output,definition:&Borrow|matches!(output,Output::Returned(_))&&definition.calls.iter().any(|result|function.calls[result.call].function==*name&&result.output==*output);
@@ -2086,7 +2123,7 @@ fn finish_function(
     let state = &known[name];
     let mut evaluation = BorrowEvaluation {
         function, state, known, expand_loops: true, deferred_reads: false,
-        loop_bindings: Vec::new(), values: BTreeMap::new(), stored: None,
+        loop_bindings: Vec::new(), values: BTreeMap::new(), stored: None, stored_paths: Default::default(),
     };
     let mut effects = MemoryEffects::new();
     let mut resolved = BTreeMap::new();
@@ -2177,11 +2214,11 @@ fn finish_function(
     let context = function.value_context(resolved.as_ref());
     let mut evaluation = BorrowEvaluation {
         function, state, known, expand_loops: true, deferred_reads: false,
-        loop_bindings: Vec::new(), values: BTreeMap::new(), stored: None,
+        loop_bindings: Vec::new(), values: BTreeMap::new(), stored: None, stored_paths: Default::default(),
     };
     let mut symbolic = BorrowEvaluation {
         function, state, known, expand_loops: false, deferred_reads: false,
-        loop_bindings: Vec::new(), values: BTreeMap::new(), stored: None,
+        loop_bindings: Vec::new(), values: BTreeMap::new(), stored: None, stored_paths: Default::default(),
     };
     for usage in &function.uses{
         let path=bounds::Clause::both(&usage.path,&context);
