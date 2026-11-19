@@ -1620,16 +1620,43 @@ fn stored_outputs<'p>(
     }).collect()
 }
 
+fn borrow_worker_error(
+    functions: &BTreeMap<String, &Function>, error: crate::parallel::Error<crate::ast::Diagnostic>,
+) -> crate::ast::Diagnostic {
+    match error {
+        crate::parallel::Error::Work(error) => error,
+        crate::parallel::Error::Resource(error) => {
+            let path = functions.values().find_map(|function| function.uses.first()
+                .map(|usage| usage.source.path.as_path()))
+                .unwrap_or_else(|| std::path::Path::new("<borrow-solver>"));
+            crate::compiler::diagnostic(path, error)
+        }
+    }
+}
+
+struct ConvergenceUpdate<'a> {
+    name: &'a String,
+    loops: Option<Arc<relation::Graph>>,
+    entries: Option<BTreeMap<ValueIdentity, Borrow>>,
+    outputs: Outputs,
+    stored: BTreeSet<Access>,
+    local_changed: bool,
+    interface_changed: bool,
+}
+
 fn converge(
+    worker: &crate::compiler::Worker,
     functions: &BTreeMap<String, &Function>,
     known: &mut States,
     loop_inputs: &BTreeMap<String, BTreeSet<LoopInput>>,
     unknown: &BTreeSet<(String, Output)>,
-) {
-    loop{
-        let mut changed = Vec::new();
-        for(name,function)in functions{
-            let state=&known[name];
+) -> Result<()> {
+    let mut ready: BTreeSet<_> = functions.keys().collect();
+    while !ready.is_empty() {
+        let tasks: Vec<_> = ready.into_iter().collect();
+        let changed = crate::parallel::try_map(worker, tasks, |_| (), |_, name| {
+            let function = functions[name];
+            let state = &known[name];
             let mut evaluation=BorrowEvaluation{function,state,known,expand_loops:true,deferred_reads:false,loop_bindings:Vec::new(),values:BTreeMap::new()};
             let loops = relation::Graph::loops(&loop_inputs[name], function, state, known);
             let entries = relation::Graph::recursive_inputs(name,function,state,known);
@@ -1666,24 +1693,37 @@ fn converge(
                 (output, value)
             }).collect::<Outputs>();
             let access = stored_outputs(&mut evaluation, &exposed, || &parameters);
-            if loops != state.loops || entries != state.entries
-                || outputs != state.interface.outputs || access != state.interface.access
-            {
-                changed.push((name, loops, entries, outputs, access));
-            }
+            let local_changed = loops != state.loops || entries != state.entries;
+            let interface_changed = outputs != state.interface.outputs || access != state.interface.access;
+            Ok((local_changed || interface_changed).then_some(ConvergenceUpdate {
+                name, loops, entries, outputs, stored: access, local_changed, interface_changed,
+            }))
+        }).map_err(|error| borrow_worker_error(functions, error))?;
+        let changed = changed.into_iter().flatten().collect::<Vec<_>>();
+        let interfaces: BTreeSet<_> = changed.iter().filter_map(|update| {
+            update.interface_changed.then_some(update.name.as_str())
+        }).collect();
+        // A new interface reaches only its actual callers. Local loop/entry
+        // changes also require another evaluation of their originating function.
+        ready = changed.iter().filter_map(|update| {
+            update.local_changed.then_some(update.name)
+        }).collect();
+        if !interfaces.is_empty() {
+            ready.extend(functions.iter().filter_map(|(name, function)| {
+                function.calls.iter().any(|call| interfaces.contains(call.function.as_str())).then_some(name)
+            }));
         }
-        if changed.is_empty() {
-            break;
-        }
-        for (name, loops, entries, outputs, access) in changed {
-            let state = known.get_mut(name).unwrap();
-            state.loops = loops;
-            state.entries = entries;
-            state.interface.outputs = outputs;
-            state.interface.access = access;
+        for update in changed {
+            let state = known.get_mut(update.name).unwrap();
+            state.loops = update.loops;
+            state.entries = update.entries;
+            state.interface.outputs = update.outputs;
+            state.interface.access = update.stored;
         }
     }
+    Ok(())
 }
+
 struct LoopConditions {
     carried: Vec<LoopInput>,
     terms: Vec<bounds::Condition>,
@@ -1955,22 +1995,14 @@ fn solve<'a>(
         entries:None,
         interface:Interface{outputs:function.outputs.keys().map(|output|(output.clone(),Borrow::default())).collect(),access:BTreeSet::new(),initialization:Vec::new()},
     });}
-    converge(functions, &mut known, &loop_inputs, &BTreeSet::new());
+    converge(worker, functions, &mut known, &loop_inputs, &BTreeSet::new())?;
     let unknown=functions.iter().flat_map(|(name,function)|function.outputs.keys().filter_map(|output|known[name].interface.outputs[output].empty().then_some((name.clone(),output.clone())))).collect::<BTreeSet<_>>();
-    if !unknown.is_empty(){converge(functions, &mut known, &loop_inputs, &unknown);}
+    if !unknown.is_empty(){converge(worker, functions, &mut known, &loop_inputs, &unknown)?;}
     converge_initializations(functions,&mut known);
     converge_access(functions,&mut known,&owns_input);
     let results = crate::parallel::try_map(worker, functions.iter().collect(), |_| (),
         |_, (name, function)| finish_function(name, function, &known),
-    ).map_err(|error| match error {
-        crate::parallel::Error::Work(error) => error,
-        crate::parallel::Error::Resource(error) => {
-            let path = functions.values().find_map(|function| function.uses.first()
-                .map(|usage| usage.source.path.as_path()))
-                .unwrap_or_else(|| std::path::Path::new("<borrow-solver>"));
-            crate::compiler::diagnostic(path, error)
-        }
-    })?;
+    ).map_err(|error| borrow_worker_error(functions, error))?;
     let mut memory = BTreeMap::new();
     let mut scalar_values = BTreeMap::new();
     for (name, (effects, values)) in functions.keys().zip(results) {
