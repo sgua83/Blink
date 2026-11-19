@@ -983,21 +983,26 @@ impl Device {
         self.download_graph(data, &mut std::collections::BTreeMap::new())
     }
     fn read_payload(&self, data: &GpuDataset) -> Result<Vec<u32>> {
-        let mut words = vec![0; data.bytes().div_ceil(4) as usize];
         let Some(first) = data.pages.first() else {
-            return Ok(words);
+            return Ok(Vec::new());
         };
+        let byte_count = data.bytes() as usize;
+        let word_count = byte_count.div_ceil(4);
+        let mut words = Vec::<u32>::new();
+        words.try_reserve_exact(word_count)?;
+        let output = words.spare_capacity_mut().as_mut_ptr().cast::<u8>();
         let target = Allocation::new(self.inner.clone(), first.size, 2, 6, 4)?;
-        let mut remaining = data.bytes();
+        let page_bytes = data.page_records() as usize * data.stride as usize;
+        let mut written = 0;
         let mut producer = data.dependency();
         for page in &data.pages {
-            let bytes = remaining.min(u64::from(data.page_records()) * u64::from(data.stride));
+            let bytes = (byte_count - written).min(page_bytes);
             let commands = Commands::new(self.inner.clone())?;
             commands.barrier(data.producer.stage(), 0x1000, data.producer.access(), 0x800);
             let copy = VkBufferCopy {
                 srcOffset: 0,
                 dstOffset: 0,
-                size: bytes.div_ceil(4) * 4,
+                size: (bytes.div_ceil(4) * 4) as u64,
             };
             unsafe {
                 (self.inner.functions.vkCmdCopyBuffer)(
@@ -1016,9 +1021,15 @@ impl Device {
             self.submit_transfer(commands, Vec::new(), dependencies)?
                 .wait()?;
             target.read_with(|pointer| unsafe {
-                std::ptr::copy_nonoverlapping(pointer, words.as_mut_ptr().cast::<u8>().add((data.bytes() - remaining) as usize), bytes as usize);
+                std::ptr::copy_nonoverlapping(pointer, output.add(written), bytes);
             })?;
-            remaining -= bytes;
+            written += bytes;
+        }
+        // The allocated pages cover all logical bytes. Initialize only the final
+        // word's padding before exposing the fully written CPU storage.
+        unsafe {
+            output.add(byte_count).write_bytes(0, word_count * 4 - byte_count);
+            words.set_len(word_count);
         }
         Ok(words)
     }
