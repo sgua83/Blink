@@ -168,7 +168,7 @@ pub(super) struct StructureStorage {
     handle: u64,
     address: u64,
     _storage: Allocation,
-    models: Vec<BottomLevel>,
+    models: Option<Rc<[BottomLevel]>>,
     count: u32,
     flags: u32,
     max_vertex: Option<u32>,
@@ -239,7 +239,13 @@ impl BottomLevel {
 }
 pub(super) struct InstanceInput {
     pub(super) pointers: Allocation,
-    pub(super) models: Vec<BottomLevel>,
+    models: Option<Rc<[BottomLevel]>>,
+}
+fn collect_models(models: impl IntoIterator<Item = BottomLevel>) -> Option<Rc<[BottomLevel]>> {
+    let unique = models.into_iter()
+        .map(|model| (model.0.handle, model))
+        .collect::<BTreeMap<_, _>>();
+    (!unique.is_empty()).then(|| unique.into_values().collect())
 }
 pub struct RayInstance {
     pub model: BottomLevel,
@@ -273,6 +279,8 @@ impl Acceleration {
             + self
                 .0
                 .models
+                .as_deref()
+                .unwrap_or_default()
                 .iter()
                 .map(|m| m.0._storage.allocated_size)
                 .sum::<u64>()
@@ -343,7 +351,7 @@ impl Device {
         structure_type: u32,
         producer: Usage,
         inputs: Vec<RayInput>,
-        models: Vec<BottomLevel>,
+        models: Option<Rc<[BottomLevel]>>,
         mut dependencies: Vec<Rc<Execution>>,
         operation: BuildOperation<'_>,
     ) -> Result<Structure> {
@@ -413,7 +421,7 @@ impl Device {
         }
         let storage = Allocation::new(self.inner.clone(), sizes.structure, 0x120000, 1, 1)?;
         dependencies.extend(inputs.iter().filter_map(|input| input.ready.clone()));
-        dependencies.extend(models.iter().map(|model| model.0.built.clone()));
+        dependencies.extend(models.as_deref().unwrap_or_default().iter().map(|model| model.0.built.clone()));
         dependencies.extend(source.iter().map(|source| source.built.clone()));
         let dependencies = Execution::prepare(dependencies)?;
         let mut out = StructureStorage {
@@ -648,7 +656,7 @@ impl Device {
             1,
             Usage::Transfer,
             vec![vertices, triangles],
-            Vec::new(),
+            None,
             Vec::new(),
             operation,
         )
@@ -712,12 +720,7 @@ impl Device {
                 },
             },
         };
-        let models = instances
-            .into_iter()
-            .map(|i| (i.model.0.handle, i.model))
-            .collect::<std::collections::BTreeMap<_, _>>()
-            .into_values()
-            .collect();
+        let models = collect_models(instances.into_iter().map(|instance| instance.model));
         let structure = self.build_acceleration(
             geometry,
             count,
@@ -775,12 +778,7 @@ impl Device {
         let pointers = Allocation::new(self.inner.clone(), pointer_bytes, 0xa0002, 1, 8)?;
         target.owned_storage()?.instances = Some(InstanceInput {
             pointers,
-            models: models
-                .into_iter()
-                .map(|m| (m.0.handle, m))
-                .collect::<std::collections::BTreeMap<_, _>>()
-                .into_values()
-                .collect(),
+            models: collect_models(models),
         });
         if !data.words.is_empty() {
             let mut commands = Commands::new(self.inner.clone())?;
