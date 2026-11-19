@@ -356,18 +356,22 @@ impl Graph {
         self.walk_reachable(root, &mut BTreeSet::new(), &mut BTreeSet::new(), accepts)
     }
 
-    fn order(&self, reachable: &BTreeSet<usize>) -> Vec<(usize, bool)> {
+    fn evaluation_dependencies(&self, id: usize) -> impl Iterator<Item = usize> + '_ {
+        let sources = self.nodes[id].edges.iter().map(|edge| edge.from);
+        let writes = self.frames_at(id).into_iter().flat_map(|frame| self.frames[frame].writes.iter());
+        sources.chain(writes.flat_map(|write| {
+            std::iter::once(write.target).chain(write.fields.iter().flatten().map(|(_, value)| *value))
+        }))
+    }
+
+    fn order(
+        &self, reachable: &BTreeSet<usize>, fixed_inputs: Option<&mut BTreeSet<usize>>,
+    ) -> Vec<(usize, bool)> {
         let mut counts = BTreeMap::new();
         let mut users: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
         for &id in reachable.difference(&self.variables) {
             let edges = &self.nodes[id].edges;
-            let mut dependencies = edges.iter().map(|edge| edge.from).collect::<BTreeSet<_>>();
-            for frame in self.frames_at(id) {
-                for write in &self.frames[frame].writes {
-                    dependencies.insert(write.target);
-                    dependencies.extend(write.fields.iter().flatten().map(|(_, id)| *id));
-                }
-            }
+            let mut dependencies: BTreeSet<_> = self.evaluation_dependencies(id).collect();
 
             // A read can also use the evaluation scope's current loop bindings.
             let mut feedback = edges.iter().any(|edge| matches!(edge.op, Op::Read { .. }));
@@ -397,6 +401,12 @@ impl Graph {
                     ready.push(user);
                 }
             }
+        }
+        if let Some(fixed) = fixed_inputs {
+            fixed.extend(self.variables.intersection(reachable).copied().filter(|&id| {
+                !self.nodes[id].edges.iter().any(|edge| matches!(edge.op, Op::Read { .. }))
+                    && self.evaluation_dependencies(id).all(|dependency| counts.get(&dependency) == Some(&(0, false)))
+            }));
         }
         order
     }
@@ -597,11 +607,13 @@ impl Graph {
     }
     pub(super) fn solve(self: &Arc<Self>, root: usize, evaluation: &mut BorrowEvaluation<'_>) -> Borrow {
         let (reachable, _) = self.reachable(root);
+        let mut fixed_inputs = BTreeSet::new();
         let (mut stable, feedback): (Vec<_>, Vec<_>) =
-            self.order(&reachable).into_iter().partition(|&(_, changes)| !changes);
+            self.order(&reachable, Some(&mut fixed_inputs)).into_iter().partition(|&(_, changes)| !changes);
         let mut variables = self.variables.intersection(&reachable)
             .map(|&id| (id, Borrow::default())).collect::<BTreeMap<_, _>>();
         let mut values = BTreeMap::new();
+        let mut initial = true;
         loop {
             let mut scope = BorrowEvaluation {
                 function: evaluation.function,
@@ -626,8 +638,9 @@ impl Graph {
                 let value = query.definition(id, &mut scope);
                 query.values.insert(id, value);
             }
-            let next = variables.keys().map(|&id| (id, query.definition(id, &mut scope)))
-                .collect::<BTreeMap<_, _>>();
+            // A fixed input has no reads or dependencies that can change on a backedge.
+            let next = variables.keys().copied().filter(|id| initial || !fixed_inputs.contains(id))
+                .map(|id| (id, query.definition(id, &mut scope))).collect::<BTreeMap<_, _>>();
             if let Some(observe) = scope.known.observe {
                 use crate::compiler::{AnalysisStorage, BorrowSolveStorage};
                 observe(scope.state.name, BorrowSolveStorage::Relation {
@@ -639,8 +652,8 @@ impl Graph {
                     next_inputs: AnalysisStorage::entries::<usize, Borrow>(next.len(), None),
                 });
             }
-            if variables.iter().all(|(id, previous)| next[id].sources.same_sources(&previous.sources))
-                && variables.iter().all(|(id, previous)| next[id].sources.equivalent_paths(&previous.sources))
+            if next.iter().all(|(id, value)| value.sources.same_sources(&variables[id].sources))
+                && next.iter().all(|(id, value)| value.sources.equivalent_paths(&variables[id].sources))
             {
                 let value = query.node(root);
                 let residual = std::cell::OnceCell::new();
@@ -650,7 +663,8 @@ impl Graph {
             for &(id, _) in &feedback {
                 values.remove(&id);
             }
-            variables = next;
+            variables.extend(next);
+            initial = false;
         }
     }
 }
@@ -1791,7 +1805,7 @@ const _: () = {
                 return status;
             }
             if output.nodes.is_empty()||output.variables.iter().any(|id|*id>=output.nodes.len())||output.nodes.iter().any(|n|n.edges.iter().any(|e|e.from>=output.nodes.len()||matches!(&e.op,Op::Read{frame:Some(f),..}|Op::Initial{frame:Some(f),..}if *f>=output.frames.len())))||output.frames.iter().enumerate().any(|(i,f)|f.parent.is_some_and(|p|p>=i)||f.writes.iter().any(|w|w.target>=output.nodes.len()||w.fields.iter().flatten().any(|(_,v)|*v>=output.nodes.len()))){return unsafe{contracts::fail(context,"invalid bound read relation")};}
-            if output.order(&(0..output.nodes.len()).collect()).len()
+            if output.order(&(0..output.nodes.len()).collect(), None).len()
                 != output.nodes.len() - output.variables.len()
             {
                 return unsafe {
