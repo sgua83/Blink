@@ -2722,9 +2722,7 @@ async fn build_domain(
     };
     let mut data = Vec::new();
     let mut texture_values = Vec::new();
-    let mut uniform_values = Vec::new();
-    let mut uniform_regs = BTreeMap::new();
-    let mut ui = 0;
+    let mut uniform_inputs = Vec::new();
     for param in bound_parameters.iter() {
         let first = registers.len();
         if param.ty.dataset {
@@ -2738,17 +2736,10 @@ async fn build_domain(
                 origin: None, dataset_borrow: None, ty: Ty::scalar(Scalar::U64), values: vec![first],
             });
         } else {
-            let uniform = &signature.uniforms[ui];
+            let uniform = &signature.uniforms[uniform_inputs.len()];
             registers.extend(uniform.ty.components.iter().map(|(scalar, _)| *scalar));
             parameters.push(CallParameter::value(uniform.ty.clone()));
-            for (i, &(scalar, offset)) in uniform.ty.components.iter().enumerate() {
-                uniform_regs.insert(uniform.offset + offset, first + i);
-                uniform_values.push(CallArgument::Value { #[cfg(feature = "compiler")] origin: None,
-                    dataset_borrow:None, ty: Ty::scalar(scalar),
-                    values: vec![first + i],
-                });
-            }
-            ui += 1;
+            uniform_inputs.push(first..registers.len());
         }
     }
     let inputs: Vec<_> = (0..registers.len()).collect();
@@ -2798,7 +2789,7 @@ async fn build_domain(
             target,
             &frame,
             &data,
-            &uniform_values,
+            &uniform_inputs,
             &texture_values,
             &mut registers,
             &mut code,
@@ -2812,13 +2803,9 @@ async fn build_domain(
                     values: data[*i].to_vec(),
                 },
                 Root::Texture(i) => texture_values[*i].clone(),
-                Root::Uniform(ty, offset) => CallArgument::Value { #[cfg(feature = "compiler")] origin: None,
-                    dataset_borrow:None, ty: ty.clone(),
-                    values: ty
-                        .components
-                        .iter()
-                        .map(|(_, at)| uniform_regs[&(offset + at)])
-                        .collect(),
+                Root::Uniform(i) => CallArgument::Value { #[cfg(feature = "compiler")] origin: None,
+                    dataset_borrow:None, ty: signature.uniforms[*i].ty.clone(),
+                    values: uniform_inputs[*i].clone().collect(),
                 },
                 Root::Literal(ty, words, evaluation) => {
                     let origin = Arc::new(GeneratedOrigin {
@@ -2883,7 +2870,7 @@ async fn build_domain(
         target,
         &frame,
         &data,
-        &uniform_values,
+        &uniform_inputs,
         &texture_values,
         &mut registers,
         &mut code,
@@ -2965,7 +2952,7 @@ fn emit_domain_part(
     target: Target,
     frame: &CallArgument,
     data: &[[Reg; 2]],
-    uniforms: &[CallArgument],
+    uniform_inputs: &[std::ops::Range<Reg>],
     textures: &[CallArgument],
     registers: &mut Vec<Scalar>,
     code: &mut Vec<Inst>,
@@ -3002,7 +2989,13 @@ fn emit_domain_part(
         dataset_borrow:None, ty: Ty::scalar(Scalar::U32),
         values: vec![reg],
     }));
-    arguments.extend_from_slice(uniforms);
+    arguments.extend(uniform_inputs.iter().cloned().flatten().map(|reg| CallArgument::Value {
+        #[cfg(feature = "compiler")]
+        origin: None,
+        dataset_borrow: None,
+        ty: Ty::scalar(registers[reg]),
+        values: vec![reg],
+    }));
     arguments.extend_from_slice(textures);
     let error=registers.len();registers.push(Scalar::U64);
     code.push(Inst {

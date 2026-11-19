@@ -101,7 +101,7 @@ unsafe extern "C" fn place_uniform(context: *mut std::ffi::c_void, index: usize,
     let layout = unsafe { &mut *context.cast::<UniformLayout<'_>>() };
     let uniform = &mut layout.uniforms[index];
     uniform.offset = offset;
-    layout.roots.insert(uniform.name.clone(), Root::Uniform(uniform.ty.clone(), offset));
+    layout.roots.insert(uniform.name.clone(), Root::Uniform(index));
 }
 
 pub(super) fn layout_uniforms(

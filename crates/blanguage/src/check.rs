@@ -112,7 +112,7 @@ enum Root {
     Data(usize, Access),
     Acceleration(usize),
     Texture(usize),
-    Uniform(Ty, u32),
+    Uniform(usize),
     Literal(Ty, Vec<Bits>, Option<Arc<GeneratedOrigin>>),
 }
 impl Root {
@@ -1203,7 +1203,8 @@ async fn expand_stages(
                                     ty: Some(std::borrow::Cow::Borrowed(&program.buffers[*i].ty)),
                                     count: program.buffers[*i].count,
                                 },
-                                Root::Uniform(ty, _) | Root::Literal(ty, ..) => generics::Actual::value(ty),
+                                Root::Uniform(i) => generics::Actual::value(&program.uniforms[*i].ty),
+                                Root::Literal(ty, ..) => generics::Actual::value(ty),
                                 Root::Acceleration(_) => generics::Actual {
                                     ty: None,
                                     count: None,
@@ -1235,7 +1236,7 @@ async fn expand_stages(
                                     &callee.imports,
                                 )).await }
                             };
-                            match &root {
+                            let actual_value = match &root {
                                 Root::Texture(i) => {
                                     if !p.ty.is_texture_resource()
                                         || p.access != Access::Read
@@ -1250,6 +1251,7 @@ async fn expand_stages(
                                             "纹理资源与只读纹理参数的维度／形状／格式不匹配",
                                         );
                                     }
+                                    None
                                 }
                                 Root::Acceleration(_) => {
                                     if p.ty.name != "acceleration"
@@ -1262,6 +1264,7 @@ async fn expand_stages(
                                             "加速资源的类型或访问权限不匹配",
                                         );
                                     }
+                                    None
                                 }
                                 Root::Data(i, access) => {
                                     let ty = expected().await?;
@@ -1292,12 +1295,15 @@ async fn expand_stages(
                                             "子程序请求了调用方没有的数据访问权限",
                                         );
                                     }
+                                    None
                                 }
-                                Root::Uniform(t, _) | Root::Literal(t, ..) => {
-                                    let ty = expected().await?;
-                                    if p.ty.dataset || *t != ty {
-                                        return d.source.fail(arg.span(), "B117", "标量参数类型不匹配");
-                                    }
+                                Root::Uniform(i) => Some(&program.uniforms[*i].ty),
+                                Root::Literal(ty, ..) => Some(ty),
+                            };
+                            if let Some(actual) = actual_value {
+                                let ty = expected().await?;
+                                if p.ty.dataset || *actual != ty {
+                                    return d.source.fail(arg.span(), "B117", "标量参数类型不匹配");
                                 }
                             }
                             child.insert(
@@ -2128,11 +2134,13 @@ impl<'a> Builder<'a> {
                     self.env.insert(name.clone(), Binding::Data(view));
                     self.view_access.insert(*i, *access);
                 }
-                Root::Uniform(ty, offset) => {
+                Root::Uniform(i) => {
+                    let program = self.program;
+                    let uniform = &program.uniforms[*i];
                     let mut regs = Vec::new();
-                    for (s, o) in &ty.components {
+                    for (s, o) in &uniform.ty.components {
                         let r = self.reg(*s);
-                        self.emit(InstKind::Uniform(r, offset + o));
+                        self.emit(InstKind::Uniform(r, uniform.offset + o));
                         regs.push(r);
                     }
                     self.env.insert(
@@ -2140,7 +2148,7 @@ impl<'a> Builder<'a> {
                         Binding::Value(Value {
                             proof: bounds::Proof::default(),
                             literal: false,
-                            ty: ty.clone(),
+                            ty: uniform.ty.clone(),
                             regs,
                             uniform: true,
                             constant: None,
