@@ -232,7 +232,7 @@ pub(super) enum ExecutionResources {
         commands: Commands,
         _compiled: Rc<Compiled>,
         _accelerations: Vec<Acceleration>,
-        _scratch: Vec<Option<Scratch>>,
+        _scratch: Vec<Scratch>,
         _binding_parameters: Option<Allocation>,
         _queries: Option<Rc<QueryPool>>,
     },
