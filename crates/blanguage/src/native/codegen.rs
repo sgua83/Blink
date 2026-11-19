@@ -116,7 +116,10 @@ enum Branch {
     Nonzero64,
 }
 
+static EMPTY_TILE_WORDS: std::collections::BTreeSet<SharedWord> = std::collections::BTreeSet::new();
+
 struct Emitter<'a> {
+    used_tile_words: &'a std::collections::BTreeSet<SharedWord>,
     code: Vec<u8>,
     unwind: Vec<UnwindOperation>,
     prolog: u8,
@@ -648,6 +651,7 @@ impl Emitter<'_> {
 /// 算法输出（包括计数）只写第五参数，map及无摘要续阶段不读取该指针。
 fn emit_map(
     program: &Program, index: usize, inputs: &crate::ir::dataflow::InputFragments,
+    used: &std::collections::BTreeSet<SharedWord>,
 ) -> Result<NativeCode, &'static str> {
     let mut lowered = program.stages[index].clone();
     texture::lower(&mut lowered);
@@ -673,6 +677,7 @@ fn emit_map(
     let frame = i32::try_from(bytes.div_ceil(16) * 16)
         .map_err(|_| "原生 tile 栈帧超过 x64 范围函数 ABI")? as u32;
     let mut e = Emitter {
+        used_tile_words: used,
         unwind: Vec::new(),
         prolog: 0,
         probe: None,

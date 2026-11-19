@@ -221,15 +221,16 @@ impl Emitter<'_> {
     }
     pub(super) fn publish_values(&mut self, publication: &Publication) {
         let stage = self.stage;
+        let used = self.used_tile_words;
         let tile = publication.tile;
-        let used = stage.storage_words();
         let mut values = publication.values.iter().filter_map(|&(word, value)| {
             let scalar = stage.registers[value];
-            let low = SharedWord::Published { tile, word };
-            let high = SharedWord::Published { tile, word: word + 4 };
-            let low = used.contains(&low).then_some(low);
-            let high = (scalar.size() == 8 && used.contains(&high)).then_some(high);
-            (low.is_some() || high.is_some()).then_some((word, value, scalar, low, high))
+            let parts = crate::ir::dataflow::publish_parts(used, tile, word, scalar.size());
+            (parts != 0).then(|| {
+                let low = (parts & 1 != 0).then_some(SharedWord::Published { tile, word });
+                let high = (parts & 2 != 0).then(|| SharedWord::Published { tile, word: word + 4 });
+                (word, value, scalar, low, high)
+            })
         }).peekable();
         if values.peek().is_none() {
             return;

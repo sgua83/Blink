@@ -534,6 +534,9 @@ unsafe extern "C" fn register_bytes(stage: *const c_void, register: usize) -> u3
 struct WordOutput<'a> { stage: &'a Stage, words: BTreeSet<SharedWord> }
 pub(super) fn storage_words(stage: &Stage) -> BTreeSet<SharedWord> {
     let mut output = WordOutput { stage, words: BTreeSet::new() };
+    if stage.tiles.is_empty() {
+        return output.words;
+    }
     unsafe {
         b_storage_words(Span::slice(&stage.code), StorageHost { ir: HOST, stage: ptr::from_ref(stage).cast(),
             components: tile_components, scalar_bytes: register_bytes }, ptr::from_mut(&mut output).cast(), emit_word);
@@ -557,15 +560,14 @@ unsafe extern "C" {
     );
 }
 
-pub(super) fn input_fragments(stage: &Stage) -> InputFragments {
+pub(crate) fn input_fragments(stage: &Stage, used: &BTreeSet<SharedWord>) -> InputFragments {
     let mut output = BTreeMap::new();
-    if stage.tiles.is_empty() {
+    if used.is_empty() {
         return output;
     }
-    let used = stage.storage_words();
     unsafe {
         b_tile_input_words(
-            Span::slice(&stage.tiles), HOST, ptr::from_ref(&used).cast(),
+            Span::slice(&stage.tiles), HOST, ptr::from_ref(used).cast(),
             contains_input_word, ptr::from_mut(&mut output).cast(), emit_input_fragment,
         );
     }
@@ -587,6 +589,23 @@ unsafe extern "C" fn emit_input_fragment(
         _ => Scalar::U32,
     };
     output.entry((binding, word)).or_default().insert((byte, unit));
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.ir_dataflow::tile_publish_parts"]
+    fn b_tile_publish_parts(
+        used: *const c_void, tile: usize, word: u32, bytes: u32,
+        contains: unsafe extern "C" fn(*const c_void, usize, u32) -> u32,
+    ) -> u32;
+}
+
+pub(crate) fn publish_parts(used: &BTreeSet<SharedWord>, tile: usize, word: u32, bytes: u32) -> u32 {
+    unsafe { b_tile_publish_parts(ptr::from_ref(used).cast(), tile, word, bytes, contains_publish_word) }
+}
+
+unsafe extern "C" fn contains_publish_word(used: *const c_void, tile: usize, word: u32) -> u32 {
+    let used = unsafe { &*used.cast::<BTreeSet<SharedWord>>() };
+    u32::from(used.contains(&SharedWord::Published { tile, word }))
 }
 
 #[repr(C)]

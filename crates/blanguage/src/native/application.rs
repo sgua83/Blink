@@ -97,6 +97,7 @@ fn emit_value(
     let hidden = plan.result_location == ResultLocation::Indirect;
     let result_pointer = hidden.then_some(plan.result as u32);
     let mut e = Emitter {
+        used_tile_words: &super::EMPTY_TILE_WORDS,
         unwind: Vec::new(),
         prolog: 0,
         probe: None,

@@ -2,6 +2,7 @@
 use super::*;
 fn emitter(program: &Program) -> Emitter<'_> {
     Emitter {
+        used_tile_words: &super::EMPTY_TILE_WORDS,
         unwind: Vec::new(),
         prolog: 0,
         probe: None,

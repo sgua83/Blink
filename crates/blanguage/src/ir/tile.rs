@@ -78,7 +78,7 @@ impl Stage {
     }
     #[cfg(feature = "compiler")]
     pub(crate) fn input_words(&self) -> dataflow::InputFragments {
-        dataflow::input_fragments(self)
+        dataflow::input_fragments(self, &self.storage_words())
     }
     pub(crate) fn tile_phases(&self) -> Vec<TilePhase<'_>> {
         let mut phases = Vec::new();

@@ -35,6 +35,7 @@ pub(super) fn emit(program: &Program, reduction: &SegmentedReduction, finish: bo
         value_words: values.ty.size.div_ceil(4),
     };
     let mut e = Emitter {
+        used_tile_words: &super::EMPTY_TILE_WORDS,
         unwind: Vec::new(),
         prolog: 0,
         probe: None,

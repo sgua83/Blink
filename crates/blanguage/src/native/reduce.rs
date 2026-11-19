@@ -59,6 +59,7 @@ impl ReductionRange {
 
 pub(super) fn emit(program: &Program, reduction: &ReductionSpec) -> NativeCode {
     let mut e = Emitter {
+        used_tile_words: &super::EMPTY_TILE_WORDS,
         unwind: Vec::new(),
         prolog: 0,
         probe: None,

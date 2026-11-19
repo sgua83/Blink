@@ -188,10 +188,11 @@ impl<'a> RangeStage<'a> {
 
     fn first(
         &self, entries: &RangeEntries, inputs: &crate::ir::dataflow::InputFragments,
+        used: &std::collections::BTreeSet<SharedWord>,
     ) -> Result<NativeCode, &'static str> {
         use custom_reduce::Pass;
         match self.operation {
-            RangeOperation::Map => emit_map(self.program, self.index, inputs),
+            RangeOperation::Map => emit_map(self.program, self.index, inputs, used),
             RangeOperation::Reduce => Ok(reduce::emit(self.program, unsafe { self.value() })),
             RangeOperation::CustomReduce => self.custom(unsafe { self.value() }, Pass::Reduce, None, None),
             RangeOperation::CustomScan => {
@@ -214,16 +215,20 @@ impl<'a> RangeStage<'a> {
 
 pub fn emit(program: &Program, index: usize) -> Result<NativeCode, &'static str> {
     let stage = RangeStage::new(program, index);
-    stage.first(&stage.entries(false), &program.stages()[index].input_words())
+    let ir = &program.stages()[index];
+    let used = ir.storage_words();
+    let inputs = crate::ir::dataflow::input_fragments(ir, &used);
+    stage.first(&stage.entries(false), &inputs, &used)
 }
 
 pub(crate) fn compile_stage(program: &Program, index: usize) -> Result<(ExecutionStage, StageCode), &'static str> {
     use custom_reduce::Pass;
     let ir = &program.stages()[index];
-    let inputs = ir.input_words();
+    let used = ir.storage_words();
+    let inputs = crate::ir::dataflow::input_fragments(ir, &used);
     let stage = RangeStage::new(program, index);
     let entries = stage.entries(true);
-    let main = stage.first(&entries, &inputs)?;
+    let main = stage.first(&entries, &inputs, &used)?;
     let layout = ExecutionStage::from_stage(ir, inputs.into_keys().collect());
     let continuation = match entries.follow {
         RangeFollow::None => None,
