@@ -112,7 +112,7 @@ unsafe extern "C" {
         place: unsafe extern "C" fn(*mut std::ffi::c_void, usize, u32),
     ) -> u32;
     #[link_name = "bootstrap.function_inputs::parameter_form"]
-    fn parameter_form(facts: Facts) -> Parameter;
+    fn native_parameter_form(facts: Facts) -> Parameter;
     #[link_name = "bootstrap.function_inputs::domain_result"]
     fn native_domain_result(unit: u32, arguments: usize, dataset: u32, tile: u32, view: u32) -> bool;
     #[link_name = "bootstrap.function_inputs::domain_parameter"]
@@ -167,6 +167,10 @@ pub(super) fn domain_result(ty: &TypeName) -> bool {
             u32::from(ty.tile), u32::from(ty.view),
         )
     }
+}
+
+pub(super) fn parameter_form(param: &Param) -> Parameter {
+    unsafe { native_parameter_form(facts(param)) }
 }
 
 pub(super) fn domain_parameter(param: &Param) -> DomainParameter {
@@ -594,7 +598,7 @@ pub(super) async fn function_parameters(
     let mut acceleration_index = 0;
     let context: (&Source, &str, &[String], FunctionKind) = (&d.source, &d.module, &d.imports, d.function.kind());
     for (index, p) in bound_parameters.into_iter().enumerate() {
-        let form = unsafe { parameter_form(facts(&p)) };
+        let form = parameter_form(&p);
         let binding = match form {
             Parameter::Acceleration => {
                 let binding = Binding::Acceleration(acceleration_index);

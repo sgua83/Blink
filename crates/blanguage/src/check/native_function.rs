@@ -2755,23 +2755,28 @@ async fn build_domain(
     let mut data = Vec::new();
     let mut texture_values = Vec::new();
     let mut uniform_inputs = Vec::new();
+    use function_inputs::Parameter;
     for param in bound_parameters.iter() {
         let first = registers.len();
-        if param.ty.dataset {
-            registers.extend([Scalar::U32; 2]);
-            parameters.push(CallParameter::value(Builder::domain_dataset_parameter_type()));
-            data.push([first, first + 1]);
-        } else if param.ty.is_texture_resource() {
-            registers.push(Scalar::U64);
-            parameters.push(CallParameter::value(Ty::scalar(Scalar::U64)));
-            texture_values.push(CallArgument::Value {
-                origin: None, dataset_borrow: None, ty: Ty::scalar(Scalar::U64), values: vec![first],
-            });
-        } else {
-            let uniform = &signature.uniforms[uniform_inputs.len()];
-            registers.extend(uniform.ty.components.iter().map(|(scalar, _)| *scalar));
-            parameters.push(CallParameter::value(uniform.ty.clone()));
-            uniform_inputs.push(first..registers.len());
+        match function_inputs::parameter_form(param) {
+            Parameter::Dataset => {
+                registers.extend([Scalar::U32; 2]);
+                parameters.push(CallParameter::value(Builder::domain_dataset_parameter_type()));
+                data.push([first, first + 1]);
+            }
+            Parameter::Texture => {
+                registers.push(Scalar::U64);
+                parameters.push(CallParameter::value(Ty::scalar(Scalar::U64)));
+                texture_values.push(CallArgument::Value {
+                    origin: None, dataset_borrow: None, ty: Ty::scalar(Scalar::U64), values: vec![first],
+                });
+            }
+            _ => {
+                let uniform = &signature.uniforms[uniform_inputs.len()];
+                registers.extend(uniform.ty.components.iter().map(|(scalar, _)| *scalar));
+                parameters.push(CallParameter::value(uniform.ty.clone()));
+                uniform_inputs.push(first..registers.len());
+            }
         }
     }
     let inputs: Vec<_> = (0..registers.len()).collect();

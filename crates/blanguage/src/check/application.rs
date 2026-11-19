@@ -135,6 +135,12 @@ pub(super) struct DataReference {
     pub sources: Vec<ValueIdentity>,
     pub projection: Vec<usize>,
 }
+enum DomainCallArgument {
+    Dataset(usize),
+    Uniform(Value),
+    Texture(CallArgument),
+}
+
 #[derive(Clone)]
 pub(super) enum DataLayout {
     Declared,
@@ -3164,62 +3170,69 @@ impl Builder<'_> {
         span: Span,
         element_inputs: &[ElementFact],
     ) -> Result<Option<returns::Returned>> {
-        self.application_frame(span)?;
+        let frame = self.application_frame(span)?;
         let callee = &input.owner().definition;
         let bound_parameters=unsafe { self.world.call(input.parameters(self.world)).await }?;
         if input.target() != Target::Compute && input.target() != target {
             return self.fail(span, "B266", "函数声明的目标能力与本次调用位置不一致");
         }
+        use function_inputs::Parameter;
         let mut data = Vec::new();
-        let mut uniforms = Vec::new();
         let mut held = Vec::new();
-        let mut textures = Vec::new();
+        let mut arguments = Vec::with_capacity(prepared.len());
         for (parameter, value) in bound_parameters.iter().zip(prepared) {
-            if parameter.ty.dataset {
-                let value = match value {
-                    Argument::ApplicationData(data) => DataReference::direct(data),
-                    Argument::BorrowedData(reference) => {
-                        reference
+            let argument = match function_inputs::parameter_form(parameter) {
+                Parameter::Dataset => {
+                    let value = match value {
+                        Argument::ApplicationData(data) => DataReference::direct(data),
+                        Argument::BorrowedData(reference) => {
+                            reference
+                        }
+                        Argument::Scoped { value:returns::Returned::Dataset(data), owner } => {
+                            held.push(owner);
+                            DataReference::direct(data)
+                        }
+                        _ => return self.fail(span, "B224", "整域调用需要当前应用持有的实际 dataset"),
+                    };
+                    if !value.permits(parameter.access) {
+                        return self.fail(span, "B227", "dataset借用的访问模式不能转换为被调参数权限");
                     }
-                    Argument::Scoped { value:returns::Returned::Dataset(data), owner } => {
-                        held.push(owner);
-                        DataReference::direct(data)
+                    let path=self.residency_path();
+                    if !self
+                        .residency
+                        .require(&value.residency, target, self.scope.source(), span,&path)
+                    {
+                        return self.fail(
+                            span,
+                            "B266",
+                            "实际存储与调用位置不一致；先显式 upload／download",
+                        );
                     }
-                    _ => return self.fail(span, "B224", "整域调用需要当前应用持有的实际 dataset"),
-                };
-                if !value.permits(parameter.access) {
-                    return self.fail(span, "B227", "dataset借用的访问模式不能转换为被调参数权限");
+                    if parameter.access.reads() {
+                        self.require_application_reference_initialized(&value, span)?;
+                    }
+                    let slot = data.len();
+                    data.push(value);
+                    DomainCallArgument::Dataset(slot)
                 }
-                let path=self.residency_path();
-                if !self
-                    .residency
-                    .require(&value.residency, target, self.scope.source(), span,&path)
-                {
-                    return self.fail(
-                        span,
-                        "B266",
-                        "实际存储与调用位置不一致；先显式 upload／download",
-                    );
+                Parameter::Texture => {
+                    let Argument::Texture(resource) = value else {
+                        return self.fail(span, "B239", "整域纹理参数需要实际只读纹理资源");
+                    };
+                    unsafe { self.world.call(self.texture_parameter(parameter, &resource,(&callee.source,&callee.module,&callee.imports),span)).await }?;
+                    let address = self.reg(Scalar::U64);
+                    self.emit(InstKind::TextureBindingAddress { dst: address, texture: resource.source });
+                    DomainCallArgument::Texture(CallArgument::Value { origin: None, dataset_borrow: None,
+                        ty: Ty::scalar(Scalar::U64), values: vec![address] })
                 }
-                if parameter.access.reads() {
-                    self.require_application_reference_initialized(&value, span)?;
+                _ => {
+                    let Argument::Value(value) = value else {
+                        return self.fail(span, "B266", "当前整域统一参数需要普通值");
+                    };
+                    DomainCallArgument::Uniform(value)
                 }
-                data.push(value);
-            } else if parameter.ty.is_texture_resource() {
-                let Argument::Texture(resource) = value else {
-                    return self.fail(span, "B239", "整域纹理参数需要实际只读纹理资源");
-                };
-                unsafe { self.world.call(self.texture_parameter(parameter, &resource,(&callee.source,&callee.module,&callee.imports),span)).await }?;
-                let address = self.reg(Scalar::U64);
-                self.emit(InstKind::TextureBindingAddress { dst: address, texture: resource.source });
-                textures.push(CallArgument::Value { origin: None, dataset_borrow: None,
-                    ty: Ty::scalar(Scalar::U64), values: vec![address] });
-            } else {
-                let Argument::Value(value) = value else {
-                    return self.fail(span, "B266", "当前整域统一参数需要普通值");
-                };
-                uniforms.push(value);
-            }
+            };
+            arguments.push(argument);
         }
         for value in &data {
             self.application_handle_available(value.root.identity(), span, &[],&self.path)?;
@@ -3236,7 +3249,11 @@ impl Builder<'_> {
                 return self.fail(span, "B167", "调用方没有交付函数需要的数据形状");
             }
         }
-        for (value, uniform) in uniforms.iter().zip(&interface.uniforms) {
+        let uniform_values = arguments.iter().filter_map(|argument| match argument {
+            DomainCallArgument::Uniform(value) => Some(value),
+            _ => None,
+        });
+        for (value, uniform) in uniform_values.zip(&interface.uniforms) {
             self.require_same(&uniform.ty, &value.ty, span)?;
         }
         for requirement in &interface.element_requirements {
@@ -3288,21 +3305,13 @@ impl Builder<'_> {
             unsafe { self.world.call(self.update_application_contents(reference, &words, update)).await }?;
         }
         self.initialize_application_domain(&interface, &data);
-        let frame = self.application_frame(span)?;
-        let mut physical = vec![argument(frame)];
-        let mut data_arguments = data.iter();
-        let mut uniforms = uniforms.into_iter();
-        let mut textures = textures.into_iter();
-        for parameter in bound_parameters.iter() {
-            if parameter.ty.dataset {
-                let value = data_arguments.next().unwrap();
-                physical.push(self.application_domain_argument(value));
-            } else if parameter.ty.is_texture_resource() {
-                physical.push(textures.next().unwrap());
-            } else {
-                physical.push(argument(uniforms.next().unwrap()));
-            }
-        }
+        let mut physical = Vec::with_capacity(arguments.len() + 1);
+        physical.push(argument(frame));
+        physical.extend(arguments.into_iter().map(|prepared| match prepared {
+            DomainCallArgument::Dataset(slot) => self.application_domain_argument(&data[slot]),
+            DomainCallArgument::Uniform(value) => argument(value),
+            DomainCallArgument::Texture(value) => value,
+        }));
         self.call_domain(input.name(), target, physical);
         for relation in &interface.prefix_guarantees {
             let count=&data[relation.count.binding];
