@@ -9,7 +9,7 @@ use blanguage::{ast::Access, ir::{Scalar, Ty, align_up}};
 use std::{
     collections::{BTreeMap, BTreeSet},
     ffi::c_void,
-    ptr,
+    ptr::{self, NonNull},
 };
 
 pub(super) type Entry = unsafe extern "C" fn(*mut Frame, *const u8, *mut u8) -> *mut c_void;
@@ -105,12 +105,20 @@ fn ready_output_owners<'a>(ty: &'a Ty, mut flag: usize, output: &[u8]) -> Vec<(u
 pub(super) struct InputCompletionWrites {
     input_type:usize,
     output_base:usize,
-    positions:Vec<(Ty,*mut u8)>,
+    positions: Vec<(NonNull<Ty>, *mut u8)>,
 }
 impl InputCompletionWrites {
+    fn positions(&self) -> impl Iterator<Item = (&Ty, *mut u8)> {
+        self.positions.iter().map(|(ty, address)| {
+            // Work Frames inherit the same immutable Definitions from the
+            // originating Frame. Each receiving Frame keeps that owner alive.
+            (unsafe { ty.as_ref() }, *address)
+        })
+    }
+
     fn consumed(&self,error:*mut c_void) {
-        for (ty,address) in &self.positions {
-            unsafe { abi::consumed(error,*address as usize,ty.size as usize) };
+        for (ty, address) in self.positions() {
+            unsafe { abi::consumed(error, address as usize, ty.size as usize) };
         }
     }
 }
@@ -438,8 +446,8 @@ unsafe extern "system" fn execute(_: *mut c_void, context: *mut c_void, _: *mut 
             }
         }
         if let Some(completions)=&frame.task_completion_writes {
-            for (ty,address) in &completions.positions {
-                unsafe { gather(frame,ty,*address,&mut selected,false)?; }
+            for (ty, address) in completions.positions() {
+                unsafe { gather(frame, ty, address, &mut selected, false)?; }
             }
         }
         Ok(())
@@ -574,7 +582,7 @@ pub(super) unsafe fn wait(frame: &mut Frame, owner: *mut c_void, completion: *mu
                             if status.is_null() {
                                 let types=&worker.definitions.types;
                                 completions.positions.extend(completed_positions(types,&types[work.result_type-1],&work.input,&work.output)
-                                    .filter(|(ty,_)|ty.contains_dataset()).map(|(ty,address)|(ty.clone(),address)));
+                                    .filter(|(ty,_)|ty.contains_dataset()).map(|(ty, address)| (NonNull::from(ty), address)));
                             }
                             if let Some(nested)=worker.task_completion_writes.take() {
                                 completions.positions.extend(nested.positions);
