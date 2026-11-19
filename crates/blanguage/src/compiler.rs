@@ -103,7 +103,7 @@ struct Resources {
     #[cfg(feature = "compiler")]
     bootstrap_jobserver: Option<jobserver::Client>,
     #[cfg(all(feature = "installed", feature = "compiler"))]
-    sdk_input: Mutex<Option<std::fs::File>>,
+    sdk_input: Mutex<Option<crate::object::InstalledSdk>>,
 }
 struct Permit {
     compiler: Compiler,
@@ -187,12 +187,13 @@ impl Compiler {
     }
     pub fn max_parameter_bytes(&self) -> u32 { self.max_parameter_bytes }
     #[cfg(all(feature = "installed", feature = "compiler"))]
-    fn hold_sdk_input(&self) -> io::Result<()> {
+    pub(crate) fn with_sdk_input<T>(&self, use_root: impl FnOnce(&std::path::Path) -> T) -> io::Result<T> {
         let mut input = self.resources.sdk_input.lock().unwrap();
-        if input.is_none() {
-            *input = Some(crate::object::hold_sdk(&crate::object::sdk_root()?)?);
-        }
-        Ok(())
+        let sdk = match &mut *input {
+            Some(sdk) => sdk,
+            empty => empty.insert(crate::object::InstalledSdk::open()?),
+        };
+        Ok(use_root(&sdk.root))
     }
     fn worker(&self, slot: usize) -> Worker {
         Worker { permit: Arc::new(Permit {
@@ -215,7 +216,7 @@ impl Compiler {
         &self, compile: impl FnOnce(&Worker) -> Result<T, E> + Send,
     ) -> Result<T, Error<E>> {
         #[cfg(all(feature = "installed", feature = "compiler"))]
-        self.hold_sdk_input().map_err(Error::Resource)?;
+        self.with_sdk_input(|_| ()).map_err(Error::Resource)?;
         let worker = self.acquire();
         if self.resources.processors.is_none() {
             return compile(&worker).map_err(Error::Work);

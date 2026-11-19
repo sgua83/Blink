@@ -2,10 +2,19 @@
 use super::{Archive, Result};
 use std::{ffi::OsString, os::windows::io::{FromRawHandle, RawHandle}, path::{Path, PathBuf}, sync::atomic::{AtomicU64, Ordering}};
 
-pub(crate) fn installed_sdk_root() -> std::io::Result<PathBuf> {
-    let program_files = std::env::var_os("ProgramFiles").ok_or_else(||
-        std::io::Error::new(std::io::ErrorKind::NotFound, "缺少Windows ProgramFiles安装根"))?;
-    Ok(PathBuf::from(program_files).join("Blink"))
+pub(crate) struct InstalledSdk {
+    pub(crate) root: PathBuf,
+    _version: std::fs::File,
+}
+
+impl InstalledSdk {
+    pub(crate) fn open() -> std::io::Result<Self> {
+        let program_files = std::env::var_os("ProgramFiles").ok_or_else(||
+            std::io::Error::new(std::io::ErrorKind::NotFound, "缺少Windows ProgramFiles安装根"))?;
+        let root = crate::source_path::absolute(&PathBuf::from(program_files).join("Blink"))?;
+        let version = hold_sdk(&root)?;
+        Ok(Self { root, _version: version })
+    }
 }
 
 #[repr(C)]
@@ -19,7 +28,7 @@ unsafe extern "C" {
     fn open_sdk_input(path: *const u16, units: usize) -> SdkInput;
 }
 
-pub(crate) fn hold_sdk(root: &Path) -> std::io::Result<std::fs::File> {
+fn hold_sdk(root: &Path) -> std::io::Result<std::fs::File> {
     let path = crate::file_bytes::host_path(&root.join("VERSION"))?;
     let input = unsafe { open_sdk_input(path.as_ptr(), path.len() - 1) };
     if input.error != 0 {
@@ -31,9 +40,9 @@ pub(crate) fn hold_sdk(root: &Path) -> std::io::Result<std::fs::File> {
 
 pub(crate) const SDK_RUNTIME: &str = "crates/blcompute/native/";
 
-pub(crate) fn sdk_root() -> std::io::Result<PathBuf> {
+fn sdk_root(_worker: &crate::compiler::Worker) -> std::io::Result<PathBuf> {
     #[cfg(feature = "installed")]
-    { installed_sdk_root() }
+    { _worker.compiler().with_sdk_input(Path::to_path_buf) }
     #[cfg(not(feature = "installed"))]
     { Ok(Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().parent().unwrap().into()) }
 }
@@ -83,7 +92,7 @@ fn development_runtime(
 }
 
 fn runtime_libraries(worker: &crate::compiler::Worker) -> Result<Vec<String>> {
-    let sdk = sdk_root()?;
+    let sdk = sdk_root(worker)?;
     if cfg!(feature = "installed") {
         return Ok(std::fs::read_to_string(sdk.join(SDK_RUNTIME).join("native-static-libs.txt"))?
             .split_whitespace().map(str::to_owned).collect());
@@ -126,7 +135,7 @@ pub(crate) fn compile(
 }
 
 // 构建输入来自原原生生产者；不是资源ABI或另一份运行时状态。
-pub(crate) fn inputs(runtime: bool) -> std::io::Result<[u8; 32]> {
+pub(crate) fn inputs(runtime: bool, worker: &crate::compiler::Worker) -> std::io::Result<[u8; 32]> {
     use crate::{build::hash::Digest, file_bytes::FileBytes};
     use std::{collections::BTreeSet, fs, io::ErrorKind};
     fn optional(digest: &mut Digest, path: &Path) -> std::io::Result<bool> {
@@ -158,7 +167,7 @@ pub(crate) fn inputs(runtime: bool) -> std::io::Result<[u8; 32]> {
     let mut digest = Digest::new();
     digest.update(b"BlinkNativeInputs2");
     if !runtime { return Ok(digest.finish()); }
-    let sdk = sdk_root()?;
+    let sdk = sdk_root(worker)?;
     digest.field(sdk.as_os_str().as_encoded_bytes());
     if cfg!(feature = "installed") {
         let link_inputs = sdk.join(SDK_RUNTIME).join("native-static-libs.txt");

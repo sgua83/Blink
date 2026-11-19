@@ -274,9 +274,7 @@ pub(super) fn link(
     let sdk = if archives.iter().flat_map(|archive| &archive.libraries)
         .any(|name| name.starts_with(crate::object::SDK_RUNTIME))
     {
-        let root = crate::object::installed_sdk_root()?;
-        let lease = crate::object::hold_sdk(&root)?;
-        Some((root, lease))
+        Some(crate::object::InstalledSdk::open()?)
     } else {
         None
     };
@@ -318,7 +316,7 @@ pub(super) fn link(
         }
         let (status, stdout, stderr) = link_process(
             &linker, path, &temporary, &libraries, archives,
-            sdk.as_ref().map(|(root, _)| root.as_path()), stack_reserve, import_library)?;
+            sdk.as_ref().map(|sdk| sdk.root.as_path()), stack_reserve, import_library)?;
         if status.success() {
             return Ok(());
         }

@@ -84,7 +84,7 @@ pub(super) fn compile<'a>(
                 if stored.source.same_code(&source) {
                     let inputs = reader.reuse_inputs().map_err(error)?;
                     if stored.imports == identity::references(definitions, imported, inputs.imports.iter().copied(), &stored.declarations) {
-                        let native = stored.native.map(|_| crate::object::native_inputs(runtime)).transpose()?;
+                        let native = stored.native.map(|_| crate::object::native_inputs(runtime, worker)).transpose()?;
                         if stored.native == native
                             && let Some(libraries) = inputs.libraries_for_reuse().map_err(error)?
                         {
@@ -113,7 +113,7 @@ pub(super) fn compile<'a>(
             crate::dll::compile_in(worker, program, prefix).map_err(error)?
         }
     };
-    let native = if object.archive.is_some() { Some(crate::object::native_inputs(runtime)?) } else { None };
+    let native = if object.archive.is_some() { Some(crate::object::native_inputs(runtime, worker)?) } else { None };
     let declarations = super::used_declarations(&world);
     let imports = identity::references(definitions, imported, object.imports.keys().map(String::as_str), &declarations);
     let stored = identity::Inputs { source, imports, native, declarations }.encode();
