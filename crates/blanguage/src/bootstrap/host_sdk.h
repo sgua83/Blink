@@ -15,6 +15,11 @@ extern "C" HostWide read_sdk_root() on cpu;
 extern "C" HostWide decode_host_text(address input, i32 bytes, HostText kind) on cpu;
 extern "C" i32 release_host_wide(address data) on cpu;
 
+struct SdkInput { handle file; u32 error; };
+
+// Borrows a NUL-terminated path and transfers the opened handle on success.
+extern "C" SdkInput open_sdk_input(address path, usize units) on cpu;
+
 struct SdkVersionResult { u32 units; u32 status; };
 
 // pattern borrows units UTF-16 code units followed by NUL. selected holds 260 units.

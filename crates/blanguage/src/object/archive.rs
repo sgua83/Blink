@@ -1,6 +1,6 @@
 //! 编译阶段把执行框架和 ABI 编译为静态目标库；链接器不再调用 Cargo 或 rustc。
 use super::{Archive, Result};
-use std::{ffi::OsString, path::{Path, PathBuf}, sync::atomic::{AtomicU64, Ordering}};
+use std::{ffi::OsString, os::windows::io::{FromRawHandle, RawHandle}, path::{Path, PathBuf}, sync::atomic::{AtomicU64, Ordering}};
 
 pub(crate) fn installed_sdk_root() -> std::io::Result<PathBuf> {
     let program_files = std::env::var_os("ProgramFiles").ok_or_else(||
@@ -8,15 +8,25 @@ pub(crate) fn installed_sdk_root() -> std::io::Result<PathBuf> {
     Ok(PathBuf::from(program_files).join("Blink"))
 }
 
+#[repr(C)]
+struct SdkInput {
+    file: RawHandle,
+    error: u32,
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.host_sdk::open_sdk_input"]
+    fn open_sdk_input(path: *const u16, units: usize) -> SdkInput;
+}
+
 pub(crate) fn hold_sdk(root: &Path) -> std::io::Result<std::fs::File> {
-    let mut options = std::fs::OpenOptions::new();
-    options.read(true);
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::OpenOptionsExt;
-        options.share_mode(1);
+    let path = crate::file_bytes::host_path(&root.join("VERSION"))?;
+    let input = unsafe { open_sdk_input(path.as_ptr(), path.len() - 1) };
+    if input.error != 0 {
+        return Err(std::io::Error::from_raw_os_error(input.error as i32));
     }
-    options.open(root.join("VERSION"))
+    // The B call transfers the sole handle to the existing File owner.
+    Ok(unsafe { std::fs::File::from_raw_handle(input.file) })
 }
 
 pub(crate) const SDK_RUNTIME: &str = "crates/blcompute/native/";

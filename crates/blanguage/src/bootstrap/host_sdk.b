@@ -66,6 +66,16 @@ extern "C" i32 release_host_wide(address data) on cpu {
     return HeapFree(GetProcessHeap(), 0, data);
 }
 
+extern "C" SdkInput open_sdk_input(address path, usize units) on cpu {
+    NativePath name = native_path(path, units, true);
+    if (name.status != 0) { return SdkInput(INVALID_HANDLE_VALUE, name.status); }
+
+    handle file = CreateFileW(name.name, 2147483648, 1, address(), 3, 128, handle());
+    u32 error = file == INVALID_HANDLE_VALUE ? GetLastError() : 0;
+    release_native_path(name);
+    return SdkInput(file, error);
+}
+
 u32 wide_unit(address data, usize index) on cpu {
     return u32(unsafe_position<u16>(unsafe_address(address_bits(data) + index * 2u64)));
 }
