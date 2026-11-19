@@ -305,10 +305,12 @@ impl Executable {
     }
 }
 impl Allocation {
-    fn new<P>(image: &blanguage::native::ProgramImage<P>) -> Result<(Option<std::sync::Arc<Self>>, std::collections::BTreeMap<usize, *mut c_void>, Vec<blanguage::resource::ModuleFactory>)> {
+    fn load<P>(
+        image: &blanguage::native::ProgramImage<P>, workers: usize,
+    ) -> Result<(Option<std::sync::Arc<Self>>, BTreeMap<usize, *mut c_void>, Option<crate::application::Definitions>)> {
         let codes = image.code().collect::<Vec<_>>();
         let module = image.module_code();
-        if codes.is_empty() && module.is_none() { return Ok((None, std::collections::BTreeMap::new(), Vec::new())); }
+        if codes.is_empty() && module.is_none() { return Ok((None, BTreeMap::new(), None)); }
         let mut size = 0usize;
         let mut layout = Vec::with_capacity(codes.len());
         for code in &codes {
@@ -438,15 +440,27 @@ impl Allocation {
             }
             allocation.functions.push(unsafe { std::ptr::NonNull::new_unchecked(table) });
         }
+        let allocation = std::sync::Arc::new(allocation);
+        // The compiler-produced table is already relocated in this allocation.
+        // Definitions consumes it synchronously while the code owner is live.
         let factories = match functions.get("__blink_module_count") {
             Some(&count) => unsafe {
                 let count = *count.cast::<usize>();
                 let table = functions["__blink_module_factories"].cast::<blanguage::resource::ModuleFactory>();
-                std::slice::from_raw_parts(table, count).to_vec()
+                std::slice::from_raw_parts(table, count)
             },
-            None => Vec::new(),
+            None => &[],
         };
-        Ok((Some(std::sync::Arc::new(allocation)), addresses, factories))
+        let definitions = if factories.is_empty() {
+            None
+        } else {
+            Some(unsafe { crate::application::Definitions::linked(factories, |image| {
+                Ok(CpuTemplate { code: CpuCode::from_image(image, workers, &|address| Executable {
+                    address: address.cast_mut().cast(), _allocation: Some(allocation.clone()),
+                }, None) })
+            }) }?)
+        };
+        Ok((Some(allocation), addresses, definitions))
     }
 }
 impl Drop for Allocation {
@@ -799,19 +813,9 @@ impl CpuCode {
     }
     fn raw<P>(image: blanguage::native::ProgramImage<P>) -> std::result::Result<Self, (Box<dyn std::error::Error + Send + Sync>, blanguage::native::ProgramImage<P>)> {
         let workers=match std::thread::available_parallelism(){Ok(workers)=>workers.get(),Err(error)=>return Err((error.into(),image))};
-        let (allocation, addresses, factories) = match Allocation::new(&image) {
+        let (allocation, addresses, definitions) = match Allocation::load(&image, workers) {
             Ok(code) => code,
             Err(error) => return Err((error, image)),
-        };
-        let definitions = if factories.is_empty() { None } else {
-            match unsafe { crate::application::Definitions::linked(&factories, |image| {
-                Ok(CpuTemplate { code: Self::from_image(image, workers, &|address| Executable {
-                    address: address.cast_mut().cast(), _allocation: allocation.clone(),
-                }, None) })
-            }) } {
-                Ok(definitions) => Some(definitions),
-                Err(error) => return Err((error, image)),
-            }
         };
         Ok(Self::from_image(image,workers,&|code|Executable{
             address:addresses[&(code as *const _ as usize)],_allocation:allocation.clone(),
