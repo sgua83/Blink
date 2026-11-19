@@ -2490,7 +2490,7 @@ async fn module_instance(
 pub(crate) async fn compile_module(
     world: &World,
     entry: &str,
-    requests: &[String],
+    requests: crate::ExportRequests<'_>,
     imported: Option<&crate::module::Imports>,
 ) -> Result<crate::module::Module> {
     let interrupted = InterruptedUnits::default();
@@ -2513,13 +2513,11 @@ pub(crate) async fn compile_module(
             }
         }
         for request in requests {
-            let source = Source {
-                path: "<module-export>".into(),
-                text: request.clone().into(),
-            };
-            let (name, arguments) = crate::parser::entry(source.clone())?;
+            let request = request?;
+            let crate::ExportRequest { source, name, arguments } = request.as_ref();
+            let span = Span { start: 0, end: source.text.len() };
             let key = world
-                .resolve(&name, entry, &[], true).unique()
+                .resolve(name, entry, &[], true).unique()
                 .filter(|key| world.functions[key].module == entry && world.functions[key].public)
                 .ok_or_else(|| Diagnostic {
                     source: source.clone(),
@@ -2533,7 +2531,7 @@ pub(crate) async fn compile_module(
             let bindings=Arc::new(crate::generics::Bindings::default());
             let arguments=match arguments.as_ref() {
                 Some(arguments)=>Some(unsafe { world.call(bindings.arguments(world,arguments,
-                    (&source,&d.module,&imports),Span{start:0,end:request.len()})).await }?),
+                    (source,&d.module,&imports),span)).await }?),
                 None=>None,
             };
             let instance = unsafe { world.call(super::generics::specialize(
@@ -2541,8 +2539,8 @@ pub(crate) async fn compile_module(
                 &key,
                 &[],
                 arguments.as_deref(),
-                (&source, &d.module, &imports),
-                Span { start: 0, end: request.len() },
+                (source, &d.module, &imports),
+                span,
             )).await }?;
             unsafe { world.call(module_instance(world, &instance, &mut functions, &mut roots, true)).await }?;
             prepared.push(instance.name.clone());

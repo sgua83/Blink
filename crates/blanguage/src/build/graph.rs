@@ -273,7 +273,7 @@ impl Compiler {
         }).collect::<Result<Vec<_>>>()?;
         let mut capture = Capture::default();
         for unit in &prepared { capture.header(&unit.path)?; }
-        let mut interfaces = Vec::with_capacity(prepared.len());
+        let mut captured = Vec::with_capacity(prepared.len());
         let ids = dependency_plan.plan.ids();
         for (unit, row) in prepared.iter().zip(&dependency_plan.provider_rows) {
             let mut providers = BTreeMap::new();
@@ -287,9 +287,13 @@ impl Compiler {
                 };
                 providers.entry(name).or_insert(interface);
             }
-            interfaces.push(capture.capture(&unit.path, &unit.root, &providers)?);
+            let requests = match unit.kind {
+                UnitKind::Object(ObjectKind::Module(requests)) => requests,
+                _ => &[],
+            };
+            captured.push(capture.capture(&unit.path, &unit.root, &providers, requests)?);
         }
-        let inputs = capture.finish(interfaces);
+        let inputs = capture.finish(captured);
         Ok::<_, Box<dyn std::error::Error + Send + Sync>>((prepared, inputs, dependency_plan))
         }).map_err(|error| match error {
             crate::parallel::Error::Work(error) => error,

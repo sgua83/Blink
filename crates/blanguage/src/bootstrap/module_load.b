@@ -295,3 +295,30 @@ extern "C" void prepare_world(WorldPreparation host) on cpu
     if (!host.run(host.context,WorldCheck::Types)) { return; }
     host.run(host.context,WorldCheck::External);
 }
+
+extern "C" void load_export_types(StorageView storage,Slice arguments,ExportTypeHost host) on cpu
+    requires nonzero(host.save) requires nonzero(host.resume) requires nonzero(host.load) {
+    let syntax=ModuleView(address(),SignatureNode(storage,0u64));
+    ExportRange active=ExportRange(arguments,arguments.count);
+    while (true) {
+        if (active.remaining==0u64) {
+            active=host.resume(host.context);
+            if (active.remaining==0u64) { return; }
+        }
+        active.remaining-=1u64;
+        let argument=node<ArgumentNode>(syntax,member(syntax,active.arguments,active.remaining));
+        match (argument) {
+            ArgumentNode::Type(reference) {
+                let named_type=node<TypeNode>(syntax,reference.offset);
+                let name=text(syntax,named_type.name);
+                let owner_end=qualification_separator(name);
+                if (owner_end<name.length && !host.load(host.context,NameBytes(name.bytes,owner_end))) { return; }
+                if (named_type.arguments.count!=0u64) {
+                    if (active.remaining!=0u64) { host.save(host.context,active); }
+                    active=ExportRange(named_type.arguments,named_type.arguments.count);
+                }
+            }
+            ArgumentNode::Value(value) {}
+        }
+    }
+}

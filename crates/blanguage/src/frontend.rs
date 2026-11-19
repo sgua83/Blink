@@ -234,7 +234,7 @@ pub(crate) fn compile_module_on(
             span: Span::default(), code: "B270", message: error.to_string(),
         })?;
         let imported = if dependencies.is_empty() { None } else { Some(&imports) };
-        let (world, entry) = read_world(path, module_root, imported, &[], worker, None, None)?;
+        let (world, entry, _) = read_world(path, module_root, imported, &[], worker, None, None)?;
         compile_world(&world, entry, require_program, requested)
     })
 }
@@ -245,7 +245,7 @@ impl Compiler {
             let source = Source { path: "<layout>".into(), text: request.into() };
             let span = Span { start: 0, end: request.len() };
             let name = parser::type_query(source.clone())?;
-            let (world, module) = read_world(path, root, None, &[], worker, None, None)?;
+            let (world, module, _) = read_world(path, root, None, &[], worker, None, None)?;
             let imports = &world.interfaces[&module].imports().map(str::to_owned).collect::<Vec<_>>();
             let bindings=Arc::new(generics::Bindings::default());
             let name=unsafe { world.run(bindings.type_name(&world,&name,(&source,&module,imports),span)) }?;
@@ -262,7 +262,7 @@ impl Compiler {
             let source = Source { path: "<layout>".into(), text: request.into() };
             let span = Span { start: 0, end: request.len() };
             let name = parser::type_query(source.clone())?;
-            let (world, module) = read_world(path, root, None, &[], worker, None, None)?;
+            let (world, module, _) = read_world(path, root, None, &[], worker, None, None)?;
             let imports = &world.interfaces[&module].imports().map(str::to_owned).collect::<Vec<_>>();
             let bindings=Arc::new(generics::Bindings::default());
             let name=unsafe { world.run(bindings.type_name(&world,&name,(&source,&module,imports),span)) }?;
@@ -538,15 +538,65 @@ pub(crate) fn compile_world(
         applications,
     })
 }
-pub(crate) fn read_world(
+
+#[derive(Clone)]
+pub(crate) struct ExportRequest {
+    pub(crate) source: Source,
+    pub(crate) name: String,
+    pub(crate) arguments: Option<crate::syntax::List<crate::syntax::wire::ArgumentNode>>,
+}
+
+impl ExportRequest {
+    pub(crate) fn parse(text: &str) -> Result<Self> {
+        let source = Source { path: "<module-export>".into(), text: text.into() };
+        let (name, arguments) = parser::entry(source.clone())?;
+        Ok(Self { source, name, arguments })
+    }
+
+    pub(crate) fn visit_type_owners(&self, visit: impl FnMut(&str) -> Result<()>) -> Result<()> {
+        if let Some(arguments) = &self.arguments {
+            loading::visit_export_types(arguments, visit)?;
+        }
+        Ok(())
+    }
+}
+
+pub(crate) struct CapturedExport {
+    pub(crate) request: ExportRequest,
+    pub(crate) owners: Vec<String>,
+    pub(crate) error: Option<Diagnostic>,
+}
+
+pub(crate) enum ExportRequests<'a> {
+    Text(std::slice::Iter<'a, String>),
+    Parsed(std::vec::IntoIter<ExportRequest>),
+    Captured(std::slice::Iter<'a, Result<CapturedExport>>),
+}
+
+impl<'a> Iterator for ExportRequests<'a> {
+    type Item = Result<std::borrow::Cow<'a, ExportRequest>>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        use std::borrow::Cow;
+        match self {
+            Self::Text(requests) => requests.next().map(|text| ExportRequest::parse(text).map(Cow::Owned)),
+            Self::Parsed(requests) => requests.next().map(|request| Ok(Cow::Owned(request))),
+            Self::Captured(requests) => requests.next().map(|request| {
+                request.as_ref().map(|capture| Cow::Borrowed(&capture.request)).map_err(Clone::clone)
+            }),
+        }
+    }
+}
+
+pub(crate) fn read_world<'a>(
     path: &Path,
     module_root: &Path,
     imported: Option<&module::Imports>,
-    requests: &[String],
+    requests: &'a [String],
     worker: &compiler::Worker,
-    inputs: Option<&build::Inputs>,
+    inputs: Option<&'a build::Inputs>,
     build_declarations: Option<RefCell<BTreeSet<build::Declaration>>>,
-) -> Result<(World, String)> {
+) -> Result<(World, String, ExportRequests<'a>)> {
     let mut world = Declarations {
         sources: BTreeMap::new(),
         interfaces: BTreeMap::new(),
@@ -562,28 +612,21 @@ pub(crate) fn read_world(
         None,
         inputs,
     )?;
-    if let Some(imported) = imported {
-        for request in requests {
-            let (_, arguments) = parser::entry(Source { path: "<module-export>".into(), text: request.clone().into() })?;
-            let mut arguments=arguments.into_iter().flatten().collect::<Vec<_>>();
-            while let Some(argument) = arguments.pop() {
-                if let crate::syntax::ArgumentKind::Type(ty) = argument.kind() {
-                    if let Some((owner, _)) = ty.name().split_once("::")
-                        && imported.modules.contains_key(owner)
-                    {
-                        load(&crate::source_path::module(module_root, owner, u16::from(b'b')), module_root,
-                            &mut world, Some(imported), Some(owner), inputs)?;
-                    }
-                    arguments.extend(ty.arguments());
-                }
-            }
+    let requests = if let Some(imported) = imported {
+        if let Some(captured) = inputs.and_then(build::Inputs::exports) {
+            loading::load_captured_exports(captured, module_root, &mut world, imported, inputs)?;
+            ExportRequests::Captured(captured.iter())
+        } else {
+            ExportRequests::Parsed(loading::prepare_exports(requests, module_root, &mut world, imported, inputs)?.into_iter())
         }
-    }
+    } else {
+        ExportRequests::Text(requests.iter())
+    };
     execution::infer(&mut world, build_declarations.as_ref());
     let mut world = World::new(Arc::new(world), worker.clone());
     loading::prepare_world(&mut world, build_declarations.is_some())?;
     world.build_declarations = build_declarations;
-    Ok((world, entry))
+    Ok((world, entry, requests))
 }
 pub(crate) async fn validate_types(world: &World) -> Result<()> {
     for name in world.type_sets.keys() {

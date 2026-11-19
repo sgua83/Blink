@@ -61,7 +61,7 @@ pub(super) fn compile<'a>(
         })?;
     let imported = (!imports.modules.is_empty()).then_some(&imports);
     let requests = match kind { ObjectKind::Module(requests) => requests, _ => &[] };
-    let (world, module) = crate::read_world(&source_path, &root, imported, requests, worker, inputs,
+    let (world, module, requests) = crate::read_world(&source_path, &root, imported, requests, worker, inputs,
         Some(std::cell::RefCell::new(std::collections::BTreeSet::new())))?;
     let definitions = &world.declarations;
     let selection = match kind {
@@ -100,8 +100,8 @@ pub(super) fn compile<'a>(
         Err(value) => return Err(value.into()),
     }
     let object = match kind {
-        ObjectKind::Module(instances) => {
-            unsafe { world.run(crate::check::compile_native_module(&world, &module, instances, imported)) }?.compile_in(worker).map_err(error)?
+        ObjectKind::Module(_) => {
+            unsafe { world.run(crate::check::compile_native_module(&world, &module, requests, imported)) }?.compile_in(worker).map_err(error)?
         }
         ObjectKind::Application(entry) => {
             crate::compile_world(&world, module, false, Some((crate::EntryKind::Application, entry)))?

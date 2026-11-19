@@ -76,7 +76,7 @@ fn compile_in(
     let mut imports = crate::module::Imports::inputs(&dependencies).map_err(|e| std::io::Error::other(e.to_string()))?;
     for object in borrowed { imports.object(object).map_err(|e| std::io::Error::other(e.to_string()))?; }
     let imported = if dependencies.is_empty() && borrowed.is_empty() { None } else { Some(&imports) };
-    let (world, module) = crate::read_world(&path, &root, imported, &[], worker, inputs,
+    let (world, module, _) = crate::read_world(&path, &root, imported, &[], worker, inputs,
         Some(std::cell::RefCell::new(std::collections::BTreeSet::new())))?;
     let target_name = if target == Target::Cpu { "cpu" } else { "gpu" };
     let request = [

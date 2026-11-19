@@ -202,8 +202,8 @@ enum Provider<'a> {
     Loaded(&'a str),
     Compiled { name: &'a str, module: &'a module::Imported },
     CapturedCompiled { name: &'a str, module: &'a module::Imported, inputs: &'a build::Inputs },
-    Source,
-    Captured(&'a build::Inputs),
+    Source(&'a Path),
+    Captured { path: &'a Path, inputs: &'a build::Inputs },
 }
 pub(crate) fn load(path: &Path, root: &Path, world: &mut Declarations,
     imported: Option<&module::Imports>, import: Option<&str>, inputs: Option<&build::Inputs>) -> Result<String> {
@@ -216,12 +216,19 @@ pub(crate) fn load(path: &Path, root: &Path, world: &mut Declarations,
             None => Provider::Compiled { name, module },
         }
     }));
-    let source = match inputs { Some(inputs) => Provider::Captured(inputs), None => Provider::Source };
+    let source = match inputs { Some(inputs) => Provider::Captured { path, inputs }, None => Provider::Source(path) };
     let selected = unsafe { &*select_provider(
         loaded.as_ref().map_or(std::ptr::null(), |provider| (provider as *const Provider<'_>).cast()),
         compiled.as_ref().map_or(std::ptr::null(), |provider| (provider as *const Provider<'_>).cast()),
         (&source as *const Provider<'_>).cast(),
     ).cast::<Provider<'_>>() };
+    load_provider(selected, root, world, imported, inputs)
+}
+
+fn load_provider(
+    selected: &Provider<'_>, root: &Path, world: &mut Declarations,
+    imported: Option<&module::Imports>, inputs: Option<&build::Inputs>,
+) -> Result<String> {
     let (interface, implementation, captured_imports, compiled) = match selected {
         Provider::Loaded(name) => return Ok((*name).to_owned()),
         Provider::Compiled { name, module } => (Arc::new(parser::parse(Source {
@@ -231,12 +238,12 @@ pub(crate) fn load(path: &Path, root: &Path, world: &mut Declarations,
             let (interface, imports) = inputs.interface(name, &module.header)?;
             (interface, None, imports, Some(*module))
         }
-        Provider::Source => {
+        Provider::Source(path) => {
             let interface = Arc::new(parser::parse(read(&crate::source_path::with_extension(path, u16::from(b'h')))?)?);
             let implementation_path = crate::source_path::with_extension(path, u16::from(b'b'));
             (interface, read_implementation(&implementation_path)?, None, None)
         }
-        Provider::Captured(inputs) => {
+        Provider::Captured { path, inputs } => {
             let (interface, implementation, imports) = inputs.source(path)?;
             (interface, implementation, Some(imports), None)
         }
@@ -387,4 +394,98 @@ pub(super) fn prepare_world(world: &mut World, track_constants: bool) -> Result<
         });
     }
     checks.error.map_or(Ok(()), Err)
+}
+
+#[repr(C)]
+struct ExportRange {
+    arguments: wire::Slice,
+    remaining: u64,
+}
+
+#[repr(C)]
+struct ExportTypeHost {
+    context: *mut c_void,
+    save: unsafe extern "C" fn(*mut c_void, ExportRange),
+    resume: unsafe extern "C" fn(*mut c_void) -> ExportRange,
+    load: unsafe extern "C" fn(*mut c_void, Bytes) -> u32,
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.module_load::load_export_types"]
+    fn load_export_types(storage: wire::StorageView, arguments: wire::Slice, host: ExportTypeHost);
+}
+
+struct ExportVisit<F> {
+    visit: F,
+    parents: Vec<ExportRange>,
+    error: Option<Diagnostic>,
+}
+
+unsafe extern "C" fn save_export_range<F>(context: *mut c_void, range: ExportRange) {
+    unsafe { &mut *context.cast::<ExportVisit<F>>() }.parents.push(range);
+}
+
+unsafe extern "C" fn resume_export_range<F>(context: *mut c_void) -> ExportRange {
+    unsafe { &mut *context.cast::<ExportVisit<F>>() }.parents.pop().unwrap_or(ExportRange {
+        arguments: wire::Slice { offset: 0, count: 0 }, remaining: 0,
+    })
+}
+
+unsafe extern "C" fn visit_export_owner<F: FnMut(&str) -> Result<()>>(context: *mut c_void, name: Bytes) -> u32 {
+    let state = unsafe { &mut *context.cast::<ExportVisit<F>>() };
+    state.error = (state.visit)(unsafe { name.text() }).err();
+    u32::from(state.error.is_none())
+}
+
+pub(super) fn visit_export_types<F: FnMut(&str) -> Result<()>>(
+    arguments: &syntax::List<wire::ArgumentNode>, visit: F,
+) -> Result<()> {
+    let mut state = ExportVisit { visit, parents: Vec::new(), error: None };
+    unsafe {
+        load_export_types(arguments.source_view().storage(), arguments.source_slice(), ExportTypeHost {
+            context: std::ptr::from_mut(&mut state).cast(),
+            save: save_export_range::<F>,
+            resume: resume_export_range::<F>,
+            load: visit_export_owner::<F>,
+        });
+    }
+    state.error.map_or(Ok(()), Err)
+}
+
+fn load_export_owner(
+    name: &str, root: &Path, world: &mut Declarations,
+    imported: &module::Imports, inputs: Option<&build::Inputs>,
+) -> Result<()> {
+    let Some(module) = imported.modules.get(name) else { return Ok(()); };
+    if world.sources.contains_key(name) { return Ok(()); }
+    let provider = match inputs {
+        Some(inputs) => Provider::CapturedCompiled { name, module, inputs },
+        None => Provider::Compiled { name, module },
+    };
+    load_provider(&provider, root, world, Some(imported), inputs).map(|_| ())
+}
+
+pub(super) fn prepare_exports(
+    requests: &[String], root: &Path, world: &mut Declarations,
+    imported: &module::Imports, inputs: Option<&build::Inputs>,
+) -> Result<Vec<ExportRequest>> {
+    requests.iter().map(|text| {
+        let request = ExportRequest::parse(text)?;
+        request.visit_type_owners(|name| load_export_owner(name, root, world, imported, inputs))?;
+        Ok(request)
+    }).collect()
+}
+
+pub(super) fn load_captured_exports(
+    requests: &[Result<CapturedExport>], root: &Path, world: &mut Declarations,
+    imported: &module::Imports, inputs: Option<&build::Inputs>,
+) -> Result<()> {
+    for request in requests {
+        let request = request.as_ref().map_err(Clone::clone)?;
+        for name in &request.owners {
+            load_export_owner(name, root, world, imported, inputs)?;
+        }
+        if let Some(error) = &request.error { return Err(error.clone()); }
+    }
+    Ok(())
 }

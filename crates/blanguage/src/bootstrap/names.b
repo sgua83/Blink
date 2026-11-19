@@ -14,8 +14,16 @@ bool equal(NameBytes a,NameBytes b) on cpu {
     if(a.length!=b.length){return false;}
     u64 at=0u64;while(at<a.length){if(byte_at(a,at)!=byte_at(b,at)){return false;}at+=1u64;}return true;
 }
+u64 qualification_separator(NameBytes name) on cpu {
+    u64 at=1u64;
+    while (at<name.length) {
+        if (byte_at(name,at-1u64)==58 && byte_at(name,at)==58) { return at-1u64; }
+        at+=1u64;
+    }
+    return name.length;
+}
 bool qualified(NameBytes name) on cpu {
-    u64 at=1u64;while(at<name.length){if(byte_at(name,at-1u64)==58&&byte_at(name,at)==58){return true;}at+=1u64;}return false;
+    return qualification_separator(name)<name.length;
 }
 bool visible(NameHit hit,NameBytes module,address imports,u64 count) on cpu {
     if(hit.present==0u64){return false;}

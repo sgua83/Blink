@@ -1,5 +1,5 @@
 //! 一次构建持有的解析输入；跨次复用仍由正式对象／映像拥有。
-use crate::{ast::{self, Diagnostic, Source, Span}, object::{Kind, Object}, parser, syntax};
+use crate::{CapturedExport, ExportRequest, ast::{self, Diagnostic, Source, Span}, object::{Kind, Object}, parser, syntax};
 use std::{collections::{BTreeMap, BTreeSet}, path::Path, sync::Arc};
 pub(super) enum ProviderInterface<'a> {
     Unit(Arc<syntax::Module>),
@@ -18,9 +18,13 @@ type Sources = BTreeMap<std::path::PathBuf, SourceInput>;
 type Interfaces<T> = BTreeMap<String, BTreeMap<Arc<str>, T>>;
 type CapturedInterface = (Arc<syntax::Module>, Option<Arc<[String]>>);
 
+pub(super) struct CapturedUnit {
+    interfaces: Interfaces<CapturedInterface>,
+    exports: Option<Vec<ast::Result<CapturedExport>>>,
+}
 pub(crate) struct Inputs {
     sources: Arc<Sources>,
-    interfaces: Interfaces<CapturedInterface>,
+    unit: CapturedUnit,
 }
 #[derive(Default)]
 pub(super) struct Capture {
@@ -28,9 +32,9 @@ pub(super) struct Capture {
     interfaces: Interfaces<Arc<syntax::Module>>,
 }
 impl Capture {
-    pub(super) fn finish(self, interfaces: Vec<Interfaces<CapturedInterface>>) -> Vec<Inputs> {
+    pub(super) fn finish(self, units: Vec<CapturedUnit>) -> Vec<Inputs> {
         let sources = Arc::new(self.sources);
-        interfaces.into_iter().map(|interfaces| Inputs { sources: sources.clone(), interfaces }).collect()
+        units.into_iter().map(|unit| Inputs { sources: sources.clone(), unit }).collect()
     }
     pub(super) fn header(&mut self, path: &Path) -> ast::Result<Arc<syntax::Module>> {
         Ok(self.source_input(path)?.interface.clone())
@@ -49,10 +53,36 @@ impl Capture {
 
     pub(super) fn capture(
         &mut self, path: &Path, root: &Path, providers: &BTreeMap<String, ProviderInterface<'_>>,
-    ) -> ast::Result<Interfaces<CapturedInterface>> {
+        requests: &[String],
+    ) -> ast::Result<CapturedUnit> {
         let mut interfaces = Interfaces::new();
-        self.capture_source(path, root, providers, &mut BTreeSet::new(), &mut interfaces)?;
-        Ok(interfaces)
+        let mut visited = BTreeSet::new();
+        self.capture_source(path, root, providers, &mut visited, &mut interfaces)?;
+        let exports = (!providers.is_empty() && !requests.is_empty()).then(|| {
+            let mut captured = Vec::new();
+            for text in requests {
+                let request = match ExportRequest::parse(text) {
+                    Ok(request) => request,
+                    Err(error) => {
+                        captured.push(Err(error));
+                        break;
+                    }
+                };
+                let mut owners = Vec::new();
+                let error = request.visit_type_owners(|name| {
+                    if providers.contains_key(name) && !visited.contains(name) {
+                        self.capture_import(name, root, providers, &mut visited, &mut interfaces)?;
+                        owners.push(name.to_owned());
+                    }
+                    Ok(())
+                }).err();
+                let failed = error.is_some();
+                captured.push(Ok(CapturedExport { request, owners, error }));
+                if failed { break; }
+            }
+            captured
+        });
+        Ok(CapturedUnit { interfaces, exports })
     }
 
     fn capture_source(
@@ -81,31 +111,36 @@ impl Capture {
         visited: &mut BTreeSet<String>, interfaces: &mut Interfaces<CapturedInterface>,
     ) -> ast::Result<()> {
         for name in imports {
-            if visited.contains(name) {
-                continue;
+            self.capture_import(name, root, providers, visited, interfaces)?;
+        }
+        Ok(())
+    }
+
+    fn capture_import(
+        &mut self, name: &str, root: &Path, providers: &BTreeMap<String, ProviderInterface<'_>>,
+        visited: &mut BTreeSet<String>, interfaces: &mut Interfaces<CapturedInterface>,
+    ) -> ast::Result<()> {
+        if visited.contains(name) { return Ok(()); }
+        let interface = match providers.get(name) {
+            Some(ProviderInterface::Unit(header)) => header.clone(),
+            Some(ProviderInterface::Object(object)) => {
+                let Kind::Module { interface, .. } = &object.kind else {
+                    // Imports reports invalid explicit providers when constructing the module inputs.
+                    return Ok(());
+                };
+                self.capture_interface(name, interface)?
             }
-            let interface = match providers.get(name) {
-                Some(ProviderInterface::Unit(header)) => header.clone(),
-                Some(ProviderInterface::Object(object)) => {
-                    let Kind::Module { interface, .. } = &object.kind else {
-                        // Imports reports invalid explicit providers when constructing the module inputs.
-                        continue;
-                    };
-                    self.capture_interface(name, interface)?
-                }
-                None => {
-                    let path = crate::source_path::module(root, name, u16::from(b'b'));
-                    self.capture_source(&path, root, providers, visited, interfaces)?;
-                    continue;
-                }
-            };
-            let imports = visited.insert(interface.name().to_owned())
-                .then(|| crate::names::module_imports(&interface, None));
-            interfaces.entry(name.clone()).or_default()
-                .insert(interface.source.text.clone(), (interface, imports.clone()));
-            if let Some(imports) = imports {
-                self.capture_imports(&imports, root, providers, visited, interfaces)?;
+            None => {
+                let path = crate::source_path::module(root, name, u16::from(b'b'));
+                return self.capture_source(&path, root, providers, visited, interfaces);
             }
+        };
+        let imports = visited.insert(interface.name().to_owned())
+            .then(|| crate::names::module_imports(&interface, None));
+        interfaces.entry(name.to_owned()).or_default()
+            .insert(interface.source.text.clone(), (interface, imports.clone()));
+        if let Some(imports) = imports {
+            self.capture_imports(&imports, root, providers, visited, interfaces)?;
         }
         Ok(())
     }
@@ -123,8 +158,12 @@ impl Capture {
     }
 }
 impl Inputs {
+    pub(crate) fn exports(&self) -> Option<&[ast::Result<CapturedExport>]> {
+        self.unit.exports.as_deref()
+    }
+
     pub(crate) fn interface(&self, name: &str, text: &str) -> ast::Result<CapturedInterface> {
-        self.interfaces.get(name).and_then(|interfaces| interfaces.get(text)).cloned()
+        self.unit.interfaces.get(name).and_then(|interfaces| interfaces.get(text)).cloned()
             .ok_or_else(|| Diagnostic {
                 source: Source { path: format!("<{name}>.h").into(), text: "".into() },
                 span: Span::default(), code: "B020",

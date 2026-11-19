@@ -66,3 +66,13 @@ struct WorldPreparation {
 extern "C" void prepare_world(WorldPreparation host) on cpu
     requires nonzero(host.next) requires nonzero(host.signature)
     requires nonzero(host.enqueue) requires nonzero(host.run);
+
+struct ExportRange { Slice arguments; u64 remaining; };
+struct ExportTypeHost {
+    address context;
+    cfn<void,address,ExportRange> save;
+    cfn<ExportRange,address> resume;
+    cfn<bool,address,NameBytes> load;
+};
+extern "C" void load_export_types(StorageView storage,Slice arguments,ExportTypeHost host) on cpu
+    requires nonzero(host.save) requires nonzero(host.resume) requires nonzero(host.load);
