@@ -484,11 +484,16 @@ impl Graph {
         &self, function: &Function, exposed: &BTreeMap<Origin, Borrow>,
         guards: &bounds::PublicGuards<'_>,
     ) -> Self {
-        let input_parameters = residency::input_parameters(&function.parameters, function.input_width);
+        let bindings = || residency::input_parameters(&function.parameters, function.input_width);
+        let relation = guards.relation(bindings);
+        let fallback = std::cell::LazyCell::new(bindings);
+        let input_parameters = relation.map_or_else(|| &*fallback, |scope| &scope.bindings);
         let nodes = self.nodes.iter().map(|node| {
             let seeds = canonical_with_guards(node.seeds.clone(), function, None, exposed, guards, false);
             let edges = node.edges.iter().map(|edge| {
-                let when = edge.when.guard_at_call(&input_parameters);
+                let when = relation.map_or_else(
+                    || edge.when.guard_at_call(input_parameters), |scope| scope.edge(&edge.when),
+                );
                 let op = match &edge.op {
                     Op::Read { word, frame, .. } => Op::Read {
                         word: *word,
@@ -514,7 +519,7 @@ impl Graph {
             writes: frame.writes.iter().map(|write| Write {
                 target: write.target,
                 fields: write.fields.clone(),
-                when: write.when.at_call(&input_parameters),
+                when: write.when.at_call(input_parameters),
             }).collect(),
         }).collect();
         Self { nodes, variables: self.variables.clone(), frames, inputs: BTreeMap::new() }

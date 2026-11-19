@@ -1893,6 +1893,29 @@ pub(super) struct Clause(ManuallyDrop<Arc<ClauseNode>>);
 pub(super) struct PublicGuards<'a> {
     pub(super) bindings: &'a BTreeMap<ValueIdentity, Proof>,
     results: Option<std::cell::RefCell<std::collections::HashMap<usize, PublicGuard>>>,
+    relation: Option<std::cell::OnceCell<RelationGuards>>,
+}
+
+pub(super) struct RelationGuards {
+    pub(super) bindings: BTreeMap<ValueIdentity, Proof>,
+    projected: std::cell::RefCell<std::collections::HashMap<[usize; 2], ProjectedEdge>>,
+}
+
+struct ProjectedEdge {
+    // Both cases contribute to the input projection and retain stable root identities.
+    _roots: [std::sync::Weak<ClauseNode>; 2],
+    value: Condition,
+}
+
+impl RelationGuards {
+    pub(super) fn edge(&self, source: &Condition) -> Condition {
+        let key = source.cases.each_ref().map(Clause::key);
+        let mut projected = self.projected.borrow_mut();
+        projected.entry(key).or_insert_with(|| ProjectedEdge {
+            _roots: source.cases.each_ref().map(|case| Arc::downgrade(&case.0)),
+            value: source.guard_at_call(&self.bindings),
+        }).value.clone()
+    }
 }
 
 struct PublicGuard {
@@ -1911,11 +1934,21 @@ impl PublicGuard {
 
 impl<'a> PublicGuards<'a> {
     pub(super) fn new(bindings: &'a BTreeMap<ValueIdentity, Proof>) -> Self {
-        Self { bindings, results: None }
+        Self { bindings, results: None, relation: None }
     }
 
     pub(super) fn stored(bindings: &'a BTreeMap<ValueIdentity, Proof>) -> Self {
-        Self { bindings, results: Some(std::cell::RefCell::new(std::collections::HashMap::new())) }
+        Self {
+            bindings,
+            results: Some(std::cell::RefCell::new(std::collections::HashMap::new())),
+            relation: Some(std::cell::OnceCell::new()),
+        }
+    }
+
+    pub(super) fn relation(&self, bindings: impl FnOnce() -> BTreeMap<ValueIdentity, Proof>) -> Option<&RelationGuards> {
+        self.relation.as_ref().map(|scope| scope.get_or_init(|| RelationGuards {
+            bindings: bindings(), projected: Default::default(),
+        }))
     }
 
     pub(super) fn possible(&self, source: &Clause) -> bool {
