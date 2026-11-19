@@ -719,7 +719,7 @@ fn encode_sections<'a>(
 }
 
 pub(super) fn decode(b: &super::ObjectBytes) -> Result<Object> {
-    Reader::new(b)?.object()
+    Reader::new(b)?.object(false)
 }
 /// 同一COFF包络的借用视图；构建调用先消费输入记录，命中后才消费代码ABI。
 pub(crate) struct Reader<'a, Input: ?Sized = [u8]> {
@@ -851,7 +851,7 @@ impl<'a, Input: AsRef<[u8]> + ?Sized> Reader<'a, Input> {
         let mut parts = ObjectParts::default();
         for row in self.section_rows(&mut parts) { row?; }
         let (name, kind, mut bindings, _, _) = read_metadata(
-            self.metadata(parts.metadata)?, None, false,
+            self.metadata(parts.metadata)?, None, false, false,
         )?;
         let mut definitions = BTreeMap::new();
         self.for_each_definition(|symbol| {
@@ -878,13 +878,13 @@ impl<'a, Input: AsRef<[u8]> + ?Sized> Reader<'a, Input> {
 }
 impl Reader<'_, super::ObjectBytes> {
     /// 非根资源侧库来自原编译产物；其C符号沿真实ABI恢复，不消费B公开合同。
-    pub(crate) fn native(&self, name: &str) -> Result<Object> { decode_object(self, Some(name)) }
-    pub(crate) fn object(&self) -> Result<Object> {
-        decode_object(self, None)
+    pub(crate) fn native(&self, name: &str) -> Result<Object> { decode_object(self, Some(name), false) }
+    pub(crate) fn object(&self, same_producer: bool) -> Result<Object> {
+        decode_object(self, None, same_producer)
     }
 }
 fn read_metadata(
-    meta: &[u8], archive: Option<super::ObjectBytes>, keep_stack: bool,
+    meta: &[u8], archive: Option<super::ObjectBytes>, keep_stack: bool, same_producer: bool,
 ) -> Result<(String, Kind, BTreeMap<String, Vec<u8>>, StackMetadata, Option<Archive>)> {
     let mut c = MetadataReadCursor::new(meta);
     let prefix = unsafe { metadata_read_prefix(&mut c, u64::from(FORMAT)) };
@@ -941,7 +941,7 @@ fn read_metadata(
     for _ in 0..prefix.binding_count {
         let value = unsafe { metadata_read_binding(&mut c) };
         value.error.check()?;
-        bindings.insert(read_text(value.name)?, crate::check::canonical_function_contract(unsafe { value.value.borrowed() })?);
+        bindings.insert(read_text(value.name)?, crate::check::read_function_contract(unsafe { value.value.borrowed() }, same_producer)?);
     }
     let mut stack = StackMetadata::default();
     for _ in 0..c.word()? {
@@ -966,7 +966,9 @@ fn read_metadata(
     });
     Ok((name, kind, bindings, stack, archive))
 }
-fn decode_object(reader: &Reader<'_, super::ObjectBytes>, native: Option<&str>) -> Result<Object> {
+fn decode_object(
+    reader: &Reader<'_, super::ObjectBytes>, native: Option<&str>, same_producer: bool,
+) -> Result<Object> {
     let b = reader.bytes;
     let mut definitions = vec![SectionDefinition::default(); reader.headers.len() / 40];
     let symbols = reader.symbol_rows(&mut definitions)?;
@@ -979,7 +981,7 @@ fn decode_object(reader: &Reader<'_, super::ObjectBytes>, native: Option<&str>) 
                 let start = parts.runtime.bytes.addr() - b.as_ptr().addr();
                 b.slice(start..start + parts.runtime.length)
             });
-            read_metadata(reader.metadata(parts.metadata)?, archive, true)?
+            read_metadata(reader.metadata(parts.metadata)?, archive, true, same_producer)?
         }
     };
     let mut sections = Vec::new();

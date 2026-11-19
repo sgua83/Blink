@@ -4893,12 +4893,18 @@ async fn kernel_parameters<'a>(
 
 
 // 已编译符号的空合同表示没有B函数合同；非空合同由原所有者交接规范身份。
-pub(crate) fn canonical_function_contract(bytes: &[u8]) -> crate::module::codec::Result<Vec<u8>> {
+pub(crate) fn read_function_contract(bytes: &[u8], same_producer: bool) -> crate::module::codec::Result<Vec<u8>> {
     use crate::module::codec::{Decode, Encode};
     if bytes.is_empty() {
         return Ok(Vec::new());
     }
-    Ok(native_function::Contract::from_bytes(bytes)?.bytes())
+    let contract = native_function::Contract::from_bytes(bytes)?;
+    if same_producer {
+        drop(contract);
+        Ok(bytes.to_vec())
+    } else {
+        Ok(contract.bytes())
+    }
 }
 
 // Physical construction for the original public contract wire.
