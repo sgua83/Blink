@@ -2199,6 +2199,14 @@ fn finish_function(
             Requirement::Initialized{borrow:read.borrow(),read,code,span:*span}.check(&usage.source, None)?;
             continue;
         }
+        // The memory and dataset records have already supplied the effects.
+        // Here the only consumer is the unresolved-source diagnostic.
+        if let Requirement::Memory { borrow, span, .. } | Requirement::Dataset { borrow, span, .. } = &usage.requirement {
+            if evaluation.evaluate(borrow).unresolved_under(&path) {
+                return Requirement::unresolved_diagnostic(&usage.source, *span);
+            }
+            continue;
+        }
         if let Requirement::Unborrowed { resource, borrow, .. } = &usage.requirement {
             let resource = symbolic.evaluate(resource);
             let borrow = symbolic.evaluate(borrow);

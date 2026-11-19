@@ -457,6 +457,10 @@ impl Borrow{
         self.unresolved_in(&|| Some(&*root))
     }
 
+    pub(super) fn unresolved_under(&self, path: &bounds::Clause) -> bool {
+        self.unresolved_in(&|| Some(path))
+    }
+
     fn unresolved_in<'a>(
         &self,
         reachable_path: &dyn Fn() -> Option<&'a bounds::Clause>,
@@ -716,6 +720,10 @@ impl Requirement {
             Self::Nonzero{..}=>self.clone(),
         }
     }
+    pub(super) fn unresolved_diagnostic<T>(source: &crate::Source, span: Span) -> Result<T> {
+        source.fail(span, "B271", "view的实际借用来源尚未形成合同")
+    }
+
     pub fn check(&self, source: &crate::Source, call_path: Option<&bounds::Clause>) -> Result<()> {
         let applies = || call_path.is_none_or(bounds::Clause::possible);
 
@@ -742,7 +750,11 @@ impl Requirement {
         if (self.borrow().is_some_and(Borrow::unresolved)
             || matches!(self, Self::Unborrowed { resource, borrow, .. } if !borrow.empty() && resource.unresolved())) && applies()
         {
-            return source.fail(match self{Self::Unborrowed{span,..}|Self::Return{span,..}|Self::Address{span,..}|Self::Memory{span,..}|Self::Dataset{span,..}|Self::Initialized{span,..}|Self::Nonzero{span,..}=>*span},"B271","view的实际借用来源尚未形成合同");
+            return Self::unresolved_diagnostic(source, match self {
+                Self::Unborrowed { span, .. } | Self::Return { span, .. } | Self::Address { span, .. }
+                | Self::Memory { span, .. } | Self::Dataset { span, .. } | Self::Initialized { span, .. }
+                | Self::Nonzero { span, .. } => *span,
+            });
         }
         if let Self::Initialized{read,code,span,..}=self {
             if !read.complete(){return source.fail(*span,code,"读取或返回前没有完整初始化原位置的所需分量");}
