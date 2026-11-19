@@ -146,9 +146,10 @@ unsafe extern "system" fn execute_ranges(
                 work.partials.add(index * words)
             };
             let timing = work.timing.map(|first| first.add(index));
-            *work.errors.add(index) = work.invoke(
+            let failure = work.invoke(
                 work.entry, buffers, &mut uniforms, end as u32, begin as u32, output, timing,
             );
+            work.errors.add(index).write(failure);
         }
         begin = work.next.fetch_add(work.grain, Ordering::Relaxed);
     }
@@ -1052,6 +1053,7 @@ impl CpuCode {
         // 原参数及投影已接受；取得可写访问时撤回旧计数关系。
         // 后续失败可能已有写入，不将未完成调用发布为完整保证。
         writing();
+        let mut errors = Vec::new();
         // Actual input facts move into this scope; declarations never create facts.
         for (stage_index, (stage, code)) in self.program.stages().iter().zip(&self.stages).enumerate() {
             crate::bindings::invalidate(&mut input_domains,&stage.write_regions,|binding|(binding,0));
@@ -1066,7 +1068,7 @@ impl CpuCode {
                 buffers[stage.domain].count
             };
             match code {
-                StageCode::Sort(code) => sort::run(self, code, &pointers, count, stage_index, &mut timings)?,
+                StageCode::Sort(code) => sort::run(self, code, &pointers, count, stage_index, &mut errors, &mut timings)?,
                 StageCode::Element { main: executable, continuation, result } => {
                     let result = *result;
                     uniforms[0] = count;
@@ -1099,7 +1101,7 @@ impl CpuCode {
                         timing: None,
                     };
                     // On success every range has written the fields and metadata consumed below.
-                    self.execute(&mut ranges, &mut timings)?;
+                    self.execute(&mut ranges, &mut errors, &mut timings)?;
                     if let blanguage::ir::Operation::Reduce(reduction) = &stage.operation {
                         for (scalar, offset) in &reduction.ty.components {
                             let total = partials
@@ -1236,7 +1238,7 @@ impl CpuCode {
                             ranges.result = RangeResult::None;
                             ranges.next = AtomicUsize::new(0);
                             ranges.range_parameters = partials.as_ptr().cast();
-                            self.execute(&mut ranges, &mut timings)?;
+                            self.execute(&mut ranges, &mut errors, &mut timings)?;
                         }
                     }
                 }
@@ -1256,19 +1258,21 @@ impl CpuCode {
     fn execute(
         &self,
         ranges: &mut RangeWork<'_>,
+        errors: &mut Vec<*mut c_void>,
         timings: &mut Option<&mut CpuRangeTimings>,
     ) -> Result<()> {
         let range_count = ranges.count.div_ceil(ranges.grain);
         if range_count == 0 {
             return Ok(());
         }
-        let mut errors = vec![std::ptr::null_mut(); range_count];
-        ranges.errors = errors.as_mut_ptr();
+        errors.try_reserve_exact(range_count)?;
+        let slots = &mut errors.spare_capacity_mut()[..range_count];
         unsafe {
             observation::capture(timings, ranges.stage, ranges.entry as usize, range_count, |timing| {
                 let submissions = self.workers.min(range_count);
                 let work = std::ptr::from_mut(ranges);
                 let handle = WorkHandle::new(execute_ranges, work.cast())?;
+                (*work).errors = slots.as_mut_ptr().cast();
                 (*work).timing = timing;
                 for _ in 0..submissions {
                     handle.submit();
@@ -1277,7 +1281,9 @@ impl CpuCode {
                 (*work).timing = None;
                 Ok(())
             })?;
-            crate::application::take_errors(errors)
+            // The callbacks have joined and each range has written its slot. The backing
+            // vector keeps length zero so the next pass borrows only the capacity again.
+            crate::application::take_errors(slots.iter().map(|slot| slot.assume_init()))
         }
     }
 }

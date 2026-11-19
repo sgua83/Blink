@@ -33,6 +33,7 @@ pub(super) fn run(
     pointers: &[BufferAddress],
     count: u32,
     stage: usize,
+    errors: &mut Vec<*mut c_void>,
     timings: &mut Option<&mut CpuRangeTimings>,
 ) -> Result<()> {
     if count == 0 {
@@ -76,7 +77,7 @@ pub(super) fn run(
         work.entry = key.address;
         work.range_parameters = std::ptr::null();
         work.next = AtomicUsize::new(0);
-        host.execute(&mut work, timings)?;
+        host.execute(&mut work, errors, timings)?;
         for shift in (0..32).step_by(4) {
             rows.fill(0);
             for row in rows.chunks_exact_mut(17) {
@@ -88,7 +89,7 @@ pub(super) fn run(
             work.entry = code.histogram.address;
             work.range_parameters = rows.as_mut_ptr();
             work.next = AtomicUsize::new(0);
-            host.execute(&mut work, timings)?;
+            host.execute(&mut work, errors, timings)?;
             let mut offset = 0u32;
             for bin in 0..16 {
                 for row in rows.chunks_exact_mut(17) {
@@ -100,7 +101,7 @@ pub(super) fn run(
             work.range_parameters = rows.as_mut_ptr();
             work.entry = code.scatter.address;
             work.next = AtomicUsize::new(0);
-            host.execute(&mut work, timings)?;
+            host.execute(&mut work, errors, timings)?;
             std::mem::swap(&mut a, &mut b);
         }
     }
@@ -109,7 +110,7 @@ pub(super) fn run(
     work.entry = code.gather.address;
     work.range_parameters = std::ptr::null();
     work.next = AtomicUsize::new(0);
-    host.execute(&mut work, timings)
+    host.execute(&mut work, errors, timings)
 }
 
 fn words(count: usize) -> Result<Vec<u32>> {
