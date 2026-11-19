@@ -995,16 +995,24 @@ fn canonical(borrow: Borrow, function: &Function, exposed: &BTreeMap<Origin, Bor
     canonical_relation(borrow, function, None, exposed, &public_parameters(function), false)
 }
 fn canonical_relation(
-    mut borrow: Borrow, function: &Function, resource: Option<&Borrow>, exposed: &BTreeMap<Origin, Borrow>,
+    borrow: Borrow, function: &Function, resource: Option<&Borrow>, exposed: &BTreeMap<Origin, Borrow>,
     parameters: &BTreeMap<ValueIdentity, bounds::Proof>, initialization: bool,
 ) -> Borrow {
+    canonical_with_guards(borrow, function, resource, exposed, &bounds::PublicGuards::new(parameters), initialization)
+}
+
+fn canonical_with_guards(
+    mut borrow: Borrow, function: &Function, resource: Option<&Borrow>, exposed: &BTreeMap<Origin, Borrow>,
+    guards: &bounds::PublicGuards<'_>, initialization: bool,
+) -> Borrow {
+    let parameters = guards.bindings;
     // Impossible source edges carry known absence, not a live private owner.
     // Keep that knowledge in the existing Inactive representation at the ABI.
     let known=!borrow.sources.is_empty();
-    borrow.sources.retain_possible();
+    borrow.sources.retain_paths(|path| guards.possible(path));
     if known&&borrow.sources.is_empty(){borrow.sources.insert(Origin::Inactive);}
     let address=|origin:&address::Origin|{
-        let mut value=origin.map_borrows(|borrow|canonical_relation(borrow.clone(),function,None,exposed,parameters,false));
+        let mut value=origin.map_borrows(|borrow|canonical_with_guards(borrow.clone(),function,None,exposed,guards,false));
             if let address::Root::External(address::Identity::Value(ids))=&mut value.root {
                 *ids=ids.iter().filter_map(|id|function.parameters.get(id).copied().filter(|id|function.input(*id))).collect();
             }
@@ -1030,24 +1038,24 @@ fn canonical_relation(
             else{Borrow::source(Origin::Unresolved)}
         }
         Origin::Parameter(id,indices)=>Borrow::source(function.parameters.get(&id).copied().map(|id|Origin::Parameter(id,indices.into_iter().map(|index|input_index(index,function)).collect())).unwrap_or(Origin::Unresolved)),
-        Origin::Element{parent,fields,index}=>Borrow::element(canonical_relation(*parent,function,None,exposed,parameters,false),fields,input_index(index,function)),
-        Origin::Projection{parent,fields}=>Borrow::projection(canonical_relation(*parent,function,None,exposed,parameters,false),fields),
-        Origin::Task{captures,outputs,initialized,guards,completions}=>Borrow::source(Origin::Task{
-            captures:Box::new(canonical_relation(*captures,function,None,exposed,parameters,false)),
-            initialized:Box::new(canonical_relation(*initialized,function,None,exposed,parameters,true)),
-            outputs:outputs.into_iter().map(|output|canonical_relation(output,function,None,exposed,parameters,false)).collect(),
-            completions:completions.iter().map(|completion|completion.map_task(|task|canonical_relation(task.clone(),function,None,exposed,parameters,false))).collect(),
-            guards:guards.into_iter().map(|mut guard|{
-                guard.target=canonical_relation(guard.target,function,None,exposed,parameters,false);
+        Origin::Element{parent,fields,index}=>Borrow::element(canonical_with_guards(*parent,function,None,exposed,guards,false),fields,input_index(index,function)),
+        Origin::Projection{parent,fields}=>Borrow::projection(canonical_with_guards(*parent,function,None,exposed,guards,false),fields),
+        Origin::Task{captures,outputs,initialized,guards:task_guards,completions}=>Borrow::source(Origin::Task{
+            captures:Box::new(canonical_with_guards(*captures,function,None,exposed,guards,false)),
+            initialized:Box::new(canonical_with_guards(*initialized,function,None,exposed,guards,true)),
+            outputs:outputs.into_iter().map(|output|canonical_with_guards(output,function,None,exposed,guards,false)).collect(),
+            completions:completions.iter().map(|completion|completion.map_task(|task|canonical_with_guards(task.clone(),function,None,exposed,guards,false))).collect(),
+            guards:task_guards.into_iter().map(|mut guard|{
+                guard.target=canonical_with_guards(guard.target,function,None,exposed,guards,false);
                 guard.map_arguments(|proof|proof.at_call(parameters));
                 guard.map_inputs(|word|word.map(|id|function.parameters.get(&id).copied()));
                 guard
             }).collect(),
         }),
-        Origin::TaskOutput{task,projection}=>canonical_relation(*task,function,None,exposed,parameters,false).task_projection(projection.map_result(|id|function.parameters.get(&id).copied())),
+        Origin::TaskOutput{task,projection}=>canonical_with_guards(*task,function,None,exposed,guards,false).task_projection(projection.map_result(|id|function.parameters.get(&id).copied())),
         Origin::Position(origin)=>Borrow::source(Origin::Position(Arc::new(address(&origin)))),
         Origin::Contents{origin,word}=>Borrow::source(Origin::Contents{origin:Arc::new(address(&origin)),word}),
-        Origin::Relation(graph,root)=>Borrow::source(Origin::Relation(Arc::new(graph.canonical(function,exposed,parameters)),root)),
+        Origin::Relation(graph,root)=>Borrow::source(Origin::Relation(Arc::new(graph.canonical(function,exposed,guards)),root)),
         Origin::Unresolved|Origin::Inactive|Origin::External=>Borrow::source(source),
     }};
     if initialization {
@@ -1057,7 +1065,7 @@ fn canonical_relation(
         // 拥有输出的来源改名不附加条件，先投影正式输入关系。
         Some(_) => borrow.map_sources_at_call(parameters, renamed),
         // 借用输出需先合成实际拥有者条件，保留来源相关性。
-        None=>borrow.map_sources(renamed).guards_at_call(parameters),
+        None=>borrow.map_sources(renamed).project_guards(guards),
     }
 }
 
@@ -1597,11 +1605,12 @@ fn stored_outputs<'p>(
         let target = stored_target(&origin, function, exposed, &parameters);
         stored.entry((target, word)).or_default().0.push(origin);
     }
+    let guards = std::cell::LazyCell::new(|| bounds::PublicGuards::stored(parameters()));
     for memory in exits {
         for ((_, word), (origins, value)) in &mut stored {
             for origin in origins {
                 let incoming = evaluation.content_at_exit(origin, *word, memory);
-                let incoming = canonical_relation(incoming, function, None, exposed, parameters(), false);
+                let incoming = canonical_with_guards(incoming, function, None, exposed, &guards, false);
                 value.union(&incoming);
             }
         }

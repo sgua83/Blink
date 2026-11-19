@@ -482,11 +482,11 @@ impl Graph {
     pub(in crate::check) fn normalize(&mut self,normal:&mut bounds::Normalizer){for n in &mut self.nodes{n.seeds.normalize_contract(normal);for e in &mut n.edges{e.when=normal.condition(&e.when);if let Op::Position(p)=&mut e.op{normal.origin(p);}}}for f in &mut self.frames{for w in &mut f.writes{w.when=normal.condition(&w.when);}}}
     pub(super) fn canonical(
         &self, function: &Function, exposed: &BTreeMap<Origin, Borrow>,
-        parameters: &BTreeMap<ValueIdentity, bounds::Proof>,
+        guards: &bounds::PublicGuards<'_>,
     ) -> Self {
         let input_parameters = residency::input_parameters(&function.parameters, function.input_width);
         let nodes = self.nodes.iter().map(|node| {
-            let seeds = canonical_relation(node.seeds.clone(), function, None, exposed, parameters, false);
+            let seeds = canonical_with_guards(node.seeds.clone(), function, None, exposed, guards, false);
             let edges = node.edges.iter().map(|edge| {
                 let when = edge.when.guard_at_call(&input_parameters);
                 let op = match &edge.op {
@@ -497,7 +497,7 @@ impl Graph {
                     },
                     Op::Position(origin) => {
                         let borrow = Borrow::source(Origin::Position(Arc::new(origin.clone())));
-                        let value = canonical_relation(borrow, function, None, exposed, parameters, false);
+                        let value = canonical_with_guards(borrow, function, None, exposed, guards, false);
                         match value.sources.iter().next() {
                             Some(Origin::Position(position)) => Op::Position(position.as_ref().clone()),
                             _ => edge.op.clone(),

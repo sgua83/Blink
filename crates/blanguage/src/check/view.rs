@@ -69,7 +69,9 @@ impl<K:Ord+Clone> Edges<K>{
     }
 
     pub fn remove(&mut self, key: &K) -> Option<bounds::Clause> { self.0.remove(key) }
-    pub(super) fn retain_possible(&mut self) { self.0.retain(|_, when| when.possible()); }
+    pub(super) fn retain_paths(&mut self, possible: impl Fn(&bounds::Clause) -> bool) {
+        self.0.retain(|_, when| possible(when));
+    }
     pub fn contains(&self, key: &K) -> bool { self.0.get(key).is_some_and(bounds::Clause::possible) }
     pub fn is_empty(&self) -> bool { self.0.is_empty() }
     pub fn iter(&self) -> std::collections::btree_map::Keys<'_, K, bounds::Clause> { self.0.keys() }
@@ -398,6 +400,15 @@ impl Borrow{
             sources: self.sources.guards_at_call(bindings),
             ..self.pending_guards_at_call(bindings)
         }
+    }
+
+    pub(super) fn project_guards(mut self, guards: &bounds::PublicGuards<'_>) -> Self {
+        for condition in self.sources.0.values_mut().chain(self.inputs.0.values_mut())
+            .chain(self.calls.0.values_mut()).chain(self.reads.0.values_mut())
+        {
+            *condition = guards.project(condition);
+        }
+        self
     }
 
     pub(super) fn map_sources_at_call(

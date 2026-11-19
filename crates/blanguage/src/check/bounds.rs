@@ -1026,7 +1026,7 @@ impl Proof {
         let roots: Vec<_> = (0..count(self.conditions.len())).filter_map(|i| self.conditions.get(source(i)).and_then(Option::as_ref))
             .flat_map(|condition| condition.cases.iter()).collect();
         let mut projected = if roots.is_empty() { Vec::new() } else {
-            Clause::at_calls(&roots, &Clause::ordered(roots.iter().copied()), bindings, |_| false)
+            Clause::at_calls(&roots, &Clause::ordered(roots.iter().copied()), bindings, |_| false, Clause::required)
         }.into_iter();
         translated.conditions = (0..count(self.conditions.len())).map(|i| self.conditions.get(source(i)).and_then(Option::as_ref).map(|_| {
             Box::new(Condition { cases: [projected.next().unwrap(), projected.next().unwrap()] })
@@ -1889,6 +1889,71 @@ impl Default for Condition {
 }
 #[derive(Clone)]
 pub(super) struct Clause(ManuallyDrop<Arc<ClauseNode>>);
+// One stored-output pass has one fixed public binding and owns its guard results.
+pub(super) struct PublicGuards<'a> {
+    pub(super) bindings: &'a BTreeMap<ValueIdentity, Proof>,
+    results: Option<std::cell::RefCell<std::collections::HashMap<usize, PublicGuard>>>,
+}
+
+struct PublicGuard {
+    // Keep the source address unique for this pass without retaining its condition graph.
+    _source: std::sync::Weak<ClauseNode>,
+    possible: Option<bool>,
+    facts: Option<Facts>,
+    projected: Option<Clause>,
+}
+
+impl PublicGuard {
+    fn new(source: &Clause) -> Self {
+        Self { _source: Arc::downgrade(&source.0), possible: None, facts: None, projected: None }
+    }
+}
+
+impl<'a> PublicGuards<'a> {
+    pub(super) fn new(bindings: &'a BTreeMap<ValueIdentity, Proof>) -> Self {
+        Self { bindings, results: None }
+    }
+
+    pub(super) fn stored(bindings: &'a BTreeMap<ValueIdentity, Proof>) -> Self {
+        Self { bindings, results: Some(std::cell::RefCell::new(std::collections::HashMap::new())) }
+    }
+
+    pub(super) fn possible(&self, source: &Clause) -> bool {
+        let Some(results) = &self.results else { return source.possible(); };
+        if !matches!(&**source.0, ClauseNode::Both(..) | ClauseNode::Either(..) | ClauseNode::Branch(..)) {
+            return source.possible();
+        }
+        let mut results = results.borrow_mut();
+        let result = results.entry(source.key()).or_insert_with(|| PublicGuard::new(source));
+        if let Some(possible) = result.possible {
+            return possible;
+        }
+        result.facts = source.required();
+        let possible = result.facts.is_some();
+        result.possible = Some(possible);
+        possible
+    }
+
+    pub(super) fn project(&self, source: &Clause) -> Clause {
+        let Some(results) = &self.results else { return source.project_guard(self.bindings); };
+        let mut results = results.borrow_mut();
+        let result = results.entry(source.key()).or_insert_with(|| PublicGuard::new(source));
+        if let Some(projected) = &result.projected {
+            return projected.clone();
+        }
+        let projected = source.project_guard_in(&Clause::ordered([source]), self.bindings, |root| {
+            if result.possible == Some(false) {
+                None
+            } else {
+                result.facts.take().or_else(|| root.required())
+            }
+        });
+        result.facts = None;
+        result.projected = Some(projected.clone());
+        projected
+    }
+}
+
 pub(super) struct GuardProjection<'a> {
     source: &'a Clause,
     bindings: &'a BTreeMap<ValueIdentity, Proof>,
@@ -1947,6 +2012,7 @@ impl Clause {
         ordered: &[&Self],
         bindings: &BTreeMap<ValueIdentity, impl std::borrow::Borrow<Proof>>,
         numeric_context: impl FnOnce(&[&Self]) -> bool,
+        mut required: impl FnMut(&Self) -> Option<Facts>,
     ) -> Vec<Self> {
         let mut clauses = BTreeMap::new();
         let mut private_numeric = false;
@@ -1979,7 +2045,7 @@ impl Clause {
             roots.sort_by_key(|root| root.key());
             roots.dedup_by_key(|root| root.key());
             for root in &roots {
-                let numeric = match root.required() {
+                let numeric = match required(root) {
                     Some(facts) => Clause::call_facts(
                         facts.into_iter().filter(|value| matches!(value, Fact::Minimum(..) | Fact::Maximum(..))),
                         bindings,
@@ -2007,10 +2073,13 @@ impl Clause {
     }
 
     pub(super) fn project_guard(&self, bindings: &BTreeMap<ValueIdentity, Proof>) -> Self {
-        self.project_guard_in(&Self::ordered([self]), bindings)
+        self.project_guard_in(&Self::ordered([self]), bindings, Self::required)
     }
 
-    fn project_guard_in(&self, ordered: &[&Self], bindings: &BTreeMap<ValueIdentity, impl std::borrow::Borrow<Proof>>) -> Self {
+    fn project_guard_in(
+        &self, ordered: &[&Self], bindings: &BTreeMap<ValueIdentity, impl std::borrow::Borrow<Proof>>,
+        required: impl FnMut(&Self) -> Option<Facts>,
+    ) -> Self {
         Self::at_calls(&[self], ordered, bindings, |ordered| {
             // A reversed Below uses the same identities. Only a negated computed
             // exclusion can introduce a numeric trigger absent from the original path.
@@ -2020,7 +2089,7 @@ impl Clause {
                         if Self::private_numeric(&Fact::Index(id, domain), bindings))
                 }))
             }) && self.negate().has_private_numeric(bindings)
-        }).pop().unwrap()
+        }, required).pop().unwrap()
     }
 
     fn call_facts(facts: impl IntoIterator<Item = Fact>, bindings: &BTreeMap<ValueIdentity, impl std::borrow::Borrow<Proof>>) -> Self {
@@ -2056,7 +2125,7 @@ impl Clause {
             id
         });
         let bindings = Proof::value_bindings(identities.into_inner(), |id| values.get(&id), |id| Proof::default().with_identity(id));
-        self.project_guard_in(&ordered, &bindings)
+        self.project_guard_in(&ordered, &bindings, Self::required)
     }
 
     fn visit_identities(
@@ -2498,6 +2567,7 @@ impl Condition {
             &Clause::ordered([&self.cases[index]]),
             bindings,
             |_| self.cases[1 - index].has_private_numeric(bindings),
+            Clause::required,
         ).pop().unwrap()
     }
 
@@ -2524,7 +2594,7 @@ impl Condition {
     pub(super) fn unconstrained(&self)->bool{self.cases.iter().all(|case|matches!(&**case.0,ClauseNode::Facts(facts)if facts.is_empty()))}
     pub(super) fn exclusive(&self)->bool{!Clause::both(&self.cases[0],&self.cases[1]).possible()}
     pub(super) fn at_call(&self,bindings:&BTreeMap<ValueIdentity,impl std::borrow::Borrow<Proof>>)->Self{
-        let mut cases=Clause::at_calls(&self.cases.each_ref(), &Clause::ordered(&self.cases), bindings, |_| false).into_iter();
+        let mut cases=Clause::at_calls(&self.cases.each_ref(), &Clause::ordered(&self.cases), bindings, |_| false, Clause::required).into_iter();
         Self{cases:[cases.next().unwrap(),cases.next().unwrap()]}
     }
     pub(super) fn output_bound(&self,bindings:&OutputBindings)->Self{
