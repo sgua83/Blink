@@ -308,6 +308,42 @@ impl Compiler {
             Some((EntryKind::Application, entry)), dependencies)?.applications.remove(0))
     }
 }
+#[repr(u32)]
+#[derive(Clone, Copy)]
+enum SourceMode {
+    Automatic,
+    SelectedProgram,
+    Application,
+}
+
+#[allow(dead_code)]
+#[repr(u32)]
+#[derive(Clone, Copy)]
+enum SourceRoute {
+    Function,
+    CheckDomain,
+    Program,
+}
+
+#[repr(C)]
+struct SourcePlan {
+    route: SourceRoute,
+    schedule: u32,
+    cpu_signature: u32,
+    publish: u32,
+    public_domain: u32,
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.module_load::source_module_entry"]
+    fn source_module_entry(source: crate::syntax::wire::SignatureNode, local: u32, public: u32) -> u32;
+    #[link_name = "bootstrap.module_load::source_module_plan"]
+    fn source_module_plan(
+        source: crate::syntax::wire::SignatureNode, mode: SourceMode, compiled: u32,
+        local: u32, public: u32, domain: u32, selected: u32,
+    ) -> SourcePlan;
+}
+
 pub(crate) fn compile_world(
     world: &World,
     entry: String,
@@ -329,10 +365,10 @@ pub(crate) fn compile_world(
                 message: format!("没有公开入口 {name}"),
             })?;
         let definition = &world.functions[&key];
-        if !definition.public
-            || definition.module != entry
-            || definition.function.kind() != FunctionKind::Value
-        {
+        if unsafe { source_module_entry(
+            definition.function.signature_node(), u32::from(definition.module == entry),
+            u32::from(definition.public),
+        ) } == 0 {
             return source.fail(
                 Span::default(),
                 "B240",
@@ -344,7 +380,12 @@ pub(crate) fn compile_world(
         None
     };
     enum Job<'a> {
-        Instance(generics::Instance, bool),
+        Instance {
+            instance: generics::Instance,
+            route: SourceRoute,
+            cpu_signature: bool,
+            publish: bool,
+        },
         Failed(Diagnostic),
         Selected(&'a str, &'a Option<crate::syntax::List<crate::syntax::wire::ArgumentNode>>, EntryKind, &'a Source),
     }
@@ -352,18 +393,38 @@ pub(crate) fn compile_world(
         Programs(Vec<ir::Program>),
         Application(application::Application),
     }
-    let for_application = matches!(selected.as_ref(), Some((_, _, EntryKind::Application, _)));
+    let mode = match selected.as_ref().map(|(_, _, kind, _)| kind) {
+        None => SourceMode::Automatic,
+        Some(EntryKind::Domain) => SourceMode::SelectedProgram,
+        Some(EntryKind::Application) => SourceMode::Application,
+    };
     let mut jobs = Vec::new();
+    let mut open_generics: Vec<_> = world.records.iter()
+        .filter(|(_, (record, ..))| generics::is_open(&record.types(), &record.values()))
+        .map(|(name, _)| name.clone()).collect();
+    let mut open_public_domain = false;
     let planned = unsafe { world.run(async {
         for (base, definition) in &world.functions {
-            if definition.compiled.is_some() || definition.function.kind() == FunctionKind::Constant
-                || definition.function.external().is_some() { continue; }
-            if selected.as_ref().is_some_and(|(key, _, _, _)| key == base) {
-                continue;
+            let function = &definition.function;
+            let plan = unsafe { source_module_plan(
+                function.signature_node(), mode, u32::from(definition.compiled.is_some()),
+                u32::from(definition.module == entry), u32::from(definition.public),
+                u32::from(definition.execution == execution::Requirement::Domain),
+                u32::from(selected.as_ref().is_some_and(|(selected, _, _, _)| selected == base)),
+            ) };
+            if generics::is_open(&function.types(), &function.values()) {
+                open_generics.push(base.clone());
+                open_public_domain |= plan.public_domain != 0;
             }
-            let retained = selected.is_none() && definition.module == entry && definition.public;
-            jobs.extend(unsafe { world.call(generics::instances(&world, base, definition)).await }?
-                .into_iter().map(|instance| Job::Instance(instance, retained)));
+            if plan.schedule != 0 {
+                let instances = unsafe { world.call(generics::instances(world, base, definition)).await }?;
+                jobs.extend(instances.into_iter().map(|instance| Job::Instance {
+                    instance,
+                    route: plan.route,
+                    cpu_signature: plan.cpu_signature != 0,
+                    publish: plan.publish != 0,
+                }));
+            }
         }
         Ok(())
     }) };
@@ -383,28 +444,33 @@ pub(crate) fn compile_world(
         let mut programs = Vec::new();
         match job {
             Job::Failed(error) => return Err(error),
-            Job::Instance(instance, retained) => {
+            Job::Instance { instance, route, cpu_signature, publish } => {
                 let name = &instance.name;
-                let d = &instance.definition;
-                let domain = d.execution == execution::Requirement::Domain;
-                let cpu_domain = domain && d.function.target() == Target::Cpu;
-                let signature = if cpu_domain {
+                let definition = &instance.definition;
+                let signature = if cpu_signature {
                     unsafe { world.call(check::kernel_signature(world, &instance)).await }?
                 } else {
                     None
                 };
-                if domain && (!cpu_domain || signature.is_some()) {
-                    if for_application {
-                        unsafe { world.call(check::check_domain(world, &instance, signature.as_deref())).await }.map_err(|error| instance_error(error, name))?;
-                    } else {
-                        let mut program = unsafe { world.call(check::compile_program(world, &instance, signature.as_deref())).await }.map_err(|error| instance_error(error, name))?;
-                        if retained {
-                            optimize::optimize(&mut program, &world.worker).map_err(|error| crate::compiler::diagnostic(&d.source.path, error))?;
+                let route = if cpu_signature && signature.is_none() { SourceRoute::Function } else { route };
+                match route {
+                    SourceRoute::Function => {
+                        unsafe { world.call(check::check_function(world, &instance)).await }
+                            .map_err(|error| instance_error(error, name))?;
+                    }
+                    SourceRoute::CheckDomain => {
+                        unsafe { world.call(check::check_domain(world, &instance, signature.as_deref())).await }
+                            .map_err(|error| instance_error(error, name))?;
+                    }
+                    SourceRoute::Program => {
+                        let mut program = unsafe { world.call(check::compile_program(world, &instance, signature.as_deref())).await }
+                            .map_err(|error| instance_error(error, name))?;
+                        if publish {
+                            optimize::optimize(&mut program, &world.worker)
+                                .map_err(|error| crate::compiler::diagnostic(&definition.source.path, error))?;
                             programs.push(program);
                         }
                     }
-                } else {
-                    unsafe { world.call(check::check_function(world, &instance)).await }.map_err(|error| instance_error(error, name))?;
                 }
             }
             Job::Selected(key, arguments, kind, source) => {
@@ -451,26 +517,8 @@ pub(crate) fn compile_world(
             },
         }
     }
-    let open_generics: Vec<_> = world
-        .records
-        .iter()
-        .filter(|(_, (record, ..))| generics::is_open(&record.types(), &record.values()))
-        .map(|(name, _)| name.clone())
-        .chain(
-            world
-                .functions
-                .iter()
-                .filter(|(_, d)| generics::is_open(&d.function.types(), &d.function.values()))
-                .map(|(name, _)| name.clone()),
-        )
-        .collect();
     if require_program && programs.is_empty() && templates.is_empty() {
-        if world.functions.values().any(|d| {
-            d.module == entry
-                && d.public
-                && d.execution == execution::Requirement::Domain
-                && generics::is_open(&d.function.types(), &d.function.values())
-        }) {
+        if open_public_domain {
             return world.sources[&entry].fail(
                 Span::default(),
                 "B240",

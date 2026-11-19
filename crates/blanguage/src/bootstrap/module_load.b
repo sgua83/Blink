@@ -233,10 +233,14 @@ extern "C" NameBytes load(LoadInput input,address context,
     return name;
 }
 
+bool source_definition(FunctionNode definition) on cpu {
+    return definition.kind != 2 && definition.external.present == 0;
+}
+
 extern "C" bool native_module_admission(SignatureNode source,u32 compiled,u32 local) on cpu {
     if (compiled != 0 || local == 0) { return false; }
     FunctionNode definition = unsafe_position<FunctionNode>(at(source.storage.nodes,source.offset));
-    return definition.kind != 2 && definition.external.present == 0;
+    return source_definition(definition);
 }
 
 extern "C" ModuleInstance native_module_instance(SignatureNode source,u32 domain,u32 exported,u32 explicit) on cpu {
@@ -247,4 +251,26 @@ extern "C" ModuleInstance native_module_instance(SignatureNode source,u32 domain
     if (explicit != 0) { return ModuleInstance(ModuleEntry::Reject,domain,0); }
     if (domain != 0) { return ModuleInstance(ModuleEntry::DomainProgram,domain,0); }
     return ModuleInstance(ModuleEntry::Check,0,0);
+}
+
+extern "C" u32 source_module_entry(SignatureNode source,u32 local,u32 exported) on cpu {
+    FunctionNode definition = unsafe_position<FunctionNode>(at(source.storage.nodes,source.offset));
+    return local != 0 && exported != 0 && definition.kind == 0 ? 1 : 0;
+}
+
+extern "C" SourcePlan source_module_plan(SignatureNode source,SourceMode mode,u32 compiled,
+    u32 local,u32 exported,u32 domain,u32 selected) on cpu {
+    bool public_root = local != 0 && exported != 0;
+    u32 public_domain = public_root && domain != 0 ? 1 : 0;
+    if (compiled != 0 || selected != 0) {
+        return SourcePlan(SourceRoute::Function,0,0,0,public_domain);
+    }
+    FunctionNode definition = unsafe_position<FunctionNode>(at(source.storage.nodes,source.offset));
+    if (!source_definition(definition)) {
+        return SourcePlan(SourceRoute::Function,0,0,0,public_domain);
+    }
+    u32 publish = mode == SourceMode::Automatic && public_root ? 1 : 0;
+    if (domain == 0) { return SourcePlan(SourceRoute::Function,1,0,publish,public_domain); }
+    SourceRoute route = mode == SourceMode::Application ? SourceRoute::CheckDomain : SourceRoute::Program;
+    return SourcePlan(route,1,definition.target == 1 ? 1 : 0,publish,public_domain);
 }
