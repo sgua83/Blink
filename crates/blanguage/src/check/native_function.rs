@@ -14,11 +14,23 @@ mod canonical;
 pub(super) use canonical::{canonical,element_inputs};
 pub(super) use model::{rebind_model,translate_returned,translate_in_place};
 
+type Units = BTreeMap<String, Option<Unit>>;
+type InterruptedUnits = std::rc::Rc<std::cell::RefCell<Option<Units>>>;
+
 #[derive(Default)]
 pub(super) struct Module {
-    pub(super) units: BTreeMap<String, Option<Unit>>,
+    pub(super) units: Units,
     pub(super) resources: crate::application::Resources,
     programs: Vec<Option<PendingProgram>>,
+    interrupted_units: Option<InterruptedUnits>,
+}
+
+impl Drop for Module {
+    fn drop(&mut self) {
+        if let Some(owner) = self.interrupted_units.take() {
+            owner.replace(Some(std::mem::take(&mut self.units)));
+        }
+    }
 }
 struct PendingProgram {
     target: Target,
@@ -28,15 +40,42 @@ struct PendingProgram {
 }
 
 impl Module {
-    pub(super) fn read_only(&self,name:&str)->bool {
-        self.units.get(name).and_then(Option::as_ref).and_then(|unit|unit.contract.view_access.as_ref()).is_some_and(|access|
-            access.iter().all(|access|match access {
-                view_contracts::Access::Resource{kind,..}=>*kind!=view::Exclusion::Ownership,
-                view_contracts::Access::Memory{access,..}=>!access.writes(),
-                view_contracts::Access::Position{position,..}=>position.written.is_none(),
-                view_contracts::Access::Dataset{access,..}=>!access.writes(),
-                view_contracts::Access::Initialized{..}|view_contracts::Access::Stored{..}=>true,
-            }))
+    fn access(&self, name: &str) -> Option<&BTreeSet<view_contracts::Access>> {
+        self.units.get(name)?.as_ref()?.contract.view_access.as_ref()
+    }
+
+    fn read_access(access: Option<&BTreeSet<view_contracts::Access>>) -> bool {
+        access.is_some_and(|access| access.iter().all(|access| match access {
+            view_contracts::Access::Resource { kind, .. } => *kind != view::Exclusion::Ownership,
+            view_contracts::Access::Memory { access, .. } => !access.writes(),
+            view_contracts::Access::Position { position, .. } => position.written.is_none(),
+            view_contracts::Access::Dataset { access, .. } => !access.writes(),
+            view_contracts::Access::Initialized { .. } | view_contracts::Access::Stored { .. } => true,
+        }))
+    }
+
+    pub(super) fn read_only(&self, name: &str) -> bool {
+        Self::read_access(self.access(name))
+    }
+
+    fn effect_access(&self, world: &World, name: &str) -> Result<Option<&BTreeSet<view_contracts::Access>>> {
+        let Some(unit) = self.units.get(name).and_then(Option::as_ref) else { return Ok(None); };
+        if let Some(pending) = &unit.module_view {
+            let outcome = pending.get_or_init(|| view_work(self, Some(name)).unwrap().solve(&world.worker));
+            return match outcome {
+                Ok(outputs) => Ok(Some(&outputs[0].1.interface.access)),
+                Err(error) => Err(error.clone()),
+            };
+        }
+        Ok(unit.contract.view_access.as_ref())
+    }
+
+    pub(super) fn effect_read_only(&self, world: &World, name: &str) -> Result<bool> {
+        Ok(Self::read_access(self.effect_access(world, name)?))
+    }
+
+    pub(super) fn effect_writes_only_references(&self, world: &World, name: &str) -> Result<bool> {
+        Ok(Self::reference_access(self.effect_access(world, name)?))
     }
     fn reference_read_only(&self,name:&str)->bool {
         fn read_only(borrow:&view::Borrow)->bool {
@@ -61,7 +100,11 @@ impl Module {
         }
         self.read_only(name)&&self.units[name].as_ref().unwrap().contract.returned.as_ref().is_none_or(returned_read_only)
     }
-    pub(super) fn writes_only_references(&self,name:&str)->bool {
+    pub(super) fn writes_only_references(&self, name: &str) -> bool {
+        Self::reference_access(self.access(name))
+    }
+
+    fn reference_access(access: Option<&BTreeSet<view_contracts::Access>>) -> bool {
         fn references(borrow:&view::Borrow)->bool {
             borrow.inputs.is_empty()&&borrow.calls.is_empty()&&borrow.sources.iter().all(|source|match source {
                 view::Source::Parameter(ValueIdentity::ParameterStorage(_),_)=>true,
@@ -75,21 +118,13 @@ impl Module {
                 _=>false,
             })
         }
-        self.units.get(name).and_then(Option::as_ref).and_then(|unit|unit.contract.view_access.as_ref()).is_some_and(|access|
-            access.iter().all(|access|match access {
+        access.is_some_and(|access| access.iter().all(|access| match access {
                 view_contracts::Access::Resource{kind,..}=>matches!(kind,view::Exclusion::Position(_)),
                 view_contracts::Access::Memory{access,borrows,..}=>!access.writes()||references(borrows),
                 view_contracts::Access::Dataset{access,..}=>!access.writes(),
                 view_contracts::Access::Initialized{..}|view_contracts::Access::Stored{..}=>true,
                 view_contracts::Access::Position{position,borrows,..}=>position.written.is_none()||references(borrows),
             }))
-    }
-    fn owns_input(&self, function: &str, id: ValueIdentity) -> bool {
-        let unit = self.units[function].as_ref().unwrap();
-        match id {
-            ValueIdentity::ResourceParameter(parameter, _) => unit.input_access[parameter] == Access::Value,
-            _ => false,
-        }
     }
     #[inline(never)]
     fn declare(&mut self, name: &str) -> bool {
@@ -149,13 +184,26 @@ pub(super) struct Unit {
     c_abi: bool,
     residency: residency::Inputs,
     view_model: view_contracts::Function,
+    module_view: Option<std::cell::OnceCell<Result<ViewOutputs>>>,
 }
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ViewDemand {
+    Caller,
+    ModuleOutput,
+}
+
 async fn declaration(
     world: &World,
     instance: &crate::generics::Instance,
     mut functions: Module,
+    demand: ViewDemand,
 ) -> Result<Module> {
     if !functions.declare(&instance.name) {
+        if demand == ViewDemand::Caller && functions.units[&instance.name].as_ref()
+            .is_some_and(|unit| unit.module_view.is_some())
+        {
+            resolve_views(world, &mut functions, Some(&instance.name))?;
+        }
         return Ok(functions);
     }
     if let Some(definitions) = &instance.definition.compiled {
@@ -163,7 +211,23 @@ async fn declaration(
     }
     let target=match instance.definition.function.target(){Target::Compute=>Target::Cpu,target=>target};
     let checked=unsafe { world.call(checked_function(world,instance,target,Some(application::Context::default()),functions)).await }?;
-    finish_declaration(world,&LexicalScope::Function(instance.clone()),instance.definition.function.c_abi(),checked)
+    let lexical = LexicalScope::Function(instance.clone());
+    let c_abi = instance.definition.function.c_abi();
+    match demand {
+        ViewDemand::Caller => finish_declaration(world, &lexical, c_abi, checked),
+        ViewDemand::ModuleOutput => {
+            let (name, mut module) = prepare_declaration(&lexical, c_abi, checked);
+            let ready = module.units[&name].as_ref().unwrap().view_model.calls.iter().all(|call| {
+                call.function == name || module.access(&call.function).is_some()
+            });
+            if ready {
+                module.units.get_mut(&name).unwrap().as_mut().unwrap().module_view = Some(Default::default());
+            } else {
+                resolve_views(world, &mut module, Some(&name))?;
+            }
+            Ok(module)
+        },
+    }
 }
 
 #[inline(never)]
@@ -198,6 +262,7 @@ fn compiled_declaration(
             c_abi: instance.definition.function.c_abi(),
             residency: residency::Inputs::default(),
             view_model: view_contracts::Function::default(),
+            module_view: None,
         }),
     );
     Ok(functions)
@@ -205,11 +270,16 @@ fn compiled_declaration(
 
 #[inline(never)]
 fn finish_declaration(
-    world: &World,
-    lexical:&LexicalScope,
-    c_abi:bool,
-    mut checked: Box<CheckedFunction>,
+    world: &World, lexical: &LexicalScope, c_abi: bool, checked: Box<CheckedFunction>,
 ) -> Result<Module> {
+    let (name, mut functions) = prepare_declaration(lexical, c_abi, checked);
+    resolve_views(world, &mut functions, Some(&name))?;
+    Ok(functions)
+}
+
+fn prepare_declaration(
+    lexical: &LexicalScope, c_abi: bool, mut checked: Box<CheckedFunction>,
+) -> (String, Module) {
     let residency=checked.residency;
     let mut functions = checked.functions;
     let function = checked.body;
@@ -243,10 +313,10 @@ fn finish_declaration(
             c_abi,
             residency,
             view_model: checked.view_model,
+            module_view: None,
         }),
     );
-    resolve_views(world,&mut functions,Some(&name))?;
-    Ok(functions)
+    (name, functions)
 }
 #[derive(Clone)]
 pub(super) struct TaskCompletionOutput {
@@ -319,7 +389,7 @@ mod task_parameters;
 pub(in crate::check) use task_parameters::{task_argument_slots, task_completion_parameters};
 
 pub(super) async fn check(world: &World, instance: &crate::generics::Instance) -> Result<()> {
-    let mut functions = unsafe { world.call(declaration(world, instance, Module::default())).await }?;
+    let mut functions = unsafe { world.call(declaration(world, instance, Module::default(), ViewDemand::Caller)).await }?;
     unsafe { world.call(lower_module_failures(world,&mut functions,&mut [])).await }?;
     resolve_residencies(world,&mut functions).map(|_|())
 }
@@ -341,7 +411,7 @@ impl Builder<'_> {
             }
             return Ok(());
         }
-        self.functions = unsafe { self.world.call(declaration(self.world, instance, std::mem::take(&mut self.functions))).await }?;
+        self.functions = unsafe { self.world.call(declaration(self.world, instance, std::mem::take(&mut self.functions), ViewDemand::Caller)).await }?;
         Ok(())
     }
     pub(super) async fn native_function(
@@ -1566,7 +1636,124 @@ fn returned_input_aliases(module:&Module,name:&str)->Vec<(usize,usize)> {
     }).collect()
 }
 
-fn resolve_views(world:&World,module:&mut Module,root:Option<&str>)->Result<()> {
+type ViewOutputs = Vec<(String, view_contracts::SolvedFunction)>;
+
+struct ViewSource<'a> {
+    source: &'a Source,
+    span: Span,
+    input_access: &'a [Access],
+}
+
+#[derive(Default)]
+struct ViewWork<'a> {
+    functions: BTreeMap<String, &'a view_contracts::Function>,
+    sources: BTreeMap<String, ViewSource<'a>>,
+    closed: BTreeMap<String, view_contracts::Interface>,
+}
+
+impl ViewWork<'_> {
+    fn solve(self, worker: &crate::compiler::Worker) -> Result<ViewOutputs> {
+        let Self { functions, sources, closed } = self;
+        let owns_input = |function: &str, id| match id {
+            ValueIdentity::ResourceParameter(parameter, _) => sources[function].input_access[parameter] == Access::Value,
+            _ => false,
+        };
+        let outputs = if let Some(observe) = &worker.compiler().borrow_solve_observer {
+            use crate::compiler::{BorrowSolveEvent, BorrowSolveFunction, BorrowSolvePhase};
+            let participating: Vec<_> = sources.iter().map(|(name, unit)| {
+                BorrowSolveFunction { name, source: unit.source, span: unit.span }
+            }).collect();
+            observe(BorrowSolveEvent { phase: BorrowSolvePhase::Started, functions: &participating });
+            let storage = |function: &str, storage| observe(BorrowSolveEvent {
+                phase: BorrowSolvePhase::Storage { function, storage },
+                functions: &participating,
+            });
+            let result = view_contracts::solve_views(worker, &functions, closed, owns_input, Some(&storage));
+            observe(BorrowSolveEvent {
+                phase: BorrowSolvePhase::Finished { succeeded: result.is_ok() },
+                functions: &participating,
+            });
+            result
+        } else {
+            view_contracts::solve_views(worker, &functions, closed, owns_input, None)
+        }?;
+        for (name, solved) in &outputs {
+            if solved.interface.outputs.values().any(view::Borrow::has_local) {
+                let unit = &sources[name];
+                return unit.source.fail(unit.span,"B227","地址不能返回或输出当前函数的局部存储");
+            }
+        }
+        Ok(outputs)
+    }
+}
+
+fn view_work<'a>(module: &'a Module, root: Option<&str>) -> Option<ViewWork<'a>> {
+    let mut work = ViewWork::default();
+    let mut pending = root.map(|name| vec![name.to_owned()]).unwrap_or_else(|| {
+        module.units.iter().filter_map(|(name, unit)| {
+            unit.as_ref().unwrap().contract.view_access.is_none().then(|| name.clone())
+        }).collect()
+    });
+    while let Some(name) = pending.pop() {
+        if work.functions.contains_key(&name) || work.closed.contains_key(&name) { continue; }
+        let unit = module.units[&name].as_ref()?;
+        if unit.contract.view_access.is_some() {
+            work.closed.insert(name, view_outputs(&unit.contract));
+        } else {
+            pending.extend(unit.view_model.calls.iter().map(|call| call.function.clone()));
+            work.sources.insert(name.clone(), ViewSource {
+                source: &unit.source, span: unit.span, input_access: &unit.input_access,
+            });
+            work.functions.insert(name, &unit.view_model);
+        }
+    }
+    Some(work)
+}
+
+fn resolve_views(world: &World, module: &mut Module, root: Option<&str>) -> Result<()> {
+    if let Some(name) = root
+        && let Some(outcome) = module.units.get_mut(name).and_then(Option::as_mut)
+            .and_then(|unit| unit.module_view.as_mut()).and_then(std::cell::OnceCell::take)
+    {
+        publish_views(module, outcome?);
+        return Ok(());
+    }
+    if let Some(work) = view_work(module, root) {
+        let solved = work.solve(&world.worker)?;
+        publish_views(module, solved);
+    }
+    Ok(())
+}
+
+fn publish_ready_views(world: &World, module: &mut Module, ready: &mut Vec<&str>) -> Result<()> {
+    let jobs = ready.drain(..).map(|name| view_work(module, Some(name)).unwrap()).collect();
+    let results = crate::parallel::try_map(&world.worker, jobs, Clone::clone, |worker, work| work.solve(worker))
+        .map_err(|error| match error {
+            crate::parallel::Error::Work(diagnostic) => diagnostic,
+            crate::parallel::Error::Resource(error) => crate::compiler::diagnostic(std::path::Path::new("<borrow-solver>"), error),
+        })?;
+    for outputs in results {
+        publish_views(module, outputs);
+    }
+    Ok(())
+}
+
+fn resolve_module_views(world: &World, module: &mut Module, roots: &[String]) -> Result<()> {
+    let mut ready = Vec::new();
+    for name in roots {
+        let Some(pending) = module.units.get(name).and_then(Option::as_ref)
+            .and_then(|unit| unit.module_view.as_ref()) else { continue; };
+        if pending.get().is_some() {
+            publish_ready_views(world, module, &mut ready)?;
+            resolve_views(world, module, Some(name))?;
+        } else if !ready.contains(&name.as_str()) {
+            ready.push(name.as_str());
+        }
+    }
+    publish_ready_views(world, module, &mut ready)
+}
+
+fn publish_views(module: &mut Module, outputs: ViewOutputs) {
     fn scalar_values(value:&mut Value,bindings:&BTreeMap<ValueIdentity,bounds::Proof>){
         value.proof=value.proof.substitute_values(bindings);
         value.constant=value.constant.take().or_else(||value.proof.known_value(&value.ty));
@@ -1587,45 +1774,11 @@ fn resolve_views(world:&World,module:&mut Module,root:Option<&str>)->Result<()> 
         }
     }
 
-    let mut functions=BTreeMap::new();let mut closed=BTreeMap::new();
-    let mut pending=root.map(|name|vec![name.to_owned()]).unwrap_or_else(||module.units.iter().filter_map(|(name,unit)|unit.as_ref().unwrap().contract.view_access.is_none().then(||name.clone())).collect());
-    while let Some(name)=pending.pop() {
-        if functions.contains_key(&name)||closed.contains_key(&name){continue;}
-        let Some(unit)=module.units[&name].as_ref() else{return Ok(());};
-        if unit.contract.view_access.is_some(){closed.insert(name,view_outputs(&unit.contract));}
-        else{
-            pending.extend(unit.view_model.calls.iter().map(|call|call.function.clone()));
-            functions.insert(name,&unit.view_model);
-        }
-    }
-    let owns_input = |function: &str, id| module.owns_input(function, id);
-    let outputs = if let Some(observe) = &world.worker.compiler().borrow_solve_observer {
-        use crate::compiler::{BorrowSolveEvent, BorrowSolveFunction, BorrowSolvePhase};
-        let participating: Vec<_> = functions.keys().map(|name| {
-            let unit = module.units[name].as_ref().unwrap();
-            BorrowSolveFunction { name, source: &unit.source, span: unit.span }
-        }).collect();
-        observe(BorrowSolveEvent { phase: BorrowSolvePhase::Started, functions: &participating });
-        let storage = |function: &str, storage| observe(BorrowSolveEvent {
-            phase: BorrowSolvePhase::Storage { function, storage },
-            functions: &participating,
-        });
-        let result = view_contracts::solve_views(&world.worker, &functions, closed, owns_input, Some(&storage));
-        observe(BorrowSolveEvent {
-            phase: BorrowSolvePhase::Finished { succeeded: result.is_ok() },
-            functions: &participating,
-        });
-        result
-    } else {
-        view_contracts::solve_views(&world.worker, &functions, closed, owns_input, None)
-    }?;
     for (name, view_contracts::SolvedFunction { interface, memory, values }) in outputs {
         let aliases=returned_input_aliases(module,&name);
         let unit=module.units.get_mut(&name).unwrap().as_mut().unwrap();
+        unit.module_view = None;
         let contract=&mut unit.contract;
-        if interface.outputs.values().any(view::Borrow::has_local) {
-            return unit.source.fail(unit.span,"B227","地址不能返回或输出当前函数的局部存储");
-        }
         contract.view_access=Some(interface.access);
         contract.initialization=Some(interface.initialization);
         if let Some(values)=values {
@@ -1675,7 +1828,6 @@ fn resolve_views(world:&World,module:&mut Module,root:Option<&str>)->Result<()> 
             address::apply_memory(&mut function.body.code,&memory,&function.body.locals);
         }
     }
-    Ok(())
 }
 // Borrow current contracts; own decoded dependencies from compiled definitions,
 // including private callees without reconstructing their source declarations.
@@ -2142,9 +2294,7 @@ async fn finalize(
         }).collect::<Vec<_>>();
     let mut reachable = entries.clone();
     for (_, _, _, names) in &programs { reachable.extend(names.iter().cloned()); }
-    let mut units = module
-        .units
-        .into_iter()
+    let mut units = std::mem::take(&mut module.units).into_iter()
         .map(|(name, unit)| (name, unit.unwrap()))
         .collect::<BTreeMap<_, _>>();
     dependencies::complete(&units, &mut reachable, owner);
@@ -2317,7 +2467,7 @@ async fn module_instance(
             if route.publish != 0 {
                 roots.insert(instance.name.clone());
             }
-            *functions = unsafe { world.call(declaration(world, instance, std::mem::take(functions))).await }?;
+            *functions = unsafe { world.call(declaration(world, instance, std::mem::take(functions), ViewDemand::ModuleOutput)).await }?;
         }
         ModuleEntry::DomainProgram => {
             // The interface query already rejected this instance's program signature.
@@ -2343,54 +2493,80 @@ pub(crate) async fn compile_module(
     requests: &[String],
     imported: Option<&crate::module::Imports>,
 ) -> Result<crate::module::Module> {
+    let interrupted = InterruptedUnits::default();
     let mut functions = Module::default();
+    functions.interrupted_units = Some(interrupted.clone());
     let mut roots = BTreeSet::new();
-    for (key, definition) in &world.functions {
-        if !unsafe { native_module_admission(
-            definition.function.signature_node(),
-            u32::from(definition.compiled.is_some()),
-            u32::from(definition.module == entry),
-        ) } {
-            continue;
+    let mut prepared = Vec::new();
+    let preparation = async {
+        for (key, definition) in &world.functions {
+            if !unsafe { native_module_admission(
+                definition.function.signature_node(),
+                u32::from(definition.compiled.is_some()),
+                u32::from(definition.module == entry),
+            ) } {
+                continue;
+            }
+            for instance in unsafe { world.call(crate::generics::instances(world, key, definition)).await }? {
+                unsafe { world.call(module_instance(world, &instance, &mut functions, &mut roots, false)).await }?;
+                prepared.push(instance.name.clone());
+            }
         }
-        for instance in unsafe { world.call(crate::generics::instances(world, key, definition)).await }? {
-            unsafe { world.call(module_instance(world, &instance, &mut functions, &mut roots, false)).await }?;
+        for request in requests {
+            let source = Source {
+                path: "<module-export>".into(),
+                text: request.clone().into(),
+            };
+            let (name, arguments) = crate::parser::entry(source.clone())?;
+            let key = world
+                .resolve(&name, entry, &[], true).unique()
+                .filter(|key| world.functions[key].module == entry && world.functions[key].public)
+                .ok_or_else(|| Diagnostic {
+                    source: source.clone(),
+                    span: Span::default(),
+                    code: "B270",
+                    message: format!("没有本模块公开导出 {name}"),
+                })?;
+            let d = &world.functions[&key];
+            let imports = d.imports.iter().chain(imported.into_iter().flat_map(|input| input.modules.keys()))
+                .cloned().collect::<BTreeSet<_>>().into_iter().collect::<Vec<_>>();
+            let bindings=Arc::new(crate::generics::Bindings::default());
+            let arguments=match arguments.as_ref() {
+                Some(arguments)=>Some(unsafe { world.call(bindings.arguments(world,arguments,
+                    (&source,&d.module,&imports),Span{start:0,end:request.len()})).await }?),
+                None=>None,
+            };
+            let instance = unsafe { world.call(super::generics::specialize(
+                world,
+                &key,
+                &[],
+                arguments.as_deref(),
+                (&source, &d.module, &imports),
+                Span { start: 0, end: request.len() },
+            )).await }?;
+            unsafe { world.call(module_instance(world, &instance, &mut functions, &mut roots, true)).await }?;
+            prepared.push(instance.name.clone());
         }
+
+        Ok::<(), Diagnostic>(())
+    }.await;
+    functions.interrupted_units = None;
+    if let Err(error) = preparation {
+        // The moved builder may have ended while preparing a later declaration.
+        // Earlier view models still determine the original diagnostic order.
+        if let Some(units) = interrupted.borrow_mut().take() {
+            functions.units = units;
+        }
+        for name in prepared {
+            if functions.units.get(&name).and_then(Option::as_ref)
+                .is_some_and(|unit| unit.contract.view_access.is_none())
+            {
+                resolve_views(world, &mut functions, Some(&name))?;
+            }
+        }
+        return Err(error);
     }
-    for request in requests {
-        let source = Source {
-            path: "<module-export>".into(),
-            text: request.clone().into(),
-        };
-        let (name, arguments) = crate::parser::entry(source.clone())?;
-        let key = world
-            .resolve(&name, entry, &[], true).unique()
-            .filter(|key| world.functions[key].module == entry && world.functions[key].public)
-            .ok_or_else(|| Diagnostic {
-                source: source.clone(),
-                span: Span::default(),
-                code: "B270",
-                message: format!("没有本模块公开导出 {name}"),
-            })?;
-        let d = &world.functions[&key];
-        let imports = d.imports.iter().chain(imported.into_iter().flat_map(|input| input.modules.keys()))
-            .cloned().collect::<BTreeSet<_>>().into_iter().collect::<Vec<_>>();
-        let bindings=Arc::new(crate::generics::Bindings::default());
-        let arguments=match arguments.as_ref() {
-            Some(arguments)=>Some(unsafe { world.call(bindings.arguments(world,arguments,
-                (&source,&d.module,&imports),Span{start:0,end:request.len()})).await }?),
-            None=>None,
-        };
-        let instance = unsafe { world.call(super::generics::specialize(
-            world,
-            &key,
-            &[],
-            arguments.as_deref(),
-            (&source, &d.module, &imports),
-            Span { start: 0, end: request.len() },
-        )).await }?;
-        unsafe { world.call(module_instance(world, &instance, &mut functions, &mut roots, true)).await }?;
-    }
+    resolve_module_views(world, &mut functions, &prepared)?;
     let finalized = unsafe { world.call(finalize(world, functions, roots, None, Some(entry), &mut [])).await }?;
     let mut functions = finalized.functions;
     let resources = application::module_resources(&mut functions, finalized.resources);
@@ -2425,7 +2601,7 @@ async fn domain_at(
             && instance.definition.compiled.is_some() {
             let mut reference = instance.clone();
             reference.name = name.clone();
-            *functions = unsafe { world.call(declaration(world, &reference, std::mem::take(functions))).await }?;
+            *functions = unsafe { world.call(declaration(world, &reference, std::mem::take(functions), ViewDemand::Caller)).await }?;
         } else {
             unsafe { world.call(build_domain(world, input, functions, target, element_inputs, parameters)).await }?;
         }
@@ -2768,6 +2944,7 @@ async fn build_domain(
             c_abi: false,
             residency: residency::Inputs::default(),
             view_model: view_contracts::Function::default(),
+            module_view: None,
         }),
     );
     Ok(())

@@ -1011,7 +1011,12 @@ impl<'b, 'w> Scope<'b, 'w> {
                                     Some(ContractPredicate::Memory(access))
                                 }else{None}
                             })).is_some_and(|access|access.writes());
-                        let read_only=instance.as_ref().is_some_and(|instance|self.builder.is_some_and(|builder|builder.functions.read_only(&instance.name)));
+                        let read_only = if let (Some(instance), Some(builder)) = (&instance, self.builder)
+                            && self.world.functions[&key].function.params().iter().zip(&args)
+                                .any(|(param, _)| matches!(param.access(), Access::InOut | Access::Write) && !param.ty().tile())
+                        {
+                            builder.functions.effect_read_only(self.world, &instance.name)?
+                        } else { false };
                         for (at,(param, arg)) in self.world.functions[&key].function.params().iter().zip(&args).enumerate() {
                             accesses[at]=param.access();
                             if matches!(param.access(), Access::InOut | Access::Write) && !param.ty().tile() {
@@ -1071,7 +1076,7 @@ impl<'b, 'w> Scope<'b, 'w> {
                             let result_name=unsafe { self.world.call(instance.bindings.type_name(self.world,&definition.function.result(),
                                 (&definition.source,&definition.module,&definition.imports),definition.function.span())).await }?;
                             let result=unsafe { self.world.call(self.world.ty(&result_name,&definition.source,definition.function.span(),&definition.module,&definition.imports)).await }?;
-                            !result.owns_resources()&&builder.functions.writes_only_references(&instance.name)
+                            !result.owns_resources() && builder.functions.effect_writes_only_references(self.world, &instance.name)?
                         }else{false};
                         if !read_only {writes.accept(world, Write::Generator(factory)).await?;}
                     }
