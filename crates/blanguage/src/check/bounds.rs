@@ -443,17 +443,26 @@ impl Proof {
         };
         facts.ranges.resize_with(self.ranges.len().max(self.domains.len()), ScalarRanges::default);
         for (component, domains) in self.domains.iter().enumerate() {
-            for domain in domains {
-                if matches!(domain,IndexDomain::KnownBits(..)){facts.mark_domain(component,*domain);}
-                if let IndexDomain::Data(binding) = domain {
-                    let mut bound = target(*binding);
-                    if let Some(domains) = bound.domains.first_mut() { facts.domains[component].append(domains); }
-                    facts.ranges[component] = facts.range_set(component).combine(&bound.range_set(0),
-                        |(a, b), (c, d)| ScalarRanges::interval(a.max(c), b.min(d)));
-                }
-            }
+            facts.apply_element_domains(component, domains, &target);
         }
         facts
+    }
+
+    fn apply_element_domains(&mut self, component: usize, domains: &Domains, target: impl Fn(usize) -> Self) {
+        for &domain in domains {
+            match domain {
+                IndexDomain::KnownBits(..) => self.mark_domain(component, domain),
+                IndexDomain::Data(binding) => {
+                    let mut bound = target(binding);
+                    if let Some(domains) = bound.domains.first_mut() {
+                        self.domains[component].append(domains);
+                    }
+                    self.ranges[component] = self.range_set(component).combine(&bound.range_set(0),
+                        |(a, b), (c, d)| ScalarRanges::interval(a.max(c), b.min(d)));
+                }
+                _ => {}
+            }
+        }
     }
     fn interval_source(&self, component: usize) -> &[(Bits, Bits)] {
         self.ranges.get(component)
@@ -3697,10 +3706,21 @@ impl Builder<'_> {
             TileOrigin::Input { binding, word, .. } =>
                 self.common_element_proof((*binding, *word), words, None),
             TileOrigin::Published(value) if self.tiles[tile].access == Access::Value => {
-                let components = words.iter().map(|word| value.ty.components.iter()
-                    .position(|(_, byte)| byte == word).unwrap()).collect::<Vec<_>>();
-                Some(Proof::capture(value).project(&components, value.regs.len()).element_facts(
-                    |target| self.data_index_proof(target).with_domains(Domains::from([IndexDomain::Data(target)]))))
+                let target = |binding| self.data_index_proof(binding)
+                    .with_domains(Domains::from([IndexDomain::Data(binding)]));
+                let mut facts = Proof {
+                    ranges: Vec::with_capacity(words.len()),
+                    domains: vec![Domains::new(); words.len()],
+                    ..Proof::default()
+                };
+                for (component, word) in words.iter().enumerate() {
+                    let source = value.ty.components.iter().position(|(_, byte)| byte == word).unwrap();
+                    facts.ranges.push(value.component_ranges(source));
+                    if let Some(domains) = value.proof.domains.get(source) {
+                        facts.apply_element_domains(component, domains, &target);
+                    }
+                }
+                Some(facts)
             }
             _ => None,
         }
