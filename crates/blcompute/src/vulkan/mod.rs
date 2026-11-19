@@ -1109,6 +1109,11 @@ impl Usage {
         }
     }
 }
+struct BindingAccess {
+    producer: Usage,
+    pending_read: bool,
+    pending_write: bool,
+}
 /// 原数据存储中的buffer角色；页的逻辑覆盖不含buffer末尾或分配对齐填充。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GpuBufferRole {
@@ -2368,7 +2373,11 @@ impl GpuProgram {
             };
             scratch.push(temporary);
         }
-        let mut last: Vec<_> = data.owners.iter().map(|d| d.producer).collect();
+        let mut accesses: Vec<_> = data.owners.iter().map(|dataset| BindingAccess {
+            producer: dataset.producer,
+            pending_read: false,
+            pending_write: true,
+        }).collect();
         if !c.pipelines.is_empty() {
             unsafe {
                 let sets = u32::try_from(1 + extra_sets)?;
@@ -2452,35 +2461,29 @@ impl GpuProgram {
                     )?;
                     (f.vkCmdResetQueryPool)(commands.command, commands.queries, 0, queries.count);
                 }
-                let mut pending: BTreeSet<_> = (0..data.owners.len()).collect();
-                let mut pending_reads = BTreeSet::new();
                 for step in 0..steps.get() {
                     for (i, stage) in c.program.stages().iter().enumerate() {
-                        let affected: Vec<_> = stage
+                        let write_hazard = stage
                             .reads
                             .iter()
                             .chain(&stage.writes)
-                            .map(|&b| physical(b))
-                            .filter(|b| pending.contains(b))
-                            .collect();
+                            .any(|&b| accesses[physical(b)].pending_write);
                         let war = stage
                             .writes
                             .iter()
-                            .any(|&b| pending_reads.contains(&physical(b)));
-                        if !affected.is_empty() || war || resource_stage != 0 {
-                            let src = pending
-                                .iter()
-                                .fold(resource_stage | if war { 0x800 } else { 0 }, |s, b| {
-                                    s | last[*b].stage()
-                                });
-                            let access = pending
-                                .iter()
-                                .fold(resource_access | if war { 0x20 } else { 0 }, |s, b| {
-                                    s | last[*b].access()
-                                });
+                            .any(|&b| accesses[physical(b)].pending_read);
+                        if write_hazard || war || resource_stage != 0 {
+                            let mut src = resource_stage | if war { 0x800 } else { 0 };
+                            let mut access = resource_access | if war { 0x20 } else { 0 };
+                            for binding in &mut accesses {
+                                if binding.pending_write {
+                                    src |= binding.producer.stage();
+                                    access |= binding.producer.access();
+                                }
+                                binding.pending_read = false;
+                                binding.pending_write = false;
+                            }
                             commands.barrier(src, 0x800, access, 0x60);
-                            pending.clear();
-                            pending_reads.clear();
                             resource_stage = 0;
                             resource_access = 0;
                         }
@@ -2765,10 +2768,13 @@ impl GpuProgram {
                                 query + 1,
                             );
                         }
-                        pending_reads.extend(stage.reads.iter().map(|&b| physical(b)));
-                        for b in &stage.writes {
-                            pending.insert(physical(*b));
-                            last[physical(*b)] = Usage::Compute;
+                        for &b in &stage.reads {
+                            accesses[physical(b)].pending_read = true;
+                        }
+                        for &b in &stage.writes {
+                            let binding = &mut accesses[physical(b)];
+                            binding.pending_write = true;
+                            binding.producer = Usage::Compute;
                         }
                     }
                 }
@@ -2787,9 +2793,9 @@ impl GpuProgram {
             },
             std::mem::take(&mut owner.dependencies),
         )?;
-        for (dataset, producer) in data.owners.iter_mut().zip(last) {
+        for (dataset, access) in data.owners.iter_mut().zip(accesses) {
             if let DatasetStorage::Owned(storage) = &mut *dataset.storage {
-                storage.producer = producer;
+                storage.producer = access.producer;
             }
             dataset.last_use = Some(execution.clone());
         }
