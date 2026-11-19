@@ -346,8 +346,8 @@ impl Frame {
     }
     /// CPU 在本次同步执行中借用实际绑定的帧槽，参数拒绝保持原域，
     /// 取得可写访问后撤回覆盖的计数关系，只有真实完成才发布新保证。
-    /// GPU 参数驻留确认后才装入管线并交接存储；等待本次真实完成后返回，
-    /// 数据仍驻留原设备。
+    /// GPU 参数驻留确认后才装入管线，完整选中的域关系随存储移交。
+    /// 提交拒绝交回原关系，已提交的写入撤回旧事实，等待成功才交回新保证。
     pub fn run(&mut self, program: u32, bindings: &[DatasetBinding], values: &[Value], textures: &[crate::cpu::CpuTextureBinding<'_>]) -> Result<()> {
         let index = program as usize;
         let definitions = self.definitions.clone();
@@ -388,12 +388,10 @@ impl Frame {
             };
             order.push((slot, binding.offset));
         }
-        let selected_domains = || self.data.domains.iter()
-            .filter_map(|r| r.mapped(|binding| selected.iter().position(|&handle| handle as usize == binding)))
-            .collect();
+        let selected_slot = |binding| selected.iter().position(|&handle| handle as usize == binding);
         let (domains, result) = match definition {
             ProgramSlot::Cpu(program) => {
-                let domains = selected_domains();
+                let domains = self.data.domains.iter().filter_map(|r| r.mapped(selected_slot)).collect();
                 let mut datasets = Vec::with_capacity(selected.len());
                 let slots = self.data.datasets.as_mut_ptr();
                 for &handle in &selected {
@@ -419,9 +417,12 @@ impl Frame {
                 if cpu_resident {
                     return Err(error("GPU 执行需要先显式 upload 数据"));
                 }
-                let domains = selected_domains();
                 self.load_gpu(index, image)?;
                 let gpu_program = self.gpu_programs[index].as_ref().unwrap();
+                let domains = self.data.domains
+                    .extract_if(.., |relation| relation.binding_indices().all(|binding| selected_slot(binding).is_some()))
+                    .map(|relation| relation.into_mapped(selected_slot).unwrap())
+                    .collect();
                 let mut datasets = Vec::with_capacity(selected.len());
                 for &handle in &selected {
                     let Some(ResidentData::Gpu(data)) = self.data.datasets[handle as usize].take() else {
@@ -429,25 +430,22 @@ impl Frame {
                     };
                     datasets.push(data);
                 }
-                let submission = match gpu_program
+                let (inputs, result) = match gpu_program
                     .submit_projected(DomainBindings { datasets, domains }, &order, uniforms)
                 {
-                    Ok(submission) => submission,
-                    Err((error, bindings)) => {
-                        for (&handle, data) in selected.iter().zip(bindings.datasets) {
-                            self.data.datasets[handle as usize] = Some(ResidentData::Gpu(data));
+                    Err((error, inputs)) => (inputs, Err(error)),
+                    Ok(submission) => {
+                        let (mut inputs, result) = match submission.wait() {
+                            Ok(completed) => (completed.into_bindings(), Ok(())),
+                            Err((error, submission)) => (submission.into_bindings(), Err(error)),
+                        };
+                        crate::bindings::invalidate(&mut self.data.domains, &layout.write_regions,
+                            |i| (bindings[i].handle as usize, bindings[i].offset));
+                        crate::bindings::invalidate(&mut inputs.domains, &layout.write_regions, |i| order[i]);
+                        if result.is_ok() {
+                            inputs.produced(layout, |i| order[i]);
                         }
-                        return Err(error);
-                    }
-                };
-                crate::bindings::invalidate(&mut self.data.domains, &layout.write_regions,
-                    |i| (bindings[i].handle as usize, bindings[i].offset));
-                let (inputs, result) = match submission.wait() {
-                    Ok(completed) => (completed.into_bindings(), Ok(())),
-                    Err((error, submission)) => {
-                        let mut inputs = submission.into_bindings();
-                        inputs.domains.clear();
-                        (inputs, Err(error))
+                        (inputs, result)
                     }
                 };
                 for (&handle, data) in selected.iter().zip(inputs.datasets) {

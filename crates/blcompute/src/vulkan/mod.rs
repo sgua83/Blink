@@ -2193,7 +2193,10 @@ impl GpuProgram {
         let count = owner.bindings.datasets.len();
         let uniforms = arguments(&self.compiled.program, owner.bindings.datasets.iter()
             .map(|data| (&data.ty, data.count, Some(0))), values)?;
-        self.submit_owned_mapped(&mut owner, uniforms, steps, count, |i| (i, 0))
+        let location = |i| (i, 0);
+        let mut submission = self.submit_owned_mapped(&mut owner, uniforms, steps, count, location)?;
+        submission.bindings.completed(&self.compiled.program, location);
+        Ok(submission)
     }
     fn submit_owned_mapped(
         &self,
@@ -2798,7 +2801,6 @@ impl GpuProgram {
             }
             dataset.last_use = Some(execution.clone());
         }
-        owner.bindings.completed(&c.program, location);
         Ok(Submission {
             execution,
             bindings: std::mem::replace(&mut owner.bindings, Vec::new().into()),
@@ -2826,6 +2828,8 @@ impl GpuTemplate {
     ) -> Result<Submission> {
         self.code.submit(bindings, values)
     }
+    // Return the original relations with the submission. Frame applies effects
+    // and publishes guarantees according to the synchronous wait result.
     pub(crate) fn submit_projected(
         &self,
         bindings: DomainBindings<GpuDataset>,
