@@ -30,6 +30,76 @@ impl crate::Compiler {
     }
 }
 
+#[repr(u32)]
+enum EntryOperation {
+    Map,
+    Reduce,
+    Scan,
+    Segmented,
+    Compact,
+    Sort,
+}
+
+#[allow(dead_code)]
+#[repr(u32)]
+enum EntryTail {
+    None,
+    Reduce,
+    Scan,
+}
+
+#[allow(dead_code)]
+#[repr(u32)]
+enum EntryFinish {
+    None,
+    Selection,
+    Compact,
+    Segmented,
+    ScanRoot,
+}
+
+#[allow(dead_code)]
+#[repr(u32)]
+enum EntryDispatch {
+    None,
+    Prefix,
+    Selection,
+}
+
+#[repr(C)]
+struct StageEntries {
+    tail: EntryTail,
+    finish: EntryFinish,
+    dispatch: EntryDispatch,
+    scan_add: u32,
+    sort_passes: usize,
+}
+
+#[allow(dead_code)]
+#[repr(u32)]
+enum SortShaderKind {
+    Histogram,
+    Scatter,
+    Scan,
+    ScanTail,
+    ScanAdd,
+    Gather,
+    Key,
+}
+
+#[repr(C)]
+struct SortShaderEntry {
+    kind: SortShaderKind,
+    parameter: usize,
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.spirv_envelope::stage_entries"]
+    fn stage_entries(operation: EntryOperation, selected: u32, prefix: u32, root_add: u32, keys: usize) -> StageEntries;
+    #[link_name = "bootstrap.spirv_envelope::sort_shader_entry"]
+    fn sort_shader_entry(index: usize) -> SortShaderEntry;
+}
+
 pub(crate) fn compile_stage(
     program: &Program, i: usize, requirements: DeviceRequirements,
 ) -> Result<(ExecutionStage, StageCode), &'static str> {
@@ -43,77 +113,56 @@ pub(crate) fn compile_stage(
         layout.shared_bytes = layout.shared_bytes.max(bytes);
         Ok::<_, &'static str>(words)
     };
-    let selected = stage.selection.is_some();
-    let tail = match stage.operation {
-        Operation::Reduce(_) | Operation::CustomReduce(_) => Some(Pass::ReductionTail),
-        Operation::ScanExclusive(_)
-        | Operation::CustomScan(_)
-        | Operation::CustomSegmentedReduce(_)
-        | Operation::Compact(_)
-        | Operation::SegmentedReduce(_) => Some(Pass::ScanTail),
-        Operation::Map if selected => Some(Pass::ScanTail),
-        Operation::Map | Operation::StableSort(_) => None,
+    let (operation, root_add, keys) = match &stage.operation {
+        Operation::Map => (EntryOperation::Map, false, 0),
+        Operation::Reduce(_) | Operation::CustomReduce(_) => (EntryOperation::Reduce, false, 0),
+        Operation::ScanExclusive(scan) => (EntryOperation::Scan, scan.needs_root_add(program), 0),
+        Operation::CustomScan(scan) => (EntryOperation::Scan, scan.needs_root_add(program), 0),
+        Operation::SegmentedReduce(_) | Operation::CustomSegmentedReduce(_) =>
+            (EntryOperation::Segmented, false, 0),
+        Operation::Compact(_) => (EntryOperation::Compact, false, 0),
+        Operation::StableSort(sort) => (EntryOperation::Sort, false, sort.keys.len()),
     };
-    let scan_add = if matches!(
-        stage.operation,
-        Operation::ScanExclusive(_)
-            | Operation::CustomScan(_)
-            | Operation::CustomSegmentedReduce(_)
-            | Operation::Compact(_)
-            | Operation::SegmentedReduce(_)
-    ) || selected
-    {
-        Some(Pass::ScanAdd)
-    } else {
-        None
+    let entries = unsafe { stage_entries(
+        operation, u32::from(stage.selection.is_some()), u32::from(stage.prefix.is_some()),
+        u32::from(root_add), keys,
+    ) };
+    let (dispatch, selected) = match entries.dispatch {
+        EntryDispatch::None => (None, false),
+        EntryDispatch::Prefix => (stage.prefix.map(Pass::DispatchArguments), false),
+        EntryDispatch::Selection => (Some(Pass::SelectionArguments), true),
     };
-    let finish = match &stage.operation {
-        Operation::Map if selected => Some(("scatter", Pass::SelectionScatter)),
-        Operation::Compact(_) => Some(("scatter", Pass::CompactScatter)),
-        Operation::SegmentedReduce(_) | Operation::CustomSegmentedReduce(_) => {
-            Some(("finish", Pass::ScanRootAdd))
-        }
-        Operation::ScanExclusive(scan) if scan.needs_root_add(program) => {
-            Some(("root-add", Pass::ScanRootAdd))
-        }
-        Operation::CustomScan(scan) if scan.needs_root_add(program) => {
-            Some(("root-add", Pass::ScanRootAdd))
-        }
-        _ => None,
+    let tail = match entries.tail {
+        EntryTail::None => None,
+        EntryTail::Reduce => Some(Pass::ReductionTail),
+        EntryTail::Scan => Some(Pass::ScanTail),
     };
-    let dispatch = if selected {
-        Some(Pass::SelectionArguments)
-    } else {
-        stage.prefix.map(Pass::DispatchArguments)
+    let finish = match entries.finish {
+        EntryFinish::None => None,
+        EntryFinish::Selection => Some(("scatter", Pass::SelectionScatter)),
+        EntryFinish::Compact => Some(("scatter", Pass::CompactScatter)),
+        EntryFinish::Segmented => Some(("finish", Pass::ScanRootAdd)),
+        EntryFinish::ScanRoot => Some(("root-add", Pass::ScanRootAdd)),
     };
-    let sort = if let Operation::StableSort(sort) = &stage.operation {
-        let passes = (0..8)
-            .map(|i| Pass::SortHistogram(i * 4))
-            .chain((0..8).map(|i| Pass::SortScatter(i * 4)))
-            .chain([
-                Pass::SortScan,
-                Pass::ScanTail,
-                Pass::ScanAdd,
-                Pass::SortGather,
-            ])
-            .chain((0..sort.keys.len() - 1).map(Pass::SortKey));
-        Some(
-            passes
-                .map(|pass| {
-                    Ok(ShaderCode {
-                        words: emit(pass)?,
-                        ranks: matches!(pass, Pass::SortHistogram(_) | Pass::SortScatter(_)),
-                    })
-                })
-                .collect::<Result<_, &'static str>>()?,
-        )
-    } else {
-        None
-    };
+    let sort = (entries.sort_passes != 0).then(|| {
+        (0..entries.sort_passes).map(|index| {
+            let entry = unsafe { sort_shader_entry(index) };
+            let (pass, ranks) = match entry.kind {
+                SortShaderKind::Histogram => (Pass::SortHistogram(entry.parameter as u32), true),
+                SortShaderKind::Scatter => (Pass::SortScatter(entry.parameter as u32), true),
+                SortShaderKind::Scan => (Pass::SortScan, false),
+                SortShaderKind::ScanTail => (Pass::ScanTail, false),
+                SortShaderKind::ScanAdd => (Pass::ScanAdd, false),
+                SortShaderKind::Gather => (Pass::SortGather, false),
+                SortShaderKind::Key => (Pass::SortKey(entry.parameter), false),
+            };
+            Ok(ShaderCode { words: emit(pass)?, ranks })
+        }).collect::<Result<_, &'static str>>()
+    }).transpose()?;
     let code = StageCode {
         main: emit(Pass::Main)?,
         tail: tail.map(|p| emit(p)).transpose()?,
-        scan_add: scan_add.map(|p| emit(p)).transpose()?,
+        scan_add: (entries.scan_add != 0).then(|| emit(Pass::ScanAdd)).transpose()?,
         finish: finish
             .map(|(name, p)| Ok((name.into(), emit(p)?)))
             .transpose()?,

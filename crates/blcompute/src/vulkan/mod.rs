@@ -2627,46 +2627,20 @@ impl GpuProgram {
                                     self.partition_elements,
                                 )?;
                             }
-                            blanguage::ir::Operation::ScanExclusive(r) => {
+                            blanguage::ir::Operation::ScanExclusive(blanguage::ir::Scan {
+                                values: fields, head_word, ..
+                            })
+                            | blanguage::ir::Operation::CustomScan(blanguage::ir::CustomScan {
+                                values: blanguage::ir::ReductionLayout { fields, .. },
+                                head_word,
+                            }) => {
                                 let add = c.scan_adds[i].unwrap();
-                                let root_add = if r.needs_root_add(&c.program) {
-                                    c.finishes[i].unwrap()
-                                } else {
-                                    add
-                                };
                                 scan::record(
                                     &mut commands,
                                     c,
-                                    [c.pipelines[i], c.tails[i].unwrap(), add, root_add],
-                                    &r.values,
-                                    r.head_word.is_some(),
-                                    (data[r.values.source].count, infos[r.values.source]),
-                                    infos[r.values.target],
-                                    &scratch[scratch_indices[i]].as_ref().unwrap().buffers,
-                                    scratch[scratch_indices[i]]
-                                        .as_ref()
-                                        .and_then(|s| s.arguments.as_ref()),
-                                    &infos,
-                                    &accelerations,
-                                    &mut uniforms,
-                                    self.partition_elements,
-                                    0,
-                                )?;
-                            }
-                            blanguage::ir::Operation::CustomScan(r) => {
-                                let fields = &r.values.fields;
-                                let add = c.scan_adds[i].unwrap();
-                                let root_add = if r.needs_root_add(&c.program) {
-                                    c.finishes[i].unwrap()
-                                } else {
-                                    add
-                                };
-                                scan::record(
-                                    &mut commands,
-                                    c,
-                                    [c.pipelines[i], c.tails[i].unwrap(), add, root_add],
+                                    [c.pipelines[i], c.tails[i].unwrap(), add, c.finishes[i].unwrap_or(add)],
                                     fields,
-                                    r.head_word.is_some(),
+                                    head_word.is_some(),
                                     (data[fields.source].count, infos[fields.source]),
                                     infos[fields.target],
                                     &scratch[scratch_indices[i]].as_ref().unwrap().buffers,

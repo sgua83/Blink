@@ -604,3 +604,15 @@ struct PrefixIndexWords {
 };
 
 extern "C" PrefixIndexWords encode_prefix_index(PrefixIndexEmission input, address body) on cpu;
+
+// Complete Vulkan stages produce these existing StageCode fields.
+struct StageEntries {
+ u32 tail;
+ u32 finish;
+ u32 dispatch;
+ u32 scan_add;
+ usize sort_passes;
+};
+struct SortShaderEntry { u32 kind; usize parameter; };
+extern "C" StageEntries stage_entries(u32 operation,u32 selected,u32 prefix,u32 root_add,usize keys) on cpu;
+extern "C" SortShaderEntry sort_shader_entry(usize index) on cpu;
