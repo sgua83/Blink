@@ -267,13 +267,18 @@ impl Device {
             return Err(error("纹理尺寸和mip链必须是非空的合法二维链"));
         }
         let mut size = dimensions;
+        // Each selected slot has its own last-use point, even when two slots borrow the same storage.
+        let mut used_sources = Vec::new();
         for level in levels {
             let source = sources.get(level.source).ok_or_else(|| error("纹理mip的GPU源下标越界"))?;
-            if !Rc::ptr_eq(&source.allocation.inner, &self.inner) {
-                return Err(error("纹理GPU源属于另一设备"));
-            }
-            if source.stride != format.texel_bytes() as u32 {
-                return Err(error("纹理GPU源记录stride必须等于实际texel字节数"));
+            if !used_sources.contains(&level.source) {
+                if !Rc::ptr_eq(&source.allocation.inner, &self.inner) {
+                    return Err(error("纹理GPU源属于另一设备"));
+                }
+                if source.stride != format.texel_bytes() as u32 {
+                    return Err(error("纹理GPU源记录stride必须等于实际texel字节数"));
+                }
+                used_sources.push(level.source);
             }
             if level.row_stride < size[0] {
                 return Err(error("纹理GPU源行步长小于本级宽度"));
@@ -284,13 +289,23 @@ impl Device {
             }
             size = size.map(|n| (n / 2).max(1));
         }
-        let dependencies = Execution::prepare(levels.iter()
-            .filter_map(|level| sources[level.source].dependency().cloned()).collect())?;
+        let mut source_stage = 0;
+        let mut source_access = 0;
+        let mut dependencies = Vec::new();
+        for &index in &used_sources {
+            let source = &sources[index];
+            source_stage |= source.producer.stage();
+            source_access |= source.producer.access();
+            if let Some(previous) = source.dependency()
+                && !dependencies.iter().any(|known| Rc::ptr_eq(known, previous))
+            {
+                dependencies.push(previous.clone());
+            }
+        }
+        let dependencies = Execution::prepare(dependencies)?;
         let texture = self.create_image::<2>([dimensions[0], dimensions[1], 1],
             [address[0], address[1], crate::TextureAddress::Clamp], format, levels.len() as u32)?;
         let texture = self.write_image(texture, Vec::new(), dependencies, |commands, texture| {
-            let source_stage = levels.iter().fold(0, |stages, level| stages | sources[level.source].producer.stage());
-            let source_access = levels.iter().fold(0, |access, level| access | sources[level.source].producer.access());
             commands.barrier(source_stage, 0x1000, source_access, 0x800);
             let mut size = dimensions;
             for (mip, level) in levels.iter().enumerate() {
@@ -330,8 +345,8 @@ impl Device {
             // 原producer仍表示最后写；本次真实Transfer读必须先于后继源写。
             commands.barrier(0x1000, 0x1800, 0x800, 0x1040);
         })?;
-        for level in levels {
-            sources[level.source].last_use = Some(texture.produced());
+        for index in used_sources {
+            sources[index].last_use = Some(texture.produced());
         }
         Ok(texture)
     }
