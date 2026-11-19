@@ -1785,12 +1785,11 @@ impl Value {
             && (0..self.regs.len()).all(|i| self.component_nonzero(i))
     }
     fn component_nonzero(&self, component: usize) -> bool {
-        self.ty.components[component].0.is_integer()
+        let scalar = self.ty.components[component].0;
+        scalar.is_integer()
             && (self.proof.nonzero.get(component) == Some(&true)
-                || !self.component_ranges(component).contains(
-                    self.ty.components[component].0.order_bias(),
-                )
-                || self.constant.as_ref().is_some_and(|v| v[component] != 0))
+                || self.constant.as_ref().is_some_and(|bits| bits[component] != 0)
+                || !range_sets::contains(self.proof.interval_source(component), scalar.order_bias()))
     }
     // A complete byte range is nonzero when its contained integer words cannot all be zero.
     pub(super) fn nonzero_bytes(&self, offset: u32, size: u32, path: &Clause) -> bool {
@@ -1847,16 +1846,13 @@ impl Value {
         let scalar = self.ty.components[component].0;
         if scalar.is_float() { return floating::ranges(self, component); }
         if !scalar.is_integer() { return ScalarRanges::default(); }
-        let bias = scalar.order_bias();
-        let mut ranges = self.proof.range_set(component).restrict(0, scalar.bit_mask());
-        if self.proof.nonzero.get(component) == Some(&true) {
-            ranges = ranges.without(bias);
-        }
-        if let Some(bits) = &self.constant {
-            let value = bits[component] ^ bias;
-            ranges = ranges.restrict(value, value);
-        }
-        ranges
+        let mask = scalar.bit_mask();
+        let (lower, upper) = self.constant.as_ref().map_or((0, mask), |bits| {
+            let value = bits[component] ^ scalar.order_bias();
+            (value, value.min(mask))
+        });
+        let (ranges, excluded) = self.proof.element_intervals(component, scalar);
+        range_sets::restrict_excluding(ranges, lower, upper, excluded)
     }
     pub(super) fn identity(&self) -> ValueIdentity {
         self.component_identity(0)
