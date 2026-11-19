@@ -537,6 +537,16 @@ struct State<'a> {
     entries: Option<BTreeMap<ValueIdentity, Borrow>>,
     interface: Interface,
 }
+#[derive(Clone, Copy)]
+struct LoopScope<'a> {
+    name: &'a str,
+    loops: Option<&'a Arc<relation::Graph>>,
+}
+impl State<'_> {
+    fn loop_scope(&self) -> LoopScope<'_> {
+        LoopScope { name: self.name, loops: self.loops.as_ref() }
+    }
+}
 type StorageObserver<'a> = dyn Fn(&str, crate::compiler::BorrowSolveStorage) + Sync + 'a;
 
 struct States<'a> {
@@ -760,7 +770,7 @@ impl Ord for EvaluationInput {
 type StoredLocations = BTreeSet<(Arc<address::Origin>, u32)>;
 
 struct BorrowEvaluation<'a>{
-    function:&'a Function,state:&'a State<'a>,known:&'a States<'a>,expand_loops:bool,deferred_reads:bool,
+    function:&'a Function,state:LoopScope<'a>,known:&'a States<'a>,expand_loops:bool,deferred_reads:bool,
     loop_bindings:Vec<BTreeMap<LoopInput,Borrow>>,
     values: BTreeMap<(LoopSources, EvaluationInput), Borrow>,
     stored: Option<Arc<StoredLocations>>,
@@ -1050,7 +1060,7 @@ impl BorrowEvaluation<'_>{
         }
         for(input,when)in borrow.inputs.entries(){if matches!(sources,LoopSources::Resolved){
             let bound = self.loop_bindings.iter().rev().find_map(|scope| scope.get(input));
-            match (bound, state.loops.as_ref()) {
+            match (bound, state.loops) {
                 (Some(bound), _) => value.union_restricted(bound, &when),
                 (None, Some(graph)) =>
                     value.union_restricted(&self.relation(graph, graph.input_root(*input), sources), &when),
@@ -1088,7 +1098,7 @@ fn stored_target<'p>(
     canonical_relation(Borrow::source(Origin::Position(Arc::new(origin))), function, None, exposed, parameters(), false)
 }
 fn evaluate(borrow:&Borrow,function:&Function,state:&State,known:&States,expand_loops:bool)->Borrow {
-    BorrowEvaluation{function,state,known,expand_loops,deferred_reads:false,loop_bindings:Vec::new(),values:BTreeMap::new(),stored:None,stored_paths:Default::default()}.evaluate(borrow)
+    BorrowEvaluation{function,state:state.loop_scope(),known,expand_loops,deferred_reads:false,loop_bindings:Vec::new(),values:BTreeMap::new(),stored:None,stored_paths:Default::default()}.evaluate(borrow)
 }
 
 fn input_index(index:Option<bounds::Operand>,function:&Function)->Option<bounds::Operand>{
@@ -1558,7 +1568,7 @@ fn converge_access(functions:&BTreeMap<String,&Function>,known:&mut States,owns_
         let parameters = residency::input_parameters(&function.parameters, function.input_width);
         let mut access=BTreeMap::new();
         let mut evaluation = BorrowEvaluation {
-            function, state, known, expand_loops: true, deferred_reads: false,
+            function, state: state.loop_scope(), known, expand_loops: true, deferred_reads: false,
             loop_bindings: Vec::new(), values: BTreeMap::new(), stored: None, stored_paths: Default::default(),
         };
         for value in state.interface.access.iter().filter(|access|matches!(access,Access::Stored{..})) {insert(&mut access,value.clone());}
@@ -1607,7 +1617,7 @@ fn converge_access(functions:&BTreeMap<String,&Function>,known:&mut States,owns_
             let (parameters, local_access)=&direct[name];
             let mut access=local_access.clone();
             let mut evaluation = BorrowEvaluation {
-                function, state, known, expand_loops: true, deferred_reads: false,
+                function, state: state.loop_scope(), known, expand_loops: true, deferred_reads: false,
                 loop_bindings: Vec::new(), values: BTreeMap::new(), stored: None, stored_paths: Default::default(),
             };
             for (index, call) in function.calls.iter().enumerate().filter(|(_, call)| call.function != *name || state.entries.is_none()) {
@@ -1769,7 +1779,6 @@ struct ConvergenceUpdate<'a> {
     entries: Option<BTreeMap<ValueIdentity, Borrow>>,
     outputs: Outputs,
     stored: BTreeSet<Access>,
-    local_changed: bool,
     interface_changed: bool,
 }
 
@@ -1786,9 +1795,10 @@ fn converge(
         let changed = crate::parallel::try_map(worker, tasks, Clone::clone, |worker, name| {
             let function = functions[name];
             let state = &known[name];
-            let mut evaluation=BorrowEvaluation{function,state,known,expand_loops:true,deferred_reads:false,loop_bindings:Vec::new(),values:BTreeMap::new(),stored:None,stored_paths:Default::default()};
-            let loops = relation::Graph::loops(&loop_inputs[name], function, state, known);
-            let entries = relation::Graph::recursive_inputs(name,function,state,known);
+            let loops = relation::Graph::loops(&loop_inputs[name], function, state.name, known);
+            let scope = LoopScope { name: state.name, loops: loops.as_ref() };
+            let entries = relation::Graph::recursive_inputs(name, function, scope, known);
+            let mut evaluation=BorrowEvaluation{function,state:scope,known,expand_loops:true,deferred_reads:false,loop_bindings:Vec::new(),values:BTreeMap::new(),stored:None,stored_paths:Default::default()};
             let forwards=|output:&Output,definition:&Borrow|matches!(output,Output::Returned(_))&&definition.calls.iter().any(|result|function.calls[result.call].function==*name&&result.output==*output);
             let entry_bindings=entries.as_ref().filter(|_|function.outputs.iter().any(|(output,definition)|forwards(output,definition))).map(|entries|{
                 let mut inverse=BTreeMap::new();for(&local,&formal)in &function.parameters{inverse.entry(formal).or_insert_with(||{let mut component_proof=bounds::Proof::default().with_identity(local);component_proof.set_view_borrow(0,Borrow::source(Origin::Parameter(local,Vec::new())));component_proof});}
@@ -1823,21 +1833,18 @@ fn converge(
             }).collect::<Outputs>();
             let access = stored_outputs(worker, &mut evaluation, &exposed, || &parameters)
                 .map_err(|error| borrow_worker_error(functions, error))?;
-            let local_changed = loops != state.loops || entries != state.entries;
             let interface_changed = outputs != state.interface.outputs || access != state.interface.access;
-            Ok((local_changed || interface_changed).then_some(ConvergenceUpdate {
-                name, loops, entries, outputs, stored: access, local_changed, interface_changed,
-            }))
+            Ok((interface_changed || loops != state.loops || entries != state.entries)
+                .then_some(ConvergenceUpdate { name, loops, entries, outputs, stored: access, interface_changed }))
+
         }).map_err(|error| borrow_worker_error(functions, error))?;
         let changed = changed.into_iter().flatten().collect::<Vec<_>>();
         let interfaces: BTreeSet<_> = changed.iter().filter_map(|update| {
             update.interface_changed.then_some(update.name.as_str())
         }).collect();
-        // A new interface reaches only its actual callers. Local loop/entry
-        // changes also require another evaluation of their originating function.
-        ready = changed.iter().filter_map(|update| {
-            update.local_changed.then_some(update.name)
-        }).collect();
+        // The originating function already consumed its current graph and entries.
+        // A new interface reaches the callers that read it in the preceding round.
+        ready = BTreeSet::new();
         if !interfaces.is_empty() {
             ready.extend(functions.iter().filter_map(|(name, function)| {
                 function.calls.iter().any(|call| interfaces.contains(call.function.as_str())).then_some(name)
@@ -2147,7 +2154,7 @@ fn finish_function(
 ) -> Result<(MemoryEffects, Option<ScalarValues>)> {
     let state = &known[name];
     let mut evaluation = BorrowEvaluation {
-        function, state, known, expand_loops: true, deferred_reads: false,
+        function, state: state.loop_scope(), known, expand_loops: true, deferred_reads: false,
         loop_bindings: Vec::new(), values: BTreeMap::new(), stored: None, stored_paths: Default::default(),
     };
     let mut effects = MemoryEffects::new();
@@ -2238,11 +2245,11 @@ fn finish_function(
     let resolved = function.pending_values().then_some(resolved);
     let context = function.value_context(resolved.as_ref());
     let mut evaluation = BorrowEvaluation {
-        function, state, known, expand_loops: true, deferred_reads: false,
+        function, state: state.loop_scope(), known, expand_loops: true, deferred_reads: false,
         loop_bindings: Vec::new(), values: BTreeMap::new(), stored: None, stored_paths: Default::default(),
     };
     let mut symbolic = BorrowEvaluation {
-        function, state, known, expand_loops: false, deferred_reads: false,
+        function, state: state.loop_scope(), known, expand_loops: false, deferred_reads: false,
         loop_bindings: Vec::new(), values: BTreeMap::new(), stored: None, stored_paths: Default::default(),
     };
     for usage in &function.uses{

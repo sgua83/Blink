@@ -31,7 +31,7 @@ pub(in crate::check) struct Graph { nodes:Vec<Node>, variables:BTreeSet<usize>, 
 
 #[derive(Clone,PartialEq,Eq,PartialOrd,Ord)]
 enum Key { Loop(LoopInput), Read(ContentRead), Call(CallResult) }
-struct Builder<'a> { function:&'a Function,state:&'a State<'a>,known:&'a States<'a>,keys:BTreeMap<Key,usize>,prefix:Vec<Option<usize>>,graph:Graph,parameters:BTreeMap<ValueIdentity,usize> }
+struct Builder<'a> { function:&'a Function,state:LoopScope<'a>,known:&'a States<'a>,keys:BTreeMap<Key,usize>,prefix:Vec<Option<usize>>,graph:Graph,parameters:BTreeMap<ValueIdentity,usize> }
 impl Builder<'_> {
     fn empty(&mut self)->usize{let id=self.graph.nodes.len();self.graph.nodes.push(Node::default());id}
     fn edge(&mut self,to:usize,from:usize,op:Op,when:bounds::Clause){self.graph.nodes[to].edges.push(Edge{from,op,when:bounds::Condition::guard(when)})}
@@ -194,8 +194,8 @@ impl Builder<'_> {
     }
 }
 impl Graph {
-    fn builder<'a>(function:&'a Function,state:&'a State<'a>,known:&'a States<'a>)->Builder<'a>{Builder{function,state,known,keys:BTreeMap::new(),prefix:vec![None],graph:Self::default(),parameters:BTreeMap::new()}}
-    pub(super) fn recursive_inputs(name:&str,function:&Function,state:&State,known:&States)->Option<BTreeMap<ValueIdentity,Borrow>>{
+    fn builder<'a>(function:&'a Function,state:LoopScope<'a>,known:&'a States<'a>)->Builder<'a>{Builder{function,state,known,keys:BTreeMap::new(),prefix:vec![None],graph:Self::default(),parameters:BTreeMap::new()}}
+    pub(super) fn recursive_inputs(name:&str,function:&Function,state:LoopScope<'_>,known:&States)->Option<BTreeMap<ValueIdentity,Borrow>>{
         if !function.calls.iter().any(|call|call.function==name){return None;}
         let mut b=Self::builder(function,state,known);let mut roots=BTreeMap::new();
         for(&local,&formal)in &function.parameters{if function.input(formal){
@@ -211,12 +211,12 @@ impl Graph {
         Some(roots.into_iter().map(|(input,root)|{let value=graph.solve(root,&mut evaluation);(input,function.address_borrows(&parameters,value).unwrap_or_default())}).collect())
     }
     pub(super) fn loops(
-        inputs: &BTreeSet<LoopInput>, function: &Function, state: &State, known: &States,
+        inputs: &BTreeSet<LoopInput>, function: &Function, name: &str, known: &States,
     ) -> Option<Arc<Self>> {
         if inputs.is_empty() {
             return None;
         }
-        let mut builder = Self::builder(function, state, known);
+        let mut builder = Self::builder(function, LoopScope { name, loops: None }, known);
         for &input in inputs {
             builder.key(Key::Loop(input));
         }
@@ -227,10 +227,10 @@ impl Graph {
     pub(super) fn input_root(&self, input: LoopInput) -> usize {
         self.inputs[&input]
     }
-    pub(super) fn bind(&self,root:usize,function:&Function,state:&State,known:&States)->(Arc<Self>,usize){let mut b=Self::builder(function,state,known);let root=b.import(self,root,None,&Epoch::Input);(Arc::new(b.graph),root)}
+    pub(super) fn bind(&self,root:usize,function:&Function,state:LoopScope<'_>,known:&States)->(Arc<Self>,usize){let mut b=Self::builder(function,state,known);let root=b.import(self,root,None,&Epoch::Input);(Arc::new(b.graph),root)}
     pub(super) fn bind_incoming(
         &self, root: usize, memory: usize, snapshots: Option<Arc<[ValueSnapshot]>>,
-        function: &Function, state: &State, known: &States,
+        function: &Function, state: LoopScope<'_>, known: &States,
     ) -> (Arc<Self>, usize) {
         let mut builder = Self::builder(function, state, known);
         let prefix = builder.read_frame(memory);
