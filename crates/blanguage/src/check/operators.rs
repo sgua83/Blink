@@ -16,11 +16,12 @@ enum Status {
 }
 #[repr(u32)]
 #[derive(Clone, Copy)]
-enum Kind { Numeric, Identity, Handle, Elements, Product, MatrixScalar, ScalarMatrix, MatrixVector, VectorMatrix }
+pub(super) enum Kind { Numeric, Identity, Handle, Elements, Product, MatrixScalar, ScalarMatrix, MatrixVector, VectorMatrix }
 #[repr(C)]
 #[derive(Clone, Copy)]
-struct Plan {
-    status: Status, kind: Kind, scalar: u32, cast_left: u32, cast_right: u32, comparison: u32, operation: u32,
+pub(super) struct Plan {
+    status: Status, pub(super) kind: Kind, scalar: u32,
+    pub(super) cast_left: u32, pub(super) cast_right: u32, comparison: u32, operation: u32,
     rows: u64, inner: u64, columns: u64, count: u64,
 }
 #[repr(C)]
@@ -114,23 +115,21 @@ pub(super) fn numeric(a:&Ty,a_literal:bool,b:&Ty,b_literal:bool,source:&Source,s
     finish(plan,source,span,"",||format!("类型不匹配：需要 {}，实际为 {}",a.name,b.name),numeric_result)
 }
 pub(super) enum Binary {
-    Identity,Handle,Matrix(matrix::Binary),Numeric {operands:Numeric,comparison:bool,operation:Option<BinaryOp>},
+    Identity,Handle,Matrix(Plan),Numeric {operands:Numeric,comparison:bool,operation:Option<BinaryOp>},
 }
 pub(super) fn binary(op:&str,a:&Ty,a_literal:bool,b:&Ty,b_literal:bool,source:&Source,span:Span)->Result<(Ty,Binary)> {
     let context=Context {types:[a,b]};
     let plan=unsafe {source_binary(op.as_ptr(),op.len() as u64,Operand::of(a),u32::from(a_literal),Operand::of(b),u32::from(b_literal),context.queries())};
     finish(plan,source,span,op,||format!("类型不匹配：需要 {}，实际为 {}",a.name,b.name),|plan| {
-        use matrix::Binary as Matrix;
-        let count=plan.count as usize;let rows=plan.rows as usize;let inner=plan.inner as usize;let columns=plan.columns as usize;
+        let count=plan.count as usize;let rows=plan.rows as usize;let columns=plan.columns as usize;
         match plan.kind {
             Kind::Identity=>(Ty::scalar(Scalar::Bool),Binary::Identity),
             Kind::Handle=>(Ty::scalar(Scalar::Bool),Binary::Handle),
-            Kind::Elements=>(a.clone(),Binary::Matrix(Matrix::Elements(count))),
-            Kind::Product=>(Ty::matrix(rows,columns),Binary::Matrix(Matrix::Product {rows,inner,columns})),
-            Kind::MatrixScalar=>(a.clone(),Binary::Matrix(Matrix::MatrixScalar {count,cast:plan.cast_right!=0})),
-            Kind::ScalarMatrix=>(b.clone(),Binary::Matrix(Matrix::ScalarMatrix {count,cast:plan.cast_left!=0})),
-            Kind::MatrixVector=>(Ty::vector(Scalar::F32,rows),Binary::Matrix(Matrix::MatrixVector {rows,columns})),
-            Kind::VectorMatrix=>(Ty::vector(Scalar::F32,columns),Binary::Matrix(Matrix::VectorMatrix {rows,columns})),
+            Kind::Elements|Kind::MatrixScalar=>(a.clone(),Binary::Matrix(plan)),
+            Kind::ScalarMatrix=>(b.clone(),Binary::Matrix(plan)),
+            Kind::Product=>(Ty::matrix(rows,columns),Binary::Matrix(plan)),
+            Kind::MatrixVector=>(Ty::vector(Scalar::F32,rows),Binary::Matrix(plan)),
+            Kind::VectorMatrix=>(Ty::vector(Scalar::F32,columns),Binary::Matrix(plan)),
             Kind::Numeric=>{
                 use BinaryOp::*;use Comparison as C;
                 let operations=[None,Some(FAdd),Some(FSub),Some(FMul),Some(FDiv),Some(IAdd),Some(ISub),Some(IMul),

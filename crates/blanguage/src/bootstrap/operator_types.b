@@ -106,7 +106,11 @@ extern "C" Plan binary(address bytes,u64 length,Operand a,bool a_literal,Operand
         if(!queries.same(queries.context)){return decision(124);}
         if(!comparison){return decision(268);}
     }
-    if(has(a,128)||has(b,128)){return matrix_type(op,a,a_literal,b,b_literal,queries);}
+    if(has(a,128)||has(b,128)){
+        Plan result=matrix_type(op,a,a_literal,b,b_literal,queries);
+        result.operation=binary_instruction(op,0);
+        return result;
+    }
     if(a.components==0u64||b.components==0u64||has(a,96)||has(b,96)
         ||queries.views(queries.context,0)||queries.views(queries.context,1)){return decision(1474);}
     Plan result=numeric(a,a_literal,b,b_literal);
@@ -154,13 +158,14 @@ u32 first_matrix_axis(u32 axes,u32 width) on cpu {
     return 0;
 }
 
-bool expand_matrix_minor(u32 width,u32 size,u32 rows,u32 columns,u32 destination,u32 scratch,
+void expand_matrix_minor(u32 width,u32 size,u32 rows,u32 columns,u32 destination,u32 scratch,
                           MatrixEmitter emitter) on cpu requires nonzero(emitter.emit) {
     let row=first_matrix_axis(rows,width);
     let next_rows=rows & ~(1 << u32(row));
     if (size==1) {
         let source=read_matrix_slot(row*width+first_matrix_axis(columns,width));
-        return emitter.emit(emitter.context,MatrixStep(MatrixAction::Copy,source,source,destination));
+        emitter.emit(emitter.context,MatrixStep(u32(MatrixAction::Copy),source,source,destination));
+        return;
     }
     let next_row=size==2 ? first_matrix_axis(next_rows,width) : 0;
     u32 produced=0;
@@ -173,33 +178,32 @@ bool expand_matrix_minor(u32 width,u32 size,u32 rows,u32 columns,u32 destination
             minor=read_matrix_slot(next_row*width+first_matrix_axis(next_columns,width));
         } else {
             let child=scratch+size;
-            if (!expand_matrix_minor(width,size-1,next_rows,next_columns,child,child+1,emitter)) { return false; }
+            expand_matrix_minor(width,size-1,next_rows,next_columns,child,child+1,emitter);
             minor=take_matrix_slot(child);
         }
         let element=read_matrix_slot(row*width+column);
-        let product=MatrixStep(MatrixAction::Multiply,element,minor,scratch+produced);
-        if (!emitter.emit(emitter.context,product)) { return false; }
+        let product=MatrixStep(u32(MatrixAction::Multiply),element,minor,scratch+produced);
+        emitter.emit(emitter.context,product);
         produced+=1;
     }
     // Lower every term before the ordered alternating sum, as in the original IR.
     for (term in 1..size) {
         let action=(term & 1)==0 ? MatrixAction::Add : MatrixAction::Subtract;
         let target=term+1==size ? destination : scratch;
-        let combine=MatrixStep(action,take_matrix_slot(scratch),take_matrix_slot(scratch+term),target);
-        if (!emitter.emit(emitter.context,combine)) { return false; }
+        let combine=MatrixStep(u32(action),take_matrix_slot(scratch),take_matrix_slot(scratch+term),target);
+        emitter.emit(emitter.context,combine);
     }
-    return true;
 }
 
-extern "C" bool expand_square_matrix(u32 width,bool inverse,MatrixEmitter emitter) on cpu
+extern "C" void expand_square_matrix(u32 width,bool inverse,MatrixEmitter emitter) on cpu
     requires nonzero(emitter.emit) requires nonzero(emitter.output) {
     let inputs=width*width;
     let axes=(1 << u32(width))-1;
     if (!inverse) {
-        if (!expand_matrix_minor(width,width,axes,axes,inputs,inputs+1,emitter)) { return false; }
+        expand_matrix_minor(width,width,axes,axes,inputs,inputs+1,emitter);
         emitter.output(emitter.context,inputs);
-        return true;
-    }
+        return;
+        }
 
     let determinant=2*inputs;
     let scratch=determinant+1;
@@ -208,29 +212,62 @@ extern "C" bool expand_square_matrix(u32 width,bool inverse,MatrixEmitter emitte
         for (column in 0..width) {
             let columns=axes & ~(1 << u32(column));
             let target=inputs+row*width+column;
-            if (!expand_matrix_minor(width,width-1,rows,columns,target,scratch,emitter)) { return false; }
+            expand_matrix_minor(width,width-1,rows,columns,target,scratch,emitter);
             if (((row+column) & 1)!=0) {
                 let value=take_matrix_slot(target);
-                if (!emitter.emit(emitter.context,MatrixStep(MatrixAction::Negate,value,value,target))) { return false; }
+                emitter.emit(emitter.context,MatrixStep(u32(MatrixAction::Negate),value,value,target));
             }
         }
     }
     for (column in 0..width) {
         let target=column==0 ? determinant : scratch;
-        let product=MatrixStep(MatrixAction::Multiply,read_matrix_slot(column),read_matrix_slot(inputs+column),target);
-        if (!emitter.emit(emitter.context,product)) { return false; }
+        let product=MatrixStep(u32(MatrixAction::Multiply),read_matrix_slot(column),read_matrix_slot(inputs+column),target);
+        emitter.emit(emitter.context,product);
         if (column!=0) {
-            let sum=MatrixStep(MatrixAction::Add,take_matrix_slot(determinant),take_matrix_slot(scratch),determinant);
-            if (!emitter.emit(emitter.context,sum)) { return false; }
+            let sum=MatrixStep(u32(MatrixAction::Add),take_matrix_slot(determinant),take_matrix_slot(scratch),determinant);
+            emitter.emit(emitter.context,sum);
         }
     }
     for (row in 0..width) {
         for (column in 0..width) {
             let numerator=take_matrix_slot(inputs+column*width+row);
-            let quotient=MatrixStep(MatrixAction::Divide,numerator,read_matrix_slot(determinant),scratch);
-            if (!emitter.emit(emitter.context,quotient)) { return false; }
+            let quotient=MatrixStep(u32(MatrixAction::Divide),numerator,read_matrix_slot(determinant),scratch);
+            emitter.emit(emitter.context,quotient);
             emitter.output(emitter.context,scratch);
         }
     }
-    return true;
+}
+
+extern "C" void expand_matrix_binary(Plan plan,u32 left_count,u32 input_count,MatrixEmitter emitter) on cpu
+    requires nonzero(emitter.emit) requires nonzero(emitter.output) {
+    let scratch=input_count;
+    if (plan.kind==3 || plan.kind==5 || plan.kind==6) {
+        for (component in 0..u32(plan.count)) {
+            let left=read_matrix_slot(plan.kind==6 ? 0 : component);
+            let right=read_matrix_slot(left_count+(plan.kind==5 ? 0 : component));
+            emitter.emit(emitter.context,MatrixStep(plan.operation,left,right,scratch));
+            emitter.output(emitter.context,scratch);
+        }
+        return;
+    }
+    let rows=plan.kind==8 ? 1 : u32(plan.rows);
+    let columns=plan.kind==7 ? 1 : u32(plan.columns);
+    let inner=plan.kind==4 ? u32(plan.inner) : (plan.kind==7 ? u32(plan.columns) : u32(plan.rows));
+    for (row in 0..rows) {
+        for (column in 0..columns) {
+            let left_row=row*inner;
+            let right_column=left_count+column;
+            let left=read_matrix_slot(left_row);
+            let right=read_matrix_slot(right_column);
+            emitter.emit(emitter.context,MatrixStep(u32(MatrixAction::Multiply),left,right,scratch));
+            for (index in 1..inner) {
+                let next_left=read_matrix_slot(left_row+index);
+                let next_right=read_matrix_slot(right_column+index*columns);
+                let term=scratch+1;
+                emitter.emit(emitter.context,MatrixStep(u32(MatrixAction::Multiply),next_left,next_right,term));
+                emitter.emit(emitter.context,MatrixStep(u32(MatrixAction::Add),take_matrix_slot(scratch),take_matrix_slot(term),scratch));
+            }
+            emitter.output(emitter.context,scratch);
+        }
+    }
 }

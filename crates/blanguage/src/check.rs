@@ -2860,14 +2860,13 @@ impl<'a> Builder<'a> {
                 let zero = self.constant(Scalar::U32, 0);
                 return self.binary(op, difference, zero, span,generated_origin.clone());
             }
-            operators::Binary::Matrix(kind) => return self.matrix_binary(op, a, b, kind, span),
+            operators::Binary::Matrix(plan) => return Ok(self.matrix_binary(ty, plan, a, b)),
             operators::Binary::Numeric { operands, comparison, operation } => (operands, comparison, operation),
         };
         let (operands, comparison, operation) = operands;
         let literal = a.literal && b.literal && !operands.scalar.is_float() && !comparison;
         let a = if operands.cast_left { self.cast(a, operands.scalar) } else { a };
         let b = if operands.cast_right { self.cast(b, operands.scalar) } else { b };
-        let n = ty.components.len();
         let scalar = operands.scalar;
         let divisors = if matches!(op, "/" | "%") && !scalar.is_float() {
             let path=self.residency_path();
@@ -2882,6 +2881,16 @@ impl<'a> Builder<'a> {
         } else {
             None
         };
+        Ok(self.lower_numeric_binary(op, ty, a, b, scalar, comparison, operation, literal,
+            divisors, generated_origin))
+    }
+
+    fn lower_numeric_binary(
+        &mut self, op: &str, ty: Ty, a: Value, b: Value, scalar: Scalar,
+        comparison: bool, operation: Option<BinaryOp>, literal: bool,
+        divisors: Option<Vec<IntegerDivisor>>, generated_origin: Option<Arc<GeneratedOrigin>>,
+    ) -> Value {
+        let n = ty.components.len();
         let constant = a
             .constant
             .as_ref()
@@ -2956,7 +2965,7 @@ impl<'a> Builder<'a> {
             }
             value.literal = literal;
             value.proof = proof;
-            return Ok(value);
+            return value;
         }
         let mut regs = Vec::new();
         for i in 0..n {
@@ -3001,7 +3010,7 @@ impl<'a> Builder<'a> {
             constant: None,
         };
         self.observe_integer_binary(op, &a, &b, &mut value);
-        Ok(value)
+        value
     }
     fn math(&mut self, op: &str, mut args: Vec<Value>, span: Span) -> Result<Value> {
         let arity = if matches!(op, "min" | "max" | "pow") {

@@ -283,12 +283,11 @@ unsafe extern "C" fn binary_type(ctx: Address, op: Bytes, a: Address, a_literal:
                 }
                 operators::Binary::Identity => result.kind = 1,
                 operators::Binary::Handle => result.kind = 2,
-                operators::Binary::Matrix(kind) => { use matrix::Binary::*; match kind {
-                    Elements(_) => result.kind = 3, Product { .. } => result.kind = 4,
-                    MatrixScalar { cast, .. } => { result.kind = 5; result.cast_right = u32::from(cast); }
-                    ScalarMatrix { cast, .. } => { result.kind = 6; result.cast_left = u32::from(cast); }
-                    MatrixVector { .. } => result.kind = 7, VectorMatrix { .. } => result.kind = 8,
-                } }
+                operators::Binary::Matrix(plan) => {
+                    result.kind = plan.kind as u32;
+                    result.cast_left = plan.cast_left;
+                    result.cast_right = plan.cast_right;
+                }
             }
             result
         }

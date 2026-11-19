@@ -1,17 +1,8 @@
 //! 固定维度矩阵按行布局；算术静态降低到既有标量值 IR。
 use super::*;
 
-pub(super) enum Binary {
-    Elements(usize),
-    Product { rows: usize, inner: usize, columns: usize },
-    MatrixScalar { count: usize, cast: bool },
-    ScalarMatrix { count: usize, cast: bool },
-    MatrixVector { rows: usize, columns: usize },
-    VectorMatrix { rows: usize, columns: usize },
-}
-
 #[repr(u32)]
-enum MatrixAction { Copy, Multiply, Add, Subtract, Divide, Negate }
+enum MatrixAction { Copy, Add, Subtract, Multiply, Divide, Negate }
 
 #[derive(Clone, Copy)]
 #[repr(C)]
@@ -31,13 +22,15 @@ struct MatrixStep {
 #[repr(C)]
 struct MatrixEmitter<'a, 'w> {
     context: *mut MatrixValues<'a, 'w>,
-    emit: unsafe extern "C" fn(*mut MatrixValues<'a, 'w>, MatrixStep) -> u32,
+    emit: unsafe extern "C" fn(*mut MatrixValues<'a, 'w>, MatrixStep),
     output: unsafe extern "C" fn(*mut MatrixValues<'a, 'w>, u32),
 }
 
 unsafe extern "C" {
     #[link_name = "bootstrap.operator_types::expand_square_matrix"]
-    fn expand_square_matrix(width: u32, inverse: u32, emitter: MatrixEmitter<'_, '_>) -> u32;
+    fn expand_square_matrix(width: u32, inverse: u32, emitter: MatrixEmitter<'_, '_>);
+    #[link_name = "bootstrap.operator_types::expand_matrix_binary"]
+    fn expand_matrix_binary(plan: operators::Plan, left_count: u32, input_count: u32, emitter: MatrixEmitter<'_, '_>);
 }
 
 // The slots hold the actual typed values. Only the B expansion assigns a
@@ -46,8 +39,6 @@ struct MatrixValues<'a, 'w> {
     builder: &'a mut Builder<'w>,
     slots: Vec<Option<Value>>,
     output: Vec<Value>,
-    failure: Option<Diagnostic>,
-    span: Span,
 }
 
 impl MatrixValues<'_, '_> {
@@ -60,14 +51,14 @@ impl MatrixValues<'_, '_> {
         }
     }
 
-    fn emit(&mut self, step: MatrixStep) -> Result<Value> {
+    fn emit(&mut self, step: MatrixStep) -> Value {
         let left = self.operand(step.left);
-        let operation = match step.action {
-            MatrixAction::Copy => return Ok(left),
+        let (token, operation) = match step.action {
+            MatrixAction::Copy => return left,
             MatrixAction::Negate => {
                 let mut value = left;
                 if let Some(bits) = &value.constant {
-                    return Ok(self.builder.constant(Scalar::F32, bits[0] ^ 0x80000000));
+                    return self.builder.constant(Scalar::F32, bits[0] ^ 0x80000000);
                 }
                 let dst = self.builder.reg(Scalar::F32);
                 self.builder.emit(InstKind::Unary {
@@ -77,34 +68,27 @@ impl MatrixValues<'_, '_> {
                 });
                 value.regs[0] = dst;
                 value.proof = bounds::Proof::default();
-                return Ok(value);
+                return value;
             }
-            MatrixAction::Multiply => "*",
-            MatrixAction::Add => "+",
-            MatrixAction::Subtract => "-",
-            MatrixAction::Divide => "/",
+            MatrixAction::Multiply => ("*", BinaryOp::FMul),
+            MatrixAction::Add => ("+", BinaryOp::FAdd),
+            MatrixAction::Subtract => ("-", BinaryOp::FSub),
+            MatrixAction::Divide => ("/", BinaryOp::FDiv),
         };
         let right = self.operand(step.right);
-        self.builder.binary(operation, left, right, self.span, None)
+        self.builder.lower_numeric_binary(token, Ty::scalar(Scalar::F32), left, right,
+            Scalar::F32, false, Some(operation), false, None, None)
     }
 }
 
-unsafe extern "C" fn emit_matrix(context: *mut MatrixValues<'_, '_>, step: MatrixStep) -> u32 {
+unsafe extern "C" fn emit_matrix(context: *mut MatrixValues<'_, '_>, step: MatrixStep) {
     let values = unsafe { &mut *context };
     let destination = step.destination as usize;
-    match values.emit(step) {
-        Ok(value) => {
-            if destination >= values.slots.len() {
-                values.slots.resize_with(destination + 1, || None);
-            }
-            values.slots[destination] = Some(value);
-            1
-        }
-        Err(diagnostic) => {
-            values.failure = Some(diagnostic);
-            0
-        }
+    let value = values.emit(step);
+    if destination >= values.slots.len() {
+        values.slots.resize_with(destination + 1, || None);
     }
+    values.slots[destination] = Some(value);
 }
 
 unsafe extern "C" fn output_matrix(context: *mut MatrixValues<'_, '_>, slot: u32) {
@@ -193,77 +177,30 @@ impl Builder<'_> {
         }
         Ok(Self::matrix_result(ty, components))
     }
-    fn matrix_dot(&mut self, a: &[Value], b: &[Value], span: Span) -> Result<Value> {
-        let mut result = self.binary("*", a[0].clone(), b[0].clone(), span,None)?;
-        for (a, b) in a.iter().zip(b).skip(1) {
-            let product = self.binary("*", a.clone(), b.clone(), span,None)?;
-            result = self.binary("+", result, product, span,None)?;
-        }
-        Ok(result)
-    }
-    pub(super) fn matrix_binary(
-        &mut self, op: &str, a: Value, b: Value, kind: Binary, span: Span,
-    ) -> Result<Value> {
-        match kind {
-            Binary::Elements(count) => {
-                let mut values = Vec::new();
-                for i in 0..count {
-                    values.push(self.binary(op, Self::matrix_component(&a, i),
-                        Self::matrix_component(&b, i), span,None)?);
-                }
-                Ok(Self::matrix_result(a.ty, values))
-            }
-            Binary::Product { rows, inner, columns } => {
-                let mut values = Vec::new();
-                for r in 0..rows {
-                    for c in 0..columns {
-                        let lhs: Vec<_> = (0..inner)
-                            .map(|k| Self::matrix_component(&a, r * inner + k)).collect();
-                        let rhs: Vec<_> = (0..inner)
-                            .map(|k| Self::matrix_component(&b, k * columns + c)).collect();
-                        values.push(self.matrix_dot(&lhs, &rhs, span)?);
-                    }
-                }
-                Ok(Self::matrix_result(Ty::matrix(rows, columns), values))
-            }
-            Binary::MatrixScalar { count, cast } => {
-                let b = if cast { self.cast(b, Scalar::F32) } else { b };
-                let mut values = Vec::new();
-                for i in 0..count {
-                    values.push(self.binary(op, Self::matrix_component(&a, i), b.clone(), span,None)?);
-                }
-                Ok(Self::matrix_result(a.ty, values))
-            }
-            Binary::ScalarMatrix { count, cast } => {
-                let a = if cast { self.cast(a, Scalar::F32) } else { a };
-                let mut values = Vec::new();
-                for i in 0..count {
-                    values.push(self.binary(op, a.clone(), Self::matrix_component(&b, i), span,None)?);
-                }
-                Ok(Self::matrix_result(b.ty, values))
-            }
-            Binary::MatrixVector { rows, columns } => {
-                let rhs: Vec<_> = (0..columns).map(|i| Self::matrix_component(&b, i)).collect();
-                let mut values = Vec::new();
-                for r in 0..rows {
-                    let lhs: Vec<_> = (0..columns)
-                        .map(|c| Self::matrix_component(&a, r * columns + c)).collect();
-                    values.push(self.matrix_dot(&lhs, &rhs, span)?);
-                }
-                Ok(Self::matrix_result(Ty::vector(Scalar::F32, rows), values))
-            }
-            Binary::VectorMatrix { rows, columns } => {
-                let lhs: Vec<_> = (0..rows).map(|i| Self::matrix_component(&a, i)).collect();
-                let mut values = Vec::new();
-                for c in 0..columns {
-                    let rhs: Vec<_> = (0..rows)
-                        .map(|r| Self::matrix_component(&b, r * columns + c)).collect();
-                    values.push(self.matrix_dot(&lhs, &rhs, span)?);
-                }
-                Ok(Self::matrix_result(Ty::vector(Scalar::F32, columns), values))
+
+    pub(super) fn matrix_binary(&mut self, ty: Ty, plan: operators::Plan, a: Value, b: Value) -> Value {
+        let a = if plan.cast_left != 0 { self.cast(a, Scalar::F32) } else { a };
+        let b = if plan.cast_right != 0 { self.cast(b, Scalar::F32) } else { b };
+        let left_count = a.regs.len() as u32;
+        let input_count = left_count + b.regs.len() as u32;
+        let mut slots = Vec::with_capacity(input_count as usize);
+        for value in [a, b] {
+            if value.regs.len() == 1 {
+                slots.push(Some(value));
+            } else {
+                slots.extend((0..value.regs.len()).map(|index| Some(Self::matrix_component(&value, index))));
             }
         }
+        let mut values = MatrixValues {
+            builder: self,
+            slots,
+            output: Vec::with_capacity(ty.components.len()),
+        };
+        let emitter = MatrixEmitter { context: &mut values, emit: emit_matrix, output: output_matrix };
+        unsafe { expand_matrix_binary(plan, left_count, input_count, emitter); }
+        Self::matrix_result(ty, values.output)
     }
+
     pub(super) fn matrix_intrinsic(
         &mut self,
         name: &str,
@@ -299,17 +236,13 @@ impl Builder<'_> {
             builder: self,
             slots: components.map(Some).collect(),
             output: Vec::with_capacity(if inverse { rows * columns } else { 1 }),
-            failure: None,
-            span,
         };
         let emitter = MatrixEmitter {
             context: &mut values,
             emit: emit_matrix,
             output: output_matrix,
         };
-        if unsafe { expand_square_matrix(rows as u32, u32::from(inverse), emitter) } == 0 {
-            return Err(values.failure.unwrap());
-        }
+        unsafe { expand_square_matrix(rows as u32, u32::from(inverse), emitter); }
         if inverse {
             Ok(Self::matrix_result(value.ty, values.output))
         } else {
