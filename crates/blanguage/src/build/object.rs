@@ -82,15 +82,15 @@ pub(super) fn compile<'a>(
                 && let Some(stored) = identity::decode(bytes)?
             {
                 if stored.source.same_code(&source) {
-                    let names = reader.import_names().map_err(error)?;
-                    if stored.imports == identity::references(definitions, imported, names, &stored.declarations) {
+                    let inputs = reader.reuse_inputs().map_err(error)?;
+                    if stored.imports == identity::references(definitions, imported, inputs.imports.iter().copied(), &stored.declarations) {
                         let native = stored.native.map(|_| crate::object::native_inputs(runtime)).transpose()?;
-                        if stored.native == native {
+                        if stored.native == native
+                            && let Some(libraries) = inputs.libraries_for_reuse().map_err(error)?
+                        {
                             // The matched producer already wrote the contract identity used on a cold build.
-                            let object = reader.object(true).map_err(error)?;
-                            if object.archive.as_ref().map_or(Ok(true), |archive| archive.local_libraries_available())? {
-                                return Ok(ObjectCompilation { object, artifact, reused: true });
-                            }
+                            let object = reader.object(Some(libraries)).map_err(error)?;
+                            return Ok(ObjectCompilation { object, artifact, reused: true });
                         }
                     }
                 }
