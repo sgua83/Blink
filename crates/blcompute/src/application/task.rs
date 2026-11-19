@@ -15,17 +15,24 @@ use std::{
 pub(super) type Entry = unsafe extern "C" fn(*mut Frame, *const u8, *mut u8) -> *mut c_void;
 pub(super) type Cleanup = unsafe extern "C" fn(*mut Frame, *const u8, *const u8, *mut c_void, u32) -> *mut c_void;
 
-// A reference may have padding. Read only initialized tags and handle words.
-unsafe fn offsets(ty: &Ty, value: *const u8, base: usize, output: &mut Vec<usize>, status: *const c_void) {
+// A reference may have padding. Visit only initialized handle words.
+unsafe fn visit_dataset_words(
+    ty: &Ty,
+    value: *const u8,
+    base: usize,
+    status: *const c_void,
+    visit: &mut impl FnMut(usize) -> Result<()>,
+) -> Result<()> {
     if unsafe { abi::blink_error_consumed(status, value.wrapping_add(base) as usize, ty.size as usize) } != 0 {
-        return;
+        return Ok(());
     }
     if ty.dataset.is_some() {
-        output.push(base);
-    } else if let Some(element) = &ty.array {
+        return visit(base);
+    }
+    if let Some(element) = &ty.array {
         let stride = align_up(element.size, element.align) as usize;
         for index in 0..ty.values[0] as usize {
-            unsafe { offsets(element, value, base + index * stride, output, status) };
+            unsafe { visit_dataset_words(element, value, base + index * stride, status, visit)? };
         }
     } else if !ty.variants.is_empty() {
         let bytes = ty.components[0].0.size() as usize;
@@ -33,14 +40,15 @@ unsafe fn offsets(ty: &Ty, value: *const u8, base: usize, output: &mut Vec<usize
         unsafe { ptr::copy_nonoverlapping(value.add(base), tag.as_mut_ptr(), bytes) };
         let tag = u64::from_le_bytes(tag);
         let variant = ty.variants.iter().find(|variant| u64::from(variant.discriminant) == tag).unwrap();
-        unsafe { offsets(&variant.ty, value, base + align_up(4, ty.align) as usize, output, status) };
+        unsafe { visit_dataset_words(&variant.ty, value, base + align_up(4, ty.align) as usize, status, visit)? };
     } else {
         for (name, offset, field) in &ty.fields {
             if !name.starts_with(Ty::TASK_READ_FIELD_PREFIX) && field.contains_dataset() {
-                unsafe { offsets(field, value, base + *offset as usize, output, status) };
+                unsafe { visit_dataset_words(field, value, base + *offset as usize, status, visit)? };
             }
         }
     }
+    Ok(())
 }
 
 // A root word belongs to the caller position or the task packet. Element
@@ -128,9 +136,7 @@ unsafe fn gather_value(
     if !ty.contains_dataset() {
         return Ok(());
     }
-    let mut fields = Vec::new();
-    unsafe { offsets(ty, value, 0, &mut fields, status) };
-    for field in fields {
+    let mut visit = |field| {
         let word = unsafe { value.add(field).cast::<u32>() };
         let slot = u32::from_le(unsafe { word.read_unaligned() }) as usize;
         if !shared {
@@ -141,7 +147,7 @@ unsafe fn gather_value(
             selected.words.push((location,slot));
         }
         if !selected.slots.insert(slot) {
-            continue;
+            return Ok(());
         }
         let storage = frame.data.datasets[slot].as_ref();
         if !shared && !matches!(storage, Some(ResidentData::Cpu(CpuDataset::Owned(_)))) {
@@ -159,8 +165,9 @@ unsafe fn gather_value(
                 unsafe { gather_value(frame,element,element_ptr,selected,shared,Some((slot,byte)),status)? };
             }
         }
-    }
-    Ok(())
+        Ok(())
+    };
+    unsafe { visit_dataset_words(ty, value, 0, status, &mut visit) }
 }
 
 enum DatasetBase {
