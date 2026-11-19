@@ -26,3 +26,19 @@ extern "C" Plan unary(address bytes,u64 length,Operand value,Queries queries) on
 enum FixedProjectionKind:u32 { Components=0; Vector=1; Array=2; };
 struct FixedProjection { FixedProjectionKind kind; usize first; };
 extern "C" FixedProjection fixed_projection(u32 array, usize width, u32 known, usize index) on cpu;
+
+enum MatrixAction:u32 { Copy=0; Multiply=1; Add=2; Subtract=3; Divide=4; Negate=5; };
+struct MatrixOperand { u32 slot; u32 take; };
+struct MatrixStep {
+    MatrixAction action;
+    MatrixOperand left;
+    MatrixOperand right;
+    u32 destination;
+};
+struct MatrixEmitter {
+    address context;
+    cfn<bool,address,MatrixStep> emit;
+    cfn<void,address,u32> output;
+};
+extern "C" bool expand_square_matrix(u32 width, bool inverse, MatrixEmitter emitter) on cpu
+    requires nonzero(emitter.emit) requires nonzero(emitter.output);

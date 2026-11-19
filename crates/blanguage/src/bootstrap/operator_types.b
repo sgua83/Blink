@@ -143,3 +143,94 @@ extern "C" FixedProjection fixed_projection(u32 array, usize width, u32 known, u
     }
     return FixedProjection(array != 0 ? FixedProjectionKind::Array : FixedProjectionKind::Vector, 0u64);
 }
+
+MatrixOperand read_matrix_slot(u32 slot) on cpu { return MatrixOperand(slot,0); }
+MatrixOperand take_matrix_slot(u32 slot) on cpu { return MatrixOperand(slot,1); }
+
+u32 first_matrix_axis(u32 axes,u32 width) on cpu {
+    for (axis in 0..width) {
+        if ((axes & (1 << u32(axis))) != 0) { return axis; }
+    }
+    return 0;
+}
+
+bool expand_matrix_minor(u32 width,u32 size,u32 rows,u32 columns,u32 destination,u32 scratch,
+                          MatrixEmitter emitter) on cpu requires nonzero(emitter.emit) {
+    let row=first_matrix_axis(rows,width);
+    let next_rows=rows & ~(1 << u32(row));
+    if (size==1) {
+        let source=read_matrix_slot(row*width+first_matrix_axis(columns,width));
+        return emitter.emit(emitter.context,MatrixStep(MatrixAction::Copy,source,source,destination));
+    }
+    let next_row=size==2 ? first_matrix_axis(next_rows,width) : 0;
+    u32 produced=0;
+    for (column in 0..width) {
+        let bit=1 << u32(column);
+        if ((columns & bit)==0) { continue; }
+        let next_columns=columns & ~bit;
+        MatrixOperand minor;
+        if (size==2) {
+            minor=read_matrix_slot(next_row*width+first_matrix_axis(next_columns,width));
+        } else {
+            let child=scratch+size;
+            if (!expand_matrix_minor(width,size-1,next_rows,next_columns,child,child+1,emitter)) { return false; }
+            minor=take_matrix_slot(child);
+        }
+        let element=read_matrix_slot(row*width+column);
+        let product=MatrixStep(MatrixAction::Multiply,element,minor,scratch+produced);
+        if (!emitter.emit(emitter.context,product)) { return false; }
+        produced+=1;
+    }
+    // Lower every term before the ordered alternating sum, as in the original IR.
+    for (term in 1..size) {
+        let action=(term & 1)==0 ? MatrixAction::Add : MatrixAction::Subtract;
+        let target=term+1==size ? destination : scratch;
+        let combine=MatrixStep(action,take_matrix_slot(scratch),take_matrix_slot(scratch+term),target);
+        if (!emitter.emit(emitter.context,combine)) { return false; }
+    }
+    return true;
+}
+
+extern "C" bool expand_square_matrix(u32 width,bool inverse,MatrixEmitter emitter) on cpu
+    requires nonzero(emitter.emit) requires nonzero(emitter.output) {
+    let inputs=width*width;
+    let axes=(1 << u32(width))-1;
+    if (!inverse) {
+        if (!expand_matrix_minor(width,width,axes,axes,inputs,inputs+1,emitter)) { return false; }
+        emitter.output(emitter.context,inputs);
+        return true;
+    }
+
+    let determinant=2*inputs;
+    let scratch=determinant+1;
+    for (row in 0..width) {
+        let rows=axes & ~(1 << u32(row));
+        for (column in 0..width) {
+            let columns=axes & ~(1 << u32(column));
+            let target=inputs+row*width+column;
+            if (!expand_matrix_minor(width,width-1,rows,columns,target,scratch,emitter)) { return false; }
+            if (((row+column) & 1)!=0) {
+                let value=take_matrix_slot(target);
+                if (!emitter.emit(emitter.context,MatrixStep(MatrixAction::Negate,value,value,target))) { return false; }
+            }
+        }
+    }
+    for (column in 0..width) {
+        let target=column==0 ? determinant : scratch;
+        let product=MatrixStep(MatrixAction::Multiply,read_matrix_slot(column),read_matrix_slot(inputs+column),target);
+        if (!emitter.emit(emitter.context,product)) { return false; }
+        if (column!=0) {
+            let sum=MatrixStep(MatrixAction::Add,take_matrix_slot(determinant),take_matrix_slot(scratch),determinant);
+            if (!emitter.emit(emitter.context,sum)) { return false; }
+        }
+    }
+    for (row in 0..width) {
+        for (column in 0..width) {
+            let numerator=take_matrix_slot(inputs+column*width+row);
+            let quotient=MatrixStep(MatrixAction::Divide,numerator,read_matrix_slot(determinant),scratch);
+            if (!emitter.emit(emitter.context,quotient)) { return false; }
+            emitter.output(emitter.context,scratch);
+        }
+    }
+    return true;
+}

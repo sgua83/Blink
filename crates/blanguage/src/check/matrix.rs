@@ -9,6 +9,109 @@ pub(super) enum Binary {
     MatrixVector { rows: usize, columns: usize },
     VectorMatrix { rows: usize, columns: usize },
 }
+
+#[repr(u32)]
+enum MatrixAction { Copy, Multiply, Add, Subtract, Divide, Negate }
+
+#[derive(Clone, Copy)]
+#[repr(C)]
+struct MatrixOperand {
+    slot: u32,
+    take: u32,
+}
+
+#[repr(C)]
+struct MatrixStep {
+    action: MatrixAction,
+    left: MatrixOperand,
+    right: MatrixOperand,
+    destination: u32,
+}
+
+#[repr(C)]
+struct MatrixEmitter<'a, 'w> {
+    context: *mut MatrixValues<'a, 'w>,
+    emit: unsafe extern "C" fn(*mut MatrixValues<'a, 'w>, MatrixStep) -> u32,
+    output: unsafe extern "C" fn(*mut MatrixValues<'a, 'w>, u32),
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.operator_types::expand_square_matrix"]
+    fn expand_square_matrix(width: u32, inverse: u32, emitter: MatrixEmitter<'_, '_>) -> u32;
+}
+
+// The slots hold the actual typed values. Only the B expansion assigns a
+// temporary position, moves its last use, or publishes a result component.
+struct MatrixValues<'a, 'w> {
+    builder: &'a mut Builder<'w>,
+    slots: Vec<Option<Value>>,
+    output: Vec<Value>,
+    failure: Option<Diagnostic>,
+    span: Span,
+}
+
+impl MatrixValues<'_, '_> {
+    fn operand(&mut self, operand: MatrixOperand) -> Value {
+        let slot = &mut self.slots[operand.slot as usize];
+        if operand.take != 0 {
+            slot.take().unwrap()
+        } else {
+            slot.as_ref().unwrap().clone()
+        }
+    }
+
+    fn emit(&mut self, step: MatrixStep) -> Result<Value> {
+        let left = self.operand(step.left);
+        let operation = match step.action {
+            MatrixAction::Copy => return Ok(left),
+            MatrixAction::Negate => {
+                let mut value = left;
+                if let Some(bits) = &value.constant {
+                    return Ok(self.builder.constant(Scalar::F32, bits[0] ^ 0x80000000));
+                }
+                let dst = self.builder.reg(Scalar::F32);
+                self.builder.emit(InstKind::Unary {
+                    dst,
+                    op: UnaryOp::FloatNegate,
+                    a: value.regs[0],
+                });
+                value.regs[0] = dst;
+                value.proof = bounds::Proof::default();
+                return Ok(value);
+            }
+            MatrixAction::Multiply => "*",
+            MatrixAction::Add => "+",
+            MatrixAction::Subtract => "-",
+            MatrixAction::Divide => "/",
+        };
+        let right = self.operand(step.right);
+        self.builder.binary(operation, left, right, self.span, None)
+    }
+}
+
+unsafe extern "C" fn emit_matrix(context: *mut MatrixValues<'_, '_>, step: MatrixStep) -> u32 {
+    let values = unsafe { &mut *context };
+    let destination = step.destination as usize;
+    match values.emit(step) {
+        Ok(value) => {
+            if destination >= values.slots.len() {
+                values.slots.resize_with(destination + 1, || None);
+            }
+            values.slots[destination] = Some(value);
+            1
+        }
+        Err(diagnostic) => {
+            values.failure = Some(diagnostic);
+            0
+        }
+    }
+}
+
+unsafe extern "C" fn output_matrix(context: *mut MatrixValues<'_, '_>, slot: u32) {
+    let values = unsafe { &mut *context };
+    values.output.push(values.slots[slot as usize].take().unwrap());
+}
+
 impl Builder<'_> {
     fn matrix_component(value: &Value, at: usize) -> Value {
         Value {
@@ -161,28 +264,6 @@ impl Builder<'_> {
             }
         }
     }
-    fn matrix_determinant(&mut self, values: &[Value], size: usize, span: Span) -> Result<Value> {
-        if size == 1 {
-            return Ok(values[0].clone());
-        }
-        let mut terms = Vec::new();
-        for c in 0..size {
-            let minor: Vec<_> = (1..size)
-                .flat_map(|r| {
-                    (0..size)
-                        .filter(move |k| *k != c)
-                        .map(move |k| values[r * size + k].clone())
-                })
-                .collect();
-            let determinant = self.matrix_determinant(&minor, size - 1, span)?;
-            terms.push(self.binary("*", values[c].clone(), determinant, span,None)?);
-        }
-        let mut result = terms[0].clone();
-        for (c, term) in terms.into_iter().enumerate().skip(1) {
-            result = self.binary(if c % 2 == 0 { "+" } else { "-" }, result, term, span,None)?;
-        }
-        Ok(result)
-    }
     pub(super) fn matrix_intrinsic(
         &mut self,
         name: &str,
@@ -196,10 +277,9 @@ impl Builder<'_> {
         let Some((rows, columns)) = value.ty.matrix_shape() else {
             return self.fail(span, "B237", "矩阵内建需要 floatRxC 矩阵");
         };
-        let components: Vec<_> = (0..rows * columns)
-            .map(|at| Self::matrix_component(&value, at))
-            .collect();
+        let components = (0..rows * columns).map(|at| Self::matrix_component(&value, at));
         if name == "transpose" {
+            let components: Vec<_> = components.collect();
             return Ok(Self::matrix_result(
                 Ty::matrix(columns, rows),
                 (0..columns)
@@ -213,52 +293,27 @@ impl Builder<'_> {
         if rows != columns {
             return self.fail(span, "B237", "行列式和逆矩阵需要方阵");
         }
-        if name == "determinant" {
-            return self.matrix_determinant(&components, rows, span);
+
+        let inverse = name != "determinant";
+        let mut values = MatrixValues {
+            builder: self,
+            slots: components.map(Some).collect(),
+            output: Vec::with_capacity(if inverse { rows * columns } else { 1 }),
+            failure: None,
+            span,
+        };
+        let emitter = MatrixEmitter {
+            context: &mut values,
+            emit: emit_matrix,
+            output: output_matrix,
+        };
+        if unsafe { expand_square_matrix(rows as u32, u32::from(inverse), emitter) } == 0 {
+            return Err(values.failure.unwrap());
         }
-        let mut cofactors = Vec::new();
-        for r in 0..rows {
-            for c in 0..columns {
-                let minor: Vec<_> = (0..rows)
-                    .filter(|i| *i != r)
-                    .flat_map(|i| {
-                        let components = &components;
-                        (0..columns)
-                            .filter(move |j| *j != c)
-                            .map(move |j| components[i * columns + j].clone())
-                    })
-                    .collect();
-                let mut cofactor = self.matrix_determinant(&minor, rows - 1, span)?;
-                if (r + c) % 2 != 0 {
-                    if let Some(bits) = &cofactor.constant {
-                        cofactor = self.constant(Scalar::F32, bits[0] ^ 0x80000000);
-                    } else {
-                        let dst = self.reg(Scalar::F32);
-                        self.emit(InstKind::Unary {
-                            dst,
-                            op: UnaryOp::FloatNegate,
-                            a: cofactor.regs[0],
-                        });
-                        cofactor.regs = vec![dst];
-                        cofactor.proof = bounds::Proof::default();
-                    }
-                }
-                cofactors.push(cofactor);
-            }
+        if inverse {
+            Ok(Self::matrix_result(value.ty, values.output))
+        } else {
+            Ok(values.output.pop().unwrap())
         }
-        let determinant = self.matrix_dot(&components[..columns], &cofactors[..columns], span)?;
-        let mut inverse = Vec::new();
-        for r in 0..rows {
-            for c in 0..columns {
-                inverse.push(self.binary(
-                    "/",
-                    cofactors[c * columns + r].clone(),
-                    determinant.clone(),
-                    span,
-                    None,
-                )?);
-            }
-        }
-        Ok(Self::matrix_result(value.ty, inverse))
     }
 }
