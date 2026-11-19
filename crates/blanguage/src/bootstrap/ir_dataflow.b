@@ -269,44 +269,52 @@ usize compact_index(address slots,usize index) on cpu {
 extern "C" u32 compact_mark_register(address marks,usize reg) on cpu {
  unsafe_position<usize>(compact_at(marks,reg))=1u64;return 1;
 }
-void compact_range(address marks,usize begin,usize end) on cpu {
+extern "C" void compact_range(address marks,usize begin,usize end) on cpu {
  usize position=begin;
  while(position<end){unsafe_position<usize>(compact_at(marks,position))=1u64;position+=1u64;}
 }
-void compact_aliases(Node source,address marks,Host host) on cpu requires nonzero(host.inspect) {
+void visit_addressable_aliases(Node source,Host host,address context,
+                               cfn<void,address,usize,usize> emit) on cpu
+ requires nonzero(host.inspect) requires nonzero(emit) {
  usize index=0u64;
  while(true){
   RangePart part=alias_range(source,index,host);
   if(part.more==0){return;}
-  if(part.local!=0){compact_range(marks,part.begin,part.end);}
+  if(part.local!=0 && part.begin!=part.end){emit(context,part.begin,part.end);}
   index+=1u64;
  }
 }
-void compact_locals(View value,address marks,Host host) on cpu requires nonzero(host.inspect) {
- if(value.tag==OP_LOAD_LOCAL){compact_range(marks,value.b,value.b+1u64);}
- else if(value.tag==OP_STORE_LOCAL){compact_range(marks,value.a,value.a+1u64);}
- else if(value.tag==OP_LOAD_LOCAL_INDEXED){compact_range(marks,value.b,value.b+value.c);}
- else if(value.tag==OP_STORE_LOCAL_INDEXED){compact_range(marks,value.a,value.a+value.b);}
+void visit_addressable_locals(View value,Host host,address context,
+                               cfn<void,address,usize,usize> emit) on cpu
+ requires nonzero(host.inspect) requires nonzero(emit) {
+ if(value.tag==OP_LOAD_LOCAL_INDEXED){emit(context,value.b,value.b+value.c);}
+ else if(value.tag==OP_STORE_LOCAL_INDEXED){emit(context,value.a,value.a+value.b);}
  else if(value.tag==OP_INVOKE){
-  View call=host.inspect(value.left);usize index=0u64;
-  // Passing an address preserves its whole local range even without a read
-  // or write effect. This is the union needed by the original compactor.
+  View call=host.inspect(value.left);
+  usize index=0u64;
+  // Passing an address preserves the entire local range, including when
+  // the call itself has no read or write effect on that range.
   while(index<call.first.count){
    View argument=host.inspect(node_at(call.first,index,N_ARGUMENT));
-   if(argument.tag==1){compact_aliases(argument.left,marks,host);}
+   if(argument.tag==1){visit_addressable_aliases(argument.left,host,context,emit);}
    index+=1u64;
   }
   index=0u64;
   while(index<call.second.count){
    View effect=host.inspect(node_at(call.second,index,N_MEMORY_EFFECT));
    View alias=host.inspect(effect.left);
-   if(alias.tag==0){compact_range(marks,alias.a,alias.a+alias.b);}
+   if(alias.tag==0 && alias.b!=0u64){emit(context,alias.a,alias.a+alias.b);}
    index+=1u64;
   }
  }else if(value.tag==OP_POSITION_ADDRESS||value.tag==OP_LOAD_INDEXED
      ||value.tag==OP_STORE_INDEXED||value.tag==OP_ATOMIC){
-  compact_aliases(value.left,marks,host);
+  visit_addressable_aliases(value.left,host,context,emit);
  }
+}
+void compact_locals(View value,address marks,Host host) on cpu requires nonzero(host.inspect) {
+ if(value.tag==OP_LOAD_LOCAL){compact_range(marks,value.b,value.b+1u64);}
+ else if(value.tag==OP_STORE_LOCAL){compact_range(marks,value.a,value.a+1u64);}
+ else{visit_addressable_locals(value,host,marks,c_function(compact_range));}
 }
 void compact_marks(Span code,address regs,address locals,Host host) on cpu requires nonzero(host.inspect) {
  usize index=0u64;
@@ -1411,6 +1419,21 @@ extern "C" u32 has_tile_scope(Span code,u32 has_tiles,Host host) on cpu
  }
  return 0;
 }
+extern "C" void private_spans(Span code,Host host,address context,
+                              cfn<void,address,usize,usize> emit) on cpu
+ requires nonzero(host.inspect) requires nonzero(emit) {
+ usize index=0u64;
+ while(index<code.count){
+  View value=host.inspect(node_at(code,index,N_INSTRUCTION));
+  visit_addressable_locals(value,host,context,emit);
+  if(value.tag==OP_SCOPE||value.tag==OP_BRANCH||value.tag==OP_LOOP_VALUE){
+   private_spans(value.first,host,context,emit);
+   private_spans(value.second,host,context,emit);
+  }
+  index+=1u64;
+ }
+}
+
 extern "C" void storage_tiles(Span code,Host host,address context,
  cfn<void,address,usize> emit) on cpu
  requires nonzero(host.inspect) requires nonzero(emit) {

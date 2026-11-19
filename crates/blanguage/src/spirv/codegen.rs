@@ -2027,15 +2027,15 @@ fn emit_shader(
             e.ray_variables.insert(result, id);
         }
         e.locals.resize(stage.locals.last_key_value().map_or(0, |(end, _)| *end), 0);
-        for span in private_spans(&stage.code) {
-            let ty = &stage.locals[&span.end];
+        for (begin, end) in private_spans(&stage.code) {
+            let ty = &stage.locals[&end];
             let size = ty.components.iter().map(|(s, _)| s.size()).min().unwrap().min(4);
             let unit = match size { 1 => Scalar::U8, 2 => Scalar::U16, _ => Scalar::U32 };
             let length = e.constant(Scalar::U32, ty.size / size);
             let array = e.declare_type(TypeShape::Array, e.types[&unit], length);
             let pointer = e.declare_pointer(StorageClass::Function, array);
             let variable = e.declare_function_variable(pointer);
-            e.private_arrays.insert(span.end, PrivateArray { start: span.start, unit, variable });
+            e.private_arrays.insert(end, PrivateArray { start: begin, unit, variable });
         }
         for (&end, ty) in &stage.locals {
             if e.private_arrays.contains_key(&end) {

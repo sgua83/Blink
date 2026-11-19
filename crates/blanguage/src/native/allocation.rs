@@ -58,7 +58,7 @@ pub(super) struct Frame {
 }
 pub(super) struct Graph {
     locations: Vec<ColorPlace>,
-    private: Vec<std::ops::Range<usize>>,
+    private: BTreeSet<(usize, usize)>,
     addressable: BTreeSet<usize>,
     edges: Vec<BTreeSet<usize>>,
     affinities: Vec<BTreeSet<usize>>,
@@ -85,7 +85,7 @@ impl Graph {
     pub fn with_live(stage: &Stage, mut live: BTreeSet<PrivateSlot>) -> (Self, Vec<TilePhase<'_>>) {
         let slots = stage.registers.len() + stage.locals.last_key_value().map_or(0, |(end, _)| *end);
         let private = private_spans(&stage.code);
-        let addressable: BTreeSet<_> = private.iter().flat_map(|span| span.clone())
+        let addressable: BTreeSet<_> = private.iter().flat_map(|&(begin, end)| begin..end)
             .map(|slot| stage.registers.len() + slot).collect();
         let locations = stage.registers.iter()
             .chain(stage.locals.values().flat_map(|ty| ty.components.iter().map(|(scalar, _)| scalar)))
@@ -211,10 +211,10 @@ impl Allocation {
         let mut layout = color_locations(
             graph, &mut locations, u32::from(stage.has_tile_scope()), graph.outgoing_bytes,
         );
-        for span in &graph.private {
-            let ty = &stage.locals[&span.end];
-            let first = stage.registers.len() + span.start;
-            let count = span.len().min(ty.components.len());
+        for &(begin, end) in &graph.private {
+            let ty = &stage.locals[&end];
+            let first = stage.registers.len() + begin;
+            let count = (begin..end).len().min(ty.components.len());
             let places = &mut locations[first..first + count];
             for (place, (_, offset)) in places.iter_mut().zip(&ty.components) {
                 place.value = u64::from(*offset);
