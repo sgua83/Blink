@@ -533,12 +533,18 @@ impl Graph {
         !self.references(source) && Borrow::source_has_local(source)
     }
     fn residual(&self, query: &Query<'_>) -> Self {
-        let mut residual=self.clone();
+        let mut nodes = Vec::with_capacity(self.nodes.len());
         for &id in query.values.keys() {
-            if let Cow::Owned(node) = query.local_definition(id) {
-                residual.nodes[id] = node;
-            }
+            nodes.extend_from_slice(&self.nodes[nodes.len()..id]);
+            nodes.push(query.local_definition(id).into_owned());
         }
+        nodes.extend_from_slice(&self.nodes[nodes.len()..]);
+        let mut residual = Self {
+            nodes,
+            variables: self.variables.clone(),
+            frames: self.frames.clone(),
+            inputs: self.inputs.clone(),
+        };
         for(id,node)in residual.nodes.iter_mut().enumerate(){
             node.seeds.retain_sources(|source| !self.private(source));
             if self.variables.contains(&id)||self.nodes[id].edges.iter().any(|e|matches!(e.op,Op::Read{..})) {
@@ -560,12 +566,22 @@ impl Graph {
         }
         residual
     }
-    fn rebind<'r>(&self,value:&Borrow,residual:&impl Fn()->&'r Graph)->Borrow{
+    fn rebind<'r>(&self, value: &Borrow, residual: &impl Fn() -> &'r Arc<Graph>) -> Borrow {
         value.map_sources(|source|match source{
-            Origin::Relation(g,root)if self.extension(&g)=>{
+            Origin::Relation(graph, root) if self.extension(&graph) => {
                 let residual = residual();
-                let mut graph=(*g).clone();graph.nodes[..self.nodes.len()].clone_from_slice(&residual.nodes);graph.frames=residual.frames.clone();
-                Borrow::source(Origin::Relation(Arc::new(graph),root))
+                let tail = &graph.nodes[self.nodes.len()..];
+                let graph = if tail.is_empty() {
+                    Arc::clone(residual)
+                } else {
+                    Arc::new(Self {
+                        nodes: residual.nodes.iter().chain(tail).cloned().collect(),
+                        variables: graph.variables.clone(),
+                        frames: residual.frames.clone(),
+                        inputs: graph.inputs.clone(),
+                    })
+                };
+                Borrow::source(Origin::Relation(graph, root))
             },
             Origin::Element{parent,fields,index}=>Borrow::element(self.rebind(&parent,residual),fields,index),
             Origin::Projection{parent,fields}=>Borrow::projection(self.rebind(&parent,residual),fields),
@@ -623,7 +639,7 @@ impl Graph {
             {
                 let value = query.node(root);
                 let residual = std::cell::OnceCell::new();
-                return self.rebind(value, &|| residual.get_or_init(|| self.residual(&query)));
+                return self.rebind(value, &|| residual.get_or_init(|| Arc::new(self.residual(&query))));
             }
             values = query.values;
             for &(id, _) in &feedback {
