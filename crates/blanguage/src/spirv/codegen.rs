@@ -729,8 +729,7 @@ struct Emitter<'a> {
     ray_variables: BTreeMap<Reg, u32>,
     ray_position_type: u32,
     ray_transform_type: u32,
-    position_queries: std::collections::BTreeSet<Reg>,
-    transform_queries: [std::collections::BTreeSet<Reg>; 2],
+    ray_queries: &'a [BTreeSet<Reg>; 3],
     vec3_type: u32,
     vec2_type: u32,
     push: u32,
@@ -1594,9 +1593,9 @@ impl Emitter<'_> {
         }
         let hit = result.registers()[0];
         let closest = matches!(result, RayResult::Closest(_));
-        let positions = self.position_queries.contains(&hit);
-        let object_to_world = self.transform_queries[0].contains(&hit);
-        let world_to_object = self.transform_queries[1].contains(&hit);
+        let positions = self.ray_queries[0].contains(&hit);
+        let object_to_world = self.ray_queries[1].contains(&hit);
+        let world_to_object = self.ray_queries[2].contains(&hit);
         if positions && self.ray_position_type == 0 {
             let length = self.constant(Scalar::U32, 3);
             self.ray_position_type = self.declare_type(TypeShape::Array, self.vec3_type, length);
@@ -1695,14 +1694,17 @@ pub fn emit_pass(
     stage_index: usize,
     pass: Pass,
 ) -> Result<Vec<u32>, &'static str> {
-    let (layout, mut inputs) = shader_stage_inputs(program, &program.stages[stage_index])?;
+    let stage = &program.stages[stage_index];
+    let (layout, mut inputs) = shader_stage_inputs(program, stage)?;
     let (float64, integer8, integer16) = crate::ir::dataflow::numeric_requirements(program);
     let features = ProgramShaderFeatures {
         float64, integer8, integer16,
         acceleration: !program.accelerations.is_empty(),
         descriptor_indexing: program.requires_texture_indexing(),
     };
-    emit_shader(program, stage_index, pass, &mut inputs, &layout, features).map(|(words, _)| words)
+    let reduction = prepare_reduction(stage, pass);
+    emit_shader(program, stage, pass, &mut inputs, &layout, features, reduction.as_ref())
+        .map(|(words, _)| words)
 }
 fn shader_stage_inputs(
     program: &Program, stage: &Stage,
@@ -1726,34 +1728,99 @@ fn shader_stage_inputs(
     let inputs = crate::ir::dataflow::input_fragments(stage, &used);
     Ok((layout, inputs))
 }
-fn emit_shader(
-    program: &Program, stage_index: usize, pass: Pass, inputs: &mut crate::ir::dataflow::InputFragments,
-    layout: &crate::ir::dataflow::TileLayout, program_features: ProgramShaderFeatures,
-) -> Result<(Vec<u32>, u64), &'static str> {
-    let stage = &program.stages[stage_index];
-    let argument_pass = matches!(pass, Pass::DispatchArguments(_) | Pass::SelectionArguments);
-    let custom_kernel =
-        if !argument_pass
-            && let Operation::CustomReduce(r)
-        | Operation::CustomScan(CustomScan { values: r, .. })
-        | Operation::CustomSegmentedReduce(CustomSegmentedReduction { values: r, .. }) =
-            &stage.operation
-        {
-            Some(r.kernel(
-                stage,
-                pass == Pass::Main
-                    || matches!(stage.operation, Operation::CustomSegmentedReduce(_))
-                        && pass == Pass::ScanRootAdd,
-                pass != Pass::ScanAdd
-                    && (pass != Pass::ScanRootAdd
-                        || matches!(stage.operation, Operation::CustomSegmentedReduce(_))),
-            ))
+#[repr(u32)]
+enum ReductionPass {
+    Main,
+    Add,
+    Root,
+    Arguments,
+    Tail,
+}
+
+#[allow(dead_code)]
+#[repr(u32)]
+enum KernelPreparation {
+    Original,
+    ProjectIdentity,
+    Identity,
+    Combine,
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.spirv_envelope::custom_kernel_preparation"]
+    fn custom_kernel_preparation(pass: ReductionPass, segmented: u32) -> KernelPreparation;
+}
+
+struct ShaderStageFacts {
+    ray_queries: [BTreeSet<Reg>; 3],
+    atomic64: bool,
+    float_preserve: (bool, bool),
+}
+
+impl ShaderStageFacts {
+    fn new(stage: &Stage, pass: Pass) -> Self {
+        let (buffer_atomic64, shared_atomic64) = stage.atomic64_requirements();
+        let float_preserve = if matches!(
+            pass, Pass::Main | Pass::ReductionTail | Pass::ScanTail | Pass::ScanAdd | Pass::ScanRootAdd
+        ) {
+            crate::ir::dataflow::stage_float_preserve(stage)
         } else {
-            None
+            (false, false)
         };
-    let stage = custom_kernel.as_ref().map(|k| &k.stage).unwrap_or(stage);
-    let custom_layout = custom_kernel.as_ref().map(|kernel| kernel.stage.tile_layout(true, None));
-    let [position_queries, object_queries, world_queries] = stage.ray_query_groups();
+        Self {
+            ray_queries: stage.ray_query_groups(),
+            atomic64: buffer_atomic64 || shared_atomic64,
+            float_preserve,
+        }
+    }
+}
+
+struct PreparedReduction {
+    kernel: ReductionKernel,
+    layout: crate::ir::dataflow::TileLayout,
+    facts: ShaderStageFacts,
+}
+
+fn prepare_reduction(stage: &Stage, pass: Pass) -> Option<PreparedReduction> {
+    let (reduction, segmented) = match &stage.operation {
+        Operation::CustomReduce(value)
+        | Operation::CustomScan(CustomScan { values: value, .. }) => (value, false),
+        Operation::CustomSegmentedReduce(value) => (&value.values, true),
+        _ => return None,
+    };
+    let selected = match pass {
+        Pass::Main => ReductionPass::Main,
+        Pass::ScanAdd => ReductionPass::Add,
+        Pass::ScanRootAdd => ReductionPass::Root,
+        Pass::DispatchArguments(_) | Pass::SelectionArguments => ReductionPass::Arguments,
+        _ => ReductionPass::Tail,
+    };
+    let (project, identity) = match unsafe { custom_kernel_preparation(selected, u32::from(segmented)) } {
+        KernelPreparation::Original => return None,
+        KernelPreparation::ProjectIdentity => (true, true),
+        KernelPreparation::Identity => (false, true),
+        KernelPreparation::Combine => (false, false),
+    };
+    let kernel = reduction.kernel(stage, project, identity);
+    let layout = kernel.stage.tile_layout(true, None);
+    let facts = ShaderStageFacts::new(&kernel.stage, pass);
+    Some(PreparedReduction { kernel, layout, facts })
+}
+
+fn emit_shader(
+    program: &Program, original_stage: &Stage, pass: Pass,
+    inputs: &mut crate::ir::dataflow::InputFragments, layout: &crate::ir::dataflow::TileLayout,
+    program_features: ProgramShaderFeatures, reduction: Option<&PreparedReduction>,
+) -> Result<(Vec<u32>, u64), &'static str> {
+    let argument_pass = matches!(pass, Pass::DispatchArguments(_) | Pass::SelectionArguments);
+    let original_facts;
+    let (stage, tile_layout, facts, custom_kernel) = match reduction {
+        Some(prepared) => (&prepared.kernel.stage, &prepared.layout, &prepared.facts, Some(&prepared.kernel)),
+        None => {
+            original_facts = ShaderStageFacts::new(original_stage, pass);
+            (original_stage, layout, &original_facts, None)
+        }
+    };
     let mut e = Emitter {
         next: 1,
         types: BTreeMap::new(),
@@ -1771,8 +1838,7 @@ fn emit_shader(
         ray_variables: BTreeMap::new(),
         ray_position_type: 0,
         ray_transform_type: 0,
-        position_queries,
-        transform_queries: [object_queries, world_queries],
+        ray_queries: &facts.ray_queries,
         vec3_type: 0,
         vec2_type: 0,
         push: 0,
@@ -1790,7 +1856,7 @@ fn emit_shader(
         subgroup_inputs: BTreeMap::new(),
         ballot_type: 0,
         workgroup_width: stage.workgroup_width(),
-        tile_layout: custom_layout.as_ref().unwrap_or(layout),
+        tile_layout,
         tile_shared64: 0,
         tile_pointer64: 0,
         tile_shared: 0,
@@ -1800,16 +1866,8 @@ fn emit_shader(
         current_label: 0,
         return_scopes: Vec::new(),
     };
-    let (atomic64, shared_atomic64) = stage.atomic64_requirements();
     let ProgramShaderFeatures { float64, integer8, integer16, acceleration, descriptor_indexing } = program_features;
-    let numeric_pass = matches!(
-        pass, Pass::Main | Pass::ReductionTail | Pass::ScanTail | Pass::ScanAdd | Pass::ScanRootAdd
-    );
-    let (float32_preserve, float64_preserve) = if numeric_pass {
-        crate::ir::dataflow::stage_float_preserve(stage)
-    } else {
-        (false, false)
-    };
+    let (float32_preserve, float64_preserve) = facts.float_preserve;
     let ranks = matches!(pass, Pass::SortHistogram(_) | Pass::SortScatter(_));
     let subgroup_operations = if pass == Pass::Main {
         stage.subgroup_operations()
@@ -1818,7 +1876,7 @@ fn emit_shader(
     };
     let subgroup_caps = SubgroupCapabilities::from_operations(subgroup_operations.iter().copied());
     let features = ShaderFeatures {
-        atomic64: u32::from(atomic64 || shared_atomic64),
+        atomic64: u32::from(facts.atomic64),
         float64: u32::from(float64),
         integer8: u32::from(integer8),
         integer16: u32::from(integer16),
@@ -1831,7 +1889,7 @@ fn emit_shader(
         subgroup_shuffle: u32::from(subgroup_caps.shuffle),
         subgroup_shuffle_relative: u32::from(subgroup_caps.shuffle_relative),
         acceleration: u32::from(acceleration),
-        position_fetch: u32::from(!e.position_queries.is_empty()),
+        position_fetch: u32::from(!e.ray_queries[0].is_empty()),
         descriptor_indexing: u32::from(descriptor_indexing),
         maximal_reconvergence: u32::from(pass == Pass::Main && stage.requires_maximal_reconvergence()),
     };
@@ -2138,7 +2196,7 @@ fn emit_shader(
         e.emit(113, &[u, e.index, index_wide]);
         (count, active, [0; 2])
     };
-    if let Some(kernel) = &custom_kernel {
+    if let Some(kernel) = custom_kernel {
         e.block(&kernel.stage.code[..kernel.invariant_end], None)?;
     }
     if let Some(selection) = stage.selection
@@ -2231,7 +2289,7 @@ fn emit_shader(
         };
         e.custom_segmented_reduce(
             r,
-            custom_kernel.as_ref().unwrap(),
+            custom_kernel.unwrap(),
             pass,
             local,
             shared,
@@ -2240,7 +2298,7 @@ fn emit_shader(
             count,
         )?;
     } else if let Operation::CustomScan(r) = &stage.operation {
-        let kernel = custom_kernel.as_ref().unwrap();
+        let kernel = custom_kernel.unwrap();
         if scan_local {
             let local = e.id();
             e.emit(61, &[u, local, local_input]);
@@ -2267,7 +2325,7 @@ fn emit_shader(
         e.emit(61, &[u, local, local_input]);
         e.custom_reduce(
             r,
-            custom_kernel.as_ref().unwrap(),
+            custom_kernel.unwrap(),
             pass == Pass::ReductionTail,
             local,
             shared,

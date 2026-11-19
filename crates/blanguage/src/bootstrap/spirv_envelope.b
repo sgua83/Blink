@@ -1996,9 +1996,11 @@ const u32 ENTRY_SCAN=2;
 const u32 ENTRY_SEGMENTED=3;
 const u32 ENTRY_COMPACT=4;
 const u32 ENTRY_SORT=5;
+const u32 ENTRY_CUSTOM_SCAN=6;
+const u32 ENTRY_CUSTOM_SEGMENTED=7;
 
 extern "C" StageEntries stage_entries(u32 operation,u32 selected,u32 prefix,u32 root_add,usize keys) on cpu {
- StageEntries entries=StageEntries(0,0,selected!=0 ? 2 : prefix,selected,0u64);
+ StageEntries entries=StageEntries(0,0,selected!=0 ? 2 : prefix,selected,0,0u64);
  if(operation==ENTRY_MAP) {
   if(selected!=0) {
    entries.tail=2;
@@ -2013,10 +2015,12 @@ extern "C" StageEntries stage_entries(u32 operation,u32 selected,u32 prefix,u32 
   entries.scan_add=1;
   if(operation==ENTRY_COMPACT) {
    entries.finish=2;
-  }else if(operation==ENTRY_SEGMENTED) {
+  }else if(operation==ENTRY_SEGMENTED || operation==ENTRY_CUSTOM_SEGMENTED) {
    entries.finish=3;
+   if(operation==ENTRY_CUSTOM_SEGMENTED){entries.finish_kernel=1;}
   }else if(root_add!=0) {
    entries.finish=4;
+   if(operation==ENTRY_CUSTOM_SCAN){entries.finish_kernel=2;}
   }
  }
  return entries;
@@ -2027,4 +2031,11 @@ extern "C" SortShaderEntry sort_shader_entry(usize index) on cpu {
  if(index<16u64){return SortShaderEntry(1,(index-8u64)*4u64);}
  if(index<20u64){return SortShaderEntry(u32(index-14u64),0u64);}
  return SortShaderEntry(6,index-20u64);
+}
+
+extern "C" u32 custom_kernel_preparation(u32 pass,u32 segmented) on cpu {
+ if(pass==3){return 0;}
+ if(pass==0 || pass==2 && segmented!=0){return 1;}
+ if(pass==1 || pass==2){return 3;}
+ return 2;
 }

@@ -38,6 +38,8 @@ enum EntryOperation {
     Segmented,
     Compact,
     Sort,
+    CustomScan,
+    CustomSegmented,
 }
 
 #[allow(dead_code)]
@@ -66,12 +68,21 @@ enum EntryDispatch {
     Selection,
 }
 
+#[allow(dead_code)]
+#[repr(u32)]
+enum FinishKernel {
+    Original,
+    Main,
+    Add,
+}
+
 #[repr(C)]
 struct StageEntries {
     tail: EntryTail,
     finish: EntryFinish,
     dispatch: EntryDispatch,
     scan_add: u32,
+    finish_kernel: FinishKernel,
     sort_passes: usize,
 }
 
@@ -108,8 +119,8 @@ pub(crate) fn compile_stage(
     // Shader input also includes the physical low half of a wide word.
     let mut layout = ExecutionStage::from_stage(stage, inputs.keys().copied().collect());
     let features = ProgramShaderFeatures::from(requirements);
-    let mut emit = |pass| {
-        let (words, bytes) = emit_shader(program, i, pass, &mut inputs, &tile_layout, features)?;
+    let mut emit = |pass, kernel: Option<&PreparedReduction>| {
+        let (words, bytes) = emit_shader(program, stage, pass, &mut inputs, &tile_layout, features, kernel)?;
         layout.shared_bytes = layout.shared_bytes.max(bytes);
         Ok::<_, &'static str>(words)
     };
@@ -117,9 +128,9 @@ pub(crate) fn compile_stage(
         Operation::Map => (EntryOperation::Map, false, 0),
         Operation::Reduce(_) | Operation::CustomReduce(_) => (EntryOperation::Reduce, false, 0),
         Operation::ScanExclusive(scan) => (EntryOperation::Scan, scan.needs_root_add(program), 0),
-        Operation::CustomScan(scan) => (EntryOperation::Scan, scan.needs_root_add(program), 0),
-        Operation::SegmentedReduce(_) | Operation::CustomSegmentedReduce(_) =>
-            (EntryOperation::Segmented, false, 0),
+        Operation::CustomScan(scan) => (EntryOperation::CustomScan, scan.needs_root_add(program), 0),
+        Operation::SegmentedReduce(_) => (EntryOperation::Segmented, false, 0),
+        Operation::CustomSegmentedReduce(_) => (EntryOperation::CustomSegmented, false, 0),
         Operation::Compact(_) => (EntryOperation::Compact, false, 0),
         Operation::StableSort(sort) => (EntryOperation::Sort, false, sort.keys.len()),
     };
@@ -156,20 +167,34 @@ pub(crate) fn compile_stage(
                 SortShaderKind::Gather => (Pass::SortGather, false),
                 SortShaderKind::Key => (Pass::SortKey(entry.parameter), false),
             };
-            Ok(ShaderCode { words: emit(pass)?, ranks })
+            Ok(ShaderCode { words: emit(pass, None)?, ranks })
         }).collect::<Result<_, &'static str>>()
     }).transpose()?;
+    let main_kernel = prepare_reduction(stage, Pass::Main);
+    let main = emit(Pass::Main, main_kernel.as_ref())?;
+    let finish_main = main_kernel.filter(|_| matches!(entries.finish_kernel, FinishKernel::Main));
+    let tail = tail.map(|pass| {
+        let kernel = prepare_reduction(stage, pass);
+        emit(pass, kernel.as_ref())
+    }).transpose()?;
+    let (scan_add, finish_add) = if entries.scan_add != 0 {
+        let kernel = prepare_reduction(stage, Pass::ScanAdd);
+        let words = emit(Pass::ScanAdd, kernel.as_ref())?;
+        (Some(words), kernel.filter(|_| matches!(entries.finish_kernel, FinishKernel::Add)))
+    } else {
+        (None, None)
+    };
+    let finish = finish.map(|(name, pass)| {
+        let kernel = finish_main.or(finish_add);
+        Ok((name.into(), emit(pass, kernel.as_ref())?))
+    }).transpose()?;
     let code = StageCode {
-        main: emit(Pass::Main)?,
-        tail: tail.map(|p| emit(p)).transpose()?,
-        scan_add: (entries.scan_add != 0).then(|| emit(Pass::ScanAdd)).transpose()?,
-        finish: finish
-            .map(|(name, p)| Ok((name.into(), emit(p)?)))
-            .transpose()?,
-        dispatch: dispatch.map(|p| emit(p)).transpose()?,
-        selector: selected
-            .then(|| emit(Pass::SelectionScan))
-            .transpose()?,
+        main,
+        tail,
+        scan_add,
+        finish,
+        dispatch: dispatch.map(|p| emit(p, None)).transpose()?,
+        selector: selected.then(|| emit(Pass::SelectionScan, None)).transpose()?,
         sort,
     };
     Ok((layout, code))

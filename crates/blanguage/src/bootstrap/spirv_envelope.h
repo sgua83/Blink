@@ -611,8 +611,12 @@ struct StageEntries {
  u32 finish;
  u32 dispatch;
  u32 scan_add;
+ u32 finish_kernel;
  usize sort_passes;
 };
 struct SortShaderEntry { u32 kind; usize parameter; };
 extern "C" StageEntries stage_entries(u32 operation,u32 selected,u32 prefix,u32 root_add,usize keys) on cpu;
 extern "C" SortShaderEntry sort_shader_entry(usize index) on cpu;
+
+// The pass class is Main, Add, Root, Arguments, or the remaining identity-bearing pass.
+extern "C" u32 custom_kernel_preparation(u32 pass,u32 segmented) on cpu;
