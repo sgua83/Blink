@@ -126,7 +126,13 @@ pub(super) struct Call {
     source:crate::Source,
     span:Span,
 }
-pub(super) struct Use { pub requirement:Requirement, pub source:crate::Source, pub path:bounds::Clause, pub active_loops:BTreeSet<usize> }
+pub(super) struct Use {
+    pub requirement: Requirement,
+    pub source: crate::Source,
+    pub path: bounds::Clause,
+    pub active_loops: BTreeSet<usize>,
+    pub(super) opaque_write_possible: std::sync::OnceLock<bool>,
+}
 
 #[derive(Clone)]
 pub(super) enum ControlInput {Value{name:String,contents:Option<Vec<usize>>,component:usize},Length{name:String,path:Vec<usize>}}
@@ -794,7 +800,8 @@ impl BorrowEvaluation<'_>{
             && borrow.sources.when(&Origin::External) == bounds::Clause::default()
         {
             let when = &usage.path;
-            if when.possible() {
+            // Every queried word consumes the same immutable write path.
+            if *usage.opaque_write_possible.get_or_init(|| when.possible()) {
                 result.write(&Borrow::source(Origin::External), &bounds::Condition::execution(when), false);
             }
             return;

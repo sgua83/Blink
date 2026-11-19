@@ -985,12 +985,12 @@ impl Builder<'_> {
     }
     pub(super) fn check_view_requirement(&mut self,requirement:Requirement)->Result<()> {
         if requirement.pending()||matches!(&requirement,Requirement::Initialized{..}|Requirement::Memory{..}) {
-            self.view_model.uses.push(view_contracts::Use{requirement,source:self.scope.source().clone(),path:self.path.clone(),active_loops:self.loop_contexts.iter().filter_map(|context|context.view_scope).collect()});
+            self.view_model.uses.push(view_contracts::Use{requirement,source:self.scope.source().clone(),path:self.path.clone(),active_loops:self.loop_contexts.iter().filter_map(|context|context.view_scope).collect(),opaque_write_possible:Default::default()});
             return Ok(());
         }
         if requirement.borrow().is_some_and(Borrow::empty){return Ok(());}
         requirement.under_path(&self.path).check(self.scope.source(), None)?;
-        if matches!(&requirement,Requirement::Unborrowed{..}|Requirement::Address{..}|Requirement::Memory{..}|Requirement::Dataset{..}){self.view_model.uses.push(view_contracts::Use{requirement,source:self.scope.source().clone(),path:self.path.clone(),active_loops:self.loop_contexts.iter().filter_map(|context|context.view_scope).collect()});}
+        if matches!(&requirement,Requirement::Unborrowed{..}|Requirement::Address{..}|Requirement::Memory{..}|Requirement::Dataset{..}){self.view_model.uses.push(view_contracts::Use{requirement,source:self.scope.source().clone(),path:self.path.clone(),active_loops:self.loop_contexts.iter().filter_map(|context|context.view_scope).collect(),opaque_write_possible:Default::default()});}
         Ok(())
     }
     pub(super) fn require_view_available(&self, value: &Value, resources: &[&application::Data], span: Span) -> Result<()> {
