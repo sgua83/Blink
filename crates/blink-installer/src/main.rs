@@ -23,9 +23,11 @@ fn pack(root: &Path, output: &Path) -> Result<()> {
     let mut raw = Vec::new(); raw.write_all(&u32::try_from(files.len())?.to_le_bytes())?;
     for relative in &files {
         let name = relative.to_str().ok_or_else(|| error("安装文件名不是UTF-8"))?.replace('\\', "/");
-        let data = fs::read(root.join(relative))?;
         raw.write_all(&u32::try_from(name.len())?.to_le_bytes())?; raw.write_all(name.as_bytes())?;
-        raw.write_all(&(data.len() as u64).to_le_bytes())?; raw.write_all(&data)?;
+        let length_at = raw.len();
+        raw.extend_from_slice(&0u64.to_le_bytes());
+        let bytes = File::open(root.join(relative))?.read_to_end(&mut raw)?;
+        raw[length_at..length_at + size_of::<u64>()].copy_from_slice(&(bytes as u64).to_le_bytes());
     }
     let compressed = windows::compress(&raw)?;
     let mut executable = File::open(env::current_exe()?)?;
