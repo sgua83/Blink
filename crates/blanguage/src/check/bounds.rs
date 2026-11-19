@@ -2491,7 +2491,8 @@ fn contradictory_with_roots(facts: &Facts, roots: &BTreeMap<ValueIdentity, Value
 
 // 环境已由本轮固定点检查；这里只处理新增事实内部及其与环境的关系。
 fn additions_conflict(environment: &Facts, additions: &Facts) -> bool {
-    contradictory(additions) || cross_conflict(environment, additions, true)
+    // The query produces additions outside its fixed environment.
+    contradictory(additions) || cross_conflict(environment, additions, false)
 }
 // 两侧已各自完成内部检查；共有事实不会与另一侧冲突。
 fn cross_conflict(a: &Facts, b: &Facts, may_share: bool) -> bool {
