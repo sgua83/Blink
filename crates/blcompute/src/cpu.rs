@@ -825,23 +825,36 @@ impl CpuCode {
         let workers=match std::thread::available_parallelism(){Ok(workers)=>workers.get(),Err(error)=>return Err((error.into(),image))};
         Ok(Self::from_image(image,workers,&|address|Executable{address:address.cast_mut().cast(),_allocation:None},None))
     }
-    fn from_image<P,C>(image:blanguage::native::ProgramImage<P,C>,workers:usize,load:&impl Fn(&C)->Executable,linked:Option<crate::application::Definitions>)->Self{
-        let stages=Self::load_stages(image.stages(),load);
-        let(program,_,_,resources)=image.into_parts();
-        let definitions=resources.map(|module|{
-            let programs=module.images.into_iter().map(|image|match image{
-                blanguage::resource::Image::Cpu(image)=>crate::application::ProgramSlot::Cpu(CpuTemplate{code:Self::from_image(image,workers,load,None)}),
-                blanguage::resource::Image::Gpu(image)=>crate::application::ProgramSlot::Gpu(std::sync::Arc::new(image)),
-            }).collect();
-            crate::application::Definitions{types:module.types,programs}
-        });
-        let definitions=match (definitions,linked) {
-            (Some(mut source),Some(imported))=>{
-                source.types.extend(imported.types);source.programs.extend(imported.programs);Some(source)
-            },
-            (source,None)=>source,(None,imported)=>imported,
+    fn from_image<P, C>(
+        image: blanguage::native::ProgramImage<P, C>, workers: usize, load: &impl Fn(&C) -> Executable,
+        linked: Option<crate::application::Definitions>,
+    ) -> Self {
+        use blanguage::resource::Image;
+        use crate::application::{Definitions, ProgramSlot};
+
+        let stages = Self::load_stages(image.stages(), load);
+        let (program, _, _, resources) = image.into_parts();
+        let definitions = match resources {
+            Some(module) => {
+                let programs = module.images.into_iter().map(|image| match image {
+                    Image::Cpu(image) => ProgramSlot::Cpu(CpuTemplate {
+                        code: Self::from_image(image, workers, load, None),
+                    }),
+                    Image::Gpu(image) => ProgramSlot::Gpu(std::sync::Arc::new(image)),
+                });
+                Some(match linked {
+                    Some(mut definitions) => {
+                        // Linked module indices start after the root's types and programs.
+                        drop(definitions.types.splice(0..0, module.types));
+                        drop(definitions.programs.splice(0..0, programs));
+                        definitions
+                    }
+                    None => Definitions { types: module.types, programs: programs.collect() },
+                })
+            }
+            None => linked,
         }.map(std::sync::Arc::new);
-        Self{program,stages,workers,definitions}
+        Self { program, stages, workers, definitions }
     }
     fn load_stages<C>(stages:&[blanguage::native::StageCode<C>],load:&impl Fn(&C)->Executable)->Vec<StageCode>{
         use blanguage::native::{ContinuationCode,StageCode as ImageStage};
