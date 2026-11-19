@@ -645,15 +645,21 @@ impl ContentAtRead {
     }
 }
 
-fn content_write_overlap(query:Option<(&address::Origin,u32)>,position:Option<&Position>,target:&address::Origin,word:u32,when:&bounds::Clause)->(bool,bool){
-    let complete=query.is_some_and(|(origin,at)|origin.base==target.base&&same_content_storage(&origin.root,&target.root)
-        &&content_word(origin,at).zip(content_word(target,word)).is_some_and(|((_,a),(_,b))|a==b))
-        ||position.zip(content_position(target,word).as_ref()).is_some_and(|(a,b)|a==b);
+fn content_write_overlap<'a>(
+    query: Option<(&address::Origin, u32)>, position: Option<&Position>,
+    target: &address::Origin, word: u32, active: impl FnOnce() -> Option<&'a bounds::Clause>,
+) -> Option<bool> {
+    let complete = query.is_some_and(|(origin, at)| {
+        origin.base == target.base && same_content_storage(&origin.root, &target.root)
+            && content_word(origin, at).zip(content_word(target, word))
+                .is_some_and(|((_, read), (_, written))| read == written)
+    }) || position.zip(content_position(target, word).as_ref()).is_some_and(|(read, written)| read == written);
 
-    let affected = complete || position.is_some_and(|position| {
-        address::MemoryEffect::position_may_write(target, when, position)
-    });
-    (affected,complete)
+    if complete {
+        return active().map(|_| true);
+    }
+    let position = position?;
+    address::MemoryEffect::position_may_write(target, active()?, position).then_some(false)
 }
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum LoopSources {
@@ -705,17 +711,19 @@ impl BorrowEvaluation<'_>{
         if let Some(call)=function.calls.iter().find(|call|!call.deferred&&call.memory==memory){
             for access in known[&call.function].interface.access.iter().rev(){
                 let Access::Stored{borrows,word,value:stored,when}=access else{continue;};
-                let when=bounds::Clause::both(&usage.path, &when.projected_case(true, &call.arguments));
+                let when = std::cell::LazyCell::new(|| {
+                    bounds::Clause::both(&usage.path, &when.projected_case(true, &call.arguments))
+                });
                 let target=self.evaluate(&call_content_sources(borrows,call,&call.arguments).at_call(&call.arguments));
                 let stored = std::cell::LazyCell::new(|| {
                     self.evaluate(&call_content_sources(stored, call, &call.arguments).at_call(&call.arguments))
                 });
-                for(source,selected)in target.sources.entries().rev(){
+                for (source, selected) in target.sources.entries().rev() {
                     if let Origin::Position(origin) = source {
-                        let path = bounds::Clause::both(&when, &selected);
-                        if !path.possible() { continue; }
-                        let (affected, complete) = content_write_overlap(query, position, origin, *word, &path);
-                        if affected {
+                        let path = std::cell::LazyCell::new(|| bounds::Clause::both(&when, &selected));
+                        if let Some(complete) = content_write_overlap(
+                            query, position, origin, *word, || path.possible().then_some(&*path),
+                        ) {
                             result.write(&stored, &bounds::Condition::execution(&path), complete);
                         }
                     }
@@ -736,28 +744,35 @@ impl BorrowEvaluation<'_>{
             return;
         }
         let targets=self.evaluate(borrow);
-        for(source,selected)in targets.sources.entries().rev(){
-            let when=bounds::Clause::both(&usage.path,&selected);
-            if !when.possible(){continue;}
+        for (source, selected) in targets.sources.entries().rev() {
+            let when = std::cell::LazyCell::new(|| bounds::Clause::both(&usage.path, &selected));
+            let active = std::cell::LazyCell::new(|| when.possible().then_some(&*when));
             match source {
-                Origin::Position(origin)=>{
-                    if let Some(written)=written {
-                        for &(word,component) in address_fields.iter().rev(){
-                            let (affected, complete) = content_write_overlap(query, position, origin, word, &when);
-                            if affected {
+                Origin::Position(origin) => {
+                    if let Some(written) = written {
+                        for &(word, component) in address_fields.iter().rev() {
+                            if let Some(complete) = content_write_overlap(
+                                query, position, origin, word, || *active,
+                            ) {
                                 let stored = self.evaluate(&written.view_borrow(component));
                                 result.write(&stored, &bounds::Condition::execution(&when), complete);
                             }
                         }
-                    }else{
-                        let effect=address::MemoryEffect::of(&Borrow::source(source.clone()).restricted(&when),super::Access::Write,None);
-                        if position.is_some_and(|position|effect.written_bytes(position,Scalar::U64,None)!=0){
-                            result.write(&Borrow::source(Origin::External),&bounds::Condition::execution(&when),false);
+                    } else if let Some(position) = position && let Some(path) = *active {
+                        let effect = address::MemoryEffect::of(
+                            &Borrow::source(source.clone()).restricted(path), super::Access::Write, None,
+                        );
+                        if effect.written_bytes(position, Scalar::U64, None) != 0 {
+                            result.write(&Borrow::source(Origin::External), &bounds::Condition::execution(path), false);
                         }
                     }
                 },
-                Origin::External=>result.write(&Borrow::source(Origin::External),&bounds::Condition::execution(&when),false),
-                _=>{},
+                Origin::External => {
+                    if let Some(path) = *active {
+                        result.write(&Borrow::source(Origin::External), &bounds::Condition::execution(path), false);
+                    }
+                },
+                _ => {},
             }
         }
     }

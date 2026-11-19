@@ -730,10 +730,9 @@ impl<'g> Query<'g> {
                                 continue;
                             }
                             for (word, value) in fields {
-                                let (affected, full) = content_write_overlap(
-                                    Some((origin, 0)), position.as_ref(), target, *word, &yes,
-                                );
-                                if affected {
+                                if let Some(full) = content_write_overlap(
+                                    Some((origin, 0)), position.as_ref(), target, *word, || Some(&yes),
+                                ) {
                                     result.edges.push(Edge {
                                         from: *value,
                                         op: Op::Identity,
@@ -849,9 +848,20 @@ impl<'g> Query<'g> {
                         if let Origin::Position(target)=target{
                             if let Some(fields)=&write.fields{
                                 for (field,value)in fields{
-                                    let(affected,full)=content_write_overlap(Some((origin,word)),position.as_ref(),target,*field,&selected);
-                                    if affected{let v=self.node(*value);if v.empty(){ready=false;break;}incoming.sources.union_restricted(&v.sources, &selected);possible=true;complete|=full;}
-                                    else if !full&&(origin.symbolic_input()||target.symbolic_input()||matches!(origin.root,address::Root::Parameter(_))||matches!(target.root,address::Root::Parameter(_))){delayed=true;}
+                                    if let Some(full) = content_write_overlap(
+                                        Some((origin, word)), position.as_ref(), target, *field, || Some(&selected),
+                                    ) {
+                                        let v = self.node(*value);
+                                        if v.empty() { ready = false; break; }
+                                        incoming.sources.union_restricted(&v.sources, &selected);
+                                        possible = true;
+                                        complete |= full;
+                                    } else if origin.symbolic_input() || target.symbolic_input()
+                                        || matches!(origin.root, address::Root::Parameter(_))
+                                        || matches!(target.root, address::Root::Parameter(_))
+                                    {
+                                        delayed = true;
+                                    }
                                 }
                             }else if position.as_ref().is_some_and(|p|address::MemoryEffect::of(&Borrow::source(Origin::Position(target.clone())).restricted(&selected),super::super::Access::Write,None).written_bytes(p,Scalar::U64,None)!=0){possible=true;incoming.sources.union_when(Origin::External, &selected);}
                         }else if matches!(target,Origin::External){possible=true;incoming.sources.union_when(Origin::External, &selected);}
