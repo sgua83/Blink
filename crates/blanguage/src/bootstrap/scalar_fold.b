@@ -637,6 +637,27 @@ IntegerWide range_number(u32 width,u32 signed,u64 ordered) on cpu {
 extern "C" IntegerRangePieces integer_range_cast(u32 source_width,u32 source_signed,u32 target_width,u64 target_bias,BitRange value) on cpu {
  return integer_range_project(target_width,target_bias,range_number(source_width,source_signed,value.lower),range_number(source_width,source_signed,value.upper));
 }
+extern "C" IntegerRangePieces integer_range_tile_sum(u32 width,u32 signed,BitRange values,TileSumLanes lanes) on cpu {
+    u64 minimum=u64(lanes.minimum);
+    u64 maximum=u64(lanes.maximum);
+    if(lanes.has_nonzero!=0){maximum=min(maximum,u64(lanes.nonzero));}
+
+    u64 bias=0u64;
+    IntegerWide lower;
+    IntegerWide upper;
+    if(signed!=0){
+        bias=1u64<<u64(width-1);
+        i64 first=signed_value(values.lower^bias,width);
+        i64 last=signed_value(values.upper^bias,width);
+        lower=range_signed_product(first,i64(first<i64(0)?maximum:minimum));
+        upper=range_signed_product(last,i64(last<i64(0)?minimum:maximum));
+    }else{
+        lower=range_product(values.lower,minimum);
+        upper=range_product(values.upper,maximum);
+    }
+    if(range_less(upper,lower)){return IntegerRangePieces(BitRange(0u64,0u64),BitRange(0u64,0u64),0);}
+    return integer_range_project(width,bias,lower,upper);
+}
 extern "C" IntegerRangePieces integer_range_unary(IntegerRangeUnary operation,u32 width,u32 signed,BitRange value) on cpu {
  u64 mask=truncate(18446744073709551615u64,width);u64 bias=signed!=0 ? 1u64<<u64(width-1) : 0u64;
  if(operation==IntegerRangeUnary::BitNot){return range_single((~value.upper)&mask,(~value.lower)&mask);}

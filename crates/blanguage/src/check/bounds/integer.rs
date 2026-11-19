@@ -51,6 +51,13 @@ struct Pieces {
     second: Range,
     count: u32,
 }
+#[repr(C)]
+struct TileSumLanes {
+    minimum: u32,
+    maximum: u32,
+    has_nonzero: u32,
+    nonzero: u32,
+}
 fn decoded(value: Pieces) -> ScalarRanges {
     let pieces = [value.first, value.second];
     ScalarRanges::from_sorted_intervals(
@@ -65,6 +72,8 @@ unsafe extern "C" {
     -> Pieces;
     #[link_name = "bootstrap.scalar_fold::integer_range_unary"]
     fn evaluate_unary(operation: Unary, width: u32, signed: u32, value: Range) -> Pieces;
+    #[link_name = "bootstrap.scalar_fold::integer_range_tile_sum"]
+    fn evaluate_tile_sum(width: u32, signed: u32, values: Range, lanes: TileSumLanes) -> Pieces;
     #[link_name = "bootstrap.scalar_fold::integer_range_project"]
     fn project_values(width: u32, bias: Bits, lower: Wide, upper: Wide) -> Pieces;
 }
@@ -106,6 +115,20 @@ pub(super) fn unary(operation: Unary, scalar: Scalar, value: (Bits, Bits)) -> Sc
         )
     })
 }
+pub(super) fn tile_sum(
+    scalar: Scalar, values: (Bits, Bits), (minimum, maximum): (u32, u32), nonzero: Option<u32>,
+) -> ScalarRanges {
+    let lanes = TileSumLanes {
+        minimum,
+        maximum,
+        has_nonzero: u32::from(nonzero.is_some()),
+        nonzero: nonzero.unwrap_or_default(),
+    };
+    decoded(unsafe {
+        evaluate_tile_sum(scalar.bit_width(), u32::from(scalar.is_signed()), values.into(), lanes)
+    })
+}
+
 pub(super) fn project((lower, upper): (i128, i128), bias: Bits, width: u32) -> ScalarRanges {
     decoded(unsafe { project_values(width, bias, lower.into(), upper.into()) })
 }

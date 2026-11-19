@@ -455,12 +455,15 @@ impl Proof {
         }
         facts
     }
+    fn interval_source(&self, component: usize) -> &[(Bits, Bits)] {
+        self.ranges.get(component)
+            .map_or(&[(0, Bits::MAX)][..], |ranges| ranges.0.as_slice())
+    }
+
     fn element_intervals(&self, component: usize, scalar: Scalar) -> (&[(Bits, Bits)], Option<Bits>) {
-        let intervals = self.ranges.get(component)
-            .map_or(&[(0, Bits::MAX)][..], |ranges| ranges.0.as_slice());
         let excluded = (scalar.is_integer() && self.nonzero.get(component) == Some(&true))
             .then(|| scalar.order_bias());
-        (intervals, excluded)
+        (self.interval_source(component), excluded)
     }
 
     fn element_range(&self, component: usize, scalar: Scalar) -> ScalarRanges {
@@ -470,7 +473,7 @@ impl Proof {
 
     fn element_hull(&self, component: usize, scalar: Scalar) -> (Bits, Bits) {
         let (source, excluded) = self.element_intervals(component, scalar);
-        range_sets::element_hull(source, scalar.bit_mask(), excluded)
+        range_sets::restricted_hull(source, (0, scalar.bit_mask()), excluded)
     }
 
     fn element_known_bits(&self, component: usize, scalar: Scalar) -> (Bits, Bits) {
@@ -3663,7 +3666,7 @@ impl Builder<'_> {
     }
     // A reduction sums distinct elements, not repeated copies of one identity.
     pub(super) fn tile_sum(&self, tile: usize, words: &[u32], input: &Proof, ty: &Ty, length: &Proof) -> Proof {
-        let (minimum, maximum) = length.range_set(0).restrict(1, Bits::from(u32::MAX)).hull();
+        let (minimum, maximum) = range_sets::restricted_hull(length.interval_source(0), (1, Bits::from(u32::MAX)), None);
         Proof {
             ranges: ty.components.iter().enumerate().map(|(component, (scalar, _))| {
                 if minimum > maximum { return ScalarRanges(Vec::new()); }
@@ -3671,20 +3674,8 @@ impl Builder<'_> {
                 if !scalar.is_integer() { return ScalarRanges::default(); }
                 let (lower, upper) = input.element_hull(component, *scalar);
                 if lower > upper { return ScalarRanges(Vec::new()); }
-                let number = |bits| if scalar.is_signed() {
-                    i128::from(scalar.signed(bits ^ scalar.order_bias()))
-                } else { i128::from(bits) };
-                let (lower, upper) = (number(lower), number(upper));
-                let ends = [lower*i128::from(minimum), lower*i128::from(maximum),
-                    upper*i128::from(minimum), upper*i128::from(maximum)];
-                let mut range = (*ends.iter().min().unwrap(), *ends.iter().max().unwrap());
-                if let Some(count) = self.tile_nonzero_count(tile, words[component], maximum as u32) {
-                    let count = i128::from(count);
-                    range.0 = range.0.max(lower.min(0) * count);
-                    range.1 = range.1.min(upper.max(0) * count);
-                }
-                if range.0 > range.1 { return ScalarRanges(Vec::new()); }
-                integer_result_range(range, scalar.order_bias(), scalar.bit_width())
+                let nonzero = self.tile_nonzero_count(tile, words[component], maximum as u32);
+                integer::tile_sum(*scalar, (lower, upper), (minimum as u32, maximum as u32), nonzero)
             }).collect(),
             ..Proof::default()
         }

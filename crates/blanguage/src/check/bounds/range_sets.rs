@@ -139,8 +139,8 @@ pub(super) fn restrict_excluding(values: &[Pair], lower: u64, upper: u64, exclud
         output(|dest| unsafe { projected(source, count, read, dest, push, projection) })
     })
 }
-pub(super) fn element_hull(values: &[Pair], upper: Bits, excluded: Option<Bits>) -> Pair {
-    let projection = Projection::new(0, upper, excluded);
+pub(super) fn restricted_hull(values: &[Pair], (lower, upper): Pair, excluded: Option<Bits>) -> Pair {
+    let projection = Projection::new(lower, upper, excluded);
     inputs(values, &[], |source, count, _| unsafe {
         projected_hull(source, count, read, projection).into()
     })
