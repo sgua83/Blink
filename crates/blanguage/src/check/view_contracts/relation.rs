@@ -769,19 +769,42 @@ impl<'g> Query<'g> {
         }
         Cow::Owned(result)
     }
-    fn binding(&self,mut id:usize)->usize{
-        loop{let n=self.local_definition(id);if !self.graph.variables.contains(&id)&&n.seeds.empty()&&n.edges.len()==1&&n.edges[0].op==Op::Identity{id=n.edges[0].from;}else{return id;}}
+    fn binding(&self, mut id: usize) -> (usize, Cow<'g, Node>) {
+        loop {
+            let node = self.local_definition(id);
+            if !self.graph.variables.contains(&id)
+                && node.seeds.empty()
+                && let [edge] = node.edges.as_slice()
+                && edge.op == Op::Identity
+            {
+                id = edge.from;
+            } else {
+                return (id, node);
+            }
+        }
     }
-    fn location(&self,id:usize)->Option<(usize,address::Origin)>{let id=self.binding(id);let n=self.local_definition(id);if n.seeds.empty()&&n.edges.len()==1&&let Op::Position(origin)=&n.edges[0].op{Some((self.binding(n.edges[0].from),origin.clone()))}else{None}}
-    fn same_word(&self,read:usize,word:u32,write:usize,field:u32)->bool{
-        let(Some((a,x)),Some((b,y)))=(self.location(read),self.location(write))else{return false;};
-        (a==b||(!self.graph.variables.contains(&a)&&!self.graph.variables.contains(&b)&&self.graph.nodes[a]==self.graph.nodes[b]))&&x.root==y.root&&x.base==y.base&&content_word(&x,word).zip(content_word(&y,field)).is_some_and(|((_,a),(_,b))|a==b)
+
+    fn location(&self, id: usize) -> Option<(usize, address::Origin)> {
+        let (_, node) = self.binding(id);
+        if node.seeds.empty()
+            && let [edge] = node.edges.as_slice()
+            && let Op::Position(origin) = &edge.op
+        {
+            Some((self.binding(edge.from).0, origin.clone()))
+        } else {
+            None
+        }
     }
     fn read(
         &self, id: usize, from_id: usize, from: &Borrow, word: u32, epoch: &Epoch, frame: Option<usize>,
         evaluation: &mut BorrowEvaluation<'_>,
     ) -> Borrow {
         let mut output=Borrow::default();
+        let read_location = std::cell::LazyCell::new(|| {
+            let (binding, origin) = self.location(from_id)?;
+            let (_, word) = content_word(&origin, word)?;
+            Some((binding, origin, word))
+        });
         for(source,path)in from.sources.entries(){
             let Origin::Position(origin)=source else{continue;};let position=content_position(origin,word);let mut content=ContentAtRead::default();let mut at=frame;let mut delayed=false;let mut ready=true;
             while let Some(fi)=at{
@@ -789,10 +812,34 @@ impl<'g> Query<'g> {
                 at = frame.parent;
                 for write in frame.writes.iter().rev() {
                     let yes=write.when.assume(&path,true);if !yes.possible(){continue;}
-                    let fields=write.fields.iter().flatten().filter(|(field,_)|self.same_word(from_id,word,write.target,*field)).collect::<Vec<_>>();
-                    if !fields.is_empty(){
-                        let mut incoming=Borrow::default();for(_,value)in fields{let v=self.node(*value);if v.empty(){ready=false;break;}incoming.sources.union(&v.sources);}
-                        content.write(&incoming,&write.when,true);continue;
+                    let matches = write.fields.as_deref().filter(|fields| !fields.is_empty()).and_then(|fields| {
+                        let (read_binding, read, read_word) = read_location.as_ref()?;
+                        let (write_binding, target) = self.location(write.target)?;
+                        let same_binding = *read_binding == write_binding
+                            || (!self.graph.variables.contains(read_binding)
+                                && !self.graph.variables.contains(&write_binding)
+                                && self.graph.nodes[*read_binding] == self.graph.nodes[write_binding]);
+                        if !same_binding || read.root != target.root || read.base != target.base {
+                            return None;
+                        }
+                        let read_word = *read_word;
+                        Some(fields.iter().filter_map(move |&(field, value)| {
+                            let (_, word) = content_word(&target, field)?;
+                            (word == read_word).then_some(value)
+                        }).peekable())
+                    });
+                    if let Some(mut values) = matches && values.peek().is_some() {
+                        let mut incoming = Borrow::default();
+                        for value in values {
+                            let value = self.node(value);
+                            if value.empty() {
+                                ready = false;
+                                break;
+                            }
+                            incoming.sources.union(&value.sources);
+                        }
+                        content.write(&incoming, &write.when, true);
+                        continue;
                     }
                     let targets=self.node(write.target);if targets.empty(){ready=false;break;}
                     let mut hit=bounds::Clause::impossible();let mut miss=bounds::Clause::impossible();let mut incoming=Borrow::default();
