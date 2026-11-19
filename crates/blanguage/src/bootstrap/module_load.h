@@ -53,3 +53,16 @@ struct SourcePlan { SourceRoute route; u32 schedule; u32 cpu_signature; u32 publ
 extern "C" u32 source_module_entry(SignatureNode source,u32 local,u32 exported) on cpu;
 extern "C" SourcePlan source_module_plan(SignatureNode source,SourceMode mode,u32 compiled,
     u32 local,u32 exported,u32 domain,u32 selected) on cpu;
+
+enum WorldCheck:u32 { Constant=0; Interface=1; External=2; Types=3; };
+struct WorldDeclaration { SignatureNode source; u32 present; u32 paired; };
+struct WorldPreparation {
+    address context;
+    cfn<WorldDeclaration,address> next;
+    cfn<bool,address> signature;
+    cfn<void,address,WorldCheck> enqueue;
+    cfn<bool,address,WorldCheck> run;
+};
+extern "C" void prepare_world(WorldPreparation host) on cpu
+    requires nonzero(host.next) requires nonzero(host.signature)
+    requires nonzero(host.enqueue) requires nonzero(host.run);

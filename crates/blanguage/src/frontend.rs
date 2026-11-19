@@ -580,31 +580,8 @@ pub(crate) fn read_world(
         }
     }
     execution::infer(&mut world, build_declarations.as_ref());
-    for definition in world.functions.values() {
-        generics::validate_declaration(definition)?;
-    }
     let mut world = World::new(Arc::new(world), worker.clone());
-    if build_declarations.is_some() {
-        world.build_declarations = Some(RefCell::new(BTreeSet::new()));
-    }
-    for (key, definition) in &world.functions {
-        if definition.function.kind() == FunctionKind::Constant {
-            unsafe { world.run(check::evaluate_constant(&world, key, &[])) }?;
-        }
-    }
-    world.build_declarations = None;
-    for definition in world.functions.values().filter(|definition| {
-        definition.function.types().is_empty() && definition.function.values().is_empty()
-    }) {
-        unsafe { world.run(world.check_interface_types(definition, &Arc::new(generics::Bindings::default()))) }?;
-    }
-    unsafe { world.run(validate_types(&world)) }?;
-    for (key,definition) in world.functions.iter().filter(|(_,definition)|definition.function.c_abi()) {
-        if definition.function.types().is_empty()&&definition.function.values().is_empty(){
-            let instance=unsafe { world.run(generics::instantiate(&world,key,definition,Vec::new(),&[])) }?;
-            unsafe { world.run(check::external::check_declaration(&world,&instance)) }?;
-        }
-    }
+    loading::prepare_world(&mut world, build_declarations.is_some())?;
     world.build_declarations = build_declarations;
     Ok((world, entry))
 }

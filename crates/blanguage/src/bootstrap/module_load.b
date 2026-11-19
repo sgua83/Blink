@@ -274,3 +274,24 @@ extern "C" SourcePlan source_module_plan(SignatureNode source,SourceMode mode,u3
     SourceRoute route = mode == SourceMode::Application ? SourceRoute::CheckDomain : SourceRoute::Program;
     return SourcePlan(route,1,definition.target == 1 ? 1 : 0,publish,public_domain);
 }
+
+extern "C" void prepare_world(WorldPreparation host) on cpu
+    requires nonzero(host.next) requires nonzero(host.signature)
+    requires nonzero(host.enqueue) requires nonzero(host.run) {
+    while (true) {
+        let candidate=host.next(host.context);
+        if (candidate.present==0) { break; }
+        if (!host.signature(host.context)) { return; }
+        let source=candidate.source;
+        let declaration=unsafe_position<FunctionNode>(at(source.storage.nodes,source.offset));
+        if (declaration.kind==2) { host.enqueue(host.context,WorldCheck::Constant); }
+        if (declaration.types.count==0u64 && declaration.values.count==0u64) {
+            if (candidate.paired!=0) { host.enqueue(host.context,WorldCheck::Interface); }
+            if (declaration.c_abi!=0) { host.enqueue(host.context,WorldCheck::External); }
+        }
+    }
+    if (!host.run(host.context,WorldCheck::Constant)) { return; }
+    if (!host.run(host.context,WorldCheck::Interface)) { return; }
+    if (!host.run(host.context,WorldCheck::Types)) { return; }
+    host.run(host.context,WorldCheck::External);
+}

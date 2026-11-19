@@ -257,3 +257,134 @@ pub(crate) fn load(path: &Path, root: &Path, world: &mut Declarations,
         None => Ok(unsafe { name.text() }.to_owned()),
     }
 }
+
+type WorldFunction<'a> = (&'a String, &'a Arc<Definition>);
+
+#[repr(C)]
+struct WorldDeclaration {
+    source: wire::SignatureNode,
+    present: u32,
+    paired: u32,
+}
+
+#[repr(u32)]
+#[derive(Clone, Copy)]
+enum WorldCheck { Constant, Interface, External, Types }
+
+#[repr(C)]
+struct WorldPreparation<'a, 'w> {
+    context: *mut WorldChecks<'a, 'w>,
+    next: unsafe extern "C" fn(*mut WorldChecks<'a, 'w>) -> WorldDeclaration,
+    signature: unsafe extern "C" fn(*mut WorldChecks<'a, 'w>) -> u32,
+    enqueue: unsafe extern "C" fn(*mut WorldChecks<'a, 'w>, WorldCheck),
+    run: unsafe extern "C" fn(*mut WorldChecks<'a, 'w>, WorldCheck) -> u32,
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.module_load::prepare_world"]
+    fn prepare_world_b(host: WorldPreparation<'_, '_>);
+}
+
+struct WorldChecks<'a, 'w> {
+    world: &'w mut World,
+    declarations: std::collections::btree_map::Iter<'a, String, Arc<Definition>>,
+    current: Option<WorldFunction<'a>>,
+    pending: [Vec<WorldFunction<'a>>; 3],
+    track_constants: bool,
+    error: Option<Diagnostic>,
+}
+
+unsafe extern "C" fn next_declaration(context: *mut WorldChecks<'_, '_>) -> WorldDeclaration {
+    let checks = unsafe { &mut *context };
+    checks.current = checks.declarations.next();
+    if let Some((_, definition)) = checks.current {
+        WorldDeclaration {
+            source: definition.function.signature_node(),
+            present: 1,
+            paired: u32::from(definition.interface_declaration.is_some()),
+        }
+    } else {
+        WorldDeclaration {
+            source: wire::SignatureNode { storage: wire::StorageView {
+                nodes: std::ptr::null_mut(), node_bytes: 0,
+                text: std::ptr::null_mut(), text_bytes: 0,
+                source: std::ptr::null_mut(), source_bytes: 0,
+            }, offset: 0 },
+            present: 0,
+            paired: 0,
+        }
+    }
+}
+
+unsafe extern "C" fn check_signature(context: *mut WorldChecks<'_, '_>) -> u32 {
+    let checks = unsafe { &mut *context };
+    let (_, definition) = checks.current.unwrap();
+    checks.error = generics::validate_declaration(definition).err();
+    u32::from(checks.error.is_none())
+}
+
+unsafe extern "C" fn enqueue_declaration(context: *mut WorldChecks<'_, '_>, check: WorldCheck) {
+    let checks = unsafe { &mut *context };
+    checks.pending[check as usize].push(checks.current.unwrap());
+}
+
+impl WorldChecks<'_, '_> {
+    fn run(&mut self, check: WorldCheck) -> Result<()> {
+        let world = &mut *self.world;
+        match check {
+            WorldCheck::Constant => {
+                if self.track_constants {
+                    world.build_declarations = Some(RefCell::new(BTreeSet::new()));
+                }
+                for (name, _) in std::mem::take(&mut self.pending[check as usize]) {
+                    unsafe { world.run(check::evaluate_constant(world, name, &[])) }?;
+                }
+                world.build_declarations = None;
+            }
+            WorldCheck::Interface => {
+                let bindings = std::cell::LazyCell::new(|| Arc::new(generics::Bindings::default()));
+                for (_, definition) in std::mem::take(&mut self.pending[check as usize]) {
+                    unsafe { world.run(world.check_interface_types(definition, &bindings)) }?;
+                }
+            }
+            WorldCheck::Types => unsafe { world.run(super::validate_types(world)) }?,
+            WorldCheck::External => {
+                for (name, definition) in std::mem::take(&mut self.pending[check as usize]) {
+                    let instance = unsafe { world.run(generics::instantiate(world, name, definition, Vec::new(), &[])) }?;
+                    unsafe { world.run(check::external::check_declaration(world, &instance)) }?;
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+unsafe extern "C" fn run_world_check(context: *mut WorldChecks<'_, '_>, check: WorldCheck) -> u32 {
+    let checks = unsafe { &mut *context };
+    checks.error = checks.run(check).err();
+    u32::from(checks.error.is_none())
+}
+
+// read_world is a synchronous entry. The original World runs each requested
+// check here, with its evaluation stack empty on entry and return.
+pub(super) fn prepare_world(world: &mut World, track_constants: bool) -> Result<()> {
+    let declarations = Arc::clone(&world.declarations);
+    let mut checks = WorldChecks {
+        world,
+        declarations: declarations.functions.iter(),
+        current: None,
+        pending: Default::default(),
+        track_constants,
+        error: None,
+    };
+    unsafe {
+        prepare_world_b(WorldPreparation {
+            context: &mut checks,
+            next: next_declaration,
+            signature: check_signature,
+            enqueue: enqueue_declaration,
+            run: run_world_check,
+        });
+    }
+    checks.error.map_or(Ok(()), Err)
+}
