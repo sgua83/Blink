@@ -11,7 +11,7 @@ use blanguage::{
 };
 pub use dataset::CpuDataset;
 pub use observation::{CpuRangeCall, CpuRangeTiming, CpuRangeTimings, CpuThreadTime, CpuTimePoint};
-use std::{collections::{BTreeMap, btree_map::Entry}, ffi::c_void};
+use std::{collections::{BTreeMap, btree_map::Entry}, ffi::c_void, ptr::NonNull, sync::Arc};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 #[link(name = "kernel32")]
@@ -197,8 +197,18 @@ struct Executable {
 }
 struct Allocation {
     address: *mut c_void,
-    functions: Vec<std::ptr::NonNull<RuntimeFunction>>,
+    functions: Vec<NonNull<RuntimeFunction>>,
     _libraries: Vec<Library>,
+}
+struct LoadedCode {
+    allocation: Arc<Allocation>,
+    table: NonNull<[RuntimeFunction]>,
+}
+impl LoadedCode {
+    fn entries(&self) -> &[RuntimeFunction] {
+        // The initialized root table is read-only and belongs to allocation.
+        unsafe { self.table.as_ref() }
+    }
 }
 fn external_symbol<'image>(
     libraries: &mut BTreeMap<&'image str, Library>, name: &'image blanguage::ast::ExternalName,
@@ -305,19 +315,36 @@ impl Executable {
     }
 }
 impl Allocation {
+    fn place_code(cursor: &mut usize, code: &blanguage::native::NativeCode) -> (usize, usize) {
+        let begin = cursor.div_ceil(16) * 16;
+        let unwind = (begin + code.bytes.len()).div_ceil(4) * 4;
+        *cursor = unwind + code.unwind.len();
+        (begin, unwind)
+    }
+
+    fn register_functions(&mut self, table: NonNull<RuntimeFunction>, count: u32) -> Result<()> {
+        if count != 0 {
+            if unsafe { RtlAddFunctionTable(table.as_ptr(), count, self.address as u64) } == 0 {
+                return Err(error("Windows未接受CPU代码的原生展开信息"));
+            }
+            self.functions.push(table);
+        }
+        Ok(())
+    }
+
     fn load<P>(
         image: &blanguage::native::ProgramImage<P>, workers: usize,
-    ) -> Result<(Option<std::sync::Arc<Self>>, Vec<(u32, u32)>, Option<crate::application::Definitions>)> {
+    ) -> Result<(Option<LoadedCode>, Option<crate::application::Definitions>)> {
         let module = image.module_code();
         let mut size = 0usize;
-        let mut layout = Vec::new();
+        let mut count = 0usize;
         for code in image.code() {
-            let begin = u32::try_from(size.div_ceil(16) * 16)?;
-            let unwind = u32::try_from((begin as usize + code.bytes.len()).div_ceil(4) * 4)?;
-            size = unwind as usize + code.unwind.len();
-            layout.push((begin, unwind));
+            let (_, unwind) = Self::place_code(&mut size, code);
+            // The aligned unwind offset also bounds the preceding code offset.
+            u32::try_from(unwind)?;
+            count += 1;
         }
-        if layout.is_empty() && module.is_none() { return Ok((None, layout, None)); }
+        if count == 0 && module.is_none() { return Ok((None, None)); }
         let mut sections = Vec::new();
         let mut imports = std::collections::BTreeMap::new();
         if let Some(module) = module {
@@ -336,23 +363,29 @@ impl Allocation {
         }
         for offset in imports.values_mut() { *offset = size; size += 8; }
         let table_offset = size.div_ceil(4) * 4;
-        let count = u32::try_from(layout.len())?;
-        size = table_offset + layout.len() * std::mem::size_of::<RuntimeFunction>();
+        let count = u32::try_from(count)?;
+        size = table_offset + count as usize * std::mem::size_of::<RuntimeFunction>();
         let address = unsafe { VirtualAlloc(std::ptr::null_mut(), size, 0x3000, 0x04) };
         if address.is_null() { return Err(std::io::Error::last_os_error().into()); }
         let mut allocation = Self { address, functions: Vec::new(), _libraries: Vec::new() };
-        let table = unsafe { address.cast::<u8>().add(table_offset).cast::<RuntimeFunction>() };
-        for (index, (code, &(begin, unwind))) in image.code().zip(&layout).enumerate() {
-            let entry = unsafe { address.cast::<u8>().add(begin as usize) };
+        let table = unsafe { NonNull::new_unchecked(address.cast::<u8>().add(table_offset).cast::<RuntimeFunction>()) };
+        let mut cursor = 0;
+        for (index, code) in image.code().enumerate() {
+            let (begin, unwind) = Self::place_code(&mut cursor, code);
+            let begin_rva = begin as u32;
             unsafe {
-                std::ptr::copy_nonoverlapping(code.bytes.as_ptr(), entry, code.bytes.len());
-                std::ptr::copy_nonoverlapping(code.unwind.as_ptr(), address.cast::<u8>().add(unwind as usize), code.unwind.len());
-                std::ptr::write(table.add(index), RuntimeFunction { begin, end: begin + u32::try_from(code.function_end)?, unwind });
+                std::ptr::copy_nonoverlapping(code.bytes.as_ptr(), address.cast::<u8>().add(begin), code.bytes.len());
+                std::ptr::copy_nonoverlapping(code.unwind.as_ptr(), address.cast::<u8>().add(unwind), code.unwind.len());
+                table.as_ptr().add(index).write(RuntimeFunction {
+                    begin: begin_rva, end: begin_rva + u32::try_from(code.function_end)?, unwind: unwind as u32,
+                });
             }
         }
-        let mut functions = image.functions().iter().zip(&layout[image.stage_code_count()..])
-            .map(|((name, _), &(begin, _))| {
-                let entry = unsafe { address.cast::<u8>().add(begin as usize) }.cast::<c_void>();
+        let root_table = NonNull::slice_from_raw_parts(table, count as usize);
+        let entries = unsafe { root_table.as_ref() };
+        let mut functions = image.functions().iter().zip(&entries[image.stage_code_count()..])
+            .map(|((name, _), row)| {
+                let entry = unsafe { address.cast::<u8>().add(row.begin as usize) }.cast::<c_void>();
                 (name.as_str(), entry)
             }).collect::<BTreeMap<_, _>>();
         let mut libraries = std::collections::BTreeMap::new();
@@ -360,7 +393,6 @@ impl Allocation {
             let symbol = external_symbol(&mut libraries, name)?;
             unsafe { std::ptr::write_unaligned(address.cast::<u8>().add(offset).cast::<u64>(), symbol as u64); }
         }
-        let mut tables = vec![(table, count)];
         if let Some(module) = module {
             for (section, &begin) in module.sections.iter().zip(&sections) {
                 let entry = unsafe { address.cast::<u8>().add(begin) };
@@ -376,10 +408,9 @@ impl Allocation {
                         .map_err(error)?;
                 }
                 if section.name == ".pdata" {
-                    let count = section.bytes.len() / std::mem::size_of::<RuntimeFunction>();
+                    let count = u32::try_from(section.bytes.len() / std::mem::size_of::<RuntimeFunction>())?;
                     let table = entry.cast::<RuntimeFunction>();
-                    unsafe { std::slice::from_raw_parts_mut(table, count) }.sort_unstable_by_key(|entry| entry.begin);
-                    tables.push((table, u32::try_from(count)?));
+                    unsafe { std::slice::from_raw_parts_mut(table, count as usize) }.sort_unstable_by_key(|entry| entry.begin);
                 }
             }
             for (name, &(section, value)) in &module.symbols {
@@ -387,8 +418,8 @@ impl Allocation {
                 functions.insert(name.as_str(), entry);
             }
         }
-        for (code, &(begin, _)) in image.code().zip(&layout) {
-            let entry = unsafe { address.cast::<u8>().add(begin as usize) };
+        for (code, row) in image.code().zip(entries) {
+            let entry = unsafe { address.cast::<u8>().add(row.begin as usize) };
             for relocation in &code.relocations {
                 let ptr = match &relocation.target {
                     NativeSymbol::Function(name) => *functions.get(name.as_str())
@@ -434,13 +465,18 @@ impl Allocation {
                 return Err(std::io::Error::last_os_error().into());
             }
         }
-        for (table, count) in tables.into_iter().filter(|(_, count)| *count != 0) {
-            if unsafe { RtlAddFunctionTable(table, count, address as u64) } == 0 {
-                return Err(error("Windows未接受CPU代码的原生展开信息"));
+        allocation.register_functions(table, count)?;
+        if let Some(module) = module {
+            for (section, &begin) in module.sections.iter().zip(&sections) {
+                if section.name == ".pdata" {
+                    // Relocation and sorting already checked this section's entry count.
+                    let count = (section.bytes.len() / std::mem::size_of::<RuntimeFunction>()) as u32;
+                    let table = unsafe { NonNull::new_unchecked(address.cast::<u8>().add(begin).cast::<RuntimeFunction>()) };
+                    allocation.register_functions(table, count)?;
+                }
             }
-            allocation.functions.push(unsafe { std::ptr::NonNull::new_unchecked(table) });
         }
-        let allocation = std::sync::Arc::new(allocation);
+        let allocation = Arc::new(allocation);
         // The compiler-produced table is already relocated in this allocation.
         // Definitions consumes it synchronously while the code owner is live.
         let factories = match functions.get("__blink_module_count") {
@@ -460,7 +496,7 @@ impl Allocation {
                 }, None) })
             }) }?)
         };
-        Ok((Some(allocation), layout, definitions))
+        Ok((Some(LoadedCode { allocation, table: root_table }), definitions))
     }
 }
 impl Drop for Allocation {
@@ -811,18 +847,18 @@ impl CpuCode {
     }
     fn raw<P>(image: blanguage::native::ProgramImage<P>) -> std::result::Result<Self, (Box<dyn std::error::Error + Send + Sync>, blanguage::native::ProgramImage<P>)> {
         let workers=match std::thread::available_parallelism(){Ok(workers)=>workers.get(),Err(error)=>return Err((error.into(),image))};
-        let (allocation, layout, definitions) = match Allocation::load(&image, workers) {
+        let (loaded, definitions) = match Allocation::load(&image, workers) {
             Ok(code) => code,
             Err(error) => return Err((error, image)),
         };
-        let mut remaining = layout.as_slice();
+        let mut remaining = loaded.as_ref().map_or(&[][..], LoadedCode::entries);
         Ok(Self::from_image(image, workers, &mut |stages, functions| {
             let stages = Self::load_stages(stages, &mut |_| {
-                let (&(begin, _), rest) = remaining.split_first().unwrap();
+                let (row, rest) = remaining.split_first().unwrap();
                 remaining = rest;
-                let base = allocation.as_ref().unwrap().address.cast::<u8>();
-                let address = unsafe { base.add(begin as usize) }.cast::<c_void>();
-                Executable { address, _allocation: allocation.clone() }
+                let allocation = &loaded.as_ref().unwrap().allocation;
+                let address = unsafe { allocation.address.cast::<u8>().add(row.begin as usize) }.cast::<c_void>();
+                Executable { address, _allocation: Some(allocation.clone()) }
             });
             // These entries were already placed and resolved by Allocation::load.
             remaining = &remaining[functions..];
