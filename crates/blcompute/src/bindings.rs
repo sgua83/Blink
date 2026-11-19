@@ -168,14 +168,16 @@ impl<D> DomainBindings<D> {
         let order: Vec<_> = groups.iter().flat_map(|g| g.iter().copied()).collect();
         self.remap(&order, Vec::new())?;
         let mut data = self.datasets.into_iter();
-        let mut parts = Vec::new();
-        let mut positions = Vec::new();
-        for (part, group) in groups.iter().enumerate() {
-            parts.push(Self {
-                datasets: data.by_ref().take(group.len()).collect(),
-                domains: Vec::new(),
-            });
-            positions.extend((0..group.len()).map(|index| (part, index)));
+        let mut parts: Vec<_> = groups.iter().map(|group| Self {
+            datasets: data.by_ref().take(group.len()).collect(),
+            domains: Vec::new(),
+        }).collect();
+        if self.domains.is_empty() {
+            return Ok(parts);
+        }
+        let mut positions = Vec::with_capacity(order.len());
+        for (part, bindings) in parts.iter().enumerate() {
+            positions.extend((0..bindings.datasets.len()).map(|index| (part, index)));
         }
         for r in self.domains {
             let part = positions[r.domain()].0;
@@ -200,41 +202,43 @@ impl<D> DomainBindings<D> {
             *count += 1;
         }
         self.datasets.extend(additional);
-        let mut positions = vec![Vec::new(); total];
-        let mut shared: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
-        for (new, &old) in order.iter().enumerate() {
-            if let Some(identity) = self.datasets[old].read_identity() {
-                shared.entry(identity).or_default().push(new);
-            } else {
-                positions[old].push(new);
-            }
-        }
-        let new_positions = |old: usize| -> &[usize] {
-            match self.datasets[old].read_identity() {
-                Some(identity) => shared.get(&identity).map_or(&[], Vec::as_slice),
-                None => &positions[old],
-            }
-        };
         let mut domains = Vec::new();
-        for relation in &self.domains {
-            match relation {
-                DomainRelation::Prefix { domain, offset, bytes, count } => {
-                    let counts = new_positions(count.binding);
-                    for &domain in new_positions(*domain) {
-                        for &binding in counts {
-                            domains.push(DomainRelation::Prefix {
-                                domain, offset: *offset, bytes: *bytes, count: PrefixCount { binding, word: count.word },
-                            });
-                        }
-                    }
-                },
-                DomainRelation::Element(range) => for &binding in new_positions(range.binding) {
-                    domains.push(DomainRelation::Element(ElementRange { binding, ..range.clone() }));
-                },
+        if !self.domains.is_empty() && !order.is_empty() {
+            let mut positions = vec![Vec::new(); total];
+            let mut shared: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
+            for (new, &old) in order.iter().enumerate() {
+                if let Some(identity) = self.datasets[old].read_identity() {
+                    shared.entry(identity).or_default().push(new);
+                } else {
+                    positions[old].push(new);
+                }
             }
+            let new_positions = |old: usize| -> &[usize] {
+                match self.datasets[old].read_identity() {
+                    Some(identity) => shared.get(&identity).map_or(&[], Vec::as_slice),
+                    None => &positions[old],
+                }
+            };
+            for relation in &self.domains {
+                match relation {
+                    DomainRelation::Prefix { domain, offset, bytes, count } => {
+                        let counts = new_positions(count.binding);
+                        for &domain in new_positions(*domain) {
+                            for &binding in counts {
+                                domains.push(DomainRelation::Prefix {
+                                    domain, offset: *offset, bytes: *bytes, count: PrefixCount { binding, word: count.word },
+                                });
+                            }
+                        }
+                    },
+                    DomainRelation::Element(range) => for &binding in new_positions(range.binding) {
+                        domains.push(DomainRelation::Element(ElementRange { binding, ..range.clone() }));
+                    },
+                }
+            }
+            domains.sort();
+            domains.dedup();
         }
-        domains.sort();
-        domains.dedup();
         let mut slots: Vec<_> = std::mem::take(&mut self.datasets)
             .into_iter()
             .map(Some)
