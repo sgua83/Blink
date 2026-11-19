@@ -11,7 +11,7 @@ mod pe;
 mod resources;
 pub(crate) mod native;
 use crate::{
-    object::{Input, Kind, Object},
+    object::{Input, Kind, Object, stack},
 };
 use std::path::Path;
 pub(crate) type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
@@ -69,10 +69,29 @@ fn prepare(inputs: Inputs<'_>) -> Result<(Vec<Object>, Vec<crate::object::Archiv
 }
 pub fn stack_report_inputs(inputs: &[impl AsRef<Path>], budget: Option<u64>) -> Result<String> {
     let mut objects = entry(read_inputs(inputs, true)?, true)?;
-    let runtime = objects.iter().any(crate::object::stack::uses_runtime);
-    let reserve = match objects[0].kind { Kind::Application { stack_bytes } => Some(pe::stack_reserve(stack_bytes)), _ => None };
-    let object = if objects.len() == 1 { objects.remove(0) } else { combine::objects(objects,None)? };
-    Ok(crate::object::stack::report(&object, budget, reserve, runtime))
+    let runtime = objects.iter().any(stack::uses_runtime);
+    let reserve = match objects[0].kind {
+        Kind::Application { stack_bytes } => Some(pe::stack_reserve(stack_bytes, &objects[1..])),
+        _ => None,
+    };
+    let report = if let [object] = objects.as_slice() {
+        let code = stack::Code {
+            sections: &object.sections,
+            frames: &object.stack,
+            symbols: &object.symbols,
+        };
+        stack::report(&object.name, code, budget, reserve, runtime)
+    } else {
+        let name = std::mem::take(&mut objects[0].name);
+        let combined = combine::objects(objects, None)?;
+        let code = stack::Code {
+            sections: &combined.sections,
+            frames: &combined.stack,
+            symbols: &[],
+        };
+        stack::report(&name, code, budget, reserve, runtime)
+    };
+    Ok(report)
 }
 #[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
 fn link_objects(inputs: Inputs<'_>, _: &Path) -> Result<()> {
@@ -90,12 +109,13 @@ fn link_objects(inputs: Inputs<'_>, path: &Path) -> Result<()> {
     file_bytes::create_dir_all(output.parent().unwrap())?;
     match &object.kind {
         Kind::Module { .. } => unreachable!(),
-        Kind::Application { .. } => {
+        Kind::Application { stack_bytes } => {
+            let reserve = pe::stack_reserve(*stack_bytes, &objects[1..]);
             if archives.is_empty() {
-                let object = combine::objects(objects,None)?;
-                file_bytes::write(&output, &pe::link(&object)?)?;
+                let combined = combine::objects(objects, None)?;
+                file_bytes::write(&output, &pe::link(&combined.sections, reserve)?)?;
             } else {
-                msvc::link(&archives, &objects.iter().collect::<Vec<_>>(), &output, false)?;
+                msvc::link(&archives, &objects, &output, reserve, false)?;
             }
         }
         Kind::Library {
@@ -107,7 +127,7 @@ fn link_objects(inputs: Inputs<'_>, path: &Path) -> Result<()> {
                 return Err("DLL 目标文件没有静态目标库".into());
             }
             let library = source_path::file_stem(&output).ok_or("DLL 文件名不是 UTF-8")?;
-            msvc::link(&archives, &objects.iter().collect::<Vec<_>>(), &output, true)?;
+            msvc::link(&archives, &objects, &output, 0, true)?;
             let header_path = source_path::with_extension_units(
                 &output, &[b'a' as u16, b'b' as u16, b'i' as u16, b'.' as u16, b'h' as u16],
             );

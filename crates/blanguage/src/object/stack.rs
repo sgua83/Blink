@@ -1,5 +1,5 @@
 //! Stack information follows the same sections and relocations as native code.
-use super::{Kind, Object, Target};
+use super::{Kind, Object, Section, Symbol, Target};
 mod analysis;
 use analysis::Budget;
 
@@ -23,11 +23,18 @@ pub(crate) fn uses_runtime(object: &Object) -> bool {
         })
 }
 
-pub(crate) fn report(object: &Object, capacity: Option<u64>, reserve: Option<u64>, runtime: bool) -> String {
+pub(crate) struct Code<'a> {
+    pub sections: &'a [Section],
+    pub frames: &'a [Frame],
+    pub symbols: &'a [Symbol],
+}
+
+pub(crate) fn report(name: &str, code: Code<'_>, capacity: Option<u64>, reserve: Option<u64>, runtime: bool) -> String {
     use std::fmt::Write;
-    let analysis::Analysis { metrics, unknown, callees } = analysis::analyze(object, capacity);
-    let count = object.stack.len();
-    let mut text = format!("Blink CPU stack report: {}\nTarget: Windows x64; unit: bytes\n", object.name);
+    let frames = code.frames;
+    let analysis::Analysis { metrics, unknown, callees } = analysis::analyze(code, capacity);
+    let count = frames.len();
+    let mut text = format!("Blink CPU stack report: {name}\nTarget: Windows x64; unit: bytes\n");
     text.push_str("Each row starts immediately before calling the named function. Local includes saved registers and outgoing argument space, excluding its 8-byte return address. Known path includes return addresses and stops at unreported calls; it is not a bound on the rest of execution.\n");
     text.push_str("Upper is available only for a closed, acyclic reported call graph. A reachable cycle has no established finite bound; it does not assert infinite recursion for an actual input.\n");
     if let Some(bytes) = reserve {
@@ -36,7 +43,7 @@ pub(crate) fn report(object: &Object, capacity: Option<u64>, reserve: Option<u64
     if let Some(bytes) = capacity {
         writeln!(text, "Supplied budget: {bytes}; before an independent call to each named function. The caller owns this remaining-capacity declaration.").unwrap();
     }
-    if object.stack.is_empty() {
+    if frames.is_empty() {
         text.push_str("No ordinary CPU function frames in this object. Compute/runtime/native library stack is not established.\n");
     }
     if runtime {
@@ -44,9 +51,9 @@ pub(crate) fn report(object: &Object, capacity: Option<u64>, reserve: Option<u64
     }
     text.push_str("\nFunction\tLocal\tKnown path\tUpper\tCapacity comparison\tUnknown / callees\n");
     let mut order = (0..count).collect::<Vec<_>>();
-    order.sort_by(|&a, &b| object.stack[a].name.cmp(&object.stack[b].name).then(a.cmp(&b)));
+    order.sort_by(|&a, &b| frames[a].name.cmp(&frames[b].name).then(a.cmp(&b)));
     for index in order {
-        let frame = &object.stack[index];
+        let frame = &frames[index];
         let metric = &metrics[index];
         let bytes = metric.bytes();
         let path = if metric.closed != 0 { bytes.to_string() } else { "unknown".into() };

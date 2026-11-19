@@ -42,7 +42,7 @@ void sort(CombineInput input,u64 count,bool symbols) on cpu {
 }
 bool same_section(CombineSection a,CombineSection b) on cpu {return a.flags==b.flags&&compare(a.name,a.name_length,b.name,b.name_length)==0;}
 bool same_symbol(CombineSymbol a,CombineSymbol b) on cpu {return compare(a.name,a.name_length,b.name,b.name_length)==0;}
-CombinePlan invalid(u64 error,u64 at) on cpu {return CombinePlan(0u64,0u64,0u64,error,at);}
+CombinePlan invalid(u64 error,u64 at) on cpu {return CombinePlan(0u64,0u64,error,at);}
 extern "C" CombinePlan prepare(CombineInput input, address local, u64 local_count) on cpu {
     CombinePlan result=invalid(0u64,0u64);u64 i=0u64;
     while(i<input.section_count){CombineSection row=section_at(input,i);row.flags=row.flags&4278185983u64;row.size=0u64;section_put(input,i,row);i+=1u64;}
@@ -54,7 +54,7 @@ extern "C" CombinePlan prepare(CombineInput input, address local, u64 local_coun
     }
     u64 o=0u64;
     while(o<input.object_count){
-        CombineObject object=object_at(input,o);if(object.stack_bytes>result.stack_bytes){result.stack_bytes=object.stack_bytes;}
+        CombineObject object=object_at(input,o);
         i=object.section_start;
         while(i<object.section_start+object.section_count){
             CombineSection row=section_at(input,i);CombineSection first=section_at(input,row.owner);

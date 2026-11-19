@@ -20,7 +20,7 @@ struct PeImport {
 struct PeAbsolute {u64 page;u64 value;u64 order_or_page_end;};
 struct PeInput {
     address sections;u64 section_count;address relocations;
-    address imports;u64 import_count;address absolutes;u64 absolute_count;u64 stack_bytes;
+    address imports;u64 import_count;address absolutes;u64 absolute_count;u64 stack_reserve;
 };
 struct PeLayout {
     u64 length;u64 header;u64 idata;u64 idata_length;u64 import_directory_size;

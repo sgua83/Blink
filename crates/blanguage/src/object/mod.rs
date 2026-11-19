@@ -91,7 +91,14 @@ pub struct Object<Bytes = Vec<u8>> {
     pub(crate) stack: Vec<stack::Frame>,
 }
 impl Object {
-    pub fn stack_report(&self, budget: Option<u64>) -> String { stack::report(self, budget, None, stack::uses_runtime(self)) }
+    pub fn stack_report(&self, budget: Option<u64>) -> String {
+        let code = stack::Code {
+            sections: &self.sections,
+            frames: &self.stack,
+            symbols: &self.symbols,
+        };
+        stack::report(&self.name, code, budget, None, stack::uses_runtime(self))
+    }
     pub fn write(&self, path: &Path) -> Result<()> {
         if let Some(parent) = path.parent() {
             crate::file_bytes::create_dir_all(parent)?;

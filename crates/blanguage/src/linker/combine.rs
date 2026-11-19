@@ -1,12 +1,12 @@
 //! B owns grouping, layout, symbol/stack/relocation rebasing and payload copying.
 //! The original objects stay alive until synchronous encoding ends. Rust keeps
-//! the final Object, symbol map and resource owners; no input payload is cloned.
+//! the combined sections and requested frames; no input payload is cloned.
 use super::{Result, resources::ImportBytes};
-use crate::object::{Kind,Object,Section,Target,stack::Call};
+use crate::object::{Object, Section, Target, stack::{Call, Frame}};
 use std::collections::BTreeMap;
 
 #[repr(C)]
-struct CombineObject {section_start:u64,section_count:u64,symbol_start:u64,symbol_count:u64,frame_start:u64,frame_count:u64,stack_bytes:u64}
+struct CombineObject {section_start:u64,section_count:u64,symbol_start:u64,symbol_count:u64,frame_start:u64,frame_count:u64}
 #[repr(C)]
 struct CombineSection {
     name:*const u8,name_length:u64,bytes:*const u8,byte_length:u64,flags:u64,object:u64,
@@ -26,7 +26,7 @@ struct CombineInput {
     frames:*mut CombineFrame,calls:*mut u64,order:*mut u64,
 }
 #[repr(C)]
-struct CombinePlan {groups:u64,symbols:u64,stack_bytes:u64,error:u64,at:u64}
+struct CombinePlan {groups:u64,symbols:u64,error:u64,at:u64}
 unsafe extern "C" {
     #[link_name="bootstrap.combine::prepare"]
     fn combine_prepare(input: CombineInput, local: *const ImportBytes, local_count: usize) -> CombinePlan;
@@ -34,10 +34,14 @@ unsafe extern "C" {
     fn combine_encode(input:CombineInput,outputs:*const *mut u8);
 }
 
+pub(super) struct Combined {
+    pub sections: Vec<Section>,
+    pub stack: Vec<Frame>,
+}
+
 pub(super) fn objects<Payload: AsRef<[u8]>>(
     objects: Vec<Object<Payload>>, module: Option<(&[&str], &mut BTreeMap<String, (usize, u32)>)>,
-) -> Result<Object> {
-    let name=objects[0].name.clone();
+) -> Result<Combined> {
     let mut inputs=Vec::with_capacity(objects.len());
     let mut rows=Vec::new();let mut symbols=Vec::new();let mut relocations=Vec::new();
     let mut frames=Vec::new();let mut calls=Vec::new();
@@ -68,9 +72,8 @@ pub(super) fn objects<Payload: AsRef<[u8]>>(
             let (section,start,present)=match frame.coff {Some((section,start))=>(section as u64,u64::from(start),1),None=>(0,0,0)};
             frames.push(CombineFrame{section,start,present,call_start:call_start as u64,call_count:(calls.len()-call_start) as u64});
         }
-        let stack_bytes=match object.kind{Kind::Application{stack_bytes}|Kind::Module{stack_bytes,..}=>u64::from(stack_bytes),_=>0};
         inputs.push(CombineObject{section_start:section_start as u64,section_count:object.sections.len() as u64,
-            symbol_start:symbol_start as u64,symbol_count:object.symbols.len() as u64,frame_start:frame_start as u64,frame_count:object.stack.len() as u64,stack_bytes});
+            symbol_start:symbol_start as u64,symbol_count:object.symbols.len() as u64,frame_start:frame_start as u64,frame_count:object.stack.len() as u64});
     }
     // The same temporary permutation serves grouping, then final symbol lookup.
     let mut order=vec![0u64;rows.len().max(symbols.len())];
@@ -135,6 +138,5 @@ pub(super) fn objects<Payload: AsRef<[u8]>>(
             }
         }
     }
-    Ok(Object{name,kind:Kind::Application{stack_bytes:u32::try_from(plan.stack_bytes)?},sections,stack,
-        symbols:Vec::new(),imports:BTreeMap::new(),archive:None})
+    Ok(Combined { sections, stack })
 }

@@ -1,5 +1,5 @@
-//! Synchronous access to the original stack object and the query's native containers.
-use super::{Call,Object,Target};
+//! Synchronous access to the original native code and the query's native containers.
+use super::{Call, Code, Target};
 use std::{collections::{BTreeMap,BTreeSet},ffi::c_void};
 
 #[repr(C)]
@@ -57,7 +57,7 @@ unsafe extern "C" {
         metrics:*mut Metric,scratch:*mut Scratch,host:Host);
 }
 struct Context<'a> {
-    object:&'a Object,
+    code: Code<'a>,
     positions:BTreeMap<(usize,u32),usize>,
     symbols:BTreeMap<&'a str,(usize,u32)>,
     parents:Vec<Vec<Parent>>,
@@ -65,18 +65,18 @@ struct Context<'a> {
     callees:Vec<BTreeSet<String>>,
 }
 unsafe extern "C" fn read_frame(slot:*mut c_void,index:u64)->FrameInfo {
-    let context=unsafe{&*slot.cast::<Context<'_>>()};let frame=&context.object.stack[index as usize];
+    let context=unsafe{&*slot.cast::<Context<'_>>()};let frame=&context.code.frames[index as usize];
     FrameInfo{calls:frame.calls.len() as u64,local:frame.local,positioned:u32::from(frame.coff.is_some())}
 }
 unsafe extern "C" fn read_call(slot:*mut c_void,index:u64,ordinal:u64)->CallInfo {
-    let context=unsafe{&*slot.cast::<Context<'_>>()};let frame=&context.object.stack[index as usize];
+    let context=unsafe{&*slot.cast::<Context<'_>>()};let frame=&context.code.frames[index as usize];
     let mut value=CallInfo{name:Name::new(""),dll:Name::new(""),section:0,start:0,kind:CallKind::Indirect,target:TargetKind::Section};
     match &frame.calls[ordinal as usize] {
         Call::Unreported(reason)=>{value.kind=CallKind::Unreported;value.name=Name::new(reason);}
         Call::Indirect=>{},
         Call::Reference{offset,tail}=>{
             value.kind=if *tail{CallKind::Tail}else{CallKind::Reference};
-            let target=&context.object.sections[frame.coff.unwrap().0].relocations.iter().find(|r|r.offset==*offset).unwrap().target;
+            let target=&context.code.sections[frame.coff.unwrap().0].relocations.iter().find(|r|r.offset==*offset).unwrap().target;
             match target {
                 Target::Section(section,start)=>{value.section=*section as u64;value.start=*start;}
                 Target::Symbol(name)=>{value.target=TargetKind::Symbol;value.name=Name::new(name);}
@@ -87,10 +87,10 @@ unsafe extern "C" fn read_call(slot:*mut c_void,index:u64,ordinal:u64)->CallInfo
     value
 }
 unsafe extern "C" fn register_frame(slot:*mut c_void,index:u64) {
-    let context=unsafe{&mut *slot.cast::<Context<'_>>()};context.positions.insert(context.object.stack[index as usize].coff.unwrap(),index as usize);
+    let context=unsafe{&mut *slot.cast::<Context<'_>>()};context.positions.insert(context.code.frames[index as usize].coff.unwrap(),index as usize);
 }
 unsafe extern "C" fn register_symbol(slot:*mut c_void,index:u64) {
-    let context=unsafe{&mut *slot.cast::<Context<'_>>()};let symbol=&context.object.symbols[index as usize];
+    let context=unsafe{&mut *slot.cast::<Context<'_>>()};let symbol=&context.code.symbols[index as usize];
     context.symbols.insert(symbol.name.as_str(),(symbol.section,symbol.value));
 }
 unsafe extern "C" fn lookup_symbol(slot:*mut c_void,name:Name)->Position {
@@ -101,7 +101,7 @@ unsafe extern "C" fn lookup_position(slot:*mut c_void,position:Position)->Index 
 }
 unsafe extern "C" fn edge(slot:*mut c_void,parent:u64,child:u64,tail:u32) {
     let context=unsafe{&mut *slot.cast::<Context<'_>>()};context.parents[child as usize].push(Parent{parent,tail});
-    context.callees[parent as usize].insert(context.object.stack[child as usize].name.clone());
+    context.callees[parent as usize].insert(context.code.frames[child as usize].name.clone());
 }
 unsafe extern "C" fn parent_count(slot:*mut c_void,index:u64)->u64 {unsafe{&*slot.cast::<Context<'_>>()}.parents[index as usize].len() as u64}
 unsafe extern "C" fn read_parent(slot:*mut c_void,index:u64,ordinal:u64)->Parent {unsafe{&*slot.cast::<Context<'_>>()}.parents[index as usize][ordinal as usize]}
@@ -125,10 +125,12 @@ unsafe extern "C" fn union_unknown(slot:*mut c_void,parent:u64,child:u64) {
 }
 unsafe extern "C" fn unknown_empty(slot:*mut c_void,index:u64)->u32 {u32::from(unsafe{&*slot.cast::<Context<'_>>()}.unknown[index as usize].is_empty())}
 pub(super) struct Analysis {pub metrics:Vec<Metric>,pub unknown:Vec<BTreeSet<String>>,pub callees:Vec<BTreeSet<String>>}
-pub(super) fn analyze(object:&Object,capacity:Option<u64>)->Analysis {
-    let count=object.stack.len();let mut context=Context{object,positions:BTreeMap::new(),symbols:BTreeMap::new(),parents:vec![Vec::new();count],unknown:vec![BTreeSet::new();count],callees:vec![BTreeSet::new();count]};
+pub(super) fn analyze(code: Code<'_>, capacity: Option<u64>) -> Analysis {
+    let count = code.frames.len();
+    let symbol_count = code.symbols.len();
+    let mut context=Context{code,positions:BTreeMap::new(),symbols:BTreeMap::new(),parents:vec![Vec::new();count],unknown:vec![BTreeSet::new();count],callees:vec![BTreeSet::new();count]};
     let mut metrics=Vec::with_capacity(count);let mut scratch=Vec::<Scratch>::with_capacity(count);
     let host=Host{frame:read_frame,call:read_call,register_frame,register_symbol,symbol:lookup_symbol,position:lookup_position,edge,parent_count,parent:read_parent,notice,union_unknown,unknown_empty};
-    unsafe{analyze_graph(std::ptr::from_mut(&mut context).cast(),count as u64,object.symbols.len() as u64,u32::from(capacity.is_some()),capacity.unwrap_or(0),metrics.as_mut_ptr(),scratch.as_mut_ptr(),host);metrics.set_len(count);}
+    unsafe{analyze_graph(std::ptr::from_mut(&mut context).cast(),count as u64,symbol_count as u64,u32::from(capacity.is_some()),capacity.unwrap_or(0),metrics.as_mut_ptr(),scratch.as_mut_ptr(),host);metrics.set_len(count);}
     Analysis{metrics,unknown:context.unknown,callees:context.callees}
 }

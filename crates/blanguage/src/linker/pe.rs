@@ -2,7 +2,7 @@
 //! borrowed until encoding ends; the shared machine relocation owner patches the
 //! same final output, also serving raw VM loading.
 use super::Result;
-use crate::object::{Kind, Object, Target};
+use crate::object::{Kind, Object, Section, Target};
 
 #[repr(C)]
 struct PeSection {
@@ -28,7 +28,7 @@ struct PeInput {
     sections:*mut PeSection, section_count:u64,
     relocations:*mut PeRelocation,
     imports:*mut PeImport, import_count:u64,
-    absolutes:*mut PeAbsolute, absolute_count:u64, stack_bytes:u64,
+    absolutes:*mut PeAbsolute, absolute_count:u64, stack_reserve:u64,
 }
 #[derive(Clone,Copy)]
 #[repr(C)]
@@ -45,18 +45,20 @@ unsafe extern "C" {
     #[link_name="bootstrap.pe::stack_reserve"]
     fn pe_stack_reserve(stack_bytes:u32)->u64;
 }
-pub(super) fn stack_reserve(stack_bytes:u32)->u64 {unsafe{pe_stack_reserve(stack_bytes)}}
+pub(super) fn stack_reserve(entry_stack_bytes: u32, modules: &[Object]) -> u64 {
+    let stack_bytes = modules.iter().filter_map(|object| match object.kind {
+        Kind::Module { stack_bytes, .. } => Some(stack_bytes),
+        _ => None,
+    }).fold(entry_stack_bytes, u32::max);
+    unsafe { pe_stack_reserve(stack_bytes) }
+}
 
-pub(super) fn link(object:&Object)->Result<Vec<u8>> {
-    let stack_bytes=match object.kind {
-        Kind::Application{stack_bytes}=>stack_bytes,
-        _=>return Err("需要应用目标文件".into()),
-    };
-    let mut sections=Vec::with_capacity(object.sections.len());
+pub(super) fn link(input_sections: &[Section], stack_reserve: u64) -> Result<Vec<u8>> {
+    let mut sections=Vec::with_capacity(input_sections.len());
     let mut relocations=Vec::new();
     let mut imports=Vec::new();
     let mut absolute_count=0;
-    for section in &object.sections {
+    for section in input_sections {
         let start=relocations.len();
         for relocation in &section.relocations {
             let (target_kind,target_section,value)=match &relocation.target {
@@ -89,9 +91,9 @@ pub(super) fn link(object:&Object)->Result<Vec<u8>> {
         sections:sections.as_mut_ptr(),section_count:sections.len() as u64,
         relocations:relocations.as_mut_ptr(),
         imports:imports.as_mut_ptr(),import_count:imports.len() as u64,
-        absolutes:absolutes.as_mut_ptr(),absolute_count:absolutes.len() as u64,stack_bytes:u64::from(stack_bytes),
+        absolutes:absolutes.as_mut_ptr(),absolute_count:absolutes.len() as u64,stack_reserve,
     };
-    // Every pointer borrows its original Object or this call's final metadata
+    // Every pointer borrows the combined sections or this call's final metadata
     // allocation. B cannot retain them, and encoding does not resize any input.
     let layout=unsafe{pe_layout(input)};
     match layout.error {

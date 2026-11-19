@@ -265,7 +265,10 @@ fn write_input(temporary: &mut Vec<PathBuf>, path: PathBuf, bytes: &[u8]) -> io:
     written.into_result()
 }
 
-pub(super) fn link(archives: &[Archive], objects: &[&crate::object::Object], path: &Path, import_library: bool) -> Result<()> {
+pub(super) fn link(
+    archives: &[Archive], objects: &[crate::object::Object], path: &Path,
+    stack_reserve: u64, import_library: bool,
+) -> Result<()> {
     let binding = super::resources::resources(&archives.iter().collect::<Vec<_>>(), 0, 0, std::iter::empty(), std::iter::empty(), None)?;
     let (linker, libraries) = tools()?;
     let sdk = if archives.iter().flat_map(|archive| &archive.libraries)
@@ -313,10 +316,6 @@ pub(super) fn link(archives: &[Archive], objects: &[&crate::object::Object], pat
             let path = join(directory, format!(".blink-link-{id}-resources.obj"));
             write_input(&mut temporary, path, &encode_native(&binding.name, &binding.sections, &binding.symbols)?)?;
         }
-        let stack_reserve = match &objects[0].kind {
-            crate::object::Kind::Application { stack_bytes } => super::pe::stack_reserve(*stack_bytes),
-            _ => 0,
-        };
         let (status, stdout, stderr) = link_process(
             &linker, path, &temporary, &libraries, archives,
             sdk.as_ref().map(|(root, _)| root.as_path()), stack_reserve, import_library)?;

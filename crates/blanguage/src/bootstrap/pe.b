@@ -211,7 +211,7 @@ extern "C" void encode(PeInput input,PeLayout layout,address output) on cpu {
     le64(output,optional+24u64,layout.image_base);le32(output,optional+32u64,4096u64);le32(output,optional+36u64,512u64);
     le16(output,optional+40u64,6u64);le16(output,optional+48u64,6u64);le32(output,optional+56u64,layout.image_size);le32(output,optional+60u64,layout.header);le16(output,optional+68u64,3u64);
     u64 flags=256u64;if(layout.reloc_length!=0u64){flags+=96u64;}le16(output,optional+70u64,flags);
-    le64(output,optional+72u64,stack_reserve(u32(input.stack_bytes)));le64(output,optional+80u64,4096u64);le64(output,optional+88u64,1048576u64);le64(output,optional+96u64,4096u64);le32(output,optional+108u64,16u64);
+    le64(output,optional+72u64,input.stack_reserve);le64(output,optional+80u64,4096u64);le64(output,optional+88u64,1048576u64);le64(output,optional+96u64,4096u64);le32(output,optional+108u64,16u64);
     le32(output,optional+120u64,layout.idata);le32(output,optional+124u64,layout.import_directory_size);
     le32(output,optional+136u64,layout.pdata);le32(output,optional+140u64,layout.pdata_length);
     if(layout.reloc_length!=0u64){le32(output,optional+152u64,layout.reloc);}le32(output,optional+156u64,layout.reloc_length);
