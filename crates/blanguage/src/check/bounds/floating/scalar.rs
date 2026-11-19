@@ -81,7 +81,8 @@ pub(in crate::check::bounds) fn math(op:MathOp,args:&[Value],component:usize)->S
     decoded(unsafe{source_math(operation,a.ty.components[0].0.bit_width(),raw(left.hull()),right)})
 }
 pub(in crate::check::bounds) fn sum(input:&Proof,component:usize,scalar:Scalar,maximum:Bits)->ScalarRanges {
-    let ranges=input.element_range(component,scalar);decoded(unsafe{source_sum(scalar.bit_width(),raw(ranges.hull()),maximum)})
+    let hull = input.element_hull(component, scalar);
+    decoded(unsafe { source_sum(scalar.bit_width(), raw(hull), maximum) })
 }
 pub(in crate::check::bounds) fn negate(value:&Value,component:usize)->ScalarRanges {
     decoded(unsafe{source_negate(value.ty.components[component].0.bit_width(),raw(super::ranges(value,component).hull()))})

@@ -468,6 +468,11 @@ impl Proof {
         range_sets::restrict_excluding(source, 0, scalar.bit_mask(), excluded)
     }
 
+    fn element_hull(&self, component: usize, scalar: Scalar) -> (Bits, Bits) {
+        let (source, excluded) = self.element_intervals(component, scalar);
+        range_sets::element_hull(source, scalar.bit_mask(), excluded)
+    }
+
     fn element_known_bits(&self, component: usize, scalar: Scalar) -> (Bits, Bits) {
         scalar.is_integer().then(|| self.known_bits(component, scalar)).flatten()
             .map_or((0, 0), |bits| (bits.mask, bits.value))
@@ -3664,7 +3669,7 @@ impl Builder<'_> {
                 if minimum > maximum { return ScalarRanges(Vec::new()); }
                 if scalar.is_float() { return floating::sum(input, component, *scalar, maximum); }
                 if !scalar.is_integer() { return ScalarRanges::default(); }
-                let (lower, upper) = input.element_range(component, *scalar).hull();
+                let (lower, upper) = input.element_hull(component, *scalar);
                 if lower > upper { return ScalarRanges(Vec::new()); }
                 let number = |bits| if scalar.is_signed() {
                     i128::from(scalar.signed(bits ^ scalar.order_bias()))

@@ -108,6 +108,8 @@ unsafe extern "C" {
     fn clipped(input:Borrowed,count:usize,read:Read,output:Slot,push:Push,lower:u64,upper:u64);
     #[link_name="bootstrap.scalar_fold::range_set_project"]
     fn projected(input:Borrowed,count:usize,read:Read,output:Slot,push:Push,projection:Projection);
+    #[link_name="bootstrap.scalar_fold::range_set_projected_hull"]
+    fn projected_hull(input: Borrowed, count: usize, read: Read, projection: Projection) -> Range;
     #[link_name="bootstrap.scalar_fold::range_set_covers_projected"]
     fn covers_projected(input: Borrowed, count: usize, read: Read, projection: Projection, requirement: Requirement) -> bool;
     #[link_name="bootstrap.scalar_fold::range_set_without"]
@@ -135,6 +137,12 @@ pub(super) fn restrict_excluding(values: &[Pair], lower: u64, upper: u64, exclud
     let projection = Projection::new(lower, upper, excluded);
     inputs(values, &[], |source, count, _| {
         output(|dest| unsafe { projected(source, count, read, dest, push, projection) })
+    })
+}
+pub(super) fn element_hull(values: &[Pair], upper: Bits, excluded: Option<Bits>) -> Pair {
+    let projection = Projection::new(0, upper, excluded);
+    inputs(values, &[], |source, count, _| unsafe {
+        projected_hull(source, count, read, projection).into()
     })
 }
 pub(super) fn covers_element(

@@ -868,6 +868,24 @@ extern "C" void range_set_project(address input,u64 count,cfn<BitRange,address,u
     }
 }
 
+extern "C" BitRange range_set_projected_hull(address input,u64 count,cfn<BitRange,address,u32,u64> get,
+    RangeSetProjection projection) on cpu requires nonzero(get) {
+    RangeSetCursor cursor=RangeSetCursor(0u64,RangeSetNext(BitRange(0u64,0u64),0));
+    BitRange hull=BitRange(1u64,0u64);
+    bool present=false;
+    while(true){
+        RangeSetNext next=range_set_next(input,count,get,projection,cursor);
+        if(next.present==0){return hull;}
+        IntegerRangePieces pieces=range_set_excluding(next.value,projection.excluded,projection.exclude);
+        if(pieces.count==0){continue;}
+        if(!present){
+            hull.lower=pieces.first.lower;
+            present=true;
+        }
+        hull.upper=pieces.count>1?pieces.second.upper:pieces.first.upper;
+    }
+}
+
 extern "C" bool range_set_covers_projected(address input,u64 count,cfn<BitRange,address,u32,u64> get,
     RangeSetProjection projection,RangeSetRequirement requirement) on cpu
     requires nonzero(get) requires nonzero(requirement.interval) {
