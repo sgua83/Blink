@@ -130,7 +130,7 @@ bool stack_relocation(ObjectSection section,u64 offset,u64 stride) on cpu {
     }
     return false;
 }
-extern "C" u32 recover_stack(ObjectRows rows,address frames,u64 count,address calls,address nodes,u64 stride) on cpu {
+extern "C" u32 recover_stack(ObjectRows rows,address frames,u64 count,address calls,address nodes,u64 stride,u32 stack_output) on cpu {
     // Resolve all section identities before interpreting positions and calls.
     u64 i=0u64;
     while(i<count){
@@ -170,6 +170,7 @@ extern "C" u32 recover_stack(ObjectRows rows,address frames,u64 count,address ca
         }
         i+=1u64;
     }
+    if(stack_output==0){return 0;}
     i=0u64;
     while(i<count){
         address row=stack_frame_address(frames,i);

@@ -196,7 +196,7 @@ impl<'a> Context<'a> {
 }
 unsafe extern "C" fn extract(context:*mut c_void,library:u64,name:Bytes)->Reply {
     let context=unsafe{&mut *context.cast::<Context<'_>>()};
-    let result=context.libraries[library as usize].extract(text(&name));context.reply(result)
+    let result=context.libraries[library as usize].extract(text(&name), context.frames.is_some());context.reply(result)
 }
 unsafe extern "C" fn native_archive(context:*mut c_void,index:u64)->Reply {
     let context=unsafe{&mut *context.cast::<Context<'_>>()};
@@ -216,21 +216,21 @@ unsafe extern "C" fn binding(context:*mut c_void,request:ResourceRequest)->Reply
     let result=resources::resources(&archives,request.types as u32,request.programs as u32,runtime.iter().map(text),locals.iter().map(|row|(text(&row.slot),text(&row.name))),Some(crate::resource::ABI));
     context.reply(result)
 }
-pub(super) fn entry(inputs: Inputs<'_>) -> Result<Vec<Object>> {
-    select(inputs, Roots::Entry, std::convert::identity, <[u8]>::to_vec)
+pub(super) fn entry(inputs: Inputs<'_>, stack_output: bool) -> Result<Vec<Object>> {
+    select(inputs, Roots::Entry { stack_output }, std::convert::identity, <[u8]>::to_vec)
 }
 pub(super) fn select<'a, Payload>(
     inputs: Inputs<'a>, roots: Roots<'_>,
     owned: impl Fn(Vec<u8>) -> Payload,
     borrowed: impl Fn(&'a [u8]) -> Payload,
 ) -> Result<Vec<Object<Payload>>> {
-    let(native_mode,types,programs,roots)=match roots{
-        Roots::Entry=>(0,0,0,&[][..]),
-        Roots::Symbols(roots,types,programs)=>(1,u64::from(types),u64::from(programs),roots),
+    let(native_mode,types,programs,roots,stack_output)=match roots{
+        Roots::Entry { stack_output }=>(0,0,0,&[][..],stack_output),
+        Roots::Symbols(roots,types,programs)=>(1,u64::from(types),u64::from(programs),roots,false),
     };
     let runtime=crate::resource::MODULE_RUNTIME_SYMBOLS.iter().map(|name|Bytes::new(name)).collect::<Vec<_>>();
     let params=Params{native_mode,types,programs,roots:roots.as_ptr(),root_count:roots.len() as u64,runtime_library:Bytes::new(crate::application::RUNTIME_LIBRARY),runtime_symbols:runtime.as_ptr(),runtime_symbol_count:runtime.len() as u64};
-    let mut context=Context::new(inputs, native_mode == 0);let input=context.view();
+    let mut context=Context::new(inputs, stack_output);let input=context.view();
     let result=unsafe{choose(input,params,&mut context as *mut Context<'_> as *mut c_void,extract,native_archive,binding,slot)};
     match result.error{
         0=>{},

@@ -19,12 +19,12 @@ pub fn link(input: &Path, output: &Path) -> Result<()> {
     link_inputs(&[input], output)
 }
 pub fn link_inputs(inputs: &[impl AsRef<Path>], output: &Path) -> Result<()> {
-    link_objects(read_inputs(inputs)?, output)
+    link_objects(read_inputs(inputs, false)?, output)
 }
-fn read_inputs(paths: &[impl AsRef<Path>]) -> Result<Inputs<'static>> {
+fn read_inputs(paths: &[impl AsRef<Path>], stack_output: bool) -> Result<Inputs<'static>> {
     let mut inputs = Inputs::default();
     for path in paths {
-        inputs.push(Input::read(path.as_ref())?);
+        inputs.push(Input::read_with_stack(path.as_ref(), stack_output)?);
     }
     Ok(inputs)
 }
@@ -56,19 +56,19 @@ impl std::ops::Deref for Source<'_> {
     }
 }
 enum Roots<'a> {
-    Entry,
+    Entry { stack_output: bool },
     Symbols(&'a [RootView<'a>], u32, u32),
 }
 pub(crate) fn link_object(object: Object, path: &Path) -> Result<()> {
     link_objects(Inputs { sources: vec![Source::Owned(object)], libraries: Vec::new() }, path)
 }
 fn prepare(inputs: Inputs<'_>) -> Result<(Vec<Object>, Vec<crate::object::Archive>)> {
-    let mut objects = entry(inputs)?;
+    let mut objects = entry(inputs, false)?;
     let archives = objects.iter_mut().filter_map(|object| object.archive.take()).collect();
     Ok((objects, archives))
 }
 pub fn stack_report_inputs(inputs: &[impl AsRef<Path>], budget: Option<u64>) -> Result<String> {
-    let mut objects = entry(read_inputs(inputs)?)?;
+    let mut objects = entry(read_inputs(inputs, true)?, true)?;
     let runtime = objects.iter().any(crate::object::stack::uses_runtime);
     let reserve = match objects[0].kind { Kind::Application { stack_bytes } => Some(pe::stack_reserve(stack_bytes)), _ => None };
     let object = if objects.len() == 1 { objects.remove(0) } else { combine::objects(objects,None)? };

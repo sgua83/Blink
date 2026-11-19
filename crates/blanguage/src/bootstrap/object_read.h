@@ -30,4 +30,4 @@ extern "C" ObjectRelocation object_relocation(
 ) on cpu;
 // Decoded relocations borrow each owning section's records. Offset is their
 // first field and stride is the size of one complete owning record.
-extern "C" u32 recover_stack(ObjectRows rows,address frames,u64 count,address calls,address nodes,u64 stride) on cpu;
+extern "C" u32 recover_stack(ObjectRows rows,address frames,u64 count,address calls,address nodes,u64 stride,u32 stack_output) on cpu;

@@ -346,7 +346,7 @@ unsafe extern "C" {
     #[link_name = "bootstrap.object_read::recover_stack"]
     fn object_recover_stack(
         rows: ObjectRows, frames: *mut MetadataReadFrame, count: usize,
-        calls: *const MetadataReadCall, nodes: *mut [u64; 9], stride: usize,
+        calls: *const MetadataReadCall, nodes: *mut [u64; 9], stride: usize, stack_output: u32,
     ) -> ObjectReadError;
 }
 
@@ -357,12 +357,13 @@ struct StackMetadata {
 }
 
 impl StackMetadata {
-    fn restore(mut self, rows: ObjectRows) -> Result<Vec<stack::Frame>> {
+    fn restore(mut self, rows: ObjectRows, stack_output: bool) -> Result<Vec<stack::Frame>> {
         let mut nodes = vec![[0; 9]; self.frames.len()];
         unsafe {
             object_recover_stack(rows, self.frames.as_mut_ptr(), self.frames.len(),
-                self.calls.as_ptr(), nodes.as_mut_ptr(), size_of::<Relocation>())
+                self.calls.as_ptr(), nodes.as_mut_ptr(), size_of::<Relocation>(), u32::from(stack_output))
         }.check()?;
+        if !stack_output { return Ok(Vec::new()); }
         // read_metadata already checked UTF-8 in these borrowed fields.
         let text = |field: ReadBytes| unsafe { std::str::from_utf8_unchecked(field.borrowed()) }.to_owned();
         let mut calls = self.calls.into_iter();
@@ -718,8 +719,8 @@ fn encode_sections<'a>(
 
 }
 
-pub(super) fn decode(b: &super::ObjectBytes) -> Result<Object> {
-    Reader::new(b)?.object(None)
+pub(super) fn decode(b: &super::ObjectBytes, stack_output: bool) -> Result<Object> {
+    decode_object(&Reader::new(b)?, None, None, stack_output)
 }
 pub(crate) struct ReuseInputs<'a> {
     pub(crate) imports: BTreeSet<&'a str>,
@@ -901,9 +902,9 @@ impl<'a, Input: AsRef<[u8]> + ?Sized> Reader<'a, Input> {
 }
 impl Reader<'_, super::ObjectBytes> {
     /// 非根资源侧库来自原编译产物；其C符号沿真实ABI恢复，不消费B公开合同。
-    pub(crate) fn native(&self, name: &str) -> Result<Object> { decode_object(self, Some(name), None) }
+    pub(crate) fn native(&self, name: &str) -> Result<Object> { decode_object(self, Some(name), None, false) }
     pub(crate) fn object(&self, reuse_libraries: Option<Vec<String>>) -> Result<Object> {
-        decode_object(self, None, reuse_libraries)
+        decode_object(self, None, reuse_libraries, true)
     }
 }
 fn read_metadata(
@@ -995,6 +996,7 @@ fn read_metadata(
 }
 fn decode_object(
     reader: &Reader<'_, super::ObjectBytes>, native: Option<&str>, reuse_libraries: Option<Vec<String>>,
+    stack_output: bool,
 ) -> Result<Object> {
     let b = reader.bytes;
     let mut definitions = vec![SectionDefinition::default(); reader.headers.len() / 40];
@@ -1080,7 +1082,7 @@ fn decode_object(
         row.decoded_count = relocations.len();
     }
     Ok(Object {
-        stack: stack.restore(ObjectRows::new(&raw))?,
+        stack: stack.restore(ObjectRows::new(&raw), stack_output)?,
         name,
         symbols,
         imports: bindings,

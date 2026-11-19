@@ -12,11 +12,14 @@ pub enum Input {
 }
 impl Input {
     pub fn read(path: &Path) -> Result<Self> {
+        Self::read_with_stack(path, true)
+    }
+    pub(crate) fn read_with_stack(path: &Path, stack_output: bool) -> Result<Self> {
         let bytes = ObjectBytes::read(path)?;
         if has_signature(&bytes) {
             Ok(Self::Library(Library::decode(bytes, false)?))
         } else {
-            Ok(Self::Object(coff::decode(&bytes)?))
+            Ok(Self::Object(coff::decode(&bytes, stack_output)?))
         }
     }
     pub(crate) fn imports(&self, imports: &mut crate::module::Imports) -> Result<()> {
@@ -44,7 +47,7 @@ impl Input {
                     let member=library.member(index);
                     (member.available!=0).then(|| {
                         let (name,bytes)=library.member_bytes(member.member);
-                        member_object(name,&bytes,library.native)
+                        member_object(name,&bytes,library.native,true)
                     })
                 }).collect(),
         }
@@ -119,8 +122,8 @@ impl Member {
             .map_err(|error|format!("静态库成员 {}：{error}",self.name).into())
     }
 }
-fn member_object(name:&str,bytes:&ObjectBytes,native:bool)->Result<Object> {
-    (if native {coff::Reader::new(bytes)?.native(name)} else {coff::decode(bytes)})
+fn member_object(name:&str,bytes:&ObjectBytes,native:bool,stack_output:bool)->Result<Object> {
+    (if native {coff::Reader::new(bytes)?.native(name)} else {coff::decode(bytes, stack_output)})
         .map_err(|error|format!("静态库成员 {name}：{error}").into())
 }
 pub struct Library {
@@ -230,7 +233,7 @@ impl Library {
         // The original receiver validated this name before B retained its range.
         (unsafe{std::str::from_utf8_unchecked(member.name.bytes(&self.bytes))},self.bytes.slice(member.body.range()))
     }
-    pub(crate) fn extract(&mut self,symbol:&str)->Result<Option<Object>> {
+    pub(crate) fn extract(&mut self,symbol:&str,stack_output:bool)->Result<Option<Object>> {
         let selected=unsafe{library_take(self.directory.as_ptr(),symbol.as_ptr(),symbol.len())};
         match selected.result {
             0=>return Ok(None),
@@ -239,7 +242,7 @@ impl Library {
         }
         let member=self.member(selected.index).member;
         let (name,bytes)=self.member_bytes(member);
-        let object=member_object(name,&bytes,self.native)?;
+        let object=member_object(name,&bytes,self.native,stack_output)?;
         if !matches!(object.kind,Kind::Module{..}) {
             return Err(format!("静态库成员 {name} 不是独立模块").into());
         }

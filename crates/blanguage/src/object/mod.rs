@@ -103,7 +103,7 @@ impl Object {
         coff::encode(self)
     }
     pub fn read(path: &Path) -> Result<Self> {
-        coff::decode(&ObjectBytes::read(path)?)
+        coff::decode(&ObjectBytes::read(path)?, true)
     }
     pub(crate) fn build_bytes(&self, inputs: &[u8]) -> Result<Vec<u8>> {
         coff::encode_build(self, Some(inputs))
