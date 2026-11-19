@@ -1968,9 +1968,13 @@ impl Clause {
             };
             clauses.insert(clause.key(), mapped);
         }
+        // An impossible result has no consumer for supplementary bounds.
+        let mut outputs = roots.iter().copied()
+            .filter(|root| !matches!(&**clauses[&root.key()].0, ClauseNode::Impossible))
+            .peekable();
         // The other case can trigger numeric projection without itself being projected.
-        if private_numeric || numeric_context(ordered) {
-            let mut roots=roots.to_vec();
+        if outputs.peek().is_some() && (private_numeric || numeric_context(ordered)) {
+            let mut roots: Vec<_> = outputs.collect();
             // Consume the original numeric condition before private snapshots leave scope.
             roots.sort_by_key(|root| root.key());
             roots.dedup_by_key(|root| root.key());
