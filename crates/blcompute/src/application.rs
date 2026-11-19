@@ -21,19 +21,6 @@ pub enum ProgramImage {
     CpuLinked(blanguage::native::ProgramImage<TemplateProgram, *const u8>),
     Gpu(blanguage::spirv::ProgramImage<TemplateProgram>),
 }
-/// 已装入程序的只读借用；不转移代码或设备的拥有关系。
-enum Program<'a> {
-    Cpu(&'a CpuTemplate),
-    Gpu(&'a vulkan::GpuTemplate),
-}
-impl Program<'_> {
-    fn layout(&self) -> &ExecutionPlan {
-        match self {
-            Self::Cpu(p) => p.program(),
-            Self::Gpu(p) => p.program(),
-        }
-    }
-}
 /// 原模块持有的不可变程序定义；CPU代码已绑定，GPU映像供实际设备装入。
 pub enum ProgramSlot {
     Cpu(CpuTemplate),
@@ -356,14 +343,17 @@ impl Frame {
     }
     /// CPU 在本次同步执行中借用实际绑定的帧槽，参数拒绝保持原域，
     /// 取得可写访问后撤回覆盖的计数关系，只有真实完成才发布新保证。
-    /// GPU 等待本次真实完成后返回，数据仍驻留原设备；不隐式下载。
+    /// GPU 参数驻留确认后才装入管线并交接存储；等待本次真实完成后返回，
+    /// 数据仍驻留原设备。
     pub fn run(&mut self, program: u32, bindings: &[DatasetBinding], values: &[Value], textures: &[crate::cpu::CpuTextureBinding<'_>]) -> Result<()> {
         let index = program as usize;
         let definitions = self.definitions.clone();
         let definition = &definitions.programs[index];
         let layout = definition.layout();
+        let mut cpu_resident = false;
         let uniforms = crate::arguments(layout, bindings.iter().map(|binding| {
             let data = self.data.datasets[binding.handle as usize].as_ref().unwrap();
+            cpu_resident |= !matches!(data, ResidentData::Gpu(_));
             let ty = match data {
                 ResidentData::Cpu(data) => &data.ty,
                 ResidentData::CpuBorrow(data) => data.layout(),
@@ -395,23 +385,12 @@ impl Frame {
             };
             order.push((slot, binding.offset));
         }
-        let domains: Vec<_> = self
-            .data
-            .domains
-            .iter()
+        let selected_domains = || self.data.domains.iter()
             .filter_map(|r| r.mapped(|binding| selected.iter().position(|&handle| handle as usize == binding)))
             .collect();
-        let loaded = match definition {
-            ProgramSlot::Cpu(program) => Program::Cpu(program),
-            ProgramSlot::Gpu(image) => {
-                if !textures.is_empty() { return Err(error("CPU纹理借用不能作为GPU驻留资源")); }
-                self.load_gpu(index, image)?;
-                Program::Gpu(self.gpu_programs[index].as_ref().unwrap())
-            }
-        };
-        let layout = loaded.layout();
-        let (domains, result) = match &loaded {
-            Program::Cpu(program) => {
+        let (domains, result) = match definition {
+            ProgramSlot::Cpu(program) => {
+                let domains = selected_domains();
                 let mut datasets = Vec::with_capacity(selected.len());
                 let slots = self.data.datasets.as_mut_ptr();
                 for &handle in &selected {
@@ -430,19 +409,22 @@ impl Frame {
                 });
                 (inputs.domains, result)
             }
-            Program::Gpu(gpu_program) => {
+            ProgramSlot::Gpu(image) => {
+                if !textures.is_empty() {
+                    return Err(error("CPU纹理借用不能作为GPU驻留资源"));
+                }
+                if cpu_resident {
+                    return Err(error("GPU 执行需要先显式 upload 数据"));
+                }
+                let domains = selected_domains();
+                self.load_gpu(index, image)?;
+                let gpu_program = self.gpu_programs[index].as_ref().unwrap();
                 let mut datasets = Vec::with_capacity(selected.len());
                 for &handle in &selected {
-                    match self.data.datasets[handle as usize].take().unwrap() {
-                        ResidentData::Gpu(data) => datasets.push(data),
-                        data @ (ResidentData::Cpu(_)|ResidentData::CpuBorrow(_)) => {
-                            self.data.datasets[handle as usize] = Some(data);
-                            for (&handle, data) in selected.iter().zip(datasets) {
-                                self.data.datasets[handle as usize] = Some(ResidentData::Gpu(data));
-                            }
-                            return Err(error("GPU 执行需要先显式 upload 数据"));
-                        }
-                    }
+                    let Some(ResidentData::Gpu(data)) = self.data.datasets[handle as usize].take() else {
+                        unreachable!("GPU residency was checked during argument binding");
+                    };
+                    datasets.push(data);
                 }
                 let submission = match gpu_program
                     .submit_projected(DomainBindings { datasets, domains }, &order, uniforms)
