@@ -998,13 +998,12 @@ impl CpuCode {
         let input_domains=if self.program.native_frame().is_some(){
             bindings.projected_relations(&self.program,physical)
         }else{Vec::new()};
-        let buffers = bindings
-            .datasets
-            .iter_mut()
-            .map(CpuStorage::cpu_buffer)
-            .collect::<Result<Vec<_>>>()?;
+        let mut buffers = Vec::with_capacity(count);
+        for data in &mut bindings.datasets {
+            buffers.push(data.cpu_buffer()?);
+        }
         // arguments已核对同一存储类型与偏移；这里只交接原指针描述符。
-        let arguments = (0..count).map(|i| {
+        let project = |buffers: &[CpuBuffer<'_>], i| {
             let (physical, offset) = physical(i);
             let expected = &self.program.buffers()[i];
             let buffer = buffers[physical];
@@ -1014,8 +1013,16 @@ impl CpuCode {
                 writable: buffer.writable && expected.access != blanguage::ast::Access::Read,
                 ..buffer
             }
-        }).collect::<Vec<_>>();
-        self.run_buffers(&arguments, textures, uniforms, || {
+        };
+        let physical_count = buffers.len();
+        for i in physical_count..count {
+            buffers.push(project(&buffers, i));
+        }
+        // 物理槽按首次绑定分配，其索引不大于当前逻辑索引。逆序覆盖保留尚未消费的槽。
+        for i in (0..physical_count).rev() {
+            buffers[i] = project(&buffers, i);
+        }
+        self.run_buffers(&buffers, textures, uniforms, || {
             crate::bindings::invalidate(&mut bindings.domains, &self.program.write_regions, physical);
             writing();
         }, definitions, input_domains, timings)?;

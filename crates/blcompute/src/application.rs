@@ -372,7 +372,7 @@ impl Frame {
             };
             (ty, crate::DomainStorage::element_count(data), Some(binding.offset))
         }), values)?;
-        // 参数是存储的引用；同一物理存储只移动一次。
+        // 同一物理存储只移动一次，物理槽按首次绑定顺序分配，供CPU原位投影。
         let mut selected = Vec::new();
         let mut order: Vec<(usize, u32)> = Vec::with_capacity(bindings.len());
         for (logical, binding) in bindings.iter().enumerate() {
