@@ -76,10 +76,6 @@ impl Stage {
             TileSource::Published => SharedWord::Published { tile, word },
         }
     }
-    #[cfg(feature = "compiler")]
-    pub(crate) fn input_words(&self) -> dataflow::InputFragments {
-        dataflow::input_fragments(self, &self.storage_words())
-    }
     pub(crate) fn tile_phases(&self) -> Vec<TilePhase<'_>> {
         let mut phases = Vec::new();
         let mut begin = 0;
@@ -131,88 +127,13 @@ impl Stage {
     }
     // (实际单元类型，所属类型平面的槽，单元内字节)；CPU继续使用原u32字流。
     #[cfg(feature = "compiler")]
-    pub(crate) fn tile_layout(&self, wide: bool) -> BTreeMap<SharedWord, (Scalar, usize, u32)> {
-        fn loads(stage: &Stage, code: &[Inst], phase: i64, last: &mut BTreeMap<SharedWord, i64>, groups: &mut Vec<Vec<SharedWord>>) {
-            for inst in code {
-                match &(inst).kind {
-                    InstKind::Atomic(Atomic {
-                        target: IndexedSource::Tile { tile, .. },
-                        word, scalar,
-                        offset: None,
-                        ..
-                    }) => {
-                        for part in 0..scalar.size().div_ceil(4) {
-                            last.insert(stage.shared_word(*tile, *word + part * 4).aligned(), phase);
-                        }
-                    }
-                    InstKind::LoadIndexed {
-                        source: IndexedSource::Tile { tile, .. },
-                        ..
-                    }
-                    | InstKind::Atomic(Atomic {
-                        target: IndexedSource::Tile { tile, .. },
-                        offset: Some(_),
-                        ..
-                    }) => {
-                        for (scalar, byte) in &stage.tiles[*tile].ty.components {
-                            for part in 0..scalar.size().div_ceil(4) {
-                                last.insert(stage.shared_word(*tile, *byte + part * 4).aligned(), phase);
-                            }
-                        }
-                        let bias = match stage.tiles[*tile].source { TileSource::Input { word, .. } => word % 4, TileSource::Published => 0 };
-                        let mut group: Vec<_> = (0..(stage.tiles[*tile].ty.size + bias).div_ceil(4))
-                            .map(|w| stage.shared_word(*tile, w * 4).aligned()).collect();
-                        let mut i = 0;
-                        while i < groups.len() {
-                            if groups[i].iter().any(|w| group.contains(w)) { group.extend(groups.remove(i)); }
-                            else { i += 1; }
-                        }
-                        group.sort_unstable();
-                        group.dedup();
-                        groups.push(group);
-                    }
-                    InstKind::TileLoad { dst, tile, word, .. } => {
-                        for part in 0..stage.registers[*dst].size().div_ceil(4) {
-                            last.insert(stage.shared_word(*tile, *word + part * 4).aligned(), phase);
-                        }
-                    }
-                    InstKind::Scope(body) => loads(stage, body, phase, last, groups),
-                    InstKind::If { yes, no, .. } => {
-                        loads(stage, yes, phase, last, groups);
-                        loads(stage, no, phase, last, groups);
-                    }
-                    InstKind::Loop {
-                        condition, body, ..
-                    } => {
-                        loads(stage, condition, phase, last, groups);
-                        loads(stage, body, phase, last, groups);
-                    }
-                    _ => {}
-                }
-            }
+    pub(crate) fn tile_layout(
+        &self, wide: bool, used: Option<&mut BTreeSet<SharedWord>>,
+    ) -> dataflow::TileLayout {
+        if self.tiles.is_empty() {
+            return BTreeMap::new();
         }
-        let mut last = BTreeMap::new();
-        let mut births = BTreeMap::new();
-        let mut groups = Vec::new();
-        let mut phase = 0usize;
-        for inst in &self.code {
-            match &(inst).kind {
-                InstKind::TilePublish(publication) => {
-                    births.insert(publication.tile, phase as i64);
-                    phase += 1;
-                }
-                InstKind::TileCollective(c) => {
-                    for (word, result) in &c.results {
-                        for part in 0..self.registers[*result].size().div_ceil(4) {
-                            last.insert(self.shared_word(c.tile, *word + part * 4).aligned(), phase as i64);
-                        }
-                    }
-                    phase += 1;
-                }
-                InstKind::TileBarrier => phase += 1,
-                _ => loads(self, std::slice::from_ref(inst), phase as i64, &mut last, &mut groups),
-            }
-        }
+        let dataflow::LayoutFacts { mut last, births, mut groups } = dataflow::tile_layout_facts(self, used);
         let mut cells = BTreeMap::new();
         if wide {
             for (tile, data) in self.tiles.iter().enumerate() {
@@ -306,7 +227,7 @@ impl Stage {
     }
     #[cfg(feature = "compiler")]
     pub fn tile_data_bytes(&self) -> u64 {
-        self.tile_layout(false).values().map(|(_, slot, _)| slot).max().map_or(0, |slot| {
+        self.tile_layout(false, None).values().map(|(_, slot, _)| slot).max().map_or(0, |slot| {
             (*slot as u64 + 1) * self.workgroup_width() as u64 * 4
         })
     }

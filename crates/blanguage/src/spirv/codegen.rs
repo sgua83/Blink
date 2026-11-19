@@ -53,7 +53,7 @@ pub enum Pass {
     SortGather,
     DispatchArguments(PrefixCount),
 }
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 fn op(out: &mut Vec<u32>, code: u16, args: &[u32]) {
     out.push(((args.len() as u32 + 1) << 16) | code as u32);
@@ -748,7 +748,7 @@ struct Emitter<'a> {
     subgroup_inputs: BTreeMap<SubgroupOp, u32>,
     ballot_type: u32,
     workgroup_width: u32,
-    tile_layout: BTreeMap<SharedWord, (Scalar, usize, u32)>,
+    tile_layout: &'a crate::ir::dataflow::TileLayout,
     tile_shared64: u32,
     tile_pointer64: u32,
     tile_shared: u32,
@@ -1674,12 +1674,12 @@ pub fn emit_pass(
     stage_index: usize,
     pass: Pass,
 ) -> Result<Vec<u32>, &'static str> {
-    let mut inputs = program.stages[stage_index].input_words();
-    emit_shader(program, stage_index, pass, &mut inputs).map(|(words, _)| words)
+    let (layout, mut inputs) = shader_stage_inputs(program, &program.stages[stage_index])?;
+    emit_shader(program, stage_index, pass, &mut inputs, &layout).map(|(words, _)| words)
 }
-fn emit_shader(
-    program: &Program, stage_index: usize, pass: Pass, inputs: &mut crate::ir::dataflow::InputFragments,
-) -> Result<(Vec<u32>, u64), &'static str> {
+fn shader_stage_inputs(
+    program: &Program, stage: &Stage,
+) -> Result<(crate::ir::dataflow::TileLayout, crate::ir::dataflow::InputFragments), &'static str> {
     fn oversized_view(ty: &Ty) -> bool {
         if ty.has_variants() {
             ty.variants.iter().any(|variant| oversized_view(&variant.ty))
@@ -1694,6 +1694,15 @@ fn emit_shader(
     if program.buffers.iter().any(|b| b.stride > PAGE_BYTES || oversized_view(&b.ty)) {
         return Err("GPU 页寻址要求单条记录能容纳于一个物理页");
     }
+    let mut used = BTreeSet::new();
+    let layout = stage.tile_layout(true, Some(&mut used));
+    let inputs = crate::ir::dataflow::input_fragments(stage, &used);
+    Ok((layout, inputs))
+}
+fn emit_shader(
+    program: &Program, stage_index: usize, pass: Pass, inputs: &mut crate::ir::dataflow::InputFragments,
+    layout: &crate::ir::dataflow::TileLayout,
+) -> Result<(Vec<u32>, u64), &'static str> {
     let stage = &program.stages[stage_index];
     let argument_pass = matches!(pass, Pass::DispatchArguments(_) | Pass::SelectionArguments);
     let custom_kernel =
@@ -1716,6 +1725,7 @@ fn emit_shader(
             None
         };
     let stage = custom_kernel.as_ref().map(|k| &k.stage).unwrap_or(stage);
+    let custom_layout = custom_kernel.as_ref().map(|kernel| kernel.stage.tile_layout(true, None));
     let [position_queries, object_queries, world_queries] = stage.ray_query_groups();
     let mut e = Emitter {
         next: 1,
@@ -1753,7 +1763,7 @@ fn emit_shader(
         subgroup_inputs: BTreeMap::new(),
         ballot_type: 0,
         workgroup_width: stage.workgroup_width(),
-        tile_layout: stage.tile_layout(true),
+        tile_layout: custom_layout.as_ref().unwrap_or(layout),
         tile_shared64: 0,
         tile_pointer64: 0,
         tile_shared: 0,

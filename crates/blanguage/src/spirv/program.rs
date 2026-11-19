@@ -31,11 +31,11 @@ impl crate::Compiler {
 
 pub(crate) fn compile_stage(program: &Program, i: usize) -> Result<(ExecutionStage, StageCode), &'static str> {
     let stage = &program.stages()[i];
-    let mut inputs = stage.input_words();
+    let (tile_layout, mut inputs) = shader_stage_inputs(program, stage)?;
     // Shader input also includes the physical low half of a wide word.
     let mut layout = ExecutionStage::from_stage(stage, inputs.keys().copied().collect());
     let mut emit = |pass| {
-        let (words, bytes) = emit_shader(program, i, pass, &mut inputs)?;
+        let (words, bytes) = emit_shader(program, i, pass, &mut inputs, &tile_layout)?;
         layout.shared_bytes = layout.shared_bytes.max(bytes);
         Ok::<_, &'static str>(words)
     };

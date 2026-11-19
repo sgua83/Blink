@@ -331,7 +331,7 @@ unsafe extern "C" fn inspect(node: Node) -> View {
                 }
                 TileSource::Published => View::tag(1),
             };
-            view.first = Span::slice(&tile.ty.components); view
+            view.first = Span::slice(&tile.ty.components); view.c = tile.ty.size as usize; view
         }
         Kind::RayRange => {
             let range = unsafe { &*node.data.cast::<std::ops::Range<usize>>() };
@@ -381,7 +381,7 @@ fn instruction(value: &Inst) -> View {
             view.first = Span::pairs(&value.values);
         }
         InstKind::TileBarrier => view.tag = 12,
-        InstKind::TilePublish(value) => { view.tag = 13; view.first = Span::pairs(&value.values); }
+        InstKind::TilePublish(value) => { view.tag = 13; view.a = value.tile; view.first = Span::pairs(&value.values); }
         InstKind::TileCollective(value) => {
             view.tag = 14; view.a = value.tile; view.first = Span::pairs(&value.results);
             view.second = Span::slice(&value.results);
@@ -514,38 +514,107 @@ unsafe extern "C" fn emit_tile(context: *mut c_void, tile: usize) {
     unsafe { &mut *context.cast::<BTreeSet<usize>>() }.insert(tile);
 }
 
-unsafe extern "C" {
-    #[link_name = "bootstrap.ir_dataflow::storage_words"]
-    fn b_storage_words(code: Span, host: StorageHost,
-        context: *mut c_void, emit: unsafe extern "C" fn(*mut c_void, usize, u32));
-}
 #[repr(C)]
 struct StorageHost {
     ir: Host, stage: *const c_void,
-    components: unsafe extern "C" fn(*const c_void, usize) -> Span,
     scalar_bytes: unsafe extern "C" fn(*const c_void, usize) -> u32,
 }
-unsafe extern "C" fn tile_components(stage: *const c_void, tile: usize) -> Span {
-    Span::slice(&unsafe { &*stage.cast::<Stage>() }.tiles[tile].ty.components)
+
+#[repr(u32)]
+enum StorageEvent { Read, Birth, Group }
+
+#[repr(C)]
+struct StorageOutput {
+    context: *mut c_void,
+    emit: unsafe extern "C" fn(*mut c_void, StorageEvent, usize, u32, i64),
 }
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.ir_dataflow::storage_facts"]
+    fn b_storage_facts(code: Span, tiles: Span, host: StorageHost, phase: i64, output: StorageOutput);
+}
+
 unsafe extern "C" fn register_bytes(stage: *const c_void, register: usize) -> u32 {
     unsafe { &*stage.cast::<Stage>() }.registers[register].size()
 }
+
+fn storage_facts(stage: &Stage, phase: i64, output: StorageOutput) {
+    unsafe {
+        b_storage_facts(
+            Span::slice(&stage.code), Span::slice(&stage.tiles),
+            StorageHost { ir: HOST, stage: ptr::from_ref(stage).cast(), scalar_bytes: register_bytes },
+            phase, output,
+        );
+    }
+}
+
 struct WordOutput<'a> { stage: &'a Stage, words: BTreeSet<SharedWord> }
+
 pub(super) fn storage_words(stage: &Stage) -> BTreeSet<SharedWord> {
     let mut output = WordOutput { stage, words: BTreeSet::new() };
-    if stage.tiles.is_empty() {
-        return output.words;
-    }
-    unsafe {
-        b_storage_words(Span::slice(&stage.code), StorageHost { ir: HOST, stage: ptr::from_ref(stage).cast(),
-            components: tile_components, scalar_bytes: register_bytes }, ptr::from_mut(&mut output).cast(), emit_word);
+    if !stage.tiles.is_empty() {
+        storage_facts(stage, -1, StorageOutput { context: ptr::from_mut(&mut output).cast(), emit: emit_word });
     }
     output.words
 }
-unsafe extern "C" fn emit_word(context: *mut c_void, tile: usize, byte: u32) {
+
+unsafe extern "C" fn emit_word(context: *mut c_void, _: StorageEvent, tile: usize, byte: u32, _: i64) {
     let output = unsafe { &mut *context.cast::<WordOutput<'_>>() };
     output.words.insert(output.stage.shared_word(tile, byte));
+}
+
+pub(crate) type TileLayout = BTreeMap<SharedWord, (Scalar, usize, u32)>;
+
+#[derive(Default)]
+pub(super) struct LayoutFacts {
+    pub(super) last: BTreeMap<SharedWord, i64>,
+    pub(super) births: BTreeMap<usize, i64>,
+    pub(super) groups: Vec<Vec<SharedWord>>,
+}
+
+struct LayoutOutput<'a> {
+    stage: &'a Stage,
+    used: Option<&'a mut BTreeSet<SharedWord>>,
+    facts: LayoutFacts,
+}
+
+pub(super) fn tile_layout_facts(stage: &Stage, used: Option<&mut BTreeSet<SharedWord>>) -> LayoutFacts {
+    let mut output = LayoutOutput { stage, used, facts: LayoutFacts::default() };
+    storage_facts(stage, 0, StorageOutput { context: ptr::from_mut(&mut output).cast(), emit: emit_layout });
+    output.facts
+}
+
+unsafe extern "C" fn emit_layout(context: *mut c_void, event: StorageEvent, tile: usize, offset_or_count: u32, phase: i64) {
+    let output = unsafe { &mut *context.cast::<LayoutOutput<'_>>() };
+    match event {
+        StorageEvent::Read => {
+            let word = output.stage.shared_word(tile, offset_or_count);
+            if let Some(used) = &mut output.used {
+                used.insert(word);
+            }
+            if phase >= 0 {
+                output.facts.last.insert(word.aligned(), phase);
+            }
+        }
+        StorageEvent::Birth => {
+            output.facts.births.insert(tile, phase);
+        }
+        StorageEvent::Group => {
+            let mut group: Vec<_> = (0..offset_or_count).map(|word| output.stage.shared_word(tile, word * 4).aligned()).collect();
+            let groups = &mut output.facts.groups;
+            let mut index = 0;
+            while index < groups.len() {
+                if groups[index].iter().any(|word| group.contains(word)) {
+                    group.extend(groups.remove(index));
+                } else {
+                    index += 1;
+                }
+            }
+            group.sort_unstable();
+            group.dedup();
+            groups.push(group);
+        }
+    }
 }
 
 type TileInputWord = unsafe extern "C" fn(*mut c_void, usize, u32, u32, u32);

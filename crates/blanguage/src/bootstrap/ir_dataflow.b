@@ -1523,25 +1523,18 @@ extern "C" void storage_tiles(Span code,Host host,address context,
  }
 }
 
-void shared_parts(usize tile,u32 byte,u32 bytes,address context,
- cfn<void,address,usize,u32> emit) on cpu requires nonzero(emit) {
+void shared_parts(usize tile,u32 byte,u32 bytes,i64 phase,StorageOutput output) on cpu
+ requires nonzero(output.emit) {
  u32 part=0;
- while(part<(bytes+3)/4){emit(context,tile,byte+part*4);part+=1;}
-}
-void shared_components(usize tile,StorageHost host,address context,
- cfn<void,address,usize,u32> emit) on cpu
- requires nonzero(host.ir.inspect) requires nonzero(host.components) requires nonzero(emit) {
- Span components=host.components(host.stage,tile);usize index=0u64;
- while(index<components.count) {
-  View component=host.ir.inspect(node_at(components,index,N_COMPONENT));
-  shared_parts(tile,u32(component.a),u32(component.b),context,emit);
-  index+=1u64;
+ while(part<(bytes+3)/4) {
+  output.emit(output.context,StorageEvent::Read,tile,byte+part*4,phase);
+  part+=1;
  }
 }
-extern "C" void storage_words(Span code,StorageHost host,address context,
- cfn<void,address,usize,u32> emit) on cpu
- requires nonzero(host.ir.inspect) requires nonzero(host.components)
- requires nonzero(host.scalar_bytes) requires nonzero(emit) {
+
+void storage_visit(Span code,Span tiles,StorageHost host,i64 first_phase,bool root,StorageOutput output) on cpu
+ requires nonzero(host.ir.inspect) requires nonzero(host.scalar_bytes) requires nonzero(output.emit) {
+ i64 phase=first_phase;
  usize index=0u64;
  while(index<code.count) {
   View value=host.ir.inspect(node_at(code,index,N_INSTRUCTION));
@@ -1549,25 +1542,50 @@ extern "C" void storage_words(Span code,StorageHost host,address context,
    View source=host.ir.inspect(value.left);
    if(source.tag==3) {
     if(value.tag==OP_ATOMIC && value.second.count==0u64) {
-     shared_parts(source.a,u32(value.a),u32(value.b),context,emit);
-    }else{shared_components(source.a,host,context,emit);}
+     shared_parts(source.a,u32(value.a),u32(value.b),phase,output);
+    }else{
+     View tile=host.ir.inspect(node_at(tiles,source.a,N_TILE));
+     usize component=0u64;
+     while(component<tile.first.count) {
+      View field=host.ir.inspect(node_at(tile.first,component,N_COMPONENT));
+      shared_parts(source.a,u32(field.a),u32(field.b),phase,output);
+      component+=1u64;
+     }
+     if(phase>=i64(0)) {
+      u32 bias=tile.tag==0 ? u32(tile.b)%4 : 0;
+      output.emit(output.context,StorageEvent::Group,source.a,u32((u64(tile.c)+u64(bias)+3u64)/4u64),phase);
+     }
+    }
    }
   }else if(value.tag==OP_TILE_LOAD) {
-   shared_parts(value.b,u32(value.d),host.scalar_bytes(host.stage,value.a),context,emit);
+   shared_parts(value.b,u32(value.d),host.scalar_bytes(host.stage,value.a),phase,output);
   }else if(value.tag==OP_TILE_COLLECTIVE) {
    usize result=0u64;
    while(result<value.first.count) {
-    // Read only the original pair's u32 byte offset, never its Rust padding.
+    // Read the original pair's u32 offset without reading the padding.
     u32 byte=unsafe_position<u32>(unsafe_address(address_bits(value.second.data)+u64(result)*u64(value.second.stride)));
-    shared_parts(value.a,byte,host.scalar_bytes(host.stage,word_at(value.first,result)),context,emit);
+    shared_parts(value.a,byte,host.scalar_bytes(host.stage,word_at(value.first,result)),root ? phase : -i64(1),output);
     result+=1u64;
    }
   }else if(value.tag==OP_SCOPE || value.tag==OP_BRANCH || value.tag==OP_LOOP_VALUE) {
-   storage_words(value.first,host,context,emit);
-   storage_words(value.second,host,context,emit);
+   storage_visit(value.first,tiles,host,phase,false,output);
+   storage_visit(value.second,tiles,host,phase,false,output);
+  }
+  if(root && phase>=i64(0)) {
+   if(value.tag==OP_TILE_PUBLISH) {
+    output.emit(output.context,StorageEvent::Birth,value.a,0,phase);
+   }
+   if(value.tag==OP_TILE_PUBLISH || value.tag==OP_TILE_COLLECTIVE || value.tag==OP_TILE_BARRIER) {
+    phase+=i64(1);
+   }
   }
   index+=1u64;
  }
+}
+
+extern "C" void storage_facts(Span code,Span tiles,StorageHost host,i64 phase,StorageOutput output) on cpu
+ requires nonzero(host.ir.inspect) requires nonzero(host.scalar_bytes) requires nonzero(output.emit) {
+ storage_visit(code,tiles,host,phase,true,output);
 }
 
 extern "C" void tile_input_words(Span tiles,Host host,address used,

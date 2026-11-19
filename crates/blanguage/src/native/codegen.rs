@@ -651,7 +651,7 @@ impl Emitter<'_> {
 /// 算法输出（包括计数）只写第五参数，map及无摘要续阶段不读取该指针。
 fn emit_map(
     program: &Program, index: usize, inputs: &crate::ir::dataflow::InputFragments,
-    used: &std::collections::BTreeSet<SharedWord>,
+    used: &std::collections::BTreeSet<SharedWord>, layout: crate::ir::dataflow::TileLayout,
 ) -> Result<NativeCode, &'static str> {
     let mut lowered = program.stages[index].clone();
     texture::lower(&mut lowered);
@@ -669,7 +669,7 @@ fn emit_map(
         packet.as_ref().map(|(_, allocation)| allocation),
     );
     let data_end = if stage.has_tile_scope() {
-        frame_layout.layout_tile(stage, &phases)
+        frame_layout.layout_tile(stage, &phases, layout)
     } else {
         frame_layout.end
     };

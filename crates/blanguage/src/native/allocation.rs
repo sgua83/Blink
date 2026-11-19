@@ -263,8 +263,7 @@ impl PacketAllocation {
     }
 }
 impl Frame {
-    pub fn layout_tile(&mut self, stage: &Stage, phases: &[TilePhase<'_>]) -> u64 {
-        let shared = stage.tile_layout(false);
+    pub fn layout_tile(&mut self, stage: &Stage, phases: &[TilePhase<'_>], shared: crate::ir::dataflow::TileLayout) -> u64 {
         let private: BTreeSet<_> = phases.iter().flat_map(|phase| phase.live_out.iter().copied()).collect();
         let mut shared_positions: Vec<_> = shared.values().map(|&(_, slot, _)| slot as u64).collect();
         let mut private_positions: Vec<_> = private.iter()

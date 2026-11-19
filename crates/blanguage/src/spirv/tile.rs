@@ -19,7 +19,7 @@ impl Emitter<'_> {
         self.emit(176, &[self.types[&Scalar::Bool], tail, remaining, width]);
         self.tile_length = self.id();
         self.select(u, self.tile_length, tail, remaining, width);
-        for (key, (unit, _, part)) in &self.tile_layout {
+        for (key, (unit, _, part)) in self.tile_layout {
             if *unit == Scalar::U64 && *part == 0 {
                 if let SharedWord::Input { binding, word } = key {
                     inputs.entry((*binding, *word)).or_default();

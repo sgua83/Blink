@@ -406,13 +406,16 @@ extern "C" void storage_tiles(Span code,Host host,address context,
 
 struct StorageHost {
  Host ir; address stage;
- cfn<Span,address,usize> ensures memory(read) components;
  cfn<u32,address,usize> ensures memory(read) scalar_bytes;
 };
-extern "C" void storage_words(Span code,StorageHost host,
- address context,cfn<void,address,usize,u32> emit) on cpu
- requires nonzero(host.ir.inspect) requires nonzero(host.components)
- requires nonzero(host.scalar_bytes) requires nonzero(emit);
+enum StorageEvent : u32 { Read = 0; Birth = 1; Group = 2; };
+struct StorageOutput {
+ address context;
+ cfn<void,address,StorageEvent,usize,u32,i64> emit;
+};
+// Use phase zero for layout and -1 for the standalone word query.
+extern "C" void storage_facts(Span code,Span tiles,StorageHost host,i64 phase,StorageOutput output) on cpu
+ requires nonzero(host.ir.inspect) requires nonzero(host.scalar_bytes) requires nonzero(output.emit);
 
 // Borrow the Stage tiles and used words for this call and deliver only matching input fragments.
 extern "C" void tile_input_words(Span tiles,Host host,address used,
