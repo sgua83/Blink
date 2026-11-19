@@ -1998,15 +1998,18 @@ const u32 ENTRY_COMPACT=4;
 const u32 ENTRY_SORT=5;
 const u32 ENTRY_CUSTOM_SCAN=6;
 const u32 ENTRY_CUSTOM_SEGMENTED=7;
+const u32 ENTRY_CUSTOM_REDUCE=8;
 
 extern "C" StageEntries stage_entries(u32 operation,u32 selected,u32 prefix,u32 root_add,usize keys) on cpu {
- StageEntries entries=StageEntries(0,0,selected!=0 ? 2 : prefix,selected,0,0u64);
+ u32 original_main=u32(operation!=ENTRY_CUSTOM_REDUCE &&
+     operation!=ENTRY_CUSTOM_SCAN && operation!=ENTRY_CUSTOM_SEGMENTED);
+ StageEntries entries=StageEntries(0,0,selected!=0 ? 2 : prefix,selected,0,original_main,0u64);
  if(operation==ENTRY_MAP) {
   if(selected!=0) {
    entries.tail=2;
    entries.finish=1;
   }
- }else if(operation==ENTRY_REDUCE) {
+ }else if(operation==ENTRY_REDUCE || operation==ENTRY_CUSTOM_REDUCE) {
   entries.tail=1;
  }else if(operation==ENTRY_SORT) {
   entries.sort_passes=19u64+keys;

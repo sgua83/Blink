@@ -612,6 +612,7 @@ struct StageEntries {
  u32 dispatch;
  u32 scan_add;
  u32 finish_kernel;
+ u32 original_main;
  usize sort_passes;
 };
 struct SortShaderEntry { u32 kind; usize parameter; };

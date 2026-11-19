@@ -1704,7 +1704,7 @@ pub fn emit_pass(
         descriptor_indexing: program.requires_texture_indexing(),
     };
     let reduction = prepare_reduction(stage, pass);
-    emit_shader(program, stage, pass, &mut inputs, &layout, features, reduction.as_ref())
+    emit_shader(program, stage, pass, &mut inputs, &layout, features, reduction.as_ref(), None)
         .map(|(words, _)| words)
 }
 fn shader_stage_inputs(
@@ -1744,12 +1744,16 @@ struct ShaderStageFacts {
     float_preserve: (bool, bool),
 }
 
+fn uses_float_modes(pass: Pass) -> bool {
+    matches!(
+        pass, Pass::Main | Pass::ReductionTail | Pass::ScanTail | Pass::ScanAdd | Pass::ScanRootAdd
+    )
+}
+
 impl ShaderStageFacts {
-    fn new(stage: &Stage, pass: Pass) -> Self {
+    fn new(stage: &Stage, uses_float_modes: bool) -> Self {
         let (buffer_atomic64, shared_atomic64) = stage.atomic64_requirements();
-        let float_preserve = if matches!(
-            pass, Pass::Main | Pass::ReductionTail | Pass::ScanTail | Pass::ScanAdd | Pass::ScanRootAdd
-        ) {
+        let float_preserve = if uses_float_modes {
             crate::ir::dataflow::stage_float_preserve(stage)
         } else {
             (false, false)
@@ -1790,7 +1794,7 @@ fn prepare_reduction(stage: &Stage, pass: Pass) -> Option<PreparedReduction> {
     };
     let kernel = reduction.kernel(stage, project, identity);
     let layout = kernel.stage.tile_layout(true, None);
-    let facts = ShaderStageFacts::new(&kernel.stage, pass);
+    let facts = ShaderStageFacts::new(&kernel.stage, uses_float_modes(pass));
     Some(PreparedReduction { kernel, layout, facts })
 }
 
@@ -1798,14 +1802,22 @@ fn emit_shader(
     program: &Program, original_stage: &Stage, pass: Pass,
     inputs: &mut crate::ir::dataflow::InputFragments, layout: &crate::ir::dataflow::TileLayout,
     program_features: ProgramShaderFeatures, reduction: Option<&PreparedReduction>,
+    shared_original_facts: Option<&ShaderStageFacts>,
 ) -> Result<(Vec<u32>, u64), &'static str> {
     let argument_pass = matches!(pass, Pass::DispatchArguments(_) | Pass::SelectionArguments);
-    let original_facts;
+    let numeric_pass = uses_float_modes(pass);
+    let local_facts;
     let (stage, tile_layout, facts, custom_kernel) = match reduction {
         Some(prepared) => (&prepared.kernel.stage, &prepared.layout, &prepared.facts, Some(&prepared.kernel)),
         None => {
-            original_facts = ShaderStageFacts::new(original_stage, pass);
-            (original_stage, layout, &original_facts, None)
+            let facts = match shared_original_facts {
+                Some(shared) => shared,
+                None => {
+                    local_facts = ShaderStageFacts::new(original_stage, numeric_pass);
+                    &local_facts
+                }
+            };
+            (original_stage, layout, facts, None)
         }
     };
     let mut e = Emitter {
@@ -1854,7 +1866,11 @@ fn emit_shader(
         return_scopes: Vec::new(),
     };
     let ProgramShaderFeatures { float64, integer8, integer16, acceleration, descriptor_indexing } = program_features;
-    let (float32_preserve, float64_preserve) = facts.float_preserve;
+    let (float32_preserve, float64_preserve) = if numeric_pass {
+        facts.float_preserve
+    } else {
+        (false, false)
+    };
     let ranks = matches!(pass, Pass::SortHistogram(_) | Pass::SortScatter(_));
     let subgroup_operations = if pass == Pass::Main {
         stage.subgroup_operations()

@@ -48,6 +48,7 @@ enum EntryOperation {
     Sort,
     CustomScan,
     CustomSegmented,
+    CustomReduce,
 }
 
 #[allow(dead_code)]
@@ -91,6 +92,7 @@ struct StageEntries {
     dispatch: EntryDispatch,
     scan_add: u32,
     finish_kernel: FinishKernel,
+    original_main: u32,
     sort_passes: usize,
 }
 
@@ -127,14 +129,10 @@ pub(crate) fn compile_stage(
     // Shader input also includes the physical low half of a wide word.
     let mut layout = ExecutionStage::from_stage(stage, inputs.keys().copied().collect());
     let features = ProgramShaderFeatures::from(requirements);
-    let mut emit = |pass, kernel: Option<&PreparedReduction>| {
-        let (words, bytes) = emit_shader(program, stage, pass, &mut inputs, &tile_layout, features, kernel)?;
-        layout.shared_bytes = layout.shared_bytes.max(bytes);
-        Ok::<_, &'static str>(words)
-    };
     let (operation, root_add, keys) = match &stage.operation {
         Operation::Map => (EntryOperation::Map, false, 0),
-        Operation::Reduce(_) | Operation::CustomReduce(_) => (EntryOperation::Reduce, false, 0),
+        Operation::Reduce(_) => (EntryOperation::Reduce, false, 0),
+        Operation::CustomReduce(_) => (EntryOperation::CustomReduce, false, 0),
         Operation::ScanExclusive(scan) => (EntryOperation::Scan, scan.needs_root_add(program), 0),
         Operation::CustomScan(scan) => (EntryOperation::CustomScan, scan.needs_root_add(program), 0),
         Operation::SegmentedReduce(_) => (EntryOperation::Segmented, false, 0),
@@ -146,6 +144,14 @@ pub(crate) fn compile_stage(
         operation, u32::from(stage.selection.is_some()), u32::from(stage.prefix.is_some()),
         u32::from(root_add), keys,
     ) };
+    let original_facts = (entries.original_main != 0).then(|| ShaderStageFacts::new(stage, true));
+    let mut emit = |pass, kernel: Option<&PreparedReduction>| {
+        let (words, bytes) = emit_shader(
+            program, stage, pass, &mut inputs, &tile_layout, features, kernel, original_facts.as_ref(),
+        )?;
+        layout.shared_bytes = layout.shared_bytes.max(bytes);
+        Ok::<_, &'static str>(words)
+    };
     let (dispatch, selected) = match entries.dispatch {
         EntryDispatch::None => (None, false),
         EntryDispatch::Prefix => (stage.prefix.map(Pass::DispatchArguments), false),
