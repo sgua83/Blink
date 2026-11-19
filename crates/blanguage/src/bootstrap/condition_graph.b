@@ -374,19 +374,31 @@ FactView internal_key(FactKind kind,address identity,address scalar,u64 value) o
  address nil=unsafe_address(0u64);
  return FactView(1,kind,identity,nil,nil,scalar,value,0u64,0,0);
 }
-BitRange internal_bounds(address context,address identity,address scalar,InternalScalar info,InternalHost host) on cpu
- requires nonzero(host.select) requires nonzero(host.contains) requires nonzero(host.compare)
- requires nonzero(host.same_scalar) {
- FactView lower_fact=host.select(context,internal_key(FactKind::Minimum,identity,scalar,info.mask),1);
- FactView upper_fact=host.select(context,internal_key(FactKind::Maximum,identity,scalar,0u64),0);
- u64 lower=0u64;u64 upper=info.mask;
- if(lower_fact.present!=0&&lower_fact.kind==FactKind::Minimum
-    &&host.compare(lower_fact.first,identity)==i32(0)&&host.same_scalar(lower_fact.scalar,scalar)!=0){lower=lower_fact.value;}
- if(upper_fact.present!=0&&upper_fact.kind==FactKind::Maximum
-    &&host.compare(upper_fact.first,identity)==i32(0)&&host.same_scalar(upper_fact.scalar,scalar)!=0){upper=upper_fact.value;}
+bool internal_same_limit(FactView fact,FactKind kind,address identity,address scalar,InternalHost host) on cpu
+ requires nonzero(host.compare) requires nonzero(host.same_scalar) {
+ return fact.present!=0&&fact.kind==kind
+    &&host.compare(fact.first,identity)==i32(0)&&host.same_scalar(fact.scalar,scalar)!=0;
+}
+FactView internal_limit(address context,FactView key,u32 preceding,InternalHost host) on cpu
+ requires nonzero(host.select) requires nonzero(host.compare) requires nonzero(host.same_scalar) {
+ FactView found=host.select(context,key,preceding);
+ if(!internal_same_limit(found,key.kind,key.first,key.scalar,host)){found.present=0;}
+ return found;
+}
+BitRange internal_clip(address context,address identity,address scalar,InternalScalar info,BitRange bounds,InternalHost host) on cpu
+ requires nonzero(host.contains) {
+ u64 lower=bounds.lower;u64 upper=bounds.upper;
  if(info.kind==0&&host.contains(context,internal_key(FactKind::NonZero,identity,scalar,0u64))!=0){lower=max(lower,1u64);}
  if(host.contains(context,internal_key(FactKind::Zero,identity,scalar,0u64))!=0){lower=max(lower,info.bias);upper=min(upper,info.bias);}
  return BitRange(lower,upper);
+}
+BitRange internal_bounds(address context,address identity,address scalar,InternalScalar info,InternalHost host) on cpu
+ requires nonzero(host.select) requires nonzero(host.contains) requires nonzero(host.compare)
+ requires nonzero(host.same_scalar) {
+ FactView lo=internal_limit(context,internal_key(FactKind::Minimum,identity,scalar,info.mask),1,host);
+ FactView hi=internal_limit(context,internal_key(FactKind::Maximum,identity,scalar,0u64),0,host);
+ BitRange bounds=BitRange(lo.present!=0 ? lo.value : 0u64,hi.present!=0 ? hi.value : info.mask);
+ return internal_clip(context,identity,scalar,info,bounds,host);
 }
 BitRange internal_operand(address context,InternalOperand operand,address scalar,InternalScalar info,InternalHost host) on cpu
  requires nonzero(host.select) requires nonzero(host.contains) requires nonzero(host.compare)
@@ -422,8 +434,8 @@ extern "C" u32 internal_conflict(address context,CrossScalars integers,InternalH
  requires nonzero(host.next) requires nonzero(host.select) requires nonzero(host.contains)
  requires nonzero(host.compare) requires nonzero(host.same_scalar) requires nonzero(host.scalar)
  requires nonzero(host.predicate) requires nonzero(host.upper) {
- while(true){
-  FactView fact=host.next(context);if(fact.present==0){return 0;}
+ FactView fact=host.next(context);
+ while(fact.present!=0){
   FactView key=fact;
   if(fact.kind==FactKind::Boolean||fact.kind==FactKind::Predicate){
    key.flag=1-fact.flag;if(host.contains(context,key)!=0){return 1;}
@@ -449,13 +461,29 @@ extern "C" u32 internal_conflict(address context,CrossScalars integers,InternalH
    key.kind=fact.kind==FactKind::Index ? FactKind::Outside : FactKind::Index;
    if(host.contains(context,key)!=0){return 1;}
   }else if(fact.kind==FactKind::Minimum||fact.kind==FactKind::Maximum){
-   InternalScalar info=host.scalar(fact.scalar);
-   BitRange bounds=internal_bounds(context,fact.first,fact.scalar,info,host);
+   FactView first=fact;
+   InternalScalar info=host.scalar(first.scalar);
+   u64 lower=0u64;
+   while(true){
+    if(first.kind==FactKind::Minimum&&fact.value<=info.mask){lower=fact.value;}
+    fact=host.next(context);
+    if(!internal_same_limit(fact,first.kind,first.first,first.scalar,host)){break;}
+   }
+   u64 upper=first.value;
+   if(first.kind==FactKind::Minimum){
+    FactView hi=internal_limit(context,internal_key(FactKind::Maximum,first.first,first.scalar,0u64),0,host);
+    upper=hi.present!=0 ? hi.value : info.mask;
+   }else{
+    // The Minimum segment precedes Maximum in both original ordered inputs.
+    FactView lo=internal_limit(context,internal_key(FactKind::Minimum,first.first,first.scalar,info.mask),1,host);
+    if(lo.present!=0){continue;}
+   }
+   BitRange bounds=internal_clip(context,first.first,first.scalar,info,BitRange(lower,upper),host);
    if(bounds.lower>bounds.upper){return 1;}
    if(bounds.lower==bounds.upper&&bounds.lower==info.bias){
-    key.kind=FactKind::NonZero;
-    if(host.contains(context,key)!=0){return 1;}
+    if(host.contains(context,internal_key(FactKind::NonZero,first.first,first.scalar,0u64))!=0){return 1;}
    }
+   continue;
   }else if(fact.kind==FactKind::NotEqual){
    if(internal_not_equal(context,fact,integers,host)!=0){return 1;}
   }else if(fact.kind==FactKind::Below){
@@ -468,7 +496,9 @@ extern "C" u32 internal_conflict(address context,CrossScalars integers,InternalH
    BitRange right=internal_bounds(context,fact.second,fact.scalar,info,host);
    if(left.lower>right.upper||(fact.flag!=0&&left.lower==right.upper)){return 1;}
   }
+  fact=host.next(context);
  }
+ return 0;
 }
 
 i32 common_limit_order(FactView left,FactView right,
