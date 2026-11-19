@@ -23,6 +23,14 @@ struct Output {
     push:Push,
 }
 #[repr(C)]
+struct Projection {
+    lower: u64,
+    upper: u64,
+    excluded: u64,
+    exclude: u32,
+}
+
+#[repr(C)]
 struct Cast {
     source_width:u32,source_signed:u32,target_width:u32,
     source_integer:u32,same:u32,nonzero:u32,
@@ -69,6 +77,8 @@ unsafe extern "C" {
     fn united(input:Borrowed,left:usize,right:usize,read:Read,output:Slot,push:Push);
     #[link_name="bootstrap.scalar_fold::range_set_restrict"]
     fn clipped(input:Borrowed,count:usize,read:Read,output:Slot,push:Push,lower:u64,upper:u64);
+    #[link_name="bootstrap.scalar_fold::range_set_project"]
+    fn projected(input:Borrowed,count:usize,read:Read,output:Slot,push:Push,projection:Projection);
     #[link_name="bootstrap.scalar_fold::range_set_without"]
     fn excluded(input:Borrowed,count:usize,read:Read,output:Slot,push:Push,value:u64);
     #[link_name="bootstrap.scalar_fold::range_set_cast"]
@@ -90,6 +100,17 @@ pub(super) fn hull(values:&[Pair])->Pair {inputs(values,&[],|s,n,_|unsafe{outer(
 pub(super) fn contains(values:&[Pair],value:u64)->bool {inputs(values,&[],|s,n,_|unsafe{member(s,n,read,value)})}
 pub(super) fn union(left:&[Pair],right:&[Pair])->ScalarRanges {inputs(left,right,|s,n,m|output(|o|unsafe{united(s,n,m,read,o,push)}))}
 pub(super) fn restrict(values:&[Pair],lower:u64,upper:u64)->ScalarRanges {inputs(values,&[],|s,n,_|output(|o|unsafe{clipped(s,n,read,o,push,lower,upper)}))}
+pub(super) fn restrict_excluding(values: &[Pair], lower: u64, upper: u64, excluded: Option<u64>) -> ScalarRanges {
+    let projection = Projection {
+        lower,
+        upper,
+        excluded: excluded.unwrap_or_default(),
+        exclude: u32::from(excluded.is_some()),
+    };
+    inputs(values, &[], |source, count, _| {
+        output(|dest| unsafe { projected(source, count, read, dest, push, projection) })
+    })
+}
 pub(super) fn without(values:&[Pair],value:u64)->ScalarRanges {inputs(values,&[],|s,n,_|output(|o|unsafe{excluded(s,n,read,o,push,value)}))}
 pub(super) fn cast(values:&[Pair],source:Scalar,target:Scalar,nonzero:bool)->ScalarRanges {
     let query=Cast{source_width:source.bit_width(),source_signed:u32::from(source.is_signed()),target_width:target.bit_width(),source_integer:u32::from(source.is_integer()),same:u32::from(source==target),nonzero:u32::from(nonzero),source_mask:source.bit_mask(),source_bias:source.order_bias(),target_bias:target.order_bias()};

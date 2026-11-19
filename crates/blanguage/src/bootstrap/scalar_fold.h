@@ -126,6 +126,9 @@ extern "C" BitRange range_set_hull(address input,u64 count,cfn<BitRange,address,
 extern "C" bool range_set_contains(address input,u64 count,cfn<BitRange,address,u32,u64> get,u64 value) on cpu requires nonzero(get);
 extern "C" void range_set_union(address input,u64 left,u64 right,cfn<BitRange,address,u32,u64> get,address output,cfn<void,address,BitRange> push) on cpu
     requires nonzero(get) requires nonzero(push);
+struct RangeSetProjection { u64 lower; u64 upper; u64 excluded; u32 exclude; };
+extern "C" void range_set_project(address input,u64 count,cfn<BitRange,address,u32,u64> get,address output,cfn<void,address,BitRange> push,RangeSetProjection projection) on cpu
+    requires nonzero(get) requires nonzero(push);
 extern "C" void range_set_restrict(address input,u64 count,cfn<BitRange,address,u32,u64> get,address output,cfn<void,address,BitRange> push,u64 lower,u64 upper) on cpu
     requires nonzero(get) requires nonzero(push);
 extern "C" void range_set_without(address input,u64 count,cfn<BitRange,address,u32,u64> get,address output,cfn<void,address,BitRange> push,u64 value) on cpu

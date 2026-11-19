@@ -456,26 +456,36 @@ impl Proof {
         facts
     }
     fn element_range(&self, component: usize, scalar: Scalar) -> ScalarRanges {
-        let ranges = self.range_set(component).restrict(0, scalar.bit_mask());
-        if scalar.is_integer() && self.nonzero.get(component) == Some(&true) {
-            ranges.without(scalar.order_bias())
-        } else { ranges }
+        let intervals = self.ranges.get(component)
+            .map_or(&[(0, Bits::MAX)][..], |ranges| ranges.0.as_slice());
+        let excluded = (scalar.is_integer() && self.nonzero.get(component) == Some(&true))
+            .then(|| scalar.order_bias());
+        range_sets::restrict_excluding(intervals, 0, scalar.bit_mask(), excluded)
     }
+
+    fn element_known_bits(&self, component: usize, scalar: Scalar) -> (Bits, Bits) {
+        scalar.is_integer().then(|| self.known_bits(component, scalar)).flatten()
+            .map_or((0, 0), |bits| (bits.mask, bits.value))
+    }
+
+    fn element_range_fact(&self, binding: usize, component: usize, scalar: Scalar, offset: u32) -> Option<ElementRange> {
+        let intervals = self.element_range(component, scalar).0;
+        let known_bits = self.element_known_bits(component, scalar);
+        (intervals != [(0, scalar.bit_mask())] || known_bits.0 != 0)
+            .then_some(ElementRange { binding, offset, scalar, intervals, known_bits })
+    }
+
     pub(super) fn element_ranges(&self, binding: usize, ty: &Ty) -> Vec<ElementRange> {
         ty.components.iter().enumerate().filter_map(|(component, &(scalar, offset))| {
-            let intervals = self.element_range(component, scalar).0;
-            let known_bits=scalar.is_integer().then(||self.known_bits(component,scalar)).flatten().map_or((0,0),|bits|(bits.mask,bits.value));
-            (intervals != [(0, scalar.bit_mask())]||known_bits.0!=0).then_some(ElementRange { binding, offset, scalar, intervals, known_bits })
+            self.element_range_fact(binding, component, scalar, offset)
         }).collect()
     }
     pub(super) fn element_guarantees(&self, binding: usize, ty: &Ty, selected: impl Fn(u32, u32) -> bool) -> Vec<ElementFact> {
         let mut facts = Vec::new();
         for (component, &(scalar, offset)) in ty.components.iter().enumerate() {
             if !selected(offset, scalar.size()) { continue; }
-            let intervals = self.element_range(component, scalar).0;
-            let known_bits=scalar.is_integer().then(||self.known_bits(component,scalar)).flatten().map_or((0,0),|bits|(bits.mask,bits.value));
-            if intervals != [(0, scalar.bit_mask())]||known_bits.0!=0 {
-                facts.push(ElementFact::Range(ElementRange { binding, offset, scalar, intervals, known_bits }));
+            if let Some(range) = self.element_range_fact(binding, component, scalar, offset) {
+                facts.push(ElementFact::Range(range));
             }
             if scalar == Scalar::U32 {
                 facts.extend(self.domains(component).iter().copied().filter_map(|domain| match domain {
@@ -492,7 +502,7 @@ impl Proof {
             |(a,b),(c,d)| ScalarRanges::interval(a.max(c), b.min(d)));
     }
     pub(super) fn holds_range(&self, component: usize, scalar: Scalar, intervals: &[(Bits, Bits)], required_bits:(Bits,Bits)) -> bool {
-        let known_bits=scalar.is_integer().then(||self.known_bits(component,scalar)).flatten().map_or((0,0),|bits|(bits.mask,bits.value));
+        let known_bits = self.element_known_bits(component, scalar);
         self.element_range(component, scalar).0.iter().all(|&range|scalar.covers_range(range,known_bits,intervals,required_bits))
     }
     pub(super) fn assign_elements(&mut self, components: &[usize], width: usize, fresh: &Self) {

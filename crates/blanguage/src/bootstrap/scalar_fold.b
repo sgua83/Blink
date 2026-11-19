@@ -811,26 +811,49 @@ extern "C" void range_set_union(address input,u64 left,u64 right,cfn<BitRange,ad
     }
     if(pending.present!=0){push(output,pending.value);}
 }
-extern "C" void range_set_restrict(address input,u64 count,cfn<BitRange,address,u32,u64> get,address output,cfn<void,address,BitRange> push,u64 lower,u64 upper) on cpu
+void range_set_publish(BitRange range,address output,cfn<void,address,BitRange> push,u64 excluded,u32 exclude) on cpu
+    requires nonzero(push) {
+    if(exclude==0||excluded<range.lower||excluded>range.upper){
+        push(output,range);
+    }else{
+        if(range.lower<excluded){push(output,BitRange(range.lower,excluded-1u64));}
+        if(excluded<range.upper){push(output,BitRange(excluded+1u64,range.upper));}
+    }
+}
+
+extern "C" void range_set_project(address input,u64 count,cfn<BitRange,address,u32,u64> get,address output,cfn<void,address,BitRange> push,RangeSetProjection projection) on cpu
     requires nonzero(get) requires nonzero(push) {
     RangeSetNext pending=RangeSetNext(BitRange(0u64,0u64),0);
-    u64 range_index_3=0u64;while(range_index_3<count){
-        BitRange range=get(input,0,range_index_3);
-        range.lower=range.lower>lower?range.lower:lower;range.upper=range.upper<upper?range.upper:upper;
-        if(range.lower<=range.upper){pending=range_set_accept(pending,range,output,push);}
-    range_index_3+=1u64;}
-    if(pending.present!=0){push(output,pending.value);}
+    u64 index=0u64;
+    while(index<count){
+        BitRange range=get(input,0,index);
+        range.lower=range.lower>projection.lower?range.lower:projection.lower;
+        range.upper=range.upper<projection.upper?range.upper:projection.upper;
+        if(range.lower<=range.upper){
+            if(pending.present!=0&&range_set_joined(pending.value,range)){
+                if(range.upper>pending.value.upper){pending.value.upper=range.upper;}
+            }else{
+                if(pending.present!=0){range_set_publish(pending.value,output,push,projection.excluded,projection.exclude);}
+                pending=RangeSetNext(range,1);
+            }
+        }
+        index+=1u64;
+    }
+    if(pending.present!=0){range_set_publish(pending.value,output,push,projection.excluded,projection.exclude);}
 }
+
+extern "C" void range_set_restrict(address input,u64 count,cfn<BitRange,address,u32,u64> get,address output,cfn<void,address,BitRange> push,u64 lower,u64 upper) on cpu
+    requires nonzero(get) requires nonzero(push) {
+    range_set_project(input,count,get,output,push,RangeSetProjection(lower,upper,0u64,0));
+}
+
 extern "C" void range_set_without(address input,u64 count,cfn<BitRange,address,u32,u64> get,address output,cfn<void,address,BitRange> push,u64 value) on cpu
     requires nonzero(get) requires nonzero(push) {
-    u64 range_index_4=0u64;while(range_index_4<count){
-        BitRange range=get(input,0,range_index_4);
-        if(value<range.lower||value>range.upper){push(output,range);}
-        else{
-            if(range.lower<value){push(output,BitRange(range.lower,value-1u64));}
-            if(value<range.upper){push(output,BitRange(value+1u64,range.upper));}
-        }
-    range_index_4+=1u64;}
+    u64 index=0u64;
+    while(index<count){
+        range_set_publish(get(input,0,index),output,push,value,1);
+        index+=1u64;
+    }
 }
 u64 range_set_parts(address output,RangeSetOutput host,IntegerRangePieces pieces) on cpu requires nonzero(host.push) {
     u64 count=0u64;
