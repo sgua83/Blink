@@ -836,12 +836,12 @@ impl CpuStorage for CpuDataset {
 impl CpuStorage for crate::application::ResidentData {
     fn cpu_metadata(&self)->(&Ty,u32,bool){match self {
         Self::Cpu(data)=>data.cpu_metadata(),
-        Self::CpuBorrow(data)=>(&data.ty,data.count,data.writable),
+        Self::CpuBorrow(data)=>(data.layout(),data.count,data.writable),
         Self::Gpu(data)=>(data.layout(),data.count(),false),
     }}
     fn cpu_buffer(&mut self)->Result<CpuBuffer<'_>>{match self {
         Self::Cpu(data)=>data.cpu_buffer(),
-        Self::CpuBorrow(data)=>Ok(CpuBuffer{ty:&data.ty,stride:data.stride,count:data.count,pointer:data.pointer,writable:data.writable}),
+        Self::CpuBorrow(data)=>Ok(CpuBuffer{ty:data.layout(),stride:data.stride,count:data.count,pointer:data.pointer,writable:data.writable}),
         Self::Gpu(_)=>Err(error("CPU 访问需要先显式 download 数据")),
     }}
 }

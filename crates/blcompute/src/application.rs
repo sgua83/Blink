@@ -4,7 +4,7 @@ use crate::{
     cpu::{CpuDataset, CpuTemplate},
     error, vulkan,
 };
-use std::sync::Arc;
+use std::{ptr::NonNull, sync::Arc};
 use blanguage::{
     TemplateProgram,
     ir::{ExecutionPlan, Ty},
@@ -85,15 +85,31 @@ impl Definitions {
         Ok(Self { types, programs })
     }
 }
-/// 当前实际驻留存储；Frame观察只借用该原值，不转移所有权。
+enum CpuBorrowLayout {
+    Range(NonNull<Ty>),
+    Task(Ty),
+}
+
 /// 范围输入的真实非拥有CPU借用；载荷及view资源仍由原执行输入保持。
 pub struct CpuBorrow {
-    pub(crate) ty: Ty,
+    layout: CpuBorrowLayout,
     pub(crate) stride: u32,
     pub(crate) count: u32,
     pub(crate) pointer: *mut u32,
     pub(crate) writable: bool,
 }
+impl CpuBorrow {
+    pub(crate) fn layout(&self) -> &Ty {
+        match &self.layout {
+            // The originating execution keeps the range input's layout alive
+            // until the last synchronous consumer in this Frame has finished.
+            CpuBorrowLayout::Range(ty) => unsafe { ty.as_ref() },
+            CpuBorrowLayout::Task(ty) => ty,
+        }
+    }
+}
+
+/// 当前实际驻留存储；Frame观察只借用该原值，不转移所有权。
 pub enum ResidentData {
     Cpu(CpuDataset),
     CpuBorrow(CpuBorrow),
@@ -136,7 +152,7 @@ impl Frame {
     /// input_domains来自已接受的实际输入合同，取得写访问后仍有效；索引对应同一inputs。
     pub(crate) unsafe fn from_definitions(definitions: Arc<Definitions>, inputs:&[crate::cpu::CpuBuffer<'_>], input_domains:&[crate::DomainRelation]) -> Self {
         let datasets=inputs.iter().map(|data|Some(ResidentData::CpuBorrow(CpuBorrow{
-            ty:data.ty.clone(),stride:data.stride,count:data.count,pointer:data.pointer,writable:data.writable,
+            layout:CpuBorrowLayout::Range(NonNull::from(data.ty)),stride:data.stride,count:data.count,pointer:data.pointer,writable:data.writable,
         }))).collect();
         Self {
             data: DomainBindings {datasets,domains:input_domains.to_vec()},
@@ -294,7 +310,7 @@ impl Frame {
         intervals: &[blanguage::resource::ElementInterval], limits: &[u32], known_bits: (u64,u64)) {
         let ty = match self.data.datasets[handle as usize].as_ref().unwrap() {
             ResidentData::Cpu(data) => &data.ty,
-            ResidentData::CpuBorrow(data) => &data.ty,
+            ResidentData::CpuBorrow(data) => data.layout(),
             ResidentData::Gpu(data) => data.layout(),
         };
         let scalar = ty.components.iter().find(|(_, at)| *at == offset).unwrap().0;
@@ -351,7 +367,7 @@ impl Frame {
             let data = self.data.datasets[binding.handle as usize].as_ref().unwrap();
             let ty = match data {
                 ResidentData::Cpu(data) => &data.ty,
-                ResidentData::CpuBorrow(data) => &data.ty,
+                ResidentData::CpuBorrow(data) => data.layout(),
                 ResidentData::Gpu(data) => data.layout(),
             };
             (ty, crate::DomainStorage::element_count(data), Some(binding.offset))

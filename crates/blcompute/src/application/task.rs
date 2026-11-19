@@ -1,5 +1,5 @@
 //! A task owns its work Frame until completion and successful result transfer.
-use super::{CpuBorrow, Frame, ResidentData, abi};
+use super::{CpuBorrow, CpuBorrowLayout, Frame, ResidentData, abi};
 use crate::{
     Result,
     cpu::{CpuDataset, WorkHandle},
@@ -107,7 +107,7 @@ impl InputCompletionWrites {
 fn cpu_storage(data: &ResidentData) -> Option<(&Ty, u32, u32, *const u32)> {
     match data {
         ResidentData::Cpu(data) => Some((&data.ty, data.stride, data.count, data.words.as_ptr())),
-        ResidentData::CpuBorrow(data) => Some((&data.ty, data.stride, data.count, data.pointer.cast_const())),
+        ResidentData::CpuBorrow(data) => Some((data.layout(), data.stride, data.count, data.pointer.cast_const())),
         ResidentData::Gpu(_) => None,
     }
 }
@@ -262,7 +262,8 @@ fn bind_borrowed_inputs(
         destination.data.datasets.resize_with(last+1,||None);
         for &slot in &selected {
             let (ty, stride, count, pointer) = source.data.datasets[slot].as_ref().and_then(cpu_storage).unwrap();
-            let ty = ty.clone();
+            // The parent may move storage slots while the task is still active.
+            let layout = CpuBorrowLayout::Task(ty.clone());
             let writable = writable.contains(&slot);
             let pointer = if writable {
                 source.storage_address(slot as u32) as usize as *mut u32
@@ -270,7 +271,7 @@ fn bind_borrowed_inputs(
                 pointer.cast_mut()
             };
             destination.data.datasets[slot] = Some(ResidentData::CpuBorrow(CpuBorrow {
-                ty, stride, count, pointer, writable,
+                layout, stride, count, pointer, writable,
             }));
         }
         destination.data.domains.extend(source.data.domains.iter().filter_map(|relation|
