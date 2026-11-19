@@ -1,7 +1,7 @@
 //! 域关系随实际数据所有权移动；宿主取出可写存储就放弃关系。
 use crate::{Result, error};
 use blanguage::ir::{ElementRange, ElementFact, ExecutionPlan, PrefixCount, ProgramInterface, Scalar};
-use std::collections::{BTreeMap, BTreeSet};
+use std::{borrow::Cow, collections::{BTreeMap, BTreeSet}};
 
 /// 只读身份与绑定由存储所有者提供；原生执行入口仍只接受各自具体存储类型。
 pub trait DomainStorage: Sized {
@@ -133,23 +133,21 @@ impl<D> DomainBindings<D> {
         bindings: &[usize],
         mut freeze: impl FnMut(D) -> Result<D>,
     ) -> Result<Self> {
-        for &binding in bindings {
-            if binding >= self.datasets.len() {
-                return Err(error("冻结域绑定索引越界"));
-            }
+        let len = self.datasets.len();
+        if bindings.iter().any(|&binding| binding >= len) {
+            return Err(error("冻结域绑定索引越界"));
         }
-        self.datasets = self
-            .datasets
-            .into_iter()
-            .enumerate()
-            .map(|(binding, data)| {
-                if bindings.contains(&binding) {
-                    freeze(data)
-                } else {
-                    Ok(data)
-                }
-            })
-            .collect::<Result<_>>()?;
+        let mut bindings = Cow::Borrowed(bindings);
+        if !bindings.is_sorted() {
+            bindings.to_mut().sort_unstable();
+        }
+        for selected in bindings.chunk_by(|a, b| a == b) {
+            let binding = selected[0];
+            let data = self.datasets.swap_remove(binding);
+            self.datasets.push(freeze(data)?);
+            // 归还临时移到本槽的尾项，保持绑定与域关系的索引。
+            self.datasets.swap(binding, len - 1);
+        }
         Ok(self)
     }
     /// order 索引本次所有旧绑定与按顺序追加的新绑定；不允许产生可写别名。
