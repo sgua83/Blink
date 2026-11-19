@@ -136,3 +136,10 @@ extern "C" Plan unary(address bytes,u64 length,Operand value,Queries queries) on
     return decision(177);
 }
 
+
+extern "C" FixedProjection fixed_projection(u32 array, usize width, u32 known, usize index) on cpu {
+    if (known != 0) {
+        return FixedProjection(FixedProjectionKind::Components, index * width);
+    }
+    return FixedProjection(array != 0 ? FixedProjectionKind::Array : FixedProjectionKind::Vector, 0u64);
+}

@@ -292,7 +292,7 @@ impl Builder<'_> {
                 if stored.proof.typed_view_borrow(&stored.ty).empty(){unsafe { self.world.call(self.finish_scoped_argument(&held,expr.span())).await }?;}
                 return Ok(Some(value));
             }
-            Some(Returned::Value(value)) if value.ty.indexed_element().is_some() => {
+            Some(Returned::Value(value)) if value.ty.indexed_count().is_some() => {
                 return unsafe { self.world.call(self
                     .array_value_index(*value, index)).await }
                     .map(|v| v.map(Returned::value));

@@ -140,6 +140,38 @@ impl Place {
         }
     }
 }
+#[repr(u32)]
+enum FixedProjectionKind {
+    Components,
+    Vector,
+    Array,
+}
+
+#[repr(C)]
+struct FixedProjection {
+    kind: FixedProjectionKind,
+    first: usize,
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.operator_types::fixed_projection"]
+    fn fixed_projection(array: u32, width: usize, known: u32, index: usize) -> FixedProjection;
+}
+
+impl FixedProjection {
+    fn of(source: &Ty, element: &Ty, index: &Value) -> Self {
+        let constant = index.constant.as_ref().map(|bits| bits[0] as usize);
+        unsafe {
+            fixed_projection(
+                u32::from(source.array.is_some()),
+                element.components.len(),
+                u32::from(constant.is_some()),
+                constant.unwrap_or(0),
+            )
+        }
+    }
+}
+
 impl Builder<'_> {
     pub(super) fn local_slots(&mut self, ty: &Ty) -> (Vec<usize>, std::ops::Range<usize>) {
         let base = self.locals.last_key_value().map_or(0, |(end, _)| *end);
@@ -213,70 +245,78 @@ impl Builder<'_> {
         let Some(index) = evaluated? else {
             return Ok(None);
         };
-        self.require_same(&Ty::scalar(Scalar::U32), &index.ty, span)?;
         let (ty, count) = value.ty.indexed_element().unwrap();
-        if !self.index_in(
-            &index,
-            IndexDomain::Fixed(count),
-            count,
-            None,
-        ) {
-            return self.fail(span, "B137", "固定值下标有效性无法静态证明");
+        self.check_fixed_index(&index, count, span, "固定值下标有效性无法静态证明")?;
+        let projection = FixedProjection::of(&value.ty, &ty, &index);
+        match projection.kind {
+            FixedProjectionKind::Components => {
+                let first = projection.first;
+                let components: Vec<_> = (first..first + ty.components.len()).collect();
+                Ok(Some(Value {
+                    proof: value.projected_proof(&components),
+                    literal: false,
+                    ty,
+                    regs: components.iter().map(|i| value.regs[*i]).collect(),
+                    uniform: value.uniform,
+                    constant: value.constant.map(|b| components.iter().map(|i| b[*i]).collect()),
+                }))
+            }
+            FixedProjectionKind::Vector => {
+                let proof = bounds::Proof::capture(&value);
+                let choices: Vec<_> = value.regs.iter().enumerate().map(|(i, r)| (i as u32, *r)).collect();
+                let reg = self.select_component(index.regs[0], ty.components[0].0, &choices);
+                let selected = ownership::ApplicationIndex::of(&index);
+                let proof = self.array_value_proof(&proof, &value.ty, &ty, count, selected, &[reg]);
+                let constant = proof.known_value(&ty);
+                let uniform = value.uniform && index.uniform;
+                Ok(Some(Value { ty, regs: vec![reg], proof, uniform, constant, literal: false }))
+            }
+            FixedProjectionKind::Array => {
+                let array = value.ty.clone();
+                let selected = ownership::ApplicationIndex::of(&index);
+                let uniform = value.uniform && index.uniform;
+                let OwnedBinding { place, proof, .. } = self.materialize_array(value, None);
+                self.observe_bounds(&index);
+                let place = self.lower_array_storage(place, index, ty, span)?;
+                let mut result = unsafe { self.world.call(self.read_place(&place, span, None)).await }?;
+                result.proof = self.array_value_proof(&proof, &array, &result.ty, count, selected, &result.regs);
+                result.uniform = uniform;
+                result.constant = result.proof.known_value(&result.ty);
+                Ok(Some(result))
+            }
         }
-        if let Some(bits) = &index.constant {
-            let begin = bits[0] as usize * ty.components.len();
-            let components: Vec<_> = (begin..begin + ty.components.len()).collect();
-            return Ok(Some(Value {
-                proof: value.projected_proof(&components),
-                literal: false,
-                ty,
-                regs: components.iter().map(|i| value.regs[*i]).collect(),
-                uniform: value.uniform,
-                constant: value
-                    .constant
-                    .map(|b| components.iter().map(|i| b[*i]).collect()),
-            }));
-        }
-        let array = value.ty.clone();
-        let selected = ownership::ApplicationIndex::of(&index);
-        let uniform = value.uniform && index.uniform;
-        if array.array.is_none() {
-            let proof = bounds::Proof::capture(&value);
-            let choices: Vec<_> = value.regs.iter().enumerate().map(|(i, r)| (i as u32, *r)).collect();
-            let reg = self.select_component(index.regs[0], ty.components[0].0, &choices);
-            let proof = self.array_value_proof(&proof, &array, selected, &[reg]);
-            let constant = proof.known_value(&ty);
-            return Ok(Some(Value { ty, regs: vec![reg], proof, uniform, constant, literal: false }));
-        }
-        let OwnedBinding { place, proof, .. } = self.materialize_array(value, None);
-        let place = self.array_index(place, index, span)?;
-        let mut result = unsafe { self.world.call(self.read_place(&place, span, None)).await }?;
-        result.proof = self.array_value_proof(&proof, &array, selected, &result.regs);
-        result.uniform = uniform;
-        result.constant = result.proof.known_value(&result.ty);
-        Ok(Some(result))
     }
+
+    fn check_fixed_index(&self, index: &Value, count: u32, span: Span, message: &str) -> Result<()> {
+        self.require_same(&Ty::scalar(Scalar::U32), &index.ty, span)?;
+        if !self.index_in(index, IndexDomain::Fixed(count), count, None) {
+            return self.fail(span, "B137", message);
+        }
+        Ok(())
+    }
+
     pub(super) fn array_index(&mut self, place: Place, index: Value, span: Span) -> Result<Place> {
         let (element, count) = place.ty().indexed_element().unwrap();
-        self.require_same(&Ty::scalar(Scalar::U32), &index.ty, span)?;
-        if !self.index_in(&index, IndexDomain::Fixed(count), count, None) {
-            return self.fail(
-                span,
-                "B137",
-                "固定值下标有效性无法静态证明；使用常量下标、有界循环或实际长度条件",
-            );
-        }
+        self.check_fixed_index(
+            &index, count, span,
+            "固定值下标有效性无法静态证明；使用常量下标、有界循环或实际长度条件",
+        )?;
         self.observe_bounds(&index);
+        let projection = FixedProjection::of(place.ty(), &element, &index);
+        match projection.kind {
+            FixedProjectionKind::Components => {
+                let first = projection.first;
+                let components: Vec<_> = (first..first + element.components.len()).collect();
+                Ok(place.project(element, &components))
+            }
+            FixedProjectionKind::Vector => Ok(self.vector_index(place, index, element)),
+            FixedProjectionKind::Array => self.lower_array_storage(place, index, element, span),
+        }
+    }
+
+    fn lower_array_storage(&mut self, place: Place, index: Value, element: Ty, span: Span) -> Result<Place> {
         if element.components.is_empty() {
             return Ok(place.project(element, &[]));
-        }
-        if let Some(bits) = &index.constant {
-            let first = bits[0] as usize * element.components.len();
-            let components: Vec<_> = (first..first + element.components.len()).collect();
-            return Ok(place.project(element, &components));
-        }
-        if place.ty().array.is_none() {
-            return Ok(self.vector_index(place, index, element));
         }
         let initialization = self.indexed_positions(&place, &index, element.components.len());
         let locations = Position::index(place.data_positions(), ownership::ApplicationIndex::of(&index), element.components.len());

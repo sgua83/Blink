@@ -164,7 +164,7 @@ impl Builder<'_> {
             let Some((value,mut owner))=unsafe { self.world.call(self.read_aggregate(&base,None)).await }? else{return Ok(None)};
             let value=match value {
                 Returned::Value(value)=>{
-                    let value=if value.ty.indexed_element().is_some(){let Some(value)=unsafe { self.world.call(self.array_value_index(*value,&index)).await }?else{return Ok(None)};value}
+                    let value=if value.ty.indexed_count().is_some(){let Some(value)=unsafe { self.world.call(self.array_value_index(*value,&index)).await }?else{return Ok(None)};value}
                         else {let Some(place)=unsafe { self.world.call(self.view_value_place(*value,&index)).await }?else{return Ok(None)};unsafe { self.world.call(self.read_place(&place,expr.span(), None)).await }?};
                     return Ok(Some((Returned::value(value),owner)));
                 }

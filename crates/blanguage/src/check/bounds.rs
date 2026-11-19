@@ -3022,10 +3022,11 @@ impl Builder<'_> {
         &mut self,
         proof: &Proof,
         array: &Ty,
+        element: &Ty,
+        count: u32,
         index: ownership::ApplicationIndex,
         registers: &[Reg],
     ) -> Proof {
-        let (element, count) = array.indexed_element().unwrap();
         let width = element.components.len();
         if width == 0 {
             return Proof::default();
@@ -3034,7 +3035,7 @@ impl Builder<'_> {
             .map(|i| ((i * width..(i + 1) * width).collect(), Clause::selection(index, i)))
             .collect();
         let (result, path) = Self::selected_proof(
-            &self.path, environment_facts(&self.env), proof, array, &element, &choices, Some(registers),
+            &self.path, environment_facts(&self.env), proof, array, element, &choices, Some(registers),
         );
         self.path = path;
         result

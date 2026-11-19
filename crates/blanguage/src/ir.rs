@@ -2348,14 +2348,21 @@ pub fn align_up(n: u32, a: u32) -> u32 {
 }
 
 impl Ty {
-    pub(crate) fn indexed_element(&self) -> Option<(Self, u32)> {
-        if let Some(element) = &self.array {
-            Some(((**element).clone(), self.values[0]))
+    pub(crate) fn indexed_count(&self) -> Option<u32> {
+        if self.array.is_some() {
+            Some(self.values[0])
         } else if self.is_numeric() && self.components.len() > 1 {
-            Some((Self::scalar(self.components[0].0), self.components.len() as u32))
+            Some(self.components.len() as u32)
         } else {
             None
         }
+    }
+
+    pub(crate) fn indexed_element(&self) -> Option<(Self, u32)> {
+        let count = self.indexed_count()?;
+        let element = self.array.as_deref().cloned()
+            .unwrap_or_else(|| Self::scalar(self.components[0].0));
+        Some((element, count))
     }
 }
 

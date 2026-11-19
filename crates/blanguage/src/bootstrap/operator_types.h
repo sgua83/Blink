@@ -22,3 +22,7 @@ extern "C" Plan binary(address bytes,u64 length,Operand a,bool a_literal,Operand
 extern "C" Plan unary(address bytes,u64 length,Operand value,Queries queries) on cpu
     requires nonzero(queries.builtin)
     requires nonzero(queries.numeric);
+
+enum FixedProjectionKind:u32 { Components=0; Vector=1; Array=2; };
+struct FixedProjection { FixedProjectionKind kind; usize first; };
+extern "C" FixedProjection fixed_projection(u32 array, usize width, u32 known, usize index) on cpu;

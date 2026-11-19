@@ -1162,7 +1162,7 @@ impl Builder<'_> {
                 let data = unsafe { self.world.call(self.application_place_reference(place, base.span())).await }?;
                 return unsafe { self.world.call(self.application_index(data, index)).await };
             }
-            if place.ty().indexed_element().is_some() {
+            if place.ty().indexed_count().is_some() {
                 return unsafe { self.world.call(self.array_place(place, index)).await };
             }
             unsafe { self.world.call(self.read_place(&place, base.span(), None)).await }?
