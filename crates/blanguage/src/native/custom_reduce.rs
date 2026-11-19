@@ -19,7 +19,7 @@ pub fn emit_custom_reduce_tail(
     let Operation::CustomReduce(r) = &program.stages[index].operation else {
         return Err("摘要合并需要自定义归约阶段");
     };
-    emit(program, index, r, Pass::ReduceTail, None)
+    emit(program, index, r, Pass::ReduceTail, None, None)
 }
 pub fn emit_custom_scan_prefix(
     program: &Program,
@@ -34,7 +34,7 @@ fn scan(program: &Program, index: usize, pass: Pass) -> Result<NativeCode, &'sta
     let Operation::CustomScan(r) = &program.stages[index].operation else {
         return Err("自定义扫描代码生成需要扫描阶段");
     };
-    emit(program, index, &r.values, pass, r.head_word)
+    emit(program, index, &r.values, pass, r.head_word, None)
 }
 pub fn emit_custom_segmented_prefix(
     program: &Program,
@@ -52,7 +52,7 @@ fn segmented(program: &Program, index: usize, pass: Pass) -> Result<NativeCode, 
     let Operation::CustomSegmentedReduce(r) = &program.stages[index].operation else {
         return Err("分段摘要与段尾代码需要自定义分段归约阶段");
     };
-    emit(program, index, &r.values, pass, Some(r.head_word))
+    emit(program, index, &r.values, pass, Some(r.head_word), Some(r.count))
 }
 fn reg(stage: &mut Stage, scalar: Scalar) -> Reg {
     let r = stage.registers.len();
@@ -141,6 +141,7 @@ pub(super) fn emit(
     r: &CustomReduction,
     pass: Pass,
     head_word: Option<u32>,
+    count: Option<PrefixCount>,
 ) -> Result<NativeCode, &'static str> {
     let packed = matches!(
         pass,
@@ -149,11 +150,6 @@ pub(super) fn emit(
     let apply = pass == Pass::ScanAdd;
     let finish = pass == Pass::SegmentFinish;
     let prefix = matches!(pass, Pass::ScanPrefix | Pass::SegmentPrefix);
-    let count = if let Operation::CustomSegmentedReduce(s) = &program.stages[index].operation {
-        Some(s.count)
-    } else {
-        None
-    };
     let counted = count.is_some();
     let history = head_word.is_some() && !apply && !finish && pass != Pass::SegmentPrefix;
     let kernel = r.kernel(

@@ -97,15 +97,165 @@ pub(crate) fn link_inputs(
     Ok(true)
 }
 
-pub(crate) fn compile_stage(program: &Program, i: usize) -> Result<StageCode, &'static str> {
-    let stage = &program.stages()[i];
-    let main = emit(program, i)?;
-    let (continuation, result) = match &stage.operation {
-        Operation::StableSort(sort) => {
-            let mut initialize = vec![main];
-            for key in (0..sort.keys.len() - 1).rev() {
-                initialize.push(emit_sort_key(program, sort, key));
+#[derive(Clone, Copy)]
+#[repr(u32)]
+enum RangeOperation {
+    Map,
+    Reduce,
+    CustomReduce,
+    CustomScan,
+    CustomSegmentedReduce,
+    SegmentedReduce,
+    Scan,
+    Compact,
+    Sort,
+}
+
+#[repr(u32)]
+enum RangeFollow {
+    None,
+    ReduceTail,
+    CustomScan,
+    CustomSegmentedReduce,
+    SegmentedFinish,
+    ScanAdd,
+    CompactScatter,
+    Sort,
+}
+
+#[repr(C)]
+struct RangeEntries {
+    follow: RangeFollow,
+    values: u32,
+    words: usize,
+    first_key: usize,
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.x64_instruction::range_entries"]
+    fn range_entries(operation: RangeOperation, words_or_keys: usize, complete: u32) -> RangeEntries;
+}
+
+// The payload borrows the exact operation kept in the original stage.
+struct RangeStage<'a> {
+    program: &'a Program,
+    index: usize,
+    operation: RangeOperation,
+    payload: *const std::ffi::c_void,
+    words_or_keys: usize,
+}
+
+impl<'a> RangeStage<'a> {
+    fn new(program: &'a Program, index: usize) -> Self {
+        use RangeOperation as Kind;
+        fn payload<T>(value: &T) -> *const std::ffi::c_void {
+            std::ptr::from_ref(value).cast()
+        }
+        let (operation, payload, words_or_keys) = match &program.stages()[index].operation {
+            Operation::Map => (Kind::Map, std::ptr::null(), 0),
+            Operation::Reduce(value) =>
+                (Kind::Reduce, payload(value), value.ty.size.div_ceil(4) as usize),
+            Operation::CustomReduce(value) =>
+                (Kind::CustomReduce, payload(value), value.ty.size.div_ceil(4) as usize),
+            Operation::CustomScan(value) =>
+                (Kind::CustomScan, payload(value), value.summary_words()),
+            Operation::CustomSegmentedReduce(value) =>
+                (Kind::CustomSegmentedReduce, payload(value), value.summary_words()),
+            Operation::SegmentedReduce(value) =>
+                (Kind::SegmentedReduce, payload(value), value.summary_words()),
+            Operation::ScanExclusive(value) => (Kind::Scan, payload(value), value.summary_words()),
+            Operation::Compact(value) => (Kind::Compact, payload(value), 1),
+            Operation::StableSort(value) => (Kind::Sort, payload(value), value.keys.len()),
+        };
+        Self { program, index, operation, payload, words_or_keys }
+    }
+
+    fn entries(&self, complete: bool) -> RangeEntries {
+        unsafe { range_entries(self.operation, self.words_or_keys, u32::from(complete)) }
+    }
+
+    // The original operation discriminant fixes the borrowed payload type.
+    unsafe fn value<T>(&self) -> &T {
+        unsafe { &*self.payload.cast() }
+    }
+
+    fn custom(&self, value: &CustomReduction, pass: custom_reduce::Pass,
+              head: Option<u32>, count: Option<PrefixCount>) -> Result<NativeCode, &'static str> {
+        custom_reduce::emit(self.program, self.index, value, pass, head, count)
+    }
+
+    fn first(&self, entries: &RangeEntries) -> Result<NativeCode, &'static str> {
+        use custom_reduce::Pass;
+        match self.operation {
+            RangeOperation::Map => emit_map(self.program, self.index),
+            RangeOperation::Reduce => Ok(reduce::emit(self.program, unsafe { self.value() })),
+            RangeOperation::CustomReduce => self.custom(unsafe { self.value() }, Pass::Reduce, None, None),
+            RangeOperation::CustomScan => {
+                let scan: &CustomScan = unsafe { self.value() };
+                self.custom(&scan.values, Pass::Scan, scan.head_word, None)
             }
+            RangeOperation::CustomSegmentedReduce => {
+                let reduction: &CustomSegmentedReduction = unsafe { self.value() };
+                self.custom(&reduction.values, Pass::SegmentReduce, Some(reduction.head_word), Some(reduction.count))
+            }
+            RangeOperation::SegmentedReduce =>
+                Ok(segmented_reduce::emit(self.program, unsafe { self.value() }, false)),
+            RangeOperation::Scan => Ok(scan::emit_scan(self.program, unsafe { self.value() }, false)),
+            RangeOperation::Compact => Ok(compact::emit_count(self.program, unsafe { self.value() })),
+            RangeOperation::Sort =>
+                Ok(sort::initialize(self.program, unsafe { self.value() }, entries.first_key, true)),
+        }
+    }
+}
+
+pub fn emit(program: &Program, index: usize) -> Result<NativeCode, &'static str> {
+    let stage = RangeStage::new(program, index);
+    stage.first(&stage.entries(false))
+}
+
+pub(crate) fn compile_stage(program: &Program, index: usize) -> Result<StageCode, &'static str> {
+    use custom_reduce::Pass;
+    let stage = RangeStage::new(program, index);
+    let entries = stage.entries(true);
+    let main = stage.first(&entries)?;
+    let continuation = match entries.follow {
+        RangeFollow::None => None,
+        RangeFollow::ReduceTail => Some(ContinuationCode::ReductionTail(
+            stage.custom(unsafe { stage.value() }, Pass::ReduceTail, None, None)?,
+        )),
+        RangeFollow::CustomScan => {
+            let scan: &CustomScan = unsafe { stage.value() };
+            Some(ContinuationCode::Scan {
+                prefix: stage.custom(&scan.values, Pass::ScanPrefix, scan.head_word, None)?,
+                apply: stage.custom(&scan.values, Pass::ScanAdd, scan.head_word, None)?,
+                source: scan.values.fields.source,
+                target: scan.values.fields.target,
+            })
+        }
+        RangeFollow::CustomSegmentedReduce => {
+            let reduction: &CustomSegmentedReduction = unsafe { stage.value() };
+            let head = Some(reduction.head_word);
+            let count = Some(reduction.count);
+            Some(ContinuationCode::Scan {
+                prefix: stage.custom(&reduction.values, Pass::SegmentPrefix, head, count)?,
+                apply: stage.custom(&reduction.values, Pass::SegmentFinish, head, count)?,
+                source: reduction.values.fields.source,
+                target: reduction.values.fields.target,
+            })
+        }
+        RangeFollow::SegmentedFinish => Some(ContinuationCode::SegmentedFinish(
+            emit_segmented_reduce_finish(program, unsafe { stage.value() }),
+        )),
+        RangeFollow::ScanAdd =>
+            Some(ContinuationCode::ScanAdd(emit_scan_add(program, unsafe { stage.value() }))),
+        RangeFollow::CompactScatter => Some(ContinuationCode::CompactScatter(
+            emit_compact_scatter(program, unsafe { stage.value() }),
+        )),
+        RangeFollow::Sort => {
+            let sort: &Sorting = unsafe { stage.value() };
+            let initialize = std::iter::once(main)
+                .chain((0..entries.first_key).rev().map(|key| emit_sort_key(program, sort, key)))
+                .collect();
             return Ok(StageCode::Sort(SortCode {
                 source: sort.source,
                 target: sort.target,
@@ -115,61 +265,7 @@ pub(crate) fn compile_stage(program: &Program, i: usize) -> Result<StageCode, &'
                 gather: emit_sort_gather(program, sort),
             }));
         }
-        Operation::CustomScan(scan) => {
-            return Ok(StageCode::Element {
-                main,
-                continuation: Some(ContinuationCode::Scan {
-                    prefix: emit_custom_scan_prefix(program, i)?,
-                    apply: emit_custom_scan_add(program, i)?,
-                    source: scan.values.fields.source,
-                    target: scan.values.fields.target,
-                }),
-                result: RangeResult::Values(scan.summary_words()),
-            });
-        }
-        Operation::CustomSegmentedReduce(reduction) => {
-            return Ok(StageCode::Element {
-                main,
-                continuation: Some(ContinuationCode::Scan {
-                    prefix: emit_custom_segmented_prefix(program, i)?,
-                    apply: emit_custom_segmented_finish(program, i)?,
-                    source: reduction.values.fields.source,
-                    target: reduction.values.fields.target,
-                }),
-                result: RangeResult::Values(reduction.summary_words()),
-            });
-        }
-        Operation::ScanExclusive(scan) => (
-            Some(ContinuationCode::ScanAdd(emit_scan_add(program, scan))),
-            RangeResult::Values(scan.summary_words()),
-        ),
-        Operation::SegmentedReduce(reduction) => (
-            Some(ContinuationCode::SegmentedFinish(
-                emit_segmented_reduce_finish(program, reduction),
-            )),
-            RangeResult::Values(reduction.summary_words()),
-        ),
-        Operation::CustomReduce(reduction) => (
-            Some(ContinuationCode::ReductionTail(emit_custom_reduce_tail(
-                program, i,
-            )?)),
-            RangeResult::Values(reduction.ty.size.div_ceil(4) as usize),
-        ),
-        Operation::Compact(compaction) => (
-            Some(ContinuationCode::CompactScatter(emit_compact_scatter(
-                program, compaction,
-            ))),
-            RangeResult::Values(1),
-        ),
-        Operation::Reduce(reduction) => (
-            None,
-            RangeResult::Values(reduction.ty.size.div_ceil(4) as usize),
-        ),
-        Operation::Map => (None, RangeResult::None),
     };
-    Ok(StageCode::Element {
-        main,
-        continuation,
-        result,
-    })
+    let result = if entries.values == 0 { RangeResult::None } else { RangeResult::Values(entries.words) };
+    Ok(StageCode::Element { main, continuation, result })
 }

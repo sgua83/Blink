@@ -4168,3 +4168,28 @@ extern "C" address packet_plan(address context,PacketPlanBlock code,PacketPlanHe
     }
     host.state_drop(definitions);host.state_drop(uses);return plan;
 }
+
+extern "C" RangeEntries range_entries(RangeOperation operation, usize words_or_keys, u32 complete) on cpu {
+    if (operation == RangeOperation::Sort) {
+        RangeFollow follow = complete != 0 ? RangeFollow::Sort : RangeFollow::None;
+        return RangeEntries(follow, 0, 0u64, words_or_keys - 1u64);
+    }
+    if (operation == RangeOperation::Map || complete == 0) {
+        return RangeEntries(RangeFollow::None, 0, 0u64, 0u64);
+    }
+    RangeFollow follow = RangeFollow::None;
+    if (operation == RangeOperation::CustomReduce) {
+        follow = RangeFollow::ReduceTail;
+    } else if (operation == RangeOperation::CustomScan) {
+        follow = RangeFollow::CustomScan;
+    } else if (operation == RangeOperation::CustomSegmentedReduce) {
+        follow = RangeFollow::CustomSegmentedReduce;
+    } else if (operation == RangeOperation::SegmentedReduce) {
+        follow = RangeFollow::SegmentedFinish;
+    } else if (operation == RangeOperation::Scan) {
+        follow = RangeFollow::ScanAdd;
+    } else if (operation == RangeOperation::Compact) {
+        follow = RangeFollow::CompactScatter;
+    }
+    return RangeEntries(follow, 1, words_or_keys, 0u64);
+}

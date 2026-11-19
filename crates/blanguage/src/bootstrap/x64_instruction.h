@@ -667,3 +667,19 @@ extern "C" u32 packet_plan_uniform_operand(address bytes,u64 reg) on cpu;
 extern "C" u32 packet_plan_mark_operand(address bytes,u64 reg) on cpu;
 extern "C" u32 packet_plan_definition(address context,u64 reg) on cpu;
 extern "C" u32 packet_plan_width(address context,u64 bytes) on cpu;
+
+enum RangeOperation:u32 {
+    Map=0; Reduce=1; CustomReduce=2; CustomScan=3; CustomSegmentedReduce=4;
+    SegmentedReduce=5; Scan=6; Compact=7; Sort=8;
+};
+enum RangeFollow:u32 {
+    None=0; ReduceTail=1; CustomScan=2; CustomSegmentedReduce=3;
+    SegmentedFinish=4; ScanAdd=5; CompactScatter=6; Sort=7;
+};
+struct RangeEntries {
+    RangeFollow follow;
+    u32 values;
+    usize words;
+    usize first_key;
+};
+extern "C" RangeEntries range_entries(RangeOperation operation, usize words_or_keys, u32 complete) on cpu;

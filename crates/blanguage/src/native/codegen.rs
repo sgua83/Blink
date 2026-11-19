@@ -30,7 +30,7 @@ mod packet;
 pub(crate) mod program;
 #[path="reads.rs"]
 mod reads;
-pub use program::compile_program;
+pub use program::{compile_program, emit};
 #[path="reduce.rs"]
 mod reduce;
 #[path="scan.rs"]
@@ -646,43 +646,7 @@ impl Emitter<'_> {
 }
 /// 所有范围共用RangeEntry：buffers、uniforms、end、begin、output，返回执行状态。
 /// 算法输出（包括计数）只写第五参数，map及无摘要续阶段不读取该指针。
-pub fn emit(program: &Program, index: usize) -> Result<NativeCode, &'static str> {
-    if let Operation::CustomSegmentedReduce(r) = &program.stages[index].operation {
-        return custom_reduce::emit(
-            program,
-            index,
-            &r.values,
-            custom_reduce::Pass::SegmentReduce,
-            Some(r.head_word),
-        );
-    }
-    if let Operation::CustomReduce(r) = &program.stages[index].operation {
-        return custom_reduce::emit(program, index, r, custom_reduce::Pass::Reduce, None);
-    }
-    if let Operation::CustomScan(r) = &program.stages[index].operation {
-        return custom_reduce::emit(
-            program,
-            index,
-            &r.values,
-            custom_reduce::Pass::Scan,
-            r.head_word,
-        );
-    }
-    if let Operation::SegmentedReduce(r) = &program.stages[index].operation {
-        return Ok(segmented_reduce::emit(program, r, false));
-    }
-    if let Operation::StableSort(s) = &program.stages[index].operation {
-        return Ok(sort::initialize(program, s, s.keys.len() - 1, true));
-    }
-    if let Operation::Compact(c) = &program.stages[index].operation {
-        return Ok(compact::emit_count(program, c));
-    }
-    if let Operation::ScanExclusive(r) = &program.stages[index].operation {
-        return Ok(scan::emit_scan(program, r, false));
-    }
-    if let Operation::Reduce(r) = &program.stages[index].operation {
-        return Ok(reduce::emit(program, r));
-    }
+fn emit_map(program: &Program, index: usize) -> Result<NativeCode, &'static str> {
     let mut lowered = program.stages[index].clone();
     texture::lower(&mut lowered);
     reads::place(&mut lowered.code, &lowered.writes);
