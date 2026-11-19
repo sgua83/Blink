@@ -51,6 +51,18 @@ extern "C" Parameter parameter_form(Facts facts) on cpu {
     return Parameter::Ordinary;
 }
 
+extern "C" bool domain_result(u32 unit, usize arguments, u32 dataset, u32 tile, u32 view) on cpu {
+    return unit != 0 && arguments == 0u64 && (dataset | tile | view) == 0;
+}
+
+extern "C" DomainParameter domain_parameter(u32 dataset, u32 resource, u32 by_value) on cpu {
+    if (dataset != 0) {
+        return by_value == 0 ? DomainParameter::Accept : DomainParameter::Reject;
+    }
+    if (resource != 0) { return DomainParameter::Accept; }
+    return by_value != 0 ? DomainParameter::PlainLayout : DomainParameter::Reject;
+}
+
 extern "C" Dataset dataset_form(u32 ordinary_cpu,u32 by_value) on cpu {
     if (ordinary_cpu == 0) { return Dataset::Device; }
     if (by_value != 0) { return Dataset::Owned; }

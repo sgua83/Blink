@@ -4862,12 +4862,7 @@ async fn kernel_parameters<'a>(
     let d=&instance.definition;
     let result=unsafe { world.call(instance.bindings.type_name(world,&d.function.result(),
         (&d.source,&d.module,&d.imports),d.function.span())).await }?;
-    if result.name != "void"
-        || result.dataset
-        || result.tile
-        || result.view
-        || !result.arguments.is_empty()
-    {
+    if !function_inputs::domain_result(&result) {
         return Ok(false);
     }
     for parameter in parameters {
@@ -4876,17 +4871,15 @@ async fn kernel_parameters<'a>(
                 Cow::Owned(unsafe { world.call(instance.parameter(world, parameter)).await }?),
             ScopeParameter::Bound(parameter) => Cow::Borrowed(parameter),
         };
-        if param.ty.dataset {
-            if param.access == Access::Value {
-                return Ok(false);
-            }
-        } else if !param.ty.is_acceleration() && !param.ty.is_texture_resource() {
-            if param.access != Access::Value
-                || unsafe { world.call(world
-                    .ty(&param.ty, &d.source, param.span, &d.module, &d.imports)).await }?
-                    .owns_resources()
-            {
-                return Ok(false);
+        match function_inputs::domain_parameter(&param) {
+            function_inputs::DomainParameter::Accept => {}
+            function_inputs::DomainParameter::Reject => return Ok(false),
+            function_inputs::DomainParameter::PlainLayout => {
+                let ty = unsafe { world.call(world
+                    .ty(&param.ty, &d.source, param.span, &d.module, &d.imports)).await }?;
+                if ty.owns_resources() {
+                    return Ok(false);
+                }
             }
         }
         if let Cow::Owned(param) = param {

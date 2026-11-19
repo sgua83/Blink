@@ -2458,7 +2458,7 @@ async fn module_instance(
     if route.query_domain != 0
         && let Some(signature) = unsafe { world.call(kernel_signature(world, instance)).await }?
     {
-        roots.extend(unsafe { world.call(domain_declaration(world, instance, Some(&signature), functions)).await }?);
+        roots.extend(unsafe { world.call(domain_declaration(world, instance, &signature, functions)).await }?);
         return Ok(());
     }
 
@@ -2655,13 +2655,32 @@ pub(crate) async fn check_domain(
     instance: &crate::generics::Instance,
     signature: Option<&[Param]>,
 ) -> Result<()> {
-    unsafe { world.call(domain_declaration(world, instance, signature, &mut Module::default())).await }?;
+    let parameters = match signature {
+        Some(signature) => Cow::Borrowed(signature),
+        None => {
+            let input = DomainInput::Declaration { instance, signature: None };
+            let parameters = unsafe { world.call(input.parameters(world)).await }?;
+            unsafe { world.call(check_bound_kernel(world, instance, &parameters)).await }?;
+            parameters
+        }
+    };
+    unsafe { world.call(domain_declaration(world, instance, &parameters, &mut Module::default())).await }?;
     Ok(())
 }
+
+async fn check_bound_kernel(world: &World, instance: &crate::generics::Instance, parameters: &[Param]) -> Result<()> {
+    if !unsafe {
+        world.call(kernel_parameters(world, instance, parameters.iter().map(ScopeParameter::Bound), |_| {})).await
+    }? {
+        return Err(invalid_kernel_interface(DomainInput::Declaration { instance, signature: None }));
+    }
+    Ok(())
+}
+
 async fn domain_declaration(
     world: &World,
     instance: &crate::generics::Instance,
-    signature: Option<&[Param]>,
+    signature: &[Param],
     functions: &mut Module,
 ) -> Result<BTreeSet<String>> {
     let targets: &[Target] = match instance.definition.function.target() {
@@ -2670,9 +2689,9 @@ async fn domain_declaration(
         Target::Compute => &[Target::Cpu, Target::Gpu],
     };
     let mut roots = BTreeSet::new();
-    let input = DomainInput::Declaration { instance, signature };
+    let input = DomainInput::Declaration { instance, signature: Some(signature) };
     for &target in targets {
-        unsafe { world.call(domain_at(world, input, functions, target, &[], None)).await }?;
+        unsafe { world.call(domain_at(world, input, functions, target, &[], Some(signature))).await }?;
         if instance.definition.public {
             roots.insert(crate::module::domain::symbol(&instance.name, target));
         }
@@ -2692,12 +2711,8 @@ async fn build_domain(
         Some(parameters) => Cow::Borrowed(parameters),
         None => unsafe { world.call(input.parameters(world)).await }?,
     };
-    if let DomainInput::Declaration { instance, signature: None } = input
-        && !unsafe {
-            world.call(kernel_parameters(world, instance, bound_parameters.iter().map(ScopeParameter::Bound), |_| {})).await
-        }?
-    {
-        return Err(invalid_kernel_interface(input));
+    if let DomainInput::Declaration { instance, signature: None } = input {
+        unsafe { world.call(check_bound_kernel(world, instance, &bound_parameters)).await }?;
     }
     let (expanded, bound_contracts) =
         unsafe { world.call(expand_domain(world, input, &bound_parameters, functions, element_inputs)).await }?;

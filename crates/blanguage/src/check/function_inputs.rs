@@ -11,6 +11,14 @@ enum Resource { Done, Buffer, Acceleration, Texture, Keep }
 enum Parameter { Acceleration, Texture, Dataset, Tile, Ordinary }
 
 #[allow(dead_code)]
+#[repr(u32)]
+pub(super) enum DomainParameter {
+    Accept,
+    Reject,
+    PlainLayout,
+}
+
+#[allow(dead_code)]
 #[derive(Clone, Copy)]
 #[repr(u32)]
 enum Dataset { Device, Owned, Borrowed }
@@ -75,6 +83,10 @@ unsafe extern "C" {
     ) -> u32;
     #[link_name = "bootstrap.function_inputs::parameter_form"]
     fn parameter_form(facts: Facts) -> Parameter;
+    #[link_name = "bootstrap.function_inputs::domain_result"]
+    fn native_domain_result(unit: u32, arguments: usize, dataset: u32, tile: u32, view: u32) -> bool;
+    #[link_name = "bootstrap.function_inputs::domain_parameter"]
+    fn native_domain_parameter(dataset: u32, resource: u32, by_value: u32) -> DomainParameter;
     #[link_name = "bootstrap.function_inputs::dataset_form"]
     fn dataset_form(ordinary_cpu: u32, by_value: u32) -> Dataset;
     #[link_name = "bootstrap.function_inputs::value_form"]
@@ -114,6 +126,21 @@ pub(super) fn layout_uniforms(
     unsafe {
         native_layout_uniforms(buffers, count, std::ptr::from_mut(&mut layout).cast(), uniform_field, place_uniform)
     }
+}
+
+pub(super) fn domain_result(ty: &TypeName) -> bool {
+    unsafe {
+        native_domain_result(
+            u32::from(ty.name == "void"), ty.arguments.len(), u32::from(ty.dataset),
+            u32::from(ty.tile), u32::from(ty.view),
+        )
+    }
+}
+
+pub(super) fn domain_parameter(param: &Param) -> DomainParameter {
+    let ty = &param.ty;
+    let resource = !ty.dataset && (ty.is_acceleration() || ty.is_texture_resource());
+    unsafe { native_domain_parameter(u32::from(ty.dataset), u32::from(resource), u32::from(param.access == Access::Value)) }
 }
 
 fn facts(p: &Param) -> Facts {
