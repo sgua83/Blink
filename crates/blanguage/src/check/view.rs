@@ -705,7 +705,7 @@ impl Requirement {
         Self::Nonzero{..}=>self.clone(),
         Self::Unborrowed{..}|Self::Address{..}|Self::Memory{..}|Self::Dataset{..}|Self::Initialized{..}=>self.mapped(|borrow|borrow.restricted(path)),
     }}
-    pub fn mapped(&self,map:impl Fn(&Borrow)->Borrow)->Self {
+    pub fn mapped(&self, mut map: impl FnMut(&Borrow) -> Borrow) -> Self {
         match self {
             Self::Unborrowed{resource,borrow,kind,span}=>Self::Unborrowed{resource:map(resource),borrow:map(borrow),kind:*kind,span:*span},
             Self::Return{borrow,allowed,owned,span}=>Self::Return{borrow:map(borrow),allowed:allowed.clone(),owned:map(owned),span:*span},
