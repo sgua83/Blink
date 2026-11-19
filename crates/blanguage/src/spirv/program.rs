@@ -9,10 +9,11 @@ fn compile_stages(worker: &crate::compiler::Worker, program: &Program) -> Result
     if program.target() == crate::ast::Target::Cpu {
         return Err("CPU 专属程序不能提交给 GPU".into());
     }
+    let requirements = program.requirements();
     let compiled = crate::parallel::try_map(worker, (0..program.stages().len()).collect(), |_| (),
-        |_, index| compile_stage(program, index)).map_err(|error| error.to_string())?;
+        |_, index| compile_stage(program, index, requirements)).map_err(|error| error.to_string())?;
     let (layout, stages) = compiled.into_iter().unzip();
-    Ok((ExecutionPlan::from_program(program, layout), stages))
+    Ok((ExecutionPlan::from_program(program, layout, requirements), stages))
 }
 pub(crate) fn compile_in<P: Deref<Target = Program>>(
     worker: &crate::compiler::Worker, program: P,
@@ -29,13 +30,16 @@ impl crate::Compiler {
     }
 }
 
-pub(crate) fn compile_stage(program: &Program, i: usize) -> Result<(ExecutionStage, StageCode), &'static str> {
+pub(crate) fn compile_stage(
+    program: &Program, i: usize, requirements: DeviceRequirements,
+) -> Result<(ExecutionStage, StageCode), &'static str> {
     let stage = &program.stages()[i];
     let (tile_layout, mut inputs) = shader_stage_inputs(program, stage)?;
     // Shader input also includes the physical low half of a wide word.
     let mut layout = ExecutionStage::from_stage(stage, inputs.keys().copied().collect());
+    let features = ProgramShaderFeatures::from(requirements);
     let mut emit = |pass| {
-        let (words, bytes) = emit_shader(program, i, pass, &mut inputs, &tile_layout)?;
+        let (words, bytes) = emit_shader(program, i, pass, &mut inputs, &tile_layout, features)?;
         layout.shared_bytes = layout.shared_bytes.max(bytes);
         Ok::<_, &'static str>(words)
     };

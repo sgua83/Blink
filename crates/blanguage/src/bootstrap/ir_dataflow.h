@@ -381,17 +381,15 @@ extern "C" void mark_frame_sources(FrameSourceHost host) on cpu
  requires nonzero(host.arguments) requires nonzero(host.contains);
 
 // Optimized floating requirements borrow each original body's own registers.
-struct FloatCode { Span code; address registers; };
-struct FloatInput {
- FloatCode body; FloatCode identity; FloatCode combine; FloatCode project;
- Word collective;
-};
 struct FloatScalar { u32 kind; u32 integer; u32 floating; };
 struct FloatHost {
  Host ir;
- cfn<FloatScalar,address,usize> ensures memory(read) scalar;
+ cfn<FloatScalar,Span,usize> ensures memory(read) scalar;
 };
-extern "C" u32 float_preserve(FloatInput input,u32 scalar,FloatHost host) on cpu
+// The mask uses the original ScalarCode positions, including for a single requested scalar.
+extern "C" u32 float_preserve(Node source,u32 requested,FloatHost host) on cpu
+ requires nonzero(host.ir.inspect) requires nonzero(host.scalar);
+extern "C" u32 program_float_preserve(Span stages,u32 requested,FloatHost host) on cpu
  requires nonzero(host.ir.inspect) requires nonzero(host.scalar);
 
 // Query only the tile usage facts consumed by the original Stage caller.

@@ -10,6 +10,7 @@ enum Kind {
     Instruction, Call, Target, Argument, DatasetBorrow, Reference, Storage,
     Indexed, Stride, Texture, AtomicOp, Alias, Effect, Division, Divisor, Words3,
     Component, Stage, RayRange, Operation, Buffer, Uniform, ValueCode, CustomReduction, Scalar, Tile, Registers,
+    FirstComponentScalar,
 }
 #[derive(Clone, Copy)]
 #[repr(C)]
@@ -281,7 +282,9 @@ unsafe extern "C" fn inspect(node: Node) -> View {
         Kind::Operation => {
             let pair = |tag, source, target| { let mut view = View::tag(tag); view.a = source; view.b = target; view };
             let typed = |tag, values: &Reduction, ty: &Ty| {
-                let mut view = pair(tag, values.source, values.target); view.first = Span::slice(&ty.components); view
+                let mut view = pair(tag, values.source, values.target);
+                view.first = Span::slice(&ty.components);
+                view.left = Node::of(ty, Kind::FirstComponentScalar); view
             };
             let custom = |tag, values: &CustomReduction| {
                 let mut view = pair(tag, values.fields.source, values.fields.target);
@@ -309,7 +312,8 @@ unsafe extern "C" fn inspect(node: Node) -> View {
         }
         Kind::ValueCode => {
             let value = unsafe { &*node.data.cast::<ValueCode>() };
-            let mut view = View::tag(0); view.second = Span::slice(&value.registers);
+            let mut view = View::tag(0); view.first = Span::slice(&value.code);
+            view.second = Span::slice(&value.registers);
             view.c = ptr::from_ref(&value.locals).addr();
             view.left = Node::of(&value.inputs, Kind::Registers); view.right = Node::of(&value.outputs, Kind::Registers); view
         }
@@ -323,6 +327,10 @@ unsafe extern "C" fn inspect(node: Node) -> View {
             let mut view = View::tag(0); view.first = Span::slice(values); view
         }
         Kind::Scalar => View::tag(crate::builtin_types::ScalarCode::from(unsafe { *node.data.cast::<Scalar>() }) as u32),
+        Kind::FirstComponentScalar => {
+            let ty = unsafe { &*node.data.cast::<Ty>() };
+            View::tag(crate::builtin_types::ScalarCode::from(ty.components[0].0) as u32)
+        }
         Kind::Tile => {
             let tile = unsafe { &*node.data.cast::<Tile>() };
             let mut view = match tile.source {
@@ -438,61 +446,51 @@ fn instruction(value: &Inst) -> View {
 
 #[derive(Clone, Copy)]
 #[repr(C)]
-struct FloatCode { code: Span, registers: *const c_void }
-impl FloatCode {
-    const EMPTY: Self = Self { code: Span::EMPTY, registers: ptr::null() };
-    fn of(code: &[Inst], registers: &Vec<Scalar>) -> Self {
-        Self { code: Span::slice(code), registers: ptr::from_ref(registers).cast() }
-    }
-    fn body(value: &ValueCode) -> Self { Self::of(&value.code, &value.registers) }
-}
-#[repr(C)]
-struct FloatInput {
-    body: FloatCode, identity: FloatCode, combine: FloatCode, project: FloatCode,
-    collective: Word,
-}
-#[repr(C)]
 struct FloatScalar { kind: u32, integer: u32, floating: u32 }
+
 #[repr(C)]
 struct FloatHost {
     ir: Host,
-    scalar: unsafe extern "C" fn(*const c_void, usize) -> FloatScalar,
+    scalar: unsafe extern "C" fn(Span, usize) -> FloatScalar,
 }
+
 unsafe extern "C" {
     #[link_name = "bootstrap.ir_dataflow::float_preserve"]
-    fn b_float_preserve(input: FloatInput, scalar: u32, host: FloatHost) -> u32;
+    fn b_float_preserve(stage: Node, requested: u32, host: FloatHost) -> u32;
+    #[link_name = "bootstrap.ir_dataflow::program_float_preserve"]
+    fn b_program_float_preserve(stages: Span, requested: u32, host: FloatHost) -> u32;
 }
-unsafe extern "C" fn float_scalar(registers: *const c_void, index: usize) -> FloatScalar {
-    let scalar = unsafe { &*registers.cast::<Vec<Scalar>>() }[index];
-    FloatScalar { kind: scalar as u32, integer: u32::from(scalar.is_integer()), floating: u32::from(scalar.is_float()) }
+
+unsafe extern "C" fn float_scalar(registers: Span, index: usize) -> FloatScalar {
+    let registers = unsafe { std::slice::from_raw_parts(registers.data.cast::<Scalar>(), registers.count) };
+    let scalar = registers[index];
+    FloatScalar {
+        kind: crate::builtin_types::ScalarCode::from(scalar) as u32,
+        integer: u32::from(scalar.is_integer()),
+        floating: u32::from(scalar.is_float()),
+    }
 }
+
+const FLOAT_HOST: FloatHost = FloatHost { ir: HOST, scalar: float_scalar };
+const PRESERVE_F32: u32 = 1 << (crate::builtin_types::ScalarCode::F32 as u32);
+const PRESERVE_F64: u32 = 1 << (crate::builtin_types::ScalarCode::F64 as u32);
+const PRESERVE_FLOATS: u32 = PRESERVE_F32 | PRESERVE_F64;
+
+fn float_modes(bits: u32) -> (bool, bool) {
+    (bits & PRESERVE_F32 != 0, bits & PRESERVE_F64 != 0)
+}
+
 pub(super) fn float_preserve(stage: &Stage, scalar: Scalar) -> bool {
-    let mut input = FloatInput {
-        body: FloatCode::of(&stage.code, &stage.registers), identity: FloatCode::EMPTY,
-        combine: FloatCode::EMPTY, project: FloatCode::EMPTY,
-        collective: Word { present: 0, value: 0 },
-    };
-    let collective = match &stage.operation {
-        Operation::Reduce(value) => Some(&value.ty),
-        Operation::SegmentedReduce(value) => Some(&value.values.ty),
-        Operation::ScanExclusive(value) => Some(&value.ty),
-        _ => None,
-    };
-    if let Some(ty) = collective {
-        input.collective = Word { present: 1, value: ty.components[0].0 as usize };
-    }
-    let custom = match &stage.operation {
-        Operation::CustomReduce(value)
-        | Operation::CustomScan(CustomScan { values: value, .. })
-        | Operation::CustomSegmentedReduce(CustomSegmentedReduction { values: value, .. }) => Some(value),
-        _ => None,
-    };
-    if let Some(value) = custom {
-        input.identity = FloatCode::body(&value.identity);
-        input.combine = FloatCode::body(&value.combine);
-        if let Some(project) = &value.project { input.project = FloatCode::body(project); }
-    }
-    unsafe { b_float_preserve(input, scalar as u32, FloatHost { ir: HOST, scalar: float_scalar }) != 0 }
+    let requested = 1 << (crate::builtin_types::ScalarCode::from(scalar) as u32);
+    unsafe { b_float_preserve(Node::of(stage, Kind::Stage), requested, FLOAT_HOST) != 0 }
+}
+
+pub(crate) fn stage_float_preserve(stage: &Stage) -> (bool, bool) {
+    float_modes(unsafe { b_float_preserve(Node::of(stage, Kind::Stage), PRESERVE_FLOATS, FLOAT_HOST) })
+}
+
+pub(super) fn program_float_preserve(program: &Program) -> (bool, bool) {
+    float_modes(unsafe { b_program_float_preserve(Span::slice(program.stages()), PRESERVE_FLOATS, FLOAT_HOST) })
 }
 
 unsafe extern "C" {
@@ -806,7 +804,7 @@ unsafe extern "C" {
     #[link_name = "bootstrap.ir_dataflow::numeric_requirements"]
     fn b_numeric_requirements(stages: Span, buffers: Span, uniforms: Span, host: NumericHost) -> NumericRequirements;
 }
-pub(super) fn numeric_requirements(program: &Program) -> (bool, bool, bool) {
+pub(crate) fn numeric_requirements(program: &Program) -> (bool, bool, bool) {
     let flags = unsafe { b_numeric_requirements(Span::slice(program.stages()), Span::slice(&program.buffers),
         Span::slice(&program.uniforms), NumericHost { ir: HOST, locals: numeric_locals }) };
     (flags.float64 != 0, flags.integer8 != 0, flags.integer16 != 0)

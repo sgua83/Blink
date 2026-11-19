@@ -98,11 +98,11 @@ impl ProgramInterface for Program {
     fn requirements(&self) -> DeviceRequirements {
         let (float64, integer8, integer16) = dataflow::numeric_requirements(self);
         let (atomic64, shared_atomic64) = dataflow::program_atomic64_requirements(self);
+        let (float32_preserve, float64_preserve) = dataflow::program_float_preserve(self);
         DeviceRequirements {
             float64, integer8, integer16,
             ray_query: !self.accelerations.is_empty(),
-            float32_preserve: self.stages.iter().any(|stage| stage.requires_float_preserve(Scalar::F32)),
-            float64_preserve: self.stages.iter().any(|stage| stage.requires_float_preserve(Scalar::F64)),
+            float32_preserve, float64_preserve,
             sorting: self.requires_sort(),
             maximal_reconvergence: self.requires_maximal_reconvergence(),
             texture_indexing: self.requires_texture_indexing(),
@@ -336,7 +336,9 @@ impl ExecutionPlan {
         self.requirements().subgroup
     }
     #[cfg(feature = "compiler")]
-    pub(crate) fn from_program(program: &Program, stages: Vec<ExecutionStage>) -> Self {
+    pub(crate) fn from_program(
+        program: &Program, stages: Vec<ExecutionStage>, requirements: DeviceRequirements,
+    ) -> Self {
         let buffers = program.execution_buffers();
         Self {
             interface: ProgramLayout {
@@ -353,7 +355,7 @@ impl ExecutionPlan {
                 element_requirements: program.element_requirements.clone(),
                 element_guarantees: program.element_guarantees.clone(),
                 length_requirements: program.length_requirements.clone(),
-                requirements: program.requirements(),
+                requirements,
             },
             stages,
             indirect_buffer: buffers.indirect,

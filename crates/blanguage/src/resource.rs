@@ -82,6 +82,7 @@ pub struct Module<C = native::NativeCode> {
 }
 #[cfg(feature = "compiler")]
 pub(crate) fn compile_image( resources: &crate::application::Resources, worker: &crate::compiler::Worker) -> codec::Result<Module> {
+    let requirements: Vec<_> = resources.programs.iter().map(|(_, program)| program.requirements()).collect();
     let jobs = |cpu| resources.programs.iter().enumerate()
         .filter(|(_, (target, _))| (*target == Target::Cpu) == cpu)
         .flat_map(|(program, (_, code))| (0..code.stages().len()).map(move |stage| (program, stage)))
@@ -90,20 +91,20 @@ pub(crate) fn compile_image( resources: &crate::application::Resources, worker: 
         native::program::compile_stage(&resources.programs[program].1, stage)
     }).map_err(|error| std::io::Error::other(error.to_string()))?;
     let gpu = crate::parallel::try_map(worker, jobs(false), |_| (), |_, (program, stage)| {
-        spirv::program::compile_stage(&resources.programs[program].1, stage)
+        spirv::program::compile_stage(&resources.programs[program].1, stage, requirements[program])
     }).map_err(|error| std::io::Error::other(error.to_string()))?;
     let mut cpu = cpu.into_iter();
     let mut gpu = gpu.into_iter();
-    let images = resources.programs.iter().map(|(target, program)| {
+    let images = resources.programs.iter().zip(requirements).map(|((target, program), requirements)| {
         let count = program.stages().len();
         if *target == Target::Cpu {
             let (layout, stages) = (0..count).map(|_| cpu.next().unwrap()).unzip();
-            let plan = ExecutionPlan::from_program(program, layout);
+            let plan = ExecutionPlan::from_program(program, layout, requirements);
             let image = unsafe { native::ProgramImage::from_compiler_output(plan, stages, Vec::new(), None) };
             Image::Cpu(image)
         } else {
             let (layout, stages) = (0..count).map(|_| gpu.next().unwrap()).unzip();
-            let plan = ExecutionPlan::from_program(program, layout);
+            let plan = ExecutionPlan::from_program(program, layout, requirements);
             Image::Gpu(unsafe { spirv::ProgramImage::from_compiler_output(plan, stages) })
         }
     }).collect();

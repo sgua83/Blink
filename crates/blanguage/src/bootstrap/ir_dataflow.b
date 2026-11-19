@@ -1420,52 +1420,75 @@ extern "C" void mark_frame_sources(FrameSourceHost host) on cpu
  }
 }
 
-u32 float_code(Span code,address registers,u32 scalar,FloatHost host) on cpu
+u32 float_kind(u32 kind) on cpu { return u32(1)<<kind; }
+u32 float_code(Span code,Span registers,u32 requested,FloatHost host) on cpu
  requires nonzero(host.ir.inspect) requires nonzero(host.scalar) {
- usize index=0u64;
- while(index<code.count) {
+ usize index=0u64;u32 remaining=requested;
+ while(index<code.count && remaining!=0) {
   View value=host.ir.inspect(node_at(code,index,N_INSTRUCTION));
-  if(value.tag==OP_MATH) {
-   FloatScalar target=host.scalar(registers,value.a);
-   if(target.kind==scalar && value.b!=0u64){return 1;}
-  }else if(value.tag==OP_BINARY) {
-   if(value.d!=0u64) {
-    FloatScalar input=host.scalar(registers,value.b);
-    if(input.kind==scalar){return 1;}
-   }
+  if(value.tag==OP_MATH && value.b!=0u64) {
+   remaining&=~float_kind(host.scalar(registers,value.a).kind);
+  }else if(value.tag==OP_BINARY && value.d!=0u64) {
+   remaining&=~float_kind(host.scalar(registers,value.b).kind);
   }else if(value.tag==OP_CAST) {
    FloatScalar source=host.scalar(registers,value.b);
    if(source.floating!=0) {
     FloatScalar target=host.scalar(registers,value.a);
-    if(target.integer==0 && ((target.kind==scalar)!=(source.kind==scalar))){return 1;}
+    if(target.integer==0) {
+     remaining&=~(float_kind(target.kind)^float_kind(source.kind));
+    }
    }
   }else if(value.tag==OP_TILE_COLLECTIVE) {
    usize result=0u64;
-   while(result<value.first.count) {
-    FloatScalar target=host.scalar(registers,word_at(value.first,result));
-    if(target.kind==scalar){return 1;}
+   while(result<value.first.count && remaining!=0) {
+    remaining&=~float_kind(host.scalar(registers,word_at(value.first,result)).kind);
     result+=1u64;
    }
-  }else if(value.tag==OP_SUBGROUP) {
-   FloatScalar target=host.scalar(registers,value.a);
+  }else if(value.tag==OP_SUBGROUP && (value.c==13u64 || value.c==14u64 || value.c==15u64 || value.c==16u64)) {
    // Original SubgroupOp Sum, ExclusiveSum, Min and Max discriminants.
-   if(target.kind==scalar && (value.c==13u64 || value.c==14u64
-       || value.c==15u64 || value.c==16u64)){return 1;}
+   remaining&=~float_kind(host.scalar(registers,value.a).kind);
   }else if(value.tag==OP_SCOPE || value.tag==OP_BRANCH || value.tag==OP_LOOP_VALUE) {
-   if(float_code(value.first,registers,scalar,host)!=0){return 1;}
-   if(float_code(value.second,registers,scalar,host)!=0){return 1;}
+   remaining&=~float_code(value.first,registers,remaining,host);
+   remaining&=~float_code(value.second,registers,remaining,host);
   }
   index+=1u64;
  }
- return 0;
+ return requested^remaining;
 }
-extern "C" u32 float_preserve(FloatInput input,u32 scalar,FloatHost host) on cpu
+
+u32 float_value_code(Node source,u32 requested,FloatHost host) on cpu
  requires nonzero(host.ir.inspect) requires nonzero(host.scalar) {
- if(input.collective.present!=0 && input.collective.value==usize(scalar)){return 1;}
- if(float_code(input.identity.code,input.identity.registers,scalar,host)!=0){return 1;}
- if(float_code(input.combine.code,input.combine.registers,scalar,host)!=0){return 1;}
- if(float_code(input.project.code,input.project.registers,scalar,host)!=0){return 1;}
- return float_code(input.body.code,input.body.registers,scalar,host);
+ if(requested==0){return 0;}
+ View value=host.ir.inspect(source);
+ return float_code(value.first,value.second,requested,host);
+}
+
+extern "C" u32 float_preserve(Node source,u32 requested,FloatHost host) on cpu
+ requires nonzero(host.ir.inspect) requires nonzero(host.scalar) {
+ View stage=host.ir.inspect(source);View operation=host.ir.inspect(stage.left);
+ u32 remaining=requested;
+ if(operation.tag==1 || operation.tag==5 || operation.tag==6) {
+  remaining&=~float_kind(host.ir.inspect(operation.left).tag);
+ }else if(operation.tag==2 || operation.tag==3 || operation.tag==4) {
+  View custom=host.ir.inspect(operation.left);
+  remaining&=~float_value_code(custom.left,remaining,host);
+  remaining&=~float_value_code(custom.right,remaining,host);
+  if(custom.first.count!=0u64) {
+   remaining&=~float_value_code(node_at(custom.first,0u64,N_VALUE_CODE),remaining,host);
+  }
+ }
+ remaining&=~float_code(stage.first,stage.second,remaining,host);
+ return requested^remaining;
+}
+
+extern "C" u32 program_float_preserve(Span stages,u32 requested,FloatHost host) on cpu
+ requires nonzero(host.ir.inspect) requires nonzero(host.scalar) {
+ u32 remaining=requested;usize index=0u64;
+ while(index<stages.count && remaining!=0) {
+  remaining&=~float_preserve(node_at(stages,index,N_STAGE),remaining,host);
+  index+=1u64;
+ }
+ return requested^remaining;
 }
 
 extern "C" u32 has_tile_scope(Span code,u32 has_tiles,Host host) on cpu

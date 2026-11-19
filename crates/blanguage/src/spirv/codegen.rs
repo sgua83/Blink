@@ -1669,13 +1669,40 @@ fn ray_results(code: &[Inst], out: &mut Vec<Reg>) {
         }
     }
 }
+#[derive(Clone, Copy)]
+struct ProgramShaderFeatures {
+    float64: bool,
+    integer8: bool,
+    integer16: bool,
+    acceleration: bool,
+    descriptor_indexing: bool,
+}
+
+impl From<DeviceRequirements> for ProgramShaderFeatures {
+    fn from(requirements: DeviceRequirements) -> Self {
+        Self {
+            float64: requirements.float64,
+            integer8: requirements.integer8,
+            integer16: requirements.integer16,
+            acceleration: requirements.ray_query,
+            descriptor_indexing: requirements.texture_indexing,
+        }
+    }
+}
+
 pub fn emit_pass(
     program: &Program,
     stage_index: usize,
     pass: Pass,
 ) -> Result<Vec<u32>, &'static str> {
     let (layout, mut inputs) = shader_stage_inputs(program, &program.stages[stage_index])?;
-    emit_shader(program, stage_index, pass, &mut inputs, &layout).map(|(words, _)| words)
+    let (float64, integer8, integer16) = crate::ir::dataflow::numeric_requirements(program);
+    let features = ProgramShaderFeatures {
+        float64, integer8, integer16,
+        acceleration: !program.accelerations.is_empty(),
+        descriptor_indexing: program.requires_texture_indexing(),
+    };
+    emit_shader(program, stage_index, pass, &mut inputs, &layout, features).map(|(words, _)| words)
 }
 fn shader_stage_inputs(
     program: &Program, stage: &Stage,
@@ -1701,7 +1728,7 @@ fn shader_stage_inputs(
 }
 fn emit_shader(
     program: &Program, stage_index: usize, pass: Pass, inputs: &mut crate::ir::dataflow::InputFragments,
-    layout: &crate::ir::dataflow::TileLayout,
+    layout: &crate::ir::dataflow::TileLayout, program_features: ProgramShaderFeatures,
 ) -> Result<(Vec<u32>, u64), &'static str> {
     let stage = &program.stages[stage_index];
     let argument_pass = matches!(pass, Pass::DispatchArguments(_) | Pass::SelectionArguments);
@@ -1773,16 +1800,16 @@ fn emit_shader(
         current_label: 0,
         return_scopes: Vec::new(),
     };
-    let requirements = program.requirements();
     let (atomic64, shared_atomic64) = stage.atomic64_requirements();
-    let float64 = requirements.float64;
-    let integer8 = requirements.integer8;
-    let integer16 = requirements.integer16;
+    let ProgramShaderFeatures { float64, integer8, integer16, acceleration, descriptor_indexing } = program_features;
     let numeric_pass = matches!(
         pass, Pass::Main | Pass::ReductionTail | Pass::ScanTail | Pass::ScanAdd | Pass::ScanRootAdd
     );
-    let float32_preserve = numeric_pass && stage.requires_float_preserve(Scalar::F32);
-    let float64_preserve = numeric_pass && stage.requires_float_preserve(Scalar::F64);
+    let (float32_preserve, float64_preserve) = if numeric_pass {
+        crate::ir::dataflow::stage_float_preserve(stage)
+    } else {
+        (false, false)
+    };
     let ranks = matches!(pass, Pass::SortHistogram(_) | Pass::SortScatter(_));
     let subgroup_operations = if pass == Pass::Main {
         stage.subgroup_operations()
@@ -1803,9 +1830,9 @@ fn emit_shader(
         subgroup_ballot: u32::from(subgroup_caps.ballot || ranks),
         subgroup_shuffle: u32::from(subgroup_caps.shuffle),
         subgroup_shuffle_relative: u32::from(subgroup_caps.shuffle_relative),
-        acceleration: u32::from(!program.accelerations.is_empty()),
+        acceleration: u32::from(acceleration),
         position_fetch: u32::from(!e.position_queries.is_empty()),
-        descriptor_indexing: u32::from(program.requires_texture_indexing()),
+        descriptor_indexing: u32::from(descriptor_indexing),
         maximal_reconvergence: u32::from(pass == Pass::Main && stage.requires_maximal_reconvergence()),
     };
     e.ext = e.id();
