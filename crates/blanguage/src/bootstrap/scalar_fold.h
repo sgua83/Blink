@@ -129,6 +129,17 @@ extern "C" void range_set_union(address input,u64 left,u64 right,cfn<BitRange,ad
 struct RangeSetProjection { u64 lower; u64 upper; u64 excluded; u32 exclude; };
 extern "C" void range_set_project(address input,u64 count,cfn<BitRange,address,u32,u64> get,address output,cfn<void,address,BitRange> push,RangeSetProjection projection) on cpu
     requires nonzero(get) requires nonzero(push);
+struct RangeSetRequirement {
+    u64 order_bias;
+    BitPattern known;
+    BitPattern required;
+    address intervals;
+    u64 count;
+    cfn<BitRange,address,u64> interval;
+};
+extern "C" bool range_set_covers_projected(address input,u64 count,cfn<BitRange,address,u32,u64> get,
+    RangeSetProjection projection,RangeSetRequirement requirement) on cpu
+    requires nonzero(get) requires nonzero(requirement.interval);
 extern "C" void range_set_restrict(address input,u64 count,cfn<BitRange,address,u32,u64> get,address output,cfn<void,address,BitRange> push,u64 lower,u64 upper) on cpu
     requires nonzero(get) requires nonzero(push);
 extern "C" void range_set_without(address input,u64 count,cfn<BitRange,address,u32,u64> get,address output,cfn<void,address,BitRange> push,u64 value) on cpu

@@ -811,35 +811,79 @@ extern "C" void range_set_union(address input,u64 left,u64 right,cfn<BitRange,ad
     }
     if(pending.present!=0){push(output,pending.value);}
 }
+struct RangeSetCursor { u64 index; RangeSetNext pending; };
+
+RangeSetNext range_set_next(address input,u64 count,cfn<BitRange,address,u32,u64> get,
+    read RangeSetProjection projection,inout RangeSetCursor cursor) on cpu requires nonzero(get) {
+    while(cursor.index<count){
+        BitRange range=get(input,0,cursor.index);
+        cursor.index+=1u64;
+        range.lower=max(range.lower,projection.lower);
+        range.upper=min(range.upper,projection.upper);
+        if(range.lower<=range.upper){
+            if(cursor.pending.present==0){
+                cursor.pending=RangeSetNext(range,1);
+            }else if(range_set_joined(cursor.pending.value,range)){
+                cursor.pending.value.upper=max(cursor.pending.value.upper,range.upper);
+            }else{
+                RangeSetNext previous=cursor.pending;
+                cursor.pending=RangeSetNext(range,1);
+                return previous;
+            }
+        }
+    }
+    RangeSetNext final_range=cursor.pending;
+    cursor.pending.present=0;
+    return final_range;
+}
+
+IntegerRangePieces range_set_excluding(BitRange range,u64 excluded,u32 exclude) on cpu {
+    if(exclude==0||excluded<range.lower||excluded>range.upper){
+        return range_single(range.lower,range.upper);
+    }
+    if(range.lower<excluded){
+        if(excluded<range.upper){
+            return IntegerRangePieces(BitRange(range.lower,excluded-1u64),BitRange(excluded+1u64,range.upper),2);
+        }
+        return range_single(range.lower,excluded-1u64);
+    }
+    if(excluded<range.upper){return range_single(excluded+1u64,range.upper);}
+    return IntegerRangePieces(range,range,0);
+}
+
 void range_set_publish(BitRange range,address output,cfn<void,address,BitRange> push,u64 excluded,u32 exclude) on cpu
     requires nonzero(push) {
-    if(exclude==0||excluded<range.lower||excluded>range.upper){
-        push(output,range);
-    }else{
-        if(range.lower<excluded){push(output,BitRange(range.lower,excluded-1u64));}
-        if(excluded<range.upper){push(output,BitRange(excluded+1u64,range.upper));}
-    }
+    IntegerRangePieces pieces=range_set_excluding(range,excluded,exclude);
+    if(pieces.count!=0){push(output,pieces.first);}
+    if(pieces.count>1){push(output,pieces.second);}
 }
 
 extern "C" void range_set_project(address input,u64 count,cfn<BitRange,address,u32,u64> get,address output,cfn<void,address,BitRange> push,RangeSetProjection projection) on cpu
     requires nonzero(get) requires nonzero(push) {
-    RangeSetNext pending=RangeSetNext(BitRange(0u64,0u64),0);
-    u64 index=0u64;
-    while(index<count){
-        BitRange range=get(input,0,index);
-        range.lower=range.lower>projection.lower?range.lower:projection.lower;
-        range.upper=range.upper<projection.upper?range.upper:projection.upper;
-        if(range.lower<=range.upper){
-            if(pending.present!=0&&range_set_joined(pending.value,range)){
-                if(range.upper>pending.value.upper){pending.value.upper=range.upper;}
-            }else{
-                if(pending.present!=0){range_set_publish(pending.value,output,push,projection.excluded,projection.exclude);}
-                pending=RangeSetNext(range,1);
-            }
-        }
-        index+=1u64;
+    RangeSetCursor cursor=RangeSetCursor(0u64,RangeSetNext(BitRange(0u64,0u64),0));
+    while(true){
+        RangeSetNext next=range_set_next(input,count,get,projection,cursor);
+        if(next.present==0){return;}
+        range_set_publish(next.value,output,push,projection.excluded,projection.exclude);
     }
-    if(pending.present!=0){range_set_publish(pending.value,output,push,projection.excluded,projection.exclude);}
+}
+
+extern "C" bool range_set_covers_projected(address input,u64 count,cfn<BitRange,address,u32,u64> get,
+    RangeSetProjection projection,RangeSetRequirement requirement) on cpu
+    requires nonzero(get) requires nonzero(requirement.interval) {
+    RangeSetCursor cursor=RangeSetCursor(0u64,RangeSetNext(BitRange(0u64,0u64),0));
+    while(true){
+        RangeSetNext next=range_set_next(input,count,get,projection,cursor);
+        if(next.present==0){return true;}
+        IntegerRangePieces pieces=range_set_excluding(next.value,projection.excluded,projection.exclude);
+        if(pieces.count==0){continue;}
+        RangeQuery query=RangeQuery(requirement.order_bias,pieces.first,requirement.known,requirement.required);
+        if(!covers_range(query,requirement.intervals,requirement.count,requirement.interval)){return false;}
+        if(pieces.count>1){
+            query.range=pieces.second;
+            if(!covers_range(query,requirement.intervals,requirement.count,requirement.interval)){return false;}
+        }
+    }
 }
 
 extern "C" void range_set_restrict(address input,u64 count,cfn<BitRange,address,u32,u64> get,address output,cfn<void,address,BitRange> push,u64 lower,u64 upper) on cpu

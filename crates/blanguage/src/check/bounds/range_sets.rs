@@ -30,6 +30,32 @@ struct Projection {
     exclude: u32,
 }
 
+impl Projection {
+    fn new(lower: u64, upper: u64, excluded: Option<u64>) -> Self {
+        Self { lower, upper, excluded: excluded.unwrap_or_default(), exclude: u32::from(excluded.is_some()) }
+    }
+}
+
+#[repr(C)]
+struct Pattern {
+    mask: Bits,
+    value: Bits,
+}
+
+impl From<Pair> for Pattern {
+    fn from((mask, value): Pair) -> Self { Self { mask, value } }
+}
+
+#[repr(C)]
+struct Requirement {
+    order_bias: Bits,
+    known: Pattern,
+    required: Pattern,
+    intervals: Borrowed,
+    count: usize,
+    interval: unsafe extern "C" fn(Borrowed, usize) -> Range,
+}
+
 #[repr(C)]
 struct Cast {
     source_width:u32,source_signed:u32,target_width:u32,
@@ -39,6 +65,9 @@ struct Cast {
 unsafe extern "C" fn read(slot:Borrowed,side:u32,index:usize)->Range {
     let source=unsafe{&*slot.cast::<Sources<'_>>()};
     (if side==0{source.left}else{source.right})[index].into()
+}
+unsafe extern "C" fn read_requirement(slot: Borrowed, index: usize) -> Range {
+    unsafe { read(slot, 1, index) }
 }
 unsafe extern "C" fn get(slot:Slot,index:usize)->Range {{let values=unsafe{&*slot.cast::<Vec<Pair>>()};values[index].into()}}
 unsafe extern "C" fn set(slot:Slot,index:usize,value:Range) {let values=unsafe{&mut *slot.cast::<Vec<Pair>>()};values[index]=value.into();}
@@ -79,6 +108,8 @@ unsafe extern "C" {
     fn clipped(input:Borrowed,count:usize,read:Read,output:Slot,push:Push,lower:u64,upper:u64);
     #[link_name="bootstrap.scalar_fold::range_set_project"]
     fn projected(input:Borrowed,count:usize,read:Read,output:Slot,push:Push,projection:Projection);
+    #[link_name="bootstrap.scalar_fold::range_set_covers_projected"]
+    fn covers_projected(input: Borrowed, count: usize, read: Read, projection: Projection, requirement: Requirement) -> bool;
     #[link_name="bootstrap.scalar_fold::range_set_without"]
     fn excluded(input:Borrowed,count:usize,read:Read,output:Slot,push:Push,value:u64);
     #[link_name="bootstrap.scalar_fold::range_set_cast"]
@@ -101,14 +132,25 @@ pub(super) fn contains(values:&[Pair],value:u64)->bool {inputs(values,&[],|s,n,_
 pub(super) fn union(left:&[Pair],right:&[Pair])->ScalarRanges {inputs(left,right,|s,n,m|output(|o|unsafe{united(s,n,m,read,o,push)}))}
 pub(super) fn restrict(values:&[Pair],lower:u64,upper:u64)->ScalarRanges {inputs(values,&[],|s,n,_|output(|o|unsafe{clipped(s,n,read,o,push,lower,upper)}))}
 pub(super) fn restrict_excluding(values: &[Pair], lower: u64, upper: u64, excluded: Option<u64>) -> ScalarRanges {
-    let projection = Projection {
-        lower,
-        upper,
-        excluded: excluded.unwrap_or_default(),
-        exclude: u32::from(excluded.is_some()),
-    };
+    let projection = Projection::new(lower, upper, excluded);
     inputs(values, &[], |source, count, _| {
         output(|dest| unsafe { projected(source, count, read, dest, push, projection) })
+    })
+}
+pub(super) fn covers_element(
+    values: &[Pair], scalar: Scalar, excluded: Option<Bits>, known: Pair, intervals: &[Pair], required: Pair,
+) -> bool {
+    let projection = Projection::new(0, scalar.bit_mask(), excluded);
+    inputs(values, intervals, |source, count, required_count| {
+        let requirement = Requirement {
+            order_bias: scalar.order_bias(),
+            known: known.into(),
+            required: required.into(),
+            intervals: source,
+            count: required_count,
+            interval: read_requirement,
+        };
+        unsafe { covers_projected(source, count, read, projection, requirement) }
     })
 }
 pub(super) fn without(values:&[Pair],value:u64)->ScalarRanges {inputs(values,&[],|s,n,_|output(|o|unsafe{excluded(s,n,read,o,push,value)}))}

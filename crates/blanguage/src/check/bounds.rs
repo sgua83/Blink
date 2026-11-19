@@ -455,12 +455,17 @@ impl Proof {
         }
         facts
     }
-    fn element_range(&self, component: usize, scalar: Scalar) -> ScalarRanges {
+    fn element_intervals(&self, component: usize, scalar: Scalar) -> (&[(Bits, Bits)], Option<Bits>) {
         let intervals = self.ranges.get(component)
             .map_or(&[(0, Bits::MAX)][..], |ranges| ranges.0.as_slice());
         let excluded = (scalar.is_integer() && self.nonzero.get(component) == Some(&true))
             .then(|| scalar.order_bias());
-        range_sets::restrict_excluding(intervals, 0, scalar.bit_mask(), excluded)
+        (intervals, excluded)
+    }
+
+    fn element_range(&self, component: usize, scalar: Scalar) -> ScalarRanges {
+        let (source, excluded) = self.element_intervals(component, scalar);
+        range_sets::restrict_excluding(source, 0, scalar.bit_mask(), excluded)
     }
 
     fn element_known_bits(&self, component: usize, scalar: Scalar) -> (Bits, Bits) {
@@ -502,8 +507,9 @@ impl Proof {
             |(a,b),(c,d)| ScalarRanges::interval(a.max(c), b.min(d)));
     }
     pub(super) fn holds_range(&self, component: usize, scalar: Scalar, intervals: &[(Bits, Bits)], required_bits:(Bits,Bits)) -> bool {
+        let (source, excluded) = self.element_intervals(component, scalar);
         let known_bits = self.element_known_bits(component, scalar);
-        self.element_range(component, scalar).0.iter().all(|&range|scalar.covers_range(range,known_bits,intervals,required_bits))
+        range_sets::covers_element(source, scalar, excluded, known_bits, intervals, required_bits)
     }
     pub(super) fn assign_elements(&mut self, components: &[usize], width: usize, fresh: &Self) {
         self.origins.resize_with(width, Vec::new);
