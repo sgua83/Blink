@@ -160,18 +160,17 @@ impl Device {
     }
     pub(super) fn submit_transfer(
         &self,
-        mut commands: Commands,
+        commands: Commands,
         staging: Vec<Allocation>,
         dependencies: Vec<Rc<Execution>>,
     ) -> Result<Rc<Execution>> {
-        commands.submit()?;
-        Ok(Execution::new(
+        Execution::submit(
             ExecutionResources::Transfer {
                 commands,
                 _staging: staging,
             },
             dependencies,
-        ))
+        )
     }
 
     pub(super) fn download_graph(

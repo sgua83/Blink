@@ -450,7 +450,7 @@ impl Device {
             transform_offset: 0,
         };
         let ranges = &range as *const Range;
-        let mut commands = Commands::new(self.inner.clone())?;
+        let commands = Commands::new(self.inner.clone())?;
         commands.barrier(
             producer.stage() | 0x1000 | 0x2000000,
             0x2000000,
@@ -460,14 +460,7 @@ impl Device {
         unsafe {
             (ray.build)(commands.command, 1, &info, &ranges);
         }
-        commands.submit()?;
-        let address = AddressInfo {
-            kind: 1000150002,
-            next: null(),
-            structure: out.handle,
-        };
-        out.address = unsafe { (ray.address)(self.inner.owner.device, &address) };
-        let built = Execution::new(
+        let built = Execution::submit(
             ExecutionResources::Acceleration {
                 commands,
                 _scratch: scratch,
@@ -475,7 +468,13 @@ impl Device {
                 _source: source,
             },
             dependencies,
-        );
+        )?;
+        let address = AddressInfo {
+            kind: 1000150002,
+            next: null(),
+            structure: out.handle,
+        };
+        out.address = unsafe { (ray.address)(self.inner.owner.device, &address) };
         Ok(Structure {
             storage: ManuallyDrop::new(out),
             built,

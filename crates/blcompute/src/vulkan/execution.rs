@@ -68,12 +68,11 @@ impl GpuTimestamps {
 pub(super) struct Completion {
     pub inner: Rc<Inner>,
     pub fence: Cell<VkFence>,
-    pub submitted: Cell<bool>,
-    pub sequence: Cell<u64>,
+    pub sequence: u64,
     result: Cell<Option<i32>>,
 }
 impl Completion {
-    pub fn new(inner: Rc<Inner>) -> Result<Rc<Self>> {
+    pub fn new(inner: Rc<Inner>, sequence: u64) -> Result<Self> {
         let mut fence = 0;
         let mut info: VkFenceCreateInfo = zero();
         info.sType = 8;
@@ -83,13 +82,12 @@ impl Completion {
                 "vkCreateFence",
             )?;
         }
-        Ok(Rc::new(Self {
+        Ok(Self {
             inner,
             fence: Cell::new(fence),
-            submitted: Cell::new(false),
-            sequence: Cell::new(0),
+            sequence,
             result: Cell::new(None),
-        }))
+        })
     }
     pub fn wait(&self) -> Result<()> {
         let r = if let Some(r) = self.result.get() {
@@ -131,7 +129,7 @@ impl Completion {
         }
     }
     pub fn finish_for_drop(&self) {
-        if !self.submitted.get() || self.result.get().is_some() {
+        if self.result.get().is_some() {
             return;
         }
         if let Err(e) = self.wait() {
@@ -152,7 +150,6 @@ impl Completion {
 }
 impl Drop for Completion {
     fn drop(&mut self) {
-        self.finish_for_drop();
         self.release_fence();
     }
 }
@@ -196,7 +193,7 @@ impl QueryPool {
     fn timestamps(&self, point: &Completion) -> Result<GpuTimestamps> {
         Ok(GpuTimestamps {
             device: point.inner.owner.device as usize,
-            sequence: point.sequence.get(),
+            sequence: point.sequence,
             period_ns: self.inner.properties.limits.timestampPeriod,
             valid_bits: self.inner.timestamp_bits,
             program: self.program.clone(),
@@ -260,25 +257,38 @@ impl ExecutionResources {
     }
 }
 pub(super) struct Execution {
-    pub point: Rc<Completion>,
+    pub point: Completion,
     resources: RefCell<Option<ExecutionResources>>,
     dependencies: RefCell<Vec<Rc<Self>>>,
     discarded: RefCell<Vec<DatasetStorage>>,
     discarded_structures: RefCell<Vec<ray::StructureStorage>>,
 }
 impl Execution {
-    pub fn new(resources: ExecutionResources, dependencies: Vec<Rc<Self>>) -> Rc<Self> {
-        Rc::new(Self {
-            point: resources.commands().completion.clone(),
+    pub fn submit(
+        resources: ExecutionResources,
+        dependencies: Vec<Rc<Self>>,
+    ) -> Result<Rc<Self>> {
+        Self::submit_with(resources, dependencies, &[], &[], &[])
+    }
+    pub fn submit_with(
+        resources: ExecutionResources,
+        dependencies: Vec<Rc<Self>>,
+        wait: &[u64],
+        stages: &[u32],
+        signal: &[u64],
+    ) -> Result<Rc<Self>> {
+        let point = resources.commands().submit_with(wait, stages, signal)?;
+        Ok(Rc::new(Self {
+            point,
             resources: RefCell::new(Some(resources)),
             dependencies: RefCell::new(dependencies),
             discarded: RefCell::new(Vec::new()),
             discarded_structures: RefCell::new(Vec::new()),
-        })
+        }))
     }
     pub fn prepare(mut sources: Vec<Rc<Self>>) -> Result<Vec<Rc<Self>>> {
-        sources.sort_unstable_by_key(|s| s.point.sequence.get());
-        sources.dedup_by_key(|s| s.point.sequence.get());
+        sources.sort_unstable_by_key(|s| s.point.sequence);
+        sources.dedup_by_key(|s| s.point.sequence);
         let mut finished = 0;
         for source in &sources {
             if !source.is_complete()? {

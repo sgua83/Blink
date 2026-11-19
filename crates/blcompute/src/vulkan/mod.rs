@@ -1297,7 +1297,7 @@ impl GpuDataset {
         let complete = execution.is_complete()?;
         Ok(Some(GpuDatasetUse {
             device: execution.point.inner.owner.device as usize,
-            sequence: execution.point.sequence.get(),
+            sequence: execution.point.sequence,
             complete,
         }))
     }
@@ -1539,7 +1539,6 @@ struct Commands {
     inner: Rc<Inner>,
     pool: VkCommandPool,
     command: VkCommandBuffer,
-    completion: Rc<Completion>,
     descriptors: VkDescriptorPool,
     queries: u64,
     textures: Vec<TextureInput>,
@@ -1548,7 +1547,6 @@ impl Commands {
     fn new(inner: Rc<Inner>) -> Result<Self> {
         unsafe {
             let mut out = Self {
-                completion: Completion::new(inner.clone())?,
                 inner,
                 pool: 0,
                 command: null_mut(),
@@ -1604,10 +1602,7 @@ impl Commands {
             );
         }
     }
-    fn submit(&mut self) -> Result<()> {
-        self.submit_with(&[], &[], &[])
-    }
-    fn submit_with(&mut self, wait: &[u64], stages: &[u32], signal: &[u64]) -> Result<()> {
+    fn submit_with(&self, wait: &[u64], stages: &[u32], signal: &[u64]) -> Result<Completion> {
         let sequence = self.inner.next_submission.get();
         let next = sequence
             .checked_add(1)
@@ -1615,6 +1610,7 @@ impl Commands {
         unsafe {
             let f = &self.inner.functions;
             check((f.vkEndCommandBuffer)(self.command), "vkEndCommandBuffer")?;
+            let point = Completion::new(self.inner.clone(), sequence)?;
             let mut submit: VkSubmitInfo = zero();
             submit.sType = 4;
             submit.commandBufferCount = 1;
@@ -1625,19 +1621,16 @@ impl Commands {
             submit.signalSemaphoreCount = signal.len() as u32;
             submit.pSignalSemaphores = signal.as_ptr();
             check(
-                (f.vkQueueSubmit)(self.inner.queue, 1, &submit, self.completion.fence.get()),
+                (f.vkQueueSubmit)(self.inner.queue, 1, &submit, point.fence.get()),
                 "vkQueueSubmit",
             )?;
-            self.completion.submitted.set(true);
-            self.completion.sequence.set(sequence);
             self.inner.next_submission.set(next);
+            Ok(point)
         }
-        Ok(())
     }
 }
 impl Drop for Commands {
     fn drop(&mut self) {
-        self.completion.finish_for_drop();
         unsafe {
             let f = &self.inner.functions;
             let d = self.inner.owner.device;
@@ -2781,10 +2774,9 @@ impl GpuProgram {
                 }
             }
         }
-        commands.submit()?;
         let queries = (query_count != 0)
             .then(|| QueryPool::take(&mut commands, query_count, c.program.clone()));
-        let execution = Execution::new(
+        let execution = Execution::submit(
             ExecutionResources::Compute {
                 commands,
                 _compiled: c.clone(),
@@ -2794,7 +2786,7 @@ impl GpuProgram {
                 _queries: queries.clone(),
             },
             std::mem::take(&mut owner.dependencies),
-        );
+        )?;
         for (dataset, producer) in data.owners.iter_mut().zip(last) {
             if let DatasetStorage::Owned(storage) = &mut *dataset.storage {
                 storage.producer = producer;

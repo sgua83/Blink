@@ -376,7 +376,7 @@ impl Swapchain {
             let acquired = PresentStatus::read(result, "vkAcquireNextImageKHR")?;
             let dependencies =
                 Execution::prepare(display.dependency().cloned().into_iter().collect())?;
-            let mut commands = Commands::new(self.inner.clone())?;
+            let commands = Commands::new(self.inner.clone())?;
             commands.barrier(
                 display.producer.stage(),
                 0x1000,
@@ -476,14 +476,16 @@ impl Swapchain {
                 (&barrier as *const ImageBarrier).cast(),
             );
             let signal = self.rendered[index as usize];
-            commands.submit_with(&[self.acquired], &[0x1000], &[signal])?;
-            let execution = Execution::new(
+            let execution = Execution::submit_with(
                 ExecutionResources::Transfer {
                     commands,
                     _staging: Vec::new(),
                 },
                 dependencies,
-            );
+                &[self.acquired],
+                &[0x1000],
+                &[signal],
+            )?;
             let info = PresentInfo {
                 kind: 1000001001,
                 next: null(),
