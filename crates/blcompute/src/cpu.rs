@@ -3,6 +3,7 @@ mod dataset;
 mod observation;
 mod sort;
 use crate::{Dataset, DomainBindings, ReadDataset, Result, Value, arguments, error};
+use crate::application::ResidentData;
 use crate::library::Library;
 use blanguage::{
     ExecutableProgram, TemplateProgram,
@@ -777,7 +778,7 @@ impl CpuTemplate {
 
     pub(crate) fn run_projected(
         &self,
-        bindings: &mut DomainBindings<crate::application::ResidentData>,
+        bindings: &mut DomainBindings<&mut ResidentData>,
         order: &[(usize, u32)],
         textures: &[CpuTextureBinding<'_>],
         uniforms: Vec<u32>,
@@ -833,16 +834,16 @@ impl CpuStorage for CpuDataset {
     fn cpu_metadata(&self)->(&Ty,u32,bool){(&self.ty,self.count,!matches!(self,CpuDataset::Read(_)))}
     fn cpu_buffer(&mut self)->Result<CpuBuffer<'_>>{match self {Self::Owned(data)=>CpuBuffer::owned(data),Self::Read(data)=>CpuBuffer::read(data)}}
 }
-impl CpuStorage for crate::application::ResidentData {
-    fn cpu_metadata(&self)->(&Ty,u32,bool){match self {
-        Self::Cpu(data)=>data.cpu_metadata(),
-        Self::CpuBorrow(data)=>(data.layout(),data.count,data.writable),
-        Self::Gpu(data)=>(data.layout(),data.count(),false),
+impl CpuStorage for &mut ResidentData {
+    fn cpu_metadata(&self)->(&Ty,u32,bool){match &**self {
+        ResidentData::Cpu(data)=>data.cpu_metadata(),
+        ResidentData::CpuBorrow(data)=>(data.layout(),data.count,data.writable),
+        ResidentData::Gpu(data)=>(data.layout(),data.count(),false),
     }}
-    fn cpu_buffer(&mut self)->Result<CpuBuffer<'_>>{match self {
-        Self::Cpu(data)=>data.cpu_buffer(),
-        Self::CpuBorrow(data)=>Ok(CpuBuffer{ty:data.layout(),stride:data.stride,count:data.count,pointer:data.pointer,writable:data.writable}),
-        Self::Gpu(_)=>Err(error("CPU 访问需要先显式 download 数据")),
+    fn cpu_buffer(&mut self)->Result<CpuBuffer<'_>>{match &mut **self {
+        ResidentData::Cpu(data)=>data.cpu_buffer(),
+        ResidentData::CpuBorrow(data)=>Ok(CpuBuffer{ty:data.layout(),stride:data.stride,count:data.count,pointer:data.pointer,writable:data.writable}),
+        ResidentData::Gpu(_)=>Err(error("CPU 访问需要先显式 download 数据")),
     }}
 }
 impl CpuCode {

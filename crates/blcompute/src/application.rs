@@ -354,8 +354,7 @@ impl Frame {
             ResidentData::Gpu(data)=>data.storage_address(),
         }
     }
-    /// 同一帧只移动本次实际参数；没有被绑定的存储及其有效域继续由帧持有。
-    /// CPU 直接消费原存储，错误与成功均交回原输入及程序；参数拒绝保持原域，
+    /// CPU 在本次同步执行中借用实际绑定的帧槽，参数拒绝保持原域，
     /// 取得可写访问后撤回覆盖的计数关系，只有真实完成才发布新保证。
     /// GPU 等待本次真实完成后返回，数据仍驻留原设备；不隐式下载。
     pub fn run(&mut self, program: u32, bindings: &[DatasetBinding], values: &[Value], textures: &[crate::cpu::CpuTextureBinding<'_>]) -> Result<()> {
@@ -372,7 +371,7 @@ impl Frame {
             };
             (ty, crate::DomainStorage::element_count(data), Some(binding.offset))
         }), values)?;
-        // 同一物理存储只移动一次，物理槽按首次绑定顺序分配，供CPU原位投影。
+        // 同一物理存储只选一次，物理槽按首次绑定顺序分配，供CPU原位投影。
         let mut selected = Vec::new();
         let mut order: Vec<(usize, u32)> = Vec::with_capacity(bindings.len());
         for (logical, binding) in bindings.iter().enumerate() {
@@ -413,27 +412,22 @@ impl Frame {
         let layout = loaded.layout();
         let (domains, result) = match &loaded {
             Program::Cpu(program) => {
-                let mut datasets = Vec::new();
+                let mut datasets = Vec::with_capacity(selected.len());
+                let slots = self.data.datasets.as_mut_ptr();
                 for &handle in &selected {
-                    match self.data.datasets[handle as usize].take().unwrap() {
-                        data @ (ResidentData::Cpu(_)|ResidentData::CpuBorrow(_)) => datasets.push(data),
-                        data @ ResidentData::Gpu(_) => {
-                            self.data.datasets[handle as usize] = Some(data);
-                            for (&handle, data) in selected.iter().zip(datasets) {
-                                self.data.datasets[handle as usize] = Some(data);
-                            }
-                            return Err(error("CPU 访问需要先显式 download 数据"));
-                        }
+                    // Argument validation indexes every handle. Selection above records
+                    // each slot once, and the slot array stays in place through the join.
+                    let data = unsafe { &mut *slots.add(handle as usize) }.as_mut().unwrap();
+                    if matches!(data, ResidentData::Gpu(_)) {
+                        return Err(error("CPU 访问需要先显式 download 数据"));
                     }
+                    datasets.push(data);
                 }
                 let mut inputs = DomainBindings { datasets, domains };
                 let result = program.run_projected(&mut inputs, &order, textures, uniforms, &definitions, || {
                     crate::bindings::invalidate(&mut self.data.domains, &layout.write_regions,
                         |i| (bindings[i].handle as usize, bindings[i].offset));
                 });
-                for (&handle, data) in selected.iter().zip(inputs.datasets) {
-                    self.data.datasets[handle as usize] = Some(data);
-                }
                 (inputs.domains, result)
             }
             Program::Gpu(gpu_program) => {
@@ -502,4 +496,16 @@ impl crate::DomainStorage for ResidentData {
         Self::CpuBorrow(_)=>None,
         Self::Gpu(data)=>crate::DomainStorage::read_binding(data).map(Self::Gpu),
     }}
+}
+
+impl crate::DomainStorage for &mut ResidentData {
+    fn element_count(&self) -> u32 {
+        crate::DomainStorage::element_count(&**self)
+    }
+    fn read_identity(&self) -> Option<usize> {
+        crate::DomainStorage::read_identity(&**self)
+    }
+    fn read_binding(&self) -> Option<Self> {
+        None
+    }
 }
