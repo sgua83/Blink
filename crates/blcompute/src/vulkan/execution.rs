@@ -131,12 +131,13 @@ impl Completion {
         }
     }
     pub fn finish_for_drop(&self) {
-        if self.submitted.get() {
-            if let Err(e) = self.wait() {
-                eprintln!("设备提交生命周期终止：{e}");
-                if self.result.get() != Some(-4) {
-                    std::process::abort();
-                }
+        if !self.submitted.get() || self.result.get().is_some() {
+            return;
+        }
+        if let Err(e) = self.wait() {
+            eprintln!("设备提交生命周期终止：{e}");
+            if self.result.get() != Some(-4) {
+                std::process::abort();
             }
         }
     }
