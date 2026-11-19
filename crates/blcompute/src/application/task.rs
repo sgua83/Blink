@@ -283,31 +283,32 @@ fn bind_borrowed_inputs(
 
 /// Every recorded word stays live through this Frame handoff. Reserve before rewriting any word.
 unsafe fn transfer(source: &mut Frame, destination: &mut Frame, selected: Selection) -> Result<()> {
-    let Selection{slots:selected,words}=selected;
-    let mut destinations: Vec<_> = destination
+    let Selection { slots: selected, words } = selected;
+    if selected.is_empty() {
+        return Ok(());
+    }
+    let start = destination.data.datasets.len();
+    let destinations = destination
         .data
         .datasets
         .iter()
         .enumerate()
         .filter_map(|(slot, data)| data.is_none().then_some(slot))
-        .take(selected.len())
-        .collect();
-    let additional = selected.len() - destinations.len();
-    let start = destination.data.datasets.len();
-    destinations.extend(start..start + additional);
+        .chain(start..);
     let slots: BTreeMap<_, _> = selected
         .into_iter()
         .zip(destinations)
         .map(|(source, target)| Ok((source, u32::try_from(target)?)))
         .collect::<Result<_>>()?;
-    let domains: Vec<_> = source
-        .data
-        .domains
-        .iter()
-        .filter_map(|relation| relation.mapped(|old| slots.get(&old).map(|&slot| slot as usize)))
-        .collect();
+    let (_, &last) = slots.last_key_value().unwrap();
+    let additional = (last as usize + 1).saturating_sub(start);
+    let target = |old| slots.get(&old).map(|&slot| slot as usize);
+    let moves = |old| target(old).is_some();
+    let domain_count = source.data.domains.iter()
+        .filter(|relation| relation.binding_indices().all(moves))
+        .count();
     destination.data.datasets.try_reserve(additional)?;
-    destination.data.domains.try_reserve(domains.len())?;
+    destination.data.domains.try_reserve(domain_count)?;
 
     for (word, old) in words {
         let word=match word {
@@ -329,11 +330,8 @@ unsafe fn transfer(source: &mut Frame, destination: &mut Frame, selected: Select
             destination.data.datasets[new as usize] = Some(storage);
         }
     }
-    destination.data.domains.extend(domains);
-    source
-        .data
-        .domains
-        .retain(|relation| !slots.keys().any(|&slot| relation.references(slot)));
+    let departing = source.data.domains.extract_if(.., |relation| relation.binding_indices().any(moves));
+    destination.data.domains.extend(departing.filter_map(|relation| relation.into_mapped(target)));
     Ok(())
 }
 

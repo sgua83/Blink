@@ -41,8 +41,14 @@ impl DomainRelation {
         match self { Self::Prefix { domain, .. } => *domain, Self::Element(range) => range.binding }
     }
     pub(crate) fn references(&self, binding: usize) -> bool {
-        match self { Self::Prefix { domain, count, .. } => *domain == binding || count.binding == binding,
-            Self::Element(range) => range.binding == binding }
+        self.binding_indices().any(|index| index == binding)
+    }
+    pub(crate) fn binding_indices(&self) -> impl Iterator<Item = usize> {
+        let count = match self {
+            Self::Prefix { count, .. } => Some(count.binding),
+            Self::Element(_) => None,
+        };
+        std::iter::once(self.domain()).chain(count)
     }
     pub(crate) fn mapped(&self, binding: impl Fn(usize) -> Option<usize>) -> Option<Self> {
         Some(match self {
