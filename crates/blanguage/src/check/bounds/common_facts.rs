@@ -211,6 +211,10 @@ pub(super) fn either<'a>(
     b: Option<QueryFacts<'a>>,
 ) -> Option<QueryFacts<'a>> {
     match (a, b) {
+        // With no established facts, an empty side supplies no equality,
+        // range or known bits to the disjunction. Reuse its empty result.
+        (Some(a), Some(_)) if environment.is_empty() && a.is_empty() => Some(a),
+        (Some(_), Some(b)) if environment.is_empty() && b.is_empty() => Some(b),
         (Some(a), Some(b)) => {
             let left = additional_equality_roots(environment, environment_roots, &a);
             let right = additional_equality_roots(environment, environment_roots, &b);
