@@ -6,9 +6,9 @@ use super::*;
 enum Resource { Done, Buffer, Acceleration, Texture, Keep }
 
 #[allow(dead_code)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 #[repr(u32)]
-enum Parameter { Acceleration, Texture, Dataset, Tile, Ordinary }
+pub(super) enum Parameter { Acceleration, Texture, Dataset, Tile, Ordinary }
 
 #[allow(dead_code)]
 #[repr(u32)]
@@ -16,6 +16,36 @@ pub(super) enum DomainParameter {
     Accept,
     Reject,
     PlainLayout,
+}
+
+#[allow(dead_code)]
+#[repr(u32)]
+enum DomainAccessError {
+    None,
+    Texture,
+    Acceleration,
+    Dataset,
+    Uniform,
+}
+
+#[repr(C)]
+pub(super) struct DomainBinding {
+    pub form: Parameter,
+    access_error: DomainAccessError,
+    pub view_check: u32,
+}
+
+impl DomainBinding {
+    pub(super) fn check_access(&self, source: &Source, span: Span) -> Result<()> {
+        let (code, message) = match self.access_error {
+            DomainAccessError::None => return Ok(()),
+            DomainAccessError::Texture => ("B239", "texture2d／texture3d 必须声明 read 资源权限"),
+            DomainAccessError::Acceleration => ("B182", "acceleration 必须是 GPU program 的 read 资源"),
+            DomainAccessError::Dataset => ("B101", "dataset 必须声明 read、write、inout 或 atomic"),
+            DomainAccessError::Uniform => ("B102", "标量参数按值传递；访问权限只用于 dataset"),
+        };
+        source.fail(span, code, message)
+    }
 }
 
 #[allow(dead_code)]
@@ -86,7 +116,9 @@ unsafe extern "C" {
     #[link_name = "bootstrap.function_inputs::domain_result"]
     fn native_domain_result(unit: u32, arguments: usize, dataset: u32, tile: u32, view: u32) -> bool;
     #[link_name = "bootstrap.function_inputs::domain_parameter"]
-    fn native_domain_parameter(dataset: u32, resource: u32, by_value: u32) -> DomainParameter;
+    fn native_domain_parameter(facts: Facts, access: Access) -> DomainParameter;
+    #[link_name = "bootstrap.function_inputs::domain_binding"]
+    fn native_domain_binding(facts: Facts, access: Access, gpu: u32, qualified: u32) -> DomainBinding;
     #[link_name = "bootstrap.function_inputs::dataset_form"]
     fn dataset_form(ordinary_cpu: u32, by_value: u32) -> Dataset;
     #[link_name = "bootstrap.function_inputs::value_form"]
@@ -138,9 +170,11 @@ pub(super) fn domain_result(ty: &TypeName) -> bool {
 }
 
 pub(super) fn domain_parameter(param: &Param) -> DomainParameter {
-    let ty = &param.ty;
-    let resource = !ty.dataset && (ty.is_acceleration() || ty.is_texture_resource());
-    unsafe { native_domain_parameter(u32::from(ty.dataset), u32::from(resource), u32::from(param.access == Access::Value)) }
+    unsafe { native_domain_parameter(facts(param), param.access) }
+}
+
+pub(super) fn domain_binding(param: &Param, gpu: bool, qualified: bool) -> DomainBinding {
+    unsafe { native_domain_binding(facts(param), param.access, u32::from(gpu), u32::from(qualified)) }
 }
 
 fn facts(p: &Param) -> Facts {

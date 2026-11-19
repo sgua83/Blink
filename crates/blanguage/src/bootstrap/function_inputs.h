@@ -1,7 +1,10 @@
 module bootstrap.function_inputs;
+import bootstrap.call_execution;
 enum Resource:u32 {Done=0;Buffer=1;Acceleration=2;Texture=3;Keep=4;};
 enum Parameter:u32 {Acceleration=0;Texture=1;Dataset=2;Tile=3;Ordinary=4;};
 enum DomainParameter:u32 {Accept=0;Reject=1;PlainLayout=2;};
+enum DomainAccessError:u32 {None=0;Texture=1;Acceleration=2;Dataset=3;Uniform=4;};
+struct DomainBinding { Parameter form; DomainAccessError access_error; u32 view_check; };
 enum Dataset:u32 {Device=0;Owned=1;Borrowed=2;};
 enum ValueForm:u32 {OwnedRead=0;AtomicParameter=1;Reference=2;Value=3;};
 enum PlaceForm:u32 {CAbi=0;Native=1;LocalRead=2;LocalWrite=3;};
@@ -22,7 +25,8 @@ extern "C" u32 layout_uniforms(u32 buffers, usize count, address context,
 
 extern "C" Parameter parameter_form(Facts facts) on cpu;
 extern "C" bool domain_result(u32 unit, usize arguments, u32 dataset, u32 tile, u32 view) on cpu;
-extern "C" DomainParameter domain_parameter(u32 dataset, u32 resource, u32 by_value) on cpu;
+extern "C" DomainParameter domain_parameter(Facts facts, CallAccess access) on cpu;
+extern "C" DomainBinding domain_binding(Facts facts, CallAccess access, u32 gpu, u32 qualified) on cpu;
 extern "C" Dataset dataset_form(u32 ordinary_cpu,u32 by_value) on cpu;
 extern "C" ValueForm value_form(Mode mode,u32 read,u32 atomic,u32 by_value,u32 owned) on cpu;
 extern "C" PlaceForm place_form(Mode mode,u32 read) on cpu;

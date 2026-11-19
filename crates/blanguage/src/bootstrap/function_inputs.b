@@ -1,4 +1,5 @@
 module bootstrap.function_inputs;
+import bootstrap.call_execution;
 
 extern "C" ResourceStep resource_step(u32 stage,Facts facts) on cpu {
     u32 next = stage;
@@ -55,12 +56,32 @@ extern "C" bool domain_result(u32 unit, usize arguments, u32 dataset, u32 tile, 
     return unit != 0 && arguments == 0u64 && (dataset | tile | view) == 0;
 }
 
-extern "C" DomainParameter domain_parameter(u32 dataset, u32 resource, u32 by_value) on cpu {
-    if (dataset != 0) {
-        return by_value == 0 ? DomainParameter::Accept : DomainParameter::Reject;
+extern "C" DomainParameter domain_parameter(Facts facts, CallAccess access) on cpu {
+    Parameter form = parameter_form(facts);
+    if (form == Parameter::Dataset) {
+        return access != CallAccess::Value ? DomainParameter::Accept : DomainParameter::Reject;
     }
-    if (resource != 0) { return DomainParameter::Accept; }
-    return by_value != 0 ? DomainParameter::PlainLayout : DomainParameter::Reject;
+    if (form == Parameter::Texture || form == Parameter::Acceleration) { return DomainParameter::Accept; }
+    return access == CallAccess::Value ? DomainParameter::PlainLayout : DomainParameter::Reject;
+}
+
+extern "C" DomainBinding domain_binding(Facts facts, CallAccess access, u32 gpu, u32 qualified) on cpu {
+    Parameter form = parameter_form(facts);
+    if (form == Parameter::Texture) {
+        return DomainBinding(form, access == CallAccess::Read ? DomainAccessError::None : DomainAccessError::Texture, 0);
+    }
+    if (form == Parameter::Acceleration) {
+        return DomainBinding(form, access == CallAccess::Read && gpu != 0 ?
+            DomainAccessError::None : DomainAccessError::Acceleration, 0);
+    }
+    DomainAccessError error = DomainAccessError::None;
+    if (form == Parameter::Dataset) {
+        if (qualified == 0 && access == CallAccess::Value) { error = DomainAccessError::Dataset; }
+        u32 view_check = access != CallAccess::Read && access != CallAccess::InOut ? 1 : 0;
+        return DomainBinding(form, error, view_check);
+    }
+    if (qualified == 0 && access != CallAccess::Value) { error = DomainAccessError::Uniform; }
+    return DomainBinding(form, error, 1);
 }
 
 extern "C" Dataset dataset_form(u32 ordinary_cpu,u32 by_value) on cpu {

@@ -487,13 +487,12 @@ async fn expand_domain<'a>(
     let mut textures = Vec::new();
     let mut uniforms = Vec::new();
     let mut env = BTreeMap::new();
+    let gpu = input.target() == Target::Gpu;
+    let qualified = uniform_types.is_some();
     for p in parameters {
-        if p.ty.is_texture_resource() {
-            if p.access != Access::Read {
-                return d
-                    .source
-                    .fail(p.span, "B239", "texture2d／texture3d 必须声明 read 资源权限");
-            }
+        let parameter = function_inputs::domain_binding(p, gpu, qualified);
+        if parameter.form == function_inputs::Parameter::Texture {
+            parameter.check_access(&d.source, p.span)?;
             env.insert(p.name.to_owned(), Root::Texture(textures.len()));
             textures.push(TextureBinding {
                 name: p.name.to_owned(),
@@ -503,19 +502,14 @@ async fn expand_domain<'a>(
             });
             continue;
         }
-        if p.ty.is_acceleration() {
-            if p.access != Access::Read || input.target() != Target::Gpu {
-                return d.source.fail(
-                    p.span,
-                    "B182",
-                    "acceleration 必须是 GPU program 的 read 资源",
-                );
-            }
+        if parameter.form == function_inputs::Parameter::Acceleration {
+            parameter.check_access(&d.source, p.span)?;
             env.insert(p.name.to_owned(), Root::Acceleration(accelerations.len()));
             accelerations.push(p.name.to_owned());
             continue;
         }
-        let ty = if !p.ty.dataset && let Some(types) = uniform_types.as_deref_mut() {
+        let dataset = parameter.form == function_inputs::Parameter::Dataset;
+        let ty = if !dataset && let Some(types) = uniform_types.as_deref_mut() {
             types.next().unwrap()
         } else {
             let ty = unsafe { world.call(world.ty(&p.ty, &d.source, p.span, &d.module, &d.imports)).await }?;
@@ -528,21 +522,15 @@ async fn expand_domain<'a>(
             }
             ty
         };
-        if ty.contains_views() && (!p.ty.dataset || !matches!(p.access, Access::Read | Access::InOut)) {
+        if parameter.view_check != 0 && ty.contains_views() {
             return d.source.fail(
                 p.span,
                 "B185",
                 "含view的整域根需要read／inout dataset；write／atomic或uniform不能构造引用图",
             );
         }
-        if p.ty.dataset {
-            if p.access == Access::Value {
-                return d.source.fail(
-                    p.span,
-                    "B101",
-                    "dataset 必须声明 read、write、inout 或 atomic",
-                );
-            }
+        parameter.check_access(&d.source, p.span)?;
+        if dataset {
             let binding = buffers.len();
             let stride = ir::align_up(ty.size, ty.align);
             buffers.push(Buffer {
@@ -554,11 +542,6 @@ async fn expand_domain<'a>(
             });
             env.insert(p.name.to_owned(), Root::Data(binding, p.access));
         } else {
-            if p.access != Access::Value {
-                return d
-                    .source
-                    .fail(p.span, "B102", "标量参数按值传递；访问权限只用于 dataset");
-            }
             uniforms.push(Uniform {
                 name: p.name.to_owned(),
                 ty,
