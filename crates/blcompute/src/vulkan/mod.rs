@@ -1400,20 +1400,18 @@ impl GpuDataset {
     }
     fn table(inner: Rc<Inner>, pages: &[Allocation], stride: u32) -> Result<Allocation> {
         let header = u64::from(blanguage::spirv::BINDING_BYTES);
-        let table = Allocation::new(inner.clone(), header + pages.len() as u64 * 8, 0x20020, 6, 8)?;
+        let table = Allocation::new(inner, header + pages.len() as u64 * 8, 0x20020, 6, 8)?;
         let address = table.address() + header;
-        let mut words = vec![address as u32, (address >> 32) as u32, stride, 0];
-        for page in pages {
-            let info = VkBufferDeviceAddressInfo {
-                sType: 1000244001,
-                pNext: null(),
-                buffer: page.buffer,
-            };
-            let address =
-                unsafe { (inner.functions.vkGetBufferDeviceAddress)(inner.owner.device, &info) };
-            words.extend([address as u32, (address >> 32) as u32]);
+        let mapped = table.mapping()?;
+        // The new mapped range holds the header followed by one address per live page.
+        unsafe {
+            mapped.cast::<[u32; 4]>().write(binding_header(address, stride, 0));
+            let entries = mapped.add(header as usize).cast::<[u32; 2]>();
+            for (index, page) in pages.iter().enumerate() {
+                let address = page.address();
+                entries.add(index).write([address as u32, (address >> 32) as u32]);
+            }
         }
-        table.write(&words)?;
         Ok(table)
     }
     pub fn count(&self) -> u32 {
@@ -1422,6 +1420,9 @@ impl GpuDataset {
     pub fn bytes(&self) -> u64 {
         self.stride as u64 * self.count as u64
     }
+}
+fn binding_header(pages: u64, stride: u32, offset: u32) -> [u32; 4] {
+    [pages as u32, (pages >> 32) as u32, stride, offset]
 }
 struct Allocation {
     inner: Rc<Inner>,
@@ -1499,9 +1500,6 @@ impl Allocation {
             )?;
             Ok(out)
         }
-    }
-    fn write(&self, words: &[u32]) -> Result<()> {
-        self.write_with(words, |_| {})
     }
     fn mapping(&self) -> Result<*mut u8> {
         if !self.host_visible {
@@ -2410,7 +2408,9 @@ impl GpuProgram {
                 if field_count != 0 {
                     binding_parameters = Some(Allocation::new(c.inner.clone(), step * field_count as u64, 0x20, 6, 8)?);
                 }
-                let mut words = vec![0; step as usize * field_count / 4];
+                let projected = binding_parameters.as_ref()
+                    .map(|parameters| parameters.mapping().map(|mapped| (parameters.buffer, mapped)))
+                    .transpose()?;
                 let mut field_index = 0;
                 let infos: Vec<_> = data.iter().enumerate().map(|(i, d)| {
                     let offset = location(i).1;
@@ -2419,13 +2419,13 @@ impl GpuProgram {
                     } else {
                         let at = step * field_index;
                         let address = d.allocation.address() + bytes;
-                        words[at as usize / 4..at as usize / 4 + 4]
-                            .copy_from_slice(&[address as u32, (address >> 32) as u32, d.stride, offset]);
+                        let (buffer, mapped) = projected.unwrap();
+                        mapped.add(at as usize).cast::<[u32; 4]>()
+                            .write(binding_header(address, d.stride, offset));
                         field_index += 1;
-                        VkDescriptorBufferInfo { buffer: binding_parameters.as_ref().unwrap().buffer, offset: at, range: bytes }
+                        VkDescriptorBufferInfo { buffer, offset: at, range: bytes }
                     }
                 }).collect();
-                if let Some(parameters) = &binding_parameters { parameters.write(&words)?; }
                 let set = descriptor_set(
                     &mut commands,
                     c,
