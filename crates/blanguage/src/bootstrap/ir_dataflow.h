@@ -472,3 +472,6 @@ extern "C" u32 program_atomic64_requirements(Span stages,Host host) on cpu requi
 
 extern "C" u32 maximal_reconvergence(Span code,Host host) on cpu requires nonzero(host.inspect);
 extern "C" u32 program_maximal_reconvergence(Span stages,Host host) on cpu requires nonzero(host.inspect);
+
+// The original program's buffers and type storage are borrowed synchronously.
+extern "C" u32 shader_pages_fit(Span buffers,u32 bytes,Host host) on cpu requires nonzero(host.inspect);

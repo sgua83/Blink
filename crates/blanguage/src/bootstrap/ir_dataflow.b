@@ -1929,3 +1929,36 @@ extern "C" u32 program_maximal_reconvergence(Span stages,Host host) on cpu requi
  }
  return 0;
 }
+
+const u32 N_PAGE_BUFFER=28;
+const u32 N_PAGE_VARIANT=30;
+const u32 N_PAGE_FIELD=31;
+
+bool page_type_fits(Node source,u32 bytes,Host host) on cpu requires nonzero(host.inspect) {
+ View value=host.inspect(source);
+ Span children=value.first;
+ u32 kind=N_PAGE_VARIANT;
+ if(children.count==0u64) {
+  if(value.tag==1){return value.a<=usize(bytes);}
+  if(value.tag==2){return value.b==0u64 || page_type_fits(value.left,bytes,host);}
+  children=value.second;
+  kind=N_PAGE_FIELD;
+ }
+ usize index=0u64;
+ while(index<children.count) {
+  View child=host.inspect(node_at(children,index,kind));
+  if(!page_type_fits(child.left,bytes,host)){return false;}
+  index+=1u64;
+ }
+ return true;
+}
+
+extern "C" u32 shader_pages_fit(Span buffers,u32 bytes,Host host) on cpu requires nonzero(host.inspect) {
+ usize index=0u64;
+ while(index<buffers.count) {
+  View buffer=host.inspect(node_at(buffers,index,N_PAGE_BUFFER));
+  if(buffer.a>usize(bytes) || !page_type_fits(buffer.left,bytes,host)){return 0;}
+  index+=1u64;
+ }
+ return 1;
+}

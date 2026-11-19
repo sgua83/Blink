@@ -5,10 +5,18 @@ use std::ops::Deref;
 pub fn compile_program<P: Deref<Target = Program>>(program: P) -> Result<ProgramImage<P>, String> {
     crate::Compiler::available().map_err(|error| error.to_string())?.spirv(program)
 }
+pub(crate) fn check_shader_pages(program: &Program) -> Result<(), &'static str> {
+    if !program.stages().is_empty() && !crate::ir::dataflow::shader_pages_fit(program, PAGE_BYTES) {
+        return Err("GPU 页寻址要求单条记录能容纳于一个物理页");
+    }
+    Ok(())
+}
+
 fn compile_stages(worker: &crate::compiler::Worker, program: &Program) -> Result<(ExecutionPlan, Vec<StageCode>), String> {
     if program.target() == crate::ast::Target::Cpu {
         return Err("CPU 专属程序不能提交给 GPU".into());
     }
+    check_shader_pages(program)?;
     let requirements = program.requirements();
     let compiled = crate::parallel::try_map(worker, (0..program.stages().len()).collect(), |_| (),
         |_, index| compile_stage(program, index, requirements)).map_err(|error| error.to_string())?;
@@ -115,7 +123,7 @@ pub(crate) fn compile_stage(
     program: &Program, i: usize, requirements: DeviceRequirements,
 ) -> Result<(ExecutionStage, StageCode), &'static str> {
     let stage = &program.stages()[i];
-    let (tile_layout, mut inputs) = shader_stage_inputs(program, stage)?;
+    let (tile_layout, mut inputs) = shader_stage_inputs(stage);
     // Shader input also includes the physical low half of a wide word.
     let mut layout = ExecutionStage::from_stage(stage, inputs.keys().copied().collect());
     let features = ProgramShaderFeatures::from(requirements);

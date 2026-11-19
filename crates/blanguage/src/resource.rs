@@ -83,14 +83,25 @@ pub struct Module<C = native::NativeCode> {
 #[cfg(feature = "compiler")]
 pub(crate) fn compile_image( resources: &crate::application::Resources, worker: &crate::compiler::Worker) -> codec::Result<Module> {
     let requirements: Vec<_> = resources.programs.iter().map(|(_, program)| program.requirements()).collect();
-    let jobs = |cpu| resources.programs.iter().enumerate()
-        .filter(|(_, (target, _))| (*target == Target::Cpu) == cpu)
+    let cpu_jobs = resources.programs.iter().enumerate()
+        .filter(|(_, (target, _))| *target == Target::Cpu)
         .flat_map(|(program, (_, code))| (0..code.stages().len()).map(move |stage| (program, stage)))
         .collect();
-    let cpu = crate::parallel::try_map(worker, jobs(true), |_| (), |_, (program, stage)| {
+    let cpu = crate::parallel::try_map(worker, cpu_jobs, |_| (), |_, (program, stage)| {
         native::program::compile_stage(&resources.programs[program].1, stage)
     }).map_err(|error| std::io::Error::other(error.to_string()))?;
-    let gpu = crate::parallel::try_map(worker, jobs(false), |_| (), |_, (program, stage)| {
+    let mut gpu_jobs = Vec::new();
+    for (program, (target, code)) in resources.programs.iter().enumerate() {
+        if *target != Target::Cpu {
+            // Keep a layout error at the original position of that program's first shader.
+            match spirv::program::check_shader_pages(code) {
+                Ok(()) => gpu_jobs.extend((0..code.stages().len()).map(|stage| Ok((program, stage)))),
+                Err(error) => gpu_jobs.push(Err(error)),
+            }
+        }
+    }
+    let gpu = crate::parallel::try_map(worker, gpu_jobs, |_| (), |_, job| {
+        let (program, stage) = job?;
         spirv::program::compile_stage(&resources.programs[program].1, stage, requirements[program])
     }).map_err(|error| std::io::Error::other(error.to_string()))?;
     let mut cpu = cpu.into_iter();

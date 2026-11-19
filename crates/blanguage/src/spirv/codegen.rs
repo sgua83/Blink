@@ -1695,7 +1695,8 @@ pub fn emit_pass(
     pass: Pass,
 ) -> Result<Vec<u32>, &'static str> {
     let stage = &program.stages[stage_index];
-    let (layout, mut inputs) = shader_stage_inputs(program, stage)?;
+    program::check_shader_pages(program)?;
+    let (layout, mut inputs) = shader_stage_inputs(stage);
     let (float64, integer8, integer16) = crate::ir::dataflow::numeric_requirements(program);
     let features = ProgramShaderFeatures {
         float64, integer8, integer16,
@@ -1707,26 +1708,12 @@ pub fn emit_pass(
         .map(|(words, _)| words)
 }
 fn shader_stage_inputs(
-    program: &Program, stage: &Stage,
-) -> Result<(crate::ir::dataflow::TileLayout, crate::ir::dataflow::InputFragments), &'static str> {
-    fn oversized_view(ty: &Ty) -> bool {
-        if ty.has_variants() {
-            ty.variants.iter().any(|variant| oversized_view(&variant.ty))
-        } else if let Some(element) = &ty.view {
-            element.size > PAGE_BYTES
-        } else if let Some(element) = &ty.array {
-            ty.values[0] != 0 && oversized_view(element)
-        } else {
-            ty.fields.iter().any(|(_, _, field)| oversized_view(field))
-        }
-    }
-    if program.buffers.iter().any(|b| b.stride > PAGE_BYTES || oversized_view(&b.ty)) {
-        return Err("GPU 页寻址要求单条记录能容纳于一个物理页");
-    }
+    stage: &Stage,
+) -> (crate::ir::dataflow::TileLayout, crate::ir::dataflow::InputFragments) {
     let mut used = BTreeSet::new();
     let layout = stage.tile_layout(true, Some(&mut used));
     let inputs = crate::ir::dataflow::input_fragments(stage, &used);
-    Ok((layout, inputs))
+    (layout, inputs)
 }
 #[repr(u32)]
 enum ReductionPass {

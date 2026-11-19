@@ -10,7 +10,7 @@ enum Kind {
     Instruction, Call, Target, Argument, DatasetBorrow, Reference, Storage,
     Indexed, Stride, Texture, AtomicOp, Alias, Effect, Division, Divisor, Words3,
     Component, Stage, RayRange, Operation, Buffer, Uniform, ValueCode, CustomReduction, Scalar, Tile, Registers,
-    FirstComponentScalar,
+    FirstComponentScalar, PageBuffer, PageType, PageVariant, PageField,
 }
 #[derive(Clone, Copy)]
 #[repr(C)]
@@ -305,6 +305,40 @@ unsafe extern "C" fn inspect(node: Node) -> View {
         Kind::Buffer => {
             let value = unsafe { &*node.data.cast::<Buffer>() };
             let mut view = View::tag(0); view.first = Span::slice(&value.ty.components); view
+        }
+        Kind::PageBuffer => {
+            let buffer = unsafe { &*node.data.cast::<Buffer>() };
+            let mut view = View::tag(0);
+            view.a = buffer.stride as usize;
+            view.left = Node::of(&buffer.ty, Kind::PageType);
+            view
+        }
+        Kind::PageType => {
+            let ty = unsafe { &*node.data.cast::<Ty>() };
+            let mut view = View::tag(0);
+            view.first = Span::slice(&ty.variants);
+            view.second = Span::slice(&ty.fields);
+            if let Some(element) = &ty.view {
+                view.tag = 1;
+                view.a = element.size as usize;
+            } else if let Some(element) = &ty.array {
+                view.tag = 2;
+                view.b = ty.values[0] as usize;
+                view.left = Node::of(element.as_ref(), Kind::PageType);
+            }
+            view
+        }
+        Kind::PageVariant => {
+            let variant = unsafe { &*node.data.cast::<Variant>() };
+            let mut view = View::tag(0);
+            view.left = Node::of(variant.ty.as_ref(), Kind::PageType);
+            view
+        }
+        Kind::PageField => {
+            let field = unsafe { &*node.data.cast::<(String, u32, Box<Ty>)>() };
+            let mut view = View::tag(0);
+            view.left = Node::of(field.2.as_ref(), Kind::PageType);
+            view
         }
         Kind::Uniform => {
             let value = unsafe { &*node.data.cast::<Uniform>() };
@@ -835,4 +869,13 @@ pub(super) fn maximal_reconvergence(stage: &Stage) -> bool {
 }
 pub(super) fn program_maximal_reconvergence(program: &Program) -> bool {
     unsafe { b_program_maximal_reconvergence(Span::slice(program.stages()), HOST) != 0 }
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.ir_dataflow::shader_pages_fit"]
+    fn b_shader_pages_fit(buffers: Span, bytes: u32, host: Host) -> u32;
+}
+
+pub(crate) fn shader_pages_fit(program: &Program, bytes: u32) -> bool {
+    unsafe { b_shader_pages_fit(Span::slice(&program.buffers), bytes, HOST) != 0 }
 }
