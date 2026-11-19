@@ -4470,7 +4470,7 @@ let persistent = pending.wait().map_err(|(error, _)| error)?.into_bindings();
 
 `partition(groups)` 消费一个绑定组，按每组索引转移所有权；未选择的存储沿实际最后使用点释放。它与 rebind 共用同一重排规则：唯一可写存储不能重复，已冻结的 CPU／GPU 存储可以产生同一所有者的只读绑定。空分组有效。每组数据与实际 Count 关系一起交付；没有对应 Count 或其只读别名时放弃关系，随后 join 不会根据相同计数或记录内容恢复关系。一个 Count 不能被复制为多个可写所有者。裸 Dataset 移入 CPU 绑定时保持独占所有权，冻结后的 CpuDataset 可共享只读存储。
 
-`DomainBindings<GpuDataset>::freeze(&[count_binding])` 消费绑定组，在保留现有域关系的同时冻结所选物理存储；此后这些槽只能交给 read 参数。它可以直接消费 pending 结果，不读取 Count，不复制记录或申请 GPU 数据页。后续 partition／rebind 允许重复选择冻结槽，每个别名持有同一 ReadDataset 所有者及其真实生产依赖；分支新增的 GPU 使用仍由原 Execution 与最后使用点管理。
+`DomainBindings<GpuDataset>::freeze(&[count_binding])` 消费绑定组，在保留现有域关系的同时冻结所选物理存储；此后这些槽只能交给 read 参数。首次冻结沿原物理所有者交接已有生产点；所选槽已经冻结时保留本绑定的最后使用点。冻结可以直接消费 pending 结果，不读取 Count，不复制记录或申请 GPU 数据页。后续 partition／rebind 允许重复选择冻结槽，每个别名持有同一 ReadDataset 所有者及其真实生产依赖；分支新增的 GPU 使用仍由原 Execution 与最后使用点管理。
 
 例如生产者绑定为 source／queue_a／queue_b／count，并已交付两个队列与 count 的有效域关系：
 

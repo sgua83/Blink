@@ -1223,8 +1223,14 @@ impl crate::DomainStorage for GpuDataset {
 }
 impl DomainBindings<GpuDataset> {
     /// 冻结选中存储并保留原域关系；后续只读别名仍指向同一物理所有者。
+    /// 已冻结的选中绑定保留当前最后使用点。
     pub fn freeze(self, bindings: &[usize]) -> Result<Self> {
-        self.freeze_with(bindings, |data| Ok(data.freeze().binding()))
+        self.freeze_with(bindings, |data| {
+            Ok(match &*data.storage {
+                DatasetStorage::Owned(_) => data.freeze().into_binding(),
+                DatasetStorage::Read(_) => data,
+            })
+        })
     }
 }
 pub type ViewBinding<'a> = crate::ViewBinding<'a, ReadDataset>;
@@ -1235,8 +1241,12 @@ impl ReadDataset {
     }
     /// 将同一冻结物理存储直接交给原生read dataset绑定；不创建GPU记录、页表或传输。
     pub fn binding(&self) -> GpuDataset {
+        self.clone().into_binding()
+    }
+
+    fn into_binding(self) -> GpuDataset {
         GpuDataset {
-            storage: ManuallyDrop::new(DatasetStorage::Read(self.clone())),
+            storage: ManuallyDrop::new(DatasetStorage::Read(self)),
             last_use: None,
         }
     }
