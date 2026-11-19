@@ -3,7 +3,7 @@ mod archive;
 mod static_library;
 pub use static_library::{Input, archive};
 pub(crate) use static_library::{Member as LibraryMember, members as library_members, encode as library_bytes};
-pub(crate) use static_library::{Library, ObjectBytes};
+pub(crate) use static_library::{Library, ObjectBytes, read_input};
 mod coff;
 pub(crate) use coff::{encode_native, rust_link_binding};
 pub(crate) mod stack;
@@ -31,6 +31,39 @@ pub(crate) struct Section<Bytes = Vec<u8>> {
     pub associated: Vec<usize>,
     pub layout: Option<coff::facts::observations::Layout>,
 }
+impl<Bytes> Section<Bytes> {
+    pub(crate) fn map_bytes<Output>(self, map: impl FnOnce(Bytes) -> Output) -> Section<Output> {
+        let Self { name, bytes, flags, relocations, associated, layout } = self;
+        Section { name, bytes: map(bytes), flags, relocations, associated, layout }
+    }
+}
+
+pub(crate) trait ReadSection: Sized {
+    fn from_coff(bytes: &[u8], zero_fill: usize) -> Self;
+    fn from_generated(object: Object) -> Object<Self>;
+}
+
+impl ReadSection for Vec<u8> {
+    fn from_coff(bytes: &[u8], zero_fill: usize) -> Self {
+        if zero_fill == 0 { bytes.to_vec() } else { vec![0; zero_fill] }
+    }
+
+    fn from_generated(object: Object) -> Object<Self> { object }
+}
+
+// The report only needs the original logical length for section layout.
+impl ReadSection for usize {
+    fn from_coff(bytes: &[u8], zero_fill: usize) -> Self {
+        if zero_fill == 0 { bytes.len() } else { zero_fill }
+    }
+
+    fn from_generated(object: Object) -> Object<Self> {
+        let Object { name, kind, sections, symbols, imports, archive, stack } = object;
+        let sections = sections.into_iter().map(|section| section.map_bytes(|bytes| bytes.len())).collect();
+        Object { name, kind, sections, symbols, imports, archive, stack }
+    }
+}
+
 pub(crate) struct Symbol {
     pub name: String,
     pub section: usize,
@@ -93,7 +126,7 @@ pub struct Object<Bytes = Vec<u8>> {
 impl Object {
     pub fn stack_report(&self, budget: Option<u64>) -> String {
         let code = stack::Code {
-            sections: &self.sections,
+            relocations: &|section| self.sections[section].relocations.as_slice(),
             frames: &self.stack,
             symbols: &self.symbols,
         };

@@ -1,5 +1,5 @@
 //! Stack information follows the same sections and relocations as native code.
-use super::{Kind, Object, Section, Symbol, Target};
+use super::{Kind, Object, Relocation, Symbol, Target};
 mod analysis;
 use analysis::Budget;
 
@@ -15,7 +15,7 @@ pub(crate) enum Call {
     Unreported(String),
 }
 
-pub(crate) fn uses_runtime(object: &Object) -> bool {
+pub(crate) fn uses_runtime<Bytes>(object: &Object<Bytes>) -> bool {
     object.archive.as_ref().and_then(|archive| archive.resources.as_ref()).is_some()
         || matches!(object.kind, Kind::Library { .. })
         || object.sections.iter().flat_map(|section| &section.relocations).any(|relocation| {
@@ -24,7 +24,7 @@ pub(crate) fn uses_runtime(object: &Object) -> bool {
 }
 
 pub(crate) struct Code<'a> {
-    pub sections: &'a [Section],
+    pub relocations: &'a dyn Fn(usize) -> &'a [Relocation],
     pub frames: &'a [Frame],
     pub symbols: &'a [Symbol],
 }

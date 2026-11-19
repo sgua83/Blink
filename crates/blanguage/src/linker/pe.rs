@@ -45,7 +45,7 @@ unsafe extern "C" {
     #[link_name="bootstrap.pe::stack_reserve"]
     fn pe_stack_reserve(stack_bytes:u32)->u64;
 }
-pub(super) fn stack_reserve(entry_stack_bytes: u32, modules: &[Object]) -> u64 {
+pub(super) fn stack_reserve<Bytes>(entry_stack_bytes: u32, modules: &[Object<Bytes>]) -> u64 {
     let stack_bytes = modules.iter().filter_map(|object| match object.kind {
         Kind::Module { stack_bytes, .. } => Some(stack_bytes),
         _ => None,

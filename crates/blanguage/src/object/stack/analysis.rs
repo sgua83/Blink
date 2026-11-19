@@ -76,7 +76,8 @@ unsafe extern "C" fn read_call(slot:*mut c_void,index:u64,ordinal:u64)->CallInfo
         Call::Indirect=>{},
         Call::Reference{offset,tail}=>{
             value.kind=if *tail{CallKind::Tail}else{CallKind::Reference};
-            let target=&context.code.sections[frame.coff.unwrap().0].relocations.iter().find(|r|r.offset==*offset).unwrap().target;
+            let relocations = (context.code.relocations)(frame.coff.unwrap().0);
+            let target = &relocations.iter().find(|r| r.offset == *offset).unwrap().target;
             match target {
                 Target::Section(section,start)=>{value.section=*section as u64;value.start=*start;}
                 Target::Symbol(name)=>{value.target=TargetKind::Symbol;value.name=Name::new(name);}

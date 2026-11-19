@@ -719,7 +719,7 @@ fn encode_sections<'a>(
 
 }
 
-pub(super) fn decode(b: &super::ObjectBytes, stack_output: bool) -> Result<Object> {
+pub(super) fn decode<Bytes: super::ReadSection>(b: &super::ObjectBytes, stack_output: bool) -> Result<Object<Bytes>> {
     decode_object(&Reader::new(b)?, None, None, stack_output)
 }
 pub(crate) struct ReuseInputs<'a> {
@@ -902,7 +902,9 @@ impl<'a, Input: AsRef<[u8]> + ?Sized> Reader<'a, Input> {
 }
 impl Reader<'_, super::ObjectBytes> {
     /// 非根资源侧库来自原编译产物；其C符号沿真实ABI恢复，不消费B公开合同。
-    pub(crate) fn native(&self, name: &str) -> Result<Object> { decode_object(self, Some(name), None, false) }
+    pub(crate) fn native<Bytes: super::ReadSection>(&self, name: &str) -> Result<Object<Bytes>> {
+        decode_object(self, Some(name), None, false)
+    }
     pub(crate) fn object(&self, reuse_libraries: Option<Vec<String>>) -> Result<Object> {
         decode_object(self, None, reuse_libraries, true)
     }
@@ -994,10 +996,10 @@ fn read_metadata(
     });
     Ok((name, kind, bindings, stack, archive))
 }
-fn decode_object(
+fn decode_object<Bytes: super::ReadSection>(
     reader: &Reader<'_, super::ObjectBytes>, native: Option<&str>, reuse_libraries: Option<Vec<String>>,
     stack_output: bool,
-) -> Result<Object> {
+) -> Result<Object<Bytes>> {
     let b = reader.bytes;
     let mut definitions = vec![SectionDefinition::default(); reader.headers.len() / 40];
     let symbols = reader.symbol_rows(&mut definitions)?;
@@ -1016,15 +1018,12 @@ fn decode_object(
     let mut sections = Vec::new();
     for row in &raw {
         if row.mapped != 0 {
+            let bytes = if row.zero_fill == 0 { unsafe { row.bytes.borrowed() } } else { &[] };
             sections.push(Section {
                 associated: Vec::new(),
                 layout: None,
                 name: read_text(row.name)?,
-                bytes: if row.zero_fill == 0 {
-                    unsafe { row.bytes.borrowed() }.to_vec()
-                } else {
-                    vec![0; row.zero_fill]
-                },
+                bytes: Bytes::from_coff(bytes, row.zero_fill),
                 flags: row.flags as u32,
                 relocations: Vec::new(),
             });

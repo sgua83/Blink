@@ -1,7 +1,7 @@
 //! B owns this link's definition tree, section queue, resource closure and remapping.
 //! Rust keeps the original objects/libraries and only hands their current borrowed views across the synchronous call.
 use super::{Inputs,Result,Roots,Source,resources};
-use crate::object::{self,Object,Kind,Target,Library};
+use crate::object::{self, Object, Kind, Target, Library, ReadSection};
 use resources::ImportBytes as Bytes;
 use std::{ffi::c_void, marker::PhantomData};
 #[derive(Clone,Copy)]#[repr(C)]
@@ -60,14 +60,14 @@ unsafe extern "C" {
 }
 fn borrowed(bytes:&[u8])->Bytes {Bytes{bytes:bytes.as_ptr(),length:bytes.len() as u64}}
 fn text(bytes:&Bytes)->&str {unsafe{std::str::from_utf8_unchecked(std::slice::from_raw_parts(bytes.bytes,bytes.length as usize))}}
-struct Context<'a> {
-    sources:Vec<Source<'a>>,libraries:Vec<Library>,objects:Vec<ObjectView>,sections:Vec<SectionView>,
+struct Context<'a, Payload> {
+    sources:Vec<Source<'a, Payload>>,libraries:Vec<Library>,objects:Vec<ObjectView>,sections:Vec<SectionView>,
     relocations:Vec<RelocationView>,associated:Vec<u64>,symbols:Vec<SymbolView>,imports:Vec<ImportView>,
     exports:Vec<ExportView>,code:Vec<Bytes>,frames:Option<Vec<FrameView>>,nodes:Vec<[u64;9]>,pending:Vec<u64>,
     locals:Vec<LocalView>,runtime:Vec<Bytes>,archives:Vec<u64>,slots:Vec<String>,error:Option<Box<dyn std::error::Error>>,
 }
-impl<'a> Context<'a> {
-    fn new(inputs: Inputs<'a>, stack_output: bool)->Self {
+impl<'a, Payload> Context<'a, Payload> {
+    fn new(inputs: Inputs<'a, Payload>, stack_output: bool)->Self {
         let Inputs { sources, libraries } = inputs;
         let mut context=Self{sources,libraries,objects:Vec::new(),sections:Vec::new(),relocations:Vec::new(),associated:Vec::new(),
             symbols:Vec::new(),imports:Vec::new(),exports:Vec::new(),code:Vec::new(),frames:stack_output.then(Vec::new),nodes:Vec::new(),pending:Vec::new(),
@@ -125,10 +125,10 @@ impl<'a> Context<'a> {
             exports:self.exports.as_mut_ptr(),code:self.code.as_mut_ptr(),frames:self.frames.as_mut().map_or(std::ptr::null_mut(), Vec::as_mut_ptr),nodes:self.nodes.as_mut_ptr(),pending:self.pending.as_mut_ptr(),
             locals:self.locals.as_mut_ptr(),runtime:self.runtime.as_mut_ptr(),archives:self.archives.as_mut_ptr(),library_count:self.libraries.len() as u64}
     }
-    fn append(&mut self,object:Object)->u64 {
+    fn append(&mut self, object: Object<Payload>) -> u64 {
         let index=self.sources.len();self.sources.push(Source::Owned(object));self.describe(index);self.grow();index as u64+1
     }
-    fn reply(&mut self,result:Result<Option<Object>>)->Reply {
+    fn reply(&mut self, result: Result<Option<Object<Payload>>>) -> Reply {
         match result{
             Ok(object)=>{let object=object.map_or(0,|object|self.append(object));Reply{view:self.view(),object,error:0}},
             Err(error)=>{self.error=Some(error);Reply{view:self.view(),object:0,error:1}},
@@ -141,11 +141,11 @@ impl<'a> Context<'a> {
             if view.rewrite!=0{relocation.target=Target::Symbol(text(&self.locals[view.rewrite as usize-1].slot).to_owned());}
         }
     }
-    fn materialize<Payload>(
-        &self, source: Source<'a>, row: ObjectView,
-        owned: &impl Fn(Vec<u8>) -> Payload,
-        borrowed: &impl Fn(&'a [u8]) -> Payload,
-    ) -> Object<Payload> {
+    fn materialize<Output>(
+        &self, source: Source<'a, Payload>, row: ObjectView,
+        owned: &impl Fn(Payload) -> Output,
+        borrowed: &impl Fn(&'a Payload) -> Output,
+    ) -> Object<Output> {
         let sections=&self.sections[row.section_start as usize..(row.section_start+row.section_count) as usize];
         let symbols=&self.symbols[row.symbol_start as usize..(row.symbol_start+row.symbol_count) as usize];
         let mut object=match source {
@@ -154,8 +154,7 @@ impl<'a> Context<'a> {
                 let sections = input.into_iter().zip(sections).filter_map(|(mut section, &row)| {
                     if row.live == 0 { return None; }
                     self.section(&mut section, row);
-                    let object::Section { name, bytes, flags, relocations, associated, layout } = section;
-                    Some(object::Section { name, bytes: owned(bytes), flags, relocations, associated, layout })
+                    Some(section.map_bytes(owned))
                 }).collect();
                 let mut index=0;selected.retain_mut(|symbol|{let row=symbols[index];index+=1;symbol.section=row.section as usize;row.keep!=0});
                 if let Some(frames) = &self.frames {
@@ -194,36 +193,40 @@ impl<'a> Context<'a> {
         object
     }
 }
-unsafe extern "C" fn extract(context:*mut c_void,library:u64,name:Bytes)->Reply {
-    let context=unsafe{&mut *context.cast::<Context<'_>>()};
+unsafe extern "C" fn extract<Payload: ReadSection>(context:*mut c_void,library:u64,name:Bytes)->Reply {
+    let context=unsafe{&mut *context.cast::<Context<'_, Payload>>()};
     let result=context.libraries[library as usize].extract(text(&name), context.frames.is_some());context.reply(result)
 }
-unsafe extern "C" fn native_archive(context:*mut c_void,index:u64)->Reply {
-    let context=unsafe{&mut *context.cast::<Context<'_>>()};
+unsafe extern "C" fn native_archive<Payload>(context:*mut c_void,index:u64)->Reply {
+    let context=unsafe{&mut *context.cast::<Context<'_, Payload>>()};
     let result=Library::native(context.sources[index as usize].archive.as_ref().unwrap().bytes.clone());
     match result {Ok(library)=>{context.libraries.push(library);context.reply(Ok(None))},Err(error)=>context.reply(Err(error))}
 }
-unsafe extern "C" fn slot(context:*mut c_void,name:Bytes)->Bytes {
-    let context=unsafe{&mut *context.cast::<Context<'_>>()};
+unsafe extern "C" fn slot<Payload>(context:*mut c_void,name:Bytes)->Bytes {
+    let context=unsafe{&mut *context.cast::<Context<'_, Payload>>()};
     context.slots.push(resources::import_symbol(crate::application::RUNTIME_LIBRARY,text(&name)));Bytes::new(context.slots.last().unwrap())
 }
-unsafe extern "C" fn binding(context:*mut c_void,request:ResourceRequest)->Reply {
-    let context=unsafe{&mut *context.cast::<Context<'_>>()};
+unsafe extern "C" fn binding<Payload: ReadSection>(context:*mut c_void,request:ResourceRequest)->Reply {
+    let context=unsafe{&mut *context.cast::<Context<'_, Payload>>()};
     let archives=unsafe{std::slice::from_raw_parts(request.archives,request.archive_count as usize)};
     let runtime=unsafe{std::slice::from_raw_parts(request.runtime,request.runtime_count as usize)};
     let locals=unsafe{std::slice::from_raw_parts(request.locals,request.local_count as usize)};
     let archives=archives.iter().map(|&index|context.sources[index as usize].archive.as_ref().unwrap()).collect::<Vec<_>>();
     let result=resources::resources(&archives,request.types as u32,request.programs as u32,runtime.iter().map(text),locals.iter().map(|row|(text(&row.slot),text(&row.name))),Some(crate::resource::ABI));
+    // The B selector requests generated bindings only for a native image.
+    let result = result.map(|object| object.map(Payload::from_generated));
     context.reply(result)
 }
-pub(super) fn entry(inputs: Inputs<'_>, stack_output: bool) -> Result<Vec<Object>> {
-    select(inputs, Roots::Entry { stack_output }, std::convert::identity, <[u8]>::to_vec)
-}
-pub(super) fn select<'a, Payload>(
-    inputs: Inputs<'a>, roots: Roots<'_>,
-    owned: impl Fn(Vec<u8>) -> Payload,
-    borrowed: impl Fn(&'a [u8]) -> Payload,
+pub(super) fn entry<Payload: ReadSection + Clone>(
+    inputs: Inputs<'_, Payload>, stack_output: bool,
 ) -> Result<Vec<Object<Payload>>> {
+    select(inputs, Roots::Entry { stack_output }, std::convert::identity, Clone::clone)
+}
+pub(super) fn select<'a, Payload: ReadSection, Output>(
+    inputs: Inputs<'a, Payload>, roots: Roots<'_>,
+    owned: impl Fn(Payload) -> Output,
+    borrowed: impl Fn(&'a Payload) -> Output,
+) -> Result<Vec<Object<Output>>> {
     let(native_mode,types,programs,roots,stack_output)=match roots{
         Roots::Entry { stack_output }=>(0,0,0,&[][..],stack_output),
         Roots::Symbols(roots,types,programs)=>(1,u64::from(types),u64::from(programs),roots,false),
@@ -231,7 +234,7 @@ pub(super) fn select<'a, Payload>(
     let runtime=crate::resource::MODULE_RUNTIME_SYMBOLS.iter().map(|name|Bytes::new(name)).collect::<Vec<_>>();
     let params=Params{native_mode,types,programs,roots:roots.as_ptr(),root_count:roots.len() as u64,runtime_library:Bytes::new(crate::application::RUNTIME_LIBRARY),runtime_symbols:runtime.as_ptr(),runtime_symbol_count:runtime.len() as u64};
     let mut context=Context::new(inputs, stack_output);let input=context.view();
-    let result=unsafe{choose(input,params,&mut context as *mut Context<'_> as *mut c_void,extract,native_archive,binding,slot)};
+    let result=unsafe{choose(input,params,std::ptr::from_mut(&mut context).cast(), extract::<Payload>, native_archive::<Payload>, binding::<Payload>, slot::<Payload>)};
     match result.error{
         0=>{},
         1=>return Err("原生链接需要且只能有一个实际应用或算法库入口对象".into()),

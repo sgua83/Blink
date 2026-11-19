@@ -1,5 +1,5 @@
 //! 标准 COFF 静态库保存原对象；目录归库所有，实际符号绑定仍归链接器。
-use super::{Kind, Object, Result, coff};
+use super::{Kind, Object, ReadSection, Result, coff};
 use crate::file_bytes::FileBytes;
 use std::{fs::File, ops::{Deref, Range}, path::Path, ptr::NonNull, sync::Arc};
 fn has_signature(bytes: &[u8]) -> bool {
@@ -12,15 +12,7 @@ pub enum Input {
 }
 impl Input {
     pub fn read(path: &Path) -> Result<Self> {
-        Self::read_with_stack(path, true)
-    }
-    pub(crate) fn read_with_stack(path: &Path, stack_output: bool) -> Result<Self> {
-        let bytes = ObjectBytes::read(path)?;
-        if has_signature(&bytes) {
-            Ok(Self::Library(Library::decode(bytes, false)?))
-        } else {
-            Ok(Self::Object(coff::decode(&bytes, stack_output)?))
-        }
+        read_input(path, true, Self::Object, Self::Library)
     }
     pub(crate) fn imports(&self, imports: &mut crate::module::Imports) -> Result<()> {
         match self {
@@ -53,6 +45,18 @@ impl Input {
         }
     }
 }
+pub(crate) fn read_input<Bytes: ReadSection, Output>(
+    path: &Path, stack_output: bool,
+    object: impl FnOnce(Object<Bytes>) -> Output, library: impl FnOnce(Library) -> Output,
+) -> Result<Output> {
+    let bytes = ObjectBytes::read(path)?;
+    if has_signature(&bytes) {
+        Ok(library(Library::decode(bytes, false)?))
+    } else {
+        Ok(object(coff::decode(&bytes, stack_output)?))
+    }
+}
+
 #[derive(Clone)]
 enum Storage {
     Captured(Arc<FileBytes>),
@@ -122,7 +126,7 @@ impl Member {
             .map_err(|error|format!("静态库成员 {}：{error}",self.name).into())
     }
 }
-fn member_object(name:&str,bytes:&ObjectBytes,native:bool,stack_output:bool)->Result<Object> {
+fn member_object<Bytes: ReadSection>(name: &str, bytes: &ObjectBytes, native: bool, stack_output: bool) -> Result<Object<Bytes>> {
     (if native {coff::Reader::new(bytes)?.native(name)} else {coff::decode(bytes, stack_output)})
         .map_err(|error|format!("静态库成员 {name}：{error}").into())
 }
@@ -233,7 +237,7 @@ impl Library {
         // The original receiver validated this name before B retained its range.
         (unsafe{std::str::from_utf8_unchecked(member.name.bytes(&self.bytes))},self.bytes.slice(member.body.range()))
     }
-    pub(crate) fn extract(&mut self,symbol:&str,stack_output:bool)->Result<Option<Object>> {
+    pub(crate) fn extract<Bytes: ReadSection>(&mut self, symbol: &str, stack_output: bool) -> Result<Option<Object<Bytes>>> {
         let selected=unsafe{library_take(self.directory.as_ptr(),symbol.as_ptr(),symbol.len())};
         match selected.result {
             0=>return Ok(None),

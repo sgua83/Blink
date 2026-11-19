@@ -1,8 +1,8 @@
-//! B owns grouping, layout, symbol/stack/relocation rebasing and payload copying.
-//! The original objects stay alive until synchronous encoding ends. Rust keeps
-//! the combined sections and requested frames; no input payload is cloned.
+//! B owns layout and rebasing for both reports and native outputs.
+//! Only native outputs encode bytes, borrowing the selected objects until the
+//! synchronous copy finishes.
 use super::{Result, resources::ImportBytes};
-use crate::object::{Object, Section, Target, stack::{Call, Frame}};
+use crate::object::{Object, Relocation, Section, Target, stack::{Call, Frame}};
 use std::collections::BTreeMap;
 
 #[repr(C)]
@@ -34,14 +34,27 @@ unsafe extern "C" {
     fn combine_encode(input:CombineInput,outputs:*const *mut u8);
 }
 
-pub(super) struct Combined {
-    pub sections: Vec<Section>,
-    pub stack: Vec<Frame>,
-}
-
 pub(super) fn objects<Payload: AsRef<[u8]>>(
     objects: Vec<Object<Payload>>, module: Option<(&[&str], &mut BTreeMap<String, (usize, u32)>)>,
-) -> Result<Combined> {
+) -> Result<Vec<Section>> {
+    let (sections, _) = combine(objects, module,
+        |bytes| { let bytes = bytes.as_ref(); (bytes.as_ptr(), bytes.len()) },
+        encode_sections, |section| &mut section.relocations)?;
+    Ok(sections)
+}
+
+pub(super) fn report(objects: Vec<Object<usize>>) -> Result<(Vec<Vec<Relocation>>, Vec<Frame>)> {
+    combine(objects, None, |&length| (std::ptr::null(), length),
+        |_, _, groups, _| Ok((0..groups).map(|_| Vec::new()).collect()),
+        |relocations| relocations)
+}
+
+fn combine<Payload, Output>(
+    objects: Vec<Object<Payload>>, module: Option<(&[&str], &mut BTreeMap<String, (usize, u32)>)>,
+    extent: impl Fn(&Payload) -> (*const u8, usize),
+    materialize: impl FnOnce(CombineInput, &[CombineSection], usize, &[Object<Payload>]) -> Result<Vec<Output>>,
+    relocation_output: impl Fn(&mut Output) -> &mut Vec<Relocation>,
+) -> Result<(Vec<Output>, Vec<Frame>)> {
     let mut inputs=Vec::with_capacity(objects.len());
     let mut rows=Vec::new();let mut symbols=Vec::new();let mut relocations=Vec::new();
     let mut frames=Vec::new();let mut calls=Vec::new();
@@ -58,8 +71,9 @@ pub(super) fn objects<Payload: AsRef<[u8]>>(
                 relocations.push(CombineRelocation{source:source as u64,offset:relocation.offset as u64,
                     target_kind,section:target_section,value,name,name_length:length});
             }
+            let (bytes, length) = extent(&section.bytes);
             rows.push(CombineSection{name:section.name.as_ptr(),name_length:section.name.len() as u64,
-                bytes:section.bytes.as_ref().as_ptr(),byte_length:section.bytes.as_ref().len() as u64,flags:u64::from(section.flags),object:object_index as u64,
+                bytes,byte_length:length as u64,flags:u64::from(section.flags),object:object_index as u64,
                 owner:0,group:0,begin:0,size:0,padding:0});
         }
         for symbol in &object.symbols {
@@ -103,15 +117,7 @@ pub(super) fn objects<Payload: AsRef<[u8]>>(
         },
         code=>return Err(format!("COFF节组合失败 {code}").into()),
     }
-    let mut sections=Vec::with_capacity(usize::try_from(plan.groups)?);
-    for (i,(section,row)) in objects.iter().flat_map(|object|&object.sections).zip(&rows).enumerate(){
-        if row.owner==i as u64{sections.push(Section{name:section.name.clone(),bytes:Vec::with_capacity(usize::try_from(row.size)?),
-            flags:u32::try_from(row.flags)?,relocations:Vec::new(),associated:Vec::new(),layout:None});}
-    }
-    let outputs:Vec<_>=sections.iter_mut().map(|section|section.bytes.as_mut_ptr()).collect();
-    unsafe{combine_encode(input,outputs.as_ptr());}
-    // Encoding writes every byte, including the real alignment gaps, exactly once.
-    for (i,row) in rows.iter().enumerate(){if row.owner==i as u64{unsafe{sections[usize::try_from(row.group)?].bytes.set_len(usize::try_from(row.size)?);}}}
+    let mut sections = materialize(input, &rows, usize::try_from(plan.groups)?, &objects)?;
     if let Some((_, defined))=module{for &index in &order[..usize::try_from(plan.symbols)?]{
         let symbol=&symbols[usize::try_from(index)?];
         let name=unsafe{std::str::from_utf8_unchecked(std::slice::from_raw_parts(symbol.name,symbol.name_length as usize))};
@@ -134,9 +140,36 @@ pub(super) fn objects<Payload: AsRef<[u8]>>(
             for mut relocation in section.relocations {
                 let row=&relocations[relocation_index];relocation_index+=1;relocation.offset=usize::try_from(row.offset)?;
                 if row.target_kind==0{relocation.target=Target::Section(usize::try_from(row.section)?,u32::try_from(row.value)?);}
-                sections[group].relocations.push(relocation);
+                relocation_output(&mut sections[group]).push(relocation);
             }
         }
     }
-    Ok(Combined { sections, stack })
+    Ok((sections, stack))
+}
+
+fn encode_sections<Payload: AsRef<[u8]>>(
+    input: CombineInput, rows: &[CombineSection], groups: usize, objects: &[Object<Payload>],
+) -> Result<Vec<Section>> {
+    let mut sections = Vec::with_capacity(groups);
+    for (i, (section, row)) in objects.iter().flat_map(|object| &object.sections).zip(rows).enumerate() {
+        if row.owner == i as u64 {
+            sections.push(Section {
+                name: section.name.clone(),
+                bytes: Vec::with_capacity(usize::try_from(row.size)?),
+                flags: u32::try_from(row.flags)?,
+                relocations: Vec::new(),
+                associated: Vec::new(),
+                layout: None,
+            });
+        }
+    }
+    let outputs: Vec<_> = sections.iter_mut().map(|section| section.bytes.as_mut_ptr()).collect();
+    unsafe { combine_encode(input, outputs.as_ptr()); }
+    // Encoding writes every byte, including the real alignment gaps.
+    for (i, row) in rows.iter().enumerate() {
+        if row.owner == i as u64 {
+            unsafe { sections[row.group as usize].bytes.set_len(row.size as usize); }
+        }
+    }
+    Ok(sections)
 }

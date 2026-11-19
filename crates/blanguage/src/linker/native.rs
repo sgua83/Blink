@@ -8,11 +8,11 @@ pub(crate) fn modules(inputs: Vec<Input>, borrowed: &[&crate::object::Object], r
         linked.push(input);
     }
     linked.sources.extend(borrowed.iter().copied().map(Source::Borrowed));
-    let objects = select(linked, Roots::Symbols(roots, types, programs), Cow::Owned, Cow::Borrowed)?;
+    let objects = select(linked, Roots::Symbols(roots, types, programs), Cow::Owned, |bytes| Cow::Borrowed(bytes.as_slice()))?;
     if objects.is_empty() { return Ok(None); }
     let mut symbols = BTreeMap::new();
-    let object = combine::objects(objects, Some((local, &mut symbols)))?;
-    let sections = object.sections.into_iter().map(|section| {
+    let sections = combine::objects(objects, Some((local, &mut symbols)))?;
+    let sections = sections.into_iter().map(|section| {
         let relocations = section.relocations.into_iter().map(|relocation| {
             let target = match relocation.target {
                 Target::Section(section, value) => ModuleTarget::Section { section, value },

@@ -11,7 +11,7 @@ mod pe;
 mod resources;
 pub(crate) mod native;
 use crate::{
-    object::{Input, Kind, Object, stack},
+    object::{Input, Kind, Object, ReadSection, read_input, stack},
 };
 use std::path::Path;
 pub(crate) type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
@@ -21,17 +21,19 @@ pub fn link(input: &Path, output: &Path) -> Result<()> {
 pub fn link_inputs(inputs: &[impl AsRef<Path>], output: &Path) -> Result<()> {
     link_objects(read_inputs(inputs, false)?, output)
 }
-fn read_inputs(paths: &[impl AsRef<Path>], stack_output: bool) -> Result<Inputs<'static>> {
-    let mut inputs = Inputs::default();
+fn read_inputs<Bytes: ReadSection>(paths: &[impl AsRef<Path>], stack_output: bool) -> Result<Inputs<'static, Bytes>> {
+    let mut inputs = Inputs { sources: Vec::new(), libraries: Vec::new() };
     for path in paths {
-        inputs.push(Input::read_with_stack(path.as_ref(), stack_output)?);
+        read_input(path.as_ref(), stack_output,
+            |object| inputs.sources.push(Source::Owned(object)),
+            |library| inputs.libraries.push(library))?;
     }
     Ok(inputs)
 }
 
 #[derive(Default)]
-struct Inputs<'a> {
-    sources: Vec<Source<'a>>,
+struct Inputs<'a, Bytes = Vec<u8>> {
+    sources: Vec<Source<'a, Bytes>>,
     libraries: Vec<crate::object::Library>,
 }
 
@@ -45,13 +47,13 @@ impl Inputs<'_> {
 }
 
 /// One original object owner; graph consumers borrow the same compiled value.
-enum Source<'a> {
-    Owned(Object),
-    Borrowed(&'a Object),
+enum Source<'a, Bytes = Vec<u8>> {
+    Owned(Object<Bytes>),
+    Borrowed(&'a Object<Bytes>),
 }
-impl std::ops::Deref for Source<'_> {
-    type Target = Object;
-    fn deref(&self) -> &Object {
+impl<Bytes> std::ops::Deref for Source<'_, Bytes> {
+    type Target = Object<Bytes>;
+    fn deref(&self) -> &Self::Target {
         match self { Self::Owned(object) => object, Self::Borrowed(object) => object }
     }
 }
@@ -68,7 +70,7 @@ fn prepare(inputs: Inputs<'_>) -> Result<(Vec<Object>, Vec<crate::object::Archiv
     Ok((objects, archives))
 }
 pub fn stack_report_inputs(inputs: &[impl AsRef<Path>], budget: Option<u64>) -> Result<String> {
-    let mut objects = entry(read_inputs(inputs, true)?, true)?;
+    let mut objects = entry(read_inputs::<usize>(inputs, true)?, true)?;
     let runtime = objects.iter().any(stack::uses_runtime);
     let reserve = match objects[0].kind {
         Kind::Application { stack_bytes } => Some(pe::stack_reserve(stack_bytes, &objects[1..])),
@@ -76,17 +78,17 @@ pub fn stack_report_inputs(inputs: &[impl AsRef<Path>], budget: Option<u64>) -> 
     };
     let report = if let [object] = objects.as_slice() {
         let code = stack::Code {
-            sections: &object.sections,
+            relocations: &|section| object.sections[section].relocations.as_slice(),
             frames: &object.stack,
             symbols: &object.symbols,
         };
         stack::report(&object.name, code, budget, reserve, runtime)
     } else {
         let name = std::mem::take(&mut objects[0].name);
-        let combined = combine::objects(objects, None)?;
+        let (relocations, frames) = combine::report(objects)?;
         let code = stack::Code {
-            sections: &combined.sections,
-            frames: &combined.stack,
+            relocations: &|section| relocations[section].as_slice(),
+            frames: &frames,
             symbols: &[],
         };
         stack::report(&name, code, budget, reserve, runtime)
@@ -112,8 +114,8 @@ fn link_objects(inputs: Inputs<'_>, path: &Path) -> Result<()> {
         Kind::Application { stack_bytes } => {
             let reserve = pe::stack_reserve(*stack_bytes, &objects[1..]);
             if archives.is_empty() {
-                let combined = combine::objects(objects, None)?;
-                file_bytes::write(&output, &pe::link(&combined.sections, reserve)?)?;
+                let sections = combine::objects(objects, None)?;
+                file_bytes::write(&output, &pe::link(&sections, reserve)?)?;
             } else {
                 msvc::link(&archives, &objects, &output, reserve, false)?;
             }
