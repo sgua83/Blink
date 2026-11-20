@@ -1494,14 +1494,22 @@ fn initializations(function:&Function,state:&State,known:&States,exit_paths:Opti
     }));
     let Some(exit_paths) = exit_paths else { return facts; };
     facts.into_iter().filter_map(|mut fact|{
-        fact.when=normalized_condition(function.initialization_when(&fact).guaranteed_at_call(&exit_paths.parameters));
+        // A normal exit supplies the guarantee when its path excludes failure.
+        let projected_failure = function.initialization_when(&fact)
+            .projected_case(false, &exit_paths.parameters);
+        let failure = bounds::Clause::both(&bounds::Clause::default(), &projected_failure).canonical();
         // Original normal exits form a finite induction domain; recursive scalar substitutions
         // cannot manufacture an unbounded chain of successively expanded path formulas.
-        let mut when=bounds::Condition::constant(false);
-        if fact.when.truth_in(&bounds::Clause::default())==Some(true){when=bounds::Condition::constant(true);}
-        else{for (path, exit) in &exit_paths.exits{
-            if fact.when.truth_in(path)==Some(true){when=when.logical(exit.clone(),true);}
-        }}
+        let mut when = bounds::Condition::constant(false);
+        if !failure.possible() {
+            when = bounds::Condition::constant(true);
+        } else {
+            for (path, exit) in &exit_paths.exits {
+                if !bounds::Clause::both(path, &failure).possible() {
+                    when = when.logical(exit.clone(), true);
+                }
+            }
+        }
         fact.when=normalized_condition(when);
         fact.when.active().then_some(fact)
     }).collect()
