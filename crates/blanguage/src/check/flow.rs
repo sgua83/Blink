@@ -668,11 +668,19 @@ impl Builder<'_> {
                 }
             }
         }
-        if let Some(state)=natural.take(){context.exits.push(state);}
-        let view_natural=(context.exits.len()>natural_index).then_some(natural_index);self.close_view_context(&mut context,view_natural,nonempty)?;
-        natural=if context.exits.len()>natural_index{Some(context.exits.pop().unwrap())}else{None};
-        let mut guards=loop_exit_paths(body,&context.controls,&owned_presence::Presence::input(test));
-        if let Some(state)=natural{context.exits.push(state);guards.push(owned_presence::Presence::input(test).not());}
+        let has_natural = natural.is_some();
+        context.exits.extend(natural);
+        self.close_view_context(&mut context, has_natural.then_some(natural_index), nonempty)?;
+        let guards = if context.exits.len() > 1 {
+            let test = owned_presence::Presence::input(test);
+            let mut guards = loop_exit_paths(body, &context.controls, &test);
+            if has_natural {
+                guards.push(test.not());
+            }
+            guards
+        } else {
+            Vec::new()
+        };
         let mut positions = context.exits.iter().map(|state| &state.initialized);
         let initialized = positions.next().zip(positions.next()).map(|(first, second)| {
             let mut common = ownership::intersect_initialized(first, second);
@@ -687,8 +695,8 @@ impl Builder<'_> {
             common.extend(conditional);
             common
         });
-        let mut guards=guards.into_iter().rev();let mut exits=context.exits.into_iter().rev();let Some(first)=exits.next()else{self.env.retain(|name,_|context.names.contains(name));self.path=bounds::Clause::impossible();return Ok((false,context.writes))};
-        let _first=guards.next().unwrap();self.env=first.env;self.path=first.path;
+        let mut guards=guards.into_iter().rev().skip(1);let mut exits=context.exits.into_iter().rev();let Some(first)=exits.next()else{self.env.retain(|name,_|context.names.contains(name));self.path=bounds::Clause::impossible();return Ok((false,context.writes))};
+        self.env=first.env;self.path=first.path;
         for exit in exits{let when=guards.next().unwrap();let mut previous=std::mem::replace(&mut self.env,exit.env);self.path=bounds::Clause::either(&self.path,&exit.path);self.join_environment_selected(&mut previous,&when);}
         self.env.retain(|name,_|context.names.contains(name));
         self.initialized = initialized.unwrap_or(first.initialized);
@@ -696,22 +704,93 @@ impl Builder<'_> {
         Ok((true,context.writes))
     }
 }
-// 每个出口条件来自原Loop/If；不写运行时出口标记，也不丢弃其他路径的拥有内容。
-fn loop_exit_paths(code:&[Inst],controls:&BTreeMap<Reg,Value>,test:&owned_presence::Presence)->Vec<owned_presence::Presence>{
-    use owned_presence::Presence;
-    fn escapes(code:&[Inst],exit:bool)->bool{code.iter().any(|instruction|match &(instruction).kind{InstKind::Break|InstKind::Continue=>true,InstKind::Exit=>exit,InstKind::If{yes,no,..}=>escapes(yes,exit)||escapes(no,exit),InstKind::Scope(code)=>escapes(code,false),_=>false})}
-    fn walk(code:&[Inst],mut when:Presence,controls:&BTreeMap<Reg,Value>,breaks:&mut Vec<Presence>)->(Presence,Presence){
-        let mut exited=Presence::None;
-        for instruction in code{match &(instruction).kind{
-            InstKind::Break=>{breaks.push(when.clone());when=Presence::None;},InstKind::Continue=>when=Presence::None,InstKind::Exit=>{exited=exited.or(when);when=Presence::None;},
-            InstKind::If{condition,yes,no}if escapes(yes,true)||escapes(no,true)=>{let selected=Presence::input(&controls[condition]);let(a,x)=walk(yes,when.clone().and(selected.clone()),controls,breaks);let(b,y)=walk(no,when.and(selected.not()),controls,breaks);when=a.or(b);exited=exited.or(x).or(y);},
-            InstKind::Scope(code)if escapes(code,false)=>{let(a,b)=walk(code,when,controls,breaks);when=a.or(b);},_=>{}
-        }}(when,exited)
-    }
-    let mut breaks=Vec::new();walk(code,Presence::All,controls,&mut breaks);breaks.into_iter().map(|when|test.clone().and(when)).collect()
+use crate::ir::dataflow;
+use owned_presence::Presence;
+use std::ffi::c_void;
+
+#[repr(u32)]
+enum LoopTransfer { Break, Continue, ScopeExit, Branch, Scope }
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.ir_dataflow::loop_transfers"]
+    fn source_loop_transfers(
+        code: dataflow::Span, host: dataflow::Host, context: *mut c_void,
+        visit: unsafe extern "C" fn(*mut c_void, LoopTransfer, Reg, dataflow::Span, dataflow::Span),
+    );
 }
 
-// Continue is the real next-iteration edge.// Continue is the real next-iteration edge. Compile its continuation directly, without an ownership flag.
+struct LoopPaths<'a> {
+    controls: &'a BTreeMap<Reg, Value>,
+    test: &'a Presence,
+    breaks: &'a mut Vec<Presence>,
+    when: Presence,
+    exited: Presence,
+}
+
+impl LoopPaths<'_> {
+    fn take_when(&mut self) -> Presence {
+        std::mem::replace(&mut self.when, Presence::None)
+    }
+
+    fn take_exited(&mut self) -> Presence {
+        std::mem::replace(&mut self.exited, Presence::None)
+    }
+
+    fn walk(&mut self, body: dataflow::Span, when: Presence) -> (Presence, Presence) {
+        let mut child = LoopPaths {
+            controls: self.controls, test: self.test, breaks: self.breaks,
+            when, exited: Presence::None,
+        };
+        child.visit(body);
+        (child.when, child.exited)
+    }
+
+    fn visit(&mut self, body: dataflow::Span) {
+        // The source traversal and its nested calls borrow the current inputs
+        // synchronously. Only the actual exit conditions go into the result.
+        unsafe { source_loop_transfers(body, dataflow::HOST, std::ptr::from_mut(self).cast(), loop_transfer); }
+    }
+}
+
+unsafe extern "C" fn loop_transfer(
+    context: *mut c_void, transfer: LoopTransfer, condition: Reg,
+    first: dataflow::Span, second: dataflow::Span,
+) {
+    let paths = unsafe { &mut *context.cast::<LoopPaths<'_>>() };
+    match transfer {
+        LoopTransfer::Break => {
+            let when = paths.take_when();
+            paths.breaks.push(paths.test.clone().and(when));
+        }
+        LoopTransfer::Continue => paths.when = Presence::None,
+        LoopTransfer::ScopeExit => {
+            let when = paths.take_when();
+            paths.exited = paths.take_exited().or(when);
+        }
+        LoopTransfer::Branch => {
+            let when = paths.take_when();
+            let selected = Presence::input(&paths.controls[&condition]);
+            let (yes, yes_exit) = paths.walk(first, when.clone().and(selected.clone()));
+            let (no, no_exit) = paths.walk(second, when.and(selected.not()));
+            paths.when = yes.or(no);
+            paths.exited = paths.take_exited().or(yes_exit).or(no_exit);
+        }
+        LoopTransfer::Scope => {
+            let when = paths.take_when();
+            let (next, exited) = paths.walk(first, when);
+            paths.when = next.or(exited);
+        }
+    }
+}
+
+fn loop_exit_paths(code: &[Inst], controls: &BTreeMap<Reg, Value>, test: &Presence) -> Vec<Presence> {
+    let mut breaks = Vec::new();
+    LoopPaths { controls, test, breaks: &mut breaks, when: Presence::All, exited: Presence::None }
+        .visit(dataflow::Span::slice(code));
+    breaks
+}
+
+// Continue is the real next-iteration edge. Compile its continuation directly.
 async fn compile_initial_continuation<'a, F>(
     builder: &mut Builder<'a>,
     state: LoopState,

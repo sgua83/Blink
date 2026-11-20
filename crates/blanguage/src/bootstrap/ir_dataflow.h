@@ -28,6 +28,11 @@ struct View {
  Span first; Span second; Node left; Node right;
 };
 struct Host { cfn<View,Node> ensures memory(read) inspect; };
+
+enum LoopTransfer:u32 { Break=0; Continue=1; ScopeExit=2; Branch=3; Scope=4; };
+extern "C" void loop_transfers(Span code,Host host,address context,
+ cfn<void,address,LoopTransfer,usize,Span,Span> visit) on cpu
+ requires nonzero(host.inspect) requires nonzero(visit);
 struct Word { u32 present; usize value; };
 struct Results { Span first; Span second; usize a; usize b; usize inline_count; usize index; };
 struct Locals {

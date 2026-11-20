@@ -21,6 +21,45 @@ Node node_at(Span span,usize index,u32 kind) on cpu {
  return Node(unsafe_address(address_bits(span.data)+u64(index)*u64(span.stride)),kind);
 }
 
+// Scope exits are local to that scope. Transfers in an inner Loop belong to it.
+bool loop_block_transfers(Span code,bool scope_exit,Host host) on cpu
+ requires nonzero(host.inspect) {
+ usize i=0u64;
+ while(i<code.count){
+  View instruction=host.inspect(node_at(code,i,N_INSTRUCTION));
+  i+=1u64;
+  u32 kind=instruction.tag;
+  if(kind==OP_BREAK_VALUE||kind==OP_CONTINUE_VALUE||(scope_exit&&kind==OP_EXIT_VALUE)){return true;}
+  if(kind==OP_BRANCH&&(loop_block_transfers(instruction.first,scope_exit,host)
+                    ||loop_block_transfers(instruction.second,scope_exit,host))){return true;}
+  if(kind==OP_SCOPE&&loop_block_transfers(instruction.first,false,host)){return true;}
+ }
+ return false;
+}
+
+extern "C" void loop_transfers(Span code,Host host,address context,
+ cfn<void,address,LoopTransfer,usize,Span,Span> visit) on cpu
+ requires nonzero(host.inspect) requires nonzero(visit) {
+ usize i=0u64;
+ while(i<code.count){
+  View instruction=host.inspect(node_at(code,i,N_INSTRUCTION));
+  i+=1u64;
+  u32 kind=instruction.tag;
+  if(kind==OP_BREAK_VALUE){
+   visit(context,LoopTransfer::Break,0u64,empty_span(),empty_span());
+  }else if(kind==OP_CONTINUE_VALUE){
+   visit(context,LoopTransfer::Continue,0u64,empty_span(),empty_span());
+  }else if(kind==OP_EXIT_VALUE){
+   visit(context,LoopTransfer::ScopeExit,0u64,empty_span(),empty_span());
+  }else if(kind==OP_BRANCH&&(loop_block_transfers(instruction.first,true,host)
+                          ||loop_block_transfers(instruction.second,true,host))){
+   visit(context,LoopTransfer::Branch,instruction.a,instruction.first,instruction.second);
+  }else if(kind==OP_SCOPE&&loop_block_transfers(instruction.first,false,host)){
+   visit(context,LoopTransfer::Scope,0u64,instruction.first,empty_span());
+  }
+ }
+}
+
 void ordinary_results(address value,address output) on cpu {
  u32 kind=unsafe_position<View>(value).tag;
  if(kind==OP_INVOKE||kind==OP_TEXTURE_SAMPLE||kind==OP_TEXTURE_FETCH||kind==OP_TEXTURE_SIZE
