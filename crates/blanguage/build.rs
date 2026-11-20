@@ -70,15 +70,17 @@ fn native_modules() -> Result<(), Box<dyn std::error::Error>> {
     let value_archive = out.join("blink_value_format.lib");
     let compiler_archive = out.join("blink_compiler_bootstrap.lib");
     let object = |name: &str| out.join(format!("blink_compiler_{name}.obj"));
+    let coff_source = "../../library/blink/windows/coff";
+    let coff_object = object("coff_read");
     for extension in ["b", "h"] {
         println!("cargo:rerun-if-changed=src/codec/value_format.{extension}");
+        println!("cargo:rerun-if-changed={coff_source}.{extension}");
     }
-    let mut jobs = vec![compile(
-        "value_format",
-        "src/codec/value_format.b",
-        "src",
-        &value_object,
-    )];
+    let mut jobs = vec![
+        compile("value_format", "src/codec/value_format.b", "src", &value_object),
+        compile("coff_read", &format!("{coff_source}.b"), "../../library", &coff_object),
+    ];
+    let compiler_start = jobs.len();
     let mut compiler_members = Vec::new();
     let compiler = env::var_os("CARGO_FEATURE_COMPILER").is_some();
     if compiler {
@@ -88,7 +90,6 @@ fn native_modules() -> Result<(), Box<dyn std::error::Error>> {
             ("path_core", "../../library/blink/windows/path_core"),
             ("process_core", "../../library/blink/windows/process_core"),
             ("text_core", "../../library/blink/text_core"),
-            ("coff_read", "../../library/blink/windows/coff"),
         ] {
             for extension in ["b", "h"] {
                 println!("cargo:rerun-if-changed={source}.{extension}");
@@ -161,12 +162,12 @@ fn native_modules() -> Result<(), Box<dyn std::error::Error>> {
             compiler_members.push(output);
         }
     }
-    let compiler_inputs = (1..jobs.len()).collect();
+    let compiler_inputs = (compiler_start..jobs.len()).collect();
     jobs.push(archive(
         "blink_value_format.lib",
-        std::iter::once(value_object),
+        [value_object, coff_object].into_iter(),
         &value_archive,
-        vec![0],
+        (0..compiler_start).collect(),
     ));
     if compiler {
         jobs.push(archive(

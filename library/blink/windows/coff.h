@@ -23,3 +23,9 @@ extern "C" ReadRange next_export(ReadBytes input, ReadSymbols table, inout u64 i
 extern "C" ReadSection section(ReadBytes input,ReadBytes headers,u64 index) on cpu;
 extern "C" ReadRelocations relocations(ReadBytes input,u64 offset,u64 count,u64 flags) on cpu;
 extern "C" ReadRelocation relocation(ReadBytes input,u64 offset,u64 index) on cpu;
+
+// Zero indicates success. Other results distinguish an unsupported kind,
+// a field beyond the section, and a value beyond the field.
+extern "C" u32 relocation_span(u64 length, u64 offset, u32 kind) on cpu;
+extern "C" u32 apply_relocation(address bytes, u64 length, u64 offset, u32 kind,
+                               u64 base, u64 source, u64 target) on cpu;

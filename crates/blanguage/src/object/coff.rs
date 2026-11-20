@@ -838,8 +838,8 @@ impl<'a, Input: AsRef<[u8]> + ?Sized> Reader<'a, Input> {
         Ok((0..table.count).map(move |index| {
             let ObjectRelocation { record, target } = unsafe { object_relocation(input, rows, symbols, table.offset, index) };
             record.error.check()?;
-            if let Some(kind) = crate::native::CoffRelocationKind::of(record.kind as u16) {
-                kind.range(length, record.offset)?;
+            if !crate::native::coff_relocation_within_section(length, record.offset, record.kind as u16) {
+                return Err("COFF 重定位位置越界".into());
             }
             target.error.check()?;
             Ok((record, target))

@@ -112,3 +112,53 @@ extern "C" ReadRelocation relocation(ReadBytes input,u64 offset,u64 index) on cp
     if(row.error!=0){return ReadRelocation(0u64,0u64,0u64,row.error);}
     return ReadRelocation(little(row.bytes.bytes,0u64,4u64),little(row.bytes.bytes,4u64,4u64),little(row.bytes.bytes,8u64,2u64),0);
 }
+
+// The object reader and both image consumers use the original field width.
+extern "C" u32 relocation_span(u64 length, u64 offset, u32 kind) on cpu {
+    u64 width = 4u64;
+    if (kind == 1) {
+        width = 8u64;
+    } else if (kind != 3 && kind != 4) {
+        return 1;
+    }
+    if (offset > length || width > length - offset) {
+        return 2;
+    }
+    return 0;
+}
+
+void write_little(address bytes, u64 offset, u64 width, u64 value) on cpu {
+    u64 i = 0u64;
+    while (i < width) {
+        unsafe_position<u8>(at(bytes, offset + i)) = u8(value >> (i * 8u64));
+        i += 1u64;
+    }
+}
+
+extern "C" u32 apply_relocation(address bytes, u64 length, u64 offset, u32 kind,
+                               u64 base, u64 source, u64 target) on cpu {
+    u32 span = relocation_span(length, offset, kind);
+    if (span != 0) {
+        return span;
+    }
+    if (kind == 1) {
+        write_little(bytes, offset, 8u64, little(bytes, offset, 8u64) + base + target);
+        return 0;
+    }
+
+    u64 addend = little(bytes, offset, 4u64);
+    if (kind == 3) {
+        if (target > 4294967295u64) {
+            return 3;
+        }
+        write_little(bytes, offset, 4u64, addend + target);
+        return 0;
+    }
+    i64 displacement = i64(target) - i64(source) - i64(4) + i64(i32(u32(addend)));
+    i32 field = i32(displacement);
+    if (i64(field) != displacement) {
+        return 3;
+    }
+    write_little(bytes, offset, 4u64, u64(u32(field)));
+    return 0;
+}
