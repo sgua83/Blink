@@ -77,27 +77,35 @@ bool propagating_body(address nodes,address source,address stored,Slice body) on
     }
     return false;
 }
-bool returning_arms(address nodes,Slice arms) on cpu {
+enum ExitScope:u32 { FunctionBody=0; Nested=1; LoopBody=2; };
+
+bool arm_exits(address nodes,Slice arms,ExitScope scope) on cpu {
     u64 i=0u64;
-    while(i<arms.count){ArmNode arm=node<ArmNode>(nodes,member(nodes,arms,i));if(has_return(nodes,arm.body)){return true;}i+=1u64;}
+    while(i<arms.count){
+        ArmNode arm=node<ArmNode>(nodes,member(nodes,arms,i));
+        if(explicit_exit(nodes,arm.body,scope)){return true;}
+        i+=1u64;
+    }
     return false;
 }
-bool has_return(address nodes,Slice body) on cpu {
+
+bool explicit_exit(address nodes,Slice body,ExitScope scope) on cpu {
+    ExitScope branch=scope==ExitScope::LoopBody ? ExitScope::LoopBody : ExitScope::Nested;
     u64 i=0u64;
     while(i<body.count){
         StmtNode statement=node<StmtNode>(nodes,member(nodes,body,i));
         match(statement.kind){
-            StmtKind::Return(unused){return true;}
-            StmtKind::If(value){if(has_return(nodes,value.yes)||has_return(nodes,value.no)){return true;}}
-            StmtKind::Match(value){if(returning_arms(nodes,value.arms)){return true;}}
-            StmtKind::While(value){if(has_return(nodes,value.body)){return true;}}
-            StmtKind::For(value){if(has_return(nodes,value.body)){return true;}}
+            StmtKind::Return(unused){if(scope!=ExitScope::FunctionBody || i+1u64!=body.count){return true;}}
+            StmtKind::Break(){if(scope==ExitScope::LoopBody){return true;}}
+            StmtKind::If(value){if(explicit_exit(nodes,value.yes,branch)||explicit_exit(nodes,value.no,branch)){return true;}}
+            StmtKind::Match(value){if(arm_exits(nodes,value.arms,branch)){return true;}}
+            StmtKind::While(value){if(explicit_exit(nodes,value.body,ExitScope::Nested)){return true;}}
+            StmtKind::For(value){if(explicit_exit(nodes,value.body,ExitScope::Nested)){return true;}}
             StmtKind::Declare(unused){}
             StmtKind::Let(unused){}
             StmtKind::Assign(unused){}
             StmtKind::Expr(unused){}
             StmtKind::Parallel(unused){}
-            StmtKind::Break(){}
             StmtKind::Continue(){}
             StmtKind::Phase(){}
             StmtKind::Seek(unused){}
@@ -106,28 +114,11 @@ bool has_return(address nodes,Slice body) on cpu {
     }
     return false;
 }
+
 extern "C" bool early_returns(address nodes,address source,address stored,Slice body) on cpu {
-    if(propagating_body(nodes,source,stored,body)){return true;}
-    u64 i=0u64;
-    while(i<body.count){
-        StmtNode statement=node<StmtNode>(nodes,member(nodes,body,i));
-        match(statement.kind){
-            StmtKind::Return(unused){if(i+1u64!=body.count){return true;}}
-            StmtKind::If(value){if(has_return(nodes,value.yes)||has_return(nodes,value.no)){return true;}}
-            StmtKind::Match(value){if(returning_arms(nodes,value.arms)){return true;}}
-            StmtKind::While(value){if(has_return(nodes,value.body)){return true;}}
-            StmtKind::For(value){if(has_return(nodes,value.body)){return true;}}
-            StmtKind::Declare(unused){}
-            StmtKind::Let(unused){}
-            StmtKind::Assign(unused){}
-            StmtKind::Expr(unused){}
-            StmtKind::Parallel(unused){}
-            StmtKind::Break(){}
-            StmtKind::Continue(){}
-            StmtKind::Phase(){}
-            StmtKind::Seek(unused){}
-        }
-        i+=1u64;
-    }
-    return false;
+    return propagating_body(nodes,source,stored,body)||explicit_exit(nodes,body,ExitScope::FunctionBody);
+}
+
+extern "C" bool loop_exit(address nodes,Slice body) on cpu {
+    return explicit_exit(nodes,body,ExitScope::LoopBody);
 }

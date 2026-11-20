@@ -386,20 +386,13 @@ impl Builder<'_> {
         self.resolve_owned_model(&mut model,None);Some(match model{Returned::Dataset(data)=>!data.ownership.available(),Returned::OwnedValue(value)=>if value.value.ty.has_variants(){value.ownership==Ownership::Moved||matches!(value.ownership,Ownership::Conditional(_))||shape&&value.incomplete()}else{!value.available()},_=>false})
     }
     fn loop_has_resource_exit(&self, body: &Block) -> bool {
-        fn exits(body: &Block, nested: bool) -> bool {
-            body.iter().any(|statement| match statement.kind() {
-                StmtKind::Break => !nested,
-                StmtKind::Return(_) => true,
-                StmtKind::If(_, yes, no) => exits(&yes, nested) || exits(&no, nested),
-                StmtKind::Match(_, arms) => arms.iter().any(|arm| exits(&arm.body(), nested)),
-                StmtKind::While(_, body) | StmtKind::For(_, _, _, body) => exits(&body, true),
-                _ => false,
-            })
+        if self.application.is_none()
+            || !self.env.values().any(|binding| !binding.application_resources().is_empty())
+        {
+            return false;
         }
-
-        self.application.is_some()
-            && self.env.values().any(|binding| !binding.application_resources().is_empty())
-            && exits(body, false)
+        let storage = body.source_view().storage();
+        unsafe { source_loop_exit(storage.nodes.cast_const(), body.source_slice()) }
     }
 
     fn loop_writes_incomplete_resource(&self, writes: &[Expr]) -> bool {
@@ -820,6 +813,11 @@ unsafe extern "C" fn loop_transfer(
             paths.when = next.or(exited);
         }
     }
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.return_scope::loop_exit"]
+    fn source_loop_exit(nodes: *const std::ffi::c_void, body: crate::syntax::wire::Slice) -> bool;
 }
 
 fn loop_exit_paths(code: &[Inst], controls: &BTreeMap<Reg, Value>, test: &Presence) -> Vec<Presence> {
