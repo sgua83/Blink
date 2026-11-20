@@ -1881,12 +1881,12 @@ fn emit_shader(
         (false, false)
     };
     let ranks = matches!(pass, Pass::SortHistogram(_) | Pass::SortScatter(_));
-    let subgroup_operations = if pass == Pass::Main {
-        stage.subgroup_operations()
+    let subgroups = if pass == Pass::Main {
+        crate::ir::dataflow::shader_subgroups(stage)
     } else {
         Default::default()
     };
-    let subgroup_caps = SubgroupCapabilities::from_operations(subgroup_operations.iter().copied());
+    let subgroup_caps = subgroups.capabilities();
     let features = ShaderFeatures {
         atomic64: u32::from(facts.atomic64),
         float64: u32::from(float64),
@@ -1903,7 +1903,7 @@ fn emit_shader(
         acceleration: u32::from(acceleration),
         position_fetch: u32::from(!e.ray_queries[0].is_empty()),
         descriptor_indexing: u32::from(descriptor_indexing),
-        maximal_reconvergence: u32::from(pass == Pass::Main && stage.requires_maximal_reconvergence()),
+        maximal_reconvergence: subgroups.maximal_reconvergence,
     };
     e.ext = e.id();
     let void = e.declare_type(TypeShape::Void, 0, 0);
@@ -2031,7 +2031,7 @@ fn emit_shader(
         (SubgroupOp::Size, 36),
         (SubgroupOp::Id, 40),
     ] {
-        if subgroup_operations.contains(&operation) {
+        if subgroups.uses_builtin(operation) {
             let input_ptr = e.declare_pointer(StorageClass::Input, u);
             let variable = e.declare_annotated(VariableAnnotation::BuiltIn, input_ptr, builtin);
             e.subgroup_inputs.insert(operation, variable);

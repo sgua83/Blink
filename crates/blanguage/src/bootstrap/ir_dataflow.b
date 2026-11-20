@@ -1662,84 +1662,75 @@ u32 collective_presence(Span code,Host host,bool include_subgroups) on cpu requi
 extern "C" u32 has_subgroups(Span code,Host host) on cpu requires nonzero(host.inspect) {
  return collective_presence(code,host,true);
 }
-struct AppendOperations { usize count; usize prefix; usize elect; usize first; };
-AppendOperations append_operations() on cpu {return AppendOperations(6u64,7u64,3u64,8u64);}
-extern "C" void subgroup_operations(Span code,Host host,address context,
- cfn<void,address,usize> emit) on cpu requires nonzero(host.inspect) requires nonzero(emit) {
- usize index=0u64;
- while(index<code.count) {
-  View value=host.inspect(node_at(code,index,N_INSTRUCTION));
-  if(value.tag==OP_APPEND) {
-   AppendOperations operations=append_operations();
-   emit(context,operations.count);emit(context,operations.prefix);
-   emit(context,operations.elect);emit(context,operations.first);
-  }else if(value.tag==OP_SUBGROUP){emit(context,value.c);}
-  else if(value.tag==OP_SCOPE || value.tag==OP_BRANCH || value.tag==OP_LOOP_VALUE) {
-   subgroup_operations(value.first,host,context,emit);
-   subgroup_operations(value.second,host,context,emit);
-  }
-  index+=1u64;
- }
-}
-SubgroupFlags empty_subgroup_flags() on cpu {return SubgroupFlags(0,0,0,0,0,0,0);}
-void include_subgroup(inout SubgroupFlags flags,usize operation) on cpu {
- flags.basic=1;
- if(operation==4u64 || operation==5u64){flags.vote=1;}
- else if(operation==6u64 || operation==7u64 || operation==8u64){flags.ballot=1;}
- else if(operation==9u64 || operation==10u64){flags.shuffle=1;}
- else if(operation==11u64 || operation==12u64){flags.shuffle_relative=1;}
- else if(operation==13u64 || operation==14u64 || operation==15u64 || operation==16u64
-     || operation==17u64 || operation==18u64 || operation==19u64 || operation==20u64
-     || operation==21u64 || operation==22u64){flags.arithmetic=1;}
-}
-void subgroup_flags(Span code,Host host,inout SubgroupFlags flags) on cpu requires nonzero(host.inspect) {
- usize index=0u64;
- while(index<code.count) {
-  View value=host.inspect(node_at(code,index,N_INSTRUCTION));
-  if(value.tag==OP_APPEND) {
-   AppendOperations operations=append_operations();
-   include_subgroup(flags,operations.count);include_subgroup(flags,operations.prefix);
-   include_subgroup(flags,operations.elect);include_subgroup(flags,operations.first);
-  }else if(value.tag==OP_SUBGROUP){include_subgroup(flags,value.c);}
-  else if(value.tag==OP_SCOPE || value.tag==OP_BRANCH || value.tag==OP_LOOP_VALUE) {
-   subgroup_flags(value.first,host,flags);subgroup_flags(value.second,host,flags);
-  }
-  index+=1u64;
- }
-}
-extern "C" SubgroupFlags subgroup_from_operations(address context,cfn<Word,address> next) on cpu
- requires nonzero(next) {
- SubgroupFlags flags=empty_subgroup_flags();
- while(true) {
-  Word operation=next(context);if(operation.present==0){return flags;}
-  include_subgroup(flags,operation.value);
- }
-}
-u32 subgroup_extended(Span code,address stage,SubgroupHost host) on cpu
+// Operation bits follow the existing SubgroupOp discriminants. The two
+// following bits describe use of Append and non-32-bit subgroup results.
+const u32 SUBGROUP_OPERATIONS=8388607;
+const u32 SUBGROUP_APPEND=8388608;
+const u32 SUBGROUP_EXTENDED=16777216;
+const u32 SUBGROUP_BUILTINS=7;
+const u32 SUBGROUP_VOTE=48;
+const u32 SUBGROUP_BALLOT=448;
+const u32 SUBGROUP_SHUFFLE=1536;
+const u32 SUBGROUP_RELATIVE=6144;
+const u32 SUBGROUP_ARITHMETIC=8380416;
+const u32 APPEND_OPERATIONS=456; // Elect, Count, PrefixCount, BroadcastFirst.
+
+u32 subgroup_uses<const Widths:u32>(Span code,address stage,SubgroupHost host,u32 previous) on cpu
  requires nonzero(host.ir.inspect) requires nonzero(host.scalar_bytes) {
+ u32 used=previous;
  usize index=0u64;
  while(index<code.count) {
   View value=host.ir.inspect(node_at(code,index,N_INSTRUCTION));
-  if(value.tag==OP_SUBGROUP) {
-   if(host.scalar_bytes(stage,value.a)!=4){return 1;}
+  if(value.tag==OP_APPEND) {
+   used|=SUBGROUP_APPEND|APPEND_OPERATIONS;
+  }else if(value.tag==OP_SUBGROUP) {
+   used|=1<<u32(value.c);
+   if(Widths!=0 && (used&SUBGROUP_EXTENDED)==0 && host.scalar_bytes(stage,value.a)!=4) {
+    used|=SUBGROUP_EXTENDED;
+   }
   }else if(value.tag==OP_SCOPE || value.tag==OP_BRANCH || value.tag==OP_LOOP_VALUE) {
-   if(subgroup_extended(value.first,stage,host)!=0){return 1;}
-   if(subgroup_extended(value.second,stage,host)!=0){return 1;}
+   used=subgroup_uses<Widths>(value.first,stage,host,used);
+   used=subgroup_uses<Widths>(value.second,stage,host,used);
   }
   index+=1u64;
  }
- return 0;
+ return used;
+}
+
+SubgroupFlags subgroup_flags(u32 used) on cpu {
+ return SubgroupFlags(
+  u32((used&SUBGROUP_OPERATIONS)!=0),u32((used&SUBGROUP_VOTE)!=0),
+  u32((used&SUBGROUP_ARITHMETIC)!=0),u32((used&SUBGROUP_BALLOT)!=0),
+  u32((used&SUBGROUP_SHUFFLE)!=0),u32((used&SUBGROUP_RELATIVE)!=0),
+  u32((used&SUBGROUP_EXTENDED)!=0));
+}
+extern "C" u32 subgroup_operations(Span code,SubgroupHost host) on cpu
+ requires nonzero(host.ir.inspect) requires nonzero(host.scalar_bytes) {
+ return subgroup_uses<0>(code,unsafe_address(0u64),host,0)&SUBGROUP_OPERATIONS;
+}
+extern "C" ShaderSubgroups shader_subgroups(Span code,SubgroupHost host) on cpu
+ requires nonzero(host.ir.inspect) requires nonzero(host.scalar_bytes) {
+ let used=subgroup_uses<0>(code,unsafe_address(0u64),host,0);
+ return ShaderSubgroups(subgroup_flags(used),used&SUBGROUP_BUILTINS,u32((used&SUBGROUP_APPEND)!=0));
+}
+extern "C" SubgroupFlags subgroup_from_operations(address context,cfn<Word,address> next) on cpu
+ requires nonzero(next) {
+ u32 used=0;
+ while(true) {
+  Word operation=next(context);
+  if(operation.present==0){return subgroup_flags(used);}
+  used|=1<<u32(operation.value);
+ }
 }
 extern "C" SubgroupFlags subgroup_capabilities(Span stages,SubgroupHost host) on cpu
  requires nonzero(host.ir.inspect) requires nonzero(host.scalar_bytes) {
- SubgroupFlags flags=empty_subgroup_flags();usize index=0u64;
+ u32 used=0;usize index=0u64;
  while(index<stages.count) {
   Node stage=node_at(stages,index,N_STAGE);View value=host.ir.inspect(stage);
-  subgroup_flags(value.first,host.ir,flags);
-  if(flags.extended_types==0){flags.extended_types=subgroup_extended(value.first,stage.data,host);}
+  used=subgroup_uses<1>(value.first,stage.data,host,used);
   index+=1u64;
  }
- return flags;
+ return subgroup_flags(used);
 }
 
 void collect_ray_operands(Span code,RayHost host) on cpu

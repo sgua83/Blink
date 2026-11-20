@@ -430,13 +430,18 @@ struct SubgroupFlags {
  u32 basic; u32 vote; u32 arithmetic; u32 ballot;
  u32 shuffle; u32 shuffle_relative; u32 extended_types;
 };
+struct ShaderSubgroups {
+ SubgroupFlags capabilities; u32 builtins; u32 maximal_reconvergence;
+};
 struct SubgroupHost {
  Host ir;
  cfn<u32,address,usize> ensures memory(read) scalar_bytes;
 };
 extern "C" u32 has_subgroups(Span code,Host host) on cpu requires nonzero(host.inspect);
-extern "C" void subgroup_operations(Span code,Host host,address context,
- cfn<void,address,usize> emit) on cpu requires nonzero(host.inspect) requires nonzero(emit);
+extern "C" u32 subgroup_operations(Span code,SubgroupHost host) on cpu
+ requires nonzero(host.ir.inspect) requires nonzero(host.scalar_bytes);
+extern "C" ShaderSubgroups shader_subgroups(Span code,SubgroupHost host) on cpu
+ requires nonzero(host.ir.inspect) requires nonzero(host.scalar_bytes);
 extern "C" SubgroupFlags subgroup_from_operations(address context,cfn<Word,address> next) on cpu
  requires nonzero(next);
 extern "C" SubgroupFlags subgroup_capabilities(Span stages,SubgroupHost host) on cpu

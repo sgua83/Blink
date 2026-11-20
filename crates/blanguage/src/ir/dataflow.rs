@@ -709,6 +709,7 @@ unsafe extern "C" fn contains_publish_word(used: *const c_void, tile: usize, wor
     u32::from(used.contains(&SharedWord::Published { tile, word }))
 }
 
+#[derive(Clone, Copy, Default)]
 #[repr(C)]
 struct SubgroupFlags {
     basic: u32, vote: u32, arithmetic: u32, ballot: u32,
@@ -721,14 +722,32 @@ impl From<SubgroupFlags> for SubgroupCapabilities {
             shuffle_relative: value.shuffle_relative != 0, extended_types: value.extended_types != 0 }
     }
 }
+#[derive(Default)]
+#[repr(C)]
+pub(crate) struct ShaderSubgroups {
+    capabilities: SubgroupFlags,
+    builtins: u32,
+    pub(crate) maximal_reconvergence: u32,
+}
+impl ShaderSubgroups {
+    pub(crate) fn capabilities(&self) -> SubgroupCapabilities {
+        self.capabilities.into()
+    }
+
+    pub(crate) fn uses_builtin(&self, operation: SubgroupOp) -> bool {
+        self.builtins & (1 << operation as u32) != 0
+    }
+}
 #[repr(C)]
 struct SubgroupHost { ir: Host, scalar_bytes: unsafe extern "C" fn(*const c_void, usize) -> u32 }
+const SUBGROUP_HOST: SubgroupHost = SubgroupHost { ir: HOST, scalar_bytes: register_bytes };
 unsafe extern "C" {
     #[link_name = "bootstrap.ir_dataflow::has_subgroups"]
     fn b_has_subgroups(code: Span, host: Host) -> u32;
     #[link_name = "bootstrap.ir_dataflow::subgroup_operations"]
-    fn b_subgroup_operations(code: Span, host: Host, context: *mut c_void,
-        emit: unsafe extern "C" fn(*mut c_void, usize));
+    fn b_subgroup_operations(code: Span, host: SubgroupHost) -> u32;
+    #[link_name = "bootstrap.ir_dataflow::shader_subgroups"]
+    fn b_shader_subgroups(code: Span, host: SubgroupHost) -> ShaderSubgroups;
     #[link_name = "bootstrap.ir_dataflow::subgroup_from_operations"]
     fn b_subgroup_from_operations(context: *mut c_void,
         next: unsafe extern "C" fn(*mut c_void) -> Word) -> SubgroupFlags;
@@ -749,12 +768,13 @@ pub(crate) fn has_subgroups(stage: &Stage) -> bool {
     unsafe { b_has_subgroups(Span::slice(&stage.code), HOST) != 0 }
 }
 pub(super) fn subgroup_operations(stage: &Stage) -> BTreeSet<SubgroupOp> {
-    let mut output = BTreeSet::new();
-    unsafe { b_subgroup_operations(Span::slice(&stage.code), HOST, ptr::from_mut(&mut output).cast(), emit_subgroup); }
-    output
+    let used = unsafe { b_subgroup_operations(Span::slice(&stage.code), SUBGROUP_HOST) };
+    SUBGROUP_OPERATIONS.into_iter().enumerate()
+        .filter_map(|(bit, operation)| (used & (1 << bit) != 0).then_some(operation))
+        .collect()
 }
-unsafe extern "C" fn emit_subgroup(context: *mut c_void, operation: usize) {
-    unsafe { &mut *context.cast::<BTreeSet<SubgroupOp>>() }.insert(SUBGROUP_OPERATIONS[operation]);
+pub(crate) fn shader_subgroups(stage: &Stage) -> ShaderSubgroups {
+    unsafe { b_shader_subgroups(Span::slice(&stage.code), SUBGROUP_HOST) }
 }
 pub(super) fn subgroup_from_operations<I: IntoIterator<Item = SubgroupOp>>(operations: I) -> SubgroupCapabilities {
     let mut operations = operations.into_iter();
@@ -767,7 +787,7 @@ unsafe extern "C" fn next_subgroup<I: Iterator<Item = SubgroupOp>>(context: *mut
     }
 }
 pub(super) fn subgroup_capabilities(program: &Program) -> SubgroupCapabilities {
-    unsafe { b_subgroup_capabilities(Span::slice(program.stages()), SubgroupHost { ir: HOST, scalar_bytes: register_bytes }).into() }
+    unsafe { b_subgroup_capabilities(Span::slice(program.stages()), SUBGROUP_HOST).into() }
 }
 
 #[repr(C)]
