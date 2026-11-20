@@ -259,7 +259,8 @@ impl ExecutionResources {
 pub(super) struct Execution {
     pub point: Completion,
     resources: RefCell<Option<ExecutionResources>>,
-    dependencies: RefCell<Vec<Rc<Self>>>,
+    // Some(empty) is still a live execution whose dependency list has not been moved.
+    dependencies: RefCell<Option<Vec<Rc<Self>>>>,
     discarded: RefCell<Vec<DatasetStorage>>,
     discarded_structures: RefCell<Vec<ray::StructureStorage>>,
 }
@@ -309,7 +310,7 @@ impl Execution {
         Ok(Rc::new(Self {
             point,
             resources: RefCell::new(Some(resources)),
-            dependencies: RefCell::new(dependencies),
+            dependencies: RefCell::new(Some(dependencies)),
             discarded: RefCell::new(Vec::new()),
             discarded_structures: RefCell::new(Vec::new()),
         }))
@@ -342,20 +343,19 @@ impl Execution {
         };
         // 保留真实原生终态；同队列成功覆盖生产依赖，设备丢失仍是错误。
         let result = self.point.result.get();
-        let mut completed = std::mem::take(&mut *self.dependencies.borrow_mut());
+        let mut completed = self.dependencies.take().unwrap_or_default();
         let mut index = 0;
         while index < completed.len() {
-            let dependencies = {
-                let previous = &completed[index];
-                previous
-                    .point
-                    .result
-                    .set(previous.point.result.get().or(result));
-                std::mem::take(&mut *previous.dependencies.borrow_mut())
+            let previous = &completed[index];
+            let Some(dependencies) = previous.dependencies.take() else {
+                completed.swap_remove(index);
+                continue;
             };
+            previous.point.result.set(previous.point.result.get().or(result));
             completed.extend(dependencies);
             index += 1;
         }
+        // Publish the entire closure before destructors can consult an earlier point.
         for previous in completed.into_iter().rev() {
             if let Some(resources) = previous.resources.take() {
                 previous.release_resources(resources);
