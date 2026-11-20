@@ -38,6 +38,14 @@ impl Builder<'_> {
     fn borrow(&mut self,value:&Borrow,epoch:&Epoch)->usize{let id=self.empty();self.fill(id,value,epoch);id}
     fn read(&mut self,to:usize,from:usize,word:u32,epoch:Epoch){let frame=match &epoch{Epoch::Input=>None,Epoch::Local{memory,..}=>self.read_frame(*memory)};self.edge(to,from,Op::Read{word,epoch,frame},bounds::Clause::default());}
     fn fill(&mut self,id:usize,value:&Borrow,epoch:&Epoch){
+        self.fill_with_seeds(id, value, epoch, |seeds, source, when| {
+            seeds.sources.insert_when(source.clone(), when);
+        });
+    }
+    fn fill_with_seeds(
+        &mut self, id: usize, value: &Borrow, epoch: &Epoch,
+        mut add_seed: impl FnMut(&mut Borrow, &Origin, bounds::Clause),
+    ) {
         for(source,when)in value.sources.entries(){
             let target=match source {
                 Origin::Parameter(input,indices)if self.parameters.contains_key(input)=>{let from=self.parameters[input];let n=self.empty();self.edge(n,from,Op::Select(indices.clone()),bounds::Clause::default());Some(n)},
@@ -48,7 +56,11 @@ impl Builder<'_> {
                 Origin::Relation(graph,root)=>Some(self.import(graph,*root,None,&Epoch::Input)),
                 _=>None,
             };
-            if let Some(from)=target{self.edge(id,from,Op::Identity,when);}else{self.graph.nodes[id].seeds.sources.insert_when(source.clone(),when);}
+            if let Some(from) = target {
+                self.edge(id, from, Op::Identity, when);
+            } else {
+                add_seed(&mut self.graph.nodes[id].seeds, source, when);
+            }
         }
         for(input,when)in value.inputs.entries(){let from=self.key(Key::Loop(*input));self.edge(id,from,Op::Identity,when);}
         for(read,when)in value.reads.entries(){let from=self.key(Key::Read(read.clone()));self.edge(id,from,Op::Identity,when);}
@@ -202,10 +214,26 @@ impl Graph {
             let id=*roots.entry(formal).or_insert_with(||{let id=b.empty();b.graph.variables.insert(id);b.graph.nodes[id].seeds=Borrow::source(Origin::Parameter(local,Vec::new()));id});
             b.parameters.insert(local,id);
         }}
-        for call in function.calls.iter().filter(|call|call.function==name){for(input,value)in &call.arguments{if let Some(&id)=roots.get(input){
-            b.fill(id,&value.view_borrow(0).restricted(&call.path),&Epoch::Local{memory:call.memory,snapshots:call.snapshots.clone()});
-        }}}
-        if !roots.values().any(|root|b.graph.read_feedback(*root)){return None;}
+        // Feedback depends only on edges and writes. Merge the seeds once
+        // the graph has a reader, in the original argument order.
+        let mut pending_seeds = Vec::new();
+        for call in function.calls.iter().filter(|call| call.function == name) {
+            for (input, value) in &call.arguments {
+                if let Some(&id) = roots.get(input) {
+                    let value = value.view_borrow(0).restricted(&call.path);
+                    let epoch = Epoch::Local { memory: call.memory, snapshots: call.snapshots.clone() };
+                    b.fill_with_seeds(id, &value, &epoch, |_, source, when| {
+                        pending_seeds.push((id, source.clone(), when));
+                    });
+                }
+            }
+        }
+        if !roots.values().any(|root| b.graph.read_feedback(*root)) {
+            return None;
+        }
+        for (id, source, when) in pending_seeds {
+            b.graph.nodes[id].seeds.sources.insert_when(source, when);
+        }
         let graph=Arc::new(b.graph);let mut evaluation=BorrowEvaluation{function,state,known,expand_loops:true,deferred_reads:false,loop_bindings:Vec::new(),values:BTreeMap::new(),stored:None,stored_paths:Default::default()};
         let parameters=residency::input_parameters(&function.parameters,function.input_width);
         Some(roots.into_iter().map(|(input,root)|{let value=graph.solve(root,&mut evaluation);(input,function.address_borrows(&parameters,value).unwrap_or_default())}).collect())
