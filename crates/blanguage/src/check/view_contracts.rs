@@ -1536,7 +1536,9 @@ fn initializations(function:&Function,state:&State,known:&States,exit_paths:Opti
         fact.when.active().then_some(fact)
     }).collect()
 }
-fn converge_initializations(functions:&BTreeMap<String,&Function>,known:&mut States) {
+fn converge_initializations(
+    worker: &crate::compiler::Worker, functions: &BTreeMap<String, &Function>, known: &mut States,
+) -> Result<()> {
     // First grow written locations, then retain only guarantees on normal return.
     for candidates in [true, false] {
         // Original exit paths depend on the declaration and parameter identities.
@@ -1547,13 +1549,12 @@ fn converge_initializations(functions:&BTreeMap<String,&Function>,known:&mut Sta
                 .map(|(name, function)| (name, InitializationExitPaths::new(function))).collect()
         };
         loop {
-            let mut changed = Vec::new();
-            for (name, function) in functions {
+            let tasks = functions.iter()
+                .filter(|(name, _)| candidates || !known[*name].interface.initialization.is_empty())
+                .collect::<Vec<_>>();
+            let changed = crate::parallel::try_map(worker, tasks, |_| (), |_, (name, function)| {
                 let state = &known[name];
                 let old = &state.interface.initialization;
-                if !candidates && old.is_empty() {
-                    continue;
-                }
                 let paths = exit_paths.get(name);
                 let facts = initializations(function, state, known, paths);
                 let facts = if paths.is_some() {
@@ -1566,10 +1567,9 @@ fn converge_initializations(functions:&BTreeMap<String,&Function>,known:&mut Sta
                 } else {
                     facts
                 };
-                if facts != state.interface.initialization {
-                    changed.push((name, facts));
-                }
-            }
+                Ok((facts != state.interface.initialization).then_some((name, facts)))
+            }).map_err(|error| borrow_worker_error(functions, error))?;
+            let changed = changed.into_iter().flatten().collect::<Vec<_>>();
             if changed.is_empty() {
                 break;
             }
@@ -1578,8 +1578,12 @@ fn converge_initializations(functions:&BTreeMap<String,&Function>,known:&mut Sta
             }
         }
     }
+    Ok(())
 }
-fn converge_access(functions:&BTreeMap<String,&Function>,known:&mut States,owns_input:&impl Fn(&str,ValueIdentity)->bool) {
+fn converge_access(
+    worker: &crate::compiler::Worker, functions: &BTreeMap<String, &Function>, known: &mut States,
+    owns_input: &(impl Fn(&str, ValueIdentity) -> bool + Sync),
+) -> Result<()> {
     fn feeds_back(name:&str,functions:&BTreeMap<String,&Function>)->bool {
         let mut pending=functions[name].calls.iter().map(|call|call.function.as_str()).collect::<Vec<_>>();
         let mut visited=BTreeSet::new();
@@ -1601,7 +1605,7 @@ fn converge_access(functions:&BTreeMap<String,&Function>,known:&mut States,owns_
 
     // Borrow sources, stored writes and initialization are fixed before this stage.
     // Only the access requirements propagated through calls change between rounds.
-    let direct = functions.iter().map(|(name, function)| {
+    let direct = crate::parallel::try_map(worker, functions.iter().collect(), |_| (), |_, (name, function)| {
         let state = &known[name];
         let parameters = residency::input_parameters(&function.parameters, function.input_width);
         let mut access=BTreeMap::new();
@@ -1640,16 +1644,19 @@ fn converge_access(functions:&BTreeMap<String,&Function>,known:&mut States,owns_
             };
             if let Some(value)=value{insert(&mut access,value);}
         }
-        (name, (parameters, access))
-    }).collect::<BTreeMap<_, _>>();
+        Ok((name, (parameters, access)))
+    }).map_err(|error| borrow_worker_error(functions, error))?
+        .into_iter().collect::<BTreeMap<_, _>>();
 
     // Sources, stored writes and initialization are fixed; a call's projection
     // changes only with its callee's access contract.
     struct CallProjection<'a> { condition: bounds::GuardProjection<'a>, access: Option<Vec<Access>> }
-    let mut call_accesses: BTreeMap<(&str, usize), CallProjection<'_>> = BTreeMap::new();
+    let mut call_accesses = functions.keys().map(|name| {
+        (name.as_str(), BTreeMap::<usize, CallProjection<'_>>::new())
+    }).collect::<BTreeMap<_, _>>();
     loop {
-        let mut changed = Vec::new();
-        for(name,function)in functions {
+        let changed = crate::parallel::try_map(worker, call_accesses.iter_mut().collect(), |_| (), |_, (&name, projections)| {
+            let (name, function) = functions.get_key_value(name).unwrap();
             let normalize=feedback.contains(name.as_str());
             let state=&known[name];
             let (parameters, local_access)=&direct[name];
@@ -1659,7 +1666,7 @@ fn converge_access(functions:&BTreeMap<String,&Function>,known:&mut States,owns_
                 loop_bindings: Vec::new(), values: BTreeMap::new(), stored: None, exit_writes: None, stored_paths: Default::default(),
             };
             for (index, call) in function.calls.iter().enumerate().filter(|(_, call)| call.function != *name || state.entries.is_none()) {
-                let projection = call_accesses.entry((name.as_str(), index)).or_insert_with(|| CallProjection {
+                let projection = projections.entry(index).or_insert_with(|| CallProjection {
                     condition: bounds::GuardProjection::new(&call.path,parameters), access: None,
                 });
                 let condition = &projection.condition;
@@ -1721,24 +1728,26 @@ fn converge_access(functions:&BTreeMap<String,&Function>,known:&mut States,owns_
                 *access.when_mut() = if normalize { normalized_condition(when) } else { when };
                 access
             }).collect::<BTreeSet<_>>();
-            if access != state.interface.access {
-                changed.push((name, access));
-            }
-        }
+            Ok((access != state.interface.access).then_some((name, access)))
+        }).map_err(|error| borrow_worker_error(functions, error))?;
+        let changed = changed.into_iter().flatten().collect::<Vec<_>>();
         if changed.is_empty() {
             break;
         }
         // changed follows the sorted order of functions.
-        for ((caller, index), projection) in &mut call_accesses {
-            let callee = functions[*caller].calls[*index].function.as_str();
-            if changed.binary_search_by_key(&callee, |(name, _)| name.as_str()).is_ok() {
-                projection.access = None;
+        for (&caller, projections) in &mut call_accesses {
+            for (&index, projection) in projections {
+                let callee = functions[caller].calls[index].function.as_str();
+                if changed.binary_search_by_key(&callee, |(name, _)| name.as_str()).is_ok() {
+                    projection.access = None;
+                }
             }
         }
         for (name, access) in changed {
             known.get_mut(name).unwrap().interface.access = access;
         }
     }
+    Ok(())
 }
 
 fn stored_outputs<'p>(
@@ -1991,7 +2000,7 @@ pub(super) struct SolvedFunction {
 pub(super) fn solve_views(
     worker: &crate::compiler::Worker,
     functions: &BTreeMap<String, &Function>, closed: BTreeMap<String, Interface>,
-    owns_input: impl Fn(&str, ValueIdentity) -> bool, observe: Option<&StorageObserver<'_>>,
+    owns_input: impl Fn(&str, ValueIdentity) -> bool + Sync, observe: Option<&StorageObserver<'_>>,
 ) -> Result<Vec<(String, SolvedFunction)>> {
     let Solved { mut states, memory, mut values } = solve(worker, functions, closed, owns_input, observe)?;
     Ok(memory.into_iter().map(|(name, memory)| {
@@ -2157,7 +2166,7 @@ fn memory_use_effect(
 fn solve<'a>(
     worker: &crate::compiler::Worker,
     functions: &'a BTreeMap<String, &Function>, closed: BTreeMap<String, Interface>,
-    owns_input: impl Fn(&str, ValueIdentity) -> bool, observe: Option<&'a StorageObserver<'a>>,
+    owns_input: impl Fn(&str, ValueIdentity) -> bool + Sync, observe: Option<&'a StorageObserver<'a>>,
 ) -> Result<Solved<'a>> {
     let loop_inputs = used_loops(functions, &closed);
     let mut known = States {
@@ -2173,8 +2182,8 @@ fn solve<'a>(
     converge(worker, functions, &mut known, &loop_inputs, &BTreeSet::new())?;
     let unknown=functions.iter().flat_map(|(name,function)|function.outputs.keys().filter_map(|output|known[name].interface.outputs[output].empty().then_some((name.clone(),output.clone())))).collect::<BTreeSet<_>>();
     if !unknown.is_empty(){converge(worker, functions, &mut known, &loop_inputs, &unknown)?;}
-    converge_initializations(functions,&mut known);
-    converge_access(functions,&mut known,&owns_input);
+    converge_initializations(worker, functions, &mut known)?;
+    converge_access(worker, functions, &mut known, &owns_input)?;
     let results = crate::parallel::try_map(worker, functions.iter().collect(), Clone::clone,
         |worker, (name, function)| finish_function(worker, name, function, &known),
     ).map_err(|error| borrow_worker_error(functions, error))?;
