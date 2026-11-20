@@ -1,5 +1,5 @@
 //! 用户值函数共用有序共享树；归约、扫描及摘要传播不引入另一套函数执行器。
-use super::{scan::PhysicalField, *};
+use super::{reduce::CollectiveField, scan::PhysicalField, *};
 
 #[repr(C)]
 struct CustomCollectiveSource {
@@ -33,6 +33,12 @@ struct CustomCollectiveJoin {
 }
 
 unsafe extern "C" {
+    #[link_name = "bootstrap.spirv_envelope::read_collective_result"]
+    fn read_collective_result(target: &PageAddress, fields: *const CollectiveField,
+        count: u32, values: *mut u32, locations: *mut u32, body: *mut u32) -> PayloadWrite;
+    #[link_name = "bootstrap.spirv_envelope::write_collective_result"]
+    fn write_collective_result(target: PageAddress, fields: *const CollectiveField,
+        count: u32, values: *const u32, locations: *const u32, body: *mut u32) -> PayloadWrite;
     #[link_name = "bootstrap.spirv_envelope::custom_collective_read"]
     fn emit_custom_collective_read(input: CustomCollectiveSource, fields: *const PhysicalField,
         count: u32, values: *mut u32, body: *mut u32) -> CustomCollectiveRead;
@@ -599,18 +605,59 @@ impl Emitter<'_> {
         self.emit(248, &[end]);
         Ok(())
     }
-    fn custom_store_target(&mut self, r: &CustomReduction, index: u32, values: &[u32]) {
-        for (scalar, offset) in &r.ty.components {
-            let at = (offset / 4) as usize;
-            let raw = if offset % 4 != 0 {
-                let shift = self.constant(Scalar::U32, offset % 4 * 8);
-                let shifted = self.id();
-                self.emit(194, &[self.types[&Scalar::U32], shifted, values[at], shift]);
-                self.join_words(*scalar, &[shifted], Scalar::U32)
-            } else { self.join_words(*scalar, &values[at..at + scalar.size().div_ceil(4) as usize], Scalar::U32) };
-            self.store_raw_buffer(*scalar, r.fields.target, index, r.fields.target_word + offset, raw);
+    fn custom_result_target(&mut self, r: &CustomReduction, index: u32) -> (PageAddress, Vec<CollectiveField>) {
+        let fields = self.collective_fields(&r.ty, None);
+        let target = self.page_input(Scalar::U32, PageSource::Dataset(self.buffers[r.fields.target]),
+            index, (r.fields.target_word != 0).then_some(r.fields.target_word), 0);
+        (target, fields)
+    }
+
+    fn custom_result_read(&mut self, target: &PageAddress, fields: &[CollectiveField], words: usize)
+        -> (Vec<u32>, Vec<u32>)
+    {
+        let mut values = vec![target.zero; words];
+        let mut locations = vec![0; 2 * fields.len()];
+        if !fields.is_empty() {
+            let body = self.body.len();
+            self.body.reserve(109 + 60 * fields.len());
+            unsafe {
+                let emitted = read_collective_result(target, fields.as_ptr(), fields.len() as u32,
+                    values.as_mut_ptr(), locations.as_mut_ptr(), self.body.as_mut_ptr().add(body));
+                self.body.set_len(body + emitted.words as usize);
+                self.next = emitted.next;
+            }
+        }
+        (values, locations)
+    }
+
+
+    fn custom_result_write(&mut self, mut target: PageAddress, fields: &[CollectiveField],
+        values: &[u32], locations: Option<&[u32]>,
+    ) {
+        if fields.is_empty() {
+            return;
+        }
+        target.next = self.next;
+        let body = self.body.len();
+        self.body.reserve(109 + 44 * fields.len());
+        unsafe {
+            let emitted = write_collective_result(target, fields.as_ptr(), fields.len() as u32,
+                values.as_ptr(), locations.map_or(std::ptr::null(), |p| p.as_ptr()),
+                self.body.as_mut_ptr().add(body));
+            self.body.set_len(body + emitted.words as usize);
+            self.next = emitted.next;
         }
     }
+
+    fn custom_store_target(&mut self, r: &CustomReduction, index: u32, values: &[u32]) {
+        if r.ty.components.is_empty() {
+            return;
+        }
+        let (target, fields) = self.custom_result_target(r, index);
+        self.custom_result_write(target, &fields, values, None);
+    }
+
+
     pub(super) fn custom_scan_add(
         &mut self,
         scan: &CustomScan,
@@ -653,28 +700,16 @@ impl Emitter<'_> {
         };
         let prefix = self.summary_addresses(words, self.scan_input_binding(&r.fields), group);
         let prefix = self.read_summary_words(&prefix);
-        let target = if root { Vec::new() } else { self.summary_addresses(words, r.fields.target, self.index) };
-        let values = if root {
-            let values: Vec<_> = r.ty.components.iter().map(|(scalar, offset)| self.load_raw_buffer(
-                *scalar, r.fields.target, self.index, r.fields.target_word + offset)).collect();
-            self.pack_words(r.ty.size, r.ty.components.iter().zip(&values).map(|((scalar, byte), value)| (*scalar, *byte, *value)))
-        } else {
-            self.read_summary_words(&target)
-        };
-        let values = self.custom_merge(
-            r,
-            kernel,
-            &prefix,
-            &values,
-            if root {
-                Summary::Plain
-            } else {
-                scan.head_word.map(Summary::Segmented).unwrap_or(Summary::Plain)
-            },
-        )?;
         if root {
-            self.custom_store_target(r, self.index, &values);
+            let (target, fields) = self.custom_result_target(r, self.index);
+            let (values, locations) = self.custom_result_read(&target, &fields, words);
+            let values = self.custom_merge(r, kernel, &prefix, &values, Summary::Plain)?;
+            self.custom_result_write(target, &fields, &values, Some(&locations));
         } else {
+            let target = self.summary_addresses(words, r.fields.target, self.index);
+            let values = self.read_summary_words(&target);
+            let summary = scan.head_word.map(Summary::Segmented).unwrap_or(Summary::Plain);
+            let values = self.custom_merge(r, kernel, &prefix, &values, summary)?;
             self.write_summary_words(&target, &values);
         }
         if let Some(end) = end {

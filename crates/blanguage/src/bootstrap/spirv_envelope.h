@@ -450,6 +450,13 @@ extern "C" TreeWords reduction_group(ReductionGroup input, address strides, addr
 extern "C" StageWords reduction_writeback(ReductionWriteback input, u32 owner,
     address fields, u32 count, address pointers, address body) on cpu;
 
+// The caller initializes the packed words with the zero ID and provides two
+// pointer slots per field. The write can use these same physical addresses.
+extern "C" PayloadWrite read_collective_result(read PageAddress target, address fields,
+    u32 count, address values, address locations, address body) on cpu;
+extern "C" PayloadWrite write_collective_result(PageAddress target, address fields,
+    u32 count, address values, address locations, address body) on cpu;
+
 struct ScanPrefix {
     PageAddress target;
     u32 prefix_descriptor;

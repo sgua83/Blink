@@ -2025,15 +2025,21 @@ PageAddress reduction_target(inout StageCursor out, ReductionWriteback input) on
 
 
 void write_collective_record(inout StageCursor out, PageAddress target, address fields,
-    u32 count, address pointers) on cpu {
-    u32 record = collective_record(out, target);
+    u32 count, address values, bool shared, address locations) on cpu {
+    bool located = address_bits(locations) != 0u64;
+    u32 record = located ? 0 : collective_record(out, target);
     u32 u = target.u32_type;
     for (index in 0..count) {
         let field = unsafe_position<CollectiveField>(
             unsafe_address(address_bits(fields) + u64(index) * size_of<CollectiveField>()));
-        array<u32,2> to = stage_field_pointers(out, record, field.target_offset, field.pointer_type,
-            target.u64_type, field.step);
-        u32 low = stage_load(out, u, read_word(pointers, field.slot), false);
+        array<u32,2> to;
+        if (located) {
+            to = array<u32,2>(read_word(locations, 2 * index), read_word(locations, 2 * index + 1));
+        } else {
+            to = stage_field_pointers(out, record, field.target_offset, field.pointer_type, target.u64_type, field.step);
+        }
+        u32 low = read_word(values, field.slot);
+        if (shared) { low = stage_load(out, u, low, false); }
         if (field.shift != 0) {
             low = stage_op(out, 194, u, low, field.shift);
         }
@@ -2042,18 +2048,54 @@ void write_collective_record(inout StageCursor out, PageAddress target, address 
         low = payload_word(out, narrowed, low, 0);
         out.words = aligned_store(out.body, out.words, to[0], low, field.unit_bytes);
         if (field.step != 0) {
-            u32 high = stage_load(out, u, read_word(pointers, field.slot + 1), false);
+            u32 high = read_word(values, field.slot + 1);
+            if (shared) { high = stage_load(out, u, high, false); }
             out.words = aligned_store(out.body, out.words, to[1], high, 4);
         }
     }
 
 }
 
+extern "C" PayloadWrite read_collective_result(read PageAddress target, address fields,
+    u32 count, address values, address locations, address body) on cpu {
+    StageCursor out = StageCursor(body, 0u64, target.next);
+    u32 record = collective_record(out, target);
+    u32 u = target.u32_type;
+    for (index in 0..count) {
+        let field = unsafe_position<CollectiveField>(
+            unsafe_address(address_bits(fields) + u64(index) * size_of<CollectiveField>()));
+        array<u32,2> at = stage_field_pointers(out, record, field.target_offset, field.pointer_type,
+            target.u64_type, field.step);
+        put(locations, 2u64 * u64(index), at[0]);
+        put(locations, 2u64 * u64(index) + 1u64, at[1]);
+        u32 low = stage_aligned_load(out, field.unit_type, at[0], field.unit_bytes);
+        if (field.unit_bytes < 4) {
+            PayloadEmission widened = PayloadEmission(PayloadAccess::Words, field.unit_type, u, 4, 1, out.next);
+            low = payload_word(out, widened, low, 0);
+            if (field.shift != 0) { low = stage_op(out, 196, u, low, field.shift); }
+            u32 prior = read_word(values, field.slot);
+            if (prior != target.zero) { low = stage_op(out, 197, u, prior, low); }
+        }
+        put(values, u64(field.slot), low);
+        if (field.step != 0) {
+            put(values, u64(field.slot + 1), stage_aligned_load(out, u, at[1], 4));
+        }
+    }
+    return PayloadWrite(out.words, out.next);
+}
+
+extern "C" PayloadWrite write_collective_result(PageAddress target, address fields,
+    u32 count, address values, address locations, address body) on cpu {
+    StageCursor out = StageCursor(body, 0u64, target.next);
+    write_collective_record(out, target, fields, count, values, false, locations);
+    return PayloadWrite(out.words, out.next);
+}
+
 u32 write_reduction(inout StageCursor out, ReductionWriteback input, u32 owner, address fields,
     u32 count, address pointers) on cpu {
     StageBranch write = stage_open(out, owner);
     PageAddress target = reduction_target(out, input);
-    write_collective_record(out, target, fields, count, pointers);
+    write_collective_record(out, target, fields, count, pointers, true, address());
     stage_close(out, write);
     return write.end;
 }
@@ -2178,7 +2220,7 @@ extern "C" TreeWords scan_group(ScanGroup input, address levels, address compone
     summary.descriptor = input.summary;
     summary.index = stage_op(out, 134, u, target.index, input.width);
     summary.word = 0;
-    write_collective_record(out, summary, fields, count, workspace);
+    write_collective_record(out, summary, fields, count, workspace, true, address());
 
     for (index in 0..count) {
         let component = unsafe_position<TreeComponent>(
@@ -2195,7 +2237,7 @@ extern "C" TreeWords scan_group(ScanGroup input, address levels, address compone
     decorated += scan_tree_levels(out, input, remaining, true, levels, components, count, workspace,
         word_at(decorations, decorated));
     StageBranch write = stage_open(out, input.lanes.active);
-    write_collective_record(out, target, fields, count, workspace);
+    write_collective_record(out, target, fields, count, workspace, true, address());
     stage_close(out, write);
     return TreeWords(out.words, decorated, out.next, write.end);
 }
