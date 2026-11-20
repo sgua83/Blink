@@ -1,8 +1,7 @@
 //! B lays out the final PE and writes its headers and directories.
 //! The section writer fills the same file before shared machine relocation.
-use super::{Result, combine::CombineSection};
+use super::{Result, combine::{CombineRelocation, CombineSection}};
 use crate::native::CoffRelocationStatus;
-use crate::object::{Section, Target};
 
 #[repr(C)]
 struct PeSection {
@@ -19,7 +18,6 @@ struct PeImport {
     dll:*const u8, dll_length:u64, name:*const u8, name_length:u64, relocation:u64,
     lookup:u64, iat:u64, hint:u64, dll_at:u64, directory:u64,
 }
-#[derive(Clone,Copy,Default)]
 #[repr(C)]
 struct PeAbsolute {page:u64,value:u64,order_or_page_end:u64}
 #[derive(Clone,Copy)]
@@ -45,56 +43,32 @@ struct PeRelocationResult {
 
 unsafe extern "C" {
     #[link_name="bootstrap.pe::layout"]
-    fn pe_layout(input:PeInput)->PeLayout;
+    fn pe_layout(input:PeInput, rows:*const CombineSection, row_count:usize,
+        combined:*const CombineRelocation, relocation_count:usize)->PeLayout;
     #[link_name="bootstrap.pe::encode"]
     fn pe_encode(input:PeInput,layout:PeLayout,rows:*const CombineSection,
         row_count:usize,output:*mut u8)->PeRelocationResult;
 }
 
 pub(super) fn link(
-    input_sections: &[Section<usize>], rows: &[CombineSection], stack_reserve: u64,
+    rows: &[CombineSection], combined: &[CombineRelocation], groups: usize, stack_reserve: u64,
 ) -> Result<Vec<u8>> {
-    let mut sections=Vec::with_capacity(input_sections.len());
-    let mut relocations=Vec::new();
-    let mut imports=Vec::new();
-    let mut absolute_count=0;
-    for section in input_sections {
-        let start=relocations.len();
-        for relocation in &section.relocations {
-            let (target_kind,target_section,value)=match &relocation.target {
-                Target::Section(index,value)=>(0,*index as u64,u64::from(*value)),
-                Target::Import(import)=>{
-                    imports.push(PeImport{
-                        dll:import.dll.as_ptr(),dll_length:import.dll.len() as u64,
-                        name:import.name.as_ptr(),name_length:import.name.len() as u64,
-                        relocation:relocations.len() as u64,lookup:0,iat:0,hint:0,dll_at:0,directory:0,
-                    });
-                    (1,0,0)
-                },
-                Target::Symbol(name)=>return Err(format!("未定义模块符号 {name}").into()),
-            };
-            absolute_count+=usize::from(relocation.kind==1);
-            relocations.push(PeRelocation{
-                offset:relocation.offset as u64,kind:u32::from(relocation.kind),
-                target_kind,section:target_section,value,source:0,target:0,
-            });
-        }
-        sections.push(PeSection{
-            name:section.name.as_ptr(),name_length:section.name.len() as u64,
-            byte_length:section.bytes as u64,
-            relocation_start:start as u64,relocation_count:section.relocations.len() as u64,
-            flags:section.flags,rva:0,raw:0,
-        });
-    }
-    let mut absolutes=vec![PeAbsolute::default();absolute_count];
-    let input=PeInput{
-        sections:sections.as_mut_ptr(),section_count:sections.len() as u64,
-        relocations:relocations.as_mut_ptr(),
-        imports:imports.as_mut_ptr(),import_count:imports.len() as u64,
-        absolutes:absolutes.as_mut_ptr(),absolute_count:absolutes.len() as u64,stack_reserve,
+    let import_count = combined.iter().filter(|row| row.target_kind == 1).count();
+    let absolute_count = combined.iter().filter(|row| row.kind == 1).count();
+    let mut sections = Vec::<PeSection>::with_capacity(groups);
+    let mut relocations = Vec::<PeRelocation>::with_capacity(combined.len());
+    let mut imports = Vec::<PeImport>::with_capacity(import_count);
+    let mut absolutes = Vec::<PeAbsolute>::with_capacity(absolute_count);
+    let input = PeInput {
+        sections: sections.as_mut_ptr(), section_count: groups as u64,
+        relocations: relocations.as_mut_ptr(), imports: imports.as_mut_ptr(),
+        import_count: import_count as u64, absolutes: absolutes.as_mut_ptr(),
+        absolute_count: absolute_count as u64, stack_reserve,
     };
-    // The names and relocation data borrow the grouped layout until writing finishes.
-    let layout=unsafe{pe_layout(input)};
+    // B initializes the physical section, relocation and import slots from the combined rows.
+    let layout = unsafe {
+        pe_layout(input, rows.as_ptr(), rows.len(), combined.as_ptr(), combined.len())
+    };
     match layout.error {
         0=>{},
         1=>return Err("PE映像或节目录超出格式范围".into()),

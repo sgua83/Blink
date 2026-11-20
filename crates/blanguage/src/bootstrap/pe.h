@@ -29,5 +29,5 @@ struct PeLayout {
 };
 struct PeRelocationResult { u32 status; u32 kind; };
 
-extern "C" PeLayout layout(PeInput input) on cpu;
+extern "C" PeLayout layout(PeInput input,address rows,u64 row_count,address combined,u64 relocation_count) on cpu;
 extern "C" PeRelocationResult encode(PeInput input,PeLayout layout,address rows,u64 row_count,address output) on cpu;

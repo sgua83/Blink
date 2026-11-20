@@ -3,7 +3,7 @@
 use super::{Result, Selected, pe, resources::ImportBytes};
 use crate::{
     native::{ModuleCode, ModuleRelocation, ModuleSection, ModuleTarget},
-    object::{Relocation, Section, Target, stack::{Call, Frame}},
+    object::{Relocation, Target, stack::{Call, Frame}},
 };
 use std::collections::BTreeMap;
 
@@ -17,7 +17,10 @@ pub(super) struct CombineSection {
 #[repr(C)]
 struct CombineSymbol {name:*const u8,name_length:u64,section:u64,value:u64}
 #[repr(C)]
-struct CombineRelocation {source:u64,offset:u64,target_kind:u64,section:u64,value:u64,name:*const u8,name_length:u64}
+pub(super) struct CombineRelocation {
+    source:u64,offset:u64,pub(super) target_kind:u64,section:u64,value:u64,
+    name:*const u8,name_length:u64,pub(super) kind:u64,library:*const u8,library_length:u64,
+}
 #[repr(C)]
 struct CombineFrame {section:u64,start:u64,present:u64}
 #[derive(Clone,Copy)]
@@ -60,12 +63,8 @@ pub(super) fn module<Payload: AsRef<[u8]>>(
 }
 
 pub(super) fn link_pe(objects: Vec<Selected>, stack_reserve: u64) -> Result<Vec<u8>> {
-    combine(objects, None, extent,
-        |rows, groups, objects| grouped_sections(rows, groups, objects, |name, length, flags| Section {
-            name, bytes: length, flags, relocations: Vec::new(), associated: Vec::new(), layout: None,
-        }),
-        |section| &mut section.relocations,
-        |rows, sections, _| pe::link(&sections, rows, stack_reserve))
+    let Prepared { rows, relocations, plan, .. } = prepare(&objects, &[], extent)?;
+    pe::link(&rows, &relocations, usize::try_from(plan.groups)?, stack_reserve)
 }
 
 pub(super) fn report(objects: Vec<Selected<usize>>) -> Result<(Vec<Vec<Relocation>>, Vec<Frame>)> {
@@ -80,13 +79,20 @@ fn extent(bytes: &impl AsRef<[u8]>) -> (*const u8, usize) {
     (bytes.as_ptr(), bytes.len())
 }
 
-fn combine<Payload, Group, Output, Reference: From<Relocation>>(
-    mut objects: Vec<Selected<Payload>>, module: Option<(&[&str], &mut BTreeMap<String, (usize, u32)>)>,
+struct Prepared {
+    rows: Vec<CombineSection>,
+    symbols: Vec<CombineSymbol>,
+    relocations: Vec<CombineRelocation>,
+    frames: Vec<CombineFrame>,
+    order: Vec<u64>,
+    plan: CombinePlan,
+}
+
+// The selected objects own the bytes and names through the final consumer.
+fn prepare<Payload>(
+    objects: &[Selected<Payload>], local: &[&str],
     extent: impl Fn(&Payload) -> (*const u8, usize),
-    groups: impl FnOnce(&[CombineSection], usize, &[Selected<Payload>]) -> Result<Vec<Group>>,
-    relocation_output: impl Fn(&mut Group) -> &mut Vec<Reference>,
-    finish: impl FnOnce(&[CombineSection], Vec<Group>, Vec<Frame>) -> Result<Output>,
-) -> Result<Output> {
+) -> Result<Prepared> {
     let mut inputs=Vec::with_capacity(objects.len());
     let mut rows=Vec::new();let mut symbols=Vec::new();let mut relocations=Vec::new();
     let mut frames=Vec::new();
@@ -95,13 +101,15 @@ fn combine<Payload, Group, Output, Reference: From<Relocation>>(
         for section in &object.sections {
             let source=rows.len();
             for relocation in &section.relocations {
-                let (target_kind,target_section,value,name,length)=match &relocation.target {
-                    Target::Section(index,value)=>(0,*index as u64,u64::from(*value),std::ptr::null(),0),
-                    Target::Import(_)=>(1,0,0,std::ptr::null(),0),
-                    Target::Symbol(name)=>(2,0,0,name.as_ptr(),name.len() as u64),
+                let empty = "";
+                let (target_kind, target_section, value, name, library) = match &relocation.target {
+                    Target::Section(index, value) => (0, *index as u64, u64::from(*value), empty, empty),
+                    Target::Import(import) => (1, 0, 0, import.name.as_str(), import.dll.as_str()),
+                    Target::Symbol(name) => (2, 0, 0, name.as_str(), empty),
                 };
                 relocations.push(CombineRelocation{source:source as u64,offset:relocation.offset as u64,
-                    target_kind,section:target_section,value,name,name_length:length});
+                    target_kind,section:target_section,value,name:name.as_ptr(),name_length:name.len() as u64,
+                    kind:u64::from(relocation.kind),library:library.as_ptr(),library_length:library.len() as u64});
             }
             let (bytes, length) = extent(&section.bytes);
             rows.push(CombineSection{name:section.name.as_ptr(),name_length:section.name.len() as u64,
@@ -125,8 +133,7 @@ fn combine<Payload, Group, Output, Reference: From<Relocation>>(
         sections:rows.as_mut_ptr(),section_count:rows.len() as u64,symbols:symbols.as_mut_ptr(),symbol_count:symbols.len() as u64,
         relocations:relocations.as_mut_ptr(),relocation_count:relocations.len() as u64,frames:frames.as_mut_ptr(),
         order:order.as_mut_ptr()};
-    let local: Vec<_> = module.as_ref().into_iter().flat_map(|(names, _)| names.iter())
-        .map(|name| ImportBytes::new(name)).collect();
+    let local: Vec<_> = local.iter().map(|name| ImportBytes::new(name)).collect();
     let plan = unsafe { combine_prepare(input, local.as_ptr(), local.len()) };
     match plan.error {
         0=>{},1=>return Err("合并节偏移超出32位范围".into()),
@@ -147,6 +154,18 @@ fn combine<Payload, Group, Output, Reference: From<Relocation>>(
         },
         code=>return Err(format!("COFF节组合失败 {code}").into()),
     }
+    Ok(Prepared { rows, symbols, relocations, frames, order, plan })
+}
+
+fn combine<Payload, Group, Output, Reference: From<Relocation>>(
+    mut objects: Vec<Selected<Payload>>, module: Option<(&[&str], &mut BTreeMap<String, (usize, u32)>)>,
+    extent: impl Fn(&Payload) -> (*const u8, usize),
+    groups: impl FnOnce(&[CombineSection], usize, &[Selected<Payload>]) -> Result<Vec<Group>>,
+    relocation_output: impl Fn(&mut Group) -> &mut Vec<Reference>,
+    finish: impl FnOnce(&[CombineSection], Vec<Group>, Vec<Frame>) -> Result<Output>,
+) -> Result<Output> {
+    let local = module.as_ref().map_or(&[][..], |(names, _)| *names);
+    let Prepared { rows, symbols, relocations, frames, order, plan } = prepare(&objects, local, extent)?;
     let mut sections = groups(&rows, usize::try_from(plan.groups)?, &objects)?;
     if let Some((_, defined))=module{for &index in &order[..usize::try_from(plan.symbols)?]{
         let symbol=&symbols[usize::try_from(index)?];

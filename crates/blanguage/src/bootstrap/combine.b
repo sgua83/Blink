@@ -5,8 +5,8 @@ CombineSection section_at(address sections,u64 i) on cpu {return unsafe_position
 void section_put(CombineInput input,u64 i,CombineSection value) on cpu {unsafe_position<CombineSection>(unsafe_address(address_bits(input.sections)+i*SECTION_BYTES))=value;}
 CombineSymbol symbol_at(CombineInput input,u64 i) on cpu {return unsafe_position<CombineSymbol>(unsafe_address(address_bits(input.symbols)+i*SYMBOL_BYTES));}
 void symbol_put(CombineInput input,u64 i,CombineSymbol value) on cpu {unsafe_position<CombineSymbol>(unsafe_address(address_bits(input.symbols)+i*SYMBOL_BYTES))=value;}
-CombineRelocation relocation_at(CombineInput input,u64 i) on cpu {return unsafe_position<CombineRelocation>(unsafe_address(address_bits(input.relocations)+i*RELOCATION_BYTES));}
-void relocation_put(CombineInput input,u64 i,CombineRelocation value) on cpu {unsafe_position<CombineRelocation>(unsafe_address(address_bits(input.relocations)+i*RELOCATION_BYTES))=value;}
+CombineRelocation relocation_at(CombineInput input,u64 i) on cpu {return unsafe_position<CombineRelocation>(unsafe_address(address_bits(input.relocations)+i*size_of<CombineRelocation>()));}
+void relocation_put(CombineInput input,u64 i,CombineRelocation value) on cpu {unsafe_position<CombineRelocation>(unsafe_address(address_bits(input.relocations)+i*size_of<CombineRelocation>()))=value;}
 CombineFrame frame_at(CombineInput input,u64 i) on cpu {return unsafe_position<CombineFrame>(unsafe_address(address_bits(input.frames)+i*size_of<CombineFrame>()));}
 void frame_put(CombineInput input,u64 i,CombineFrame value) on cpu {unsafe_position<CombineFrame>(unsafe_address(address_bits(input.frames)+i*size_of<CombineFrame>()))=value;}
 u64 order_at(CombineInput input,u64 i) on cpu {return unsafe_position<u64>(unsafe_address(address_bits(input.order)+i*8u64));}

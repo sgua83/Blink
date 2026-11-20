@@ -147,7 +147,59 @@ void plan_imports(PeInput input, inout PeLayout result) on cpu {
 PeLayout invalid(u64 code) on cpu {
     return PeLayout(0u64,0u64,0u64,0u64,0u64,0u64,0u64,0u64,0u64,0u64,0u64,0u64,0u64,5368709120u64,code);
 }
-extern "C" PeLayout layout(PeInput input) on cpu {
+CombineRelocation combined_at(address combined,u64 index) on cpu {
+    return unsafe_position<CombineRelocation>(unsafe_address(address_bits(combined)+index*size_of<CombineRelocation>()));
+}
+
+void pack_sections(PeInput input,address rows,u64 row_count,address combined,u64 relocation_count) on cpu {
+    u64 i=0u64;
+    while(i<row_count){
+        CombineSection row=bootstrap.combine::section_at(rows,i);
+        if(row.owner==i){
+            section_put(input,row.group,PeSection(row.name,row.name_length,row.size,0u64,0u64,u32(row.flags),0,0u64));
+        }
+        i+=1u64;
+    }
+    i=0u64;
+    while(i<relocation_count){
+        CombineRelocation row=combined_at(combined,i);
+        u64 group=bootstrap.combine::section_at(rows,row.source).group;
+        PeSection section=section_at(input,group);
+        section.relocation_count+=1u64;
+        section_put(input,group,section);
+        i+=1u64;
+    }
+    u64 start=0u64;
+    i=0u64;
+    while(i<input.section_count){
+        PeSection section=section_at(input,i);
+        section.relocation_start=start;
+        start+=section.relocation_count;
+        section.relocation_count=0u64;
+        section_put(input,i,section);
+        i+=1u64;
+    }
+    u64 imports=0u64;
+    i=0u64;
+    while(i<relocation_count){
+        CombineRelocation row=combined_at(combined,i);
+        u64 group=bootstrap.combine::section_at(rows,row.source).group;
+        PeSection section=section_at(input,group);
+        u64 slot=section.relocation_start+section.relocation_count;
+        relocation_put(input,slot,PeRelocation(row.offset,u32(row.kind),u32(row.target_kind),row.section,row.value,0u64,0u64));
+        if(row.target_kind==1u64){
+            import_put(input,imports,PeImport(row.library,row.library_length,row.name,row.name_length,slot,
+                0u64,0u64,0u64,0u64,0u64));
+            imports+=1u64;
+        }
+        section.relocation_count+=1u64;
+        section_put(input,group,section);
+        i+=1u64;
+    }
+}
+
+extern "C" PeLayout layout(PeInput input,address rows,u64 row_count,address combined,u64 relocation_count) on cpu {
+    pack_sections(input,rows,row_count,combined,relocation_count);
     PeLayout result=invalid(0u64);u64 rva=4096u64;u64 i=0u64;bool pdata=false;
     while(i<input.section_count){
         PeSection section=section_at(input,i);
