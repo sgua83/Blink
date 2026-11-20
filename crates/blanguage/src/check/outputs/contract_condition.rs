@@ -99,17 +99,29 @@ impl Drop for OwnedTerm {
         if !self.0.ty.is_null() { unsafe { drop_type(self.0.ty) }; }
     }
 }
-struct OwnedType { ty: Box<Ty>, literal: bool }
-impl OwnedType {
+pub(super) enum Layout<'a> {
+    Borrowed(&'a Ty),
+    Owned(Box<Ty>),
+}
+impl Layout<'_> {
+    pub(super) fn ty(&self) -> &Ty {
+        match self {
+            Self::Borrowed(ty) => ty,
+            Self::Owned(ty) => ty,
+        }
+    }
+}
+struct ConditionType<'a> { layout: Layout<'a>, literal: bool }
+impl ConditionType<'_> {
     fn describe(&self) -> TypeResult {
-        TypeResult { ty: address(&*self.ty), literal: u32::from(self.literal), ok: 1 }
+        TypeResult { ty: address(self.layout.ty()), literal: u32::from(self.literal), ok: 1 }
     }
 }
 #[repr(C)]
 struct QueryContext<'a> {
     common: Context<'a>,
     terms: [Option<OwnedTerm>; 2],
-    types: [Option<OwnedType>; 2],
+    types: [Option<ConditionType<'a>>; 2],
 }
 impl<'a> QueryContext<'a> {
     fn new(source: &'a Source, span: Span) -> Self {
@@ -145,14 +157,14 @@ unsafe extern "C" fn term_type(ctx: Address, index: u32) -> Address {
     let ctx=unsafe { query_context(ctx) };
     let term=ctx.terms[index as usize].as_ref().unwrap();
     if !term.0.ty.is_null() { term.0.ty }
-    else { address(&*ctx.types[index as usize].as_ref().unwrap().ty) }
+    else { address(ctx.types[index as usize].as_ref().unwrap().layout.ty()) }
 }
 unsafe extern "C" fn typed(ctx: Address, index: u32) -> TypeResult {
     unsafe { query_context(ctx) }.types[index as usize].as_ref().unwrap().describe()
 }
 unsafe extern "C" fn put_type(ctx: Address, index: u32, value: TypeResult) {
-    unsafe { query_context(ctx) }.types[index as usize]=Some(OwnedType {
-        ty: unsafe { Box::from_raw(value.ty.cast()) }, literal: value.literal!=0,
+    unsafe { query_context(ctx) }.types[index as usize]=Some(ConditionType {
+        layout: Layout::Owned(unsafe { Box::from_raw(value.ty.cast()) }), literal: value.literal!=0,
     });
 }
 unsafe extern "C" fn clear_type(ctx: Address, index: u32) {
@@ -400,10 +412,10 @@ async fn bind_node(world: &World, definition: ConditionScope<'_>, value: &Output
 pub(super) async fn bind_constants(world: &World, definition: ConditionScope<'_>, value: &OutputCondition, span: Span) -> Result<OutputCondition> {
     Ok(*unsafe { world.call(bind_node(world,definition,value,span)).await }?)
 }
-async fn identity_term(
+async fn identity_term<'a>(
     world: &World, value: &OutputCondition,
-    path: &impl std::ops::AsyncFn(&OutputCondition) -> Result<Ty>,
-    source: &Source, span: Span,
+    path: &impl std::ops::AsyncFn(&OutputCondition) -> Result<Cow<'a, Ty>>,
+    source: &'a Source, span: Span,
 ) -> Result<OwnedTerm> {
     let mut ctx=QueryContext::new(source,span);
     let mut cursor=unsafe { identity_start(address(value)) };
@@ -423,18 +435,18 @@ async fn identity_term(
         }
     }
 }
-pub(super) async fn identity(
+pub(super) async fn identity<'a>(
     world: &World, value: &OutputCondition,
-    path: &impl std::ops::AsyncFn(&OutputCondition) -> Result<Ty>,
-    source: &Source, span: Span,
+    path: &impl std::ops::AsyncFn(&OutputCondition) -> Result<Cow<'a, Ty>>,
+    source: &'a Source, span: Span,
 ) -> Result<OutputCondition> {
     Ok(unsafe { world.call(identity_term(world,value,path,source,span)).await }?.condition())
 }
-async fn type_value(
+async fn type_value<'a>(
     world: &World, value: &OutputCondition,
-    path: &impl std::ops::AsyncFn(&OutputCondition) -> Result<Ty>,
-    source: &Source, span: Span,
-) -> Result<OwnedType> {
+    path: &impl std::ops::AsyncFn(&OutputCondition) -> Result<Cow<'a, Ty>>,
+    source: &'a Source, span: Span,
+) -> Result<ConditionType<'a>> {
     let mut ctx=QueryContext::new(source,span);
     let mut cursor=unsafe { type_start(address(value)) };
     loop {
@@ -449,16 +461,19 @@ async fn type_value(
             TypeNeed::Path => {
                 let input=unsafe { borrowed(cursor.request) };
                 let ty=unsafe { world.call(path(input)).await }?;
-                ctx.types[cursor.slot as usize]=Some(OwnedType { ty: Box::new(ty),literal:false });
+                let layout = match ty {
+                    Cow::Borrowed(ty) => Layout::Borrowed(ty),
+                    Cow::Owned(ty) => Layout::Owned(Box::new(ty)),
+                };
+                ctx.types[cursor.slot as usize]=Some(ConditionType { layout, literal:false });
             }
         }
     }
 }
-pub(super) async fn condition_type(
+pub(super) async fn condition_type<'a>(
     world: &World, value: &OutputCondition,
-    path: &impl std::ops::AsyncFn(&OutputCondition) -> Result<Ty>,
-    source: &Source, span: Span,
-) -> Result<(Ty,bool)> {
-    let value=unsafe { world.call(type_value(world,value,path,source,span)).await }?;
-    Ok((*value.ty,value.literal))
+    path: &impl std::ops::AsyncFn(&OutputCondition) -> Result<Cow<'a, Ty>>,
+    source: &'a Source, span: Span,
+) -> Result<Layout<'a>> {
+    Ok(unsafe { world.call(type_value(world,value,path,source,span)).await }?.layout)
 }

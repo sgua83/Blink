@@ -218,7 +218,7 @@ pub(super) async fn validate_named<'a>(world: &World, instance: &crate::generics
     let definition=&instance.definition;
     let input = |name: &str| definition.function.params().iter().enumerate()
         .find(|(_, param)| param.name() == name)
-        .map(|(index, param)| (param.access(), parameter_type(index).clone()));
+        .map(|(index, param)| (param.access(), parameter_type(index)));
     for contract in instance.contracts() {
         if definition.function.c_abi() && contract.kind == ContractKind::Requires
             && let ContractPredicate::Nonzero(path) = &contract.predicate {
@@ -799,6 +799,7 @@ async fn normalize(world: &World, definition: ConditionScope<'_>, returned: &Typ
         let syntax = syntax.ok_or_else(|| Diagnostic { source: definition.source.clone(), span, code: "B225",
             message: format!("输出条件没有输入{name}") })?;
         unsafe { world.call(world.output_path_type(&syntax, &fields, definition.source, span, definition.module, definition.imports)).await }
+            .map(Cow::Owned)
     };
     unsafe { world.call(contract_condition::identity(world,&value,&path, definition.source, span)).await }
 }
@@ -824,50 +825,55 @@ pub(crate) async fn bind_function_contracts(
     }
     Ok(bound.into_iter().collect())
 }
-fn typed_path(value: &OutputCondition, input: &impl Fn(&str) -> Option<(Access, Ty)>,
-    returned: Option<&Ty>, source: &Source, span: Span) -> Result<Ty> {
+fn typed_path<'a>(value: &OutputCondition, input: &impl Fn(&str) -> Option<(Access, &'a Ty)>,
+    returned: Option<&'a Ty>, source: &Source, span: Span) -> Result<Cow<'a, Ty>> {
     match value {
-        OutputCondition::Name(name) if name == "returned" => returned.cloned().ok_or_else(|| Diagnostic {
+        OutputCondition::Name(name) if name == "returned" => returned.map(Cow::Borrowed).ok_or_else(|| Diagnostic {
             source: source.clone(), span, code: "B225", message: "无返回值的函数没有returned输入".into(),
         }),
         OutputCondition::Name(name) => {
             let Some((access, ty)) = input(name) else {
                 return source.fail(span, "B225", format!("输出条件没有输入{name}"));
             };
-            if access == Access::Value || ty.dataset.is_some() { Ok(ty) }
+            if access == Access::Value || ty.dataset.is_some() { Ok(Cow::Borrowed(ty)) }
             else { source.fail(span, "B225", "输出条件只引用按值输入快照、资源长度和实际returned") }
         }
         OutputCondition::Member(base, field) => {
             let ty = typed_path(base, input, returned, source, span)?;
             if (ty.array.is_some() || ty.dataset.is_some()) && field == "length" {
-                return Ok(Ty::scalar(Scalar::U32));
+                return Ok(Cow::Owned(Ty::scalar(Scalar::U32)));
             }
             if ty.has_variants() {
                 return if ty.declared_variant(field).is_some() {
-                    Ok(Ty::scalar(Scalar::Bool))
+                    Ok(Cow::Owned(Ty::scalar(Scalar::Bool)))
                 } else { source.fail(span, "B225", "输出条件使用声明的返回变体名称") };
             }
-            member_type_only(&ty, field, source, span)
+            member_type_only(ty, field, source, span)
         }
         _ => source.fail(span, "B225", "输出条件的字段来自输入或returned"),
     }
 }
-async fn validate_output(world:&World,value: &str, condition: &OutputCondition,
-    input: &impl Fn(&str) -> Option<(Access, Ty)>, returned: Option<&Ty>,
+async fn validate_output<'a>(world:&World,value: &str, condition: &OutputCondition,
+    input: &impl Fn(&str) -> Option<(Access, &'a Ty)>, returned: Option<&'a Ty>,
     source: &Source, span: Span,
 ) -> Result<()> {
     let mut fields = value.split('.');
     let root = fields.next().unwrap();
-    let Some((Access::Write | Access::InOut, mut ty)) = input(root) else {
+    let Some((Access::Write | Access::InOut, ty)) = input(root) else {
         return source.fail(span, "B225", "initialized需要实际write／inout参数或字段");
     };
     // Dataset output positions describe initialized elements; input/return
     // conditions consume the original handle/length storage type.
-    if let Some(reference)=&ty.dataset {ty=unsafe { world.call(world.ty(reference,source,span,"",&[])).await }?;}
-    for field in fields { ty = member_type_only(&ty, field, source, span)?; }
+    let element;
+    let ty = if let Some(reference) = &ty.dataset {
+        element = unsafe { world.call(world.ty(reference, source, span, "", &[])).await }?;
+        &element
+    } else { ty };
+
+    fields.try_fold(Cow::Borrowed(ty), |ty, field| member_type_only(ty, field, source, span))?;
     let path = async |value: &OutputCondition| typed_path(value, input, returned, source, span);
-    let (condition, _) = unsafe { world.call(condition_type(world,condition,&path, source, span)).await }?;
-    operators::same(&Ty::scalar(Scalar::Bool), &condition, source, span)
+    let condition = unsafe { world.call(condition_type(world,condition,&path, source, span)).await }?;
+    operators::same(&Ty::scalar(Scalar::Bool), condition.ty(), source, span)
 }
 
 pub(crate) async fn validate_function_contracts(
@@ -876,8 +882,8 @@ pub(crate) async fn validate_function_contracts(
 ) -> Result<()> {
     let input = |name: &str| parameters.get(positional_index(name))
         .map(|parameter| match &parameter.kind {
-            CallParameterKind::Value(ty) => (Access::Value, ty.clone()),
-            CallParameterKind::Reference { ty, access } => (*access, ty.clone()),
+            CallParameterKind::Value(ty) => (Access::Value, ty),
+            CallParameterKind::Reference { ty, access } => (*access, ty),
         });
     for output in outputs {
         match output {

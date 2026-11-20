@@ -68,21 +68,29 @@ use std::{
 pub(crate) fn member_type(ty: &Ty, field: &str, source: &Source, span: Span) -> Result<(Ty, Vec<usize>)> {
     let mut indices = Vec::new();
     let selected = select_member(ty, field, source, span, Some(&mut indices))?;
-    Ok((selected, indices))
+    Ok((selected.into_owned(), indices))
 }
 
-pub(crate) fn member_type_only(ty: &Ty, field: &str, source: &Source, span: Span) -> Result<Ty> {
-    select_member(ty, field, source, span, None)
+pub(crate) fn member_type_only<'a>(
+    ty: Cow<'a, Ty>, field: &str, source: &Source, span: Span,
+) -> Result<Cow<'a, Ty>> {
+    match ty {
+        Cow::Borrowed(ty) => select_member(ty, field, source, span, None),
+        Cow::Owned(ty) => select_member(&ty, field, source, span, None)
+            .map(|selected| Cow::Owned(selected.into_owned())),
+    }
 }
 
-fn select_member(ty: &Ty, field: &str, source: &Source, span: Span, indices: Option<&mut Vec<usize>>) -> Result<Ty> {
+fn select_member<'a>(
+    ty: &'a Ty, field: &str, source: &Source, span: Span, indices: Option<&mut Vec<usize>>,
+) -> Result<Cow<'a, Ty>> {
     use crate::ir::SourceMember;
     match crate::ir::source_member(ty, field) {
         SourceMember::Length => {
             if let Some(indices) = indices {
                 indices.push(2);
             }
-            Ok(Ty::scalar(Scalar::U32))
+            Ok(Cow::Owned(Ty::scalar(Scalar::U32)))
         }
         SourceMember::Declared { ty: selected, offset } => {
             if let Some(indices) = indices {
@@ -90,13 +98,13 @@ fn select_member(ty: &Ty, field: &str, source: &Source, span: Span, indices: Opt
                     ty.components.iter().position(|(_, position)| *position == offset + component).unwrap()
                 }));
             }
-            Ok(selected.clone())
+            Ok(Cow::Borrowed(selected))
         }
         SourceMember::Swizzle { lanes, count } => {
             if let Some(indices) = indices {
                 indices.extend(lanes[..count as usize].iter().map(|&lane| lane as usize));
             }
-            Ok(Ty::vector(ty.components[0].0, count as usize))
+            Ok(Cow::Owned(Ty::vector(ty.components[0].0, count as usize)))
         }
         SourceMember::Variant => source.fail(span, "B269",
             "结果载荷通过 match 或 try 使用，不公开原始判别字／载荷字段"),

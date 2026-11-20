@@ -395,15 +395,15 @@ pub(super) fn validate_nonzero_type(ty: &Ty, source: &Source, span: Span) -> Res
     }
     Ok(())
 }
-pub(super) fn validate_nonzero_input(path: &str,
-    input: &impl Fn(&str) -> Option<(Access, Ty)>, source: &Source, span: Span,
+pub(super) fn validate_nonzero_input<'a>(path: &str,
+    input: &impl Fn(&str) -> Option<(Access, &'a Ty)>, source: &Source, span: Span,
 ) -> Result<()> {
     let mut fields = path.split('.');
     let root = fields.next().unwrap();
-    let Some((Access::Value, mut ty)) = input(root) else {
+    let Some((Access::Value, ty)) = input(root) else {
         return source.fail(span, "B225", "nonzero需要实际按值输入或其字段");
     };
-    for field in fields { ty = member_type_only(&ty, field, source, span)?; }
+    let ty = fields.try_fold(Cow::Borrowed(ty), |ty, field| member_type_only(ty, field, source, span))?;
     validate_nonzero_type(&ty, source, span)
 }
 pub(super) async fn prove_c_inputs(builder: &Builder<'_>, contract: outputs::Contract<'_>,

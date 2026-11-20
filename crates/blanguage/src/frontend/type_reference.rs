@@ -193,11 +193,11 @@ impl World {
                 Projection::Variant => return variant_condition(rest, source, span),
                 Projection::Member => {}
             }
-            if let Some(mut ty) = ir::Ty::from_builtin(builtin) {
-                for field in fields {
-                    ty = crate::check::member_type_only(&ty, field, source, span)?;
-                }
-                return Ok(ty);
+            if let Some(ty) = ir::Ty::from_builtin(builtin) {
+                let selected = fields.iter().try_fold(std::borrow::Cow::Borrowed(&ty), |ty, field| {
+                    crate::check::member_type_only(ty, field, source, span)
+                })?;
+                return Ok(selected.into_owned());
             }
             let Some((record, record_source, record_module, record_imports)) = declaration() else {
                 return source.fail(span, "B031", format!("未知类型 {}", name.name));
