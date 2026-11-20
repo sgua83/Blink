@@ -60,7 +60,7 @@ impl crate::Compiler {
         &self, path: &Path, root: &Path, entry: &str, target: Target, output: &Path,
         dependencies: Vec<crate::object::Input>,
     ) -> Result<Compilation> {
-        self.execute(|worker| compile_in(worker, path, root, entry, target, output, dependencies, &[], None))
+        self.execute(|worker| compile_in(worker, path, root, entry, target, output, dependencies, &[], None, None))
             .map_err(|error| match error {
                 crate::parallel::Error::Work(error) => error,
                 crate::parallel::Error::Resource(error) => Box::new(error) as Box<dyn std::error::Error + Send + Sync>,
@@ -70,6 +70,7 @@ impl crate::Compiler {
 fn compile_in(
     worker: &crate::compiler::Worker, path: &Path, root: &Path, entry: &str,
     target: Target, output: &Path, dependencies: Vec<crate::object::Input>, borrowed: &[&crate::object::Object], inputs: Option<&Inputs>,
+    entry_checks: Option<&crate::frontend::EntryChecks>,
 ) -> Result<Compilation> {
     if target == Target::Compute {
         return Err("构建映像必须选择实际CPU或GPU后端".into());
@@ -112,7 +113,7 @@ fn compile_in(
         Err(error) => return Err(error.into()),
     }
     let compilation =
-        crate::compile_world(&world, module, true, Some((crate::EntryKind::Domain, entry)))?;
+        crate::compile_world(&world, module, true, Some((crate::EntryKind::Domain, entry)), entry_checks)?;
     let compiled_images = compilation
         .programs
         .into_iter()

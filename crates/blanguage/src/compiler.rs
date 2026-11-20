@@ -105,18 +105,32 @@ struct Resources {
     #[cfg(all(feature = "installed", feature = "compiler"))]
     sdk_input: Mutex<Option<crate::object::InstalledSdk>>,
 }
+enum CpuLease {
+    Local(usize),
+    #[cfg(feature = "compiler")]
+    Shared { _permit: jobserver::Acquired },
+}
 struct Permit {
     compiler: Compiler,
-    slot: Option<usize>,
-    #[cfg(feature = "compiler")]
-    _shared: Option<jobserver::Acquired>,
+    lease: Mutex<Option<CpuLease>>,
+}
+impl Permit {
+    fn release(&self, lease: CpuLease) {
+        match lease {
+            CpuLease::Local(slot) => {
+                let resources = &self.compiler.resources;
+                resources.available.lock().unwrap().push(slot);
+                resources.released.notify_one();
+            }
+            #[cfg(feature = "compiler")]
+            CpuLease::Shared { .. } => drop(lease),
+        }
+    }
 }
 impl Drop for Permit {
     fn drop(&mut self) {
-        if let Some(slot) = self.slot {
-            let resources = &self.compiler.resources;
-            resources.available.lock().unwrap().push(slot);
-            resources.released.notify_one();
+        if let Some(lease) = self.lease.get_mut().unwrap().take() {
+            self.release(lease);
         }
     }
 }
@@ -178,7 +192,7 @@ impl Compiler {
     }
     #[cfg(feature = "compiler")]
     pub(crate) fn shared_worker(&self, permit: jobserver::Acquired) -> Worker {
-        Worker { permit: Arc::new(Permit { compiler: self.clone(), slot: None, _shared: Some(permit) }) }
+        self.with_lease(CpuLease::Shared { _permit: permit })
     }
     /// 本次新生成参数布局的字节上限；不会查询或改变执行设备。
     pub fn with_max_parameter_bytes(mut self, bytes: u32) -> Self {
@@ -195,22 +209,27 @@ impl Compiler {
         };
         Ok(use_root(&sdk.root))
     }
-    fn worker(&self, slot: usize) -> Worker {
+    fn with_lease(&self, lease: CpuLease) -> Worker {
         Worker { permit: Arc::new(Permit {
-            compiler: self.clone(), slot: Some(slot),
-            #[cfg(feature = "compiler")]
-            _shared: None,
+            compiler: self.clone(),
+            lease: Mutex::new(Some(lease)),
         }) }
+    }
+    fn worker(&self, slot: usize) -> Worker {
+        self.with_lease(CpuLease::Local(slot))
     }
     pub(crate) fn try_worker(&self) -> Option<Worker> {
         self.resources.available.lock().unwrap().pop().map(|slot| self.worker(slot))
     }
-    fn acquire(&self) -> Worker {
+    fn acquire_slot(&self) -> usize {
         let mut available = self.resources.available.lock().unwrap();
         loop {
-            if let Some(slot) = available.pop() { return self.worker(slot); }
+            if let Some(slot) = available.pop() { return slot; }
             available = self.resources.released.wait(available).unwrap();
         }
+    }
+    fn acquire(&self) -> Worker {
+        self.worker(self.acquire_slot())
     }
     pub(crate) fn execute<T: Send, E: Send>(
         &self, compile: impl FnOnce(&Worker) -> Result<T, E> + Send,
@@ -248,7 +267,12 @@ pub(crate) fn diagnostic(path: &std::path::Path, error: io::Error) -> crate::ast
 impl Worker {
     pub(crate) fn compiler(&self) -> &Compiler { &self.permit.compiler }
     fn processor(&self) -> Option<Processor> {
-        let slot = self.permit.slot?;
+        let lease = self.permit.lease.lock().unwrap();
+        let slot = match lease.as_ref()? {
+            CpuLease::Local(slot) => *slot,
+            #[cfg(feature = "compiler")]
+            CpuLease::Shared { .. } => return None,
+        };
         self.compiler().resources.processors.as_ref().map(|processors| processors[slot])
     }
     pub(crate) fn bind(&self) -> io::Result<()> {
@@ -256,6 +280,22 @@ impl Worker {
             bind(processor)?;
         }
         Ok(())
+    }
+    #[cfg(feature = "compiler")]
+    pub(crate) fn wait_for_work<T>(&self, wait: impl FnOnce() -> T) -> io::Result<T> {
+        let lease = self.permit.lease.lock().unwrap().take().unwrap();
+        let shared = matches!(lease, CpuLease::Shared { .. });
+        self.permit.release(lease);
+        let result = wait();
+        let lease = if shared {
+            let permit = self.compiler().bootstrap_jobserver().unwrap().acquire()?;
+            CpuLease::Shared { _permit: permit }
+        } else {
+            CpuLease::Local(self.compiler().acquire_slot())
+        };
+        *self.permit.lease.lock().unwrap() = Some(lease);
+        self.bind()?;
+        Ok(result)
     }
 }
 impl Processor {

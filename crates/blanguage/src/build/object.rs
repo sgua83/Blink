@@ -103,11 +103,11 @@ pub(super) fn compile<'a>(
             unsafe { world.run(crate::check::compile_native_module(&world, &module, requests, imported)) }?.compile_in(worker).map_err(error)?
         }
         ObjectKind::Application(entry) => {
-            crate::compile_world(&world, module, false, Some((crate::EntryKind::Application, entry)))?
+            crate::compile_world(&world, module, false, Some((crate::EntryKind::Application, entry)), None)?
                 .applications.remove(0).compile_in(worker).map_err(error)?
         }
         ObjectKind::Library { entry, prefix } => {
-            let compilation = crate::compile_world(&world, module, true, Some((crate::EntryKind::Domain, entry)))?;
+            let compilation = crate::compile_world(&world, module, true, Some((crate::EntryKind::Domain, entry)), None)?;
             let program = compilation.programs.first().ok_or_else(|| Error::other("DLL 编译需要无前置条件的具体 program"))?;
             crate::dll::compile_in(worker, program, prefix).map_err(error)?
         }

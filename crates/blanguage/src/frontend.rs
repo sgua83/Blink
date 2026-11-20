@@ -3,6 +3,8 @@ pub(crate) use evaluation::Call;
 mod type_reference;
 mod type_value;
 mod loading;
+mod entry_checks;
+pub(crate) use entry_checks::EntryChecks;
 use loading::load;
 use crate::{file_bytes::FileBytes, *};
 use std::{
@@ -235,7 +237,7 @@ pub(crate) fn compile_module_on(
         })?;
         let imported = if dependencies.is_empty() { None } else { Some(&imports) };
         let (world, entry, _) = read_world(path, module_root, imported, &[], worker, None, None)?;
-        compile_world(&world, entry, require_program, requested)
+        compile_world(&world, entry, require_program, requested, None)
     })
 }
 impl Compiler {
@@ -352,6 +354,7 @@ pub(crate) fn compile_world(
     entry: String,
     require_program: bool,
     requested: Option<(EntryKind, &str)>,
+    entry_checks: Option<&EntryChecks>,
 ) -> Result<Compilation> {
     let mode = match requested {
         None => SourceMode::Automatic,
@@ -430,11 +433,7 @@ pub(crate) fn compile_world(
     }
     let declarations = &world.declarations;
     let collect_declarations = world.build_declarations.is_some();
-    let output = parallel::try_map(&world.worker, jobs, |worker| {
-        let mut world = World::new(Arc::clone(declarations), worker.clone());
-        if collect_declarations { world.build_declarations = Some(RefCell::new(BTreeSet::new())); }
-        world
-    }, |world, job| {
+    let compile = |world: &mut World, job: Job<'_>| -> Result<_> {
         let output = unsafe { world.run(async {
             let (instance, route, cpu_signature) = match job {
                 Job::Failed(error) => return Err(error),
@@ -495,6 +494,28 @@ pub(crate) fn compile_world(
         let used = world.build_declarations.as_ref()
             .map(|inputs| std::mem::take(&mut *inputs.borrow_mut())).unwrap_or_default();
         Ok((output, used))
+    };
+
+    enum JobInputs {
+        Owned(BTreeSet<build::Declaration>),
+        Shared(entry_checks::SharedInputs),
+    }
+    let output = parallel::try_map(&world.worker, jobs, |worker| {
+        let mut world = World::new(Arc::clone(declarations), worker.clone());
+        if collect_declarations { world.build_declarations = Some(RefCell::new(BTreeSet::new())); }
+        world
+    }, |world, job| {
+        if let Some(checks) = entry_checks
+            && let Job::Instance(instance, route @ (SourceRoute::Function | SourceRoute::ValidateProgram), cpu_signature) = &job
+        {
+            let worker = world.worker.clone();
+            let name = instance.name.clone();
+            let source = instance.definition.source.path.clone();
+            let inputs = checks.run(name, *route, *cpu_signature, &worker, &source,
+                || compile(world, job).map(|(_, used)| used))?;
+            return Ok((Output::Checked, JobInputs::Shared(inputs)));
+        }
+        compile(world, job).map(|(output, used)| (output, JobInputs::Owned(used)))
     }).map_err(|error| match error {
         parallel::Error::Work(error) => error,
         parallel::Error::Resource(error) => Diagnostic {
@@ -506,7 +527,13 @@ pub(crate) fn compile_world(
     let mut templates = Vec::new();
     let mut applications = Vec::new();
     for (output, used) in output {
-        if let Some(inputs) = &world.build_declarations { inputs.borrow_mut().extend(used); }
+        if let Some(inputs) = &world.build_declarations {
+            let mut inputs = inputs.borrow_mut();
+            match used {
+                JobInputs::Owned(used) => inputs.extend(used),
+                JobInputs::Shared(used) => inputs.extend(used.iter().cloned()),
+            }
+        }
         match output {
             Output::Application(application) => applications.push(application),
             Output::Checked => {}

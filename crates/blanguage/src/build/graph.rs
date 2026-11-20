@@ -302,6 +302,22 @@ impl Compiler {
         })?;
         let DependencyPlan { plan, provider_rows, externals, schedule } = dependency_plan;
         let ids = plan.ids();
+        // These entries borrow the same captured source and the same completed
+        // provider objects. Output paths and selected entries remain independent.
+        let mut entry_groups = BTreeMap::<_, Vec<usize>>::new();
+        for (index, unit) in prepared.iter().enumerate() {
+            if matches!(unit.kind, UnitKind::Entry { .. }) {
+                let identity = (&unit.path, &unit.root, provider_rows[index].slice(ids));
+                entry_groups.entry(identity).or_default().push(index);
+            }
+        }
+        let mut entry_checks = vec![None; units.len()];
+        for group in entry_groups.into_values().filter(|group| group.len() > 1) {
+            let shared = Arc::new(crate::frontend::EntryChecks::default());
+            for index in group {
+                entry_checks[index] = Some(Arc::clone(&shared));
+            }
+        }
         let state = Mutex::new(State {
             schedule, outputs: (0..units.len()).map(|_| None).collect(),
             failures: Vec::new(), unfinished: units.len(),
@@ -332,7 +348,8 @@ impl Compiler {
                     providers.iter().map(Provider::object), kind, &unit.output, Some(&inputs[index]))
                     .map(|value| Output::Object(Arc::new(value))),
                 UnitKind::Entry { entry, target } => super::compile_in(worker, &unit.path, &unit.root,
-                    entry, target, &unit.output, Vec::new(), &providers.iter().map(Provider::object).collect::<Vec<_>>(), Some(&inputs[index])).map(Output::Entry),
+                    entry, target, &unit.output, Vec::new(), &providers.iter().map(Provider::object).collect::<Vec<_>>(),
+                    Some(&inputs[index]), entry_checks[index].as_deref()).map(Output::Entry),
             }).map_err(|error| match error {
                 crate::parallel::Error::Work(error) => error,
                 crate::parallel::Error::Resource(error) => Box::new(error) as Box<dyn std::error::Error + Send + Sync>,
