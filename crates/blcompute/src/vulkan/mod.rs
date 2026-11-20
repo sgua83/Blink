@@ -2331,17 +2331,21 @@ impl GpuProgram {
         let mut resources: Vec<_> = data.owners.iter().flat_map(|d| &d.views.sources).collect();
         while let Some(source) = resources.pop() {
             if visited.insert(Rc::as_ptr(&source.0) as usize) {
-                resource_stage |= source.0.producer.stage();
-                resource_access |= source.0.producer.access();
                 if let Some(used) = source.0.dependency() {
                     owner.dependencies.insert(used);
+                } else if owner.dependencies.is_empty() {
+                    resource_stage |= source.0.producer.stage();
+                    resource_access |= source.0.producer.access();
                 }
                 resources.extend(&source.0.views.sources);
             }
         }
         let mut commands = Commands::new(c.inner.clone())?;
         commands.textures = std::mem::take(&mut owner.textures);
-        let dependencies = if !owner.dependencies.is_empty() {
+        let pending_inputs = owner.dependencies.is_empty();
+        let dependencies = if pending_inputs {
+            Vec::new()
+        } else {
             // 同队列提交顺序本身不形成依赖；此交接同时覆盖 RAW、WAW 与 WAR。
             let access = 0x60
                 | if accelerations.is_empty() {
@@ -2350,10 +2354,11 @@ impl GpuProgram {
                     0x200000
                 };
             commands.barrier(0x10000, 0x800, 0x10000, access);
+            // 入口屏障已覆盖此前提交的根槽及view写入。
+            resource_stage = 0;
+            resource_access = 0;
             // 完成状态不替代设备内存依赖，先记录交接，再回收完成的前序资源。
             std::mem::take(&mut owner.dependencies).prepare()?
-        } else {
-            Vec::new()
         };
         let f = &c.inner.functions;
         let device = c.inner.owner.device;
@@ -2466,7 +2471,7 @@ impl GpuProgram {
         let mut accesses: Vec<_> = data.owners.iter().map(|dataset| BindingAccess {
             producer: dataset.producer,
             pending_read: false,
-            pending_write: true,
+            pending_write: pending_inputs,
         }).collect();
         if !c.pipelines.is_empty() {
             unsafe {
