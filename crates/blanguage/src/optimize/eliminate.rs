@@ -32,18 +32,19 @@ struct Host {
     change: unsafe extern "C" fn(Action, *mut Slots, *const Slots, usize),
     clone_set: unsafe extern "C" fn(*const Slots) -> *mut Slots,
     drop_set: unsafe extern "C" fn(*mut Slots),
-    eliminate_block: unsafe extern "C" fn(*mut Vec<Inst>, *mut Slots, *const Slots, *const Slots, *const Slots, *mut Context<'_>),
+    swap_instructions: unsafe extern "C" fn(*mut Inst, *mut Inst),
+    discard_prefix: unsafe extern "C" fn(*mut Vec<Inst>, usize),
     live_before: unsafe extern "C" fn(Block, *mut Slots, *const Slots, *const Slots, *const Slots),
     loop_live: unsafe extern "C" fn(Block, Reg, Block, *const Slots, *const Slots, *const Slots, *const Slots) -> *mut Slots,
     record: unsafe extern "C" fn(*mut Context<'_>, *const Inst, Removal),
     prune_division: unsafe extern "C" fn(*mut Inst, *mut IntegerDivisionResult, DivisionChoice, Reg, Reg),
     prune_collective: unsafe extern "C" fn(*mut TileCollective, *const Slots),
 }
-struct Context<'a> { registers: &'a [Scalar], removed: &'a mut Vec<EliminatedOperation>, empty: *const Slots }
+struct Context<'a> { registers: &'a [Scalar], removed: &'a mut Vec<EliminatedOperation> }
 unsafe extern "C" {
-    #[link_name = "bootstrap.stage_fusion::eliminate_instruction"]
-    fn eliminate_instruction(instruction: *mut Inst, needed: *mut Slots, break_live: *const Slots,
-        continue_live: *const Slots, exit_live: *const Slots, empty: *const Slots, context: *mut Context<'_>, host: Host) -> u32;
+    #[link_name = "bootstrap.stage_fusion::eliminate_code"]
+    fn eliminate_code(code: *mut Vec<Inst>, needed: *mut Slots, break_live: *const Slots,
+        continue_live: *const Slots, exit_live: *const Slots, empty: *const Slots, context: *mut Context<'_>, host: Host);
     #[link_name = "bootstrap.stage_fusion::dce_result_needed"]
     fn result_needed(needed: *const Slots, reg: Reg, contains: Contains) -> u32;
 }
@@ -138,20 +139,17 @@ unsafe extern "C" fn prune_collective(collective: *mut TileCollective, needed: *
     unsafe { &mut *collective }.results.retain(|(_, reg)| unsafe { result_needed(needed, *reg, contains) } != 0);
 }
 const HOST: Host = Host { ir: crate::ir::dataflow::HOST, storage, read_block, contains, change, clone_set, drop_set,
-    eliminate_block: block, live_before: before, loop_live: header, record, prune_division, prune_collective };
-unsafe extern "C" fn block(code: *mut Vec<Inst>, needed: *mut Slots, brk: *const Slots,
-    cont: *const Slots, exit: *const Slots, context: *mut Context<'_>) {
-    let code = unsafe { &mut *code }; let mut output = Vec::new();
-    for mut inst in std::mem::take(code).into_iter().rev() {
-        let keep = unsafe { eliminate_instruction(&mut inst, needed, brk, cont, exit, (*context).empty, context, HOST) };
-        if keep != 0 { output.push(inst); }
-    }
-    output.reverse(); *code = output;
+    swap_instructions, discard_prefix, live_before: before, loop_live: header, record, prune_division, prune_collective };
+unsafe extern "C" fn swap_instructions(first: *mut Inst, second: *mut Inst) {
+    unsafe { std::ptr::swap(first, second) };
+}
+unsafe extern "C" fn discard_prefix(code: *mut Vec<Inst>, count: usize) {
+    drop(unsafe { &mut *code }.drain(..count));
 }
 pub(super) fn run(code: &mut Vec<Inst>, needed: &mut Slots, brk: &Slots, cont: &Slots, exit: &Slots,
     registers: &[Scalar]) -> Vec<EliminatedOperation> {
     let empty = Slots::new(); let mut removed = Vec::new();
-    let mut context = Context { registers, removed: &mut removed, empty: &empty };
-    unsafe { block(code, needed, brk, cont, exit, &mut context) };
+    let mut context = Context { registers, removed: &mut removed };
+    unsafe { eliminate_code(code, needed, brk, cont, exit, &empty, &mut context, HOST) };
     removed
 }

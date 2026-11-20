@@ -104,7 +104,8 @@ struct DceHost {
     cfn<void,LiveSetAction,address,address,u64> change;
     cfn<address,address> clone_set;
     cfn<void,address> drop_set;
-    cfn<void,address,address,address,address,address,address> eliminate_block;
+    cfn<void,address,address> swap_instructions;
+    cfn<void,address,u64> discard_prefix;
     cfn<void,FusionBlock,address,address,address,address> live_before;
     cfn<address,FusionBlock,u64,FusionBlock,address,address,address,address> loop_live;
     cfn<void,address,address,DceRemoval> record;
@@ -116,12 +117,13 @@ struct DceHost {
 // B owns every elimination and propagation decision during that borrow.
 extern "C" u32 dce_result_needed(address needed,u64 reg,
     cfn<u32,address,u32,u64> contains) on cpu requires nonzero(contains);
-extern "C" bool eliminate_instruction(address instruction,address needed,
+extern "C" void eliminate_code(address block,address needed,
     address break_live,address continue_live,address exit_live,address empty,
     address context,DceHost host) on cpu
     requires nonzero(host.ir.inspect) requires nonzero(host.storage) requires nonzero(host.read_block)
     requires nonzero(host.contains) requires nonzero(host.change)
-    requires nonzero(host.clone_set) requires nonzero(host.drop_set) requires nonzero(host.eliminate_block)
+    requires nonzero(host.clone_set) requires nonzero(host.drop_set)
+    requires nonzero(host.swap_instructions) requires nonzero(host.discard_prefix)
     requires nonzero(host.live_before) requires nonzero(host.loop_live) requires nonzero(host.record)
     requires nonzero(host.prune_division) requires nonzero(host.prune_collective);
 
