@@ -89,7 +89,12 @@ impl Bindings {
             bytes: name.as_ptr(), length: name.len() as u64, kind: 2, wrapped: 0,
         })).collect()
     }
-    fn use_result(error: crate::syntax::wire::UseError, source: &Source) -> Result<()> {
+    fn check_uses(
+        &self, source: &Source,
+        inspect: impl FnOnce(&[crate::syntax::wire::BoundName]) -> crate::syntax::wire::UseError,
+    ) -> Result<()> {
+        if self.types.is_empty() && self.values.is_empty() { return Ok(()); }
+        let error = inspect(&self.use_names());
         if error.code == 0 { return Ok(()); }
         let (code, message) = [
             ("B232", "类型参数已代表完整具体类型，不能再附加类型实参"),
@@ -102,13 +107,13 @@ impl Bindings {
     }
     fn check_type(&self, ty: &crate::syntax::Type, source: &Source, span: Span) -> Result<()> {
         let span = crate::syntax::wire::Span { start: span.start as u64, end: span.end as u64 };
-        Self::use_result(ty.bound_uses(&self.use_names(), span), source)
+        self.check_uses(source, |bindings| ty.bound_uses(bindings, span))
     }
     fn check_function(&self, function: &crate::syntax::Function, source: &Source) -> Result<()> {
-        Self::use_result(function.bound_uses(&self.use_names()), source)
+        self.check_uses(source, |bindings| function.bound_uses(bindings))
     }
     pub(crate) fn check_expression(&self, expression: &crate::syntax::Expr, source: &Source) -> Result<()> {
-        Self::use_result(expression.bound_uses(&self.use_names()), source)
+        self.check_uses(source, |bindings| expression.bound_uses(bindings))
     }
     pub(crate) async fn type_name(
         self: &std::sync::Arc<Self>, world: &World, source_type: &crate::syntax::Type,

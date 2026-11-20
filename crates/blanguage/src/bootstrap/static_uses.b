@@ -55,10 +55,12 @@ result<void,UseError> shape_uses(UseContext context, ShapeRef shape) on cpu {
 result<void,UseError> type_uses(UseContext context, TypeRef reference, Span span) on cpu {
     TypeNode ty = node<TypeNode>(context, reference.offset);
     try(argument_uses(context, ty.arguments, span));
-    u32 bound = binding(context, ty.name, 1);
-    if (bound != 0 && ty.arguments.count != 0u64) { return Err(UseError(1, span)); }
-    if (bound == 2 && (ty.dataset != 0 || ty.view != 0 || ty.tile != 0)) {
-        return Err(UseError(2, span));
+    bool arguments = ty.arguments.count != 0u64;
+    bool resource = ty.dataset != 0 || ty.view != 0 || ty.tile != 0;
+    if (arguments || resource) {
+        u32 bound = binding(context, ty.name, 1);
+        if (arguments && bound != 0) { return Err(UseError(1, span)); }
+        if (resource && bound == 2) { return Err(UseError(2, span)); }
     }
     if (ty.count.present != 0) { try(shape_uses(context, ty.count.value)); }
     return Ok();
