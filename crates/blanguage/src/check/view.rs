@@ -490,7 +490,7 @@ impl Borrow{
         match source {
             Source::Unresolved => reachable().is_some(),
             Source::Relation(graph, root) =>
-                reachable().is_some() && graph.unresolved(*root),
+                graph.unresolved(*root) && reachable().is_some(),
             Source::Element { parent, .. } | Source::Projection { parent, .. } =>
                 parent.unresolved_in(reachable),
             Source::Task { captures, outputs, initialized, .. } =>
@@ -499,7 +499,7 @@ impl Borrow{
                     || outputs.iter().any(|output| output.unresolved_in(reachable)),
             Source::TaskOutput { task, .. } => task.unresolved_in(reachable),
             Source::Contents { origin, .. } =>
-                reachable().is_some() && (origin.has_local() || origin.resources().unresolved()),
+                (origin.has_local() || origin.resources().unresolved()) && reachable().is_some(),
             Source::Position(origin) => match &origin.root {
                 address::Root::Resource { borrow, .. } | address::Root::Derived(borrow)
                 | address::Root::Dataset { borrow, .. } => borrow.unresolved_in(reachable),
@@ -531,7 +531,7 @@ impl Borrow{
         reachable: &dyn Fn() -> Option<&'a bounds::Clause>,
     ) -> bool {
         match source {
-            Source::Relation(graph, root) => reachable().is_some() && graph.has_local(*root),
+            Source::Relation(graph, root) => graph.has_local(*root) && reachable().is_some(),
             Source::Position(origin) => match &origin.root {
                 address::Root::Derived(parent) | address::Root::Dataset { borrow: parent, .. } =>
                     parent.has_local_in(reachable),
