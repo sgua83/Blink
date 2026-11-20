@@ -649,6 +649,7 @@ struct RequiredResult<'a> {
     facts: Option<&'a Facts>,
     node: RequiredNode,
     value: Option<Option<super::QueryFacts<'a>>>,
+    valid_additions: Option<bool>,
 }
 pub(super) struct RequiredQuery<'a> {
     nodes: Vec<RequiredResult<'a>>,
@@ -737,6 +738,7 @@ unsafe extern "C" fn required_common(slot: Slot, id: usize, left_last: u32, righ
     let node = evaluation.query.nodes[id].node;
     let a = take_required(&mut evaluation.query.nodes[node.left], left_last);
     let b = take_required(&mut evaluation.query.nodes[node.right], right_last);
+    evaluation.query.nodes[id].valid_additions = None;
     evaluation.query.nodes[id].value = Some(super::either_facts(
         evaluation.environment,
         evaluation.roots,
@@ -748,13 +750,14 @@ unsafe extern "C" fn required_common(slot: Slot, id: usize, left_last: u32, righ
 }
 unsafe extern "C" fn required_valid_additions(slot: Slot, id: usize) -> u32 {
     let evaluation = unsafe { required_evaluation(slot) };
-    let facts = evaluation.query.nodes[id]
-        .value
-        .as_ref()
-        .unwrap()
-        .as_ref()
-        .unwrap();
-    u32::from(!super::additions_conflict(evaluation.environment, facts))
+    let node = &mut evaluation.query.nodes[id];
+    let facts = node.value.as_ref().unwrap().as_ref().unwrap();
+    if node.node.users == 1 {
+        return u32::from(!super::additions_conflict(evaluation.environment, facts));
+    }
+    // All consumers of this result see the same immutable query environment.
+    // A new common result resets this decision when the environment changes.
+    u32::from(*node.valid_additions.get_or_insert_with(|| !super::additions_conflict(evaluation.environment, facts)))
 }
 unsafe extern "C" fn required_release(slot: Slot, id: usize, last: u32) -> u32 {
     let result = &mut unsafe { required_evaluation(slot) }.query.nodes[id];
@@ -800,6 +803,7 @@ impl<'a> RequiredQuery<'a> {
                 facts,
                 node: RequiredNode { left, right, kind, users: 0, remaining: 0 },
                 value: None,
+                valid_additions: None,
             });
         });
         let root = indices[&root.key()];
