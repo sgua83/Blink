@@ -2708,11 +2708,73 @@ u32 segment_scan_write(inout StageCursor out, SegmentGroup input, u32 group, u32
     return save.end;
 }
 
-void write_segment_count(inout StageCursor out, SegmentGroup input, u32 count) on cpu {
-    u32 zero = input.merge.zero;
-    PageAddress target = segment_page(input.source, input.count_target, zero, input.count_word);
-    PageAddressResult pointer = stage_address(out, target, zero, 0);
+void write_segment_count(inout StageCursor out, PageAddress target, u32 count) on cpu {
+    PageAddressResult pointer = stage_address(out, target, target.zero, 0);
     out.words = aligned_store(out.body, out.words, pointer.pointer, count, 4);
+}
+
+u32 segment_prefix(inout StageCursor out, PageAddress parent, u32 bool_type, u32 from, u32 step,
+    u32 words, address identity, address values) on cpu {
+    u32 first_group = stage_op(out, 170, bool_type, parent.index, parent.zero);
+    StageBranch load = stage_branch(out, first_group, true);
+    read_segment_summary(out, parent, step, words, values, values);
+    stage_close(out, load.end);
+    for (part in 0..words) {
+        u32 value = stage_phi(out, parent.u32_type, read_word(values, part), load.run,
+            read_word(identity, part), from);
+        put(values, u64(part), value);
+    }
+    return load.end;
+}
+
+struct SegmentOutput { u32 last; u32 end; u32 index; };
+
+SegmentOutput open_segment_output(inout StageCursor out, PageAddress source, u32 bool_type,
+    u32 length, u32 from, u32 segments) on cpu {
+    u32 u = source.u32_type;
+    u32 next = stage_op(out, 128, u, source.index, source.one);
+    u32 last = stage_op(out, 170, bool_type, next, length);
+    StageBranch look = stage_branch(out, last, true);
+    PageAddressResult pointer = stage_address(out, source, next, 0);
+    u32 head = stage_aligned_load(out, u, pointer.pointer, 4);
+    u32 starts = stage_op(out, 171, bool_type, head, source.zero);
+    stage_close(out, look.end);
+    u32 tail = stage_phi(out, bool_type, last, from, starts, look.run);
+
+    StageBranch store = stage_open(out, tail);
+    u32 index = stage_op(out, 130, u, segments, source.one);
+    return SegmentOutput(last, store.end, index);
+}
+
+void close_segment_output(inout StageCursor out, SegmentOutput output, PageAddress counter, u32 segments) on cpu {
+    stage_close(out, output.end);
+    StageBranch counted = stage_open(out, output.last);
+    write_segment_count(out, counter, segments);
+    stage_close(out, counted.end);
+}
+
+extern "C" CollectiveBranch open_custom_segment_finish(CustomSegmentPrefix input, address own,
+    address identity, u32 words, address workspace, address body) on cpu {
+    StageCursor out = StageCursor(body, 0u64, input.parent.next);
+    StageBranch write = stage_open(out, input.active);
+    read_segment_values(out, input.parent.u32_type, words, own, workspace);
+    address parent = word_at(workspace, u64(words));
+    u32 run = segment_prefix(out, input.parent, input.bool_type, write.run, input.step, words, identity, parent);
+    return CollectiveBranch(out.words, out.next, run, write.end);
+}
+
+extern "C" StageWords close_custom_segment_finish(CustomSegmentOutput input, address fields,
+    u32 field_count, address total, u32 segments, address body) on cpu {
+    StageCursor out = StageCursor(body, 0u64, input.source.next);
+    SegmentOutput output = open_segment_output(out, input.source, input.bool_type, input.length, input.from, segments);
+    if (field_count != 0) {
+        PageAddress row = segment_page(input.source, input.target, output.index, input.target_word);
+        write_collective_record(out, row, fields, field_count, total, false, address());
+    }
+    PageAddress counter = segment_page(input.source, input.count_target, input.source.zero, input.count_word);
+    close_segment_output(out, output, counter, segments);
+    stage_close(out, input.end);
+    return StageWords(out.words, out.next, input.end);
 }
 
 TreeWords segment_finish(inout StageCursor out, SegmentGroup input, u32 group, address fields,
@@ -2720,48 +2782,22 @@ TreeWords segment_finish(inout StageCursor out, SegmentGroup input, u32 group, a
     address workspace, address decorations) on cpu {
     StageBranch write = stage_open(out, input.active);
     u32 words = input.merge.value_words + 1 + input.merge.counted;
-    u64 span = u64(words);
-    address prefix_ptrs = word_at(workspace, span);
-    address prefix = word_at(workspace, 2u64 * span);
-    address total = word_at(workspace, 3u64 * span);
-    u32 u = input.merge.uint_type;
-    u32 b = input.merge.bool_type;
-    u32 zero = input.merge.zero;
-    u32 one = input.source.one;
+    address prefix = word_at(workspace, u64(words));
+    address total = word_at(workspace, 2u64 * u64(words));
     u64 decorated = merge_segment(out, input.merge, fields, field_count, exclusive, item, workspace, decorations);
 
-    u32 first_group = stage_op(out, 170, b, group, zero);
-    StageBranch load = stage_branch(out, first_group, true);
     PageAddress parent = segment_page(input.source, input.summary, group, 0);
-    read_segment_summary(out, parent, input.step, words, prefix_ptrs, prefix);
-    stage_close(out, load.end);
-    for (part in 0..words) {
-        u32 value = stage_phi(out, u, read_word(prefix, part), load.run, read_word(identity, part), write.run);
-        put(prefix, u64(part), value);
-    }
+    u32 joined = segment_prefix(out, parent, input.merge.bool_type, write.run, input.step, words, identity, prefix);
     decorated += merge_segment(out, input.merge, fields, field_count, prefix, workspace, total,
         word_at(decorations, decorated));
 
-    u32 next = stage_op(out, 128, u, input.source.index, one);
-    u32 last = stage_op(out, 170, b, next, input.count);
-    StageBranch look = stage_branch(out, last, true);
-    PageAddress source = segment_page(input.source, input.source.descriptor, next, input.head_word);
-    PageAddressResult pointer = stage_address(out, source, next, 0);
-    u32 head = stage_aligned_load(out, u, pointer.pointer, 4);
-    u32 starts = stage_op(out, 171, b, head, zero);
-    stage_close(out, look.end);
-    u32 tail = stage_phi(out, b, last, load.end, starts, look.run);
-
     u32 segments = read_word(total, input.merge.value_words + 1);
-    StageBranch store = stage_open(out, tail);
-    u32 index = stage_op(out, 130, u, segments, one);
-    PageAddress row = segment_page(input.source, input.target, index, 0);
-    write_segment_result(out, row, index, storage, field_count, total, 0, identity);
-    stage_close(out, store.end);
-
-    StageBranch counted = stage_open(out, last);
-    write_segment_count(out, input, segments);
-    stage_close(out, counted.end);
+    PageAddress source = segment_page(input.source, input.source.descriptor, input.source.index, input.head_word);
+    SegmentOutput output = open_segment_output(out, source, input.merge.bool_type, input.count, joined, segments);
+    PageAddress row = segment_page(input.source, input.target, output.index, 0);
+    write_segment_result(out, row, output.index, storage, field_count, total, 0, identity);
+    PageAddress counter = segment_page(input.source, input.count_target, input.merge.zero, input.count_word);
+    close_segment_output(out, output, counter, segments);
     stage_close(out, write.end);
     return TreeWords(out.words, decorated, out.next, write.end);
 }
@@ -2825,7 +2861,8 @@ extern "C" TreeWords segment_group(SegmentGroup input, address levels, address f
     }
     if (finish) {
         StageBranch zero = stage_open(out, empty);
-        write_segment_count(out, input, input.merge.zero);
+        PageAddress counter = segment_page(input.source, input.count_target, input.merge.zero, input.count_word);
+        write_segment_count(out, counter, input.merge.zero);
         stage_close(out, zero.end);
     } else {
         u32 published = counted || tail ? words : input.merge.value_words;

@@ -571,6 +571,31 @@ extern "C" CollectiveBranch open_custom_segment(u32 bool_type, u32 right_head, u
 extern "C" StageWords close_custom_segment(CustomSegmentJoin input, address left, address right,
     address values, address body) on cpu;
 
+struct CustomSegmentPrefix {
+    PageAddress parent;
+    u32 bool_type;
+    u32 active;
+    u32 step;
+};
+
+struct CustomSegmentOutput {
+    PageAddress source;
+    u32 bool_type;
+    u32 length;
+    u32 from;
+    u32 end;
+    u32 target;
+    u32 target_word;
+    u32 count_target;
+    u32 count_word;
+};
+
+// The workspace receives exclusive and parent summaries, words result IDs each.
+extern "C" CollectiveBranch open_custom_segment_finish(CustomSegmentPrefix input, address own,
+    address identity, u32 words, address workspace, address body) on cpu;
+extern "C" StageWords close_custom_segment_finish(CustomSegmentOutput input, address fields,
+    u32 field_count, address total, u32 segments, address body) on cpu;
+
 struct SegmentField {
     BuiltinScalar scalar;
     u32 word;

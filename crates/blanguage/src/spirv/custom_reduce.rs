@@ -81,7 +81,34 @@ struct CustomSegmentJoin {
     next: u32,
 }
 
+#[repr(C)]
+struct CustomSegmentPrefix {
+    parent: PageAddress,
+    bool_type: u32,
+    active: u32,
+    step: u32,
+}
+
+#[repr(C)]
+struct CustomSegmentOutput {
+    source: PageAddress,
+    bool_type: u32,
+    length: u32,
+    from: u32,
+    end: u32,
+    target: u32,
+    target_word: u32,
+    count_target: u32,
+    count_word: u32,
+}
+
 unsafe extern "C" {
+    #[link_name = "bootstrap.spirv_envelope::open_custom_segment_finish"]
+    fn open_custom_segment_finish(input: CustomSegmentPrefix, own: *const u32,
+        identity: *const u32, words: u32, workspace: *mut u32, body: *mut u32) -> CollectiveBranch;
+    #[link_name = "bootstrap.spirv_envelope::close_custom_segment_finish"]
+    fn close_custom_segment_finish(input: CustomSegmentOutput, fields: *const CollectiveField,
+        field_count: u32, total: *const u32, segments: u32, body: *mut u32) -> StageWords;
     #[link_name = "bootstrap.spirv_envelope::open_custom_segment"]
     fn open_custom_segment(bool_type: u32, right_head: u32, zero: u32, next: u32,
         body: *mut u32) -> CollectiveBranch;
@@ -494,11 +521,9 @@ impl Emitter<'_> {
         let r = &reduction.values;
         let summary = Summary::Counted(reduction.head_word);
         let words = reduction.summary_words();
-        let k = r.ty.size.div_ceil(4) as usize;
         let u = self.types[&Scalar::U32];
         let b = self.types[&Scalar::Bool];
         let zero = self.constant(Scalar::U32, 0);
-        let one = self.constant(Scalar::U32, 1);
         let width = self.constant(Scalar::U32, 64);
         let group = self.id();
         self.emit(134, &[u, group, self.index, width]);
@@ -568,85 +593,77 @@ impl Emitter<'_> {
         }
         self.scan_barrier();
         self.custom_tree(r, kernel, local, shared, pointer, remaining, &own, true, summary)?;
+        if pass != Pass::ScanTail {
+            return self.custom_segmented_finish(reduction, kernel, active, count, group, &own, &identity, &input);
+        }
         let result = self.read_summary_words(&own);
         let write = self.id();
         let end = self.id();
         self.emit(247, &[end, 0]);
         self.emit(250, &[active, write, end]);
         self.emit(248, &[write]);
-        if pass == Pass::ScanTail {
-            let target = self.summary_addresses(words, r.fields.target, self.index);
-            self.write_summary_words(&target, &result);
-        } else {
-            let inclusive = self.custom_merge(r, kernel, &result, &input, summary)?;
-            let first_group = self.id();
-            self.emit(170, &[b, first_group, group, zero]);
-            let load = self.id();
-            let loaded = self.id();
-            let before = self.current_label;
-            self.emit(247, &[loaded, 0]);
-            self.emit(250, &[first_group, loaded, load]);
-            self.emit(248, &[load]);
-            let prefix = self.summary_addresses(words, self.program.buffers.len(), group);
-            let prefix = self.read_summary_words(&prefix);
-            self.emit(249, &[loaded]);
-            self.emit(248, &[loaded]);
-            let prefix: Vec<_> = prefix
-                .iter()
-                .zip(&identity)
-                .map(|(v, i)| {
-                    let p = self.id();
-                    self.emit(245, &[u, p, *v, load, *i, before]);
-                    p
-                })
-                .collect();
-            let total = self.custom_merge(r, kernel, &prefix, &inclusive, summary)?;
-            let next = self.id();
-            self.emit(128, &[u, next, self.index, one]);
-            let last = self.id();
-            self.emit(170, &[b, last, next, count]);
-            let look = self.id();
-            let looked = self.id();
-            let before = self.current_label;
-            self.emit(247, &[looked, 0]);
-            self.emit(250, &[last, looked, look]);
-            self.emit(248, &[look]);
-            let next_head = self.address_scalar(Scalar::U32,
-                r.fields.source,
-                next,
-                reduction.head_word);
-            let next_head = self.read_summary_words(&[next_head])[0];
-            let head = self.id();
-            self.emit(171, &[b, head, next_head, zero]);
-            self.emit(249, &[looked]);
-            self.emit(248, &[looked]);
-            let tail = self.id();
-            self.emit(245, &[b, tail, last, before, head, look]);
-            let emit_tail = self.id();
-            let emitted = self.id();
-            self.emit(247, &[emitted, 0]);
-            self.emit(250, &[tail, emit_tail, emitted]);
-            self.emit(248, &[emit_tail]);
-            let index = self.id();
-            self.emit(130, &[u, index, total[k + 1], one]);
-            self.custom_store_target(r, index, &total[..k]);
-            self.emit(249, &[emitted]);
-            self.emit(248, &[emitted]);
-            let emit_count = self.id();
-            let counted = self.id();
-            self.emit(247, &[counted, 0]);
-            self.emit(250, &[last, emit_count, counted]);
-            self.emit(248, &[emit_count]);
-            let target = self.address_scalar(Scalar::U32,
-                reduction.count.binding,
-                zero,
-                reduction.count.word);
-            self.write_summary_words(&[target], &[total[k + 1]]);
-            self.emit(249, &[counted]);
-            self.emit(248, &[counted]);
-        }
+        let target = self.summary_addresses(words, r.fields.target, self.index);
+        self.write_summary_words(&target, &result);
         self.emit(249, &[end]);
         self.emit(248, &[end]);
+        Ok(())
+    }
+
+    fn custom_segmented_finish(
+        &mut self,
+        reduction: &CustomSegmentedReduction,
+        kernel: &ReductionKernel,
+        active: u32,
+        length: u32,
+        group: u32,
+        own: &[u32],
+        identity: &[u32],
+        item: &[u32],
+    ) -> Result<(), &'static str> {
+        let r = &reduction.values;
+        let summary = Summary::Counted(reduction.head_word);
+        let words = own.len();
+        let bool_type = self.types[&Scalar::Bool];
+        let step = self.constant(Scalar::U64, 4);
+        let parent = self.page_input(Scalar::U32,
+            PageSource::Dataset(self.buffers[self.program.buffers.len()]), group, Some(0), 0);
+        let prefix = CustomSegmentPrefix { parent, bool_type, active, step };
+        let mut workspace = vec![0; 2 * words];
+        let body = self.body.len();
+        self.body.reserve(136 + 28 * words);
+        let open = unsafe {
+            let open = open_custom_segment_finish(prefix, own.as_ptr(), identity.as_ptr(),
+                words as u32, workspace.as_mut_ptr(), self.body.as_mut_ptr().add(body));
+            self.body.set_len(body + open.words as usize);
+            open
+        };
+        self.next = open.next;
+        self.current_label = open.run;
+
+        let (exclusive, prefix) = workspace.split_at(words);
+        let inclusive = self.custom_merge(r, kernel, exclusive, item, summary)?;
+        let total = self.custom_merge(r, kernel, prefix, &inclusive, summary)?;
+
+        let fields = self.collective_fields(&r.ty, None);
+        let target_word = if r.fields.target_word == 0 { 0 }
+            else { self.constant(Scalar::U32, r.fields.target_word) };
+        let count_word = self.constant(Scalar::U32, reduction.count.word);
+        let source = self.page_input(Scalar::U32, PageSource::Dataset(self.buffers[r.fields.source]),
+            self.index, Some(reduction.head_word), 0);
+        let output = CustomSegmentOutput {
+            source, bool_type, length, from: self.current_label, end: open.end,
+            target: self.buffers[r.fields.target], target_word,
+            count_target: self.buffers[reduction.count.binding], count_word,
+        };
+        let body = self.body.len();
+        self.body.reserve(420 + 44 * fields.len());
+        unsafe {
+            let emitted = close_custom_segment_finish(output, fields.as_ptr(), fields.len() as u32,
+                total.as_ptr(), total[words - 1], self.body.as_mut_ptr().add(body));
+            self.body.set_len(body + emitted.words as usize);
+            self.next = emitted.next;
+            self.current_label = emitted.label;
+        }
         Ok(())
     }
     fn custom_result_target(&mut self, r: &CustomReduction, index: u32) -> (PageAddress, Vec<CollectiveField>) {
