@@ -2347,7 +2347,7 @@ impl GpuProgram {
         let mut binding_parameters = None;
         // 同一串行提交中，完成消费的同容量 where 工作区由后续阶段复用。
         let mut scratch_uses = Vec::new();
-        let mut selected_storage = BTreeMap::new();
+        let mut selected_storage = BTreeMap::<u32, (usize, BTreeSet<usize>)>::new();
         let stage_count = c.program.stages().len();
         let query_count = if self.capture_timestamps {
             u32::try_from(stage_count as u64 * 2 * steps.get() as u64)?
@@ -2356,17 +2356,25 @@ impl GpuProgram {
         let mut extra_sets = 0u64;
         for (i, stage) in c.program.stages().iter().enumerate() {
             let count = data[stage.domain].count;
-            if stage.selection.is_some() {
-                if let Some(&slot) = selected_storage.get(&count) {
-                    extra_sets += (scan::levels(count) * 2 + 1) as u64;
-                    scratch_uses.push(ScratchUse {
-                        stage: i,
-                        slot,
-                        reused: true,
-                    });
-                    continue;
+            if let Some(selection) = stage.selection {
+                use std::collections::btree_map::Entry;
+                let ((slot, sources), reused) = match selected_storage.entry(count) {
+                    Entry::Occupied(entry) => (entry.into_mut(), true),
+                    Entry::Vacant(entry) => {
+                        let slot = scratch.len();
+                        let mut temporary = selection::allocate(c, count)?;
+                        temporary.arguments = Some(prefix::allocate(c, stage)?);
+                        scratch.push(temporary);
+                        extra_sets += 2;
+                        (entry.insert((slot, BTreeSet::new())), false)
+                    }
+                };
+                let levels = scan::levels(count);
+                if levels > 1 && sources.insert(selection.binding) {
+                    extra_sets += ((levels - 1) * 2) as u64;
                 }
-                selected_storage.insert(count, scratch.len());
+                scratch_uses.push(ScratchUse { stage: i, slot: *slot, reused });
+                continue;
             }
             let temporary = match stage.operation {
                 blanguage::ir::Operation::Reduce(blanguage::ir::ReductionSpec {
@@ -2422,16 +2430,12 @@ impl GpuProgram {
                         sorting: Some(sorting),
                     })
                 }
-                blanguage::ir::Operation::Map if stage.selection.is_some() => {
-                    extra_sets += (scan::levels(count) * 2) as u64;
-                    Some(selection::allocate(c, count)?)
-                }
                 blanguage::ir::Operation::Map => {
                     direct_map |= count != 0 && stage.prefix.is_none();
                     None
                 }
             };
-            let temporary = if stage.prefix.is_some() || stage.selection.is_some() {
+            let temporary = if stage.prefix.is_some() {
                 let mut temporary = temporary.unwrap_or(Scratch {
                     buffers: Vec::new(),
                     arguments: None,
@@ -2452,7 +2456,6 @@ impl GpuProgram {
                 scratch.push(temporary);
             }
         }
-        drop(selected_storage);
         let mut accesses: Vec<_> = data.owners.iter().map(|dataset| BindingAccess {
             producer: dataset.producer,
             pending_read: false,
@@ -2524,6 +2527,10 @@ impl GpuProgram {
                 let direct_set = direct_map
                     .then(|| descriptors.as_mut().unwrap().set(&[], None, None, None, None))
                     .transpose()?;
+                let selection_sets = selected_storage.into_iter().map(|(count, (slot, sources))| {
+                    selection::descriptors(descriptors.as_mut().unwrap(), &scratch[slot], count, sources)
+                        .map(|sets| (count, sets))
+                }).collect::<Result<BTreeMap<_, _>>>()?;
                 let mut sorting_sets = Vec::new();
                 for usage in &scratch_uses {
                     if let blanguage::ir::Operation::StableSort(sorting) =
@@ -2601,7 +2608,8 @@ impl GpuProgram {
                         let temporary = usage.map(|usage| &scratch[usage.slot]);
                         let arguments = temporary.and_then(|s| s.arguments.as_ref());
                         let prefix_set = if let Some(args) = arguments.filter(|_| {
-                            !matches!(stage.operation, blanguage::ir::Operation::StableSort(_))
+                            stage.selection.is_none()
+                                && !matches!(stage.operation, blanguage::ir::Operation::StableSort(_))
                         }) {
                             let set = prefix::descriptor(descriptors.as_mut().unwrap(), args)?;
                             prefix::prepare(
@@ -2637,14 +2645,15 @@ impl GpuProgram {
                             blanguage::ir::Operation::Map if stage.selection.is_some() => {
                                 selection::record(
                                     &commands,
-                                    descriptors.as_mut().unwrap(),
+                                    &selection_sets[&count],
                                     c,
                                     i,
-                                    &data,
-                                    temporary.unwrap(),
+                                    count,
+                                    arguments.unwrap(),
                                     &mut uniforms,
                                     self.partition_elements,
-                                )?;
+                                    step > 0 || usage.unwrap().reused,
+                                );
                             }
                             blanguage::ir::Operation::Map if stage.prefix.is_some() => {
                                 prefix::dispatch(

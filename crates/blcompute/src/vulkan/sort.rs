@@ -96,17 +96,12 @@ pub(super) fn descriptors(
             None,
         )?;
     }
-    let r = blanguage::ir::Reduction {
-        source: sorting.source,
-        source_word: 0,
-        target: sorting.target,
-        target_word: 0,
-    };
     let scan = scan::descriptors(
         writer,
-        &r,
+        (sorting.source, sorting.target),
         false,
-        (storage.histogram_count, storage.histogram.descriptor()),
+        storage.histogram_count,
+        scan::ScanRoot::Source(storage.histogram.descriptor()),
         storage.prefixes.descriptor(),
         &storage.scan,
         indirect,

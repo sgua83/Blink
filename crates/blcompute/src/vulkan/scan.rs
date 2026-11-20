@@ -38,21 +38,44 @@ pub(super) fn allocate(c: &Compiled, mut count: u32, words: usize) -> Result<Scr
 }
 pub(super) struct Descriptors([u64; 2 * blanguage::spirv::PREFIX_LEVELS - 1]);
 
+impl Descriptors {
+    pub(super) fn with_root(root: u64) -> Self {
+        let mut sets = Self([0; 2 * blanguage::spirv::PREFIX_LEVELS - 1]);
+        sets.0[0] = root;
+        sets
+    }
+    pub(super) fn root(&self) -> u64 {
+        self.0[0]
+    }
+}
+
+pub(super) enum ScanRoot {
+    Source(VkDescriptorBufferInfo),
+    Set(u64),
+}
+
 pub(super) fn descriptors(
     writer: &mut DescriptorWriter<'_>,
-    r: &blanguage::ir::Reduction,
+    (source_binding, target_binding): (usize, usize),
     segmented: bool,
-    source: (u32, VkDescriptorBufferInfo),
+    count: u32,
+    first: ScanRoot,
     root_target: VkDescriptorBufferInfo,
     temporary: &[PagedBuffer],
     arguments: Option<VkDescriptorBufferInfo>,
 ) -> Result<Descriptors> {
-    let level_count = levels(source.0);
+    let level_count = levels(count);
     let selection_buffer = writer.compiled.program.selection_buffer();
     let mut sets = Descriptors([0; 2 * blanguage::spirv::PREFIX_LEVELS - 1]);
     for level in 0..level_count {
         let source = if level == 0 {
-            source.1
+            match first {
+                ScanRoot::Source(info) => info,
+                ScanRoot::Set(set) => {
+                    sets.0[0] = set;
+                    continue;
+                }
+            }
         } else {
             temporary[(level - 1) * 2].descriptor()
         };
@@ -63,16 +86,16 @@ pub(super) fn descriptors(
         };
         let auxiliary = &temporary[level * 2];
         let bindings = [
-            (r.source != r.target && (level > 0 || r.target != selection_buffer))
-                .then_some((r.source, source)),
-            Some((r.target, target)),
+            (source_binding != target_binding)
+                .then_some((source_binding, source)),
+            Some((target_binding, target)),
         ];
         sets.0[level] = writer.set(
             &bindings,
             Some((auxiliary).descriptor()),
             arguments,
-            (r.target == selection_buffer).then_some(target),
-            (r.source == r.target && level > 0).then_some(source),
+            (target_binding == selection_buffer).then_some(target),
+            (source_binding == target_binding && level > 0).then_some(source),
         )?;
     }
     for level in (0..level_count - 1).rev() {
@@ -83,8 +106,8 @@ pub(super) fn descriptors(
             temporary[(level - 1) * 2 + 1].descriptor()
         };
         let bindings = [
-            (r.source != r.target).then_some((r.source, source)),
-            Some((r.target, target)),
+            (source_binding != target_binding).then_some((source_binding, source)),
+            Some((target_binding, target)),
         ];
         sets.0[level_count + level] = writer.set(
             &bindings,
@@ -94,8 +117,8 @@ pub(super) fn descriptors(
                 None
             },
             arguments,
-            (r.target == selection_buffer).then_some(target),
-            (r.source == r.target).then_some(source),
+            (target_binding == selection_buffer).then_some(target),
+            (source_binding == target_binding).then_some(source),
         )?;
     }
     Ok(sets)
@@ -117,7 +140,8 @@ pub(super) fn record(
     argument_base: usize,
 ) -> Result<()> {
     let sets = descriptors(
-        writer, r, segmented, source, root_target, temporary, arguments.map(PagedBuffer::descriptor),
+        writer, (r.source, r.target), segmented, source.0, ScanRoot::Source(source.1),
+        root_target, temporary, arguments.map(PagedBuffer::descriptor),
     )?;
     record_dispatches(
         commands, c, kernels, source.0, &sets, arguments, uniforms, partition, argument_base,
