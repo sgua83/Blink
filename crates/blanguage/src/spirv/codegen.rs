@@ -282,6 +282,14 @@ struct PayloadEmission {
 }
 
 #[repr(C)]
+struct PackedField {
+    value: u32,
+    offset: u32,
+    byte_shift: u32,
+    zero: u32,
+}
+
+#[repr(C)]
 struct PayloadRead {
     words: u64,
     next: u32,
@@ -680,6 +688,9 @@ unsafe extern "C" {
         input: PayloadEmission, value: u32, pointers: *const u32, shifts: *const u32,
         output: *mut u32, body: *mut u32,
     ) -> PayloadWrite;
+    #[link_name = "bootstrap.spirv_envelope::pack_field"]
+    fn pack_field(input: PayloadEmission, field: PackedField, high_shift: u32,
+        packed: *mut u32, body: *mut u32) -> PayloadWrite;
     #[link_name = "bootstrap.spirv_envelope::open_selection"]
     fn open_selection(merge: u32, condition: u32, yes: u32, no: u32, body: *mut u32) -> ControlWords;
     #[link_name = "bootstrap.spirv_envelope::next_control_block"]
@@ -1447,19 +1458,17 @@ impl Emitter<'_> {
         let zero = self.constant(Scalar::U32, 0);
         let mut values = vec![zero; size.div_ceil(4) as usize];
         for (scalar, offset, value) in components {
-            for (part, mut word) in self.split_words(scalar, value, Scalar::U32).into_iter().enumerate() {
-                let at = (offset / 4) as usize + part;
-                if offset % 4 != 0 {
-                    let shift = self.constant(Scalar::U32, offset % 4 * 8);
-                    let shifted = self.id();
-                    self.emit(196, &[self.types[&Scalar::U32], shifted, word, shift]);
-                    word = shifted;
-                }
-                if values[at] == zero { values[at] = word; } else {
-                    let joined = self.id();
-                    self.emit(197, &[self.types[&Scalar::U32], joined, values[at], word]);
-                    values[at] = joined;
-                }
+            let byte_shift = if offset % 4 == 0 { 0 } else { self.constant(Scalar::U32, offset % 4 * 8) };
+            let count = scalar.size().div_ceil(4) as usize;
+            let (input, shifts) = self.payload_input(scalar, Scalar::U32, count, PayloadAccess::Words);
+            let field = PackedField { value, offset, byte_shift, zero };
+            let at = self.body.len();
+            // A field can emit one split shift, two conversions and two shift/merge pairs.
+            self.body.reserve(33);
+            unsafe {
+                let result = pack_field(input, field, shifts[1], values.as_mut_ptr(), self.body.as_mut_ptr().add(at));
+                self.body.set_len(at + result.words as usize);
+                self.next = result.next;
             }
         }
         values

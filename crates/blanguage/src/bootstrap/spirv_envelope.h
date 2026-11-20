@@ -210,6 +210,10 @@ struct PayloadEmission {
 };
 struct PayloadRead { u64 words; u32 next; u32 value; };
 struct PayloadWrite { u64 words; u32 next; };
+struct PackedField { u32 value; u32 offset; u32 byte_shift; u32 zero; };
+// The caller owns the zero-initialized record IDs and supplies space for up to
+// 33 body words: one split shift, two conversions and two shift/merge pairs.
+extern "C" PayloadWrite pack_field(PayloadEmission input, PackedField field, u32 high_shift, address packed, address body) on cpu;
 // The original paged record contains count consecutive u32 words. The caller
 // provides count pointer slots; step is the constant ID for a four-byte advance.
 extern "C" PayloadWrite summary_addresses(PageAddress input, u32 step, address pointers, u32 count, address body) on cpu;

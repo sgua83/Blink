@@ -775,30 +775,51 @@ extern "C" PayloadRead payload_read(PayloadEmission input, address operands, add
     return PayloadRead(at, next, value);
 }
 
+u32 payload_word(inout StageCursor out, PayloadEmission input, u32 value, u32 shift) on cpu {
+    u32 word = value;
+    if (shift != 0) {
+        word = stage_op(out, 194, input.raw_type, value, shift);
+    }
+    if (input.raw_type != input.unit_type) {
+        u32 converted = out.next;
+        out.words = words_three(out.body, out.words, 113, input.unit_type, converted, word);
+        out.next += 1;
+        word = converted;
+    }
+    return word;
+}
+
 extern "C" PayloadWrite payload_write(PayloadEmission input, u32 value, address pointers, address shifts, address output, address body) on cpu {
-    u64 at = 0u64;
-    u32 next = input.next;
+    StageCursor out = StageCursor(body, 0u64, input.next);
     for (part in 0..input.count) {
-        u32 word = value;
-        if (part != 0) {
-            at = words_four(body, at, 194, input.raw_type, next, value, read_word(shifts, part));
-            word = next;
-            next += 1;
-        }
-        if (input.raw_type != input.unit_type) {
-            at = words_three(body, at, 113, input.unit_type, next, word);
-            word = next;
-            next += 1;
-        }
+        u32 word = payload_word(out, input, value, part == 0 ? 0 : read_word(shifts, part));
         if (input.access == PayloadAccess::Words) {
             put(output, u64(part), word);
         } else if (input.access == PayloadAccess::Physical) {
-            at = aligned_store(body, at, read_word(pointers, part), word, input.unit_bytes);
+            out.words = aligned_store(body, out.words, read_word(pointers, part), word, input.unit_bytes);
         } else {
-            at = words_two(body, at, 62, read_word(pointers, part), word);
+            out.words = words_two(body, out.words, 62, read_word(pointers, part), word);
         }
     }
-    return PayloadWrite(at, next);
+    return PayloadWrite(out.words, out.next);
+}
+
+extern "C" PayloadWrite pack_field(PayloadEmission input, PackedField field, u32 high_shift, address packed, address body) on cpu {
+    StageCursor out = StageCursor(body, 0u64, input.next);
+    u32 first = field.offset / 4;
+    for (part in 0..input.count) {
+        u32 word = payload_word(out, input, field.value, part == 0 ? 0 : high_shift);
+        if (field.byte_shift != 0) {
+            word = stage_op(out, 196, input.unit_type, word, field.byte_shift);
+        }
+        u32 slot = first + part;
+        u32 previous = read_word(packed, slot);
+        if (previous != field.zero) {
+            word = stage_op(out, 197, input.unit_type, previous, word);
+        }
+        put(packed, u64(slot), word);
+    }
+    return PayloadWrite(out.words, out.next);
 }
 
 u64 open_conditional(address body, u64 at, u32 merge, u32 condition, u32 yes, u32 no) on cpu {
