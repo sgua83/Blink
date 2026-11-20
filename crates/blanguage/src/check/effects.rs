@@ -27,7 +27,11 @@ enum Write {
         local_value: bool,
     },
     External { call:Expr, instance:Option<crate::generics::Instance>, arguments:BTreeMap<ValueIdentity,bounds::Proof>, syntax:Expressions },
-    Memory { call:Expr, borrow:view::Borrow },
+    Memory {
+        call: Expr,
+        borrow: view::Borrow,
+        effect: std::cell::OnceCell<Option<address::MemoryEffect>>,
+    },
     Generator(Expr),
 }
 
@@ -42,6 +46,15 @@ impl<F: std::ops::AsyncFnMut(Write) -> Result<()>> WriteSink for F {
 }
 
 impl Write {
+    fn memory(call: Expr, borrow: view::Borrow) -> Self {
+        Self::Memory { call, borrow, effect: std::cell::OnceCell::new() }
+    }
+
+    fn memory_effect(&self) -> Option<&address::MemoryEffect> {
+        let Self::Memory { borrow, effect, .. } = self else { return None; };
+        effect.get_or_init(|| Builder::address_write_effect(borrow)).as_ref()
+    }
+
     fn restrict_move(&mut self,condition:&bounds::Condition) {
         if let Self::Move{when,..}=self{*when=when.clone().logical(condition.clone(),false);}
     }
@@ -201,7 +214,7 @@ impl Builder<'_> {
                     .iter()
                     .any(|write| match write {
                         Write::External{..}|Write::Generator(_)=>true,
-                        Write::Memory{borrow,..}=>self.env.get(name).and_then(Binding::stored_place).is_some_and(|owner|!self.memory_effect_components(self.address_write_effect(borrow).as_ref(), &owner, false).is_empty()),
+                        Write::Memory{..}=>self.env.get(name).and_then(Binding::stored_place).is_some_and(|owner|!self.memory_effect_components(write.memory_effect(), &owner, false).is_empty()),
                         Write::Position{contents:false,place,..}=>assigned_root(&place).as_deref()==Some(name)||address_write(place),
                         _=>false,
                     }) =>
@@ -289,27 +302,21 @@ impl Builder<'_> {
         condition: Option<&Expr>,
         cursor: Option<&str>,
     ) -> Result<()> {
-        let mut memory_effects=Vec::new();
         for write in writes {
-            let effect=(async || -> Result<_> {
-            let address_effect = match write {
-                Write::Memory { borrow, .. } => self.address_write_effect(borrow),
-                _ => None,
-            };
             if let Write::Memory { borrow, .. } = write
-                && let Some(effect) = &address_effect
+                && let Some(effect) = write.memory_effect()
             {
                 unsafe { self.world.call(self.update_address_elements(borrow, effect)).await }?;
-                return Ok(address_effect);
+                continue;
             }
             let changed=match write {
-                Write::Move{..}=>return Ok(address_effect),
+                Write::Move{..}=>continue,
                 Write::External{..}|Write::Generator(_)|Write::Memory{..}=>{
                     let contents=self.env.values().flat_map(Binding::application_resources).map(|data|(
                         data.root.identity(),view::resource_borrow(data),data.ty.components.iter().map(|(_,word)|*word).collect::<Vec<_>>()
                     )).collect::<Vec<_>>();
                     for(source,resource,words)in contents{unsafe { self.world.call(self.update_application_elements(&[source],&resource,&words,application::ElementUpdate::Unknown)).await }?;}
-                    return Ok(address_effect);
+                    continue;
                 },
                 Write::Position{place,contents:true,when,..}=>self.written_application_data(place).map(|(data,offset,ty)|(
                     vec![data.root.identity()],view::resource_borrow(data),ty.components.iter().map(|(_,word)|offset+word).collect::<Vec<_>>(),None,when.as_ref()
@@ -321,9 +328,6 @@ impl Builder<'_> {
                 )),
             };
             if let Some((sources,resource,words,index,when))=changed{unsafe { self.world.call(self.update_application_elements(&sources,&resource,&words,application::ElementUpdate::Element{proof:&bounds::Proof::default(),index,when})).await }?;}
-            Ok(address_effect)
-            })().await?;
-            memory_effects.push(effect);
         }
         let mut resources = Vec::new();
         for (name,binding) in &self.env {
@@ -352,7 +356,7 @@ impl Builder<'_> {
                 if condition.is_some() && matches!(binding, Binding::Owned(_))
                     && owner.ty() == &Ty::scalar(Scalar::U32)
                     && matches!(owner.storage(), Place::Local(..) | Place::Reference { .. }) { continue; }
-                for (write, address_effect) in writes.iter().zip(&memory_effects) {
+                for write in writes {
                     if cursor==Some(name.as_str())
                         &&let Place::ApplicationElement{identity,index_value,element_layout,..}=owner.storage()
                         &&let Write::Position{place,contents:false,..}=write
@@ -366,7 +370,7 @@ impl Builder<'_> {
                         Write::Memory{..}=>{
                             let outside_element = cursor == Some(name.as_str())
                                 && matches!(owner.storage(), Place::ApplicationElement{..});
-                            vec![self.memory_effect_components(address_effect.as_ref(), &owner, outside_element)]
+                            vec![self.memory_effect_components(write.memory_effect(), &owner, outside_element)]
                         },
                         Write::Position{place,contents,iterator,..}=>{
                             let projection=if *contents {self.application_write_projection(place,&owner)}
@@ -385,7 +389,7 @@ impl Builder<'_> {
             Write::Position{contents:false,place,..}=>address_write(place),
             _=>false,
         });
-        let deferred=writes.iter().zip(&memory_effects).any(|(write,address_effect)|matches!(write,Write::Memory{..})&&address_effect.is_none());
+        let deferred=writes.iter().any(|write|matches!(write,Write::Memory{..})&&write.memory_effect().is_none());
         for (name, binding) in &mut self.env {
             let context=self.loop_contexts.last_mut().unwrap();
             if deferred && context.view_scope.is_some() {
@@ -512,7 +516,7 @@ impl Builder<'_> {
                         None=>view::Borrow::source(view::Source::Unresolved),
                     };
                     if let Some(when)=when {borrow=borrow.restricted(&when.assume(&self.path,true));}
-                    Write::Memory{call:place,borrow}
+                    Write::memory(place,borrow)
                 },
                 Write::Generator(factory)=>{
                     if let Some(instance)=unsafe { self.world.call(Scope::current(self).factory_instance(&factory)).await }? {
@@ -554,11 +558,11 @@ impl Builder<'_> {
                         Some(memory)=>{
                             normalized.extend(memory.into_iter().filter_map(|(borrow,_,_)|{
                                 let borrow=borrow.restricted(&self.path);
-                                borrow.active().then_some(Write::Memory{call:call.clone(),borrow})
+                                borrow.active().then_some(Write::memory(call.clone(),borrow))
                             }));
                             continue;
                         },
-                        None=>Write::Memory{call,borrow:view::Borrow::source(view::Source::Unresolved)},
+                        None=>Write::memory(call,view::Borrow::source(view::Source::Unresolved)),
                     }
                 },
                 write=>write,
@@ -1131,7 +1135,7 @@ impl<'b, 'w> Scope<'b, 'w> {
                     let element=self.builder.is_some() && assigned_root(&lhs).is_some_and(|name|
                         self.bindings.iter().rev().find(|(bound,_)|*bound==name).is_some_and(|(_,local)|matches!(local,Local::NamedElement(_))));
                     if element && let Some((_,_,borrow))=unsafe { self.world.call(self.input_snapshot(&lhs,self.bindings.len(),Access::Write,None,None)).await }? {
-                        writes.accept(world, Write::Memory{call:lhs.clone(),borrow}).await?;
+                        writes.accept(world, Write::memory(lhs.clone(),borrow)).await?;
                     } else {
                         writes.accept(world, Write::Position{ place: lhs.clone(), call: None, contents: false, iterator: None,when:None,local_value:self.builder.is_some()&&unsafe { self.world.call(self.local_value_write(&lhs)).await }?==Some(true)}).await?;
                     }
@@ -1656,14 +1660,14 @@ impl Builder<'_> {
                 }
             }
             let(scalar,word)=target.base.components[*component];let origin=address::Origin{root:address::Root::Resource{borrow:target.resource.clone(),index:target.index},layout:address::Layout{size:scalar.size(),align:scalar.size(),parts:vec![(scalar,0)].into()},base:address::Layout::of(&target.base),words:vec![word].into(),positions:Arc::from([]),writable:true,initialized:vec![false].into()};
-            let borrow=view::Borrow::source(view::Source::Position(Arc::new(origin)));let changed=self.memory_effect_components(self.address_write_effect(&borrow).as_ref(), &owner, false);
+            let borrow=view::Borrow::source(view::Source::Position(Arc::new(origin)));let changed=self.memory_effect_components(Self::address_write_effect(&borrow).as_ref(), &owner, false);
             return Ok(parts.iter().flatten().any(|component|changed.contains(component)));
         }
         let LoopPlace::Stored(owner,component)=target else {
             return Ok(matches!(write,Write::Position{contents:false,place,..}if matches!(place.kind(),ExprKind::Name(bound)if bound==name)));
         };
         let component=*component;
-        if let Write::Memory{borrow,..}=write{return Ok(self.memory_effect_components(self.address_write_effect(borrow).as_ref(), owner, false).contains(&component));}
+        if matches!(write,Write::Memory{..}){return Ok(self.memory_effect_components(write.memory_effect(), owner, false).contains(&component));}
         let Write::Position{place,contents,iterator,..}=write else{return Ok(true);};
         let projection = if *contents { self.application_write_projection(place, owner) }
             else { unsafe { self.world.call(self.written_projection(place, name, owner, iterator.as_ref().map(|(name,index)|(name.as_str(),index)), writes)).await }? };

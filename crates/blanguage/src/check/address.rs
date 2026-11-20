@@ -1047,7 +1047,7 @@ impl Builder<'_> {
         }).is_some()
     }
 
-    pub(super) fn address_write_effect(&self, borrow: &view::Borrow) -> Option<MemoryEffect> {
+    pub(super) fn address_write_effect(borrow: &view::Borrow) -> Option<MemoryEffect> {
         let mut effect = MemoryEffect::default();
         Self::visit_address_writes(borrow, |origin, when| {
             if origin.writable { origin.collect_memory_regions(&when, None)?; }
