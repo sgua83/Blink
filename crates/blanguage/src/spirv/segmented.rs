@@ -1,5 +1,5 @@
 //! 分段摘要携带尾段值与段头标记；归约额外携带段数，摘要始终留在设备。
-use super::*;
+use super::{scan::TreeWords, *};
 
 #[repr(C)]
 struct SegmentField {
@@ -28,7 +28,34 @@ struct SegmentWords {
     next: u32,
 }
 
+#[repr(C)]
+struct SegmentLevel {
+    mask: u32,
+    stride: u32,
+}
+
+#[repr(C)]
+struct SegmentTree {
+    merge: SegmentMerge,
+    shared: u32,
+    pointer: u32,
+    lane: u32,
+    remaining: u32,
+    one: u32,
+    scope: u32,
+    semantics: u32,
+    down: u32,
+}
+
+struct SegmentTreeLayout {
+    levels: [SegmentLevel; 6],
+    words: Vec<u32>,
+}
+
 unsafe extern "C" {
+    #[link_name = "bootstrap.spirv_envelope::segment_tree"]
+    fn emit_segment_tree(input: SegmentTree, levels: *const SegmentLevel, fields: *const SegmentField,
+        count: u32, words: *mut u32, body: *mut u32, decorations: *mut u32) -> TreeWords;
     #[link_name = "bootstrap.spirv_envelope::merge_segment"]
     fn merge_segment(input: SegmentMerge, fields: *const SegmentField, count: u32,
         left: *const u32, right: *const u32, values: *mut u32, body: *mut u32,
@@ -83,9 +110,9 @@ impl Emitter<'_> {
         words[k]=self.read_summary_words(&[at])[0];
         words
     }
-    fn segment_combine(&mut self, scan: &Segment<'_>, left: &[u32], right: &[u32]) -> Vec<u32> {
+    fn segment_merge_input(&mut self, scan: &Segment<'_>) -> SegmentMerge {
         let zero = self.constant(Scalar::U32, 0);
-        let input = SegmentMerge {
+        SegmentMerge {
             operator: scan.operator as u32,
             uint_type: self.types[&Scalar::U32],
             bool_type: self.types[&Scalar::Bool],
@@ -93,8 +120,12 @@ impl Emitter<'_> {
             value_words: scan.ty.size.div_ceil(4),
             counted: u32::from(scan.counted),
             next: self.next,
-        };
-        let mut values = vec![zero; scan.summary_words()];
+        }
+    }
+
+    fn segment_combine(&mut self, scan: &Segment<'_>, left: &[u32], right: &[u32]) -> Vec<u32> {
+        let input = self.segment_merge_input(scan);
+        let mut values = vec![input.zero; scan.summary_words()];
         let body = self.body.len();
         let decorations = self.decorations.len();
         self.body.reserve(15 + 74 * scan.fields.len());
@@ -166,9 +197,8 @@ impl Emitter<'_> {
         let own = self.shared_planes(shared, pointer, local, scan.summary_words());
         self.write_summary_words(&own, &input);
         self.scan_barrier();
-        for width in [1, 2, 4, 8, 16, 32] {
-            self.segment_tree(scan, local, shared, pointer, width, false, remaining);
-        }
+        let mut layout = self.segment_tree_layout(scan);
+        self.segment_tree(scan, &mut layout, local, shared, pointer, false, remaining);
         let last = self.constant(Scalar::U32, 63);
         let width = self.constant(Scalar::U32, 64);
         let group = self.id();
@@ -191,9 +221,7 @@ impl Emitter<'_> {
         self.emit(249, &[saved]);
         self.emit(248, &[saved]);
         self.scan_barrier();
-        for width in [32, 16, 8, 4, 2, 1] {
-            self.segment_tree(scan, local, shared, pointer, width, true, None);
-        }
+        self.segment_tree(scan, &mut layout, local, shared, pointer, true, None);
         let result = self.read_summary_words(&own);
         if !tail {
             // 首段头写 lane+1；没有段头时只有最后一个物理 lane 写 0。
@@ -330,9 +358,8 @@ impl Emitter<'_> {
         self.write_summary_words(&own, &input);
         self.scan_barrier();
         let remaining = self.group_remaining(local, count);
-        for width in [1, 2, 4, 8, 16, 32] {
-            self.segment_tree(scan, local, shared, pointer, width, false, Some(remaining));
-        }
+        let mut layout = self.segment_tree_layout(scan);
+        self.segment_tree(scan, &mut layout, local, shared, pointer, false, Some(remaining));
         let (owner, empty) = self.collective_writer(local, active, count);
         let save = self.id();
         let saved = self.id();
@@ -368,9 +395,7 @@ impl Emitter<'_> {
             return;
         }
         self.scan_barrier();
-        for width in [32, 16, 8, 4, 2, 1] {
-            self.segment_tree(scan, local, shared, pointer, width, true, None);
-        }
+        self.segment_tree(scan, &mut layout, local, shared, pointer, true, None);
         let result = self.read_summary_words(&own);
         let write = self.id();
         let end = self.id();
@@ -457,48 +482,52 @@ impl Emitter<'_> {
         self.emit(249, &[end]);
         self.emit(248, &[end]);
     }
+    fn segment_tree_layout(&mut self, scan: &Segment<'_>) -> SegmentTreeLayout {
+        let levels = [1, 2, 4, 8, 16, 32].map(|width| SegmentLevel {
+            mask: self.constant(Scalar::U32, width * 2 - 1),
+            stride: self.constant(Scalar::U32, width),
+        });
+        let count = scan.summary_words();
+        let mut words = vec![0; 6 * count];
+        for (index, slot) in words[..count].iter_mut().enumerate().skip(1) {
+            *slot = self.constant(Scalar::U32, index as u32 * 64);
+        }
+        SegmentTreeLayout { levels, words }
+    }
+
     fn segment_tree(
         &mut self,
         scan: &Segment<'_>,
-        local: u32,
+        layout: &mut SegmentTreeLayout,
+        lane: u32,
         shared: u32,
         pointer: u32,
-        width: u32,
         down: bool,
         remaining: Option<u32>,
     ) {
-        let u = self.types[&Scalar::U32];
-        let (other, end) = self.open_scan_tree(local, width);
-        let a_ptr = self.shared_planes(shared, pointer, other, scan.summary_words());
-        let b_ptr = self.shared_planes(shared, pointer, local, scan.summary_words());
-        let a = self.read_summary_words(&a_ptr);
-        let b = self.read_summary_words(&b_ptr);
-        let mut merged = if down {
-            self.segment_combine(scan, &b, &a)
-        } else {
-            self.segment_combine(scan, &a, &b)
+        let one = remaining.map_or(0, |_| self.constant(Scalar::U32, 1));
+        let scope = self.constant(Scalar::U32, 2);
+        let semantics = self.constant(Scalar::U32, 0x108);
+        let input = SegmentTree {
+            merge: self.segment_merge_input(scan),
+            shared, pointer, lane, one, scope, semantics,
+            remaining: remaining.unwrap_or(0),
+            down: u32::from(down),
         };
-        if let Some(remaining) = remaining.filter(|_| !down) {
-            // 空右子树不参与归约，尤其不能让填充 identity 改写 NaN／有符号零。
-            let one = self.constant(Scalar::U32, 1);
-            let right_start = self.id();
-            self.emit(128, &[u, right_start, other, one]);
-            let has_right = self.id();
-            self.emit(
-                176,
-                &[self.types[&Scalar::Bool], has_right, right_start, remaining],
-            );
-            for (value, left) in merged.iter_mut().zip(&a) {
-                let result = self.id();
-                self.select(u, result, has_right, *value, *left);
-                *value = result;
-            }
+        let body = self.body.len();
+        let decorations = self.decorations.len();
+        let levels = layout.levels.len();
+        self.body.reserve(levels * (57 + 48 * scan.summary_words() + 74 * scan.fields.len()));
+        self.decorations.reserve(levels * 3 * scan.fields.len());
+        unsafe {
+            let result = emit_segment_tree(input, layout.levels.as_ptr(), scan.fields.as_ptr(),
+                scan.fields.len() as u32, layout.words.as_mut_ptr(), self.body.as_mut_ptr().add(body),
+                self.decorations.as_mut_ptr().add(decorations));
+            self.body.set_len(body + result.body as usize);
+            self.decorations.set_len(decorations + result.decorations as usize);
+            self.next = result.next;
+            self.current_label = result.label;
         }
-        if down {
-            self.write_summary_words(&a_ptr, &b);
-        }
-        self.write_summary_words(&b_ptr, &merged);
-        self.close_scan_tree(end);
     }
     pub(super) fn segmented_add(&mut self, scan: &Scan) {
         let r = &scan.values;

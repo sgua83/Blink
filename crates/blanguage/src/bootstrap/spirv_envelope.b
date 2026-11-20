@@ -1618,7 +1618,7 @@ extern "C" PrefixIndexWords encode_prefix_index(PrefixIndexEmission input, addre
     return PrefixIndexWords(at, index + 1, index, count, active, label, groups_x, groups_y);
 }
 
-extern "C" SharedAddressWords shared_addresses(SharedAddress input, address offsets, address body) on cpu {
+SharedAddressWords write_shared_addresses(SharedAddress input, address offsets, address pointers, address body) on cpu {
     u64 at = 0u64;
     u32 node = input.node;
     u32 next = input.next;
@@ -1636,10 +1636,14 @@ extern "C" SharedAddressWords shared_addresses(SharedAddress input, address offs
             next += 1;
         }
         at = words_four(body, at, 65, input.pointer_type, next, input.variable, index);
-        put(offsets, u64(part), next);
+        put(pointers, u64(part), next);
         next += 1;
     }
     return SharedAddressWords(at, next);
+}
+
+extern "C" SharedAddressWords shared_addresses(SharedAddress input, address offsets, address body) on cpu {
+    return write_shared_addresses(input, offsets, offsets, body);
 }
 
 void tree_node_address(inout StageCursor out, TreeComponent component, u32 uint_type,
@@ -2105,6 +2109,78 @@ extern "C" SegmentWords merge_segment(SegmentMerge input, address fields, u32 co
         put(values, u64(k + 1), segments);
     }
     return SegmentWords(out.words, decorated, out.next);
+}
+
+void segment_plane_addresses(inout StageCursor out, SegmentTree input, u32 lane, u32 words,
+    address offsets, address pointers) on cpu {
+    SharedAddress plane = SharedAddress(input.merge.uint_type, input.pointer, input.shared, lane, 0, words, out.next);
+    SharedAddressWords emitted = write_shared_addresses(plane, offsets, pointers, word_at(out.body, out.words));
+    out.words += emitted.words;
+    out.next = emitted.next;
+}
+
+void segment_plane_values(inout StageCursor out, u32 type_id, u32 words, address pointers, address values) on cpu {
+    out.words += read_summary_words(word_at(out.body, out.words), type_id, out.next, pointers, words);
+    for (part in 0..words) {
+        put(values, u64(part), out.next + part);
+    }
+    out.next += words;
+}
+
+extern "C" TreeWords segment_tree(SegmentTree input, address levels, address fields, u32 count,
+    address workspace, address body, address decorations) on cpu {
+    StageCursor out = StageCursor(body, 0u64, input.merge.next);
+    u32 words = input.merge.value_words + 1 + input.merge.counted;
+    u64 span = u64(words);
+    address a_ptr = word_at(workspace, span);
+    address b_ptr = word_at(workspace, 2u64 * span);
+    address a = word_at(workspace, 3u64 * span);
+    address b = word_at(workspace, 4u64 * span);
+    address merged = word_at(workspace, 5u64 * span);
+    bool down = input.down != 0;
+    u32 type_id = input.merge.uint_type;
+    u32 bool_type = input.merge.bool_type;
+    u32 label = 0;
+    u64 decorated = 0u64;
+    for (index in 0..6) {
+        u32 ordinal = down ? 5 - index : index;
+        let level = unsafe_position<SegmentLevel>(unsafe_address(address_bits(levels) + u64(ordinal) * size_of<SegmentLevel>()));
+        StageBranch branch = scan_tree_branch(out, type_id, bool_type, input.lane, level.mask);
+        u32 other = stage_op(out, 130, type_id, input.lane, level.stride);
+        segment_plane_addresses(out, input, other, words, workspace, a_ptr);
+        segment_plane_addresses(out, input, input.lane, words, workspace, b_ptr);
+        segment_plane_values(out, type_id, words, a_ptr, a);
+        segment_plane_values(out, type_id, words, b_ptr, b);
+
+        for (part in 0..words) {
+            put(merged, u64(part), input.merge.zero);
+        }
+        SegmentMerge merge = input.merge;
+        merge.next = out.next;
+        SegmentWords result = merge_segment(merge, fields, count, down ? b : a, down ? a : b, merged,
+            word_at(body, out.words), word_at(decorations, decorated));
+        out.words += result.body;
+        out.next = result.next;
+        decorated += result.decorations;
+
+        if (input.remaining != 0) {
+            // Padding is not the right subtree: selecting it can change NaN or negative zero.
+            u32 right_start = stage_op(out, 128, type_id, other, input.one);
+            u32 has_right = stage_op(out, 176, bool_type, right_start, input.remaining);
+            for (part in 0..words) {
+                u32 value = stage_select(out, type_id, has_right, read_word(merged, part), read_word(a, part));
+                put(merged, u64(part), value);
+            }
+        }
+        if (down) {
+            out.words += write_summary_words(word_at(body, out.words), a_ptr, b, words);
+        }
+        out.words += write_summary_words(word_at(body, out.words), b_ptr, merged, words);
+        stage_close(out, branch);
+        stage_barrier(out, input.scope, input.semantics);
+        label = branch.end;
+    }
+    return TreeWords(out.words, decorated, out.next, label);
 }
 
 extern "C" PayloadRead tile_extract(TileExtract input, address body) on cpu {

@@ -68,11 +68,11 @@ struct TreeLayer {
 }
 
 #[repr(C)]
-struct TreeWords {
-    body: u64,
-    decorations: u64,
-    next: u32,
-    label: u32,
+pub(super) struct TreeWords {
+    pub(super) body: u64,
+    pub(super) decorations: u64,
+    pub(super) next: u32,
+    pub(super) label: u32,
 }
 
 #[repr(C)]

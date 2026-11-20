@@ -457,6 +457,24 @@ struct SegmentWords { u64 body; u64 decorations; u32 next; };
 extern "C" SegmentWords merge_segment(SegmentMerge input, address fields, u32 count,
     address left, address right, address values, address body, address decorations) on cpu;
 
+struct SegmentLevel { u32 mask; u32 stride; };
+struct SegmentTree {
+    SegmentMerge merge;
+    u32 shared;
+    u32 pointer;
+    u32 lane;
+    u32 remaining;
+    u32 one;
+    u32 scope;
+    u32 semantics;
+    u32 down;
+};
+
+// Six level constants are in ascending width order. The workspace has six
+// summary spans: plane offsets, two pointer lists, two input lists and output.
+extern "C" TreeWords segment_tree(SegmentTree input, address levels, address fields, u32 count,
+    address workspace, address body, address decorations) on cpu;
+
 struct PrivateAddress {
     u32 index_type;
     u32 pointer_type;
