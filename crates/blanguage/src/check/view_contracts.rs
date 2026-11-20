@@ -2137,8 +2137,8 @@ fn solve<'a>(
     if !unknown.is_empty(){converge(worker, functions, &mut known, &loop_inputs, &unknown)?;}
     converge_initializations(functions,&mut known);
     converge_access(functions,&mut known,&owns_input);
-    let results = crate::parallel::try_map(worker, functions.iter().collect(), |_| (),
-        |_, (name, function)| finish_function(name, function, &known),
+    let results = crate::parallel::try_map(worker, functions.iter().collect(), Clone::clone,
+        |worker, (name, function)| finish_function(worker, name, function, &known),
     ).map_err(|error| borrow_worker_error(functions, error))?;
     let mut memory = BTreeMap::new();
     let mut scalar_values = BTreeMap::new();
@@ -2150,7 +2150,7 @@ fn solve<'a>(
 }
 
 fn finish_function(
-    name: &str, function: &Function, known: &States<'_>,
+    worker: &crate::compiler::Worker, name: &str, function: &Function, known: &States<'_>,
 ) -> Result<(MemoryEffects, Option<ScalarValues>)> {
     let _required_scope = bounds::required_scope();
     let state = &known[name];
@@ -2245,48 +2245,68 @@ fn finish_function(
     }
     let resolved = function.pending_values().then_some(resolved);
     let context = function.value_context(resolved.as_ref());
+    let paths = CallWritePaths::default();
+    let symbolic_paths = CallWritePaths::default();
+    crate::parallel::try_map(
+        worker,
+        function.uses.iter().collect(),
+        |_| {
+            let evaluation = BorrowEvaluation {
+                function, state: state.loop_scope(), known, expand_loops: true, deferred_reads: false,
+                loop_bindings: Vec::new(), values: BTreeMap::new(), stored: None,
+                stored_paths: StoredPaths::Borrowed(&paths),
+            };
+            let symbolic = BorrowEvaluation {
+                function, state: state.loop_scope(), known, expand_loops: false, deferred_reads: false,
+                loop_bindings: Vec::new(), values: BTreeMap::new(), stored: None,
+                stored_paths: StoredPaths::Borrowed(&symbolic_paths),
+            };
+            (bounds::required_scope(), evaluation, symbolic)
+        },
+        |(_, evaluation, symbolic), usage| {
+            let path=bounds::Clause::both(&usage.path,&context);
+            if let Requirement::Nonzero{value,path,span}=&usage.requirement {
+                let values = resolved.as_ref().unwrap();
+                let mut value=(**value).clone();
+                let path=bounds::Clause::both(path,&context);
+                value.proof=bounds::scoped_proof(&value.ty,value.proof.substitute_values(values),&path,&BTreeMap::new());
+                value.constant=value.constant.or_else(||value.proof.known_value(&value.ty));
+                Requirement::Nonzero{value:Box::new(value),path,span:*span}.check(&usage.source, None)?;
+                return Ok(());
+            }
+            if let Requirement::Initialized{read,code,span,..}=&usage.requirement {
+                let read=resolved_read(read,&path,function,state,known);
+                Requirement::Initialized{borrow:read.borrow(),read,code,span:*span}.check(&usage.source, None)?;
+                return Ok(());
+            }
+            // The memory and dataset records have already supplied the effects.
+            // Here the only consumer is the unresolved-source diagnostic.
+            if let Requirement::Memory { borrow, span, .. } | Requirement::Dataset { borrow, span, .. } = &usage.requirement {
+                if evaluation.evaluate(borrow).unresolved_under(&path) {
+                    return Requirement::unresolved_diagnostic(&usage.source, *span);
+                }
+                return Ok(());
+            }
+            if let Requirement::Unborrowed { resource, borrow, .. } = &usage.requirement {
+                let resource = symbolic.evaluate(resource);
+                let borrow = symbolic.evaluate(borrow);
+                if disjoint(&resource, &borrow, &function.independent, &usage.active_loops) {
+                    return Ok(());
+                }
+            }
+            usage.requirement.mapped(|borrow| evaluation.evaluate(borrow))
+                .under_path(&path).check(&usage.source, None)
+        },
+    ).map_err(|error| match error {
+        crate::parallel::Error::Work(error) => error,
+        crate::parallel::Error::Resource(error) =>
+            crate::compiler::diagnostic(&function.uses[0].source.path, error),
+    })?;
     let mut evaluation = BorrowEvaluation {
         function, state: state.loop_scope(), known, expand_loops: true, deferred_reads: false,
-        loop_bindings: Vec::new(), values: BTreeMap::new(), stored: None, stored_paths: Default::default(),
+        loop_bindings: Vec::new(), values: BTreeMap::new(), stored: None,
+        stored_paths: StoredPaths::Borrowed(&paths),
     };
-    let mut symbolic = BorrowEvaluation {
-        function, state: state.loop_scope(), known, expand_loops: false, deferred_reads: false,
-        loop_bindings: Vec::new(), values: BTreeMap::new(), stored: None, stored_paths: Default::default(),
-    };
-    for usage in &function.uses{
-        let path=bounds::Clause::both(&usage.path,&context);
-        if let Requirement::Nonzero{value,path,span}=&usage.requirement {
-            let values = resolved.as_ref().unwrap();
-            let mut value=(**value).clone();
-            let path=bounds::Clause::both(path,&context);
-            value.proof=bounds::scoped_proof(&value.ty,value.proof.substitute_values(values),&path,&BTreeMap::new());
-            value.constant=value.constant.or_else(||value.proof.known_value(&value.ty));
-            Requirement::Nonzero{value:Box::new(value),path,span:*span}.check(&usage.source, None)?;
-            continue;
-        }
-        if let Requirement::Initialized{read,code,span,..}=&usage.requirement {
-            let read=resolved_read(read,&path,function,state,known);
-            Requirement::Initialized{borrow:read.borrow(),read,code,span:*span}.check(&usage.source, None)?;
-            continue;
-        }
-        // The memory and dataset records have already supplied the effects.
-        // Here the only consumer is the unresolved-source diagnostic.
-        if let Requirement::Memory { borrow, span, .. } | Requirement::Dataset { borrow, span, .. } = &usage.requirement {
-            if evaluation.evaluate(borrow).unresolved_under(&path) {
-                return Requirement::unresolved_diagnostic(&usage.source, *span);
-            }
-            continue;
-        }
-        if let Requirement::Unborrowed { resource, borrow, .. } = &usage.requirement {
-            let resource = symbolic.evaluate(resource);
-            let borrow = symbolic.evaluate(borrow);
-            if disjoint(&resource, &borrow, &function.independent, &usage.active_loops) {
-                continue;
-            }
-        }
-        usage.requirement.mapped(|borrow| evaluation.evaluate(borrow))
-            .under_path(&path).check(&usage.source, None)?;
-    }
     for call in &function.calls{
         let path=bounds::Clause::both(&call.path,&context);
         let live_task_places=evaluation.evaluate(&call.live_task_places);
