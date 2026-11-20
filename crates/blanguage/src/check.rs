@@ -395,7 +395,7 @@ pub(crate) async fn compile_program(
     let mut uniform_types = uniform_types.into_iter();
     let mut functions = native_function::Module::default();
     let (expanded, _) = unsafe {
-        world.call(expand_domain(world, input, &parameters, Some(&mut uniform_types), &mut functions, &[])).await
+        world.call(expand_domain(world, input, &parameters, Some(&mut uniform_types), &mut functions, &[], None)).await
     }?;
     if !expanded.calls.is_empty() {
         return instance.definition.source.fail(
@@ -487,6 +487,7 @@ async fn expand_domain<'a>(
     mut uniform_types: Option<&mut dyn Iterator<Item = Ty>>,
     functions: &mut native_function::Module,
     element_inputs: &[ElementFact],
+    mut entry: Option<&mut native_function::DomainEntry>,
 ) -> Result<(ExpandedDomain, Cow<'a, [FunctionContract]>)> {
     let name = input.name();
     let d = &input.owner().definition;
@@ -506,6 +507,7 @@ async fn expand_domain<'a>(
             textures.push(unsafe {
                 world.call(texture::binding(world, p, texture.unwrap(), (&d.source, &d.module, &d.imports))).await
             }?);
+            if let Some(entry) = entry.as_deref_mut() { entry.texture(); }
             continue;
         }
         if parameter.form == function_inputs::Parameter::Acceleration {
@@ -547,7 +549,9 @@ async fn expand_domain<'a>(
                 count: unsafe { world.call(world.shape(&p.ty.count, &d.source, p.span, &d.module, &d.imports)).await }?,
             });
             env.insert(p.name.to_owned(), Root::Data(binding, p.access));
+            if let Some(entry) = entry.as_deref_mut() { entry.dataset(); }
         } else {
+            if let Some(entry) = entry.as_deref_mut() { entry.uniform(&ty); }
             uniforms.push(Uniform {
                 name: p.name.to_owned(),
                 ty,

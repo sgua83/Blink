@@ -2711,6 +2711,53 @@ async fn domain_declaration(
     }
     Ok(targets)
 }
+
+pub(super) struct DomainEntry {
+    frame: CallArgument,
+    registers: Vec<Scalar>,
+    parameters: Vec<CallParameter>,
+    data: Vec<[Reg; 2]>,
+    textures: Vec<CallArgument>,
+    uniforms: Vec<std::ops::Range<Reg>>,
+}
+
+impl DomainEntry {
+    fn new() -> Self {
+        let mut ty = Ty::vector(Scalar::U32, 2);
+        ty.name = "__blink_frame".into();
+        let parameters = vec![CallParameter::value(ty.clone())];
+        let frame = CallArgument::Value {
+            origin: None, dataset_borrow: None, ty, values: vec![0, 1],
+        };
+        Self { frame, parameters, registers: vec![Scalar::U32, Scalar::U32],
+            data: Vec::new(), textures: Vec::new(), uniforms: Vec::new() }
+    }
+
+    pub(super) fn dataset(&mut self) {
+        let first = self.registers.len();
+        self.registers.extend([Scalar::U32; 2]);
+        self.parameters.push(CallParameter::value(Builder::domain_dataset_parameter_type()));
+        self.data.push([first, first + 1]);
+    }
+
+    pub(super) fn texture(&mut self) {
+        let register = self.registers.len();
+        self.registers.push(Scalar::U64);
+        let ty = Ty::scalar(Scalar::U64);
+        self.parameters.push(CallParameter::value(ty.clone()));
+        self.textures.push(CallArgument::Value {
+            origin: None, dataset_borrow: None, ty, values: vec![register],
+        });
+    }
+
+    pub(super) fn uniform(&mut self, ty: &Ty) {
+        let first = self.registers.len();
+        self.registers.extend(ty.components.iter().map(|(scalar, _)| *scalar));
+        self.parameters.push(CallParameter::value(ty.clone()));
+        self.uniforms.push(first..self.registers.len());
+    }
+}
+
 async fn build_domain(
     world: &World,
     input: DomainInput<'_>,
@@ -2737,8 +2784,9 @@ async fn build_domain(
         }
         DomainInput::Parallel { .. } => None,
     };
+    let mut entry = DomainEntry::new();
     let (expanded, bound_contracts) = unsafe {
-        world.call(expand_domain(world, input, &bound_parameters, uniform_types, functions, element_inputs)).await
+        world.call(expand_domain(world, input, &bound_parameters, uniform_types, functions, element_inputs, Some(&mut entry))).await
     }?;
     let mut signature = expanded.program;
     let mut scopes = expanded.scopes;
@@ -2757,41 +2805,7 @@ async fn build_domain(
     let element_requirements = std::mem::take(&mut signature.element_requirements);
     let element_guarantees = std::mem::take(&mut signature.element_guarantees);
     let mut element_required = Cow::Borrowed(element_requirements.as_slice());
-    let mut frame = Ty::vector(Scalar::U32, 2);
-    frame.name = "__blink_frame".into();
-    let mut registers = vec![Scalar::U32, Scalar::U32];
-    let mut parameters = vec![CallParameter::value(frame.clone())];
-    let frame = CallArgument::Value { #[cfg(feature = "compiler")] origin: None,
-        dataset_borrow:None, ty: frame,
-        values: vec![0, 1],
-    };
-    let mut data = Vec::new();
-    let mut texture_values = Vec::new();
-    let mut uniform_inputs = Vec::new();
-    use function_inputs::Parameter;
-    for param in bound_parameters.iter() {
-        let first = registers.len();
-        match function_inputs::parameter_form(param) {
-            Parameter::Dataset => {
-                registers.extend([Scalar::U32; 2]);
-                parameters.push(CallParameter::value(Builder::domain_dataset_parameter_type()));
-                data.push([first, first + 1]);
-            }
-            Parameter::Texture => {
-                registers.push(Scalar::U64);
-                parameters.push(CallParameter::value(Ty::scalar(Scalar::U64)));
-                texture_values.push(CallArgument::Value {
-                    origin: None, dataset_borrow: None, ty: Ty::scalar(Scalar::U64), values: vec![first],
-                });
-            }
-            _ => {
-                let uniform = &signature.uniforms[uniform_inputs.len()];
-                registers.extend(uniform.ty.components.iter().map(|(scalar, _)| *scalar));
-                parameters.push(CallParameter::value(uniform.ty.clone()));
-                uniform_inputs.push(first..registers.len());
-            }
-        }
-    }
+    let DomainEntry { frame, mut registers, parameters, data, textures: texture_values, uniforms: uniform_inputs } = entry;
     let inputs: Vec<_> = (0..registers.len()).collect();
     let mut code = Vec::new();
     let entry_context=match input {
