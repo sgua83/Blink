@@ -1651,7 +1651,7 @@ void tree_node_address(inout StageCursor out, TreeComponent component, u32 uint_
     out.next = result.next;
 }
 
-u32 tree_node_load(inout StageCursor out, PayloadEmission input, address pointers, address shifts) on cpu {
+u32 read_stage_payload(inout StageCursor out, PayloadEmission input, address pointers, address shifts) on cpu {
     PayloadEmission request = input;
     request.next = out.next;
     PayloadRead result = payload_read(request, pointers, shifts, word_at(out.body, out.words));
@@ -1660,7 +1660,7 @@ u32 tree_node_load(inout StageCursor out, PayloadEmission input, address pointer
     return result.value;
 }
 
-void tree_node_store(inout StageCursor out, PayloadEmission input, u32 value, address pointers, address shifts) on cpu {
+void write_stage_payload(inout StageCursor out, PayloadEmission input, u32 value, address pointers, address shifts) on cpu {
     PayloadEmission request = input;
     request.next = out.next;
     PayloadWrite result = payload_write(request, value, pointers, shifts, address(), word_at(out.body, out.words));
@@ -1772,9 +1772,9 @@ extern "C" TreeWords tree_layer(TreeLayer input, address components, u32 count, 
         } else {
             tree_node_address(out, component, input.uint_type, other, left);
         }
-        u32 a = tree_node_load(out, payload, left, shifts);
+        u32 a = read_stage_payload(out, payload, left, shifts);
         tree_node_address(out, component, input.uint_type, reduction ? other : node, right);
-        u32 b = tree_node_load(out, payload, right, shifts);
+        u32 b = read_stage_payload(out, payload, right, shifts);
         bool reverse = input.down != 0 && component.operation != CollectiveOperation::Sum;
         CollectivePair pair = CollectivePair(component.operation, component.scalar, component.raw_type,
             component.value_type, input.bool_type, reverse ? b : a, reverse ? a : b, out.next);
@@ -1795,9 +1795,9 @@ extern "C" TreeWords tree_layer(TreeLayer input, address components, u32 count, 
             value = stage_select(out, component.raw_type, has_right, value, a);
         }
         if (input.down != 0) {
-            tree_node_store(out, payload, b, left, shifts);
+            write_stage_payload(out, payload, b, left, shifts);
         }
-        tree_node_store(out, payload, value, reduction ? left : right, shifts);
+        write_stage_payload(out, payload, value, reduction ? left : right, shifts);
     }
     stage_close(out, branch);
     stage_barrier(out, input.scope, input.semantics);
@@ -1989,6 +1989,64 @@ extern "C" TileAddressWords tile_address(TileAddress input, address body) on cpu
     }
     at = words_four(body, at, 65, input.pointer_type, next, input.shared, index);
     return TileAddressWords(at, next + 1, next, byte);
+}
+
+array<u32,2> scan_field_pointers(inout StageCursor out, u32 record, u32 wide_type, ScanField field) on cpu {
+    PageAddressResult address_ids = reduction_field(record, field.offset, field.pointer_type, wide_type,
+        field.step, out.next, word_at(out.body, out.words));
+    out.words += address_ids.words;
+    out.next = address_ids.next;
+    return array<u32,2>(address_ids.pointer, address_ids.second);
+}
+
+extern "C" ScanPrefixWords add_scan_prefix(ScanPrefix input, address fields, u32 count,
+    address body, address decorations) on cpu {
+    StageCursor out = StageCursor(body, 0u64, input.target.next);
+    u32 uint_type = input.target.u32_type;
+    u32 group = stage_op(out, 134, uint_type, input.target.index, input.width);
+    u32 first = 0;
+    let scalar = unsafe_position<ScanField>(fields).scalar;
+    if ((scalar == BuiltinScalar::F32 || scalar == BuiltinScalar::F64) && input.operation != CollectiveOperation::Sum) {
+        u32 lane = stage_op(out, 137, uint_type, input.target.index, input.width);
+        first = stage_op(out, 170, input.bool_type, lane, input.target.zero);
+    }
+
+    PageAddress parent = input.target;
+    parent.descriptor = input.prefix_descriptor;
+    parent.index = group;
+    parent.word = 0;
+    PhysicalAddress prefix = physical_page_address(parent, word_at(body, out.words), out.next);
+    out.words += prefix.words;
+    PhysicalAddress target = physical_page_address(input.target, word_at(body, out.words), prefix.next);
+    out.words += target.words;
+    out.next = target.next;
+
+    u64 decorated = 0u64;
+
+    for (index in 0..count) {
+        let field = unsafe_position<ScanField>(unsafe_address(address_bits(fields) + u64(index) * size_of<ScanField>()));
+        array<u32,2> from = scan_field_pointers(out, prefix.value, input.target.u64_type, field);
+        array<u32,2> to = scan_field_pointers(out, target.value, input.target.u64_type, field);
+        array<u32,2> shifts = array<u32,2>(0, field.shift);
+        address from_slots = address_of(from[0]);
+        address to_slots = address_of(to[0]);
+        address shift_slots = address_of(shifts[0]);
+        u32 parts = field.step == 0 ? 1 : 2;
+        PayloadEmission payload = PayloadEmission(PayloadAccess::Physical, field.raw_type, field.unit_type,
+            field.unit_bytes, parts, out.next);
+        u32 left = read_stage_payload(out, payload, from_slots, shift_slots);
+        u32 right = read_stage_payload(out, payload, to_slots, shift_slots);
+        CollectivePair pair = CollectivePair(input.operation, field.scalar, field.raw_type, field.value_type,
+            input.bool_type, left, right, out.next);
+        CollectiveWords merged = collective_pair(pair, word_at(body, out.words), word_at(decorations, decorated));
+        out.words += merged.body;
+        out.next = merged.next;
+        decorated += merged.decorations;
+        u32 value = merged.value;
+        if (first != 0) { value = stage_select(out, field.raw_type, first, left, value); }
+        write_stage_payload(out, payload, value, to_slots, shift_slots);
+    }
+    return ScanPrefixWords(out.words, decorated, out.next);
 }
 
 extern "C" PayloadRead tile_extract(TileExtract input, address body) on cpu {

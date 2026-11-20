@@ -75,7 +75,39 @@ struct TreeWords {
     label: u32,
 }
 
+#[repr(C)]
+struct ScanPrefix {
+    target: PageAddress,
+    prefix_descriptor: u32,
+    width: u32,
+    bool_type: u32,
+    operation: u32,
+}
+
+#[repr(C)]
+struct ScanField {
+    scalar: ScalarCode,
+    raw_type: u32,
+    value_type: u32,
+    unit_type: u32,
+    unit_bytes: u32,
+    pointer_type: u32,
+    offset: u32,
+    step: u32,
+    shift: u32,
+}
+
+#[repr(C)]
+struct ScanPrefixWords {
+    body: u64,
+    decorations: u64,
+    next: u32,
+}
+
 unsafe extern "C" {
+    #[link_name = "bootstrap.spirv_envelope::add_scan_prefix"]
+    fn add_scan_prefix(input: ScanPrefix, fields: *const ScanField, count: u32,
+        body: *mut u32, decorations: *mut u32) -> ScanPrefixWords;
     #[link_name = "bootstrap.spirv_envelope::shared_addresses"]
     fn emit_shared_addresses(input: SharedAddress, offsets: *mut u32, body: *mut u32) -> SharedAddressWords;
     #[link_name = "bootstrap.spirv_envelope::group_remaining"]
@@ -435,39 +467,47 @@ impl Emitter<'_> {
 
     pub(super) fn scan_add(&mut self, scan: &Scan, root: bool) {
         let r = &scan.values;
-        let u = self.types[&Scalar::U32];
         let width = self.constant(Scalar::U32, 64);
-        let group = self.id();
-        self.emit(134, &[u, group, self.index, width]);
-        let first =
-            if scan.ty.components[0].0.is_float() && scan.operator != CollectiveOperator::Sum {
-                let local = self.id();
-                self.emit(137, &[u, local, self.index, width]);
-                let zero = self.constant(Scalar::U32, 0);
-                let first = self.id();
-                self.emit(170, &[self.types[&Scalar::Bool], first, local, zero]);
-                Some(first)
+        let fields: Vec<_> = scan.ty.components.iter().map(|&(scalar, offset)| {
+            let unit = Self::physical_unit(scalar);
+            let (step, shift) = if scalar.size() == 8 {
+                (self.constant(Scalar::U64, 4), self.constant(Scalar::U32, 32))
             } else {
-                None
+                (0, 0)
             };
-        for (scalar, offset) in &scan.ty.components {
-            let prefix = self.load_raw_buffer(*scalar,
-                self.scan_input_binding(r),
-                group,
-                *offset);
-            let word = if root {r.target_word + offset} else {*offset};
-            let value = self.load_raw_buffer(*scalar,
-                r.target,
-                self.index,word);
-            let combined = self.collective_pair(*scalar, scan.operator, prefix, value);
-            let result = if let Some(first) = first {
-                let result = self.id();
-                self.select(self.raw_type(*scalar), result, first, prefix, combined);
-                result
-            } else {
-                combined
-            };
-            self.store_raw_buffer(*scalar,r.target,self.index,word,result);
-        }
+            ScanField {
+                scalar: scalar.into(),
+                raw_type: self.raw_type(scalar),
+                value_type: self.types[&scalar],
+                unit_type: self.types[&unit],
+                unit_bytes: unit.size(),
+                pointer_type: self.physical_pointers[&unit],
+                offset: if offset == 0 { 0 } else { self.constant(Scalar::U64, offset) },
+                step,
+                shift,
+            }
+        }).collect();
+        let target_word = (root && r.target_word != 0).then_some(r.target_word);
+        let target = self.page_input(Scalar::U32, PageSource::Dataset(self.buffers[r.target]),
+            self.index, target_word, 0);
+        let input = ScanPrefix {
+            target,
+            prefix_descriptor: self.buffers[self.scan_input_binding(r)],
+            width,
+            bool_type: self.types[&Scalar::Bool],
+            operation: scan.operator as u32,
+        };
+        let body = self.body.len();
+        let decorations = self.decorations.len();
+        self.body.reserve(233 + 144 * fields.len());
+        self.decorations.reserve(3 * fields.len());
+        let result = unsafe {
+            let result = add_scan_prefix(input, fields.as_ptr(), fields.len() as u32,
+                self.body.as_mut_ptr().add(body), self.decorations.as_mut_ptr().add(decorations));
+            self.body.set_len(body + result.body as usize);
+            self.decorations.set_len(decorations + result.decorations as usize);
+            result
+        };
+        self.next = result.next;
     }
 }
