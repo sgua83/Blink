@@ -19,7 +19,7 @@ bool matches<const N: u32>(ReadBytes value,read array<u8,N> pattern,bool whole) 
 ObjectSection row_at(ObjectRows rows,u64 index) on cpu {
     return unsafe_position<ObjectSection>(unsafe_address(address_bits(rows.values)+index*size_of<ObjectSection>()));
 }
-extern "C" ObjectSectionResult logical_section(ReadBytes input, ReadBytes headers, u64 index,
+ObjectSectionResult logical_section(ReadBytes input, ReadBytes headers, u64 index,
     inout u64 mapped, inout ObjectParts parts) on cpu {
     ReadSection row=section(input,headers,index);
     ObjectSection value=ObjectSection(row.name,row.bytes,row.flags,row.relocations,row.relocation_count,0u64,row.zero_fill,unsafe_address(0u64),0u64);
@@ -38,7 +38,7 @@ extern "C" ObjectSectionResult logical_section(ReadBytes input, ReadBytes header
 address definition_address(address definitions,u64 index) on cpu {
     return unsafe_address(address_bits(definitions)+index*4u64);
 }
-extern "C" ObjectSymbolResult object_symbol(
+ObjectSymbolResult object_symbol(
     ReadBytes input,ReadSymbols table,u64 index,address definitions,u64 definition_count
 ) on cpu {
     ReadSymbol row=symbol(input,table,index);
@@ -51,6 +51,51 @@ extern "C" ObjectSymbolResult object_symbol(
     }
     return ObjectSymbolResult(primary,row.next,row.error);
 }
+
+struct ObjectSectionResult {ObjectSection value;u32 error;};
+struct ObjectSymbolResult {ObjectSymbol value;u64 next;u32 error;};
+
+extern "C" u32 object_sections(ReadBytes input, ReadBytes headers, address rows,
+    inout ObjectParts parts, address context, cfn<u32,address,ReadBytes> validate) on cpu
+    requires nonzero(validate) {
+    u64 mapped = 0u64;
+    u64 count = headers.length / 40u64;
+    bool keep_rows = address_bits(rows) != 0u64;
+    u64 index = 0u64;
+    while (index < count) {
+        let section = logical_section(input, headers, index, mapped, parts);
+        if (section.error != 0) { return section.error; }
+        if (validate(context, section.value.name) == 0) { return 0; }
+        if (keep_rows) {
+            address slot = unsafe_address(address_bits(rows) + index * size_of<ObjectSection>());
+            unsafe_position<ObjectSection>(slot) = section.value;
+        }
+        index += 1u64;
+    }
+    return 0;
+}
+
+extern "C" u32 object_symbols(ReadBytes input, ReadSymbols table, address rows,
+    address definitions, u64 definition_count, address context,
+    cfn<u32,address,ReadBytes> validate) on cpu requires nonzero(validate) {
+    u64 index = 0u64;
+    let auxiliary = ObjectSymbol(empty_bytes(), 0, i16(0), u8(0), u8(0));
+    while (index < table.count) {
+        let primary = object_symbol(input, table, index, definitions, definition_count);
+        if (primary.error != 0) { return primary.error; }
+        if (validate(context, primary.value.name) == 0) { return 0; }
+        address slot = unsafe_address(address_bits(rows) + index * size_of<ObjectSymbol>());
+        unsafe_position<ObjectSymbol>(slot) = primary.value;
+        index += 1u64;
+        while (index < primary.next) {
+            address next = unsafe_address(address_bits(rows) + index * size_of<ObjectSymbol>());
+            unsafe_position<ObjectSymbol>(next) = auxiliary;
+            index += 1u64;
+        }
+    }
+    return 0;
+}
+
 extern "C" ObjectAssociation association(ObjectRows rows,address definitions,u64 index) on cpu {
     SectionDefinition definition=unsafe_position<SectionDefinition>(definition_address(definitions,index));
     if(definition.present==u8(0)){return ObjectAssociation(0u64,0u64,16);}

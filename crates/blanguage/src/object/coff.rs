@@ -1,6 +1,6 @@
 //! COFF 节、符号与 AMD64 重定位；Blink 元数据不替代标准重定位表。
 use super::*;
-use std::{collections::{BTreeMap, BTreeSet}, sync::Arc};
+use std::{collections::{BTreeMap, BTreeSet}, ffi::c_void, sync::Arc};
 const META: &str = ".blmeta";
 const ARCHIVE: &str = ".blrt";
 const BUILD: &str = ".blbuild";
@@ -145,8 +145,6 @@ struct ObjectSection {
     decoded_relocations: *const u8, decoded_count: usize,
 }
 #[repr(C)]
-struct ObjectSectionResult { value: ObjectSection, error: ReadError }
-#[repr(C)]
 #[derive(Default)]
 struct ObjectParts {
     metadata: ReadBytes,
@@ -200,19 +198,10 @@ struct ObjectSymbol {
     function: u8,
 }
 
-impl ObjectSymbol {
-    const AUXILIARY: Self = Self {
-        name: ReadBytes { bytes: std::ptr::null(), length: 0 },
-        value: 0, section: 0, external: 0, function: 0,
-    };
-}
-
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct ObjectSymbols { values: *const ObjectSymbol, count: usize }
 
-#[repr(C)]
-struct ObjectSymbolResult { value: ObjectSymbol, next: usize, error: ReadError }
 
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
@@ -230,12 +219,13 @@ struct ObjectTarget {
 struct ObjectRelocation { record: ReadRelocation, target: ObjectTarget }
 
 unsafe extern "C" {
-    #[link_name = "bootstrap.object_read::logical_section"]
-    fn object_logical_section(input: ReadBytes, headers: ReadBytes, index: usize,
-        mapped: &mut u64, parts: &mut ObjectParts) -> ObjectSectionResult;
-    #[link_name = "bootstrap.object_read::object_symbol"]
-    fn object_symbol(input: ReadBytes, table: ReadSymbols, index: usize,
-        definitions: *mut SectionDefinition, definition_count: usize) -> ObjectSymbolResult;
+    #[link_name = "bootstrap.object_read::object_sections"]
+    fn object_sections(input: ReadBytes, headers: ReadBytes, rows: *mut ObjectSection,
+        parts: &mut ObjectParts, context: *mut c_void, validate: ValidateObjectName) -> ReadError;
+    #[link_name = "bootstrap.object_read::object_symbols"]
+    fn object_symbols(input: ReadBytes, table: ReadSymbols, rows: *mut ObjectSymbol,
+        definitions: *mut SectionDefinition, definition_count: usize, context: *mut c_void,
+        validate: ValidateObjectName) -> ReadError;
     #[link_name = "bootstrap.object_read::association"]
     fn object_association(rows: ObjectRows, definitions: *const SectionDefinition,
         index: usize) -> ObjectAssociation;
@@ -243,6 +233,24 @@ unsafe extern "C" {
     fn object_relocation(input: ReadBytes, rows: ObjectRows, symbols: ObjectSymbols,
         table: usize, index: usize) -> ObjectRelocation;
 }
+type ValidateObjectName = unsafe extern "C" fn(*mut c_void, ReadBytes) -> u32;
+
+unsafe extern "C" fn validate_object_name(context: *mut c_void, bytes: ReadBytes) -> u32 {
+    match std::str::from_utf8(unsafe { bytes.borrowed() }) {
+        Ok(_) => 1,
+        Err(error) => {
+            unsafe { *context.cast::<Option<std::str::Utf8Error>>() = Some(error) };
+            0
+        }
+    }
+}
+
+fn read_object_names(read: impl FnOnce(*mut c_void) -> ReadError) -> Result<()> {
+    let mut invalid = None::<std::str::Utf8Error>;
+    read(std::ptr::from_mut(&mut invalid).cast()).check()?;
+    invalid.map_or(Ok(()), |error| Err(error.into()))
+}
+
 fn object_index(rows: &[ObjectSection], index: usize) -> Option<usize> {
     rows.get(index)?.mapped.checked_sub(1)
 }
@@ -761,18 +769,21 @@ impl<'a, Input: AsRef<[u8]> + ?Sized> Reader<'a, Input> {
         input.error.check()?;
         Ok(if input.present == 0 { None } else { Some(unsafe { input.bytes.borrowed() }) })
     }
-    fn section_rows<'rows>(&'rows self, parts: &'rows mut ObjectParts)
-        -> impl Iterator<Item = Result<ObjectSection>> + 'rows
-    {
-        let input = ReadBytes::new(self.bytes.as_ref());
-        let headers = ReadBytes::new(self.headers);
-        let mut mapped = 0u64;
-        (0..self.headers.len() / 40).map(move |index| {
-            let row = unsafe { object_logical_section(input, headers, index, &mut mapped, parts) };
-            row.error.check()?;
-            std::str::from_utf8(unsafe { row.value.name.borrowed() })?;
-            Ok(row.value)
-        })
+    fn sections(&self, materialize: bool) -> Result<(ObjectParts, Vec<ObjectSection>)> {
+        let count = self.headers.len() / 40;
+        let mut parts = ObjectParts::default();
+        let mut rows = Vec::with_capacity(if materialize { count } else { 0 });
+        let output = if materialize { rows.as_mut_ptr() } else { std::ptr::null_mut() };
+        read_object_names(|context| unsafe {
+            object_sections(
+                ReadBytes::new(self.bytes.as_ref()), ReadBytes::new(self.headers), output,
+                &mut parts, context, validate_object_name,
+            )
+        })?;
+        if materialize {
+            unsafe { rows.set_len(count) };
+        }
+        Ok((parts, rows))
     }
     fn metadata(&self, bytes: ReadBytes) -> Result<&'a [u8]> {
         // B borrows this range from the same validated section rows.
@@ -781,8 +792,7 @@ impl<'a, Input: AsRef<[u8]> + ?Sized> Reader<'a, Input> {
     }
     /// 借用判等所需的名称，等采用后再恢复完整对象。
     pub(crate) fn reuse_inputs(&self) -> Result<ReuseInputs<'a>> {
-        let mut parts = ObjectParts::default();
-        for row in self.section_rows(&mut parts) { row?; }
+        let (parts, _) = self.sections(false)?;
         let mut cursor = MetadataReadCursor::new(self.metadata(parts.metadata)?);
         let prefix = unsafe { metadata_read_prefix(&mut cursor, u64::from(FORMAT)) };
         prefix.header.error.check()?;
@@ -812,15 +822,14 @@ impl<'a, Input: AsRef<[u8]> + ?Sized> Reader<'a, Input> {
         let input = ReadBytes::new(self.bytes.as_ref());
         let table = unsafe { read_symbols(input) };
         table.error.check()?;
-        let mut symbols = vec![ObjectSymbol::AUXILIARY; table.count];
-        let mut index = 0;
-        while index < table.count {
-            let row = unsafe { object_symbol(input, table, index, definitions.as_mut_ptr(), definitions.len()) };
-            row.error.check()?;
-            std::str::from_utf8(unsafe { row.value.name.borrowed() })?;
-            symbols[index] = row.value;
-            index = row.next;
-        }
+        let mut symbols = Vec::with_capacity(table.count);
+        read_object_names(|context| unsafe {
+            object_symbols(
+                input, table, symbols.as_mut_ptr(), definitions.as_mut_ptr(), definitions.len(),
+                context, validate_object_name,
+            )
+        })?;
+        unsafe { symbols.set_len(table.count) };
         Ok(symbols)
     }
     fn relocations<'rows>(&'rows self, raw: &'rows [ObjectSection], symbols: &'rows [ObjectSymbol], row: &'rows ObjectSection)
@@ -843,8 +852,7 @@ impl<'a, Input: AsRef<[u8]> + ?Sized> Reader<'a, Input> {
         }))
     }
     fn module_symbols(&self) -> Result<Option<(Vec<ObjectSection>, Vec<ObjectSymbol>)>> {
-        let mut parts = ObjectParts::default();
-        let raw = self.section_rows(&mut parts).collect::<Result<Vec<_>>>()?;
+        let (parts, raw) = self.sections(true)?;
         let mut cursor = MetadataReadCursor::new(self.metadata(parts.metadata)?);
         let header = unsafe { metadata_read_prefix(&mut cursor, u64::from(FORMAT)) }.header;
         header.error.check()?;
@@ -876,8 +884,7 @@ impl<'a, Input: AsRef<[u8]> + ?Sized> Reader<'a, Input> {
 
     /// 从库成员借用公开接口与合同。完整对象负责代码、重定位和诊断材料。
     pub(crate) fn interface(&self) -> Result<(String, Kind, BTreeMap<String, Vec<u8>>)> {
-        let mut parts = ObjectParts::default();
-        for row in self.section_rows(&mut parts) { row?; }
+        let (parts, _) = self.sections(false)?;
         let (name, kind, mut bindings, _, _) = read_metadata(
             self.metadata(parts.metadata)?, None, false, None,
         )?;
@@ -1007,8 +1014,7 @@ fn decode_object<Bytes: super::ReadSection>(
     let b = reader.bytes;
     let mut definitions = vec![SectionDefinition::default(); reader.headers.len() / 40];
     let symbols = reader.symbol_rows(&mut definitions)?;
-    let mut parts = ObjectParts::default();
-    let mut raw = reader.section_rows(&mut parts).collect::<Result<Vec<_>>>()?;
+    let (parts, mut raw) = reader.sections(true)?;
     let (name, kind, mut bindings, stack, archive) = match native {
         Some(name) => (name.to_owned(), Kind::Module { interface: "".into(), requirements: Arc::default(), stack_bytes: 0 }, BTreeMap::new(), StackMetadata::default(), None),
         None => {
@@ -1026,7 +1032,7 @@ fn decode_object<Bytes: super::ReadSection>(
             sections.push(Section {
                 associated: Vec::new(),
                 layout: None,
-                name: read_text(row.name)?,
+                name: unsafe { std::str::from_utf8_unchecked(row.name.borrowed()) }.to_owned(),
                 bytes: Bytes::from_coff(bytes, row.zero_fill),
                 flags: row.flags as u32,
                 relocations: Vec::new(),
