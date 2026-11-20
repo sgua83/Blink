@@ -2877,7 +2877,6 @@ impl Builder<'_> {
         count: Value,
         span: Span,
     ) -> Result<[Reg; 2]> {
-        self.application_handle_available(identity, span, &[],&self.path)?;
         self.application_cpu_source(identity,span)?;
         let handle = Value {
             proof: bounds::Proof::default(),
