@@ -2400,11 +2400,13 @@ impl GpuProgram {
                     }
                     if size > 1 {
                         let words = reduction_ty.size.div_ceil(4);
+                        let mut buffers = vec![PagedBuffer::words(c.inner.clone(), size, words)?];
+                        let second = scan::groups(size);
+                        if second > 1 {
+                            buffers.push(PagedBuffer::words(c.inner.clone(), second, words)?);
+                        }
                         Some(Scratch {
-                            buffers: vec![
-                                PagedBuffer::words(c.inner.clone(), size, words)?,
-                                PagedBuffer::words(c.inner.clone(), size, words)?,
-                            ],
+                            buffers,
                             arguments: None,
                             sorting: None,
                         })
