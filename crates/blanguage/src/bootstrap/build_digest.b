@@ -251,37 +251,23 @@ extern "C" void sha256_reference(inout DigestState state, BuildReference row) on
     if (present != u8(0)) { digest_field(state, row.value); }
 }
 
-extern "C" void plan_source_regions(address regions,address declarations,u64 count) on cpu {
-    u64 index = count;
-    while (index != 0u64) {
-        index -= 1u64;
-        address declaration_at = at(declarations,index * size_of<SourceDeclaration>());
-        SourceDeclaration declaration = unsafe_position<SourceDeclaration>(declaration_at);
-        address region_at = at(regions,declaration.region * size_of<SourceRegion>());
-        SourceRegion region = unsafe_position<SourceRegion>(region_at);
-        if (declaration.start < region.preamble_end) {
-            region.preamble_end = declaration.start;
-        }
-        if (region.include_signatures != 0u64 && address_bits(declaration.signature.bytes) != 0u64) {
-            declaration.next_signature = region.first_signature;
-            region.first_signature = index + 1u64;
-            unsafe_position<SourceDeclaration>(declaration_at) = declaration;
-        }
-        unsafe_position<SourceRegion>(region_at) = region;
-    }
+extern "C" bool record_source_declaration(inout u64 preamble_end, u64 start,
+    bool implementation, bool ordinary) on cpu {
+    if (start < preamble_end) { preamble_end = start; }
+    return implementation && ordinary;
 }
 
-extern "C" void sha256_source(DigestField prefix, address declarations,
-    u64 first_signature, address output) on cpu {
+extern "C" void sha256_source(DigestField prefix, address signatures,
+    u64 count, address output) on cpu {
     DigestState state = sha256_start();
     digest_field(state, prefix);
-    u64 signature = first_signature;
-    while (signature != 0u64) {
-        SourceDeclaration row = unsafe_position<SourceDeclaration>(
-            at(declarations, (signature - 1u64) * size_of<SourceDeclaration>()));
+    u64 index = 0u64;
+    while (index < count) {
+        SourceSignature row = unsafe_position<SourceSignature>(
+            at(signatures, index * size_of<SourceSignature>()));
         digest_field(state, row.name);
         digest_field(state, row.signature);
-        signature = row.next_signature;
+        index += 1u64;
     }
     sha256_finish(state, output);
 }

@@ -235,28 +235,27 @@ pub(super) fn references<'a>(declarations: &crate::Declarations, imported: Optio
     digest.finish()
 }
 
-#[repr(C)]
 struct SourceRegion {
     preamble_end: usize,
-    include_signatures: usize,
-    first_signature: usize,
+    include_signatures: bool,
+    signatures: Vec<SourceSignature>,
 }
 
 #[repr(C)]
-struct SourceDeclaration {
-    region: usize,
-    start: usize,
-    next_signature: usize,
+struct SourceSignature {
     name: ByteField,
     signature: ByteField,
 }
 
 unsafe extern "C" {
-    #[link_name = "bootstrap.build_digest::plan_source_regions"]
-    fn plan_source_regions(regions: *mut SourceRegion, declarations: *mut SourceDeclaration, count: usize);
+    #[link_name = "bootstrap.build_digest::record_source_declaration"]
+    fn record_source_declaration(
+        preamble_end: &mut usize, start: usize, implementation: bool, ordinary: bool,
+    ) -> bool;
     #[link_name = "bootstrap.build_digest::sha256_source"]
-    fn sha256_source(prefix: ByteField, declarations: *const SourceDeclaration,
-        first_signature: usize, output: &mut [u8; 32]);
+    fn sha256_source(
+        prefix: ByteField, signatures: *const SourceSignature, count: usize, output: &mut [u8; 32],
+    );
 }
 
 pub(super) fn sources(path: &std::path::Path, root: &std::path::Path,
@@ -273,31 +272,33 @@ pub(super) fn sources(path: &std::path::Path, root: &std::path::Path,
         let index = *paths.entry(source.path.as_path()).or_insert_with(|| {
             let index = regions.len();
             regions.push(SourceRegion {
-                preamble_end: usize::MAX, include_signatures: 0, first_signature: 0,
+                preamble_end: usize::MAX, include_signatures: false, signatures: Vec::new(),
             });
             index
         });
-        regions[index].include_signatures |= usize::from(implementation);
+        regions[index].include_signatures |= implementation;
     }
 
-    let mut declarations = Vec::new();
-    let mut record = |source: &crate::ast::Source, start, signature: Option<(&str, usize)>| {
-        if let Some(&region) = paths.get(source.path.as_path()) {
-            let (name, signature) = if let Some((name, end)) = signature
-                && regions[region].include_signatures != 0
-            {
-                (name.as_bytes().into(), source.text[start..end].trim_end().as_bytes().into())
-            } else {
-                (b"".as_slice().into(), ByteField { bytes: std::ptr::null(), length: 0 })
+    let mut record = |source: &crate::ast::Source, start, signature: Option<(&str, &crate::syntax::Function)>| {
+        if let Some(&index) = paths.get(source.path.as_path()) {
+            let region = &mut regions[index];
+            let keep = unsafe {
+                record_source_declaration(&mut region.preamble_end, start, region.include_signatures, signature.is_some())
             };
-            declarations.push(SourceDeclaration { region, start, next_signature: 0, name, signature });
+            if let Some((name, function)) = signature.filter(|_| keep) {
+                let end = function.signature_end();
+                region.signatures.push(SourceSignature {
+                    name: name.as_bytes().into(),
+                    signature: source.text[start..end].trim_end().as_bytes().into(),
+                });
+            }
         }
     };
     for (name, definition) in &world.declarations.functions {
         let ordinary = definition.function.kind() != crate::ast::FunctionKind::Constant
             && definition.function.external().is_none();
         record(&definition.source, definition.function.span().start,
-            ordinary.then(|| (name.as_str(), definition.function.signature_end())));
+            ordinary.then_some((name.as_str(), &definition.function)));
     }
     for (record_type, source, ..) in world.declarations.records.values() {
         record(source, record_type.span().start, None);
@@ -305,24 +306,23 @@ pub(super) fn sources(path: &std::path::Path, root: &std::path::Path,
     for (set, source, ..) in world.declarations.type_sets.values() {
         record(source, set.span().start, None);
     }
-    unsafe { plan_source_regions(regions.as_mut_ptr(), declarations.as_mut_ptr(), declarations.len()) };
 
     let mut sources = Vec::new();
     for (name, source, implementation) in source_rows() {
         let partial = name != module || implementation;
-        let (scope, prefix, first_signature) = if partial {
+        let (scope, prefix, signatures) = if partial {
             let region = &regions[paths[source.path.as_path()]];
             let end = if region.preamble_end == usize::MAX { source.text.len() } else { region.preamble_end };
             let scope = if implementation { "preamble_and_function_signatures" } else { "preamble" };
-            let signature = if implementation { region.first_signature } else { 0 };
-            (scope, source.text[..end].trim_end(), signature)
+            let signatures = if implementation { region.signatures.as_slice() } else { &[] };
+            (scope, source.text[..end].trim_end(), signatures)
         } else {
-            ("full_source", &*source.text, 0)
+            ("full_source", &*source.text, &[][..])
         };
         // Source text and declaration names remain owned by the world for this call.
         let mut fingerprint = [0; 32];
         unsafe {
-            sha256_source(prefix.as_bytes().into(), declarations.as_ptr(), first_signature, &mut fingerprint);
+            sha256_source(prefix.as_bytes().into(), signatures.as_ptr(), signatures.len(), &mut fingerprint);
         }
         sources.push(SourceInput {
             module: name.clone(), path: source.path.as_os_str().as_encoded_bytes().to_vec(),

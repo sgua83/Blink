@@ -34,24 +34,16 @@ extern "C" void sha256_reference_symbol(inout DigestState state, BuildSymbol sym
 extern "C" void sha256_reference_count(inout DigestState state, u64 count) on cpu;
 extern "C" void sha256_reference(inout DigestState state, BuildReference row) on cpu;
 
-struct SourceRegion {
-    u64 preamble_end;
-    u64 include_signatures;
-    u64 first_signature;
-};
-
-struct SourceDeclaration {
-    u64 region;
-    u64 start;
-    u64 next_signature;
+struct SourceSignature {
     DigestField name;
     DigestField signature;
 };
 
-// Declarations are in original order. A zero link ends a region's signature
-// list; nonzero links are one-based indices into this call's original rows.
-extern "C" void plan_source_regions(address regions,address declarations,u64 count) on cpu;
+// Each original declaration contributes its start. Ordinary signatures are
+// kept only for regions used as implementation inputs.
+extern "C" bool record_source_declaration(inout u64 preamble_end, u64 start,
+    bool implementation, bool ordinary) on cpu;
 
-// The caller owns the original source, declaration rows and borrowed fields.
-extern "C" void sha256_source(DigestField prefix, address declarations,
-    u64 first_signature, address output) on cpu;
+// Signatures are borrowed from the original source in declaration order.
+extern "C" void sha256_source(DigestField prefix, address signatures,
+    u64 count, address output) on cpu;
