@@ -1654,8 +1654,10 @@ fn converge_access(
     let mut call_accesses = functions.keys().map(|name| {
         (name.as_str(), BTreeMap::<usize, CallProjection<'_>>::new())
     }).collect::<BTreeMap<_, _>>();
-    loop {
-        let changed = crate::parallel::try_map(worker, call_accesses.iter_mut().collect(), |_| (), |_, (&name, projections)| {
+    let mut ready = call_accesses.keys().copied().collect::<BTreeSet<_>>();
+    while !ready.is_empty() {
+        let tasks = call_accesses.iter_mut().filter(|(name, _)| ready.contains(*name)).collect();
+        let changed = crate::parallel::try_map(worker, tasks, |_| (), |_, (&name, projections)| {
             let (name, function) = functions.get_key_value(name).unwrap();
             let normalize=feedback.contains(name.as_str());
             let state=&known[name];
@@ -1734,12 +1736,15 @@ fn converge_access(
         if changed.is_empty() {
             break;
         }
-        // changed follows the sorted order of functions.
+        // Direct accesses and all uninvalidated call projections still describe
+        // the same inputs, so only callers with an invalidated projection rerun.
+        ready.clear();
         for (&caller, projections) in &mut call_accesses {
             for (&index, projection) in projections {
                 let callee = functions[caller].calls[index].function.as_str();
                 if changed.binary_search_by_key(&callee, |(name, _)| name.as_str()).is_ok() {
                     projection.access = None;
+                    ready.insert(caller);
                 }
             }
         }
