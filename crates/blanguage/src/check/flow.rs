@@ -673,13 +673,27 @@ impl Builder<'_> {
         natural=if context.exits.len()>natural_index{Some(context.exits.pop().unwrap())}else{None};
         let mut guards=loop_exit_paths(body,&context.controls,&owned_presence::Presence::input(test));
         if let Some(state)=natural{context.exits.push(state);guards.push(owned_presence::Presence::input(test).not());}
-        let common=context.exits.iter().map(|state|state.initialized.clone()).reduce(|a,b|ownership::intersect_initialized(&a,&b));
-        let initialized=context.exits.iter().zip(&guards).flat_map(|(state,when)|state.initialized.difference(common.as_ref().unwrap()).map(move|position|Position::selected(when.clone(),position.clone(),Position::Initialized))).collect::<BTreeSet<_>>();
+        let mut positions = context.exits.iter().map(|state| &state.initialized);
+        let initialized = positions.next().zip(positions.next()).map(|(first, second)| {
+            let mut common = ownership::intersect_initialized(first, second);
+            for positions in positions {
+                common = ownership::intersect_initialized(&common, positions);
+            }
+            let conditional = context.exits.iter().zip(&guards).flat_map(|(state, when)| {
+                state.initialized.difference(&common).map(move |position| {
+                    Position::selected(when.clone(), position.clone(), Position::Initialized)
+                })
+            }).collect::<BTreeSet<_>>();
+            common.extend(conditional);
+            common
+        });
         let mut guards=guards.into_iter().rev();let mut exits=context.exits.into_iter().rev();let Some(first)=exits.next()else{self.env.retain(|name,_|context.names.contains(name));self.path=bounds::Clause::impossible();return Ok((false,context.writes))};
         let _first=guards.next().unwrap();self.env=first.env;self.path=first.path;
         for exit in exits{let when=guards.next().unwrap();let mut previous=std::mem::replace(&mut self.env,exit.env);self.path=bounds::Clause::either(&self.path,&exit.path);self.join_environment_selected(&mut previous,&when);}
         self.env.retain(|name,_|context.names.contains(name));
-        self.initialized=common.unwrap();self.initialized.extend(initialized);self.view_uses.after(span);Ok((true,context.writes))
+        self.initialized = initialized.unwrap_or(first.initialized);
+        self.view_uses.after(span);
+        Ok((true,context.writes))
     }
 }
 // 每个出口条件来自原Loop/If；不写运行时出口标记，也不丢弃其他路径的拥有内容。
