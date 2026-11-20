@@ -28,6 +28,10 @@ pub struct StageCode {
 }
 
 pub const SCAN_WIDTH: u32 = 64;
+/// Vulkan dispatch dimensions followed by one shader-side element count.
+pub const DISPATCH_RECORD_BYTES: usize = 16;
+/// Byte offset of the histogram or the selected domain in a preparation pipeline.
+pub const DISPATCH_CONTINUATION_SPEC_ID: u32 = 0;
 
 pub fn sort_histogram_count(count: u32) -> u32 {
     count.div_ceil(SCAN_WIDTH).max(1) * 16

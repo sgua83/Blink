@@ -1699,7 +1699,7 @@ struct Compiled {
     tails: Vec<Option<VkPipeline>>,
     scan_adds: Vec<Option<VkPipeline>>,
     finishes: Vec<Option<VkPipeline>>,
-    dispatches: Vec<Option<VkPipeline>>,
+    dispatches: Vec<Option<prefix::Preparation>>,
     selectors: Vec<Option<VkPipeline>>,
     additional: Vec<AdditionalPipelines>,
 }
@@ -1723,7 +1723,7 @@ impl Drop for Compiled {
                 .chain(self.tails.iter().flatten())
                 .chain(self.scan_adds.iter().flatten())
                 .chain(self.finishes.iter().flatten())
-                .chain(self.dispatches.iter().flatten())
+                .chain(self.dispatches.iter().flatten().map(|prepare| &prepare.pipeline))
                 .chain(self.selectors.iter().flatten())
                 .chain(self.additional.iter().flat_map(|pipelines| {
                     pipelines.sort.iter().chain(&pipelines.segmented_single_group)
@@ -1759,6 +1759,8 @@ fn pipeline(
     layout: VkPipelineLayout,
     words: &[u32],
     subgroup: bool,
+    entry: &CStr,
+    continuation: Option<u64>,
 ) -> Result<VkPipeline> {
     unsafe {
         let f = &inner.functions;
@@ -1788,7 +1790,21 @@ fn pipeline(
             pipeline.stage.flags = 2;
             pipeline.stage.pNext = (&required as *const sort::RequiredSize).cast();
         }
-        pipeline.stage.pName = c"main".as_ptr();
+        pipeline.stage.pName = entry.as_ptr();
+        let map = VkSpecializationMapEntry {
+            constantID: blanguage::spirv::DISPATCH_CONTINUATION_SPEC_ID,
+            offset: 0,
+            size: size_of::<u64>(),
+        };
+        let data = continuation.map(|value| value.to_le());
+        let specialization = data.as_ref().map(|value| VkSpecializationInfo {
+            mapEntryCount: 1,
+            pMapEntries: &map,
+            dataSize: size_of::<u64>(),
+            pData: std::ptr::from_ref(value).cast(),
+        });
+        pipeline.stage.pSpecializationInfo = specialization.as_ref()
+            .map_or(null(), |info| std::ptr::from_ref(info).cast());
         let mut handle = 0;
         let result = (f.vkCreateComputePipelines)(device, 0, 1, &pipeline, null(), &mut handle);
         (f.vkDestroyShaderModule)(device, module, null());
@@ -2153,7 +2169,11 @@ impl GpuProgram {
                     "vkCreatePipelineLayout",
                 )?;
                 for (stage, shader) in image.stages().iter().enumerate() {
-                    let make = |words: &[u32]| pipeline(&out.inner, out.layout, words, false);
+                    let make = |words: &[u32]| pipeline(&out.inner, out.layout, words, false, c"main", None);
+                    let stage_layout = &out.program.stages()[stage];
+                    let entry = shader.dispatch.as_deref().map(prefix::entry);
+                    let packed = entry == Some(prefix::PREPARE_ENTRY);
+                    let continuation = packed.then_some(blanguage::spirv::DISPATCH_RECORD_BYTES as u64);
                     out.pipelines.push(make(&shader.main)?);
                     out.tails
                         .push(shader.tail.as_deref().map(make).transpose()?);
@@ -2163,11 +2183,21 @@ impl GpuProgram {
                         shader
                             .finish
                             .as_ref()
-                            .map(|(_, words)| make(words))
+                            .map(|(_, words)| {
+                                let offset = if stage_layout.selection.is_some() { continuation } else { None };
+                                pipeline(&out.inner, out.layout, words, false, c"main", offset)
+                            })
                             .transpose()?,
                     );
-                    out.dispatches
-                        .push(shader.dispatch.as_deref().map(make).transpose()?);
+                    out.dispatches.push(shader.dispatch.as_deref().zip(entry).map(|(words, name)| {
+                        let offset = if matches!(stage_layout.operation, blanguage::ir::Operation::StableSort(_)) {
+                            continuation
+                        } else {
+                            None
+                        };
+                        pipeline(&out.inner, out.layout, words, false, name, offset)
+                            .map(|pipeline| prefix::Preparation { pipeline, packed })
+                    }).transpose()?);
                     out.selectors
                         .push(shader.selector.as_deref().map(make).transpose()?);
                     use blanguage::spirv::TerminalScan;
@@ -2175,7 +2205,7 @@ impl GpuProgram {
                     out.additional.push(AdditionalPipelines::default());
                     let extra = &mut out.additional[stage];
                     for shader in entries.sort {
-                        extra.sort.push(pipeline(&out.inner, out.layout, &shader.words, shader.ranks)?);
+                        extra.sort.push(pipeline(&out.inner, out.layout, &shader.words, shader.ranks, c"main", None)?);
                     }
                     extra.segmented_single_group = entries.segmented_single_group
                         .map(|shader| make(&shader.words)).transpose()?;
@@ -2382,7 +2412,7 @@ impl GpuProgram {
         let mut binding_parameters = None;
         // 同一串行提交中，完成消费的同容量 where 工作区由后续阶段复用。
         let mut scratch_uses = Vec::new();
-        let mut selected_storage = BTreeMap::<(u32, bool), (usize, BTreeSet<usize>)>::new();
+        let mut selected_storage = BTreeMap::<(u32, bool, usize), (usize, BTreeSet<usize>)>::new();
         let stage_count = c.program.stages().len();
         let query_count = if self.capture_timestamps {
             u32::try_from(stage_count as u64 * 2 * steps.get() as u64)?
@@ -2406,12 +2436,13 @@ impl GpuProgram {
             if let Some(selection) = stage.selection {
                 use std::collections::btree_map::Entry;
                 let legacy_summary = c.scan_terminal(i, count).is_none();
-                let ((slot, sources), reused) = match selected_storage.entry((count, legacy_summary)) {
+                let continuation = prefix::continuation_slot(c, i);
+                let ((slot, sources), reused) = match selected_storage.entry((count, legacy_summary, continuation)) {
                     Entry::Occupied(entry) => (entry.into_mut(), true),
                     Entry::Vacant(entry) => {
                         let slot = scratch.len();
                         let mut temporary = selection::allocate(c, i, count)?;
-                        temporary.arguments = Some(prefix::allocate(c, stage)?);
+                        temporary.arguments = Some(prefix::allocate(c, i, count)?);
                         scratch.push(temporary);
                         extra_sets += 2;
                         (entry.insert((slot, BTreeSet::new())), false)
@@ -2510,7 +2541,7 @@ impl GpuProgram {
                     arguments: None,
                     sorting: None,
                 });
-                temporary.arguments = Some(prefix::allocate(c, stage)?);
+                temporary.arguments = Some(prefix::allocate(c, i, count)?);
                 Some(temporary)
             } else {
                 temporary
@@ -2607,7 +2638,7 @@ impl GpuProgram {
                     .transpose()?;
                 let selection_sets = selected_storage.into_iter().map(|(key, (slot, sources))| {
                     selection::descriptors(descriptors.as_mut().unwrap(), &scratch[slot], key.0, sources)
-                        .map(|sets| (key, sets))
+                        .map(|sets| (slot, sets))
                 }).collect::<Result<BTreeMap<_, _>>>()?;
                 let mut sorting_sets = Vec::new();
                 for usage in &scratch_uses {
@@ -2713,7 +2744,7 @@ impl GpuProgram {
                             blanguage::ir::Operation::Map if stage.selection.is_some() => {
                                 selection::record(
                                     &commands,
-                                    &selection_sets[&(count, c.scan_terminal(i, count).is_none())],
+                                    &selection_sets[&usage.unwrap().slot],
                                     c,
                                     i,
                                     count,

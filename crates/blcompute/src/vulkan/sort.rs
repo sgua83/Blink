@@ -128,6 +128,7 @@ pub(super) fn record(
     reused: bool,
 ) {
     let kernels = &c.additional[stage].sort;
+    let histogram_record = arguments.map_or(0, |_| prefix::continuation_slot(c, stage));
     for key in (0..key_count).rev() {
         commands.bind_compute_set(c.layout, sets.initialize);
         let initialize = if key + 1 == key_count {
@@ -173,7 +174,7 @@ pub(super) fn record(
                 arguments,
                 uniforms,
                 partition,
-                blanguage::spirv::PREFIX_LEVELS,
+                histogram_record,
             );
             commands.barrier(0x800, 0x800, 0x40, 0x60);
             commands.bind_compute_set(c.layout, sets.scatter[pass % 2]);

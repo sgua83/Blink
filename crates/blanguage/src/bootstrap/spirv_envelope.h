@@ -25,6 +25,7 @@ struct Envelope {
     u32 ext;
     u32 entry;
     u32 workgroup_width;
+    u32 prepare;
     Features features;
 };
 struct Words { address data; u64 count; };
@@ -836,13 +837,18 @@ struct DispatchGrid {
     u32 width;
     u32 max_x;
     u32 max_y;
-    u32 levels;
+    u32 capacity;
     u32 collective;
     u32 bins;
+    u32 first_byte;
+    u32 histogram_byte;
+    u32 width_shift;
+    u32 record_bytes;
+    array<u32,3> field_bytes;
     u32 next;
 };
- 
-extern "C" DispatchValue encode_dispatch_grid(DispatchGrid input, address offsets, address body) on cpu;
+
+extern "C" DispatchValue encode_dispatch_grid(DispatchGrid input, address body) on cpu;
 
 struct ScatterInput {
     PageAddress flag;
@@ -857,7 +863,7 @@ struct ScatterInput {
 extern "C" StageWords encode_record_scatter(ScatterInput input, address record_copy,
     u32 count_descriptor, u32 count_word, address body) on cpu;
 extern "C" StageWords encode_index_scatter(ScatterInput input, u32 target_descriptor,
-    DispatchGrid grid, address offsets, address body) on cpu;
+    DispatchGrid grid, address body) on cpu;
 
 struct SortRankEmission {
     PageAddress source;

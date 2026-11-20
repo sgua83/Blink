@@ -85,11 +85,12 @@ u64 extensions(address output, u64 start, Features f) on cpu {
     return at;
 }
 
-u64 entry_point(address output, u64 start, u32 entry, address interfaces, u64 count) on cpu {
+u64 entry_point(address output, u64 start, u32 entry, address interfaces, u64 count, bool prepare) on cpu {
     put(output, start + 1u64, 5);
     put(output, start + 2u64, entry);
-    put(output, start + 3u64, 0x6e69616d); // "main"
-    put(output, start + 4u64, 0);
+    // "main" and "prepare", including the final NUL.
+    put(output, start + 3u64, prepare ? 0x70657270 : 0x6e69616d);
+    put(output, start + 4u64, prepare ? 0x00657261 : 0);
     u64 at = start + 5u64;
     u64 index = 0u64;
     while (index < count) {
@@ -143,7 +144,10 @@ extern "C" u64 encode(Envelope input, address interfaces, u64 count, address wor
     put(words, at + 1u64, 5348);
     put(words, at + 2u64, 1);
 
-    at = entry_point(words, at + 3u64, input.entry, interfaces, count);
+    at = entry_point(words, at + 3u64, input.entry, interfaces, count, false);
+    if (input.prepare != 0) {
+        at = entry_point(words, at, input.entry, interfaces, count, true);
+    }
     put(words, at, instruction(16, 6));
     put(words, at + 1u64, input.entry);
     put(words, at + 2u64, 17);
@@ -1365,7 +1369,7 @@ DispatchValue dispatch_pointer(address body, DispatchValue cursor, DispatchGrid 
 }
 
 DispatchValue dispatch_record(address body, DispatchValue cursor, DispatchGrid input,
-                              u32 base, u32 count, address offsets, u32 slot) on cpu {
+                              u32 base, u32 count) on cpu {
     DispatchScalars types = input.scalars;
     u32 zero = types.zero;
     DispatchValue output = cursor;
@@ -1386,7 +1390,8 @@ DispatchValue dispatch_record(address body, DispatchValue cursor, DispatchGrid i
     }
     array<u32,4> values = array<u32,4>(x, y, z, count);
     for (i in 0..4) {
-        DispatchValue pointer = dispatch_pointer(body, output, input, base, read_word(offsets, slot + i));
+        u32 offset = i == 0 ? 0 : input.field_bytes[i - 1];
+        DispatchValue pointer = dispatch_pointer(body, output, input, base, offset);
         u64 at = words_four(body, pointer.words, 62, pointer.value, values[i], 2, 4);
         output = DispatchValue(at, pointer.next, 0);
     }
@@ -1394,16 +1399,49 @@ DispatchValue dispatch_record(address body, DispatchValue cursor, DispatchGrid i
 }
 
 DispatchValue dispatch_levels(address body, DispatchValue cursor, DispatchGrid input,
-                              u32 base, address offsets, u32 start, u32 count) on cpu {
-    DispatchValue first = dispatch_record(body, cursor, input, base, count, offsets, start);
-    DispatchValue level = first;
-    for (index in 1..input.levels) {
-        level = dispatch_record(body, level, input, base, level.value, offsets, start + index * 4);
-    }
-    return DispatchValue(level.words, level.next, first.value);
+                              u32 base, u32 count, u32 capacity) on cpu {
+    DispatchValue first = dispatch_record(body, cursor, input, base, count);
+    if (capacity == 0) { return first; }
+
+    StageCursor out = StageCursor(body, first.words, first.next);
+    DispatchScalars types = input.scalars;
+    u32 u = types.uint_type;
+    u32 first_next = stage_op(out, 128, input.wide_type, base, input.record_bytes);
+    u32 before = out.next;
+    u32 header = before + 1;
+    u32 run = header + 1;
+    u32 repeat = run + 1;
+    u32 end = repeat + 1;
+    u32 next_count = end + 1;
+    u32 next_capacity = next_count + 1;
+    u32 next_base = next_capacity + 1;
+    out.next = next_base + 1;
+    stage_close(out, before);
+    stage_close(out, header);
+
+    u32 current = stage_phi(out, u, first.value, before, next_count, repeat);
+    u32 remaining = stage_phi(out, u, capacity, before, next_capacity, repeat);
+    u32 record = stage_phi(out, input.wide_type, first_next, before, next_base, repeat);
+    u32 more = stage_op(out, 172, types.bool_type, remaining, input.width);
+    out.words = words_three(body, out.words, 246, end, repeat, 0);
+    out.words = words_three(body, out.words, 250, more, run, end);
+    out.words = words_one(body, out.words, 248, run);
+
+    DispatchValue emitted = dispatch_record(body, DispatchValue(out.words, out.next, 0), input, record, current);
+    out.words = emitted.words;
+    out.next = emitted.next;
+    stage_close(out, repeat);
+    u32 last = stage_op(out, 130, u, remaining, types.one);
+    u32 groups_minus_one = stage_op(out, 194, u, last, input.width_shift);
+    out.words = words_three(body, out.words, 83, u, next_count, emitted.value);
+    out.words = words_four(body, out.words, 128, u, next_capacity, groups_minus_one, types.one);
+    out.words = words_four(body, out.words, 128, input.wide_type, next_base, record, input.record_bytes);
+    out.words = words_one(body, out.words, 249, header);
+    out.words = words_one(body, out.words, 248, end);
+    return DispatchValue(out.words, out.next, first.value);
 }
 
-extern "C" DispatchValue encode_dispatch_grid(DispatchGrid input, address offsets, address body) on cpu {
+extern "C" DispatchValue encode_dispatch_grid(DispatchGrid input, address body) on cpu {
     // The command and the shader consume the same first page of indirect records.
     u32 header = input.next;
     u32 table = header + 1;
@@ -1414,15 +1452,27 @@ extern "C" DispatchValue encode_dispatch_grid(DispatchGrid input, address offset
     at = words_three(body, at, 61, input.wide_type, table, header);
     at = words_three(body, at, 120, input.page_pointer, page, table);
     at = words_five(body, at, 61, input.wide_type, base, page, 2, 8);
-    DispatchValue cursor = DispatchValue(at, base + 1, 0);
-    DispatchValue levels = dispatch_levels(body, cursor, input, base, offsets, 0, input.count);
-    if (input.bins != 0) {
-        u32 histogram = levels.next;
-        at = words_four(body, levels.words, 132, input.scalars.uint_type, histogram, levels.value, input.bins);
-        levels = dispatch_levels(body, DispatchValue(at, histogram + 1, 0), input, base,
-                                 offsets, input.levels * 4, histogram);
+    StageCursor out = StageCursor(body, at, base + 1);
+    u32 first = input.first_byte == 0 ? base : stage_op(out, 128, input.wide_type, base, input.first_byte);
+    DispatchValue cursor = DispatchValue(out.words, out.next, 0);
+    if (input.bins == 0) {
+        return dispatch_levels(body, cursor, input, first, input.count, input.capacity);
     }
-    return levels;
+
+    DispatchValue root = dispatch_record(body, cursor, input, first, input.count);
+    out.words = root.words;
+    out.next = root.next;
+    u32 histogram = stage_op(out, 132, input.scalars.uint_type, root.value, input.bins);
+    u32 slots = 0;
+    if (input.capacity != 0) {
+        DispatchValue groups = dispatch_groups(body, DispatchValue(out.words, out.next, 0),
+            input.scalars, input.capacity, input.width, true);
+        out.words = groups.words;
+        out.next = groups.next;
+        slots = stage_op(out, 132, input.scalars.uint_type, groups.value, input.bins);
+    }
+    u32 histogram_base = stage_op(out, 128, input.wide_type, base, input.histogram_byte);
+    return dispatch_levels(body, DispatchValue(out.words, out.next, 0), input, histogram_base, histogram, slots);
 }
 
 extern "C" StageWords write_sort_key(SortKeyWrite input, address body) on cpu {
@@ -1457,7 +1507,7 @@ extern "C" StageWords encode_sort_gather(PageAddress indices, address layout, u3
 }
 
 struct ScatterRecords { address copy; u32 count_descriptor; u32 count_word; };
-struct ScatterIndices { u32 descriptor; DispatchGrid grid; address offsets; };
+struct ScatterIndices { u32 descriptor; DispatchGrid grid; };
 enum ScatterTarget:u32 { Records(ScatterRecords)=0; Indices(ScatterIndices)=1; };
 
 void scatter_count(inout StageCursor out, PageAddress flag, read ScatterTarget target, u32 count) on cpu {
@@ -1473,7 +1523,7 @@ void scatter_count(inout StageCursor out, PageAddress flag, read ScatterTarget t
             DispatchGrid grid = indices.grid;
             grid.count = count;
             grid.next = out.next;
-            DispatchValue written = encode_dispatch_grid(grid, indices.offsets, word_at(out.body, out.words));
+            DispatchValue written = encode_dispatch_grid(grid, word_at(out.body, out.words));
             out.words += written.words;
             out.next = written.next;
         }
@@ -1540,8 +1590,8 @@ extern "C" StageWords encode_record_scatter(ScatterInput input, address record_c
 }
 
 extern "C" StageWords encode_index_scatter(ScatterInput input, u32 target_descriptor,
-    DispatchGrid grid, address offsets, address body) on cpu {
-    let target = ScatterTarget::Indices(ScatterIndices(target_descriptor, grid, offsets));
+    DispatchGrid grid, address body) on cpu {
+    let target = ScatterTarget::Indices(ScatterIndices(target_descriptor, grid));
     return emit_scatter(input, target, body);
 }
 

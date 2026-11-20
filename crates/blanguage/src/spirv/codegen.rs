@@ -86,6 +86,7 @@ struct ShaderEnvelope {
     ext: u32,
     entry: u32,
     workgroup_width: u32,
+    prepare: u32,
     features: ShaderFeatures,
 }
 
@@ -459,16 +460,22 @@ struct DispatchGrid {
     width: u32,
     max_x: u32,
     max_y: u32,
-    levels: u32,
+    capacity: u32,
     collective: u32,
     bins: u32,
+    first_byte: u32,
+    histogram_byte: u32,
+    width_shift: u32,
+    record_bytes: u32,
+    field_bytes: [u32; 3],
     next: u32,
 }
 
 impl DispatchGrid {
     fn word_capacity(&self) -> usize {
-        // Page header, optional histogram count and up to 167 words per record.
-        25 + 167 * self.levels as usize * (1 + usize::from(self.bins != 0))
+        // First record, optional histogram setup and one loop body for the hierarchy.
+        25 + 167 + (56 + 167) * usize::from(self.bins != 0)
+            + (96 + 167) * usize::from(self.capacity != 0)
     }
 }
 
@@ -630,7 +637,7 @@ unsafe extern "C" {
     #[link_name = "bootstrap.spirv_envelope::encode_sort_rank"]
     fn encode_sort_rank(input: SortRankEmission, body: *mut u32) -> StageWords;
     #[link_name = "bootstrap.spirv_envelope::encode_dispatch_grid"]
-    fn encode_dispatch_grid(input: DispatchGrid, offsets: *const u32, body: *mut u32) -> DispatchValue;
+    fn encode_dispatch_grid(input: DispatchGrid, body: *mut u32) -> DispatchValue;
     #[link_name = "bootstrap.spirv_envelope::encode_prefix_index"]
     fn encode_prefix_index(input: PrefixIndexEmission, body: *mut u32) -> PrefixIndexWords;
     #[link_name = "bootstrap.spirv_envelope::encode_append_reservation"]
@@ -2119,9 +2126,14 @@ fn emit_shader(
             data: part.as_ptr(),
             count: part.len() as u64,
         });
-        let input = ShaderEnvelope { bound: e.next, ext: e.ext, entry: main, workgroup_width: e.workgroup_width, features };
+        let prepare = argument_pass && (e.stage.selection.is_some() || !matches!(e.stage.operation, Operation::Map));
+        let input = ShaderEnvelope {
+            bound: e.next, ext: e.ext, entry: main, workgroup_width: e.workgroup_width,
+            prepare: u32::from(prepare), features,
+        };
+        let entry_words = interface_words + usize::from(prepare) * (5 + interface_words);
         let mut out = Vec::with_capacity(
-            unsafe { envelope_capacity() } as usize + interface_words
+            unsafe { envelope_capacity() } as usize + entry_words
                 + e.decorations.len() + e.defs.len() + e.body.len(),
         );
         // The envelope initializes the prefix in the same allocation the module returns.

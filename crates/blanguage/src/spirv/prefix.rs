@@ -1,5 +1,6 @@
 //! 有效前缀的 GPU 间接参数与多维工作组索引；实际数量始终驻留设备。
 use super::*;
+use crate::spirv::{DISPATCH_CONTINUATION_SPEC_ID, DISPATCH_RECORD_BYTES, SCAN_WIDTH, sort_histogram_count};
 impl Emitter<'_> {
     fn prefix_push(&mut self, word: u32) -> u32 {
         let zero = self.constant(Scalar::U32, 0);
@@ -39,50 +40,49 @@ impl Emitter<'_> {
         let max_y = self.prefix_push(1);
         let collective =
             !matches!(self.stage.operation, Operation::Map) || self.stage.selection.is_some();
-        let levels = if collective { PREFIX_LEVELS } else { 1 };
         let sorting = matches!(self.stage.operation, Operation::StableSort(_));
-        self.dispatch_grid(count, [max_x, max_y], 0, levels, collective, sorting);
-        self.emit_control(4, |body| unsafe { next_control_block(end, end, 1, body) });
-    }
-
-    pub(super) fn dispatch_grid(
-        &mut self,
-        count: u32,
-        limits: [u32; 2],
-        first: usize,
-        levels: usize,
-        collective: bool,
-        sorting: bool,
-    ) {
-        let (input, offsets) = self.dispatch_grid_input(count, limits, first, levels, collective, sorting);
+        let buffer = &self.program.buffers[self.stage.domain];
+        let capacity = if collective && buffer.count.is_none_or(|capacity| {
+            let elements = if sorting { sort_histogram_count(capacity) } else { capacity };
+            elements > SCAN_WIDTH
+        }) {
+            match buffer.count {
+                Some(capacity) => self.constant(Scalar::U32, capacity),
+                None => self.prefix_push(2 + self.stage.domain as u32),
+            }
+        } else {
+            0
+        };
+        let input = self.dispatch_grid_input(count, [max_x, max_y], capacity, collective, sorting, 0);
         let at = self.body.len();
         self.body.reserve(input.word_capacity());
         let emitted = unsafe {
-            let emitted = encode_dispatch_grid(input, offsets.as_ptr(), self.body.as_mut_ptr().add(at));
+            let emitted = encode_dispatch_grid(input, self.body.as_mut_ptr().add(at));
             self.body.set_len(at + emitted.words as usize);
             emitted
         };
         self.next = emitted.next;
+        self.emit_control(4, |body| unsafe { next_control_block(end, end, 1, body) });
+    }
+
+    pub(super) fn continuation_byte(&mut self) -> u32 {
+        let id = self.id();
+        op(&mut self.decorations, 71, &[id, 1, DISPATCH_CONTINUATION_SPEC_ID]); // SpecId
+        let legacy = (PREFIX_LEVELS * DISPATCH_RECORD_BYTES) as u32;
+        op(&mut self.defs, 50, &[self.u64_type, id, legacy, 0]); // OpSpecConstant
+        id
     }
 
     pub(super) fn dispatch_grid_input(
         &mut self,
         count: u32,
         limits: [u32; 2],
-        first: usize,
-        levels: usize,
+        capacity: u32,
         collective: bool,
         sorting: bool,
-    ) -> (DispatchGrid, [u32; PREFIX_LEVELS * 2 * 4]) {
-        let records = levels * (1 + usize::from(sorting));
-        let mut offsets = [0; PREFIX_LEVELS * 2 * 4];
-        for (slot, offset) in offsets[..records * 4].iter_mut().enumerate() {
-            let byte = ((first * 4 + slot) * 4) as u32;
-            if byte != 0 {
-                *offset = self.constant(Scalar::U64, byte);
-            }
-        }
-        let input = DispatchGrid {
+        first_byte: u32,
+    ) -> DispatchGrid {
+        DispatchGrid {
             scalars: self.dispatch_scalars(),
             wide_type: self.u64_type,
             table_pointer: self.ptr_table_u64,
@@ -93,12 +93,16 @@ impl Emitter<'_> {
             width: self.constant(Scalar::U32, self.workgroup_width),
             max_x: limits[0],
             max_y: limits[1],
-            levels: levels as u32,
+            capacity,
             collective: u32::from(collective),
             bins: if sorting { self.constant(Scalar::U32, 16) } else { 0 },
+            first_byte,
+            histogram_byte: if sorting { self.continuation_byte() } else { 0 },
+            width_shift: self.constant(Scalar::U32, SCAN_WIDTH.trailing_zeros()),
+            record_bytes: self.constant(Scalar::U64, DISPATCH_RECORD_BYTES as u32),
+            field_bytes: [4, 8, 12].map(|byte| self.constant(Scalar::U64, byte)),
             next: self.next,
-        };
-        (input, offsets)
+        }
     }
 
     pub(super) fn prefix_index(

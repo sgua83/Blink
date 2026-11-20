@@ -71,7 +71,13 @@ pub(super) fn record(
         partition,
         0,
     );
-    commands.barrier(0x800, 0x800, 0x40, 0x60);
+    let continuation = prefix::continuation_slot(c, stage);
+    if continuation < scan::levels(count) {
+        // Scatter replaces a scan record after its last command and shader reads.
+        commands.barrier(0x802, 0x800, 0x61, 0x60);
+    } else {
+        commands.barrier(0x800, 0x800, 0x40, 0x60);
+    }
     commands.bind_compute_set(c.layout, sets.finish);
     prefix::dispatch(
         commands,
@@ -88,6 +94,6 @@ pub(super) fn record(
         c.pipelines[stage],
         args,
         uniforms,
-        blanguage::spirv::PREFIX_LEVELS,
+        continuation,
     );
 }

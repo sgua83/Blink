@@ -386,6 +386,19 @@ pub struct VkShaderModuleCreateInfo {
     pub pCode: *const u32,
 }
 #[repr(C)]
+pub struct VkSpecializationMapEntry {
+    pub constantID: u32,
+    pub offset: u32,
+    pub size: usize,
+}
+#[repr(C)]
+pub struct VkSpecializationInfo {
+    pub mapEntryCount: u32,
+    pub pMapEntries: *const VkSpecializationMapEntry,
+    pub dataSize: usize,
+    pub pData: *const c_void,
+}
+#[repr(C)]
 #[derive(Clone, Copy)]
 pub struct VkPipelineShaderStageCreateInfo {
     pub sType: u32,
