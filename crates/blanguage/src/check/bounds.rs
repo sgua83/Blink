@@ -3920,7 +3920,7 @@ enum EncodedClause<F> {
 
 fn condition_node_ids<'a>(
     roots: impl IntoIterator<Item = &'a Clause>,
-    record: impl FnMut(EncodedClause<&'a Facts>),
+    record: impl FnMut(&'a Clause, EncodedClause<&'a Facts>),
 ) -> BTreeMap<usize, usize> {
     codec::conditions::node_ids(roots, false, record)
 }
@@ -3929,7 +3929,7 @@ fn same_condition_roots<const N: usize>(left: [&Clause; N], right: [&Clause; N])
     if left.iter().zip(&right).all(|(a, b)| Arc::ptr_eq(&a.0, &b.0)) {
         return true;
     }
-    let indices = condition_node_ids(left.into_iter().chain(right), |_| {});
+    let indices = condition_node_ids(left.into_iter().chain(right), |_, _| {});
     left.map(|root| indices[&root.key()]) == right.map(|root| indices[&root.key()])
 }
 

@@ -26,7 +26,7 @@ enum ClauseKind {
 struct ClauseFields {
     present: u32,
     kind: ClauseKind,
-    key: usize,
+    source: *const c_void,
     facts: *const c_void,
     first: usize,
     second: usize,
@@ -57,8 +57,8 @@ struct CanonicalHost {
     index: unsafe extern "C" fn(Slot, usize) -> usize,
     len: unsafe extern "C" fn(Slot) -> usize,
     intern: unsafe extern "C" fn(Slot, NodeKind, *const c_void, usize, usize, usize) -> Inserted,
-    record: unsafe extern "C" fn(Slot, NodeKind, *const c_void, usize, usize),
-    bind: unsafe extern "C" fn(Slot, usize, usize),
+    record: unsafe extern "C" fn(Slot, *const c_void, NodeKind, *const c_void, usize, usize),
+    bind: unsafe extern "C" fn(Slot, *const c_void, usize),
 }
 struct Canonical<'a, F> {
     ordered: std::vec::IntoIter<&'a Clause>,
@@ -86,7 +86,7 @@ unsafe extern "C" fn next<'a, F>(context: Slot) -> ClauseFields {
     };
     let mut result = ClauseFields {
         present: 1,
-        key: clause.key(),
+        source: ptr::from_ref(clause).cast(),
         ..Default::default()
     };
     match &**clause.0 {
@@ -146,26 +146,26 @@ unsafe extern "C" fn intern<'a, F>(
         }
     }
 }
-unsafe extern "C" fn record<'a, F: FnMut(EncodedClause<&'a Facts>)>(
+unsafe extern "C" fn record<'a, F: FnMut(&'a Clause, EncodedClause<&'a Facts>)>(
     context: Slot,
+    source: *const c_void,
     kind: NodeKind,
     facts: *const c_void,
     a: usize,
     b: usize,
 ) {
     let state = unsafe { &mut *context.cast::<Canonical<'a, F>>() };
-    (state.record)(unsafe { borrowed_node(kind, facts, a, b) });
+    (state.record)(unsafe { &*source.cast::<Clause>() }, unsafe { borrowed_node(kind, facts, a, b) });
 }
-unsafe extern "C" fn bind<'a, F>(context: Slot, key: usize, index: usize) {
-    unsafe { &mut *context.cast::<Canonical<'a, F>>() }
-        .indices
-        .insert(key, index);
+unsafe extern "C" fn bind<'a, F>(context: Slot, source: *const c_void, index: usize) {
+    let key = unsafe { &*source.cast::<Clause>() }.key();
+    unsafe { &mut *context.cast::<Canonical<'a, F>>() }.indices.insert(key, index);
 }
 unsafe extern "C" {
     #[link_name = "bootstrap.contract_codec::condition_node_ids"]
     fn canonical_ids(context: Slot, host: CanonicalHost, keep_pairs: u32);
 }
-pub(in super::super) fn node_ids<'a, F: FnMut(EncodedClause<&'a Facts>)>(
+pub(in super::super) fn node_ids<'a, F: FnMut(&'a Clause, EncodedClause<&'a Facts>)>(
     roots: impl IntoIterator<Item = &'a Clause>,
     keep_pairs: bool,
     record: F,
@@ -206,7 +206,7 @@ impl<'a> WriteContext<'a> {
             .filter_map(|i| conditions.at(i))
             .flat_map(|condition| condition.cases.iter());
         let mut nodes = Vec::new();
-        let indices = node_ids(roots, false, |node| nodes.push(node));
+        let indices = node_ids(roots, false, |_, node| nodes.push(node));
         Self { conditions, nodes, indices }
     }
 }

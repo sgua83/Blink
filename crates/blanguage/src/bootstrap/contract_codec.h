@@ -49,7 +49,7 @@ enum NodeKind:u32 { Impossible=0; Facts=1; Both=2; Either=3; };
 
 enum ClauseKind:u32 { Impossible=0; Facts=1; Both=2; Either=3; Branch=4; };
 
-struct ClauseFields {u32 present;ClauseKind kind;u64 key;address facts;u64 first;u64 second;};
+struct ClauseFields {u32 present;ClauseKind kind;address source;address facts;u64 first;u64 second;};
 
 struct NodeFields {NodeKind kind;address facts;u64 first;u64 second;};
 
@@ -62,8 +62,8 @@ struct CanonicalHost {
  cfn<u64,address,u64> ensures memory(read) index;
  cfn<u64,address> ensures memory(read) len;
  cfn<Inserted,address,NodeKind,address,u64,u64,u64> intern;
- cfn<void,address,NodeKind,address,u64,u64> record;
- cfn<void,address,u64,u64> bind;
+ cfn<void,address,address,NodeKind,address,u64,u64> record;
+ cfn<void,address,address,u64> bind;
 };
 
 struct ConditionWriter {

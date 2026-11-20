@@ -630,9 +630,9 @@ extern "C" void condition_node_ids(address context,CanonicalHost host,u32 keep_p
   if(keep_pairs==0&&(kind==NodeKind::Both||kind==NodeKind::Either)&&a==b){index=a;}
   else{
    u64 next=host.len(context);Inserted found=host.intern(context,kind,value.facts,a,b,next);index=found.index;
-   if(found.inserted!=0){host.record(context,kind,value.facts,a,b);}
+   if(found.inserted!=0){host.record(context,value.source,kind,value.facts,a,b);}
   }
-  host.bind(context,value.key,index);value=host.next(context);
+  host.bind(context,value.source,index);value=host.next(context);
  }
 }
 

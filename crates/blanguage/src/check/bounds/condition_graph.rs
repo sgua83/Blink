@@ -197,25 +197,17 @@ struct Context<'a> {
     next_fact: Option<(Fact, Option<btree_set::Iter<'a, Fact>>)>,
 }
 impl<'a> Context<'a> {
-    fn new(left: &'a Clause, right: &'a Clause, indices: BTreeMap<usize, usize>) -> Self {
-        let mut nodes = Vec::new();
-        for clause in Clause::ordered([left, right]) {
-            if indices[&clause.key()] == nodes.len() {
-                nodes.push(Node {
-                    clause,
-                    view: Gate {
-                        left: 0,
-                        right: 0,
-                        kind: 0,
-                        parents: Span {
-                            data: std::ptr::null(),
-                            count: 0,
-                        },
-                    },
-                    parents: Vec::new(),
-                });
-            }
-        }
+    fn new(indices: BTreeMap<usize, usize>, representatives: Vec<&'a Clause>) -> Self {
+        let nodes = representatives.into_iter().map(|clause| Node {
+            clause,
+            view: Gate {
+                left: 0,
+                right: 0,
+                kind: 0,
+                parents: Span { data: std::ptr::null(), count: 0 },
+            },
+            parents: Vec::new(),
+        }).collect();
         Self {
             indices,
             nodes,
@@ -560,10 +552,16 @@ unsafe extern "C" {
         reset: unsafe extern "C" fn(Slot),
     ) -> u32;
 }
+fn query_sources<'a>(left: &'a Clause, right: &'a Clause) -> (BTreeMap<usize, usize>, Vec<&'a Clause>) {
+    let mut representatives = Vec::new();
+    let indices = super::condition_node_ids([left, right], |source, _| representatives.push(source));
+    (indices, representatives)
+}
+
 pub(super) fn overlap(left: &Clause, right: &Clause, truth: bool) -> bool {
     let unsigned32 = super::Scalar::U32;
-    let indices = super::condition_node_ids([left, right], |_| {});
-    let mut context = Context::new(left, right, indices);
+    let (indices, representatives) = query_sources(left, right);
+    let mut context = Context::new(indices, representatives);
     unsafe {
         query(
             std::ptr::from_ref(left).cast(),
@@ -578,12 +576,12 @@ pub(super) fn equivalent(left: &Clause, right: &Clause) -> bool {
     if left.key() == right.key() {
         return true;
     }
-    let indices = super::condition_node_ids([left, right], |_| {});
+    let (indices, representatives) = query_sources(left, right);
     if indices[&left.key()] == indices[&right.key()] {
         return true;
     }
     let unsigned32 = super::Scalar::U32;
-    let mut context = Context::new(left, right, indices);
+    let mut context = Context::new(indices, representatives);
     unsafe {
         query_equivalent(
             std::ptr::from_ref(left).cast(),
@@ -785,7 +783,7 @@ impl<'a> RequiredQuery<'a> {
     pub(super) fn new(root: &'a Clause) -> Self {
         use super::EncodedClause;
         let mut nodes = Vec::<RequiredResult<'a>>::new();
-        let indices = super::codec::conditions::node_ids([root], true, |shape| {
+        let indices = super::codec::conditions::node_ids([root], true, |_, shape| {
             let (kind, facts, left, right) = match shape {
                 EncodedClause::Impossible => (0, None, 0, 0),
                 EncodedClause::Facts(facts) => (1, Some(facts), 0, 0),
