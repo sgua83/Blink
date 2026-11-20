@@ -28,9 +28,9 @@ float3x4 自然大小为 48、对齐为 16；Transform<64> 大小为 64、对齐
 | unsafe Device::top_level_device(data) | 消费GpuDataset所有权，读取实际GPU页异步提交TLAS构建；输入须属于该设备并持有原生实例所有权 |
 | Device::download(data) | 返回矩阵等逻辑数据；原生实例的 48..64 字节清零，不将设备地址序列化为可执行资源 |
 
-实例输入以已有 GpuDataset 持有数据页、原生地址数组及唯一 BLAS 引用集合。框架填入 mask／flags／BLAS 引用，B 只写 matrix。宿主和设备矩阵实例都允许 GPU 查询按各自的背面剔除参数进行遍历。48 字节矩阵与 16 字节原生尾部对应 [Vulkan 实例布局](https://docs.vulkan.org/refpages/latest/refpages/source/VkAccelerationStructureInstanceKHR.html)。构建使用 [arrayOfPointers](https://docs.vulkan.org/refpages/latest/refpages/source/VkAccelerationStructureGeometryInstancesDataKHR.html)，地址数组按真实数据页生成，允许实例跨多个数据页，无需逐记录复制命令或矩阵读回。
+实例输入由 GpuDataset 持有原生记录页及唯一 BLAS 引用集合。框架填入 mask／flags／BLAS 引用，B 只写 matrix。宿主和设备矩阵实例都允许 GPU 查询按各自的背面剔除参数进行遍历。48 字节矩阵与 16 字节原生尾部对应 [Vulkan 实例布局](https://docs.vulkan.org/refpages/latest/refpages/source/VkAccelerationStructureInstanceKHR.html)。单页构建直接读取连续记录页。多页构建读取按物理页及原记录顺序生成的实例地址数组。空输入持有 Vulkan 构建要求的有效设备地址，实际记录数为零。记录或地址数组按原生 [arrayOfPointers](https://docs.vulkan.org/refpages/latest/refpages/source/VkAccelerationStructureGeometryInstancesDataKHR.html) 选择。
 
-唯一输入入口 top_level_device 沿用 GpuDataset 的真实最后使用点，并消费其唯一所有权。页表、实例页、地址数组交给本次构建完成点；不在函数内等待GPU，也不下载或重新打包矩阵。原队列记录Compute／Transfer到构建的访问依赖，后续查询记录构建到计算的访问依赖。API返回不表示本次构建已经完成，GPU自主调度仍未实现；显式新版本refit见下文。
+唯一输入入口 top_level_device 沿用 GpuDataset 的真实最后使用点，并消费其唯一所有权。原实例存储及实际使用的原生输入缓冲保持到本次构建完成；不在函数内等待GPU，也不下载或重新打包矩阵。原队列记录Compute／Transfer到构建的访问依赖，后续查询记录构建到计算的访问依赖。API返回不表示本次构建已经完成，GPU自主调度仍未实现；显式新版本refit见下文。
 
 TLAS自提交起持有唯一BLAS引用集合，构建持有的输入引用与scratch在真实构建完成后释放；TLAS随真正查询它的执行存活。不维护第二份模型计数或跨操作注册表。普通数据集的原始填充不能伪造原生所有权，跨设备模型／输入在资源边界直接报告。
 
@@ -61,7 +61,7 @@ BottomLevel::primitive_count返回该BLAS实际构建输入的u32 primitive范�
 
 
 ## 共享不可变的实际构建输入
-BLEngine 的刚体表面对应需要此前实例矩阵。instance_data_from 读取既有 B 布局 CPU Dataset 的矩阵分量，instance_data 提供初始零矩阵，调用者在构建 TLAS 前写入实际有效变换。两个入口在同一原生实例上传路径验收模型和记录布局，直接把矩阵与 BLAS 尾部写入各实际页的映射暂存。实例地址独立写入指针暂存，实例页、实际 BLAS 引用和指针缓冲随原设备存储交接。
+BLEngine 的刚体表面对应需要此前实例矩阵。instance_data_from 读取既有 B 布局 CPU Dataset 的矩阵分量，instance_data 提供初始零矩阵，调用者在构建 TLAS 前写入实际有效变换。两个入口在同一原生实例上传路径验收模型和记录布局，直接把矩阵与 BLAS 尾部写入各实际页的映射暂存。多页输入将实例地址写入指针暂存。GpuDataset::memory 仅在实际持有地址缓冲时报告 InstancePointers，allocated_bytes 同样统计实际存在的绑定区间。
 
 调用者可 freeze 同一原生输入，再交给 unsafe top_level_device_read。只读绑定在真实构建完成点持有该 ReadDataset；显式场景或计算消费者按自己的使用期限继续持有同一存储。冻结输入保持其原生产完成点，不反向改成当前构建的最后使用点，因此构建对输入的持有不会形成引用环。后续 view 提交仍由原执行框架持有真实读取资源，不新增全局历史、资源注册表或额外完成状态。
 

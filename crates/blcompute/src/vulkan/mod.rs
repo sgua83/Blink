@@ -1326,8 +1326,8 @@ impl GpuDataset {
                 logical_bytes: (self.bytes() - logical_offset).min(page_bytes),
             }));
         }
-        if let Some(instances) = &self.instances {
-            buffers.push(instances.pointers.memory_info(GpuBufferRole::InstancePointers));
+        if let Some(pointers) = self.instances.as_ref().and_then(|input| input.pointers.as_ref()) {
+            buffers.push(pointers.memory_info(GpuBufferRole::InstancePointers));
         }
         GpuDatasetMemory {
             device: self.allocation.inner.owner.device as usize,
@@ -1363,7 +1363,8 @@ impl GpuDataset {
             + self
                 .instances
                 .as_ref()
-                .map_or(0, |i| i.pointers.allocated_size)
+                .and_then(|input| input.pointers.as_ref())
+                .map_or(0, |pointers| pointers.allocated_size)
     }
     fn page_records(&self) -> u32 {
         blanguage::spirv::PAGE_BYTES / self.stride

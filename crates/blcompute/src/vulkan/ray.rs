@@ -236,7 +236,7 @@ impl BottomLevel {
     }
 }
 pub(super) struct InstanceInput {
-    pub(super) pointers: Allocation,
+    pub(super) pointers: Option<Allocation>,
     models: Option<Rc<[BottomLevel]>>,
 }
 fn collect_models(models: impl IntoIterator<Item = BottomLevel>) -> Option<Rc<[BottomLevel]>> {
@@ -765,7 +765,11 @@ impl Device {
             self.inner.clone(), ty, data_stride, count, 0x80000, 16,
         )?;
         let pointer_bytes = u64::from(count) * 8;
-        let pointers = Allocation::new(self.inner.clone(), pointer_bytes, 0xa0002, 1, 8)?;
+        // A single page already holds the packed native array. Empty builds
+        // still need a valid build-input address, supplied by the pointer buffer.
+        let pointers = (target.pages.len() != 1)
+            .then(|| Allocation::new(self.inner.clone(), pointer_bytes, 0xa0002, 1, 8))
+            .transpose()?;
         let transfer = if count == 0 {
             None
         } else {
@@ -793,27 +797,29 @@ impl Device {
                     &mut staging,
                 )?;
             }
-            self.stage_page(
-                &pointers,
-                pointer_bytes,
-                |source| {
-                    let mut entry = source.mapping()?.cast::<[u32; 2]>();
-                    // Each page holds whole instance records in the original input order.
-                    for page in &target.pages {
-                        let base = page.address();
-                        for offset in (0..page.size).step_by(stride) {
-                            let address = base + offset;
-                            unsafe {
-                                entry.write([address as u32, (address >> 32) as u32]);
-                                entry = entry.add(1);
+            if let Some(pointers) = &pointers {
+                self.stage_page(
+                    pointers,
+                    pointer_bytes,
+                    |source| {
+                        let mut entry = source.mapping()?.cast::<[u32; 2]>();
+                        // Each page holds whole instance records in the original input order.
+                        for page in &target.pages {
+                            let base = page.address();
+                            for offset in (0..page.size).step_by(stride) {
+                                let address = base + offset;
+                                unsafe {
+                                    entry.write([address as u32, (address >> 32) as u32]);
+                                    entry = entry.add(1);
+                                }
                             }
                         }
-                    }
-                    Ok(())
-                },
-                &mut commands,
-                &mut staging,
-            )?;
+                        Ok(())
+                    },
+                    &mut commands,
+                    &mut staging,
+                )?;
+            }
             Some((commands, staging))
         };
         target.owned_storage()?.instances = Some(InstanceInput {
@@ -861,6 +867,10 @@ impl Device {
             .as_ref()
             .ok_or_else(|| error("数据集不是由设备创建的原生实例输入"))?;
         let structure = self.build_acceleration(data.count, None, operation, |inputs| {
+            let (pointers, address) = match &input.pointers {
+                Some(pointers) => (1, pointers.address()),
+                None => (0, data.pages[0].address()),
+            };
             let geometry = Geometry {
                 kind: 1000150006,
                 next: null(),
@@ -870,8 +880,8 @@ impl Device {
                     instances: Instances {
                         kind: 1000150004,
                         next: null(),
-                        pointers: 1,
-                        data: input.pointers.address(),
+                        pointers,
+                        data: address,
                     },
                 },
             };
