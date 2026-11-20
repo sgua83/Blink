@@ -89,6 +89,18 @@ impl Completion {
             result: Cell::new(None),
         })
     }
+    pub fn reset(&mut self, sequence: u64) -> Result<()> {
+        let fence = self.fence.get();
+        unsafe {
+            check(
+                (self.inner.functions.vkResetFences)(self.inner.owner.device, 1, &fence),
+                "vkResetFences",
+            )?;
+        }
+        self.sequence = sequence;
+        self.result.set(None);
+        Ok(())
+    }
     pub fn wait(&self) -> Result<()> {
         let r = if let Some(r) = self.result.get() {
             r
@@ -341,9 +353,17 @@ impl Execution {
         let Some(resources) = self.resources.take() else {
             return;
         };
+        Self::release_dependencies(self.dependencies.take().unwrap_or_default(), self.point.result.get());
+        self.release_resources(resources);
+    }
+    pub fn wait_synchronous(point: &Completion, dependencies: Vec<Rc<Self>>) -> Result<()> {
+        let result = point.wait();
+        point.finish_for_drop();
+        Self::release_dependencies(dependencies, point.result.get());
+        result
+    }
+    fn release_dependencies(mut completed: Vec<Rc<Self>>, result: Option<i32>) {
         // 保留真实原生终态；同队列成功覆盖生产依赖，设备丢失仍是错误。
-        let result = self.point.result.get();
-        let mut completed = self.dependencies.take().unwrap_or_default();
         let mut index = 0;
         while index < completed.len() {
             let previous = &completed[index];
@@ -361,7 +381,6 @@ impl Execution {
                 previous.release_resources(resources);
             }
         }
-        self.release_resources(resources);
     }
     fn release_resources(&self, resources: ExecutionResources) {
         drop(resources);

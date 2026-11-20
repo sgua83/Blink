@@ -278,6 +278,7 @@ functions! { Functions {
     vkCmdDispatchIndirect:unsafe extern "system" fn(VkCommandBuffer,VkBuffer,u64),
     vkCreateFence:unsafe extern "system" fn(VkDevice,*const VkFenceCreateInfo,*const c_void,*mut VkFence)->i32,
     vkDestroyFence:unsafe extern "system" fn(VkDevice,VkFence,*const c_void),
+    vkResetFences:unsafe extern "system" fn(VkDevice,u32,*const VkFence)->i32,
     vkWaitForFences:unsafe extern "system" fn(VkDevice,u32,*const VkFence,u32,u64)->i32,
     vkGetFenceStatus:unsafe extern "system" fn(VkDevice,VkFence)->i32,
     vkQueueSubmit:unsafe extern "system" fn(VkQueue,u32,*const VkSubmitInfo,VkFence)->i32,
@@ -995,9 +996,13 @@ impl Device {
         let page_bytes = data.page_records() as usize * data.stride as usize;
         let mut written = 0;
         let mut producer = data.dependency();
+        let commands = Commands::with_pool_flags(self.inner.clone(), if data.pages.len() > 1 { 3 } else { 1 })?;
+        let mut completion = None;
         for page in &data.pages {
             let bytes = (byte_count - written).min(page_bytes);
-            let commands = Commands::new(self.inner.clone())?;
+            if completion.is_some() {
+                commands.begin()?;
+            }
             commands.barrier(data.producer.stage(), 0x1000, data.producer.access(), 0x800);
             let copy = VkBufferCopy {
                 srcOffset: 0,
@@ -1015,8 +1020,14 @@ impl Device {
             }
             commands.barrier(0x1000, 0x4000, 0x1000, 0x2000);
             let dependencies = Execution::prepare_one(producer.take())?;
-            self.submit_transfer(commands, Vec::new(), dependencies)?
-                .wait()?;
+            let point = match &mut completion {
+                Some(point) => {
+                    commands.resubmit(point)?;
+                    point
+                }
+                slot @ None => slot.insert(commands.submit_with(&[], &[], &[])?),
+            };
+            Execution::wait_synchronous(point, dependencies)?;
             target.read_with(|pointer| unsafe {
                 std::ptr::copy_nonoverlapping(pointer, output.add(written), bytes);
             })?;
@@ -1573,6 +1584,9 @@ struct Commands {
 }
 impl Commands {
     fn new(inner: Rc<Inner>) -> Result<Self> {
+        Self::with_pool_flags(inner, 1)
+    }
+    fn with_pool_flags(inner: Rc<Inner>, flags: u32) -> Result<Self> {
         unsafe {
             let mut out = Self {
                 inner,
@@ -1587,7 +1601,7 @@ impl Commands {
             let mut pool: VkCommandPoolCreateInfo = zero();
             pool.sType = 39;
             pool.queueFamilyIndex = out.inner.family;
-            pool.flags = 1;
+            pool.flags = flags;
             check(
                 (f.vkCreateCommandPool)(device, &pool, null(), &mut out.pool),
                 "vkCreateCommandPool",
@@ -1600,14 +1614,19 @@ impl Commands {
                 (f.vkAllocateCommandBuffers)(device, &alloc, &mut out.command),
                 "vkAllocateCommandBuffers",
             )?;
-            let mut begin: VkCommandBufferBeginInfo = zero();
-            begin.sType = 42;
-            begin.flags = 1;
-            check(
-                (f.vkBeginCommandBuffer)(out.command, &begin),
-                "vkBeginCommandBuffer",
-            )?;
+            out.begin()?;
             Ok(out)
+        }
+    }
+    fn begin(&self) -> Result<()> {
+        let mut begin: VkCommandBufferBeginInfo = zero();
+        begin.sType = 42;
+        begin.flags = 1;
+        unsafe {
+            check(
+                (self.inner.functions.vkBeginCommandBuffer)(self.command, &begin),
+                "vkBeginCommandBuffer",
+            )
         }
     }
     fn barrier(&self, src_stage: u32, dst_stage: u32, src_access: u32, dst_access: u32) {
@@ -1631,14 +1650,28 @@ impl Commands {
         }
     }
     fn submit_with(&self, wait: &[u64], stages: &[u32], signal: &[u64]) -> Result<Completion> {
-        let sequence = self.inner.next_submission.get();
-        let next = sequence
+        let next = self.end_recording()?;
+        let point = Completion::new(self.inner.clone(), next - 1)?;
+        self.enqueue(next, point.fence.get(), wait, stages, signal)?;
+        Ok(point)
+    }
+    fn resubmit(&self, point: &mut Completion) -> Result<()> {
+        let next = self.end_recording()?;
+        point.reset(next - 1)?;
+        self.enqueue(next, point.fence.get(), &[], &[], &[])
+    }
+    fn end_recording(&self) -> Result<u64> {
+        let next = self.inner.next_submission.get()
             .checked_add(1)
             .ok_or_else(|| error("设备队列提交序号耗尽"))?;
         unsafe {
+            check((self.inner.functions.vkEndCommandBuffer)(self.command), "vkEndCommandBuffer")?;
+        }
+        Ok(next)
+    }
+    fn enqueue(&self, next: u64, fence: VkFence, wait: &[u64], stages: &[u32], signal: &[u64]) -> Result<()> {
+        unsafe {
             let f = &self.inner.functions;
-            check((f.vkEndCommandBuffer)(self.command), "vkEndCommandBuffer")?;
-            let point = Completion::new(self.inner.clone(), sequence)?;
             let mut submit: VkSubmitInfo = zero();
             submit.sType = 4;
             submit.commandBufferCount = 1;
@@ -1649,11 +1682,11 @@ impl Commands {
             submit.signalSemaphoreCount = signal.len() as u32;
             submit.pSignalSemaphores = signal.as_ptr();
             check(
-                (f.vkQueueSubmit)(self.inner.queue, 1, &submit, point.fence.get()),
+                (f.vkQueueSubmit)(self.inner.queue, 1, &submit, fence),
                 "vkQueueSubmit",
             )?;
             self.inner.next_submission.set(next);
-            Ok(point)
+            Ok(())
         }
     }
 }
