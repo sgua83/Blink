@@ -170,7 +170,8 @@ impl Builder<'_> {
                 (false, false) => bounds::Clause::impossible(),
             };
             if yes_flow.continues() && no_flow.continues() {
-                self.join_environment_selected(&mut no_env, &owned_presence::Presence::input(&c));
+                let when = owned_presence::Presence::input(&c);
+                self.join_environment_selected(&mut no_env, &when, &when.condition());
             }
             if yes_flow.continues() && !no_flow.continues() {
                 self.initialized = yes_initial;

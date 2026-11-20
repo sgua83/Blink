@@ -3621,6 +3621,7 @@ impl Builder<'_> {
         &mut self,
         other: &mut BTreeMap<String, Binding>,
         when:&owned_presence::Presence,
+        choice:&Condition,
     ) {
         let bindings=BTreeMap::new();
         let mut names=[BTreeMap::new(),BTreeMap::new()];
@@ -3655,29 +3656,28 @@ impl Builder<'_> {
             *alias=bounds::Clause::both(alias,&bound[0]);
             for(case,bound)in cases.into_iter().zip(bound.into_iter().skip(1)){*case=bound;}
         }
-        let choice=when.condition();
         if !bounds::Condition::paths(aliases[0].clone(),aliases[1].clone()).unconstrained(){
             self.path=bounds::Clause::both(&self.path,&bounds::Clause::either(&choice.assume(&aliases[0],true),&choice.assume(&aliases[1],false)));
         }
         for (name, binding) in &mut self.env {
             match (binding, &other[name]) {
                 (Binding::Value(a), Binding::Value(b)) => {
-                    a.proof.join_condition(&b.proof,a.regs.len(),Some(&choice));
+                    a.proof.join_condition(&b.proof,a.regs.len(),Some(choice));
                     a.uniform &= b.uniform;
                 }
                 (Binding::Owned(a), Binding::Owned(b))
                 | (Binding::ViewElement { element: a, .. }, Binding::ViewElement { element: b, .. }) => {
                     a.place.join_position_range(&b.place);
                     a.proof
-                        .join_condition(&b.proof,a.place.ty().components.len(),Some(&choice));
+                        .join_condition(&b.proof,a.place.ty().components.len(),Some(choice));
                     a.uniform &= b.uniform;
                 }
                 (Binding::Data(a), Binding::Data(b)) => a.length.join(&b.length, 1, None),
                 (Binding::OwnedValue(a), Binding::OwnedValue(b)) => {
-                    let mut value=returns::Returned::OwnedValue(a.clone());value.join_presence(returns::Returned::OwnedValue(b.clone()),when);let returns::Returned::OwnedValue(value)=value else{unreachable!()};*a=value;
+                    let mut value=returns::Returned::OwnedValue(a.clone());value.join_presence(returns::Returned::OwnedValue(b.clone()),when,Some(choice));let returns::Returned::OwnedValue(value)=value else{unreachable!()};*a=value;
                 }
                 (Binding::ApplicationData(a), Binding::ApplicationData(b)) => {
-                    let mut value=returns::Returned::Dataset(a.clone());value.join_presence(returns::Returned::Dataset(b.clone()),when);let returns::Returned::Dataset(value)=value else{unreachable!()};*a=value;
+                    let mut value=returns::Returned::Dataset(a.clone());value.join_presence(returns::Returned::Dataset(b.clone()),when,Some(choice));let returns::Returned::Dataset(value)=value else{unreachable!()};*a=value;
                 }
                 (Binding::Tile(a), Binding::Tile(b)) => a.length.join(&b.length, 1, None),
                 _ => {}

@@ -44,14 +44,24 @@ impl Returned{
         restore(self,&candidates.iter().map(|(when,value)|(when.clone(),value)).collect::<Vec<_>>());
     }
     pub(super) fn restrict_owned(&mut self,when:&Presence){match self{Self::Dataset(data)=>data.ownership=data.ownership.restricted(when),Self::OwnedValue(value)=>value.restrict_owned(when),_=>{}}}
-    pub(super) fn join_presence(&mut self,other:Self,choice:&Presence){
+    pub(super) fn join_presence(&mut self,other:Self,choice:&Presence,condition:Option<&bounds::Condition>){
         match choice {
             Presence::All => return,
             Presence::None => { *self=other; return; }
             _ => {}
         }
         fn restore(target:&mut Returned,a:&Returned,b:&Returned,choice:&Presence){match(target,a,b){(Returned::Dataset(target),Returned::Dataset(a),Returned::Dataset(b))=>{target.ownership=Ownership::either(&a.ownership,&b.ownership,Some(choice));let ai=a.initialization.clone().unwrap_or(Position::Initialized);let bi=b.initialization.clone().unwrap_or(Position::Initialized);let initialization=if a.ownership==Ownership::Moved{bi}else if b.ownership==Ownership::Moved{ai}else{Position::selected(choice.clone(),ai,bi)};target.initialization=match initialization{Position::Initialized=>None,position=>Some(position)};if a.ownership==Ownership::Moved{target.residency=b.residency.clone();}else if b.ownership==Ownership::Moved{target.residency=a.residency.clone();}if let(Some(target),Some(a),Some(b))=(target.elements.known_mut(),a.elements.known(),b.elements.known()){restore(target,a,b,choice);}},(Returned::OwnedValue(target),Returned::OwnedValue(a),Returned::OwnedValue(b))=>{target.ownership=Ownership::either(&a.ownership,&b.ownership,Some(choice));for(index,payload)in target.payloads.iter_mut().enumerate(){if let(Some(target),Some(a),Some(b))=(payload.as_deref_mut(),a.payloads[index].as_deref(),b.payloads[index].as_deref()){restore(target,a,b,choice);}}},_=>{}}}
-        let old=self.clone();self.join(other.clone(),false,Some(&choice.condition()));restore(self,&old,&other,choice);
+        let projected;
+        let condition = match condition {
+            Some(condition) => condition,
+            None => {
+                projected = choice.condition();
+                &projected
+            }
+        };
+        let old = self.clone();
+        self.join(other.clone(), false, Some(condition));
+        restore(self, &old, &other, choice);
     }
 }
 impl Builder<'_>{
@@ -98,18 +108,19 @@ impl Builder<'_>{
         }
     }
     pub(super) async fn owned_when(&mut self,value:&Presence,span:Span,branch_origin:Option<Arc<GeneratedOrigin>>,condition_origin:Option<Arc<GeneratedOrigin>>,body:impl std::ops::AsyncFnOnce(&mut Self)->Result<()>)->Result<()>{
-        match self.condition_truth(&value.condition(),None){
+        let projected = value.condition();
+        match self.condition_truth(&projected,None){
             Some(false)=>Ok(()),
             Some(true)=>body(self).await,
             None=>{
                 let condition=self.presence_register(value,span,condition_origin.as_ref())?;let outer=std::mem::take(&mut self.code);let initialized=self.initialized.clone();let path=self.path.clone();
                 let mut unselected=self.env.clone();
-                self.path=value.condition().assume(&path,true);
+                self.path=projected.assume(&path,true);
                 body(self).await?;
                 self.path=path;
                 let selected=self.take_application_initialization_state();
                 self.join_initialization(value,selected,initialized);
-                self.join_environment_selected(&mut unselected,value);
+                self.join_environment_selected(&mut unselected,value,&projected);
                 let yes=std::mem::replace(&mut self.code,outer);let kind=InstKind::If{condition,yes,no:Vec::new()};
                 if let Some(origin)=branch_origin{self.code.push(Inst::generated(kind,origin));}else{self.emit(kind);}
                 Ok(())

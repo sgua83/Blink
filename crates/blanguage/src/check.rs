@@ -3551,7 +3551,7 @@ impl<'a> Builder<'a> {
             self.env = yes_env;
             let when=owned_presence::Presence::input(&c);
             self.join_initialization(&when,yes_init,no_init);
-            self.join_environment_selected(&mut no_env,&when);
+            self.join_environment_selected(&mut no_env,&when,&when.condition());
         } else {
             self.path = bounds::Clause::impossible();
             self.env = environment;

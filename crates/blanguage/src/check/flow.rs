@@ -734,7 +734,7 @@ impl Builder<'_> {
         });
         let mut guards=guards.into_iter().rev().skip(1);let mut exits=context.exits.into_iter().rev();let Some(first)=exits.next()else{self.env.retain(|name,_|context.names.contains(name));self.path=bounds::Clause::impossible();return Ok((false,context.writes))};
         self.env=first.env;self.path=first.path;
-        for exit in exits{let when=guards.next().unwrap();let mut previous=std::mem::replace(&mut self.env,exit.env);self.path=bounds::Clause::either(&self.path,&exit.path);self.join_environment_selected(&mut previous,&when);}
+        for exit in exits{let when=guards.next().unwrap();let mut previous=std::mem::replace(&mut self.env,exit.env);self.path=bounds::Clause::either(&self.path,&exit.path);self.join_environment_selected(&mut previous,&when,&when.condition());}
         self.env.retain(|name,_|context.names.contains(name));
         self.initialized = initialized.unwrap_or(first.initialized);
         self.view_uses.after(span);
