@@ -1,20 +1,13 @@
 //! Selects original compilation consumers, then prints their actual IR values.
-use super::{Argument, CompileError};
+use super::{Argument, CompileError, EntryMode};
 use crate::json::string;
 use std::{ffi::OsString, fmt::Write, path::Path};
 
 pub(super) const USAGE: &str = "用法：bc ir <module.b> [-I root] [--module | --program name | --entry name] [--function qualified-name | --stage index] [--import object|archive] [--instance name]";
 
-#[repr(u32)]
-enum IrMode {
-    Module,
-    Application,
-    Program,
-}
-
 #[repr(C)]
 struct IrCommandLine {
-    mode: IrMode,
+    mode: EntryMode,
     error: CompileError,
     error_index: usize,
     root_index: usize,
@@ -61,14 +54,14 @@ pub(super) fn print(
     let mut imports = Vec::new();
     for path in &import_paths { imports.extend(blanguage::object::Input::read(path)?.objects()?); }
     let (mode, phase, value) = match line.mode {
-        IrMode::Application => {
+        EntryMode::Application => {
             let application = compiler.compile_application_with_modules(&path, root, entry, &imports)?;
             let value = if let Some(function) = function {
                 application.function_ir_json(function).ok_or_else(|| format!("本次应用没有保留普通函数 {function}"))?
             } else { application.ir_json() };
             ("application", "finalized_application_ir", value)
         }
-        IrMode::Program => {
+        EntryMode::Program => {
             let compilation = compiler.compile_entry(&path, root, entry)?;
             let program = compilation.programs.iter().map(|p| &**p)
                 .chain(compilation.templates.iter().map(|p| &**p)).next().ok_or("本次入口没有并行IR")?;
@@ -77,7 +70,7 @@ pub(super) fn print(
             } else { program.ir_json() };
             ("program", "optimized_program_ir", value)
         }
-        IrMode::Module => {
+        EntryMode::Module => {
             let module = compiler.compile_native_module(&path, root, &imports, &instances)?;
             let value = if let Some(function) = function {
                 module.function_ir_json(function).ok_or_else(|| format!("本次模块没有保留普通函数 {function}"))?

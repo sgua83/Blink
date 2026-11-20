@@ -58,6 +58,8 @@ enum CompileError:u32 {
     X64Repeated=39; ImageUsage=40; SpirvUsage=41;
 };
 
+enum EntryMode:u32 { Module=0; Application=1; Program=2; };
+
 struct CompileCommandLine {
     CompileCommand command;
     CompileError prefix_error;
@@ -69,11 +71,10 @@ struct CompileCommandLine {
     u64 output_index;
     u64 root_index;
     u64 entry_index;
-    u64 program_index;
     u64 report_index;
     u64 budget;
     u64 has_budget;
-    u64 as_module;
+    EntryMode mode;
     u64 jobs;
     u64 cpu_count;
     u64 has_parameter_limit;
@@ -100,10 +101,8 @@ struct CodeCommandLine {
 // Returns indices into the original arguments for paths and the exact function name.
 extern "C" CodeCommandLine parse_code_arguments(address arguments, u64 count) on cpu;
 
-enum IrMode:u32 { Module=0; Application=1; Program=2; };
-
 struct IrCommandLine {
-    IrMode mode;
+    EntryMode mode;
     CompileError error;
     u64 error_index;
     u64 root_index;

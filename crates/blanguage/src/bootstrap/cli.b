@@ -197,7 +197,8 @@ CompileCommandLine parse_object_options(address arguments, u64 count, address ro
     while (index < count) {
         CliArgument option = argument_at(arguments, index);
         if (is_token(option, "--module")) {
-            result.as_module = 1u64;
+            result.mode = EntryMode::Module;
+            result.entry_index = count;
             index += 1u64;
             continue;
         }
@@ -217,8 +218,14 @@ CompileCommandLine parse_object_options(address arguments, u64 count, address ro
             result.has_budget = 1u64;
         } else if (is_token(option, "--entry") || is_token(option, "--program")) {
             if (argument.text == 0u64) { result.error = CompileError::EntryText; return result; }
-            if (is_token(option, "--entry")) { result.entry_index = operand; }
-            else { result.program_index = operand; }
+            if (is_token(option, "--program")) {
+                if (result.mode != EntryMode::Module) {
+                    result.mode = EntryMode::Program;
+                    result.entry_index = operand;
+                }
+            } else if (result.mode == EntryMode::Application) {
+                result.entry_index = operand;
+            }
         } else if (is_token(option, "--import")) {
             unsafe_position<u8>(unsafe_address(address_bits(roles) + operand)) = u8(1);
         } else if (is_token(option, "--instance")) {
@@ -238,7 +245,7 @@ CompileCommandLine parse_object_options(address arguments, u64 count, address ro
 extern "C" CompileCommandLine parse_compile_arguments(address arguments, u64 count, address roles, address cpus) on cpu {
     CompileCommandLine result = CompileCommandLine(
         CompileCommand::Unknown, CompileError::None, CompileError::None, 0,
-        0u64, count, count, count, count, count, count, count, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64);
+        0u64, count, count, count, count, count, count, 0u64, 0u64, EntryMode::Application, 0u64, 0u64, 0u64);
     if (count == 0u64) { result.command = CompileCommand::Help; return result; }
     CliArgument first = argument_at(arguments, 0u64);
     if (count == 1u64 && is_token(first, "--version")) { result.command = CompileCommand::Version; return result; }
@@ -386,7 +393,7 @@ extern "C" CodeCommandLine parse_code_arguments(address arguments, u64 count) on
 
 extern "C" IrCommandLine parse_ir_arguments(address arguments, u64 count, address roles) on cpu {
     IrCommandLine line = IrCommandLine(
-        IrMode::Module, CompileError::None, count, count, count, count, 0u64, 0u64);
+        EntryMode::Module, CompileError::None, count, count, count, count, 0u64, 0u64);
     bool explicit_mode = false;
     bool has_imports = false;
     bool has_instances = false;
@@ -409,7 +416,7 @@ extern "C" IrCommandLine parse_ir_arguments(address arguments, u64 count, addres
             if (value.text == 0u64) { line.error = CompileError::IrUsage; return line; }
             if (explicit_mode) { line.error = CompileError::IrModeRepeated; return line; }
             explicit_mode = true;
-            line.mode = is_token(option, "--entry") ? IrMode::Application : IrMode::Program;
+            line.mode = is_token(option, "--entry") ? EntryMode::Application : EntryMode::Program;
             line.entry_index = operand;
         } else if (is_token(option, "--function")) {
             if (value.text == 0u64) { line.error = CompileError::IrUsage; return line; }
@@ -439,13 +446,13 @@ extern "C" IrCommandLine parse_ir_arguments(address arguments, u64 count, addres
         }
         index += 2u64;
     }
-    if (line.function_index != count && (line.has_stage != 0u64 || line.mode == IrMode::Program)) {
+    if (line.function_index != count && (line.has_stage != 0u64 || line.mode == EntryMode::Program)) {
         line.error = CompileError::IrFunctionMode;
-    } else if (line.has_stage != 0u64 && line.mode != IrMode::Program) {
+    } else if (line.has_stage != 0u64 && line.mode != EntryMode::Program) {
         line.error = CompileError::IrStageMode;
-    } else if (has_instances && line.mode != IrMode::Module) {
+    } else if (has_instances && line.mode != EntryMode::Module) {
         line.error = CompileError::IrInstanceMode;
-    } else if (has_imports && line.mode == IrMode::Program) {
+    } else if (has_imports && line.mode == EntryMode::Program) {
         line.error = CompileError::IrImportMode;
     }
     return line;

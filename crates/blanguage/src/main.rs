@@ -38,6 +38,14 @@ enum CompileError {
     LayoutUsage, LayoutOption, X64Usage, X64Option, X64Repeated, ImageUsage, SpirvUsage,
 }
 
+#[derive(Clone, Copy, PartialEq)]
+#[repr(u32)]
+enum EntryMode {
+    Module,
+    Application,
+    Program,
+}
+
 #[repr(C)]
 struct CompileCommandLine {
     command: CompileCommand,
@@ -50,11 +58,10 @@ struct CompileCommandLine {
     output_index: usize,
     root_index: usize,
     entry_index: usize,
-    program_index: usize,
     report_index: usize,
     budget: u64,
     has_budget: u64,
-    as_module: u64,
+    mode: EntryMode,
     jobs: usize,
     cpu_count: usize,
     has_parameter_limit: u64,
@@ -270,21 +277,29 @@ fn build_object(
     for (arg, role) in args.iter().zip(roles) {
         match role {
             1 => imports.extend(blanguage::object::Input::read(Path::new(arg))?.objects()?),
-            2 => instances.push(arg.to_str().ok_or("实例不是UTF-8文本")?.to_owned()),
+            2 if line.mode == EntryMode::Module => {
+                instances.push(arg.to_str().ok_or("实例不是UTF-8文本")?.to_owned());
+            }
             _ => {}
         }
     }
     line.error.result(args, line.error_index)?;
     let output = PathBuf::from(&args[line.output_index]);
-    let kind = if line.as_module != 0 {
-        blanguage::build::ObjectKind::Module(&instances)
-    } else if let Some(entry) = args.get(line.program_index) {
-        let entry = entry.to_str().ok_or("入口不是UTF-8文本")?;
-        let prefix = output.file_stem().and_then(|value| value.to_str()).ok_or("目标文件名不是UTF-8")?;
-        blanguage::build::ObjectKind::Library { entry, prefix }
-    } else {
-        let entry = args.get(line.entry_index).and_then(|entry| entry.to_str()).unwrap_or("main");
-        blanguage::build::ObjectKind::Application(entry)
+    use blanguage::build::ObjectKind;
+    let kind = match line.mode {
+        EntryMode::Module => ObjectKind::Module(&instances),
+        EntryMode::Program => {
+            let entry = args[line.entry_index].to_str().ok_or("入口不是UTF-8文本")?;
+            let prefix = output.file_stem().and_then(|value| value.to_str()).ok_or("目标文件名不是UTF-8")?;
+            ObjectKind::Library { entry, prefix }
+        }
+        EntryMode::Application => {
+            let entry = args.get(line.entry_index)
+                .map(|entry| entry.to_str().ok_or("入口不是UTF-8文本"))
+                .transpose()?
+                .unwrap_or("main");
+            ObjectKind::Application(entry)
+        }
     };
     let compiled = compiler.build_object(&path, &root, &imports, kind, &output)
         .map_err(|error| -> Box<dyn std::error::Error> { error })?;
