@@ -4427,9 +4427,9 @@ void run(read dataset<Item> input, inout dataset<Item> output,
 }
 ```
 
-`requires` 表示调用者必须提供的关系；`ensures` 表示当前实现必须证明的关系，不是可任意声明的承诺。Count 必须是独立、形状为 1 且只含一个 u32 字段的数据集；requires 的计数参数必须可读。缺少调用条件报 B191，无效关系声明报 B192，无法证明交付报 B193，`.h/.b` 约束不同报 B028。普通值函数不接受此类约束。
+`requires prefix`由调用者证明。`ensures prefix`由整域函数在完成时证明。计数必须来自另一个固定形状为 1 的 dataset，选中的字段为 u32，可用命名嵌套路径。`requires prefix`的计数参数必须可读。整域内欠缺前缀证明报 B191，普通 CPU 调用欠缺前提报 B226。无效关系声明报 B192，无法证明输出保证报 B193，`.h/.b`约束不同报 B028。普通 CPU 函数接受`requires prefix`，正常写出沿原返回合同交接实际前缀。
 
-每个 计算函数 只在自己的 requires 下检查。调用时，编译器先满足被调用者的条件，再按声明的 write/inout 参数使调用方旧计数关系失效，最后接收被调用者已证明的 ensures；不从私有实现推断额外承诺。read 计数不能被模块改写，因此调用方已有关系可继续保留；函数直接改写计数后，必须重新生产对应关系才能交付。访问权限仍独立生效，write 参数不会因存在前缀关系而变为 read。
+纯整域包装沿实际参与要求使用整域接口，包括`on cpu`函数中仅组合其他整域调用的情况。子调用交付的前缀可在包装函数内部消费。调用方从包装函数自己的`ensures prefix`取得输出保证，公开函数在`.h`和`.b`中声明相同保证。源码、对象与归档使用同一合同。调用先核对前提，再按实际写字节撤回相交计数字段的旧关系，最后接收已证明的输出保证。未写的计数字段保留已有事实，访问权限由原参数决定。
 
 编译结果将无前置条件的公开入口保存为 `ExecutableProgram`，条件模板保存为 `Compilation.templates` 中的 `TemplateProgram`。两个类型都只能由编译器构造，只读访问已检查 IR。`CpuProgram::new`只接收前者，`CpuTemplate::new`接收后者；GPU先由`Compiler::spirv`或`spirv::compile_program`形成对应类型的映像，设备创建借用其`ExecutionPlan`，再用`Device::load`／`Device::load_template`装入普通入口／条件模板。条件执行接口必须取得实际存储持有的域关系。`bc check/build` 可以检查与导出条件模板的原生代码，通用 `compute` 文件入口不能直接绑定裸 Count 执行条件模板。跨模块组合仍可在一个闭合入口中执行，不为普通模块调用读回计数或新增一次提交。
 
