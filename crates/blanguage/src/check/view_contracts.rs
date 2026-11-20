@@ -784,6 +784,7 @@ struct BorrowEvaluation<'a>{
     loop_bindings:Vec<BTreeMap<LoopInput,Borrow>>,
     values: BTreeMap<(LoopSources, EvaluationInput), Borrow>,
     stored: Option<Arc<StoredLocations>>,
+    exit_writes: Option<&'a ReturnedWrites>,
     stored_paths: StoredPaths<'a>,
 }
 // A replay may visit the same physical write for many words or exits.
@@ -822,7 +823,8 @@ impl StoredPaths<'_> {
 }
 
 impl BorrowEvaluation<'_>{
-    fn content_event(&mut self,result:&mut ContentAtRead,query:Option<(&address::Origin,u32)>,position:Option<&Position>,memory:usize){
+    fn content_event(&mut self, query: Option<(&address::Origin,u32)>, position: Option<&Position>, memory: usize,
+        mut write: impl FnMut(&Borrow, &bounds::Condition, bool)) {
         let(function,known)=(self.function,self.known);
         let usage=&function.uses[memory];
         let Requirement::Memory{borrow,access,written,address_fields,..}=&usage.requirement else{return;};
@@ -850,7 +852,7 @@ impl BorrowEvaluation<'_>{
                         let stored = stored.get_or_init(|| {
                             self.evaluate(&call_content_sources(value, call, &call.arguments).at_call(&call.arguments))
                         });
-                        result.write(stored, &path, complete);
+                        write(stored, &path, complete);
                     }
                 }
             }
@@ -865,7 +867,7 @@ impl BorrowEvaluation<'_>{
             let when = &usage.path;
             // Every queried word consumes the same immutable write path.
             if *usage.opaque_write_possible.get_or_init(|| when.possible()) {
-                result.write(&Borrow::source(Origin::External), &bounds::Condition::execution(when), false);
+                write(&Borrow::source(Origin::External), &bounds::Condition::execution(when), false);
             }
             return;
         }
@@ -881,7 +883,7 @@ impl BorrowEvaluation<'_>{
                                 query, position, origin, word, || *active,
                             ) {
                                 let stored = self.evaluate(&written.view_borrow(component));
-                                result.write(&stored, &bounds::Condition::execution(&when), complete);
+                                write(&stored, &bounds::Condition::execution(&when), complete);
                             }
                         }
                     } else if let Some(position) = position && let Some(path) = *active {
@@ -889,13 +891,13 @@ impl BorrowEvaluation<'_>{
                             &Borrow::source(source.clone()).restricted(path), super::Access::Write, None,
                         );
                         if effect.written_bytes(position, Scalar::U64, None) != 0 {
-                            result.write(&Borrow::source(Origin::External), &bounds::Condition::execution(path), false);
+                            write(&Borrow::source(Origin::External), &bounds::Condition::execution(path), false);
                         }
                     }
                 },
                 Origin::External => {
                     if let Some(path) = *active {
-                        result.write(&Borrow::source(Origin::External), &bounds::Condition::execution(path), false);
+                        write(&Borrow::source(Origin::External), &bounds::Condition::execution(path), false);
                     }
                 },
                 _ => {},
@@ -917,7 +919,8 @@ impl BorrowEvaluation<'_>{
             if let Some(value)=captured{return value;}
         }
         let mut result=ContentAtRead::default();
-        for at in (0..memory).rev(){self.content_event(&mut result,Some((origin,word)),position.as_ref(),at);}
+        for at in (0..memory).rev(){self.content_event(Some((origin,word)), position.as_ref(), at,
+            |borrow, when, complete| result.write(borrow, when, complete));}
         result.with_initial(input_contents(origin,word))
     }
 
@@ -981,8 +984,24 @@ impl BorrowEvaluation<'_>{
             ContentRead::Returned{memory}=>{
                 let mut value=Borrow::default();
                 let parameters = std::cell::LazyCell::new(|| public_parameters(function));
-                for (origin, word) in self.stored_locations(|| &parameters).iter() {
-                    value.union(&self.content_at_exit(origin, *word, *memory));
+                if let Some(history) = self.exit_writes.filter(|_| matches!(sources, LoopSources::Resolved)
+                    && self.loop_bindings.is_empty()) {
+                    for location in history {
+                        let mut result = ContentAtRead::default();
+                        let first = location.events.partition_point(|event| event.at >= *memory);
+                        for event in &location.events[first..] {
+                            for write in &event.writes {
+                                result.write(&write.borrow, &write.when, write.complete);
+                            }
+                        }
+                        let contents = result.with_initial(input_contents(&location.origin, location.word))
+                            .restricted_by(&function.uses[*memory].path);
+                        value.union(&contents);
+                    }
+                } else {
+                    for (origin, word) in self.stored_locations(|| &parameters).iter() {
+                        value.union(&self.content_at_exit(origin, *word, *memory));
+                    }
                 }
                 value
             },
@@ -999,7 +1018,8 @@ impl BorrowEvaluation<'_>{
             ContentRead::Snapshot{memory,position,initial,..}=>{
                 let value=self.evaluate_sources(&initial.view_borrow(0),sources);
                 let mut result=ContentAtRead::default();
-                self.content_event(&mut result,None,Some(position),*memory);
+                self.content_event(None, Some(position), *memory,
+                    |borrow, when, complete| result.write(borrow, when, complete));
                 result.with_initial(value).restricted_by(&function.uses[*memory].path)
             },
             ContentRead::Call{memory,origin,word,snapshots}=>{
@@ -1108,7 +1128,7 @@ fn stored_target<'p>(
     canonical_relation(Borrow::source(Origin::Position(Arc::new(origin))), function, None, exposed, parameters(), false)
 }
 fn evaluate(borrow:&Borrow,function:&Function,state:&State,known:&States,expand_loops:bool)->Borrow {
-    BorrowEvaluation{function,state:state.loop_scope(),known,expand_loops,deferred_reads:false,loop_bindings:Vec::new(),values:BTreeMap::new(),stored:None,stored_paths:Default::default()}.evaluate(borrow)
+    BorrowEvaluation{function,state:state.loop_scope(),known,expand_loops,deferred_reads:false,loop_bindings:Vec::new(),values:BTreeMap::new(),stored: None, exit_writes: None,stored_paths:Default::default()}.evaluate(borrow)
 }
 
 fn input_index(index:Option<bounds::Operand>,function:&Function)->Option<bounds::Operand>{
@@ -1587,7 +1607,7 @@ fn converge_access(functions:&BTreeMap<String,&Function>,known:&mut States,owns_
         let mut access=BTreeMap::new();
         let mut evaluation = BorrowEvaluation {
             function, state: state.loop_scope(), known, expand_loops: true, deferred_reads: false,
-            loop_bindings: Vec::new(), values: BTreeMap::new(), stored: None, stored_paths: Default::default(),
+            loop_bindings: Vec::new(), values: BTreeMap::new(), stored: None, exit_writes: None, stored_paths: Default::default(),
         };
         for value in state.interface.access.iter().filter(|access|matches!(access,Access::Stored{..})) {insert(&mut access,value.clone());}
         for usage in &function.uses {
@@ -1636,7 +1656,7 @@ fn converge_access(functions:&BTreeMap<String,&Function>,known:&mut States,owns_
             let mut access=local_access.clone();
             let mut evaluation = BorrowEvaluation {
                 function, state: state.loop_scope(), known, expand_loops: true, deferred_reads: false,
-                loop_bindings: Vec::new(), values: BTreeMap::new(), stored: None, stored_paths: Default::default(),
+                loop_bindings: Vec::new(), values: BTreeMap::new(), stored: None, exit_writes: None, stored_paths: Default::default(),
             };
             for (index, call) in function.calls.iter().enumerate().filter(|(_, call)| call.function != *name || state.entries.is_none()) {
                 let projection = call_accesses.entry((name.as_str(), index)).or_insert_with(|| CallProjection {
@@ -1771,7 +1791,7 @@ fn stored_outputs<'p>(
         (BorrowEvaluation {
             function, state, known, expand_loops: true, deferred_reads: false,
             loop_bindings: Vec::new(), values: BTreeMap::new(),
-            stored: Some(locations.clone()), stored_paths: StoredPaths::Borrowed(paths),
+            stored: Some(locations.clone()), exit_writes: None, stored_paths: StoredPaths::Borrowed(paths),
         }, bounds::PublicGuards::stored(bindings))
     }, |(evaluation, guards), entry| Ok(store(evaluation, guards, entry)))?;
     Ok(results.into_iter().collect())
@@ -1816,7 +1836,7 @@ fn converge(
             let loops = relation::Graph::loops(&loop_inputs[name], function, state.name, known);
             let scope = LoopScope { name: state.name, loops: loops.as_ref() };
             let entries = relation::Graph::recursive_inputs(name, function, scope, known);
-            let mut evaluation=BorrowEvaluation{function,state:scope,known,expand_loops:true,deferred_reads:false,loop_bindings:Vec::new(),values:BTreeMap::new(),stored:None,stored_paths:Default::default()};
+            let mut evaluation=BorrowEvaluation{function,state:scope,known,expand_loops:true,deferred_reads:false,loop_bindings:Vec::new(),values:BTreeMap::new(),stored: None, exit_writes: None,stored_paths:Default::default()};
             let forwards=|output:&Output,definition:&Borrow|matches!(output,Output::Returned(_))&&definition.calls.iter().any(|result|function.calls[result.call].function==*name&&result.output==*output);
             let entry_bindings=entries.as_ref().filter(|_|function.outputs.iter().any(|(output,definition)|forwards(output,definition))).map(|entries|{
                 let mut inverse=BTreeMap::new();for(&local,&formal)in &function.parameters{inverse.entry(formal).or_insert_with(||{let mut component_proof=bounds::Proof::default().with_identity(local);component_proof.set_view_borrow(0,Borrow::source(Origin::Parameter(local,Vec::new())));component_proof});}
@@ -2167,6 +2187,69 @@ fn solve<'a>(
     Ok(Solved { states: known.functions, memory, values: scalar_values })
 }
 
+struct ExitWrite {
+    borrow: Borrow,
+    when: bounds::Condition,
+    complete: bool,
+}
+
+struct ExitEvent {
+    at: usize,
+    writes: Vec<ExitWrite>,
+}
+
+struct ExitContents {
+    origin: Arc<address::Origin>,
+    word: u32,
+    events: Vec<ExitEvent>,
+}
+
+type ReturnedWrites = Vec<ExitContents>;
+
+fn prepare_returned_writes(
+    worker: &crate::compiler::Worker, function: &Function, state: &State, known: &States<'_>,
+    paths: &CallWritePaths,
+) -> Result<Option<ReturnedWrites>> {
+    let mut latest = None;
+    let mut exits = 0;
+    for usage in &function.uses {
+        let Requirement::Return { borrow, .. } = &usage.requirement else { continue; };
+        for read in borrow.reads.iter() {
+            if let ContentRead::Returned { memory } = read {
+                latest = Some(latest.map_or(*memory, |at: usize| at.max(*memory)));
+                exits += 1;
+            }
+        }
+    }
+    let Some(latest) = latest.filter(|_| exits > 1) else { return Ok(None); };
+    let evaluation = || BorrowEvaluation {
+        function, state: state.loop_scope(), known, expand_loops: true, deferred_reads: false,
+        loop_bindings: Vec::new(), values: BTreeMap::new(), stored: None, exit_writes: None,
+        stored_paths: StoredPaths::Borrowed(paths),
+    };
+    let mut source = evaluation();
+    let parameters = std::cell::LazyCell::new(|| public_parameters(function));
+    let locations = source.stored_locations(|| &parameters);
+    let writes = crate::parallel::try_map(worker, locations.iter().collect(), |_| evaluation(),
+        |evaluation, (origin, word)| {
+            let position = content_position(origin, *word);
+            let mut events = Vec::new();
+            for at in (0..latest).rev() {
+                let mut writes = Vec::new();
+                evaluation.content_event(Some((origin, *word)), position.as_ref(), at,
+                    |borrow, when, complete| writes.push(ExitWrite { borrow: borrow.clone(), when: when.clone(), complete }));
+                if !writes.is_empty() {
+                    events.push(ExitEvent { at, writes });
+                }
+            }
+            Ok::<_, crate::ast::Diagnostic>(ExitContents { origin: origin.clone(), word: *word, events })
+        }).map_err(|error| match error {
+            crate::parallel::Error::Work(error) => error,
+            crate::parallel::Error::Resource(error) => crate::compiler::diagnostic(&function.uses[latest].source.path, error),
+        })?;
+    Ok(Some(writes))
+}
+
 fn finish_function(
     worker: &crate::compiler::Worker, name: &str, function: &Function, known: &States<'_>,
 ) -> Result<(MemoryEffects, Option<ScalarValues>)> {
@@ -2174,7 +2257,7 @@ fn finish_function(
     let state = &known[name];
     let mut evaluation = BorrowEvaluation {
         function, state: state.loop_scope(), known, expand_loops: true, deferred_reads: false,
-        loop_bindings: Vec::new(), values: BTreeMap::new(), stored: None, stored_paths: Default::default(),
+        loop_bindings: Vec::new(), values: BTreeMap::new(), stored: None, exit_writes: None, stored_paths: Default::default(),
     };
     let mut effects = MemoryEffects::new();
     let mut resolved = BTreeMap::new();
@@ -2265,18 +2348,19 @@ fn finish_function(
     let context = function.value_context(resolved.as_ref());
     let paths = CallWritePaths::default();
     let symbolic_paths = CallWritePaths::default();
+    let history = prepare_returned_writes(worker, function, state, known, &paths)?;
     crate::parallel::try_map(
         worker,
         function.uses.iter().collect(),
         |_| {
             let evaluation = BorrowEvaluation {
                 function, state: state.loop_scope(), known, expand_loops: true, deferred_reads: false,
-                loop_bindings: Vec::new(), values: BTreeMap::new(), stored: None,
+                loop_bindings: Vec::new(), values: BTreeMap::new(), stored: None, exit_writes: history.as_ref(),
                 stored_paths: StoredPaths::Borrowed(&paths),
             };
             let symbolic = BorrowEvaluation {
                 function, state: state.loop_scope(), known, expand_loops: false, deferred_reads: false,
-                loop_bindings: Vec::new(), values: BTreeMap::new(), stored: None,
+                loop_bindings: Vec::new(), values: BTreeMap::new(), stored: None, exit_writes: None,
                 stored_paths: StoredPaths::Borrowed(&symbolic_paths),
             };
             (bounds::required_scope(), evaluation, symbolic)
@@ -2322,7 +2406,7 @@ fn finish_function(
     })?;
     let mut evaluation = BorrowEvaluation {
         function, state: state.loop_scope(), known, expand_loops: true, deferred_reads: false,
-        loop_bindings: Vec::new(), values: BTreeMap::new(), stored: None,
+        loop_bindings: Vec::new(), values: BTreeMap::new(), stored: None, exit_writes: None,
         stored_paths: StoredPaths::Borrowed(&paths),
     };
     for call in &function.calls{
