@@ -116,7 +116,7 @@ u32 query_search(usize first,usize second,u32 right_truth,address context,Graph 
  requires nonzero(host.push_clause) requires nonzero(host.push_fact) requires nonzero(host.pop_alternative) {
  address values=graph.values;usize at=0u64;
  host.pending_push(context,first,1);host.pending_push(context,second,right_truth);
- usize consumed=0u64;usize negative=0u64;
+ usize consumed=0u64;usize negative=0u64;usize choice=0u64;
  while(true){
   if(propagate(context,graph,host)!=0){
    usize before=host.additions(context);Span trail=host.trail(context);
@@ -129,7 +129,8 @@ u32 query_search(usize first,usize second,u32 right_truth,address context,Graph 
    u32 remaining=host.add_next(context);consumed=trail.count;
    if(host.additions(context)==before||host.contradictory(context)==0){
     u32 chosen=0;
-    at=0u64;
+    // Assignments already scanned remain fixed until a rollback.
+    at=choice;
     while(at<trail.count){
      usize id=word_at(trail,at);Gate node=node_at(graph,id);u32 either=node.kind==3 ? 1 : 0;
      if(node.kind>=2&&value_at(values,id)==either+1
@@ -140,6 +141,7 @@ u32 query_search(usize first,usize second,u32 right_truth,address context,Graph 
      }
      at+=1u64;
     }
+    choice=at+u64(chosen);
     if(chosen!=0){continue;}
     u32 found=remaining;
     if(found==0){
@@ -177,7 +179,7 @@ u32 query_search(usize first,usize second,u32 right_truth,address context,Graph 
   }
   count=host.additions(context);
   while(count>alternative.checkpoint.facts){host.undo_addition(context);count-=1u64;}
-  consumed=alternative.checkpoint.nodes;negative=alternative.checkpoint.negative;
+  consumed=alternative.checkpoint.nodes;negative=alternative.checkpoint.negative;choice=0u64;
   if(alternative.kind==1){host.pending_push(context,alternative.node,alternative.truth);}
  }
 }
