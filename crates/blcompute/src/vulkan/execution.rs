@@ -340,12 +340,15 @@ impl Execution {
         }
         Ok(Vec::new())
     }
+    /// The retained initial upload owns the copies for this storage and its CPU view sources.
+    pub(super) fn uploads_dataset_graph(&self) -> bool {
+        matches!(self.resources.borrow().as_ref(), Some(ExecutionResources::DatasetUpload { .. }))
+    }
     pub fn discard(&self, mut storage: DatasetStorage) {
         if matches!(self.point.result.get(), Some(0 | -4)) {
             drop(storage);
         } else {
-            let initial_upload = matches!(self.resources.borrow().as_ref(), Some(ExecutionResources::DatasetUpload { .. }));
-            if initial_upload && let DatasetStorage::Owned(target) = &mut storage {
+            if self.uploads_dataset_graph() && let DatasetStorage::Owned(target) = &mut storage {
                 // Initial copies access only these destination pages. Releasing the
                 // dead graph here also releases references to this very execution.
                 drop(std::mem::take(&mut target.views));

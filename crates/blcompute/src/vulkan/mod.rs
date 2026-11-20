@@ -2284,26 +2284,34 @@ impl GpuProgram {
         for acceleration in accelerations {
             owner.dependencies.insert(acceleration.produced());
         }
+        let mut resources: Vec<&ReadDataset> = Vec::new();
         for d in data.owners.iter() {
             if !Rc::ptr_eq(&c.inner, &d.allocation.inner) {
                 return Err(error("数据集不属于程序的设备"));
             }
-            if let Some(used) = d.dependency() {
+            let previous = d.dependency();
+            if let Some(used) = previous {
                 owner.dependencies.insert(used);
+            }
+            if !d.views.sources.is_empty() && !previous.is_some_and(|used| used.uploads_dataset_graph()) {
+                resources.extend(&d.views.sources);
             }
         }
         let mut resource_stage = 0;
         let mut resource_access = 0;
         let mut visited = BTreeSet::new();
-        let mut resources: Vec<_> = data.owners.iter().flat_map(|d| &d.views.sources).collect();
         while let Some(source) = resources.pop() {
-            if visited.insert(Rc::as_ptr(&source.0) as usize) {
-                if let Some(used) = source.0.dependency() {
-                    owner.dependencies.insert(used);
-                } else if owner.dependencies.is_empty() {
-                    resource_stage |= source.0.producer.stage();
-                    resource_access |= source.0.producer.access();
-                }
+            if !visited.insert(Rc::as_ptr(&source.0) as usize) {
+                continue;
+            }
+            let previous = source.0.dependency();
+            if let Some(used) = previous {
+                owner.dependencies.insert(used);
+            } else if owner.dependencies.is_empty() {
+                resource_stage |= source.0.producer.stage();
+                resource_access |= source.0.producer.access();
+            }
+            if !source.0.views.sources.is_empty() && !previous.is_some_and(|used| used.uploads_dataset_graph()) {
                 resources.extend(&source.0.views.sources);
             }
         }
