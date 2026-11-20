@@ -1999,17 +1999,9 @@ array<u32,2> scan_field_pointers(inout StageCursor out, u32 record, u32 wide_typ
     return array<u32,2>(address_ids.pointer, address_ids.second);
 }
 
-extern "C" ScanPrefixWords add_scan_prefix(ScanPrefix input, address fields, u32 count,
-    address body, address decorations) on cpu {
-    StageCursor out = StageCursor(body, 0u64, input.target.next);
-    u32 uint_type = input.target.u32_type;
-    u32 group = stage_op(out, 134, uint_type, input.target.index, input.width);
-    u32 first = 0;
-    let scalar = unsafe_position<ScanField>(fields).scalar;
-    if ((scalar == BuiltinScalar::F32 || scalar == BuiltinScalar::F64) && input.operation != CollectiveOperation::Sum) {
-        u32 lane = stage_op(out, 137, uint_type, input.target.index, input.width);
-        first = stage_op(out, 170, input.bool_type, lane, input.target.zero);
-    }
+u64 write_scan_prefix(inout StageCursor out, ScanPrefix input, u32 group, u32 first,
+    address fields, u32 count, address decorations) on cpu {
+    address body = out.body;
 
     PageAddress parent = input.target;
     parent.descriptor = input.prefix_descriptor;
@@ -2046,7 +2038,36 @@ extern "C" ScanPrefixWords add_scan_prefix(ScanPrefix input, address fields, u32
         if (first != 0) { value = stage_select(out, field.raw_type, first, left, value); }
         write_stage_payload(out, payload, value, to_slots, shift_slots);
     }
-    return ScanPrefixWords(out.words, decorated, out.next);
+    return decorated;
+}
+
+extern "C" TreeWords add_scan_prefix(ScanPrefix input, address fields, u32 count,
+    address body, address decorations) on cpu {
+    StageCursor out = StageCursor(body, 0u64, input.target.next);
+    u32 uint_type = input.target.u32_type;
+    u32 group = stage_op(out, 134, uint_type, input.target.index, input.width);
+    let scalar = unsafe_position<ScanField>(fields).scalar;
+    bool extreme = (scalar == BuiltinScalar::F32 || scalar == BuiltinScalar::F64) && input.operation != CollectiveOperation::Sum;
+    bool segmented = input.head_descriptor != 0;
+    u32 lane = segmented || extreme ? stage_op(out, 137, uint_type, input.target.index, input.width) : 0;
+    u32 first = extreme ? stage_op(out, 170, input.bool_type, lane, input.target.zero) : 0;
+    if (segmented) {
+        PageAddress head = input.target;
+        head.descriptor = input.head_descriptor;
+        head.word = input.head_word;
+        PageAddressResult pointer = stage_address(out, head, group, 0);
+        u32 head_lane = stage_load(out, uint_type, pointer.pointer, true);
+        u32 lane_number = stage_op(out, 128, uint_type, lane, input.one);
+        u32 before = stage_op(out, 176, input.bool_type, lane_number, head_lane);
+        u32 absent = stage_op(out, 170, input.bool_type, head_lane, input.target.zero);
+        u32 apply = stage_op(out, 166, input.bool_type, before, absent);
+        StageBranch branch = stage_open(out, apply);
+        u64 decorated = write_scan_prefix(out, input, group, first, fields, count, decorations);
+        stage_close(out, branch);
+        return TreeWords(out.words, decorated, out.next, branch.end);
+    }
+    u64 decorated = write_scan_prefix(out, input, group, first, fields, count, decorations);
+    return TreeWords(out.words, decorated, out.next, input.label);
 }
 
 extern "C" PayloadRead tile_extract(TileExtract input, address body) on cpu {

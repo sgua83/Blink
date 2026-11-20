@@ -407,9 +407,13 @@ extern "C" TreeWords tree_layer(TreeLayer input, address components, u32 count, 
 struct ScanPrefix {
     PageAddress target;
     u32 prefix_descriptor;
+    u32 head_descriptor;
+    u32 head_word;
     u32 width;
     u32 bool_type;
+    u32 one;
     CollectiveOperation operation;
+    u32 label;
 };
 
 struct ScanField {
@@ -424,11 +428,9 @@ struct ScanField {
     u32 shift;
 };
 
-struct ScanPrefixWords { u64 body; u64 decorations; u32 next; };
-// One group/optional lane test and two record addresses precede the fields.
-// Each field has two address/read pairs, a merge, and a write through the target pointers.
 // The caller provides 233 + 144*count body words and 3*count decoration words.
-extern "C" ScanPrefixWords add_scan_prefix(ScanPrefix input, address fields, u32 count,
+// A segment head descriptor uses a further 148 body words for its load and branch.
+extern "C" TreeWords add_scan_prefix(ScanPrefix input, address fields, u32 count,
     address body, address decorations) on cpu;
 
 struct PrivateAddress {

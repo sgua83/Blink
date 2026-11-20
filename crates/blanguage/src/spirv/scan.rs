@@ -79,9 +79,13 @@ struct TreeWords {
 struct ScanPrefix {
     target: PageAddress,
     prefix_descriptor: u32,
+    head_descriptor: u32,
+    head_word: u32,
     width: u32,
     bool_type: u32,
+    one: u32,
     operation: u32,
+    label: u32,
 }
 
 #[repr(C)]
@@ -97,17 +101,11 @@ struct ScanField {
     shift: u32,
 }
 
-#[repr(C)]
-struct ScanPrefixWords {
-    body: u64,
-    decorations: u64,
-    next: u32,
-}
 
 unsafe extern "C" {
     #[link_name = "bootstrap.spirv_envelope::add_scan_prefix"]
     fn add_scan_prefix(input: ScanPrefix, fields: *const ScanField, count: u32,
-        body: *mut u32, decorations: *mut u32) -> ScanPrefixWords;
+        body: *mut u32, decorations: *mut u32) -> TreeWords;
     #[link_name = "bootstrap.spirv_envelope::shared_addresses"]
     fn emit_shared_addresses(input: SharedAddress, offsets: *mut u32, body: *mut u32) -> SharedAddressWords;
     #[link_name = "bootstrap.spirv_envelope::group_remaining"]
@@ -466,6 +464,15 @@ impl Emitter<'_> {
     }
 
     pub(super) fn scan_add(&mut self, scan: &Scan, root: bool) {
+        let target_word = if root { scan.values.target_word } else { 0 };
+        self.emit_scan_prefix(scan, target_word, None);
+    }
+
+    pub(super) fn segmented_root_add(&mut self, scan: &Scan) {
+        self.emit_scan_prefix(scan, scan.values.target_word, Some(scan.ty.size.div_ceil(4) * 4));
+    }
+
+    fn emit_scan_prefix(&mut self, scan: &Scan, target_word: u32, head: Option<u32>) {
         let r = &scan.values;
         let width = self.constant(Scalar::U32, 64);
         let fields: Vec<_> = scan.ty.components.iter().map(|&(scalar, offset)| {
@@ -487,19 +494,30 @@ impl Emitter<'_> {
                 shift,
             }
         }).collect();
-        let target_word = (root && r.target_word != 0).then_some(r.target_word);
+        let (head_descriptor, head_word, one) = match head {
+            Some(offset) => (
+                self.buffers[self.program.buffers.len()],
+                self.constant(Scalar::U32, offset),
+                self.constant(Scalar::U32, 1),
+            ),
+            None => (0, 0, 0),
+        };
         let target = self.page_input(Scalar::U32, PageSource::Dataset(self.buffers[r.target]),
-            self.index, target_word, 0);
+            self.index, (target_word != 0).then_some(target_word), 0);
         let input = ScanPrefix {
             target,
             prefix_descriptor: self.buffers[self.scan_input_binding(r)],
+            head_descriptor,
+            head_word,
             width,
             bool_type: self.types[&Scalar::Bool],
+            one,
             operation: scan.operator as u32,
+            label: self.current_label,
         };
         let body = self.body.len();
         let decorations = self.decorations.len();
-        self.body.reserve(233 + 144 * fields.len());
+        self.body.reserve(233 + 148 * usize::from(head.is_some()) + 144 * fields.len());
         self.decorations.reserve(3 * fields.len());
         let result = unsafe {
             let result = add_scan_prefix(input, fields.as_ptr(), fields.len() as u32,
@@ -509,5 +527,6 @@ impl Emitter<'_> {
             result
         };
         self.next = result.next;
+        self.current_label = result.label;
     }
 }
