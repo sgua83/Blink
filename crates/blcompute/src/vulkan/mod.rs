@@ -1768,6 +1768,12 @@ fn pipeline(
         Ok(handle)
     }
 }
+enum DescriptorStep {
+    Single,
+    Capture,
+    Reuse(usize),
+}
+
 struct DescriptorWriter<'a> {
     compiled: &'a Compiled,
     pool: u64,
@@ -1776,6 +1782,8 @@ struct DescriptorWriter<'a> {
     _accelerations: &'a [Acceleration],
     _structures: Vec<ray::WriteAcceleration>,
     _images: Vec<texture::DescriptorImageInfo>,
+    step: DescriptorStep,
+    step_sets: Vec<u64>,
 }
 impl<'a> DescriptorWriter<'a> {
     fn new(
@@ -1826,6 +1834,8 @@ impl<'a> DescriptorWriter<'a> {
             _accelerations: accelerations,
             _structures: structures,
             _images: images,
+            step: DescriptorStep::Single,
+            step_sets: Vec::new(),
         }
     }
 
@@ -1851,6 +1861,11 @@ impl<'a> DescriptorWriter<'a> {
         selection: Option<VkDescriptorBufferInfo>,
         scan_source: Option<VkDescriptorBufferInfo>,
     ) -> Result<u64> {
+        if let DescriptorStep::Reuse(index) = &mut self.step {
+            let set = self.step_sets[*index];
+            *index += 1;
+            return Ok(set);
+        }
         let compiled = self.compiled;
         let f = &compiled.inner.functions;
         let device = compiled.inner.owner.device;
@@ -1898,6 +1913,9 @@ impl<'a> DescriptorWriter<'a> {
             if let Some(write) = self.writes[..info_count].get_mut(*binding) {
                 write.pBufferInfo = &self.infos[*binding];
             }
+        }
+        if matches!(self.step, DescriptorStep::Capture) {
+            self.step_sets.push(set);
         }
         Ok(set)
     }
@@ -2354,7 +2372,7 @@ impl GpuProgram {
             let count = data[stage.domain].count;
             if stage.selection.is_some() {
                 if let Some(&slot) = selected_storage.get(&count) {
-                    extra_sets += (scan::levels(count) * 2 + 2) as u64 * steps.get() as u64;
+                    extra_sets += (scan::levels(count) * 2 + 1) as u64;
                     scratch_uses.push(ScratchUse {
                         stage: i,
                         slot,
@@ -2373,7 +2391,7 @@ impl GpuProgram {
                     ty: ref reduction_ty,
                     ..
                 }) => {
-                    extra_sets += scan::levels(count) as u64 * steps.get() as u64;
+                    extra_sets += scan::levels(count) as u64;
                     let size = scan::groups(count);
                     if size > 1 {
                         let words = reduction_ty.size.div_ceil(4);
@@ -2390,23 +2408,23 @@ impl GpuProgram {
                     }
                 }
                 blanguage::ir::Operation::Compact(_) => {
-                    extra_sets += scan::levels(count) as u64 * 2 * steps.get() as u64;
+                    extra_sets += scan::levels(count) as u64 * 2;
                     Some(compact::allocate(c, count)?)
                 }
                 blanguage::ir::Operation::ScanExclusive(ref s) => {
-                    extra_sets += (scan::levels(count) * 2 - 1) as u64 * steps.get() as u64;
+                    extra_sets += (scan::levels(count) * 2 - 1) as u64;
                     Some(scan::allocate(c, count, s.summary_words())?)
                 }
                 blanguage::ir::Operation::CustomScan(ref s) => {
-                    extra_sets += (scan::levels(count) * 2 - 1) as u64 * steps.get() as u64;
+                    extra_sets += (scan::levels(count) * 2 - 1) as u64;
                     Some(scan::allocate(c, count, s.summary_words())?)
                 }
                 blanguage::ir::Operation::CustomSegmentedReduce(ref r) => {
-                    extra_sets += (scan::levels(count) * 2 - 1).max(2) as u64 * steps.get() as u64;
+                    extra_sets += (scan::levels(count) * 2 - 1).max(2) as u64;
                     Some(scan::allocate(c, count, r.summary_words())?)
                 }
                 blanguage::ir::Operation::SegmentedReduce(ref r) => {
-                    extra_sets += (scan::levels(count) * 2 - 1).max(2) as u64 * steps.get() as u64;
+                    extra_sets += (scan::levels(count) * 2 - 1).max(2) as u64;
                     Some(scan::allocate(c, count, r.summary_words())?)
                 }
                 blanguage::ir::Operation::StableSort(_) => {
@@ -2419,7 +2437,7 @@ impl GpuProgram {
                     })
                 }
                 blanguage::ir::Operation::Map if stage.selection.is_some() => {
-                    extra_sets += (scan::levels(count) * 2 + 1) as u64 * steps.get() as u64;
+                    extra_sets += (scan::levels(count) * 2) as u64;
                     Some(selection::allocate(c, count)?)
                 }
                 blanguage::ir::Operation::Map => None,
@@ -2430,7 +2448,7 @@ impl GpuProgram {
                     arguments: None,
                     sorting: None,
                 });
-                extra_sets += if temporary.sorting.is_some() { 1 } else { steps.get() as u64 };
+                extra_sets += 1;
                 temporary.arguments = Some(prefix::allocate(c, stage)?);
                 Some(temporary)
             } else {
@@ -2540,6 +2558,13 @@ impl GpuProgram {
                     (f.vkCmdResetQueryPool)(commands.command, commands.queries, 0, queries.count);
                 }
                 for step in 0..steps.get() {
+                    // Stage bindings and the order of set requests depend on fixed storage.
+                    // The device updates buffer contents and indirect counts between steps.
+                    descriptors.step = match step {
+                        0 if steps.get() == 1 => DescriptorStep::Single,
+                        0 => DescriptorStep::Capture,
+                        _ => DescriptorStep::Reuse(0),
+                    };
                     let mut uses = scratch_uses.iter().peekable();
                     let mut sorting_sets = sorting_sets.iter();
                     for (i, stage) in c.program.stages().iter().enumerate() {
