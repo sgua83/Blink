@@ -4,6 +4,7 @@ use super::{
     additional_equality_roots, equality_members, equivalent_facts, fact_fields,
 };
 use std::{
+    cell::OnceCell,
     borrow::Cow,
     collections::{BTreeMap, btree_map, btree_set},
     ffi::c_void,
@@ -203,10 +204,47 @@ unsafe extern "C" {
     #[link_name = "bootstrap.condition_graph::common_facts"]
     fn evaluate(context: Slot, host: Host);
 }
+fn fold<'a>(
+    environment: &'a Facts, sides: [&'a Facts; 2], roots: [btree_map::Iter<'a, ValueIdentity, ValueIdentity>; 2],
+) -> Facts {
+    let mut context = Context {
+        environment,
+        sides,
+        roots,
+        groups: BTreeMap::new(),
+        union: sides[0].union(sides[1]),
+        cursors: [sides[0].iter(), sides[1].iter()],
+        common: Facts::new(),
+    };
+    unsafe {
+        evaluate(
+            (&mut context as *mut Context<'_>).cast(),
+            Host {
+                intersection,
+                root_next,
+                representative,
+                contains,
+                emit,
+                known_next,
+                known_bits,
+                contains_known,
+                emit_known,
+                bound_next,
+                range,
+                compare: fact_fields::compare,
+                scalar_compare: fact_fields::compare_scalars,
+                scalar: fact_fields::scalar,
+            },
+        );
+    }
+    context.common
+}
+
 pub(super) fn either<'a>(
     environment: &Facts,
     environment_roots: &BTreeMap<ValueIdentity, ValueIdentity>,
     environment_members: &[(&ValueIdentity, &ValueIdentity)],
+    shared_equalities: Option<&OnceCell<Facts>>,
     a: Option<QueryFacts<'a>>,
     b: Option<QueryFacts<'a>>,
 ) -> Option<QueryFacts<'a>> {
@@ -233,37 +271,22 @@ pub(super) fn either<'a>(
                 };
             let a = expand(a, &left);
             let b = expand(b, &right);
-            let mut context = Context {
-                environment,
-                sides: [&a, &b],
-                roots: [left.iter(), right.iter()],
-                groups: BTreeMap::new(),
-                union: a.union(&b),
-                cursors: [a.iter(), b.iter()],
-                common: Facts::new(),
+            let common = if let Some(original) = shared_equalities
+                && matches!(left, Cow::Borrowed(_))
+                && matches!(right, Cow::Borrowed(_))
+            {
+                // Empty sides leave only the original equality result to produce.
+                let shared = original.get_or_init(|| {
+                    let empty = Facts::new();
+                    fold(environment, [&empty, &empty], [environment_roots.iter(), environment_roots.iter()])
+                });
+                let mut facts = fold(environment, [&a, &b], Default::default());
+                facts.extend(shared.iter().copied());
+                facts
+            } else {
+                fold(environment, [&a, &b], [left.iter(), right.iter()])
             };
-            unsafe {
-                evaluate(
-                    (&mut context as *mut Context<'_>).cast(),
-                    Host {
-                        intersection,
-                        root_next,
-                        representative,
-                        contains,
-                        emit,
-                        known_next,
-                        known_bits,
-                        contains_known,
-                        emit_known,
-                        bound_next,
-                        range,
-                        compare: fact_fields::compare,
-                        scalar_compare: fact_fields::compare_scalars,
-                        scalar: fact_fields::scalar,
-                    },
-                );
-            }
-            Some(QueryFacts::Owned(Arc::new(context.common)))
+            Some(QueryFacts::Owned(Arc::new(common)))
         }
         (a, None) | (None, a) => a,
     }

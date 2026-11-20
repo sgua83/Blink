@@ -656,6 +656,7 @@ pub(super) struct RequiredQuery<'a> {
     pending: Vec<usize>,
 }
 struct RequiredEvaluation<'a, 'b, 'c> {
+    common_equalities: Option<std::cell::OnceCell<Facts>>,
     query: &'a mut RequiredQuery<'b>,
     environment: &'c Facts,
     roots: &'c std::collections::BTreeMap<super::ValueIdentity, super::ValueIdentity>,
@@ -740,6 +741,7 @@ unsafe extern "C" fn required_common(slot: Slot, id: usize, left_last: u32, righ
         evaluation.environment,
         evaluation.roots,
         evaluation.members,
+        evaluation.common_equalities.as_ref(),
         a,
         b,
     ));
@@ -817,6 +819,7 @@ impl<'a> RequiredQuery<'a> {
             root: self.root,
         };
         let mut evaluation = RequiredEvaluation {
+            common_equalities: (!roots.is_empty()).then(std::cell::OnceCell::new),
             query: self,
             environment,
             roots,

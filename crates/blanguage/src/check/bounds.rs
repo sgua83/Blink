@@ -2548,10 +2548,11 @@ fn either_facts<'a>(
     environment: &Facts,
     environment_roots: &BTreeMap<ValueIdentity, ValueIdentity>,
     environment_members: &[(&ValueIdentity, &ValueIdentity)],
+    shared_equalities: Option<&std::cell::OnceCell<Facts>>,
     a: Option<QueryFacts<'a>>,
     b: Option<QueryFacts<'a>>,
 ) -> Option<QueryFacts<'a>> {
-    common_facts::either(environment, environment_roots, environment_members, a, b)
+    common_facts::either(environment, environment_roots, environment_members, shared_equalities, a, b)
 }
 impl PartialEq for Clause {
     fn eq(&self, other: &Self) -> bool { same_condition_roots([self], [other]) }
