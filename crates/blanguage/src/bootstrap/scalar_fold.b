@@ -865,6 +865,28 @@ extern "C" void range_set_union(address input,u64 left,u64 right,cfn<BitRange,ad
     }
     if(pending.present!=0){push(output,pending.value);}
 }
+extern "C" void range_set_intersection(address input,u64 left,u64 right,cfn<BitRange,address,u32,u64> get,
+    address output,cfn<void,address,BitRange> push) on cpu
+    requires nonzero(get) requires nonzero(push) {
+    if(left==0u64 || right==0u64){return;}
+    u64 i=0u64;
+    u64 j=0u64;
+    BitRange a=get(input,0,i);
+    BitRange b=get(input,1,j);
+    while(true){
+        u64 lower=max(a.lower,b.lower);
+        u64 upper=min(a.upper,b.upper);
+        if(lower<=upper){push(output,BitRange(lower,upper));}
+        bool move_left=a.upper<=b.upper;
+        bool move_right=b.upper<=a.upper;
+        i+=move_left ? 1u64 : 0u64;
+        j+=move_right ? 1u64 : 0u64;
+        if(i==left || j==right){return;}
+        if(move_left){a=get(input,0,i);}
+        if(move_right){b=get(input,1,j);}
+    }
+}
+
 struct RangeSetCursor { u64 index; RangeSetNext pending; };
 
 RangeSetNext range_set_next(address input,u64 count,cfn<BitRange,address,u32,u64> get,

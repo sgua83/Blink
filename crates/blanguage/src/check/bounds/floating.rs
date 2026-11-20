@@ -206,8 +206,7 @@ pub(super) fn refine(proof: &mut Proof) {
         for domain in domains {
             if let IndexDomain::Floating(bound) = domain && bound.form == FloatingForm::Upper {
                 let range = upper_range(bound.maximum());
-                proof.ranges[component] = proof.ranges[component].combine(&range,
-                    |(al,ah),(bl,bh)| ScalarRanges::interval(al.max(bl),ah.min(bh)));
+                proof.ranges[component] = proof.ranges[component].intersection(&range);
             }
         }
     }

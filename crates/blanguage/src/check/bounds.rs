@@ -373,6 +373,7 @@ impl ScalarRanges {
     fn hull(&self)->(Bits,Bits) {range_sets::hull(&self.0)}
     fn contains(&self,value:Bits)->bool {range_sets::contains(&self.0,value)}
     fn union(&self,other:&Self)->Self {range_sets::union(&self.0,&other.0)}
+    fn intersection(&self, other: &Self) -> Self { range_sets::intersection(&self.0, &other.0) }
     fn restrict(&self,lower:Bits,upper:Bits)->Self {range_sets::restrict(&self.0,lower,upper)}
     fn without(&self,value:Bits)->Self {range_sets::without(&self.0,value)}
     fn map(&self,operation:impl FnMut((Bits,Bits))->Self)->Self {range_sets::map(&self.0,operation)}
@@ -457,8 +458,9 @@ impl Proof {
                     if let Some(domains) = bound.domains.first_mut() {
                         self.domains[component].append(domains);
                     }
-                    self.ranges[component] = self.range_set(component).combine(&bound.range_set(0),
-                        |(a, b), (c, d)| ScalarRanges::interval(a.max(c), b.min(d)));
+                    self.ranges[component] = range_sets::intersection(
+                        self.interval_source(component), bound.interval_source(0),
+                    );
                 }
                 _ => {}
             }
@@ -520,8 +522,8 @@ impl Proof {
     }
     pub(super) fn constrain_range(&mut self, component: usize, intervals: &[(Bits, Bits)]) {
         self.ranges.resize_with(self.ranges.len().max(component + 1), ScalarRanges::default);
-        self.ranges[component] = self.range_set(component).combine(&ScalarRanges::from_intervals(intervals.iter().copied()),
-            |(a,b),(c,d)| ScalarRanges::interval(a.max(c), b.min(d)));
+        let required = ScalarRanges::from_intervals(intervals.iter().copied());
+        self.ranges[component] = self.ranges[component].intersection(&required);
     }
     pub(super) fn holds_range(&self, component: usize, scalar: Scalar, intervals: &[(Bits, Bits)], required_bits:(Bits,Bits)) -> bool {
         let (source, excluded) = self.element_intervals(component, scalar);
@@ -550,8 +552,9 @@ impl Proof {
         for component in 0..width {
             self.nonzero[component] |= other.nonzero.get(component) == Some(&true);
             for domain in other.domains(component).iter().copied() {self.mark_domain(component,domain);}
-            self.ranges[component] = self.range_set(component).combine(&other.range_set(component),
-                |(a, b), (c, d)| ScalarRanges::interval(a.max(c), b.min(d)));
+            self.ranges[component] = range_sets::intersection(
+                self.interval_source(component), other.interval_source(component),
+            );
             if let Some(incoming)=other.component_condition(component){
                 let condition=self.conditions[component].get_or_insert_with(||Box::new(Condition::default()));
                 for(target,incoming)in condition.cases.iter_mut().zip(&incoming.cases){*target=Clause::both(target,incoming);}
@@ -563,8 +566,7 @@ impl Proof {
         for &identity in other.origins.first().into_iter().flatten() {
             if !self.origins[0].contains(&identity) { self.origins[0].push(identity); }
         }
-        let range = self.range_set(0).combine(&other.range_set(0),
-            |(a,b),(c,d)| ScalarRanges::interval(a.max(c),b.min(d)));
+        let range = range_sets::intersection(self.interval_source(0), other.interval_source(0));
         self.ranges.resize_with(self.ranges.len().max(1), ScalarRanges::default);
         self.ranges[0] = range;
         self.nonzero.resize(self.nonzero.len().max(1), false);
@@ -977,11 +979,8 @@ impl Proof {
                 .filter_map(|domain| Self::call_domain(domain, bindings)).collect());
             for value in origins.filter_map(|id| Proof::bound_input(bindings, id)) {
                 translated.origins[i].extend(value.origins.first().into_iter().flatten().copied());
-                let incoming = value.ranges.first().map_or(&[(0, Bits::MAX)][..], |range| range.0.as_slice());
-                translated.ranges[i] = ScalarRanges::from_sorted_intervals(
-                    translated.ranges[i].0.iter().flat_map(|(a, b)| {
-                        incoming.iter().map(move |(c, d)| ((*a).max(*c), (*b).min(*d)))
-                    }).filter(|(lower, upper)| lower <= upper),
+                translated.ranges[i] = range_sets::intersection(
+                    &translated.ranges[i].0, value.interval_source(0),
                 );
                 translated.nonzero[i] |= value.nonzero.first() == Some(&true);
                 translated.domains[i].extend(value.domains.first().into_iter().flatten().copied());
@@ -1001,8 +1000,7 @@ impl Proof {
                         let range=incoming.range_set(0).cast(*from,*low,incoming.nonzero.first()==Some(&true)).cast(*low,*extended,false).cast(*extended,*to,false);
                         if let Some(bits)=Self::call_common_bits(incoming,*from,*low,*extended,*to){translated.mark_domain(component,bits.domain());}
                         translated.ranges.resize_with(translated.ranges.len().max(component + 1), ScalarRanges::default);
-                        translated.ranges[component] = translated.ranges[component].combine(&range,
-                            |(al, ah), (bl, bh)| ScalarRanges::interval(al.max(bl), ah.min(bh)));
+                        translated.ranges[component] = translated.ranges[component].intersection(&range);
                         translated.nonzero.resize(translated.nonzero.len().max(component + 1), false);
                         translated.nonzero[component] |= if to.is_integer(){!range.contains(to.order_bias())}else{incoming.nonzero.first()==Some(&true)};
                         translated.domains.resize_with(translated.domains.len().max(component + 1), Domains::new);
@@ -1016,15 +1014,13 @@ impl Proof {
                     && let Some(range) = bound.range_at_call(bindings)
                 {
                     translated.ranges.resize_with(translated.ranges.len().max(component + 1), ScalarRanges::default);
-                    translated.ranges[component] = translated.ranges[component].combine(&range,
-                        |(al, ah), (bl, bh)| ScalarRanges::interval(al.max(bl), ah.min(bh)));
+                    translated.ranges[component] = translated.ranges[component].intersection(&range);
                 }
                 if let IndexDomain::Computed(expression) = domain
                     && let Some(range) = expression.ranges_at_call(bindings)
                 {
                     translated.ranges.resize_with(translated.ranges.len().max(component + 1), ScalarRanges::default);
-                    translated.ranges[component] = translated.ranges[component].combine(&range,
-                        |(al, ah), (bl, bh)| ScalarRanges::interval(al.max(bl), ah.min(bh)));
+                    translated.ranges[component] = translated.ranges[component].intersection(&range);
                 }
             }
         }
@@ -2836,9 +2832,7 @@ pub(super) fn arithmetic(builder: &Builder<'_>, op: &str, a: &Value, b: &Value) 
                         && a.same_component(ai, b, bi)
                     {
                         // 同值快照只取共同可达片段；空路径仍为空。
-                        let shared = left.combine(&right, |(al, ah), (bl, bh)| {
-                            ScalarRanges::interval(al.max(bl), ah.min(bh))
-                        });
+                        let shared = left.intersection(&right);
                         return match op {
                             "&" | "|" | "min" | "max" => shared,
                             _ => {
@@ -2903,11 +2897,9 @@ pub(super) fn arithmetic(builder: &Builder<'_>, op: &str, a: &Value, b: &Value) 
             if let Some((value, source)) = arithmetic_source(op, a, b, component) {
                 let mut exact = value.projected_proof(&[source]);
                 // 继承操作数身份，但仍与运算的可达片段相交，保留空路径。
-                exact.ranges[0] = exact
-                    .range_set(0)
-                    .combine(&proof.range_set(component), |(al, ah), (bl, bh)| {
-                        ScalarRanges::interval(al.max(bl), ah.min(bh))
-                    });
+                exact.ranges[0] = range_sets::intersection(
+                    exact.interval_source(0), proof.interval_source(component),
+                );
                 exact.domains[0].extend(proof.domains(component).iter().copied());
                 proof.assign(&[component], count, exact);
             }
@@ -3080,7 +3072,7 @@ impl Builder<'_> {
                 {
                     let current = proof.element_range(component, scalar);
                     ranges = Some(match ranges.take() {
-                        Some(previous) => previous.combine(&current, |(a,b),(c,d)| ScalarRanges::interval(a.max(c),b.min(d))),
+                        Some(previous) => previous.intersection(&current),
                         None => current,
                     });
                 }

@@ -153,6 +153,9 @@ struct RangeSetRequirement {
 extern "C" bool range_set_covers_projected(address input,u64 count,cfn<BitRange,address,u32,u64> get,
     RangeSetProjection projection,RangeSetRequirement requirement) on cpu
     requires nonzero(get) requires nonzero(requirement.interval);
+extern "C" void range_set_intersection(address input,u64 left,u64 right,cfn<BitRange,address,u32,u64> get,
+    address output,cfn<void,address,BitRange> push) on cpu
+    requires nonzero(get) requires nonzero(push);
 extern "C" void range_set_restrict(address input,u64 count,cfn<BitRange,address,u32,u64> get,address output,cfn<void,address,BitRange> push,u64 lower,u64 upper) on cpu
     requires nonzero(get) requires nonzero(push);
 extern "C" void range_set_without(address input,u64 count,cfn<BitRange,address,u32,u64> get,address output,cfn<void,address,BitRange> push,u64 value) on cpu

@@ -104,6 +104,8 @@ unsafe extern "C" {
     fn member(input:Borrowed,count:usize,read:Read,value:u64)->bool;
     #[link_name="bootstrap.scalar_fold::range_set_union"]
     fn united(input:Borrowed,left:usize,right:usize,read:Read,output:Slot,push:Push);
+    #[link_name="bootstrap.scalar_fold::range_set_intersection"]
+    fn intersected(input: Borrowed, left: usize, right: usize, read: Read, output: Slot, push: Push);
     #[link_name="bootstrap.scalar_fold::range_set_restrict"]
     fn clipped(input:Borrowed,count:usize,read:Read,output:Slot,push:Push,lower:u64,upper:u64);
     #[link_name="bootstrap.scalar_fold::range_set_project"]
@@ -135,6 +137,11 @@ pub(super) fn from_sorted_intervals<I:IntoIterator<Item=Pair>>(values:I)->Scalar
 pub(super) fn hull(values:&[Pair])->Pair {inputs(values,&[],|s,n,_|unsafe{outer(s,n,read)}.into())}
 pub(super) fn contains(values:&[Pair],value:u64)->bool {inputs(values,&[],|s,n,_|unsafe{member(s,n,read,value)})}
 pub(super) fn union(left:&[Pair],right:&[Pair])->ScalarRanges {inputs(left,right,|s,n,m|output(|o|unsafe{united(s,n,m,read,o,push)}))}
+pub(super) fn intersection(left: &[Pair], right: &[Pair]) -> ScalarRanges {
+    inputs(left, right, |source, left_count, right_count| {
+        output(|dest| unsafe { intersected(source, left_count, right_count, read, dest, push) })
+    })
+}
 pub(super) fn restrict(values:&[Pair],lower:u64,upper:u64)->ScalarRanges {inputs(values,&[],|s,n,_|output(|o|unsafe{clipped(s,n,read,o,push,lower,upper)}))}
 pub(super) fn project(values: &[Pair], projection: Projection) -> ScalarRanges {
     inputs(values, &[], |source, count, _| {
