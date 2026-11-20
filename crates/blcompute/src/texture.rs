@@ -1,6 +1,11 @@
 //! 不可变有类型纹理与独立资产；CPU描述只借用实际texel存储，不生成解码镜像。
 use crate::{Result, error};
-use std::{io::Write, path::Path, sync::Arc};
+use std::{
+    fs::File,
+    io::{ErrorKind, Read, Write},
+    path::Path,
+    sync::Arc,
+};
 pub use blanguage::ast::TextureFormat;
 fn read_format(value: u32) -> Result<TextureFormat> {
     TextureFormat::from_code(value).ok_or_else(|| error("未知BLTEX texel格式"))
@@ -229,46 +234,118 @@ impl Texture2D {
         Ok(())
     }
     pub fn read(path: &Path) -> Result<Self> {
-        let bytes = std::fs::read(path)?;
-        let mut at = 0usize;
-        if take(&bytes, &mut at, 8)? != b"BLTEX\0\0\0" {
-            return Err(error("不是BLTEX资产"));
-        }
-        let format = match word(&bytes, &mut at)? {
+        let mut input = TextureFile::open(path)?;
+        let [version] = input.words()?;
+        let format = match version {
             1 => TextureFormat::Rgba32Float,
-            2 => read_format(word(&bytes, &mut at)?)?,
+            2 => {
+                let [format] = input.words()?;
+                read_format(format)?
+            }
             _ => return Err(error("不支持的BLTEX版本")),
         };
-        let count = word(&bytes, &mut at)?;
+        let [count] = input.words()?;
         let mut levels = Vec::new();
         for _ in 0..count {
-            let width = word(&bytes, &mut at)?;
-            let height = word(&bytes, &mut at)?;
-            let size = texture_bytes([width, height, 1], format)?;
-            let data = take(&bytes, &mut at, size)?;
+            let [width, height] = input.words()?;
             levels.push(TextureMip {
                 width,
                 height,
-                pixels: TextureTexels::from_bytes(format, data)?,
+                pixels: input.pixels([width, height, 1], format)?,
             });
         }
-        if at != bytes.len() {
-            return Err(error("纹理文件有未声明的尾部数据"));
-        }
+        input.finish()?;
         Self::new(levels)
     }
 }
 
-// 两种维度共用同一资产字节读取；边界错误直接交回原调用者。
-fn take<'a>(bytes: &'a [u8], at: &mut usize, n: usize) -> Result<&'a [u8]> {
-    let end = at.checked_add(n).ok_or_else(|| error("纹理文件大小溢出"))?;
-    let data = bytes.get(*at..end).ok_or_else(|| error("纹理文件不完整"))?;
-    *at = end;
-    Ok(data)
+struct TextureFile {
+    file: File,
+    remaining: Option<u64>,
 }
-fn word(bytes: &[u8], at: &mut usize) -> Result<u32> {
-    Ok(u32::from_le_bytes(take(bytes, at, 4)?.try_into()?))
+
+impl TextureFile {
+    fn open(path: &Path) -> Result<Self> {
+        let file = File::open(path)?;
+        let remaining = crate::disk_file_length(&file)?;
+        let mut input = Self { file, remaining };
+        let mut magic = [0; 8];
+        input.read_exact(&mut magic)?;
+        if &magic != b"BLTEX\0\0\0" {
+            return Err(error("不是BLTEX资产"));
+        }
+        Ok(input)
+    }
+
+    fn read_exact(&mut self, output: &mut [u8]) -> Result<()> {
+        match self.file.read_exact(output) {
+            Ok(()) => {}
+            Err(e) if e.kind() == ErrorKind::UnexpectedEof => return Err(error("纹理文件不完整")),
+            Err(e) => return Err(e.into()),
+        }
+        if let Some(remaining) = &mut self.remaining {
+            *remaining = remaining.saturating_sub(output.len() as u64);
+        }
+        Ok(())
+    }
+
+    fn words<const N: usize>(&mut self) -> Result<[u32; N]> {
+        let mut words = [0u32; N];
+        let bytes = unsafe {
+            std::slice::from_raw_parts_mut(words.as_mut_ptr().cast(), std::mem::size_of_val(&words))
+        };
+        self.read_exact(bytes)?;
+        Ok(words.map(u32::from_le))
+    }
+
+    fn pixels(&mut self, dimensions: [u32; 3], format: TextureFormat) -> Result<TextureTexels> {
+        let bytes = texture_bytes(dimensions, format)?;
+        if self.remaining.is_some_and(|remaining| remaining < bytes as u64) {
+            return Err(error("纹理文件不完整"));
+        }
+        // Each format uses padding-free texels for which every bit pattern is valid.
+        unsafe {
+            Ok(match format {
+                TextureFormat::Rgba32Float => TextureTexels::Rgba32Float(self.read_texels(bytes)?),
+                TextureFormat::Rgba8Unorm => TextureTexels::Rgba8Unorm(self.read_texels(bytes)?),
+                TextureFormat::Rgba8Srgb => TextureTexels::Rgba8Srgb(self.read_texels(bytes)?),
+                TextureFormat::R8Unorm => TextureTexels::R8Unorm(self.read_texels(bytes)?),
+                TextureFormat::Rg16Unorm => TextureTexels::Rg16Unorm(self.read_texels(bytes)?),
+                TextureFormat::Rgb10A2Unorm => TextureTexels::Rgb10A2Unorm(self.read_texels(bytes)?),
+                TextureFormat::R11G11B10Float => TextureTexels::R11G11B10Float(self.read_texels(bytes)?),
+            })
+        }
+    }
+
+    // T must have no padding, accept every bit pattern, and divide bytes exactly.
+    unsafe fn read_texels<T: Copy + Default>(&mut self, bytes: usize) -> Result<Vec<T>> {
+        let stride = std::mem::size_of::<T>();
+        let count = bytes / stride;
+        // A stream has no measured extent. Grow the final storage as the input arrives.
+        let chunk = if self.remaining.is_some() { count } else { 64 * 1024 / stride };
+        let mut texels = Vec::new();
+        while texels.len() < count {
+            let start = texels.len();
+            let length = (count - start).min(chunk);
+            texels.try_reserve(length)?;
+            texels.resize(start + length, T::default());
+            let output = unsafe {
+                std::slice::from_raw_parts_mut(texels[start..].as_mut_ptr().cast(), length * stride)
+            };
+            self.read_exact(output)?;
+        }
+        Ok(texels)
+    }
+
+    fn finish(mut self) -> Result<()> {
+        match self.file.read_exact(&mut [0]) {
+            Ok(()) => Err(error("纹理文件有未声明的尾部数据")),
+            Err(e) if e.kind() == ErrorKind::UnexpectedEof => Ok(()),
+            Err(e) => Err(e.into()),
+        }
+    }
 }
+
 fn texture_bytes(dimensions: [u32; 3], format: TextureFormat) -> Result<usize> {
     dimensions.into_iter().try_fold(format.texel_bytes(), |bytes, extent|
         bytes.checked_mul(extent as usize).ok_or_else(|| error("纹理层大小溢出")))
@@ -342,29 +419,27 @@ impl Texture3D {
         Ok(())
     }
     pub fn read(path: &Path) -> Result<Self> {
-        let bytes = std::fs::read(path)?;
-        let mut at = 0;
-        if take(&bytes, &mut at, 8)? != b"BLTEX\0\0\0" {
-            return Err(error("不是BLTEX资产"));
-        }
-        if word(&bytes, &mut at)? != 3 {
+        let mut input = TextureFile::open(path)?;
+        let [version] = input.words()?;
+        if version != 3 {
             return Err(error("不支持的三维BLTEX版本"));
         }
-        if word(&bytes, &mut at)? != 3 {
+        let [dimension] = input.words()?;
+        if dimension != 3 {
             return Err(error("BLTEX体资产需要三维图像"));
         }
-        let format = read_format(word(&bytes, &mut at)?)?;
-        let count = word(&bytes, &mut at)?;
+        let [format] = input.words()?;
+        let format = read_format(format)?;
+        let [count] = input.words()?;
         let mut levels = Vec::new();
         for _ in 0..count {
-            let dimensions = [word(&bytes, &mut at)?, word(&bytes, &mut at)?, word(&bytes, &mut at)?];
-            let data = take(&bytes, &mut at, texture_bytes(dimensions, format)?)?;
-            levels.push(TextureMip3D { width: dimensions[0], height: dimensions[1], depth: dimensions[2],
-                pixels: TextureTexels::from_bytes(format, data)? });
+            let [width, height, depth] = input.words()?;
+            levels.push(TextureMip3D {
+                width, height, depth,
+                pixels: input.pixels([width, height, depth], format)?,
+            });
         }
-        if at != bytes.len() {
-            return Err(error("纹理文件有未声明的尾部数据"));
-        }
+        input.finish()?;
         Self::new(levels)
     }
 }

@@ -3229,7 +3229,7 @@ Device::copy_texture(sources, dimensions, format, address, levels) 沿同一Devi
 
 Device::download_texture(&texture) 显式等待真实 image→buffer 复制和采样布局恢复，返回独立 CPU Texture2D 的完整 mip；源纹理可以继续共享和采样，返回值在源 GPU 引用退出后仍有效。操作从实际图像读出，不缓存原 CPU 像素、不经采样重建颜色、不翻转行。传入另一逻辑 Device 的图像明确报设备归属错误；需要交接时，调用者先用源设备读回，再把该 CPU 数据交给目标设备上传。独立逻辑设备及本机离散／集成两块物理 GPU 的双向显式交接已有原生记录，不表示直接设备间通信或隐式迁移已经完成。Texture::is_complete／wait 仍只观察原图像生产，采样结果仍沿实际提交观察。
 
-二维独立资产 `.bltex` 写入 **BLTEX v2**：8 字节 `BLTEX\0\0\0`，小端 u32 version=2、format、mip_count；format 0／1／2／3／4／5／6 分别为 RGBA32F／RGBA8 UNORM／RGBA8 sRGB／R8 UNORM／RG16 UNORM／RGB10A2 UNORM／R11G11B10 FLOAT。每层为小端 u32 width、height，再跟按行紧密排列的原始 texel，分别每 texel 16／4／4／1／4／4／4 字节，RG16 为小端 R、G 两个 u16；RGB10A2 为小端 u32，R／G／B／A 位于 0..9／10..19／20..29／30..31，R11G11B10同样为小端u32，R／G／B位于0..10／11..21／22..31，5位指数／偏置15，尾数为6／6／5位；零、次正规、正常、Inf／NaN按真实浮点编码解释，不作UNORM转换。文件层间无填充。现有 v1 资产仍明确解释为原 RGBA32F 布局，未知版本／格式直接报错。行方向由资产生产者确定，读取不翻转像素。CPU 资源按真实 u32 维度、可表示的总字节数、完整负载与 mip 布局接收，二维／三维共用原字节大小计算；原生寻址使用 64 位整数，不以 f32 坐标精度设置资源尺寸上限。坐标运算仍遵循实际 f32 精度。GPU 受实际 image2D／image3D 尺寸、内存和所选格式的线性过滤／传输能力限制。文件读取仍为显式同步操作；GPU 上传显式构造主机 staging 并提交异步设备工作，不等于完整异步流送或虚拟纹理。
+二维独立资产 `.bltex` 写入 **BLTEX v2**：8 字节 `BLTEX\0\0\0`，小端 u32 version=2、format、mip_count；format 0／1／2／3／4／5／6 分别为 RGBA32F／RGBA8 UNORM／RGBA8 sRGB／R8 UNORM／RG16 UNORM／RGB10A2 UNORM／R11G11B10 FLOAT。每层为小端 u32 width、height，再跟按行紧密排列的原始 texel，分别每 texel 16／4／4／1／4／4／4 字节，RG16 为小端 R、G 两个 u16；RGB10A2 为小端 u32，R／G／B／A 位于 0..9／10..19／20..29／30..31，R11G11B10同样为小端u32，R／G／B位于0..10／11..21／22..31，5位指数／偏置15，尾数为6／6／5位；零、次正规、正常、Inf／NaN按真实浮点编码解释，不作UNORM转换。文件层间无填充。现有 v1 资产仍明确解释为原 RGBA32F 布局，未知版本／格式直接报错。行方向由资产生产者确定，读取不翻转像素。CPU 资源按真实 u32 维度、可表示的总字节数、完整负载与 mip 布局接收，二维／三维共用原字节大小计算；原生寻址使用 64 位整数，不以 f32 坐标精度设置资源尺寸上限。坐标运算仍遵循实际 f32 精度。GPU 受实际 image2D／image3D 尺寸、内存和所选格式的线性过滤／传输能力限制。二维和三维资产读取同步按层填入对应格式的最终像素存储。磁盘截断可在申请本级载荷之前报告；无磁盘长度的输入沿实际读取逐段扩展同一像素存储。GPU 上传显式构造主机暂存并提交异步复制。
 
 当前计算入口、源内展开及普通CPU原生调用支持只读二维／三维采样；显式on cpu整域入口与无源obj／lib沿原Frame同步借用实际纹理，GPU整域输入仍见C-003.2.3.1.2.2，GPU独立普通调用仍见C-021.3.1，未解决的 NVIDIA 三维过滤偏差仍见 C-003.2.4.1.2，不宣称全部目标已通过。固定纹理资源数组见下一节；压缩与整数采样、可写图像、二维数组图像、通用 bindless、隐式导数、各向异性、一般资源泛型及运行时自动 mip 构建尚未实现。规范依据 [SPIR-V 标准](https://registry.khronos.org/SPIR-V/specs/unified1/SPIRV.html) 和 [Vulkan 图像格式](https://docs.vulkan.org/refpages/latest/refpages/source/VkFormat.html)。
 
@@ -4462,7 +4462,7 @@ let persistent = pending.wait().map_err(|(error, _)| error)?.into_bindings();
 
 回收前仍先记录同队列 RAW／WAW／WAR 依赖：Fence 完成观察不替代设备内存可见性，依据 [Vulkan 跨提交屏障](https://docs.vulkan.org/refpages/latest/refpages/source/vkCmdPipelineBarrier.html)。成功观察到 signaled 后复用原有完成结果，资源析构不会再次调用原生等待。显式 `wait()` 只等待当前末项 Fence；它的作用域包括同队列此前命令，因此前序资源可直接释放，依据 [Vulkan Fence 作用域](https://docs.vulkan.org/spec/latest/chapters/synchronization.html#synchronization-fences-signaling)。丢弃尚未完成的数据，只把它的物理存储移交给最后使用点，已有兄弟分支可继续推进；最后一个执行所有者退出时才结束仍未完成的真实消费者。原生完成后允许销毁命令池，见 [vkDestroyCommandPool](https://docs.vulkan.org/refpages/latest/refpages/source/vkDestroyCommandPool.html)。
 
-这没有新增 `prefix<T>` 存储容器，也不改变 GPU 数据页表 ABI。提交序列仍按宿主确定；已完成的前序资源在继续提交、显式完成观察或末项等待时回收，当前未完成工作和实际存储消费者继续持有必要资源。CPU 长期排入快于 GPU 完成的真实任务时，未完成工作仍会增加，尚无自动背压。多生产者与待完成结果分叉见下节；CPU／GPU 只读 Count 共享见下节；多队列／多 GPU 和设备自主生成任务仍未完成。新缓冲区上传与GPU清零现已返回带真实完成点的存储，后续提交可以直接消费；纹理上传仍显式同步，不能将缓冲区能力外推为所有资源均异步。
+这没有新增 `prefix<T>` 存储容器，也不改变 GPU 数据页表 ABI。提交序列仍按宿主确定；已完成的前序资源在继续提交、显式完成观察或末项等待时回收，当前未完成工作和实际存储消费者继续持有必要资源。CPU 长期排入快于 GPU 完成的真实任务时，未完成工作仍会增加，尚无自动背压。多生产者与待完成结果分叉见下节；CPU／GPU 只读 Count 共享见下节；多队列／多 GPU 和设备自主生成任务仍未完成。缓冲区上传、GPU清零和纹理上传返回带真实完成点的资源，后续提交可以直接消费。
 
 ### 多生产者汇合与待完成结果分叉
 
@@ -4536,7 +4536,7 @@ let results = pending.wait().map_err(|(error, _)| error)?.into_bindings();
 
 `Bindings<D>` 的 datasets 可为普通 GPU 数据向量或 `DomainBindings<GpuDataset>`。所有执行最终使用同一带域绑定表示；普通向量没有已生产关系。追加预先上传的 CPU 结果或已完成 GPU 结果时，直接传入带域绑定，既有关系和待汇合 GPU 结果一起重排。需要加速结构时，使用相同 `Bindings { datasets, accelerations, textures }`。`submit_after` 是一个前项的汇合入口，执行与生命周期实现共用。
 
-缓冲区上传仍是显式传输，但不在API内等待复制完成；CPU上传结果与尚未等待的GPU结果可以直接汇合，沿真实最后使用点建立原队列依赖。下载等待实际结果，纹理上传仍同步；没有隐式统一物理内存或新GPU调度语言。源语言组合的条件继续由前端检查，动态 Rust 路由在实际绑定边界检查归属、唯一所有权与已有关系。
+缓冲区上传仍是显式传输，但不在API内等待复制完成；CPU上传结果与尚未等待的GPU结果可以直接汇合，沿真实最后使用点建立原队列依赖。纹理上传也沿原队列交接实际完成点，显式下载等待实际结果。源语言组合的条件继续由前端检查，动态 Rust 路由在实际绑定边界检查归属、唯一所有权与已有关系。
 
 ### 有效前缀上的集合运算
 

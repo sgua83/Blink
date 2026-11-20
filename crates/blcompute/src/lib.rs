@@ -76,6 +76,33 @@ impl Value {
         }
     }
 }
+fn disk_file_length(input: &std::fs::File) -> std::io::Result<Option<u64>> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::AsRawHandle;
+        #[link(name = "kernel32")]
+        unsafe extern "system" {
+            fn GetFileType(file: *mut std::ffi::c_void) -> u32;
+        }
+        match unsafe { GetFileType(input.as_raw_handle()) } {
+            1 => Ok(Some(input.metadata()?.len())), // FILE_TYPE_DISK
+            0 => {
+                let error = std::io::Error::last_os_error();
+                if error.raw_os_error() != Some(0) {
+                    return Err(error);
+                }
+                Ok(None) // Valid FILE_TYPE_UNKNOWN has no disk length.
+            }
+            _ => Ok(None),
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let metadata = input.metadata()?;
+        Ok(metadata.is_file().then_some(metadata.len()))
+    }
+}
+
 /// 同步读取原CPU数据字存储所得的字节快照；不持有存储或OS堆状态。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DatasetMemory {
@@ -180,28 +207,7 @@ impl Dataset {
             return Err(error("BLDATA 步长与编译布局不一致"));
         }
         let length = word(16) as usize * word(12) as usize;
-        #[cfg(windows)]
-        let file_bytes = {
-            use std::os::windows::io::AsRawHandle;
-            #[link(name = "kernel32")]
-            unsafe extern "system" {
-                fn GetFileType(file: *mut std::ffi::c_void) -> u32;
-            }
-            match unsafe { GetFileType(input.as_raw_handle()) } {
-                1 => Some(input.metadata()?.len()), // FILE_TYPE_DISK
-                0 => {
-                    let error = std::io::Error::last_os_error();
-                    if error.raw_os_error() != Some(0) { return Err(error.into()); }
-                    None // Valid FILE_TYPE_UNKNOWN has no disk length.
-                }
-                _ => None,
-            }
-        };
-        #[cfg(not(windows))]
-        let file_bytes = {
-            let metadata = input.metadata()?;
-            metadata.is_file().then_some(metadata.len())
-        };
+        let file_bytes = disk_file_length(&input)?;
         if file_bytes.is_some_and(|bytes| bytes < header.len() as u64 + length as u64) {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::UnexpectedEof, "failed to fill whole buffer",
