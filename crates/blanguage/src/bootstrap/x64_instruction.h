@@ -268,6 +268,9 @@ struct MoveEncoding {
 // The caller owns 24 output bytes. A nonzero literal_field is the offset
 // of a disp32 to the caller's original f32 literal, including its exact bits.
 extern "C" MoveEncoding copy_scalar_move(MoveLocation dst, MoveLocation src, u32 size, bool signed, address output) on cpu;
+// The 84-byte output holds the original argument moves, ABS64 call and return move.
+extern "C" SymbolEncoding print_call(MoveLocation dst, MoveLocation src, ScalarEncoding value,
+    ScalarEncoding result, address output) on cpu;
 extern "C" u64 read_scalar_move(MoveLocation dst, MoveLocation memory, u32 size, bool signed, bool boolean, address output) on cpu;
 extern "C" u64 write_scalar_move(MoveLocation memory, MoveLocation src, u32 size, address output) on cpu;
 

@@ -417,15 +417,7 @@ impl Emitter<'_> {
             match &(inst).kind {
                 InstKind::Call(call) => self.native_call(call)?,
                 InstKind::Raise(error) => self.lower_control(Flow::Raise(*error), Self::block, Self::load)?,
-                InstKind::Print { dst, value } => {
-                    let scalar = self.stage.registers[*value];
-                    self.copy_scalar(allocation::Location::Gpr(1), self.location(*value), scalar);
-                    if scalar.is_float() {
-                        self.copy_scalar(allocation::Location::Gpr(2), allocation::Location::Immediate(u64::from(scalar.bit_width())), Scalar::U32);
-                    }
-                    self.emit_symbol_target(NativeSymbol::Print(scalar), true);
-                    self.store(*dst);
-                }
+                InstKind::Print { dst, value } => self.print_call(*dst, *value),
                 InstKind::TextureBindingAddress { dst, texture } => {
                     self.texture_binding_address(*texture);
                     self.copy_scalar(self.location(*dst), allocation::Location::Gpr(15), Scalar::U64);

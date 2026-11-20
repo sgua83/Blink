@@ -95,6 +95,9 @@ unsafe extern "C" {
     fn encode_abi_stack_pointer(offset: u32, slot: u32, output: *mut u8) -> u64;
     #[link_name = "bootstrap.x64_instruction::argument_register"]
     fn encode_argument_register(slot: u8, float_size: u32, to_home: u32, output: *mut u8) -> u64;
+    #[link_name = "bootstrap.x64_instruction::print_call"]
+    fn emit_print_call(dst: MoveLocation, src: MoveLocation, value: ScalarEncoding,
+        result: ScalarEncoding, output: *mut u8) -> SymbolEncoding;
     #[link_name = "bootstrap.x64_instruction::symbol_target"]
     fn encode_symbol_target(invoke: u32, output: *mut u8) -> SymbolEncoding;
     #[link_name = "bootstrap.x64_instruction::call_slot"]
@@ -263,6 +266,21 @@ impl Emitter<'_> {
         }
         Ok(())
     }
+    pub(super) fn print_call(&mut self, dst: Reg, value: Reg) {
+        let scalar = self.stage.registers[value];
+        let target = self.location(dst).into();
+        let source = self.location(value).into();
+        let start = self.code.len();
+        self.code.reserve(84);
+        let field = unsafe {
+            let emission = emit_print_call(target, source, scalar.into(),
+                self.stage.registers[dst].into(), self.code.as_mut_ptr().add(start));
+            self.code.set_len(start + emission.length as usize);
+            emission.field as usize
+        };
+        self.record_symbol_target(start + field, NativeSymbol::Print(scalar), true);
+    }
+
     pub(super) fn emit_symbol_target(&mut self, target: NativeSymbol, invoke: bool) {
         self.code.reserve(12);
         let start = self.code.len();

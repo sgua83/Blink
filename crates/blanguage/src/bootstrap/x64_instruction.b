@@ -1021,6 +1021,21 @@ extern "C" MoveEncoding copy_scalar_move(MoveLocation dst, MoveLocation src, u32
     return MoveEncoding(length, literal);
 }
 
+extern "C" SymbolEncoding print_call(MoveLocation dst, MoveLocation src, ScalarEncoding value,
+    ScalarEncoding result, address output) on cpu {
+    u64 start = address_bits(output);
+    MoveEncoding argument = copy_scalar_move(move_gpr(u8(1)), src, value.width / 8,
+        value.kind == ScalarKind::Signed, output);
+    u64 cursor = start + argument.length;
+    if (value.kind == ScalarKind::Float) {
+        cursor = move_immediate(cursor, u8(2), u64(value.width), false);
+    }
+    SymbolEncoding call = symbol_target(true, unsafe_address(cursor));
+    MoveEncoding status = copy_scalar_move(dst, move_gpr(u8(0)), result.width / 8,
+        result.kind == ScalarKind::Signed, unsafe_address(cursor + call.length));
+    return SymbolEncoding(cursor + call.length + status.length - start, cursor + call.field - start);
+}
+
 extern "C" u64 read_scalar_move(MoveLocation dst, MoveLocation memory, u32 size, bool signed, bool boolean, address output) on cpu {
     u64 start = address_bits(output);
     u64 cursor = start;
