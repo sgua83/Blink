@@ -2,7 +2,7 @@
 use crate::{CapturedExport, ExportRequest, ast::{self, Diagnostic, Source, Span}, object::{Kind, Object}, parser, syntax};
 use std::{collections::{BTreeMap, BTreeSet}, path::Path, sync::Arc};
 pub(super) enum ProviderInterface<'a> {
-    Unit(Arc<syntax::Module>),
+    Unit(&'a Arc<syntax::Module>),
     Object(&'a Object),
 }
 
@@ -52,7 +52,7 @@ impl Capture {
     }
 
     pub(super) fn capture(
-        &mut self, path: &Path, root: &Path, providers: &BTreeMap<String, ProviderInterface<'_>>,
+        &mut self, path: &Path, root: &Path, providers: &BTreeMap<&str, ProviderInterface<'_>>,
         requests: &[String],
     ) -> ast::Result<CapturedUnit> {
         let mut interfaces = Interfaces::new();
@@ -86,7 +86,7 @@ impl Capture {
     }
 
     fn capture_source(
-        &mut self, path: &Path, root: &Path, providers: &BTreeMap<String, ProviderInterface<'_>>,
+        &mut self, path: &Path, root: &Path, providers: &BTreeMap<&str, ProviderInterface<'_>>,
         visited: &mut BTreeSet<String>, interfaces: &mut Interfaces<CapturedInterface>,
     ) -> ast::Result<()> {
         let SourceInput { interface, body } = self.source_input(path)?;
@@ -107,7 +107,7 @@ impl Capture {
     }
 
     fn capture_imports(
-        &mut self, imports: &[String], root: &Path, providers: &BTreeMap<String, ProviderInterface<'_>>,
+        &mut self, imports: &[String], root: &Path, providers: &BTreeMap<&str, ProviderInterface<'_>>,
         visited: &mut BTreeSet<String>, interfaces: &mut Interfaces<CapturedInterface>,
     ) -> ast::Result<()> {
         for name in imports {
@@ -117,12 +117,12 @@ impl Capture {
     }
 
     fn capture_import(
-        &mut self, name: &str, root: &Path, providers: &BTreeMap<String, ProviderInterface<'_>>,
+        &mut self, name: &str, root: &Path, providers: &BTreeMap<&str, ProviderInterface<'_>>,
         visited: &mut BTreeSet<String>, interfaces: &mut Interfaces<CapturedInterface>,
     ) -> ast::Result<()> {
         if visited.contains(name) { return Ok(()); }
         let interface = match providers.get(name) {
-            Some(ProviderInterface::Unit(header)) => header.clone(),
+            Some(ProviderInterface::Unit(header)) => Arc::clone(header),
             Some(ProviderInterface::Object(object)) => {
                 let Kind::Module { interface, .. } = &object.kind else {
                     // Imports reports invalid explicit providers when constructing the module inputs.

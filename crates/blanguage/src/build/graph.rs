@@ -272,7 +272,8 @@ impl Compiler {
                 kind: unit.kind })
         }).collect::<Result<Vec<_>>>()?;
         let mut capture = Capture::default();
-        for unit in &prepared { capture.header(&unit.path)?; }
+        let headers = prepared.iter().map(|unit| capture.header(&unit.path))
+            .collect::<crate::ast::Result<Vec<_>>>()?;
         let mut captured = Vec::with_capacity(prepared.len());
         let ids = dependency_plan.plan.ids();
         for (unit, row) in prepared.iter().zip(&dependency_plan.provider_rows) {
@@ -280,10 +281,10 @@ impl Compiler {
             for dependency in dependencies(row.slice(ids), units.len(), &dependency_plan.externals) {
                 let (name, interface) = match dependency {
                     Dependency::Unit(id) => {
-                        let header = capture.header(&prepared[id].path)?;
-                        (header.name().to_owned(), ProviderInterface::Unit(header))
+                        let header = &headers[id];
+                        (header.name(), ProviderInterface::Unit(header))
                     }
-                    Dependency::Object(object) => (object.name().to_owned(), ProviderInterface::Object(object)),
+                    Dependency::Object(object) => (object.name(), ProviderInterface::Object(object)),
                 };
                 providers.entry(name).or_insert(interface);
             }
