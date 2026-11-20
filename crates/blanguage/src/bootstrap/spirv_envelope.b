@@ -2119,7 +2119,7 @@ void segment_plane_addresses(inout StageCursor out, SegmentTree input, u32 lane,
     out.next = emitted.next;
 }
 
-void segment_plane_values(inout StageCursor out, u32 type_id, u32 words, address pointers, address values) on cpu {
+void read_segment_values(inout StageCursor out, u32 type_id, u32 words, address pointers, address values) on cpu {
     out.words += read_summary_words(word_at(out.body, out.words), type_id, out.next, pointers, words);
     for (part in 0..words) {
         put(values, u64(part), out.next + part);
@@ -2149,8 +2149,8 @@ extern "C" TreeWords segment_tree(SegmentTree input, address levels, address fie
         u32 other = stage_op(out, 130, type_id, input.lane, level.stride);
         segment_plane_addresses(out, input, other, words, workspace, a_ptr);
         segment_plane_addresses(out, input, input.lane, words, workspace, b_ptr);
-        segment_plane_values(out, type_id, words, a_ptr, a);
-        segment_plane_values(out, type_id, words, b_ptr, b);
+        read_segment_values(out, type_id, words, a_ptr, a);
+        read_segment_values(out, type_id, words, b_ptr, b);
 
         for (part in 0..words) {
             put(merged, u64(part), input.merge.zero);
@@ -2181,6 +2181,64 @@ extern "C" TreeWords segment_tree(SegmentTree input, address levels, address fie
         label = branch.end;
     }
     return TreeWords(out.words, decorated, out.next, label);
+}
+
+void read_segment_summary(inout StageCursor out, PageAddress source, u32 step, u32 words,
+    address pointers, address values) on cpu {
+    PageAddress request = source;
+    request.next = out.next;
+    PayloadWrite located = summary_addresses(request, step, pointers, words, word_at(out.body, out.words));
+    out.words += located.words;
+    out.next = located.next;
+    read_segment_values(out, source.u32_type, words, pointers, values);
+}
+
+extern "C" TreeWords segment_add(SegmentAdd input, address fields, u32 count,
+    address workspace, address body, address decorations) on cpu {
+    StageCursor out = StageCursor(body, 0u64, input.merge.next);
+    StageBranch branch = StageBranch(input.run, input.end);
+    out.words = open_conditional(body, out.words, branch.end, input.active, branch.run, branch.end);
+    out.words = words_one(body, out.words, 248, branch.run);
+
+    u32 words = input.merge.value_words + 1 + input.merge.counted;
+    u64 span = u64(words);
+    address target_ptrs = word_at(workspace, span);
+    address prefix = word_at(workspace, 2u64 * span);
+    address target = word_at(workspace, 3u64 * span);
+    address merged = word_at(workspace, 4u64 * span);
+    u32 type_id = input.merge.uint_type;
+    u32 group = stage_op(out, 134, type_id, input.target.index, input.width);
+    PageAddress parent = input.target;
+    parent.descriptor = input.prefix_descriptor;
+    parent.index = group;
+
+    read_segment_summary(out, parent, input.step, words, workspace, prefix);
+    read_segment_summary(out, input.target, input.step, words, target_ptrs, target);
+    for (part in 0..words) {
+        put(merged, u64(part), input.merge.zero);
+    }
+    SegmentMerge merge = input.merge;
+    merge.next = out.next;
+    SegmentWords result = merge_segment(merge, fields, count, prefix, target, merged,
+        word_at(body, out.words), decorations);
+    out.words += result.body;
+    out.next = result.next;
+
+    let scalar = unsafe_position<SegmentField>(fields).scalar;
+    bool extreme = (scalar == BuiltinScalar::F32 || scalar == BuiltinScalar::F64)
+        && input.merge.operation != CollectiveOperation::Sum;
+    if (input.merge.counted == 0 && extreme) {
+        u32 lane = stage_op(out, 137, type_id, input.target.index, input.width);
+        u32 first = stage_op(out, 170, input.merge.bool_type, lane, input.merge.zero);
+        for (part in 0..words) {
+            u32 value = stage_select(out, type_id, first, read_word(prefix, part), read_word(merged, part));
+            put(merged, u64(part), value);
+        }
+    }
+
+    out.words += write_summary_words(word_at(body, out.words), target_ptrs, merged, words);
+    stage_close(out, branch);
+    return TreeWords(out.words, result.decorations, out.next, branch.end);
 }
 
 extern "C" PayloadRead tile_extract(TileExtract input, address body) on cpu {

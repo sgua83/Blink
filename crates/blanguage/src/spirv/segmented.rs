@@ -52,7 +52,22 @@ struct SegmentTreeLayout {
     words: Vec<u32>,
 }
 
+#[repr(C)]
+struct SegmentAdd {
+    merge: SegmentMerge,
+    target: PageAddress,
+    prefix_descriptor: u32,
+    width: u32,
+    step: u32,
+    active: u32,
+    run: u32,
+    end: u32,
+}
+
 unsafe extern "C" {
+    #[link_name = "bootstrap.spirv_envelope::segment_add"]
+    fn emit_segment_add(input: SegmentAdd, fields: *const SegmentField, count: u32,
+        words: *mut u32, body: *mut u32, decorations: *mut u32) -> TreeWords;
     #[link_name = "bootstrap.spirv_envelope::segment_tree"]
     fn emit_segment_tree(input: SegmentTree, levels: *const SegmentLevel, fields: *const SegmentField,
         count: u32, words: *mut u32, body: *mut u32, decorations: *mut u32) -> TreeWords;
@@ -307,22 +322,6 @@ impl Emitter<'_> {
         let width = self.constant(Scalar::U32, 64);
         let group = self.id();
         self.emit(134, &[u, group, self.index, width]);
-        if pass == Pass::ScanAdd {
-            let run = self.id();
-            let end = self.id();
-            self.emit(247, &[end, 0]);
-            self.emit(250, &[active, run, end]);
-            self.emit(248, &[run]);
-            let prefix = self.summary_addresses(scan.summary_words(), self.scan_input_binding(r), group);
-            let prefix = self.read_summary_words(&prefix);
-            let target = self.summary_addresses(scan.summary_words(), r.target, self.index);
-            let value = self.read_summary_words(&target);
-            let merged = self.segment_combine(scan, &prefix, &value);
-            self.write_summary_words(&target, &merged);
-            self.emit(249, &[end]);
-            self.emit(248, &[end]);
-            return;
-        }
         let identity = self.segment_identity(scan);
         let before = self.current_label;
         let read = self.id();
@@ -529,37 +528,41 @@ impl Emitter<'_> {
             self.current_label = result.label;
         }
     }
-    pub(super) fn segmented_add(&mut self, scan: &Scan) {
-        let r = &scan.values;
-        let scan = &self.segment(&scan.ty, scan.operator, false);
+    pub(super) fn segmented_add(&mut self, scan: &Scan, active: u32, labels: [u32; 2]) {
+        let segment = self.segment(&scan.ty, scan.operator, false);
+        self.segment_add(&segment, &scan.values, active, labels);
+    }
+
+    pub(super) fn segmented_reduce_add(&mut self, reduction: &SegmentedReduction, active: u32, labels: [u32; 2]) {
+        let values = &reduction.values;
+        let segment = self.segment(&values.ty, values.operator, true);
+        self.segment_add(&segment, &values.fields, active, labels);
+    }
+
+    fn segment_add(&mut self, scan: &Segment<'_>, fields: &Reduction, active: u32, [run, end]: [u32; 2]) {
+        let target = self.page_input(Scalar::U32, PageSource::Dataset(self.buffers[fields.target]),
+            self.index, Some(0), 0);
         let width = self.constant(Scalar::U32, 64);
-        let group = self.id();
-        self.emit(134, &[self.types[&Scalar::U32], group, self.index, width]);
-        let prefix = self.summary_addresses(scan.summary_words(), self.scan_input_binding(r), group);
-        let prefix = self.read_summary_words(&prefix);
-        let target = self.summary_addresses(scan.summary_words(), r.target, self.index);
-        let value = self.read_summary_words(&target);
-        let merged = self.segment_combine(scan, &prefix, &value);
-        let merged =
-            if scan.ty.components[0].0.is_float() && scan.operator != CollectiveOperator::Sum {
-                let u = self.types[&Scalar::U32];
-                let local = self.id();
-                self.emit(137, &[u, local, self.index, width]);
-                let zero = self.constant(Scalar::U32, 0);
-                let first = self.id();
-                self.emit(170, &[self.types[&Scalar::Bool], first, local, zero]);
-                merged
-                    .into_iter()
-                    .zip(prefix)
-                    .map(|(value, prefix)| {
-                        let result = self.id();
-                        self.select(u, result, first, prefix, value);
-                        result
-                    })
-                    .collect::<Vec<_>>()
-            } else {
-                merged
-            };
-        self.write_summary_words(&target, &merged);
+        let step = self.constant(Scalar::U64, 4);
+        let input = SegmentAdd {
+            merge: self.segment_merge_input(scan),
+            target,
+            prefix_descriptor: self.buffers[self.scan_input_binding(fields)],
+            width, step, active, run, end,
+        };
+        let count = scan.summary_words();
+        let mut words = vec![0; 5 * count];
+        let body = self.body.len();
+        let decorations = self.decorations.len();
+        self.body.reserve(243 + 41 * count + 74 * scan.fields.len());
+        self.decorations.reserve(3 * scan.fields.len());
+        unsafe {
+            let result = emit_segment_add(input, scan.fields.as_ptr(), scan.fields.len() as u32,
+                words.as_mut_ptr(), self.body.as_mut_ptr().add(body), self.decorations.as_mut_ptr().add(decorations));
+            self.body.set_len(body + result.body as usize);
+            self.decorations.set_len(decorations + result.decorations as usize);
+            self.next = result.next;
+            self.current_label = result.label;
+        }
     }
 }

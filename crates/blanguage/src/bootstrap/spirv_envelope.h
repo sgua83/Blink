@@ -475,6 +475,22 @@ struct SegmentTree {
 extern "C" TreeWords segment_tree(SegmentTree input, address levels, address fields, u32 count,
     address workspace, address body, address decorations) on cpu;
 
+struct SegmentAdd {
+    SegmentMerge merge;
+    PageAddress target;
+    u32 prefix_descriptor;
+    u32 width;
+    u32 step;
+    u32 active;
+    u32 run;
+    u32 end;
+};
+
+// The workspace holds five summary spans: two pointer lists, two input lists,
+// and the merged result. The existing run/end IDs delimit the active lanes.
+extern "C" TreeWords segment_add(SegmentAdd input, address fields, u32 count,
+    address workspace, address body, address decorations) on cpu;
+
 struct PrivateAddress {
     u32 index_type;
     u32 pointer_type;

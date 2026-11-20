@@ -2358,14 +2358,18 @@ fn emit_shader(
             count,
         );
     } else if let Operation::SegmentedReduce(r) = &stage.operation {
-        let local = if scan_local {
-            let local = e.id();
-            e.emit(61, &[u, local, local_input]);
-            local
+        if pass == Pass::ScanAdd {
+            e.segmented_reduce_add(r, active, [execute, end]);
         } else {
-            0
-        };
-        e.segmented_reduce(r, pass, local, shared, shared_pointer, active, count);
+            let local = if scan_local {
+                let local = e.id();
+                e.emit(61, &[u, local, local_input]);
+                local
+            } else {
+                0
+            };
+            e.segmented_reduce(r, pass, local, shared, shared_pointer, active, count);
+        }
     } else if let Operation::Compact(c) = &stage.operation {
         if pass == Pass::CompactScatter {
             e.compact_scatter(c, count, active);
@@ -2405,16 +2409,18 @@ fn emit_shader(
                     count,
                 );
             } else {
-                e.emit(247, &[end, 0]);
-                e.emit(250, &[active, execute, end]);
-                e.emit(248, &[execute]);
                 match pass {
-                    Pass::ScanAdd => e.segmented_add(r),
-                    Pass::ScanRootAdd => e.segmented_root_add(r),
+                    Pass::ScanAdd => e.segmented_add(r, active, [execute, end]),
+                    Pass::ScanRootAdd => {
+                        e.emit(247, &[end, 0]);
+                        e.emit(250, &[active, execute, end]);
+                        e.emit(248, &[execute]);
+                        e.segmented_root_add(r);
+                        e.emit(249, &[end]);
+                        e.emit(248, &[end]);
+                    }
                     _ => return Err("分段扫描不支持该代码生成阶段"),
                 }
-                e.emit(249, &[end]);
-                e.emit(248, &[end]);
             }
         } else {
             if scan_local {
