@@ -2713,6 +2713,56 @@ void write_segment_count(inout StageCursor out, PageAddress target, u32 count) o
     out.words = aligned_store(out.body, out.words, pointer.pointer, count, 4);
 }
 
+void publish_summary_root(inout StageCursor out, PageAddress target, u32 step, u32 words,
+    address root, address pointers, address values) on cpu {
+    if (words == 0) { return; }
+    read_segment_values(out, target.u32_type, words, root, values);
+    segment_summary_addresses(out, target, step, words, pointers);
+    out.words += write_summary_words(word_at(out.body, out.words), pointers, values, words);
+}
+
+void write_empty_segment_count(inout StageCursor out, PageAddress counter, u32 empty) on cpu {
+    StageBranch zero = stage_open(out, empty);
+    write_segment_count(out, counter, counter.zero);
+    stage_close(out, zero.end);
+}
+
+void reset_summary_root(inout StageCursor out, u32 end, u32 words, u32 scope, u32 semantics,
+    address root, address identity) on cpu {
+    out.words += write_summary_words(word_at(out.body, out.words), root, identity, words);
+    stage_close(out, end);
+    stage_barrier(out, scope, semantics);
+}
+
+extern "C" SummaryRootWords custom_summary_root(CustomSummaryRoot input, address identity,
+    u32 words, address workspace, address body) on cpu {
+    StageCursor out = StageCursor(body, 0u64, input.target.next);
+    u32 u = input.target.u32_type;
+    array<u32,2> writers = stage_collective_writer(out, input.bool_type, input.lane,
+        input.active, input.length, input.target.zero);
+    u32 group = stage_op(out, 134, u, input.target.index, input.width);
+    StageBranch save = stage_open(out, writers[0]);
+    SharedAddress root = SharedAddress(u, input.pointer, input.shared, input.last, 0, words, out.next);
+    SharedAddressWords emitted = write_shared_addresses(root, workspace, workspace, word_at(body, out.words));
+    out.words += emitted.words;
+    out.next = emitted.next;
+    if (input.mode == SummaryRootMode::EmptyCountReset) {
+        write_empty_segment_count(out, input.target, writers[1]);
+    } else {
+        PageAddress summary = input.target;
+        summary.index = group;
+        u64 span = u64(words);
+        publish_summary_root(out, summary, input.step, words, workspace,
+            word_at(workspace, span), word_at(workspace, 2u64 * span));
+    }
+    if (input.mode == SummaryRootMode::Publish) {
+        stage_close(out, save.end);
+    } else {
+        reset_summary_root(out, save.end, words, input.scope, input.semantics, workspace, identity);
+    }
+    return SummaryRootWords(out.words, out.next, save.end, group);
+}
+
 u32 segment_prefix(inout StageCursor out, PageAddress parent, u32 bool_type, u32 from, u32 step,
     u32 words, address identity, address values) on cpu {
     u32 first_group = stage_op(out, 170, bool_type, parent.index, parent.zero);
@@ -2860,24 +2910,18 @@ extern "C" TreeWords segment_group(SegmentGroup input, address levels, address f
         segment_plane_addresses(out, input, input.last, words, workspace, root);
     }
     if (finish) {
-        StageBranch zero = stage_open(out, empty);
         PageAddress counter = segment_page(input.source, input.count_target, input.merge.zero, input.count_word);
-        write_segment_count(out, counter, input.merge.zero);
-        stage_close(out, zero.end);
+        write_empty_segment_count(out, counter, empty);
     } else {
         u32 published = counted || tail ? words : input.merge.value_words;
-        read_segment_values(out, u, published, root, values);
         PageAddress target = segment_page(input.source, input.summary, group, 0);
-        segment_summary_addresses(out, target, input.step, published, pointers);
-        out.words += write_summary_words(word_at(body, out.words), pointers, values, published);
+        publish_summary_root(out, target, input.step, published, root, pointers, values);
     }
-    if (down) {
-        out.words += write_summary_words(word_at(body, out.words), root, identity, words);
+    if (!down) {
+        stage_close(out, save.end);
+        return TreeWords(out.words, decorated, out.next, save.end);
     }
-    stage_close(out, save.end);
-    if (!down) { return TreeWords(out.words, decorated, out.next, save.end); }
-
-    stage_barrier(out, input.scope, input.semantics);
+    reset_summary_root(out, save.end, words, input.scope, input.semantics, root, identity);
     decorated += segment_tree(out, input, 0, true, levels, fields, field_count, workspace,
         word_at(decorations, decorated));
     read_segment_values(out, u, words, own, values);

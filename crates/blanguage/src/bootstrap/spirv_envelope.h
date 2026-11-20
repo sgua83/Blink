@@ -596,6 +596,35 @@ extern "C" CollectiveBranch open_custom_segment_finish(CustomSegmentPrefix input
 extern "C" StageWords close_custom_segment_finish(CustomSegmentOutput input, address fields,
     u32 field_count, address total, u32 segments, address body) on cpu;
 
+enum SummaryRootMode : u32 { Publish = 0; PublishReset = 1; EmptyCountReset = 2; };
+
+struct CustomSummaryRoot {
+    PageAddress target;
+    SummaryRootMode mode;
+    u32 bool_type;
+    u32 lane;
+    u32 active;
+    u32 length;
+    u32 width;
+    u32 last;
+    u32 shared;
+    u32 pointer;
+    u32 step;
+    u32 scope;
+    u32 semantics;
+};
+
+struct SummaryRootWords {
+    u64 words;
+    u32 next;
+    u32 label;
+    u32 group;
+};
+
+// Workspace spans hold root offsets/pointers, destination pointers and loaded values.
+extern "C" SummaryRootWords custom_summary_root(CustomSummaryRoot input, address identity,
+    u32 words, address workspace, address body) on cpu;
+
 struct SegmentField {
     BuiltinScalar scalar;
     u32 word;

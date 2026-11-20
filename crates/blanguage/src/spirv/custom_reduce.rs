@@ -102,7 +102,42 @@ struct CustomSegmentOutput {
     count_word: u32,
 }
 
+#[repr(u32)]
+enum SummaryRootMode {
+    Publish = 0,
+    PublishReset = 1,
+    EmptyCountReset = 2,
+}
+
+#[repr(C)]
+struct CustomSummaryRoot {
+    target: PageAddress,
+    mode: SummaryRootMode,
+    bool_type: u32,
+    lane: u32,
+    active: u32,
+    length: u32,
+    width: u32,
+    last: u32,
+    shared: u32,
+    pointer: u32,
+    step: u32,
+    scope: u32,
+    semantics: u32,
+}
+
+#[repr(C)]
+struct SummaryRootWords {
+    words: u64,
+    next: u32,
+    label: u32,
+    group: u32,
+}
+
 unsafe extern "C" {
+    #[link_name = "bootstrap.spirv_envelope::custom_summary_root"]
+    fn emit_custom_summary_root(input: CustomSummaryRoot, identity: *const u32,
+        words: u32, workspace: *mut u32, body: *mut u32) -> SummaryRootWords;
     #[link_name = "bootstrap.spirv_envelope::open_custom_segment_finish"]
     fn open_custom_segment_finish(input: CustomSegmentPrefix, own: *const u32,
         identity: *const u32, words: u32, workspace: *mut u32, body: *mut u32) -> CollectiveBranch;
@@ -416,6 +451,46 @@ impl Emitter<'_> {
         self.reduction_output(&r.fields, &r.ty, &words, owner);
         Ok(())
     }
+    fn custom_summary_root(
+        &mut self,
+        binding: usize,
+        word: u32,
+        mode: SummaryRootMode,
+        lane: u32,
+        shared: u32,
+        pointer: u32,
+        active: u32,
+        length: u32,
+        identity: &[u32],
+    ) -> u32 {
+        let words = identity.len();
+        let mut workspace = vec![0; 3 * words];
+        for (part, slot) in workspace[..words].iter_mut().enumerate().skip(1) {
+            *slot = self.constant(Scalar::U32, (part as u32) * 64);
+        }
+        let width = self.constant(Scalar::U32, 64);
+        let last = self.constant(Scalar::U32, 63);
+        let step = self.constant(Scalar::U64, 4);
+        let scope = self.constant(Scalar::U32, 2);
+        let semantics = self.constant(Scalar::U32, 0x108);
+        let target = self.page_input(Scalar::U32, PageSource::Dataset(self.buffers[binding]),
+            self.index, Some(word), 0);
+        let input = CustomSummaryRoot {
+            target, mode, bool_type: self.types[&Scalar::Bool], lane, active, length,
+            width, last, shared, pointer, step, scope, semantics,
+        };
+        let body = self.body.len();
+        self.body.reserve(169 + 36 * words);
+        unsafe {
+            let emitted = emit_custom_summary_root(input, identity.as_ptr(), words as u32,
+                workspace.as_mut_ptr(), self.body.as_mut_ptr().add(body));
+            self.body.set_len(body + emitted.words as usize);
+            self.next = emitted.next;
+            self.current_label = emitted.label;
+            emitted.group
+        }
+    }
+
     pub(super) fn custom_scan(
         &mut self,
         scan: &CustomScan,
@@ -437,24 +512,8 @@ impl Emitter<'_> {
         let head = scan.head_word.map(|_| input[k]);
         let remaining = self.group_remaining(local, count);
         self.custom_tree(r, kernel, local, shared, pointer, remaining, &own, false, summary)?;
-        let (owner, _) = self.collective_writer(local, active, count);
-        let width = self.constant(Scalar::U32, 64);
-        let group = self.id();
-        self.emit(134, &[self.types[&Scalar::U32], group, self.index, width]);
-        let save = self.id();
-        let saved = self.id();
-        self.emit(247, &[saved, 0]);
-        self.emit(250, &[owner, save, saved]);
-        self.emit(248, &[save]);
-        let last = self.constant(Scalar::U32, 63);
-        let root = self.shared_planes(shared, pointer, last, words);
-        let total = self.read_summary_words(&root);
-        let target = self.summary_addresses(words, self.program.buffers.len(), group);
-        self.write_summary_words(&target, &total);
-        self.write_summary_words(&root, &identity);
-        self.emit(249, &[saved]);
-        self.emit(248, &[saved]);
-        self.scan_barrier();
+        let group = self.custom_summary_root(self.program.buffers.len(), 0, SummaryRootMode::PublishReset,
+            local, shared, pointer, active, count, &identity);
         self.custom_tree(r, kernel, local, shared, pointer, remaining, &own, true, summary)?;
         let values = self.read_summary_words(&own);
         let write = self.id();
@@ -521,13 +580,11 @@ impl Emitter<'_> {
         let r = &reduction.values;
         let summary = Summary::Counted(reduction.head_word);
         let words = reduction.summary_words();
-        let u = self.types[&Scalar::U32];
-        let b = self.types[&Scalar::Bool];
-        let zero = self.constant(Scalar::U32, 0);
-        let width = self.constant(Scalar::U32, 64);
-        let group = self.id();
-        self.emit(134, &[u, group, self.index, width]);
         if pass == Pass::ScanAdd {
+            let u = self.types[&Scalar::U32];
+            let width = self.constant(Scalar::U32, 64);
+            let group = self.id();
+            self.emit(134, &[u, group, self.index, width]);
             let run = self.id();
             let end = self.id();
             self.emit(247, &[end, 0]);
@@ -555,43 +612,16 @@ impl Emitter<'_> {
         )?;
         let remaining = self.group_remaining(local, count);
         self.custom_tree(r, kernel, local, shared, pointer, remaining, &own, false, summary)?;
-        let (owner, _) = self.collective_writer(local, active, count);
-        let save = self.id();
-        let saved = self.id();
-        self.emit(247, &[saved, 0]);
-        self.emit(250, &[owner, save, saved]);
-        self.emit(248, &[save]);
-        let last = self.constant(Scalar::U32, 63);
-        let root = self.shared_planes(shared, pointer, last, words);
-        if pass != Pass::ScanRootAdd {
-            let total = self.read_summary_words(&root);
-            let target = self.summary_addresses(words, self.program.buffers.len(), group);
-            self.write_summary_words(&target, &total);
-        } else {
-            let empty = self.id();
-            self.emit(170, &[b, empty, count, zero]);
-            let write = self.id();
-            let end = self.id();
-            self.emit(247, &[end, 0]);
-            self.emit(250, &[empty, write, end]);
-            self.emit(248, &[write]);
-            let target = self.address_scalar(Scalar::U32,
-                reduction.count.binding,
-                zero,
-                reduction.count.word);
-            self.write_summary_words(&[target], &[zero]);
-            self.emit(249, &[end]);
-            self.emit(248, &[end]);
-        }
-        if pass != Pass::Main {
-            self.write_summary_words(&root, &identity);
-        }
-        self.emit(249, &[saved]);
-        self.emit(248, &[saved]);
+        let (binding, word, mode) = match pass {
+            Pass::Main => (self.program.buffers.len(), 0, SummaryRootMode::Publish),
+            Pass::ScanTail => (self.program.buffers.len(), 0, SummaryRootMode::PublishReset),
+            _ => (reduction.count.binding, reduction.count.word, SummaryRootMode::EmptyCountReset),
+        };
+        let group = self.custom_summary_root(binding, word, mode, local, shared, pointer,
+            active, count, &identity);
         if pass == Pass::Main {
             return Ok(());
         }
-        self.scan_barrier();
         self.custom_tree(r, kernel, local, shared, pointer, remaining, &own, true, summary)?;
         if pass != Pass::ScanTail {
             return self.custom_segmented_finish(reduction, kernel, active, count, group, &own, &identity, &input);
