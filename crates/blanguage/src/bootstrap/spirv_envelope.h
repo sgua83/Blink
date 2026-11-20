@@ -184,12 +184,6 @@ struct PageAddressResult { u64 words; u32 next; u32 pointer; u32 second; };
 // A nonzero step ID adds a second pointer from the same physical address.
 // The emitter owns the next ID and up to 118 output words.
 extern "C" PageAddressResult page_address(PageAddress input, u32 step, address body) on cpu;
-// Return the physical record address ID before conversion to a typed pointer.
-extern "C" PageAddressResult reduction_record(PageAddress input, address body) on cpu;
-extern "C" PageAddressResult reduction_field(u32 record, u32 offset, u32 pointer_type, u32 wide_type, u32 step, u32 first, address body) on cpu;
-extern "C" void choose_reduction_target(u32 uint_type, u32 bool_type, u32 push_pointer, u32 push, u32 index,
-    u32 width, u32 zero, u32 one, u32 length_word, u32 target_bias, u32 first, address body) on cpu;
-
 struct RecordCopy {
     PageAddress source;
     u32 target_descriptor;
@@ -387,7 +381,6 @@ struct TreeLayer {
     u32 stride;
     u32 selector;
     u32 tile_capacity;
-    u32 index;
     u32 remaining;
     u32 one;
     u32 scope;
@@ -396,13 +389,50 @@ struct TreeLayer {
     u32 next;
 };
 struct TreeWords { u64 body; u64 decorations; u32 next; u32 label; };
-struct TreeParts { array<u32,2> ids; u64 count; };
 
 // Selector is the scan lane mask or the tile's doubled stride.
-// Reduction supplies the current node's initialized pointer slots in own.
 // The host provides 42 + 176*count body words and 3*count decoration words.
-extern "C" TreeWords tree_layer(TreeLayer input, address components, u32 count, address own,
+extern "C" TreeWords tree_layer(TreeLayer input, address components, u32 count,
     address body, address decorations) on cpu;
+
+struct ReductionField {
+    u32 source_offset;
+    u32 target_offset;
+    u32 unit_type;
+    u32 unit_bytes;
+    u32 pointer_type;
+    u32 step;
+    u32 shift;
+    u32 slot;
+};
+
+struct ReductionWriteback {
+    PageAddress target;
+    u32 bool_type;
+    u32 push_pointer;
+    u32 push;
+    u32 width;
+    u32 length_word;
+    u32 bias;
+};
+
+struct ReductionGroup {
+    ReductionWriteback output;
+    array<u32,2> identity;
+    u32 source;
+    u32 lane;
+    u32 active;
+    u32 count;
+    u32 before;
+    u32 scope;
+    u32 semantics;
+};
+
+// Workspace has two pointer words and two input words per component.
+extern "C" TreeWords reduction_group(ReductionGroup input, address strides, address components,
+    address fields, u32 count, address workspace, address body, address decorations) on cpu;
+extern "C" StageWords reduction_writeback(ReductionWriteback input, u32 owner,
+    address fields, u32 count, address pointers, address body) on cpu;
 
 struct ScanPrefix {
     PageAddress target;

@@ -296,11 +296,7 @@ impl Emitter<'_> {
         let (owner, _) = self.collective_writer(local, active, count);
         let last = self.constant(Scalar::U32, 63);
         let words = self.shared_planes(shared, pointer, last, r.ty.size.div_ceil(4) as usize);
-        let root: Vec<_> = r.ty.components.iter().map(|(scalar, offset)| {
-            let start = (offset / 4) as usize;
-            &words[start..start + scalar.size().div_ceil(4) as usize]
-        }).collect();
-        self.reduction_output(&r.fields, &r.ty, &root, owner);
+        self.reduction_output(&r.fields, &r.ty, &words, owner);
         Ok(())
     }
     pub(super) fn custom_scan(

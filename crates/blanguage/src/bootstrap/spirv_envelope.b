@@ -651,11 +651,6 @@ extern "C" PageAddressResult page_address(PageAddress input, u32 step, address b
     return PageAddressResult(at, next + 3, next, next + 2);
 }
 
-extern "C" PageAddressResult reduction_record(PageAddress input, address body) on cpu {
-    PhysicalAddress record = physical_page_address(input, body, input.next);
-    return PageAddressResult(record.words, record.next, record.value, 0);
-}
-
 extern "C" PayloadWrite summary_addresses(PageAddress input, u32 step, address pointers, u32 count, address body) on cpu {
     PhysicalAddress start = physical_page_address(input, body, input.next);
     u64 at = start.words;
@@ -1684,43 +1679,6 @@ void write_stage_payload(inout StageCursor out, PayloadEmission input, u32 value
 }
 
 
-extern "C" PageAddressResult reduction_field(u32 record, u32 offset, u32 pointer_type, u32 wide_type, u32 step, u32 first, address body) on cpu {
-    u64 at = 0u64;
-    u32 next = first;
-    u32 physical = record;
-    if (offset != 0) {
-        at = words_four(body, at, 128, wide_type, next, physical, offset);
-        physical = next;
-        next += 1;
-    }
-    u32 pointer = next;
-    at = words_three(body, at, 120, pointer_type, pointer, physical);
-    next += 1;
-    u32 second = 0;
-    if (step != 0) {
-        at = words_four(body, at, 128, wide_type, next, physical, step);
-        second = next + 1;
-        at = words_three(body, at, 120, pointer_type, second, next);
-        next += 2;
-    }
-    return PageAddressResult(at, next, pointer, second);
-}
-
-extern "C" void choose_reduction_target(u32 uint_type, u32 bool_type, u32 push_pointer, u32 push, u32 index,
-    u32 width, u32 zero, u32 one, u32 length_word, u32 target_bias, u32 first, address body) on cpu {
-    StageCursor out = StageCursor(body, 0u64, first);
-    u32 group = stage_op(out, 134, uint_type, index, width);
-    u32 length_pointer = out.next;
-    out.words = words_five(body, out.words, 65, push_pointer, length_pointer, push, zero, length_word);
-    out.next += 1;
-    u32 length = stage_load(out, uint_type, length_pointer, false);
-    u32 final_pass = stage_op(out, 170, bool_type, length, one);
-    stage_select(out, uint_type, final_pass, zero, group);
-    if (target_bias != 0) {
-        stage_select(out, uint_type, final_pass, target_bias, zero);
-    }
-}
-
 u32 stage_group_remaining(inout StageCursor out, u32 uint_type, u32 index, u32 lane, u32 count) on cpu {
     u32 begin = stage_op(out, 130, uint_type, index, lane);
     return stage_op(out, 130, uint_type, count, begin);
@@ -1759,9 +1717,8 @@ extern "C" ScanTreeOpen open_scan_tree(ScanTreeInput input, address body) on cpu
     return ScanTreeOpen(out.words, branch.run, branch.end);
 }
 
-extern "C" TreeWords tree_layer(TreeLayer input, address components, u32 count, address own,
-    address body, address decorations) on cpu {
-    StageCursor out = StageCursor(body, 0u64, input.next);
+TreeWords stage_tree_layer(inout StageCursor out, TreeLayer input, u32 global_index,
+    address components, u32 count, address own, address decorations) on cpu {
     u32 node = input.lane;
     bool reduction = address_bits(own) != 0u64;
     StageBranch branch;
@@ -1793,7 +1750,7 @@ extern "C" TreeWords tree_layer(TreeLayer input, address components, u32 count, 
             4, component.count, out.next);
 
         if (reduction) {
-            left = unsafe_address(address_bits(own) + u64(index) * size_of<TreeParts>());
+            left = word_at(own, 2u64 * u64(index));
         } else {
             tree_node_address(out, component, input.uint_type, other, left);
         }
@@ -1813,7 +1770,7 @@ extern "C" TreeWords tree_layer(TreeLayer input, address components, u32 count, 
         if (input.down == 0 && floating && component.operation != CollectiveOperation::Sum) {
             if (has_right == 0) {
                 u32 right_begin = reduction
-                    ? stage_op(out, 128, input.uint_type, input.index, input.stride)
+                    ? stage_op(out, 128, input.uint_type, global_index, input.stride)
                     : stage_op(out, 128, input.uint_type, other, input.one);
                 has_right = stage_op(out, 176, input.bool_type, right_begin, input.remaining);
             }
@@ -1827,6 +1784,12 @@ extern "C" TreeWords tree_layer(TreeLayer input, address components, u32 count, 
     stage_close(out, branch);
     stage_barrier(out, input.scope, input.semantics);
     return TreeWords(out.words, decorated, out.next, branch.end);
+}
+
+extern "C" TreeWords tree_layer(TreeLayer input, address components, u32 count,
+    address body, address decorations) on cpu {
+    StageCursor out = StageCursor(body, 0u64, input.next);
+    return stage_tree_layer(out, input, 0, components, count, address(), decorations);
 }
 
 extern "C" PrivateAddressWords private_address(PrivateAddress input, address parts, address pointers, address body) on cpu {
@@ -2017,12 +1980,144 @@ extern "C" TileAddressWords tile_address(TileAddress input, address body) on cpu
 }
 
 array<u32,2> stage_field_pointers(inout StageCursor out, u32 record, u32 offset, u32 pointer, u32 wide_type, u32 step) on cpu {
-    PageAddressResult address_ids = reduction_field(record, offset, pointer, wide_type,
-        step, out.next, word_at(out.body, out.words));
-    out.words += address_ids.words;
-    out.next = address_ids.next;
-    return array<u32,2>(address_ids.pointer, address_ids.second);
+    u32 physical = offset == 0 ? record : stage_op(out, 128, wide_type, record, offset);
+    u32 low = out.next;
+    out.words = words_three(out.body, out.words, 120, pointer, low, physical);
+    out.next += 1;
+    u32 high = 0;
+    if (step != 0) {
+        u32 second = stage_op(out, 128, wide_type, physical, step);
+        high = out.next;
+        out.words = words_three(out.body, out.words, 120, pointer, high, second);
+        out.next += 1;
+    }
+    return array<u32,2>(low, high);
 }
+
+u32 reduction_row(inout StageCursor out, PageAddress page) on cpu {
+    PhysicalAddress record = physical_page_address(page, word_at(out.body, out.words), out.next);
+    out.words += record.words;
+    out.next = record.next;
+    return record.value;
+}
+
+PageAddress reduction_target(inout StageCursor out, ReductionWriteback input) on cpu {
+    PageAddress target = input.target;
+    u32 u = target.u32_type;
+    u32 group = stage_op(out, 134, u, target.index, input.width);
+    u32 pointer = out.next;
+    out.words = words_five(out.body, out.words, 65, input.push_pointer, pointer, input.push,
+        target.zero, input.length_word);
+    out.next += 1;
+    u32 length = stage_load(out, u, pointer, false);
+    u32 final_pass = stage_op(out, 170, input.bool_type, length, target.one);
+    target.index = stage_select(out, u, final_pass, target.zero, group);
+    if (input.bias != 0) {
+        target.extra = stage_select(out, u, final_pass, input.bias, target.zero);
+    }
+    return target;
+}
+
+
+u32 write_reduction(inout StageCursor out, ReductionWriteback input, u32 owner, address fields,
+    u32 count, address pointers) on cpu {
+    StageBranch write = stage_open(out, owner);
+    PageAddress target = reduction_target(out, input);
+    u32 record = reduction_row(out, target);
+    u32 u = target.u32_type;
+    for (index in 0..count) {
+        let field = unsafe_position<ReductionField>(
+            unsafe_address(address_bits(fields) + u64(index) * size_of<ReductionField>()));
+        array<u32,2> to = stage_field_pointers(out, record, field.target_offset, field.pointer_type,
+            target.u64_type, field.step);
+        u32 low = stage_load(out, u, read_word(pointers, field.slot), false);
+        if (field.shift != 0) {
+            low = stage_op(out, 194, u, low, field.shift);
+        }
+        PayloadEmission narrowed = PayloadEmission(PayloadAccess::Words, u, field.unit_type,
+            field.unit_bytes, 1, out.next);
+        low = payload_word(out, narrowed, low, 0);
+        out.words = aligned_store(out.body, out.words, to[0], low, field.unit_bytes);
+        if (field.step != 0) {
+            u32 high = stage_load(out, u, read_word(pointers, field.slot + 1), false);
+            out.words = aligned_store(out.body, out.words, to[1], high, 4);
+        }
+    }
+    stage_close(out, write);
+    return write.end;
+}
+
+extern "C" StageWords reduction_writeback(ReductionWriteback input, u32 owner, address fields,
+    u32 count, address pointers, address body) on cpu {
+    StageCursor out = StageCursor(body, 0u64, input.target.next);
+    u32 label = write_reduction(out, input, owner, fields, count, pointers);
+    return StageWords(out.words, out.next, label);
+}
+
+
+extern "C" TreeWords reduction_group(ReductionGroup input, address strides, address components,
+    address fields, u32 count, address workspace, address body, address decorations) on cpu {
+    PageAddress source = input.output.target;
+    source.descriptor = input.source;
+    StageCursor out = StageCursor(body, 0u64, source.next);
+    u32 u = source.u32_type;
+    u32 b = input.output.bool_type;
+    address values = word_at(workspace, 2u64 * u64(count));
+
+    StageBranch read = stage_open(out, input.active);
+    u32 record = reduction_row(out, source);
+    for (index in 0..count) {
+        let field = unsafe_position<ReductionField>(
+            unsafe_address(address_bits(fields) + u64(index) * size_of<ReductionField>()));
+        array<u32,2> from = stage_field_pointers(out, record, field.source_offset, field.pointer_type,
+            source.u64_type, field.step);
+        u32 low = stage_aligned_load(out, field.unit_type, from[0], field.unit_bytes);
+        PayloadEmission widened = PayloadEmission(PayloadAccess::Words, field.unit_type, u, 4, 1, out.next);
+        put(values, 2u64 * u64(index), payload_word(out, widened, low, 0));
+        if (field.step != 0) {
+            put(values, 2u64 * u64(index) + 1u64, stage_aligned_load(out, u, from[1], 4));
+        }
+    }
+    stage_close(out, read);
+
+    for (index in 0..count) {
+        let component = unsafe_position<TreeComponent>(
+            unsafe_address(address_bits(components) + u64(index) * size_of<TreeComponent>()));
+        u32 slot = 2 * index;
+        u32 low = stage_phi(out, u, read_word(values, slot), read.run, input.identity[0], input.before);
+        put(values, u64(slot), low);
+        if (component.count == 2) {
+            u32 high = stage_phi(out, u, read_word(values, slot + 1), read.run, input.identity[1], input.before);
+            put(values, u64(slot + 1), high);
+        }
+    }
+    for (index in 0..count) {
+        let component = unsafe_position<TreeComponent>(
+            unsafe_address(address_bits(components) + u64(index) * size_of<TreeComponent>()));
+        u32 slot = 2 * index;
+        address own = word_at(workspace, u64(slot));
+        put(own, 0u64, component.low);
+        put(own, 1u64, component.high);
+        tree_node_address(out, component, u, input.lane, own);
+        for (part in 0..component.count) {
+            out.words = words_two(body, out.words, 62, read_word(own, part), read_word(values, slot + part));
+        }
+    }
+    stage_barrier(out, input.scope, input.semantics);
+
+    u64 decorated = 0u64;
+    for (level in 0..6) {
+        TreeLayer layer = TreeLayer(u, b, input.lane, read_word(strides, level), 0, 0,
+            input.count, 0, input.scope, input.semantics, 0, out.next);
+        TreeWords part = stage_tree_layer(out, layer, source.index, components, count, workspace,
+            word_at(decorations, decorated));
+        decorated += part.decorations;
+    }
+    u32 owner = stage_op(out, 170, b, input.lane, source.zero);
+    u32 label = write_reduction(out, input.output, owner, fields, count, workspace);
+    return TreeWords(out.words, decorated, out.next, label);
+}
+
 
 u64 write_scan_prefix(inout StageCursor out, ScanPrefix input, u32 group, u32 first,
     address fields, u32 count, address decorations) on cpu {

@@ -1,5 +1,5 @@
 //! 全域数值归约：分量共用 64 路树的同步，递归结果在设备驻留。
-use super::{scan::{SharedTree, TreeDomain}, *};
+use super::{scan::{SharedTree, TreeComponent, TreeWords}, *};
 
 #[repr(C)]
 struct CollectivePair {
@@ -21,16 +21,50 @@ struct CollectiveWords {
     value: u32,
 }
 
+#[repr(C)]
+struct ReductionField {
+    source_offset: u32,
+    target_offset: u32,
+    unit_type: u32,
+    unit_bytes: u32,
+    pointer_type: u32,
+    step: u32,
+    shift: u32,
+    slot: u32,
+}
+
+#[repr(C)]
+struct ReductionWriteback {
+    target: PageAddress,
+    bool_type: u32,
+    push_pointer: u32,
+    push: u32,
+    width: u32,
+    length_word: u32,
+    bias: u32,
+}
+
+#[repr(C)]
+struct ReductionGroup {
+    output: ReductionWriteback,
+    identity: [u32; 2],
+    source: u32,
+    lane: u32,
+    active: u32,
+    count: u32,
+    before: u32,
+    scope: u32,
+    semantics: u32,
+}
+
 unsafe extern "C" {
-    #[link_name = "bootstrap.spirv_envelope::choose_reduction_target"]
-    fn emit_choose_reduction_target(uint_type: u32, bool_type: u32, push_pointer: u32, push: u32,
-        index: u32, width: u32, zero: u32, one: u32, length_word: u32, target_bias: u32,
-        first: u32, body: *mut u32);
-    #[link_name = "bootstrap.spirv_envelope::reduction_record"]
-    fn emit_reduction_record(input: PageAddress, body: *mut u32) -> PageAddressResult;
-    #[link_name = "bootstrap.spirv_envelope::reduction_field"]
-    fn emit_reduction_field(record: u32, offset: u32, pointer_type: u32, wide_type: u32,
-        step: u32, first: u32, body: *mut u32) -> PageAddressResult;
+    #[link_name = "bootstrap.spirv_envelope::reduction_group"]
+    fn emit_reduction_group(input: ReductionGroup, strides: *const u32, components: *const TreeComponent,
+        fields: *const ReductionField, count: u32, workspace: *mut u32, body: *mut u32,
+        decorations: *mut u32) -> TreeWords;
+    #[link_name = "bootstrap.spirv_envelope::reduction_writeback"]
+    fn emit_reduction_writeback(input: ReductionWriteback, owner: u32, fields: *const ReductionField,
+        count: u32, pointers: *const u32, body: *mut u32) -> StageWords;
     #[link_name = "bootstrap.spirv_envelope::collective_pair"]
     fn emit_collective_pair(input: CollectivePair, body: *mut u32, decorations: *mut u32) -> CollectiveWords;
 }
@@ -67,7 +101,7 @@ impl Emitter<'_> {
         &mut self,
         reduction: &ReductionSpec,
         tail: bool,
-        local: u32,
+        lane: u32,
         shared: u32,
         pointer: u32,
         active: u32,
@@ -75,120 +109,91 @@ impl Emitter<'_> {
     ) {
         let r = &reduction.fields;
         let scalar = reduction.ty.components[0].0;
-        let b = self.types[&Scalar::Bool];
-        let zero = self.constant(Scalar::U32, 0);
-        let identity = self.raw_constant(scalar, reduction.operator.identity(scalar));
-        let trees:Vec<_>=reduction.ty.components.iter().map(|(scalar,offset)|SharedTree {
-            shared,pointer,base_word:(offset/4)*64,scalar:*scalar,operator:reduction.operator,
+        let bits = reduction.operator.identity(scalar);
+        let identity = [
+            self.constant(Scalar::U32, bits as u32),
+            if scalar.size() == 8 { self.constant(Scalar::U32, (bits >> 32) as u32) } else { 0 },
+        ];
+        let trees: Vec<_> = reduction.ty.components.iter().map(|&(scalar, offset)| SharedTree {
+            shared, pointer, base_word: (offset / 4) * 64, scalar, operator: reduction.operator,
         }).collect();
-        let own: Vec<_> = trees.iter()
-            .map(|tree| {
-                let at = self.tree_parts(*tree,local);
-                self.store_raw(tree.scalar, Scalar::U32, at.as_ref(), identity, false);
-                at
-            })
-            .collect();
-        let run = self.id();
-        let merged = self.id();
-        self.emit(247, &[merged, 0]);
-        self.emit(250, &[active, run, merged]);
-        self.emit(248, &[run]);
-        for (component, at) in own.iter().enumerate() {
-            let offset=reduction.ty.components[component].1;
-            let raw = self.load_raw_buffer(scalar,
-                r.source,
-                self.index,
-                if tail {
-                    offset
-                } else {
-                    r.source_word + offset
-                });
-            self.store_raw(scalar, Scalar::U32, at.as_ref(), raw, false);
-        }
-        self.emit(249, &[merged]);
-        self.emit(248, &[merged]);
-        self.scan_barrier();
         let components = self.tree_components(&trees);
-        for width in [32, 16, 8, 4, 2, 1] {
-            self.tree_layer(&components, local, width,
-                TreeDomain::Reduction { index: self.index, own: &own }, false, count);
+        let fields = self.reduction_fields(&reduction.ty, Some(if tail { 0 } else { r.source_word }));
+        let mut workspace = vec![0; 4 * fields.len()];
+        let strides = [32, 16, 8, 4, 2, 1].map(|stride| self.constant(Scalar::U32, stride));
+        let scope = self.constant(Scalar::U32, 2);
+        let semantics = self.constant(Scalar::U32, 0x108);
+        let input = ReductionGroup {
+            output: self.reduction_writeback_input(r),
+            identity, source: self.buffers[r.source], lane, active, count,
+            before: self.current_label, scope, semantics,
+        };
+        let body = self.body.len();
+        let decorations = self.decorations.len();
+        self.body.reserve(6 * (42 + 176 * fields.len()) + 350 + 108 * fields.len());
+        self.decorations.reserve(18 * fields.len());
+        unsafe {
+            let emitted = emit_reduction_group(input, strides.as_ptr(), components.as_ptr(),
+                fields.as_ptr(), fields.len() as u32, workspace.as_mut_ptr(),
+                self.body.as_mut_ptr().add(body), self.decorations.as_mut_ptr().add(decorations));
+            self.body.set_len(body + emitted.body as usize);
+            self.decorations.set_len(decorations + emitted.decorations as usize);
+            self.next = emitted.next;
+            self.current_label = emitted.label;
         }
-        let first = self.id();
-        self.emit(170, &[b, first, local, zero]);
-        self.reduction_output(r, &reduction.ty, &own, first);
     }
-    pub(super) fn reduction_output(&mut self, r: &Reduction, ty: &Ty, own: &[impl AsRef<[u32]>], first: u32) {
-        if ty.components.is_empty() {
-            return;
-        }
 
-        let run = self.id();
-        let end = self.id();
-        self.emit_control(9, |body| unsafe { open_selection(end, first, run, end, body) });
 
+    fn reduction_fields(&mut self, ty: &Ty, source: Option<u32>) -> Vec<ReductionField> {
+        ty.components.iter().enumerate().map(|(index, &(scalar, offset))| {
+            let unit = Self::physical_unit(scalar);
+            let source_offset = match source {
+                Some(base) if base + offset != 0 => self.constant(Scalar::U64, base + offset),
+                _ => 0,
+            };
+            ReductionField {
+                source_offset,
+                target_offset: if offset == 0 { 0 } else { self.constant(Scalar::U64, offset) },
+                unit_type: self.types[&unit],
+                unit_bytes: unit.size(),
+                pointer_type: self.physical_pointers[&unit],
+                step: if scalar.size() == 8 { self.constant(Scalar::U64, 4) } else { 0 },
+                shift: if scalar.size() < 4 && offset % 4 != 0 {
+                    self.constant(Scalar::U32, offset % 4 * 8)
+                } else { 0 },
+                slot: if source.is_some() { 2 * index as u32 } else { offset / 4 },
+            }
+        }).collect()
+    }
+
+    fn reduction_writeback_input(&mut self, r: &Reduction) -> ReductionWriteback {
         let width = self.constant(Scalar::U32, 64);
         let length_word = self.constant(Scalar::U32, 2 + r.target as u32);
         let bias = if r.target_word == 0 { 0 } else { self.constant(Scalar::U32, r.target_word) };
-        let mut target = self.page_input(Scalar::U32, PageSource::Dataset(self.buffers[r.target]),
+        let target = self.page_input(Scalar::U32, PageSource::Dataset(self.buffers[r.target]),
             self.index, None, 0);
-        let u = target.u32_type;
-        let b = self.types[&Scalar::Bool];
-        let first = self.next;
-        let words = 26 + if bias == 0 { 0 } else { 6 };
-        let at = self.body.len();
-        self.body.reserve(words);
+        ReductionWriteback {
+            target, bool_type: self.types[&Scalar::Bool], push_pointer: self.ptr_push_u32,
+            push: self.push, width, length_word, bias,
+        }
+    }
+
+
+    pub(super) fn reduction_output(&mut self, r: &Reduction, ty: &Ty, pointers: &[u32], owner: u32) {
+        if ty.components.is_empty() {
+            return;
+        }
+        let fields = self.reduction_fields(ty, None);
+        let input = self.reduction_writeback_input(r);
+        let body = self.body.len();
+        self.body.reserve(180 + 44 * fields.len());
         unsafe {
-            emit_choose_reduction_target(u, b, self.ptr_push_u32, self.push, self.index,
-                width, target.zero, target.one, length_word, bias, first, self.body.as_mut_ptr().add(at));
-            self.body.set_len(at + words);
-        }
-        target.index = first + 4;
-        self.next = first + 5;
-        if bias != 0 {
-            target.extra = self.id();
-        }
-        target.next = self.next;
-
-        let at = self.body.len();
-        self.body.reserve(109);
-        let record = unsafe {
-            let emitted = emit_reduction_record(target, self.body.as_mut_ptr().add(at));
-            self.body.set_len(at + emitted.words as usize);
+            let emitted = emit_reduction_writeback(input, owner, fields.as_ptr(),
+                fields.len() as u32, pointers.as_ptr(), self.body.as_mut_ptr().add(body));
+            self.body.set_len(body + emitted.words as usize);
             self.next = emitted.next;
-            emitted.pointer
-        };
-
-        for (&(scalar, offset), source) in ty.components.iter().zip(own) {
-            let source = source.as_ref();
-            let value = if scalar.size() < 4 {
-                let mut raw = self.load_raw(Scalar::U32, Scalar::U32, source, false);
-                if offset % 4 != 0 {
-                    let shift = self.constant(Scalar::U32, offset % 4 * 8);
-                    let shifted = self.id();
-                    self.emit(194, &[u, shifted, raw, shift]);
-                    raw = shifted;
-                }
-                self.join_words(scalar, &[raw], Scalar::U32)
-            } else {
-                self.load_raw(scalar, Scalar::U32, source, false)
-            };
-
-            let unit = Self::physical_unit(scalar);
-            let count = scalar.size().div_ceil(4) as usize;
-            let offset = if offset == 0 { 0 } else { self.constant(Scalar::U64, offset) };
-            let step = if count == 2 { self.constant(Scalar::U64, 4) } else { 0 };
-            let at = self.body.len();
-            self.body.reserve(18);
-            let pointers = unsafe {
-                let emitted = emit_reduction_field(record, offset, self.physical_pointers[&unit],
-                    self.u64_type, step, self.next, self.body.as_mut_ptr().add(at));
-                self.body.set_len(at + emitted.words as usize);
-                self.next = emitted.next;
-                [emitted.pointer, emitted.second]
-            };
-            self.store_raw(scalar, unit, &pointers[..count], value, true);
+            self.current_label = emitted.label;
         }
-
-        self.emit_control(4, |body| unsafe { next_control_block(end, end, 1, body) });
     }
 }
+

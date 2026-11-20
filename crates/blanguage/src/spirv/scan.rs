@@ -58,7 +58,6 @@ struct TreeLayer {
     stride: u32,
     selector: u32,
     tile_capacity: u32,
-    index: u32,
     remaining: u32,
     one: u32,
     scope: u32,
@@ -116,7 +115,7 @@ unsafe extern "C" {
     fn emit_open_scan_tree(input: ScanTreeInput, body: *mut u32) -> ScanTreeOpen;
     #[link_name = "bootstrap.spirv_envelope::tree_layer"]
     fn emit_tree_layer(input: TreeLayer, components: *const TreeComponent, count: u32,
-        own: *const TreeParts, body: *mut u32, decorations: *mut u32) -> TreeWords;
+        body: *mut u32, decorations: *mut u32) -> TreeWords;
 }
 
 #[derive(Clone, Copy)]
@@ -127,14 +126,12 @@ pub(super) struct SharedTree {
     pub scalar: Scalar,
     pub operator: CollectiveOperator,
 }
-pub(super) enum TreeDomain<'a> {
+pub(super) enum TreeDomain {
     Scan,
     Tile(u32),
-    Reduction { index: u32, own: &'a [TreeParts] },
 }
 
-#[repr(C)]
-pub(super) struct TreeParts {
+struct TreeParts {
     ids: [u32; 2],
     count: usize,
 }
@@ -383,7 +380,7 @@ impl Emitter<'_> {
         self.emit(249, &[end]);
         self.emit(248, &[end]);
     }
-    pub(super) fn tree_parts(&mut self, tree: SharedTree, node: u32) -> TreeParts {
+    fn tree_parts(&mut self, tree: SharedTree, node: u32) -> TreeParts {
         let count = tree.scalar.size().div_ceil(4) as usize;
         let mut ids = [tree.base_word, tree.base_word + 1];
         self.shared_addresses(tree.shared, tree.pointer, node, count as u32, &mut ids[..count]);
@@ -423,13 +420,12 @@ impl Emitter<'_> {
     }
 
     pub(super) fn tree_layer(&mut self, components: &[TreeComponent], lane: u32,
-        width: u32, domain: TreeDomain<'_>, down: bool, remaining: u32,
+        width: u32, domain: TreeDomain, down: bool, remaining: u32,
     ) {
-        let (selector, tile_capacity, index, own) = match domain {
-            TreeDomain::Scan => (self.constant(Scalar::U32, width * 2 - 1), 0, 0, std::ptr::null()),
+        let (selector, tile_capacity) = match domain {
+            TreeDomain::Scan => (self.constant(Scalar::U32, width * 2 - 1), 0),
             TreeDomain::Tile(capacity) => (self.constant(Scalar::U32, width * 2),
-                self.constant(Scalar::U32, capacity), 0, std::ptr::null()),
-            TreeDomain::Reduction { index, own } => (0, 0, index, own.as_ptr()),
+                self.constant(Scalar::U32, capacity)),
         };
         let input = TreeLayer {
             uint_type: self.types[&Scalar::U32],
@@ -438,9 +434,8 @@ impl Emitter<'_> {
             stride: self.constant(Scalar::U32, width),
             selector,
             tile_capacity,
-            index,
             remaining,
-            one: if own.is_null() && (tile_capacity != 0 || (!down && remaining != 0)) {
+            one: if tile_capacity != 0 || (!down && remaining != 0) {
                 self.constant(Scalar::U32, 1)
             } else { 0 },
             scope: self.constant(Scalar::U32, 2),
@@ -454,7 +449,7 @@ impl Emitter<'_> {
         self.decorations.reserve(3 * components.len());
         let result = unsafe {
             let result = emit_tree_layer(input, components.as_ptr(), components.len() as u32,
-                own, self.body.as_mut_ptr().add(body), self.decorations.as_mut_ptr().add(decorations));
+                self.body.as_mut_ptr().add(body), self.decorations.as_mut_ptr().add(decorations));
             self.body.set_len(body + result.body as usize);
             self.decorations.set_len(decorations + result.decorations as usize);
             result
