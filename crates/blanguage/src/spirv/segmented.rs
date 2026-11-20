@@ -1,9 +1,45 @@
 //! 分段摘要携带尾段值与段头标记；归约额外携带段数，摘要始终留在设备。
 use super::*;
+
+#[repr(C)]
+struct SegmentField {
+    scalar: ScalarCode,
+    word: u32,
+    raw_type: u32,
+    value_type: u32,
+    shift: u32,
+}
+
+#[repr(C)]
+struct SegmentMerge {
+    operator: u32,
+    uint_type: u32,
+    bool_type: u32,
+    zero: u32,
+    value_words: u32,
+    counted: u32,
+    next: u32,
+}
+
+#[repr(C)]
+struct SegmentWords {
+    body: u64,
+    decorations: u64,
+    next: u32,
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.spirv_envelope::merge_segment"]
+    fn merge_segment(input: SegmentMerge, fields: *const SegmentField, count: u32,
+        left: *const u32, right: *const u32, values: *mut u32, body: *mut u32,
+        decorations: *mut u32) -> SegmentWords;
+}
+
 struct Segment<'a> {
     ty: &'a Ty,
     operator: CollectiveOperator,
     counted: bool,
+    fields: Vec<SegmentField>,
 }
 impl Segment<'_> {
     fn summary_words(&self) -> usize {
@@ -11,6 +47,17 @@ impl Segment<'_> {
     }
 }
 impl Emitter<'_> {
+    fn segment<'a>(&mut self, ty: &'a Ty, operator: CollectiveOperator, counted: bool) -> Segment<'a> {
+        let fields = ty.components.iter().map(|&(scalar, offset)| SegmentField {
+            scalar: scalar.into(),
+            word: offset / 4,
+            raw_type: self.raw_type(scalar),
+            value_type: self.types[&scalar],
+            shift: if scalar.size() == 8 { self.constant(Scalar::U32, 32) } else { 0 },
+        }).collect();
+        Segment { ty, operator, counted, fields }
+    }
+
     fn segment_identity(&mut self, scan: &Segment<'_>) -> Vec<u32> {
         let zero = self.constant(Scalar::U32, 0);
         let mut words=vec![zero;scan.summary_words()];
@@ -37,29 +84,28 @@ impl Emitter<'_> {
         words
     }
     fn segment_combine(&mut self, scan: &Segment<'_>, left: &[u32], right: &[u32]) -> Vec<u32> {
-        let u = self.types[&Scalar::U32];
-        let k = scan.ty.size.div_ceil(4) as usize;
         let zero = self.constant(Scalar::U32, 0);
-        let head = self.id();
-        self.emit(171, &[self.types[&Scalar::Bool], head, right[k], zero]);
-        let mut values = vec![zero;scan.summary_words()];
-        for (scalar,offset) in &scan.ty.components {
-            let word=(offset/4) as usize;
-            let n=scalar.size().div_ceil(4) as usize;
-            let a=self.join_words(*scalar,&left[word..word+n], Scalar::U32);
-            let b=self.join_words(*scalar,&right[word..word+n], Scalar::U32);
-            let merged = self.collective_pair(*scalar, scan.operator, a, b);
-            let tail = self.id();
-            self.select(self.raw_type(*scalar), tail, head, b, merged);
-            values[word..word+n].copy_from_slice(&self.split_words(*scalar,tail, Scalar::U32));
-        }
-        let heads = self.id();
-        self.emit(197, &[u, heads, left[k], right[k]]);
-        values[k]=heads;
-        if scan.counted {
-            let count = self.id();
-            self.emit(128, &[u, count, left[k + 1], right[k + 1]]);
-            values[k+1]=count;
+        let input = SegmentMerge {
+            operator: scan.operator as u32,
+            uint_type: self.types[&Scalar::U32],
+            bool_type: self.types[&Scalar::Bool],
+            zero,
+            value_words: scan.ty.size.div_ceil(4),
+            counted: u32::from(scan.counted),
+            next: self.next,
+        };
+        let mut values = vec![zero; scan.summary_words()];
+        let body = self.body.len();
+        let decorations = self.decorations.len();
+        self.body.reserve(15 + 74 * scan.fields.len());
+        self.decorations.reserve(3 * scan.fields.len());
+        unsafe {
+            let result = merge_segment(input, scan.fields.as_ptr(), scan.fields.len() as u32,
+                left.as_ptr(), right.as_ptr(), values.as_mut_ptr(), self.body.as_mut_ptr().add(body),
+                self.decorations.as_mut_ptr().add(decorations));
+            self.body.set_len(body + result.body as usize);
+            self.decorations.set_len(decorations + result.decorations as usize);
+            self.next = result.next;
         }
         values
     }
@@ -75,11 +121,7 @@ impl Emitter<'_> {
         count: u32,
     ) {
         let r = &scan.values;
-        let scan = &Segment {
-            ty: &scan.ty,
-            operator: scan.operator,
-            counted: false,
-        };
+        let scan = &self.segment(&scan.ty, scan.operator, false);
         let k = scan.ty.size.div_ceil(4) as usize;
         let u = self.types[&Scalar::U32];
         let b = self.types[&Scalar::Bool];
@@ -228,11 +270,7 @@ impl Emitter<'_> {
         count: u32,
     ) {
         let r = &reduction.values.fields;
-        let scan = &Segment {
-            ty: &reduction.values.ty,
-            operator: reduction.values.operator,
-            counted: true,
-        };
+        let scan = &self.segment(&reduction.values.ty, reduction.values.operator, true);
         let k = scan.ty.size.div_ceil(4) as usize;
         let u = self.types[&Scalar::U32];
         let b = self.types[&Scalar::Bool];
@@ -464,11 +502,7 @@ impl Emitter<'_> {
     }
     pub(super) fn segmented_add(&mut self, scan: &Scan) {
         let r = &scan.values;
-        let scan = &Segment {
-            ty: &scan.ty,
-            operator: scan.operator,
-            counted: false,
-        };
+        let scan = &self.segment(&scan.ty, scan.operator, false);
         let width = self.constant(Scalar::U32, 64);
         let group = self.id();
         self.emit(134, &[self.types[&Scalar::U32], group, self.index, width]);

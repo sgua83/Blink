@@ -2070,6 +2070,43 @@ extern "C" TreeWords add_scan_prefix(ScanPrefix input, address fields, u32 count
     return TreeWords(out.words, decorated, out.next, input.label);
 }
 
+extern "C" SegmentWords merge_segment(SegmentMerge input, address fields, u32 count,
+    address left, address right, address values, address body, address decorations) on cpu {
+    StageCursor out = StageCursor(body, 0u64, input.next);
+    u32 k = input.value_words;
+    u32 left_head = read_word(left, k);
+    u32 right_head = read_word(right, k);
+    u32 starts = stage_op(out, 171, input.bool_type, right_head, input.zero);
+    u64 decorated = 0u64;
+    for (index in 0..count) {
+        let field = unsafe_position<SegmentField>(unsafe_address(address_bits(fields) + u64(index) * size_of<SegmentField>()));
+        array<u32,2> shifts = array<u32,2>(0, field.shift);
+        address shift_slots = address_of(shifts[0]);
+        u32 parts = field.shift == 0 ? 1 : 2;
+        PayloadEmission payload = PayloadEmission(PayloadAccess::Words, field.raw_type, input.uint_type, 4, parts, out.next);
+        u32 a = read_stage_payload(out, payload, word_at(left, u64(field.word)), shift_slots);
+        u32 b = read_stage_payload(out, payload, word_at(right, u64(field.word)), shift_slots);
+        CollectivePair pair = CollectivePair(input.operation, field.scalar, field.raw_type, field.value_type,
+            input.bool_type, a, b, out.next);
+        CollectiveWords merged = collective_pair(pair, word_at(body, out.words), word_at(decorations, decorated));
+        out.words += merged.body;
+        out.next = merged.next;
+        decorated += merged.decorations;
+        u32 tail = stage_select(out, field.raw_type, starts, b, merged.value);
+        payload.next = out.next;
+        PayloadWrite words = payload_write(payload, tail, address(), shift_slots,
+            word_at(values, u64(field.word)), word_at(body, out.words));
+        out.words += words.words;
+        out.next = words.next;
+    }
+    put(values, u64(k), stage_op(out, 197, input.uint_type, left_head, right_head));
+    if (input.counted != 0) {
+        u32 segments = stage_op(out, 128, input.uint_type, read_word(left, k + 1), read_word(right, k + 1));
+        put(values, u64(k + 1), segments);
+    }
+    return SegmentWords(out.words, decorated, out.next);
+}
+
 extern "C" PayloadRead tile_extract(TileExtract input, address body) on cpu {
     u32 value = input.next;
     u32 next = value + 1;

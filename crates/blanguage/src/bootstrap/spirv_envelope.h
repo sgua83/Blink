@@ -433,6 +433,30 @@ struct ScanField {
 extern "C" TreeWords add_scan_prefix(ScanPrefix input, address fields, u32 count,
     address body, address decorations) on cpu;
 
+struct SegmentField {
+    BuiltinScalar scalar;
+    u32 word;
+    u32 raw_type;
+    u32 value_type;
+    u32 shift;
+};
+
+struct SegmentMerge {
+    CollectiveOperation operation;
+    u32 uint_type;
+    u32 bool_type;
+    u32 zero;
+    u32 value_words;
+    u32 counted;
+    u32 next;
+};
+
+struct SegmentWords { u64 body; u64 decorations; u32 next; };
+// left, right and values contain value_words, a head flag, and a count if counted.
+// The caller supplies 15 + 74*count body words and 3*count decoration words.
+extern "C" SegmentWords merge_segment(SegmentMerge input, address fields, u32 count,
+    address left, address right, address values, address body, address decorations) on cpu;
+
 struct PrivateAddress {
     u32 index_type;
     u32 pointer_type;
