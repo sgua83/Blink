@@ -305,6 +305,23 @@ struct PayloadWrite {
 }
 
 #[repr(C)]
+struct UniformRead {
+    next: u32,
+    push_pointer: u32,
+    push_block: u32,
+    uint_type: u32,
+    raw_type: u32,
+    result_type: u32,
+    result: u32,
+    boolean: u32,
+    zero: u32,
+    low_word: u32,
+    high_word: u32,
+    byte_shift: u32,
+    high_shift: u32,
+}
+
+#[repr(C)]
 struct ControlWords {
     words: u64,
     label: u32,
@@ -689,6 +706,8 @@ unsafe extern "C" {
     fn read_summary_words(body: *mut u32, type_id: u32, first: u32, pointers: *const u32, count: u32) -> u64;
     #[link_name = "bootstrap.spirv_envelope::write_summary_words"]
     fn write_summary_words(body: *mut u32, pointers: *const u32, values: *const u32, count: u32) -> u64;
+    #[link_name = "bootstrap.spirv_envelope::read_uniform"]
+    fn read_uniform(input: UniformRead, body: *mut u32) -> PayloadWrite;
     #[link_name = "bootstrap.spirv_envelope::payload_read"]
     fn payload_read(input: PayloadEmission, operands: *const u32, shifts: *const u32, body: *mut u32) -> PayloadRead;
     #[link_name = "bootstrap.spirv_envelope::payload_write"]
@@ -1243,25 +1262,7 @@ impl Emitter<'_> {
                     self.regs[*dst] = self.constant_bits(*s, *bits);
                 }
                 InstKind::Index(dst) => self.emit(83, &[self.ty(*dst), self.value(*dst), self.index]),
-                InstKind::Uniform(dst, offset) => {
-                    let zero = self.constant(Scalar::U32, 0);
-                    let mut words = Vec::new();
-                    for part in 0..self.stage.registers[*dst].size().div_ceil(4) {
-                        let word = self.constant(Scalar::U32, offset / 4 + part);
-                        let ptr = self.id();
-                        self.emit(65, &[self.ptr_push_u32, ptr, self.push, zero, word]);
-                        let mut raw = self.id();
-                        self.emit(61, &[self.types[&Scalar::U32], raw, ptr, 2, 4]);
-                        if offset % 4 != 0 {
-                            let shift = self.constant(Scalar::U32, offset % 4 * 8);
-                            let shifted = self.id();
-                            self.emit(194, &[self.types[&Scalar::U32], shifted, raw, shift]);
-                            raw = shifted;
-                        }
-                        words.push(raw);
-                    }
-                    self.from_words(*dst, &words, Scalar::U32);
-                }
+                InstKind::Uniform(dst, offset) => self.uniform(*dst, *offset),
                 InstKind::LoadLocal(dst, slot) => {
                     let pointer = self.locals[*slot];
                     if pointer == 0 {
@@ -1451,6 +1452,42 @@ impl Emitter<'_> {
         let temporary = self.id();
         self.id();
         FloatSignOperands { raw_type: self.raw_type(scalar), mask, temporary }
+    }
+    fn uniform(&mut self, dst: Reg, offset: u32) {
+        let scalar = self.stage.registers[dst];
+        let zero = self.constant(Scalar::U32, 0);
+        let word = offset / 4;
+        let low_word = self.constant(Scalar::U32, word);
+        let shift = offset % 4 * 8;
+        let byte_shift = if shift == 0 { 0 } else { self.constant(Scalar::U32, shift) };
+        let (high_word, high_shift) = if scalar.size() == 8 {
+            (self.constant(Scalar::U32, word + 1), self.constant(Scalar::U32, 32))
+        } else {
+            (0, 0)
+        };
+        let input = UniformRead {
+            next: self.next,
+            push_pointer: self.ptr_push_u32,
+            push_block: self.push,
+            uint_type: self.types[&Scalar::U32],
+            raw_type: self.raw_type(scalar),
+            result_type: self.ty(dst),
+            result: self.value(dst),
+            boolean: u32::from(scalar == Scalar::Bool),
+            zero,
+            low_word,
+            high_word,
+            byte_shift,
+            high_shift,
+        };
+        let at = self.body.len();
+        // Up to two access/load/shift groups, a 64-bit join and one result.
+        self.body.reserve(57);
+        unsafe {
+            let emitted = read_uniform(input, self.body.as_mut_ptr().add(at));
+            self.body.set_len(at + emitted.words as usize);
+            self.next = emitted.next;
+        }
     }
     fn from_words(&mut self, dst: Reg, words: &[u32], unit: Scalar) {
         let scalar = self.stage.registers[dst];

@@ -774,6 +774,48 @@ extern "C" PayloadRead payload_read(PayloadEmission input, address operands, add
     return PayloadRead(at, next, value);
 }
 
+u32 uniform_word(inout StageCursor out, UniformRead input, u32 word) on cpu {
+    u32 pointer = out.next;
+    u32 value = pointer + 1;
+    out.words = words_five(out.body, out.words, 65, input.push_pointer, pointer,
+        input.push_block, input.zero, word);
+    out.words = aligned_load(out.body, out.words, input.uint_type, value, pointer, 4);
+    out.next = value + 1;
+    if (input.byte_shift != 0) {
+        u32 shifted = out.next;
+        out.next += 1;
+        out.words = words_four(out.body, out.words, 194, input.uint_type,
+            shifted, value, input.byte_shift);
+        return shifted;
+    }
+    return value;
+}
+
+extern "C" PayloadWrite read_uniform(UniformRead input, address body) on cpu {
+    StageCursor out = StageCursor(body, 0u64, input.next);
+    u32 low = uniform_word(out, input, input.low_word);
+    u32 high = 0;
+    u32 count = 1;
+    if (input.high_word != 0) {
+        high = uniform_word(out, input, input.high_word);
+        count = 2;
+    }
+    array<u32,2> words = array<u32,2>(low, high);
+    array<u32,2> shifts = array<u32,2>(0, input.high_shift);
+    PayloadEmission payload = PayloadEmission(PayloadAccess::Words, input.raw_type,
+        input.uint_type, 4, count, out.next);
+    PayloadRead read = payload_read(payload, address_of(words[0]),
+        address_of(shifts[0]), word_at(body, out.words));
+    u64 at = out.words + read.words;
+    if (input.boolean != 0) {
+        at = words_four(body, at, 171, input.result_type, input.result, read.value, input.zero);
+    } else {
+        u32 opcode = input.result_type == input.raw_type ? 83 : 124;
+        at = words_three(body, at, opcode, input.result_type, input.result, read.value);
+    }
+    return PayloadWrite(at, read.next);
+}
+
 u32 payload_word(inout StageCursor out, PayloadEmission input, u32 value, u32 shift) on cpu {
     u32 word = value;
     if (shift != 0) {

@@ -205,6 +205,24 @@ struct PayloadEmission {
 };
 struct PayloadRead { u64 words; u32 next; u32 value; };
 struct PayloadWrite { u64 words; u32 next; };
+struct UniformRead {
+    u32 next;
+    u32 push_pointer;
+    u32 push_block;
+    u32 uint_type;
+    u32 raw_type;
+    u32 result_type;
+    u32 result;
+    u32 boolean;
+    u32 zero;
+    u32 low_word;
+    u32 high_word;
+    u32 byte_shift;
+    u32 high_shift;
+};
+// The emitter supplies the declared IDs and room for both word loads,
+// the original payload join and the final scalar definition.
+extern "C" PayloadWrite read_uniform(UniformRead input, address body) on cpu;
 struct PackedField { u32 value; u32 offset; u32 byte_shift; u32 zero; };
 // The caller owns the zero-initialized record IDs and supplies space for up to
 // 33 body words: one split shift, two conversions and two shift/merge pairs.
