@@ -29,7 +29,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let _sdk_use = OpenOptions::new().read(true).share_mode(1).open("../../VERSION")?;
     let out = PathBuf::from(env::var_os("OUT_DIR").ok_or("缺少OUT_DIR")?);
     let mut identity = env::var_os("CARGO_FEATURE_COMPILER")
-        .map(|_| compiler_identity::Identity::new());
+        .map(|_| compiler_identity::Identity::new()).transpose()?;
     capture("blink_value_format", &out, identity.as_mut())?;
     println!("cargo:rustc-link-search=native={}", out.display());
     if let Some(mut identity) = identity {

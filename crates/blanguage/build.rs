@@ -202,7 +202,7 @@ fn native_modules() -> Result<(), Box<dyn std::error::Error>> {
     println!("cargo:rustc-link-lib=static=blink_value_format");
     if compiler {
         println!("cargo:rustc-link-lib=static=blink_compiler_bootstrap");
-        let mut identity = compiler_identity::Identity::new();
+        let mut identity = compiler_identity::Identity::new()?;
         for archive in [value_archive, compiler_archive] {
             identity.library(&mut fs::File::open(archive)?, io::sink())?;
         }
