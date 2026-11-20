@@ -1680,7 +1680,7 @@ fn converge_access(
     let mut ready = call_accesses.keys().copied().collect::<BTreeSet<_>>();
     while !ready.is_empty() {
         let tasks = call_accesses.iter_mut().filter(|(name, _)| ready.contains(*name)).collect();
-        let changed = crate::parallel::try_map(worker, tasks, |_| (), |_, (&name, projections)| {
+        let changed = crate::parallel::try_map(worker, tasks, Clone::clone, |worker, (&name, projections)| {
             // This function reads one immutable round of call contracts.
             let _required_scope = bounds::required_scope();
             let (name, function) = functions.get_key_value(name).unwrap();
@@ -1688,58 +1688,73 @@ fn converge_access(
             let state=&known[name];
             let (parameters, local_access)=&direct[name];
             let mut access=local_access.clone();
-            let mut evaluation = BorrowEvaluation {
+            let evaluation = || BorrowEvaluation {
                 function, state: state.loop_scope(), known, expand_loops: true, deferred_reads: false,
                 loop_bindings: Vec::new(), values: BTreeMap::new(), stored: None, exit_writes: None, stored_paths: Default::default(),
             };
             for (index, call) in function.calls.iter().enumerate().filter(|(_, call)| call.function != *name || state.entries.is_none()) {
                 let requirements = &known[&call.function].interface.access;
-                let projection = projections.entry(index).or_insert_with(|| CallProjection {
+                projections.entry(index).or_insert_with(|| CallProjection {
                     condition: bounds::GuardProjection::new(&call.path, parameters),
                     access: vec![None; requirements.len()],
                 });
+            }
+            let pending = projections.iter_mut()
+                .filter_map(|(&index, projection)| projection.access.iter().any(Option::is_none).then_some((index, projection)))
+                .collect::<Vec<_>>();
+            let project_call = |evaluation: &mut BorrowEvaluation<'_>, (index, projection): (usize, &mut CallProjection<'_>)| {
+                let call = &function.calls[index];
+                let requirements = &known[&call.function].interface.access;
                 let condition = &projection.condition;
                 let project = |path:&bounds::Clause,bindings:&BTreeMap<ValueIdentity,bounds::Proof>| condition.project(path,bindings);
                 let projected = &mut projection.access;
-                if projected.iter().any(Option::is_none) {
-                    let live_task_places=evaluation.evaluate(&call.live_task_places);
-                    let task_access=live_task_places.active();
-                    let initialized = std::cell::LazyCell::new(|| initialization_effects(&call.initialization, function, state, known).positions(&call.path));
-                    for (requirement, previous) in requirements.iter().zip(&mut *projected) {
-                        if previous.is_some() {
-                            continue;
-                        }
-                        let projected = previous.insert(Vec::new());
-                        if !task_access && (matches!(requirement,Access::Stored{..})
-                            || matches!(requirement,Access::Position{position,..} if !position.writable && !position.initialized && (call.deferred || position.written.is_none()))) {
-                            continue;
-                        }
-                        let value=access_at_call(requirement,call,&call.path,&mut evaluation,&|| &*initialized);
-                        if task_access
-                            && let Some((accessed,when,mode))=value.accessed()
-                            && let Some(exclusion)=function.access(parameters,accessed.clone(),live_task_places.clone(),view::Exclusion::Position(mode),when,&project)
-                        {
-                            projected.push(exclusion);
-                        }
-                        let value=match value {
-                            Access::Position{mut position,borrows,when}=>{
-                                if call.deferred { position.written=None; }
-                                if position.written.is_none()&&!position.initialized&&!position.writable{continue;}
-                                position.written=position.written.as_ref()
-                                    .map(|proof|proof.at_call(&call.arguments).at_call(parameters));
-                                function.address_access(parameters,borrows,|borrows,when|Access::Position{borrows,when,position},&when,&project)
-                            },
-                            Access::Stored{..}=>continue,
-                            Access::Memory{borrows,when,access}=>function.address_access(parameters,borrows,|borrows,when|Access::Memory{borrows,when,access},&when,&project),
-                            Access::Initialized{borrows,initialized,when}=>function.initialization_access(
-                                parameters,&output_initialization_read(&borrows,&initialized,&when),&when,&project),
-                            Access::Resource{resources,borrows,kind,when}=>function.access(parameters,resources,borrows,kind,&when,&project),
-                            Access::Dataset{borrows,index,access,atomic,when}=>function.dataset_access(parameters,borrows,index,access,atomic,&when,&|id|owns_input(name,id),&project),
-                        };
-                        if let Some(value)=value{projected.push(value);}
+                let live_task_places=evaluation.evaluate(&call.live_task_places);
+                let task_access=live_task_places.active();
+                let initialized = std::cell::LazyCell::new(|| initialization_effects(&call.initialization, function, state, known).positions(&call.path));
+                for (requirement, previous) in requirements.iter().zip(&mut *projected) {
+                    if previous.is_some() {
+                        continue;
                     }
+                    let projected = previous.insert(Vec::new());
+                    if !task_access && (matches!(requirement,Access::Stored{..})
+                        || matches!(requirement,Access::Position{position,..} if !position.writable && !position.initialized && (call.deferred || position.written.is_none()))) {
+                        continue;
+                    }
+                    let value=access_at_call(requirement,call,&call.path,evaluation,&|| &*initialized);
+                    if task_access
+                        && let Some((accessed,when,mode))=value.accessed()
+                        && let Some(exclusion)=function.access(parameters,accessed.clone(),live_task_places.clone(),view::Exclusion::Position(mode),when,&project)
+                    {
+                        projected.push(exclusion);
+                    }
+                    let value=match value {
+                        Access::Position{mut position,borrows,when}=>{
+                            if call.deferred { position.written=None; }
+                            if position.written.is_none()&&!position.initialized&&!position.writable{continue;}
+                            position.written=position.written.as_ref()
+                                .map(|proof|proof.at_call(&call.arguments).at_call(parameters));
+                            function.address_access(parameters,borrows,|borrows,when|Access::Position{borrows,when,position},&when,&project)
+                        },
+                        Access::Stored{..}=>continue,
+                        Access::Memory{borrows,when,access}=>function.address_access(parameters,borrows,|borrows,when|Access::Memory{borrows,when,access},&when,&project),
+                        Access::Initialized{borrows,initialized,when}=>function.initialization_access(
+                            parameters,&output_initialization_read(&borrows,&initialized,&when),&when,&project),
+                        Access::Resource{resources,borrows,kind,when}=>function.access(parameters,resources,borrows,kind,&when,&project),
+                        Access::Dataset{borrows,index,access,atomic,when}=>function.dataset_access(parameters,borrows,index,access,atomic,&when,&|id|owns_input(name,id),&project),
+                    };
+                    if let Some(value)=value{projected.push(value);}
                 }
-                for value in projected.iter().flatten().flatten() {
+            };
+            crate::parallel::try_map(
+                worker, pending,
+                |_| (bounds::required_scope(), evaluation()),
+                |(_, evaluation), call| {
+                    project_call(evaluation, call);
+                    Ok::<(), crate::ast::Diagnostic>(())
+                },
+            ).map_err(|error| borrow_worker_error(functions, error))?;
+            for projection in projections.values() {
+                for value in projection.access.iter().flatten().flatten() {
                     insert(&mut access, value.clone());
                 }
             }
