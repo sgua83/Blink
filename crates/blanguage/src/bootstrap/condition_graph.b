@@ -135,7 +135,7 @@ u32 query_search(usize first,usize second,u32 right_truth,address context,Graph 
      usize id=word_at(trail,at);Gate node=node_at(graph,id);u32 either=node.kind==3 ? 1 : 0;
      if(node.kind>=2&&value_at(values,id)==either+1
         &&value_at(values,node.left)==0&&value_at(values,node.right)==0){
-      Checkpoint checkpoint=Checkpoint(trail.count,host.additions(context),negative);
+      Checkpoint checkpoint=Checkpoint(trail.count,host.additions(context),negative,at);
       host.push_clause(context,node.left,1-either,checkpoint);
       host.pending_push(context,node.left,either);chosen=1;break;
      }
@@ -162,7 +162,7 @@ u32 query_search(usize first,usize second,u32 right_truth,address context,Graph 
      if(negated.present!=0){
       host.set_next_fact(context,negated);
       if(host.remaining(context)!=0u64){
-       host.push_fact(context,fact,Checkpoint(trail.count,host.additions(context),negative));
+       host.push_fact(context,fact,Checkpoint(trail.count,host.additions(context),negative,choice));
       }
       chosen=1;break;
      }
@@ -179,7 +179,7 @@ u32 query_search(usize first,usize second,u32 right_truth,address context,Graph 
   }
   count=host.additions(context);
   while(count>alternative.checkpoint.facts){host.undo_addition(context);count-=1u64;}
-  consumed=alternative.checkpoint.nodes;negative=alternative.checkpoint.negative;choice=0u64;
+  consumed=alternative.checkpoint.nodes;negative=alternative.checkpoint.negative;choice=alternative.checkpoint.choice;
   if(alternative.kind==1){host.pending_push(context,alternative.node,alternative.truth);}
  }
 }

@@ -27,7 +27,7 @@ extern "C" u32 project_call_graph(address context,CallProjectionHost host) on cp
 struct Gate { usize left; usize right; u32 kind; Span parents; };
 struct Graph { address nodes; usize stride; address values; };
 struct Assignment { u32 present; usize node; u32 truth; };
-struct Checkpoint { usize nodes; usize facts; usize negative; };
+struct Checkpoint { usize nodes; usize facts; usize negative; usize choice; };
 struct Alternative { u32 kind; usize node; u32 truth; Checkpoint checkpoint; };
 struct Host {
  cfn<usize,address,address> index;

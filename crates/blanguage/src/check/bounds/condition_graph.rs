@@ -166,6 +166,7 @@ struct Checkpoint {
     nodes: usize,
     facts: usize,
     negative: usize,
+    choice: usize,
 }
 #[repr(C)]
 struct AlternativeView {
@@ -506,6 +507,7 @@ unsafe extern "C" fn pop_alternative(slot: Slot) -> AlternativeView {
                 nodes: 0,
                 facts: 0,
                 negative: 0,
+                choice: 0,
             },
         },
     }
