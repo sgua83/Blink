@@ -247,9 +247,6 @@ impl Emitter<'_> {
     fn bytes(&mut self, b: &[u8]) {
         self.code.extend_from_slice(b);
     }
-    fn u32(&mut self, n: u32) {
-        self.bytes(&n.to_le_bytes());
-    }
     fn jump(&mut self, branch: Branch) -> usize {
         let (condition, test_bits) = match branch {
             Branch::Always => (0, 0),

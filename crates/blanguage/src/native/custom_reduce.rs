@@ -545,8 +545,7 @@ pub(super) fn emit(
         pass,
         Pass::Reduce | Pass::ReduceTail | Pass::Scan | Pass::SegmentReduce
     ) {
-        e.bytes(&[0x4c, 0x8b, 0xbc, 0x24]);
-        e.u32(frame + 80);
+        e.copy_scalar(allocation::Location::Gpr(15), allocation::Location::Stack(frame + 80), Scalar::U64);
         for (field, (scalar, offset)) in r.ty.components.iter().enumerate() {
             let value = e.allocation.location(PrivateSlot::Local(carry + field));
             e.write_value_address(value, Memory::new(15, *offset), scalar.size());
