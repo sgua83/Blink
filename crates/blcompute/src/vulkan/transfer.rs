@@ -90,7 +90,7 @@ impl Device {
         target.last_use = Some(self.submit_transfer(commands, staging, Vec::new())?);
         Ok(())
     }
-    pub(super) fn stage_payload(
+    fn stage_payload(
         &self,
         target: &GpuDataset,
         words: &[u32],

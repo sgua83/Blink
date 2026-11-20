@@ -743,51 +743,79 @@ impl Device {
         binding: usize,
         models: Vec<BottomLevel>,
     ) -> Result<GpuDataset> {
-        let data = Dataset::new(program, binding, u32::try_from(models.len())?)?;
-        self.instance_data_from(data, models)
+        let count = u32::try_from(models.len())?;
+        let schema = program.buffers().get(binding).ok_or_else(|| error("数据绑定编号越界"))?;
+        let stride = blanguage::ir::align_up(schema.ty.size, schema.ty.align);
+        self.upload_instance_data(
+            schema.ty.clone(), stride, count, std::iter::repeat([0.0; 12]), models,
+        )
     }
     /// CPU矩阵与B产生的矩阵共用实际64字节实例输入，原生尾部仍由平台填写。
     pub fn instance_data_from(
         &self,
-        mut data: Dataset,
+        data: Dataset,
         models: Vec<BottomLevel>,
     ) -> Result<GpuDataset> {
-        if data.count as usize != models.len() {
+        let transforms = data.words.chunks_exact(16).map(|record| {
+            std::array::from_fn(|index| f32::from_bits(record[index]))
+        });
+        self.upload_instance_data(data.ty, data.stride, data.count, transforms, models)
+    }
+    fn upload_instance_data(
+        &self,
+        ty: Ty,
+        data_stride: u32,
+        count: u32,
+        transforms: impl Iterator<Item = [f32; 12]>,
+        models: Vec<BottomLevel>,
+    ) -> Result<GpuDataset> {
+        if count as usize != models.len() {
             return Err(error("矩阵记录与实际BLAS实例数量不同"));
         }
         let components = (0..12).map(|i| (blanguage::ir::Scalar::F32, i * 4));
         let stride = std::mem::size_of::<InstanceRecord>();
-        if data.stride as usize != stride || !data.ty.components.iter().copied().eq(components) {
+        if data_stride as usize != stride || !ty.components.iter().copied().eq(components) {
             return Err(error(
                 "Vulkan 实例输入需要 64 字节 stride 与 offset 0 的 3×4 f32 矩阵",
             ));
         }
-        for (model, record) in models.iter().zip(data.words.chunks_exact_mut(stride / 4)) {
-            if !Rc::ptr_eq(&model.0.inner, &self.inner) {
-                return Err(error("BLAS 不属于目标设备"));
-            }
-            record[12..].copy_from_slice(&model.instance_tail());
+        if models.iter().any(|model| !Rc::ptr_eq(&model.0.inner, &self.inner)) {
+            return Err(error("BLAS 不属于目标设备"));
         }
         let mut target = GpuDataset::allocate(
-            self.inner.clone(),
-            data.ty,
-            data.stride,
-            data.count,
-            0x80000,
-            16,
+            self.inner.clone(), ty, data_stride, count, 0x80000, 16,
         )?;
-        let pointer_bytes = u64::from(data.count) * 8;
+        let pointer_bytes = u64::from(count) * 8;
         let pointers = Allocation::new(self.inner.clone(), pointer_bytes, 0xa0002, 1, 8)?;
-        target.owned_storage()?.instances = Some(InstanceInput {
-            pointers,
-            models: collect_models(models),
-        });
-        if !data.words.is_empty() {
+        let transfer = if count == 0 {
+            None
+        } else {
             let mut commands = Commands::new(self.inner.clone())?;
             let mut staging = Vec::new();
-            self.stage_payload(&target, &data.words, &mut commands, &mut staging)?;
+            let mut records = transforms.zip(models.iter());
+            for page in &target.pages {
+                self.stage_page(
+                    page,
+                    page.size,
+                    |source| {
+                        let mapped = source.mapping()?.cast::<InstanceRecord>();
+                        let count = page.size as usize / stride;
+                        for (index, (transform, model)) in records.by_ref().take(count).enumerate() {
+                            unsafe {
+                                mapped.add(index).write(InstanceRecord {
+                                    transform,
+                                    tail: model.instance_tail(),
+                                });
+                            }
+                        }
+                        Ok(())
+                    },
+                    &mut commands,
+                    &mut staging,
+                )?;
+            }
             self.stage_page(
-                &target.instances.as_ref().unwrap().pointers,
+                &pointers,
                 pointer_bytes,
                 |source| {
                     let mut entry = source.mapping()?.cast::<[u32; 2]>();
@@ -807,6 +835,13 @@ impl Device {
                 &mut commands,
                 &mut staging,
             )?;
+            Some((commands, staging))
+        };
+        target.owned_storage()?.instances = Some(InstanceInput {
+            pointers,
+            models: collect_models(models),
+        });
+        if let Some((commands, staging)) = transfer {
             target.last_use = Some(self.submit_transfer(commands, staging, Vec::new())?);
         }
         Ok(target)

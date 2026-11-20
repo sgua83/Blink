@@ -61,7 +61,7 @@ BottomLevel::primitive_count返回该BLAS实际构建输入的u32 primitive范�
 
 
 ## 共享不可变的实际构建输入
-BLEngine 的刚体表面对应需要此前实例矩阵。instance_data_from 接收由真实 B 类型创建并填好逻辑矩阵的 CPU Dataset，复用 instance_data 的原生尾部、模型检查、分页地址及传输；instance_data 原入口直接委托它，没有第二份设备矩阵。
+BLEngine 的刚体表面对应需要此前实例矩阵。instance_data_from 读取既有 B 布局 CPU Dataset 的矩阵分量，instance_data 提供初始零矩阵，调用者在构建 TLAS 前写入实际有效变换。两个入口在同一原生实例上传路径验收模型和记录布局，直接把矩阵与 BLAS 尾部写入各实际页的映射暂存。实例地址独立写入指针暂存，实例页、实际 BLAS 引用和指针缓冲随原设备存储交接。
 
 调用者可 freeze 同一原生输入，再交给 unsafe top_level_device_read。只读绑定在真实构建完成点持有该 ReadDataset；显式场景或计算消费者按自己的使用期限继续持有同一存储。冻结输入保持其原生产完成点，不反向改成当前构建的最后使用点，因此构建对输入的持有不会形成引用环。后续 view 提交仍由原执行框架持有真实读取资源，不新增全局历史、资源注册表或额外完成状态。
 
