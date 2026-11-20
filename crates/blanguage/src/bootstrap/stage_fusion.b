@@ -121,17 +121,30 @@ bool overwrites_stage_guarantee(address writes, u64 count, StageGuarantee guaran
     return write.binding == guarantee.binding && u64(write.start) < guarantee.end;
 }
 
-extern "C" void retain_stage_guarantees(address writes, u64 write_count,
-    address guarantees, u64 guarantee_count) on cpu {
-    u64 count = coalesce_stage_writes(writes, write_count);
+u64 retain_guarantee_kind(address writes, u64 write_count, GuaranteeKind kind,
+    u64 count, GuaranteeHost host) on cpu
+    requires nonzero(host.field) requires nonzero(host.swap_slots) {
+    u64 retained = 0u64;
     u64 index = 0u64;
-    while (index < guarantee_count) {
-        address row = unsafe_address(address_bits(guarantees) + index * size_of<StageGuarantee>());
-        StageGuarantee guarantee = unsafe_position<StageGuarantee>(row);
-        guarantee.retained = u64(!overwrites_stage_guarantee(writes, count, guarantee));
-        unsafe_position<StageGuarantee>(row) = guarantee;
+
+    while (index < count) {
+        let guarantee = host.field(host.context, kind, index);
+        if (!overwrites_stage_guarantee(writes, write_count, guarantee)) {
+            if (index != retained) { host.swap_slots(host.context, kind, index, retained); }
+            retained += 1u64;
+        }
         index += 1u64;
     }
+    return retained;
+}
+
+extern "C" GuaranteeCounts retain_stage_guarantees(address writes, u64 write_count,
+    GuaranteeCounts counts, GuaranteeHost host) on cpu
+    requires nonzero(host.field) requires nonzero(host.swap_slots) {
+    let count = coalesce_stage_writes(writes, write_count);
+    let prefix = retain_guarantee_kind(writes, count, GuaranteeKind::Prefix, counts.prefix, host);
+    let element = retain_guarantee_kind(writes, count, GuaranteeKind::Element, counts.element, host);
+    return GuaranteeCounts(prefix, element);
 }
 
 address local_value_at(address values, u64 index) on cpu {

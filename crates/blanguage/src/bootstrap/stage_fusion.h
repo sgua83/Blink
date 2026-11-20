@@ -34,13 +34,20 @@ struct StageGuarantee {
     u64 binding;
     u64 start;
     u64 end;
-    u64 retained;
+};
+enum GuaranteeKind:u32 { Prefix=0; Element=1; };
+struct GuaranteeCounts { u64 prefix; u64 element; };
+struct GuaranteeHost {
+    address context;
+    cfn<StageGuarantee,address,GuaranteeKind,u64> field;
+    cfn<void,address,GuaranteeKind,u64,u64> swap_slots;
 };
 
-// Writes are ordered by binding, then by start and end. B coalesces them in
-// this temporary buffer and marks the original guarantee order in place.
-extern "C" void retain_stage_guarantees(address writes, u64 write_count,
-    address guarantees, u64 guarantee_count) on cpu;
+// Writes arrive ordered by binding, start and end. Surviving guarantees move
+// to the front of each original list in their original order.
+extern "C" GuaranteeCounts retain_stage_guarantees(address writes, u64 write_count,
+    GuaranteeCounts counts, GuaranteeHost host) on cpu
+    requires nonzero(host.field) requires nonzero(host.swap_slots);
 
 struct LocalValue { u64 slot; u64 value; };
 

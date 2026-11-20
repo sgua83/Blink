@@ -1,6 +1,6 @@
 //! 仅在读写与跨元素依赖允许时融合同域阶段；phase 保留全域阶段边界。
 use crate::ir::*;
-use std::collections::{BTreeMap, BTreeSet};
+use std::{collections::{BTreeMap, BTreeSet}, ffi::c_void, ptr};
 mod invariant;
 mod selection;
 mod value_flow;
@@ -59,20 +59,57 @@ struct StageGuarantee {
     binding: usize,
     start: u64,
     end: u64,
-    retained: u64,
 }
 
 impl StageGuarantee {
     fn new(binding: usize, offset: u32, bytes: u32) -> Self {
         let start = u64::from(offset);
-        Self { binding, start, end: start + u64::from(bytes), retained: 0 }
+        Self { binding, start, end: start + u64::from(bytes) }
     }
+}
+
+#[allow(dead_code)] // Passed by bootstrap.stage_fusion.
+#[repr(u32)]
+enum GuaranteeKind { Prefix, Element }
+
+#[repr(C)]
+struct GuaranteeCounts { prefix: usize, element: usize }
+
+#[repr(C)]
+struct GuaranteeHost {
+    context: *mut c_void,
+
+    field: unsafe extern "C" fn(*const c_void, GuaranteeKind, usize) -> StageGuarantee,
+    swap_slots: unsafe extern "C" fn(*mut c_void, GuaranteeKind, usize, usize),
 }
 
 unsafe extern "C" {
     #[link_name = "bootstrap.stage_fusion::retain_stage_guarantees"]
-    fn mark_stage_guarantees(writes: *mut StageWrite, write_count: usize,
-        guarantees: *mut StageGuarantee, guarantee_count: usize);
+    fn compact_stage_guarantees(
+        writes: *mut StageWrite, write_count: usize, counts: GuaranteeCounts, host: GuaranteeHost,
+    ) -> GuaranteeCounts;
+}
+
+unsafe extern "C" fn guarantee_field(context: *const c_void, kind: GuaranteeKind, index: usize) -> StageGuarantee {
+    let stage = unsafe { &*context.cast::<Stage>() };
+    match kind {
+        GuaranteeKind::Prefix => {
+            let count = stage.prefix_guarantees[index].count;
+            StageGuarantee::new(count.binding, count.word, 4)
+        }
+        GuaranteeKind::Element => match &stage.element_guarantees[index] {
+            ElementFact::Range(range) => StageGuarantee::new(range.binding, range.offset, range.scalar.size()),
+            ElementFact::Index { binding, offset, .. } => StageGuarantee::new(*binding, *offset, 4),
+        },
+    }
+}
+
+unsafe extern "C" fn swap_guarantees(context: *mut c_void, kind: GuaranteeKind, left: usize, right: usize) {
+    let stage = unsafe { &mut *context.cast::<Stage>() };
+    match kind {
+        GuaranteeKind::Prefix => stage.prefix_guarantees.swap(left, right),
+        GuaranteeKind::Element => stage.element_guarantees.swap(left, right),
+    }
 }
 
 fn retain_stage_guarantees(previous: &mut Stage, write_regions: &BTreeMap<usize, BTreeSet<(u32, u32)>>) {
@@ -83,20 +120,16 @@ fn retain_stage_guarantees(previous: &mut Stage, write_regions: &BTreeMap<usize,
     let mut writes = write_regions.iter().flat_map(|(&binding, ranges)| {
         ranges.iter().map(move |&(start, end)| StageWrite { binding, start, end })
     }).collect::<Vec<_>>();
-    let mut guarantees = previous.prefix_guarantees.iter()
-        .map(|relation| StageGuarantee::new(relation.count.binding, relation.count.word, 4))
-        .chain(previous.element_guarantees.iter().map(|fact| match fact {
-            ElementFact::Range(range) => StageGuarantee::new(range.binding, range.offset, range.scalar.size()),
-            ElementFact::Index { binding, offset, .. } => StageGuarantee::new(*binding, *offset, 4),
-        })).collect::<Vec<_>>();
-    // Both slices are borrowed only for this call. B preserves the order of the
-    // guarantee rows, so the original Stage can retain its own payloads.
-    unsafe {
-        mark_stage_guarantees(writes.as_mut_ptr(), writes.len(), guarantees.as_mut_ptr(), guarantees.len());
-    }
-    let mut retained = guarantees.into_iter().map(|row| row.retained != 0);
-    previous.prefix_guarantees.retain(|_| retained.next().unwrap());
-    previous.element_guarantees.retain(|_| retained.next().unwrap());
+    let counts = GuaranteeCounts {
+
+        prefix: previous.prefix_guarantees.len(), element: previous.element_guarantees.len(),
+    };
+    let host = GuaranteeHost {
+        context: ptr::from_mut(previous).cast(), field: guarantee_field, swap_slots: swap_guarantees,
+    };
+    let retained = unsafe { compact_stage_guarantees(writes.as_mut_ptr(), writes.len(), counts, host) };
+    previous.prefix_guarantees.truncate(retained.prefix);
+    previous.element_guarantees.truncate(retained.element);
 }
 
 pub fn optimize(program: &mut Program, worker: &crate::compiler::Worker) -> std::io::Result<()> {
