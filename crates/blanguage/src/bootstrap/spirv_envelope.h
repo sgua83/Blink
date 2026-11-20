@@ -533,7 +533,7 @@ struct CustomCollectiveSource {
     u32 tail;
 };
 
-struct CustomCollectiveRead {
+struct CollectiveBranch {
     u64 words;
     u32 next;
     u32 run;
@@ -551,10 +551,25 @@ struct CustomCollectiveJoin {
 };
 
 // The caller applies the original projection in run for a typed source.
-extern "C" CustomCollectiveRead custom_collective_read(CustomCollectiveSource input,
+extern "C" CollectiveBranch custom_collective_read(CustomCollectiveSource input,
     address fields, u32 count, address values, address body) on cpu;
 extern "C" StageWords custom_collective_join(CustomCollectiveJoin input, address values,
     address identity, address shared, u32 count, address body) on cpu;
+
+struct CustomSegmentJoin {
+    u32 uint_type;
+    u32 skipped;
+    u32 combined;
+    u32 end;
+    u32 value_words;
+    u32 counted;
+    u32 next;
+};
+
+extern "C" CollectiveBranch open_custom_segment(u32 bool_type, u32 right_head, u32 zero,
+    u32 next, address body) on cpu;
+extern "C" StageWords close_custom_segment(CustomSegmentJoin input, address left, address right,
+    address values, address body) on cpu;
 
 struct SegmentField {
     BuiltinScalar scalar;

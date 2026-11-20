@@ -14,7 +14,7 @@ struct CustomCollectiveSource {
 }
 
 #[repr(C)]
-struct CustomCollectiveRead {
+struct CollectiveBranch {
     words: u64,
     next: u32,
     run: u32,
@@ -70,7 +70,24 @@ struct CustomTreeClose {
     next: u32,
 }
 
+#[repr(C)]
+struct CustomSegmentJoin {
+    uint_type: u32,
+    skipped: u32,
+    combined: u32,
+    end: u32,
+    value_words: u32,
+    counted: u32,
+    next: u32,
+}
+
 unsafe extern "C" {
+    #[link_name = "bootstrap.spirv_envelope::open_custom_segment"]
+    fn open_custom_segment(bool_type: u32, right_head: u32, zero: u32, next: u32,
+        body: *mut u32) -> CollectiveBranch;
+    #[link_name = "bootstrap.spirv_envelope::close_custom_segment"]
+    fn close_custom_segment(input: CustomSegmentJoin, left: *const u32, right: *const u32,
+        values: *mut u32, body: *mut u32) -> StageWords;
     #[link_name = "bootstrap.spirv_envelope::open_custom_tree"]
     fn emit_open_custom_tree(input: CustomTreeInput, offsets: *const u32, own: *const u32,
         count: u32, workspace: *mut u32, body: *mut u32) -> CustomTreeOpen;
@@ -85,7 +102,7 @@ unsafe extern "C" {
         count: u32, values: *const u32, locations: *const u32, body: *mut u32) -> PayloadWrite;
     #[link_name = "bootstrap.spirv_envelope::custom_collective_read"]
     fn emit_custom_collective_read(input: CustomCollectiveSource, fields: *const PhysicalField,
-        count: u32, values: *mut u32, body: *mut u32) -> CustomCollectiveRead;
+        count: u32, values: *mut u32, body: *mut u32) -> CollectiveBranch;
     #[link_name = "bootstrap.spirv_envelope::custom_collective_join"]
     fn emit_custom_collective_join(input: CustomCollectiveJoin, values: *mut u32,
         identity: *const u32, shared: *const u32, count: u32, body: *mut u32) -> StageWords;
@@ -247,38 +264,35 @@ impl Emitter<'_> {
             return self.custom_pair(r, kernel, left, right);
         }
         let k = r.ty.size.div_ceil(4) as usize;
-        let u = self.types[&Scalar::U32];
+        let uint_type = self.types[&Scalar::U32];
+        let bool_type = self.types[&Scalar::Bool];
         let zero = self.constant(Scalar::U32, 0);
-        let head = self.id();
-        self.emit(171, &[self.types[&Scalar::Bool], head, right[k], zero]);
-        let keep = self.id();
-        let combine = self.id();
-        let end = self.id();
-        self.emit(247, &[end, 0]);
-        self.emit(250, &[head, keep, combine]);
-        self.emit(248, &[keep]);
-        self.emit(249, &[end]);
-        self.emit(248, &[combine]);
-        let merged = self.custom_pair(r, kernel, &left[..k], &right[..k])?;
-        let combined = self.current_label;
-        self.emit(249, &[end]);
-        self.emit(248, &[end]);
-        let mut values: Vec<_> = merged
-            .iter()
-            .zip(right)
-            .map(|(m, r)| {
-                let value = self.id();
-                self.emit(245, &[u, value, *r, keep, *m, combined]);
-                value
-            })
-            .collect();
-        let flags = self.id();
-        self.emit(197, &[u, flags, left[k], right[k]]);
-        values.push(flags);
-        if matches!(summary, Summary::Counted(_)) {
-            let count = self.id();
-            self.emit(128, &[u, count, left[k + 1], right[k + 1]]);
-            values.push(count);
+        let skipped = self.current_label;
+        let body = self.body.len();
+        self.body.reserve(14);
+        let open = unsafe {
+            let open = open_custom_segment(bool_type, right[k], zero, self.next,
+                self.body.as_mut_ptr().add(body));
+            self.body.set_len(body + open.words as usize);
+            open
+        };
+        self.next = open.next;
+        self.current_label = open.run;
+        let mut values = self.custom_pair(r, kernel, &left[..k], &right[..k])?;
+        values.resize(summary.words(k), 0);
+        let join = CustomSegmentJoin {
+            uint_type, skipped, combined: self.current_label, end: open.end,
+            value_words: k as u32, counted: u32::from(matches!(summary, Summary::Counted(_))),
+            next: self.next,
+        };
+        let body = self.body.len();
+        self.body.reserve(14 + 7 * k);
+        unsafe {
+            let emitted = close_custom_segment(join, left.as_ptr(), right.as_ptr(),
+                values.as_mut_ptr(), self.body.as_mut_ptr().add(body));
+            self.body.set_len(body + emitted.words as usize);
+            self.next = emitted.next;
+            self.current_label = emitted.label;
         }
         Ok(values)
     }

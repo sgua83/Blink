@@ -1195,9 +1195,9 @@ StageBranch stage_open(inout StageCursor out, u32 condition) on cpu {
     return stage_branch(out, condition, false);
 }
 
-void stage_close(inout StageCursor out, StageBranch branch) on cpu {
-    out.words = words_one(out.body, out.words, 249, branch.end);
-    out.words = words_one(out.body, out.words, 248, branch.end);
+void stage_close(inout StageCursor out, u32 end) on cpu {
+    out.words = words_one(out.body, out.words, 249, end);
+    out.words = words_one(out.body, out.words, 248, end);
 }
 
 u32 stage_phi(inout StageCursor out, u32 ty, u32 a, u32 edge_a, u32 b, u32 edge_b) on cpu {
@@ -1265,7 +1265,7 @@ extern "C" StageWords encode_sort_rank(SortRankEmission input, address body) on 
     u32 loaded = stage_load(out, u, source.pointer, true);
     u32 ordinal = zero;
     if (!histogram) { ordinal = stage_load(out, u, source.second, true); }
-    stage_close(out, read);
+    stage_close(out, read.end);
     u32 key = stage_phi(out, u, zero, input.label, loaded, read.run);
     if (!histogram) { ordinal = stage_phi(out, u, zero, input.label, ordinal, read.run); }
 
@@ -1291,7 +1291,7 @@ extern "C" StageWords encode_sort_rank(SortRankEmission input, address body) on 
     StageBranch clear = stage_open(out, init);
     u32 cell = stage_op(out, 65, input.shared_pointer, input.shared, local);
     out.words = words_two(body, out.words, 62, cell, zero);
-    stage_close(out, clear);
+    stage_close(out, clear.end);
     stage_barrier(out, input.workgroup_scope, input.shared_semantics);
 
     u32 first = stage_op(out, 170, b, rank, zero);
@@ -1301,7 +1301,7 @@ extern "C" StageWords encode_sort_rank(SortRankEmission input, address body) on 
     StageBranch write = stage_open(out, leader);
     u32 cell_out = stage_op(out, 65, input.shared_pointer, input.shared, own_bin);
     out.words = words_two(body, out.words, 62, cell_out, total);
-    stage_close(out, write);
+    stage_close(out, write.end);
     stage_barrier(out, input.workgroup_scope, input.shared_semantics);
 
     DispatchValue groups = dispatch_groups(body, DispatchValue(out.words, out.next, 0), types, input.count, input.width, true);
@@ -1320,7 +1320,7 @@ extern "C" StageWords encode_sort_rank(SortRankEmission input, address body) on 
         u32 slot = stage_op(out, 128, u, row, group);
         PageAddressResult target = stage_address(out, input.totals, slot, 0);
         out.words = words_four(body, out.words, 62, target.pointer, sum_bin, 2, 4);
-        stage_close(out, sum);
+        stage_close(out, sum.end);
         return StageWords(out.words, out.next, sum.end);
     }
 
@@ -1338,7 +1338,7 @@ extern "C" StageWords encode_sort_rank(SortRankEmission input, address body) on 
     PageAddressResult target = stage_address(out, input.target, index_out, input.pair_step);
     out.words = words_four(body, out.words, 62, target.pointer, key, 2, 4);
     out.words = words_four(body, out.words, 62, target.second, ordinal, 2, 4);
-    stage_close(out, scatter);
+    stage_close(out, scatter.end);
     return StageWords(out.words, out.next, scatter.end);
 }
 
@@ -1452,7 +1452,7 @@ extern "C" StageWords encode_sort_gather(PageAddress indices, address layout, u3
     PageAddressResult at = stage_address(out, indices, indices.index, 0);
     u32 original = stage_load(out, indices.u32_type, at.pointer, true);
     copy_record(out, layout, original, indices.index);
-    stage_close(out, run);
+    stage_close(out, run.end);
     return StageWords(out.words, out.next, run.end);
 }
 
@@ -1503,8 +1503,8 @@ StageWords emit_scatter(ScatterInput input, read ScatterTarget target, address b
     u32 empty = stage_op(out, 170, input.bool_type, input.count, flag.zero);
     StageBranch empty_branch = stage_open(out, empty);
     scatter_count(out, flag, target, flag.zero);
-    stage_close(out, empty_branch);
-    stage_close(out, first_branch);
+    stage_close(out, empty_branch.end);
+    stage_close(out, first_branch.end);
 
     StageBranch active_branch = stage_open(out, input.active);
     PageAddressResult flag_at = stage_address(out, flag, flag.index, 0);
@@ -1518,7 +1518,7 @@ StageWords emit_scatter(ScatterInput input, read ScatterTarget target, address b
     u32 prefix = stage_load(out, flag.u32_type, prefix_at.pointer, true);
     StageBranch keep_branch = stage_open(out, keep);
     scatter_selected(out, flag, target, prefix);
-    stage_close(out, keep_branch);
+    stage_close(out, keep_branch.end);
 
     u32 after_index = stage_op(out, 128, flag.u32_type, flag.index, flag.one);
     u32 last = stage_op(out, 170, input.bool_type, after_index, input.count);
@@ -1528,8 +1528,8 @@ StageWords emit_scatter(ScatterInput input, read ScatterTarget target, address b
     out.words = select_words(body, out.words, flag.u32_type, chosen, keep, flag.one, flag.zero);
     u32 total = stage_op(out, 128, flag.u32_type, prefix, chosen);
     scatter_count(out, flag, target, total);
-    stage_close(out, last_branch);
-    stage_close(out, active_branch);
+    stage_close(out, last_branch.end);
+    stage_close(out, active_branch.end);
     return StageWords(out.words, out.next, active_branch.end);
 }
 
@@ -1778,7 +1778,7 @@ TreeWords stage_tree_layer(inout StageCursor out, TreeLayer input, u32 global_in
         }
         write_stage_payload(out, payload, value, reduction ? left : right, shifts);
     }
-    stage_close(out, branch);
+    stage_close(out, branch.end);
     stage_barrier(out, input.scope, input.semantics);
     return TreeWords(out.words, decorated, out.next, branch.end);
 }
@@ -2088,7 +2088,7 @@ u32 write_reduction(inout StageCursor out, ReductionWriteback input, u32 owner, 
     StageBranch write = stage_open(out, owner);
     PageAddress target = reduction_target(out, input);
     write_collective_record(out, target, fields, count, pointers, true, address());
-    stage_close(out, write);
+    stage_close(out, write.end);
     return write.end;
 }
 
@@ -2124,7 +2124,7 @@ void initialize_collective(inout StageCursor out, PageAddress source, Collective
             put(values, 2u64 * u64(index) + 1u64, stage_aligned_load(out, u, from[1], 4));
         }
     }
-    stage_close(out, read);
+    stage_close(out, read.end);
 
     for (index in 0..count) {
         let component = unsafe_position<TreeComponent>(
@@ -2223,14 +2223,14 @@ extern "C" TreeWords scan_group(ScanGroup input, address levels, address compone
             out.words = words_two(body, out.words, 62, read_word(workspace, slot + 1), input.lanes.identity[1]);
         }
     }
-    stage_close(out, save);
+    stage_close(out, save.end);
     stage_barrier(out, input.lanes.scope, input.lanes.semantics);
 
     decorated += scan_tree_levels(out, input, remaining, true, levels, components, count, workspace,
         word_at(decorations, decorated));
     StageBranch write = stage_open(out, input.lanes.active);
     write_collective_record(out, target, fields, count, workspace, true, address());
-    stage_close(out, write);
+    stage_close(out, write.end);
     return TreeWords(out.words, decorated, out.next, write.end);
 }
 
@@ -2301,18 +2301,49 @@ extern "C" TreeWords add_scan_prefix(ScanPrefix input, address fields, u32 count
         u32 apply = stage_op(out, 166, input.bool_type, before, absent);
         StageBranch branch = stage_open(out, apply);
         u64 decorated = write_scan_prefix(out, input, group, first, fields, count, decorations);
-        stage_close(out, branch);
+        stage_close(out, branch.end);
         return TreeWords(out.words, decorated, out.next, branch.end);
     }
     u64 decorated = write_scan_prefix(out, input, group, first, fields, count, decorations);
     return TreeWords(out.words, decorated, out.next, input.label);
 }
 
+void write_segment_tags(inout StageCursor out, u32 uint_type, u32 k, u32 counted,
+    address left, address right, address values) on cpu {
+    u32 left_head = read_word(left, k);
+    u32 right_head = read_word(right, k);
+    put(values, u64(k), stage_op(out, 197, uint_type, left_head, right_head));
+    if (counted != 0) {
+        u32 segments = stage_op(out, 128, uint_type, read_word(left, k + 1), read_word(right, k + 1));
+        put(values, u64(k + 1), segments);
+    }
+}
+
+extern "C" CollectiveBranch open_custom_segment(u32 bool_type, u32 right_head, u32 zero,
+    u32 next, address body) on cpu {
+    StageCursor out = StageCursor(body, 0u64, next);
+    u32 starts = stage_op(out, 171, bool_type, right_head, zero);
+    StageBranch branch = stage_branch(out, starts, true);
+    return CollectiveBranch(out.words, out.next, branch.run, branch.end);
+}
+
+extern "C" StageWords close_custom_segment(CustomSegmentJoin input, address left, address right,
+    address values, address body) on cpu {
+    StageCursor out = StageCursor(body, 0u64, input.next);
+    stage_close(out, input.end);
+    for (part in 0..input.value_words) {
+        u32 value = stage_phi(out, input.uint_type, read_word(right, part), input.skipped,
+            read_word(values, part), input.combined);
+        put(values, u64(part), value);
+    }
+    write_segment_tags(out, input.uint_type, input.value_words, input.counted, left, right, values);
+    return StageWords(out.words, out.next, input.end);
+}
+
 u64 merge_segment(inout StageCursor out, SegmentMerge input, address fields, u32 count,
     address left, address right, address values, address decorations) on cpu {
     address body = out.body;
     u32 k = input.value_words;
-    u32 left_head = read_word(left, k);
     u32 right_head = read_word(right, k);
     u32 starts = stage_op(out, 171, input.bool_type, right_head, input.zero);
     u64 decorated = 0u64;
@@ -2337,11 +2368,7 @@ u64 merge_segment(inout StageCursor out, SegmentMerge input, address fields, u32
         out.words += words.words;
         out.next = words.next;
     }
-    put(values, u64(k), stage_op(out, 197, input.uint_type, left_head, right_head));
-    if (input.counted != 0) {
-        u32 segments = stage_op(out, 128, input.uint_type, read_word(left, k + 1), read_word(right, k + 1));
-        put(values, u64(k + 1), segments);
-    }
+    write_segment_tags(out, input.uint_type, k, input.counted, left, right, values);
     return decorated;
 }
 
@@ -2389,12 +2416,11 @@ extern "C" CustomTreeOpen open_custom_tree(CustomTreeInput input, address offset
 extern "C" StageWords close_custom_tree(CustomTreeClose input, address own, address left,
     address values, u32 count, address body) on cpu {
     StageCursor out = StageCursor(body, 0u64, input.next);
-    StageBranch merge = StageBranch(input.from, input.merged);
     if (input.down != 0) {
         out.words += write_summary_words(word_at(body, out.words), own, values, count);
-        stage_close(out, merge);
+        stage_close(out, input.merged);
     } else {
-        stage_close(out, merge);
+        stage_close(out, input.merged);
         for (part in 0..count) {
             u32 value = stage_phi(out, input.uint_type, read_word(values, part), input.from,
                 read_word(left, part), input.absent);
@@ -2402,7 +2428,7 @@ extern "C" StageWords close_custom_tree(CustomTreeClose input, address own, addr
         }
         out.words += write_summary_words(word_at(body, out.words), own, values, count);
     }
-    stage_close(out, StageBranch(input.absent, input.end));
+    stage_close(out, input.end);
     stage_barrier(out, input.scope, input.semantics);
     return StageWords(out.words, out.next, input.end);
 }
@@ -2449,7 +2475,7 @@ u64 segment_tree(inout StageCursor out, SegmentGroup input, u32 remaining, bool 
             out.words += write_summary_words(word_at(out.body, out.words), a_ptr, b, words);
         }
         out.words += write_summary_words(word_at(out.body, out.words), b_ptr, merged, words);
-        stage_close(out, branch);
+        stage_close(out, branch.end);
         stage_barrier(out, input.scope, input.semantics);
     }
     return decorated;
@@ -2509,7 +2535,7 @@ extern "C" TreeWords segment_add(SegmentAdd input, address fields, u32 count,
     }
 
     out.words += write_summary_words(word_at(body, out.words), target_ptrs, merged, words);
-    stage_close(out, branch);
+    stage_close(out, branch.end);
     return TreeWords(out.words, decorated, out.next, branch.end);
 }
 
@@ -2522,7 +2548,7 @@ u32 segment_indicator(inout StageCursor out, PageAddress source, u32 bool_type, 
     return stage_select(out, source.u32_type, flag, source.one, source.zero);
 }
 
-extern "C" CustomCollectiveRead custom_collective_read(CustomCollectiveSource input,
+extern "C" CollectiveBranch custom_collective_read(CustomCollectiveSource input,
     address fields, u32 count, address values, address body) on cpu {
     PageAddress source = input.source;
     StageCursor out = StageCursor(body, 0u64, source.next);
@@ -2558,7 +2584,7 @@ extern "C" CustomCollectiveRead custom_collective_read(CustomCollectiveSource in
             if (input.tag_words == 2) { put(values, u64(count + 1), tag); }
         }
     }
-    return CustomCollectiveRead(out.words, out.next, read.run, read.end);
+    return CollectiveBranch(out.words, out.next, read.run, read.end);
 }
 
 
@@ -2667,7 +2693,7 @@ u32 segment_scan_write(inout StageCursor out, SegmentGroup input, u32 group, u32
     PageAddress target = segment_page(input.source, input.target, input.source.index, 0);
     write_segment_result(out, target, target.index, storage, field_count,
         exclusive, is_head, identity);
-    stage_close(out, write);
+    stage_close(out, write.end);
 
     u32 no_previous = stage_op(out, 170, b, previous, zero);
     u32 last_or_head = stage_op(out, 166, b, is_last, is_head);
@@ -2678,7 +2704,7 @@ u32 segment_scan_write(inout StageCursor out, SegmentGroup input, u32 group, u32
     PageAddress summary = segment_page(input.source, input.summary, group, input.marker_word);
     PageAddressResult pointer = stage_address(out, summary, group, 0);
     out.words = aligned_store(out.body, out.words, pointer.pointer, marker, 4);
-    stage_close(out, save);
+    stage_close(out, save.end);
     return save.end;
 }
 
@@ -2708,7 +2734,7 @@ TreeWords segment_finish(inout StageCursor out, SegmentGroup input, u32 group, a
     StageBranch load = stage_branch(out, first_group, true);
     PageAddress parent = segment_page(input.source, input.summary, group, 0);
     read_segment_summary(out, parent, input.step, words, prefix_ptrs, prefix);
-    stage_close(out, load);
+    stage_close(out, load.end);
     for (part in 0..words) {
         u32 value = stage_phi(out, u, read_word(prefix, part), load.run, read_word(identity, part), write.run);
         put(prefix, u64(part), value);
@@ -2723,7 +2749,7 @@ TreeWords segment_finish(inout StageCursor out, SegmentGroup input, u32 group, a
     PageAddressResult pointer = stage_address(out, source, next, 0);
     u32 head = stage_aligned_load(out, u, pointer.pointer, 4);
     u32 starts = stage_op(out, 171, b, head, zero);
-    stage_close(out, look);
+    stage_close(out, look.end);
     u32 tail = stage_phi(out, b, last, load.end, starts, look.run);
 
     u32 segments = read_word(total, input.merge.value_words + 1);
@@ -2731,12 +2757,12 @@ TreeWords segment_finish(inout StageCursor out, SegmentGroup input, u32 group, a
     u32 index = stage_op(out, 130, u, segments, one);
     PageAddress row = segment_page(input.source, input.target, index, 0);
     write_segment_result(out, row, index, storage, field_count, total, 0, identity);
-    stage_close(out, store);
+    stage_close(out, store.end);
 
     StageBranch counted = stage_open(out, last);
     write_segment_count(out, input, segments);
-    stage_close(out, counted);
-    stage_close(out, write);
+    stage_close(out, counted.end);
+    stage_close(out, write.end);
     return TreeWords(out.words, decorated, out.next, write.end);
 }
 
@@ -2763,7 +2789,7 @@ extern "C" TreeWords segment_group(SegmentGroup input, address levels, address f
     } else {
         segment_source(out, input, source_fields, field_count, item);
     }
-    stage_close(out, read);
+    stage_close(out, read.end);
     for (part in 0..words) {
         u32 value = stage_phi(out, u, read_word(item, part), read.run, read_word(identity, part), input.before);
         put(item, u64(part), value);
@@ -2800,7 +2826,7 @@ extern "C" TreeWords segment_group(SegmentGroup input, address levels, address f
     if (finish) {
         StageBranch zero = stage_open(out, empty);
         write_segment_count(out, input, input.merge.zero);
-        stage_close(out, zero);
+        stage_close(out, zero.end);
     } else {
         u32 published = counted || tail ? words : input.merge.value_words;
         read_segment_values(out, u, published, root, values);
@@ -2811,7 +2837,7 @@ extern "C" TreeWords segment_group(SegmentGroup input, address levels, address f
     if (down) {
         out.words += write_summary_words(word_at(body, out.words), root, identity, words);
     }
-    stage_close(out, save);
+    stage_close(out, save.end);
     if (!down) { return TreeWords(out.words, decorated, out.next, save.end); }
 
     stage_barrier(out, input.scope, input.semantics);
@@ -2824,7 +2850,7 @@ extern "C" TreeWords segment_group(SegmentGroup input, address levels, address f
         PageAddress target = segment_page(input.source, input.target, input.source.index, 0);
         segment_summary_addresses(out, target, input.step, words, pointers);
         out.words += write_summary_words(word_at(body, out.words), pointers, values, words);
-        stage_close(out, write);
+        stage_close(out, write.end);
         return TreeWords(out.words, decorated, out.next, write.end);
     }
     if (finish) {
