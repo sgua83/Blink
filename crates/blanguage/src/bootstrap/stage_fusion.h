@@ -142,7 +142,7 @@ enum VfReuseKind:u32 { Expression=0; LocalRead=1; IndexedRead=2; IndexedStoreRea
 enum VfRole:u32 { Value=0; Quotient=1; Remainder=2; };
 struct VfExpression { u32 kind; u32 operation; u64 first; u64 second; u64 third; address arguments; u64 count; };
 struct VfOptional { u64 value; u32 present; };
-struct VfDivision { u64 position; u64 quotient; u64 remainder; u32 mask; u32 present; };
+struct VfDivision { address instruction; u64 quotient; u64 remainder; u32 mask; u32 present; };
 struct VfMemory { u64 value; address origin; u32 present; };
 struct VfReuse { address origin; VfReuseKind kind; VfRole role; u32 paired; };
 struct VfNode {
@@ -156,6 +156,9 @@ struct VfHost {
     cfn<VfNode,address,address> read;
     cfn<void,address,address> remap;
     cfn<VfFlow,address,address,address> block;
+    cfn<Span,address> instruction_span;
+    cfn<void,address,address> swap_instructions;
+    cfn<void,address,u64> truncate;
     cfn<address,VfStateOp,address,address,VfMap> state;
     cfn<VfOptional,address,VfRegMap,u64> get;
     cfn<void,address,VfRegMap,u64,u64> put;
@@ -167,8 +170,7 @@ struct VfHost {
     cfn<VfOptional,address,VfExpression,u64> expression;
     cfn<VfDivision,address,VfDivisionOp,u64,u64,u64,VfDivision> division;
     cfn<void,address,VfDivisionChoice,u64,u64> rewrite_division;
-    cfn<void,address,address,VfDivision,address,u64,u64,u64> pair;
-    cfn<u64,address> position;
+    cfn<void,address,address,address,address,u64,u64,u64> pair;
     cfn<void,address,u64,address,VfReuse> note;
     cfn<VfMemory,address,u64,u64,u32> memory_get;
     cfn<void,address,u64,u64,u32,u64,address> memory_put;
@@ -181,37 +183,16 @@ struct VfHost {
 extern "C" u64 value_root(address values,u64 reg,cfn<VfOptional,address,VfRegMap,u64> get) on cpu requires nonzero(get);
 extern "C" u32 value_memory_keeps(u32 mode,u64 binding,u64 index,u32 word,u64 target,u64 at,u32 field) on cpu;
 extern "C" void value_alias(address values,u32 kind,u64 first,u64 length,VfHost host) on cpu 
-    requires nonzero(host.read) requires nonzero(host.remap) requires nonzero(host.block) requires nonzero(host.state)
-    requires nonzero(host.get) requires nonzero(host.put) requires nonzero(host.remove_range) requires nonzero(host.snapshot)
-    requires nonzero(host.intersect) requires nonzero(host.drop_snapshot) requires nonzero(host.apply) requires nonzero(host.expression)
-    requires nonzero(host.division) requires nonzero(host.rewrite_division) requires nonzero(host.pair) requires nonzero(host.position)
-    requires nonzero(host.note) requires nonzero(host.memory_get) requires nonzero(host.memory_put) requires nonzero(host.memory_filter)
-    requires nonzero(host.aliases) requires nonzero(host.written) requires nonzero(host.call);
+    requires nonzero(host.remove_range) requires nonzero(host.memory_filter);
 extern "C" void value_call_effect(address values,u32 kind,u64 first,u64 length,u32 writes,VfHost host) on cpu 
+    requires nonzero(host.state) requires nonzero(host.remove_range) requires nonzero(host.memory_filter);
+extern "C" VfFlow value_block(address block,address values,address context,VfHost host) on cpu
     requires nonzero(host.read) requires nonzero(host.remap) requires nonzero(host.block) requires nonzero(host.state)
     requires nonzero(host.get) requires nonzero(host.put) requires nonzero(host.remove_range) requires nonzero(host.snapshot)
     requires nonzero(host.intersect) requires nonzero(host.drop_snapshot) requires nonzero(host.apply) requires nonzero(host.expression)
-    requires nonzero(host.division) requires nonzero(host.rewrite_division) requires nonzero(host.pair) requires nonzero(host.position)
+    requires nonzero(host.division) requires nonzero(host.rewrite_division) requires nonzero(host.pair)
     requires nonzero(host.note) requires nonzero(host.memory_get) requires nonzero(host.memory_put) requires nonzero(host.memory_filter)
-    requires nonzero(host.aliases) requires nonzero(host.written) requires nonzero(host.call);
-extern "C" VfAction value_instruction(address instruction,address values,inout VfFlow flow,address context,VfHost host) on cpu 
-    requires nonzero(host.read) requires nonzero(host.remap) requires nonzero(host.block) requires nonzero(host.state)
-    requires nonzero(host.get) requires nonzero(host.put) requires nonzero(host.remove_range) requires nonzero(host.snapshot)
-    requires nonzero(host.intersect) requires nonzero(host.drop_snapshot) requires nonzero(host.apply) requires nonzero(host.expression)
-    requires nonzero(host.division) requires nonzero(host.rewrite_division) requires nonzero(host.pair) requires nonzero(host.position)
-    requires nonzero(host.note) requires nonzero(host.memory_get) requires nonzero(host.memory_put) requires nonzero(host.memory_filter)
-    requires nonzero(host.aliases) requires nonzero(host.written) requires nonzero(host.call);
-extern "C" VfFlow value_finish(address values,VfFlow flow,u32 continuing,VfHost host) on cpu 
-    requires nonzero(host.read) requires nonzero(host.remap) requires nonzero(host.block) requires nonzero(host.state)
-    requires nonzero(host.get) requires nonzero(host.put) requires nonzero(host.remove_range) requires nonzero(host.snapshot)
-    requires nonzero(host.intersect) requires nonzero(host.drop_snapshot) requires nonzero(host.apply) requires nonzero(host.expression)
-    requires nonzero(host.division) requires nonzero(host.rewrite_division) requires nonzero(host.pair) requires nonzero(host.position)
-    requires nonzero(host.note) requires nonzero(host.memory_get) requires nonzero(host.memory_put) requires nonzero(host.memory_filter)
-    requires nonzero(host.aliases) requires nonzero(host.written) requires nonzero(host.call);
+    requires nonzero(host.aliases) requires nonzero(host.written) requires nonzero(host.call)
+    requires nonzero(host.instruction_span) requires nonzero(host.swap_instructions) requires nonzero(host.truncate);
 extern "C" void value_discard_flow(VfFlow flow,VfHost host) on cpu 
-    requires nonzero(host.read) requires nonzero(host.remap) requires nonzero(host.block) requires nonzero(host.state)
-    requires nonzero(host.get) requires nonzero(host.put) requires nonzero(host.remove_range) requires nonzero(host.snapshot)
-    requires nonzero(host.intersect) requires nonzero(host.drop_snapshot) requires nonzero(host.apply) requires nonzero(host.expression)
-    requires nonzero(host.division) requires nonzero(host.rewrite_division) requires nonzero(host.pair) requires nonzero(host.position)
-    requires nonzero(host.note) requires nonzero(host.memory_get) requires nonzero(host.memory_put) requires nonzero(host.memory_filter)
-    requires nonzero(host.aliases) requires nonzero(host.written) requires nonzero(host.call);
+    requires nonzero(host.drop_snapshot);

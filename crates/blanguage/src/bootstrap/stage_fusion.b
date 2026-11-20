@@ -261,14 +261,14 @@ DceResults dce_results(address instruction,address needed,DceHost host) on cpu r
     }
     return output;
 }
-address dce_instruction_at(Span code,u64 index) on cpu {
+address block_instruction_at(Span code,u64 index) on cpu {
     return unsafe_address(address_bits(code.data)+index*u64(code.stride));
 }
 
 bool dce_scope_observable(Span code,address after,DceHost host) on cpu requires nonzero(host.ir.inspect) requires nonzero(host.storage) requires nonzero(host.read_block) requires nonzero(host.contains) {
     u64 index=0u64;
     while(index<code.count){
-        address instruction=dce_instruction_at(code,index);
+        address instruction=block_instruction_at(code,index);
         View value=host.ir.inspect(Node(instruction,N_INSTRUCTION));u32 kind=value.tag;
         if(kind==OP_STORE_LOCAL){
             if(host.contains(after,1,value.a)!=0){return true;}
@@ -387,11 +387,11 @@ extern "C" void eliminate_code(address block,address needed,
     // The retained suffix is already ordered. No move touches an unread instruction.
     while(read!=0u64){
         read-=1u64;
-        address instruction=dce_instruction_at(code,read);
+        address instruction=block_instruction_at(code,read);
         if(eliminate_instruction(instruction,needed,break_live,continue_live,exit_live,empty,context,host)){
             write-=1u64;
             if(write!=read){
-                host.swap_instructions(instruction,dce_instruction_at(code,write));
+                host.swap_instructions(instruction,block_instruction_at(code,write));
             }
         }
     }
@@ -409,22 +409,12 @@ extern "C" u32 value_memory_keeps(u32 mode,u64 binding,u64 index,u32 word,u64 ta
     return binding!=target || (index==at && word!=field) ? 1 : 0;
 }
 extern "C" void value_alias(address values,u32 kind,u64 first,u64 length,VfHost host) on cpu 
-    requires nonzero(host.read) requires nonzero(host.remap) requires nonzero(host.block) requires nonzero(host.state)
-    requires nonzero(host.get) requires nonzero(host.put) requires nonzero(host.remove_range) requires nonzero(host.snapshot)
-    requires nonzero(host.intersect) requires nonzero(host.drop_snapshot) requires nonzero(host.apply) requires nonzero(host.expression)
-    requires nonzero(host.division) requires nonzero(host.rewrite_division) requires nonzero(host.pair) requires nonzero(host.position)
-    requires nonzero(host.note) requires nonzero(host.memory_get) requires nonzero(host.memory_put) requires nonzero(host.memory_filter)
-    requires nonzero(host.aliases) requires nonzero(host.written) requires nonzero(host.call) {
+    requires nonzero(host.remove_range) requires nonzero(host.memory_filter) {
     if(kind==0){host.remove_range(values,first,first+length);}
     else {host.memory_filter(values,0,first,0u64,0);}
 }
 extern "C" void value_call_effect(address values,u32 kind,u64 first,u64 length,u32 writes,VfHost host) on cpu 
-    requires nonzero(host.read) requires nonzero(host.remap) requires nonzero(host.block) requires nonzero(host.state)
-    requires nonzero(host.get) requires nonzero(host.put) requires nonzero(host.remove_range) requires nonzero(host.snapshot)
-    requires nonzero(host.intersect) requires nonzero(host.drop_snapshot) requires nonzero(host.apply) requires nonzero(host.expression)
-    requires nonzero(host.division) requires nonzero(host.rewrite_division) requires nonzero(host.pair) requires nonzero(host.position)
-    requires nonzero(host.note) requires nonzero(host.memory_get) requires nonzero(host.memory_put) requires nonzero(host.memory_filter)
-    requires nonzero(host.aliases) requires nonzero(host.written) requires nonzero(host.call) {
+    requires nonzero(host.state) requires nonzero(host.remove_range) requires nonzero(host.memory_filter) {
     if(writes==0){return;}
     if(kind==0){host.remove_range(values,first,first+1u64);}
     else if(kind==1 || kind==4){host.memory_filter(values,0,first,0u64,0);}
@@ -432,24 +422,14 @@ extern "C" void value_call_effect(address values,u32 kind,u64 first,u64 length,u
     else {host.remove_range(values,first,first+length);}
 }
 void vf_merge(inout address left,address right,VfHost host) on cpu 
-    requires nonzero(host.read) requires nonzero(host.remap) requires nonzero(host.block) requires nonzero(host.state)
-    requires nonzero(host.get) requires nonzero(host.put) requires nonzero(host.remove_range) requires nonzero(host.snapshot)
-    requires nonzero(host.intersect) requires nonzero(host.drop_snapshot) requires nonzero(host.apply) requires nonzero(host.expression)
-    requires nonzero(host.division) requires nonzero(host.rewrite_division) requires nonzero(host.pair) requires nonzero(host.position)
-    requires nonzero(host.note) requires nonzero(host.memory_get) requires nonzero(host.memory_put) requires nonzero(host.memory_filter)
-    requires nonzero(host.aliases) requires nonzero(host.written) requires nonzero(host.call) {
+    requires nonzero(host.intersect) {
     if(address_bits(right)!=0u64){
         if(address_bits(left)!=0u64){host.intersect(left,right);}
         else {left=right;}
     }
 }
 bool vf_resume(address values,inout VfFlow flow,VfFlow step,VfHost host) on cpu 
-    requires nonzero(host.read) requires nonzero(host.remap) requires nonzero(host.block) requires nonzero(host.state)
-    requires nonzero(host.get) requires nonzero(host.put) requires nonzero(host.remove_range) requires nonzero(host.snapshot)
-    requires nonzero(host.intersect) requires nonzero(host.drop_snapshot) requires nonzero(host.apply) requires nonzero(host.expression)
-    requires nonzero(host.division) requires nonzero(host.rewrite_division) requires nonzero(host.pair) requires nonzero(host.position)
-    requires nonzero(host.note) requires nonzero(host.memory_get) requires nonzero(host.memory_put) requires nonzero(host.memory_filter)
-    requires nonzero(host.aliases) requires nonzero(host.written) requires nonzero(host.call) {
+    requires nonzero(host.intersect) requires nonzero(host.state) requires nonzero(host.apply) {
     vf_merge(flow.exits,step.exits,host);
     bool continuing=address_bits(step.next)!=0u64;
     host.state(VfStateOp::Clear,values,unsafe_address(0u64),VfMap::Locals);
@@ -458,12 +438,7 @@ bool vf_resume(address values,inout VfFlow flow,VfFlow step,VfHost host) on cpu
     return continuing;
 }
 address vf_child(address values,VfHost host) on cpu 
-    requires nonzero(host.read) requires nonzero(host.remap) requires nonzero(host.block) requires nonzero(host.state)
-    requires nonzero(host.get) requires nonzero(host.put) requires nonzero(host.remove_range) requires nonzero(host.snapshot)
-    requires nonzero(host.intersect) requires nonzero(host.drop_snapshot) requires nonzero(host.apply) requires nonzero(host.expression)
-    requires nonzero(host.division) requires nonzero(host.rewrite_division) requires nonzero(host.pair) requires nonzero(host.position)
-    requires nonzero(host.note) requires nonzero(host.memory_get) requires nonzero(host.memory_put) requires nonzero(host.memory_filter)
-    requires nonzero(host.aliases) requires nonzero(host.written) requires nonzero(host.call) {
+    requires nonzero(host.state) {
     address child=host.state(VfStateOp::New,unsafe_address(0u64),unsafe_address(0u64),VfMap::Aliases);
     host.state(VfStateOp::Move,child,values,VfMap::Aliases);
     host.state(VfStateOp::Copy,child,values,VfMap::Expressions);
@@ -471,17 +446,17 @@ address vf_child(address values,VfHost host) on cpu
     host.state(VfStateOp::Move,child,values,VfMap::Memory);
     return child;
 }
-extern "C" VfAction value_instruction(address instruction,address values,inout VfFlow flow,address context,VfHost host) on cpu 
+VfAction value_instruction(address instruction,address retained_at,address values,inout VfFlow flow,address context,VfHost host) on cpu
     requires nonzero(host.read) requires nonzero(host.remap) requires nonzero(host.block) requires nonzero(host.state)
     requires nonzero(host.get) requires nonzero(host.put) requires nonzero(host.remove_range) requires nonzero(host.snapshot)
     requires nonzero(host.intersect) requires nonzero(host.drop_snapshot) requires nonzero(host.apply) requires nonzero(host.expression)
-    requires nonzero(host.division) requires nonzero(host.rewrite_division) requires nonzero(host.pair) requires nonzero(host.position)
+    requires nonzero(host.division) requires nonzero(host.rewrite_division) requires nonzero(host.pair)
     requires nonzero(host.note) requires nonzero(host.memory_get) requires nonzero(host.memory_put) requires nonzero(host.memory_filter)
     requires nonzero(host.aliases) requires nonzero(host.written) requires nonzero(host.call) {
     host.remap(instruction,values);
     VfNode node=host.read(instruction,context);
     address none=unsafe_address(0u64);
-    VfDivision empty=VfDivision(0u64,0u64,0u64,0,0);
+    VfDivision empty=VfDivision(none,0u64,0u64,0,0);
     if(node.kind==VfKind::If || node.kind==VfKind::Loop || node.kind==VfKind::Scope || node.kind==VfKind::Exit || node.kind==VfKind::Raise ||
         node.kind==VfKind::Publish || node.kind==VfKind::Collective || node.kind==VfKind::Barrier || node.kind==VfKind::Break || node.kind==VfKind::Continue){
         host.division(context,VfDivisionOp::Clear,0u64,0u64,0u64,empty);
@@ -515,11 +490,13 @@ extern "C" VfAction value_instruction(address instruction,address values,inout V
         if(previous.present!=0 && ((previous.mask==1 && retained==2)||(previous.mask==2 && retained==1))){
             u64 quotient=retained==1 ? node.dst : previous.quotient;
             u64 remainder=retained==2 ? node.extra : previous.remainder;
-            host.pair(context,instruction,previous,node.divisor,node.first,quotient,remainder);
+            address quotient_from=retained==1 ? instruction : previous.instruction;
+            address remainder_from=retained==2 ? instruction : previous.instruction;
+            host.pair(previous.instruction,quotient_from,remainder_from,node.divisor,node.first,quotient,remainder);
             return VfAction::Discard;
         }
         if(retained!=3){
-            VfDivision next=VfDivision(host.position(context),node.dst,node.extra,retained,1);
+            VfDivision next=VfDivision(retained_at,node.dst,node.extra,retained,1);
             host.division(context,VfDivisionOp::Put,node.first,node.second,node.third,next);
         }
     }
@@ -615,24 +592,38 @@ extern "C" VfAction value_instruction(address instruction,address values,inout V
     } else if(node.kind==VfKind::Call){host.call(values,node.payload);}
     return continuing ? VfAction::Keep : VfAction::Stop;
 }
-extern "C" VfFlow value_finish(address values,VfFlow flow,u32 continuing,VfHost host) on cpu 
+extern "C" VfFlow value_block(address block,address values,address context,VfHost host) on cpu
     requires nonzero(host.read) requires nonzero(host.remap) requires nonzero(host.block) requires nonzero(host.state)
     requires nonzero(host.get) requires nonzero(host.put) requires nonzero(host.remove_range) requires nonzero(host.snapshot)
     requires nonzero(host.intersect) requires nonzero(host.drop_snapshot) requires nonzero(host.apply) requires nonzero(host.expression)
-    requires nonzero(host.division) requires nonzero(host.rewrite_division) requires nonzero(host.pair) requires nonzero(host.position)
+    requires nonzero(host.division) requires nonzero(host.rewrite_division) requires nonzero(host.pair)
     requires nonzero(host.note) requires nonzero(host.memory_get) requires nonzero(host.memory_put) requires nonzero(host.memory_filter)
-    requires nonzero(host.aliases) requires nonzero(host.written) requires nonzero(host.call) {
-    address next=flow.next;
-    if(continuing!=0){next=host.snapshot(values);}
-    return VfFlow(next,flow.exits);
+    requires nonzero(host.aliases) requires nonzero(host.written) requires nonzero(host.call)
+    requires nonzero(host.instruction_span) requires nonzero(host.swap_instructions) requires nonzero(host.truncate) {
+    Span code=host.instruction_span(block);
+    address none=unsafe_address(0u64);
+    VfFlow flow=VfFlow(none,none);
+    u64 kept=0u64;
+    u64 index=0u64;
+    bool continuing=true;
+    // The retained prefix never moves again, including slots awaiting a division pair.
+    while(index<code.count){
+        address instruction=block_instruction_at(code,index);
+        address retained_at=block_instruction_at(code,kept);
+        VfAction action=value_instruction(instruction,retained_at,values,flow,context,host);
+        if(action!=VfAction::Discard){
+            if(kept!=index){host.swap_instructions(instruction,retained_at);}
+            kept+=1u64;
+            if(action==VfAction::Stop){continuing=false;break;}
+        }
+        index+=1u64;
+    }
+    if(kept!=code.count){host.truncate(block,kept);}
+    if(continuing){flow.next=host.snapshot(values);}
+    return flow;
 }
 extern "C" void value_discard_flow(VfFlow flow,VfHost host) on cpu 
-    requires nonzero(host.read) requires nonzero(host.remap) requires nonzero(host.block) requires nonzero(host.state)
-    requires nonzero(host.get) requires nonzero(host.put) requires nonzero(host.remove_range) requires nonzero(host.snapshot)
-    requires nonzero(host.intersect) requires nonzero(host.drop_snapshot) requires nonzero(host.apply) requires nonzero(host.expression)
-    requires nonzero(host.division) requires nonzero(host.rewrite_division) requires nonzero(host.pair) requires nonzero(host.position)
-    requires nonzero(host.note) requires nonzero(host.memory_get) requires nonzero(host.memory_put) requires nonzero(host.memory_filter)
-    requires nonzero(host.aliases) requires nonzero(host.written) requires nonzero(host.call) {
+    requires nonzero(host.drop_snapshot) {
     if(address_bits(flow.next)!=0u64){host.drop_snapshot(flow.next);}
     if(address_bits(flow.exits)!=0u64){host.drop_snapshot(flow.exits);}
 }

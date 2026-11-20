@@ -1,5 +1,6 @@
 //! The original owning IR, primitive containers and source construction.
 use super::*;
+use super::super::{BlockSpan, instruction_span, swap_instructions};
 use std::collections::btree_map::Entry;
 
 #[derive(Clone, Default)]
@@ -19,7 +20,7 @@ struct Expression { kind: u32, operation: u32, words: [u64; 3], arguments: *cons
 struct Optional { value: usize, present: u32 }
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
-struct Division { position: usize, quotient: Reg, remainder: Reg, mask: u32, present: u32 }
+struct Division { instruction: *mut Inst, quotient: Reg, remainder: Reg, mask: u32, present: u32 }
 #[repr(C)]
 struct Memory { value: Reg, origin: *const OperationOrigin, present: u32 }
 #[repr(u32)]
@@ -40,8 +41,6 @@ enum DivisionOp { Clear, Take, Put }
 #[repr(u32)]
 enum DivisionChoice { Quotient = 1, Remainder, Both }
 #[repr(u32)]
-enum Action { Discard, Keep, Stop }
-#[repr(u32)]
 enum Kind {
     Ordinary, Constant, Index, Uniform, BufferStride, Unary, Binary, Cast, Math, Select,
     Division, Scope, Raise, Exit, Break, Continue, Atomic, Append, Barrier,
@@ -58,7 +57,7 @@ struct Node {
 #[repr(C)]
 struct Flow { next: *mut LocalValues, exits: *mut LocalValues }
 struct Context<'a> {
-    registers: &'a [Scalar], reuses: &'a mut Reuses, output: Vec<Inst>,
+    registers: &'a [Scalar], reuses: &'a mut Reuses,
     divisions: BTreeMap<(Reg, u64, u64), Division>,
 }
 type Get = unsafe extern "C" fn(*const Values, RegMap, usize) -> Optional;
@@ -68,6 +67,9 @@ struct Host {
     read: unsafe extern "C" fn(*mut Inst, *const Context<'_>) -> Node,
     remap: unsafe extern "C" fn(*mut Inst, *const Values),
     block: unsafe extern "C" fn(*mut Vec<Inst>, *mut Values, *mut Context<'_>) -> Flow,
+    instruction_span: unsafe extern "C" fn(*mut Vec<Inst>) -> BlockSpan,
+    swap_instructions: unsafe extern "C" fn(*mut Inst, *mut Inst),
+    truncate: unsafe extern "C" fn(*mut Vec<Inst>, usize),
     state: unsafe extern "C" fn(StateOp, *mut Values, *mut Values, Map) -> *mut Values,
     get: Get,
     put: unsafe extern "C" fn(*mut Values, RegMap, usize, usize),
@@ -79,8 +81,7 @@ struct Host {
     expression: unsafe extern "C" fn(*mut Values, Expression, Reg) -> Optional,
     division: unsafe extern "C" fn(*mut Context<'_>, DivisionOp, Reg, u64, u64, Division) -> Division,
     rewrite_division: unsafe extern "C" fn(*mut IntegerDivisionResult, DivisionChoice, Reg, Reg),
-    pair: unsafe extern "C" fn(*mut Context<'_>, *const Inst, Division, *const IntegerDivisor, Reg, Reg, Reg),
-    position: unsafe extern "C" fn(*const Context<'_>) -> usize,
+    pair: unsafe extern "C" fn(*mut Inst, *const Inst, *const Inst, *const IntegerDivisor, Reg, Reg, Reg),
     note: unsafe extern "C" fn(*mut Context<'_>, Reg, *const Inst, Reuse),
     memory_get: unsafe extern "C" fn(*const Values, usize, Reg, u32) -> Memory,
     memory_put: unsafe extern "C" fn(*mut Values, usize, Reg, u32, Reg, *const Inst),
@@ -91,10 +92,8 @@ struct Host {
 }
 
 unsafe extern "C" {
-    #[link_name = "bootstrap.stage_fusion::value_instruction"]
-    fn value_instruction(instruction: *mut Inst, values: *mut Values, flow: *mut Flow, context: *mut Context<'_>, host: Host) -> Action;
-    #[link_name = "bootstrap.stage_fusion::value_finish"]
-    fn value_finish(values: *const Values, flow: Flow, continuing: u32, host: Host) -> Flow;
+    #[link_name = "bootstrap.stage_fusion::value_block"]
+    fn value_block(code: *mut Vec<Inst>, values: *mut Values, context: *mut Context<'_>, host: Host) -> Flow;
     #[link_name = "bootstrap.stage_fusion::value_discard_flow"]
     fn value_discard_flow(flow: Flow, host: Host);
     #[link_name = "bootstrap.stage_fusion::value_root"]
@@ -115,18 +114,11 @@ pub(super) fn extend_aliases(target: &mut Values, source: Values) { target.alias
 pub(super) fn aliases_only(values: &Values) -> Values { Values { aliases: values.aliases.clone(), ..Values::default() } }
 
 fn run_block(code: &mut Vec<Inst>, values: &mut Values, registers: &[Scalar], reuses: &mut Reuses) -> Flow {
-    let mut context = Context { registers, reuses, output: Vec::new(), divisions: BTreeMap::new() };
-    let mut flow = Flow { next: std::ptr::null_mut(), exits: std::ptr::null_mut() };
-    let mut continuing = true;
-    for mut inst in std::mem::take(code) {
-        match unsafe { value_instruction(&mut inst, values, &mut flow, &mut context, HOST) } {
-            Action::Discard => {}
-            Action::Keep => context.output.push(inst),
-            Action::Stop => { context.output.push(inst); continuing = false; break; }
-        }
-    }
-    *code = context.output;
-    unsafe { value_finish(values, flow, u32::from(continuing), HOST) }
+    let mut context = Context { registers, reuses, divisions: BTreeMap::new() };
+    unsafe { value_block(code, values, &mut context, HOST) }
+}
+unsafe extern "C" fn truncate(code: *mut Vec<Inst>, kept: usize) {
+    unsafe { &mut *code }.truncate(kept);
 }
 fn binary_code(op: BinaryOp) -> u32 {
     match op {
@@ -247,14 +239,16 @@ unsafe extern "C" fn rewrite_division(result: *mut IntegerDivisionResult, choice
     unsafe { *result = match choice { DivisionChoice::Quotient => IntegerDivisionResult::Quotient(quotient),
         DivisionChoice::Remainder => IntegerDivisionResult::Remainder(remainder), DivisionChoice::Both => IntegerDivisionResult::Both { quotient, remainder } }; }
 }
-unsafe extern "C" fn pair(context: *mut Context<'_>, instruction: *const Inst, previous: Division, divisor: *const IntegerDivisor, src: Reg, quotient: Reg, remainder: Reg) {
-    let context = unsafe { &mut *context }; let old = OperationOrigin::from_instruction(&context.output[previous.position]); let current = OperationOrigin::from_instruction(unsafe { &*instruction });
-    let (quotient_origin, remainder_origin) = if previous.mask == 1 { (old, current) } else { (current, old) };
-    context.output[previous.position] = Inst::generated(InstKind::IntegerDivide { result: IntegerDivisionResult::Both { quotient, remainder }, src, divisor: unsafe { *divisor } },
+unsafe extern "C" fn pair(retained: *mut Inst, quotient_from: *const Inst, remainder_from: *const Inst,
+    divisor: *const IntegerDivisor, src: Reg, quotient: Reg, remainder: Reg) {
+    let quotient_origin = OperationOrigin::from_instruction(unsafe { &*quotient_from });
+    let remainder_origin = OperationOrigin::from_instruction(unsafe { &*remainder_from });
+    unsafe { *retained = Inst::generated(
+        InstKind::IntegerDivide { result: IntegerDivisionResult::Both { quotient, remainder }, src, divisor: *divisor },
         std::sync::Arc::new(GeneratedOrigin { reason: GenerationReason::IntegerDivisionPair,
-            trigger: Some(GenerationAnchor::IntegerDivisionPair { quotient: quotient_origin, remainder: remainder_origin }) }));
+            trigger: Some(GenerationAnchor::IntegerDivisionPair { quotient: quotient_origin, remainder: remainder_origin }) }),
+    ); }
 }
-unsafe extern "C" fn position(context: *const Context<'_>) -> usize { unsafe { &*context }.output.len() }
 unsafe extern "C" fn note(context: *mut Context<'_>, retained: Reg, instruction: *const Inst, reuse: Reuse) {
     let origin = OperationOrigin::from_instruction(unsafe { &*instruction }); let fact = match reuse.kind {
         ReuseKind::Expression => RetainedUse::Expression(ExpressionReuse { result: reuse.role.reuse(), paired_input: reuse.paired != 0, origin }),
@@ -302,6 +296,6 @@ unsafe extern "C" fn call(values: *mut Values, call: *const Call) {
             }
         }
 }
-const HOST: Host = Host { read, remap, block, state, get, put, remove_range, snapshot, intersect,
-    drop_snapshot, apply, expression, division, rewrite_division, pair, position, note,
+const HOST: Host = Host { read, remap, block, instruction_span, swap_instructions, truncate, state, get, put, remove_range, snapshot, intersect,
+    drop_snapshot, apply, expression, division, rewrite_division, pair, note,
     memory_get, memory_put, memory_filter, aliases, written, call };

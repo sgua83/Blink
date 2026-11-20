@@ -1,5 +1,6 @@
 //! B selects deletion and propagation; Rust moves the original owning IR.
 use crate::ir::*;
+use super::{BlockSpan, instruction_span, swap_instructions};
 use std::collections::BTreeSet;
 type Slots = BTreeSet<PrivateSlot>;
 #[repr(C)]
@@ -17,8 +18,6 @@ enum Space { Register, Local }
 #[repr(u32)]
 enum Action { Copy, Union, InsertRegister, RemoveRegister, InsertLocal, RemoveLocal, Swap }
 #[repr(C)]
-struct Span { data: *mut std::ffi::c_void, count: usize, stride: usize }
-#[repr(C)]
 struct Storage { first_code: *mut Vec<Inst>, second_code: *mut Vec<Inst>, payload: *mut std::ffi::c_void }
 #[repr(C)]
 struct Removal { kind: RemovalKind, value: Reg, index: Reg, length: usize, word: usize }
@@ -27,7 +26,7 @@ type Contains = unsafe extern "C" fn(*const Slots, Space, usize) -> u32;
 struct Host {
     ir: crate::ir::dataflow::Host,
     storage: unsafe extern "C" fn(*mut Inst) -> Storage,
-    read_block: unsafe extern "C" fn(*mut Vec<Inst>) -> Span,
+    read_block: unsafe extern "C" fn(*mut Vec<Inst>) -> BlockSpan,
     contains: Contains,
     change: unsafe extern "C" fn(Action, *mut Slots, *const Slots, usize),
     clone_set: unsafe extern "C" fn(*const Slots) -> *mut Slots,
@@ -63,10 +62,6 @@ unsafe extern "C" fn storage(instruction: *mut Inst) -> Storage {
         _ => {}
     }
     fields
-}
-unsafe extern "C" fn read_block(code: *mut Vec<Inst>) -> Span {
-    let code = unsafe { &mut *code };
-    Span { data: code.as_mut_ptr().cast(), count: code.len(), stride: std::mem::size_of::<Inst>() }
 }
 unsafe extern "C" fn contains(slots: *const Slots, space: Space, slot: usize) -> u32 {
     let slot = match space { Space::Register => PrivateSlot::Register(slot), Space::Local => PrivateSlot::Local(slot) };
@@ -138,11 +133,8 @@ unsafe extern "C" fn prune_division(instruction: *mut Inst, result: *mut Integer
 unsafe extern "C" fn prune_collective(collective: *mut TileCollective, needed: *const Slots) {
     unsafe { &mut *collective }.results.retain(|(_, reg)| unsafe { result_needed(needed, *reg, contains) } != 0);
 }
-const HOST: Host = Host { ir: crate::ir::dataflow::HOST, storage, read_block, contains, change, clone_set, drop_set,
+const HOST: Host = Host { ir: crate::ir::dataflow::HOST, storage, read_block: instruction_span, contains, change, clone_set, drop_set,
     swap_instructions, discard_prefix, live_before: before, loop_live: header, record, prune_division, prune_collective };
-unsafe extern "C" fn swap_instructions(first: *mut Inst, second: *mut Inst) {
-    unsafe { std::ptr::swap(first, second) };
-}
 unsafe extern "C" fn discard_prefix(code: *mut Vec<Inst>, count: usize) {
     drop(unsafe { &mut *code }.drain(..count));
 }

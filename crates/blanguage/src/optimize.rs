@@ -10,6 +10,18 @@ mod pipeline;
 pub(crate) use invariant::kernel as reduction_kernel;
 
 #[repr(C)]
+struct BlockSpan { data: *mut c_void, count: usize, stride: usize }
+
+unsafe extern "C" fn instruction_span(code: *mut Vec<Inst>) -> BlockSpan {
+    let code = unsafe { &mut *code };
+    BlockSpan { data: code.as_mut_ptr().cast(), count: code.len(), stride: std::mem::size_of::<Inst>() }
+}
+
+unsafe extern "C" fn swap_instructions(first: *mut Inst, second: *mut Inst) {
+    unsafe { ptr::swap(first, second) };
+}
+
+#[repr(C)]
 struct BindingSpan {
     data: *const usize,
     count: usize,
