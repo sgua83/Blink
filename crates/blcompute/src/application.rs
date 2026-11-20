@@ -8,7 +8,7 @@ use crate::{
 use std::{ptr::NonNull, sync::Arc};
 use blanguage::{
     TemplateProgram,
-    ir::{ExecutionPlan, Ty},
+    ir::{Buffer, ExecutionPlan, Ty},
 };
 
 mod abi;
@@ -109,6 +109,70 @@ pub enum ResidentData {
 pub struct FrameCpuDataMemory {
     pub handles: Vec<u32>,
     pub memory: crate::DatasetMemory,
+}
+
+pub(crate) struct FrameArguments<'a> {
+    bindings: &'a [DatasetBinding],
+    selected: Vec<usize>,
+    slots: Vec<usize>,
+}
+
+impl<'a> FrameArguments<'a> {
+    fn new(bindings: &'a [DatasetBinding], parameters: &[Buffer]) -> Result<Self> {
+        use blanguage::ast::Access::{Atomic, Read};
+
+        let mut selected: Vec<_> = (0..bindings.len()).collect();
+        // 同一起点的零宽字段先处理，保留原字节边界比较。
+        selected.sort_unstable_by_key(|&i| (bindings[i].handle, bindings[i].offset, parameters[i].ty.size));
+        let mut slots = vec![0; bindings.len()];
+        for group in selected.chunk_by(|&a, &b| bindings[a].handle == bindings[b].handle) {
+            let first = *group.iter().min().unwrap();
+            let (mut read_end, mut atomic_end, mut write_end) = (0u64, 0u64, 0u64);
+            for &i in group {
+                let start = u64::from(bindings[i].offset);
+                let (conflict, end) = match parameters[i].access {
+                    Read => (atomic_end.max(write_end), &mut read_end),
+                    Atomic => (read_end.max(write_end), &mut atomic_end),
+                    _ => (read_end.max(atomic_end).max(write_end), &mut write_end),
+                };
+                if start < conflict {
+                    return Err(error("同一存储重叠区域的重复参数必须同为 read 或同为 atomic"));
+                }
+                *end = (*end).max(start + u64::from(parameters[i].ty.size));
+                slots[i] = first;
+            }
+        }
+
+        // 复用分组索引缓冲。CPU原位投影消费按首次实参出现顺序排列的物理槽。
+        selected.clear();
+        for (i, binding) in bindings.iter().enumerate() {
+            let first = slots[i];
+            if first == i {
+                slots[i] = selected.len();
+                selected.push(binding.handle as usize);
+            } else {
+                slots[i] = slots[first];
+            }
+        }
+        Ok(Self { bindings, selected, slots })
+    }
+
+    pub(crate) fn len(&self) -> usize {
+        self.bindings.len()
+    }
+
+    pub(crate) fn location(&self, i: usize) -> (usize, u32) {
+        (self.slots[i], self.bindings[i].offset)
+    }
+
+    pub(crate) fn storage_slots(&self) -> bindings::StorageSlots<'_> {
+        bindings::StorageSlots::Frame(&self.selected)
+    }
+
+    fn original(&self, i: usize) -> (usize, u32) {
+        let binding = &self.bindings[i];
+        (binding.handle as usize, binding.offset)
+    }
 }
 
 /// 一个实际 B 应用调用帧的唯一数据所有者。句柄只由编译后的资源声明取得，
@@ -383,45 +447,22 @@ impl Frame {
             };
             (ty, crate::DomainStorage::element_count(data), Some(binding.offset))
         }), values)?;
-        // 同一物理存储只选一次，物理槽按首次绑定顺序分配，供CPU原位投影。
-        let mut selected = Vec::new();
-        let mut order: Vec<(usize, u32)> = Vec::with_capacity(bindings.len());
-        for (logical, binding) in bindings.iter().enumerate() {
-            let handle = binding.handle;
-            let slot = if let Some(slot) = selected.iter().position(|&h| h == handle) {
-                use blanguage::ast::Access::{Atomic, Read};
-                let current = &layout.buffers()[logical];
-                for (before, previous) in bindings[..logical].iter().zip(layout.buffers()) {
-                    if before.handle == handle
-                        && u64::from(before.offset) < u64::from(binding.offset) + u64::from(current.ty.size)
-                        && u64::from(binding.offset) < u64::from(before.offset) + u64::from(previous.ty.size)
-                        && !matches!((previous.access, current.access), (Read, Read) | (Atomic, Atomic))
-                    {
-                        return Err(error("同一存储重叠区域的重复参数必须同为 read 或同为 atomic"));
-                    }
-                }
-                slot
-            } else {
-                selected.push(handle);
-                selected.len() - 1
-            };
-            order.push((slot, binding.offset));
-        }
+        let arguments = FrameArguments::new(bindings, layout.buffers())?;
         match definition {
             ProgramSlot::Cpu(program) => {
-                let mut datasets = Vec::with_capacity(selected.len());
+                let mut datasets = Vec::with_capacity(arguments.selected.len());
                 let slots = self.data.datasets.as_mut_ptr();
-                for &handle in &selected {
+                for &handle in &arguments.selected {
                     // Argument validation indexes every handle. Selection above records
                     // each slot once, and the slot array stays in place through the join.
-                    let data = unsafe { &mut *slots.add(handle as usize) }.as_mut().unwrap();
+                    let data = unsafe { &mut *slots.add(handle) }.as_mut().unwrap();
                     if matches!(data, ResidentData::Gpu(_)) {
                         return Err(error("CPU 访问需要先显式 download 数据"));
                     }
                     datasets.push(data);
                 }
                 let result = program.run_projected(&mut datasets, &mut self.data.domains,
-                    &selected, &order, textures, uniforms, &definitions);
+                    &arguments, textures, uniforms, &definitions);
                 if result.is_err() {
                     self.data.domains.sort_unique();
                 }
@@ -436,24 +477,24 @@ impl Frame {
                 }
                 self.load_gpu(index, image)?;
                 let gpu_program = self.gpu_programs[index].as_ref().unwrap();
-                let mut datasets = Vec::with_capacity(selected.len());
+                let mut datasets = Vec::with_capacity(arguments.selected.len());
                 let slots = self.data.datasets.as_mut_ptr();
-                for &handle in &selected {
+                for &handle in &arguments.selected {
                     // Selection records disjoint slots and the slot array stays in place.
-                    let Some(ResidentData::Gpu(data)) = (unsafe { &mut *slots.add(handle as usize) }) else {
+                    let Some(ResidentData::Gpu(data)) = (unsafe { &mut *slots.add(handle) }) else {
                         unreachable!("GPU residency was checked during argument binding");
                     };
                     datasets.push(data);
                 }
                 let result = gpu_program.submit_projected(&mut datasets, &self.data.domains,
-                    &selected, &order, uniforms).and_then(|completion| {
+                    &arguments, uniforms).and_then(|completion| {
                     let result = completion.wait_bound(datasets.iter_mut().map(|data| &mut **data))
                         .map(|_| ());
-                    let original = |i: usize| (bindings[i].handle as usize, bindings[i].offset);
+                    let original = |i| arguments.original(i);
                     bindings::invalidate(&mut self.data.domains, &layout.write_regions, original);
                     if result.is_ok() {
                         bindings::produce(&mut self.data.domains, layout, original,
-                            |i| datasets[order[i].0].count());
+                            |i| datasets[arguments.location(i).0].count());
                     }
                     result
                 });

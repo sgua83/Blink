@@ -200,21 +200,21 @@ impl DomainRelations {
 #[derive(Clone, Copy)]
 pub(crate) enum StorageSlots<'a> {
     Direct,
-    Frame(&'a [u32]),
+    Frame(&'a [usize]),
 }
 
 impl StorageSlots<'_> {
     pub(crate) fn original(self, slot: usize) -> usize {
         match self {
             Self::Direct => slot,
-            Self::Frame(handles) => handles[slot] as usize,
+            Self::Frame(handles) => handles[slot],
         }
     }
 
     fn selected(self, original: usize) -> Option<usize> {
         match self {
             Self::Direct => Some(original),
-            Self::Frame(handles) => handles.iter().position(|&handle| handle as usize == original),
+            Self::Frame(handles) => handles.iter().position(|&handle| handle == original),
         }
     }
 }

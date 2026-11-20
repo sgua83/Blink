@@ -4,7 +4,7 @@ mod observation;
 mod sort;
 use crate::{Dataset, DomainBindings, ReadDataset, Result, Value, arguments, error};
 use crate::bindings::{self, DomainRelations, StorageSlots};
-use crate::application::ResidentData;
+use crate::application::{FrameArguments, ResidentData};
 use crate::library::Library;
 use blanguage::{
     ExecutableProgram, TemplateProgram,
@@ -781,14 +781,13 @@ impl CpuTemplate {
         &self,
         datasets: &mut [&mut ResidentData],
         domains: &mut DomainRelations,
-        selected: &[u32],
-        order: &[(usize, u32)],
+        arguments: &FrameArguments<'_>,
         textures: &[CpuTextureBinding<'_>],
         uniforms: Vec<u32>,
         definitions: &std::sync::Arc<crate::application::Definitions>,
     ) -> Result<()> {
-        self.code.run_mapped(datasets, domains, textures, uniforms, order.len(), |i| order[i],
-            StorageSlots::Frame(selected), Some(definitions), None)
+        self.code.run_mapped(datasets, domains, textures, uniforms, arguments.len(), |i| arguments.location(i),
+            arguments.storage_slots(), Some(definitions), None)
     }
 }
 #[derive(Clone, Copy)]

@@ -12,6 +12,7 @@ mod selection;
 mod sort;
 mod texture;
 mod transfer;
+use crate::application::FrameArguments;
 use crate::bindings::{self, StorageSlots};
 use crate::views::Views;
 use transfer::Readback;
@@ -3142,13 +3143,12 @@ impl GpuTemplate {
         &self,
         datasets: &mut [&mut GpuDataset],
         domains: &[crate::DomainRelation],
-        selected: &[u32],
-        order: &[(usize, u32)],
+        arguments: &FrameArguments<'_>,
         uniforms: Vec<u32>,
     ) -> Result<GpuCompletion> {
-        let location = |i| order[i];
+        let location = |i| arguments.location(i);
         bindings::require(|slot| datasets.get(slot).map(|data| &**data),
-            domains, self.program(), location, StorageSlots::Frame(selected))?;
+            domains, self.program(), location, arguments.storage_slots())?;
         self.code.submit_mapped(datasets, DependencySources::default(), &[], Vec::new(),
             uniforms, NonZeroU32::MIN, location)
     }
