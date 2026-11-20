@@ -1306,9 +1306,11 @@ impl Builder<'_> {
                     self.complete_application_elements(reference,updated.elements.known(),&snapshots,span,origin)?;
                 }
                 unsafe { self.world.call(self.apply_application_dataset_model(reference,updated.elements)).await }?;
-                let offset=reference.element_layout().0;
-                let facts=updated.prefixes.into_iter().map(|(word,fact)|(offset+word,fact)).collect();
-                unsafe { self.world.call(self.apply_application_prefixes(reference,&facts)).await }?;
+                if !updated.prefixes.is_empty() {
+                    let offset = reference.element_layout().0;
+                    let facts = updated.prefixes.iter().map(|(&word, fact)| (offset + word, fact));
+                    unsafe { self.world.call(self.apply_application_prefixes(reference, facts)).await }?;
+                }
             }
         }
         for (index, place) in written {

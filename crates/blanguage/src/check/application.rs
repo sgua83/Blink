@@ -3359,8 +3359,9 @@ impl Builder<'_> {
         for relation in &interface.prefix_guarantees {
             let count=&data[relation.count.binding];
             let word=count.element_layout().0+relation.count.word;
-            let facts=BTreeMap::from([(word,prefix::domain(&data[relation.domain]))]);
-            unsafe { self.world.call(self.apply_application_prefixes(count,&facts)).await }?;
+            let domain = prefix::domain(&data[relation.domain]);
+            let facts = std::iter::once((word, &domain));
+            unsafe { self.world.call(self.apply_application_prefixes(count, facts)).await }?;
         }
         for name in held {
             unsafe { self.world.call(self.finish_scoped_argument(&name, span)).await }?;
@@ -4634,7 +4635,9 @@ impl Builder<'_> {
             self.replace_element_model(parent.payloads[*field].as_deref_mut().unwrap(), rest, fresh);
         }
     }
-    pub(super) async fn apply_application_prefixes(&mut self,reference:&DataReference,facts:&prefix::Fields)->Result<()> {
+    pub(super) async fn apply_application_prefixes<'a>(
+        &mut self, reference: &DataReference, facts: impl Iterator<Item = (u32, &'a view::Borrow)> + Clone,
+    ) -> Result<()> {
         let resource=view::resource_borrow(&reference.data);let names=self.env.keys().cloned().collect::<Vec<_>>();
         for name in names {
             let mut binding=self.env[&name].clone();
@@ -4649,7 +4652,9 @@ impl Builder<'_> {
                         data=model_data_mut(data.elements.known_mut(),&fields).unwrap();
                     }
                     let when=bounds::Condition::constant(unique&&complete).assume(&bounds::Clause::default(),true);
-                    for(word,fact)in facts {data.prefixes.entry(*word).or_default().union(&fact.restricted(&when));}
+                    for (word, fact) in facts.clone() {
+                        data.prefixes.entry(word).or_default().union_restricted(fact, &when);
+                    }
                 }
             }
             self.env.insert(name,binding);
