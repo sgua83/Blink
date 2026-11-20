@@ -1212,7 +1212,7 @@ u8 binary_target(MoveLocation dst, MoveLocation left, MoveLocation right, u8 kin
     return u8(0);
 }
 
-extern "C" BinaryEncoding float_binary(MoveLocation dst, MoveLocation left, MoveLocation right,
+BinaryEncoding float_binary(MoveLocation dst, MoveLocation left, MoveLocation right,
     u32 size, u8 opcode, address output) on cpu {
     u64 start = address_bits(output);
     u8 target = binary_target(dst, left, right, MOVE_XMM);
@@ -1336,7 +1336,7 @@ extern "C" MoveEncoding value_unary(MoveLocation dst, MoveLocation src, ScalarEn
     return MoveEncoding(cursor + store.length - start, 0u64);
 }
 
-extern "C" MoveEncoding value_math(MoveLocation dst, MoveLocation src, u32 size, bool sqrt, address output) on cpu {
+MoveEncoding unary_math(MoveLocation dst, MoveLocation src, u32 size, bool sqrt, address output) on cpu {
     if (!sqrt) { return float_sign(dst, src, size, false, output); }
     u64 start = address_bits(output);
     u8 target = u8(0);
@@ -1350,6 +1350,93 @@ extern "C" MoveEncoding value_math(MoveLocation dst, MoveLocation src, u32 size,
     MoveLocation value = MoveLocation(0u64, MOVE_XMM, target, NO_INDEX, u8(0));
     MoveEncoding store = copy_scalar_move(dst, value, size, false, unsafe_address(cursor));
     return MoveEncoding(cursor + store.length - start, literal);
+}
+
+enum CrtMath:u32 {
+    Floor=0; Sin=1; Cos=2; Pow=3; Exp=4; Log=5; Exp2=6; Log2=7; Ceil=8;
+};
+enum ScalarMathRoute:u32 { Unary(bool)=0; Binary(u8)=1; Crt(CrtMath)=2; };
+
+ScalarMathRoute scalar_math_route(ScalarMathOperation operation) on cpu {
+    if (operation == ScalarMathOperation::Abs) { return ScalarMathRoute::Unary(false); }
+    if (operation == ScalarMathOperation::Sqrt) { return ScalarMathRoute::Unary(true); }
+    if (operation == ScalarMathOperation::Min) { return ScalarMathRoute::Binary(u8(0x5d)); }
+    if (operation == ScalarMathOperation::Max) { return ScalarMathRoute::Binary(u8(0x5f)); }
+    if (operation == ScalarMathOperation::Floor) { return ScalarMathRoute::Crt(CrtMath::Floor); }
+    if (operation == ScalarMathOperation::Sin) { return ScalarMathRoute::Crt(CrtMath::Sin); }
+    if (operation == ScalarMathOperation::Cos) { return ScalarMathRoute::Crt(CrtMath::Cos); }
+    if (operation == ScalarMathOperation::Pow) { return ScalarMathRoute::Crt(CrtMath::Pow); }
+    if (operation == ScalarMathOperation::Exp) { return ScalarMathRoute::Crt(CrtMath::Exp); }
+    if (operation == ScalarMathOperation::Log) { return ScalarMathRoute::Crt(CrtMath::Log); }
+    if (operation == ScalarMathOperation::Exp2) { return ScalarMathRoute::Crt(CrtMath::Exp2); }
+    if (operation == ScalarMathOperation::Log2) { return ScalarMathRoute::Crt(CrtMath::Log2); }
+    return ScalarMathRoute::Crt(CrtMath::Ceil);
+}
+
+extern "C" u64 scalar_math_outgoing(ScalarMathOperation operation) on cpu {
+    match (scalar_math_route(operation)) {
+        ScalarMathRoute::Unary(_) { return 0u64; }
+        ScalarMathRoute::Binary(_) { return 0u64; }
+        ScalarMathRoute::Crt(_) { return 32u64; }
+    }
+}
+
+struct CrtMathName {
+    array<u8,6> bytes;
+    u32 length;
+};
+
+CrtMathName crt_math_name(CrtMath operation) on cpu {
+    if (operation == CrtMath::Floor) { return CrtMathName("floorf", 5); }
+    if (operation == CrtMath::Sin) { return CrtMathName("sinf  ", 3); }
+    if (operation == CrtMath::Cos) { return CrtMathName("cosf  ", 3); }
+    if (operation == CrtMath::Pow) { return CrtMathName("powf  ", 3); }
+    if (operation == CrtMath::Exp) { return CrtMathName("expf  ", 3); }
+    if (operation == CrtMath::Log) { return CrtMathName("logf  ", 3); }
+    if (operation == CrtMath::Exp2) { return CrtMathName("exp2f ", 4); }
+    if (operation == CrtMath::Log2) { return CrtMathName("log2f ", 4); }
+    return CrtMathName("ceilf ", 4);
+}
+
+ScalarMathEncoding crt_math(CrtMath operation, MoveLocation dst, MoveLocation left,
+    address right, u32 size, address output) on cpu {
+    u64 start = address_bits(output);
+    u64 cursor = start;
+    u64 right_literal = 0u64;
+    if (operation == CrtMath::Pow) {
+        MoveLocation xmm1 = MoveLocation(0u64, MOVE_XMM, u8(1), NO_INDEX, u8(0));
+        MoveEncoding argument = copy_scalar_move(xmm1, unsafe_position<MoveLocation>(right), size, false, output);
+        right_literal = argument.literal_field;
+        cursor += argument.length;
+    }
+
+    MoveLocation xmm0 = MoveLocation(0u64, MOVE_XMM, u8(0), NO_INDEX, u8(0));
+    MoveEncoding argument = copy_scalar_move(xmm0, left, size, false, unsafe_address(cursor));
+    u64 left_literal = argument.literal_field;
+    if (left_literal != 0u64) { left_literal += cursor - start; }
+    cursor += argument.length;
+    SymbolEncoding call = symbol_target(true, unsafe_address(cursor));
+    u64 call_field = cursor - start + call.field;
+    cursor += call.length;
+    MoveEncoding result = copy_scalar_move(dst, xmm0, size, false, unsafe_address(cursor));
+    CrtMathName name = crt_math_name(operation);
+    return ScalarMathEncoding(BinaryEncoding(cursor + result.length - start, left_literal, right_literal),
+        call_field, name.length + u32(size == 4), name.bytes);
+}
+
+extern "C" ScalarMathEncoding scalar_math(ScalarMathOperation operation, MoveLocation dst,
+    MoveLocation left, address right, u32 size, address output) on cpu {
+    match (scalar_math_route(operation)) {
+        ScalarMathRoute::Unary(sqrt) {
+            MoveEncoding value = unary_math(dst, left, size, sqrt, output);
+            return ScalarMathEncoding(BinaryEncoding(value.length, value.literal_field, 0u64), 0u64, 0, array<u8,6>(u8(0)));
+        }
+        ScalarMathRoute::Binary(opcode) {
+            BinaryEncoding value = float_binary(dst, left, unsafe_position<MoveLocation>(right), size, opcode, output);
+            return ScalarMathEncoding(value, 0u64, 0, array<u8,6>(u8(0)));
+        }
+        ScalarMathRoute::Crt(imported) { return crt_math(imported, dst, left, right, size, output); }
+    }
 }
 
 extern "C" BinaryEncoding value_cast(MoveLocation dst, MoveLocation src, ScalarEncoding from,

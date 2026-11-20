@@ -111,6 +111,14 @@ struct BinaryEncoding {
 }
 
 #[repr(C)]
+struct MathEncoding {
+    body: BinaryEncoding,
+    call_field: u64,
+    symbol_length: u32,
+    symbol: [u8; 6],
+}
+
+#[repr(C)]
 pub(super) struct AddressEncoding {
     length: u64,
     offset: u32,
@@ -156,9 +164,11 @@ unsafe extern "C" {
     #[link_name = "bootstrap.x64_instruction::value_unary"]
     fn value_unary(dst: MoveLocation, src: MoveLocation, scalar: ScalarEncoding,
         operation: u32, output: *mut u8) -> MoveEncoding;
-    #[link_name = "bootstrap.x64_instruction::value_math"]
-    fn value_math(dst: MoveLocation, src: MoveLocation, size: u32,
-        sqrt: u32, output: *mut u8) -> MoveEncoding;
+    #[link_name = "bootstrap.x64_instruction::scalar_math"]
+    fn scalar_math(operation: u32, dst: MoveLocation, left: MoveLocation,
+        right: *const MoveLocation, size: u32, output: *mut u8) -> MathEncoding;
+    #[link_name = "bootstrap.x64_instruction::scalar_math_outgoing"]
+    fn scalar_math_outgoing(operation: u32) -> u64;
     #[link_name = "bootstrap.x64_instruction::value_cast"]
     fn value_cast(dst: MoveLocation, src: MoveLocation, from: ScalarEncoding,
         into: ScalarEncoding, output: *mut u8) -> BinaryEncoding;
@@ -169,9 +179,6 @@ unsafe extern "C" {
     fn scalar_binary(dst: MoveLocation, left: MoveLocation, right: MoveLocation,
         size: u32, signed: u32, floating: u32, count_size: u32, count_signed: u32,
         operation: crate::builtin_types::ScalarBinaryOp, output: *mut u8) -> BinaryEncoding;
-    #[link_name = "bootstrap.x64_instruction::float_binary"]
-    fn encode_float_binary(dst: MoveLocation, left: MoveLocation, right: MoveLocation,
-        size: u32, opcode: u8, output: *mut u8) -> BinaryEncoding;
     #[link_name = "bootstrap.x64_instruction::scalar_compare"]
     fn scalar_compare(dst: MoveLocation, left: MoveLocation, right: MoveLocation,
         size: u32, signed: u32, floating: u32, operation: crate::builtin_types::ScalarBinaryOp,
@@ -184,6 +191,10 @@ unsafe extern "C" {
     fn read_scalar_move(dst: MoveLocation, memory: MoveLocation, size: u32, signed: u32, boolean: u32, output: *mut u8) -> u64;
     #[link_name = "bootstrap.x64_instruction::write_scalar_move"]
     fn write_scalar_move(memory: MoveLocation, src: MoveLocation, size: u32, output: *mut u8) -> u64;
+}
+
+pub(super) fn math_outgoing(operation: MathOp) -> u64 {
+    unsafe { scalar_math_outgoing(operation as u32) }
 }
 
 impl Emitter<'_> {
@@ -364,12 +375,6 @@ impl Emitter<'_> {
     pub(super) fn write_value_address(&mut self, src: Location, memory: Memory, size: u32) {
         self.emit_bytes(24, |output| unsafe { write_scalar_move(memory.into(), src.into(), size, output) });
     }
-    pub(super) fn float_binary(&mut self, dst: Reg, a: Reg, b: Reg, opcode: u8) {
-        let scalar = self.stage.registers[dst];
-        self.emit_binary(dst, a, b, scalar, |d, a, b, output| unsafe {
-            encode_float_binary(d, a, b, scalar.size(), opcode, output)
-        });
-    }
     pub(super) fn binary(&mut self, dst: Reg, a: Reg, b: Reg, operation: BinaryOp) {
         let scalar = self.stage.registers[dst];
         let count = self.stage.registers[b];
@@ -395,11 +400,35 @@ impl Emitter<'_> {
             value_unary(d, s, scalar.into(), operation as u32, output)
         });
     }
-    pub(super) fn float_math(&mut self, dst: Reg, src: Reg, sqrt: bool) {
-        let scalar = self.stage.registers[src];
-        self.emit_scalar(64, self.location(dst), self.location(src), scalar.size() == 8, |d, s, output| unsafe {
-            value_math(d, s, scalar.size(), u32::from(sqrt), output)
-        });
+    pub(super) fn math(&mut self, dst: Reg, operation: MathOp, args: &[Reg]) {
+        let size = self.stage.registers[args[0]].size();
+        let left = MoveLocation::from(self.location(args[0]));
+        let right = args.get(1).map(|&reg| MoveLocation::from(self.location(reg)));
+        let left_bits = left.value;
+        let right_bits = right.as_ref().map_or(0, |arg| arg.value);
+        let right = right.as_ref().map_or(std::ptr::null(), std::ptr::from_ref);
+        let dst = MoveLocation::from(self.location(dst));
+        let start = self.code.len();
+        self.code.reserve(84);
+        let encoding = unsafe {
+            let encoding = scalar_math(operation as u32, dst, left, right, size, self.code.as_mut_ptr().add(start));
+            self.code.set_len(start + encoding.body.length as usize);
+            encoding
+        };
+        let mut literals = [(left_bits, encoding.body.left_literal), (right_bits, encoding.body.right_literal)];
+        if encoding.symbol_length != 0 {
+            // The B encoder returns the actual ASCII CRT symbol.
+            let name = unsafe { std::str::from_utf8_unchecked(&encoding.symbol[..encoding.symbol_length as usize]) };
+            let target = NativeSymbol::External(crate::ast::ExternalName {
+                library: "ucrtbase.dll".into(),
+                symbol: name.into(),
+            });
+            self.record_symbol_target(start + encoding.call_field as usize, target, true);
+            literals.swap(0, 1);
+        }
+        for (bits, field) in literals {
+            self.record_literal(start, (bits, size == 8), field as usize);
+        }
     }
     pub(super) fn compare(&mut self, dst: Reg, a: Reg, b: Reg, comparison: Comparison) {
         let scalar = self.stage.registers[a];
@@ -425,10 +454,12 @@ impl Emitter<'_> {
             fields = (result.left_literal as usize, result.right_literal as usize);
             result.length
         });
-        for (literal, field) in [(left, fields.0), (right, fields.1)] {
-            if field != 0 {
-                self.literals.entry(literal).or_default().push(start + field);
-            }
+        self.record_literal(start, left, fields.0);
+        self.record_literal(start, right, fields.1);
+    }
+    fn record_literal(&mut self, start: usize, literal: (Bits, bool), field: usize) {
+        if field != 0 {
+            self.literals.entry(literal).or_default().push(start + field);
         }
     }
     pub(super) fn select(&mut self, dst: Reg, condition: Reg, a: Reg, b: Reg) {

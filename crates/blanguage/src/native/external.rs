@@ -271,7 +271,9 @@ impl Emitter<'_> {
             self.code.set_len(start + encoding.length as usize);
             encoding
         };
-        let offset = start + encoding.field as usize;
+        self.record_symbol_target(start + encoding.field as usize, target, invoke);
+    }
+    pub(super) fn record_symbol_target(&mut self, offset: usize, target: NativeSymbol, invoke: bool) {
         self.relocations.push(Relocation { offset, target });
         if invoke {
             self.calls.push(Some(offset));

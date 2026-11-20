@@ -116,7 +116,7 @@ unsafe extern "C" fn read(code: Block, index: usize, registers: Scalars) -> Node
             node.kind = Kind::Math;
             node.dst = *dst;
             node.a = args[0];
-            node.outgoing = super::super::CpuMath::from(*op).outgoing();
+            node.outgoing = super::super::operands::math_outgoing(*op);
         }
         InstKind::Constant(_, _, bits) => { node.kind = Kind::Constant; node.bits = *bits; }
         InstKind::Print { .. } => node.kind = Kind::Print,

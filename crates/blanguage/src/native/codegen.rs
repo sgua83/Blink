@@ -131,42 +131,6 @@ unsafe extern "C" {
     fn encode_buffer_selection(data_offset: u32, stride_offset: u32, word: u32, output: *mut u8) -> u64;
 }
 
-#[derive(Clone, Copy)]
-enum CpuMath {
-    Unary { sqrt: bool },
-    Binary { opcode: u8 },
-    Import(&'static str),
-}
-
-impl From<MathOp> for CpuMath {
-    fn from(op: MathOp) -> Self {
-        match op {
-            MathOp::Abs => Self::Unary { sqrt: false },
-            MathOp::Sqrt => Self::Unary { sqrt: true },
-            MathOp::Min => Self::Binary { opcode: 0x5d },
-            MathOp::Max => Self::Binary { opcode: 0x5f },
-            MathOp::Floor => Self::Import("floor"),
-            MathOp::Ceil => Self::Import("ceil"),
-            MathOp::Sin => Self::Import("sin"),
-            MathOp::Cos => Self::Import("cos"),
-            MathOp::Pow => Self::Import("pow"),
-            MathOp::Exp => Self::Import("exp"),
-            MathOp::Exp2 => Self::Import("exp2"),
-            MathOp::Log => Self::Import("log"),
-            MathOp::Log2 => Self::Import("log2"),
-        }
-    }
-}
-
-impl CpuMath {
-    fn outgoing(self) -> u64 {
-        match self {
-            Self::Import(_) => 32,
-            Self::Unary { .. } | Self::Binary { .. } => 0,
-        }
-    }
-}
-
 enum Branch {
     Always,
     Flags(u8),
@@ -653,19 +617,7 @@ impl Emitter<'_> {
                     }
                 },
                 InstKind::Cast { dst, src } => self.cast(*dst, *src),
-                InstKind::Math { dst, op, args } => match CpuMath::from(*op) {
-                    CpuMath::Unary { sqrt } => self.float_math(*dst, args[0], sqrt),
-                    CpuMath::Binary { opcode } => self.float_binary(*dst, args[0], args[1], opcode),
-                    CpuMath::Import(name) => {
-                        if args.len() == 2 { self.float(args[1], 1); }
-                        self.float(args[0], 0);
-                        self.emit_symbol_target(NativeSymbol::External(crate::ast::ExternalName {
-                            library: "ucrtbase.dll".into(),
-                            symbol: if self.stage.registers[*dst] == Scalar::F32 { format!("{name}f") } else { name.into() },
-                        }), true);
-                        self.store_float(*dst);
-                    }
-                },
+                InstKind::Math { dst, op, args } => self.math(*dst, *op, args),
                 InstKind::Select {
                     dst,
                     condition,
