@@ -32,3 +32,11 @@ u64 find(BindingForest forest,u64 root,BindingKey key) on cpu;
 BindingInsert put(inout BindingForest forest,u64 root,BindingKey key,u64 value) on cpu;
 u64 first(BindingForest forest,u64 root) on cpu;
 u64 next(BindingForest forest,u64 index) on cpu;
+
+struct MsvcName { BindingBytes name; u64 sdk_relative; };
+struct MsvcNamePlan { u64 libraries; u64 exports; u64 needs_sdk; };
+
+// Reuse one node per name in the larger input. Compact each borrowed group
+// in place in byte order. The two groups keep independent name identities.
+extern "C" MsvcNamePlan select_msvc_names(address libraries, u64 library_count,
+    address exports, u64 export_count, address prefix, u64 prefix_length, address nodes) on cpu;

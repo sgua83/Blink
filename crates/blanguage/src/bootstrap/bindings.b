@@ -267,3 +267,40 @@ extern "C" void materialize(BindingInput input,BindingWork work,BindingPlan plan
         i+=1u64;
     }
 }
+
+struct MsvcOrder { u64 count; u64 needs_sdk; };
+
+address msvc_name_at(address rows, u64 index) on cpu {
+    return unsafe_address(address_bits(rows) + index * size_of<MsvcName>());
+}
+
+MsvcOrder order_msvc_names(address rows, u64 count, BindingBytes sdk_prefix, address nodes) on cpu {
+    BindingForest forest = BindingForest(nodes, 0u64, 0u64, 0u64);
+    u64 root = 0u64;
+    u64 index = 0u64;
+    while (index < count) {
+        BindingBytes name = unsafe_position<MsvcName>(msvc_name_at(rows, index)).name;
+        root = put(forest, root, BindingKey(name, empty()), 0u64).root;
+        index += 1u64;
+    }
+    u64 written = 0u64;
+    bool needs_sdk = false;
+    u64 at = first(forest, root);
+    while (at != 0u64) {
+        BindingBytes name = node_at(forest, at).key.first;
+        bool sdk = sdk_prefix.length != 0u64 && name.length >= sdk_prefix.length &&
+            bytes_compare(BindingBytes(name.bytes, sdk_prefix.length), sdk_prefix) == 0;
+        unsafe_position<MsvcName>(msvc_name_at(rows, written)) = MsvcName(name, u64(sdk));
+        needs_sdk = needs_sdk || sdk;
+        written += 1u64;
+        at = next(forest, at);
+    }
+    return MsvcOrder(written, u64(needs_sdk));
+}
+
+extern "C" MsvcNamePlan select_msvc_names(address libraries, u64 library_count,
+    address exports, u64 export_count, address prefix, u64 prefix_length, address nodes) on cpu {
+    let libs = order_msvc_names(libraries, library_count, BindingBytes(prefix, prefix_length), nodes);
+    let syms = order_msvc_names(exports, export_count, empty(), nodes);
+    return MsvcNamePlan(libs.count, syms.count, libs.needs_sdk);
+}

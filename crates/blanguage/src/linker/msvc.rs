@@ -76,6 +76,38 @@ impl From<&[MsvcText]> for MsvcGroup {
 }
 
 #[repr(C)]
+struct MsvcName<'a> {
+    bytes: *const u8,
+    length: usize,
+    sdk_relative: u64,
+    borrowed: std::marker::PhantomData<&'a str>,
+}
+
+impl<'a> MsvcName<'a> {
+    fn new(text: &'a str) -> Self {
+        Self { bytes: text.as_ptr(), length: text.len(), sdk_relative: 0, borrowed: std::marker::PhantomData }
+    }
+
+    fn text(&self) -> &'a str {
+        // B only orders and compacts the original borrowed UTF-8 spans.
+        unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(self.bytes, self.length)) }
+    }
+}
+
+#[repr(C)]
+struct MsvcNamePlan {
+    libraries: usize,
+    exports: usize,
+    needs_sdk: u64,
+}
+
+struct MsvcNames<'a> {
+    libraries: Vec<MsvcName<'a>>,
+    exports: Vec<MsvcName<'a>>,
+    needs_sdk: bool,
+}
+
+#[repr(C)]
 struct MsvcArguments {
     text: *const u16,
     output: MsvcText,
@@ -88,6 +120,10 @@ struct MsvcArguments {
 }
 
 unsafe extern "C" {
+    #[link_name = "bootstrap.bindings::select_msvc_names"]
+    fn select_msvc_names(libraries: *mut MsvcName<'_>, library_count: usize,
+        exports: *mut MsvcName<'_>, export_count: usize,
+        prefix: *const u8, prefix_length: usize, nodes: *mut [u64; 9]) -> MsvcNamePlan;
     #[link_name = "bootstrap.cli::write_msvc_arguments"]
     fn write_msvc_arguments(input: MsvcArguments, output: *mut u16) -> u64;
     #[link_name = "bootstrap.host_sdk::run_host_process"]
@@ -212,9 +248,29 @@ fn tools() -> Result<(PathBuf, Vec<PathBuf>)> {
         vec![join(&vc, "lib/x64"), join(&sdk, "um/x64"), join(&sdk, "ucrt/x64")],
     ))
 }
+impl<'a> MsvcNames<'a> {
+    fn from_archives(archives: &'a [Archive]) -> Self {
+        let mut libraries: Vec<_> = archives.iter().flat_map(|archive| &archive.libraries)
+            .map(|name| MsvcName::new(name)).collect();
+        let mut exports: Vec<_> = archives.iter().flat_map(|archive| &archive.exports)
+            .map(|name| MsvcName::new(name)).collect();
+        let mut nodes = Vec::with_capacity(libraries.len().max(exports.len()));
+        let prefix = crate::object::SDK_RUNTIME.as_bytes();
+        let plan = unsafe {
+            select_msvc_names(
+                libraries.as_mut_ptr(), libraries.len(), exports.as_mut_ptr(), exports.len(),
+                prefix.as_ptr(), prefix.len(), nodes.as_mut_ptr(),
+            )
+        };
+        libraries.truncate(plan.libraries);
+        exports.truncate(plan.exports);
+        Self { libraries, exports, needs_sdk: plan.needs_sdk != 0 }
+    }
+}
+
 fn link_process(
     linker: &Path, output: &Path, inputs: &[PathBuf], search_paths: &[PathBuf],
-    archives: &[Archive], sdk: Option<&Path>, stack_reserve: u64, import_library: bool,
+    names: &MsvcNames<'_>, sdk: Option<&Path>, stack_reserve: u64, import_library: bool,
 ) -> Result<(ExitStatus, FileBytes, FileBytes)> {
     let executable = host_path(linker)?;
     let mut text = Vec::new();
@@ -229,18 +285,16 @@ fn link_process(
     };
     let search_paths: Vec<_> = search_paths.iter().map(|path| append_wide(&mut text, path.as_os_str()))
         .collect::<io::Result<_>>()?;
-    let libraries: Vec<_> = archives.iter().flat_map(|archive| &archive.libraries)
-        .collect::<std::collections::BTreeSet<_>>().into_iter()
-        .map(|name| {
-            if let Some(sdk) = sdk.filter(|_| name.starts_with(crate::object::SDK_RUNTIME)) {
-                append_wide(&mut text, sdk.join(name).as_os_str())
-            } else {
-                append_wide(&mut text, OsStr::new(name))
-            }
-        }).collect::<io::Result<_>>()?;
-    let exports: Vec<_> = archives.iter().flat_map(|archive| &archive.exports)
-        .collect::<std::collections::BTreeSet<_>>().into_iter()
-        .map(|name| append_wide(&mut text, OsStr::new(name))).collect::<io::Result<_>>()?;
+    let libraries: Vec<_> = names.libraries.iter().map(|name| {
+        if let Some(sdk) = sdk.filter(|_| name.sdk_relative != 0) {
+            append_wide(&mut text, sdk.join(name.text()).as_os_str())
+        } else {
+            append_wide(&mut text, OsStr::new(name.text()))
+        }
+    }).collect::<io::Result<_>>()?;
+    let exports: Vec<_> = names.exports.iter()
+        .map(|name| append_wide(&mut text, OsStr::new(name.text())))
+        .collect::<io::Result<_>>()?;
     let request = MsvcArguments {
         text: text.as_ptr(), output: output_path, inputs: inputs.as_slice().into(),
         import_library: import_path, search_paths: search_paths.as_slice().into(),
@@ -271,9 +325,8 @@ pub(super) fn link(
 ) -> Result<()> {
     let binding = super::resources::resources(&archives.iter().collect::<Vec<_>>(), 0, 0, std::iter::empty(), std::iter::empty(), None)?;
     let (linker, libraries) = tools()?;
-    let sdk = if archives.iter().flat_map(|archive| &archive.libraries)
-        .any(|name| name.starts_with(crate::object::SDK_RUNTIME))
-    {
+    let names = MsvcNames::from_archives(archives);
+    let sdk = if names.needs_sdk {
         Some(crate::object::InstalledSdk::open()?)
     } else {
         None
@@ -315,7 +368,7 @@ pub(super) fn link(
             write_input(&mut temporary, path, &encode_native(super::resources::Generated::NAME, &binding.sections, &binding.definitions)?)?;
         }
         let (status, stdout, stderr) = link_process(
-            &linker, path, &temporary, &libraries, archives,
+            &linker, path, &temporary, &libraries, &names,
             sdk.as_ref().map(|sdk| sdk.root.as_path()), stack_reserve, import_library)?;
         if status.success() {
             return Ok(());
