@@ -196,7 +196,7 @@ mod native {
         context: *mut c_void,
     ) -> *mut Frame {
         let factories = unsafe { std::slice::from_raw_parts(factories, count) };
-        match unsafe { Frame::from_linked_modules(factories) } {
+        match unsafe { Frame::linked_frame(factories) } {
             Ok(frame) => Box::into_raw(Box::new(frame)),
             Err(error) => {
                 let message = error.to_string();

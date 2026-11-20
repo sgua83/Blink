@@ -456,7 +456,7 @@ unsafe extern "system" fn execute(_: *mut c_void, context: *mut c_void, _: *mut 
         match collected {
             Ok(()) => {
                 // Only owned CPU results leave the work thread. Device consumers end here.
-                frame.gpu_programs.clear();
+                frame.gpu_programs = Vec::new();
                 frame.device = None;
                 Ok(Completion{selected,status})
             }

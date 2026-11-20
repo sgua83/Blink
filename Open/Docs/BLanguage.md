@@ -4928,7 +4928,7 @@ Rust SDK的`Frame::types()`返回构造时移入的原`&Vec<Ty>`，索引对应�
 
 Rust SDK的Frame::programs()返回原模块目录的&Vec<ProgramSlot>，索引保持真实程序号，len／capacity乘size_of::<ProgramSlot>()只计这个原容器。ProgramSlot::Cpu持已经绑定的CpuTemplate，Gpu持原只读映像；类型和代码目录由原模块持有，Frame不在run中取出／归还CPU程序。Frame::new(types,images)消费这些定义并返回Result<Frame>，CPU装入错误在构造阶段交回，未形成Frame的局部资源正常释放。
 
-Frame::gpu_programs()返回本Frame实际&Vec<Option<GpuTemplate>>，同一程序号对应本设备实例，CPU位置没有GPU实例；len／capacity乘size_of::<Option<GpuTemplate>>()只计该容器，不能把None计作已创建的GPU程序。GPU在真实需要时从共享定义装入pipeline，原SPIR-V和同一ExecutionPlan不复制成另一权威；设备、pipeline及完成仍归实际GPU消费者。
+由Rust SDK的Frame::new或Frame::from_linked_modules构造的Frame按定义程序号提供可直接索引的GPU槽。Frame::gpu_programs()借用本Frame实际&Vec<Option<GpuTemplate>>，同一程序号对应本设备实例，CPU程序位置为None。len／capacity乘size_of::<Option<GpuTemplate>>()只计该容器，None表示该位置尚无已装入实例。GPU在真实需要时从共享定义装入pipeline，原SPIR-V和同一ExecutionPlan不复制成另一权威；设备、pipeline及完成仍归实际GPU消费者。
 
 ProgramSlot::layout()共享借用原ExecutionPlan。查询原定义、GPU槽和类型不分配、装入、创建设备、执行、等待或传输，也不授予改写私有容器的权限。活动借用不跨Frame修改或销毁；CPU已装入和GPU槽Some均不表示工作接收、执行或完成。
 
