@@ -2360,18 +2360,8 @@ impl GpuProgram {
         let dependencies = if pending_inputs {
             Vec::new()
         } else {
-            // 同队列提交顺序本身不形成依赖；此交接同时覆盖 RAW、WAW 与 WAR。
-            let access = 0x60
-                | if accelerations.is_empty() {
-                    0
-                } else {
-                    0x200000
-                };
-            commands.barrier(0x10000, 0x800, 0x10000, access);
-            // 入口屏障已覆盖此前提交的根槽及view写入。
             resource_stage = 0;
             resource_access = 0;
-            // 完成状态不替代设备内存依赖，先记录交接，再回收完成的前序资源。
             std::mem::take(&mut owner.dependencies).prepare()?
         };
         let f = &c.inner.functions;
@@ -2385,10 +2375,22 @@ impl GpuProgram {
         let query_count = if self.capture_timestamps {
             u32::try_from(stage_count as u64 * 2 * steps.get() as u64)?
         } else { 0 };
+        // Reductions and compact still publish an identity or a count for empty input.
+        let stage_has_work = |stage: &blanguage::ir::ExecutionStage, count| {
+            use blanguage::ir::Operation;
+            count != 0 || !matches!(
+                stage.operation,
+                Operation::Map | Operation::StableSort(_)
+                    | Operation::ScanExclusive(_) | Operation::CustomScan(_)
+            )
+        };
         let mut needs_root_set = false;
         let mut extra_sets = 0u64;
         for (i, stage) in c.program.stages().iter().enumerate() {
             let count = data[stage.domain].count;
+            if !stage_has_work(stage, count) {
+                continue;
+            }
             if let Some(selection) = stage.selection {
                 use std::collections::btree_map::Entry;
                 let ((slot, sources), reused) = match selected_storage.entry(count) {
@@ -2484,7 +2486,7 @@ impl GpuProgram {
                     if stage.prefix.is_some() {
                         extra_sets += 1;
                     } else {
-                        needs_root_set |= count != 0;
+                        needs_root_set = true;
                     }
                     None
                 }
@@ -2517,6 +2519,16 @@ impl GpuProgram {
         if !c.pipelines.is_empty() {
             unsafe {
                 let sets = u32::try_from(u64::from(needs_root_set) + extra_sets)?;
+                if sets != 0 && !pending_inputs {
+                    // 同队列完成交接独立于内存可见性。实际计算消费需要 RAW、WAW 与 WAR 屏障。
+                    let access = 0x60
+                        | if accelerations.is_empty() {
+                            0
+                        } else {
+                            0x200000
+                        };
+                    commands.barrier(0x10000, 0x800, 0x10000, access);
+                }
                 let infos = if sets != 0 {
                     let mut sizes = vec![VkDescriptorPoolSize {
                         r#type: 7,
@@ -2626,6 +2638,16 @@ impl GpuProgram {
                     let mut uses = scratch_uses.iter().peekable();
                     let mut sorting_sets = sorting_sets.iter();
                     for (i, stage) in c.program.stages().iter().enumerate() {
+                        let count = data[stage.domain].count;
+                        let query = self.capture_timestamps
+                            .then(|| (step as usize * stage_count + i) as u32 * 2);
+                        if !stage_has_work(stage, count) {
+                            if let Some(query) = query {
+                                (f.vkCmdWriteTimestamp)(commands.command, 0x800, commands.queries, query);
+                                (f.vkCmdWriteTimestamp)(commands.command, 0x800, commands.queries, query + 1);
+                            }
+                            continue;
+                        }
                         let write_hazard = stage
                             .reads
                             .iter()
@@ -2650,10 +2672,7 @@ impl GpuProgram {
                             resource_stage = 0;
                             resource_access = 0;
                         }
-                        let count = data[stage.domain].count;
                         uniforms[0] = count;
-                        let query = self.capture_timestamps
-                            .then(|| (step as usize * stage_count + i) as u32 * 2);
                         if let Some(query) = query {
                             (f.vkCmdWriteTimestamp)(commands.command, 0x800, commands.queries, query);
                         }
@@ -2710,7 +2729,7 @@ impl GpuProgram {
                                     0,
                                 );
                             }
-                            blanguage::ir::Operation::Map if count != 0 => {
+                            blanguage::ir::Operation::Map => {
                                 (f.vkCmdBindPipeline)(commands.command, 1, c.pipelines[i]);
                                 commands.bind_compute_set(c.layout, root_set.unwrap());
                                 let width = stage.workgroup_width();
@@ -2746,7 +2765,6 @@ impl GpuProgram {
                                     begin += size;
                                 }
                             }
-                            blanguage::ir::Operation::Map => {}
                             blanguage::ir::Operation::SegmentedReduce(_)
                             | blanguage::ir::Operation::CustomSegmentedReduce(_)
                                 if segmented_single_group.is_some() =>
