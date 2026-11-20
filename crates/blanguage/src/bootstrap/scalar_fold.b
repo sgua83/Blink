@@ -566,7 +566,7 @@ extern "C" BitRange integer_bitwise_range(IntegerBitwise operation,u32 width,u64
  return BitRange(lower,upper);
 }
 
-extern "C" BitPattern known_cast(u64 source_mask,u64 source_sign,u64 target_mask,BitPattern value) on cpu {
+BitPattern known_cast(u64 source_mask,u64 source_sign,u64 target_mask,BitPattern value) on cpu {
  u64 mask=value.mask&target_mask;u64 bits=value.value&mask;
  if(target_mask>source_mask){u64 extra=target_mask&~source_mask;
   if(source_sign==0u64){mask|=extra;}
@@ -593,10 +593,6 @@ extern "C" BitPattern known_cast_path(ScalarEncoding source,address targets,u64 
     }
     return pattern;
 }
-extern "C" BitPattern known_combined(u64 target_mask,u64 am,u64 sign_a,BitPattern a,u64 bm,u64 sign_b,BitPattern b) on cpu {
- BitPattern left=known_cast(am,sign_a,target_mask,a);BitPattern right=known_cast(bm,sign_b,target_mask,b);
- return BitPattern(left.mask|right.mask,left.value|right.value);
-}
 BitPattern common_pattern(BitPattern a,BitPattern b) on cpu {
  u64 mask=a.mask&b.mask&~(a.value^b.value);return BitPattern(mask,a.value&mask);
 }
@@ -609,30 +605,62 @@ extern "C" BitPattern known_bitwise(IntegerBitwise operation,BitPattern a,BitPat
  if(operation==IntegerBitwise::Or){return BitPattern((az&bz)|a.value|b.value,a.value|b.value);}
  return BitPattern(a.mask&b.mask,(a.value^b.value)&a.mask&b.mask);
 }
-extern "C" BitPattern known_ranges(u64 mask,u64 bias,address context,u64 count,cfn<BitRange,address,u64> read) on cpu requires nonzero(read) {
- BitPattern result=BitPattern(0u64,0u64);bool present=false;
- u64 index=0u64;while(index<count){BitRange range=read(context,index);index+=1u64;
-  u64 upper=min(range.upper,mask);if(range.lower>upper){continue;}
-  u64 different=range.lower^upper;
-  different|=different>>1u64;different|=different>>2u64;different|=different>>4u64;
-  different|=different>>8u64;different|=different>>16u64;different|=different>>32u64;
-  u64 fixed=mask&~different;BitPattern bits=BitPattern(fixed,(range.lower^bias)&fixed);if(bits.mask==0u64){return bits;}
-  if(present){result=common_pattern(result,bits);}else{result=bits;present=true;}
-  if(result.mask==0u64){return result;}
- }return result;
+BitPattern known_interval(u64 mask,u64 bias,u64 lower,u64 upper) on cpu {
+    u64 different=lower^upper;
+    different|=different>>1u64;different|=different>>2u64;different|=different>>4u64;
+    different|=different>>8u64;different|=different>>16u64;different|=different>>32u64;
+    u64 fixed=mask&~different;
+    return BitPattern(fixed,(lower^bias)&fixed);
 }
-extern "C" BitPattern known_proof(u64 mask,u64 bias,address ranges,u64 count,
-    cfn<BitRange,address,u64> read,address domains,cfn<KnownDomain,address> next_domain) on cpu
-    requires nonzero(read) requires nonzero(next_domain) {
-    BitPattern bits=known_ranges(mask,bias,ranges,count,read);
+
+BitPattern known_ranges(u64 mask,u64 bias,address context,u64 count,cfn<BitRange,address,u64> read) on cpu requires nonzero(read) {
+    BitPattern result=BitPattern(0u64,0u64);bool present=false;
+    u64 index=0u64;while(index<count){
+        BitRange range=read(context,index);index+=1u64;
+        u64 upper=min(range.upper,mask);if(range.lower>upper){continue;}
+        BitPattern bits=known_interval(mask,bias,range.lower,upper);if(bits.mask==0u64){return bits;}
+        if(present){result=common_pattern(result,bits);}else{result=bits;present=true;}
+        if(result.mask==0u64){return result;}
+    }
+    return result;
+}
+
+KnownProjection merge_known_domains(u64 mask,BitPattern initial,address domains,cfn<KnownDomain,address> next_domain) on cpu requires nonzero(next_domain) {
+    BitPattern bits=initial;
     KnownDomain domain=next_domain(domains);
+    u32 have_domain=domain.present;
     while(domain.present!=0){
         BitPattern incoming=known_cast(domain.source_mask,domain.source_sign,mask,domain.pattern);
         bits=BitPattern(bits.mask|incoming.mask,bits.value|incoming.value);
         domain=next_domain(domains);
     }
-    return bits;
+    return KnownProjection(bits,u32(have_domain!=0 || bits.mask!=0u64));
 }
+
+extern "C" BitPattern known_proof(u64 mask,u64 bias,address ranges,u64 count,
+    cfn<BitRange,address,u64> read,address domains,cfn<KnownDomain,address> next_domain) on cpu
+    requires nonzero(read) requires nonzero(next_domain) {
+    BitPattern bits=known_ranges(mask,bias,ranges,count,read);
+    return merge_known_domains(mask,bits,domains,next_domain).pattern;
+}
+
+extern "C" KnownProjection known_facts(u64 mask,u64 bias,address context,u64 count,
+    cfn<KnownBounds,address,u64> read_bound,cfn<KnownDomain,address> next_domain) on cpu
+    requires nonzero(read_bound) requires nonzero(next_domain) {
+    u64 lower=0u64;u64 upper=mask;
+    u64 index=0u64;
+    while(index<count){
+        KnownBounds bounds=read_bound(context,index);
+        lower=max(lower,bounds.range.lower);
+        upper=min(upper,bounds.range.upper);
+        if(bounds.zero!=0){lower=max(lower,bias);upper=min(upper,bias);}
+        index+=1u64;
+    }
+    BitPattern bits=BitPattern(0u64,0u64);
+    if(lower<=upper){bits=known_interval(mask,bias,lower,upper);}
+    return merge_known_domains(mask,bits,context,next_domain);
+}
+
 u64 shifted_pattern(u64 bits,u32 count,bool left,bool fill,u64 mask) on cpu {
  u64 moved;u64 padding;
  if(left){moved=bits<<u64(count);padding=mask&~(mask<<u64(count));}

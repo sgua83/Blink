@@ -1,6 +1,6 @@
 //! B controls common fact production. Original query inputs, roots and result own their storage.
 use super::{
-    Fact, Facts, IndexDomain, KnownBits, QueryFacts, Scalar, ValueIdentity,
+    Fact, Facts, IndexDomain, QueryFacts, Scalar, ValueIdentity,
     additional_equality_roots, equality_members, equivalent_facts, fact_fields,
 };
 use std::{
@@ -115,7 +115,7 @@ unsafe extern "C" fn known_bits(
     scalar: Borrowed,
 ) -> Bits {
     let context = unsafe { context(slot) };
-    match KnownBits::facts(
+    match super::known_bits::from_facts(
         unsafe { *scalar.cast::<Scalar>() },
         unsafe { *identity.cast::<ValueIdentity>() },
         &[context.environment, context.sides[side as usize]],

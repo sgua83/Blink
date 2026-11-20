@@ -81,17 +81,19 @@ enum IntegerBitwise : u32 { And = 0; Or = 1; Xor = 2; };
 // Inputs are the original integer Scalar width/bias and ordered intervals.
 extern "C" BitRange integer_bitwise_range(IntegerBitwise operation,u32 width,u64 order_bias,BitRange left,BitRange right) on cpu;
 
-extern "C" BitPattern known_cast(u64 source_mask,u64 source_sign,u64 target_mask,BitPattern value) on cpu;
 extern "C" BitPattern known_cast_path(ScalarEncoding source,address targets,u64 count,
     u64 first_required,BitPattern value) on cpu;
-extern "C" BitPattern known_combined(u64 target_mask,u64 am,u64 sign_a,BitPattern a,u64 bm,u64 sign_b,BitPattern b) on cpu;
 extern "C" BitPattern known_common(u64 target_mask,BitPattern a,u64 bm,u64 sign_b,BitPattern b) on cpu;
 extern "C" BitPattern known_bitwise(IntegerBitwise operation,BitPattern a,BitPattern b) on cpu;
-extern "C" BitPattern known_ranges(u64 mask,u64 bias,address context,u64 count,cfn<BitRange,address,u64> read) on cpu requires nonzero(read);
 struct KnownDomain {u64 source_mask;u64 source_sign;BitPattern pattern;u32 present;};
 extern "C" BitPattern known_proof(u64 mask,u64 bias,address ranges,u64 count,
     cfn<BitRange,address,u64> read,address domains,cfn<KnownDomain,address> next_domain) on cpu
     requires nonzero(read) requires nonzero(next_domain);
+struct KnownBounds {BitRange range;u32 zero;};
+struct KnownProjection {BitPattern pattern;u32 present;};
+extern "C" KnownProjection known_facts(u64 mask,u64 bias,address context,u64 count,
+    cfn<KnownBounds,address,u64> read_bound,cfn<KnownDomain,address> next_domain) on cpu
+    requires nonzero(read_bound) requires nonzero(next_domain);
 extern "C" BitPattern known_shifted(u64 mask,u64 bias,u32 direction,BitPattern value,address context,u64 count,cfn<BitRange,address,u64> read) on cpu requires nonzero(read);
 
 enum IntegerRangeOperation : u32 { Minimum=0;Maximum=1;Add=2;Subtract=3;Multiply=4;Divide=5;Remainder=6;ShiftLeft=7;ShiftRight=8; };

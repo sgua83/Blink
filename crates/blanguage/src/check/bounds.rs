@@ -436,31 +436,12 @@ impl ScalarRanges {
 struct KnownBits { scalar:Scalar, mask:Bits, value:Bits }
 impl KnownBits {
     fn domain(self)->IndexDomain {IndexDomain::KnownBits(self.scalar,self.mask,self.value)}
-    fn cast(self,scalar:Scalar)->Self {known_bits::cast(self,scalar)}
-    fn combined(self,other:Self)->Self {let scalar=if self.scalar.size()>=other.scalar.size(){self.scalar}else{other.scalar};known_bits::combined(self,other,scalar)}
     fn bitwise(operation:IntegerOperation,scalar:Scalar,a:Option<Self>,b:Option<Self>)->Option<Self> {
         let operation=match operation {IntegerOperation::And=>bitwise::Operation::And,IntegerOperation::Or=>bitwise::Operation::Or,IntegerOperation::Xor=>bitwise::Operation::Xor,_=>return None};
         known_bits::bitwise(scalar,operation,a,b)
     }
     fn common(self,other:Self)->Option<Self> {known_bits::common(self,other)}
-    fn facts(scalar:Scalar,id:ValueIdentity,sets:&[&Facts])->Option<Self> {
-        let (mut lower,mut upper)=(0,scalar.bit_mask());
-        for facts in sets {
-            if let Some(Fact::Minimum(_,_,bound))=facts.range(Fact::Minimum(id,scalar,0)..=Fact::Minimum(id,scalar,scalar.bit_mask())).next_back(){lower=lower.max(*bound);}
-            if let Some(Fact::Maximum(_,_,bound))=facts.range(Fact::Maximum(id,scalar,0)..=Fact::Maximum(id,scalar,scalar.bit_mask())).next(){upper=upper.min(*bound);}
-            if facts.contains(&Fact::Zero(id)){lower=lower.max(scalar.order_bias());upper=upper.min(scalar.order_bias());}
-        }
-        let mut bits=Self::ranges(scalar,&[(lower,upper)]);
-        for facts in sets {for fact in facts.range(Fact::Index(id,IndexDomain::KnownBits(scalar,0,0))..=Fact::Index(id,IndexDomain::KnownBits(scalar,Bits::MAX,Bits::MAX))) {
-            if let Fact::Index(_,IndexDomain::KnownBits(from,mask,value))=*fact {
-                let incoming=Self{scalar:from,mask,value}.cast(scalar);
-                bits=Some(match bits{Some(old)=>old.combined(incoming),None=>incoming});
-            }
-        }}
-        bits
-    }
     fn shifted(self,left:bool,counts:ScalarRanges)->Option<Self> {known_bits::shifted(self,left,&counts.0)}
-    fn ranges(scalar:Scalar,ranges:&[(Bits,Bits)])->Option<Self> {known_bits::ranges(scalar,ranges)}
 }
 #[derive(Clone, Default)]
 pub(crate) struct Proof {
@@ -3963,10 +3944,10 @@ pub(super) fn proof_scope(path: &Clause, env: &BTreeMap<String, Binding>) -> imp
                 for domain in proof.domains(component).into_owned() {
                     if let IndexDomain::CommonRange(id, from, low, extended, to) = domain
                         && [from, low, extended, to].into_iter().all(Scalar::is_integer)
-                        && let Some(bits) = KnownBits::facts(from, id, &[facts])
+                        && let Some(bits) = known_bits::from_facts(from, id, &[facts])
                     {
-                        let bits = bits.cast(low).cast(extended).cast(to);
-                        if bits.mask != 0 {
+                        let targets = [low, extended, to];
+                        if let Some(bits) = known_bits::cast_path(bits, targets, targets.len()) {
                             proof.mark_domain(component, bits.domain());
                         }
                     }
