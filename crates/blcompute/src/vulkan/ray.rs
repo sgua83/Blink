@@ -271,8 +271,8 @@ impl Acceleration {
     pub fn wait(&self) -> Result<()> {
         self.0.built.wait()
     }
-    pub(super) fn produced(&self) -> Rc<Execution> {
-        self.0.built.clone()
+    pub(super) fn produced(&self) -> &Rc<Execution> {
+        &self.0.built
     }
     pub fn allocated_bytes(&self) -> u64 {
         self.0._storage.allocated_size
@@ -335,8 +335,7 @@ impl Device {
                 }
                 offset += page.size;
             }
-            let dependencies =
-                Execution::prepare(data.dependency().cloned().into_iter().collect())?;
+            let dependencies = Execution::prepare_one(data.dependency())?;
             Some(self.submit_transfer(commands, Vec::new(), dependencies)?)
         };
         if let Some(ready) = &ready {
@@ -352,7 +351,7 @@ impl Device {
         producer: Usage,
         inputs: Vec<RayInput>,
         models: Option<Rc<[BottomLevel]>>,
-        mut dependencies: Vec<Rc<Execution>>,
+        mut dependencies: DependencySources,
         operation: BuildOperation<'_>,
     ) -> Result<Structure> {
         let ray = self
@@ -420,10 +419,13 @@ impl Device {
             (ray.sizes)(self.inner.owner.device, 1, &info, &count, &mut sizes);
         }
         let storage = Allocation::new(self.inner.clone(), sizes.structure, 0x120000, 1, 1)?;
-        dependencies.extend(inputs.iter().filter_map(|input| input.ready.clone()));
-        dependencies.extend(models.as_deref().unwrap_or_default().iter().map(|model| model.0.built.clone()));
-        dependencies.extend(source.iter().map(|source| source.built.clone()));
-        let dependencies = Execution::prepare(dependencies)?;
+        for previous in inputs.iter().filter_map(|input| input.ready.as_ref())
+            .chain(models.as_deref().unwrap_or_default().iter().map(|model| &model.0.built))
+            .chain(source.iter().map(|source| &source.built))
+        {
+            dependencies.insert(previous);
+        }
+        let dependencies = dependencies.prepare()?;
         let mut out = StructureStorage {
             inner: self.inner.clone(),
             handle: 0,
@@ -657,7 +659,7 @@ impl Device {
             Usage::Transfer,
             vec![vertices, triangles],
             None,
-            Vec::new(),
+            DependencySources::default(),
             operation,
         )
         .map(|s| BottomLevel(Rc::new(s)))
@@ -728,7 +730,7 @@ impl Device {
             Usage::Transfer,
             vec![input],
             models,
-            Vec::new(),
+            DependencySources::default(),
             operation,
         )?;
         Ok(Acceleration(Rc::new(structure)))
@@ -859,7 +861,10 @@ impl Device {
             },
         };
         let models = input.models.clone();
-        let dependencies = data.dependency().cloned().into_iter().collect();
+        let mut dependencies = DependencySources::default();
+        if let Some(previous) = data.dependency() {
+            dependencies.insert(previous);
+        }
         let structure = self.build_acceleration(
             geometry,
             data.count,

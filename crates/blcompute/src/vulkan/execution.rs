@@ -263,6 +263,34 @@ pub(super) struct Execution {
     discarded: RefCell<Vec<DatasetStorage>>,
     discarded_structures: RefCell<Vec<ray::StructureStorage>>,
 }
+
+#[derive(Default)]
+pub(super) struct DependencySources(BTreeMap<u64, Rc<Execution>>);
+
+impl DependencySources {
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    pub fn insert(&mut self, source: &Rc<Execution>) {
+        self.0.entry(source.point.sequence).or_insert_with(|| source.clone());
+    }
+
+    pub fn insert_owned(&mut self, source: Rc<Execution>) {
+        self.0.entry(source.point.sequence).or_insert(source);
+    }
+
+    pub fn prepare(self) -> Result<Vec<Rc<Execution>>> {
+        let mut sources = self.0.into_values();
+        while let Some(source) = sources.next() {
+            if !source.is_complete()? {
+                return Ok(std::iter::once(source).chain(sources).collect());
+            }
+        }
+        Ok(Vec::new())
+    }
+}
+
 impl Execution {
     pub fn submit(
         resources: ExecutionResources,
@@ -286,18 +314,13 @@ impl Execution {
             discarded_structures: RefCell::new(Vec::new()),
         }))
     }
-    pub fn prepare(mut sources: Vec<Rc<Self>>) -> Result<Vec<Rc<Self>>> {
-        sources.sort_unstable_by_key(|s| s.point.sequence);
-        sources.dedup_by_key(|s| s.point.sequence);
-        let mut finished = 0;
-        for source in &sources {
-            if !source.is_complete()? {
-                break;
-            }
-            finished += 1;
+    pub fn prepare_one(source: Option<&Rc<Self>>) -> Result<Vec<Rc<Self>>> {
+        if let Some(source) = source
+            && !source.is_complete()?
+        {
+            return Ok(vec![source.clone()]);
         }
-        sources.drain(..finished);
-        Ok(sources)
+        Ok(Vec::new())
     }
     pub fn discard(&self, storage: DatasetStorage) {
         if matches!(self.point.result.get(), Some(0 | -4)) {

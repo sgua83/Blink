@@ -19,7 +19,7 @@ use blanguage::{
     ir::{DeviceRequirements, ExecutionPlan as Program, ProgramInterface, Ty},
 };
 pub use execution::{GpuCompletion, GpuStageTimestamps, GpuTimestamps};
-use execution::{Completion, Execution, ExecutionResources, QueryPool};
+use execution::{Completion, DependencySources, Execution, ExecutionResources, QueryPool};
 pub use memory::{MemoryBudget, MemoryHeapBudget};
 pub use present::{PresentStatus, Swapchain};
 use raw::*;
@@ -1014,10 +1014,7 @@ impl Device {
                 );
             }
             commands.barrier(0x1000, 0x4000, 0x1000, 0x2000);
-            let dependencies = match producer.take() {
-                Some(source) => Execution::prepare(vec![source.clone()])?,
-                None => Vec::new(),
-            };
+            let dependencies = Execution::prepare_one(producer.take())?;
             self.submit_transfer(commands, Vec::new(), dependencies)?
                 .wait()?;
             target.read_with(|pointer| unsafe {
@@ -2215,7 +2212,7 @@ impl GpuProgram {
         } = bindings.into();
         self.submit_owned(
             InputOwner {
-                dependencies: Vec::new(),
+                dependencies: DependencySources::default(),
                 bindings: datasets,
                 accelerations,
                 textures,
@@ -2254,7 +2251,7 @@ impl GpuProgram {
                 if !Rc::ptr_eq(&used.point.inner, &self.compiled.inner) {
                     return Err(error("跨提交衔接必须属于同一设备队列"));
                 }
-                owner.dependencies.push(used.clone());
+                owner.dependencies.insert(used);
             }
         }
         owner.bindings.append(extra.datasets);
@@ -2296,7 +2293,7 @@ impl GpuProgram {
             return Err(error("纹理数量、维度、格式或设备归属与程序不一致"));
         }
         for texture in &owner.textures {
-            owner.dependencies.push(texture.produced());
+            owner.dependencies.insert(texture.produced());
         }
         let mut data = DatasetProjection {
             owners: &mut owner.bindings.datasets,
@@ -2318,14 +2315,14 @@ impl GpuProgram {
             return Err(error("加速资源的数量或设备归属与程序不一致"));
         }
         for acceleration in accelerations {
-            owner.dependencies.push(acceleration.produced());
+            owner.dependencies.insert(acceleration.produced());
         }
         for d in data.owners.iter() {
             if !Rc::ptr_eq(&c.inner, &d.allocation.inner) {
                 return Err(error("数据集不属于程序的设备"));
             }
             if let Some(used) = d.dependency() {
-                owner.dependencies.push(used.clone());
+                owner.dependencies.insert(used);
             }
         }
         let mut resource_stage = 0;
@@ -2337,14 +2334,14 @@ impl GpuProgram {
                 resource_stage |= source.0.producer.stage();
                 resource_access |= source.0.producer.access();
                 if let Some(used) = source.0.dependency() {
-                    owner.dependencies.push(used.clone());
+                    owner.dependencies.insert(used);
                 }
                 resources.extend(&source.0.views.sources);
             }
         }
         let mut commands = Commands::new(c.inner.clone())?;
         commands.textures = std::mem::take(&mut owner.textures);
-        if !owner.dependencies.is_empty() {
+        let dependencies = if !owner.dependencies.is_empty() {
             // 同队列提交顺序本身不形成依赖；此交接同时覆盖 RAW、WAW 与 WAR。
             let access = 0x60
                 | if accelerations.is_empty() {
@@ -2354,8 +2351,10 @@ impl GpuProgram {
                 };
             commands.barrier(0x10000, 0x800, 0x10000, access);
             // 完成状态不替代设备内存依赖，先记录交接，再回收完成的前序资源。
-            owner.dependencies = Execution::prepare(std::mem::take(&mut owner.dependencies))?;
-        }
+            std::mem::take(&mut owner.dependencies).prepare()?
+        } else {
+            Vec::new()
+        };
         let f = &c.inner.functions;
         let device = c.inner.owner.device;
         let mut scratch = Vec::new();
@@ -2875,7 +2874,7 @@ impl GpuProgram {
                 _binding_parameters: binding_parameters,
                 _queries: queries.clone(),
             },
-            std::mem::take(&mut owner.dependencies),
+            dependencies,
         )?;
         for (dataset, access) in data.owners.iter_mut().zip(accesses) {
             if let DatasetStorage::Owned(storage) = &mut *dataset.storage {
@@ -2919,7 +2918,7 @@ impl GpuTemplate {
         uniforms: Vec<u32>,
     ) -> std::result::Result<Submission, (Box<dyn std::error::Error + Send + Sync>, DomainBindings<GpuDataset>)> {
         let mut owner = InputOwner {
-            dependencies: Vec::new(),
+            dependencies: DependencySources::default(),
             bindings,
             accelerations: Vec::new(),
             textures: Vec::new(),
@@ -2978,7 +2977,7 @@ impl<F: Fn(usize) -> usize> std::ops::IndexMut<usize> for DatasetProjection<'_, 
 }
 // 数据本身持有最后使用点，输入容器无需维护另一套原生资源所属表。
 struct InputOwner {
-    dependencies: Vec<Rc<Execution>>,
+    dependencies: DependencySources,
     bindings: DomainBindings<GpuDataset>,
     accelerations: Vec<Acceleration>,
     textures: Vec<TextureInput>,
@@ -2991,7 +2990,7 @@ impl InputOwner {
         inner: &Rc<Inner>,
     ) -> Result<Self> {
         let mut owner = Self {
-            dependencies: Vec::new(),
+            dependencies: DependencySources::default(),
             bindings: Vec::new().into(),
             accelerations,
             textures,
@@ -3006,7 +3005,7 @@ impl InputOwner {
                 accelerations: _,
                 queries: _,
             } = previous;
-            owner.dependencies.push(execution);
+            owner.dependencies.insert_owned(execution);
             owner.bindings.append(bindings);
         }
         Ok(owner)

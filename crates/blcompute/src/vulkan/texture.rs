@@ -210,8 +210,8 @@ impl<const D: usize> Texture<D> {
     pub fn wait(&self) -> Result<()> {
         self.0.produced.wait()
     }
-    pub(super) fn produced(&self) -> Rc<Execution> {
-        self.0.produced.clone()
+    pub(super) fn produced(&self) -> &Rc<Execution> {
+        &self.0.produced
     }
     pub(super) fn belongs_to(&self, inner: &Rc<Inner>) -> bool {
         Rc::ptr_eq(&self.0.storage.inner, inner)
@@ -236,7 +236,7 @@ impl TextureInput {
     pub fn dimension(&self) -> blanguage::ast::TextureDimension {
         match self { Self::D2(_) => blanguage::ast::TextureDimension::D2, Self::D3(_) => blanguage::ast::TextureDimension::D3 }
     }
-    pub(super) fn produced(&self) -> Rc<Execution> {
+    pub(super) fn produced(&self) -> &Rc<Execution> {
         match self { Self::D2(t) => t.produced(), Self::D3(t) => t.produced() }
     }
     pub(super) fn belongs_to(&self, inner: &Rc<Inner>) -> bool {
@@ -291,18 +291,16 @@ impl Device {
         }
         let mut source_stage = 0;
         let mut source_access = 0;
-        let mut dependencies = Vec::new();
+        let mut dependencies = DependencySources::default();
         for &index in &used_sources {
             let source = &sources[index];
             source_stage |= source.producer.stage();
             source_access |= source.producer.access();
-            if let Some(previous) = source.dependency()
-                && !dependencies.iter().any(|known| Rc::ptr_eq(known, previous))
-            {
-                dependencies.push(previous.clone());
+            if let Some(previous) = source.dependency() {
+                dependencies.insert(previous);
             }
         }
-        let dependencies = Execution::prepare(dependencies)?;
+        let dependencies = dependencies.prepare()?;
         let texture = self.create_image::<2>([dimensions[0], dimensions[1], 1],
             [address[0], address[1], crate::TextureAddress::Clamp], format, levels.len() as u32)?;
         let texture = self.write_image(texture, Vec::new(), dependencies, |commands, texture| {
@@ -346,7 +344,7 @@ impl Device {
             commands.barrier(0x1000, 0x1800, 0x800, 0x1040);
         })?;
         for index in used_sources {
-            sources[index].last_use = Some(texture.produced());
+            sources[index].last_use = Some(texture.produced().clone());
         }
         Ok(texture)
     }
@@ -655,7 +653,7 @@ impl Device {
             );
         }
         commands.barrier(0x1000, 0x4000, 0x1000, 0x2000);
-        let dependencies = Execution::prepare(vec![source.produced()])?;
+        let dependencies = Execution::prepare_one(Some(source.produced()))?;
         self.submit_transfer(commands, Vec::new(), dependencies)?
             .wait()?;
         let mut levels = Vec::with_capacity(copies.len());
