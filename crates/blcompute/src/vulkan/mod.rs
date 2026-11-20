@@ -1753,6 +1753,7 @@ struct ScratchUse {
     stage: usize,
     slot: usize,
     reused: bool,
+    prepare_map: bool,
 }
 fn pipeline(
     inner: &Inner,
@@ -2413,6 +2414,9 @@ impl GpuProgram {
         // 同一串行提交中，完成消费的同容量 where 工作区由后续阶段复用。
         let mut scratch_uses = Vec::new();
         let mut selected_storage = BTreeMap::<(u32, bool, usize), (usize, BTreeSet<usize>)>::new();
+        // Each Count word and workgroup width owns one ordinary Map record.
+        // The bool describes whether the current step already prepares it.
+        let mut map_arguments = BTreeMap::<(usize, u64, u32), (usize, bool)>::new();
         let stage_count = c.program.stages().len();
         let query_count = if self.capture_timestamps {
             u32::try_from(stage_count as u64 * 2 * steps.get() as u64)?
@@ -2431,6 +2435,49 @@ impl GpuProgram {
         for (i, stage) in c.program.stages().iter().enumerate() {
             let count = data[stage.domain].count;
             if !stage_has_work(stage, count) {
+                continue;
+            }
+            let map_prefix = stage.prefix.filter(|_| {
+                stage.selection.is_none() && matches!(stage.operation, blanguage::ir::Operation::Map)
+            });
+            if let Some(prefix) = map_prefix {
+                use std::collections::btree_map::Entry;
+                let (binding, offset) = location(prefix.binding);
+                let key = (binding, u64::from(offset) + u64::from(prefix.word), stage.workgroup_width());
+                let (slot, reused, prepare_map) = match map_arguments.entry(key) {
+                    Entry::Occupied(mut entry) => {
+                        let (slot, prepared) = entry.get_mut();
+                        (*slot, true, !std::mem::replace(prepared, true))
+                    }
+                    Entry::Vacant(entry) => {
+                        let slot = scratch.len();
+                        scratch.push(Scratch {
+                            buffers: Vec::new(),
+                            arguments: Some(prefix::allocate(c, i, count)?),
+                            sorting: None,
+                        });
+                        entry.insert((slot, true));
+                        extra_sets += 1;
+                        (slot, false, true)
+                    }
+                };
+                scratch_uses.push(ScratchUse { stage: i, slot, reused, prepare_map });
+            }
+            // The body writes after its preparation. An overlapping write ends
+            // the current Count's use for all widths, including projected fields.
+            if !map_arguments.is_empty() {
+                for (&binding, regions) in &stage.write_regions {
+                    let (binding, offset) = location(binding);
+                    for &(start, end) in regions {
+                        let start = (u64::from(offset) + u64::from(start)).saturating_sub(3);
+                        let end = u64::from(offset) + u64::from(end);
+                        for (_, (_, prepared)) in map_arguments.range_mut((binding, start, 0)..(binding, end, 0)) {
+                            *prepared = false;
+                        }
+                    }
+                }
+            }
+            if map_prefix.is_some() {
                 continue;
             }
             if let Some(selection) = stage.selection {
@@ -2452,7 +2499,7 @@ impl GpuProgram {
                 if levels > 1 && sources.insert(selection.binding) {
                     extra_sets += ((levels - 1) * 2) as u64;
                 }
-                scratch_uses.push(ScratchUse { stage: i, slot: *slot, reused });
+                scratch_uses.push(ScratchUse { stage: i, slot: *slot, reused, prepare_map: false });
                 continue;
             }
             let temporary = match stage.operation {
@@ -2527,11 +2574,7 @@ impl GpuProgram {
                     })
                 }
                 blanguage::ir::Operation::Map => {
-                    if stage.prefix.is_some() {
-                        extra_sets += 1;
-                    } else {
-                        needs_root_set = true;
-                    }
+                    needs_root_set = true;
                     None
                 }
             };
@@ -2551,6 +2594,7 @@ impl GpuProgram {
                     stage: i,
                     slot: scratch.len(),
                     reused: false,
+                    prepare_map: false,
                 });
                 scratch.push(temporary);
             }
@@ -2639,6 +2683,11 @@ impl GpuProgram {
                 let selection_sets = selected_storage.into_iter().map(|(key, (slot, sources))| {
                     selection::descriptors(descriptors.as_mut().unwrap(), &scratch[slot], key.0, sources)
                         .map(|sets| (slot, sets))
+                }).collect::<Result<BTreeMap<_, _>>>()?;
+                let map_sets = map_arguments.into_values().map(|(slot, _)| {
+                    let args = scratch[slot].arguments.as_ref().unwrap();
+                    descriptors.as_mut().unwrap().set(&[], None, Some(args.descriptor()), None, None)
+                        .map(|set| (slot, set))
                 }).collect::<Result<BTreeMap<_, _>>>()?;
                 let mut sorting_sets = Vec::new();
                 for usage in &scratch_uses {
@@ -2756,14 +2805,14 @@ impl GpuProgram {
                             }
                             blanguage::ir::Operation::Map if stage.prefix.is_some() => {
                                 let args = arguments.unwrap();
-                                let set = descriptors.as_mut().unwrap().set(
-                                    &[], None, Some(args.descriptor()), None, None,
-                                )?;
-                                commands.bind_compute_set(c.layout, set);
-                                prefix::prepare(
-                                    &commands, c, i, &mut uniforms,
-                                    self.partition_elements, step > 0,
-                                );
+                                let usage = usage.unwrap();
+                                commands.bind_compute_set(c.layout, map_sets[&usage.slot]);
+                                if usage.prepare_map {
+                                    prefix::prepare(
+                                        &commands, c, i, &mut uniforms,
+                                        self.partition_elements, step > 0 || usage.reused,
+                                    );
+                                }
                                 prefix::dispatch(
                                     &commands,
                                     c,
