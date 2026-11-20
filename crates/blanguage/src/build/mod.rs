@@ -13,8 +13,11 @@ pub use object::{ObjectCompilation, ObjectKind, compile_object};
 use crate::{file_bytes::FileBytes, native::program::ModuleLink};
 use crate::{ExecutableProgram, TemplateProgram, ast::Target, resource};
 use std::{
+    collections::BTreeSet,
+    ffi::c_void,
     io::ErrorKind,
     path::{Path, PathBuf},
+    ptr,
     sync::atomic::{AtomicU64, Ordering},
 };
 
@@ -138,22 +141,67 @@ fn compile_in(
     write_artifact(&artifact, &identity, &encoded)?;
     Ok(images(image, artifact, false))
 }
-fn used_declarations(world: &crate::frontend::World) -> Vec<Declaration> {
-    let mut used = world.build_declarations.as_ref().unwrap().take();
-    let mut constants = used.iter().filter_map(|declaration| match declaration {
-        Declaration::Constant(key) => Some(key.clone()),
-        _ => None,
-    }).collect::<Vec<_>>();
-    while let Some(key) = constants.pop() {
-        if let Some(value) = world.functions[&key].constant.get() {
-            for dependency in &value.inputs {
-                if used.insert(dependency.clone()) && let Declaration::Constant(key) = dependency {
-                    constants.push(key.clone());
-                }
-            }
+#[repr(C)]
+struct DeclarationHost {
+    next: unsafe extern "C" fn(*mut c_void) -> *const c_void,
+    retain: unsafe extern "C" fn(*mut c_void, *const c_void) -> bool,
+    expand: unsafe extern "C" fn(*mut c_void, *const c_void),
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.build_digest::complete_declarations"]
+    fn complete_declarations(context: *mut c_void, host: DeclarationHost);
+}
+
+struct DeclarationClosure<'a> {
+    world: &'a crate::frontend::World,
+    pending: Vec<std::collections::btree_set::Iter<'a, Declaration>>,
+    used: BTreeSet<Declaration>,
+}
+
+fn constant_inputs<'a>(world: &'a crate::frontend::World, declaration: &Declaration) -> Option<&'a BTreeSet<Declaration>> {
+    let Declaration::Constant(key) = declaration else { return None; };
+    world.functions[key].constant.get().map(|value| &value.inputs).filter(|inputs| !inputs.is_empty())
+}
+
+unsafe extern "C" fn next_declaration(context: *mut c_void) -> *const c_void {
+    let closure = unsafe { &mut *context.cast::<DeclarationClosure<'_>>() };
+    while let Some(inputs) = closure.pending.last_mut() {
+        if let Some(declaration) = inputs.next() {
+            return ptr::from_ref(declaration).cast();
         }
+        closure.pending.pop();
     }
-    used.into_iter().collect()
+    ptr::null()
+}
+
+unsafe extern "C" fn retain_declaration(context: *mut c_void, declaration: *const c_void) -> bool {
+    let closure = unsafe { &mut *context.cast::<DeclarationClosure<'_>>() };
+    // The declaration is borrowed from an original constant's cached inputs.
+    let declaration = unsafe { &*declaration.cast::<Declaration>() };
+    if closure.used.contains(declaration) { return false; }
+    closure.used.insert(declaration.clone());
+    true
+}
+
+unsafe extern "C" fn expand_declaration(context: *mut c_void, declaration: *const c_void) {
+    let closure = unsafe { &mut *context.cast::<DeclarationClosure<'_>>() };
+    let declaration = unsafe { &*declaration.cast::<Declaration>() };
+    if let Some(inputs) = constant_inputs(closure.world, declaration) {
+        closure.pending.push(inputs.iter());
+    }
+}
+
+fn used_declarations(world: &crate::frontend::World) -> Vec<Declaration> {
+    let used = world.build_declarations.as_ref().unwrap().take();
+    let pending = used.iter().filter_map(|declaration| constant_inputs(world, declaration).map(BTreeSet::iter)).collect();
+    let mut closure = DeclarationClosure { world, pending, used };
+    unsafe {
+        complete_declarations(ptr::from_mut(&mut closure).cast(), DeclarationHost {
+            next: next_declaration, retain: retain_declaration, expand: expand_declaration,
+        });
+    }
+    closure.used.into_iter().collect()
 }
 
 fn entry_links(image: &mut resource::Module) -> Vec<ModuleLink<'_>> {

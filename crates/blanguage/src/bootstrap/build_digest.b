@@ -275,3 +275,15 @@ extern "C" void sha256_source(DigestField prefix, address signatures,
     }
     sha256_finish(state, output);
 }
+
+// Only newly retained declarations can contribute another original input set.
+extern "C" void complete_declarations(address context, DeclarationHost host) on cpu
+    requires nonzero(host.next) requires nonzero(host.retain) requires nonzero(host.expand) {
+    address declaration = host.next(context);
+    while (address_bits(declaration) != 0u64) {
+        if (host.retain(context,declaration)) {
+            host.expand(context,declaration);
+        }
+        declaration = host.next(context);
+    }
+}

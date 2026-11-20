@@ -48,3 +48,12 @@ extern "C" bool record_source_declaration(inout u64 preamble_end, u64 start,
 // Signatures are borrowed from the original source in declaration order.
 extern "C" void sha256_source(DigestField prefix, address signatures,
     u64 count, address output) on cpu;
+
+// The receiver borrows original cached input entries for one build.
+struct DeclarationHost {
+    cfn<address,address> next;
+    cfn<bool,address,address> retain;
+    cfn<void,address,address> expand;
+};
+extern "C" void complete_declarations(address context, DeclarationHost host) on cpu
+    requires nonzero(host.next) requires nonzero(host.retain) requires nonzero(host.expand);
