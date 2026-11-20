@@ -62,6 +62,40 @@ struct Cast {
     source_integer:u32,same:u32,nonzero:u32,
     source_mask:u64,source_bias:u64,target_bias:u64,
 }
+impl Cast {
+    fn new(source: Scalar, target: Scalar, nonzero: bool) -> Self {
+        Self {
+            source_width: source.bit_width(),
+            source_signed: u32::from(source.is_signed()),
+            target_width: target.bit_width(),
+            source_integer: u32::from(source.is_integer()),
+            same: u32::from(source == target),
+            nonzero: u32::from(nonzero),
+            source_mask: source.bit_mask(),
+            source_bias: source.order_bias(),
+            target_bias: target.order_bias(),
+        }
+    }
+}
+#[repr(C)]
+struct CastStep {
+    source_width: u32,
+    source_signed: u32,
+    target_width: u32,
+    same: u32,
+    target_bias: u64,
+}
+impl CastStep {
+    fn new(source: Scalar, target: Scalar) -> Self {
+        Self {
+            source_width: source.bit_width(),
+            source_signed: u32::from(source.is_signed()),
+            target_width: target.bit_width(),
+            same: u32::from(source == target),
+            target_bias: target.order_bias(),
+        }
+    }
+}
 unsafe extern "C" fn read(slot:Borrowed,side:u32,index:usize)->Range {
     let source=unsafe{&*slot.cast::<Sources<'_>>()};
     (if side==0{source.left}else{source.right})[index].into()
@@ -121,6 +155,9 @@ unsafe extern "C" {
     fn excluded(input:Borrowed,count:usize,read:Read,output:Slot,push:Push,value:u64);
     #[link_name="bootstrap.scalar_fold::range_set_cast"]
     fn converted(input:Borrowed,count:usize,read:Read,output:Slot,host:Output,query:Cast)->usize;
+    #[link_name="bootstrap.scalar_fold::range_set_cast_chain"]
+    fn converted_chain(input: Borrowed, count: usize, read: Read, output: Slot, host: Output,
+        first: Cast, second: CastStep, last: CastStep) -> usize;
     #[link_name="bootstrap.scalar_fold::range_set_counts"]
     fn counts(input:Borrowed,count:usize,read:Read,output:Slot,host:Output,width:u32,bias:u64)->usize;
     #[link_name="bootstrap.scalar_fold::range_set_apply"]
@@ -179,8 +216,18 @@ pub(super) fn covers_element(
 }
 pub(super) fn without(values:&[Pair],value:u64)->ScalarRanges {inputs(values,&[],|s,n,_|output(|o|unsafe{excluded(s,n,read,o,push,value)}))}
 pub(super) fn cast(values:&[Pair],source:Scalar,target:Scalar,nonzero:bool)->ScalarRanges {
-    let query=Cast{source_width:source.bit_width(),source_signed:u32::from(source.is_signed()),target_width:target.bit_width(),source_integer:u32::from(source.is_integer()),same:u32::from(source==target),nonzero:u32::from(nonzero),source_mask:source.bit_mask(),source_bias:source.order_bias(),target_bias:target.order_bias()};
+    let query = Cast::new(source, target, nonzero);
     inputs(values,&[],|s,n,_|normalized_output(|o,h|unsafe{converted(s,n,read,o,h,query)}))
+}
+pub(super) fn cast_chain(values: &[Pair], [from, low, extended, to]: [Scalar; 4], nonzero: bool) -> ScalarRanges {
+    let first = Cast::new(from, low, nonzero);
+    let second = CastStep::new(low, extended);
+    let last = CastStep::new(extended, to);
+    inputs(values, &[], |source, count, _| {
+        normalized_output(|out, host| unsafe {
+            converted_chain(source, count, read, out, host, first, second, last)
+        })
+    })
 }
 pub(super) fn shift_counts(values:&[Pair],scalar:Scalar)->ScalarRanges {inputs(values,&[],|s,n,_|normalized_output(|o,h|unsafe{counts(s,n,read,o,h,scalar.bit_width(),scalar.order_bias())}))}
 fn apply<F:FnMut(Pair,Pair)->ScalarRanges>(left:&[Pair],right:&[Pair],combine:bool,mut operation:F)->ScalarRanges {

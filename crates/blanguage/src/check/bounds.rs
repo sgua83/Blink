@@ -881,7 +881,9 @@ impl Proof {
             Fact::Index(id, IndexDomain::CommonRange(source,from,low,extended,to)) => {
                 let mut facts=Facts::new();
                 if let Some(target)=Self::call_identity(id,bindings) && let Some(input)=Proof::bound_input(bindings, &source){
-                    let range=input.range_set(0).cast(from,low,input.nonzero.first()==Some(&true)).cast(low,extended,false).cast(extended,to,false);
+                    let range = range_sets::cast_chain(
+                        input.interval_source(0), [from, low, extended, to], input.nonzero.first() == Some(&true),
+                    );
                     if to==Scalar::Bool && let Some(truth)=input.component_condition(0).and_then(Condition::boolean_constant){facts.insert(Fact::Boolean(target,truth));}
                     let nonzero=if to.is_integer(){!range.contains(to.order_bias())||Self::call_common_bits(input,from,low,extended,to).is_some_and(|bits|bits.value!=0)}else{input.nonzero.first()==Some(&true)};
                     if nonzero{facts.insert(Fact::NonZero(target));}
@@ -997,7 +999,10 @@ impl Proof {
             for domain in domains {
                 if let IndexDomain::CommonRange(source,from,low,extended,to) = domain {
                     if let Some(incoming) = Proof::bound_input(bindings, source) {
-                        let range=incoming.range_set(0).cast(*from,*low,incoming.nonzero.first()==Some(&true)).cast(*low,*extended,false).cast(*extended,*to,false);
+                        let range = range_sets::cast_chain(
+                            incoming.interval_source(0), [*from, *low, *extended, *to],
+                            incoming.nonzero.first() == Some(&true),
+                        );
                         if let Some(bits)=Self::call_common_bits(incoming,*from,*low,*extended,*to){translated.mark_domain(component,bits.domain());}
                         translated.ranges.resize_with(translated.ranges.len().max(component + 1), ScalarRanges::default);
                         translated.ranges[component] = translated.ranges[component].intersection(&range);
