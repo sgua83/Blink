@@ -85,3 +85,52 @@ extern "C" u64 tile_frame(u64 data_end, u64 width, bool steps,
     }
     return end;
 }
+
+const u32 RANGE_SAVE_COUNT = 5;
+const array<u8,RANGE_SAVE_COUNT> RANGE_SAVES =
+    array<u8,RANGE_SAVE_COUNT>(u8(12), u8(13), u8(14), u8(15), u8(3));
+
+extern "C" RangePrologue range_prologue(u32 frame, address saved, u64 count,
+    address operations, address output) on cpu {
+    u64 start = address_bits(output);
+    u64 rows = address_bits(operations);
+    u64 cursor = start;
+    for (index in 0..RANGE_SAVE_COUNT) {
+        u8 register = RANGE_SAVES[index];
+        cursor += stack_register(register, false, unsafe_address(cursor));
+        address row = unsafe_address(rows + u64(index) * size_of<Operation>());
+        unsafe_position<Operation>(row) = Operation(u8(cursor - start), register, u16(0), 0);
+    }
+    u64 used = u64(RANGE_SAVE_COUNT);
+    u64 probe = 0u64;
+    if (frame != 0) {
+        FrameEncoding encoded = allocate_frame(frame, unsafe_address(cursor));
+        if (encoded.probe_field != 0u64) { probe = cursor - start + encoded.probe_field; }
+        cursor += encoded.length;
+        address row = unsafe_address(rows + used * size_of<Operation>());
+        unsafe_position<Operation>(row) = Operation(u8(cursor - start), u8(0), u16(1), frame);
+        used += 1u64;
+    }
+    address remaining = unsafe_address(rows + used * size_of<Operation>());
+    cursor += preserve_registers(saved, count, cursor - start, remaining, unsafe_address(cursor));
+    u8 prolog = u8(cursor - start);
+    cursor += range_arguments(unsafe_address(cursor));
+    return RangePrologue(cursor - start, probe, used + count, frame + 8 * RANGE_SAVE_COUNT, prolog);
+}
+
+extern "C" u64 range_epilogue(u32 frame, address saved, u64 count,
+    address image, u64 end, address exits, u64 exit_count) on cpu {
+    u64 start = address_bits(image) + end;
+    unsafe_position<u8>(unsafe_address(start)) = u8(0x31);
+    unsafe_position<u8>(unsafe_address(start + 1u64)) = u8(0xc0);
+    u64 cursor = start + 2u64;
+    patch_branches(image, end + 2u64, exits, exit_count);
+    cursor += preserve_registers(saved, count, 0u64, address(), unsafe_address(cursor));
+    if (frame != 0) { cursor += release_frame(frame, unsafe_address(cursor)); }
+    for (index in 0..RANGE_SAVE_COUNT) {
+        u8 register = RANGE_SAVES[RANGE_SAVE_COUNT - 1 - index];
+        cursor += stack_register(register, true, unsafe_address(cursor));
+    }
+    unsafe_position<u8>(unsafe_address(cursor)) = u8(0xc3);
+    return cursor + 1u64 - start;
+}

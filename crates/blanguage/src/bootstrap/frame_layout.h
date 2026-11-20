@@ -18,3 +18,20 @@ extern "C" u64 tile_frame(u64 data_end, u64 width, bool steps,
 // per save. An empty operations address denotes restoration.
 extern "C" u64 preserve_registers(address saved, u64 count, u64 offset,
     address operations, address output) on cpu;
+
+// Range entry starts at image offset zero. Lend 39 + 9 * count bytes and
+// 6 + count unwind rows. stack_bytes includes the five fixed pushes.
+struct RangePrologue {
+    u64 length;
+    u64 probe_field;
+    u64 operations;
+    u32 stack_bytes;
+    u8 prolog;
+};
+extern "C" RangePrologue range_prologue(u32 frame, address saved, u64 count,
+    address operations, address output) on cpu;
+
+// The caller lends 20 + 9 * count bytes at end. Exit rel32 fields point to
+// restoration after the success status write.
+extern "C" u64 range_epilogue(u32 frame, address saved, u64 count,
+    address image, u64 end, address exits, u64 exit_count) on cpu;

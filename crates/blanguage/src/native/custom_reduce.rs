@@ -525,7 +525,7 @@ pub(super) fn emit(
         allocation,
         frame: layout,
     };
-    e.enter(frame);
+    let stack_bytes = e.enter(frame);
     e.block(&stage.code[..initialize_end])?;
     let begin = e.code.len();
     let end = e.range_bounds(false);
@@ -540,12 +540,12 @@ pub(super) fn emit(
         e.close_breaks();
     }
     e.block(&stage.code[loop_end..])?;
-    // 五个固定保存寄存器之后，从原 ABI 的第五参数取得摘要目标。
+    // 第五个Win64参数位于返回地址和四个home槽之后。
     if matches!(
         pass,
         Pass::Reduce | Pass::ReduceTail | Pass::Scan | Pass::SegmentReduce
     ) {
-        e.copy_scalar(allocation::Location::Gpr(15), allocation::Location::Stack(frame + 80), Scalar::U64);
+        e.copy_scalar(allocation::Location::Gpr(15), allocation::Location::Stack(stack_bytes + 40), Scalar::U64);
         for (field, (scalar, offset)) in r.ty.components.iter().enumerate() {
             let value = e.allocation.location(PrivateSlot::Local(carry + field));
             e.write_value_address(value, Memory::new(15, *offset), scalar.size());
@@ -556,5 +556,5 @@ pub(super) fn emit(
         }
     }
     e.leave(frame);
-    Ok(e.finish(frame + 40))
+    Ok(e.finish(stack_bytes))
 }

@@ -69,6 +69,15 @@ struct FrameEncoding {
 }
 
 #[repr(C)]
+struct RangePrologue {
+    length: u64,
+    probe_field: u64,
+    operations: usize,
+    stack_bytes: u32,
+    prolog: u8,
+}
+
+#[repr(C)]
 struct TailRange {
     start: u64,
     end: u64,
@@ -95,8 +104,12 @@ unsafe extern "C" {
     fn encode_jump_to(offset: u64, target: u64, output: *mut u8) -> u64;
     #[link_name = "bootstrap.x64_instruction::patch_branches"]
     fn patch_branches(image: *mut u8, target: u64, fields: *const usize, count: u64);
-    #[link_name = "bootstrap.x64_instruction::range_arguments"]
-    fn encode_range_arguments(output: *mut u8) -> u64;
+    #[link_name = "bootstrap.frame_layout::range_prologue"]
+    fn range_prologue(frame: u32, saved: *const allocation::SavedRegister, count: usize,
+        operations: *mut UnwindOperation, output: *mut u8) -> RangePrologue;
+    #[link_name = "bootstrap.frame_layout::range_epilogue"]
+    fn range_epilogue(frame: u32, saved: *const allocation::SavedRegister, count: usize,
+        image: *mut u8, end: usize, exits: *const usize, exit_count: usize) -> usize;
     #[link_name = "bootstrap.x64_instruction::range_bounds"]
     fn encode_range_bounds(packet: u32, output: *mut u8) -> u64;
     #[link_name = "bootstrap.x64_instruction::range_advance"]
@@ -192,8 +205,6 @@ impl Emitter<'_> {
             sources: super::CodeSources::Emitted { operation_ranges: self.operation_ranges, function_abi: self.function_abi },
         }
     }
-    const RANGE_SAVED_REGISTERS: &'static [u8] = &[12, 13, 14, 15, 3];
-
     fn push_registers(&mut self, registers: &[u8]) {
         for &register in registers {
             self.emit_bytes(2, |output| unsafe { encode_stack_register(register, 0, output) });
@@ -226,23 +237,34 @@ impl Emitter<'_> {
     fn pop_register(&mut self, register: u8) {
         self.emit_bytes(2, |output| unsafe { encode_stack_register(register, 1, output) });
     }
-    fn enter(&mut self, frame: u32) {
-        self.push_registers(Self::RANGE_SAVED_REGISTERS);
-        self.allocate_frame(frame);
-        self.preserve_registers(false);
-        self.emit_bytes(12, |output| unsafe { encode_range_arguments(output) });
+    fn enter(&mut self, frame: u32) -> u32 {
+        let saved = &self.frame.saved;
+        self.code.reserve(39 + 9 * saved.len());
+        self.unwind.reserve(6 + saved.len());
+        let entry = unsafe {
+            let entry = range_prologue(
+                frame, saved.as_ptr(), saved.len(), self.unwind.as_mut_ptr(), self.code.as_mut_ptr(),
+            );
+            self.code.set_len(entry.length as usize);
+            self.unwind.set_len(entry.operations);
+            entry
+        };
+        self.probe = (entry.probe_field != 0).then_some(entry.probe_field as usize);
+        self.prolog = entry.prolog;
+        entry.stack_bytes
     }
     fn leave(&mut self, frame: u32) {
-        self.bytes(&[0x31, 0xc0]);
-        self.close_exits();
-        self.preserve_registers(true);
-        if frame != 0 {
-            self.release_frame(frame);
+        let exits = self.exits.pop().unwrap();
+        let saved = &self.frame.saved;
+        let end = self.code.len();
+        self.code.reserve(20 + 9 * saved.len());
+        unsafe {
+            let bytes = range_epilogue(
+                frame, saved.as_ptr(), saved.len(), self.code.as_mut_ptr(), end,
+                exits.as_ptr(), exits.len(),
+            );
+            self.code.set_len(end + bytes);
         }
-        for &register in Self::RANGE_SAVED_REGISTERS.iter().rev() {
-            self.pop_register(register);
-        }
-        self.bytes(&[0xc3]);
     }
     fn bytes(&mut self, b: &[u8]) {
         self.code.extend_from_slice(b);
@@ -694,7 +716,7 @@ fn emit_map(
         frame: frame_layout,
     };
     let start = e.code.len();
-    e.enter(frame);
+    let stack_bytes = e.enter(frame);
     e.parallel_abi(start, super::ParallelRangePart::Enter { frame_bytes: frame });
     if let Some((plan, allocation)) = packet {
         e.packet_loop(&plan, &allocation)?;
@@ -730,5 +752,5 @@ fn emit_map(
     let start = e.code.len();
     e.leave(frame);
     e.parallel_abi(start, super::ParallelRangePart::Exit { frame_bytes: frame });
-    Ok(e.finish(frame + 40))
+    Ok(e.finish(stack_bytes))
 }
