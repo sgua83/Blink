@@ -2,6 +2,22 @@ module bootstrap.ownership_presence;
 struct Index { u32 kind; u32 value; address identity; u64 reg; };
 struct Selection { u32 operation; Index a; Index b; };
 struct Node { u32 kind; u32 operation; Index a; Index b; address first; address second; address value; };
+struct EmitBranch { address value; u64 slot; u64 condition; u32 either; };
+struct EmitHost {
+    cfn<Node,address> inspect;
+    cfn<u64,address,u32,u32> constant;
+    cfn<u64,address> input_register;
+    cfn<u64,address,u32,u64,u64> compare;
+    cfn<u64,address,u64> invert;
+    cfn<u64,address> slot;
+    cfn<void,address,u64,u64> store;
+    cfn<u64,address,u64> load;
+    cfn<void,address,EmitBranch> scoped_branch;
+    cfn<void,address,address> swap_code;
+    cfn<void,address,address,u64,u64> fixed_store;
+    cfn<void,address,u64,address,address> branch;
+};
+
 struct PositionNode { u32 indexed; u64 count; Index index; };
 struct OwnershipNode { u32 kind; address presence; };
 // Opaque nodes stay in their original Rust containers. Scoped callbacks borrow
@@ -759,3 +775,27 @@ extern "C" u32 ownership_compatible(address a,address b,address inputs,address p
     requires nonzero(host.ownership_constant)
     requires nonzero(host.ownership_conditional)
     requires nonzero(host.copy_value);
+
+extern "C" u64 emit_presence(address context,address value,EmitHost host) on cpu
+    requires nonzero(host.inspect)
+    requires nonzero(host.constant)
+    requires nonzero(host.input_register)
+    requires nonzero(host.compare)
+    requires nonzero(host.invert)
+    requires nonzero(host.slot)
+    requires nonzero(host.load)
+    requires nonzero(host.scoped_branch);
+
+extern "C" void emit_presence_branch(address context,EmitBranch work,address right,address fixed,EmitHost host) on cpu
+    requires nonzero(host.inspect)
+    requires nonzero(host.constant)
+    requires nonzero(host.input_register)
+    requires nonzero(host.compare)
+    requires nonzero(host.invert)
+    requires nonzero(host.slot)
+    requires nonzero(host.store)
+    requires nonzero(host.load)
+    requires nonzero(host.scoped_branch)
+    requires nonzero(host.swap_code)
+    requires nonzero(host.fixed_store)
+    requires nonzero(host.branch);

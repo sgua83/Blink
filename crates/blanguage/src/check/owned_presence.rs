@@ -76,36 +76,8 @@ impl Builder<'_>{
     pub(super) fn prepare_selected_owned_read(&mut self,value:&owned_values::OwnedValuePayload){path::prepare_selected_value(self,value)}
     pub(super) fn forget_owned_metadata(&mut self,value:&Returned){path::forget(self,value)}
     pub(super) fn forget_owned_value(&mut self,value:&owned_values::OwnedValuePayload){path::forget_value(self,value)}
-    pub(super) fn presence_register(&mut self,value:&Presence,origin:Option<&Arc<GeneratedOrigin>>)->Reg{
-        match value{
-            Presence::All=>self.constant_with_origin(Scalar::Bool,1,origin.cloned()).regs[0],
-            Presence::None=>self.constant_with_origin(Scalar::Bool,0,origin.cloned()).regs[0],
-            Presence::Input(value)=>value.regs[0],
-            Presence::Selected(operator,index,element)=>{
-                let actual=match index{ownership::ApplicationIndex::Constant(at)=>self.constant_with_origin(Scalar::U32,Bits::from(*at),origin.cloned()).regs[0],ownership::ApplicationIndex::Value(_,reg)=>*reg};
-                let rhs=match element{ownership::ApplicationIndex::Constant(at)=>self.constant_with_origin(Scalar::U32,Bits::from(*at),origin.cloned()).regs[0],ownership::ApplicationIndex::Value(_,reg)=>*reg};let dst=self.reg(Scalar::Bool);
-                let kind=InstKind::Binary{dst,op:BinaryOp::Compare(*operator),a:actual,b:rhs};
-                if let Some(origin)=origin{self.code.push(Inst::generated(kind,origin.clone()));}else{self.emit(kind);}
-                dst
-            },
-            Presence::Not(value)=>{
-                let input=self.presence_register(value,origin);let dst=self.reg(Scalar::Bool);let kind=InstKind::Unary{dst,op:UnaryOp::LogicalNot,a:input};
-                if let Some(origin)=origin{self.code.push(Inst::generated(kind,origin.clone()));}else{self.emit(kind);}
-                dst
-            },
-            Presence::Both(a,b)|Presence::Either(a,b)=>{
-                let any=matches!(value,Presence::Either(..));let condition=self.presence_register(a,origin);let(slots,_)=self.local_slots(&Ty::scalar(Scalar::Bool));
-                let outer=std::mem::take(&mut self.code);let rhs=self.presence_register(b,origin);let kind=InstKind::StoreLocal(slots[0],rhs);
-                if let Some(origin)=origin{self.code.push(Inst::generated(kind,origin.clone()));}else{self.emit(kind);}
-                let right=std::mem::replace(&mut self.code,outer);let bit=self.constant_with_origin(Scalar::Bool,Bits::from(any),origin.cloned()).regs[0];let kind=InstKind::StoreLocal(slots[0],bit);
-                let fixed=vec![match origin{Some(origin)=>Inst::generated(kind,origin.clone()),None=>Inst::new(kind)}];let(yes,no)=if any{(fixed,right)}else{(right,fixed)};
-                let kind=InstKind::If{condition,yes,no};
-                if let Some(origin)=origin{self.code.push(Inst::generated(kind,origin.clone()));}else{self.emit(kind);}
-                let dst=self.reg(Scalar::Bool);let kind=InstKind::LoadLocal(dst,slots[0]);
-                if let Some(origin)=origin{self.code.push(Inst::generated(kind,origin.clone()));}else{self.emit(kind);}
-                dst
-            }
-        }
+    pub(super) fn presence_register(&mut self, value: &Presence, origin: Option<&Arc<GeneratedOrigin>>) -> Reg {
+        host::emit_presence(self, value, origin)
     }
     pub(super) async fn owned_when(&mut self,value:&Presence,branch_origin:Option<Arc<GeneratedOrigin>>,condition_origin:Option<Arc<GeneratedOrigin>>,body:impl std::ops::AsyncFnOnce(&mut Self)->Result<()>)->Result<()>{
         let projected = value.condition();

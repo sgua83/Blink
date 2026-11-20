@@ -1518,3 +1518,62 @@ OwnershipNode left=host.ownership_read(a);OwnershipNode right=host.ownership_rea
     Compatible context=Compatible(a,b,inputs,path);
     return host.truth_scope(0,address_of(context),host,c_function(expected_presence));
 }
+
+u64 emit_index(address context,Index index,cfn<u64,address,u32,u32> literal) on cpu
+    requires nonzero(literal) {
+    if(index.kind==1){return literal(context,index.value,1);}
+    return index.reg;
+}
+
+extern "C" u64 emit_presence(address context,address value,EmitHost host) on cpu
+    requires nonzero(host.inspect)
+    requires nonzero(host.constant)
+    requires nonzero(host.input_register)
+    requires nonzero(host.compare)
+    requires nonzero(host.invert)
+    requires nonzero(host.slot)
+    requires nonzero(host.load)
+    requires nonzero(host.scoped_branch) {
+    Node node=host.inspect(value);
+    if(node.kind<=1){return host.constant(context,node.kind,0);}
+    if(node.kind==2){return host.input_register(node.value);}
+    if(node.kind==3){
+        u64 a=emit_index(context,node.a,host.constant);
+        u64 b=emit_index(context,node.b,host.constant);
+        return host.compare(context,node.operation,a,b);
+    }
+    if(node.kind==4){
+        u64 input=emit_presence(context,node.first,host);
+        return host.invert(context,input);
+    }
+    u64 condition=emit_presence(context,node.first,host);
+    u64 slot=host.slot(context);
+    host.scoped_branch(context,EmitBranch(node.second,slot,condition,node.kind==6 ? 1 : 0));
+    return host.load(context,slot);
+}
+
+extern "C" void emit_presence_branch(address context,EmitBranch work,address right,address fixed,EmitHost host) on cpu
+    requires nonzero(host.inspect)
+    requires nonzero(host.constant)
+    requires nonzero(host.input_register)
+    requires nonzero(host.compare)
+    requires nonzero(host.invert)
+    requires nonzero(host.slot)
+    requires nonzero(host.store)
+    requires nonzero(host.load)
+    requires nonzero(host.scoped_branch)
+    requires nonzero(host.swap_code)
+    requires nonzero(host.fixed_store)
+    requires nonzero(host.branch) {
+    host.swap_code(context,right);
+    u64 rhs=emit_presence(context,work.value,host);
+    host.store(context,work.slot,rhs);
+    host.swap_code(context,right);
+    u64 bit=host.constant(context,work.either,0);
+    host.fixed_store(context,fixed,work.slot,bit);
+    if(work.either==0){
+        host.branch(context,work.condition,right,fixed);
+    }else{
+        host.branch(context,work.condition,fixed,right);
+    }
+}

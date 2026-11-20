@@ -323,3 +323,129 @@ pub(super) fn restricted(value: &Ownership, when: &Presence) -> Ownership {
 pub(super) fn compatible(a: &Ownership, b: &Ownership, inputs: &BTreeMap<ValueIdentity, bounds::Proof>, path: &bounds::Clause) -> bool {
     unsafe { source_compatible(pointer(a), pointer(b), pointer(inputs), pointer(path), HOST) != 0 }
 }
+
+
+#[repr(C)]
+struct EmitBranch { value: Address, slot: usize, condition: Reg, either: u32 }
+
+#[repr(C)]
+struct EmitHost {
+    inspect: unsafe extern "C" fn(Address) -> Node,
+    constant: unsafe extern "C" fn(Address, u32, u32) -> Reg,
+    input_register: unsafe extern "C" fn(Address) -> Reg,
+    compare: unsafe extern "C" fn(Address, u32, Reg, Reg) -> Reg,
+    invert: unsafe extern "C" fn(Address, Reg) -> Reg,
+    slot: unsafe extern "C" fn(Address) -> usize,
+    store: unsafe extern "C" fn(Address, usize, Reg),
+    load: unsafe extern "C" fn(Address, usize) -> Reg,
+    scoped_branch: unsafe extern "C" fn(Address, EmitBranch),
+    swap_code: unsafe extern "C" fn(Address, Address),
+    fixed_store: unsafe extern "C" fn(Address, Address, usize, Reg),
+    branch: unsafe extern "C" fn(Address, Reg, Address, Address),
+}
+
+const EMITTER: EmitHost = EmitHost {
+    inspect, constant: emit_constant, input_register, compare: emit_compare,
+    invert: emit_invert, slot: bool_slot, store: store_bool, load: load_bool,
+    scoped_branch, swap_code, fixed_store, branch: emit_branch,
+};
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.ownership_presence::emit_presence"]
+    fn source_emit_presence(context: Address, value: Address, host: EmitHost) -> Reg;
+    #[link_name = "bootstrap.ownership_presence::emit_presence_branch"]
+    fn source_emit_branch(context: Address, work: EmitBranch, right: Address,
+        fixed: Address, host: EmitHost);
+}
+
+struct Emission<'a, 'w> {
+    builder: &'a mut Builder<'w>,
+    origin: Option<&'a Arc<GeneratedOrigin>>,
+}
+
+impl Emission<'_, '_> {
+    fn emit(&mut self, kind: InstKind) {
+        match self.origin {
+            Some(origin) => self.builder.code.push(Inst::generated(kind, origin.clone())),
+            None => self.builder.emit(kind),
+        }
+    }
+
+    fn value(&mut self, scalar: Scalar, instruction: impl FnOnce(Reg) -> InstKind) -> Reg {
+        let dst = self.builder.reg(scalar);
+        self.emit(instruction(dst));
+        dst
+    }
+}
+
+pub(super) fn emit_presence(builder: &mut Builder<'_>, value: &Presence, origin: Option<&Arc<GeneratedOrigin>>) -> Reg {
+    let mut emission = Emission { builder, origin };
+    unsafe { source_emit_presence(std::ptr::from_mut(&mut emission).cast(), pointer(value), EMITTER) }
+}
+
+unsafe extern "C" fn emit_constant(context: Address, value: u32, index: u32) -> Reg {
+    let state = unsafe { &mut *context.cast::<Emission<'_, '_>>() };
+    let scalar = if index == 0 { Scalar::Bool } else { Scalar::U32 };
+    state.value(scalar, |dst| InstKind::Constant(dst, scalar, Bits::from(value)))
+}
+
+unsafe extern "C" fn input_register(value: Address) -> Reg {
+    unsafe { (&*value.cast::<Value>()).regs[0] }
+}
+
+unsafe extern "C" fn emit_compare(context: Address, operation: u32, a: Reg, b: Reg) -> Reg {
+    let state = unsafe { &mut *context.cast::<Emission<'_, '_>>() };
+    let op = BinaryOp::Compare(comparison(operation));
+    state.value(Scalar::Bool, |dst| InstKind::Binary { dst, op, a, b })
+}
+
+unsafe extern "C" fn emit_invert(context: Address, a: Reg) -> Reg {
+    let state = unsafe { &mut *context.cast::<Emission<'_, '_>>() };
+    state.value(Scalar::Bool, |dst| InstKind::Unary { dst, op: UnaryOp::LogicalNot, a })
+}
+
+unsafe extern "C" fn bool_slot(context: Address) -> usize {
+    let state = unsafe { &mut *context.cast::<Emission<'_, '_>>() };
+    state.builder.local_slots(&Ty::scalar(Scalar::Bool)).0[0]
+}
+
+unsafe extern "C" fn store_bool(context: Address, slot: usize, value: Reg) {
+    let state = unsafe { &mut *context.cast::<Emission<'_, '_>>() };
+    state.emit(InstKind::StoreLocal(slot, value));
+}
+
+unsafe extern "C" fn load_bool(context: Address, slot: usize) -> Reg {
+    let state = unsafe { &mut *context.cast::<Emission<'_, '_>>() };
+    state.value(Scalar::Bool, |dst| InstKind::LoadLocal(dst, slot))
+}
+
+unsafe extern "C" fn scoped_branch(context: Address, work: EmitBranch) {
+    let mut right = Vec::<Inst>::new();
+    let mut fixed = Vec::<Inst>::new();
+    unsafe {
+        source_emit_branch(context, work, std::ptr::from_mut(&mut right).cast(),
+            std::ptr::from_mut(&mut fixed).cast(), EMITTER);
+    }
+}
+
+unsafe extern "C" fn swap_code(context: Address, code: Address) {
+    let state = unsafe { &mut *context.cast::<Emission<'_, '_>>() };
+    std::mem::swap(&mut state.builder.code, unsafe { &mut *code.cast::<Vec<Inst>>() });
+}
+
+unsafe extern "C" fn fixed_store(context: Address, code: Address, slot: usize, value: Reg) {
+    let state = unsafe { &*context.cast::<Emission<'_, '_>>() };
+    let kind = InstKind::StoreLocal(slot, value);
+    let store = match state.origin {
+        Some(origin) => Inst::generated(kind, origin.clone()),
+        None => Inst::new(kind),
+    };
+    unsafe { &mut *code.cast::<Vec<Inst>>() }.push(store);
+}
+
+unsafe extern "C" fn emit_branch(context: Address, condition: Reg, yes: Address, no: Address) {
+    let state = unsafe { &mut *context.cast::<Emission<'_, '_>>() };
+    let yes = std::mem::take(unsafe { &mut *yes.cast::<Vec<Inst>>() });
+    let no = std::mem::take(unsafe { &mut *no.cast::<Vec<Inst>>() });
+    state.emit(InstKind::If { condition, yes, no });
+}
