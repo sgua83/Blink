@@ -13,6 +13,7 @@ mod sort;
 mod texture;
 mod transfer;
 use crate::views::Views;
+use transfer::Readback;
 use crate::{Dataset, DomainBindings, Result, Value, arguments, error};
 use blanguage::{
     ExecutableProgram, TemplateProgram,
@@ -981,65 +982,7 @@ impl Device {
         if !Rc::ptr_eq(&self.inner, &data.allocation.inner) {
             return Err(error("数据集属于另一设备"));
         }
-        self.download_graph(data, &mut std::collections::BTreeMap::new())
-    }
-    fn read_payload(&self, data: &GpuDataset) -> Result<Vec<u32>> {
-        let Some(first) = data.pages.first() else {
-            return Ok(Vec::new());
-        };
-        let byte_count = data.bytes() as usize;
-        let word_count = byte_count.div_ceil(4);
-        let mut words = Vec::<u32>::new();
-        words.try_reserve_exact(word_count)?;
-        let output = words.spare_capacity_mut().as_mut_ptr().cast::<u8>();
-        let target = Allocation::new(self.inner.clone(), first.size, 2, 6, 4)?;
-        let page_bytes = data.page_records() as usize * data.stride as usize;
-        let mut written = 0;
-        let mut producer = data.dependency();
-        let commands = Commands::with_pool_flags(self.inner.clone(), if data.pages.len() > 1 { 3 } else { 1 })?;
-        let mut completion = None;
-        for page in &data.pages {
-            let bytes = (byte_count - written).min(page_bytes);
-            if completion.is_some() {
-                commands.begin()?;
-            }
-            commands.barrier(data.producer.stage(), 0x1000, data.producer.access(), 0x800);
-            let copy = VkBufferCopy {
-                srcOffset: 0,
-                dstOffset: 0,
-                size: (bytes.div_ceil(4) * 4) as u64,
-            };
-            unsafe {
-                (self.inner.functions.vkCmdCopyBuffer)(
-                    commands.command,
-                    page.buffer,
-                    target.buffer,
-                    1,
-                    &copy,
-                );
-            }
-            commands.barrier(0x1000, 0x4000, 0x1000, 0x2000);
-            let dependencies = Execution::prepare_one(producer.take())?;
-            let point = match &mut completion {
-                Some(point) => {
-                    commands.resubmit(point)?;
-                    point
-                }
-                slot @ None => slot.insert(commands.submit_with(&[], &[], &[])?),
-            };
-            Execution::wait_synchronous(point, dependencies)?;
-            target.read_with(|pointer| unsafe {
-                std::ptr::copy_nonoverlapping(pointer, output.add(written), bytes);
-            })?;
-            written += bytes;
-        }
-        // The allocated pages cover all logical bytes. Initialize only the final
-        // word's padding before exposing the fully written CPU storage.
-        unsafe {
-            output.add(byte_count).write_bytes(0, word_count * 4 - byte_count);
-            words.set_len(word_count);
-        }
-        Ok(words)
+        Readback::new(self).download_graph(data)
     }
     pub fn load(
         &self,
@@ -1081,7 +1024,7 @@ impl Device {
         &self,
         bindings: DomainBindings<GpuDataset>,
     ) -> Result<DomainBindings<crate::cpu::CpuDataset>> {
-        let mut memo = std::collections::BTreeMap::new();
+        let mut readback = Readback::new(self);
         let datasets = bindings
             .datasets
             .iter()
@@ -1089,7 +1032,7 @@ impl Device {
                 if !Rc::ptr_eq(&self.inner, &d.allocation.inner) {
                     return Err(error("数据集属于另一设备"));
                 }
-                self.download_cpu(d, &mut memo)
+                readback.download_cpu(d)
             })
             .collect::<Result<Vec<_>>>()?;
         Ok(DomainBindings {
