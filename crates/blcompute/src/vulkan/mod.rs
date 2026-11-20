@@ -1140,11 +1140,15 @@ pub struct GpuStorage {
     instances: Option<ray::InstanceInput>,
 }
 impl GpuStorage {
-    fn view_header(&self) -> [u32; 6] {
+    fn page_array_address(&self) -> u64 {
         let mapped = self.allocation.memory.as_ref().unwrap().pointer();
         // PagedBuffer::table initializes the immutable page-array address in the mapped header.
         let [low, high] = unsafe { mapped.cast::<[u32; 2]>().read() };
-        [low, high, self.count, self.stride, 0, 0]
+        u64::from(low) | (u64::from(high) << 32)
+    }
+    fn view_header(&self) -> [u32; 6] {
+        let address = self.page_array_address();
+        [address as u32, (address >> 32) as u32, self.count, self.stride, 0, 0]
     }
 }
 impl std::ops::Deref for GpuDataset {
@@ -1235,7 +1239,9 @@ impl ReadDataset {
     }
 }
 impl GpuDataset {
-    pub(crate) fn storage_address(&self)->u64 { self.allocation.address() }
+    pub(crate) fn storage_address(&self) -> u64 {
+        self.page_array_address() - u64::from(blanguage::spirv::BINDING_BYTES)
+    }
     /// 借用同一物理存储的原类型；记录步幅和实际绑定分别查询。
     pub fn layout(&self) -> &Ty {
         &self.ty
@@ -2502,7 +2508,7 @@ impl GpuProgram {
                             VkDescriptorBufferInfo { buffer: d.allocation.buffer, offset: 0, range: bytes }
                         } else {
                             let at = step * field_index;
-                            let address = d.allocation.address() + bytes;
+                            let address = d.page_array_address();
                             let (buffer, mapped) = projected.unwrap();
                             mapped.add(at as usize).cast::<[u32; 4]>()
                                 .write(binding_header(address, d.stride, offset));
