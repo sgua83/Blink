@@ -203,20 +203,18 @@ impl Drop for Structure {
         self.built.discard_structure(storage);
     }
 }
-pub(super) struct RayInput {
-    allocation: Allocation,
-    ready: Option<Rc<Execution>>,
+struct BuildInputs {
+    commands: Commands,
+    allocations: Vec<Allocation>,
+    dependencies: DependencySources,
 }
-impl RayInput {
-    fn address(&self) -> u64 {
-        self.allocation.address()
-    }
-}
-impl Drop for RayInput {
-    fn drop(&mut self) {
-        if let Some(ready) = &self.ready {
-            ready.point.finish_for_drop();
-        }
+impl BuildInputs {
+    fn new(inner: &Rc<Inner>) -> Result<Self> {
+        Ok(Self {
+            commands: Commands::new(inner.clone())?,
+            allocations: Vec::new(),
+            dependencies: DependencySources::default(),
+        })
     }
 }
 #[derive(Clone)]
@@ -293,29 +291,21 @@ impl Acceleration {
     }
 }
 impl Device {
-    fn ray_input(
+    fn stage_ray_input(
         &self,
         bytes: u64,
         alignment: u64,
         write: impl FnOnce(&Allocation) -> Result<()>,
-    ) -> Result<RayInput> {
+        inputs: &mut BuildInputs,
+    ) -> Result<Allocation> {
         let allocation = Allocation::new(self.inner.clone(), bytes, 0xa0002, 1, alignment)?;
-        let ready = if bytes == 0 {
-            None
-        } else {
-            let mut commands = Commands::new(self.inner.clone())?;
-            let mut staging = Vec::new();
-            self.stage_page(&allocation, bytes, write, &mut commands, &mut staging)?;
-            Some(self.submit_transfer(commands, staging, Vec::new())?)
-        };
-        Ok(RayInput { allocation, ready })
+        self.stage_page(&allocation, bytes, write, &mut inputs.commands, &mut inputs.allocations)?;
+        Ok(allocation)
     }
-    fn ray_input_device(&self, mut data: GpuDataset) -> Result<RayInput> {
+    fn stage_device_input(&self, data: &GpuDataset, inputs: &mut BuildInputs) -> Result<Allocation> {
         let allocation = Allocation::new(self.inner.clone(), data.bytes(), 0xa0002, 1, u64::from(data.ty.align))?;
-        let ready = if data.count == 0 {
-            None
-        } else {
-            let commands = Commands::new(self.inner.clone())?;
+        if data.count != 0 {
+            let commands = &inputs.commands;
             commands.barrier(data.producer.stage(), 0x1000, data.producer.access(), 0x800);
             let mut offset = 0;
             for page in &data.pages {
@@ -335,13 +325,11 @@ impl Device {
                 }
                 offset += page.size;
             }
-            let dependencies = Execution::prepare_one(data.dependency())?;
-            Some(self.submit_transfer(commands, Vec::new(), dependencies)?)
-        };
-        if let Some(ready) = &ready {
-            data.last_use = Some(ready.clone());
+            if let Some(previous) = data.dependency() {
+                inputs.dependencies.insert(previous);
+            }
         }
-        Ok(RayInput { allocation, ready })
+        Ok(allocation)
     }
     fn build_acceleration(
         &self,
@@ -349,9 +337,8 @@ impl Device {
         count: u32,
         structure_type: u32,
         producer: Usage,
-        inputs: Vec<RayInput>,
+        inputs: BuildInputs,
         models: Option<Rc<[BottomLevel]>>,
-        mut dependencies: DependencySources,
         operation: BuildOperation<'_>,
     ) -> Result<Structure> {
         let ray = self
@@ -419,8 +406,8 @@ impl Device {
             (ray.sizes)(self.inner.owner.device, 1, &info, &count, &mut sizes);
         }
         let storage = Allocation::new(self.inner.clone(), sizes.structure, 0x120000, 1, 1)?;
-        for previous in inputs.iter().filter_map(|input| input.ready.as_ref())
-            .chain(models.as_deref().unwrap_or_default().iter().map(|model| &model.0.built))
+        let BuildInputs { commands, allocations, mut dependencies } = inputs;
+        for previous in models.as_deref().unwrap_or_default().iter().map(|model| &model.0.built)
             .chain(source.iter().map(|source| &source.built))
         {
             dependencies.insert(previous);
@@ -474,7 +461,6 @@ impl Device {
             transform_offset: 0,
         };
         let ranges = &range as *const Range;
-        let commands = Commands::new(self.inner.clone())?;
         commands.barrier(
             producer.stage() | 0x1000 | 0x2000000,
             0x2000000,
@@ -488,7 +474,7 @@ impl Device {
             ExecutionResources::Acceleration {
                 commands,
                 _scratch: scratch,
-                _inputs: inputs,
+                _inputs: allocations,
                 _source: source,
             },
             dependencies,
@@ -542,13 +528,15 @@ impl Device {
         indices: &[[u32; 3]],
         operation: BuildOperation<'_>,
     ) -> Result<BottomLevel> {
-        let vertices = self.ray_input(std::mem::size_of_val(positions) as u64, 4, |source| {
+        let mut inputs = BuildInputs::new(&self.inner)?;
+        let vertices = self.stage_ray_input(std::mem::size_of_val(positions) as u64, 4, |source| {
             source.write_with(positions, |_| {})
-        })?;
-        let triangles = self.ray_input(std::mem::size_of_val(indices) as u64, 4, |source| {
+        }, &mut inputs)?;
+        let triangles = self.stage_ray_input(std::mem::size_of_val(indices) as u64, 4, |source| {
             source.write_with(indices, |_| {})
-        })?;
+        }, &mut inputs)?;
         self.bottom_level_inputs(
+            inputs,
             vertices,
             triangles,
             12,
@@ -557,7 +545,7 @@ impl Device {
             operation,
         )
     }
-    /// GPU 顶点／三角形沿原传输完成点形成自有 AS 输入；不下载几何。
+    /// 在本次构建命令内复制 GPU 顶点和索引，源存储保持到构建完成。
     /// 顶点开头为三个 f32，沿实际记录 stride 取样；三角形为紧密的三个 u32。
     /// 消费完整记录域；冻结来源可直接传入 binding()，不读取有效前缀计数。
     /// # Safety
@@ -592,8 +580,8 @@ impl Device {
     }
     fn bottom_level_device_operation(
         &self,
-        vertices: GpuDataset,
-        triangles: GpuDataset,
+        mut vertices: GpuDataset,
+        mut triangles: GpuDataset,
         operation: BuildOperation<'_>,
     ) -> Result<BottomLevel> {
         use blanguage::ir::Scalar::{F32, U32};
@@ -615,19 +603,24 @@ impl Device {
         let stride = vertices.stride as u64;
         let max_vertex = vertices.count.saturating_sub(1);
         let count = triangles.count;
-        self.bottom_level_inputs(
-            self.ray_input_device(vertices)?,
-            self.ray_input_device(triangles)?,
-            stride,
-            max_vertex,
-            count,
-            operation,
-        )
+        let mut inputs = BuildInputs::new(&self.inner)?;
+        let vertex_input = self.stage_device_input(&vertices, &mut inputs)?;
+        let triangle_input = self.stage_device_input(&triangles, &mut inputs)?;
+        let result = self.bottom_level_inputs(
+            inputs, vertex_input, triangle_input, stride, max_vertex, count, operation,
+        )?;
+        for data in [&mut vertices, &mut triangles] {
+            if data.count != 0 {
+                data.last_use = Some(result.0.built.clone());
+            }
+        }
+        Ok(result)
     }
     fn bottom_level_inputs(
         &self,
-        vertices: RayInput,
-        triangles: RayInput,
+        mut inputs: BuildInputs,
+        vertices: Allocation,
+        triangles: Allocation,
         stride: u64,
         max_vertex: u32,
         count: u32,
@@ -652,14 +645,14 @@ impl Device {
                 },
             },
         };
+        inputs.allocations.extend([vertices, triangles]);
         self.build_acceleration(
             geometry,
             count,
             1,
             Usage::Transfer,
-            vec![vertices, triangles],
+            inputs,
             None,
-            DependencySources::default(),
             operation,
         )
         .map(|s| BottomLevel(Rc::new(s)))
@@ -695,7 +688,8 @@ impl Device {
         }
         let count = u32::try_from(instances.len())?;
         let bytes = u64::from(count) * std::mem::size_of::<InstanceRecord>() as u64;
-        let input = self.ray_input(bytes, 16, |source| {
+        let mut inputs = BuildInputs::new(&self.inner)?;
+        let input = self.stage_ray_input(bytes, 16, |source| {
             let records = source.mapping()?.cast::<InstanceRecord>();
             // The mapped range has one full native record for each admitted instance.
             for (index, instance) in instances.iter().enumerate() {
@@ -707,7 +701,7 @@ impl Device {
                 }
             }
             Ok(())
-        })?;
+        }, &mut inputs)?;
         let geometry = Geometry {
             kind: 1000150006,
             next: null(),
@@ -723,14 +717,14 @@ impl Device {
             },
         };
         let models = collect_models(instances.into_iter().map(|instance| instance.model));
+        inputs.allocations.push(input);
         let structure = self.build_acceleration(
             geometry,
             count,
             0,
             Usage::Transfer,
-            vec![input],
+            inputs,
             models,
-            DependencySources::default(),
             operation,
         )?;
         Ok(Acceleration(Rc::new(structure)))
@@ -896,18 +890,17 @@ impl Device {
             },
         };
         let models = input.models.clone();
-        let mut dependencies = DependencySources::default();
+        let mut inputs = BuildInputs::new(&self.inner)?;
         if let Some(previous) = data.dependency() {
-            dependencies.insert(previous);
+            inputs.dependencies.insert(previous);
         }
         let structure = self.build_acceleration(
             geometry,
             data.count,
             0,
             data.producer,
-            Vec::new(),
+            inputs,
             models,
-            dependencies,
             operation,
         )?;
         data.last_use = Some(structure.built.clone());

@@ -255,7 +255,7 @@ pub(super) enum ExecutionResources {
     Acceleration {
         commands: Commands,
         _scratch: Allocation,
-        _inputs: Vec<ray::RayInput>,
+        _inputs: Vec<Allocation>,
         _source: Option<Rc<ray::Structure>>,
     },
 }

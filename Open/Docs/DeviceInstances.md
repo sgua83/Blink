@@ -45,7 +45,7 @@ TLAS自提交起持有唯一BLAS引用集合，构建持有的输入引用与scr
 
 Device::upload／upload_with_views／upload_domains返回已提交的真实GpuDataset；Device::zeroed用一次提交填充实际数据页。每个上传操作持有本次全部分块暂存到设备复制完成，冻结view仍持有实际子资源；同一队列后续program直接消费这些真实依赖，调用方无需在中间加入CPU等待。
 
-unsafe bottom_level复制CPU几何到自有传输资源后提交构建；unsafe top_level同样复制原生实例输入，并持有去重后的BLAS。BottomLevel／Acceleration提供is_complete与wait，含义为该结构自身的构建完成，不代表未来的全部查询已经结束。查询、TLAS与调用者通过原Rc维持真实AS／BLAS拥有关系；Structure最后拥有者明确交出StructureStorage后，同一构建Completion已记录0或DEVICE_LOST时，Execution::discard_structure直接drop原AS、存储及其模型引用；未确认终止时沿原discarded_structures保留。其他拥有者仍在时不销毁其AS，DEVICE_LOST继续交回原错误，不保证数据可用，不增加等待或释放链。没有消费者的最后析构会等待尚未结束的真实工作；显式download也等待实际结果。纹理上传仍同步，本能力只覆盖已有单设备／单队列缓冲区和AS执行。
+unsafe bottom_level把CPU几何填入自有暂存，在本次构建命令记录拷贝、屏障及实际构建。unsafe top_level沿同一方式提交原生实例拷贝及TLAS构建，结果持有去重后的BLAS。BottomLevel／Acceleration提供is_complete与wait，含义为该结构自身的构建完成，不代表未来的全部查询已经结束。查询、TLAS与调用者通过原Rc维持真实AS／BLAS拥有关系；Structure最后拥有者明确交出StructureStorage后，同一构建Completion已记录0或DEVICE_LOST时，Execution::discard_structure直接drop原AS、存储及其模型引用；未确认终止时沿原discarded_structures保留。其他拥有者仍在时不销毁其AS，DEVICE_LOST继续交回原错误，不保证数据可用，不增加等待或释放链。没有消费者的最后析构会等待尚未结束的真实工作；显式download也等待实际结果。纹理上传仍同步，本能力只覆盖已有单设备／单队列缓冲区和AS执行。
 
 
 ## 数据绑定保留点的只读查询
@@ -98,7 +98,7 @@ top_level_device_read也复用此路径，AS不再保留独立的_read_inputs持
 
 两个输入都是本逻辑设备的 GpuDataset，可直接传冻结来源的 binding()。顶点前三个分量为 offset 0／4／8 的 f32，按真实记录 stride 读取，允许后续字段；三角形为紧密三个 u32，stride 12。`struct Triangle {array<u32,3> indices;};` 可表达该索引布局，uint3 的 stride 16 不等价。入口消费完整记录数，不隐式读取有效前缀；全部记录已初始化、位置有限及索引有效是 unsafe 前提。更新还要求原索引内容／顺序、活动状态、原数量及 maxVertex；同形 CPU／GPU 输入可以交叉更新，顶点 stride 可以不同。
 
-GPU 计算结果按真实物理页沿原传输提交复制到具备 AS 输入用途的连续存储，保留逻辑顺序及 primitive 编号。没有 CPU 几何读回、逐三角形主机调用、额外调度或所有普通分配用途扩张。源数据通过原最后使用点持有到复制完成，输入／scratch 与 refit source 通过原 AS Execution 持有到构建／更新完成；旧新查询各消费自己的真实快照。输出仍为原 BottomLevel，不增加另一份几何或场景权威。
+GPU 计算结果沿真实物理页在本次构建命令复制到具备 AS 输入用途的连续存储，保持逻辑顺序及 primitive 编号。原GPU生产点交接本次依赖，复制后的屏障将设备输入交给实际构建。源数据沿原最后使用点持有，输入、scratch 和 refit 来源随同一 AS Execution 保持到构建或更新完成。旧新查询各消费自己的 BottomLevel 快照。
 
 容量内的大型AS设备丢失／驱动问题仍按具体设备与输入留在Issues调查，不用一次创建或查询成功代替合法原生容量。
 
