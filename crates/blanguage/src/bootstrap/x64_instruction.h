@@ -345,6 +345,11 @@ extern "C" AddressEncoding view_memory(u8 base, MoveLocation index, u64 stride, 
 extern "C" AddressEncoding view_memory_dynamic(u8 base, MoveLocation index, MoveLocation low, MoveLocation high, u32 offset, address output) on cpu;
 extern "C" AddressEncoding scaled_memory(u8 base, u8 index, u32 stride, u32 offset, address output) on cpu;
 extern "C" u64 offset_address(u32 stride, address output) on cpu;
+// Both entries use the existing R15 base. The caller lends 48 or 64 output bytes, respectively.
+extern "C" u64 indexed_address(MoveLocation index, ScalarEncoding scalar, u32 stride,
+    u32 word, address output) on cpu;
+extern "C" AddressEncoding indexed_memory(MoveLocation index, ScalarEncoding scalar, u32 stride,
+    u32 word, address output) on cpu;
 
 // Combine two allocated 32-bit address words in R15. The caller owns 24 bytes.
 extern "C" u64 address_pair(MoveLocation low, MoveLocation high, address output) on cpu;

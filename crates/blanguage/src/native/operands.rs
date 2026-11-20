@@ -298,9 +298,6 @@ impl Emitter<'_> {
             BinaryEncoding { length: result.length, left_literal: result.literal_field, right_literal: 0 }
         });
     }
-    pub(super) fn load_location(&mut self, src: Location) {
-        self.copy(Location::Gpr(0), src);
-    }
     pub(super) fn load(&mut self, r: Reg) {
         self.copy_scalar(Location::Gpr(0), self.location(r), self.stage.registers[r]);
     }

@@ -2187,6 +2187,37 @@ extern "C" u64 offset_address(u32 stride, address output) on cpu {
     return cursor + 3u64 - start;
 }
 
+u64 indexed_word_at(u64 at, MoveLocation index, ScalarEncoding scalar, u32 word) on cpu {
+    MoveEncoding loaded = copy_scalar_move(move_gpr(u8(0)), index, scalar.width / 8,
+        scalar.kind == ScalarKind::Signed, unsafe_address(at));
+    u64 cursor = at + loaded.length;
+    put_byte(cursor, u8(0x05));
+    write_word(cursor + 1u64, word);
+    return cursor + 5u64;
+}
+
+extern "C" u64 indexed_address(MoveLocation index, ScalarEncoding scalar, u32 stride,
+    u32 word, address output) on cpu {
+    u64 start = address_bits(output);
+    u64 cursor = start;
+    if (word == 0) {
+        cursor += copy_scalar_move(move_gpr(u8(0)), index, 4, false, output).length;
+    } else {
+        cursor = indexed_word_at(start, index, scalar, word);
+    }
+    return cursor - start + offset_address(stride, unsafe_address(cursor));
+}
+
+extern "C" AddressEncoding indexed_memory(MoveLocation index, ScalarEncoding scalar, u32 stride,
+    u32 word, address output) on cpu {
+    if (word == 0) { return value_memory(u8(15), index, stride, 0, output); }
+    u64 start = address_bits(output);
+    u64 cursor = indexed_word_at(start, index, scalar, word);
+    AddressEncoding result = value_memory(u8(15), move_gpr(u8(0)), stride, 0, unsafe_address(cursor));
+    result.length += cursor - start;
+    return result;
+}
+
 // The caller supplies the actual descriptor field offsets in the table held by R12.
 u64 buffer_field_at(u64 at, u32 offset, u16 opcode, u8 reg) on cpu {
     MoveLocation field = MoveLocation(u64(offset), MOVE_MEMORY, u8(12), NO_INDEX, u8(0));

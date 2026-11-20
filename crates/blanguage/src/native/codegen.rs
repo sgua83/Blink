@@ -1,4 +1,5 @@
 //! Windows x64 原生机器码后端。每个阶段编译为独立原生范围函数。
+use crate::builtin_types::ScalarEncoding;
 use crate::ir::*;
 use super::{BufferAddress,NativeCode,NativeSymbol,Relocation,ContinuationCode,ProgramImage,RangeResult,SortCode,StageCode};
 #[path="allocation.rs"]
@@ -23,7 +24,7 @@ mod external;
 mod integer;
 #[path="operands.rs"]
 mod operands;
-use operands::Memory;
+use operands::{AddressEncoding, Memory, MoveLocation};
 #[path="packet.rs"]
 mod packet;
 #[path="program.rs"]
@@ -104,6 +105,12 @@ unsafe extern "C" {
     fn encode_buffer_load(offset: u32, target: u8, output: *mut u8) -> u64;
     #[link_name = "bootstrap.x64_instruction::buffer_index"]
     fn encode_buffer_index(stride_offset: u32, index: u8, base: u8, output: *mut u8) -> u64;
+    #[link_name = "bootstrap.x64_instruction::indexed_address"]
+    fn encode_indexed_address(index: MoveLocation, scalar: ScalarEncoding, stride: u32,
+        word: u32, output: *mut u8) -> u64;
+    #[link_name = "bootstrap.x64_instruction::indexed_memory"]
+    fn encode_indexed_memory(index: MoveLocation, scalar: ScalarEncoding, stride: u32,
+        word: u32, output: *mut u8) -> AddressEncoding;
     #[link_name = "bootstrap.x64_instruction::buffer_selection"]
     fn encode_buffer_selection(data_offset: u32, stride_offset: u32, word: u32, output: *mut u8) -> u64;
 }
@@ -331,15 +338,18 @@ impl Emitter<'_> {
     }
     fn indexed_address(&mut self, source: &IndexedSource, offset: Reg, word: u32) {
         let stride = self.indexed_base(source);
-        let index = self.indexed_offset(offset, word);
-        self.load_location(index);
-        self.offset_address(stride);
+        let index = self.location(offset).into();
+        let scalar = self.stage.registers[offset].into();
+        self.emit_bytes(48, |output| unsafe { encode_indexed_address(index, scalar, stride, word, output) });
     }
+
     fn indexed_memory(&mut self, source: &IndexedSource, offset: Reg, word: u32) -> Memory {
         let stride = self.indexed_base(source);
-        let index = self.indexed_offset(offset, word);
-        self.value_memory(15, index, stride, 0)
+        let index = self.location(offset).into();
+        let scalar = self.stage.registers[offset].into();
+        self.emit_address(64, |output| unsafe { encode_indexed_memory(index, scalar, stride, word, output) })
     }
+
     fn indexed_base(&mut self, source: &IndexedSource) -> u32 {
         match source {
             IndexedSource::Data { binding, index } => self.address(*binding, *index),
@@ -360,16 +370,6 @@ impl Emitter<'_> {
             }
         }
         1
-    }
-    fn indexed_offset(&mut self, offset: Reg, word: u32) -> allocation::Location {
-        if word != 0 {
-            self.load(offset);
-            self.bytes(&[0x05]);
-            self.u32(word);
-            allocation::Location::Gpr(0)
-        } else {
-            self.location(offset)
-        }
     }
     fn abi_range(&mut self, start: usize, kind: super::AbiRangeKind) {
         self.record_abi_range(start..self.code.len(), kind);
