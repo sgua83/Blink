@@ -619,7 +619,7 @@ ReadValue part_188=read_boolean(input,position);if(part_188.status!=ReadStatus::
 return ReadStatus::Success;
 }
 
-extern "C" void condition_node_ids(address context,CanonicalHost host) on cpu requires nonzero(host.next) requires nonzero(host.index) requires nonzero(host.len) requires nonzero(host.intern) requires nonzero(host.record) requires nonzero(host.bind) {
+extern "C" void condition_node_ids(address context,CanonicalHost host,u32 keep_pairs) on cpu requires nonzero(host.next) requires nonzero(host.index) requires nonzero(host.len) requires nonzero(host.intern) requires nonzero(host.record) requires nonzero(host.bind) {
  ClauseFields value=host.next(context);
  while(value.present!=0){
   NodeKind kind=NodeKind::Impossible;u64 a=0u64;u64 b=0u64;
@@ -627,7 +627,7 @@ extern "C" void condition_node_ids(address context,CanonicalHost host) on cpu re
   else if(value.kind==ClauseKind::Both||value.kind==ClauseKind::Branch){kind=NodeKind::Both;a=host.index(context,value.first);b=host.index(context,value.second);}
   else if(value.kind==ClauseKind::Either){kind=NodeKind::Either;a=host.index(context,value.first);b=host.index(context,value.second);}
   u64 index=0u64;
-  if((kind==NodeKind::Both||kind==NodeKind::Either)&&a==b){index=a;}
+  if(keep_pairs==0&&(kind==NodeKind::Both||kind==NodeKind::Either)&&a==b){index=a;}
   else{
    u64 next=host.len(context);Inserted found=host.intern(context,kind,value.facts,a,b,next);index=found.index;
    if(found.inserted!=0){host.record(context,kind,value.facts,a,b);}

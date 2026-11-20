@@ -163,10 +163,11 @@ unsafe extern "C" fn bind<'a, F>(context: Slot, key: usize, index: usize) {
 }
 unsafe extern "C" {
     #[link_name = "bootstrap.contract_codec::condition_node_ids"]
-    fn canonical_ids(context: Slot, host: CanonicalHost);
+    fn canonical_ids(context: Slot, host: CanonicalHost, keep_pairs: u32);
 }
 pub(in super::super) fn node_ids<'a, F: FnMut(EncodedClause<&'a Facts>)>(
     roots: impl IntoIterator<Item = &'a Clause>,
+    keep_pairs: bool,
     record: F,
 ) -> BTreeMap<usize, usize> {
     let mut state = Canonical {
@@ -186,6 +187,7 @@ pub(in super::super) fn node_ids<'a, F: FnMut(EncodedClause<&'a Facts>)>(
                 record: self::record::<F>,
                 bind: bind::<F>,
             },
+            u32::from(keep_pairs),
         )
     };
     state.indices
@@ -204,7 +206,7 @@ impl<'a> WriteContext<'a> {
             .filter_map(|i| conditions.at(i))
             .flat_map(|condition| condition.cases.iter());
         let mut nodes = Vec::new();
-        let indices = node_ids(roots, |node| nodes.push(node));
+        let indices = node_ids(roots, false, |node| nodes.push(node));
         Self { conditions, nodes, indices }
     }
 }

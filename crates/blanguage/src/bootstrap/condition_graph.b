@@ -185,22 +185,6 @@ extern "C" u32 equivalent(address left,address right,address context,Host host,c
  return query_search(second,first,0,context,graph,host)==0 ? 1 : 0;
 }
 
-extern "C" void required_build(address root,address context,RequiredBuildHost host) on cpu
- requires nonzero(host.index) requires nonzero(host.count)
- requires nonzero(host.inspect) requires nonzero(host.define) {
- usize first=host.index(context,root);
- usize at=first;
- while(at<host.count(context)){
-  SourceNode source=host.inspect(context,at);
-  if(source.kind>=2){
-   address child=source.right;
-   if(source.kind==4&&source.truth==0){child=source.no;}
-   usize a=host.index(context,source.left);usize b=host.index(context,child);
-   host.define(context,at,source.kind==3 ? 3 : 2,a,b);
-  }else{host.define(context,at,source.kind,0u64,0u64);}
-  at+=1u64;
- }
-}
 RequiredNode required_node(RequiredGraph graph,usize index) on compute {
  return unsafe_position<RequiredNode>(unsafe_address(address_bits(graph.nodes)+u64(index)*u64(graph.stride)));
 }
@@ -234,7 +218,7 @@ extern "C" void required_evaluate(RequiredGraph graph,address context,RequiredHo
   RequiredNode node=required_node(graph,at);
   required_remaining(graph,at,node.users);at+=1u64;
  }
- host.push(context,0u64);
+ host.push(context,graph.root);
  while(true){
   RequiredPending pending=host.pop(context);
   if(pending.present==0){break;}
@@ -268,7 +252,7 @@ extern "C" void required_evaluate(RequiredGraph graph,address context,RequiredHo
    host.impossible(context,id);
   }
  }
- required_remaining(graph,0u64,required_node(graph,0u64).remaining-1u64);
+ required_remaining(graph,graph.root,required_node(graph,graph.root).remaining-1u64);
 }
 
 FactView fact_equal(FactView value,i32 order) on cpu {

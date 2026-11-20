@@ -73,14 +73,8 @@ extern "C" u32 equivalent(address left,address right,address context,Host host,c
 
 // Original required-facts query nodes; the result stays in its owning container.
 struct RequiredNode { usize left; usize right; u32 kind; usize users; usize remaining; };
-struct RequiredGraph { address nodes; usize stride; usize count; };
+struct RequiredGraph { address nodes; usize stride; usize count; usize root; };
 struct RequiredPending { u32 present; usize index; };
-struct RequiredBuildHost {
- cfn<usize,address,address> index;
- cfn<usize,address> ensures memory(read) count;
- cfn<SourceNode,address,usize> ensures memory(read) inspect;
- cfn<void,address,usize,u32,usize,usize> define;
-};
 struct RequiredHost {
  cfn<u32,address,usize> ensures memory(read) status;
  cfn<void,address,usize> push;
@@ -93,9 +87,6 @@ struct RequiredHost {
  cfn<u32,address,usize> ensures memory(read) valid_additions;
  cfn<u32,address,usize,u32> release;
 };
-extern "C" void required_build(address root,address context,RequiredBuildHost host) on cpu
- requires nonzero(host.index) requires nonzero(host.count)
- requires nonzero(host.inspect) requires nonzero(host.define);
 extern "C" void required_evaluate(RequiredGraph graph,address context,RequiredHost host) on cpu
  requires nonzero(host.status) requires nonzero(host.push)
  requires nonzero(host.pop) requires nonzero(host.pending_count) requires nonzero(host.impossible)

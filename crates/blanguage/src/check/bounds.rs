@@ -3915,7 +3915,7 @@ fn condition_node_ids<'a>(
     roots: impl IntoIterator<Item = &'a Clause>,
     record: impl FnMut(EncodedClause<&'a Facts>),
 ) -> BTreeMap<usize, usize> {
-    codec::conditions::node_ids(roots, record)
+    codec::conditions::node_ids(roots, false, record)
 }
 
 fn same_condition_roots<const N: usize>(left: [&Clause; N], right: [&Clause; N]) -> bool {

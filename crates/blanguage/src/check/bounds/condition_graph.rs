@@ -531,68 +531,17 @@ struct RequiredGraph {
     nodes: *mut RequiredNode,
     stride: usize,
     count: usize,
+    root: usize,
 }
 struct RequiredResult<'a> {
-    clause: &'a Clause,
+    facts: Option<&'a Facts>,
     node: RequiredNode,
     value: Option<Option<super::QueryFacts<'a>>>,
 }
 pub(super) struct RequiredQuery<'a> {
     nodes: Vec<RequiredResult<'a>>,
+    root: usize,
     pending: Vec<usize>,
-}
-struct RequiredBuilder<'a> {
-    indices: HashMap<usize, usize>,
-    query: RequiredQuery<'a>,
-}
-unsafe fn required_builder<'a, 'b>(slot: Slot) -> &'a mut RequiredBuilder<'b> {
-    unsafe { &mut *slot.cast::<RequiredBuilder<'b>>() }
-}
-unsafe extern "C" fn required_index(slot: Slot, clause: Borrowed) -> usize {
-    let builder = unsafe { required_builder(slot) };
-    let clause = unsafe { &*clause.cast::<Clause>() };
-    match builder.indices.entry(clause.key()) {
-        std::collections::hash_map::Entry::Vacant(entry) => {
-            let id = builder.query.nodes.len();
-            entry.insert(id);
-            builder.query.nodes.push(RequiredResult {
-                clause,
-                node: RequiredNode {
-                    left: 0,
-                    right: 0,
-                    kind: 0,
-                    users: 1,
-                    remaining: 0,
-                },
-                value: None,
-            });
-            id
-        }
-        std::collections::hash_map::Entry::Occupied(entry) => {
-            let id = *entry.get();
-            builder.query.nodes[id].node.users += 1;
-            id
-        }
-    }
-}
-unsafe extern "C" fn required_count(slot: Slot) -> usize {
-    unsafe { required_builder(slot) }.query.nodes.len()
-}
-unsafe extern "C" fn required_inspect(slot: Slot, id: usize) -> SourceNode {
-    source_node(unsafe { required_builder(slot) }.query.nodes[id].clause)
-}
-unsafe extern "C" fn required_define(slot: Slot, id: usize, kind: u32, left: usize, right: usize) {
-    let node = &mut unsafe { required_builder(slot) }.query.nodes[id].node;
-    node.left = left;
-    node.right = right;
-    node.kind = kind;
-}
-#[repr(C)]
-struct RequiredBuildHost {
-    index: unsafe extern "C" fn(Slot, Borrowed) -> usize,
-    count: unsafe extern "C" fn(Slot) -> usize,
-    inspect: unsafe extern "C" fn(Slot, usize) -> SourceNode,
-    define: unsafe extern "C" fn(Slot, usize, u32, usize, usize),
 }
 struct RequiredEvaluation<'a, 'b, 'c> {
     query: &'a mut RequiredQuery<'b>,
@@ -637,7 +586,7 @@ unsafe extern "C" fn required_impossible(slot: Slot, id: usize) {
 }
 unsafe extern "C" fn required_leaf(slot: Slot, id: usize) {
     let evaluation = unsafe { required_evaluation(slot) };
-    if let ClauseNode::Facts(required) = &**evaluation.query.nodes[id].clause.0 {
+    if let Some(required) = evaluation.query.nodes[id].facts {
         let required = if required.is_disjoint(evaluation.environment) {
             super::QueryFacts::Borrowed(required)
         } else {
@@ -715,33 +664,33 @@ struct RequiredHost {
     release: unsafe extern "C" fn(Slot, usize, u32) -> u32,
 }
 unsafe extern "C" {
-    #[link_name = "bootstrap.condition_graph::required_build"]
-    fn build_required(root: Borrowed, context: Slot, host: RequiredBuildHost);
     #[link_name = "bootstrap.condition_graph::required_evaluate"]
     fn evaluate_required(graph: RequiredGraph, context: Slot, host: RequiredHost);
 }
 impl<'a> RequiredQuery<'a> {
     pub(super) fn new(root: &'a Clause) -> Self {
-        let mut builder = RequiredBuilder {
-            indices: HashMap::new(),
-            query: Self {
-                nodes: Vec::new(),
-                pending: Vec::new(),
-            },
-        };
-        unsafe {
-            build_required(
-                std::ptr::from_ref(root).cast(),
-                (&mut builder as *mut RequiredBuilder<'_>).cast(),
-                RequiredBuildHost {
-                    index: required_index,
-                    count: required_count,
-                    inspect: required_inspect,
-                    define: required_define,
-                },
-            );
-        }
-        builder.query
+        use super::EncodedClause;
+        let mut nodes = Vec::<RequiredResult<'a>>::new();
+        let indices = super::codec::conditions::node_ids([root], true, |shape| {
+            let (kind, facts, left, right) = match shape {
+                EncodedClause::Impossible => (0, None, 0, 0),
+                EncodedClause::Facts(facts) => (1, Some(facts), 0, 0),
+                EncodedClause::Both(left, right) => (2, None, left, right),
+                EncodedClause::Either(left, right) => (3, None, left, right),
+            };
+            if kind >= 2 {
+                nodes[left].node.users += 1;
+                nodes[right].node.users += 1;
+            }
+            nodes.push(RequiredResult {
+                facts,
+                node: RequiredNode { left, right, kind, users: 0, remaining: 0 },
+                value: None,
+            });
+        });
+        let root = indices[&root.key()];
+        nodes[root].node.users += 1;
+        Self { nodes, root, pending: Vec::new() }
     }
     pub(super) fn evaluate(
         &mut self,
@@ -753,6 +702,7 @@ impl<'a> RequiredQuery<'a> {
             nodes: std::ptr::addr_of_mut!(self.nodes[0].node),
             stride: std::mem::size_of::<RequiredResult<'a>>(),
             count: self.nodes.len(),
+            root: self.root,
         };
         let mut evaluation = RequiredEvaluation {
             query: self,
@@ -778,6 +728,6 @@ impl<'a> RequiredQuery<'a> {
                 },
             );
         }
-        self.nodes[0].value.take().unwrap()
+        self.nodes[self.root].value.take().unwrap()
     }
 }
