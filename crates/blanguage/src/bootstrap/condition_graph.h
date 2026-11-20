@@ -5,6 +5,17 @@ import bootstrap.scalar_fold;
 // They are private native fields, not a stored condition or public graph format.
 struct Span { address data; usize count; };
 struct SourceNode { u32 kind; address left; address right; address no; u32 truth; u32 empty; address condition; };
+struct CallProjectionNode { address original; SourceNode node; };
+struct CallProjectionHost {
+ cfn<CallProjectionNode,address> next;
+ cfn<void,address,address> impossible;
+ cfn<u32,address,address,address,u32> facts;
+ cfn<void,address,address,address,address> both;
+ cfn<void,address,address,address,address> either;
+};
+extern "C" u32 project_call_graph(address context,CallProjectionHost host) on cpu
+ requires nonzero(host.next) requires nonzero(host.impossible) requires nonzero(host.facts)
+ requires nonzero(host.both) requires nonzero(host.either);
 struct Gate { usize left; usize right; u32 kind; Span parents; };
 struct Graph { address nodes; usize stride; address values; };
 struct Assignment { u32 present; usize node; u32 truth; };

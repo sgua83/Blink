@@ -2066,26 +2066,7 @@ impl Clause {
         numeric_context: impl FnOnce(&[&Self]) -> bool,
         mut required: impl FnMut(&Self) -> Option<Facts>,
     ) -> Vec<Self> {
-        let mut clauses = BTreeMap::new();
-        let mut private_numeric = false;
-        for &clause in ordered {
-            let mapped = match &**clause.0 {
-                ClauseNode::Impossible => Clause::impossible(),
-                ClauseNode::Facts(facts) => {
-                    private_numeric = private_numeric || facts.iter().any(|fact| Self::private_numeric(fact, bindings));
-                    Clause::call_facts(facts.iter().copied(), bindings)
-                },
-                ClauseNode::Both(a, b) => Clause::both(&clauses[&a.key()], &clauses[&b.key()]),
-                ClauseNode::Branch(parent, condition, truth) => Clause::both(
-                    &clauses[&parent.key()],
-                    &clauses[&condition.cases[usize::from(*truth)].key()],
-                ),
-                ClauseNode::Either(a, b) => {
-                    Clause::either(&clauses[&a.key()], &clauses[&b.key()])
-                }
-            };
-            clauses.insert(clause.key(), mapped);
-        }
+        let (mut clauses, private_numeric) = condition_graph::project_call(ordered, bindings);
         // An impossible result has no consumer for supplementary bounds.
         let mut outputs = roots.iter().copied()
             .filter(|root| !matches!(&**clauses[&root.key()].0, ClauseNode::Impossible))
@@ -2145,7 +2126,35 @@ impl Clause {
     }
 
     fn call_facts(facts: impl IntoIterator<Item = Fact>, bindings: &BTreeMap<ValueIdentity, impl std::borrow::Borrow<Proof>>) -> Self {
-        let mut facts = facts.into_iter().filter_map(|fact| Proof::call_fact(fact, bindings));
+        Self::fold_call_facts(facts.into_iter().filter_map(|fact| Proof::call_fact(fact, bindings)))
+    }
+
+    fn project_call_leaf(
+        facts: &Facts, bindings: &BTreeMap<ValueIdentity, impl std::borrow::Borrow<Proof>>,
+        need_private: bool,
+    ) -> (Self, bool) {
+        if !need_private {
+            return (Self::call_facts(facts.iter().copied(), bindings), false);
+        }
+        let mut source = facts.iter().copied();
+        let mut private = false;
+        let projected = Self::fold_call_facts(source.by_ref().filter_map(|fact| {
+            let mapped = Proof::call_fact(fact, bindings);
+            if !private && mapped.is_none()
+                && matches!(fact, Fact::Below(..) | Fact::Index(_, IndexDomain::Computed(_)))
+            {
+                private = true;
+            }
+            mapped
+        }));
+        // An impossible leaf can still contribute the trigger for another output.
+        if !private {
+            private = source.any(|fact| Self::private_numeric(&fact, bindings));
+        }
+        (projected, private)
+    }
+
+    fn fold_call_facts(mut facts: impl Iterator<Item = Clause>) -> Self {
         let mut projected = Facts::new();
         for clause in facts.by_ref() {
             match &**clause.0 {

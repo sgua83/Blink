@@ -1,7 +1,8 @@
 //! B owns the complete shared-Clause overlap search. The original query owns
 //! its physical containers and borrows immutable Clause/Fact fields until return.
-use super::{Clause, ClauseNode, Fact, Facts, contradictory};
+use super::{Clause, ClauseNode, Fact, Facts, Proof, ValueIdentity, contradictory};
 use std::{
+    borrow::Borrow,
     collections::{BTreeMap, HashMap, btree_set},
     ffi::c_void,
 };
@@ -14,6 +15,7 @@ struct Span {
     data: *const usize,
     count: usize,
 }
+#[derive(Default)]
 #[repr(C)]
 pub(super) struct SourceNode {
     kind: u32,
@@ -135,15 +137,7 @@ unsafe extern "C" fn inspect(slot: Slot, id: usize) -> SourceNode {
     source_node(unsafe { context(slot) }.nodes[id].clause)
 }
 pub(super) fn source_node(clause: &Clause) -> SourceNode {
-    let mut out = SourceNode {
-        kind: 0,
-        left: std::ptr::null(),
-        right: std::ptr::null(),
-        no: std::ptr::null(),
-        truth: 0,
-        empty: 0,
-        condition: std::ptr::null(),
-    };
+    let mut out = SourceNode::default();
     match &**clause.0 {
         ClauseNode::Impossible => {}
         ClauseNode::Facts(facts) => {
@@ -171,6 +165,82 @@ pub(super) fn source_node(clause: &Clause) -> SourceNode {
         }
     }
     out
+}
+
+#[derive(Default)]
+#[repr(C)]
+struct CallProjectionNode {
+    original: Borrowed,
+    node: SourceNode,
+}
+
+struct CallProjection<'a, P> {
+    ordered: std::slice::Iter<'a, &'a Clause>,
+    bindings: &'a BTreeMap<ValueIdentity, P>,
+    results: BTreeMap<usize, Clause>,
+}
+
+unsafe extern "C" fn call_next<P>(slot: Slot) -> CallProjectionNode {
+    let ctx = unsafe { &mut *slot.cast::<CallProjection<'_, P>>() };
+    ctx.ordered.next().map_or_else(CallProjectionNode::default, |&clause| CallProjectionNode {
+        original: std::ptr::from_ref(clause).cast(),
+        node: source_node(clause),
+    })
+}
+
+unsafe fn call_key(source: Borrowed) -> usize {
+    unsafe { &*source.cast::<Clause>() }.key()
+}
+
+unsafe extern "C" fn call_impossible<P>(slot: Slot, source: Borrowed) {
+    let ctx = unsafe { &mut *slot.cast::<CallProjection<'_, P>>() };
+    ctx.results.insert(unsafe { call_key(source) }, Clause::impossible());
+}
+
+unsafe extern "C" fn call_leaf<P: Borrow<Proof>>(slot: Slot, source: Borrowed, facts: Borrowed, need_private: u32) -> u32 {
+    let ctx = unsafe { &mut *slot.cast::<CallProjection<'_, P>>() };
+    let facts = unsafe { &*facts.cast::<Facts>() };
+    let (mapped, private) = Clause::project_call_leaf(facts, ctx.bindings, need_private != 0);
+    ctx.results.insert(unsafe { call_key(source) }, mapped);
+    u32::from(private)
+}
+
+unsafe extern "C" fn call_pair<P, const EITHER: bool>(slot: Slot, source: Borrowed, left: Borrowed, right: Borrowed) {
+    let ctx = unsafe { &mut *slot.cast::<CallProjection<'_, P>>() };
+    let left = &ctx.results[&unsafe { call_key(left) }];
+    let right = &ctx.results[&unsafe { call_key(right) }];
+    let mapped = if EITHER { Clause::either(left, right) } else { Clause::both(left, right) };
+    ctx.results.insert(unsafe { call_key(source) }, mapped);
+}
+
+#[repr(C)]
+struct CallProjectionHost {
+    next: unsafe extern "C" fn(Slot) -> CallProjectionNode,
+    impossible: unsafe extern "C" fn(Slot, Borrowed),
+    facts: unsafe extern "C" fn(Slot, Borrowed, Borrowed, u32) -> u32,
+    both: unsafe extern "C" fn(Slot, Borrowed, Borrowed, Borrowed),
+    either: unsafe extern "C" fn(Slot, Borrowed, Borrowed, Borrowed),
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.condition_graph::project_call_graph"]
+    fn project_call_graph(slot: Slot, host: CallProjectionHost) -> u32;
+}
+
+pub(super) fn project_call<P: Borrow<Proof>>(
+    ordered: &[&Clause], bindings: &BTreeMap<ValueIdentity, P>,
+) -> (BTreeMap<usize, Clause>, bool) {
+    let mut ctx = CallProjection { ordered: ordered.iter(), bindings, results: BTreeMap::new() };
+    let private = unsafe {
+        project_call_graph(std::ptr::from_mut(&mut ctx).cast(), CallProjectionHost {
+            next: call_next::<P>,
+            impossible: call_impossible::<P>,
+            facts: call_leaf::<P>,
+            both: call_pair::<P, false>,
+            either: call_pair::<P, true>,
+        })
+    };
+    (ctx.results, private != 0)
 }
 unsafe extern "C" fn define(slot: Slot, id: usize, kind: u32, left: usize, right: usize) {
     let context = unsafe { context(slot) };
