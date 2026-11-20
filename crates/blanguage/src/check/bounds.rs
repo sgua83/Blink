@@ -18,6 +18,8 @@ mod numeric_bounds;
 mod execution_conditions;
 mod proof_facts;
 mod range_sets;
+#[path = "bounds/required_roots.rs"]
+mod required_roots;
 use super::*;
 mod floating;
 mod bitwise;
@@ -27,6 +29,10 @@ mod contract;
 mod codec;
 pub(super) use contract::Normalizer;
 use std::{borrow::Cow, collections::{HashMap, HashSet}, mem::ManuallyDrop, sync::Arc};
+
+pub(super) fn required_scope() -> impl Drop {
+    required_roots::scope()
+}
 
 pub(super) fn seeks(body: &Block) -> bool {
     body.iter().any(|statement| match statement.kind() {
@@ -225,6 +231,7 @@ pub(super) struct FloatingBound {
 
 type Facts = BTreeSet<Fact>;
 
+#[derive(Clone)]
 struct RequiredFacts {
     facts: Facts,
     roots: BTreeMap<ValueIdentity, ValueIdentity>,
@@ -2441,7 +2448,10 @@ impl Clause {
     fn required(&self) -> Option<Facts> {
         self.required_in(&Facts::new()).map(|required| required.facts)
     }
-    fn required_in<'a>(&'a self, environment: &'a Facts) -> Option<RequiredFacts> {
+    fn required_in(&self, environment: &Facts) -> Option<RequiredFacts> {
+        required_roots::required(self, environment, || self.calculate_required(environment))
+    }
+    fn calculate_required<'a>(&'a self, environment: &'a Facts) -> Option<RequiredFacts> {
         let mut environment_roots = equality_roots(environment);
         if contradictory_with_roots(environment, &environment_roots) {
             return None;
@@ -2500,7 +2510,9 @@ impl Clause {
             ClauseNode::Impossible => false,
             ClauseNode::Facts(_) => true,
             ClauseNode::Both(..) | ClauseNode::Either(..) | ClauseNode::Branch(..) => {
-                self.required().is_some()
+                let environment = Facts::new();
+                required_roots::possible(self, &environment)
+                    .unwrap_or_else(|| self.required_in(&environment).is_some())
             }
         }
     }

@@ -1,0 +1,63 @@
+use super::{Clause, ClauseNode, Facts, RequiredFacts};
+use std::{
+    cell::RefCell,
+    collections::{BTreeMap, HashMap},
+    sync::{Arc, Weak},
+};
+
+struct Root {
+    // A weak owner keeps the allocation identity valid for this function.
+    _source: Weak<ClauseNode>,
+    environments: BTreeMap<Facts, Option<RequiredFacts>>,
+}
+
+type Results = HashMap<usize, Root>;
+
+thread_local! {
+    static RESULTS: RefCell<Option<Results>> = const { RefCell::new(None) };
+}
+
+pub(super) fn scope() -> impl Drop {
+    struct Scope(Option<Results>);
+    impl Drop for Scope {
+        fn drop(&mut self) {
+            RESULTS.replace(self.0.take());
+        }
+    }
+    Scope(RESULTS.replace(Some(Results::new())))
+}
+
+fn result<R>(
+    root: &Clause,
+    environment: &Facts,
+    read: impl FnOnce(&Option<RequiredFacts>) -> R,
+) -> Option<R> {
+    RESULTS.with_borrow(|active| {
+        let known = active.as_ref()?.get(&root.key())?;
+        known.environments.get(environment).map(read)
+    })
+}
+
+pub(super) fn possible(root: &Clause, environment: &Facts) -> Option<bool> {
+    result(root, environment, Option::is_some)
+}
+
+pub(super) fn required(
+    root: &Clause,
+    environment: &Facts,
+    evaluate: impl FnOnce() -> Option<RequiredFacts>,
+) -> Option<RequiredFacts> {
+    if let Some(known) = result(root, environment, Clone::clone) {
+        return known;
+    }
+    let value = evaluate();
+    RESULTS.with_borrow_mut(|active| {
+        if let Some(results) = active {
+            results.entry(root.key()).or_insert_with(|| Root {
+                _source: Arc::downgrade(&root.0),
+                environments: BTreeMap::new(),
+            }).environments.insert(environment.clone(), value.clone());
+        }
+    });
+    value
+}

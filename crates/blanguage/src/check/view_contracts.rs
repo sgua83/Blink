@@ -2152,6 +2152,7 @@ fn solve<'a>(
 fn finish_function(
     name: &str, function: &Function, known: &States<'_>,
 ) -> Result<(MemoryEffects, Option<ScalarValues>)> {
+    let _required_scope = bounds::required_scope();
     let state = &known[name];
     let mut evaluation = BorrowEvaluation {
         function, state: state.loop_scope(), known, expand_loops: true, deferred_reads: false,
