@@ -1,6 +1,6 @@
 //! 同一逻辑设备的缓冲区物理内存；区间随实际 Allocation 释放，不保留空闲块。
 use super::*;
-use std::{cell::RefCell, collections::btree_map::Entry, rc::Weak};
+use std::{cell::RefCell, collections::btree_map::Entry, ops::Range as ByteRange, rc::Weak};
 
 // 小缓冲区的物理分块政策，不是资源容量或语言边界。
 const BLOCK_BYTES: u64 = 1024 * 1024;
@@ -84,7 +84,7 @@ struct Block {
     size: u64,
     class: Class,
     mapped: *mut u8,
-    free: RefCell<Vec<(u64, u64)>>,
+    free: RefCell<Vec<ByteRange<u64>>>,
     free_memory: unsafe extern "system" fn(VkDevice, VkDeviceMemory, *const c_void),
     unmap: unsafe extern "system" fn(VkDevice, VkDeviceMemory),
 }
@@ -164,9 +164,8 @@ impl Block {
         Ok(block)
     }
     fn first_range(mut self, size: u64) -> Range {
-        let remaining = self.size - size;
-        if remaining != 0 {
-            *self.free.get_mut() = vec![(size, remaining)];
+        if size < self.size {
+            *self.free.get_mut() = vec![size..self.size];
         }
         Range {
             block: Rc::new(self),
@@ -176,19 +175,23 @@ impl Block {
     }
     fn take(self: &Rc<Self>, size: u64, alignment: u64) -> Option<Range> {
         let mut free = self.free.borrow_mut();
-        let fit = free.iter().enumerate().find_map(|(i, &(start, bytes))| {
-            let offset = start.div_ceil(alignment) * alignment;
-            (offset - start <= bytes && size <= bytes - (offset - start)).then_some((i, offset))
-        });
-        let (i, offset) = fit?;
-        let (start, bytes) = free.remove(i);
+        let (index, offset) = free.iter().enumerate().find_map(|(index, span)| {
+            let offset = span.start.div_ceil(alignment) * alignment;
+            (offset <= span.end && size <= span.end - offset).then_some((index, offset))
+        })?;
         let end = offset + size;
-        if start < offset {
-            free.insert(i, (start, offset - start));
-        }
-        let after = free.partition_point(|&(at, _)| at < end);
-        if end < start + bytes {
-            free.insert(after, (end, start + bytes - end));
+        let span = &mut free[index];
+        match (span.start < offset, end < span.end) {
+            (true, true) => {
+                let right = end..span.end;
+                span.end = offset;
+                free.insert(index + 1, right);
+            }
+            (true, false) => span.end = offset,
+            (false, true) => span.start = end,
+            (false, false) => {
+                free.remove(index);
+            }
         }
         Some(Range {
             block: self.clone(),
@@ -239,19 +242,18 @@ impl Drop for Range {
             return;
         }
         let mut free = self.block.free.borrow_mut();
-        let mut index = free.partition_point(|&(at, _)| at < self.offset);
-        let mut start = self.offset;
-        let mut size = self.size;
-        if index != 0 && free[index - 1].0 + free[index - 1].1 == start {
-            index -= 1;
-            let previous = free.remove(index);
-            start = previous.0;
-            size += previous.1;
+        let start = self.offset;
+        let end = start + self.size;
+        let index = free.partition_point(|span| span.start < start);
+        let joins_right = free.get(index).is_some_and(|span| span.start == end);
+        if index != 0 && free[index - 1].end == start {
+            let end = if joins_right { free.remove(index).end } else { end };
+            free[index - 1].end = end;
+        } else if joins_right {
+            free[index].start = start;
+        } else {
+            free.insert(index, start..end);
         }
-        if index < free.len() && start + size == free[index].0 {
-            size += free.remove(index).1;
-        }
-        free.insert(index, (start, size));
     }
 }
 pub(super) fn allocate(
