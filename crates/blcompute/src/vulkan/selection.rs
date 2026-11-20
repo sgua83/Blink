@@ -51,7 +51,8 @@ pub(super) fn record(
         let source = c.program.stages()[stage].selection.unwrap().binding;
         &sets.layers[&source]
     };
-    prefix::prepare(commands, c, stage, sets.root.root(), uniforms, partition, reused);
+    commands.bind_compute_set(c.layout, scan.root());
+    prefix::prepare(commands, c, stage, uniforms, partition, reused);
     scan::record_dispatches(
         commands,
         c,
@@ -69,11 +70,11 @@ pub(super) fn record(
         0,
     );
     commands.barrier(0x800, 0x800, 0x40, 0x60);
+    commands.bind_compute_set(c.layout, sets.finish);
     prefix::dispatch(
         commands,
         c,
         c.finishes[stage].unwrap(),
-        sets.finish,
         args,
         uniforms,
         0,
@@ -83,7 +84,6 @@ pub(super) fn record(
         commands,
         c,
         c.pipelines[stage],
-        sets.finish,
         args,
         uniforms,
         blanguage::spirv::PREFIX_LEVELS,

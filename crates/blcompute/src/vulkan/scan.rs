@@ -144,8 +144,9 @@ pub(super) fn record(
         writer, (r.source, r.target), segmented, source.0, ScanRoot::Source(source.1),
         root_target, temporary, arguments.map(PagedBuffer::descriptor),
     )?;
+    commands.bind_compute_set(c.layout, sets.root());
     if arguments.is_some() {
-        prefix::prepare(commands, c, stage, sets.root(), uniforms, partition, reused);
+        prefix::prepare(commands, c, stage, uniforms, partition, reused);
     }
     record_dispatches(
         commands, c, kernels, source.0, &sets, arguments, uniforms, partition, 0,
@@ -153,6 +154,7 @@ pub(super) fn record(
     Ok(())
 }
 
+/// The caller has already bound the root set.
 pub(super) fn record_dispatches(
     commands: &Commands,
     c: &Compiled,
@@ -168,12 +170,12 @@ pub(super) fn record_dispatches(
     for level in 0..level_count {
         if level > 0 {
             commands.barrier(0x800, 0x800, 0x40, 0x60);
+            commands.bind_compute_set(c.layout, sets.0[level]);
         }
         dispatch(
             commands,
             c,
             kernels[usize::from(level != 0)],
-            sets.0[level],
             length_at(count, level),
             uniforms,
             partition,
@@ -183,11 +185,11 @@ pub(super) fn record_dispatches(
     }
     for level in (0..level_count - 1).rev() {
         commands.barrier(0x800, 0x800, 0x40, 0x60);
+        commands.bind_compute_set(c.layout, sets.0[level_count + level]);
         dispatch(
             commands,
             c,
             kernels[if level == 0 { 3 } else { 2 }],
-            sets.0[level_count + level],
             length_at(count, level),
             uniforms,
             partition,
@@ -233,14 +235,14 @@ pub(super) fn record_segmented_reduce(
             None,
             (r.source == r.target && level > 0).then(|| temporary[(level - 1) * 2].descriptor()),
         )?;
+        commands.bind_compute_set(c.layout, set);
         if level == 0 && arguments.is_some() {
-            prefix::prepare(commands, c, stage, set, uniforms, partition, reused);
+            prefix::prepare(commands, c, stage, uniforms, partition, reused);
         }
         dispatch(
             commands,
             c,
             kernels[usize::from(level != 0)],
-            set,
             length_at(count, level),
             uniforms,
             partition,
@@ -263,11 +265,11 @@ pub(super) fn record_segmented_reduce(
             None,
             (r.source == r.target).then_some(temporary[level * 2 + 1].descriptor()),
         )?;
+        commands.bind_compute_set(c.layout, set);
         dispatch(
             commands,
             c,
             kernels[2],
-            set,
             length_at(count, level),
             uniforms,
             partition,
@@ -276,19 +278,21 @@ pub(super) fn record_segmented_reduce(
         );
     }
     commands.barrier(0x800, 0x800, 0x40, 0x60);
-    let prefix = &temporary[usize::from(level_count > 1)];
-    let set = writer.set(
-        &[],
-        Some((prefix).descriptor()),
-        arguments.map(PagedBuffer::descriptor),
-        None,
-        None,
-    )?;
+    // At one level the root is still bound and also supplies the final summary.
+    if level_count > 1 {
+        let set = writer.set(
+            &[],
+            Some(temporary[1].descriptor()),
+            arguments.map(PagedBuffer::descriptor),
+            None,
+            None,
+        )?;
+        commands.bind_compute_set(c.layout, set);
+    }
     dispatch(
         commands,
         c,
         kernels[3],
-        set,
         count,
         uniforms,
         partition,
@@ -301,7 +305,6 @@ pub(super) fn dispatch(
     commands: &Commands,
     c: &Compiled,
     pipeline: VkPipeline,
-    set: u64,
     count: u32,
     uniforms: &mut [u32],
     partition: NonZeroU32,
@@ -309,13 +312,12 @@ pub(super) fn dispatch(
     level: usize,
 ) {
     if let Some(args) = arguments {
-        prefix::dispatch(commands, c, pipeline, set, args, uniforms, level);
+        prefix::dispatch(commands, c, pipeline, args, uniforms, level);
         return;
     }
     unsafe {
         let f = &c.inner.functions;
         (f.vkCmdBindPipeline)(commands.command, 1, pipeline);
-        (f.vkCmdBindDescriptorSets)(commands.command, 1, c.layout, 0, 1, &set, 0, null());
         let groups = groups(count);
         let batch =
             c.inner.properties.limits.maxComputeWorkGroupCount[0].min(partition.get().div_ceil(GROUP_WIDTH));

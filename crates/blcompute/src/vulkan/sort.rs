@@ -127,20 +127,21 @@ pub(super) fn record(
     partition: NonZeroU32,
     reused: bool,
 ) {
-    if arguments.is_some() {
-        prefix::prepare(commands, c, stage, sets.initialize, uniforms, partition, reused);
-    }
     let kernels = c.sorts[stage].as_ref().unwrap();
     for key in (0..key_count).rev() {
+        commands.bind_compute_set(c.layout, sets.initialize);
+        let initialize = if key + 1 == key_count {
+            if arguments.is_some() {
+                prefix::prepare(commands, c, stage, uniforms, partition, reused);
+            }
+            c.pipelines[stage]
+        } else {
+            kernels[20 + key]
+        };
         scan::dispatch(
             commands,
             c,
-            if key + 1 == key_count {
-                c.pipelines[stage]
-            } else {
-                kernels[20 + key]
-            },
-            sets.initialize,
+            initialize,
             count,
             uniforms,
             partition,
@@ -149,11 +150,11 @@ pub(super) fn record(
         );
         for pass in 0..8 {
             commands.barrier(0x800, 0x800, 0x40, 0x60);
+            commands.bind_compute_set(c.layout, sets.histogram[pass % 2]);
             scan::dispatch(
                 commands,
                 c,
                 kernels[pass],
-                sets.histogram[pass % 2],
                 count,
                 uniforms,
                 partition,
@@ -161,6 +162,7 @@ pub(super) fn record(
                 0,
             );
             commands.barrier(0x800, 0x800, 0x40, 0x60);
+            commands.bind_compute_set(c.layout, sets.scan.root());
             scan::record_dispatches(
                 commands,
                 c,
@@ -173,11 +175,11 @@ pub(super) fn record(
                 blanguage::spirv::PREFIX_LEVELS,
             );
             commands.barrier(0x800, 0x800, 0x40, 0x60);
+            commands.bind_compute_set(c.layout, sets.scatter[pass % 2]);
             scan::dispatch(
                 commands,
                 c,
                 kernels[8 + pass],
-                sets.scatter[pass % 2],
                 count,
                 uniforms,
                 partition,
@@ -188,7 +190,8 @@ pub(super) fn record(
         commands.barrier(0x800, 0x800, 0x40, 0x60);
     }
     let pipeline = kernels[19];
+    commands.bind_compute_set(c.layout, sets.finish);
     scan::dispatch(
-        commands, c, pipeline, sets.finish, count, uniforms, partition, arguments, 0,
+        commands, c, pipeline, count, uniforms, partition, arguments, 0,
     );
 }

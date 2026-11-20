@@ -17,7 +17,6 @@ pub(super) fn prepare(
     commands: &Commands,
     c: &Compiled,
     stage: usize,
-    set: u64,
     uniforms: &mut [u32],
     partition: NonZeroU32,
     reused: bool,
@@ -27,7 +26,6 @@ pub(super) fn prepare(
     }
     unsafe {
         let f = &c.inner.functions;
-        (f.vkCmdBindDescriptorSets)(commands.command, 1, c.layout, 0, 1, &set, 0, null());
         (f.vkCmdBindPipeline)(commands.command, 1, c.dispatches[stage].unwrap());
         uniforms[0] = c.inner.properties.limits.maxComputeWorkGroupCount[0].min(
             partition
@@ -51,7 +49,6 @@ pub(super) fn dispatch(
     commands: &Commands,
     c: &Compiled,
     pipeline: VkPipeline,
-    set: u64,
     args: &PagedBuffer,
     uniforms: &mut [u32],
     level: usize,
@@ -59,7 +56,6 @@ pub(super) fn dispatch(
     unsafe {
         let f = &c.inner.functions;
         (f.vkCmdBindPipeline)(commands.command, 1, pipeline);
-        (f.vkCmdBindDescriptorSets)(commands.command, 1, c.layout, 0, 1, &set, 0, null());
         uniforms[0] = 0;
         uniforms[1] = (level * 4) as u32;
         (f.vkCmdPushConstants)(

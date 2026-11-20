@@ -49,11 +49,11 @@ pub(super) fn record(
         None,
         None,
     )?;
+    commands.bind_compute_set(c.layout, set);
     scan::dispatch(
         commands,
         c,
         c.finishes[stage].unwrap(),
-        set,
         data[selection.source].count,
         uniforms,
         partition,

@@ -1592,6 +1592,13 @@ impl Commands {
             )
         }
     }
+    fn bind_compute_set(&self, layout: VkPipelineLayout, set: VkDescriptorSet) {
+        unsafe {
+            (self.inner.functions.vkCmdBindDescriptorSets)(
+                self.command, 1, layout, 0, 1, &set, 0, null(),
+            );
+        }
+    }
     fn barrier(&self, src_stage: u32, dst_stage: u32, src_access: u32, dst_access: u32) {
         let mut b: VkMemoryBarrier = zero();
         b.sType = 46;
@@ -2414,11 +2421,11 @@ impl GpuProgram {
                     Some(scan::allocate(c, count, s.summary_words())?)
                 }
                 blanguage::ir::Operation::CustomSegmentedReduce(ref r) => {
-                    extra_sets += (scan::levels(count) * 2 - 1).max(2) as u64;
+                    extra_sets += (scan::levels(count) * 2 - 1) as u64;
                     Some(scan::allocate(c, count, r.summary_words())?)
                 }
                 blanguage::ir::Operation::SegmentedReduce(ref r) => {
-                    extra_sets += (scan::levels(count) * 2 - 1).max(2) as u64;
+                    extra_sets += (scan::levels(count) * 2 - 1) as u64;
                     Some(scan::allocate(c, count, r.summary_words())?)
                 }
                 blanguage::ir::Operation::StableSort(_) => {
@@ -2645,15 +2652,15 @@ impl GpuProgram {
                                 let set = descriptors.as_mut().unwrap().set(
                                     &[], None, Some(args.descriptor()), None, None,
                                 )?;
+                                commands.bind_compute_set(c.layout, set);
                                 prefix::prepare(
-                                    &commands, c, i, set, &mut uniforms,
+                                    &commands, c, i, &mut uniforms,
                                     self.partition_elements, step > 0,
                                 );
                                 prefix::dispatch(
                                     &commands,
                                     c,
                                     c.pipelines[i],
-                                    set,
                                     args,
                                     &mut uniforms,
                                     0,
@@ -2662,16 +2669,7 @@ impl GpuProgram {
                             blanguage::ir::Operation::Map if count != 0 => {
                                 let set = direct_set.unwrap();
                                 (f.vkCmdBindPipeline)(commands.command, 1, c.pipelines[i]);
-                                (f.vkCmdBindDescriptorSets)(
-                                    commands.command,
-                                    1,
-                                    c.layout,
-                                    0,
-                                    1,
-                                    &set,
-                                    0,
-                                    null(),
-                                );
+                                commands.bind_compute_set(c.layout, set);
                                 let width = stage.workgroup_width();
                                 let maximum = c.inner.properties.limits.maxComputeWorkGroupCount[0]
                                     as u64
@@ -2816,9 +2814,10 @@ impl GpuProgram {
                                         None,
                                         None,
                                     )?;
+                                    commands.bind_compute_set(c.layout, pass_set);
                                     if pass == 0 && arguments.is_some() {
                                         prefix::prepare(
-                                            &commands, c, i, pass_set, &mut uniforms,
+                                            &commands, c, i, &mut uniforms,
                                             self.partition_elements, step > 0,
                                         );
                                     }
@@ -2831,7 +2830,6 @@ impl GpuProgram {
                                         } else {
                                             c.tails[i].unwrap()
                                         },
-                                        pass_set,
                                         length,
                                         &mut uniforms,
                                         self.partition_elements,
