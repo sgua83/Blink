@@ -11,7 +11,7 @@ mod pe;
 mod resources;
 pub(crate) mod native;
 use crate::{
-    object::{Archive, Definition, Input, Kind, Object, ReadSection, Section, read_input, stack},
+    object::{Archive, Definition, Input, Object, ReadSection, Section, read_input, stack},
 };
 use std::path::Path;
 pub(crate) type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
@@ -59,39 +59,39 @@ impl<Bytes> std::ops::Deref for Source<'_, Bytes> {
 }
 struct Selected<Bytes = Vec<u8>> {
     name: String,
-    kind: SelectedKind,
+    library: Option<LibraryBinding>,
     sections: Vec<Section<Bytes>>,
     definitions: Vec<Definition>,
     archive: Option<Archive>,
     stack: Vec<stack::Frame>,
 }
 
-enum SelectedKind {
-    Module { stack_bytes: u32 },
-    Application { stack_bytes: u32 },
-    Library { header: String, binding: String, prefix: String },
+struct LibraryBinding {
+    header: String,
+    binding: String,
+    prefix: String,
 }
 
-impl From<Kind> for SelectedKind {
-    fn from(kind: Kind) -> Self {
-        match kind {
-            Kind::Module { stack_bytes, .. } => Self::Module { stack_bytes },
-            Kind::Application { stack_bytes } => Self::Application { stack_bytes },
-            Kind::Library { header, binding, prefix } => Self::Library { header, binding, prefix },
-        }
-    }
+#[derive(Clone, Copy)]
+#[repr(u32)]
+enum EntryProduct {
+    None,
+    Pe,
+    HostApplication,
+    Dll,
+    DllWithoutArchive,
 }
 
-impl From<&Kind> for SelectedKind {
-    fn from(kind: &Kind) -> Self {
-        match kind {
-            Kind::Module { stack_bytes, .. } => Self::Module { stack_bytes: *stack_bytes },
-            Kind::Application { stack_bytes } => Self::Application { stack_bytes: *stack_bytes },
-            Kind::Library { header, binding, prefix } => Self::Library {
-                header: header.clone(), binding: binding.clone(), prefix: prefix.clone(),
-            },
-        }
-    }
+#[derive(Clone, Copy)]
+#[repr(C)]
+struct EntryPlan {
+    product: EntryProduct,
+    stack_reserve: u64,
+}
+
+struct Selection<Bytes> {
+    objects: Vec<Selected<Bytes>>,
+    plan: EntryPlan,
 }
 
 enum Roots<'a> {
@@ -101,18 +101,12 @@ enum Roots<'a> {
 pub(crate) fn link_object(object: Object, path: &Path) -> Result<()> {
     link_objects(Inputs { sources: vec![Source::Owned(object)], libraries: Vec::new() }, path)
 }
-fn prepare(inputs: Inputs<'_>) -> Result<(Vec<Selected>, Vec<Archive>)> {
-    let mut objects = entry(inputs, false)?;
-    let archives = objects.iter_mut().filter_map(|object| object.archive.take()).collect();
-    Ok((objects, archives))
-}
 pub fn stack_report_inputs(inputs: &[impl AsRef<Path>], budget: Option<u64>) -> Result<String> {
-    let mut objects = entry(read_inputs::<usize>(inputs, true)?, true)?;
-    let runtime = objects.iter().any(|object| stack::uses_runtime(
-        object.archive.as_ref(), matches!(object.kind, SelectedKind::Library { .. }), &object.sections,
-    ));
-    let reserve = match objects[0].kind {
-        SelectedKind::Application { stack_bytes } => Some(pe::stack_reserve(stack_bytes, &objects[1..])),
+    let Selection { mut objects, plan } = entry(read_inputs::<usize>(inputs, true)?, true)?;
+    let runtime = matches!(plan.product, EntryProduct::Dll | EntryProduct::DllWithoutArchive)
+        || objects.iter().any(|object| stack::uses_runtime(object.archive.as_ref(), false, &object.sections));
+    let reserve = match plan.product {
+        EntryProduct::Pe | EntryProduct::HostApplication => Some(plan.stack_reserve),
         _ => None,
     };
     let report = if let [object] = objects.as_slice() {
@@ -136,7 +130,7 @@ pub fn stack_report_inputs(inputs: &[impl AsRef<Path>], budget: Option<u64>) -> 
 }
 #[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
 fn link_objects(inputs: Inputs<'_>, _: &Path) -> Result<()> {
-    prepare(inputs)?;
+    entry(inputs, false)?;
     Err("本机链接当前输出 Windows x64".into())
 }
 
@@ -144,30 +138,22 @@ fn link_objects(inputs: Inputs<'_>, _: &Path) -> Result<()> {
 fn link_objects(inputs: Inputs<'_>, path: &Path) -> Result<()> {
     use crate::{file_bytes, source_path};
 
-    let (objects, archives) = prepare(inputs)?;
-    let object = &objects[0];
+    let Selection { objects, plan } = entry(inputs, false)?;
     let output = source_path::absolute(path)?;
     file_bytes::create_dir_all(output.parent().unwrap())?;
-    match &object.kind {
-        SelectedKind::Module { .. } => unreachable!(),
-        SelectedKind::Application { stack_bytes } => {
-            let reserve = pe::stack_reserve(*stack_bytes, &objects[1..]);
-            if archives.is_empty() {
-                file_bytes::write(&output, &combine::link_pe(objects, reserve)?)?;
-            } else {
-                msvc::link(&archives, &objects, &output, reserve, false)?;
-            }
+    match plan.product {
+        EntryProduct::None => unreachable!(),
+        EntryProduct::Pe => {
+            file_bytes::write(&output, &combine::link_pe(objects, plan.stack_reserve)?)?;
         }
-        SelectedKind::Library {
-            header,
-            binding,
-            prefix,
-        } => {
-            if archives.is_empty() {
-                return Err("DLL 目标文件没有静态目标库".into());
-            }
+        EntryProduct::HostApplication => {
+            msvc::link(&objects, &output, plan.stack_reserve, false)?;
+        }
+        EntryProduct::DllWithoutArchive => return Err("DLL 目标文件没有静态目标库".into()),
+        EntryProduct::Dll => {
+            let LibraryBinding { header, binding, prefix } = objects[0].library.as_ref().unwrap();
             let library = source_path::file_stem(&output).ok_or("DLL 文件名不是 UTF-8")?;
-            msvc::link(&archives, &objects, &output, 0, true)?;
+            msvc::link(&objects, &output, 0, true)?;
             let header_path = source_path::with_extension_units(
                 &output, &[b'a' as u16, b'b' as u16, b'i' as u16, b'.' as u16, b'h' as u16],
             );

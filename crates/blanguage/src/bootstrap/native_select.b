@@ -1,10 +1,11 @@
 module bootstrap.native_select;
 import bootstrap.bindings;
+import bootstrap.pe;
 
 struct SelectState {SelectView view;BindingForest forest;u64 runtime_root;u64 head;u64 tail;u64 local_count;u64 entry;};
 struct SelectTarget {u64 object;u64 section;SelectResult result;};
 BindingBytes empty() on cpu {return BindingBytes(unsafe_address(0u64),0u64);}
-SelectResult result(u64 error,BindingBytes name,BindingBytes owner,u64 entry) on cpu {return SelectResult(error,name,owner,entry);}
+SelectResult result(u64 error,BindingBytes name,BindingBytes owner,u64 entry) on cpu {return SelectResult(error,name,owner,entry,EntryPlan(EntryProduct::None,0u64));}
 SelectResult success(u64 entry) on cpu {return result(0u64,empty(),empty(),entry);}
 SelectObject object_at(SelectView view,u64 i) on cpu {return unsafe_position<SelectObject>(unsafe_address(address_bits(view.objects)+i*OBJECT_BYTES));}
 void object_put(SelectView view,u64 i,SelectObject row) on cpu {unsafe_position<SelectObject>(unsafe_address(address_bits(view.objects)+i*OBJECT_BYTES))=row;}
@@ -81,7 +82,9 @@ SelectImport required_import(SelectView view,SelectObject object,BindingBytes na
         SelectImport row=import_row(view,middle);i32 order=bytes_compare(row.name,name);if(order==0){return row;}if(order<0){begin=middle+1u64;}else{end=middle;}}
     return SelectImport(empty(),empty());
 }
-void finish(inout SelectState state,SelectParams params) on cpu {
+EntryPlan finish(inout SelectState state,SelectParams params) on cpu {
+    bool retained_archive=false;
+    u64 stack_bytes=0u64;
     u64 o=0u64;while(o<state.view.object_count){SelectObject object=object_at(state.view,o);
         if(object.selected!=0u64){
             u64 mapping=0u64;u64 i=object.section_start;
@@ -97,6 +100,8 @@ void finish(inout SelectState state,SelectParams params) on cpu {
                     if(object.has_resources!=0u64&&suffixed(row.name,object.prefix,7165919078637728351u64,29541u64,10u64)){row.keep=1u64;}export_put(state.view,i,row);i+=1u64;}
                 if(!used){object.keep_archive=0u64;}
             }
+            retained_archive=retained_archive||object.keep_archive!=0u64;
+            if(object.kind!=2u64&&object.stack_bytes>stack_bytes){stack_bytes=object.stack_bytes;}
             i=object.section_start;while(i<object.section_start+object.section_count){SelectSection section=section_at(state.view,i);if(section.live!=0u64){
                 u64 r=section.relocation_start;while(r<section.relocation_start+section.relocation_count){SelectRelocation row=relocation_at(state.view,r);
                     if(row.kind==0u64){row.section=section_at(state.view,object.section_start+row.section).mapping;relocation_put(state.view,r,row);}r+=1u64;}
@@ -110,6 +115,14 @@ void finish(inout SelectState state,SelectParams params) on cpu {
             object_put(state.view,o,object);
         }o+=1u64;
     }
+    if(params.native_mode!=0u64){return EntryPlan(EntryProduct::None,0u64);}
+    if(object_at(state.view,state.entry).kind==2u64){
+        if(retained_archive){return EntryPlan(EntryProduct::Dll,0u64);}
+        return EntryPlan(EntryProduct::DllWithoutArchive,0u64);
+    }
+    u64 reserve=bootstrap.pe::stack_reserve(u32(stack_bytes));
+    if(retained_archive){return EntryPlan(EntryProduct::HostApplication,reserve);}
+    return EntryPlan(EntryProduct::Pe,reserve);
 }
 extern "C" SelectResult choose(SelectView input,SelectParams params,address context,
     cfn<SelectReply,address,u64,BindingBytes> extract,cfn<SelectReply,address,u64> native_archive,
@@ -164,5 +177,6 @@ extern "C" SelectResult choose(SelectView input,SelectParams params,address cont
         if(reply.error!=0u64){return result(7u64,empty(),empty(),state.entry);}
         if(reply.object!=0u64){u64 index=reply.object-1u64;SelectResult defined=define(state,index);if(defined.error!=0u64){return defined;}SelectObject object=object_at(state.view,index);object.selected=1u64;object_put(state.view,index,object);u64 s=object.section_start;while(s<object.section_start+object.section_count){enqueue(state,s);s+=1u64;}}
     }
-    finish(state,params);return success(state.entry);
+    EntryPlan plan=finish(state,params);
+    return SelectResult(0u64,empty(),empty(),state.entry,plan);
 }

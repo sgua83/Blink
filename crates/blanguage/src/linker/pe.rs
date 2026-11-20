@@ -1,6 +1,6 @@
 //! B lays out the final PE and writes its headers and directories.
 //! The section writer fills the same file before shared machine relocation.
-use super::{Result, Selected, SelectedKind};
+use super::Result;
 use crate::object::{Section, Target};
 
 #[repr(C)]
@@ -41,15 +41,6 @@ unsafe extern "C" {
     fn pe_layout(input:PeInput)->PeLayout;
     #[link_name="bootstrap.pe::encode"]
     fn pe_encode(input:PeInput,layout:PeLayout,output:*mut u8);
-    #[link_name="bootstrap.pe::stack_reserve"]
-    fn pe_stack_reserve(stack_bytes:u32)->u64;
-}
-pub(super) fn stack_reserve<Bytes>(entry_stack_bytes: u32, modules: &[Selected<Bytes>]) -> u64 {
-    let stack_bytes = modules.iter().filter_map(|object| match object.kind {
-        SelectedKind::Module { stack_bytes } => Some(stack_bytes),
-        _ => None,
-    }).fold(entry_stack_bytes, u32::max);
-    unsafe { pe_stack_reserve(stack_bytes) }
 }
 
 pub(super) fn link(

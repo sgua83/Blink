@@ -249,7 +249,7 @@ fn tools() -> Result<(PathBuf, Vec<PathBuf>)> {
     ))
 }
 impl<'a> MsvcNames<'a> {
-    fn from_archives(archives: &'a [Archive]) -> Self {
+    fn from_archives(archives: &[&'a Archive]) -> Self {
         let mut libraries: Vec<_> = archives.iter().flat_map(|archive| &archive.libraries)
             .map(|name| MsvcName::new(name)).collect();
         let mut exports: Vec<_> = archives.iter().flat_map(|archive| &archive.exports)
@@ -320,12 +320,12 @@ fn write_input(temporary: &mut Vec<PathBuf>, path: PathBuf, bytes: &[u8]) -> io:
 }
 
 pub(super) fn link(
-    archives: &[Archive], objects: &[super::Selected], path: &Path,
-    stack_reserve: u64, import_library: bool,
+    objects: &[super::Selected], path: &Path, stack_reserve: u64, import_library: bool,
 ) -> Result<()> {
-    let binding = super::resources::resources(&archives.iter().collect::<Vec<_>>(), 0, 0, std::iter::empty(), std::iter::empty(), None)?;
+    let archives = objects.iter().filter_map(|object| object.archive.as_ref()).collect::<Vec<_>>();
+    let binding = super::resources::resources(&archives, 0, 0, std::iter::empty(), std::iter::empty(), None)?;
     let (linker, libraries) = tools()?;
-    let names = MsvcNames::from_archives(archives);
+    let names = MsvcNames::from_archives(&archives);
     let sdk = if names.needs_sdk {
         Some(crate::object::InstalledSdk::open()?)
     } else {

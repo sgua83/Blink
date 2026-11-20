@@ -8,7 +8,7 @@ pub(crate) fn modules(inputs: Vec<Input>, borrowed: &[&crate::object::Object], r
         linked.push(input);
     }
     linked.sources.extend(borrowed.iter().copied().map(Source::Borrowed));
-    let objects = select(linked, Roots::Symbols(roots, types, programs), Cow::Owned, |bytes| Cow::Borrowed(bytes.as_slice()))?;
+    let objects = select(linked, Roots::Symbols(roots, types, programs), Cow::Owned, |bytes| Cow::Borrowed(bytes.as_slice()))?.objects;
     if objects.is_empty() { return Ok(None); }
     combine::module(objects, local).map(Some)
 }

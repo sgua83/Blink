@@ -1,6 +1,6 @@
 //! B owns this link's definition tree, section queue, resource closure and remapping.
 //! Rust keeps the original objects/libraries and only hands their current borrowed views across the synchronous call.
-use super::{Inputs, Result, Roots, Selected, Source, resources};
+use super::{EntryPlan, Inputs, LibraryBinding, Result, Roots, Selected, Selection, Source, resources};
 use crate::object::{self, Object, Kind, Target, Library, ReadSection};
 use resources::ImportBytes as Bytes;
 use std::{ffi::c_void, marker::PhantomData};
@@ -8,7 +8,7 @@ use std::{ffi::c_void, marker::PhantomData};
 struct ObjectView {
     kind:u64,name:Bytes,section_start:u64,section_count:u64,symbol_start:u64,symbol_count:u64,
     import_start:u64,import_count:u64,export_start:u64,export_count:u64,code_start:u64,code_count:u64,
-    frame_start:u64,frame_count:u64,prefix:Bytes,archive:u64,has_resources:u64,selected:u64,resources:u64,keep_archive:u64,borrowed:u64,
+    frame_start:u64,frame_count:u64,prefix:Bytes,archive:u64,has_resources:u64,selected:u64,resources:u64,keep_archive:u64,borrowed:u64,stack_bytes:u64,
 }
 #[derive(Clone,Copy)]#[repr(C)]
 struct SectionView {owner:u64,flags:u64,associated_start:u64,associated_count:u64,relocation_start:u64,relocation_count:u64,live:u64,mapping:u64}
@@ -49,7 +49,7 @@ struct Reply {view:View,object:u64,error:u64}
 #[derive(Clone,Copy)]#[repr(C)]
 struct ResourceRequest {archives:*const u64,archive_count:u64,runtime:*const Bytes,runtime_count:u64,locals:*const LocalView,local_count:u64,types:u64,programs:u64}
 #[derive(Clone,Copy)]#[repr(C)]
-struct SelectionResult {error:u64,name:Bytes,owner:Bytes,entry:u64}
+struct SelectionResult {error:u64,name:Bytes,owner:Bytes,entry:u64,plan:EntryPlan}
 type Extract=unsafe extern "C" fn(*mut c_void,u64,Bytes)->Reply;
 type NativeArchive=unsafe extern "C" fn(*mut c_void,u64)->Reply;
 type ResourceBinding=unsafe extern "C" fn(*mut c_void,ResourceRequest)->Reply;
@@ -77,12 +77,17 @@ impl<'a, Payload> Context<'a, Payload> {
     }
     fn describe(&mut self,index:usize) {
         let object=&*self.sources[index];let empty=Bytes::new("");let borrowed_source=matches!(self.sources[index],Source::Borrowed(_));
+        let (kind, stack_bytes) = match object.kind {
+            Kind::Module { stack_bytes, .. } => (0, stack_bytes),
+            Kind::Application { stack_bytes } => (1, stack_bytes),
+            Kind::Library { .. } => (2, 0),
+        };
         let mut row=ObjectView{
-            kind:match object.kind{Kind::Module{..}=>0,Kind::Application{..}=>1,Kind::Library{..}=>2},name:Bytes::new(&object.name),
+            kind,name:Bytes::new(&object.name),
             section_start:self.sections.len() as u64,section_count:object.sections.len() as u64,symbol_start:self.symbols.len() as u64,symbol_count:object.symbols.len() as u64,
             import_start:self.imports.len() as u64,import_count:object.imports.len() as u64,export_start:self.exports.len() as u64,export_count:0,
             code_start:self.code.len() as u64,code_count:0,frame_start:self.frames.as_ref().map_or(0, Vec::len) as u64,frame_count:0,prefix:empty,
-            archive:object.archive.is_some() as u64,has_resources:0,selected:0,resources:0,keep_archive:0,borrowed:borrowed_source as u64,
+            archive:object.archive.is_some() as u64,has_resources:0,selected:0,resources:0,keep_archive:0,borrowed:borrowed_source as u64,stack_bytes:u64::from(stack_bytes),
         };
         for section in &object.sections {
             self.sections.push(SectionView{owner:index as u64,flags:section.flags.into(),associated_start:self.associated.len() as u64,associated_count:section.associated.len() as u64,
@@ -178,10 +183,14 @@ impl<'a, Payload> Context<'a, Payload> {
                 } else {
                     stack = Vec::new();
                 }
-                Selected { name, kind: kind.into(), sections, definitions, archive, stack }
+                let library = match kind {
+                    Kind::Library { header, binding, prefix } => Some(LibraryBinding { header, binding, prefix }),
+                    _ => None,
+                };
+                Selected { name, library, sections, definitions, archive, stack }
             }
             Source::Borrowed(object)=>Selected{
-                name:object.name.clone(),kind:(&object.kind).into(),
+                name:object.name.clone(),library:None,
                 sections:object.sections.iter().zip(sections).filter_map(|(section,&row)|{
                     if row.live==0{return None;}
                     let mut section=object::Section{name:section.name.clone(),bytes:borrowed(&section.bytes),flags:section.flags,associated:Vec::new(),layout:None,
@@ -231,14 +240,14 @@ unsafe extern "C" fn binding<Payload: ReadSection>(context:*mut c_void,request:R
 }
 pub(super) fn entry<Payload: ReadSection + Clone>(
     inputs: Inputs<'_, Payload>, stack_output: bool,
-) -> Result<Vec<Selected<Payload>>> {
+) -> Result<Selection<Payload>> {
     select(inputs, Roots::Entry { stack_output }, std::convert::identity, Clone::clone)
 }
 pub(super) fn select<'a, Payload: ReadSection, Output>(
     inputs: Inputs<'a, Payload>, roots: Roots<'_>,
     owned: impl Fn(Payload) -> Output,
     borrowed: impl Fn(&'a Payload) -> Output,
-) -> Result<Vec<Selected<Output>>> {
+) -> Result<Selection<Output>> {
     let(native_mode,types,programs,roots,stack_output)=match roots{
         Roots::Entry { stack_output }=>(0,0,0,&[][..],stack_output),
         Roots::Symbols(roots,types,programs)=>(1,u64::from(types),u64::from(programs),roots,false),
@@ -262,5 +271,5 @@ pub(super) fn select<'a, Payload: ReadSection, Output>(
     if native_mode==0{context.sources.swap(0,result.entry as usize);context.objects.swap(0,result.entry as usize);}
     let sources=std::mem::take(&mut context.sources);let mut output=Vec::new();
     for(source,row)in sources.into_iter().zip(&context.objects){if row.selected!=0{output.push(context.materialize(source,*row,&owned,&borrowed));}}
-    Ok(output)
+    Ok(Selection { objects: output, plan: result.plan })
 }
