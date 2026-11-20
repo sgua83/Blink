@@ -386,3 +386,128 @@ unsafe extern "C" fn select_child(target: Item, selection: Address, index: usize
     }).collect::<Vec<_>>();
     select_model(target, &choices);
 }
+
+
+#[repr(C)]
+struct LookupNode { item: Item, place: Address, payload: Address, ty: Address, projected: u32 }
+
+#[repr(C)]
+struct LookupHost {
+    matches_place: unsafe extern "C" fn(Address, Address) -> u32,
+    capture: unsafe extern "C" fn(Address, LookupNode),
+    inspect: unsafe extern "C" fn(Address) -> Info,
+    field: unsafe extern "C" fn(Address, u64) -> Field,
+    visit_child: unsafe extern "C" fn(Address, LookupNode, usize, Field),
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.ownership_payload::collect_owned_places"]
+    fn source_collect_places(context: Address, node: LookupNode, host: LookupHost);
+}
+
+const LOOKUP: LookupHost = LookupHost {
+    matches_place, capture: capture_owned_place, inspect: lookup_shape,
+    field: lookup_field, visit_child: visit_lookup_child,
+};
+
+struct CandidateLookup<'a, 'w> {
+    builder: &'a Builder<'w>,
+    ty: &'a Ty,
+    positions: &'a BTreeSet<Position>,
+    name: &'a str,
+    root: Item,
+    path: Vec<usize>,
+    output: &'a mut Vec<(String, Vec<usize>, Returned)>,
+}
+
+fn place_pointer(place: Option<&Place>) -> Address {
+    place.map_or(std::ptr::null_mut(), pointer)
+}
+
+impl Builder<'_> {
+    pub(in super::super) fn owned_place_candidates(&self, place: &Place) -> Vec<(String, Vec<usize>, Returned)> {
+        let mut positions = BTreeSet::new();
+        owned_borrows::positions(&place.owned_positions().unwrap()[0], &mut positions);
+        let mut output = Vec::new();
+        for (name, binding) in &self.env {
+            let (item, storage, ty) = match binding {
+                Binding::OwnedValue(value) => (
+                    Item { node: pointer(value.as_ref()), kind: 4 }, value.place.as_ref(), pointer(&value.value.ty),
+                ),
+                Binding::ApplicationData(data) if data.place.is_some() =>
+                    (Item { node: pointer(data), kind: 3 }, data.place.as_ref(), std::ptr::null_mut()),
+                _ => continue,
+            };
+            let mut context = CandidateLookup {
+                builder: self, ty: place.ty(), positions: &positions, name, root: item,
+                path: Vec::new(), output: &mut output,
+            };
+            let node = LookupNode {
+                item, place: place_pointer(storage), payload: std::ptr::null_mut(), ty, projected: 0,
+            };
+            unsafe { source_collect_places(pointer_mut(&mut context), node, LOOKUP); }
+        }
+        output
+    }
+}
+
+unsafe extern "C" fn matches_place(context: Address, place: Address) -> u32 {
+    let context = unsafe { &*context.cast::<CandidateLookup<'_, '_>>() };
+    let place = unsafe { &*place.cast::<Place>() };
+    u32::from(place.ty() == context.ty && context.positions.contains(&place.owned_positions().unwrap()[0]))
+}
+
+unsafe extern "C" fn capture_owned_place(context: Address, node: LookupNode) {
+    let context = unsafe { &mut *context.cast::<CandidateLookup<'_, '_>>() };
+    let model = if let Some((&first, rest)) = context.path.split_first() {
+        let root = unsafe { &*context.root.node.cast::<OwnedValuePayload>() };
+        let mut value = context.builder.record_component(&root.value, first);
+        for &index in rest {
+            value = context.builder.record_component(&value, index);
+        }
+        let payload = unsafe { &*node.payload.cast::<Returned>() };
+        let place = (node.projected != 0).then(|| || unsafe { &*node.place.cast::<Place>() }.clone());
+        storage::unpack(context.builder, value, || payload, place)
+    } else if node.item.kind == 3 {
+        Returned::Dataset(unsafe { &*node.item.node.cast::<Data>() }.clone())
+    } else {
+        let value = unsafe { &*node.item.node.cast::<OwnedValuePayload>() };
+        Returned::OwnedValue(Box::new(value.clone()))
+    };
+    context.output.push((context.name.to_owned(), context.path.clone(), model));
+}
+
+unsafe extern "C" fn lookup_shape(ty: Address) -> Info {
+    let ty = unsafe { &*ty.cast::<Ty>() };
+    Info { count: ty.aggregate_len() as u64, flags: u32::from(ty.has_variants()) }
+}
+
+unsafe extern "C" fn lookup_field(ty: Address, index: u64) -> Field {
+    let (offset, ty) = unsafe { &*ty.cast::<Ty>() }.aggregate_part(index as usize);
+    Field { ty: pointer(ty), offset, owns: u32::from(ty.owns_resources()) }
+}
+
+unsafe extern "C" fn visit_lookup_child(context: Address, parent: LookupNode, index: usize, field: Field) {
+    let owner = unsafe { &*parent.item.node.cast::<OwnedValuePayload>() };
+    let payload = unsafe { owner.payloads[index].as_deref().unwrap_unchecked() };
+    let item = returned_item(Some(payload));
+    let projected = if item.kind == 3 || item.kind == 4 {
+        let parent_ty = unsafe { &*parent.ty.cast::<Ty>() };
+        let field_ty = unsafe { &*field.ty.cast::<Ty>() };
+        unsafe { parent.place.cast::<Place>().as_ref() }
+            .map(|place| owned_records::owned_field_place(parent_ty, place, field_ty, field.offset))
+    } else {
+        None
+    };
+    let place = projected.as_ref().or_else(|| match payload {
+        Returned::Dataset(data) => data.place.as_ref(),
+        _ => None,
+    });
+    let node = LookupNode {
+        item, place: place_pointer(place), payload: pointer(payload), ty: field.ty,
+        projected: u32::from(projected.is_some()),
+    };
+    unsafe { &mut *context.cast::<CandidateLookup<'_, '_>>() }.path.push(index);
+    unsafe { source_collect_places(context, node, LOOKUP); }
+    unsafe { &mut *context.cast::<CandidateLookup<'_, '_>>() }.path.pop();
+}

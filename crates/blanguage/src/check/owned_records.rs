@@ -22,6 +22,10 @@ fn metadata_mut<'a>(owner: &'a mut OwnedValue, path: &[usize]) -> &'a mut Return
         metadata_mut(child, &path[1..])
     }
 }
+pub(super) fn owned_field_place(ty: &Ty, place: &Place, field: &Ty, offset: u32) -> Place {
+    place.clone().project(field.clone(), &projection::components(ty, field, offset))
+}
+
 impl Builder<'_> {
     pub(super) fn record_component(&self, value:&Value,index:usize)->Value {
         let(offset,ty)=value.ty.aggregate_part(index);
@@ -33,11 +37,12 @@ impl Builder<'_> {
             proof:value.projected_proof(components),uniform:value.uniform,literal:false,
             constant:value.constant.as_ref().map(|v|components.iter().map(|i|v[*i]).collect())}
     }
-    pub(super) fn unpack_record(&mut self,owner:&OwnedValue,index:usize)->Returned {
-        let(offset,ty)=owner.value.ty.aggregate_part(index);
-        let components=projection::components(&owner.value.ty,ty,offset);
-        let value=self.component_value(&owner.value,ty,&components);
-        owned_values::storage::unpack(self,owner,index,value,ty,components)
+    pub(super) fn unpack_record(&self, owner: &OwnedValue, index: usize) -> Returned {
+        let (offset, ty) = owner.value.ty.aggregate_part(index);
+        let components = projection::components(&owner.value.ty, ty, offset);
+        let value = self.component_value(&owner.value, ty, &components);
+        let place = owner.place.as_ref().map(|place| move || place.clone().project(ty.clone(), &components));
+        owned_values::storage::unpack(self, value, || unsafe { owner.payloads[index].as_deref().unwrap_unchecked() }, place)
     }
     pub(super) fn owned_projection(&self, expr: &Expr) -> Option<OwnedProjection> {
         projection::owned(self,expr).map(|(value,_)|value)
@@ -326,7 +331,7 @@ impl Builder<'_> {
             (data,Vec::new())
         }else{
             let candidates=self.owned_place_candidates(&place);
-            let model=self.owned_place_model(&place);self.prepare_owned_read(&model);unsafe { self.world.call(self.require_initialized(&place,span)).await }?;
+            let model=self.join_owned_place_candidates(&place, &candidates);self.prepare_owned_read(&model);unsafe { self.world.call(self.require_initialized(&place,span)).await }?;
             let Returned::Dataset(mut data)=model else{unreachable!()};
             let sources:Vec<_>=candidates.iter().map(|(_,_,model)|{let Returned::Dataset(data)=model else{unreachable!()};data.root.identity()}).collect();
             data.root.proof.set_view_borrow(0,self.data_borrow(&sources));

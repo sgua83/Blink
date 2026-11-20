@@ -169,11 +169,15 @@ impl Builder<'_>{
   }}
  }
 }
-pub(in crate::check) fn unpack(builder:&mut Builder<'_>,owner:&OwnedValue,index:usize,value:Value,ty:&Ty,components:Vec<usize>)->Returned{
- let mut cursor=unsafe{start()};let mut facts=UnpackFacts{owns:u32::from(ty.owns_resources()),place:u32::from(owner.place.is_some()),..UnpackFacts::default()};let mut value=Some(value);let mut item:Option<Returned>=None;
+pub(in crate::check) fn unpack<'a>(
+ builder: &Builder<'_>, value: Value, payload: impl FnOnce() -> &'a Returned,
+ mut project: Option<impl FnOnce() -> Place>,
+) -> Returned {
+ let mut cursor=unsafe{start()};let mut facts=UnpackFacts{owns:u32::from(value.ty.owns_resources()),place:u32::from(project.is_some()),..UnpackFacts::default()};let mut value=Some(value);let mut item:Option<Returned>=None;
+ let mut payload = Some(payload);
  loop{let step=unsafe{unpack_step(cursor,facts)};cursor=step.cursor;match step.need{
   UnpackNeed::Value=>return Returned::value(unsafe{value.take().unwrap_unchecked()}),
-  UnpackNeed::Clone=>{item=Some(unsafe{(**owner.payloads[index].as_ref().unwrap_unchecked()).clone()});}
+  UnpackNeed::Clone=>{item=Some(unsafe{payload.take().unwrap_unchecked()}().clone());}
   UnpackNeed::Inspect=>{let v=unsafe{item.as_ref().unwrap_unchecked()};facts.kind=kind(v);facts.count=u32::from(matches!(v,Returned::Dataset(data)if data.count.is_some()));}
   UnpackNeed::ValueRegs=>{let Returned::Value(v)=(unsafe{item.as_mut().unwrap_unchecked()})else{unsafe{std::hint::unreachable_unchecked()}};v.regs=std::mem::take(&mut unsafe{value.as_mut().unwrap_unchecked()}.regs);}
   UnpackNeed::Owned=>{let Returned::OwnedValue(v)=(unsafe{item.as_mut().unwrap_unchecked()})else{unsafe{std::hint::unreachable_unchecked()}};v.value=unsafe{value.take().unwrap_unchecked()};v.place=None;}
@@ -181,7 +185,7 @@ pub(in crate::check) fn unpack(builder:&mut Builder<'_>,owner:&OwnedValue,index:
   UnpackNeed::Length=>{let Returned::Dataset(data)=(unsafe{item.as_mut().unwrap_unchecked()})else{unsafe{std::hint::unreachable_unchecked()}};data.length=builder.value_component(unsafe{value.as_ref().unwrap_unchecked()},1);}
   UnpackNeed::Count=>{let Returned::Dataset(data)=(unsafe{item.as_mut().unwrap_unchecked()})else{unsafe{std::hint::unreachable_unchecked()}};data.length.proof.assume_same_length(&bounds::Proof::unsigned(unsafe{data.count.unwrap_unchecked()},unsafe{data.count.unwrap_unchecked()}));}
   UnpackNeed::Place=>{
-   let place=unsafe{owner.place().unwrap_unchecked()}.project(ty.clone(),&components);
+   let place=unsafe{project.take().unwrap_unchecked()}();
    match unsafe{item.as_mut().unwrap_unchecked()}{Returned::Dataset(data)=>data.place=Some(place),Returned::OwnedValue(child)=>child.place=Some(place),_=>unsafe{std::hint::unreachable_unchecked()}}
   }
   UnpackNeed::Complete=>return unsafe{item.take().unwrap_unchecked()},

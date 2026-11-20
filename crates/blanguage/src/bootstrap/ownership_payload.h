@@ -199,3 +199,19 @@ extern "C" void select_presence(Item target,address inputs,u64 count,SelectionHo
     requires nonzero(host.inspect)
     requires nonzero(host.mutable_child)
     requires nonzero(host.select_child);
+
+struct LookupNode { Item item; address place; address payload; address ty; u32 projected; };
+struct LookupHost {
+    cfn<u32,address,address> matches_place;
+    cfn<void,address,LookupNode> capture;
+    cfn<Info,address> inspect;
+    cfn<Field,address,u64> field;
+    cfn<void,address,LookupNode,u64,Field> visit_child;
+};
+
+extern "C" void collect_owned_places(address context,LookupNode node,LookupHost host) on cpu
+    requires nonzero(host.matches_place)
+    requires nonzero(host.capture)
+    requires nonzero(host.inspect)
+    requires nonzero(host.field)
+    requires nonzero(host.visit_child);

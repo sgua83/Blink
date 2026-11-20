@@ -9,24 +9,18 @@ fn at<'a>(model:&'a Returned,path:&[usize])->Option<&'a application::Data>{match
 pub(super) fn each_data(model:&mut Returned,path:&mut Vec<usize>,apply:&mut impl FnMut(&mut application::Data,&[usize])){match model{Returned::Dataset(data)=>apply(data,path),Returned::OwnedValue(value)=>for(index,payload)in value.payloads.iter_mut().enumerate(){if let Some(payload)=payload{path.push(index);each_data(payload,path,apply);path.pop();}},_=>{}}}
 pub(super) fn set_storage(model:&mut Returned,place:Place){match model{Returned::Dataset(data)=>data.place=Some(place),Returned::OwnedValue(value)=>value.place=Some(place),_=>unreachable!()}}
 impl Builder<'_>{
-    pub(super) fn owned_place_candidates(&mut self,place:&Place)->Vec<(String,Vec<usize>,Returned)> {
-        fn collect(builder:&mut Builder<'_>,model:Returned,path:&mut Vec<usize>,wanted:&Place,selected:&BTreeSet<Position>,into:&mut Vec<(Vec<usize>,Returned)>){
-            if storage(&model).is_some_and(|place|place.ty()==wanted.ty()&&selected.contains(&place.owned_positions().unwrap()[0])){into.push((path.clone(),model));return;}
-            let Returned::OwnedValue(value)=model else{return};if value.value.ty.has_variants(){return;}
-            for index in 0..value.value.ty.aggregate_len(){if value.value.ty.aggregate_part(index).1.owns_resources(){path.push(index);let child=builder.unpack_record(&value,index);collect(builder,child,path,wanted,selected,into);path.pop();}}
-        }
-        let mut selected=BTreeSet::new();positions(&place.owned_positions().unwrap()[0],&mut selected);
-        let roots=self.env.iter().filter_map(|(name,binding)|match binding{Binding::OwnedValue(value)=>Some((name.clone(),Returned::OwnedValue(value.clone()))),Binding::ApplicationData(data)if data.place.is_some()=>Some((name.clone(),Returned::Dataset(data.clone()))),_=>None}).collect::<Vec<_>>();
-        let mut candidates=Vec::new();for(name,root)in roots{let mut found=Vec::new();collect(self,root,&mut Vec::new(),place,&selected,&mut found);candidates.extend(found.into_iter().map(|(path,value)|(name.clone(),path,value)));}candidates
+    pub(super) fn owned_place_model(&self, place: &Place) -> Returned {
+        self.join_owned_place_candidates(place, &self.owned_place_candidates(place))
     }
-    pub(super) fn owned_place_model(&mut self,place:&Place)->Returned {
+
+    pub(super) fn join_owned_place_candidates(&self, place: &Place, candidates: &[(String, Vec<usize>, Returned)]) -> Returned {
         fn initialization(position:&Position,path:&[usize],candidates:&[(String,Vec<usize>,Returned)])->Position{match position{
             Position::Indexed(choices,index)=>Position::Indexed(choices.iter().map(|choice|initialization(choice,path,candidates)).collect(),*index),
             position=>{let model=&candidates.iter().find(|(_,_,model)|storage(model).unwrap().owned_positions().unwrap()[0]==*position).unwrap().2;at(model,path).and_then(|data|data.initialization.clone()).unwrap_or(Position::Initialized)}
         }}
-        let candidates=self.owned_place_candidates(place);let root=place.owned_positions().unwrap()[0].clone();
+        let root=place.owned_positions().unwrap()[0].clone();
         let selected=candidates.iter().map(|(_,_,value)|{let when=Presence::selected(&root,&storage(value).unwrap().owned_positions().unwrap()[0]);let mut value=value.clone();self.resolve_owned_model(&mut value,Some(&when));(when,value)}).filter(|(when,_)|self.owned_possible(when)).collect::<Vec<_>>();let mut values=selected.iter().map(|(_,value)|value.clone());let mut model=values.next().unwrap();for other in values{model.join(other,false,None);}model.select_presence(selected.iter().map(|(when, value)| (when, value)));self.resolve_owned_model(&mut model,None);
-each_data(&mut model,&mut Vec::new(),&mut|data,path|data.initialization=Some(initialization(&root,path,&candidates)));set_storage(&mut model,place.clone());self.resolve_owned_model(&mut model,None);model
+each_data(&mut model,&mut Vec::new(),&mut|data,path|data.initialization=Some(initialization(&root,path,candidates)));set_storage(&mut model,place.clone());self.resolve_owned_model(&mut model,None);model
     }
     pub(super) async fn mutable_argument(&mut self,expr:&Expr,access:Access)->Result<Option<cooperative::Argument>> {
         if let Some(data)=unsafe { self.world.call(self.application_reference(expr)).await }?{

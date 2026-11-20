@@ -355,3 +355,24 @@ extern "C" void select_presence(Item target,address inputs,u64 count,SelectionHo
         }
     }
 }
+
+extern "C" void collect_owned_places(address context,LookupNode node,LookupHost host) on cpu
+    requires nonzero(host.matches_place)
+    requires nonzero(host.capture)
+    requires nonzero(host.inspect)
+    requires nonzero(host.field)
+    requires nonzero(host.visit_child) {
+    if(address_bits(node.place)!=0u64&&host.matches_place(context,node.place)!=0){
+        host.capture(context,node);
+        return;
+    }
+    if(node.item.kind!=4){return;}
+    Info shape=host.inspect(node.ty);
+    if((shape.flags&1)!=0){return;}
+    u64 i=0u64;
+    while(i<shape.count){
+        Field field=host.field(node.ty,i);
+        if(field.owns!=0){host.visit_child(context,node,i,field);}
+        i+=1u64;
+    }
+}
