@@ -2260,7 +2260,7 @@ impl Builder<'_> {
                 return self.fail(args.at(1).span(), "B224", "拥有填充值只能移动到已证明不回绕且恰好新增的一项，不能广播复制或截短拥有元素");
             }
         }
-        let incoming = self.capture_element_model(&data, &[], returned);
+        let incoming = self.capture_element_model(&data, &[], returned, None);
         let growth = bounds::Condition::comparison(Comparison::Greater, &length, &data.length);
         let grows = growth.truth_in(&self.path);
         let elements = if grows == Some(false) { data.elements } else if data.length.maximum() == 0 { ElementFacts::Known(incoming) } else if let ElementFacts::Known(mut previous)=data.elements {
@@ -2534,7 +2534,7 @@ impl Builder<'_> {
             }
         }
         bind_indices(&mut model,ordinal,0);
-        let elements=self.capture_element_model(data,&[],model);let value=self.returned_storage(&returned);
+        let elements=self.capture_element_model(data,&[],model,None);let value=self.returned_storage(&returned);
         if let Some(Binding::ApplicationData(prefix))=self.env.get_mut(&owner){prefix.elements=application::ElementFacts::Known(elements.clone());}
         // 原factory合同形成的模型交给此前捕获的同一前缀事实，不重建代码或调用图。
         native_function::calls(&mut self.code,&mut |call|{
@@ -4083,13 +4083,19 @@ impl Builder<'_> {
         unsafe { self.world.call(self.assign_owned_storage(place,Some(data),op,rhs,span)).await }
     }
     // These are the original already-evaluated metadata positions, not a second element table.
-    fn element_selection(&self,place:Option<&Place>,first:usize,count:usize)->Option<owned_presence::Presence> {
+    fn element_selection(
+        &self, place:Option<&Place>, first:usize, count:usize,
+        mut bind:impl FnMut(ValueIdentity,usize),
+    )->Option<owned_presence::Presence> {
         let mut current=place;let mut selected=owned_presence::Presence::All;
         for depth in first..first+count{
             let Place::ApplicationElement{index,index_value,parent,..}=current.map(Place::storage)?else{return None;};
             let actual=match *index_value{
                 bounds::Operand::Constant(_,at)=>ownership::ApplicationIndex::Constant(at as u32),
-                bounds::Operand::Value(id)=>ownership::ApplicationIndex::Value(id,*index),
+                bounds::Operand::Value(id)=>{
+                    bind(id,depth);
+                    ownership::ApplicationIndex::Value(id,*index)
+                },
             };
             selected=selected.and(owned_presence::Presence::indices(Comparison::Equal,ownership::ApplicationIndex::Value(ValueIdentity::ElementIndex(depth),depth),actual));current=parent.as_deref();
         }
@@ -4105,10 +4111,14 @@ impl Builder<'_> {
                 let scopes=self.application_element_scopes(&data.sources,&resource,target,(&self.path,&self.env));let unique=scopes.len()==1;
                 for(scope,complete_scope,_)in scopes {
                     let count=scope.len()+1;
-                    let qualifier=if unique&&complete_scope&&paths.len()==1{bounds::Condition::constant(true)}else{bounds::Condition::default()};
-                    let selection=self.element_selection(Some(place),0,count);
+                    let precise=unique&&complete_scope&&paths.len()==1;
+                    let qualifier=if precise{bounds::Condition::constant(true)}else{bounds::Condition::default()};
+                    let mut indices=BTreeMap::new();
+                    let selection=self.element_selection(Some(place),0,count,|id,depth|{
+                        if precise{indices.entry(id).or_insert(ValueIdentity::ElementIndex(depth));}
+                    });
                     let selected=qualifier.logical(match &selection{Some(selection)=>selection.condition(),None=>bounds::Condition::default()},false);
-                    let presence=selection.filter(|_|unique&&complete_scope&&paths.len()==1);
+                    let presence=selection.filter(|_|precise);
                     let mut complete_scope=bounds::Condition::constant(complete_scope);
                     let mut target=Some(&mut *target);
                     for fields in scope{target=match target{
@@ -4121,7 +4131,7 @@ impl Builder<'_> {
                     }
                     for projection in paths {
                         let mut fresh = match value {
-                            Some(value) => self.capture_element_model(target, projection, value.clone()),
+                            Some(value) => self.capture_element_model(target, projection, value.clone(),presence.as_ref().map(|_|&indices)),
                             None => {
                                 let mut current = target.elements.known().unwrap();
                                 for &field in projection {
@@ -4247,9 +4257,17 @@ impl Builder<'_> {
         for(data,paths)in self.application_owned_references(place){unsafe { self.world.call(self.assign_application_element_model(&data,place,&paths,value)).await }?;}
         Ok(())
     }
-    fn capture_element_model(&self,data:&Data,projection:&[usize],mut model:returns::Returned)->Box<returns::Returned>{
+    fn capture_element_model(
+        &self,data:&Data,projection:&[usize],mut model:returns::Returned,
+        indices:Option<&BTreeMap<ValueIdentity,ValueIdentity>>,
+    )->Box<returns::Returned>{
         model.bind_outputs(None,&BTreeMap::new(),&bounds::Clause::default());
         let value=self.returned_storage(&model);let mut bindings=self.element_owner_bindings(data);
+        // The stored model uses the destination ordinal on the selected write arm.
+        for (&source,&ordinal) in indices.into_iter().flatten(){
+            let proof=bindings.entry(source).or_default();
+            *proof=std::mem::take(proof).with_identity(ordinal);
+        }
         let mut components=(0..data.ty.components.len()).collect::<Vec<_>>();let mut ty=&data.ty;
         for field in projection{let(offset,next)=ty.aggregate_part(*field);components=next.components.iter().map(|(_,at)|components[ty.components.iter().position(|(_,word)|*word==offset+at).unwrap()]).collect();ty=next;}
         for (component,stored) in components.iter().enumerate(){
@@ -4598,7 +4616,7 @@ impl Builder<'_> {
                 for(scope,mut complete,_)in scopes{
                     let count=scope.len()+1;
                     let qualifier=if unique&&complete{bounds::Condition::constant(true)}else{bounds::Condition::default()};
-                    let selection=self.element_selection(reference.data.place.as_ref(),1,scope.len());
+                    let selection=self.element_selection(reference.data.place.as_ref(),1,scope.len(),|_,_|{});
                     let selected=qualifier.logical(match selection{Some(selection)=>selection.condition(),None=>bounds::Condition::default()},false);
                     let mut selected_data=Some(&mut *data);
                     for fields in scope{selected_data=match selected_data{
@@ -4607,10 +4625,10 @@ impl Builder<'_> {
                     };}
                     let Some(data)=selected_data else{continue;};
                     if reference.projection.is_empty()&&unique&&complete{
-                        data.elements=model.clone().map(&mut |model|self.capture_element_model(data,&reference.projection,*model),&mut |when|when);continue;
+                        data.elements=model.clone().map(&mut |model|self.capture_element_model(data,&reference.projection,*model,None),&mut |when|when);continue;
                     }
                     let incoming=unsafe { self.world.call(self.element_model(reference.element_layout().1,&model,(&reference.residency,&reference.projection),self.scope.span())).await }?;let model=incoming.as_ref();
-                    let mut fresh=self.capture_element_model(data,&reference.projection,model.clone());
+                    let mut fresh=self.capture_element_model(data,&reference.projection,model.clone(),None);
                     if reference.projection.is_empty()&&unique&&complete{data.elements=application::ElementFacts::Known(fresh);continue;}
                     // A real partial write supplies new facts; only its enclosing model is materialized.
                     // Invalidating absent facts above does not manufacture an unknown element tree.
