@@ -34,9 +34,30 @@ extern "C" MetaCall call(inout MetaCursor cursor) on cpu;
 struct BuildImage {ReadBytes identity;ReadBytes image;u32 status;};
 extern "C" BuildImage read_build_image(ReadBytes input,u64 magic) on cpu;
 
-// BLBO readers borrow the original snapshot. Header mismatch returns no range.
-extern "C" ReadBytes manifest_body(ReadBytes input, u64 magic) on cpu;
-extern "C" MetaWord manifest_number(inout MetaCursor cursor, bool wide) on cpu;
+struct ManifestIdentity {
+    ReadBytes path;
+    ReadBytes root;
+    ReadBytes working_directory;
+    ReadBytes module_name;
+    ReadBytes compiler;
+    u32 max_parameter_bytes;
+};
+struct ManifestVariant { ReadBytes first; ReadBytes second; u32 tag; };
+struct ManifestReadSource { ReadBytes module_name; ReadBytes path; ReadBytes scope; address fingerprint; };
+struct ManifestReadRequirement { ReadBytes name; ReadBytes kind; };
+struct ManifestReadResult { ManifestIdentity identity; address imports_digest; address native_digest; u32 status; };
 
-enum ManifestFieldKind : u32 { Bytes = 0; Text = 1; Digest = 2; OptionalDigest = 3; };
-extern "C" MetaField manifest_field(inout MetaCursor cursor, ManifestFieldKind kind) on cpu;
+// The receiver builds the original records synchronously. All fields borrow input.
+struct ManifestReceiver {
+    address context;
+    cfn<bool,address,ReadBytes> valid_text;
+    cfn<void,address,ReadBytes> name;
+    cfn<void,address,ManifestVariant> selection;
+    cfn<void,address,ManifestReadSource> source;
+    cfn<void,address,ManifestReadRequirement> requirement;
+    cfn<void,address,ManifestVariant> declaration;
+};
+extern "C" ManifestReadResult read_manifest(ReadBytes input, u64 magic, ManifestReceiver receiver) on cpu
+    requires nonzero(receiver.valid_text) requires nonzero(receiver.name)
+    requires nonzero(receiver.selection) requires nonzero(receiver.source)
+    requires nonzero(receiver.requirement) requires nonzero(receiver.declaration);

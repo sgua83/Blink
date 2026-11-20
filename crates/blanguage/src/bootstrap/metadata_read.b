@@ -178,25 +178,163 @@ extern "C" BuildImage read_build_image(ReadBytes input,u64 magic) on cpu {
     return BuildImage(identity.value,image.value,status);
 }
 
-extern "C" ReadBytes manifest_body(ReadBytes input, u64 magic) on cpu {
+const u32 MANIFEST_ABSENT = 1;
+const u32 MANIFEST_UTF8 = 11;
+const u32 MANIFEST_SELECTION = 12;
+const u32 MANIFEST_DECLARATION = 13;
+const u32 MANIFEST_TRAILING = 14;
+
+// The first format error ends the cursor and prevents another record from reaching the receiver.
+struct ManifestScan { MetaCursor cursor; u32 status; };
+
+u64 manifest_number(inout ManifestScan scan, u64 width) on cpu {
+    if (scan.status != 0) { return 0u64; }
+    MetaWord field = number(scan.cursor,width,8);
+    scan.status = field.error;
+    return field.value;
+}
+
+ReadBytes manifest_bytes(inout ManifestScan scan, bool text) on cpu {
+    if (scan.status != 0) { return empty(); }
+    MetaField field = resource_range(scan.cursor,text);
+    scan.status = field.error;
+    return field.value;
+}
+
+ReadBytes manifest_text(inout ManifestScan scan, ManifestReceiver receiver) on cpu
+    requires nonzero(receiver.valid_text) {
+    ReadBytes field = manifest_bytes(scan,true);
+    if (scan.status == 0 && !receiver.valid_text(receiver.context,field)) {
+        scan.status = MANIFEST_UTF8;
+    }
+    return field;
+}
+
+address manifest_digest(inout ManifestScan scan) on cpu {
+    if (scan.status != 0) { return unsafe_address(0u64); }
+    MetaField field = take_range(scan.cursor,32u64,false);
+    scan.status = field.error;
+    return field.value.bytes;
+}
+
+address manifest_native_digest(inout ManifestScan scan) on cpu {
+    u64 present = manifest_number(scan,1u64);
+    if (present == 0u64) { return unsafe_address(0u64); }
+    if (present == 1u64) { return manifest_digest(scan); }
+    scan.status = 10;
+    return unsafe_address(0u64);
+}
+
+void manifest_names(inout ManifestScan scan, ManifestReceiver receiver) on cpu
+    requires nonzero(receiver.valid_text) requires nonzero(receiver.name) {
+    u64 count = manifest_number(scan,8u64);
+    while (count != 0u64 && scan.status == 0) {
+        ReadBytes name = manifest_text(scan,receiver);
+        if (scan.status == 0) { receiver.name(receiver.context,name); }
+        count -= 1u64;
+    }
+}
+
+void manifest_selection(inout ManifestScan scan, ManifestReceiver receiver) on cpu
+    requires nonzero(receiver.valid_text) requires nonzero(receiver.name)
+    requires nonzero(receiver.selection) {
+    u32 tag = u32(manifest_number(scan,4u64));
+    if (tag > 3) { scan.status = MANIFEST_SELECTION; return; }
+    ReadBytes entry = empty();
+    ReadBytes target = empty();
+    if (tag == 1) {
+        manifest_names(scan,receiver);
+    } else {
+        entry = manifest_text(scan,receiver);
+        if (tag != 0) { target = manifest_text(scan,receiver); }
+    }
+    if (scan.status == 0) { receiver.selection(receiver.context,ManifestVariant(entry,target,tag)); }
+}
+
+void manifest_declaration(inout ManifestScan scan, ManifestReceiver receiver) on cpu
+    requires nonzero(receiver.valid_text) requires nonzero(receiver.name)
+    requires nonzero(receiver.declaration) {
+    u32 tag = u32(manifest_number(scan,4u64));
+    if (tag > 7) { scan.status = MANIFEST_DECLARATION; return; }
+    ReadBytes name = manifest_text(scan,receiver);
+    ReadBytes module_name = empty();
+    if (tag >= 4 && tag <= 6) {
+        module_name = manifest_text(scan,receiver);
+        manifest_names(scan,receiver);
+    }
+    if (scan.status == 0) { receiver.declaration(receiver.context,ManifestVariant(name,module_name,tag)); }
+}
+
+void manifest_source(inout ManifestScan scan, ManifestReceiver receiver) on cpu
+    requires nonzero(receiver.valid_text) requires nonzero(receiver.source) {
+    ReadBytes module_name = manifest_text(scan,receiver);
+    ReadBytes path = manifest_bytes(scan,false);
+    ReadBytes scope = manifest_text(scan,receiver);
+    address fingerprint = manifest_digest(scan);
+    if (scan.status == 0) {
+        receiver.source(receiver.context,ManifestReadSource(module_name,path,scope,fingerprint));
+    }
+}
+
+void manifest_requirement(inout ManifestScan scan, ManifestReceiver receiver) on cpu
+    requires nonzero(receiver.valid_text) requires nonzero(receiver.requirement) {
+    ReadBytes name = manifest_text(scan,receiver);
+    ReadBytes kind = manifest_text(scan,receiver);
+    if (scan.status == 0) { receiver.requirement(receiver.context,ManifestReadRequirement(name,kind)); }
+}
+
+ManifestIdentity manifest_identity(inout ManifestScan scan, ManifestReceiver receiver) on cpu
+    requires nonzero(receiver.valid_text) {
+    ReadBytes path = manifest_bytes(scan,false);
+    ReadBytes root = manifest_bytes(scan,false);
+    ReadBytes working_directory = manifest_bytes(scan,false);
+    ReadBytes module_name = manifest_text(scan,receiver);
+    ReadBytes compiler = manifest_text(scan,receiver);
+    u32 max_parameter_bytes = u32(manifest_number(scan,4u64));
+    return ManifestIdentity(path,root,working_directory,module_name,compiler,max_parameter_bytes);
+}
+
+ManifestReadResult manifest_records(inout ManifestScan scan, ManifestReceiver receiver) on cpu
+    requires nonzero(receiver.valid_text) requires nonzero(receiver.name)
+    requires nonzero(receiver.selection) requires nonzero(receiver.source)
+    requires nonzero(receiver.requirement) requires nonzero(receiver.declaration) {
+    ManifestIdentity identity = manifest_identity(scan,receiver);
+    manifest_selection(scan,receiver);
+    u64 sources = manifest_number(scan,8u64);
+    while (sources != 0u64 && scan.status == 0) {
+        manifest_source(scan,receiver);
+        sources -= 1u64;
+    }
+    u64 requirements = manifest_number(scan,8u64);
+    while (requirements != 0u64 && scan.status == 0) {
+        manifest_requirement(scan,receiver);
+        requirements -= 1u64;
+    }
+    address imports_digest = manifest_digest(scan);
+    address native_digest = manifest_native_digest(scan);
+    u64 declarations = manifest_number(scan,8u64);
+    while (declarations != 0u64 && scan.status == 0) {
+        manifest_declaration(scan,receiver);
+        declarations -= 1u64;
+    }
+    if (scan.status == 0 && scan.cursor.position != scan.cursor.input.length) {
+        scan.status = MANIFEST_TRAILING;
+    }
+    return ManifestReadResult(identity,imports_digest,native_digest,scan.status);
+}
+
+extern "C" ManifestReadResult read_manifest(ReadBytes input, u64 magic, ManifestReceiver receiver) on cpu
+    requires nonzero(receiver.valid_text) requires nonzero(receiver.name)
+    requires nonzero(receiver.selection) requires nonzero(receiver.source)
+    requires nonzero(receiver.requirement) requires nonzero(receiver.declaration) {
     MetaCursor cursor = MetaCursor(input,0u64);
     MetaWord signature = number(cursor,8u64,8);
-    if (signature.error != 0 || signature.value != magic) { return empty(); }
-    return ReadBytes(at(input.bytes,cursor.position),input.length-cursor.position);
-}
-
-extern "C" MetaWord manifest_number(inout MetaCursor cursor, bool wide) on cpu {
-    return number(cursor,wide ? 8u64 : 4u64,8);
-}
-
-extern "C" MetaField manifest_field(inout MetaCursor cursor, ManifestFieldKind kind) on cpu {
-    if (kind == ManifestFieldKind::Text || kind == ManifestFieldKind::Bytes) {
-        return resource_range(cursor,kind == ManifestFieldKind::Text);
+    if (signature.error != 0 || signature.value != magic) {
+        ManifestIdentity identity = ManifestIdentity(empty(),empty(),empty(),empty(),empty(),0);
+        address absent = unsafe_address(0u64);
+        return ManifestReadResult(identity,absent,absent,MANIFEST_ABSENT);
     }
-    if (kind == ManifestFieldKind::OptionalDigest) {
-        MetaWord present = number(cursor,1u64,8);
-        if (present.error != 0 || present.value == 0u64) { return MetaField(empty(),present.error); }
-        if (present.value != 1u64) { return MetaField(empty(),10); }
-    }
-    return take_range(cursor,32u64,false);
+    ReadBytes payload = ReadBytes(at(input.bytes,cursor.position),input.length-cursor.position);
+    ManifestScan scan = ManifestScan(MetaCursor(payload,0u64),0);
+    return manifest_records(scan,receiver);
 }

@@ -352,169 +352,177 @@ pub(super) fn sources(path: &std::path::Path, root: &std::path::Path,
     })
 }
 #[repr(C)]
-struct ManifestCursor {
-    input: ByteField,
-    position: usize,
+struct ManifestIdentity {
+    path: ByteField,
+    root: ByteField,
+    working_directory: ByteField,
+    module_name: ByteField,
+    compiler: ByteField,
+    max_parameter_bytes: u32,
 }
 
 #[repr(C)]
-struct ManifestReadWord {
-    value: u64,
-    error: u32,
+struct ManifestVariant {
+    first: ByteField,
+    second: ByteField,
+    tag: u32,
 }
 
 #[repr(C)]
-struct ManifestReadField {
-    value: ByteField,
-    error: u32,
+struct ManifestReadResult {
+    identity: ManifestIdentity,
+    imports_digest: *const u8,
+    native_digest: *const u8,
+    status: u32,
 }
 
-#[repr(u32)]
-enum ManifestFieldKind {
-    Bytes,
-    Text,
-    Digest,
-    OptionalDigest,
+#[repr(C)]
+struct ManifestReceiver {
+    context: *mut c_void,
+    valid_text: unsafe extern "C" fn(*mut c_void, ByteField) -> bool,
+    name: unsafe extern "C" fn(*mut c_void, ByteField),
+    selection: unsafe extern "C" fn(*mut c_void, ManifestVariant),
+    source: unsafe extern "C" fn(*mut c_void, ManifestSource),
+    requirement: unsafe extern "C" fn(*mut c_void, ManifestRequirement),
+    declaration: unsafe extern "C" fn(*mut c_void, ManifestVariant),
 }
 
 unsafe extern "C" {
-    #[link_name = "bootstrap.metadata_read::manifest_body"]
-    fn manifest_body(input: ByteField, magic: u64) -> ByteField;
-    #[link_name = "bootstrap.metadata_read::manifest_number"]
-    fn manifest_number(cursor: &mut ManifestCursor, wide: u32) -> ManifestReadWord;
-    #[link_name = "bootstrap.metadata_read::manifest_field"]
-    fn manifest_field(cursor: &mut ManifestCursor, kind: ManifestFieldKind) -> ManifestReadField;
+    #[link_name = "bootstrap.metadata_read::read_manifest"]
+    fn read_manifest(input: ByteField, magic: u64, receiver: ManifestReceiver) -> ManifestReadResult;
 }
 
-struct ManifestReader<'a> {
-    cursor: ManifestCursor,
-    input: std::marker::PhantomData<&'a [u8]>,
+#[derive(Default)]
+struct ManifestProjection {
+    selection: Option<Selection>,
+    sources: Vec<SourceInput>,
+    requirements: Vec<(String, String)>,
+    declarations: Vec<Declaration>,
+    names: Vec<String>,
+    invalid_text: Option<std::str::Utf8Error>,
 }
 
-impl<'a> ManifestReader<'a> {
-    fn new(input: &'a [u8]) -> Option<Self> {
-        let input = unsafe { manifest_body(input.into(), u64::from_le_bytes(*MAGIC)) };
-        (!input.bytes.is_null()).then_some(Self {
-            cursor: ManifestCursor { input, position: 0 },
-            input: std::marker::PhantomData,
-        })
-    }
+unsafe fn own_manifest_bytes(field: ByteField) -> Vec<u8> {
+    unsafe { std::slice::from_raw_parts(field.bytes, field.length) }.to_vec()
+}
 
-    fn check(error: u32) -> std::io::Result<()> {
-        match error {
-            0 => Ok(()),
-            9 => Err(Error::other("模块接口长度溢出")),
-            10 => Err(Error::other("模块布尔值编码错误")),
-            _ => Err(Error::other("模块接口被截断")),
+unsafe fn own_manifest_text(field: ByteField) -> String {
+    // B passes these exact immutable ranges through validate_manifest_text before projection.
+    unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(field.bytes, field.length)) }.into()
+}
+
+unsafe extern "C" fn validate_manifest_text(context: *mut c_void, field: ByteField) -> bool {
+    let bytes = unsafe { std::slice::from_raw_parts(field.bytes, field.length) };
+    match std::str::from_utf8(bytes) {
+        Ok(_) => true,
+        Err(error) => {
+            unsafe { &mut *context.cast::<ManifestProjection>() }.invalid_text = Some(error);
+            false
         }
     }
+}
 
-    fn slice(&self, bytes: ByteField) -> &'a [u8] {
-        // Successful fields borrow the same original snapshot as the cursor.
-        unsafe { std::slice::from_raw_parts(bytes.bytes, bytes.length) }
-    }
+unsafe extern "C" fn collect_manifest_name(context: *mut c_void, field: ByteField) {
+    unsafe { &mut *context.cast::<ManifestProjection>() }.names.push(unsafe { own_manifest_text(field) });
+}
 
-    fn word(&mut self) -> std::io::Result<u32> {
-        let row = unsafe { manifest_number(&mut self.cursor, 0) };
-        Self::check(row.error)?;
-        Ok(row.value as u32)
-    }
+unsafe extern "C" fn collect_manifest_selection(context: *mut c_void, variant: ManifestVariant) {
+    let output = unsafe { &mut *context.cast::<ManifestProjection>() };
+    output.selection = Some(match variant.tag {
+        0 => Selection::Application(unsafe { own_manifest_text(variant.first) }),
+        1 => Selection::Module(std::mem::take(&mut output.names)),
+        2 => Selection::Library {
+            entry: unsafe { own_manifest_text(variant.first) },
+            prefix: unsafe { own_manifest_text(variant.second) },
+        },
+        _ => Selection::Entry {
+            entry: unsafe { own_manifest_text(variant.first) },
+            target: unsafe { own_manifest_text(variant.second) },
+        },
+    });
+}
 
-    fn bytes(&mut self) -> std::io::Result<Vec<u8>> {
-        let row = unsafe { manifest_field(&mut self.cursor, ManifestFieldKind::Bytes) };
-        Self::check(row.error)?;
-        Ok(self.slice(row.value).to_vec())
-    }
+unsafe extern "C" fn collect_manifest_source(context: *mut c_void, row: ManifestSource) {
+    unsafe { &mut *context.cast::<ManifestProjection>() }.sources.push(SourceInput {
+        module: unsafe { own_manifest_text(row.module_name) },
+        path: unsafe { own_manifest_bytes(row.path) },
+        scope: unsafe { own_manifest_text(row.scope) },
+        fingerprint: unsafe { *row.fingerprint.cast::<[u8; 32]>() },
+    });
+}
 
-    fn text(&mut self) -> std::io::Result<String> {
-        let row = unsafe { manifest_field(&mut self.cursor, ManifestFieldKind::Text) };
-        Self::check(row.error)?;
-        std::str::from_utf8(self.slice(row.value)).map(str::to_owned).map_err(Error::other)
-    }
+unsafe extern "C" fn collect_manifest_requirement(context: *mut c_void, row: ManifestRequirement) {
+    unsafe { &mut *context.cast::<ManifestProjection>() }.requirements.push((
+        unsafe { own_manifest_text(row.name) },
+        unsafe { own_manifest_text(row.kind) },
+    ));
+}
 
-    fn list<T>(&mut self, mut read: impl FnMut(&mut Self) -> std::io::Result<T>) -> std::io::Result<Vec<T>> {
-        let count = unsafe { manifest_number(&mut self.cursor, 1) };
-        Self::check(count.error)?;
-        (0..count.value).map(|_| read(self)).collect()
-    }
-
-    fn digest(&mut self, kind: ManifestFieldKind) -> std::io::Result<ByteField> {
-        let row = unsafe { manifest_field(&mut self.cursor, kind) };
-        Self::check(row.error)?;
-        Ok(row.value)
-    }
-
-    fn required_digest(&mut self) -> std::io::Result<[u8; 32]> {
-        let bytes = self.digest(ManifestFieldKind::Digest)?;
-        Ok(self.slice(bytes).try_into().unwrap())
-    }
-
-    fn native_digest(&mut self) -> std::io::Result<Option<[u8; 32]>> {
-        let bytes = self.digest(ManifestFieldKind::OptionalDigest)?;
-        Ok((!bytes.bytes.is_null()).then(|| self.slice(bytes).try_into().unwrap()))
-    }
-
-    fn declaration(&mut self) -> std::io::Result<Declaration> {
-        Ok(match self.word()? {
-            0 => Declaration::Constant(self.text()?),
-            1 => Declaration::Record(self.text()?),
-            2 => Declaration::TypeSet(self.text()?),
-            3 => Declaration::External(self.text()?),
-            4 => Declaration::ValueName { name: self.text()?, module: self.text()?, imports: self.list(Self::text)? },
-            5 => Declaration::RecordName { name: self.text()?, module: self.text()?, imports: self.list(Self::text)? },
-            6 => Declaration::TypeSetName { name: self.text()?, module: self.text()?, imports: self.list(Self::text)? },
-            7 => Declaration::Implementation(self.text()?),
-            _ => return Err(Error::other("模块枚举编码错误：Declaration")),
-        })
-    }
-
-    fn selection(&mut self) -> std::io::Result<Selection> {
-        Ok(match self.word()? {
-            0 => Selection::Application(self.text()?),
-            1 => Selection::Module(self.list(Self::text)?),
-            2 => Selection::Library { entry: self.text()?, prefix: self.text()? },
-            3 => Selection::Entry { entry: self.text()?, target: self.text()? },
-            _ => return Err(Error::other("模块枚举编码错误：Selection")),
-        })
-    }
-
-    fn source(&mut self) -> std::io::Result<SourceInput> {
-        Ok(SourceInput {
-            module: self.text()?,
-            path: self.bytes()?,
-            scope: self.text()?,
-            fingerprint: self.required_digest()?,
-        })
-    }
-
-    fn inputs(mut self) -> std::io::Result<Inputs> {
-        let source = SourceInputs {
-            path: self.bytes()?,
-            root: self.bytes()?,
-            working_directory: self.bytes()?,
-            module: self.text()?,
-            compiler: self.text()?,
-            max_parameter_bytes: self.word()?,
-            selection: self.selection()?,
-            sources: self.list(Self::source)?,
-            requirements: self.list(|reader| Ok((reader.text()?, reader.text()?)))?,
-        };
-        let inputs = Inputs {
-            source,
-            imports: self.required_digest()?,
-            native: self.native_digest()?,
-            declarations: self.list(Self::declaration)?,
-        };
-        if self.cursor.position != self.cursor.input.length {
-            return Err(Error::other("模块接口有未消费内容"));
+unsafe extern "C" fn collect_manifest_declaration(context: *mut c_void, variant: ManifestVariant) {
+    let output = unsafe { &mut *context.cast::<ManifestProjection>() };
+    let name = unsafe { own_manifest_text(variant.first) };
+    let declaration = match variant.tag {
+        0 => Declaration::Constant(name),
+        1 => Declaration::Record(name),
+        2 => Declaration::TypeSet(name),
+        3 => Declaration::External(name),
+        7 => Declaration::Implementation(name),
+        tag => {
+            let module = unsafe { own_manifest_text(variant.second) };
+            let imports = std::mem::take(&mut output.names);
+            match tag {
+                4 => Declaration::ValueName { name, module, imports },
+                5 => Declaration::RecordName { name, module, imports },
+                _ => Declaration::TypeSetName { name, module, imports },
+            }
         }
-        Ok(inputs)
-    }
+    };
+    output.declarations.push(declaration);
 }
 
 pub(super) fn decode(bytes: &[u8]) -> Result<Option<Inputs>> {
-    Ok(ManifestReader::new(bytes).map(ManifestReader::inputs).transpose()?)
+    let mut projection = ManifestProjection::default();
+    let receiver = ManifestReceiver {
+        context: ptr::from_mut(&mut projection).cast(),
+        valid_text: validate_manifest_text,
+        name: collect_manifest_name,
+        selection: collect_manifest_selection,
+        source: collect_manifest_source,
+        requirement: collect_manifest_requirement,
+        declaration: collect_manifest_declaration,
+    };
+    // The B reader owns the wire order and calls the receiver with borrows of bytes.
+    let manifest = unsafe { read_manifest(bytes.into(), u64::from_le_bytes(*MAGIC), receiver) };
+    match manifest.status {
+        0 => {}
+        1 => return Ok(None),
+        8 => return Err(Error::other("模块接口被截断").into()),
+        9 => return Err(Error::other("模块接口长度溢出").into()),
+        10 => return Err(Error::other("模块布尔值编码错误").into()),
+        11 => return Err(Error::other(projection.invalid_text.unwrap()).into()),
+        12 => return Err(Error::other("模块枚举编码错误：Selection").into()),
+        13 => return Err(Error::other("模块枚举编码错误：Declaration").into()),
+        _ => return Err(Error::other("模块接口有未消费内容").into()),
+    }
+    let identity = manifest.identity;
+    Ok(Some(Inputs {
+        source: SourceInputs {
+            path: unsafe { own_manifest_bytes(identity.path) },
+            root: unsafe { own_manifest_bytes(identity.root) },
+            working_directory: unsafe { own_manifest_bytes(identity.working_directory) },
+            module: unsafe { own_manifest_text(identity.module_name) },
+            compiler: unsafe { own_manifest_text(identity.compiler) },
+            max_parameter_bytes: identity.max_parameter_bytes,
+            selection: projection.selection.unwrap(),
+            sources: projection.sources,
+            requirements: projection.requirements,
+        },
+        imports: unsafe { *manifest.imports_digest.cast::<[u8; 32]>() },
+        native: unsafe { manifest.native_digest.cast::<[u8; 32]>().as_ref() }.copied(),
+        declarations: projection.declarations,
+    }))
 }
+
 #[repr(C)]
 struct ManifestSelection {
     first: ByteField,
