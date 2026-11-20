@@ -2405,6 +2405,7 @@ impl GpuProgram {
         let query_count = if self.capture_timestamps {
             u32::try_from(stage_count as u64 * 2 * steps.get() as u64)?
         } else { 0 };
+        let mut direct_map = false;
         let mut extra_sets = 0u64;
         for (i, stage) in c.program.stages().iter().enumerate() {
             let count = data[stage.domain].count;
@@ -2478,7 +2479,10 @@ impl GpuProgram {
                     extra_sets += (scan::levels(count) * 2) as u64;
                     Some(selection::allocate(c, count)?)
                 }
-                blanguage::ir::Operation::Map => None,
+                blanguage::ir::Operation::Map => {
+                    direct_map |= count != 0 && stage.prefix.is_none();
+                    None
+                }
             };
             let temporary = if stage.prefix.is_some() || stage.selection.is_some() {
                 let mut temporary = temporary.unwrap_or(Scratch {
@@ -2509,63 +2513,70 @@ impl GpuProgram {
         }).collect();
         if !c.pipelines.is_empty() {
             unsafe {
-                let sets = u32::try_from(1 + extra_sets)?;
-                let mut sizes = vec![VkDescriptorPoolSize {
-                    r#type: 7,
-                    descriptorCount: u32::try_from(
-                        (data.len() + c.program.auxiliary_buffers()) as u64 * sets as u64,
-                    )?,
-                }];
-                if !accelerations.is_empty() {
-                    sizes.push(VkDescriptorPoolSize {
-                        r#type: 1000150000,
-                        descriptorCount: u32::try_from(accelerations.len() as u64 * sets as u64)?,
-                    });
-                }
-                if !commands.textures.is_empty() {
-                    sizes.push(VkDescriptorPoolSize {
-                        r#type: 1,
+                let sets = u32::try_from(u64::from(direct_map) + extra_sets)?;
+                let infos = if sets != 0 {
+                    let mut sizes = vec![VkDescriptorPoolSize {
+                        r#type: 7,
                         descriptorCount: u32::try_from(
-                            commands.textures.len() as u64 * sets as u64,
+                            (data.len() + c.program.auxiliary_buffers()) as u64 * sets as u64,
                         )?,
-                    });
-                }
-                let mut pool: VkDescriptorPoolCreateInfo = zero();
-                pool.sType = 33;
-                pool.maxSets = sets;
-                pool.poolSizeCount = sizes.len() as u32;
-                pool.pPoolSizes = sizes.as_ptr();
-                check(
-                    (f.vkCreateDescriptorPool)(device, &pool, null(), &mut commands.descriptors),
-                    "vkCreateDescriptorPool",
-                )?;
-                let field_count = (0..count).filter(|&i| location(i).1 != 0).count();
-                let alignment = c.inner.properties.limits.minStorageBufferOffsetAlignment;
-                let bytes = u64::from(blanguage::spirv::BINDING_BYTES);
-                let step = bytes.div_ceil(alignment) * alignment;
-                if field_count != 0 {
-                    binding_parameters = Some(Allocation::new(c.inner.clone(), step * field_count as u64, 0x20, 6, 8)?);
-                }
-                let projected = binding_parameters.as_ref()
-                    .map(|parameters| parameters.mapping().map(|mapped| (parameters.buffer, mapped)))
-                    .transpose()?;
-                let mut field_index = 0;
-                let infos: Vec<_> = data.iter().enumerate().map(|(i, d)| {
-                    let offset = location(i).1;
-                    if offset == 0 {
-                        VkDescriptorBufferInfo { buffer: d.allocation.buffer, offset: 0, range: bytes }
-                    } else {
-                        let at = step * field_index;
-                        let address = d.allocation.address() + bytes;
-                        let (buffer, mapped) = projected.unwrap();
-                        mapped.add(at as usize).cast::<[u32; 4]>()
-                            .write(binding_header(address, d.stride, offset));
-                        field_index += 1;
-                        VkDescriptorBufferInfo { buffer, offset: at, range: bytes }
+                    }];
+                    if !accelerations.is_empty() {
+                        sizes.push(VkDescriptorPoolSize {
+                            r#type: 1000150000,
+                            descriptorCount: u32::try_from(accelerations.len() as u64 * sets as u64)?,
+                        });
                     }
-                }).collect();
-                let mut descriptors = DescriptorWriter::new(&commands, c, &infos, &accelerations);
-                let set = descriptors.set(&[], None, None, None, None)?;
+                    if !commands.textures.is_empty() {
+                        sizes.push(VkDescriptorPoolSize {
+                            r#type: 1,
+                            descriptorCount: u32::try_from(
+                                commands.textures.len() as u64 * sets as u64,
+                            )?,
+                        });
+                    }
+                    let mut pool: VkDescriptorPoolCreateInfo = zero();
+                    pool.sType = 33;
+                    pool.maxSets = sets;
+                    pool.poolSizeCount = sizes.len() as u32;
+                    pool.pPoolSizes = sizes.as_ptr();
+                    check(
+                        (f.vkCreateDescriptorPool)(device, &pool, null(), &mut commands.descriptors),
+                        "vkCreateDescriptorPool",
+                    )?;
+                    let field_count = (0..count).filter(|&i| location(i).1 != 0).count();
+                    let alignment = c.inner.properties.limits.minStorageBufferOffsetAlignment;
+                    let bytes = u64::from(blanguage::spirv::BINDING_BYTES);
+                    let step = bytes.div_ceil(alignment) * alignment;
+                    if field_count != 0 {
+                        binding_parameters = Some(Allocation::new(c.inner.clone(), step * field_count as u64, 0x20, 6, 8)?);
+                    }
+                    let projected = binding_parameters.as_ref()
+                        .map(|parameters| parameters.mapping().map(|mapped| (parameters.buffer, mapped)))
+                        .transpose()?;
+                    let mut field_index = 0;
+                    data.iter().enumerate().map(|(i, d)| {
+                        let offset = location(i).1;
+                        if offset == 0 {
+                            VkDescriptorBufferInfo { buffer: d.allocation.buffer, offset: 0, range: bytes }
+                        } else {
+                            let at = step * field_index;
+                            let address = d.allocation.address() + bytes;
+                            let (buffer, mapped) = projected.unwrap();
+                            mapped.add(at as usize).cast::<[u32; 4]>()
+                                .write(binding_header(address, d.stride, offset));
+                            field_index += 1;
+                            VkDescriptorBufferInfo { buffer, offset: at, range: bytes }
+                        }
+                    }).collect::<Vec<_>>()
+                } else {
+                    Vec::new()
+                };
+                let mut descriptors = (sets != 0)
+                    .then(|| DescriptorWriter::new(&commands, c, &infos, accelerations));
+                let direct_set = direct_map
+                    .then(|| descriptors.as_mut().unwrap().set(&[], None, None, None, None))
+                    .transpose()?;
                 let mut sorting_sets = Vec::new();
                 for usage in &scratch_uses {
                     if let blanguage::ir::Operation::StableSort(sorting) =
@@ -2573,7 +2584,7 @@ impl GpuProgram {
                     {
                         let storage = &scratch[usage.slot];
                         sorting_sets.push(sort::descriptors(
-                            &mut descriptors,
+                            descriptors.as_mut().unwrap(),
                             sorting,
                             storage.sorting.as_ref().unwrap(),
                             storage.arguments.as_ref(),
@@ -2598,11 +2609,13 @@ impl GpuProgram {
                 for step in 0..steps.get() {
                     // Stage bindings and the order of set requests depend on fixed storage.
                     // The device updates buffer contents and indirect counts between steps.
-                    descriptors.step = match step {
-                        0 if steps.get() == 1 => DescriptorStep::Single,
-                        0 => DescriptorStep::Capture,
-                        _ => DescriptorStep::Reuse(0),
-                    };
+                    if let Some(descriptors) = &mut descriptors {
+                        descriptors.step = match step {
+                            0 if steps.get() == 1 => DescriptorStep::Single,
+                            0 => DescriptorStep::Capture,
+                            _ => DescriptorStep::Reuse(0),
+                        };
+                    }
                     let mut uses = scratch_uses.iter().peekable();
                     let mut sorting_sets = sorting_sets.iter();
                     for (i, stage) in c.program.stages().iter().enumerate() {
@@ -2634,17 +2647,6 @@ impl GpuProgram {
                         uniforms[0] = count;
                         let query = self.capture_timestamps
                             .then(|| (step as usize * stage_count + i) as u32 * 2);
-                        (f.vkCmdBindPipeline)(commands.command, 1, c.pipelines[i]);
-                        (f.vkCmdBindDescriptorSets)(
-                            commands.command,
-                            1,
-                            c.layout,
-                            0,
-                            1,
-                            &set,
-                            0,
-                            null(),
-                        );
                         if let Some(query) = query {
                             (f.vkCmdWriteTimestamp)(commands.command, 0x800, commands.queries, query);
                         }
@@ -2654,7 +2656,7 @@ impl GpuProgram {
                         let prefix_set = if let Some(args) = arguments.filter(|_| {
                             !matches!(stage.operation, blanguage::ir::Operation::StableSort(_))
                         }) {
-                            let set = prefix::descriptor(&mut descriptors, args)?;
+                            let set = prefix::descriptor(descriptors.as_mut().unwrap(), args)?;
                             prefix::prepare(
                                 &commands,
                                 c,
@@ -2688,7 +2690,7 @@ impl GpuProgram {
                             blanguage::ir::Operation::Map if stage.selection.is_some() => {
                                 selection::record(
                                     &commands,
-                                    &mut descriptors,
+                                    descriptors.as_mut().unwrap(),
                                     c,
                                     i,
                                     &data,
@@ -2708,7 +2710,19 @@ impl GpuProgram {
                                     0,
                                 );
                             }
-                            blanguage::ir::Operation::Map => {
+                            blanguage::ir::Operation::Map if count != 0 => {
+                                let set = direct_set.unwrap();
+                                (f.vkCmdBindPipeline)(commands.command, 1, c.pipelines[i]);
+                                (f.vkCmdBindDescriptorSets)(
+                                    commands.command,
+                                    1,
+                                    c.layout,
+                                    0,
+                                    1,
+                                    &set,
+                                    0,
+                                    null(),
+                                );
                                 let width = stage.workgroup_width();
                                 let maximum = c.inner.properties.limits.maxComputeWorkGroupCount[0]
                                     as u64
@@ -2742,10 +2756,11 @@ impl GpuProgram {
                                     begin += size;
                                 }
                             }
+                            blanguage::ir::Operation::Map => {}
                             blanguage::ir::Operation::SegmentedReduce(r) => {
                                 scan::record_segmented_reduce(
                                     &commands,
-                                    &mut descriptors,
+                                    descriptors.as_mut().unwrap(),
                                     c,
                                     [
                                         c.pipelines[i],
@@ -2764,7 +2779,7 @@ impl GpuProgram {
                             blanguage::ir::Operation::CustomSegmentedReduce(r) => {
                                 scan::record_segmented_reduce(
                                     &commands,
-                                    &mut descriptors,
+                                    descriptors.as_mut().unwrap(),
                                     c,
                                     [
                                         c.pipelines[i],
@@ -2787,12 +2802,13 @@ impl GpuProgram {
                                 values: blanguage::ir::ReductionLayout { fields, .. },
                                 head_word,
                             }) => {
+                                let descriptors = descriptors.as_mut().unwrap();
                                 let add = c.scan_adds[i].unwrap();
                                 let source = descriptors.binding(fields.source);
                                 let target = descriptors.binding(fields.target);
                                 scan::record(
                                     &commands,
-                                    &mut descriptors,
+                                    descriptors,
                                     c,
                                     [c.pipelines[i], c.tails[i].unwrap(), add, c.finishes[i].unwrap_or(add)],
                                     fields,
@@ -2809,7 +2825,7 @@ impl GpuProgram {
                             blanguage::ir::Operation::Compact(selection) => {
                                 compact::record(
                                     &commands,
-                                    &mut descriptors,
+                                    descriptors.as_mut().unwrap(),
                                     c,
                                     i,
                                     selection,
@@ -2828,6 +2844,7 @@ impl GpuProgram {
                                     fields: reduction, ..
                                 },
                             ) => {
+                                let descriptors = descriptors.as_mut().unwrap();
                                 let mut length = count;
                                 let mut pass = 0;
                                 loop {
