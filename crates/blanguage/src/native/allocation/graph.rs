@@ -16,7 +16,7 @@ struct Scalars { data: *const Scalar, count: usize }
 enum Kind { Ordinary, If, Loop, Scope, Raise, Exit, Break, Continue, LocalLoad, LocalStore, Cast, Unary, Binary, Select, Math, Constant, Print, Call }
 #[repr(C)]
 struct Node {
-    first: Block, second: Block, instruction: *const Inst, arguments: *const Reg, count: usize,
+    first: Block, second: Block, instruction: *const Inst,
     dst: Reg, a: Reg, b: Reg, bits: u64, outgoing: u64,
     kind: Kind, flags: u32, operation: u32, uses_r15: u32,
 }
@@ -94,7 +94,7 @@ unsafe extern "C" fn read(code: Block, index: usize, registers: Scalars) -> Node
     let instruction = unsafe { code.instructions.add(index) }; let inst = unsafe { &*instruction };
     let registers = unsafe { std::slice::from_raw_parts(registers.data, registers.count) };
     let mut node = Node { first: Block::EMPTY, second: Block::EMPTY, instruction,
-        arguments: std::ptr::NonNull::<Reg>::dangling().as_ptr(), count: 0, dst: 0, a: 0, b: 0,
+        dst: 0, a: 0, b: 0,
         bits: 0, outgoing: 0, kind: Kind::Ordinary, flags: 0, operation: 0, uses_r15: 0 };
     match &inst.kind {
         InstKind::If { condition, yes, no } => { node.kind = Kind::If; node.a = *condition; node.first = Block::from(yes); node.second = Block::from(no); }
@@ -112,7 +112,12 @@ unsafe extern "C" fn read(code: Block, index: usize, registers: Scalars) -> Node
         InstKind::Binary { dst, op, a, b } => { node.kind = Kind::Binary; node.dst = *dst; node.a = *a; node.b = *b;
             if let BinaryOp::Compare(cmp) = op { node.flags = 4 | (u32::from(registers[*a].is_float()) << 1); node.operation = *cmp as u32; } }
         InstKind::Select { dst, b, .. } => { node.kind = Kind::Select; node.dst = *dst; node.a = *b; }
-        InstKind::Math { dst, op, args } => { node.kind = Kind::Math; node.dst = *dst; node.operation = *op as u32; node.arguments = args.as_ptr(); node.count = args.len(); }
+        InstKind::Math { dst, op, args } => {
+            node.kind = Kind::Math;
+            node.dst = *dst;
+            node.a = args[0];
+            node.outgoing = super::super::CpuMath::from(*op).outgoing();
+        }
         InstKind::Constant(_, _, bits) => { node.kind = Kind::Constant; node.bits = *bits; }
         InstKind::Print { .. } => node.kind = Kind::Print,
         InstKind::Call(call) => {

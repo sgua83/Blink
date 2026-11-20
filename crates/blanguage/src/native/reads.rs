@@ -146,9 +146,8 @@ fn input(inst: &Inst, writes: &[usize]) -> (Input, usize, usize) {
     match &inst.kind {
         InstKind::Constant(..) | InstKind::Index(_) | InstKind::Unary { .. }
         | InstKind::Binary { .. } | InstKind::IntegerDivide { .. } | InstKind::Cast { .. }
-        | InstKind::Select { .. }
-        | InstKind::Math { op: MathOp::Sqrt | MathOp::Abs | MathOp::Min | MathOp::Max, .. } =>
-            (Input::Value, 0, 0),
+        | InstKind::Select { .. } => (Input::Value, 0, 0),
+        InstKind::Math { op, .. } if CpuMath::from(*op).outgoing() == 0 => (Input::Value, 0, 0),
         InstKind::Load { binding, .. } => (Input::Load, usize::from(writes.contains(binding)), 0),
         InstKind::ViewLoad { .. } => (Input::ViewLoad, 0, 0),
         InstKind::LoadLocal(_, slot) => (Input::LocalRead, *slot, *slot + 1),

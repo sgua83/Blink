@@ -337,8 +337,8 @@ extern "C" u32 graph_block(address graph,GraphBlock code,GraphScalars registers,
                         bool reverse=(node.flags&2)!=0 ? (node.operation==3 || node.operation==5) : (node.operation==2 || node.operation==5);
                         if(reverse){preferred_source=node.b;}
                     }
-                } else if(node.kind==GraphKind::Math && (node.operation==0 || node.operation==9 || node.operation==10 || node.operation==11)){
-                    preferred=1;preferred_destination=node.dst;preferred_source=unsafe_position<u64>(node.arguments);
+                } else if(node.kind==GraphKind::Math && node.outgoing==0u64){
+                    preferred=1;preferred_destination=node.dst;preferred_source=node.a;
                 }
             }
             if(preferred!=0){
@@ -351,9 +351,9 @@ extern "C" u32 graph_block(address graph,GraphBlock code,GraphScalars registers,
             definitions.pass=1;
             host.definitions(node.instruction,graph,live,definitions);
             bool calls=node.kind==GraphKind::Print || node.kind==GraphKind::Call ||
-                (node.kind==GraphKind::Math && node.operation>=1 && node.operation<=8);
+                (node.kind==GraphKind::Math && node.outgoing!=0u64);
             if(calls){
-                u64 outgoing=node.kind==GraphKind::Call ? node.outgoing : 32u64;
+                u64 outgoing=node.kind==GraphKind::Print ? 32u64 : node.outgoing;
                 if(outgoing>host.core.counter(graph,GraphCounter::Outgoing)){host.core.set_outgoing(graph,outgoing);}
                 host.core.visit_set(live,18446744073709551615u64,graph,GraphEvent(0u64,0u64,2,0));
             }

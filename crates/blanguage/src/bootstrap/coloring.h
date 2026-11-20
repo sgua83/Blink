@@ -29,7 +29,7 @@ enum GraphKind:u32 { Ordinary=0; If=1; Loop=2; Scope=3; Raise=4; Exit=5; Break=6
 struct GraphBlock { address instructions; u64 count; };
 struct GraphScalars { address data; u64 count; };
 struct GraphNode {
-    GraphBlock first; GraphBlock second; address instruction; address arguments; u64 count;
+    GraphBlock first; GraphBlock second; address instruction;
     u64 dst; u64 a; u64 b; u64 bits; u64 outgoing;
     GraphKind kind; u32 flags; u32 operation; u32 uses_r15;
 };
