@@ -29,13 +29,29 @@ struct View {
 };
 struct Host { cfn<View,Node> ensures memory(read) inspect; };
 
-enum LoopTransfer:u32 { Break=0; Continue=1; ScopeExit=2; Branch=3; Scope=4; };
+struct LoopPaths { address live; address exited; };
+struct LoopPathHost {
+ Host ir;
+ address context;
+ cfn<void,address,address> record_break;
+ cfn<void,address> clear;
+ cfn<void,address,address,address> union_paths;
+ cfn<void,usize,Span,Span,LoopPaths,LoopPathHost> with_branch;
+ cfn<void,Span,LoopPaths,LoopPathHost> with_scope;
+};
 extern "C" usize next_loop_edit(Span code,usize first,Host host) on cpu
  requires nonzero(host.inspect);
 extern "C" u32 has_function_exit(Span code,Host host) on cpu requires nonzero(host.inspect);
-extern "C" void loop_transfers(Span code,Host host,address context,
- cfn<void,address,LoopTransfer,usize,Span,Span> visit) on cpu
- requires nonzero(host.inspect) requires nonzero(visit);
+extern "C" void loop_exit_paths(Span code,LoopPaths paths,LoopPathHost host) on cpu
+ requires nonzero(host.ir.inspect) requires nonzero(host.record_break) requires nonzero(host.clear)
+ requires nonzero(host.union_paths) requires nonzero(host.with_branch) requires nonzero(host.with_scope);
+extern "C" void loop_path_branch(Span yes_code,Span no_code,LoopPaths parent,
+ LoopPaths yes,LoopPaths no,LoopPathHost host) on cpu
+ requires nonzero(host.ir.inspect) requires nonzero(host.record_break) requires nonzero(host.clear)
+ requires nonzero(host.union_paths) requires nonzero(host.with_branch) requires nonzero(host.with_scope);
+extern "C" void loop_path_scope(Span code,LoopPaths parent,LoopPaths child,LoopPathHost host) on cpu
+ requires nonzero(host.ir.inspect) requires nonzero(host.record_break) requires nonzero(host.clear)
+ requires nonzero(host.union_paths) requires nonzero(host.with_branch) requires nonzero(host.with_scope);
 struct Word { u32 present; usize value; };
 struct Results { Span first; Span second; usize a; usize b; usize inline_count; usize index; };
 struct Locals {

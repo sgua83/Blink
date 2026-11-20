@@ -745,82 +745,84 @@ use crate::ir::dataflow;
 use owned_presence::Presence;
 use std::ffi::c_void;
 
-#[repr(u32)]
-enum LoopTransfer { Break, Continue, ScopeExit, Branch, Scope }
+#[derive(Clone, Copy)]
+#[repr(C)]
+struct LoopPaths {
+    live: *mut Presence,
+    exited: *mut Presence,
+}
+
+#[derive(Clone, Copy)]
+#[repr(C)]
+struct LoopPathHost {
+    ir: dataflow::Host,
+    context: *mut c_void,
+    record_break: unsafe extern "C" fn(*mut c_void, *mut Presence),
+    clear: unsafe extern "C" fn(*mut Presence),
+    union_paths: unsafe extern "C" fn(*mut Presence, *mut Presence, *mut Presence),
+    with_branch: unsafe extern "C" fn(Reg, dataflow::Span, dataflow::Span, LoopPaths, LoopPathHost),
+    with_scope: unsafe extern "C" fn(dataflow::Span, LoopPaths, LoopPathHost),
+}
 
 unsafe extern "C" {
     #[link_name = "bootstrap.ir_dataflow::next_loop_edit"]
     fn next_loop_edit(code: dataflow::Span, first: usize, host: dataflow::Host) -> usize;
 
-    #[link_name = "bootstrap.ir_dataflow::loop_transfers"]
-    fn source_loop_transfers(
-        code: dataflow::Span, host: dataflow::Host, context: *mut c_void,
-        visit: unsafe extern "C" fn(*mut c_void, LoopTransfer, Reg, dataflow::Span, dataflow::Span),
-    );
+    #[link_name = "bootstrap.ir_dataflow::loop_exit_paths"]
+    fn source_loop_exit_paths(code: dataflow::Span, paths: LoopPaths, host: LoopPathHost);
+
+    #[link_name = "bootstrap.ir_dataflow::loop_path_branch"]
+    fn source_loop_branch(yes: dataflow::Span, no: dataflow::Span, parent: LoopPaths, yes_paths: LoopPaths, no_paths: LoopPaths, host: LoopPathHost);
+
+    #[link_name = "bootstrap.ir_dataflow::loop_path_scope"]
+    fn source_loop_scope(code: dataflow::Span, parent: LoopPaths, child: LoopPaths, host: LoopPathHost);
 }
 
-struct LoopPaths<'a> {
+struct ExitConditions<'a> {
     controls: &'a BTreeMap<Reg, Value>,
     test: &'a Presence,
-    breaks: &'a mut Vec<Presence>,
-    when: Presence,
-    exited: Presence,
+    guards: &'a mut Vec<Presence>,
 }
 
-impl LoopPaths<'_> {
-    fn take_when(&mut self) -> Presence {
-        std::mem::replace(&mut self.when, Presence::None)
-    }
-
-    fn take_exited(&mut self) -> Presence {
-        std::mem::replace(&mut self.exited, Presence::None)
-    }
-
-    fn walk(&mut self, body: dataflow::Span, when: Presence) -> (Presence, Presence) {
-        let mut child = LoopPaths {
-            controls: self.controls, test: self.test, breaks: self.breaks,
-            when, exited: Presence::None,
-        };
-        child.visit(body);
-        (child.when, child.exited)
-    }
-
-    fn visit(&mut self, body: dataflow::Span) {
-        // The source traversal and its nested calls borrow the current inputs
-        // synchronously. Only the actual exit conditions go into the result.
-        unsafe { source_loop_transfers(body, dataflow::HOST, std::ptr::from_mut(self).cast(), loop_transfer); }
-    }
+unsafe fn take_presence(slot: *mut Presence) -> Presence {
+    std::mem::replace(unsafe { &mut *slot }, Presence::None)
 }
 
-unsafe extern "C" fn loop_transfer(
-    context: *mut c_void, transfer: LoopTransfer, condition: Reg,
-    first: dataflow::Span, second: dataflow::Span,
+unsafe extern "C" fn record_break(context: *mut c_void, live: *mut Presence) {
+    let context = unsafe { &mut *context.cast::<ExitConditions<'_>>() };
+    context.guards.push(context.test.clone().and(unsafe { take_presence(live) }));
+}
+
+unsafe extern "C" fn clear_loop_path(slot: *mut Presence) {
+    unsafe { *slot = Presence::None; }
+}
+
+unsafe extern "C" fn union_loop_paths(output: *mut Presence, left: *mut Presence, right: *mut Presence) {
+    let left = unsafe { take_presence(left) };
+    let right = unsafe { take_presence(right) };
+    unsafe { *output = left.or(right); }
+}
+
+unsafe extern "C" fn with_loop_branch(
+    condition: Reg, yes: dataflow::Span, no: dataflow::Span, parent: LoopPaths, host: LoopPathHost,
 ) {
-    let paths = unsafe { &mut *context.cast::<LoopPaths<'_>>() };
-    match transfer {
-        LoopTransfer::Break => {
-            let when = paths.take_when();
-            paths.breaks.push(paths.test.clone().and(when));
-        }
-        LoopTransfer::Continue => paths.when = Presence::None,
-        LoopTransfer::ScopeExit => {
-            let when = paths.take_when();
-            paths.exited = paths.take_exited().or(when);
-        }
-        LoopTransfer::Branch => {
-            let when = paths.take_when();
-            let selected = Presence::input(&paths.controls[&condition]);
-            let (yes, yes_exit) = paths.walk(first, when.clone().and(selected.clone()));
-            let (no, no_exit) = paths.walk(second, when.and(selected.not()));
-            paths.when = yes.or(no);
-            paths.exited = paths.take_exited().or(yes_exit).or(no_exit);
-        }
-        LoopTransfer::Scope => {
-            let when = paths.take_when();
-            let (next, exited) = paths.walk(first, when);
-            paths.when = next.or(exited);
-        }
-    }
+    let context = unsafe { &*host.context.cast::<ExitConditions<'_>>() };
+    let selected = Presence::input(&context.controls[&condition]);
+    let live = unsafe { take_presence(parent.live) };
+    let mut yes_live = live.clone().and(selected.clone());
+    let mut no_live = live.and(selected.not());
+    let mut yes_exited = Presence::None;
+    let mut no_exited = Presence::None;
+    unsafe { source_loop_branch(yes, no, parent,
+        LoopPaths { live: &mut yes_live, exited: &mut yes_exited },
+        LoopPaths { live: &mut no_live, exited: &mut no_exited },
+        host,
+    ); }
+}
+
+unsafe extern "C" fn with_loop_scope(code: dataflow::Span, parent: LoopPaths, host: LoopPathHost) {
+    let mut exited = Presence::None;
+    unsafe { source_loop_scope(code, parent, LoopPaths { live: parent.live, exited: &mut exited }, host); }
 }
 
 unsafe extern "C" {
@@ -829,10 +831,18 @@ unsafe extern "C" {
 }
 
 fn loop_exit_paths(code: &[Inst], controls: &BTreeMap<Reg, Value>, test: &Presence) -> Vec<Presence> {
-    let mut breaks = Vec::new();
-    LoopPaths { controls, test, breaks: &mut breaks, when: Presence::All, exited: Presence::None }
-        .visit(dataflow::Span::slice(code));
-    breaks
+    let mut guards = Vec::new();
+    let mut context = ExitConditions { controls, test, guards: &mut guards };
+    let mut live = Presence::All;
+    let mut exited = Presence::None;
+    let paths = LoopPaths { live: &mut live, exited: &mut exited };
+    let host = LoopPathHost {
+        ir: dataflow::HOST, context: std::ptr::from_mut(&mut context).cast(), record_break,
+        clear: clear_loop_path, union_paths: union_loop_paths,
+        with_branch: with_loop_branch, with_scope: with_loop_scope,
+    };
+    unsafe { source_loop_exit_paths(dataflow::Span::slice(code), paths, host); }
+    guards
 }
 
 // Continue is the real next-iteration edge. Compile its continuation directly.

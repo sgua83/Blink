@@ -56,25 +56,40 @@ extern "C" u32 has_function_exit(Span code,Host host) on cpu requires nonzero(ho
  return u32(block_transfers(code,TransferSearch::FunctionExit,host));
 }
 
-extern "C" void loop_transfers(Span code,Host host,address context,
- cfn<void,address,LoopTransfer,usize,Span,Span> visit) on cpu
- requires nonzero(host.inspect) requires nonzero(visit) {
+extern "C" void loop_path_branch(Span yes_code,Span no_code,LoopPaths parent,
+ LoopPaths yes,LoopPaths no,LoopPathHost host) on cpu
+ requires nonzero(host.ir.inspect) requires nonzero(host.record_break) requires nonzero(host.clear)
+ requires nonzero(host.union_paths) requires nonzero(host.with_branch) requires nonzero(host.with_scope) {
+ loop_exit_paths(yes_code,yes,host);
+ loop_exit_paths(no_code,no,host);
+ host.union_paths(parent.live,yes.live,no.live);
+ host.union_paths(parent.exited,parent.exited,yes.exited);
+ host.union_paths(parent.exited,parent.exited,no.exited);
+}
+
+extern "C" void loop_path_scope(Span code,LoopPaths parent,LoopPaths child,LoopPathHost host) on cpu
+ requires nonzero(host.ir.inspect) requires nonzero(host.record_break) requires nonzero(host.clear)
+ requires nonzero(host.union_paths) requires nonzero(host.with_branch) requires nonzero(host.with_scope) {
+ loop_exit_paths(code,child,host);
+ host.union_paths(parent.live,child.live,child.exited);
+}
+
+extern "C" void loop_exit_paths(Span code,LoopPaths paths,LoopPathHost host) on cpu
+ requires nonzero(host.ir.inspect) requires nonzero(host.record_break) requires nonzero(host.clear)
+ requires nonzero(host.union_paths) requires nonzero(host.with_branch) requires nonzero(host.with_scope) {
  usize i=0u64;
  while(i<code.count){
-  View instruction=host.inspect(node_at(code,i,N_INSTRUCTION));
+  View instruction=host.ir.inspect(node_at(code,i,N_INSTRUCTION));
   i+=1u64;
   u32 kind=instruction.tag;
-  if(kind==OP_BREAK_VALUE){
-   visit(context,LoopTransfer::Break,0u64,empty_span(),empty_span());
-  }else if(kind==OP_CONTINUE_VALUE){
-   visit(context,LoopTransfer::Continue,0u64,empty_span(),empty_span());
-  }else if(kind==OP_EXIT_VALUE){
-   visit(context,LoopTransfer::ScopeExit,0u64,empty_span(),empty_span());
-  }else if(kind==OP_BRANCH&&(block_transfers(instruction.first,TransferSearch::LoopAndExit,host)
-                          ||block_transfers(instruction.second,TransferSearch::LoopAndExit,host))){
-   visit(context,LoopTransfer::Branch,instruction.a,instruction.first,instruction.second);
-  }else if(kind==OP_SCOPE&&block_transfers(instruction.first,TransferSearch::LoopLocal,host)){
-   visit(context,LoopTransfer::Scope,0u64,instruction.first,empty_span());
+  if(kind==OP_BREAK_VALUE){host.record_break(host.context,paths.live);}
+  else if(kind==OP_CONTINUE_VALUE){host.clear(paths.live);}
+  else if(kind==OP_EXIT_VALUE){host.union_paths(paths.exited,paths.exited,paths.live);}
+  else if(kind==OP_BRANCH&&(block_transfers(instruction.first,TransferSearch::LoopAndExit,host.ir)
+                         ||block_transfers(instruction.second,TransferSearch::LoopAndExit,host.ir))){
+   host.with_branch(instruction.a,instruction.first,instruction.second,paths,host);
+  }else if(kind==OP_SCOPE&&block_transfers(instruction.first,TransferSearch::LoopLocal,host.ir)){
+   host.with_scope(instruction.first,paths,host);
   }
  }
 }
