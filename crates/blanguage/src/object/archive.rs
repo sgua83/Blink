@@ -59,13 +59,23 @@ fn development_runtime(
     work: &Path,
     worker: &crate::compiler::Worker,
 ) -> Result<Vec<String>> {
-    let arguments: Vec<OsString> = [
+    let mut arguments: Vec<OsString> = [
         "rustc".into(), "--offline".into(), "--locked".into(), "--release".into(),
         "--jobs".into(), "1".into(), "--manifest-path".into(), sdk.join("Cargo.toml").into_os_string(),
         "--target-dir".into(), target.as_os_str().into(), "--package".into(), "blcompute".into(),
         "--no-default-features".into(), "--config".into(), "profile.release.lto=false".into(),
-        "--color".into(), "never".into(), "--".into(), "--print".into(), "native-static-libs".into(),
+        "--color".into(), "never".into(),
     ].into();
+    if let Some(directory) = option_env!("BLINK_BUILT_SHARED_OBJECTS") {
+        let directory = directory.replace('\\', "\\\\");
+        arguments.extend([
+            "--config".into(),
+            format!(r#"env.BLINK_DEVELOPMENT_SHARED_OBJECTS.value="{directory}""#).into(),
+            "--config".into(),
+            "env.BLINK_DEVELOPMENT_SHARED_OBJECTS.force=true".into(),
+        ]);
+    }
+    arguments.extend(["--", "--print", "native-static-libs"].map(OsString::from));
     let output = worker.cargo_output(&arguments, work, sdk)?;
     let stderr = String::from_utf8(output.stderr)?;
     if !output.status.success() {

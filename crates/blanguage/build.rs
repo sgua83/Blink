@@ -84,6 +84,7 @@ fn native_modules() -> Result<(), Box<dyn std::error::Error>> {
     let mut compiler_members = Vec::new();
     let compiler = env::var_os("CARGO_FEATURE_COMPILER").is_some();
     if compiler {
+        println!("cargo:rustc-env=BLINK_BUILT_SHARED_OBJECTS={}", out.display());
         println!("cargo:rerun-if-changed=src/bootstrap");
         for (name, source) in [
             ("unicode_scalar", "../../library/blink/unicode_scalar"),
@@ -161,6 +162,24 @@ fn native_modules() -> Result<(), Box<dyn std::error::Error>> {
             }
             jobs.push(job);
             compiler_members.push(output);
+        }
+    }
+    if !compiler && let Some(directory) = env::var_os("BLINK_DEVELOPMENT_SHARED_OBJECTS") {
+        let directory = Path::new(&directory);
+        for output in [&value_object, &coff_object] {
+            if output.try_exists()? {
+                continue;
+            }
+            let source = directory.join(output.file_name().unwrap());
+            let mut source = match fs::File::open(source) {
+                Ok(source) => source,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+                Err(error) => return Err(error.into()),
+            };
+            // Publish a complete object for bc to validate against its actual inputs.
+            let staged = output.with_extension("seed.obj");
+            io::copy(&mut source, &mut fs::File::create(&staged)?)?;
+            fs::rename(staged, output)?;
         }
     }
     let compiler_inputs = (compiler_start..jobs.len()).collect();
