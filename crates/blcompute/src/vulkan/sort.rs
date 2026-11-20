@@ -62,7 +62,7 @@ pub(super) struct Storage {
     histogram: PagedBuffer,
     prefixes: PagedBuffer,
     scan: Vec<PagedBuffer>,
-    pub(super) histogram_count: u32,
+    histogram_count: u32,
 }
 pub(super) fn allocate(c: &Compiled, count: u32) -> Result<Storage> {
     let histogram_count = scan::groups(count) * 16;
@@ -77,45 +77,134 @@ pub(super) fn allocate(c: &Compiled, count: u32) -> Result<Storage> {
         histogram_count,
     })
 }
-pub(super) fn record(
+impl Storage {
+    pub(super) fn descriptor_count(&self) -> u64 {
+        // Initialization and finish, two histogram and two scatter sets, then scan levels.
+        (6 + 2 * scan::levels(self.histogram_count) - 1) as u64
+    }
+}
+
+pub(super) struct Descriptors {
+    prefix: Option<u64>,
+    initialize: u64,
+    histogram: [u64; 2],
+    scan: scan::Descriptors,
+    scatter: [u64; 2],
+    finish: u64,
+}
+
+pub(super) fn descriptors(
     commands: &mut Commands,
     c: &Compiled,
-    stage: usize,
-    s: &blanguage::ir::Sorting,
-    data: &impl std::ops::Index<usize, Output = GpuDataset>,
+    sorting: &blanguage::ir::Sorting,
     storage: &Storage,
     arguments: Option<&PagedBuffer>,
     infos: &[VkDescriptorBufferInfo],
     accelerations: &[Acceleration],
-    uniforms: &mut [u32],
-    partition: NonZeroU32,
-) -> Result<()> {
-    let kernels = c.sorts[stage].as_ref().unwrap();
-    let n = data[s.source].count;
-    let args = arguments.map(PagedBuffer::descriptor);
-    for key in (0..s.keys.len()).rev() {
-        let bindings = [Some((s.target, storage.pairs[0].descriptor()))];
-        let set = descriptor_set(
+) -> Result<Descriptors> {
+    let prefix = arguments.map(|args| prefix::descriptor(commands, c, args, infos, accelerations)).transpose()?;
+    let indirect = arguments.map(PagedBuffer::descriptor);
+    let initialize = descriptor_set(
+        commands,
+        c,
+        infos,
+        &[Some((sorting.target, storage.pairs[0].descriptor()))],
+        accelerations,
+        None,
+        indirect,
+        None,
+        None,
+    )?;
+    let mut histogram = [0; 2];
+    let mut scatter = [0; 2];
+    for (parity, input) in storage.pairs.iter().enumerate() {
+        let bindings = [
+            Some((sorting.source, input.descriptor())),
+            Some((sorting.target, storage.pairs[1 - parity].descriptor())),
+        ];
+        histogram[parity] = descriptor_set(
             commands,
             c,
             infos,
             &bindings,
             accelerations,
-            None,
-            args,
+            Some(storage.histogram.descriptor()),
+            indirect,
             None,
             None,
         )?;
+        scatter[parity] = descriptor_set(
+            commands,
+            c,
+            infos,
+            &bindings,
+            accelerations,
+            Some(storage.prefixes.descriptor()),
+            indirect,
+            None,
+            None,
+        )?;
+    }
+    let r = blanguage::ir::Reduction {
+        source: sorting.source,
+        source_word: 0,
+        target: sorting.target,
+        target_word: 0,
+    };
+    let scan = scan::descriptors(
+        commands,
+        c,
+        &r,
+        false,
+        (storage.histogram_count, storage.histogram.descriptor()),
+        storage.prefixes.descriptor(),
+        &storage.scan,
+        indirect,
+        infos,
+        accelerations,
+    )?;
+    let finish = descriptor_set(
+        commands,
+        c,
+        infos,
+        &[],
+        accelerations,
+        Some(storage.pairs[0].descriptor()),
+        indirect,
+        None,
+        None,
+    )?;
+    Ok(Descriptors { prefix, initialize, histogram, scan, scatter, finish })
+}
+
+pub(super) fn record(
+    commands: &Commands,
+    c: &Compiled,
+    stage: usize,
+    key_count: usize,
+    count: u32,
+    storage: &Storage,
+    sets: &Descriptors,
+    arguments: Option<&PagedBuffer>,
+    uniforms: &mut [u32],
+    partition: NonZeroU32,
+    reused: bool,
+) {
+    if let Some(set) = sets.prefix {
+        prefix::prepare(commands, c, stage, set, uniforms, partition, reused);
+    }
+    let kernels = c.sorts[stage].as_ref().unwrap();
+    for key in (0..key_count).rev() {
         scan::dispatch(
             commands,
             c,
-            if key + 1 == s.keys.len() {
+            if key + 1 == key_count {
                 c.pipelines[stage]
             } else {
                 kernels.handles[20 + key]
             },
-            set,
-            n,
+            sets.initialize,
+            count,
             uniforms,
             partition,
             arguments,
@@ -123,75 +212,36 @@ pub(super) fn record(
         );
         for pass in 0..8 {
             commands.barrier(0x800, 0x800, 0x40, 0x60);
-            let input = &storage.pairs[pass % 2];
-            let target = &storage.pairs[(pass + 1) % 2];
-            let bindings = [
-                Some((s.source, input.descriptor())),
-                Some((s.target, target.descriptor())),
-            ];
-            let set = descriptor_set(
-                commands,
-                c,
-                infos,
-                &bindings,
-                accelerations,
-                Some(storage.histogram.descriptor()),
-                args,
-                None,
-                None,
-            )?;
             scan::dispatch(
                 commands,
                 c,
                 kernels.handles[pass],
-                set,
-                n,
+                sets.histogram[pass % 2],
+                count,
                 uniforms,
                 partition,
                 arguments,
                 0,
             );
             commands.barrier(0x800, 0x800, 0x40, 0x60);
-            let r = blanguage::ir::Reduction {
-                source: s.source,
-                source_word: 0,
-                target: s.target,
-                target_word: 0,
-            };
-            scan::record(
+            scan::record_dispatches(
                 commands,
                 c,
                 kernels.scan(),
-                &r,
-                false,
-                (storage.histogram_count, storage.histogram.descriptor()),
-                storage.prefixes.descriptor(),
-                &storage.scan,
+                storage.histogram_count,
+                &sets.scan,
                 arguments,
-                infos,
-                accelerations,
                 uniforms,
                 partition,
                 blanguage::spirv::PREFIX_LEVELS,
-            )?;
+            );
             commands.barrier(0x800, 0x800, 0x40, 0x60);
-            let set = descriptor_set(
-                commands,
-                c,
-                infos,
-                &bindings,
-                accelerations,
-                Some(storage.prefixes.descriptor()),
-                args,
-                None,
-                None,
-            )?;
             scan::dispatch(
                 commands,
                 c,
                 kernels.handles[8 + pass],
-                set,
-                n,
+                sets.scatter[pass % 2],
+                count,
                 uniforms,
                 partition,
                 arguments,
@@ -200,27 +250,8 @@ pub(super) fn record(
         }
         commands.barrier(0x800, 0x800, 0x40, 0x60);
     }
-    let set = descriptor_set(
-        commands,
-        c,
-        infos,
-        &[],
-        accelerations,
-        Some(storage.pairs[0].descriptor()),
-        args,
-        None,
-        None,
-    )?;
+    let pipeline = kernels.handles[19];
     scan::dispatch(
-        commands,
-        c,
-        kernels.handles[19],
-        set,
-        n,
-        uniforms,
-        partition,
-        arguments,
-        0,
+        commands, c, pipeline, sets.finish, count, uniforms, partition, arguments, 0,
     );
-    Ok(())
 }

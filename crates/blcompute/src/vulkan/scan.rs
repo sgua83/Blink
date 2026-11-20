@@ -36,28 +36,23 @@ pub(super) fn allocate(c: &Compiled, mut count: u32, words: usize) -> Result<Scr
         sorting: None,
     })
 }
-pub(super) fn record(
+pub(super) struct Descriptors([u64; 2 * blanguage::spirv::PREFIX_LEVELS - 1]);
+
+pub(super) fn descriptors(
     commands: &mut Commands,
     c: &Compiled,
-    kernels: [VkPipeline; 4],
     r: &blanguage::ir::Reduction,
     segmented: bool,
     source: (u32, VkDescriptorBufferInfo),
     root_target: VkDescriptorBufferInfo,
     temporary: &[PagedBuffer],
-    arguments: Option<&PagedBuffer>,
+    arguments: Option<VkDescriptorBufferInfo>,
     infos: &[VkDescriptorBufferInfo],
     accelerations: &[Acceleration],
-    uniforms: &mut [u32],
-    partition: NonZeroU32,
-    argument_base: usize,
-) -> Result<()> {
-    let count = source.0;
-    let level_count = levels(count);
+) -> Result<Descriptors> {
+    let level_count = levels(source.0);
+    let mut sets = Descriptors([0; 2 * blanguage::spirv::PREFIX_LEVELS - 1]);
     for level in 0..level_count {
-        if level > 0 {
-            commands.barrier(0x800, 0x800, 0x40, 0x60);
-        }
         let source = if level == 0 {
             source.1
         } else {
@@ -74,32 +69,19 @@ pub(super) fn record(
                 .then_some((r.source, source)),
             Some((r.target, target)),
         ];
-        let set = descriptor_set(
+        sets.0[level] = descriptor_set(
             commands,
             c,
             infos,
             &bindings,
             accelerations,
             Some((auxiliary).descriptor()),
-            arguments.map(PagedBuffer::descriptor),
+            arguments,
             (r.target == c.program.selection_buffer()).then_some(target),
             (r.source == r.target && level > 0).then_some(source),
         )?;
-        let pipeline = kernels[usize::from(level != 0)];
-        dispatch(
-            commands,
-            c,
-            pipeline,
-            set,
-            length_at(count, level),
-            uniforms,
-            partition,
-            arguments,
-            argument_base + level,
-        );
     }
     for level in (0..level_count - 1).rev() {
-        commands.barrier(0x800, 0x800, 0x40, 0x60);
         let source = temporary[level * 2 + 1].descriptor();
         let target = if level == 0 {
             root_target
@@ -110,7 +92,7 @@ pub(super) fn record(
             (r.source != r.target).then_some((r.source, source)),
             Some((r.target, target)),
         ];
-        let set = descriptor_set(
+        sets.0[level_count + level] = descriptor_set(
             commands,
             c,
             infos,
@@ -121,15 +103,61 @@ pub(super) fn record(
             } else {
                 None
             },
-            arguments.map(PagedBuffer::descriptor),
+            arguments,
             (r.target == c.program.selection_buffer()).then_some(target),
             (r.source == r.target).then_some(source),
         )?;
+    }
+    Ok(sets)
+}
+
+pub(super) fn record(
+    commands: &mut Commands,
+    c: &Compiled,
+    kernels: [VkPipeline; 4],
+    r: &blanguage::ir::Reduction,
+    segmented: bool,
+    source: (u32, VkDescriptorBufferInfo),
+    root_target: VkDescriptorBufferInfo,
+    temporary: &[PagedBuffer],
+    arguments: Option<&PagedBuffer>,
+    infos: &[VkDescriptorBufferInfo],
+    accelerations: &[Acceleration],
+    uniforms: &mut [u32],
+    partition: NonZeroU32,
+    argument_base: usize,
+) -> Result<()> {
+    let sets = descriptors(
+        commands, c, r, segmented, source, root_target, temporary,
+        arguments.map(PagedBuffer::descriptor), infos, accelerations,
+    )?;
+    record_dispatches(
+        commands, c, kernels, source.0, &sets, arguments, uniforms, partition, argument_base,
+    );
+    Ok(())
+}
+
+pub(super) fn record_dispatches(
+    commands: &Commands,
+    c: &Compiled,
+    kernels: [VkPipeline; 4],
+    count: u32,
+    sets: &Descriptors,
+    arguments: Option<&PagedBuffer>,
+    uniforms: &mut [u32],
+    partition: NonZeroU32,
+    argument_base: usize,
+) {
+    let level_count = levels(count);
+    for level in 0..level_count {
+        if level > 0 {
+            commands.barrier(0x800, 0x800, 0x40, 0x60);
+        }
         dispatch(
             commands,
             c,
-            kernels[if level == 0 { 3 } else { 2 }],
-            set,
+            kernels[usize::from(level != 0)],
+            sets.0[level],
             length_at(count, level),
             uniforms,
             partition,
@@ -137,7 +165,20 @@ pub(super) fn record(
             argument_base + level,
         );
     }
-    Ok(())
+    for level in (0..level_count - 1).rev() {
+        commands.barrier(0x800, 0x800, 0x40, 0x60);
+        dispatch(
+            commands,
+            c,
+            kernels[if level == 0 { 3 } else { 2 }],
+            sets.0[level_count + level],
+            length_at(count, level),
+            uniforms,
+            partition,
+            arguments,
+            argument_base + level,
+        );
+    }
 }
 pub(super) fn record_segmented_reduce(
     commands: &mut Commands,

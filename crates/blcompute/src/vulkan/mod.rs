@@ -2371,11 +2371,9 @@ impl GpuProgram {
                     extra_sets += (scan::levels(count) * 2 - 1).max(2) as u64 * steps.get() as u64;
                     Some(scan::allocate(c, count, r.summary_words())?)
                 }
-                blanguage::ir::Operation::StableSort(ref s) => {
+                blanguage::ir::Operation::StableSort(_) => {
                     let sorting = sort::allocate(c, count)?;
-                    extra_sets += (1 + s.keys.len() as u64
-                        * (1 + 8 * (2 * scan::levels(sorting.histogram_count) + 1)) as u64)
-                        * steps.get() as u64;
+                    extra_sets += sorting.descriptor_count();
                     Some(Scratch {
                         buffers: Vec::new(),
                         arguments: None,
@@ -2389,12 +2387,12 @@ impl GpuProgram {
                 blanguage::ir::Operation::Map => None,
             };
             let temporary = if stage.prefix.is_some() || stage.selection.is_some() {
-                extra_sets += steps.get() as u64;
                 let mut temporary = temporary.unwrap_or(Scratch {
                     buffers: Vec::new(),
                     arguments: None,
                     sorting: None,
                 });
+                extra_sets += if temporary.sorting.is_some() { 1 } else { steps.get() as u64 };
                 temporary.arguments = Some(prefix::allocate(c, stage)?);
                 Some(temporary)
             } else {
@@ -2483,6 +2481,23 @@ impl GpuProgram {
                     None,
                     None,
                 )?;
+                let mut sorting_sets = Vec::new();
+                for usage in &scratch_uses {
+                    if let blanguage::ir::Operation::StableSort(sorting) =
+                        &c.program.stages()[usage.stage].operation
+                    {
+                        let storage = &scratch[usage.slot];
+                        sorting_sets.push(sort::descriptors(
+                            &mut commands,
+                            c,
+                            sorting,
+                            storage.sorting.as_ref().unwrap(),
+                            storage.arguments.as_ref(),
+                            &infos,
+                            &accelerations,
+                        )?);
+                    }
+                }
                 if self.capture_timestamps {
                     let queries = QueryPoolCreateInfo {
                         s_type: 11,
@@ -2500,6 +2515,7 @@ impl GpuProgram {
                 }
                 for step in 0..steps.get() {
                     let mut uses = scratch_uses.iter().peekable();
+                    let mut sorting_sets = sorting_sets.iter();
                     for (i, stage) in c.program.stages().iter().enumerate() {
                         let write_hazard = stage
                             .reads
@@ -2546,18 +2562,20 @@ impl GpuProgram {
                         let usage = uses.next_if(|usage| usage.stage == i);
                         let temporary = usage.map(|usage| &scratch[usage.slot]);
                         let arguments = temporary.and_then(|s| s.arguments.as_ref());
-                        let prefix_set = if let Some(args) = arguments {
-                            Some(prefix::prepare(
-                                &mut commands,
+                        let prefix_set = if let Some(args) = arguments.filter(|_| {
+                            !matches!(stage.operation, blanguage::ir::Operation::StableSort(_))
+                        }) {
+                            let set = prefix::descriptor(&mut commands, c, args, &infos, &accelerations)?;
+                            prefix::prepare(
+                                &commands,
                                 c,
                                 i,
-                                args,
-                                &infos,
-                                &accelerations,
+                                set,
                                 &mut uniforms,
                                 self.partition_elements,
                                 step > 0 || usage.unwrap().reused,
-                            )?)
+                            );
+                            Some(set)
                         } else {
                             None
                         };
@@ -2565,18 +2583,18 @@ impl GpuProgram {
                             blanguage::ir::Operation::StableSort(s) => {
                                 let temporary = temporary.unwrap();
                                 sort::record(
-                                    &mut commands,
+                                    &commands,
                                     c,
                                     i,
-                                    s,
-                                    &data,
+                                    s.keys.len(),
+                                    data[s.source].count,
                                     temporary.sorting.as_ref().unwrap(),
+                                    sorting_sets.next().unwrap(),
                                     arguments,
-                                    &infos,
-                                    &accelerations,
                                     &mut uniforms,
                                     self.partition_elements,
-                                )?;
+                                    step > 0,
+                                );
                             }
                             blanguage::ir::Operation::Map if stage.selection.is_some() => {
                                 selection::record(

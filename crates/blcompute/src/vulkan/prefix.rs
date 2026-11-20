@@ -13,21 +13,14 @@ pub(super) fn allocate(c: &Compiled, stage: &Stage) -> Result<PagedBuffer> {
     };
     PagedBuffer::new(c.inner.clone(), 4, (levels * 4) as u32, 0x100, 4)
 }
-pub(super) fn prepare(
+pub(super) fn descriptor(
     commands: &mut Commands,
     c: &Compiled,
-    stage: usize,
     args: &PagedBuffer,
     infos: &[VkDescriptorBufferInfo],
     accelerations: &[Acceleration],
-    uniforms: &mut [u32],
-    partition: NonZeroU32,
-    reused: bool,
 ) -> Result<u64> {
-    if reused {
-        commands.barrier(0x802, 0x800, 0x61, 0x40);
-    }
-    let set = descriptor_set(
+    descriptor_set(
         commands,
         c,
         infos,
@@ -37,7 +30,20 @@ pub(super) fn prepare(
         Some(args.descriptor()),
         None,
         None,
-    )?;
+    )
+}
+pub(super) fn prepare(
+    commands: &Commands,
+    c: &Compiled,
+    stage: usize,
+    set: u64,
+    uniforms: &mut [u32],
+    partition: NonZeroU32,
+    reused: bool,
+) {
+    if reused {
+        commands.barrier(0x802, 0x800, 0x61, 0x40);
+    }
     unsafe {
         let f = &c.inner.functions;
         (f.vkCmdBindDescriptorSets)(commands.command, 1, c.layout, 0, 1, &set, 0, null());
@@ -59,7 +65,6 @@ pub(super) fn prepare(
         (f.vkCmdDispatch)(commands.command, 1, 1, 1);
         commands.barrier(0x800, 0x802, 0x40, 0x21);
     }
-    Ok(set)
 }
 pub(super) fn dispatch(
     commands: &Commands,
