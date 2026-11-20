@@ -448,27 +448,9 @@ struct SegmentMerge {
     u32 zero;
     u32 value_words;
     u32 counted;
-    u32 next;
 };
 
 struct SegmentLevel { u32 mask; u32 stride; };
-struct SegmentTree {
-    SegmentMerge merge;
-    u32 shared;
-    u32 pointer;
-    u32 lane;
-    u32 remaining;
-    u32 one;
-    u32 scope;
-    u32 semantics;
-    u32 down;
-};
-
-// Six level constants are in ascending width order. The workspace has six
-// summary spans: plane offsets, two pointer lists, two input lists and output.
-extern "C" TreeWords segment_tree(SegmentTree input, address levels, address fields, u32 count,
-    address workspace, address body, address decorations) on cpu;
-
 struct SegmentAdd {
     SegmentMerge merge;
     PageAddress target;
@@ -494,50 +476,36 @@ struct SegmentStorageField {
     u32 step;
 };
 
-struct SegmentSource {
-    PageAddress source;
-    u32 bool_type;
-    u32 head;
-    u32 value_words;
-    u32 counted;
-};
+enum SegmentPass : u32 { Main = 0; Tail = 1; Finish = 2; };
 
-// The caller provides the existing summary layout with zero-filled padding.
-extern "C" PayloadWrite segment_source(SegmentSource input, address fields, u32 count,
-    address words, address body) on cpu;
-
-struct SegmentScanWrite {
-    PageAddress target;
-    u32 bool_type;
-    u32 value_words;
-    u32 group_descriptor;
-    u32 marker_word;
-    u32 group;
-    u32 lane;
-    u32 is_last;
-    u32 active;
-};
-
-extern "C" StageWords segment_scan_write(SegmentScanWrite input, address storage, u32 field_count,
-    address exclusive, address item, address identity, address body) on cpu;
-
-struct SegmentFinish {
+struct SegmentGroup {
     SegmentMerge merge;
-    PageAddress target;
-    u32 prefix_descriptor;
-    u32 source_descriptor;
+    PageAddress source;
+    SegmentPass pass;
+    u32 target;
+    u32 summary;
+    u32 head_offset;
     u32 head_word;
-    u32 count_descriptor;
+    u32 marker_word;
+    u32 count_target;
     u32 count_word;
-    u32 group;
     u32 active;
     u32 count;
+    u32 lane;
+    u32 shared;
+    u32 pointer;
+    u32 width;
+    u32 last;
+    u32 scope;
+    u32 semantics;
     u32 step;
+    u32 before;
 };
 
-// The caller owns the original summaries and four summary spans of workspace.
-extern "C" TreeWords segment_finish(SegmentFinish input, address fields, address storage, u32 field_count,
-    address exclusive, address item, address identity, address workspace, address body, address decorations) on cpu;
+// Six tree spans followed by the input summary and its workgroup pointers.
+extern "C" TreeWords segment_group(SegmentGroup input, address levels, address fields,
+    address source_fields, address target_fields, u32 field_count, address identity,
+    address workspace, address body, address decorations) on cpu;
 
 struct PrivateAddress {
     u32 index_type;
