@@ -481,7 +481,7 @@ pub(crate) fn projected_relations<D: DomainStorage>(
     let source = |original| slots.selected(original).and_then(|slot| targets.source(slot));
     let mut prefixes = BTreeSet::new();
     let mut elements = BTreeSet::new();
-    let mut counts = Vec::new();
+    let mut remaining_counts = Vec::new();
     let mut result = Vec::new();
     for relation in domains {
         let Some(domain_source) = source(relation.domain()) else { continue; };
@@ -491,17 +491,28 @@ pub(crate) fn projected_relations<D: DomainStorage>(
                 if !prefixes.insert((domain_source, *offset, *bytes, count_source, count.word)) {
                     continue;
                 }
-                counts.clear();
-                counts.extend(targets.positions[count_source].iter()
-                    .filter_map(|field| field.project(count.word, 4)));
-                let domains = targets.positions[domain_source].iter()
+                let mut domains = targets.positions[domain_source].iter()
                     .filter_map(|field| field.project(*offset, *bytes));
-                for (domain, offset) in domains {
-                    for &(binding, word) in &counts {
-                        result.push(DomainRelation::Prefix {
-                            domain, offset, bytes: *bytes, count: PrefixCount { binding, word },
-                        });
-                    }
+                let Some(first_domain) = domains.next() else { continue; };
+                let mut count_fields = targets.positions[count_source].iter()
+                    .filter_map(|field| field.project(count.word, 4));
+                let Some(first_count) = count_fields.next() else { continue; };
+                let pair = |(domain, offset), (binding, word)| DomainRelation::Prefix {
+                    domain, offset, bytes: *bytes, count: PrefixCount { binding, word },
+                };
+                result.push(pair(first_domain, first_count));
+                let Some(second_domain) = domains.next() else {
+                    result.extend(count_fields.map(|count| pair(first_domain, count)));
+                    continue;
+                };
+                remaining_counts.clear();
+                for count in count_fields {
+                    result.push(pair(first_domain, count));
+                    remaining_counts.push(count);
+                }
+                for domain in std::iter::once(second_domain).chain(domains) {
+                    result.push(pair(domain, first_count));
+                    result.extend(remaining_counts.iter().map(|&count| pair(domain, count)));
                 }
             },
             DomainRelation::Element(range) => {
