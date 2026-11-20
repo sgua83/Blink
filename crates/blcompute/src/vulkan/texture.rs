@@ -145,7 +145,7 @@ pub(super) struct DescriptorImageInfo {
     view: u64,
     layout: u32,
 }
-struct Storage {
+pub(super) struct Storage {
     inner: Rc<Inner>,
     image: u64,
     memory: u64,
@@ -168,14 +168,14 @@ impl Storage {
         }
     }
 }
-// 真实图像和生产完成点由同一个共享所有者持有；执行不反向持有输出图像。
+// 最后一个图像引用结束时，尚在复制的存储交回原生产执行。
 struct Image {
-    storage: Storage,
+    storage: ManuallyDrop<Storage>,
     produced: Rc<Execution>,
 }
 impl Drop for Image {
     fn drop(&mut self) {
-        self.produced.point.finish_for_drop();
+        self.produced.discard_image(unsafe { ManuallyDrop::take(&mut self.storage) });
     }
 }
 /// 一个既有二维mip在原GPU数据集中的记录布局；每条记录是一份已编码texel。
@@ -572,8 +572,11 @@ impl Device {
                 (&barrier as *const ImageBarrier).cast(),
             );
         }
-        let produced = self.submit_transfer(commands, staging, dependencies)?;
-        Ok(Texture(Rc::new(Image { storage: texture, produced })))
+        let produced = Execution::submit(
+            ExecutionResources::ImageCopy { commands, _staging: staging, discarded: None },
+            dependencies,
+        )?;
+        Ok(Texture(Rc::new(Image { storage: ManuallyDrop::new(texture), produced })))
     }
     /// 显式同步读回真实图像的全部 mip；返回独立 CPU 存储并恢复采样布局。
     pub fn download_texture(&self, source: &Texture) -> Result<crate::Texture2D> {

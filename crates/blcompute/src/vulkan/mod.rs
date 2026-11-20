@@ -1543,7 +1543,6 @@ struct Commands {
     command: VkCommandBuffer,
     descriptors: VkDescriptorPool,
     queries: u64,
-    textures: Vec<TextureInput>,
 }
 impl Commands {
     fn new(inner: Rc<Inner>) -> Result<Self> {
@@ -1557,7 +1556,6 @@ impl Commands {
                 command: null_mut(),
                 descriptors: 0,
                 queries: 0,
-                textures: Vec::new(),
             };
             let f = &out.inner.functions;
             let device = out.inner.owner.device;
@@ -1782,6 +1780,13 @@ struct Scratch {
     arguments: Option<PagedBuffer>,
     sorting: Option<sort::Storage>,
 }
+struct ComputeResources {
+    _compiled: Rc<Compiled>,
+    _accelerations: Vec<Acceleration>,
+    _textures: Vec<TextureInput>,
+    _scratch: Vec<Scratch>,
+    _binding_parameters: Option<Allocation>,
+}
 struct ScratchUse {
     stage: usize,
     slot: usize,
@@ -1869,6 +1874,7 @@ impl<'a> DescriptorWriter<'a> {
         compiled: &'a Compiled,
         infos: &'a [VkDescriptorBufferInfo],
         accelerations: &'a [Acceleration],
+        textures: &[TextureInput],
     ) -> Self {
         let structures: Vec<_> = accelerations.iter().map(|structure| ray::WriteAcceleration {
             kind: 1000150007,
@@ -1876,7 +1882,7 @@ impl<'a> DescriptorWriter<'a> {
             count: 1,
             structures: structure.handle(),
         }).collect();
-        let images: Vec<_> = commands.textures.iter().map(TextureInput::descriptor).collect();
+        let images: Vec<_> = textures.iter().map(TextureInput::descriptor).collect();
         let mut writes = Vec::with_capacity(
             infos.len() + accelerations.len() + compiled.program.textures().len() + 4,
         );
@@ -2431,7 +2437,6 @@ impl GpuProgram {
             }
         }
         let mut commands = Commands::new(c.inner.clone())?;
-        commands.textures = std::mem::take(&mut owner.textures);
         let pending_inputs = owner.dependencies.is_empty();
         let dependencies = if pending_inputs {
             Vec::new()
@@ -2663,11 +2668,11 @@ impl GpuProgram {
                             descriptorCount: u32::try_from(accelerations.len() as u64 * sets as u64)?,
                         });
                     }
-                    if !commands.textures.is_empty() {
+                    if !owner.textures.is_empty() {
                         sizes.push(VkDescriptorPoolSize {
                             r#type: 1,
                             descriptorCount: u32::try_from(
-                                commands.textures.len() as u64 * sets as u64,
+                                owner.textures.len() as u64 * sets as u64,
                             )?,
                         });
                     }
@@ -2709,7 +2714,7 @@ impl GpuProgram {
                     Vec::new()
                 };
                 let mut descriptors = (sets != 0)
-                    .then(|| DescriptorWriter::new(&commands, c, &infos, accelerations));
+                    .then(|| DescriptorWriter::new(&commands, c, &infos, accelerations, &owner.textures));
                 let root_set = needs_root_set
                     .then(|| descriptors.as_mut().unwrap().set(&[], None, None, None, None))
                     .transpose()?;
@@ -3081,13 +3086,17 @@ impl GpuProgram {
         drop(scratch_uses);
         let queries = (query_count != 0)
             .then(|| QueryPool::take(&mut commands, query_count, c.program.clone()));
+        let resources = used_bindings.then(|| ComputeResources {
+            _compiled: c.clone(),
+            _accelerations: owner.accelerations.clone(),
+            _textures: std::mem::take(&mut owner.textures),
+            _scratch: scratch,
+            _binding_parameters: binding_parameters,
+        });
         let execution = Execution::submit(
             ExecutionResources::Compute {
                 commands,
-                _compiled: c.clone(),
-                _accelerations: owner.accelerations.clone(),
-                _scratch: scratch,
-                _binding_parameters: binding_parameters,
+                _resources: resources,
                 _queries: queries.clone(),
             },
             dependencies,

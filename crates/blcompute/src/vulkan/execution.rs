@@ -242,15 +242,17 @@ impl Drop for QueryPool {
 pub(super) enum ExecutionResources {
     Compute {
         commands: Commands,
-        _compiled: Rc<Compiled>,
-        _accelerations: Vec<Acceleration>,
-        _scratch: Vec<Scratch>,
-        _binding_parameters: Option<Allocation>,
+        _resources: Option<ComputeResources>,
         _queries: Option<Rc<QueryPool>>,
     },
     Transfer {
         commands: Commands,
         _staging: Vec<Allocation>,
+    },
+    ImageCopy {
+        commands: Commands,
+        _staging: Vec<Allocation>,
+        discarded: Option<texture::Storage>,
     },
     DatasetUpload {
         commands: Commands,
@@ -268,6 +270,7 @@ impl ExecutionResources {
         match self {
             Self::Compute { commands, .. }
             | Self::Transfer { commands, .. }
+            | Self::ImageCopy { commands, .. }
             | Self::DatasetUpload { commands, .. }
             | Self::Acceleration { commands, .. } => commands,
         }
@@ -361,6 +364,11 @@ impl Execution {
             drop(storage);
         } else {
             self.discarded_structures.borrow_mut().push(storage);
+        }
+    }
+    pub(super) fn discard_image(&self, storage: texture::Storage) {
+        if let Some(ExecutionResources::ImageCopy { discarded, .. }) = self.resources.borrow_mut().as_mut() {
+            *discarded = Some(storage);
         }
     }
     fn release_known(&self) {

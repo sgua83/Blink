@@ -5198,7 +5198,7 @@ void assign<T>(write T target, T value) on compute { target = value; }
 
 ## 原生缓冲区与AS异步交接
 
-upload／upload_texture、GPU zeroed及BLAS／TLAS构建返回已提交的真实资源，其生产／最后使用点沿既有Execution传递；调用者不从CPU帧或返回时刻推断设备完成。后续构建／计算按实际资源建立同队列内存访问关系，命令、暂存、scratch、实例页与引用在真实使用结束后释放。top_level_device消费GpuDataset所有权，直接读取原GPU矩阵页；BottomLevel／Acceleration的完成接口只观察本次构建，Texture的完成接口只观察本次图像生产。详细原生API与范围见[设备实例](DeviceInstances.md)。下载、显式等待、当前draw及呈现仍可阻塞；直接跨设备传输、多物理 GPU 选择／验证、多队列、refit和完整流送未据此完成。
+upload／upload_texture、GPU zeroed及BLAS／TLAS构建返回已提交的真实资源，其生产／最后使用点沿既有Execution传递；调用者不从CPU帧或返回时刻推断设备完成。后续构建／计算按实际资源建立同队列内存访问关系，命令、暂存、scratch、实例页与引用在真实使用结束后释放。纹理最后一个引用退役时，尚待确认完成的图像复制继续持有该图像。已录制的采样绑定沿其实际计算完成点持有纹理。没有录制计算绑定的提交仍交接原队列完成与阶段观察，管线、纹理和加速结构沿各自实际使用退出。top_level_device消费GpuDataset所有权，直接读取原GPU矩阵页；BottomLevel／Acceleration的完成接口只观察本次构建，Texture的完成接口只观察本次图像生产。详细原生API与范围见[设备实例](DeviceInstances.md)。下载、显式等待、当前draw及呈现仍可阻塞；直接跨设备传输、多物理 GPU 选择／验证、多队列、refit和完整流送未据此完成。
 
 ## 整程序编译映像与原生装载
 编译器拥有从已检查 IR 到全部机器入口的转换，执行器拥有代码装载、存储、提交和实际完成后的释放。`native::compile_program` 生成 CPU 的 `ProgramImage<P>`，`spirv::compile_program` 生成 GPU 的 `ProgramImage<P>`；P 保留 ExecutableProgram／TemplateProgram 的入口种类，但不保存原 IR 对象。映像包含最终代码及 ExecutionPlan，后者只保留接口、域关系、访问依赖、集合布局、工作组／共享存储和实际设备需求；自定义集合的投影、单位元、合并器及普通值指令均已编译，不进入执行布局。
