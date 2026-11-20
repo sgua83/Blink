@@ -2779,9 +2779,11 @@ impl Builder<'_> {
                 "dataset 索引需要由本资源的长度条件或有界游标证明",
             );
         }
-        Ok(Some(
-            data.element(&value, (value.minimum(), value.maximum())),
-        ))
+        let place = data.element(&value, (value.minimum(), value.maximum()));
+        if place.ty().owns_resources() {
+            self.observe_bounds(&value);
+        }
+        Ok(Some(place))
     }
     fn application_cpu_source(&mut self,identity:ValueIdentity,span:Span)->Result<()> {
         if let Some(data) = self
