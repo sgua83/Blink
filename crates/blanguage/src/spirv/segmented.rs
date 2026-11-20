@@ -22,6 +22,19 @@ struct SegmentMerge {
 }
 
 #[repr(C)]
+struct SegmentScanWrite {
+    target: PageAddress,
+    bool_type: u32,
+    value_words: u32,
+    group_descriptor: u32,
+    marker_word: u32,
+    group: u32,
+    lane: u32,
+    is_last: u32,
+    active: u32,
+}
+
+#[repr(C)]
 struct SegmentFinish {
     merge: SegmentMerge,
     target: PageAddress,
@@ -101,6 +114,10 @@ unsafe extern "C" {
     #[link_name = "bootstrap.spirv_envelope::segment_tree"]
     fn emit_segment_tree(input: SegmentTree, levels: *const SegmentLevel, fields: *const SegmentField,
         count: u32, words: *mut u32, body: *mut u32, decorations: *mut u32) -> TreeWords;
+    #[link_name = "bootstrap.spirv_envelope::segment_scan_write"]
+    fn emit_segment_scan_write(input: SegmentScanWrite, storage: *const SegmentStorageField,
+        field_count: u32, exclusive: *const u32, item: *const u32, identity: *const u32,
+        body: *mut u32) -> StageWords;
     #[link_name = "bootstrap.spirv_envelope::segment_finish"]
     fn emit_segment_finish(input: SegmentFinish, fields: *const SegmentField,
         storage: *const SegmentStorageField, field_count: u32, exclusive: *const u32,
@@ -246,7 +263,6 @@ impl Emitter<'_> {
         let k = scan.ty.size.div_ceil(4) as usize;
         let u = self.types[&Scalar::U32];
         let b = self.types[&Scalar::Bool];
-        let zero = self.constant(Scalar::U32, 0);
         let identity = self.segment_identity(scan);
         let remaining =
             if scan.ty.components[0].0.is_float() && scan.operator != CollectiveOperator::Sum {
@@ -306,69 +322,37 @@ impl Emitter<'_> {
         self.scan_barrier();
         self.segment_tree(scan, &mut layout, local, shared, pointer, true, None);
         let result = self.read_summary_words(&own);
-        if !tail {
-            // 首段头写 lane+1；没有段头时只有最后一个物理 lane 写 0。
-            let heads = self.id();
-            self.emit(197, &[u, heads, result[k], input[k]]);
-            let no_heads = self.id();
-            self.emit(170, &[b, no_heads, heads, zero]);
-            let empty_last = self.id();
-            self.emit(167, &[b, empty_last, no_heads, is_last]);
-            let save = self.id();
-            let saved = self.id();
-            self.emit(247, &[saved, 0]);
-            self.emit(250, &[empty_last, save, saved]);
-            self.emit(248, &[save]);
-            let first = self.address_scalar(Scalar::U32,
-                self.program.buffers.len(),
-                group,
-                k as u32 * 4);
-            self.write_summary_words(&[first], &[zero]);
-            self.emit(249, &[saved]);
-            self.emit(248, &[saved]);
-        }
-        let write = self.id();
-        let end = self.id();
-        self.emit(247, &[end, 0]);
-        self.emit(250, &[active, write, end]);
-        self.emit(248, &[write]);
-        if !tail {
-            let is_head = self.id();
-            self.emit(171, &[b, is_head, input[k], zero]);
-            for (scalar,offset) in &scan.ty.components {
-                let word = (offset / 4) as usize;
-                let n = scalar.size().div_ceil(4) as usize;
-                let current = self.join_words(*scalar, &result[word..word+n], Scalar::U32);
-                let empty = self.raw_constant(*scalar, scan.operator.identity(*scalar));
-                let value = self.id();
-                self.select(self.raw_type(*scalar), value, is_head, empty, current);
-                self.store_raw_buffer(*scalar, r.target, self.index, r.target_word + offset, value);
-            }
-            let no_previous = self.id();
-            self.emit(170, &[b, no_previous, result[k], zero]);
-            let is_first = self.id();
-            self.emit(167, &[b, is_first, is_head, no_previous]);
-            let first = self.id();
-            let finish = self.id();
-            self.emit(247, &[finish, 0]);
-            self.emit(250, &[is_first, first, finish]);
-            self.emit(248, &[first]);
-            let target = self.address_scalar(Scalar::U32,
-                self.program.buffers.len(),
-                group,
-                k as u32 * 4);
-            let one = self.constant(Scalar::U32, 1);
-            let encoded = self.id();
-            self.emit(128, &[u, encoded, local, one]);
-            self.write_summary_words(&[target], &[encoded]);
-            self.emit(249, &[finish]);
-            self.emit(248, &[finish]);
-        } else {
+        if tail {
+            let write = self.id();
+            let end = self.id();
+            self.emit(247, &[end, 0]);
+            self.emit(250, &[active, write, end]);
+            self.emit(248, &[write]);
             let target = self.summary_addresses(scan.summary_words(), r.target, self.index);
             self.write_summary_words(&target, &result);
+            self.emit(249, &[end]);
+            self.emit(248, &[end]);
+            return;
         }
-        self.emit(249, &[end]);
-        self.emit(248, &[end]);
+
+        let fields = self.segment_storage_fields(scan, r.target_word);
+        let marker_word = self.constant(Scalar::U32, k as u32 * 4);
+        let target = self.page_input(Scalar::U32, PageSource::Dataset(self.buffers[r.target]),
+            self.index, None, 0);
+        let args = SegmentScanWrite {
+            target, bool_type: b, value_words: k as u32,
+            group_descriptor: self.buffers[self.program.buffers.len()],
+            marker_word, group, lane: local, is_last, active,
+        };
+        let body = self.body.len();
+        self.body.reserve(280 + 40 * fields.len());
+        unsafe {
+            let result = emit_segment_scan_write(args, fields.as_ptr(), fields.len() as u32,
+                result.as_ptr(), input.as_ptr(), identity.as_ptr(), self.body.as_mut_ptr().add(body));
+            self.body.set_len(body + result.words as usize);
+            self.next = result.next;
+            self.current_label = result.label;
+        }
     }
     pub(super) fn segmented_reduce(
         &mut self,

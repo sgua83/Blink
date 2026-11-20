@@ -506,6 +506,21 @@ struct SegmentSource {
 extern "C" PayloadWrite segment_source(SegmentSource input, address fields, u32 count,
     address words, address body) on cpu;
 
+struct SegmentScanWrite {
+    PageAddress target;
+    u32 bool_type;
+    u32 value_words;
+    u32 group_descriptor;
+    u32 marker_word;
+    u32 group;
+    u32 lane;
+    u32 is_last;
+    u32 active;
+};
+
+extern "C" StageWords segment_scan_write(SegmentScanWrite input, address storage, u32 field_count,
+    address exclusive, address item, address identity, address body) on cpu;
+
 struct SegmentFinish {
     SegmentMerge merge;
     PageAddress target;

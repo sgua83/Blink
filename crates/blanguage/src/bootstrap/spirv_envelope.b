@@ -2282,7 +2282,7 @@ extern "C" PayloadWrite segment_source(SegmentSource input, address fields, u32 
 }
 
 void write_segment_result(inout StageCursor out, PageAddress target, u32 index,
-    address storage, u32 count, address values) on cpu {
+    address storage, u32 count, address values, u32 replace, address identity) on cpu {
     PageAddress row = target;
     row.index = index;
     PhysicalAddress record = physical_page_address(row, word_at(out.body, out.words), out.next);
@@ -2294,6 +2294,9 @@ void write_segment_result(inout StageCursor out, PageAddress target, u32 index,
         array<u32,2> pointers = stage_field_pointers(out, record.value, field.offset, field.pointer_type,
             row.u64_type, field.step);
         u32 value = read_word(values, field.word);
+        if (replace != 0) {
+            value = stage_select(out, row.u32_type, replace, read_word(identity, field.word), value);
+        }
         if (field.unit_type != row.u32_type) {
             out.words = words_three(out.body, out.words, 113, field.unit_type, out.next, value);
             value = out.next;
@@ -2301,9 +2304,43 @@ void write_segment_result(inout StageCursor out, PageAddress target, u32 index,
         }
         out.words = aligned_store(out.body, out.words, pointers[0], value, field.unit_bytes);
         if (field.step != 0) {
-            out.words = aligned_store(out.body, out.words, pointers[1], read_word(values, field.word + 1), 4);
+            u32 high = read_word(values, field.word + 1);
+            if (replace != 0) {
+                high = stage_select(out, row.u32_type, replace, read_word(identity, field.word + 1), high);
+            }
+            out.words = aligned_store(out.body, out.words, pointers[1], high, 4);
         }
     }
+}
+
+extern "C" StageWords segment_scan_write(SegmentScanWrite input, address storage, u32 field_count,
+    address exclusive, address item, address identity, address body) on cpu {
+    StageCursor out = StageCursor(body, 0u64, input.target.next);
+    u32 u = input.target.u32_type;
+    u32 b = input.bool_type;
+    u32 zero = input.target.zero;
+    u32 current = read_word(item, input.value_words);
+    u32 previous = read_word(exclusive, input.value_words);
+    u32 is_head = stage_op(out, 171, b, current, zero);
+
+    StageBranch write = stage_open(out, input.active);
+    write_segment_result(out, input.target, input.target.index, storage, field_count,
+        exclusive, is_head, identity);
+    stage_close(out, write);
+
+    u32 no_previous = stage_op(out, 170, b, previous, zero);
+    u32 last_or_head = stage_op(out, 166, b, input.is_last, is_head);
+    u32 owner = stage_op(out, 167, b, no_previous, last_or_head);
+    StageBranch save = stage_open(out, owner);
+    u32 lane = stage_op(out, 128, u, input.lane, input.target.one);
+    u32 marker = stage_select(out, u, is_head, lane, zero);
+    PageAddress target = input.target;
+    target.descriptor = input.group_descriptor;
+    target.word = input.marker_word;
+    PageAddressResult pointer = stage_address(out, target, input.group, 0);
+    out.words = aligned_store(body, out.words, pointer.pointer, marker, 4);
+    stage_close(out, save);
+    return StageWords(out.words, out.next, save.end);
 }
 
 extern "C" TreeWords segment_finish(SegmentFinish input, address fields, address storage, u32 field_count,
@@ -2351,7 +2388,7 @@ extern "C" TreeWords segment_finish(SegmentFinish input, address fields, address
     u32 segments = read_word(total, input.merge.value_words + 1);
     StageBranch store = stage_open(out, tail);
     u32 index = stage_op(out, 130, u, segments, one);
-    write_segment_result(out, input.target, index, storage, field_count, total);
+    write_segment_result(out, input.target, index, storage, field_count, total, 0, identity);
     stage_close(out, store);
 
     StageBranch counted = stage_open(out, last);
