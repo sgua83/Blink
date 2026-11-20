@@ -1628,6 +1628,7 @@ async fn checked_function(
     application: Option<application::Context>,
     functions: native_function::Module,
 ) -> Result<Box<CheckedFunction>> {
+    let _required_scope = bounds::required_scope();
     let name = &instance.name;
     let d = &instance.definition;
     let mut bound_parameters = Vec::new();
