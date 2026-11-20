@@ -118,9 +118,6 @@ impl ScalarPredicate {
     fn map(self, identity: impl Fn(ValueIdentity) -> Option<ValueIdentity>) -> Option<Self> {
         Some(Self::new(self.op, self.scalar, self.a.map(&identity)?, self.b.map(&identity)?))
     }
-    fn mentions(self, identity: ValueIdentity) -> bool {
-        [self.a, self.b].contains(&Operand::Value(identity))
-    }
     fn at_call(self, bindings: &BTreeMap<ValueIdentity, impl std::borrow::Borrow<Proof>>) -> Option<Self> {
         let operand = |operand| Some(match operand {
             Operand::Value(id) => {
@@ -2373,24 +2370,10 @@ impl Clause {
             found.get()
         })
     }
-    fn any_fact<'a>(roots:impl IntoIterator<Item=&'a Self>,test:&impl Fn(&Fact)->bool)->bool {
-        let mut pending=Vec::new();let mut visited=HashSet::new();
-        for root in roots {
-            pending.push(root);
-            while let Some(clause)=pending.pop() {
-                if !visited.insert(clause.key()) { continue; }
-                match &**clause.0 {
-                    ClauseNode::Facts(facts)=>if facts.iter().any(test){return true;},
-                    ClauseNode::Both(a,b)|ClauseNode::Either(a,b)=>pending.extend([b,a]),
-                    ClauseNode::Branch(parent,condition,truth)=>{
-                        pending.extend([&condition.cases[usize::from(*truth)],parent]);
-                    },
-                    ClauseNode::Impossible=>{},
-                }
-            }
-        }
-        false
+    fn any_fact<'a>(roots: impl IntoIterator<Item = &'a Self>, test: &impl Fn(&Fact) -> bool) -> bool {
+        condition_graph::any_fact(roots, test)
     }
+
     // 按子节点在先的顺序只访问每个共享节点一次，不展开路径的笛卡尔积。
     fn ordered<'a>(roots: impl IntoIterator<Item = &'a Self>) -> Vec<&'a Self> {
         let mut pending: Vec<_> = roots.into_iter().map(|root| (root, false)).collect();
@@ -2710,7 +2693,19 @@ impl Condition {
     pub(super) fn truth_in(&self,path:&Clause)->Option<bool>{
         if !self.assume(path,false).possible(){Some(true)}else if !self.assume(path,true).possible(){Some(false)}else{None}
     }
-    pub(super) fn mentions(&self,identity:ValueIdentity)->bool{Clause::any_fact(&self.cases,&|fact|match fact{Fact::Equal(a,b)|Fact::NotEqual(a,b)|Fact::Below(a,b,..)=>*a==identity||*b==identity,Fact::Predicate(predicate,_)=>predicate.mentions(identity),Fact::Index(a,_)|Fact::Outside(a,_)|Fact::Zero(a)|Fact::Minimum(a,..)|Fact::Maximum(a,..)|Fact::NonZero(a)|Fact::Boolean(a,_)=>*a==identity})}
+    pub(super) fn mentions(&self, identity: ValueIdentity) -> bool {
+        condition_graph::condition_inputs(&self.cases, |input| *input == identity)
+    }
+
+    pub(super) fn input_identities(&self) -> BTreeSet<ValueIdentity> {
+        let mut inputs = BTreeSet::new();
+        condition_graph::condition_inputs(&self.cases, |input| {
+            inputs.insert(*input);
+            false
+        });
+        inputs
+    }
+
     pub(super) fn constant(truth:bool)->Self{let mut value=Self::default();value.cases[usize::from(!truth)]=Clause::impossible();value}
     pub(super) fn selected(index:ownership::ApplicationIndex,element:usize)->Self{
         let ownership::ApplicationIndex::Value(id,_)=index else{return Self::constant(matches!(index,ownership::ApplicationIndex::Constant(i)if i as usize==element))};

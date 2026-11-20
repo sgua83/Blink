@@ -169,18 +169,20 @@ fn binding_value(binding:&Binding)->Option<(&Ty,bounds::Proof)> {
 }
 impl LoopControl {
     pub fn capture(test:&Value,environment:&BTreeMap<String,Binding>,cursor:Option<Value>)->Self {
-        let condition=bounds::Condition::of(test);let mut inputs=BTreeMap::new();
+        let condition = bounds::Condition::of(test);
+        let identities = condition.input_identities();
+        let mut inputs = BTreeMap::new();
         for(name,binding)in environment {
             if let Some((ty,proof))=binding_value(binding) {
                 for component in 0..ty.components.len() {
-                    if let Some(id)=proof.known_identity(component) && condition.mentions(id) {
+                    if let Some(id)=proof.known_identity(component) && identities.contains(&id) {
                         inputs.insert(id,ControlInput::Value{name:name.clone(),contents:None,component});
                     }
                 }
             }
             for(path,data,_)in view::data_paths(binding) {
                 let id=data.length.identity();
-                if condition.mentions(id){inputs.insert(id,ControlInput::Length{name:name.clone(),path});}
+                if identities.contains(&id){inputs.insert(id,ControlInput::Length{name:name.clone(),path});}
             }
         }
         Self{cursor,test:Some(condition),inputs}

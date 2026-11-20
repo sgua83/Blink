@@ -61,7 +61,7 @@ unsafe extern "C" fn input_uses_index(value: Address, at: Index) -> u32 {
     let value = unsafe { &*value.cast::<Value>() };
     u32::from(match unsafe { actual_index(at) } {
         ownership::ApplicationIndex::Constant(_) => false,
-        ownership::ApplicationIndex::Value(id, _) => bounds::Condition::of(value).mentions(id) || value.identity() == id,
+        ownership::ApplicationIndex::Value(id, _) => value.identity() == id || bounds::Condition::of(value).mentions(id),
     })
 }
 unsafe extern "C" fn truth(output: Address, value: u32) {

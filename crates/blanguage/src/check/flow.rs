@@ -535,11 +535,12 @@ impl Builder<'_> {
         unsafe { self.world.call(self.release_application_data(Some(&names),view::Borrow::default())).await }
     }
     pub(super) fn remember_loop_control(&mut self,value:&Value){
-        if let Some(context)=self.loop_contexts.last_mut(){context.controls.insert(value.regs[0],value.clone());}
-        let condition=bounds::Condition::of(value);
+        let Some(context) = self.loop_contexts.last_mut() else { return; };
+        context.controls.insert(value.regs[0], value.clone());
+        let inputs = bounds::Condition::of(value).input_identities();
         let lengths=self.env.values().flat_map(view::data_paths).filter_map(|(_,data,_)|{
             let Some(Position::ApplicationInput(input,..))=&data.initialization else{return None;};
-            let id=data.length.identity();condition.mentions(id).then_some((*input,id))
+            let id=data.length.identity();inputs.contains(&id).then_some((*input,id))
         }).collect::<Vec<_>>();
         for(input,id)in lengths {
             if let Some(context)=self.loop_contexts.iter_mut().find(|context|context.view_scope==Some(input.level))
