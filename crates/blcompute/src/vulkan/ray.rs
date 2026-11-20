@@ -333,14 +333,12 @@ impl Device {
     }
     fn build_acceleration(
         &self,
-        geometry: Geometry,
         count: u32,
-        structure_type: u32,
-        producer: Usage,
-        inputs: BuildInputs,
-        models: Option<Rc<[BottomLevel]>>,
+        max_vertex: Option<u32>,
         operation: BuildOperation<'_>,
+        prepare: impl FnOnce(&mut BuildInputs) -> Result<(Geometry, Usage, Option<Rc<[BottomLevel]>>)>,
     ) -> Result<Structure> {
+        let structure_type = u32::from(max_vertex.is_some());
         let ray = self
             .inner
             .ray
@@ -354,11 +352,6 @@ impl Device {
         if count as u64 > limit {
             return Err(error("加速结构的 primitive／instance 数量超出设备能力"));
         }
-        let max_vertex = if structure_type == 1 {
-            Some(unsafe { geometry.data.triangles.max_vertex })
-        } else {
-            None
-        };
         let static_flags = 4 | if self.inner.position_fetch && structure_type == 1 {
             0x800
         } else {
@@ -382,6 +375,8 @@ impl Device {
                 (source.flags, Some(source.clone()))
             }
         };
+        let mut inputs = BuildInputs::new(&self.inner)?;
+        let (geometry, producer, models) = prepare(&mut inputs)?;
         let mut info = Build {
             kind: 1000150000,
             next: null(),
@@ -528,21 +523,26 @@ impl Device {
         indices: &[[u32; 3]],
         operation: BuildOperation<'_>,
     ) -> Result<BottomLevel> {
-        let mut inputs = BuildInputs::new(&self.inner)?;
-        let vertices = self.stage_ray_input(std::mem::size_of_val(positions) as u64, 4, |source| {
-            source.write_with(positions, |_| {})
-        }, &mut inputs)?;
-        let triangles = self.stage_ray_input(std::mem::size_of_val(indices) as u64, 4, |source| {
-            source.write_with(indices, |_| {})
-        }, &mut inputs)?;
         self.bottom_level_inputs(
-            inputs,
-            vertices,
-            triangles,
             12,
             u32::try_from(positions.len().saturating_sub(1))?,
             u32::try_from(indices.len())?,
             operation,
+            |inputs| {
+                let vertices = self.stage_ray_input(
+                    std::mem::size_of_val(positions) as u64,
+                    4,
+                    |source| source.write_with(positions, |_| {}),
+                    inputs,
+                )?;
+                let triangles = self.stage_ray_input(
+                    std::mem::size_of_val(indices) as u64,
+                    4,
+                    |source| source.write_with(indices, |_| {}),
+                    inputs,
+                )?;
+                Ok((vertices, triangles))
+            },
         )
     }
     /// 在本次构建命令内复制 GPU 顶点和索引，源存储保持到构建完成。
@@ -603,12 +603,11 @@ impl Device {
         let stride = vertices.stride as u64;
         let max_vertex = vertices.count.saturating_sub(1);
         let count = triangles.count;
-        let mut inputs = BuildInputs::new(&self.inner)?;
-        let vertex_input = self.stage_device_input(&vertices, &mut inputs)?;
-        let triangle_input = self.stage_device_input(&triangles, &mut inputs)?;
-        let result = self.bottom_level_inputs(
-            inputs, vertex_input, triangle_input, stride, max_vertex, count, operation,
-        )?;
+        let result = self.bottom_level_inputs(stride, max_vertex, count, operation, |inputs| {
+            let vertex_input = self.stage_device_input(&vertices, inputs)?;
+            let triangle_input = self.stage_device_input(&triangles, inputs)?;
+            Ok((vertex_input, triangle_input))
+        })?;
         for data in [&mut vertices, &mut triangles] {
             if data.count != 0 {
                 data.last_use = Some(result.0.built.clone());
@@ -618,43 +617,36 @@ impl Device {
     }
     fn bottom_level_inputs(
         &self,
-        mut inputs: BuildInputs,
-        vertices: Allocation,
-        triangles: Allocation,
         stride: u64,
         max_vertex: u32,
         count: u32,
         operation: BuildOperation<'_>,
+        stage: impl FnOnce(&mut BuildInputs) -> Result<(Allocation, Allocation)>,
     ) -> Result<BottomLevel> {
-        let geometry = Geometry {
-            kind: 1000150006,
-            next: null(),
-            geometry_type: 0,
-            flags: 1,
-            data: GeometryData {
-                triangles: Triangles {
-                    kind: 1000150005,
-                    next: null(),
-                    format: 106,
-                    vertices: vertices.address(),
-                    stride,
-                    max_vertex,
-                    index_type: 1,
-                    indices: triangles.address(),
-                    transform: 0,
+        self.build_acceleration(count, Some(max_vertex), operation, |inputs| {
+            let (vertices, triangles) = stage(inputs)?;
+            let geometry = Geometry {
+                kind: 1000150006,
+                next: null(),
+                geometry_type: 0,
+                flags: 1,
+                data: GeometryData {
+                    triangles: Triangles {
+                        kind: 1000150005,
+                        next: null(),
+                        format: 106,
+                        vertices: vertices.address(),
+                        stride,
+                        max_vertex,
+                        index_type: 1,
+                        indices: triangles.address(),
+                        transform: 0,
+                    },
                 },
-            },
-        };
-        inputs.allocations.extend([vertices, triangles]);
-        self.build_acceleration(
-            geometry,
-            count,
-            1,
-            Usage::Transfer,
-            inputs,
-            None,
-            operation,
-        )
+            };
+            inputs.allocations.extend([vertices, triangles]);
+            Ok((geometry, Usage::Transfer, None))
+        })
         .map(|s| BottomLevel(Rc::new(s)))
     }
     /// # Safety
@@ -687,46 +679,39 @@ impl Device {
             return Err(error("BLAS 不属于目标设备"));
         }
         let count = u32::try_from(instances.len())?;
-        let bytes = u64::from(count) * std::mem::size_of::<InstanceRecord>() as u64;
-        let mut inputs = BuildInputs::new(&self.inner)?;
-        let input = self.stage_ray_input(bytes, 16, |source| {
-            let records = source.mapping()?.cast::<InstanceRecord>();
-            // The mapped range has one full native record for each admitted instance.
-            for (index, instance) in instances.iter().enumerate() {
-                unsafe {
-                    records.add(index).write(InstanceRecord {
-                        transform: instance.transform,
-                        tail: instance.model.instance_tail(),
-                    });
+        let structure = self.build_acceleration(count, None, operation, |inputs| {
+            let bytes = u64::from(count) * std::mem::size_of::<InstanceRecord>() as u64;
+            let input = self.stage_ray_input(bytes, 16, |source| {
+                let records = source.mapping()?.cast::<InstanceRecord>();
+                // The mapped range has one full native record for each admitted instance.
+                for (index, instance) in instances.iter().enumerate() {
+                    unsafe {
+                        records.add(index).write(InstanceRecord {
+                            transform: instance.transform,
+                            tail: instance.model.instance_tail(),
+                        });
+                    }
                 }
-            }
-            Ok(())
-        }, &mut inputs)?;
-        let geometry = Geometry {
-            kind: 1000150006,
-            next: null(),
-            geometry_type: 2,
-            flags: 0,
-            data: GeometryData {
-                instances: Instances {
-                    kind: 1000150004,
-                    next: null(),
-                    pointers: 0,
-                    data: input.address(),
+                Ok(())
+            }, inputs)?;
+            let geometry = Geometry {
+                kind: 1000150006,
+                next: null(),
+                geometry_type: 2,
+                flags: 0,
+                data: GeometryData {
+                    instances: Instances {
+                        kind: 1000150004,
+                        next: null(),
+                        pointers: 0,
+                        data: input.address(),
+                    },
                 },
-            },
-        };
-        let models = collect_models(instances.into_iter().map(|instance| instance.model));
-        inputs.allocations.push(input);
-        let structure = self.build_acceleration(
-            geometry,
-            count,
-            0,
-            Usage::Transfer,
-            inputs,
-            models,
-            operation,
-        )?;
+            };
+            let models = collect_models(instances.into_iter().map(|instance| instance.model));
+            inputs.allocations.push(input);
+            Ok((geometry, Usage::Transfer, models))
+        })?;
         Ok(Acceleration(Rc::new(structure)))
     }
     /// 创建 Vulkan 实例输入，B 仅声明 offset 0..48 的 12 个 f32 与 stride(64)。
@@ -875,34 +860,26 @@ impl Device {
             .instances
             .as_ref()
             .ok_or_else(|| error("数据集不是由设备创建的原生实例输入"))?;
-        let geometry = Geometry {
-            kind: 1000150006,
-            next: null(),
-            geometry_type: 2,
-            flags: 0,
-            data: GeometryData {
-                instances: Instances {
-                    kind: 1000150004,
-                    next: null(),
-                    pointers: 1,
-                    data: input.pointers.address(),
+        let structure = self.build_acceleration(data.count, None, operation, |inputs| {
+            let geometry = Geometry {
+                kind: 1000150006,
+                next: null(),
+                geometry_type: 2,
+                flags: 0,
+                data: GeometryData {
+                    instances: Instances {
+                        kind: 1000150004,
+                        next: null(),
+                        pointers: 1,
+                        data: input.pointers.address(),
+                    },
                 },
-            },
-        };
-        let models = input.models.clone();
-        let mut inputs = BuildInputs::new(&self.inner)?;
-        if let Some(previous) = data.dependency() {
-            inputs.dependencies.insert(previous);
-        }
-        let structure = self.build_acceleration(
-            geometry,
-            data.count,
-            0,
-            data.producer,
-            inputs,
-            models,
-            operation,
-        )?;
+            };
+            if let Some(previous) = data.dependency() {
+                inputs.dependencies.insert(previous);
+            }
+            Ok((geometry, data.producer, input.models.clone()))
+        })?;
         data.last_use = Some(structure.built.clone());
         drop(data);
         Ok(Acceleration(Rc::new(structure)))
