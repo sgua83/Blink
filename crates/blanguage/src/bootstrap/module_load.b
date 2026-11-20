@@ -145,11 +145,11 @@ extern "C" address provider(address loaded,address compiled,address source) on c
     return source;
 }
 
-extern "C" NameBytes load(LoadInput input,address context,
+extern "C" void load(LoadInput input,address context,
     cfn<bool,address> contains,
     cfn<void,address> enter,
-    cfn<ImportList,address> imports,
-    cfn<Imported,address,NameBytes> import_module,
+    cfn<u64,address> imports,
+    cfn<Imported,address,u64> import_module,
     cfn<bool,address,NameBytes,u32> prepare,
     cfn<void,address,address,u64,u32> insert_type,
     cfn<address,address> pair,
@@ -169,29 +169,28 @@ extern "C" NameBytes load(LoadInput input,address context,
         source_owner=input.implementation.owner;
         ModuleNode body=node<ModuleNode>(input.implementation,input.implementation.source.offset);
         if(compare_name(text(input.implementation,body.name),name)!=0){
-            report(context,LoadFailure::ModuleName,source_owner,Span(0u64,0u64),empty,empty);return empty;
+            report(context,LoadFailure::ModuleName,source_owner,Span(0u64,0u64),empty,empty);return;
         }
     }
-    if(contains(context)){return name;}
+    if(contains(context)){return;}
     enter(context);
-    ImportList imported_names=imports(context);
+    u64 import_count=imports(context);
     u64 imported_index=0u64;
-    while(imported_index<imported_names.count){
-        NameBytes imported_name=unsafe_position<NameBytes>(at(imported_names.names,imported_index*size_of<NameBytes>()));
-        Imported imported=import_module(context,imported_name);
-        if(imported.success==0){return empty;}
-        if(compare_name(imported.name,imported_name)!=0){
-            report(context,LoadFailure::ImportName,source_owner,Span(0u64,0u64),imported_name,imported.name);return empty;
+    while(imported_index<import_count){
+        Imported imported=import_module(context,imported_index);
+        if(imported.success==0){return;}
+        if(compare_name(imported.name,imported.requested)!=0){
+            report(context,LoadFailure::ImportName,source_owner,Span(0u64,0u64),imported.requested,imported.name);return;
         }
         imported_index+=1u64;
     }
-    if(!load_records(input.interface,context,prepare,insert_type,report)){return empty;}
+    if(!load_records(input.interface,context,prepare,insert_type,report)){return;}
     if(input.has_implementation!=0){
-        if(!load_records(input.implementation,context,prepare,insert_type,report)){return empty;}
+        if(!load_records(input.implementation,context,prepare,insert_type,report)){return;}
     }
-    if(!load_sets(input.interface,context,prepare,insert_type,report)){return empty;}
+    if(!load_sets(input.interface,context,prepare,insert_type,report)){return;}
     if(input.has_implementation!=0){
-        if(!load_sets(input.implementation,context,prepare,insert_type,report)){return empty;}
+        if(!load_sets(input.implementation,context,prepare,insert_type,report)){return;}
     }
     address pairs=pair(context);
     u64 implementation_count=0u64;
@@ -206,31 +205,30 @@ extern "C" NameBytes load(LoadInput input,address context,
         if(function.kind!=2&&function.external.present==0){
             NameBytes function_name=text(input.interface,function.name);
             if(function.body.present!=0){
-                report(context,LoadFailure::InterfaceBody,input.interface.owner,function.span,empty,empty);return empty;
+                report(context,LoadFailure::InterfaceBody,input.interface.owner,function.span,empty,empty);return;
             }
             if(input.compiled==0){
                 u64 paired_index=implementation_count;
                 if(address_bits(pairs)!=0u64){paired_index=unsafe_position<u64>(at(pairs,declaration_index*size_of<u64>()));}
                 if(paired_index>=implementation_count){
-                    report(context,LoadFailure::MissingBody,input.interface.owner,function.span,function_name,empty);return empty;
+                    report(context,LoadFailure::MissingBody,input.interface.owner,function.span,function_name,empty);return;
                 }
                 ModuleNode implementation=node<ModuleNode>(input.implementation,input.implementation.source.offset);
                 u64 body_offset=member(input.implementation,implementation.functions,paired_index);
                 if(!signature(context,input.implementation.owner,offset,body_offset)){
                     FunctionNode body=node<FunctionNode>(input.implementation,body_offset);
-                    report(context,LoadFailure::Signature,input.implementation.owner,body.span,function_name,empty);return empty;
+                    report(context,LoadFailure::Signature,input.implementation.owner,body.span,function_name,empty);return;
                 }
             }
         }
         declaration_index+=1u64;
     }
     if(!load_functions(input.interface,input.interface,0,input.compiled,pairs,context,
-        prepare,requirement,insert_function,report)){return empty;}
+        prepare,requirement,insert_function,report)){return;}
     if(input.has_implementation!=0){
         if(!load_functions(input.implementation,input.interface,1,input.compiled,pairs,context,
-            prepare,requirement,insert_function,report)){return empty;}
+            prepare,requirement,insert_function,report)){return;}
     }
-    return name;
 }
 
 bool source_definition(FunctionNode definition) on cpu {

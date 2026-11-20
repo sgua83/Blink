@@ -29,9 +29,7 @@ struct LoadInput {
     has_implementation: u32, compiled: u32,
 }
 #[repr(C)]
-struct ImportList { names: *const Bytes, count: u64 }
-#[repr(C)]
-struct Imported { success: u32, name: Bytes }
+struct Imported { success: u32, requested: Bytes, name: Bytes }
 
 #[repr(u32)]
 #[derive(Clone, Copy)]
@@ -48,8 +46,8 @@ unsafe extern "C" {
     fn load_b(input: LoadInput, context: *mut c_void,
         contains: unsafe extern "C" fn(*mut c_void) -> bool,
         enter: unsafe extern "C" fn(*mut c_void),
-        imports: unsafe extern "C" fn(*mut c_void) -> ImportList,
-        import_module: unsafe extern "C" fn(*mut c_void, Bytes) -> Imported,
+        imports: unsafe extern "C" fn(*mut c_void) -> u64,
+        import_module: unsafe extern "C" fn(*mut c_void, u64) -> Imported,
         prepare: unsafe extern "C" fn(*mut c_void, Bytes, u32) -> bool,
         insert_type: unsafe extern "C" fn(*mut c_void, *const c_void, u64, u32),
         pair: unsafe extern "C" fn(*mut c_void) -> *const u64,
@@ -57,7 +55,7 @@ unsafe extern "C" {
         requirement: unsafe extern "C" fn(*mut c_void) -> u32,
         insert_function: unsafe extern "C" fn(*mut c_void, *const c_void, u64, wire::Optional<wire::FunctionRef>, u32, u32, u32),
         report: unsafe extern "C" fn(*mut c_void, LoadFailure, *const c_void, wire::Span, Bytes, Bytes),
-    ) -> Bytes;
+    );
 }
 
 struct Loaded {
@@ -65,7 +63,6 @@ struct Loaded {
     implementation: Option<Arc<syntax::Module>>,
     imports: Arc<[String]>,
     captured_imports: Option<Arc<[String]>>,
-    import_views: Vec<Bytes>,
     pairs: Option<Vec<u64>>,
     key: String,
 }
@@ -93,26 +90,23 @@ unsafe extern "C" fn enter(raw: *mut c_void) {
     context.world.sources.insert(data.interface.name().to_owned(), source.clone());
     context.world.interfaces.insert(data.interface.name().to_owned(), data.interface.clone());
 }
-unsafe extern "C" fn imports(raw: *mut c_void) -> ImportList {
-    let context = unsafe { context(raw) };
-    let data = &mut context.data;
+unsafe extern "C" fn imports(raw: *mut c_void) -> u64 {
+    let data = &mut unsafe { context(raw) }.data;
     data.imports = data.captured_imports.take().unwrap_or_else(||
         crate::names::module_imports(&data.interface, data.implementation.as_deref()));
-    data.import_views = data.imports.iter().map(|name| Bytes::new(name)).collect();
-    ImportList { names: data.import_views.as_ptr(), count: data.import_views.len() as u64 }
+    data.imports.len() as u64
 }
-unsafe extern "C" fn import_module(raw: *mut c_void, name: Bytes) -> Imported {
+
+unsafe extern "C" fn import_module(raw: *mut c_void, index: u64) -> Imported {
     let context = unsafe { context(raw) };
-    let name = unsafe { name.text() };
-    let path = crate::source_path::module(context.root, name, u16::from(b'b'));
-    match load(&path, context.root, context.world, context.imported, Some(name), context.inputs) {
-        Ok(actual) => {
-            // The original interface map already retains this syntax owner;
-            // no temporary String or recursive-call handle escapes the call.
-            let module = &context.world.interfaces[&actual];
-            Imported { success: 1, name: Bytes::new(module.name()) }
+    let name = &context.data.imports[index as usize];
+    let requested = Bytes::new(name);
+    match load_import(name, context.root, context.world, context.imported, context.inputs) {
+        Ok(module) => Imported { success: 1, requested, name: Bytes::new(module.name()) },
+        Err(error) => {
+            context.error = Some(error);
+            Imported { success: 0, requested, name: Bytes::new("") }
         }
-        Err(error) => { context.error = Some(error); Imported { success: 0, name: Bytes::new("") } }
     }
 }
 unsafe extern "C" fn prepare(raw: *mut c_void, name: Bytes, namespace: u32) -> bool {
@@ -198,25 +192,29 @@ unsafe extern "C" fn report(raw: *mut c_void, failure: LoadFailure, owner: *cons
         span: Span { start: span.start as usize, end: span.end as usize }, code, message });
 }
 
+enum ModuleSource<'a> {
+    Entry(&'a Path),
+    Import(&'a str),
+}
+
 enum Provider<'a> {
     Loaded(&'a str),
     Compiled { name: &'a str, module: &'a module::Imported },
-    CapturedCompiled { name: &'a str, module: &'a module::Imported, inputs: &'a build::Inputs },
-    Source(&'a Path),
-    Captured { path: &'a Path, inputs: &'a build::Inputs },
+    Source(ModuleSource<'a>),
 }
-pub(crate) fn load(path: &Path, root: &Path, world: &mut Declarations,
-    imported: Option<&module::Imports>, import: Option<&str>, inputs: Option<&build::Inputs>) -> Result<String> {
-    // B selects among actual available operations, not their Rust representation.
-    // Each operation already carries its typed source/capture/compiled owner.
-    let loaded = import.filter(|name| world.sources.contains_key(*name)).map(Provider::Loaded);
-    let compiled = import.zip(imported).and_then(|(name, imports)| imports.modules.get(name).map(|module| {
-        match inputs {
-            Some(inputs) => Provider::CapturedCompiled { name, module, inputs },
-            None => Provider::Compiled { name, module },
-        }
-    }));
-    let source = match inputs { Some(inputs) => Provider::Captured { path, inputs }, None => Provider::Source(path) };
+
+pub(super) fn load(path: &Path, root: &Path, world: &mut Declarations,
+    imported: Option<&module::Imports>, inputs: Option<&build::Inputs>) -> Result<String> {
+    let provider = Provider::Source(ModuleSource::Entry(path));
+    load_provider(&provider, root, world, imported, inputs).map(|module| module.name().to_owned())
+}
+
+fn load_import<'a>(name: &'a str, root: &'a Path, world: &'a mut Declarations,
+    imported: Option<&'a module::Imports>, inputs: Option<&'a build::Inputs>) -> Result<&'a syntax::Module> {
+    let loaded = world.sources.contains_key(name).then_some(Provider::Loaded(name));
+    let compiled = imported.and_then(|imports| imports.modules.get(name))
+        .map(|module| Provider::Compiled { name, module });
+    let source = Provider::Source(ModuleSource::Import(name));
     let selected = unsafe { &*select_provider(
         loaded.as_ref().map_or(std::ptr::null(), |provider| (provider as *const Provider<'_>).cast()),
         compiled.as_ref().map_or(std::ptr::null(), |provider| (provider as *const Provider<'_>).cast()),
@@ -225,43 +223,54 @@ pub(crate) fn load(path: &Path, root: &Path, world: &mut Declarations,
     load_provider(selected, root, world, imported, inputs)
 }
 
-fn load_provider(
-    selected: &Provider<'_>, root: &Path, world: &mut Declarations,
-    imported: Option<&module::Imports>, inputs: Option<&build::Inputs>,
-) -> Result<String> {
+fn load_provider<'a>(
+    selected: &Provider<'a>, root: &'a Path, world: &'a mut Declarations,
+    imported: Option<&'a module::Imports>, inputs: Option<&'a build::Inputs>,
+) -> Result<&'a syntax::Module> {
     let (interface, implementation, captured_imports, compiled) = match selected {
-        Provider::Loaded(name) => return Ok((*name).to_owned()),
-        Provider::Compiled { name, module } => (Arc::new(parser::parse(Source {
-            path: PathBuf::from(format!("<{name}>.h")), text: module.header.clone(),
-        })?), None, None, Some(*module)),
-        Provider::CapturedCompiled { name, module, inputs } => {
-            let (interface, imports) = inputs.interface(name, &module.header)?;
+        Provider::Loaded(name) => return Ok(world.interfaces[*name].as_ref()),
+        Provider::Compiled { name, module } => {
+            let (interface, imports) = match inputs {
+                Some(inputs) => inputs.interface(name, &module.header)?,
+                None => (Arc::new(parser::parse(Source {
+                    path: PathBuf::from(format!("<{name}>.h")), text: module.header.clone(),
+                })?), None),
+            };
             (interface, None, imports, Some(*module))
         }
-        Provider::Source(path) => {
-            let interface = Arc::new(parser::parse(read(&crate::source_path::with_extension(path, u16::from(b'h')))?)?);
-            let implementation_path = crate::source_path::with_extension(path, u16::from(b'b'));
-            (interface, read_implementation(&implementation_path)?, None, None)
-        }
-        Provider::Captured { path, inputs } => {
-            let (interface, implementation, imports) = inputs.source(path)?;
-            (interface, implementation, Some(imports), None)
+        Provider::Source(source) => {
+            let import_path;
+            let path = match source {
+                ModuleSource::Entry(path) => *path,
+                ModuleSource::Import(name) => {
+                    import_path = crate::source_path::module(root, name, u16::from(b'b'));
+                    import_path.as_path()
+                }
+            };
+            if let Some(inputs) = inputs {
+                let (interface, implementation, imports) = inputs.source(path)?;
+                (interface, implementation, Some(imports), None)
+            } else {
+                let interface = Arc::new(parser::parse(read(&crate::source_path::with_extension(path, u16::from(b'h')))?)?);
+                let implementation_path = crate::source_path::with_extension(path, u16::from(b'b'));
+                (interface, read_implementation(&implementation_path)?, None, None)
+            }
         }
     };
     let mut context = Context { root, world, imported, inputs, compiled,
         data: Loaded { interface, implementation, imports: Arc::from([]), captured_imports,
-            import_views: Vec::new(), pairs: None, key: String::new() }, error: None };
+            pairs: None, key: String::new() }, error: None };
     let interface = ModuleView::new(&context.data.interface);
     let input = LoadInput { interface,
         implementation: context.data.implementation.as_deref().map_or(interface, ModuleView::new),
         has_implementation: u32::from(context.data.implementation.is_some()),
         compiled: u32::from(compiled.is_some()),
     };
-    let name = unsafe { load_b(input, (&mut context as *mut Context<'_>).cast(),
-        contains, enter, imports, import_module, prepare, insert_type, pair, signature, requirement, insert_function, report) };
+    unsafe { load_b(input, (&mut context as *mut Context<'_>).cast(),
+        contains, enter, imports, import_module, prepare, insert_type, pair, signature, requirement, insert_function, report); }
     match context.error.take() {
         Some(error) => Err(error),
-        None => Ok(unsafe { name.text() }.to_owned()),
+        None => Ok(context.world.interfaces[context.data.interface.name()].as_ref()),
     }
 }
 
@@ -458,10 +467,7 @@ fn load_export_owner(
 ) -> Result<()> {
     let Some(module) = imported.modules.get(name) else { return Ok(()); };
     if world.sources.contains_key(name) { return Ok(()); }
-    let provider = match inputs {
-        Some(inputs) => Provider::CapturedCompiled { name, module, inputs },
-        None => Provider::Compiled { name, module },
-    };
+    let provider = Provider::Compiled { name, module };
     load_provider(&provider, root, world, Some(imported), inputs).map(|_| ())
 }
 

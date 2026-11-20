@@ -3,7 +3,7 @@ pub(crate) use evaluation::Call;
 mod type_reference;
 mod type_value;
 mod loading;
-pub(crate) use loading::load;
+use loading::load;
 use crate::{file_bytes::FileBytes, *};
 use std::{
     cell::RefCell,
@@ -608,7 +608,6 @@ pub(crate) fn read_world<'a>(
         module_root,
         &mut world,
         imported,
-        None,
         inputs,
     )?;
     let requests = if let Some(imported) = imported {

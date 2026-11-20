@@ -10,8 +10,7 @@ struct LoadInput {
     u32 has_implementation;
     u32 compiled;
 };
-struct ImportList {address names;u64 count;};
-struct Imported {u32 success;NameBytes name;};
+struct Imported {u32 success;NameBytes requested;NameBytes name;};
 enum LoadFailure:u32 {
     ModuleName=22; ImportName=24; DuplicateRecord=25; InterfaceBody=26;
     MissingBody=27; Signature=28; ImplementationBody=29; DuplicateValue=30;
@@ -25,11 +24,11 @@ enum LoadFailure:u32 {
 extern "C" address provider(address loaded,address compiled,address source) on cpu;
 // prepare queries one existing namespace (record=0, set=1, value=2), keeping
 // the one qualified key only until insertion or the original diagnostic.
-extern "C" NameBytes load(LoadInput input,address context,
+extern "C" void load(LoadInput input,address context,
     cfn<bool,address> contains,
     cfn<void,address> enter,
-    cfn<ImportList,address> imports,
-    cfn<Imported,address,NameBytes> import_module,
+    cfn<u64,address> imports,
+    cfn<Imported,address,u64> import_module,
     cfn<bool,address,NameBytes,u32> prepare,
     cfn<void,address,address,u64,u32> insert_type,
     cfn<address,address> pair,
