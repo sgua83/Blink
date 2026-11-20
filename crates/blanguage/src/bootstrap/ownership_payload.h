@@ -167,3 +167,35 @@ extern "C" void resources(address value,address context,cfn<void,address,address
     requires nonzero(host.child)
     requires nonzero(host.state_moved)
     requires nonzero(visit);
+
+struct Alternative { address when; Item item; };
+struct SelectionHost {
+    cfn<Alternative,address,u64> alternative;
+    cfn<address,Item> owner;
+    cfn<u32,address> mode;
+    cfn<u32,address,address> equal;
+    cfn<void,address,Alternative,address> accumulate;
+    cfn<void,Item,address,address,u32> commit;
+    cfn<void,Item> reset_residency;
+    cfn<void,Item,Alternative> join_residency;
+    cfn<void,address,Alternative> push_proof;
+    cfn<void,Item,address> finish_proofs;
+    cfn<Info,address> inspect;
+    cfn<Item,address,u64> mutable_child;
+    cfn<void,Item,address,u64> select_child;
+};
+
+extern "C" void select_presence(Item target,address inputs,u64 count,SelectionHost host) on cpu
+    requires nonzero(host.alternative)
+    requires nonzero(host.owner)
+    requires nonzero(host.mode)
+    requires nonzero(host.equal)
+    requires nonzero(host.accumulate)
+    requires nonzero(host.commit)
+    requires nonzero(host.reset_residency)
+    requires nonzero(host.join_residency)
+    requires nonzero(host.push_proof)
+    requires nonzero(host.finish_proofs)
+    requires nonzero(host.inspect)
+    requires nonzero(host.mutable_child)
+    requires nonzero(host.select_child);

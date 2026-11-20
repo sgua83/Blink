@@ -8,6 +8,7 @@ fn pointer_mut<T>(value:&mut T)->Address{(value as *mut T).cast()}
 #[derive(Clone,Copy)]
 struct Info{count:u64,flags:u32}
 #[repr(C)]
+#[derive(Clone, Copy)]
 struct Item{node:Address,kind:u32}
 #[repr(C)]
 #[derive(Clone,Copy)]
@@ -29,7 +30,10 @@ unsafe extern "C" fn ownership(owner:Address)->Address{pointer(&unsafe{&*owner.c
 unsafe extern "C" fn value_mut(owner:Address)->Address{pointer_mut(&mut unsafe{&mut *owner.cast::<OwnedValuePayload>()}.value)}
 unsafe extern "C" fn ownership_mut(owner:Address)->Address{pointer_mut(&mut unsafe{&mut *owner.cast::<OwnedValuePayload>()}.ownership)}
 unsafe extern "C" fn child(owner:Address,at:u64)->Item{
-    match unsafe{&*owner.cast::<OwnedValuePayload>()}.payloads[at as usize].as_deref(){
+    returned_item(unsafe { &*owner.cast::<OwnedValuePayload>() }.payloads[at as usize].as_deref())
+}
+fn returned_item(value: Option<&Returned>) -> Item {
+    match value {
         None=>Item{node:std::ptr::null_mut(),kind:0},
         Some(Returned::Unit)=>Item{node:std::ptr::null_mut(),kind:1},
         Some(Returned::Value(value))=>Item{node:pointer(value.as_ref()),kind:2},
@@ -38,7 +42,10 @@ unsafe extern "C" fn child(owner:Address,at:u64)->Item{
     }
 }
 unsafe extern "C" fn child_mut(owner:Address,at:u64)->Item{
-    match unsafe{&mut *owner.cast::<OwnedValuePayload>()}.payloads[at as usize].as_deref_mut(){
+    mutable_item(unsafe { &mut *owner.cast::<OwnedValuePayload>() }.payloads[at as usize].as_deref_mut())
+}
+fn mutable_item(value: Option<&mut Returned>) -> Item {
+    match value {
         None=>Item{node:std::ptr::null_mut(),kind:0},
         Some(Returned::Unit)=>Item{node:std::ptr::null_mut(),kind:1},
         Some(Returned::Value(value))=>Item{node:pointer_mut(value.as_mut()),kind:2},
@@ -225,3 +232,157 @@ unsafe extern "C" fn visit_resource<F:FnMut(&Data)>(data:Address,context:Address
 pub(super) fn visit_resources<F:FnMut(&Data)>(value:&OwnedValuePayload,visit:&mut F){unsafe{source_resources(pointer(value),(visit as *mut F).cast(),visit_resource::<F>,HOST)};}
 unsafe extern "C" fn visit_mut<F:FnMut(&mut Data)>(data:Address,context:Address){(unsafe{&mut *context.cast::<F>()})(unsafe{&mut *data.cast::<Data>()});}
 pub(super) fn resources_mut<F:FnMut(&mut Data)>(value:&mut OwnedValuePayload,visit:&mut F){unsafe{source_resources(pointer_mut(value),(visit as *mut F).cast(),visit_mut::<F>,MUT_HOST)};}
+
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct Alternative { when: Address, item: Item }
+
+struct Selection<'a> {
+    choices: &'a [Alternative],
+    proofs: Vec<(bounds::Condition, bounds::Proof)>,
+    combined: owned_presence::Presence,
+}
+
+#[repr(C)]
+struct SelectionHost {
+    alternative: unsafe extern "C" fn(Address, usize) -> Alternative,
+    owner: unsafe extern "C" fn(Item) -> Address,
+    mode: unsafe extern "C" fn(Address) -> u32,
+    equal: unsafe extern "C" fn(Address, Address) -> u32,
+    accumulate: unsafe extern "C" fn(Address, Alternative, Address),
+    commit: unsafe extern "C" fn(Item, Address, Address, u32),
+    reset_residency: unsafe extern "C" fn(Item),
+    join_residency: unsafe extern "C" fn(Item, Alternative),
+    push_proof: unsafe extern "C" fn(Address, Alternative),
+    finish_proofs: unsafe extern "C" fn(Item, Address),
+    inspect: unsafe extern "C" fn(Address) -> Info,
+    mutable_child: unsafe extern "C" fn(Address, u64) -> Item,
+    select_child: unsafe extern "C" fn(Item, Address, usize),
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.ownership_payload::select_presence"]
+    fn source_select_presence(target: Item, inputs: Address, count: usize, host: SelectionHost);
+}
+
+const SELECT: SelectionHost = SelectionHost {
+    alternative, owner: selection_owner, mode: selection_mode, equal: state_equal,
+    accumulate: accumulate_presence, commit: commit_presence, reset_residency: reset_selection_residency,
+    join_residency: join_selection_residency, push_proof: selection_proof, finish_proofs: install_selected_proofs,
+    inspect, mutable_child: child_mut, select_child,
+};
+
+impl Returned {
+    pub(in super::super) fn select_presence<'a>(
+        &mut self,
+        candidates: impl IntoIterator<Item = (&'a owned_presence::Presence, &'a Returned)>,
+    ) {
+        let target = mutable_item(Some(self));
+        let choices = candidates.into_iter().map(|(when, value)| Alternative {
+            when: pointer(when), item: returned_item(Some(value)),
+        }).collect::<Vec<_>>();
+        select_model(target, &choices);
+    }
+}
+
+fn select_model(target: Item, choices: &[Alternative]) {
+    let mut selection = Selection {
+        choices, proofs: Vec::new(), combined: owned_presence::Presence::None,
+    };
+    unsafe { source_select_presence(target, pointer_mut(&mut selection), choices.len(), SELECT); }
+}
+
+unsafe extern "C" fn alternative(selection: Address, index: usize) -> Alternative {
+    unsafe { &*selection.cast::<Selection<'_>>() }.choices[index]
+}
+
+unsafe extern "C" fn selection_owner(item: Item) -> Address {
+    if item.kind == 3 {
+        unsafe { data_ownership(item.node) }
+    } else {
+        unsafe { ownership(item.node) }
+    }
+}
+
+unsafe extern "C" fn selection_mode(owner: Address) -> u32 {
+    match unsafe { &*owner.cast::<Ownership>() } {
+        Ownership::Moved => 0,
+        Ownership::Owned => 1,
+        Ownership::Borrowed => 2,
+        Ownership::Conditional(_) => 3,
+    }
+}
+
+unsafe extern "C" fn accumulate_presence(selection: Address, candidate: Alternative, owner: Address) {
+    let selection = unsafe { &mut *selection.cast::<Selection<'_>>() };
+    let when = unsafe { &*candidate.when.cast::<owned_presence::Presence>() };
+    let owner = unsafe { &*owner.cast::<Ownership>() };
+    let current = std::mem::replace(&mut selection.combined, owned_presence::Presence::None);
+    selection.combined = current.or(when.clone().and(owner.presence()));
+}
+
+unsafe extern "C" fn commit_presence(output: Item, first: Address, selection: Address, mode: u32) {
+    let owner = match mode {
+        0 => unsafe { &*first.cast::<Ownership>() }.clone(),
+        1 => Ownership::Moved,
+        _ => {
+            let selection = unsafe { &mut *selection.cast::<Selection<'_>>() };
+            Ownership::from_presence(std::mem::replace(&mut selection.combined, owned_presence::Presence::None))
+        }
+    };
+    let output = if output.kind == 3 {
+        unsafe { data_ownership_mut(output.node) }
+    } else {
+        unsafe { ownership_mut(output.node) }
+    };
+    unsafe { *output.cast::<Ownership>() = owner; }
+}
+
+unsafe extern "C" fn reset_selection_residency(target: Item) {
+    unsafe { &mut *target.node.cast::<Data>() }.residency = residency::Residency::Absent;
+}
+
+unsafe extern "C" fn join_selection_residency(target: Item, candidate: Alternative) {
+    let target = unsafe { &mut *target.node.cast::<Data>() };
+    let data = unsafe { &*candidate.item.node.cast::<Data>() };
+    let when = unsafe { &*candidate.when.cast::<owned_presence::Presence>() };
+    let residency = residency::Residency::selected(when.clone(), data.residency.clone(), residency::Residency::Absent);
+    target.residency.join(&residency);
+}
+
+unsafe extern "C" fn selection_proof(selection: Address, candidate: Alternative) {
+    let selection = unsafe { &mut *selection.cast::<Selection<'_>>() };
+    let when = unsafe { &*candidate.when.cast::<owned_presence::Presence>() };
+    let proof = if candidate.item.kind == 3 {
+        let data = unsafe { &*candidate.item.node.cast::<Data>() };
+        (when.clone().and(data.ownership.presence()).condition(), view::resource_proof(data))
+    } else {
+        let value = unsafe { &*candidate.item.node.cast::<OwnedValuePayload>() };
+        (when.condition(), value.value.proof.borrow_state())
+    };
+    selection.proofs.push(proof);
+}
+
+unsafe extern "C" fn install_selected_proofs(target: Item, selection: Address) {
+    let selection = unsafe { &mut *selection.cast::<Selection<'_>>() };
+    let value = if target.kind == 3 {
+        &mut unsafe { &mut *target.node.cast::<Data>() }.root
+    } else {
+        &mut unsafe { &mut *target.node.cast::<OwnedValuePayload>() }.value
+    };
+    value.proof.select_view_borrows(&selection.proofs);
+    selection.proofs.clear();
+}
+
+unsafe extern "C" fn select_child(target: Item, selection: Address, index: usize) {
+    let selection = unsafe { &*selection.cast::<Selection<'_>>() };
+    let choices = selection.choices.iter().filter_map(|candidate| {
+        if candidate.item.kind != 4 {
+            return None;
+        }
+        let item = unsafe { child(candidate.item.node, index as u64) };
+        (item.kind == target.kind).then_some(Alternative { when: candidate.when, item })
+    }).collect::<Vec<_>>();
+    select_model(target, &choices);
+}

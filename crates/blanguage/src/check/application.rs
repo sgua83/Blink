@@ -4179,7 +4179,10 @@ impl Builder<'_> {
                                 (ElementFacts::Known(previous),truth)=>{
                                     let incoming=fresh.clone();let old=previous.clone();
                                     if truth==Some(false){fresh.join(*previous,true,None);}else{let mut common=fresh.clone();common.join(*previous,true,None);fresh.join(*common,true,Some(&complete));}
-                                    if let Some(presence)=&presence{fresh.select_presence(&[(presence.clone(),*incoming.clone()),(presence.clone().not(),*old.clone())]);}
+                                    if let Some(presence) = &presence {
+                                        let opposite = presence.clone().not();
+                                        fresh.select_presence([(presence, incoming.as_ref()), (&opposite, old.as_ref())]);
+                                    }
                                     residency::select_elements(&mut fresh,&incoming,&old,&selected,count);ElementFacts::Known(fresh)
                                 },
                                 (previous,Some(false))=>previous.common(ElementFacts::Known(fresh)),
@@ -4197,7 +4200,10 @@ impl Builder<'_> {
                             (Some(previous),truth)=>{
                                 let incoming=fresh.clone();let old=previous.clone();
                                 if truth==Some(false){fresh.join(*previous,true,None);}else{let mut common=fresh.clone();common.join(*previous,true,None);fresh.join(*common,true,Some(&complete));}
-                                if let Some(presence)=&presence{fresh.select_presence(&[(presence.clone(),*incoming.clone()),(presence.clone().not(),*old.clone())]);}
+                                if let Some(presence) = &presence {
+                                    let opposite = presence.clone().not();
+                                    fresh.select_presence([(presence, incoming.as_ref()), (&opposite, old.as_ref())]);
+                                }
                                     residency::select_elements(&mut fresh,&incoming,&old,&selected,count);Some(fresh)
                             },
                             (None,_)=>None,

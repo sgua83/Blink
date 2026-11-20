@@ -26,23 +26,12 @@ impl Ownership {
     pub(super) fn may_own(&self) -> bool { host::may_own(self) }
     pub(super) fn available(&self) -> bool { host::available(self) }
     pub(super) fn presence(&self) -> Presence { host::presence(self) }
-    fn from_presence(value: Presence) -> Self { host::from_presence(value) }
+    pub(super) fn from_presence(value: Presence) -> Self { host::from_presence(value) }
     pub(super) fn loop_compatible(&self, other: &Self, inputs: &BTreeMap<ValueIdentity,bounds::Proof>, path: &bounds::Clause) -> bool { host::compatible(self, other, inputs, path) }
     pub(super) fn either(a: &Self, b: &Self, choice: Option<&Presence>) -> Self { host::either(a, b, choice) }
     pub(super) fn restricted(&self, when: &Presence) -> Self { host::restricted(self, when) }
 }
 impl Returned{
-    pub(super) fn select_presence(&mut self,candidates:&[(Presence,Returned)]){
-        fn mode(values:&[(Presence,&Ownership)])->Ownership{
-            if values.iter().all(|(_,value)|*value==values[0].1){return values[0].1.clone();}
-            if values.iter().any(|(_,value)|**value==Ownership::Borrowed){return Ownership::Moved;}
-            let present=values.iter().fold(Presence::None,|all,(when,value)|all.or(when.clone().and(value.presence())));Ownership::from_presence(present)
-        }
-        fn restore(target:&mut Returned,values:&[(Presence,&Returned)]){match target{
-            Returned::Dataset(target)=>{let values=values.iter().filter_map(|(when,value)|if let Returned::Dataset(data)=value{Some((when.clone(),data))}else{None}).collect::<Vec<_>>();target.ownership=mode(&values.iter().map(|(when,data)|(when.clone(),&data.ownership)).collect::<Vec<_>>());target.root.proof.select_view_borrows(&values.iter().map(|(when,data)|(when.clone().and(data.ownership.presence()).condition(),view::resource_proof(data))).collect::<Vec<_>>());target.residency=residency::Residency::Absent;for(when,data)in values.iter().filter(|(_,data)|data.ownership.may_own()||data.ownership==Ownership::Borrowed){let candidate=residency::Residency::selected(when.clone(),data.residency.clone(),residency::Residency::Absent);target.residency.join(&candidate);}},
-            Returned::OwnedValue(target)=>{let values=values.iter().filter_map(|(when,value)|if let Returned::OwnedValue(value)=value{Some((when.clone(),value))}else{None}).collect::<Vec<_>>();target.ownership=mode(&values.iter().map(|(when,value)|(when.clone(),&value.ownership)).collect::<Vec<_>>());target.value.proof.select_view_borrows(&values.iter().map(|(when,value)|(when.condition(),value.value.proof.borrow_state())).collect::<Vec<_>>());for(index,payload)in target.payloads.iter_mut().enumerate(){if let Some(payload)=payload{let children=values.iter().filter_map(|(when,value)|value.payloads[index].as_deref().map(|child|(when.clone(),child))).collect::<Vec<_>>();restore(payload,&children);}}},_=>{}}}
-        restore(self,&candidates.iter().map(|(when,value)|(when.clone(),value)).collect::<Vec<_>>());
-    }
     pub(super) fn restrict_owned(&mut self,when:&Presence){match self{Self::Dataset(data)=>data.ownership=data.ownership.restricted(when),Self::OwnedValue(value)=>value.restrict_owned(when),_=>{}}}
     pub(super) fn join_presence(&mut self,other:Self,choice:&Presence,condition:Option<&bounds::Condition>){
         match choice {

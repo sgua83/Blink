@@ -281,3 +281,77 @@ extern "C" void resources(address value,address context,cfn<void,address,address
     requires nonzero(host.child)
     requires nonzero(host.state_moved)
     requires nonzero(visit) { walk(value,0,context,visit,host);}
+
+extern "C" void select_presence(Item target,address inputs,u64 count,SelectionHost host) on cpu
+    requires nonzero(host.alternative)
+    requires nonzero(host.owner)
+    requires nonzero(host.mode)
+    requires nonzero(host.equal)
+    requires nonzero(host.accumulate)
+    requires nonzero(host.commit)
+    requires nonzero(host.reset_residency)
+    requires nonzero(host.join_residency)
+    requires nonzero(host.push_proof)
+    requires nonzero(host.finish_proofs)
+    requires nonzero(host.inspect)
+    requires nonzero(host.mutable_child)
+    requires nonzero(host.select_child) {
+    if(target.kind!=3&&target.kind!=4){return;}
+    u64 start=0u64;
+    Alternative selected=host.alternative(inputs,start);
+    while(selected.item.kind!=target.kind){
+        start+=1u64;
+        selected=host.alternative(inputs,start);
+    }
+    address first=host.owner(selected.item);
+    u32 same=1;
+    u32 borrowed=host.mode(first)==2 ? 1 : 0;
+    u64 at=start+1u64;
+    while(at<count){
+        Alternative candidate=host.alternative(inputs,at);
+        if(candidate.item.kind==target.kind){
+            address owner=host.owner(candidate.item);
+            if(same!=0){same=host.equal(first,owner);}
+            if(host.mode(owner)==2){borrowed=1;}
+        }
+        at+=1u64;
+    }
+    if(same!=0){
+        host.commit(target,first,inputs,0);
+    }else if(borrowed!=0){
+        host.commit(target,first,inputs,1);
+    }else{
+        at=start;
+        while(at<count){
+            Alternative candidate=host.alternative(inputs,at);
+            if(candidate.item.kind==target.kind){
+                host.accumulate(inputs,candidate,host.owner(candidate.item));
+            }
+            at+=1u64;
+        }
+        host.commit(target,first,inputs,2);
+    }
+
+    if(target.kind==3){host.reset_residency(target);}
+    at=start;
+    while(at<count){
+        Alternative candidate=host.alternative(inputs,at);
+        if(candidate.item.kind==target.kind){
+            host.push_proof(inputs,candidate);
+            if(target.kind==3&&host.mode(host.owner(candidate.item))!=0){
+                host.join_residency(target,candidate);
+            }
+        }
+        at+=1u64;
+    }
+    host.finish_proofs(target,inputs);
+    if(target.kind==4){
+        u64 fields=host.inspect(target.node).count;
+        at=0u64;
+        while(at<fields){
+            Item child=host.mutable_child(target.node,at);
+            if(child.kind==3||child.kind==4){host.select_child(child,inputs,at);}
+            at+=1u64;
+        }
+    }
+}
