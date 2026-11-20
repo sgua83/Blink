@@ -388,7 +388,7 @@ pub(super) fn infer(inputs:&Inputs,parameters:&BTreeMap<ValueIdentity,bounds::Pr
         function:call.function.clone(),
         arguments:call.arguments.iter().map(|(input,value)|(input.clone(),value.at_call(&scoped_indices(parameters,input.depth())))).collect(),
         bindings:call.bindings.iter().map(|(id,proof)|(*id,proof.at_call(parameters))).collect(),
-        path:bounds::Condition::guard(call.path.clone()).projected_case(true, parameters).canonical(),
+        path:bounds::Condition::guard(call.path.clone()).projected_case(true, parameters),
         source:None,span:Span::default(),
     }).collect();
     Ok(Contract{required,calls})
