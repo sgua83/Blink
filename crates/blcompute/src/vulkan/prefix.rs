@@ -13,24 +13,8 @@ pub(super) fn allocate(c: &Compiled, stage: &Stage) -> Result<PagedBuffer> {
     };
     PagedBuffer::new(c.inner.clone(), 4, (levels * 4) as u32, 0x100, 4)
 }
-pub(super) fn descriptor(
-    commands: &mut Commands,
-    c: &Compiled,
-    args: &PagedBuffer,
-    infos: &[VkDescriptorBufferInfo],
-    accelerations: &[Acceleration],
-) -> Result<u64> {
-    descriptor_set(
-        commands,
-        c,
-        infos,
-        &[],
-        accelerations,
-        None,
-        Some(args.descriptor()),
-        None,
-        None,
-    )
+pub(super) fn descriptor(writer: &mut DescriptorWriter<'_>, args: &PagedBuffer) -> Result<u64> {
+    writer.set(&[], None, Some(args.descriptor()), None, None)
 }
 pub(super) fn prepare(
     commands: &Commands,

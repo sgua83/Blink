@@ -94,22 +94,15 @@ pub(super) struct Descriptors {
 }
 
 pub(super) fn descriptors(
-    commands: &mut Commands,
-    c: &Compiled,
+    writer: &mut DescriptorWriter<'_>,
     sorting: &blanguage::ir::Sorting,
     storage: &Storage,
     arguments: Option<&PagedBuffer>,
-    infos: &[VkDescriptorBufferInfo],
-    accelerations: &[Acceleration],
 ) -> Result<Descriptors> {
-    let prefix = arguments.map(|args| prefix::descriptor(commands, c, args, infos, accelerations)).transpose()?;
+    let prefix = arguments.map(|args| prefix::descriptor(writer, args)).transpose()?;
     let indirect = arguments.map(PagedBuffer::descriptor);
-    let initialize = descriptor_set(
-        commands,
-        c,
-        infos,
+    let initialize = writer.set(
         &[Some((sorting.target, storage.pairs[0].descriptor()))],
-        accelerations,
         None,
         indirect,
         None,
@@ -122,23 +115,15 @@ pub(super) fn descriptors(
             Some((sorting.source, input.descriptor())),
             Some((sorting.target, storage.pairs[1 - parity].descriptor())),
         ];
-        histogram[parity] = descriptor_set(
-            commands,
-            c,
-            infos,
+        histogram[parity] = writer.set(
             &bindings,
-            accelerations,
             Some(storage.histogram.descriptor()),
             indirect,
             None,
             None,
         )?;
-        scatter[parity] = descriptor_set(
-            commands,
-            c,
-            infos,
+        scatter[parity] = writer.set(
             &bindings,
-            accelerations,
             Some(storage.prefixes.descriptor()),
             indirect,
             None,
@@ -152,23 +137,16 @@ pub(super) fn descriptors(
         target_word: 0,
     };
     let scan = scan::descriptors(
-        commands,
-        c,
+        writer,
         &r,
         false,
         (storage.histogram_count, storage.histogram.descriptor()),
         storage.prefixes.descriptor(),
         &storage.scan,
         indirect,
-        infos,
-        accelerations,
     )?;
-    let finish = descriptor_set(
-        commands,
-        c,
-        infos,
+    let finish = writer.set(
         &[],
-        accelerations,
         Some(storage.pairs[0].descriptor()),
         indirect,
         None,

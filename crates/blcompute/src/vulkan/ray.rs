@@ -285,8 +285,8 @@ impl Acceleration {
                 .map(|m| m.0._storage.allocated_size)
                 .sum::<u64>()
     }
-    pub(super) fn handle(&self) -> u64 {
-        self.0.handle
+    pub(super) fn handle(&self) -> &u64 {
+        &self.0.handle
     }
     pub(super) fn belongs_to(&self, inner: &Rc<Inner>) -> bool {
         Rc::ptr_eq(&self.0.inner, inner)

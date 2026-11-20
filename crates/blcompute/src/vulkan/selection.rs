@@ -6,13 +6,12 @@ pub(super) fn allocate(c: &Compiled, count: u32) -> Result<Scratch> {
     Ok(out)
 }
 pub(super) fn record(
-    commands: &mut Commands,
+    commands: &Commands,
+    writer: &mut DescriptorWriter<'_>,
     c: &Compiled,
     stage: usize,
     data: &impl std::ops::Index<usize, Output = GpuDataset>,
     scratch: &Scratch,
-    infos: &[VkDescriptorBufferInfo],
-    accelerations: &[Acceleration],
     uniforms: &mut [u32],
     partition: NonZeroU32,
 ) -> Result<()> {
@@ -20,8 +19,10 @@ pub(super) fn record(
     let root = scratch.buffers[scratch.buffers.len() - 2].descriptor();
     let indices = scratch.buffers.last().unwrap().descriptor();
     let args = scratch.arguments.as_ref().unwrap();
+    let source = writer.binding(selected.binding);
     scan::record(
         commands,
+        writer,
         c,
         [
             c.selectors[stage].unwrap(),
@@ -31,23 +32,17 @@ pub(super) fn record(
         ],
         &selected.scan(c.program.selection_buffer()),
         false,
-        (data[c.program.stages()[stage].domain].count, infos[selected.binding]),
+        (data[c.program.stages()[stage].domain].count, source),
         root,
         &scratch.buffers,
         Some(args),
-        infos,
-        accelerations,
         uniforms,
         partition,
         0,
     )?;
     commands.barrier(0x800, 0x800, 0x40, 0x60);
-    let set = descriptor_set(
-        commands,
-        c,
-        infos,
+    let set = writer.set(
         &[],
-        accelerations,
         Some(indices),
         Some(args.descriptor()),
         Some(root),

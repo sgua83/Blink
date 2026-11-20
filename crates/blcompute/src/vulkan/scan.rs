@@ -39,18 +39,16 @@ pub(super) fn allocate(c: &Compiled, mut count: u32, words: usize) -> Result<Scr
 pub(super) struct Descriptors([u64; 2 * blanguage::spirv::PREFIX_LEVELS - 1]);
 
 pub(super) fn descriptors(
-    commands: &mut Commands,
-    c: &Compiled,
+    writer: &mut DescriptorWriter<'_>,
     r: &blanguage::ir::Reduction,
     segmented: bool,
     source: (u32, VkDescriptorBufferInfo),
     root_target: VkDescriptorBufferInfo,
     temporary: &[PagedBuffer],
     arguments: Option<VkDescriptorBufferInfo>,
-    infos: &[VkDescriptorBufferInfo],
-    accelerations: &[Acceleration],
 ) -> Result<Descriptors> {
     let level_count = levels(source.0);
+    let selection_buffer = writer.compiled.program.selection_buffer();
     let mut sets = Descriptors([0; 2 * blanguage::spirv::PREFIX_LEVELS - 1]);
     for level in 0..level_count {
         let source = if level == 0 {
@@ -65,19 +63,15 @@ pub(super) fn descriptors(
         };
         let auxiliary = &temporary[level * 2];
         let bindings = [
-            (r.source != r.target && (level > 0 || r.target != c.program.selection_buffer()))
+            (r.source != r.target && (level > 0 || r.target != selection_buffer))
                 .then_some((r.source, source)),
             Some((r.target, target)),
         ];
-        sets.0[level] = descriptor_set(
-            commands,
-            c,
-            infos,
+        sets.0[level] = writer.set(
             &bindings,
-            accelerations,
             Some((auxiliary).descriptor()),
             arguments,
-            (r.target == c.program.selection_buffer()).then_some(target),
+            (r.target == selection_buffer).then_some(target),
             (r.source == r.target && level > 0).then_some(source),
         )?;
     }
@@ -92,19 +86,15 @@ pub(super) fn descriptors(
             (r.source != r.target).then_some((r.source, source)),
             Some((r.target, target)),
         ];
-        sets.0[level_count + level] = descriptor_set(
-            commands,
-            c,
-            infos,
+        sets.0[level_count + level] = writer.set(
             &bindings,
-            accelerations,
             if level == 0 && segmented {
                 Some(temporary[0].descriptor())
             } else {
                 None
             },
             arguments,
-            (r.target == c.program.selection_buffer()).then_some(target),
+            (r.target == selection_buffer).then_some(target),
             (r.source == r.target).then_some(source),
         )?;
     }
@@ -112,7 +102,8 @@ pub(super) fn descriptors(
 }
 
 pub(super) fn record(
-    commands: &mut Commands,
+    commands: &Commands,
+    writer: &mut DescriptorWriter<'_>,
     c: &Compiled,
     kernels: [VkPipeline; 4],
     r: &blanguage::ir::Reduction,
@@ -121,15 +112,12 @@ pub(super) fn record(
     root_target: VkDescriptorBufferInfo,
     temporary: &[PagedBuffer],
     arguments: Option<&PagedBuffer>,
-    infos: &[VkDescriptorBufferInfo],
-    accelerations: &[Acceleration],
     uniforms: &mut [u32],
     partition: NonZeroU32,
     argument_base: usize,
 ) -> Result<()> {
     let sets = descriptors(
-        commands, c, r, segmented, source, root_target, temporary,
-        arguments.map(PagedBuffer::descriptor), infos, accelerations,
+        writer, r, segmented, source, root_target, temporary, arguments.map(PagedBuffer::descriptor),
     )?;
     record_dispatches(
         commands, c, kernels, source.0, &sets, arguments, uniforms, partition, argument_base,
@@ -181,15 +169,14 @@ pub(super) fn record_dispatches(
     }
 }
 pub(super) fn record_segmented_reduce(
-    commands: &mut Commands,
+    commands: &Commands,
+    writer: &mut DescriptorWriter<'_>,
     c: &Compiled,
     kernels: [VkPipeline; 4],
     r: &blanguage::ir::Reduction,
     count: u32,
     temporary: &[PagedBuffer],
     arguments: Option<&PagedBuffer>,
-    infos: &[VkDescriptorBufferInfo],
-    accelerations: &[Acceleration],
     uniforms: &mut [u32],
     partition: NonZeroU32,
 ) -> Result<()> {
@@ -204,12 +191,8 @@ pub(super) fn record_segmented_reduce(
             (level > 0)
                 .then(|| (r.target, temporary[(level - 1) * 2 + 1].descriptor())),
         ];
-        let set = descriptor_set(
-            commands,
-            c,
-            infos,
+        let set = writer.set(
             &bindings,
-            accelerations,
             Some(temporary[level * 2].descriptor()),
             arguments.map(PagedBuffer::descriptor),
             None,
@@ -235,12 +218,8 @@ pub(super) fn record_segmented_reduce(
                 .then(|| (r.source, temporary[level * 2 + 1].descriptor())),
             Some((r.target, temporary[(level - 1) * 2 + 1].descriptor())),
         ];
-        let set = descriptor_set(
-            commands,
-            c,
-            infos,
+        let set = writer.set(
             &bindings,
-            accelerations,
             None,
             arguments.map(PagedBuffer::descriptor),
             None,
@@ -260,12 +239,8 @@ pub(super) fn record_segmented_reduce(
     }
     commands.barrier(0x800, 0x800, 0x40, 0x60);
     let prefix = &temporary[usize::from(level_count > 1)];
-    let set = descriptor_set(
-        commands,
-        c,
-        infos,
+    let set = writer.set(
         &[],
-        accelerations,
         Some((prefix).descriptor()),
         arguments.map(PagedBuffer::descriptor),
         None,

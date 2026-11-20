@@ -1768,99 +1768,137 @@ fn pipeline(
         Ok(handle)
     }
 }
-fn descriptor_set(
-    commands: &mut Commands,
-    compiled: &Compiled,
-    infos: &[VkDescriptorBufferInfo],
-    replacements: &[Option<(usize, VkDescriptorBufferInfo)>],
-    accelerations: &[Acceleration],
-    auxiliary: Option<VkDescriptorBufferInfo>,
-    indirect: Option<VkDescriptorBufferInfo>,
-    selection: Option<VkDescriptorBufferInfo>,
-    scan_source: Option<VkDescriptorBufferInfo>,
-) -> Result<u64> {
-    unsafe {
+struct DescriptorWriter<'a> {
+    compiled: &'a Compiled,
+    pool: u64,
+    infos: &'a [VkDescriptorBufferInfo],
+    writes: Vec<VkWriteDescriptorSet>,
+    _accelerations: &'a [Acceleration],
+    _structures: Vec<ray::WriteAcceleration>,
+    _images: Vec<texture::DescriptorImageInfo>,
+}
+impl<'a> DescriptorWriter<'a> {
+    fn new(
+        commands: &Commands,
+        compiled: &'a Compiled,
+        infos: &'a [VkDescriptorBufferInfo],
+        accelerations: &'a [Acceleration],
+    ) -> Self {
+        let structures: Vec<_> = accelerations.iter().map(|structure| ray::WriteAcceleration {
+            kind: 1000150007,
+            next: null(),
+            count: 1,
+            structures: structure.handle(),
+        }).collect();
+        let images: Vec<_> = commands.textures.iter().map(TextureInput::descriptor).collect();
+        let mut writes = Vec::with_capacity(
+            infos.len() + accelerations.len() + compiled.program.textures().len() + 4,
+        );
+        for (binding, info) in infos.iter().enumerate() {
+            writes.push(Self::buffer_write(binding, info));
+        }
+        // The backing allocations remain fixed while the writer borrows their addresses.
+        for structure in &structures {
+            let mut write: VkWriteDescriptorSet = zero();
+            write.sType = 35;
+            write.pNext = (structure as *const ray::WriteAcceleration).cast();
+            write.dstBinding = writes.len() as u32;
+            write.descriptorCount = 1;
+            write.descriptorType = 1000150000;
+            writes.push(write);
+        }
+        let mut offset = 0;
+        for texture in compiled.program.textures() {
+            let mut write: VkWriteDescriptorSet = zero();
+            write.sType = 35;
+            write.dstBinding = writes.len() as u32;
+            write.descriptorCount = texture.elements();
+            write.descriptorType = 1;
+            write.pImageInfo = (&images[offset] as *const texture::DescriptorImageInfo).cast();
+            writes.push(write);
+            offset += texture.elements() as usize;
+        }
+        Self {
+            compiled,
+            pool: commands.descriptors,
+            infos,
+            writes,
+            _accelerations: accelerations,
+            _structures: structures,
+            _images: images,
+        }
+    }
+
+    fn buffer_write(binding: usize, info: &VkDescriptorBufferInfo) -> VkWriteDescriptorSet {
+        let mut write: VkWriteDescriptorSet = zero();
+        write.sType = 35;
+        write.dstBinding = binding as u32;
+        write.descriptorCount = 1;
+        write.descriptorType = 7;
+        write.pBufferInfo = info;
+        write
+    }
+
+    fn binding(&self, binding: usize) -> VkDescriptorBufferInfo {
+        self.infos[binding]
+    }
+
+    fn set(
+        &mut self,
+        replacements: &[Option<(usize, VkDescriptorBufferInfo)>],
+        auxiliary: Option<VkDescriptorBufferInfo>,
+        indirect: Option<VkDescriptorBufferInfo>,
+        selection: Option<VkDescriptorBufferInfo>,
+        scan_source: Option<VkDescriptorBufferInfo>,
+    ) -> Result<u64> {
+        let compiled = self.compiled;
         let f = &compiled.inner.functions;
         let device = compiled.inner.owner.device;
         let mut alloc: VkDescriptorSetAllocateInfo = zero();
         alloc.sType = 34;
-        alloc.descriptorPool = commands.descriptors;
+        alloc.descriptorPool = self.pool;
         alloc.descriptorSetCount = 1;
         alloc.pSetLayouts = &compiled.set_layout;
         let mut set = 0;
         check(
-            (f.vkAllocateDescriptorSets)(device, &alloc, &mut set),
+            unsafe { (f.vkAllocateDescriptorSets)(device, &alloc, &mut set) },
             "vkAllocateDescriptorSets",
         )?;
-        let mut writes: Vec<_> = infos
-            .iter()
-            .enumerate()
-            .map(|(i, info)| {
-                let info = replacements.iter().rev().flatten()
-                    .find(|(binding, _)| *binding == i)
-                    .map_or(info, |(_, replacement)| replacement);
-                let mut w: VkWriteDescriptorSet = zero();
-                w.sType = 35;
-                w.dstSet = set;
-                w.dstBinding = i as u32;
-                w.descriptorCount = 1;
-                w.descriptorType = 7;
-                w.pBufferInfo = info;
-                w
-            })
-            .collect();
-        let handles: Vec<_> = accelerations.iter().map(Acceleration::handle).collect();
-        let structures: Vec<_> = handles
-            .iter()
-            .map(|h| ray::WriteAcceleration {
-                kind: 1000150007,
-                next: null(),
-                count: 1,
-                structures: h,
-            })
-            .collect();
-        for (i, structure) in structures.iter().enumerate() {
-            let mut w: VkWriteDescriptorSet = zero();
-            w.sType = 35;
-            w.pNext = (structure as *const ray::WriteAcceleration).cast();
-            w.dstSet = set;
-            w.dstBinding = (infos.len() + i) as u32;
-            w.descriptorCount = 1;
-            w.descriptorType = 1000150000;
-            writes.push(w);
+
+        let base = self.writes.len();
+        let info_count = self.infos.len();
+        for write in &mut self.writes {
+            write.dstSet = set;
         }
-        let images: Vec<_> = commands.textures.iter().map(TextureInput::descriptor).collect();
-        let mut offset = 0;
-        for (i, texture) in compiled.program.textures().iter().enumerate() {
-            let mut w: VkWriteDescriptorSet = zero();
-            w.sType = 35;
-            w.dstSet = set;
-            w.dstBinding = (infos.len() + accelerations.len() + i) as u32;
-            w.descriptorCount = texture.elements();
-            w.descriptorType = 1;
-            w.pImageInfo = (&images[offset] as *const texture::DescriptorImageInfo).cast();
-            writes.push(w);
-            offset += texture.elements() as usize;
+        // Apply replacements in declaration order so the final one for a root slot wins.
+        for (binding, info) in replacements.iter().flatten() {
+            if let Some(write) = self.writes[..info_count].get_mut(*binding) {
+                write.pBufferInfo = info;
+            }
         }
         let auxiliary_infos = [
-            (infos.len(), auxiliary),
+            (info_count, auxiliary),
             (compiled.program.indirect_buffer(), indirect),
             (compiled.program.selection_buffer(), selection),
             (compiled.program.scan_source_buffer(), scan_source),
         ];
-        for (binding, info) in auxiliary_infos.iter()
-            .filter_map(|(binding, info)| info.as_ref().map(|info| (*binding, info))) {
-            let mut w: VkWriteDescriptorSet = zero();
-            w.sType = 35;
-            w.dstSet = set;
-            w.dstBinding =
-                (binding + accelerations.len() + compiled.program.textures().len()) as u32;
-            w.descriptorCount = 1;
-            w.descriptorType = 7;
-            w.pBufferInfo = info;
-            writes.push(w);
+        let resources = base - info_count;
+        for (binding, info) in &auxiliary_infos {
+            if let Some(info) = info {
+                let mut write = Self::buffer_write(binding + resources, info);
+                write.dstSet = set;
+                self.writes.push(write);
+            }
         }
-        (f.vkUpdateDescriptorSets)(device, writes.len() as u32, writes.as_ptr(), 0, null());
+        unsafe {
+            (f.vkUpdateDescriptorSets)(device, self.writes.len() as u32, self.writes.as_ptr(), 0, null());
+        }
+        self.writes.truncate(base);
+        for (binding, _) in replacements.iter().flatten() {
+            if let Some(write) = self.writes[..info_count].get_mut(*binding) {
+                write.pBufferInfo = &self.infos[*binding];
+            }
+        }
         Ok(set)
     }
 }
@@ -2470,17 +2508,8 @@ impl GpuProgram {
                         VkDescriptorBufferInfo { buffer, offset: at, range: bytes }
                     }
                 }).collect();
-                let set = descriptor_set(
-                    &mut commands,
-                    c,
-                    &infos,
-                    &[],
-                    &accelerations,
-                    None,
-                    None,
-                    None,
-                    None,
-                )?;
+                let mut descriptors = DescriptorWriter::new(&commands, c, &infos, &accelerations);
+                let set = descriptors.set(&[], None, None, None, None)?;
                 let mut sorting_sets = Vec::new();
                 for usage in &scratch_uses {
                     if let blanguage::ir::Operation::StableSort(sorting) =
@@ -2488,13 +2517,10 @@ impl GpuProgram {
                     {
                         let storage = &scratch[usage.slot];
                         sorting_sets.push(sort::descriptors(
-                            &mut commands,
-                            c,
+                            &mut descriptors,
                             sorting,
                             storage.sorting.as_ref().unwrap(),
                             storage.arguments.as_ref(),
-                            &infos,
-                            &accelerations,
                         )?);
                     }
                 }
@@ -2565,7 +2591,7 @@ impl GpuProgram {
                         let prefix_set = if let Some(args) = arguments.filter(|_| {
                             !matches!(stage.operation, blanguage::ir::Operation::StableSort(_))
                         }) {
-                            let set = prefix::descriptor(&mut commands, c, args, &infos, &accelerations)?;
+                            let set = prefix::descriptor(&mut descriptors, args)?;
                             prefix::prepare(
                                 &commands,
                                 c,
@@ -2598,13 +2624,12 @@ impl GpuProgram {
                             }
                             blanguage::ir::Operation::Map if stage.selection.is_some() => {
                                 selection::record(
-                                    &mut commands,
+                                    &commands,
+                                    &mut descriptors,
                                     c,
                                     i,
                                     &data,
                                     temporary.unwrap(),
-                                    &infos,
-                                    &accelerations,
                                     &mut uniforms,
                                     self.partition_elements,
                                 )?;
@@ -2656,7 +2681,8 @@ impl GpuProgram {
                             }
                             blanguage::ir::Operation::SegmentedReduce(r) => {
                                 scan::record_segmented_reduce(
-                                    &mut commands,
+                                    &commands,
+                                    &mut descriptors,
                                     c,
                                     [
                                         c.pipelines[i],
@@ -2668,15 +2694,14 @@ impl GpuProgram {
                                     data[r.values.fields.source].count,
                                     &temporary.unwrap().buffers,
                                     arguments,
-                                    &infos,
-                                    &accelerations,
                                     &mut uniforms,
                                     self.partition_elements,
                                 )?;
                             }
                             blanguage::ir::Operation::CustomSegmentedReduce(r) => {
                                 scan::record_segmented_reduce(
-                                    &mut commands,
+                                    &commands,
+                                    &mut descriptors,
                                     c,
                                     [
                                         c.pipelines[i],
@@ -2688,8 +2713,6 @@ impl GpuProgram {
                                     data[r.values.fields.source].count,
                                     &temporary.unwrap().buffers,
                                     arguments,
-                                    &infos,
-                                    &accelerations,
                                     &mut uniforms,
                                     self.partition_elements,
                                 )?;
@@ -2702,18 +2725,19 @@ impl GpuProgram {
                                 head_word,
                             }) => {
                                 let add = c.scan_adds[i].unwrap();
+                                let source = descriptors.binding(fields.source);
+                                let target = descriptors.binding(fields.target);
                                 scan::record(
-                                    &mut commands,
+                                    &commands,
+                                    &mut descriptors,
                                     c,
                                     [c.pipelines[i], c.tails[i].unwrap(), add, c.finishes[i].unwrap_or(add)],
                                     fields,
                                     head_word.is_some(),
-                                    (data[fields.source].count, infos[fields.source]),
-                                    infos[fields.target],
+                                    (data[fields.source].count, source),
+                                    target,
                                     &temporary.unwrap().buffers,
                                     arguments,
-                                    &infos,
-                                    &accelerations,
                                     &mut uniforms,
                                     self.partition_elements,
                                     0,
@@ -2721,14 +2745,13 @@ impl GpuProgram {
                             }
                             blanguage::ir::Operation::Compact(selection) => {
                                 compact::record(
-                                    &mut commands,
+                                    &commands,
+                                    &mut descriptors,
                                     c,
                                     i,
                                     selection,
                                     &data,
                                     temporary.unwrap(),
-                                    &infos,
-                                    &accelerations,
                                     &mut uniforms,
                                     self.partition_elements,
                                 )?;
@@ -2750,12 +2773,12 @@ impl GpuProgram {
                                         commands.barrier(0x800, 0x800, 0x40, 0x60);
                                     }
                                     let source = if pass == 0 {
-                                        infos[reduction.source]
+                                        descriptors.binding(reduction.source)
                                     } else {
                                         temporary.unwrap().buffers[(pass - 1) % 2].descriptor()
                                     };
                                     let target = if groups == 1 {
-                                        infos[reduction.target]
+                                        descriptors.binding(reduction.target)
                                     } else {
                                         temporary.unwrap().buffers[pass % 2].descriptor()
                                     };
@@ -2763,12 +2786,8 @@ impl GpuProgram {
                                         Some((reduction.source, source)),
                                         Some((reduction.target, target)),
                                     ];
-                                    let pass_set = descriptor_set(
-                                        &mut commands,
-                                        c,
-                                        &infos,
+                                    let pass_set = descriptors.set(
                                         &bindings,
-                                        &accelerations,
                                         None,
                                         arguments.map(PagedBuffer::descriptor),
                                         None,
