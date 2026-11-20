@@ -690,6 +690,13 @@ struct ComparisonConstraintHost {
  cfn<IndexFields,address> next;
  cfn<void,address,IndexOutput,IndexFields> domain;
 };
+struct CallComparisonRanges {
+ address left;u64 left_count;address right;u64 right_count;
+ cfn<BitRange,address,u64> ensures memory(read) get;
+};
+extern "C" bool comparison_call_below(address context,u32 strict,u32 same,InternalScalar info,
+ CallComparisonRanges ranges,ComparisonConstraintHost host) on cpu
+ requires nonzero(ranges.get) requires nonzero(host.emit) requires nonzero(host.next) requires nonzero(host.domain);
 struct ComparisonIntegerInfo {
  InternalScalar scalar;u64 left_count;u64 right_count;IndexBounds left;IndexBounds right;
  u32 same;u32 left_nonzero;u32 right_nonzero;

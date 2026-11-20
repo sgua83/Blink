@@ -1493,14 +1493,74 @@ extern "C" void arithmetic_index_domains(address context,u32 operation,Arithmeti
  }
 }
 
-extern "C" void comparison_constraint(address context,u32 strict,InternalScalar info,IndexBounds left,IndexBounds right,ComparisonConstraintHost host) on cpu
+void comparison_constraint_ends(address context,u32 strict,InternalScalar info,u64 left_min,u64 right_max,ComparisonConstraintHost host) on cpu
  requires nonzero(host.emit) requires nonzero(host.next) requires nonzero(host.domain) {
  host.emit(context,ComparisonConstraintOutput::Below,u64(strict));
- if(right.upper>=u64(strict)){u64 upper=right.upper-u64(strict);if(upper!=info.mask){host.emit(context,ComparisonConstraintOutput::Maximum,upper);}}
+ if(right_max>=u64(strict)){u64 upper=right_max-u64(strict);if(upper!=info.mask){host.emit(context,ComparisonConstraintOutput::Maximum,upper);}}
  if(info.kind!=1){host.emit(context,ComparisonConstraintOutput::Upper,u64(strict));}
  if(info.kind==0&&info.width==32){index_domains_below(context,strict,IndexBelowHost(host.next,host.domain));}
- u64 lower=left.lower+u64(strict);
- if(lower>=left.lower&&lower!=0u64&&lower<=info.mask){host.emit(context,ComparisonConstraintOutput::Minimum,lower);}
+ u64 lower=left_min+u64(strict);
+ if(lower>=left_min&&lower!=0u64&&lower<=info.mask){host.emit(context,ComparisonConstraintOutput::Minimum,lower);}
+}
+
+extern "C" void comparison_constraint(address context,u32 strict,InternalScalar info,IndexBounds left,IndexBounds right,ComparisonConstraintHost host) on cpu
+ requires nonzero(host.emit) requires nonzero(host.next) requires nonzero(host.domain) {
+ comparison_constraint_ends(context,strict,info,left.lower,right.upper,host);
+}
+
+bool call_comparison_overlaps(CallComparisonRanges ranges,BitRange first_left,BitRange first_right,u64 mask) on cpu
+ requires nonzero(ranges.get) {
+ BitRange left=first_left;
+ BitRange right=first_right;
+ u64 left_at=0u64;
+ u64 right_at=0u64;
+ while(true){
+  u64 lower=max(left.lower,right.lower);
+  if(lower>mask){return false;}
+  if(lower<=min(left.upper,right.upper)){return true;}
+  if(left.upper<right.upper){
+   left_at+=1u64;
+   if(left_at==ranges.left_count){return false;}
+   left=ranges.get(ranges.left,left_at);
+  }else{
+   right_at+=1u64;
+   if(right_at==ranges.right_count){return false;}
+   right=ranges.get(ranges.right,right_at);
+  }
+ }
+}
+
+u64 call_comparison_right_max(CallComparisonRanges ranges,BitRange first,u64 mask) on cpu
+ requires nonzero(ranges.get) {
+ u64 accepted=0u64;
+ u64 end=ranges.right_count;
+ u64 upper=first.upper;
+ while(end-accepted>1u64){
+  u64 middle=accepted+(end-accepted)/2u64;
+  BitRange range=ranges.get(ranges.right,middle);
+  if(range.lower<=mask){
+   accepted=middle;
+   upper=range.upper;
+  }else{
+   end=middle;
+  }
+ }
+ return min(upper,mask);
+}
+
+extern "C" bool comparison_call_below(address context,u32 strict,u32 same,InternalScalar info,
+ CallComparisonRanges ranges,ComparisonConstraintHost host) on cpu
+ requires nonzero(ranges.get) requires nonzero(host.emit) requires nonzero(host.next) requires nonzero(host.domain) {
+ if(same!=0&&strict!=0){return false;}
+ if(ranges.left_count==0u64||ranges.right_count==0u64){return false;}
+ BitRange left=ranges.get(ranges.left,0u64);
+ BitRange right=ranges.get(ranges.right,0u64);
+ if(left.lower>info.mask||right.lower>info.mask){return false;}
+ if(same!=0&&!call_comparison_overlaps(ranges,left,right,info.mask)){return false;}
+ u64 upper=call_comparison_right_max(ranges,right,info.mask);
+ if(same==0&&(left.lower>upper||(strict!=0&&left.lower==upper))){return false;}
+ comparison_constraint_ends(context,strict,info,left.lower,upper,host);
+ return true;
 }
 void comparison_domains(address state,u32 truth,u32 source,u32 target,u32 common_only,ComparisonCaseHost host) on cpu
  requires nonzero(host.select) requires nonzero(host.next) requires nonzero(host.domain) {

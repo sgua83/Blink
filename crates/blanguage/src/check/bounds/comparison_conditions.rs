@@ -169,6 +169,11 @@ struct ConstraintHost {
     next: unsafe extern "C" fn(Slot) -> index_domains::Fields,
     domain: unsafe extern "C" fn(Slot, index_domains::Output, index_domains::Fields),
 }
+const CONSTRAINT_HOST: ConstraintHost = ConstraintHost {
+    emit: constraint_emit,
+    next: constraint_next,
+    domain: constraint_domain,
+};
 pub(super) fn constrain_parts(
     facts: &mut Facts,
     ids: [ValueIdentity; 2],
@@ -190,31 +195,55 @@ pub(super) fn constrain_parts(
             fact_fields::scalar(ptr::from_ref(&scalar).cast()),
             bounds[0],
             bounds[1],
-            ConstraintHost {
-                emit: constraint_emit,
-                next: constraint_next,
-                domain: constraint_domain,
-            },
+            CONSTRAINT_HOST,
         )
     };
 }
-pub(super) fn constrain(
-    facts: &mut Facts,
-    (a, ap): (ValueIdentity, &Proof),
-    (b, bp): (ValueIdentity, &Proof),
-    strict: bool,
-    scalar: Scalar,
-) {
-    let bounds = [ap, bp].map(|p| p.range_set(0).restrict(0, scalar.bit_mask()).hull().into());
+#[repr(C)]
+struct CallComparisonRanges {
+    left: Borrowed,
+    left_count: u64,
+    right: Borrowed,
+    right_count: u64,
+    get: unsafe extern "C" fn(Borrowed, u64) -> Bounds,
+}
+unsafe extern "C" fn call_range(input: Borrowed, at: u64) -> Bounds {
+    let ranges = unsafe { *input.cast::<&[(Bits, Bits)]>() };
+    ranges[at as usize].into()
+}
+
+pub(super) fn call_below(
+    ids: [ValueIdentity; 2], [left, right]: [&Proof; 2], strict: bool, scalar: Scalar,
+) -> Clause {
+    let same = left.origins[0].iter().any(|id| right.origins[0].contains(id));
+    let left_ranges = left.interval_source(0);
+    let right_ranges = right.interval_source(0);
+    let ranges = CallComparisonRanges {
+        left: ptr::from_ref(&left_ranges).cast(),
+        left_count: left_ranges.len() as u64,
+        right: ptr::from_ref(&right_ranges).cast(),
+        right_count: right_ranges.len() as u64,
+        get: call_range,
+    };
+    let mut facts = Facts::new();
     let empty = Domains::new();
-    constrain_parts(
-        facts,
-        [a, b],
-        bounds,
-        bp.domains.get(0).unwrap_or(&empty),
-        strict,
+    let mut c = Constraint {
+        facts: &mut facts,
+        ids,
         scalar,
-    );
+        input: right.domains.get(0).unwrap_or(&empty).iter(),
+    };
+    let possible = unsafe {
+        b_call_below(
+            ptr::from_mut(&mut c).cast(),
+            u32::from(strict),
+            u32::from(same),
+            fact_fields::scalar(ptr::from_ref(&scalar).cast()),
+            ranges,
+            CONSTRAINT_HOST,
+        )
+    };
+    if possible { Clause::facts(facts) } else { Clause::impossible() }
 }
 struct Integer<'a> {
     ranges: &'a [ScalarRanges; 2],
@@ -362,6 +391,11 @@ unsafe extern "C" {
         right: Bounds,
         host: ConstraintHost,
     );
+    #[link_name = "bootstrap.condition_graph::comparison_call_below"]
+    fn b_call_below(
+        context: Slot, strict: u32, same: u32, info: fact_fields::ScalarView,
+        ranges: CallComparisonRanges, host: ConstraintHost,
+    ) -> bool;
     #[link_name = "bootstrap.condition_graph::comparison_integer_case"]
     fn b_integer_case(
         s: Slot,

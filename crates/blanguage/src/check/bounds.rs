@@ -838,38 +838,10 @@ impl Proof {
                 return clause;
             }
             Fact::Below(lower, upper, strict, scalar) => {
-                let Some((lower_id, upper_id)) =
-                    Self::call_identity(lower, bindings).zip(Self::call_identity(upper, bindings))
-                else {
-                    return None;
-                };
-                let (lower, upper) = (Proof::bound_input(bindings, &lower).unwrap(), Proof::bound_input(bindings, &upper).unwrap());
-                let same = lower.origins[0]
-                    .iter()
-                    .any(|id| upper.origins[0].contains(id));
-                let possible = lower.range_set(0).restrict(0, scalar.bit_mask()).0.iter().any(|&(a, b)| {
-                    upper.range_set(0).restrict(0, scalar.bit_mask()).0.iter().any(|&(c, d)| {
-                        if same {
-                            !strict && a.max(c) <= b.min(d)
-                        } else if strict {
-                            a < d
-                        } else {
-                            a <= d
-                        }
-                    })
-                });
-                if !possible {
-                    return Some(Clause::impossible());
-                }
-                let mut facts = Facts::new();
-                constrain_proofs(
-                    &mut facts,
-                    (lower_id, lower),
-                    (upper_id, upper),
-                    strict,
-                    scalar,
-                );
-                return projected(facts);
+                let left = Proof::bound_input(bindings, &lower)?;
+                let right = Proof::bound_input(bindings, &upper)?;
+                let ids = [left.known_identity(0)?, right.known_identity(0)?];
+                return Some(comparison_conditions::call_below(ids, [left, right], strict, scalar));
             }
             Fact::Equal(a, b) => {
                 let Some((left,right))=Self::call_identity(a,bindings).zip(Self::call_identity(b,bindings)) else{return None;};
@@ -2764,9 +2736,6 @@ impl Condition {
     fn compare(op: Comparison, a: &Value, b: &Value) -> Self {
         comparison_conditions::compare(op,a,b)
     }
-}
-fn constrain_proofs(facts: &mut Facts,index: (ValueIdentity,&Proof),limit: (ValueIdentity,&Proof),strict: bool,scalar: Scalar) {
-    comparison_conditions::constrain(facts,index,limit,strict,scalar)
 }
 // These coefficients belong to one numeric query. The original snapshot
 // equations and scalar bounds remain the facts' only source.
