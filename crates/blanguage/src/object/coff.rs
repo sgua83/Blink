@@ -734,22 +734,44 @@ fn encode_sections<'a>(
 pub(super) fn decode<Bytes: super::ReadSection>(b: &super::ObjectBytes, stack_output: bool) -> Result<Object<Bytes>> {
     decode_object(&Reader::new(b)?, None, None, stack_output)
 }
+struct Metadata<'a> {
+    input: &'a [u8],
+    prefix: MetadataReadPrefix,
+    binding_start: usize,
+}
+
+impl<'a> Metadata<'a> {
+    fn read(input: &'a [u8]) -> Result<Self> {
+        let mut cursor = MetadataReadCursor::new(input);
+        let prefix = unsafe { metadata_read_prefix(&mut cursor, u64::from(FORMAT)) };
+        prefix.header.error.check()?;
+        Ok(Self { input, prefix, binding_start: cursor.position })
+    }
+
+    fn bindings_cursor(&self) -> MetadataReadCursor {
+        MetadataReadCursor { input: ReadBytes::new(self.input), position: self.binding_start }
+    }
+}
+
 pub(crate) struct ReuseInputs<'a> {
     pub(crate) imports: BTreeSet<&'a str>,
-    libraries: &'a [u8],
+    reader: Reader<'a, super::ObjectBytes>,
+    metadata: Metadata<'a>,
     has_archive: bool,
 }
+
 impl ReuseInputs<'_> {
-    /// Selected library names move into the restored archive.
-    pub(crate) fn libraries_for_reuse(self) -> Result<Option<Vec<String>>> {
-        let libraries = MetadataReadCursor::new(self.libraries).strings(self.has_archive)?;
+    pub(crate) fn restore(self) -> Result<Option<Object>> {
+        drop(self.imports);
+        let libraries = MetadataReadCursor::new(unsafe { self.metadata.prefix.libraries.borrowed() })
+            .strings(self.has_archive)?;
         for library in &libraries {
             let path = Path::new(library);
             if path.is_absolute() && !path.try_exists()? {
                 return Ok(None);
             }
         }
-        Ok(Some(libraries))
+        decode_object(&self.reader, None, Some((self.metadata, libraries)), true).map(Some)
     }
 }
 
@@ -789,34 +811,6 @@ impl<'a, Input: AsRef<[u8]> + ?Sized> Reader<'a, Input> {
         // B borrows this range from the same validated section rows.
         if bytes.bytes.is_null() { return Err("缺少 Blink 目标文件元数据".into()); }
         Ok(unsafe { bytes.borrowed() })
-    }
-    /// 借用判等所需的名称，等采用后再恢复完整对象。
-    pub(crate) fn reuse_inputs(&self) -> Result<ReuseInputs<'a>> {
-        let (parts, _) = self.sections(false)?;
-        let mut cursor = MetadataReadCursor::new(self.metadata(parts.metadata)?);
-        let prefix = unsafe { metadata_read_prefix(&mut cursor, u64::from(FORMAT)) };
-        prefix.header.error.check()?;
-        let mut names = BTreeSet::new();
-        for _ in 0..prefix.binding_count {
-            let value = unsafe { metadata_read_binding(&mut cursor) };
-            value.error.check()?;
-            names.insert(std::str::from_utf8(unsafe { value.name.borrowed() })?);
-        }
-        let input = ReadBytes::new(self.bytes.as_ref());
-        let table = unsafe { read_symbols(input) };
-        table.error.check()?;
-        let mut index = 0;
-        loop {
-            let row = unsafe { next_export(input, table, &mut index) };
-            row.error.check()?;
-            if row.bytes.bytes.is_null() { break; }
-            names.remove(std::str::from_utf8(unsafe { row.bytes.borrowed() })?);
-        }
-        Ok(ReuseInputs {
-            imports: names,
-            libraries: unsafe { prefix.libraries.borrowed() },
-            has_archive: !parts.runtime.bytes.is_null(),
-        })
     }
     fn symbol_rows(&self, definitions: &mut [SectionDefinition]) -> Result<Vec<ObjectSymbol>> {
         let input = ReadBytes::new(self.bytes.as_ref());
@@ -886,7 +880,7 @@ impl<'a, Input: AsRef<[u8]> + ?Sized> Reader<'a, Input> {
     pub(crate) fn interface(&self) -> Result<(String, Kind, BTreeMap<String, Vec<u8>>)> {
         let (parts, _) = self.sections(false)?;
         let (name, kind, mut bindings, _, _) = read_metadata(
-            self.metadata(parts.metadata)?, None, false, None,
+            Metadata::read(self.metadata(parts.metadata)?)?, None, false, None,
         )?;
         let mut definitions = BTreeMap::new();
         self.for_each_definition(|symbol| {
@@ -911,22 +905,46 @@ impl<'a, Input: AsRef<[u8]> + ?Sized> Reader<'a, Input> {
         }
     }
 }
-impl Reader<'_, super::ObjectBytes> {
+impl<'a> Reader<'a, super::ObjectBytes> {
+    /// 借用判等所需的名称，等采用后再恢复完整对象。
+    pub(crate) fn reuse_inputs(self) -> Result<ReuseInputs<'a>> {
+        let (parts, _) = self.sections(false)?;
+        let metadata = Metadata::read(self.metadata(parts.metadata)?)?;
+        let mut cursor = metadata.bindings_cursor();
+        let mut names = BTreeSet::new();
+        for _ in 0..metadata.prefix.binding_count {
+            let value = unsafe { metadata_read_binding(&mut cursor) };
+            value.error.check()?;
+            names.insert(std::str::from_utf8(unsafe { value.name.borrowed() })?);
+        }
+        let input = ReadBytes::new(self.bytes.as_ref());
+        let table = unsafe { read_symbols(input) };
+        table.error.check()?;
+        let mut index = 0;
+        loop {
+            let row = unsafe { next_export(input, table, &mut index) };
+            row.error.check()?;
+            if row.bytes.bytes.is_null() { break; }
+            names.remove(std::str::from_utf8(unsafe { row.bytes.borrowed() })?);
+        }
+        Ok(ReuseInputs {
+            imports: names,
+            reader: self,
+            metadata,
+            has_archive: !parts.runtime.bytes.is_null(),
+        })
+    }
     /// 非根资源侧库来自原编译产物；其C符号沿真实ABI恢复，不消费B公开合同。
     pub(crate) fn native<Bytes: super::ReadSection>(&self, name: &str) -> Result<Object<Bytes>> {
         decode_object(self, Some(name), None, false)
     }
-    pub(crate) fn object(&self, reuse_libraries: Option<Vec<String>>) -> Result<Object> {
-        decode_object(self, None, reuse_libraries, true)
-    }
 }
 fn read_metadata(
-    meta: &[u8], archive: Option<super::ObjectBytes>, keep_stack: bool, reuse_libraries: Option<Vec<String>>,
+    meta: Metadata<'_>, archive: Option<super::ObjectBytes>, keep_stack: bool, reuse_libraries: Option<Vec<String>>,
 ) -> Result<(String, Kind, BTreeMap<String, Vec<u8>>, StackMetadata, Option<Archive>)> {
-    let mut c = MetadataReadCursor::new(meta);
-    let prefix = unsafe { metadata_read_prefix(&mut c, u64::from(FORMAT)) };
+    let mut c = meta.bindings_cursor();
+    let prefix = meta.prefix;
     let header = prefix.header;
-    header.error.check()?;
     let name = read_text(header.name)?;
     let kind = match header.kind {
         ReadObjectKind::Module => {
@@ -1008,7 +1026,7 @@ fn read_metadata(
     Ok((name, kind, bindings, stack, archive))
 }
 fn decode_object<Bytes: super::ReadSection>(
-    reader: &Reader<'_, super::ObjectBytes>, native: Option<&str>, reuse_libraries: Option<Vec<String>>,
+    reader: &Reader<'_, super::ObjectBytes>, native: Option<&str>, reuse: Option<(Metadata<'_>, Vec<String>)>,
     stack_output: bool,
 ) -> Result<Object<Bytes>> {
     let b = reader.bytes;
@@ -1022,7 +1040,11 @@ fn decode_object<Bytes: super::ReadSection>(
                 let start = parts.runtime.bytes.addr() - b.as_ptr().addr();
                 b.slice(start..start + parts.runtime.length)
             });
-            read_metadata(reader.metadata(parts.metadata)?, archive, true, reuse_libraries)?
+            let (metadata, libraries) = match reuse {
+                Some((metadata, libraries)) => (metadata, Some(libraries)),
+                None => (Metadata::read(reader.metadata(parts.metadata)?)?, None),
+            };
+            read_metadata(metadata, archive, true, libraries)?
         }
     };
     let mut sections = Vec::new();

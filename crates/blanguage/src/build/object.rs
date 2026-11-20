@@ -86,10 +86,9 @@ pub(super) fn compile<'a>(
                     if stored.imports == identity::references(definitions, imported, inputs.imports.iter().copied(), &stored.declarations) {
                         let native = stored.native.map(|_| crate::object::native_inputs(runtime, worker)).transpose()?;
                         if stored.native == native
-                            && let Some(libraries) = inputs.libraries_for_reuse().map_err(error)?
+                            && let Some(object) = inputs.restore().map_err(error)?
                         {
                             // The matched producer already wrote the contract identity used on a cold build.
-                            let object = reader.object(Some(libraries)).map_err(error)?;
                             return Ok(ObjectCompilation { object, artifact, reused: true });
                         }
                     }
