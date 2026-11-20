@@ -97,19 +97,13 @@ impl ProgramInterface for Program {
     interface_fields!(,);
     fn requirements(&self) -> DeviceRequirements {
         let (float64, integer8, integer16) = dataflow::numeric_requirements(self);
-        let (atomic64, shared_atomic64) = dataflow::program_atomic64_requirements(self);
-        let (float32_preserve, float64_preserve) = dataflow::program_float_preserve(self);
         DeviceRequirements {
             float64, integer8, integer16,
             ray_query: !self.accelerations.is_empty(),
-            float32_preserve, float64_preserve,
             sorting: self.requires_sort(),
-            maximal_reconvergence: self.requires_maximal_reconvergence(),
             texture_indexing: self.requires_texture_indexing(),
             position_fetch: self.requires_ray_position_fetch(),
-            atomic64, shared_atomic64,
-            subgroup: self.subgroup_capabilities(),
-            ..DeviceRequirements::default()
+            ..dataflow::program_code_requirements(self)
         }
     }
 }

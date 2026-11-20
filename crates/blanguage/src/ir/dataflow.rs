@@ -480,32 +480,31 @@ fn instruction(value: &Inst) -> View {
 
 #[derive(Clone, Copy)]
 #[repr(C)]
-struct FloatScalar { kind: u32, integer: u32, floating: u32 }
+struct RegisterFacts { kind: u32, integer: u32, floating: u32, bytes: u32 }
 
 #[repr(C)]
-struct FloatHost {
+struct RegisterHost {
     ir: Host,
-    scalar: unsafe extern "C" fn(Span, usize) -> FloatScalar,
+    scalar: unsafe extern "C" fn(Span, usize) -> RegisterFacts,
 }
 
 unsafe extern "C" {
     #[link_name = "bootstrap.ir_dataflow::float_preserve"]
-    fn b_float_preserve(stage: Node, requested: u32, host: FloatHost) -> u32;
-    #[link_name = "bootstrap.ir_dataflow::program_float_preserve"]
-    fn b_program_float_preserve(stages: Span, requested: u32, host: FloatHost) -> u32;
+    fn b_float_preserve(stage: Node, requested: u32, host: RegisterHost) -> u32;
 }
 
-unsafe extern "C" fn float_scalar(registers: Span, index: usize) -> FloatScalar {
+unsafe extern "C" fn register_facts(registers: Span, index: usize) -> RegisterFacts {
     let registers = unsafe { std::slice::from_raw_parts(registers.data.cast::<Scalar>(), registers.count) };
     let scalar = registers[index];
-    FloatScalar {
+    RegisterFacts {
         kind: crate::builtin_types::ScalarCode::from(scalar) as u32,
         integer: u32::from(scalar.is_integer()),
         floating: u32::from(scalar.is_float()),
+        bytes: scalar.size(),
     }
 }
 
-const FLOAT_HOST: FloatHost = FloatHost { ir: HOST, scalar: float_scalar };
+const REGISTER_HOST: RegisterHost = RegisterHost { ir: HOST, scalar: register_facts };
 const PRESERVE_F32: u32 = 1 << (crate::builtin_types::ScalarCode::F32 as u32);
 const PRESERVE_F64: u32 = 1 << (crate::builtin_types::ScalarCode::F64 as u32);
 const PRESERVE_FLOATS: u32 = PRESERVE_F32 | PRESERVE_F64;
@@ -516,15 +515,11 @@ fn float_modes(bits: u32) -> (bool, bool) {
 
 pub(super) fn float_preserve(stage: &Stage, scalar: Scalar) -> bool {
     let requested = 1 << (crate::builtin_types::ScalarCode::from(scalar) as u32);
-    unsafe { b_float_preserve(Node::of(stage, Kind::Stage), requested, FLOAT_HOST) != 0 }
+    unsafe { b_float_preserve(Node::of(stage, Kind::Stage), requested, REGISTER_HOST) != 0 }
 }
 
 pub(crate) fn stage_float_preserve(stage: &Stage) -> (bool, bool) {
-    float_modes(unsafe { b_float_preserve(Node::of(stage, Kind::Stage), PRESERVE_FLOATS, FLOAT_HOST) })
-}
-
-pub(super) fn program_float_preserve(program: &Program) -> (bool, bool) {
-    float_modes(unsafe { b_program_float_preserve(Span::slice(program.stages()), PRESERVE_FLOATS, FLOAT_HOST) })
+    float_modes(unsafe { b_float_preserve(Node::of(stage, Kind::Stage), PRESERVE_FLOATS, REGISTER_HOST) })
 }
 
 unsafe extern "C" {
@@ -739,20 +734,26 @@ impl ShaderSubgroups {
     }
 }
 #[repr(C)]
-struct SubgroupHost { ir: Host, scalar_bytes: unsafe extern "C" fn(*const c_void, usize) -> u32 }
-const SUBGROUP_HOST: SubgroupHost = SubgroupHost { ir: HOST, scalar_bytes: register_bytes };
+struct ProgramCodeRequirements {
+    subgroup: SubgroupFlags,
+    atomic64: u32,
+    float_preserve: u32,
+    maximal_reconvergence: u32,
+}
 unsafe extern "C" {
     #[link_name = "bootstrap.ir_dataflow::has_subgroups"]
     fn b_has_subgroups(code: Span, host: Host) -> u32;
     #[link_name = "bootstrap.ir_dataflow::subgroup_operations"]
-    fn b_subgroup_operations(code: Span, host: SubgroupHost) -> u32;
+    fn b_subgroup_operations(code: Span, host: RegisterHost) -> u32;
     #[link_name = "bootstrap.ir_dataflow::shader_subgroups"]
-    fn b_shader_subgroups(code: Span, host: SubgroupHost) -> ShaderSubgroups;
+    fn b_shader_subgroups(code: Span, host: RegisterHost) -> ShaderSubgroups;
     #[link_name = "bootstrap.ir_dataflow::subgroup_from_operations"]
     fn b_subgroup_from_operations(context: *mut c_void,
         next: unsafe extern "C" fn(*mut c_void) -> Word) -> SubgroupFlags;
     #[link_name = "bootstrap.ir_dataflow::subgroup_capabilities"]
-    fn b_subgroup_capabilities(stages: Span, host: SubgroupHost) -> SubgroupFlags;
+    fn b_subgroup_capabilities(stages: Span, host: RegisterHost) -> SubgroupFlags;
+    #[link_name = "bootstrap.ir_dataflow::program_code_requirements"]
+    fn b_program_code_requirements(stages: Span, requested: u32, host: RegisterHost) -> ProgramCodeRequirements;
 }
 // Decode the paired private instruction discriminants into the original enum;
 // its Rust representation and the public query result remain unchanged.
@@ -768,13 +769,13 @@ pub(crate) fn has_subgroups(stage: &Stage) -> bool {
     unsafe { b_has_subgroups(Span::slice(&stage.code), HOST) != 0 }
 }
 pub(super) fn subgroup_operations(stage: &Stage) -> BTreeSet<SubgroupOp> {
-    let used = unsafe { b_subgroup_operations(Span::slice(&stage.code), SUBGROUP_HOST) };
+    let used = unsafe { b_subgroup_operations(Span::slice(&stage.code), REGISTER_HOST) };
     SUBGROUP_OPERATIONS.into_iter().enumerate()
         .filter_map(|(bit, operation)| (used & (1 << bit) != 0).then_some(operation))
         .collect()
 }
 pub(crate) fn shader_subgroups(stage: &Stage) -> ShaderSubgroups {
-    unsafe { b_shader_subgroups(Span::slice(&stage.code), SUBGROUP_HOST) }
+    unsafe { b_shader_subgroups(Span::slice(&stage.code), REGISTER_HOST) }
 }
 pub(super) fn subgroup_from_operations<I: IntoIterator<Item = SubgroupOp>>(operations: I) -> SubgroupCapabilities {
     let mut operations = operations.into_iter();
@@ -787,7 +788,21 @@ unsafe extern "C" fn next_subgroup<I: Iterator<Item = SubgroupOp>>(context: *mut
     }
 }
 pub(super) fn subgroup_capabilities(program: &Program) -> SubgroupCapabilities {
-    unsafe { b_subgroup_capabilities(Span::slice(program.stages()), SUBGROUP_HOST).into() }
+    unsafe { b_subgroup_capabilities(Span::slice(program.stages()), REGISTER_HOST).into() }
+}
+
+pub(super) fn program_code_requirements(program: &Program) -> DeviceRequirements {
+    let facts = unsafe {
+        b_program_code_requirements(Span::slice(program.stages()), PRESERVE_FLOATS, REGISTER_HOST)
+    };
+    let (atomic64, shared_atomic64) = atomic64_flags(facts.atomic64);
+    let (float32_preserve, float64_preserve) = float_modes(facts.float_preserve);
+    DeviceRequirements {
+        atomic64, shared_atomic64, float32_preserve, float64_preserve,
+        subgroup: facts.subgroup.into(),
+        maximal_reconvergence: facts.maximal_reconvergence != 0,
+        ..DeviceRequirements::default()
+    }
 }
 
 #[repr(C)]
@@ -866,16 +881,11 @@ pub(crate) fn numeric_requirements(program: &Program) -> (bool, bool, bool) {
 
 unsafe extern "C" {
     #[link_name = "bootstrap.ir_dataflow::atomic64_requirements"]
-    fn b_atomic64_requirements(code: Span, host: Host) -> u32;
-    #[link_name = "bootstrap.ir_dataflow::program_atomic64_requirements"]
-    fn b_program_atomic64_requirements(stages: Span, host: Host) -> u32;
+    fn b_atomic64_requirements(code: Span, host: RegisterHost) -> u32;
 }
 fn atomic64_flags(flags: u32) -> (bool, bool) { (flags & 1 != 0, flags & 2 != 0) }
 pub(super) fn atomic64_requirements(stage: &Stage) -> (bool, bool) {
-    atomic64_flags(unsafe { b_atomic64_requirements(Span::slice(&stage.code), HOST) })
-}
-pub(super) fn program_atomic64_requirements(program: &Program) -> (bool, bool) {
-    atomic64_flags(unsafe { b_program_atomic64_requirements(Span::slice(program.stages()), HOST) })
+    atomic64_flags(unsafe { b_atomic64_requirements(Span::slice(&stage.code), REGISTER_HOST) })
 }
 
 unsafe extern "C" {

@@ -1421,74 +1421,62 @@ extern "C" void mark_frame_sources(FrameSourceHost host) on cpu
 }
 
 u32 float_kind(u32 kind) on cpu { return u32(1)<<kind; }
-u32 float_code(Span code,Span registers,u32 requested,FloatHost host) on cpu
- requires nonzero(host.ir.inspect) requires nonzero(host.scalar) {
- usize index=0u64;u32 remaining=requested;
- while(index<code.count && remaining!=0) {
-  View value=host.ir.inspect(node_at(code,index,N_INSTRUCTION));
-  if(value.tag==OP_MATH && value.b!=0u64) {
-   remaining&=~float_kind(host.scalar(registers,value.a).kind);
-  }else if(value.tag==OP_BINARY && value.d!=0u64) {
-   remaining&=~float_kind(host.scalar(registers,value.b).kind);
-  }else if(value.tag==OP_CAST) {
-   FloatScalar source=host.scalar(registers,value.b);
-   if(source.floating!=0) {
-    FloatScalar target=host.scalar(registers,value.a);
-    if(target.integer==0) {
-     remaining&=~(float_kind(target.kind)^float_kind(source.kind));
-    }
+u32 float_instruction_remaining(View value,Span registers,u32 requested,RegisterHost host) on cpu
+ requires nonzero(host.scalar) {
+ u32 remaining=requested;
+ if(value.tag==OP_MATH && value.b!=0u64) {
+  remaining&=~float_kind(host.scalar(registers,value.a).kind);
+ }else if(value.tag==OP_BINARY && value.d!=0u64) {
+  remaining&=~float_kind(host.scalar(registers,value.b).kind);
+ }else if(value.tag==OP_CAST) {
+  RegisterFacts source=host.scalar(registers,value.b);
+  if(source.floating!=0) {
+   RegisterFacts target=host.scalar(registers,value.a);
+   if(target.integer==0) {
+    remaining&=~(float_kind(target.kind)^float_kind(source.kind));
    }
-  }else if(value.tag==OP_TILE_COLLECTIVE) {
-   usize result=0u64;
-   while(result<value.first.count && remaining!=0) {
-    remaining&=~float_kind(host.scalar(registers,word_at(value.first,result)).kind);
-    result+=1u64;
-   }
-  }else if(value.tag==OP_SUBGROUP && (value.c==13u64 || value.c==14u64 || value.c==15u64 || value.c==16u64)) {
-   // Original SubgroupOp Sum, ExclusiveSum, Min and Max discriminants.
-   remaining&=~float_kind(host.scalar(registers,value.a).kind);
-  }else if(value.tag==OP_SCOPE || value.tag==OP_BRANCH || value.tag==OP_LOOP_VALUE) {
-   remaining&=~float_code(value.first,registers,remaining,host);
-   remaining&=~float_code(value.second,registers,remaining,host);
   }
-  index+=1u64;
+ }else if(value.tag==OP_TILE_COLLECTIVE) {
+  usize result=0u64;
+  while(result<value.first.count && remaining!=0) {
+   remaining&=~float_kind(host.scalar(registers,word_at(value.first,result)).kind);
+   result+=1u64;
+  }
  }
- return requested^remaining;
+ return remaining;
 }
 
-u32 float_value_code(Node source,u32 requested,FloatHost host) on cpu
+u32 float_value_remaining(Node source,u32 requested,RegisterHost host) on cpu
  requires nonzero(host.ir.inspect) requires nonzero(host.scalar) {
  if(requested==0){return 0;}
  View value=host.ir.inspect(source);
- return float_code(value.first,value.second,requested,host);
+ return code_requirements<0>(value.first,value.second,host,CodeRequirements(0,0,requested)).remaining_floats;
 }
 
-extern "C" u32 float_preserve(Node source,u32 requested,FloatHost host) on cpu
+u32 float_operation_remaining(Node source,u32 requested,RegisterHost host) on cpu
  requires nonzero(host.ir.inspect) requires nonzero(host.scalar) {
- View stage=host.ir.inspect(source);View operation=host.ir.inspect(stage.left);
+ if(requested==0){return 0;}
+ View operation=host.ir.inspect(source);
  u32 remaining=requested;
  if(operation.tag==1 || operation.tag==5 || operation.tag==6) {
   remaining&=~float_kind(host.ir.inspect(operation.left).tag);
  }else if(operation.tag==2 || operation.tag==3 || operation.tag==4) {
   View custom=host.ir.inspect(operation.left);
-  remaining&=~float_value_code(custom.left,remaining,host);
-  remaining&=~float_value_code(custom.right,remaining,host);
+  remaining=float_value_remaining(custom.left,remaining,host);
+  remaining=float_value_remaining(custom.right,remaining,host);
   if(custom.first.count!=0u64) {
-   remaining&=~float_value_code(node_at(custom.first,0u64,N_VALUE_CODE),remaining,host);
+   remaining=float_value_remaining(node_at(custom.first,0u64,N_VALUE_CODE),remaining,host);
   }
  }
- remaining&=~float_code(stage.first,stage.second,remaining,host);
- return requested^remaining;
+ return remaining;
 }
 
-extern "C" u32 program_float_preserve(Span stages,u32 requested,FloatHost host) on cpu
+extern "C" u32 float_preserve(Node source,u32 requested,RegisterHost host) on cpu
  requires nonzero(host.ir.inspect) requires nonzero(host.scalar) {
- u32 remaining=requested;usize index=0u64;
- while(index<stages.count && remaining!=0) {
-  remaining&=~float_preserve(node_at(stages,index,N_STAGE),remaining,host);
-  index+=1u64;
- }
- return requested^remaining;
+ View stage=host.ir.inspect(source);
+ let remaining=float_operation_remaining(stage.left,requested,host);
+ let facts=code_requirements<0>(stage.first,stage.second,host,CodeRequirements(0,0,remaining));
+ return requested^facts.remaining_floats;
 }
 
 extern "C" u32 has_tile_scope(Span code,u32 has_tiles,Host host) on cpu
@@ -1675,26 +1663,43 @@ const u32 SUBGROUP_RELATIVE=6144;
 const u32 SUBGROUP_ARITHMETIC=8380416;
 const u32 APPEND_OPERATIONS=456; // Elect, Count, PrefixCount, BroadcastFirst.
 
-u32 subgroup_uses<const Widths:u32>(Span code,address stage,SubgroupHost host,u32 previous) on cpu
- requires nonzero(host.ir.inspect) requires nonzero(host.scalar_bytes) {
- u32 used=previous;
+const u32 CODE_SUBGROUPS=1;
+const u32 CODE_SUBGROUP_WIDTHS=2;
+const u32 CODE_ATOMICS=4;
+
+struct CodeRequirements { u32 subgroup; u32 atomic64; u32 remaining_floats; };
+
+CodeRequirements code_requirements<const Queries:u32>(Span code,Span registers,RegisterHost host,CodeRequirements initial) on cpu
+ requires nonzero(host.ir.inspect) requires nonzero(host.scalar) {
+ CodeRequirements facts=initial;
  usize index=0u64;
- while(index<code.count) {
+ while(index<code.count &&
+       ((Queries&CODE_SUBGROUPS)!=0 || ((Queries&CODE_ATOMICS)!=0 && facts.atomic64!=3) || facts.remaining_floats!=0)) {
   View value=host.ir.inspect(node_at(code,index,N_INSTRUCTION));
-  if(value.tag==OP_APPEND) {
-   used|=SUBGROUP_APPEND|APPEND_OPERATIONS;
+  if(value.tag==OP_SCOPE || value.tag==OP_BRANCH || value.tag==OP_LOOP_VALUE) {
+   facts=code_requirements<Queries>(value.first,registers,host,facts);
+   facts=code_requirements<Queries>(value.second,registers,host,facts);
   }else if(value.tag==OP_SUBGROUP) {
-   used|=1<<u32(value.c);
-   if(Widths!=0 && (used&SUBGROUP_EXTENDED)==0 && host.scalar_bytes(stage,value.a)!=4) {
-    used|=SUBGROUP_EXTENDED;
+   if((Queries&CODE_SUBGROUPS)!=0){facts.subgroup|=1<<u32(value.c);}
+   bool width=(Queries&CODE_SUBGROUP_WIDTHS)!=0 && (facts.subgroup&SUBGROUP_EXTENDED)==0;
+   // Sum, ExclusiveSum, Min and Max share the result register used by the width query.
+   bool floating=facts.remaining_floats!=0 && value.c>=13u64 && value.c<=16u64;
+   if(width || floating) {
+    RegisterFacts scalar=host.scalar(registers,value.a);
+    if(width && scalar.bytes!=4){facts.subgroup|=SUBGROUP_EXTENDED;}
+    if(floating){facts.remaining_floats&=~float_kind(scalar.kind);}
    }
-  }else if(value.tag==OP_SCOPE || value.tag==OP_BRANCH || value.tag==OP_LOOP_VALUE) {
-   used=subgroup_uses<Widths>(value.first,stage,host,used);
-   used=subgroup_uses<Widths>(value.second,stage,host,used);
+  }else if((Queries&CODE_SUBGROUPS)!=0 && value.tag==OP_APPEND) {
+   facts.subgroup|=SUBGROUP_APPEND|APPEND_OPERATIONS;
+  }else if((Queries&CODE_ATOMICS)!=0 && facts.atomic64!=3 && value.tag==OP_ATOMIC && value.b==8u64) {
+   View target=host.ir.inspect(value.left);
+   if(target.tag==0){facts.atomic64|=1;}else if(target.tag==3){facts.atomic64|=2;}
+  }else if(facts.remaining_floats!=0) {
+   facts.remaining_floats=float_instruction_remaining(value,registers,facts.remaining_floats,host);
   }
   index+=1u64;
  }
- return used;
+ return facts;
 }
 
 SubgroupFlags subgroup_flags(u32 used) on cpu {
@@ -1704,13 +1709,17 @@ SubgroupFlags subgroup_flags(u32 used) on cpu {
   u32((used&SUBGROUP_SHUFFLE)!=0),u32((used&SUBGROUP_RELATIVE)!=0),
   u32((used&SUBGROUP_EXTENDED)!=0));
 }
-extern "C" u32 subgroup_operations(Span code,SubgroupHost host) on cpu
- requires nonzero(host.ir.inspect) requires nonzero(host.scalar_bytes) {
- return subgroup_uses<0>(code,unsafe_address(0u64),host,0)&SUBGROUP_OPERATIONS;
+u32 shader_subgroup_uses(Span code,RegisterHost host) on cpu
+ requires nonzero(host.ir.inspect) requires nonzero(host.scalar) {
+ return code_requirements<1>(code,empty_span(),host,CodeRequirements(0,0,0)).subgroup;
 }
-extern "C" ShaderSubgroups shader_subgroups(Span code,SubgroupHost host) on cpu
- requires nonzero(host.ir.inspect) requires nonzero(host.scalar_bytes) {
- let used=subgroup_uses<0>(code,unsafe_address(0u64),host,0);
+extern "C" u32 subgroup_operations(Span code,RegisterHost host) on cpu
+ requires nonzero(host.ir.inspect) requires nonzero(host.scalar) {
+ return shader_subgroup_uses(code,host)&SUBGROUP_OPERATIONS;
+}
+extern "C" ShaderSubgroups shader_subgroups(Span code,RegisterHost host) on cpu
+ requires nonzero(host.ir.inspect) requires nonzero(host.scalar) {
+ let used=shader_subgroup_uses(code,host);
  return ShaderSubgroups(subgroup_flags(used),used&SUBGROUP_BUILTINS,u32((used&SUBGROUP_APPEND)!=0));
 }
 extern "C" SubgroupFlags subgroup_from_operations(address context,cfn<Word,address> next) on cpu
@@ -1722,15 +1731,30 @@ extern "C" SubgroupFlags subgroup_from_operations(address context,cfn<Word,addre
   used|=1<<u32(operation.value);
  }
 }
-extern "C" SubgroupFlags subgroup_capabilities(Span stages,SubgroupHost host) on cpu
- requires nonzero(host.ir.inspect) requires nonzero(host.scalar_bytes) {
- u32 used=0;usize index=0u64;
+extern "C" SubgroupFlags subgroup_capabilities(Span stages,RegisterHost host) on cpu
+ requires nonzero(host.ir.inspect) requires nonzero(host.scalar) {
+ CodeRequirements facts=CodeRequirements(0,0,0);
+ usize index=0u64;
  while(index<stages.count) {
-  Node stage=node_at(stages,index,N_STAGE);View value=host.ir.inspect(stage);
-  used=subgroup_uses<1>(value.first,stage.data,host,used);
+  View stage=host.ir.inspect(node_at(stages,index,N_STAGE));
+  facts=code_requirements<3>(stage.first,stage.second,host,facts);
   index+=1u64;
  }
- return subgroup_flags(used);
+ return subgroup_flags(facts.subgroup);
+}
+
+extern "C" ProgramCodeRequirements program_code_requirements(Span stages,u32 requested,RegisterHost host) on cpu
+ requires nonzero(host.ir.inspect) requires nonzero(host.scalar) {
+ CodeRequirements facts=CodeRequirements(0,0,requested);
+ usize index=0u64;
+ while(index<stages.count) {
+  View stage=host.ir.inspect(node_at(stages,index,N_STAGE));
+  facts.remaining_floats=float_operation_remaining(stage.left,facts.remaining_floats,host);
+  facts=code_requirements<7>(stage.first,stage.second,host,facts);
+  index+=1u64;
+ }
+ return ProgramCodeRequirements(subgroup_flags(facts.subgroup),facts.atomic64,
+  requested^facts.remaining_floats,u32((facts.subgroup&SUBGROUP_APPEND)!=0));
 }
 
 void collect_ray_operands(Span code,RayHost host) on cpu
@@ -1884,28 +1908,9 @@ extern "C" NumericRequirements numeric_requirements(Span stages,Span buffers,Spa
  return flags;
 }
 
-extern "C" u32 atomic64_requirements(Span code,Host host) on cpu requires nonzero(host.inspect) {
- u32 flags=0;usize index=0u64;
- while(index<code.count && flags!=3) {
-  View value=host.inspect(node_at(code,index,N_INSTRUCTION));
-  if(value.tag==OP_ATOMIC && value.b==8u64) {
-   View target=host.inspect(value.left);
-   if(target.tag==0){flags=flags|1;}else if(target.tag==3){flags=flags|2;}
-  }else if(value.tag==OP_SCOPE || value.tag==OP_BRANCH || value.tag==OP_LOOP_VALUE) {
-   flags=flags|atomic64_requirements(value.first,host);
-   if(flags!=3){flags=flags|atomic64_requirements(value.second,host);}
-  }
-  index+=1u64;
- }
- return flags;
-}
-extern "C" u32 program_atomic64_requirements(Span stages,Host host) on cpu requires nonzero(host.inspect) {
- u32 flags=0;usize index=0u64;
- while(index<stages.count && flags!=3) {
-  View stage=host.inspect(node_at(stages,index,N_STAGE));
-  flags=flags|atomic64_requirements(stage.first,host);index+=1u64;
- }
- return flags;
+extern "C" u32 atomic64_requirements(Span code,RegisterHost host) on cpu
+ requires nonzero(host.ir.inspect) requires nonzero(host.scalar) {
+ return code_requirements<4>(code,empty_span(),host,CodeRequirements(0,0,0)).atomic64;
 }
 
 extern "C" u32 maximal_reconvergence(Span code,Host host) on cpu requires nonzero(host.inspect) {

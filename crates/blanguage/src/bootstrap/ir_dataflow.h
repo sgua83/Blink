@@ -381,15 +381,13 @@ extern "C" void mark_frame_sources(FrameSourceHost host) on cpu
  requires nonzero(host.arguments) requires nonzero(host.contains);
 
 // Optimized floating requirements borrow each original body's own registers.
-struct FloatScalar { u32 kind; u32 integer; u32 floating; };
-struct FloatHost {
+struct RegisterFacts { u32 kind; u32 integer; u32 floating; u32 bytes; };
+struct RegisterHost {
  Host ir;
- cfn<FloatScalar,Span,usize> ensures memory(read) scalar;
+ cfn<RegisterFacts,Span,usize> ensures memory(read) scalar;
 };
 // The mask uses the original ScalarCode positions, including for a single requested scalar.
-extern "C" u32 float_preserve(Node source,u32 requested,FloatHost host) on cpu
- requires nonzero(host.ir.inspect) requires nonzero(host.scalar);
-extern "C" u32 program_float_preserve(Span stages,u32 requested,FloatHost host) on cpu
+extern "C" u32 float_preserve(Node source,u32 requested,RegisterHost host) on cpu
  requires nonzero(host.ir.inspect) requires nonzero(host.scalar);
 
 // Query only the tile usage facts consumed by the original Stage caller.
@@ -433,19 +431,20 @@ struct SubgroupFlags {
 struct ShaderSubgroups {
  SubgroupFlags capabilities; u32 builtins; u32 maximal_reconvergence;
 };
-struct SubgroupHost {
- Host ir;
- cfn<u32,address,usize> ensures memory(read) scalar_bytes;
+struct ProgramCodeRequirements {
+ SubgroupFlags subgroup; u32 atomic64; u32 float_preserve; u32 maximal_reconvergence;
 };
 extern "C" u32 has_subgroups(Span code,Host host) on cpu requires nonzero(host.inspect);
-extern "C" u32 subgroup_operations(Span code,SubgroupHost host) on cpu
- requires nonzero(host.ir.inspect) requires nonzero(host.scalar_bytes);
-extern "C" ShaderSubgroups shader_subgroups(Span code,SubgroupHost host) on cpu
- requires nonzero(host.ir.inspect) requires nonzero(host.scalar_bytes);
+extern "C" u32 subgroup_operations(Span code,RegisterHost host) on cpu
+ requires nonzero(host.ir.inspect) requires nonzero(host.scalar);
+extern "C" ShaderSubgroups shader_subgroups(Span code,RegisterHost host) on cpu
+ requires nonzero(host.ir.inspect) requires nonzero(host.scalar);
 extern "C" SubgroupFlags subgroup_from_operations(address context,cfn<Word,address> next) on cpu
  requires nonzero(next);
-extern "C" SubgroupFlags subgroup_capabilities(Span stages,SubgroupHost host) on cpu
- requires nonzero(host.ir.inspect) requires nonzero(host.scalar_bytes);
+extern "C" SubgroupFlags subgroup_capabilities(Span stages,RegisterHost host) on cpu
+ requires nonzero(host.ir.inspect) requires nonzero(host.scalar);
+extern "C" ProgramCodeRequirements program_code_requirements(Span stages,u32 requested,RegisterHost host) on cpu
+ requires nonzero(host.ir.inspect) requires nonzero(host.scalar);
 
 struct RayHost {
  Host ir; address used;
@@ -472,8 +471,8 @@ struct NumericHost {
 extern "C" NumericRequirements numeric_requirements(Span stages,Span buffers,Span uniforms,NumericHost host) on cpu
  requires nonzero(host.ir.inspect) requires nonzero(host.locals);
 
-extern "C" u32 atomic64_requirements(Span code,Host host) on cpu requires nonzero(host.inspect);
-extern "C" u32 program_atomic64_requirements(Span stages,Host host) on cpu requires nonzero(host.inspect);
+extern "C" u32 atomic64_requirements(Span code,RegisterHost host) on cpu
+ requires nonzero(host.ir.inspect) requires nonzero(host.scalar);
 
 extern "C" u32 maximal_reconvergence(Span code,Host host) on cpu requires nonzero(host.inspect);
 extern "C" u32 program_maximal_reconvergence(Span stages,Host host) on cpu requires nonzero(host.inspect);
