@@ -98,6 +98,47 @@ pub struct DomainBindings<D> {
     pub(crate) datasets: Vec<D>,
     pub(crate) domains: Vec<DomainRelation>,
 }
+
+struct RelationTargets<'a, D, T> {
+    datasets: &'a [D],
+    positions: Vec<Vec<T>>,
+    shared: BTreeMap<usize, usize>,
+}
+
+impl<'a, D: DomainStorage, T> RelationTargets<'a, D, T> {
+    fn new(datasets: &'a [D], targets: impl Iterator<Item = (usize, T)>) -> Self {
+        let mut positions: Vec<_> = datasets.iter().map(|_| Vec::new()).collect();
+        let mut shared = BTreeMap::new();
+        for (old, target) in targets {
+            let source = datasets[old].read_identity()
+                .map_or(old, |identity| *shared.entry(identity).or_insert(old));
+            positions[source].push(target);
+        }
+        Self { datasets, positions, shared }
+    }
+
+    fn source(&self, old: usize) -> Option<usize> {
+        let source = match self.datasets[old].read_identity() {
+            Some(identity) => *self.shared.get(&identity)?,
+            None => old,
+        };
+        (!self.positions[source].is_empty()).then_some(source)
+    }
+}
+
+struct ArgumentField {
+    binding: usize,
+    start: u32,
+    end: u64,
+}
+
+impl ArgumentField {
+    fn project(&self, offset: u32, width: u32) -> Option<(usize, u32)> {
+        (offset >= self.start && u64::from(offset) + u64::from(width) <= self.end)
+            .then(|| (self.binding, offset - self.start))
+    }
+}
+
 impl<D> From<Vec<D>> for DomainBindings<D> {
     fn from(datasets: Vec<D>) -> Self {
         Self {
@@ -212,31 +253,18 @@ impl<D> DomainBindings<D> {
         self.datasets.extend(additional);
         let relations = std::mem::take(&mut self.domains);
         if !relations.is_empty() && !order.is_empty() {
-            let mut positions = vec![Vec::new(); total];
-            let mut shared = BTreeMap::new();
             let targets = groups.enumerate().flat_map(|(part, len)| (0..len).map(move |slot| (part, slot)));
-            for (&old, target) in order.iter().zip(targets) {
-                let source = self.datasets[old].read_identity()
-                    .map_or(old, |identity| *shared.entry(identity).or_insert(old));
-                positions[source].push(target);
-            }
-            let source = |old: usize| {
-                let source = match self.datasets[old].read_identity() {
-                    Some(identity) => *shared.get(&identity)?,
-                    None => old,
-                };
-                (!positions[source].is_empty()).then_some(source)
-            };
+            let targets = RelationTargets::new(&self.datasets, order.iter().copied().zip(targets));
             // Resolve aliases before expanding relations into the receiving groups.
             let mut relations: Vec<_> = relations.into_iter()
-                .filter_map(|relation| relation.into_mapped(source)).collect();
+                .filter_map(|relation| relation.into_mapped(|old| targets.source(old))).collect();
             relations.sort_unstable();
             relations.dedup();
             for relation in relations {
                 match relation {
                     DomainRelation::Prefix { domain, offset, bytes, count } => {
-                        let mut counts = positions[count.binding].as_slice();
-                        for targets in positions[domain].chunk_by(|a,b| a.0 == b.0) {
+                        let mut counts = targets.positions[count.binding].as_slice();
+                        for targets in targets.positions[domain].chunk_by(|a,b| a.0 == b.0) {
                             let part = targets[0].0;
                             let start = counts.partition_point(|&(group, _)| group < part);
                             let end = counts.partition_point(|&(group, _)| group <= part);
@@ -250,7 +278,7 @@ impl<D> DomainBindings<D> {
                             counts = &counts[end..];
                         }
                     },
-                    DomainRelation::Element(range) => for &(part, binding) in &positions[range.binding] {
+                    DomainRelation::Element(range) => for &(part, binding) in &targets.positions[range.binding] {
                         emit(part, DomainRelation::Element(ElementRange { binding, ..range.clone() }));
                     },
                 }
@@ -308,36 +336,63 @@ impl<D> DomainBindings<D> {
         self.domains.dedup();
     }
     /// Borrow only facts contained in the actual logical argument fields.
-    pub(crate) fn projected_relations(&self, program:&ExecutionPlan, physical:impl Fn(usize)->(usize,u32))->Vec<DomainRelation>
-    where D:DomainStorage {
-        let mut result=Vec::new();
-        for (logical,buffer) in program.buffers().iter().enumerate() {
-            let (source,start)=physical(logical);
-            let end=u64::from(start)+u64::from(buffer.ty.size);
-            for relation in &self.domains {
-                if !same_storage(&self.datasets,source,relation.domain()) { continue; }
-                match relation {
-                    DomainRelation::Prefix{offset,bytes,count,..}
-                        if *offset>=start && u64::from(*offset)+u64::from(*bytes)<=end => {
-                        let offset=*offset-start;
-                        for (target,buffer) in program.buffers().iter().enumerate() {
-                            let (source,start)=physical(target);
-                            if same_storage(&self.datasets,source,count.binding) && count.word>=start
-                                && u64::from(count.word)+4<=u64::from(start)+u64::from(buffer.ty.size) {
-                                result.push(DomainRelation::Prefix{domain:logical,offset,bytes:*bytes,
-                                    count:PrefixCount{binding:target,word:count.word-start}});
-                            }
+    pub(crate) fn projected_relations(
+        &self,
+        program: &ExecutionPlan,
+        physical: impl Fn(usize) -> (usize, u32),
+    ) -> Vec<DomainRelation>
+    where
+        D: DomainStorage,
+    {
+        if self.domains.is_empty() {
+            return Vec::new();
+        }
+        let fields = program.buffers().iter().enumerate().map(|(binding, buffer)| {
+            let (source, start) = physical(binding);
+            (source, ArgumentField { binding, start, end: u64::from(start) + u64::from(buffer.ty.size) })
+        });
+        let targets = RelationTargets::new(&self.datasets, fields);
+        let mut prefixes = BTreeSet::new();
+        let mut elements = BTreeSet::new();
+        let mut counts = Vec::new();
+        let mut result = Vec::new();
+        for relation in &self.domains {
+            let Some(source) = targets.source(relation.domain()) else { continue; };
+            match relation {
+                DomainRelation::Prefix { offset, bytes, count, .. } => {
+                    let Some(count_source) = targets.source(count.binding) else { continue; };
+                    if !prefixes.insert((source, *offset, *bytes, count_source, count.word)) {
+                        continue;
+                    }
+                    counts.clear();
+                    counts.extend(targets.positions[count_source].iter()
+                        .filter_map(|field| field.project(count.word, 4)));
+                    let domains = targets.positions[source].iter()
+                        .filter_map(|field| field.project(*offset, *bytes));
+                    for (domain, offset) in domains {
+                        for &(binding, word) in &counts {
+                            result.push(DomainRelation::Prefix {
+                                domain, offset, bytes: *bytes, count: PrefixCount { binding, word },
+                            });
                         }
-                    },
-                    DomainRelation::Element(range)
-                        if range.offset>=start && u64::from(range.offset)+u64::from(range.scalar.size())<=end => {
-                        result.push(DomainRelation::Element(ElementRange{binding:logical,offset:range.offset-start,..range.clone()}));
-                    },
-                    _=>{},
+                    }
+                },
+                DomainRelation::Element(range) => {
+                    // Compare the original interval storage before cloning a receiving field's fact.
+                    let key = (source, range.offset, range.scalar, range.intervals.as_slice(), range.known_bits);
+                    if !elements.insert(key) {
+                        continue;
+                    }
+                    let fields = targets.positions[source].iter()
+                        .filter_map(|field| field.project(range.offset, range.scalar.size()));
+                    for (binding, offset) in fields {
+                        result.push(DomainRelation::Element(ElementRange { binding, offset, ..range.clone() }));
+                    }
                 }
             }
         }
-        result.sort();result.dedup();result
+        result.sort_unstable();
+        result
     }
     /// 将真实生产者的共同字段保证并入本组原关系，不读取或修改载荷。
     ///
