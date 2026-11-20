@@ -385,22 +385,61 @@ impl Builder<'_> {
         for index in projection.path{let Returned::OwnedValue(value)=model else{unreachable!()};model=value.payloads[index].as_deref().unwrap().clone();}
         self.resolve_owned_model(&mut model,None);Some(match model{Returned::Dataset(data)=>!data.ownership.available(),Returned::OwnedValue(value)=>if value.value.ty.has_variants(){value.ownership==Ownership::Moved||matches!(value.ownership,Ownership::Conditional(_))||shape&&value.incomplete()}else{!value.available()},_=>false})
     }
-    pub(super) async fn application_initial_loop(&self,body:&Block)->Result<bool>{
-        fn exits(body:&Block,nested:bool)->bool{body.iter().any(|statement|match statement.kind(){
-            StmtKind::Break=>!nested,StmtKind::Return(_)=>true,
-            StmtKind::If(_,yes,no)=>exits(&yes,nested)||exits(&no,nested),
-            StmtKind::Match(_,arms)=>arms.iter().any(|arm|exits(&arm.body(),nested)),
-            StmtKind::While(_,body)|StmtKind::For(_,_,_,body)=>exits(&body,true),
-            _=>false,
-        })}
-        // 资源出口先消费真实首轮；后续回边仍沿原构造进展及位置关系处理。
-        if self.application.is_some()&&self.env.values().any(|binding|!binding.application_resources().is_empty())&&exits(body,false){return Ok(true);}
-        fn root(expr:&Expr)->Option<String>{match expr.kind(){ExprKind::Name(name)=>Some(name.into()),ExprKind::Member(base,_)|ExprKind::Index(base,_)=>root(&base),_=>None}}
-        Ok(unsafe { self.world.call(effects::value_writes(self,body)).await }?.iter().any(|expr|match self.initial_target(expr,true){Some(value)=>value,None=>match root(expr).and_then(|name|self.env.get(&name)){Some(Binding::OwnedValue(value))=>value.ownership==application::Ownership::Moved||value.incomplete(),Some(Binding::ApplicationData(data))=>data.ownership==application::Ownership::Moved,_=>false}}))
+    fn loop_has_resource_exit(&self, body: &Block) -> bool {
+        fn exits(body: &Block, nested: bool) -> bool {
+            body.iter().any(|statement| match statement.kind() {
+                StmtKind::Break => !nested,
+                StmtKind::Return(_) => true,
+                StmtKind::If(_, yes, no) => exits(&yes, nested) || exits(&no, nested),
+                StmtKind::Match(_, arms) => arms.iter().any(|arm| exits(&arm.body(), nested)),
+                StmtKind::While(_, body) | StmtKind::For(_, _, _, body) => exits(&body, true),
+                _ => false,
+            })
+        }
+
+        self.application.is_some()
+            && self.env.values().any(|binding| !binding.application_resources().is_empty())
+            && exits(body, false)
     }
-    pub(super) async fn next_initial_loop(&self,body:&Block)->Result<bool>{
-        if !unsafe { self.world.call(self.application_initial_loop(body)).await }?{return Ok(false);}
-        if unsafe { self.world.call(effects::value_writes(self,body)).await }?.iter().any(|expr|self.initial_target(expr,false)==Some(true)){return Ok(true);}
+
+    fn loop_writes_incomplete_resource(&self, writes: &[Expr]) -> bool {
+        fn root(expr: &Expr) -> Option<String> {
+            match expr.kind() {
+                ExprKind::Name(name) => Some(name.into()),
+                ExprKind::Member(base, _) | ExprKind::Index(base, _) => root(&base),
+                _ => None,
+            }
+        }
+
+        writes.iter().any(|expr| match self.initial_target(expr, true) {
+            Some(value) => value,
+            None => match root(expr).and_then(|name| self.env.get(&name)) {
+                Some(Binding::OwnedValue(value)) => {
+                    value.ownership == application::Ownership::Moved || value.incomplete()
+                }
+                Some(Binding::ApplicationData(data)) => data.ownership == application::Ownership::Moved,
+                _ => false,
+            },
+        })
+    }
+
+    pub(super) async fn application_initial_loop(&self, body: &Block) -> Result<bool> {
+        if self.loop_has_resource_exit(body) {
+            return Ok(true);
+        }
+        let writes = unsafe { self.world.call(effects::value_writes(self, body)).await }?;
+        Ok(self.loop_writes_incomplete_resource(&writes))
+    }
+
+    pub(super) async fn next_initial_loop(&self, body: &Block) -> Result<bool> {
+        let resource_exit = self.loop_has_resource_exit(body);
+        let writes = unsafe { self.world.call(effects::value_writes(self, body)).await }?;
+        if !resource_exit && !self.loop_writes_incomplete_resource(&writes) {
+            return Ok(false);
+        }
+        if writes.iter().any(|expr| self.initial_target(expr, false) == Some(true)) {
+            return Ok(true);
+        }
         #[derive(PartialEq,Eq,PartialOrd,Ord)]enum Known{Owned(Vec<usize>),Payload(Vec<usize>),Boolean(usize,bool)}
         fn collect(model:&returns::Returned,path:&mut Vec<usize>,values:&mut BTreeSet<Known>){match model{returns::Returned::Dataset(data)=>{if data.ownership==application::Ownership::Owned{values.insert(Known::Owned(path.clone()));}},returns::Returned::OwnedValue(value)=>{if value.value.ty.has_variants()&&value.ownership==application::Ownership::Owned{values.insert(Known::Owned(path.clone()));}for(index,payload)in value.payloads.iter().enumerate(){if let Some(payload)=payload{path.push(index);if value.value.ty.has_variants(){values.insert(Known::Payload(path.clone()));}collect(payload,path,values);path.pop();}}},_=>{}}}
         let context=self.loop_contexts.last().unwrap();let known=|environment:&BTreeMap<String,Binding>|{let mut all=BTreeSet::new();for name in context.entry.env.keys(){
