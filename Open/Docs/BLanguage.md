@@ -4866,7 +4866,7 @@ Rust SDK的`vulkan::GpuDataset::layout() -> &Ty`和`stride() -> u32`交付原物
 
 `last_use() -> Result<Option<vulkan::GpuDatasetUse>>`查询本绑定的原dependency：先取本次已记录last_use，无本次点时沿同一冻结来源。Some包含device、sequence和complete；device是原VkDevice的当时作用域，sequence是该原队列从0开始的提交序号，complete由同一原Execution::is_complete观察。不同逻辑设备序号各自从0开始，不跨设备排序；值也不作为持久执行ID。完成状态是查询当时的事实，GPU仍可继续执行，标准状态语义见[Vulkan vkGetFenceStatus](https://docs.vulkan.org/refpages/latest/refpages/source/vkGetFenceStatus.html)。None仅表示没有保留点，可能是尚未提交或显式wait已清除本次点，不证明数据初始化、设备空闲或别名全部完成。
 
-同源只读绑定可以记录不同的真实执行点：源保留生产点，后续每个绑定保留自己的读取点。`same_storage`成立不合并这些点；源上的旧点完成不代表另一个绑定的新工作完成。成功Submission::wait清除本次绑定点，Owned可变为None，Read仍可能沿原冻结来源观察较早的点；它不是已被清除工作的第二记录。
+同源只读绑定可以记录不同的真实执行点：源保留生产点，后续每个绑定保留自己的读取点。`same_storage`成立不合并这些点；源上的旧点完成不代表另一个绑定的新工作完成。Vulkan提交实际录制数据绑定且成功交给设备后，才以该次完成点更新原绑定。零阶段或全部跳过的零容量阶段仍有原提交完成点，输入保留已有的最后使用点。成功Submission::wait只清除本次写入的绑定点，Owned可变为None，Read仍可能沿原冻结来源观察较早的点。
 
 查询不提交、等待、下载或改变producer／绑定点，也不增加完成表／状态镜像。原Execution可以按其已有职责清理实际已经完成的命令资源；原生错误直接返回Err，不写成None或complete。GpuDatasetUse只复制本次元数据，不持有Execution／数据／设备；保留旧快照不会保活资源、阻止后续提交或改变释放时机。
 

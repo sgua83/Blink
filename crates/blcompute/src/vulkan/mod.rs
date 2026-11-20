@@ -2637,7 +2637,7 @@ impl GpuProgram {
             pending_read: false,
             pending_write: pending_inputs,
         }).collect();
-        if !c.pipelines.is_empty() {
+        let used_bindings = if !c.pipelines.is_empty() {
             unsafe {
                 let sets = u32::try_from(u64::from(needs_root_set) + extra_sets)?;
                 if sets != 0 && !pending_inputs {
@@ -3073,8 +3073,11 @@ impl GpuProgram {
                         }
                     }
                 }
+                commands.set.get().is_some()
             }
-        }
+        } else {
+            false
+        };
         drop(scratch_uses);
         let queries = (query_count != 0)
             .then(|| QueryPool::take(&mut commands, query_count, c.program.clone()));
@@ -3089,11 +3092,13 @@ impl GpuProgram {
             },
             dependencies,
         )?;
-        for (dataset, access) in data.owners.iter_mut().zip(accesses) {
-            if let DatasetStorage::Owned(storage) = &mut *dataset.storage {
-                storage.producer = access.producer;
+        if used_bindings {
+            for (dataset, access) in data.owners.iter_mut().zip(accesses) {
+                if let DatasetStorage::Owned(storage) = &mut *dataset.storage {
+                    storage.producer = access.producer;
+                }
+                dataset.last_use = Some(execution.clone());
             }
-            dataset.last_use = Some(execution.clone());
         }
         Ok(Submission {
             execution,
@@ -3286,7 +3291,9 @@ impl Submission {
             Err(error) => return Err((error, self)),
         };
         for dataset in &mut self.bindings.datasets {
-            dataset.last_use = None;
+            if dataset.last_use.as_ref().is_some_and(|point| Rc::ptr_eq(point, &self.execution)) {
+                dataset.last_use = None;
+            }
         }
         Ok(Completed {
             bindings: self.bindings,
