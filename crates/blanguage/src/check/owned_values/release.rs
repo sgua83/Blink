@@ -50,7 +50,7 @@ impl Builder<'_>{
     let no_error=bounds::Condition::guard(bounds::Clause::zero_results([status]));
     let consumed_proof=bounds::Proof::condition(no_error.negate().logical(bounds::Condition::default(),false));
     let retained_owner=owned_presence::Presence::input(&Value{ty:Ty::scalar(Scalar::Bool),regs:vec![consumed],proof:consumed_proof,uniform:false,literal:false,constant:None}).not();
-    unsafe{self.world.call(self.owned_when(&retained_owner,span,None,None,async |builder|unsafe{builder.world.call(builder.drop_present_owned_tree(value,retained,span,drop_dataset)).await})).await}
+    unsafe{self.world.call(self.owned_when(&retained_owner,None,None,async |builder|unsafe{builder.world.call(builder.drop_present_owned_tree(value,retained,span,drop_dataset)).await})).await}
    }
   }
  }
@@ -68,7 +68,7 @@ impl Builder<'_>{
     let trigger=self.source_site.clone().map(ir::GenerationAnchor::Syntax);
     let branch=Arc::new(GeneratedOrigin{reason:ir::GenerationReason::ConditionalDropBranch,trigger:trigger.clone()});
     let condition=Arc::new(GeneratedOrigin{reason:ir::GenerationReason::ConditionalDropCondition,trigger});
-    return unsafe{self.world.call(self.owned_when(&when,span,Some(branch),Some(condition),async |builder|unsafe{builder.world.call(builder.drop_present_owned_tree(value,retained,span,drop_dataset)).await})).await};
+    return unsafe{self.world.call(self.owned_when(&when,Some(branch),Some(condition),async |builder|unsafe{builder.world.call(builder.drop_present_owned_tree(value,retained,span,drop_dataset)).await})).await};
    }
    Need::Frame=>{self.application_frame(span)?;}
    Need::Data=>{let Returned::Dataset(data)=value else{unsafe{std::hint::unreachable_unchecked()}};return drop_dataset(self,&data,retained,span).await;}

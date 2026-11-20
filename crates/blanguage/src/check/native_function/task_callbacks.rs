@@ -77,7 +77,7 @@ impl Builder<'_>{
     }
     SelectionNeed::Owners=>{owners=outputs[cursor.index as usize].1.ty.task_output_owners();facts.owners=owners.len()as u64;}
     SelectionNeed::Ready=>{
-     let(base,guard)=&outputs[cursor.index as usize];let ready=outputs::resource_guard(&guard.ty,owners[cursor.part as usize].0,&selected);let value=b.presence_register(&ready,span,None)?;
+     let(base,guard)=&outputs[cursor.index as usize];let ready=outputs::resource_guard(&guard.ty,owners[cursor.part as usize].0,&selected);let value=b.presence_register(&ready,None);
      b.emit(InstKind::StoreIndexed{source:IndexedSource::Pointer{address:output,index:unsafe{zero.unwrap_unchecked()},stride:1,aliases:Vec::new()},offset:unsafe{zero.unwrap_unchecked()},word:*base+cursor.part as u32*Scalar::Bool.size(),value});
     }
     SelectionNeed::Complete=>return Ok(()),

@@ -1604,7 +1604,7 @@ impl Builder<'_> {
         }
         let value=Value{ty:result,regs:values,proof,uniform:false,literal:false,constant:None};
         let accepted=owned_presence::Presence::input(&self.result_condition(&value,span)?);
-        unsafe { self.world.call(self.owned_when(&accepted,span,None,None,async |builder| {
+        unsafe { self.world.call(self.owned_when(&accepted,None,None,async |builder| {
             let owner=argument(builder.result_payload(&value,true).unwrap());
             let submit=|builder:&mut Builder<'_>| {
                 for (_, reference) in &dataset_writes {

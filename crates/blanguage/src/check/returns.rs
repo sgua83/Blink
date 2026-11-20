@@ -293,7 +293,7 @@ impl Builder<'_> {
         self.check_view_requirement(view::Requirement::Initialized{borrow:read.borrow(),read,code:"B229",span})?;
         Ok(true)
     }
-    fn publish_task_return_sources(&mut self,value:&mut Value,address:[Reg;2],span:Span)->Result<()> {
+    fn publish_task_return_sources(&mut self,value:&mut Value,address:[Reg;2]) {
         let index=self.constant(Scalar::U32,0).regs[0];
         for (slot,component) in value.ty.task_components().into_iter().enumerate() {
             let mut borrow=value.proof.view_borrow(component);
@@ -318,7 +318,8 @@ impl Builder<'_> {
                         });
                         Some(selected)
                     }else{
-                        self.task_source_condition(source,&active,span)?.map(|value|value.regs[0])
+                        self.task_source_presence(source, &active)
+                            .map(|presence| self.presence_register(&presence, None))
                     };
                     if let Some(condition)=condition {
                         origin=self.reg(Scalar::U32);
@@ -337,7 +338,6 @@ impl Builder<'_> {
             });
             value.proof.set_view_borrow(component,borrow);
         }
-        Ok(())
     }
 }
 

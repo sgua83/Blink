@@ -141,7 +141,15 @@ each_data(&mut model,&mut Vec::new(),&mut|data,path|data.initialization=Some(ini
                 complete(self).await?;
                 continue;
             }
-            if closed && let Some(condition)=self.task_source_condition(source_kind,&active,span)? {
+            if closed && let Some(presence) = self.task_source_presence(source_kind, &active) {
+                let condition = Value {
+                    ty: Ty::scalar(Scalar::Bool),
+                    regs: vec![self.presence_register(&presence, None)],
+                    proof: bounds::Proof::condition(presence.condition()),
+                    literal: false,
+                    uniform: false,
+                    constant: None,
+                };
                 unsafe { self.world.call(self.conditional_blocks(condition,complete,async |_|Ok(()),span)).await }?;
             }
         }
@@ -172,7 +180,7 @@ each_data(&mut model,&mut Vec::new(),&mut|data,path|data.initialization=Some(ini
         }
         decisions
     }
-    fn task_source_presence(
+    pub(super) fn task_source_presence(
         &self, source:&view::Source, active:&[(&view::Source,bounds::Clause)],
     )->Option<Presence> {
         if active.iter().all(|(other,_)|*other!=source) {
@@ -197,17 +205,6 @@ each_data(&mut model,&mut Vec::new(),&mut|data,path|data.initialization=Some(ini
         Some(decision.clone().and(yes).or(decision.not().and(no)))
     }
 
-    pub(super) fn task_source_condition(
-        &mut self, source:&view::Source, active:&[(&view::Source,bounds::Clause)], span:Span,
-    )->Result<Option<Value>> {
-        let Some(presence)=self.task_source_presence(source,active) else { return Ok(None); };
-        let reg=self.presence_register(&presence,span,None)?;
-        let proof=bounds::Proof::condition(presence.condition());
-        Ok(Some(Value{
-            ty:Ty::scalar(Scalar::Bool),regs:vec![reg],proof,
-            literal:false,uniform:false,constant:None,
-        }))
-    }
     pub(super) async fn assign_owned_place(&mut self,place:&Place,value:Returned)->Result<()>{
         if matches!(place.storage(),Place::ApplicationElement{..}) {
             return unsafe { self.world.call(self.assign_application_owned_argument(place, Some(&value))).await };

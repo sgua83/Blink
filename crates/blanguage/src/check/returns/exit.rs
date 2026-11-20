@@ -226,7 +226,7 @@ impl Builder<'_>{
      self.require_return_borrow(view::Borrow{reads:view::Edges::from([view_contracts::ContentRead::Returned{memory}]),..view::Borrow::default()},owned.take().unwrap(),span)?;
      facts.task=u32::from(self.task_return_source.is_some());facts.view=u32::from(value.as_ref().and_then(Returned::view_value).is_some());
     }
-    FinishNeed::Publish=>self.publish_task_return_sources(value.as_mut().and_then(Returned::view_value_mut).unwrap(),self.task_return_source.unwrap(),span)?,
+    FinishNeed::Publish=>self.publish_task_return_sources(value.as_mut().and_then(Returned::view_value_mut).unwrap(),self.task_return_source.unwrap()),
     FinishNeed::Context=>{
      let context=self.return_context.as_ref().unwrap();facts.scoped=u32::from(context.scoped);facts.slots=context.slots.len()as u64;
      facts.registers=value.as_ref().map_or(0,Returned::register_count)as u64;
