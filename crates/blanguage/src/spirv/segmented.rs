@@ -22,10 +22,18 @@ struct SegmentMerge {
 }
 
 #[repr(C)]
-struct SegmentWords {
-    body: u64,
-    decorations: u64,
-    next: u32,
+struct SegmentFinish {
+    merge: SegmentMerge,
+    target: PageAddress,
+    prefix_descriptor: u32,
+    source_descriptor: u32,
+    head_word: u32,
+    count_descriptor: u32,
+    count_word: u32,
+    group: u32,
+    active: u32,
+    count: u32,
+    step: u32,
 }
 
 #[repr(C)]
@@ -65,7 +73,7 @@ struct SegmentAdd {
 }
 
 #[repr(C)]
-struct SegmentSourceField {
+struct SegmentStorageField {
     word: u32,
     offset: u32,
     unit_type: u32,
@@ -85,7 +93,7 @@ struct SegmentSource {
 
 unsafe extern "C" {
     #[link_name = "bootstrap.spirv_envelope::segment_source"]
-    fn emit_segment_source(input: SegmentSource, fields: *const SegmentSourceField, count: u32,
+    fn emit_segment_source(input: SegmentSource, fields: *const SegmentStorageField, count: u32,
         words: *mut u32, body: *mut u32) -> PayloadWrite;
     #[link_name = "bootstrap.spirv_envelope::segment_add"]
     fn emit_segment_add(input: SegmentAdd, fields: *const SegmentField, count: u32,
@@ -93,10 +101,11 @@ unsafe extern "C" {
     #[link_name = "bootstrap.spirv_envelope::segment_tree"]
     fn emit_segment_tree(input: SegmentTree, levels: *const SegmentLevel, fields: *const SegmentField,
         count: u32, words: *mut u32, body: *mut u32, decorations: *mut u32) -> TreeWords;
-    #[link_name = "bootstrap.spirv_envelope::merge_segment"]
-    fn merge_segment(input: SegmentMerge, fields: *const SegmentField, count: u32,
-        left: *const u32, right: *const u32, values: *mut u32, body: *mut u32,
-        decorations: *mut u32) -> SegmentWords;
+    #[link_name = "bootstrap.spirv_envelope::segment_finish"]
+    fn emit_segment_finish(input: SegmentFinish, fields: *const SegmentField,
+        storage: *const SegmentStorageField, field_count: u32, exclusive: *const u32,
+        item: *const u32, identity: *const u32, workspace: *mut u32, body: *mut u32,
+        decorations: *mut u32) -> TreeWords;
 }
 
 struct Segment<'a> {
@@ -133,11 +142,11 @@ impl Emitter<'_> {
         }
         words
     }
-    fn segment_source(&mut self, scan: &Segment<'_>, reduction: &Reduction, head_word: u32) -> Vec<u32> {
-        let fields: Vec<_> = scan.ty.components.iter().map(|&(scalar, offset)| {
+    fn segment_storage_fields(&mut self, scan: &Segment<'_>, first: u32) -> Vec<SegmentStorageField> {
+        scan.ty.components.iter().map(|&(scalar, offset)| {
             let unit = Self::physical_unit(scalar);
-            let byte = reduction.source_word + offset;
-            SegmentSourceField {
+            let byte = first + offset;
+            SegmentStorageField {
                 word: offset / 4,
                 offset: if byte == 0 { 0 } else { self.constant(Scalar::U64, byte) },
                 unit_type: self.types[&unit],
@@ -145,7 +154,11 @@ impl Emitter<'_> {
                 pointer_type: self.physical_pointers[&unit],
                 step: if scalar.size() == 8 { self.constant(Scalar::U64, 4) } else { 0 },
             }
-        }).collect();
+        }).collect()
+    }
+
+    fn segment_source(&mut self, scan: &Segment<'_>, reduction: &Reduction, head_word: u32) -> Vec<u32> {
+        let fields = self.segment_storage_fields(scan, reduction.source_word);
         let head = if head_word == 0 { 0 } else { self.constant(Scalar::U64, head_word) };
         let source = self.page_input(Scalar::U32, PageSource::Dataset(self.buffers[reduction.source]),
             self.index, None, 0);
@@ -179,22 +192,43 @@ impl Emitter<'_> {
         }
     }
 
-    fn segment_combine(&mut self, scan: &Segment<'_>, left: &[u32], right: &[u32]) -> Vec<u32> {
-        let input = self.segment_merge_input(scan);
-        let mut values = vec![input.zero; scan.summary_words()];
+    fn segment_finish(
+        &mut self, scan: &Segment<'_>, reduction: &SegmentedReduction,
+        group: u32, active: u32, count: u32, exclusive: &[u32], item: &[u32], identity: &[u32],
+    ) {
+        let values = &reduction.values.fields;
+        let storage = self.segment_storage_fields(scan, values.target_word);
+        let target = self.page_input(Scalar::U32, PageSource::Dataset(self.buffers[values.target]),
+            self.index, None, 0);
+        let head_word = self.constant(Scalar::U32, reduction.head_word);
+        let count_word = self.constant(Scalar::U32, reduction.count.word);
+        let step = self.constant(Scalar::U64, 4);
+        let input = SegmentFinish {
+            merge: self.segment_merge_input(scan),
+            target,
+            prefix_descriptor: self.buffers[self.program.buffers.len()],
+            source_descriptor: self.buffers[values.source],
+            head_word,
+            count_descriptor: self.buffers[reduction.count.binding],
+            count_word,
+            group, active, count, step,
+        };
+        let words = scan.summary_words();
+        let mut workspace = vec![input.merge.zero; 4 * words];
         let body = self.body.len();
         let decorations = self.decorations.len();
-        self.body.reserve(15 + 74 * scan.fields.len());
-        self.decorations.reserve(3 * scan.fields.len());
+        self.body.reserve(565 + 22 * words + 180 * scan.fields.len());
+        self.decorations.reserve(6 * scan.fields.len());
         unsafe {
-            let result = merge_segment(input, scan.fields.as_ptr(), scan.fields.len() as u32,
-                left.as_ptr(), right.as_ptr(), values.as_mut_ptr(), self.body.as_mut_ptr().add(body),
+            let result = emit_segment_finish(input, scan.fields.as_ptr(), storage.as_ptr(),
+                scan.fields.len() as u32, exclusive.as_ptr(), item.as_ptr(), identity.as_ptr(),
+                workspace.as_mut_ptr(), self.body.as_mut_ptr().add(body),
                 self.decorations.as_mut_ptr().add(decorations));
             self.body.set_len(body + result.body as usize);
             self.decorations.set_len(decorations + result.decorations as usize);
             self.next = result.next;
+            self.current_label = result.label;
         }
-        values
     }
     pub(super) fn segmented_scan(
         &mut self,
@@ -348,11 +382,8 @@ impl Emitter<'_> {
     ) {
         let r = &reduction.values.fields;
         let scan = &self.segment(&reduction.values.ty, reduction.values.operator, true);
-        let k = scan.ty.size.div_ceil(4) as usize;
         let u = self.types[&Scalar::U32];
-        let b = self.types[&Scalar::Bool];
         let zero = self.constant(Scalar::U32, 0);
-        let one = self.constant(Scalar::U32, 1);
         let width = self.constant(Scalar::U32, 64);
         let group = self.id();
         self.emit(134, &[u, group, self.index, width]);
@@ -419,90 +450,19 @@ impl Emitter<'_> {
         self.scan_barrier();
         self.segment_tree(scan, &mut layout, local, shared, pointer, true, None);
         let result = self.read_summary_words(&own);
-        let write = self.id();
-        let end = self.id();
-        self.emit(247, &[end, 0]);
-        self.emit(250, &[active, write, end]);
-        self.emit(248, &[write]);
         if pass == Pass::ScanTail {
+            let write = self.id();
+            let end = self.id();
+            self.emit(247, &[end, 0]);
+            self.emit(250, &[active, write, end]);
+            self.emit(248, &[write]);
             let target = self.summary_addresses(scan.summary_words(), r.target, self.index);
             self.write_summary_words(&target, &result);
+            self.emit(249, &[end]);
+            self.emit(248, &[end]);
         } else {
-            let inclusive = self.segment_combine(scan, &result, &input);
-            // 首组不需要设备前缀；其余组只读取自己的摘要前缀。
-            let first_group = self.id();
-            self.emit(170, &[b, first_group, group, zero]);
-            let load_prefix = self.id();
-            let prefix_end = self.id();
-            let before = self.current_label;
-            self.emit(247, &[prefix_end, 0]);
-            self.emit(250, &[first_group, prefix_end, load_prefix]);
-            self.emit(248, &[load_prefix]);
-            let prefix = self.summary_addresses(scan.summary_words(), self.program.buffers.len(), group);
-            let prefix = self.read_summary_words(&prefix);
-            self.emit(249, &[prefix_end]);
-            self.emit(248, &[prefix_end]);
-            let prefix: Vec<_> = prefix
-                .iter()
-                .zip(&identity)
-                .map(|(v, identity)| {
-                    let result = self.id();
-                    self.emit(245, &[u, result, *v, load_prefix, *identity, before]);
-                    result
-                })
-                .collect();
-            let total = self.segment_combine(scan, &prefix, &inclusive);
-            let next = self.id();
-            self.emit(128, &[u, next, self.index, one]);
-            let last = self.id();
-            self.emit(170, &[b, last, next, count]);
-            let look = self.id();
-            let looked = self.id();
-            let before = self.current_label;
-            self.emit(247, &[looked, 0]);
-            self.emit(250, &[last, looked, look]);
-            self.emit(248, &[look]);
-            let next_head = self.address_scalar(Scalar::U32,
-                r.source,
-                next,
-                reduction.head_word);
-            let next_head = self.read_summary_words(&[next_head])[0];
-            let head = self.id();
-            self.emit(171, &[b, head, next_head, zero]);
-            self.emit(249, &[looked]);
-            self.emit(248, &[looked]);
-            let tail = self.id();
-            self.emit(245, &[b, tail, last, before, head, look]);
-            let emit_tail = self.id();
-            let emitted = self.id();
-            self.emit(247, &[emitted, 0]);
-            self.emit(250, &[tail, emit_tail, emitted]);
-            self.emit(248, &[emit_tail]);
-            let output = self.id();
-            self.emit(130, &[u, output, total[k + 1], one]);
-            for (scalar,offset) in &scan.ty.components {
-                let word = (offset / 4) as usize;
-                let n = scalar.size().div_ceil(4) as usize;
-                let value = self.join_words(*scalar, &total[word..word+n], Scalar::U32);
-                self.store_raw_buffer(*scalar, r.target, output, r.target_word + offset, value);
-            }
-            self.emit(249, &[emitted]);
-            self.emit(248, &[emitted]);
-            let emit_count = self.id();
-            let counted = self.id();
-            self.emit(247, &[counted, 0]);
-            self.emit(250, &[last, emit_count, counted]);
-            self.emit(248, &[emit_count]);
-            let target = self.address_scalar(Scalar::U32,
-                reduction.count.binding,
-                zero,
-                reduction.count.word);
-            self.write_summary_words(&[target], &[total[k + 1]]);
-            self.emit(249, &[counted]);
-            self.emit(248, &[counted]);
+            self.segment_finish(scan, reduction, group, active, count, &result, &input, &identity);
         }
-        self.emit(249, &[end]);
-        self.emit(248, &[end]);
     }
     fn segment_tree_layout(&mut self, scan: &Segment<'_>) -> SegmentTreeLayout {
         let levels = [1, 2, 4, 8, 16, 32].map(|width| SegmentLevel {

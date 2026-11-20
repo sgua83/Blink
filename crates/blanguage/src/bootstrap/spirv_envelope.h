@@ -451,12 +451,6 @@ struct SegmentMerge {
     u32 next;
 };
 
-struct SegmentWords { u64 body; u64 decorations; u32 next; };
-// left, right and values contain value_words, a head flag, and a count if counted.
-// The caller supplies 15 + 74*count body words and 3*count decoration words.
-extern "C" SegmentWords merge_segment(SegmentMerge input, address fields, u32 count,
-    address left, address right, address values, address body, address decorations) on cpu;
-
 struct SegmentLevel { u32 mask; u32 stride; };
 struct SegmentTree {
     SegmentMerge merge;
@@ -491,7 +485,7 @@ struct SegmentAdd {
 extern "C" TreeWords segment_add(SegmentAdd input, address fields, u32 count,
     address workspace, address body, address decorations) on cpu;
 
-struct SegmentSourceField {
+struct SegmentStorageField {
     u32 word;
     u32 offset;
     u32 unit_type;
@@ -511,6 +505,24 @@ struct SegmentSource {
 // The caller provides the existing summary layout with zero-filled padding.
 extern "C" PayloadWrite segment_source(SegmentSource input, address fields, u32 count,
     address words, address body) on cpu;
+
+struct SegmentFinish {
+    SegmentMerge merge;
+    PageAddress target;
+    u32 prefix_descriptor;
+    u32 source_descriptor;
+    u32 head_word;
+    u32 count_descriptor;
+    u32 count_word;
+    u32 group;
+    u32 active;
+    u32 count;
+    u32 step;
+};
+
+// The caller owns the original summaries and four summary spans of workspace.
+extern "C" TreeWords segment_finish(SegmentFinish input, address fields, address storage, u32 field_count,
+    address exclusive, address item, address identity, address workspace, address body, address decorations) on cpu;
 
 struct PrivateAddress {
     u32 index_type;
