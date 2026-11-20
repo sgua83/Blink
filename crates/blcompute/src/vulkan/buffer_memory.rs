@@ -1,6 +1,6 @@
 //! 同一逻辑设备的缓冲区物理内存；区间随实际 Allocation 释放，不保留空闲块。
 use super::*;
-use std::{cell::RefCell, rc::Weak};
+use std::{cell::RefCell, collections::btree_map::Entry, rc::Weak};
 
 // 小缓冲区的物理分块政策，不是资源容量或语言边界。
 const BLOCK_BYTES: u64 = 1024 * 1024;
@@ -64,11 +64,25 @@ struct Class {
 pub(super) struct Pool {
     blocks: BTreeMap<Class, Vec<Weak<Block>>>,
 }
+impl Pool {
+    fn remove(&mut self, block: &Block) {
+        if let Entry::Occupied(mut class) = self.blocks.entry(block.class) {
+            let blocks = class.get_mut();
+            if let Some(index) = blocks.iter().position(|entry| std::ptr::eq(entry.as_ptr(), block)) {
+                blocks.remove(index);
+            }
+            if blocks.is_empty() {
+                class.remove();
+            }
+        }
+    }
+}
 struct Block {
     owner: Rc<DeviceOwner>,
+    pool_owner: Weak<Inner>,
     memory: VkDeviceMemory,
     size: u64,
-    memory_type: u32,
+    class: Class,
     mapped: *mut u8,
     free: RefCell<Vec<(u64, u64)>>,
     free_memory: unsafe extern "system" fn(VkDevice, VkDeviceMemory, *const c_void),
@@ -121,9 +135,10 @@ impl Block {
         }
         let mut block = Self {
             owner: inner.owner.clone(),
+            pool_owner: Weak::new(),
             memory,
             size: info.allocationSize,
-            memory_type: info.memoryTypeIndex,
+            class,
             mapped: null_mut(),
             free: RefCell::default(),
             free_memory: inner.functions.vkFreeMemory,
@@ -184,6 +199,9 @@ impl Block {
 }
 impl Drop for Block {
     fn drop(&mut self) {
+        if let Some(inner) = self.pool_owner.upgrade() {
+            inner.buffer_memory.borrow_mut().remove(self);
+        }
         unsafe {
             if !self.mapped.is_null() {
                 (self.unmap)(self.owner.device, self.memory);
@@ -205,7 +223,7 @@ impl Range {
         self.block.size
     }
     pub fn memory_type(&self) -> u32 {
-        self.block.memory_type
+        self.block.class.memory_type
     }
     pub fn memory(&self) -> VkDeviceMemory {
         self.block.memory
@@ -216,8 +234,8 @@ impl Range {
 }
 impl Drop for Range {
     fn drop(&mut self) {
-        // A range covering the entire block has no remaining suballocations.
-        if self.size == self.block.size {
+        // Only a block with another live range can reuse this interval.
+        if Rc::strong_count(&self.block) == 1 {
             return;
         }
         let mut free = self.block.free.borrow_mut();
@@ -237,7 +255,7 @@ impl Drop for Range {
     }
 }
 pub(super) fn allocate(
-    inner: &Inner,
+    inner: &Rc<Inner>,
     required: VkMemoryRequirements,
     dedicated: bool,
     buffer: VkBuffer,
@@ -269,15 +287,22 @@ pub(super) fn allocate(
         )?;
         return Ok(block.first_range(required.size));
     }
-    let mut pool = inner.buffer_memory.borrow_mut();
-    let blocks = pool.blocks.entry(class).or_default();
-    blocks.retain(|block| block.strong_count() != 0);
-    for block in blocks.iter().filter_map(Weak::upgrade) {
-        if let Some(range) = block.take(required.size, alignment) {
-            return Ok(range);
+    if let Some(blocks) = inner.buffer_memory.borrow().blocks.get(&class) {
+        for block in blocks.iter().filter_map(Weak::upgrade) {
+            if let Some(range) = block.take(required.size, alignment) {
+                return Ok(range);
+            }
         }
     }
-    let range = Block::new(inner, class, BLOCK_BYTES, 0)?.first_range(required.size);
-    blocks.push(Rc::downgrade(&range.block));
+    let mut block = Block::new(inner, class, BLOCK_BYTES, 0)?;
+    block.pool_owner = Rc::downgrade(inner);
+    let range = block.first_range(required.size);
+    inner
+        .buffer_memory
+        .borrow_mut()
+        .blocks
+        .entry(class)
+        .or_default()
+        .push(Rc::downgrade(&range.block));
     Ok(range)
 }
