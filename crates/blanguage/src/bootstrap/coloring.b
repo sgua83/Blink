@@ -76,7 +76,9 @@ extern "C" ColorLayout color(address graph, u64 count, address places, address o
     u64 pending = 0u64;
     u64 id = 0u64;
     while (id < count) {
-        if (unsafe_position<ColorPlace>(place_at(places, id)).kind != IMMEDIATE) {
+        ColorPlace place = unsafe_position<ColorPlace>(place_at(places, id));
+        // Addressable fields receive their stack positions after coloring.
+        if (place.kind != IMMEDIATE && place.width != 0) {
             ColorNode facts = node(graph, id);
             unsafe_position<array<u64,3>>(order_at(order, pending)) = array<u64,3>(facts.weight, facts.degree, id);
             pending += 1u64;
@@ -138,11 +140,8 @@ extern "C" ColorLayout color(address graph, u64 count, address places, address o
         if (chosen != 16) {
             unsafe_position<ColorPlace>(destination).value = u64(chosen);
             unsafe_position<ColorPlace>(destination).kind = bank;
-            // Addressable fields receive their final stack positions after coloring.
-            if (unsafe_position<ColorPlace>(destination).width != 0) {
-                if (bank == GPR) { saved_gpr |= (1 << chosen) & 0xe0; }
-                else { saved_xmm |= (1 << chosen) & 0xffc0; }
-            }
+            if (bank == GPR) { saved_gpr |= (1 << chosen) & 0xe0; }
+            else { saved_xmm |= (1 << chosen) & 0xffc0; }
         } else {
             u32 slot = 0;
             while (slot < spills && unsafe_position<u64>(spill_mark(order, slot)) == visit) {
