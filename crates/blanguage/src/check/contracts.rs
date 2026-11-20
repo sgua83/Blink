@@ -501,30 +501,47 @@ enum Prefix {
     Application { count:String, word:u32, known:view::Borrow, required:view::Borrow },
     Domain(PrefixRelation),
 }
+fn prefix_count_word(
+    ty: &Ty, path: &str, readable_count: bool, source: &Source, span: Span,
+) -> Result<u32> {
+    let mut fields = path.split('.');
+    let (mut selected, mut components) = member_type(ty, fields.next().unwrap(), source, span)?;
+    for field in fields {
+        let (next, indices) = member_type(&selected, field, source, span)?;
+        components = indices.into_iter().map(|i| components[i]).collect();
+        selected = next;
+    }
+    if selected != Ty::scalar(Scalar::U32) || !readable_count {
+        return source.fail(span, "B192", "requires prefix需要可读独立形状1资源中的u32计数字段");
+    }
+    Ok(ty.components[components[0]].1)
+}
+
 async fn prefix_requirement(builder:&Builder<'_>,definition:outputs::Contract<'_>,env:&BTreeMap<String,Binding>,resources:&BTreeMap<ValueIdentity,bounds::Proof>,data:&str,count:&str,field:&str,span:Span)->Result<Prefix> {
-    fn application(binding:&Binding)->Option<(&application::Data,&[usize])> {match binding {
-        Binding::ApplicationData(data)=>Some((data,&[])),Binding::DataReference(data)=>Some((&data.data,&data.projection)),_=>None,
-    }}
+    fn application(binding: &Binding) -> Option<&application::Data> {
+        match binding {
+            Binding::ApplicationData(data) => Some(data),
+            Binding::DataReference(reference) => Some(&reference.data),
+            _ => None,
+        }
+    }
     if data==count{return definition.source.fail(span,"B192","前缀域约束需要独立形状1资源中的u32计数字段");}
     let data_binding=env.get(data);let count_binding=env.get(count);
     match (data_binding,count_binding,data_binding.and_then(application),count_binding.and_then(application)) {
         (Some(Binding::Data(data)),Some(Binding::Data(count)),_,_)=>{
             let (offset,ty)=builder.dataset_layout(count);
-            let (selected,components)=member_type(ty,field,&definition.source,span)?;
-            if selected!=Ty::scalar(Scalar::U32)||builder.program.buffers[count.binding].count!=Some(1)||!count.access.reads() {
-                return definition.source.fail(span,"B192","requires prefix需要可读独立形状1资源中的u32计数字段");
-            }
+            let word = offset + prefix_count_word(ty, field,
+                builder.program.buffers[count.binding].count == Some(1) && count.access.reads(), &definition.source, span)?;
             let (data_offset,data_ty)=builder.dataset_layout(data);
-            Ok(Prefix::Domain(PrefixRelation{ domain_region: Some((data_offset,data_ty.size)),domain:data.binding,count:PrefixCount{binding:count.binding,word:offset+ty.components[components[0]].1}}))
+            Ok(Prefix::Domain(PrefixRelation{ domain_region: Some((data_offset,data_ty.size)),domain:data.binding,count:PrefixCount{binding:count.binding,word}}))
         },
-        (_,_,Some(_),Some((count_reference,projection)))=>{
-            let mut ty=&count_reference.ty;let mut offset=0;
-            for field in projection{let(at,next)=ty.aggregate_part(*field);offset+=at;ty=next;}
-            let (selected,components)=member_type(ty,field,&definition.source,span)?;
-            if selected!=Ty::scalar(Scalar::U32)||count_reference.count!=Some(1)||!count_reference.access.reads() {
-                return definition.source.fail(span,"B192","requires prefix需要可读独立形状1资源中的u32计数字段");
-            }
-            let word=offset+ty.components[components[0]].1;
+        (_,Some(binding),Some(_),Some(count_reference))=>{
+            let (offset, ty) = match binding {
+                Binding::DataReference(reference) => reference.element_layout(),
+                _ => (0, &count_reference.ty),
+            };
+            let word = offset + prefix_count_word(ty, field,
+                count_reference.count == Some(1) && count_reference.access.reads(), &definition.source, span)?;
             let parameter=definition.parameters().position(|p|p.name()==data).unwrap();
             let required=resources[&ValueIdentity::ResourceParameter(parameter,0)].view_borrow(0);
             Ok(Prefix::Application{count:count.into(),word,known:count_reference.prefixes.get(&word).cloned().unwrap_or_default(),required})

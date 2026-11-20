@@ -2900,7 +2900,7 @@ PrefixRelation的domain_region为None时表示该实际绑定的完整声明类�
 | `requires nonzero(input[*].field)` | 普通CPU及整域dataset每个已初始化元素的所选整数分量非零；整域使用原read／inout字段前提。普通CPU的记录内dataset及嵌套元素显式按[*]选择，调用点消费同一实际共同Proof，见下节 |
 | `requires nonempty(resource)` | dataset／tile、固定array或按值不可变view的长度至少为一；支持普通CPU按值拥有记录的dataset字段及记录中的view字段 |
 | `requires nonempty(input[*].field)` | 普通CPU dataset每个已初始化元素中所选子dataset／固定array非空，沿同一实际长度／Proof交接；见[共同资源前提](#common-element-nonempty) |
-| `requires prefix(data,count.field)` | 普通CPU函数的真实资源前提；data与count为命名dataset形参，count为独立固定形状1的可读u32计数字段；Count写入撤回关系，数值相等／复制不建立前缀，实际参数可为字段投影 |
+| `requires prefix(data,count.field)` | 普通CPU函数的真实资源前提。data与count为命名dataset形参，计数是独立固定形状1资源中的可读u32字段，可用命名嵌套路径，如requires prefix(data,count.inner.used)。实参为字段投影时按原记录内的实际计数字节验证。Count写入撤回关系，数值相等或复制不建立前缀。 |
 | `requires contiguous(position)` | write／inout普通位置参数或其字段／swizzle按所选类型连续、顺序匹配且对齐；不读取载荷 |
 | `requires range(value,lower,upper,...)` | 所选数值分量属于类型化闭区间并集；普通按值、共同元素与整域输入沿原范围合同交接，不授予资源访问或输出保证 |
 | `requires index(value,resource)` | 按值u32标量或向量每个选中分量都可索引该实际资源；同时可知资源非空，不表示索引互异 |
