@@ -786,8 +786,8 @@ impl CpuTemplate {
         uniforms: Vec<u32>,
         definitions: &std::sync::Arc<crate::application::Definitions>,
     ) -> Result<()> {
-        self.code.run_mapped(datasets, domains, textures, uniforms, arguments.len(), |i| arguments.location(i),
-            arguments.storage_slots(), Some(definitions), None)
+        self.code.run_mapped(datasets, domains, textures, uniforms,
+            StorageSlots::Frame(arguments), Some(definitions), None)
     }
 }
 #[derive(Clone, Copy)]
@@ -962,7 +962,6 @@ impl CpuCode {
         values: &[Value],
         timings: Option<&mut CpuRangeTimings>,
     ) -> OwnedRunResult {
-        let count = bindings.datasets.datasets.len();
         let uniforms = arguments(&self.program, bindings.datasets.datasets.iter().map(|data| {
             let (ty, count, _) = data.cpu_metadata();
             (ty, count, Some(0))
@@ -970,7 +969,7 @@ impl CpuCode {
         let result = uniforms.and_then(|uniforms| {
             let descriptions = CpuTextures::new(&bindings.textures);
             let DomainBindings { datasets, domains } = &mut bindings.datasets;
-            self.run_mapped(datasets, domains, &descriptions.bindings(), uniforms, count, |i| (i, 0),
+            self.run_mapped(datasets, domains, &descriptions.bindings(), uniforms,
                 StorageSlots::Direct, self.definitions.as_ref(), timings)
         });
         match result {
@@ -984,13 +983,13 @@ impl CpuCode {
         domains: &mut DomainRelations,
         textures: &[CpuTextureBinding<'_>],
         uniforms: Vec<u32>,
-        count: usize,
-        physical: impl Fn(usize) -> (usize, u32) + Copy,
         slots: StorageSlots<'_>,
         definitions:Option<&std::sync::Arc<crate::application::Definitions>>,
         timings: Option<&mut CpuRangeTimings>,
     ) -> Result<()> {
-        bindings::require(|slot| datasets.get(slot), domains, &self.program, physical, slots)?;
+        bindings::require(|slot| datasets.get(slot), domains, &self.program, slots)?;
+        let physical = |i| slots.location(i);
+        let count = self.program.buffers().len();
         for (data, binding) in (0..count)
             .map(|i| &datasets[physical(i).0])
             .zip(self.program.buffers())
@@ -1001,7 +1000,7 @@ impl CpuCode {
             }
         }
         let input_domains = if self.program.native_frame().is_some() {
-            bindings::projected_relations(datasets, domains, &self.program, physical, slots)
+            bindings::projected_relations(datasets, domains, &self.program, slots)
         } else {
             Vec::new()
         };
@@ -1029,10 +1028,7 @@ impl CpuCode {
         for i in (0..physical_count).rev() {
             buffers[i] = project(&buffers, i);
         }
-        let original = |i| {
-            let (slot, offset) = physical(i);
-            (slots.original(slot), offset)
-        };
+        let original = |i| slots.original(i);
         self.run_buffers(&buffers, textures, uniforms, || {
             bindings::invalidate(domains, &self.program.write_regions, original);
         }, definitions, input_domains, timings)?;

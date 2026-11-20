@@ -2358,8 +2358,9 @@ impl GpuProgram {
         let program = &self.compiled.program;
         let uniforms = arguments(program, bindings.datasets.iter()
             .map(|data| (&data.ty, data.count, Some(0))), values)?;
-        let location = |i| (i, 0);
-        bindings::require(|slot| bindings.datasets.get(slot), &bindings.domains, program, location, StorageSlots::Direct)?;
+        let slots = StorageSlots::Direct;
+        bindings::require(|slot| bindings.datasets.get(slot), &bindings.domains, program, slots)?;
+        let location = |i| slots.location(i);
         let completion = self.submit_mapped(&mut bindings.datasets, dependencies, &accelerations,
             textures, uniforms, steps, location)?;
         bindings.completed(program, location);
@@ -3146,11 +3147,10 @@ impl GpuTemplate {
         arguments: &FrameArguments<'_>,
         uniforms: Vec<u32>,
     ) -> Result<GpuCompletion> {
-        let location = |i| arguments.location(i);
-        bindings::require(|slot| datasets.get(slot).map(|data| &**data),
-            domains, self.program(), location, arguments.storage_slots())?;
+        let slots = StorageSlots::Frame(arguments);
+        bindings::require(|slot| datasets.get(slot).map(|data| &**data), domains, self.program(), slots)?;
         self.code.submit_mapped(datasets, DependencySources::default(), &[], Vec::new(),
-            uniforms, NonZeroU32::MIN, location)
+            uniforms, NonZeroU32::MIN, |i| slots.location(i))
     }
     pub fn submit_after(
         &self,

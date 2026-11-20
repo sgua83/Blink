@@ -1,4 +1,5 @@
 //! 域关系随实际数据所有权移动；宿主取出可写存储就放弃关系。
+use crate::application::FrameArguments;
 use crate::{Result, error};
 use blanguage::ir::{ElementRange, ElementFact, ExecutionPlan, PrefixCount, ProgramInterface, Scalar};
 use std::{
@@ -200,21 +201,28 @@ impl DomainRelations {
 #[derive(Clone, Copy)]
 pub(crate) enum StorageSlots<'a> {
     Direct,
-    Frame(&'a [usize]),
+    Frame(&'a FrameArguments<'a>),
 }
 
 impl StorageSlots<'_> {
-    pub(crate) fn original(self, slot: usize) -> usize {
+    pub(crate) fn location(self, logical: usize) -> (usize, u32) {
         match self {
-            Self::Direct => slot,
-            Self::Frame(handles) => handles[slot],
+            Self::Direct => (logical, 0),
+            Self::Frame(arguments) => arguments.location(logical),
+        }
+    }
+
+    pub(crate) fn original(self, logical: usize) -> (usize, u32) {
+        match self {
+            Self::Direct => (logical, 0),
+            Self::Frame(arguments) => arguments.original(logical),
         }
     }
 
     fn selected(self, original: usize) -> Option<usize> {
         match self {
             Self::Direct => Some(original),
-            Self::Frame(handles) => handles.iter().position(|&handle| handle == original),
+            Self::Frame(arguments) => arguments.selected(original),
         }
     }
 }
@@ -460,14 +468,13 @@ pub(crate) fn projected_relations<D: DomainStorage>(
     datasets: &[D],
     domains: &[DomainRelation],
     program: &ExecutionPlan,
-    physical: impl Fn(usize) -> (usize, u32),
     slots: StorageSlots<'_>,
 ) -> Vec<DomainRelation> {
     if domains.is_empty() {
         return Vec::new();
     }
     let fields = program.buffers().iter().enumerate().map(|(binding, buffer)| {
-        let (source, start) = physical(binding);
+        let (source, start) = slots.location(binding);
         (source, ArgumentField { binding, start, end: u64::from(start) + u64::from(buffer.ty.size) })
     });
     let targets = RelationTargets::new(datasets, fields);
@@ -571,28 +578,29 @@ pub(crate) fn require<'a, D: DomainStorage + 'a>(
     dataset: impl Fn(usize) -> Option<&'a D>,
     domains: &[DomainRelation],
     program: &dyn ProgramInterface,
-    binding: impl Fn(usize) -> (usize, u32),
     slots: StorageSlots<'_>,
 ) -> Result<()> {
-    let same = |original: usize, selected: usize| {
-        original == slots.original(selected) || dataset(selected).and_then(D::read_identity).is_some_and(|identity| {
-            slots.selected(original).and_then(&dataset).and_then(D::read_identity) == Some(identity)
+    let same = |known: usize, original: usize, selected: usize| {
+        known == original || dataset(selected).and_then(D::read_identity).is_some_and(|identity| {
+            slots.selected(known).and_then(&dataset).and_then(D::read_identity) == Some(identity)
         })
     };
     for relation in program.prefix_requirements() {
-        let (domain_slot, domain_offset) = binding(relation.domain);
+        let (domain_slot, domain_offset) = slots.location(relation.domain);
+        let (domain_original, _) = slots.original(relation.domain);
         let (field, size) = relation.domain_layout(program.buffers());
         let start = u64::from(domain_offset) + u64::from(field);
         let end = start + u64::from(size);
-        let (count_slot, count_offset) = binding(relation.count.binding);
+        let (count_slot, count_offset) = slots.location(relation.count.binding);
+        let (count_original, _) = slots.original(relation.count.binding);
         let word = u64::from(relation.count.word) + u64::from(count_offset);
         if !domains.iter().any(|known| {
             matches!(known, DomainRelation::Prefix { domain, offset, bytes, count }
-                if same(*domain, domain_slot)
+                if same(*domain, domain_original, domain_slot)
                 && u64::from(*offset) <= start
                 && end <= u64::from(*offset) + u64::from(*bytes)
                 && u64::from(count.word) == word
-                && same(count.binding, count_slot))
+                && same(count.binding, count_original, count_slot))
         }) {
             return Err(error(format!(
                 "程序 {} 缺少绑定 {} 与 {} 的有效域所有权",
@@ -607,15 +615,16 @@ pub(crate) fn require<'a, D: DomainStorage + 'a>(
             ElementFact::Range(range) => (range.binding, range.offset, range.scalar),
             ElementFact::Index { binding, offset, .. } => (*binding, *offset, Scalar::U32),
         };
-        let (source, offset) = binding(logical);
+        let (source, offset) = slots.location(logical);
+        let (original, _) = slots.original(logical);
         if dataset(source).unwrap().element_count() == 0 { continue; }
         let holds = domains.iter().any(|known| {
             let DomainRelation::Element(range) = known else { return false; };
-            same(range.binding, source) && u64::from(range.offset) == u64::from(offset) + u64::from(word)
+            same(range.binding, original, source) && u64::from(range.offset) == u64::from(offset) + u64::from(word)
                 && range.scalar == scalar && match requirement {
                     ElementFact::Range(required) => range.within(required),
                     ElementFact::Index { target, .. } => {
-                        let allowed=dataset(binding(*target).0).unwrap().element_count().checked_sub(1).map(|last|(0,u64::from(last)));
+                        let allowed=dataset(slots.location(*target).0).unwrap().element_count().checked_sub(1).map(|last|(0,u64::from(last)));
                         range.intervals.iter().all(|&actual|scalar.covers_range(actual,range.known_bits,allowed.as_slice(),(0,0)))
                     },
                 }

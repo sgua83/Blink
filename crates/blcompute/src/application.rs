@@ -113,7 +113,7 @@ pub struct FrameCpuDataMemory {
 
 pub(crate) struct FrameArguments<'a> {
     bindings: &'a [DatasetBinding],
-    selected: Vec<usize>,
+    by_handle: Vec<usize>,
     slots: Vec<usize>,
 }
 
@@ -121,11 +121,11 @@ impl<'a> FrameArguments<'a> {
     fn new(bindings: &'a [DatasetBinding], parameters: &[Buffer]) -> Result<Self> {
         use blanguage::ast::Access::{Atomic, Read};
 
-        let mut selected: Vec<_> = (0..bindings.len()).collect();
+        let mut by_handle: Vec<_> = (0..bindings.len()).collect();
         // 同一起点的零宽字段先处理，保留原字节边界比较。
-        selected.sort_unstable_by_key(|&i| (bindings[i].handle, bindings[i].offset, parameters[i].ty.size));
+        by_handle.sort_unstable_by_key(|&i| (bindings[i].handle, bindings[i].offset, parameters[i].ty.size));
         let mut slots = vec![0; bindings.len()];
-        for group in selected.chunk_by(|&a, &b| bindings[a].handle == bindings[b].handle) {
+        for group in by_handle.chunk_by(|&a, &b| bindings[a].handle == bindings[b].handle) {
             let first = *group.iter().min().unwrap();
             let (mut read_end, mut atomic_end, mut write_end) = (0u64, 0u64, 0u64);
             for &i in group {
@@ -143,33 +143,41 @@ impl<'a> FrameArguments<'a> {
             }
         }
 
-        // 复用分组索引缓冲。CPU原位投影消费按首次实参出现顺序排列的物理槽。
-        selected.clear();
-        for (i, binding) in bindings.iter().enumerate() {
+        // 保留每组的首个实参，按原句柄查找。紧凑槽仍按实参首次出现编号。
+        by_handle.retain(|&i| slots[i] == i);
+        let mut next = 0;
+        for i in 0..slots.len() {
             let first = slots[i];
             if first == i {
-                slots[i] = selected.len();
-                selected.push(binding.handle as usize);
+                slots[i] = next;
+                next += 1;
             } else {
                 slots[i] = slots[first];
             }
         }
-        Ok(Self { bindings, selected, slots })
+        Ok(Self { bindings, by_handle, slots })
     }
 
-    pub(crate) fn len(&self) -> usize {
-        self.bindings.len()
+    fn selected_handles(&self) -> impl Iterator<Item = usize> + '_ {
+        let mut next = 0;
+        self.bindings.iter().zip(&self.slots).filter_map(move |(binding, &slot)| {
+            (slot == next).then(|| {
+                next += 1;
+                binding.handle as usize
+            })
+        })
+    }
+
+    pub(crate) fn selected(&self, original: usize) -> Option<usize> {
+        self.by_handle.binary_search_by_key(&original, |&i| self.bindings[i].handle as usize)
+            .ok().map(|i| self.slots[self.by_handle[i]])
     }
 
     pub(crate) fn location(&self, i: usize) -> (usize, u32) {
         (self.slots[i], self.bindings[i].offset)
     }
 
-    pub(crate) fn storage_slots(&self) -> bindings::StorageSlots<'_> {
-        bindings::StorageSlots::Frame(&self.selected)
-    }
-
-    fn original(&self, i: usize) -> (usize, u32) {
+    pub(crate) fn original(&self, i: usize) -> (usize, u32) {
         let binding = &self.bindings[i];
         (binding.handle as usize, binding.offset)
     }
@@ -450,9 +458,9 @@ impl Frame {
         let arguments = FrameArguments::new(bindings, layout.buffers())?;
         match definition {
             ProgramSlot::Cpu(program) => {
-                let mut datasets = Vec::with_capacity(arguments.selected.len());
+                let mut datasets = Vec::with_capacity(arguments.by_handle.len());
                 let slots = self.data.datasets.as_mut_ptr();
-                for &handle in &arguments.selected {
+                for handle in arguments.selected_handles() {
                     // Argument validation indexes every handle. Selection above records
                     // each slot once, and the slot array stays in place through the join.
                     let data = unsafe { &mut *slots.add(handle) }.as_mut().unwrap();
@@ -477,9 +485,9 @@ impl Frame {
                 }
                 self.load_gpu(index, image)?;
                 let gpu_program = self.gpu_programs[index].as_ref().unwrap();
-                let mut datasets = Vec::with_capacity(arguments.selected.len());
+                let mut datasets = Vec::with_capacity(arguments.by_handle.len());
                 let slots = self.data.datasets.as_mut_ptr();
-                for &handle in &arguments.selected {
+                for handle in arguments.selected_handles() {
                     // Selection records disjoint slots and the slot array stays in place.
                     let Some(ResidentData::Gpu(data)) = (unsafe { &mut *slots.add(handle) }) else {
                         unreachable!("GPU residency was checked during argument binding");
