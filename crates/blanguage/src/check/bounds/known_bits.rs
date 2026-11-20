@@ -1,5 +1,6 @@
 //! Numerical values cross synchronously; the original Proof owns every fact.
 use super::{Bits, KnownBits, Scalar, bitwise::Operation};
+use crate::builtin_types::ScalarEncoding;
 use std::ffi::c_void;
 
 #[derive(Clone, Copy)]
@@ -28,6 +29,14 @@ unsafe extern "C" {
         source_mask: Bits,
         source_sign: Bits,
         target_mask: Bits,
+        value: Pattern,
+    ) -> Pattern;
+    #[link_name = "bootstrap.scalar_fold::known_cast_path"]
+    fn cast_values(
+        source: ScalarEncoding,
+        targets: *const ScalarEncoding,
+        count: usize,
+        first_required: usize,
         value: Pattern,
     ) -> Pattern;
     #[link_name = "bootstrap.scalar_fold::known_combined"]
@@ -83,6 +92,24 @@ pub(super) fn cast(source: KnownBits, target: Scalar) -> KnownBits {
         )
     })
 }
+pub(super) fn cast_path<const N: usize>(
+    source: KnownBits,
+    targets: [Scalar; N],
+    first_required: usize,
+) -> Option<KnownBits> {
+    let target = targets[N - 1];
+    let encodings = targets.map(ScalarEncoding::from);
+    present(target, unsafe {
+        cast_values(
+            source.scalar.into(),
+            encodings.as_ptr(),
+            N,
+            first_required,
+            source.into(),
+        )
+    })
+}
+
 pub(super) fn combined(a: KnownBits, b: KnownBits, target: Scalar) -> KnownBits {
     value(target, unsafe {
         combine(

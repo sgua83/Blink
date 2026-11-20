@@ -82,6 +82,8 @@ enum IntegerBitwise : u32 { And = 0; Or = 1; Xor = 2; };
 extern "C" BitRange integer_bitwise_range(IntegerBitwise operation,u32 width,u64 order_bias,BitRange left,BitRange right) on cpu;
 
 extern "C" BitPattern known_cast(u64 source_mask,u64 source_sign,u64 target_mask,BitPattern value) on cpu;
+extern "C" BitPattern known_cast_path(ScalarEncoding source,address targets,u64 count,
+    u64 first_required,BitPattern value) on cpu;
 extern "C" BitPattern known_combined(u64 target_mask,u64 am,u64 sign_a,BitPattern a,u64 bm,u64 sign_b,BitPattern b) on cpu;
 extern "C" BitPattern known_common(u64 target_mask,BitPattern a,u64 bm,u64 sign_b,BitPattern b) on cpu;
 extern "C" BitPattern known_bitwise(IntegerBitwise operation,BitPattern a,BitPattern b) on cpu;

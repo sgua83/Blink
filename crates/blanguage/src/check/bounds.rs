@@ -314,7 +314,7 @@ unsafe extern "C" {
     ) -> CommonRangeTypeResult;
 }
 
-fn cast_domain<const N: usize>(mut domain: IndexDomain, path: [Scalar; N]) -> Option<IndexDomain> {
+fn cast_domain<const N: usize>(domain: IndexDomain, path: [Scalar; N]) -> Option<IndexDomain> {
     if let IndexDomain::CommonRange(id, base, low, extended, _) = domain {
         let types = path.as_slice();
         let result = unsafe {
@@ -343,22 +343,19 @@ fn cast_domain<const N: usize>(mut domain: IndexDomain, path: [Scalar; N]) -> Op
             }
         };
     }
-    for edge in path.windows(2) {
-        let (source, target) = (edge[0], edge[1]);
-        domain = match domain {
-            IndexDomain::KnownBits(from, mask, value) => {
-                if !source.is_integer() || !target.is_integer() { return None; }
-                let bits = KnownBits { scalar: from, mask, value }.cast(source).cast(target);
-                (bits.mask != 0).then(|| bits.domain())?
-            }
-            domain if source == target && common_range_domain(domain)
-                || source.is_integer() && target.is_integer() && !source.is_signed() && !target.is_signed()
-                    && target.size() > source.size() => domain,
-            _ => return None,
-        };
+    if let IndexDomain::KnownBits(scalar, mask, value) = domain {
+        if !path.into_iter().all(Scalar::is_integer) { return None; }
+        // The first target normalizes the incoming representation before the first edge.
+        return known_bits::cast_path(KnownBits { scalar, mask, value }, path, 1).map(KnownBits::domain);
     }
-    Some(domain)
+    path.windows(2).all(|edge| {
+        let (source, target) = (edge[0], edge[1]);
+        source == target && common_range_domain(domain)
+            || source.is_integer() && target.is_integer() && !source.is_signed() && !target.is_signed()
+                && target.size() > source.size()
+    }).then_some(domain)
 }
+
 fn numeric_domain(domain: &IndexDomain) -> bool {
     matches!(domain, IndexDomain::Upper(..) | IndexDomain::Lower(..) | IndexDomain::Room(..) | IndexDomain::Sum(..) | IndexDomain::Shifted(..) | IndexDomain::Offset(..) | IndexDomain::CommonRange(..) | IndexDomain::Computed(..) | IndexDomain::KnownBits(..) | IndexDomain::Floating(..))
 }
@@ -869,8 +866,9 @@ impl Proof {
     }
     fn call_common_bits(input:&Proof,from:Scalar,low:Scalar,extended:Scalar,to:Scalar)->Option<KnownBits> {
         if ![from,low,extended,to].into_iter().all(Scalar::is_integer){return None;}
-        let bits=input.known_bits(0,from)?.cast(low).cast(extended).cast(to);
-        (bits.mask!=0).then_some(bits)
+        let bits = input.known_bits(0, from)?;
+        let targets = [low, extended, to];
+        known_bits::cast_path(bits, targets, targets.len())
     }
     fn call_fact(value: Fact, bindings: &BTreeMap<ValueIdentity, impl std::borrow::Borrow<Proof>>) -> Option<Clause> {
         let projected = |facts: Facts| (!facts.is_empty()).then(|| Clause::facts(facts));

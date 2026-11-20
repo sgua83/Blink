@@ -573,6 +573,26 @@ extern "C" BitPattern known_cast(u64 source_mask,u64 source_sign,u64 target_mask
   else if((value.mask&source_sign)!=0u64){mask|=extra;if((value.value&source_sign)!=0u64){bits|=extra;}}
  }return BitPattern(mask,bits);
 }
+extern "C" BitPattern known_cast_path(ScalarEncoding source,address targets,u64 count,
+    u64 first_required,BitPattern value) on cpu {
+    ScalarEncoding current=source;
+    BitPattern pattern=value;
+    u64 source_mask=truncate(18446744073709551615u64,source.width);
+    u64 at=0u64;
+    while(at<count){
+        address slot=unsafe_address(address_bits(targets)+at*size_of<ScalarEncoding>());
+        ScalarEncoding target=unsafe_position<ScalarEncoding>(slot);
+        u64 target_mask=truncate(18446744073709551615u64,target.width);
+        u64 source_sign=0u64;
+        if(current.kind==ScalarKind::Signed){source_sign=1u64<<u64(current.width-1);}
+        pattern=known_cast(source_mask,source_sign,target_mask,pattern);
+        if(at>=first_required && pattern.mask==0u64){return pattern;}
+        current=target;
+        source_mask=target_mask;
+        at+=1u64;
+    }
+    return pattern;
+}
 extern "C" BitPattern known_combined(u64 target_mask,u64 am,u64 sign_a,BitPattern a,u64 bm,u64 sign_b,BitPattern b) on cpu {
  BitPattern left=known_cast(am,sign_a,target_mask,a);BitPattern right=known_cast(bm,sign_b,target_mask,b);
  return BitPattern(left.mask|right.mask,left.value|right.value);
