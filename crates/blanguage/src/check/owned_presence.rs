@@ -39,7 +39,6 @@ impl Returned{
             Presence::None => { *self=other; return; }
             _ => {}
         }
-        fn restore(target:&mut Returned,a:&Returned,b:&Returned,choice:&Presence){match(target,a,b){(Returned::Dataset(target),Returned::Dataset(a),Returned::Dataset(b))=>{target.ownership=Ownership::either(&a.ownership,&b.ownership,Some(choice));let ai=a.initialization.clone().unwrap_or(Position::Initialized);let bi=b.initialization.clone().unwrap_or(Position::Initialized);let initialization=if a.ownership==Ownership::Moved{bi}else if b.ownership==Ownership::Moved{ai}else{Position::selected(choice.clone(),ai,bi)};target.initialization=match initialization{Position::Initialized=>None,position=>Some(position)};if a.ownership==Ownership::Moved{target.residency=b.residency.clone();}else if b.ownership==Ownership::Moved{target.residency=a.residency.clone();}if let(Some(target),Some(a),Some(b))=(target.elements.known_mut(),a.elements.known(),b.elements.known()){restore(target,a,b,choice);}},(Returned::OwnedValue(target),Returned::OwnedValue(a),Returned::OwnedValue(b))=>{target.ownership=Ownership::either(&a.ownership,&b.ownership,Some(choice));for(index,payload)in target.payloads.iter_mut().enumerate(){if let(Some(target),Some(a),Some(b))=(payload.as_deref_mut(),a.payloads[index].as_deref(),b.payloads[index].as_deref()){restore(target,a,b,choice);}}},_=>{}}}
         let projected;
         let condition = match condition {
             Some(condition) => condition,
@@ -48,9 +47,7 @@ impl Returned{
                 &projected
             }
         };
-        let old = self.clone();
-        self.join(other.clone(), false, Some(condition));
-        restore(self, &old, &other, choice);
+        self.join_with_presence(other, false, Some(condition), Some(choice));
     }
 }
 impl Builder<'_>{

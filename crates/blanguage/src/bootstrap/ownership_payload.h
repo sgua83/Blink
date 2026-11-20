@@ -35,7 +35,8 @@ struct Host {
     cfn<void,address,u32> length_constant;
     cfn<u32,address> view_empty;
     cfn<void,address> install_source;
-    cfn<void,address,address,u64,u32,address> join_child;
+    cfn<void,address,address,u64,u32,address,address> join_child;
+    cfn<void,address,address,address> join_ownership;
     cfn<void,address,address,u64> move_child;
     cfn<address,address> data_root;
     cfn<address,address> data_length;
@@ -53,7 +54,7 @@ struct Host {
     cfn<void,address> drop_indices;
 };
 
-extern "C" void join(address left,address right,u32 stored,address choice,Host host) on cpu
+extern "C" void join(address left,address right,u32 stored,address choice,address presence,Host host) on cpu
     requires nonzero(host.inspect)
     requires nonzero(host.value)
     requires nonzero(host.ownership)
@@ -67,6 +68,7 @@ extern "C" void join(address left,address right,u32 stored,address choice,Host h
     requires nonzero(host.constant_equal)
     requires nonzero(host.clear_constant)
     requires nonzero(host.join_child)
+    requires nonzero(host.join_ownership)
     requires nonzero(host.move_child);
 extern "C" u32 available(address value,Host host) on cpu
     requires nonzero(host.inspect)
@@ -215,3 +217,17 @@ extern "C" void collect_owned_places(address context,LookupNode node,LookupHost 
     requires nonzero(host.inspect)
     requires nonzero(host.field)
     requires nonzero(host.visit_child);
+
+struct PayloadPair { Item left; Item right; };
+struct RetainedHost {
+    cfn<Info,address> inspect;
+    cfn<Item,address,u64> child;
+    cfn<void,PayloadPair,address,u32> ownership;
+    cfn<PayloadPair,PayloadPair,address,u32> dataset;
+};
+
+extern "C" void retain_presence(PayloadPair pair,address presence,u32 take_right,RetainedHost host) on cpu
+    requires nonzero(host.inspect)
+    requires nonzero(host.child)
+    requires nonzero(host.ownership)
+    requires nonzero(host.dataset);

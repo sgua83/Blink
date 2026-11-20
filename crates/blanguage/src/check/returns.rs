@@ -79,60 +79,118 @@ impl Returned {
         }
     }
     // Data.elements contains logical model slots, not registers of the current function.
-    pub(super) fn join(&mut self, mut other: Self, stored: bool, choice: Option<&bounds::Condition>) {
-        if matches!(self, Self::Unit) {
-            return;
-        }
-        if let Self::OwnedValue(value) = self {
-            let Self::OwnedValue(other) = other else {
-                unreachable!()
+    pub(super) fn join(&mut self, other: Self, stored: bool, choice: Option<&bounds::Condition>) {
+        self.join_with_presence(other, stored, choice, None);
+    }
+
+    pub(super) fn join_with_presence(
+        &mut self, other: Self, stored: bool, choice: Option<&bounds::Condition>,
+        presence: Option<&owned_presence::Presence>,
+    ) {
+        fn join_value(left: &mut Value, right: &Value, stored: bool, choice: Option<&bounds::Condition>) {
+            left.proof = if stored {
+                let mut proof = left.proof.clone();
+                proof.join_condition(&right.proof, left.regs.len(), choice);
+                proof
+            } else {
+                bounds::Proof::common(left, right, choice, None)
             };
-            value.join(other,stored,choice);
-            return;
-        }
-        if let (Self::Dataset(data), Self::Dataset(other)) = (&mut *self, &mut other) {
-            let borrows=choice.map(|choice| {
-                let a=view::resource_borrow(data);let b=view::resource_borrow(other);
-                data.root.proof.set_view_borrow(0,view::Borrow::default());
-                other.root.proof.set_view_borrow(0,view::Borrow::default());
-                (choice,a,b)
-            });
-            if data.ownership != other.ownership {
-                data.ownership = application::Ownership::Moved;
-            }
-            if stored { data.root.proof.join_condition(&other.root.proof,data.root.regs.len(),None); } else { data.root.proof = bounds::Proof::common(&data.root, &other.root,None,None); }
-            if let Some((choice,a,b))=borrows {
-                data.root.proof.set_view_borrow(0,a.selected(choice,&b));
-            }
-            data.elements=if data.length.maximum()==0{other.elements.clone()}
-                else if other.length.maximum()==0{std::mem::take(&mut data.elements)}
-                else{match choice {
-                    Some(choice)=>std::mem::take(&mut data.elements).selected(other.elements.clone(),choice),
-                    None=>std::mem::take(&mut data.elements).common(other.elements.clone()),
-                }};
-            data.prefixes=prefix::join_fields(&data.prefixes,&other.prefixes,choice);
-        }
-        let (other, residency) = match &other {
-            Self::Unit | Self::OwnedValue(_) => unreachable!(),
-            Self::Value(value) => (value.as_ref(), None),
-            Self::Dataset(data) => (&data.length, Some(data.residency.clone())),
-        };
-        let value = match self {
-            Self::Unit | Self::OwnedValue(_) => unreachable!(),
-            Self::Value(value) => value.as_mut(),
-            Self::Dataset(data) => &mut data.length,
-        };
-        value.proof = if stored { let mut proof=value.proof.clone(); proof.join_condition(&other.proof,value.regs.len(),choice); proof } else { bounds::Proof::common(value, other,choice,None) };
-        value.uniform &= other.uniform;
-        if value.constant != other.constant {
-            value.constant = None;
-        }
-        if let Self::Dataset(data) = self {
-            match choice {
-                Some(choice)=>data.residency=residency::Residency::conditional(choice.clone(),data.residency.clone(),residency.unwrap()),
-                None=>data.residency.join(&residency.unwrap()),
+            left.uniform &= right.uniform;
+            if left.constant != right.constant {
+                left.constant = None;
             }
         }
+        match self {
+            Self::Unit => {},
+            Self::OwnedValue(value) => {
+                let Self::OwnedValue(other) = other else { unreachable!() };
+                value.join_with_presence(other, stored, choice, presence);
+            },
+            Self::Value(value) => {
+                let other = match &other {
+                    Self::Value(value) => value.as_ref(),
+                    Self::Dataset(data) => &data.length,
+                    Self::Unit | Self::OwnedValue(_) => unreachable!(),
+                };
+                join_value(value, other, stored, choice);
+            },
+            Self::Dataset(data) => {
+                let Self::Dataset(mut other) = other else { unreachable!() };
+                let borrows = choice.map(|choice| {
+                    let a = view::resource_borrow(data);
+                    let b = view::resource_borrow(&other);
+                    data.root.proof.set_view_borrow(0, view::Borrow::default());
+                    other.root.proof.set_view_borrow(0, view::Borrow::default());
+                    (choice, a, b)
+                });
+                if let Some(presence) = presence {
+                    merge_dataset_presence(data, &mut other, presence, false, choice);
+                } else {
+                    if data.ownership != other.ownership {
+                        data.ownership = application::Ownership::Moved;
+                    }
+                    match choice {
+                        Some(choice) => data.residency = residency::Residency::conditional(
+                            choice.clone(), std::mem::take(&mut data.residency), std::mem::take(&mut other.residency),
+                        ),
+                        None => data.residency.join(&other.residency),
+                    }
+                }
+                if stored {
+                    data.root.proof.join_condition(&other.root.proof, data.root.regs.len(), None);
+                } else {
+                    data.root.proof = bounds::Proof::common(&data.root, &other.root, None, None);
+                }
+                if let Some((choice, a, b)) = borrows {
+                    data.root.proof.set_view_borrow(0, a.selected(choice, &b));
+                }
+                let elements = std::mem::take(&mut data.elements);
+                let other_elements = std::mem::take(&mut other.elements);
+                data.elements = if data.length.maximum() == 0 {
+                    elements.retain_side(other_elements, true, presence)
+                } else if other.length.maximum() == 0 {
+                    elements.retain_side(other_elements, false, presence)
+                } else {
+                    match choice {
+                        Some(choice) => elements.join_selected(other_elements, choice, presence),
+                        None => elements.common(other_elements),
+                    }
+                };
+                data.prefixes = prefix::join_fields(&data.prefixes, &other.prefixes, choice);
+                join_value(&mut data.length, &other.length, stored, choice);
+            },
+        }
+    }
+}
+
+pub(super) fn merge_dataset_presence(
+    left: &mut application::DataPayload, right: &mut application::DataPayload,
+    selected: &owned_presence::Presence, into_right: bool, joined: Option<&bounds::Condition>,
+) {
+    use application::Ownership;
+    let ownership = Ownership::either(&left.ownership, &right.ownership, Some(selected));
+    let (initialization, residency) = if left.ownership == Ownership::Moved {
+        (right.initialization.take().unwrap_or(Position::Initialized), Some(std::mem::take(&mut right.residency)))
+    } else if right.ownership == Ownership::Moved {
+        (left.initialization.take().unwrap_or(Position::Initialized), Some(std::mem::take(&mut left.residency)))
+    } else {
+        let a = left.initialization.take().unwrap_or(Position::Initialized);
+        let b = right.initialization.take().unwrap_or(Position::Initialized);
+        (
+            Position::selected(selected.clone(), a, b),
+            joined.map(|condition| residency::Residency::conditional(
+                condition.clone(), std::mem::take(&mut left.residency), std::mem::take(&mut right.residency),
+            )),
+        )
+    };
+    let target = if into_right { right } else { left };
+    target.ownership = ownership;
+    target.initialization = match initialization {
+        Position::Initialized => None,
+        position => Some(position),
+    };
+    if let Some(residency) = residency {
+        target.residency = residency;
     }
 }
 struct ReturnExit {

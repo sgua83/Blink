@@ -91,10 +91,10 @@ unsafe extern "C" fn install_source(value:Address){
     let v=unsafe{&mut *value.cast::<Value>()};let identity=v.identity();
     v.proof.set_view_borrow(0,view::Borrow::source(view::Source::Data(identity)));
 }
-unsafe extern "C" fn join_child(a:Address,b:Address,at:u64,stored:u32,when:Address){
+unsafe extern "C" fn join_child(a:Address,b:Address,at:u64,stored:u32,when:Address,presence:Address){
     let a=unsafe{&mut *a.cast::<OwnedValuePayload>()};let b=unsafe{&mut *b.cast::<OwnedValuePayload>()};
     let other=b.payloads[at as usize].take().unwrap();
-    a.payloads[at as usize].as_mut().unwrap().join(*other,stored!=0,unsafe{choice(when)});
+    a.payloads[at as usize].as_mut().unwrap().join_with_presence(*other,stored!=0,unsafe{choice(when)},unsafe{presence.cast::<owned_presence::Presence>().as_ref()});
 }
 unsafe extern "C" fn move_child(a:Address,b:Address,at:u64){
     let a=unsafe{&mut *a.cast::<OwnedValuePayload>()};let b=unsafe{&mut *b.cast::<OwnedValuePayload>()};
@@ -164,7 +164,8 @@ struct Host{
     length_constant:unsafe extern "C" fn(Address,u32),
     view_empty:unsafe extern "C" fn(Address)->u32,
     install_source:unsafe extern "C" fn(Address),
-    join_child:unsafe extern "C" fn(Address,Address,u64,u32,Address),
+    join_child:unsafe extern "C" fn(Address,Address,u64,u32,Address,Address),
+    join_ownership:unsafe extern "C" fn(Address,Address,Address),
     move_child:unsafe extern "C" fn(Address,Address,u64),
     data_root:unsafe extern "C" fn(Address)->Address,
     data_length:unsafe extern "C" fn(Address)->Address,
@@ -181,11 +182,11 @@ struct Host{
     indices_view:unsafe extern "C" fn(Address)->Indices,
     drop_indices:unsafe extern "C" fn(Address),
 }
-const HOST:Host=Host{inspect,value,ownership,child,field,field_owned,aggregate_count,component_count,component_word,component_index,index_at,state_available,state_owned,state_moved,state_equal,state_set_owned,state_set_borrowed,state_set_moved,proof_join_stored,proof_join_common,uniform,set_uniform,constant_equal,clear_constant,proof_borrow,proof_clear,proof_assign,length_constant,view_empty,install_source,join_child,move_child,data_root,data_length,data_ownership,data_count,data_read,data_clear_residency,data_identity,ownership_loop,loop_path,path_possible,fresh_indices,push_index,indices_view,drop_indices};
+const HOST:Host=Host{inspect,value,ownership,child,field,field_owned,aggregate_count,component_count,component_word,component_index,index_at,state_available,state_owned,state_moved,state_equal,state_set_owned,state_set_borrowed,state_set_moved,proof_join_stored,proof_join_common,uniform,set_uniform,constant_equal,clear_constant,proof_borrow,proof_clear,proof_assign,length_constant,view_empty,install_source,join_child,join_ownership,move_child,data_root,data_length,data_ownership,data_count,data_read,data_clear_residency,data_identity,ownership_loop,loop_path,path_possible,fresh_indices,push_index,indices_view,drop_indices};
 const MUT_HOST:Host=Host{value:value_mut,ownership:ownership_mut,child:child_mut,data_root:data_root_mut,data_length:data_length_mut,data_ownership:data_ownership_mut,..HOST};
 
 unsafe extern "C" {
-    #[link_name="bootstrap.ownership_payload::join"] fn source_join(a:Address,b:Address,stored:u32,choice:Address,host:Host);
+    #[link_name="bootstrap.ownership_payload::join"] fn source_join(a:Address,b:Address,stored:u32,choice:Address,presence:Address,host:Host);
     #[link_name="bootstrap.ownership_payload::available"] fn source_available(value:Address,host:Host)->u32;
     #[link_name="bootstrap.ownership_payload::all_available"] fn source_all_available(value:Address,host:Host)->u32;
     #[link_name="bootstrap.ownership_payload::borrow"] fn source_borrow(value:Address,host:Host);
@@ -198,7 +199,24 @@ unsafe extern "C" {
     #[link_name="bootstrap.ownership_payload::handles"] fn source_handles(value:Address,context:Address,visit:unsafe extern "C" fn(Address,Address),host:Host);
     #[link_name="bootstrap.ownership_payload::resources"] fn source_resources(value:Address,context:Address,visit:unsafe extern "C" fn(Address,Address),host:Host);
 }
-pub(super) fn join(value:&mut OwnedValuePayload,mut other:OwnedValue,stored:bool,choice:Option<&bounds::Condition>){unsafe{source_join(pointer_mut(value),pointer_mut(other.as_mut()),u32::from(stored),choice.map_or(std::ptr::null_mut(),pointer),MUT_HOST)};}
+pub(super) fn join(
+    value: &mut OwnedValuePayload, mut other: OwnedValue, stored: bool, choice: Option<&bounds::Condition>,
+    presence: Option<&owned_presence::Presence>,
+) {
+    unsafe {
+        source_join(
+            pointer_mut(value), pointer_mut(other.as_mut()), u32::from(stored),
+            choice.map_or(std::ptr::null_mut(), pointer),
+            presence.map_or(std::ptr::null_mut(), pointer), MUT_HOST,
+        );
+    }
+}
+unsafe extern "C" fn join_ownership(left: Address, right: Address, presence: Address) {
+    let a = unsafe { &mut *left.cast::<Ownership>() };
+    let b = unsafe { &*right.cast::<Ownership>() };
+    let condition = unsafe { &*presence.cast::<owned_presence::Presence>() };
+    *a = Ownership::either(a, b, Some(condition));
+}
 pub(super) fn available(value:&OwnedValuePayload)->bool{unsafe{source_available(pointer(value),HOST)!=0}}
 pub(super) fn all_available(value:&OwnedValuePayload)->bool{unsafe{source_all_available(pointer(value),HOST)!=0}}
 pub(super) fn borrow(value:&mut OwnedValuePayload){unsafe{source_borrow(pointer_mut(value),MUT_HOST)};}
@@ -510,4 +528,51 @@ unsafe extern "C" fn visit_lookup_child(context: Address, parent: LookupNode, in
     unsafe { &mut *context.cast::<CandidateLookup<'_, '_>>() }.path.push(index);
     unsafe { source_collect_places(context, node, LOOKUP); }
     unsafe { &mut *context.cast::<CandidateLookup<'_, '_>>() }.path.pop();
+}
+
+
+#[repr(C)]
+struct PayloadPair { left: Item, right: Item }
+
+#[repr(C)]
+struct RetainedHost {
+    inspect: unsafe extern "C" fn(Address) -> Info,
+    child: unsafe extern "C" fn(Address, u64) -> Item,
+    ownership: unsafe extern "C" fn(PayloadPair, Address, u32),
+    dataset: unsafe extern "C" fn(PayloadPair, Address, u32) -> PayloadPair,
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.ownership_payload::retain_presence"]
+    fn source_retain_presence(pair: PayloadPair, presence: Address, take_right: u32, host: RetainedHost);
+}
+
+impl Returned {
+    pub(in super::super) fn merge_retained_presence(
+        &mut self, other: &mut Self, presence: &owned_presence::Presence, take_right: bool,
+    ) {
+        let pair = PayloadPair { left: mutable_item(Some(self)), right: mutable_item(Some(other)) };
+        unsafe {
+            source_retain_presence(pair, pointer(presence), u32::from(take_right), RetainedHost {
+                inspect, child: child_mut, ownership: retain_ownership, dataset: retain_dataset,
+            });
+        }
+    }
+}
+
+unsafe extern "C" fn retain_ownership(pair: PayloadPair, presence: Address, take_right: u32) {
+    let left = unsafe { &mut *pair.left.node.cast::<OwnedValuePayload>() };
+    let right = unsafe { &mut *pair.right.node.cast::<OwnedValuePayload>() };
+    let condition = unsafe { &*presence.cast::<owned_presence::Presence>() };
+    let ownership = Ownership::either(&left.ownership, &right.ownership, Some(condition));
+    let output = if take_right != 0 { &mut right.ownership } else { &mut left.ownership };
+    *output = ownership;
+}
+
+unsafe extern "C" fn retain_dataset(pair: PayloadPair, presence: Address, take_right: u32) -> PayloadPair {
+    let left = unsafe { &mut *pair.left.node.cast::<Data>() };
+    let right = unsafe { &mut *pair.right.node.cast::<Data>() };
+    let condition = unsafe { &*presence.cast::<owned_presence::Presence>() };
+    returns::merge_dataset_presence(left, right, condition, take_right != 0, None);
+    PayloadPair { left: mutable_item(left.elements.known_mut()), right: mutable_item(right.elements.known_mut()) }
 }

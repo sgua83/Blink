@@ -36,12 +36,29 @@ impl ElementFacts {
         (Self::Cleanup(a),Self::Cleanup(b))=>Self::Cleanup(a.logical(b,false)),
         (a,b)=>Self::Common(Box::new(a),Box::new(b)),
     }}
-    pub(super) fn selected(self,other:Self,when:&bounds::Condition)->Self {
-        if let Some(truth)=when.boolean_constant(){return if truth{self}else{other};}
+    pub(super) fn selected(self, other: Self, when: &bounds::Condition) -> Self {
+        self.join_selected(other, when, None)
+    }
+    pub(super) fn retain_side(
+        mut self, mut other: Self, take_right: bool, presence: Option<&owned_presence::Presence>,
+    ) -> Self {
+        if let Some(presence) = presence
+            && let (Some(left), Some(right)) = (self.known_mut(), other.known_mut())
+        {
+            left.merge_retained_presence(right, presence, take_right);
+        }
+        if take_right { other } else { self }
+    }
+    pub(super) fn join_selected(
+        self, other: Self, when: &bounds::Condition, presence: Option<&owned_presence::Presence>,
+    ) -> Self {
+        if let Some(truth) = when.boolean_constant() {
+            return self.retain_side(other, !truth, presence);
+        }
         match(self,other){
             (Self::Unknown,Self::Unknown)=>Self::Unknown,
             (Self::Input(a),Self::Input(b))=>Self::Input(bounds::Condition::branch(when.clone(),a,b)),
-            (Self::Known(mut a),Self::Known(b))=>{a.join(*b,true,Some(when));Self::Known(a)},
+            (Self::Known(mut a),Self::Known(b))=>{a.join_with_presence(*b,true,Some(when),presence);Self::Known(a)},
             (Self::Cleanup(a),Self::Cleanup(b))=>Self::Cleanup(bounds::Condition::branch(when.clone(),a,b)),
             (Self::Cleanup(a),Self::Unknown)=>Self::Cleanup(when.clone().logical(a,false)),
             (Self::Unknown,Self::Cleanup(b))=>Self::Cleanup(when.clone().negate().logical(b,false)),

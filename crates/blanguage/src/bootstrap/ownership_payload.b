@@ -1,7 +1,7 @@
 module bootstrap.ownership_payload;
 // Info flags: variants=1, own-presence=2. Item tags: absent=0, Unit=1,
 // ordinary Value=2, Dataset=3, OwnedValuePayload=4. All storage is original.
-extern "C" void join(address left,address right,u32 stored,address choice,Host host) on cpu
+extern "C" void join(address left,address right,u32 stored,address choice,address presence,Host host) on cpu
     requires nonzero(host.inspect)
     requires nonzero(host.value)
     requires nonzero(host.ownership)
@@ -15,9 +15,11 @@ extern "C" void join(address left,address right,u32 stored,address choice,Host h
     requires nonzero(host.constant_equal)
     requires nonzero(host.clear_constant)
     requires nonzero(host.join_child)
+    requires nonzero(host.join_ownership)
     requires nonzero(host.move_child) { 
     address a=host.ownership(left);address b=host.ownership(right);
-    if(host.state_equal(a,b)==0){host.state_set_moved(a);}
+    if(address_bits(presence)!=0u64){host.join_ownership(a,b,presence);}
+    else if(host.state_equal(a,b)==0){host.state_set_moved(a);}
     address av=host.value(left);address bv=host.value(right);
     if(stored!=0){host.proof_join_stored(av,bv,choice);}else{host.proof_join_common(av,bv,choice);}
     host.set_uniform(av,host.uniform(av)&host.uniform(bv));
@@ -26,7 +28,7 @@ extern "C" void join(address left,address right,u32 stored,address choice,Host h
     if(other<count){count=other;}u64 i=0u64;
     while(i<count){
         Item source=host.child(right,i);
-        if(source.kind!=0){if(host.child(left,i).kind==0){host.move_child(left,right,i);}else{host.join_child(left,right,i,stored,choice);}}
+        if(source.kind!=0){if(host.child(left,i).kind==0){host.move_child(left,right,i);}else{host.join_child(left,right,i,stored,choice,presence);}}
         i+=1u64;
     }
 }
@@ -374,5 +376,27 @@ extern "C" void collect_owned_places(address context,LookupNode node,LookupHost 
         Field field=host.field(node.ty,i);
         if(field.owns!=0){host.visit_child(context,node,i,field);}
         i+=1u64;
+    }
+}
+
+extern "C" void retain_presence(PayloadPair pair,address presence,u32 take_right,RetainedHost host) on cpu
+    requires nonzero(host.inspect)
+    requires nonzero(host.child)
+    requires nonzero(host.ownership)
+    requires nonzero(host.dataset) {
+    if(pair.left.kind!=pair.right.kind){return;}
+    if(pair.left.kind==3){
+        PayloadPair child=host.dataset(pair,presence,take_right);
+        retain_presence(child,presence,take_right,host);
+    }else if(pair.left.kind==4){
+        host.ownership(pair,presence,take_right);
+        address retained=take_right!=0 ? pair.right.node : pair.left.node;
+        u64 count=host.inspect(retained).count;
+        u64 i=0u64;
+        while(i<count){
+            PayloadPair child=PayloadPair(host.child(pair.left.node,i),host.child(pair.right.node,i));
+            retain_presence(child,presence,take_right,host);
+            i+=1u64;
+        }
     }
 }

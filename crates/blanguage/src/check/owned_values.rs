@@ -19,7 +19,12 @@ pub(super) struct OwnedValuePayload {
 }
 impl OwnedValuePayload {
     pub(super) fn place(&self)->Option<Place>{self.place.clone()}
-    pub(super) fn join(&mut self,other:OwnedValue,stored:bool,choice:Option<&bounds::Condition>){model::join(self,other,stored,choice)}
+    pub(super) fn join_with_presence(
+        &mut self, other: OwnedValue, stored: bool, choice: Option<&bounds::Condition>,
+        presence: Option<&owned_presence::Presence>,
+    ) {
+        model::join(self, other, stored, choice, presence);
+    }
     pub(super) fn all_available(&self)->bool{model::all_available(self)}
     pub(super) fn available(&self)->bool{model::available(self)}
     pub(super) fn borrow(&mut self){model::borrow(self)}
