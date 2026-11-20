@@ -3,7 +3,7 @@ use blanguage::{
     ast::Target,
     ir::{Operation, Program, interface_layout_json},
     native::{ContinuationCode, NativeCode, StageCode as NativeStage},
-    spirv::AdditionalShaders,
+    spirv::TerminalScan,
 };
 use std::path::Path;
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
@@ -52,28 +52,32 @@ pub fn program(compiler: &blanguage::Compiler, program: &Program, out: &Path, st
             if let Some((suffix, words)) = &code.finish {
                 shader_file(out, &format!("{name}.{suffix}"), words)?;
             }
-            let operation = &image.program().stages()[i].operation;
-            match code.additional_shaders(operation) {
-                Some(AdditionalShaders::Sort(sort)) => {
-                    for (suffix, shader) in ["scan", "tail", "add", "gather"]
-                        .into_iter()
-                        .zip(&sort[16..20])
-                    {
-                        shader_file(out, &format!("{name}.{suffix}"), &shader.words)?;
-                    }
-                    for (key, shader) in sort[20..].iter().enumerate() {
-                        shader_file(out, &format!("{name}.key-{key}"), &shader.words)?;
-                    }
-                    for shift in (0..32).step_by(4) {
-                        for (suffix, index) in [("histogram", shift / 4), ("scatter", 8 + shift / 4)] {
-                            shader_file(out, &format!("{name}.{shift}.{suffix}"), &sort[index].words)?;
-                        }
+            let plan = image.program();
+            let shaders = code.additional_shaders(plan, &plan.stages()[i]);
+            let sort = shaders.sort;
+            if !sort.is_empty() {
+                for (suffix, shader) in ["scan", "tail", "add", "gather"]
+                    .into_iter()
+                    .zip(&sort[16..20])
+                {
+                    shader_file(out, &format!("{name}.{suffix}"), &shader.words)?;
+                }
+                for (key, shader) in sort[20..].iter().enumerate() {
+                    shader_file(out, &format!("{name}.key-{key}"), &shader.words)?;
+                }
+                for shift in (0..32).step_by(4) {
+                    for (suffix, index) in [("histogram", shift / 4), ("scatter", 8 + shift / 4)] {
+                        shader_file(out, &format!("{name}.{shift}.{suffix}"), &sort[index].words)?;
                     }
                 }
-                Some(AdditionalShaders::SegmentedSingleGroup(shader)) => {
-                    shader_file(out, &format!("{name}.single-group"), &shader.words)?;
+            }
+            if let Some(shader) = shaders.segmented_single_group {
+                shader_file(out, &format!("{name}.single-group"), &shader.words)?;
+            }
+            for (suffix, terminal) in ["terminal-root", "terminal-tail"].into_iter().zip(shaders.terminal_scans) {
+                if let Some(TerminalScan::Alternate(shader)) = terminal {
+                    shader_file(out, &format!("{name}.{suffix}"), &shader.words)?;
                 }
-                None => {}
             }
         }
     }

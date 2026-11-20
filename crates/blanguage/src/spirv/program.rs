@@ -1,5 +1,6 @@
 //! 编译完整阶段及实际消费的集合／间接启动入口；GPU 资源装载不再调用 Shader 发射器。
 use super::*;
+use crate::spirv::{ScanShader, scan_shaders};
 use std::ops::Deref;
 
 pub fn compile_program<P: Deref<Target = Program>>(program: P) -> Result<ProgramImage<P>, String> {
@@ -146,10 +147,13 @@ pub(crate) fn compile_stage(
         operation, u32::from(stage.selection.is_some()), u32::from(stage.prefix.is_some()),
         u32::from(root_add), keys,
     ) };
+    let [root_scan, tail_scan] = scan_shaders(
+        &stage.operation, stage.selection.is_some(), program.buffers[stage.domain].count,
+    );
     let original_facts = (entries.original_main != 0).then(|| ShaderStageFacts::new(stage, true));
-    let mut emit = |pass, kernel: Option<&PreparedReduction>| {
+    let mut emit = |pass, kernel: Option<&PreparedReduction>, publishes_summary| {
         let (words, bytes) = emit_shader(
-            program, stage, pass, &mut inputs, &tile_layout, features, kernel, original_facts.as_ref(),
+            program, stage, pass, &mut inputs, &tile_layout, features, kernel, original_facts.as_ref(), publishes_summary,
         )?;
         layout.shared_bytes = layout.shared_bytes.max(bytes);
         Ok::<_, &'static str>(words)
@@ -172,7 +176,8 @@ pub(crate) fn compile_stage(
         EntryFinish::Segmented => Some(("finish", Pass::ScanRootAdd)),
         EntryFinish::ScanRoot => Some(("root-add", Pass::ScanRootAdd)),
     };
-    let mut additional = (entries.sort_passes != 0).then(|| {
+    let sorting = entries.sort_passes != 0;
+    let mut additional = sorting.then(|| {
         (0..entries.sort_passes).map(|index| {
             let entry = unsafe { sort_shader_entry(index) };
             let (pass, ranks) = match entry.kind {
@@ -184,40 +189,55 @@ pub(crate) fn compile_stage(
                 SortShaderKind::Gather => (Pass::SortGather, false),
                 SortShaderKind::Key => (Pass::SortKey(entry.parameter), false),
             };
-            Ok(ShaderCode { words: emit(pass, None)?, ranks })
-        }).collect::<Result<_, &'static str>>()
+            let publishes_summary = match pass {
+                Pass::SortScan => root_scan != ScanShader::Terminal,
+                Pass::ScanTail => tail_scan != ScanShader::Terminal,
+                _ => true,
+            };
+            Ok(ShaderCode { words: emit(pass, None, publishes_summary)?, ranks })
+        }).collect::<Result<Vec<_>, &'static str>>()
     }).transpose()?;
     let main_kernel = prepare_reduction(stage, Pass::Main);
-    let main = emit(Pass::Main, main_kernel.as_ref())?;
-    let finish_main = main_kernel.filter(|_| matches!(entries.finish_kernel, FinishKernel::Main));
-    let tail = tail.map(|pass| {
-        let kernel = prepare_reduction(stage, pass);
-        emit(pass, kernel.as_ref())
-    }).transpose()?;
+    let main = emit(Pass::Main, main_kernel.as_ref(), selected || sorting || root_scan != ScanShader::Terminal)?;
+    let finish_main = main_kernel.as_ref().filter(|_| matches!(entries.finish_kernel, FinishKernel::Main));
+    let tail_kernel = tail.and_then(|pass| prepare_reduction(stage, pass));
+    let tail = tail.map(|pass| emit(pass, tail_kernel.as_ref(), tail_scan != ScanShader::Terminal)).transpose()?;
     let (scan_add, finish_add) = if entries.scan_add != 0 {
         let kernel = prepare_reduction(stage, Pass::ScanAdd);
-        let words = emit(Pass::ScanAdd, kernel.as_ref())?;
+        let words = emit(Pass::ScanAdd, kernel.as_ref(), true)?;
         (Some(words), kernel.filter(|_| matches!(entries.finish_kernel, FinishKernel::Add)))
     } else {
         (None, None)
     };
     let finish = finish.map(|(name, pass)| {
-        let kernel = finish_main.or(finish_add);
+        let kernel = finish_main.or(finish_add.as_ref());
         if segmented && can_use_single_group {
             additional = Some(vec![ShaderCode {
-                words: emit(Pass::SegmentedSingleGroup, kernel.as_ref())?,
+                words: emit(Pass::SegmentedSingleGroup, kernel, true)?,
                 ranks: false,
             }]);
         }
-        Ok((name.into(), emit(pass, kernel.as_ref())?))
+        Ok((name.into(), emit(pass, kernel, true)?))
     }).transpose()?;
+    let root_pass = if sorting { Pass::SortScan } else if selected { Pass::SelectionScan } else { Pass::Main };
+    for (role, pass, kernel) in [
+        (root_scan, root_pass, main_kernel.as_ref()),
+        (tail_scan, Pass::ScanTail, tail_kernel.as_ref()),
+    ] {
+        if role == ScanShader::Both {
+            additional.get_or_insert_with(Vec::new).push(ShaderCode {
+                words: emit(pass, kernel, false)?,
+                ranks: false,
+            });
+        }
+    }
     let code = StageCode {
         main,
         tail,
         scan_add,
         finish,
-        dispatch: dispatch.map(|p| emit(p, None)).transpose()?,
-        selector: selected.then(|| emit(Pass::SelectionScan, None)).transpose()?,
+        dispatch: dispatch.map(|p| emit(p, None, true)).transpose()?,
+        selector: selected.then(|| emit(Pass::SelectionScan, None, root_scan != ScanShader::Terminal)).transpose()?,
         additional,
     };
     Ok((layout, code))

@@ -22,28 +22,121 @@ pub struct StageCode {
     pub finish: Option<(String, Vec<u32>)>,
     pub dispatch: Option<Vec<u32>>,
     pub selector: Option<Vec<u32>>,
-    /// Stage-specific entries. Sort retains its pass order, while segmented
-    /// reduction can provide one entry that needs no intergroup prefix.
+    /// Original sort or single-group segmented entries, followed by the
+    /// terminal scan alternatives that the stage's physical shape can use.
     pub additional: Option<Vec<ShaderCode>>,
 }
 
-pub enum AdditionalShaders<'a> {
-    Sort(&'a [ShaderCode]),
-    SegmentedSingleGroup(&'a ShaderCode),
+pub const SCAN_WIDTH: u32 = 64;
+
+pub fn sort_histogram_count(count: u32) -> u32 {
+    count.div_ceil(SCAN_WIDTH).max(1) * 16
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ScanShader {
+    Summary,
+    Terminal,
+    Both,
+}
+
+pub(crate) fn scan_shaders<R>(operation: &Operation<R>, selected: bool, count: Option<u32>) -> [ScanShader; 2] {
+    use ScanShader::*;
+    let (root, count) = match operation {
+        Operation::StableSort(_) => (true, count.map(sort_histogram_count)),
+        Operation::ScanExclusive(_) | Operation::CustomScan(_) | Operation::Compact(_) => (true, count),
+        Operation::Map if selected => (true, count),
+        Operation::SegmentedReduce(_) | Operation::CustomSegmentedReduce(_) => (false, count),
+        _ => return [Summary; 2],
+    };
+    let first = match (root, count) {
+        (true, None) => Both,
+        (true, Some(size)) if size <= SCAN_WIDTH => Terminal,
+        _ => Summary,
+    };
+    let tail = match count {
+        None => Both,
+        Some(size) if size > SCAN_WIDTH * SCAN_WIDTH => Both,
+        Some(size) if size > SCAN_WIDTH => Terminal,
+        _ => Summary,
+    };
+    [first, tail]
+}
+
+pub enum TerminalScan<'a> {
+    Canonical,
+    Alternate(&'a ShaderCode),
+}
+
+pub struct AdditionalShaders<'a> {
+    pub sort: &'a [ShaderCode],
+    pub segmented_single_group: Option<&'a ShaderCode>,
+    /// Exclusive scan of the original records and of an upper level, respectively.
+    pub terminal_scans: [Option<TerminalScan<'a>>; 2],
 }
 
 impl StageCode {
-    pub fn additional_shaders<R>(&self, operation: &Operation<R>) -> Option<AdditionalShaders<'_>> {
-        let shaders = self.additional.as_deref()?;
-        match operation {
-            Operation::StableSort(_) => Some(AdditionalShaders::Sort(shaders)),
-            Operation::SegmentedReduce(_) | Operation::CustomSegmentedReduce(_) => {
-                shaders.first().map(AdditionalShaders::SegmentedSingleGroup)
-            }
-            _ => None,
-        }
+    pub fn additional_shaders(&self, plan: &ExecutionPlan, stage: &crate::ir::ExecutionStage) -> AdditionalShaders<'_> {
+        let mut shaders = self.additional.as_deref().unwrap_or_default().iter();
+        let operation = &stage.operation;
+        let count = plan.buffers()[stage.domain].count;
+        let sort = if let Operation::StableSort(sort) = operation {
+            let size = 19 + sort.keys.len();
+            let original = shaders.as_slice().get(..size).unwrap_or_default();
+            shaders = shaders.as_slice().get(size..).unwrap_or_default().iter();
+            original
+        } else {
+            &[]
+        };
+        let segmented_single_group = if matches!(operation,
+            Operation::SegmentedReduce(_) | Operation::CustomSegmentedReduce(_))
+            && count.is_none_or(|size| size <= SCAN_WIDTH)
+        {
+            shaders.next()
+        } else {
+            None
+        };
+
+        let root = match operation {
+            Operation::StableSort(_) => sort.get(16).map(|shader| shader.words.as_slice()),
+            Operation::Map if stage.selection.is_some() => self.selector.as_deref(),
+            _ => Some(self.main.as_slice()),
+        };
+        let tail = if sort.is_empty() {
+            self.tail.as_deref()
+        } else {
+            sort.get(17).map(|shader| shader.words.as_slice())
+        };
+        let binding = (plan.buffers().len() + plan.accelerations().len() + plan.textures().len()) as u32;
+        let [root_role, tail_role] = scan_shaders(operation, stage.selection.is_some(), count);
+        let terminal_scans = [(root_role, root), (tail_role, tail)].map(|(role, canonical)| match role {
+                ScanShader::Summary => None,
+                ScanShader::Terminal => canonical.filter(|words| !declares_binding(words, binding))
+                    .map(|_| TerminalScan::Canonical),
+                ScanShader::Both => shaders.next().map(TerminalScan::Alternate),
+            });
+        AdditionalShaders { sort, segmented_single_group, terminal_scans }
     }
 }
+
+// This reads the compiled page-binding declaration used by the original pipeline.
+// Older images declared the auxiliary slot even in a statically single-group scan.
+fn declares_binding(words: &[u32], binding: u32) -> bool {
+    let Some(mut instructions) = words.get(5..) else { return true };
+    while let Some(&header) = instructions.first() {
+        let width = (header >> 16) as usize;
+        let Some((instruction, rest)) = instructions.split_at_checked(width) else { return true };
+        match (header as u16, instruction) {
+            (54, _) => break, // OpFunction ends module declarations.
+            (71, [_, _, 33, slot]) if *slot == binding => return true, // OpDecorate Binding
+            (_, []) => return true,
+            _ => {}
+        }
+        instructions = rest;
+    }
+    false
+}
+
 #[derive(Clone, Debug)]
 pub struct ProgramImage<P> {
     program: std::sync::Arc<ExecutionPlan>,

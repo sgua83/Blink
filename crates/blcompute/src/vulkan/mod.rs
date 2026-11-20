@@ -1677,9 +1677,17 @@ impl Drop for Commands {
         }
     }
 }
-enum AdditionalPipelines {
-    Sort(Vec<VkPipeline>),
-    SegmentedSingleGroup(VkPipeline),
+#[derive(Clone, Copy)]
+enum TerminalPipeline {
+    Canonical,
+    Alternate(VkPipeline),
+}
+
+#[derive(Default)]
+struct AdditionalPipelines {
+    sort: Vec<VkPipeline>,
+    segmented_single_group: Option<VkPipeline>,
+    terminal_scans: [Option<TerminalPipeline>; 2],
 }
 
 struct Compiled {
@@ -1693,14 +1701,15 @@ struct Compiled {
     finishes: Vec<Option<VkPipeline>>,
     dispatches: Vec<Option<VkPipeline>>,
     selectors: Vec<Option<VkPipeline>>,
-    additional: Vec<Option<AdditionalPipelines>>,
+    additional: Vec<AdditionalPipelines>,
 }
 impl Compiled {
     fn segmented_single_group(&self, stage: usize, count: u32) -> Option<VkPipeline> {
-        match self.additional[stage] {
-            Some(AdditionalPipelines::SegmentedSingleGroup(pipeline)) if scan::groups(count) == 1 => Some(pipeline),
-            _ => None,
-        }
+        (scan::groups(count) == 1).then(|| self.additional[stage].segmented_single_group).flatten()
+    }
+
+    fn scan_terminal(&self, stage: usize, count: u32) -> Option<TerminalPipeline> {
+        self.additional[stage].terminal_scans[usize::from(scan::groups(count) > 1)]
     }
 }
 impl Drop for Compiled {
@@ -1716,9 +1725,12 @@ impl Drop for Compiled {
                 .chain(self.finishes.iter().flatten())
                 .chain(self.dispatches.iter().flatten())
                 .chain(self.selectors.iter().flatten())
-                .chain(self.additional.iter().flatten().flat_map(|pipelines| match pipelines {
-                    AdditionalPipelines::Sort(pipelines) => pipelines.as_slice(),
-                    AdditionalPipelines::SegmentedSingleGroup(pipeline) => std::slice::from_ref(pipeline),
+                .chain(self.additional.iter().flat_map(|pipelines| {
+                    pipelines.sort.iter().chain(&pipelines.segmented_single_group)
+                        .chain(pipelines.terminal_scans.iter().filter_map(|pipeline| match pipeline {
+                            Some(TerminalPipeline::Alternate(handle)) => Some(handle),
+                            _ => None,
+                        }))
                 }))
             {
                 (f.vkDestroyPipeline)(d, *p, null());
@@ -2158,22 +2170,22 @@ impl GpuProgram {
                         .push(shader.dispatch.as_deref().map(make).transpose()?);
                     out.selectors
                         .push(shader.selector.as_deref().map(make).transpose()?);
-                    out.additional.push(None);
-                    match shader.additional_shaders(&out.program.stages()[stage].operation) {
-                        Some(blanguage::spirv::AdditionalShaders::Sort(shaders)) => {
-                            let AdditionalPipelines::Sort(kernels) = out.additional[stage]
-                                .insert(AdditionalPipelines::Sort(Vec::with_capacity(shaders.len())))
-                            else {
-                                unreachable!()
-                            };
-                            for shader in shaders {
-                                kernels.push(pipeline(&out.inner, out.layout, &shader.words, shader.ranks)?);
-                            }
-                        }
-                        Some(blanguage::spirv::AdditionalShaders::SegmentedSingleGroup(shader)) => {
-                            out.additional[stage] = Some(AdditionalPipelines::SegmentedSingleGroup(make(&shader.words)?));
-                        }
-                        None => {}
+                    use blanguage::spirv::TerminalScan;
+                    let entries = shader.additional_shaders(&out.program, &out.program.stages()[stage]);
+                    out.additional.push(AdditionalPipelines::default());
+                    let extra = &mut out.additional[stage];
+                    for shader in entries.sort {
+                        extra.sort.push(pipeline(&out.inner, out.layout, &shader.words, shader.ranks)?);
+                    }
+                    extra.segmented_single_group = entries.segmented_single_group
+                        .map(|shader| make(&shader.words)).transpose()?;
+                    for (pipeline, shader) in extra.terminal_scans.iter_mut().zip(entries.terminal_scans) {
+                        *pipeline = match shader {
+                            Some(TerminalScan::Canonical) => Some(TerminalPipeline::Canonical),
+                            Some(TerminalScan::Alternate(shader)) =>
+                                Some(TerminalPipeline::Alternate(make(&shader.words)?)),
+                            None => None,
+                        };
                     }
                 }
             }
@@ -2370,7 +2382,7 @@ impl GpuProgram {
         let mut binding_parameters = None;
         // 同一串行提交中，完成消费的同容量 where 工作区由后续阶段复用。
         let mut scratch_uses = Vec::new();
-        let mut selected_storage = BTreeMap::<u32, (usize, BTreeSet<usize>)>::new();
+        let mut selected_storage = BTreeMap::<(u32, bool), (usize, BTreeSet<usize>)>::new();
         let stage_count = c.program.stages().len();
         let query_count = if self.capture_timestamps {
             u32::try_from(stage_count as u64 * 2 * steps.get() as u64)?
@@ -2393,11 +2405,12 @@ impl GpuProgram {
             }
             if let Some(selection) = stage.selection {
                 use std::collections::btree_map::Entry;
-                let ((slot, sources), reused) = match selected_storage.entry(count) {
+                let legacy_summary = c.scan_terminal(i, count).is_none();
+                let ((slot, sources), reused) = match selected_storage.entry((count, legacy_summary)) {
                     Entry::Occupied(entry) => (entry.into_mut(), true),
                     Entry::Vacant(entry) => {
                         let slot = scratch.len();
-                        let mut temporary = selection::allocate(c, count)?;
+                        let mut temporary = selection::allocate(c, i, count)?;
                         temporary.arguments = Some(prefix::allocate(c, stage)?);
                         scratch.push(temporary);
                         extra_sets += 2;
@@ -2444,15 +2457,15 @@ impl GpuProgram {
                 }
                 blanguage::ir::Operation::Compact(_) => {
                     extra_sets += scan::levels(count) as u64 * 2;
-                    Some(compact::allocate(c, count)?)
+                    Some(compact::allocate(c, i, count)?)
                 }
                 blanguage::ir::Operation::ScanExclusive(ref s) => {
                     extra_sets += (scan::levels(count) * 2 - 1) as u64;
-                    Some(scan::allocate(c, count, s.summary_words())?)
+                    Some(scan::allocate(c, i, count, s.summary_words())?)
                 }
                 blanguage::ir::Operation::CustomScan(ref s) => {
                     extra_sets += (scan::levels(count) * 2 - 1) as u64;
-                    Some(scan::allocate(c, count, s.summary_words())?)
+                    Some(scan::allocate(c, i, count, s.summary_words())?)
                 }
                 blanguage::ir::Operation::SegmentedReduce(_)
                 | blanguage::ir::Operation::CustomSegmentedReduce(_)
@@ -2467,14 +2480,14 @@ impl GpuProgram {
                 }
                 blanguage::ir::Operation::CustomSegmentedReduce(ref r) => {
                     extra_sets += (scan::levels(count) * 2 - 1) as u64;
-                    Some(scan::allocate(c, count, r.summary_words())?)
+                    Some(scan::allocate(c, i, count, r.summary_words())?)
                 }
                 blanguage::ir::Operation::SegmentedReduce(ref r) => {
                     extra_sets += (scan::levels(count) * 2 - 1) as u64;
-                    Some(scan::allocate(c, count, r.summary_words())?)
+                    Some(scan::allocate(c, i, count, r.summary_words())?)
                 }
                 blanguage::ir::Operation::StableSort(_) => {
-                    let sorting = sort::allocate(c, count)?;
+                    let sorting = sort::allocate(c, i, count)?;
                     extra_sets += sorting.descriptor_count();
                     Some(Scratch {
                         buffers: Vec::new(),
@@ -2592,9 +2605,9 @@ impl GpuProgram {
                 let root_set = needs_root_set
                     .then(|| descriptors.as_mut().unwrap().set(&[], None, None, None, None))
                     .transpose()?;
-                let selection_sets = selected_storage.into_iter().map(|(count, (slot, sources))| {
-                    selection::descriptors(descriptors.as_mut().unwrap(), &scratch[slot], count, sources)
-                        .map(|sets| (count, sets))
+                let selection_sets = selected_storage.into_iter().map(|(key, (slot, sources))| {
+                    selection::descriptors(descriptors.as_mut().unwrap(), &scratch[slot], key.0, sources)
+                        .map(|sets| (key, sets))
                 }).collect::<Result<BTreeMap<_, _>>>()?;
                 let mut sorting_sets = Vec::new();
                 for usage in &scratch_uses {
@@ -2700,7 +2713,7 @@ impl GpuProgram {
                             blanguage::ir::Operation::Map if stage.selection.is_some() => {
                                 selection::record(
                                     &commands,
-                                    &selection_sets[&count],
+                                    &selection_sets[&(count, c.scan_terminal(i, count).is_none())],
                                     c,
                                     i,
                                     count,

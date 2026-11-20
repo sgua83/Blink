@@ -1213,9 +1213,9 @@ compiler SDK的`spirv::module_json(words: &[u32]) -> Result<String, spirv::Decod
 
 ### 原GPU映像全部模块的结构查询
 
-compiler功能提供原`spirv::ShaderCode::code_json()`、`StageCode::code_json()`及`ProgramImage<P>::code_json()`，均返回`Result<String, spirv::DecodeError>`。它们只借用自己的原words／字段，逐模块复用module_json，不读B源、创建Compiler／设备、改写执行代码或重新生成shader；返回JSON及临时解析由调用者持有和释放，不延长原映像与GPU消费者寿命。
+compiler功能可用`spirv::ShaderCode::code_json()`和`ProgramImage<P>::code_json()`，均返回`Result<String, spirv::DecodeError>`。映像查询沿同一阶段的实际布局交接全部StageCode模块。它们只借用自己的原words／字段，逐模块复用module_json，不读B源、创建Compiler／设备、改写执行代码或重新生成shader；返回JSON及临时解析由调用者持有和释放，不延长原映像与GPU消费者寿命。
 
-ShaderCode结果kind=spirv_shader，保留原ranks布尔角色及module；ranks不是实测数值。StageCode结果kind=spirv_stage，main是原模块结构；tail／scan_add／dispatch／selector为原可选模块或null，finish为原name及module或null，sort为原ShaderCode次序的全部数组或null。不存在的sort与存在的空数组分别交接，不从固定长度截取辅助模块。ProgramImage结果kind=gpu_program_image，program为原程序名，offset_basis=each_module_relative，stages按原次序保留全部阶段。各模块的ID和偏移始终只属于该模块，不按相同ID数值合并跨模块关系。
+ShaderCode结果kind=spirv_shader，保留原ranks布尔角色及module；ranks不是实测数值。StageCode结果kind=spirv_stage，main是原模块结构；tail／scan_add／dispatch／selector为原可选模块或null，finish为原name及module或null，sort交接实际排序轮、其扫描、回收及其余键的ShaderCode原次序，其他阶段为null。single_group交接单组分段写回；terminal_root和terminal_tail交接原记录扫描及递归扫描的终层入口。独立入口给出原ShaderCode，复用正常入口时为`{"canonical":true}`，缺少该入口时为null。`bc build`沿原模块路径导出，并将实际独立入口分别写入`.terminal-root.spv`和`.terminal-tail.spv`。复用入口对应原main、selector或原排序扫描，以及各自的tail。ProgramImage结果kind=gpu_program_image，program为原程序名，offset_basis=each_module_relative，stages按原次序保留全部阶段。各模块的ID和偏移始终只属于该模块，不按相同ID数值合并跨模块关系。
 
 嵌套失败返回DecodeError，offset_words仍是失败模块内部的原位置，reason包含原stage[index]、字段或sort[index]；不输出缺项或部分成功JSON。查询原StageCode字段不证明它是实际GPU dispatch历史，结构可解析也不证明完整语义／设备可执行。运行角色关闭compiler后不包含这些查询或解码依赖，原BLRI执行编码不增加观察字段。
 
@@ -4139,7 +4139,7 @@ void chains(read dataset<SegmentItem> local,
 
 分段摘要为 `(T 的尾段值, 是否含段头)`，紧密保存 K+1 个 word。左右摘要 `(a,h)`、`(b,j)` 合并为 `(j ? b : combine(a,b),h||j)`；右侧已经开始新段时直接保留其尾值，不执行跨段用户合并器。摘要的单位元为 `(identity(),false)`。这是一种有序结合运算，继续使用相同 ValueCode 与扫描层级，没有逐输入段号或额外映射数据集。
 
-CPU 主范围函数遇到段头后重置累积；原生摘要前缀函数直接合并／重置摘要，传播函数到范围内首个段头即结束。需要跨迭代保留的单位元和累积值进入既有活跃集，数学调用遵守相同 ABI。GPU 在原共享树中处理 K+1 分量，上扫与下扫保持逻辑顺序，根阶段输出当前段头的单位元。根摘要最后一个 word 同时编码首个段头的 lane+1，零表示没有段头；递归将非零解释为含段头，最终传播只修改该工作组首个段头之前的值。共享存储为 `64*(K+1)*4` 字节，所有摘要、有效计数和递归间接参数留在设备，资源仍由原提交持有到最后消费。
+CPU 主范围函数遇到段头后重置累积；原生摘要前缀函数直接合并／重置摘要，传播函数到范围内首个段头即结束。需要跨迭代保留的单位元和累积值进入既有活跃集，数学调用遵守相同 ABI。GPU 在原共享树中处理 K+1 分量，上扫与下扫保持逻辑顺序，根阶段输出当前段头的单位元。供下一层消费的根摘要在最后一个 word 编码首个段头的 lane+1，零表示没有段头；递归将非零解释为含段头，最终传播只修改该工作组首个段头之前的值。共享存储为 `64*(K+1)*4` 字节，所有摘要、有效计数和递归间接参数留在设备，资源仍由原提交持有到最后消费。
 
 导出文件与普通自定义扫描相同，`bc build` 的 CPU prefix／add 也包含需要的数学链接。它没有增加另一个运行时、同步协议或调度器。用户定义分段归约见下节；动态协作／任务和完整语言仍未完成。
 
@@ -4226,7 +4226,7 @@ void offsets(read dataset<Work> input,
 
 扫描是全域集合操作，不能放入单元素 parallel 或当作纯函数调用。前端以类型化 Scan 保存字段、分量与算子，保留既有阶段边界和依赖。CPU 普通独占扫描的两遍 x64 范围机器码由 B 发射。第一遍按实际布局写局部独占值，经与归约共用的第五个参数交付范围摘要。执行框架按同一算子合并摘要，第二遍沿原范围前缀并行修正输出字段。叶范围保存其实际使用的非易失寄存器，并交接 Windows 展开信息，无局部栈分配。
 
-GPU 每组 64 线程执行 work-efficient Blelloch 扫描，各分量共用同步层，普通扫描最多使用 1024 字节共享树。有效尾组的全部线程参加必要的屏障，域外位置贡献对应单位元；递归摘要和前缀紧密保存真实分量，不复制整份输出记录，也不读回 CPU。最终传播使用原目标记录步长与字段偏移；它们与紧密摘要布局不同时，复用现有根输出传播 pass，相同时使用同一传播内核，不额外建立重复管线。三分量向量的记录填充与其他字段同样保留。提交继续持有全部临时页到真实完成。
+GPU 每组 64 线程执行 work-efficient Blelloch 扫描，各分量共用同步层，普通扫描最多使用 1024 字节共享树。有效尾组的全部线程参加必要的屏障，域外位置贡献对应单位元；递归摘要和前缀紧密保存真实分量，不复制整份输出记录，也不读回 CPU。最终传播使用原目标记录步长与字段偏移；它们与紧密摘要布局不同时，复用现有根输出传播 pass，相同时使用同一传播内核，不额外建立重复管线。三分量向量的记录填充与其他字段同样保留。最高层直接产出其逐项前缀，有后续层消费时才生成组总摘要。提交继续持有实际临时页到设备完成。
 
 稳定 compact 与键排序的内部计数仍使用同一扫描实现中的 u32 求和定义；各自的布尔规范化、稳定散写和计数所有权保持。有效前缀扫描交付原 Count 对应的输出域，后续可直接读取该前缀；容量尾部不参与扫描，也不被修改。GPU 额外绑定的扫描页表属于既有执行框架，不增加源参数或提交协议。`bc build` 输出主 `.spv`、`.tail.spv`、`.add.spv` 和 CPU `.x64`／`.add.x64`，最终布局不同或分段时另输出 `.root-add.spv`。浮点、用户普通值及分段扫描见相应章节；设备生成新任务仍未实现。
 
@@ -4290,7 +4290,7 @@ void local_offsets(read dataset<Work> work,
 
 分段算法的结合元为 `(各分量尾段值, 是否含段头)`：组合左结果 a 与右结果 b 时，若 b 含段头，逐分量采用 b 的尾段值，否则以对应算子合并；段头位取逻辑或。K 个数值分量的摘要紧密占 K+1 个 word，数值分量后保存段头信息，由同一 `Scan.summary_words()` 交付后端与物理分配。CPU 两遍 x64 范围机器码由 B 发射。第一遍扫描范围内所有分量，经普通归约／扫描共用的第五个结果指针写摘要。执行框架合并摘要，第二遍并行修正各范围首个段头之前的输出，遇到段头直接结束。两遍保存 R12 和 R13 并交接 Windows 展开信息，无局部栈分配。
 
-GPU 每组 64 个 invocation，在 `64*(K+1)*4` 字节 workgroup 存储中完成所有分量与段头的上行／下行扫描，直接写入目标字段。K 为 1–4，显式共享载荷为 512–1280 字节；每条全局摘要为 8–20 字节。根层将首段头位置加一编码在摘要最后一个 word 中：有段头时仅首段头 invocation 写编码，没有段头时仅最后一个物理 lane 写 0。两种写入互斥，尾组与空输入同样适用；递归只消费其是否非零，不另存段头副本。组间前缀仅修正首段头之前的结果，不生成逐元素全局标记或末尾复制程序。树的 workgroup 屏障与既有计算阶段的全局内存屏障分别负责自己的消费者，存储类作用域遵循 [Vulkan memory model](https://docs.vulkan.org/spec/latest/appendices/memorymodel.html)。
+GPU 每组 64 个 invocation，在 `64*(K+1)*4` 字节 workgroup 存储中完成所有分量与段头的上行／下行扫描，直接写入目标字段。K 为 1–4，显式共享载荷为 512–1280 字节；每条全局摘要为 8–20 字节。供下一层继续扫描的根摘要将首段头位置加一编码在最后一个 word 中：有段头时仅首段头 invocation 写编码，没有段头时仅最后一个物理 lane 写 0。两种写入互斥，尾组与空输入同样适用；递归只消费其是否非零，不另存段头副本。组间前缀仅修正首段头之前的结果，不生成逐元素全局标记或末尾复制程序。树的 workgroup 屏障与既有计算阶段的全局内存屏障分别负责自己的消费者，存储类作用域遵循 [Vulkan memory model](https://docs.vulkan.org/spec/latest/appendices/memorymodel.html)。
 
 浮点求和沿用上述 f32 运算，极值沿用严格比较与右值选择，两者使用原设备保留模式；同一段的 CPU 顺序、范围组合和 GPU 树形结合顺序不同，不承诺逐位一致、固定误差界或 NaN 载荷相同。新段分别从 +0.0／+Infinity／-Infinity 开始，不把上一段的 NaN／无穷前缀带进新段。浮点按位扫描仍不开放；整数按位操作不等于原子或全域屏障，数值前缀不签发任意散写权限。
 

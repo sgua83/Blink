@@ -1714,7 +1714,7 @@ pub fn emit_pass(
         descriptor_indexing: program.requires_texture_indexing(),
     };
     let reduction = prepare_reduction(stage, pass);
-    emit_shader(program, stage, pass, &mut inputs, &layout, features, reduction.as_ref(), None)
+    emit_shader(program, stage, pass, &mut inputs, &layout, features, reduction.as_ref(), None, true)
         .map(|(words, _)| words)
 }
 fn shader_stage_inputs(
@@ -1813,7 +1813,7 @@ fn emit_shader(
     program: &Program, original_stage: &Stage, pass: Pass,
     inputs: &mut crate::ir::dataflow::InputFragments, layout: &crate::ir::dataflow::TileLayout,
     program_features: ProgramShaderFeatures, reduction: Option<&PreparedReduction>,
-    shared_original_facts: Option<&ShaderStageFacts>,
+    shared_original_facts: Option<&ShaderStageFacts>, publishes_summary: bool,
 ) -> Result<(Vec<u32>, u64), &'static str> {
     let single_group = pass == Pass::SegmentedSingleGroup;
     let pass = if single_group { Pass::ScanRootAdd } else { pass };
@@ -1982,6 +1982,12 @@ fn emit_shader(
     }
     e.ptr_table_u64 = e.declare_pointer(StorageClass::StorageBuffer, e.u64_type);
     for i in 0..program.buffers.len() + program.auxiliary_buffers() {
+        if i == program.buffers.len()
+            && (!publishes_summary || single_group || (argument_pass && program.indirect_buffer() != i))
+        {
+            e.buffers.push(0);
+            continue;
+        }
         let binding = if i >= program.buffers.len() {
             (i + program.accelerations.len() + program.textures.len()) as u32
         } else {

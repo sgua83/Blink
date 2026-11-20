@@ -2194,11 +2194,13 @@ extern "C" TreeWords scan_group(ScanGroup input, address levels, address compone
 
     u32 last = stage_op(out, 170, b, input.lanes.lane, input.last);
     StageBranch save = stage_open(out, last);
-    PageAddress summary = target;
-    summary.descriptor = input.summary;
-    summary.index = stage_op(out, 134, u, target.index, input.width);
-    summary.word = 0;
-    write_collective_record(out, summary, fields, count, workspace, true, address());
+    if (input.summary != 0) {
+        PageAddress summary = target;
+        summary.descriptor = input.summary;
+        summary.index = stage_op(out, 134, u, target.index, input.width);
+        summary.word = 0;
+        write_collective_record(out, summary, fields, count, workspace, true, address());
+    }
 
     for (index in 0..count) {
         let component = unsafe_position<TreeComponent>(
@@ -2735,7 +2737,6 @@ u32 segment_scan_write(inout StageCursor out, SegmentGroup input, u32 group, u32
     u32 b = input.merge.bool_type;
     u32 zero = input.merge.zero;
     u32 current = read_word(item, input.merge.value_words);
-    u32 previous = read_word(exclusive, input.merge.value_words);
     u32 is_head = stage_op(out, 171, b, current, zero);
 
     StageBranch write = stage_open(out, input.active);
@@ -2743,7 +2744,9 @@ u32 segment_scan_write(inout StageCursor out, SegmentGroup input, u32 group, u32
     write_segment_result(out, target, target.index, storage, field_count,
         exclusive, is_head, identity);
     stage_close(out, write.end);
+    if (input.summary == 0) { return write.end; }
 
+    u32 previous = read_word(exclusive, input.merge.value_words);
     u32 no_previous = stage_op(out, 170, b, previous, zero);
     u32 last_or_head = stage_op(out, 166, b, is_last, is_head);
     u32 owner = stage_op(out, 167, b, no_previous, last_or_head);
@@ -2813,7 +2816,7 @@ extern "C" SummaryRootWords custom_summary_root(CustomSummaryRoot input, address
     u32 u = input.target.u32_type;
     array<u32,2> writers = stage_collective_writer(out, input.bool_type, input.lane,
         input.active, input.length, input.target.zero);
-    u32 group = stage_op(out, 134, u, input.target.index, input.width);
+    u32 group = input.target.descriptor != 0 ? stage_op(out, 134, u, input.target.index, input.width) : 0;
     StageBranch save = stage_open(out, writers[0]);
     SharedAddress root = SharedAddress(u, input.pointer, input.shared, input.last, 0, words, out.next);
     SharedAddressWords emitted = write_shared_addresses(root, workspace, workspace, word_at(body, out.words));
@@ -2821,7 +2824,7 @@ extern "C" SummaryRootWords custom_summary_root(CustomSummaryRoot input, address
     out.next = emitted.next;
     if (input.mode == SummaryRootMode::EmptyCountReset) {
         write_empty_segment_count(out, input.target, writers[1]);
-    } else {
+    } else if (input.target.descriptor != 0) {
         PageAddress summary = input.target;
         summary.index = group;
         u64 span = u64(words);
@@ -2970,7 +2973,7 @@ extern "C" TreeWords segment_group(SegmentGroup input, address levels, address f
         ? stage_group_remaining(out, u, input.source.index, input.lane, input.count) : 0;
     u64 decorated = segment_tree(out, input, remaining, false, levels, fields, field_count, workspace, decorations);
 
-    u32 group = stage_op(out, 134, u, input.source.index, input.width);
+    u32 group = finish || input.summary != 0 ? stage_op(out, 134, u, input.source.index, input.width) : 0;
     u32 is_last = 0;
     u32 owner = 0;
     u32 empty = 0;
@@ -2991,7 +2994,7 @@ extern "C" TreeWords segment_group(SegmentGroup input, address levels, address f
     if (finish) {
         PageAddress counter = segment_page(input.source, input.count_target, input.merge.zero, input.count_word);
         write_empty_segment_count(out, counter, empty);
-    } else {
+    } else if (input.summary != 0) {
         u32 published = counted || tail ? words : input.merge.value_words;
         PageAddress target = segment_page(input.source, input.summary, group, 0);
         publish_summary_root(out, target, input.step, published, root, pointers, values);

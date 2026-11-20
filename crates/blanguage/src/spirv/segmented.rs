@@ -229,7 +229,7 @@ impl Emitter<'_> {
             (self.buffers[field.binding], self.constant(Scalar::U32, field.word))
         });
         let head_word = if pass == SegmentPass::Finish { self.constant(Scalar::U32, head) } else { 0 };
-        let marker_word = if final_values && !scan.counted {
+        let marker_word = if final_values && !scan.counted && summary != 0 {
             self.constant(Scalar::U32, merge.value_words * 4)
         } else {
             0

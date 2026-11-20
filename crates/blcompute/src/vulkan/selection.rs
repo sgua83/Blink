@@ -1,7 +1,7 @@
 //! where 的私有索引队列与间接参数沿原命令／完成点持有。
 use super::*;
-pub(super) fn allocate(c: &Compiled, count: u32) -> Result<Scratch> {
-    let mut out = compact::allocate(c, count)?;
+pub(super) fn allocate(c: &Compiled, stage: usize, count: u32) -> Result<Scratch> {
+    let mut out = compact::allocate(c, stage, count)?;
     out.buffers.push(PagedBuffer::words(c.inner.clone(), count, 1)?);
     Ok(out)
 }
@@ -18,17 +18,18 @@ pub(super) fn descriptors(
     sources: BTreeSet<usize>,
 ) -> Result<Descriptors> {
     let selection = writer.compiled.program.selection_buffer();
-    let root = scratch.buffers[scratch.buffers.len() - 2].descriptor();
-    let indices = scratch.buffers.last().unwrap().descriptor();
+    let (summaries, records) = scratch.buffers.split_at(scratch.buffers.len() - 2);
+    let root = records[0].descriptor();
+    let indices = records[1].descriptor();
     let args = Some(scratch.arguments.as_ref().unwrap().descriptor());
 
     // The first scan and prefix preparation both read the original bindings.
-    let first = writer.set(&[], Some(scratch.buffers[0].descriptor()), args, Some(root), None)?;
+    let first = writer.set(&[], summaries.first().map(PagedBuffer::descriptor), args, Some(root), None)?;
     let finish = writer.set(&[], Some(indices), args, Some(root), None)?;
     let layers = sources.into_iter().map(|source| {
         scan::descriptors(
             writer, (source, selection), false, count, scan::ScanRoot::Set(first),
-            root, &scratch.buffers, args,
+            root, summaries, args,
         ).map(|sets| (source, sets))
     }).collect::<Result<BTreeMap<_, _>>>()?;
     Ok(Descriptors { root: scan::Descriptors::with_root(first), finish, layers })
@@ -56,6 +57,7 @@ pub(super) fn record(
     scan::record_dispatches(
         commands,
         c,
+        stage,
         [
             c.selectors[stage].unwrap(),
             c.tails[stage].unwrap(),

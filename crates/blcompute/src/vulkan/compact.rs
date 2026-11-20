@@ -1,8 +1,8 @@
 //! 压缩筛选重用扫描的设备层级；完整前缀与原始记录分开驻留。
 use super::*;
 use blanguage::ir::Compaction;
-pub(super) fn allocate(c: &Compiled, count: u32) -> Result<Scratch> {
-    let mut scratch = scan::allocate(c, count, 1)?;
+pub(super) fn allocate(c: &Compiled, stage: usize, count: u32) -> Result<Scratch> {
+    let mut scratch = scan::allocate(c, stage, count, 1)?;
     scratch.buffers.push(PagedBuffer::words(c.inner.clone(), count, 1)?);
     Ok(scratch)
 }
@@ -18,7 +18,8 @@ pub(super) fn record(
     partition: NonZeroU32,
     reused: bool,
 ) -> Result<()> {
-    let prefix = scratch.buffers.last().unwrap().descriptor();
+    let (prefix, summaries) = scratch.buffers.split_last().unwrap();
+    let prefix = prefix.descriptor();
     let source = writer.binding(selection.flags);
     scan::record(
         commands,
@@ -35,7 +36,7 @@ pub(super) fn record(
         false,
         (data[selection.flags].count, source),
         prefix,
-        &scratch.buffers,
+        summaries,
         scratch.arguments.as_ref(),
         uniforms,
         partition,

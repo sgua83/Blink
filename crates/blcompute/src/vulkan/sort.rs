@@ -30,8 +30,8 @@ pub(super) struct Storage {
     scan: Vec<PagedBuffer>,
     histogram_count: u32,
 }
-pub(super) fn allocate(c: &Compiled, count: u32) -> Result<Storage> {
-    let histogram_count = scan::groups(count) * 16;
+pub(super) fn allocate(c: &Compiled, stage: usize, count: u32) -> Result<Storage> {
+    let histogram_count = blanguage::spirv::sort_histogram_count(count);
     Ok(Storage {
         pairs: [
             PagedBuffer::words(c.inner.clone(), count, 2)?,
@@ -39,7 +39,7 @@ pub(super) fn allocate(c: &Compiled, count: u32) -> Result<Storage> {
         ],
         histogram: PagedBuffer::words(c.inner.clone(), histogram_count, 1)?,
         prefixes: PagedBuffer::words(c.inner.clone(), histogram_count, 1)?,
-        scan: scan::allocate(c, histogram_count, 1)?.buffers,
+        scan: scan::allocate(c, stage, histogram_count, 1)?.buffers,
         histogram_count,
     })
 }
@@ -127,9 +127,7 @@ pub(super) fn record(
     partition: NonZeroU32,
     reused: bool,
 ) {
-    let Some(AdditionalPipelines::Sort(kernels)) = &c.additional[stage] else {
-        unreachable!()
-    };
+    let kernels = &c.additional[stage].sort;
     for key in (0..key_count).rev() {
         commands.bind_compute_set(c.layout, sets.initialize);
         let initialize = if key + 1 == key_count {
@@ -168,6 +166,7 @@ pub(super) fn record(
             scan::record_dispatches(
                 commands,
                 c,
+                stage,
                 [kernels[16], kernels[17], kernels[18], kernels[18]],
                 storage.histogram_count,
                 &sets.scan,
