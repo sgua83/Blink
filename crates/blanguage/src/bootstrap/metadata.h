@@ -60,18 +60,27 @@ struct ManifestSource {
 struct ManifestRequirement { MetadataBytes name; MetadataBytes kind; };
 struct ManifestDeclaration {
     MetadataBytes name; MetadataBytes module_name;
-    u64 import_start; u64 import_count; u32 tag;
+    address imports; u64 import_count; u32 tag;
 };
 struct BuildManifest {
     MetadataBytes path; MetadataBytes root; MetadataBytes working_directory;
     MetadataBytes module_name; MetadataBytes compiler;
     u32 max_parameter_bytes; ManifestSelection selection;
-    address sources; u64 source_count;
-    address requirements; u64 requirement_count;
+    address context; u64 source_count; u64 requirement_count;
     address imports_digest; address native_digest;
-    address declarations; u64 declaration_count; address declaration_imports;
+    u64 declaration_count;
+};
+struct ManifestHost {
+    cfn<MetadataBytes,address,u64> ensures memory(read) name;
+    cfn<ManifestSource,address,u64> ensures memory(read) source;
+    cfn<ManifestRequirement,address,u64> ensures memory(read) requirement;
+    cfn<ManifestDeclaration,address,u64> ensures memory(read) declaration;
 };
 
 // The caller owns the final BLBO buffer sized by build_manifest_length.
-extern "C" u64 build_manifest_length(BuildManifest input) on cpu;
-extern "C" u64 encode_build_manifest(u64 magic, BuildManifest input, address output) on cpu;
+extern "C" u64 build_manifest_length(BuildManifest input, ManifestHost host) on cpu
+    requires nonzero(host.name) requires nonzero(host.source)
+    requires nonzero(host.requirement) requires nonzero(host.declaration);
+extern "C" u64 encode_build_manifest(u64 magic, BuildManifest input, ManifestHost host, address output) on cpu
+    requires nonzero(host.name) requires nonzero(host.source)
+    requires nonzero(host.requirement) requires nonzero(host.declaration);

@@ -1,6 +1,6 @@
 //! 构建输入只交接已消费的声明与实际实现；COFF和入口映像共用同一编码。
 use super::{ByteField, hash, Result};
-use std::{collections::BTreeMap, io::Error};
+use std::{collections::BTreeMap, ffi::c_void, io::Error, ptr};
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Declaration {
     Constant(String),
@@ -101,7 +101,7 @@ struct BuildReference {
     name: ByteField,
     module_name: ByteField,
     value: ByteField,
-    imports: *const ByteField,
+    imports: *const c_void,
     import_count: usize,
     tag: u32,
     kind: BuildReferenceKind,
@@ -115,7 +115,14 @@ unsafe extern "C" {
     #[link_name = "bootstrap.build_digest::sha256_reference_count"]
     fn sha256_reference_count(digest: &mut hash::Digest, count: usize);
     #[link_name = "bootstrap.build_digest::sha256_reference"]
-    fn sha256_reference(digest: &mut hash::Digest, row: BuildReference);
+    fn sha256_reference(digest: &mut hash::Digest, row: BuildReference, name: NameField);
+}
+
+type NameField = unsafe extern "C" fn(*const c_void, usize) -> ByteField;
+
+unsafe extern "C" fn name_field(names: *const c_void, index: usize) -> ByteField {
+    let name = unsafe { &*names.cast::<String>().add(index) };
+    name.as_bytes().into()
 }
 
 fn build_symbol(declarations: &crate::Declarations, imported: Option<&crate::module::Imports>, symbol: &str)
@@ -150,7 +157,6 @@ fn build_symbol(declarations: &crate::Declarations, imported: Option<&crate::mod
 
 fn digest_reference(
     digest: &mut hash::Digest, declarations: &crate::Declarations, entry: &Declaration,
-    import_fields: &mut Vec<ByteField>,
 ) {
     use crate::frontend::NameResolution;
     let (tag, name, query) = entry.fields();
@@ -166,12 +172,10 @@ fn digest_reference(
         resolution: NameQuery::Missing,
     };
     if let Some((module, imports)) = query {
-        import_fields.clear();
-        import_fields.extend(imports.iter().map(|name| ByteField::from(name.as_bytes())));
         row.kind = BuildReferenceKind::Query;
         row.module_name = module.as_bytes().into();
-        row.imports = import_fields.as_ptr();
-        row.import_count = import_fields.len();
+        row.imports = imports.as_ptr().cast();
+        row.import_count = imports.len();
         let resolved = if matches!(entry, Declaration::TypeSetName { .. }) {
             declarations.resolve_type_set(name, module, imports)
                 .map_or(NameResolution::Missing, NameResolution::Unique)
@@ -186,7 +190,7 @@ fn digest_reference(
             }
             NameResolution::Ambiguous => NameQuery::Ambiguous,
         };
-        unsafe { sha256_reference(digest, row) };
+        unsafe { sha256_reference(digest, row, name_field) };
         return;
     }
     let input = match entry {
@@ -216,7 +220,7 @@ fn digest_reference(
             BuildReferenceKind::Source
         };
     }
-    unsafe { sha256_reference(digest, row) };
+    unsafe { sha256_reference(digest, row, name_field) };
 }
 
 pub(super) fn references<'a>(declarations: &crate::Declarations, imported: Option<&crate::module::Imports>,
@@ -228,9 +232,8 @@ pub(super) fn references<'a>(declarations: &crate::Declarations, imported: Optio
         unsafe { sha256_reference_symbol(&mut digest, row) };
     }
     unsafe { sha256_reference_count(&mut digest, used.len()) };
-    let mut import_fields = Vec::new();
     for entry in used {
-        digest_reference(&mut digest, declarations, entry, &mut import_fields);
+        digest_reference(&mut digest, declarations, entry);
     }
     digest.finish()
 }
@@ -516,7 +519,7 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Option<Inputs>> {
 struct ManifestSelection {
     first: ByteField,
     second: ByteField,
-    instances: *const ByteField,
+    instances: *const c_void,
     instance_count: usize,
     tag: u32,
 }
@@ -539,7 +542,7 @@ struct ManifestRequirement {
 struct ManifestDeclaration {
     name: ByteField,
     module_name: ByteField,
-    import_start: usize,
+    imports: *const c_void,
     import_count: usize,
     tag: u32,
 }
@@ -553,22 +556,59 @@ struct BuildManifest {
     compiler: ByteField,
     max_parameter_bytes: u32,
     selection: ManifestSelection,
-    sources: *const ManifestSource,
+    context: *const c_void,
     source_count: usize,
-    requirements: *const ManifestRequirement,
     requirement_count: usize,
     imports_digest: *const u8,
     native_digest: *const u8,
-    declarations: *const ManifestDeclaration,
     declaration_count: usize,
-    declaration_imports: *const ByteField,
 }
+
+#[repr(C)]
+struct ManifestHost {
+    name: NameField,
+    source: unsafe extern "C" fn(*const c_void, usize) -> ManifestSource,
+    requirement: unsafe extern "C" fn(*const c_void, usize) -> ManifestRequirement,
+    declaration: unsafe extern "C" fn(*const c_void, usize) -> ManifestDeclaration,
+}
+
+unsafe extern "C" fn manifest_source(context: *const c_void, index: usize) -> ManifestSource {
+    let input = unsafe { &*context.cast::<Inputs>() };
+    let source = &input.source.sources[index];
+    ManifestSource {
+        module_name: source.module.as_bytes().into(),
+        path: source.path.as_slice().into(),
+        scope: source.scope.as_bytes().into(),
+        fingerprint: source.fingerprint.as_ptr(),
+    }
+}
+
+unsafe extern "C" fn manifest_requirement(context: *const c_void, index: usize) -> ManifestRequirement {
+    let input = unsafe { &*context.cast::<Inputs>() };
+    let (name, kind) = &input.source.requirements[index];
+    ManifestRequirement { name: name.as_bytes().into(), kind: kind.as_bytes().into() }
+}
+
+unsafe extern "C" fn manifest_declaration(context: *const c_void, index: usize) -> ManifestDeclaration {
+    let input = unsafe { &*context.cast::<Inputs>() };
+    let (tag, name, query) = input.declarations[index].fields();
+    let (module, names) = query.unwrap_or(("", &[]));
+    ManifestDeclaration {
+        name: name.as_bytes().into(), module_name: module.as_bytes().into(),
+        imports: names.as_ptr().cast(), import_count: names.len(), tag,
+    }
+}
+
+const MANIFEST_HOST: ManifestHost = ManifestHost {
+    name: name_field, source: manifest_source,
+    requirement: manifest_requirement, declaration: manifest_declaration,
+};
 
 unsafe extern "C" {
     #[link_name = "bootstrap.metadata::build_manifest_length"]
-    fn build_manifest_length(input: &BuildManifest) -> usize;
+    fn build_manifest_length(input: &BuildManifest, host: ManifestHost) -> usize;
     #[link_name = "bootstrap.metadata::encode_build_manifest"]
-    fn encode_build_manifest(magic: u64, input: &BuildManifest, output: *mut u8) -> usize;
+    fn encode_build_manifest(magic: u64, input: &BuildManifest, host: ManifestHost, output: *mut u8) -> usize;
 }
 
 impl Inputs {
@@ -581,47 +621,27 @@ impl Inputs {
             Selection::Library { entry, prefix } => (2, entry.as_str(), prefix.as_str(), &[][..]),
             Selection::Entry { entry, target } => (3, entry.as_str(), target.as_str(), &[][..]),
         };
-        let instances: Vec<_> = instances.iter().map(|name| field(name)).collect();
         let selection = ManifestSelection {
-            first: field(first), second: field(second), instances: instances.as_ptr(),
+            first: field(first), second: field(second), instances: instances.as_ptr().cast(),
             instance_count: instances.len(), tag,
         };
-        let sources: Vec<_> = source.sources.iter().map(|source| ManifestSource {
-            module_name: field(&source.module), path: source.path.as_slice().into(),
-            scope: field(&source.scope), fingerprint: source.fingerprint.as_ptr(),
-        }).collect();
-        let requirements: Vec<_> = source.requirements.iter().map(|(name, kind)| {
-            ManifestRequirement { name: field(name), kind: field(kind) }
-        }).collect();
-        let mut imports = Vec::new();
-        let declarations: Vec<_> = self.declarations.iter().map(|declaration| {
-            let (tag, name, query) = declaration.fields();
-            let (module, names) = query.unwrap_or(("", &[]));
-            let start = imports.len();
-            imports.extend(names.iter().map(|name| field(name)));
-            ManifestDeclaration {
-                name: field(name), module_name: field(module), import_start: start,
-                import_count: names.len(), tag,
-            }
-        }).collect();
         let input = BuildManifest {
             path: source.path.as_slice().into(), root: source.root.as_slice().into(),
             working_directory: source.working_directory.as_slice().into(),
             module_name: field(&source.module), compiler: field(&source.compiler),
             max_parameter_bytes: source.max_parameter_bytes, selection,
-            sources: sources.as_ptr(), source_count: sources.len(),
-            requirements: requirements.as_ptr(), requirement_count: requirements.len(),
+            context: ptr::from_ref(self).cast(),
+            source_count: source.sources.len(), requirement_count: source.requirements.len(),
             imports_digest: self.imports.as_ptr(),
-            native_digest: self.native.as_ref().map_or(std::ptr::null(), |digest| digest.as_ptr()),
-            declarations: declarations.as_ptr(), declaration_count: declarations.len(),
-            declaration_imports: imports.as_ptr(),
+            native_digest: self.native.as_ref().map_or(ptr::null(), |digest| digest.as_ptr()),
+            declaration_count: self.declarations.len(),
         };
         let magic = u64::from_le_bytes(*MAGIC);
         // The same borrowed fields stay live through measurement and the final write.
         unsafe {
-            let length = build_manifest_length(&input);
+            let length = build_manifest_length(&input, MANIFEST_HOST);
             let mut output = Vec::with_capacity(length);
-            let written = encode_build_manifest(magic, &input, output.as_mut_ptr());
+            let written = encode_build_manifest(magic, &input, MANIFEST_HOST, output.as_mut_ptr());
             output.set_len(written);
             output
         }

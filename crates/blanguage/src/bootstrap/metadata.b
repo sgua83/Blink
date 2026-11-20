@@ -345,31 +345,33 @@ void manifest_field<const Emit: u32>(inout ManifestWriter writer, MetadataBytes 
     manifest_payload<Emit>(writer, value);
 }
 
-void manifest_fields<const Emit: u32>(inout ManifestWriter writer, address values, u64 start, u64 count) on cpu {
+void manifest_fields<const Emit: u32>(inout ManifestWriter writer, address values, u64 count,
+    cfn<MetadataBytes,address,u64> ensures memory(read) name) on cpu requires nonzero(name) {
     manifest_count<Emit>(writer, count);
     u64 index = 0u64;
     while (index < count) {
-        manifest_field<Emit>(writer, bytes_at(values, start + index));
+        manifest_field<Emit>(writer, name(values, index));
         index += 1u64;
     }
 }
 
-void manifest_request<const Emit: u32>(inout ManifestWriter writer, ManifestSelection selection) on cpu {
+void manifest_request<const Emit: u32>(inout ManifestWriter writer, ManifestSelection selection,
+    cfn<MetadataBytes,address,u64> ensures memory(read) name) on cpu requires nonzero(name) {
     manifest_word<Emit>(writer, selection.tag);
     if (selection.tag == 1) {
-        manifest_fields<Emit>(writer, selection.instances, 0u64, selection.instance_count);
+        manifest_fields<Emit>(writer, selection.instances, selection.instance_count, name);
     } else {
         manifest_field<Emit>(writer, selection.first);
         if (selection.tag != 0) { manifest_field<Emit>(writer, selection.second); }
     }
 }
 
-void manifest_sources<const Emit: u32>(inout ManifestWriter writer, BuildManifest input) on cpu {
+void manifest_sources<const Emit: u32>(inout ManifestWriter writer, BuildManifest input, ManifestHost host) on cpu
+    requires nonzero(host.source) requires nonzero(host.requirement) {
     manifest_count<Emit>(writer, input.source_count);
     u64 index = 0u64;
     while (index < input.source_count) {
-        address row = unsafe_address(address_bits(input.sources) + index * size_of<ManifestSource>());
-        ManifestSource source = unsafe_position<ManifestSource>(row);
+        ManifestSource source = host.source(input.context, index);
         manifest_field<Emit>(writer, source.module_name);
         manifest_field<Emit>(writer, source.path);
         manifest_field<Emit>(writer, source.scope);
@@ -380,31 +382,32 @@ void manifest_sources<const Emit: u32>(inout ManifestWriter writer, BuildManifes
     manifest_count<Emit>(writer, input.requirement_count);
     index = 0u64;
     while (index < input.requirement_count) {
-        address row = unsafe_address(address_bits(input.requirements) + index * size_of<ManifestRequirement>());
-        ManifestRequirement requirement = unsafe_position<ManifestRequirement>(row);
+        ManifestRequirement requirement = host.requirement(input.context, index);
         manifest_field<Emit>(writer, requirement.name);
         manifest_field<Emit>(writer, requirement.kind);
         index += 1u64;
     }
 }
 
-void manifest_declarations<const Emit: u32>(inout ManifestWriter writer, BuildManifest input) on cpu {
+void manifest_declarations<const Emit: u32>(inout ManifestWriter writer, BuildManifest input, ManifestHost host) on cpu
+    requires nonzero(host.name) requires nonzero(host.declaration) {
     manifest_count<Emit>(writer, input.declaration_count);
     u64 index = 0u64;
     while (index < input.declaration_count) {
-        address row = unsafe_address(address_bits(input.declarations) + index * size_of<ManifestDeclaration>());
-        ManifestDeclaration declaration = unsafe_position<ManifestDeclaration>(row);
+        ManifestDeclaration declaration = host.declaration(input.context, index);
         manifest_word<Emit>(writer, declaration.tag);
         manifest_field<Emit>(writer, declaration.name);
         if (declaration.tag >= 4 && declaration.tag <= 6) {
             manifest_field<Emit>(writer, declaration.module_name);
-            manifest_fields<Emit>(writer, input.declaration_imports, declaration.import_start, declaration.import_count);
+            manifest_fields<Emit>(writer, declaration.imports, declaration.import_count, host.name);
         }
         index += 1u64;
     }
 }
 
-u64 write_build_manifest<const Emit: u32>(u64 magic, BuildManifest input, address output) on cpu {
+u64 write_build_manifest<const Emit: u32>(u64 magic, BuildManifest input, ManifestHost host, address output) on cpu
+    requires nonzero(host.name) requires nonzero(host.source)
+    requires nonzero(host.requirement) requires nonzero(host.declaration) {
     ManifestWriter writer = ManifestWriter(output, 0u64);
     manifest_count<Emit>(writer, magic);
     manifest_field<Emit>(writer, input.path);
@@ -413,21 +416,25 @@ u64 write_build_manifest<const Emit: u32>(u64 magic, BuildManifest input, addres
     manifest_field<Emit>(writer, input.module_name);
     manifest_field<Emit>(writer, input.compiler);
     manifest_word<Emit>(writer, input.max_parameter_bytes);
-    manifest_request<Emit>(writer, input.selection);
-    manifest_sources<Emit>(writer, input);
+    manifest_request<Emit>(writer, input.selection, host.name);
+    manifest_sources<Emit>(writer, input, host);
     manifest_payload<Emit>(writer, MetadataBytes(input.imports_digest, 32u64));
     bool has_native = address_bits(input.native_digest) != 0u64;
     if (Emit != 0) { unsafe_position<u8>(unsafe_address(address_bits(output) + writer.cursor)) = u8(has_native); }
     writer.cursor += 1u64;
     if (has_native) { manifest_payload<Emit>(writer, MetadataBytes(input.native_digest, 32u64)); }
-    manifest_declarations<Emit>(writer, input);
+    manifest_declarations<Emit>(writer, input, host);
     return writer.cursor;
 }
 
-extern "C" u64 build_manifest_length(BuildManifest input) on cpu {
-    return write_build_manifest<0>(0u64, input, unsafe_address(0u64));
+extern "C" u64 build_manifest_length(BuildManifest input, ManifestHost host) on cpu
+    requires nonzero(host.name) requires nonzero(host.source)
+    requires nonzero(host.requirement) requires nonzero(host.declaration) {
+    return write_build_manifest<0>(0u64, input, host, unsafe_address(0u64));
 }
 
-extern "C" u64 encode_build_manifest(u64 magic, BuildManifest input, address output) on cpu {
-    return write_build_manifest<1>(magic, input, output);
+extern "C" u64 encode_build_manifest(u64 magic, BuildManifest input, ManifestHost host, address output) on cpu
+    requires nonzero(host.name) requires nonzero(host.source)
+    requires nonzero(host.requirement) requires nonzero(host.declaration) {
+    return write_build_manifest<1>(magic, input, host, output);
 }

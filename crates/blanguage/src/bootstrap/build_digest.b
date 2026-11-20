@@ -213,21 +213,25 @@ void digest_reference_name(inout DigestState state, u64 key_length, u32 tag, Dig
     digest_field(state, name);
 }
 
-extern "C" void sha256_reference(inout DigestState state, BuildReference row) on cpu {
+extern "C" void sha256_reference(inout DigestState state, BuildReference row,
+    cfn<DigestField,address,u64> ensures memory(read) name) on cpu requires nonzero(name) {
     // Match the existing Declaration variant and length-prefixed UTF-8 fields.
     u64 key_length = 12u64 + row.name.length;
     if (row.kind == ReferenceKind::Query) {
         key_length += 16u64 + row.module_name.length;
         u64 index = 0u64;
         while (index < row.import_count) {
-            DigestField import_name = unsafe_position<DigestField>(at(row.imports, index * size_of<DigestField>()));
-            key_length += 8u64 + import_name.length;
+            key_length += 8u64 + name(row.imports, index).length;
             index += 1u64;
         }
         digest_reference_name(state, key_length, row.tag, row.name);
         digest_field(state, row.module_name);
         digest_length(state, row.import_count);
-        digest_fields(state, row.imports, row.import_count);
+        index = 0u64;
+        while (index < row.import_count) {
+            digest_field(state, name(row.imports, index));
+            index += 1u64;
+        }
 
         // A unique name follows its one-byte status with a length-prefixed string.
         u8 resolution = u8(row.resolution);
