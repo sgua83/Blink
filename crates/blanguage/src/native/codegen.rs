@@ -45,6 +45,7 @@ mod structure;
 use structure::Flow;
 #[path="texture.rs"]
 mod texture;
+use texture::TextureAccessKind;
 pub(crate) use application::{
     emit as emit_application, emit_function,
 };
@@ -419,56 +420,27 @@ impl Emitter<'_> {
                 InstKind::Raise(error) => self.lower_control(Flow::Raise(*error), Self::block, Self::load)?,
                 InstKind::Print { dst, value } => self.print_call(*dst, *value),
                 InstKind::TextureBindingAddress { dst, texture } => {
-                    self.texture_binding_address(*texture);
-                    self.copy_scalar(self.location(*dst), allocation::Location::Gpr(15), Scalar::U64);
+                    self.texture_access(*texture, TextureAccessKind::Binding, None, &[], &[*dst]);
                 }
                 InstKind::TextureSample { .. } | InstKind::Cleanup { .. } => return Err("原生操作尚未降低到CPU执行IR"),
-                InstKind::TextureSize {
-                    result,
-                    texture,
-                    level,
-                } => {
-                    self.texture_level(*texture, *level);
-                    for (axis, dst) in result.iter().enumerate() {
-                        self.read_scalar(*dst, 15, axis as u32 * 4);
-                    }
+                InstKind::TextureSize { result, texture, level } => {
+                    self.texture_access(*texture, TextureAccessKind::Size, Some(*level), &[], result);
                 }
                 InstKind::TextureLevels { dst, texture } => {
-                    self.texture_pointer(*texture);
-                    self.read_scalar(*dst, 15, 0);
+                    self.texture_access(*texture, TextureAccessKind::Levels, None, &[], &[*dst]);
                 }
                 InstKind::TextureAddress { dst, texture } => {
-                    self.texture_pointer(*texture);
-                    self.read_scalar(*dst, 15, 4);
+                    self.texture_access(*texture, TextureAccessKind::Address, None, &[], &[*dst]);
                 }
                 InstKind::TextureFormat { dst, texture } => {
-                    self.texture_pointer(*texture);
-                    self.read_scalar(*dst, 15, 16);
+                    self.texture_access(*texture, TextureAccessKind::Format, None, &[], &[*dst]);
                 }
-                InstKind::TextureRead {
-                    dst,
-                    texture,
-                    level,
-                    coordinate,
-                    byte,
-                } => {
-                    self.texture_texel(*texture, *level, coordinate, if *byte { 1 } else { 4 });
-                    if *byte {
-                        self.texture_read_byte(*dst);
-                    } else {
-                        self.read_scalar(*dst, 15, 0);
-                    }
+                InstKind::TextureRead { dst, texture, level, coordinate, byte } => {
+                    let kind = if *byte { TextureAccessKind::Byte } else { TextureAccessKind::Word };
+                    self.texture_access(*texture, kind, Some(*level), coordinate, &[*dst]);
                 }
-                InstKind::TextureFetch {
-                    result,
-                    texture,
-                    level,
-                    coordinate,
-                } => {
-                    self.texture_texel(*texture, *level, coordinate, 16);
-                    for (i, dst) in result.iter().enumerate() {
-                        self.read_scalar(*dst, 15, i as u32 * 4);
-                    }
+                InstKind::TextureFetch { result, texture, level, coordinate } => {
+                    self.texture_access(*texture, TextureAccessKind::Rgba, Some(*level), coordinate, result);
                 }
                 InstKind::Scope(body) => self.lower_control(Flow::Scope(body), Self::block, Self::load)?,
                 InstKind::Exit => self.lower_control(Flow::Exit, Self::block, Self::load)?,

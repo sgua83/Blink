@@ -372,7 +372,6 @@ extern "C" u64 view_element_base(ViewElement source, address output) on cpu;
 extern "C" u64 pointer_element_base(MoveLocation low, MoveLocation high, MoveLocation index,
     ScalarEncoding scalar, u32 stride, address output) on cpu;
 extern "C" AddressEncoding scaled_memory(u8 base, u8 index, u32 stride, u32 offset, address output) on cpu;
-extern "C" u64 offset_address(u32 stride, address output) on cpu;
 // Both entries use the existing R15 base. The caller lends 48 or 64 output bytes, respectively.
 extern "C" u64 indexed_address(MoveLocation index, ScalarEncoding scalar, u32 stride,
     u32 word, address output) on cpu;
@@ -531,21 +530,25 @@ extern "C" TileInputBoundaryCode tile_input_boundary(u32 width, u32 length_offse
 // The caller owns 80 bytes for the loop over the actual lanes in the tile.
 extern "C" u64 tile_input_copy(TileInputCopy input, address output) on cpu;
 
-struct TextureTexelAddress {
-    MoveLocation level;
-    array<MoveLocation,3> coordinates;
-    u32 dimensions;
-    u32 texel_bytes;
+enum TextureAccessKind:u32 {
+    Binding=0; Levels=1; Address=2; Format=3; Size=4; Byte=5; Word=6; Rgba=7;
 };
 
-// R12 is the existing binding table. R15 carries the binding, descriptor,
-// mip or pixel address between these emitters. The caller owns 16/8/40/96 bytes.
-extern "C" u64 texture_table_address(u64 offset, address output) on cpu;
-extern "C" u64 texture_descriptor(address output) on cpu;
-extern "C" u64 texture_level_address(MoveLocation level, address output) on cpu;
-extern "C" u64 texture_texel_address(TextureTexelAddress input, address output) on cpu;
-// Read one byte as a complete u32 result. The caller owns 24 bytes.
-extern "C" u64 texture_read_byte(MoveLocation dst, address output) on cpu;
+struct TextureAccess {
+    MoveLocation base;
+    MoveLocation element;
+    ScalarEncoding element_scalar;
+    MoveLocation level;
+    array<MoveLocation,3> coordinates;
+    u32 in_table;
+    u32 stride;
+    TextureAccessKind kind;
+    u32 dimensions;
+};
+
+// R12 is the binding table. R15 holds the transient binding and source address.
+// The caller owns the result locations and room for the whole operation.
+extern "C" u64 texture_access(TextureAccess input, address results, u64 count, address output) on cpu;
 
 struct TilePublishInput {
     MoveLocation location;

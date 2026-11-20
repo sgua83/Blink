@@ -155,8 +155,6 @@ unsafe extern "C" {
         scalar: ScalarEncoding, stride: u32, output: *mut u8) -> u64;
     #[link_name = "bootstrap.x64_instruction::scaled_memory"]
     fn encode_scaled_memory(base: u8, index: u8, stride: u32, offset: u32, output: *mut u8) -> AddressEncoding;
-    #[link_name = "bootstrap.x64_instruction::offset_address"]
-    fn encode_offset_address(stride: u32, output: *mut u8) -> u64;
     #[link_name = "bootstrap.x64_instruction::reference_address"]
     fn encode_reference_address(base: u8, offset: u32, indexed: u32, output: *mut u8) -> u64;
     #[link_name = "bootstrap.x64_instruction::bit_copy"]
@@ -261,9 +259,6 @@ impl Emitter<'_> {
         self.emit_bytes(8, |output| unsafe {
             encode_reference_address(base, offset, u32::from(index.is_some()), output)
         });
-    }
-    pub(super) fn offset_address(&mut self, stride: u32) {
-        self.emit_bytes(16, |output| unsafe { encode_offset_address(stride, output) });
     }
     fn emit_instruction(&mut self, opcode: &[u8], input: InstructionEncoding) {
         // One legacy prefix, REX, ModR/M, SIB and at most four displacement bytes.

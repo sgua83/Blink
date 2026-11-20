@@ -2318,7 +2318,7 @@ extern "C" AddressEncoding packet_view_memory_dynamic(u8 base, MoveLocation inde
     return view_memory_dynamic_at(base, index, low, high, offset, true, lane, output);
 }
 
-extern "C" u64 offset_address(u32 stride, address output) on cpu {
+u64 offset_address(u32 stride, address output) on cpu {
     u64 start = address_bits(output);
     u8 shift = address_shift(stride);
     if ((stride >> u32(shift)) == 1 && stride <= 8) {
@@ -3259,24 +3259,18 @@ extern "C" u64 abi_stack_pointer(u32 offset, u32 slot, address output) on cpu {
     return store_bits(cursor, home, u8(0), 8) - start;
 }
 
-extern "C" u64 texture_table_address(u64 offset, address output) on cpu {
-    u64 start = address_bits(output);
+u64 texture_table_at(u64 cursor, u64 offset) on cpu {
     if (offset <= 0x7fffffffu64) {
         MoveLocation binding = MoveLocation(offset, MOVE_MEMORY, u8(12), NO_INDEX, u8(0));
-        return encode_operand_instruction(start, u16(0x8d), u8(0), true, u8(15), binding) - start;
+        return encode_operand_instruction(cursor, u16(0x8d), u8(0), true, u8(15), binding);
     }
-    u64 cursor = move_immediate(start, u8(15), offset, true);
-    return register_instruction(cursor, u16(0x01), u8(0), true, u8(12), u8(15)) - start;
+    return register_instruction(move_immediate(cursor, u8(15), offset, true),
+        u16(0x01), u8(0), true, u8(12), u8(15));
 }
 
 u64 texture_descriptor_at(u64 at) on cpu {
     MoveLocation binding = MoveLocation(0u64, MOVE_MEMORY, u8(15), NO_INDEX, u8(0));
     return load_bits(at, u8(15), binding, true);
-}
-
-extern "C" u64 texture_descriptor(address output) on cpu {
-    u64 start = address_bits(output);
-    return texture_descriptor_at(start) - start;
 }
 
 u64 texture_level_at(u64 at, MoveLocation level) on cpu {
@@ -3290,11 +3284,6 @@ u64 texture_level_at(u64 at, MoveLocation level) on cpu {
     return register_instruction(cursor + 1u64, u16(0x01), u8(0), true, u8(0), u8(15));
 }
 
-extern "C" u64 texture_level_address(MoveLocation level, address output) on cpu {
-    u64 start = address_bits(output);
-    return texture_level_at(start, level) - start;
-}
-
 u64 texture_axis_at(u64 at, u32 extent_offset, MoveLocation coordinate) on cpu {
     MoveLocation extent = MoveLocation(u64(extent_offset), MOVE_MEMORY, u8(15), NO_INDEX, u8(0));
     u64 cursor = load_bits(at, u8(1), extent, false);
@@ -3304,9 +3293,8 @@ u64 texture_axis_at(u64 at, u32 extent_offset, MoveLocation coordinate) on cpu {
     return register_instruction(cursor + component.length, u16(0x01), u8(0), true, u8(2), u8(0));
 }
 
-extern "C" u64 texture_texel_address(TextureTexelAddress input, address output) on cpu {
-    u64 start = address_bits(output);
-    u64 cursor = texture_level_at(start, input.level);
+u64 texture_texel_at(u64 at, TextureAccess input, u32 texel_bytes) on cpu {
+    u64 cursor = at;
     bool volume = input.dimensions == 3;
     MoveLocation outer = volume ? input.coordinates[2] : input.coordinates[1];
     MoveEncoding loaded = copy_scalar_move(move_gpr(u8(0)), outer, 8, false, unsafe_address(cursor));
@@ -3315,18 +3303,58 @@ extern "C" u64 texture_texel_address(TextureTexelAddress input, address output) 
         cursor = texture_axis_at(cursor, 4, input.coordinates[1]);
     }
     cursor = texture_axis_at(cursor, 0, input.coordinates[0]);
-    cursor = address_scale_at(cursor, u8(0), input.texel_bytes);
+    cursor = address_scale_at(cursor, u8(0), texel_bytes);
     MoveLocation pixels = MoveLocation(16u64, MOVE_MEMORY, u8(15), NO_INDEX, u8(0));
     cursor = load_bits(cursor, u8(15), pixels, true);
-    return register_instruction(cursor, u16(0x01), u8(0), true, u8(0), u8(15)) - start;
+    return register_instruction(cursor, u16(0x01), u8(0), true, u8(0), u8(15));
 }
 
-extern "C" u64 texture_read_byte(MoveLocation dst, address output) on cpu {
+extern "C" u64 texture_access(TextureAccess input, address results, u64 count, address output) on cpu {
     u64 start = address_bits(output);
-    MoveLocation pixel = MoveLocation(0u64, MOVE_MEMORY, u8(15), NO_INDEX, u8(0));
-    u64 cursor = load_extended(start, u8(0), pixel, 1, false);
-    MoveEncoding copied = copy_scalar_move(dst, move_gpr(u8(0)), 4, false, unsafe_address(cursor));
-    return cursor + copied.length - start;
+    u64 cursor = start;
+    if (input.in_table != 0) {
+        cursor = texture_table_at(cursor, input.base.value);
+    } else {
+        MoveEncoding binding = copy_scalar_move(move_gpr(u8(15)), input.base, 8, false, output);
+        cursor += binding.length;
+    }
+    if (input.stride != 0) {
+        ScalarEncoding scalar = input.element_scalar;
+        MoveEncoding index = copy_scalar_move(move_gpr(u8(0)), input.element, scalar.width / 8,
+            scalar.kind == ScalarKind::Signed, unsafe_address(cursor));
+        cursor += index.length;
+        cursor += offset_address(input.stride, unsafe_address(cursor));
+    }
+    TextureAccessKind kind = input.kind;
+    if (kind == TextureAccessKind::Binding) {
+        MoveLocation dst = unsafe_position<MoveLocation>(results);
+        MoveEncoding binding = copy_scalar_move(dst, move_gpr(u8(15)), 8, false, unsafe_address(cursor));
+        return cursor + binding.length - start;
+    }
+    if (kind == TextureAccessKind::Byte || kind == TextureAccessKind::Word || kind == TextureAccessKind::Rgba) {
+        u32 bytes = kind == TextureAccessKind::Byte ? 1 : (kind == TextureAccessKind::Word ? 4 : 16);
+        cursor = texture_texel_at(texture_level_at(cursor, input.level), input, bytes);
+    } else if (kind == TextureAccessKind::Size) {
+        cursor = texture_level_at(cursor, input.level);
+    } else {
+        cursor = texture_descriptor_at(cursor);
+    }
+    if (kind == TextureAccessKind::Byte) {
+        MoveLocation dst = unsafe_position<MoveLocation>(results);
+        MoveLocation pixel = MoveLocation(0u64, MOVE_MEMORY, u8(15), NO_INDEX, u8(0));
+        cursor = load_extended(cursor, u8(0), pixel, 1, false);
+        MoveEncoding value = copy_scalar_move(dst, move_gpr(u8(0)), 4, false, unsafe_address(cursor));
+        return cursor + value.length - start;
+    }
+    u64 offset = kind == TextureAccessKind::Address ? 4u64 : (kind == TextureAccessKind::Format ? 16u64 : 0u64);
+    u64 i = 0u64;
+    while (i < count) {
+        MoveLocation dst = unsafe_position<MoveLocation>(unsafe_address(address_bits(results) + i * size_of<MoveLocation>()));
+        MoveLocation field = MoveLocation(offset + i * 4u64, MOVE_MEMORY, u8(15), NO_INDEX, u8(0));
+        cursor += read_scalar_move(dst, field, 4, false, false, unsafe_address(cursor));
+        i += 1u64;
+    }
+    return cursor - start;
 }
 
 extern "C" u64 tile_index_base(MoveLocation index, ScalarEncoding scalar, u32 storage_offset, address output) on cpu {
