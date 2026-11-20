@@ -115,7 +115,7 @@ pub(super) fn descriptors(
 }
 
 pub(super) fn record(
-    commands: &Commands,
+    commands: &ComputeCommands<'_>,
     c: &Compiled,
     stage: usize,
     key_count: usize,
@@ -130,7 +130,7 @@ pub(super) fn record(
     let kernels = &c.additional[stage].sort;
     let histogram_record = arguments.map_or(0, |_| prefix::continuation_slot(c, stage));
     for key in (0..key_count).rev() {
-        commands.bind_compute_set(c.layout, sets.initialize);
+        commands.bind_set(sets.initialize);
         let initialize = if key + 1 == key_count {
             if arguments.is_some() {
                 prefix::prepare(commands, c, stage, uniforms, partition, reused);
@@ -151,7 +151,7 @@ pub(super) fn record(
         );
         for pass in 0..8 {
             commands.barrier(0x800, 0x800, 0x40, 0x60);
-            commands.bind_compute_set(c.layout, sets.histogram[pass % 2]);
+            commands.bind_set(sets.histogram[pass % 2]);
             scan::dispatch(
                 commands,
                 c,
@@ -163,7 +163,7 @@ pub(super) fn record(
                 0,
             );
             commands.barrier(0x800, 0x800, 0x40, 0x60);
-            commands.bind_compute_set(c.layout, sets.scan.root());
+            commands.bind_set(sets.scan.root());
             scan::record_dispatches(
                 commands,
                 c,
@@ -177,7 +177,7 @@ pub(super) fn record(
                 histogram_record,
             );
             commands.barrier(0x800, 0x800, 0x40, 0x60);
-            commands.bind_compute_set(c.layout, sets.scatter[pass % 2]);
+            commands.bind_set(sets.scatter[pass % 2]);
             scan::dispatch(
                 commands,
                 c,
@@ -192,7 +192,7 @@ pub(super) fn record(
         commands.barrier(0x800, 0x800, 0x40, 0x60);
     }
     let pipeline = kernels[19];
-    commands.bind_compute_set(c.layout, sets.finish);
+    commands.bind_set(sets.finish);
     scan::dispatch(
         commands, c, pipeline, count, uniforms, partition, arguments, 0,
     );

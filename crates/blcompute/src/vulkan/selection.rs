@@ -36,7 +36,7 @@ pub(super) fn descriptors(
 }
 
 pub(super) fn record(
-    commands: &Commands,
+    commands: &ComputeCommands<'_>,
     sets: &Descriptors,
     c: &Compiled,
     stage: usize,
@@ -52,7 +52,7 @@ pub(super) fn record(
         let source = c.program.stages()[stage].selection.unwrap().binding;
         &sets.layers[&source]
     };
-    commands.bind_compute_set(c.layout, scan.root());
+    commands.bind_set(scan.root());
     prefix::prepare(commands, c, stage, uniforms, partition, reused);
     scan::record_dispatches(
         commands,
@@ -78,7 +78,7 @@ pub(super) fn record(
     } else {
         commands.barrier(0x800, 0x800, 0x40, 0x60);
     }
-    commands.bind_compute_set(c.layout, sets.finish);
+    commands.bind_set(sets.finish);
     prefix::dispatch(
         commands,
         c,

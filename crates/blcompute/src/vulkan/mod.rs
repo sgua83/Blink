@@ -1592,13 +1592,6 @@ impl Commands {
             )
         }
     }
-    fn bind_compute_set(&self, layout: VkPipelineLayout, set: VkDescriptorSet) {
-        unsafe {
-            (self.inner.functions.vkCmdBindDescriptorSets)(
-                self.command, 1, layout, 0, 1, &set, 0, null(),
-            );
-        }
-    }
     fn barrier(&self, src_stage: u32, dst_stage: u32, src_access: u32, dst_access: u32) {
         let mut b: VkMemoryBarrier = zero();
         b.sType = 46;
@@ -1688,6 +1681,46 @@ struct AdditionalPipelines {
     sort: Vec<VkPipeline>,
     segmented_single_group: Option<VkPipeline>,
     terminal_scans: [Option<TerminalPipeline>; 2],
+}
+
+// The compute bind point belongs to this recording of one compiled layout.
+struct ComputeCommands<'a> {
+    commands: &'a Commands,
+    layout: VkPipelineLayout,
+    pipeline: Cell<Option<VkPipeline>>,
+    set: Cell<Option<VkDescriptorSet>>,
+}
+impl<'a> ComputeCommands<'a> {
+    fn new(commands: &'a Commands, layout: VkPipelineLayout) -> Self {
+        Self { commands, layout, pipeline: Cell::new(None), set: Cell::new(None) }
+    }
+
+    fn bind_pipeline(&self, pipeline: VkPipeline) {
+        if self.pipeline.replace(Some(pipeline)) == Some(pipeline) {
+            return;
+        }
+        unsafe {
+            (self.inner.functions.vkCmdBindPipeline)(self.command, 1, pipeline);
+        }
+    }
+
+    fn bind_set(&self, set: VkDescriptorSet) {
+        if self.set.replace(Some(set)) == Some(set) {
+            return;
+        }
+        unsafe {
+            (self.inner.functions.vkCmdBindDescriptorSets)(
+                self.command, 1, self.layout, 0, 1, &set, 0, null(),
+            );
+        }
+    }
+}
+impl std::ops::Deref for ComputeCommands<'_> {
+    type Target = Commands;
+
+    fn deref(&self) -> &Commands {
+        self.commands
+    }
 }
 
 struct Compiled {
@@ -2718,6 +2751,7 @@ impl GpuProgram {
                     )?;
                     (f.vkCmdResetQueryPool)(commands.command, commands.queries, 0, queries.count);
                 }
+                let commands = ComputeCommands::new(&commands, c.layout);
                 for step in 0..steps.get() {
                     // Stage bindings and the order of set requests depend on fixed storage.
                     // The device updates buffer contents and indirect counts between steps.
@@ -2806,7 +2840,7 @@ impl GpuProgram {
                             blanguage::ir::Operation::Map if stage.prefix.is_some() => {
                                 let args = arguments.unwrap();
                                 let usage = usage.unwrap();
-                                commands.bind_compute_set(c.layout, map_sets[&usage.slot]);
+                                commands.bind_set(map_sets[&usage.slot]);
                                 if usage.prepare_map {
                                     prefix::prepare(
                                         &commands, c, i, &mut uniforms,
@@ -2823,8 +2857,8 @@ impl GpuProgram {
                                 );
                             }
                             blanguage::ir::Operation::Map => {
-                                (f.vkCmdBindPipeline)(commands.command, 1, c.pipelines[i]);
-                                commands.bind_compute_set(c.layout, root_set.unwrap());
+                                commands.bind_pipeline(c.pipelines[i]);
+                                commands.bind_set(root_set.unwrap());
                                 let width = stage.workgroup_width();
                                 let maximum = c.inner.properties.limits.maxComputeWorkGroupCount[0]
                                     as u64
@@ -2869,7 +2903,7 @@ impl GpuProgram {
                                 } else {
                                     root_set.unwrap()
                                 };
-                                commands.bind_compute_set(c.layout, set);
+                                commands.bind_set(set);
                                 if arguments.is_some() {
                                     prefix::prepare(
                                         &commands, c, i, &mut uniforms,
@@ -2990,7 +3024,7 @@ impl GpuProgram {
                                     } else {
                                         root_set.unwrap()
                                     };
-                                    commands.bind_compute_set(c.layout, pass_set);
+                                    commands.bind_set(pass_set);
                                     if pass == 0 && arguments.is_some() {
                                         prefix::prepare(
                                             &commands, c, i, &mut uniforms,

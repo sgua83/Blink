@@ -46,7 +46,7 @@ pub(super) fn allocate(c: &Compiled, stage: usize, count: u32) -> Result<PagedBu
 }
 
 pub(super) fn prepare(
-    commands: &Commands,
+    commands: &ComputeCommands<'_>,
     c: &Compiled,
     stage: usize,
     uniforms: &mut [u32],
@@ -58,7 +58,7 @@ pub(super) fn prepare(
     }
     unsafe {
         let f = &c.inner.functions;
-        (f.vkCmdBindPipeline)(commands.command, 1, c.dispatches[stage].as_ref().unwrap().pipeline);
+        commands.bind_pipeline(c.dispatches[stage].as_ref().unwrap().pipeline);
         uniforms[0] = c.inner.properties.limits.maxComputeWorkGroupCount[0].min(
             partition
                 .get()
@@ -78,7 +78,7 @@ pub(super) fn prepare(
     }
 }
 pub(super) fn dispatch(
-    commands: &Commands,
+    commands: &ComputeCommands<'_>,
     c: &Compiled,
     pipeline: VkPipeline,
     args: &PagedBuffer,
@@ -87,7 +87,7 @@ pub(super) fn dispatch(
 ) {
     unsafe {
         let f = &c.inner.functions;
-        (f.vkCmdBindPipeline)(commands.command, 1, pipeline);
+        commands.bind_pipeline(pipeline);
         uniforms[0] = 0;
         uniforms[1] = (level * (DISPATCH_RECORD_BYTES / 4)) as u32;
         (f.vkCmdPushConstants)(

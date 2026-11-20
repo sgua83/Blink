@@ -7,7 +7,7 @@ pub(super) fn allocate(c: &Compiled, stage: usize, count: u32) -> Result<Scratch
     Ok(scratch)
 }
 pub(super) fn record(
-    commands: &Commands,
+    commands: &ComputeCommands<'_>,
     writer: &mut DescriptorWriter<'_>,
     c: &Compiled,
     stage: usize,
@@ -50,7 +50,7 @@ pub(super) fn record(
         None,
         None,
     )?;
-    commands.bind_compute_set(c.layout, set);
+    commands.bind_set(set);
     scan::dispatch(
         commands,
         c,

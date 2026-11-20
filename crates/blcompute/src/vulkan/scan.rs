@@ -128,7 +128,7 @@ pub(super) fn descriptors(
 }
 
 pub(super) fn record(
-    commands: &Commands,
+    commands: &ComputeCommands<'_>,
     writer: &mut DescriptorWriter<'_>,
     c: &Compiled,
     stage: usize,
@@ -147,7 +147,7 @@ pub(super) fn record(
         writer, (r.source, r.target), segmented, source.0, ScanRoot::Source(source.1),
         root_target, temporary, arguments.map(PagedBuffer::descriptor),
     )?;
-    commands.bind_compute_set(c.layout, sets.root());
+    commands.bind_set(sets.root());
     if arguments.is_some() {
         prefix::prepare(commands, c, stage, uniforms, partition, reused);
     }
@@ -159,7 +159,7 @@ pub(super) fn record(
 
 /// The caller has already bound the root set.
 pub(super) fn record_dispatches(
-    commands: &Commands,
+    commands: &ComputeCommands<'_>,
     c: &Compiled,
     stage: usize,
     kernels: [VkPipeline; 4],
@@ -174,7 +174,7 @@ pub(super) fn record_dispatches(
     for level in 0..level_count {
         if level > 0 {
             commands.barrier(0x800, 0x800, 0x40, 0x60);
-            commands.bind_compute_set(c.layout, sets.0[level]);
+            commands.bind_set(sets.0[level]);
         }
         dispatch(
             commands,
@@ -189,7 +189,7 @@ pub(super) fn record_dispatches(
     }
     for level in (0..level_count - 1).rev() {
         commands.barrier(0x800, 0x800, 0x40, 0x60);
-        commands.bind_compute_set(c.layout, sets.0[level_count + level]);
+        commands.bind_set(sets.0[level_count + level]);
         dispatch(
             commands,
             c,
@@ -210,7 +210,7 @@ fn scan_pipeline(c: &Compiled, stage: usize, count: u32, level: usize, levels: u
 }
 
 pub(super) fn record_segmented_reduce(
-    commands: &Commands,
+    commands: &ComputeCommands<'_>,
     writer: &mut DescriptorWriter<'_>,
     c: &Compiled,
     stage: usize,
@@ -246,7 +246,7 @@ pub(super) fn record_segmented_reduce(
             None,
             (r.source == r.target && level > 0).then(|| temporary[(level - 1) * 2].descriptor()),
         )?;
-        commands.bind_compute_set(c.layout, set);
+        commands.bind_set(set);
         if level == 0 && arguments.is_some() {
             prefix::prepare(commands, c, stage, uniforms, partition, reused);
         }
@@ -276,7 +276,7 @@ pub(super) fn record_segmented_reduce(
             None,
             (r.source == r.target).then_some(temporary[level * 2 + 1].descriptor()),
         )?;
-        commands.bind_compute_set(c.layout, set);
+        commands.bind_set(set);
         dispatch(
             commands,
             c,
@@ -298,7 +298,7 @@ pub(super) fn record_segmented_reduce(
             None,
             None,
         )?;
-        commands.bind_compute_set(c.layout, set);
+        commands.bind_set(set);
     }
     dispatch(
         commands,
@@ -313,7 +313,7 @@ pub(super) fn record_segmented_reduce(
     Ok(())
 }
 pub(super) fn dispatch(
-    commands: &Commands,
+    commands: &ComputeCommands<'_>,
     c: &Compiled,
     pipeline: VkPipeline,
     count: u32,
@@ -328,7 +328,7 @@ pub(super) fn dispatch(
     }
     unsafe {
         let f = &c.inner.functions;
-        (f.vkCmdBindPipeline)(commands.command, 1, pipeline);
+        commands.bind_pipeline(pipeline);
         let groups = groups(count);
         let batch =
             c.inner.properties.limits.maxComputeWorkGroupCount[0].min(partition.get().div_ceil(GROUP_WIDTH));
