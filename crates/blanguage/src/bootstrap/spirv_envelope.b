@@ -1698,11 +1698,6 @@ array<u32,2> stage_collective_writer(inout StageCursor out, u32 bool_type, u32 l
     return array<u32,2>(writer, empty);
 }
 
-extern "C" void collective_writer(address body, u32 bool_type, u32 lane, u32 active, u32 count, u32 zero, u32 first) on cpu {
-    StageCursor out = StageCursor(body, 0u64, first);
-    stage_collective_writer(out, bool_type, lane, active, count, zero);
-}
-
 StageBranch scan_tree_branch(inout StageCursor out, u32 uint_type, u32 bool_type, u32 lane, u32 mask) on cpu {
     u32 bits = stage_op(out, 199, uint_type, lane, mask);
     u32 selected = stage_op(out, 170, bool_type, bits, mask);
@@ -2074,8 +2069,9 @@ void read_collective_record(inout StageCursor out, read PageAddress target, addr
     }
 }
 
-u32 write_reduction(inout StageCursor out, ReductionWriteback input, u32 owner, address fields,
-    u32 count, address pointers) on cpu {
+u32 write_reduction(inout StageCursor out, ReductionWriteback input, u32 lane, u32 root,
+    address fields, u32 count, address pointers) on cpu {
+    u32 owner = stage_op(out, 170, input.bool_type, lane, root);
     StageBranch write = stage_open(out, owner);
     PageAddress target = reduction_target(out, input);
     write_collective_record(out, target, fields, count, pointers, true, address());
@@ -2083,10 +2079,10 @@ u32 write_reduction(inout StageCursor out, ReductionWriteback input, u32 owner, 
     return write.end;
 }
 
-extern "C" StageWords reduction_writeback(ReductionWriteback input, u32 owner, address fields,
-    u32 count, address pointers, address body) on cpu {
+extern "C" StageWords reduction_writeback(ReductionWriteback input, u32 lane, u32 root,
+    address fields, u32 count, address pointers, address body) on cpu {
     StageCursor out = StageCursor(body, 0u64, input.target.next);
-    u32 label = write_reduction(out, input, owner, fields, count, pointers);
+    u32 label = write_reduction(out, input, lane, root, fields, count, pointers);
     return StageWords(out.words, out.next, label);
 }
 
@@ -2160,8 +2156,7 @@ extern "C" TreeWords reduction_group(ReductionGroup input, address strides, addr
             word_at(decorations, decorated));
         decorated += part.decorations;
     }
-    u32 owner = stage_op(out, 170, b, input.lanes.lane, source.zero);
-    u32 label = write_reduction(out, input.output, owner, fields, count, workspace);
+    u32 label = write_reduction(out, input.output, input.lanes.lane, source.zero, fields, count, workspace);
     return TreeWords(out.words, decorated, out.next, label);
 }
 

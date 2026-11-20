@@ -68,7 +68,7 @@ unsafe extern "C" {
         fields: *const CollectiveField, count: u32, workspace: *mut u32, body: *mut u32,
         decorations: *mut u32) -> TreeWords;
     #[link_name = "bootstrap.spirv_envelope::reduction_writeback"]
-    fn emit_reduction_writeback(input: ReductionWriteback, owner: u32, fields: *const CollectiveField,
+    fn emit_reduction_writeback(input: ReductionWriteback, lane: u32, root: u32, fields: *const CollectiveField,
         count: u32, pointers: *const u32, body: *mut u32) -> StageWords;
     #[link_name = "bootstrap.spirv_envelope::collective_pair"]
     fn emit_collective_pair(input: CollectivePair, body: *mut u32, decorations: *mut u32) -> CollectiveWords;
@@ -190,16 +190,17 @@ impl Emitter<'_> {
     }
 
 
-    pub(super) fn reduction_output(&mut self, r: &Reduction, ty: &Ty, pointers: &[u32], owner: u32) {
+    pub(super) fn reduction_output(&mut self, r: &Reduction, ty: &Ty, pointers: &[u32], lane: u32) {
         if ty.components.is_empty() {
             return;
         }
         let fields = self.collective_fields(ty, None);
+        let root = self.constant(Scalar::U32, 63);
         let input = self.reduction_writeback_input(r);
         let body = self.body.len();
         self.body.reserve(180 + 44 * fields.len());
         unsafe {
-            let emitted = emit_reduction_writeback(input, owner, fields.as_ptr(),
+            let emitted = emit_reduction_writeback(input, lane, root, fields.as_ptr(),
                 fields.len() as u32, pointers.as_ptr(), self.body.as_mut_ptr().add(body));
             self.body.set_len(body + emitted.words as usize);
             self.next = emitted.next;

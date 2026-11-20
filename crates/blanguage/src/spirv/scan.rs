@@ -111,8 +111,6 @@ unsafe extern "C" {
     fn emit_shared_addresses(input: SharedAddress, offsets: *mut u32, body: *mut u32) -> SharedAddressWords;
     #[link_name = "bootstrap.spirv_envelope::group_remaining"]
     fn emit_group_remaining(body: *mut u32, uint_type: u32, index: u32, lane: u32, count: u32, first: u32);
-    #[link_name = "bootstrap.spirv_envelope::collective_writer"]
-    fn emit_collective_writer(body: *mut u32, bool_type: u32, lane: u32, active: u32, count: u32, zero: u32, first: u32);
     #[link_name = "bootstrap.spirv_envelope::tree_layer"]
     fn emit_tree_layer(input: TreeLayer, components: *const TreeComponent, count: u32,
         body: *mut u32, decorations: *mut u32) -> TreeWords;
@@ -196,20 +194,6 @@ impl Emitter<'_> {
         }
         self.next += 2;
         first + 1
-    }
-
-    pub(super) fn collective_writer(&mut self, lane: u32, active: u32, count: u32) -> (u32, u32) {
-        let zero = self.constant(Scalar::U32, 0);
-        let at = self.body.len();
-        let first = self.next;
-        self.body.reserve(20);
-        unsafe {
-            emit_collective_writer(self.body.as_mut_ptr().add(at), self.types[&Scalar::Bool],
-                lane, active, count, zero, first);
-            self.body.set_len(at + 20);
-        }
-        self.next += 4;
-        (first + 3, first + 1)
     }
 
     pub(super) fn scan_barrier(&mut self) {

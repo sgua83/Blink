@@ -487,10 +487,7 @@ impl Emitter<'_> {
         )?;
         let remaining = self.group_remaining(local, count);
         self.custom_tree(r, kernel, local, shared, pointer, remaining, &own, false, Summary::Plain)?;
-        let (owner, _) = self.collective_writer(local, active, count);
-        let last = self.constant(Scalar::U32, 63);
-        let words = self.shared_planes(shared, pointer, last, r.ty.size.div_ceil(4) as usize);
-        self.reduction_output(&r.fields, &r.ty, &words, owner);
+        self.reduction_output(&r.fields, &r.ty, &own, local);
         Ok(())
     }
     fn custom_summary_root(

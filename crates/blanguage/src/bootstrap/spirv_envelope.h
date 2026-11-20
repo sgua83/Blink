@@ -365,9 +365,7 @@ struct TreeComponent {
     u32 value_type;
 };
 // group_remaining writes 10 words and two IDs, with the count at first + 1.
-// collective_writer writes 20 words and four IDs, with empty at first + 1 and writer at first + 3.
 extern "C" void group_remaining(address body, u32 uint_type, u32 index, u32 lane, u32 count, u32 first) on cpu;
-extern "C" void collective_writer(address body, u32 bool_type, u32 lane, u32 active, u32 count, u32 zero, u32 first) on cpu;
 
 struct CustomTreeInput {
     u32 uint_type;
@@ -483,7 +481,7 @@ extern "C" TreeWords scan_group(ScanGroup input, address levels, address compone
     address fields, u32 count, address workspace, address body, address decorations) on cpu;
 extern "C" TreeWords reduction_group(ReductionGroup input, address strides, address components,
     address fields, u32 count, address workspace, address body, address decorations) on cpu;
-extern "C" StageWords reduction_writeback(ReductionWriteback input, u32 owner,
+extern "C" StageWords reduction_writeback(ReductionWriteback input, u32 lane, u32 root,
     address fields, u32 count, address pointers, address body) on cpu;
 
 struct ScanPrefix {
