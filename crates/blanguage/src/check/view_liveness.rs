@@ -219,7 +219,7 @@ async fn stored_element_borrow(builder:&Builder<'_>,binding:&Binding,path:&[Step
         let out=match data.elements.known(){
             Some(elements)if path.is_empty()=>unsafe { builder.world.call(model(builder,elements,path,excluded,true,&omitted,Some(&bindings),&passed,transferred,cleanup)).await }?,
             Some(elements)=>if let Some(step@Step::Index(_))=path.first(){unsafe { builder.world.call(model(builder,elements,&path[1..],&without(excluded,step),true,&omitted,Some(&bindings),&passed,transferred,cleanup)).await }?}else{view::Borrow::default()},
-            None if unsafe { builder.world.call(builder.world.stored_borrows(&data.ty,builder.scope.source(),builder.scope.span(),builder.scope.module(),builder.scope.imports(),&mut BTreeSet::new(),cleanup)).await }?=>view::Borrow::source(view::Source::Unresolved),
+            None if unsafe { builder.world.call(builder.world.stored_borrows(&data.ty,builder.scope.source(),builder.scope.span(),builder.scope.module(),builder.scope.imports(),cleanup)).await }?=>view::Borrow::source(view::Source::Unresolved),
             None=>view::Borrow::default(),
         };
         Ok(if let application::Ownership::Conditional(when)=&data.ownership{out.restricted(&when.condition().projected_case(true, &bindings))}else{out})

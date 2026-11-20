@@ -4651,7 +4651,7 @@ impl Builder<'_> {
             }}
             let mut scoped=owned.output_bound(&shifts);
             let Some(elements)=data.elements.known()else{
-                if unsafe { builder.world.call(builder.world.stored_borrows(&data.ty,builder.scope.source(),span,builder.scope.module(),builder.scope.imports(),&mut BTreeSet::new(),false)).await }? && !matches!(data.elements,ElementFacts::Input(_)){
+                if unsafe { builder.world.call(builder.world.stored_borrows(&data.ty,builder.scope.source(),span,builder.scope.module(),builder.scope.imports(),false)).await }? && !matches!(data.elements,ElementFacts::Input(_)){
                     let proof={let mut component_proof=bounds::Proof::default();component_proof.set_view_borrow(0,view::Borrow::source(view::Source::Unresolved));component_proof};
                     builder.require_view_return_proof(&proof,scoped,span)?;
                 }

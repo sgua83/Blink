@@ -41,6 +41,11 @@ struct TypeNode {
     u32 task; u32 cleanup; u32 dataset; u32 view; u32 array; u32 address;
     usize variants; usize fields; u32 count; u32 alignment;
 };
+enum StorageMode:u32 { Borrow=0; CleanupBorrow=1; CleanupRequirement=2; };
+enum StorageAction:u32 { Absent=0; Present=1; Contract=2; Children=3; };
+struct StoragePlan { StorageMode mode; StorageAction action; u32 array; u32 dataset; };
+extern "C" StoragePlan storage_plan(TypeNode node, StorageMode mode, u32 empty_dataset) on cpu;
+
 struct TypeHost {
     cfn<TypeNode,address> ensures memory(read) inspect;
     cfn<address,address,Child,usize> ensures memory(read) child;

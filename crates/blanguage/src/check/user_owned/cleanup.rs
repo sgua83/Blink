@@ -88,7 +88,7 @@ async fn data_contents(builder:&Builder<'_>,data:&application::Data,into:&mut vi
   DataNeed::Inspect=>{facts.kind=kind(data.elements.known());}
   DataNeed::Owned=>{let Some(Returned::OwnedValue(value))=data.elements.known()else{unsafe{std::hint::unreachable_unchecked()}};unsafe{builder.world.call(value.cleanup_borrow(builder,&mut borrowed)).await}?;}
   DataNeed::Data=>{let Some(Returned::Dataset(value))=data.elements.known()else{unsafe{std::hint::unreachable_unchecked()}};unsafe{builder.world.call(data_contents(builder,value,&mut borrowed)).await}?;}
-  DataNeed::Stored=>{facts.stored=u32::from(unsafe{builder.world.call(builder.world.stored_borrows(&data.ty,builder.scope.source(),builder.scope.span(),builder.scope.module(),builder.scope.imports(),&mut BTreeSet::new(),true)).await}?);}
+  DataNeed::Stored=>{facts.stored=u32::from(unsafe{builder.world.call(builder.world.stored_borrows(&data.ty,builder.scope.source(),builder.scope.span(),builder.scope.module(),builder.scope.imports(),true)).await}?);}
   DataNeed::Unresolved=>{borrowed=view::Borrow::source(view::Source::Unresolved);}
   DataNeed::Restrict=>{let Ownership::Conditional(when)=&data.ownership else{unsafe{std::hint::unreachable_unchecked()}};borrowed=borrowed.restricted_by(&when.condition().assume(&bounds::Clause::default(),true));}
   DataNeed::Union=>{into.union(&borrowed);}

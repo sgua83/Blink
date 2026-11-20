@@ -42,6 +42,23 @@ extern "C" VariantLayout tagged_variant(u32 payload_size, u32 payload_alignment)
     return VariantLayout(u64(alignment) + natural_size(payload_size, alignment), alignment);
 }
 
+extern "C" StoragePlan storage_plan(TypeNode node, StorageMode mode, u32 empty_dataset) on cpu {
+    StorageMode access = mode;
+    if (mode == StorageMode::CleanupBorrow && node.cleanup != 0) {
+        access = StorageMode::Borrow;
+    }
+    if (access == StorageMode::CleanupRequirement) {
+        if (node.cleanup != 0) {
+            return StoragePlan(access, StorageAction::Contract, 0, 0);
+        }
+    } else if (node.view != 0 || node.address != 0) {
+        StorageAction result = access == StorageMode::Borrow ? StorageAction::Present : StorageAction::Absent;
+        return StoragePlan(access, result, 0, 0);
+    }
+    return StoragePlan(access, StorageAction::Children, u32(node.array != 0 && node.count != 0),
+        u32(node.dataset != 0 && empty_dataset == 0));
+}
+
 extern "C" u32 contains(address value, Property property, TypeHost host) on cpu
     requires nonzero(host.inspect) requires nonzero(host.child) {
     TypeNode node=host.inspect(value);

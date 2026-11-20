@@ -35,7 +35,22 @@ struct PathHost {
     entry: unsafe extern "C" fn(*const Ty, Child, usize) -> PathEntry,
     tag: unsafe extern "C" fn(*const Ty, u32) -> u32,
 }
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[repr(u32)]
+pub(crate) enum StorageMode { Borrow, CleanupBorrow, CleanupRequirement }
+#[repr(u32)]
+pub(crate) enum StorageAction { Absent, Present, Contract, Children }
+#[repr(C)]
+pub(crate) struct StoragePlan {
+    pub(crate) mode: StorageMode,
+    pub(crate) action: StorageAction,
+    pub(crate) array: u32,
+    pub(crate) dataset: u32,
+}
+
 unsafe extern "C" {
+    #[link_name = "bootstrap.type_layout::storage_plan"]
+    fn b_storage_plan(node: Node, mode: StorageMode, empty_dataset: u32) -> StoragePlan;
     #[link_name = "bootstrap.type_layout::contains"]
     fn b_contains(value: *const Ty, query: Query, host: Host) -> u32;
     #[link_name = "bootstrap.type_layout::zero_valid"]
@@ -50,6 +65,11 @@ unsafe extern "C" {
     #[link_name = "bootstrap.type_layout::field"]
     fn b_field(value: *const Ty, path: Text, words: *const u32, word_count: usize,
         active: u32, host: PathHost) -> Part;
+}
+
+pub(crate) fn storage_plan(value: &Ty, mode: StorageMode) -> StoragePlan {
+    let shape = unsafe { inspect(value) };
+    unsafe { b_storage_plan(shape, mode, u32::from(value.values.first() == Some(&0))) }
 }
 
 pub(super) fn contains(value: &Ty, query: Query) -> bool {

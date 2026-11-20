@@ -12,7 +12,7 @@ mod layout;
 #[cfg(feature = "compiler")]
 mod properties;
 #[cfg(feature = "compiler")]
-pub(crate) use properties::{SourceMember, source_member};
+pub(crate) use properties::{SourceMember, StorageAction, StorageMode, source_member, storage_plan};
 pub use layout::interface_layout_json;
 pub(crate) use layout::TypeJson;
 mod external;

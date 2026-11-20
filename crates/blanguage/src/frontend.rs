@@ -705,40 +705,58 @@ impl World {
         active.remove(&value.name);
         result
     }
-    // Query stored borrows through nominal references; cleanup retains possible
-    // reads by actual F. Generic arguments and signatures do not occupy storage.
-    pub(crate) async fn stored_borrows(&self, ty: &ir::Ty, source: &Source, span: Span, module: &str, imports: &[String], consumed: &mut BTreeSet<(String,bool)>, cleanup: bool) -> crate::Result<bool> {
-        let cleanup=cleanup&&ty.cleanup.is_none();
-        if !consumed.insert((ty.name.clone(),cleanup)) { return Ok(false); }
-        if ty.view.is_some() || ty.is_address() { return Ok(!cleanup); }
-        for nested in ty.fields.iter().map(|(_, _, ty)| ty.as_ref())
-            .chain(ty.variants.iter().map(|variant| variant.ty.as_ref()))
-            .chain(ty.array.as_deref().filter(|_| ty.values[0] != 0)) {
-            if unsafe{self.call(self.stored_borrows(nested,source,span,module,imports,consumed,cleanup)).await}? { return Ok(true); }
+    pub(crate) async fn stored_borrows(
+        &self, ty: &ir::Ty, source: &Source, span: Span, module: &str, imports: &[String],
+        cleanup: bool,
+    ) -> crate::Result<bool> {
+        let mode = if cleanup { ir::StorageMode::CleanupBorrow } else { ir::StorageMode::Borrow };
+        self.storage_query(ty, (source, span, module, imports),
+            &mut BTreeSet::new(), mode).await
+    }
+
+    pub(crate) async fn cleanup_requirements(
+        &self, ty: &ir::Ty, source: &Source, span: Span, module: &str, imports: &[String],
+    ) -> crate::Result<bool> {
+        self.storage_query(ty, (source, span, module, imports),
+            &mut BTreeSet::new(), ir::StorageMode::CleanupRequirement).await
+    }
+
+    async fn storage_query(
+        &self, ty: &ir::Ty, origin: (&Source, Span, &str, &[String]),
+        consumed: &mut BTreeSet<(String, ir::StorageMode)>, mode: ir::StorageMode,
+    ) -> crate::Result<bool> {
+        let plan = ir::storage_plan(ty, mode);
+        if !consumed.insert((ty.name.clone(), plan.mode)) {
+            return Ok(false);
         }
-        if let Some(reference) = ty.dataset.as_deref().filter(|_| ty.values.first() != Some(&0)) {
-            let element=unsafe{self.call(self.ty_inner(reference,source,span,module,imports,&mut BTreeSet::new())).await}?;
-            return unsafe{self.call(self.stored_borrows(&element,source,span,module,imports,consumed,cleanup)).await};
+        match plan.action {
+            ir::StorageAction::Absent => return Ok(false),
+            ir::StorageAction::Present => return Ok(true),
+            ir::StorageAction::Contract => {
+                let cleanup = &self.functions[ty.cleanup.as_ref().unwrap()];
+                return Ok(cleanup.function.contracts().iter()
+                    .any(|contract| contract.kind() == ContractKind::Requires));
+            }
+            ir::StorageAction::Children => {}
+        }
+        let children = ty.fields.iter().map(|(_, _, field)| field.as_ref())
+            .chain(ty.variants.iter().map(|variant| variant.ty.as_ref()))
+            .chain(ty.array.as_deref().filter(|_| plan.array != 0));
+        for child in children {
+            if unsafe { self.call(self.storage_query(child, origin, consumed, plan.mode)).await }? {
+                return Ok(true);
+            }
+        }
+        if plan.dataset != 0 {
+            let (source, span, module, imports) = origin;
+            let reference = ty.dataset.as_deref().unwrap();
+            let element = unsafe { self.call(self.ty_inner(reference, source, span, module, imports,
+                &mut BTreeSet::new())).await }?;
+            return unsafe { self.call(self.storage_query(&element, origin, consumed, plan.mode)).await };
         }
         Ok(false)
     }
-    // An absent element model loses only actual F input requirements.
-    pub(crate) async fn cleanup_requirements(&self, ty: &ir::Ty, source: &Source, span: Span, module: &str, imports: &[String], consumed: &mut BTreeSet<String>) -> crate::Result<bool> {
-        if !consumed.insert(ty.name.clone()) { return Ok(false); }
-        if let Some(key) = &ty.cleanup {
-            return Ok(self.functions[key].function.contracts().iter().any(|contract| contract.kind() == ContractKind::Requires));
-        }
-        for nested in ty.fields.iter().map(|(_, _, ty)| ty.as_ref())
-            .chain(ty.variants.iter().map(|variant| variant.ty.as_ref()))
-            .chain(ty.array.as_deref().filter(|_| ty.values[0] != 0)) {
-            if unsafe{self.call(self.cleanup_requirements(nested,source,span,module,imports,consumed)).await}? { return Ok(true); }
-        }
-        if let Some(reference) = ty.dataset.as_deref().filter(|_| ty.values.first() != Some(&0)) {
-            let element=unsafe{self.call(self.ty_inner(reference,source,span,module,imports,&mut BTreeSet::new())).await}?;
-            return unsafe{self.call(self.cleanup_requirements(&element,source,span,module,imports,consumed)).await};
-        }
-        Ok(false)
-    }
+
     pub(crate) async fn validate_type_references(&self, ty: &ir::Ty, source: &Source, span: Span, module: &str, imports: &[String], consumed: &mut BTreeSet<String>) -> crate::Result<()> {
         if !consumed.insert(ty.name.clone()) { return Ok(()); }
         if let Some(function) = &ty.function {
