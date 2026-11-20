@@ -1176,14 +1176,10 @@ impl Proof {
             if let Some(id) = initial.known_identity(0) { self.mark_domain(component, IndexDomain::Upper(id, 0)); }
         }
     }
-    fn known_bits(&self,component:usize,scalar:Scalar)->Option<KnownBits> {
-        let mut bits=KnownBits::ranges(scalar,self.ranges.get(component).map_or(&[(0,Bits::MAX)][..],|ranges|ranges.0.as_slice()));
-        for domain in self.domains.get(component).into_iter().flatten(){
-            let IndexDomain::KnownBits(from,mask,value)=*domain else{continue;};
-            let incoming=KnownBits{scalar:from,mask,value}.cast(scalar);
-            if incoming.mask!=0{bits=Some(match bits{Some(old)=>old.combined(incoming),None=>incoming});}
-        }
-        bits
+    fn known_bits(&self, component: usize, scalar: Scalar) -> Option<KnownBits> {
+        let ranges = self.ranges.get(component).map_or(&[(0, Bits::MAX)][..], |ranges| ranges.0.as_slice());
+        let domains = self.domains.get(component).map(Domains::iter).unwrap_or_default();
+        known_bits::from_proof(scalar, ranges, domains)
     }
     pub(super) fn written_range(&self,component:usize,scalar:Scalar,bytes:u8)->Self {
         if !scalar.is_integer()||bytes==((1u16<<scalar.size())-1) as u8{return Self::default();}

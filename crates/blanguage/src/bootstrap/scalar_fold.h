@@ -88,6 +88,10 @@ extern "C" BitPattern known_combined(u64 target_mask,u64 am,u64 sign_a,BitPatter
 extern "C" BitPattern known_common(u64 target_mask,BitPattern a,u64 bm,u64 sign_b,BitPattern b) on cpu;
 extern "C" BitPattern known_bitwise(IntegerBitwise operation,BitPattern a,BitPattern b) on cpu;
 extern "C" BitPattern known_ranges(u64 mask,u64 bias,address context,u64 count,cfn<BitRange,address,u64> read) on cpu requires nonzero(read);
+struct KnownDomain {u64 source_mask;u64 source_sign;BitPattern pattern;u32 present;};
+extern "C" BitPattern known_proof(u64 mask,u64 bias,address ranges,u64 count,
+    cfn<BitRange,address,u64> read,address domains,cfn<KnownDomain,address> next_domain) on cpu
+    requires nonzero(read) requires nonzero(next_domain);
 extern "C" BitPattern known_shifted(u64 mask,u64 bias,u32 direction,BitPattern value,address context,u64 count,cfn<BitRange,address,u64> read) on cpu requires nonzero(read);
 
 enum IntegerRangeOperation : u32 { Minimum=0;Maximum=1;Add=2;Subtract=3;Multiply=4;Divide=5;Remainder=6;ShiftLeft=7;ShiftRight=8; };

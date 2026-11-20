@@ -1,7 +1,7 @@
 //! Numerical values cross synchronously; the original Proof owns every fact.
-use super::{Bits, KnownBits, Scalar, bitwise::Operation};
+use super::{Bits, IndexDomain, KnownBits, Scalar, bitwise::Operation};
 use crate::builtin_types::ScalarEncoding;
-use std::ffi::c_void;
+use std::{collections::btree_set, ffi::c_void};
 
 #[derive(Clone, Copy)]
 #[repr(C)]
@@ -22,6 +22,14 @@ struct Range {
     lower: Bits,
     upper: Bits,
 }
+#[repr(C)]
+struct KnownDomain {
+    source_mask: Bits,
+    source_sign: Bits,
+    pattern: Pattern,
+    present: u32,
+}
+
 type Reader = unsafe extern "C" fn(*const c_void, u64) -> Range;
 unsafe extern "C" {
     #[link_name = "bootstrap.scalar_fold::known_cast"]
@@ -60,6 +68,16 @@ unsafe extern "C" {
         context: *const c_void,
         count: u64,
         read: Reader,
+    ) -> Pattern;
+    #[link_name = "bootstrap.scalar_fold::known_proof"]
+    fn read_proof(
+        mask: Bits,
+        bias: Bits,
+        ranges: *const c_void,
+        count: u64,
+        read: Reader,
+        domains: *mut c_void,
+        next_domain: unsafe extern "C" fn(*mut c_void) -> KnownDomain,
     ) -> Pattern;
     #[link_name = "bootstrap.scalar_fold::known_shifted"]
     fn shift(
@@ -165,6 +183,44 @@ pub(super) fn ranges(scalar: Scalar, ranges: &[(Bits, Bits)]) -> Option<KnownBit
         )
     })
 }
+unsafe extern "C" fn next_domain(context: *mut c_void) -> KnownDomain {
+    let domains = unsafe { &mut *context.cast::<btree_set::Iter<'_, IndexDomain>>() };
+    for domain in domains {
+        if let IndexDomain::KnownBits(scalar, mask, value) = *domain {
+            return KnownDomain {
+                source_mask: scalar.bit_mask(),
+                source_sign: scalar.order_bias(),
+                pattern: Pattern { mask, value },
+                present: 1,
+            };
+        }
+    }
+    KnownDomain {
+        source_mask: 0,
+        source_sign: 0,
+        pattern: Pattern { mask: 0, value: 0 },
+        present: 0,
+    }
+}
+
+pub(super) fn from_proof(
+    scalar: Scalar,
+    ranges: &[(Bits, Bits)],
+    mut domains: btree_set::Iter<'_, IndexDomain>,
+) -> Option<KnownBits> {
+    present(scalar, unsafe {
+        read_proof(
+            scalar.bit_mask(),
+            scalar.order_bias(),
+            std::ptr::from_ref(&ranges).cast(),
+            ranges.len() as u64,
+            interval,
+            std::ptr::from_mut(&mut domains).cast(),
+            next_domain,
+        )
+    })
+}
+
 pub(super) fn shifted(source: KnownBits, left: bool, counts: &[(Bits, Bits)]) -> Option<KnownBits> {
     present(source.scalar, unsafe {
         shift(

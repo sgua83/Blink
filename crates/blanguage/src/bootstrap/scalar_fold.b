@@ -621,6 +621,18 @@ extern "C" BitPattern known_ranges(u64 mask,u64 bias,address context,u64 count,c
   if(result.mask==0u64){return result;}
  }return result;
 }
+extern "C" BitPattern known_proof(u64 mask,u64 bias,address ranges,u64 count,
+    cfn<BitRange,address,u64> read,address domains,cfn<KnownDomain,address> next_domain) on cpu
+    requires nonzero(read) requires nonzero(next_domain) {
+    BitPattern bits=known_ranges(mask,bias,ranges,count,read);
+    KnownDomain domain=next_domain(domains);
+    while(domain.present!=0){
+        BitPattern incoming=known_cast(domain.source_mask,domain.source_sign,mask,domain.pattern);
+        bits=BitPattern(bits.mask|incoming.mask,bits.value|incoming.value);
+        domain=next_domain(domains);
+    }
+    return bits;
+}
 u64 shifted_pattern(u64 bits,u32 count,bool left,bool fill,u64 mask) on cpu {
  u64 moved;u64 padding;
  if(left){moved=bits<<u64(count);padding=mask&~(mask<<u64(count));}
