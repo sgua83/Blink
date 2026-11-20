@@ -78,9 +78,18 @@ struct RangePrologue {
 }
 
 #[repr(C)]
-struct TailRange {
-    start: u64,
-    end: u64,
+struct TailLiteral {
+    bits: Bits,
+    references: *const usize,
+    reference_count: usize,
+    wide: u64,
+    target: usize,
+}
+
+#[repr(C)]
+struct CodeTail {
+    end: usize,
+    region_count: usize,
 }
 
 unsafe extern "C" {
@@ -90,12 +99,11 @@ unsafe extern "C" {
     fn encode_frame_release(frame: u32, output: *mut u8) -> u64;
     #[link_name = "bootstrap.x64_instruction::stack_register"]
     fn encode_stack_register(register: u8, restore: u32, output: *mut u8) -> u64;
-    #[link_name = "bootstrap.x64_instruction::stack_probe_size"]
-    fn stack_probe_size() -> u64;
-    #[link_name = "bootstrap.x64_instruction::append_stack_probe"]
-    fn append_stack_probe(image: *mut u8, end: u64, call_field: u64) -> u64;
-    #[link_name = "bootstrap.x64_instruction::append_literal"]
-    fn append_literal(image: *mut u8, end: u64, bits: u64, width: u32, references: *const usize, count: u64) -> TailRange;
+    #[link_name = "bootstrap.x64_instruction::tail_capacity"]
+    fn tail_capacity(probe: usize, literal_count: usize) -> usize;
+    #[link_name = "bootstrap.x64_instruction::write_tail"]
+    fn write_tail(image: *mut u8, end: usize, probe: usize, literals: *mut TailLiteral,
+        literal_count: usize, regions: *mut super::Region) -> CodeTail;
     #[link_name = "bootstrap.x64_instruction::patch_relative"]
     fn patch_relative(field: *mut u8, offset: u64, target: u64);
     #[link_name = "bootstrap.x64_instruction::encode_branch"]
@@ -166,36 +174,32 @@ impl Emitter<'_> {
     // and any local helpers. Their references move with the same image.
     fn finish(mut self, stack_bytes: u32) -> NativeCode {
         let function_end = self.code.len();
-        let mut tail_regions = Vec::new();
-        let mut tail_references = Vec::new();
         let unwind = unwind::encode(self.prolog, &self.unwind);
+        let mut literals: Vec<_> = self.literals.iter().map(|(&(bits, wide), references)| TailLiteral {
+            bits,
+            references: references.as_ptr(),
+            reference_count: references.len(),
+            wide: u64::from(wide),
+            target: 0,
+        }).collect();
+        let probe = self.probe.unwrap_or(0);
+        let count = literals.len();
+        let has_probe = usize::from(self.probe.is_some());
+        let mut tail_regions = Vec::with_capacity(count + usize::from(count != 0) + has_probe);
+        self.code.reserve(unsafe { tail_capacity(probe, count) });
+        // B writes the tail and its regions while the original image and references are live.
+        unsafe {
+            let tail = write_tail(self.code.as_mut_ptr(), function_end, probe,
+                literals.as_mut_ptr(), count, tail_regions.as_mut_ptr());
+            self.code.set_len(tail.end);
+            tail_regions.set_len(tail.region_count);
+        }
+        let mut tail_references = Vec::with_capacity(count + has_probe);
         if let Some(at) = self.probe {
-            let start = self.code.len();
-            self.code.reserve(unsafe { stack_probe_size() } as usize);
-            unsafe {
-                let end = append_stack_probe(self.code.as_mut_ptr(), start as u64, at as u64);
-                self.code.set_len(end as usize);
-            }
-            tail_references.push(super::TailReference { target: start, rel32_fields: vec![at] });
-            tail_regions.push(super::Region { end: self.code.len(), kind: super::RegionKind::StackProbe });
+            tail_references.push(super::TailReference { target: function_end, rel32_fields: vec![at] });
         }
-        for ((bits, wide), references) in self.literals {
-            let start = self.code.len();
-            let width = if wide { 8 } else { 4 };
-            self.code.reserve(width as usize + 3);
-            let range = unsafe {
-                let range = append_literal(self.code.as_mut_ptr(), start as u64, bits, width,
-                    references.as_ptr(), references.len() as u64);
-                self.code.set_len(range.end as usize);
-                range
-            };
-            let target = range.start as usize;
-            if target != start {
-                tail_regions.push(super::Region { end: target, kind: super::RegionKind::Alignment });
-            }
-            tail_regions.push(super::Region { end: range.end as usize, kind: super::RegionKind::Literal });
-            tail_references.push(super::TailReference { target, rel32_fields: references });
-        }
+        tail_references.extend(literals.into_iter().zip(self.literals.into_values())
+            .map(|(literal, rel32_fields)| super::TailReference { target: literal.target, rel32_fields }));
         NativeCode {
             bytes: self.code,
             relocations: self.relocations,

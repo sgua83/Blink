@@ -21,10 +21,16 @@ struct FrameEncoding {
     u64 probe_field;
 };
 
-struct TailRange {
-    u64 start;
-    u64 end;
+struct TailLiteral {
+    u64 bits;
+    address references;
+    u64 reference_count;
+    u64 wide;
+    u64 target;
 };
+enum TailRegionKind:u32 { StackProbe=0; Alignment=1; Literal=2; };
+struct TailRegion { u64 end; TailRegionKind kind; };
+struct CodeTail { u64 end; u64 region_count; };
 
 // The destination has room for 17 bytes. The caller supplies a nonempty frame.
 // probe_field is relative to the output, and zero when no call is emitted.
@@ -63,12 +69,12 @@ extern "C" u64 abi_value(u32 slot, u64 count, AbiMemoryMode mode, address contex
 // The caller owns sixteen bytes for computing and writing a frame address.
 extern "C" u64 abi_stack_pointer(u32 offset, u32 slot, address output) on cpu;
 
-extern "C" u64 stack_probe_size() on cpu;
-// The caller owns the code image through end plus stack_probe_size bytes.
-extern "C" u64 append_stack_probe(address image, u64 end, u64 call_field) on cpu;
-// The caller keeps width plus three spare bytes and all reference fields alive.
-// The original reference array contains count image-relative u64 offsets.
-extern "C" TailRange append_literal(address image, u64 end, u64 bits, u32 width, address references, u64 count) on cpu;
+// The caller preserves the existing bytes and supplies this tail's maximum length.
+extern "C" u64 tail_capacity(u64 probe,u64 literal_count) on cpu;
+// The borrowed literals stay in emission order. They own their existing reference lists
+// and receive target offsets. Regions holds the probe, optional initial padding and each literal.
+extern "C" CodeTail write_tail(address image,u64 end,u64 probe,address literals,
+    u64 literal_count,address regions) on cpu;
 // The field address refers to the four-byte displacement at offset in the image.
 extern "C" void patch_relative(address field, u64 offset, u64 target) on cpu;
 // Known-target jump: output has five bytes and offset is its function-relative start.

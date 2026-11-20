@@ -313,12 +313,14 @@ impl<P, C> ProgramImage<P, C> {
 /// 原发射者写入的尾部分区；end是同一bytes中的排他末端。
 #[cfg(feature = "compiler")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(C)]
 pub struct Region {
     pub end: usize,
     pub kind: RegionKind,
 }
 #[cfg(feature = "compiler")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u32)]
 pub enum RegionKind {
     StackProbe,
     Alignment,

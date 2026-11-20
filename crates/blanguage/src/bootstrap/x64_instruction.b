@@ -171,11 +171,7 @@ const array<u8,STACK_PROBE_LENGTH> STACK_PROBE = array<u8,STACK_PROBE_LENGTH>(
     u8(0x4d), u8(0x29), u8(0xda), u8(0x41), u8(0x85), u8(0x02), u8(0xc3)
 );
 
-extern "C" u64 stack_probe_size() on cpu {
-    return u64(STACK_PROBE_LENGTH);
-}
-
-extern "C" u64 append_stack_probe(address image, u64 end, u64 call_field) on cpu {
+u64 append_stack_probe(address image, u64 end, u64 call_field) on cpu {
     u64 base = address_bits(image);
     patch_relative(unsafe_address(base + call_field), call_field, end);
     for (index in 0..STACK_PROBE_LENGTH) {
@@ -184,25 +180,61 @@ extern "C" u64 append_stack_probe(address image, u64 end, u64 call_field) on cpu
     return end + u64(STACK_PROBE_LENGTH);
 }
 
-extern "C" TailRange append_literal(address image, u64 end, u64 bits, u32 width, address references, u64 count) on cpu {
-    u64 base = address_bits(image);
-    u64 start = ((end + 3u64) / 4u64) * 4u64;
-    u64 cursor = end;
-    while (cursor < start) {
-        unsafe_position<u8>(unsafe_address(base + cursor)) = u8(0);
-        cursor += 1u64;
+extern "C" u64 tail_capacity(u64 probe,u64 literal_count) on cpu {
+    u64 extra=probe!=0u64 ? u64(STACK_PROBE_LENGTH) : 0u64;
+    if(literal_count!=0u64){extra+=literal_count*8u64+3u64;}
+    return extra;
+}
+
+void tail_region(address regions,u64 ordinal,u64 end,TailRegionKind kind) on cpu {
+    address target=unsafe_address(address_bits(regions)+ordinal*size_of<TailRegion>());
+    unsafe_position<TailRegion>(target)=TailRegion(end,kind);
+}
+
+extern "C" CodeTail write_tail(address image,u64 end,u64 probe,address literals,
+    u64 literal_count,address regions) on cpu {
+    u64 cursor=end;
+    u64 count=0u64;
+    if(probe!=0u64){
+        cursor=append_stack_probe(image,cursor,probe);
+        tail_region(regions,count,cursor,TailRegionKind::StackProbe);
+        count+=1u64;
     }
-    write_word(base + start, u32(bits));
-    if (width == 8) {
-        write_word(base + start + 4u64, u32(bits >> 32));
+    u64 base=address_bits(image);
+    if(literal_count!=0u64){
+        u64 start=((cursor+3u64)/4u64)*4u64;
+        if(start!=cursor){
+            while(cursor<start){
+                unsafe_position<u8>(unsafe_address(base+cursor))=u8(0);
+                cursor+=1u64;
+            }
+            tail_region(regions,count,cursor,TailRegionKind::Alignment);
+            count+=1u64;
+        }
     }
-    u64 index = 0u64;
-    while (index < count) {
-        u64 field = unsafe_position<u64>(unsafe_address(address_bits(references) + index * 8u64));
-        patch_relative(unsafe_address(base + field), field, start);
-        index += 1u64;
+    u64 ordinal=0u64;
+    while(ordinal<literal_count){
+        address at=unsafe_address(address_bits(literals)+ordinal*size_of<TailLiteral>());
+        TailLiteral literal=unsafe_position<TailLiteral>(at);
+        u64 start=cursor;
+        write_word(base+cursor,u32(literal.bits));
+        cursor+=4u64;
+        if(literal.wide!=0u64){
+            write_word(base+cursor,u32(literal.bits>>32));
+            cursor+=4u64;
+        }
+        u64 index=0u64;
+        while(index<literal.reference_count){
+            u64 field=unsafe_position<u64>(unsafe_address(address_bits(literal.references)+index*8u64));
+            patch_relative(unsafe_address(base+field),field,start);
+            index+=1u64;
+        }
+        unsafe_position<TailLiteral>(at).target=start;
+        tail_region(regions,count,cursor,TailRegionKind::Literal);
+        count+=1u64;
+        ordinal+=1u64;
     }
-    return TailRange(start, start + u64(width));
+    return CodeTail(cursor,count);
 }
 
 u64 register_instruction(u64 at, u16 opcode, u8 prefix, bool wide, u8 reg, u8 operand) on cpu {
