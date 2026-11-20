@@ -53,37 +53,27 @@ struct RangeWork<'a> {
     timing: Option<*mut CpuRangeTiming>,
 }
 impl RangeWork<'_> {
-    unsafe fn frame_uniforms(&self) -> Vec<u32> {
-        match self.frame {
-            Some((_, _, words, _, _)) => unsafe {
-                std::slice::from_raw_parts(self.uniforms, words).to_vec()
-            },
-            None => Vec::new(),
-        }
-    }
-
     unsafe fn invoke(
         &self,
         address: *mut c_void,
         buffers: *const BufferAddress,
-        frame_uniforms: &mut [u32],
+        uniforms: *mut u32,
         end: u32,
         begin: u32,
         output: *mut u32,
         timing: Option<*mut CpuRangeTiming>,
     ) -> *mut c_void {
         let mut frame;
-        let uniforms = if let Some((definitions, offset, _, inputs, input_domains)) = self.frame {
+        if let Some((definitions, offset, words, inputs, input_domains)) = self.frame {
             frame = unsafe {
                 crate::application::Frame::from_definitions(definitions.clone(), inputs, input_domains)
             };
             let pointer = std::ptr::from_mut(&mut frame) as usize as u64;
+            // A framed call owns its complete uniform block for this invocation.
+            let frame_uniforms = unsafe { std::slice::from_raw_parts_mut(uniforms, words) };
             frame_uniforms[offset] = pointer as u32;
             frame_uniforms[offset + 1] = (pointer >> 32) as u32;
-            frame_uniforms.as_ptr()
-        } else {
-            self.uniforms
-        };
+        }
         let entry:RangeEntry=unsafe {std::mem::transmute(address)};
         unsafe {
             observation::measure(timing, begin, end, || entry(buffers, uniforms, end, begin, output))
@@ -95,19 +85,26 @@ impl RangeWork<'_> {
         address: *mut c_void,
         buffers: &mut [BufferAddress],
         replacements: &mut [(usize, BufferAddress)],
+        uniforms: &mut [u32],
         end: u32,
         output: *mut u32,
         timings: &mut Option<&mut CpuRangeTimings>,
     ) -> Result<*mut c_void> {
-        // The parallel pass has joined. Only this synchronous entry borrows the
-        // table until the original bindings are restored.
+        // The parallel pass has joined. This entry alone borrows the original
+        // bindings and uniforms until both are restored.
         for (slot, replacement) in replacements.iter_mut() {
             std::mem::swap(&mut buffers[*slot], replacement);
         }
         let result = unsafe {
             observation::capture(timings, self.stage, address as usize, 1, |timing| {
-                let mut uniforms = self.frame_uniforms();
-                Ok(self.invoke(address, buffers.as_ptr(), &mut uniforms, end, 0, output, timing))
+                let frame_words = self.frame.map(|(_, offset, _, _, _)| {
+                    (offset, [uniforms[offset], uniforms[offset + 1]])
+                });
+                let failure = self.invoke(address, buffers.as_ptr(), uniforms.as_mut_ptr(), end, 0, output, timing);
+                if let Some((offset, words)) = frame_words {
+                    uniforms[offset..offset + words.len()].copy_from_slice(&words);
+                }
+                Ok(failure)
             })
         };
         // The source and target can name the same slot.
@@ -127,7 +124,10 @@ unsafe extern "system" fn execute_ranges(
     if begin >= work.count {
         return;
     }
-    let mut uniforms = unsafe { work.frame_uniforms() };
+    let mut frame_uniforms = work.frame.map(|(_, _, words, _, _)| unsafe {
+        std::slice::from_raw_parts(work.uniforms, words).to_vec()
+    });
+    let uniforms = frame_uniforms.as_mut().map_or(work.uniforms.cast_mut(), Vec::as_mut_ptr);
     let mut private_buffers = if work.range_parameters.is_null() {
         Vec::new()
     } else {
@@ -159,7 +159,7 @@ unsafe extern "system" fn execute_ranges(
             };
             let timing = work.timing.map(|first| first.add(index));
             let failure = work.invoke(
-                work.entry, buffers, &mut uniforms, end as u32, begin as u32, output, timing,
+                work.entry, buffers, uniforms, end as u32, begin as u32, output, timing,
             );
             work.errors.add(index).write(failure);
         }
@@ -1150,6 +1150,7 @@ impl CpuCode {
                                         prefix.address,
                                         &mut pointers,
                                         &mut [(*source, summary), (*target, summary)],
+                                        &mut uniforms,
                                         range_count as u32,
                                         std::ptr::null_mut(),
                                         &mut timings,
@@ -1173,6 +1174,7 @@ impl CpuCode {
                                             next.address,
                                             &mut pointers,
                                             &mut [(r.fields.source, summary)],
+                                            &mut uniforms,
                                             range_count as u32,
                                             output,
                                             &mut timings,
@@ -1254,6 +1256,7 @@ impl CpuCode {
                         if let Some(next) = next {
                             ranges.entry = next.address;
                             ranges.buffers = pointers.as_ptr();
+                            ranges.uniforms = uniforms.as_ptr();
                             ranges.result = RangeResult::None;
                             ranges.next = AtomicUsize::new(0);
                             ranges.range_parameters = partials.as_ptr().cast();
