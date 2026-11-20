@@ -215,8 +215,6 @@ impl Compiler {
     pub(crate) fn execute<T: Send, E: Send>(
         &self, compile: impl FnOnce(&Worker) -> Result<T, E> + Send,
     ) -> Result<T, Error<E>> {
-        #[cfg(all(feature = "installed", feature = "compiler"))]
-        self.with_sdk_input(|_| ()).map_err(Error::Resource)?;
         let worker = self.acquire();
         if self.resources.processors.is_none() {
             return compile(&worker).map_err(Error::Work);
