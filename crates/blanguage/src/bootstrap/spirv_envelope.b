@@ -1709,14 +1709,6 @@ StageBranch scan_tree_branch(inout StageCursor out, u32 uint_type, u32 bool_type
     return stage_open(out, selected);
 }
 
-extern "C" ScanTreeOpen open_scan_tree(ScanTreeInput input, address body) on cpu {
-    StageCursor out = StageCursor(body, 0u64, input.first);
-    StageBranch branch = scan_tree_branch(out, input.uint_type, input.bool_type, input.lane, input.mask);
-    out.next = input.other;
-    stage_op(out, 130, input.uint_type, input.lane, input.stride);
-    return ScanTreeOpen(out.words, branch.run, branch.end);
-}
-
 TreeWords stage_tree_layer(inout StageCursor out, TreeLayer input, u32 global_index,
     address components, u32 count, address own, address decorations) on cpu {
     u32 node = input.lane;
@@ -2368,6 +2360,53 @@ void read_segment_values(inout StageCursor out, u32 type_id, u32 words, address 
     }
     out.next += words;
 }
+
+extern "C" CustomTreeOpen open_custom_tree(CustomTreeInput input, address offsets, address own,
+    u32 count, address workspace, address body) on cpu {
+    StageCursor out = StageCursor(body, 0u64, input.next);
+    u32 u = input.uint_type;
+    StageBranch layer = scan_tree_branch(out, u, input.bool_type, input.lane, input.mask);
+    u32 other = stage_op(out, 130, u, input.lane, input.stride);
+    u32 right_start = stage_op(out, 128, u, other, input.one);
+    u32 valid = stage_op(out, 176, input.bool_type, right_start, input.remaining);
+    SharedAddress plane = SharedAddress(u, input.pointer, input.shared, other, 0, count, out.next);
+    SharedAddressWords located = write_shared_addresses(plane, offsets, workspace, word_at(body, out.words));
+    out.words += located.words;
+    out.next = located.next;
+
+    address left = word_at(workspace, u64(count));
+    address right = word_at(workspace, 2u64 * u64(count));
+    read_segment_values(out, u, count, workspace, left);
+    read_segment_values(out, u, count, own, right);
+    if (input.down != 0) {
+        out.words += write_summary_words(word_at(body, out.words), workspace, right, count);
+    }
+    StageBranch run = stage_open(out, valid);
+    return CustomTreeOpen(out.words, out.next, run.run, layer.run, run.end, layer.end);
+}
+
+
+extern "C" StageWords close_custom_tree(CustomTreeClose input, address own, address left,
+    address values, u32 count, address body) on cpu {
+    StageCursor out = StageCursor(body, 0u64, input.next);
+    StageBranch merge = StageBranch(input.from, input.merged);
+    if (input.down != 0) {
+        out.words += write_summary_words(word_at(body, out.words), own, values, count);
+        stage_close(out, merge);
+    } else {
+        stage_close(out, merge);
+        for (part in 0..count) {
+            u32 value = stage_phi(out, input.uint_type, read_word(values, part), input.from,
+                read_word(left, part), input.absent);
+            put(values, u64(part), value);
+        }
+        out.words += write_summary_words(word_at(body, out.words), own, values, count);
+    }
+    stage_close(out, StageBranch(input.absent, input.end));
+    stage_barrier(out, input.scope, input.semantics);
+    return StageWords(out.words, out.next, input.end);
+}
+
 
 u64 segment_tree(inout StageCursor out, SegmentGroup input, u32 remaining, bool down,
     address levels, address fields, u32 count, address workspace, address decorations) on cpu {

@@ -369,10 +369,46 @@ struct TreeComponent {
 extern "C" void group_remaining(address body, u32 uint_type, u32 index, u32 lane, u32 count, u32 first) on cpu;
 extern "C" void collective_writer(address body, u32 bool_type, u32 lane, u32 active, u32 count, u32 zero, u32 first) on cpu;
 
-struct ScanTreeInput { u32 uint_type; u32 bool_type; u32 lane; u32 mask; u32 stride; u32 first; u32 other; };
-struct ScanTreeOpen { u64 words; u32 run; u32 end; };
-// first starts the four branch IDs. other is the neighboring-node result ID.
-extern "C" ScanTreeOpen open_scan_tree(ScanTreeInput input, address body) on cpu;
+struct CustomTreeInput {
+    u32 uint_type;
+    u32 bool_type;
+    u32 lane;
+    u32 shared;
+    u32 pointer;
+    u32 mask;
+    u32 stride;
+    u32 remaining;
+    u32 one;
+    u32 down;
+    u32 next;
+};
+
+struct CustomTreeOpen {
+    u64 words;
+    u32 next;
+    u32 run;
+    u32 absent;
+    u32 merged;
+    u32 end;
+};
+
+struct CustomTreeClose {
+    u32 uint_type;
+    u32 from;
+    u32 absent;
+    u32 merged;
+    u32 end;
+    u32 scope;
+    u32 semantics;
+    u32 down;
+    u32 next;
+};
+
+// Workspace holds a word span each for neighbor pointers, left and right.
+extern "C" CustomTreeOpen open_custom_tree(CustomTreeInput input, address offsets, address own,
+    u32 count, address workspace, address body) on cpu;
+extern "C" StageWords close_custom_tree(CustomTreeClose input, address own, address left,
+    address values, u32 count, address body) on cpu;
 
 struct TreeLayer {
     u32 uint_type;

@@ -32,7 +32,51 @@ struct CustomCollectiveJoin {
     semantics: u32,
 }
 
+#[repr(C)]
+struct CustomTreeInput {
+    uint_type: u32,
+    bool_type: u32,
+    lane: u32,
+    shared: u32,
+    pointer: u32,
+    mask: u32,
+    stride: u32,
+    remaining: u32,
+    one: u32,
+    down: u32,
+    next: u32,
+}
+
+#[repr(C)]
+struct CustomTreeOpen {
+    words: u64,
+    next: u32,
+    run: u32,
+    absent: u32,
+    merged: u32,
+    end: u32,
+}
+
+#[repr(C)]
+struct CustomTreeClose {
+    uint_type: u32,
+    from: u32,
+    absent: u32,
+    merged: u32,
+    end: u32,
+    scope: u32,
+    semantics: u32,
+    down: u32,
+    next: u32,
+}
+
 unsafe extern "C" {
+    #[link_name = "bootstrap.spirv_envelope::open_custom_tree"]
+    fn emit_open_custom_tree(input: CustomTreeInput, offsets: *const u32, own: *const u32,
+        count: u32, workspace: *mut u32, body: *mut u32) -> CustomTreeOpen;
+    #[link_name = "bootstrap.spirv_envelope::close_custom_tree"]
+    fn emit_close_custom_tree(input: CustomTreeClose, own: *const u32, left: *const u32,
+        values: *mut u32, count: u32, body: *mut u32) -> StageWords;
     #[link_name = "bootstrap.spirv_envelope::read_collective_result"]
     fn read_collective_result(target: &PageAddress, fields: *const CollectiveField,
         count: u32, values: *mut u32, locations: *mut u32, body: *mut u32) -> PayloadWrite;
@@ -245,49 +289,63 @@ impl Emitter<'_> {
         local: u32,
         shared: u32,
         pointer: u32,
-        width: u32,
         remaining: u32,
+        own: &[u32],
         down: bool,
         summary: Summary,
     ) -> Result<(), &'static str> {
-        let u = self.types[&Scalar::U32];
-        let b = self.types[&Scalar::Bool];
-        let (other, end) = self.open_scan_tree(local, width);
+        let words = own.len();
+        let uint_type = self.types[&Scalar::U32];
+        let bool_type = self.types[&Scalar::Bool];
         let one = self.constant(Scalar::U32, 1);
-        let right_start = self.id();
-        self.emit(128, &[u, right_start, other, one]);
-        let valid = self.id();
-        self.emit(176, &[b, valid, right_start, remaining]);
-        let words = summary.words(r.ty.size.div_ceil(4) as usize);
-        let a = self.shared_planes(shared, pointer, other, words);
-        let z = self.shared_planes(shared, pointer, local, words);
-        let left = self.read_summary_words(&a);
-        let right = self.read_summary_words(&z);
-        if down {
-            self.write_summary_words(&a, &right);
+        let scope = self.constant(Scalar::U32, 2);
+        let semantics = self.constant(Scalar::U32, 0x108);
+        let mut offsets = vec![0; words];
+        for (part, offset) in offsets.iter_mut().enumerate().skip(1) {
+            *offset = self.constant(Scalar::U32, part as u32 * 64);
         }
-        let merge = self.id();
-        let absent = self.id();
-        let merged = self.id();
-        self.emit(247, &[merged, 0]);
-        self.emit(250, &[valid, merge, absent]);
-        self.emit(248, &[merge]);
-        let values = if down {
-            self.custom_merge(r, kernel, &right, &left, summary)
-        } else {
-            self.custom_merge(r, kernel, &left, &right, summary)
-        }?;
-        self.write_summary_words(&z, &values);
-        self.emit(249, &[merged]);
-        self.emit(248, &[absent]);
-        if !down {
-            self.write_summary_words(&z, &left);
+        let mut workspace = vec![0; 3 * words];
+        for depth in 0..6 {
+            let width = if down { 32 >> depth } else { 1 << depth };
+            let mask = self.constant(Scalar::U32, 2 * width - 1);
+            let stride = self.constant(Scalar::U32, width);
+            let input = CustomTreeInput {
+                uint_type, bool_type, lane: local, shared, pointer, mask, stride,
+                remaining, one, down: u32::from(down), next: self.next,
+            };
+            let body = self.body.len();
+            self.body.reserve(48 + 25 * words);
+            let open = unsafe {
+                let open = emit_open_custom_tree(input, offsets.as_ptr(), own.as_ptr(),
+                    words as u32, workspace.as_mut_ptr(), self.body.as_mut_ptr().add(body));
+                self.body.set_len(body + open.words as usize);
+                open
+            };
+            self.next = open.next;
+            self.current_label = open.run;
+            let (left, right) = workspace[words..].split_at(words);
+            let (before, after) = if down { (right, left) } else { (left, right) };
+            let mut values = self.custom_merge(r, kernel, before, after, summary)?;
+
+
+            let close = CustomTreeClose {
+                uint_type, from: self.current_label, absent: open.absent, merged: open.merged,
+                end: open.end, scope, semantics, down: u32::from(down), next: self.next,
+            };
+            let body = self.body.len();
+            self.body.reserve(12 + 12 * words);
+            unsafe {
+                let emitted = emit_close_custom_tree(close, own.as_ptr(), left.as_ptr(),
+                    values.as_mut_ptr(), words as u32, self.body.as_mut_ptr().add(body));
+                self.body.set_len(body + emitted.words as usize);
+                self.next = emitted.next;
+                self.current_label = emitted.label;
+            }
         }
-        self.emit(249, &[merged]);
-        self.emit(248, &[merged]);
-        self.close_scan_tree(end);
         Ok(())
     }
+
+
     pub(super) fn custom_reduce(
         &mut self,
         r: &CustomReduction,
@@ -299,7 +357,7 @@ impl Emitter<'_> {
         active: u32,
         count: u32,
     ) -> Result<(), &'static str> {
-        self.custom_input(
+        let (own, _, _) = self.custom_input(
             r,
             kernel,
             tail,
@@ -310,19 +368,7 @@ impl Emitter<'_> {
             Summary::Plain,
         )?;
         let remaining = self.group_remaining(local, count);
-        for width in [1, 2, 4, 8, 16, 32] {
-            self.custom_tree(
-                r,
-                kernel,
-                local,
-                shared,
-                pointer,
-                width,
-                remaining,
-                false,
-                Summary::Plain,
-            )?;
-        }
+        self.custom_tree(r, kernel, local, shared, pointer, remaining, &own, false, Summary::Plain)?;
         let (owner, _) = self.collective_writer(local, active, count);
         let last = self.constant(Scalar::U32, 63);
         let words = self.shared_planes(shared, pointer, last, r.ty.size.div_ceil(4) as usize);
@@ -349,11 +395,7 @@ impl Emitter<'_> {
         )?;
         let head = scan.head_word.map(|_| input[k]);
         let remaining = self.group_remaining(local, count);
-        for width in [1, 2, 4, 8, 16, 32] {
-            self.custom_tree(
-                r, kernel, local, shared, pointer, width, remaining, false, summary,
-            )?;
-        }
+        self.custom_tree(r, kernel, local, shared, pointer, remaining, &own, false, summary)?;
         let (owner, _) = self.collective_writer(local, active, count);
         let width = self.constant(Scalar::U32, 64);
         let group = self.id();
@@ -372,11 +414,7 @@ impl Emitter<'_> {
         self.emit(249, &[saved]);
         self.emit(248, &[saved]);
         self.scan_barrier();
-        for width in [32, 16, 8, 4, 2, 1] {
-            self.custom_tree(
-                r, kernel, local, shared, pointer, width, remaining, true, summary,
-            )?;
-        }
+        self.custom_tree(r, kernel, local, shared, pointer, remaining, &own, true, summary)?;
         let values = self.read_summary_words(&own);
         let write = self.id();
         let end = self.id();
@@ -477,11 +515,7 @@ impl Emitter<'_> {
             summary,
         )?;
         let remaining = self.group_remaining(local, count);
-        for width in [1, 2, 4, 8, 16, 32] {
-            self.custom_tree(
-                r, kernel, local, shared, pointer, width, remaining, false, summary,
-            )?;
-        }
+        self.custom_tree(r, kernel, local, shared, pointer, remaining, &own, false, summary)?;
         let (owner, _) = self.collective_writer(local, active, count);
         let save = self.id();
         let saved = self.id();
@@ -519,11 +553,7 @@ impl Emitter<'_> {
             return Ok(());
         }
         self.scan_barrier();
-        for width in [32, 16, 8, 4, 2, 1] {
-            self.custom_tree(
-                r, kernel, local, shared, pointer, width, remaining, true, summary,
-            )?;
-        }
+        self.custom_tree(r, kernel, local, shared, pointer, remaining, &own, true, summary)?;
         let result = self.read_summary_words(&own);
         let write = self.id();
         let end = self.id();
