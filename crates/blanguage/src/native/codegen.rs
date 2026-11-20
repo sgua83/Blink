@@ -118,6 +118,9 @@ unsafe extern "C" {
     fn encode_buffer_load(offset: u32, target: u8, output: *mut u8) -> u64;
     #[link_name = "bootstrap.x64_instruction::buffer_index"]
     fn encode_buffer_index(stride_offset: u32, index: u8, base: u8, output: *mut u8) -> u64;
+    #[link_name = "bootstrap.x64_instruction::dataset_index"]
+    fn encode_dataset_index(data: u32, stride: u32, index: MoveLocation, scalar: ScalarEncoding,
+        materialize: u32, output: *mut u8) -> u64;
     #[link_name = "bootstrap.x64_instruction::indexed_address"]
     fn encode_indexed_address(index: MoveLocation, scalar: ScalarEncoding, stride: u32,
         word: u32, output: *mut u8) -> u64;
@@ -316,25 +319,24 @@ impl Emitter<'_> {
     fn buffer_load(&mut self, offset: u32, target: u8) {
         self.emit_bytes(8, |output| unsafe { encode_buffer_load(offset, target, output) });
     }
-    fn address(&mut self, binding: usize, index: Reg) {
-        self.buffer_load(binding as u32 * BUFFER_BYTES, 15);
-        self.load(index);
-        self.offset_buffer_address(binding);
-    }
-    fn data_memory(&mut self, binding: usize, index: Reg, word: u32) -> Memory {
-        self.buffer_load(binding as u32 * BUFFER_BYTES, 15);
-        self.load(index);
-        self.buffer_index(binding, 0, None);
-        Memory::indexed(15, 0, 0, word)
-    }
-    fn buffer_index(&mut self, binding: usize, index: u8, base: Option<u8>) {
-        let stride = binding as u32 * BUFFER_BYTES + BUFFER_STRIDE;
-        self.emit_bytes(12, |output| unsafe {
-            encode_buffer_index(stride, index, base.unwrap_or(u8::MAX), output)
+    fn dataset_index(&mut self, binding: usize, index: Reg, materialize: bool) {
+        let data = binding as u32 * BUFFER_BYTES;
+        let location = self.location(index).into();
+        let scalar = self.stage.registers[index].into();
+        self.emit_bytes(44, |output| unsafe {
+            encode_dataset_index(data, data + BUFFER_STRIDE, location, scalar, u32::from(materialize), output)
         });
     }
+    fn address(&mut self, binding: usize, index: Reg) {
+        self.dataset_index(binding, index, true);
+    }
+    fn data_memory(&mut self, binding: usize, index: Reg, word: u32) -> Memory {
+        self.dataset_index(binding, index, false);
+        Memory::indexed(15, 0, 0, word)
+    }
     fn offset_buffer_address(&mut self, binding: usize) {
-        self.buffer_index(binding, 0, Some(15));
+        let stride = binding as u32 * BUFFER_BYTES + BUFFER_STRIDE;
+        self.emit_bytes(12, |output| unsafe { encode_buffer_index(stride, 0, 15, output) });
     }
     fn buffer_selection(&mut self, binding: usize, word: u32) {
         let data = binding as u32 * BUFFER_BYTES;
@@ -372,16 +374,8 @@ impl Emitter<'_> {
     fn indexed_base(&mut self, source: &IndexedSource) -> u32 {
         match source {
             IndexedSource::Data { binding, index } => self.address(*binding, *index),
-            IndexedSource::View { address, index, stride }=>{
-                self.address_pair(*address);
-                let memory=self.view_memory(15,self.location(*index),*stride,0);
-                self.instruction(None,&[0x8d],true,15,memory.into());
-            },
-            IndexedSource::Pointer { address, index, stride, .. } => {
-                self.address_pair(*address);
-                self.load(*index);
-                self.offset_address(*stride);
-            }
+            IndexedSource::View { address, index, stride } => self.view_element_base(*address, *index, *stride),
+            IndexedSource::Pointer { address, index, stride, .. } => self.pointer_element_base(*address, *index, *stride),
             IndexedSource::Tile { tile, index } => {
                 let storage = self.shared_stream(self.stage.shared_word(*tile, 0));
                 self.tile_index_base(*index, storage);
@@ -505,8 +499,7 @@ impl Emitter<'_> {
                     stride,
                     word,
                 } => {
-                    self.address_pair(*address);
-                    let memory = self.view_memory(15, self.location(*index), *stride, *word);
+                    let memory = self.view_element_memory(*address, *index, *stride, *word);
                     self.read_scalar_address(*dst, memory);
                 }
                 InstKind::LoadIndexed {

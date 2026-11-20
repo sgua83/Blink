@@ -119,6 +119,17 @@ pub(super) struct AddressEncoding {
     shift: u8,
 }
 
+#[repr(C)]
+struct ViewElement {
+    low: MoveLocation,
+    high: MoveLocation,
+    index: MoveLocation,
+    stride_low: MoveLocation,
+    stride_high: MoveLocation,
+    stride: u64,
+    dynamic: u32,
+}
+
 unsafe extern "C" {
     #[link_name = "bootstrap.frame_layout::preserve_registers"]
     fn encode_preserved_registers(
@@ -127,16 +138,17 @@ unsafe extern "C" {
     ) -> usize;
     #[link_name = "bootstrap.x64_instruction::value_memory"]
     fn encode_value_memory(base: u8, index: MoveLocation, stride: u32, offset: u32, output: *mut u8) -> AddressEncoding;
-    #[link_name = "bootstrap.x64_instruction::view_memory"]
-    fn encode_view_memory(base: u8, index: MoveLocation, stride: u64, offset: u32, output: *mut u8) -> AddressEncoding;
-    #[link_name = "bootstrap.x64_instruction::view_memory_dynamic"]
-    fn encode_view_memory_dynamic(base: u8, index: MoveLocation, low: MoveLocation, high: MoveLocation, offset: u32, output: *mut u8) -> AddressEncoding;
+    #[link_name = "bootstrap.x64_instruction::view_element_memory"]
+    fn encode_view_element_memory(source: ViewElement, offset: u32, output: *mut u8) -> AddressEncoding;
+    #[link_name = "bootstrap.x64_instruction::view_element_base"]
+    fn encode_view_element_base(source: ViewElement, output: *mut u8) -> u64;
+    #[link_name = "bootstrap.x64_instruction::pointer_element_base"]
+    fn encode_pointer_element_base(low: MoveLocation, high: MoveLocation, index: MoveLocation,
+        scalar: ScalarEncoding, stride: u32, output: *mut u8) -> u64;
     #[link_name = "bootstrap.x64_instruction::scaled_memory"]
     fn encode_scaled_memory(base: u8, index: u8, stride: u32, offset: u32, output: *mut u8) -> AddressEncoding;
     #[link_name = "bootstrap.x64_instruction::offset_address"]
     fn encode_offset_address(stride: u32, output: *mut u8) -> u64;
-    #[link_name = "bootstrap.x64_instruction::address_pair"]
-    fn encode_address_pair(low: MoveLocation, high: MoveLocation, output: *mut u8) -> u64;
     #[link_name = "bootstrap.x64_instruction::reference_address"]
     fn encode_reference_address(base: u8, offset: u32, indexed: u32, output: *mut u8) -> u64;
     #[link_name = "bootstrap.x64_instruction::bit_copy"]
@@ -198,27 +210,38 @@ impl Emitter<'_> {
         let index = index.into();
         self.emit_address(32, |output| unsafe { encode_value_memory(base, index, stride, offset, output) })
     }
-    pub(super) fn view_memory(&mut self, base: u8, index: Location, stride: ElementStride, offset: u32) -> Memory {
-        let index = index.into();
-        match stride {
-            ElementStride::Constant(bytes) => self.emit_address(64, |output| unsafe {
-                encode_view_memory(base, index, bytes, offset, output)
-            }),
-            ElementStride::Value(words) => {
-                let low = self.location(words[0]).into();
-                let high = self.location(words[1]).into();
-                self.emit_address(64, |output| unsafe { encode_view_memory_dynamic(base, index, low, high, offset, output) })
-            },
+    fn view_element(&self, [low, high]: [Reg; 2], index: Reg, stride: ElementStride) -> ViewElement {
+        let (stride_low, stride_high, stride, dynamic) = match stride {
+            ElementStride::Constant(bytes) => (Location::Gpr(0), Location::Gpr(0), bytes, 0),
+            ElementStride::Value([low, high]) => (self.location(low), self.location(high), 0, 1),
+        };
+        ViewElement {
+            low: self.location(low).into(), high: self.location(high).into(),
+            index: self.location(index).into(), stride_low: stride_low.into(), stride_high: stride_high.into(),
+            stride, dynamic,
         }
+    }
+    pub(super) fn view_element_memory(
+        &mut self, address: [Reg; 2], index: Reg, stride: ElementStride, offset: u32,
+    ) -> Memory {
+        let source = self.view_element(address, index, stride);
+        self.emit_address(88, |output| unsafe { encode_view_element_memory(source, offset, output) })
+    }
+    pub(super) fn view_element_base(&mut self, address: [Reg; 2], index: Reg, stride: ElementStride) {
+        let source = self.view_element(address, index, stride);
+        self.emit_bytes(96, |output| unsafe { encode_view_element_base(source, output) });
+    }
+    pub(super) fn pointer_element_base(&mut self, [low, high]: [Reg; 2], index: Reg, stride: u32) {
+        let low = self.location(low).into();
+        let high = self.location(high).into();
+        let location = self.location(index).into();
+        let scalar = self.stage.registers[index].into();
+        self.emit_bytes(64, |output| unsafe {
+            encode_pointer_element_base(low, high, location, scalar, stride, output)
+        });
     }
     pub(super) fn scaled_memory(&mut self, base: u8, index: u8, stride: u32, offset: u32) -> Memory {
         self.emit_address(16, |output| unsafe { encode_scaled_memory(base, index, stride, offset, output) })
-    }
-    // The original R15 base and zero-extended RAX index remain owned by this emitter.
-    pub(super) fn address_pair(&mut self, [low, high]: [Reg; 2]) {
-        let low = self.location(low).into();
-        let high = self.location(high).into();
-        self.emit_bytes(24, |output| unsafe { encode_address_pair(low, high, output) });
     }
     pub(super) fn borrow_address(&mut self, base: u8, offset: u32, index: Option<Reg>) {
         if let Some(index) = index {

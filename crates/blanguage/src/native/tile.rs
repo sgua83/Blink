@@ -70,7 +70,7 @@ struct TilePublishCode {
 
 unsafe extern "C" {
     #[link_name = "bootstrap.x64_instruction::tile_index_base"]
-    fn encode_tile_index_base(storage_offset: u32, output: *mut u8) -> u64;
+    fn encode_tile_index_base(index: MoveLocation, scalar: ScalarEncoding, storage_offset: u32, output: *mut u8) -> u64;
     #[link_name = "bootstrap.x64_instruction::tile_field_address"]
     fn encode_tile_field_address(width: u32, byte_offset: u32, output: *mut u8) -> u64;
     #[link_name = "bootstrap.x64_instruction::tile_read_split"]
@@ -113,8 +113,11 @@ impl Emitter<'_> {
         self.store(dst);
     }
     pub(super) fn tile_index_base(&mut self, index: Reg, storage_offset: u32) {
-        self.load(index);
-        self.emit_bytes(12, |output| unsafe { encode_tile_index_base(storage_offset, output) });
+        let location = self.location(index).into();
+        let scalar = self.stage.registers[index].into();
+        self.emit_bytes(36, |output| unsafe {
+            encode_tile_index_base(location, scalar, storage_offset, output)
+        });
     }
 
     pub(super) fn tile_load(&mut self, dst: Reg, tile: usize, index: Reg, word: u32, offset: Option<Reg>) {

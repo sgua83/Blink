@@ -338,11 +338,19 @@ extern "C" u64 packet_select(MoveLocation dst, MoveLocation condition, MoveLocat
 // The caller owns the output and consumes the returned native memory operand.
 // B retains no address after return; the emitter owns the code and memory operand.
 struct AddressEncoding { u64 length; u32 offset; u8 base; u8 index; u8 shift; };
-// value_memory needs 32 output bytes; view_memory and its dynamic form need 64.
+// value_memory needs 32 output bytes.
 // scaled_memory and offset_address need 16 output bytes.
 extern "C" AddressEncoding value_memory(u8 base, MoveLocation index, u32 stride, u32 offset, address output) on cpu;
-extern "C" AddressEncoding view_memory(u8 base, MoveLocation index, u64 stride, u32 offset, address output) on cpu;
-extern "C" AddressEncoding view_memory_dynamic(u8 base, MoveLocation index, MoveLocation low, MoveLocation high, u32 offset, address output) on cpu;
+struct ViewElement {
+    MoveLocation low; MoveLocation high; MoveLocation index;
+    MoveLocation stride_low; MoveLocation stride_high; u64 stride; u32 dynamic;
+};
+// View prefix and direct memory use 88 output bytes. Materializing R15 needs 96.
+extern "C" AddressEncoding view_element_memory(ViewElement source, u32 offset, address output) on cpu;
+extern "C" u64 view_element_base(ViewElement source, address output) on cpu;
+// The pointer base and scaled index need 64 output bytes.
+extern "C" u64 pointer_element_base(MoveLocation low, MoveLocation high, MoveLocation index,
+    ScalarEncoding scalar, u32 stride, address output) on cpu;
 extern "C" AddressEncoding scaled_memory(u8 base, u8 index, u32 stride, u32 offset, address output) on cpu;
 extern "C" u64 offset_address(u32 stride, address output) on cpu;
 // Both entries use the existing R15 base. The caller lends 48 or 64 output bytes, respectively.
@@ -351,14 +359,15 @@ extern "C" u64 indexed_address(MoveLocation index, ScalarEncoding scalar, u32 st
 extern "C" AddressEncoding indexed_memory(MoveLocation index, ScalarEncoding scalar, u32 stride,
     u32 word, address output) on cpu;
 
-// Combine two allocated 32-bit address words in R15. The caller owns 24 bytes.
-extern "C" u64 address_pair(MoveLocation low, MoveLocation high, address output) on cpu;
 // Place the effective address in RAX. An indexed address consumes RAX as its
 // index. The caller owns eight output bytes.
 extern "C" u64 reference_address(u8 base, u32 offset, bool indexed, address output) on cpu;
 
 // Field offsets refer to the caller's original table in R12.
 extern "C" u64 buffer_load(u32 offset, u8 target, address output) on cpu;
+// Shared dataset prefix for memory and effective-address consumers; 44 output bytes.
+extern "C" u64 dataset_index(u32 data, u32 stride, MoveLocation index, ScalarEncoding scalar,
+    bool materialize, address output) on cpu;
 // Scale an index by the stored u64 stride. Base 255 leaves the scaled index
 // available as an operand; otherwise add it to the given pointer register.
 extern "C" u64 buffer_index(u32 stride_offset, u8 index, u8 base, address output) on cpu;
@@ -532,8 +541,8 @@ struct TilePublishCode {
     u64 high_store;
 };
 
-// The lane is in EAX. The caller owns 12 bytes for the shared plane base.
-extern "C" u64 tile_index_base(u32 storage_offset, address output) on cpu;
+// The caller owns 36 bytes for the lane index and shared plane base.
+extern "C" u64 tile_index_base(MoveLocation index, ScalarEncoding scalar, u32 storage_offset, address output) on cpu;
 // R15 holds the lane base and EAX the logical byte offset. The caller owns 40 bytes.
 extern "C" u64 tile_field_address(u32 width, u32 byte_offset, address output) on cpu;
 // The caller owns 48 bytes for reading the two shared words into the original value location.

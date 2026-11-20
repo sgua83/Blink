@@ -2133,11 +2133,6 @@ u64 address_pair_at(u64 at, MoveLocation low, MoveLocation high, bool packet, u8
     return register_instruction(cursor, u16(0x09), u8(0), true, u8(0), target);
 }
 
-extern "C" u64 address_pair(MoveLocation low, MoveLocation high, address output) on cpu {
-    u64 start = address_bits(output);
-    return address_pair_at(start, low, high, false, u8(0), u8(15)) - start;
-}
-
 extern "C" u64 reference_address(u8 base, u32 offset, bool indexed, address output) on cpu {
     u64 start = address_bits(output);
     u8 index = indexed ? u8(0) : NO_INDEX;
@@ -2154,12 +2149,26 @@ AddressEncoding view_memory_dynamic_at(u8 base, MoveLocation index, MoveLocation
     return AddressEncoding(cursor - start, offset, base, u8(0), u8(0));
 }
 
-extern "C" AddressEncoding view_memory(u8 base, MoveLocation index, u64 stride, u32 offset, address output) on cpu {
-    return view_memory_at(base, index, stride, offset, false, u8(0), output);
+extern "C" AddressEncoding view_element_memory(ViewElement source, u32 offset, address output) on cpu {
+    u64 start = address_bits(output);
+    u64 cursor = address_pair_at(start, source.low, source.high, false, u8(0), u8(15));
+    address memory_output = unsafe_address(cursor);
+    AddressEncoding memory;
+    if (source.dynamic != 0) {
+        memory = view_memory_dynamic_at(u8(15), source.index, source.stride_low, source.stride_high,
+            offset, false, u8(0), memory_output);
+    } else {
+        memory = view_memory_at(u8(15), source.index, source.stride, offset, false, u8(0), memory_output);
+    }
+    memory.length += cursor - start;
+    return memory;
 }
 
-extern "C" AddressEncoding view_memory_dynamic(u8 base, MoveLocation index, MoveLocation low, MoveLocation high, u32 offset, address output) on cpu {
-    return view_memory_dynamic_at(base, index, low, high, offset, false, u8(0), output);
+extern "C" u64 view_element_base(ViewElement source, address output) on cpu {
+    AddressEncoding memory = view_element_memory(source, 0, output);
+    u64 start = address_bits(output);
+    MoveLocation operand = MoveLocation(u64(memory.offset), MOVE_MEMORY, memory.base, memory.index, memory.shift);
+    return encode_operand_instruction(start + memory.length, u16(0x8d), u8(0), true, u8(15), operand) - start;
 }
 
 extern "C" u64 packet_lane(MoveLocation src, u8 lane, u8 gpr, address output) on cpu {
@@ -2187,10 +2196,21 @@ extern "C" u64 offset_address(u32 stride, address output) on cpu {
     return cursor + 3u64 - start;
 }
 
+u64 load_index_at(u64 at, MoveLocation index, ScalarEncoding scalar) on cpu {
+    return at + copy_scalar_move(move_gpr(u8(0)), index, scalar.width / 8,
+        scalar.kind == ScalarKind::Signed, unsafe_address(at)).length;
+}
+
+extern "C" u64 pointer_element_base(MoveLocation low, MoveLocation high, MoveLocation index,
+    ScalarEncoding scalar, u32 stride, address output) on cpu {
+    u64 start = address_bits(output);
+    u64 cursor = address_pair_at(start, low, high, false, u8(0), u8(15));
+    cursor = load_index_at(cursor, index, scalar);
+    return cursor - start + offset_address(stride, unsafe_address(cursor));
+}
+
 u64 indexed_word_at(u64 at, MoveLocation index, ScalarEncoding scalar, u32 word) on cpu {
-    MoveEncoding loaded = copy_scalar_move(move_gpr(u8(0)), index, scalar.width / 8,
-        scalar.kind == ScalarKind::Signed, unsafe_address(at));
-    u64 cursor = at + loaded.length;
+    u64 cursor = load_index_at(at, index, scalar);
     put_byte(cursor, u8(0x05));
     write_word(cursor + 1u64, word);
     return cursor + 5u64;
@@ -2230,6 +2250,14 @@ u64 buffer_index_at(u64 at, u32 stride_offset, u8 index, u8 base) on cpu {
         cursor = register_instruction(cursor, u16(0x01), u8(0), true, index, base);
     }
     return cursor;
+}
+
+extern "C" u64 dataset_index(u32 data, u32 stride, MoveLocation index, ScalarEncoding scalar,
+    bool materialize, address output) on cpu {
+    u64 start = address_bits(output);
+    u64 cursor = buffer_field_at(start, data, u16(0x8b), u8(15));
+    cursor = load_index_at(cursor, index, scalar);
+    return buffer_index_at(cursor, stride, u8(0), materialize ? u8(15) : NO_INDEX) - start;
 }
 
 MoveLocation buffer_element_operand(u32 offset) on cpu {
@@ -3167,10 +3195,11 @@ extern "C" u64 texture_read_byte(MoveLocation dst, address output) on cpu {
     return cursor + copied.length - start;
 }
 
-extern "C" u64 tile_index_base(u32 storage_offset, address output) on cpu {
+extern "C" u64 tile_index_base(MoveLocation index, ScalarEncoding scalar, u32 storage_offset, address output) on cpu {
     u64 start = address_bits(output);
+    u64 cursor = load_index_at(start, index, scalar);
     MoveLocation lane = MoveLocation(u64(storage_offset), MOVE_MEMORY, u8(4), u8(0), u8(2));
-    return encode_operand_instruction(start, u16(0x8d), u8(0), true, u8(15), lane) - start;
+    return encode_operand_instruction(cursor, u16(0x8d), u8(0), true, u8(15), lane) - start;
 }
 
 extern "C" u64 tile_field_address(u32 width, u32 byte_offset, address output) on cpu {
