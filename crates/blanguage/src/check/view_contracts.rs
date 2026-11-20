@@ -1650,7 +1650,30 @@ fn converge_access(
 
     // Sources, stored writes and initialization are fixed; a call's projection
     // changes only with its callee's access contract.
-    struct CallProjection<'a> { condition: bounds::GuardProjection<'a>, access: Option<Vec<Access>> }
+    struct CallProjection<'a> {
+        condition: bounds::GuardProjection<'a>,
+        // Slots follow the callee's current ordered requirements.
+        access: Vec<Option<Vec<Access>>>,
+    }
+
+    fn matching_requirements(old: &BTreeSet<Access>, new: &BTreeSet<Access>) -> Vec<Option<usize>> {
+        use std::cmp::Ordering;
+        let mut old = old.iter().enumerate().peekable();
+        new.iter().map(|requirement| {
+            while let Some((_, prior)) = old.peek() {
+                match (*prior).cmp(requirement) {
+                    Ordering::Less => { old.next(); }
+                    Ordering::Equal => {
+                        let (index, prior) = old.next().unwrap();
+                        return (prior == requirement).then_some(index);
+                    }
+                    Ordering::Greater => break,
+                }
+            }
+            None
+        }).collect()
+    }
+
     let mut call_accesses = functions.keys().map(|name| {
         (name.as_str(), BTreeMap::<usize, CallProjection<'_>>::new())
     }).collect::<BTreeMap<_, _>>();
@@ -1670,17 +1693,23 @@ fn converge_access(
                 loop_bindings: Vec::new(), values: BTreeMap::new(), stored: None, exit_writes: None, stored_paths: Default::default(),
             };
             for (index, call) in function.calls.iter().enumerate().filter(|(_, call)| call.function != *name || state.entries.is_none()) {
+                let requirements = &known[&call.function].interface.access;
                 let projection = projections.entry(index).or_insert_with(|| CallProjection {
-                    condition: bounds::GuardProjection::new(&call.path,parameters), access: None,
+                    condition: bounds::GuardProjection::new(&call.path, parameters),
+                    access: vec![None; requirements.len()],
                 });
                 let condition = &projection.condition;
                 let project = |path:&bounds::Clause,bindings:&BTreeMap<ValueIdentity,bounds::Proof>| condition.project(path,bindings);
-                let projected = projection.access.get_or_insert_with(|| {
-                    let mut projected = Vec::new();
+                let projected = &mut projection.access;
+                if projected.iter().any(Option::is_none) {
                     let live_task_places=evaluation.evaluate(&call.live_task_places);
                     let task_access=live_task_places.active();
                     let initialized = std::cell::LazyCell::new(|| initialization_effects(&call.initialization, function, state, known).positions(&call.path));
-                    for requirement in &known[&call.function].interface.access {
+                    for (requirement, previous) in requirements.iter().zip(&mut *projected) {
+                        if previous.is_some() {
+                            continue;
+                        }
+                        let projected = previous.insert(Vec::new());
                         if !task_access && (matches!(requirement,Access::Stored{..})
                             || matches!(requirement,Access::Position{position,..} if !position.writable && !position.initialized && (call.deferred || position.written.is_none()))) {
                             continue;
@@ -1709,9 +1738,8 @@ fn converge_access(
                         };
                         if let Some(value)=value{projected.push(value);}
                     }
-                    projected
-                });
-                for value in projected {
+                }
+                for value in projected.iter().flatten().flatten() {
                     insert(&mut access, value.clone());
                 }
             }
@@ -1738,14 +1766,20 @@ fn converge_access(
         if changed.is_empty() {
             break;
         }
-        // Direct accesses and all uninvalidated call projections still describe
-        // the same inputs, so only callers with an invalidated projection rerun.
+        // Match each changed callee once while both contracts are available.
+        // Move projections of unchanged requirements to their new slots.
+        let matching = changed.iter().map(|(name, next)| {
+            matching_requirements(&known[*name].interface.access, next)
+        }).collect::<Vec<_>>();
         ready.clear();
         for (&caller, projections) in &mut call_accesses {
             for (&index, projection) in projections {
                 let callee = functions[caller].calls[index].function.as_str();
-                if changed.binary_search_by_key(&callee, |(name, _)| name.as_str()).is_ok() {
-                    projection.access = None;
+                if let Ok(change) = changed.binary_search_by_key(&callee, |(name, _)| name.as_str()) {
+                    let mut prior = std::mem::take(&mut projection.access);
+                    projection.access = matching[change].iter().map(|previous| {
+                        previous.and_then(|index| prior[index].take())
+                    }).collect();
                     ready.insert(caller);
                 }
             }
