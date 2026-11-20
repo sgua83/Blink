@@ -2409,6 +2409,7 @@ pub(super) async fn finish_program(
 }
 
 #[allow(dead_code)] // Returned by bootstrap.module_load.
+#[derive(Clone, Copy)]
 #[repr(u32)]
 enum ModuleEntry {
     Native,
@@ -2417,28 +2418,36 @@ enum ModuleEntry {
     Reject,
 }
 
+#[derive(Clone, Copy)]
 #[repr(C)]
-struct ModuleInstance {
+struct ModulePlan {
     entry: ModuleEntry,
     query_domain: u32,
     publish: u32,
+    schedule: u32,
 }
 
 unsafe extern "C" {
-    #[link_name = "bootstrap.module_load::native_module_admission"]
-    fn native_module_admission(
+    #[link_name = "bootstrap.module_load::native_module_plan"]
+    fn native_module_plan(
         source: crate::syntax::wire::SignatureNode,
         compiled: u32,
         local: u32,
-    ) -> bool;
-
-    #[link_name = "bootstrap.module_load::native_module_instance"]
-    fn native_module_instance(
-        source: crate::syntax::wire::SignatureNode,
         domain: u32,
         public: u32,
         explicit: u32,
-    ) -> ModuleInstance;
+    ) -> ModulePlan;
+}
+
+fn module_plan(definition: &crate::Definition, entry: &str, explicit: bool) -> ModulePlan {
+    unsafe { native_module_plan(
+        definition.function.signature_node(),
+        u32::from(definition.compiled.is_some()),
+        u32::from(definition.module == entry),
+        u32::from(definition.execution == crate::execution::Requirement::Domain),
+        u32::from(definition.public),
+        u32::from(explicit),
+    ) }
 }
 
 async fn module_instance(
@@ -2446,25 +2455,23 @@ async fn module_instance(
     instance: &crate::generics::Instance,
     functions: &mut Module,
     roots: &mut BTreeSet<String>,
-    explicit: bool,
+    plan: ModulePlan,
 ) -> Result<()> {
     let definition = &instance.definition;
-    let route = unsafe { native_module_instance(
-        definition.function.signature_node(),
-        u32::from(definition.execution == crate::execution::Requirement::Domain),
-        u32::from(definition.public),
-        u32::from(explicit),
-    ) };
-    if route.query_domain != 0
+
+    if plan.query_domain != 0
         && let Some(signature) = unsafe { world.call(kernel_signature(world, instance)).await }?
     {
-        roots.extend(unsafe { world.call(domain_declaration(world, instance, &signature, functions)).await }?);
+        let targets = unsafe { world.call(domain_declaration(world, instance, &signature, functions)).await }?;
+        if plan.publish != 0 {
+            roots.extend(targets.iter().map(|&target| crate::module::domain::symbol(&instance.name, target)));
+        }
         return Ok(());
     }
 
-    match route.entry {
+    match plan.entry {
         ModuleEntry::Native => {
-            if route.publish != 0 {
+            if plan.publish != 0 {
                 roots.insert(instance.name.clone());
             }
             *functions = unsafe { world.call(declaration(world, instance, std::mem::take(functions), ViewDemand::ModuleOutput)).await }?;
@@ -2500,15 +2507,12 @@ pub(crate) async fn compile_module(
     let mut prepared = Vec::new();
     let preparation = async {
         for (key, definition) in &world.functions {
-            if !unsafe { native_module_admission(
-                definition.function.signature_node(),
-                u32::from(definition.compiled.is_some()),
-                u32::from(definition.module == entry),
-            ) } {
+            let plan = module_plan(definition, entry, false);
+            if plan.schedule == 0 {
                 continue;
             }
             for instance in unsafe { world.call(crate::generics::instances(world, key, definition)).await }? {
-                unsafe { world.call(module_instance(world, &instance, &mut functions, &mut roots, false)).await }?;
+                unsafe { world.call(module_instance(world, &instance, &mut functions, &mut roots, plan)).await }?;
                 prepared.push(instance.name.clone());
             }
         }
@@ -2516,9 +2520,13 @@ pub(crate) async fn compile_module(
             let request = request?;
             let crate::ExportRequest { source, name, arguments } = request.as_ref();
             let span = Span { start: 0, end: source.text.len() };
-            let key = world
+            let (key, plan) = world
                 .resolve(name, entry, &[], true).unique()
-                .filter(|key| world.functions[key].module == entry && world.functions[key].public)
+
+                .and_then(|key| {
+                    let plan = module_plan(&world.functions[&key], entry, true);
+                    (plan.schedule != 0).then_some((key, plan))
+                })
                 .ok_or_else(|| Diagnostic {
                     source: source.clone(),
                     span: Span::default(),
@@ -2542,7 +2550,7 @@ pub(crate) async fn compile_module(
                 (source, &d.module, &imports),
                 span,
             )).await }?;
-            unsafe { world.call(module_instance(world, &instance, &mut functions, &mut roots, true)).await }?;
+            unsafe { world.call(module_instance(world, &instance, &mut functions, &mut roots, plan)).await }?;
             prepared.push(instance.name.clone());
         }
 
@@ -2691,21 +2699,17 @@ async fn domain_declaration(
     instance: &crate::generics::Instance,
     signature: &KernelSignature,
     functions: &mut Module,
-) -> Result<BTreeSet<String>> {
-    let targets: &[Target] = match instance.definition.function.target() {
+) -> Result<&'static [Target]> {
+    let targets: &'static [Target] = match instance.definition.function.target() {
         Target::Cpu => &[Target::Cpu],
         Target::Gpu => &[Target::Gpu],
         Target::Compute => &[Target::Cpu, Target::Gpu],
     };
-    let mut roots = BTreeSet::new();
     let input = DomainInput::Declaration { instance, signature: Some(signature) };
     for &target in targets {
         unsafe { world.call(ensure_domain(world, input, functions, target, &[], Some(&signature.parameters))).await }?;
-        if instance.definition.public {
-            roots.insert(crate::module::domain::symbol(&instance.name, target));
-        }
     }
-    Ok(roots)
+    Ok(targets)
 }
 async fn build_domain(
     world: &World,

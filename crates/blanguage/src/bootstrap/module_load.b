@@ -237,20 +237,21 @@ bool source_definition(FunctionNode definition) on cpu {
     return definition.kind != 2 && definition.external.present == 0;
 }
 
-extern "C" bool native_module_admission(SignatureNode source,u32 compiled,u32 local) on cpu {
-    if (compiled != 0 || local == 0) { return false; }
-    FunctionNode definition = unsafe_position<FunctionNode>(at(source.storage.nodes,source.offset));
-    return source_definition(definition);
-}
-
-extern "C" ModuleInstance native_module_instance(SignatureNode source,u32 domain,u32 exported,u32 explicit) on cpu {
-    FunctionNode definition = unsafe_position<FunctionNode>(at(source.storage.nodes,source.offset));
-    if (definition.kind == 0 && definition.target != 2 && (explicit == 0 || definition.external.present == 0)) {
-        return ModuleInstance(ModuleEntry::Native,domain,exported | explicit);
+extern "C" ModulePlan native_module_plan(SignatureNode source,u32 compiled,u32 local,u32 domain,u32 exported,u32 explicit) on cpu {
+    if (local == 0 || (explicit == 0 ? compiled != 0 : exported == 0)) {
+        return ModulePlan(ModuleEntry::Native,0,0,0);
     }
-    if (explicit != 0) { return ModuleInstance(ModuleEntry::Reject,domain,0); }
-    if (domain != 0) { return ModuleInstance(ModuleEntry::DomainProgram,domain,0); }
-    return ModuleInstance(ModuleEntry::Check,0,0);
+    FunctionNode definition = unsafe_position<FunctionNode>(at(source.storage.nodes,source.offset));
+    if (explicit == 0 && !source_definition(definition)) {
+        return ModulePlan(ModuleEntry::Native,0,0,0);
+    }
+    if (definition.kind == 0 && definition.target != 2 && (explicit == 0 || definition.external.present == 0)) {
+
+        return ModulePlan(ModuleEntry::Native,domain,exported,1);
+    }
+    if (explicit != 0) { return ModulePlan(ModuleEntry::Reject,domain,exported,1); }
+    if (domain != 0) { return ModulePlan(ModuleEntry::DomainProgram,domain,exported,1); }
+    return ModulePlan(ModuleEntry::Check,0,0,1);
 }
 
 extern "C" SourcePlan source_module_entry(SignatureNode source,SourceMode mode,u32 local,u32 exported) on cpu {

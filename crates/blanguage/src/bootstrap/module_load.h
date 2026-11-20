@@ -43,9 +43,8 @@ extern "C" NameBytes load(LoadInput input,address context,
     requires nonzero(insert_function) requires nonzero(report);
 
 enum ModuleEntry:u32 { Native=0; DomainProgram=1; Check=2; Reject=3; };
-struct ModuleInstance { ModuleEntry entry; u32 query_domain; u32 publish; };
-extern "C" bool native_module_admission(SignatureNode source,u32 compiled,u32 local) on cpu;
-extern "C" ModuleInstance native_module_instance(SignatureNode source,u32 domain,u32 exported,u32 explicit) on cpu;
+struct ModulePlan { ModuleEntry entry; u32 query_domain; u32 publish; u32 schedule; };
+extern "C" ModulePlan native_module_plan(SignatureNode source,u32 compiled,u32 local,u32 domain,u32 exported,u32 explicit) on cpu;
 
 enum SourceMode:u32 { Automatic=0; SelectedProgram=1; Application=2; };
 enum SourceRoute:u32 { Function=0; CheckDomain=1; ValidateProgram=2; Program=3; Application=4; };
