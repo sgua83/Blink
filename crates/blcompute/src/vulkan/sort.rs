@@ -65,7 +65,7 @@ pub(super) struct Storage {
     pub(super) histogram_count: u32,
 }
 pub(super) fn allocate(c: &Compiled, count: u32) -> Result<Storage> {
-    let histogram_count = count.div_ceil(64).max(1) * 16;
+    let histogram_count = scan::groups(count) * 16;
     Ok(Storage {
         pairs: [
             PagedBuffer::words(c.inner.clone(), count, 2)?,

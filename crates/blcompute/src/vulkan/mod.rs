@@ -1726,14 +1726,6 @@ struct ScratchUse {
     slot: usize,
     reused: bool,
 }
-fn levels(mut count: u32) -> u32 {
-    let mut n = 1;
-    while count > 64 {
-        count = count.div_ceil(64);
-        n += 1;
-    }
-    n
-}
 fn pipeline(
     inner: &Inner,
     layout: VkPipelineLayout,
@@ -2324,7 +2316,7 @@ impl GpuProgram {
             let count = data[stage.domain].count;
             if stage.selection.is_some() {
                 if let Some(&slot) = selected_storage.get(&count) {
-                    extra_sets += (levels(count) * 2 + 2) as u64 * steps.get() as u64;
+                    extra_sets += (scan::levels(count) * 2 + 2) as u64 * steps.get() as u64;
                     scratch_uses.push(ScratchUse {
                         stage: i,
                         slot,
@@ -2343,9 +2335,9 @@ impl GpuProgram {
                     ty: ref reduction_ty,
                     ..
                 }) => {
-                    extra_sets += levels(count) as u64 * steps.get() as u64;
-                    if count > 64 {
-                        let size = count.div_ceil(64);
+                    extra_sets += scan::levels(count) as u64 * steps.get() as u64;
+                    let size = scan::groups(count);
+                    if size > 1 {
                         let words = reduction_ty.size.div_ceil(4);
                         Some(Scratch {
                             buffers: vec![
@@ -2360,29 +2352,29 @@ impl GpuProgram {
                     }
                 }
                 blanguage::ir::Operation::Compact(_) => {
-                    extra_sets += levels(count) as u64 * 2 * steps.get() as u64;
+                    extra_sets += scan::levels(count) as u64 * 2 * steps.get() as u64;
                     Some(compact::allocate(c, count)?)
                 }
                 blanguage::ir::Operation::ScanExclusive(ref s) => {
-                    extra_sets += (levels(count) * 2 - 1) as u64 * steps.get() as u64;
+                    extra_sets += (scan::levels(count) * 2 - 1) as u64 * steps.get() as u64;
                     Some(scan::allocate(c, count, s.summary_words())?)
                 }
                 blanguage::ir::Operation::CustomScan(ref s) => {
-                    extra_sets += (levels(count) * 2 - 1) as u64 * steps.get() as u64;
+                    extra_sets += (scan::levels(count) * 2 - 1) as u64 * steps.get() as u64;
                     Some(scan::allocate(c, count, s.summary_words())?)
                 }
                 blanguage::ir::Operation::CustomSegmentedReduce(ref r) => {
-                    extra_sets += (levels(count) * 2 - 1).max(2) as u64 * steps.get() as u64;
+                    extra_sets += (scan::levels(count) * 2 - 1).max(2) as u64 * steps.get() as u64;
                     Some(scan::allocate(c, count, r.summary_words())?)
                 }
                 blanguage::ir::Operation::SegmentedReduce(ref r) => {
-                    extra_sets += (levels(count) * 2 - 1).max(2) as u64 * steps.get() as u64;
+                    extra_sets += (scan::levels(count) * 2 - 1).max(2) as u64 * steps.get() as u64;
                     Some(scan::allocate(c, count, r.summary_words())?)
                 }
                 blanguage::ir::Operation::StableSort(ref s) => {
                     let sorting = sort::allocate(c, count)?;
                     extra_sets += (1 + s.keys.len() as u64
-                        * (1 + 8 * (2 * levels(sorting.histogram_count) + 1)) as u64)
+                        * (1 + 8 * (2 * scan::levels(sorting.histogram_count) + 1)) as u64)
                         * steps.get() as u64;
                     Some(Scratch {
                         buffers: Vec::new(),
@@ -2391,7 +2383,7 @@ impl GpuProgram {
                     })
                 }
                 blanguage::ir::Operation::Map if stage.selection.is_some() => {
-                    extra_sets += (levels(count) * 2 + 1) as u64 * steps.get() as u64;
+                    extra_sets += (scan::levels(count) * 2 + 1) as u64 * steps.get() as u64;
                     Some(selection::allocate(c, count)?)
                 }
                 blanguage::ir::Operation::Map => None,
@@ -2655,7 +2647,7 @@ impl GpuProgram {
                                         c.finishes[i].unwrap(),
                                     ],
                                     &r.values.fields,
-                                    &data[r.values.fields.source],
+                                    data[r.values.fields.source].count,
                                     &temporary.unwrap().buffers,
                                     arguments,
                                     &infos,
@@ -2675,7 +2667,7 @@ impl GpuProgram {
                                         c.finishes[i].unwrap(),
                                     ],
                                     &r.values.fields,
-                                    &data[r.values.fields.source],
+                                    data[r.values.fields.source].count,
                                     &temporary.unwrap().buffers,
                                     arguments,
                                     &infos,
@@ -2735,7 +2727,7 @@ impl GpuProgram {
                                 let mut length = count;
                                 let mut pass = 0;
                                 loop {
-                                    let groups = length.div_ceil(64).max(1);
+                                    let groups = scan::groups(length);
                                     if pass > 0 {
                                         commands.barrier(0x800, 0x800, 0x40, 0x60);
                                     }
