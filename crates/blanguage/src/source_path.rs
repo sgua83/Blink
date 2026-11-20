@@ -116,7 +116,7 @@ pub(crate) fn absolute(path: &Path) -> io::Result<PathBuf> {
     native_path_result(unsafe { absolute_path(units.as_ptr(), units.len() - 1) })
 }
 
-pub(crate) fn canonicalize(path: &Path) -> io::Result<PathBuf> {
+pub fn canonicalize(path: &Path) -> io::Result<PathBuf> {
     let units = path_units(path.as_os_str())?;
     let mut scratch = [MaybeUninit::<u16>::uninit(); 512];
     let resolved = unsafe {

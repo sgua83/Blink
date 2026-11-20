@@ -1,6 +1,6 @@
 //! A file/range adapter; it does not infer instruction boundaries from a container format.
 use super::{Argument, CompileError};
-use std::{ffi::OsString, fmt::Write, path::PathBuf};
+use std::{ffi::OsString, fmt::Write, path::Path};
 
 pub(super) const USAGE: &str = "用法：bc x64 <instruction-bytes> [--ip file-base-ip] [--offset bytes] [--length bytes]";
 
@@ -20,7 +20,7 @@ unsafe extern "C" {
 }
 
 pub(super) fn print(args: &[OsString], arguments: &[Argument]) -> Result<(), Box<dyn std::error::Error>> {
-    let path = PathBuf::from(args.get(1).ok_or(USAGE)?).canonicalize()?;
+    let path = blanguage::canonicalize_source_path(Path::new(args.get(1).ok_or(USAGE)?))?;
     let line = unsafe { parse_x64_arguments(arguments.as_ptr(), arguments.len()) };
     line.error.result(args, line.error_index)?;
     let raw = std::fs::read(&path)?;

@@ -1,7 +1,7 @@
 //! Selects original compilation consumers, then prints their actual IR values.
 use super::{Argument, CompileError};
 use crate::json::string;
-use std::{ffi::OsString, fmt::Write, path::PathBuf};
+use std::{ffi::OsString, fmt::Write, path::Path};
 
 pub(super) const USAGE: &str = "用法：bc ir <module.b> [-I root] [--module | --program name | --entry name] [--function qualified-name | --stage index] [--import object|archive] [--instance name]";
 
@@ -32,7 +32,7 @@ unsafe extern "C" {
 pub(super) fn print(
     compiler: &blanguage::Compiler, args: &[OsString], arguments: &[Argument], roles: &mut [u8],
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let path = PathBuf::from(args.get(1).ok_or(USAGE)?).canonicalize()?;
+    let path = blanguage::canonicalize_source_path(Path::new(args.get(1).ok_or(USAGE)?))?;
     let line = unsafe { parse_ir_arguments(arguments.as_ptr(), arguments.len(), roles.as_mut_ptr()) };
     // Every returned text index has been checked by the parser against the original argument.
     let text = |index: usize| unsafe { std::str::from_utf8_unchecked(args[index].as_encoded_bytes()) };
@@ -41,15 +41,19 @@ pub(super) fn print(
     // Preserve path errors from imports encountered before the reported syntax error.
     for (index, (&role, arg)) in roles.iter().zip(args).enumerate() {
         match role {
-            1 => import_paths.push(PathBuf::from(arg).canonicalize()?),
+            1 => import_paths.push(blanguage::canonicalize_source_path(Path::new(arg))?),
             2 => instances.push(text(index).to_owned()),
             _ => {}
         }
     }
     line.error.result(args, line.error_index)?;
-    let root = match args.get(line.root_index) {
-        Some(root) => PathBuf::from(root).canonicalize()?,
-        None => path.parent().unwrap().canonicalize()?,
+    let explicit_root;
+    let root: &Path = match args.get(line.root_index) {
+        Some(root) => {
+            explicit_root = blanguage::canonicalize_source_path(Path::new(root))?;
+            &explicit_root
+        }
+        None => path.parent().ok_or(USAGE)?,
     };
     let entry = if line.entry_index == args.len() { "" } else { text(line.entry_index) };
     let function = (line.function_index != args.len()).then(|| text(line.function_index));
@@ -58,14 +62,14 @@ pub(super) fn print(
     for path in &import_paths { imports.extend(blanguage::object::Input::read(path)?.objects()?); }
     let (mode, phase, value) = match line.mode {
         IrMode::Application => {
-            let application = compiler.compile_application_with_modules(&path, &root, entry, &imports)?;
+            let application = compiler.compile_application_with_modules(&path, root, entry, &imports)?;
             let value = if let Some(function) = function {
                 application.function_ir_json(function).ok_or_else(|| format!("本次应用没有保留普通函数 {function}"))?
             } else { application.ir_json() };
             ("application", "finalized_application_ir", value)
         }
         IrMode::Program => {
-            let compilation = compiler.compile_entry(&path, &root, entry)?;
+            let compilation = compiler.compile_entry(&path, root, entry)?;
             let program = compilation.programs.iter().map(|p| &**p)
                 .chain(compilation.templates.iter().map(|p| &**p)).next().ok_or("本次入口没有并行IR")?;
             let value = if let Some(stage) = stage {
@@ -74,7 +78,7 @@ pub(super) fn print(
             ("program", "optimized_program_ir", value)
         }
         IrMode::Module => {
-            let module = compiler.compile_native_module(&path, &root, &imports, &instances)?;
+            let module = compiler.compile_native_module(&path, root, &imports, &instances)?;
             let value = if let Some(function) = function {
                 module.function_ir_json(function).ok_or_else(|| format!("本次模块没有保留普通函数 {function}"))?
             } else { module.ir_json() };
@@ -83,7 +87,7 @@ pub(super) fn print(
     };
     let mut out = String::from("{\"kind\":\"ir_query\",\"phase\":"); string(&mut out, phase);
     out.push(','); crate::json::path(&mut out, "source_path", &path);
-    out.push(','); crate::json::path(&mut out, "module_root", &root);
+    out.push(','); crate::json::path(&mut out, "module_root", root);
     out.push_str(",\"mode\":"); string(&mut out, mode);
     out.push_str(",\"entry\":"); if entry.is_empty() { out.push_str("null"); } else { string(&mut out, entry); }
     out.push_str(",\"function\":"); if let Some(function) = function { string(&mut out, function); } else { out.push_str("null"); }

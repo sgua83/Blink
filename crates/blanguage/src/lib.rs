@@ -71,6 +71,11 @@ impl std::ops::Deref for TemplateProgram {
 mod file_bytes;
 #[cfg(feature = "compiler")]
 mod source_path;
+
+#[cfg(feature = "compiler")]
+#[doc(hidden)]
+pub use source_path::canonicalize as canonicalize_source_path;
+
 #[cfg(feature = "compiler")]
 mod frontend;
 #[cfg(feature = "compiler")]
