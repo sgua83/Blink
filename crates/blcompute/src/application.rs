@@ -343,9 +343,9 @@ impl Frame {
             ResidentData::Gpu(data)=>data.storage_address(),
         }
     }
-    /// CPU 在本次同步执行中借用实际绑定的帧槽，参数拒绝保持原域，
-    /// 取得可写访问后撤回覆盖的计数关系，只有真实完成才发布新保证。
-    /// GPU 参数驻留确认后才装入管线，完整选中的域关系随存储移交。
+    /// CPU 同步执行借用原帧槽，完整选中的域关系在本次调用内移交。
+    /// 取得可写访问后，调用与Frame各自撤回所持关系中实际覆盖的字段。
+    /// GPU 参数驻留确认后才装入管线，同样将完整选中的域关系随存储移交。
     /// 提交拒绝交回原关系，已提交的写入撤回旧事实，等待成功才交回新保证。
     pub fn run(&mut self, program: u32, bindings: &[DatasetBinding], values: &[Value], textures: &[crate::cpu::CpuTextureBinding<'_>]) -> Result<()> {
         let index = program as usize;
@@ -388,9 +388,14 @@ impl Frame {
             order.push((slot, binding.offset));
         }
         let selected_slot = |binding| selected.iter().position(|&handle| handle as usize == binding);
+        let take_domains = |domains: &mut Vec<crate::DomainRelation>| {
+            domains
+                .extract_if(.., |relation| relation.binding_indices().all(|binding| selected_slot(binding).is_some()))
+                .map(|relation| relation.into_mapped(selected_slot).unwrap())
+                .collect()
+        };
         let (domains, result) = match definition {
             ProgramSlot::Cpu(program) => {
-                let domains = self.data.domains.iter().filter_map(|r| r.mapped(selected_slot)).collect();
                 let mut datasets = Vec::with_capacity(selected.len());
                 let slots = self.data.datasets.as_mut_ptr();
                 for &handle in &selected {
@@ -402,6 +407,7 @@ impl Frame {
                     }
                     datasets.push(data);
                 }
+                let domains = take_domains(&mut self.data.domains);
                 let mut inputs = DomainBindings { datasets, domains };
                 let result = program.run_projected(&mut inputs, &order, textures, uniforms, &definitions, || {
                     crate::bindings::invalidate(&mut self.data.domains, &layout.write_regions,
@@ -418,10 +424,7 @@ impl Frame {
                 }
                 self.load_gpu(index, image)?;
                 let gpu_program = self.gpu_programs[index].as_ref().unwrap();
-                let domains = self.data.domains
-                    .extract_if(.., |relation| relation.binding_indices().all(|binding| selected_slot(binding).is_some()))
-                    .map(|relation| relation.into_mapped(selected_slot).unwrap())
-                    .collect();
+                let domains = take_domains(&mut self.data.domains);
                 let mut datasets = Vec::with_capacity(selected.len());
                 for &handle in &selected {
                     let Some(ResidentData::Gpu(data)) = self.data.datasets[handle as usize].take() else {
