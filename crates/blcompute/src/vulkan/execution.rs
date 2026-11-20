@@ -13,8 +13,22 @@ impl GpuCompletion {
         self.execution.is_complete()
     }
     pub fn wait(self) -> Result<Option<GpuTimings>> {
+        self.wait_timings()
+    }
+
+    fn wait_timings(&self) -> Result<Option<GpuTimings>> {
         self.execution.wait()?;
         self.queries.as_ref().map(|queries| queries.timings()).transpose()
+    }
+
+    pub(crate) fn wait_bound<'a>(&self, datasets: impl Iterator<Item = &'a mut GpuDataset>) -> Result<Option<GpuTimings>> {
+        let timings = self.wait_timings()?;
+        for dataset in datasets {
+            if dataset.last_use.as_ref().is_some_and(|point| Rc::ptr_eq(point, &self.execution)) {
+                dataset.last_use = None;
+            }
+        }
+        Ok(timings)
     }
 
     /// 等待本次提交结束，交回显式请求的原设备时间戳与实际阶段。

@@ -12,6 +12,7 @@ mod selection;
 mod sort;
 mod texture;
 mod transfer;
+use crate::bindings::{self, StorageSlots};
 use crate::views::Views;
 use transfer::Readback;
 use crate::{Dataset, DomainBindings, Result, Value, arguments, error};
@@ -25,7 +26,7 @@ pub use memory::{MemoryBudget, MemoryHeapBudget};
 pub use present::{PresentStatus, Swapchain};
 use raw::*;
 pub use ray::{Acceleration, BottomLevel, RayInstance};
-use std::num::NonZeroU32;
+use std::{borrow::BorrowMut, num::NonZeroU32};
 use std::{
     cell::{Cell, RefCell},
     collections::{BTreeMap, BTreeSet},
@@ -2348,45 +2349,49 @@ impl GpuProgram {
     }
     fn submit_owned(
         &self,
-        mut owner: InputOwner,
+        owner: InputOwner,
         values: &[Value],
         steps: NonZeroU32,
     ) -> Result<Submission> {
-        let count = owner.bindings.datasets.len();
-        let uniforms = arguments(&self.compiled.program, owner.bindings.datasets.iter()
+        let InputOwner { dependencies, mut bindings, accelerations, textures } = owner;
+        let program = &self.compiled.program;
+        let uniforms = arguments(program, bindings.datasets.iter()
             .map(|data| (&data.ty, data.count, Some(0))), values)?;
         let location = |i| (i, 0);
-        let mut submission = self.submit_owned_mapped(&mut owner, uniforms, steps, count, location)?;
-        submission.bindings.completed(&self.compiled.program, location);
-        Ok(submission)
+        bindings::require(|slot| bindings.datasets.get(slot), &bindings.domains, program, location, StorageSlots::Direct)?;
+        let completion = self.submit_mapped(&mut bindings.datasets, dependencies, &accelerations,
+            textures, uniforms, steps, location)?;
+        bindings.completed(program, location);
+        Ok(Submission { completion, bindings, accelerations })
     }
-    fn submit_owned_mapped(
+
+    fn submit_mapped<D: BorrowMut<GpuDataset>>(
         &self,
-        owner: &mut InputOwner,
+        datasets: &mut [D],
+        mut dependencies: DependencySources,
+        accelerations: &[Acceleration],
+        textures: Vec<TextureInput>,
         mut uniforms: Vec<u32>,
         steps: NonZeroU32,
-        count: usize,
         location: impl Fn(usize) -> (usize, u32) + Copy,
-    ) -> Result<Submission> {
+    ) -> Result<GpuCompletion> {
         let c = &self.compiled;
-        crate::bindings::require(&owner.bindings.datasets, &owner.bindings.domains, &c.program, location,
-            crate::bindings::StorageSlots::Direct)?;
         let physical = |i| location(i).0;
-        if owner.textures.len() != c.program.texture_count()
-            || owner.textures.iter().any(|t| !t.belongs_to(&c.inner))
-            || owner.textures.iter().zip(c.program.textures().iter().flat_map(|binding|
+        if textures.len() != c.program.texture_count()
+            || textures.iter().any(|t| !t.belongs_to(&c.inner))
+            || textures.iter().zip(c.program.textures().iter().flat_map(|binding|
                 std::iter::repeat_n(binding, binding.elements() as usize)))
                 .any(|(texture, binding)| texture.dimension() != binding.dimension
                     || binding.format.is_some_and(|format| texture.format() != format))
         {
             return Err(error("纹理数量、维度、格式或设备归属与程序不一致"));
         }
-        for texture in &owner.textures {
-            owner.dependencies.insert(texture.produced());
+        for texture in &textures {
+            dependencies.insert(texture.produced());
         }
-        let mut data = DatasetProjection {
-            owners: &mut owner.bindings.datasets,
-            count,
+        let data = DatasetProjection {
+            owners: datasets,
+            count: c.program.buffers().len(),
             physical,
         };
         for (dataset, binding) in data.iter().zip(c.program.buffers()) {
@@ -2397,23 +2402,23 @@ impl GpuProgram {
             }
         }
 
-        let accelerations = &owner.accelerations;
         if accelerations.len() != c.program.accelerations().len()
             || accelerations.iter().any(|a| !a.belongs_to(&c.inner))
         {
             return Err(error("加速资源的数量或设备归属与程序不一致"));
         }
         for acceleration in accelerations {
-            owner.dependencies.insert(acceleration.produced());
+            dependencies.insert(acceleration.produced());
         }
         let mut resources: Vec<&ReadDataset> = Vec::new();
         for d in data.owners.iter() {
+            let d = d.borrow();
             if !Rc::ptr_eq(&c.inner, &d.allocation.inner) {
                 return Err(error("数据集不属于程序的设备"));
             }
             let previous = d.dependency();
             if let Some(used) = previous {
-                owner.dependencies.insert(used);
+                dependencies.insert(used);
             }
             if !d.views.sources.is_empty() && !previous.is_some_and(|used| used.uploads_dataset_graph()) {
                 resources.extend(&d.views.sources);
@@ -2428,8 +2433,8 @@ impl GpuProgram {
             }
             let previous = source.0.dependency();
             if let Some(used) = previous {
-                owner.dependencies.insert(used);
-            } else if owner.dependencies.is_empty() {
+                dependencies.insert(used);
+            } else if dependencies.is_empty() {
                 resource_stage |= source.0.producer.stage();
                 resource_access |= source.0.producer.access();
             }
@@ -2438,13 +2443,13 @@ impl GpuProgram {
             }
         }
         let mut commands = Commands::new(c.inner.clone())?;
-        let pending_inputs = owner.dependencies.is_empty();
+        let pending_inputs = dependencies.is_empty();
         let dependencies = if pending_inputs {
             Vec::new()
         } else {
             resource_stage = 0;
             resource_access = 0;
-            std::mem::take(&mut owner.dependencies).prepare()?
+            dependencies.prepare()?
         };
         let f = &c.inner.functions;
         let device = c.inner.owner.device;
@@ -2639,7 +2644,7 @@ impl GpuProgram {
             }
         }
         let mut accesses: Vec<_> = data.owners.iter().map(|dataset| BindingAccess {
-            producer: dataset.producer,
+            producer: dataset.borrow().producer,
             pending_read: false,
             pending_write: pending_inputs,
         }).collect();
@@ -2669,11 +2674,11 @@ impl GpuProgram {
                             descriptorCount: u32::try_from(accelerations.len() as u64 * sets as u64)?,
                         });
                     }
-                    if !owner.textures.is_empty() {
+                    if !textures.is_empty() {
                         sizes.push(VkDescriptorPoolSize {
                             r#type: 1,
                             descriptorCount: u32::try_from(
-                                owner.textures.len() as u64 * sets as u64,
+                                textures.len() as u64 * sets as u64,
                             )?,
                         });
                     }
@@ -2686,7 +2691,7 @@ impl GpuProgram {
                         (f.vkCreateDescriptorPool)(device, &pool, null(), &mut commands.descriptors),
                         "vkCreateDescriptorPool",
                     )?;
-                    let field_count = (0..count).filter(|&i| location(i).1 != 0).count();
+                    let field_count = (0..data.len()).filter(|&i| location(i).1 != 0).count();
                     let alignment = c.inner.properties.limits.minStorageBufferOffsetAlignment;
                     let bytes = u64::from(blanguage::spirv::BINDING_BYTES);
                     let step = bytes.div_ceil(alignment) * alignment;
@@ -2715,7 +2720,7 @@ impl GpuProgram {
                     Vec::new()
                 };
                 let mut descriptors = (sets != 0)
-                    .then(|| DescriptorWriter::new(&commands, c, &infos, accelerations, &owner.textures));
+                    .then(|| DescriptorWriter::new(&commands, c, &infos, accelerations, &textures));
                 let root_set = needs_root_set
                     .then(|| descriptors.as_mut().unwrap().set(&[], None, None, None, None))
                     .transpose()?;
@@ -3089,8 +3094,8 @@ impl GpuProgram {
             .then(|| QueryPool::take(&mut commands, query_count, c.program.clone()));
         let resources = used_bindings.then(|| ComputeResources {
             _compiled: c.clone(),
-            _accelerations: owner.accelerations.clone(),
-            _textures: std::mem::take(&mut owner.textures),
+            _accelerations: accelerations.to_vec(),
+            _textures: textures,
             _scratch: scratch,
             _binding_parameters: binding_parameters,
         });
@@ -3104,18 +3109,14 @@ impl GpuProgram {
         )?;
         if used_bindings {
             for (dataset, access) in data.owners.iter_mut().zip(accesses) {
+                let dataset = dataset.borrow_mut();
                 if let DatasetStorage::Owned(storage) = &mut *dataset.storage {
                     storage.producer = access.producer;
                 }
                 dataset.last_use = Some(execution.clone());
             }
         }
-        Ok(Submission {
-            execution,
-            bindings: std::mem::replace(&mut owner.bindings, Vec::new().into()),
-            accelerations: std::mem::take(&mut owner.accelerations),
-            queries,
-        })
+        Ok(GpuCompletion { execution, queries })
     }
 }
 impl GpuTemplate {
@@ -3137,27 +3138,19 @@ impl GpuTemplate {
     ) -> Result<Submission> {
         self.code.submit(bindings, values)
     }
-    // Return the original relations with the submission. Frame applies effects
-    // and publishes guarantees according to the synchronous wait result.
     pub(crate) fn submit_projected(
         &self,
-        bindings: DomainBindings<GpuDataset>,
+        datasets: &mut [&mut GpuDataset],
+        domains: &[crate::DomainRelation],
+        selected: &[u32],
         order: &[(usize, u32)],
         uniforms: Vec<u32>,
-    ) -> std::result::Result<Submission, (Box<dyn std::error::Error + Send + Sync>, DomainBindings<GpuDataset>)> {
-        let mut owner = InputOwner {
-            dependencies: DependencySources::default(),
-            bindings,
-            accelerations: Vec::new(),
-            textures: Vec::new(),
-        };
-        self.code.submit_owned_mapped(
-            &mut owner,
-            uniforms,
-            NonZeroU32::MIN,
-            order.len(),
-            |i| order[i],
-        ).map_err(|error| (error, owner.bindings))
+    ) -> Result<GpuCompletion> {
+        let location = |i| order[i];
+        bindings::require(|slot| datasets.get(slot).map(|data| &**data),
+            domains, self.program(), location, StorageSlots::Frame(selected))?;
+        self.code.submit_mapped(datasets, DependencySources::default(), &[], Vec::new(),
+            uniforms, NonZeroU32::MIN, location)
     }
     pub fn submit_after(
         &self,
@@ -3178,29 +3171,28 @@ impl GpuTemplate {
         self.code.submit_join(previous, order, additional, values)
     }
 }
-// 投影仅用于本次命令记录；提交继续持有各物理存储的唯一所有者。
-struct DatasetProjection<'a, F> {
-    owners: &'a mut [GpuDataset],
+// 命令按参数顺序借用同一次实际物理绑定。
+struct DatasetProjection<'a, D, F> {
+    owners: &'a mut [D],
     count: usize,
     physical: F,
 }
-impl<F: Fn(usize) -> usize + Copy> DatasetProjection<'_, F> {
+
+impl<D: BorrowMut<GpuDataset>, F: Fn(usize) -> usize> DatasetProjection<'_, D, F> {
     fn len(&self) -> usize {
         self.count
     }
+
     fn iter(&self) -> impl ExactSizeIterator<Item = &GpuDataset> {
-        (0..self.count).map(|i| &self.owners[(self.physical)(i)])
+        (0..self.count).map(|i| &self[i])
     }
 }
-impl<F: Fn(usize) -> usize> std::ops::Index<usize> for DatasetProjection<'_, F> {
+
+impl<D: BorrowMut<GpuDataset>, F: Fn(usize) -> usize> std::ops::Index<usize> for DatasetProjection<'_, D, F> {
     type Output = GpuDataset;
+
     fn index(&self, index: usize) -> &GpuDataset {
-        &self.owners[(self.physical)(index)]
-    }
-}
-impl<F: Fn(usize) -> usize> std::ops::IndexMut<usize> for DatasetProjection<'_, F> {
-    fn index_mut(&mut self, index: usize) -> &mut GpuDataset {
-        &mut self.owners[(self.physical)(index)]
+        self.owners[(self.physical)(index)].borrow()
     }
 }
 // 数据本身持有最后使用点，输入容器无需维护另一套原生资源所属表。
@@ -3224,26 +3216,24 @@ impl InputOwner {
             textures,
         };
         for previous in previous {
-            if !Rc::ptr_eq(inner, &previous.execution.point.inner) {
+            if !Rc::ptr_eq(inner, &previous.completion.execution.point.inner) {
                 return Err(error("跨提交衔接必须属于同一设备队列"));
             }
             let Submission {
-                execution,
+                completion,
                 bindings,
-                accelerations: _,
-                queries: _,
+                ..
             } = previous;
-            owner.dependencies.insert_owned(execution);
+            owner.dependencies.insert_owned(completion.execution);
             owner.bindings.append(bindings);
         }
         Ok(owner)
     }
 }
 pub struct Submission {
-    execution: Rc<Execution>,
+    completion: GpuCompletion,
     bindings: DomainBindings<GpuDataset>,
     accelerations: Vec<Acceleration>,
-    queries: Option<Rc<QueryPool>>,
 }
 pub struct Completed {
     bindings: DomainBindings<GpuDataset>,
@@ -3270,7 +3260,7 @@ pub struct GpuTimings {
 }
 impl Submission {
     pub fn is_complete(&self) -> Result<bool> {
-        self.execution.is_complete()
+        self.completion.is_complete()
     }
     /// 交还尚未等待的数据；物理存储继续持有真实最后使用点。
     pub fn into_bindings(self) -> DomainBindings<GpuDataset> {
@@ -3281,10 +3271,7 @@ impl Submission {
         (
             self.bindings,
             self.accelerations,
-            GpuCompletion {
-                execution: self.execution,
-                queries: self.queries,
-            },
+            self.completion,
         )
     }
     pub fn partition(self, groups: &[&[usize]]) -> Result<Vec<DomainBindings<GpuDataset>>> {
@@ -3292,19 +3279,10 @@ impl Submission {
     }
     /// 等待真实完成并读取时间戳；失败交回原提交及其全部输入和最后使用点。
     pub fn wait(mut self) -> std::result::Result<Completed, (Box<dyn std::error::Error + Send + Sync>, Self)> {
-        let result = (|| {
-            self.execution.wait()?;
-            self.queries.as_ref().map(|queries| queries.timings()).transpose()
-        })();
-        let timings = match result {
+        let timings = match self.completion.wait_bound(self.bindings.datasets.iter_mut()) {
             Ok(timings) => timings,
             Err(error) => return Err((error, self)),
         };
-        for dataset in &mut self.bindings.datasets {
-            if dataset.last_use.as_ref().is_some_and(|point| Rc::ptr_eq(point, &self.execution)) {
-                dataset.last_use = None;
-            }
-        }
         Ok(Completed {
             bindings: self.bindings,
             accelerations: self.accelerations,

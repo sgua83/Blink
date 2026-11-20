@@ -567,16 +567,16 @@ pub(crate) fn produced_element(domains: &mut Vec<DomainRelation>, range: Element
     }
 }
 
-pub(crate) fn require<D: DomainStorage>(
-    datasets: &[D],
+pub(crate) fn require<'a, D: DomainStorage + 'a>(
+    dataset: impl Fn(usize) -> Option<&'a D>,
     domains: &[DomainRelation],
     program: &dyn ProgramInterface,
     binding: impl Fn(usize) -> (usize, u32),
     slots: StorageSlots<'_>,
 ) -> Result<()> {
     let same = |original: usize, selected: usize| {
-        original == slots.original(selected) || datasets[selected].read_identity().is_some_and(|identity| {
-            slots.selected(original).and_then(|slot| datasets.get(slot)).and_then(D::read_identity) == Some(identity)
+        original == slots.original(selected) || dataset(selected).and_then(D::read_identity).is_some_and(|identity| {
+            slots.selected(original).and_then(&dataset).and_then(D::read_identity) == Some(identity)
         })
     };
     for relation in program.prefix_requirements() {
@@ -608,14 +608,14 @@ pub(crate) fn require<D: DomainStorage>(
             ElementFact::Index { binding, offset, .. } => (*binding, *offset, Scalar::U32),
         };
         let (source, offset) = binding(logical);
-        if datasets[source].element_count() == 0 { continue; }
+        if dataset(source).unwrap().element_count() == 0 { continue; }
         let holds = domains.iter().any(|known| {
             let DomainRelation::Element(range) = known else { return false; };
             same(range.binding, source) && u64::from(range.offset) == u64::from(offset) + u64::from(word)
                 && range.scalar == scalar && match requirement {
                     ElementFact::Range(required) => range.within(required),
                     ElementFact::Index { target, .. } => {
-                        let allowed=datasets[binding(*target).0].element_count().checked_sub(1).map(|last|(0,u64::from(last)));
+                        let allowed=dataset(binding(*target).0).unwrap().element_count().checked_sub(1).map(|last|(0,u64::from(last)));
                         range.intervals.iter().all(|&actual|scalar.covers_range(actual,range.known_bits,allowed.as_slice(),(0,0)))
                     },
                 }

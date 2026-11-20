@@ -991,7 +991,7 @@ impl CpuCode {
         definitions:Option<&std::sync::Arc<crate::application::Definitions>>,
         timings: Option<&mut CpuRangeTimings>,
     ) -> Result<()> {
-        bindings::require(datasets, domains, &self.program, physical, slots)?;
+        bindings::require(|slot| datasets.get(slot), domains, &self.program, physical, slots)?;
         for (data, binding) in (0..count)
             .map(|i| &datasets[physical(i).0])
             .zip(self.program.buffers())

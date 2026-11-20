@@ -1,7 +1,7 @@
 //! B 应用拥有动态数据；原 Dataset、域关系及 GPU 最后使用点仍拥有物理资源。
 use crate::{
     Dataset, DomainBindings, Result, Value,
-    bindings::DomainRelations,
+    bindings::{self, DomainRelations},
     cpu::{CpuDataset, CpuTemplate},
     error, vulkan,
 };
@@ -365,8 +365,8 @@ impl Frame {
         }
     }
     /// CPU 同步执行借用原帧槽，沿原句柄验证、撤回实际覆盖的事实并发布结果。
-    /// GPU 参数驻留确认后才装入管线，将完整选中的域关系随存储移交。
-    /// 提交拒绝交回原关系，已提交的写入撤回旧事实，等待成功才交回新保证。
+    /// GPU 同步记录同样借用原帧槽，由实际数据保留最后使用点。
+    /// 队列接受后撤回实际写入覆盖的关系，等待成功才发布新保证。
     pub fn run(&mut self, program: u32, bindings: &[DatasetBinding], values: &[Value], textures: &[crate::cpu::CpuTextureBinding<'_>]) -> Result<()> {
         let index = program as usize;
         let definitions = self.definitions.clone();
@@ -407,7 +407,7 @@ impl Frame {
             };
             order.push((slot, binding.offset));
         }
-        let (domains, result) = match definition {
+        match definition {
             ProgramSlot::Cpu(program) => {
                 let mut datasets = Vec::with_capacity(selected.len());
                 let slots = self.data.datasets.as_mut_ptr();
@@ -425,7 +425,7 @@ impl Frame {
                 if result.is_err() {
                     self.data.domains.sort_unique();
                 }
-                return result;
+                result
             }
             ProgramSlot::Gpu(image) => {
                 if !textures.is_empty() {
@@ -436,47 +436,33 @@ impl Frame {
                 }
                 self.load_gpu(index, image)?;
                 let gpu_program = self.gpu_programs[index].as_ref().unwrap();
-                let selected_slot = |binding| selected.iter().position(|&handle| handle as usize == binding);
-                let domains = DomainRelations::Owned(self.data.domains
-                    .extract_matching(|relation| relation.binding_indices().all(|binding| selected_slot(binding).is_some()))
-                    .map(|relation| relation.into_mapped(selected_slot).unwrap())
-                    .collect());
                 let mut datasets = Vec::with_capacity(selected.len());
+                let slots = self.data.datasets.as_mut_ptr();
                 for &handle in &selected {
-                    let Some(ResidentData::Gpu(data)) = self.data.datasets[handle as usize].take() else {
+                    // Selection records disjoint slots and the slot array stays in place.
+                    let Some(ResidentData::Gpu(data)) = (unsafe { &mut *slots.add(handle as usize) }) else {
                         unreachable!("GPU residency was checked during argument binding");
                     };
                     datasets.push(data);
                 }
-                let (inputs, result) = match gpu_program
-                    .submit_projected(DomainBindings { datasets, domains }, &order, uniforms)
-                {
-                    Err((error, inputs)) => (inputs, Err(error)),
-                    Ok(submission) => {
-                        let (mut inputs, result) = match submission.wait() {
-                            Ok(completed) => (completed.into_bindings(), Ok(())),
-                            Err((error, submission)) => (submission.into_bindings(), Err(error)),
-                        };
-                        crate::bindings::invalidate(&mut self.data.domains, &layout.write_regions,
-                            |i| (bindings[i].handle as usize, bindings[i].offset));
-                        crate::bindings::invalidate(&mut inputs.domains, &layout.write_regions, |i| order[i]);
-                        if result.is_ok() {
-                            inputs.produced(layout, |i| order[i]);
-                        }
-                        (inputs, result)
+                let result = gpu_program.submit_projected(&mut datasets, &self.data.domains,
+                    &selected, &order, uniforms).and_then(|completion| {
+                    let result = completion.wait_bound(datasets.iter_mut().map(|data| &mut **data))
+                        .map(|_| ());
+                    let original = |i: usize| (bindings[i].handle as usize, bindings[i].offset);
+                    bindings::invalidate(&mut self.data.domains, &layout.write_regions, original);
+                    if result.is_ok() {
+                        bindings::produce(&mut self.data.domains, layout, original,
+                            |i| datasets[order[i].0].count());
                     }
-                };
-                for (&handle, data) in selected.iter().zip(inputs.datasets) {
-                    self.data.datasets[handle as usize] = Some(ResidentData::Gpu(data));
+                    result
+                });
+                if result.is_err() {
+                    self.data.domains.sort_unique();
                 }
-                (inputs.domains, result)
+                result
             }
-        };
-        self.data
-            .domains
-            .extend(domains.into_vec().into_iter().map(|r| r.into_mapped(|binding| Some(selected[binding] as usize)).unwrap()));
-        self.data.domains.sort_unique();
-        result
+        }
     }
 }
 
