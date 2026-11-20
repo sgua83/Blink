@@ -3755,7 +3755,7 @@ impl Builder<'_> {
     pub(super) async fn read_owned_proof(&mut self, place: &Place, regs: &[Reg], reads: &[(usize,usize)]) -> Result<(Proof, bool, bool)> {
         let (snapshots,common)=match place {
             Place::ApplicationElement{..}=>{
-                let snapshots=regs.iter().map(|reg|self.application_read_snapshot(*reg)).collect::<Vec<_>>();
+                let snapshots = regs.iter().copied().map(self.application_read_snapshots()).collect::<Vec<_>>();
                 let common=unsafe { self.world.call(self.application_element_proof(place,&snapshots,reads)).await }?;(snapshots,common)
             },
             _=>(Vec::new(),None),
@@ -3812,9 +3812,10 @@ impl Builder<'_> {
                     proof.constrain_common_ranges(&common, regs.len());
                 }
                 proof.origins.resize_with(regs.len(), Vec::new);
+                let mut snapshot = self.application_read_snapshots();
                 for (origins, reg) in proof.origins.iter_mut().zip(regs) {
                     if origins.is_empty() {
-                        origins.push(ValueIdentity::Register(self.application_read_snapshot(*reg)));
+                        origins.push(ValueIdentity::Register(snapshot(*reg)));
                     }
                 }
                 (self.path_proof(place.ty(), proof), uniform)

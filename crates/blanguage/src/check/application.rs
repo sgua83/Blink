@@ -708,7 +708,7 @@ impl ApplicationLoads<'_, '_> {
             _ => false,
         })
     }
-    fn prior_snapshot<'a>(&'a self,code:impl Iterator<Item=&'a Inst>,mut load:&'a Inst)->Option<Reg> {
+    fn prior_snapshot<'a>(&'a self, code: impl Iterator<Item=&'a Inst>, mut load: &'a Inst, branches: &mut BTreeMap<Reg, Option<bool>>) -> Option<Reg> {
         let mut result=None;
         for inst in code {
             let nested=match &inst.kind {
@@ -723,13 +723,16 @@ impl ApplicationLoads<'_, '_> {
                         let Some(Inst{kind:InstKind::StoreLocal(_,value),..})=self.code().rev().skip(self.len()-at).find(|inst|self.writes_local(inst,*slot))else{break;};
                         source=*value;
                     }
-                    let value=Value{ty:Ty::scalar(Scalar::Bool),regs:vec![source],proof:bounds::Proof::default(),literal:false,uniform:false,constant:None};
-                    self.0.condition_truth(&bounds::Condition::of(&value),None).map(|truth|if truth{yes.as_slice()}else{no.as_slice()})
+                    let truth = *branches.entry(source).or_insert_with(|| {
+                        let value=Value{ty:Ty::scalar(Scalar::Bool),regs:vec![source],proof:bounds::Proof::default(),literal:false,uniform:false,constant:None};
+                        self.0.condition_truth(&bounds::Condition::of(&value), None)
+                    });
+                    truth.map(|truth| if truth { yes.as_slice() } else { no.as_slice() })
                 },
                 InstKind::Scope(body)=>Some(body.as_slice()),
                 _=>None,
             };
-            if let Some(reg)=nested.and_then(|code|self.prior_snapshot(code.iter().rev(),load)) {
+            if let Some(reg)=nested.and_then(|code|self.prior_snapshot(code.iter().rev(), load, branches)) {
                 result=Some(reg);load=self.definition(reg).unwrap().1;
             }
             if self.writes(inst,load){break;}
@@ -739,10 +742,10 @@ impl ApplicationLoads<'_, '_> {
         }
         result
     }
-    fn snapshot(&self,reg:Reg)->Reg {
+    fn snapshot(&self, reg: Reg, branches: &mut BTreeMap<Reg, Option<bool>>) -> Reg {
         let Some((at,load))=self.definition(reg)else{return reg;};
         if !matches!(load.kind,InstKind::Load{..}|InstKind::ViewLoad{..}){return reg;}
-        self.prior_snapshot(self.code().rev().skip(self.len()-at),load).unwrap_or(reg)
+        self.prior_snapshot(self.code().rev().skip(self.len()-at), load, branches).unwrap_or(reg)
     }
 }
 impl Builder<'_> {
@@ -800,7 +803,11 @@ impl Builder<'_> {
         }
         let [normal,broken]=output;(normal,broken)
     }
-    pub(super) fn application_read_snapshot(&self,reg:Reg)->Reg {ApplicationLoads(self).snapshot(reg)}
+    pub(super) fn application_read_snapshots(&self) -> impl FnMut(Reg) -> Reg + '_ {
+        let loads = ApplicationLoads(self);
+        let mut branches = BTreeMap::new();
+        move |reg| loads.snapshot(reg, &mut branches)
+    }
 }
 
 pub(super) fn pointer_type() -> Ty {
