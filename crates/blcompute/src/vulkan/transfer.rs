@@ -98,15 +98,6 @@ impl Device {
         staging: &mut Vec<Allocation>,
     ) -> Result<()> {
         let bytes = unsafe { std::slice::from_raw_parts(words.as_ptr().cast::<u8>(), target.bytes() as usize) };
-        let headers: Vec<_> = target
-            .views
-            .sources
-            .iter()
-            .map(|source| {
-                let address = source.0.allocation.address() + u64::from(blanguage::spirv::BINDING_BYTES);
-                [address as u32, (address >> 32) as u32, source.0.count,source.0.stride,0,0]
-            })
-            .collect();
         for (index, page) in target.pages.iter().enumerate() {
             let bytes_per_page = target.page_records() as usize * target.stride as usize;
             let start = index * bytes_per_page;
@@ -116,7 +107,7 @@ impl Device {
                 bytes.len() as u64,
                 |source| {
                     source.write_with(bytes, |mapped| {
-                        target.views.encode(index * bytes_per_page / 4, mapped, &headers);
+                        target.views.encode(start / 4, mapped, |source| source.0.view_header());
                     })
                 },
                 commands,

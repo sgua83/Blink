@@ -1191,6 +1191,14 @@ pub struct GpuStorage {
     views: Views<ReadDataset>,
     instances: Option<ray::InstanceInput>,
 }
+impl GpuStorage {
+    fn view_header(&self) -> [u32; 6] {
+        let mapped = self.allocation.memory.as_ref().unwrap().pointer();
+        // PagedBuffer::table initializes the immutable page-array address in the mapped header.
+        let [low, high] = unsafe { mapped.cast::<[u32; 2]>().read() };
+        [low, high, self.count, self.stride, 0, 0]
+    }
+}
 impl std::ops::Deref for GpuDataset {
     type Target = GpuStorage;
     fn deref(&self) -> &GpuStorage {

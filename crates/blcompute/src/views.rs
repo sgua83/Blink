@@ -34,12 +34,12 @@ impl<Source> Views<Source> {
         self.bindings.clear();
         self.sources.clear();
     }
-    pub fn encode(&self,base_word:usize,words:&mut[u32],headers:&[[u32;6]]) {
-        let start=self.bindings.partition_point(|(word,_)|*word<base_word);
-        let end=base_word+words.len();
-        for &(word,source)in self.bindings[start..].iter().take_while(|(word,_)|*word<end){
-            let at=word-base_word;
-            words[at..at+6].copy_from_slice(&headers[source]);
+    pub fn encode(&self, base_word: usize, words: &mut [u32], header: impl Fn(&Source) -> [u32; 6]) {
+        let start = self.bindings.partition_point(|&(word, _)| word < base_word);
+        let end = base_word + words.len();
+        for &(word, source) in self.bindings[start..].iter().take_while(|&&(word, _)| word < end) {
+            let at = word - base_word;
+            words[at..at + 6].copy_from_slice(&header(&self.sources[source]));
         }
     }
 }
@@ -107,15 +107,10 @@ impl Dataset {
     }
 
     pub(crate) fn attach_views(&mut self, views: Views<ReadDataset>) {
-        let headers: Vec<_> = views
-            .sources
-            .iter()
-            .map(|source| {
-                let address = source.0.words.as_ptr() as usize as u64;
-                [address as u32, (address >> 32) as u32, source.0.count,source.0.stride,0,0]
-            })
-            .collect();
-        views.encode(0,self.words_mut(),&headers);
+        views.encode(0, self.words_mut(), |source| {
+            let address = source.words.as_ptr() as usize as u64;
+            [address as u32, (address >> 32) as u32, source.count, source.stride, 0, 0]
+        });
         self.views = views;
     }
 
