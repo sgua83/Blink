@@ -1,5 +1,5 @@
 //! Windows encoding and caller-owned buffers for the shared B path algorithms.
-use std::{ffi::OsString, io, os::windows::ffi::{OsStrExt, OsStringExt}, path::{Path, PathBuf}};
+use std::{ffi::{OsStr, OsString}, io, mem::MaybeUninit, os::windows::ffi::{OsStrExt, OsStringExt}, path::{Path, PathBuf}};
 
 #[derive(Clone, Copy)]
 #[repr(C)]
@@ -24,6 +24,8 @@ struct NativePath {
 unsafe extern "C" {
     #[link_name = "blink.windows.path_core::absolute_path"]
     fn absolute_path(path: *const u16, units: usize) -> NativePath;
+    #[link_name = "blink.windows.path_core::canonicalize_path"]
+    fn canonicalize_path(path: *const u16, units: usize, scratch: *mut u16, capacity: u32) -> NativePath;
     #[link_name = "blink.windows.path_core::release_native_path"]
     fn release_native_path(path: NativePath);
     #[link_name = "blink.windows.path_core::file_stem"]
@@ -89,23 +91,38 @@ pub(crate) fn with_extension_units(path: &Path, tail: &[u16]) -> PathBuf {
     PathBuf::from(OsString::from_wide(&output))
 }
 
-pub(crate) fn absolute(path: &Path) -> io::Result<PathBuf> {
-    let path = path.as_os_str();
-    if path.is_empty() {
-        return Err(io::Error::new(io::ErrorKind::InvalidInput, "cannot make an empty path absolute"));
-    }
+fn path_units(path: &OsStr) -> io::Result<Vec<u16>> {
     if path.as_encoded_bytes().contains(&0) {
         return Err(io::Error::new(io::ErrorKind::InvalidInput, "strings passed to WinAPI cannot contain NULs"));
     }
-    let units: Vec<u16> = path.encode_wide().chain([0]).collect();
-    let resolved = unsafe { absolute_path(units.as_ptr(), units.len() - 1) };
+    Ok(path.encode_wide().chain([0]).collect())
+}
+
+fn native_path_result(resolved: NativePath) -> io::Result<PathBuf> {
     if resolved.status != 0 {
         return Err(io::Error::from_raw_os_error(resolved.status as i32));
     }
-    // The resolved name is borrowed from the input or owned by the Windows heap.
+    // The native name remains valid in the caller's storage or on the Windows heap.
     let name = OsString::from_wide(unsafe { std::slice::from_raw_parts(resolved.name, resolved.units) });
     unsafe { release_native_path(resolved); }
     Ok(PathBuf::from(name))
+}
+
+pub(crate) fn absolute(path: &Path) -> io::Result<PathBuf> {
+    if path.as_os_str().is_empty() {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "cannot make an empty path absolute"));
+    }
+    let units = path_units(path.as_os_str())?;
+    native_path_result(unsafe { absolute_path(units.as_ptr(), units.len() - 1) })
+}
+
+pub(crate) fn canonicalize(path: &Path) -> io::Result<PathBuf> {
+    let units = path_units(path.as_os_str())?;
+    let mut scratch = [MaybeUninit::<u16>::uninit(); 512];
+    let resolved = unsafe {
+        canonicalize_path(units.as_ptr(), units.len() - 1, scratch.as_mut_ptr().cast(), scratch.len() as u32)
+    };
+    native_path_result(resolved)
 }
 
 pub(crate) fn file_stem(path: &Path) -> Option<String> {

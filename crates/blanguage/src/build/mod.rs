@@ -71,8 +71,8 @@ fn compile_in(
     if target == Target::Compute {
         return Err("构建映像必须选择实际CPU或GPU后端".into());
     }
-    let path = if inputs.is_some() { path.into() } else { path.canonicalize()? };
-    let root = if inputs.is_some() { root.into() } else { root.canonicalize()? };
+    let path = if inputs.is_some() { path.into() } else { crate::source_path::canonicalize(path)? };
+    let root = if inputs.is_some() { root.into() } else { crate::source_path::canonicalize(root)? };
     let mut imports = crate::module::Imports::inputs(&dependencies).map_err(|e| std::io::Error::other(e.to_string()))?;
     for object in borrowed { imports.object(object).map_err(|e| std::io::Error::other(e.to_string()))?; }
     let imported = if dependencies.is_empty() && borrowed.is_empty() { None } else { Some(&imports) };

@@ -265,10 +265,10 @@ impl Compiler {
         let (prepared, inputs, dependency_plan) = self.execute(|_| {
         let dependency_plan = dependency_plan(units)?;
         let prepared = units.iter().map(|unit| {
-            let header = source_path::with_extension(unit.path, u16::from(b'h')).canonicalize()?;
+            let header = source_path::canonicalize(&source_path::with_extension(unit.path, u16::from(b'h')))?;
             let extension: Vec<_> = unit.path.extension().unwrap_or_else(|| OsStr::new("b")).encode_wide().collect();
             let path = source_path::with_extension_units(&header, &extension);
-            Ok(Prepared { path, root: unit.root.canonicalize()?, output: source_path::absolute(unit.output)?,
+            Ok(Prepared { path, root: source_path::canonicalize(unit.root)?, output: source_path::absolute(unit.output)?,
                 kind: unit.kind })
         }).collect::<Result<Vec<_>>>()?;
         let mut capture = Capture::default();

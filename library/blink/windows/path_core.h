@@ -42,6 +42,12 @@ extern "C" NativePath absolute_path(address path,usize units) on cpu;
 UnitSpan extended_native_path(UnitSpan full) on cpu;
 NativePath native_path(address path,usize units,bool prefer_verbatim) on cpu;
 extern "C" void release_native_path(NativePath path) on cpu;
+struct CanonicalSource { handle file; u32 status; bool input; };
+struct CanonicalName { u32 units; u32 status; };
+CanonicalSource normalized_canonical_source(address path,usize units) on cpu;
+CanonicalName canonical_name(handle file,address output,u32 capacity) on cpu;
+u32 close_canonical_source(handle file) on cpu;
+extern "C" NativePath canonicalize_path(address path,usize units,address scratch,u32 capacity) on cpu;
 result<void,DirectoryError> directory_tree(address path,usize units,bool prefer_verbatim) on cpu;
 extern "C" u32 create_output_directories(address path,usize units) on cpu;
 

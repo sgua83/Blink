@@ -61,80 +61,40 @@ result<dataset<u16>,AbsoluteError> absolute(address path) on cpu {
     return Ok(resize(output,written,u16(0)));
 }
 
-extern "C" u32 GetFinalPathNameByHandleW(handle file,address output,u32 capacity,
-    u32 flags) on cpu from "KERNEL32.dll";
-
 result<dataset<u16>,CanonicalQueryError> final_path(handle file) on cpu {
-    u32 capacity=GetFinalPathNameByHandleW(file,address(),0,0);
-    if (capacity == 0) { return Err(CanonicalQueryError::System(GetLastError())); }
+    CanonicalName needed=canonical_name(file,address(),0);
+    u32 capacity=needed.units;
+    if (capacity == 0) { return Err(CanonicalQueryError::System(needed.status)); }
     dataset<u16> output=dataset<u16>(capacity);
-    u32 written=GetFinalPathNameByHandleW(file,address_of(output[0]),capacity,0);
-    if (written == 0) { return Err(CanonicalQueryError::System(GetLastError())); }
-    if (written >= capacity) { return Err(CanonicalQueryError::BufferTooSmall(written)); }
-    return Ok(resize(output,written,u16(0)));
+    CanonicalName name=canonical_name(file,address_of(output[0]),capacity);
+    if (name.units == 0) { return Err(CanonicalQueryError::System(name.status)); }
+    if (name.units >= capacity) { return Err(CanonicalQueryError::BufferTooSmall(name.units)); }
+    return Ok(resize(output,name.units,u16(0)));
 }
 
-
-bool canonical_nt_prefix(address path) on cpu {
-    usize start=address_bits(path);
-    if (unsafe_position<u16>(path) == u16(92)) {
-        if (unsafe_position<u16>(unsafe_address(start+2)) == u16(63)) {
-            if (unsafe_position<u16>(unsafe_address(start+4)) == u16(63)) {
-                if (unsafe_position<u16>(unsafe_address(start+6)) == u16(92)) {
-                    return true;
-                }
-            }
-        }
-    }
-    return false;
-}
-
-result<handle,CanonicalError> canonical_open_path(address path) on cpu {
-    handle file=CreateFileW(path,0,7,address(),3,33554432,handle());
-    if (file == INVALID_HANDLE_VALUE) {
-        return Err(CanonicalError::Open(GetLastError()));
-    }
-    return Ok(file);
-}
-
-result<handle,CanonicalError> canonical_open(address path) on cpu {
-    if (verbatim(path) || canonical_nt_prefix(path) || unsafe_position<u16>(path) == u16(0)) {
-        return canonical_open_path(path);
-    }
+result<dataset<u16>,CanonicalError> canonicalize(address path) on cpu {
     usize units=0u64;
     while (unsafe_position<u16>(unsafe_address(address_bits(path)+units*2u64)) != u16(0)) {
         units+=1u64;
     }
-    NativePath name=absolute_path(path,units);
-    if (name.status != 0) { return Err(CanonicalError::Input(AbsoluteError::System(name.status))); }
-    UnitSpan extended=extended_native_path(UnitSpan(name.name,name.units));
-    name.name=extended.data;
-    name.units=extended.length;
-    let opened=canonical_open_path(name.name);
-    release_native_path(name);
-    return opened;
-}
-result<dataset<u16>,CanonicalError> canonicalize(address path) on cpu {
-    handle file;
-    match (canonical_open(path)) {
-        Ok(opened) { file=opened; }
-        Err(error) { return Err(error); }
+    CanonicalSource source=normalized_canonical_source(path,units);
+    if (source.status != 0) {
+        if (source.input) { return Err(CanonicalError::Input(AbsoluteError::System(source.status))); }
+        return Err(CanonicalError::Open(source.status));
     }
-    result<dataset<u16>,CanonicalQueryError> queried=final_path(file);
-    i32 closed=CloseHandle(file);
-    u32 close_error=0;
-    if (closed == 0) { close_error=GetLastError(); }
+    result<dataset<u16>,CanonicalQueryError> queried=final_path(source.file);
+    u32 close_error=close_canonical_source(source.file);
     match (queried) {
         Ok(full) {
-            if (closed == 0) {
-                return Err(CanonicalError::Close(CanonicalCloseError(file,close_error)));
+            if (close_error != 0) {
+                return Err(CanonicalError::Close(CanonicalCloseError(source.file,close_error)));
             }
             return Ok(full);
         }
         Err(error) {
-            if (closed == 0) {
+            if (close_error != 0) {
                 return Err(CanonicalError::QueryAndClose(
-                    CanonicalQueryCloseError(error,CanonicalCloseError(file,close_error))));
+                    CanonicalQueryCloseError(error,CanonicalCloseError(source.file,close_error))));
             }
             return Err(CanonicalError::Query(error));
         }

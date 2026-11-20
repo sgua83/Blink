@@ -53,7 +53,7 @@ pub(super) fn compile<'a>(
     let (source_path, path, root, artifact) = if inputs.is_some() {
         (path.to_path_buf(), header, root.to_path_buf(), output.to_path_buf())
     } else {
-        (source_path::absolute(path)?, header.canonicalize()?, root.canonicalize()?, source_path::absolute(output)?)
+        (source_path::absolute(path)?, source_path::canonicalize(&header)?, source_path::canonicalize(root)?, source_path::absolute(output)?)
     };
     let imports = crate::module::Imports::new(dependencies).map_err(|value| crate::ast::Diagnostic {
             source: crate::ast::Source { path: source_path.clone(), text: "".into() },

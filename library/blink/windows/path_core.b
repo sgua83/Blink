@@ -379,6 +379,71 @@ extern "C" void release_native_path(NativePath path) on cpu {
     if (address_bits(path.allocation) != 0u64) { HeapFree(GetProcessHeap(),0,path.allocation); }
 }
 
+extern "C" u32 GetFinalPathNameByHandleW(handle file,address output,u32 capacity,
+    u32 flags) on cpu from "KERNEL32.dll";
+
+CanonicalSource open_canonical_source(NativePath name) on cpu {
+    if (name.status != 0) { return CanonicalSource(handle(),name.status,true); }
+    handle file=CreateFileW(name.name,0,7,address(),3,33554432,handle());
+    u32 status=file == INVALID_HANDLE_VALUE ? GetLastError() : 0;
+    release_native_path(name);
+    return CanonicalSource(file,status,false);
+}
+
+CanonicalSource normalized_canonical_source(address path,usize units) on cpu {
+    UnitSpan input=UnitSpan(path,units);
+    NativePath name=NativePath(path,address(),units,0);
+    if (units != 0u64 && !nt_namespace(input)) {
+        name=absolute_path(path,units);
+        if (name.status == 0 && address_bits(name.allocation) != 0u64) {
+            UnitSpan extended=extended_native_path(UnitSpan(name.name,name.units));
+            name.name=extended.data;
+            name.units=extended.length;
+        }
+    }
+    return open_canonical_source(name);
+}
+
+CanonicalName canonical_name(handle file,address output,u32 capacity) on cpu {
+    u32 units=GetFinalPathNameByHandleW(file,output,capacity,0);
+    return CanonicalName(units,units == 0 ? GetLastError() : 0);
+}
+
+u32 close_canonical_source(handle file) on cpu {
+    return CloseHandle(file) == 0 ? GetLastError() : 0;
+}
+
+extern "C" NativePath canonicalize_path(address path,usize units,address scratch,u32 capacity) on cpu {
+    NativePath input=units == 0u64 ? NativePath(path,address(),0u64,0) : native_path(path,units,true);
+    CanonicalSource source=open_canonical_source(input);
+    if (source.status != 0) { return NativePath(address(),address(),0u64,source.status); }
+
+    NativePath output=NativePath(scratch,address(),0u64,0);
+    u32 available=capacity;
+    while (true) {
+        CanonicalName name=canonical_name(source.file,output.name,available);
+        output.status=name.status;
+        if (name.status != 0) { break; }
+        if (name.units < available) {
+            output.units=usize(name.units);
+            break;
+        }
+        release_native_path(output);
+        available=name.units > available ? name.units : available+1;
+        address allocation=HeapAlloc(GetProcessHeap(),0,usize(available)*2u64);
+        output=NativePath(allocation,allocation,0u64,0);
+        if (address_bits(allocation) == 0u64) {
+            output.status=ERROR_NOT_ENOUGH_MEMORY;
+            break;
+        }
+    }
+    u32 close_status=close_canonical_source(source.file);
+    if (output.status == 0 && close_status == 0) { return output; }
+    u32 error=output.status != 0 ? output.status : close_status;
+    release_native_path(output);
+    return NativePath(address(),address(),0u64,error);
+}
+
 result<bool,DirectoryError> directory_target(address path) on cpu {
     handle file = CreateFileW(path,0,7,address(),3,33554432,handle());
     if (file == INVALID_HANDLE_VALUE) {
