@@ -170,30 +170,34 @@ impl<D> DomainBindings<D> {
         D: DomainStorage,
     {
         let order: Vec<_> = groups.iter().flat_map(|g| g.iter().copied()).collect();
-        self.remap(&order, Vec::new())?;
+        let mut parts: Vec<Self> = groups.iter().map(|_| Vec::new().into()).collect();
+        self.remap_into(&order, Vec::new(), groups.iter().map(|group| group.len()),
+            |part, relation| parts[part].domains.push(relation))?;
         let mut data = self.datasets.into_iter();
-        let mut parts: Vec<_> = groups.iter().map(|group| Self {
-            datasets: data.by_ref().take(group.len()).collect(),
-            domains: Vec::new(),
-        }).collect();
-        if self.domains.is_empty() {
-            return Ok(parts);
-        }
-        let mut positions = Vec::with_capacity(order.len());
-        for (part, bindings) in parts.iter().enumerate() {
-            positions.extend((0..bindings.datasets.len()).map(|index| (part, index)));
-        }
-        for r in self.domains {
-            let part = positions[r.domain()].0;
-            if let Some(relation) = r.into_mapped(|binding| {
-                let (owner, local) = positions[binding]; (owner == part).then_some(local)
-            }) {
-                parts[part].domains.push(relation);
-            }
+        for (part, group) in parts.iter_mut().zip(groups) {
+            part.datasets = data.by_ref().take(group.len()).collect();
+            part.domains.sort_unstable();
         }
         Ok(parts)
     }
     pub(crate) fn remap(&mut self, order: &[usize], additional: Vec<D>) -> Result<()>
+    where
+        D: DomainStorage,
+    {
+        let mut domains = Vec::new();
+        self.remap_into(order, additional, std::iter::once(order.len()),
+            |_, relation| domains.push(relation))?;
+        domains.sort_unstable();
+        self.domains = domains;
+        Ok(())
+    }
+    fn remap_into(
+        &mut self,
+        order: &[usize],
+        additional: Vec<D>,
+        groups: impl Iterator<Item = usize>,
+        mut emit: impl FnMut(usize, DomainRelation),
+    ) -> Result<()>
     where
         D: DomainStorage,
     {
@@ -206,42 +210,51 @@ impl<D> DomainBindings<D> {
             *count += 1;
         }
         self.datasets.extend(additional);
-        let mut domains = Vec::new();
-        if !self.domains.is_empty() && !order.is_empty() {
+        let relations = std::mem::take(&mut self.domains);
+        if !relations.is_empty() && !order.is_empty() {
             let mut positions = vec![Vec::new(); total];
-            let mut shared: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
-            for (new, &old) in order.iter().enumerate() {
-                if let Some(identity) = self.datasets[old].read_identity() {
-                    shared.entry(identity).or_default().push(new);
-                } else {
-                    positions[old].push(new);
-                }
+            let mut shared = BTreeMap::new();
+            let targets = groups.enumerate().flat_map(|(part, len)| (0..len).map(move |slot| (part, slot)));
+            for (&old, target) in order.iter().zip(targets) {
+                let source = self.datasets[old].read_identity()
+                    .map_or(old, |identity| *shared.entry(identity).or_insert(old));
+                positions[source].push(target);
             }
-            let new_positions = |old: usize| -> &[usize] {
-                match self.datasets[old].read_identity() {
-                    Some(identity) => shared.get(&identity).map_or(&[], Vec::as_slice),
-                    None => &positions[old],
-                }
+            let source = |old: usize| {
+                let source = match self.datasets[old].read_identity() {
+                    Some(identity) => *shared.get(&identity)?,
+                    None => old,
+                };
+                (!positions[source].is_empty()).then_some(source)
             };
-            for relation in &self.domains {
+            // Resolve aliases before expanding relations into the receiving groups.
+            let mut relations: Vec<_> = relations.into_iter()
+                .filter_map(|relation| relation.into_mapped(source)).collect();
+            relations.sort_unstable();
+            relations.dedup();
+            for relation in relations {
                 match relation {
                     DomainRelation::Prefix { domain, offset, bytes, count } => {
-                        let counts = new_positions(count.binding);
-                        for &domain in new_positions(*domain) {
-                            for &binding in counts {
-                                domains.push(DomainRelation::Prefix {
-                                    domain, offset: *offset, bytes: *bytes, count: PrefixCount { binding, word: count.word },
-                                });
+                        let mut counts = positions[count.binding].as_slice();
+                        for targets in positions[domain].chunk_by(|a,b| a.0 == b.0) {
+                            let part = targets[0].0;
+                            let start = counts.partition_point(|&(group, _)| group < part);
+                            let end = counts.partition_point(|&(group, _)| group <= part);
+                            for &(_, domain) in targets {
+                                for &(_, binding) in &counts[start..end] {
+                                    emit(part, DomainRelation::Prefix {
+                                        domain, offset, bytes, count: PrefixCount { binding, word: count.word },
+                                    });
+                                }
                             }
+                            counts = &counts[end..];
                         }
                     },
-                    DomainRelation::Element(range) => for &binding in new_positions(range.binding) {
-                        domains.push(DomainRelation::Element(ElementRange { binding, ..range.clone() }));
+                    DomainRelation::Element(range) => for &(part, binding) in &positions[range.binding] {
+                        emit(part, DomainRelation::Element(ElementRange { binding, ..range.clone() }));
                     },
                 }
             }
-            domains.sort();
-            domains.dedup();
         }
         let mut slots: Vec<_> = std::mem::take(&mut self.datasets)
             .into_iter()
@@ -262,7 +275,6 @@ impl<D> DomainBindings<D> {
             remaining[old] -= 1;
         }
         self.datasets = datasets;
-        self.domains = domains;
         Ok(())
     }
     pub(crate) fn completed(
