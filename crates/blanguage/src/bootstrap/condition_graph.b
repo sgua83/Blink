@@ -803,25 +803,42 @@ extern "C" void alias_facts(address context,u32 inherited,AliasFactHost host) on
  }
 }
 
+extern "C" u32 canonical_term_overlap(address context,CanonicalTermHost host) on cpu
+ requires nonzero(host.same) requires nonzero(host.conflict) requires nonzero(host.next)
+ requires nonzero(host.insert) requires nonzero(host.remove) requires nonzero(host.remaining)
+ requires nonzero(host.facts.compare) {
+ if(host.same(context)!=0||host.conflict(context,0)!=0){return 0;}
+ if(host.conflict(context,1)!=0){return 1;}
+ while(true){
+  FactView fact=host.next(context);if(fact.present==0){return 0;}
+  FactView opposite=negated_fact(fact,host.facts);if(opposite.present==0){continue;}
+  if(host.insert(context,opposite)==0||host.conflict(context,0)==0){return 1;}
+  host.remove(context,opposite);
+  // The search resumes with the rejected alternative's positive prefix.
+  if(host.remaining(context)==0){return 0;}
+  if(host.insert(context,fact)!=0&&host.conflict(context,0)!=0){return 0;}
+ }
+}
+
 extern "C" CanonicalInsertion canonical_insert(address context,address candidate,u32 empty,CanonicalInsertHost host) on cpu
- requires nonzero(host.next) requires nonzero(host.subset) requires nonzero(host.prepare)
- requires nonzero(host.reset) requires nonzero(host.forward) {
+ requires nonzero(host.next) requires nonzero(host.subset) requires nonzero(host.reset)
+ requires nonzero(host.overlap) {
  while(true){
   CanonicalTerm old=host.next(context);if(old.present==0){break;}
   if(host.subset(old.value,candidate)!=0){return CanonicalInsertion::Reject;}
  }
  if(empty!=0){return CanonicalInsertion::Insert;}
- host.prepare(context);host.reset(context);
+ host.reset(context);
  while(true){
   CanonicalTerm old=host.next(context);if(old.present==0){break;}
-  if(host.forward(context,old.value)==0){return CanonicalInsertion::RejectPrepared;}
+  if(host.overlap(candidate,old.value)==0){return CanonicalInsertion::Reject;}
  }
  return CanonicalInsertion::RetainInsert;
 }
-extern "C" u32 canonical_keep(address old,address candidate,address incoming,CanonicalKeepHost host) on cpu
- requires nonzero(host.subset) requires nonzero(host.reverse) {
+extern "C" u32 canonical_keep(address old,address candidate,CanonicalKeepHost host) on cpu
+ requires nonzero(host.subset) requires nonzero(host.overlap) {
  if(host.subset(candidate,old)!=0){return 0;}
- return host.reverse(old,incoming);
+ return host.overlap(old,candidate);
 }
 extern "C" void canonical_normalize(address context,CanonicalNormalHost host) on cpu
  requires nonzero(host.next) requires nonzero(host.reset) requires nonzero(host.bound)

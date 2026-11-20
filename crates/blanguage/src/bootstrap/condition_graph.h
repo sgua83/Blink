@@ -321,23 +321,35 @@ extern "C" void alias_facts(address context,u32 inherited,AliasFactHost host) on
 
 // Original typed source-path terms remain owned by the synchronous native caller.
 struct CanonicalTerm { u32 present; address value; };
-enum CanonicalInsertion : u32 { Reject=0; Insert=1; RejectPrepared=2; RetainInsert=3; };
+enum CanonicalInsertion : u32 { Reject=0; Insert=1; RetainInsert=2; };
+struct CanonicalTermHost {
+ cfn<u32,address> ensures memory(read) same;
+ cfn<u32,address,u32> conflict;
+ cfn<FactView,address> next;
+ cfn<u32,address,FactView> insert;
+ cfn<void,address,FactView> remove;
+ cfn<u32,address> ensures memory(read) remaining;
+ FactHost facts;
+};
+extern "C" u32 canonical_term_overlap(address context,CanonicalTermHost host) on cpu
+ requires nonzero(host.same) requires nonzero(host.conflict) requires nonzero(host.next)
+ requires nonzero(host.insert) requires nonzero(host.remove) requires nonzero(host.remaining)
+ requires nonzero(host.facts.compare);
 struct CanonicalInsertHost {
  cfn<CanonicalTerm,address> next;
  cfn<u32,address,address> ensures memory(read) subset;
- cfn<void,address> prepare;
  cfn<void,address> reset;
- cfn<u32,address,address> forward;
+ cfn<u32,address,address> overlap;
 };
 extern "C" CanonicalInsertion canonical_insert(address context,address candidate,u32 empty,CanonicalInsertHost host) on cpu
- requires nonzero(host.next) requires nonzero(host.subset) requires nonzero(host.prepare)
- requires nonzero(host.reset) requires nonzero(host.forward);
+ requires nonzero(host.next) requires nonzero(host.subset) requires nonzero(host.reset)
+ requires nonzero(host.overlap);
 struct CanonicalKeepHost {
  cfn<u32,address,address> ensures memory(read) subset;
- cfn<u32,address,address> reverse;
+ cfn<u32,address,address> overlap;
 };
-extern "C" u32 canonical_keep(address old,address candidate,address incoming,CanonicalKeepHost host) on cpu
- requires nonzero(host.subset) requires nonzero(host.reverse);
+extern "C" u32 canonical_keep(address old,address candidate,CanonicalKeepHost host) on cpu
+ requires nonzero(host.subset) requires nonzero(host.overlap);
 struct CanonicalNormalHost {
  cfn<FactView,address> next;
  cfn<void,address,u32> reset;

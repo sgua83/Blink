@@ -6,7 +6,6 @@ use super::{
 use std::{
     collections::{BTreeMap, BTreeSet, btree_map, btree_set},
     ffi::c_void,
-    mem::MaybeUninit,
     ops::Bound::{Excluded, Unbounded},
     ptr,
 };
@@ -40,11 +39,69 @@ unsafe extern "C" fn subset(left: Borrowed, right: Borrowed) -> u32 {
 unsafe extern "C" fn conflict(source: Borrowed) -> u32 {
     u32::from(contradictory(unsafe { &*source.cast::<Facts>() }))
 }
+struct Proof<'a> {
+    left: std::borrow::Cow<'a, Facts>,
+    right: &'a Facts,
+    next: btree_set::Iter<'a, super::Fact>,
+}
+unsafe fn proof<'a, 'b>(slot: Slot) -> &'a mut Proof<'b> {
+    unsafe { &mut *slot.cast::<Proof<'b>>() }
+}
+unsafe extern "C" fn same_term(slot: Slot) -> u32 {
+    let proof = unsafe { proof(slot) };
+    u32::from(proof.left.as_ref() == proof.right)
+}
+unsafe extern "C" fn proof_conflict(slot: Slot, side: u32) -> u32 {
+    let proof = unsafe { proof(slot) };
+    u32::from(contradictory(if side == 0 { proof.left.as_ref() } else { proof.right }))
+}
+unsafe extern "C" fn proof_next(slot: Slot) -> fact_fields::Fields {
+    unsafe { proof(slot) }.next.next().map(fact_fields::Fields::from).unwrap_or_default()
+}
+unsafe extern "C" fn proof_insert(slot: Slot, fact: fact_fields::Fields) -> u32 {
+    let fact = unsafe { fact_fields::key(fact) };
+    let proof = unsafe { proof(slot) };
+    if proof.left.contains(&fact) { return 0; }
+    u32::from(proof.left.to_mut().insert(fact))
+}
+unsafe extern "C" fn proof_remove(slot: Slot, fact: fact_fields::Fields) {
+    unsafe { proof(slot) }.left.to_mut().remove(&unsafe { fact_fields::key(fact) });
+}
+unsafe extern "C" fn proof_remaining(slot: Slot) -> u32 {
+    u32::from(unsafe { proof(slot) }.next.len() != 0)
+}
+#[repr(C)]
+struct ProofHost {
+    same: unsafe extern "C" fn(Slot) -> u32,
+    conflict: unsafe extern "C" fn(Slot, u32) -> u32,
+    next: unsafe extern "C" fn(Slot) -> fact_fields::Fields,
+    insert: unsafe extern "C" fn(Slot, fact_fields::Fields) -> u32,
+    remove: unsafe extern "C" fn(Slot, fact_fields::Fields),
+    remaining: unsafe extern "C" fn(Slot) -> u32,
+    facts: fact_fields::Host,
+}
+unsafe extern "C" {
+    #[link_name = "bootstrap.condition_graph::canonical_term_overlap"]
+    fn b_overlap(context: Slot, host: ProofHost) -> u32;
+}
+unsafe extern "C" fn overlap(left: Borrowed, right: Borrowed) -> u32 {
+    let (left, right) = unsafe { (&*left.cast::<Facts>(), &*right.cast::<Facts>()) };
+    let mut proof = Proof { left: std::borrow::Cow::Borrowed(left), right, next: right.iter() };
+    let unsigned32 = Scalar::U32;
+    unsafe {
+        b_overlap(
+            (&mut proof as *mut Proof<'_>).cast(),
+            ProofHost {
+                same: same_term, conflict: proof_conflict, next: proof_next,
+                insert: proof_insert, remove: proof_remove, remaining: proof_remaining,
+                facts: fact_fields::Host { unsigned32: borrowed(&unsigned32), compare: fact_fields::compare },
+            },
+        )
+    }
+}
 struct Scan<'a> {
     terms: &'a Terms,
     cursor: btree_set::Iter<'a, Facts>,
-    candidate: &'a Facts,
-    incoming: *mut Clause,
 }
 unsafe fn scan<'a, 'b>(slot: Slot) -> &'a mut Scan<'b> {
     unsafe { &mut *slot.cast() }
@@ -53,82 +110,50 @@ unsafe extern "C" fn scan_next(slot: Slot) -> Term {
     term(unsafe { scan(slot) }.cursor.next())
 }
 unsafe extern "C" fn scan_reset(slot: Slot) {
-    let c = unsafe { scan(slot) };
-    c.cursor = c.terms.iter();
-}
-unsafe extern "C" fn prepare(slot: Slot) {
-    let c = unsafe { scan(slot) };
-    unsafe { c.incoming.write(Clause::facts(c.candidate.clone())) };
-}
-unsafe extern "C" fn forward(slot: Slot, other: Borrowed) -> u32 {
-    let c = unsafe { scan(slot) };
-    let other = Clause::facts(unsafe { (&*other.cast::<Facts>()).clone() });
-    u32::from(unsafe { &*c.incoming }.overlap_query(&other, false))
-}
-unsafe extern "C" fn reverse(old: Borrowed, incoming: Borrowed) -> u32 {
-    let old = Clause::facts(unsafe { (&*old.cast::<Facts>()).clone() });
-    u32::from(old.overlap_query(unsafe { &*incoming.cast::<Clause>() }, false))
+    let scan = unsafe { scan(slot) };
+    scan.cursor = scan.terms.iter();
 }
 #[repr(u32)]
 enum Insertion {
     Reject,
     Insert,
-    RejectPrepared,
     RetainInsert,
 }
 #[repr(C)]
 struct InsertHost {
     next: unsafe extern "C" fn(Slot) -> Term,
     subset: unsafe extern "C" fn(Borrowed, Borrowed) -> u32,
-    prepare: unsafe extern "C" fn(Slot),
     reset: unsafe extern "C" fn(Slot),
-    forward: unsafe extern "C" fn(Slot, Borrowed) -> u32,
+    overlap: unsafe extern "C" fn(Borrowed, Borrowed) -> u32,
 }
 #[repr(C)]
 struct KeepHost {
     subset: unsafe extern "C" fn(Borrowed, Borrowed) -> u32,
-    reverse: unsafe extern "C" fn(Borrowed, Borrowed) -> u32,
+    overlap: unsafe extern "C" fn(Borrowed, Borrowed) -> u32,
 }
 unsafe extern "C" {
     #[link_name = "bootstrap.condition_graph::canonical_insert"]
     fn b_insert(context: Slot, candidate: Borrowed, empty: u32, host: InsertHost) -> Insertion;
     #[link_name = "bootstrap.condition_graph::canonical_keep"]
-    fn b_keep(old: Borrowed, candidate: Borrowed, incoming: Borrowed, host: KeepHost) -> u32;
+    fn b_keep(old: Borrowed, candidate: Borrowed, host: KeepHost) -> u32;
 }
 fn insert(output: &mut Terms, facts: Facts) -> bool {
-    let mut incoming = MaybeUninit::<Clause>::uninit();
-    let action = {
-        let mut c = Scan {
-            terms: output,
-            cursor: output.iter(),
-            candidate: &facts,
-            incoming: incoming.as_mut_ptr(),
-        };
-        unsafe {
-            b_insert(
-                (&mut c as *mut Scan<'_>).cast(),
-                borrowed(&facts),
-                u32::from(output.is_empty()),
-                InsertHost {
-                    next: scan_next,
-                    subset,
-                    prepare,
-                    reset: scan_reset,
-                    forward,
-                },
-            )
-        }
+    let mut scan = Scan { terms: output, cursor: output.iter() };
+    let action = unsafe {
+        b_insert(
+            (&mut scan as *mut Scan<'_>).cast(),
+            borrowed(&facts),
+            u32::from(output.is_empty()),
+            InsertHost { next: scan_next, subset, reset: scan_reset, overlap },
+        )
     };
     match action {
         Insertion::Reject => false,
         Insertion::Insert => output.insert(facts),
-        Insertion::RejectPrepared => {
-            drop(unsafe { incoming.assume_init() });
-            false
-        }
         Insertion::RetainInsert => {
-            let incoming = unsafe { incoming.assume_init() };
-            output.retain(|old|unsafe{b_keep(borrowed(old),borrowed(&facts),borrowed(&incoming),KeepHost{subset,reverse})}!=0);
+            output.retain(|old| unsafe {
+                b_keep(borrowed(old), borrowed(&facts), KeepHost { subset, overlap })
+            } != 0);
             output.insert(facts)
         }
     }
