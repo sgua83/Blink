@@ -197,6 +197,28 @@ impl DomainRelations {
     }
 }
 
+#[derive(Clone, Copy)]
+pub(crate) enum StorageSlots<'a> {
+    Direct,
+    Frame(&'a [u32]),
+}
+
+impl StorageSlots<'_> {
+    pub(crate) fn original(self, slot: usize) -> usize {
+        match self {
+            Self::Direct => slot,
+            Self::Frame(handles) => handles[slot] as usize,
+        }
+    }
+
+    fn selected(self, original: usize) -> Option<usize> {
+        match self {
+            Self::Direct => Some(original),
+            Self::Frame(handles) => handles.iter().position(|&handle| handle as usize == original),
+        }
+    }
+}
+
 struct RelationTargets<'a, D, T> {
     datasets: &'a [D],
     positions: Vec<Vec<T>>,
@@ -416,80 +438,8 @@ impl<D> DomainBindings<D> {
         program: &dyn ProgramInterface,
         binding: impl Fn(usize) -> (usize, u32),
     ) where D: DomainStorage {
-        self.domains
-            .extend(program.prefix_guarantees().iter().map(|r| DomainRelation::Prefix {
-                domain: binding(r.domain).0,
-                offset: binding(r.domain).1+r.domain_layout(program.buffers()).0,
-                bytes: r.domain_layout(program.buffers()).1,
-                count: PrefixCount {
-                    binding: binding(r.count.binding).0,
-                    word: r.count.word + binding(r.count.binding).1,
-                },
-            }));
-        for range in produced_ranges(program.element_guarantees(), &binding,
-            |target| self.datasets[binding(target).0].element_count()) {
-            produced_element(&mut self.domains, range);
-        }
-        self.domains.sort_unique();
-    }
-    /// Borrow only facts contained in the actual logical argument fields.
-    pub(crate) fn projected_relations(
-        &self,
-        program: &ExecutionPlan,
-        physical: impl Fn(usize) -> (usize, u32),
-    ) -> Vec<DomainRelation>
-    where
-        D: DomainStorage,
-    {
-        if self.domains.is_empty() {
-            return Vec::new();
-        }
-        let fields = program.buffers().iter().enumerate().map(|(binding, buffer)| {
-            let (source, start) = physical(binding);
-            (source, ArgumentField { binding, start, end: u64::from(start) + u64::from(buffer.ty.size) })
-        });
-        let targets = RelationTargets::new(&self.datasets, fields);
-        let mut prefixes = BTreeSet::new();
-        let mut elements = BTreeSet::new();
-        let mut counts = Vec::new();
-        let mut result = Vec::new();
-        for relation in self.domains.iter() {
-            let Some(source) = targets.source(relation.domain()) else { continue; };
-            match relation {
-                DomainRelation::Prefix { offset, bytes, count, .. } => {
-                    let Some(count_source) = targets.source(count.binding) else { continue; };
-                    if !prefixes.insert((source, *offset, *bytes, count_source, count.word)) {
-                        continue;
-                    }
-                    counts.clear();
-                    counts.extend(targets.positions[count_source].iter()
-                        .filter_map(|field| field.project(count.word, 4)));
-                    let domains = targets.positions[source].iter()
-                        .filter_map(|field| field.project(*offset, *bytes));
-                    for (domain, offset) in domains {
-                        for &(binding, word) in &counts {
-                            result.push(DomainRelation::Prefix {
-                                domain, offset, bytes: *bytes, count: PrefixCount { binding, word },
-                            });
-                        }
-                    }
-                },
-                DomainRelation::Element(range) => {
-                    // Compare the original interval storage before cloning a receiving field's fact.
-                    let key = (source, range.offset, range.scalar, range.intervals.as_slice(), range.known_bits);
-                    if !elements.insert(key) {
-                        continue;
-                    }
-                    let fields = targets.positions[source].iter()
-                        .filter_map(|field| field.project(range.offset, range.scalar.size()));
-                    for (binding, offset) in fields {
-                        result.push(DomainRelation::Element(ElementRange { binding, offset, ..range.clone() }));
-                    }
-                }
-            }
-        }
-        result.sort_unstable();
-        result
+        produce(&mut self.domains, program, &binding,
+            |target| self.datasets[binding(target).0].element_count());
     }
     /// 将真实生产者的共同字段保证并入本组原关系，不读取或修改载荷。
     ///
@@ -503,6 +453,89 @@ impl<D> DomainBindings<D> {
     pub unsafe fn produced_element(&mut self, range: ElementRange) {
         produced_element(&mut self.domains, range);
     }
+}
+
+/// Borrow only facts contained in the actual logical argument fields.
+pub(crate) fn projected_relations<D: DomainStorage>(
+    datasets: &[D],
+    domains: &[DomainRelation],
+    program: &ExecutionPlan,
+    physical: impl Fn(usize) -> (usize, u32),
+    slots: StorageSlots<'_>,
+) -> Vec<DomainRelation> {
+    if domains.is_empty() {
+        return Vec::new();
+    }
+    let fields = program.buffers().iter().enumerate().map(|(binding, buffer)| {
+        let (source, start) = physical(binding);
+        (source, ArgumentField { binding, start, end: u64::from(start) + u64::from(buffer.ty.size) })
+    });
+    let targets = RelationTargets::new(datasets, fields);
+    let source = |original| slots.selected(original).and_then(|slot| targets.source(slot));
+    let mut prefixes = BTreeSet::new();
+    let mut elements = BTreeSet::new();
+    let mut counts = Vec::new();
+    let mut result = Vec::new();
+    for relation in domains {
+        let Some(domain_source) = source(relation.domain()) else { continue; };
+        match relation {
+            DomainRelation::Prefix { offset, bytes, count, .. } => {
+                let Some(count_source) = source(count.binding) else { continue; };
+                if !prefixes.insert((domain_source, *offset, *bytes, count_source, count.word)) {
+                    continue;
+                }
+                counts.clear();
+                counts.extend(targets.positions[count_source].iter()
+                    .filter_map(|field| field.project(count.word, 4)));
+                let domains = targets.positions[domain_source].iter()
+                    .filter_map(|field| field.project(*offset, *bytes));
+                for (domain, offset) in domains {
+                    for &(binding, word) in &counts {
+                        result.push(DomainRelation::Prefix {
+                            domain, offset, bytes: *bytes, count: PrefixCount { binding, word },
+                        });
+                    }
+                }
+            },
+            DomainRelation::Element(range) => {
+                // Compare the original interval storage before cloning a receiving field's fact.
+                let key = (domain_source, range.offset, range.scalar, range.intervals.as_slice(), range.known_bits);
+                if !elements.insert(key) {
+                    continue;
+                }
+                let fields = targets.positions[domain_source].iter()
+                    .filter_map(|field| field.project(range.offset, range.scalar.size()));
+                for (binding, offset) in fields {
+                    result.push(DomainRelation::Element(ElementRange { binding, offset, ..range.clone() }));
+                }
+            }
+        }
+    }
+    result.sort_unstable();
+    result
+}
+
+pub(crate) fn produce(
+    domains: &mut DomainRelations,
+    program: &dyn ProgramInterface,
+    binding: impl Fn(usize) -> (usize, u32),
+    count: impl Fn(usize) -> u32,
+) {
+    domains.extend(program.prefix_guarantees().iter().map(|relation| {
+        let (domain, offset) = binding(relation.domain);
+        let (field, bytes) = relation.domain_layout(program.buffers());
+        let (count, word) = binding(relation.count.binding);
+        DomainRelation::Prefix {
+            domain,
+            offset: offset + field,
+            bytes,
+            count: PrefixCount { binding: count, word: word + relation.count.word },
+        }
+    }));
+    for range in produced_ranges(program.element_guarantees(), &binding, count) {
+        produced_element(domains, range);
+    }
+    domains.sort_unique();
 }
 
 pub(crate) fn produced_ranges(
@@ -534,25 +567,32 @@ pub(crate) fn produced_element(domains: &mut Vec<DomainRelation>, range: Element
     }
 }
 
-fn same_storage<D:DomainStorage>(datasets:&[D],a:usize,b:usize)->bool {
-    a==b || datasets[a].read_identity().is_some_and(|identity|
-        datasets.get(b).and_then(D::read_identity)==Some(identity))
-}
 pub(crate) fn require<D: DomainStorage>(
     datasets: &[D],
     domains: &[DomainRelation],
     program: &dyn ProgramInterface,
     binding: impl Fn(usize) -> (usize, u32),
+    slots: StorageSlots<'_>,
 ) -> Result<()> {
-    let same = |a: usize, b: usize| same_storage(datasets,a,b);
+    let same = |original: usize, selected: usize| {
+        original == slots.original(selected) || datasets[selected].read_identity().is_some_and(|identity| {
+            slots.selected(original).and_then(|slot| datasets.get(slot)).and_then(D::read_identity) == Some(identity)
+        })
+    };
     for relation in program.prefix_requirements() {
+        let (domain_slot, domain_offset) = binding(relation.domain);
+        let (field, size) = relation.domain_layout(program.buffers());
+        let start = u64::from(domain_offset) + u64::from(field);
+        let end = start + u64::from(size);
+        let (count_slot, count_offset) = binding(relation.count.binding);
+        let word = u64::from(relation.count.word) + u64::from(count_offset);
         if !domains.iter().any(|known| {
             matches!(known, DomainRelation::Prefix { domain, offset, bytes, count }
-                if same(*domain, binding(relation.domain).0)
-                && u64::from(*offset) <= u64::from(binding(relation.domain).1)+u64::from(relation.domain_layout(program.buffers()).0)
-                && u64::from(binding(relation.domain).1)+u64::from(relation.domain_layout(program.buffers()).0)+u64::from(relation.domain_layout(program.buffers()).1)<=u64::from(*offset)+u64::from(*bytes)
-                && u64::from(count.word) == u64::from(relation.count.word) + u64::from(binding(relation.count.binding).1)
-                && same(count.binding, binding(relation.count.binding).0))
+                if same(*domain, domain_slot)
+                && u64::from(*offset) <= start
+                && end <= u64::from(*offset) + u64::from(*bytes)
+                && u64::from(count.word) == word
+                && same(count.binding, count_slot))
         }) {
             return Err(error(format!(
                 "程序 {} 缺少绑定 {} 与 {} 的有效域所有权",

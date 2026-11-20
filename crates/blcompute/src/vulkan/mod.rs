@@ -2369,7 +2369,8 @@ impl GpuProgram {
         location: impl Fn(usize) -> (usize, u32) + Copy,
     ) -> Result<Submission> {
         let c = &self.compiled;
-        crate::bindings::require(&owner.bindings.datasets, &owner.bindings.domains, &c.program, location)?;
+        crate::bindings::require(&owner.bindings.datasets, &owner.bindings.domains, &c.program, location,
+            crate::bindings::StorageSlots::Direct)?;
         let physical = |i| location(i).0;
         if owner.textures.len() != c.program.texture_count()
             || owner.textures.iter().any(|t| !t.belongs_to(&c.inner))

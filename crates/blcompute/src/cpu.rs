@@ -3,7 +3,7 @@ mod dataset;
 mod observation;
 mod sort;
 use crate::{Dataset, DomainBindings, ReadDataset, Result, Value, arguments, error};
-use crate::bindings::DomainRelations;
+use crate::bindings::{self, DomainRelations, StorageSlots};
 use crate::application::ResidentData;
 use crate::library::Library;
 use blanguage::{
@@ -779,15 +779,16 @@ impl CpuTemplate {
 
     pub(crate) fn run_projected(
         &self,
-        bindings: &mut DomainBindings<&mut ResidentData>,
+        datasets: &mut [&mut ResidentData],
+        domains: &mut DomainRelations,
+        selected: &[u32],
         order: &[(usize, u32)],
         textures: &[CpuTextureBinding<'_>],
         uniforms: Vec<u32>,
         definitions: &std::sync::Arc<crate::application::Definitions>,
-        writing: impl FnOnce(),
     ) -> Result<()> {
-        self.code
-            .run_mapped(bindings, textures, uniforms, order.len(), |i| order[i], writing, Some(definitions), None)
+        self.code.run_mapped(datasets, domains, textures, uniforms, order.len(), |i| order[i],
+            StorageSlots::Frame(selected), Some(definitions), None)
     }
 }
 #[derive(Clone, Copy)]
@@ -969,7 +970,9 @@ impl CpuCode {
         }), values);
         let result = uniforms.and_then(|uniforms| {
             let descriptions = CpuTextures::new(&bindings.textures);
-            self.run_mapped(&mut bindings.datasets, &descriptions.bindings(), uniforms, count, |i| (i, 0), || {}, self.definitions.as_ref(), timings)
+            let DomainBindings { datasets, domains } = &mut bindings.datasets;
+            self.run_mapped(datasets, domains, &descriptions.bindings(), uniforms, count, |i| (i, 0),
+                StorageSlots::Direct, self.definitions.as_ref(), timings)
         });
         match result {
             Ok(()) => Ok(bindings.datasets),
@@ -978,18 +981,19 @@ impl CpuCode {
     }
     fn run_mapped<D:CpuStorage>(
         &self,
-        bindings: &mut DomainBindings<D>,
+        datasets: &mut [D],
+        domains: &mut DomainRelations,
         textures: &[CpuTextureBinding<'_>],
         uniforms: Vec<u32>,
         count: usize,
         physical: impl Fn(usize) -> (usize, u32) + Copy,
-        writing: impl FnOnce(),
+        slots: StorageSlots<'_>,
         definitions:Option<&std::sync::Arc<crate::application::Definitions>>,
         timings: Option<&mut CpuRangeTimings>,
     ) -> Result<()> {
-        crate::bindings::require(&bindings.datasets, &bindings.domains, &self.program, physical)?;
+        bindings::require(datasets, domains, &self.program, physical, slots)?;
         for (data, binding) in (0..count)
-            .map(|i| &bindings.datasets[physical(i).0])
+            .map(|i| &datasets[physical(i).0])
             .zip(self.program.buffers())
         {
             if !data.cpu_metadata().2 && binding.access != blanguage::ast::Access::Read
@@ -997,11 +1001,13 @@ impl CpuCode {
                 return Err(error("冻结的 CPU 存储只能绑定 read dataset"));
             }
         }
-        let input_domains=if self.program.native_frame().is_some(){
-            bindings.projected_relations(&self.program,physical)
-        }else{Vec::new()};
+        let input_domains = if self.program.native_frame().is_some() {
+            bindings::projected_relations(datasets, domains, &self.program, physical, slots)
+        } else {
+            Vec::new()
+        };
         let mut buffers = Vec::with_capacity(count);
-        for data in &mut bindings.datasets {
+        for data in &mut *datasets {
             buffers.push(data.cpu_buffer()?);
         }
         // arguments已核对同一存储类型与偏移；这里只交接原指针描述符。
@@ -1024,11 +1030,14 @@ impl CpuCode {
         for i in (0..physical_count).rev() {
             buffers[i] = project(&buffers, i);
         }
+        let original = |i| {
+            let (slot, offset) = physical(i);
+            (slots.original(slot), offset)
+        };
         self.run_buffers(&buffers, textures, uniforms, || {
-            crate::bindings::invalidate(&mut bindings.domains, &self.program.write_regions, physical);
-            writing();
+            bindings::invalidate(domains, &self.program.write_regions, original);
         }, definitions, input_domains, timings)?;
-        bindings.produced(&self.program, physical);
+        bindings::produce(domains, &self.program, original, |i| datasets[physical(i).0].element_count());
         Ok(())
     }
     fn run(

@@ -364,9 +364,8 @@ impl Frame {
             ResidentData::Gpu(data)=>data.storage_address(),
         }
     }
-    /// CPU 同步执行借用原帧槽，完整选中的域关系在本次调用内移交。
-    /// 取得可写访问后，调用与Frame各自撤回所持关系中实际覆盖的字段。
-    /// GPU 参数驻留确认后才装入管线，同样将完整选中的域关系随存储移交。
+    /// CPU 同步执行借用原帧槽，沿原句柄验证、撤回实际覆盖的事实并发布结果。
+    /// GPU 参数驻留确认后才装入管线，将完整选中的域关系随存储移交。
     /// 提交拒绝交回原关系，已提交的写入撤回旧事实，等待成功才交回新保证。
     pub fn run(&mut self, program: u32, bindings: &[DatasetBinding], values: &[Value], textures: &[crate::cpu::CpuTextureBinding<'_>]) -> Result<()> {
         let index = program as usize;
@@ -408,13 +407,6 @@ impl Frame {
             };
             order.push((slot, binding.offset));
         }
-        let selected_slot = |binding| selected.iter().position(|&handle| handle as usize == binding);
-        let take_domains = |domains: &mut DomainRelations| {
-            DomainRelations::Owned(domains
-                .extract_matching(|relation| relation.binding_indices().all(|binding| selected_slot(binding).is_some()))
-                .map(|relation| relation.into_mapped(selected_slot).unwrap())
-                .collect())
-        };
         let (domains, result) = match definition {
             ProgramSlot::Cpu(program) => {
                 let mut datasets = Vec::with_capacity(selected.len());
@@ -428,13 +420,12 @@ impl Frame {
                     }
                     datasets.push(data);
                 }
-                let domains = take_domains(&mut self.data.domains);
-                let mut inputs = DomainBindings { datasets, domains };
-                let result = program.run_projected(&mut inputs, &order, textures, uniforms, &definitions, || {
-                    crate::bindings::invalidate(&mut self.data.domains, &layout.write_regions,
-                        |i| (bindings[i].handle as usize, bindings[i].offset));
-                });
-                (inputs.domains, result)
+                let result = program.run_projected(&mut datasets, &mut self.data.domains,
+                    &selected, &order, textures, uniforms, &definitions);
+                if result.is_err() {
+                    self.data.domains.sort_unique();
+                }
+                return result;
             }
             ProgramSlot::Gpu(image) => {
                 if !textures.is_empty() {
@@ -445,7 +436,11 @@ impl Frame {
                 }
                 self.load_gpu(index, image)?;
                 let gpu_program = self.gpu_programs[index].as_ref().unwrap();
-                let domains = take_domains(&mut self.data.domains);
+                let selected_slot = |binding| selected.iter().position(|&handle| handle as usize == binding);
+                let domains = DomainRelations::Owned(self.data.domains
+                    .extract_matching(|relation| relation.binding_indices().all(|binding| selected_slot(binding).is_some()))
+                    .map(|relation| relation.into_mapped(selected_slot).unwrap())
+                    .collect());
                 let mut datasets = Vec::with_capacity(selected.len());
                 for &handle in &selected {
                     let Some(ResidentData::Gpu(data)) = self.data.datasets[handle as usize].take() else {
