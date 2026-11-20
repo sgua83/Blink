@@ -462,7 +462,7 @@ struct ScanPrefix {
     u32 label;
 };
 
-struct ScanField {
+struct PhysicalField {
     BuiltinScalar scalar;
     u32 raw_type;
     u32 value_type;
@@ -478,6 +478,40 @@ struct ScanField {
 // A segment head descriptor uses a further 148 body words for its load and branch.
 extern "C" TreeWords add_scan_prefix(ScanPrefix input, address fields, u32 count,
     address body, address decorations) on cpu;
+
+struct CustomCollectiveSource {
+    PageAddress source;
+    u32 active;
+    u32 bool_type;
+    u32 value_words;
+    u32 tag_words;
+    u32 head_offset;
+    u32 step;
+    u32 tail;
+};
+
+struct CustomCollectiveRead {
+    u64 words;
+    u32 next;
+    u32 run;
+    u32 end;
+};
+
+struct CustomCollectiveJoin {
+    u32 uint_type;
+    u32 from;
+    u32 inactive;
+    u32 end;
+    u32 next;
+    u32 scope;
+    u32 semantics;
+};
+
+// The caller applies the original projection in run for a typed source.
+extern "C" CustomCollectiveRead custom_collective_read(CustomCollectiveSource input,
+    address fields, u32 count, address values, address body) on cpu;
+extern "C" StageWords custom_collective_join(CustomCollectiveJoin input, address values,
+    address identity, address shared, u32 count, address body) on cpu;
 
 struct SegmentField {
     BuiltinScalar scalar;

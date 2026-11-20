@@ -2218,7 +2218,7 @@ u64 write_scan_prefix(inout StageCursor out, ScanPrefix input, u32 group, u32 fi
     u64 decorated = 0u64;
 
     for (index in 0..count) {
-        let field = unsafe_position<ScanField>(unsafe_address(address_bits(fields) + u64(index) * size_of<ScanField>()));
+        let field = unsafe_position<PhysicalField>(unsafe_address(address_bits(fields) + u64(index) * size_of<PhysicalField>()));
         array<u32,2> from = stage_field_pointers(out, prefix.value, field.offset, field.pointer_type,
             input.target.u64_type, field.step);
         array<u32,2> to = stage_field_pointers(out, target.value, field.offset, field.pointer_type,
@@ -2250,7 +2250,7 @@ extern "C" TreeWords add_scan_prefix(ScanPrefix input, address fields, u32 count
     StageCursor out = StageCursor(body, 0u64, input.target.next);
     u32 uint_type = input.target.u32_type;
     u32 group = stage_op(out, 134, uint_type, input.target.index, input.width);
-    let scalar = unsafe_position<ScanField>(fields).scalar;
+    let scalar = unsafe_position<PhysicalField>(fields).scalar;
     bool extreme = (scalar == BuiltinScalar::F32 || scalar == BuiltinScalar::F64) && input.operation != CollectiveOperation::Sum;
     bool segmented = input.head_descriptor != 0;
     u32 lane = segmented || extreme ? stage_op(out, 137, uint_type, input.target.index, input.width) : 0;
@@ -2432,6 +2432,71 @@ extern "C" TreeWords segment_add(SegmentAdd input, address fields, u32 count,
     return TreeWords(out.words, decorated, out.next, branch.end);
 }
 
+u32 segment_indicator(inout StageCursor out, PageAddress source, u32 bool_type, u32 head, bool implicit_first) on cpu {
+    u32 flag = stage_op(out, 171, bool_type, head, source.zero);
+    if (implicit_first) {
+        u32 first = stage_op(out, 170, bool_type, source.index, source.zero);
+        flag = stage_op(out, 166, bool_type, flag, first);
+    }
+    return stage_select(out, source.u32_type, flag, source.one, source.zero);
+}
+
+extern "C" CustomCollectiveRead custom_collective_read(CustomCollectiveSource input,
+    address fields, u32 count, address values, address body) on cpu {
+    PageAddress source = input.source;
+    StageCursor out = StageCursor(body, 0u64, source.next);
+    StageBranch read = stage_open(out, input.active);
+    if (input.tail != 0) {
+        u32 words = input.value_words + input.tag_words;
+        if (words != 0) {
+            read_segment_summary(out, source, input.step, words, values, values);
+        }
+        if (input.tag_words != 0) {
+            u32 tag = read_word(values, input.value_words);
+            put(values, u64(input.value_words), segment_indicator(out, source, input.bool_type, tag, false));
+        }
+    } else if (count + input.tag_words != 0) {
+        u32 record = collective_record(out, source);
+        for (index in 0..count) {
+            let field = unsafe_position<PhysicalField>(
+                unsafe_address(address_bits(fields) + u64(index) * size_of<PhysicalField>()));
+            array<u32,2> pointers = stage_field_pointers(out, record, field.offset, field.pointer_type,
+                source.u64_type, field.step);
+            array<u32,2> shifts = array<u32,2>(0, field.shift);
+            PayloadEmission payload = PayloadEmission(PayloadAccess::Physical, field.raw_type, field.unit_type,
+                field.unit_bytes, field.step == 0 ? 1 : 2, out.next);
+            u32 value = read_stage_payload(out, payload, address_of(pointers[0]), address_of(shifts[0]));
+            put(values, u64(index), value);
+        }
+        if (input.tag_words != 0) {
+            array<u32,2> pointer = stage_field_pointers(out, record, input.head_offset, source.result_pointer,
+                source.u64_type, 0);
+            u32 head = stage_aligned_load(out, source.u32_type, pointer[0], 4);
+            u32 tag = segment_indicator(out, source, input.bool_type, head, input.tag_words == 2);
+            put(values, u64(count), tag);
+            if (input.tag_words == 2) { put(values, u64(count + 1), tag); }
+        }
+    }
+    return CustomCollectiveRead(out.words, out.next, read.run, read.end);
+}
+
+
+extern "C" StageWords custom_collective_join(CustomCollectiveJoin input, address values,
+    address identity, address shared, u32 count, address body) on cpu {
+    StageCursor out = StageCursor(body, 0u64, input.next);
+    out.words = words_one(body, out.words, 249, input.end);
+    out.words = words_one(body, out.words, 248, input.end);
+    for (part in 0..count) {
+        u32 value = stage_phi(out, input.uint_type, read_word(values, part), input.from,
+            read_word(identity, part), input.inactive);
+        put(values, u64(part), value);
+    }
+    out.words += write_summary_words(word_at(body, out.words), shared, values, count);
+    stage_barrier(out, input.scope, input.semantics);
+    return StageWords(out.words, out.next, input.end);
+}
+
+
 void segment_source(inout StageCursor out, SegmentGroup input, address fields, u32 count,
     address words) on cpu {
     address body = out.body;
@@ -2463,12 +2528,7 @@ void segment_source(inout StageCursor out, SegmentGroup input, address fields, u
 
     array<u32,2> head_ptr = stage_field_pointers(out, record.value, input.head_offset, input.source.result_pointer, wide_type, 0);
     u32 head = stage_aligned_load(out, uint_type, head_ptr[0], 4);
-    u32 flag = stage_op(out, 171, input.merge.bool_type, head, input.source.zero);
-    if (input.merge.counted != 0) {
-        u32 first = stage_op(out, 170, input.merge.bool_type, input.source.index, input.source.zero);
-        flag = stage_op(out, 166, input.merge.bool_type, flag, first);
-    }
-    u32 indicator = stage_select(out, uint_type, flag, input.source.one, input.source.zero);
+    u32 indicator = segment_indicator(out, input.source, input.merge.bool_type, head, input.merge.counted != 0);
     put(words, u64(input.merge.value_words), indicator);
     if (input.merge.counted != 0) { put(words, u64(input.merge.value_words + 1), indicator); }
 }

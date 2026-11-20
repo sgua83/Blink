@@ -105,7 +105,7 @@ struct ScanPrefix {
 }
 
 #[repr(C)]
-struct ScanField {
+pub(super) struct PhysicalField {
     scalar: ScalarCode,
     raw_type: u32,
     value_type: u32,
@@ -124,7 +124,7 @@ unsafe extern "C" {
         fields: *const CollectiveField, count: u32, workspace: *mut u32, body: *mut u32,
         decorations: *mut u32) -> TreeWords;
     #[link_name = "bootstrap.spirv_envelope::add_scan_prefix"]
-    fn add_scan_prefix(input: ScanPrefix, fields: *const ScanField, count: u32,
+    fn add_scan_prefix(input: ScanPrefix, fields: *const PhysicalField, count: u32,
         body: *mut u32, decorations: *mut u32) -> TreeWords;
     #[link_name = "bootstrap.spirv_envelope::shared_addresses"]
     fn emit_shared_addresses(input: SharedAddress, offsets: *mut u32, body: *mut u32) -> SharedAddressWords;
@@ -409,17 +409,16 @@ impl Emitter<'_> {
         self.emit_scan_prefix(scan, scan.values.target_word, Some(scan.ty.size.div_ceil(4) * 4));
     }
 
-    fn emit_scan_prefix(&mut self, scan: &Scan, target_word: u32, head: Option<u32>) {
-        let r = &scan.values;
-        let width = self.constant(Scalar::U32, 64);
-        let fields: Vec<_> = scan.ty.components.iter().map(|&(scalar, offset)| {
+    pub(super) fn physical_fields(&mut self, ty: &Ty, first: u32) -> Vec<PhysicalField> {
+        ty.components.iter().map(|&(scalar, offset)| {
             let unit = Self::physical_unit(scalar);
             let (step, shift) = if scalar.size() == 8 {
                 (self.constant(Scalar::U64, 4), self.constant(Scalar::U32, 32))
             } else {
                 (0, 0)
             };
-            ScanField {
+            let offset = first + offset;
+            PhysicalField {
                 scalar: scalar.into(),
                 raw_type: self.raw_type(scalar),
                 value_type: self.types[&scalar],
@@ -430,7 +429,13 @@ impl Emitter<'_> {
                 step,
                 shift,
             }
-        }).collect();
+        }).collect()
+    }
+
+    fn emit_scan_prefix(&mut self, scan: &Scan, target_word: u32, head: Option<u32>) {
+        let r = &scan.values;
+        let width = self.constant(Scalar::U32, 64);
+        let fields = self.physical_fields(&scan.ty, 0);
         let (head_descriptor, head_word, one) = match head {
             Some(offset) => (
                 self.buffers[self.program.buffers.len()],

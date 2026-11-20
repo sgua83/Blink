@@ -1,5 +1,45 @@
 //! 用户值函数共用有序共享树；归约、扫描及摘要传播不引入另一套函数执行器。
-use super::*;
+use super::{scan::PhysicalField, *};
+
+#[repr(C)]
+struct CustomCollectiveSource {
+    source: PageAddress,
+    active: u32,
+    bool_type: u32,
+    value_words: u32,
+    tag_words: u32,
+    head_offset: u32,
+    step: u32,
+    tail: u32,
+}
+
+#[repr(C)]
+struct CustomCollectiveRead {
+    words: u64,
+    next: u32,
+    run: u32,
+    end: u32,
+}
+
+#[repr(C)]
+struct CustomCollectiveJoin {
+    uint_type: u32,
+    from: u32,
+    inactive: u32,
+    end: u32,
+    next: u32,
+    scope: u32,
+    semantics: u32,
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.spirv_envelope::custom_collective_read"]
+    fn emit_custom_collective_read(input: CustomCollectiveSource, fields: *const PhysicalField,
+        count: u32, values: *mut u32, body: *mut u32) -> CustomCollectiveRead;
+    #[link_name = "bootstrap.spirv_envelope::custom_collective_join"]
+    fn emit_custom_collective_join(input: CustomCollectiveJoin, values: *mut u32,
+        identity: *const u32, shared: *const u32, count: u32, body: *mut u32) -> StageWords;
+}
 #[derive(Clone, Copy)]
 enum Summary {
     Plain,
@@ -65,101 +105,86 @@ impl Emitter<'_> {
         pointer: u32,
         active: u32,
         summary: Summary,
-        capture: bool,
     ) -> Result<(Vec<u32>, Vec<u32>, Vec<u32>), &'static str> {
         let k = r.ty.size.div_ceil(4) as usize;
         let words = summary.words(k);
-        let head_word = summary.head();
-        let fields = &r.fields;
-        let u = self.types[&Scalar::U32];
+        let tags = words - k;
         self.block(
             &kernel.stage.code[kernel.invariant_end..kernel.initialize_end],
             None,
         )?;
         let initial: Vec<_> = kernel.initial.iter().map(|reg| self.raw_bits(*reg)).collect();
-        let mut identity = self.pack_words(r.ty.size, r.ty.components.iter().zip(&initial).map(|((scalar, byte), value)| (*scalar, *byte, *value)));
-        for _ in k..words {
-            identity.push(self.constant(Scalar::U32, 0));
-        }
+        let mut identity = self.pack_words(r.ty.size, r.ty.components.iter().zip(&initial)
+            .map(|((scalar, byte), value)| (*scalar, *byte, *value)));
+        identity.resize(words, self.constant(Scalar::U32, 0));
         let own = self.shared_planes(shared, pointer, local, words);
-        self.write_summary_words(&own, &identity);
-        let read = self.id();
-        let end = self.id();
-        self.emit(247, &[end, 0]);
-        self.emit(250, &[active, read, end]);
-        self.emit(248, &[read]);
-        for (i, reg) in kernel.source.iter().enumerate() {
-            let scalar = kernel.stage.registers[*reg];
-            let word = if tail { r.ty.components[i].1 } else { fields.source_word + r.source_ty.components[i].1 };
-            let raw = self.load_raw_buffer(scalar,
-                if tail {
-                    self.scan_input_binding(fields)
-                } else {
-                    fields.source
-                },
-                self.index,
-                word);
-            self.from_words(*reg, &[raw], Self::raw_scalar(scalar));
-        }
-        self.block(
-            &kernel.stage.code[kernel.initialize_end..kernel.project_end],
-            None,
-        )?;
-        for (dst, src) in kernel.right.iter().zip(&kernel.projected) {
-            self.regs[*dst] = self.value(*src);
-        }
-        let components: Vec<_> = kernel.right.iter().map(|reg| self.raw_bits(*reg)).collect();
-        let values = self.pack_words(r.ty.size, r.ty.components.iter().zip(&components).map(|((scalar, byte), value)| (*scalar, *byte, *value)));
-        self.write_summary_words(&own[..k], &values);
-        if let Some(head_word) = head_word {
-            let source = self.address_scalar(Scalar::U32,
-                if tail {
-                    self.scan_input_binding(fields)
-                } else {
-                    fields.source
-                },
-                self.index,
-                if tail { k as u32 * 4 } else { head_word });
-            let raw = self.read_summary_words(&[source])[0];
-            let mut head = self.id();
-            let zero = self.constant(Scalar::U32, 0);
-            let one = self.constant(Scalar::U32, 1);
-            self.emit(171, &[self.types[&Scalar::Bool], head, raw, zero]);
-            if matches!(summary, Summary::Counted(_)) && !tail {
-                let first = self.id();
-                self.emit(170, &[self.types[&Scalar::Bool], first, self.index, zero]);
-                let explicit = head;
-                head = self.id();
-                self.emit(166, &[self.types[&Scalar::Bool], head, explicit, first]);
-            }
-            let flag = self.id();
-            self.select(u, flag, head, one, zero);
-            self.write_summary_words(&own[k..k + 1], &[flag]);
-            if matches!(summary, Summary::Counted(_)) {
-                let count = if tail {
-                    let at = self.address_scalar(Scalar::U32,
-                        self.scan_input_binding(fields),
-                        self.index,
-                        (k as u32 + 1) * 4);
-                    self.read_summary_words(&[at])[0]
-                } else {
-                    flag
-                };
-                self.write_summary_words(&own[k + 1..], &[count]);
-            }
-        }
-        self.emit(249, &[end]);
-        self.emit(248, &[end]);
-        let input = if capture {
-            self.read_summary_words(&own)
-        } else if matches!(summary, Summary::Segmented(_)) && !tail {
-            self.read_summary_words(&own[k..k + 1])
+
+        let (binding, fields) = if tail {
+            (self.scan_input_binding(&r.fields), Vec::new())
         } else {
-            Vec::new()
+            (r.fields.source, self.physical_fields(&r.source_ty, r.fields.source_word))
         };
-        self.scan_barrier();
-        Ok((own, identity, input))
+        let head = summary.head().unwrap_or(0);
+        let head_offset = if !tail && head != 0 { self.constant(Scalar::U64, head) } else { 0 };
+        let step = if tail && words > 1 { self.constant(Scalar::U64, 4) } else { 0 };
+        let source = self.page_input(Scalar::U32, PageSource::Dataset(self.buffers[binding]),
+            self.index, None, 0);
+        let input = CustomCollectiveSource {
+            source, active, bool_type: self.types[&Scalar::Bool],
+            value_words: k as u32, tag_words: tags as u32, head_offset, step,
+            tail: u32::from(tail),
+        };
+        let mut incoming = vec![0; if tail { words } else { fields.len() + tags }];
+        let inactive = self.current_label;
+        let body = self.body.len();
+        self.body.reserve(155 + 74 * fields.len() + 14 * words);
+        let read = unsafe {
+            let read = emit_custom_collective_read(input, fields.as_ptr(), fields.len() as u32,
+                incoming.as_mut_ptr(), self.body.as_mut_ptr().add(body));
+            self.body.set_len(body + read.words as usize);
+            read
+        };
+        self.next = read.next;
+        self.current_label = read.run;
+
+
+        let mut values = if tail {
+            incoming
+        } else {
+            for (reg, raw) in kernel.source.iter().zip(&incoming) {
+                let scalar = kernel.stage.registers[*reg];
+                self.from_words(*reg, &[*raw], Self::raw_scalar(scalar));
+            }
+            self.block(&kernel.stage.code[kernel.initialize_end..kernel.project_end], None)?;
+            for (dst, src) in kernel.right.iter().zip(&kernel.projected) {
+                self.regs[*dst] = self.value(*src);
+            }
+            let projected: Vec<_> = kernel.right.iter().map(|reg| self.raw_bits(*reg)).collect();
+            let mut packed = self.pack_words(r.ty.size, r.ty.components.iter().zip(&projected)
+                .map(|((scalar, byte), value)| (*scalar, *byte, *value)));
+            packed.extend_from_slice(&incoming[fields.len()..]);
+            packed
+        };
+
+        let scope = self.constant(Scalar::U32, 2);
+        let semantics = self.constant(Scalar::U32, 0x108);
+        let join = CustomCollectiveJoin {
+            uint_type: self.types[&Scalar::U32], from: self.current_label, inactive,
+            end: read.end, next: self.next, scope, semantics,
+        };
+        let body = self.body.len();
+        self.body.reserve(8 + 12 * words);
+        unsafe {
+            let joined = emit_custom_collective_join(join, values.as_mut_ptr(), identity.as_ptr(),
+                own.as_ptr(), words as u32, self.body.as_mut_ptr().add(body));
+            self.body.set_len(body + joined.words as usize);
+            self.next = joined.next;
+            self.current_label = joined.label;
+        }
+        Ok((own, identity, values))
     }
+
+
     fn custom_merge(
         &mut self,
         r: &CustomReduction,
@@ -277,7 +302,6 @@ impl Emitter<'_> {
             pointer,
             active,
             Summary::Plain,
-            false,
         )?;
         let remaining = self.group_remaining(local, count);
         for width in [1, 2, 4, 8, 16, 32] {
@@ -315,9 +339,9 @@ impl Emitter<'_> {
         let words = scan.summary_words();
         let summary = scan.head_word.map(Summary::Segmented).unwrap_or(Summary::Plain);
         let (own, identity, input) = self.custom_input(
-            r, kernel, tail, local, shared, pointer, active, summary, false,
+            r, kernel, tail, local, shared, pointer, active, summary,
         )?;
-        let head = input.first().copied();
+        let head = scan.head_word.map(|_| input[k]);
         let remaining = self.group_remaining(local, count);
         for width in [1, 2, 4, 8, 16, 32] {
             self.custom_tree(
@@ -445,7 +469,6 @@ impl Emitter<'_> {
             pointer,
             active,
             summary,
-            pass == Pass::ScanRootAdd,
         )?;
         let remaining = self.group_remaining(local, count);
         for width in [1, 2, 4, 8, 16, 32] {
