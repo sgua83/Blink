@@ -137,17 +137,17 @@ pub(super) struct Use {
 #[derive(Clone)]
 pub(super) enum ControlInput {Value{name:String,contents:Option<Vec<usize>>,component:usize},Length{name:String,path:Vec<usize>}}
 impl ControlInput {
-    fn project(&self, producer: &flow::LoopState) -> Option<bounds::Proof> {
+    fn project<'a>(&self, lookup: impl FnOnce(&str) -> Option<&'a Binding>) -> Option<bounds::Proof> {
         match self {
-            Self::Value { name, contents: None, component } => producer.env.get(name)
+            Self::Value { name, contents: None, component } => lookup(name)
                 .and_then(binding_value)
                 .map(|(ty, proof)| proof.project(&[*component], ty.components.len())),
-            Self::Value { name, contents: Some(path), component } => producer.env.get(name)
+            Self::Value { name, contents: Some(path), component } => lookup(name)
                 .and_then(|binding| view::data_at(binding, path))
                 .and_then(|data| data.elements.known())
                 .and_then(returns::Returned::view_value)
                 .map(|value| bounds::Proof::capture(value).project(&[*component], value.ty.components.len())),
-            Self::Length { name, path } => producer.env.get(name)
+            Self::Length { name, path } => lookup(name)
                 .and_then(|binding| view::data_at(binding, path))
                 .map(|data| bounds::Proof::capture(&data.length)),
         }
@@ -186,10 +186,18 @@ impl LoopControl {
         Self{cursor,test:Some(condition),inputs}
     }
     pub(super) fn bindings(&self, producer: &flow::LoopState) -> BTreeMap<ValueIdentity, bounds::Proof> {
+        self.bindings_from(producer.cursor.as_ref(), |name| producer.env.get(name))
+    }
+
+    pub(super) fn bindings_from<'a>(
+        &self,
+        next: Option<&Value>,
+        lookup: impl Fn(&str) -> Option<&'a Binding>,
+    ) -> BTreeMap<ValueIdentity, bounds::Proof> {
         let mut values = self.inputs.iter().filter_map(|(&id, input)| {
-            input.project(producer).map(|proof| (id, proof))
+            input.project(&lookup).map(|proof| (id, proof))
         }).collect::<BTreeMap<_, _>>();
-        if let (Some(cursor), Some(next)) = (&self.cursor, &producer.cursor) {
+        if let (Some(cursor), Some(next)) = (&self.cursor, next) {
             values.insert(cursor.identity(), bounds::Proof::capture(next));
         }
         values
@@ -201,7 +209,7 @@ impl LoopControl {
         {
             return Some(bounds::Proof::capture(next));
         }
-        self.inputs.get(&id)?.project(producer)
+        self.inputs.get(&id)?.project(|name| producer.env.get(name))
     }
 }
 pub(super) struct LoopResource {

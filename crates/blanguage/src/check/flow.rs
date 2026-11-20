@@ -72,6 +72,10 @@ pub(super) struct LoopContext {
     pub(super) view_scope: Option<usize>,
 }
 impl LoopContext {
+    fn carries_binding(&self, name: &str) -> bool {
+        self.names.contains(name) || self.iterator.as_ref().is_some_and(|(iterator, _)| iterator == name)
+    }
+
     pub(super) fn value_input(&mut self,name:&str,contents:Option<Vec<usize>>,component:usize,scalar:Scalar)->ValueIdentity {
         let index=self.view_inputs.iter().position(|slot|matches!(slot,InputSlot::Value{name:target,contents:path,component:part,..}if target==name&&path==&contents&&*part==component)).unwrap_or(self.view_inputs.len());
         let identity=ValueIdentity::LoopValue(self.view_scope.unwrap(),index);
@@ -465,14 +469,22 @@ impl Builder<'_> {
 
         }
     }
+    fn loop_compatibility_inputs(&self) -> (bounds::Clause, BTreeMap<ValueIdentity, bounds::Proof>) {
+        let context = self.loop_contexts.last().unwrap();
+        let cursor = context.iterator.as_ref().map(|(_, cursor)| cursor);
+        let inputs = context.control_source.bindings_from(cursor, |name| {
+            self.env.get(name).filter(|_| context.carries_binding(name))
+        });
+        (self.residency_path(), inputs)
+    }
+
     pub(super) async fn check_application_loop(&mut self, span: Span) -> Result<()> {
         if self.loop_contexts.last().unwrap().initial {
             let state = self.loop_state();
             self.loop_contexts.last_mut().unwrap().continues.push(state);
             return Ok(());
         }
-        let path=self.residency_path();
-        let inputs=self.loop_contexts.last().unwrap().control_source.bindings(&self.loop_state());
+        let mut compatibility = None;
         let names=self.env.keys().cloned().collect::<Vec<_>>();
         for name in names {
             let binding=self.env[&name].clone();
@@ -487,16 +499,13 @@ impl Builder<'_> {
                         "循环继续前须保有入口的结果所有权，不能在回边重复消费",
                     );
                 }
-                if result.ownership == application::Ownership::Owned
-                    && !unsafe { self.world.call(before.loop_compatible(
-                        result,
-                        self,
-                        span,
-                        &path,
-                        &inputs,
-                    )).await }?
-                {
-                    return self.fail(span,"B266","循环回边尚未能合流结果载荷的分支与CPU／GPU存储位置；需要相同的资源生命周期");
+                if result.ownership == application::Ownership::Owned {
+                    let (path, inputs) = compatibility.get_or_insert_with(|| self.loop_compatibility_inputs());
+                    if !unsafe { self.world.call(before.loop_compatible(
+                        result, self, span, path, inputs,
+                    )).await }? {
+                        return self.fail(span,"B266","循环回边尚未能合流结果载荷的分支与CPU／GPU存储位置；需要相同的资源生命周期");
+                    }
                 }
             }
             let data=match &binding{Binding::ApplicationData(data)=>Some(data),Binding::DataReference(data)=>Some(&data.data),_=>None};
@@ -509,14 +518,11 @@ impl Builder<'_> {
                         "循环继续前须保有入口的 dataset 所有权，不能在回边重复消费",
                     );
                 }
-                if before.ownership != application::Ownership::Moved
-                    && !unsafe { self.world.call(before.loop_compatible(data,self,span,&path,&inputs)).await }?
-                {
-                    return self.fail(
-                        span,
-                        "B266",
-                        "循环继续前须归还入口及其拥有子资源相同的 CPU／GPU 存储位置；在循环内完成配对的显式传输",
-                    );
+                if before.ownership != application::Ownership::Moved {
+                    let (path, inputs) = compatibility.get_or_insert_with(|| self.loop_compatibility_inputs());
+                    if !unsafe { self.world.call(before.loop_compatible(data, self, span, path, inputs)).await }? {
+                        return self.fail(span,"B266","循环继续前须归还入口及其拥有子资源相同的 CPU／GPU 存储位置；在循环内完成配对的显式传输");
+                    }
                 }
             }
         }
@@ -569,14 +575,12 @@ impl Builder<'_> {
     }
     pub(super) fn loop_state(&self) -> LoopState {
         let context=self.loop_contexts.last().unwrap();
-        let names=&context.names;
-        let iterator=context.iterator.as_ref().map(|(name,_)|name);
         LoopState {
             path: self.path.clone(),
             env: self
                 .env
                 .iter()
-                .filter(|(n, _)| names.contains(*n)||iterator==Some(*n))
+                .filter(|(name, _)| context.carries_binding(name))
                 .map(|(n, b)| (n.clone(), b.clone()))
                 .collect(),
             initialized: self.application_initialization_state(),
