@@ -7,49 +7,11 @@ impl Device {
     pub(crate) fn upload_cpu<'a>(
         data: &crate::cpu::CpuDataset,
         device: impl FnOnce() -> Result<&'a Self>,
-        memo: &mut BTreeMap<usize, ReadDataset>,
     ) -> Result<GpuDataset> {
-        match data {
-            crate::cpu::CpuDataset::Owned(data) => {
-                data.require_views()?;
-                device()?.upload_graph(data, memo)
-            }
-            crate::cpu::CpuDataset::Read(source) => device()?
-                .upload_read(source, memo)
-                .map(|target| target.binding()),
-        }
-    }
-
-    fn upload_read(
-        &self,
-        source: &crate::ReadDataset,
-        memo: &mut BTreeMap<usize, ReadDataset>,
-    ) -> Result<ReadDataset> {
-        let key = source.identity();
-        if let Some(target) = memo.get(&key) {
-            return Ok(target.clone());
-        }
-        let target = self.upload_graph(source, memo)?.freeze();
-        memo.insert(key, target.clone());
-        Ok(target)
-    }
-    pub(super) fn upload_graph(
-        &self,
-        data: &Dataset,
-        memo: &mut BTreeMap<usize, ReadDataset>,
-    ) -> Result<GpuDataset> {
-        let mut sources = Vec::with_capacity(data.views.sources.len());
-        for source in &data.views.sources {
-            sources.push(self.upload_read(source, memo)?);
-        }
-        let mut target =
-            GpuDataset::new(self.inner.clone(), data.ty.clone(), data.stride, data.count)?;
-        target.owned_storage()?.views = Views {
-            sources,
-            bindings: data.views.bindings.clone(),
-        };
-        self.upload_payload(&mut target, &data.words)?;
-        Ok(target)
+        Upload::accept(data)?;
+        let mut upload = Upload::new(device()?);
+        let root = upload.record_root(data)?;
+        Ok(upload.submit()?.root(root))
     }
 
     pub(super) fn upload_payload(&self, target: &mut GpuDataset, words: &[u32]) -> Result<()> {
@@ -58,7 +20,13 @@ impl Device {
         }
         let mut commands = Commands::new(self.inner.clone())?;
         let mut staging = Vec::new();
-        self.stage_payload(target, words, &mut commands, &mut staging)?;
+        self.stage_payload(
+            target,
+            words,
+            |start, mapped| target.views.encode(start, mapped, |source| source.0.view_header()),
+            &mut commands,
+            &mut staging,
+        )?;
         target.last_use = Some(self.submit_transfer(commands, staging, Vec::new())?);
         Ok(())
     }
@@ -66,6 +34,7 @@ impl Device {
         &self,
         target: &GpuDataset,
         words: &[u32],
+        encode_views: impl Fn(usize, &mut [u32]),
         commands: &mut Commands,
         staging: &mut Vec<Allocation>,
     ) -> Result<()> {
@@ -79,7 +48,7 @@ impl Device {
                 bytes.len() as u64,
                 |source| {
                     source.write_with(bytes, |mapped| {
-                        target.views.encode(start / 4, mapped, |source| source.0.view_header());
+                        encode_views(start / 4, mapped);
                     })
                 },
                 commands,
@@ -132,6 +101,125 @@ impl Device {
             },
             dependencies,
         )
+    }
+}
+
+/// Record a CPU resource graph before publishing any of its GPU bindings.
+pub(super) struct Upload<'a> {
+    device: &'a Device,
+    commands: Option<Commands>,
+    staging: Vec<Allocation>,
+    identities: BTreeMap<usize, usize>,
+    shared: Vec<StagedDataset>,
+}
+pub(super) enum UploadRoot {
+    Owned(StagedDataset),
+    Read(usize),
+}
+pub(super) struct StagedDataset {
+    data: GpuDataset,
+    views: Views<usize>,
+}
+pub(super) struct Uploaded {
+    shared: Vec<ReadDataset>,
+    execution: Option<Rc<Execution>>,
+}
+
+impl<'a> Upload<'a> {
+    pub(super) fn new(device: &'a Device) -> Self {
+        Self {
+            device,
+            commands: None,
+            staging: Vec::new(),
+            identities: BTreeMap::new(),
+            shared: Vec::new(),
+        }
+    }
+
+    pub(super) fn accept(data: &crate::cpu::CpuDataset) -> Result<()> {
+        if let crate::cpu::CpuDataset::Owned(data) = data {
+            data.require_views()?;
+        }
+        Ok(())
+    }
+
+    pub(super) fn record_root(&mut self, data: &crate::cpu::CpuDataset) -> Result<UploadRoot> {
+        match data {
+            crate::cpu::CpuDataset::Owned(data) => self.record(data).map(UploadRoot::Owned),
+            crate::cpu::CpuDataset::Read(source) => self.record_read(source).map(UploadRoot::Read),
+        }
+    }
+
+    fn record_read(&mut self, source: &crate::ReadDataset) -> Result<usize> {
+        let identity = source.identity();
+        if let Some(&index) = self.identities.get(&identity) {
+            return Ok(index);
+        }
+        let target = self.record(source)?;
+        let index = self.shared.len();
+        self.shared.push(target);
+        self.identities.insert(identity, index);
+        Ok(index)
+    }
+
+    fn record(&mut self, source: &Dataset) -> Result<StagedDataset> {
+        let sources = source.views.sources.iter()
+            .map(|source| self.record_read(source))
+            .collect::<Result<Vec<_>>>()?;
+        let views = Views {
+            sources,
+            bindings: source.views.bindings.clone(),
+        };
+        let data = GpuDataset::new(self.device.inner.clone(), source.ty.clone(), source.stride, source.count)?;
+        if !source.words.is_empty() {
+            let commands = match &mut self.commands {
+                Some(commands) => commands,
+                slot @ None => slot.insert(Commands::new(self.device.inner.clone())?),
+            };
+            self.device.stage_payload(
+                &data,
+                &source.words,
+                |start, mapped| views.encode(start, mapped, |&index| self.shared[index].data.view_header()),
+                commands,
+                &mut self.staging,
+            )?;
+        }
+        Ok(StagedDataset { data, views })
+    }
+
+    pub(super) fn submit(self) -> Result<Uploaded> {
+        let execution = self.commands.map(|commands| {
+            Execution::submit(
+                ExecutionResources::DatasetUpload { commands, _staging: self.staging },
+                Vec::new(),
+            )
+        }).transpose()?;
+        let mut shared = Vec::with_capacity(self.shared.len());
+        // A source is recorded before any record that refers to it.
+        for staged in self.shared {
+            shared.push(staged.publish(&shared, execution.as_ref()).freeze());
+        }
+        Ok(Uploaded { shared, execution })
+    }
+}
+impl StagedDataset {
+    fn publish(mut self, shared: &[ReadDataset], execution: Option<&Rc<Execution>>) -> GpuDataset {
+        self.data.owned_storage().expect("staged upload owns its destination").views = Views {
+            sources: self.views.sources.into_iter().map(|index| shared[index].clone()).collect(),
+            bindings: self.views.bindings,
+        };
+        if !self.data.pages.is_empty() {
+            self.data.last_use = execution.cloned();
+        }
+        self.data
+    }
+}
+impl Uploaded {
+    pub(super) fn root(&self, root: UploadRoot) -> GpuDataset {
+        match root {
+            UploadRoot::Owned(staged) => staged.publish(&self.shared, self.execution.as_ref()),
+            UploadRoot::Read(index) => self.shared[index].binding(),
+        }
     }
 }
 

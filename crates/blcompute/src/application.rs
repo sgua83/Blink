@@ -214,7 +214,6 @@ impl Frame {
         let data = vulkan::Device::upload_cpu(
             data,
             || Self::gpu_device(&self.definitions, &mut self.device),
-            &mut std::collections::BTreeMap::new(),
         )?;
         self.data.datasets[handle as usize] = Some(ResidentData::Gpu(data));
         Ok(())

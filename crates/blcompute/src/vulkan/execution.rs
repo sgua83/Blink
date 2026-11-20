@@ -252,6 +252,10 @@ pub(super) enum ExecutionResources {
         commands: Commands,
         _staging: Vec<Allocation>,
     },
+    DatasetUpload {
+        commands: Commands,
+        _staging: Vec<Allocation>,
+    },
     Acceleration {
         commands: Commands,
         _scratch: Allocation,
@@ -264,6 +268,7 @@ impl ExecutionResources {
         match self {
             Self::Compute { commands, .. }
             | Self::Transfer { commands, .. }
+            | Self::DatasetUpload { commands, .. }
             | Self::Acceleration { commands, .. } => commands,
         }
     }
@@ -335,10 +340,16 @@ impl Execution {
         }
         Ok(Vec::new())
     }
-    pub fn discard(&self, storage: DatasetStorage) {
+    pub fn discard(&self, mut storage: DatasetStorage) {
         if matches!(self.point.result.get(), Some(0 | -4)) {
             drop(storage);
         } else {
+            let initial_upload = matches!(self.resources.borrow().as_ref(), Some(ExecutionResources::DatasetUpload { .. }));
+            if initial_upload && let DatasetStorage::Owned(target) = &mut storage {
+                // Initial copies access only these destination pages. Releasing the
+                // dead graph here also releases references to this very execution.
+                drop(std::mem::take(&mut target.views));
+            }
             self.discarded.borrow_mut().push(storage);
         }
     }
