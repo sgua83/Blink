@@ -95,7 +95,7 @@ scan_add:Option<Vec<u32>>,
 finish:Option<(String,Vec<u32>)>,
 dispatch:Option<Vec<u32>>,
 selector:Option<Vec<u32>>,
-sort:Option<Vec<spirv::ShaderCode>>,
+additional:Option<Vec<spirv::ShaderCode>>,
 },{});
 projected_record!(@ [],Module<native::NativeCode>,"codec.value_format::resource_write_module","codec.value_format::resource_read_module",{
 types:Vec<Ty>,

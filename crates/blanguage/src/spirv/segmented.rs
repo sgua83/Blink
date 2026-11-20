@@ -160,13 +160,16 @@ impl Emitter<'_> {
     ) {
         let segment = self.segment(&scan.ty, scan.operator, false);
         let pass = if tail { SegmentPass::Tail } else { SegmentPass::Main };
-        self.segment_group(&segment, &scan.values, head_word, pass, None, local, shared, pointer, active, count);
+        let summary = self.buffers[self.program.buffers.len()];
+        self.segment_group(&segment, &scan.values, head_word, pass, summary, None,
+            local, shared, pointer, active, count);
     }
 
     pub(super) fn segmented_reduce(
         &mut self,
         reduction: &SegmentedReduction,
         pass: Pass,
+        single_group: bool,
         local: u32,
         shared: u32,
         pointer: u32,
@@ -181,7 +184,8 @@ impl Emitter<'_> {
             _ => SegmentPass::Main,
         };
         let count_field = (pass == SegmentPass::Finish).then_some(&reduction.count);
-        self.segment_group(&segment, &values.fields, reduction.head_word, pass, count_field,
+        let summary = if single_group { 0 } else { self.buffers[self.program.buffers.len()] };
+        self.segment_group(&segment, &values.fields, reduction.head_word, pass, summary, count_field,
             local, shared, pointer, active, count);
     }
 
@@ -191,6 +195,7 @@ impl Emitter<'_> {
         values: &Reduction,
         head: u32,
         pass: SegmentPass,
+        summary: u32,
         count_field: Option<&crate::ir::PrefixCount>,
         lane: u32,
         shared: u32,
@@ -238,7 +243,7 @@ impl Emitter<'_> {
             PageSource::Dataset(self.buffers[source_binding]), self.index, None, 0);
         let input = SegmentGroup {
             merge, source, pass, target: self.buffers[values.target],
-            summary: self.buffers[self.program.buffers.len()],
+            summary,
             head_offset, head_word, marker_word, count_target, count_word,
             active, count, lane, shared, pointer, width, last, scope, semantics, step,
             before: self.current_label,

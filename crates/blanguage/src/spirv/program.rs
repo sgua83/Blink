@@ -128,6 +128,8 @@ pub(crate) fn compile_stage(
     let (tile_layout, mut inputs) = shader_stage_inputs(stage);
     // Shader input also includes the physical low half of a wide word.
     let mut layout = ExecutionStage::from_stage(stage, inputs.keys().copied().collect());
+    let can_use_single_group = program.buffers[stage.domain].count
+        .is_none_or(|count| count <= layout.workgroup_width());
     let features = ProgramShaderFeatures::from(requirements);
     let (operation, root_add, keys) = match &stage.operation {
         Operation::Map => (EntryOperation::Map, false, 0),
@@ -162,6 +164,7 @@ pub(crate) fn compile_stage(
         EntryTail::Reduce => Some(Pass::ReductionTail),
         EntryTail::Scan => Some(Pass::ScanTail),
     };
+    let segmented = matches!(entries.finish, EntryFinish::Segmented);
     let finish = match entries.finish {
         EntryFinish::None => None,
         EntryFinish::Selection => Some(("scatter", Pass::SelectionScatter)),
@@ -169,7 +172,7 @@ pub(crate) fn compile_stage(
         EntryFinish::Segmented => Some(("finish", Pass::ScanRootAdd)),
         EntryFinish::ScanRoot => Some(("root-add", Pass::ScanRootAdd)),
     };
-    let sort = (entries.sort_passes != 0).then(|| {
+    let mut additional = (entries.sort_passes != 0).then(|| {
         (0..entries.sort_passes).map(|index| {
             let entry = unsafe { sort_shader_entry(index) };
             let (pass, ranks) = match entry.kind {
@@ -200,6 +203,12 @@ pub(crate) fn compile_stage(
     };
     let finish = finish.map(|(name, pass)| {
         let kernel = finish_main.or(finish_add);
+        if segmented && can_use_single_group {
+            additional = Some(vec![ShaderCode {
+                words: emit(Pass::SegmentedSingleGroup, kernel.as_ref())?,
+                ranks: false,
+            }]);
+        }
         Ok((name.into(), emit(pass, kernel.as_ref())?))
     }).transpose()?;
     let code = StageCode {
@@ -209,7 +218,7 @@ pub(crate) fn compile_stage(
         finish,
         dispatch: dispatch.map(|p| emit(p, None)).transpose()?,
         selector: selected.then(|| emit(Pass::SelectionScan, None)).transpose()?,
-        sort,
+        additional,
     };
     Ok((layout, code))
 }

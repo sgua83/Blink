@@ -42,6 +42,7 @@ pub enum Pass {
     ScanTail,
     ScanAdd,
     ScanRootAdd,
+    SegmentedSingleGroup,
     CompactScatter,
     SelectionArguments,
     SelectionScan,
@@ -1755,7 +1756,8 @@ struct ShaderStageFacts {
 
 fn uses_float_modes(pass: Pass) -> bool {
     matches!(
-        pass, Pass::Main | Pass::ReductionTail | Pass::ScanTail | Pass::ScanAdd | Pass::ScanRootAdd
+        pass, Pass::Main | Pass::ReductionTail | Pass::ScanTail | Pass::ScanAdd
+            | Pass::ScanRootAdd | Pass::SegmentedSingleGroup
     )
 }
 
@@ -1791,7 +1793,7 @@ fn prepare_reduction(stage: &Stage, pass: Pass) -> Option<PreparedReduction> {
     let selected = match pass {
         Pass::Main => ReductionPass::Main,
         Pass::ScanAdd => ReductionPass::Add,
-        Pass::ScanRootAdd => ReductionPass::Root,
+        Pass::ScanRootAdd | Pass::SegmentedSingleGroup => ReductionPass::Root,
         Pass::DispatchArguments(_) | Pass::SelectionArguments => ReductionPass::Arguments,
         _ => ReductionPass::Tail,
     };
@@ -1813,6 +1815,8 @@ fn emit_shader(
     program_features: ProgramShaderFeatures, reduction: Option<&PreparedReduction>,
     shared_original_facts: Option<&ShaderStageFacts>,
 ) -> Result<(Vec<u32>, u64), &'static str> {
+    let single_group = pass == Pass::SegmentedSingleGroup;
+    let pass = if single_group { Pass::ScanRootAdd } else { pass };
     let argument_pass = matches!(pass, Pass::DispatchArguments(_) | Pass::SelectionArguments);
     let numeric_pass = uses_float_modes(pass);
     let local_facts;
@@ -2303,6 +2307,7 @@ fn emit_shader(
             r,
             custom_kernel.unwrap(),
             pass,
+            single_group,
             local,
             shared,
             shared_pointer,
@@ -2363,7 +2368,7 @@ fn emit_shader(
             } else {
                 0
             };
-            e.segmented_reduce(r, pass, local, shared, shared_pointer, active, count);
+            e.segmented_reduce(r, pass, single_group, local, shared, shared_pointer, active, count);
         }
     } else if let Operation::Compact(c) = &stage.operation {
         if pass == Pass::CompactScatter {

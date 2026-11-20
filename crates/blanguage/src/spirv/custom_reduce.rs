@@ -582,6 +582,7 @@ impl Emitter<'_> {
         reduction: &CustomSegmentedReduction,
         kernel: &ReductionKernel,
         pass: Pass,
+        single_group: bool,
         local: u32,
         shared: u32,
         pointer: u32,
@@ -618,7 +619,9 @@ impl Emitter<'_> {
         }
         self.custom_tree(r, kernel, local, shared, pointer, remaining, &own, true, summary)?;
         if pass != Pass::ScanTail {
-            return self.custom_segmented_finish(reduction, kernel, active, count, group, &own, &identity, &input);
+            return self.custom_segmented_finish(
+                reduction, kernel, active, count, group, single_group, &own, &identity, &input,
+            );
         }
         let result = self.read_summary_words(&own);
         let write = self.id();
@@ -640,6 +643,7 @@ impl Emitter<'_> {
         active: u32,
         length: u32,
         group: u32,
+        single_group: bool,
         own: &[u32],
         identity: &[u32],
         item: &[u32],
@@ -649,8 +653,9 @@ impl Emitter<'_> {
         let words = own.len();
         let bool_type = self.types[&Scalar::Bool];
         let step = self.constant(Scalar::U64, 4);
+        let summary_descriptor = if single_group { 0 } else { self.buffers[self.program.buffers.len()] };
         let parent = self.page_input(Scalar::U32,
-            PageSource::Dataset(self.buffers[self.program.buffers.len()]), group, Some(0), 0);
+            PageSource::Dataset(summary_descriptor), group, Some(0), 0);
         let prefix = CustomSegmentPrefix { parent, bool_type, active, step };
         let mut workspace = vec![0; 2 * words];
         let body = self.body.len();

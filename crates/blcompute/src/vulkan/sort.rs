@@ -127,7 +127,9 @@ pub(super) fn record(
     partition: NonZeroU32,
     reused: bool,
 ) {
-    let kernels = c.sorts[stage].as_ref().unwrap();
+    let Some(AdditionalPipelines::Sort(kernels)) = &c.additional[stage] else {
+        unreachable!()
+    };
     for key in (0..key_count).rev() {
         commands.bind_compute_set(c.layout, sets.initialize);
         let initialize = if key + 1 == key_count {

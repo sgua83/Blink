@@ -593,11 +593,11 @@ struct ResourceShaderCodeWriter {cfn<void,address,address> words;cfn<void,addres
 
 struct ResourceShaderCodeReader {cfn<ReadStatus,address,address> words;cfn<ReadStatus,address,address> ranks;};
 
-struct ResourceGpuStageCodeFields {address main;address tail;address scan_add;address finish;address dispatch;address selector;address sort;};
+struct ResourceGpuStageCodeFields {address main;address tail;address scan_add;address finish;address dispatch;address selector;address additional;};
 
-struct ResourceGpuStageCodeWriter {cfn<void,address,address> main;cfn<void,address,address> tail;cfn<void,address,address> scan_add;cfn<void,address,address> finish;cfn<void,address,address> dispatch;cfn<void,address,address> selector;cfn<void,address,address> sort;};
+struct ResourceGpuStageCodeWriter {cfn<void,address,address> main;cfn<void,address,address> tail;cfn<void,address,address> scan_add;cfn<void,address,address> finish;cfn<void,address,address> dispatch;cfn<void,address,address> selector;cfn<void,address,address> additional;};
 
-struct ResourceGpuStageCodeReader {cfn<ReadStatus,address,address> main;cfn<ReadStatus,address,address> tail;cfn<ReadStatus,address,address> scan_add;cfn<ReadStatus,address,address> finish;cfn<ReadStatus,address,address> dispatch;cfn<ReadStatus,address,address> selector;cfn<ReadStatus,address,address> sort;};
+struct ResourceGpuStageCodeReader {cfn<ReadStatus,address,address> main;cfn<ReadStatus,address,address> tail;cfn<ReadStatus,address,address> scan_add;cfn<ReadStatus,address,address> finish;cfn<ReadStatus,address,address> dispatch;cfn<ReadStatus,address,address> selector;cfn<ReadStatus,address,address> additional;};
 
 struct ResourceModuleFields {address types;address images;};
 
@@ -979,9 +979,9 @@ extern "C" void resource_write_shader_code(address output,ResourceShaderCodeFiel
 
 extern "C" ReadStatus resource_read_shader_code(address context,ResourceShaderCodeFields fields,ResourceShaderCodeReader host) on cpu requires nonzero(host.words) requires nonzero(host.ranks);
 
-extern "C" void resource_write_gpu_stage_code(address output,ResourceGpuStageCodeFields fields,ResourceGpuStageCodeWriter host) on cpu requires nonzero(host.main) requires nonzero(host.tail) requires nonzero(host.scan_add) requires nonzero(host.finish) requires nonzero(host.dispatch) requires nonzero(host.selector) requires nonzero(host.sort);
+extern "C" void resource_write_gpu_stage_code(address output,ResourceGpuStageCodeFields fields,ResourceGpuStageCodeWriter host) on cpu requires nonzero(host.main) requires nonzero(host.tail) requires nonzero(host.scan_add) requires nonzero(host.finish) requires nonzero(host.dispatch) requires nonzero(host.selector) requires nonzero(host.additional);
 
-extern "C" ReadStatus resource_read_gpu_stage_code(address context,ResourceGpuStageCodeFields fields,ResourceGpuStageCodeReader host) on cpu requires nonzero(host.main) requires nonzero(host.tail) requires nonzero(host.scan_add) requires nonzero(host.finish) requires nonzero(host.dispatch) requires nonzero(host.selector) requires nonzero(host.sort);
+extern "C" ReadStatus resource_read_gpu_stage_code(address context,ResourceGpuStageCodeFields fields,ResourceGpuStageCodeReader host) on cpu requires nonzero(host.main) requires nonzero(host.tail) requires nonzero(host.scan_add) requires nonzero(host.finish) requires nonzero(host.dispatch) requires nonzero(host.selector) requires nonzero(host.additional);
 
 extern "C" void resource_write_module(address output,ResourceModuleFields fields,ResourceModuleWriter host) on cpu requires nonzero(host.types) requires nonzero(host.images);
 

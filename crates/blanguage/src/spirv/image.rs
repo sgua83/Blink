@@ -1,5 +1,5 @@
 //! 已编译GPU映像及页绑定ABI；编译器与执行器消费同一份表示。
-use crate::ir::ExecutionPlan;
+use crate::ir::{ExecutionPlan, Operation};
 
 /// GPU 存储页的最大字节数；每页只容纳完整记录，页表使用 64 位设备地址。
 pub const PAGE_BYTES: u32 = 256 * 1024 * 1024;
@@ -22,7 +22,27 @@ pub struct StageCode {
     pub finish: Option<(String, Vec<u32>)>,
     pub dispatch: Option<Vec<u32>>,
     pub selector: Option<Vec<u32>>,
-    pub sort: Option<Vec<ShaderCode>>,
+    /// Stage-specific entries. Sort retains its pass order, while segmented
+    /// reduction can provide one entry that needs no intergroup prefix.
+    pub additional: Option<Vec<ShaderCode>>,
+}
+
+pub enum AdditionalShaders<'a> {
+    Sort(&'a [ShaderCode]),
+    SegmentedSingleGroup(&'a ShaderCode),
+}
+
+impl StageCode {
+    pub fn additional_shaders<R>(&self, operation: &Operation<R>) -> Option<AdditionalShaders<'_>> {
+        let shaders = self.additional.as_deref()?;
+        match operation {
+            Operation::StableSort(_) => Some(AdditionalShaders::Sort(shaders)),
+            Operation::SegmentedReduce(_) | Operation::CustomSegmentedReduce(_) => {
+                shaders.first().map(AdditionalShaders::SegmentedSingleGroup)
+            }
+            _ => None,
+        }
+    }
 }
 #[derive(Clone, Debug)]
 pub struct ProgramImage<P> {

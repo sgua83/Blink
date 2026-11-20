@@ -1677,6 +1677,11 @@ impl Drop for Commands {
         }
     }
 }
+enum AdditionalPipelines {
+    Sort(Vec<VkPipeline>),
+    SegmentedSingleGroup(VkPipeline),
+}
+
 struct Compiled {
     inner: Rc<Inner>,
     program: std::sync::Arc<Program>,
@@ -1688,7 +1693,15 @@ struct Compiled {
     finishes: Vec<Option<VkPipeline>>,
     dispatches: Vec<Option<VkPipeline>>,
     selectors: Vec<Option<VkPipeline>>,
-    sorts: Vec<Option<Vec<VkPipeline>>>,
+    additional: Vec<Option<AdditionalPipelines>>,
+}
+impl Compiled {
+    fn segmented_single_group(&self, stage: usize, count: u32) -> Option<VkPipeline> {
+        match self.additional[stage] {
+            Some(AdditionalPipelines::SegmentedSingleGroup(pipeline)) if scan::groups(count) == 1 => Some(pipeline),
+            _ => None,
+        }
+    }
 }
 impl Drop for Compiled {
     fn drop(&mut self) {
@@ -1703,7 +1716,10 @@ impl Drop for Compiled {
                 .chain(self.finishes.iter().flatten())
                 .chain(self.dispatches.iter().flatten())
                 .chain(self.selectors.iter().flatten())
-                .chain(self.sorts.iter().flatten().flatten())
+                .chain(self.additional.iter().flatten().flat_map(|pipelines| match pipelines {
+                    AdditionalPipelines::Sort(pipelines) => pipelines.as_slice(),
+                    AdditionalPipelines::SegmentedSingleGroup(pipeline) => std::slice::from_ref(pipeline),
+                }))
             {
                 (f.vkDestroyPipeline)(d, *p, null());
             }
@@ -2081,7 +2097,7 @@ impl GpuProgram {
             finishes: Vec::new(),
             dispatches: Vec::new(),
             selectors: Vec::new(),
-            sorts: Vec::new(),
+            additional: Vec::new(),
         };
         if !out.program.stages().is_empty() {
             unsafe {
@@ -2124,7 +2140,7 @@ impl GpuProgram {
                     (f.vkCreatePipelineLayout)(device, &layout, null(), &mut out.layout),
                     "vkCreatePipelineLayout",
                 )?;
-                for shader in image.stages() {
+                for (stage, shader) in image.stages().iter().enumerate() {
                     let make = |words: &[u32]| pipeline(&out.inner, out.layout, words, false);
                     out.pipelines.push(make(&shader.main)?);
                     out.tails
@@ -2142,12 +2158,22 @@ impl GpuProgram {
                         .push(shader.dispatch.as_deref().map(make).transpose()?);
                     out.selectors
                         .push(shader.selector.as_deref().map(make).transpose()?);
-                    out.sorts.push(None);
-                    if let Some(shaders) = &shader.sort {
-                        let kernels = out.sorts.last_mut().unwrap().insert(Vec::with_capacity(shaders.len()));
-                        for shader in shaders {
-                            kernels.push(pipeline(&out.inner, out.layout, &shader.words, shader.ranks)?);
+                    out.additional.push(None);
+                    match shader.additional_shaders(&out.program.stages()[stage].operation) {
+                        Some(blanguage::spirv::AdditionalShaders::Sort(shaders)) => {
+                            let AdditionalPipelines::Sort(kernels) = out.additional[stage]
+                                .insert(AdditionalPipelines::Sort(Vec::with_capacity(shaders.len())))
+                            else {
+                                unreachable!()
+                            };
+                            for shader in shaders {
+                                kernels.push(pipeline(&out.inner, out.layout, &shader.words, shader.ranks)?);
+                            }
                         }
+                        Some(blanguage::spirv::AdditionalShaders::SegmentedSingleGroup(shader)) => {
+                            out.additional[stage] = Some(AdditionalPipelines::SegmentedSingleGroup(make(&shader.words)?));
+                        }
+                        None => {}
                     }
                 }
             }
@@ -2426,6 +2452,17 @@ impl GpuProgram {
                     extra_sets += (scan::levels(count) * 2 - 1) as u64;
                     Some(scan::allocate(c, count, s.summary_words())?)
                 }
+                blanguage::ir::Operation::SegmentedReduce(_)
+                | blanguage::ir::Operation::CustomSegmentedReduce(_)
+                    if c.segmented_single_group(i, count).is_some() =>
+                {
+                    if stage.prefix.is_some() {
+                        extra_sets += 1;
+                    } else {
+                        needs_root_set = true;
+                    }
+                    None
+                }
                 blanguage::ir::Operation::CustomSegmentedReduce(ref r) => {
                     extra_sets += (scan::levels(count) * 2 - 1) as u64;
                     Some(scan::allocate(c, count, r.summary_words())?)
@@ -2623,6 +2660,7 @@ impl GpuProgram {
                         let usage = uses.next_if(|usage| usage.stage == i);
                         let temporary = usage.map(|usage| &scratch[usage.slot]);
                         let arguments = temporary.and_then(|s| s.arguments.as_ref());
+                        let segmented_single_group = c.segmented_single_group(i, count);
                         match &stage.operation {
                             blanguage::ir::Operation::StableSort(s) => {
                                 let temporary = temporary.unwrap();
@@ -2709,6 +2747,29 @@ impl GpuProgram {
                                 }
                             }
                             blanguage::ir::Operation::Map => {}
+                            blanguage::ir::Operation::SegmentedReduce(_)
+                            | blanguage::ir::Operation::CustomSegmentedReduce(_)
+                                if segmented_single_group.is_some() =>
+                            {
+                                let set = if let Some(args) = arguments {
+                                    descriptors.as_mut().unwrap().set(
+                                        &[], None, Some(args.descriptor()), None, None,
+                                    )?
+                                } else {
+                                    root_set.unwrap()
+                                };
+                                commands.bind_compute_set(c.layout, set);
+                                if arguments.is_some() {
+                                    prefix::prepare(
+                                        &commands, c, i, &mut uniforms,
+                                        self.partition_elements, step > 0,
+                                    );
+                                }
+                                scan::dispatch(
+                                    &commands, c, segmented_single_group.unwrap(), count, &mut uniforms,
+                                    self.partition_elements, arguments, 0,
+                                );
+                            }
                             blanguage::ir::Operation::SegmentedReduce(r) => {
                                 scan::record_segmented_reduce(
                                     &commands,

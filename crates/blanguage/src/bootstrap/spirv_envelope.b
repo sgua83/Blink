@@ -2838,6 +2838,12 @@ extern "C" SummaryRootWords custom_summary_root(CustomSummaryRoot input, address
 
 u32 segment_prefix(inout StageCursor out, PageAddress parent, u32 bool_type, u32 from, u32 step,
     u32 words, address identity, address values) on cpu {
+    if (parent.descriptor == 0) {
+        for (part in 0..words) {
+            put(values, u64(part), read_word(identity, part));
+        }
+        return from;
+    }
     u32 first_group = stage_op(out, 170, bool_type, parent.index, parent.zero);
     StageBranch load = stage_branch(out, first_group, true);
     read_segment_summary(out, parent, step, words, values, values);

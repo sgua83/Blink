@@ -1100,24 +1100,24 @@ extern "C" ReadStatus resource_read_shader_code(address context,ResourceShaderCo
  return ReadStatus::Success;
 }
 
-extern "C" void resource_write_gpu_stage_code(address output,ResourceGpuStageCodeFields fields,ResourceGpuStageCodeWriter host) on cpu requires nonzero(host.main) requires nonzero(host.tail) requires nonzero(host.scan_add) requires nonzero(host.finish) requires nonzero(host.dispatch) requires nonzero(host.selector) requires nonzero(host.sort) {
+extern "C" void resource_write_gpu_stage_code(address output,ResourceGpuStageCodeFields fields,ResourceGpuStageCodeWriter host) on cpu requires nonzero(host.main) requires nonzero(host.tail) requires nonzero(host.scan_add) requires nonzero(host.finish) requires nonzero(host.dispatch) requires nonzero(host.selector) requires nonzero(host.additional) {
  host.main(fields.main,output);
  host.tail(fields.tail,output);
  host.scan_add(fields.scan_add,output);
  host.finish(fields.finish,output);
  host.dispatch(fields.dispatch,output);
  host.selector(fields.selector,output);
- host.sort(fields.sort,output);
+ host.additional(fields.additional,output);
 }
 
-extern "C" ReadStatus resource_read_gpu_stage_code(address context,ResourceGpuStageCodeFields fields,ResourceGpuStageCodeReader host) on cpu requires nonzero(host.main) requires nonzero(host.tail) requires nonzero(host.scan_add) requires nonzero(host.finish) requires nonzero(host.dispatch) requires nonzero(host.selector) requires nonzero(host.sort) {
+extern "C" ReadStatus resource_read_gpu_stage_code(address context,ResourceGpuStageCodeFields fields,ResourceGpuStageCodeReader host) on cpu requires nonzero(host.main) requires nonzero(host.tail) requires nonzero(host.scan_add) requires nonzero(host.finish) requires nonzero(host.dispatch) requires nonzero(host.selector) requires nonzero(host.additional) {
  ReadStatus s0=host.main(context,fields.main);if(s0!=ReadStatus::Success){return s0;}
  ReadStatus s1=host.tail(context,fields.tail);if(s1!=ReadStatus::Success){return s1;}
  ReadStatus s2=host.scan_add(context,fields.scan_add);if(s2!=ReadStatus::Success){return s2;}
  ReadStatus s3=host.finish(context,fields.finish);if(s3!=ReadStatus::Success){return s3;}
  ReadStatus s4=host.dispatch(context,fields.dispatch);if(s4!=ReadStatus::Success){return s4;}
  ReadStatus s5=host.selector(context,fields.selector);if(s5!=ReadStatus::Success){return s5;}
- ReadStatus s6=host.sort(context,fields.sort);if(s6!=ReadStatus::Success){return s6;}
+ ReadStatus s6=host.additional(context,fields.additional);if(s6!=ReadStatus::Success){return s6;}
  return ReadStatus::Success;
 }
 
