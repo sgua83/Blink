@@ -26,6 +26,15 @@ struct ScalarEncoding {
     u32 width;
 };
 
+enum CommonRangeTypeDecision:u32 { Drop=0; Keep=1; Rebind=2; };
+struct CommonRangeTypeResult {
+    CommonRangeTypeDecision decision;
+    u32 low;
+    u32 extended;
+};
+extern "C" CommonRangeTypeResult common_range_cast_types(address input,u32 count,
+    cfn<ScalarEncoding,address,u32> get,u32 initial_low_width,u32 initial_extended_width) on cpu requires nonzero(get);
+
 struct FoldedCast {
     u64 bits;
     u32 present;

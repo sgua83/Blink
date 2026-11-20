@@ -161,6 +161,49 @@ u64 cast_to_float(ScalarEncoding source, u32 width, u64 bits) on cpu {
     return u64(bitcast_u32(f32(bits)));
 }
 
+extern "C" CommonRangeTypeResult common_range_cast_types(address input,u32 count,
+    cfn<ScalarEncoding,address,u32> get,u32 initial_low_width,u32 initial_extended_width) on cpu requires nonzero(get) {
+    ScalarEncoding source=get(input,0);
+    u32 at=1;
+    if(source.kind==ScalarKind::Float || source.kind==ScalarKind::Boolean){
+        while(at<count){
+            ScalarEncoding target=get(input,at);
+            if(source.kind!=target.kind || source.width!=target.width){
+                return CommonRangeTypeResult(CommonRangeTypeDecision::Drop,0,0);
+            }
+            at+=1;
+        }
+        return CommonRangeTypeResult(CommonRangeTypeDecision::Keep,0,0);
+    }
+
+    u32 low_width=initial_low_width;
+    u32 extended_width=initial_extended_width;
+    u32 low=0;
+    u32 extended=0;
+    while(at<count){
+        ScalarEncoding target=get(input,at);
+        if(target.kind==ScalarKind::Float || target.kind==ScalarKind::Boolean){
+            return CommonRangeTypeResult(CommonRangeTypeDecision::Drop,0,0);
+        }
+        if(target.width<=low_width){
+            low=at+1;
+            low_width=target.width;
+            extended=at+1;
+            extended_width=target.width;
+        }else if(target.width<extended_width){
+            extended=at+1;
+            extended_width=target.width;
+        }else if(source.kind==ScalarKind::Signed && source.width==extended_width){
+            if(source.width==low_width){low=at;low_width=source.width;}
+            extended=at+1;
+            extended_width=target.width;
+        }
+        source=target;
+        at+=1;
+    }
+    return CommonRangeTypeResult(CommonRangeTypeDecision::Rebind,low,extended);
+}
+
 extern "C" FoldedCast cast(ScalarEncoding source, ScalarEncoding target, u64 bits) on cpu {
     if (target.kind == ScalarKind::Boolean) {
         if (source.kind == ScalarKind::Float) {

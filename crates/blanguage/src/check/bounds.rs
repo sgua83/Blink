@@ -283,26 +283,81 @@ fn map_domain(domain:IndexDomain, identity:&impl Fn(ValueIdentity)->ValueIdentit
         other => other,
     }
 }
-fn cast_domain(domain:IndexDomain,source:Scalar,target:Scalar)->Option<IndexDomain> {
-    match domain {
-        IndexDomain::KnownBits(from,mask,value)=>{
-            if !source.is_integer()||!target.is_integer(){return None;}
-            let bits=KnownBits{scalar:from,mask,value}.cast(source).cast(target);
-            (bits.mask!=0).then(||bits.domain())
-        },
-        IndexDomain::CommonRange(id,base,mut low,mut extended,_) if source.is_integer()&&target.is_integer()=>{
-            let unsigned=|scalar|match scalar{Scalar::I8=>Scalar::U8,Scalar::I16=>Scalar::U16,Scalar::I32=>Scalar::U32,Scalar::I64=>Scalar::U64,other=>other};
-            if target.size()<=low.size(){low=target;extended=unsigned(target);}
-            else if target.size()<extended.size(){extended=unsigned(target);}
-            else if source.is_signed()&&source.size()==extended.size(){
-                if source.size()==low.size(){low=source;}
-                extended=unsigned(target);
+#[allow(dead_code)] // Returned by bootstrap.scalar_fold.
+#[repr(u32)]
+enum CommonRangeTypeDecision {
+    Drop,
+    Keep,
+    Rebind,
+}
+
+#[repr(C)]
+struct CommonRangeTypeResult {
+    decision: CommonRangeTypeDecision,
+    low: u32,
+    extended: u32,
+}
+
+unsafe extern "C" fn common_range_type(input: *const std::ffi::c_void, index: u32) -> crate::builtin_types::ScalarEncoding {
+    let path = unsafe { *input.cast::<&[Scalar]>() };
+    path[index as usize].into()
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.scalar_fold::common_range_cast_types"]
+    fn common_range_cast_types(
+        input: *const std::ffi::c_void,
+        count: u32,
+        get: unsafe extern "C" fn(*const std::ffi::c_void, u32) -> crate::builtin_types::ScalarEncoding,
+        low_width: u32,
+        extended_width: u32,
+    ) -> CommonRangeTypeResult;
+}
+
+fn cast_domain<const N: usize>(mut domain: IndexDomain, path: [Scalar; N]) -> Option<IndexDomain> {
+    if let IndexDomain::CommonRange(id, base, low, extended, _) = domain {
+        let types = path.as_slice();
+        let result = unsafe {
+            common_range_cast_types(
+                std::ptr::from_ref(&types).cast(), N as u32, common_range_type,
+                low.bit_width(), extended.bit_width(),
+            )
+        };
+        return match result.decision {
+            CommonRangeTypeDecision::Drop => None,
+            CommonRangeTypeDecision::Keep => Some(domain),
+            CommonRangeTypeDecision::Rebind => {
+                let low = if result.low == 0 { low } else { path[result.low as usize - 1] };
+                let extended = if result.extended == 0 {
+                    extended
+                } else {
+                    match path[result.extended as usize - 1] {
+                        Scalar::I8 => Scalar::U8,
+                        Scalar::I16 => Scalar::U16,
+                        Scalar::I32 => Scalar::U32,
+                        Scalar::I64 => Scalar::U64,
+                        other => other,
+                    }
+                };
+                Some(IndexDomain::CommonRange(id, base, low, extended, path[N - 1]))
             }
-            Some(IndexDomain::CommonRange(id,base,low,extended,target))
-        }
-        domain if source==target&&common_range_domain(domain)||source.is_integer()&&target.is_integer()&&!source.is_signed()&&!target.is_signed()&&target.size()>source.size()=>Some(domain),
-        _=>None,
+        };
     }
+    for edge in path.windows(2) {
+        let (source, target) = (edge[0], edge[1]);
+        domain = match domain {
+            IndexDomain::KnownBits(from, mask, value) => {
+                if !source.is_integer() || !target.is_integer() { return None; }
+                let bits = KnownBits { scalar: from, mask, value }.cast(source).cast(target);
+                (bits.mask != 0).then(|| bits.domain())?
+            }
+            domain if source == target && common_range_domain(domain)
+                || source.is_integer() && target.is_integer() && !source.is_signed() && !target.is_signed()
+                    && target.size() > source.size() => domain,
+            _ => return None,
+        };
+    }
+    Some(domain)
 }
 fn numeric_domain(domain: &IndexDomain) -> bool {
     matches!(domain, IndexDomain::Upper(..) | IndexDomain::Lower(..) | IndexDomain::Room(..) | IndexDomain::Sum(..) | IndexDomain::Shifted(..) | IndexDomain::Offset(..) | IndexDomain::CommonRange(..) | IndexDomain::Computed(..) | IndexDomain::KnownBits(..) | IndexDomain::Floating(..))
@@ -888,7 +943,7 @@ impl Proof {
                     let nonzero=if to.is_integer(){!range.contains(to.order_bias())||Self::call_common_bits(input,from,low,extended,to).is_some_and(|bits|bits.value!=0)}else{input.nonzero.first()==Some(&true)};
                     if nonzero{facts.insert(Fact::NonZero(target));}
                     if to.is_integer()||to.is_float(){let(minimum,maximum)=range.hull();if minimum!=0{facts.insert(Fact::Minimum(target,to,minimum));}if maximum!=to.bit_mask(){facts.insert(Fact::Maximum(target,to,maximum));}}
-                    facts.extend(input.domains(0).iter().copied().filter_map(|domain|cast_domain(domain,from,low).and_then(|domain|cast_domain(domain,low,extended)).and_then(|domain|cast_domain(domain,extended,to))).map(|domain|Fact::Index(target,domain)));
+                    facts.extend(input.domains(0).iter().copied().filter_map(|domain|cast_domain(domain,[from,low,extended,to])).map(|domain|Fact::Index(target,domain)));
                     facts.extend(input.origins.first().into_iter().flatten().filter(|source|!matches!(source,ValueIdentity::ElementComponent(_)|ValueIdentity::ElementParent(..)|ValueIdentity::ElementIndex(_))).map(|source|Fact::Index(target,IndexDomain::CommonRange(*source,from,low,extended,to))));
                 }
                 return projected(facts);
@@ -1009,7 +1064,7 @@ impl Proof {
                         translated.nonzero.resize(translated.nonzero.len().max(component + 1), false);
                         translated.nonzero[component] |= if to.is_integer(){!range.contains(to.order_bias())}else{incoming.nonzero.first()==Some(&true)};
                         translated.domains.resize_with(translated.domains.len().max(component + 1), Domains::new);
-                        translated.domains[component].extend(incoming.domains.first().into_iter().flatten().copied().filter_map(|domain|cast_domain(domain,*from,*low).and_then(|domain|cast_domain(domain,*low,*extended)).and_then(|domain|cast_domain(domain,*extended,*to))));
+                        translated.domains[component].extend(incoming.domains.first().into_iter().flatten().copied().filter_map(|domain|cast_domain(domain,[*from,*low,*extended,*to])));
                         translated.domains[component].extend(incoming.origins.first().into_iter().flatten()
                             .filter(|id|!matches!(id,ValueIdentity::ElementComponent(_)|ValueIdentity::ElementParent(..)|ValueIdentity::ElementIndex(_)))
                             .map(|id|IndexDomain::CommonRange(*id,*from,*low,*extended,*to)));
@@ -1426,8 +1481,8 @@ impl Proof {
                 ScalarRanges::interval(target.order_bias(), target.order_bias() + 1)
             } else { floating::cast(value, i, target) };
             proof.nonzero[i] = integers && !proof.ranges[i].contains(target.order_bias());
-            let domains=proof.domains.get_mut(i).map(std::mem::take).unwrap_or_default().into_iter().filter_map(|domain|cast_domain(domain,source,target))
-                .chain(proof.origins[i].iter().copied().filter(|_|integers&&!same_value).filter_map(|id|cast_domain(IndexDomain::CommonRange(id,source,source,source,source),source,target))).collect::<Domains>();
+            let domains=proof.domains.get_mut(i).map(std::mem::take).unwrap_or_default().into_iter().filter_map(|domain|cast_domain(domain,[source,target]))
+                .chain(proof.origins[i].iter().copied().filter(|_|integers&&!same_value).filter_map(|id|cast_domain(IndexDomain::CommonRange(id,source,source,source,source),[source,target]))).collect::<Domains>();
             for domain in domains{proof.mark_domain(i,domain);}
             if target == Scalar::F32 {
                 for domain in floating::cast_domains(value, i) { proof.mark_domain(i, domain); }
