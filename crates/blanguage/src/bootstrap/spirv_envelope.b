@@ -1720,7 +1720,8 @@ extern "C" ScanTreeOpen open_scan_tree(ScanTreeInput input, address body) on cpu
 TreeWords stage_tree_layer(inout StageCursor out, TreeLayer input, u32 global_index,
     address components, u32 count, address own, address decorations) on cpu {
     u32 node = input.lane;
-    bool reduction = address_bits(own) != 0u64;
+    bool reduction = global_index != 0;
+    bool local_slots = address_bits(own) != 0u64;
     StageBranch branch;
     if (reduction) {
         u32 selected = stage_op(out, 176, input.bool_type, node, input.stride);
@@ -1755,7 +1756,11 @@ TreeWords stage_tree_layer(inout StageCursor out, TreeLayer input, u32 global_in
             tree_node_address(out, component, input.uint_type, other, left);
         }
         u32 a = read_stage_payload(out, payload, left, shifts);
-        tree_node_address(out, component, input.uint_type, reduction ? other : node, right);
+        if (!reduction && local_slots) {
+            right = word_at(own, 2u64 * u64(index));
+        } else {
+            tree_node_address(out, component, input.uint_type, reduction ? other : node, right);
+        }
         u32 b = read_stage_payload(out, payload, right, shifts);
         bool reverse = input.down != 0 && component.operation != CollectiveOperation::Sum;
         CollectivePair pair = CollectivePair(component.operation, component.scalar, component.raw_type,
@@ -1994,7 +1999,7 @@ array<u32,2> stage_field_pointers(inout StageCursor out, u32 record, u32 offset,
     return array<u32,2>(low, high);
 }
 
-u32 reduction_row(inout StageCursor out, PageAddress page) on cpu {
+u32 collective_record(inout StageCursor out, PageAddress page) on cpu {
     PhysicalAddress record = physical_page_address(page, word_at(out.body, out.words), out.next);
     out.words += record.words;
     out.next = record.next;
@@ -2019,15 +2024,13 @@ PageAddress reduction_target(inout StageCursor out, ReductionWriteback input) on
 }
 
 
-u32 write_reduction(inout StageCursor out, ReductionWriteback input, u32 owner, address fields,
+void write_collective_record(inout StageCursor out, PageAddress target, address fields,
     u32 count, address pointers) on cpu {
-    StageBranch write = stage_open(out, owner);
-    PageAddress target = reduction_target(out, input);
-    u32 record = reduction_row(out, target);
+    u32 record = collective_record(out, target);
     u32 u = target.u32_type;
     for (index in 0..count) {
-        let field = unsafe_position<ReductionField>(
-            unsafe_address(address_bits(fields) + u64(index) * size_of<ReductionField>()));
+        let field = unsafe_position<CollectiveField>(
+            unsafe_address(address_bits(fields) + u64(index) * size_of<CollectiveField>()));
         array<u32,2> to = stage_field_pointers(out, record, field.target_offset, field.pointer_type,
             target.u64_type, field.step);
         u32 low = stage_load(out, u, read_word(pointers, field.slot), false);
@@ -2043,6 +2046,14 @@ u32 write_reduction(inout StageCursor out, ReductionWriteback input, u32 owner, 
             out.words = aligned_store(out.body, out.words, to[1], high, 4);
         }
     }
+
+}
+
+u32 write_reduction(inout StageCursor out, ReductionWriteback input, u32 owner, address fields,
+    u32 count, address pointers) on cpu {
+    StageBranch write = stage_open(out, owner);
+    PageAddress target = reduction_target(out, input);
+    write_collective_record(out, target, fields, count, pointers);
     stage_close(out, write);
     return write.end;
 }
@@ -2055,25 +2066,26 @@ extern "C" StageWords reduction_writeback(ReductionWriteback input, u32 owner, a
 }
 
 
-extern "C" TreeWords reduction_group(ReductionGroup input, address strides, address components,
-    address fields, u32 count, address workspace, address body, address decorations) on cpu {
-    PageAddress source = input.output.target;
-    source.descriptor = input.source;
-    StageCursor out = StageCursor(body, 0u64, source.next);
+void initialize_collective(inout StageCursor out, PageAddress source, CollectiveInput input,
+    u32 bool_type, bool normalize, address components, address fields, u32 count, address workspace) on cpu {
     u32 u = source.u32_type;
-    u32 b = input.output.bool_type;
     address values = word_at(workspace, 2u64 * u64(count));
 
     StageBranch read = stage_open(out, input.active);
-    u32 record = reduction_row(out, source);
+    u32 record = collective_record(out, source);
     for (index in 0..count) {
-        let field = unsafe_position<ReductionField>(
-            unsafe_address(address_bits(fields) + u64(index) * size_of<ReductionField>()));
+        let field = unsafe_position<CollectiveField>(
+            unsafe_address(address_bits(fields) + u64(index) * size_of<CollectiveField>()));
         array<u32,2> from = stage_field_pointers(out, record, field.source_offset, field.pointer_type,
             source.u64_type, field.step);
         u32 low = stage_aligned_load(out, field.unit_type, from[0], field.unit_bytes);
         PayloadEmission widened = PayloadEmission(PayloadAccess::Words, field.unit_type, u, 4, 1, out.next);
-        put(values, 2u64 * u64(index), payload_word(out, widened, low, 0));
+        low = payload_word(out, widened, low, 0);
+        if (normalize) {
+            u32 keep = stage_op(out, 171, bool_type, low, source.zero);
+            low = stage_select(out, u, keep, source.one, source.zero);
+        }
+        put(values, 2u64 * u64(index), low);
         if (field.step != 0) {
             put(values, 2u64 * u64(index) + 1u64, stage_aligned_load(out, u, from[1], 4));
         }
@@ -2100,22 +2112,92 @@ extern "C" TreeWords reduction_group(ReductionGroup input, address strides, addr
         put(own, 1u64, component.high);
         tree_node_address(out, component, u, input.lane, own);
         for (part in 0..component.count) {
-            out.words = words_two(body, out.words, 62, read_word(own, part), read_word(values, slot + part));
+            out.words = words_two(out.body, out.words, 62, read_word(own, part), read_word(values, slot + part));
         }
     }
     stage_barrier(out, input.scope, input.semantics);
+}
+
+extern "C" TreeWords reduction_group(ReductionGroup input, address strides, address components,
+    address fields, u32 count, address workspace, address body, address decorations) on cpu {
+    PageAddress source = input.output.target;
+    source.descriptor = input.lanes.source;
+    StageCursor out = StageCursor(body, 0u64, source.next);
+    u32 u = source.u32_type;
+    u32 b = input.output.bool_type;
+    initialize_collective(out, source, input.lanes, b, false, components, fields, count, workspace);
 
     u64 decorated = 0u64;
     for (level in 0..6) {
-        TreeLayer layer = TreeLayer(u, b, input.lane, read_word(strides, level), 0, 0,
-            input.count, 0, input.scope, input.semantics, 0, out.next);
+        TreeLayer layer = TreeLayer(u, b, input.lanes.lane, read_word(strides, level), 0, 0,
+            input.lanes.count, 0, input.lanes.scope, input.lanes.semantics, 0, out.next);
         TreeWords part = stage_tree_layer(out, layer, source.index, components, count, workspace,
             word_at(decorations, decorated));
         decorated += part.decorations;
     }
-    u32 owner = stage_op(out, 170, b, input.lane, source.zero);
+    u32 owner = stage_op(out, 170, b, input.lanes.lane, source.zero);
     u32 label = write_reduction(out, input.output, owner, fields, count, workspace);
     return TreeWords(out.words, decorated, out.next, label);
+}
+
+
+u64 scan_tree_levels(inout StageCursor out, ScanGroup input, u32 remaining, bool down,
+    address levels, address components, u32 count, address pointers, address decorations) on cpu {
+    u64 decorated = 0u64;
+    for (index in 0..6) {
+        u32 ordinal = down ? 5 - index : index;
+        let level = unsafe_position<ScanLevel>(unsafe_address(address_bits(levels) + u64(ordinal) * size_of<ScanLevel>()));
+        TreeLayer layer = TreeLayer(input.target.u32_type, input.bool_type, input.lanes.lane, level.stride,
+            level.mask, 0, remaining, input.target.one, input.lanes.scope, input.lanes.semantics, down ? 1 : 0, out.next);
+        TreeWords words = stage_tree_layer(out, layer, 0, components, count, pointers, word_at(decorations, decorated));
+        decorated += words.decorations;
+    }
+    return decorated;
+}
+
+extern "C" TreeWords scan_group(ScanGroup input, address levels, address components,
+    address fields, u32 count, address workspace, address body, address decorations) on cpu {
+    PageAddress target = input.target;
+    PageAddress source = target;
+    source.descriptor = input.lanes.source;
+    source.word = 0;
+    StageCursor out = StageCursor(body, 0u64, target.next);
+    u32 u = target.u32_type;
+    u32 b = input.bool_type;
+    initialize_collective(out, source, input.lanes, b, input.normalize != 0, components, fields, count, workspace);
+
+    let first = unsafe_position<TreeComponent>(components);
+    bool extreme = (first.scalar == BuiltinScalar::F32 || first.scalar == BuiltinScalar::F64)
+        && first.operation != CollectiveOperation::Sum;
+    u32 remaining = extreme ? stage_group_remaining(out, u, target.index, input.lanes.lane, input.lanes.count) : 0;
+    u64 decorated = scan_tree_levels(out, input, remaining, false, levels, components, count, workspace, decorations);
+
+    u32 last = stage_op(out, 170, b, input.lanes.lane, input.last);
+    StageBranch save = stage_open(out, last);
+    PageAddress summary = target;
+    summary.descriptor = input.summary;
+    summary.index = stage_op(out, 134, u, target.index, input.width);
+    summary.word = 0;
+    write_collective_record(out, summary, fields, count, workspace);
+
+    for (index in 0..count) {
+        let component = unsafe_position<TreeComponent>(
+            unsafe_address(address_bits(components) + u64(index) * size_of<TreeComponent>()));
+        u32 slot = 2 * index;
+        out.words = words_two(body, out.words, 62, read_word(workspace, slot), input.lanes.identity[0]);
+        if (component.count == 2) {
+            out.words = words_two(body, out.words, 62, read_word(workspace, slot + 1), input.lanes.identity[1]);
+        }
+    }
+    stage_close(out, save);
+    stage_barrier(out, input.lanes.scope, input.lanes.semantics);
+
+    decorated += scan_tree_levels(out, input, remaining, true, levels, components, count, workspace,
+        word_at(decorations, decorated));
+    StageBranch write = stage_open(out, input.lanes.active);
+    write_collective_record(out, target, fields, count, workspace);
+    stage_close(out, write);
+    return TreeWords(out.words, decorated, out.next, write.end);
 }
 
 
@@ -2259,7 +2341,7 @@ u64 segment_tree(inout StageCursor out, SegmentGroup input, u32 remaining, bool 
     u64 decorated = 0u64;
     for (index in 0..6) {
         u32 ordinal = down ? 5 - index : index;
-        let level = unsafe_position<SegmentLevel>(unsafe_address(address_bits(levels) + u64(ordinal) * size_of<SegmentLevel>()));
+        let level = unsafe_position<ScanLevel>(unsafe_address(address_bits(levels) + u64(ordinal) * size_of<ScanLevel>()));
         StageBranch branch = scan_tree_branch(out, type_id, bool_type, input.lane, level.mask);
         u32 other = stage_op(out, 130, type_id, input.lane, level.stride);
         segment_plane_addresses(out, input, other, words, workspace, a_ptr);

@@ -1,5 +1,5 @@
 //! 64 线程 work-efficient Blelloch 独占扫描，工作组间由设备递归前缀传播。
-use super::*;
+use super::{reduce::{CollectiveField, CollectiveInput}, *};
 #[repr(C)]
 struct SharedAddress {
     index_type: u32,
@@ -75,6 +75,23 @@ pub(super) struct TreeWords {
 }
 
 #[repr(C)]
+pub(super) struct ScanLevel {
+    mask: u32,
+    stride: u32,
+}
+
+#[repr(C)]
+struct ScanGroup {
+    target: PageAddress,
+    lanes: CollectiveInput,
+    summary: u32,
+    width: u32,
+    last: u32,
+    bool_type: u32,
+    normalize: u32,
+}
+
+#[repr(C)]
 struct ScanPrefix {
     target: PageAddress,
     prefix_descriptor: u32,
@@ -102,6 +119,10 @@ struct ScanField {
 
 
 unsafe extern "C" {
+    #[link_name = "bootstrap.spirv_envelope::scan_group"]
+    fn emit_scan_group(input: ScanGroup, levels: *const ScanLevel, components: *const TreeComponent,
+        fields: *const CollectiveField, count: u32, workspace: *mut u32, body: *mut u32,
+        decorations: *mut u32) -> TreeWords;
     #[link_name = "bootstrap.spirv_envelope::add_scan_prefix"]
     fn add_scan_prefix(input: ScanPrefix, fields: *const ScanField, count: u32,
         body: *mut u32, decorations: *mut u32) -> TreeWords;
@@ -126,11 +147,6 @@ pub(super) struct SharedTree {
     pub scalar: Scalar,
     pub operator: CollectiveOperator,
 }
-pub(super) enum TreeDomain {
-    Scan,
-    Tile(u32),
-}
-
 struct TreeParts {
     ids: [u32; 2],
     count: usize,
@@ -251,135 +267,66 @@ impl Emitter<'_> {
         &mut self,
         scan: &Scan,
         tail: bool,
-        local: u32,
+        lane: u32,
         shared: u32,
         pointer: u32,
         active: u32,
         count: u32,
     ) {
         let r = &scan.values;
-        let u = self.types[&Scalar::U32];
-        let b = self.types[&Scalar::Bool];
-        let zero = self.constant(Scalar::U32, 0);
-        // 全域扫描的尾组与 tile 共用树；有效长度属于当前实际工作域。
-        let remaining =
-            if scan.ty.components[0].0.is_float() && scan.operator != CollectiveOperator::Sum {
-                self.group_remaining(local, count)
-            } else {
-                0
-            };
-        let trees: Vec<_> = scan
-            .ty
-            .components
-            .iter()
-            .map(|(scalar, offset)| SharedTree {
-                shared,
-                pointer,
-                base_word: (offset/4) * 64,
-                scalar: *scalar,
-                operator: scan.operator,
-            })
-            .collect();
-        let identity = self.raw_constant(scan.ty.components[0].0, scan.operator.identity(scan.ty.components[0].0));
-        let before = self.current_label;
-        let read = self.id();
-        let read_end = self.id();
-        self.emit(247, &[read_end, 0]);
-        self.emit(250, &[active, read, read_end]);
-        self.emit(248, &[read]);
-        let mut values = Vec::new();
-        for (scalar, offset) in &scan.ty.components {
-            let value = self.load_raw_buffer(*scalar,
-                if tail {
-                    self.scan_input_binding(r)
-                } else {
-                    r.source
-                },
-                self.index,
-                if tail {
-                    *offset
-                } else {
-                    r.source_word + offset
-                });
-            let value = if (matches!(self.stage.operation, Operation::Compact(_))
-                || self.stage.selection.is_some())
-                && !tail
-            {
-                let keep = self.id();
-                self.emit(171, &[b, keep, value, zero]);
-                let one = self.constant(Scalar::U32, 1);
-                let selected = self.id();
-                self.select(u, selected, keep, one, zero);
-                selected
-            } else {
-                value
-            };
-            values.push(value);
-        }
-        self.emit(249, &[read_end]);
-        self.emit(248, &[read_end]);
-        let inputs: Vec<_> = values
-            .into_iter()
-            .zip(&scan.ty.components)
-            .map(|(value,(scalar,_))| {
-                let input = self.id();
-                self.emit(245, &[self.raw_type(*scalar), input, value, read, identity, before]);
-                input
-            })
-            .collect();
-        for (tree,input) in trees.iter().zip(inputs) {self.tree_store(*tree,local,input);}
-        self.scan_barrier();
+        let identity = self.collective_identity(scan.ty.components[0].0, scan.operator);
+        let trees: Vec<_> = scan.ty.components.iter().map(|&(scalar, offset)| SharedTree {
+            shared, pointer, base_word: (offset / 4) * 64, scalar, operator: scan.operator,
+        }).collect();
         let components = self.tree_components(&trees);
-        for width in [1, 2, 4, 8, 16, 32] {
-            self.tree_layer(&components, local, width, TreeDomain::Scan, false, remaining);
-        }
+        let fields = self.collective_fields(&scan.ty, Some(if tail { 0 } else { r.source_word }));
+        let mut workspace = vec![0; 4 * fields.len()];
+        let levels = self.scan_levels();
         let last = self.constant(Scalar::U32, 63);
-        let is_last = self.id();
-        self.emit(170, &[b, is_last, local, last]);
-        let save = self.id();
-        let saved = self.id();
-        self.emit(247, &[saved, 0]);
-        self.emit(250, &[is_last, save, saved]);
-        self.emit(248, &[save]);
         let width = self.constant(Scalar::U32, 64);
-        let group = self.id();
-        self.emit(134, &[u, group, self.index, width]);
-        for (tree, (_,offset)) in trees.iter().zip(&scan.ty.components) {
-            let total = self.tree_load(*tree,local);
-            self.store_raw_buffer(tree.scalar,
-                self.program.buffers.len(),
-                group,
-                *offset,
-                total);
-            self.tree_store(*tree,local,identity);
-        }
-        self.emit(249, &[saved]);
-        self.emit(248, &[saved]);
-        self.scan_barrier();
-        for width in [32, 16, 8, 4, 2, 1] {
-            self.tree_layer(&components, local, width, TreeDomain::Scan, true, remaining);
-        }
-        let write = self.id();
-        let end = self.id();
-        self.emit(247, &[end, 0]);
-        self.emit(250, &[active, write, end]);
-        self.emit(248, &[write]);
+        let scope = self.constant(Scalar::U32, 2);
+        let semantics = self.constant(Scalar::U32, 0x108);
+        let source = if tail { self.scan_input_binding(r) } else { r.source };
         let root = !tail && matches!(self.stage.operation, Operation::ScanExclusive(_));
-        for (tree, (_,offset)) in trees.iter().zip(&scan.ty.components) {
-            let result = self.tree_load(*tree,local);
-            self.store_raw_buffer(tree.scalar,
-                r.target,
-                self.index,
-                if root {
-                    r.target_word + offset
-                } else {
-                    *offset
-                },
-                result);
+        let bias = (root && r.target_word != 0).then_some(r.target_word);
+        let target = self.page_input(Scalar::U32, PageSource::Dataset(self.buffers[r.target]),
+            self.index, bias, 0);
+        let normalize = !tail && (matches!(self.stage.operation, Operation::Compact(_))
+            || self.stage.selection.is_some());
+        let input = ScanGroup {
+            target,
+            lanes: CollectiveInput {
+                identity, source: self.buffers[source], lane, active, count,
+                before: self.current_label, scope, semantics,
+            },
+            summary: self.buffers[self.program.buffers.len()],
+            width, last, bool_type: self.types[&Scalar::Bool], normalize: u32::from(normalize),
+        };
+
+        let count = fields.len();
+        let body = self.body.len();
+        let decorations = self.decorations.len();
+        self.body.reserve(12 * (42 + 176 * count) + 430 + 128 * count);
+        self.decorations.reserve(36 * count);
+        unsafe {
+            let emitted = emit_scan_group(input, levels.as_ptr(), components.as_ptr(), fields.as_ptr(),
+                count as u32, workspace.as_mut_ptr(), self.body.as_mut_ptr().add(body),
+                self.decorations.as_mut_ptr().add(decorations));
+            self.body.set_len(body + emitted.body as usize);
+            self.decorations.set_len(decorations + emitted.decorations as usize);
+            self.next = emitted.next;
+            self.current_label = emitted.label;
         }
-        self.emit(249, &[end]);
-        self.emit(248, &[end]);
     }
+
+    pub(super) fn scan_levels(&mut self) -> [ScanLevel; 6] {
+        [1, 2, 4, 8, 16, 32].map(|width| ScanLevel {
+            mask: self.constant(Scalar::U32, width * 2 - 1),
+            stride: self.constant(Scalar::U32, width),
+        })
+    }
+
+
     fn tree_parts(&mut self, tree: SharedTree, node: u32) -> TreeParts {
         let count = tree.scalar.size().div_ceil(4) as usize;
         let mut ids = [tree.base_word, tree.base_word + 1];
@@ -419,14 +366,11 @@ impl Emitter<'_> {
         }).collect()
     }
 
-    pub(super) fn tree_layer(&mut self, components: &[TreeComponent], lane: u32,
-        width: u32, domain: TreeDomain, down: bool, remaining: u32,
+    pub(super) fn tile_tree_layer(&mut self, components: &[TreeComponent], lane: u32,
+        width: u32, padded: u32, down: bool, remaining: u32,
     ) {
-        let (selector, tile_capacity) = match domain {
-            TreeDomain::Scan => (self.constant(Scalar::U32, width * 2 - 1), 0),
-            TreeDomain::Tile(capacity) => (self.constant(Scalar::U32, width * 2),
-                self.constant(Scalar::U32, capacity)),
-        };
+        let selector = self.constant(Scalar::U32, width * 2);
+        let tile_capacity = self.constant(Scalar::U32, padded);
         let input = TreeLayer {
             uint_type: self.types[&Scalar::U32],
             bool_type: self.types[&Scalar::Bool],
@@ -435,9 +379,7 @@ impl Emitter<'_> {
             selector,
             tile_capacity,
             remaining,
-            one: if tile_capacity != 0 || (!down && remaining != 0) {
-                self.constant(Scalar::U32, 1)
-            } else { 0 },
+            one: self.constant(Scalar::U32, 1),
             scope: self.constant(Scalar::U32, 2),
             semantics: self.constant(Scalar::U32, 0x108),
             down: u32::from(down),

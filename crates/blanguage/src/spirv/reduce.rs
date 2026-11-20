@@ -22,7 +22,7 @@ struct CollectiveWords {
 }
 
 #[repr(C)]
-struct ReductionField {
+pub(super) struct CollectiveField {
     source_offset: u32,
     target_offset: u32,
     unit_type: u32,
@@ -45,25 +45,30 @@ struct ReductionWriteback {
 }
 
 #[repr(C)]
+pub(super) struct CollectiveInput {
+    pub(super) identity: [u32; 2],
+    pub(super) source: u32,
+    pub(super) lane: u32,
+    pub(super) active: u32,
+    pub(super) count: u32,
+    pub(super) before: u32,
+    pub(super) scope: u32,
+    pub(super) semantics: u32,
+}
+
+#[repr(C)]
 struct ReductionGroup {
     output: ReductionWriteback,
-    identity: [u32; 2],
-    source: u32,
-    lane: u32,
-    active: u32,
-    count: u32,
-    before: u32,
-    scope: u32,
-    semantics: u32,
+    lanes: CollectiveInput,
 }
 
 unsafe extern "C" {
     #[link_name = "bootstrap.spirv_envelope::reduction_group"]
     fn emit_reduction_group(input: ReductionGroup, strides: *const u32, components: *const TreeComponent,
-        fields: *const ReductionField, count: u32, workspace: *mut u32, body: *mut u32,
+        fields: *const CollectiveField, count: u32, workspace: *mut u32, body: *mut u32,
         decorations: *mut u32) -> TreeWords;
     #[link_name = "bootstrap.spirv_envelope::reduction_writeback"]
-    fn emit_reduction_writeback(input: ReductionWriteback, owner: u32, fields: *const ReductionField,
+    fn emit_reduction_writeback(input: ReductionWriteback, owner: u32, fields: *const CollectiveField,
         count: u32, pointers: *const u32, body: *mut u32) -> StageWords;
     #[link_name = "bootstrap.spirv_envelope::collective_pair"]
     fn emit_collective_pair(input: CollectivePair, body: *mut u32, decorations: *mut u32) -> CollectiveWords;
@@ -109,24 +114,22 @@ impl Emitter<'_> {
     ) {
         let r = &reduction.fields;
         let scalar = reduction.ty.components[0].0;
-        let bits = reduction.operator.identity(scalar);
-        let identity = [
-            self.constant(Scalar::U32, bits as u32),
-            if scalar.size() == 8 { self.constant(Scalar::U32, (bits >> 32) as u32) } else { 0 },
-        ];
+        let identity = self.collective_identity(scalar, reduction.operator);
         let trees: Vec<_> = reduction.ty.components.iter().map(|&(scalar, offset)| SharedTree {
             shared, pointer, base_word: (offset / 4) * 64, scalar, operator: reduction.operator,
         }).collect();
         let components = self.tree_components(&trees);
-        let fields = self.reduction_fields(&reduction.ty, Some(if tail { 0 } else { r.source_word }));
+        let fields = self.collective_fields(&reduction.ty, Some(if tail { 0 } else { r.source_word }));
         let mut workspace = vec![0; 4 * fields.len()];
         let strides = [32, 16, 8, 4, 2, 1].map(|stride| self.constant(Scalar::U32, stride));
         let scope = self.constant(Scalar::U32, 2);
         let semantics = self.constant(Scalar::U32, 0x108);
         let input = ReductionGroup {
             output: self.reduction_writeback_input(r),
-            identity, source: self.buffers[r.source], lane, active, count,
-            before: self.current_label, scope, semantics,
+            lanes: CollectiveInput {
+                identity, source: self.buffers[r.source], lane, active, count,
+                before: self.current_label, scope, semantics,
+            },
         };
         let body = self.body.len();
         let decorations = self.decorations.len();
@@ -144,14 +147,22 @@ impl Emitter<'_> {
     }
 
 
-    fn reduction_fields(&mut self, ty: &Ty, source: Option<u32>) -> Vec<ReductionField> {
+    pub(super) fn collective_identity(&mut self, scalar: Scalar, operator: CollectiveOperator) -> [u32; 2] {
+        let bits = operator.identity(scalar);
+        [
+            self.constant(Scalar::U32, bits as u32),
+            if scalar.size() == 8 { self.constant(Scalar::U32, (bits >> 32) as u32) } else { 0 },
+        ]
+    }
+
+    pub(super) fn collective_fields(&mut self, ty: &Ty, source: Option<u32>) -> Vec<CollectiveField> {
         ty.components.iter().enumerate().map(|(index, &(scalar, offset))| {
             let unit = Self::physical_unit(scalar);
             let source_offset = match source {
                 Some(base) if base + offset != 0 => self.constant(Scalar::U64, base + offset),
                 _ => 0,
             };
-            ReductionField {
+            CollectiveField {
                 source_offset,
                 target_offset: if offset == 0 { 0 } else { self.constant(Scalar::U64, offset) },
                 unit_type: self.types[&unit],
@@ -183,7 +194,7 @@ impl Emitter<'_> {
         if ty.components.is_empty() {
             return;
         }
-        let fields = self.reduction_fields(ty, None);
+        let fields = self.collective_fields(ty, None);
         let input = self.reduction_writeback_input(r);
         let body = self.body.len();
         self.body.reserve(180 + 44 * fields.len());

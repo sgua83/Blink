@@ -1,5 +1,5 @@
 //! 同一向量的极值分量共用树的同步层；求和继续复用单流工作区。
-use super::{scan::{SharedTree, TreeDomain}, *};
+use super::{scan::SharedTree, *};
 impl Emitter<'_> {
     pub(super) fn tile_collective(&mut self, collective: &TileCollective) {
         if collective.results.is_empty() {
@@ -69,7 +69,7 @@ impl Emitter<'_> {
             let components = self.tree_components(&trees);
             let mut stride = 1;
             while stride < padded {
-                self.tree_layer(&components, self.tile_lane, stride, TreeDomain::Tile(padded), false, self.tile_length);
+                self.tile_tree_layer(&components, self.tile_lane, stride, padded, false, self.tile_length);
                 stride *= 2;
             }
             let final_index = if collective.op.exclusive() {
@@ -90,7 +90,7 @@ impl Emitter<'_> {
                 self.scan_barrier();
                 let mut stride = padded / 2;
                 while stride != 0 {
-                    self.tree_layer(&components, self.tile_lane, stride, TreeDomain::Tile(padded), true, self.tile_length);
+                    self.tile_tree_layer(&components, self.tile_lane, stride, padded, true, self.tile_length);
                     stride /= 2;
                 }
                 self.tile_lane

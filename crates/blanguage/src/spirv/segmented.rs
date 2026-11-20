@@ -1,5 +1,5 @@
 //! 分段摘要携带尾段值与段头标记；归约额外携带段数，摘要始终留在设备。
-use super::{scan::TreeWords, *};
+use super::{scan::{ScanLevel, TreeWords}, *};
 
 #[repr(C)]
 struct SegmentField {
@@ -18,12 +18,6 @@ struct SegmentMerge {
     zero: u32,
     value_words: u32,
     counted: u32,
-}
-
-#[repr(C)]
-struct SegmentLevel {
-    mask: u32,
-    stride: u32,
 }
 
 #[repr(C)]
@@ -83,7 +77,7 @@ struct SegmentGroup {
 
 unsafe extern "C" {
     #[link_name = "bootstrap.spirv_envelope::segment_group"]
-    fn emit_segment_group(input: SegmentGroup, levels: *const SegmentLevel, fields: *const SegmentField,
+    fn emit_segment_group(input: SegmentGroup, levels: *const ScanLevel, fields: *const SegmentField,
         source_fields: *const SegmentStorageField, target_fields: *const SegmentStorageField,
         field_count: u32, identity: *const u32, words: *mut u32, body: *mut u32,
         decorations: *mut u32) -> TreeWords;
@@ -207,10 +201,7 @@ impl Emitter<'_> {
         let identity = self.segment_identity(scan);
         let merge = self.segment_merge_input(scan);
         let words = scan.summary_words();
-        let levels = [1, 2, 4, 8, 16, 32].map(|width| SegmentLevel {
-            mask: self.constant(Scalar::U32, width * 2 - 1),
-            stride: self.constant(Scalar::U32, width),
-        });
+        let levels = self.scan_levels();
         let mut workspace = vec![0; 8 * words];
         for (index, slot) in workspace[..words].iter_mut().enumerate().skip(1) {
             *slot = self.constant(Scalar::U32, index as u32 * 64);

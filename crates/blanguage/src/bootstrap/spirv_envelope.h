@@ -395,7 +395,7 @@ struct TreeWords { u64 body; u64 decorations; u32 next; u32 label; };
 extern "C" TreeWords tree_layer(TreeLayer input, address components, u32 count,
     address body, address decorations) on cpu;
 
-struct ReductionField {
+struct CollectiveField {
     u32 source_offset;
     u32 target_offset;
     u32 unit_type;
@@ -416,8 +416,7 @@ struct ReductionWriteback {
     u32 bias;
 };
 
-struct ReductionGroup {
-    ReductionWriteback output;
+struct CollectiveInput {
     array<u32,2> identity;
     u32 source;
     u32 lane;
@@ -428,7 +427,24 @@ struct ReductionGroup {
     u32 semantics;
 };
 
+struct ReductionGroup {
+    ReductionWriteback output;
+    CollectiveInput lanes;
+};
+
+struct ScanGroup {
+    PageAddress target;
+    CollectiveInput lanes;
+    u32 summary;
+    u32 width;
+    u32 last;
+    u32 bool_type;
+    u32 normalize;
+};
+
 // Workspace has two pointer words and two input words per component.
+extern "C" TreeWords scan_group(ScanGroup input, address levels, address components,
+    address fields, u32 count, address workspace, address body, address decorations) on cpu;
 extern "C" TreeWords reduction_group(ReductionGroup input, address strides, address components,
     address fields, u32 count, address workspace, address body, address decorations) on cpu;
 extern "C" StageWords reduction_writeback(ReductionWriteback input, u32 owner,
@@ -480,7 +496,7 @@ struct SegmentMerge {
     u32 counted;
 };
 
-struct SegmentLevel { u32 mask; u32 stride; };
+struct ScanLevel { u32 mask; u32 stride; };
 struct SegmentAdd {
     SegmentMerge merge;
     PageAddress target;
