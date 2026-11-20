@@ -147,7 +147,6 @@ void plan_imports(PeInput input, inout PeLayout result) on cpu {
 PeLayout invalid(u64 code) on cpu {
     return PeLayout(0u64,0u64,0u64,0u64,0u64,0u64,0u64,0u64,0u64,0u64,0u64,0u64,0u64,5368709120u64,code);
 }
-extern "C" u64 stack_reserve(u32 stack_bytes) on cpu {return align(u64(stack_bytes)+1048576u64,65536u64);}
 extern "C" PeLayout layout(PeInput input) on cpu {
     PeLayout result=invalid(0u64);u64 rva=4096u64;u64 i=0u64;bool pdata=false;
     while(i<input.section_count){

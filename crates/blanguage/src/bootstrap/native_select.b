@@ -1,6 +1,5 @@
 module bootstrap.native_select;
 import bootstrap.bindings;
-import bootstrap.pe;
 
 struct SelectState {SelectView view;BindingForest forest;u64 runtime_root;u64 head;u64 tail;u64 local_count;u64 entry;};
 struct SelectTarget {u64 object;u64 section;SelectResult result;};
@@ -120,7 +119,8 @@ EntryPlan finish(inout SelectState state,SelectParams params) on cpu {
         if(retained_archive){return EntryPlan(EntryProduct::Dll,0u64);}
         return EntryPlan(EntryProduct::DllWithoutArchive,0u64);
     }
-    u64 reserve=bootstrap.pe::stack_reserve(u32(stack_bytes));
+    u64 stack=u64(u32(stack_bytes))+1048576u64;
+    u64 reserve=((stack+65535u64)/65536u64)*65536u64;
     if(retained_archive){return EntryPlan(EntryProduct::HostApplication,reserve);}
     return EntryPlan(EntryProduct::Pe,reserve);
 }

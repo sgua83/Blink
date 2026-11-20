@@ -31,4 +31,3 @@ struct PeRelocationResult { u32 status; u32 kind; };
 
 extern "C" PeLayout layout(PeInput input) on cpu;
 extern "C" PeRelocationResult encode(PeInput input,PeLayout layout,address rows,u64 row_count,address output) on cpu;
-extern "C" u64 stack_reserve(u32 stack_bytes) on cpu;
