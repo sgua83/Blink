@@ -2240,8 +2240,12 @@ impl Builder<'_> {
         if fill.ty.contains_views() {
             return self.fail(args.at(2).span(), "B224", "resize 填充值不能复制 view 借用图");
         }
+        let pending=match &returned {
+            returns::Returned::OwnedValue(value)=>Some(self.hold_binding(Binding::OwnedValue(value.clone()))),
+            returns::Returned::Dataset(data)=>Some(self.hold_binding(Binding::ApplicationData(data.clone()))),
+            _=>None,
+        };
         let mut retained = fill.proof.typed_view_borrow(&fill.ty);
-        for borrow in view_contracts::resource_borrows(&returned) { retained.union(&borrow); }
         self.view_uses.invocation(span);
         retained.union(&unsafe { self.world.call(self.view_uses.all(self,&[view_liveness::Transfer::OwnedData(&data)])).await }?);
         self.application_movable(&data, &retained, span)?;
@@ -2256,11 +2260,6 @@ impl Builder<'_> {
                 return self.fail(args.at(1).span(), "B224", "拥有填充值只能移动到已证明不回绕且恰好新增的一项，不能广播复制或截短拥有元素");
             }
         }
-        let pending=match &returned {
-            returns::Returned::OwnedValue(value)=>Some(self.hold_binding(Binding::OwnedValue(value.clone()))),
-            returns::Returned::Dataset(data)=>Some(self.hold_binding(Binding::ApplicationData(data.clone()))),
-            _=>None,
-        };
         let incoming = self.capture_element_model(&data, &[], returned);
         let growth = bounds::Condition::comparison(Comparison::Greater, &length, &data.length);
         let grows = growth.truth_in(&self.path);
