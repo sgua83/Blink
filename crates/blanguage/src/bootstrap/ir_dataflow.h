@@ -32,6 +32,7 @@ struct Host { cfn<View,Node> ensures memory(read) inspect; };
 enum LoopTransfer:u32 { Break=0; Continue=1; ScopeExit=2; Branch=3; Scope=4; };
 extern "C" usize next_loop_edit(Span code,usize first,Host host) on cpu
  requires nonzero(host.inspect);
+extern "C" u32 has_function_exit(Span code,Host host) on cpu requires nonzero(host.inspect);
 extern "C" void loop_transfers(Span code,Host host,address context,
  cfn<void,address,LoopTransfer,usize,Span,Span> visit) on cpu
  requires nonzero(host.inspect) requires nonzero(visit);

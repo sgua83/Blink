@@ -14,16 +14,6 @@ pub(super) struct ReturnEdge {
     label: u32,
     returned: u32,
 }
-fn contains_exit(code: &[Inst]) -> bool {
-    code.iter().any(|i| match &(i).kind {
-        InstKind::Exit => true,
-        InstKind::If { yes, no, .. } => contains_exit(yes) || contains_exit(no),
-        InstKind::Loop {
-            condition, body, ..
-        } => contains_exit(condition) || contains_exit(body),
-        _ => false, // 嵌套 Scope 的 Exit 属于另一个函数。
-    })
-}
 impl Emitter<'_> {
     pub(super) fn function_scope(&mut self, body: &[Inst]) -> Result<(), &'static str> {
         let merge = self.id();
@@ -51,18 +41,15 @@ impl Emitter<'_> {
         self.leave_control(target)
     }
     pub(super) fn begin_return_loop(&mut self, body: &[Inst], merge: u32) -> bool {
-        if !contains_exit(body) {
+        let Some(scope) = self.return_scopes.last_mut() else { return false; };
+        if !crate::ir::dataflow::has_function_exit(body) {
             return false;
         }
-        if let Some(scope) = self.return_scopes.last_mut() {
-            scope.loops.push(ReturnLoop {
-                merge,
-                edges: Vec::new(),
-            });
-            true
-        } else {
-            false
-        }
+        scope.loops.push(ReturnLoop {
+            merge,
+            edges: Vec::new(),
+        });
+        true
     }
     pub(super) fn loop_exit_edge(&mut self, merge: u32, label: u32) {
         if let Some(cycle) = self

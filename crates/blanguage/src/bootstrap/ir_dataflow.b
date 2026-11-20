@@ -32,20 +32,28 @@ extern "C" usize next_loop_edit(Span code,usize first,Host host) on cpu
  return code.count;
 }
 
-// Scope exits are local to that scope. Transfers in an inner Loop belong to it.
-bool loop_block_transfers(Span code,bool scope_exit,Host host) on cpu
+enum TransferSearch:u32 { LoopLocal=0; LoopAndExit=1; FunctionExit=2; };
+
+bool block_transfers(Span code,TransferSearch search,Host host) on cpu
  requires nonzero(host.inspect) {
  usize i=0u64;
  while(i<code.count){
   View instruction=host.inspect(node_at(code,i,N_INSTRUCTION));
   i+=1u64;
   u32 kind=instruction.tag;
-  if(kind==OP_BREAK_VALUE||kind==OP_CONTINUE_VALUE||(scope_exit&&kind==OP_EXIT_VALUE)){return true;}
-  if(kind==OP_BRANCH&&(loop_block_transfers(instruction.first,scope_exit,host)
-                    ||loop_block_transfers(instruction.second,scope_exit,host))){return true;}
-  if(kind==OP_SCOPE&&loop_block_transfers(instruction.first,false,host)){return true;}
+  if(kind==OP_EXIT_VALUE && search!=TransferSearch::LoopLocal){return true;}
+  if((kind==OP_BREAK_VALUE||kind==OP_CONTINUE_VALUE) && search!=TransferSearch::FunctionExit){return true;}
+  if(kind==OP_BRANCH || (kind==OP_LOOP_VALUE && search==TransferSearch::FunctionExit)){
+   if(block_transfers(instruction.first,search,host)||block_transfers(instruction.second,search,host)){return true;}
+  }
+  if(kind==OP_SCOPE && search!=TransferSearch::FunctionExit
+     && block_transfers(instruction.first,TransferSearch::LoopLocal,host)){return true;}
  }
  return false;
+}
+
+extern "C" u32 has_function_exit(Span code,Host host) on cpu requires nonzero(host.inspect) {
+ return u32(block_transfers(code,TransferSearch::FunctionExit,host));
 }
 
 extern "C" void loop_transfers(Span code,Host host,address context,
@@ -62,10 +70,10 @@ extern "C" void loop_transfers(Span code,Host host,address context,
    visit(context,LoopTransfer::Continue,0u64,empty_span(),empty_span());
   }else if(kind==OP_EXIT_VALUE){
    visit(context,LoopTransfer::ScopeExit,0u64,empty_span(),empty_span());
-  }else if(kind==OP_BRANCH&&(loop_block_transfers(instruction.first,true,host)
-                          ||loop_block_transfers(instruction.second,true,host))){
+  }else if(kind==OP_BRANCH&&(block_transfers(instruction.first,TransferSearch::LoopAndExit,host)
+                          ||block_transfers(instruction.second,TransferSearch::LoopAndExit,host))){
    visit(context,LoopTransfer::Branch,instruction.a,instruction.first,instruction.second);
-  }else if(kind==OP_SCOPE&&loop_block_transfers(instruction.first,false,host)){
+  }else if(kind==OP_SCOPE&&block_transfers(instruction.first,TransferSearch::LoopLocal,host)){
    visit(context,LoopTransfer::Scope,0u64,instruction.first,empty_span());
   }
  }
