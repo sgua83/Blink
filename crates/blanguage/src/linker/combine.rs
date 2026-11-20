@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 #[repr(C)]
 struct CombineObject {section_start:u64,section_count:u64,symbol_start:u64,symbol_count:u64,frame_start:u64,frame_count:u64}
 #[repr(C)]
-struct CombineSection {
+pub(super) struct CombineSection {
     name:*const u8,name_length:u64,bytes:*const u8,byte_length:u64,flags:u64,object:u64,
     owner:u64,group:u64,begin:u64,size:u64,padding:u64,
 }
@@ -65,10 +65,7 @@ pub(super) fn link_pe(objects: Vec<Selected>, stack_reserve: u64) -> Result<Vec<
             name, bytes: length, flags, relocations: Vec::new(), associated: Vec::new(), layout: None,
         }),
         |section| &mut section.relocations,
-        |rows, sections, _| pe::link(&sections, stack_reserve, |destinations| {
-            // PE supplies one final byte range for each group in layout order.
-            unsafe { combine_encode(rows.as_ptr(), rows.len(), destinations.as_ptr()); }
-        }))
+        |rows, sections, _| pe::link(&sections, rows, stack_reserve))
 }
 
 pub(super) fn report(objects: Vec<Selected<usize>>) -> Result<(Vec<Vec<Relocation>>, Vec<Frame>)> {

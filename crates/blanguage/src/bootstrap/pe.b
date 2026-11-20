@@ -1,6 +1,7 @@
 module bootstrap.pe;
 
 import blink.windows.coff;
+import bootstrap.combine;
 
 u64 align(u64 n,u64 by) on cpu requires nonzero(by) {return ((n+by-1u64)/by)*by;}
 PeSection section_at(PeInput input,u64 i) on cpu {return unsafe_position<PeSection>(unsafe_address(address_bits(input.sections)+i*SECTION_BYTES));}
@@ -195,7 +196,7 @@ extern "C" PeLayout layout(PeInput input) on cpu {
     if(result.reloc_length!=0u64){result.image_size=result.reloc+align(result.reloc_length,4096u64);}else{result.image_size=result.idata+align(result.idata_length,4096u64);}
     if(result.length>4294967295u64||result.image_size>4294967295u64){return invalid(1u64);}return result;
 }
-extern "C" PeRelocationResult relocate_sections(PeInput input,u64 image_base,address output) on cpu {
+PeRelocationResult relocate_sections(PeInput input,u64 image_base,address output) on cpu {
     u64 i=0u64;
     while (i<input.section_count) {
         PeSection section=section_at(input,i);
@@ -219,7 +220,7 @@ void section_header(address output,u64 index,address name,u64 name_length,u64 rv
     copy(output,header,name,count);le32(output,header+8u64,length);le32(output,header+12u64,rva);
     le32(output,header+16u64,align(length,512u64));le32(output,header+20u64,raw);le32(output,header+36u64,flags);
 }
-extern "C" void encode(PeInput input,PeLayout layout,address output) on cpu {
+void encode_headers(PeInput input,PeLayout layout,address output) on cpu {
     put(output,0u64,77u64);put(output,1u64,90u64);le32(output,60u64,128u64);
     put(output,128u64,80u64);put(output,129u64,69u64);le16(output,132u64,34404u64);
     le16(output,134u64,layout.section_count);le16(output,148u64,240u64);le16(output,150u64,34u64);
@@ -274,4 +275,16 @@ extern "C" void encode(PeInput input,PeLayout layout,address output) on cpu {
             cursor+=size;i=end;
         }
     }
+}
+
+extern "C" PeRelocationResult encode(PeInput input,PeLayout layout,address rows,u64 row_count,address output) on cpu {
+    encode_headers(input,layout,output);
+    u64 i=0u64;
+    while(i<row_count){
+        CombineSection row=bootstrap.combine::section_at(rows,i);
+        PeSection group=section_at(input,row.group);
+        encode_section(row,unsafe_address(address_bits(output)+group.raw));
+        i+=1u64;
+    }
+    return relocate_sections(input,layout.image_base,output);
 }

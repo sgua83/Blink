@@ -1,6 +1,6 @@
 //! B lays out the final PE and writes its headers and directories.
 //! The section writer fills the same file before shared machine relocation.
-use super::Result;
+use super::{Result, combine::CombineSection};
 use crate::native::CoffRelocationStatus;
 use crate::object::{Section, Target};
 
@@ -47,13 +47,12 @@ unsafe extern "C" {
     #[link_name="bootstrap.pe::layout"]
     fn pe_layout(input:PeInput)->PeLayout;
     #[link_name="bootstrap.pe::encode"]
-    fn pe_encode(input:PeInput,layout:PeLayout,output:*mut u8);
-    #[link_name="bootstrap.pe::relocate_sections"]
-    fn relocate_sections(input:PeInput,image_base:u64,output:*mut u8)->PeRelocationResult;
+    fn pe_encode(input:PeInput,layout:PeLayout,rows:*const CombineSection,
+        row_count:usize,output:*mut u8)->PeRelocationResult;
 }
 
 pub(super) fn link(
-    input_sections: &[Section<usize>], stack_reserve: u64, write_sections: impl FnOnce(&[*mut u8]),
+    input_sections: &[Section<usize>], rows: &[CombineSection], stack_reserve: u64,
 ) -> Result<Vec<u8>> {
     let mut sections=Vec::with_capacity(input_sections.len());
     let mut relocations=Vec::new();
@@ -104,14 +103,8 @@ pub(super) fn link(
         code=>return Err(format!("PE格式生成失败 {code}").into()),
     }
     let mut output=vec![0;usize::try_from(layout.length)?];
-    unsafe{pe_encode(input,layout,output.as_mut_ptr());}
-    let base = output.as_mut_ptr();
-    let destinations = sections.iter().map(|section| {
-        // Successful layout places every complete group inside this file buffer.
-        unsafe { base.add(section.raw as usize) }
-    }).collect::<Vec<_>>();
-    write_sections(&destinations);
-    let relocation = unsafe { relocate_sections(input, layout.image_base, output.as_mut_ptr()) };
+    // Both original plans and their source bytes stay alive through image encoding.
+    let relocation = unsafe { pe_encode(input, layout, rows.as_ptr(), rows.len(), output.as_mut_ptr()) };
     relocation.status.result(relocation.kind)?;
     Ok(output)
 }
