@@ -18,8 +18,8 @@ pub(super) struct CombineSection {
 struct CombineSymbol {name:*const u8,name_length:u64,section:u64,value:u64}
 #[repr(C)]
 pub(super) struct CombineRelocation {
-    source:u64,offset:u64,pub(super) target_kind:u64,section:u64,value:u64,
-    name:*const u8,name_length:u64,pub(super) kind:u64,library:*const u8,library_length:u64,
+    source:u64,offset:u64,target_kind:u64,section:u64,value:u64,
+    name:*const u8,name_length:u64,kind:u64,library:*const u8,library_length:u64,
 }
 #[repr(C)]
 struct CombineFrame {section:u64,start:u64,present:u64}
@@ -31,10 +31,17 @@ struct CombineInput {
     frames:*mut CombineFrame,order:*mut u64,
 }
 #[repr(C)]
-struct CombinePlan {groups:u64,symbols:u64,error:u64,at:u64}
+pub(super) struct CombinePlan {
+    pub(super) groups: usize,
+    symbols: u64,
+    pub(super) imports: usize,
+    pub(super) absolutes: usize,
+    error: u64,
+    at: u64,
+}
 unsafe extern "C" {
     #[link_name="bootstrap.combine::prepare"]
-    fn combine_prepare(input: CombineInput, local: *const ImportBytes, local_count: usize) -> CombinePlan;
+    fn combine_prepare(input: CombineInput, local: *const ImportBytes, local_count: usize, pe: u32) -> CombinePlan;
     #[link_name="bootstrap.combine::encode"]
     fn combine_encode(sections: *const CombineSection, count: usize, outputs: *const *mut u8);
 }
@@ -63,8 +70,8 @@ pub(super) fn module<Payload: AsRef<[u8]>>(
 }
 
 pub(super) fn link_pe(objects: Vec<Selected>, stack_reserve: u64) -> Result<Vec<u8>> {
-    let Prepared { rows, relocations, plan, .. } = prepare(&objects, &[], extent)?;
-    pe::link(&rows, &relocations, usize::try_from(plan.groups)?, stack_reserve)
+    let Prepared { rows, relocations, plan, .. } = prepare(&objects, &[], extent, true)?;
+    pe::link(&rows, &relocations, &plan, stack_reserve)
 }
 
 pub(super) fn report(objects: Vec<Selected<usize>>) -> Result<(Vec<Vec<Relocation>>, Vec<Frame>)> {
@@ -92,6 +99,7 @@ struct Prepared {
 fn prepare<Payload>(
     objects: &[Selected<Payload>], local: &[&str],
     extent: impl Fn(&Payload) -> (*const u8, usize),
+    pe: bool,
 ) -> Result<Prepared> {
     let mut inputs=Vec::with_capacity(objects.len());
     let mut rows=Vec::new();let mut symbols=Vec::new();let mut relocations=Vec::new();
@@ -134,7 +142,7 @@ fn prepare<Payload>(
         relocations:relocations.as_mut_ptr(),relocation_count:relocations.len() as u64,frames:frames.as_mut_ptr(),
         order:order.as_mut_ptr()};
     let local: Vec<_> = local.iter().map(|name| ImportBytes::new(name)).collect();
-    let plan = unsafe { combine_prepare(input, local.as_ptr(), local.len()) };
+    let plan = unsafe { combine_prepare(input, local.as_ptr(), local.len(), u32::from(pe)) };
     match plan.error {
         0=>{},1=>return Err("合并节偏移超出32位范围".into()),
         2=>return Err("模块符号地址溢出".into()),3=>return Err("栈函数节地址溢出".into()),4=>return Err("模块节地址溢出".into()),
@@ -165,8 +173,8 @@ fn combine<Payload, Group, Output, Reference: From<Relocation>>(
     finish: impl FnOnce(&[CombineSection], Vec<Group>, Vec<Frame>) -> Result<Output>,
 ) -> Result<Output> {
     let local = module.as_ref().map_or(&[][..], |(names, _)| *names);
-    let Prepared { rows, symbols, relocations, frames, order, plan } = prepare(&objects, local, extent)?;
-    let mut sections = groups(&rows, usize::try_from(plan.groups)?, &objects)?;
+    let Prepared { rows, symbols, relocations, frames, order, plan } = prepare(&objects, local, extent, false)?;
+    let mut sections = groups(&rows, plan.groups, &objects)?;
     if let Some((_, defined))=module{for &index in &order[..usize::try_from(plan.symbols)?]{
         let symbol=&symbols[usize::try_from(index)?];
         let name=unsafe{std::str::from_utf8_unchecked(std::slice::from_raw_parts(symbol.name,symbol.name_length as usize))};

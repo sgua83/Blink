@@ -22,8 +22,8 @@ struct CombineInput {
     address symbols;u64 symbol_count;address relocations;u64 relocation_count;
     address frames;address order;
 };
-struct CombinePlan {u64 groups;u64 symbols;u64 error;u64 at;};
-extern "C" CombinePlan prepare(CombineInput input, address local, u64 local_count) on cpu;
+struct CombinePlan {u64 groups;u64 symbols;u64 imports;u64 absolutes;u64 error;u64 at;};
+extern "C" CombinePlan prepare(CombineInput input, address local, u64 local_count, bool pe) on cpu;
 CombineSection section_at(address sections,u64 i) on cpu;
 void encode_section(CombineSection row,address output) on cpu;
 extern "C" void encode(address sections,u64 section_count,address outputs) on cpu;

@@ -1,6 +1,6 @@
 //! B lays out the final PE and writes its headers and directories.
 //! The section writer fills the same file before shared machine relocation.
-use super::{Result, combine::{CombineRelocation, CombineSection}};
+use super::{Result, combine::{CombinePlan, CombineRelocation, CombineSection}};
 use crate::native::CoffRelocationStatus;
 
 #[repr(C)]
@@ -51,19 +51,17 @@ unsafe extern "C" {
 }
 
 pub(super) fn link(
-    rows: &[CombineSection], combined: &[CombineRelocation], groups: usize, stack_reserve: u64,
+    rows: &[CombineSection], combined: &[CombineRelocation], plan: &CombinePlan, stack_reserve: u64,
 ) -> Result<Vec<u8>> {
-    let import_count = combined.iter().filter(|row| row.target_kind == 1).count();
-    let absolute_count = combined.iter().filter(|row| row.kind == 1).count();
-    let mut sections = Vec::<PeSection>::with_capacity(groups);
+    let mut sections = Vec::<PeSection>::with_capacity(plan.groups);
     let mut relocations = Vec::<PeRelocation>::with_capacity(combined.len());
-    let mut imports = Vec::<PeImport>::with_capacity(import_count);
-    let mut absolutes = Vec::<PeAbsolute>::with_capacity(absolute_count);
+    let mut imports = Vec::<PeImport>::with_capacity(plan.imports);
+    let mut absolutes = Vec::<PeAbsolute>::with_capacity(plan.absolutes);
     let input = PeInput {
-        sections: sections.as_mut_ptr(), section_count: groups as u64,
+        sections: sections.as_mut_ptr(), section_count: plan.groups as u64,
         relocations: relocations.as_mut_ptr(), imports: imports.as_mut_ptr(),
-        import_count: import_count as u64, absolutes: absolutes.as_mut_ptr(),
-        absolute_count: absolute_count as u64, stack_reserve,
+        import_count: plan.imports as u64, absolutes: absolutes.as_mut_ptr(),
+        absolute_count: plan.absolutes as u64, stack_reserve,
     };
     // B initializes the physical section, relocation and import slots from the combined rows.
     let layout = unsafe {

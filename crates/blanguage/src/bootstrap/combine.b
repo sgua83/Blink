@@ -42,8 +42,8 @@ void sort(CombineInput input,u64 count,bool symbols) on cpu {
 }
 bool same_section(CombineSection a,CombineSection b) on cpu {return a.flags==b.flags&&compare(a.name,a.name_length,b.name,b.name_length)==0;}
 bool same_symbol(CombineSymbol a,CombineSymbol b) on cpu {return compare(a.name,a.name_length,b.name,b.name_length)==0;}
-CombinePlan invalid(u64 error,u64 at) on cpu {return CombinePlan(0u64,0u64,error,at);}
-extern "C" CombinePlan prepare(CombineInput input, address local, u64 local_count) on cpu {
+CombinePlan invalid(u64 error,u64 at) on cpu {return CombinePlan(0u64,0u64,0u64,0u64,error,at);}
+extern "C" CombinePlan prepare(CombineInput input, address local, u64 local_count, bool pe) on cpu {
     CombinePlan result=invalid(0u64,0u64);u64 i=0u64;
     while(i<input.section_count){CombineSection row=section_at(input.sections,i);row.flags=row.flags&4278185983u64;row.size=0u64;section_put(input,i,row);i+=1u64;}
     sort(input,input.section_count,false);i=0u64;u64 owner=0u64;
@@ -100,6 +100,10 @@ extern "C" CombinePlan prepare(CombineInput input, address local, u64 local_coun
             if(lo==result.symbols){return invalid(5u64,i);}CombineSymbol symbol=symbol_at(input,order_at(input,lo));
             if(compare(symbol.name,symbol.name_length,row.name,row.name_length)!=0){return invalid(5u64,i);}
             row.target_kind=0u64;row.section=symbol.section;row.value=symbol.value;
+        }
+        if (pe) {
+            result.imports += (row.target_kind == 1u64) ? 1u64 : 0u64;
+            result.absolutes += (row.kind == 1u64) ? 1u64 : 0u64;
         }
         relocation_put(input,i,row);i+=1u64;
     }
