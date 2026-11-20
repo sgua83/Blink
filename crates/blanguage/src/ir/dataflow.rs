@@ -14,10 +14,11 @@ enum Kind {
 }
 #[derive(Clone, Copy)]
 #[repr(C)]
-struct Node { data: *const c_void, kind: Kind }
+pub(crate) struct Node { data: *const c_void, kind: Kind }
 impl Node {
+    pub(crate) fn instruction(value: &Inst) -> Self { Self::of(value, Kind::Instruction) }
     fn of<T>(value: &T, kind: Kind) -> Self { Self { data: ptr::from_ref(value).cast(), kind } }
-    const EMPTY: Self = Self { data: ptr::null(), kind: Kind::Instruction };
+    pub(crate) const EMPTY: Self = Self { data: ptr::null(), kind: Kind::Instruction };
 }
 #[derive(Clone, Copy)]
 #[repr(C)]

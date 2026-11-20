@@ -166,7 +166,7 @@ unsafe extern "C" {
     fn scalar_math(operation: u32, dst: MoveLocation, left: MoveLocation,
         right: *const MoveLocation, size: u32, output: *mut u8) -> MathEncoding;
     #[link_name = "bootstrap.x64_instruction::scalar_math_outgoing"]
-    fn scalar_math_outgoing(operation: u32) -> u64;
+    pub(super) fn scalar_math_outgoing(operation: u32) -> u64;
     #[link_name = "bootstrap.x64_instruction::value_cast"]
     fn value_cast(dst: MoveLocation, src: MoveLocation, from: ScalarEncoding,
         into: ScalarEncoding, output: *mut u8) -> BinaryEncoding;

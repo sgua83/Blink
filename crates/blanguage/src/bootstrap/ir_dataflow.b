@@ -209,9 +209,9 @@ u32 visit_call(Node source,Host host,address context,cfn<u32,address,usize> visi
  }
  return 1;
 }
-u32 visit_instruction(Node source,Host host,address context,cfn<u32,address,usize> visit) on cpu
+u32 visit_instruction(View value,Host host,address context,cfn<u32,address,usize> visit) on cpu
  requires nonzero(host.inspect) requires nonzero(visit) {
- View value=host.inspect(source);u32 kind=value.tag;u32 continued=1;
+ u32 kind=value.tag;u32 continued=1;
  if(kind==OP_INVOKE){continued=visit_call(value.left,host,context,visit);}
  else if(kind==OP_RAISE){continued=visit(context,value.a);}
  else if(kind==OP_FUNCTION_ADDRESS){
@@ -283,7 +283,7 @@ extern "C" u32 operands(Node source,Host host,address context,cfn<u32,address,us
  if(source.kind==N_REFERENCE){return visit_reference(source,host,context,visit);}
  if(source.kind==N_INDEXED){return visit_indexed(source,host,context,visit);}
  if(source.kind==N_STRIDE){return visit_stride(source,host,context,visit);}
- return visit_instruction(source,host,context,visit);
+ return visit_instruction(host.inspect(source),host,context,visit);
 }
 
 bool accessed(usize access,u32 writing) on cpu {
@@ -1834,9 +1834,8 @@ void collect_ray_operands(Span code,RayHost host) on cpu
  requires nonzero(host.ir.inspect) requires nonzero(host.include) {
  usize index=0u64;
  while(index<code.count) {
-  Node source=node_at(code,index,N_INSTRUCTION);
-  visit_instruction(source,host.ir,host.used,host.include);
-  View value=host.ir.inspect(source);
+  View value=host.ir.inspect(node_at(code,index,N_INSTRUCTION));
+  visit_instruction(value,host.ir,host.used,host.include);
   if(value.tag==OP_SCOPE || value.tag==OP_BRANCH || value.tag==OP_LOOP_VALUE) {
    collect_ray_operands(value.first,host);collect_ray_operands(value.second,host);
   }
@@ -2032,78 +2031,132 @@ extern "C" u32 shader_pages_fit(Span buffers,u32 bytes,Host host) on cpu require
  return 1;
 }
 
-extern "C" void read_demand(address context,usize id,ReadHost host) on cpu
- requires nonzero(host.expand) requires nonzero(host.pop) requires nonzero(host.emit) {
- host.expand(context,id);
- while (true) {
-  ReadWork row=host.pop(context);
-  if (row.kind==ReadWorkKind::Done) { break; }
-  if (row.kind==ReadWorkKind::Emit) {
-   host.emit(context,row.id);
-  } else {
-   host.expand(context,row.id);
-  }
+void read_expand(address pending,usize id,ReadHost host) on cpu
+ requires nonzero(host.ir.inspect) requires nonzero(host.queued)
+ requires nonzero(host.push) requires nonzero(host.work_len) requires nonzero(host.reverse) requires nonzero(host.enqueue_operand) {
+ Node node=host.queued(pending,id);
+ if(address_bits(node.data)==0u64){return;}
+ host.push(pending,ReadWork(id,ReadWorkKind::Emit));
+ usize start=host.work_len(pending);
+ operands(node,host.ir,pending,host.enqueue_operand);
+ // The existing stack emits the earliest operand's producer first.
+ host.reverse(pending,start);
+}
+
+extern "C" void read_demand(address pending,usize id,ReadHost host) on cpu
+ requires nonzero(host.ir.inspect) requires nonzero(host.queued) requires nonzero(host.push)
+ requires nonzero(host.work_len) requires nonzero(host.reverse) requires nonzero(host.pop)
+ requires nonzero(host.emit) requires nonzero(host.enqueue_operand) {
+ read_expand(pending,id,host);
+ while(true) {
+  ReadWork work=host.pop(pending);
+  if(work.kind==ReadWorkKind::Done){return;}
+  if(work.kind==ReadWorkKind::Emit){host.emit(pending,work.id);}
+  else{read_expand(pending,work.id,host);}
  }
 }
 
-void finish_shared_reads(address context,ReadHost host) on cpu
- requires nonzero(host.expand) requires nonzero(host.pop) requires nonzero(host.emit) requires nonzero(host.count) requires nonzero(host.read_at) requires nonzero(host.clear) {
- usize count=host.count(context,ReadClear::Shared);
- usize i=0u64;
- while (i<count) {
-  read_demand(context,host.read_at(context,i),host);
-  i+=1u64;
+void finish_shared_reads(address pending,ReadHost host) on cpu
+ requires nonzero(host.ir.inspect) requires nonzero(host.queued) requires nonzero(host.push)
+ requires nonzero(host.work_len) requires nonzero(host.reverse) requires nonzero(host.pop)
+ requires nonzero(host.emit) requires nonzero(host.enqueue_operand) requires nonzero(host.count) requires nonzero(host.read_at)
+ requires nonzero(host.clear) {
+ usize count=host.count(pending,ReadClear::Shared);
+ usize index=0u64;
+ while(index<count) {
+  read_demand(pending,host.read_at(pending,index),host);
+  index+=1u64;
  }
- host.clear(context,ReadClear::Shared,0u64);
+ host.clear(pending,ReadClear::Shared,0u64);
 }
 
-void finish_overlapping_reads(address context,usize first,usize end,ReadHost host) on cpu
- requires nonzero(host.expand) requires nonzero(host.pop) requires nonzero(host.emit) requires nonzero(host.count) requires nonzero(host.private_at)
+void finish_overlapping_reads(address pending,usize first,usize end,ReadHost host) on cpu
+ requires nonzero(host.ir.inspect) requires nonzero(host.queued) requires nonzero(host.push)
+ requires nonzero(host.work_len) requires nonzero(host.reverse) requires nonzero(host.pop)
+ requires nonzero(host.emit) requires nonzero(host.enqueue_operand) requires nonzero(host.count) requires nonzero(host.private_at)
  requires nonzero(host.retain) requires nonzero(host.clear) {
- usize count=host.count(context,ReadClear::Local);
+ usize count=host.count(pending,ReadClear::Local);
  usize kept=0u64;
- usize i=0u64;
- while (i<count) {
-  ReadPrivate row=host.private_at(context,i);
-  if (row.pending) {
-   if (row.first<end && first<row.end) {
-    read_demand(context,row.id,host);
-   } else {
-    host.retain(context,i,kept);
+ usize index=0u64;
+ while(index<count) {
+  ReadPrivate row=host.private_at(pending,index);
+  if(row.pending) {
+   if(row.first<end&&first<row.end){read_demand(pending,row.id,host);}
+   else {
+    host.retain(pending,index,kept);
     kept+=1u64;
    }
   }
-  i+=1u64;
+  index+=1u64;
  }
- host.clear(context,ReadClear::Local,kept);
+ host.clear(pending,ReadClear::Local,kept);
 }
 
-extern "C" void read_finish(address context,ReadHost host) on cpu
- requires nonzero(host.expand) requires nonzero(host.pop) requires nonzero(host.emit) requires nonzero(host.count) requires nonzero(host.clear) {
- usize count=host.count(context,ReadClear::All);
- usize i=0u64;
- while (i<count) {
-  read_demand(context,i,host);
-  i+=1u64;
+void read_finish(address pending,ReadHost host) on cpu
+ requires nonzero(host.ir.inspect) requires nonzero(host.queued) requires nonzero(host.push)
+ requires nonzero(host.work_len) requires nonzero(host.reverse) requires nonzero(host.pop)
+ requires nonzero(host.emit) requires nonzero(host.enqueue_operand) requires nonzero(host.count) requires nonzero(host.clear) {
+ usize count=host.count(pending,ReadClear::All);
+ usize index=0u64;
+ while(index<count) {
+  read_demand(pending,index,host);
+  index+=1u64;
  }
- host.clear(context,ReadClear::All,0u64);
+ host.clear(pending,ReadClear::All,0u64);
 }
 
-extern "C" ReadQueue read_prepare(address context,ReadInput input,usize first,usize end,ReadHost host) on cpu
- requires nonzero(host.expand) requires nonzero(host.pop) requires nonzero(host.emit)
- requires nonzero(host.count) requires nonzero(host.read_at) requires nonzero(host.private_at)
- requires nonzero(host.retain) requires nonzero(host.clear) {
- if (input==ReadInput::Value) { return ReadQueue::Value; }
- if (input==ReadInput::LocalRead) { return ReadQueue::Local; }
- // For a load, first carries the existing binding's write membership.
- if (input==ReadInput::ViewLoad || (input==ReadInput::Load && first==0u64)) { return ReadQueue::Shared; }
- if (input==ReadInput::LocalWrite) {
-  finish_shared_reads(context,host);
-  finish_overlapping_reads(context,first,end,host);
- } else if (input==ReadInput::Memory || input==ReadInput::Load) {
-  finish_shared_reads(context,host);
- } else if (input==ReadInput::Barrier) {
-  read_finish(context,host);
+bool binding_written(Span writes,usize binding) on cpu {
+ usize index=0u64;
+ while(index<writes.count) {
+  if(word_at(writes,index)==binding){return true;}
+  index+=1u64;
  }
- return ReadQueue::Immediate;
+ return false;
+}
+
+extern "C" void place_reads(address input,address pending,Span writes,ReadHost host) on cpu
+ requires nonzero(host.ir.inspect) requires nonzero(host.math_outgoing)
+ requires nonzero(host.next) requires nonzero(host.child) requires nonzero(host.store)
+ requires nonzero(host.queued) requires nonzero(host.enqueue_operand) requires nonzero(host.demand_operand) requires nonzero(host.work_len)
+ requires nonzero(host.push) requires nonzero(host.reverse) requires nonzero(host.pop)
+ requires nonzero(host.emit) requires nonzero(host.enqueue_operand) requires nonzero(host.count) requires nonzero(host.read_at)
+ requires nonzero(host.private_at) requires nonzero(host.retain) requires nonzero(host.clear) {
+ while(true) {
+  Node node=host.next(input);
+  if(address_bits(node.data)==0u64){break;}
+  View inst=host.ir.inspect(node);
+  u32 tag=inst.tag;
+  if(tag==OP_CONSTANT||tag==OP_INDEX_VALUE||tag==OP_UNARY||tag==OP_BINARY||tag==OP_INTEGER_DIVIDE||
+     tag==OP_CAST||tag==OP_SELECT_VALUE||(tag==OP_MATH&&host.math_outgoing(u32(inst.b))==0u64)) {
+   host.store(input,pending,ReadQueue::Value,0u64,0u64);
+  } else if(tag==OP_LOAD_LOCAL||tag==OP_LOAD_LOCAL_INDEXED) {
+   usize end=inst.b+1u64;
+   if(tag==OP_LOAD_LOCAL_INDEXED){end=inst.b+inst.c;}
+   host.store(input,pending,ReadQueue::Local,inst.b,end);
+  } else if(tag==OP_VIEW_LOAD||(tag==OP_LOAD&&!binding_written(writes,inst.b))) {
+   host.store(input,pending,ReadQueue::Shared,0u64,0u64);
+  } else {
+   if(tag==OP_STORE_LOCAL||tag==OP_STORE_LOCAL_INDEXED) {
+    finish_shared_reads(pending,host);
+    usize end=inst.a+1u64;
+    if(tag==OP_STORE_LOCAL_INDEXED){end=inst.a+inst.b;}
+    finish_overlapping_reads(pending,inst.a,end,host);
+    visit_instruction(inst,host.ir,pending,host.demand_operand);
+   } else if(tag==OP_STORE||tag==OP_STORE_INDEXED||tag==OP_LOAD_INDEXED||tag==OP_LOAD) {
+    finish_shared_reads(pending,host);
+    visit_instruction(inst,host.ir,pending,host.demand_operand);
+   } else if(tag!=OP_UNIFORM) {
+    // A full boundary leaves no pending producer to demand for this instruction.
+    read_finish(pending,host);
+    if(tag==OP_BRANCH||tag==OP_LOOP_VALUE) {
+     host.child(input,0);
+     host.child(input,1);
+    } else if(tag==OP_SCOPE) {
+     host.child(input,0);
+    }
+   }
+   host.store(input,pending,ReadQueue::Immediate,0u64,0u64);
+  }
+ }
+ read_finish(pending,host);
 }

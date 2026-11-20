@@ -1,11 +1,7 @@
-//! CPU producers reach their first consumer; actual memory and control effects keep their order.
+//! The B read scheduler borrows the original instructions and owns their ordering.
 use super::*;
-use std::{collections::BTreeMap, ops::Range};
-
-#[repr(u32)]
-enum Input {
-    Value, Load, ViewLoad, LocalRead, LocalWrite, Memory, Uniform, Barrier,
-}
+use crate::ir::dataflow::{self, Node, Span};
+use std::{collections::BTreeMap, ffi::c_void, ops::Range, ptr, vec::IntoIter};
 
 #[allow(dead_code)]
 #[repr(u32)]
@@ -35,25 +31,26 @@ struct Pending {
     out: Vec<Inst>,
 }
 
-impl Pending {
-    fn defer(&mut self, inst: Inst, queue: Queue, first: usize, end: usize) {
-        let id = self.code.len();
-        for reg in inst.results() {
-            self.producers.insert(reg, id);
-        }
-        self.code.push(Some(inst));
-        match queue {
-            Queue::Shared => self.reads.push(id),
-            Queue::Local => self.private_reads.push((first..end, id)),
-            Queue::Value | Queue::Immediate => (),
-        }
-    }
+struct Input<'a> {
+    remaining: IntoIter<Inst>,
+    current: Option<Inst>,
+    writes: &'a [usize],
 }
 
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct Host {
-    expand: unsafe extern "C" fn(*mut Pending, usize),
+    ir: dataflow::Host,
+    math_outgoing: unsafe extern "C" fn(u32) -> u64,
+    next: unsafe extern "C" fn(*mut Input<'_>) -> Node,
+    child: unsafe extern "C" fn(*mut Input<'_>, u32),
+    store: unsafe extern "C" fn(*mut Input<'_>, *mut Pending, Queue, usize, usize),
+    queued: unsafe extern "C" fn(*const Pending, usize) -> Node,
+    enqueue_operand: unsafe extern "C" fn(*mut Pending, Reg) -> u32,
+    demand_operand: unsafe extern "C" fn(*mut Pending, Reg) -> u32,
+    work_len: unsafe extern "C" fn(*const Pending) -> usize,
+    push: unsafe extern "C" fn(*mut Pending, Work),
+    reverse: unsafe extern "C" fn(*mut Pending, usize),
     pop: unsafe extern "C" fn(*mut Pending) -> Work,
     emit: unsafe extern "C" fn(*mut Pending, usize),
     count: unsafe extern "C" fn(*const Pending, Clear) -> usize,
@@ -64,49 +61,103 @@ struct Host {
 }
 
 unsafe extern "C" {
-    #[link_name = "bootstrap.ir_dataflow::read_prepare"]
-    fn read_prepare(pending: *mut Pending, input: Input, first: usize, end: usize, host: Host) -> Queue;
+    #[link_name = "bootstrap.ir_dataflow::place_reads"]
+    fn place_reads(input: *mut c_void, pending: *mut c_void, writes: Span, host: Host);
     #[link_name = "bootstrap.ir_dataflow::read_demand"]
-    fn read_demand(pending: *mut Pending, id: usize, host: Host);
-    #[link_name = "bootstrap.ir_dataflow::read_finish"]
-    fn read_finish(pending: *mut Pending, host: Host);
+    fn read_demand(pending: *mut c_void, id: usize, host: Host);
 }
 
-unsafe extern "C" fn pop(pending: *mut Pending) -> Work {
-    unsafe { &mut *pending }.work.pop().unwrap_or(Work { id: 0, kind: WorkKind::Done })
+unsafe extern "C" fn next(input: *mut Input<'_>) -> Node {
+    let input = unsafe { &mut *input };
+    input.current = input.remaining.next();
+    input.current.as_ref().map_or(Node::EMPTY, Node::instruction)
 }
 
-unsafe extern "C" fn expand(pending: *mut Pending, id: usize) {
-    let p = unsafe { &mut *pending };
-    if let Some(inst) = &p.code[id] {
-        p.work.push(Work { id, kind: WorkKind::Emit });
-        let first_dependency = p.work.len();
-        inst.all_operands(&mut |reg| {
-            if let Some(&producer) = p.producers.get(&reg) {
-                p.work.push(Work { id: producer, kind: WorkKind::Expand });
-            }
-            true
-        });
-        p.work[first_dependency..].reverse();
+unsafe extern "C" fn child(input: *mut Input<'_>, index: u32) {
+    let input = unsafe { &mut *input };
+    let inst = unsafe { input.current.as_mut().unwrap_unchecked() };
+    let body = match (&mut inst.kind, index) {
+        (InstKind::If { yes, .. }, 0) => yes,
+        (InstKind::If { no, .. }, 1) => no,
+        (InstKind::Loop { condition, .. }, 0) => condition,
+        (InstKind::Loop { body, .. }, 1) | (InstKind::Scope(body), 0) => body,
+        _ => unsafe { std::hint::unreachable_unchecked() },
+    };
+    place(body, input.writes);
+}
+
+unsafe extern "C" fn store(input: *mut Input<'_>, pending: *mut Pending, queue: Queue, first: usize, end: usize) {
+    let inst = unsafe { (&mut *input).current.take().unwrap_unchecked() };
+    let pending = unsafe { &mut *pending };
+    if matches!(queue, Queue::Immediate) {
+        pending.out.push(inst);
+        return;
+    }
+    let id = pending.code.len();
+    for result in inst.results() {
+        pending.producers.insert(result, id);
+    }
+    pending.code.push(Some(inst));
+    match queue {
+        Queue::Shared => pending.reads.push(id),
+        Queue::Local => pending.private_reads.push((first..end, id)),
+        Queue::Value | Queue::Immediate => {}
     }
 }
 
+unsafe extern "C" fn queued(pending: *const Pending, id: usize) -> Node {
+    let code = unsafe { &(*pending).code };
+    code[id].as_ref().map_or(Node::EMPTY, Node::instruction)
+}
+
+unsafe extern "C" fn enqueue_operand(pending: *mut Pending, reg: Reg) -> u32 {
+    if let Some(&id) = unsafe { &(*pending).producers }.get(&reg) {
+        unsafe { &mut (*pending).work }.push(Work { id, kind: WorkKind::Expand });
+    }
+    1
+}
+
+unsafe extern "C" fn demand_operand(pending: *mut Pending, reg: Reg) -> u32 {
+    let id = unsafe { &(*pending).producers }.get(&reg).copied();
+    if let Some(id) = id {
+        unsafe { read_demand(pending.cast(), id, HOST) };
+    }
+    1
+}
+
+unsafe extern "C" fn work_len(pending: *const Pending) -> usize {
+    unsafe { &(*pending).work }.len()
+}
+
+unsafe extern "C" fn push(pending: *mut Pending, work: Work) {
+    unsafe { &mut (*pending).work }.push(work);
+}
+
+unsafe extern "C" fn reverse(pending: *mut Pending, start: usize) {
+    let work = unsafe { &mut (*pending).work };
+    work[start..].reverse();
+}
+
+unsafe extern "C" fn pop(pending: *mut Pending) -> Work {
+    unsafe { &mut (*pending).work }.pop().unwrap_or(Work { id: 0, kind: WorkKind::Done })
+}
+
 unsafe extern "C" fn emit(pending: *mut Pending, id: usize) {
-    let p = unsafe { &mut *pending };
-    if let Some(inst) = p.code[id].take() {
+    let pending = unsafe { &mut *pending };
+    if let Some(inst) = pending.code[id].take() {
         for reg in inst.results() {
-            p.producers.remove(&reg);
+            pending.producers.remove(&reg);
         }
-        p.out.push(inst);
+        pending.out.push(inst);
     }
 }
 
 unsafe extern "C" fn count(pending: *const Pending, kind: Clear) -> usize {
-    let p = unsafe { &*pending };
+    let pending = unsafe { &*pending };
     match kind {
-        Clear::All => p.code.len(),
-        Clear::Shared => p.reads.len(),
-        Clear::Local => p.private_reads.len(),
+        Clear::All => pending.code.len(),
+        Clear::Shared => pending.reads.len(),
+        Clear::Local => pending.private_reads.len(),
     }
 }
 
@@ -115,9 +166,9 @@ unsafe extern "C" fn read_at(pending: *const Pending, index: usize) -> usize {
 }
 
 unsafe extern "C" fn private_at(pending: *const Pending, index: usize) -> PrivateRead {
-    let p = unsafe { &*pending };
-    let (range, id) = &p.private_reads[index];
-    PrivateRead { id: *id, first: range.start, end: range.end, pending: p.code[*id].is_some() }
+    let pending = unsafe { &*pending };
+    let (range, id) = &pending.private_reads[index];
+    PrivateRead { id: *id, first: range.start, end: range.end, pending: pending.code[*id].is_some() }
 }
 
 unsafe extern "C" fn retain(pending: *mut Pending, source: usize, target: usize) {
@@ -127,69 +178,31 @@ unsafe extern "C" fn retain(pending: *mut Pending, source: usize, target: usize)
 }
 
 unsafe extern "C" fn clear(pending: *mut Pending, kind: Clear, count: usize) {
-    let p = unsafe { &mut *pending };
+    let pending = unsafe { &mut *pending };
     match kind {
         Clear::All => {
-            p.producers.clear();
-            p.code.clear();
-            p.reads.clear();
-            p.private_reads.clear();
+            pending.producers.clear();
+            pending.code.clear();
+            pending.reads.clear();
+            pending.private_reads.clear();
         }
-        Clear::Shared => p.reads.clear(),
-        Clear::Local => p.private_reads.truncate(count),
+        Clear::Shared => pending.reads.clear(),
+        Clear::Local => pending.private_reads.truncate(count),
     }
 }
 
-const HOST: Host = Host { expand, pop, emit, count, read_at, private_at, retain, clear };
-
-fn input(inst: &Inst, writes: &[usize]) -> (Input, usize, usize) {
-    match &inst.kind {
-        InstKind::Constant(..) | InstKind::Index(_) | InstKind::Unary { .. }
-        | InstKind::Binary { .. } | InstKind::IntegerDivide { .. } | InstKind::Cast { .. }
-        | InstKind::Select { .. } => (Input::Value, 0, 0),
-        InstKind::Math { op, .. } if operands::math_outgoing(*op) == 0 => (Input::Value, 0, 0),
-        InstKind::Load { binding, .. } => (Input::Load, usize::from(writes.contains(binding)), 0),
-        InstKind::ViewLoad { .. } => (Input::ViewLoad, 0, 0),
-        InstKind::LoadLocal(_, slot) => (Input::LocalRead, *slot, *slot + 1),
-        InstKind::LoadLocalIndexed { base, len, .. } => (Input::LocalRead, *base, *base + *len),
-        InstKind::StoreLocal(slot, _) => (Input::LocalWrite, *slot, *slot + 1),
-        InstKind::StoreLocalIndexed { base, len, .. } => (Input::LocalWrite, *base, *base + *len),
-        InstKind::Store { .. } | InstKind::StoreIndexed { .. } | InstKind::LoadIndexed { .. } =>
-            (Input::Memory, 0, 0),
-        InstKind::Uniform(..) => (Input::Uniform, 0, 0),
-        _ => (Input::Barrier, 0, 0),
-    }
-}
+const HOST: Host = Host {
+    ir: dataflow::HOST,
+    math_outgoing: operands::scalar_math_outgoing,
+    next, child, store, queued, enqueue_operand, demand_operand, work_len, push, reverse, pop, emit,
+    count, read_at, private_at, retain, clear,
+};
 
 pub(super) fn place(code: &mut Vec<Inst>, writes: &[usize]) {
+    let mut input = Input { remaining: std::mem::take(code).into_iter(), current: None, writes };
     let mut pending = Pending::default();
-    for mut inst in std::mem::take(code) {
-        let (input, first, end) = input(&inst, writes);
-        let queue = unsafe { read_prepare(&mut pending, input, first, end, HOST) };
-        if !matches!(queue, Queue::Immediate) {
-            pending.defer(inst, queue, first, end);
-            continue;
-        }
-        match &mut inst.kind {
-            InstKind::If { yes, no, .. } => {
-                place(yes, writes);
-                place(no, writes);
-            }
-            InstKind::Loop { condition, body, .. } => {
-                place(condition, writes);
-                place(body, writes);
-            }
-            InstKind::Scope(body) => place(body, writes),
-            _ => {}
-        }
-        inst.all_operands(&mut |reg| {
-            if let Some(&id) = pending.producers.get(&reg) {
-                unsafe { read_demand(&mut pending, id, HOST); }
-            }
-            true
-        });
-        pending.out.push(inst);
-    }
-    unsafe { read_finish(&mut pending, HOST); }
+    unsafe {
+        place_reads(ptr::from_mut(&mut input).cast(), ptr::from_mut(&mut pending).cast(), Span::slice(writes), HOST)
+    };
     *code = pending.out;
 }
