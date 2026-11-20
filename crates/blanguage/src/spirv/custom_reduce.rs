@@ -147,7 +147,38 @@ struct CustomScanWrite {
     tail: u32,
 }
 
+#[repr(C)]
+struct CustomPrefix {
+    target: PageAddress,
+    prefix_descriptor: u32,
+    head_descriptor: u32,
+    head_word: u32,
+    width: u32,
+    bool_type: u32,
+    active: u32,
+    step: u32,
+    packed: u32,
+    words: u32,
+    field_count: u32,
+}
+
+#[repr(C)]
+struct CustomPrefixOpen {
+    words: u64,
+    next: u32,
+    label: u32,
+    end: u32,
+    head_end: u32,
+}
+
 unsafe extern "C" {
+    #[link_name = "bootstrap.spirv_envelope::open_custom_prefix"]
+    fn open_custom_prefix(input: &CustomPrefix, fields: *const CollectiveField,
+        workspace: *mut u32, body: *mut u32) -> CustomPrefixOpen;
+    #[link_name = "bootstrap.spirv_envelope::close_custom_prefix"]
+    fn close_custom_prefix(input: &CustomPrefix, opened: CustomPrefixOpen,
+        fields: *const CollectiveField, locations: *const u32, values: *const u32,
+        next: u32, body: *mut u32) -> StageWords;
     #[link_name = "bootstrap.spirv_envelope::custom_scan_write"]
     fn emit_custom_scan_write(input: CustomScanWrite, own: *const u32, identity: *const u32,
         words: u32, fields: *const CollectiveField, field_count: u32,
@@ -173,12 +204,6 @@ unsafe extern "C" {
     #[link_name = "bootstrap.spirv_envelope::close_custom_tree"]
     fn emit_close_custom_tree(input: CustomTreeClose, own: *const u32, left: *const u32,
         values: *mut u32, count: u32, body: *mut u32) -> StageWords;
-    #[link_name = "bootstrap.spirv_envelope::read_collective_result"]
-    fn read_collective_result(target: &PageAddress, fields: *const CollectiveField,
-        count: u32, values: *mut u32, locations: *mut u32, body: *mut u32) -> PayloadWrite;
-    #[link_name = "bootstrap.spirv_envelope::write_collective_result"]
-    fn write_collective_result(target: PageAddress, fields: *const CollectiveField,
-        count: u32, values: *const u32, locations: *const u32, body: *mut u32) -> PayloadWrite;
     #[link_name = "bootstrap.spirv_envelope::custom_collective_read"]
     fn emit_custom_collective_read(input: CustomCollectiveSource, fields: *const PhysicalField,
         count: u32, values: *mut u32, body: *mut u32) -> CollectiveBranch;
@@ -570,24 +595,7 @@ impl Emitter<'_> {
         let summary = Summary::Counted(reduction.head_word);
         let words = reduction.summary_words();
         if pass == Pass::ScanAdd {
-            let u = self.types[&Scalar::U32];
-            let width = self.constant(Scalar::U32, 64);
-            let group = self.id();
-            self.emit(134, &[u, group, self.index, width]);
-            let run = self.id();
-            let end = self.id();
-            self.emit(247, &[end, 0]);
-            self.emit(250, &[active, run, end]);
-            self.emit(248, &[run]);
-            let prefix = self.summary_addresses(words, self.scan_input_binding(&r.fields), group);
-            let prefix = self.read_summary_words(&prefix);
-            let target = self.summary_addresses(words, r.fields.target, self.index);
-            let value = self.read_summary_words(&target);
-            let total = self.custom_merge(r, kernel, &prefix, &value, summary)?;
-            self.write_summary_words(&target, &total);
-            self.emit(249, &[end]);
-            self.emit(248, &[end]);
-            return Ok(());
+            return self.custom_prefix_add(r, kernel, false, summary, active);
         }
         let (own, identity, input) = self.custom_input(
             r,
@@ -692,100 +700,70 @@ impl Emitter<'_> {
         (target, fields)
     }
 
-    fn custom_result_read(&mut self, target: &PageAddress, fields: &[CollectiveField], words: usize)
-        -> (Vec<u32>, Vec<u32>)
-    {
-        let mut values = vec![target.zero; words];
-        let mut locations = vec![0; 2 * fields.len()];
-        if !fields.is_empty() {
-            let body = self.body.len();
-            self.body.reserve(109 + 60 * fields.len());
-            unsafe {
-                let emitted = read_collective_result(target, fields.as_ptr(), fields.len() as u32,
-                    values.as_mut_ptr(), locations.as_mut_ptr(), self.body.as_mut_ptr().add(body));
-                self.body.set_len(body + emitted.words as usize);
-                self.next = emitted.next;
-            }
-        }
-        (values, locations)
-    }
-
-
-    fn custom_result_write(&mut self, mut target: PageAddress, fields: &[CollectiveField],
-        values: &[u32], locations: Option<&[u32]>,
-    ) {
-        if fields.is_empty() {
-            return;
-        }
-        target.next = self.next;
-        let body = self.body.len();
-        self.body.reserve(109 + 44 * fields.len());
-        unsafe {
-            let emitted = write_collective_result(target, fields.as_ptr(), fields.len() as u32,
-                values.as_ptr(), locations.map_or(std::ptr::null(), |p| p.as_ptr()),
-                self.body.as_mut_ptr().add(body));
-            self.body.set_len(body + emitted.words as usize);
-            self.next = emitted.next;
-        }
-    }
-
     pub(super) fn custom_scan_add(
         &mut self,
         scan: &CustomScan,
         kernel: &ReductionKernel,
         root: bool,
+        active: u32,
     ) -> Result<(), &'static str> {
-        let r = &scan.values;
-        let words = if root { r.ty.size.div_ceil(4) as usize } else { scan.summary_words() };
+        let summary = scan.head_word.map(Summary::Segmented).unwrap_or(Summary::Plain);
+        self.custom_prefix_add(&scan.values, kernel, root, summary, active)
+    }
+
+    fn custom_prefix_add(
+        &mut self,
+        r: &CustomReduction,
+        kernel: &ReductionKernel,
+        root: bool,
+        summary: Summary,
+        active: u32,
+    ) -> Result<(), &'static str> {
+        let value_words = r.ty.size.div_ceil(4) as usize;
+        let merged_summary = if root { Summary::Plain } else { summary };
+        let words = merged_summary.words(value_words);
         let width = self.constant(Scalar::U32, 64);
-        let group = self.id();
-        self.emit(134, &[self.types[&Scalar::U32], group, self.index, width]);
-        let end = if root && scan.head_word.is_some() {
-            let u = self.types[&Scalar::U32];
-            let b = self.types[&Scalar::Bool];
-            let first = self.address_scalar(Scalar::U32,
-                self.program.buffers.len(),
-                group,
-                r.ty.size.div_ceil(4) * 4);
-            let first = self.read_summary_words(&[first])[0];
-            let lane = self.id();
-            self.emit(137, &[u, lane, self.index, width]);
-            let one = self.constant(Scalar::U32, 1);
-            let encoded = self.id();
-            self.emit(128, &[u, encoded, lane, one]);
-            let before = self.id();
-            self.emit(176, &[b, before, encoded, first]);
-            let zero = self.constant(Scalar::U32, 0);
-            let no_head = self.id();
-            self.emit(170, &[b, no_head, first, zero]);
-            let needed = self.id();
-            self.emit(166, &[b, needed, before, no_head]);
-            let run = self.id();
-            let end = self.id();
-            self.emit(247, &[end, 0]);
-            self.emit(250, &[needed, run, end]);
-            self.emit(248, &[run]);
-            Some(end)
+        let step = if words > 1 { self.constant(Scalar::U64, 4) } else { 0 };
+        let (head_descriptor, head_word) = if root && summary.head().is_some() {
+            (self.buffers[self.program.buffers.len()], self.constant(Scalar::U32, value_words as u32 * 4))
         } else {
-            None
+            (0, 0)
         };
-        let prefix = self.summary_addresses(words, self.scan_input_binding(&r.fields), group);
-        let prefix = self.read_summary_words(&prefix);
-        if root {
-            let (target, fields) = self.custom_result_target(r, self.index);
-            let (values, locations) = self.custom_result_read(&target, &fields, words);
-            let values = self.custom_merge(r, kernel, &prefix, &values, Summary::Plain)?;
-            self.custom_result_write(target, &fields, &values, Some(&locations));
+        let (target, fields) = if root {
+            self.custom_result_target(r, self.index)
         } else {
-            let target = self.summary_addresses(words, r.fields.target, self.index);
-            let values = self.read_summary_words(&target);
-            let summary = scan.head_word.map(Summary::Segmented).unwrap_or(Summary::Plain);
-            let values = self.custom_merge(r, kernel, &prefix, &values, summary)?;
-            self.write_summary_words(&target, &values);
-        }
-        if let Some(end) = end {
-            self.emit(249, &[end]);
-            self.emit(248, &[end]);
+            let target = self.page_input(Scalar::U32, PageSource::Dataset(self.buffers[r.fields.target]),
+                self.index, Some(0), 0);
+            (target, Vec::new())
+        };
+        let mut workspace = vec![target.zero; 2 * words + if root { 2 * fields.len() } else { words }];
+        let request = CustomPrefix {
+            target, prefix_descriptor: self.buffers[self.scan_input_binding(&r.fields)],
+            head_descriptor, head_word, width, bool_type: self.types[&Scalar::Bool], active, step,
+            packed: u32::from(!root), words: words as u32, field_count: fields.len() as u32,
+        };
+        let body = self.body.len();
+        self.body.reserve(375 + 30 * words + 60 * fields.len());
+        let opened = unsafe {
+            let opened = open_custom_prefix(&request, fields.as_ptr(),
+                workspace.as_mut_ptr(), self.body.as_mut_ptr().add(body));
+            self.body.set_len(body + opened.words as usize);
+            opened
+        };
+        self.next = opened.next;
+        self.current_label = opened.label;
+
+        let (prefix, rest) = workspace.split_at(words);
+        let (target, locations) = rest.split_at(words);
+        let values = self.custom_merge(r, kernel, prefix, target, merged_summary)?;
+        let body = self.body.len();
+        self.body.reserve(8 + 5 * words + 44 * fields.len());
+        unsafe {
+            let emitted = close_custom_prefix(&request, opened, fields.as_ptr(), locations.as_ptr(),
+                values.as_ptr(), self.next, self.body.as_mut_ptr().add(body));
+            self.body.set_len(body + emitted.words as usize);
+            self.next = emitted.next;
+            self.current_label = emitted.label;
         }
         Ok(())
     }

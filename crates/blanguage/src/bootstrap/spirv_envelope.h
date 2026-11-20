@@ -486,13 +486,6 @@ extern "C" TreeWords reduction_group(ReductionGroup input, address strides, addr
 extern "C" StageWords reduction_writeback(ReductionWriteback input, u32 owner,
     address fields, u32 count, address pointers, address body) on cpu;
 
-// The caller initializes the packed words with the zero ID and provides two
-// pointer slots per field. The write can use these same physical addresses.
-extern "C" PayloadWrite read_collective_result(read PageAddress target, address fields,
-    u32 count, address values, address locations, address body) on cpu;
-extern "C" PayloadWrite write_collective_result(PageAddress target, address fields,
-    u32 count, address values, address locations, address body) on cpu;
-
 struct ScanPrefix {
     PageAddress target;
     u32 prefix_descriptor;
@@ -500,7 +493,6 @@ struct ScanPrefix {
     u32 head_word;
     u32 width;
     u32 bool_type;
-    u32 one;
     CollectiveOperation operation;
     u32 label;
 };
@@ -640,6 +632,34 @@ struct CustomScanWrite {
 // Two workspace spans hold loaded summary values and recursive output pointers.
 extern "C" StageWords custom_scan_write(CustomScanWrite input, address own, address identity,
     u32 words, address fields, u32 field_count, address workspace, address body) on cpu;
+
+struct CustomPrefix {
+    PageAddress target;
+    u32 prefix_descriptor;
+    u32 head_descriptor;
+    u32 head_word;
+    u32 width;
+    u32 bool_type;
+    u32 active;
+    u32 step;
+    u32 packed;
+    u32 words;
+    u32 field_count;
+};
+
+struct CustomPrefixOpen {
+    u64 words;
+    u32 next;
+    u32 label;
+    u32 end;
+    u32 head_end;
+};
+
+// Workspace holds prefix words, target words, and the target pointers used by the write.
+extern "C" CustomPrefixOpen open_custom_prefix(read CustomPrefix input, address fields,
+    address workspace, address body) on cpu;
+extern "C" StageWords close_custom_prefix(read CustomPrefix input, CustomPrefixOpen opened,
+    address fields, address locations, address values, u32 next, address body) on cpu;
 
 struct SegmentField {
     BuiltinScalar scalar;

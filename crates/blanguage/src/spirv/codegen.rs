@@ -2325,12 +2325,7 @@ fn emit_shader(
                 count,
             )?;
         } else {
-            e.emit(247, &[end, 0]);
-            e.emit(250, &[active, execute, end]);
-            e.emit(248, &[execute]);
-            e.custom_scan_add(r, kernel, pass == Pass::ScanRootAdd)?;
-            e.emit(249, &[end]);
-            e.emit(248, &[end]);
+            e.custom_scan_add(r, kernel, pass == Pass::ScanRootAdd, active)?;
         }
     } else if let Operation::CustomReduce(r) = &stage.operation {
         let local = e.id();

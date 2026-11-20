@@ -81,7 +81,6 @@ struct ScanPrefix {
     head_word: u32,
     width: u32,
     bool_type: u32,
-    one: u32,
     operation: u32,
     label: u32,
 }
@@ -389,13 +388,9 @@ impl Emitter<'_> {
         let r = &scan.values;
         let width = self.constant(Scalar::U32, 64);
         let fields = self.physical_fields(&scan.ty, 0);
-        let (head_descriptor, head_word, one) = match head {
-            Some(offset) => (
-                self.buffers[self.program.buffers.len()],
-                self.constant(Scalar::U32, offset),
-                self.constant(Scalar::U32, 1),
-            ),
-            None => (0, 0, 0),
+        let (head_descriptor, head_word) = match head {
+            Some(offset) => (self.buffers[self.program.buffers.len()], self.constant(Scalar::U32, offset)),
+            None => (0, 0),
         };
         let target = self.page_input(Scalar::U32, PageSource::Dataset(self.buffers[r.target]),
             self.index, (target_word != 0).then_some(target_word), 0);
@@ -406,7 +401,6 @@ impl Emitter<'_> {
             head_word,
             width,
             bool_type: self.types[&Scalar::Bool],
-            one,
             operation: scan.operator as u32,
             label: self.current_label,
         };

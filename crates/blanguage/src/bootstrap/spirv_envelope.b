@@ -2048,9 +2048,8 @@ void write_collective_record(inout StageCursor out, PageAddress target, address 
 
 }
 
-extern "C" PayloadWrite read_collective_result(read PageAddress target, address fields,
-    u32 count, address values, address locations, address body) on cpu {
-    StageCursor out = StageCursor(body, 0u64, target.next);
+void read_collective_record(inout StageCursor out, read PageAddress target, address fields,
+    u32 count, address values, address locations) on cpu {
     u32 record = collective_record(out, target);
     u32 u = target.u32_type;
     for (index in 0..count) {
@@ -2073,14 +2072,6 @@ extern "C" PayloadWrite read_collective_result(read PageAddress target, address 
             put(values, u64(field.slot + 1), stage_aligned_load(out, u, at[1], 4));
         }
     }
-    return PayloadWrite(out.words, out.next);
-}
-
-extern "C" PayloadWrite write_collective_result(PageAddress target, address fields,
-    u32 count, address values, address locations, address body) on cpu {
-    StageCursor out = StageCursor(body, 0u64, target.next);
-    write_collective_record(out, target, fields, count, values, false, locations);
-    return PayloadWrite(out.words, out.next);
 }
 
 u32 write_reduction(inout StageCursor out, ReductionWriteback input, u32 owner, address fields,
@@ -2279,6 +2270,18 @@ u64 write_scan_prefix(inout StageCursor out, ScanPrefix input, u32 group, u32 fi
     return decorated;
 }
 
+StageBranch open_marked_scan_prefix(inout StageCursor out, PageAddress head, u32 group, u32 lane,
+    u32 bool_type) on cpu {
+    u32 u = head.u32_type;
+    PageAddressResult pointer = stage_address(out, head, group, 0);
+    u32 head_lane = stage_load(out, u, pointer.pointer, true);
+    u32 lane_number = stage_op(out, 128, u, lane, head.one);
+    u32 before = stage_op(out, 176, bool_type, lane_number, head_lane);
+    u32 absent = stage_op(out, 170, bool_type, head_lane, head.zero);
+    u32 apply = stage_op(out, 166, bool_type, before, absent);
+    return stage_open(out, apply);
+}
+
 extern "C" TreeWords add_scan_prefix(ScanPrefix input, address fields, u32 count,
     address body, address decorations) on cpu {
     StageCursor out = StageCursor(body, 0u64, input.target.next);
@@ -2293,13 +2296,7 @@ extern "C" TreeWords add_scan_prefix(ScanPrefix input, address fields, u32 count
         PageAddress head = input.target;
         head.descriptor = input.head_descriptor;
         head.word = input.head_word;
-        PageAddressResult pointer = stage_address(out, head, group, 0);
-        u32 head_lane = stage_load(out, uint_type, pointer.pointer, true);
-        u32 lane_number = stage_op(out, 128, uint_type, lane, input.one);
-        u32 before = stage_op(out, 176, input.bool_type, lane_number, head_lane);
-        u32 absent = stage_op(out, 170, input.bool_type, head_lane, input.target.zero);
-        u32 apply = stage_op(out, 166, input.bool_type, before, absent);
-        StageBranch branch = stage_open(out, apply);
+        StageBranch branch = open_marked_scan_prefix(out, head, group, lane, input.bool_type);
         u64 decorated = write_scan_prefix(out, input, group, first, fields, count, decorations);
         stage_close(out, branch.end);
         return TreeWords(out.words, decorated, out.next, branch.end);
@@ -2501,6 +2498,54 @@ void read_segment_summary(inout StageCursor out, PageAddress source, u32 step, u
     address pointers, address values) on cpu {
     segment_summary_addresses(out, source, step, words, pointers);
     read_segment_values(out, source.u32_type, words, pointers, values);
+}
+
+extern "C" CustomPrefixOpen open_custom_prefix(read CustomPrefix input, address fields,
+    address workspace, address body) on cpu {
+    StageCursor out = StageCursor(body, 0u64, input.target.next);
+    StageBranch write = stage_open(out, input.active);
+    u32 u = input.target.u32_type;
+    u32 group = stage_op(out, 134, u, input.target.index, input.width);
+    u32 label = write.run;
+    u32 head_end = 0;
+    if (input.head_descriptor != 0) {
+        PageAddress head = input.target;
+        head.descriptor = input.head_descriptor;
+        head.word = input.head_word;
+        u32 lane = stage_op(out, 137, u, input.target.index, input.width);
+        StageBranch apply = open_marked_scan_prefix(out, head, group, lane, input.bool_type);
+        label = apply.run;
+        head_end = apply.end;
+    }
+    if (input.words != 0) {
+        PageAddress parent = input.target;
+        parent.descriptor = input.prefix_descriptor;
+        parent.index = group;
+        parent.word = parent.zero;
+        u64 span = u64(input.words);
+        address target = word_at(workspace, span);
+        address locations = word_at(workspace, 2u64 * span);
+        read_segment_summary(out, parent, input.step, input.words, workspace, workspace);
+        if (input.packed != 0) {
+            read_segment_summary(out, input.target, input.step, input.words, locations, target);
+        } else if (input.field_count != 0) {
+            read_collective_record(out, input.target, fields, input.field_count, target, locations);
+        }
+    }
+    return CustomPrefixOpen(out.words, out.next, label, write.end, head_end);
+}
+
+extern "C" StageWords close_custom_prefix(read CustomPrefix input, CustomPrefixOpen opened,
+    address fields, address locations, address values, u32 next, address body) on cpu {
+    StageCursor out = StageCursor(body, 0u64, next);
+    if (input.packed != 0) {
+        out.words += write_summary_words(body, locations, values, input.words);
+    } else if (input.field_count != 0) {
+        write_collective_record(out, input.target, fields, input.field_count, values, false, locations);
+    }
+    if (opened.head_end != 0) { stage_close(out, opened.head_end); }
+    stage_close(out, opened.end);
+    return StageWords(out.words, out.next, opened.end);
 }
 
 extern "C" TreeWords segment_add(SegmentAdd input, address fields, u32 count,
