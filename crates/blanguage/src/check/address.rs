@@ -439,9 +439,19 @@ impl MemoryEffect {
         })
     }
     fn origin_written_bytes(origin:&Origin,when:&bounds::Clause,position:&Position,scalar:Scalar,index:Option<bounds::Operand>)->u8 {
+        let regions = std::cell::LazyCell::new(|| origin.memory_regions(when));
+        Self::project_written_bytes(origin, when, position, scalar, index, &|| regions.as_deref())
+    }
+
+    fn project_written_bytes<'a>(
+        origin: &Origin, when: &bounds::Clause, position: &Position, scalar: Scalar,
+        index: Option<bounds::Operand>, regions: &impl Fn() -> Option<&'a [MemoryRegion]>,
+    ) -> u8 {
         if Self::same_element(origin,when,position,index)==Some(false){return 0;}
         let all=((1u16<<scalar.size())-1) as u8;
-        let known=||origin.memory_regions(when).map(|regions|regions.iter().fold(0,|bytes,region|bytes|region.written_bytes(position,scalar))).unwrap_or(all);
+        let known = || regions().map_or(all, |regions| regions.iter().fold(0, |bytes, region| {
+            bytes | region.written_bytes(position, scalar)
+        }));
         match position{
             Position::Initialized=>0,
             Position::Local(_)=>known(),
@@ -452,8 +462,12 @@ impl MemoryEffect {
             Position::Borrowed(borrow,_,_) if matches!(&origin.root,
                 Root::Resource{borrow:source,..}|Root::Dataset{borrow:source,..}if same_loop_resource(source,borrow))
                 ||!borrow.pending()&&!borrow.unresolved()&&!external_memory(borrow)&&!borrow.sources.iter().any(|source|matches!(source,view::Source::Parameter(..)))=>known(),
-            Position::Both(a,b)|Position::Conditional(_,a,b)=>Self::origin_written_bytes(origin,when,a,scalar,index)|Self::origin_written_bytes(origin,when,b,scalar,index),
-            Position::Indexed(positions,_)=>positions.iter().fold(0,|bytes,position|bytes|Self::origin_written_bytes(origin,when,position,scalar,index)),
+            Position::Both(a, b) | Position::Conditional(_, a, b) =>
+                Self::project_written_bytes(origin, when, a, scalar, index, regions)
+                | Self::project_written_bytes(origin, when, b, scalar, index, regions),
+            Position::Indexed(positions, _) => positions.iter().fold(0, |bytes, position| {
+                bytes | Self::project_written_bytes(origin, when, position, scalar, index, regions)
+            }),
             _=>all,
         }
     }
@@ -506,8 +520,10 @@ impl MemoryEffect {
         }
         let mut writes = self.known.iter().filter(|(_, _, access, _)| access.writes())
             .filter_map(|(origin, when, _, written)| {
-                let bytes = Self::origin_written_bytes(origin, when, position, scalar, index);
-                (bytes != 0).then_some((origin, when, written, bytes))
+                let regions = std::cell::LazyCell::new(move || origin.memory_regions(when));
+                let bytes = Self::project_written_bytes(origin, when, position, scalar, index,
+                    &|| regions.as_deref());
+                (bytes != 0).then_some((origin, written, bytes, regions))
             });
         let Some(first) = writes.next() else {
             return previous.clone();
@@ -515,12 +531,14 @@ impl MemoryEffect {
         let previous = previous.numeric_at_call(&BTreeMap::new());
         let mut result = previous.clone();
         let all = ((1u16 << scalar.size()) - 1) as u8;
-        for (origin, when, written, bytes) in std::iter::once(first).chain(writes) {
+        for (origin, written, bytes, regions) in std::iter::once(first).chain(writes) {
             let incoming=written.as_ref().and_then(|proof|{
-                let regions=origin.memory_regions(when)?;let mut incoming=None;
-                for region in regions.iter().filter(|region|region.written_bytes(position,scalar)!=0){
+                let mut incoming=None;
+                for region in regions.as_deref()? {
+                    let region_bytes = region.written_bytes(position, scalar);
+                    if region_bytes == 0 { continue; }
                     let component=origin.layout.parts.iter().position(|part|*part==(scalar,region.word))?;
-                    if region.offset!=0||region.size!=scalar.size()||region.written_bytes(position,scalar)!=all{return None;}
+                    if region.offset!=0||region.size!=scalar.size()||region_bytes!=all{return None;}
                     let proof=proof.project_numeric_at_call(&[component],origin.layout.parts.len(),&BTreeMap::new());
                     if let Some(incoming)=&mut incoming{bounds::Proof::join(incoming,&proof,1,None);}else{incoming=Some(proof);}
                 }
