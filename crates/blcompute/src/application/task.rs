@@ -333,7 +333,9 @@ unsafe fn transfer(source: &mut Frame, destination: &mut Frame, selected: Select
         .filter(|relation| relation.binding_indices().all(moves))
         .count();
     destination.data.datasets.try_reserve(additional)?;
-    destination.data.domains.try_reserve(domain_count)?;
+    if domain_count != 0 {
+        destination.data.domains.try_reserve(domain_count)?;
+    }
 
     for (word, old) in words {
         let word=match word {
@@ -355,7 +357,7 @@ unsafe fn transfer(source: &mut Frame, destination: &mut Frame, selected: Select
             destination.data.datasets[new as usize] = Some(storage);
         }
     }
-    let departing = source.data.domains.extract_if(.., |relation| relation.binding_indices().any(moves));
+    let departing = source.data.domains.extract_matching(|relation| relation.binding_indices().any(moves));
     destination.data.domains.extend(departing.filter_map(|relation| relation.into_mapped(target)));
     Ok(())
 }
@@ -489,7 +491,7 @@ pub(super) unsafe fn start(
             )
         };
     }
-    let mut worker = unsafe { Frame::from_definitions(definitions.clone(), &[], &[]) };
+    let mut worker = unsafe { Frame::from_definitions(definitions.clone(), &[], None) };
     let layout=input_type.arguments.last().unwrap();
     let mut work_output=vec![0;layout.size as usize];
     for (_,offset,completion) in &layout.fields {

@@ -1,7 +1,12 @@
 //! 域关系随实际数据所有权移动；宿主取出可写存储就放弃关系。
 use crate::{Result, error};
 use blanguage::ir::{ElementRange, ElementFact, ExecutionPlan, PrefixCount, ProgramInterface, Scalar};
-use std::{borrow::Cow, collections::{BTreeMap, BTreeSet}};
+use std::{
+    borrow::Cow,
+    collections::{BTreeMap, BTreeSet},
+    ops::{Deref, DerefMut},
+    sync::Arc,
+};
 
 /// 只读身份与绑定由存储所有者提供；原生执行入口仍只接受各自具体存储类型。
 pub trait DomainStorage: Sized {
@@ -96,7 +101,100 @@ impl DomainRelation {
 }
 pub struct DomainBindings<D> {
     pub(crate) datasets: Vec<D>,
-    pub(crate) domains: Vec<DomainRelation>,
+    pub(crate) domains: DomainRelations,
+}
+
+/// 范围借用同阶段的输入事实，发生本地变更时取得自有关系容器。
+pub(crate) enum DomainRelations {
+    Owned(Vec<DomainRelation>),
+    Shared(Arc<Vec<DomainRelation>>),
+}
+
+impl Default for DomainRelations {
+    fn default() -> Self { Self::Owned(Vec::new()) }
+}
+
+impl Deref for DomainRelations {
+    type Target = Vec<DomainRelation>;
+    fn deref(&self) -> &Self::Target {
+        match self {
+            Self::Owned(domains) => domains,
+            Self::Shared(domains) => domains,
+        }
+    }
+}
+
+impl DerefMut for DomainRelations {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        if let Self::Shared(domains) = self && Arc::get_mut(domains).is_none() {
+            *self = Self::Owned((**domains).clone());
+        }
+        match self {
+            Self::Owned(domains) => domains,
+            Self::Shared(domains) => Arc::make_mut(domains),
+        }
+    }
+}
+
+impl Extend<DomainRelation> for DomainRelations {
+    fn extend<T: IntoIterator<Item = DomainRelation>>(&mut self, items: T) {
+        let mut items = items.into_iter().peekable();
+        if items.peek().is_some() {
+            self.deref_mut().extend(items);
+        }
+    }
+}
+
+impl DomainRelations {
+    pub(crate) fn share(&mut self) -> Option<&Arc<Vec<DomainRelation>>> {
+        if let Self::Owned(domains) = self && !domains.is_empty() {
+            *self = Self::Shared(Arc::new(std::mem::take(domains)));
+        }
+        match self {
+            Self::Shared(domains) if !domains.is_empty() => Some(domains),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn into_vec(self) -> Vec<DomainRelation> {
+        match self {
+            Self::Owned(domains) => domains,
+            Self::Shared(domains) => Arc::unwrap_or_clone(domains),
+        }
+    }
+
+    pub(crate) fn retain(&mut self, keep: impl Fn(&DomainRelation) -> bool) {
+        match self {
+            Self::Owned(domains) => domains.retain(keep),
+            Self::Shared(shared) => {
+                if let Some(domains) = Arc::get_mut(shared) {
+                    domains.retain(keep);
+                } else if !shared.iter().all(&keep) {
+                    *self = Self::Owned(shared.iter().filter(|relation| keep(relation)).cloned().collect());
+                }
+            }
+        }
+    }
+
+    pub(crate) fn extract_matching<'a>(
+        &'a mut self, matches: impl Fn(&DomainRelation) -> bool + 'a,
+    ) -> impl Iterator<Item = DomainRelation> + 'a {
+        let any = match self {
+            Self::Owned(_) => true,
+            Self::Shared(domains) => domains.iter().any(&matches),
+        };
+        let extracted = any.then(|| self.deref_mut().extract_if(.., move |r| matches(r)));
+        extracted.into_iter().flatten()
+    }
+
+    pub(crate) fn sort_unique(&mut self) {
+        if matches!(self, Self::Shared(_)) && self.windows(2).all(|pair| pair[0] < pair[1]) {
+            return;
+        }
+        let domains = self.deref_mut();
+        domains.sort();
+        domains.dedup();
+    }
 }
 
 struct RelationTargets<'a, D, T> {
@@ -143,7 +241,7 @@ impl<D> From<Vec<D>> for DomainBindings<D> {
     fn from(datasets: Vec<D>) -> Self {
         Self {
             datasets,
-            domains: Vec::new(),
+            domains: DomainRelations::default(),
         }
     }
 }
@@ -159,7 +257,7 @@ impl<D> DomainBindings<D> {
     pub(crate) fn append(&mut self, other: Self) {
         let offset = self.datasets.len();
         self.datasets.extend(other.datasets);
-        self.domains.extend(other.domains.into_iter().map(|r| r.into_mapped(|binding| Some(binding + offset)).unwrap()));
+        self.domains.extend(other.domains.into_vec().into_iter().map(|r| r.into_mapped(|binding| Some(binding + offset)).unwrap()));
     }
     /// 共享借用原数据槽Vec，len包含已初始化空槽，capacity以D槽数计。
     /// 槽容量不包含元素内部拥有的载荷、分配器开销或OS页；零尺寸D不占槽字节。
@@ -229,7 +327,7 @@ impl<D> DomainBindings<D> {
         self.remap_into(order, additional, std::iter::once(order.len()),
             |_, relation| domains.push(relation))?;
         domains.sort_unstable();
-        self.domains = domains;
+        self.domains = DomainRelations::Owned(domains);
         Ok(())
     }
     fn remap_into(
@@ -251,7 +349,7 @@ impl<D> DomainBindings<D> {
             *count += 1;
         }
         self.datasets.extend(additional);
-        let relations = std::mem::take(&mut self.domains);
+        let relations = std::mem::take(&mut self.domains).into_vec();
         if !relations.is_empty() && !order.is_empty() {
             let targets = groups.enumerate().flat_map(|(part, len)| (0..len).map(move |slot| (part, slot)));
             let targets = RelationTargets::new(&self.datasets, order.iter().copied().zip(targets));
@@ -332,8 +430,7 @@ impl<D> DomainBindings<D> {
             |target| self.datasets[binding(target).0].element_count()) {
             produced_element(&mut self.domains, range);
         }
-        self.domains.sort();
-        self.domains.dedup();
+        self.domains.sort_unique();
     }
     /// Borrow only facts contained in the actual logical argument fields.
     pub(crate) fn projected_relations(
@@ -356,7 +453,7 @@ impl<D> DomainBindings<D> {
         let mut elements = BTreeSet::new();
         let mut counts = Vec::new();
         let mut result = Vec::new();
-        for relation in &self.domains {
+        for relation in self.domains.iter() {
             let Some(source) = targets.source(relation.domain()) else { continue; };
             match relation {
                 DomainRelation::Prefix { offset, bytes, count, .. } => {
@@ -488,7 +585,7 @@ pub(crate) fn require<D: DomainStorage>(
     Ok(())
 }
 pub(crate) fn invalidate(
-    domains: &mut Vec<DomainRelation>,
+    domains: &mut DomainRelations,
     write_regions: &BTreeMap<usize, BTreeSet<(u32,u32)>>,
     binding: impl Fn(usize) -> (usize, u32),
 ) {

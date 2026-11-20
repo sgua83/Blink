@@ -1,6 +1,7 @@
 //! B 应用拥有动态数据；原 Dataset、域关系及 GPU 最后使用点仍拥有物理资源。
 use crate::{
     Dataset, DomainBindings, Result, Value,
+    bindings::DomainRelations,
     cpu::{CpuDataset, CpuTemplate},
     error, vulkan,
 };
@@ -123,7 +124,7 @@ impl Frame {
     /// 消费本模块定义并绑定CPU代码；失败时未创建Frame，局部资源按原所有者释放。
     pub fn new(types: Vec<Ty>, images: Vec<ProgramImage>) -> Result<Self> {
         let definitions = Arc::new(Definitions::new(types, images)?);
-        Ok(unsafe { Self::from_definitions(definitions, &[], &[]) }.with_gpu_program_slots())
+        Ok(unsafe { Self::from_definitions(definitions, &[], None) }.with_gpu_program_slots())
     }
     /// 从同次静态链接的真实模块工厂创建应用Frame。
     ///
@@ -136,7 +137,7 @@ impl Frame {
 
     unsafe fn linked_frame(factories: &[blanguage::resource::ModuleFactory]) -> Result<Self> {
         let definitions = unsafe { Definitions::linked(factories, |image| CpuTemplate::from_linked(image).map_err(|(error, _)| error)) }?;
-        Ok(unsafe { Self::from_definitions(Arc::new(definitions), &[], &[]) })
+        Ok(unsafe { Self::from_definitions(Arc::new(definitions), &[], None) })
     }
 
     fn with_gpu_program_slots(mut self) -> Self {
@@ -148,12 +149,18 @@ impl Frame {
     /// # Safety
     /// inputs的实际存储、布局、权限和借用资源保持到本Frame最后消费者完成；本值不取得其释放权。
     /// input_domains来自已接受的实际输入合同，取得写访问后仍有效；索引对应同一inputs。
-    pub(crate) unsafe fn from_definitions(definitions: Arc<Definitions>, inputs:&[crate::cpu::CpuBuffer<'_>], input_domains:&[crate::DomainRelation]) -> Self {
+    pub(crate) unsafe fn from_definitions(
+        definitions: Arc<Definitions>, inputs: &[crate::cpu::CpuBuffer<'_>],
+        input_domains: Option<&Arc<Vec<crate::DomainRelation>>>,
+    ) -> Self {
         let datasets=inputs.iter().map(|data|Some(ResidentData::CpuBorrow(CpuBorrow{
             layout:CpuBorrowLayout::Range(NonNull::from(data.ty)),stride:data.stride,count:data.count,pointer:data.pointer,writable:data.writable,
         }))).collect();
+        let domains = input_domains.map_or_else(DomainRelations::default, |domains| {
+            DomainRelations::Shared(Arc::clone(domains))
+        });
         Self {
-            data: DomainBindings {datasets,domains:input_domains.to_vec()},
+            data: DomainBindings { datasets, domains },
             gpu_programs: Vec::new(),
             definitions,
             task_completion_writes: None,
@@ -326,8 +333,7 @@ impl Frame {
             }).collect();
         }
         unsafe { self.data.produced_element(blanguage::ir::ElementRange { binding: handle as usize, offset, scalar, intervals, known_bits }) };
-        self.data.domains.sort();
-        self.data.domains.dedup();
+        self.data.domains.sort_unique();
     }
     /// 取得同一存储位置并撤回真实写区相交的Count；不分配、搬移或等待。
     ///
@@ -403,11 +409,11 @@ impl Frame {
             order.push((slot, binding.offset));
         }
         let selected_slot = |binding| selected.iter().position(|&handle| handle as usize == binding);
-        let take_domains = |domains: &mut Vec<crate::DomainRelation>| {
-            domains
-                .extract_if(.., |relation| relation.binding_indices().all(|binding| selected_slot(binding).is_some()))
+        let take_domains = |domains: &mut DomainRelations| {
+            DomainRelations::Owned(domains
+                .extract_matching(|relation| relation.binding_indices().all(|binding| selected_slot(binding).is_some()))
                 .map(|relation| relation.into_mapped(selected_slot).unwrap())
-                .collect()
+                .collect())
         };
         let (domains, result) = match definition {
             ProgramSlot::Cpu(program) => {
@@ -473,9 +479,8 @@ impl Frame {
         };
         self.data
             .domains
-            .extend(domains.into_iter().map(|r| r.into_mapped(|binding| Some(selected[binding] as usize)).unwrap()));
-        self.data.domains.sort();
-        self.data.domains.dedup();
+            .extend(domains.into_vec().into_iter().map(|r| r.into_mapped(|binding| Some(selected[binding] as usize)).unwrap()));
+        self.data.domains.sort_unique();
         result
     }
 }

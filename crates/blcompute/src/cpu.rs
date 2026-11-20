@@ -3,6 +3,7 @@ mod dataset;
 mod observation;
 mod sort;
 use crate::{Dataset, DomainBindings, ReadDataset, Result, Value, arguments, error};
+use crate::bindings::DomainRelations;
 use crate::application::ResidentData;
 use crate::library::Library;
 use blanguage::{
@@ -35,7 +36,7 @@ unsafe extern "system" {
     fn CloseThreadpoolWork(work: *mut c_void);
 }
 struct RangeWork<'a> {
-    frame: Option<(&'a std::sync::Arc<crate::application::Definitions>,usize,usize,&'a [CpuBuffer<'a>],&'a [crate::DomainRelation])>,
+    frame: Option<(&'a Arc<crate::application::Definitions>, usize, usize, &'a [CpuBuffer<'a>], Option<&'a Arc<Vec<crate::DomainRelation>>>)>,
     entry: *mut c_void,
     buffers: *const BufferAddress,
     // 范围摘要替换数据集后的私有槽；普通 map 的完整表在其后还可包含纹理。
@@ -1051,7 +1052,7 @@ impl CpuCode {
         mut uniforms: Vec<u32>,
         writing: impl FnOnce(),
         definitions:Option<&std::sync::Arc<crate::application::Definitions>>,
-        mut input_domains:Vec<crate::DomainRelation>,
+        input_domains: Vec<crate::DomainRelation>,
         mut timings: Option<&mut CpuRangeTimings>,
     ) -> Result<()> {
         if textures.len() != self.program.texture_count()
@@ -1074,6 +1075,7 @@ impl CpuCode {
         writing();
         let mut errors = Vec::new();
         // Actual input facts move into this scope; declarations never create facts.
+        let mut input_domains = DomainRelations::Owned(input_domains);
         for (stage_index, (stage, code)) in self.program.stages().iter().zip(&self.stages).enumerate() {
             crate::bindings::invalidate(&mut input_domains,&stage.write_regions,|binding|(binding,0));
             let count = if let Some(prefix) = &stage.prefix {
@@ -1103,7 +1105,7 @@ impl CpuCode {
                     storage.try_reserve_exact(partial_words)?;
                     let partials = &mut storage.spare_capacity_mut()[..partial_words];
                     let mut ranges = RangeWork {
-                        frame: frame.map(|(definitions,offset,words,inputs)| (definitions,offset,words,inputs,input_domains.as_slice())),
+                        frame: frame.map(|(definitions, offset, words, inputs)| (definitions, offset, words, inputs, input_domains.share())),
                         entry: executable.address,
                         buffers: pointers.as_ptr(),
                         range_parameter_slot: self.program.buffers().len(),
