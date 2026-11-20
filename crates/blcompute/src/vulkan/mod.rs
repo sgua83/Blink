@@ -2359,7 +2359,7 @@ impl GpuProgram {
         let query_count = if self.capture_timestamps {
             u32::try_from(stage_count as u64 * 2 * steps.get() as u64)?
         } else { 0 };
-        let mut direct_map = false;
+        let mut needs_root_set = false;
         let mut extra_sets = 0u64;
         for (i, stage) in c.program.stages().iter().enumerate() {
             let count = data[stage.domain].count;
@@ -2392,8 +2392,12 @@ impl GpuProgram {
                     ty: ref reduction_ty,
                     ..
                 }) => {
-                    extra_sets += scan::levels(count) as u64;
                     let size = scan::groups(count);
+                    if size == 1 && stage.prefix.is_none() {
+                        needs_root_set = true;
+                    } else {
+                        extra_sets += scan::levels(count) as u64;
+                    }
                     if size > 1 {
                         let words = reduction_ty.size.div_ceil(4);
                         Some(Scratch {
@@ -2441,7 +2445,7 @@ impl GpuProgram {
                     if stage.prefix.is_some() {
                         extra_sets += 1;
                     } else {
-                        direct_map |= count != 0;
+                        needs_root_set |= count != 0;
                     }
                     None
                 }
@@ -2473,7 +2477,7 @@ impl GpuProgram {
         }).collect();
         if !c.pipelines.is_empty() {
             unsafe {
-                let sets = u32::try_from(u64::from(direct_map) + extra_sets)?;
+                let sets = u32::try_from(u64::from(needs_root_set) + extra_sets)?;
                 let infos = if sets != 0 {
                     let mut sizes = vec![VkDescriptorPoolSize {
                         r#type: 7,
@@ -2534,7 +2538,7 @@ impl GpuProgram {
                 };
                 let mut descriptors = (sets != 0)
                     .then(|| DescriptorWriter::new(&commands, c, &infos, accelerations));
-                let direct_set = direct_map
+                let root_set = needs_root_set
                     .then(|| descriptors.as_mut().unwrap().set(&[], None, None, None, None))
                     .transpose()?;
                 let selection_sets = selected_storage.into_iter().map(|(count, (slot, sources))| {
@@ -2667,9 +2671,8 @@ impl GpuProgram {
                                 );
                             }
                             blanguage::ir::Operation::Map if count != 0 => {
-                                let set = direct_set.unwrap();
                                 (f.vkCmdBindPipeline)(commands.command, 1, c.pipelines[i]);
-                                commands.bind_compute_set(c.layout, set);
+                                commands.bind_compute_set(c.layout, root_set.unwrap());
                                 let width = stage.workgroup_width();
                                 let maximum = c.inner.properties.limits.maxComputeWorkGroupCount[0]
                                     as u64
@@ -2785,7 +2788,6 @@ impl GpuProgram {
                                     fields: reduction, ..
                                 },
                             ) => {
-                                let descriptors = descriptors.as_mut().unwrap();
                                 let mut length = count;
                                 let mut pass = 0;
                                 loop {
@@ -2793,27 +2795,27 @@ impl GpuProgram {
                                     if pass > 0 {
                                         commands.barrier(0x800, 0x800, 0x40, 0x60);
                                     }
-                                    let source = if pass == 0 {
-                                        descriptors.binding(reduction.source)
+                                    let pass_set = if let Some(scratch) = temporary {
+                                        let bindings = [
+                                            (pass > 0).then(|| (
+                                                reduction.source,
+                                                scratch.buffers[(pass - 1) % 2].descriptor(),
+                                            )),
+                                            (groups > 1).then(|| (
+                                                reduction.target,
+                                                scratch.buffers[pass % 2].descriptor(),
+                                            )),
+                                        ];
+                                        descriptors.as_mut().unwrap().set(
+                                            &bindings,
+                                            None,
+                                            arguments.map(PagedBuffer::descriptor),
+                                            None,
+                                            None,
+                                        )?
                                     } else {
-                                        temporary.unwrap().buffers[(pass - 1) % 2].descriptor()
+                                        root_set.unwrap()
                                     };
-                                    let target = if groups == 1 {
-                                        descriptors.binding(reduction.target)
-                                    } else {
-                                        temporary.unwrap().buffers[pass % 2].descriptor()
-                                    };
-                                    let bindings = [
-                                        Some((reduction.source, source)),
-                                        Some((reduction.target, target)),
-                                    ];
-                                    let pass_set = descriptors.set(
-                                        &bindings,
-                                        None,
-                                        arguments.map(PagedBuffer::descriptor),
-                                        None,
-                                        None,
-                                    )?;
                                     commands.bind_compute_set(c.layout, pass_set);
                                     if pass == 0 && arguments.is_some() {
                                         prefix::prepare(
