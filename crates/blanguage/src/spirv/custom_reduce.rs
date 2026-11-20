@@ -5,6 +5,7 @@ use super::{reduce::CollectiveField, scan::PhysicalField, *};
 struct CustomCollectiveSource {
     source: PageAddress,
     active: u32,
+    lane: u32,
     bool_type: u32,
     value_words: u32,
     tag_words: u32,
@@ -73,6 +74,8 @@ struct CustomTreeClose {
 #[repr(C)]
 struct CustomSegmentJoin {
     uint_type: u32,
+    bool_type: u32,
+    zero: u32,
     skipped: u32,
     combined: u32,
     end: u32,
@@ -134,7 +137,21 @@ struct SummaryRootWords {
     group: u32,
 }
 
+#[repr(C)]
+struct CustomScanWrite {
+    target: PageAddress,
+    active: u32,
+    bool_type: u32,
+    head: u32,
+    step: u32,
+    tail: u32,
+}
+
 unsafe extern "C" {
+    #[link_name = "bootstrap.spirv_envelope::custom_scan_write"]
+    fn emit_custom_scan_write(input: CustomScanWrite, own: *const u32, identity: *const u32,
+        words: u32, fields: *const CollectiveField, field_count: u32,
+        workspace: *mut u32, body: *mut u32) -> StageWords;
     #[link_name = "bootstrap.spirv_envelope::custom_summary_root"]
     fn emit_custom_summary_root(input: CustomSummaryRoot, identity: *const u32,
         words: u32, workspace: *mut u32, body: *mut u32) -> SummaryRootWords;
@@ -259,7 +276,7 @@ impl Emitter<'_> {
         let source = self.page_input(Scalar::U32, PageSource::Dataset(self.buffers[binding]),
             self.index, None, 0);
         let input = CustomCollectiveSource {
-            source, active, bool_type: self.types[&Scalar::Bool],
+            source, active, lane: local, bool_type: self.types[&Scalar::Bool],
             value_words: k as u32, tag_words: tags as u32, head_offset, step,
             tail: u32::from(tail),
         };
@@ -343,12 +360,12 @@ impl Emitter<'_> {
         let mut values = self.custom_pair(r, kernel, &left[..k], &right[..k])?;
         values.resize(summary.words(k), 0);
         let join = CustomSegmentJoin {
-            uint_type, skipped, combined: self.current_label, end: open.end,
+            uint_type, bool_type, zero, skipped, combined: self.current_label, end: open.end,
             value_words: k as u32, counted: u32::from(matches!(summary, Summary::Counted(_))),
             next: self.next,
         };
         let body = self.body.len();
-        self.body.reserve(14 + 7 * k);
+        self.body.reserve(15 + 7 * k);
         unsafe {
             let emitted = close_custom_segment(join, left.as_ptr(), right.as_ptr(),
                 values.as_mut_ptr(), self.body.as_mut_ptr().add(body));
@@ -509,61 +526,33 @@ impl Emitter<'_> {
         let (own, identity, input) = self.custom_input(
             r, kernel, tail, local, shared, pointer, active, summary,
         )?;
-        let head = scan.head_word.map(|_| input[k]);
         let remaining = self.group_remaining(local, count);
         self.custom_tree(r, kernel, local, shared, pointer, remaining, &own, false, summary)?;
-        let group = self.custom_summary_root(self.program.buffers.len(), 0, SummaryRootMode::PublishReset,
+        self.custom_summary_root(self.program.buffers.len(), 0, SummaryRootMode::PublishReset,
             local, shared, pointer, active, count, &identity);
         self.custom_tree(r, kernel, local, shared, pointer, remaining, &own, true, summary)?;
-        let values = self.read_summary_words(&own);
-        let write = self.id();
-        let end = self.id();
-        self.emit(247, &[end, 0]);
-        self.emit(250, &[active, write, end]);
-        self.emit(248, &[write]);
-        if !tail && let Some(head) = head {
-            let u = self.types[&Scalar::U32];
-            let b = self.types[&Scalar::Bool];
-            let zero = self.constant(Scalar::U32, 0);
-            let is_head = self.id();
-            self.emit(171, &[b, is_head, head, zero]);
-            let result: Vec<_> = values
-                .iter()
-                .zip(&identity)
-                .take(k)
-                .map(|(v, i)| {
-                    let result = self.id();
-                    self.select(u, result, is_head, *i, *v);
-                    result
-                })
-                .collect();
-            self.custom_store_target(r, self.index, &result);
-            // 根摘要的标记同时编码首段头 lane+1，供最终传播跳过已闭合的段。
-            let no_previous = self.id();
-            self.emit(170, &[b, no_previous, values[k], zero]);
-            let first = self.id();
-            self.emit(167, &[b, first, is_head, no_previous]);
-            let save = self.id();
-            let saved = self.id();
-            self.emit(247, &[saved, 0]);
-            self.emit(250, &[first, save, saved]);
-            self.emit(248, &[save]);
-            let one = self.constant(Scalar::U32, 1);
-            let encoded = self.id();
-            self.emit(128, &[u, encoded, local, one]);
-            let target =
-                self.address_scalar(Scalar::U32, self.program.buffers.len(), group, k as u32 * 4);
-            self.write_summary_words(&[target], &[encoded]);
-            self.emit(249, &[saved]);
-            self.emit(248, &[saved]);
-        } else if tail {
-            let target = self.summary_addresses(words, r.fields.target, self.index);
-            self.write_summary_words(&target, &values);
+        let step = if tail && words > 1 { self.constant(Scalar::U64, 4) } else { 0 };
+        let (target, fields) = if tail {
+            let target = self.page_input(Scalar::U32, PageSource::Dataset(self.buffers[r.fields.target]),
+                self.index, Some(0), 0);
+            (target, Vec::new())
         } else {
-            self.custom_store_target(r, self.index, &values);
+            self.custom_result_target(r, self.index)
+        };
+        let head = if !tail && scan.head_word.is_some() { input[k] } else { 0 };
+        let request = CustomScanWrite {
+            target, active, bool_type: self.types[&Scalar::Bool], head, step, tail: u32::from(tail),
+        };
+        let mut workspace = vec![0; 2 * words];
+        let body = self.body.len();
+        self.body.reserve(128 + 20 * words + 44 * fields.len());
+        unsafe {
+            let emitted = emit_custom_scan_write(request, own.as_ptr(), identity.as_ptr(), words as u32,
+                fields.as_ptr(), fields.len() as u32, workspace.as_mut_ptr(), self.body.as_mut_ptr().add(body));
+            self.body.set_len(body + emitted.words as usize);
+            self.next = emitted.next;
+            self.current_label = emitted.label;
         }
-        self.emit(249, &[end]);
-        self.emit(248, &[end]);
         Ok(())
     }
     pub(super) fn custom_segmented_reduce(
@@ -739,15 +728,6 @@ impl Emitter<'_> {
             self.next = emitted.next;
         }
     }
-
-    fn custom_store_target(&mut self, r: &CustomReduction, index: u32, values: &[u32]) {
-        if r.ty.components.is_empty() {
-            return;
-        }
-        let (target, fields) = self.custom_result_target(r, index);
-        self.custom_result_write(target, &fields, values, None);
-    }
-
 
     pub(super) fn custom_scan_add(
         &mut self,

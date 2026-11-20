@@ -525,6 +525,7 @@ extern "C" TreeWords add_scan_prefix(ScanPrefix input, address fields, u32 count
 struct CustomCollectiveSource {
     PageAddress source;
     u32 active;
+    u32 lane;
     u32 bool_type;
     u32 value_words;
     u32 tag_words;
@@ -558,6 +559,8 @@ extern "C" StageWords custom_collective_join(CustomCollectiveJoin input, address
 
 struct CustomSegmentJoin {
     u32 uint_type;
+    u32 bool_type;
+    u32 zero;
     u32 skipped;
     u32 combined;
     u32 end;
@@ -624,6 +627,19 @@ struct SummaryRootWords {
 // Workspace spans hold root offsets/pointers, destination pointers and loaded values.
 extern "C" SummaryRootWords custom_summary_root(CustomSummaryRoot input, address identity,
     u32 words, address workspace, address body) on cpu;
+
+struct CustomScanWrite {
+    PageAddress target;
+    u32 active;
+    u32 bool_type;
+    u32 head;
+    u32 step;
+    u32 tail;
+};
+
+// Two workspace spans hold loaded summary values and recursive output pointers.
+extern "C" StageWords custom_scan_write(CustomScanWrite input, address own, address identity,
+    u32 words, address fields, u32 field_count, address workspace, address body) on cpu;
 
 struct SegmentField {
     BuiltinScalar scalar;

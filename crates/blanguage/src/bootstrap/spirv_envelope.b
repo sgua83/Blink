@@ -2336,7 +2336,14 @@ extern "C" StageWords close_custom_segment(CustomSegmentJoin input, address left
             read_word(values, part), input.combined);
         put(values, u64(part), value);
     }
-    write_segment_tags(out, input.uint_type, input.value_words, input.counted, left, right, values);
+    u32 k = input.value_words;
+    if (input.counted != 0) {
+        write_segment_tags(out, input.uint_type, k, input.counted, left, right, values);
+    } else {
+        u32 first = read_word(left, k);
+        u32 has_head = stage_op(out, 171, input.bool_type, first, input.zero);
+        put(values, u64(k), stage_select(out, input.uint_type, has_head, first, read_word(right, k)));
+    }
     return StageWords(out.words, out.next, input.end);
 }
 
@@ -2558,10 +2565,6 @@ extern "C" CollectiveBranch custom_collective_read(CustomCollectiveSource input,
         if (words != 0) {
             read_segment_summary(out, source, input.step, words, values, values);
         }
-        if (input.tag_words != 0) {
-            u32 tag = read_word(values, input.value_words);
-            put(values, u64(input.value_words), segment_indicator(out, source, input.bool_type, tag, false));
-        }
     } else if (count + input.tag_words != 0) {
         u32 record = collective_record(out, source);
         for (index in 0..count) {
@@ -2579,9 +2582,15 @@ extern "C" CollectiveBranch custom_collective_read(CustomCollectiveSource input,
             array<u32,2> pointer = stage_field_pointers(out, record, input.head_offset, source.result_pointer,
                 source.u64_type, 0);
             u32 head = stage_aligned_load(out, source.u32_type, pointer[0], 4);
-            u32 tag = segment_indicator(out, source, input.bool_type, head, input.tag_words == 2);
-            put(values, u64(count), tag);
-            if (input.tag_words == 2) { put(values, u64(count + 1), tag); }
+            if (input.tag_words == 2) {
+                u32 tag = segment_indicator(out, source, input.bool_type, head, true);
+                put(values, u64(count), tag);
+                put(values, u64(count + 1), tag);
+            } else {
+                u32 starts = stage_op(out, 171, input.bool_type, head, source.zero);
+                u32 position = stage_op(out, 128, source.u32_type, input.lane, source.one);
+                put(values, u64(count), stage_select(out, source.u32_type, starts, position, source.zero));
+            }
         }
     }
     return CollectiveBranch(out.words, out.next, read.run, read.end);
@@ -2719,6 +2728,30 @@ void publish_summary_root(inout StageCursor out, PageAddress target, u32 step, u
     read_segment_values(out, target.u32_type, words, root, values);
     segment_summary_addresses(out, target, step, words, pointers);
     out.words += write_summary_words(word_at(out.body, out.words), pointers, values, words);
+}
+
+extern "C" StageWords custom_scan_write(CustomScanWrite input, address own, address identity,
+    u32 words, address fields, u32 field_count, address workspace, address body) on cpu {
+    StageCursor out = StageCursor(body, 0u64, input.target.next);
+    u32 u = input.target.u32_type;
+    StageBranch write = stage_open(out, input.active);
+    if (input.tail != 0) {
+        publish_summary_root(out, input.target, input.step, words, own,
+            word_at(workspace, u64(words)), workspace);
+    } else if (field_count != 0) {
+        u32 value_words = input.head != 0 ? words - 1 : words;
+        read_segment_values(out, u, value_words, own, workspace);
+        if (input.head != 0) {
+            u32 starts = stage_op(out, 171, input.bool_type, input.head, input.target.zero);
+            for (part in 0..value_words) {
+                u32 value = stage_select(out, u, starts, read_word(identity, part), read_word(workspace, part));
+                put(workspace, u64(part), value);
+            }
+        }
+        write_collective_record(out, input.target, fields, field_count, workspace, false, address());
+    }
+    stage_close(out, write.end);
+    return StageWords(out.words, out.next, write.end);
 }
 
 void write_empty_segment_count(inout StageCursor out, PageAddress counter, u32 empty) on cpu {
