@@ -593,7 +593,7 @@ impl Builder<'_> {
     }
     pub(super) async fn expand_initial_loop<F>(
         &mut self,
-        code: Vec<Inst>,
+        mut code: Vec<Inst>,
         next: bool,
         mut continuation: F,
     ) -> Result<(Vec<Inst>, Flow)>
@@ -610,9 +610,9 @@ impl Builder<'_> {
         };
         let mut exits = Vec::new();
         let mut flow = Flow::NEXT;
-        let mut code = unsafe { self.world.call(expand_initial_code(
+        unsafe { self.world.call(expand_initial_code(
             self,
-            code,
+            &mut code,
             &mut breaks.into_iter(),
             &mut continues.into_iter(),
             &mut exits,
@@ -744,6 +744,9 @@ use std::ffi::c_void;
 enum LoopTransfer { Break, Continue, ScopeExit, Branch, Scope }
 
 unsafe extern "C" {
+    #[link_name = "bootstrap.ir_dataflow::next_loop_edit"]
+    fn next_loop_edit(code: dataflow::Span, first: usize, host: dataflow::Host) -> usize;
+
     #[link_name = "bootstrap.ir_dataflow::loop_transfers"]
     fn source_loop_transfers(
         code: dataflow::Span, host: dataflow::Host, context: *mut c_void,
@@ -852,66 +855,52 @@ where
 }
 async fn expand_initial_code<'a, F>(
     builder: &mut Builder<'a>,
-    code: Vec<Inst>,
+    code: &mut Vec<Inst>,
     breaks: &mut impl Iterator<Item = LoopState>,
     continues: &mut impl Iterator<Item = LoopState>,
     exits: &mut Vec<LoopState>,
     flow: &mut Flow,
     continuation: &mut F,
-) -> Result<Vec<Inst>>
+) -> Result<()>
 where
     F: std::ops::AsyncFnMut(&mut Builder<'a>, Option<Value>) -> Result<()>,
 {
-    let mut result = Vec::new();
-    for mut instruction in code {
-        match &mut (instruction).kind {
+    let mut first = 0;
+    loop {
+        let index = unsafe { next_loop_edit(dataflow::Span::slice(code), first, dataflow::HOST) };
+        let Some(instruction) = code.get_mut(index) else {
+            return Ok(());
+        };
+        first = index + 1;
+        match &mut instruction.kind {
             InstKind::Break => exits.push(breaks.next().unwrap()),
             InstKind::Continue => {
-                result.extend(unsafe { builder.world.call(compile_initial_continuation(
+                let next = unsafe { builder.world.call(compile_initial_continuation(
                     builder,
                     continues.next().unwrap(),
                     exits,
                     flow,
                     continuation,
-                )).await }?);
-                continue;
+                )).await }?;
+                first = index + next.len();
+                drop(code.splice(index..index + 1, next));
             }
             InstKind::If { yes, no, .. } => {
-                *yes = unsafe { builder.world.call(expand_initial_code(
-                    builder,
-                    std::mem::take(yes),
-                    breaks,
-                    continues,
-                    exits,
-                    flow,
-                    continuation,
+                unsafe { builder.world.call(expand_initial_code(
+                    builder, yes, breaks, continues, exits, flow, continuation,
                 )).await }?;
-                *no = unsafe { builder.world.call(expand_initial_code(
-                    builder,
-                    std::mem::take(no),
-                    breaks,
-                    continues,
-                    exits,
-                    flow,
-                    continuation,
+                unsafe { builder.world.call(expand_initial_code(
+                    builder, no, breaks, continues, exits, flow, continuation,
                 )).await }?;
             }
             InstKind::Scope(body) => {
-                *body = unsafe { builder.world.call(expand_initial_code(
-                    builder,
-                    std::mem::take(body),
-                    breaks,
-                    continues,
-                    exits,
-                    flow,
-                    continuation,
-                )).await }?
+                unsafe { builder.world.call(expand_initial_code(
+                    builder, body, breaks, continues, exits, flow, continuation,
+                )).await }?;
             }
             _ => {}
         }
-        result.push(instruction);
     }
-    Ok(result)
 }
 
 

@@ -21,6 +21,17 @@ Node node_at(Span span,usize index,u32 kind) on cpu {
  return Node(unsafe_address(address_bits(span.data)+u64(index)*u64(span.stride)),kind);
 }
 
+extern "C" usize next_loop_edit(Span code,usize first,Host host) on cpu
+ requires nonzero(host.inspect) {
+ usize index=first;
+ while(index<code.count){
+  u32 kind=host.inspect(node_at(code,index,N_INSTRUCTION)).tag;
+  if(kind==OP_BREAK_VALUE||kind==OP_CONTINUE_VALUE||kind==OP_BRANCH||kind==OP_SCOPE){return index;}
+  index+=1u64;
+ }
+ return code.count;
+}
+
 // Scope exits are local to that scope. Transfers in an inner Loop belong to it.
 bool loop_block_transfers(Span code,bool scope_exit,Host host) on cpu
  requires nonzero(host.inspect) {
