@@ -1045,14 +1045,14 @@ impl Device {
         &self,
         image: blanguage::spirv::ProgramImage<ExecutableProgram>,
     ) -> Result<GpuProgram> {
-        GpuProgram::from_image(self.inner.clone(), image).map_err(|(error, _)| error)
+        GpuProgram::load_image(self.inner.clone(), &image)
     }
     /// 装入失败交回原错误和同一未改映像；本调用没有提交数据。
     pub fn load_template(
         &self,
         image: blanguage::spirv::ProgramImage<TemplateProgram>,
     ) -> std::result::Result<GpuTemplate, (Box<dyn std::error::Error + Send + Sync>, blanguage::spirv::ProgramImage<TemplateProgram>)> {
-        GpuProgram::from_image(self.inner.clone(), image).map(|code| GpuTemplate { code })
+        self.load_template_ref(&image).map_err(|error| (error, image))
     }
     pub(crate) fn load_template_ref(
         &self,
@@ -1708,9 +1708,9 @@ impl Drop for Commands {
         }
     }
 }
-struct Compiled<P = std::sync::Arc<Program>> {
+struct Compiled {
     inner: Rc<Inner>,
-    program: P,
+    program: std::sync::Arc<Program>,
     set_layout: VkDescriptorSetLayout,
     layout: VkPipelineLayout,
     pipelines: Vec<VkPipeline>,
@@ -1719,9 +1719,9 @@ struct Compiled<P = std::sync::Arc<Program>> {
     finishes: Vec<Option<VkPipeline>>,
     dispatches: Vec<Option<VkPipeline>>,
     selectors: Vec<Option<VkPipeline>>,
-    sorts: Vec<Option<sort::Pipelines>>,
+    sorts: Vec<Option<Vec<VkPipeline>>>,
 }
-impl<P> Drop for Compiled<P> {
+impl Drop for Compiled {
     fn drop(&mut self) {
         unsafe {
             let f = &self.inner.functions;
@@ -1734,10 +1734,10 @@ impl<P> Drop for Compiled<P> {
                 .chain(self.finishes.iter().flatten())
                 .chain(self.dispatches.iter().flatten())
                 .chain(self.selectors.iter().flatten())
+                .chain(self.sorts.iter().flatten().flatten())
             {
                 (f.vkDestroyPipeline)(d, *p, null());
             }
-            self.sorts.clear();
             if self.layout != 0 {
                 (f.vkDestroyPipelineLayout)(d, self.layout, null());
             }
@@ -2006,208 +2006,185 @@ impl GpuProgram {
     pub fn program(&self) -> &Program {
         &self.compiled.program
     }
-    fn from_image<P>(inner: Rc<Inner>, image: blanguage::spirv::ProgramImage<P>) -> std::result::Result<Self, (Box<dyn std::error::Error + Send + Sync>, blanguage::spirv::ProgramImage<P>)> {
-        Self::load_image(inner, &image).map_err(|error| (error, image))
-    }
     fn load_image<P>(inner: Rc<Inner>, image: &blanguage::spirv::ProgramImage<P>) -> Result<Self> {
-        let loaded: Result<_> = (|| {
-            let program = image.program();
-            if program.requires_sort() && !inner.sorting {
-                return Err(error(
-                    "排序程序必须以 Device::for_program 声明 subgroup 能力",
-                ));
-            }
-            if program.requires_maximal_reconvergence() && !inner.maximal_reconvergence {
-                return Err(error(
-                    "append 程序必须以 Device::for_program 声明 maximal reconvergence 能力",
-                ));
-            }
-            if program.requirements().float64 && !inner.float64 {
-                return Err(error("f64 程序必须以 Device::for_program 声明 shaderFloat64 能力"));
-            }
-            if program.requirements().integer8 && !inner.integer8 {
-                return Err(error("8位整数程序须以Device::for_program声明设备能力"));
-            }
-            if program.requirements().integer16 && !inner.integer16 {
-                return Err(error("16位整数程序须以Device::for_program声明设备能力"));
-            }
-            if program.requirements().atomic64 && !inner.atomic64 {
-                return Err(error("64位dataset原子须以Device::for_program声明设备能力"));
-            }
-            if program.requirements().shared_atomic64 && !inner.shared_atomic64 {
-                return Err(error("64位tile原子须以Device::for_program声明shared设备能力"));
-            }
-            if program.requirements().float64_preserve && !inner.float64_preserve {
-                return Err(error("f64 运算需要设备支持64位 DenormPreserve 与 SignedZeroInfNanPreserve"));
-            }
-            let caps = program.subgroup_capabilities();
-            if caps.extended_types && !inner.subgroup_extended_types {
-                return Err(error("64位subgroup程序必须以Device::for_program声明扩展类型能力"));
-            }
-            if program.requirements().float32_preserve && !inner.float32_preserve {
-                return Err(error(
-                    "f32 运算需要设备支持 DenormPreserve 与 SignedZeroInfNanPreserve",
-                ));
-            }
-            let required = u32::from(caps.basic)
-                | (u32::from(caps.vote) << 1)
-                | (u32::from(caps.arithmetic) << 2)
-                | (u32::from(caps.ballot) << 3)
-                | (u32::from(caps.shuffle) << 4)
-                | (u32::from(caps.shuffle_relative) << 5);
-            if inner.subgroup_operations & required != required {
-                return Err(error(format!(
-                    "GPU 不支持程序需要的 compute subgroup 操作：需要 {required:#x}，实际 {:#x}",
-                    inner.subgroup_operations
-                )));
-            }
-            let limits = &inner.properties.limits;
-            let acceleration_count = program.accelerations().len();
-            if acceleration_count != 0 {
-                let ray = inner
-                    .ray
-                    .as_ref()
-                    .ok_or_else(|| error("光线查询程序必须以 Device::for_program 声明设备能力"))?;
-                if acceleration_count > ray.properties.per_stage as usize
-                    || acceleration_count > ray.properties.per_set as usize
-                {
-                    return Err(error("加速结构绑定数量超出设备能力"));
-                }
-            }
-            if program.requires_ray_position_fetch() && !inner.position_fetch {
-                return Err(error(
-                    "命中顶点查询必须以 Device::for_program 声明位置读取能力",
-                ));
-            }
-            if program.requires_texture_indexing() && !inner.texture_indexing {
-                return Err(error("纹理数组程序必须以 Device::for_program 声明设备能力"));
-            }
-            let texture_count = program.texture_count();
-            if texture_count > limits.maxPerStageDescriptorSampledImages as usize
-                || texture_count > limits.maxPerStageDescriptorSamplers as usize
-                || texture_count > limits.maxDescriptorSetSampledImages as usize
-                || texture_count > limits.maxDescriptorSetSamplers as usize
+        let program = image.program();
+        if program.requires_sort() && !inner.sorting {
+            return Err(error(
+                "排序程序必须以 Device::for_program 声明 subgroup 能力",
+            ));
+        }
+        if program.requires_maximal_reconvergence() && !inner.maximal_reconvergence {
+            return Err(error(
+                "append 程序必须以 Device::for_program 声明 maximal reconvergence 能力",
+            ));
+        }
+        if program.requirements().float64 && !inner.float64 {
+            return Err(error("f64 程序必须以 Device::for_program 声明 shaderFloat64 能力"));
+        }
+        if program.requirements().integer8 && !inner.integer8 {
+            return Err(error("8位整数程序须以Device::for_program声明设备能力"));
+        }
+        if program.requirements().integer16 && !inner.integer16 {
+            return Err(error("16位整数程序须以Device::for_program声明设备能力"));
+        }
+        if program.requirements().atomic64 && !inner.atomic64 {
+            return Err(error("64位dataset原子须以Device::for_program声明设备能力"));
+        }
+        if program.requirements().shared_atomic64 && !inner.shared_atomic64 {
+            return Err(error("64位tile原子须以Device::for_program声明shared设备能力"));
+        }
+        if program.requirements().float64_preserve && !inner.float64_preserve {
+            return Err(error("f64 运算需要设备支持64位 DenormPreserve 与 SignedZeroInfNanPreserve"));
+        }
+        let caps = program.subgroup_capabilities();
+        if caps.extended_types && !inner.subgroup_extended_types {
+            return Err(error("64位subgroup程序必须以Device::for_program声明扩展类型能力"));
+        }
+        if program.requirements().float32_preserve && !inner.float32_preserve {
+            return Err(error(
+                "f32 运算需要设备支持 DenormPreserve 与 SignedZeroInfNanPreserve",
+            ));
+        }
+        let required = u32::from(caps.basic)
+            | (u32::from(caps.vote) << 1)
+            | (u32::from(caps.arithmetic) << 2)
+            | (u32::from(caps.ballot) << 3)
+            | (u32::from(caps.shuffle) << 4)
+            | (u32::from(caps.shuffle_relative) << 5);
+        if inner.subgroup_operations & required != required {
+            return Err(error(format!(
+                "GPU 不支持程序需要的 compute subgroup 操作：需要 {required:#x}，实际 {:#x}",
+                inner.subgroup_operations
+            )));
+        }
+        let limits = &inner.properties.limits;
+        let acceleration_count = program.accelerations().len();
+        if acceleration_count != 0 {
+            let ray = inner
+                .ray
+                .as_ref()
+                .ok_or_else(|| error("光线查询程序必须以 Device::for_program 声明设备能力"))?;
+            if acceleration_count > ray.properties.per_stage as usize
+                || acceleration_count > ray.properties.per_set as usize
             {
-                return Err(error("纹理绑定数量超出设备能力"));
+                return Err(error("加速结构绑定数量超出设备能力"));
             }
-            let auxiliary = program.auxiliary_buffers();
-            let storage_count = program.buffers().len() + auxiliary;
-            if program.uniform_bytes() > limits.maxPushConstantsSize
-                || storage_count > limits.maxPerStageDescriptorStorageBuffers as usize
-                || storage_count > limits.maxDescriptorSetStorageBuffers as usize
-                || storage_count + texture_count
-                    > limits.maxPerStageResources as usize
-                || program.stages().iter().any(|s| {
-                    s.workgroup_width() > limits.maxComputeWorkGroupInvocations
-                        || s.workgroup_width() > limits.maxComputeWorkGroupSize[0]
-                        || s.shared_bytes() > limits.maxComputeSharedMemorySize as u64
-                })
-            {
-                return Err(error("计算程序超出目标设备的资源能力"));
-            }
-            let mut out = Compiled {
-                inner: inner.clone(),
-                program,
-                set_layout: 0,
-                layout: 0,
-                pipelines: Vec::new(),
-                tails: Vec::new(),
-                scan_adds: Vec::new(),
-                finishes: Vec::new(),
-                dispatches: Vec::new(),
-                selectors: Vec::new(),
-                sorts: Vec::new(),
-            };
-            if !out.program.stages().is_empty() {
-                unsafe {
-                    let f = &out.inner.functions;
-                    let device = out.inner.owner.device;
-                    let bindings: Vec<_> = (0..out.program.buffers().len())
-                        .map(|_| (7, 1))
-                        .chain((0..out.program.accelerations().len()).map(|_| (1000150000, 1)))
-                        .chain(out.program.textures().iter().map(|t| (1, t.elements())))
-                        .chain((0..auxiliary).map(|_| (7, 1)))
-                        .enumerate()
-                        .map(|(i, (kind, count))| VkDescriptorSetLayoutBinding {
-                            binding: i as u32,
-                            descriptorType: kind,
-                            descriptorCount: count,
-                            stageFlags: 0x20,
-                            pImmutableSamplers: null(),
-                        })
-                        .collect();
-                    let mut ci: VkDescriptorSetLayoutCreateInfo = zero();
-                    ci.sType = 32;
-                    ci.bindingCount = bindings.len() as u32;
-                    ci.pBindings = bindings.as_ptr();
-                    check(
-                        (f.vkCreateDescriptorSetLayout)(device, &ci, null(), &mut out.set_layout),
-                        "vkCreateDescriptorSetLayout",
-                    )?;
-                    let range = VkPushConstantRange {
+        }
+        if program.requires_ray_position_fetch() && !inner.position_fetch {
+            return Err(error(
+                "命中顶点查询必须以 Device::for_program 声明位置读取能力",
+            ));
+        }
+        if program.requires_texture_indexing() && !inner.texture_indexing {
+            return Err(error("纹理数组程序必须以 Device::for_program 声明设备能力"));
+        }
+        let texture_count = program.texture_count();
+        if texture_count > limits.maxPerStageDescriptorSampledImages as usize
+            || texture_count > limits.maxPerStageDescriptorSamplers as usize
+            || texture_count > limits.maxDescriptorSetSampledImages as usize
+            || texture_count > limits.maxDescriptorSetSamplers as usize
+        {
+            return Err(error("纹理绑定数量超出设备能力"));
+        }
+        let auxiliary = program.auxiliary_buffers();
+        let storage_count = program.buffers().len() + auxiliary;
+        if program.uniform_bytes() > limits.maxPushConstantsSize
+            || storage_count > limits.maxPerStageDescriptorStorageBuffers as usize
+            || storage_count > limits.maxDescriptorSetStorageBuffers as usize
+            || storage_count + texture_count
+                > limits.maxPerStageResources as usize
+            || program.stages().iter().any(|s| {
+                s.workgroup_width() > limits.maxComputeWorkGroupInvocations
+                    || s.workgroup_width() > limits.maxComputeWorkGroupSize[0]
+                    || s.shared_bytes() > limits.maxComputeSharedMemorySize as u64
+            })
+        {
+            return Err(error("计算程序超出目标设备的资源能力"));
+        }
+        let mut out = Compiled {
+            inner,
+            program: image.shared_program(),
+            set_layout: 0,
+            layout: 0,
+            pipelines: Vec::new(),
+            tails: Vec::new(),
+            scan_adds: Vec::new(),
+            finishes: Vec::new(),
+            dispatches: Vec::new(),
+            selectors: Vec::new(),
+            sorts: Vec::new(),
+        };
+        if !out.program.stages().is_empty() {
+            unsafe {
+                let f = &out.inner.functions;
+                let device = out.inner.owner.device;
+                let bindings: Vec<_> = (0..out.program.buffers().len())
+                    .map(|_| (7, 1))
+                    .chain((0..out.program.accelerations().len()).map(|_| (1000150000, 1)))
+                    .chain(out.program.textures().iter().map(|t| (1, t.elements())))
+                    .chain((0..auxiliary).map(|_| (7, 1)))
+                    .enumerate()
+                    .map(|(i, (kind, count))| VkDescriptorSetLayoutBinding {
+                        binding: i as u32,
+                        descriptorType: kind,
+                        descriptorCount: count,
                         stageFlags: 0x20,
-                        offset: 0,
-                        size: out.program.uniform_bytes(),
-                    };
-                    let mut layout: VkPipelineLayoutCreateInfo = zero();
-                    layout.sType = 30;
-                    layout.setLayoutCount = 1;
-                    layout.pSetLayouts = &out.set_layout;
-                    layout.pushConstantRangeCount = 1;
-                    layout.pPushConstantRanges = &range;
-                    check(
-                        (f.vkCreatePipelineLayout)(device, &layout, null(), &mut out.layout),
-                        "vkCreatePipelineLayout",
-                    )?;
-                    for shader in image.stages() {
-                        let make = |words: &[u32]| pipeline(&out.inner, out.layout, words, false);
-                        out.pipelines.push(make(&shader.main)?);
-                        out.tails
-                            .push(shader.tail.as_deref().map(make).transpose()?);
-                        out.scan_adds
-                            .push(shader.scan_add.as_deref().map(make).transpose()?);
-                        out.finishes.push(
-                            shader
-                                .finish
-                                .as_ref()
-                                .map(|(_, words)| make(words))
-                                .transpose()?,
-                        );
-                        out.dispatches
-                            .push(shader.dispatch.as_deref().map(make).transpose()?);
-                        out.selectors
-                            .push(shader.selector.as_deref().map(make).transpose()?);
-                        let sort = shader
-                            .sort
-                            .as_deref()
-                            .map(|s| sort::Pipelines::load(&out, s))
-                            .transpose()?;
-                        out.sorts.push(sort);
+                        pImmutableSamplers: null(),
+                    })
+                    .collect();
+                let mut ci: VkDescriptorSetLayoutCreateInfo = zero();
+                ci.sType = 32;
+                ci.bindingCount = bindings.len() as u32;
+                ci.pBindings = bindings.as_ptr();
+                check(
+                    (f.vkCreateDescriptorSetLayout)(device, &ci, null(), &mut out.set_layout),
+                    "vkCreateDescriptorSetLayout",
+                )?;
+                let range = VkPushConstantRange {
+                    stageFlags: 0x20,
+                    offset: 0,
+                    size: out.program.uniform_bytes(),
+                };
+                let mut layout: VkPipelineLayoutCreateInfo = zero();
+                layout.sType = 30;
+                layout.setLayoutCount = 1;
+                layout.pSetLayouts = &out.set_layout;
+                layout.pushConstantRangeCount = 1;
+                layout.pPushConstantRanges = &range;
+                check(
+                    (f.vkCreatePipelineLayout)(device, &layout, null(), &mut out.layout),
+                    "vkCreatePipelineLayout",
+                )?;
+                for shader in image.stages() {
+                    let make = |words: &[u32]| pipeline(&out.inner, out.layout, words, false);
+                    out.pipelines.push(make(&shader.main)?);
+                    out.tails
+                        .push(shader.tail.as_deref().map(make).transpose()?);
+                    out.scan_adds
+                        .push(shader.scan_add.as_deref().map(make).transpose()?);
+                    out.finishes.push(
+                        shader
+                            .finish
+                            .as_ref()
+                            .map(|(_, words)| make(words))
+                            .transpose()?,
+                    );
+                    out.dispatches
+                        .push(shader.dispatch.as_deref().map(make).transpose()?);
+                    out.selectors
+                        .push(shader.selector.as_deref().map(make).transpose()?);
+                    out.sorts.push(None);
+                    if let Some(shaders) = &shader.sort {
+                        let kernels = out.sorts.last_mut().unwrap().insert(Vec::with_capacity(shaders.len()));
+                        for shader in shaders {
+                            kernels.push(pipeline(&out.inner, out.layout, &shader.words, shader.ranks)?);
+                        }
                     }
                 }
             }
-            let owned = (
-                std::mem::replace(&mut out.set_layout, 0),
-                std::mem::replace(&mut out.layout, 0),
-                std::mem::take(&mut out.pipelines),
-                std::mem::take(&mut out.tails),
-                std::mem::take(&mut out.scan_adds),
-                std::mem::take(&mut out.finishes),
-                std::mem::take(&mut out.dispatches),
-                std::mem::take(&mut out.selectors),
-                std::mem::take(&mut out.sorts),
-            );
-            drop(out);
-            Ok(owned)
-        })();
-        let (set_layout, layout, pipelines, tails, scan_adds, finishes, dispatches, selectors, sorts) =
-            loaded?;
-        let program = image.shared_program();
+        }
         Ok(Self {
-            compiled: Rc::new(Compiled {
-                inner, program, set_layout, layout, pipelines, tails, scan_adds,
-                finishes, dispatches, selectors, sorts,
-            }),
+            compiled: Rc::new(out),
             partition_elements: NonZeroU32::MAX,
             capture_timestamps: false,
         })

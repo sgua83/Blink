@@ -23,40 +23,6 @@ pub(super) struct RequiredSize {
     pub size: u32,
 }
 
-pub(super) struct Pipelines {
-    inner: Rc<Inner>,
-    handles: Vec<VkPipeline>,
-}
-impl Drop for Pipelines {
-    fn drop(&mut self) {
-        unsafe {
-            for p in &self.handles {
-                (self.inner.functions.vkDestroyPipeline)(self.inner.owner.device, *p, null());
-            }
-        }
-    }
-}
-impl Pipelines {
-    pub fn load<P>(c: &Compiled<P>, shaders: &[blanguage::spirv::ShaderCode]) -> Result<Self> {
-        let mut out = Self {
-            inner: c.inner.clone(),
-            handles: Vec::new(),
-        };
-        for shader in shaders {
-            out.handles
-                .push(pipeline(&c.inner, c.layout, &shader.words, shader.ranks)?);
-        }
-        Ok(out)
-    }
-    fn scan(&self) -> [VkPipeline; 4] {
-        [
-            self.handles[16],
-            self.handles[17],
-            self.handles[18],
-            self.handles[18],
-        ]
-    }
-}
 pub(super) struct Storage {
     pairs: [PagedBuffer; 2],
     histogram: PagedBuffer,
@@ -179,7 +145,7 @@ pub(super) fn record(
             if key + 1 == key_count {
                 c.pipelines[stage]
             } else {
-                kernels.handles[20 + key]
+                kernels[20 + key]
             },
             sets.initialize,
             count,
@@ -193,7 +159,7 @@ pub(super) fn record(
             scan::dispatch(
                 commands,
                 c,
-                kernels.handles[pass],
+                kernels[pass],
                 sets.histogram[pass % 2],
                 count,
                 uniforms,
@@ -205,7 +171,7 @@ pub(super) fn record(
             scan::record_dispatches(
                 commands,
                 c,
-                kernels.scan(),
+                [kernels[16], kernels[17], kernels[18], kernels[18]],
                 storage.histogram_count,
                 &sets.scan,
                 arguments,
@@ -217,7 +183,7 @@ pub(super) fn record(
             scan::dispatch(
                 commands,
                 c,
-                kernels.handles[8 + pass],
+                kernels[8 + pass],
                 sets.scatter[pass % 2],
                 count,
                 uniforms,
@@ -228,7 +194,7 @@ pub(super) fn record(
         }
         commands.barrier(0x800, 0x800, 0x40, 0x60);
     }
-    let pipeline = kernels.handles[19];
+    let pipeline = kernels[19];
     scan::dispatch(
         commands, c, pipeline, sets.finish, count, uniforms, partition, arguments, 0,
     );
