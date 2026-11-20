@@ -128,6 +128,7 @@ pub(super) fn record(
     commands: &Commands,
     writer: &mut DescriptorWriter<'_>,
     c: &Compiled,
+    stage: usize,
     kernels: [VkPipeline; 4],
     r: &blanguage::ir::Reduction,
     segmented: bool,
@@ -137,14 +138,17 @@ pub(super) fn record(
     arguments: Option<&PagedBuffer>,
     uniforms: &mut [u32],
     partition: NonZeroU32,
-    argument_base: usize,
+    reused: bool,
 ) -> Result<()> {
     let sets = descriptors(
         writer, (r.source, r.target), segmented, source.0, ScanRoot::Source(source.1),
         root_target, temporary, arguments.map(PagedBuffer::descriptor),
     )?;
+    if arguments.is_some() {
+        prefix::prepare(commands, c, stage, sets.root(), uniforms, partition, reused);
+    }
     record_dispatches(
-        commands, c, kernels, source.0, &sets, arguments, uniforms, partition, argument_base,
+        commands, c, kernels, source.0, &sets, arguments, uniforms, partition, 0,
     );
     Ok(())
 }
@@ -196,14 +200,21 @@ pub(super) fn record_segmented_reduce(
     commands: &Commands,
     writer: &mut DescriptorWriter<'_>,
     c: &Compiled,
-    kernels: [VkPipeline; 4],
+    stage: usize,
     r: &blanguage::ir::Reduction,
     count: u32,
     temporary: &[PagedBuffer],
     arguments: Option<&PagedBuffer>,
     uniforms: &mut [u32],
     partition: NonZeroU32,
+    reused: bool,
 ) -> Result<()> {
+    let kernels = [
+        c.pipelines[stage],
+        c.tails[stage].unwrap(),
+        c.scan_adds[stage].unwrap(),
+        c.finishes[stage].unwrap(),
+    ];
     let level_count = levels(count);
     for level in 0..level_count {
         if level > 0 {
@@ -222,6 +233,9 @@ pub(super) fn record_segmented_reduce(
             None,
             (r.source == r.target && level > 0).then(|| temporary[(level - 1) * 2].descriptor()),
         )?;
+        if level == 0 && arguments.is_some() {
+            prefix::prepare(commands, c, stage, set, uniforms, partition, reused);
+        }
         dispatch(
             commands,
             c,

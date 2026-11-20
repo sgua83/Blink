@@ -16,6 +16,7 @@ pub(super) fn record(
     scratch: &Scratch,
     uniforms: &mut [u32],
     partition: NonZeroU32,
+    reused: bool,
 ) -> Result<()> {
     let prefix = scratch.buffers.last().unwrap().descriptor();
     let source = writer.binding(selection.flags);
@@ -23,6 +24,7 @@ pub(super) fn record(
         commands,
         writer,
         c,
+        stage,
         [
             c.pipelines[stage],
             c.tails[stage].unwrap(),
@@ -37,7 +39,7 @@ pub(super) fn record(
         scratch.arguments.as_ref(),
         uniforms,
         partition,
-        0,
+        reused,
     )?;
     commands.barrier(0x800, 0x800, 0x40, 0x60);
     let set = writer.set(

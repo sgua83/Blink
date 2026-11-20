@@ -2431,7 +2431,11 @@ impl GpuProgram {
                     })
                 }
                 blanguage::ir::Operation::Map => {
-                    direct_map |= count != 0 && stage.prefix.is_none();
+                    if stage.prefix.is_some() {
+                        extra_sets += 1;
+                    } else {
+                        direct_map |= count != 0;
+                    }
                     None
                 }
             };
@@ -2441,7 +2445,6 @@ impl GpuProgram {
                     arguments: None,
                     sorting: None,
                 });
-                extra_sets += 1;
                 temporary.arguments = Some(prefix::allocate(c, stage)?);
                 Some(temporary)
             } else {
@@ -2607,24 +2610,6 @@ impl GpuProgram {
                         let usage = uses.next_if(|usage| usage.stage == i);
                         let temporary = usage.map(|usage| &scratch[usage.slot]);
                         let arguments = temporary.and_then(|s| s.arguments.as_ref());
-                        let prefix_set = if let Some(args) = arguments.filter(|_| {
-                            stage.selection.is_none()
-                                && !matches!(stage.operation, blanguage::ir::Operation::StableSort(_))
-                        }) {
-                            let set = prefix::descriptor(descriptors.as_mut().unwrap(), args)?;
-                            prefix::prepare(
-                                &commands,
-                                c,
-                                i,
-                                set,
-                                &mut uniforms,
-                                self.partition_elements,
-                                step > 0 || usage.unwrap().reused,
-                            );
-                            Some(set)
-                        } else {
-                            None
-                        };
                         match &stage.operation {
                             blanguage::ir::Operation::StableSort(s) => {
                                 let temporary = temporary.unwrap();
@@ -2656,12 +2641,20 @@ impl GpuProgram {
                                 );
                             }
                             blanguage::ir::Operation::Map if stage.prefix.is_some() => {
+                                let args = arguments.unwrap();
+                                let set = descriptors.as_mut().unwrap().set(
+                                    &[], None, Some(args.descriptor()), None, None,
+                                )?;
+                                prefix::prepare(
+                                    &commands, c, i, set, &mut uniforms,
+                                    self.partition_elements, step > 0,
+                                );
                                 prefix::dispatch(
                                     &commands,
                                     c,
                                     c.pipelines[i],
-                                    prefix_set.unwrap(),
-                                    arguments.unwrap(),
+                                    set,
+                                    args,
                                     &mut uniforms,
                                     0,
                                 );
@@ -2718,18 +2711,14 @@ impl GpuProgram {
                                     &commands,
                                     descriptors.as_mut().unwrap(),
                                     c,
-                                    [
-                                        c.pipelines[i],
-                                        c.tails[i].unwrap(),
-                                        c.scan_adds[i].unwrap(),
-                                        c.finishes[i].unwrap(),
-                                    ],
+                                    i,
                                     &r.values.fields,
                                     data[r.values.fields.source].count,
                                     &temporary.unwrap().buffers,
                                     arguments,
                                     &mut uniforms,
                                     self.partition_elements,
+                                    step > 0,
                                 )?;
                             }
                             blanguage::ir::Operation::CustomSegmentedReduce(r) => {
@@ -2737,18 +2726,14 @@ impl GpuProgram {
                                     &commands,
                                     descriptors.as_mut().unwrap(),
                                     c,
-                                    [
-                                        c.pipelines[i],
-                                        c.tails[i].unwrap(),
-                                        c.scan_adds[i].unwrap(),
-                                        c.finishes[i].unwrap(),
-                                    ],
+                                    i,
                                     &r.values.fields,
                                     data[r.values.fields.source].count,
                                     &temporary.unwrap().buffers,
                                     arguments,
                                     &mut uniforms,
                                     self.partition_elements,
+                                    step > 0,
                                 )?;
                             }
                             blanguage::ir::Operation::ScanExclusive(blanguage::ir::Scan {
@@ -2766,6 +2751,7 @@ impl GpuProgram {
                                     &commands,
                                     descriptors,
                                     c,
+                                    i,
                                     [c.pipelines[i], c.tails[i].unwrap(), add, c.finishes[i].unwrap_or(add)],
                                     fields,
                                     head_word.is_some(),
@@ -2775,7 +2761,7 @@ impl GpuProgram {
                                     arguments,
                                     &mut uniforms,
                                     self.partition_elements,
-                                    0,
+                                    step > 0,
                                 )?;
                             }
                             blanguage::ir::Operation::Compact(selection) => {
@@ -2789,6 +2775,7 @@ impl GpuProgram {
                                     temporary.unwrap(),
                                     &mut uniforms,
                                     self.partition_elements,
+                                    step > 0,
                                 )?;
                             }
                             blanguage::ir::Operation::Reduce(blanguage::ir::ReductionSpec {
@@ -2829,6 +2816,12 @@ impl GpuProgram {
                                         None,
                                         None,
                                     )?;
+                                    if pass == 0 && arguments.is_some() {
+                                        prefix::prepare(
+                                            &commands, c, i, pass_set, &mut uniforms,
+                                            self.partition_elements, step > 0,
+                                        );
+                                    }
                                     uniforms[2 + reduction.target] = groups;
                                     scan::dispatch(
                                         &commands,

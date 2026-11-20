@@ -13,9 +13,6 @@ pub(super) fn allocate(c: &Compiled, stage: &Stage) -> Result<PagedBuffer> {
     };
     PagedBuffer::new(c.inner.clone(), 4, (levels * 4) as u32, 0x100, 4)
 }
-pub(super) fn descriptor(writer: &mut DescriptorWriter<'_>, args: &PagedBuffer) -> Result<u64> {
-    writer.set(&[], None, Some(args.descriptor()), None, None)
-}
 pub(super) fn prepare(
     commands: &Commands,
     c: &Compiled,

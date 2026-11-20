@@ -51,7 +51,6 @@ impl Storage {
 }
 
 pub(super) struct Descriptors {
-    prefix: Option<u64>,
     initialize: u64,
     histogram: [u64; 2],
     scan: scan::Descriptors,
@@ -65,7 +64,6 @@ pub(super) fn descriptors(
     storage: &Storage,
     arguments: Option<&PagedBuffer>,
 ) -> Result<Descriptors> {
-    let prefix = arguments.map(|args| prefix::descriptor(writer, args)).transpose()?;
     let indirect = arguments.map(PagedBuffer::descriptor);
     let initialize = writer.set(
         &[Some((sorting.target, storage.pairs[0].descriptor()))],
@@ -113,7 +111,7 @@ pub(super) fn descriptors(
         None,
         None,
     )?;
-    Ok(Descriptors { prefix, initialize, histogram, scan, scatter, finish })
+    Ok(Descriptors { initialize, histogram, scan, scatter, finish })
 }
 
 pub(super) fn record(
@@ -129,8 +127,8 @@ pub(super) fn record(
     partition: NonZeroU32,
     reused: bool,
 ) {
-    if let Some(set) = sets.prefix {
-        prefix::prepare(commands, c, stage, set, uniforms, partition, reused);
+    if arguments.is_some() {
+        prefix::prepare(commands, c, stage, sets.initialize, uniforms, partition, reused);
     }
     let kernels = c.sorts[stage].as_ref().unwrap();
     for key in (0..key_count).rev() {
