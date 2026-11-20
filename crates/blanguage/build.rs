@@ -125,7 +125,7 @@ fn native_modules() -> Result<(), Box<dyn std::error::Error>> {
                     job.arguments.extend(["-I".into(), "../../library".into()]);
                     &["path_core", "ast_storage"]
                 }
-                "metadata_read" | "object_read" => &["coff_read"],
+                "metadata_read" | "object_read" | "pe" => &["coff_read"],
                 "parser" => &["unicode_scalar"],
                 _ => &[],
             };

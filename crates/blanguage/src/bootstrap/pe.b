@@ -1,5 +1,7 @@
 module bootstrap.pe;
 
+import blink.windows.coff;
+
 u64 align(u64 n,u64 by) on cpu requires nonzero(by) {return ((n+by-1u64)/by)*by;}
 PeSection section_at(PeInput input,u64 i) on cpu {return unsafe_position<PeSection>(unsafe_address(address_bits(input.sections)+i*SECTION_BYTES));}
 void section_put(PeInput input,u64 i,PeSection value) on cpu {unsafe_position<PeSection>(unsafe_address(address_bits(input.sections)+i*SECTION_BYTES))=value;}
@@ -193,6 +195,25 @@ extern "C" PeLayout layout(PeInput input) on cpu {
     if(result.reloc_length!=0u64){result.image_size=result.reloc+align(result.reloc_length,4096u64);}else{result.image_size=result.idata+align(result.idata_length,4096u64);}
     if(result.length>4294967295u64||result.image_size>4294967295u64){return invalid(1u64);}return result;
 }
+extern "C" PeRelocationResult relocate_sections(PeInput input,u64 image_base,address output) on cpu {
+    u64 i=0u64;
+    while (i<input.section_count) {
+        PeSection section=section_at(input,i);
+        address bytes=unsafe_address(address_bits(output)+section.raw);
+        u64 j=section.relocation_start;
+        u64 end=j+section.relocation_count;
+        while (j<end) {
+            PeRelocation relocation=relocation_at(input,j);
+            u32 status=apply_relocation(bytes,section.byte_length,relocation.offset,
+                relocation.kind,image_base,relocation.source,relocation.target);
+            if (status!=0) { return PeRelocationResult(status,relocation.kind); }
+            j+=1u64;
+        }
+        i+=1u64;
+    }
+    return PeRelocationResult(0,0);
+}
+
 void section_header(address output,u64 index,address name,u64 name_length,u64 rva,u64 length,u64 raw,u64 flags) on cpu {
     u64 header=392u64+index*40u64;u64 count=name_length;if(count>8u64){count=8u64;}
     copy(output,header,name,count);le32(output,header+8u64,length);le32(output,header+12u64,rva);

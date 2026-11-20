@@ -25,11 +25,22 @@ pub enum ModuleTarget {
 }
 #[allow(dead_code, reason = "The B COFF implementation returns these ABI statuses.")]
 #[repr(u32)]
-enum CoffRelocationStatus {
+pub(crate) enum CoffRelocationStatus {
     Applied,
     Unsupported,
     OutsideSection,
     OutsideField,
+}
+
+impl CoffRelocationStatus {
+    pub(crate) fn result(self, kind: u32) -> Result<(), String> {
+        match self {
+            Self::Applied => Ok(()),
+            Self::Unsupported => Err(format!("不支持 AMD64 重定位类型 {kind}")),
+            Self::OutsideSection => Err("COFF 重定位位置越界".into()),
+            Self::OutsideField => Err("out of range integral type conversion attempted".into()),
+        }
+    }
 }
 
 unsafe extern "C" {
@@ -58,10 +69,6 @@ pub fn coff_relocate(
     bytes: &mut [u8], offset: usize, kind: u16, base: u64, source: u64, target: u64,
 ) -> Result<(), String> {
     // The slice exclusively owns the same section until B finishes the write.
-    match unsafe { apply_relocation(bytes.as_mut_ptr(), bytes.len(), offset, kind.into(), base, source, target) } {
-        CoffRelocationStatus::Applied => Ok(()),
-        CoffRelocationStatus::Unsupported => Err(format!("不支持 AMD64 重定位类型 {kind}")),
-        CoffRelocationStatus::OutsideSection => Err("COFF 重定位位置越界".into()),
-        CoffRelocationStatus::OutsideField => Err("out of range integral type conversion attempted".into()),
-    }
+    unsafe { apply_relocation(bytes.as_mut_ptr(), bytes.len(), offset, kind.into(), base, source, target) }
+        .result(kind.into())
 }

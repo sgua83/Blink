@@ -1,6 +1,7 @@
 //! B lays out the final PE and writes its headers and directories.
 //! The section writer fills the same file before shared machine relocation.
 use super::Result;
+use crate::native::CoffRelocationStatus;
 use crate::object::{Section, Target};
 
 #[repr(C)]
@@ -36,11 +37,19 @@ struct PeLayout {
     iat_start:u64,iat_size:u64,reloc:u64,reloc_length:u64,pdata:u64,pdata_length:u64,
     section_count:u64,image_size:u64,image_base:u64,error:u64,
 }
+#[repr(C)]
+struct PeRelocationResult {
+    status: CoffRelocationStatus,
+    kind: u32,
+}
+
 unsafe extern "C" {
     #[link_name="bootstrap.pe::layout"]
     fn pe_layout(input:PeInput)->PeLayout;
     #[link_name="bootstrap.pe::encode"]
     fn pe_encode(input:PeInput,layout:PeLayout,output:*mut u8);
+    #[link_name="bootstrap.pe::relocate_sections"]
+    fn relocate_sections(input:PeInput,image_base:u64,output:*mut u8)->PeRelocationResult;
 }
 
 pub(super) fn link(
@@ -102,15 +111,7 @@ pub(super) fn link(
         unsafe { base.add(section.raw as usize) }
     }).collect::<Vec<_>>();
     write_sections(&destinations);
-    for section in &sections {
-        let raw=usize::try_from(section.raw)?;
-        let bytes=&mut output[raw..raw+usize::try_from(section.byte_length)?];
-        let start=usize::try_from(section.relocation_start)?;
-        let count=usize::try_from(section.relocation_count)?;
-        for relocation in &relocations[start..start+count] {
-            crate::native::coff_relocate(bytes,usize::try_from(relocation.offset)?,relocation.kind as u16,
-                layout.image_base,relocation.source,relocation.target)?;
-        }
-    }
+    let relocation = unsafe { relocate_sections(input, layout.image_base, output.as_mut_ptr()) };
+    relocation.status.result(relocation.kind)?;
     Ok(output)
 }
