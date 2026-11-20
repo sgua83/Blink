@@ -1658,6 +1658,8 @@ fn converge_access(
     while !ready.is_empty() {
         let tasks = call_accesses.iter_mut().filter(|(name, _)| ready.contains(*name)).collect();
         let changed = crate::parallel::try_map(worker, tasks, |_| (), |_, (&name, projections)| {
+            // This function reads one immutable round of call contracts.
+            let _required_scope = bounds::required_scope();
             let (name, function) = functions.get_key_value(name).unwrap();
             let normalize=feedback.contains(name.as_str());
             let state=&known[name];
