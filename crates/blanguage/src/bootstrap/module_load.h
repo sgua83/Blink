@@ -48,9 +48,9 @@ extern "C" bool native_module_admission(SignatureNode source,u32 compiled,u32 lo
 extern "C" ModuleInstance native_module_instance(SignatureNode source,u32 domain,u32 exported,u32 explicit) on cpu;
 
 enum SourceMode:u32 { Automatic=0; SelectedProgram=1; Application=2; };
-enum SourceRoute:u32 { Function=0; CheckDomain=1; Program=2; };
-struct SourcePlan { SourceRoute route; u32 schedule; u32 cpu_signature; u32 publish; u32 public_domain; };
-extern "C" u32 source_module_entry(SignatureNode source,u32 local,u32 exported) on cpu;
+enum SourceRoute:u32 { Function=0; CheckDomain=1; ValidateProgram=2; Program=3; Application=4; };
+struct SourcePlan { SourceRoute route; u32 schedule; u32 cpu_signature; u32 public_domain; };
+extern "C" SourcePlan source_module_entry(SignatureNode source,SourceMode mode,u32 local,u32 exported) on cpu;
 extern "C" SourcePlan source_module_plan(SignatureNode source,SourceMode mode,u32 compiled,
     u32 local,u32 exported,u32 domain,u32 selected) on cpu;
 

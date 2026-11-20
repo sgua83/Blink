@@ -253,9 +253,11 @@ extern "C" ModuleInstance native_module_instance(SignatureNode source,u32 domain
     return ModuleInstance(ModuleEntry::Check,0,0);
 }
 
-extern "C" u32 source_module_entry(SignatureNode source,u32 local,u32 exported) on cpu {
+extern "C" SourcePlan source_module_entry(SignatureNode source,SourceMode mode,u32 local,u32 exported) on cpu {
     FunctionNode definition = unsafe_position<FunctionNode>(at(source.storage.nodes,source.offset));
-    return local != 0 && exported != 0 && definition.kind == 0 ? 1 : 0;
+    u32 schedule = local != 0 && exported != 0 && definition.kind == 0 ? 1 : 0;
+    SourceRoute route = mode == SourceMode::Application ? SourceRoute::Application : SourceRoute::Program;
+    return SourcePlan(route,schedule,0,0);
 }
 
 extern "C" SourcePlan source_module_plan(SignatureNode source,SourceMode mode,u32 compiled,
@@ -263,16 +265,17 @@ extern "C" SourcePlan source_module_plan(SignatureNode source,SourceMode mode,u3
     bool public_root = local != 0 && exported != 0;
     u32 public_domain = public_root && domain != 0 ? 1 : 0;
     if (compiled != 0 || selected != 0) {
-        return SourcePlan(SourceRoute::Function,0,0,0,public_domain);
+        return SourcePlan(SourceRoute::Function,0,0,public_domain);
     }
     FunctionNode definition = unsafe_position<FunctionNode>(at(source.storage.nodes,source.offset));
     if (!source_definition(definition)) {
-        return SourcePlan(SourceRoute::Function,0,0,0,public_domain);
+        return SourcePlan(SourceRoute::Function,0,0,public_domain);
     }
-    u32 publish = mode == SourceMode::Automatic && public_root ? 1 : 0;
-    if (domain == 0) { return SourcePlan(SourceRoute::Function,1,0,publish,public_domain); }
-    SourceRoute route = mode == SourceMode::Application ? SourceRoute::CheckDomain : SourceRoute::Program;
-    return SourcePlan(route,1,definition.target == 1 ? 1 : 0,publish,public_domain);
+    if (domain == 0) { return SourcePlan(SourceRoute::Function,1,0,public_domain); }
+    SourceRoute route = SourceRoute::ValidateProgram;
+    if (mode == SourceMode::Application) { route = SourceRoute::CheckDomain; }
+    else if (mode == SourceMode::Automatic && public_root) { route = SourceRoute::Program; }
+    return SourcePlan(route,1,definition.target == 1 ? 1 : 0,public_domain);
 }
 
 extern "C" void prepare_world(WorldPreparation host) on cpu

@@ -322,7 +322,9 @@ enum SourceMode {
 enum SourceRoute {
     Function,
     CheckDomain,
+    ValidateProgram,
     Program,
+    Application,
 }
 
 #[repr(C)]
@@ -330,13 +332,14 @@ struct SourcePlan {
     route: SourceRoute,
     schedule: u32,
     cpu_signature: u32,
-    publish: u32,
     public_domain: u32,
 }
 
 unsafe extern "C" {
     #[link_name = "bootstrap.module_load::source_module_entry"]
-    fn source_module_entry(source: crate::syntax::wire::SignatureNode, local: u32, public: u32) -> u32;
+    fn source_module_entry(
+        source: crate::syntax::wire::SignatureNode, mode: SourceMode, local: u32, public: u32,
+    ) -> SourcePlan;
     #[link_name = "bootstrap.module_load::source_module_plan"]
     fn source_module_plan(
         source: crate::syntax::wire::SignatureNode, mode: SourceMode, compiled: u32,
@@ -350,7 +353,12 @@ pub(crate) fn compile_world(
     require_program: bool,
     requested: Option<(EntryKind, &str)>,
 ) -> Result<Compilation> {
-    let selected = if let Some((kind, request)) = requested {
+    let mode = match requested {
+        None => SourceMode::Automatic,
+        Some((EntryKind::Domain, _)) => SourceMode::SelectedProgram,
+        Some((EntryKind::Application, _)) => SourceMode::Application,
+    };
+    let selected = if let Some((_, request)) = requested {
         let source = Source {
             path: PathBuf::from("<entry>"),
             text: request.into(),
@@ -365,39 +373,31 @@ pub(crate) fn compile_world(
                 message: format!("没有公开入口 {name}"),
             })?;
         let definition = &world.functions[&key];
-        if unsafe { source_module_entry(
-            definition.function.signature_node(), u32::from(definition.module == entry),
+        let plan = unsafe { source_module_entry(
+            definition.function.signature_node(), mode, u32::from(definition.module == entry),
             u32::from(definition.public),
-        ) } == 0 {
+        ) };
+        if plan.schedule == 0 {
             return source.fail(
                 Span::default(),
                 "B240",
                 "入口选择需要本模块对应种类的公开函数",
             );
         }
-        Some((key, arguments, kind, source))
+        Some((key, arguments, plan.route, source))
     } else {
         None
     };
     enum Job<'a> {
-        Instance {
-            instance: generics::Instance,
-            route: SourceRoute,
-            cpu_signature: bool,
-            publish: bool,
-        },
+        Instance(generics::Instance, SourceRoute, bool),
+        Selected(&'a str, &'a Option<crate::syntax::List<crate::syntax::wire::ArgumentNode>>, SourceRoute, &'a Source),
         Failed(Diagnostic),
-        Selected(&'a str, &'a Option<crate::syntax::List<crate::syntax::wire::ArgumentNode>>, EntryKind, &'a Source),
     }
     enum Output {
-        Programs(Vec<ir::Program>),
+        Checked,
+        Program(ir::Program),
         Application(application::Application),
     }
-    let mode = match selected.as_ref().map(|(_, _, kind, _)| kind) {
-        None => SourceMode::Automatic,
-        Some(EntryKind::Domain) => SourceMode::SelectedProgram,
-        Some(EntryKind::Application) => SourceMode::Application,
-    };
     let mut jobs = Vec::new();
     let mut open_generics: Vec<_> = world.records.iter()
         .filter(|(_, (record, ..))| generics::is_open(&record.types(), &record.values()))
@@ -418,20 +418,15 @@ pub(crate) fn compile_world(
             }
             if plan.schedule != 0 {
                 let instances = unsafe { world.call(generics::instances(world, base, definition)).await }?;
-                jobs.extend(instances.into_iter().map(|instance| Job::Instance {
-                    instance,
-                    route: plan.route,
-                    cpu_signature: plan.cpu_signature != 0,
-                    publish: plan.publish != 0,
-                }));
+                jobs.extend(instances.into_iter().map(|instance| Job::Instance(instance, plan.route, plan.cpu_signature != 0)));
             }
         }
         Ok(())
     }) };
     if let Err(error) = planned {
         jobs.push(Job::Failed(error));
-    } else if let Some((key, arguments, kind, source)) = &selected {
-        jobs.push(Job::Selected(key, arguments, *kind, source));
+    } else if let Some((key, arguments, route, source)) = &selected {
+        jobs.push(Job::Selected(key, arguments, *route, source));
     }
     let declarations = &world.declarations;
     let collect_declarations = world.build_declarations.is_some();
@@ -441,58 +436,61 @@ pub(crate) fn compile_world(
         world
     }, |world, job| {
         let output = unsafe { world.run(async {
-        let mut programs = Vec::new();
-        match job {
-            Job::Failed(error) => return Err(error),
-            Job::Instance { instance, route, cpu_signature, publish } => {
-                let name = &instance.name;
-                let definition = &instance.definition;
-                let signature = if cpu_signature {
-                    unsafe { world.call(check::kernel_signature(world, &instance)).await }?
-                } else {
-                    None
-                };
-                let route = if cpu_signature && signature.is_none() { SourceRoute::Function } else { route };
-                match route {
-                    SourceRoute::Function => {
-                        unsafe { world.call(check::check_function(world, &instance)).await }
-                            .map_err(|error| instance_error(error, name))?;
-                    }
-                    SourceRoute::CheckDomain => {
-                        unsafe { world.call(check::check_domain(world, &instance, signature.as_ref())).await }
-                            .map_err(|error| instance_error(error, name))?;
-                    }
-                    SourceRoute::Program => {
-                        let mut program = unsafe { world.call(check::compile_program(world, &instance, signature)).await }
-                            .map_err(|error| instance_error(error, name))?;
-                        if publish {
-                            optimize::optimize(&mut program, &world.worker)
-                                .map_err(|error| crate::compiler::diagnostic(&definition.source.path, error))?;
-                            programs.push(program);
-                        }
+            let (instance, route, cpu_signature) = match job {
+                Job::Failed(error) => return Err(error),
+                Job::Instance(instance, route, cpu_signature) => (instance, route, cpu_signature),
+                Job::Selected(key, arguments, route, source) => {
+                    let definition = &world.functions[key];
+                    let span = Span { start: 0, end: source.text.len() };
+                    let bindings = Arc::new(generics::Bindings::default());
+                    let arguments = match arguments.as_ref() {
+                        Some(arguments) => Some(unsafe { world.call(bindings.arguments(world, arguments,
+                            (source, &definition.module, &definition.imports), span)).await }?),
+                        None => None,
+                    };
+                    let instance = unsafe { world.call(check::generics::specialize(world, key, &[], arguments.as_deref(),
+                        (source, &definition.module, &definition.imports), span)).await }?;
+                    (instance, route, false)
+                }
+            };
+            let signature = if cpu_signature {
+                unsafe { world.call(check::kernel_signature(world, &instance)).await }?
+            } else {
+                None
+            };
+            let route = if cpu_signature && signature.is_none() {
+                SourceRoute::Function
+            } else {
+                route
+            };
+            let name = &instance.name;
+            let output = match route {
+                SourceRoute::Function => {
+                    unsafe { world.call(check::check_function(world, &instance)).await }
+                        .map_err(|error| instance_error(error, name))?;
+                    Output::Checked
+                }
+                SourceRoute::CheckDomain => {
+                    unsafe { world.call(check::check_domain(world, &instance, signature.as_ref())).await }
+                        .map_err(|error| instance_error(error, name))?;
+                    Output::Checked
+                }
+                SourceRoute::ValidateProgram | SourceRoute::Program => {
+                    let mut program = unsafe { world.call(check::compile_program(world, &instance, signature)).await }
+                        .map_err(|error| instance_error(error, name))?;
+                    if matches!(route, SourceRoute::Program) {
+                        optimize::optimize(&mut program, &world.worker)
+                            .map_err(|error| crate::compiler::diagnostic(&instance.definition.source.path, error))?;
+                        Output::Program(program)
+                    } else {
+                        Output::Checked
                     }
                 }
-            }
-            Job::Selected(key, arguments, kind, source) => {
-                let definition = &world.functions[key];
-                let span=Span{start:0,end:source.text.len()};
-                let bindings=Arc::new(generics::Bindings::default());
-                let arguments=match arguments.as_ref() {
-                    Some(arguments)=>Some(unsafe { world.call(bindings.arguments(world,arguments,
-                        (source,&definition.module,&definition.imports),span)).await }?),
-                    None=>None,
-                };
-                let instance = unsafe { world.call(check::generics::specialize(world, key, &[], arguments.as_deref(),
-                    (source, &definition.module, &definition.imports), span)).await }?;
-                if matches!(kind, EntryKind::Application) {
-                    return unsafe { world.call(check::compile_application(world, &instance)).await }.map(Output::Application);
-                }
-                let mut program = unsafe { world.call(check::compile_program(world, &instance, None)).await }.map_err(|error| instance_error(error, &instance.name))?;
-                optimize::optimize(&mut program, &world.worker).map_err(|error| crate::compiler::diagnostic(&definition.source.path, error))?;
-                programs.push(program);
-            }
-        }
-        Ok(Output::Programs(programs))
+                SourceRoute::Application => Output::Application(
+                    unsafe { world.call(check::compile_application(world, &instance)).await }?,
+                ),
+            };
+            Ok(output)
         }) }?;
         let used = world.build_declarations.as_ref()
             .map(|inputs| std::mem::take(&mut *inputs.borrow_mut())).unwrap_or_default();
@@ -511,10 +509,11 @@ pub(crate) fn compile_world(
         if let Some(inputs) = &world.build_declarations { inputs.borrow_mut().extend(used); }
         match output {
             Output::Application(application) => applications.push(application),
-            Output::Programs(images) => for program in images {
+            Output::Checked => {}
+            Output::Program(program) => {
                 if !crate::ir::ProgramInterface::requires_bindings(&program) { programs.push(ExecutableProgram(program)); }
                 else { templates.push(TemplateProgram(program)); }
-            },
+            }
         }
     }
     if require_program && programs.is_empty() && templates.is_empty() {
