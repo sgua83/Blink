@@ -75,7 +75,7 @@ struct Block {
     unmap: unsafe extern "system" fn(VkDevice, VkDeviceMemory),
 }
 impl Block {
-    fn new(inner: &Inner, class: Class, size: u64, dedicated_buffer: VkBuffer) -> Result<Rc<Self>> {
+    fn new(inner: &Inner, class: Class, size: u64, dedicated_buffer: VkBuffer) -> Result<Self> {
         let dedicated = DedicatedInfo {
             kind: 1000127001,
             next: null(),
@@ -125,7 +125,7 @@ impl Block {
             size: info.allocationSize,
             memory_type: info.memoryTypeIndex,
             mapped: null_mut(),
-            free: RefCell::new(vec![(0, size)]),
+            free: RefCell::default(),
             free_memory: inner.functions.vkFreeMemory,
             unmap: inner.functions.vkUnmapMemory,
         };
@@ -146,7 +146,18 @@ impl Block {
             }
             block.mapped = pointer.cast();
         }
-        Ok(Rc::new(block))
+        Ok(block)
+    }
+    fn first_range(mut self, size: u64) -> Range {
+        let remaining = self.size - size;
+        if remaining != 0 {
+            *self.free.get_mut() = vec![(size, remaining)];
+        }
+        Range {
+            block: Rc::new(self),
+            offset: 0,
+            size,
+        }
     }
     fn take(self: &Rc<Self>, size: u64, alignment: u64) -> Option<Range> {
         let mut free = self.free.borrow_mut();
@@ -205,6 +216,10 @@ impl Range {
 }
 impl Drop for Range {
     fn drop(&mut self) {
+        // A range covering the entire block has no remaining suballocations.
+        if self.size == self.block.size {
+            return;
+        }
         let mut free = self.block.free.borrow_mut();
         let mut index = free.partition_point(|&(at, _)| at < self.offset);
         let mut start = self.offset;
@@ -252,7 +267,7 @@ pub(super) fn allocate(
             required.size,
             if dedicated { buffer } else { 0 },
         )?;
-        return Ok(block.take(required.size, alignment).unwrap());
+        return Ok(block.first_range(required.size));
     }
     let mut pool = inner.buffer_memory.borrow_mut();
     let blocks = pool.blocks.entry(class).or_default();
@@ -262,8 +277,7 @@ pub(super) fn allocate(
             return Ok(range);
         }
     }
-    let block = Block::new(inner, class, BLOCK_BYTES, 0)?;
-    let range = block.take(required.size, alignment).unwrap();
-    blocks.push(Rc::downgrade(&block));
+    let range = Block::new(inner, class, BLOCK_BYTES, 0)?.first_range(required.size);
+    blocks.push(Rc::downgrade(&range.block));
     Ok(range)
 }
