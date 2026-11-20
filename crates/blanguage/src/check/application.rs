@@ -693,10 +693,30 @@ impl ApplicationLoads<'_, '_> {
         (next, continues, exits, breaks)
     }
 
+    fn block_contains_snapshot_candidate(&self, code: &[Inst], load: &Inst) -> bool {
+        code.iter().any(|candidate| match (&candidate.kind, &load.kind) {
+            (InstKind::If { yes, no, .. }, _) =>
+                self.block_contains_snapshot_candidate(yes, load)
+                    || self.block_contains_snapshot_candidate(no, load),
+            (InstKind::Scope(body), _) => self.block_contains_snapshot_candidate(body, load),
+            (InstKind::Load { dst: a, binding: left, word: w1, .. },
+             InstKind::Load { dst: b, binding: right, word: w2, .. }) =>
+                left == right && w1 == w2 && self.0.registers[*a] == self.0.registers[*b],
+            (InstKind::ViewLoad { dst: a, word: left, .. },
+             InstKind::ViewLoad { dst: b, word: right, .. }) =>
+                left == right && self.0.registers[*a] == self.0.registers[*b],
+            _ => false,
+        })
+    }
     fn prior_snapshot<'a>(&'a self,code:impl Iterator<Item=&'a Inst>,mut load:&'a Inst)->Option<Reg> {
         let mut result=None;
         for inst in code {
             let nested=match &inst.kind {
+                InstKind::If { yes, no, .. }
+                    if !self.block_contains_snapshot_candidate(yes, load)
+                        && !self.block_contains_snapshot_candidate(no, load) => {
+                    None
+                }
                 InstKind::If{condition,yes,no}=>{
                     let mut source=*condition;
                     while let Some((at,Inst{kind:InstKind::LoadLocal(_,slot),..}))=self.definition(source) {
