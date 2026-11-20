@@ -64,7 +64,29 @@ struct SegmentAdd {
     end: u32,
 }
 
+#[repr(C)]
+struct SegmentSourceField {
+    word: u32,
+    offset: u32,
+    unit_type: u32,
+    unit_bytes: u32,
+    pointer_type: u32,
+    step: u32,
+}
+
+#[repr(C)]
+struct SegmentSource {
+    source: PageAddress,
+    bool_type: u32,
+    head: u32,
+    value_words: u32,
+    counted: u32,
+}
+
 unsafe extern "C" {
+    #[link_name = "bootstrap.spirv_envelope::segment_source"]
+    fn emit_segment_source(input: SegmentSource, fields: *const SegmentSourceField, count: u32,
+        words: *mut u32, body: *mut u32) -> PayloadWrite;
     #[link_name = "bootstrap.spirv_envelope::segment_add"]
     fn emit_segment_add(input: SegmentAdd, fields: *const SegmentField, count: u32,
         words: *mut u32, body: *mut u32, decorations: *mut u32) -> TreeWords;
@@ -111,18 +133,37 @@ impl Emitter<'_> {
         }
         words
     }
-    fn segment_source(&mut self, scan: &Segment<'_>, fields: &Reduction, head_word: u32) -> Vec<u32> {
-        let k=scan.ty.size.div_ceil(4) as usize;
-        let zero=self.constant(Scalar::U32,0);
-        let mut words=vec![zero;k+1];
-        for (scalar,offset) in &scan.ty.components {
-            let raw = self.load_raw_buffer(*scalar, fields.source, self.index, fields.source_word + offset);
-            for (part,word) in self.split_words(*scalar, raw, Scalar::U32).into_iter().enumerate() {
-                words[(offset / 4) as usize + part] = word;
+    fn segment_source(&mut self, scan: &Segment<'_>, reduction: &Reduction, head_word: u32) -> Vec<u32> {
+        let fields: Vec<_> = scan.ty.components.iter().map(|&(scalar, offset)| {
+            let unit = Self::physical_unit(scalar);
+            let byte = reduction.source_word + offset;
+            SegmentSourceField {
+                word: offset / 4,
+                offset: if byte == 0 { 0 } else { self.constant(Scalar::U64, byte) },
+                unit_type: self.types[&unit],
+                unit_bytes: unit.size(),
+                pointer_type: self.physical_pointers[&unit],
+                step: if scalar.size() == 8 { self.constant(Scalar::U64, 4) } else { 0 },
             }
+        }).collect();
+        let head = if head_word == 0 { 0 } else { self.constant(Scalar::U64, head_word) };
+        let source = self.page_input(Scalar::U32, PageSource::Dataset(self.buffers[reduction.source]),
+            self.index, None, 0);
+        let mut words = vec![source.zero; scan.summary_words()];
+        let input = SegmentSource {
+            source, head,
+            bool_type: self.types[&Scalar::Bool],
+            value_words: scan.ty.size.div_ceil(4),
+            counted: u32::from(scan.counted),
+        };
+        let at = self.body.len();
+        self.body.reserve(145 + 34 * fields.len());
+        unsafe {
+            let result = emit_segment_source(input, fields.as_ptr(), fields.len() as u32,
+                words.as_mut_ptr(), self.body.as_mut_ptr().add(at));
+            self.body.set_len(at + result.words as usize);
+            self.next = result.next;
         }
-        let at=self.address_scalar(Scalar::U32, fields.source,self.index,head_word);
-        words[k]=self.read_summary_words(&[at])[0];
         words
     }
     fn segment_merge_input(&mut self, scan: &Segment<'_>) -> SegmentMerge {
@@ -185,19 +226,12 @@ impl Emitter<'_> {
         self.emit(247, &[read_end, 0]);
         self.emit(250, &[active, read, read_end]);
         self.emit(248, &[read]);
-        let mut input = if tail {
+        let input = if tail {
             let source=self.summary_addresses(scan.summary_words(),self.scan_input_binding(r),self.index);
             self.read_summary_words(&source)
         } else {
-            self.segment_source(scan,r,head_word)
+            self.segment_source(scan, r, head_word)
         };
-        if !tail {
-            let is_head = self.id();
-            self.emit(171, &[b, is_head, input[k], zero]);
-            let one = self.constant(Scalar::U32, 1);
-            input[k] = self.id();
-            self.select(u, input[k], is_head, one, zero);
-        }
         self.emit(249, &[read_end]);
         self.emit(248, &[read_end]);
         let input: Vec<_> = input
@@ -333,18 +367,7 @@ impl Emitter<'_> {
             let source = self.summary_addresses(scan.summary_words(), self.scan_input_binding(r), self.index);
             self.read_summary_words(&source)
         } else {
-            let mut input = self.segment_source(scan,r,reduction.head_word);
-            let head = self.id();
-            self.emit(171, &[b, head, input[k], zero]);
-            let first = self.id();
-            self.emit(170, &[b, first, self.index, zero]);
-            let is_head = self.id();
-            self.emit(166, &[b, is_head, head, first]);
-            let flag = self.id();
-            self.select(u, flag, is_head, one, zero);
-            input[k] = flag;
-            input.push(flag);
-            input
+            self.segment_source(scan, r, reduction.head_word)
         };
         self.emit(249, &[read_end]);
         self.emit(248, &[read_end]);

@@ -491,6 +491,27 @@ struct SegmentAdd {
 extern "C" TreeWords segment_add(SegmentAdd input, address fields, u32 count,
     address workspace, address body, address decorations) on cpu;
 
+struct SegmentSourceField {
+    u32 word;
+    u32 offset;
+    u32 unit_type;
+    u32 unit_bytes;
+    u32 pointer_type;
+    u32 step;
+};
+
+struct SegmentSource {
+    PageAddress source;
+    u32 bool_type;
+    u32 head;
+    u32 value_words;
+    u32 counted;
+};
+
+// The caller provides the existing summary layout with zero-filled padding.
+extern "C" PayloadWrite segment_source(SegmentSource input, address fields, u32 count,
+    address words, address body) on cpu;
+
 struct PrivateAddress {
     u32 index_type;
     u32 pointer_type;

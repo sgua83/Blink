@@ -1159,13 +1159,19 @@ u32 stage_op(inout StageCursor out, u32 op, u32 ty, u32 a, u32 b) on cpu {
     return result;
 }
 
-u32 stage_load(inout StageCursor out, u32 ty, u32 pointer, bool physical) on cpu {
+u32 stage_aligned_load(inout StageCursor out, u32 ty, u32 pointer, u32 alignment) on cpu {
     u32 result = out.next;
+    out.words = aligned_load(out.body, out.words, ty, result, pointer, alignment);
+    out.next = result + 1;
+    return result;
+}
+
+u32 stage_load(inout StageCursor out, u32 ty, u32 pointer, bool physical) on cpu {
     if (physical) {
-        out.words = aligned_load(out.body, out.words, ty, result, pointer, 4);
-    } else {
-        out.words = words_three(out.body, out.words, 61, ty, result, pointer);
+        return stage_aligned_load(out, ty, pointer, 4);
     }
+    u32 result = out.next;
+    out.words = words_three(out.body, out.words, 61, ty, result, pointer);
     out.next = result + 1;
     return result;
 }
@@ -1995,9 +2001,9 @@ extern "C" TileAddressWords tile_address(TileAddress input, address body) on cpu
     return TileAddressWords(at, next + 1, next, byte);
 }
 
-array<u32,2> scan_field_pointers(inout StageCursor out, u32 record, u32 wide_type, ScanField field) on cpu {
-    PageAddressResult address_ids = reduction_field(record, field.offset, field.pointer_type, wide_type,
-        field.step, out.next, word_at(out.body, out.words));
+array<u32,2> stage_field_pointers(inout StageCursor out, u32 record, u32 offset, u32 pointer, u32 wide_type, u32 step) on cpu {
+    PageAddressResult address_ids = reduction_field(record, offset, pointer, wide_type,
+        step, out.next, word_at(out.body, out.words));
     out.words += address_ids.words;
     out.next = address_ids.next;
     return array<u32,2>(address_ids.pointer, address_ids.second);
@@ -2021,8 +2027,10 @@ u64 write_scan_prefix(inout StageCursor out, ScanPrefix input, u32 group, u32 fi
 
     for (index in 0..count) {
         let field = unsafe_position<ScanField>(unsafe_address(address_bits(fields) + u64(index) * size_of<ScanField>()));
-        array<u32,2> from = scan_field_pointers(out, prefix.value, input.target.u64_type, field);
-        array<u32,2> to = scan_field_pointers(out, target.value, input.target.u64_type, field);
+        array<u32,2> from = stage_field_pointers(out, prefix.value, field.offset, field.pointer_type,
+            input.target.u64_type, field.step);
+        array<u32,2> to = stage_field_pointers(out, target.value, field.offset, field.pointer_type,
+            input.target.u64_type, field.step);
         array<u32,2> shifts = array<u32,2>(0, field.shift);
         address from_slots = address_of(from[0]);
         address to_slots = address_of(to[0]);
@@ -2239,6 +2247,43 @@ extern "C" TreeWords segment_add(SegmentAdd input, address fields, u32 count,
     out.words += write_summary_words(word_at(body, out.words), target_ptrs, merged, words);
     stage_close(out, branch);
     return TreeWords(out.words, result.decorations, out.next, branch.end);
+}
+
+extern "C" PayloadWrite segment_source(SegmentSource input, address fields, u32 count,
+    address words, address body) on cpu {
+    PhysicalAddress record = physical_page_address(input.source, body, input.source.next);
+    StageCursor out = StageCursor(body, record.words, record.next);
+    u32 uint_type = input.source.u32_type;
+    u32 wide_type = input.source.u64_type;
+    for (index in 0..count) {
+        let field = unsafe_position<SegmentSourceField>(
+            unsafe_address(address_bits(fields) + u64(index) * size_of<SegmentSourceField>()));
+        array<u32,2> pointers = stage_field_pointers(out, record.value, field.offset, field.pointer_type,
+            wide_type, field.step);
+        u32 value = stage_aligned_load(out, field.unit_type, pointers[0], field.unit_bytes);
+        if (field.unit_type != uint_type) {
+            out.words = words_three(body, out.words, 113, uint_type, out.next, value);
+            value = out.next;
+            out.next += 1;
+        }
+        put(words, u64(field.word), value);
+        if (field.step != 0) {
+            u32 high = stage_aligned_load(out, uint_type, pointers[1], 4);
+            put(words, u64(field.word + 1), high);
+        }
+    }
+
+    array<u32,2> head_ptr = stage_field_pointers(out, record.value, input.head, input.source.result_pointer, wide_type, 0);
+    u32 head = stage_aligned_load(out, uint_type, head_ptr[0], 4);
+    u32 flag = stage_op(out, 171, input.bool_type, head, input.source.zero);
+    if (input.counted != 0) {
+        u32 first = stage_op(out, 170, input.bool_type, input.source.index, input.source.zero);
+        flag = stage_op(out, 166, input.bool_type, flag, first);
+    }
+    u32 indicator = stage_select(out, uint_type, flag, input.source.one, input.source.zero);
+    put(words, u64(input.value_words), indicator);
+    if (input.counted != 0) { put(words, u64(input.value_words + 1), indicator); }
+    return PayloadWrite(out.words, out.next);
 }
 
 extern "C" PayloadRead tile_extract(TileExtract input, address body) on cpu {
