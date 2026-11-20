@@ -315,7 +315,7 @@ impl Builder<'_> {
             for word in words {
                 if initial
                     || continues.iter().all(|state| {
-                        initialized_application_word(&state.initialized, scope, index, *word)
+                        scope.application_word_initialized(Some(index), *word, &state.initialized)
                     })
                 {
                     exit.initialized
@@ -813,7 +813,7 @@ pub(super) fn iteration_positions(iteration:&address::Iteration,states:&[BTreeSe
     let mut result=BTreeSet::new();
     for(scope,words)in &iteration.outputs {
         for word in words {
-            if states.iter().all(|state|initialized_application_word(state,scope,iteration.index,*word)){
+            if states.iter().all(|state|scope.application_word_initialized(Some(iteration.index),*word,state)){
                 result.insert(scope.application_word(None,*word));
             }
         }
@@ -827,11 +827,3 @@ pub(super) fn iteration_positions(iteration:&address::Iteration,states:&[BTreeSe
     result
 }
 
-pub(super) fn initialized_application_word(
-    initialized: &BTreeSet<Position>,
-    scope: &Position,
-    index: ownership::ApplicationIndex,
-    word: u32,
-) -> bool {
-    scope.application_word(Some(index),word).initialized_by(initialized)
-}

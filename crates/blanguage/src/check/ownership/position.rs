@@ -130,6 +130,7 @@ unsafe extern "C" {
     #[link_name="bootstrap.ownership_position::index"] fn source_index(values:Address,index:Index,width:u64,host:Host)->Address;
     #[link_name="bootstrap.ownership_position::word"] fn source_word(value:Address,index:Index,word:u32,host:Host)->Address;
     #[link_name="bootstrap.ownership_position::ready"] fn source_ready(value:Address,known:Address,host:Host)->u32;
+    #[link_name="bootstrap.ownership_position::word_ready"] fn source_word_ready(value:Address,at:Index,word:u32,known:Address,host:Host)->u32;
     #[link_name="bootstrap.ownership_position::prefix_ready"] fn source_prefix(value:Address,length:u32,word:u32,known:Address,host:Host)->u32;
     #[link_name="bootstrap.ownership_position::uses_scope"] fn source_scope(value:Address,owner:u64,host:Host)->u32;
     #[link_name="bootstrap.ownership_position::depends_index"] fn source_depends(value:Address,index:Index,host:Host)->u32;
@@ -142,6 +143,9 @@ pub(super) fn both(a:Position,b:Position)->Position {match unsafe{source_both(po
 pub(super) fn indexed(values:Vec<Position>,at:ApplicationIndex,width:usize)->Vec<Position> {*unsafe{Box::from_raw(source_index(pointer(&values),index(Some(&at)),width as u64,HOST).cast::<Vec<Position>>())}}
 pub(super) fn word(value:&Position,at:Option<ApplicationIndex>,word:u32)->Position {*unsafe{Box::from_raw(source_word(pointer(value),index(at.as_ref()),word,HOST).cast::<Position>())}}
 pub(super) fn initialized(value:&Position,known:&BTreeSet<Position>)->bool {unsafe{source_ready(pointer(value),pointer(known),HOST)!=0}}
+pub(super) fn word_initialized(value:&Position,at:Option<ApplicationIndex>,word:u32,known:&BTreeSet<Position>)->bool {
+    unsafe{source_word_ready(pointer(value),index(at.as_ref()),word,pointer(known),HOST)!=0}
+}
 pub(super) fn prefix(value:&Position,length:u32,word:u32,known:&BTreeSet<Position>)->bool {unsafe{source_prefix(pointer(value),length,word,pointer(known),HOST)!=0}}
 pub(super) fn scope(value:&Position,owner:usize)->bool {unsafe{source_scope(pointer(value),owner as u64,HOST)!=0}}
 pub(super) fn depends(value:&Position,at:ApplicationIndex)->bool {unsafe{source_depends(pointer(value),index(Some(&at)),HOST)!=0}}

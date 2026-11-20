@@ -1167,12 +1167,8 @@ impl Builder<'_> {
                         .iter()
                         .copied()
                         .filter(|word| {
-                            flow::initialized_application_word(
-                                &self.initialized,
-                                data.initialization.as_ref().unwrap(),
-                                index,
-                                *word,
-                            )
+                            data.initialization.as_ref().unwrap()
+                                .application_word_initialized(Some(index), *word, &self.initialized)
                         })
                         .collect(),
                 )
@@ -1253,8 +1249,11 @@ impl Builder<'_> {
         fn complete(builder:&Builder<'_>,scope:&Position,word:u32,length:Option<u32>,initialized:&BTreeSet<Position>,assuming:owned_presence::Presence)->bool{
             let scope=builder.resolve_owned_initialization(scope,Some(&assuming));
             let facts=initialized.iter().map(|position|builder.resolve_owned_initialization(position,Some(&assuming))).collect();
-            if scope.application_word(None,word).initialized_by(&facts)
-                ||length.is_some_and(|length|scope.application_prefix_initialized(length,word,&facts)){return true;}
+            let ready = match length {
+                Some(length) => scope.application_prefix_initialized(length,word,&facts),
+                None => scope.application_word_initialized(None,word,&facts),
+            };
+            if ready { return true; }
             match scope {
                 Position::Conditional(when,a,b)=>complete(builder,&a,word,length,initialized,assuming.clone().and(when.as_ref().clone()))
                     &&complete(builder,&b,word,length,initialized,assuming.and(when.as_ref().clone().not())),

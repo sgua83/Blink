@@ -45,6 +45,9 @@ impl Position {
     pub(super) fn both(a:Self,b:Self)->Self{position::both(a,b)}
     pub(super) fn initialized_by(&self,initialized:&BTreeSet<Position>)->bool{position::initialized(self,initialized)}
     pub(super) fn application_word(&self,index:Option<ApplicationIndex>,word:u32)->Self{position::word(self,index,word)}
+    pub(super) fn application_word_initialized(&self,index:Option<ApplicationIndex>,word:u32,initialized:&BTreeSet<Position>)->bool {
+        position::word_initialized(self,index,word,initialized)
+    }
     pub(super) fn application_prefix_initialized(&self,length:u32,word:u32,initialized:&BTreeSet<Position>)->bool{position::prefix(self,length,word,initialized)}
     pub(super) fn uses_scope(&self,scope:usize)->bool{position::scope(self,scope)}
     pub(super) fn uses_index(&self,index:ApplicationIndex)->bool{position::depends(self,index)}

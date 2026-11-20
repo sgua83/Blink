@@ -286,6 +286,22 @@ extern "C" u32 ready(address value,address known,Host host) on cpu
     requires nonzero(host.iterate)
     requires nonzero(host.next)
     requires nonzero(host.drop_iterator) { return initialized(original(value),known,host) ? 1 : 0;}
+extern "C" u32 word_ready(address value,PositionIndex selected,u32 field,address known,Host host) on cpu
+    requires nonzero(host.inspect)
+    requires nonzero(host.child)
+    requires nonzero(host.equal)
+    requires nonzero(host.identity_equal)
+    requires nonzero(host.presence_kind)
+    requires nonzero(host.presence_equal)
+    requires nonzero(host.contains)
+    requires nonzero(host.contains_parameter)
+    requires nonzero(host.contains_element)
+    requires nonzero(host.contains_input)
+    requires nonzero(host.iterate)
+    requires nonzero(host.next)
+    requires nonzero(host.drop_iterator) {
+    return initialized(Projection(value,2,selected,field),known,host) ? 1 : 0;
+}
 extern "C" u32 prefix_ready(address value,u32 length,u32 field,address known,Host host) on cpu
     requires nonzero(host.inspect)
     requires nonzero(host.child)
