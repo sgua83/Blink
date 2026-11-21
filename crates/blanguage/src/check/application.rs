@@ -955,7 +955,7 @@ fn runtime_calls(code: &mut [Inst], visitor: &mut impl FnMut(&mut ExternalName))
                     visitor(name)
                 }
             }
-            InstKind::Scope(body) => runtime_calls(body, visitor),
+            InstKind::Scope(body) | InstKind::Cleanup { body, .. } => runtime_calls(body, visitor),
             InstKind::If { yes, no, .. } => {
                 runtime_calls(yes, visitor);
                 runtime_calls(no, visitor);
@@ -970,14 +970,45 @@ fn runtime_calls(code: &mut [Inst], visitor: &mut impl FnMut(&mut ExternalName))
         }
     }
 }
+fn visit_stage_bodies(
+    stages: &mut [Stage],
+    mut visit: impl FnMut(&mut Vec<Scalar>, &mut BTreeMap<usize, Ty>, &mut Vec<Inst>),
+) {
+    for stage in stages {
+        visit(&mut stage.registers, &mut stage.locals, &mut stage.code);
+        let values = match &mut stage.operation {
+            Operation::CustomReduce(values) => values,
+            Operation::CustomScan(scan) => &mut scan.values,
+            Operation::CustomSegmentedReduce(reduction) => &mut reduction.values,
+            _ => continue,
+        };
+        for body in values.project.iter_mut().chain([&mut values.identity, &mut values.combine]) {
+            visit(&mut body.registers, &mut body.locals, &mut body.code);
+        }
+    }
+}
+
 fn declarations(
     codes: &mut [&mut Vec<Inst>],
-    resources: crate::application::Resources,
+    mut resources: crate::application::Resources,
 ) -> crate::application::Resources {
-    let mut names = BTreeSet::new();
-    for code in codes.iter_mut() {
+    fn collect(code: &mut [Inst], names: &mut BTreeSet<String>, pending: &mut Vec<usize>) {
         runtime_calls(code, &mut |call| {
-            names.insert(call.symbol.clone());
+            if names.insert(call.symbol.clone())
+                && let Some(index) = call.symbol.strip_prefix("blink_run_").and_then(|index| index.parse().ok())
+            {
+                pending.push(index);
+            }
+        });
+    }
+    let mut names = BTreeSet::new();
+    let mut pending = Vec::new();
+    for code in codes.iter_mut() {
+        collect(code, &mut names, &mut pending);
+    }
+    while let Some(index) = pending.pop() {
+        visit_stage_bodies(&mut resources.programs[index].1.stages, |_, _, code| {
+            collect(code, &mut names, &mut pending);
         });
     }
     fn retain<T>(
@@ -1000,15 +1031,21 @@ fn declarations(
     }
     let mut renames = BTreeMap::new();
     let types = retain(resources.types, "allocate", &names, &mut renames);
-    let programs = retain(resources.programs, "run", &names, &mut renames);
+    let mut programs = retain(resources.programs, "run", &names, &mut renames);
     let completions = retain(resources.completions, "complete", &names, &mut renames);
     if !renames.is_empty() {
-        for code in codes.iter_mut() {
+        let rewrite = |code: &mut [Inst]| {
             runtime_calls(code, &mut |call| {
                 if let Some(name) = renames.get(&call.symbol) {
                     call.symbol = name.clone();
                 }
             });
+        };
+        for code in codes.iter_mut() {
+            rewrite(code);
+        }
+        for (_, program) in &mut programs {
+            visit_stage_bodies(&mut program.stages, |_, _, code| rewrite(code));
         }
     }
     crate::application::Resources { types, programs, completions, task_starts: names.contains("blink_task_start") }
