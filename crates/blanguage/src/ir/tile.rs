@@ -1,5 +1,6 @@
 //! 发布点切分块内阶段；私有值与共享 word 分别按实际消费者安排生命周期。
 use super::*;
+#[cfg(feature = "compiler")]
 use std::collections::{BTreeMap, BTreeSet};
 #[cfg(feature = "compiler")]
 mod private_live;
@@ -33,11 +34,13 @@ unsafe extern "C" {
     fn place_tile(rows: *mut TilePlacement, count: usize, narrow: *mut i64, wide: *mut i64);
 }
 
+#[cfg(feature = "compiler")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum PrivateSlot {
     Register(Reg),
     Local(usize),
 }
+#[cfg(feature = "compiler")]
 pub(crate) struct TilePhase<'a> {
     pub code: &'a [Inst],
     pub step: Option<&'a Inst>,
@@ -57,6 +60,7 @@ impl Stage {
             TileSource::Published => SharedWord::Published { tile, word },
         }
     }
+    #[cfg(feature = "compiler")]
     pub(crate) fn tile_phases(&self) -> Vec<TilePhase<'_>> {
         let mut phases = Vec::new();
         let mut begin = 0;
@@ -93,6 +97,7 @@ impl Stage {
         }
         phases
     }
+    #[cfg(feature = "compiler")]
     pub(crate) fn private_scalar(&self, slot: PrivateSlot) -> Scalar {
         match slot {
             PrivateSlot::Register(r) => self.registers[r],
@@ -245,81 +250,6 @@ pub(crate) fn live_before(
     continue_live: &BTreeSet<PrivateSlot>, exit_live: &BTreeSet<PrivateSlot>,
 ) -> BTreeSet<PrivateSlot> {
     private_live::before(code, live, break_live, continue_live, exit_live)
-}
-
-#[cfg(not(feature = "compiler"))]
-pub(crate) fn loop_live(
-    condition: &[Inst],
-    test: Reg,
-    body: &[Inst],
-    after: &BTreeSet<PrivateSlot>,
-    break_live: &BTreeSet<PrivateSlot>,
-    continue_live: &BTreeSet<PrivateSlot>,
-    exit_live: &BTreeSet<PrivateSlot>,
-) -> BTreeSet<PrivateSlot> {
-    // Gen/kill transfers are pointwise; the empty-header result closes the backedge.
-    let mut need = live_before(body, BTreeSet::new(), after, &BTreeSet::new(), exit_live);
-    need.extend(after.iter().copied());
-    need.insert(PrivateSlot::Register(test));
-    live_before(condition, need, break_live, continue_live, exit_live)
-}
-
-#[cfg(not(feature = "compiler"))]
-pub(crate) fn live_before(
-    code: &[Inst],
-    mut live: BTreeSet<PrivateSlot>,
-    break_live: &BTreeSet<PrivateSlot>,
-    continue_live: &BTreeSet<PrivateSlot>,
-    exit_live: &BTreeSet<PrivateSlot>,
-) -> BTreeSet<PrivateSlot> {
-    use PrivateSlot::{Local, Register};
-    for inst in code.iter().rev() {
-        match &(inst).kind {
-            InstKind::If { condition, yes, no } => {
-                let a = live_before(yes, live.clone(), break_live, continue_live, exit_live);
-                live = live_before(no, live, break_live, continue_live, exit_live);
-                live.extend(a);
-                live.insert(Register(*condition));
-            }
-            InstKind::Loop {
-                condition,
-                test,
-                body,
-            } => {
-                live = loop_live(
-                    condition,
-                    *test,
-                    body,
-                    &live,
-                    break_live,
-                    continue_live,
-                    exit_live,
-                );
-            }
-            InstKind::Scope(body) => {
-                live = live_before(body, live.clone(), break_live, continue_live, &live)
-            }
-            InstKind::Exit => live = exit_live.clone(),
-            InstKind::Break => live = break_live.clone(),
-            InstKind::Continue => live = continue_live.clone(),
-            InstKind::LoadLocal(dst, slot) => {
-                live.remove(&Register(*dst));
-                live.insert(Local(*slot));
-            }
-            InstKind::StoreLocal(slot, src) => {
-                live.remove(&Local(*slot));
-                live.insert(Register(*src));
-            }
-            _ => {
-                for dst in inst.results() {
-                    live.remove(&Register(dst));
-                }
-                inst.all_operands(&mut |reg| { live.insert(Register(reg)); true });
-                live.extend(inst.local_reads().map(Local));
-            }
-        }
-    }
-    live
 }
 
 impl Inst {
