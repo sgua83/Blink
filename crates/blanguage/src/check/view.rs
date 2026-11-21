@@ -280,8 +280,7 @@ impl Borrow{
     }
     pub(super) fn overlaps_source(&self,source:&Source,when:&bounds::Clause)->bool {
         self.sources.entries().any(|(other,active)|{
-            let path=bounds::Clause::both(when,&active);
-            path.possible()&&source.overlaps(other,&path)
+            source.overlaps(other,||bounds::Clause::both(when,&active))
         })
     }
     pub fn projection(parent:Self,fields:Vec<usize>)->Self {
@@ -817,18 +816,20 @@ impl Source {
             index=>index.and_then(|index|index.at_call(values)),
         }
     }
-    fn overlaps(&self,other:&Self,path:&bounds::Clause)->bool{
+    fn overlaps(&self,other:&Self,path:impl FnOnce()->bounds::Clause)->bool{
         match(self,other){
             (Self::Element{parent,fields,index},Self::Element{parent:other,fields:other_fields,index:other_index})=>{
                 if fields!=other_fields{return false;}
-                if let(Some(a),Some(b))=(index,other_index){if !bounds::Condition::index_equal(*a,*b).assume(path,true).possible(){return false;}}
-                parent.sources.entries().any(|(source,when)|other.overlaps_source(source,&bounds::Clause::both(path,&when)))
-                    ||parent.inputs.entries().any(|(input,when)|bounds::Clause::both(path,&when).overlaps(&other.inputs.when(input)))
-                    ||parent.calls.entries().any(|(call,when)|bounds::Clause::both(path,&when).overlaps(&other.calls.when(call)))
+                let path=path();
+                if !path.possible(){return false;}
+                if let(Some(a),Some(b))=(index,other_index){if !bounds::Condition::index_equal(*a,*b).assume(&path,true).possible(){return false;}}
+                parent.sources.entries().any(|(source,when)|other.overlaps_source(source,&bounds::Clause::both(&path,&when)))
+                    ||parent.inputs.entries().any(|(input,when)|bounds::Clause::both(&path,&when).overlaps(&other.inputs.when(input)))
+                    ||parent.calls.entries().any(|(call,when)|bounds::Clause::both(&path,&when).overlaps(&other.calls.when(call)))
             },
             // Different input views can still borrow the same external resource.
-            (Self::Parameter(a,_),Self::Parameter(b,_))=>a==b,
-            _=>self==other,
+            (Self::Data(a),Self::Data(b)) | (Self::Parameter(a,_),Self::Parameter(b,_))=>a==b&&path().possible(),
+            _=>std::mem::discriminant(self)==std::mem::discriminant(other)&&path().possible()&&self==other,
         }
     }
     pub(super) fn bind_outputs(self, bindings: &BTreeMap<ValueIdentity, ValueIdentity>) -> Self {
