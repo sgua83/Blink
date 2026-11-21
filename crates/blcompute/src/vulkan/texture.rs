@@ -246,6 +246,43 @@ impl TextureInput {
         match self { Self::D2(t) => t.descriptor(), Self::D3(t) => t.descriptor() }
     }
 }
+impl Commands {
+    pub(super) fn copy_dataset_to_image(
+        &self, source: &GpuDataset, image: u64, mip: u32, size: [u32; 2],
+        first_pixel: u64, row_stride: u32,
+    ) {
+        let page_records = u64::from(source.page_records());
+        let mut row = 0;
+        let mut column = 0;
+        while row < size[1] {
+            let pixel = first_pixel + u64::from(row) * u64::from(row_stride) + u64::from(column);
+            let page = (pixel / page_records) as usize;
+            let offset = pixel % page_records;
+            let available = page_records.min(u64::from(source.count) - page as u64 * page_records) - offset;
+            let (width, rows) = if column == 0 && available >= u64::from(size[0]) {
+                (size[0], u64::from(size[1] - row).min(
+                    (available - u64::from(size[0])) / u64::from(row_stride) + 1) as u32)
+            } else {
+                (u64::from(size[0] - column).min(available) as u32, 1)
+            };
+            let copy = BufferImageCopy {
+                offset: offset * u64::from(source.stride),
+                row_length: if rows > 1 { row_stride } else { 0 },
+                image_height: 0,
+                subresource: Subresource { aspect: 1, mip, base_layer: 0, layers: 1 },
+                image_offset: [column as i32, row as i32, 0],
+                extent: VkExtent3D { width, height: rows, depth: 1 },
+            };
+            unsafe {
+                (self.inner.functions.vkCmdCopyBufferToImage)(
+                    self.command, source.pages[page].buffer, image, 7, 1, &copy,
+                );
+            }
+            column += width;
+            if column == size[0] { column = 0; row += rows; }
+        }
+    }
+}
 impl Device {
     pub fn upload_texture(&self, source: &crate::Texture2D) -> Result<Texture> {
         let [width, height] = source.dimensions();
@@ -307,37 +344,9 @@ impl Device {
             commands.barrier(source_stage, 0x1000, source_access, 0x800);
             let mut size = dimensions;
             for (mip, level) in levels.iter().enumerate() {
-                let source = &sources[level.source];
-                let page_records = u64::from(source.page_records());
-                let mut row = 0;
-                let mut column = 0;
-                while row < size[1] {
-                    let pixel = level.offset + u64::from(row) * u64::from(level.row_stride) + u64::from(column);
-                    let page = (pixel / page_records) as usize;
-                    let offset = pixel % page_records;
-                    let available = page_records.min(u64::from(source.count) - page as u64 * page_records) - offset;
-                    let (width, rows) = if column == 0 && available >= u64::from(size[0]) {
-                        (size[0], u64::from(size[1] - row).min(
-                            (available - u64::from(size[0])) / u64::from(level.row_stride) + 1) as u32)
-                    } else {
-                        (u64::from(size[0] - column).min(available) as u32, 1)
-                    };
-                    let copy = BufferImageCopy {
-                        offset: offset * u64::from(source.stride),
-                        row_length: if rows > 1 { level.row_stride } else { 0 },
-                        image_height: 0,
-                        subresource: Subresource { aspect: 1, mip: mip as u32, base_layer: 0, layers: 1 },
-                        image_offset: [column as i32, row as i32, 0],
-                        extent: VkExtent3D { width, height: rows, depth: 1 },
-                    };
-                    unsafe {
-                        (self.inner.functions.vkCmdCopyBufferToImage)(
-                            commands.command, source.pages[page].buffer, texture.image, 7, 1, &copy,
-                        );
-                    }
-                    column += width;
-                    if column == size[0] { column = 0; row += rows; }
-                }
+                commands.copy_dataset_to_image(
+                    &sources[level.source], texture.image, mip as u32, size, level.offset, level.row_stride,
+                );
                 size = size.map(|n| (n / 2).max(1));
             }
             // 原producer仍表示最后写；本次真实Transfer读必须先于后继源写。

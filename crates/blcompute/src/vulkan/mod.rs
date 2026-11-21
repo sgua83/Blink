@@ -37,7 +37,7 @@ use std::{
     rc::Rc,
 };
 pub use texture::{Texture, TextureCopyLevel, TextureInput};
-use texture::{BufferImageCopy, ImageBarrier, Subresource, SubresourceRange};
+use texture::{BufferImageCopy, ImageBarrier, SubresourceRange};
 
 type Gipa = unsafe extern "system" fn(VkInstance, *const c_char) -> *const c_void;
 type Gdpa = unsafe extern "system" fn(VkDevice, *const c_char) -> *const c_void;

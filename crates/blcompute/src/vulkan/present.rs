@@ -414,42 +414,9 @@ impl Swapchain {
                 1,
                 (&barrier as *const ImageBarrier).cast(),
             );
-            let width = u64::from(self.extent.width);
-            let mut pixel = 0u64;
-            for page in &display.pages {
-                let end = pixel + page.size / 4;
-                let mut offset = 0u64;
-                while pixel < end {
-                    let x = pixel % width;
-                    let remaining = end - pixel;
-                    let (copy_width, rows) = if x == 0 && remaining >= width {
-                        (width, remaining / width)
-                    } else {
-                        ((width - x).min(remaining), 1)
-                    };
-                    let copy = BufferImageCopy {
-                        offset,
-                        row_length: 0,
-                        image_height: 0,
-                        subresource: Subresource {
-                            aspect: 1,
-                            mip: 0,
-                            base_layer: 0,
-                            layers: 1,
-                        },
-                        image_offset: [x as i32, (pixel / width) as i32, 0],
-                        extent: VkExtent3D {
-                            width: copy_width as u32,
-                            height: rows as u32,
-                            depth: 1,
-                        },
-                    };
-                    (f.vkCmdCopyBufferToImage)(commands.command, page.buffer, image, 7, 1, &copy);
-                    let copied = copy_width * rows;
-                    pixel += copied;
-                    offset += copied * 4;
-                }
-            }
+            commands.copy_dataset_to_image(
+                display, image, 0, [self.extent.width, self.extent.height], 0, self.extent.width,
+            );
             let barrier = ImageBarrier {
                 kind: 45,
                 next: null(),
