@@ -163,6 +163,8 @@ impl RayDevice {
         }
     }
 }
+pub(super) const BUILD_INPUT_READ_ONLY: u32 = 0x80000;
+
 pub(super) struct StructureStorage {
     handle: u64,
     allocation: Allocation,
@@ -307,9 +309,17 @@ impl Device {
         self.stage_page(&allocation, bytes, write, &mut inputs.commands, &mut inputs.allocations)?;
         Ok(allocation)
     }
-    fn stage_device_input(&self, data: &GpuDataset, inputs: &mut BuildInputs) -> Result<Allocation> {
-        let allocation = Allocation::new(self.inner.clone(), data.bytes(), 0xa0002, 1, u64::from(data.ty.align))?;
-        if data.count != 0 {
+    fn device_geometry_address(&self, data: &GpuDataset, inputs: &mut BuildInputs) -> Result<(u64, Usage)> {
+        if data.count != 0 && let Some(previous) = data.dependency() {
+            inputs.dependencies.insert(previous);
+        }
+        if let [page] = data.pages.as_slice() {
+            return Ok((page.address(), data.producer));
+        }
+
+        let alignment = u64::from(data.ty.align).max(4);
+        let allocation = Allocation::new(self.inner.clone(), data.bytes(), 0xa0002, 1, alignment)?;
+        if !data.pages.is_empty() {
             let commands = &inputs.commands;
             commands.barrier(data.producer.stage(), 0x1000, data.producer.access(), 0x800);
             let mut offset = 0;
@@ -330,11 +340,10 @@ impl Device {
                 }
                 offset += page.size;
             }
-            if let Some(previous) = data.dependency() {
-                inputs.dependencies.insert(previous);
-            }
         }
-        Ok(allocation)
+        let address = allocation.address();
+        inputs.allocations.push(allocation);
+        Ok((address, Usage::Transfer))
     }
     fn build_acceleration(
         &self,
@@ -550,7 +559,9 @@ impl Device {
                     |source| source.write_with(indices, |_| {}),
                     inputs,
                 )?;
-                Ok((vertices, triangles))
+                let addresses = [vertices.address(), triangles.address()];
+                inputs.allocations.extend([vertices, triangles]);
+                Ok((addresses, Usage::Transfer))
             },
         )
     }
@@ -613,9 +624,13 @@ impl Device {
         let max_vertex = vertices.count.saturating_sub(1);
         let count = triangles.count;
         let result = self.bottom_level_inputs(stride, max_vertex, count, operation, |inputs| {
-            let vertex_input = self.stage_device_input(&vertices, inputs)?;
-            let triangle_input = self.stage_device_input(&triangles, inputs)?;
-            Ok((vertex_input, triangle_input))
+            let (vertex_address, vertex_producer) = self.device_geometry_address(&vertices, inputs)?;
+            let (index_address, index_producer) = self.device_geometry_address(&triangles, inputs)?;
+            let producer = match (vertex_producer, index_producer) {
+                (Usage::Transfer, Usage::Transfer) => Usage::Transfer,
+                _ => Usage::Compute,
+            };
+            Ok(([vertex_address, index_address], producer))
         })?;
         for data in [&mut vertices, &mut triangles] {
             if data.count != 0 {
@@ -630,10 +645,10 @@ impl Device {
         max_vertex: u32,
         count: u32,
         operation: BuildOperation<'_>,
-        stage: impl FnOnce(&mut BuildInputs) -> Result<(Allocation, Allocation)>,
+        prepare: impl FnOnce(&mut BuildInputs) -> Result<([u64; 2], Usage)>,
     ) -> Result<BottomLevel> {
         self.build_acceleration(count, Some(max_vertex), operation, |inputs| {
-            let (vertices, triangles) = stage(inputs)?;
+            let ([vertices, indices], producer) = prepare(inputs)?;
             let geometry = Geometry {
                 kind: 1000150006,
                 next: null(),
@@ -644,17 +659,16 @@ impl Device {
                         kind: 1000150005,
                         next: null(),
                         format: 106,
-                        vertices: vertices.address(),
+                        vertices,
                         stride,
                         max_vertex,
                         index_type: 1,
-                        indices: triangles.address(),
+                        indices,
                         transform: 0,
                     },
                 },
             };
-            inputs.allocations.extend([vertices, triangles]);
-            Ok((geometry, Usage::Transfer, None))
+            Ok((geometry, producer, None))
         })
         .map(|s| BottomLevel(Rc::new(s)))
     }
@@ -771,7 +785,7 @@ impl Device {
             return Err(error("BLAS 不属于目标设备"));
         }
         let mut target = GpuDataset::allocate(
-            self.inner.clone(), ty, data_stride, count, 0x80000, 16,
+            self.inner.clone(), ty, data_stride, count, BUILD_INPUT_READ_ONLY, 16,
         )?;
         let pointer_bytes = u64::from(count) * 8;
         // A single page already holds the packed native array. Empty builds

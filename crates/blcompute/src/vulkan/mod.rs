@@ -1326,7 +1326,12 @@ impl GpuDataset {
         blanguage::spirv::PAGE_BYTES / self.stride
     }
     fn new(inner: Rc<Inner>, ty: Ty, stride: u32, count: u32) -> Result<Self> {
-        Self::allocate(inner, ty, stride, count, 0, 1)
+        let (usage, alignment) = if inner.ray.is_some() {
+            (ray::BUILD_INPUT_READ_ONLY, 4)
+        } else {
+            (0, 1)
+        };
+        Self::allocate(inner, ty, stride, count, usage, alignment)
     }
     fn allocate(
         inner: Rc<Inner>,

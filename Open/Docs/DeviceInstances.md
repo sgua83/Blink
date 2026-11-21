@@ -98,7 +98,7 @@ top_level_device_read也复用此路径，AS不再保留独立的_read_inputs持
 
 两个输入都是本逻辑设备的 GpuDataset，可直接传冻结来源的 binding()。顶点前三个分量为 offset 0／4／8 的 f32，按真实记录 stride 读取，允许后续字段；三角形为紧密三个 u32，stride 12。`struct Triangle {array<u32,3> indices;};` 可表达该索引布局，uint3 的 stride 16 不等价。入口消费完整记录数，不隐式读取有效前缀；全部记录已初始化、位置有限及索引有效是 unsafe 前提。更新还要求原索引内容／顺序、活动状态、原数量及 maxVertex；同形 CPU／GPU 输入可以交叉更新，顶点 stride 可以不同。
 
-GPU 计算结果沿真实物理页在本次构建命令复制到具备 AS 输入用途的连续存储，保持逻辑顺序及 primitive 编号。原GPU生产点交接本次依赖，复制后的屏障将设备输入交给实际构建。源数据沿原最后使用点持有，输入、scratch 和 refit 来源随同一 AS Execution 保持到构建或更新完成。旧新查询各消费自己的 BottomLevel 快照。
+启用光追的逻辑设备创建数据页时赋予 Vulkan AS 只读输入用途。顶点和索引各自按实际页数交接，单页直接由 BLAS 读取，多页按逻辑顺序复制到连续输入，空输入提供构建要求的有效地址。原GPU生产点交接本次依赖。构建屏障接收原单页写入和多页复制，保持实际记录顺序及 primitive 编号。源数据沿原最后使用点持有，输入、scratch 和 refit 来源随同一 AS Execution 保持到构建或更新完成。旧新查询各消费自己的 BottomLevel 快照。
 
 容量内的大型AS设备丢失／驱动问题仍按具体设备与输入留在Issues调查，不用一次创建或查询成功代替合法原生容量。
 
