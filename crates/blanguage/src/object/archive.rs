@@ -61,7 +61,7 @@ fn development_runtime(
 ) -> Result<Vec<String>> {
     let mut arguments: Vec<OsString> = [
         "rustc".into(), "--offline".into(), "--locked".into(), "--release".into(),
-        "--jobs".into(), "1".into(), "--manifest-path".into(), sdk.join("Cargo.toml").into_os_string(),
+        "--manifest-path".into(), sdk.join("Cargo.toml").into_os_string(),
         "--target-dir".into(), target.as_os_str().into(), "--package".into(), "blcompute".into(),
         "--no-default-features".into(), "--config".into(), "profile.release.lto=false".into(),
         "--color".into(), "never".into(),
@@ -76,7 +76,7 @@ fn development_runtime(
         ]);
     }
     arguments.extend(["--", "--print", "native-static-libs"].map(OsString::from));
-    let output = worker.cargo_output(&arguments, work, sdk)?;
+    let output = worker.cargo_output(arguments, work, sdk)?;
     let stderr = String::from_utf8(output.stderr)?;
     if !output.status.success() {
         return Err(format!("执行库编译失败：\n{}{}", String::from_utf8_lossy(&output.stdout), stderr).into());

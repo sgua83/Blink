@@ -2,8 +2,17 @@
 use super::{Processor, Worker};
 use std::{ffi::OsString, io, path::Path, process::Output};
 impl Worker {
-    pub(crate) fn cargo_output(&self, arguments: &[OsString], directory: &Path, working_directory: &Path) -> io::Result<Output> {
-        cargo_output(arguments, directory, working_directory, self.processor())
+    pub(crate) fn cargo_output(&self, mut arguments: Vec<OsString>, directory: &Path, working_directory: &Path) -> io::Result<Output> {
+        let processor = self.processor();
+        let compiler = self.compiler();
+        let mut helpers = Vec::new();
+        if processor.is_none() && compiler.bootstrap_jobserver().is_none() {
+            helpers.extend(std::iter::from_fn(|| compiler.try_worker()));
+        }
+        arguments.insert(1, format!("--jobs={}", 1 + helpers.len()).into());
+        let output = cargo_output(&arguments, directory, working_directory, processor);
+        drop(helpers);
+        output
     }
 }
 #[cfg(not(windows))]
