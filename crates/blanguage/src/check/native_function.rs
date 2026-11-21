@@ -2405,9 +2405,7 @@ pub(super) async fn finish_program(
     mut scopes: BTreeMap<usize, RangeContext>,
 ) -> Result<Program> {
     let mut finalized = unsafe { world.call(finalize(world, module, BTreeSet::new(), None, None, &mut [(&mut program, &mut scopes)])).await }?;
-    for function in &mut finalized.functions {
-        application::lower_sdk_resources(&mut function.body,&finalized.resources);
-    }
+    application::lower_sdk_resources(&mut program, &mut finalized.functions, &mut finalized.resources);
     program.functions = finalized.functions.into();
     if program.native_frame.is_some() || !finalized.resources.types.is_empty() || !finalized.resources.programs.is_empty(){
         program.resources=Some(Box::new(finalized.resources));

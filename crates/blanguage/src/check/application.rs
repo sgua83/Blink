@@ -4838,7 +4838,11 @@ impl Builder<'_> {
 }
 
 // 已闭合源码包直接消费本目录的类型／program编号；实际C ABI数组只借用到本次同步调用结束。
-pub(super) fn lower_sdk_resources(body:&mut ValueCode,resources:&crate::application::Resources){
+pub(super) fn lower_sdk_resources(
+    program: &mut Program,
+    functions: &mut [FunctionBody],
+    resources: &mut crate::application::Resources,
+) {
     fn value(reg:Reg,scalar:Scalar)->CallArgument{
         CallArgument::Value{origin:None,dataset_borrow:None,ty:Ty::scalar(scalar),values:vec![reg]}
     }
@@ -4983,7 +4987,26 @@ pub(super) fn lower_sdk_resources(body:&mut ValueCode,resources:&crate::applicat
         }
         *code=out;
     }
-    block(&mut body.registers,&mut body.locals,&mut body.code,resources);
+    for function in functions {
+        let body = &mut function.body;
+        block(&mut body.registers, &mut body.locals, &mut body.code, resources);
+    }
+    if program.native_frame.is_some() {
+        visit_stage_bodies(&mut program.stages, |registers, locals, code| {
+            block(registers, locals, code, resources);
+        });
+    }
+    for index in 0..resources.programs.len() {
+        let nested = &mut resources.programs[index].1;
+        if nested.native_frame.is_some() {
+            // A nested dispatch reads the original program's immutable argument layout.
+            let mut stages = std::mem::take(&mut nested.stages);
+            visit_stage_bodies(&mut stages, |registers, locals, code| {
+                block(registers, locals, code, resources);
+            });
+            resources.programs[index].1.stages = stages;
+        }
+    }
 }
 
 impl Builder<'_>{
