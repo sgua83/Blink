@@ -169,32 +169,54 @@ extern "C" u64 intersect_local_values(address left, u64 left_count,
     return kept;
 }
 
+void private_kill(View value,address live,LiveHost host) on cpu
+    requires nonzero(host.ir.inspect) requires nonzero(host.change) {
+    Results values=view_results(value,host.ir);
+    Word reg=next_result(values);
+    while(reg.present!=0){
+        host.change(LiveSetAction::RemoveRegister,live,unsafe_address(0u64),reg.value);
+        reg=next_result(values);
+    }
+}
+
+void private_reads(View value,address live,LiveHost host) on cpu
+    requires nonzero(host.ir.inspect) requires nonzero(host.insert_register) requires nonzero(host.change) {
+    visit_instruction(value,host.ir,live,host.insert_register);
+    Locals reads=view_locals(value,0,host.ir);
+    Word slot=next_local(reads,host.ir);
+    while(slot.present!=0){
+        host.change(LiveSetAction::InsertLocal,live,unsafe_address(0u64),slot.value);
+        slot=next_local(reads,host.ir);
+    }
+}
+
 extern "C" void private_phase_step(address instruction,address live,address saved,LiveHost host) on cpu
-    requires nonzero(host.kill) requires nonzero(host.read) requires nonzero(host.change) {
-    host.kill(instruction,live);
+    requires nonzero(host.ir.inspect) requires nonzero(host.insert_register) requires nonzero(host.change) {
+    View value=host.ir.inspect(Node(instruction,N_INSTRUCTION));
+    private_kill(value,live,host);
     host.change(LiveSetAction::Copy,saved,live,0u64);
-    host.read(instruction,live);
+    private_reads(value,live,host);
 }
 
 extern "C" void private_loop(Span condition,u64 test,Span body,
     address after,address break_live,address continue_live,address exit_live,
     address result,address empty,LiveHost host) on cpu
-    requires nonzero(host.ir.inspect) requires nonzero(host.kill) requires nonzero(host.read)
+    requires nonzero(host.ir.inspect) requires nonzero(host.insert_register)
     requires nonzero(host.clone_set) requires nonzero(host.drop_set) requires nonzero(host.change) {
     // Pointwise gen/kill transfers close the backedge from an empty header.
     // after may be result: it remains borrowed until the final swap.
     address need=host.clone_set(empty);
     private_before(body,need,after,empty,exit_live,empty,host);
     host.change(LiveSetAction::Union,need,after,0u64);
-    host.change(LiveSetAction::InsertRegister,need,unsafe_address(0u64),test);
+    host.insert_register(need,test);
     private_before(condition,need,break_live,continue_live,exit_live,empty,host);
     host.change(LiveSetAction::Swap,result,need,0u64);
     host.drop_set(need);
 }
 
-void private_instruction(address instruction,View value,address live,address break_live,
+void private_instruction(View value,address live,address break_live,
     address continue_live,address exit_live,address empty,LiveHost host) on cpu
-    requires nonzero(host.ir.inspect) requires nonzero(host.kill) requires nonzero(host.read)
+    requires nonzero(host.ir.inspect) requires nonzero(host.insert_register)
     requires nonzero(host.clone_set) requires nonzero(host.drop_set) requires nonzero(host.change) {
     if (value.tag==OP_BRANCH) {
         address first=host.clone_set(live);
@@ -202,7 +224,7 @@ void private_instruction(address instruction,View value,address live,address bre
         private_before(value.second,live,break_live,continue_live,exit_live,empty,host);
         host.change(LiveSetAction::Union,live,first,0u64);
         host.drop_set(first);
-        host.change(LiveSetAction::InsertRegister,live,unsafe_address(0u64),value.a);
+        host.insert_register(live,value.a);
     } else if (value.tag==OP_LOOP_VALUE) {
         private_loop(value.first,value.a,value.second,live,break_live,continue_live,exit_live,live,empty,host);
     } else if (value.tag==OP_SCOPE) {
@@ -220,23 +242,23 @@ void private_instruction(address instruction,View value,address live,address bre
         host.change(LiveSetAction::InsertLocal,live,unsafe_address(0u64),value.b);
     } else if (value.tag==OP_STORE_LOCAL) {
         host.change(LiveSetAction::RemoveLocal,live,unsafe_address(0u64),value.a);
-        host.change(LiveSetAction::InsertRegister,live,unsafe_address(0u64),value.b);
+        host.insert_register(live,value.b);
     } else {
-        host.kill(instruction,live);
-        host.read(instruction,live);
+        private_kill(value,live,host);
+        private_reads(value,live,host);
     }
 }
 
 extern "C" void private_before(Span code,address live,address break_live,
     address continue_live,address exit_live,address empty,LiveHost host) on cpu
-    requires nonzero(host.ir.inspect) requires nonzero(host.kill) requires nonzero(host.read)
+    requires nonzero(host.ir.inspect) requires nonzero(host.insert_register)
     requires nonzero(host.clone_set) requires nonzero(host.drop_set) requires nonzero(host.change) {
     u64 index=code.count;
     while (index!=0u64) {
         index-=1u64;
         address instruction=span_item_at(code,index);
         View value=host.ir.inspect(Node(instruction,N_INSTRUCTION));
-        private_instruction(instruction,value,live,break_live,continue_live,exit_live,empty,host);
+        private_instruction(value,live,break_live,continue_live,exit_live,empty,host);
     }
 }
 
@@ -245,10 +267,6 @@ u32 dce_result(inout DceResults results,address needed,u64 reg,
     results.present=1;
     results.needed=contains(needed,0,reg);
     return results.needed==0 ? 1 : 0;
-}
-extern "C" u32 dce_result_needed(address needed,u64 reg,
-    cfn<u32,address,u32,u64> contains) on cpu requires nonzero(contains) {
-    return contains(needed,0,reg);
 }
 bool dce_any_local(address needed,u64 first,u64 length,
     cfn<u32,address,u32,u64> contains) on cpu requires nonzero(contains) {
@@ -259,9 +277,9 @@ bool dce_any_local(address needed,u64 first,u64 length,
     }
     return false;
 }
-DceResults dce_results(address instruction,address needed,DceHost host) on cpu requires nonzero(host.live.ir.inspect) requires nonzero(host.contains) {
+DceResults dce_results(View instruction,address needed,DceHost host) on cpu requires nonzero(host.live.ir.inspect) requires nonzero(host.contains) {
     DceResults output=DceResults(0,0);
-    Results values=results(Node(instruction,N_INSTRUCTION),host.live.ir);
+    Results values=view_results(instruction,host.live.ir);
     while(true){
         Word value=next_result(values);if(value.present==0){break;}
         if(dce_result(output,needed,value.value,host.contains)==0){break;}
@@ -292,7 +310,7 @@ bool dce_scope_observable(Span code,address after,DceHost host) on cpu requires 
             ||kind==OP_ATOMIC||kind==OP_APPEND||kind==OP_PRINT||kind==OP_INVOKE
             ||kind==OP_TILE_PUBLISH||kind==OP_TILE_COLLECTIVE||kind==OP_TILE_BARRIER){return true;}
         else {
-            DceResults live=dce_results(instruction,after,host);
+            DceResults live=dce_results(value,after,host);
             if(live.needed!=0){return true;}
         }
         index+=1u64;
@@ -306,7 +324,7 @@ bool eliminate_instruction(address instruction,address needed,
     requires nonzero(host.contains) requires nonzero(host.live.change)
     requires nonzero(host.live.clone_set) requires nonzero(host.live.drop_set)
     requires nonzero(host.swap_instructions) requires nonzero(host.discard_prefix)
-    requires nonzero(host.live.kill) requires nonzero(host.live.read) requires nonzero(host.record)
+    requires nonzero(host.live.insert_register) requires nonzero(host.record)
     requires nonzero(host.prune_division) requires nonzero(host.prune_collective) {
     View value=host.live.ir.inspect(Node(instruction,N_INSTRUCTION));u32 kind=value.tag;
     // Copy actual scalar fields before requesting an exclusive physical owner.
@@ -314,6 +332,7 @@ bool eliminate_instruction(address instruction,address needed,
     if(kind==OP_STORE_LOCAL_INDEXED){byte_offset=u64(unsafe_position<u32>(value.first.data));}
     if(kind==OP_TILE_COLLECTIVE){
         InstructionStorage storage=host.storage(instruction);host.prune_collective(storage.payload,needed);
+        value=host.live.ir.inspect(Node(instruction,N_INSTRUCTION));
     }
     if(kind==OP_INTEGER_DIVIDE){
         View output=host.live.ir.inspect(value.right);
@@ -332,11 +351,12 @@ bool eliminate_instruction(address instruction,address needed,
             else{choice=DceDivisionChoice::Both;}
             InstructionStorage storage=host.storage(instruction);
             host.prune_division(instruction,storage.payload,choice,quotient,remainder);
+            value=host.live.ir.inspect(Node(instruction,N_INSTRUCTION));
         }
     }
     bool exempt=kind==OP_ATOMIC||kind==OP_APPEND||kind==OP_PRINT||kind==OP_INVOKE;
     if(!exempt){
-        DceResults live=dce_results(instruction,needed,host);
+        DceResults live=dce_results(value,needed,host);
         if(live.present!=0&&live.needed==0){
             host.record(context,instruction,DceRemoval(DceRemovalKind::Values,0u64,0u64,0u64,0u64));
             return false;
@@ -362,7 +382,7 @@ bool eliminate_instruction(address instruction,address needed,
         u64 no_count=host.read_block(storage.second_code).count;
         if(yes_count==0u64&&no_count==0u64){host.live.drop_set(yes_needed);return false;}
         host.live.change(LiveSetAction::Union,needed,yes_needed,0u64);host.live.drop_set(yes_needed);
-        host.live.change(LiveSetAction::InsertRegister,needed,unsafe_address(0u64),first);
+        host.live.insert_register(needed,first);
     } else if(kind==OP_LOOP_VALUE){
         address header=host.live.clone_set(empty);
         private_loop(value.first,first,value.second,needed,break_live,continue_live,exit_live,header,empty,host.live);
@@ -370,11 +390,11 @@ bool eliminate_instruction(address instruction,address needed,
         address before_body=host.live.clone_set(header);
         eliminate_code(storage.second_code,before_body,needed,header,exit_live,empty,context,host);
         host.live.change(LiveSetAction::Union,before_body,needed,0u64);
-        host.live.change(LiveSetAction::InsertRegister,before_body,unsafe_address(0u64),first);
+        host.live.insert_register(before_body,first);
         eliminate_code(storage.first_code,before_body,break_live,continue_live,exit_live,empty,context,host);
         host.live.change(LiveSetAction::Swap,needed,before_body,0u64);host.live.drop_set(before_body);host.live.drop_set(header);
     } else {
-        private_instruction(instruction,value,needed,break_live,continue_live,exit_live,empty,host.live);
+        private_instruction(value,needed,break_live,continue_live,exit_live,empty,host.live);
     }
     return true;
 }
@@ -386,7 +406,7 @@ extern "C" void eliminate_code(address block,address needed,
     requires nonzero(host.contains) requires nonzero(host.live.change)
     requires nonzero(host.live.clone_set) requires nonzero(host.live.drop_set)
     requires nonzero(host.swap_instructions) requires nonzero(host.discard_prefix)
-    requires nonzero(host.live.kill) requires nonzero(host.live.read) requires nonzero(host.record)
+    requires nonzero(host.live.insert_register) requires nonzero(host.record)
     requires nonzero(host.prune_division) requires nonzero(host.prune_collective) {
     Span code=host.read_block(block);
     u64 read=code.count;

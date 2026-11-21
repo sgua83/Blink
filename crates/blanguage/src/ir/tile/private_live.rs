@@ -4,13 +4,12 @@ use crate::ir::dataflow::{self, Span};
 type Slots = BTreeSet<PrivateSlot>;
 
 #[repr(u32)]
-enum Action { Copy, Union, InsertRegister, RemoveRegister, InsertLocal, RemoveLocal, Swap }
+enum Action { Copy, Union, RemoveRegister, InsertLocal, RemoveLocal, Swap }
 type Change = unsafe extern "C" fn(Action, *mut Slots, *const Slots, usize);
 #[repr(C)]
 pub(crate) struct Host {
     ir: dataflow::Host,
-    kill: unsafe extern "C" fn(*const Inst, *mut Slots),
-    read: unsafe extern "C" fn(*const Inst, *mut Slots),
+    insert_register: unsafe extern "C" fn(*mut Slots, Reg) -> u32,
     clone_set: unsafe extern "C" fn(*const Slots) -> *mut Slots,
     drop_set: unsafe extern "C" fn(*mut Slots),
     change: Change,
@@ -27,22 +26,11 @@ unsafe extern "C" {
     fn native_phase_step(inst: *const Inst, live: *mut Slots, saved: *mut Slots, host: Host);
 }
 
-unsafe extern "C" fn kill(inst: *const Inst, live: *mut Slots) {
-    let inst = unsafe { &*inst };
-    let live = unsafe { &mut *live };
-    for reg in inst.results() {
-        live.remove(&PrivateSlot::Register(reg));
-    }
+unsafe extern "C" fn insert_register(live: *mut Slots, reg: Reg) -> u32 {
+    unsafe { &mut *live }.insert(PrivateSlot::Register(reg));
+    1
 }
-unsafe extern "C" fn read(inst: *const Inst, live: *mut Slots) {
-    let inst = unsafe { &*inst };
-    let live = unsafe { &mut *live };
-    inst.all_operands(&mut |reg| {
-        live.insert(PrivateSlot::Register(reg));
-        true
-    });
-    live.extend(inst.local_reads().map(PrivateSlot::Local));
-}
+
 unsafe extern "C" fn clone_set(source: *const Slots) -> *mut Slots {
     Box::into_raw(Box::new(unsafe { &*source }.clone()))
 }
@@ -51,14 +39,13 @@ unsafe extern "C" fn change(action: Action, output: *mut Slots, input: *const Sl
     match action {
         Action::Copy => unsafe { (*output).clone_from(&*input) },
         Action::Union => unsafe { (*output).extend((*input).iter().copied()) },
-        Action::InsertRegister => { unsafe { (*output).insert(PrivateSlot::Register(slot)) }; }
         Action::RemoveRegister => { unsafe { (*output).remove(&PrivateSlot::Register(slot)) }; }
         Action::InsertLocal => { unsafe { (*output).insert(PrivateSlot::Local(slot)) }; }
         Action::RemoveLocal => { unsafe { (*output).remove(&PrivateSlot::Local(slot)) }; }
         Action::Swap => unsafe { std::ptr::swap(output, input.cast_mut()) },
     }
 }
-pub(crate) const HOST: Host = Host { ir: dataflow::HOST, kill, read, clone_set, drop_set, change };
+pub(crate) const HOST: Host = Host { ir: dataflow::HOST, insert_register, clone_set, drop_set, change };
 
 pub(super) fn phase_step(inst: &Inst, live: &mut Slots, saved: &mut Slots) {
     unsafe { native_phase_step(inst, live, saved, HOST) };

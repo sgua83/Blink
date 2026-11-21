@@ -136,14 +136,16 @@ void division_results(usize a,usize b,u32 kind,address output) on cpu {
  unsafe_position<Results>(output).b=b;
  unsafe_position<Results>(output).inline_count=kind==2 ? 2u64 : 1u64;
 }
-extern "C" Results results(Node source,Host host) on cpu requires nonzero(host.inspect) {
- View value=host.inspect(source);
+Results view_results(View value,Host host) on cpu requires nonzero(host.inspect) {
  Results output=Results(empty_span(),empty_span(),0u64,0u64,0u64,0u64);
  if(value.tag==OP_INTEGER_DIVIDE){
   View division=host.inspect(value.right);
   division_results(division.a,division.b,division.tag,address_of(output));
  }else{ordinary_results(address_of(value),address_of(output));}
  return output;
+}
+extern "C" Results results(Node source,Host host) on cpu requires nonzero(host.inspect) {
+ return view_results(host.inspect(source),host);
 }
 extern "C" Word next_result(inout Results state) on cpu {
  usize index=state.index;

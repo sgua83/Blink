@@ -79,6 +79,11 @@ struct Locals {
  Node source; u32 mode; u32 writing; usize phase; usize entry; usize alias;
  usize position; usize end; u32 active;
 };
+Results view_results(View value,Host host) on cpu requires nonzero(host.inspect);
+u32 visit_instruction(View value,Host host,address context,cfn<u32,address,usize> visit) on cpu
+ requires nonzero(host.inspect) requires nonzero(visit);
+Locals view_locals(View value,u32 writing,Host host) on cpu requires nonzero(host.inspect);
+
 extern "C" Results results(Node source,Host host) on cpu requires nonzero(host.inspect);
 extern "C" Word next_result(inout Results state) on cpu;
 enum ResultRole:u32 { Value=0; Quotient=1; Remainder=2; };

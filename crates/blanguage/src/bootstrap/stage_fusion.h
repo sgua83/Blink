@@ -54,11 +54,10 @@ extern "C" u64 intersect_local_values(address left, u64 left_count,
 
 // The original IR and PrivateSlot sets stay in their native owning containers.
 // Every borrowed block and temporary clone ends with this synchronous query.
-enum LiveSetAction:u32 { Copy=0; Union=1; InsertRegister=2; RemoveRegister=3; InsertLocal=4; RemoveLocal=5; Swap=6; };
+enum LiveSetAction:u32 { Copy=0; Union=1; RemoveRegister=2; InsertLocal=3; RemoveLocal=4; Swap=5; };
 struct LiveHost {
     Host ir;
-    cfn<void,address,address> kill;
-    cfn<void,address,address> read;
+    cfn<u32,address,usize> insert_register;
     cfn<address,address> clone_set;
     cfn<void,address> drop_set;
     cfn<void,LiveSetAction,address,address,u64> change;
@@ -66,16 +65,16 @@ struct LiveHost {
 
 extern "C" void private_before(Span code, address live, address break_live,
     address continue_live, address exit_live, address empty, LiveHost host) on cpu
-    requires nonzero(host.ir.inspect) requires nonzero(host.kill) requires nonzero(host.read)
+    requires nonzero(host.ir.inspect) requires nonzero(host.insert_register)
     requires nonzero(host.clone_set) requires nonzero(host.drop_set) requires nonzero(host.change);
 extern "C" void private_loop(Span condition, u64 test, Span body,
     address after, address break_live, address continue_live, address exit_live,
     address result, address empty, LiveHost host) on cpu
-    requires nonzero(host.ir.inspect) requires nonzero(host.kill) requires nonzero(host.read)
+    requires nonzero(host.ir.inspect) requires nonzero(host.insert_register)
     requires nonzero(host.clone_set) requires nonzero(host.drop_set) requires nonzero(host.change);
 // The step's own results are produced after saving, before the next restore.
 extern "C" void private_phase_step(address instruction,address live,address saved,LiveHost host) on cpu
-    requires nonzero(host.kill) requires nonzero(host.read) requires nonzero(host.change);
+    requires nonzero(host.ir.inspect) requires nonzero(host.insert_register) requires nonzero(host.change);
 
 enum DceRemovalKind:u32 { Values=0; Division=1; DirectWrite=2; IndexedWrite=3; };
 enum DceDivisionChoice:u32 { Quotient=1; Remainder=2; Both=3; };
@@ -96,8 +95,6 @@ struct DceHost {
 
 // The IR owner enumerates actual results and moves retained instructions.
 // B owns every elimination and propagation decision during that borrow.
-extern "C" u32 dce_result_needed(address needed,u64 reg,
-    cfn<u32,address,u32,u64> contains) on cpu requires nonzero(contains);
 extern "C" void eliminate_code(address block,address needed,
     address break_live,address continue_live,address exit_live,address empty,
     address context,DceHost host) on cpu
@@ -105,7 +102,7 @@ extern "C" void eliminate_code(address block,address needed,
     requires nonzero(host.contains) requires nonzero(host.live.change)
     requires nonzero(host.live.clone_set) requires nonzero(host.live.drop_set)
     requires nonzero(host.swap_instructions) requires nonzero(host.discard_prefix)
-    requires nonzero(host.live.kill) requires nonzero(host.live.read) requires nonzero(host.record)
+    requires nonzero(host.live.insert_register) requires nonzero(host.record)
     requires nonzero(host.prune_division) requires nonzero(host.prune_collective);
 
 enum VfMap:u32 { Aliases=0; Expressions=1; Memory=2; Locals=3; };

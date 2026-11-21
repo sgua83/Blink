@@ -29,8 +29,6 @@ unsafe extern "C" {
     #[link_name = "bootstrap.stage_fusion::eliminate_code"]
     fn eliminate_code(code: *mut Vec<Inst>, needed: *mut Slots, break_live: *const Slots,
         continue_live: *const Slots, exit_live: *const Slots, empty: *const Slots, context: *mut Context<'_>, host: Host);
-    #[link_name = "bootstrap.stage_fusion::dce_result_needed"]
-    fn result_needed(needed: *const Slots, reg: Reg, contains: Contains) -> u32;
 }
 
 unsafe extern "C" fn contains(slots: *const Slots, space: Space, slot: usize) -> u32 {
@@ -77,7 +75,8 @@ unsafe extern "C" fn prune_division(instruction: *mut Inst, result: *mut Integer
     }));
 }
 unsafe extern "C" fn prune_collective(collective: *mut TileCollective, needed: *const Slots) {
-    unsafe { &mut *collective }.results.retain(|(_, reg)| unsafe { result_needed(needed, *reg, contains) } != 0);
+    let needed = unsafe { &*needed };
+    unsafe { &mut *collective }.results.retain(|(_, reg)| needed.contains(&PrivateSlot::Register(*reg)));
 }
 const HOST: Host = Host { live: PRIVATE_LIVE_HOST, storage: instruction_storage, read_block: instruction_span, contains,
     swap_instructions, discard_prefix, record, prune_division, prune_collective };
