@@ -108,7 +108,7 @@ bool explicit_exit(address nodes,Slice body,ExitScope scope) on cpu {
             StmtKind::Parallel(unused){}
             StmtKind::Continue(){}
             StmtKind::Phase(){}
-            StmtKind::Seek(unused){}
+            StmtKind::Seek(unused){if(scope==ExitScope::LoopBody){return true;}}
         }
         i+=1u64;
     }
