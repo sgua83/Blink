@@ -165,7 +165,6 @@ impl RayDevice {
 }
 pub(super) struct StructureStorage {
     handle: u64,
-    address: u64,
     allocation: Allocation,
     models: Option<Rc<[BottomLevel]>>,
     count: u32,
@@ -195,6 +194,7 @@ impl Drop for StructureStorage {
 pub(super) struct Structure {
     storage: ManuallyDrop<StructureStorage>,
     built: Rc<Execution>,
+    instance_address: u64,
 }
 impl std::ops::Deref for Structure {
     type Target = StructureStorage;
@@ -236,7 +236,7 @@ impl BottomLevel {
         self.0.built.wait()
     }
     fn instance_tail(&self) -> [u32; 4] {
-        let address = self.0.address;
+        let address = self.0.instance_address;
         [0xff000000, 0, address as u32, (address >> 32) as u32]
     }
 }
@@ -343,7 +343,8 @@ impl Device {
         operation: BuildOperation<'_>,
         prepare: impl FnOnce(&mut BuildInputs) -> Result<(Geometry, Usage, Option<Rc<[BottomLevel]>>)>,
     ) -> Result<Structure> {
-        let structure_type = u32::from(max_vertex.is_some());
+        let bottom_level = max_vertex.is_some();
+        let structure_type = u32::from(bottom_level);
         let ray = self
             .inner
             .ray
@@ -357,7 +358,7 @@ impl Device {
         if count as u64 > limit {
             return Err(error("加速结构的 primitive／instance 数量超出设备能力"));
         }
-        let static_flags = 4 | if self.inner.position_fetch && structure_type == 1 {
+        let static_flags = 4 | if self.inner.position_fetch && bottom_level {
             0x800
         } else {
             0
@@ -415,7 +416,6 @@ impl Device {
         let dependencies = dependencies.prepare()?;
         let mut out = StructureStorage {
             handle: 0,
-            address: 0,
             allocation: storage,
             models,
             count,
@@ -478,15 +478,20 @@ impl Device {
             },
             dependencies,
         )?;
-        let address = AddressInfo {
-            kind: 1000150002,
-            next: null(),
-            structure: out.handle,
+        let instance_address = if bottom_level {
+            let address = AddressInfo {
+                kind: 1000150002,
+                next: null(),
+                structure: out.handle,
+            };
+            unsafe { (ray.address)(self.inner.owner.device, &address) }
+        } else {
+            0
         };
-        out.address = unsafe { (ray.address)(self.inner.owner.device, &address) };
         Ok(Structure {
             storage: ManuallyDrop::new(out),
             built,
+            instance_address,
         })
     }
     /// 输入索引来自已检查拓扑的资产；返回前复制到自有传输存储，构建资源沿真实完成点持有。
