@@ -1,6 +1,10 @@
 //! 普通值 IR 直接成为范围累积与摘要合并机器码，不经宿主解释合并器。
 use super::*;
 use crate::ast::Access;
+use crate::ir::dataflow::Span;
+use std::ffi::c_void;
+
+#[repr(u32)]
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum Pass {
     Reduce,
@@ -54,87 +58,179 @@ fn segmented(program: &Program, index: usize, pass: Pass) -> Result<NativeCode, 
     };
     emit(program, index, &r.values, pass, Some(r.head_word), Some(r.count))
 }
-fn reg(stage: &mut Stage, scalar: Scalar) -> Reg {
-    let r = stage.registers.len();
-    stage.registers.push(scalar);
-    r
+#[derive(Clone, Copy)]
+#[repr(C)]
+struct RangePlan {
+    project: u32,
+    identity: u32,
+    apply: u32,
+    finish: u32,
+    packed: u32,
+    prefix: u32,
+    publish: u32,
+    summary: usize,
 }
-fn segment_tail(
-    stage: &mut Stage,
-    r: &CustomReduction,
-    head: u32,
+
+#[repr(C)]
+struct RangeInput {
+    pass: Pass,
+    has_head: u32,
+    head_word: u32,
+    counted: u32,
+    source: usize,
+    target: usize,
+    temporary: usize,
+    count_binding: usize,
+    count_word: u32,
+    source_word: u32,
+    target_word: u32,
+    payload_bytes: u32,
+    fields: usize,
+    initial: Span,
+    left: Span,
+    source_registers: Span,
+    projected: Span,
+    result: Span,
+}
+
+#[repr(C)]
+struct RangeBody {
+    initialization_end: usize,
+    loop_end: usize,
     carry: usize,
-    index: Reg,
+    count_slot: usize,
     length_slot: usize,
-) {
-    let fields = r.ty.components.len();
-    let one = reg(stage, Scalar::U32);
-    let next = reg(stage, Scalar::U32);
-    let length = reg(stage, Scalar::U32);
-    let last = reg(stage, Scalar::Bool);
-    stage.code.push(Inst::new(InstKind::Constant(one, Scalar::U32, 1)));
-    stage.code.push(Inst::new(InstKind::Binary {
-        dst: next,
-        op: BinaryOp::IAdd,
-        a: index,
-        b: one,
-    }));
-    stage.code.push(Inst::new(InstKind::LoadLocal(length, length_slot)));
-    stage.code.push(Inst::new(InstKind::Binary {
-        dst: last,
-        op: BinaryOp::Compare(Comparison::Equal),
-        a: next,
-        b: length,
-    }));
-    let tail_slot = stage.locals.last_key_value().map_or(0, |(end, _)| *end);
-    stage.locals.insert(tail_slot + 1, Ty::scalar(Scalar::Bool));
-    let is_last = reg(stage, Scalar::Bool);
-    let next_head = reg(stage, Scalar::Bool);
-    stage.code.push(Inst::new(InstKind::If {
-        condition: last,
-        yes: vec![
-            Inst::new(InstKind::Constant(is_last, Scalar::Bool, 1)),
-            Inst::new(InstKind::StoreLocal(tail_slot, is_last)),
-        ],
-        no: vec![
-            Inst::new(InstKind::Load {
-                dst: next_head,
-                binding: r.fields.source,
-                index: next,
-                word: head,
-            }),
-            Inst::new(InstKind::StoreLocal(tail_slot, next_head)),
-        ],
-    }));
-    let tail = reg(stage, Scalar::Bool);
-    stage.code.push(Inst::new(InstKind::LoadLocal(tail, tail_slot)));
-    let segments = reg(stage, Scalar::U32);
-    let target = reg(stage, Scalar::U32);
-    let mut write = vec![
-        Inst::new(InstKind::LoadLocal(segments, carry + fields + 1)),
-        Inst::new(InstKind::Binary {
-            dst: target,
-            op: BinaryOp::ISub,
-            a: segments,
-            b: one,
-        }),
-    ];
-    for (field, (scalar, offset)) in r.ty.components.iter().enumerate() {
-        let value = reg(stage, *scalar);
-        write.push(Inst::new(InstKind::LoadLocal(value, carry + field)));
-        write.push(Inst::new(InstKind::Store {
-            binding: r.fields.target,
-            index: target,
-            word: r.fields.target_word + *offset,
-            value,
-        }));
-    }
-    stage.code.push(Inst::new(InstKind::If {
-        condition: tail,
-        yes: write,
-        no: Vec::new(),
-    }));
+    history: u32,
+    reset_on_head: u32,
+    break_on_head: u32,
 }
+
+#[allow(dead_code)]
+#[repr(u32)]
+enum RangeType { U32, Bool, Value }
+
+#[allow(dead_code)]
+#[derive(Clone, Copy)]
+#[repr(u32)]
+enum RangeBlock { Body, Yes, No, Project, Combine }
+
+#[allow(dead_code)]
+#[repr(u32)]
+enum RangeOp { Index, Constant, Load, Store, LocalLoad, LocalStore,
+    Add, Subtract, Equal, Or, Uniform, Break }
+
+#[repr(C)]
+struct RangeHost {
+    reg: unsafe extern "C" fn(*mut c_void, RangeType, usize) -> Reg,
+    local: unsafe extern "C" fn(*mut c_void, RangeType) -> usize,
+    offset: unsafe extern "C" fn(*mut c_void, usize, u32) -> u32,
+    put: unsafe extern "C" fn(*mut c_void, RangeBlock, RangeOp, usize, usize, usize, u32),
+    move_block: unsafe extern "C" fn(*mut c_void, RangeBlock),
+    branch: unsafe extern "C" fn(*mut c_void, Reg, RangeBlock),
+    size: unsafe extern "C" fn(*mut c_void) -> usize,
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.ir_dataflow::cpu_range_plan"]
+    fn cpu_range_plan(pass: Pass, words: usize, has_head: u32, counted: u32) -> RangePlan;
+    #[link_name = "bootstrap.ir_dataflow::cpu_range_body"]
+    fn cpu_range_body(input: RangeInput, plan: RangePlan, context: *mut c_void,
+        host: RangeHost) -> RangeBody;
+}
+
+struct RangeWriter<'a> {
+    stage: &'a mut Stage,
+    reduction: &'a CustomReduction,
+    project: Vec<Inst>,
+    combine: Vec<Inst>,
+    yes: Vec<Inst>,
+    no: Vec<Inst>,
+}
+impl RangeWriter<'_> {
+    fn block(&mut self, part: RangeBlock) -> &mut Vec<Inst> {
+        match part {
+            RangeBlock::Body => &mut self.stage.code,
+            RangeBlock::Yes => &mut self.yes,
+            RangeBlock::No => &mut self.no,
+            RangeBlock::Project => &mut self.project,
+            RangeBlock::Combine => &mut self.combine,
+        }
+    }
+}
+
+unsafe extern "C" fn range_reg(context: *mut c_void, ty: RangeType, component: usize) -> Reg {
+    let writer = unsafe { &mut *context.cast::<RangeWriter<'_>>() };
+    let scalar = match ty {
+        RangeType::U32 => Scalar::U32,
+        RangeType::Bool => Scalar::Bool,
+        RangeType::Value => writer.reduction.ty.components[component].0,
+    };
+    let reg = writer.stage.registers.len();
+    writer.stage.registers.push(scalar);
+    reg
+}
+
+unsafe extern "C" fn range_local(context: *mut c_void, ty: RangeType) -> usize {
+    let writer = unsafe { &mut *context.cast::<RangeWriter<'_>>() };
+    let layout = match ty {
+        RangeType::U32 => Ty::scalar(Scalar::U32),
+        RangeType::Bool => Ty::scalar(Scalar::Bool),
+        RangeType::Value => writer.reduction.ty.clone(),
+    };
+    let slot = writer.stage.locals.last_key_value().map_or(0, |(&end, _)| end);
+    writer.stage.locals.insert(slot + layout.components.len(), layout);
+    slot
+}
+
+unsafe extern "C" fn range_offset(context: *mut c_void, component: usize, source: u32) -> u32 {
+    let writer = unsafe { &*context.cast::<RangeWriter<'_>>() };
+    let layout = if source != 0 { &writer.reduction.source_ty } else { &writer.reduction.ty };
+    layout.components[component].1
+}
+
+unsafe extern "C" fn range_put(context: *mut c_void, part: RangeBlock, op: RangeOp,
+    a: usize, b: usize, c: usize, word: u32,
+) {
+    let writer = unsafe { &mut *context.cast::<RangeWriter<'_>>() };
+    let kind = match op {
+        RangeOp::Index => InstKind::Index(a),
+        RangeOp::Constant => InstKind::Constant(a, writer.stage.registers[a], b as Bits),
+        RangeOp::Load => InstKind::Load { dst: a, binding: b, index: c, word },
+        RangeOp::Store => InstKind::Store { value: a, binding: b, index: c, word },
+        RangeOp::LocalLoad => InstKind::LoadLocal(a, b),
+        RangeOp::LocalStore => InstKind::StoreLocal(a, b),
+        RangeOp::Add => InstKind::Binary { dst: a, op: BinaryOp::IAdd, a: b, b: c },
+        RangeOp::Subtract => InstKind::Binary { dst: a, op: BinaryOp::ISub, a: b, b: c },
+        RangeOp::Equal => InstKind::Binary { dst: a, op: BinaryOp::Compare(Comparison::Equal), a: b, b: c },
+        RangeOp::Or => InstKind::Binary { dst: a, op: BinaryOp::Or, a: b, b: c },
+        RangeOp::Uniform => InstKind::Uniform(a, word),
+        RangeOp::Break => InstKind::Break,
+    };
+    writer.block(part).push(Inst::new(kind));
+}
+
+unsafe extern "C" fn range_move_block(context: *mut c_void, part: RangeBlock) {
+    let writer = unsafe { &mut *context.cast::<RangeWriter<'_>>() };
+    let code = std::mem::take(writer.block(part));
+    writer.stage.code.extend(code);
+}
+
+unsafe extern "C" fn range_branch(context: *mut c_void, condition: Reg, alternate: RangeBlock) {
+    let writer = unsafe { &mut *context.cast::<RangeWriter<'_>>() };
+    let yes = std::mem::take(&mut writer.yes);
+    let no = std::mem::take(writer.block(alternate));
+    writer.stage.code.push(Inst::new(InstKind::If { condition, yes, no }));
+}
+
+unsafe extern "C" fn range_size(context: *mut c_void) -> usize {
+    unsafe { &*context.cast::<RangeWriter<'_>>() }.stage.code.len()
+}
+
+const RANGE_HOST: RangeHost = RangeHost {
+    reg: range_reg, local: range_local, offset: range_offset, put: range_put,
+    move_block: range_move_block, branch: range_branch, size: range_size,
+};
+
 pub(super) fn emit(
     program: &Program,
     index: usize,
@@ -143,335 +239,64 @@ pub(super) fn emit(
     head_word: Option<u32>,
     count: Option<PrefixCount>,
 ) -> Result<NativeCode, &'static str> {
-    let packed = matches!(
-        pass,
-        Pass::ReduceTail | Pass::ScanPrefix | Pass::SegmentPrefix
-    );
-    let apply = pass == Pass::ScanAdd;
-    let finish = pass == Pass::SegmentFinish;
-    let prefix = matches!(pass, Pass::ScanPrefix | Pass::SegmentPrefix);
-    let counted = count.is_some();
-    let history = head_word.is_some() && !apply && !finish && pass != Pass::SegmentPrefix;
-    let kernel = r.kernel(
-        &program.stages[index],
-        matches!(
-            pass,
-            Pass::Reduce | Pass::Scan | Pass::SegmentReduce | Pass::SegmentFinish
-        ),
-        !apply,
-    );
     let k = r.ty.size.div_ceil(4) as usize;
     let fields = r.ty.components.len();
-    let summary = k + usize::from(head_word.is_some()) + usize::from(counted);
+    let counted = count.is_some();
+    let has_head = u32::from(head_word.is_some());
+    let plan = unsafe { cpu_range_plan(pass, k, has_head, u32::from(counted)) };
+    let mut kernel = r.kernel(&program.stages[index], plan.project != 0, plan.identity != 0);
     let mut stage = kernel.stage;
     let mut buffers = program.buffers.clone();
     let private = buffers.len();
-    if apply || finish {
+    if plan.apply != 0 || plan.finish != 0 {
         buffers.push(Buffer {
             name: String::from("<range>"),
             access: Access::Read,
-            ty: Ty::vector(Scalar::U32, summary),
-            stride: summary as u32 * 4,
+            ty: Ty::vector(Scalar::U32, plan.summary),
+            stride: plan.summary as u32 * 4,
             count: Some(1),
         });
     }
-    if packed {
-        buffers[r.fields.source].stride = summary as u32 * 4;
+    if plan.packed != 0 {
+        buffers[r.fields.source].stride = plan.summary as u32 * 4;
     }
-    if prefix {
-        buffers[r.fields.target].stride = summary as u32 * 4;
+    if plan.prefix != 0 {
+        buffers[r.fields.target].stride = plan.summary as u32 * 4;
     }
+
     let mut combine = stage.code.split_off(kernel.project_end);
     let project = stage.code.split_off(kernel.initialize_end);
-    let carry = stage.locals.last_key_value().map_or(0, |(end, _)| *end);
-    stage.locals.insert(carry + fields, r.ty.clone());
-    if head_word.is_some() && !apply {
-        stage.locals.insert(carry + fields + 1, Ty::scalar(Scalar::Bool));
-    }
-    let count_slot = stage.locals.last_key_value().map_or(0, |(end, _)| *end);
-    if counted {
-        stage.locals.insert(count_slot + 1, Ty::scalar(Scalar::U32));
-    }
-    if apply {
+    if plan.apply != 0 {
         stage.code.truncate(kernel.invariant_end);
     }
-    let private_index = reg(&mut stage, Scalar::U32);
-    if apply || finish {
-        stage
-            .code
-            .push(Inst::new(InstKind::Constant(private_index, Scalar::U32, 0)));
-    }
-    let length_slot = stage.locals.last_key_value().map_or(0, |(end, _)| *end);
-    if finish {
-        stage.locals.insert(length_slot + 1, Ty::scalar(Scalar::U32));
-        let length = reg(&mut stage, Scalar::U32);
-        stage.code.push(Inst::new(InstKind::Load {
-            dst: length,
-            binding: private,
-            index: private_index,
-            word: k as u32 * 4,
-        }));
-        stage.code.push(Inst::new(InstKind::StoreLocal(length_slot, length)));
-    }
-    if apply || finish {
-        for (field, (scalar, offset)) in r.ty.components.iter().enumerate() {
-            let reg = stage.registers.len();
-            stage.registers.push(*scalar);
-            stage.code.push(Inst::new(InstKind::Load {
-                dst: reg,
-                binding: private,
-                index: private_index,
-                word: *offset,
-            }));
-            stage.code.push(Inst::new(InstKind::StoreLocal(carry + field, reg)));
-        }
-    } else {
-        for (i, reg) in kernel.initial.iter().enumerate() {
-            stage.code.push(Inst::new(InstKind::StoreLocal(carry + i, *reg)));
-        }
-        if history {
-            let zero = stage.registers.len();
-            stage.registers.push(Scalar::Bool);
-            stage.code.push(Inst::new(InstKind::Constant(zero, Scalar::Bool, 0)));
-            stage.code.push(Inst::new(InstKind::StoreLocal(carry + fields, zero)));
-        }
-    }
-    if counted {
-        let value = reg(&mut stage, Scalar::U32);
-        stage.code.push(if finish {
-            Inst::new(InstKind::Load {
-                dst: value,
-                binding: private,
-                index: private_index,
-                word: (k as u32 + 1) * 4,
-            })
-        } else {
-            Inst::new(InstKind::Constant(value, Scalar::U32, 0))
-        });
-        stage.code.push(Inst::new(InstKind::StoreLocal(count_slot, value)));
-    }
-    let initialize_end = stage.code.len();
-    let index = stage.registers.len();
-    stage.registers.push(Scalar::U32);
-    stage.code.push(Inst::new(InstKind::Index(index)));
-    let head = head_word.map(|word| {
-        let raw = reg(&mut stage, Scalar::Bool);
-        stage.code.push(Inst::new(InstKind::Load {
-            dst: raw,
-            binding: r.fields.source,
-            index,
-            word: if packed { k as u32 * 4 } else { word },
-        }));
-        let head = if counted && !packed {
-            let zero = reg(&mut stage, Scalar::U32);
-            let first = reg(&mut stage, Scalar::Bool);
-            let head = reg(&mut stage, Scalar::Bool);
-            stage.code.push(Inst::new(InstKind::Constant(zero, Scalar::U32, 0)));
-            stage.code.push(Inst::new(InstKind::Binary {
-                dst: first,
-                op: BinaryOp::Compare(Comparison::Equal),
-                a: index,
-                b: zero,
-            }));
-            stage.code.push(Inst::new(InstKind::Binary {
-                dst: head,
-                op: BinaryOp::Or,
-                a: raw,
-                b: first,
-            }));
-            head
-        } else {
-            raw
-        };
-        if apply {
-            stage.code.push(Inst::new(InstKind::If {
-                condition: head,
-                yes: vec![Inst::new(InstKind::Break)],
-                no: Vec::new(),
-            }));
-        } else if matches!(pass, Pass::Scan | Pass::SegmentReduce | Pass::SegmentFinish) {
-            let mut reset: Vec<_> = kernel
-                .initial
-                .iter()
-                .enumerate()
-                .map(|(i, reg)| Inst::new(InstKind::StoreLocal(carry + i, *reg)))
-                .collect();
-            if history {
-                let flag = reg(&mut stage, Scalar::Bool);
-                reset.push(Inst::new(InstKind::Constant(flag, Scalar::Bool, 1)));
-                reset.push(Inst::new(InstKind::StoreLocal(carry + fields, flag)));
-            }
-            if counted {
-                let before = reg(&mut stage, Scalar::U32);
-                let one = reg(&mut stage, Scalar::U32);
-                let after = reg(&mut stage, Scalar::U32);
-                reset.push(Inst::new(InstKind::LoadLocal(before, count_slot)));
-                reset.push(Inst::new(InstKind::Constant(one, Scalar::U32, 1)));
-                reset.push(Inst::new(InstKind::Binary {
-                    dst: after,
-                    op: BinaryOp::IAdd,
-                    a: before,
-                    b: one,
-                }));
-                reset.push(Inst::new(InstKind::StoreLocal(count_slot, after)));
-            }
-            stage.code.push(Inst::new(InstKind::If {
-                condition: head,
-                yes: reset,
-                no: Vec::new(),
-            }));
-        }
-        head
-    });
-    for (i, reg) in kernel.left.iter().enumerate() {
-        stage.code.push(Inst::new(InstKind::LoadLocal(*reg, carry + i)));
-    }
-    for (i, reg) in kernel.source.iter().enumerate() {
-        stage.code.push(Inst::new(InstKind::Load {
-            dst: *reg,
-            binding: if apply {
-                r.fields.target
-            } else {
-                r.fields.source
-            },
-            index,
-            word: if packed {
-                r.ty.components[i].1
-            } else if apply {
-                r.fields.target_word + r.ty.components[i].1
-            } else {
-                r.fields.source_word + r.source_ty.components[i].1
-            },
-        }));
-    }
-    let right_count = if counted && packed {
-        let right = reg(&mut stage, Scalar::U32);
-        stage.code.push(Inst::new(InstKind::Load {
-            dst: right,
-            binding: r.fields.source,
-            index,
-            word: (k as u32 + 1) * 4,
-        }));
-        Some(right)
-    } else {
-        None
-    };
-    stage.code.extend(project);
-    if pass == Pass::Scan || prefix {
-        for (i, reg) in kernel.left.iter().enumerate() {
-            stage.code.push(Inst::new(InstKind::Store {
-                binding: r.fields.target,
-                index,
-                word: if packed {
-                    r.ty.components[i].1
-                } else {
-                    r.fields.target_word + r.ty.components[i].1
-                },
-                value: *reg,
-            }));
-        }
-        if pass == Pass::ScanPrefix && head.is_some() {
-            let flag = stage.registers.len();
-            stage.registers.push(Scalar::Bool);
-            stage.code.push(Inst::new(InstKind::LoadLocal(flag, carry + fields)));
-            stage.code.push(Inst::new(InstKind::Store {
-                binding: r.fields.target,
-                index,
-                word: k as u32 * 4,
-                value: flag,
-            }));
-        }
-        if pass == Pass::SegmentPrefix {
-            let length = reg(&mut stage, Scalar::U32);
-            let segments = reg(&mut stage, Scalar::U32);
-            stage.code.push(Inst::new(InstKind::Uniform(length, 0)));
-            stage.code.push(Inst::new(InstKind::LoadLocal(segments, count_slot)));
-            stage.code.push(Inst::new(InstKind::Store {
-                binding: r.fields.target,
-                index,
-                word: k as u32 * 4,
-                value: length,
-            }));
-            stage.code.push(Inst::new(InstKind::Store {
-                binding: r.fields.target,
-                index,
-                word: (k as u32 + 1) * 4,
-                value: segments,
-            }));
-        }
-    }
-    let arguments: std::collections::BTreeMap<_, _> = kernel
-        .right
-        .iter()
-        .zip(&kernel.projected)
-        .map(|(a, b)| (*a, *b))
-        .collect();
-    let bind = |r| arguments.get(&r).copied().unwrap_or(r);
+    let arguments: std::collections::BTreeMap<_, _> = kernel.right.iter().copied()
+        .zip(kernel.projected.iter().copied()).collect();
     crate::optimize::map(&mut combine, crate::ir::rewrite::Remap::Bindings(&arguments));
-    for (i, reg) in kernel.result.iter().enumerate() {
-        if apply {
-            combine.push(Inst::new(InstKind::Store {
-                binding: r.fields.target,
-                index,
-                word: r.fields.target_word + r.ty.components[i].1,
-                value: bind(*reg),
-            }));
-        } else {
-            combine.push(Inst::new(InstKind::StoreLocal(carry + i, bind(*reg))));
+    for value in &mut kernel.result {
+        if let Some(&projected) = arguments.get(value) {
+            *value = projected;
         }
     }
-    if let Some(head) = head.filter(|_| prefix) {
-        let mut reset: Vec<_> = kernel
-            .projected
-            .iter()
-            .enumerate()
-            .map(|(i, reg)| Inst::new(InstKind::StoreLocal(carry + i, *reg)))
-            .collect();
-        if history {
-            let flag = reg(&mut stage, Scalar::Bool);
-            reset.push(Inst::new(InstKind::Constant(flag, Scalar::Bool, 1)));
-            reset.push(Inst::new(InstKind::StoreLocal(carry + fields, flag)));
-        }
-        stage.code.push(Inst::new(InstKind::If {
-            condition: head,
-            yes: reset,
-            no: combine,
-        }));
-    } else {
-        stage.code.extend(combine);
-    }
-    if let Some(right) = right_count {
-        let before = reg(&mut stage, Scalar::U32);
-        let after = reg(&mut stage, Scalar::U32);
-        stage.code.push(Inst::new(InstKind::LoadLocal(before, count_slot)));
-        stage.code.push(Inst::new(InstKind::Binary {
-            dst: after,
-            op: BinaryOp::IAdd,
-            a: before,
-            b: right,
-        }));
-        stage.code.push(Inst::new(InstKind::StoreLocal(count_slot, after)));
-    }
-    if finish {
-        segment_tail(&mut stage, r, head_word.unwrap(), carry, index, length_slot);
-    }
-    let loop_end = stage.code.len();
-    if pass == Pass::SegmentPrefix {
-        let count = count.unwrap();
-        let zero = reg(&mut stage, Scalar::U32);
-        let total = reg(&mut stage, Scalar::U32);
-        stage.code.push(Inst::new(InstKind::Constant(zero, Scalar::U32, 0)));
-        stage.code.push(Inst::new(InstKind::LoadLocal(total, count_slot)));
-        stage.code.push(Inst::new(InstKind::Store {
-            binding: count.binding,
-            index: zero,
-            word: count.word,
-            value: total,
-        }));
-    }
+
+    let input = RangeInput {
+        pass, has_head, head_word: head_word.unwrap_or_default(), counted: u32::from(counted),
+        source: r.fields.source, target: r.fields.target, temporary: private,
+        count_binding: count.as_ref().map_or(0, |count| count.binding),
+        count_word: count.as_ref().map_or(0, |count| count.word),
+        source_word: r.fields.source_word, target_word: r.fields.target_word,
+        payload_bytes: k as u32 * 4, fields,
+        initial: Span::slice(&kernel.initial), left: Span::slice(&kernel.left),
+        source_registers: Span::slice(&kernel.source), projected: Span::slice(&kernel.projected),
+        result: Span::slice(&kernel.result),
+    };
+    let mut writer = RangeWriter {
+        stage: &mut stage, reduction: r, project, combine, yes: Vec::new(), no: Vec::new(),
+    };
+    let body = unsafe { cpu_range_body(input, plan, std::ptr::from_mut(&mut writer).cast(), RANGE_HOST) };
+    let carry = body.carry;
     // Each actual range phase owns its own producers; no value crosses these cuts.
-    let mut after_code = stage.code.split_off(loop_end);
-    let mut loop_code = stage.code.split_off(initialize_end);
+    let mut after_code = stage.code.split_off(body.loop_end);
+    let mut loop_code = stage.code.split_off(body.initialization_end);
     reads::place(&mut stage.code, &stage.writes);
     reads::place(&mut loop_code, &stage.writes);
     reads::place(&mut after_code, &stage.writes);
@@ -481,16 +306,16 @@ pub(super) fn emit(
     stage.code.extend(after_code);
     let mut live: std::collections::BTreeSet<_> =
         (0..fields).map(|field| PrivateSlot::Local(carry + field)).collect();
-    if history {
+    if body.history != 0 {
         live.insert(PrivateSlot::Local(carry + fields));
     }
     if counted {
-        live.insert(PrivateSlot::Local(count_slot));
+        live.insert(PrivateSlot::Local(body.count_slot));
     }
-    if finish {
-        live.insert(PrivateSlot::Local(length_slot));
+    if plan.finish != 0 {
+        live.insert(PrivateSlot::Local(body.length_slot));
     }
-    if head.is_some() && matches!(pass, Pass::Scan | Pass::SegmentReduce | Pass::SegmentFinish) {
+    if body.reset_on_head != 0 {
         live.extend(kernel.initial.iter().map(|r| PrivateSlot::Register(*r)));
     }
     live.extend(live_before(
@@ -529,26 +354,23 @@ pub(super) fn emit(
     e.block(&stage.code[..initialize_end])?;
     let begin = e.code.len();
     let end = e.range_bounds(false);
-    if apply && head.is_some() {
+    if body.break_on_head != 0 {
         e.breaks.push(Vec::new());
     }
     e.block(&stage.code[initialize_end..loop_end])?;
     e.finish_range(begin, end, 0, 1);
-    if apply && head.is_some() {
+    if body.break_on_head != 0 {
         e.close_breaks();
     }
     e.block(&stage.code[loop_end..])?;
     // 第五个Win64参数位于返回地址和四个home槽之后。
-    if matches!(
-        pass,
-        Pass::Reduce | Pass::ReduceTail | Pass::Scan | Pass::SegmentReduce
-    ) {
+    if plan.publish != 0 {
         e.copy_scalar(allocation::Location::Gpr(15), allocation::Location::Stack(stack_bytes + 40), Scalar::U64);
         for (field, (scalar, offset)) in r.ty.components.iter().enumerate() {
             let value = e.allocation.location(PrivateSlot::Local(carry + field));
             e.write_value_address(value, Memory::new(15, *offset), scalar.size());
         }
-        for i in k..summary {
+        for i in k..plan.summary {
             let value = e.allocation.location(PrivateSlot::Local(carry + fields + i - k));
             e.write_memory(value, 15, i as u32 * 4);
         }

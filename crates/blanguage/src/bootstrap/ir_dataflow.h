@@ -556,3 +556,39 @@ extern "C" void place_reads(address input,address pending,Span writes,ReadHost h
  requires nonzero(host.push) requires nonzero(host.reverse) requires nonzero(host.pop)
  requires nonzero(host.emit) requires nonzero(host.count) requires nonzero(host.read_at)
  requires nonzero(host.private_at) requires nonzero(host.retain) requires nonzero(host.clear);
+
+enum CpuRangePass:u32 { Reduce=0; ReduceTail=1; Scan=2; ScanPrefix=3; ScanAdd=4;
+ SegmentReduce=5; SegmentPrefix=6; SegmentFinish=7; };
+enum CpuRangeType:u32 { U32=0; Bool=1; Value=2; };
+enum CpuRangeBlock:u32 { Body=0; Yes=1; No=2; Project=3; Combine=4; };
+enum CpuRangeOp:u32 { Index=0; Constant=1; Load=2; Store=3; LocalLoad=4; LocalStore=5;
+ Add=6; Subtract=7; Equal=8; Or=9; Uniform=10; Break=11; };
+
+struct CpuRangePlan {
+ u32 project; u32 identity; u32 apply; u32 finish; u32 packed; u32 prefix; u32 publish;
+ usize summary;
+};
+struct CpuRangeInput {
+ CpuRangePass pass; u32 has_head; u32 head_word; u32 counted;
+ usize source; usize target; usize temporary; usize count_binding; u32 count_word;
+ u32 source_word; u32 target_word; u32 payload_bytes; usize fields;
+ Span initial; Span left; Span source_registers; Span projected; Span result;
+};
+struct CpuRangeBody {
+ usize initialization_end; usize loop_end; usize carry; usize count_slot; usize length_slot;
+ u32 history; u32 reset_on_head; u32 break_on_head;
+};
+struct CpuRangeHost {
+ cfn<usize,address,CpuRangeType,usize> reg;
+ cfn<usize,address,CpuRangeType> local;
+ cfn<u32,address,usize,u32> ensures memory(read) offset;
+ cfn<void,address,CpuRangeBlock,CpuRangeOp,usize,usize,usize,u32> put;
+ cfn<void,address,CpuRangeBlock> move_block;
+ cfn<void,address,usize,CpuRangeBlock> branch;
+ cfn<usize,address> ensures memory(read) size;
+};
+extern "C" CpuRangePlan cpu_range_plan(CpuRangePass pass,usize words,u32 has_head,u32 counted) on cpu;
+extern "C" CpuRangeBody cpu_range_body(CpuRangeInput input,CpuRangePlan plan,address context,CpuRangeHost host) on cpu
+ requires nonzero(host.reg) requires nonzero(host.local) requires nonzero(host.offset) requires nonzero(host.put)
+ requires nonzero(host.move_block) requires nonzero(host.branch) requires nonzero(host.size);
+

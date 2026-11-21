@@ -2183,3 +2183,246 @@ extern "C" void place_reads(address input,address pending,Span writes,ReadHost h
  }
  read_finish(pending,host);
 }
+
+extern "C" CpuRangePlan cpu_range_plan(CpuRangePass pass,usize words,u32 has_head,u32 counted) on cpu {
+ bool apply=pass==CpuRangePass::ScanAdd;
+ bool finish=pass==CpuRangePass::SegmentFinish;
+ bool prefix=pass==CpuRangePass::ScanPrefix || pass==CpuRangePass::SegmentPrefix;
+ bool project=pass==CpuRangePass::Reduce || pass==CpuRangePass::Scan ||
+  pass==CpuRangePass::SegmentReduce || finish;
+ bool publish=pass==CpuRangePass::Reduce || pass==CpuRangePass::ReduceTail ||
+  pass==CpuRangePass::Scan || pass==CpuRangePass::SegmentReduce;
+ return CpuRangePlan(u32(project),u32(!apply),u32(apply),u32(finish),
+  u32(prefix || pass==CpuRangePass::ReduceTail),u32(prefix),u32(publish),
+  words+usize(has_head)+usize(counted));
+}
+
+void range_store_locals(Span values,usize carry,CpuRangeBlock part,address context,CpuRangeHost host) on cpu
+ requires nonzero(host.put) {
+ usize slot=0u64;
+ while(slot<values.count) {
+  host.put(context,part,CpuRangeOp::LocalStore,carry+slot,word_at(values,slot),0u64,0);
+  slot+=1u64;
+ }
+}
+
+void range_add_count(usize slot,usize value,CpuRangeBlock part,address context,CpuRangeHost host) on cpu
+ requires nonzero(host.reg) requires nonzero(host.put) {
+ usize before=host.reg(context,CpuRangeType::U32,0u64);
+ usize after=host.reg(context,CpuRangeType::U32,0u64);
+ host.put(context,part,CpuRangeOp::LocalLoad,before,slot,0u64,0);
+ host.put(context,part,CpuRangeOp::Add,after,before,value,0);
+ host.put(context,part,CpuRangeOp::LocalStore,slot,after,0u64,0);
+}
+
+void range_segment_tail(CpuRangeInput input,usize carry,usize index,usize length_slot,
+ address context,CpuRangeHost host) on cpu
+ requires nonzero(host.reg) requires nonzero(host.local) requires nonzero(host.offset)
+ requires nonzero(host.put) requires nonzero(host.branch) {
+ CpuRangeBlock body=CpuRangeBlock::Body;
+ CpuRangeBlock yes=CpuRangeBlock::Yes;
+ CpuRangeBlock no=CpuRangeBlock::No;
+ usize one=host.reg(context,CpuRangeType::U32,0u64);
+ usize next=host.reg(context,CpuRangeType::U32,0u64);
+ usize length=host.reg(context,CpuRangeType::U32,0u64);
+ usize last=host.reg(context,CpuRangeType::Bool,0u64);
+ host.put(context,body,CpuRangeOp::Constant,one,1u64,0u64,0);
+ host.put(context,body,CpuRangeOp::Add,next,index,one,0);
+ host.put(context,body,CpuRangeOp::LocalLoad,length,length_slot,0u64,0);
+ host.put(context,body,CpuRangeOp::Equal,last,next,length,0);
+ usize tail_slot=host.local(context,CpuRangeType::Bool);
+ usize is_last=host.reg(context,CpuRangeType::Bool,0u64);
+ usize next_head=host.reg(context,CpuRangeType::Bool,0u64);
+ host.put(context,yes,CpuRangeOp::Constant,is_last,1u64,0u64,0);
+ host.put(context,yes,CpuRangeOp::LocalStore,tail_slot,is_last,0u64,0);
+ host.put(context,no,CpuRangeOp::Load,next_head,input.source,next,input.head_word);
+ host.put(context,no,CpuRangeOp::LocalStore,tail_slot,next_head,0u64,0);
+ host.branch(context,last,no);
+
+ usize tail=host.reg(context,CpuRangeType::Bool,0u64);
+ host.put(context,body,CpuRangeOp::LocalLoad,tail,tail_slot,0u64,0);
+ usize segments=host.reg(context,CpuRangeType::U32,0u64);
+ usize target=host.reg(context,CpuRangeType::U32,0u64);
+ host.put(context,yes,CpuRangeOp::LocalLoad,segments,carry+input.fields+1u64,0u64,0);
+ host.put(context,yes,CpuRangeOp::Subtract,target,segments,one,0);
+ usize tail_field=0u64;
+ while(tail_field<input.fields) {
+  usize value=host.reg(context,CpuRangeType::Value,tail_field);
+  host.put(context,yes,CpuRangeOp::LocalLoad,value,carry+tail_field,0u64,0);
+  host.put(context,yes,CpuRangeOp::Store,value,input.target,target,
+   input.target_word+host.offset(context,tail_field,0));
+  tail_field+=1u64;
+ }
+ host.branch(context,tail,no);
+}
+
+extern "C" CpuRangeBody cpu_range_body(CpuRangeInput input,CpuRangePlan plan,address context,CpuRangeHost host) on cpu
+ requires nonzero(host.reg) requires nonzero(host.local) requires nonzero(host.offset) requires nonzero(host.put)
+ requires nonzero(host.move_block) requires nonzero(host.branch) requires nonzero(host.size) {
+ CpuRangeBlock body=CpuRangeBlock::Body;
+ CpuRangeBlock yes=CpuRangeBlock::Yes;
+ CpuRangeBlock no=CpuRangeBlock::No;
+ bool apply=plan.apply!=0;
+ bool finish=plan.finish!=0;
+ bool packed=plan.packed!=0;
+ bool prefix=plan.prefix!=0;
+ bool has_head=input.has_head!=0;
+ bool counted=input.counted!=0;
+ bool segment_prefix=input.pass==CpuRangePass::SegmentPrefix;
+ bool scan=input.pass==CpuRangePass::Scan;
+ bool history=has_head && !apply && !finish && !segment_prefix;
+ bool reset_on_head=has_head && (scan || input.pass==CpuRangePass::SegmentReduce || finish);
+ usize carry=host.local(context,CpuRangeType::Value);
+ usize flag_slot=carry+input.fields;
+ if(has_head && !apply){host.local(context,CpuRangeType::Bool);}
+ usize count_slot=counted ? host.local(context,CpuRangeType::U32) : 0u64;
+ usize private_index=host.reg(context,CpuRangeType::U32,0u64);
+ if(apply || finish){host.put(context,body,CpuRangeOp::Constant,private_index,0u64,0u64,0);}
+ usize length_slot=0u64;
+ if(finish) {
+  length_slot=host.local(context,CpuRangeType::U32);
+  usize length=host.reg(context,CpuRangeType::U32,0u64);
+  host.put(context,body,CpuRangeOp::Load,length,input.temporary,private_index,input.payload_bytes);
+  host.put(context,body,CpuRangeOp::LocalStore,length_slot,length,0u64,0);
+ }
+ if(apply || finish) {
+  usize input_field=0u64;
+  while(input_field<input.fields) {
+   usize value=host.reg(context,CpuRangeType::Value,input_field);
+   host.put(context,body,CpuRangeOp::Load,value,input.temporary,private_index,host.offset(context,input_field,0));
+   host.put(context,body,CpuRangeOp::LocalStore,carry+input_field,value,0u64,0);
+   input_field+=1u64;
+  }
+ }else{
+  range_store_locals(input.initial,carry,body,context,host);
+  if(history) {
+   usize zero=host.reg(context,CpuRangeType::Bool,0u64);
+   host.put(context,body,CpuRangeOp::Constant,zero,0u64,0u64,0);
+   host.put(context,body,CpuRangeOp::LocalStore,flag_slot,zero,0u64,0);
+  }
+ }
+ if(counted) {
+  usize value=host.reg(context,CpuRangeType::U32,0u64);
+  if(finish) {
+   host.put(context,body,CpuRangeOp::Load,value,input.temporary,private_index,input.payload_bytes+4);
+  }else{
+   host.put(context,body,CpuRangeOp::Constant,value,0u64,0u64,0);
+  }
+  host.put(context,body,CpuRangeOp::LocalStore,count_slot,value,0u64,0);
+ }
+ usize initialization_end=host.size(context);
+ usize index=host.reg(context,CpuRangeType::U32,0u64);
+ host.put(context,body,CpuRangeOp::Index,index,0u64,0u64,0);
+ usize head=0u64;
+ if(has_head) {
+  usize raw=host.reg(context,CpuRangeType::Bool,0u64);
+  host.put(context,body,CpuRangeOp::Load,raw,input.source,index,packed ? input.payload_bytes : input.head_word);
+  head=raw;
+  if(counted && !packed) {
+   usize zero=host.reg(context,CpuRangeType::U32,0u64);
+   usize first=host.reg(context,CpuRangeType::Bool,0u64);
+   head=host.reg(context,CpuRangeType::Bool,0u64);
+   host.put(context,body,CpuRangeOp::Constant,zero,0u64,0u64,0);
+   host.put(context,body,CpuRangeOp::Equal,first,index,zero,0);
+   host.put(context,body,CpuRangeOp::Or,head,raw,first,0);
+  }
+  if(apply) {
+   host.put(context,yes,CpuRangeOp::Break,0u64,0u64,0u64,0);
+   host.branch(context,head,no);
+  }else if(reset_on_head) {
+   range_store_locals(input.initial,carry,yes,context,host);
+   if(history) {
+    usize flag=host.reg(context,CpuRangeType::Bool,0u64);
+    host.put(context,yes,CpuRangeOp::Constant,flag,1u64,0u64,0);
+    host.put(context,yes,CpuRangeOp::LocalStore,flag_slot,flag,0u64,0);
+   }
+   if(counted) {
+    usize before=host.reg(context,CpuRangeType::U32,0u64);
+    usize one=host.reg(context,CpuRangeType::U32,0u64);
+    usize after=host.reg(context,CpuRangeType::U32,0u64);
+    host.put(context,yes,CpuRangeOp::LocalLoad,before,count_slot,0u64,0);
+    host.put(context,yes,CpuRangeOp::Constant,one,1u64,0u64,0);
+    host.put(context,yes,CpuRangeOp::Add,after,before,one,0);
+    host.put(context,yes,CpuRangeOp::LocalStore,count_slot,after,0u64,0);
+   }
+   host.branch(context,head,no);
+  }
+ }
+
+ usize left_field=0u64;
+ while(left_field<input.left.count) {
+  host.put(context,body,CpuRangeOp::LocalLoad,word_at(input.left,left_field),carry+left_field,0u64,0);
+  left_field+=1u64;
+ }
+ usize source_field=0u64;
+ while(source_field<input.source_registers.count) {
+  u32 offset=packed ? host.offset(context,source_field,0)
+   : apply ? input.target_word+host.offset(context,source_field,0)
+   : input.source_word+host.offset(context,source_field,1);
+  host.put(context,body,CpuRangeOp::Load,word_at(input.source_registers,source_field),
+   apply ? input.target : input.source,index,offset);
+  source_field+=1u64;
+ }
+ usize right_count=0u64;
+ if(counted && packed) {
+  right_count=host.reg(context,CpuRangeType::U32,0u64);
+  host.put(context,body,CpuRangeOp::Load,right_count,input.source,index,input.payload_bytes+4);
+ }
+ host.move_block(context,CpuRangeBlock::Project);
+ if(scan || prefix) {
+  usize scan_field=0u64;
+  while(scan_field<input.left.count) {
+   u32 offset=host.offset(context,scan_field,0)+(packed ? 0 : input.target_word);
+   host.put(context,body,CpuRangeOp::Store,word_at(input.left,scan_field),input.target,index,offset);
+   scan_field+=1u64;
+  }
+  if(input.pass==CpuRangePass::ScanPrefix && has_head) {
+   usize flag=host.reg(context,CpuRangeType::Bool,0u64);
+   host.put(context,body,CpuRangeOp::LocalLoad,flag,flag_slot,0u64,0);
+   host.put(context,body,CpuRangeOp::Store,flag,input.target,index,input.payload_bytes);
+  }
+  if(segment_prefix) {
+   usize length=host.reg(context,CpuRangeType::U32,0u64);
+   usize segments=host.reg(context,CpuRangeType::U32,0u64);
+   host.put(context,body,CpuRangeOp::Uniform,length,0u64,0u64,0);
+   host.put(context,body,CpuRangeOp::LocalLoad,segments,count_slot,0u64,0);
+   host.put(context,body,CpuRangeOp::Store,length,input.target,index,input.payload_bytes);
+   host.put(context,body,CpuRangeOp::Store,segments,input.target,index,input.payload_bytes+4);
+  }
+ }
+ CpuRangeBlock combine=CpuRangeBlock::Combine;
+ if(apply) {
+  usize result_field=0u64;
+  while(result_field<input.result.count) {
+   host.put(context,combine,CpuRangeOp::Store,word_at(input.result,result_field),input.target,
+    index,input.target_word+host.offset(context,result_field,0));
+   result_field+=1u64;
+  }
+ }else{
+  range_store_locals(input.result,carry,combine,context,host);
+ }
+ if(has_head && prefix) {
+  range_store_locals(input.projected,carry,yes,context,host);
+  if(history) {
+   usize flag=host.reg(context,CpuRangeType::Bool,0u64);
+   host.put(context,yes,CpuRangeOp::Constant,flag,1u64,0u64,0);
+   host.put(context,yes,CpuRangeOp::LocalStore,flag_slot,flag,0u64,0);
+  }
+  host.branch(context,head,combine);
+ }else{
+  host.move_block(context,combine);
+ }
+ if(counted && packed){range_add_count(count_slot,right_count,body,context,host);}
+ if(finish){range_segment_tail(input,carry,index,length_slot,context,host);}
+ usize loop_end=host.size(context);
+ if(segment_prefix) {
+  usize zero=host.reg(context,CpuRangeType::U32,0u64);
+  usize total=host.reg(context,CpuRangeType::U32,0u64);
+  host.put(context,body,CpuRangeOp::Constant,zero,0u64,0u64,0);
+  host.put(context,body,CpuRangeOp::LocalLoad,total,count_slot,0u64,0);
+  host.put(context,body,CpuRangeOp::Store,total,input.count_binding,zero,input.count_word);
+ }
+ return CpuRangeBody(initialization_end,loop_end,carry,count_slot,length_slot,
+  u32(history),u32(reset_on_head),u32(apply && has_head));
+}
+
