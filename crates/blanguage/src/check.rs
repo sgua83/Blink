@@ -3639,7 +3639,7 @@ impl<'a> Builder<'a> {
         }
         let body = code;
         let outer=std::mem::take(&mut self.loop_contexts.last_mut().unwrap().outer);
-        let (next, _) = self.leave_loop(natural, &c, &condition_code, &body, span, false)?;
+        let (next, _) = self.leave_loop(natural, &c, &condition_code, &body, span, false, None)?;
         self.flow = body_flow.loop_result(next);
         self.control_uniform = control;
         self.code = outer;
@@ -3962,7 +3962,7 @@ impl<'a> Builder<'a> {
         }
         let body = code;
         let outer=std::mem::take(&mut self.loop_contexts.last_mut().unwrap().outer);
-        let (next, writes) = self.leave_loop(natural, &test, &condition, &body, span, nonempty)?;
+        let (next, writes) = self.leave_loop(natural, &test, &condition, &body, span, nonempty, Some((&begin, &limit)))?;
         self.flow = body_flow.loop_result(next);
         self.control_uniform = control;
         self.code = outer;
@@ -4478,7 +4478,9 @@ impl<'a> Builder<'a> {
     fn advance_iterator(&mut self, slot: usize) -> Result<()> {
         let source=self.loop_cursor().unwrap();
         let one=self.constant(Scalar::U32,1);
-        let value=self.binary("+",source,one,self.scope.span(),None)?;
+        let mut value=self.binary("+",source,one,self.scope.span(),None)?;
+        let (_, _, limit) = self.iterators.last().unwrap().as_ref().unwrap();
+        value.proof.mark_domain(0, IndexDomain::Upper(limit.identity(), 0));
         self.emit(InstKind::StoreLocal(slot,value.regs[0]));
         self.capture_loop_cursor(value);Ok(())
     }

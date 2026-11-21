@@ -1,6 +1,6 @@
 //! B controls equality closure and alias projection. The original query owns
 //! roots, typed expression keys, Facts and the final borrowed/owned result.
-use super::{Fact, Facts, IndexDomain, IntegerExpression, QueryFacts, ValueIdentity, fact_fields};
+use super::{Fact, Facts, IndexDomain, IntegerExpression, IntegerOperation, Operand, QueryFacts, ValueIdentity, fact_fields};
 use std::{
     borrow::Cow,
     collections::{BTreeMap, btree_set},
@@ -133,6 +133,7 @@ struct ComputedContext<'a> {
     expressions: Vec<(&'a ValueIdentity, &'a IntegerExpression)>,
     index: usize,
     produced: BTreeMap<IntegerExpression, ValueIdentity>,
+    inverse: Option<(ValueIdentity, IntegerExpression)>,
     equalities: Facts,
     expression: *mut IntegerExpression,
     result: *mut ValueIdentity,
@@ -149,6 +150,7 @@ unsafe extern "C" fn expression(domain: Borrowed) -> Borrowed {
 unsafe extern "C" fn begin(slot: Slot) {
     let context = unsafe { computed_context(slot) };
     context.index = 0;
+    context.inverse = None;
     context.produced.clear();
     context.equalities.clear();
 }
@@ -159,24 +161,41 @@ struct ComputedStep {
 }
 unsafe extern "C" fn step(slot: Slot) -> ComputedStep {
     let context = unsafe { computed_context(slot) };
-    let Some(&(result, expression)) = context.expressions.get(context.index) else {
-        return ComputedStep {
-            present: 0,
-            result: ptr::null(),
+    let (result, expression) = if let Some(inverse) = context.inverse.take() {
+        inverse
+    } else {
+        let Some(&(result, expression)) = context.expressions.get(context.index) else {
+            return ComputedStep {
+                present: 0,
+                result: ptr::null(),
+            };
         };
+        context.index += 1;
+        let root = |id| context.roots.get(&id).copied().unwrap_or(id);
+        let expression = expression.map(|id| Some(root(id))).unwrap();
+        let resolved = root(*result);
+        if context.roots.contains_key(result) {
+            use IntegerOperation::{Add, Subtract};
+            use Operand::{Constant, Value};
+            let IntegerExpression::Binary(op, scalar, a, b) = expression;
+            context.inverse = match (op, a, b) {
+                (Add, Value(input), constant @ Constant(..))
+                | (Add, constant @ Constant(..), Value(input)) => Some((
+                    input,
+                    IntegerExpression::Binary(Subtract, scalar, Value(resolved), constant),
+                )),
+                (Subtract, Value(input), constant @ Constant(..)) => Some((
+                    input,
+                    IntegerExpression::Binary(Add, scalar, Value(resolved), constant),
+                )),
+                _ => None,
+            };
+        }
+        (resolved, expression)
     };
-    context.index += 1;
     unsafe {
-        context
-            .result
-            .write(context.roots.get(result).copied().unwrap_or(*result))
-    };
-    unsafe {
-        context.expression.write(
-            expression
-                .map(|id| Some(context.roots.get(&id).copied().unwrap_or(id)))
-                .unwrap(),
-        )
+        context.result.write(result);
+        context.expression.write(expression);
     };
     ComputedStep {
         present: 1,
@@ -247,6 +266,7 @@ pub(super) fn computed<'a, I: IntoIterator<Item = &'a Fact>>(roots: &mut Roots, 
         expressions,
         index: 0,
         produced: BTreeMap::new(),
+        inverse: None,
         equalities: Facts::new(),
         expression: expression_slot.as_mut_ptr(),
         result: result.as_mut_ptr(),

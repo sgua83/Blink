@@ -487,7 +487,14 @@ impl Builder<'_> {
         let inputs = context.control_source.bindings_from(cursor, |name| {
             self.env.get(name).filter(|_| context.carries_binding(name))
         });
-        (self.residency_path(), inputs)
+        let path = self.residency_path();
+        let path = match (self.iterators.last().and_then(Option::as_ref), cursor) {
+            (Some((_, _, limit)), Some(cursor)) => {
+                bounds::Condition::comparison(Comparison::Less, cursor, limit).assume(&path, true)
+            }
+            _ => path,
+        };
+        (path, inputs)
     }
 
     pub(super) async fn check_application_loop(&mut self, span: Span) -> Result<()> {
@@ -675,8 +682,26 @@ impl Builder<'_> {
         body:&[Inst],
         span:Span,
         nonempty:bool,
+        range: Option<(&Value, &Value)>,
     )->Result<(bool,effects::LoopWrites)>{
         let mut context=self.loop_contexts.pop().unwrap();let natural_index=context.exits.len();
+        let terminal = range.filter(|_| !context.initial && natural.is_some()
+            && context.entry.env.values().any(|b| matches!(b, Binding::ApplicationData(_))))
+            .map(|(begin, limit)| {
+                let entered = bounds::Condition::comparison(Comparison::Less, begin, limit);
+                let edges = context.continues.iter().map(|edge| {
+                    let path = bounds::residency_scope(&edge.path, &edge.env);
+                    let next = edge.cursor.as_ref().unwrap();
+                    // A bounded successor can fail the next test only at the limit.
+                    let path = if next.proof.domains(0).contains(&IndexDomain::Upper(limit.identity(), 0)) {
+                        bounds::Condition::comparison(Comparison::Equal, next, limit).assume(&path, true)
+                    } else {
+                        bounds::Condition::comparison(Comparison::Less, next, limit).assume(&path, false)
+                    };
+                    path.possible().then_some(path)
+                }).collect::<Vec<_>>();
+                (entered, edges)
+            });
         if let Some(scope) = context.view_scope {
             let backedge = context.continues.iter().map(|edge| edge.path.clone())
                 .reduce(|left, right| bounds::Clause::either(&left, &right));
@@ -691,19 +716,47 @@ impl Builder<'_> {
             let scalar_empty=std::cell::LazyCell::new(||if nonempty{bounds::Condition::constant(false)}else{match empty.truth_in(&context.entry.path){Some(truth)=>bounds::Condition::constant(truth),None=>empty.clone()}});
             let continue_scopes=context.continues.iter().map(|_|std::cell::OnceCell::new()).collect::<Vec<_>>();
             for(name,binding)in &mut exit.env {
-                if let Binding::ApplicationData(data)=binding
-                    && let Some(Place::Local(_,slots,..))=&data.place
-                    && slots.iter().any(|slot|context.writes.locals.contains(slot)) {
-                    let mut repeated:Option<returns::Returned>=None;
-                    for edge in &context.continues {
-                        let next=returns::Returned::Dataset(data_at(&edge.env[name],&[]).unwrap().clone());
-                        if let Some(common)=repeated.as_mut(){common.join(next,true,None);}else{repeated=Some(next);}
+                if let Binding::ApplicationData(data) = binding {
+                    let written = matches!(&data.place, Some(Place::Local(_, slots, ..))
+                        if slots.iter().any(|slot| context.writes.locals.contains(slot)));
+                    if !written && terminal.is_none() {
+                        continue;
                     }
-                    if let Some(returns::Returned::Dataset(repeated))=repeated {
-                        if data.ownership!=repeated.ownership{data.ownership=application::Ownership::Moved;}
-                        data.residency=residency::Residency::conditional(empty.clone(),data.residency.clone(),repeated.residency);
-                        data.elements=std::mem::take(&mut data.elements).selected(repeated.elements,&empty);
-                        data.prefixes=prefix::join_fields(&data.prefixes,&repeated.prefixes,Some(&empty));
+                    let mut repeated: Option<returns::Returned> = None;
+                    let mut location = residency::Residency::Absent;
+                    for (index, edge) in context.continues.iter().enumerate() {
+                        let binding = &edge.env[name];
+                        if let Some((_, paths)) = &terminal
+                            && let Some(path) = &paths[index]
+                            && let Binding::ApplicationData(next) = binding
+                        {
+                            location.join(&next.residency.under(path));
+                        }
+                        if written {
+                            let next = returns::Returned::Dataset(data_at(binding, &[]).unwrap().clone());
+                            if let Some(common) = repeated.as_mut() {
+                                common.join(next, true, None);
+                            } else {
+                                repeated = Some(next);
+                            }
+                        }
+                    }
+                    if let Some((entered, _)) = &terminal && !matches!(location, residency::Residency::Absent) {
+                        data.residency = residency::Residency::conditional(
+                            entered.clone(), location, std::mem::take(&mut data.residency),
+                        );
+                    }
+                    if let Some(returns::Returned::Dataset(repeated)) = repeated {
+                        if data.ownership != repeated.ownership {
+                            data.ownership = application::Ownership::Moved;
+                        }
+                        if terminal.is_none() {
+                            data.residency = residency::Residency::conditional(
+                                empty.clone(), std::mem::take(&mut data.residency), repeated.residency,
+                            );
+                        }
+                        data.elements = std::mem::take(&mut data.elements).selected(repeated.elements, &empty);
+                        data.prefixes = prefix::join_fields(&data.prefixes, &repeated.prefixes, Some(&empty));
                     }
                     continue;
                 }
@@ -744,7 +797,15 @@ impl Builder<'_> {
         let has_natural = natural.is_some();
         context.exits.extend(natural);
         self.close_view_context(&mut context, has_natural.then_some(natural_index), nonempty)?;
-        let guards = if context.exits.len() > 1 {
+        let guards = if context.exits.len() == 2 && has_natural
+            && let Some((entered, paths)) = terminal
+            && paths.iter().all(Option::is_none)
+        {
+            let mut test = test.clone();
+            test.proof = bounds::Proof::condition(entered);
+            let test = owned_presence::Presence::input(&test);
+            vec![test.clone(), test.not()]
+        } else if context.exits.len() > 1 {
             let test = owned_presence::Presence::input(test);
             let mut guards = loop_exit_paths(body, &context.controls, &test);
             if has_natural {

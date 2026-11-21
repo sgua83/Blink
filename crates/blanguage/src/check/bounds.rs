@@ -3542,7 +3542,7 @@ impl Builder<'_> {
         }
         self.env = environment;
     }
-    pub(super) fn residency_path(&self)->Clause{Clause::both(&self.path,&Clause::facts(environment_facts(&self.env)))}
+    pub(super) fn residency_path(&self)->Clause{residency_scope(&self.path,&self.env)}
     pub(super) fn condition_truth(&self,condition:&Condition,assuming:Option<&Condition>)->Option<bool>{
         let environment=environment_facts(&self.env);let mut path=self.path.clone();if let Some(assuming)=assuming{path=Clause::both(&path,&assuming.cases[1]);}
         if Clause::both(&path,&condition.cases[0]).required_in(&environment).is_none(){Some(true)}else if Clause::both(&path,&condition.cases[1]).required_in(&environment).is_none(){Some(false)}else{None}
@@ -4250,3 +4250,7 @@ const _: () = {
 };
 
 crate::codec::contracts::codec!(Condition);
+
+pub(super) fn residency_scope(path: &Clause, environment: &BTreeMap<String, Binding>) -> Clause {
+    Clause::both(path, &Clause::facts(environment_facts(environment)))
+}
