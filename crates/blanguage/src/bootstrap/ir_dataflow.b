@@ -1860,51 +1860,48 @@ void collect_ray_operands(Span code,RayHost host) on cpu
   index+=1u64;
  }
 }
-bool has_closest_ray(Span code,Host host) on cpu requires nonzero(host.inspect) {
- usize index=0u64;
+extern "C" u32 scan_ray_queries(Span code,Host host,bool closest_only,address context,
+ cfn<void,address,Span,usize> emit) on cpu requires nonzero(host.inspect) requires nonzero(emit) {
+ u32 closest=0; usize index=0u64;
  while(index<code.count) {
   View value=host.inspect(node_at(code,index,N_INSTRUCTION));
-  if(value.tag==OP_RAY_QUERY && value.first.count==39u64){return true;}
-  if(value.tag==OP_SCOPE || value.tag==OP_BRANCH || value.tag==OP_LOOP_VALUE) {
-   if(has_closest_ray(value.first,host) || has_closest_ray(value.second,host)){return true;}
-  }
-  index+=1u64;
- }
- return false;
-}
-u32 select_ray_queries(Span code,Span ranges,RayHost host,address context,
- cfn<u32,address,usize,usize> visit) on cpu
- requires nonzero(host.ir.inspect) requires nonzero(host.contains)
- requires nonzero(host.fields) requires nonzero(visit) {
- usize index=0u64;
- while(index<code.count) {
-  View value=host.ir.inspect(node_at(code,index,N_INSTRUCTION));
-  if(value.tag==OP_RAY_QUERY && value.first.count==39u64) {
-   usize group=0u64;
-   while(group<ranges.count) {
-    View range=host.ir.inspect(node_at(ranges,group,N_RAY_RANGE));
-    Span fields=host.fields(value.first,range.a,range.b);usize field=0u64;bool consumed=false;
-    while(field<fields.count && !consumed) {
-     consumed=host.contains(host.used,word_at(fields,field))!=0;field+=1u64;
-    }
-    if(consumed && visit(context,group,word_at(value.first,0u64))==0){return 0;}
-    group+=1u64;
-   }
+  if(value.tag==OP_RAY_QUERY) {
+   bool hit=value.first.count==39u64;
+   if(hit || !closest_only){emit(context,value.first,word_at(value.first,0u64));}
+   closest|=u32(hit);
   }else if(value.tag==OP_SCOPE || value.tag==OP_BRANCH || value.tag==OP_LOOP_VALUE) {
-   if(select_ray_queries(value.first,ranges,host,context,visit)==0){return 0;}
-   if(select_ray_queries(value.second,ranges,host,context,visit)==0){return 0;}
+   closest|=scan_ray_queries(value.first,host,closest_only,context,emit);
+   closest|=scan_ray_queries(value.second,host,closest_only,context,emit);
   }
   index+=1u64;
  }
- return 1;
+ return closest;
 }
-extern "C" u32 ray_result_queries(Span code,Span ranges,RayHost host,address context,
+
+extern "C" u32 ray_result_queries(Span code,Span queries,Span ranges,RayHost host,address context,
  cfn<u32,address,usize,usize> visit) on cpu
  requires nonzero(host.ir.inspect) requires nonzero(host.include) requires nonzero(host.contains)
  requires nonzero(host.fields) requires nonzero(visit) {
- if(!has_closest_ray(code,host.ir)){return 1;}
  collect_ray_operands(code,host);
- return select_ray_queries(code,ranges,host,context,visit);
+ usize query=0u64;
+ while(query<queries.count) {
+  Span result=unsafe_position<RayQuery>(node_at(queries,query,N_INSTRUCTION).data).fields;
+  if(result.count==39u64) {
+   usize group=0u64;
+   while(group<ranges.count) {
+    View range=host.ir.inspect(node_at(ranges,group,N_RAY_RANGE));
+    Span fields=host.fields(result,range.a,range.b);
+    usize field=0u64; bool consumed=false;
+    while(field<fields.count && !consumed) {
+     consumed=host.contains(host.used,word_at(fields,field))!=0;field+=1u64;
+    }
+    if(consumed && visit(context,group,query)==0){return 0;}
+    group+=1u64;
+   }
+  }
+  query+=1u64;
+ }
+ return 1;
 }
 
 bool needs_intermediate(u32 operation,usize selection) on cpu {

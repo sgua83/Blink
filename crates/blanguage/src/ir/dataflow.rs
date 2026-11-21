@@ -819,19 +819,70 @@ struct RayHost {
     contains: unsafe extern "C" fn(*mut c_void, usize) -> u32,
     fields: unsafe extern "C" fn(Span, usize, usize) -> Span,
 }
+#[repr(C)]
+struct RayQuery {
+    fields: Span,
+    result: Reg,
+}
 unsafe extern "C" {
+    #[link_name = "bootstrap.ir_dataflow::scan_ray_queries"]
+    fn b_scan_ray_queries(code: Span, host: Host, closest_only: bool, context: *mut c_void,
+        emit: unsafe extern "C" fn(*mut c_void, Span, Reg)) -> u32;
     #[link_name = "bootstrap.ir_dataflow::ray_result_queries"]
-    fn b_ray_result_queries(code: Span, ranges: Span, host: RayHost, context: *mut c_void,
+    fn b_ray_result_queries(code: Span, queries: Span, ranges: Span, host: RayHost, context: *mut c_void,
         visit: unsafe extern "C" fn(*mut c_void, usize, usize) -> u32) -> u32;
 }
-pub(super) fn ray_result_queries<F: FnMut(usize, Reg) -> bool>(stage: &Stage,
-    ranges: &[std::ops::Range<usize>], output: &mut F) -> bool {
+fn scan_ray_queries(code: Span, closest_only: bool) -> (Vec<RayQuery>, bool) {
+    unsafe extern "C" fn push(context: *mut c_void, fields: Span, result: Reg) {
+        unsafe { &mut *context.cast::<Vec<RayQuery>>() }.push(RayQuery { fields, result });
+    }
+    let mut queries = Vec::new();
+    let closest = unsafe {
+        b_scan_ray_queries(code, HOST, closest_only, ptr::from_mut(&mut queries).cast(), push) != 0
+    };
+    (queries, closest)
+}
+
+fn visit_ray_fields<F: FnMut(usize, usize) -> bool>(
+    code: Span, queries: &[RayQuery], ranges: &[std::ops::Range<usize>], output: &mut F,
+) -> bool {
     let mut used = BTreeSet::<Reg>::new();
     let host = RayHost { ir: HOST, used: ptr::from_mut(&mut used).cast(),
         include: include_ray_operand, contains: contains_ray_operand, fields: ray_fields };
-    unsafe { b_ray_result_queries(Span::slice(&stage.code), Span::slice(ranges), host,
+    unsafe { b_ray_result_queries(code, Span::slice(queries), Span::slice(ranges), host,
         ptr::from_mut(output).cast(), visit_ray_query::<F>) != 0 }
 }
+
+pub(super) fn ray_result_queries<F: FnMut(usize, Reg) -> bool>(stage: &Stage,
+    ranges: &[std::ops::Range<usize>], output: &mut F) -> bool {
+    let code = Span::slice(&stage.code);
+    let (queries, closest) = scan_ray_queries(code, true);
+    !closest || visit_ray_fields(code, &queries, ranges, &mut |group, query| {
+        output(group, queries[query].result)
+    })
+}
+
+#[derive(Clone, Copy, Default)]
+pub(crate) struct RayFields {
+    pub positions: bool,
+    pub object_to_world: bool,
+    pub world_to_object: bool,
+}
+
+pub(crate) fn shader_ray_queries(stage: &Stage) -> Vec<(Reg, RayFields)> {
+    let code = Span::slice(&stage.code);
+    let (queries, closest) = scan_ray_queries(code, false);
+    let mut used: Vec<_> = queries.iter().map(|query| (query.result, RayFields::default())).collect();
+    if closest {
+        visit_ray_fields(code, &queries, &[6..15, 15..27, 27..39], &mut |group, query| {
+            let fields = &mut used[query].1;
+            *[&mut fields.positions, &mut fields.object_to_world, &mut fields.world_to_object][group] = true;
+            true
+        });
+    }
+    used
+}
+
 unsafe extern "C" fn include_ray_operand(context: *mut c_void, reg: usize) -> u32 {
     unsafe { &mut *context.cast::<BTreeSet<Reg>>() }.insert(reg); 1
 }

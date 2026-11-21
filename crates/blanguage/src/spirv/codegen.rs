@@ -821,10 +821,9 @@ struct Emitter<'a> {
     texture_types: BTreeMap<crate::ast::TextureDimension, (u32, u32)>,
     vec4_type: u32,
     acceleration_type: u32,
-    ray_variables: BTreeMap<Reg, u32>,
+    ray_variables: BTreeMap<Reg, (u32, crate::ir::dataflow::RayFields)>,
     ray_position_type: u32,
     ray_transform_type: u32,
-    ray_queries: &'a [BTreeSet<Reg>; 3],
     vec3_type: u32,
     vec2_type: u32,
     push: u32,
@@ -1763,9 +1762,8 @@ impl Emitter<'_> {
         }
         let hit = result.registers()[0];
         let closest = matches!(result, RayResult::Closest(_));
-        let positions = self.ray_queries[0].contains(&hit);
-        let object_to_world = self.ray_queries[1].contains(&hit);
-        let world_to_object = self.ray_queries[2].contains(&hit);
+        let (query, fields) = self.ray_variables[&hit];
+        let crate::ir::dataflow::RayFields { positions, object_to_world, world_to_object } = fields;
         if positions && self.ray_position_type == 0 {
             let length = self.constant(Scalar::U32, 3);
             self.ray_position_type = self.declare_type(TypeShape::Array, self.vec3_type, length);
@@ -1785,7 +1783,7 @@ impl Emitter<'_> {
         let input = RayEmission {
             acceleration_type: self.acceleration_type,
             acceleration: self.accelerations[scene],
-            query: self.ray_variables[&hit],
+            query,
             u32_type: self.types[&Scalar::U32],
             f32_type: self.types[&Scalar::F32],
             bool_type: self.types[&Scalar::Bool],
@@ -1818,25 +1816,6 @@ impl Emitter<'_> {
 }
 pub fn emit(program: &Program, stage_index: usize) -> Result<Vec<u32>, &'static str> {
     emit_pass(program, stage_index, Pass::Main)
-}
-fn ray_results(code: &[Inst], out: &mut Vec<Reg>) {
-    for i in code {
-        match &(i).kind {
-            InstKind::RayQuery { result, .. } => out.push(result.registers()[0]),
-            InstKind::Scope(body) => ray_results(body, out),
-            InstKind::If { yes, no, .. } => {
-                ray_results(yes, out);
-                ray_results(no, out);
-            }
-            InstKind::Loop {
-                condition, body, ..
-            } => {
-                ray_results(condition, out);
-                ray_results(body, out);
-            }
-            _ => {}
-        }
-    }
 }
 #[derive(Clone, Copy)]
 struct ProgramShaderFeatures {
@@ -1909,7 +1888,7 @@ unsafe extern "C" {
 }
 
 struct ShaderStageFacts {
-    ray_queries: [BTreeSet<Reg>; 3],
+    ray_queries: Vec<(Reg, crate::ir::dataflow::RayFields)>,
     atomic64: bool,
     float_preserve: (bool, bool),
 }
@@ -1930,7 +1909,7 @@ impl ShaderStageFacts {
             (false, false)
         };
         Self {
-            ray_queries: stage.ray_query_groups(),
+            ray_queries: crate::ir::dataflow::shader_ray_queries(stage),
             atomic64: buffer_atomic64 || shared_atomic64,
             float_preserve,
         }
@@ -2010,7 +1989,6 @@ fn emit_shader(
         ray_variables: BTreeMap::new(),
         ray_position_type: 0,
         ray_transform_type: 0,
-        ray_queries: &facts.ray_queries,
         vec3_type: 0,
         vec2_type: 0,
         push: 0,
@@ -2065,7 +2043,7 @@ fn emit_shader(
         subgroup_shuffle: u32::from(subgroup_caps.shuffle),
         subgroup_shuffle_relative: u32::from(subgroup_caps.shuffle_relative),
         acceleration: u32::from(acceleration),
-        position_fetch: u32::from(!e.ray_queries[0].is_empty()),
+        position_fetch: u32::from(facts.ray_queries.iter().any(|(_, fields)| fields.positions)),
         descriptor_indexing: u32::from(descriptor_indexing),
         maximal_reconvergence: subgroups.maximal_reconvergence,
     };
@@ -2301,11 +2279,9 @@ fn emit_shader(
     e.emit_control(7, |body| unsafe { begin_shader_body(void, main, fn_ty, entry, body) });
     if !argument_pass {
         e.regs = (0..stage.registers.len()).map(|_| e.id()).collect();
-        let mut rays = Vec::new();
-        ray_results(&stage.code, &mut rays);
-        for result in rays {
+        for &(result, fields) in &facts.ray_queries {
             let id = e.declare_function_variable(ray_pointer);
-            e.ray_variables.insert(result, id);
+            e.ray_variables.insert(result, (id, fields));
         }
         e.locals.resize(stage.locals.last_key_value().map_or(0, |(end, _)| *end), 0);
         for (begin, end) in private_spans(&stage.code) {

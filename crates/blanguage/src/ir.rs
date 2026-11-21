@@ -1754,14 +1754,6 @@ impl Stage {
         self.visit_ray_result_queries(&[range], &mut |_, query| { queries.insert(query); true });
         queries
     }
-    #[cfg(feature = "compiler")]
-    pub(crate) fn ray_query_groups(&self) -> [BTreeSet<Reg>; 3] {
-        let mut queries = std::array::from_fn(|_| BTreeSet::new());
-        self.visit_ray_result_queries(&[6..15, 15..27, 27..39], &mut |group, query| {
-            queries[group].insert(query); true
-        });
-        queries
-    }
     fn visit_ray_result_queries(&self, ranges: &[std::ops::Range<usize>],
         visit: &mut impl FnMut(usize, Reg) -> bool) -> bool {
         #[cfg(feature = "compiler")]
