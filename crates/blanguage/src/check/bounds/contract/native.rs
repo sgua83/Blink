@@ -900,7 +900,7 @@ struct Emit {
     snapshot: *mut Arc<Decision>,
     guard: *mut Clause,
     result: *mut Clause,
-    facts: Facts,
+    facts: Vec<Fact>,
 }
 #[repr(C)]
 struct VariableView {
@@ -951,12 +951,28 @@ unsafe extern "C" fn emit_cell(s: Slot, i: usize) -> Cell {
 }
 unsafe extern "C" fn emit_bound(s: Slot, fact: fact_fields::Fields) {
     let fact = unsafe { fact_fields::key(fact) };
-    unsafe { frame::<Emit>(s) }.facts.insert(fact);
+    unsafe { frame::<Emit>(s) }.facts.push(fact);
 }
-unsafe extern "C" fn emit_guard(s: Slot) {
+unsafe extern "C" fn emit_guard(s: Slot, begin: End, end: End) {
     let c = unsafe { frame::<Emit>(s) };
-    let facts = std::mem::take(&mut c.facts);
-    unsafe { c.guard.write(Clause::facts(facts)) };
+    let variable = unsafe { &*c.snapshot }.variable;
+    let (begin, end) = (u128::from(begin), u128::from(end));
+    let limit = variable.end();
+    let normal = unsafe { &mut *c.normal };
+    let mut cells = Vec::with_capacity(3);
+    if begin != 0 {
+        cells.push((begin, 0));
+    }
+    cells.push((end, 1));
+    if end != limit {
+        cells.push((limit, 0));
+    }
+    let interval = normal.node(variable, cells);
+    let guard = normal.emitted.entry(interval)
+        .or_insert_with(|| Clause::facts(c.facts.iter().copied().collect()))
+        .clone();
+    c.facts.clear();
+    unsafe { c.guard.write(guard) };
 }
 unsafe extern "C" fn emit_atom(s: Slot, fact: fact_fields::Fields) {
     let fact = unsafe { fact_fields::key(fact) };
@@ -1023,7 +1039,7 @@ struct EmitHost {
     count: unsafe extern "C" fn(Slot) -> usize,
     cell: unsafe extern "C" fn(Slot, usize) -> Cell,
     bound: unsafe extern "C" fn(Slot, fact_fields::Fields),
-    guard: unsafe extern "C" fn(Slot),
+    guard: unsafe extern "C" fn(Slot, End, End),
     atom: unsafe extern "C" fn(Slot, fact_fields::Fields),
     negate: unsafe extern "C" fn(Slot),
     guard_node: unsafe extern "C" fn(Slot) -> condition_graph::SourceNode,
@@ -1048,7 +1064,7 @@ pub(super) fn emit(normal: &mut Normalizer, root: usize) -> Clause {
         snapshot: snapshot.as_mut_ptr(),
         guard: guard.as_mut_ptr(),
         result: result.as_mut_ptr(),
-        facts: Facts::new(),
+        facts: Vec::with_capacity(2),
     };
     unsafe {
         b_emit(

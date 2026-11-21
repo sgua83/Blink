@@ -1204,7 +1204,7 @@ extern "C" void contract_emit(address context,usize root,ContractEmitHost host) 
     if(variable.kind==0){
      if(begin.low!=0u64||begin.high!=0u64){FactView lower=variable.fact;lower.kind=FactKind::Minimum;lower.value=begin.low;host.bound(context,lower);}
      if(!contract_end_equal(cell.end,variable.end)){FactView upper=variable.fact;upper.kind=FactKind::Maximum;upper.value=cell.end.low-1u64;host.bound(context,upper);}
-     host.guard(context);
+     host.guard(context,begin,cell.end);
     }else{host.atom(context,variable.fact);if(begin.low==0u64&&begin.high==0u64){host.negate(context);}}
     if(cell.value!=1u64){SourceNode guard=host.guard_node(context);
      if(guard.kind==1&&guard.empty!=0){host.child(context,cell.value);}else{host.both(context,cell.value);}

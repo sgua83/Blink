@@ -534,7 +534,7 @@ struct ContractEmitHost {
  cfn<usize,address> ensures memory(read) count;
  cfn<ContractCell,address,usize> ensures memory(read) cell;
  cfn<void,address,FactView> bound;
- cfn<void,address> guard;
+ cfn<void,address,ContractEnd,ContractEnd> guard;
  cfn<void,address,FactView> atom;
  cfn<void,address> negate;
  cfn<SourceNode,address> ensures memory(read) guard_node;
