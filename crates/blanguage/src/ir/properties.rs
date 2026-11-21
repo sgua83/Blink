@@ -48,7 +48,70 @@ pub(crate) struct StoragePlan {
     pub(crate) dataset: u32,
 }
 
+#[repr(u32)]
+pub(crate) enum ReferenceNeed {
+    Done, Enter, Signature, Parameter, Result, Argument, Field, Variant, Array, View, Dataset,
+}
+#[repr(C)]
+#[derive(Default)]
+struct ReferenceCursor {
+    next: usize,
+    phase: u32,
+}
+#[repr(C)]
+struct ReferenceShape {
+    arguments: usize,
+    fields: usize,
+    variants: usize,
+    parameters: usize,
+    signature: u32,
+    result: u32,
+    array: u32,
+    view: u32,
+    dataset: u32,
+}
+#[repr(C)]
+pub(crate) struct ReferenceStep {
+    pub(crate) index: usize,
+    pub(crate) need: ReferenceNeed,
+}
+
+pub(crate) struct ReferenceWalk {
+    cursor: ReferenceCursor,
+    shape: ReferenceShape,
+}
+
+impl ReferenceWalk {
+    pub(crate) fn new(ty: &Ty) -> Self {
+        Self {
+            cursor: ReferenceCursor::default(),
+            shape: ReferenceShape {
+                arguments: ty.arguments.len(),
+                fields: ty.fields.len(),
+                variants: ty.variants.len(),
+                parameters: 0,
+                signature: u32::from(ty.function.is_some()),
+                result: 0,
+                array: u32::from(ty.array.is_some()),
+                view: u32::from(ty.view.is_some()),
+                dataset: u32::from(ty.dataset.is_some()),
+            },
+        }
+    }
+
+    pub(crate) fn signature(&mut self, parameters: usize, result: bool) {
+        self.shape.parameters = parameters;
+        self.shape.result = u32::from(result);
+    }
+
+    pub(crate) fn step(&mut self) -> ReferenceStep {
+        unsafe { b_reference_step(&mut self.cursor, &self.shape) }
+    }
+}
+
 unsafe extern "C" {
+    #[link_name = "bootstrap.type_layout::reference_step"]
+    fn b_reference_step(cursor: &mut ReferenceCursor, shape: &ReferenceShape) -> ReferenceStep;
     #[link_name = "bootstrap.type_layout::storage_plan"]
     fn b_storage_plan(node: Node, mode: StorageMode, empty_dataset: u32) -> StoragePlan;
     #[link_name = "bootstrap.type_layout::contains"]

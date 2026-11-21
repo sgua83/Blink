@@ -42,6 +42,50 @@ extern "C" VariantLayout tagged_variant(u32 payload_size, u32 payload_alignment)
     return VariantLayout(u64(alignment) + natural_size(payload_size, alignment), alignment);
 }
 
+extern "C" ReferenceStep reference_step(inout ReferenceCursor cursor, read ReferenceShape shape) on cpu {
+    if (cursor.phase == 0) {
+        if (shape.arguments == 0u64 && shape.fields == 0u64 && shape.variants == 0u64
+            && shape.signature == 0 && shape.array == 0 && shape.view == 0 && shape.dataset == 0) {
+            return ReferenceStep(0u64, ReferenceNeed::Done);
+        }
+        cursor.phase = 1;
+        return ReferenceStep(0u64, ReferenceNeed::Enter);
+    }
+    if (cursor.phase == 1) {
+        cursor.phase = 2;
+        if (shape.signature != 0) {
+            return ReferenceStep(0u64, ReferenceNeed::Signature);
+        }
+    }
+
+    usize index = cursor.next;
+    cursor.next += 1u64;
+    if (index < shape.parameters) { return ReferenceStep(index, ReferenceNeed::Parameter); }
+    index -= shape.parameters;
+    if (shape.result != 0) {
+        if (index == 0u64) { return ReferenceStep(0u64, ReferenceNeed::Result); }
+        index -= 1u64;
+    }
+    if (index < shape.arguments) { return ReferenceStep(index, ReferenceNeed::Argument); }
+    index -= shape.arguments;
+    if (index < shape.fields) { return ReferenceStep(index, ReferenceNeed::Field); }
+    index -= shape.fields;
+    if (index < shape.variants) { return ReferenceStep(index, ReferenceNeed::Variant); }
+    index -= shape.variants;
+    if (shape.array != 0) {
+        if (index == 0u64) { return ReferenceStep(0u64, ReferenceNeed::Array); }
+        index -= 1u64;
+    }
+    if (shape.view != 0) {
+        if (index == 0u64) { return ReferenceStep(0u64, ReferenceNeed::View); }
+        index -= 1u64;
+    }
+    if (shape.dataset != 0 && index == 0u64) {
+        return ReferenceStep(0u64, ReferenceNeed::Dataset);
+    }
+    return ReferenceStep(0u64, ReferenceNeed::Done);
+}
+
 extern "C" StoragePlan storage_plan(TypeNode node, StorageMode mode, u32 empty_dataset) on cpu {
     StorageMode access = mode;
     if (mode == StorageMode::CleanupBorrow && node.cleanup != 0) {

@@ -46,6 +46,18 @@ enum StorageAction:u32 { Absent=0; Present=1; Contract=2; Children=3; };
 struct StoragePlan { StorageMode mode; StorageAction action; u32 array; u32 dataset; };
 extern "C" StoragePlan storage_plan(TypeNode node, StorageMode mode, u32 empty_dataset) on cpu;
 
+enum ReferenceNeed:u32 {
+    Done=0; Enter=1; Signature=2; Parameter=3; Result=4;
+    Argument=5; Field=6; Variant=7; Array=8; View=9; Dataset=10;
+};
+struct ReferenceCursor { usize next; u32 phase; };
+struct ReferenceShape {
+    usize arguments; usize fields; usize variants; usize parameters;
+    u32 signature; u32 result; u32 array; u32 view; u32 dataset;
+};
+struct ReferenceStep { usize index; ReferenceNeed need; };
+extern "C" ReferenceStep reference_step(inout ReferenceCursor cursor, read ReferenceShape shape) on cpu;
+
 struct TypeHost {
     cfn<TypeNode,address> ensures memory(read) inspect;
     cfn<address,address,Child,usize> ensures memory(read) child;

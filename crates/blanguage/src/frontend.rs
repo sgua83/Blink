@@ -782,28 +782,61 @@ impl World {
         Ok(false)
     }
 
-    pub(crate) async fn validate_type_references(&self, ty: &ir::Ty, source: &Source, span: Span, module: &str, imports: &[String], consumed: &mut BTreeSet<String>) -> crate::Result<()> {
-        if !consumed.insert(ty.name.clone()) { return Ok(()); }
-        if let Some(function) = &ty.function {
-            let (parameters,result,_)=unsafe{self.call(self.c_function_signature(function,source,span,module,imports)).await}?;
-            unsafe{self.call(crate::check::outputs::validate_function_contracts(
-                self,&parameters,result.as_ref(),&function.contracts,source,span)).await}?;
-            for parameter in parameters {
-                let ty = match parameter.kind { ir::CallParameterKind::Value(ty) | ir::CallParameterKind::Reference { ty, .. } => ty };
-                unsafe{self.call(self.validate_type_references(&ty,source,span,module,imports,consumed)).await}?;
-            }
-            if let Some(result) = result { unsafe{self.call(self.validate_type_references(&result,source,span,module,imports,consumed)).await}?; }
+    pub(crate) async fn validate_type_references(
+        &self, ty: &ir::Ty, source: &Source, span: Span, module: &str, imports: &[String],
+        consumed: &mut BTreeSet<String>,
+    ) -> crate::Result<()> {
+        use ir::ReferenceNeed;
+
+        let mut walk = ir::ReferenceWalk::new(ty);
+        let mut parameters = Vec::new();
+        let mut result = None;
+        loop {
+            let step = walk.step();
+            let nested = match step.need {
+                ReferenceNeed::Done => return Ok(()),
+                ReferenceNeed::Enter => {
+                    if !consumed.insert(ty.name.clone()) {
+                        return Ok(());
+                    }
+                    continue;
+                }
+                ReferenceNeed::Signature => {
+                    let function = ty.function.as_deref().unwrap();
+                    (parameters, result, _) = unsafe {
+                        self.call(self.c_function_signature(function, source, span, module, imports)).await
+                    }?;
+                    unsafe {
+                        self.call(crate::check::outputs::validate_function_contracts(
+                            self, &parameters, result.as_ref(), &function.contracts, source, span,
+                        )).await
+                    }?;
+                    walk.signature(parameters.len(), result.is_some());
+                    continue;
+                }
+                ReferenceNeed::Parameter => match &parameters[step.index].kind {
+                    ir::CallParameterKind::Value(ty) | ir::CallParameterKind::Reference { ty, .. } => ty,
+                },
+                ReferenceNeed::Result => result.as_ref().unwrap(),
+                ReferenceNeed::Argument => &ty.arguments[step.index],
+                ReferenceNeed::Field => &ty.fields[step.index].2,
+                ReferenceNeed::Variant => &ty.variants[step.index].ty,
+                ReferenceNeed::Array => ty.array.as_deref().unwrap(),
+                ReferenceNeed::View => ty.view.as_deref().unwrap(),
+                ReferenceNeed::Dataset => {
+                    let reference = ty.dataset.as_deref().unwrap();
+                    let element = unsafe {
+                        self.call(self.ty_inner(reference, source, span, module, imports, &mut BTreeSet::new())).await
+                    }?;
+                    return unsafe {
+                        self.call(self.validate_type_references(&element, source, span, module, imports, consumed)).await
+                    };
+                }
+            };
+            unsafe {
+                self.call(self.validate_type_references(nested, source, span, module, imports, consumed)).await
+            }?;
         }
-        for nested in ty.arguments.iter().chain(ty.fields.iter().map(|(_, _, ty)| ty.as_ref()))
-            .chain(ty.variants.iter().map(|variant| variant.ty.as_ref()))
-            .chain(ty.array.as_deref()).chain(ty.view.as_deref()) {
-            unsafe{self.call(self.validate_type_references(nested,source,span,module,imports,consumed)).await}?;
-        }
-        if let Some(reference) = ty.dataset.as_deref() {
-            let element=unsafe{self.call(self.ty_inner(reference,source,span,module,imports,&mut BTreeSet::new())).await}?;
-            unsafe{self.call(self.validate_type_references(&element,source,span,module,imports,consumed)).await}?;
-        }
-        Ok(())
     }
     pub(crate) async fn ty(
         &self,
