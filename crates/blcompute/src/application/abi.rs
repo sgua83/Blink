@@ -54,7 +54,7 @@ mod native {
     pub unsafe extern "C" fn blink_task_start(
         output: *mut u8, frame: *mut Frame, input: *const u8, worker: Entry, cleanup: Option<Cleanup>, index: u32,
     ) -> *mut c_void {
-        finish(unsafe { task::start(&mut *frame,index as usize,worker,cleanup,input,output) }, |_| {})
+        finish(unsafe { task::start(&*frame,index as usize,worker,cleanup,input,output) }, |_| {})
     }
 
     /// The originating call has finished retiring its write inputs and owns this unsubmitted task.

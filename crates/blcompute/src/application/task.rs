@@ -1,7 +1,7 @@
 //! A task owns its work Frame until completion and successful result transfer.
 use super::{CpuBorrow, CpuBorrowLayout, Frame, ResidentData, abi};
 use crate::{
-    Result,
+    DomainBindings, Result,
     cpu::{CpuDataset, WorkHandle},
     error,
 };
@@ -206,18 +206,20 @@ impl DatasetLoan<'_> {
         Ok(())
     }
 
-    fn elements(&self, frame: &mut Frame) -> impl Iterator<Item = *const u8> + '_ {
+    fn elements(&self, datasets: &mut [Option<ResidentData>]) -> impl Iterator<Item = *const u8> + use<> {
         let base = match self.base {
             DatasetBase::Address(address) => address,
             DatasetBase::Frame(slot) if self.access.writes() => {
-                frame.storage_address(slot as u32) as usize as *const u8
+                datasets[slot].as_mut().unwrap().storage_address() as usize as *const u8
             }
             DatasetBase::Frame(slot) => {
-                let (_, _, _, pointer) = frame.data.datasets[slot].as_ref().and_then(cpu_storage).unwrap();
+                let (_, _, _, pointer) = datasets[slot].as_ref().and_then(cpu_storage).unwrap();
                 pointer.cast()
             }
         };
-        (0..self.count).map(move |index| base.wrapping_add(self.offset + index * self.stride))
+        let offset = self.offset;
+        let stride = self.stride;
+        (0..self.count).map(move |index| base.wrapping_add(offset + index * stride))
     }
 }
 
@@ -253,7 +255,8 @@ fn dataset_loans<'a>(packet: &'a Ty, bytes: &'a [u8]) -> impl Iterator<Item = Da
 }
 
 fn bind_borrowed_inputs(
-    source: &mut Frame, destination: &mut Frame, layout: &Ty, bytes: &[u8], owned: &mut Selection,
+    source: &mut Frame, destination: &mut DomainBindings<Option<ResidentData>>,
+    layout: &Ty, bytes: &[u8], owned: &mut Selection,
 ) -> Result<()> {
     let mut borrowed = Selection::default();
     let mut writable = BTreeSet::new();
@@ -268,7 +271,7 @@ fn bind_borrowed_inputs(
         if loan.access.reads() && loan.count != 0 && loan.element.contains_dataset() {
             let shared = loan.access == Access::Read;
             let selection = if shared { &mut borrowed } else { &mut *owned };
-            for address in loan.elements(source) {
+            for address in loan.elements(&mut source.data.datasets) {
                 // The outer rows stay with the caller. Their child handle words
                 // are stable addresses for the original Frame transfer.
                 unsafe { gather(source, loan.element, address, selection, shared)? };
@@ -283,8 +286,8 @@ fn bind_borrowed_inputs(
     let selected=borrowed.slots;
     if let Some(&last)=selected.last() {
         // Borrowed element storage keeps the caller's nested handle numbers.
-        destination.data.datasets.try_reserve(last+1)?;
-        destination.data.datasets.resize_with(last+1,||None);
+        destination.datasets.try_reserve(last+1)?;
+        destination.datasets.resize_with(last+1,||None);
         for &slot in &selected {
             let (ty, stride, count, pointer) = source.data.datasets[slot].as_ref().and_then(cpu_storage).unwrap();
             // The parent may move storage slots while the task is still active.
@@ -295,11 +298,11 @@ fn bind_borrowed_inputs(
             } else {
                 pointer.cast_mut()
             };
-            destination.data.datasets[slot] = Some(ResidentData::CpuBorrow(CpuBorrow {
+            destination.datasets[slot] = Some(ResidentData::CpuBorrow(CpuBorrow {
                 layout, stride, count, pointer, writable,
             }));
         }
-        destination.data.domains.extend(source.data.domains.iter().filter_map(|relation|
+        destination.domains.extend(source.data.domains.iter().filter_map(|relation|
             relation.mapped(|slot|selected.contains(&slot).then_some(slot))
         ));
     }
@@ -410,18 +413,16 @@ unsafe extern "system" fn execute(_: *mut c_void, context: *mut c_void, _: *mut 
     let work = unsafe { &mut *context.cast::<Work>() };
     let frame = work.frame.as_mut().unwrap();
     let status = unsafe { (work.entry)(frame, work.input.as_ptr(), work.output.as_mut_ptr()) };
-    let definitions = frame.definitions.clone();
-    let types = &definitions.types;
-    let input_type=&types[work.result_type-1];
-    if !status.is_null() {
-        for (ty,address,_,_) in positions(types,input_type,&work.input) {
-            unsafe { abi::consumed(status,address as usize,ty.size as usize) };
-        }
-    }
     let mut selected = Selection::default();
-    let result_type = &types[work.result_type];
-    let collected:Result<()>=(|| {
-        if status.is_null() {
+    let collected: Result<()> = (|frame: &mut Frame| {
+        let types = &frame.definitions.types;
+        let input_type = &types[work.result_type - 1];
+        if !status.is_null() {
+            for (ty,address,_,_) in positions(types,input_type,&work.input) {
+                unsafe { abi::consumed(status,address as usize,ty.size as usize) };
+            }
+        } else {
+            let result_type = &types[work.result_type];
             unsafe { gather(frame,result_type,work.output.as_mut_ptr(),&mut selected,false)?; }
             for (ty,address) in completed_positions(types,input_type,&work.input,&work.output) {
                 unsafe { gather(frame,ty,address,&mut selected,false)?; }
@@ -439,7 +440,7 @@ unsafe extern "system" fn execute(_: *mut c_void, context: *mut c_void, _: *mut 
                 if owners.is_empty() {
                     continue;
                 }
-                for address in loan.elements(frame) {
+                for address in loan.elements(&mut frame.data.datasets) {
                     for &(offset, ty) in owners {
                         let position = address.wrapping_add(offset as usize);
                         unsafe { gather_value(frame, ty, position, &mut selected, false, None, status)? };
@@ -453,7 +454,7 @@ unsafe extern "system" fn execute(_: *mut c_void, context: *mut c_void, _: *mut 
             }
         }
         Ok(())
-    })();
+    })(frame);
     work.completion = Some(
         match collected {
             Ok(()) => {
@@ -469,14 +470,14 @@ unsafe extern "system" fn execute(_: *mut c_void, context: *mut c_void, _: *mut 
 
 /// The input and output storage are the layouts bound by the originating module.
 pub(super) unsafe fn start(
-    frame: &mut Frame,
+    frame: &Frame,
     index: usize,
     entry: Entry,
     cleanup: Option<Cleanup>,
     input: *const u8,
     output: *mut u8,
 ) -> Result<()> {
-    let definitions = frame.definitions.clone();
+    let definitions = &frame.definitions;
     let input_type = &definitions.types[index];
     let result_type = index + 1;
     let start_type = &definitions.types[index + 2];
@@ -548,15 +549,15 @@ pub(super) unsafe fn submit(frame:&mut Frame,owner:*mut c_void,preparation:*mut 
     if !preparation.is_null() {
         return Ok(());
     }
-    let definitions=frame.definitions.clone();
-    let input_type=&definitions.types[task.work.result_type-1];
     let work=&mut task.work;
     let worker=work.frame.as_mut().unwrap();
+    let types = &worker.definitions.types;
+    let input_type = &types[work.result_type - 1];
     let mut selected=Selection::default();
-    bind_borrowed_inputs(frame,worker,input_type,&work.input,&mut selected)?;
+    bind_borrowed_inputs(frame, &mut worker.data, input_type, &work.input, &mut selected)?;
     unsafe {
         gather(frame,input_type,work.input.as_mut_ptr(),&mut selected,false)?;
-        for (ty,address,inout,_) in positions(&definitions.types,input_type,&work.input) {
+        for (ty,address,inout,_) in positions(types,input_type,&work.input) {
             if inout { gather(frame,ty,address,&mut selected,false)?; }
         }
         transfer(frame,worker,selected)?;

@@ -104,6 +104,17 @@ pub enum ResidentData {
     Gpu(vulkan::GpuDataset),
 }
 
+impl ResidentData {
+    fn storage_address(&mut self) -> u64 {
+        match self {
+            Self::Cpu(CpuDataset::Owned(data)) => data.words.as_mut_ptr() as usize as u64,
+            Self::Cpu(CpuDataset::Read(data)) => data.words().as_ptr() as usize as u64,
+            Self::CpuBorrow(data) => data.pointer as usize as u64,
+            Self::Gpu(data) => data.storage_address(),
+        }
+    }
+}
+
 /// 同一Frame可见CPU数据存储的同步快照；多个句柄只列一次物理Dataset。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FrameCpuDataMemory {
@@ -277,16 +288,22 @@ impl Frame {
         }
         result
     }
-    fn load_gpu(&mut self, index: usize, image: &blanguage::spirv::ProgramImage<TemplateProgram>) -> Result<()> {
-        if self.gpu_programs.get(index).is_none_or(Option::is_none) {
-            let device = Self::gpu_device(&self.definitions, &mut self.device)?;
+    fn load_gpu<'a>(
+        definitions: &Definitions,
+        slots: &'a mut Vec<Option<vulkan::GpuTemplate>>,
+        device: &mut Option<vulkan::Device>,
+        index: usize,
+        image: &blanguage::spirv::ProgramImage<TemplateProgram>,
+    ) -> Result<&'a vulkan::GpuTemplate> {
+        if slots.get(index).is_none_or(Option::is_none) {
+            let device = Self::gpu_device(definitions, device)?;
             let program = device.load_template_ref(image)?;
-            let slots = self.gpu_programs.len().max(index + 1);
-            self.gpu_programs.try_reserve_exact(slots - self.gpu_programs.len())?;
-            self.gpu_programs.resize_with(slots, || None);
-            self.gpu_programs[index] = Some(program);
+            let len = slots.len().max(index + 1);
+            slots.try_reserve_exact(len - slots.len())?;
+            slots.resize_with(len, || None);
+            slots[index] = Some(program);
         }
-        Ok(())
+        Ok(slots[index].as_ref().unwrap())
     }
     fn gpu_device<'a>(definitions: &Definitions, slot: &'a mut Option<vulkan::Device>) -> Result<&'a vulkan::Device> {
         Ok(match slot {
@@ -431,19 +448,14 @@ impl Frame {
     /// 原存储的位置地址；GPU返回原绑定头的设备地址，不等待或下载。
     /// 地址不保活存储；CPU解引用仍要求真实CPU位置及原借用权限。
     pub fn storage_address(&mut self,handle:u32)->u64 {
-        match self.data.datasets[handle as usize].as_mut().unwrap() {
-            ResidentData::Cpu(CpuDataset::Owned(data))=>data.words.as_mut_ptr() as usize as u64,
-            ResidentData::Cpu(CpuDataset::Read(data))=>data.words().as_ptr() as usize as u64,
-            ResidentData::CpuBorrow(data)=>data.pointer as usize as u64,
-            ResidentData::Gpu(data)=>data.storage_address(),
-        }
+        self.data.datasets[handle as usize].as_mut().unwrap().storage_address()
     }
     /// CPU 同步执行借用原帧槽，沿原句柄验证、撤回实际覆盖的事实并发布结果。
     /// GPU 同步记录同样借用原帧槽，由实际数据保留最后使用点。
     /// 队列接受后撤回实际写入覆盖的关系，等待成功才发布新保证。
     pub fn run(&mut self, program: u32, bindings: &[DatasetBinding], values: &[Value], textures: &[crate::cpu::CpuTextureBinding<'_>]) -> Result<()> {
         let index = program as usize;
-        let definitions = self.definitions.clone();
+        let definitions = &self.definitions;
         let definition = &definitions.programs[index];
         let layout = definition.layout();
         let mut cpu_resident = false;
@@ -472,7 +484,7 @@ impl Frame {
                     datasets.push(data);
                 }
                 let result = program.run_projected(&mut datasets, &mut self.data.domains,
-                    &arguments, textures, uniforms, &definitions);
+                    &arguments, textures, uniforms, definitions);
                 if result.is_err() {
                     self.data.domains.sort_unique();
                 }
@@ -485,8 +497,7 @@ impl Frame {
                 if cpu_resident {
                     return Err(error("GPU 执行需要先显式 upload 数据"));
                 }
-                self.load_gpu(index, image)?;
-                let gpu_program = self.gpu_programs[index].as_ref().unwrap();
+                let gpu_program = Self::load_gpu(definitions, &mut self.gpu_programs, &mut self.device, index, image)?;
                 let mut datasets = Vec::with_capacity(arguments.by_handle.len());
                 let slots = self.data.datasets.as_mut_ptr();
                 for handle in arguments.selected_handles() {
