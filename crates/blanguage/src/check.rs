@@ -417,6 +417,7 @@ enum DomainInput<'a> {
         name: &'a str,
         parameters: &'a Arc<[Param]>,
         contracts: &'a [FunctionContract],
+        prefix_requirements: &'a [PrefixRelation],
         statement: &'a Stmt,
         element: &'a str,
         domain: &'a ParallelDomain,
@@ -587,9 +588,16 @@ async fn expand_domain<'a>(
     };
     let bound_contracts = input.contracts();
     program.length_requirements = contracts::root_lengths(&env, d, &bound_contracts)?;
-    program.prefix_requirements = prefix::relations(&program, &env, d, &bound_contracts, ContractKind::Requires)?;
-    program.prefix_guarantees = prefix::relations(&program, &env, d, &bound_contracts, ContractKind::Ensures)?;
-    program.element_requirements = unsafe { world.call(prefix::element_requirements(world, &program.buffers, &env, input.owner(), &bound_contracts)).await }?;
+    match input {
+        DomainInput::Parallel { prefix_requirements, .. } => {
+            program.prefix_requirements.extend_from_slice(prefix_requirements);
+        }
+        DomainInput::Declaration { .. } => {
+            program.prefix_requirements = prefix::relations(&program, &env, d, &bound_contracts, ContractKind::Requires)?;
+            program.prefix_guarantees = prefix::relations(&program, &env, d, &bound_contracts, ContractKind::Ensures)?;
+            program.element_requirements = unsafe { world.call(prefix::element_requirements(world, &program.buffers, &env, input.owner(), &bound_contracts)).await }?;
+        }
+    }
     program.element_requirements.extend_from_slice(element_inputs);
     program.element_requirements.sort();
     program.element_requirements.dedup();

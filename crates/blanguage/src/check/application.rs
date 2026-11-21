@@ -3413,40 +3413,66 @@ impl Builder<'_> {
             args.push(arg);
         }
         self.check_argument_aliases(|index|(params[index].access,params[index].ty.dataset), &args, |_| statement.span())?;
-        let mut contracts = Vec::new();
-        fn count_fields(ty:&Ty,path:&str,offset:u32,out:&mut Vec<(String,u32)>) {
-            for(field,at,ty)in &ty.fields {
-                let name=if path.is_empty(){field.clone()}else{format!("{path}.{field}")};
-                if **ty==Ty::scalar(Scalar::U32){out.push((name,offset+at));}
-                else{count_fields(ty,&name,offset+at,out);}
+        // 生成域按实际 dataset 的捕获顺序编号。
+        let captured = args.iter().zip(&params).filter_map(|(argument, parameter)| {
+            match argument { Argument::BorrowedData(data) => Some((parameter.access, data)), _ => None }
+        }).collect::<Vec<_>>();
+        let mut prefix_requirements = Vec::new();
+        fn count_fields(
+            ty: &Ty, base: u32, facts: &prefix::Fields, visit: &mut impl FnMut(u32, &view::Borrow),
+        ) {
+            if facts.range(base..base + ty.size).next().is_none() {
+                return;
             }
-        }
-        fn domains(resource:&view::Borrow,ty:&Ty,known:&view::Borrow,path:&bounds::Clause,name:&str,selected:&mut Vec<usize>,out:&mut Vec<String>) {
-            let projected=view::Borrow::projection(resource.clone(),selected.clone());
-            if prefix::covers(known,&projected,path){out.push(name.into());return;}
-            for(index,(field,_,ty))in ty.fields.iter().enumerate(){
-                selected.push(index);domains(resource,ty,known,path,&format!("{name}.{field}"),selected,out);selected.pop();
-            }
-        }
-        for (count_index,argument) in args.iter().enumerate() {
-            let Argument::BorrowedData(count)=argument else{continue;};
-            if count.count!=Some(1)||!params[count_index].access.reads(){continue;}
-            let (offset,ty)=count.element_layout();let mut fields=Vec::new();
-            count_fields(ty,"",offset,&mut fields);
-            for(field,word)in fields {
-                let Some(known)=count.prefixes.get(&word)else{continue;};
-                for(data_index,argument)in args.iter().enumerate() {
-                    if data_index==count_index{continue;}
-                    let Argument::BorrowedData(data)=argument else{continue;};
-                    let mut names=Vec::new();
-                    domains(&prefix::domain(data),data.element_layout().1,known,&self.path,&params[data_index].name,&mut Vec::new(),&mut names);
-                    for name in names {
-                        contracts.push(FunctionContract{kind:ContractKind::Requires,
-                            predicate:ContractPredicate::Prefix{data:name,count:params[count_index].name.clone(),field:field.clone()},span:statement.span()});
-                    }
+            for (_, relative, field) in &ty.fields {
+                let word = base + relative;
+                if let Some(fact) = facts.get(&word) && field.as_ref() == &Ty::scalar(Scalar::U32) {
+                    visit(word, fact);
+                } else if !field.fields.is_empty() {
+                    count_fields(field, word, facts, visit);
                 }
             }
         }
+        fn domain_regions(
+            resource: &view::Borrow, ty: &Ty, requirement: PrefixRelation, known: &view::Borrow,
+            path: &bounds::Clause, selected: &mut Vec<usize>, out: &mut Vec<PrefixRelation>,
+        ) {
+            let projected = view::Borrow::projection(resource.clone(), selected.clone());
+            if prefix::covers(known, &projected, path) {
+                out.push(requirement);
+                return;
+            }
+            let base = requirement.domain_region.map_or(0, |(start, _)| start);
+            for (index, (_, offset, field)) in ty.fields.iter().enumerate() {
+                selected.push(index);
+                let region = PrefixRelation {
+                    domain_region: Some((base + offset, field.size)),
+                    ..requirement
+                };
+                domain_regions(resource, field, region, known, path, selected, out);
+                selected.pop();
+            }
+        }
+        for (binding, (access, count)) in captured.iter().enumerate() {
+            if count.count != Some(1) || !access.reads() || count.prefixes.is_empty() {
+                continue;
+            }
+            let (base, ty) = count.element_layout();
+            count_fields(ty, base, &count.prefixes, &mut |word, known| {
+                let count = PrefixCount { binding, word: word - base };
+                for (domain, (_, data)) in captured.iter().enumerate() {
+                    if domain != binding {
+                        domain_regions(&prefix::domain(data), data.element_layout().1,
+                            PrefixRelation { domain, domain_region: None, count },
+                            known, &self.path, &mut Vec::new(), &mut prefix_requirements);
+                    }
+                }
+            });
+        }
+        prefix_requirements.sort();
+        prefix_requirements.dedup();
+
+        let mut contracts = Vec::new();
         let mut groups: Vec<usize> = Vec::new();
         for (index, argument) in args.iter().enumerate() {
             let Argument::BorrowedData(data) = argument else { continue; };
@@ -3467,9 +3493,6 @@ impl Builder<'_> {
                 groups.push(index);
             }
         }
-        let captured = args.iter().zip(&params).filter_map(|(argument, parameter)| {
-            match argument { Argument::BorrowedData(data) => Some((parameter.access, data)), _ => None }
-        }).collect::<Vec<_>>();
         let mut element_inputs = Vec::new();
         for (binding, (access, source)) in captured.iter().enumerate() {
             if !access.reads() || *access == Access::Atomic { continue; }
@@ -3505,7 +3528,7 @@ impl Builder<'_> {
         let site=self.source_at(statement.span(),SourceSyntax::Statement);
         unsafe { self.world.call(self.application_execute(
             DomainInput::Parallel{owner:&owner,name:&name,parameters:&parameters,contracts:&contracts,
-                statement,element,domain,body,site:&site},
+                prefix_requirements:&prefix_requirements,statement,element,domain,body,site:&site},
             args,Target::Cpu,statement.span(),&element_inputs,
         )).await }?;
         Ok(())
