@@ -1,6 +1,7 @@
 //! The original owning IR, primitive containers and source construction.
 use super::*;
-use super::super::{BlockSpan, instruction_span, swap_instructions};
+use super::super::{BlockSpan, InstructionStorage, instruction_span, instruction_storage, swap_instructions};
+use crate::ir::dataflow::{REGISTER_HOST, RegisterHost, Span};
 use std::collections::btree_map::Entry;
 
 #[derive(Clone, Default)]
@@ -40,20 +41,6 @@ enum StateOp { New, Clone, Drop, Move, Copy, Clear, Extend }
 enum DivisionOp { Clear, Take, Put }
 #[repr(u32)]
 enum DivisionChoice { Quotient = 1, Remainder, Both }
-#[repr(u32)]
-enum Kind {
-    Ordinary, Constant, Index, Uniform, BufferStride, Unary, Binary, Cast, Math, Select,
-    Division, Scope, Raise, Exit, Break, Continue, Atomic, Append, Barrier,
-    LocalRead, LocalWrite, LocalIndexedWrite, IndexedWrite, Load, Store, If, Loop, Call, Publish, Collective,
-}
-#[repr(C)]
-struct Node {
-    first_code: *mut Vec<Inst>, second_code: *mut Vec<Inst>,
-    arguments: *mut Reg, count: usize,
-    division_result: *mut IntegerDivisionResult, divisor: *const IntegerDivisor, payload: *const std::ffi::c_void,
-    dst: Reg, first: u64, second: u64, third: u64, extra: u64,
-    kind: Kind, operation: u32, flags: u32,
-}
 #[repr(C)]
 struct Flow { next: *mut LocalValues, exits: *mut LocalValues }
 struct Context<'a> {
@@ -62,9 +49,9 @@ struct Context<'a> {
 }
 type Get = unsafe extern "C" fn(*const Values, RegMap, usize) -> Optional;
 #[repr(C)]
-#[derive(Clone, Copy)]
 struct Host {
-    read: unsafe extern "C" fn(*mut Inst, *const Context<'_>) -> Node,
+    values: RegisterHost,
+    storage: unsafe extern "C" fn(*mut Inst) -> InstructionStorage,
     remap: unsafe extern "C" fn(*mut Inst, *const Values),
     block: unsafe extern "C" fn(*mut Vec<Inst>, *mut Values, *mut Context<'_>) -> Flow,
     instruction_span: unsafe extern "C" fn(*mut Vec<Inst>) -> BlockSpan,
@@ -93,7 +80,7 @@ struct Host {
 
 unsafe extern "C" {
     #[link_name = "bootstrap.stage_fusion::value_block"]
-    fn value_block(code: *mut Vec<Inst>, values: *mut Values, context: *mut Context<'_>, host: Host) -> Flow;
+    fn value_block(code: *mut Vec<Inst>, values: *mut Values, context: *mut Context<'_>, registers: Span, host: Host) -> Flow;
     #[link_name = "bootstrap.stage_fusion::value_discard_flow"]
     fn value_discard_flow(flow: Flow, host: Host);
     #[link_name = "bootstrap.stage_fusion::value_root"]
@@ -115,64 +102,10 @@ pub(super) fn aliases_only(values: &Values) -> Values { Values { aliases: values
 
 fn run_block(code: &mut Vec<Inst>, values: &mut Values, registers: &[Scalar], reuses: &mut Reuses) -> Flow {
     let mut context = Context { registers, reuses, divisions: BTreeMap::new() };
-    unsafe { value_block(code, values, &mut context, HOST) }
+    unsafe { value_block(code, values, &mut context, Span::slice(registers), HOST) }
 }
 unsafe extern "C" fn truncate(code: *mut Vec<Inst>, kept: usize) {
     unsafe { &mut *code }.truncate(kept);
-}
-fn binary_code(op: BinaryOp) -> u32 {
-    match op {
-        BinaryOp::FAdd => 0, BinaryOp::FSub => 1, BinaryOp::FMul => 2, BinaryOp::FDiv => 3,
-        BinaryOp::IAdd => 4, BinaryOp::ISub => 5, BinaryOp::IMul => 6,
-        BinaryOp::Compare(cmp) => 7 + cmp as u32,
-        BinaryOp::And => 13, BinaryOp::Or => 14, BinaryOp::Xor => 15,
-        BinaryOp::ShiftLeft => 16, BinaryOp::ShiftRightLogical => 17, BinaryOp::ShiftRightArithmetic => 18,
-    }
-}
-unsafe extern "C" fn read(instruction: *mut Inst, context: *const Context<'_>) -> Node {
-    let mut node = Node { first_code: std::ptr::null_mut(), second_code: std::ptr::null_mut(),
-        arguments: std::ptr::NonNull::<Reg>::dangling().as_ptr(), count: 0,
-        division_result: std::ptr::null_mut(), divisor: std::ptr::null(), payload: std::ptr::null(),
-        dst: 0, first: 0, second: 0, third: 0, extra: 0, kind: Kind::Ordinary, operation: 0, flags: 0 };
-    let inst = unsafe { &mut *instruction }; let registers = unsafe { &*context }.registers;
-    match &mut inst.kind {
-        InstKind::Constant(dst, scalar, bits) => { node.kind = Kind::Constant; node.dst = *dst; node.first = *bits; node.operation = *scalar as u32; }
-        InstKind::Index(dst) => { node.kind = Kind::Index; node.dst = *dst; }
-        InstKind::Uniform(dst, offset) => { node.kind = Kind::Uniform; node.dst = *dst; node.first = u64::from(*offset); }
-        InstKind::BufferStride(dst, binding) => { node.kind = Kind::BufferStride; node.dst = *dst; node.first = *binding as u64; }
-        InstKind::Unary { dst, op, a } => { node.kind = Kind::Unary; node.dst = *dst; node.first = *a as u64; node.second = registers[*dst] as u64; node.operation = *op as u32; }
-        InstKind::Binary { dst, op, a, b } => { node.kind = Kind::Binary; node.dst = *dst; node.first = *a as u64; node.second = *b as u64; node.operation = binary_code(*op); }
-        InstKind::Cast { dst, src } => { node.kind = Kind::Cast; node.dst = *dst; node.first = *src as u64; node.operation = registers[*dst] as u32; }
-        InstKind::Math { dst, op, args } => { node.kind = Kind::Math; node.dst = *dst; node.operation = *op as u32; node.arguments = args.as_mut_ptr(); node.count = args.len(); }
-        InstKind::Select { dst, condition, a, b } => { node.kind = Kind::Select; node.dst = *dst; node.first = *condition as u64; node.second = *a as u64; node.third = *b as u64; }
-        InstKind::IntegerDivide { result, src, divisor } => {
-            node.kind = Kind::Division; node.first = *src as u64; node.division_result = result; node.divisor = divisor;
-            match divisor { IntegerDivisor::Constant(value) => { node.second = 1; node.third = value.get(); }, IntegerDivisor::Value(reg) => { node.second = 2; node.third = *reg as u64; } }
-            if let Some(reg) = result.quotient() { node.flags |= 1; node.dst = reg; }
-            if let Some(reg) = result.remainder() { node.flags |= 2; node.extra = reg as u64; }
-        }
-        InstKind::Scope(code) => { node.kind = Kind::Scope; node.first_code = code; }
-        InstKind::Raise(_) => node.kind = Kind::Raise,
-        InstKind::Exit => node.kind = Kind::Exit,
-        InstKind::Break => node.kind = Kind::Break,
-        InstKind::Continue => node.kind = Kind::Continue,
-        InstKind::Atomic(atomic) => { node.kind = Kind::Atomic; node.flags = u32::from(atomic.op.writes()); node.payload = (&atomic.target as *const IndexedSource).cast(); }
-        InstKind::Append(_) => node.kind = Kind::Append,
-        InstKind::TileBarrier => node.kind = Kind::Barrier,
-        InstKind::TilePublish(_) => node.kind = Kind::Publish,
-        InstKind::TileCollective(_) => node.kind = Kind::Collective,
-        InstKind::LoadLocal(dst, slot) => { node.kind = Kind::LocalRead; node.dst = *dst; node.first = *slot as u64; }
-        InstKind::StoreLocal(slot, value) => { node.kind = Kind::LocalWrite; node.first = *slot as u64; node.second = *value as u64; }
-        InstKind::StoreLocalIndexed { base, len, .. } => { node.kind = Kind::LocalIndexedWrite; node.first = *base as u64; node.second = *len as u64; }
-        InstKind::StoreIndexed { source, .. } => { node.kind = Kind::IndexedWrite; node.payload = (source as *const IndexedSource).cast(); }
-        InstKind::Load { dst, binding, index, word } => { node.kind = Kind::Load; node.dst = *dst; node.first = *binding as u64; node.second = *index as u64; node.third = u64::from(*word); }
-        InstKind::Store { binding, index, word, value } => { node.kind = Kind::Store; node.first = *binding as u64; node.second = *index as u64; node.third = u64::from(*word); node.extra = *value as u64; }
-        InstKind::If { yes, no, .. } => { node.kind = Kind::If; node.first_code = yes; node.second_code = no; }
-        InstKind::Loop { condition, test, body } => { node.kind = Kind::Loop; node.first_code = condition; node.second_code = body; node.arguments = test; node.count = 1; }
-        InstKind::Call(call) => { node.kind = Kind::Call; node.payload = (call as *const Call).cast(); }
-        _ => {}
-    }
-    node
 }
 unsafe extern "C" fn remap(instruction: *mut Inst, values: *const Values) {
     unsafe { crate::ir::rewrite::operands(&mut *instruction, &*values, root); }
@@ -220,8 +153,12 @@ unsafe extern "C" fn apply(values: *mut Values, snapshot: *mut LocalValues) {
     unsafe { &mut *values }.locals = unsafe { *Box::from_raw(snapshot) }.into_iter().map(|entry| (entry.slot, entry.value)).collect();
 }
 unsafe extern "C" fn expression(values: *mut Values, key: Expression, dst: Reg) -> Optional {
-    let key = ExpressionKey { kind: key.kind, operation: key.operation, words: key.words,
-        arguments: unsafe { std::slice::from_raw_parts(key.arguments, key.count) }.to_vec() };
+    let arguments = if key.count == 0 {
+        Vec::new()
+    } else {
+        unsafe { std::slice::from_raw_parts(key.arguments, key.count) }.to_vec()
+    };
+    let key = ExpressionKey { kind: key.kind, operation: key.operation, words: key.words, arguments };
     match unsafe { &mut *values }.expressions.entry(key) {
         Entry::Occupied(old) => Optional { value: *old.get(), present: 1 },
         Entry::Vacant(slot) => { slot.insert(dst); Optional { value: 0, present: 0 } }
@@ -296,6 +233,6 @@ unsafe extern "C" fn call(values: *mut Values, call: *const Call) {
             }
         }
 }
-const HOST: Host = Host { read, remap, block, instruction_span, swap_instructions, truncate, state, get, put, remove_range, snapshot, intersect,
+const HOST: Host = Host { values: REGISTER_HOST, storage: instruction_storage, remap, block, instruction_span, swap_instructions, truncate, state, get, put, remove_range, snapshot, intersect,
     drop_snapshot, apply, expression, division, rewrite_division, pair, note,
     memory_get, memory_put, memory_filter, aliases, written, call };

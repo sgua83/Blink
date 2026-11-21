@@ -22,6 +22,38 @@ unsafe extern "C" fn swap_instructions(first: *mut Inst, second: *mut Inst) {
 }
 
 #[repr(C)]
+struct InstructionStorage {
+    first_code: *mut Vec<Inst>,
+    second_code: *mut Vec<Inst>,
+    payload: *mut c_void,
+    input: *const c_void,
+}
+// Only exclusive addresses of original owning fields. B has already consumed
+// the immutable scalar/tag projection before requesting these physical owners.
+unsafe extern "C" fn instruction_storage(instruction: *mut Inst) -> InstructionStorage {
+    let kind = unsafe { &mut (*instruction).kind };
+    let mut fields = InstructionStorage {
+        first_code: ptr::null_mut(), second_code: ptr::null_mut(),
+        payload: ptr::null_mut(), input: ptr::null(),
+    };
+    match kind {
+        InstKind::Scope(body) => fields.first_code = body,
+        InstKind::If { yes, no, .. } => { fields.first_code = yes; fields.second_code = no; }
+        InstKind::Loop { condition, test, body } => {
+            fields.first_code = condition;
+            fields.second_code = body;
+            fields.payload = ptr::from_mut(test).cast();
+        }
+        InstKind::IntegerDivide { result, divisor, .. } => {
+            fields.payload = ptr::from_mut(result).cast();
+            fields.input = ptr::from_ref(divisor).cast();
+        }
+        InstKind::TileCollective(collective) => fields.payload = (collective as *mut TileCollective).cast(),
+        _ => {}
+    }
+    fields
+}
+#[repr(C)]
 struct BindingSpan {
     data: *const usize,
     count: usize,

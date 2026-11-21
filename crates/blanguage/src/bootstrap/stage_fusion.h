@@ -79,12 +79,12 @@ extern "C" void private_phase_step(address instruction,address live,address save
 
 enum DceRemovalKind:u32 { Values=0; Division=1; DirectWrite=2; IndexedWrite=3; };
 enum DceDivisionChoice:u32 { Quotient=1; Remainder=2; Both=3; };
-struct DceStorage { address first_code; address second_code; address payload; };
+struct InstructionStorage { address first_code; address second_code; address payload; address input; };
 struct DceResults { u32 present; u32 needed; };
 struct DceRemoval { DceRemovalKind kind; u64 value; u64 index; u64 length; u64 word; };
 struct DceHost {
     LiveHost live;
-    cfn<DceStorage,address> storage;
+    cfn<InstructionStorage,address> storage;
     cfn<Span,address> read_block;
     cfn<u32,address,u32,u64> contains;
     cfn<void,address,address> swap_instructions;
@@ -108,11 +108,6 @@ extern "C" void eliminate_code(address block,address needed,
     requires nonzero(host.live.kill) requires nonzero(host.live.read) requires nonzero(host.record)
     requires nonzero(host.prune_division) requires nonzero(host.prune_collective);
 
-enum VfKind:u32 {
-    Ordinary=0; Constant=1; Index=2; Uniform=3; BufferStride=4; Unary=5; Binary=6; Cast=7; Math=8; Select=9;
-    Division=10; Scope=11; Raise=12; Exit=13; Break=14; Continue=15; Atomic=16; Append=17; Barrier=18;
-    LocalRead=19; LocalWrite=20; LocalIndexedWrite=21; IndexedWrite=22; Load=23; Store=24; If=25; Loop=26; Call=27; Publish=28; Collective=29;
-};
 enum VfMap:u32 { Aliases=0; Expressions=1; Memory=2; Locals=3; };
 enum VfRegMap:u32 { Aliases=0; Locals=1; };
 enum VfStateOp:u32 { New=0; Clone=1; Drop=2; Move=3; Copy=4; Clear=5; Extend=6; };
@@ -126,15 +121,10 @@ struct VfOptional { u64 value; u32 present; };
 struct VfDivision { address instruction; u64 quotient; u64 remainder; u32 mask; u32 present; };
 struct VfMemory { u64 value; address origin; u32 present; };
 struct VfReuse { address origin; VfReuseKind kind; VfRole role; u32 paired; };
-struct VfNode {
-    address first_code; address second_code; address arguments; u64 count;
-    address division_result; address divisor; address payload;
-    u64 dst; u64 first; u64 second; u64 third; u64 extra;
-    VfKind kind; u32 operation; u32 flags;
-};
 struct VfFlow { address next; address exits; };
 struct VfHost {
-    cfn<VfNode,address,address> read;
+    RegisterHost values;
+    cfn<InstructionStorage,address> storage;
     cfn<void,address,address> remap;
     cfn<VfFlow,address,address,address> block;
     cfn<Span,address> instruction_span;
@@ -167,8 +157,9 @@ extern "C" void value_alias(address values,u32 kind,u64 first,u64 length,VfHost 
     requires nonzero(host.remove_range) requires nonzero(host.memory_filter);
 extern "C" void value_call_effect(address values,u32 kind,u64 first,u64 length,u32 writes,VfHost host) on cpu 
     requires nonzero(host.state) requires nonzero(host.remove_range) requires nonzero(host.memory_filter);
-extern "C" VfFlow value_block(address block,address values,address context,VfHost host) on cpu
-    requires nonzero(host.read) requires nonzero(host.remap) requires nonzero(host.block) requires nonzero(host.state)
+extern "C" VfFlow value_block(address block,address values,address context,Span registers,VfHost host) on cpu
+    requires nonzero(host.values.ir.inspect) requires nonzero(host.values.scalar) requires nonzero(host.storage)
+    requires nonzero(host.remap) requires nonzero(host.block) requires nonzero(host.state)
     requires nonzero(host.get) requires nonzero(host.put) requires nonzero(host.remove_range) requires nonzero(host.snapshot)
     requires nonzero(host.intersect) requires nonzero(host.drop_snapshot) requires nonzero(host.apply) requires nonzero(host.expression)
     requires nonzero(host.division) requires nonzero(host.rewrite_division) requires nonzero(host.pair)

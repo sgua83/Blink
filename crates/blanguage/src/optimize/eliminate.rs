@@ -1,6 +1,6 @@
 //! B selects deletion and propagation; Rust moves the original owning IR.
 use crate::ir::*;
-use super::{BlockSpan, instruction_span, swap_instructions};
+use super::{BlockSpan, InstructionStorage, instruction_span, instruction_storage, swap_instructions};
 use std::collections::BTreeSet;
 type Slots = BTreeSet<PrivateSlot>;
 #[repr(u32)]
@@ -10,14 +10,12 @@ enum DivisionChoice { Quotient = 1, Remainder, Both }
 #[repr(u32)]
 enum Space { Register, Local }
 #[repr(C)]
-struct Storage { first_code: *mut Vec<Inst>, second_code: *mut Vec<Inst>, payload: *mut std::ffi::c_void }
-#[repr(C)]
 struct Removal { kind: RemovalKind, value: Reg, index: Reg, length: usize, word: usize }
 type Contains = unsafe extern "C" fn(*const Slots, Space, usize) -> u32;
 #[repr(C)]
 struct Host {
     live: PrivateLiveHost,
-    storage: unsafe extern "C" fn(*mut Inst) -> Storage,
+    storage: unsafe extern "C" fn(*mut Inst) -> InstructionStorage,
     read_block: unsafe extern "C" fn(*mut Vec<Inst>) -> BlockSpan,
     contains: Contains,
     swap_instructions: unsafe extern "C" fn(*mut Inst, *mut Inst),
@@ -35,21 +33,6 @@ unsafe extern "C" {
     fn result_needed(needed: *const Slots, reg: Reg, contains: Contains) -> u32;
 }
 
-// Only exclusive addresses of original owning fields. B has already consumed
-// the immutable scalar/tag projection before requesting these physical owners.
-unsafe extern "C" fn storage(instruction: *mut Inst) -> Storage {
-    let kind = unsafe { &mut (*instruction).kind };
-    let mut fields = Storage { first_code: std::ptr::null_mut(), second_code: std::ptr::null_mut(), payload: std::ptr::null_mut() };
-    match kind {
-        InstKind::Scope(body) => fields.first_code = body,
-        InstKind::If { yes, no, .. } => { fields.first_code = yes; fields.second_code = no; }
-        InstKind::Loop { condition, body, .. } => { fields.first_code = condition; fields.second_code = body; }
-        InstKind::IntegerDivide { result, .. } => fields.payload = (result as *mut IntegerDivisionResult).cast(),
-        InstKind::TileCollective(collective) => fields.payload = (collective as *mut TileCollective).cast(),
-        _ => {}
-    }
-    fields
-}
 unsafe extern "C" fn contains(slots: *const Slots, space: Space, slot: usize) -> u32 {
     let slot = match space { Space::Register => PrivateSlot::Register(slot), Space::Local => PrivateSlot::Local(slot) };
     u32::from(unsafe { &*slots }.contains(&slot))
@@ -96,7 +79,7 @@ unsafe extern "C" fn prune_division(instruction: *mut Inst, result: *mut Integer
 unsafe extern "C" fn prune_collective(collective: *mut TileCollective, needed: *const Slots) {
     unsafe { &mut *collective }.results.retain(|(_, reg)| unsafe { result_needed(needed, *reg, contains) } != 0);
 }
-const HOST: Host = Host { live: PRIVATE_LIVE_HOST, storage, read_block: instruction_span, contains,
+const HOST: Host = Host { live: PRIVATE_LIVE_HOST, storage: instruction_storage, read_block: instruction_span, contains,
     swap_instructions, discard_prefix, record, prune_division, prune_collective };
 unsafe extern "C" fn discard_prefix(code: *mut Vec<Inst>, count: usize) {
     drop(unsafe { &mut *code }.drain(..count));

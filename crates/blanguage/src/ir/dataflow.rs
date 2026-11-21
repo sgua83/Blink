@@ -10,7 +10,7 @@ enum Kind {
     Instruction, Call, Target, Argument, DatasetBorrow, Reference, Storage,
     Indexed, Stride, Texture, AtomicOp, Alias, Effect, Division, Divisor, Words3,
     Component, Stage, RayRange, Operation, Buffer, Uniform, ValueCode, CustomReduction, Scalar, Tile, Registers,
-    FirstComponentScalar, PageBuffer, PageType, PageVariant, PageField, Comparison,
+    FirstComponentScalar, PageBuffer, PageType, PageVariant, PageField, Comparison, BinaryOperation,
 }
 #[derive(Clone, Copy)]
 #[repr(C)]
@@ -265,7 +265,7 @@ unsafe extern "C" fn inspect(node: Node) -> View {
             let mut view = View::tag(tag); view.a = a; view.b = b; view
         }
         Kind::Divisor => match unsafe { &*node.data.cast::<IntegerDivisor>() } {
-            IntegerDivisor::Constant(_) => View::tag(0),
+            IntegerDivisor::Constant(value) => { let mut view = View::tag(0); view.a = value.get() as usize; view },
             IntegerDivisor::Value(a) => { let mut view = View::tag(1); view.a = *a; view }
         },
         Kind::Words3 => {
@@ -339,6 +339,7 @@ unsafe extern "C" fn inspect(node: Node) -> View {
             view.left = Node::of(variant.ty.as_ref(), Kind::PageType);
             view
         }
+        Kind::BinaryOperation => View::tag(binary_code(unsafe { *node.data.cast::<BinaryOp>() })),
         Kind::Comparison => View::tag(unsafe { *node.data.cast::<Comparison>() } as u32),
         Kind::PageField => {
             let field = unsafe { &*node.data.cast::<(String, u32, Box<Ty>)>() };
@@ -385,6 +386,16 @@ unsafe extern "C" fn inspect(node: Node) -> View {
             let range = unsafe { &*node.data.cast::<std::ops::Range<usize>>() };
             let mut view = View::tag(0); view.a = range.start; view.b = range.end; view
         }
+    }
+}
+
+fn binary_code(op: BinaryOp) -> u32 {
+    match op {
+        BinaryOp::FAdd => 0, BinaryOp::FSub => 1, BinaryOp::FMul => 2, BinaryOp::FDiv => 3,
+        BinaryOp::IAdd => 4, BinaryOp::ISub => 5, BinaryOp::IMul => 6,
+        BinaryOp::Compare(cmp) => 7 + cmp as u32,
+        BinaryOp::And => 13, BinaryOp::Or => 14, BinaryOp::Xor => 15,
+        BinaryOp::ShiftLeft => 16, BinaryOp::ShiftRightLogical => 17, BinaryOp::ShiftRightArithmetic => 18,
     }
 }
 
@@ -452,7 +463,7 @@ fn instruction(value: &Inst) -> View {
             view.second = Span::slice(origin); view.left = Node::of(direction, Kind::Words3); view.a = *minimum; view.b = *maximum;
             if let Some(reg) = cull_back_faces { view.c = 1; view.d = *reg; }
         }
-        InstKind::Constant(dst, _, bits) => { view.tag = 23; view.a = *dst; view.b = *bits as usize; }
+        InstKind::Constant(dst, scalar, bits) => { view.tag = 23; view.a = *dst; view.b = *bits as usize; view.c = *scalar as usize; }
         InstKind::FunctionAddress(dst, target) => { view.tag = 24; view.a = *dst; view.left = Node::of(target, Kind::Target); }
         InstKind::PositionAddress { dst, address } => { view.tag = 25; view.a = *dst; view.left = Node::of(address, Kind::Reference); }
         InstKind::BufferStride(dst, binding) => { view.tag = 26; view.a = *dst; view.b = *binding; }
@@ -462,12 +473,13 @@ fn instruction(value: &Inst) -> View {
         InstKind::StoreLocal(slot, value) => { view.tag = 30; view.a = *slot; view.b = *value; }
         InstKind::LoadLocalIndexed { dst, base, len, index, .. } => { view.tag = 31; view.a = *dst; view.b = *base; view.c = *len; view.d = *index; }
         InstKind::StoreLocalIndexed { base, len, index, value, word } => { view.tag = 32; view.a = *base; view.b = *len; view.c = *index; view.d = *value; view.first = Span::slice(std::slice::from_ref(word)); }
-        InstKind::Load { dst, binding, index, .. } => { view.tag = 33; view.a = *dst; view.b = *binding; view.c = *index; }
-        InstKind::Store { binding, index, value, .. } => { view.tag = 34; view.a = *binding; view.b = *index; view.d = *value; }
-        InstKind::Unary { dst, a, .. } => { view.tag = 35; view.a = *dst; view.b = *a; }
+        InstKind::Load { dst, binding, index, word } => { view.tag = 33; view.a = *dst; view.b = *binding; view.c = *index; view.d = *word as usize; }
+        InstKind::Store { binding, index, word, value } => { view.tag = 34; view.a = *binding; view.b = *index; view.c = *word as usize; view.d = *value; }
+        InstKind::Unary { dst, op, a } => { view.tag = 35; view.a = *dst; view.b = *a; view.c = *op as usize; }
         InstKind::Binary { dst, op, a, b } => {
             view.tag = 36; view.a = *dst; view.b = *a; view.c = *b;
             view.d = usize::from(value.float_preserve);
+            view.right = Node::of(op, Kind::BinaryOperation);
             if let BinaryOp::Compare(comparison) = op {
                 view.left = Node::of(comparison, Kind::Comparison);
             }
