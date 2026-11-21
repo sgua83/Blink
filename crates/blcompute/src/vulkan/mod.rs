@@ -22,7 +22,7 @@ use blanguage::{
     ir::{DeviceRequirements, ExecutionPlan as Program, ProgramInterface, Ty},
 };
 pub use execution::{GpuCompletion, GpuStageTimestamps, GpuTimestamps};
-use execution::{Completion, DependencySources, Execution, ExecutionResources, QueryPool};
+use execution::{Completion, Dependencies, DependencySources, Execution, ExecutionResources, QueryPool};
 pub use memory::{MemoryBudget, MemoryHeapBudget};
 pub use present::{PresentStatus, Swapchain};
 use raw::*;
@@ -2438,7 +2438,7 @@ impl GpuProgram {
         let mut commands = Commands::new(c.inner.clone())?;
         let pending_inputs = dependencies.is_empty();
         let dependencies = if pending_inputs {
-            Vec::new()
+            Dependencies::Empty
         } else {
             resource_stage = 0;
             resource_access = 0;

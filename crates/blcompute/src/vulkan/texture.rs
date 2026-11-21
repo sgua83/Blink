@@ -372,7 +372,7 @@ impl Device {
             }
         }
         let buffer = staging.buffer;
-        self.write_image(texture, Some(staging), Vec::new(), |commands, texture| {
+        self.write_image(texture, Some(staging), Dependencies::Empty, |commands, texture| {
             unsafe {
                 (self.inner.functions.vkCmdCopyBufferToImage)(
                     commands.command, buffer, texture.image, 7, copies.len() as u32, copies.as_ptr(),
@@ -525,7 +525,7 @@ impl Device {
         }
     }
     fn write_image<const D: usize>(&self, texture: Storage, staging: Option<Allocation>,
-        dependencies: Vec<Rc<Execution>>, record: impl FnOnce(&Commands, &Storage)) -> Result<Texture<D>> {
+        dependencies: Dependencies, record: impl FnOnce(&Commands, &Storage)) -> Result<Texture<D>> {
         let f = &self.inner.functions;
         let commands = Commands::new(self.inner.clone())?;
         unsafe {

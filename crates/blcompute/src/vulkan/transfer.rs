@@ -104,7 +104,7 @@ impl Device {
                 _staging: staging,
                 covers_view_sources,
             },
-            Vec::new(),
+            Dependencies::Empty,
         )
     }
 }

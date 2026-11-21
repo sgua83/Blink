@@ -444,7 +444,7 @@ impl Swapchain {
             let signal = self.rendered[index as usize];
             let execution = Execution::submit_with(
                 ExecutionResources::Present { commands },
-                previous.into_iter().cloned().collect(),
+                previous.cloned().map_or(Dependencies::Empty, Dependencies::Single),
                 &[self.acquired],
                 &[0x1000],
                 &[signal],

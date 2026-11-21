@@ -306,9 +306,27 @@ enum DiscardedDataset {
 pub(super) struct Execution {
     pub point: Completion,
     resources: RefCell<Option<ExecutionResources>>,
-    // Some(empty) is still a live execution whose dependency list has not been moved.
-    dependencies: RefCell<Option<Vec<Rc<Self>>>>,
+    // Some(Empty) is a predecessor whose completion has yet to be published.
+    dependencies: RefCell<Option<Dependencies>>,
     discarded: RefCell<Vec<DiscardedDataset>>,
+}
+
+#[derive(Default)]
+pub(super) enum Dependencies {
+    #[default]
+    Empty,
+    Single(Rc<Execution>),
+    Multiple(Vec<Rc<Execution>>),
+}
+
+impl Dependencies {
+    fn append_to(self, completed: &mut Vec<Rc<Execution>>) {
+        match self {
+            Self::Empty => {}
+            Self::Single(previous) => completed.push(previous),
+            Self::Multiple(sources) => completed.extend(sources),
+        }
+    }
 }
 
 #[derive(Default)]
@@ -349,36 +367,41 @@ impl DependencySources {
         };
     }
 
-    pub fn prepare(self) -> Result<Vec<Rc<Execution>>> {
+    pub fn prepare(self) -> Result<Dependencies> {
         let mut sources = match self {
-            Self::Empty => return Ok(Vec::new()),
+            Self::Empty => return Ok(Dependencies::Empty),
             Self::Single(source) => {
-                if source.is_complete()? {
-                    return Ok(Vec::new());
-                }
-                return Ok(vec![source]);
+                return Ok(if source.is_complete()? {
+                    Dependencies::Empty
+                } else {
+                    Dependencies::Single(source)
+                });
             }
             Self::Multiple(sources) => sources.into_values(),
         };
         while let Some(source) = sources.next() {
             if !source.is_complete()? {
-                return Ok(std::iter::once(source).chain(sources).collect());
+                return Ok(if sources.len() == 0 {
+                    Dependencies::Single(source)
+                } else {
+                    Dependencies::Multiple(std::iter::once(source).chain(sources).collect())
+                });
             }
         }
-        Ok(Vec::new())
+        Ok(Dependencies::Empty)
     }
 }
 
 impl Execution {
     pub fn submit(
         resources: ExecutionResources,
-        dependencies: Vec<Rc<Self>>,
+        dependencies: Dependencies,
     ) -> Result<Rc<Self>> {
         Self::submit_with(resources, dependencies, &[], &[], &[])
     }
     pub fn submit_with(
         resources: ExecutionResources,
-        dependencies: Vec<Rc<Self>>,
+        dependencies: Dependencies,
         wait: &[u64],
         stages: &[u32],
         signal: &[u64],
@@ -462,24 +485,46 @@ impl Execution {
         }
         result
     }
-    fn release_dependencies(mut completed: Vec<Rc<Self>>, result: Option<i32>) {
+    fn take_completed_dependencies(&self, result: Option<i32>) -> Option<Dependencies> {
+        let dependencies = self.dependencies.take()?;
         // 保留真实原生终态；同队列成功覆盖生产依赖，设备丢失仍是错误。
-        let mut index = 0;
+        self.point.result.set(self.point.result.get().or(result));
+        Some(dependencies)
+    }
+    fn release_predecessor(&self) {
+        if let Some(resources) = self.resources.take() {
+            self.release_resources(resources);
+        }
+    }
+    fn release_dependencies(dependencies: Dependencies, result: Option<i32>) {
+        let (mut completed, mut index) = match dependencies {
+            Dependencies::Empty => return,
+            Dependencies::Single(previous) => {
+                let Some(sources) = previous.take_completed_dependencies(result) else {
+                    return;
+                };
+                if matches!(sources, Dependencies::Empty) {
+                    previous.release_predecessor();
+                    return;
+                }
+                let mut completed = vec![previous];
+                sources.append_to(&mut completed);
+                (completed, 1)
+            }
+            Dependencies::Multiple(completed) => (completed, 0),
+        };
         while index < completed.len() {
             let previous = &completed[index];
-            let Some(dependencies) = previous.dependencies.take() else {
+            let Some(sources) = previous.take_completed_dependencies(result) else {
                 completed.swap_remove(index);
                 continue;
             };
-            previous.point.result.set(previous.point.result.get().or(result));
-            completed.extend(dependencies);
+            sources.append_to(&mut completed);
             index += 1;
         }
         // Publish the entire closure before destructors can consult an earlier point.
         for previous in completed.into_iter().rev() {
-            if let Some(resources) = previous.resources.take() {
-                previous.release_resources(resources);
-            }
+            previous.release_predecessor();
         }
     }
     fn release_resources(&self, resources: ExecutionResources) {
