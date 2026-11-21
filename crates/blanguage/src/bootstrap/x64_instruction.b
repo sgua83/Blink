@@ -2417,11 +2417,6 @@ u64 buffer_selection_at(u64 at, u32 data_offset, u32 stride_offset, u32 word) on
     return cursor + 1u64;
 }
 
-extern "C" u64 buffer_selection(u32 data_offset, u32 stride_offset, u32 word, address output) on cpu {
-    u64 start = address_bits(output);
-    return buffer_selection_at(start, data_offset, stride_offset, word) - start;
-}
-
 extern "C" u64 range_arguments(address output) on cpu {
     u64 start = address_bits(output);
     u64 cursor = register_instruction(start, u16(0x89), u8(0), true, u8(1), u8(12));
@@ -2457,9 +2452,36 @@ u64 range_step_at(u64 at, u8 reg, u8 count) on cpu {
     return immediate + 1u64;
 }
 
-extern "C" u64 range_advance(u8 count, address output) on cpu {
-    u64 start = address_bits(output);
-    return range_step_at(start, u8(3), count) - start;
+extern "C" ScalarRangePrefix scalar_range_prefix(address image, u64 begin, u32 selected,
+    u32 data_offset, u32 stride_offset, u32 word) on cpu {
+    u64 base = address_bits(image);
+    u64 exit_field = range_exit_field(base + begin, false);
+    write_word(exit_field, 0);
+    u64 end = exit_field + 4u64;
+    if (selected == 0) {
+        return ScalarRangePrefix(end - base, exit_field - base, 0u64);
+    }
+
+    u64 compare_end = buffer_selection_at(end, data_offset, stride_offset, word);
+    u64 skip_field = condition_field(compare_end, u8(0x84));
+    write_word(skip_field, 0);
+    return ScalarRangePrefix(skip_field + 4u64 - base, exit_field - base, skip_field - base);
+}
+
+extern "C" RangeEnd finish_range(address image, u64 at, u64 begin, u64 exit_field,
+    u64 skip_field, u8 step) on cpu {
+    u64 base = address_bits(image);
+    if (skip_field != 0u64) {
+        patch_relative(unsafe_address(base + skip_field), skip_field, at);
+    }
+
+    u64 back_edge = at;
+    if (step != u8(0)) {
+        back_edge = range_step_at(base + at, u8(3), step) - base;
+    }
+    u64 end = back_edge + jump_to(back_edge, begin, unsafe_address(base + back_edge));
+    patch_relative(unsafe_address(base + exit_field), exit_field, end);
+    return RangeEnd(back_edge, end);
 }
 
 extern "C" SparseRangeEncoding sparse_collect(u32 data_offset, u32 stride_offset,

@@ -64,6 +64,19 @@ const BUFFER_BYTES: u32 = std::mem::size_of::<BufferAddress>() as u32;
 const BUFFER_STRIDE: u32 = std::mem::offset_of!(BufferAddress, stride) as u32;
 
 #[repr(C)]
+struct ScalarRangePrefix {
+    end: usize,
+    exit_field: usize,
+    skip_field: usize,
+}
+
+#[repr(C)]
+struct RangeEnd {
+    back_edge: usize,
+    end: usize,
+}
+
+#[repr(C)]
 struct FrameEncoding {
     length: u64,
     probe_field: u64,
@@ -121,8 +134,12 @@ unsafe extern "C" {
         image: *mut u8, end: usize, exits: *const usize, exit_count: usize) -> usize;
     #[link_name = "bootstrap.x64_instruction::range_bounds"]
     fn encode_range_bounds(packet: u32, output: *mut u8) -> u64;
-    #[link_name = "bootstrap.x64_instruction::range_advance"]
-    fn encode_range_advance(count: u8, output: *mut u8) -> u64;
+    #[link_name = "bootstrap.x64_instruction::scalar_range_prefix"]
+    fn encode_scalar_range_prefix(image: *mut u8, begin: usize, selected: u32,
+        data_offset: u32, stride_offset: u32, word: u32) -> ScalarRangePrefix;
+    #[link_name = "bootstrap.x64_instruction::finish_range"]
+    fn encode_range_end(image: *mut u8, at: usize, begin: usize, exit_field: usize,
+        skip_field: usize, step: u8) -> RangeEnd;
     #[link_name = "bootstrap.x64_instruction::buffer_load"]
     fn encode_buffer_load(offset: u32, target: u8, output: *mut u8) -> u64;
     #[link_name = "bootstrap.x64_instruction::buffer_index"]
@@ -136,8 +153,6 @@ unsafe extern "C" {
     #[link_name = "bootstrap.x64_instruction::indexed_memory"]
     fn encode_indexed_memory(index: MoveLocation, scalar: ScalarEncoding, stride: u32,
         word: u32, output: *mut u8) -> AddressEncoding;
-    #[link_name = "bootstrap.x64_instruction::buffer_selection"]
-    fn encode_buffer_selection(data_offset: u32, stride_offset: u32, word: u32, output: *mut u8) -> u64;
 }
 
 enum Branch {
@@ -292,8 +307,14 @@ impl Emitter<'_> {
         self.emit_bytes(16, |output| unsafe { encode_range_bounds(u32::from(packet), output) });
         self.code.len() - 4
     }
-    fn range_advance(&mut self, count: u8) {
-        self.emit_bytes(3, |output| unsafe { encode_range_advance(count, output) });
+    fn finish_range(&mut self, begin: usize, exit_field: usize, skip_field: usize, step: u8) -> usize {
+        let at = self.code.len();
+        self.code.reserve(8);
+        unsafe {
+            let range = encode_range_end(self.code.as_mut_ptr(), at, begin, exit_field, skip_field, step);
+            self.code.set_len(range.end);
+            range.back_edge
+        }
     }
     fn patch(&mut self, at: usize, target: usize) {
         let field = &mut self.code[at..at + 4];
@@ -342,12 +363,6 @@ impl Emitter<'_> {
     fn offset_buffer_address(&mut self, binding: usize) {
         let stride = binding as u32 * BUFFER_BYTES + BUFFER_STRIDE;
         self.emit_bytes(12, |output| unsafe { encode_buffer_index(stride, 0, 15, output) });
-    }
-    fn buffer_selection(&mut self, binding: usize, word: u32) {
-        let data = binding as u32 * BUFFER_BYTES;
-        self.emit_bytes(32, |output| unsafe {
-            encode_buffer_selection(data, data + BUFFER_STRIDE, word, output)
-        });
     }
     fn private_memory(
         &mut self,
@@ -664,33 +679,37 @@ fn emit_map(
         e.packet_loop(&plan, &allocation)?;
     }
     let begin = e.code.len();
-    let end = e.range_bounds(false);
-    e.parallel_abi(begin, super::ParallelRangePart::ScalarBounds);
-    let skip_selection = stage.selection.map(|selection| {
-        let start = e.code.len();
-        e.buffer_selection(selection.binding, selection.word);
-        let skip = e.jump(Branch::Flags(0x84));
-        e.parallel_abi(start, super::ParallelRangePart::ScalarSelection { binding: selection.binding, offset: selection.word });
-        skip
+    let (data, word) = stage.selection.map_or((0, 0), |selection| {
+        (selection.binding as u32 * BUFFER_BYTES, selection.word)
     });
-    if !phases.is_empty() {
-        e.tile_phases(phases, inputs)?;
-    } else {
+    e.code.reserve(64);
+    let prefix = unsafe {
+        let prefix = encode_scalar_range_prefix(e.code.as_mut_ptr(), begin, u32::from(stage.selection.is_some()),
+            data, data + BUFFER_STRIDE, word);
+        e.code.set_len(prefix.end);
+        prefix
+    };
+    let bounds_end = prefix.exit_field + 4;
+    e.parallel_abi_range(begin..bounds_end, super::ParallelRangePart::ScalarBounds);
+    if let Some(selection) = stage.selection {
+        e.parallel_abi(bounds_end, super::ParallelRangePart::ScalarSelection { binding: selection.binding, offset: selection.word });
+    }
+    let step = if phases.is_empty() {
         if stage.has_tile_scope() {
             e.tile_input(inputs);
         }
         e.block(&stage.code)?;
-        if let Some(skip) = skip_selection {
-            e.patch(skip, e.code.len());
-        }
-        let start = e.code.len();
-        e.range_advance(1);
-        e.parallel_abi(start, super::ParallelRangePart::ScalarAdvance);
-    }
+        1
+    } else {
+        e.tile_phases(phases, inputs)?;
+        0
+    };
     let start = e.code.len();
-    e.jump_to(begin);
-    e.parallel_abi(start, super::ParallelRangePart::ScalarBackEdge);
-    e.patch(end, e.code.len());
+    let back_edge = e.finish_range(begin, prefix.exit_field, prefix.skip_field, step);
+    if back_edge != start {
+        e.parallel_abi_range(start..back_edge, super::ParallelRangePart::ScalarAdvance);
+    }
+    e.parallel_abi(back_edge, super::ParallelRangePart::ScalarBackEdge);
     let start = e.code.len();
     e.leave(frame);
     e.parallel_abi(start, super::ParallelRangePart::Exit { frame_bytes: frame });

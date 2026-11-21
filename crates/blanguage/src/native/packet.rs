@@ -171,15 +171,12 @@ impl Emitter<'_> {
             tail
         };
         self.packet_block(&plan.code, allocation)?;
-        if !sparse {
-            let start = self.code.len();
-            self.range_advance(4);
-            self.parallel_abi(start, crate::native::ParallelRangePart::PacketAdvance);
-        }
         let start = self.code.len();
-        self.jump_to(begin);
-        self.parallel_abi(start, crate::native::ParallelRangePart::PacketBackEdge);
-        self.patch(tail, self.code.len());
+        let back_edge = self.finish_range(begin, tail, 0, if sparse { 0 } else { 4 });
+        if back_edge != start {
+            self.parallel_abi_range(start..back_edge, crate::native::ParallelRangePart::PacketAdvance);
+        }
+        self.parallel_abi(back_edge, crate::native::ParallelRangePart::PacketBackEdge);
         if sparse {
             let start = self.code.len();
             let slots = self.frame.end as u32;

@@ -390,14 +390,29 @@ extern "C" u64 dataset_index(u32 data, u32 stride, MoveLocation index, ScalarEnc
 // Scale an index by the stored u64 stride. Base 255 leaves the scaled index
 // available as an operand; otherwise add it to the given pointer register.
 extern "C" u64 buffer_index(u32 stride_offset, u8 index, u8 base, address output) on cpu;
-// Read the selection field for EBX and leave the comparison flags.
-extern "C" u64 buffer_selection(u32 data_offset, u32 stride_offset, u32 word, address output) on cpu;
-
 // The caller owns twelve bytes for the range ABI register moves.
 extern "C" u64 range_arguments(address output) on cpu;
 // The caller owns sixteen bytes. The final four bytes are the exit rel32.
 extern "C" u64 range_bounds(bool packet, address output) on cpu;
-extern "C" u64 range_advance(u8 count, address output) on cpu;
+struct ScalarRangePrefix {
+    u64 end;
+    u64 exit_field;
+    u64 skip_field;
+};
+
+// Offsets are relative to image. The caller reserves 64 bytes after begin.
+extern "C" ScalarRangePrefix scalar_range_prefix(address image, u64 begin, u32 selected,
+    u32 data_offset, u32 stride_offset, u32 word) on cpu;
+
+struct RangeEnd {
+    u64 back_edge;
+    u64 end;
+};
+
+// The caller reserves eight bytes after at. A zero skip_field means there
+// is no predicate branch. A zero step means the body advanced the index.
+extern "C" RangeEnd finish_range(address image, u64 at, u64 begin, u64 exit_field,
+    u64 skip_field, u8 step) on cpu;
 
 struct SparseRangeEncoding {
     u64 length;

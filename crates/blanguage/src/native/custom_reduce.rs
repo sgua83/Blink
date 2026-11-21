@@ -533,9 +533,7 @@ pub(super) fn emit(
         e.breaks.push(Vec::new());
     }
     e.block(&stage.code[initialize_end..loop_end])?;
-    e.range_advance(1);
-    e.jump_to(begin);
-    e.patch(end, e.code.len());
+    e.finish_range(begin, end, 0, 1);
     if apply && head.is_some() {
         e.close_breaks();
     }
