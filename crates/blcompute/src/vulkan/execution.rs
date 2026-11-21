@@ -277,6 +277,7 @@ pub(super) enum ExecutionResources {
         _scratch: Allocation,
         _inputs: Vec<Allocation>,
         _source: Option<Rc<ray::Structure>>,
+        retired: Option<Box<ray::StructureStorage>>,
     },
 }
 impl ExecutionResources {
@@ -306,7 +307,6 @@ pub(super) struct Execution {
     // Some(empty) is still a live execution whose dependency list has not been moved.
     dependencies: RefCell<Option<Vec<Rc<Self>>>>,
     discarded: RefCell<Vec<DiscardedDataset>>,
-    discarded_structures: RefCell<Vec<ray::StructureStorage>>,
 }
 
 #[derive(Default)]
@@ -356,7 +356,6 @@ impl Execution {
             resources: RefCell::new(Some(resources)),
             dependencies: RefCell::new(Some(dependencies)),
             discarded: RefCell::new(Vec::new()),
-            discarded_structures: RefCell::new(Vec::new()),
         }))
     }
     pub fn prepare_one(source: Option<&Rc<Self>>) -> Result<Option<&Rc<Self>>> {
@@ -400,10 +399,10 @@ impl Execution {
         self.discarded.borrow_mut().push(storage);
     }
     pub fn discard_structure(&self, storage: ray::StructureStorage) {
-        if matches!(self.point.result.get(), Some(0 | -4)) {
-            drop(storage);
-        } else {
-            self.discarded_structures.borrow_mut().push(storage);
+        if !matches!(self.point.result.get(), Some(0 | -4))
+            && let Some(ExecutionResources::Acceleration { retired, .. }) = self.resources.borrow_mut().as_mut()
+        {
+            *retired = Some(Box::new(storage));
         }
     }
     pub(super) fn discard_image(&self, storage: texture::Storage) {
@@ -451,8 +450,6 @@ impl Execution {
         drop(resources);
         let storage = std::mem::take(&mut *self.discarded.borrow_mut());
         drop(storage);
-        let structures = std::mem::take(&mut *self.discarded_structures.borrow_mut());
-        drop(structures);
         self.point.release_fence();
     }
     pub fn is_complete(&self) -> Result<bool> {

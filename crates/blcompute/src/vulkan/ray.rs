@@ -192,7 +192,7 @@ impl Drop for StructureStorage {
         }
     }
 }
-// 输出持有自己的完成点；执行不持有自身输出，refit 仅持有旧 source。
+// 输出持有自己的完成点；最后一个引用退出时，尚在构建的存储交回原执行。
 pub(super) struct Structure {
     storage: ManuallyDrop<StructureStorage>,
     built: Rc<Execution>,
@@ -484,6 +484,7 @@ impl Device {
                 _scratch: scratch,
                 _inputs: allocations,
                 _source: source,
+                retired: None,
             },
             dependencies,
         )?;
