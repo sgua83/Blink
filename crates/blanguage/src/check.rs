@@ -580,19 +580,20 @@ async fn expand_domain(
         prefix_requirements: Vec::new(),
         prefix_guarantees: Vec::new(), element_requirements: Vec::new(), element_guarantees: Vec::new(), length_requirements: Vec::new(), imports: BTreeMap::new(),
     };
-    let bound_contracts = match input {
+    let (bound_contracts, guarantees) = match input {
         DomainInput::Parallel { length_requirements, prefix_requirements, .. } => {
             program.length_requirements.extend_from_slice(length_requirements);
             program.prefix_requirements.extend_from_slice(prefix_requirements);
-            Vec::new()
+            (Vec::new(), Vec::new())
         }
         DomainInput::Declaration { instance, .. } => {
             let contracts: Vec<_> = instance.contracts().collect();
             program.length_requirements = contracts::root_lengths(&env, d, &contracts)?;
-            program.prefix_requirements = prefix::relations(&program, &env, d, &contracts, ContractKind::Requires)?;
-            program.prefix_guarantees = prefix::relations(&program, &env, d, &contracts, ContractKind::Ensures)?;
+            program.prefix_requirements = prefix::requirements(&program, &env, d, &contracts)?;
+            let guarantees = prefix::bindings(&program, &env, d, &contracts, ContractKind::Ensures)
+                .collect::<Result<Vec<_>>>()?;
             program.element_requirements = unsafe { world.call(prefix::element_requirements(world, &program.buffers, &env, instance, &contracts)).await }?;
-            contracts
+            (contracts, guarantees)
         }
     };
     program.element_requirements.extend_from_slice(element_inputs);
@@ -612,6 +613,9 @@ async fn expand_domain(
         }
     }
     program.source_stages = program.stages.len();
+    program.prefix_guarantees = prefix::canonical_relations(prefix::proved_guarantees(
+        &program, d, &facts, guarantees.into_iter().map(Ok),
+    )?);
     program.element_guarantees = program.element_outputs(facts.element_facts(&program));
     Ok((ExpandedDomain { program, scopes, calls, outputs: facts.outputs, elements: facts.elements }, bound_contracts))
 }
@@ -653,18 +657,6 @@ async fn expand_program(
         functions,
         scopes,
     )).await }?;
-    for contract in instance.contracts()
-        .filter(|c| c.kind == ContractKind::Ensures)
-    {
-        let relation = prefix::relation(program, env, d, &contract)?;
-        if !facts.holds(relation,program) {
-            return d.source.fail(
-                contract.span,
-                "B193",
-                "ensures prefix 未由本函数当前生产证明或有效输入能力支持",
-            );
-        }
-    }
     stack.pop();
     Ok(())
 }
@@ -1343,7 +1335,7 @@ async fn expand_stages(
                                 return d.source.fail(statement.span(), "B226", "整域调用前未证明same_length数据集长度关系");
                             }
                         }
-                        let required = prefix::relations(program, &child, callee, &bound_contracts, ContractKind::Requires)?;
+                        let required = prefix::requirements(program, &child, callee, &bound_contracts)?;
                         let elements = unsafe { world.call(prefix::element_requirements(world, &program.buffers, &child, &instance, &bound_contracts)).await }?;
                         facts.prove_elements(program, &elements, &d.source, statement.span())?;
                         for relation in &required {
@@ -1364,7 +1356,7 @@ async fn expand_stages(
                             transition: if compiled { DomainTransition::Compiled } else { DomainTransition::Expanded },
                         });
                         let child_path: Arc<[DomainSite]> = child_path.into();
-                        if compiled {
+                        let guarantees = if compiled {
                             use crate::module::codec::Decode;
                             let target = if callee.function.target() == Target::Gpu { Target::Gpu } else { Target::Cpu };
                             let symbol = crate::module::domain::symbol(&instance.name, target);
@@ -1418,15 +1410,33 @@ async fn expand_stages(
                                 })),
                             });
                             *boundary = true;
+                            let mut guarantees = contract.prefix_guarantees;
+                            for relation in &mut guarantees {
+                                relation.domain = bindings[relation.domain];
+                                relation.count.binding = bindings[relation.count.binding];
+                                if relation.domain == relation.count.binding {
+                                    return d.source.fail(
+                                        call_span,
+                                        "B192",
+                                        "前缀域约束需要独立形状 1 资源中的 u32 计数字段",
+                                    );
+                                }
+                            }
+                            guarantees
                         } else {
                             facts.enter(&required);
                             unsafe { world.call(expand_program(
                                 world, &instance, &mut child, program, stack, boundary, facts, calls, child_path, functions, scopes,
                             )).await }?;
+                            let guarantees = prefix::proved_guarantees(
+                                program, callee, facts,
+                                prefix::bindings(program, &child, callee, &bound_contracts, ContractKind::Ensures),
+                            )?;
                             facts.leave();
-                        }
+                            guarantees
+                        };
                         first_stage = program.stages.len();
-                        for relation in prefix::relations(program, &child, callee, &bound_contracts, ContractKind::Ensures)? {
+                        for relation in guarantees {
                             facts.grant(relation);
                         }
                         if compiled {

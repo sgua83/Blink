@@ -152,20 +152,51 @@ pub(super) fn relation(
         count: PrefixCount { binding, word },
     })
 }
-pub(super) fn relations(
+pub(super) fn bindings<'a>(
+    program: &'a Program,
+    env: &'a BTreeMap<String, Root>,
+    d: &'a Definition,
+    contracts: &'a [FunctionContract],
+    kind: ContractKind,
+) -> impl Iterator<Item = Result<(PrefixRelation, Span)>> + 'a {
+    contracts.iter()
+        .filter(move |c| c.kind == kind && !matches!(c.predicate, ContractPredicate::SameLength { .. } | ContractPredicate::Index { .. } | ContractPredicate::Range { .. } | ContractPredicate::Nonzero(_)))
+        .map(move |c| Ok((relation(program, env, d, c)?, c.span)))
+}
+
+pub(super) fn requirements(
     program: &Program,
     env: &BTreeMap<String, Root>,
     d: &Definition,
     contracts: &[FunctionContract],
-    kind: ContractKind,
 ) -> Result<Vec<PrefixRelation>> {
-    let mut result = contracts.iter()
-        .filter(|c| c.kind == kind && !matches!(c.predicate, ContractPredicate::SameLength { .. } | ContractPredicate::Index { .. } | ContractPredicate::Range { .. } | ContractPredicate::Nonzero(_)))
-        .map(|c| relation(program, env, d, c))
+    let relations = bindings(program, env, d, contracts, ContractKind::Requires)
+        .map(|binding| binding.map(|(relation, _)| relation))
         .collect::<Result<Vec<_>>>()?;
-    result.sort();
-    result.dedup();
-    Ok(result)
+    Ok(canonical_relations(relations))
+}
+
+pub(super) fn proved_guarantees(
+    program: &Program,
+    d: &Definition,
+    facts: &Facts,
+    guarantees: impl Iterator<Item = Result<(PrefixRelation, Span)>>,
+) -> Result<Vec<PrefixRelation>> {
+    guarantees
+        .map(|binding| {
+            let (relation, span) = binding?;
+            if !facts.holds(relation, program) {
+                return d.source.fail(span, "B193", "ensures prefix 未由本函数当前生产证明或有效输入能力支持");
+            }
+            Ok(relation)
+        })
+        .collect()
+}
+
+pub(super) fn canonical_relations(mut relations: Vec<PrefixRelation>) -> Vec<PrefixRelation> {
+    relations.sort();
+    relations.dedup();
+    relations
 }
 
 pub(super) async fn element_requirements(world: &World, buffers: &[Buffer], env: &BTreeMap<String, Root>, instance:&crate::generics::Instance, contracts: &[FunctionContract]) -> Result<Vec<ElementFact>> {
