@@ -3792,7 +3792,10 @@ impl<'a> Builder<'a> {
             }
             return Ok(effects::LoopWrites::default());
         }
-        if bounds::seeks(body) {
+        let seeks = bounds::seeks(body);
+        // A range with at most one iteration uses the original initial-iteration path.
+        let initial = initial || (!seeks && begin.minimum() + 1 == limit.maximum());
+        if seeks {
             initialization.clear();
         }
         let environment = self.env.clone();
@@ -3821,10 +3824,10 @@ impl<'a> Builder<'a> {
         let test = self.binary("<", cursor.clone(), limit.clone(), span,None)?;
         let condition = std::mem::take(&mut self.code);
         let body_cursor=Value {
-            proof:if initial {bounds::Proof::capture(&begin)}else{bounds::for_cursor(&begin,&limit,bounds::seeks(body))},
+            proof:if initial {bounds::Proof::capture(&begin)}else{bounds::for_cursor(&begin,&limit,seeks)},
             ..cursor.clone()
         };
-        if !bounds::seeks(body) {
+        if !seeks {
             self.refine_bounds(&Arc::new(bounds::Condition::comparison(Comparison::LessEqual, original_begin, &cursor)), true);
         }
         let binding = if let Some(domain) = data {
@@ -3832,7 +3835,7 @@ impl<'a> Builder<'a> {
                 CursorSource::ApplicationData(mut data) => {
                     // The cursor uses the same current loop resource as indexed access.
                     data.data.root.proof.set_view_borrow(0,data.root.proof.view_borrow(0).joined(self.data_borrow(&data.sources)));
-                    let input=if !initial&&!bounds::seeks(body){unsafe { self.world.call(self.application_cursor_input(&data,&body_cursor)).await }?}else{bounds::Proof::default()};
+                    let input=if !initial&&!seeks{unsafe { self.world.call(self.application_cursor_input(&data,&body_cursor)).await }?}else{bounds::Proof::default()};
                     Binding::Owned(OwnedBinding {
                         place: data.element(
                             &cursor,
@@ -3921,7 +3924,7 @@ impl<'a> Builder<'a> {
         }
         self.iterators.pop();
         self.loop_depth -= 1;
-        if !initial && !bounds::seeks(body) {
+        if !initial && !seeks {
             match &cursor_specification.data {
                 Some(CursorSource::ApplicationData(data)) => unsafe { self.world.call(self.application_iteration_elements(&mut natural, Some(data), &cursor, &limit)).await }?,
                 None => unsafe { self.world.call(self.application_iteration_elements(&mut natural, None, &cursor, &limit)).await }?,
