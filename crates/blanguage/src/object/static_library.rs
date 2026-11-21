@@ -12,7 +12,7 @@ pub enum Input {
 }
 impl Input {
     pub fn read(path: &Path) -> Result<Self> {
-        read_input(path, true, Self::Object, Self::Library)
+        ObjectBytes::read(path)?.decode_input(true, Self::Object, Self::Library)
     }
     pub(crate) fn imports(&self, imports: &mut crate::module::Imports) -> Result<()> {
         match self {
@@ -45,18 +45,6 @@ impl Input {
         }
     }
 }
-pub(crate) fn read_input<Bytes: ReadSection, Output>(
-    path: &Path, stack_output: bool,
-    object: impl FnOnce(Object<Bytes>) -> Output, library: impl FnOnce(Library) -> Output,
-) -> Result<Output> {
-    let bytes = ObjectBytes::read(path)?;
-    if has_signature(&bytes) {
-        Ok(library(Library::decode(bytes, false)?))
-    } else {
-        Ok(object(coff::decode(&bytes, stack_output)?))
-    }
-}
-
 #[derive(Clone)]
 enum Storage {
     Captured(Arc<FileBytes>),
@@ -79,6 +67,19 @@ impl ObjectBytes {
         let bytes = FileBytes::read(file)?;
         let range = 0..bytes.len();
         Ok(Self { storage: Storage::Captured(Arc::new(bytes)), range })
+    }
+
+    pub(crate) fn decode_input<Bytes: ReadSection, Output>(
+        self,
+        stack_output: bool,
+        object: impl FnOnce(Object<Bytes>) -> Output,
+        library: impl FnOnce(Library) -> Output,
+    ) -> Result<Output> {
+        if has_signature(&self) {
+            Ok(library(Library::decode(self, false)?))
+        } else {
+            Ok(object(coff::decode(&self, stack_output)?))
+        }
     }
 
     pub(super) fn generated(bytes: Vec<u8>) -> Self {

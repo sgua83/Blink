@@ -11,7 +11,7 @@ mod pe;
 mod resources;
 pub(crate) mod native;
 use crate::{
-    object::{Archive, Definition, Input, Object, ReadSection, Section, read_input, stack},
+    object::{Archive, Definition, Input, Object, ObjectBytes, ReadSection, Section, stack},
 };
 use std::path::Path;
 pub(crate) type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
@@ -19,14 +19,20 @@ pub fn link(input: &Path, output: &Path) -> Result<()> {
     link_inputs(&[input], output)
 }
 pub fn link_inputs(inputs: &[impl AsRef<Path>], output: &Path) -> Result<()> {
-    link_objects(read_inputs(inputs, false)?, output)
+    let bytes = inputs.iter().map(|path| ObjectBytes::read(path.as_ref()));
+    link_objects(read_inputs(bytes, false)?, output)
 }
-fn read_inputs<Bytes: ReadSection>(paths: &[impl AsRef<Path>], stack_output: bool) -> Result<Inputs<'static, Bytes>> {
+
+fn read_inputs<Bytes: ReadSection>(
+    bytes: impl IntoIterator<Item = Result<ObjectBytes>>, stack_output: bool,
+) -> Result<Inputs<'static, Bytes>> {
     let mut inputs = Inputs { sources: Vec::new(), libraries: Vec::new() };
-    for path in paths {
-        read_input(path.as_ref(), stack_output,
+    for source in bytes {
+        source?.decode_input(
+            stack_output,
             |object| inputs.sources.push(Source::Owned(object)),
-            |library| inputs.libraries.push(library))?;
+            |library| inputs.libraries.push(library),
+        )?;
     }
     Ok(inputs)
 }
@@ -102,7 +108,26 @@ pub(crate) fn link_object(object: Object, path: &Path) -> Result<()> {
     link_objects(Inputs { sources: vec![Source::Owned(object)], libraries: Vec::new() }, path)
 }
 pub fn stack_report_inputs(inputs: &[impl AsRef<Path>], budget: Option<u64>) -> Result<String> {
-    let Selection { mut objects, plan } = entry(read_inputs::<usize>(inputs, true)?, true)?;
+    let bytes = inputs.iter().map(|path| ObjectBytes::read(path.as_ref()));
+    stack_report(read_inputs(bytes, true)?, budget)
+}
+
+/// Read each input through the handle held until the report has been written.
+pub fn write_stack_report(inputs: &[impl AsRef<Path>], output: &Path, budget: Option<u64>) -> Result<()> {
+    use crate::file_bytes;
+
+    let input_files = inputs.iter().map(|path| file_bytes::open_shared_read(path.as_ref()))
+        .collect::<std::io::Result<Vec<_>>>()?;
+    let report = stack_report(read_inputs(input_files.iter().map(ObjectBytes::capture), true)?, budget)?;
+    if let Some(parent) = output.parent() {
+        file_bytes::create_dir_all(parent)?;
+    }
+    file_bytes::write(output, report.as_bytes())?;
+    Ok(())
+}
+
+fn stack_report(inputs: Inputs<'_, usize>, budget: Option<u64>) -> Result<String> {
+    let Selection { mut objects, plan } = entry(inputs, true)?;
     let runtime = matches!(plan.product, EntryProduct::Dll | EntryProduct::DllWithoutArchive)
         || objects.iter().any(|object| stack::uses_runtime(object.archive.as_ref(), false, &object.sections));
     let reserve = match plan.product {

@@ -66,16 +66,6 @@ extern "C" i32 release_host_wide(address data) on cpu {
     return HeapFree(GetProcessHeap(), 0, data);
 }
 
-extern "C" SdkInput open_sdk_input(address path, usize units) on cpu {
-    NativePath name = native_path(path, units, true);
-    if (name.status != 0) { return SdkInput(INVALID_HANDLE_VALUE, name.status); }
-
-    handle file = CreateFileW(name.name, 2147483648, 1, address(), 3, 128, handle());
-    u32 error = file == INVALID_HANDLE_VALUE ? GetLastError() : 0;
-    release_native_path(name);
-    return SdkInput(file, error);
-}
-
 u32 wide_unit(address data, usize index) on cpu {
     return u32(unsafe_position<u16>(unsafe_address(address_bits(data) + index * 2u64)));
 }
@@ -219,16 +209,22 @@ const u32 OPEN_ALWAYS = 4;
 const u32 ERROR_ALREADY_EXISTS = 183;
 const i32 FILE_ALLOCATION_INFO = i32(5);
 
-struct HostFileOpen { handle file; u32 status; };
+const u32 SHARE_READ = 1;
+const u32 SHARE_ALL = 7;
+const u32 FILE_ATTRIBUTE_NORMAL = 128;
 
-HostFileOpen open_host_file(address path, usize units, u32 access, u32 creation, u32 flags) on cpu {
+HostFileOpen open_host_file(address path, usize units, u32 access, u32 share, u32 creation, u32 flags) on cpu {
     NativePath name = native_path(path, units, true);
     if (name.status != 0) { return HostFileOpen(INVALID_HANDLE_VALUE, name.status); }
 
-    handle file = CreateFileW(name.name, access, 7, address(), creation, flags, handle());
+    handle file = CreateFileW(name.name, access, share, address(), creation, flags, handle());
     u32 status = file == INVALID_HANDLE_VALUE || creation == OPEN_ALWAYS ? GetLastError() : 0;
     release_native_path(name);
     return HostFileOpen(file, status);
+}
+
+extern "C" HostFileOpen open_shared_read(address path, usize units) on cpu {
+    return open_host_file(path, units, GENERIC_READ, SHARE_READ, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL);
 }
 
 HostWriteResult write_host_bytes(handle file, address data, usize bytes) on cpu {
@@ -253,7 +249,7 @@ HostWriteResult write_host_bytes(handle file, address data, usize bytes) on cpu 
 }
 
 extern "C" HostWriteResult write_host_input(address path, usize units, address data, usize bytes) on cpu {
-    HostFileOpen opened = open_host_file(path, units, GENERIC_READ_WRITE, CREATE_NEW, FILE_FLAG_OPEN_REPARSE_POINT);
+    HostFileOpen opened = open_host_file(path, units, GENERIC_READ_WRITE, SHARE_ALL, CREATE_NEW, FILE_FLAG_OPEN_REPARSE_POINT);
     if (opened.file == INVALID_HANDLE_VALUE) {
         return HostWriteResult(HostWriteKind::OpenError, opened.status);
     }
@@ -263,7 +259,7 @@ extern "C" HostWriteResult write_host_input(address path, usize units, address d
 }
 
 extern "C" HostWriteResult write_host_output(address path, usize units, address data, usize bytes) on cpu {
-    HostFileOpen opened = open_host_file(path, units, GENERIC_WRITE, OPEN_ALWAYS, 0);
+    HostFileOpen opened = open_host_file(path, units, GENERIC_WRITE, SHARE_ALL, OPEN_ALWAYS, 0);
     if (opened.file == INVALID_HANDLE_VALUE) {
         return HostWriteResult(HostWriteKind::OpenError, opened.status);
     }
@@ -284,7 +280,7 @@ extern "C" HostWriteResult write_host_output(address path, usize units, address 
 }
 
 extern "C" u32 remove_host_input(address path, usize units) on cpu {
-    HostFileOpen opened = open_host_file(path, units, DELETE_ACCESS, OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT);
+    HostFileOpen opened = open_host_file(path, units, DELETE_ACCESS, SHARE_ALL, OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT);
     if (opened.file == INVALID_HANDLE_VALUE) { return opened.status; }
 
     // FILE_DISPOSITION_INFO_EX: delete the file, using POSIX semantics and ignoring its read-only attribute.
@@ -337,7 +333,7 @@ HostReplacement replace_host_file(address source,usize source_units,
 
 extern "C" HostPublishResult publish_host_file(address target,usize target_units,
     address temporary,usize temporary_units,address parts,usize count) on cpu {
-    HostFileOpen opened = open_host_file(temporary,temporary_units,GENERIC_READ_WRITE,CREATE_NEW,FILE_FLAG_OPEN_REPARSE_POINT);
+    HostFileOpen opened = open_host_file(temporary, temporary_units, GENERIC_READ_WRITE, SHARE_ALL, CREATE_NEW, FILE_FLAG_OPEN_REPARSE_POINT);
     if (opened.file==INVALID_HANDLE_VALUE) {
         return HostPublishResult(HostWriteResult(HostWriteKind::OpenError,opened.status),0,0);
     }

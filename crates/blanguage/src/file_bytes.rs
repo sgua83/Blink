@@ -5,7 +5,7 @@ use std::{
     ops::Deref,
     os::windows::{
         ffi::OsStrExt,
-        io::{AsRawHandle, RawHandle},
+        io::{AsRawHandle, FromRawHandle, RawHandle},
     },
     path::Path,
 };
@@ -15,6 +15,12 @@ pub(crate) struct FileBytes {
     data: *mut u8,
     length: usize,
     error: syntax::wire::StorageError,
+}
+
+#[repr(C)]
+struct HostFileOpen {
+    file: RawHandle,
+    status: u32,
 }
 
 #[repr(u32)]
@@ -61,6 +67,8 @@ struct HostFilePart {
 }
 
 unsafe extern "C" {
+    #[link_name = "bootstrap.host_sdk::open_shared_read"]
+    fn open_host_shared_read(path: *const u16, units: usize) -> HostFileOpen;
     #[link_name = "bootstrap.host_sdk::publish_host_file"]
     fn publish_host_file(
         target: *const u16,
@@ -130,6 +138,16 @@ pub(crate) fn host_path(path: &Path) -> io::Result<Vec<u16>> {
     }
     units.push(0);
     Ok(units)
+}
+
+pub(crate) fn open_shared_read(path: &Path) -> io::Result<File> {
+    let path = host_path(path)?;
+    let opened = unsafe { open_host_shared_read(path.as_ptr(), path.len() - 1) };
+    if opened.status != 0 {
+        return Err(io::Error::from_raw_os_error(opened.status as i32));
+    }
+    // B transfers one handle from CreateFileW to this File owner.
+    Ok(unsafe { File::from_raw_handle(opened.file) })
 }
 
 pub(crate) fn write_new(path: &Path, bytes: &[u8]) -> io::Result<HostWriteResult> {

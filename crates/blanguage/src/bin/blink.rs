@@ -105,18 +105,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let output = PathBuf::from(&args[parsed.output_index]);
     let stack_budget = (parsed.has_budget != 0).then_some(parsed.budget);
     if matches!(parsed.command, LinkCommand::StackReport) {
-        #[cfg(windows)]
-        let _input_files = {
-            use std::os::windows::fs::OpenOptionsExt;
-            inputs.iter().map(|path|
-                std::fs::OpenOptions::new().read(true).share_mode(1).open(path)
-            ).collect::<std::io::Result<Vec<_>>>()?
-        };
-        let report = blanguage::linker::stack_report_inputs(&inputs, stack_budget)?;
-        if let Some(parent) = output.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        std::fs::write(&output, report)?;
+        blanguage::linker::write_stack_report(&inputs, &output, stack_budget)?;
         println!("stack report {} input(s) -> {}", inputs.len(), output.display());
     } else if matches!(parsed.command, LinkCommand::Archive) {
         blanguage::object::archive(&inputs, &output)?;
