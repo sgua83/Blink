@@ -116,6 +116,7 @@ impl PresentStatus {
 }
 
 enum Acquisition {
+    Unused,
     Idle,
     Acquired,
     CopyPending(Rc<Execution>),
@@ -191,7 +192,7 @@ impl Device {
                 images: Vec::new(),
                 acquired: 0,
                 rendered: Vec::new(),
-                acquisition: Acquisition::Idle,
+                acquisition: Acquisition::Unused,
             };
             let info = Win32SurfaceInfo {
                 kind: 1000009000,
@@ -349,7 +350,7 @@ impl Swapchain {
     }
     fn ready_for_acquire(&mut self, wait: bool) -> Result<bool> {
         match &self.acquisition {
-            Acquisition::Idle => Ok(true),
+            Acquisition::Unused | Acquisition::Idle => Ok(true),
             Acquisition::CopyPending(previous) => {
                 if wait {
                     previous.wait()?;
@@ -515,11 +516,13 @@ impl Drop for Swapchain {
                     std::process::abort();
                 }
             }
-            let result = (f.vkDeviceWaitIdle)(d);
-            if result != 0 {
-                eprintln!("窗口呈现资源终止：vkDeviceWaitIdle={result}");
-                if result != -4 {
-                    std::process::abort();
+            if !matches!(self.acquisition, Acquisition::Unused) {
+                let result = (f.vkDeviceWaitIdle)(d);
+                if result != 0 {
+                    eprintln!("窗口呈现资源终止：vkDeviceWaitIdle={result}");
+                    if result != -4 {
+                        std::process::abort();
+                    }
                 }
             }
             for s in &self.rendered {
