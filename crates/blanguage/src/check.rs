@@ -1660,7 +1660,7 @@ async fn checked_function(
     let result_name=unsafe { world.call(instance.bindings.type_name(world,&d.function.result(),(&d.source,&d.module,&d.imports),d.function.span())).await }?;
     let result=if result_name.name=="void"||result_name.is_never(){None}else{Some(unsafe { world.call(b.expected_storage(&result_name,d.function.span())).await }?)};
     function_inputs::return_inputs(&mut b, d.function.c_abi(), result.as_ref(), &mut parameters, &mut inputs);
-    let (returned,written) = unsafe { world.call(b.function_body(instance, d.function.body().as_ref().unwrap())).await }?;
+    let (returned,written) = unsafe { world.call(b.function_body(instance, &result_name, d.function.body().as_ref().unwrap())).await }?;
     unsafe { world.call(finish_checked_function(b,program.clone(),name,d.function.span(),d.source_origin(),result,parameters,inputs,output_contracts,returned,written)).await }
 }
 

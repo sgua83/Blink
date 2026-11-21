@@ -74,6 +74,7 @@ async fn module_value(
 )->Result<ConstantValue> {
     let mut cursor=unsafe{b_module_start()};
     let mut instance:Option<crate::generics::Instance>=None;
+    let mut result_name=None;
     let mut type_allowed=0;
     loop {
         match unsafe{b_module_step(&mut cursor,type_allowed)} {
@@ -90,12 +91,13 @@ async fn module_value(
                     (&definition.source,&definition.module,&definition.imports),
                     definition.function.span())).await}?;
                 type_allowed=u32::from(declaration_type(&ty));
+                result_name=Some(ty);
             }
             ModuleNeed::InvalidType=>return definition.source.fail(
                 definition.function.span(),"B234","const 需要普通值类型，不能持有资源或 void"),
             ModuleNeed::Body=>{
                 let instance=unsafe{instance.take().unwrap_unchecked()};
-                return module_body(world,key,calls,definition,instance).await;
+                return module_body(world,key,calls,definition,instance,unsafe{result_name.as_ref().unwrap_unchecked()}).await;
             }
         }
     }
@@ -103,7 +105,7 @@ async fn module_value(
 
 async fn module_body(
     world:&World,key:&str,calls:&[String],definition:&Arc<crate::frontend::Definition>,
-    instance:crate::generics::Instance,
+    instance:crate::generics::Instance,result_name:&TypeName,
 )->Result<ConstantValue> {
     let context=constant_context(key);
     let scope=LexicalScope::Function(instance.clone());
@@ -114,7 +116,7 @@ async fn module_body(
     builder.calls.extend_from_slice(calls);
     builder.calls.push(key.into());
     let body=definition.function.body().unwrap();
-    let(returned,_)=unsafe{world.call(builder.function_body(&instance,&body)).await}?;
+    let(returned,_)=unsafe{world.call(builder.function_body(&instance,result_name,&body)).await}?;
     let value=builder.ordinary_return(returned,definition.function.span())?.unwrap();
     if !constant_result(value.ty.contains_views(),value.constant.is_some(),&builder.code) {
         return definition.source.fail(definition.function.span(),"B234",

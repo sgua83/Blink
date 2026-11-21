@@ -263,7 +263,7 @@ impl<'a> Builder<'a>{
     InlineNeed::BoundsInputs=>{facts.input_plain=plain_environment(&self.env,true);}
     InlineNeed::EnterPath=>{result_type.take();caller_path=Some(std::mem::take(&mut self.path));}
     InlineNeed::Body=>{
-     (result,_)=unsafe{world.call(self.function_body(&instance,callee.function.body().as_ref().unwrap_unchecked())).await}?;
+     (result,_)=unsafe{world.call(self.function_body(&instance,&result_name,callee.function.body().as_ref().unwrap_unchecked())).await}?;
      facts.continuing=u32::from(self.flow.continues());facts.items=borrowed.len()as u64;facts.held=held.len()as u64;
     }
     InlineNeed::RestoreInitialization=>{self.initialized=unsafe{caller_initialization.take().unwrap_unchecked()};}

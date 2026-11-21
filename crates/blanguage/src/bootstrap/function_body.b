@@ -2,32 +2,31 @@ module bootstrap.function_body;
 extern "C" Cursor start() on cpu {return Cursor(0,0,0u64,0u64);}
 extern "C" BeginStep begin_step(Cursor state,BeginFacts facts) on cpu {
  Cursor c=state;
- if(c.phase==0){c.phase=1;return BeginStep(c,BeginNeed::Name);}
+ if(c.phase==0){
+  if(facts.void_name!=0&&facts.dataset==0&&facts.tile==0&&facts.view==0){c.phase=3;return BeginStep(c,BeginNeed::Void);}
+  if(facts.never!=0){c.phase=3;return BeginStep(c,BeginNeed::Never);}
+  c.phase=1;return BeginStep(c,BeginNeed::Type);
+ }
  if(c.phase==1){
-  if(facts.void_name!=0&&facts.dataset==0&&facts.tile==0&&facts.view==0){c.phase=4;return BeginStep(c,BeginNeed::Void);}
-  if(facts.never!=0){c.phase=4;return BeginStep(c,BeginNeed::Never);}
-  c.phase=2;return BeginStep(c,BeginNeed::Type);
- }
- if(c.phase==2){
   if(facts.owns!=0&&(facts.value_function==0||facts.cpu==0)){return BeginStep(c,BeginNeed::InvalidOwned);}
-  if(facts.dataset!=0){c.phase=3;return BeginStep(c,BeginNeed::Shape);}
-  c.phase=4;return BeginStep(c,BeginNeed::Value);
+  if(facts.dataset!=0){c.phase=2;return BeginStep(c,BeginNeed::Shape);}
+  c.phase=3;return BeginStep(c,BeginNeed::Value);
  }
- if(c.phase==3){c.phase=4;return BeginStep(c,BeginNeed::Dataset);}
- if(c.phase==4){c.phase=5;return BeginStep(c,BeginNeed::Early);}
- if(c.phase==5){
+ if(c.phase==2){c.phase=3;return BeginStep(c,BeginNeed::Dataset);}
+ if(c.phase==3){c.phase=4;return BeginStep(c,BeginNeed::Early);}
+ if(c.phase==4){
   if(facts.early!=0&&facts.cooperative!=0){return BeginStep(c,BeginNeed::InvalidCooperative);}
-  c.phase=6;c.index=0u64;
+  c.phase=5;c.index=0u64;
  }
- if(c.phase==6){
-  if(facts.early!=0&&c.index<facts.scalars){c.phase=7;return BeginStep(c,BeginNeed::Slot);}
-  c.phase=8;
+ if(c.phase==5){
+  if(facts.early!=0&&c.index<facts.scalars){c.phase=6;return BeginStep(c,BeginNeed::Slot);}
+  c.phase=7;
  }
- if(c.phase==7){c.index+=1u64;c.phase=6;return BeginStep(c,BeginNeed::Next);}
- if(c.phase==8){c.phase=9;return BeginStep(c,BeginNeed::Initial);}
- if(c.phase==9){c.phase=10;return BeginStep(c,BeginNeed::Inputs);}
- if(c.phase==10){c.phase=11;return BeginStep(c,BeginNeed::Context);}
- if(c.phase==11){return BeginStep(c,BeginNeed::Complete);}
+ if(c.phase==6){c.index+=1u64;c.phase=5;return BeginStep(c,BeginNeed::Next);}
+ if(c.phase==7){c.phase=8;return BeginStep(c,BeginNeed::Initial);}
+ if(c.phase==8){c.phase=9;return BeginStep(c,BeginNeed::Inputs);}
+ if(c.phase==9){c.phase=10;return BeginStep(c,BeginNeed::Context);}
+ if(c.phase==10){return BeginStep(c,BeginNeed::Complete);}
  return BeginStep(c,BeginNeed::Next);
 }
 extern "C" SequenceStep sequence_step(Cursor state,u64 count,u32 possible,u32 continuing) on cpu {

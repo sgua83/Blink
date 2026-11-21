@@ -1,6 +1,6 @@
 module bootstrap.function_body;
 struct Cursor {u32 phase;u32 flags;u64 index;u64 part;};
-enum BeginNeed:u32 {Name=0;Void=1;Never=2;Type=3;InvalidOwned=4;Shape=5;Dataset=6;Value=7;Early=8;InvalidCooperative=9;Slot=10;Initial=11;Inputs=12;Context=13;Complete=14;Next=15;};
+enum BeginNeed:u32 {Void=0;Never=1;Type=2;InvalidOwned=3;Shape=4;Dataset=5;Value=6;Early=7;InvalidCooperative=8;Slot=9;Initial=10;Inputs=11;Context=12;Complete=13;Next=14;};
 struct BeginStep {Cursor cursor;BeginNeed need;};
 struct BeginFacts {u32 void_name;u32 dataset;u32 tile;u32 view;u32 never;u32 owns;u32 value_function;u32 cpu;u32 cooperative;u32 early;u64 scalars;};
 enum SequenceNeed:u32 {StartNext=0;StartStop=1;Statement=2;After=3;Complete=4;Next=5;};

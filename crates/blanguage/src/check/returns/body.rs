@@ -5,7 +5,7 @@ use std::ffi::c_void;
 #[repr(C)] struct Cursor{phase:u32,flags:u32,index:u64,part:u64}
 #[derive(Clone,Copy,Default)]
 #[repr(C)] struct BeginFacts{void_name:u32,dataset:u32,tile:u32,view:u32,never:u32,owns:u32,value_function:u32,cpu:u32,cooperative:u32,early:u32,scalars:u64}
-#[repr(u32)] enum BeginNeed{Name,Void,Never,Type,InvalidOwned,Shape,Dataset,Value,Early,InvalidCooperative,Slot,Initial,Inputs,Context,Complete,Next}
+#[repr(u32)] enum BeginNeed{Void,Never,Type,InvalidOwned,Shape,Dataset,Value,Early,InvalidCooperative,Slot,Initial,Inputs,Context,Complete,Next}
 #[repr(C)] struct BeginStep{cursor:Cursor,need:BeginNeed}
 #[repr(u32)] enum SequenceNeed{StartNext,StartStop,Statement,After,Complete,Next}
 #[repr(C)] struct SequenceStep{cursor:Cursor,need:SequenceNeed}
@@ -88,8 +88,8 @@ fn parameter(definition:&Definition,name:&str)->usize{
 }
 
 impl Builder<'_>{
- pub(in crate::check) async fn function_body(&mut self,instance:&crate::generics::Instance,body:&Block)->Result<(Option<Returned>,Vec<Option<Returned>>)>{
-  let world=self.world;let state=unsafe{world.call(self.begin_function_body(instance,body)).await}?;
+ pub(in crate::check) async fn function_body(&mut self,instance:&crate::generics::Instance,result_name:&TypeName,body:&Block)->Result<(Option<Returned>,Vec<Option<Returned>>)>{
+  let world=self.world;let state=unsafe{world.call(self.begin_function_body(instance,result_name,body)).await}?;
   let possible=u32::from(self.residency_path().possible());let mut sequence=Flow::STOP;let mut cursor=unsafe{b_start()};let mut statements=body.into_iter();let mut statement=None;
   loop{
    let step=unsafe{b_sequence_step(cursor,body.len()as u64,possible,u32::from(sequence.continues()))};cursor=step.cursor;
@@ -106,26 +106,27 @@ impl Builder<'_>{
   }
  }
  #[inline(never)]
- async fn begin_function_body(&mut self,instance:&crate::generics::Instance,body:&Block)->Result<Box<BodyState>>{
+ async fn begin_function_body(&mut self,instance:&crate::generics::Instance,result_name:&TypeName,body:&Block)->Result<Box<BodyState>>{
   let world=self.world;let entry=self.registers.len();let definition=&instance.definition;let mut cursor=unsafe{b_start()};
-  let mut facts=BeginFacts{value_function:u32::from(definition.function.kind()==FunctionKind::Value),cpu:u32::from(self.program.target==Target::Cpu),cooperative:u32::from(definition.function.kind()==FunctionKind::Cooperative),..BeginFacts::default()};
-  let mut name=None;let mut ty=None;let mut expected=None;let mut count=None;let mut slots=Vec::new();let mut initial=None;let mut inputs=None;let mut state=None;
+  let mut facts=BeginFacts{
+   void_name:u32::from(result_name.name=="void"),dataset:u32::from(result_name.dataset),
+   tile:u32::from(result_name.tile),view:u32::from(result_name.view),never:u32::from(result_name.is_never()),
+   value_function:u32::from(definition.function.kind()==FunctionKind::Value),cpu:u32::from(self.program.target==Target::Cpu),
+   cooperative:u32::from(definition.function.kind()==FunctionKind::Cooperative),..BeginFacts::default()
+  };
+  let mut ty=None;let mut expected=None;let mut count=None;let mut slots=Vec::new();let mut initial=None;let mut inputs=None;let mut state=None;
   loop{
    let step=unsafe{b_begin_step(cursor,facts)};cursor=step.cursor;
    match step.need{
-    BeginNeed::Name=>{
-     let value=unsafe{world.call(instance.bindings.type_name(world,&definition.function.result(),(&definition.source,&definition.module,&definition.imports),definition.function.span())).await}?;
-     facts.void_name=u32::from(value.name=="void");facts.dataset=u32::from(value.dataset);facts.tile=u32::from(value.tile);facts.view=u32::from(value.view);facts.never=u32::from(value.is_never());name=Some(value);
-    }
     BeginNeed::Void=>{expected=Some(Expected::Void);facts.scalars=0;}
     BeginNeed::Never=>{expected=Some(Expected::Never);facts.scalars=0;}
     BeginNeed::Type=>{
-     let value=unsafe{world.call(world.ty(name.as_ref().unwrap_unchecked(),&definition.source,definition.function.span(),&definition.module,&definition.imports)).await}?;
+     let value=unsafe{world.call(world.ty(result_name,&definition.source,definition.function.span(),&definition.module,&definition.imports)).await}?;
      facts.owns=u32::from(value.owns_resources());ty=Some(value);
     }
     BeginNeed::InvalidOwned=>return self.fail(definition.function.span(),"B224","拥有结果由普通CPU函数返回；并行元素与通用拥有聚合尚未实现"),
     BeginNeed::Shape=>{
-     count=unsafe{world.call(world.shape(&name.as_ref().unwrap_unchecked().count,&definition.source,definition.function.span(),&definition.module,&definition.imports)).await}?;
+     count=unsafe{world.call(world.shape(&result_name.count,&definition.source,definition.function.span(),&definition.module,&definition.imports)).await}?;
     }
     BeginNeed::Dataset=>{expected=Some(Expected::Dataset{ty:unsafe{ty.take().unwrap_unchecked()},count});facts.scalars=2;}
     BeginNeed::Value=>{let value=unsafe{ty.take().unwrap_unchecked()};facts.scalars=value.components.len()as u64;expected=Some(Expected::Value(value));}
