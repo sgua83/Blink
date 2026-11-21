@@ -38,7 +38,7 @@ impl Emitter<'_> {
     ) {
         let run = self.id();
         let end = self.id();
-        self.emit_control(9, |body| unsafe { open_selection(end, active, run, end, body) });
+        self.open_active(active, run, end);
 
         // Both work fields belong to the same eight-byte record.
         let [key_pointer, index_pointer] = self.paged_pointers(
@@ -82,7 +82,7 @@ impl Emitter<'_> {
         };
         // At most five binary instructions followed by two aligned stores.
         self.emit_stage(35, |body| unsafe { write_sort_key(input, body) });
-        self.emit_control(4, |body| unsafe { next_control_block(end, end, 1, body) });
+        self.merge_active(end, true);
     }
 
     pub(super) fn sort_gather(&mut self, s: &Sorting, active: u32) {

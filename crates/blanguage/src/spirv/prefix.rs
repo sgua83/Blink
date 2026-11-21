@@ -58,7 +58,7 @@ impl Emitter<'_> {
         self.emit(170, &[self.types[&Scalar::Bool], first, invocation, zero]);
         let run = self.id();
         let end = self.id();
-        self.emit_control(9, |body| unsafe { open_selection(end, first, run, end, body) });
+        self.open_active(first, run, end);
         let count = match prefix {
             Some(prefix) => {
                 let source = self.address_scalar(Scalar::U32, prefix.binding, zero, prefix.word);
@@ -94,7 +94,7 @@ impl Emitter<'_> {
             emitted
         };
         self.next = emitted.next;
-        self.emit_control(4, |body| unsafe { next_control_block(end, end, 1, body) });
+        self.merge_active(end, true);
     }
 
     pub(super) fn continuation_byte(&mut self) -> u32 {

@@ -626,13 +626,10 @@ impl Emitter<'_> {
         let result = self.read_summary_words(&own);
         let write = self.id();
         let end = self.id();
-        self.emit(247, &[end, 0]);
-        self.emit(250, &[active, write, end]);
-        self.emit(248, &[write]);
+        self.open_active(active, write, end);
         let target = self.summary_addresses(words, r.fields.target, self.index);
         self.write_summary_words(&target, &result);
-        self.emit(249, &[end]);
-        self.emit(248, &[end]);
+        self.merge_active(end, true);
         Ok(())
     }
 

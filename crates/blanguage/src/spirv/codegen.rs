@@ -743,6 +743,17 @@ unsafe extern "C" {
     #[link_name = "bootstrap.spirv_envelope::pack_field"]
     fn pack_field(input: PayloadEmission, field: PackedField, high_shift: u32,
         packed: *mut u32, body: *mut u32) -> PayloadWrite;
+    #[link_name = "bootstrap.spirv_envelope::begin_shader_body"]
+    fn begin_shader_body(
+        result_type: u32, function: u32, signature: u32, entry: u32, body: *mut u32,
+    ) -> ControlWords;
+    #[link_name = "bootstrap.spirv_envelope::end_shader_body"]
+    fn end_shader_body(body: *mut u32) -> ControlWords;
+    #[link_name = "bootstrap.spirv_envelope::phi_two"]
+    fn phi_two(
+        body: *mut u32, at: u64, ty: u32, result: u32, first_value: u32, first_block: u32,
+        second_value: u32, second_block: u32,
+    ) -> u64;
     #[link_name = "bootstrap.spirv_envelope::open_selection"]
     fn open_selection(merge: u32, condition: u32, yes: u32, no: u32, body: *mut u32) -> ControlWords;
     #[link_name = "bootstrap.spirv_envelope::next_control_block"]
@@ -970,9 +981,6 @@ impl Emitter<'_> {
         pointer
     }
     fn emit(&mut self, code: u16, args: &[u32]) {
-        if code == 248 {
-            self.current_label = args[0];
-        }
         op(&mut self.body, code, args);
     }
     fn read_summary_words(&mut self, pointers: &[u32]) -> Vec<u32> {
@@ -1177,6 +1185,25 @@ impl Emitter<'_> {
             self.current_label = emitted.label;
         }
         emitted.reaches_next != 0
+    }
+
+    fn open_active(&mut self, condition: u32, run: u32, merge: u32) {
+        self.emit_control(9, |body| unsafe { open_selection(merge, condition, run, merge, body) });
+    }
+
+    fn merge_active(&mut self, merge: u32, reaches: bool) {
+        self.emit_control(4, |body| unsafe { next_control_block(merge, merge, u32::from(reaches), body) });
+    }
+
+    fn join_two(&mut self, ty: u32, result: u32, first: [u32; 2], second: [u32; 2]) {
+        let at = self.body.len();
+        self.body.reserve(7);
+        unsafe {
+            let end = phi_two(
+                self.body.as_mut_ptr().add(at), 0, ty, result, first[0], first[1], second[0], second[1],
+            );
+            self.body.set_len(at + end as usize);
+        }
     }
 
     fn leave_control(&mut self, target: u32) -> bool {
@@ -2181,8 +2208,7 @@ fn emit_shader(
     let execute = e.id();
     let end = e.id();
     let finish = |mut e: Emitter<'_>| {
-        e.emit(253, &[]);
-        e.emit(56, &[]);
+        e.emit_control(2, |body| unsafe { end_shader_body(body) });
         let global_inputs = [global, num_groups];
         let workgroup_inputs = [e.push, shared, local_input];
         let mut builtin_inputs = [0; 3];
@@ -2219,8 +2245,7 @@ fn emit_shader(
         out.extend(e.body);
         Ok((out, shared_bytes))
     };
-    e.emit(54, &[void, main, 0, fn_ty]);
-    e.emit(248, &[entry]);
+    e.emit_control(7, |body| unsafe { begin_shader_body(void, main, fn_ty, entry, body) });
     if !argument_pass {
         e.regs = (0..stage.registers.len()).map(|_| e.id()).collect();
         let mut rays = Vec::new();
@@ -2298,15 +2323,12 @@ fn emit_shader(
                 count,
             );
         } else {
-            e.emit(247, &[end, 0]);
-            e.emit(250, &[active, execute, end]);
-            e.emit(248, &[execute]);
+            e.open_active(active, execute, end);
             e.scan_add(
                 &Scan::counts(selection.scan(program.selection_buffer())),
                 false,
             );
-            e.emit(249, &[end]);
-            e.emit(248, &[end]);
+            e.merge_active(end, true);
         }
     } else if let Operation::StableSort(s) = &stage.operation {
         match pass {
@@ -2343,9 +2365,7 @@ fn emit_shader(
                 );
             }
             Pass::ScanAdd => {
-                e.emit(247, &[end, 0]);
-                e.emit(250, &[active, execute, end]);
-                e.emit(248, &[execute]);
+                e.open_active(active, execute, end);
                 e.scan_add(
                     &Scan::counts(Reduction {
                         source: s.source,
@@ -2355,8 +2375,7 @@ fn emit_shader(
                     }),
                     false,
                 );
-                e.emit(249, &[end]);
-                e.emit(248, &[end]);
+                e.merge_active(end, true);
             }
             _ => return Err("排序操作不支持该代码生成阶段"),
         }
@@ -2451,12 +2470,9 @@ fn emit_shader(
                 count,
             );
         } else {
-            e.emit(247, &[end, 0]);
-            e.emit(250, &[active, execute, end]);
-            e.emit(248, &[execute]);
+            e.open_active(active, execute, end);
             e.scan_add(&Scan::counts(c.scan()), false);
-            e.emit(249, &[end]);
-            e.emit(248, &[end]);
+            e.merge_active(end, true);
         }
     } else if let Operation::ScanExclusive(r) = &stage.operation {
         if let Some(head) = r.head_word {
@@ -2477,12 +2493,9 @@ fn emit_shader(
                 match pass {
                     Pass::ScanAdd => e.segmented_add(r, active, [execute, end]),
                     Pass::ScanRootAdd => {
-                        e.emit(247, &[end, 0]);
-                        e.emit(250, &[active, execute, end]);
-                        e.emit(248, &[execute]);
+                        e.open_active(active, execute, end);
                         e.segmented_root_add(r);
-                        e.emit(249, &[end]);
-                        e.emit(248, &[end]);
+                        e.merge_active(end, true);
                     }
                     _ => return Err("分段扫描不支持该代码生成阶段"),
                 }
@@ -2501,12 +2514,9 @@ fn emit_shader(
                     count,
                 );
             } else {
-                e.emit(247, &[end, 0]);
-                e.emit(250, &[active, execute, end]);
-                e.emit(248, &[execute]);
+                e.open_active(active, execute, end);
                 e.scan_add(r, pass == Pass::ScanRootAdd);
-                e.emit(249, &[end]);
-                e.emit(248, &[end]);
+                e.merge_active(end, true);
             }
         }
     } else {
@@ -2516,19 +2526,15 @@ fn emit_shader(
         if stage.has_tile_steps() {
             e.tile_phases(active)?;
         } else {
-            e.emit(247, &[end, 0]);
-            e.emit(250, &[active, execute, end]);
-            e.emit(248, &[execute]);
+            e.open_active(active, execute, end);
             if stage.selection.is_some() {
                 let at = e.address_scalar(Scalar::U32, program.buffers.len(), e.index, 0);
                 let original = e.id();
                 e.emit(61, &[u, original, at, 2, 4]);
                 e.index = original;
             }
-            if e.block(&stage.code, None)? {
-                e.emit(249, &[end]);
-            }
-            e.emit(248, &[end]);
+            let reaches = e.block(&stage.code, None)?;
+            e.merge_active(end, reaches);
         }
     }
     finish(e)

@@ -39,14 +39,11 @@ impl Emitter<'_> {
                 let before = self.current_label;
                 let read = self.id();
                 let read_end = self.id();
-                self.emit(247, &[read_end, 0]);
-                self.emit(250, &[active, read, read_end]);
-                self.emit(248, &[read]);
+                self.open_active(active, read, read_end);
                 let value = self.tile_read(tree.scalar, collective.tile, self.tile_lane, *word, None);
-                self.emit(249, &[read_end]);
-                self.emit(248, &[read_end]);
+                self.merge_active(read_end, true);
                 let input = self.id();
-                self.emit(245, &[self.raw_type(tree.scalar), input, value, read, identity, before]);
+                self.join_two(self.raw_type(tree.scalar), input, [value, read], [identity, before]);
                 self.tree_store(tree,self.tile_lane,input);
                 if padded > width {
                     let capacity = self.constant(Scalar::U32, padded);
@@ -57,12 +54,9 @@ impl Emitter<'_> {
                     self.emit(176, &[b, fill, index, capacity]);
                     let run = self.id();
                     let end = self.id();
-                    self.emit(247, &[end, 0]);
-                    self.emit(250, &[fill, run, end]);
-                    self.emit(248, &[run]);
+                    self.open_active(fill, run, end);
                     self.tree_store(tree,index,identity);
-                    self.emit(249, &[end]);
-                    self.emit(248, &[end]);
+                    self.merge_active(end, true);
                 }
             }
             self.tile_barrier();
@@ -77,16 +71,13 @@ impl Emitter<'_> {
                 self.emit(170, &[b, first, self.tile_lane, zero]);
                 let run = self.id();
                 let end = self.id();
-                self.emit(247, &[end, 0]);
-                self.emit(250, &[first, run, end]);
-                self.emit(248, &[run]);
+                self.open_active(first, run, end);
                 let last = self.constant(Scalar::U32, padded - 1);
                 for tree in &trees {
                     let identity = self.raw_constant(tree.scalar, tree.operator.identity(tree.scalar));
                     self.tree_store(*tree,last,identity);
                 }
-                self.emit(249, &[end]);
-                self.emit(248, &[end]);
+                self.merge_active(end, true);
                 self.scan_barrier();
                 let mut stride = padded / 2;
                 while stride != 0 {

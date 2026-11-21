@@ -14,11 +14,6 @@ unsafe extern "C" {
     fn emit_tile_range(
         body: *mut u32, uint_type: u32, bool_type: u32, index: u32, count: u32, width: u32, first: u32,
     ) -> TileRangeWords;
-    #[link_name = "bootstrap.spirv_envelope::phi_two"]
-    fn phi_two(
-        body: *mut u32, at: u64, ty: u32, result: u32, first_value: u32, first_block: u32,
-        second_value: u32, second_block: u32,
-    ) -> u64;
 }
 
 pub(super) enum TileByte {
@@ -56,7 +51,7 @@ impl Emitter<'_> {
         }
         let load = self.id();
         let end = self.id();
-        self.emit_control(9, |body| unsafe { open_selection(end, active, load, end, body) });
+        self.open_active(active, load, end);
         for (&(source, word), fragments) in inputs.iter() {
             let key = SharedWord::Input { binding: source, word };
             let (unit, _, part) = self.tile_layout[&key];
@@ -83,7 +78,7 @@ impl Emitter<'_> {
             );
             self.emit(62, &[target.0, raw]);
         }
-        self.emit_control(4, |body| unsafe { next_control_block(end, end, 1, body) });
+        self.merge_active(end, true);
         self.tile_barrier();
     }
     pub(super) fn tile_data_words(&self, unit: Scalar) -> u32 {
@@ -206,13 +201,13 @@ impl Emitter<'_> {
             let before = self.current_label;
             let execute = self.id();
             let end = self.id();
-            self.emit_control(9, |body| unsafe { open_selection(end, active, execute, end, body) });
+            self.open_active(active, execute, end);
             self.block(phase.code, None)?;
             if let Some(InstKind::TilePublish(publication)) = phase.step.map(|inst| &inst.kind) {
                 self.publish_values(publication);
             }
             let producer = self.current_label;
-            self.emit_control(4, |body| unsafe { next_control_block(end, end, 1, body) });
+            self.merge_active(end, true);
             // 有效 lane 的私有 SSA 值跨发布点延续；无效尾 lane 只参加统一屏障。
             for slot in &phase.preserved_out() {
                 if let PrivateSlot::Register(r) = slot {
@@ -220,15 +215,7 @@ impl Emitter<'_> {
                     if self.constants.values().any(|&id| id == self.value(*r)) { continue; }
                     let value = self.id();
                     let zero = self.constant(self.stage.registers[*r], 0);
-                    let at = self.body.len();
-                    self.body.reserve(7);
-                    unsafe {
-                        let end = phi_two(
-                            self.body.as_mut_ptr().add(at), 0, self.ty(*r), value,
-                            self.value(*r), producer, zero, before,
-                        );
-                        self.body.set_len(at + end as usize);
-                    }
+                    self.join_two(self.ty(*r), value, [self.value(*r), producer], [zero, before]);
                     self.regs[*r] = value;
                 }
             }

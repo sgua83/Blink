@@ -872,6 +872,17 @@ u64 open_conditional(address body, u64 at, u32 merge, u32 condition, u32 yes, u3
     return words_three(body, end, 250, condition, yes, no);
 }
 
+extern "C" ControlWords begin_shader_body(u32 result_type, u32 function, u32 signature, u32 entry, address body) on cpu {
+    u64 at = words_four(body, 0u64, 54, result_type, function, 0, signature);
+    return ControlWords(words_one(body, at, 248, entry), entry, 1);
+}
+
+extern "C" ControlWords end_shader_body(address body) on cpu {
+    put(body, 0u64, instruction(253, 1));
+    put(body, 1u64, instruction(56, 1));
+    return ControlWords(2u64, 0, 0);
+}
+
 extern "C" ControlWords open_selection(u32 merge, u32 condition, u32 yes, u32 no, address body) on cpu {
     u64 at = open_conditional(body, 0u64, merge, condition, yes, no);
     return ControlWords(words_one(body, at, 248, yes), yes, 1);

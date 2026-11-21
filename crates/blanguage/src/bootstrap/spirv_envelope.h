@@ -255,6 +255,8 @@ struct LoopReturn {
 // The emitter supplies allocated labels and the actual exit status of each
 // child block. A zero result label means the fragment opened no new block.
 // The return edge slice contains label/returned u32 pairs.
+extern "C" ControlWords begin_shader_body(u32 result_type, u32 function, u32 signature, u32 entry, address body) on cpu;
+extern "C" ControlWords end_shader_body(address body) on cpu;
 extern "C" ControlWords open_selection(u32 merge, u32 condition, u32 yes, u32 no, address body) on cpu;
 extern "C" ControlWords next_control_block(u32 target, u32 label, u32 reaches, address body) on cpu;
 extern "C" ControlWords close_selection(u32 merge, u32 yes_reaches, u32 no_reaches, address body) on cpu;
