@@ -258,6 +258,8 @@ struct LoopReturn {
 extern "C" ControlWords open_selection(u32 merge, u32 condition, u32 yes, u32 no, address body) on cpu;
 extern "C" ControlWords next_control_block(u32 target, u32 label, u32 reaches, address body) on cpu;
 extern "C" ControlWords close_selection(u32 merge, u32 yes_reaches, u32 no_reaches, address body) on cpu;
+extern "C" u64 phi_two(address body, u64 at, u32 type, u32 result,
+                        u32 first_value, u32 first_block, u32 second_value, u32 second_block) on cpu;
 extern "C" ControlWords open_loop(LoopLabels labels, address body) on cpu;
 extern "C" ControlWords test_loop(LoopLabels labels, u32 test, address body) on cpu;
 extern "C" ControlWords close_loop(LoopLabels labels, u32 reaches, address body) on cpu;

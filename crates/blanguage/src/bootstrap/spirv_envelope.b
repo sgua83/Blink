@@ -1074,7 +1074,7 @@ extern "C" u64 encode_atomic(AtomicEmission input, address body) on cpu {
     return u64(length);
 }
 
-u64 phi_two(address body, u64 at, u32 type, u32 result,
+extern "C" u64 phi_two(address body, u64 at, u32 type, u32 result,
             u32 first_value, u32 first_block, u32 second_value, u32 second_block) on cpu {
     put(body, at, instruction(245, 7));
     put(body, at + 1u64, type);
@@ -1251,16 +1251,8 @@ void stage_close(inout StageCursor out, u32 end) on cpu {
 }
 
 u32 stage_phi(inout StageCursor out, u32 ty, u32 a, u32 edge_a, u32 b, u32 edge_b) on cpu {
-    u64 at = out.words;
     u32 result = out.next;
-    put(out.body, at, instruction(245, 7));
-    put(out.body, at + 1u64, ty);
-    put(out.body, at + 2u64, result);
-    put(out.body, at + 3u64, a);
-    put(out.body, at + 4u64, edge_a);
-    put(out.body, at + 5u64, b);
-    put(out.body, at + 6u64, edge_b);
-    out.words = at + 7u64;
+    out.words = phi_two(out.body, out.words, ty, result, a, edge_a, b, edge_b);
     out.next = result + 1;
     return result;
 }
@@ -1921,17 +1913,6 @@ extern "C" PrivateAddressWords private_address(PrivateAddress input, address par
     return PrivateAddressWords(at, next);
 }
 
-u64 ray_phi(address body, u64 at, u32 type, u32 result, u32 hit, u32 yes, u32 miss, u32 no) on cpu {
-    put(body, at, instruction(245, 7));
-    put(body, at + 1u64, type);
-    put(body, at + 2u64, result);
-    put(body, at + 3u64, hit);
-    put(body, at + 4u64, yes);
-    put(body, at + 5u64, miss);
-    put(body, at + 6u64, no);
-    return at + 7u64;
-}
-
 RayWords ray_closest(RayEmission input, address results, address body, u64 start, u32 first) on cpu {
     u64 at = start;
     u32 yes = first;
@@ -1984,20 +1965,20 @@ RayWords ray_closest(RayEmission input, address results, address body, u64 start
     at += next_control_block(merge, no, 1, word_at(body, at)).words;
     at += close_selection(merge, 1, 1, word_at(body, at)).words;
     u32 z = input.float_zero;
-    at = ray_phi(body, at, f, read_word(results, 1), distance, yes, input.maximum, no);
-    at = ray_phi(body, at, f, read_word(results, 2), u, yes, z, no);
-    at = ray_phi(body, at, f, read_word(results, 3), v, yes, z, no);
-    at = ray_phi(body, at, input.u32_type, read_word(results, 4), instance, yes, input.zero, no);
-    at = ray_phi(body, at, input.u32_type, read_word(results, 5), primitive, yes, input.zero, no);
+    at = phi_two(body, at, f, read_word(results, 1), distance, yes, input.maximum, no);
+    at = phi_two(body, at, f, read_word(results, 2), u, yes, z, no);
+    at = phi_two(body, at, f, read_word(results, 3), v, yes, z, no);
+    at = phi_two(body, at, input.u32_type, read_word(results, 4), instance, yes, input.zero, no);
+    at = phi_two(body, at, input.u32_type, read_word(results, 5), primitive, yes, input.zero, no);
     if (positions != 0) {
         for (part in 0..9) {
-            at = ray_phi(body, at, f, read_word(results, 6 + part), positions + part, yes, z, no);
+            at = phi_two(body, at, f, read_word(results, 6 + part), positions + part, yes, z, no);
         }
     }
     for (slot in 0..2) {
         if (matrices[slot] != 0) {
             for (part in 0..12) {
-                at = ray_phi(body, at, f, read_word(results, 15 + 12 * slot + part),
+                at = phi_two(body, at, f, read_word(results, 15 + 12 * slot + part),
                              matrices[slot] + part, yes, z, no);
             }
         }
