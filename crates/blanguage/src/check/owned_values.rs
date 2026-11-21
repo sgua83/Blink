@@ -2,6 +2,7 @@
 use super::*;
 #[path="owned_values/model.rs"]
 mod model;
+pub(super) use model::{live_data_at, owned_data_at, owned_data_at_mut};
 pub(super) mod storage;
 mod release;
 use application::{Data, DataPayload, Ownership};

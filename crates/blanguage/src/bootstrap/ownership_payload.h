@@ -163,6 +163,16 @@ extern "C" void handles(address value,address context,cfn<void,address,address> 
     requires nonzero(host.child)
     requires nonzero(host.state_moved)
     requires nonzero(visit);
+struct DataPathHost {
+    cfn<u64,Indices,u64> index_at;
+    cfn<Item,address,u64> child;
+    cfn<u32,Item> moved;
+};
+extern "C" address data_at(address value, Indices path, u32 live, DataPathHost host) on cpu
+    requires nonzero(host.index_at)
+    requires nonzero(host.child)
+    requires nonzero(host.moved);
+
 extern "C" void resources(address value,address context,cfn<void,address,address> visit,Host host) on cpu
     requires nonzero(host.inspect)
     requires nonzero(host.ownership)

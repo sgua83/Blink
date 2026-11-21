@@ -261,6 +261,26 @@ extern "C" void mark_moved(address value,Host host) on cpu
         i+=1u64;
     }
 }
+extern "C" address data_at(address value, Indices path, u32 live, DataPathHost host) on cpu
+    requires nonzero(host.index_at)
+    requires nonzero(host.child)
+    requires nonzero(host.moved) {
+    address absent = unsafe_address(0u64);
+    Item item = Item(value, 4);
+    u64 at = 0u64;
+    while (at < path.count) {
+        if (item.kind != 4 || (live != 0 && host.moved(item) != 0)) {
+            return absent;
+        }
+        item = host.child(item.node, host.index_at(path, at));
+        at += 1u64;
+    }
+    if (item.kind != 3 || (live != 0 && host.moved(item) != 0)) {
+        return absent;
+    }
+    return item.node;
+}
+
 void walk(address value,u32 retain_moved,address context,cfn<void,address,address> visit,Host host) on cpu
     requires nonzero(host.inspect)
     requires nonzero(host.ownership)

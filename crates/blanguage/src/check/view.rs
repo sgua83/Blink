@@ -740,21 +740,22 @@ pub(super) fn data_paths(binding:&Binding)->Vec<(Vec<usize>,&application::Data,b
     }
     result
 }
-pub(super) fn data_at<'a>(binding:&'a Binding,path:&[usize])->Option<&'a application::Data> {
-    data_paths(binding).into_iter().find_map(|(at,data,_)|(at==path).then_some(data))
-}
-pub(super) fn data_at_mut<'a>(binding:&'a mut Binding,path:&[usize])->Option<&'a mut application::Data> {
+pub(super) fn data_at<'a>(binding: &'a Binding, path: &[usize]) -> Option<&'a application::Data> {
     match binding {
-        Binding::ApplicationData(data) if path.is_empty()=>Some(data),
-        Binding::OwnedValue(value)=>{
-            let (first,rest)=path.split_first()?;
-            let mut item=value.payloads.get_mut(*first)?.as_deref_mut()?;
-            for index in rest {let returns::Returned::OwnedValue(value)=item else{return None};item=value.payloads.get_mut(*index)?.as_deref_mut()?;}
-            if let returns::Returned::Dataset(data)=item {Some(data)}else{None}
-        }
-        _=>None,
+        Binding::ApplicationData(data) if path.is_empty() && data.ownership != application::Ownership::Moved => Some(data),
+        Binding::OwnedValue(value) => owned_values::live_data_at(value, path),
+        _ => None,
     }
 }
+
+pub(super) fn data_at_mut<'a>(binding: &'a mut Binding, path: &[usize]) -> Option<&'a mut application::Data> {
+    match binding {
+        Binding::ApplicationData(data) if path.is_empty() => Some(data),
+        Binding::OwnedValue(value) => owned_data_at_mut(value, path),
+        _ => None,
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) enum Exclusion {
     Resource,
@@ -1003,14 +1004,8 @@ pub(super) fn resource_paths(ty:&Ty)->Vec<Vec<usize>> {
     }
     let mut result=Vec::new();visit(ty,&mut Vec::new(),&mut result);result
 }
-pub(super) fn owned_data_at<'a>(value:&'a owned_values::OwnedValue,path:&[usize])->Option<&'a application::Data> {
-    let(first,rest)=path.split_first()?;
-    match value.payloads.get(*first)?.as_deref()? {returns::Returned::Dataset(data)if rest.is_empty()=>Some(data),returns::Returned::OwnedValue(child)=>owned_data_at(child,rest),_=>None}
-}
-pub(super) fn owned_data_at_mut<'a>(value:&'a mut owned_values::OwnedValue,path:&[usize])->Option<&'a mut application::Data>{
-    let(first,rest)=path.split_first()?;
-    match value.payloads.get_mut(*first)?.as_deref_mut()?{returns::Returned::Dataset(data)if rest.is_empty()=>Some(data),returns::Returned::OwnedValue(child)=>owned_data_at_mut(child,rest),_=>None}
-}
+pub(super) use owned_values::{owned_data_at, owned_data_at_mut};
+
 impl Builder<'_> {
     fn mapped_data_borrow(&self,identity:ValueIdentity)->Option<Borrow> {
         self.loop_contexts.iter().rev().find_map(|context|context.view_resources.get(&identity).cloned())

@@ -53,6 +53,24 @@ fn mutable_item(value: Option<&mut Returned>) -> Item {
         Some(Returned::OwnedValue(value))=>Item{node:pointer_mut(value.as_mut()),kind:4},
     }
 }
+unsafe extern "C" fn path_child(owner: Address, at: u64) -> Item {
+    let owner = unsafe { &*owner.cast::<OwnedValuePayload>() };
+    returned_item(owner.payloads.get(at as usize).and_then(Option::as_deref))
+}
+
+unsafe extern "C" fn path_child_mut(owner: Address, at: u64) -> Item {
+    let owner = unsafe { &mut *owner.cast::<OwnedValuePayload>() };
+    mutable_item(owner.payloads.get_mut(at as usize).and_then(Option::as_deref_mut))
+}
+
+unsafe extern "C" fn path_moved(item: Item) -> u32 {
+    // B asks only about a selected aggregate or dataset, using its original kind.
+    let state = unsafe {
+        if item.kind == 3 { data_ownership(item.node) } else { ownership(item.node) }
+    };
+    unsafe { state_moved(state) }
+}
+
 unsafe extern "C" fn field(owner:Address,at:u64)->Field{
     let (offset,ty)=unsafe{&*owner.cast::<OwnedValuePayload>()}.value.ty.aggregate_part(at as usize);
     Field{ty:pointer(ty),offset,owns:u32::from(ty.owns_resources())}
@@ -185,6 +203,13 @@ struct Host{
 const HOST:Host=Host{inspect,value,ownership,child,field,field_owned,aggregate_count,component_count,component_word,component_index,index_at,state_available,state_owned,state_moved,state_equal,state_set_owned,state_set_borrowed,state_set_moved,proof_join_stored,proof_join_common,uniform,set_uniform,constant_equal,clear_constant,proof_borrow,proof_clear,proof_assign,length_constant,view_empty,install_source,join_child,join_ownership,move_child,data_root,data_length,data_ownership,data_count,data_read,data_clear_residency,data_identity,ownership_loop,loop_path,path_possible,fresh_indices,push_index,indices_view,drop_indices};
 const MUT_HOST:Host=Host{value:value_mut,ownership:ownership_mut,child:child_mut,data_root:data_root_mut,data_length:data_length_mut,data_ownership:data_ownership_mut,..HOST};
 
+#[repr(C)]
+struct DataPathHost {
+    index_at: unsafe extern "C" fn(Indices, u64) -> u64,
+    child: unsafe extern "C" fn(Address, u64) -> Item,
+    moved: unsafe extern "C" fn(Item) -> u32,
+}
+
 unsafe extern "C" {
     #[link_name="bootstrap.ownership_payload::join"] fn source_join(a:Address,b:Address,stored:u32,choice:Address,presence:Address,host:Host);
     #[link_name="bootstrap.ownership_payload::available"] fn source_available(value:Address,host:Host)->u32;
@@ -198,7 +223,39 @@ unsafe extern "C" {
     #[link_name="bootstrap.ownership_payload::mark_moved"] fn source_moved(value:Address,host:Host);
     #[link_name="bootstrap.ownership_payload::handles"] fn source_handles(value:Address,context:Address,visit:unsafe extern "C" fn(Address,Address),host:Host);
     #[link_name="bootstrap.ownership_payload::resources"] fn source_resources(value:Address,context:Address,visit:unsafe extern "C" fn(Address,Address),host:Host);
+    #[link_name = "bootstrap.ownership_payload::data_at"]
+    fn source_data_at(value: Address, path: Indices, live: u32, host: DataPathHost) -> *mut Data;
 }
+fn data_at<'a>(value: &'a OwnedValuePayload, path: &[usize], live: bool) -> Option<&'a Data> {
+    // The result is borrowed from the original owner and never retained by B.
+    unsafe {
+        source_data_at(
+            pointer(value), indices(path), u32::from(live),
+            DataPathHost { index_at, child: path_child, moved: path_moved },
+        ).as_ref()
+    }
+}
+
+pub(in crate::check) fn live_data_at<'a>(value: &'a OwnedValuePayload, path: &[usize]) -> Option<&'a Data> {
+    data_at(value, path, true)
+}
+
+pub(in crate::check) fn owned_data_at<'a>(value: &'a OwnedValuePayload, path: &[usize]) -> Option<&'a Data> {
+    data_at(value, path, false)
+}
+
+pub(in crate::check) fn owned_data_at_mut<'a>(
+    value: &'a mut OwnedValuePayload, path: &[usize],
+) -> Option<&'a mut Data> {
+    // B returns only the single leaf selected through the exclusive owner.
+    unsafe {
+        source_data_at(
+            pointer_mut(value), indices(path), 0,
+            DataPathHost { index_at, child: path_child_mut, moved: path_moved },
+        ).as_mut()
+    }
+}
+
 pub(super) fn join(
     value: &mut OwnedValuePayload, mut other: OwnedValue, stored: bool, choice: Option<&bounds::Condition>,
     presence: Option<&owned_presence::Presence>,
