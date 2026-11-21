@@ -112,11 +112,11 @@ impl Graph {
         graph.needs_r15 = graph::analyze(&mut graph, &stage.code, &stage.registers, &mut live,
             &empty, &empty, &empty, 1);
         drop(live);
-        let phases = if stage.has_tile_steps() { stage.tile_phases() } else { Vec::new() };
+        let phases = stage.tile_phases();
         // 实际阶段入口会恢复整组私有值，出口则保存整组；它们必须同时可取。
         for phase in &phases {
             graph.together(&phase.live_in);
-            graph.together(&phase.preserved_out());
+            graph.together(&phase.saved);
         }
         (graph, phases)
     }
@@ -264,7 +264,9 @@ impl PacketAllocation {
 }
 impl Frame {
     pub fn layout_tile(&mut self, stage: &Stage, phases: &[TilePhase<'_>], shared: crate::ir::dataflow::TileLayout) -> u64 {
-        let private: BTreeSet<_> = phases.iter().flat_map(|phase| phase.live_out.iter().copied()).collect();
+        // Each outgoing slot has a consumer in the next phase's restore.
+        let private: BTreeSet<_> = phases.iter().skip(1)
+            .flat_map(|phase| phase.live_in.iter().copied()).collect();
         let mut shared_positions: Vec<_> = shared.values().map(|&(_, slot, _)| slot as u64).collect();
         let mut private_positions: Vec<_> = private.iter()
             .map(|&slot| u64::from(stage.private_scalar(slot).size())).collect();

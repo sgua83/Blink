@@ -169,19 +169,17 @@ extern "C" u64 intersect_local_values(address left, u64 left_count,
     return kept;
 }
 
-extern "C" void private_reference(LiveReferenceKind kind,address live,u64 slot,
-    cfn<void,LiveSetAction,address,address,u64> change) on cpu requires nonzero(change) {
-    LiveSetAction action;
-    if (kind==LiveReferenceKind::Result) { action=LiveSetAction::RemoveRegister; }
-    else if (kind==LiveReferenceKind::Operand) { action=LiveSetAction::InsertRegister; }
-    else { action=LiveSetAction::InsertLocal; }
-    change(action,live,unsafe_address(0u64),slot);
+extern "C" void private_phase_step(address instruction,address live,address saved,LiveHost host) on cpu
+    requires nonzero(host.kill) requires nonzero(host.read) requires nonzero(host.change) {
+    host.kill(instruction,live);
+    host.change(LiveSetAction::Copy,saved,live,0u64);
+    host.read(instruction,live);
 }
 
 extern "C" void private_loop(FusionBlock condition,u64 test,FusionBlock body,
     address after,address break_live,address continue_live,address exit_live,
     address result,address empty,LiveHost host) on cpu
-    requires nonzero(host.read_node) requires nonzero(host.references)
+    requires nonzero(host.read_node) requires nonzero(host.kill) requires nonzero(host.read)
     requires nonzero(host.clone_set) requires nonzero(host.drop_set) requires nonzero(host.change) {
     // Pointwise gen/kill transfers close the backedge from an empty header.
     // after may be result: it remains borrowed until the final swap.
@@ -196,7 +194,7 @@ extern "C" void private_loop(FusionBlock condition,u64 test,FusionBlock body,
 
 extern "C" void private_before(FusionBlock code,address live,address break_live,
     address continue_live,address exit_live,address empty,LiveHost host) on cpu
-    requires nonzero(host.read_node) requires nonzero(host.references)
+    requires nonzero(host.read_node) requires nonzero(host.kill) requires nonzero(host.read)
     requires nonzero(host.clone_set) requires nonzero(host.drop_set) requires nonzero(host.change) {
     u64 index=code.count;
     while (index!=0u64) {
@@ -228,7 +226,8 @@ extern "C" void private_before(FusionBlock code,address live,address break_live,
             host.change(LiveSetAction::RemoveLocal,live,unsafe_address(0u64),node.first_slot);
             host.change(LiveSetAction::InsertRegister,live,unsafe_address(0u64),node.second_slot);
         } else {
-            host.references(node.instruction,live);
+            host.kill(node.instruction,live);
+            host.read(node.instruction,live);
         }
     }
 }

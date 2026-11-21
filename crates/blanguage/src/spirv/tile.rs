@@ -196,8 +196,8 @@ impl Emitter<'_> {
             self.store_pointer(at.0, packed[word as usize]);
         }
     }
-    pub(super) fn tile_phases(&mut self, active: u32) -> Result<(), &'static str> {
-        for phase in self.stage.tile_phases() {
+    pub(super) fn tile_phases(&mut self, active: u32, phases: Vec<TilePhase<'_>>) -> Result<(), &'static str> {
+        for phase in phases {
             let before = self.current_label;
             let execute = self.id();
             let end = self.id();
@@ -209,7 +209,7 @@ impl Emitter<'_> {
             let producer = self.current_label;
             self.merge_active(end, true);
             // 有效 lane 的私有 SSA 值跨发布点延续；无效尾 lane 只参加统一屏障。
-            for slot in &phase.preserved_out() {
+            for slot in &phase.saved {
                 if let PrivateSlot::Register(r) = slot {
                     // Module constants already dominate every lane and phase.
                     if self.constants.values().any(|&id| id == self.value(*r)) { continue; }

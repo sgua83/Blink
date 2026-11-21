@@ -18,13 +18,12 @@ struct Node {
 }
 #[repr(u32)]
 enum Action { Copy, Union, InsertRegister, RemoveRegister, InsertLocal, RemoveLocal, Swap }
-#[repr(u32)]
-enum ReferenceKind { Result, Operand, LocalRead }
 type Change = unsafe extern "C" fn(Action, *mut Slots, *const Slots, usize);
 #[repr(C)]
 struct Host {
     read_node: unsafe extern "C" fn(Block, usize) -> Node,
-    references: unsafe extern "C" fn(*const Inst, *mut Slots),
+    kill: unsafe extern "C" fn(*const Inst, *mut Slots),
+    read: unsafe extern "C" fn(*const Inst, *mut Slots),
     clone_set: unsafe extern "C" fn(*const Slots) -> *mut Slots,
     drop_set: unsafe extern "C" fn(*mut Slots),
     change: Change,
@@ -37,8 +36,8 @@ unsafe extern "C" {
     fn native_loop(condition: Block, test: Reg, body: Block, after: *const Slots,
         break_live: *const Slots, continue_live: *const Slots, exit_live: *const Slots,
         result: *mut Slots, empty: *const Slots, host: Host);
-    #[link_name = "bootstrap.stage_fusion::private_reference"]
-    fn reference(kind: ReferenceKind, live: *mut Slots, slot: usize, change: Change);
+    #[link_name = "bootstrap.stage_fusion::private_phase_step"]
+    fn native_phase_step(inst: *const Inst, live: *mut Slots, saved: *mut Slots, host: Host);
 }
 
 unsafe extern "C" fn read_node(block: Block, index: usize) -> Node {
@@ -62,13 +61,21 @@ unsafe extern "C" fn read_node(block: Block, index: usize) -> Node {
     }
     node
 }
-unsafe extern "C" fn references(inst: *const Inst, live: *mut Slots) {
+unsafe extern "C" fn kill(inst: *const Inst, live: *mut Slots) {
     let inst = unsafe { &*inst };
-    for reg in inst.results() { unsafe { reference(ReferenceKind::Result, live, reg, change) }; }
+    let live = unsafe { &mut *live };
+    for reg in inst.results() {
+        live.remove(&PrivateSlot::Register(reg));
+    }
+}
+unsafe extern "C" fn read(inst: *const Inst, live: *mut Slots) {
+    let inst = unsafe { &*inst };
+    let live = unsafe { &mut *live };
     inst.all_operands(&mut |reg| {
-        unsafe { reference(ReferenceKind::Operand, live, reg, change) }; true
+        live.insert(PrivateSlot::Register(reg));
+        true
     });
-    for slot in inst.local_reads() { unsafe { reference(ReferenceKind::LocalRead, live, slot, change) }; }
+    live.extend(inst.local_reads().map(PrivateSlot::Local));
 }
 unsafe extern "C" fn clone_set(source: *const Slots) -> *mut Slots {
     Box::into_raw(Box::new(unsafe { &*source }.clone()))
@@ -85,7 +92,11 @@ unsafe extern "C" fn change(action: Action, output: *mut Slots, input: *const Sl
         Action::Swap => unsafe { std::ptr::swap(output, input.cast_mut()) },
     }
 }
-const HOST: Host = Host { read_node, references, clone_set, drop_set, change };
+const HOST: Host = Host { read_node, kill, read, clone_set, drop_set, change };
+
+pub(super) fn phase_step(inst: &Inst, live: &mut Slots, saved: &mut Slots) {
+    unsafe { native_phase_step(inst, live, saved, HOST) };
+}
 
 pub(super) fn before(code: &[Inst], mut live: Slots, break_live: &Slots,
     continue_live: &Slots, exit_live: &Slots) -> Slots {

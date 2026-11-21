@@ -300,7 +300,7 @@ impl Emitter<'_> {
                 self.publish_values(publication);
                 self.operation_range(inst, start, first);
             }
-            self.tile_private(phase_index, &phase.preserved_out(), false);
+            self.tile_private(phase_index, &phase.saved, false);
             let start = self.code.len();
             let length_offset = self.tile_length_slot();
             let bytes_back = (start - begin) as u64;

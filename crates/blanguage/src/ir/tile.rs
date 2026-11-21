@@ -42,28 +42,9 @@ pub(crate) struct TilePhase<'a> {
     pub code: &'a [Inst],
     pub step: Option<&'a Inst>,
     pub live_in: BTreeSet<PrivateSlot>,
-    pub live_out: BTreeSet<PrivateSlot>,
-}
-impl TilePhase<'_> {
-    pub fn preserved_out(&self) -> BTreeSet<PrivateSlot> {
-        let mut slots = self.live_out.clone();
-        if let Some(inst) = self.step {
-            for result in inst.results() {
-                slots.remove(&PrivateSlot::Register(result));
-            }
-        }
-        slots
-    }
+    pub saved: BTreeSet<PrivateSlot>,
 }
 impl Stage {
-    pub(crate) fn has_tile_steps(&self) -> bool {
-        self.code.iter().any(|i| {
-            matches!(
-                &(i).kind,
-                InstKind::TilePublish(_) | InstKind::TileCollective(_) | InstKind::TileBarrier
-            )
-        })
-    }
     pub fn shared_word(&self, tile: usize, word: u32) -> SharedWord {
         match self.tiles[tile].source {
             TileSource::Input {
@@ -87,31 +68,27 @@ impl Stage {
                     code: &self.code[begin..i],
                     step,
                     live_in: BTreeSet::new(),
-                    live_out: BTreeSet::new(),
+                    saved: BTreeSet::new(),
                 });
                 begin = i + 1;
             }
+        }
+        if phases.is_empty() {
+            return phases;
         }
         phases.push(TilePhase {
             code: &self.code[begin..],
             step: None,
             live_in: BTreeSet::new(),
-            live_out: BTreeSet::new(),
+            saved: BTreeSet::new(),
         });
+        let empty = BTreeSet::new();
         let mut live = BTreeSet::new();
         for phase in phases.iter_mut().rev() {
-            phase.live_out = live.clone();
             if let Some(inst) = phase.step {
-                live = live_before(std::slice::from_ref(inst), live,
-                    &BTreeSet::new(), &BTreeSet::new(), &BTreeSet::new());
+                private_live::phase_step(inst, &mut live, &mut phase.saved);
             }
-            live = live_before(
-                phase.code,
-                live,
-                &BTreeSet::new(),
-                &BTreeSet::new(),
-                &BTreeSet::new(),
-            );
+            live = live_before(phase.code, live, &empty, &empty, &empty);
             phase.live_in = live.clone();
         }
         phases

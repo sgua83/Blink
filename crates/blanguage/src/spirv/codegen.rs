@@ -2532,8 +2532,9 @@ fn emit_shader(
         if stage.has_tile_scope() {
             e.tile_input(count, active, inputs);
         }
-        if stage.has_tile_steps() {
-            e.tile_phases(active)?;
+        let phases = stage.tile_phases();
+        if !phases.is_empty() {
+            e.tile_phases(active, phases)?;
         } else {
             e.open_active(active, execute, end);
             if stage.selection.is_some() {
