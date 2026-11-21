@@ -1428,7 +1428,6 @@ impl Builder<'_> {
                 if matches!(source.elements,application::ElementFacts::Input(_)) && let Some(target)=view_contracts::resource_output_mut(&mut returned,&resource){
                     let location=source.residency.at_call(&bindings);
                     target.elements=input_elements(&location,d,&env);
-                    if let Some(location)=location.bind(&locations){target.residency=location;}
                 }
             }
         }
