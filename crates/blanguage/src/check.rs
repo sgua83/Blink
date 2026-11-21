@@ -1861,7 +1861,7 @@ struct Builder<'a> {
     return_context: Option<returns::ReturnContext>,
     cooperative_root: Option<usize>,
     calls: Vec<String>,
-    iterators: Vec<Option<(String, usize)>>,
+    iterators: Vec<Option<(String, usize, Value)>>,
     mutable_names: BTreeSet<String>,
     view_uses: view_liveness::State,
     tiles: Vec<CheckedTile>,
@@ -2285,12 +2285,10 @@ impl<'a> Builder<'a> {
         }
         unsafe { self.world.call(self.release_application_loop()).await }?;
         if breaking {
-            self.emit(InstKind::Break);
-            self.capture_break();
-            self.flow = Flow::BREAK;
+            self.emit_loop_break();
         } else {
-            if let Some(Some((_, slot))) = self.iterators.last().cloned() {
-                self.advance_iterator(slot)?;
+            if let Some(Some((_, slot, _))) = self.iterators.last() {
+                self.advance_iterator(*slot)?;
             }
             unsafe { self.world.call(self.check_application_loop(s.span())).await }?;
             self.emit(InstKind::Continue);
@@ -3821,7 +3819,7 @@ impl<'a> Builder<'a> {
                 None
             },
         };
-        let test = self.binary("<", cursor.clone(), limit.clone(), span,None)?;
+        let mut test = self.binary("<", cursor.clone(), limit.clone(), span,None)?;
         let condition = std::mem::take(&mut self.code);
         let body_cursor=Value {
             proof:if initial {bounds::Proof::capture(&begin)}else{bounds::for_cursor(&begin,&limit,seeks)},
@@ -3914,7 +3912,7 @@ impl<'a> Builder<'a> {
         let control = self.control_uniform;
         self.control_uniform &= begin.uniform && limit.uniform;
         self.loop_depth += 1;
-        self.iterators.push(Some((name.clone(), slot)));
+        self.iterators.push(Some((name.clone(), slot, limit)));
         unsafe { self.world.call(self.block(body)).await }?;
         let mut body_flow = self.flow;
         let body_reachable = body_flow.continues();
@@ -3922,7 +3920,7 @@ impl<'a> Builder<'a> {
             self.advance_iterator(slot)?;
             unsafe { self.world.call(self.check_application_loop(span)).await }?;
         }
-        self.iterators.pop();
+        let (_, _, limit) = self.iterators.pop().unwrap().unwrap();
         self.loop_depth -= 1;
         if !initial && !seeks {
             match &cursor_specification.data {
@@ -3942,6 +3940,10 @@ impl<'a> Builder<'a> {
             body,
         );
         self.defer_iteration_exit(&mut natural,&begin,&limit,&initialization,iteration,initial,body);
+        if !body_flow.iterates() {
+            let entry = bounds::Condition::comparison(Comparison::Less, &begin, &limit);
+            test.proof = bounds::Proof::condition(entry);
+        }
         let natural = (!nonempty || (!initial && body_flow.iterates())).then_some(natural);
         if initial {
             let specification = cursor_specification.clone();
@@ -4482,17 +4484,24 @@ impl<'a> Builder<'a> {
     }
     #[inline(never)]
     async fn seek_statement(&mut self, name: &str, position: &Expr, span: Span) -> Result<()> {
-        let Some(Some((iterator, slot))) = self.iterators.last().cloned() else {
+        let Some(Some((iterator, slot, _))) = self.iterators.last() else {
             return self.fail(span, "B164", "seek 需要当前有界 for 游标");
         };
-        if iterator != *name {
+        if iterator != name {
             return self.fail(span, "B165", "seek 只能推进当前最内层游标");
         }
+        let slot = *slot;
         let Some(value) = unsafe { self.world.call(self.temporary_scope(position.span(), async |builder| Ok((unsafe { builder.world.call(builder.expr(position)).await }?, view::Borrow::default())))).await }? else {
             return Ok(());
         };
         self.require_same(&Ty::scalar(Scalar::U32), &value.ty, position.span())?;
         unsafe { self.world.call(self.release_application_loop()).await }?;
+        let (_, _, limit) = self.iterators.last().unwrap().as_ref().unwrap();
+        let next = bounds::Condition::comparison(Comparison::Less, &value, limit);
+        if self.condition_truth(&next, None) == Some(false) {
+            self.emit_loop_break();
+            return Ok(());
+        }
         self.emit(InstKind::StoreLocal(slot, value.regs[0]));
         self.capture_loop_cursor(value);
         unsafe { self.world.call(self.check_application_loop(span)).await }?;

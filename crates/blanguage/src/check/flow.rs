@@ -660,10 +660,13 @@ impl Builder<'_> {
         self.loop_contexts.last_mut().unwrap().exits = exits;
         Ok((code, flow))
     }
-    pub(super) fn capture_break(&mut self) {
+    pub(super) fn emit_loop_break(&mut self) {
+        self.emit(InstKind::Break);
         let state = self.loop_state();
         self.loop_contexts.last_mut().unwrap().exits.push(state);
+        self.flow = Flow::BREAK;
     }
+
     pub(super) fn leave_loop(
         &mut self,
         mut natural:Option<LoopState>,
