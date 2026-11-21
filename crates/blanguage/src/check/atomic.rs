@@ -18,20 +18,20 @@ pub(super) struct AtomicBuiltin {
 
 unsafe extern "C" {
     #[link_name = "bootstrap.operator_types::source_atomic"]
-    fn source_atomic(bytes: *const u8, length: usize, statement: bool) -> AtomicBuiltin;
+    fn source_atomic(bytes: *const u8, length: usize, statement: u32) -> AtomicBuiltin;
     #[link_name = "bootstrap.operator_types::atomic_order_allowed"]
-    fn atomic_order_allowed(kind: AtomicSourceKind, order: u32, failure: u32) -> bool;
+    fn atomic_order_allowed(kind: AtomicSourceKind, order: u32, failure: u32) -> u32;
 }
 
 impl AtomicBuiltin {
     pub(super) fn from_source(name: &str, statement: bool) -> Option<Self> {
         let suffix = name.strip_prefix("atomic_")?;
-        let builtin = unsafe { source_atomic(suffix.as_ptr(), suffix.len(), statement) };
+        let builtin = unsafe { source_atomic(suffix.as_ptr(), suffix.len(), u32::from(statement)) };
         (builtin.kind != AtomicSourceKind::Unknown).then_some(builtin)
     }
     pub(super) fn is_store(self) -> bool { self.kind == AtomicSourceKind::Store }
     fn permits(self, order: MemoryOrder, failure: MemoryOrder) -> bool {
-        unsafe { atomic_order_allowed(self.kind, order as u32, failure as u32) }
+        unsafe { atomic_order_allowed(self.kind, order as u32, failure as u32) != 0 }
     }
 }
 
