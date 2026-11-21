@@ -735,6 +735,8 @@ unsafe extern "C" {
         input: PayloadEmission, result: PayloadResult, operands: *const u32, shifts: *const u32,
         body: *mut u32,
     ) -> PayloadWrite;
+    #[link_name = "bootstrap.spirv_envelope::payload_write_bits"]
+    fn payload_write_bits(type_id: u32, result: u32, value: u32, one: u32, zero: u32, body: *mut u32) -> u64;
     #[link_name = "bootstrap.spirv_envelope::payload_write"]
     fn payload_write(
         input: PayloadEmission, value: u32, pointers: *const u32, shifts: *const u32,
@@ -1627,19 +1629,25 @@ impl Emitter<'_> {
     fn raw_bits(&mut self, value: Reg) -> u32 {
         let scalar = self.stage.registers[value];
         let value = self.value(value);
-        if scalar == Scalar::Bool {
-            let bits = self.id();
-            let one = self.constant(Scalar::U32, 1);
-            let zero = self.constant(Scalar::U32, 0);
-            self.select(self.types[&Scalar::U32], bits, value, one, zero);
-            bits
-        } else if scalar != Self::raw_scalar(scalar) {
-            let bits = self.id();
-            self.emit(124, &[self.raw_type(scalar), bits, value]);
-            bits
-        } else {
-            value
+        let raw = Self::raw_scalar(scalar);
+        if scalar == raw {
+            return value;
         }
+        let bits = self.id();
+        let (one, zero) = if scalar == Scalar::Bool {
+            (self.constant(Scalar::U32, 1), self.constant(Scalar::U32, 0))
+        } else {
+            (0, 0)
+        };
+        let at = self.body.len();
+        self.body.reserve(6);
+        unsafe {
+            let words = payload_write_bits(
+                self.types[&raw], bits, value, one, zero, self.body.as_mut_ptr().add(at),
+            );
+            self.body.set_len(at + words as usize);
+        }
+        bits
     }
 
     fn write_payload(&mut self, input: PayloadEmission, value: u32, pointers: &[u32], shifts: &[u32; 8], output: *mut u32) {

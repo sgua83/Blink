@@ -239,6 +239,8 @@ extern "C" u64 write_summary_words(address body, address pointers, address value
 extern "C" PayloadRead payload_read(PayloadEmission input, address operands, address shifts, address body) on cpu;
 // Result emission adds up to five words. compare_zero is the zero constant ID for a bool result.
 extern "C" PayloadWrite typed_payload_read(PayloadEmission input, PayloadResult result, address operands, address shifts, address body) on cpu;
+// Boolean storage supplies its one and zero constant IDs. Other inputs use a same-width bitcast.
+extern "C" u64 payload_write_bits(u32 type_id, u32 result, u32 value, u32 one, u32 zero, address body) on cpu;
 extern "C" PayloadWrite payload_write(PayloadEmission input, u32 value, address pointers, address shifts, address output, address body) on cpu;
 
 struct ControlWords { u64 words; u32 label; u32 reaches_next; };

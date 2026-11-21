@@ -785,6 +785,13 @@ extern "C" PayloadWrite typed_payload_read(PayloadEmission input, PayloadResult 
         result.id, read.value), read.next);
 }
 
+extern "C" u64 payload_write_bits(u32 type_id, u32 result, u32 value, u32 one, u32 zero, address body) on cpu {
+    if (one != 0) {
+        return select_words(body, 0u64, type_id, result, value, one, zero);
+    }
+    return words_three(body, 0u64, 124, type_id, result, value);
+}
+
 u32 uniform_word(inout StageCursor out, UniformRead input, u32 word) on cpu {
     u32 pointer = out.next;
     u32 value = pointer + 1;
