@@ -259,18 +259,16 @@ pub(super) enum ExecutionResources {
         _resources: Option<ComputeResources>,
         _queries: Option<Rc<QueryPool>>,
     },
-    Transfer {
+    DatasetTransfer {
         commands: Commands,
         _staging: Vec<Allocation>,
+        covers_view_sources: bool,
     },
+    Present { commands: Commands },
     ImageCopy {
         commands: Commands,
         _staging: Option<Allocation>,
         discarded: Option<texture::Storage>,
-    },
-    DatasetUpload {
-        commands: Commands,
-        _staging: Vec<Allocation>,
     },
     Acceleration {
         commands: Commands,
@@ -284,15 +282,18 @@ impl ExecutionResources {
     fn commands(&self) -> &Commands {
         match self {
             Self::Compute { commands, .. }
-            | Self::Transfer { commands, .. }
+            | Self::DatasetTransfer { commands, .. }
+            | Self::Present { commands }
             | Self::ImageCopy { commands, .. }
-            | Self::DatasetUpload { commands, .. }
             | Self::Acceleration { commands, .. } => commands,
         }
     }
 }
 enum DiscardedDataset {
-    UploadPages { _pages: Vec<Allocation> },
+    TransferTargets {
+        _pages: Vec<Allocation>,
+        _instance_pointers: Option<Allocation>,
+    },
     Owned {
         _binding_table: Allocation,
         _pages: Vec<Allocation>,
@@ -369,7 +370,10 @@ impl Execution {
     }
     /// The retained initial upload owns the copies for this storage and its CPU view sources.
     pub(super) fn uploads_dataset_graph(&self) -> bool {
-        matches!(self.resources.borrow().as_ref(), Some(ExecutionResources::DatasetUpload { .. }))
+        matches!(
+            self.resources.borrow().as_ref(),
+            Some(ExecutionResources::DatasetTransfer { covers_view_sources: true, .. }),
+        )
     }
     pub fn discard(&self, storage: DatasetStorage) {
         if matches!(self.point.result.get(), Some(0 | -4)) {
@@ -377,10 +381,15 @@ impl Execution {
             return;
         }
         let storage = match storage {
-            DatasetStorage::Owned(GpuStorage { pages, .. }) if self.uploads_dataset_graph() => {
-                // The initial copies only write destination pages. The binding table
-                // and source graph have no remaining consumer once this owner drops.
-                DiscardedDataset::UploadPages { _pages: pages }
+            DatasetStorage::Owned(GpuStorage { pages, instances, .. })
+                if matches!(self.resources.borrow().as_ref(), Some(ExecutionResources::DatasetTransfer { .. })) =>
+            {
+                // Initialization writes the destination pages and, for instances,
+                // the pointer buffer. It never reads the binding table or follows its addresses.
+                DiscardedDataset::TransferTargets {
+                    _pages: pages,
+                    _instance_pointers: instances.and_then(|input| input.pointers),
+                }
             }
             DatasetStorage::Owned(GpuStorage {
                 allocation, pages, views: Views { sources, .. }, instances, ..

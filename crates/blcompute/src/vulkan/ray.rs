@@ -851,7 +851,7 @@ impl Device {
             models: collect_models(models),
         });
         if let Some((commands, staging)) = transfer {
-            target.last_use = Some(self.submit_transfer(commands, staging, Vec::new())?);
+            target.last_use = Some(self.submit_dataset_transfer(commands, staging, false)?);
         }
         Ok(target)
     }

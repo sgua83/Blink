@@ -476,10 +476,7 @@ impl Swapchain {
             );
             let signal = self.rendered[index as usize];
             let execution = Execution::submit_with(
-                ExecutionResources::Transfer {
-                    commands,
-                    _staging: Vec::new(),
-                },
+                ExecutionResources::Present { commands },
                 previous.into_iter().cloned().collect(),
                 &[self.acquired],
                 &[0x1000],

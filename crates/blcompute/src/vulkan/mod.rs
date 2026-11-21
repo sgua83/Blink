@@ -977,7 +977,7 @@ impl Device {
                     );
                 }
             }
-            target.last_use = Some(self.submit_transfer(commands, Vec::new(), Vec::new())?);
+            target.last_use = Some(self.submit_dataset_transfer(commands, Vec::new(), false)?);
         }
         Ok(target)
     }

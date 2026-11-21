@@ -31,7 +31,7 @@ impl Device {
             &mut commands,
             &mut staging,
         )?;
-        target.last_use = Some(self.submit_transfer(commands, staging, Vec::new())?);
+        target.last_use = Some(self.submit_dataset_transfer(commands, staging, false)?);
         Ok(())
     }
     fn stage_payload(
@@ -92,18 +92,19 @@ impl Device {
         staging.push(source);
         Ok(())
     }
-    pub(super) fn submit_transfer(
+    pub(super) fn submit_dataset_transfer(
         &self,
         commands: Commands,
         staging: Vec<Allocation>,
-        dependencies: Vec<Rc<Execution>>,
+        covers_view_sources: bool,
     ) -> Result<Rc<Execution>> {
         Execution::submit(
-            ExecutionResources::Transfer {
+            ExecutionResources::DatasetTransfer {
                 commands,
                 _staging: staging,
+                covers_view_sources,
             },
-            dependencies,
+            Vec::new(),
         )
     }
 }
@@ -209,10 +210,7 @@ impl<'a> Upload<'a> {
 
     pub(super) fn submit(self) -> Result<Uploaded> {
         let execution = self.commands.map(|commands| {
-            Execution::submit(
-                ExecutionResources::DatasetUpload { commands, _staging: self.staging },
-                Vec::new(),
-            )
+            self.device.submit_dataset_transfer(commands, self.staging, true)
         }).transpose()?;
         let mut shared = Vec::with_capacity(self.shared.len());
         // A source is recorded before any record that refers to it.
