@@ -205,15 +205,14 @@ struct PayloadEmission {
 };
 struct PayloadRead { u64 words; u32 next; u32 value; };
 struct PayloadWrite { u64 words; u32 next; };
+struct PayloadResult { u32 type_id; u32 id; u32 compare_zero; };
 struct UniformRead {
     u32 next;
     u32 push_pointer;
     u32 push_block;
     u32 uint_type;
     u32 raw_type;
-    u32 result_type;
-    u32 result;
-    u32 boolean;
+    PayloadResult result;
     u32 zero;
     u32 low_word;
     u32 high_word;
@@ -238,6 +237,8 @@ extern "C" PayloadWrite summary_addresses(PageAddress input, u32 step, address p
 extern "C" u64 read_summary_words(address body, u32 type_id, u32 first, address pointers, u32 count) on cpu;
 extern "C" u64 write_summary_words(address body, address pointers, address values, u32 count) on cpu;
 extern "C" PayloadRead payload_read(PayloadEmission input, address operands, address shifts, address body) on cpu;
+// Result emission adds up to five words. compare_zero is the zero constant ID for a bool result.
+extern "C" PayloadWrite typed_payload_read(PayloadEmission input, PayloadResult result, address operands, address shifts, address body) on cpu;
 extern "C" PayloadWrite payload_write(PayloadEmission input, u32 value, address pointers, address shifts, address output, address body) on cpu;
 
 struct ControlWords { u64 words; u32 label; u32 reaches_next; };

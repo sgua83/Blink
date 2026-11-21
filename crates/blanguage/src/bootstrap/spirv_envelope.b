@@ -774,6 +774,17 @@ extern "C" PayloadRead payload_read(PayloadEmission input, address operands, add
     return PayloadRead(at, next, value);
 }
 
+extern "C" PayloadWrite typed_payload_read(PayloadEmission input, PayloadResult result, address operands, address shifts, address body) on cpu {
+    PayloadRead read = payload_read(input, operands, shifts, body);
+    if (result.compare_zero != 0) {
+        return PayloadWrite(words_four(body, read.words, 171, result.type_id,
+            result.id, read.value, result.compare_zero), read.next);
+    }
+    u32 opcode = result.type_id == input.raw_type ? 83 : 124;
+    return PayloadWrite(words_three(body, read.words, opcode, result.type_id,
+        result.id, read.value), read.next);
+}
+
 u32 uniform_word(inout StageCursor out, UniformRead input, u32 word) on cpu {
     u32 pointer = out.next;
     u32 value = pointer + 1;
@@ -804,16 +815,9 @@ extern "C" PayloadWrite read_uniform(UniformRead input, address body) on cpu {
     array<u32,2> shifts = array<u32,2>(0, input.high_shift);
     PayloadEmission payload = PayloadEmission(PayloadAccess::Words, input.raw_type,
         input.uint_type, 4, count, out.next);
-    PayloadRead read = payload_read(payload, address_of(words[0]),
+    PayloadWrite read = typed_payload_read(payload, input.result, address_of(words[0]),
         address_of(shifts[0]), word_at(body, out.words));
-    u64 at = out.words + read.words;
-    if (input.boolean != 0) {
-        at = words_four(body, at, 171, input.result_type, input.result, read.value, input.zero);
-    } else {
-        u32 opcode = input.result_type == input.raw_type ? 83 : 124;
-        at = words_three(body, at, opcode, input.result_type, input.result, read.value);
-    }
-    return PayloadWrite(at, read.next);
+    return PayloadWrite(out.words + read.words, read.next);
 }
 
 u32 payload_word(inout StageCursor out, PayloadEmission input, u32 value, u32 shift) on cpu {

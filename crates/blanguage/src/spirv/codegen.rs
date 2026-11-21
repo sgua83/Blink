@@ -305,15 +305,20 @@ struct PayloadWrite {
 }
 
 #[repr(C)]
+struct PayloadResult {
+    type_id: u32,
+    id: u32,
+    compare_zero: u32,
+}
+
+#[repr(C)]
 struct UniformRead {
     next: u32,
     push_pointer: u32,
     push_block: u32,
     uint_type: u32,
     raw_type: u32,
-    result_type: u32,
-    result: u32,
-    boolean: u32,
+    result: PayloadResult,
     zero: u32,
     low_word: u32,
     high_word: u32,
@@ -710,6 +715,11 @@ unsafe extern "C" {
     fn read_uniform(input: UniformRead, body: *mut u32) -> PayloadWrite;
     #[link_name = "bootstrap.spirv_envelope::payload_read"]
     fn payload_read(input: PayloadEmission, operands: *const u32, shifts: *const u32, body: *mut u32) -> PayloadRead;
+    #[link_name = "bootstrap.spirv_envelope::typed_payload_read"]
+    fn typed_payload_read(
+        input: PayloadEmission, result: PayloadResult, operands: *const u32, shifts: *const u32,
+        body: *mut u32,
+    ) -> PayloadWrite;
     #[link_name = "bootstrap.spirv_envelope::payload_write"]
     fn payload_write(
         input: PayloadEmission, value: u32, pointers: *const u32, shifts: *const u32,
@@ -1471,9 +1481,11 @@ impl Emitter<'_> {
             push_block: self.push,
             uint_type: self.types[&Scalar::U32],
             raw_type: self.raw_type(scalar),
-            result_type: self.ty(dst),
-            result: self.value(dst),
-            boolean: u32::from(scalar == Scalar::Bool),
+            result: PayloadResult {
+                type_id: self.ty(dst),
+                id: self.value(dst),
+                compare_zero: if scalar == Scalar::Bool { zero } else { 0 },
+            },
             zero,
             low_word,
             high_word,
@@ -1491,12 +1503,21 @@ impl Emitter<'_> {
     }
     fn from_words(&mut self, dst: Reg, words: &[u32], unit: Scalar) {
         let scalar = self.stage.registers[dst];
-        let raw = self.join_words(scalar, words, unit);
-        if scalar == Scalar::Bool {
-            let zero = self.constant(Scalar::U32, 0);
-            self.emit(171, &[self.ty(dst), self.value(dst), raw, zero]);
-        } else {
-            self.emit(if scalar == Self::raw_scalar(scalar) { 83 } else { 124 }, &[self.ty(dst), self.value(dst), raw]);
+        let (mut input, shifts) = self.payload_input(scalar, unit, words.len(), PayloadAccess::Words);
+        let result = PayloadResult {
+            type_id: self.ty(dst),
+            id: self.value(dst),
+            compare_zero: if scalar == Scalar::Bool { self.constant(Scalar::U32, 0) } else { 0 },
+        };
+        input.next = self.next;
+        let at = self.body.len();
+        self.body.reserve(20 * words.len() + 5);
+        unsafe {
+            let read = typed_payload_read(
+                input, result, words.as_ptr(), shifts.as_ptr(), self.body.as_mut_ptr().add(at),
+            );
+            self.body.set_len(at + read.words as usize);
+            self.next = read.next;
         }
     }
     fn pack_words(&mut self, size: u32, components: impl IntoIterator<Item = (Scalar, u32, u32)>) -> Vec<u32> {
