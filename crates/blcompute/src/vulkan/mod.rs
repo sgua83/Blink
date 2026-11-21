@@ -338,6 +338,25 @@ struct Inner {
     float64_preserve: bool,
     next_submission: Cell<u64>,
 }
+impl Inner {
+    fn next_submission(&self) -> Result<u64> {
+        self.next_submission.get().checked_add(1)
+            .ok_or_else(|| error("设备队列提交序号耗尽"))
+    }
+
+    fn enqueue(&self, next: u64, fence: VkFence, batch: Option<&VkSubmitInfo>) -> Result<()> {
+        let count = u32::from(batch.is_some());
+        let info = batch.map_or(null(), std::ptr::from_ref);
+        unsafe {
+            check(
+                (self.functions.vkQueueSubmit)(self.queue, count, info, fence),
+                "vkQueueSubmit",
+            )?;
+        }
+        self.next_submission.set(next);
+        Ok(())
+    }
+}
 #[derive(Clone)]
 pub struct Device {
     inner: Rc<Inner>,
@@ -1611,43 +1630,31 @@ impl Commands {
     }
     fn submit_with(&self, wait: &[u64], stages: &[u32], signal: &[u64]) -> Result<Completion> {
         let next = self.end_recording()?;
-        let point = Completion::new(self.inner.clone(), next - 1)?;
-        self.enqueue(next, point.fence.get(), wait, stages, signal)?;
-        Ok(point)
+        Completion::submit(self.inner.clone(), next, Some(&self.batch(wait, stages, signal)))
     }
     fn resubmit(&self, point: &mut Completion) -> Result<()> {
         let next = self.end_recording()?;
         point.reset(next - 1)?;
-        self.enqueue(next, point.fence.get(), &[], &[], &[])
+        self.inner.enqueue(next, point.fence.get(), Some(&self.batch(&[], &[], &[])))
     }
     fn end_recording(&self) -> Result<u64> {
-        let next = self.inner.next_submission.get()
-            .checked_add(1)
-            .ok_or_else(|| error("设备队列提交序号耗尽"))?;
+        let next = self.inner.next_submission()?;
         unsafe {
             check((self.inner.functions.vkEndCommandBuffer)(self.command), "vkEndCommandBuffer")?;
         }
         Ok(next)
     }
-    fn enqueue(&self, next: u64, fence: VkFence, wait: &[u64], stages: &[u32], signal: &[u64]) -> Result<()> {
-        unsafe {
-            let f = &self.inner.functions;
-            let mut submit: VkSubmitInfo = zero();
-            submit.sType = 4;
-            submit.commandBufferCount = 1;
-            submit.pCommandBuffers = &self.command;
-            submit.waitSemaphoreCount = wait.len() as u32;
-            submit.pWaitSemaphores = wait.as_ptr();
-            submit.pWaitDstStageMask = stages.as_ptr();
-            submit.signalSemaphoreCount = signal.len() as u32;
-            submit.pSignalSemaphores = signal.as_ptr();
-            check(
-                (f.vkQueueSubmit)(self.inner.queue, 1, &submit, fence),
-                "vkQueueSubmit",
-            )?;
-            self.inner.next_submission.set(next);
-            Ok(())
-        }
+    fn batch(&self, wait: &[u64], stages: &[u32], signal: &[u64]) -> VkSubmitInfo {
+        let mut submit: VkSubmitInfo = zero();
+        submit.sType = 4;
+        submit.commandBufferCount = 1;
+        submit.pCommandBuffers = &self.command;
+        submit.waitSemaphoreCount = wait.len() as u32;
+        submit.pWaitSemaphores = wait.as_ptr();
+        submit.pWaitDstStageMask = stages.as_ptr();
+        submit.signalSemaphoreCount = signal.len() as u32;
+        submit.pSignalSemaphores = signal.as_ptr();
+        submit
     }
 }
 impl Drop for Commands {
@@ -2438,7 +2445,6 @@ impl GpuProgram {
                 resources.extend(&source.0.views.sources);
             }
         }
-        let mut commands = Commands::new(c.inner.clone())?;
         let pending_inputs = dependencies.is_empty();
         let dependencies = if pending_inputs {
             Dependencies::Empty
@@ -2639,455 +2645,456 @@ impl GpuProgram {
                 scratch.push(temporary);
             }
         }
+        let sets = u32::try_from(u64::from(needs_root_set) + extra_sets)?;
+        if sets == 0 && query_count == 0 {
+            let execution = Execution::submit_fence(c.inner.clone(), dependencies)?;
+            return Ok(GpuCompletion { execution, queries: None });
+        }
+        let mut commands = Commands::new(c.inner.clone())?;
         let mut accesses: Vec<_> = data.owners.iter().map(|dataset| BindingAccess {
             producer: dataset.borrow().producer,
             pending_read: false,
             pending_write: pending_inputs,
         }).collect();
-        let used_bindings = if !c.stages.is_empty() {
-            unsafe {
-                let sets = u32::try_from(u64::from(needs_root_set) + extra_sets)?;
-                if sets != 0 && !pending_inputs {
-                    // 同队列完成交接独立于内存可见性。实际计算消费需要 RAW、WAW 与 WAR 屏障。
-                    let access = 0x60
-                        | if accelerations.is_empty() {
-                            0
-                        } else {
-                            0x200000
-                        };
-                    commands.barrier(0x10000, 0x800, 0x10000, access);
-                }
-                let infos = if sets != 0 {
-                    let mut sizes = vec![VkDescriptorPoolSize {
-                        r#type: 7,
-                        descriptorCount: u32::try_from(
-                            (data.len() + c.program.auxiliary_buffers()) as u64 * sets as u64,
-                        )?,
-                    }];
-                    if !accelerations.is_empty() {
-                        sizes.push(VkDescriptorPoolSize {
-                            r#type: 1000150000,
-                            descriptorCount: u32::try_from(accelerations.len() as u64 * sets as u64)?,
-                        });
-                    }
-                    if !textures.is_empty() {
-                        sizes.push(VkDescriptorPoolSize {
-                            r#type: 1,
-                            descriptorCount: u32::try_from(
-                                textures.len() as u64 * sets as u64,
-                            )?,
-                        });
-                    }
-                    let mut pool: VkDescriptorPoolCreateInfo = zero();
-                    pool.sType = 33;
-                    pool.maxSets = sets;
-                    pool.poolSizeCount = sizes.len() as u32;
-                    pool.pPoolSizes = sizes.as_ptr();
-                    check(
-                        (f.vkCreateDescriptorPool)(device, &pool, null(), &mut commands.descriptors),
-                        "vkCreateDescriptorPool",
-                    )?;
-                    let bytes = u64::from(blanguage::spirv::BINDING_BYTES);
-                    let mut infos: Vec<_> = data.iter().map(|d| VkDescriptorBufferInfo {
-                        buffer: d.allocation.buffer, offset: 0, range: bytes,
-                    }).collect();
-                    if let StorageSlots::Frame(arguments) = slots {
-                        let fields = arguments.projected_fields();
-                        let field_count = fields.clone().count();
-                        if field_count != 0 {
-                            let alignment = c.inner.properties.limits.minStorageBufferOffsetAlignment;
-                            let step = bytes.div_ceil(alignment) * alignment;
-                            let parameters = Allocation::new(c.inner.clone(), step * field_count as u64, 0x20, 6, 8)?;
-                            let mapped = parameters.mapping()?;
-                            for (index, group) in fields.enumerate() {
-                                let first = group[0];
-                                let offset = location(first).1;
-                                let d = &data[first];
-                                let at = step * index as u64;
-                                mapped.add(at as usize).cast::<[u32; 4]>()
-                                    .write(binding_header(d.page_array_address(), d.stride, offset));
-                                let info = VkDescriptorBufferInfo { buffer: parameters.buffer, offset: at, range: bytes };
-                                for &i in group {
-                                    infos[i] = info;
-                                }
-                            }
-                            binding_parameters = Some(parameters);
-                        }
-                    }
-                    infos
-                } else {
-                    Vec::new()
-                };
-                let mut descriptors = (sets != 0)
-                    .then(|| DescriptorWriter::new(&commands, c, &infos, accelerations, &textures));
-                let root_set = needs_root_set
-                    .then(|| descriptors.as_mut().unwrap().set(&[], None, None, None, None))
-                    .transpose()?;
-                let selection_sets = selected_storage.into_iter().map(|(key, (slot, sources))| {
-                    selection::descriptors(descriptors.as_mut().unwrap(), &scratch[slot], key.0, sources)
-                        .map(|sets| (slot, sets))
-                }).collect::<Result<BTreeMap<_, _>>>()?;
-                let map_sets = map_arguments.into_values().map(|(slot, _)| {
-                    let args = scratch[slot].arguments.as_ref().unwrap();
-                    descriptors.as_mut().unwrap().set(&[], None, Some(args.descriptor()), None, None)
-                        .map(|set| (slot, set))
-                }).collect::<Result<BTreeMap<_, _>>>()?;
-                let mut sorting_sets = Vec::new();
-                for usage in &scratch_uses {
-                    if let blanguage::ir::Operation::StableSort(sorting) =
-                        &c.program.stages()[usage.stage].operation
-                    {
-                        let storage = &scratch[usage.slot];
-                        sorting_sets.push(sort::descriptors(
-                            descriptors.as_mut().unwrap(),
-                            sorting,
-                            storage.sorting.as_ref().unwrap(),
-                            storage.arguments.as_ref(),
-                        )?);
-                    }
-                }
-                if self.capture_timestamps {
-                    let queries = QueryPoolCreateInfo {
-                        s_type: 11,
-                        next: null(),
-                        flags: 0,
-                        query_type: 2,
-                        count: query_count,
-                        statistics: 0,
+        let used_bindings = unsafe {
+            if sets != 0 && !pending_inputs {
+                // 同队列完成交接独立于内存可见性。实际计算消费需要 RAW、WAW 与 WAR 屏障。
+                let access = 0x60
+                    | if accelerations.is_empty() {
+                        0
+                    } else {
+                        0x200000
                     };
-                    check(
-                        (f.vkCreateQueryPool)(device, &queries, null(), &mut commands.queries),
-                        "vkCreateQueryPool",
-                    )?;
-                    (f.vkCmdResetQueryPool)(commands.command, commands.queries, 0, queries.count);
+                commands.barrier(0x10000, 0x800, 0x10000, access);
+            }
+            let infos = if sets != 0 {
+                let mut sizes = vec![VkDescriptorPoolSize {
+                    r#type: 7,
+                    descriptorCount: u32::try_from(
+                        (data.len() + c.program.auxiliary_buffers()) as u64 * sets as u64,
+                    )?,
+                }];
+                if !accelerations.is_empty() {
+                    sizes.push(VkDescriptorPoolSize {
+                        r#type: 1000150000,
+                        descriptorCount: u32::try_from(accelerations.len() as u64 * sets as u64)?,
+                    });
                 }
-                let commands = ComputeCommands::new(&commands, c.layout);
-                for step in 0..steps.get() {
-                    // Stage bindings and the order of set requests depend on fixed storage.
-                    // The device updates buffer contents and indirect counts between steps.
-                    if let Some(descriptors) = &mut descriptors {
-                        descriptors.step = match step {
-                            0 if steps.get() == 1 => DescriptorStep::Single,
-                            0 => DescriptorStep::Capture,
-                            _ => DescriptorStep::Reuse(0),
-                        };
+                if !textures.is_empty() {
+                    sizes.push(VkDescriptorPoolSize {
+                        r#type: 1,
+                        descriptorCount: u32::try_from(
+                            textures.len() as u64 * sets as u64,
+                        )?,
+                    });
+                }
+                let mut pool: VkDescriptorPoolCreateInfo = zero();
+                pool.sType = 33;
+                pool.maxSets = sets;
+                pool.poolSizeCount = sizes.len() as u32;
+                pool.pPoolSizes = sizes.as_ptr();
+                check(
+                    (f.vkCreateDescriptorPool)(device, &pool, null(), &mut commands.descriptors),
+                    "vkCreateDescriptorPool",
+                )?;
+                let bytes = u64::from(blanguage::spirv::BINDING_BYTES);
+                let mut infos: Vec<_> = data.iter().map(|d| VkDescriptorBufferInfo {
+                    buffer: d.allocation.buffer, offset: 0, range: bytes,
+                }).collect();
+                if let StorageSlots::Frame(arguments) = slots {
+                    let fields = arguments.projected_fields();
+                    let field_count = fields.clone().count();
+                    if field_count != 0 {
+                        let alignment = c.inner.properties.limits.minStorageBufferOffsetAlignment;
+                        let step = bytes.div_ceil(alignment) * alignment;
+                        let parameters = Allocation::new(c.inner.clone(), step * field_count as u64, 0x20, 6, 8)?;
+                        let mapped = parameters.mapping()?;
+                        for (index, group) in fields.enumerate() {
+                            let first = group[0];
+                            let offset = location(first).1;
+                            let d = &data[first];
+                            let at = step * index as u64;
+                            mapped.add(at as usize).cast::<[u32; 4]>()
+                                .write(binding_header(d.page_array_address(), d.stride, offset));
+                            let info = VkDescriptorBufferInfo { buffer: parameters.buffer, offset: at, range: bytes };
+                            for &i in group {
+                                infos[i] = info;
+                            }
+                        }
+                        binding_parameters = Some(parameters);
                     }
-                    let mut uses = scratch_uses.iter().peekable();
-                    let mut sorting_sets = sorting_sets.iter();
-                    for (i, stage) in c.program.stages().iter().enumerate() {
-                        let count = data[stage.domain].count;
-                        let query = self.capture_timestamps
-                            .then(|| (step as usize * stage_count + i) as u32 * 2);
-                        if !stage_has_work(stage, count) {
-                            if let Some(query) = query {
-                                (f.vkCmdWriteTimestamp)(commands.command, 0x800, commands.queries, query);
-                                (f.vkCmdWriteTimestamp)(commands.command, 0x800, commands.queries, query + 1);
-                            }
-                            continue;
-                        }
-                        let write_hazard = stage
-                            .reads
-                            .iter()
-                            .chain(&stage.writes)
-                            .any(|&b| accesses[physical(b)].pending_write);
-                        let war = stage
-                            .writes
-                            .iter()
-                            .any(|&b| accesses[physical(b)].pending_read);
-                        if write_hazard || war || resource_stage != 0 {
-                            let mut src = resource_stage | if war { 0x800 } else { 0 };
-                            let mut access = resource_access | if war { 0x20 } else { 0 };
-                            for binding in &mut accesses {
-                                if binding.pending_write {
-                                    src |= binding.producer.stage();
-                                    access |= binding.producer.access();
-                                }
-                                binding.pending_read = false;
-                                binding.pending_write = false;
-                            }
-                            commands.barrier(src, 0x800, access, 0x60);
-                            resource_stage = 0;
-                            resource_access = 0;
-                        }
-                        uniforms[0] = count;
+                }
+                infos
+            } else {
+                Vec::new()
+            };
+            let mut descriptors = (sets != 0)
+                .then(|| DescriptorWriter::new(&commands, c, &infos, accelerations, &textures));
+            let root_set = needs_root_set
+                .then(|| descriptors.as_mut().unwrap().set(&[], None, None, None, None))
+                .transpose()?;
+            let selection_sets = selected_storage.into_iter().map(|(key, (slot, sources))| {
+                selection::descriptors(descriptors.as_mut().unwrap(), &scratch[slot], key.0, sources)
+                    .map(|sets| (slot, sets))
+            }).collect::<Result<BTreeMap<_, _>>>()?;
+            let map_sets = map_arguments.into_values().map(|(slot, _)| {
+                let args = scratch[slot].arguments.as_ref().unwrap();
+                descriptors.as_mut().unwrap().set(&[], None, Some(args.descriptor()), None, None)
+                    .map(|set| (slot, set))
+            }).collect::<Result<BTreeMap<_, _>>>()?;
+            let mut sorting_sets = Vec::new();
+            for usage in &scratch_uses {
+                if let blanguage::ir::Operation::StableSort(sorting) =
+                    &c.program.stages()[usage.stage].operation
+                {
+                    let storage = &scratch[usage.slot];
+                    sorting_sets.push(sort::descriptors(
+                        descriptors.as_mut().unwrap(),
+                        sorting,
+                        storage.sorting.as_ref().unwrap(),
+                        storage.arguments.as_ref(),
+                    )?);
+                }
+            }
+            if self.capture_timestamps {
+                let queries = QueryPoolCreateInfo {
+                    s_type: 11,
+                    next: null(),
+                    flags: 0,
+                    query_type: 2,
+                    count: query_count,
+                    statistics: 0,
+                };
+                check(
+                    (f.vkCreateQueryPool)(device, &queries, null(), &mut commands.queries),
+                    "vkCreateQueryPool",
+                )?;
+                (f.vkCmdResetQueryPool)(commands.command, commands.queries, 0, queries.count);
+            }
+            let commands = ComputeCommands::new(&commands, c.layout);
+            for step in 0..steps.get() {
+                // Stage bindings and the order of set requests depend on fixed storage.
+                // The device updates buffer contents and indirect counts between steps.
+                if let Some(descriptors) = &mut descriptors {
+                    descriptors.step = match step {
+                        0 if steps.get() == 1 => DescriptorStep::Single,
+                        0 => DescriptorStep::Capture,
+                        _ => DescriptorStep::Reuse(0),
+                    };
+                }
+                let mut uses = scratch_uses.iter().peekable();
+                let mut sorting_sets = sorting_sets.iter();
+                for (i, stage) in c.program.stages().iter().enumerate() {
+                    let count = data[stage.domain].count;
+                    let query = self.capture_timestamps
+                        .then(|| (step as usize * stage_count + i) as u32 * 2);
+                    if !stage_has_work(stage, count) {
                         if let Some(query) = query {
                             (f.vkCmdWriteTimestamp)(commands.command, 0x800, commands.queries, query);
+                            (f.vkCmdWriteTimestamp)(commands.command, 0x800, commands.queries, query + 1);
                         }
-                        let usage = uses.next_if(|usage| usage.stage == i);
-                        let temporary = usage.map(|usage| &scratch[usage.slot]);
-                        let arguments = temporary.and_then(|s| s.arguments.as_ref());
-                        let pipelines = &c.stages[i];
-                        let segmented_single_group = pipelines.segmented_single_group(count);
-                        match &stage.operation {
-                            blanguage::ir::Operation::StableSort(s) => {
-                                let temporary = temporary.unwrap();
-                                sort::record(
-                                    &commands,
-                                    c,
-                                    i,
-                                    s.keys.len(),
-                                    data[s.source].count,
-                                    temporary.sorting.as_ref().unwrap(),
-                                    sorting_sets.next().unwrap(),
-                                    arguments,
-                                    &mut uniforms,
-                                    self.partition_elements,
-                                    step > 0,
+                        continue;
+                    }
+                    let write_hazard = stage
+                        .reads
+                        .iter()
+                        .chain(&stage.writes)
+                        .any(|&b| accesses[physical(b)].pending_write);
+                    let war = stage
+                        .writes
+                        .iter()
+                        .any(|&b| accesses[physical(b)].pending_read);
+                    if write_hazard || war || resource_stage != 0 {
+                        let mut src = resource_stage | if war { 0x800 } else { 0 };
+                        let mut access = resource_access | if war { 0x20 } else { 0 };
+                        for binding in &mut accesses {
+                            if binding.pending_write {
+                                src |= binding.producer.stage();
+                                access |= binding.producer.access();
+                            }
+                            binding.pending_read = false;
+                            binding.pending_write = false;
+                        }
+                        commands.barrier(src, 0x800, access, 0x60);
+                        resource_stage = 0;
+                        resource_access = 0;
+                    }
+                    uniforms[0] = count;
+                    if let Some(query) = query {
+                        (f.vkCmdWriteTimestamp)(commands.command, 0x800, commands.queries, query);
+                    }
+                    let usage = uses.next_if(|usage| usage.stage == i);
+                    let temporary = usage.map(|usage| &scratch[usage.slot]);
+                    let arguments = temporary.and_then(|s| s.arguments.as_ref());
+                    let pipelines = &c.stages[i];
+                    let segmented_single_group = pipelines.segmented_single_group(count);
+                    match &stage.operation {
+                        blanguage::ir::Operation::StableSort(s) => {
+                            let temporary = temporary.unwrap();
+                            sort::record(
+                                &commands,
+                                c,
+                                i,
+                                s.keys.len(),
+                                data[s.source].count,
+                                temporary.sorting.as_ref().unwrap(),
+                                sorting_sets.next().unwrap(),
+                                arguments,
+                                &mut uniforms,
+                                self.partition_elements,
+                                step > 0,
+                            );
+                        }
+                        blanguage::ir::Operation::Map if stage.selection.is_some() => {
+                            selection::record(
+                                &commands,
+                                &selection_sets[&usage.unwrap().slot],
+                                c,
+                                i,
+                                count,
+                                arguments.unwrap(),
+                                &mut uniforms,
+                                self.partition_elements,
+                                step > 0 || usage.unwrap().reused,
+                            );
+                        }
+                        blanguage::ir::Operation::Map if stage.prefix.is_some() => {
+                            let args = arguments.unwrap();
+                            let usage = usage.unwrap();
+                            commands.bind_set(map_sets[&usage.slot]);
+                            if usage.prepare_map {
+                                prefix::prepare(
+                                    &commands, c, i, &mut uniforms,
+                                    self.partition_elements, step > 0 || usage.reused,
                                 );
                             }
-                            blanguage::ir::Operation::Map if stage.selection.is_some() => {
-                                selection::record(
-                                    &commands,
-                                    &selection_sets[&usage.unwrap().slot],
-                                    c,
-                                    i,
-                                    count,
-                                    arguments.unwrap(),
-                                    &mut uniforms,
-                                    self.partition_elements,
-                                    step > 0 || usage.unwrap().reused,
-                                );
-                            }
-                            blanguage::ir::Operation::Map if stage.prefix.is_some() => {
-                                let args = arguments.unwrap();
-                                let usage = usage.unwrap();
-                                commands.bind_set(map_sets[&usage.slot]);
-                                if usage.prepare_map {
-                                    prefix::prepare(
-                                        &commands, c, i, &mut uniforms,
-                                        self.partition_elements, step > 0 || usage.reused,
-                                    );
-                                }
-                                prefix::dispatch(
-                                    &commands,
-                                    c,
-                                    pipelines.main,
-                                    args,
-                                    &mut uniforms,
+                            prefix::dispatch(
+                                &commands,
+                                c,
+                                pipelines.main,
+                                args,
+                                &mut uniforms,
+                                0,
+                            );
+                        }
+                        blanguage::ir::Operation::Map => {
+                            commands.bind_pipeline(pipelines.main);
+                            commands.bind_set(root_set.unwrap());
+                            let width = stage.workgroup_width();
+                            let maximum = c.inner.properties.limits.maxComputeWorkGroupCount[0]
+                                as u64
+                                * width as u64;
+                            let requested = if stage.has_tile_scope() {
+                                self.partition_elements.get().div_ceil(width) as u64
+                                    * width as u64
+                            } else {
+                                self.partition_elements.get() as u64
+                            };
+                            let partition = maximum.min(requested);
+                            let mut begin = 0u64;
+                            while begin < count as u64 {
+                                let size = (count as u64 - begin).min(partition);
+                                uniforms[0] = (begin + size) as u32;
+                                uniforms[1] = begin as u32;
+                                (f.vkCmdPushConstants)(
+                                    commands.command,
+                                    c.layout,
+                                    0x20,
                                     0,
+                                    c.program.uniform_bytes(),
+                                    uniforms.as_ptr().cast(),
+                                );
+                                (f.vkCmdDispatch)(
+                                    commands.command,
+                                    (size as u32).div_ceil(width),
+                                    1,
+                                    1,
+                                );
+                                begin += size;
+                            }
+                        }
+                        blanguage::ir::Operation::SegmentedReduce(_)
+                        | blanguage::ir::Operation::CustomSegmentedReduce(_)
+                            if segmented_single_group.is_some() =>
+                        {
+                            let set = if let Some(args) = arguments {
+                                descriptors.as_mut().unwrap().set(
+                                    &[], None, Some(args.descriptor()), None, None,
+                                )?
+                            } else {
+                                root_set.unwrap()
+                            };
+                            commands.bind_set(set);
+                            if arguments.is_some() {
+                                prefix::prepare(
+                                    &commands, c, i, &mut uniforms,
+                                    self.partition_elements, step > 0,
                                 );
                             }
-                            blanguage::ir::Operation::Map => {
-                                commands.bind_pipeline(pipelines.main);
-                                commands.bind_set(root_set.unwrap());
-                                let width = stage.workgroup_width();
-                                let maximum = c.inner.properties.limits.maxComputeWorkGroupCount[0]
-                                    as u64
-                                    * width as u64;
-                                let requested = if stage.has_tile_scope() {
-                                    self.partition_elements.get().div_ceil(width) as u64
-                                        * width as u64
-                                } else {
-                                    self.partition_elements.get() as u64
-                                };
-                                let partition = maximum.min(requested);
-                                let mut begin = 0u64;
-                                while begin < count as u64 {
-                                    let size = (count as u64 - begin).min(partition);
-                                    uniforms[0] = (begin + size) as u32;
-                                    uniforms[1] = begin as u32;
-                                    (f.vkCmdPushConstants)(
-                                        commands.command,
-                                        c.layout,
-                                        0x20,
-                                        0,
-                                        c.program.uniform_bytes(),
-                                        uniforms.as_ptr().cast(),
-                                    );
-                                    (f.vkCmdDispatch)(
-                                        commands.command,
-                                        (size as u32).div_ceil(width),
-                                        1,
-                                        1,
-                                    );
-                                    begin += size;
+                            scan::dispatch(
+                                &commands, c, segmented_single_group.unwrap(), count, &mut uniforms,
+                                self.partition_elements, arguments, 0,
+                            );
+                        }
+                        blanguage::ir::Operation::SegmentedReduce(r) => {
+                            scan::record_segmented_reduce(
+                                &commands,
+                                descriptors.as_mut().unwrap(),
+                                c,
+                                i,
+                                &r.values.fields,
+                                data[r.values.fields.source].count,
+                                &temporary.unwrap().buffers,
+                                arguments,
+                                &mut uniforms,
+                                self.partition_elements,
+                                step > 0,
+                            )?;
+                        }
+                        blanguage::ir::Operation::CustomSegmentedReduce(r) => {
+                            scan::record_segmented_reduce(
+                                &commands,
+                                descriptors.as_mut().unwrap(),
+                                c,
+                                i,
+                                &r.values.fields,
+                                data[r.values.fields.source].count,
+                                &temporary.unwrap().buffers,
+                                arguments,
+                                &mut uniforms,
+                                self.partition_elements,
+                                step > 0,
+                            )?;
+                        }
+                        blanguage::ir::Operation::ScanExclusive(blanguage::ir::Scan {
+                            values: fields, head_word, ..
+                        })
+                        | blanguage::ir::Operation::CustomScan(blanguage::ir::CustomScan {
+                            values: blanguage::ir::ReductionLayout { fields, .. },
+                            head_word,
+                        }) => {
+                            let descriptors = descriptors.as_mut().unwrap();
+                            let add = pipelines.scan_add.unwrap();
+                            let source = descriptors.binding(fields.source);
+                            let target = descriptors.binding(fields.target);
+                            scan::record(
+                                &commands,
+                                descriptors,
+                                c,
+                                i,
+                                [pipelines.main, pipelines.tail.unwrap(), add, pipelines.finish.unwrap_or(add)],
+                                fields,
+                                head_word.is_some(),
+                                (data[fields.source].count, source),
+                                target,
+                                &temporary.unwrap().buffers,
+                                arguments,
+                                &mut uniforms,
+                                self.partition_elements,
+                                step > 0,
+                            )?;
+                        }
+                        blanguage::ir::Operation::Compact(selection) => {
+                            compact::record(
+                                &commands,
+                                descriptors.as_mut().unwrap(),
+                                c,
+                                i,
+                                selection,
+                                &data,
+                                temporary.unwrap(),
+                                &mut uniforms,
+                                self.partition_elements,
+                                step > 0,
+                            )?;
+                        }
+                        blanguage::ir::Operation::Reduce(blanguage::ir::ReductionSpec {
+                            fields: reduction,
+                            ..
+                        })
+                        | blanguage::ir::Operation::CustomReduce(
+                            blanguage::ir::ReductionLayout {
+                                fields: reduction, ..
+                            },
+                        ) => {
+                            let mut length = count;
+                            let mut pass = 0;
+                            loop {
+                                let groups = scan::groups(length);
+                                if pass > 0 {
+                                    commands.barrier(0x800, 0x800, 0x40, 0x60);
                                 }
-                            }
-                            blanguage::ir::Operation::SegmentedReduce(_)
-                            | blanguage::ir::Operation::CustomSegmentedReduce(_)
-                                if segmented_single_group.is_some() =>
-                            {
-                                let set = if let Some(args) = arguments {
+                                let pass_set = if let Some(scratch) = temporary {
+                                    let bindings = [
+                                        (pass > 0).then(|| (
+                                            reduction.source,
+                                            scratch.buffers[(pass - 1) % 2].descriptor(),
+                                        )),
+                                        (groups > 1).then(|| (
+                                            reduction.target,
+                                            scratch.buffers[pass % 2].descriptor(),
+                                        )),
+                                    ];
                                     descriptors.as_mut().unwrap().set(
-                                        &[], None, Some(args.descriptor()), None, None,
+                                        &bindings,
+                                        None,
+                                        arguments.map(PagedBuffer::descriptor),
+                                        None,
+                                        None,
                                     )?
                                 } else {
                                     root_set.unwrap()
                                 };
-                                commands.bind_set(set);
-                                if arguments.is_some() {
+                                commands.bind_set(pass_set);
+                                if pass == 0 && arguments.is_some() {
                                     prefix::prepare(
                                         &commands, c, i, &mut uniforms,
                                         self.partition_elements, step > 0,
                                     );
                                 }
+                                uniforms[2 + reduction.target] = groups;
                                 scan::dispatch(
-                                    &commands, c, segmented_single_group.unwrap(), count, &mut uniforms,
-                                    self.partition_elements, arguments, 0,
-                                );
-                            }
-                            blanguage::ir::Operation::SegmentedReduce(r) => {
-                                scan::record_segmented_reduce(
                                     &commands,
-                                    descriptors.as_mut().unwrap(),
                                     c,
-                                    i,
-                                    &r.values.fields,
-                                    data[r.values.fields.source].count,
-                                    &temporary.unwrap().buffers,
-                                    arguments,
-                                    &mut uniforms,
-                                    self.partition_elements,
-                                    step > 0,
-                                )?;
-                            }
-                            blanguage::ir::Operation::CustomSegmentedReduce(r) => {
-                                scan::record_segmented_reduce(
-                                    &commands,
-                                    descriptors.as_mut().unwrap(),
-                                    c,
-                                    i,
-                                    &r.values.fields,
-                                    data[r.values.fields.source].count,
-                                    &temporary.unwrap().buffers,
-                                    arguments,
-                                    &mut uniforms,
-                                    self.partition_elements,
-                                    step > 0,
-                                )?;
-                            }
-                            blanguage::ir::Operation::ScanExclusive(blanguage::ir::Scan {
-                                values: fields, head_word, ..
-                            })
-                            | blanguage::ir::Operation::CustomScan(blanguage::ir::CustomScan {
-                                values: blanguage::ir::ReductionLayout { fields, .. },
-                                head_word,
-                            }) => {
-                                let descriptors = descriptors.as_mut().unwrap();
-                                let add = pipelines.scan_add.unwrap();
-                                let source = descriptors.binding(fields.source);
-                                let target = descriptors.binding(fields.target);
-                                scan::record(
-                                    &commands,
-                                    descriptors,
-                                    c,
-                                    i,
-                                    [pipelines.main, pipelines.tail.unwrap(), add, pipelines.finish.unwrap_or(add)],
-                                    fields,
-                                    head_word.is_some(),
-                                    (data[fields.source].count, source),
-                                    target,
-                                    &temporary.unwrap().buffers,
-                                    arguments,
-                                    &mut uniforms,
-                                    self.partition_elements,
-                                    step > 0,
-                                )?;
-                            }
-                            blanguage::ir::Operation::Compact(selection) => {
-                                compact::record(
-                                    &commands,
-                                    descriptors.as_mut().unwrap(),
-                                    c,
-                                    i,
-                                    selection,
-                                    &data,
-                                    temporary.unwrap(),
-                                    &mut uniforms,
-                                    self.partition_elements,
-                                    step > 0,
-                                )?;
-                            }
-                            blanguage::ir::Operation::Reduce(blanguage::ir::ReductionSpec {
-                                fields: reduction,
-                                ..
-                            })
-                            | blanguage::ir::Operation::CustomReduce(
-                                blanguage::ir::ReductionLayout {
-                                    fields: reduction, ..
-                                },
-                            ) => {
-                                let mut length = count;
-                                let mut pass = 0;
-                                loop {
-                                    let groups = scan::groups(length);
-                                    if pass > 0 {
-                                        commands.barrier(0x800, 0x800, 0x40, 0x60);
-                                    }
-                                    let pass_set = if let Some(scratch) = temporary {
-                                        let bindings = [
-                                            (pass > 0).then(|| (
-                                                reduction.source,
-                                                scratch.buffers[(pass - 1) % 2].descriptor(),
-                                            )),
-                                            (groups > 1).then(|| (
-                                                reduction.target,
-                                                scratch.buffers[pass % 2].descriptor(),
-                                            )),
-                                        ];
-                                        descriptors.as_mut().unwrap().set(
-                                            &bindings,
-                                            None,
-                                            arguments.map(PagedBuffer::descriptor),
-                                            None,
-                                            None,
-                                        )?
+                                    if pass == 0 {
+                                        pipelines.main
                                     } else {
-                                        root_set.unwrap()
-                                    };
-                                    commands.bind_set(pass_set);
-                                    if pass == 0 && arguments.is_some() {
-                                        prefix::prepare(
-                                            &commands, c, i, &mut uniforms,
-                                            self.partition_elements, step > 0,
-                                        );
-                                    }
-                                    uniforms[2 + reduction.target] = groups;
-                                    scan::dispatch(
-                                        &commands,
-                                        c,
-                                        if pass == 0 {
-                                            pipelines.main
-                                        } else {
-                                            pipelines.tail.unwrap()
-                                        },
-                                        length,
-                                        &mut uniforms,
-                                        self.partition_elements,
-                                        arguments,
-                                        pass,
-                                    );
-                                    if groups == 1 {
-                                        break;
-                                    }
-                                    length = groups;
-                                    pass += 1;
+                                        pipelines.tail.unwrap()
+                                    },
+                                    length,
+                                    &mut uniforms,
+                                    self.partition_elements,
+                                    arguments,
+                                    pass,
+                                );
+                                if groups == 1 {
+                                    break;
                                 }
-                                uniforms[2 + reduction.target] = data[reduction.target].count;
+                                length = groups;
+                                pass += 1;
                             }
-                        }
-                        if let Some(query) = query {
-                            (f.vkCmdWriteTimestamp)(
-                                commands.command,
-                                0x800,
-                                commands.queries,
-                                query + 1,
-                            );
-                        }
-                        for &b in &stage.reads {
-                            accesses[physical(b)].pending_read = true;
-                        }
-                        for &b in &stage.writes {
-                            let binding = &mut accesses[physical(b)];
-                            binding.pending_write = true;
-                            binding.producer = Usage::Compute;
+                            uniforms[2 + reduction.target] = data[reduction.target].count;
                         }
                     }
+                    if let Some(query) = query {
+                        (f.vkCmdWriteTimestamp)(
+                            commands.command,
+                            0x800,
+                            commands.queries,
+                            query + 1,
+                        );
+                    }
+                    for &b in &stage.reads {
+                        accesses[physical(b)].pending_read = true;
+                    }
+                    for &b in &stage.writes {
+                        let binding = &mut accesses[physical(b)];
+                        binding.pending_write = true;
+                        binding.producer = Usage::Compute;
+                    }
                 }
-                commands.set.get().is_some()
             }
-        } else {
-            false
+            commands.set.get().is_some()
         };
         drop(scratch_uses);
         let queries = (query_count != 0)

@@ -86,7 +86,13 @@ pub(super) struct Completion {
     result: Cell<Option<i32>>,
 }
 impl Completion {
-    pub fn new(inner: Rc<Inner>, sequence: u64) -> Result<Self> {
+    pub fn submit(inner: Rc<Inner>, next: u64, batch: Option<&VkSubmitInfo>) -> Result<Self> {
+        let point = Self::new(inner, next - 1)?;
+        point.inner.enqueue(next, point.fence.get(), batch)?;
+        Ok(point)
+    }
+
+    fn new(inner: Rc<Inner>, sequence: u64) -> Result<Self> {
         let mut fence = 0;
         let mut info: VkFenceCreateInfo = zero();
         info.sType = 8;
@@ -306,7 +312,7 @@ enum DiscardedDataset {
 pub(super) struct Execution {
     pub point: Completion,
     resources: RefCell<Option<ExecutionResources>>,
-    // Some(Empty) is a predecessor whose completion has yet to be published.
+    // Some holds the unpublished completion, even for a fence without commands.
     dependencies: RefCell<Option<Dependencies>>,
     discarded: RefCell<Vec<DiscardedDataset>>,
 }
@@ -407,12 +413,20 @@ impl Execution {
         signal: &[u64],
     ) -> Result<Rc<Self>> {
         let point = resources.commands().submit_with(wait, stages, signal)?;
-        Ok(Rc::new(Self {
+        Ok(Self::submitted(point, Some(resources), dependencies))
+    }
+    pub fn submit_fence(inner: Rc<Inner>, dependencies: Dependencies) -> Result<Rc<Self>> {
+        let next = inner.next_submission()?;
+        let point = Completion::submit(inner, next, None)?;
+        Ok(Self::submitted(point, None, dependencies))
+    }
+    fn submitted(point: Completion, resources: Option<ExecutionResources>, dependencies: Dependencies) -> Rc<Self> {
+        Rc::new(Self {
             point,
-            resources: RefCell::new(Some(resources)),
+            resources: RefCell::new(resources),
             dependencies: RefCell::new(Some(dependencies)),
             discarded: RefCell::new(Vec::new()),
-        }))
+        })
     }
     pub fn prepare_one(source: Option<&Rc<Self>>) -> Result<Option<&Rc<Self>>> {
         if let Some(source) = source
@@ -470,11 +484,11 @@ impl Execution {
         }
     }
     fn release_known(&self) {
-        let Some(resources) = self.resources.take() else {
+        let Some(dependencies) = self.dependencies.take() else {
             return;
         };
-        Self::release_dependencies(self.dependencies.take().unwrap_or_default(), self.point.result.get());
-        self.release_resources(resources);
+        Self::release_dependencies(dependencies, self.point.result.get());
+        self.release_resources();
     }
     pub fn borrow_synchronous(source: Option<&Rc<Self>>) -> Result<Option<&Self>> {
         let Some(source) = source else {
@@ -502,11 +516,6 @@ impl Execution {
         self.point.result.set(self.point.result.get().or(result));
         Some(dependencies)
     }
-    fn release_predecessor(&self) {
-        if let Some(resources) = self.resources.take() {
-            self.release_resources(resources);
-        }
-    }
     fn release_dependencies(dependencies: Dependencies, result: Option<i32>) {
         let (mut completed, mut index) = match dependencies {
             Dependencies::Empty => return,
@@ -515,7 +524,7 @@ impl Execution {
                     return;
                 };
                 if matches!(sources, Dependencies::Empty) {
-                    previous.release_predecessor();
+                    previous.release_resources();
                     return;
                 }
                 let mut completed = vec![previous];
@@ -535,11 +544,11 @@ impl Execution {
         }
         // Publish the entire closure before destructors can consult an earlier point.
         for previous in completed.into_iter().rev() {
-            previous.release_predecessor();
+            previous.release_resources();
         }
     }
-    fn release_resources(&self, resources: ExecutionResources) {
-        drop(resources);
+    fn release_resources(&self) {
+        drop(self.resources.take());
         let storage = std::mem::take(&mut *self.discarded.borrow_mut());
         drop(storage);
         self.point.release_fence();
