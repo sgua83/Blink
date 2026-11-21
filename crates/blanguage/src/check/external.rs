@@ -134,16 +134,20 @@ impl Builder<'_> {
                 None,
                 words[0],
             ),
+            Place::Indexed { base, offset, words, .. }
+                if matches!(&**base, Place::Reference { .. }) =>
+            {
+                let scalar = place.ty().components[0].0;
+                let (source, offset, word) =
+                    self.array_memory(base, *offset, words[0], scalar, expose_writes, span)?;
+                (CallStorage::Indexed(source), Some(offset), word)
+            }
             Place::Indexed {
                 base,
                 offset,
                 ..
             } => {
                 let storage = match &**base {
-                    Place::Reference { address, .. } => {
-                        let zero=self.constant(Scalar::U32,0).regs[0];
-                        CallStorage::Indexed(address.source_at(0,zero).0)
-                    },
                     Place::Local(_, _, storage) | Place::ReadOnlyLocal(_, _, storage) => {
                         CallStorage::Local {
                             base: storage.start,
