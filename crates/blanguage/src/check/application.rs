@@ -2655,11 +2655,11 @@ impl Builder<'_> {
                 }
                 continue;
             }
-            for (fields, resource, _) in view::data_paths(binding) {
+            view::for_each_data_path(binding, |fields, resource, _| {
                 if eligible(resource) && completed.insert(resource.root.identity()) {
-                    writes.push((name.clone(), fields, resource.clone()));
+                    writes.push((name.clone(), fields.to_vec(), resource.clone()));
                 }
-            }
+            });
         }
         let origin = Arc::new(GeneratedOrigin {
             reason: GenerationReason::DatasetWriteComplete,
@@ -4069,12 +4069,17 @@ impl Builder<'_> {
                 let part=proof.project(&[component],proof.width());
                 for &id in &proof.origins[component]{out.entry(id).or_insert_with(||part.clone());}
             }}
-            let borrowed = match binding { Binding::DataReference(reference) => Some(&reference.data), _ => None };
-            for source in view::data_paths(binding).into_iter().map(|(_,source,_)|source).chain(borrowed) {
-                for value in [&source.root,&source.length]{
-                    let proof=bounds::Proof::capture(value);
-                    for id in value.component_origins(0){out.entry(id).or_insert_with(||proof.clone());}
+            let mut capture_source = |source: &Data| {
+                for value in [&source.root, &source.length] {
+                    let proof = bounds::Proof::capture(value);
+                    for id in value.component_origins(0) {
+                        out.entry(id).or_insert_with(|| proof.clone());
+                    }
                 }
+            };
+            view::visit_data(binding, &mut capture_source);
+            if let Binding::DataReference(reference) = binding {
+                capture_source(&reference.data);
             }
         }
         native_function::element_inputs(self,&mut out);

@@ -197,6 +197,23 @@ struct SelectionHost {
     cfn<void,Item,address,u64> select_child;
 };
 
+struct LivePathHost {
+    cfn<Info,address> inspect;
+    cfn<Item,address,u64> child;
+    cfn<u32,Item> moved;
+    cfn<void,address,u64> push;
+    cfn<void,address> pop;
+    cfn<u32,address,address,u32> visit;
+};
+
+extern "C" u32 live_paths(address value, u32 independent, address context, LivePathHost host) on cpu
+    requires nonzero(host.inspect)
+    requires nonzero(host.child)
+    requires nonzero(host.moved)
+    requires nonzero(host.push)
+    requires nonzero(host.pop)
+    requires nonzero(host.visit);
+
 extern "C" void select_presence(Item target,address inputs,u64 count,SelectionHost host) on cpu
     requires nonzero(host.alternative)
     requires nonzero(host.owner)

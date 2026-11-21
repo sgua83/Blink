@@ -1,6 +1,7 @@
 //! B traverses the original owned payloads; native leaves retain their containers.
 use super::*;
 use std::ffi::c_void;
+use std::ops::ControlFlow;
 type Address=*mut c_void;
 fn pointer<T>(value:&T)->Address{(value as *const T).cast_mut().cast()}
 fn pointer_mut<T>(value:&mut T)->Address{(value as *mut T).cast()}
@@ -210,6 +211,16 @@ struct DataPathHost {
     moved: unsafe extern "C" fn(Item) -> u32,
 }
 
+#[repr(C)]
+struct LivePathHost {
+    inspect: unsafe extern "C" fn(Address) -> Info,
+    child: unsafe extern "C" fn(Address, u64) -> Item,
+    moved: unsafe extern "C" fn(Item) -> u32,
+    push: unsafe extern "C" fn(Address, u64),
+    pop: unsafe extern "C" fn(Address),
+    visit: unsafe extern "C" fn(Address, Address, u32) -> u32,
+}
+
 unsafe extern "C" {
     #[link_name="bootstrap.ownership_payload::join"] fn source_join(a:Address,b:Address,stored:u32,choice:Address,presence:Address,host:Host);
     #[link_name="bootstrap.ownership_payload::available"] fn source_available(value:Address,host:Host)->u32;
@@ -225,7 +236,42 @@ unsafe extern "C" {
     #[link_name="bootstrap.ownership_payload::resources"] fn source_resources(value:Address,context:Address,visit:unsafe extern "C" fn(Address,Address),host:Host);
     #[link_name = "bootstrap.ownership_payload::data_at"]
     fn source_data_at(value: Address, path: Indices, live: u32, host: DataPathHost) -> *mut Data;
+    #[link_name = "bootstrap.ownership_payload::live_paths"]
+    fn source_live_paths(value: Address, independent: u32, context: Address, host: LivePathHost) -> u32;
 }
+pub(super) fn visit_live_paths<F>(value: &OwnedValuePayload, visit: F) -> ControlFlow<()>
+where F: FnMut(&[usize], &Data, bool) -> ControlFlow<()> {
+    struct Visit<F> {
+        path: Vec<usize>,
+        visit: F,
+    }
+
+    unsafe extern "C" fn push<F>(context: Address, index: u64) {
+        unsafe { &mut *context.cast::<Visit<F>>() }.path.push(index as usize);
+    }
+
+    unsafe extern "C" fn pop<F>(context: Address) {
+        unsafe { &mut *context.cast::<Visit<F>>() }.path.pop();
+    }
+
+    unsafe extern "C" fn emit<F>(context: Address, data: Address, independent: u32) -> u32
+    where F: FnMut(&[usize], &Data, bool) -> ControlFlow<()> {
+        let context = unsafe { &mut *context.cast::<Visit<F>>() };
+        let data = unsafe { &*data.cast::<Data>() };
+        u32::from((context.visit)(
+            &context.path, data, independent != 0 && data.ownership == Ownership::Owned,
+        ).is_break())
+    }
+
+    let mut context = Visit { path: Vec::new(), visit };
+    let stopped = unsafe {
+        source_live_paths(pointer(value), 1, pointer_mut(&mut context), LivePathHost {
+            inspect, child, moved: path_moved, push: push::<F>, pop: pop::<F>, visit: emit::<F>,
+        })
+    };
+    if stopped == 0 { ControlFlow::Continue(()) } else { ControlFlow::Break(()) }
+}
+
 fn data_at<'a>(value: &'a OwnedValuePayload, path: &[usize], live: bool) -> Option<&'a Data> {
     // The result is borrowed from the original owner and never retained by B.
     unsafe {

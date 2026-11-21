@@ -1,5 +1,6 @@
 //! view 的引用值拥有范围身份；读取共用同一 IR，由各后端解释物理地址。
 use super::*;
+use std::ops::ControlFlow;
 // 循环引用只在原Proof中连接入口和实际回边；公共合同只编码闭合来源。
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) struct LoopInput { pub level: usize, pub index: usize }
@@ -720,25 +721,50 @@ impl InputSlot {
         }
     }
 }
-pub(super) fn data_paths(binding:&Binding)->Vec<(Vec<usize>,&application::Data,bool)> {
-    fn visit<'a>(value:&'a owned_values::OwnedValue,path:&mut Vec<usize>,independent:bool,result:&mut Vec<(Vec<usize>,&'a application::Data,bool)>) {
-        if value.ownership==application::Ownership::Moved{return;}
-        let independent=independent && !value.value.ty.has_variants();
-        for (index,payload) in value.payloads.iter().enumerate() {
-            let Some(payload)=payload.as_deref() else{continue};path.push(index);
-            match payload {
-                returns::Returned::Dataset(data) if data.ownership!=application::Ownership::Moved=>result.push((path.clone(),data,independent && data.ownership==application::Ownership::Owned)),
-                returns::Returned::OwnedValue(child)=>visit(child,path,independent,result),_=>{},
-            }
-            path.pop();
+pub(super) fn visit_data(binding: &Binding, mut visit: impl FnMut(&application::Data)) {
+    let mut active = |data: &application::Data| {
+        if data.ownership != application::Ownership::Moved {
+            visit(data);
         }
-    }
-    let mut result=Vec::new();
+    };
     match binding {
-        Binding::ApplicationData(data) if data.ownership!=application::Ownership::Moved=>result.push((Vec::new(),data,data.ownership==application::Ownership::Owned)),
-        Binding::OwnedValue(value)=>visit(value,&mut Vec::new(),true,&mut result),_=>{},
+        Binding::ApplicationData(data) => active(data),
+        Binding::OwnedValue(value) => value.visit_resources(&mut active),
+        _ => {}
     }
-    result
+}
+
+pub(super) fn visit_data_mut(binding: &mut Binding, mut visit: impl FnMut(&mut application::Data)) {
+    let mut active = |data: &mut application::Data| {
+        if data.ownership != application::Ownership::Moved {
+            visit(data);
+        }
+    };
+    match binding {
+        Binding::ApplicationData(data) => active(data),
+        Binding::OwnedValue(value) => value.resources_mut(&mut active),
+        _ => {}
+    }
+}
+
+pub(super) fn visit_data_paths(
+    binding: &Binding, mut visit: impl FnMut(&[usize], &application::Data, bool) -> ControlFlow<()>,
+) -> ControlFlow<()> {
+    match binding {
+        Binding::ApplicationData(data) if data.ownership != application::Ownership::Moved =>
+            visit(&[], data, data.ownership == application::Ownership::Owned),
+        Binding::OwnedValue(value) => value.visit_live_paths(visit),
+        _ => ControlFlow::Continue(()),
+    }
+}
+
+pub(super) fn for_each_data_path(
+    binding: &Binding, mut visit: impl FnMut(&[usize], &application::Data, bool),
+) {
+    let _ = visit_data_paths(binding, |path, data, independent| {
+        visit(path, data, independent);
+        ControlFlow::Continue(())
+    });
 }
 pub(super) fn data_at<'a>(binding: &'a Binding, path: &[usize]) -> Option<&'a application::Data> {
     match binding {
@@ -1009,9 +1035,13 @@ impl Builder<'_> {
         for identity in identities {
             if let Some(borrow)=self.mapped_data_borrow(*identity){result.union(&borrow);continue;}
             let mut value=Borrow::default();
-            for binding in self.env.values() {for (_,data,_) in data_paths(binding) {
-                if data.root.identity()==*identity {value.union(&data.root.proof.view_borrow(0));}
-            }}
+            for binding in self.env.values() {
+                visit_data(binding, |data| {
+                    if data.root.identity() == *identity {
+                        value.union(&data.root.proof.view_borrow(0));
+                    }
+                });
+            }
             if value.empty(){value.sources.insert(Source::Data(*identity));}result.union(&value);
         }
         result

@@ -304,6 +304,32 @@ extern "C" void resources(address value,address context,cfn<void,address,address
     requires nonzero(host.state_moved)
     requires nonzero(visit) { walk(value,0,context,visit,host);}
 
+extern "C" u32 live_paths(address value, u32 independent, address context, LivePathHost host) on cpu
+    requires nonzero(host.inspect)
+    requires nonzero(host.child)
+    requires nonzero(host.moved)
+    requires nonzero(host.push)
+    requires nonzero(host.pop)
+    requires nonzero(host.visit) {
+    if (host.moved(Item(value, 4)) != 0) { return 0; }
+    Info info = host.inspect(value);
+    u32 separate = independent != 0 && (info.flags & 1) == 0 ? 1 : 0;
+    u64 index = 0u64;
+    while (index < info.count) {
+        Item item = host.child(value, index);
+        if (item.kind == 4 || (item.kind == 3 && host.moved(item) == 0)) {
+            host.push(context, index);
+            u32 stop = item.kind == 4
+                ? live_paths(item.node, separate, context, host)
+                : host.visit(context, item.node, separate);
+            host.pop(context);
+            if (stop != 0) { return stop; }
+        }
+        index += 1u64;
+    }
+    return 0;
+}
+
 extern "C" void select_presence(Item target,address inputs,u64 count,SelectionHost host) on cpu
     requires nonzero(host.alternative)
     requires nonzero(host.owner)

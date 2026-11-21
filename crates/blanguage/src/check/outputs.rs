@@ -1088,17 +1088,13 @@ impl Builder<'_> {
             }
         } else {
             for binding in self.env.values_mut() {
-                let paths = view::data_paths(binding)
-                    .into_iter()
-                    .filter(|(_, owner, _)| owner.root.identity() == data.root.identity())
-                    .map(|(path, _, _)| path)
-                    .collect::<Vec<_>>();
-                for path in paths {
-                    let owner = view::data_at_mut(binding, &path).unwrap();
-                    let old=owner.initialization.clone().unwrap_or(Position::Initialized);
-                    owner.initialization=Some(materialize(&old,&mut||scope.clone()).unwrap_or(old));
-                    found = true;
-                }
+                view::visit_data_mut(binding, |owner| {
+                    if owner.root.identity() == data.root.identity() {
+                        let old = owner.initialization.clone().unwrap_or(Position::Initialized);
+                        owner.initialization = Some(materialize(&old, &mut || scope.clone()).unwrap_or(old));
+                        found = true;
+                    }
+                });
             }
         }
         if !found {

@@ -37,6 +37,11 @@ impl OwnedValuePayload {
     pub(super) fn handles(&self)->Vec<ValueIdentity>{model::handles(self)}
     pub(super) fn resources(&self)->Vec<&Data>{model::resources(self)}
     pub(super) fn visit_resources(&self,visit:&mut impl FnMut(&Data)){model::visit_resources(self,visit)}
+    pub(super) fn visit_live_paths(
+        &self, visit: impl FnMut(&[usize], &Data, bool) -> std::ops::ControlFlow<()>,
+    ) -> std::ops::ControlFlow<()> {
+        model::visit_live_paths(self, visit)
+    }
     pub(super) fn resources_mut(&mut self,visit:&mut impl FnMut(&mut Data)){model::resources_mut(self,visit)}
 }
 

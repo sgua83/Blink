@@ -180,10 +180,12 @@ impl LoopControl {
                     }
                 }
             }
-            for(path,data,_)in view::data_paths(binding) {
-                let id=data.length.identity();
-                if identities.contains(&id){inputs.insert(id,ControlInput::Length{name:name.clone(),path});}
-            }
+            view::for_each_data_path(binding, |path, data, _| {
+                let id = data.length.identity();
+                if identities.contains(&id) {
+                    inputs.insert(id, ControlInput::Length { name: name.clone(), path: path.to_vec() });
+                }
+            });
         }
         Self{cursor,test:Some(condition),inputs}
     }

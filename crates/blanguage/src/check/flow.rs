@@ -1,6 +1,6 @@
 //! 顺序块合成真实退出边；循环结束只合流条件失败与 break 的状态。
 use super::*;
-use super::view::{Borrow,InputSlot,LoopInput,data_paths,data_at,data_at_mut};
+use super::view::{Borrow,InputSlot,LoopInput,data_at,data_at_mut};
 impl Place {
     pub(super) fn join_position_range(&mut self, other: &Self) {
         match (self, other) {
@@ -92,12 +92,16 @@ impl Builder<'_> {
         self.loop_contexts[level].view_scope=Some(scope);
         let mut slots=Vec::new();
         for (name,binding) in &self.loop_contexts[level].entry.env {
-            for (path,data,independent) in data_paths(binding){
-                slots.push(InputSlot::Data{name:name.clone(),path:path.clone(),independent});
-                if let Some(value)=data.elements.known().and_then(returns::Returned::view_value){for component in view_contracts::components(&value.ty){
-                    slots.push(InputSlot::Value{name:name.clone(),contents:Some(path.clone()),component,identity:None});
-                }}
-            }
+            view::for_each_data_path(binding, |path, data, independent| {
+                slots.push(InputSlot::Data { name: name.clone(), path: path.to_vec(), independent });
+                if let Some(value) = data.elements.known().and_then(returns::Returned::view_value) {
+                    for component in view_contracts::components(&value.ty) {
+                        slots.push(InputSlot::Value {
+                            name: name.clone(), contents: Some(path.to_vec()), component, identity: None,
+                        });
+                    }
+                }
+            });
             if let Some((ty,_))=binding.view_parts() {
                 for component in view_contracts::components(ty) {
                     slots.push(InputSlot::Value{name:name.clone(),contents:None,component,identity:None});
@@ -544,23 +548,33 @@ impl Builder<'_> {
         let Some(context) = self.loop_contexts.last_mut() else { return; };
         context.controls.insert(value.regs[0], value.clone());
         let inputs = bounds::Condition::of(value).input_identities();
-        let lengths=self.env.values().flat_map(view::data_paths).filter_map(|(_,data,_)|{
-            let Some(Position::ApplicationInput(input,..))=&data.initialization else{return None;};
-            let id=data.length.identity();inputs.contains(&id).then_some((*input,id))
-        }).collect::<Vec<_>>();
-        for(input,id)in lengths {
-            if let Some(context)=self.loop_contexts.iter_mut().find(|context|context.view_scope==Some(input.level))
-                && let InputSlot::Data{name,path,..}=&context.view_inputs[input.index] {
-                context.control_source.inputs.insert(id,view_contracts::ControlInput::Length{name:name.clone(),path:path.clone()});
-            }
+        for binding in self.env.values() {
+            view::visit_data(binding, |data| {
+                let id = data.length.identity();
+                if let Some(Position::ApplicationInput(input, ..)) = &data.initialization
+                    && inputs.contains(&id)
+                    && let Some(context) = self.loop_contexts.iter_mut()
+                        .find(|context| context.view_scope == Some(input.level))
+                    && let InputSlot::Data { name, path, .. } = &context.view_inputs[input.index]
+                {
+                    context.control_source.inputs.insert(id, view_contracts::ControlInput::Length {
+                        name: name.clone(), path: path.clone(),
+                    });
+                }
+            });
         }
     }
     pub(super) fn enter_loop(&mut self, environment: &BTreeMap<String, Binding>) {
         // The saved entry still has its real length. Complete storage no longer
         // depends on that length's precision after loop writes are projected.
-        let complete=environment.iter().flat_map(|(name,binding)|data_paths(binding).into_iter()
-            .filter(|(_,data,_)|self.application_initialized(data))
-            .map(move|(path,_,_)|(name.clone(),path))).collect::<Vec<_>>();
+        let mut complete = Vec::new();
+        for (name, binding) in environment {
+            view::for_each_data_path(binding, |path, data, _| {
+                if self.application_initialized(data) {
+                    complete.push((name.clone(), path.to_vec()));
+                }
+            });
+        }
         let mut resources=environment.clone();
         for(name,path)in complete {
             data_at_mut(resources.get_mut(&name).unwrap(),&path).unwrap().initialization=None;

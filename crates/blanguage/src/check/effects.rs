@@ -1,5 +1,6 @@
 //! 从已声明的 write／inout 参数追踪调用方位置写入，覆盖表达式与各控制流入口。
 use super::*;
+use std::ops::ControlFlow;
 mod sources;
 use sources::{Local, Scope};
 
@@ -393,16 +394,34 @@ impl Builder<'_> {
         for (name, binding) in &mut self.env {
             let context=self.loop_contexts.last_mut().unwrap();
             if deferred && context.view_scope.is_some() {
-                let paths=context.entry.env.get(name).into_iter().flat_map(view::data_paths).filter_map(|(path,data,_)|{
-                    let value=data.elements.known()?.view_value()?;
-                    let metadata=view::resource_paths(&value.ty).into_iter().filter(|fields|application::model_data(data.elements.known(),fields).is_some()).map(|fields|{
-                        let(mut offset,mut ty)=(0,&value.ty);
-                        for field in fields{let(at,next)=if ty.has_variants(){(ty.variant_payload_offset(),ty.variants[field].ty.as_ref())}else{ty.aggregate_part(field)};offset+=at;ty=next;}
-                        offset..offset+ty.size
-                    }).collect::<Vec<_>>();
-                    let components=value.ty.components.iter().enumerate().filter_map(|(component,(scalar,word))|(!metadata.iter().any(|range|range.contains(word))).then_some((component,*scalar))).collect::<Vec<_>>();
-                    Some((path,components))
-                }).collect::<Vec<_>>();
+                let mut paths = Vec::new();
+                if let Some(entry) = context.entry.env.get(name) {
+                    view::for_each_data_path(entry, |path, data, _| {
+                        let Some(value) = data.elements.known().and_then(returns::Returned::view_value) else {
+                            return;
+                        };
+                        let metadata = view::resource_paths(&value.ty).into_iter()
+                            .filter(|fields| application::model_data(data.elements.known(), fields).is_some())
+                            .map(|fields| {
+                                let (mut offset, mut ty) = (0, &value.ty);
+                                for field in fields {
+                                    let (at, next) = if ty.has_variants() {
+                                        (ty.variant_payload_offset(), ty.variants[field].ty.as_ref())
+                                    } else {
+                                        ty.aggregate_part(field)
+                                    };
+                                    offset += at;
+                                    ty = next;
+                                }
+                                offset..offset + ty.size
+                            }).collect::<Vec<_>>();
+                        let components = value.ty.components.iter().enumerate()
+                            .filter_map(|(component, (scalar, word))| {
+                                (!metadata.iter().any(|range| range.contains(word))).then_some((component, *scalar))
+                            }).collect::<Vec<_>>();
+                        paths.push((path.to_vec(), components));
+                    });
+                }
                 for(path,components)in paths {
                     let Some(value)=view::data_at_mut(binding,&path).and_then(|data|data.elements.known_mut()).and_then(returns::Returned::view_value_mut)else{continue;};
                     for(component,scalar)in components {
@@ -1615,22 +1634,40 @@ impl Builder<'_> {
                         address::Root::Local{..}=>{
                             let Some(positions)=origin.memory_positions(&active)else{return Ok(true);};
                             let mut matched=false;
-                            for binding in self.env.values(){for(path,data,_)in view::data_paths(binding){
-                                if self.application_element_scopes(&[],&target.resource,data,(&active,&self.env)).is_empty(){continue;}
-                                if data.ownership!=application::Ownership::Owned{return Ok(true);}
-                                let descriptor=match binding{Binding::ApplicationData(data)=>data.place.clone(),_=>binding.stored_place()};
-                                if let Some(mut descriptor)=descriptor{
-                                    for field in path{
-                                        if descriptor.ty().has_variants(){return Ok(true);}
-                                        let(offset,ty)=descriptor.ty().aggregate_part(field);
-                                        let components=ty.components.iter().map(|(_,at)|descriptor.ty().components.iter().position(|(_,word)|*word==offset+at).unwrap()).collect::<Vec<_>>();
-                                        let ty=ty.clone();descriptor=descriptor.project(ty,&components);
+                            for binding in self.env.values() {
+                                let conflict = view::visit_data_paths(binding, |path, data, _| {
+                                    if self.application_element_scopes(&[], &target.resource, data, (&active, &self.env)).is_empty() {
+                                        return ControlFlow::Continue(());
                                     }
-                                    if !self.address_write_components(&positions,&descriptor).is_empty(){return Ok(true);}
-                                }
-                                // Register descriptors have no local slots for this address to write.
-                                matched=true;
-                            }}
+                                    if data.ownership != application::Ownership::Owned {
+                                        return ControlFlow::Break(());
+                                    }
+                                    let descriptor = match binding {
+                                        Binding::ApplicationData(data) => data.place.clone(),
+                                        _ => binding.stored_place(),
+                                    };
+                                    if let Some(mut descriptor) = descriptor {
+                                        for &field in path {
+                                            if descriptor.ty().has_variants() {
+                                                return ControlFlow::Break(());
+                                            }
+                                            let (offset, ty) = descriptor.ty().aggregate_part(field);
+                                            let components = ty.components.iter().map(|(_, at)| {
+                                                descriptor.ty().components.iter().position(|(_, word)| *word == offset + at).unwrap()
+                                            }).collect::<Vec<_>>();
+                                            let projected = ty.clone();
+                                            descriptor = descriptor.project(projected, &components);
+                                        }
+                                        if !self.address_write_components(&positions, &descriptor).is_empty() {
+                                            return ControlFlow::Break(());
+                                        }
+                                    }
+                                    // Register descriptors have no local slots for this address to write.
+                                    matched = true;
+                                    ControlFlow::Continue(())
+                                });
+                                if conflict.is_break() { return Ok(true); }
+                            }
                             if !matched{return Ok(true);}
                         },
                         _=>return Ok(true),
@@ -2030,11 +2067,26 @@ impl Builder<'_> {
                 }
             }}
             if components.is_empty(){continue;}
-            let owners=self.env.iter().flat_map(|(name,binding)|view::data_paths(binding).into_iter().filter(|(_,owner,_)|owner.root.identity()==data.root.identity()&&self.resolve_ownership(&owner.ownership,None)==application::Ownership::Owned).map(move|(path,_,_)|(name.clone(),path))).collect::<Vec<_>>();
-            let [(name,path)]=owners.as_slice()else{continue;};
+            let mut selected = None;
+            for (name, binding) in &self.env {
+                let duplicate = view::visit_data_paths(binding, |path, owner, _| {
+                    if owner.root.identity() == data.root.identity()
+                        && self.resolve_ownership(&owner.ownership, None) == application::Ownership::Owned
+                    {
+                        if selected.is_some() { return ControlFlow::Break(()); }
+                        selected = Some((name, path.to_vec()));
+                    }
+                    ControlFlow::Continue(())
+                });
+                if duplicate.is_break() {
+                    selected = None;
+                    break;
+                }
+            }
+            let Some((name, path)) = selected else { continue; };
             let ordinal=ApplicationIndex::Value(ValueIdentity::ElementIndex(0),0);
             let remaining=Presence::indices(Comparison::Less,ordinal,begin).or(Presence::indices(Comparison::GreaterEqual,ordinal,cursor));
-            changes.push((name.clone(),path.clone(),components,remaining));
+            changes.push((name.clone(), path, components, remaining));
         }
         fn qualify(model:&mut Returned,when:&bounds::Condition){
             let path=when.assume(&bounds::Clause::default(),true);
