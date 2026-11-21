@@ -391,7 +391,7 @@ pub(in crate::check) use task_parameters::{task_argument_slots, task_completion_
 pub(super) async fn check(world: &World, instance: &crate::generics::Instance) -> Result<()> {
     let mut functions = unsafe { world.call(declaration(world, instance, Module::default(), ViewDemand::Caller)).await }?;
     unsafe { world.call(lower_module_failures(world,&mut functions,&mut [])).await }?;
-    resolve_residencies(world,&mut functions).map(|_|())
+    resolve_residencies(world, &mut functions, None)
 }
 struct CallSignature<'a> {
     parameters:&'a [Param],
@@ -889,7 +889,7 @@ impl Builder<'_> {
             if !self.application_entry() {
                 // This range has no application caller whose later closure could consume the call.
                 // Consume the already closed imported contract with its actual CPU inputs now.
-                let (known,outputs,_)=residency_contracts(self.world,&self.functions)?;
+                let (known, outputs) = residency_contracts(self.world, &self.functions, None)?;
                 if residency::check_calls(std::iter::once(&call),&known,&outputs)? {
                     return self.fail(span,"B270","CPU范围尚不能交接该已编译函数所需的条件存储位置");
                 }
@@ -1833,11 +1833,15 @@ fn publish_views(module: &mut Module, outputs: ViewOutputs) {
 }
 // Borrow current contracts; own decoded dependencies from compiled definitions,
 // including private callees without reconstructing their source declarations.
-fn residency_contracts(world:&World,module:&Module)->Result<(BTreeMap<String,residency::Contract>,residency::Outputs,BTreeMap<String,Vec<u8>>)> {
+fn residency_contracts(
+    world: &World,
+    module: &Module,
+    mut imports: Option<&mut BTreeMap<String, Vec<u8>>>,
+) -> Result<(BTreeMap<String, residency::Contract>, residency::Outputs)> {
     use crate::module::codec::Decode;
     use std::borrow::Cow;
     let mut contracts=module.units.iter().filter_map(|(name,unit)|unit.as_ref().map(|unit|(name.clone(),Cow::Borrowed(&unit.contract)))).collect::<BTreeMap<_,_>>();
-    let mut imports=BTreeMap::new();let mut pending=contracts.keys().cloned().collect::<Vec<_>>();
+    let mut pending = contracts.keys().cloned().collect::<Vec<_>>();
     while let Some(name)=pending.pop(){
         let contract=&contracts[&name];
         for callee in contract.residency_dependencies(){
@@ -1845,14 +1849,22 @@ fn residency_contracts(world:&World,module:&Module)->Result<(BTreeMap<String,res
             let (definition,bytes)=world.functions.values().find_map(|definition|definition.compiled.as_ref().and_then(|definitions|definitions.get(&callee)).map(|bytes|(definition,bytes)))
                 .ok_or_else(||Diagnostic{source:module.units.values().find_map(|unit|unit.as_ref()).unwrap().source.clone(),span:Span::default(),code:"B270",message:format!("已编译模块没有位置合同定义 {callee}")})?;
             let contract=Contract::from_bytes(bytes).map_err(|error|Diagnostic{source:definition.source.clone(),span:definition.function.span(),code:"B270",message:format!("模块函数接口错误：{error}")})?;
-            contracts.insert(callee.clone(),Cow::Owned(contract));imports.insert(callee.clone(),bytes.clone());pending.push(callee);
+            if let Some(imports) = imports.as_deref_mut() {
+                imports.insert(callee.clone(), bytes.clone());
+            }
+            contracts.insert(callee.clone(), Cow::Owned(contract));
+            pending.push(callee);
         }
     }
     let outputs=residency::output_sources(contracts.iter().map(|(name,contract)|(name.as_str(),contract.returned.as_ref(),contract.written.as_slice())));
-    Ok((contracts.into_iter().map(|(name,contract)|(name,match contract{Cow::Borrowed(contract)=>contract.residency.clone(),Cow::Owned(contract)=>contract.residency})).collect(),outputs,imports))
+    Ok((contracts.into_iter().map(|(name,contract)|(name,match contract{Cow::Borrowed(contract)=>contract.residency.clone(),Cow::Owned(contract)=>contract.residency})).collect(),outputs))
 }
 // 每个原函数持有自身Uses／Calls；调用者消费实际实参，不穷举递归后代。
-fn resolve_residencies(world:&World,module: &mut Module) -> Result<BTreeMap<String,Vec<u8>>> {
+fn resolve_residencies(
+    world: &World,
+    module: &mut Module,
+    imports: Option<&mut BTreeMap<String, Vec<u8>>>,
+) -> Result<()> {
     // Definition inputs retain their requirements in the existing call contract.
     fn unbound(value:&residency::Residency)->bool{match value{
         residency::Residency::Absent=>true,
@@ -1860,7 +1872,7 @@ fn resolve_residencies(world:&World,module: &mut Module) -> Result<BTreeMap<Stri
         residency::Residency::Selected(_,a,b)=>unbound(a)&&unbound(b),
     }}
     resolve_views(world,module,None)?;
-    let (mut known,outputs,imports)=residency_contracts(world,module)?;
+    let (mut known, outputs) = residency_contracts(world, module, imports)?;
     for(name,unit)in &mut module.units{let unit=unit.as_mut().unwrap();if unit.function.is_none(){continue;}
         let parameters=residency::input_parameters(&unit.view_model.parameters,unit.contract.inputs.len());
         unit.contract.residency=residency::infer(&unit.residency,&parameters,&outputs,&unit.source,unit.span)?;
@@ -1882,7 +1894,7 @@ fn resolve_residencies(world:&World,module: &mut Module) -> Result<BTreeMap<Stri
         for written in &mut unit.contract.written{if let Some(value)=written{if !residency::resolve_returned(value,&outputs){*written=None;}}}
         if let Some(returned)=&mut unit.contract.returned{if !residency::resolve_returned(returned,&outputs){unit.contract.returned=None;}}
     }
-    Ok(imports)
+    Ok(())
 }
 pub(super) fn calls(code: &mut [Inst], visit: &mut impl FnMut(&mut Call)) {
     for inst in code {
@@ -2288,7 +2300,8 @@ async fn finalize(
 ) -> Result<Finalized> {
     use crate::module::codec::Encode;
     unsafe { world.call(lower_module_failures(world,&mut module,programs)).await }?;
-    let residency_imports=resolve_residencies(world,&mut module)?;
+    let mut imports = BTreeMap::new();
+    resolve_residencies(world, &mut module, Some(&mut imports))?;
     let mut resources = std::mem::take(&mut module.resources);
     let mut pending_programs = std::mem::take(&mut module.programs)
         .into_iter().map(Option::unwrap).collect::<Vec<_>>();
@@ -2310,7 +2323,6 @@ async fn finalize(
         lower_dataset_borrows(body,model,&|callee|&units[callee].contract);
     }
     let frame=frame_effects::run(&mut units);
-    let mut imports = residency_imports;
     for (name, unit) in &mut units {
         if unit.c_abi && unit.contract.frame {
             return unit.source.fail(unit.span, "B263", "C入口的实际调用闭包需要Frame；C ABI不能隐式取得执行上下文");
