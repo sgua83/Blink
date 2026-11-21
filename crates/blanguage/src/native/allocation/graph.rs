@@ -24,7 +24,6 @@ struct Definition { weight: u64, transfer_dst: usize, transfer_src: usize, bits:
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct Core {
-    addressable: unsafe extern "C" fn(*const Graph, usize) -> u32,
     relation: unsafe extern "C" fn(*mut Graph, Relation, usize, usize),
     weight: unsafe extern "C" fn(*const Graph, usize) -> u64,
     set_weight: unsafe extern "C" fn(*mut Graph, usize, u64),
@@ -83,7 +82,6 @@ unsafe extern "C" fn cast_bits(registers: Span, from: Reg, into: Reg) -> u32 {
 unsafe extern "C" fn call_outgoing(call: *const Call) -> u64 {
     external::outgoing_bytes(unsafe { &*call })
 }
-unsafe extern "C" fn addressable(graph: *const Graph, id: usize) -> u32 { u32::from(unsafe { &*graph }.addressable.contains(&id)) }
 unsafe extern "C" fn relation(graph: *mut Graph, kind: Relation, from: usize, to: usize) {
     let graph = unsafe { &mut *graph }; match kind { Relation::Edge => { graph.edges[from].insert(to); }, Relation::Affinity => { graph.affinities[from].insert(to); } }
 }
@@ -130,7 +128,7 @@ unsafe extern "C" fn reads(instruction: *const Inst, graph: *mut Graph, live: *m
     inst.all_operands(&mut |reg| { unsafe { graph_read(graph, live, Space::Register, reg, weight, CORE) }; true });
     for index in inst.local_reads() { unsafe { graph_read(graph, live, Space::Local, index, weight, CORE); } }
 }
-const CORE: Core = Core { addressable, relation, weight, set_weight, across, counter, set_outgoing, location, visit_set, slot };
+const CORE: Core = Core { relation, weight, set_weight, across, counter, set_outgoing, location, visit_set, slot };
 const HOST: Host = Host {
     core: CORE, values: REGISTER_HOST, cast_bits, call_outgoing,
     math_outgoing: operands::scalar_math_outgoing,

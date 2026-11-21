@@ -197,45 +197,49 @@ u64 graph_nested_weight(u64 weight) on cpu {
     return weight>maximum/8u64 ? maximum : weight*8u64;
 }
 u64 graph_slot_id(address graph,GraphSpace space,u64 index,GraphCore core) on cpu 
-    requires nonzero(core.addressable) requires nonzero(core.relation) requires nonzero(core.weight) requires nonzero(core.set_weight)
+    requires nonzero(core.relation) requires nonzero(core.weight) requires nonzero(core.set_weight)
     requires nonzero(core.across) requires nonzero(core.counter) requires nonzero(core.set_outgoing) requires nonzero(core.location)
     requires nonzero(core.visit_set) requires nonzero(core.slot) {
     return space==GraphSpace::Register ? index : core.counter(graph,GraphCounter::Registers)+index;
 }
 void graph_edge(address graph,u64 first,u64 second,GraphCore core) on cpu 
-    requires nonzero(core.addressable) requires nonzero(core.relation) requires nonzero(core.weight) requires nonzero(core.set_weight)
+    requires nonzero(core.relation) requires nonzero(core.weight) requires nonzero(core.set_weight)
     requires nonzero(core.across) requires nonzero(core.counter) requires nonzero(core.set_outgoing) requires nonzero(core.location)
     requires nonzero(core.visit_set) requires nonzero(core.slot) {
-    if(first!=second && core.addressable(graph,first)==0 && core.addressable(graph,second)==0){
+    if(first!=second){
         core.relation(graph,GraphRelation::Edge,first,second);
         core.relation(graph,GraphRelation::Edge,second,first);
     }
 }
 void graph_weight(address graph,u64 id,u64 amount,GraphCore core) on cpu 
-    requires nonzero(core.addressable) requires nonzero(core.relation) requires nonzero(core.weight) requires nonzero(core.set_weight)
+    requires nonzero(core.relation) requires nonzero(core.weight) requires nonzero(core.set_weight)
     requires nonzero(core.across) requires nonzero(core.counter) requires nonzero(core.set_outgoing) requires nonzero(core.location)
     requires nonzero(core.visit_set) requires nonzero(core.slot) {
     core.set_weight(graph,id,graph_saturating_add(core.weight(graph,id),amount));
 }
 extern "C" void graph_live_event(address graph,address live,GraphSpace space,u64 index,u64 ordinal,GraphEvent event,GraphCore core) on cpu 
-    requires nonzero(core.addressable) requires nonzero(core.relation) requires nonzero(core.weight) requires nonzero(core.set_weight)
+    requires nonzero(core.relation) requires nonzero(core.weight) requires nonzero(core.set_weight)
     requires nonzero(core.across) requires nonzero(core.counter) requires nonzero(core.set_outgoing) requires nonzero(core.location)
     requires nonzero(core.visit_set) requires nonzero(core.slot) {
     u64 id=graph_slot_id(graph,space,index,core);
     if(event.kind==0){
-        if(event.skip_present==0 || id!=event.skip){graph_edge(graph,event.anchor,id,core);}
+        if((event.skip_present==0 || id!=event.skip) && unsafe_position<ColorPlace>(core.location(graph,id)).width!=0){
+            graph_edge(graph,event.anchor,id,core);
+        }
     } else if(event.kind==1){
-        if(core.addressable(graph,id)==0){core.visit_set(live,ordinal,graph,GraphEvent(id,0u64,0,0));}
+        if(unsafe_position<ColorPlace>(core.location(graph,id)).width!=0){
+            core.visit_set(live,ordinal,graph,GraphEvent(id,0u64,0,0));
+        }
     } else {core.across(graph,id);}
 }
 extern "C" void graph_together(address graph,address live,GraphCore core) on cpu 
-    requires nonzero(core.addressable) requires nonzero(core.relation) requires nonzero(core.weight) requires nonzero(core.set_weight)
+    requires nonzero(core.relation) requires nonzero(core.weight) requires nonzero(core.set_weight)
     requires nonzero(core.across) requires nonzero(core.counter) requires nonzero(core.set_outgoing) requires nonzero(core.location)
     requires nonzero(core.visit_set) requires nonzero(core.slot) {
     core.visit_set(live,18446744073709551615u64,graph,GraphEvent(0u64,0u64,1,0));
 }
 extern "C" void graph_inputs(address graph,address inputs,u64 count,GraphCore core) on cpu 
-    requires nonzero(core.addressable) requires nonzero(core.relation) requires nonzero(core.weight) requires nonzero(core.set_weight)
+    requires nonzero(core.relation) requires nonzero(core.weight) requires nonzero(core.set_weight)
     requires nonzero(core.across) requires nonzero(core.counter) requires nonzero(core.set_outgoing) requires nonzero(core.location)
     requires nonzero(core.visit_set) requires nonzero(core.slot) {
     u64 index=0u64;
@@ -251,13 +255,13 @@ extern "C" void graph_inputs(address graph,address inputs,u64 count,GraphCore co
     }
 }
 extern "C" void graph_definition(address graph,address live,GraphSpace space,u64 index,GraphDefinition definition,GraphCore core) on cpu 
-    requires nonzero(core.addressable) requires nonzero(core.relation) requires nonzero(core.weight) requires nonzero(core.set_weight)
+    requires nonzero(core.relation) requires nonzero(core.weight) requires nonzero(core.set_weight)
     requires nonzero(core.across) requires nonzero(core.counter) requires nonzero(core.set_outgoing) requires nonzero(core.location)
     requires nonzero(core.visit_set) requires nonzero(core.slot) {
     if(definition.pass!=0){core.slot(live,GraphSlotAction::Remove,space,index);return;}
     if(space==GraphSpace::Register){record_definition(core.location(graph,index),definition.literal,definition.bits);}
     u64 id=graph_slot_id(graph,space,index,core);
-    if(core.addressable(graph,id)==0){
+    if(unsafe_position<ColorPlace>(core.location(graph,id)).width!=0){
         GraphEvent event=GraphEvent(id,definition.transfer_src,0,0);
         if(definition.transfer!=0 && id==definition.transfer_dst){event.skip_present=1;}
         core.visit_set(live,18446744073709551615u64,graph,event);
@@ -265,7 +269,7 @@ extern "C" void graph_definition(address graph,address live,GraphSpace space,u64
     graph_weight(graph,id,definition.weight,core);
 }
 extern "C" void graph_read(address graph,address live,GraphSpace space,u64 index,u64 weight,GraphCore core) on cpu 
-    requires nonzero(core.addressable) requires nonzero(core.relation) requires nonzero(core.weight) requires nonzero(core.set_weight)
+    requires nonzero(core.relation) requires nonzero(core.weight) requires nonzero(core.set_weight)
     requires nonzero(core.across) requires nonzero(core.counter) requires nonzero(core.set_outgoing) requires nonzero(core.location)
     requires nonzero(core.visit_set) requires nonzero(core.slot) {
     u64 id=graph_slot_id(graph,space,index,core);
@@ -290,7 +294,7 @@ bool graph_call_uses_r15(Node call, Host ir) on cpu requires nonzero(ir.inspect)
 }
 extern "C" u32 graph_block(address graph,Span code,Span registers,address live,
     address break_live,address continue_live,address exit_live,u64 weight,GraphHost host) on cpu 
-    requires nonzero(host.core.addressable) requires nonzero(host.core.relation) requires nonzero(host.core.weight) requires nonzero(host.core.set_weight)
+    requires nonzero(host.core.relation) requires nonzero(host.core.weight) requires nonzero(host.core.set_weight)
     requires nonzero(host.core.across) requires nonzero(host.core.counter) requires nonzero(host.core.set_outgoing) requires nonzero(host.core.location)
     requires nonzero(host.core.visit_set) requires nonzero(host.core.slot)
     requires nonzero(host.values.ir.inspect) requires nonzero(host.values.scalar)
@@ -355,7 +359,8 @@ extern "C" u32 graph_block(address graph,Span code,Span registers,address live,
             if(node.tag==OP_LOAD_LOCAL){transfer=1;source+=host.core.counter(graph,GraphCounter::Registers);}
             else if(node.tag==OP_STORE_LOCAL){transfer=1;destination+=host.core.counter(graph,GraphCounter::Registers);}
             else if(node.tag==OP_CAST && host.cast_bits(registers,node.b,node.a)!=0){transfer=1;}
-            if(transfer!=0 && (host.core.addressable(graph,destination)!=0 || host.core.addressable(graph,source)!=0)){transfer=0;}
+            if(transfer!=0 && (unsafe_position<ColorPlace>(host.core.location(graph,destination)).width==0 ||
+                unsafe_position<ColorPlace>(host.core.location(graph,source)).width==0)){transfer=0;}
             u32 preferred=transfer;
             u64 preferred_destination=destination;
             u64 preferred_source=source;

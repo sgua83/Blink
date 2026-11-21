@@ -29,7 +29,6 @@ enum GraphSetAction:u32 { Copy=0; Union=1; DrainUnion=2; Swap=3; Clear=4; };
 struct GraphEvent { u64 anchor; u64 skip; u32 kind; u32 skip_present; };
 struct GraphDefinition { u64 weight; u64 transfer_dst; u64 transfer_src; u64 bits; u32 transfer; u32 literal; u32 pass; };
 struct GraphCore {
-    cfn<u32,address,u64> addressable;
     cfn<void,address,GraphRelation,u64,u64> relation;
     cfn<u64,address,u64> weight;
     cfn<void,address,u64,u64> set_weight;
@@ -56,7 +55,7 @@ struct GraphHost {
 // All sets, graph arrays and IR blocks are this synchronous caller's real containers.
 extern "C" u32 graph_block(address graph,Span code,Span registers,address live,
     address break_live,address continue_live,address exit_live,u64 weight,GraphHost host) on cpu 
-    requires nonzero(host.core.addressable) requires nonzero(host.core.relation) requires nonzero(host.core.weight) requires nonzero(host.core.set_weight)
+    requires nonzero(host.core.relation) requires nonzero(host.core.weight) requires nonzero(host.core.set_weight)
     requires nonzero(host.core.across) requires nonzero(host.core.counter) requires nonzero(host.core.set_outgoing) requires nonzero(host.core.location)
     requires nonzero(host.core.visit_set) requires nonzero(host.core.slot)
     requires nonzero(host.values.ir.inspect) requires nonzero(host.values.scalar)
@@ -64,22 +63,22 @@ extern "C" u32 graph_block(address graph,Span code,Span registers,address live,
     requires nonzero(host.drop_set) requires nonzero(host.change) requires nonzero(host.loop_live) requires nonzero(host.definitions)
     requires nonzero(host.reads);
 extern "C" void graph_together(address graph,address live,GraphCore core) on cpu 
-    requires nonzero(core.addressable) requires nonzero(core.relation) requires nonzero(core.weight) requires nonzero(core.set_weight)
+    requires nonzero(core.relation) requires nonzero(core.weight) requires nonzero(core.set_weight)
     requires nonzero(core.across) requires nonzero(core.counter) requires nonzero(core.set_outgoing) requires nonzero(core.location)
     requires nonzero(core.visit_set) requires nonzero(core.slot);
 extern "C" void graph_inputs(address graph,address inputs,u64 count,GraphCore core) on cpu 
-    requires nonzero(core.addressable) requires nonzero(core.relation) requires nonzero(core.weight) requires nonzero(core.set_weight)
+    requires nonzero(core.relation) requires nonzero(core.weight) requires nonzero(core.set_weight)
     requires nonzero(core.across) requires nonzero(core.counter) requires nonzero(core.set_outgoing) requires nonzero(core.location)
     requires nonzero(core.visit_set) requires nonzero(core.slot);
 extern "C" void graph_live_event(address graph,address live,GraphSpace space,u64 index,u64 ordinal,GraphEvent event,GraphCore core) on cpu 
-    requires nonzero(core.addressable) requires nonzero(core.relation) requires nonzero(core.weight) requires nonzero(core.set_weight)
+    requires nonzero(core.relation) requires nonzero(core.weight) requires nonzero(core.set_weight)
     requires nonzero(core.across) requires nonzero(core.counter) requires nonzero(core.set_outgoing) requires nonzero(core.location)
     requires nonzero(core.visit_set) requires nonzero(core.slot);
 extern "C" void graph_definition(address graph,address live,GraphSpace space,u64 index,GraphDefinition definition,GraphCore core) on cpu 
-    requires nonzero(core.addressable) requires nonzero(core.relation) requires nonzero(core.weight) requires nonzero(core.set_weight)
+    requires nonzero(core.relation) requires nonzero(core.weight) requires nonzero(core.set_weight)
     requires nonzero(core.across) requires nonzero(core.counter) requires nonzero(core.set_outgoing) requires nonzero(core.location)
     requires nonzero(core.visit_set) requires nonzero(core.slot);
 extern "C" void graph_read(address graph,address live,GraphSpace space,u64 index,u64 weight,GraphCore core) on cpu 
-    requires nonzero(core.addressable) requires nonzero(core.relation) requires nonzero(core.weight) requires nonzero(core.set_weight)
+    requires nonzero(core.relation) requires nonzero(core.weight) requires nonzero(core.set_weight)
     requires nonzero(core.across) requires nonzero(core.counter) requires nonzero(core.set_outgoing) requires nonzero(core.location)
     requires nonzero(core.visit_set) requires nonzero(core.slot);

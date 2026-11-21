@@ -59,7 +59,6 @@ pub(super) struct Frame {
 pub(super) struct Graph {
     locations: Vec<ColorPlace>,
     private: BTreeSet<(usize, usize)>,
-    addressable: BTreeSet<usize>,
     edges: Vec<BTreeSet<usize>>,
     affinities: Vec<BTreeSet<usize>>,
     weights: Vec<u64>,
@@ -83,28 +82,27 @@ impl Graph {
         Self::with_live(stage, BTreeSet::new())
     }
     pub fn with_live(stage: &Stage, mut live: BTreeSet<PrivateSlot>) -> (Self, Vec<TilePhase<'_>>) {
-        let slots = stage.registers.len() + stage.locals.last_key_value().map_or(0, |(end, _)| *end);
+        let registers = stage.registers.len();
+        let slots = registers + stage.locals.last_key_value().map_or(0, |(end, _)| *end);
         let private = private_spans(&stage.code);
-        let addressable: BTreeSet<_> = private.iter().flat_map(|&(begin, end)| begin..end)
-            .map(|slot| stage.registers.len() + slot).collect();
-        let locations = stage.registers.iter()
+        let mut locations: Vec<_> = stage.registers.iter()
             .chain(stage.locals.values().flat_map(|ty| ty.components.iter().map(|(scalar, _)| scalar)))
-            .enumerate()
-            .map(|(id, scalar)| {
-                let width = if addressable.contains(&id) { 0 } else { scalar.size() as u8 };
-                ColorPlace::new(width, scalar.is_float())
-            })
+            .map(|scalar| ColorPlace::new(scalar.size() as u8, scalar.is_float()))
             .collect();
+        for &(begin, end) in &private {
+            for location in &mut locations[registers + begin..registers + end] {
+                location.width = 0;
+            }
+        }
         let mut graph = Graph {
             locations,
-            addressable,
             private,
             edges: vec![BTreeSet::new(); slots],
             affinities: vec![BTreeSet::new(); slots],
             weights: vec![0; slots],
             across_call: BTreeSet::new(),
             outgoing_bytes: 0,
-            registers: stage.registers.len(),
+            registers,
             needs_r15: false,
         };
         let empty = BTreeSet::new();
