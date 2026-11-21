@@ -76,29 +76,38 @@ impl Builder<'_> {
         else{self.graph.nodes[id].seeds.sources.insert(Origin::Position(Arc::new(value.clone())));}
         id
     }
-    fn writes(&mut self, memory: usize) -> Vec<Write> {
+    fn writes(&mut self, memory: usize, names: &BTreeMap<ValueIdentity, ValueIdentity>) -> Vec<Write> {
         let usage = &self.function.uses[memory];
         let Requirement::Memory { borrow, access, written, address_fields, .. } = &usage.requirement else {
             return Vec::new();
         };
         let mut writes = Vec::new();
+        let bind = |value: Borrow| {
+            if names.is_empty() { value } else { value.output_bound(names) }
+        };
         if let Some(call) = self.function.calls.iter().find(|call| call.memory == memory) {
             for access in &self.known[&call.function].interface.access {
                 if let Access::Stored { borrows, word, value, when } = access {
-                    let target = self.borrow(&call_content_sources(borrows, call, &call.arguments).at_call(&call.arguments), &Epoch::Input);
-                    let value = self.borrow(&call_content_sources(value, call, &call.arguments).at_call(&call.arguments), &Epoch::Input);
+                    let target = self.borrow(&bind(call_content_sources(borrows, call, &call.arguments)
+                        .at_call(&call.arguments)), &Epoch::Input);
+                    let value = self.borrow(&bind(call_content_sources(value, call, &call.arguments)
+                        .at_call(&call.arguments)), &Epoch::Input);
                     writes.push(Write {
                         target,
                         fields: Some(vec![(*word, value)]),
-                        when: when.at_call(&call.arguments),
+                        when: when.at_call(&call.arguments).output_bound(names),
                     });
                 }
             }
         } else if access.is_some_and(super::super::Access::writes) {
-            let target = self.borrow(borrow, &Epoch::Input);
+            let target = if names.is_empty() {
+                self.borrow(borrow, &Epoch::Input)
+            } else {
+                self.borrow(&borrow.output_bound(names), &Epoch::Input)
+            };
             let fields = written.as_ref().map(|value| {
                 address_fields.iter().map(|&(word, component)| {
-                    (word, self.borrow(&value.view_borrow(component), &Epoch::Input))
+                    (word, self.borrow(&bind(value.view_borrow(component)), &Epoch::Input))
                 }).collect()
             });
             writes.push(Write { target, fields, when: bounds::Condition::constant(true) });
@@ -111,7 +120,7 @@ impl Builder<'_> {
             let at = self.prefix.len() - 1;
             let parent = *self.prefix.last().unwrap();
             self.prefix.push(parent);
-            let mut writes = self.writes(at);
+            let mut writes = self.writes(at, &BTreeMap::new());
             if writes.is_empty() { continue; }
             let execution = bounds::Condition::execution(&self.function.uses[at].path);
             for write in &mut writes {
@@ -125,9 +134,46 @@ impl Builder<'_> {
     }
     fn read_frame(&mut self,memory:usize)->Option<usize>{
         let mut at=self.frame(memory);let mut frames=Vec::new();while let Some(id)=at{frames.push(id);at=self.graph.frames[id].parent;}
-        let path=&self.function.uses[memory].path;let mut parent=None;let mut normal=bounds::Normalizer::new();
-        for id in frames.into_iter().rev(){
-            let writes=self.graph.frames[id].writes.iter().map(|w|Write{target:w.target,fields:w.fields.clone(),when:normal.condition(&bounds::Condition::paths(w.when.assume(path,true),w.when.assume(path,false)))}).collect();
+        let function = self.function;
+        let path = &function.uses[memory].path;
+        let mut parent = None;
+        let mut normal = bounds::Normalizer::new();
+        for (scope, at, prior) in function.carried_writes(memory) {
+            let names = function.history_names(at, memory, Some(scope));
+            let prior = prior.output_bound(&names);
+            let mut writes = self.writes(at, &names);
+            for write in &mut writes {
+                // An earlier iteration may contribute this write. The current
+                // read can still be reached without that iteration's write.
+                write.when = bounds::Condition::paths(
+                    write.when.assume(&prior, true), bounds::Clause::default(),
+                );
+            }
+            if !writes.is_empty() {
+                let id = self.graph.frames.len();
+                self.graph.frames.push(Frame { parent, writes });
+                parent = Some(id);
+            }
+        }
+        for id in frames.into_iter().rev() {
+            // The lexical prefix first names this frame just after its write.
+            let at = self.prefix.partition_point(|frame| *frame < Some(id)) - 1;
+            let names = function.history_names(at, memory, None);
+            let mut writes = if names.is_empty() {
+                self.graph.frames[id].writes.clone()
+            } else {
+                let execution = bounds::Condition::execution(&function.uses[at].path).output_bound(&names);
+                let mut writes = self.writes(at, &names);
+                for write in &mut writes {
+                    write.when = write.when.clone().logical(execution.clone(), false);
+                }
+                writes
+            };
+            for write in &mut writes {
+                write.when = normal.condition(&bounds::Condition::paths(
+                    write.when.assume(path, true), write.when.assume(path, false),
+                ));
+            }
             let frame=Frame{parent,writes};let id=match self.graph.frames.iter().position(|f|*f==frame){Some(id)=>id,None=>{let id=self.graph.frames.len();self.graph.frames.push(frame);id}};parent=Some(id);
         }
         if let Some(observe) = self.known.observe {
@@ -140,6 +186,11 @@ impl Builder<'_> {
     fn key(&mut self,key:Key)->usize{
         if let Some(&id)=self.keys.get(&key){return id;}
         let id=self.empty();self.keys.insert(key.clone(),id);
+        if let Key::Read(ContentRead::Value { memory, .. } | ContentRead::Call { memory, .. }) = &key
+            && self.function.repeated_read(*memory)
+        {
+            self.graph.variables.insert(id);
+        }
         match key{
             Key::Loop(input)=>{self.graph.inputs.insert(input,id);self.graph.variables.insert(id);self.fill(id,&self.function.loops[&input].borrow.clone(),&Epoch::Input)},
             Key::Read(ContentRead::Relation { memory, graph, root, snapshots }) => {
@@ -151,7 +202,7 @@ impl Builder<'_> {
             Key::Read(ContentRead::Call{memory,origin,word,snapshots})=>{let from=self.position(&origin,&Epoch::Input);self.read(id,from,word,Epoch::Local{memory,snapshots});self.graph.nodes[id].edges.last_mut().unwrap().when=bounds::Condition::execution(&self.function.uses[memory].path);},
             Key::Read(ContentRead::Snapshot{memory,position:Position::Local(slot),initial,..})=>{
                 let from=self.borrow(&initial.view_borrow(0),&Epoch::Input);
-                let writes = self.writes(memory);
+                let writes = self.writes(memory, &BTreeMap::new());
                 let frame = if writes.is_empty() {
                     None
                 } else {
@@ -372,6 +423,14 @@ impl Graph {
         self.inputs[&input]
     }
     pub(super) fn bind(&self,root:usize,function:&Function,state:LoopScope<'_>,known:&States)->(Arc<Self>,usize){let mut b=Self::builder(function,state,known);let root=b.import(self,root,None,&Epoch::Input);(Arc::new(b.graph),root)}
+    pub(super) fn loop_content(read: &ContentRead, function: &Function, state: LoopScope<'_>, known: &States)
+        -> (Arc<Self>, usize)
+    {
+        let mut builder = Self::builder(function, state, known);
+        let root = builder.key(Key::Read(read.clone()));
+        (Arc::new(builder.graph), root)
+    }
+
     pub(super) fn bind_incoming(
         &self, root: usize, memory: usize, snapshots: Option<Arc<[ValueSnapshot]>>,
         function: &Function, state: LoopScope<'_>, known: &States,
@@ -994,7 +1053,7 @@ impl<'g> Query<'g> {
                         let mut incoming = Borrow::default();
                         for value in values {
                             let value = self.node(value);
-                            if value.empty() {
+                            if value.empty() && !write.when.assume(&path, false).possible() {
                                 ready = false;
                                 break;
                             }
@@ -1015,7 +1074,10 @@ impl<'g> Query<'g> {
                                         Some((origin, word)), position.as_ref(), target, *field, || Some(&selected),
                                     ) {
                                         let v = self.node(*value);
-                                        if v.empty() { ready = false; break; }
+                                        if v.empty() && !write.when.assume(&path, false).possible() {
+                                            ready = false;
+                                            break;
+                                        }
                                         incoming.sources.union_restricted(&v.sources, &selected);
                                         possible = true;
                                         complete |= full;

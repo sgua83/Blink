@@ -267,6 +267,12 @@ pub(super) struct LoopDefinition {
     pub states:Arc<[flow::LoopState]>,
     pub control:Arc<LoopControl>,
 }
+pub(super) struct LoopHistory {
+    pub registers: std::ops::Range<Reg>,
+    pub uses: std::ops::Range<usize>,
+    pub backedge: Option<bounds::Clause>,
+}
+
 #[derive(Default)]
 pub(super) struct Function {
     next_scope:usize,
@@ -281,6 +287,7 @@ pub(super) struct Function {
     pub element_inputs:BTreeMap<residency::Input,(usize,usize)>,
     pub input_width:usize,
     pub uses:Vec<Use>,
+    pub history: BTreeMap<usize, LoopHistory>,
 }
 pub(super) fn components(ty:&Ty)->BTreeSet<usize> {
     ty.borrow_fields().into_iter().map(|(offset,_)|ty.components.iter().position(|(_,at)|*at==offset).unwrap()).collect()
@@ -756,6 +763,16 @@ impl ContentAtRead {
         }
     }
 
+    fn write_with_history(&mut self, incoming: &Borrow, when: &bounds::Condition, complete: bool,
+        names: &BTreeMap<ValueIdentity, ValueIdentity>,
+    ) {
+        if names.is_empty() {
+            self.write(incoming, when, complete);
+        } else {
+            self.write(&incoming.output_bound(names), &when.output_bound(names), complete);
+        }
+    }
+
     fn with_initial(self, initial: Borrow) -> Borrow {
         let initial = match self.earlier {
             Some(earlier) => initial.restricted_by(&earlier),
@@ -863,6 +880,47 @@ impl StoredPaths<'_> {
     }
 }
 
+impl Function {
+    fn carried_writes(&self, memory: usize) -> impl Iterator<Item = (usize, usize, bounds::Clause)> + '_ {
+        self.uses[memory].active_loops.iter().flat_map(move |&scope| {
+            self.history.get(&scope).into_iter().flat_map(move |history| {
+                history.backedge.iter().flat_map(move |backedge| {
+                    history.uses.clone().filter_map(move |at| {
+                        let usage = &self.uses[at];
+                        let Requirement::Memory { access, written, address_fields, .. } = &usage.requirement else {
+                            return None;
+                        };
+                        if !access.is_some_and(super::Access::writes) || written.is_some() && address_fields.is_empty() {
+                            return None;
+                        }
+                        let prior = bounds::Clause::both(&usage.path, backedge);
+                        prior.possible().then_some((scope, at, prior))
+                    })
+                })
+            })
+        })
+    }
+
+    fn repeated_read(&self, memory: usize) -> bool {
+        self.carried_writes(memory).next().is_some()
+    }
+
+    fn history_names(&self, at: usize, memory: usize, prior: Option<usize>)
+        -> BTreeMap<ValueIdentity, ValueIdentity>
+    {
+        self.uses[at].active_loops.difference(&self.uses[memory].active_loops)
+            .copied().chain(prior)
+            .flat_map(|scope| self.history.get(&scope).into_iter().flat_map(|history| history.registers.clone()))
+            .map(|reg| {
+                // These proof identities describe an earlier iteration. The high bit
+                // is outside the index range of the vector of actual registers.
+                let history = reg | (1 << (usize::BITS - 1));
+                (ValueIdentity::Register(reg), ValueIdentity::Register(history))
+            })
+            .collect()
+    }
+}
+
 impl BorrowEvaluation<'_>{
     fn content_event(&mut self, query: Option<(&address::Origin,u32)>, position: Option<&Position>, memory: usize,
         mut write: impl FnMut(&Borrow, &bounds::Condition, bool)) {
@@ -960,8 +1018,12 @@ impl BorrowEvaluation<'_>{
             if let Some(value)=captured{return value;}
         }
         let mut result=ContentAtRead::default();
-        for at in (0..memory).rev(){self.content_event(Some((origin,word)), position.as_ref(), at,
-            |borrow, when, complete| result.write(borrow, when, complete));}
+        let function = self.function;
+        for at in (0..memory).rev() {
+            let names = std::cell::LazyCell::new(|| function.history_names(at, memory, None));
+            self.content_event(Some((origin,word)), position.as_ref(), at,
+                |borrow, when, complete| result.write_with_history(borrow, when, complete, &names));
+        }
         result.with_initial(input_contents(origin,word))
     }
 
@@ -1031,8 +1093,9 @@ impl BorrowEvaluation<'_>{
                         let mut result = ContentAtRead::default();
                         let first = location.events.partition_point(|event| event.at >= *memory);
                         for event in &location.events[first..] {
+                            let names = function.history_names(event.at, *memory, None);
                             for write in &event.writes {
-                                result.write(&write.borrow, &write.when, write.complete);
+                                result.write_with_history(&write.borrow, &write.when, write.complete, &names);
                             }
                         }
                         let contents = result.with_initial(input_contents(&location.origin, location.word))
@@ -1046,6 +1109,12 @@ impl BorrowEvaluation<'_>{
                 }
                 value
             },
+            ContentRead::Value { memory, .. } | ContentRead::Call { memory, .. }
+                if function.repeated_read(*memory) =>
+            {
+                let (graph, root) = relation::Graph::loop_content(read, function, self.state, self.known);
+                graph.solve(root, self)
+            }
             ContentRead::Value{memory,word,borrow,snapshots}=>{
                 let targets=self.evaluate(borrow);
                 let mut value=Borrow::default();

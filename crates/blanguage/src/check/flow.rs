@@ -56,6 +56,8 @@ pub(super) struct LoopState {
     pub(super) cursor: Option<Value>,
 }
 pub(super) struct LoopContext {
+    first_register: Reg,
+    first_use: usize,
     pub outer: Vec<Inst>,
     pub writes: effects::LoopWrites,
     names: BTreeSet<String>,
@@ -581,6 +583,8 @@ impl Builder<'_> {
             data_at_mut(self.env.get_mut(&name).unwrap(),&path).unwrap().initialization=None;
         }
         self.loop_contexts.push(LoopContext {
+            first_register: self.registers.len(),
+            first_use: self.view_model.uses.len(),
             outer: Vec::new(),writes: effects::LoopWrites::default(),
             names: environment.keys().cloned().collect(),
             entry:LoopState{env:resources,path:self.path.clone(),initialized:self.application_initialization_state(),control:self.control_uniform,cursor:None},
@@ -670,6 +674,15 @@ impl Builder<'_> {
         nonempty:bool,
     )->Result<(bool,effects::LoopWrites)>{
         let mut context=self.loop_contexts.pop().unwrap();let natural_index=context.exits.len();
+        if let Some(scope) = context.view_scope {
+            let backedge = context.continues.iter().map(|edge| edge.path.clone())
+                .reduce(|left, right| bounds::Clause::either(&left, &right));
+            self.view_model.history.insert(scope, view_contracts::LoopHistory {
+                registers: context.first_register..self.registers.len(),
+                uses: context.first_use..self.view_model.uses.len(),
+                backedge,
+            });
+        }
         if !context.initial && let Some(exit)=natural.as_mut() {
             let empty=context.control_source.test.as_ref().unwrap().at_call(&context.control_source.bindings(&context.entry)).negate();
             let scalar_empty=std::cell::LazyCell::new(||if nonempty{bounds::Condition::constant(false)}else{match empty.truth_in(&context.entry.path){Some(truth)=>bounds::Condition::constant(truth),None=>empty.clone()}});
