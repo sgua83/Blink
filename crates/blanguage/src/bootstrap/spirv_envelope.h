@@ -966,6 +966,10 @@ struct PrefixIndexWords {
     u32 groups_y;
 };
 
+struct DispatchPush { u32 uint_type; u32 pointer_type; u32 block; u32 zero; };
+extern "C" PayloadRead read_dispatch_word(DispatchPush push, u32 word, u32 first, address body) on cpu;
+extern "C" PrefixIndexWords encode_linear_index(DispatchPush push, u32 wide_type, u32 bool_type,
+    u32 local, u32 one, u32 first, address body) on cpu;
 extern "C" PrefixIndexWords encode_prefix_index(PrefixIndexEmission input, address body) on cpu;
 
 // Complete Vulkan stages produce these existing StageCode fields.

@@ -502,6 +502,14 @@ impl DispatchGrid {
 }
 
 #[repr(C)]
+struct DispatchPush {
+    uint_type: u32,
+    pointer_type: u32,
+    block: u32,
+    zero: u32,
+}
+
+#[repr(C)]
 struct PrefixIndexEmission {
     uint_type: u32,
     wide_type: u32,
@@ -660,6 +668,13 @@ unsafe extern "C" {
     fn encode_sort_rank(input: SortRankEmission, body: *mut u32) -> StageWords;
     #[link_name = "bootstrap.spirv_envelope::encode_dispatch_grid"]
     fn encode_dispatch_grid(input: DispatchGrid, body: *mut u32) -> DispatchValue;
+    #[link_name = "bootstrap.spirv_envelope::read_dispatch_word"]
+    fn read_dispatch_word(push: DispatchPush, word: u32, first: u32, body: *mut u32) -> PayloadRead;
+    #[link_name = "bootstrap.spirv_envelope::encode_linear_index"]
+    fn encode_linear_index(
+        push: DispatchPush, wide_type: u32, bool_type: u32, local: u32, one: u32, first: u32,
+        body: *mut u32,
+    ) -> PrefixIndexWords;
     #[link_name = "bootstrap.spirv_envelope::encode_prefix_index"]
     fn encode_prefix_index(input: PrefixIndexEmission, body: *mut u32) -> PrefixIndexWords;
     #[link_name = "bootstrap.spirv_envelope::encode_append_reservation"]
@@ -2260,33 +2275,7 @@ fn emit_shader(
                 || (stage.selection.is_some() && pass != Pass::Main),
         )
     } else {
-        let zero = e.constant(Scalar::U32, 0);
-        let one = e.constant(Scalar::U32, 1);
-        let base_ptr = e.id();
-        e.emit(65, &[e.ptr_push_u32, base_ptr, e.push, zero, one]);
-        let base = e.id();
-        e.emit(61, &[u, base, base_ptr]);
-        let wide = e.u64_type;
-        let local_wide = e.id();
-        e.emit(113, &[wide, local_wide, local_index]);
-        let base_wide = e.id();
-        e.emit(113, &[wide, base_wide, base]);
-        let index_wide = e.id();
-        e.emit(128, &[wide, index_wide, local_wide, base_wide]);
-        let ptr = e.id();
-        e.emit(65, &[e.ptr_push_u32, ptr, e.push, zero, zero]);
-        let count = e.id();
-        e.emit(61, &[u, count, ptr]);
-        let count_wide = e.id();
-        e.emit(113, &[wide, count_wide, count]);
-        let active = e.id();
-        e.emit(
-            176,
-            &[e.types[&Scalar::Bool], active, index_wide, count_wide],
-        );
-        e.index = e.id();
-        e.emit(113, &[u, e.index, index_wide]);
-        (count, active, [0; 2])
+        e.linear_index(local_index)
     };
     if let Some(kernel) = custom_kernel {
         e.block(&kernel.stage.code[..kernel.invariant_end], None)?;

@@ -2,14 +2,46 @@
 use super::*;
 use crate::spirv::{DISPATCH_CONTINUATION_SPEC_ID, DISPATCH_RECORD_BYTES, SCAN_WIDTH, sort_histogram_count};
 impl Emitter<'_> {
+    fn dispatch_push(&self, zero: u32) -> DispatchPush {
+        DispatchPush {
+            uint_type: self.types[&Scalar::U32],
+            pointer_type: self.ptr_push_u32,
+            block: self.push,
+            zero,
+        }
+    }
+
     fn prefix_push(&mut self, word: u32) -> u32 {
         let zero = self.constant(Scalar::U32, 0);
         let word = self.constant(Scalar::U32, word);
-        let at = self.id();
-        self.emit(65, &[self.ptr_push_u32, at, self.push, zero, word]);
-        let value = self.id();
-        self.emit(61, &[self.types[&Scalar::U32], value, at]);
-        value
+        let push = self.dispatch_push(zero);
+        let at = self.body.len();
+        self.body.reserve(10);
+        let emitted = unsafe {
+            let emitted = read_dispatch_word(push, word, self.next, self.body.as_mut_ptr().add(at));
+            self.body.set_len(at + emitted.words as usize);
+            emitted
+        };
+        self.next = emitted.next;
+        emitted.value
+    }
+
+    pub(super) fn linear_index(&mut self, local: u32) -> (u32, u32, [u32; 2]) {
+        let scalars = self.dispatch_scalars();
+        let push = self.dispatch_push(scalars.zero);
+        let at = self.body.len();
+        self.body.reserve(46);
+        let emitted = unsafe {
+            let emitted = encode_linear_index(
+                push, self.u64_type, scalars.bool_type, local, scalars.one, self.next,
+                self.body.as_mut_ptr().add(at),
+            );
+            self.body.set_len(at + emitted.words as usize);
+            emitted
+        };
+        self.next = emitted.next;
+        self.index = emitted.index;
+        (emitted.count, emitted.active, [0; 2])
     }
     pub(super) fn dispatch_scalars(&mut self) -> DispatchScalars {
         DispatchScalars {

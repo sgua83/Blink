@@ -1269,7 +1269,7 @@ u32 stage_select(inout StageCursor out, u32 ty, u32 condition, u32 yes, u32 no) 
     return result;
 }
 
-u32 sort_unary(inout StageCursor out, u32 op, u32 ty, u32 value) on cpu {
+u32 stage_unary(inout StageCursor out, u32 op, u32 ty, u32 value) on cpu {
     u32 result = out.next;
     out.words = words_three(out.body, out.words, op, ty, result, value);
     out.next = result + 1;
@@ -1318,15 +1318,15 @@ extern "C" StageWords encode_sort_rank(SortRankEmission input, address body) on 
         u32 masked = stage_op(out, 199, u, digit, input.bit_masks[bit]);
         u32 set = stage_op(out, 171, b, masked, zero);
         u32 selected = sort_ballot(out, u, input.ballot_type, input.subgroup_scope, set);
-        u32 inverted = sort_unary(out, 200, u, selected);
+        u32 inverted = stage_unary(out, 200, u, selected);
         u32 matching = stage_select(out, u, set, selected, inverted);
         equal = stage_op(out, 199, u, equal, matching);
     }
     u32 bit = stage_op(out, 196, u, types.one, lane);
     u32 lower = stage_op(out, 130, u, bit, types.one);
     u32 prior = stage_op(out, 199, u, equal, lower);
-    u32 rank = sort_unary(out, 205, u, prior);
-    u32 total = sort_unary(out, 205, u, equal);
+    u32 rank = stage_unary(out, 205, u, prior);
+    u32 total = stage_unary(out, 205, u, equal);
 
     // Each of the two waves owns its sixteen bins.
     u32 init = stage_op(out, 176, b, local, input.wave_width);
@@ -1638,6 +1638,33 @@ u64 widen_component(address body, u64 at, PrefixIndexEmission input,
     u32 narrow = result - 1;
     u64 end = words_four(body, at, 81, input.uint_type, narrow, vector, component);
     return words_three(body, end, 113, input.wide_type, result, narrow);
+}
+
+u32 dispatch_push_word(inout StageCursor out, DispatchPush push, u32 word) on cpu {
+    u32 pointer = out.next;
+    out.words = words_five(out.body, out.words, 65, push.pointer_type, pointer, push.block, push.zero, word);
+    out.next = pointer + 1;
+    return stage_load(out, push.uint_type, pointer, false);
+}
+
+extern "C" PayloadRead read_dispatch_word(DispatchPush push, u32 word, u32 first, address body) on cpu {
+    StageCursor out = StageCursor(body, 0u64, first);
+    u32 value = dispatch_push_word(out, push, word);
+    return PayloadRead(out.words, out.next, value);
+}
+
+extern "C" PrefixIndexWords encode_linear_index(DispatchPush push, u32 wide_type, u32 bool_type,
+    u32 local, u32 one, u32 first, address body) on cpu {
+    StageCursor out = StageCursor(body, 0u64, first);
+    u32 base = dispatch_push_word(out, push, one);
+    u32 local_wide = stage_unary(out, 113, wide_type, local);
+    u32 base_wide = stage_unary(out, 113, wide_type, base);
+    u32 linear = stage_op(out, 128, wide_type, local_wide, base_wide);
+    u32 count = dispatch_push_word(out, push, push.zero);
+    u32 count_wide = stage_unary(out, 113, wide_type, count);
+    u32 active = stage_op(out, 176, bool_type, linear, count_wide);
+    u32 index = stage_unary(out, 113, push.uint_type, linear);
+    return PrefixIndexWords(out.words, out.next, index, count, active, 0, 0, 0);
 }
 
 extern "C" PrefixIndexWords encode_prefix_index(PrefixIndexEmission input, address body) on cpu {
