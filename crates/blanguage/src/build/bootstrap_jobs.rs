@@ -2,7 +2,7 @@ use std::{
     ffi::OsString,
     io,
     os::windows::io::{AsHandle, AsRawHandle, RawHandle},
-    path::Path,
+    path::{Path, PathBuf},
     process::{Child, Command},
     sync::mpsc,
     thread,
@@ -20,6 +20,7 @@ pub struct Job {
     pub compiler: bool,
     pub arguments: Vec<OsString>,
     pub inputs: Vec<usize>,
+    pub output: PathBuf,
 }
 
 impl Job {
@@ -42,7 +43,11 @@ impl Job {
         } else {
             Command::new(seed.join("bin/blink.exe"))
         };
-        process.args(&self.arguments).spawn()
+        process
+            .args(&self.arguments)
+            .arg("-o")
+            .arg(&self.output)
+            .spawn()
     }
 }
 

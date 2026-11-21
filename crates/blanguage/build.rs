@@ -8,10 +8,11 @@ use std::{
     env,
     ffi::OsString,
     fs, io,
+    ops::Range,
     path::{Path, PathBuf},
 };
 
-fn compile(name: &'static str, source: &str, include: &str, output: &Path) -> Job {
+fn compile(name: &'static str, source: &str, include: &str, output: PathBuf) -> Job {
     Job {
         name,
         compiler: true,
@@ -21,28 +22,26 @@ fn compile(name: &'static str, source: &str, include: &str, output: &Path) -> Jo
             "-I".into(),
             include.into(),
             "--module".into(),
-            "-o".into(),
-            output.as_os_str().into(),
         ]
         .into(),
         inputs: Vec::new(),
+        output,
     }
 }
 
-fn archive(
-    name: &'static str,
-    members: impl Iterator<Item = PathBuf>,
-    output: &Path,
-    inputs: Vec<usize>,
-) -> Job {
+fn archive(name: &'static str, jobs: &[Job], members: Range<usize>, output: &Path) -> Job {
     let mut arguments: Vec<OsString> = vec!["--host-archive".into()];
-    arguments.extend(members.map(PathBuf::into_os_string));
-    arguments.extend(["-o".into(), output.as_os_str().into()]);
+    arguments.extend(
+        jobs[members.clone()]
+            .iter()
+            .map(|job| job.output.as_os_str().into()),
+    );
     Job {
         name,
         compiler: false,
         arguments,
-        inputs,
+        inputs: members.collect(),
+        output: output.to_owned(),
     }
 }
 
@@ -66,22 +65,29 @@ fn native_modules() -> Result<(), Box<dyn std::error::Error>> {
         println!("cargo:rerun-if-changed={}", seed.join(name).display());
     }
     let out = PathBuf::from(env::var_os("OUT_DIR").ok_or("缺少OUT_DIR")?);
-    let value_object = out.join("blink_value_format.obj");
     let value_archive = out.join("blink_value_format.lib");
     let compiler_archive = out.join("blink_compiler_bootstrap.lib");
     let object = |name: &str| out.join(format!("blink_compiler_{name}.obj"));
     let coff_source = "../../library/blink/windows/coff";
-    let coff_object = object("coff_read");
     for extension in ["b", "h"] {
         println!("cargo:rerun-if-changed=src/codec/value_format.{extension}");
         println!("cargo:rerun-if-changed={coff_source}.{extension}");
     }
     let mut jobs = vec![
-        compile("value_format", "src/codec/value_format.b", "src", &value_object),
-        compile("coff_read", &format!("{coff_source}.b"), "../../library", &coff_object),
+        compile(
+            "value_format",
+            "src/codec/value_format.b",
+            "src",
+            out.join("blink_value_format.obj"),
+        ),
+        compile(
+            "coff_read",
+            &format!("{coff_source}.b"),
+            "../../library",
+            object("coff_read"),
+        ),
     ];
     let compiler_start = jobs.len();
-    let mut compiler_members = Vec::new();
     let compiler = env::var_os("CARGO_FEATURE_COMPILER").is_some();
     if compiler {
         println!("cargo:rustc-env=BLINK_BUILT_SHARED_OBJECTS={}", out.display());
@@ -95,14 +101,12 @@ fn native_modules() -> Result<(), Box<dyn std::error::Error>> {
             for extension in ["b", "h"] {
                 println!("cargo:rerun-if-changed={source}.{extension}");
             }
-            let object = object(name);
             jobs.push(compile(
                 name,
                 &format!("{source}.b"),
                 "../../library",
-                &object,
+                object(name),
             ));
-            compiler_members.push(object);
         }
         for header in [
             "directory",
@@ -118,8 +122,12 @@ fn native_modules() -> Result<(), Box<dyn std::error::Error>> {
             println!("cargo:rerun-if-changed=../../library/blink/windows/{header}.h");
         }
         for &name in MODULES {
-            let output = object(name);
-            let mut job = compile(name, &format!("src/bootstrap/{name}.b"), "src", &output);
+            let mut job = compile(
+                name,
+                &format!("src/bootstrap/{name}.b"),
+                "src",
+                object(name),
+            );
             let inputs: &[&str] = match name {
                 "contract_codec" => &["value_format"],
                 "host_sdk" => {
@@ -139,13 +147,8 @@ fn native_modules() -> Result<(), Box<dyn std::error::Error>> {
                         io::Error::other(format!("B引导模块{name}缺少对象生产者{input}"))
                     })?;
                 job.inputs.push(index);
-                let file = if index == 0 {
-                    value_object.clone()
-                } else {
-                    object(input)
-                };
                 job.arguments
-                    .extend(["--import".into(), file.into_os_string()]);
+                    .extend(["--import".into(), jobs[index].output.as_os_str().into()]);
             }
             if name == "names" {
                 job.arguments.extend(
@@ -161,12 +164,12 @@ fn native_modules() -> Result<(), Box<dyn std::error::Error>> {
                 );
             }
             jobs.push(job);
-            compiler_members.push(output);
         }
     }
     if !compiler && let Some(directory) = env::var_os("BLINK_DEVELOPMENT_SHARED_OBJECTS") {
         let directory = Path::new(&directory);
-        for output in [&value_object, &coff_object] {
+        for job in &jobs[..compiler_start] {
+            let output = &job.output;
             if output.try_exists()? {
                 continue;
             }
@@ -182,19 +185,19 @@ fn native_modules() -> Result<(), Box<dyn std::error::Error>> {
             fs::rename(staged, output)?;
         }
     }
-    let compiler_inputs = (compiler_start..jobs.len()).collect();
+    let compiler_end = jobs.len();
     jobs.push(archive(
         "blink_value_format.lib",
-        [value_object, coff_object].into_iter(),
+        &jobs,
+        0..compiler_start,
         &value_archive,
-        (0..compiler_start).collect(),
     ));
     if compiler {
         jobs.push(archive(
             "blink_compiler_bootstrap.lib",
-            compiler_members.into_iter(),
+            &jobs,
+            compiler_start..compiler_end,
             &compiler_archive,
-            compiler_inputs,
         ));
     }
     bootstrap_jobs::run(&seed, &jobs, cargo, cpu_budget.get())?;
