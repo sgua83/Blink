@@ -25,9 +25,9 @@ fn compile_stages(worker: &crate::compiler::Worker, program: &Program) -> Result
     Ok((ExecutionPlan::from_program(program, layout, requirements), stages))
 }
 pub(crate) fn compile_in<P: Deref<Target = Program>>(
-    worker: &crate::compiler::Worker, program: P,
+    worker: &crate::compiler::Worker, program: &P,
 ) -> Result<ProgramImage<P>, String> {
-    let (plan, stages) = compile_stages(worker, &program)?;
+    let (plan, stages) = compile_stages(worker, program)?;
     Ok(unsafe { ProgramImage::from_compiler_output(plan, stages) })
 }
 impl crate::Compiler {

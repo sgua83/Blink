@@ -19,6 +19,23 @@ fn compile_functions(worker: &crate::compiler::Worker, program: &Program) -> Res
         super::emit_function(function).map(|code| (function.name.clone(), code))
     }).map_err(|error| error.to_string())
 }
+/// The object's code entries are assigned as the root image is assembled.
+pub(crate) fn compile_linked(
+    worker: &crate::compiler::Worker,
+    program: &crate::ExecutableProgram,
+    mut entry: impl FnMut(Option<&str>, NativeCode) -> usize,
+) -> Result<ProgramImage<crate::ExecutableProgram, usize>, String> {
+    let (layout, stages) = compile_stages(worker, program)?.into_iter()
+        .map(|(layout, stage)| (layout, stage.map_code(|code| entry(None, code))))
+        .unzip();
+    let functions = compile_functions(worker, program)?.into_iter().map(|(name, code)| {
+        let index = entry(Some(&name), code);
+        (name, index)
+    }).collect();
+    let plan = ExecutionPlan::from_program(program, layout, program.requirements());
+    Ok(unsafe { ProgramImage::from_compiler_output(plan, stages, functions, None) })
+}
+
 pub(crate) fn compile_in<P: Deref<Target = Program>>(
     worker: &crate::compiler::Worker, program: P,
 ) -> Result<ProgramImage<P>, String> {

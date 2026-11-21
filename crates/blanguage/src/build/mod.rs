@@ -123,7 +123,7 @@ fn compile_in(
             if target == Target::Cpu {
                 crate::native::program::compile_in(worker, p).map(resource::Image::Cpu)
             } else {
-                crate::spirv::program::compile_in(worker, p).map(resource::Image::Gpu)
+                crate::spirv::program::compile_in(worker, &p).map(resource::Image::Gpu)
             }
             .map_err(std::io::Error::other)
         })

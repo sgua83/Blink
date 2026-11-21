@@ -139,17 +139,24 @@ pub(crate) fn compile_image(
 }
 
 #[cfg(feature = "compiler")]
+pub(crate) fn compile_linked(
+    resources: &crate::application::Resources,
+    worker: &crate::compiler::Worker,
+    mut entry: impl FnMut(native::NativeCode) -> usize,
+) -> codec::Result<Vec<u8>> {
+    let images = compile_images(resources, worker, |stage| stage.map_code(&mut entry))?;
+    Ok(image_codec::linked_module_bytes(&resources.types, &images))
+}
+
+#[cfg(feature = "compiler")]
 pub(crate) fn compile(resources: &crate::application::Resources,worker:&crate::compiler::Worker)
     -> codec::Result<(Vec<u8>, Vec<native::NativeCode>, std::collections::BTreeMap<String, Vec<u8>>)> {
     let mut code = Vec::new();
-    let images = compile_images(resources, worker, |stage| {
-        stage.map_code(|entry| {
-            let index = code.len();
-            code.push(entry);
-            index
-        })
+    let bytes = compile_linked(resources, worker, |entry| {
+        let index = code.len();
+        code.push(entry);
+        index
     })?;
-    let bytes = image_codec::linked_module_bytes(&resources.types, &images);
     let imports=resources.programs.iter().flat_map(|(_,program)|program.imports.clone()).collect();
     Ok((bytes,code,imports))
 }
@@ -191,7 +198,7 @@ pub unsafe fn from_compiler_output(bytes: &[u8]) -> codec::Result<Module> {
 pub unsafe fn from_linked_compiler_output(bytes: &[u8], code: &[*const u8]) -> codec::Result<Module<*const u8>> {
     let module: Module<usize> = decode_compiler_output(bytes)?;
     let images = module.images.into_iter().map(|image| match image {
-        Image::Cpu(image) => Image::Cpu(image.map_code(|index| code[index])),
+        Image::Cpu(image) => Image::Cpu(image.map_code(&mut |index| code[index])),
         Image::Gpu(image) => Image::Gpu(image),
     }).collect();
     Ok(Module { types: module.types, images })
@@ -217,11 +224,6 @@ macro_rules! image_output {
 image_output!(native);
 image_output!(spirv);
 // Observation ranges belong to the compiler result, not the deployed execution ABI.
-/// 同一原生执行映像或资源目录的已链接代码索引；由原静态链接持有代码。
-#[cfg(feature="compiler")]
-pub(crate) fn linked_output<T: Encode>(image:&T)->Vec<u8>{
-    compiler_output(image)
-}
 impl<P> native::ProgramImage<P,*const u8>{
     /// # Safety
     /// bytes与code来自同一次原生编译及链接，索引、入口类别和完整资源目录一致；
@@ -229,7 +231,7 @@ impl<P> native::ProgramImage<P,*const u8>{
     pub unsafe fn from_linked_compiler_output_bytes(bytes:&[u8],code:&[*const u8])->std::io::Result<Self>{
         let image:native::ProgramImage<P,usize>=decode_compiler_output(bytes).map_err(|error|
             std::io::Error::new(std::io::ErrorKind::InvalidData,error.to_string()))?;
-        Ok(image.map_code(|index|code[index]))
+        Ok(image.map_code(&mut |index|code[index]))
     }
 }
 

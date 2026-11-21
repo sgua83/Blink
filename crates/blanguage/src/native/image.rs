@@ -299,18 +299,15 @@ impl<P, C> ProgramImage<P, C> {
     }
 
     /// 同一编译映像只改变代码引用的表示；执行布局及入口类别保持。
-    pub(crate) fn map_code<D>(self, mut code: impl FnMut(C) -> D) -> ProgramImage<P, D> {
-        self.map_code_with(&mut |_, value| code(value))
-    }
-    pub(crate) fn map_code_with<D, F: FnMut(Option<&str>, C) -> D>(self, code: &mut F) -> ProgramImage<P, D> {
+    pub(crate) fn map_code<D, F: FnMut(C) -> D>(self, code: &mut F) -> ProgramImage<P, D> {
         let stages = self.stages.into_iter()
-            .map(|stage| stage.map_code(|entry| code(None, entry)))
+            .map(|stage| stage.map_code(&mut *code))
             .collect();
-        let functions = self.functions.into_iter().map(|(name, function)| {let value=code(Some(&name),function);(name,value)}).collect();
+        let functions = self.functions.into_iter().map(|(name, value)| (name, code(value))).collect();
         let resources=self.resources.map(|module|crate::resource::Module{
             types:module.types,
             images:module.images.into_iter().map(|image|match image{
-                crate::resource::Image::Cpu(image)=>crate::resource::Image::Cpu(image.map_code_with(code)),
+                crate::resource::Image::Cpu(image)=>crate::resource::Image::Cpu(image.map_code(code)),
                 crate::resource::Image::Gpu(image)=>crate::resource::Image::Gpu(image),
             }).collect(),
         });

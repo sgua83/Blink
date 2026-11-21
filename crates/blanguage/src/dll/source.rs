@@ -85,20 +85,21 @@ pub(super) fn compile(
     let cpu = if p.target() == Target::Gpu {
         None
     } else {
-        let root = crate::native::program::compile_in(worker, p.clone()).map_err(std::io::Error::other)?;
-        let mut root = root.map_code_with(&mut |name, code| {
+        let mut entry = |name: Option<&str>, code| {
             let index = functions.len();
             let name = name.map(str::to_owned).unwrap_or_else(|| format!("__blink_range_{prefix}_{index}"));
             functions.push((name, code));
             index
-        });
-        let count = functions.len();
-        let code = if let Some(module) = root.resources.take() {
+        };
+        let root = crate::native::program::compile_linked(worker, p, &mut entry).map_err(std::io::Error::other)?;
+        let code = if let Some(directory) = &p.resources {
+            let image = crate::resource::compile_linked(directory, worker, |code| entry(None, code))
+                .map_err(|error| std::io::Error::other(error.to_string()))?;
             let resource_prefix = crate::application::resource_prefix(p.name());
             let ranges = format!("{resource_prefix}_ranges");
             resources = Some(ResourceFactory::new(
-                resource_prefix, module.types.len().try_into()?, module.images.len().try_into()?,
-                crate::resource::linked_output(&module), Some(ranges.clone()),
+                resource_prefix, directory.types.len().try_into()?, directory.programs.len().try_into()?,
+                image, Some(ranges.clone()),
             ));
             Address::Symbol(ranges)
         } else if functions.is_empty() {
@@ -108,15 +109,15 @@ pub(super) fn compile(
             let relocations = functions.iter().enumerate().map(|(index, (name, _))| Relocation {
                 offset: index * 8, kind: 1, target: Address::Symbol(name.clone()),
             }).collect();
-            let table = data(&mut sections, vec![0; count * 8], relocations);
+            let table = data(&mut sections, vec![0; functions.len() * 8], relocations);
             Address::Section(table, 0)
         };
-        Some(image(&mut sections, crate::resource::linked_output(&root), Some((code, count))))
+        Some(image(&mut sections, crate::resource::compiler_output(&root), Some((code, functions.len()))))
     };
     let gpu = if p.target() == Target::Cpu {
         None
     } else {
-        let root = crate::spirv::program::compile_in(worker, p.clone()).map_err(std::io::Error::other)?;
+        let root = crate::spirv::program::compile_in(worker, p).map_err(std::io::Error::other)?;
         Some(image(&mut sections, root.compiler_output_bytes(), None))
     };
 
