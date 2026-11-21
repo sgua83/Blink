@@ -216,10 +216,8 @@ struct PipelineRead {
  cfn<u32,address,u32,usize,u32> ensures memory(read) contains;
  cfn<u32,address,usize> ensures memory(read) scalar_bytes;
 };
-// These fields come from an exclusive root-instruction borrow. B copies only
-// real word/register fields; the original Vec applies its final length.
-struct PipelineRoot { u32 kind; usize tile; Span words; Span registers; usize count; };
-struct PipelineRootResult { u32 keep; usize count; u32 changed; };
+enum PipelineRootAction:u32 { Keep=0; Drop=1; Trim=2; };
+struct PipelineRootEdit { PipelineRootAction action; usize count; };
 struct PipelineMap {
  Span code; Span tiles; PipelineField prefix; PipelineField selection;
  address flags; usize binding_count;
@@ -240,8 +238,6 @@ extern "C" void optimize_stage(PipelineStageHost host) on cpu
  requires nonzero(host.release_words) requires nonzero(host.compact);
 extern "C" void optimize_value(address value,PipelineValue host) on cpu
  requires nonzero(host.flow) requires nonzero(host.eliminate) requires nonzero(host.compact);
-extern "C" PipelineRootResult optimize_root(PipelineRoot input,u32 preserve_scope,PipelineRead host) on cpu
- requires nonzero(host.contains) requires nonzero(host.scalar_bytes);
 extern "C" PipelineAccessCounts optimize_bindings(PipelineMap input,Host ir,PipelineRead host) on cpu
  requires nonzero(ir.inspect) requires nonzero(host.contains);
 
@@ -255,6 +251,8 @@ struct RewriteView {
  RewriteNode left; RewriteNode right; usize length;
 };
 struct RewriteHost { cfn<RewriteView,RewriteNode> ensures memory(read) inspect; };
+extern "C" PipelineRootEdit optimize_root(address instruction,u32 preserve_scope,PipelineRead host,RewriteHost rewrite) on cpu
+ requires nonzero(host.contains) requires nonzero(host.scalar_bytes) requires nonzero(rewrite.inspect);
 struct RewriteMap {
  address context;
  cfn<usize,address,usize> ensures memory(read) reg;

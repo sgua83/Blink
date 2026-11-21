@@ -35,6 +35,15 @@ impl Span {
             },
             count, stride: size_of::<(u32, Reg)>() }
     }
+    fn publication_pairs(values: &mut [(u32, Reg)]) -> (Self, Self) {
+        let count = values.len();
+        if count == 0 { return (Self::EMPTY, Self::EMPTY); }
+        let base = values.as_mut_ptr();
+        let stride = size_of::<(u32, Reg)>();
+        // Both fields keep the provenance of the same exclusive slice.
+        let (word, register) = unsafe { (ptr::addr_of_mut!((*base).0), ptr::addr_of_mut!((*base).1)) };
+        (Self { data: register.cast(), count, stride }, Self { data: word.cast(), count, stride })
+    }
 }
 #[derive(Clone, Copy)]
 #[repr(C)]
@@ -51,7 +60,8 @@ impl View {
 }
 #[derive(Clone, Copy)]
 #[repr(C)]
-struct Host { inspect: unsafe extern "C" fn(Node) -> View }
+pub(crate) struct Host { inspect: unsafe extern "C" fn(Node) -> View }
+pub(crate) const HOST: Host = Host { inspect };
 #[repr(u32)]
 #[derive(Clone, Copy)]
 pub(crate) enum ResultOriginKind { Expression, LocalRead, IndexedStoreRead, IndexedRead }
@@ -76,7 +86,7 @@ pub(crate) unsafe fn retain_result_origins(
     code: &mut [Inst], context: *mut c_void, collect: ResultOriginVisitor,
     attach: AttachOrigin, pending: PendingOrigins,
 ) {
-    let host = RetainOriginHost { read: dataflow::HOST, write: Host { inspect },
+    let host = RetainOriginHost { read: dataflow::HOST, write: HOST,
         collect, attach, pending };
     unsafe { b_retain_result_origins(Span::slice(code), context, host); }
 }
@@ -117,7 +127,7 @@ unsafe extern "C-unwind" fn local(context: *const c_void, value: usize) -> usize
     }
 }
 pub(crate) fn map(code: &mut [Inst], mapping: Remap<'_>) {
-    unsafe { b_code(Span::slice(code), Host { inspect }, Mapping {
+    unsafe { b_code(Span::slice(code), HOST, Mapping {
         context: ptr::from_ref(&mapping).cast(), reg: register as *const c_void, slot: local as *const c_void,
     }); }
 }
@@ -126,7 +136,7 @@ pub(crate) fn map(code: &mut [Inst], mapping: Remap<'_>) {
 // state is copied here. The reader must only read this borrowed source and
 // neither retain it nor retain any instruction projection after this call.
 pub(crate) unsafe fn operands<T>(value: &mut Inst, source: &T, root: extern "C" fn(&T, Reg) -> Reg) {
-    unsafe { b_operands(Node::of(value, Kind::Instruction), Host { inspect }, InputMapping {
+    unsafe { b_operands(Node::of(value, Kind::Instruction), HOST, InputMapping {
         context: ptr::from_ref(source).cast(), reg: root as *const c_void,
     }); }
 }
@@ -245,7 +255,11 @@ fn instruction(value: &mut Inst) -> View {
         InstKind::Atomic(a) => { v.tag=10; v.a=optional(&mut a.result); v.b=optional(&mut a.offset); v.left=Node::of(&mut a.target,Kind::Indexed); v.right=Node::of(&mut a.op,Kind::AtomicOp); }
         InstKind::Append(a) => { v.tag=11; v.a=&mut a.accepted; v.first=Span::pairs(&mut a.values); }
         InstKind::TileBarrier => v.tag=12,
-        InstKind::TilePublish(p) => { v.tag=13; v.first=Span::pairs(&mut p.values); }
+        InstKind::TilePublish(publication) => {
+            v.tag = 13;
+            v.a = ptr::from_mut(&mut publication.tile);
+            (v.first, v.second) = Span::publication_pairs(&mut publication.values);
+        }
         InstKind::TileCollective(c) => { v.tag=14; v.first=Span::pairs(&mut c.results); }
         InstKind::TileLength(dst) => { v.tag=15; v.a=dst; }
         InstKind::TileLane(dst) => { v.tag=16; v.a=dst; }

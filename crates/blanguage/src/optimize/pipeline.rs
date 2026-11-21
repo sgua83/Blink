@@ -8,7 +8,6 @@ use std::{ffi::c_void, mem::size_of, ptr};
 #[repr(C)]
 struct Span { data: *const c_void, count: usize, stride: usize }
 impl Span {
-    const EMPTY: Self = Self { data: ptr::null(), count: 0, stride: 0 };
     fn of<T>(values: &[T]) -> Self {
         Self { data: values.as_ptr().cast(), count: values.len(), stride: size_of::<T>() }
     }
@@ -93,10 +92,11 @@ struct ReadHost {
     contains: unsafe extern "C" fn(*const c_void, u32, usize, u32) -> u32,
     scalar_bytes: unsafe extern "C" fn(*const c_void, usize) -> u32,
 }
+#[derive(PartialEq, Eq)]
+#[repr(u32)]
+enum RootAction { Keep, Drop, Trim }
 #[repr(C)]
-struct Root { kind: u32, tile: usize, words: Span, registers: Span, count: usize }
-#[repr(C)]
-struct RootResult { keep: u32, count: usize, changed: u32 }
+struct RootEdit { action: RootAction, count: usize }
 #[repr(C)]
 struct MapInput {
     code: Span, tiles: Span, prefix: Field, selection: Field,
@@ -110,7 +110,8 @@ unsafe extern "C" {
     #[link_name = "bootstrap.ir_dataflow::optimize_empty"] fn b_empty(stage: StageView, carry: u32) -> EmptyResult;
     #[link_name = "bootstrap.ir_dataflow::optimize_stage"] fn b_stage(host: StageHost);
     #[link_name = "bootstrap.ir_dataflow::optimize_value"] fn b_value(value: *mut c_void, host: ValueHost);
-    #[link_name = "bootstrap.ir_dataflow::optimize_root"] fn b_root(input: Root, preserve: u32, host: ReadHost) -> RootResult;
+    #[link_name = "bootstrap.ir_dataflow::optimize_root"]
+    fn b_root(instruction: *mut c_void, preserve: u32, host: ReadHost, rewrite: crate::ir::rewrite::Host) -> RootEdit;
     #[link_name = "bootstrap.ir_dataflow::optimize_bindings"]
     fn b_bindings(input: MapInput, ir: crate::ir::dataflow::Host, host: ReadHost) -> AccessCounts;
 }
@@ -313,30 +314,18 @@ unsafe extern "C" fn prune(context: *mut c_void, preserve: u32) -> u32 {
     let state = unsafe { &mut *context.cast::<StageState<'_>>() };
     let read = ReadState { words: &state.words, registers: &state.stage.registers };
     let host = read.host();
-    let mut changed = 0;
+    let mut changed = false;
     state.stage.code.retain_mut(|inst| {
-        let input = match &mut inst.kind {
-            InstKind::TilePublish(value) => {
-                let count = value.values.len();
-                let base = value.values.as_mut_ptr();
-                let (words, registers) = if count == 0 { (ptr::null_mut(), ptr::null_mut()) } else {
-                    unsafe { (ptr::addr_of_mut!((*base).0).cast::<c_void>(), ptr::addr_of_mut!((*base).1).cast::<c_void>()) }
-                };
-                Root { kind: 1, tile: value.tile,
-                    words: Span { data: words, count, stride: size_of::<(u32, Reg)>() },
-                    registers: Span { data: registers, count, stride: size_of::<(u32, Reg)>() }, count }
-            }
-            InstKind::TileCollective(value) => Root {
-                kind: 2, tile: value.tile, words: Span::EMPTY, registers: Span::EMPTY, count: value.results.len(),
-            },
-            _ => Root { kind: 0, tile: 0, words: Span::EMPTY, registers: Span::EMPTY, count: 0 },
-        };
-        let result = unsafe { b_root(input, preserve, host) };
-        changed |= result.changed;
-        if let InstKind::TilePublish(value) = &mut inst.kind { value.values.truncate(result.count); }
-        result.keep != 0
+        let edit = unsafe { b_root(ptr::from_mut(inst).cast(), preserve, host, crate::ir::rewrite::HOST) };
+        changed |= edit.action != RootAction::Keep;
+        if edit.action == RootAction::Trim
+            && let InstKind::TilePublish(publication) = &mut inst.kind
+        {
+            publication.values.truncate(edit.count);
+        }
+        edit.action != RootAction::Drop
     });
-    changed
+    u32::from(changed)
 }
 unsafe extern "C" fn select(context: *mut c_void) -> u32 {
     let stage = &mut unsafe { &mut *context.cast::<StageState<'_>>() }.stage;

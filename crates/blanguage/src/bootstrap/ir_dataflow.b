@@ -879,29 +879,35 @@ extern "C" void optimize_stage(PipelineStageHost host) on cpu
  if(operation==0){host.bindings(host.context);}
  host.release_words(host.context);host.compact(host.context);
 }
-extern "C" PipelineRootResult optimize_root(PipelineRoot input,u32 preserve_scope,PipelineRead host) on cpu
- requires nonzero(host.contains) requires nonzero(host.scalar_bytes) {
- usize count=input.count;
- if(input.kind==1){
+extern "C" PipelineRootEdit optimize_root(address instruction,u32 preserve_scope,PipelineRead host,RewriteHost rewrite) on cpu
+ requires nonzero(host.contains) requires nonzero(host.scalar_bytes) requires nonzero(rewrite.inspect) {
+ RewriteView root=rewrite.inspect(RewriteNode(instruction,N_INSTRUCTION));
+ if(root.tag!=OP_TILE_PUBLISH&&root.tag!=OP_TILE_COLLECTIVE){return PipelineRootEdit(PipelineRootAction::Keep,0u64);}
+ usize count=root.first.count;
+ if(root.tag==OP_TILE_PUBLISH){
+  usize tile=unsafe_position<usize>(root.a);
   usize read=0u64;count=0u64;
-  while(read<input.count){
-   address word_address=unsafe_address(address_bits(input.words.data)+u64(read)*u64(input.words.stride));
-   u32 word=unsafe_position<u32>(word_address);usize reg=word_at(input.registers,read);
+  while(read<root.first.count){
+   u32 word=unsafe_position<u32>(rewrite_word_at(root.second,read));
+   usize reg=unsafe_position<usize>(rewrite_word_at(root.first,read));
    u32 bytes=host.scalar_bytes(host.context,reg);u32 part=0;bool keep=false;
    while(part<(bytes+3)/4){
-    if(host.contains(host.context,0,input.tile,word+part*4)!=0){keep=true;break;}
+    if(host.contains(host.context,0,tile,word+part*4)!=0){keep=true;break;}
     part+=1;
    }
    if(keep){
-    address word_output=unsafe_address(address_bits(input.words.data)+u64(count)*u64(input.words.stride));
-    address reg_output=unsafe_address(address_bits(input.registers.data)+u64(count)*u64(input.registers.stride));
-    unsafe_position<u32>(word_output)=word;unsafe_position<usize>(reg_output)=reg;count+=1u64;
+    if(count!=read){
+     unsafe_position<u32>(rewrite_word_at(root.second,count))=word;
+     unsafe_position<usize>(rewrite_word_at(root.first,count))=reg;
+    }
+    count+=1u64;
    }
    read+=1u64;
   }
  }
- u32 keep=(input.kind==1||input.kind==2)&&count==0u64&&preserve_scope==0 ? 0 : 1;
- return PipelineRootResult(keep,count,count!=input.count||keep==0 ? 1 : 0);
+ if(count==0u64&&preserve_scope==0){return PipelineRootEdit(PipelineRootAction::Drop,0u64);}
+ if(count!=root.first.count){return PipelineRootEdit(PipelineRootAction::Trim,count);}
+ return PipelineRootEdit(PipelineRootAction::Keep,count);
 }
 address pipeline_flag(address flags,usize binding) on cpu {
  return unsafe_address(address_bits(flags)+u64(binding));
