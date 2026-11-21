@@ -3331,6 +3331,115 @@ u64 texture_texel_at(u64 at, TextureAccess input, u32 texel_bytes) on cpu {
     return register_instruction(cursor, u16(0x01), u8(0), true, u8(0), u8(15));
 }
 
+u64 color_op(ColorHost host, ColorOp op, ColorScalar scalar, u64 a, u64 b) on cpu
+    requires nonzero(host.instruction) {
+    return host.instruction(host.context, op, scalar, a, b, 0u64);
+}
+
+u64 color_word(ColorHost host, u32 bits) on cpu requires nonzero(host.instruction) {
+    return color_op(host, ColorOp::Constant, ColorScalar::Word, u64(bits), 0u64);
+}
+
+u64 color_float(ColorHost host, f32 value) on cpu requires nonzero(host.instruction) {
+    return color_op(host, ColorOp::Constant, ColorScalar::Float, u64(bitcast_u32(value)), 0u64);
+}
+
+u64 color_select(ColorHost host, u64 condition, u64 yes, u64 no, ColorScalar scalar) on cpu
+    requires nonzero(host.instruction) {
+    return host.instruction(host.context, ColorOp::Select, scalar, condition, yes, no);
+}
+
+u64 color_srgb(ColorHost host, u64 value) on cpu requires nonzero(host.instruction) {
+    u64 threshold = color_float(host, 0.04045);
+    u64 low = color_op(host, ColorOp::LessEqual, ColorScalar::Bool, value, threshold);
+    u64 divisor = color_float(host, 12.92);
+    u64 linear = color_op(host, ColorOp::Divide, ColorScalar::Float, value, divisor);
+    u64 offset = color_float(host, 0.055);
+    u64 scale = color_float(host, 1.055);
+    u64 exponent = color_float(host, 2.4);
+    u64 shifted = color_op(host, ColorOp::Add, ColorScalar::Float, value, offset);
+    u64 unit = color_op(host, ColorOp::Divide, ColorScalar::Float, shifted, scale);
+    u64 curve = color_op(host, ColorOp::Power, ColorScalar::Float, unit, exponent);
+    return color_select(host, low, linear, curve, ColorScalar::Float);
+}
+
+u64 color_unsigned_float(ColorHost host, u64 value, u32 mantissa_bits, u32 mask) on cpu
+    requires nonzero(host.instruction) {
+    u64 shift = color_word(host, mantissa_bits);
+    u64 exponent = color_op(host, ColorOp::ShiftRight, ColorScalar::Word, value, shift);
+    u64 fraction = color_op(host, ColorOp::And, ColorScalar::Word, value, color_word(host, mask));
+    shift = color_word(host, 23 - mantissa_bits);
+    u64 payload = color_op(host, ColorOp::ShiftLeft, ColorScalar::Word, fraction, shift);
+    u64 biased = color_op(host, ColorOp::Add, ColorScalar::Word, exponent, color_word(host, 112));
+    shift = color_word(host, 23);
+    biased = color_op(host, ColorOp::ShiftLeft, ColorScalar::Word, biased, shift);
+    u64 normal = color_op(host, ColorOp::Or, ColorScalar::Word, biased, payload);
+    u64 special = color_op(host, ColorOp::Equal, ColorScalar::Bool, exponent, color_word(host, 31));
+    u64 exceptional = color_op(host, ColorOp::Or, ColorScalar::Word, color_word(host, 0x7f800000), payload);
+    u64 bits = color_select(host, special, exceptional, normal, ColorScalar::Word);
+    u64 converted = color_op(host, ColorOp::Bitcast, ColorScalar::Float, bits, 0u64);
+    u64 integer = color_op(host, ColorOp::Cast, ColorScalar::Float, fraction, 0u64);
+    f32 scale = bitcast_f32((127 - 14 - mantissa_bits) << 23);
+    u64 subnormal = color_op(host, ColorOp::Multiply, ColorScalar::Float, integer, color_float(host, scale));
+    u64 tiny = color_op(host, ColorOp::Equal, ColorScalar::Bool, exponent, color_word(host, 0));
+    return color_select(host, tiny, subnormal, converted, ColorScalar::Float);
+}
+
+u64 color_result(address result, u32 channel) on cpu {
+    return unsafe_position<u64>(unsafe_address(address_bits(result) + u64(channel) * 8u64));
+}
+
+extern "C" void texture_color(TextureColor format, u64 raw, address result, ColorHost host) on cpu
+    requires nonzero(host.instruction) {
+    if (format == TextureColor::Srgb) {
+        for (channel in 0..3) {
+            u64 dst = color_result(result, channel);
+            u64 value = color_srgb(host, dst);
+            color_op(host, ColorOp::Into, ColorScalar::Float, dst, value);
+        }
+        return;
+    }
+    if (format == TextureColor::R8) {
+        u64 value = color_op(host, ColorOp::Cast, ColorScalar::Float, raw, 0u64);
+        u64 red = color_op(host, ColorOp::Divide, ColorScalar::Float, value, color_float(host, 255.0));
+        color_op(host, ColorOp::Into, ColorScalar::Float, color_result(result, 0), red);
+        for (channel in 1..4) {
+            u64 bits = channel == 3 ? 0x3f800000u64 : 0u64;
+            color_op(host, ColorOp::Set, ColorScalar::Float, color_result(result, channel), bits);
+        }
+        return;
+    }
+
+    u32 channels = format == TextureColor::Rg16 ? 2 : (format == TextureColor::Rg11B10 ? 3 : 4);
+    u32 offset = 0;
+    for (channel in 0..4) {
+        u64 dst = color_result(result, channel);
+        if (channel < channels) {
+            u32 width = 8;
+            if (format == TextureColor::Rg16) { width = 16; }
+            if (format == TextureColor::Rgb10A2) { width = channel == 3 ? 2 : 10; }
+            if (format == TextureColor::Rg11B10) { width = channel == 2 ? 10 : 11; }
+            u64 shift = color_word(host, offset);
+            offset += width;
+            u64 shifted = color_op(host, ColorOp::ShiftRight, ColorScalar::Word, raw, shift);
+            u32 mask = (1 << width) - 1;
+            u64 component = color_op(host, ColorOp::And, ColorScalar::Word, shifted, color_word(host, mask));
+            u64 value;
+            if (format == TextureColor::Rg11B10) {
+                u32 mantissa = width - 5;
+                value = color_unsigned_float(host, component, mantissa, (1 << mantissa) - 1);
+            } else {
+                value = color_op(host, ColorOp::Cast, ColorScalar::Float, component, 0u64);
+                value = color_op(host, ColorOp::Divide, ColorScalar::Float, value, color_float(host, f32(mask)));
+            }
+            color_op(host, ColorOp::Into, ColorScalar::Float, dst, value);
+        } else {
+            u64 bits = channel == 3 ? 0x3f800000u64 : 0u64;
+            color_op(host, ColorOp::Set, ColorScalar::Float, dst, bits);
+        }
+    }
+}
+
 extern "C" u64 texture_access(TextureAccess input, address results, u64 count, address output) on cpu {
     u64 start = address_bits(output);
     u64 cursor = start;

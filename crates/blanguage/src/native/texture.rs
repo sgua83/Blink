@@ -34,6 +34,73 @@ unsafe extern "C" {
         count: usize, output: *mut u8) -> u64;
 }
 
+#[derive(Clone, Copy)]
+#[repr(u32)]
+enum TextureColor { Rgba8 = 1, Srgb, R8, Rg16, Rgb10A2, Rg11B10 }
+
+#[allow(dead_code)]
+#[repr(u32)]
+enum ColorScalar { Word, Float, Bool }
+
+#[allow(dead_code)]
+#[repr(u32)]
+enum ColorOp {
+    Constant, Cast, Bitcast, Add, Divide, Multiply, LessEqual, Equal,
+    ShiftRight, ShiftLeft, And, Or, Power, Select, Into, Set,
+}
+
+#[repr(C)]
+struct ColorHost {
+    context: *mut std::ffi::c_void,
+    instruction: unsafe extern "C" fn(*mut std::ffi::c_void, ColorOp, ColorScalar, Reg, Reg, Reg) -> Reg,
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.x64_instruction::texture_color"]
+    fn lower_texture_color(format: TextureColor, raw: Reg, result: *const Reg, host: ColorHost);
+}
+
+unsafe extern "C" fn color_instruction(
+    context: *mut std::ffi::c_void, operation: ColorOp, scalar: ColorScalar, a: Reg, b: Reg, c: Reg,
+) -> Reg {
+    let lower = unsafe { &mut *context.cast::<Lower<'_>>() };
+    let scalar = match scalar {
+        ColorScalar::Word => Scalar::U32,
+        ColorScalar::Float => Scalar::F32,
+        ColorScalar::Bool => Scalar::Bool,
+    };
+    match operation {
+        ColorOp::Constant => lower.constant(scalar, a as u32),
+        ColorOp::Cast => lower.cast(scalar, a),
+        ColorOp::Power => lower.math(MathOp::Pow, a, b),
+        ColorOp::Select => lower.select(scalar, a, b, c),
+        ColorOp::Bitcast => {
+            let dst = lower.reg(scalar);
+            lower.code.push(Inst::generated(InstKind::Unary {
+                dst, op: UnaryOp::Bitcast, a,
+            }, lower.origin.clone()));
+            dst
+        }
+        ColorOp::Into => {
+            lower.code.push(Inst::generated(InstKind::Cast { dst: a, src: b }, lower.origin.clone()));
+            a
+        }
+        ColorOp::Set => {
+            lower.code.push(Inst::generated(InstKind::Constant(a, scalar, Bits::from(b as u32)), lower.origin.clone()));
+            a
+        }
+        ColorOp::Add => lower.binary(scalar, if scalar == Scalar::F32 { BinaryOp::FAdd } else { BinaryOp::IAdd }, a, b),
+        ColorOp::Divide => lower.binary(scalar, BinaryOp::FDiv, a, b),
+        ColorOp::Multiply => lower.binary(scalar, BinaryOp::FMul, a, b),
+        ColorOp::LessEqual => lower.binary(scalar, BinaryOp::Compare(Comparison::LessEqual), a, b),
+        ColorOp::Equal => lower.binary(scalar, BinaryOp::Compare(Comparison::Equal), a, b),
+        ColorOp::ShiftRight => lower.binary(scalar, BinaryOp::ShiftRightLogical, a, b),
+        ColorOp::ShiftLeft => lower.binary(scalar, BinaryOp::ShiftLeft, a, b),
+        ColorOp::And => lower.binary(scalar, BinaryOp::And, a, b),
+        ColorOp::Or => lower.binary(scalar, BinaryOp::Or, a, b),
+    }
+}
+
 struct Lower<'a> {
     registers: &'a mut Vec<Scalar>,
     origin: std::sync::Arc<GeneratedOrigin>,
@@ -95,51 +162,9 @@ impl Lower<'_> {
         }, self.origin.clone()));
         dst
     }
-    fn srgb(&mut self, value: Reg) -> Reg {
-        let threshold = self.constant(Scalar::F32, 0.04045f32.to_bits());
-        let condition = self.binary(
-            Scalar::Bool,
-            BinaryOp::Compare(Comparison::LessEqual),
-            value,
-            threshold,
-        );
-        let divisor = self.constant(Scalar::F32, 12.92f32.to_bits());
-        let linear = self.binary(Scalar::F32, BinaryOp::FDiv, value, divisor);
-        let offset = self.constant(Scalar::F32, 0.055f32.to_bits());
-        let scale = self.constant(Scalar::F32, 1.055f32.to_bits());
-        let exponent = self.constant(Scalar::F32, 2.4f32.to_bits());
-        let shifted = self.binary(Scalar::F32, BinaryOp::FAdd, value, offset);
-        let unit = self.binary(Scalar::F32, BinaryOp::FDiv, shifted, scale);
-        let curve = self.math(MathOp::Pow, unit, exponent);
-        self.select(Scalar::F32, condition, linear, curve)
-    }
-    fn unsigned_float(&mut self, value: Reg, mantissa_bits: u32) -> Reg {
-        let shift = self.constant(Scalar::U32, mantissa_bits);
-        let exponent = self.binary(Scalar::U32, BinaryOp::ShiftRightLogical, value, shift);
-        let mask = self.constant(Scalar::U32, (1 << mantissa_bits) - 1);
-        let fraction = self.binary(Scalar::U32, BinaryOp::And, value, mask);
-        let shift = self.constant(Scalar::U32, 23 - mantissa_bits);
-        let payload = self.binary(Scalar::U32, BinaryOp::ShiftLeft, fraction, shift);
-        let bias = self.constant(Scalar::U32, 112);
-        let biased = self.binary(Scalar::U32, BinaryOp::IAdd, exponent, bias);
-        let shift = self.constant(Scalar::U32, 23);
-        let biased = self.binary(Scalar::U32, BinaryOp::ShiftLeft, biased, shift);
-        let normal = self.binary(Scalar::U32, BinaryOp::Or, biased, payload);
-        let maximum = self.constant(Scalar::U32, 31);
-        let special = self.binary(Scalar::Bool, BinaryOp::Compare(Comparison::Equal), exponent, maximum);
-        let infinity = self.constant(Scalar::U32, 0x7f800000);
-        let exceptional = self.binary(Scalar::U32, BinaryOp::Or, infinity, payload);
-        let bits = self.select(Scalar::U32, special, exceptional, normal);
-        let converted = self.reg(Scalar::F32);
-        self.code.push(Inst::generated(InstKind::Unary {
-            dst: converted, op: UnaryOp::Bitcast, a: bits,
-        }, self.origin.clone()));
-        let integer = self.cast(Scalar::F32, fraction);
-        let scale = self.constant(Scalar::F32, (127 - 14 - mantissa_bits) << 23);
-        let subnormal = self.binary(Scalar::F32, BinaryOp::FMul, integer, scale);
-        let zero = self.constant(Scalar::U32, 0);
-        let tiny = self.binary(Scalar::Bool, BinaryOp::Compare(Comparison::Equal), exponent, zero);
-        self.select(Scalar::F32, tiny, subnormal, converted)
+    fn color(&mut self, format: TextureColor, raw: Reg, result: &[Reg; 4]) {
+        let host = ColorHost { context: std::ptr::from_mut(self).cast(), instruction: color_instruction };
+        unsafe { lower_texture_color(format, raw, result.as_ptr(), host); }
     }
     fn texel(
         &mut self,
@@ -180,18 +205,7 @@ impl Lower<'_> {
             level,
             byte: true,
         }, self.origin.clone()));
-        let value = self.cast(Scalar::F32, raw);
-        let denominator = self.constant(Scalar::F32, 255.0f32.to_bits());
-        let red = self.binary(Scalar::F32, BinaryOp::FDiv, value, denominator);
-        self.code.push(Inst::generated(InstKind::Cast {
-            dst: result[0],
-            src: red,
-        }, self.origin.clone()));
-        for channel in 1..4 {
-            let bits = if channel == 3 { 1.0f32.to_bits() } else { 0 };
-            self.code
-                .push(Inst::generated(InstKind::Constant(result[channel], Scalar::F32, Bits::from(bits)), self.origin.clone()));
-        }
+        self.color(TextureColor::R8, raw, &result);
         let singles = std::mem::take(&mut self.code);
         let raw = self.reg(Scalar::U32);
         self.code.push(Inst::generated(InstKind::TextureRead {
@@ -203,29 +217,9 @@ impl Lower<'_> {
         }, self.origin.clone()));
         let unpack_outer = std::mem::take(&mut self.code);
         let mut rgba = Vec::new();
-        for (tag, widths) in [(1, &[8,8,8,8][..]), (4, &[16,16][..]), (5, &[10,10,10,2][..]), (6, &[11,11,10][..])] {
-            let mut offset = 0;
-            for (channel, &bits) in widths.iter().enumerate() {
-                let shift = self.constant(Scalar::U32, offset);
-                offset += bits;
-                let shifted = self.binary(Scalar::U32, BinaryOp::ShiftRightLogical, raw, shift);
-                let mask = self.constant(Scalar::U32, (1 << bits) - 1);
-                let byte = self.binary(Scalar::U32, BinaryOp::And, shifted, mask);
-                let value = if tag == 6 {
-                    self.unsigned_float(byte, bits - 5)
-                } else {
-                    let value = self.cast(Scalar::F32, byte);
-                    let denominator = self.constant(Scalar::F32, (((1 << bits) - 1) as f32).to_bits());
-                    self.binary(Scalar::F32, BinaryOp::FDiv, value, denominator)
-                };
-                self.code.push(Inst::generated(InstKind::Cast {
-                    dst: result[channel],
-                    src: value,
-                }, self.origin.clone()));
-            }
-            for channel in widths.len()..4 {
-                self.code.push(Inst::generated(InstKind::Constant(result[channel], Scalar::F32, Bits::from(if channel == 3 { 1.0f32.to_bits() } else { 0 })), self.origin.clone()));
-            }
+        for color in [TextureColor::Rgba8, TextureColor::Rg16, TextureColor::Rgb10A2, TextureColor::Rg11B10] {
+            self.color(color, raw, &result);
+            let tag = color as u32;
             let unpacked = std::mem::take(&mut self.code);
             if tag == 1 { rgba = unpacked; } else {
                 let packed_format = self.constant(Scalar::U32, tag);
@@ -244,13 +238,7 @@ impl Lower<'_> {
             srgb_format,
         );
         let rgba = std::mem::take(&mut self.code);
-        for channel in 0..3 {
-            let value = self.srgb(result[channel]);
-            self.code.push(Inst::generated(InstKind::Cast {
-                dst: result[channel],
-                src: value,
-            }, self.origin.clone()));
-        }
+        self.color(TextureColor::Srgb, 0, &result);
         let decode = std::mem::replace(&mut self.code, rgba);
         self.code.push(Inst::generated(InstKind::If {
             condition: encoded,

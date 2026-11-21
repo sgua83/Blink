@@ -563,6 +563,20 @@ struct TextureAccess {
 
 // R12 is the binding table. R15 holds the transient binding and source address.
 // The caller owns the result locations and room for the whole operation.
+// CPU texel color lowering writes into the original four result registers.
+enum TextureColor:u32 { Rgba8=1; Srgb=2; R8=3; Rg16=4; Rgb10A2=5; Rg11B10=6; };
+enum ColorScalar:u32 { Word=0; Float=1; Bool=2; };
+enum ColorOp:u32 {
+    Constant=0; Cast=1; Bitcast=2; Add=3; Divide=4; Multiply=5; LessEqual=6; Equal=7;
+    ShiftRight=8; ShiftLeft=9; And=10; Or=11; Power=12; Select=13; Into=14; Set=15;
+};
+struct ColorHost {
+    address context;
+    cfn<u64,address,ColorOp,ColorScalar,u64,u64,u64> instruction;
+};
+extern "C" void texture_color(TextureColor format, u64 raw, address result, ColorHost host) on cpu
+    requires nonzero(host.instruction);
+
 extern "C" u64 texture_access(TextureAccess input, address results, u64 count, address output) on cpu;
 
 struct TilePublishInput {
