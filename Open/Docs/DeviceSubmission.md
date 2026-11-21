@@ -16,8 +16,8 @@ BLEngine的 `submit_to` 直接消费这些绑定，将同一工作图像和输�
 ## 交换链呈现与原显示存储
 `Swapchain::try_present(&mut GpuDataset)`返回`Poll<PresentStatus>`。交换链自己的上一份acquire信号量消费尚未完成，或零超时`vkAcquireNextImageKHR`报告NOT_READY／TIMEOUT时，返回Pending，不提交拷贝、不修改输入最后使用点。消费者保留当前完整显示数据，继续处理输入或其他视图；Pending是原生可用性，不是错误或异常重试。
 
-取得实际图像后，沿原Commands记录源生产者到传输的依赖、完整分页面拷贝及呈现布局转换，提交后交给原ExecutionResources::Transfer。输入GpuDataset的最后使用点更新为这份真实只读拷贝执行；后续计算改写、下载和退出复用既有依赖与资源释放，无需复制显示图或在CPU等待拷贝。冻结数据的只读binding同样保持原物理所有者；不能因调用返回提前释放它。
+取得实际图像后，沿原Commands记录源生产者到传输的依赖、完整分页面拷贝及呈现布局转换，提交后交给原呈现执行`ExecutionResources::Present`。输入GpuDataset的最后使用点更新为这份真实只读拷贝执行；后续计算改写、下载和退出复用既有依赖与资源释放，无需复制显示图或在CPU等待拷贝。冻结数据的只读binding同样保持原物理所有者；不能因调用返回提前释放它。
 
-Swapchain只持有当前acquire信号量的实际消费执行，完成后才再次获取图像；呈现等待信号量仍按实际交换链图像分配。Ready表示拷贝和呈现已排入队列，返回Optimal／Suboptimal事实，不表示源拷贝已完成或显示器已扫描输出。信号量消费与上屏完成是不同事实，参见[Khronos交换链信号量复用](https://docs.vulkan.org/guide/latest/swapchain_semaphore_reuse.html)。
+Swapchain持有本次已取得的图像和acquire信号，拷贝由队列接受后接手实际信号等待。正常呈现的拷贝完成后才再次获取图像，呈现等待信号量仍按实际交换链图像分配。Ready表示拷贝和呈现已排入队列，返回Optimal／Suboptimal事实，不表示源拷贝已完成或显示器已扫描输出。信号量消费与上屏完成是不同事实，参见[Khronos交换链信号量复用](https://docs.vulkan.org/guide/latest/swapchain_semaphore_reuse.html)。
 
-原`present(&GpuDataset)`继续是明确的同步接口，使用同一提交实现并等待源拷贝完成；可与try_present在同一交换链交替使用。正常可轮询入口没有无限acquire等待或显式CPU拷贝等待，但驱动的vkQueuePresentKHR调用本身仍可能有宿主成本，不能承诺任何平台调用绝对不阻塞。实际错误照常报告，不重建交换链、降档或吞掉OutOfDate。当前交换链销毁继续履行原WSI完成边界；多队列、动态extent及完整引擎调度仍未完成。
+原`present(&GpuDataset)`继续是明确的同步接口，使用同一提交实现并等待源拷贝完成；可与try_present在同一交换链交替使用。正常可轮询入口没有无限acquire等待或显式CPU拷贝等待，但驱动的vkQueuePresentKHR调用本身仍可能有宿主成本，不能承诺任何平台调用绝对不阻塞。获取前的输入拒绝或获取返回错误时，交回原诊断。取得图像之后录制、拷贝提交或队列呈现失败时，调用者收到原诊断，结束当前链并显式重建。拷贝尚未获队列接受的获取信号由析构排入原队列等待，实际完成后销毁原信号量和交换链。已获队列接受的拷贝沿原执行完成。原生获取要求信号量未触发且无未完成操作，见[Khronos图像获取](https://docs.vulkan.org/refpages/latest/refpages/source/vkAcquireNextImageKHR.html)。多队列、动态extent及完整引擎调度仍未完成。

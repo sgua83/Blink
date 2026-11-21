@@ -115,6 +115,13 @@ impl PresentStatus {
     }
 }
 
+enum Acquisition {
+    Idle,
+    Acquired,
+    CopyPending(Rc<Execution>),
+    Failed,
+}
+
 pub struct Swapchain {
     window_dpi: *mut c_void,
     extent: Extent2D,
@@ -126,7 +133,7 @@ pub struct Swapchain {
     images: Vec<u64>,
     acquired: u64,
     rendered: Vec<u64>,
-    acquisition: Option<Rc<Execution>>,
+    acquisition: Acquisition,
 }
 impl Device {
     /// 窗口必须在 Swapchain 析构之后销毁；调用者拥有原生窗口生命周期。
@@ -184,7 +191,7 @@ impl Device {
                 images: Vec::new(),
                 acquired: 0,
                 rendered: Vec::new(),
-                acquisition: None,
+                acquisition: Acquisition::Idle,
             };
             let info = Win32SurfaceInfo {
                 kind: 1000009000,
@@ -317,12 +324,11 @@ impl Device {
 impl Swapchain {
     /// 同步呈现；返回前源图像的实际GPU拷贝已完成。
     pub fn present(&mut self, display: &GpuDataset) -> Result<PresentStatus> {
-        if let Some(previous) = self.acquisition.take() {
-            previous.wait()?;
-        }
+        self.ready_for_acquire(true)?;
         match self.submit_present(display, u64::MAX)? {
             Poll::Ready((status, execution)) => {
-                execution.wait()?;
+                self.acquisition = Acquisition::CopyPending(execution);
+                self.ready_for_acquire(true)?;
                 Ok(status)
             }
             Poll::Pending => Err(error("无限等待的呈现图像获取未完成")),
@@ -331,18 +337,30 @@ impl Swapchain {
     /// 只在原acquire信号量已消费且交换链图像可用时提交；Pending不提交或改写输入。
     /// Ready表示已排入呈现；拷贝沿display的真实最后使用点完成，不表示已经上屏。
     pub fn try_present(&mut self, display: &mut GpuDataset) -> Result<Poll<PresentStatus>> {
-        if let Some(previous) = &self.acquisition
-            && !previous.is_complete()?
-        {
+        if !self.ready_for_acquire(false)? {
             return Ok(Poll::Pending);
         }
-        self.acquisition.take();
         let Poll::Ready((status, execution)) = self.submit_present(display, 0)? else {
             return Ok(Poll::Pending);
         };
         display.last_use = Some(execution.clone());
-        self.acquisition = Some(execution);
+        self.acquisition = Acquisition::CopyPending(execution);
         Ok(Poll::Ready(status))
+    }
+    fn ready_for_acquire(&mut self, wait: bool) -> Result<bool> {
+        match &self.acquisition {
+            Acquisition::Idle => Ok(true),
+            Acquisition::CopyPending(previous) => {
+                if wait {
+                    previous.wait()?;
+                } else if !previous.is_complete()? {
+                    return Ok(false);
+                }
+                self.acquisition = Acquisition::Idle;
+                Ok(true)
+            }
+            Acquisition::Acquired | Acquisition::Failed => Err(error("交换链在取得图像后呈现失败，须结束并重新创建")),
+        }
     }
     fn submit_present(
         &mut self,
@@ -374,6 +392,7 @@ impl Swapchain {
                 return Ok(Poll::Pending);
             }
             let acquired = PresentStatus::read(result, "vkAcquireNextImageKHR")?;
+            self.acquisition = Acquisition::Acquired;
             let previous = Execution::prepare_one(display.dependency())?;
             let commands = Commands::new(self.inner.clone())?;
             commands.barrier(
@@ -449,6 +468,8 @@ impl Swapchain {
                 &[0x1000],
                 &[signal],
             )?;
+            // The accepted copy owns the wait on the acquire semaphore.
+            self.acquisition = Acquisition::Failed;
             let info = PresentInfo {
                 kind: 1000001001,
                 next: null(),
@@ -478,6 +499,22 @@ impl Drop for Swapchain {
         unsafe {
             let f = &self.functions;
             let d = self.inner.owner.device;
+            if matches!(self.acquisition, Acquisition::Acquired) {
+                // No copy reached the queue. Finish the outstanding WSI signal before destroying it.
+                let stage = 1;
+                let submit = VkSubmitInfo {
+                    sType: 4,
+                    waitSemaphoreCount: 1,
+                    pWaitSemaphores: &self.acquired,
+                    pWaitDstStageMask: &stage,
+                    ..zero()
+                };
+                let result = (self.inner.functions.vkQueueSubmit)(self.inner.queue, 1, &submit, 0);
+                if !matches!(result, 0 | -4) {
+                    eprintln!("窗口获取信号量无法结束：vkQueueSubmit={result}");
+                    std::process::abort();
+                }
+            }
             let result = (f.vkDeviceWaitIdle)(d);
             if result != 0 {
                 eprintln!("窗口呈现资源终止：vkDeviceWaitIdle={result}");
