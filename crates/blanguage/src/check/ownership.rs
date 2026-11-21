@@ -52,7 +52,7 @@ impl Position {
     pub(super) fn uses_scope(&self,scope:usize)->bool{position::scope(self,scope)}
     pub(super) fn uses_index(&self,index:ApplicationIndex)->bool{position::depends(self,index)}
 }
-pub(super) fn intersect_initialized(a:&BTreeSet<Position>,b:&BTreeSet<Position>)->BTreeSet<Position>{position::intersect(a,b)}
+pub(super) use position::merge_initialization;
 impl Place {
     pub(super) fn data_positions(&self)->Vec<Position>{place::data(self)}
     pub(super) fn owned_positions(&self)->Option<Vec<Position>>{place::owned(self)}
@@ -270,12 +270,7 @@ impl Builder<'_> {
             Presence::All=>yes,
             Presence::None=>no,
             choice=>{
-                let mut common=intersect_initialized(&yes,&no);
-                let yes=yes.difference(&common).cloned().collect::<Vec<_>>();
-                let no=no.difference(&common).cloned().collect::<Vec<_>>();
-                common.extend(yes.into_iter().map(|position|Position::selected(choice.clone(),position,Position::Initialized)));
-                common.extend(no.into_iter().map(|position|Position::selected(choice.clone().not(),position,Position::Initialized)));
-                common
+                merge_initialization(&mut [yes, no], &[choice.clone(), choice.clone().not()], |set| set)
             }
         };
     }

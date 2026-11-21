@@ -103,7 +103,14 @@ extern "C" u32 depends_index(address value,PositionIndex selected,Host host) on 
     requires nonzero(host.child)
     requires nonzero(host.identity_equal)
     requires nonzero(host.presence_uses_index);
-extern "C" address intersect(address a,address b,Host host) on cpu
+struct InitializationHost {
+    cfn<address,address,usize> positions;
+    cfn<void,address,usize,address> retain_conditional;
+    cfn<void,address,usize,address> append_conditional;
+    cfn<void,address> drop_positions;
+};
+extern "C" address merge_initialization(address exits, usize count, usize condition_count,
+    Host host, InitializationHost initialization) on cpu
     requires nonzero(host.inspect)
     requires nonzero(host.child)
     requires nonzero(host.equal)
@@ -118,4 +125,8 @@ extern "C" address intersect(address a,address b,Host host) on cpu
     requires nonzero(host.next)
     requires nonzero(host.drop_iterator)
     requires nonzero(host.fresh_set)
-    requires nonzero(host.insert_set);
+    requires nonzero(host.insert_set)
+    requires nonzero(initialization.positions)
+    requires nonzero(initialization.retain_conditional)
+    requires nonzero(initialization.append_conditional)
+    requires nonzero(initialization.drop_positions);

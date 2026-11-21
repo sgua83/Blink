@@ -62,16 +62,16 @@ unsafe extern "C" fn contains(set:Address,value:Address)->u32 {u32::from(unsafe{
 unsafe extern "C" fn contains_parameter(set:Address,owner:u64,word:u64)->u32 {u32::from(unsafe{&*set.cast::<BTreeSet<Position>>()}.contains(&Position::Parameter(owner as usize,word as usize)))}
 unsafe extern "C" fn contains_element(set:Address,owner:u64,at:Index,word:u32)->u32 {u32::from(unsafe{&*set.cast::<BTreeSet<Position>>()}.contains(&Position::ApplicationElement(owner as usize,unsafe{required_index(at)},word)))}
 unsafe extern "C" fn contains_input(set:Address,owner:u64,member:u64,at:Index,word:u32)->u32 {u32::from(unsafe{&*set.cast::<BTreeSet<Position>>()}.contains(&Position::ApplicationInput(view::LoopInput{level:owner as usize,index:member as usize},unsafe{actual_index(at)},word)))}
-enum Iter { One(btree_set::Iter<'static,Position>), Union(btree_set::Union<'static,Position>) }
+enum Iter { One(btree_set::Iter<'static,Position>), Difference(btree_set::Difference<'static,Position>) }
 unsafe extern "C" fn iterate(a:Address,b:Address)->Address {
     // The B traversal borrows the actual input sets and drops this iterator
     // before its synchronous caller returns or any owning set can be changed.
     let a:&'static BTreeSet<Position>=unsafe{&*a.cast::<BTreeSet<Position>>()};
-    let iter=if b.is_null(){Iter::One(a.iter())}else{let b:&'static BTreeSet<Position>=unsafe{&*b.cast::<BTreeSet<Position>>()};Iter::Union(a.union(b))};
+    let iter=if b.is_null(){Iter::One(a.iter())}else{let b:&'static BTreeSet<Position>=unsafe{&*b.cast::<BTreeSet<Position>>()};Iter::Difference(a.difference(b))};
     Box::into_raw(Box::new(iter)).cast()
 }
 unsafe extern "C" fn next(value:Address)->Item {
-    let item=match unsafe{&mut *value.cast::<Iter>()}{Iter::One(iter)=>iter.next(),Iter::Union(iter)=>iter.next()};
+    let item=match unsafe{&mut *value.cast::<Iter>()}{Iter::One(iter)=>iter.next(),Iter::Difference(iter)=>iter.next()};
     match item{Some(value)=>Item{node:pointer(value),present:1},None=>Item{node:std::ptr::null_mut(),present:0}}
 }
 unsafe extern "C" fn drop_iterator(value:Address){drop(unsafe{Box::from_raw(value.cast::<Iter>())});}
@@ -134,7 +134,11 @@ unsafe extern "C" {
     #[link_name="bootstrap.ownership_position::prefix_ready"] fn source_prefix(value:Address,length:u32,word:u32,known:Address,host:Host)->u32;
     #[link_name="bootstrap.ownership_position::uses_scope"] fn source_scope(value:Address,owner:u64,host:Host)->u32;
     #[link_name="bootstrap.ownership_position::depends_index"] fn source_depends(value:Address,index:Index,host:Host)->u32;
-    #[link_name="bootstrap.ownership_position::intersect"] fn source_intersect(a:Address,b:Address,host:Host)->Address;
+    #[link_name = "bootstrap.ownership_position::merge_initialization"]
+    fn source_merge_initialization(
+        exits: Address, count: usize, condition_count: usize, host: Host,
+        initialization: InitializationHost,
+    ) -> Address;
 }
 pub(super) fn selected(when:owned_presence::Presence,a:Position,b:Position)->Position {
     match unsafe{source_select(pointer(&when),pointer(&a),pointer(&b),HOST)} {0=>a,1=>b,_=>Position::Conditional(Arc::new(when),Arc::new(a),Arc::new(b))}
@@ -149,4 +153,64 @@ pub(super) fn word_initialized(value:&Position,at:Option<ApplicationIndex>,word:
 pub(super) fn prefix(value:&Position,length:u32,word:u32,known:&BTreeSet<Position>)->bool {unsafe{source_prefix(pointer(value),length,word,pointer(known),HOST)!=0}}
 pub(super) fn scope(value:&Position,owner:usize)->bool {unsafe{source_scope(pointer(value),owner as u64,HOST)!=0}}
 pub(super) fn depends(value:&Position,at:ApplicationIndex)->bool {unsafe{source_depends(pointer(value),index(Some(&at)),HOST)!=0}}
-pub(super) fn intersect(a:&BTreeSet<Position>,b:&BTreeSet<Position>)->BTreeSet<Position> {*unsafe{Box::from_raw(source_intersect(pointer(a),pointer(b),HOST).cast::<BTreeSet<Position>>())}}
+#[repr(C)]
+struct InitializationHost {
+    positions: unsafe extern "C" fn(Address, usize) -> Address,
+    retain_conditional: unsafe extern "C" fn(Address, usize, Address),
+    append_conditional: unsafe extern "C" fn(Address, usize, Address),
+    drop_positions: unsafe extern "C" fn(Address),
+}
+
+struct InitializationExits<'a, T> {
+    states: *mut T,
+    conditions: &'a [owned_presence::Presence],
+    positions: fn(&mut T) -> &mut BTreeSet<Position>,
+}
+
+impl<T> InitializationExits<'_, T> {
+    unsafe fn positions(&self, index: usize) -> &mut BTreeSet<Position> {
+        // B borrows distinct exits during each intersection and ends those
+        // borrows before retaining or moving any exit's positions.
+        (self.positions)(unsafe { &mut *self.states.add(index) })
+    }
+}
+
+pub(in crate::check) fn merge_initialization<T>(
+    states: &mut [T],
+    conditions: &[owned_presence::Presence],
+    positions: fn(&mut T) -> &mut BTreeSet<Position>,
+) -> BTreeSet<Position> {
+    unsafe extern "C" fn get<T>(exits: Address, index: usize) -> Address {
+        let exits = unsafe { &*exits.cast::<InitializationExits<'_, T>>() };
+        pointer(unsafe { exits.positions(index) })
+    }
+    unsafe extern "C" fn retain<T>(exits: Address, index: usize, common: Address) {
+        let exits = unsafe { &*exits.cast::<InitializationExits<'_, T>>() };
+        let common = unsafe { &*common.cast::<BTreeSet<Position>>() };
+        unsafe { exits.positions(index) }.retain(|position| !common.contains(position));
+    }
+    unsafe extern "C" fn append<T>(exits: Address, index: usize, common: Address) {
+        let exits = unsafe { &*exits.cast::<InitializationExits<'_, T>>() };
+        let common = unsafe { &mut *common.cast::<BTreeSet<Position>>() };
+        let positions = std::mem::take(unsafe { exits.positions(index) });
+        let when = &exits.conditions[index];
+        common.extend(positions.into_iter().map(|position| {
+            Position::selected(when.clone(), position, Position::Initialized)
+        }));
+    }
+    unsafe extern "C" fn release(positions: Address) {
+        drop(unsafe { Box::from_raw(positions.cast::<BTreeSet<Position>>()) });
+    }
+
+    let exits = InitializationExits { states: states.as_mut_ptr(), conditions, positions };
+    let host = InitializationHost {
+        positions: get::<T>, retain_conditional: retain::<T>, append_conditional: append::<T>,
+        drop_positions: release,
+    };
+    let result = unsafe {
+        source_merge_initialization(
+            pointer(&exits), states.len(), conditions.len().min(states.len()), HOST, host,
+        )
+    };
+    *unsafe { Box::from_raw(result.cast::<BTreeSet<Position>>()) }
+}

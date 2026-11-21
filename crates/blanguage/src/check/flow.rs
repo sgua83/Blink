@@ -718,19 +718,8 @@ impl Builder<'_> {
         } else {
             Vec::new()
         };
-        let mut positions = context.exits.iter().map(|state| &state.initialized);
-        let initialized = positions.next().zip(positions.next()).map(|(first, second)| {
-            let mut common = ownership::intersect_initialized(first, second);
-            for positions in positions {
-                common = ownership::intersect_initialized(&common, positions);
-            }
-            let conditional = context.exits.iter().zip(&guards).flat_map(|(state, when)| {
-                state.initialized.difference(&common).map(move |position| {
-                    Position::selected(when.clone(), position.clone(), Position::Initialized)
-                })
-            }).collect::<BTreeSet<_>>();
-            common.extend(conditional);
-            common
+        let initialized = (context.exits.len() > 1).then(|| {
+            ownership::merge_initialization(&mut context.exits, &guards, |state| &mut state.initialized)
         });
         let mut guards=guards.into_iter().rev().skip(1);let mut exits=context.exits.into_iter().rev();let Some(first)=exits.next()else{self.env.retain(|name,_|context.names.contains(name));self.path=bounds::Clause::impossible();return Ok((false,context.writes))};
         self.env=first.env;self.path=first.path;

@@ -324,7 +324,7 @@ extern "C" u32 depends_index(address value,PositionIndex selected,Host host) on 
     requires nonzero(host.child)
     requires nonzero(host.identity_equal)
     requires nonzero(host.presence_uses_index) { return uses_index(value,selected,host) ? 1 : 0;}
-extern "C" address intersect(address a,address b,Host host) on cpu
+address intersect(address a, address b, Host host) on cpu
     requires nonzero(host.inspect)
     requires nonzero(host.child)
     requires nonzero(host.equal)
@@ -339,8 +339,70 @@ extern "C" address intersect(address a,address b,Host host) on cpu
     requires nonzero(host.next)
     requires nonzero(host.drop_iterator)
     requires nonzero(host.fresh_set)
-    requires nonzero(host.insert_set) { 
-    address result=host.fresh_set();address iterator=host.iterate(a,b);
-    while(true){PositionItem item=host.next(iterator);if(item.present==0){break;}if(initialized(original(item.node),a,host)&&initialized(original(item.node),b,host)){host.insert_set(result,item.node);}}
-    host.drop_iterator(iterator);return result;
+    requires nonzero(host.insert_set) {
+    address result = host.fresh_set();
+    u32 side = 0;
+    while (side < 2) {
+        // Preserve the first set's representative of keys present in both.
+        address iterator = side == 0
+            ? host.iterate(a, unsafe_address(0u64))
+            : host.iterate(b, a);
+        address other = side == 0 ? b : a;
+        while (true) {
+            PositionItem item = host.next(iterator);
+            if (item.present == 0) { break; }
+            if (initialized(original(item.node), other, host)) {
+                host.insert_set(result, item.node);
+            }
+        }
+        host.drop_iterator(iterator);
+        side += 1;
+    }
+    return result;
+}
+
+extern "C" address merge_initialization(address exits, usize count, usize condition_count,
+    Host host, InitializationHost initialization) on cpu
+    requires nonzero(host.inspect)
+    requires nonzero(host.child)
+    requires nonzero(host.equal)
+    requires nonzero(host.identity_equal)
+    requires nonzero(host.presence_kind)
+    requires nonzero(host.presence_equal)
+    requires nonzero(host.contains)
+    requires nonzero(host.contains_parameter)
+    requires nonzero(host.contains_element)
+    requires nonzero(host.contains_input)
+    requires nonzero(host.iterate)
+    requires nonzero(host.next)
+    requires nonzero(host.drop_iterator)
+    requires nonzero(host.fresh_set)
+    requires nonzero(host.insert_set)
+    requires nonzero(initialization.positions)
+    requires nonzero(initialization.retain_conditional)
+    requires nonzero(initialization.append_conditional)
+    requires nonzero(initialization.drop_positions) {
+    address common = intersect(initialization.positions(exits, 0u64),
+        initialization.positions(exits, 1u64), host);
+    usize i = 2u64;
+    while (i < count) {
+        address previous = common;
+        common = intersect(previous, initialization.positions(exits, i), host);
+        initialization.drop_positions(previous);
+        i += 1u64;
+    }
+
+    // Each exit must subtract the same unconditional result before any
+    // conditional positions are added to it.
+    i = 0u64;
+    while (i < condition_count) {
+        initialization.retain_conditional(exits, i, common);
+        i += 1u64;
+    }
+    i = 0u64;
+    while (i < condition_count) {
+        initialization.append_conditional(exits, i, common);
+        i += 1u64;
+    }
+    return common;
 }
