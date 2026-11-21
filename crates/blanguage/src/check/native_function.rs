@@ -2840,7 +2840,7 @@ async fn build_domain(
             &mut scopes,
             start,
             required,
-            call.before,
+            call.prefix_guarantees,
             element_required,
             call.element_guarantees,
             split,
@@ -2908,8 +2908,8 @@ async fn build_domain(
             values: Vec::new(),
         })) });
         start = call.stage;
-        required = call.after;
-        element_required = Cow::Owned(call.element_after);
+        required = call.prefix_requirements;
+        element_required = Cow::Owned(call.element_requirements);
     }
     emit_domain_part(
         &world.worker,

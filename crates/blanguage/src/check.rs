@@ -362,10 +362,10 @@ struct DomainCall {
     instance: crate::generics::Instance,
     arguments: Vec<Root>,
     write_regions: BTreeMap<usize, BTreeSet<(u32, u32)>>,
-    before: Vec<PrefixRelation>,
-    after: Vec<PrefixRelation>,
+    prefix_guarantees: Vec<PrefixRelation>,
+    prefix_requirements: Vec<PrefixRelation>,
     element_guarantees: Vec<ElementFact>,
-    element_after: Vec<ElementFact>,
+    element_requirements: Vec<ElementFact>,
     source: Option<Arc<SourceSite>>,
 }
 struct RangeContext {
@@ -672,6 +672,13 @@ fn operation_source(instance: &crate::generics::Instance, span: Span, syntax: So
     let context = Arc::new(SourceContext { domain_path: domain_path.clone(), ..(*context).clone() });
     origin.map(|origin| Arc::new(SourceSite { origin, context, span, syntax }))
 }
+fn begin_segment(program: &Program, facts: &prefix::Facts, calls: &mut [DomainCall]) {
+    if let Some(call) = calls.last_mut() && call.stage == program.stages.len() {
+        call.prefix_requirements = facts.relations();
+        call.element_requirements = facts.element_facts(program, None);
+    }
+}
+
 async fn expand_stages(
     world: &World,
     input: DomainInput<'_>,
@@ -805,6 +812,7 @@ async fn expand_stages(
                 first_stage = program.stages.len();
             }
             StmtKind::Parallel(name, syntax, body) => {
+                begin_segment(program, facts, calls);
                 let data = &syntax.dataset();
                 let Some(Root::Data(domain, domain_access)) = env.get(*data) else {
                     return d
@@ -1068,6 +1076,7 @@ async fn expand_stages(
                     ExprKind::Call(name, args) if name == "clear_prefix"
                         && world.resolve(name, &d.module, &d.imports, true).is_missing() =>
                     {
+                        begin_segment(program, facts, calls);
                         let output = append::clear(program, env, &args, d, statement.span(), facts,
                             input.operation_source(call_span, SourceSyntax::Expression, domain_path))?;
                         facts.outputs.push(output);
@@ -1076,12 +1085,14 @@ async fn expand_stages(
                     ExprKind::Call(name, args) if name == "stable_sort_by_key"
                         && world.resolve(name, &d.module, &d.imports, true).is_missing() =>
                     {
+                        begin_segment(program, facts, calls);
                         sort::compile(program, env, &args, d, statement.span(), facts, input.operation_source(call_span, SourceSyntax::Expression, domain_path))?;
                         *boundary = false;
                     }
                     ExprKind::Call(name, args) if name == "compact"
                         && world.resolve(name, &d.module, &d.imports, true).is_missing() =>
                     {
+                        begin_segment(program, facts, calls);
                         compact::compile(program, env, &args, d, statement.span(), facts, input.operation_source(call_span, SourceSyntax::Expression, domain_path))?;
                         *boundary = false;
                     }
@@ -1097,6 +1108,7 @@ async fn expand_stages(
                             if let Some(operator) = CollectiveOperator::from_reduction_source(name)
                                 .filter(|_| explicit.is_none())
                             {
+                                begin_segment(program, facts, calls);
                                 reduce::compile(program, env, operator, &args, d, statement.span(), facts, input.operation_source(call_span, SourceSyntax::Expression, domain_path))?;
                                 *boundary = false;
                                 break 'call;
@@ -1104,6 +1116,7 @@ async fn expand_stages(
                             if let Some(kind) =
                                 custom_reduce::Kind::from_source(name).filter(|_| explicit.is_none())
                             {
+                                begin_segment(program, facts, calls);
                                 unsafe { world.call(custom_reduce::compile(
                                     world,
                                     program,
@@ -1125,6 +1138,7 @@ async fn expand_stages(
                                 CollectiveOperator::from_segmented_reduction_source(name)
                                     .filter(|_| explicit.is_none())
                             {
+                                begin_segment(program, facts, calls);
                                 segmented_reduce::compile(
                                     program,
                                     env,
@@ -1141,6 +1155,7 @@ async fn expand_stages(
                             if let Some(operator) =
                                 CollectiveOperator::from_scan_source(name).filter(|_| explicit.is_none())
                             {
+                                begin_segment(program, facts, calls);
                                 scan::compile(
                                     program,
                                     env,
@@ -1158,6 +1173,7 @@ async fn expand_stages(
                             if let Some(operator) = CollectiveOperator::from_segmented_scan_source(name)
                                 .filter(|_| explicit.is_none())
                             {
+                                begin_segment(program, facts, calls);
                                 scan::compile(
                                     program,
                                     env,
@@ -1379,10 +1395,14 @@ async fn expand_stages(
                             let bindings: Vec<_> = callee.function.params().iter().filter_map(|p| match child[p.name()] {
                                 Root::Data(binding, _) => Some(binding), _ => None,
                             }).collect();
-                            let before = facts.relations();
+                            let stage = program.stages.len();
                             let segment_start = calls.last().map_or(0, |call| call.stage);
-                            let segment_writes = Program::stage_write_regions(&program.stages[segment_start..]);
-                            let element_guarantees = facts.element_facts(program, Some(&segment_writes));
+                            let (prefix_guarantees, element_guarantees) = if segment_start == stage {
+                                (Vec::new(), Vec::new())
+                            } else {
+                                let writes = Program::stage_write_regions(&program.stages[segment_start..]);
+                                (facts.relations(), facts.element_facts(program, Some(&writes)))
+                            };
                             let mut write_regions = BTreeMap::new();
                             for (logical, written) in contract.write_regions {
                                 let binding = bindings[logical];
@@ -1400,7 +1420,7 @@ async fn expand_stages(
                                 output
                             }));
                             calls.push(DomainCall {
-                                stage: program.stages.len(),
+                                stage,
                                 instance: instance.clone(),
                                 arguments: callee
                                     .function
@@ -1410,9 +1430,9 @@ async fn expand_stages(
                                     .collect(),
                                 write_regions,
                                 element_guarantees,
-                                element_after: Vec::new(),
-                                before,
-                                after: Vec::new(),
+                                element_requirements: Vec::new(),
+                                prefix_guarantees,
+                                prefix_requirements: Vec::new(),
                                 source: caller_origin.map(|origin| Arc::new(SourceSite {
                                     origin, context: Arc::new(SourceContext { domain_path: child_path, ..(*caller_context).clone() }),
                                     span: call_span, syntax: SourceSyntax::Expression,
@@ -1447,10 +1467,6 @@ async fn expand_stages(
                         first_stage = program.stages.len();
                         for relation in guarantees {
                             facts.grant(relation);
-                        }
-                        if compiled {
-                            calls.last_mut().unwrap().after = facts.relations();
-                            calls.last_mut().unwrap().element_after = facts.element_facts(program, None);
                         }
                     }
                     _ => return d.source.fail(statement.span(), "B119",
