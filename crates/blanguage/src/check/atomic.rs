@@ -1,5 +1,40 @@
 //! dataset 与块内原子共用位置、类型、索引证明及显式内存序。
 use super::*;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+#[repr(u32)]
+enum AtomicSourceKind {
+    Unknown, Load, Store, Add, Sub, Exchange, CompareExchange, Min, Max, And, Or, Xor,
+}
+
+#[derive(Clone, Copy)]
+#[repr(C)]
+pub(super) struct AtomicBuiltin {
+    kind: AtomicSourceKind,
+    access: Access,
+    arity: u32,
+    order_index: u32,
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.operator_types::source_atomic"]
+    fn source_atomic(bytes: *const u8, length: usize, statement: bool) -> AtomicBuiltin;
+    #[link_name = "bootstrap.operator_types::atomic_order_allowed"]
+    fn atomic_order_allowed(kind: AtomicSourceKind, order: u32, failure: u32) -> bool;
+}
+
+impl AtomicBuiltin {
+    pub(super) fn from_source(name: &str, statement: bool) -> Option<Self> {
+        let suffix = name.strip_prefix("atomic_")?;
+        let builtin = unsafe { source_atomic(suffix.as_ptr(), suffix.len(), statement) };
+        (builtin.kind != AtomicSourceKind::Unknown).then_some(builtin)
+    }
+    pub(super) fn is_store(self) -> bool { self.kind == AtomicSourceKind::Store }
+    fn permits(self, order: MemoryOrder, failure: MemoryOrder) -> bool {
+        unsafe { atomic_order_allowed(self.kind, order as u32, failure as u32) }
+    }
+}
+
 impl Builder<'_> {
     pub(super) fn atomic_storage(&self, place: &Place) -> bool {
         match place.storage() {
@@ -108,131 +143,93 @@ impl Builder<'_> {
         }
         self.emit(InstKind::Atomic(atomic));
     }
-    pub(super) async fn atomic_store(&mut self, args: &Expressions, span: Span) -> Result<()> {
-        if args.len() != 3 {
-            return self.fail(span, "B217", "atomic_store(目标, 值, 内存序) 需要三个参数");
-        }
-        let Some((place, location, scalar)) = unsafe { self.world.call(self.atomic_location(&args.at(0), Access::Write)).await }? else {
-            return Ok(());
-        };
-        let Some(value) = unsafe { self.world.call(self.atomic_operand(&args.at(1), scalar)).await }? else {
-            return Ok(());
-        };
-        let order = self.atomic_order(&args.at(2))?;
-        if !matches!(order, MemoryOrder::Relaxed | MemoryOrder::Release) {
-            return self.fail(
-                args.at(2).span(),
-                "B216",
-                "atomic_store 的内存序只能是 relaxed 或 release",
-            );
-        }
-        if let Some((target, offset, word)) = location {
-            self.atomic_effect(&place, Atomic {
-                result: None,
-                scalar,
-                target,
-                word,
-                offset,
-                op: AtomicOp::Store(value.regs[0]),
-                order,
-            }, Some(&value));
-        }
-        Ok(())
-    }
-    pub(super) async fn atomic_value(
+    pub(super) async fn atomic_operation(
         &mut self,
+        builtin: AtomicBuiltin,
         name: &str,
         args: &Expressions,
         span: Span,
     ) -> Result<Option<Value>> {
-        let arity = match name {
-            "atomic_load" => 2,
-            "atomic_compare_exchange" => 5,
-            _ => 3,
-        };
+        let arity = builtin.arity as usize;
         if args.len() != arity {
-            return self.fail(
-                span,
-                "B217",
-                format!(
-                    "{name} 需要 {arity} 个参数，最后显式提供内存序；比较交换提供成功与失败两种序"
-                ),
-            );
+            if builtin.is_store() {
+                return self.fail(span, "B217", "atomic_store(目标, 值, 内存序) 需要三个参数");
+            }
+            return self.fail(span, "B217", format!(
+                "{name} 需要 {arity} 个参数，最后显式提供内存序；比较交换提供成功与失败两种序"
+            ));
         }
-        let Some((place, location, scalar)) = unsafe { self.world.call(self.atomic_location(&args.at(0), if name=="atomic_load"{Access::Read}else{Access::InOut})).await }? else {
+
+        let Some((place, location, scalar)) = unsafe {
+            self.world.call(self.atomic_location(&args.at(0), builtin.access)).await
+        }? else {
             return Ok(None);
         };
-        let order_at = if name == "atomic_compare_exchange" {
-            3
-        } else {
-            arity - 1
-        };
-        let order = self.atomic_order(&args.at(order_at))?;
-        let (op, stored) = if name == "atomic_load" {
-            if !matches!(order, MemoryOrder::Relaxed | MemoryOrder::Acquire) {
-                return self.fail(
-                    args.at(order_at).span(),
-                    "B216",
-                    "atomic_load 的内存序只能是 relaxed 或 acquire",
-                );
-            }
-            (AtomicOp::Load, None)
-        } else {
-            let Some(value) = unsafe { self.world.call(self.atomic_operand(&args.at(1), scalar)).await }? else {
+        let order_expr = args.at(builtin.order_index as usize);
+        let (order, op, stored) = if builtin.is_store() {
+            let Some(value) = unsafe {
+                self.world.call(self.atomic_operand(&args.at(1), scalar)).await
+            }? else {
                 return Ok(None);
             };
-            let operand = value.regs[0];
-            match name {
-                "atomic_add" => (AtomicOp::Add(operand), None),
-                "atomic_sub" => (AtomicOp::Sub(operand), None),
-                "atomic_exchange" => (AtomicOp::Exchange(operand), Some(value)),
-                "atomic_min" => (AtomicOp::Min(operand), Some(value)),
-                "atomic_max" => (AtomicOp::Max(operand), Some(value)),
-                "atomic_and" => (AtomicOp::And(operand), None),
-                "atomic_or" => (AtomicOp::Or(operand), None),
-                "atomic_xor" => (AtomicOp::Xor(operand), None),
-                "atomic_compare_exchange" => {
-                    let Some(desired) = unsafe { self.world.call(self.atomic_operand(&args.at(2), scalar)).await }? else {
-                        return Ok(None);
-                    };
-                    let failure = self.atomic_order(&args.at(4))?;
-                    let permitted = match order {
-                        MemoryOrder::Relaxed | MemoryOrder::Release => {
-                            failure == MemoryOrder::Relaxed
-                        }
-                        MemoryOrder::Acquire | MemoryOrder::AcquireRelease => {
-                            matches!(failure, MemoryOrder::Relaxed | MemoryOrder::Acquire)
-                        }
-                    };
-                    if !permitted {
-                        return self.fail(
-                            args.at(4).span(),
-                            "B216",
-                            "比较交换失败序不得带 release，也不得强于成功序",
-                        );
-                    }
-                    (AtomicOp::CompareExchange {
-                        expected: operand,
-                        desired: desired.regs[0],
-                        failure,
-                    }, Some(desired))
-                }
-                _ => return self.fail(span, "B158", format!("未知原子操作 {name}")),
+            let order = self.atomic_order(&order_expr)?;
+            if !builtin.permits(order, MemoryOrder::Relaxed) {
+                return self.fail(order_expr.span(), "B216", "atomic_store 的内存序只能是 relaxed 或 release");
             }
+            (order, AtomicOp::Store(value.regs[0]), Some(value))
+        } else {
+            let order = self.atomic_order(&order_expr)?;
+            let (op, stored) = if builtin.kind == AtomicSourceKind::Load {
+                if !builtin.permits(order, MemoryOrder::Relaxed) {
+                    return self.fail(order_expr.span(), "B216", "atomic_load 的内存序只能是 relaxed 或 acquire");
+                }
+                (AtomicOp::Load, None)
+            } else {
+                let Some(value) = unsafe {
+                    self.world.call(self.atomic_operand(&args.at(1), scalar)).await
+                }? else {
+                    return Ok(None);
+                };
+                let operand = value.regs[0];
+                match builtin.kind {
+                    AtomicSourceKind::Add => (AtomicOp::Add(operand), None),
+                    AtomicSourceKind::Sub => (AtomicOp::Sub(operand), None),
+                    AtomicSourceKind::Exchange => (AtomicOp::Exchange(operand), Some(value)),
+                    AtomicSourceKind::Min => (AtomicOp::Min(operand), Some(value)),
+                    AtomicSourceKind::Max => (AtomicOp::Max(operand), Some(value)),
+                    AtomicSourceKind::And => (AtomicOp::And(operand), None),
+                    AtomicSourceKind::Or => (AtomicOp::Or(operand), None),
+                    AtomicSourceKind::Xor => (AtomicOp::Xor(operand), None),
+                    AtomicSourceKind::CompareExchange => {
+                        let Some(desired) = unsafe {
+                            self.world.call(self.atomic_operand(&args.at(2), scalar)).await
+                        }? else {
+                            return Ok(None);
+                        };
+                        let failure_expr = args.at(4);
+                        let failure = self.atomic_order(&failure_expr)?;
+                        if !builtin.permits(order, failure) {
+                            return self.fail(failure_expr.span(), "B216", "比较交换失败序不得带 release，也不得强于成功序");
+                        }
+                        (AtomicOp::CompareExchange {
+                            expected: operand,
+                            desired: desired.regs[0],
+                            failure,
+                        }, Some(desired))
+                    }
+                    _ => return self.fail(span, "B158", format!("未知原子操作 {name}")),
+                }
+            };
+            (order, op, stored)
         };
-        let result = self.reg(scalar);
+
+        let result = (!builtin.is_store()).then(|| self.reg(scalar));
         if let Some((target, offset, word)) = location {
             self.atomic_effect(&place, Atomic {
-                result: Some(result),
-                scalar,
-                target,
-                word,
-                offset,
-                op,
-                order,
+                result, scalar, target, word, offset, op, order,
             }, stored.as_ref());
         }
-        Ok(Some(Value {
+        Ok(result.map(|result| Value {
             proof: bounds::Proof::default(),
             literal: false,
             ty: Ty::scalar(scalar),

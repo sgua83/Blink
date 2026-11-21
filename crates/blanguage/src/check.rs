@@ -3262,26 +3262,14 @@ impl<'a> Builder<'a> {
                 format!("{name} 的作用域／能力语义尚未实现，当前编译器明确拒绝"),
             );
         }
-        if name == "atomic_store" {
-            return self.fail(span, "B218", "atomic_store 是语句，没有可绑定的返回值");
+        if let Some(builtin) = atomic::AtomicBuiltin::from_source(name, false) {
+            if builtin.is_store() {
+                return self.fail(span, "B218", "atomic_store 是语句，没有可绑定的返回值");
+            }
+            return unsafe { self.world.call(self.atomic_operation(builtin, name, args, span)).await };
         }
         if name == "tile_barrier" {
             return self.fail(span, "B218", "tile_barrier 是语句，没有可绑定的返回值");
-        }
-        if matches!(
-            name,
-            "atomic_load"
-                | "atomic_add"
-                | "atomic_sub"
-                | "atomic_exchange"
-                | "atomic_compare_exchange"
-                | "atomic_min"
-                | "atomic_max"
-                | "atomic_and"
-                | "atomic_or"
-                | "atomic_xor"
-        ) {
-            return unsafe { self.world.call(self.atomic_value(name, args, span)).await };
         }
         match record{
             Some(Some(ty))=>return unsafe{self.world.call(self.record_values(ty,args.len(),span,
@@ -4505,9 +4493,9 @@ impl<'a> Builder<'a> {
     #[inline(never)]
     async fn expression_statement(&mut self, e: &Expr) -> Result<()> {
         if let ExprKind::Call(name, args) = e.kind()
-            && name == "atomic_store"
+            && let Some(builtin) = atomic::AtomicBuiltin::from_source(name, true)
         {
-            unsafe { self.world.call(self.atomic_store(&args, e.span())).await }?;
+            unsafe { self.world.call(self.atomic_operation(builtin, name, &args, e.span())).await }?;
         } else if let ExprKind::Call(name, args) = e.kind()
             && name == "tile_barrier"
         {

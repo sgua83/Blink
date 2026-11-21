@@ -1,4 +1,5 @@
 module bootstrap.operator_types;
+import bootstrap.c_function;
 // Scalar IDs are the original compiler Scalar order. These records borrow no
 // native containers and carry only actual type facts and the final decision.
 struct Operand {u64 components;u64 rows;u64 columns;u32 scalar;u32 flags;};
@@ -57,3 +58,12 @@ extern "C" void expand_square_matrix(u32 width, bool inverse, MatrixEmitter emit
     requires nonzero(emitter.emit) requires nonzero(emitter.output);
 extern "C" void expand_matrix_binary(Plan plan,u32 left_count,u32 input_count,MatrixEmitter emitter) on cpu
     requires nonzero(emitter.emit) requires nonzero(emitter.output);
+
+// Source operation IDs do not depend on either machine backend's opcode order.
+enum AtomicSourceKind:u32 {
+    Unknown=0; Load=1; Store=2; Add=3; Sub=4; Exchange=5; CompareExchange=6;
+    Min=7; Max=8; And=9; Or=10; Xor=11;
+};
+struct AtomicBuiltin { AtomicSourceKind kind; Access access; u32 arity; u32 order_index; };
+extern "C" AtomicBuiltin source_atomic(address bytes, usize length, bool statement) on cpu;
+extern "C" bool atomic_order_allowed(AtomicSourceKind kind, u32 order, u32 failure) on cpu;

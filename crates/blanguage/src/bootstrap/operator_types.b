@@ -1,4 +1,5 @@
 module bootstrap.operator_types;
+import bootstrap.c_function;
 
 Plan decision(u32 status) on cpu {return Plan(status,0,0,0,0,0,0,0u64,0u64,0u64,0u64);}
 bool floating(u32 scalar) on cpu {return scalar==0||scalar==6;}
@@ -288,4 +289,43 @@ extern "C" void expand_matrix_binary(Plan plan,u32 left_count,u32 input_count,Ma
             emitter.output(emitter.context,scratch);
         }
     }
+}
+
+bool atomic_spelling<const N:u32>(address bytes, usize length, read array<u8,N> expected) on cpu {
+    if (length != usize(N)) { return false; }
+    for (index in 0..N) {
+        if (unsafe_position<u8>(unsafe_address(address_bits(bytes) + u64(index))) != expected[index]) {
+            return false;
+        }
+    }
+    return true;
+}
+extern "C" AtomicBuiltin source_atomic(address bytes, usize length, bool statement) on cpu {
+    if (atomic_spelling(bytes, length, "store")) {
+        return AtomicBuiltin(AtomicSourceKind::Store, Access::Write, 3, 2);
+    }
+    if (statement) { return AtomicBuiltin(AtomicSourceKind::Unknown, Access::Value, 0, 0); }
+    if (atomic_spelling(bytes, length, "load")) {
+        return AtomicBuiltin(AtomicSourceKind::Load, Access::Read, 2, 1);
+    }
+    if (atomic_spelling(bytes, length, "compare_exchange")) {
+        return AtomicBuiltin(AtomicSourceKind::CompareExchange, Access::InOut, 5, 3);
+    }
+    AtomicSourceKind kind;
+    if (atomic_spelling(bytes, length, "add")) { kind = AtomicSourceKind::Add; }
+    else if (atomic_spelling(bytes, length, "sub")) { kind = AtomicSourceKind::Sub; }
+    else if (atomic_spelling(bytes, length, "exchange")) { kind = AtomicSourceKind::Exchange; }
+    else if (atomic_spelling(bytes, length, "min")) { kind = AtomicSourceKind::Min; }
+    else if (atomic_spelling(bytes, length, "max")) { kind = AtomicSourceKind::Max; }
+    else if (atomic_spelling(bytes, length, "and")) { kind = AtomicSourceKind::And; }
+    else if (atomic_spelling(bytes, length, "or")) { kind = AtomicSourceKind::Or; }
+    else if (atomic_spelling(bytes, length, "xor")) { kind = AtomicSourceKind::Xor; }
+    else { return AtomicBuiltin(AtomicSourceKind::Unknown, Access::Value, 0, 0); }
+    return AtomicBuiltin(kind, Access::InOut, 3, 2);
+}
+extern "C" bool atomic_order_allowed(AtomicSourceKind kind, u32 order, u32 failure) on cpu {
+    // Compiler MemoryOrder encodes acquire in bit 0 and release in bit 1.
+    if (kind == AtomicSourceKind::Load) { return (order & 2) == 0; }
+    if (kind == AtomicSourceKind::Store) { return (order & 1) == 0; }
+    return (failure & 2) == 0 && (failure & order) == failure;
 }
