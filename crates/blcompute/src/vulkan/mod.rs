@@ -1135,7 +1135,7 @@ pub struct GpuStorage {
 }
 impl GpuStorage {
     fn page_array_address(&self) -> u64 {
-        let mapped = self.allocation.memory.as_ref().unwrap().pointer();
+        let mapped = self.allocation.mapping().unwrap();
         // PagedBuffer::table initializes the immutable page-array address in the mapped header.
         let [low, high] = unsafe { mapped.cast::<[u32; 2]>().read() };
         u64::from(low) | (u64::from(high) << 32)
@@ -1314,13 +1314,13 @@ impl GpuDataset {
     }
     /// 各实际buffer的Vulkan需求大小之和，不是共享VkDeviceMemory块的去重总额。
     pub fn allocated_bytes(&self) -> u64 {
-        self.allocation.allocated_size
-            + self.pages.iter().map(|p| p.allocated_size).sum::<u64>()
+        self.allocation.range_bytes()
+            + self.pages.iter().map(Allocation::range_bytes).sum::<u64>()
             + self
                 .instances
                 .as_ref()
                 .and_then(|input| input.pointers.as_ref())
-                .map_or(0, |pointers| pointers.allocated_size)
+                .map_or(0, Allocation::range_bytes)
     }
     fn page_records(&self) -> u32 {
         blanguage::spirv::PAGE_BYTES / self.stride
@@ -1432,8 +1432,6 @@ struct Allocation {
     buffer: VkBuffer,
     memory: Option<buffer_memory::Range>,
     size: u64,
-    allocated_size: u64,
-    host_visible: bool,
 }
 impl Allocation {
     fn memory_info(&self, role: GpuBufferRole) -> GpuBufferMemory {
@@ -1479,8 +1477,6 @@ impl Allocation {
                 buffer: 0,
                 memory: None,
                 size,
-                allocated_size: 0,
-                host_visible: flags & 2 != 0,
             };
             let f = &out.inner.functions;
             let device = out.inner.owner.device;
@@ -1493,7 +1489,6 @@ impl Allocation {
                 "vkCreateBuffer",
             )?;
             let (required, dedicated) = buffer_memory::requirements(&out.inner, out.buffer);
-            out.allocated_size = required.size;
             let memory = buffer_memory::allocate(&out.inner, required, dedicated, out.buffer, usage, flags, alignment)?;
             out.memory = Some(memory);
             let memory = out.memory.as_ref().unwrap();
@@ -1504,11 +1499,12 @@ impl Allocation {
             Ok(out)
         }
     }
+    fn range_bytes(&self) -> u64 {
+        self.memory.as_ref().unwrap().bytes()
+    }
     fn mapping(&self) -> Result<*mut u8> {
-        if !self.host_visible {
-            return Err(error("只能映射 host-visible 数据传输内存"));
-        }
-        Ok(self.memory.as_ref().unwrap().pointer())
+        self.memory.as_ref().unwrap().pointer()
+            .ok_or_else(|| error("只能映射 host-visible 数据传输内存"))
     }
     fn write_with<T: Copy>(&self, words: &[T], encode: impl FnOnce(&mut [u32])) -> Result<()> {
         let pointer = self.mapping()?.cast::<u32>();

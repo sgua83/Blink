@@ -280,14 +280,14 @@ impl Acceleration {
         &self.0.built
     }
     pub fn allocated_bytes(&self) -> u64 {
-        self.0.allocation.allocated_size
+        self.0.allocation.range_bytes()
             + self
                 .0
                 .models
                 .as_deref()
                 .unwrap_or_default()
                 .iter()
-                .map(|m| m.0.allocation.allocated_size)
+                .map(|m| m.0.allocation.range_bytes())
                 .sum::<u64>()
     }
     pub(super) fn handle(&self) -> &u64 {

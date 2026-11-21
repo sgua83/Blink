@@ -21,11 +21,11 @@
 | allocation_bytes | 同一原Block成功vkAllocateMemory时的allocationSize，不是当前空闲容量或本buffer独占的整块内存 |
 | memory_type／memory_properties／heap_index | 该次分配的memoryTypeIndex及同一原设备的VkMemoryType属性／heapIndex |
 
-原`bytes()`与`page_count()`继续描述逻辑记录跨度和实际数据页数量；空数据没有payload页，但原绑定表仍存在。原`allocated_bytes()`保持为所有直接buffer的需求区间大小之和，含绑定表与实际实例指针buffer；它不是VkDeviceMemory块的去重总额。逻辑页的最后几个字节、buffer请求末word填充、Vulkan需求对齐和原块中其他区间分别表达。
+原`bytes()`与`page_count()`继续描述逻辑记录跨度和实际数据页数量；空数据没有payload页，但原绑定表仍存在。原`allocated_bytes()`直接累加同一存储各buffer的原Range大小，含绑定表与实际实例指针buffer；它不是VkDeviceMemory块的去重总额。逻辑页的最后几个字节、buffer请求末word填充、Vulkan需求对齐和原块中其他区间分别表达。
 
 一个Block可被多个buffer／数据对象共享，冻结别名还可能重复引用同一buffer。跨对象分析须在相关原所有者仍存活的同一观察范围内，区分逻辑根、buffer、绑定区间与按device／memory识别的分配对象；不能逐项累加`allocation_bytes`当独占显存，也不能把这些句柄保存为长期身份。查询结果是当时元数据，原所有者结束后句柄可以复用，不授予地址访问或延长代码／数据寿命。
 
-本查询不覆盖view引用的子图、实例持有的BLAS／TLAS、纹理、管线、临时传输／scratch或整逻辑设备的全部内存，也不证明物理驻留。最后真实GPU消费者完成前由原GpuDataset／Execution持有存储；Range及最后Block沿原释放链结束，报告没有第二份所有权或常驻统计。完整资源根和AI／B／C观察入口仍待实现。
+本查询不覆盖view引用的子图、实例持有的BLAS／TLAS、纹理、管线、临时传输／scratch或整逻辑设备的全部内存，也不证明物理驻留。最后真实GPU消费者完成前由原GpuDataset／Execution持有存储；宿主访问使用原Block的实际映射地址加上所属Range的偏移。Range与Block沿原释放链结束，映射由Block释放。报告没有第二份所有权或常驻统计。完整资源根和AI／B／C观察入口仍待实现。
 
 标准字段分别依据[VkMemoryAllocateInfo](https://docs.vulkan.org/refpages/latest/refpages/source/VkMemoryAllocateInfo.html)与[VkMemoryRequirements](https://docs.vulkan.org/refpages/latest/refpages/source/VkMemoryRequirements.html)，原分配对象大小与资源需求不可互换。
 

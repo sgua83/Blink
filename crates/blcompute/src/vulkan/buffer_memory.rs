@@ -231,8 +231,9 @@ impl Range {
     pub fn memory(&self) -> VkDeviceMemory {
         self.block.memory
     }
-    pub fn pointer(&self) -> *mut u8 {
-        unsafe { self.block.mapped.add(self.offset as usize) }
+    pub fn pointer(&self) -> Option<*mut u8> {
+        std::ptr::NonNull::new(self.block.mapped)
+            .map(|base| unsafe { base.as_ptr().add(self.offset as usize) })
     }
 }
 impl Drop for Range {
