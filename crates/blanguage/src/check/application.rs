@@ -4353,17 +4353,31 @@ impl Builder<'_> {
 
     fn application_owned_references(&self,place:&Place)->Vec<(DataReference,Vec<Vec<usize>>)>{
         let Place::ApplicationElement{sources,resource,words,..}=place.storage()else{unreachable!()};
-        let mut references=Vec::new();
-        for binding in self.env.values(){for index in 0..binding_element_count(binding){if let Some(data)=binding_element_data(binding,index){
-            for(scope,_,_)in self.application_element_scopes(sources,resource,data,(&self.path,&self.env)){
-                let mut data=data;
-                for fields in scope{data=model_data(data.elements.known(),&fields).unwrap();}
-                let mut paths=Vec::new();Self::owned_element_projections(&data.ty,place.ty(),words,matches!(place,Place::Indexed{..}),0,&mut Vec::new(),&mut paths);
-                if !paths.is_empty(){let mut data=data.clone();data.root.proof.set_view_borrow(0,resource.clone());references.push((DataReference::direct(data),paths));}
+        let mut references = Vec::new();
+        for binding in self.env.values() {
+            let mut collect = |data: &Data| {
+                for (scope, _, _) in self.application_element_scopes(sources, resource, data, (&self.path, &self.env)) {
+                    let mut data = data;
+                    for fields in scope {
+                        data = model_data(data.elements.known(), &fields).unwrap();
+                    }
+                    let mut paths = Vec::new();
+                    Self::owned_element_projections(&data.ty, place.ty(), words, matches!(place, Place::Indexed{..}), 0, &mut Vec::new(), &mut paths);
+                    if !paths.is_empty() {
+                        let mut data = data.clone();
+                        data.root.proof.set_view_borrow(0, resource.clone());
+                        references.push((DataReference::direct(data), paths));
+                    }
+                }
+            };
+            match binding {
+                Binding::DataReference(reference) => collect(&reference.data),
+                _ => view::visit_data(binding, collect),
             }
-        }}}
+        }
         references
     }
+
     pub(super) fn borrowed_element_storage(&self, place: &Place) -> bool {
         let Place::ApplicationElement { sources, resource, .. } = place.storage() else {
             return false;
