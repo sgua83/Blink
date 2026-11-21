@@ -9,14 +9,15 @@ enum Variable { Range(ValueIdentity, Scalar), Atom(Fact) }
 impl Variable {
     fn end(self) -> u128 { match self { Self::Range(_, scalar) => u128::from(scalar.bit_mask())+1, Self::Atom(_) => 2 } }
 }
-#[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(PartialEq, Eq, PartialOrd, Ord)]
 struct Decision { variable: Variable, cells: Vec<(u128, usize)> }
 
 pub(in crate::check) struct Normalizer {
     types: BTreeMap<ValueIdentity, Option<Scalar>>,
     lengths: BTreeMap<ValueIdentity, ValueIdentity>,
-    nodes: Vec<Option<Decision>>,
-    unique: BTreeMap<Decision, usize>,
+    // Ordered keys and numbered consumers share one immutable decision.
+    nodes: Vec<Option<Arc<Decision>>>,
+    unique: BTreeMap<Arc<Decision>, usize>,
     operations: HashMap<(bool, usize, usize), usize>,
     negatives: HashMap<usize, usize>,
     // Retain each original input while its pointer is a local memo key.
@@ -33,7 +34,7 @@ impl Normalizer {
         use crate::compiler::{AnalysisStorage, ConditionStorage};
         ConditionStorage {
             decisions: AnalysisStorage::vector(&self.nodes),
-            unique: AnalysisStorage::entries::<Decision, usize>(self.unique.len(), None),
+            unique: AnalysisStorage::entries::<Arc<Decision>, usize>(self.unique.len(), None),
             operations: AnalysisStorage::entries::<(bool, usize, usize), usize>(
                 self.operations.len(), Some(self.operations.capacity())),
             negatives: AnalysisStorage::entries::<usize, usize>(self.negatives.len(), Some(self.negatives.capacity())),

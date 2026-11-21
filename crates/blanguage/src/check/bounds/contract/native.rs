@@ -133,7 +133,8 @@ unsafe extern "C" fn node_intern(s: Slot) -> usize {
         return i;
     }
     let i = n.nodes.len();
-    n.nodes.push(Some(decision.clone()));
+    let decision = Arc::new(decision);
+    n.nodes.push(Some(Arc::clone(&decision)));
     n.unique.insert(decision, i);
     i
 }
@@ -358,7 +359,7 @@ pub(super) fn operation(normal: &mut Normalizer, a: usize, b: usize, or: bool) -
 struct Negate {
     normal: *mut Normalizer,
     pending: Vec<(usize, bool)>,
-    snapshot: *mut Decision,
+    snapshot: *mut Arc<Decision>,
     cells: Vec<(u128, usize)>,
 }
 unsafe extern "C" fn not_pop(s: Slot) -> Pending {
@@ -427,7 +428,7 @@ unsafe extern "C" {
     fn b_not(context: Slot, root: usize, host: NotHost) -> usize;
 }
 pub(super) fn not(normal: &mut Normalizer, root: usize) -> usize {
-    let mut snapshot = MaybeUninit::<Decision>::uninit();
+    let mut snapshot = MaybeUninit::<Arc<Decision>>::uninit();
     let mut c = Negate {
         normal,
         pending: Vec::new(),
@@ -896,7 +897,7 @@ pub(super) fn import(normal: &mut Normalizer, root: &Clause) -> usize {
 struct Emit {
     normal: *mut Normalizer,
     pending: Vec<(usize, bool)>,
-    snapshot: *mut Decision,
+    snapshot: *mut Arc<Decision>,
     guard: *mut Clause,
     result: *mut Clause,
     facts: Facts,
@@ -1038,7 +1039,7 @@ unsafe extern "C" {
     fn b_emit(context: Slot, root: usize, host: EmitHost);
 }
 pub(super) fn emit(normal: &mut Normalizer, root: usize) -> Clause {
-    let mut snapshot = MaybeUninit::<Decision>::uninit();
+    let mut snapshot = MaybeUninit::<Arc<Decision>>::uninit();
     let mut guard = MaybeUninit::<Clause>::uninit();
     let mut result = MaybeUninit::<Clause>::uninit();
     let mut c = Emit {
