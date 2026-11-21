@@ -3229,7 +3229,7 @@ Device::copy_texture(sources, dimensions, format, address, levels) 沿同一Devi
 
 Device::download_texture(&texture) 显式等待真实 image→buffer 复制和采样布局恢复，返回独立 CPU Texture2D 的完整 mip；源纹理可以继续共享和采样，返回值在源 GPU 引用退出后仍有效。操作从实际图像读出，不缓存原 CPU 像素、不经采样重建颜色、不翻转行。传入另一逻辑 Device 的图像明确报设备归属错误；需要交接时，调用者先用源设备读回，再把该 CPU 数据交给目标设备上传。独立逻辑设备及本机离散／集成两块物理 GPU 的双向显式交接已有原生记录，不表示直接设备间通信或隐式迁移已经完成。Texture::is_complete／wait 仍只观察原图像生产，采样结果仍沿实际提交观察。
 
-二维独立资产 `.bltex` 写入 **BLTEX v2**：8 字节 `BLTEX\0\0\0`，小端 u32 version=2、format、mip_count；format 0／1／2／3／4／5／6 分别为 RGBA32F／RGBA8 UNORM／RGBA8 sRGB／R8 UNORM／RG16 UNORM／RGB10A2 UNORM／R11G11B10 FLOAT。每层为小端 u32 width、height，再跟按行紧密排列的原始 texel，分别每 texel 16／4／4／1／4／4／4 字节，RG16 为小端 R、G 两个 u16；RGB10A2 为小端 u32，R／G／B／A 位于 0..9／10..19／20..29／30..31，R11G11B10同样为小端u32，R／G／B位于0..10／11..21／22..31，5位指数／偏置15，尾数为6／6／5位；零、次正规、正常、Inf／NaN按真实浮点编码解释，不作UNORM转换。文件层间无填充。现有 v1 资产仍明确解释为原 RGBA32F 布局，未知版本／格式直接报错。行方向由资产生产者确定，读取不翻转像素。CPU 资源按真实 u32 维度、可表示的总字节数、完整负载与 mip 布局接收，二维／三维共用原字节大小计算；原生寻址使用 64 位整数，不以 f32 坐标精度设置资源尺寸上限。坐标运算仍遵循实际 f32 精度。GPU 受实际 image2D／image3D 尺寸、内存和所选格式的线性过滤／传输能力限制。二维和三维资产读取同步按层填入对应格式的最终像素存储。磁盘截断可在申请本级载荷之前报告；无磁盘长度的输入沿实际读取逐段扩展同一像素存储。GPU 上传显式构造主机暂存并提交异步复制。
+二维独立资产 `.bltex` 写入 **BLTEX v2**：8 字节 `BLTEX\0\0\0`，小端 u32 version=2、format、mip_count；format 0／1／2／3／4／5／6 分别为 RGBA32F／RGBA8 UNORM／RGBA8 sRGB／R8 UNORM／RG16 UNORM／RGB10A2 UNORM／R11G11B10 FLOAT。每层为小端 u32 width、height，再跟按行紧密排列的原始 texel，分别每 texel 16／4／4／1／4／4／4 字节，RG16 为小端 R、G 两个 u16；RGB10A2 为小端 u32，R／G／B／A 位于 0..9／10..19／20..29／30..31，R11G11B10同样为小端u32，R／G／B位于0..10／11..21／22..31，5位指数／偏置15，尾数为6／6／5位；零、次正规、正常、Inf／NaN按真实浮点编码解释，不作UNORM转换。文件层间无填充。现有 v1 资产仍明确解释为原 RGBA32F 布局，未知版本／格式直接报错。行方向由资产生产者确定，读取不翻转像素。CPU 资源按真实 u32 维度、可表示的总字节数、完整负载与 mip 布局接收，二维／三维共用原字节大小计算；原生寻址使用 64 位整数，不以 f32 坐标精度设置资源尺寸上限。坐标运算仍遵循实际 f32 精度。GPU 受实际 image2D／image3D 尺寸、内存和所选格式的线性过滤／传输能力限制。二维和三维资产读取按层先接收层头。基础尺寸确定允许的层数，后续尺寸沿逐轴减半校验。层头合格后读取本级像素，直接填入对应格式的最终存储。磁盘截断可在申请本级载荷前报告，无磁盘长度的输入沿实际读取逐段扩展同一存储。GPU 上传显式构造主机暂存并提交异步复制。
 
 当前计算入口、源内展开及普通CPU原生调用支持只读二维／三维采样；显式on cpu整域入口与无源obj／lib沿原Frame同步借用实际纹理，GPU整域输入仍见C-003.2.3.1.2.2，GPU独立普通调用仍见C-021.3.1，未解决的 NVIDIA 三维过滤偏差仍见 C-003.2.4.1.2，不宣称全部目标已通过。固定纹理资源数组见下一节；压缩与整数采样、可写图像、二维数组图像、通用 bindless、隐式导数、各向异性、一般资源泛型及运行时自动 mip 构建尚未实现。规范依据 [SPIR-V 标准](https://registry.khronos.org/SPIR-V/specs/unified1/SPIRV.html) 和 [Vulkan 图像格式](https://docs.vulkan.org/refpages/latest/refpages/source/VkFormat.html)。
 
@@ -3237,7 +3237,7 @@ BLEngine 的 `Programs/material/textured.h/.b` 使用同一资源语义实现批
 
 ### 三维体资产与原生传输（Rust SDK）
 
-`Texture3D::new(Vec<TextureMip3D>)`持有原不可变体mip，`TextureMip3D`的width／height／depth与`TextureTexels`共同定义每层真实布局。每层x连续、再y、再z；三轴逐级整除二并至少保留一个texel，可交付合法部分mip链，不自动生成。整链同一实际格式，支持上述六种通道编码，负零、次正规、NaN及所有原始位由字节交接保持；没有解码后的float镜像。构造要求非空、正维度及可表示且完全匹配的载荷／mip布局，不把 f32 坐标精度当成体资产尺寸限制。
+`Texture3D::new(Vec<TextureMip3D>)`持有原不可变体mip，`TextureMip3D`的width／height／depth与`TextureTexels`共同定义每层真实布局。每层x连续、再y、再z；三轴逐级整除二并至少保留一个texel，可交付合法部分mip链，不自动生成。整链同一实际格式，支持上述通道编码，负零、次正规、NaN及所有原始位由字节交接保持；没有解码后的float镜像。构造要求非空、正维度及可表示且完全匹配的载荷／mip布局，不把 f32 坐标精度当成体资产尺寸限制。
 
 `dimensions()`返回基础`[u32;3]`，`mip_count()`与`mip(index)`只读借用原层级；克隆共享同一Arc。`with_address(u,v,w)`消费该资源视图并设置三轴Clamp／Repeat，默认三轴Clamp。`Texture3D::read/write`为显式同步资产I/O，读回新建Clamp视图；寻址配置归使用方，不写入资产。
 

@@ -168,32 +168,57 @@ impl<'a> CpuTextures<'a> {
             CpuTextureBinding { dimension: input.dimension(), descriptor }).collect()
     }
 }
-impl Texture2D {
-    pub fn new(levels: Vec<TextureMip>) -> Result<Self> {
-        if levels.is_empty() {
+struct MipLayout<const D: usize> {
+    levels: usize,
+    next: Option<[u32; D]>,
+}
+impl<const D: usize> MipLayout<D> {
+    fn new(levels: usize) -> Result<Self> {
+        if levels == 0 {
             return Err(error("纹理至少需要一个mip层"));
         }
-        let format = levels[0].pixels.format();
-        let mut expected = None;
-        for level in &levels {
-            if level.width == 0
-                || level.height == 0
-                || level.pixels.format() != format
-                || level.pixels.as_bytes().len()
-                    != texture_bytes([level.width, level.height, 1], format)?
-            {
-                return Err(error("纹理尺寸、格式或负载不满足原生采样ABI"));
-            }
-            if let Some((w, h)) = expected {
-                if (level.width, level.height) != (w, h) {
-                    return Err(error("mip尺寸必须逐级减半并至少保留一个texel"));
-                }
-            }
-            expected = Some(((level.width / 2).max(1), (level.height / 2).max(1)));
+        Ok(Self { levels, next: None })
+    }
+
+    fn layout_error() -> &'static str {
+        if D == 2 { "纹理尺寸、格式或负载不满足原生采样ABI" }
+        else { "三维纹理尺寸、格式或负载不满足原生图像布局" }
+    }
+
+    fn accept(&mut self, dimensions: [u32; D], format: TextureFormat) -> Result<usize> {
+        if dimensions.contains(&0) {
+            return Err(error(Self::layout_error()));
         }
-        let maximum = 32 - levels[0].width.max(levels[0].height).leading_zeros();
-        if levels.len() > maximum as usize {
-            return Err(error("mip层数超过基础尺寸的完整链"));
+        let bytes = dimensions.into_iter().try_fold(format.texel_bytes(), |bytes, extent|
+            bytes.checked_mul(extent as usize).ok_or_else(|| error("纹理层大小溢出")))?;
+        if let Some(expected) = self.next {
+            if dimensions != expected {
+                return Err(error(if D == 2 { "mip尺寸必须逐级减半并至少保留一个texel" }
+                    else { "mip尺寸必须逐轴减半并至少保留一个texel" }));
+            }
+        } else {
+            let maximum = u32::BITS - dimensions.into_iter().max().unwrap().leading_zeros();
+            if self.levels > maximum as usize {
+                return Err(error("mip层数超过基础尺寸的完整链"));
+            }
+        }
+        self.next = Some(dimensions.map(|extent| (extent / 2).max(1)));
+        Ok(bytes)
+    }
+
+    fn check(&mut self, dimensions: [u32; D], format: TextureFormat, pixels: &TextureTexels) -> Result<()> {
+        if pixels.format() != format || pixels.as_bytes().len() != self.accept(dimensions, format)? {
+            return Err(error(Self::layout_error()));
+        }
+        Ok(())
+    }
+}
+impl Texture2D {
+    pub fn new(levels: Vec<TextureMip>) -> Result<Self> {
+        let mut layout = MipLayout::new(levels.len())?;
+        let format = levels[0].pixels.format();
+        for level in &levels {
+            layout.check([level.width, level.height], format, &level.pixels)?;
         }
         Ok(Self {
             levels: levels.into(),
@@ -245,17 +270,19 @@ impl Texture2D {
             _ => return Err(error("不支持的BLTEX版本")),
         };
         let [count] = input.words()?;
+        let mut layout = MipLayout::new(count as usize)?;
         let mut levels = Vec::new();
         for _ in 0..count {
             let [width, height] = input.words()?;
+            let bytes = layout.accept([width, height], format)?;
             levels.push(TextureMip {
                 width,
                 height,
-                pixels: input.pixels([width, height, 1], format)?,
+                pixels: input.pixels(bytes, format)?,
             });
         }
         input.finish()?;
-        Self::new(levels)
+        Ok(Self { levels: levels.into(), address: [TextureAddress::Clamp; 2] })
     }
 }
 
@@ -298,8 +325,7 @@ impl TextureFile {
         Ok(words.map(u32::from_le))
     }
 
-    fn pixels(&mut self, dimensions: [u32; 3], format: TextureFormat) -> Result<TextureTexels> {
-        let bytes = texture_bytes(dimensions, format)?;
+    fn pixels(&mut self, bytes: usize, format: TextureFormat) -> Result<TextureTexels> {
         if self.remaining.is_some_and(|remaining| remaining < bytes as u64) {
             return Err(error("纹理文件不完整"));
         }
@@ -346,10 +372,6 @@ impl TextureFile {
     }
 }
 
-fn texture_bytes(dimensions: [u32; 3], format: TextureFormat) -> Result<usize> {
-    dimensions.into_iter().try_fold(format.texel_bytes(), |bytes, extent|
-        bytes.checked_mul(extent as usize).ok_or_else(|| error("纹理层大小溢出")))
-}
 /// x连续、其次y、最后z；pixels持有原格式的实际体数据。
 pub struct TextureMip3D {
     pub width: u32,
@@ -365,29 +387,10 @@ pub struct Texture3D {
 }
 impl Texture3D {
     pub fn new(levels: Vec<TextureMip3D>) -> Result<Self> {
-        if levels.is_empty() {
-            return Err(error("纹理至少需要一个mip层"));
-        }
+        let mut layout = MipLayout::new(levels.len())?;
         let format = levels[0].pixels.format();
-        let mut expected = None;
         for level in &levels {
-            let dimensions = [level.width, level.height, level.depth];
-            if dimensions.contains(&0) || level.pixels.format() != format
-                || level.pixels.as_bytes().len() != texture_bytes(dimensions, format)?
-            {
-                return Err(error("三维纹理尺寸、格式或负载不满足原生图像布局"));
-            }
-            if let Some(next) = expected {
-                if dimensions != next {
-                    return Err(error("mip尺寸必须逐轴减半并至少保留一个texel"));
-                }
-            }
-            expected = Some(dimensions.map(|n| (n / 2).max(1)));
-        }
-        let base = &levels[0];
-        let maximum = 32 - base.width.max(base.height).max(base.depth).leading_zeros();
-        if levels.len() > maximum as usize {
-            return Err(error("mip层数超过基础尺寸的完整链"));
+            layout.check([level.width, level.height, level.depth], format, &level.pixels)?;
         }
         Ok(Self { levels: levels.into(), address: [TextureAddress::Clamp; 3] })
     }
@@ -431,15 +434,17 @@ impl Texture3D {
         let [format] = input.words()?;
         let format = read_format(format)?;
         let [count] = input.words()?;
+        let mut layout = MipLayout::new(count as usize)?;
         let mut levels = Vec::new();
         for _ in 0..count {
             let [width, height, depth] = input.words()?;
+            let bytes = layout.accept([width, height, depth], format)?;
             levels.push(TextureMip3D {
                 width, height, depth,
-                pixels: input.pixels([width, height, depth], format)?,
+                pixels: input.pixels(bytes, format)?,
             });
         }
         input.finish()?;
-        Self::new(levels)
+        Ok(Self { levels: levels.into(), address: [TextureAddress::Clamp; 3] })
     }
 }
