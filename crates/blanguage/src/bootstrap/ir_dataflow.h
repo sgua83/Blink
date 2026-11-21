@@ -531,6 +531,7 @@ struct ReadHost {
  Host ir;
  cfn<u64,u32> math_outgoing;
  cfn<Node,address> next;
+ cfn<void,address> sample;
  cfn<void,address,u32> child;
  cfn<void,address,address,ReadQueue,usize,usize> store;
  cfn<Node,address,usize> queued;
@@ -553,7 +554,7 @@ extern "C" void read_demand(address pending,usize id,ReadHost host) on cpu
  requires nonzero(host.emit) requires nonzero(host.enqueue_operand);
 extern "C" void place_reads(address input,address pending,Span writes,ReadHost host) on cpu
  requires nonzero(host.ir.inspect) requires nonzero(host.math_outgoing)
- requires nonzero(host.next) requires nonzero(host.child) requires nonzero(host.store)
+ requires nonzero(host.next) requires nonzero(host.sample) requires nonzero(host.child) requires nonzero(host.store)
  requires nonzero(host.queued) requires nonzero(host.enqueue_operand) requires nonzero(host.demand_operand) requires nonzero(host.work_len)
  requires nonzero(host.push) requires nonzero(host.reverse) requires nonzero(host.pop)
  requires nonzero(host.emit) requires nonzero(host.count) requires nonzero(host.read_at)

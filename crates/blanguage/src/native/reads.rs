@@ -34,6 +34,8 @@ struct Pending {
 struct Input<'a> {
     remaining: IntoIter<Inst>,
     current: Option<Inst>,
+    expanded: IntoIter<Inst>,
+    registers: &'a mut Vec<Scalar>,
     writes: &'a [usize],
 }
 
@@ -43,6 +45,7 @@ struct Host {
     ir: dataflow::Host,
     math_outgoing: unsafe extern "C" fn(u32) -> u64,
     next: unsafe extern "C" fn(*mut Input<'_>) -> Node,
+    sample: unsafe extern "C" fn(*mut Input<'_>),
     child: unsafe extern "C" fn(*mut Input<'_>, u32),
     store: unsafe extern "C" fn(*mut Input<'_>, *mut Pending, Queue, usize, usize),
     queued: unsafe extern "C" fn(*const Pending, usize) -> Node,
@@ -69,8 +72,22 @@ unsafe extern "C" {
 
 unsafe extern "C" fn next(input: *mut Input<'_>) -> Node {
     let input = unsafe { &mut *input };
-    input.current = input.remaining.next();
+    input.current = input.expanded.next().or_else(|| input.remaining.next());
     input.current.as_ref().map_or(Node::EMPTY, Node::instruction)
+}
+
+unsafe extern "C" fn sample(input: *mut Input<'_>) {
+    let input = unsafe { &mut *input };
+    let source = unsafe { input.current.take().unwrap_unchecked() };
+    let InstKind::TextureSample { result, texture, coordinate, lod } = source.kind else {
+        // B requests expansion only after inspecting OP_TEXTURE_SAMPLE.
+        unsafe { std::hint::unreachable_unchecked() }
+    };
+    let origin = OperationOrigin {
+        source_site: source.source_site,
+        generated_origin: source.generated_origin,
+    };
+    input.expanded = texture::sample(input.registers, texture, &coordinate, lod, &result, origin).into_iter();
 }
 
 unsafe extern "C" fn child(input: *mut Input<'_>, index: u32) {
@@ -83,7 +100,7 @@ unsafe extern "C" fn child(input: *mut Input<'_>, index: u32) {
         (InstKind::Loop { body, .. }, 1) | (InstKind::Scope(body), 0) => body,
         _ => unsafe { std::hint::unreachable_unchecked() },
     };
-    place(body, input.writes);
+    place(body, input.registers, input.writes);
 }
 
 unsafe extern "C" fn store(input: *mut Input<'_>, pending: *mut Pending, queue: Queue, first: usize, end: usize) {
@@ -194,12 +211,15 @@ unsafe extern "C" fn clear(pending: *mut Pending, kind: Clear, count: usize) {
 const HOST: Host = Host {
     ir: dataflow::HOST,
     math_outgoing: operands::scalar_math_outgoing,
-    next, child, store, queued, enqueue_operand, demand_operand, work_len, push, reverse, pop, emit,
+    next, sample, child, store, queued, enqueue_operand, demand_operand, work_len, push, reverse, pop, emit,
     count, read_at, private_at, retain, clear,
 };
 
-pub(super) fn place(code: &mut Vec<Inst>, writes: &[usize]) {
-    let mut input = Input { remaining: std::mem::take(code).into_iter(), current: None, writes };
+pub(super) fn place(code: &mut Vec<Inst>, registers: &mut Vec<Scalar>, writes: &[usize]) {
+    let mut input = Input {
+        remaining: std::mem::take(code).into_iter(), current: None, expanded: Vec::new().into_iter(),
+        registers, writes,
+    };
     let mut pending = Pending::default();
     unsafe {
         place_reads(ptr::from_mut(&mut input).cast(), ptr::from_mut(&mut pending).cast(), Span::slice(writes), HOST)

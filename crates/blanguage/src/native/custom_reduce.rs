@@ -297,9 +297,9 @@ pub(super) fn emit(
     // Each actual range phase owns its own producers; no value crosses these cuts.
     let mut after_code = stage.code.split_off(body.loop_end);
     let mut loop_code = stage.code.split_off(body.initialization_end);
-    reads::place(&mut stage.code, &stage.writes);
-    reads::place(&mut loop_code, &stage.writes);
-    reads::place(&mut after_code, &stage.writes);
+    reads::place(&mut stage.code, &mut stage.registers, &stage.writes);
+    reads::place(&mut loop_code, &mut stage.registers, &stage.writes);
+    reads::place(&mut after_code, &mut stage.registers, &stage.writes);
     let initialize_end = stage.code.len();
     stage.code.extend(loop_code);
     let loop_end = stage.code.len();

@@ -630,8 +630,7 @@ fn emit_map(
     used: &std::collections::BTreeSet<SharedWord>, layout: crate::ir::dataflow::TileLayout,
 ) -> Result<NativeCode, &'static str> {
     let mut lowered = program.stages[index].clone();
-    texture::lower(&mut lowered);
-    reads::place(&mut lowered.code, &lowered.writes);
+    reads::place(&mut lowered.code, &mut lowered.registers, &lowered.writes);
     let stage = &lowered;
     let (mut graph, phases) = allocation::Graph::new(stage);
     let allocation = Allocation::new(stage, &mut graph);

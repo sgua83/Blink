@@ -203,68 +203,30 @@ unsafe extern "C" fn sample_block(
     }
 }
 
-fn block(code: Vec<Inst>, registers: &mut Vec<Scalar>) -> Vec<Inst> {
-    let mut out = Vec::new();
-    for inst in code {
-        match inst.kind {
-            InstKind::TextureSample { result, texture, coordinate, lod } => {
-                let origin = std::sync::Arc::new(GeneratedOrigin {
-                    reason: GenerationReason::CpuTextureSample,
-                    trigger: Some(GenerationAnchor::CpuTextureSample { sample: OperationOrigin {
-                        source_site: inst.source_site, generated_origin: inst.generated_origin,
-                    } }),
-                });
-                let mut lower = Lower {
-                    registers, origin, texture,
-                    blocks: std::array::from_fn(|_| Vec::new()),
-                    current: SampleBlock::Output,
-                };
-                let host = SampleHost {
-                    context: std::ptr::from_mut(&mut lower).cast(), instruction: sample_instruction,
-                    read_texture: sample_read, block: sample_block,
-                };
-                unsafe {
-                    texture_sample_ir(coordinate.as_ptr(), coordinate.len() as u32, lod, result.as_ptr(), host);
-                }
-                let [code, ..] = lower.blocks;
-                out.extend(code);
-            }
-            InstKind::Scope(body) => {
-                out.push(Inst { kind: InstKind::Scope(block(body, registers)), ..inst });
-            }
-            InstKind::If { condition, yes, no } => {
-                let yes = block(yes, registers);
-                let no = block(no, registers);
-                out.push(Inst { kind: InstKind::If { condition, yes, no }, ..inst });
-            }
-            InstKind::Loop { condition, test, body } => {
-                let condition = block(condition, registers);
-                let body = block(body, registers);
-                out.push(Inst { kind: InstKind::Loop { condition, test, body }, ..inst });
-            }
-            other => out.push(Inst { kind: other, ..inst }),
-        }
+pub(super) fn sample(
+    registers: &mut Vec<Scalar>, texture: TextureSource, coordinate: &[Reg],
+    lod: Reg, result: &[Reg; 4], source: OperationOrigin,
+) -> Vec<Inst> {
+    let origin = std::sync::Arc::new(GeneratedOrigin {
+        reason: GenerationReason::CpuTextureSample,
+        trigger: Some(GenerationAnchor::CpuTextureSample { sample: source }),
+    });
+    let mut lower = Lower {
+        registers, origin, texture,
+        blocks: std::array::from_fn(|_| Vec::new()),
+        current: SampleBlock::Output,
+    };
+    let host = SampleHost {
+        context: std::ptr::from_mut(&mut lower).cast(), instruction: sample_instruction,
+        read_texture: sample_read, block: sample_block,
+    };
+    unsafe {
+        texture_sample_ir(coordinate.as_ptr(), coordinate.len() as u32, lod, result.as_ptr(), host);
     }
-    out
+    let [output, ..] = lower.blocks;
+    output
 }
 
-pub(super) fn lower(stage: &mut Stage) {
-    fn samples(code: &[Inst]) -> bool {
-        code.iter().any(|i| match &(i).kind {
-            InstKind::TextureSample { .. } => true,
-            InstKind::Scope(body) => samples(body),
-            InstKind::If { yes, no, .. } => samples(yes) || samples(no),
-            InstKind::Loop {
-                condition, body, ..
-            } => samples(condition) || samples(body),
-            _ => false,
-        })
-    }
-    if !samples(&stage.code) {
-        return;
-    }
-    stage.code = block(std::mem::take(&mut stage.code), &mut stage.registers);
-}
 impl Emitter<'_> {
     pub(super) fn texture_access(
         &mut self, texture: TextureSource, kind: TextureAccessKind,

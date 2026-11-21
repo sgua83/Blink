@@ -227,8 +227,7 @@ fn emit_value(
         element_guarantees: Vec::new(),
         cross_access: Vec::new(),
     };
-    texture::lower(&mut stage);
-    reads::place(&mut stage.code, &stage.writes);
+    reads::place(&mut stage.code, &mut stage.registers, &stage.writes);
     let (mut graph, _) = allocation::Graph::with_live(
         &stage,
         body.outputs

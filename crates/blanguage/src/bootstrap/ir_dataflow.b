@@ -2139,7 +2139,7 @@ bool binding_written(Span writes,usize binding) on cpu {
 
 extern "C" void place_reads(address input,address pending,Span writes,ReadHost host) on cpu
  requires nonzero(host.ir.inspect) requires nonzero(host.math_outgoing)
- requires nonzero(host.next) requires nonzero(host.child) requires nonzero(host.store)
+ requires nonzero(host.next) requires nonzero(host.sample) requires nonzero(host.child) requires nonzero(host.store)
  requires nonzero(host.queued) requires nonzero(host.enqueue_operand) requires nonzero(host.demand_operand) requires nonzero(host.work_len)
  requires nonzero(host.push) requires nonzero(host.reverse) requires nonzero(host.pop)
  requires nonzero(host.emit) requires nonzero(host.enqueue_operand) requires nonzero(host.count) requires nonzero(host.read_at)
@@ -2149,6 +2149,7 @@ extern "C" void place_reads(address input,address pending,Span writes,ReadHost h
   if(address_bits(node.data)==0u64){break;}
   View inst=host.ir.inspect(node);
   u32 tag=inst.tag;
+  if(tag==OP_TEXTURE_SAMPLE){host.sample(input);continue;}
   if(tag==OP_CONSTANT||tag==OP_INDEX_VALUE||tag==OP_UNARY||tag==OP_BINARY||tag==OP_INTEGER_DIVIDE||
      tag==OP_CAST||tag==OP_SELECT_VALUE||(tag==OP_MATH&&host.math_outgoing(u32(inst.b))==0u64)) {
    host.store(input,pending,ReadQueue::Value,0u64,0u64);
