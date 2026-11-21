@@ -917,8 +917,10 @@ impl Device {
     }
     /// 显式复制闭合只读资源图；共享来源在本次传输内只复制一次。
     pub fn upload(&self, data: impl Into<crate::cpu::CpuDataset>) -> Result<GpuDataset> {
+        let data = data.into();
+        transfer::Upload::accept(&data)?;
         let mut upload = transfer::Upload::new(self);
-        let root = upload.record_root(data.into())?;
+        let root = upload.record_root(data)?;
         Ok(upload.submit()?.root(root))
     }
     pub fn upload_with_views(
@@ -1013,6 +1015,7 @@ impl Device {
         bindings: impl Into<DomainBindings<crate::cpu::CpuDataset>>,
     ) -> Result<DomainBindings<GpuDataset>> {
         let DomainBindings { datasets, domains } = bindings.into();
+        datasets.iter().try_for_each(transfer::Upload::accept)?;
         let mut upload = transfer::Upload::new(self);
         let roots = datasets
             .into_iter()

@@ -141,15 +141,15 @@ impl<'a> Upload<'a> {
         }
     }
 
-    fn accept(data: &CpuDataset) -> Result<()> {
+    pub(super) fn accept(data: &CpuDataset) -> Result<()> {
         if let CpuDataset::Owned(data) = data {
             data.require_views()?;
         }
         Ok(())
     }
 
+    // The upload entry point has accepted this CPU binding.
     pub(super) fn record_root(&mut self, data: CpuDataset) -> Result<UploadRoot> {
-        Self::accept(&data)?;
         match data {
             CpuDataset::Owned(data) => self.record(
                 data.stride, data.count, &data.words, &data.views.sources,
