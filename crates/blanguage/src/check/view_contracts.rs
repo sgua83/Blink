@@ -2200,14 +2200,14 @@ fn memory_events(function: &Function) -> impl Iterator<Item = (usize, Option<&Ca
 
 fn memory_use_effect(
     evaluation: &mut BorrowEvaluation<'_>, usages: &[Use], resolved: &ScalarValues,
-    consumer: &mut MemoryConsumers<'_>,
+    consumer: &mut MemoryConsumers<'_>, first_path: impl Fn() -> bounds::Clause,
 ) -> address::MemoryEffect {
     let mut effect = address::MemoryEffect::default();
-    for usage in usages {
+    for (index, usage) in usages.iter().enumerate() {
         if let Requirement::Memory { borrow, access: Some(access), written, .. } = &usage.requirement {
             if matches!(consumer, MemoryConsumers::Snapshot) && !access.writes() { continue; }
             let borrow = evaluation.evaluate(borrow).substitute_values(resolved);
-            let path = || usage.path.substitute_values(resolved);
+            let path = || if index == 0 { first_path() } else { usage.path.substitute_values(resolved) };
             let written = std::cell::LazyCell::new(|| {
                 written.as_ref().map(|proof| proof.substitute_values(resolved))
             });
@@ -2351,16 +2351,18 @@ fn finish_function(
                 (false, true) => MemoryConsumers::SnapshotAndIr(effects.entry(*target).or_default()),
                 (false, false) => MemoryConsumers::Ir(effects.entry(*target).or_default()),
             };
-            let effect = if let Some(call) = call {
-                call_memory_effect(&mut evaluation, call, &resolved, &mut consumer)
-            } else {
-                memory_use_effect(&mut evaluation, usages, &resolved, &mut consumer)
+            let (effect, scope) = {
+                let path = std::cell::LazyCell::new(|| usage.path.substitute_values(&resolved));
+                let effect = if let Some(call) = call {
+                    call_memory_effect(&mut evaluation, call, &resolved, &mut consumer)
+                } else {
+                    memory_use_effect(&mut evaluation, usages, &resolved, &mut consumer, || (*path).clone())
+                };
+                let scope = (snapshots.is_some() && !effect.has_external_write())
+                    .then(|| bounds::proof_scope(&path, &BTreeMap::new()));
+                (effect, scope)
             };
             if let Some(snapshots) = snapshots {
-                let scope = (!effect.has_external_write()).then(|| {
-                    let path = usage.path.substitute_values(&resolved);
-                    bounds::proof_scope(&path, &BTreeMap::new())
-                });
                 for (component, snapshot) in snapshots.iter().enumerate() {
                     let proof = if let Some(scope) = &scope {
                         let position = match &snapshot.position {
@@ -2405,7 +2407,8 @@ fn finish_function(
             if let Some(call) = call {
                 call_memory_effect(&mut evaluation, call, &resolved, &mut consumer);
             } else {
-                memory_use_effect(&mut evaluation, usages, &resolved, &mut consumer);
+                memory_use_effect(&mut evaluation, usages, &resolved, &mut consumer,
+                    || usages[0].path.substitute_values(&resolved));
             }
         }
     }
