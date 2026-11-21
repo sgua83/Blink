@@ -145,16 +145,73 @@ pub(super) struct DescriptorImageInfo {
     view: u64,
     layout: u32,
 }
+pub(super) struct Sampler {
+    inner: Rc<Inner>,
+    handle: u64,
+    address: [crate::TextureAddress; 3],
+}
+impl Sampler {
+    fn slot(address: [crate::TextureAddress; 3]) -> usize {
+        address.into_iter().enumerate().fold(0, |slot, (axis, mode)|
+            slot | (usize::from(mode == crate::TextureAddress::Repeat) << axis))
+    }
+}
+impl Inner {
+    fn sampler(self: &Rc<Self>, address: [crate::TextureAddress; 3]) -> Result<Rc<Sampler>> {
+        let mut samplers = self.samplers.borrow_mut();
+        let slot = &mut samplers[Sampler::slot(address)];
+        if let Some(sampler) = slot.upgrade() {
+            return Ok(sampler);
+        }
+        let mode = |axis: usize| match address[axis] {
+            crate::TextureAddress::Clamp => 2,
+            crate::TextureAddress::Repeat => 0,
+        };
+        let info = SamplerCreateInfo {
+            kind: 31,
+            next: null(),
+            flags: 0,
+            mag_filter: 1,
+            min_filter: 1,
+            mipmap_mode: 1,
+            address_u: mode(0),
+            address_v: mode(1),
+            address_w: mode(2),
+            mip_bias: 0.0,
+            anisotropy: 0,
+            max_anisotropy: 1.0,
+            compare: 0,
+            compare_op: 7,
+            min_lod: 0.0,
+            // VK_LOD_CLAMP_NONE. The image view supplies the actual mip range.
+            max_lod: 1000.0,
+            border: 0,
+            unnormalized: 0,
+        };
+        let mut handle = 0;
+        check(
+            unsafe { (self.functions.vkCreateSampler)(self.owner.device, &info, null(), &mut handle) },
+            "vkCreateSampler",
+        )?;
+        let sampler = Rc::new(Sampler { inner: self.clone(), handle, address });
+        *slot = Rc::downgrade(&sampler);
+        Ok(sampler)
+    }
+}
+impl Drop for Sampler {
+    fn drop(&mut self) {
+        self.inner.samplers.borrow_mut()[Self::slot(self.address)] = std::rc::Weak::new();
+        unsafe { (self.inner.functions.vkDestroySampler)(self.inner.owner.device, self.handle, null()) };
+    }
+}
 pub(super) struct Storage {
     inner: Rc<Inner>,
     image: u64,
     memory: u64,
     view: u64,
-    sampler: u64,
     allocated_bytes: u64,
     dimensions: [u32; 3],
     mips: u32,
-    address: [crate::TextureAddress; 3],
     format: crate::TextureFormat,
 }
 impl Storage {
@@ -171,6 +228,7 @@ impl Storage {
 // 最后一个图像引用结束时，尚在复制的存储交回原生产执行。
 struct Image {
     storage: ManuallyDrop<Storage>,
+    sampler: Rc<Sampler>,
     produced: Rc<Execution>,
 }
 impl Drop for Image {
@@ -192,7 +250,7 @@ impl<const D: usize> Texture<D> {
         self.0.storage.format
     }
     pub fn address(&self) -> [crate::TextureAddress; D] {
-        std::array::from_fn(|i| self.0.storage.address[i])
+        std::array::from_fn(|i| self.0.sampler.address[i])
     }
     pub fn dimensions(&self) -> [u32; D] {
         std::array::from_fn(|i| self.0.storage.dimensions[i])
@@ -218,7 +276,7 @@ impl<const D: usize> Texture<D> {
     }
     pub(super) fn descriptor(&self) -> DescriptorImageInfo {
         DescriptorImageInfo {
-            sampler: self.0.storage.sampler,
+            sampler: self.0.sampler.handle,
             view: self.0.storage.view,
             layout: 5,
         }
@@ -338,9 +396,9 @@ impl Device {
             }
         }
         let dependencies = dependencies.prepare()?;
-        let texture = self.create_image::<2>([dimensions[0], dimensions[1], 1],
+        let (texture, sampler) = self.create_image::<2>([dimensions[0], dimensions[1], 1],
             [address[0], address[1], crate::TextureAddress::Clamp], format, levels.len() as u32)?;
-        let texture = self.write_image(texture, None, dependencies, |commands, texture| {
+        let texture = self.write_image(texture, sampler, None, dependencies, |commands, texture| {
             commands.barrier(source_stage, 0x1000, source_access, 0x800);
             let mut size = dimensions;
             for (mip, level) in levels.iter().enumerate() {
@@ -359,7 +417,7 @@ impl Device {
     }
     fn upload_image<'a, const D: usize>(&self, dimensions: [u32; 3], address: [crate::TextureAddress; 3],
         format: crate::TextureFormat, levels: impl ExactSizeIterator<Item = &'a crate::TextureTexels>) -> Result<Texture<D>> {
-        let texture = self.create_image::<D>(dimensions, address, format, levels.len() as u32)?;
+        let (texture, sampler) = self.create_image::<D>(dimensions, address, format, levels.len() as u32)?;
         let (copies, bytes) = mip_copies(dimensions, texture.mips, format.texel_bytes() as u64);
         let staging = Allocation::new(self.inner.clone(), bytes, 1, 6, 1)?;
         let mapped = staging.mapping()?;
@@ -372,7 +430,7 @@ impl Device {
             }
         }
         let buffer = staging.buffer;
-        self.write_image(texture, Some(staging), Dependencies::Empty, |commands, texture| {
+        self.write_image(texture, sampler, Some(staging), Dependencies::Empty, |commands, texture| {
             unsafe {
                 (self.inner.functions.vkCmdCopyBufferToImage)(
                     commands.command, buffer, texture.image, 7, copies.len() as u32, copies.as_ptr(),
@@ -381,7 +439,7 @@ impl Device {
         })
     }
     fn create_image<const D: usize>(&self, dimensions: [u32; 3], address: [crate::TextureAddress; 3],
-        format: crate::TextureFormat, mips: u32) -> Result<Storage> {
+        format: crate::TextureFormat, mips: u32) -> Result<(Storage, Rc<Sampler>)> {
         let inner = self.inner.clone();
         let native_format = match format {
             crate::TextureFormat::Rgba32Float => 109,
@@ -425,11 +483,9 @@ impl Device {
                 image: 0,
                 memory: 0,
                 view: 0,
-                sampler: 0,
                 allocated_bytes: 0,
                 dimensions,
                 mips,
-                address,
                 format,
             };
             let f = &inner.functions;
@@ -488,43 +544,10 @@ impl Device {
                 (f.vkCreateImageView)(device, &vi, null(), &mut texture.view),
                 "vkCreateImageView",
             )?;
-            let si = SamplerCreateInfo {
-                kind: 31,
-                next: null(),
-                flags: 0,
-                mag_filter: 1,
-                min_filter: 1,
-                mipmap_mode: 1,
-                address_u: match texture.address[0] {
-                    crate::TextureAddress::Clamp => 2,
-                    crate::TextureAddress::Repeat => 0,
-                },
-                address_v: match texture.address[1] {
-                    crate::TextureAddress::Clamp => 2,
-                    crate::TextureAddress::Repeat => 0,
-                },
-                address_w: match texture.address[2] {
-                    crate::TextureAddress::Clamp => 2,
-                    crate::TextureAddress::Repeat => 0,
-                },
-                mip_bias: 0.0,
-                anisotropy: 0,
-                max_anisotropy: 1.0,
-                compare: 0,
-                compare_op: 7,
-                min_lod: 0.0,
-                max_lod: (texture.mips - 1) as f32,
-                border: 0,
-                unnormalized: 0,
-            };
-            check(
-                (f.vkCreateSampler)(device, &si, null(), &mut texture.sampler),
-                "vkCreateSampler",
-            )?;
-            Ok(texture)
+            Ok((texture, inner.sampler(address)?))
         }
     }
-    fn write_image<const D: usize>(&self, texture: Storage, staging: Option<Allocation>,
+    fn write_image<const D: usize>(&self, texture: Storage, sampler: Rc<Sampler>, staging: Option<Allocation>,
         dependencies: Dependencies, record: impl FnOnce(&Commands, &Storage)) -> Result<Texture<D>> {
         let f = &self.inner.functions;
         let commands = Commands::new(self.inner.clone())?;
@@ -585,7 +608,7 @@ impl Device {
             ExecutionResources::ImageCopy { commands, _staging: staging, discarded: None },
             dependencies,
         )?;
-        Ok(Texture(Rc::new(Image { storage: ManuallyDrop::new(texture), produced })))
+        Ok(Texture(Rc::new(Image { storage: ManuallyDrop::new(texture), sampler, produced })))
     }
     /// 显式同步读回真实图像的全部 mip；返回独立 CPU 存储并恢复采样布局。
     pub fn download_texture(&self, source: &Texture) -> Result<crate::Texture2D> {
@@ -693,9 +716,6 @@ impl Drop for Storage {
         unsafe {
             let f = &self.inner.functions;
             let device = self.inner.owner.device;
-            if self.sampler != 0 {
-                (f.vkDestroySampler)(device, self.sampler, null());
-            }
             if self.view != 0 {
                 (f.vkDestroyImageView)(device, self.view, null());
             }
