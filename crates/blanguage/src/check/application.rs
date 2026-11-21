@@ -3281,9 +3281,11 @@ impl Builder<'_> {
             self.application_handle_available(value.root.identity(), span, &[],&self.path)?;
         }
         let interface = unsafe { self.world.call(self.prepare_domain(input, target, element_inputs, &bound_parameters)).await }?;
-        for &(left, right) in &interface.length_requirements {
-            if !self.lengths_equal(&data[left].length, &data[right].length) {
-                return self.fail(span, "B226", "整域调用前未证明same_length数据集长度关系");
+        if let DomainInput::Declaration { .. } = input {
+            for &(left, right) in &interface.length_requirements {
+                if !self.lengths_equal(&data[left].length, &data[right].length) {
+                    return self.fail(span, "B226", "整域调用前未证明same_length数据集长度关系");
+                }
             }
         }
         for (value, buffer) in data.iter().zip(&interface.buffers) {
@@ -3472,27 +3474,19 @@ impl Builder<'_> {
         prefix_requirements.sort();
         prefix_requirements.dedup();
 
-        let mut contracts = Vec::new();
+        let mut length_requirements = Vec::new();
         let mut groups: Vec<usize> = Vec::new();
-        for (index, argument) in args.iter().enumerate() {
-            let Argument::BorrowedData(data) = argument else { continue; };
+        for (binding, (_, data)) in captured.iter().enumerate() {
             let representative = groups.iter().copied().find(|&previous| {
-                let Argument::BorrowedData(other) = &args[previous] else { return false; };
-                self.lengths_equal(&data.length, &other.length)
+                self.lengths_equal(&data.length, &captured[previous].1.length)
             });
             if let Some(previous) = representative {
-                contracts.push(FunctionContract {
-                    kind: ContractKind::Requires,
-                    predicate: ContractPredicate::SameLength {
-                        left: params[previous].name.clone(),
-                        right: params[index].name.clone(),
-                    },
-                    span: statement.span(),
-                });
+                length_requirements.push((previous, binding));
             } else {
-                groups.push(index);
+                groups.push(binding);
             }
         }
+        length_requirements.sort_unstable();
         let mut element_inputs = Vec::new();
         for (binding, (access, source)) in captured.iter().enumerate() {
             if !access.reads() || *access == Access::Atomic { continue; }
@@ -3527,8 +3521,9 @@ impl Builder<'_> {
         let parameters=Arc::<[Param]>::from(params);
         let site=self.source_at(statement.span(),SourceSyntax::Statement);
         unsafe { self.world.call(self.application_execute(
-            DomainInput::Parallel{owner:&owner,name:&name,parameters:&parameters,contracts:&contracts,
-                prefix_requirements:&prefix_requirements,statement,element,domain,body,site:&site},
+            DomainInput::Parallel{owner:&owner,name:&name,parameters:&parameters,
+                length_requirements:&length_requirements,prefix_requirements:&prefix_requirements,
+                statement,element,domain,body,site:&site},
             args,Target::Cpu,statement.span(),&element_inputs,
         )).await }?;
         Ok(())

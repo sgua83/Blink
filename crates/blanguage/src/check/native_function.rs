@@ -2973,7 +2973,7 @@ async fn build_domain(
         element_inputs:BTreeMap::new(),
         returned: None,
         written: vec![None; bound_parameters.len()],
-        requires: bound_contracts.into_owned().into_iter().map(|contract| (contract.kind, contract.predicate)).collect(),
+        requires: bound_contracts.into_iter().map(|contract| (contract.kind, contract.predicate)).collect(),
         target: Target::Cpu,
         frame: false,
         domain: Some(interface),

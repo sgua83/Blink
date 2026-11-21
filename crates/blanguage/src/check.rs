@@ -416,7 +416,7 @@ enum DomainInput<'a> {
         owner: &'a crate::generics::Instance,
         name: &'a str,
         parameters: &'a Arc<[Param]>,
-        contracts: &'a [FunctionContract],
+        length_requirements: &'a [(usize, usize)],
         prefix_requirements: &'a [PrefixRelation],
         statement: &'a Stmt,
         element: &'a str,
@@ -451,12 +451,6 @@ impl<'a> DomainInput<'a> {
             Self::Parallel { parameters, .. } => Ok(Cow::Borrowed(parameters)),
         }
     }
-    fn contracts(self) -> Cow<'a, [FunctionContract]> {
-        match self {
-            Self::Declaration { instance, .. } => Cow::Owned(instance.contracts().collect()),
-            Self::Parallel { contracts, .. } => Cow::Borrowed(contracts),
-        }
-    }
     fn source_origin(self)->Option<SourceOrigin> {
         match self {Self::Declaration { instance, .. }=>instance.definition.source_origin(),Self::Parallel{..}=>None}
     }
@@ -481,15 +475,15 @@ fn invalid_kernel_interface(input: DomainInput<'_>) -> Diagnostic {
     }
 }
 
-async fn expand_domain<'a>(
+async fn expand_domain(
     world: &World,
-    input: DomainInput<'a>,
+    input: DomainInput<'_>,
     parameters: &[Param],
     mut uniform_types: Option<&mut dyn Iterator<Item = Ty>>,
     functions: &mut native_function::Module,
     element_inputs: &[ElementFact],
     mut entry: Option<&mut native_function::DomainEntry>,
-) -> Result<(ExpandedDomain, Cow<'a, [FunctionContract]>)> {
+) -> Result<(ExpandedDomain, Vec<FunctionContract>)> {
     let name = input.name();
     let d = &input.owner().definition;
     let mut buffers = Vec::new();
@@ -586,18 +580,21 @@ async fn expand_domain<'a>(
         prefix_requirements: Vec::new(),
         prefix_guarantees: Vec::new(), element_requirements: Vec::new(), element_guarantees: Vec::new(), length_requirements: Vec::new(), imports: BTreeMap::new(),
     };
-    let bound_contracts = input.contracts();
-    program.length_requirements = contracts::root_lengths(&env, d, &bound_contracts)?;
-    match input {
-        DomainInput::Parallel { prefix_requirements, .. } => {
+    let bound_contracts = match input {
+        DomainInput::Parallel { length_requirements, prefix_requirements, .. } => {
+            program.length_requirements.extend_from_slice(length_requirements);
             program.prefix_requirements.extend_from_slice(prefix_requirements);
+            Vec::new()
         }
-        DomainInput::Declaration { .. } => {
-            program.prefix_requirements = prefix::relations(&program, &env, d, &bound_contracts, ContractKind::Requires)?;
-            program.prefix_guarantees = prefix::relations(&program, &env, d, &bound_contracts, ContractKind::Ensures)?;
-            program.element_requirements = unsafe { world.call(prefix::element_requirements(world, &program.buffers, &env, input.owner(), &bound_contracts)).await }?;
+        DomainInput::Declaration { instance, .. } => {
+            let contracts: Vec<_> = instance.contracts().collect();
+            program.length_requirements = contracts::root_lengths(&env, d, &contracts)?;
+            program.prefix_requirements = prefix::relations(&program, &env, d, &contracts, ContractKind::Requires)?;
+            program.prefix_guarantees = prefix::relations(&program, &env, d, &contracts, ContractKind::Ensures)?;
+            program.element_requirements = unsafe { world.call(prefix::element_requirements(world, &program.buffers, &env, instance, &contracts)).await }?;
+            contracts
         }
-    }
+    };
     program.element_requirements.extend_from_slice(element_inputs);
     program.element_requirements.sort();
     program.element_requirements.dedup();
