@@ -13,6 +13,52 @@ u8 argument_byte(CliArgument argument, u64 index) on cpu {
     return unsafe_position<u8>(unsafe_address(address_bits(argument.bytes) + index));
 }
 
+void write_stem_byte(address output, u64 index, u8 value) on cpu {
+    unsafe_position<u8>(unsafe_address(address_bits(output) + index)) = value;
+}
+
+extern "C" u64 write_export_stem(address name, u64 length, u64 ordinal, address output) on cpu {
+    CliArgument input = CliArgument(name, length, 1u64);
+    u64 source = 0u64;
+    u64 written = 0u64;
+    while (source < length) {
+        u8 byte = argument_byte(input, source);
+        if (byte == 60) { break; }
+        source += 1u64;
+        if (byte == 58 && source < length && argument_byte(input, source) == 58) {
+            source += 1u64;
+            byte = u8(95);
+        } else if (byte == 46) {
+            byte = u8(95);
+        }
+        write_stem_byte(output, written, byte);
+        written += 1u64;
+    }
+    if (source == length) { return written; }
+
+    array<u8,10> suffix = ".instance-";
+    for (index in 0..10) {
+        write_stem_byte(output, written, suffix[index]);
+        written += 1u64;
+    }
+
+    u64 digits = 1u64;
+    u64 remaining = ordinal / 10u64;
+    while (remaining != 0u64) {
+        digits += 1u64;
+        remaining /= 10u64;
+    }
+    u64 end = written + digits;
+    u64 next = end;
+    remaining = ordinal;
+    while (next > written) {
+        next -= 1u64;
+        write_stem_byte(output, next, u8(48u64 + remaining % 10u64));
+        remaining /= 10u64;
+    }
+    return end;
+}
+
 bool is_token<const N:u32 in {2,3,4,5,6,7,8,9,10,14,21}>(CliArgument argument, read array<u8,N> token) on cpu {
     if (argument.length != u64(N)) { return false; }
     u32 index = 0;

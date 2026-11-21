@@ -80,6 +80,9 @@ struct CompileCommandLine {
     u64 has_parameter_limit;
 };
 
+// The output has room for length + 30 bytes. The result is its written length.
+extern "C" u64 write_export_stem(address name, u64 length, u64 ordinal, address output) on cpu;
+
 // The caller owns count role bytes and enough CPU slots for the longest argument.
 extern "C" CompileCommandLine parse_compile_arguments(address arguments, u64 count, address roles, address cpus) on cpu;
 

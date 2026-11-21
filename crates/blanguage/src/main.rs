@@ -75,6 +75,8 @@ unsafe extern "C" {
         roles: *mut u8,
         cpus: *mut u32,
     ) -> CompileCommandLine;
+    #[link_name = "bootstrap.cli::write_export_stem"]
+    fn write_export_stem(name: *const u8, length: usize, ordinal: usize, output: *mut u8) -> usize;
 }
 
 impl CompileError {
@@ -233,28 +235,29 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             compilation.open_generics.join(", ")
         );
     }
-    let programs: Vec<&blanguage::ir::Program> = compilation
-        .programs
-        .iter()
-        .map(|p| &**p)
-        .chain(compilation.templates.iter().map(|p| &**p))
-        .collect();
-    for p in &programs {
+    let programs = compilation.programs.iter().map(|p| &**p)
+        .chain(compilation.templates.iter().map(|p| &**p));
+    for p in programs.clone() {
         print!("{}", p.describe());
     }
     if has_output {
         let out = PathBuf::from(args.get(line.output_index).ok_or("缺少输出目录")?);
         std::fs::create_dir_all(&out)?;
-        for (index, p) in programs.iter().enumerate() {
-            // 类型的限定名保留在 layout；导出文件不使用 Windows 禁止的尖括号。
-            let stem = if let Some((base, _)) = p.name().split_once('<') {
-                format!("{}.instance-{index}", base.replace("::", "_").replace('.', "_"))
-            } else {
-                p.name().replace("::", "_").replace('.', "_")
+        let mut stem = Vec::new();
+        for (index, p) in programs.enumerate() {
+            let name = p.name();
+            stem.clear();
+            stem.reserve(name.len() + ".instance-".len() + 20);
+            let stem = unsafe {
+                // B initializes the final stem in the reserved bytes. Only ASCII
+                // separators change and the optional suffix is ASCII.
+                let length = write_export_stem(name.as_ptr(), name.len(), index, stem.as_mut_ptr());
+                stem.set_len(length);
+                std::str::from_utf8_unchecked(&stem)
             };
-            export::program(&compiler, p, &out, &stem)?;
+            export::program(&compiler, p, &out, stem)?;
         }
-    } else if programs.is_empty() {
+    } else if compilation.programs.is_empty() && compilation.templates.is_empty() {
         println!("library {} checked", path.display());
     }
     Ok(())
