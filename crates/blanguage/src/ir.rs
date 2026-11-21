@@ -1703,7 +1703,7 @@ pub(crate) mod rewrite;
 mod tile;
 pub use tile::SharedWord;
 #[cfg(feature = "compiler")]
-pub(crate) use tile::TilePhase;
+pub(crate) use tile::{PRIVATE_LIVE_HOST, PrivateLiveHost, TilePhase};
 #[cfg(feature = "compiler")]
 pub(crate) use dataflow::private_spans;
 #[cfg(feature = "compiler")]

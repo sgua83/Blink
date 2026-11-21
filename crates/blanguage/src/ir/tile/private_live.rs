@@ -1,27 +1,14 @@
 //! B propagates liveness; the original IR and sets keep their native ownership.
-use super::{BTreeSet, Inst, InstKind, PrivateSlot, Reg};
+use super::{BTreeSet, Inst, PrivateSlot, Reg};
+use crate::ir::dataflow::{self, Span};
 type Slots = BTreeSet<PrivateSlot>;
 
-#[repr(C)]
-#[derive(Clone, Copy)]
-struct Block { instructions: *const Inst, count: usize }
-impl Block {
-    fn from(code: &[Inst]) -> Self { Self { instructions: code.as_ptr(), count: code.len() } }
-    const EMPTY: Self = Self { instructions: std::ptr::null(), count: 0 };
-}
-#[repr(u32)]
-enum Kind { Ordinary, If, Loop, Scope, Exit, Break, Continue, LocalRead, LocalWrite }
-#[repr(C)]
-struct Node {
-    first: Block, second: Block, instruction: *const Inst,
-    first_slot: usize, second_slot: usize, kind: Kind,
-}
 #[repr(u32)]
 enum Action { Copy, Union, InsertRegister, RemoveRegister, InsertLocal, RemoveLocal, Swap }
 type Change = unsafe extern "C" fn(Action, *mut Slots, *const Slots, usize);
 #[repr(C)]
-struct Host {
-    read_node: unsafe extern "C" fn(Block, usize) -> Node,
+pub(crate) struct Host {
+    ir: dataflow::Host,
     kill: unsafe extern "C" fn(*const Inst, *mut Slots),
     read: unsafe extern "C" fn(*const Inst, *mut Slots),
     clone_set: unsafe extern "C" fn(*const Slots) -> *mut Slots,
@@ -30,37 +17,16 @@ struct Host {
 }
 unsafe extern "C" {
     #[link_name = "bootstrap.stage_fusion::private_before"]
-    fn native_before(code: Block, live: *mut Slots, break_live: *const Slots,
+    fn native_before(code: Span, live: *mut Slots, break_live: *const Slots,
         continue_live: *const Slots, exit_live: *const Slots, empty: *const Slots, host: Host);
     #[link_name = "bootstrap.stage_fusion::private_loop"]
-    fn native_loop(condition: Block, test: Reg, body: Block, after: *const Slots,
+    fn native_loop(condition: Span, test: Reg, body: Span, after: *const Slots,
         break_live: *const Slots, continue_live: *const Slots, exit_live: *const Slots,
         result: *mut Slots, empty: *const Slots, host: Host);
     #[link_name = "bootstrap.stage_fusion::private_phase_step"]
     fn native_phase_step(inst: *const Inst, live: *mut Slots, saved: *mut Slots, host: Host);
 }
 
-unsafe extern "C" fn read_node(block: Block, index: usize) -> Node {
-    let inst = unsafe { &*block.instructions.add(index) };
-    let mut node = Node { first: Block::EMPTY, second: Block::EMPTY, instruction: inst,
-        first_slot: 0, second_slot: 0, kind: Kind::Ordinary };
-    match &inst.kind {
-        InstKind::If { condition, yes, no } => {
-            node.kind = Kind::If; node.first = Block::from(yes); node.second = Block::from(no); node.first_slot = *condition;
-        }
-        InstKind::Loop { condition, test, body } => {
-            node.kind = Kind::Loop; node.first = Block::from(condition); node.second = Block::from(body); node.first_slot = *test;
-        }
-        InstKind::Scope(body) => { node.kind = Kind::Scope; node.first = Block::from(body); }
-        InstKind::Exit => node.kind = Kind::Exit,
-        InstKind::Break => node.kind = Kind::Break,
-        InstKind::Continue => node.kind = Kind::Continue,
-        InstKind::LoadLocal(dst, slot) => { node.kind = Kind::LocalRead; node.first_slot = *dst; node.second_slot = *slot; }
-        InstKind::StoreLocal(slot, src) => { node.kind = Kind::LocalWrite; node.first_slot = *slot; node.second_slot = *src; }
-        _ => {}
-    }
-    node
-}
 unsafe extern "C" fn kill(inst: *const Inst, live: *mut Slots) {
     let inst = unsafe { &*inst };
     let live = unsafe { &mut *live };
@@ -92,7 +58,7 @@ unsafe extern "C" fn change(action: Action, output: *mut Slots, input: *const Sl
         Action::Swap => unsafe { std::ptr::swap(output, input.cast_mut()) },
     }
 }
-const HOST: Host = Host { read_node, kill, read, clone_set, drop_set, change };
+pub(crate) const HOST: Host = Host { ir: dataflow::HOST, kill, read, clone_set, drop_set, change };
 
 pub(super) fn phase_step(inst: &Inst, live: &mut Slots, saved: &mut Slots) {
     unsafe { native_phase_step(inst, live, saved, HOST) };
@@ -101,13 +67,13 @@ pub(super) fn phase_step(inst: &Inst, live: &mut Slots, saved: &mut Slots) {
 pub(super) fn before(code: &[Inst], mut live: Slots, break_live: &Slots,
     continue_live: &Slots, exit_live: &Slots) -> Slots {
     let empty = Slots::new();
-    unsafe { native_before(Block::from(code), &mut live, break_live, continue_live, exit_live, &empty, HOST) };
+    unsafe { native_before(Span::slice(code), &mut live, break_live, continue_live, exit_live, &empty, HOST) };
     live
 }
 pub(super) fn loop_header(condition: &[Inst], test: Reg, body: &[Inst], after: &Slots,
     break_live: &Slots, continue_live: &Slots, exit_live: &Slots) -> Slots {
     let mut result = Slots::new(); let empty = Slots::new();
-    unsafe { native_loop(Block::from(condition), test, Block::from(body), after,
+    unsafe { native_loop(Span::slice(condition), test, Span::slice(body), after,
         break_live, continue_live, exit_live, &mut result, &empty, HOST) };
     result
 }

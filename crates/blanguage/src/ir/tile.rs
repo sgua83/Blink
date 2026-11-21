@@ -4,6 +4,8 @@ use super::*;
 use std::collections::{BTreeMap, BTreeSet};
 #[cfg(feature = "compiler")]
 mod private_live;
+#[cfg(feature = "compiler")]
+pub(crate) use private_live::{HOST as PRIVATE_LIVE_HOST, Host as PrivateLiveHost};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum SharedWord {

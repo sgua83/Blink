@@ -5,10 +5,6 @@ struct BindingSpan {
     address data;
     u64 count;
 };
-struct FusionBlock {
-    address instructions;
-    u64 count;
-};
 // output contains left_count original bindings, with space for right.count more.
 // The returned index starts the sorted union in that same output buffer.
 extern "C" u64 merge_bindings(address output, u64 left_count, BindingSpan right) on cpu;
@@ -58,18 +54,9 @@ extern "C" u64 intersect_local_values(address left, u64 left_count,
 
 // The original IR and PrivateSlot sets stay in their native owning containers.
 // Every borrowed block and temporary clone ends with this synchronous query.
-enum LiveKind:u32 { Ordinary=0; If=1; Loop=2; Scope=3; Exit=4; Break=5; Continue=6; LocalRead=7; LocalWrite=8; };
 enum LiveSetAction:u32 { Copy=0; Union=1; InsertRegister=2; RemoveRegister=3; InsertLocal=4; RemoveLocal=5; Swap=6; };
-struct LiveNode {
-    FusionBlock first;
-    FusionBlock second;
-    address instruction;
-    u64 first_slot;
-    u64 second_slot;
-    LiveKind kind;
-};
 struct LiveHost {
-    cfn<LiveNode,FusionBlock,u64> read_node;
+    Host ir;
     cfn<void,address,address> kill;
     cfn<void,address,address> read;
     cfn<address,address> clone_set;
@@ -77,14 +64,14 @@ struct LiveHost {
     cfn<void,LiveSetAction,address,address,u64> change;
 };
 
-extern "C" void private_before(FusionBlock code, address live, address break_live,
+extern "C" void private_before(Span code, address live, address break_live,
     address continue_live, address exit_live, address empty, LiveHost host) on cpu
-    requires nonzero(host.read_node) requires nonzero(host.kill) requires nonzero(host.read)
+    requires nonzero(host.ir.inspect) requires nonzero(host.kill) requires nonzero(host.read)
     requires nonzero(host.clone_set) requires nonzero(host.drop_set) requires nonzero(host.change);
-extern "C" void private_loop(FusionBlock condition, u64 test, FusionBlock body,
+extern "C" void private_loop(Span condition, u64 test, Span body,
     address after, address break_live, address continue_live, address exit_live,
     address result, address empty, LiveHost host) on cpu
-    requires nonzero(host.read_node) requires nonzero(host.kill) requires nonzero(host.read)
+    requires nonzero(host.ir.inspect) requires nonzero(host.kill) requires nonzero(host.read)
     requires nonzero(host.clone_set) requires nonzero(host.drop_set) requires nonzero(host.change);
 // The step's own results are produced after saving, before the next restore.
 extern "C" void private_phase_step(address instruction,address live,address saved,LiveHost host) on cpu
@@ -96,17 +83,12 @@ struct DceStorage { address first_code; address second_code; address payload; };
 struct DceResults { u32 present; u32 needed; };
 struct DceRemoval { DceRemovalKind kind; u64 value; u64 index; u64 length; u64 word; };
 struct DceHost {
-    Host ir;
+    LiveHost live;
     cfn<DceStorage,address> storage;
     cfn<Span,address> read_block;
     cfn<u32,address,u32,u64> contains;
-    cfn<void,LiveSetAction,address,address,u64> change;
-    cfn<address,address> clone_set;
-    cfn<void,address> drop_set;
     cfn<void,address,address> swap_instructions;
     cfn<void,address,u64> discard_prefix;
-    cfn<void,FusionBlock,address,address,address,address> live_before;
-    cfn<address,FusionBlock,u64,FusionBlock,address,address,address,address> loop_live;
     cfn<void,address,address,DceRemoval> record;
     cfn<void,address,address,DceDivisionChoice,u64,u64> prune_division;
     cfn<void,address,address> prune_collective;
@@ -119,11 +101,11 @@ extern "C" u32 dce_result_needed(address needed,u64 reg,
 extern "C" void eliminate_code(address block,address needed,
     address break_live,address continue_live,address exit_live,address empty,
     address context,DceHost host) on cpu
-    requires nonzero(host.ir.inspect) requires nonzero(host.storage) requires nonzero(host.read_block)
-    requires nonzero(host.contains) requires nonzero(host.change)
-    requires nonzero(host.clone_set) requires nonzero(host.drop_set)
+    requires nonzero(host.live.ir.inspect) requires nonzero(host.storage) requires nonzero(host.read_block)
+    requires nonzero(host.contains) requires nonzero(host.live.change)
+    requires nonzero(host.live.clone_set) requires nonzero(host.live.drop_set)
     requires nonzero(host.swap_instructions) requires nonzero(host.discard_prefix)
-    requires nonzero(host.live_before) requires nonzero(host.loop_live) requires nonzero(host.record)
+    requires nonzero(host.live.kill) requires nonzero(host.live.read) requires nonzero(host.record)
     requires nonzero(host.prune_division) requires nonzero(host.prune_collective);
 
 enum VfKind:u32 {

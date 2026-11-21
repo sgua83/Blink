@@ -3,20 +3,12 @@ use crate::ir::*;
 use super::{BlockSpan, instruction_span, swap_instructions};
 use std::collections::BTreeSet;
 type Slots = BTreeSet<PrivateSlot>;
-#[repr(C)]
-#[derive(Clone, Copy)]
-struct Block { instructions: *mut Inst, count: usize }
-impl Block {
-    unsafe fn slice<'a>(self) -> &'a [Inst] { unsafe { std::slice::from_raw_parts(self.instructions, self.count) } }
-}
 #[repr(u32)]
 enum RemovalKind { Values, Division, DirectWrite, IndexedWrite }
 #[repr(u32)]
 enum DivisionChoice { Quotient = 1, Remainder, Both }
 #[repr(u32)]
 enum Space { Register, Local }
-#[repr(u32)]
-enum Action { Copy, Union, InsertRegister, RemoveRegister, InsertLocal, RemoveLocal, Swap }
 #[repr(C)]
 struct Storage { first_code: *mut Vec<Inst>, second_code: *mut Vec<Inst>, payload: *mut std::ffi::c_void }
 #[repr(C)]
@@ -24,17 +16,12 @@ struct Removal { kind: RemovalKind, value: Reg, index: Reg, length: usize, word:
 type Contains = unsafe extern "C" fn(*const Slots, Space, usize) -> u32;
 #[repr(C)]
 struct Host {
-    ir: crate::ir::dataflow::Host,
+    live: PrivateLiveHost,
     storage: unsafe extern "C" fn(*mut Inst) -> Storage,
     read_block: unsafe extern "C" fn(*mut Vec<Inst>) -> BlockSpan,
     contains: Contains,
-    change: unsafe extern "C" fn(Action, *mut Slots, *const Slots, usize),
-    clone_set: unsafe extern "C" fn(*const Slots) -> *mut Slots,
-    drop_set: unsafe extern "C" fn(*mut Slots),
     swap_instructions: unsafe extern "C" fn(*mut Inst, *mut Inst),
     discard_prefix: unsafe extern "C" fn(*mut Vec<Inst>, usize),
-    live_before: unsafe extern "C" fn(Block, *mut Slots, *const Slots, *const Slots, *const Slots),
-    loop_live: unsafe extern "C" fn(Block, Reg, Block, *const Slots, *const Slots, *const Slots, *const Slots) -> *mut Slots,
     record: unsafe extern "C" fn(*mut Context<'_>, *const Inst, Removal),
     prune_division: unsafe extern "C" fn(*mut Inst, *mut IntegerDivisionResult, DivisionChoice, Reg, Reg),
     prune_collective: unsafe extern "C" fn(*mut TileCollective, *const Slots),
@@ -66,30 +53,6 @@ unsafe extern "C" fn storage(instruction: *mut Inst) -> Storage {
 unsafe extern "C" fn contains(slots: *const Slots, space: Space, slot: usize) -> u32 {
     let slot = match space { Space::Register => PrivateSlot::Register(slot), Space::Local => PrivateSlot::Local(slot) };
     u32::from(unsafe { &*slots }.contains(&slot))
-}
-unsafe extern "C" fn change(action: Action, output: *mut Slots, input: *const Slots, slot: usize) {
-    match action {
-        Action::Copy => unsafe { (*output).clone_from(&*input) },
-        Action::Union => unsafe { (*output).extend((*input).iter().copied()) },
-        Action::InsertRegister => { unsafe { (*output).insert(PrivateSlot::Register(slot)) }; }
-        Action::RemoveRegister => { unsafe { (*output).remove(&PrivateSlot::Register(slot)) }; }
-        Action::InsertLocal => { unsafe { (*output).insert(PrivateSlot::Local(slot)) }; }
-        Action::RemoveLocal => { unsafe { (*output).remove(&PrivateSlot::Local(slot)) }; }
-        Action::Swap => unsafe { std::ptr::swap(output, input.cast_mut()) },
-    }
-}
-unsafe extern "C" fn clone_set(source: *const Slots) -> *mut Slots { Box::into_raw(Box::new(unsafe { &*source }.clone())) }
-unsafe extern "C" fn drop_set(source: *mut Slots) { drop(unsafe { Box::from_raw(source) }); }
-unsafe extern "C" fn before(code: Block, needed: *mut Slots, brk: *const Slots, cont: *const Slots, exit: *const Slots) {
-    let live = unsafe { std::mem::take(&mut *needed) };
-    let live = live_before(unsafe { code.slice() }, live, unsafe { &*brk }, unsafe { &*cont }, unsafe { &*exit });
-    unsafe { *needed = live };
-}
-unsafe extern "C" fn header(condition: Block, test: Reg, body: Block, after: *const Slots,
-    brk: *const Slots, cont: *const Slots, exit: *const Slots) -> *mut Slots {
-    let live = loop_live(unsafe { condition.slice() }, test, unsafe { body.slice() }, unsafe { &*after },
-        unsafe { &*brk }, unsafe { &*cont }, unsafe { &*exit });
-    Box::into_raw(Box::new(live))
 }
 unsafe extern "C" fn record(context: *mut Context<'_>, instruction: *const Inst, removal: Removal) {
     let context = unsafe { &mut *context }; let inst = unsafe { &*instruction };
@@ -133,8 +96,8 @@ unsafe extern "C" fn prune_division(instruction: *mut Inst, result: *mut Integer
 unsafe extern "C" fn prune_collective(collective: *mut TileCollective, needed: *const Slots) {
     unsafe { &mut *collective }.results.retain(|(_, reg)| unsafe { result_needed(needed, *reg, contains) } != 0);
 }
-const HOST: Host = Host { ir: crate::ir::dataflow::HOST, storage, read_block: instruction_span, contains, change, clone_set, drop_set,
-    swap_instructions, discard_prefix, live_before: before, loop_live: header, record, prune_division, prune_collective };
+const HOST: Host = Host { live: PRIVATE_LIVE_HOST, storage, read_block: instruction_span, contains,
+    swap_instructions, discard_prefix, record, prune_division, prune_collective };
 unsafe extern "C" fn discard_prefix(code: *mut Vec<Inst>, count: usize) {
     drop(unsafe { &mut *code }.drain(..count));
 }
