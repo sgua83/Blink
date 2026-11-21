@@ -128,17 +128,32 @@ impl Builder<'_> {
             ),
         }
     }
-    pub(super) async fn require_returned_initialized(&mut self,value:&mut Returned,span:Span)->Result<()> {
+    pub(super) async fn require_returned_initialized(&mut self, value: &mut Returned, span: Span) -> Result<()> {
+        let complete = |data: &mut Data, elements| {
+            if let Some(elements) = elements {
+                data.elements = application::ElementFacts::Known(elements);
+            }
+            data.initialization = None;
+        };
         match value {
-            Returned::Dataset(data)=>{unsafe { self.world.call(self.require_application_initialized(data,span)).await }?;data.initialization=None;},
-            Returned::OwnedValue(value)=>{
-                for data in value.resources(){unsafe { self.world.call(self.require_application_initialized(data,span)).await }?;}
-                value.resources_mut(&mut |data|data.initialization=None);
+            Returned::Dataset(data) => {
+                let elements = unsafe { self.world.call(self.require_application_initialized(data, span)).await }?;
+                complete(data, elements);
             },
-            _=>{},
+            Returned::OwnedValue(value) => {
+                let mut checked = Vec::new();
+                for data in value.resources() {
+                    checked.push(unsafe { self.world.call(self.require_application_initialized(data, span)).await }?);
+                }
+                let mut checked = checked.into_iter();
+                value.resources_mut(&mut |data| complete(data, checked.next().unwrap()));
+            },
+            _ => {},
         }
         Ok(())
     }
+
+
     pub(super) fn value_component(&self, value: &Value, index: usize) -> Value {
         Value {
             ty: Ty::scalar(value.ty.components[index].0),

@@ -1348,18 +1348,25 @@ impl Builder<'_> {
         let length=(data.length.minimum()==data.length.maximum()).then(||data.length.minimum());
         complete(self,scope,word,length,initialized,owned_presence::Presence::All)
     }
-    pub(super) async fn require_application_initialized(&mut self, data: &Data, span: Span) -> Result<()> {
-        if data.length.maximum()!=0 && !matches!(data.elements,ElementFacts::Unknown|ElementFacts::Input(_)|ElementFacts::Cleanup(_)) {
-            let mut model=unsafe { self.world.call(self.element_model(&data.ty,&data.elements,(&data.residency,&[]),span)).await }?;
-            self.resolve_owned_model(&mut model,None);
-            let(available,resources)=match model.as_ref(){
-                returns::Returned::OwnedValue(value)=>(value.all_available(),value.resources()),
-                returns::Returned::Dataset(data)=>(data.ownership==Ownership::Owned,vec![data]),
-                _=>(true,Vec::new()),
+    pub(super) async fn require_application_initialized(&mut self, data: &Data, span: Span) -> Result<Option<Box<returns::Returned>>> {
+        let elements = if data.length.maximum() != 0
+            && !matches!(data.elements, ElementFacts::Unknown | ElementFacts::Input(_) | ElementFacts::Cleanup(_))
+        {
+            let mut model = unsafe { self.world.call(self.element_model(&data.ty, &data.elements, (&data.residency, &[]), span)).await }?;
+            self.resolve_owned_model(&mut model, None);
+            let available = match model.as_ref() {
+                returns::Returned::OwnedValue(value) => value.all_available(),
+                returns::Returned::Dataset(data) => data.ownership == Ownership::Owned,
+                _ => true,
             };
-            if !available{return self.fail(span,"B227","完整dataset交接需要全部活动拥有元素；移出位置须先补回");}
-            for resource in resources{unsafe { self.world.call(self.require_application_initialized(resource,span)).await }?;}
-        }
+            if !available {
+                return self.fail(span, "B227", "完整dataset交接需要全部活动拥有元素；移出位置须先补回");
+            }
+            unsafe { self.world.call(self.require_returned_initialized(&mut model, span)).await }?;
+            Some(model)
+        } else {
+            None
+        };
         if !self.application_initialized(data)
             && !self.defer_position_initialization(data.ty.components.iter().map(|(_,word)|data.initialization.as_ref().unwrap().application_word(None,*word)).collect(),"B142",span)? {
             return self.fail(
@@ -1368,8 +1375,10 @@ impl Builder<'_> {
                 "读取或 inout 借用了尚未完整初始化的 dataset；write 输出须先完整写入所需元素与字段",
             );
         }
-        Ok(())
+        Ok(elements)
     }
+
+
     pub(super) fn application_frame(&mut self, span: Span) -> Result<Value> {
         if self.application.is_none() {
             return self.fail(
