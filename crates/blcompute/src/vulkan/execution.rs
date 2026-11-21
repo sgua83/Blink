@@ -312,23 +312,54 @@ pub(super) struct Execution {
 }
 
 #[derive(Default)]
-pub(super) struct DependencySources(BTreeMap<u64, Rc<Execution>>);
+pub(super) enum DependencySources {
+    #[default]
+    Empty,
+    Single(Rc<Execution>),
+    Multiple(BTreeMap<u64, Rc<Execution>>),
+}
 
 impl DependencySources {
     pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
+        matches!(self, Self::Empty)
     }
 
     pub fn insert(&mut self, source: &Rc<Execution>) {
-        self.0.entry(source.point.sequence).or_insert_with(|| source.clone());
+        self.insert_with(source.point.sequence, || source.clone());
     }
 
     pub fn insert_owned(&mut self, source: Rc<Execution>) {
-        self.0.entry(source.point.sequence).or_insert(source);
+        self.insert_with(source.point.sequence, || source);
+    }
+
+    fn insert_with(&mut self, sequence: u64, source: impl FnOnce() -> Rc<Execution>) {
+        *self = match std::mem::take(self) {
+            Self::Empty => Self::Single(source()),
+            Self::Single(first) if first.point.sequence == sequence => Self::Single(first),
+            Self::Single(first) => {
+                let mut sources = BTreeMap::new();
+                sources.insert(first.point.sequence, first);
+                sources.insert(sequence, source());
+                Self::Multiple(sources)
+            }
+            Self::Multiple(mut sources) => {
+                sources.entry(sequence).or_insert_with(source);
+                Self::Multiple(sources)
+            }
+        };
     }
 
     pub fn prepare(self) -> Result<Vec<Rc<Execution>>> {
-        let mut sources = self.0.into_values();
+        let mut sources = match self {
+            Self::Empty => return Ok(Vec::new()),
+            Self::Single(source) => {
+                if source.is_complete()? {
+                    return Ok(Vec::new());
+                }
+                return Ok(vec![source]);
+            }
+            Self::Multiple(sources) => sources.into_values(),
+        };
         while let Some(source) = sources.next() {
             if !source.is_complete()? {
                 return Ok(std::iter::once(source).chain(sources).collect());
