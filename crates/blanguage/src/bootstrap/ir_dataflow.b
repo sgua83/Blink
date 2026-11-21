@@ -5,7 +5,7 @@ module bootstrap.ir_dataflow;
 const u32 N_CALL=1;const u32 N_TARGET=2;
 const u32 N_DATASET_BORROW=4;const u32 N_REFERENCE=5;const u32 N_STORAGE=6;
 const u32 N_INDEXED=7;const u32 N_STRIDE=8;const u32 N_TEXTURE=9;const u32 N_ATOMIC_OP=10;
-const u32 N_MEMORY_ALIAS=11;const u32 N_MEMORY_EFFECT=12;const u32 N_DIVISION=13;
+const u32 N_DIVISION=13;
 const u32 N_DIVISOR=14;const u32 N_WORDS3=15;
 const u32 N_COMPONENT=16;
 const u32 N_STAGE=17;const u32 N_RAY_RANGE=18;const u32 N_TILE=25;
@@ -304,16 +304,16 @@ extern "C" u32 operands(Node source,Host host,address context,cfn<u32,address,us
  return visit_instruction(host.inspect(source),host,context,visit);
 }
 
-bool accessed(usize access,u32 writing) on cpu {
+extern "C" bool accessed(usize access,u32 writing) on cpu {
  return writing!=0 ? access==2u64||access==3u64||access==4u64 : access==1u64||access==3u64||access==4u64;
 }
 struct RangePart { u32 more; u32 local; usize begin; usize end; };
 RangePart no_range() on cpu {return RangePart(0,0,0u64,0u64);}
 RangePart indexed_alias_range(Node source,usize index,Host host) on cpu requires nonzero(host.inspect) {
  View value=host.inspect(source);
- if(value.tag!=2||index>=value.second.count){return no_range();}
+ if(value.tag!=INDEXED_POINTER||index>=value.second.count){return no_range();}
  View alias=host.inspect(node_at(value.second,index,N_MEMORY_ALIAS));
- return RangePart(1,alias.tag==0 ? 1 : 0,alias.a,alias.a+alias.b);
+ return RangePart(1,alias.tag==ALIAS_LOCAL ? 1 : 0,alias.a,alias.a+alias.b);
 }
 RangePart alias_range(Node source,usize index,Host host) on cpu requires nonzero(host.inspect) {
  if(source.kind==N_REFERENCE){
@@ -323,10 +323,9 @@ RangePart alias_range(Node source,usize index,Host host) on cpu requires nonzero
  }
  return indexed_alias_range(source,index,host);
 }
-extern "C" Locals locals(Node source,u32 writing,Host host) on cpu requires nonzero(host.inspect) {
- Locals state=Locals(source,0,writing,0u64,0u64,0u64,0u64,0u64,0);
- if(source.kind==N_CALL){state.mode=4;return state;}
- View value=host.inspect(source);u32 kind=value.tag;
+Locals view_locals(View value,u32 writing,Host host) on cpu requires nonzero(host.inspect) {
+ Locals state=Locals(empty_node(),0,writing,0u64,0u64,0u64,0u64,0u64,0);
+ u32 kind=value.tag;
  if((kind==OP_LOAD_LOCAL&&writing==0)||(kind==OP_STORE_LOCAL&&writing!=0)){
   state.mode=1;state.position=kind==OP_LOAD_LOCAL ? value.b : value.a;
  }else if((kind==OP_LOAD_LOCAL_INDEXED&&writing==0)||(kind==OP_STORE_LOCAL_INDEXED&&writing!=0)){
@@ -340,6 +339,9 @@ extern "C" Locals locals(Node source,u32 writing,Host host) on cpu requires nonz
   if(writing!=0 ? op.tag!=0 : op.tag!=1){state.mode=3;state.source=value.left;}
  }
  return state;
+}
+extern "C" Locals locals(Node source,u32 writing,Host host) on cpu requires nonzero(host.inspect) {
+ return view_locals(host.inspect(source),writing,host);
 }
 extern "C" Word next_local(inout Locals state,Host host) on cpu requires nonzero(host.inspect) {
  if(state.mode==0){return absent();}
@@ -379,6 +381,26 @@ extern "C" Word next_local(inout Locals state,Host host) on cpu requires nonzero
    View alias=host.inspect(effect.left);
    if(alias.tag==0){state.position=alias.a;state.end=alias.a+alias.b;state.active=1;}
   }
+ }
+}
+extern "C" void visit_local_writes(Span code,Host host,address context,cfn<void,address,usize> visit) on cpu
+ requires nonzero(host.inspect) requires nonzero(visit) {
+ usize index=0u64;
+ while(index<code.count){
+  View value=host.inspect(node_at(code,index,N_INSTRUCTION));
+  Locals writes=view_locals(value,1,host);
+  Word slot=next_local(writes,host);
+  while(slot.present!=0){
+   visit(context,slot.value);
+   slot=next_local(writes,host);
+  }
+  if(value.tag==OP_SCOPE||value.tag==OP_CLEANUP){
+   visit_local_writes(value.first,host,context,visit);
+  }else if(value.tag==OP_BRANCH||value.tag==OP_LOOP_VALUE){
+   visit_local_writes(value.first,host,context,visit);
+   visit_local_writes(value.second,host,context,visit);
+  }
+  index+=1u64;
  }
 }
 void number_used_slots(address slots,u64 count) on cpu {

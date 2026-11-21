@@ -142,14 +142,8 @@ pub(crate) fn result_origins<F: FnMut(Reg, ResultRole)>(value: &Inst, mut visit:
 pub(super) fn results(value: &Inst) -> impl Iterator<Item = Reg> + '_ {
     ResultIter { state: unsafe { b_results(Node::of(value, Kind::Instruction), HOST) }, owner: PhantomData }
 }
-fn locals<'a, T>(value: &'a T, kind: Kind, writing: bool) -> LocalIter<'a> {
-    LocalIter { state: unsafe { b_locals(Node::of(value, kind), u32::from(writing), HOST) }, owner: PhantomData }
-}
 pub(super) fn instruction_locals(value: &Inst, writing: bool) -> impl Iterator<Item = usize> + '_ {
-    locals(value, Kind::Instruction, writing)
-}
-pub(super) fn call_locals(value: &Call, writing: bool) -> impl Iterator<Item = usize> + '_ {
-    locals(value, Kind::Call, writing)
+    LocalIter { state: unsafe { b_locals(Node::of(value, Kind::Instruction), u32::from(writing), HOST) }, owner: PhantomData }
 }
 unsafe extern "C" fn visit<F: FnMut(Reg) -> bool>(context: *mut c_void, value: usize) -> u32 {
     u32::from(unsafe { (&mut *context.cast::<F>())(value) })

@@ -234,7 +234,7 @@ extern "C" void private_before(Span code,address live,address break_live,
     u64 index=code.count;
     while (index!=0u64) {
         index-=1u64;
-        address instruction=block_instruction_at(code,index);
+        address instruction=span_item_at(code,index);
         View value=host.ir.inspect(Node(instruction,N_INSTRUCTION));
         private_instruction(instruction,value,live,break_live,continue_live,exit_live,empty,host);
     }
@@ -268,14 +268,14 @@ DceResults dce_results(address instruction,address needed,DceHost host) on cpu r
     }
     return output;
 }
-address block_instruction_at(Span code,u64 index) on cpu {
+address span_item_at(Span code,u64 index) on cpu {
     return unsafe_address(address_bits(code.data)+index*u64(code.stride));
 }
 
 bool dce_scope_observable(Span code,address after,DceHost host) on cpu requires nonzero(host.live.ir.inspect) requires nonzero(host.storage) requires nonzero(host.read_block) requires nonzero(host.contains) {
     u64 index=0u64;
     while(index<code.count){
-        address instruction=block_instruction_at(code,index);
+        address instruction=span_item_at(code,index);
         View value=host.live.ir.inspect(Node(instruction,N_INSTRUCTION));u32 kind=value.tag;
         if(kind==OP_STORE_LOCAL){
             if(host.contains(after,1,value.a)!=0){return true;}
@@ -394,11 +394,11 @@ extern "C" void eliminate_code(address block,address needed,
     // The retained suffix is already ordered. No move touches an unread instruction.
     while(read!=0u64){
         read-=1u64;
-        address instruction=block_instruction_at(code,read);
+        address instruction=span_item_at(code,read);
         if(eliminate_instruction(instruction,needed,break_live,continue_live,exit_live,empty,context,host)){
             write-=1u64;
             if(write!=read){
-                host.swap_instructions(instruction,block_instruction_at(code,write));
+                host.swap_instructions(instruction,span_item_at(code,write));
             }
         }
     }
@@ -415,18 +415,52 @@ extern "C" u32 value_memory_keeps(u32 mode,u64 binding,u64 index,u32 word,u64 ta
     if(mode==0){return binding!=target ? 1 : 0;}
     return binding!=target || (index==at && word!=field) ? 1 : 0;
 }
-extern "C" void value_alias(address values,u32 kind,u64 first,u64 length,VfHost host) on cpu 
+void vf_forget_alias(View alias,address values,bool memory,VfHost host) on cpu
     requires nonzero(host.remove_range) requires nonzero(host.memory_filter) {
-    if(kind==0){host.remove_range(values,first,first+length);}
-    else {host.memory_filter(values,0,first,0u64,0);}
+    if(alias.tag==ALIAS_LOCAL){host.remove_range(values,alias.a,alias.a+alias.b);}
+    else if(memory){host.memory_filter(values,0,alias.a,0u64,0);}
 }
-extern "C" void value_call_effect(address values,u32 kind,u64 first,u64 length,u32 writes,VfHost host) on cpu 
-    requires nonzero(host.state) requires nonzero(host.remove_range) requires nonzero(host.memory_filter) {
-    if(writes==0){return;}
-    if(kind==0){host.remove_range(values,first,first+1u64);}
-    else if(kind==1 || kind==4){host.memory_filter(values,0,first,0u64,0);}
-    else if(kind==2){host.state(VfStateOp::Clear,values,unsafe_address(0u64),VfMap::Memory);}
-    else {host.remove_range(values,first,first+length);}
+void vf_forget_indexed(View indexed,address values,bool memory,VfHost host) on cpu
+    requires nonzero(host.values.ir.inspect)
+    requires nonzero(host.remove_range) requires nonzero(host.memory_filter) {
+    if(indexed.tag==INDEXED_DATA && memory){
+        host.memory_filter(values,0,indexed.a,0u64,0);
+    }else if(indexed.tag==INDEXED_POINTER){
+        usize index=0u64;
+        while(index<indexed.second.count){
+            View alias=host.values.ir.inspect(Node(span_item_at(indexed.second,index),N_MEMORY_ALIAS));
+            vf_forget_alias(alias,values,memory,host);
+            index+=1u64;
+        }
+    }
+}
+void vf_forget_call(Node source,address values,VfHost host) on cpu
+    requires nonzero(host.values.ir.inspect) requires nonzero(host.state)
+    requires nonzero(host.remove_range) requires nonzero(host.memory_filter) {
+    Host ir=host.values.ir;
+    View call=ir.inspect(source);
+    usize index=0u64;
+    while(index<call.first.count){
+        View argument=ir.inspect(Node(span_item_at(call.first,index),N_ARGUMENT));
+        if(argument.tag==ARGUMENT_REFERENCE && accessed(argument.a,1)){
+            View reference=ir.inspect(argument.left);
+            View storage=ir.inspect(reference.left);
+            if(storage.tag==STORAGE_INDEXED){
+                View indexed=ir.inspect(storage.left);
+                if(indexed.tag==INDEXED_POINTER){vf_forget_indexed(indexed,values,true,host);}
+                else{host.state(VfStateOp::Clear,values,unsafe_address(0u64),VfMap::Memory);}
+            }else{
+                host.remove_range(values,storage.a,storage.a+storage.b);
+            }
+        }
+        index+=1u64;
+    }
+    index=0u64;
+    while(index<call.second.count){
+        View effect=ir.inspect(Node(span_item_at(call.second,index),N_MEMORY_EFFECT));
+        if(accessed(effect.a,1)){vf_forget_alias(ir.inspect(effect.left),values,true,host);}
+        index+=1u64;
+    }
 }
 void vf_merge(inout address left,address right,VfHost host) on cpu 
     requires nonzero(host.intersect) {
@@ -475,7 +509,7 @@ VfAction value_instruction(address instruction,address retained_at,address value
     requires nonzero(host.intersect) requires nonzero(host.drop_snapshot) requires nonzero(host.apply) requires nonzero(host.expression)
     requires nonzero(host.division) requires nonzero(host.rewrite_division) requires nonzero(host.pair)
     requires nonzero(host.note) requires nonzero(host.memory_get) requires nonzero(host.memory_put) requires nonzero(host.memory_filter)
-    requires nonzero(host.aliases) requires nonzero(host.written) requires nonzero(host.call) {
+    requires nonzero(host.remove_local) {
     host.remap(instruction,values);
     View node=host.values.ir.inspect(Node(instruction,N_INSTRUCTION));
     u32 kind=node.tag;
@@ -553,7 +587,9 @@ VfAction value_instruction(address instruction,address retained_at,address value
     else if(kind==OP_EXIT_VALUE){vf_merge(flow.exits,host.snapshot(values),host);continuing=false;}
     else if(kind==OP_BREAK_VALUE || kind==OP_CONTINUE_VALUE){continuing=false;}
     else if(kind==OP_ATOMIC){
-        if(host.values.ir.inspect(node.right).tag!=0){host.aliases(values,node.left.data);}
+        if(host.values.ir.inspect(node.right).tag!=0){
+            vf_forget_indexed(host.values.ir.inspect(node.left),values,false,host);
+        }
         host.state(VfStateOp::Clear,values,none,VfMap::Memory);
     } else if(kind==OP_APPEND || kind==OP_TILE_BARRIER){host.state(VfStateOp::Clear,values,none,VfMap::Memory);}
     else if(kind==OP_LOAD_LOCAL){
@@ -566,7 +602,7 @@ VfAction value_instruction(address instruction,address retained_at,address value
         host.put(values,VfRegMap::Locals,node.b,node.a);
     } else if(kind==OP_STORE_LOCAL){host.put(values,VfRegMap::Locals,node.a,node.b);}
     else if(kind==OP_STORE_LOCAL_INDEXED){host.remove_range(values,node.a,node.a+node.b);}
-    else if(kind==OP_STORE_INDEXED){host.aliases(values,node.left.data);}
+    else if(kind==OP_STORE_INDEXED){vf_forget_indexed(host.values.ir.inspect(node.left),values,true,host);}
     else if(kind==OP_LOAD){
         VfMemory old=host.memory_get(values,node.b,node.c,u32(node.d));
         if(old.present!=0){
@@ -595,8 +631,9 @@ VfAction value_instruction(address instruction,address retained_at,address value
         host.state(VfStateOp::Drop,yes,none,VfMap::Aliases);
         host.state(VfStateOp::Drop,no,none,VfMap::Aliases);
     } else if(kind==OP_LOOP_VALUE){
+        visit_local_writes(node.first,host.values.ir,values,host.remove_local);
+        visit_local_writes(node.second,host.values.ir,values,host.remove_local);
         InstructionStorage storage=host.storage(instruction);
-        host.written(values,storage.first_code,storage.second_code);
         address after=host.snapshot(values);
         host.state(VfStateOp::Clear,values,none,VfMap::Memory);
         address cycle=vf_child(values,host);
@@ -613,7 +650,7 @@ VfAction value_instruction(address instruction,address retained_at,address value
         host.state(VfStateOp::Move,values,cycle,VfMap::Aliases);
         continuing=vf_resume(values,flow,loop_flow,host);
         host.state(VfStateOp::Drop,cycle,none,VfMap::Aliases);
-    } else if(kind==OP_INVOKE){host.call(values,node.left.data);}
+    } else if(kind==OP_INVOKE){vf_forget_call(node.left,values,host);}
     return continuing ? VfAction::Keep : VfAction::Stop;
 }
 extern "C" VfFlow value_block(address block,address values,address context,Span registers,VfHost host) on cpu
@@ -623,7 +660,7 @@ extern "C" VfFlow value_block(address block,address values,address context,Span 
     requires nonzero(host.intersect) requires nonzero(host.drop_snapshot) requires nonzero(host.apply) requires nonzero(host.expression)
     requires nonzero(host.division) requires nonzero(host.rewrite_division) requires nonzero(host.pair)
     requires nonzero(host.note) requires nonzero(host.memory_get) requires nonzero(host.memory_put) requires nonzero(host.memory_filter)
-    requires nonzero(host.aliases) requires nonzero(host.written) requires nonzero(host.call)
+    requires nonzero(host.remove_local)
     requires nonzero(host.instruction_span) requires nonzero(host.swap_instructions) requires nonzero(host.truncate) {
     Span code=host.instruction_span(block);
     address none=unsafe_address(0u64);
@@ -633,8 +670,8 @@ extern "C" VfFlow value_block(address block,address values,address context,Span 
     bool continuing=true;
     // The retained prefix never moves again, including slots awaiting a division pair.
     while(index<code.count){
-        address instruction=block_instruction_at(code,index);
-        address retained_at=block_instruction_at(code,kept);
+        address instruction=span_item_at(code,index);
+        address retained_at=span_item_at(code,kept);
         VfAction action=value_instruction(instruction,retained_at,values,flow,context,registers,host);
         if(action!=VfAction::Discard){
             if(kept!=index){host.swap_instructions(instruction,retained_at);}

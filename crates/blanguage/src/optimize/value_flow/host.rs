@@ -73,9 +73,7 @@ struct Host {
     memory_get: unsafe extern "C" fn(*const Values, usize, Reg, u32) -> Memory,
     memory_put: unsafe extern "C" fn(*mut Values, usize, Reg, u32, Reg, *const Inst),
     memory_filter: unsafe extern "C" fn(*mut Values, u32, usize, Reg, u32),
-    aliases: unsafe extern "C" fn(*mut Values, *const IndexedSource),
-    written: unsafe extern "C" fn(*mut Values, *const Vec<Inst>, *const Vec<Inst>),
-    call: unsafe extern "C" fn(*mut Values, *const Call),
+    remove_local: unsafe extern "C" fn(*mut Values, usize),
 }
 
 unsafe extern "C" {
@@ -87,10 +85,6 @@ unsafe extern "C" {
     fn value_root(values: *const Values, reg: Reg, get: Get) -> Reg;
     #[link_name = "bootstrap.stage_fusion::value_memory_keeps"]
     fn value_memory_keeps(mode: u32, binding: usize, index: Reg, word: u32, target: usize, at: Reg, field: u32) -> u32;
-    #[link_name = "bootstrap.stage_fusion::value_alias"]
-    fn value_alias(values: *mut Values, kind: u32, first: usize, length: usize, host: Host);
-    #[link_name = "bootstrap.stage_fusion::value_call_effect"]
-    fn value_call_effect(values: *mut Values, kind: u32, first: usize, length: usize, writes: u32, host: Host);
 }
 pub(super) extern "C" fn root(values: &Values, reg: Reg) -> Reg { unsafe { value_root(values, reg, get) } }
 pub(super) fn run(code: &mut Vec<Inst>, values: &mut Values, registers: &[Scalar], reuses: &mut Reuses) {
@@ -205,34 +199,9 @@ unsafe extern "C" fn memory_put(values: *mut Values, binding: usize, index: Reg,
 unsafe extern "C" fn memory_filter(values: *mut Values, mode: u32, binding: usize, index: Reg, word: u32) {
     unsafe { &mut *values }.memory.retain(|&(b, i, w), _| unsafe { value_memory_keeps(mode, b, i, w, binding, index, word) != 0 });
 }
-unsafe extern "C" fn aliases(values: *mut Values, source: *const IndexedSource) {
-    for alias in unsafe { &*source }.aliases() {
-        match alias { MemoryAlias::Local { base, len } => unsafe { value_alias(values, 0, base, len, HOST) }, MemoryAlias::Data(binding) => unsafe { value_alias(values, 1, binding, 0, HOST) } }
-    }
-}
-unsafe extern "C" fn written(values: *mut Values, first: *const Vec<Inst>, second: *const Vec<Inst>) {
-    let values = unsafe { &mut *values };
-    for block in [unsafe { &*first }, unsafe { &*second }] {
-        super::super::visit(block, &mut |inst| {
-            for slot in inst.local_writes() { values.locals.remove(&slot); }
-        });
-    }
-}
-unsafe extern "C" fn call(values: *mut Values, call: *const Call) {
-    let call = unsafe { &*call };
-        for slot in call.locals(true) { unsafe { value_call_effect(values, 0, slot, 0, 1, HOST) }; }
-        for effect in &call.memory { if let MemoryAlias::Data(binding) = effect.alias { unsafe { value_call_effect(values, 1, binding, 0, u32::from(effect.access.writes()), HOST) }; } }
-        for argument in &call.arguments {
-            if let CallArgument::Reference { access, address: CallReference { storage: CallStorage::Indexed(source), .. }, .. } = argument {
-                match source {
-                    IndexedSource::Pointer { .. } => for alias in source.aliases() {
-                        match alias { MemoryAlias::Local { base, len } => unsafe { value_call_effect(values, 3, base, len, u32::from(access.writes()), HOST) }, MemoryAlias::Data(binding) => unsafe { value_call_effect(values, 4, binding, 0, u32::from(access.writes()), HOST) } }
-                    },
-                    _ => unsafe { value_call_effect(values, 2, 0, 0, u32::from(access.writes()), HOST) },
-                }
-            }
-        }
+unsafe extern "C" fn remove_local(values: *mut Values, slot: usize) {
+    unsafe { &mut *values }.locals.remove(&slot);
 }
 const HOST: Host = Host { values: REGISTER_HOST, storage: instruction_storage, remap, block, instruction_span, swap_instructions, truncate, state, get, put, remove_range, snapshot, intersect,
     drop_snapshot, apply, expression, division, rewrite_division, pair, note,
-    memory_get, memory_put, memory_filter, aliases, written, call };
+    memory_get, memory_put, memory_filter, remove_local };

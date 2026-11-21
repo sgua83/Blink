@@ -146,17 +146,11 @@ struct VfHost {
     cfn<VfMemory,address,u64,u64,u32> memory_get;
     cfn<void,address,u64,u64,u32,u64,address> memory_put;
     cfn<void,address,u32,u64,u64,u32> memory_filter;
-    cfn<void,address,address> aliases;
-    cfn<void,address,address,address> written;
-    cfn<void,address,address> call;
+    cfn<void,address,usize> remove_local;
 };
 // All pointers borrow this invocation's actual nodes or native owning containers.
 extern "C" u64 value_root(address values,u64 reg,cfn<VfOptional,address,VfRegMap,u64> get) on cpu requires nonzero(get);
 extern "C" u32 value_memory_keeps(u32 mode,u64 binding,u64 index,u32 word,u64 target,u64 at,u32 field) on cpu;
-extern "C" void value_alias(address values,u32 kind,u64 first,u64 length,VfHost host) on cpu 
-    requires nonzero(host.remove_range) requires nonzero(host.memory_filter);
-extern "C" void value_call_effect(address values,u32 kind,u64 first,u64 length,u32 writes,VfHost host) on cpu 
-    requires nonzero(host.state) requires nonzero(host.remove_range) requires nonzero(host.memory_filter);
 extern "C" VfFlow value_block(address block,address values,address context,Span registers,VfHost host) on cpu
     requires nonzero(host.values.ir.inspect) requires nonzero(host.values.scalar) requires nonzero(host.storage)
     requires nonzero(host.remap) requires nonzero(host.block) requires nonzero(host.state)
@@ -164,7 +158,7 @@ extern "C" VfFlow value_block(address block,address values,address context,Span 
     requires nonzero(host.intersect) requires nonzero(host.drop_snapshot) requires nonzero(host.apply) requires nonzero(host.expression)
     requires nonzero(host.division) requires nonzero(host.rewrite_division) requires nonzero(host.pair)
     requires nonzero(host.note) requires nonzero(host.memory_get) requires nonzero(host.memory_put) requires nonzero(host.memory_filter)
-    requires nonzero(host.aliases) requires nonzero(host.written) requires nonzero(host.call)
+    requires nonzero(host.remove_local)
     requires nonzero(host.instruction_span) requires nonzero(host.swap_instructions) requires nonzero(host.truncate);
 extern "C" void value_discard_flow(VfFlow flow,VfHost host) on cpu 
     requires nonzero(host.drop_snapshot);

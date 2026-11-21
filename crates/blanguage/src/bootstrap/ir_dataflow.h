@@ -2,6 +2,8 @@ module bootstrap.ir_dataflow;
 // One original instruction vocabulary, shared by the actual IR consumers.
 const u32 N_INSTRUCTION=0;const u32 N_ARGUMENT=3;const u32 N_COMPARISON=32;
 const u32 ARGUMENT_REFERENCE=1;const u32 STORAGE_INDEXED=1;
+const u32 N_MEMORY_ALIAS=11;const u32 N_MEMORY_EFFECT=12;
+const u32 INDEXED_DATA=0;const u32 INDEXED_POINTER=2;const u32 ALIAS_LOCAL=0;
 const u32 COMPARE_LESS=2;const u32 COMPARE_GREATER=3;const u32 COMPARE_GREATER_EQUAL=5;
 const u32 OP_TEXTURE_BINDING_ADDRESS=0;const u32 OP_TEXTURE_SAMPLE=1;const u32 OP_TEXTURE_SIZE=2;
 const u32 OP_TEXTURE_LEVELS=3;const u32 OP_TEXTURE_ADDRESS=4;const u32 OP_TEXTURE_FORMAT=5;
@@ -79,7 +81,10 @@ extern "C" void result_origins(Node source,Host host,address context,
 
 extern "C" u32 operands(Node source,Host host,address context,cfn<u32,address,usize> visit) on cpu
  requires nonzero(host.inspect) requires nonzero(visit);
+extern "C" bool accessed(usize access,u32 writing) on cpu;
 extern "C" Locals locals(Node source,u32 writing,Host host) on cpu requires nonzero(host.inspect);
+extern "C" void visit_local_writes(Span code,Host host,address context,cfn<void,address,usize> visit) on cpu
+ requires nonzero(host.inspect) requires nonzero(visit);
 extern "C" Word next_local(inout Locals state,Host host) on cpu requires nonzero(host.inspect);
 
 // Complete compaction borrows the original IR, Copy scalar records and root

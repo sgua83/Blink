@@ -232,10 +232,6 @@ impl Call {
             }
         }
     }
-    #[cfg(feature = "compiler")]
-    pub(crate) fn locals(&self, writing: bool) -> impl Iterator<Item = usize> + '_ {
-        super::dataflow::call_locals(self, writing)
-    }
     #[cfg(not(feature = "compiler"))]
     pub(crate) fn locals(&self, writing: bool) -> impl Iterator<Item = usize> + '_ {
         self.arguments
