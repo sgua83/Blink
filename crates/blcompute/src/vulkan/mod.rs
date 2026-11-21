@@ -1027,15 +1027,13 @@ impl Device {
         bindings: DomainBindings<GpuDataset>,
     ) -> Result<DomainBindings<crate::cpu::CpuDataset>> {
         let DomainBindings { datasets, domains } = bindings;
+        if datasets.iter().any(|data| !Rc::ptr_eq(&self.inner, &data.allocation.inner)) {
+            return Err(error("数据集属于另一设备"));
+        }
         let mut readback = Readback::new(self);
         let datasets = datasets
             .into_iter()
-            .map(|data| {
-                if !Rc::ptr_eq(&self.inner, &data.allocation.inner) {
-                    return Err(error("数据集属于另一设备"));
-                }
-                readback.download_cpu(data)
-            })
+            .map(|data| readback.download_cpu(data))
             .collect::<Result<Vec<_>>>()?;
         Ok(DomainBindings { datasets, domains })
     }
