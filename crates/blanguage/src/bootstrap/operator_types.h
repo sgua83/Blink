@@ -78,3 +78,10 @@ enum SubgroupResult:u32 {
 extern "C" SubgroupBuiltin source_subgroup(address bytes, usize length) on cpu;
 extern "C" SubgroupResult subgroup_result(SubgroupRule rule, address ty, cfn<u32,address,SubgroupFact> fact) on cpu
     requires nonzero(fact);
+
+// The source form and operator are also consumed by the original compiler IR.
+enum CollectiveForm:u32 { Unknown=0; TileReduce=1; TileScan=2; Reduce=3; SegmentedReduce=4; Scan=5; SegmentedScan=6; };
+enum CollectiveOperator:u32 { Sum=0; Min=1; Max=2; BitAnd=3; BitOr=4; BitXor=5; };
+struct CollectiveBuiltin { CollectiveForm form; CollectiveOperator operation; };
+extern "C" CollectiveBuiltin source_collective(address bytes, usize length) on cpu;
+extern "C" bool collective_accepts(CollectiveOperator operation, bool numeric, bool integer) on cpu;

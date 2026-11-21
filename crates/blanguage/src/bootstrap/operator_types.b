@@ -370,3 +370,38 @@ extern "C" SubgroupResult subgroup_result(SubgroupRule rule, address ty, cfn<u32
     if (rule == SubgroupRule::Bits && fact(ty, SubgroupFact::Integer) == 0) { return SubgroupResult::BadBits; }
     return SubgroupResult::Operand;
 }
+
+bool collective_prefix<const N:u32>(address bytes, usize length, read array<u8,N> expected, inout usize prefix) on cpu {
+    if (length < usize(N) || !source_spelling(bytes, usize(N), expected)) { return false; }
+    prefix = usize(N);
+    return true;
+}
+
+extern "C" CollectiveBuiltin source_collective(address bytes, usize length) on cpu {
+    usize prefix = usize(0);
+    CollectiveForm form;
+    if (collective_prefix(bytes, length, "tile_reduce_", prefix)) { form = CollectiveForm::TileReduce; }
+    else if (collective_prefix(bytes, length, "tile_scan_exclusive_", prefix)) { form = CollectiveForm::TileScan; }
+    else if (collective_prefix(bytes, length, "reduce_segmented_", prefix)) { form = CollectiveForm::SegmentedReduce; }
+    else if (collective_prefix(bytes, length, "reduce_", prefix)) { form = CollectiveForm::Reduce; }
+    else if (collective_prefix(bytes, length, "scan_segmented_exclusive_", prefix)) { form = CollectiveForm::SegmentedScan; }
+    else if (collective_prefix(bytes, length, "scan_exclusive_", prefix)) { form = CollectiveForm::Scan; }
+    else { return CollectiveBuiltin(CollectiveForm::Unknown, CollectiveOperator::Sum); }
+
+    address suffix = unsafe_address(address_bits(bytes) + u64(prefix));
+    usize size = length - prefix;
+    CollectiveOperator operation;
+    if (source_spelling(suffix, size, "sum")) { operation = CollectiveOperator::Sum; }
+    else if (source_spelling(suffix, size, "min")) { operation = CollectiveOperator::Min; }
+    else if (source_spelling(suffix, size, "max")) { operation = CollectiveOperator::Max; }
+    else if (source_spelling(suffix, size, "bit_and")) { operation = CollectiveOperator::BitAnd; }
+    else if (source_spelling(suffix, size, "bit_or")) { operation = CollectiveOperator::BitOr; }
+    else if (source_spelling(suffix, size, "bit_xor")) { operation = CollectiveOperator::BitXor; }
+    else { return CollectiveBuiltin(CollectiveForm::Unknown, CollectiveOperator::Sum); }
+    return CollectiveBuiltin(form, operation);
+}
+
+extern "C" bool collective_accepts(CollectiveOperator operation, bool numeric, bool integer) on cpu {
+    return numeric && (integer || operation == CollectiveOperator::Sum
+        || operation == CollectiveOperator::Min || operation == CollectiveOperator::Max);
+}

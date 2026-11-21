@@ -185,7 +185,7 @@ impl Builder<'_> {
             self.reads.insert(*binding);
             self.cross_access.insert(*binding);
         }
-        if !ty.is_numeric() || !op.operator().accepts(ty.components[0].0) {
+        if !collective::accepts(op.operator(), &ty) {
             return self.fail(
                 args.at(0).span(),
                 "B206",

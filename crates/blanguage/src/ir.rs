@@ -1585,23 +1585,6 @@ pub enum TileOp {
     ScanExclusiveBitXor,
 }
 impl TileOp {
-    pub fn from_source(name: &str) -> Option<Self> {
-        Some(match name {
-            "tile_reduce_sum" => Self::ReduceSum,
-            "tile_scan_exclusive_sum" => Self::ScanExclusiveSum,
-            "tile_reduce_min" => Self::ReduceMin,
-            "tile_reduce_max" => Self::ReduceMax,
-            "tile_scan_exclusive_min" => Self::ScanExclusiveMin,
-            "tile_scan_exclusive_max" => Self::ScanExclusiveMax,
-            "tile_reduce_bit_and" => Self::ReduceBitAnd,
-            "tile_reduce_bit_or" => Self::ReduceBitOr,
-            "tile_reduce_bit_xor" => Self::ReduceBitXor,
-            "tile_scan_exclusive_bit_and" => Self::ScanExclusiveBitAnd,
-            "tile_scan_exclusive_bit_or" => Self::ScanExclusiveBitOr,
-            "tile_scan_exclusive_bit_xor" => Self::ScanExclusiveBitXor,
-            _ => return None,
-        })
-    }
     pub fn operator(self) -> CollectiveOperator {
         match self {
             Self::ReduceSum | Self::ScanExclusiveSum => CollectiveOperator::Sum,
@@ -1625,6 +1608,7 @@ impl TileOp {
     }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u32)]
 pub enum CollectiveOperator {
     Sum,
     Min,
@@ -1634,37 +1618,6 @@ pub enum CollectiveOperator {
     BitXor,
 }
 impl CollectiveOperator {
-    pub fn from_scan_source(name: &str) -> Option<Self> {
-        Self::scan_operator(name.strip_prefix("scan_exclusive_")?)
-    }
-    fn scan_operator(suffix: &str) -> Option<Self> {
-        match suffix {
-            "sum" => Some(Self::Sum),
-            "min" => Some(Self::Min),
-            "max" => Some(Self::Max),
-            "bit_and" => Some(Self::BitAnd),
-            "bit_or" => Some(Self::BitOr),
-            "bit_xor" => Some(Self::BitXor),
-            _ => None,
-        }
-    }
-    pub fn from_segmented_scan_source(name: &str) -> Option<Self> {
-        Self::scan_operator(name.strip_prefix("scan_segmented_exclusive_")?)
-    }
-    pub fn from_reduction_source(name: &str) -> Option<Self> {
-        Self::scan_operator(name.strip_prefix("reduce_")?)
-    }
-    pub fn from_segmented_reduction_source(name: &str) -> Option<Self> {
-        Self::scan_operator(name.strip_prefix("reduce_segmented_")?)
-    }
-    pub fn accepts(self, scalar: Scalar) -> bool {
-        match self {
-            Self::BitAnd | Self::BitOr | Self::BitXor => {
-                scalar.is_integer()
-            }
-            Self::Sum | Self::Min | Self::Max => scalar != Scalar::Bool,
-        }
-    }
     pub fn identity(self, scalar: Scalar) -> Bits {
         match self {
             Self::Sum | Self::BitOr | Self::BitXor => 0,

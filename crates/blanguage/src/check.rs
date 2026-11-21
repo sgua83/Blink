@@ -8,6 +8,7 @@ mod append;
 mod address;
 mod array;
 mod atomic;
+mod collective;
 mod bounds;
 pub(crate) use bounds::Proof;
 mod compact;
@@ -1104,17 +1105,32 @@ async fn expand_stages(
                         };
                         let explicit = arguments.as_ref();
                         let callee_key = world.resolve(name, &d.module, &d.imports, true);
-                        if callee_key.is_missing() {
-                            if let Some(operator) = CollectiveOperator::from_reduction_source(name)
-                                .filter(|_| explicit.is_none())
-                            {
-                                begin_segment(program, facts, calls);
-                                reduce::compile(program, env, operator, &args, d, statement.span(), facts, input.operation_source(call_span, SourceSyntax::Expression, domain_path))?;
+                        if callee_key.is_missing() && explicit.is_none() {
+                            use collective::Form;
+                            let builtin = collective::from_source(name);
+                            let stage = match builtin.form {
+                                Form::Reduce => Some(reduce::compile(
+                                    program, env, builtin.operation, &args, d, statement.span(), facts,
+                                    input.operation_source(call_span, SourceSyntax::Expression, domain_path),
+                                )),
+                                Form::SegmentedReduce => Some(segmented_reduce::compile(
+                                    program, env, builtin.operation, &args, d, statement.span(), facts,
+                                    input.operation_source(call_span, SourceSyntax::Expression, domain_path),
+                                )),
+                                Form::Scan | Form::SegmentedScan => Some(scan::compile(
+                                    program, env, builtin.operation, matches!(builtin.form, Form::SegmentedScan),
+                                    &args, d, statement.span(), facts,
+                                    input.operation_source(call_span, SourceSyntax::Expression, domain_path),
+                                )),
+                                _ => None,
+                            };
+                            if let Some(stage) = stage {
+                                stage?;
                                 *boundary = false;
                                 break 'call;
                             }
                             if let Some(kind) =
-                                custom_reduce::Kind::from_source(name).filter(|_| explicit.is_none())
+                                custom_reduce::Kind::from_source(name)
                             {
                                 begin_segment(program, facts, calls);
                                 unsafe { world.call(custom_reduce::compile(
@@ -1131,60 +1147,6 @@ async fn expand_stages(
                                     functions,
                                     input.operation_source(call_span, SourceSyntax::Expression, domain_path),
                                 )).await }?;
-                                *boundary = false;
-                                break 'call;
-                            }
-                            if let Some(operator) =
-                                CollectiveOperator::from_segmented_reduction_source(name)
-                                    .filter(|_| explicit.is_none())
-                            {
-                                begin_segment(program, facts, calls);
-                                segmented_reduce::compile(
-                                    program,
-                                    env,
-                                    operator,
-                                    &args,
-                                    d,
-                                    statement.span(),
-                                    facts,
-                                    input.operation_source(call_span, SourceSyntax::Expression, domain_path),
-                                )?;
-                                *boundary = false;
-                                break 'call;
-                            }
-                            if let Some(operator) =
-                                CollectiveOperator::from_scan_source(name).filter(|_| explicit.is_none())
-                            {
-                                begin_segment(program, facts, calls);
-                                scan::compile(
-                                    program,
-                                    env,
-                                    operator,
-                                    false,
-                                    &args,
-                                    d,
-                                    statement.span(),
-                                    facts,
-                                    input.operation_source(call_span, SourceSyntax::Expression, domain_path),
-                                )?;
-                                *boundary = false;
-                                break 'call;
-                            }
-                            if let Some(operator) = CollectiveOperator::from_segmented_scan_source(name)
-                                .filter(|_| explicit.is_none())
-                            {
-                                begin_segment(program, facts, calls);
-                                scan::compile(
-                                    program,
-                                    env,
-                                    operator,
-                                    true,
-                                    &args,
-                                    d,
-                                    statement.span(),
-                                    facts,
-                                    input.operation_source(call_span, SourceSyntax::Expression, domain_path),
-                                )?;
                                 *boundary = false;
                                 break 'call;
                             }
@@ -3193,7 +3155,8 @@ impl<'a> Builder<'a> {
         if name == "append" {
             return unsafe { self.world.call(self.append(args, span)).await };
         }
-        if TileOp::from_source(name).is_some() {
+        let collective = collective::from_source(name);
+        if collective.is_tile() {
             return self.fail(
                 span,
                 "B205",
@@ -3251,10 +3214,7 @@ impl<'a> Builder<'a> {
             name,
             "bind" | "barrier" | "group_barrier" | "compact" | "stable_sort_by_key" | "ddx" | "ddy"
         ) || custom_reduce::Kind::from_source(name).is_some()
-            || CollectiveOperator::from_scan_source(name).is_some()
-            || CollectiveOperator::from_segmented_scan_source(name).is_some()
-            || CollectiveOperator::from_reduction_source(name).is_some()
-            || CollectiveOperator::from_segmented_reduction_source(name).is_some()
+            || collective.is_stage()
         {
             return self.fail(
                 span,
@@ -4039,7 +3999,7 @@ impl<'a> Builder<'a> {
             unsafe { self.world.call(self.cooperate(call, explicit.as_ref(), &args, e.span())).await }?
                 .map(returns::Returned::value)
         } else if let ExprKind::Call(call, args) = e.kind() {
-            if let Some(op) = TileOp::from_source(call) {
+            if let Some(op) = collective::from_source(call).tile() {
                 Some(returns::Returned::value(
                     self.tile_collective(op, &args, span)?,
                 ))
@@ -4859,10 +4819,7 @@ use effects::{assigned_names, expression_assignments};
 
 pub(crate) fn stage_intrinsic(name: &str) -> bool {
     matches!(name, "clear_prefix" | "stable_sort_by_key" | "compact")
-        || CollectiveOperator::from_reduction_source(name).is_some()
-        || CollectiveOperator::from_segmented_reduction_source(name).is_some()
-        || CollectiveOperator::from_scan_source(name).is_some()
-        || CollectiveOperator::from_segmented_scan_source(name).is_some()
+        || collective::from_source(name).is_stage()
         || custom_reduce::Kind::from_source(name).is_some()
 }
 

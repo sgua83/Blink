@@ -22,7 +22,7 @@ pub(super) fn compile(
         prefix::typed_field(program, env, &args.at(0), d, facts)?;
     let (target, target_word, target_access, target_ty) =
         collective_value_field(program, env, &args.last().unwrap(), d)?;
-    if !ty.is_numeric() || !operator.accepts(ty.components[0].0) || ty != target_ty {
+    if !collective::accepts(operator, &ty) || ty != target_ty {
         return d.source.fail(
             span,
             "B175",
