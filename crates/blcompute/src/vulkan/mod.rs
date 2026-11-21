@@ -380,16 +380,19 @@ impl Device {
         let mut workgroup_width = 0;
         let mut shared_bytes = 0;
         for program in programs {
-            uniform_bytes = uniform_bytes.max(program.uniform_bytes());
-            let textures = program.texture_count();
-            texture_count = texture_count.max(textures);
-            let storage = program.buffers().len() + program.auxiliary_buffers();
-            storage_count = storage_count.max(storage);
-            acceleration_count = acceleration_count.max(program.accelerations().len());
-            resource_count = resource_count.max(storage + textures);
-            for stage in program.stages() {
-                workgroup_width = workgroup_width.max(stage.workgroup_width());
-                shared_bytes = shared_bytes.max(stage.shared_bytes());
+            let stages = program.stages();
+            if !stages.is_empty() {
+                uniform_bytes = uniform_bytes.max(program.uniform_bytes());
+                let textures = program.texture_count();
+                texture_count = texture_count.max(textures);
+                let storage = program.buffers().len() + program.auxiliary_buffers();
+                storage_count = storage_count.max(storage);
+                acceleration_count = acceleration_count.max(program.accelerations().len());
+                resource_count = resource_count.max(storage + textures);
+                for stage in stages {
+                    workgroup_width = workgroup_width.max(stage.workgroup_width());
+                    shared_bytes = shared_bytes.max(stage.shared_bytes());
+                }
             }
             let required = program.requirements();
             requirements.float64 |= required.float64;
@@ -2056,6 +2059,7 @@ impl GpuProgram {
     }
     fn load_image<P>(inner: Rc<Inner>, image: &blanguage::spirv::ProgramImage<P>) -> Result<Self> {
         let program = image.program();
+        let has_pipeline = !program.stages().is_empty();
         if program.requires_sort() && !inner.sorting {
             return Err(error(
                 "排序程序必须以 Device::for_program 声明 subgroup 能力",
@@ -2105,15 +2109,14 @@ impl GpuProgram {
                 inner.subgroup_operations
             )));
         }
-        let limits = &inner.properties.limits;
         let acceleration_count = program.accelerations().len();
         if acceleration_count != 0 {
             let ray = inner
                 .ray
                 .as_ref()
                 .ok_or_else(|| error("光线查询程序必须以 Device::for_program 声明设备能力"))?;
-            if acceleration_count > ray.properties.per_stage as usize
-                || acceleration_count > ray.properties.per_set as usize
+            if has_pipeline && (acceleration_count > ray.properties.per_stage as usize
+                || acceleration_count > ray.properties.per_set as usize)
             {
                 return Err(error("加速结构绑定数量超出设备能力"));
             }
@@ -2126,28 +2129,30 @@ impl GpuProgram {
         if program.requires_texture_indexing() && !inner.texture_indexing {
             return Err(error("纹理数组程序必须以 Device::for_program 声明设备能力"));
         }
-        let texture_count = program.texture_count();
-        if texture_count > limits.maxPerStageDescriptorSampledImages as usize
-            || texture_count > limits.maxPerStageDescriptorSamplers as usize
-            || texture_count > limits.maxDescriptorSetSampledImages as usize
-            || texture_count > limits.maxDescriptorSetSamplers as usize
-        {
-            return Err(error("纹理绑定数量超出设备能力"));
-        }
         let auxiliary = program.auxiliary_buffers();
-        let storage_count = program.buffers().len() + auxiliary;
-        if program.uniform_bytes() > limits.maxPushConstantsSize
-            || storage_count > limits.maxPerStageDescriptorStorageBuffers as usize
-            || storage_count > limits.maxDescriptorSetStorageBuffers as usize
-            || storage_count + texture_count
-                > limits.maxPerStageResources as usize
-            || program.stages().iter().any(|s| {
-                s.workgroup_width() > limits.maxComputeWorkGroupInvocations
-                    || s.workgroup_width() > limits.maxComputeWorkGroupSize[0]
-                    || s.shared_bytes() > limits.maxComputeSharedMemorySize as u64
-            })
-        {
-            return Err(error("计算程序超出目标设备的资源能力"));
+        if has_pipeline {
+            let limits = &inner.properties.limits;
+            let texture_count = program.texture_count();
+            if texture_count > limits.maxPerStageDescriptorSampledImages as usize
+                || texture_count > limits.maxPerStageDescriptorSamplers as usize
+                || texture_count > limits.maxDescriptorSetSampledImages as usize
+                || texture_count > limits.maxDescriptorSetSamplers as usize
+            {
+                return Err(error("纹理绑定数量超出设备能力"));
+            }
+            let storage_count = program.buffers().len() + auxiliary;
+            if program.uniform_bytes() > limits.maxPushConstantsSize
+                || storage_count > limits.maxPerStageDescriptorStorageBuffers as usize
+                || storage_count > limits.maxDescriptorSetStorageBuffers as usize
+                || storage_count + texture_count > limits.maxPerStageResources as usize
+                || program.stages().iter().any(|s| {
+                    s.workgroup_width() > limits.maxComputeWorkGroupInvocations
+                        || s.workgroup_width() > limits.maxComputeWorkGroupSize[0]
+                        || s.shared_bytes() > limits.maxComputeSharedMemorySize as u64
+                })
+            {
+                return Err(error("计算程序超出目标设备的资源能力"));
+            }
         }
         let mut out = Compiled {
             inner,
@@ -2156,7 +2161,7 @@ impl GpuProgram {
             layout: 0,
             stages: Vec::new(),
         };
-        if !out.program.stages().is_empty() {
+        if has_pipeline {
             unsafe {
                 let f = &out.inner.functions;
                 let device = out.inner.owner.device;
