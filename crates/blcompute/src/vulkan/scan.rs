@@ -23,7 +23,7 @@ fn length_at(count: u32, level: usize) -> u32 {
 pub(super) fn allocate(c: &Compiled, stage: usize, mut count: u32, words: usize) -> Result<Scratch> {
     let mut buffers = Vec::new();
     let level_count = levels(count);
-    let legacy_summary = c.scan_terminal(stage, count).is_none();
+    let legacy_summary = c.stages[stage].scan_terminal(count).is_none();
     for level in 0..level_count {
         count = groups(count);
         if level + 1 < level_count || legacy_summary {
@@ -203,7 +203,7 @@ pub(super) fn record_dispatches(
     }
 }
 fn scan_pipeline(c: &Compiled, stage: usize, count: u32, level: usize, levels: usize, kernels: [VkPipeline; 4]) -> VkPipeline {
-    if level + 1 == levels && let Some(TerminalPipeline::Alternate(pipeline)) = c.scan_terminal(stage, count) {
+    if level + 1 == levels && let Some(TerminalPipeline::Alternate(pipeline)) = c.stages[stage].scan_terminal(count) {
         return pipeline;
     }
     kernels[usize::from(level != 0)]
@@ -222,11 +222,12 @@ pub(super) fn record_segmented_reduce(
     partition: NonZeroU32,
     reused: bool,
 ) -> Result<()> {
+    let pipelines = &c.stages[stage];
     let kernels = [
-        c.pipelines[stage],
-        c.tails[stage].unwrap(),
-        c.scan_adds[stage].unwrap(),
-        c.finishes[stage].unwrap(),
+        pipelines.main,
+        pipelines.tail.unwrap(),
+        pipelines.scan_add.unwrap(),
+        pipelines.finish.unwrap(),
     ];
     let level_count = levels(count);
     for level in 0..level_count {

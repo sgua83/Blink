@@ -1676,11 +1676,40 @@ enum TerminalPipeline {
     Alternate(VkPipeline),
 }
 
-#[derive(Default)]
-struct AdditionalPipelines {
+struct StagePipelines {
+    main: VkPipeline,
+    tail: Option<VkPipeline>,
+    scan_add: Option<VkPipeline>,
+    finish: Option<VkPipeline>,
+    dispatch: Option<prefix::Preparation>,
+    selector: Option<VkPipeline>,
     sort: Vec<VkPipeline>,
     segmented_single_group: Option<VkPipeline>,
     terminal_scans: [Option<TerminalPipeline>; 2],
+}
+impl StagePipelines {
+    fn segmented_single_group(&self, count: u32) -> Option<VkPipeline> {
+        (scan::groups(count) == 1).then_some(self.segmented_single_group).flatten()
+    }
+
+    fn scan_terminal(&self, count: u32) -> Option<TerminalPipeline> {
+        self.terminal_scans[usize::from(scan::groups(count) > 1)]
+    }
+
+    fn handles(&self) -> impl Iterator<Item = VkPipeline> + '_ {
+        std::iter::once(self.main)
+            .chain(self.tail)
+            .chain(self.scan_add)
+            .chain(self.finish)
+            .chain(self.dispatch.as_ref().map(|prepare| prepare.pipeline))
+            .chain(self.selector)
+            .chain(self.sort.iter().copied())
+            .chain(self.segmented_single_group)
+            .chain(self.terminal_scans.iter().filter_map(|pipeline| match pipeline {
+                Some(TerminalPipeline::Alternate(handle)) => Some(*handle),
+                _ => None,
+            }))
+    }
 }
 
 // The compute bind point belongs to this recording of one compiled layout.
@@ -1728,45 +1757,15 @@ struct Compiled {
     program: std::sync::Arc<Program>,
     set_layout: VkDescriptorSetLayout,
     layout: VkPipelineLayout,
-    pipelines: Vec<VkPipeline>,
-    tails: Vec<Option<VkPipeline>>,
-    scan_adds: Vec<Option<VkPipeline>>,
-    finishes: Vec<Option<VkPipeline>>,
-    dispatches: Vec<Option<prefix::Preparation>>,
-    selectors: Vec<Option<VkPipeline>>,
-    additional: Vec<AdditionalPipelines>,
-}
-impl Compiled {
-    fn segmented_single_group(&self, stage: usize, count: u32) -> Option<VkPipeline> {
-        (scan::groups(count) == 1).then(|| self.additional[stage].segmented_single_group).flatten()
-    }
-
-    fn scan_terminal(&self, stage: usize, count: u32) -> Option<TerminalPipeline> {
-        self.additional[stage].terminal_scans[usize::from(scan::groups(count) > 1)]
-    }
+    stages: Vec<StagePipelines>,
 }
 impl Drop for Compiled {
     fn drop(&mut self) {
         unsafe {
             let f = &self.inner.functions;
             let d = self.inner.owner.device;
-            for p in self
-                .pipelines
-                .iter()
-                .chain(self.tails.iter().flatten())
-                .chain(self.scan_adds.iter().flatten())
-                .chain(self.finishes.iter().flatten())
-                .chain(self.dispatches.iter().flatten().map(|prepare| &prepare.pipeline))
-                .chain(self.selectors.iter().flatten())
-                .chain(self.additional.iter().flat_map(|pipelines| {
-                    pipelines.sort.iter().chain(&pipelines.segmented_single_group)
-                        .chain(pipelines.terminal_scans.iter().filter_map(|pipeline| match pipeline {
-                            Some(TerminalPipeline::Alternate(handle)) => Some(handle),
-                            _ => None,
-                        }))
-                }))
-            {
-                (f.vkDestroyPipeline)(d, *p, null());
+            for handle in self.stages.iter().flat_map(StagePipelines::handles) {
+                (f.vkDestroyPipeline)(d, handle, null());
             }
             if self.layout != 0 {
                 (f.vkDestroyPipelineLayout)(d, self.layout, null());
@@ -2161,13 +2160,7 @@ impl GpuProgram {
             program: image.shared_program(),
             set_layout: 0,
             layout: 0,
-            pipelines: Vec::new(),
-            tails: Vec::new(),
-            scan_adds: Vec::new(),
-            finishes: Vec::new(),
-            dispatches: Vec::new(),
-            selectors: Vec::new(),
-            additional: Vec::new(),
+            stages: Vec::new(),
         };
         if !out.program.stages().is_empty() {
             unsafe {
@@ -2216,22 +2209,26 @@ impl GpuProgram {
                     let entry = shader.dispatch.as_deref().map(prefix::entry);
                     let packed = entry == Some(prefix::PREPARE_ENTRY);
                     let continuation = packed.then_some(blanguage::spirv::DISPATCH_RECORD_BYTES as u64);
-                    out.pipelines.push(make(&shader.main)?);
-                    out.tails
-                        .push(shader.tail.as_deref().map(make).transpose()?);
-                    out.scan_adds
-                        .push(shader.scan_add.as_deref().map(make).transpose()?);
-                    out.finishes.push(
-                        shader
-                            .finish
-                            .as_ref()
-                            .map(|(_, words)| {
-                                let offset = if stage_layout.selection.is_some() { continuation } else { None };
-                                pipeline(&out.inner, out.layout, words, false, c"main", offset)
-                            })
-                            .transpose()?,
-                    );
-                    out.dispatches.push(shader.dispatch.as_deref().zip(entry).map(|(words, name)| {
+                    // The compiled owner records each handle before another creation can fail.
+                    out.stages.push(StagePipelines {
+                        main: make(&shader.main)?,
+                        tail: None,
+                        scan_add: None,
+                        finish: None,
+                        dispatch: None,
+                        selector: None,
+                        sort: Vec::new(),
+                        segmented_single_group: None,
+                        terminal_scans: [None; 2],
+                    });
+                    let pipelines = &mut out.stages[stage];
+                    pipelines.tail = shader.tail.as_deref().map(make).transpose()?;
+                    pipelines.scan_add = shader.scan_add.as_deref().map(make).transpose()?;
+                    pipelines.finish = shader.finish.as_ref().map(|(_, words)| {
+                        let offset = if stage_layout.selection.is_some() { continuation } else { None };
+                        pipeline(&out.inner, out.layout, words, false, c"main", offset)
+                    }).transpose()?;
+                    pipelines.dispatch = shader.dispatch.as_deref().zip(entry).map(|(words, name)| {
                         let offset = if matches!(stage_layout.operation, blanguage::ir::Operation::StableSort(_)) {
                             continuation
                         } else {
@@ -2239,19 +2236,16 @@ impl GpuProgram {
                         };
                         pipeline(&out.inner, out.layout, words, false, name, offset)
                             .map(|pipeline| prefix::Preparation { pipeline, packed })
-                    }).transpose()?);
-                    out.selectors
-                        .push(shader.selector.as_deref().map(make).transpose()?);
+                    }).transpose()?;
+                    pipelines.selector = shader.selector.as_deref().map(make).transpose()?;
                     use blanguage::spirv::TerminalScan;
-                    let entries = shader.additional_shaders(&out.program, &out.program.stages()[stage]);
-                    out.additional.push(AdditionalPipelines::default());
-                    let extra = &mut out.additional[stage];
+                    let entries = shader.additional_shaders(&out.program, stage_layout);
                     for shader in entries.sort {
-                        extra.sort.push(pipeline(&out.inner, out.layout, &shader.words, shader.ranks, c"main", None)?);
+                        pipelines.sort.push(pipeline(&out.inner, out.layout, &shader.words, shader.ranks, c"main", None)?);
                     }
-                    extra.segmented_single_group = entries.segmented_single_group
+                    pipelines.segmented_single_group = entries.segmented_single_group
                         .map(|shader| make(&shader.words)).transpose()?;
-                    for (pipeline, shader) in extra.terminal_scans.iter_mut().zip(entries.terminal_scans) {
+                    for (pipeline, shader) in pipelines.terminal_scans.iter_mut().zip(entries.terminal_scans) {
                         *pipeline = match shader {
                             Some(TerminalScan::Canonical) => Some(TerminalPipeline::Canonical),
                             Some(TerminalScan::Alternate(shader)) =>
@@ -2528,7 +2522,7 @@ impl GpuProgram {
             }
             if let Some(selection) = stage.selection {
                 use std::collections::btree_map::Entry;
-                let legacy_summary = c.scan_terminal(i, count).is_none();
+                let legacy_summary = c.stages[i].scan_terminal(count).is_none();
                 let continuation = prefix::continuation_slot(c, i);
                 let ((slot, sources), reused) = match selected_storage.entry((count, legacy_summary, continuation)) {
                     Entry::Occupied(entry) => (entry.into_mut(), true),
@@ -2593,7 +2587,7 @@ impl GpuProgram {
                 }
                 blanguage::ir::Operation::SegmentedReduce(_)
                 | blanguage::ir::Operation::CustomSegmentedReduce(_)
-                    if c.segmented_single_group(i, count).is_some() =>
+                    if c.stages[i].segmented_single_group(count).is_some() =>
                 {
                     if stage.prefix.is_some() {
                         extra_sets += 1;
@@ -2650,7 +2644,7 @@ impl GpuProgram {
             pending_read: false,
             pending_write: pending_inputs,
         }).collect();
-        let used_bindings = if !c.pipelines.is_empty() {
+        let used_bindings = if !c.stages.is_empty() {
             unsafe {
                 let sets = u32::try_from(u64::from(needs_root_set) + extra_sets)?;
                 if sets != 0 && !pending_inputs {
@@ -2819,7 +2813,8 @@ impl GpuProgram {
                         let usage = uses.next_if(|usage| usage.stage == i);
                         let temporary = usage.map(|usage| &scratch[usage.slot]);
                         let arguments = temporary.and_then(|s| s.arguments.as_ref());
-                        let segmented_single_group = c.segmented_single_group(i, count);
+                        let pipelines = &c.stages[i];
+                        let segmented_single_group = pipelines.segmented_single_group(count);
                         match &stage.operation {
                             blanguage::ir::Operation::StableSort(s) => {
                                 let temporary = temporary.unwrap();
@@ -2863,14 +2858,14 @@ impl GpuProgram {
                                 prefix::dispatch(
                                     &commands,
                                     c,
-                                    c.pipelines[i],
+                                    pipelines.main,
                                     args,
                                     &mut uniforms,
                                     0,
                                 );
                             }
                             blanguage::ir::Operation::Map => {
-                                commands.bind_pipeline(c.pipelines[i]);
+                                commands.bind_pipeline(pipelines.main);
                                 commands.bind_set(root_set.unwrap());
                                 let width = stage.workgroup_width();
                                 let maximum = c.inner.properties.limits.maxComputeWorkGroupCount[0]
@@ -2966,7 +2961,7 @@ impl GpuProgram {
                                 head_word,
                             }) => {
                                 let descriptors = descriptors.as_mut().unwrap();
-                                let add = c.scan_adds[i].unwrap();
+                                let add = pipelines.scan_add.unwrap();
                                 let source = descriptors.binding(fields.source);
                                 let target = descriptors.binding(fields.target);
                                 scan::record(
@@ -2974,7 +2969,7 @@ impl GpuProgram {
                                     descriptors,
                                     c,
                                     i,
-                                    [c.pipelines[i], c.tails[i].unwrap(), add, c.finishes[i].unwrap_or(add)],
+                                    [pipelines.main, pipelines.tail.unwrap(), add, pipelines.finish.unwrap_or(add)],
                                     fields,
                                     head_word.is_some(),
                                     (data[fields.source].count, source),
@@ -3049,9 +3044,9 @@ impl GpuProgram {
                                         &commands,
                                         c,
                                         if pass == 0 {
-                                            c.pipelines[i]
+                                            pipelines.main
                                         } else {
-                                            c.tails[i].unwrap()
+                                            pipelines.tail.unwrap()
                                         },
                                         length,
                                         &mut uniforms,

@@ -54,15 +54,17 @@ pub(super) fn record(
     };
     commands.bind_set(scan.root());
     prefix::prepare(commands, c, stage, uniforms, partition, reused);
+    let pipelines = &c.stages[stage];
+    let add = pipelines.scan_add.unwrap();
     scan::record_dispatches(
         commands,
         c,
         stage,
         [
-            c.selectors[stage].unwrap(),
-            c.tails[stage].unwrap(),
-            c.scan_adds[stage].unwrap(),
-            c.scan_adds[stage].unwrap(),
+            pipelines.selector.unwrap(),
+            pipelines.tail.unwrap(),
+            add,
+            add,
         ],
         count,
         scan,
@@ -82,7 +84,7 @@ pub(super) fn record(
     prefix::dispatch(
         commands,
         c,
-        c.finishes[stage].unwrap(),
+        pipelines.finish.unwrap(),
         args,
         uniforms,
         0,
@@ -91,7 +93,7 @@ pub(super) fn record(
     prefix::dispatch(
         commands,
         c,
-        c.pipelines[stage],
+        pipelines.main,
         args,
         uniforms,
         continuation,

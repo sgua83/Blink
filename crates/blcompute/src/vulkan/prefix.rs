@@ -25,11 +25,11 @@ pub(super) fn entry(words: &[u32]) -> &'static CStr {
 }
 
 pub(super) fn continuation_slot(c: &Compiled, stage: usize) -> usize {
-    if c.dispatches[stage].as_ref().unwrap().packed { 1 } else { PREFIX_LEVELS }
+    if c.stages[stage].dispatch.as_ref().unwrap().packed { 1 } else { PREFIX_LEVELS }
 }
 
 pub(super) fn allocate(c: &Compiled, stage: usize, count: u32) -> Result<PagedBuffer> {
-    let packed = c.dispatches[stage].as_ref().unwrap().packed;
+    let packed = c.stages[stage].dispatch.as_ref().unwrap().packed;
     let stage = &c.program.stages()[stage];
     let records = if stage.selection.is_some() {
         if packed { scan::levels(count).max(2) } else { PREFIX_LEVELS + 1 }
@@ -58,7 +58,7 @@ pub(super) fn prepare(
     }
     unsafe {
         let f = &c.inner.functions;
-        commands.bind_pipeline(c.dispatches[stage].as_ref().unwrap().pipeline);
+        commands.bind_pipeline(c.stages[stage].dispatch.as_ref().unwrap().pipeline);
         uniforms[0] = c.inner.properties.limits.maxComputeWorkGroupCount[0].min(
             partition
                 .get()

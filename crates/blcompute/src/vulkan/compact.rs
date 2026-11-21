@@ -21,16 +21,18 @@ pub(super) fn record(
     let (prefix, summaries) = scratch.buffers.split_last().unwrap();
     let prefix = prefix.descriptor();
     let source = writer.binding(selection.flags);
+    let pipelines = &c.stages[stage];
+    let add = pipelines.scan_add.unwrap();
     scan::record(
         commands,
         writer,
         c,
         stage,
         [
-            c.pipelines[stage],
-            c.tails[stage].unwrap(),
-            c.scan_adds[stage].unwrap(),
-            c.scan_adds[stage].unwrap(),
+            pipelines.main,
+            pipelines.tail.unwrap(),
+            add,
+            add,
         ],
         &selection.scan(),
         false,
@@ -54,7 +56,7 @@ pub(super) fn record(
     scan::dispatch(
         commands,
         c,
-        c.finishes[stage].unwrap(),
+        pipelines.finish.unwrap(),
         data[selection.source].count,
         uniforms,
         partition,

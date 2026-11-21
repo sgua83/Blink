@@ -127,7 +127,8 @@ pub(super) fn record(
     partition: NonZeroU32,
     reused: bool,
 ) {
-    let kernels = &c.additional[stage].sort;
+    let pipelines = &c.stages[stage];
+    let kernels = &pipelines.sort;
     let histogram_record = arguments.map_or(0, |_| prefix::continuation_slot(c, stage));
     for key in (0..key_count).rev() {
         commands.bind_set(sets.initialize);
@@ -135,7 +136,7 @@ pub(super) fn record(
             if arguments.is_some() {
                 prefix::prepare(commands, c, stage, uniforms, partition, reused);
             }
-            c.pipelines[stage]
+            pipelines.main
         } else {
             kernels[20 + key]
         };
