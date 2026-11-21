@@ -4436,7 +4436,7 @@ impl<'a> Builder<'a> {
             return Ok(());
         };
         if place.ty().owns_resources() {
-            return unsafe { self.world.call(self.assign_owned_storage(place,None,op,rhs,span)).await };
+            return unsafe { self.world.call(self.assign_owned_storage(place,op,rhs,span)).await };
         }
         let borrowed = matches!(place.storage(), Place::ApplicationElement { .. })
             .then(|| self.hold_binding(Binding::AtomicBorrow(place.clone())));

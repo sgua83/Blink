@@ -4219,7 +4219,7 @@ impl Builder<'_> {
                 _=>unreachable!(),
             }
         }
-        unsafe { self.world.call(self.assign_owned_storage(place,Some(data),op,rhs,span)).await }
+        unsafe { self.world.call(self.assign_owned_storage(place,op,rhs,span)).await }
     }
     // These are the original already-evaluated metadata positions, not a second element table.
     fn element_selection(

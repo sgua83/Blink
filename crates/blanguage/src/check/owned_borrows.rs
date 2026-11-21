@@ -246,11 +246,12 @@ each_data(&mut model,&mut Vec::new(),&mut|data,path|data.initialization=Some(ini
             (Returned::OwnedValue(value),Returned::OwnedValue(old))=>for(index,payload)in value.payloads.iter_mut().enumerate(){if let Some(payload)=payload{handoff(payload,old.payloads[index].as_deref().unwrap());}},_=>{}}}
         let old=value.clone();native_function::rebind_model(&mut value,packed.regs);handoff(&mut value,&old);Ok(value)
     }
-    pub(super) async fn assign_owned_storage(&mut self,place:Place,reference:Option<application::DataReference>,op:&str,rhs:&Expr,span:Span)->Result<()> {
+    pub(super) async fn assign_owned_storage(&mut self,place:Place,op:&str,rhs:&Expr,span:Span)->Result<()> {
         self.require_owned_writable(&place,span)?;
         unsafe { self.world.call(self.writable_storage(&place,span,Some(bounds::Proof::default()))).await }?;
         if op!="="{return self.fail(span,"B224","拥有内容只支持整份移动赋值");}
-        let held=reference.map(|data|self.hold_binding(Binding::DataReference(data)));
+        let held = matches!(place.storage(), Place::ApplicationElement { .. })
+            .then(|| self.hold_binding(Binding::AtomicBorrow(place.clone())));
         let result=unsafe { self.world.call(self.evaluate_returned(rhs,Some(place.ty()))).await };
         if let Some(held)=held{self.env.remove(&held);}
         let result=result?;
