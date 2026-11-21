@@ -3798,7 +3798,7 @@ void local_histogram(inout dataset<Cell> cells) on compute {
 }
 ```
 
-共享元素只通过前述11种atomic操作访问：CPU与GPU原生映射均接受u32／i32／u64／i64标量字段。GPU64位tile必须在真实逻辑设备创建时声明shaderSharedInt64Atomics；64位dataset使用独立shaderBufferInt64Atomics，同一程序实际使用两类目标时分别满足，普通64位存储不要求原子特性。已核验的AMD驱动32.0.21036.18仍存在64位Workgroup OpAtomicLoad降成32位读取的问题；设备报告支持不替代实际正确性。嵌套记录与向量可选择具体标量；普通读取／赋值／复合赋值和直接 tile 集合读取均报 B214，其他原子目标类型报 B215。需要进入只读集合时，先在同步后显式 atomic_load，再 tile_publish 该普通值。它仍不是裸地址，不能逃逸为普通值、全局资源或函数返回的 tile；局部的有界索引、lane、length、游标与字段映射复用原检查器，不授予全局写入或前缀域能力。
+共享元素只通过前述11种atomic操作访问：CPU与GPU原生映射均接受u32／i32／u64／i64标量字段。GPU64位tile必须在真实逻辑设备创建时声明shaderSharedInt64Atomics；64位dataset使用独立shaderBufferInt64Atomics，同一程序实际使用两类目标时分别满足，普通64位存储不要求原子特性。实测AMD驱动32.0.21036.18及32.0.21030.2001的64位Workgroup OpAtomicLoad会降成32位读取。该缺陷按实际设备与驱动版本记录，B的原子操作仍要求完整标量位宽。嵌套记录与向量可选择具体标量；普通读取／赋值／复合赋值和直接 tile 集合读取均报 B214，其他原子目标类型报 B215。需要进入只读集合时，先在同步后显式 atomic_load，再 tile_publish 该普通值。它仍不是裸地址，不能逃逸为普通值、全局资源或函数返回的 tile；局部的有界索引、lane、length、游标与字段映射复用原检查器，不授予全局写入或前缀域能力。
 
 `tile_barrier();` 只允许位于已有 tile 范围的 parallel／cooperative 根块，不接收参数、不返回值。不允许放在分支、循环或普通值函数内，即便分支条件暂时是常量；非法位置／参数报 B219，作为表达式报 B218。有效尾 invocation 执行源码，无效尾 invocation 不访问记录或共享元素，但 GPU 中它们同样经过全部整块屏障。当前支持的是静态根块阶段，不是循环内动态 barrier、跨 workgroup 屏障或调度公平性承诺。
 
