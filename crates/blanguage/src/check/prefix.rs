@@ -278,10 +278,18 @@ impl Facts {
             }
         }
     }
-    pub fn element_facts(&self, program: &Program) -> Vec<ElementFact> {
+    pub fn element_facts(
+        &self, program: &Program, writes: Option<&BTreeMap<usize, BTreeSet<(u32, u32)>>>,
+    ) -> Vec<ElementFact> {
         let mut facts = Vec::new();
         for (&binding, proof) in &self.elements {
-            facts.extend(proof.element_guarantees(binding, &program.buffers[binding].ty, |_, _| true));
+            let regions = writes.and_then(|writes| writes.get(&binding));
+            if writes.is_some() && regions.is_none() { continue; }
+            facts.extend(proof.element_guarantees(binding, &program.buffers[binding].ty, |offset, size| {
+                regions.is_none_or(|regions| regions.iter().any(|&(start, end)| {
+                    u64::from(offset) < u64::from(end) && u64::from(start) < u64::from(offset) + u64::from(size)
+                }))
+            }));
         }
         facts.sort();
         facts.dedup();

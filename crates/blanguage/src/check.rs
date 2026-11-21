@@ -364,7 +364,7 @@ struct DomainCall {
     write_regions: BTreeMap<usize, BTreeSet<(u32, u32)>>,
     before: Vec<PrefixRelation>,
     after: Vec<PrefixRelation>,
-    element_before: Vec<ElementFact>,
+    element_guarantees: Vec<ElementFact>,
     element_after: Vec<ElementFact>,
     source: Option<Arc<SourceSite>>,
 }
@@ -376,6 +376,7 @@ struct RangeContext {
 
 struct ExpandedDomain {
     program: Program,
+    write_regions: BTreeMap<usize, BTreeSet<(u32, u32)>>,
     scopes: BTreeMap<usize, RangeContext>,
     calls: Vec<DomainCall>,
     outputs: Vec<crate::module::domain::Output>,
@@ -614,8 +615,16 @@ async fn expand_domain(
     program.prefix_guarantees = prefix::canonical_relations(prefix::proved_guarantees(
         &program, d, &facts, guarantees.into_iter().map(Ok),
     )?);
-    program.element_guarantees = program.element_outputs(facts.element_facts(&program));
-    Ok((ExpandedDomain { program, scopes, calls, outputs: facts.outputs, elements: facts.elements }, bound_contracts))
+    let write_regions = program.write_regions();
+    let last_writes;
+    let output_writes = if let Some(call) = calls.last() {
+        last_writes = Program::stage_write_regions(&program.stages[call.stage..]);
+        &last_writes
+    } else {
+        &write_regions
+    };
+    program.element_guarantees = facts.element_facts(&program, Some(output_writes));
+    Ok((ExpandedDomain { program, write_regions, scopes, calls, outputs: facts.outputs, elements: facts.elements }, bound_contracts))
 }
 async fn expand_program(
     world: &World,
@@ -1371,7 +1380,9 @@ async fn expand_stages(
                                 Root::Data(binding, _) => Some(binding), _ => None,
                             }).collect();
                             let before = facts.relations();
-                            let element_before = facts.element_facts(program);
+                            let segment_start = calls.last().map_or(0, |call| call.stage);
+                            let segment_writes = Program::stage_write_regions(&program.stages[segment_start..]);
+                            let element_guarantees = facts.element_facts(program, Some(&segment_writes));
                             let mut write_regions = BTreeMap::new();
                             for (logical, written) in contract.write_regions {
                                 let binding = bindings[logical];
@@ -1398,7 +1409,7 @@ async fn expand_stages(
                                     .map(|p| child[p.name()].clone())
                                     .collect(),
                                 write_regions,
-                                element_before,
+                                element_guarantees,
                                 element_after: Vec::new(),
                                 before,
                                 after: Vec::new(),
@@ -1439,7 +1450,7 @@ async fn expand_stages(
                         }
                         if compiled {
                             calls.last_mut().unwrap().after = facts.relations();
-                            calls.last_mut().unwrap().element_after = facts.element_facts(program);
+                            calls.last_mut().unwrap().element_after = facts.element_facts(program, None);
                         }
                     }
                     _ => return d.source.fail(statement.span(), "B119",

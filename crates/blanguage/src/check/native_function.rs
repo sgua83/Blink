@@ -2796,7 +2796,6 @@ async fn build_domain(
             "B应用的独立整域入口尚未交接纹理或加速结构；原生宿主算法接口继续使用已有产物",
         );
     }
-    let write_regions = signature.write_regions();
     let mut stages = std::mem::take(&mut signature.stages).into_iter();
     let expansion = signature.generated_origin.take();
     let mut required = std::mem::take(&mut signature.prefix_requirements);
@@ -2818,7 +2817,7 @@ async fn build_domain(
     let mut interface = crate::module::domain::Interface {
         instance: signature.name.clone(), target,
         buffers: signature.buffers.clone(), textures: signature.textures.clone(), uniforms: signature.uniforms.clone(),
-        write_regions,
+        write_regions: expanded.write_regions,
         length_requirements: signature.length_requirements.clone(),
         element_requirements: element_requirements.clone(),
         prefix_guarantees: guaranteed.clone(),
@@ -2843,7 +2842,7 @@ async fn build_domain(
             required,
             call.before,
             element_required,
-            call.element_before,
+            call.element_guarantees,
             split,
             &mut part,
             functions,
@@ -3031,7 +3030,7 @@ fn emit_domain_part(
     program.prefix_requirements = required;
     program.prefix_guarantees = guaranteed;
     program.element_requirements = element_required.into_owned();
-    program.element_guarantees = program.element_outputs(element_guaranteed);
+    program.element_guarantees = element_guaranteed;
     let scopes = (start..start + stage_count)
         .filter_map(|index| scopes.remove(&index).map(|scope| (index - start, scope)))
         .collect::<BTreeMap<_, _>>();

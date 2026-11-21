@@ -2093,20 +2093,12 @@ pub struct Program {
 #[repr(C)]
 struct ExecutionBuffers { indirect: usize, auxiliary: usize }
 impl Program {
-    pub(crate) fn element_outputs(&self, facts: Vec<ElementFact>) -> Vec<ElementFact> {
-        let writes = self.write_regions();
-        facts.into_iter().filter(|fact| {
-            let (binding, offset, scalar) = match fact {
-                ElementFact::Range(range) => (range.binding, range.offset, range.scalar),
-                ElementFact::Index { binding, offset, .. } => (*binding, *offset, Scalar::U32),
-            };
-            writes.get(&binding).is_some_and(|regions| regions.iter().any(|&(start, end)|
-                u64::from(offset) < u64::from(end) && u64::from(start) < u64::from(offset) + u64::from(scalar.size())))
-        }).collect()
-    }
     pub(crate) fn write_regions(&self) -> BTreeMap<usize, BTreeSet<(u32, u32)>> {
+        Self::stage_write_regions(&self.stages)
+    }
+    pub(crate) fn stage_write_regions(stages: &[Stage]) -> BTreeMap<usize, BTreeSet<(u32, u32)>> {
         let mut regions = BTreeMap::new();
-        for stage in &self.stages {
+        for stage in stages {
             for (&binding, written) in &stage.write_regions {
                 regions.entry(binding).or_insert_with(BTreeSet::new).extend(written.iter().copied());
             }
