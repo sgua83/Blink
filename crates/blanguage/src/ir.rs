@@ -1157,6 +1157,14 @@ impl IndexedSource {
         }
     }
 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum TextureReadWidth {
+    Byte = 1,
+    Half = 2,
+    Word = 4,
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct TextureSource {
     pub binding: usize,
@@ -1232,7 +1240,7 @@ pub enum InstKind {
         texture: TextureSource,
         coordinate: Vec<Reg>,
         level: Reg,
-        byte: bool,
+        width: TextureReadWidth,
     },
     TextureFetch {
         result: [Reg; 4],

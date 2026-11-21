@@ -549,7 +549,7 @@ extern "C" TileInputBoundaryCode tile_input_boundary(u32 width, u32 length_offse
 extern "C" u64 tile_input_copy(TileInputCopy input, address output) on cpu;
 
 enum TextureAccessKind:u32 {
-    Binding=0; Levels=1; Address=2; Format=3; Size=4; Byte=5; Word=6; Rgba=7;
+    Binding=0; Levels=1; Address=2; Format=3; Size=4; Byte=5; Word=6; Rgba=7; Half=8;
 };
 
 struct TextureAccess {
@@ -566,7 +566,7 @@ struct TextureAccess {
 
 // R12 is the binding table. R15 holds the transient binding and source address.
 // The caller owns the result locations and room for the whole operation.
-enum TextureColor:u32 { Rgba8=1; Srgb=2; R8=3; Rg16=4; Rgb10A2=5; Rg11B10=6; };
+enum TextureColor:u32 { Rgba8=1; Srgb=2; R8=3; Rg16=4; Rgb10A2=5; Rg11B10=6; R16=7; };
 enum SampleScalar:u32 { Word=0; Float=1; Bool=2; Index=3; };
 enum SampleOp:u32 {
     Constant=0; Cast=1; Bitcast=2; Add=3; Divide=4; Multiply=5; LessEqual=6; Equal=7;
@@ -579,7 +579,7 @@ enum SampleBlock:u32 {
     FormatArm=5; PreviousArm=6; FormatChoice=7; SrgbArm=8; Empty=9;
 };
 enum SampleBlockAction:u32 { Select=0; Append=1; Branch=2; };
-enum SampleReadKind:u32 { Size=0; Float=1; Byte=2; Word=3; };
+enum SampleReadKind:u32 { Size=0; Float=1; Byte=2; Word=3; Half=4; };
 struct SampleRegisters { array<u64,4> values; };
 struct SampleRead {
     SampleReadKind kind;

@@ -3386,6 +3386,16 @@ u64 color_unsigned_float(SampleHost host, u64 value, u32 mantissa_bits, u32 mask
     return color_select(host, tiny, subnormal, converted, SampleScalar::Float);
 }
 
+u64 color_binary16(SampleHost host, u64 raw) on cpu requires nonzero(host.instruction) {
+    u64 fraction = color_op(host, SampleOp::And, SampleScalar::Word, raw, color_word(host, 0x7fff));
+    u64 magnitude = color_unsigned_float(host, fraction, 10, 0x3ff);
+    u64 bits = color_op(host, SampleOp::Bitcast, SampleScalar::Word, magnitude, 0u64);
+    u64 sign = color_op(host, SampleOp::And, SampleScalar::Word, raw, color_word(host, 0x8000));
+    sign = color_op(host, SampleOp::ShiftLeft, SampleScalar::Word, sign, color_word(host, 16));
+    bits = color_op(host, SampleOp::Or, SampleScalar::Word, bits, sign);
+    return color_op(host, SampleOp::Bitcast, SampleScalar::Float, bits, 0u64);
+}
+
 u64 color_result(address result, u32 channel) on cpu {
     return unsafe_position<u64>(unsafe_address(address_bits(result) + u64(channel) * 8u64));
 }
@@ -3400,9 +3410,14 @@ void texture_color(TextureColor format, u64 raw, address result, SampleHost host
         }
         return;
     }
-    if (format == TextureColor::R8) {
-        u64 value = color_op(host, SampleOp::Cast, SampleScalar::Float, raw, 0u64);
-        u64 red = color_op(host, SampleOp::Divide, SampleScalar::Float, value, color_float(host, 255.0));
+    if (format == TextureColor::R8 || format == TextureColor::R16) {
+        u64 red;
+        if (format == TextureColor::R16) {
+            red = color_binary16(host, raw);
+        } else {
+            u64 value = color_op(host, SampleOp::Cast, SampleScalar::Float, raw, 0u64);
+            red = color_op(host, SampleOp::Divide, SampleScalar::Float, value, color_float(host, 255.0));
+        }
         color_op(host, SampleOp::Into, SampleScalar::Float, color_result(result, 0), red);
         for (channel in 1..4) {
             u64 bits = channel == 3 ? 0x3f800000u64 : 0u64;
@@ -3502,8 +3517,14 @@ SampleRegisters sample_texel(SampleHost host, SampleRegisters coordinate, u32 di
     sample_block(host, SampleBlock::PackedArm);
     sample_branch(host, encoded, SampleBlock::SrgbArm, SampleBlock::Empty);
 
+    sample_block(host, SampleBlock::FormatArm);
+    raw = host.read_texture(host.context, SampleRead(SampleReadKind::Half, dimensions, level, coordinate, result));
+    texture_color(TextureColor::R16, raw, address_of(result), host);
+    sample_block(host, SampleBlock::FormatChoice);
+    u64 half = sample_equal(host, format, u32(TextureColor::R16));
+    sample_branch(host, half, SampleBlock::FormatArm, SampleBlock::PackedArm);
     sample_block(host, SampleBlock::FormatTest);
-    sample_branch(host, single, SampleBlock::ByteArm, SampleBlock::PackedArm);
+    sample_branch(host, single, SampleBlock::ByteArm, SampleBlock::FormatChoice);
     sample_block(host, SampleBlock::Output);
     sample_branch(host, floating, SampleBlock::FloatArm, SampleBlock::FormatTest);
     return result;
@@ -3671,18 +3692,19 @@ extern "C" u64 texture_access(TextureAccess input, address results, u64 count, a
         MoveEncoding binding = copy_scalar_move(dst, move_gpr(u8(15)), 8, false, unsafe_address(cursor));
         return cursor + binding.length - start;
     }
-    if (kind == TextureAccessKind::Byte || kind == TextureAccessKind::Word || kind == TextureAccessKind::Rgba) {
-        u32 bytes = kind == TextureAccessKind::Byte ? 1 : (kind == TextureAccessKind::Word ? 4 : 16);
+    u32 narrow = kind == TextureAccessKind::Byte ? 1 : (kind == TextureAccessKind::Half ? 2 : 0);
+    if (narrow != 0 || kind == TextureAccessKind::Word || kind == TextureAccessKind::Rgba) {
+        u32 bytes = narrow != 0 ? narrow : (kind == TextureAccessKind::Word ? 4 : 16);
         cursor = texture_texel_at(texture_level_at(cursor, input.level), input, bytes);
     } else if (kind == TextureAccessKind::Size) {
         cursor = texture_level_at(cursor, input.level);
     } else {
         cursor = texture_descriptor_at(cursor);
     }
-    if (kind == TextureAccessKind::Byte) {
+    if (narrow != 0) {
         MoveLocation dst = unsafe_position<MoveLocation>(results);
         MoveLocation pixel = MoveLocation(0u64, MOVE_MEMORY, u8(15), NO_INDEX, u8(0));
-        cursor = load_extended(cursor, u8(0), pixel, 1, false);
+        cursor = load_extended(cursor, u8(0), pixel, narrow, false);
         MoveEncoding value = copy_scalar_move(dst, move_gpr(u8(0)), 4, false, unsafe_address(cursor));
         return cursor + value.length - start;
     }

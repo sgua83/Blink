@@ -160,7 +160,7 @@ fn instruction(value: &Inst) -> String {
         TextureLevels { dst, texture: source } => node("TextureLevels", &[("dst", number(dst)), ("texture", texture(source))]),
         TextureAddress { dst, texture: source } => node("TextureAddress", &[("dst", number(dst)), ("texture", texture(source))]),
         TextureFormat { dst, texture: source } => node("TextureFormat", &[("dst", number(dst)), ("texture", texture(source))]),
-        TextureRead { dst, texture: source, coordinate, level, byte } => node("TextureRead", &[("dst", number(dst)), ("texture", texture(source)), ("coordinate", numbers(coordinate)), ("level", number(level)), ("byte", number(byte))]),
+        TextureRead { dst, texture: source, coordinate, level, width } => node("TextureRead", &[("dst", number(dst)), ("texture", texture(source)), ("coordinate", numbers(coordinate)), ("level", number(level)), ("bytes", number(*width as u8))]),
         TextureFetch { result, texture: source, coordinate, level } => node("TextureFetch", &[("result", numbers(result)), ("texture", texture(source)), ("coordinate", numbers(coordinate)), ("level", number(level))]),
         LoadIndexed { dst, source, offset, word } => node("LoadIndexed", &[("dst", number(dst)), ("source", indexed(source)), ("offset", number(offset)), ("word", number(word))]),
         StoreIndexed { source, offset, word, value } => node("StoreIndexed", &[("source", indexed(source)), ("offset", number(offset)), ("word", number(word)), ("value", number(value))]),

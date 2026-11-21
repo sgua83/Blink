@@ -370,6 +370,7 @@ const _: () = {
         rg16unorm: ReadCallback,
         rgb10a2unorm: ReadCallback,
         r11g11b10float: ReadCallback,
+        r16float: ReadCallback,
     }
     unsafe extern "C" fn build_rgba32float(_context: Slot, destination: Slot) -> ReadStatus {
         unsafe {
@@ -414,6 +415,13 @@ const _: () = {
         unsafe {
             *destination.cast::<crate::ast::TextureFormat>() =
                 crate::ast::TextureFormat::R11G11B10Float;
+        }
+        ReadStatus::Success
+    }
+    unsafe extern "C" fn build_r16float(_context: Slot, destination: Slot) -> ReadStatus {
+        unsafe {
+            *destination.cast::<crate::ast::TextureFormat>() =
+                crate::ast::TextureFormat::R16Float;
         }
         ReadStatus::Success
     }
@@ -503,6 +511,16 @@ const _: () = {
                     }
                     unsafe { write(destination, contracts::append) }
                 }
+                Self::R16Float => {
+                    unsafe extern "C" {
+                        #[link_name = "codec.value_format::contract_write_texture_format_r16float"]
+                        fn write(
+                            output: Slot,
+                            append: unsafe extern "C" fn(Slot, *const u8, usize),
+                        );
+                    }
+                    unsafe { write(destination, contracts::append) }
+                }
             }
         }
         unsafe fn read(context: Slot, destination: &mut Self) -> ReadStatus {
@@ -521,6 +539,7 @@ const _: () = {
                         rg16unorm: build_rg16unorm,
                         rgb10a2unorm: build_rgb10a2unorm,
                         r11g11b10float: build_r11g11b10float,
+                        r16float: build_r16float,
                     },
                 )
             }

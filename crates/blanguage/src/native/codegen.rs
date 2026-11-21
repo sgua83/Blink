@@ -450,8 +450,12 @@ impl Emitter<'_> {
                 InstKind::TextureFormat { dst, texture } => {
                     self.texture_access(*texture, TextureAccessKind::Format, None, &[], &[*dst]);
                 }
-                InstKind::TextureRead { dst, texture, level, coordinate, byte } => {
-                    let kind = if *byte { TextureAccessKind::Byte } else { TextureAccessKind::Word };
+                InstKind::TextureRead { dst, texture, level, coordinate, width } => {
+                    let kind = match width {
+                        crate::ir::TextureReadWidth::Byte => TextureAccessKind::Byte,
+                        crate::ir::TextureReadWidth::Half => TextureAccessKind::Half,
+                        crate::ir::TextureReadWidth::Word => TextureAccessKind::Word,
+                    };
                     self.texture_access(*texture, kind, Some(*level), coordinate, &[*dst]);
                 }
                 InstKind::TextureFetch { result, texture, level, coordinate } => {

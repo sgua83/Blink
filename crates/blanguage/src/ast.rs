@@ -100,6 +100,7 @@ pub enum TextureFormat {
     Rg16Unorm = 4,
     Rgb10A2Unorm = 5,
     R11G11B10Float = 6,
+    R16Float = 7,
 }
 impl TextureFormat {
     pub fn name(self) -> &'static str {
@@ -108,6 +109,7 @@ impl TextureFormat {
             Self::Rgba8Srgb => "rgba8_srgb", Self::R8Unorm => "r8_unorm",
             Self::Rg16Unorm => "rg16_unorm", Self::Rgb10A2Unorm => "rgb10a2_unorm",
             Self::R11G11B10Float => "r11g11b10_float",
+            Self::R16Float => "r16_float",
         }
     }
     pub fn from_name(name: &str) -> Option<Self> {
@@ -116,6 +118,7 @@ impl TextureFormat {
             "rgba8_srgb" => Some(Self::Rgba8Srgb), "r8_unorm" => Some(Self::R8Unorm),
             "rg16_unorm" => Some(Self::Rg16Unorm), "rgb10a2_unorm" => Some(Self::Rgb10A2Unorm),
             "r11g11b10_float" => Some(Self::R11G11B10Float),
+            "r16_float" => Some(Self::R16Float),
             _ => None,
         }
     }
@@ -124,12 +127,13 @@ impl TextureFormat {
             0 => Some(Self::Rgba32Float), 1 => Some(Self::Rgba8Unorm), 2 => Some(Self::Rgba8Srgb),
             3 => Some(Self::R8Unorm), 4 => Some(Self::Rg16Unorm), 5 => Some(Self::Rgb10A2Unorm),
             6 => Some(Self::R11G11B10Float),
+            7 => Some(Self::R16Float),
             _ => None,
         }
     }
     pub fn texel_bytes(self) -> usize {
         match self {
-            Self::Rgba32Float => 16, Self::R8Unorm => 1,
+            Self::Rgba32Float => 16, Self::R8Unorm => 1, Self::R16Float => 2,
             Self::Rgba8Unorm | Self::Rgba8Srgb | Self::Rg16Unorm | Self::Rgb10A2Unorm | Self::R11G11B10Float => 4,
         }
     }

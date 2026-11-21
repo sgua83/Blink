@@ -13,6 +13,7 @@ pub(super) enum TextureAccessKind {
     Byte,
     Word,
     Rgba,
+    Half,
 }
 
 #[repr(C)]
@@ -65,7 +66,7 @@ enum SampleBlockAction { Select, Append, Branch }
 
 #[allow(dead_code)]
 #[repr(u32)]
-enum SampleReadKind { Size, Float, Byte, Word }
+enum SampleReadKind { Size, Float, Byte, Word, Half }
 
 #[repr(C)]
 struct SampleRead {
@@ -166,23 +167,22 @@ unsafe extern "C" fn sample_read(context: *mut c_void, read: SampleRead) -> Reg 
     let coordinate = || read.coordinate[..count].to_vec();
     let texture = lower.texture;
     let level = read.level;
-    match read.kind {
+    let width = match read.kind {
         SampleReadKind::Size => {
             lower.emit(InstKind::TextureSize { result: read.result[..count].to_vec(), texture, level });
+            return 0;
         }
         SampleReadKind::Float => {
             lower.emit(InstKind::TextureFetch { result: read.result, texture, coordinate: coordinate(), level });
+            return 0;
         }
-        SampleReadKind::Byte | SampleReadKind::Word => {
-            let dst = lower.reg(Scalar::U32);
-            lower.emit(InstKind::TextureRead {
-                dst, texture, coordinate: coordinate(), level,
-                byte: matches!(read.kind, SampleReadKind::Byte),
-            });
-            return dst;
-        }
-    }
-    0
+        SampleReadKind::Byte => crate::ir::TextureReadWidth::Byte,
+        SampleReadKind::Half => crate::ir::TextureReadWidth::Half,
+        SampleReadKind::Word => crate::ir::TextureReadWidth::Word,
+    };
+    let dst = lower.reg(Scalar::U32);
+    lower.emit(InstKind::TextureRead { dst, texture, coordinate: coordinate(), level, width });
+    dst
 }
 
 unsafe extern "C" fn sample_block(

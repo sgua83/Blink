@@ -206,7 +206,7 @@ struct ContractPairReader {cfn<ReadStatus,address,address> first;cfn<ReadStatus,
 
 struct ContractTextureDimensionVariants{cfn<ReadStatus,address,address> d2;cfn<ReadStatus,address,address> d3;};
 
-struct ContractTextureFormatVariants{cfn<ReadStatus,address,address> rgba32float;cfn<ReadStatus,address,address> rgba8unorm;cfn<ReadStatus,address,address> rgba8srgb;cfn<ReadStatus,address,address> r8unorm;cfn<ReadStatus,address,address> rg16unorm;cfn<ReadStatus,address,address> rgb10a2unorm;cfn<ReadStatus,address,address> r11g11b10float;};
+struct ContractTextureFormatVariants{cfn<ReadStatus,address,address> rgba32float;cfn<ReadStatus,address,address> rgba8unorm;cfn<ReadStatus,address,address> rgba8srgb;cfn<ReadStatus,address,address> r8unorm;cfn<ReadStatus,address,address> rg16unorm;cfn<ReadStatus,address,address> rgb10a2unorm;cfn<ReadStatus,address,address> r11g11b10float;cfn<ReadStatus,address,address> r16float;};
 
 struct ContractElementFactVariants{cfn<ReadStatus,address,address> range;cfn<ReadStatus,address,address> index;};
 
@@ -741,6 +741,8 @@ extern "C" void contract_write_texture_format_rgb10a2unorm(address output,cfn<vo
 
 extern "C" void contract_write_texture_format_r11g11b10float(address output,cfn<void,address,address,u64> append) on cpu requires nonzero(append);
 
+extern "C" void contract_write_texture_format_r16float(address output,cfn<void,address,address,u64> append) on cpu requires nonzero(append);
+
 extern "C" void contract_write_texture_binding(address output,ContractTextureBindingFields fields,ContractTextureBindingWriter host) on cpu requires nonzero(host.name) requires nonzero(host.count) requires nonzero(host.dimension) requires nonzero(host.format);
 
 extern "C" ReadStatus contract_read_texture_binding(address context,ContractTextureBindingFields fields,ContractTextureBindingReader host) on cpu requires nonzero(host.name) requires nonzero(host.count) requires nonzero(host.dimension) requires nonzero(host.format);
@@ -821,7 +823,7 @@ extern "C" ReadStatus contract_read_pair(address context,ContractPairFields fiel
 
 extern "C" ReadStatus contract_read_texture_dimension(Bytes input,inout u64 position,address context,address output,ContractTextureDimensionVariants host) on cpu requires nonzero(host.d2) requires nonzero(host.d3);
 
-extern "C" ReadStatus contract_read_texture_format(Bytes input,inout u64 position,address context,address output,ContractTextureFormatVariants host) on cpu requires nonzero(host.rgba32float) requires nonzero(host.rgba8unorm) requires nonzero(host.rgba8srgb) requires nonzero(host.r8unorm) requires nonzero(host.rg16unorm) requires nonzero(host.rgb10a2unorm) requires nonzero(host.r11g11b10float);
+extern "C" ReadStatus contract_read_texture_format(Bytes input,inout u64 position,address context,address output,ContractTextureFormatVariants host) on cpu requires nonzero(host.rgba32float) requires nonzero(host.rgba8unorm) requires nonzero(host.rgba8srgb) requires nonzero(host.r8unorm) requires nonzero(host.rg16unorm) requires nonzero(host.rgb10a2unorm) requires nonzero(host.r11g11b10float) requires nonzero(host.r16float);
 
 extern "C" ReadStatus contract_read_element_fact(Bytes input,inout u64 position,address context,address output,ContractElementFactVariants host) on cpu requires nonzero(host.range) requires nonzero(host.index);
 

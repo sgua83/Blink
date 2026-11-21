@@ -460,6 +460,7 @@ impl Device {
             crate::TextureFormat::Rg16Unorm => 77,
             crate::TextureFormat::Rgb10A2Unorm => 64,
             crate::TextureFormat::R11G11B10Float => 122,
+            crate::TextureFormat::R16Float => 76,
         };
         unsafe {
             let instance = &inner.owner._instance;
