@@ -22,10 +22,10 @@ struct FunctionName {
     ordinal: u64,
 }
 #[repr(C)]
-struct Hit { name:Bytes, owner:Bytes, public:u64, present:u64 }
+struct Hit { name:Bytes, public:u64, present:u64 }
 #[repr(C)]
 struct Resolution { name:Bytes, count:u64 }
-pub(crate) struct Declaration<'a> { pub name:&'a str, pub owner:&'a str, pub public:bool }
+pub(crate) struct Declaration<'a> { pub name:&'a str, pub public:bool }
 unsafe extern "C" {
     #[link_name = "bootstrap.names::classify_module_names"]
     fn classify_module_names(
@@ -73,8 +73,8 @@ impl ActiveDependencies {
 unsafe extern "C" fn lookup<'a,F:Fn(&str)->Option<Declaration<'a>>>(context:*const c_void,name:Bytes)->Hit {
     let lookup=unsafe{&*context.cast::<F>()};
     match lookup(unsafe{name.text()}) {
-        Some(declaration)=>Hit{name:Bytes::new(declaration.name),owner:Bytes::new(declaration.owner),public:u64::from(declaration.public),present:1},
-        None=>Hit{name:Bytes::new(""),owner:Bytes::new(""),public:0,present:0},
+        Some(declaration)=>Hit{name:Bytes::new(declaration.name),public:u64::from(declaration.public),present:1},
+        None=>Hit{name:Bytes::new(""),public:0,present:0},
     }
 }
 pub(crate) fn resolve<'a,F:Fn(&str)->Option<Declaration<'a>>>(name:&str,module:&str,imports:&[String],declarations:F)->NameResolution {

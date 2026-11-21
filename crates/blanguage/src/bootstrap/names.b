@@ -22,14 +22,13 @@ u64 qualification_separator(NameBytes name) on cpu {
     }
     return name.length;
 }
-bool qualified(NameBytes name) on cpu {
-    return qualification_separator(name)<name.length;
-}
-bool visible(NameHit hit,NameBytes module,address imports,u64 count) on cpu {
-    if(hit.present==0u64){return false;}
-    if(equal(hit.owner,module)){return true;}
-    if(hit.public==0u64){return false;}
-    u64 at=0u64;while(at<count){if(equal(import_at(imports,at),hit.owner)){return true;}at+=1u64;}return false;
+bool directly_imported(NameBytes owner,address imports,u64 count) on cpu {
+    u64 index=0u64;
+    while(index<count){
+        if(equal(import_at(imports,index),owner)){return true;}
+        index+=1u64;
+    }
+    return false;
 }
 NameBytes qualify(NameBytes module,NameBytes name,address candidate) on cpu {
     u64 at=0u64;while(at<module.length){unsafe_position<u8>(unsafe_address(address_bits(candidate)+at))=byte_at(module,at);at+=1u64;}
@@ -40,16 +39,31 @@ NameBytes qualify(NameBytes module,NameBytes name,address candidate) on cpu {
 }
 extern "C" NameResult resolve(NameBytes name,NameBytes module,address imports,u64 count,
     address candidate,address context,cfn<NameHit,address,NameBytes> lookup) on cpu requires nonzero(lookup) {
-    if(qualified(name)){NameHit hit=lookup(context,name);if(visible(hit,module,imports,count)){return NameResult(hit.name,1u64);}}
-    NameHit local=lookup(context,qualify(module,name,candidate));
-    if(visible(local,module,imports,count)){return NameResult(local.name,1u64);}
-    NameBytes first=empty();u64 found=0u64;u64 at=0u64;
-    while(at<count){
-        NameHit hit=lookup(context,qualify(import_at(imports,at),name,candidate));
-        if(visible(hit,module,imports,count)){
-            if(found==0u64){first=hit.name;found=1u64;}else{if(!equal(first,hit.name)){return NameResult(empty(),2u64);}}
+    u64 separator=qualification_separator(name);
+    if(separator<name.length){
+        NameHit hit=lookup(context,name);
+        NameBytes owner=NameBytes(name.bytes,separator);
+        if(hit.present!=0u64&&(equal(owner,module)||(hit.public!=0u64&&directly_imported(owner,imports,count)))){
+            return NameResult(hit.name,1u64);
         }
-        at+=1u64;
+    }
+    NameHit local=lookup(context,qualify(module,name,candidate));
+    if(local.present!=0u64){return NameResult(local.name,1u64);}
+
+    NameBytes first=empty();
+    u64 found=0u64;
+    u64 index=0u64;
+    while(index<count){
+        NameHit hit=lookup(context,qualify(import_at(imports,index),name,candidate));
+        if(hit.public!=0u64){
+            if(found==0u64){
+                first=hit.name;
+                found=1u64;
+            } else if(!equal(first,hit.name)){
+                return NameResult(empty(),2u64);
+            }
+        }
+        index+=1u64;
     }
     return NameResult(first,found);
 }

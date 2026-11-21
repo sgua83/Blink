@@ -695,11 +695,11 @@ impl Declarations {
         crate::names::resolve(name,module,imports,|name| {
             if functions {
                 self.functions.get_key_value(name).map(|(key,declaration)|crate::names::Declaration {
-                    name:key,owner:&declaration.module,public:declaration.public,
+                    name:key,public:declaration.public,
                 })
             } else {
-                self.records.get_key_value(name).map(|(key,(_,source,owner,_))|crate::names::Declaration {
-                    name:key,owner,public:source.path.extension().is_some_and(|extension|extension=="h"),
+                self.records.get_key_value(name).map(|(key,(_,source,..))|crate::names::Declaration {
+                    name:key,public:source.path.extension().is_some_and(|extension|extension=="h"),
                 })
             }
         })

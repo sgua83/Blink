@@ -1,6 +1,6 @@
 module bootstrap.names;
 struct NameBytes {address bytes;u64 length;};
-struct NameHit {NameBytes name;NameBytes owner;u64 public;u64 present;};
+struct NameHit {NameBytes name;u64 public;u64 present;};
 struct NameResult {NameBytes name;u64 count;};
 i32 compare_name(NameBytes left, NameBytes right) on cpu;
 u64 qualification_separator(NameBytes name) on cpu;
