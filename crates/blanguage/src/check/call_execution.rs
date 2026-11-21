@@ -134,7 +134,7 @@ impl<'a> Builder<'a>{
   let mut parameters=Some(instance.parameters(world).zip(args));let mut param:Option<Param>=None;let mut argument=None;let mut ty=None;
   let mut env=BTreeMap::new();let mut borrowed=Vec::new();let mut held=Vec::new();let mut requirements=None;
   let mut old_env=None;let mut old_mutable_names=None;let mut callee_scope=None;let mut old_context=None;
-  let mut caller_initialization=None;let mut result_type=None;let mut output_inputs=None;let mut caller_path=None;
+  let mut caller_initialization=None;let mut result_layout=None;let mut output_inputs=None;let mut caller_path=None;
   let mut result:Option<Returned>=None;let mut returned=None;let mut updates=Vec::new();let mut proofs=None;let mut fresh_scopes=BTreeSet::new();
   loop{
    let need=step_inline(&mut cursor,facts);let index=cursor.index as usize;
@@ -253,17 +253,24 @@ impl<'a> Builder<'a>{
     }
     InlineNeed::InitializationInputs=>{facts.input_plain=plain_environment(&self.env,false);}
     InlineNeed::ResultProperties=>{
-     let ty=unsafe{world.call(self.expected_storage(&result_name,callee.function.span())).await}?;
-     facts.result_borrows=u32::from(ty.contains_borrows());facts.result_owns=u32::from(ty.owns_resources());facts.result_ready=1;result_type=Some(ty);
+     let layout=unsafe{world.call(self.storage_layout(&result_name,callee.function.span())).await}?;
+     let storage=layout.storage();
+     facts.result_borrows=u32::from(storage.contains_borrows());
+     facts.result_owns=u32::from(storage.owns_resources());
+     facts.result_ready=1;
+     result_layout=Some(layout);
     }
-    InlineNeed::ResultFacts=>{facts.result_facts=u32::from(bounds::Proof::fact_components(unsafe{result_type.as_ref().unwrap_unchecked()}).next().is_some());}
+    InlineNeed::ResultFacts=>{
+     let storage=unsafe{result_layout.as_ref().unwrap_unchecked()}.storage();
+     facts.result_facts=u32::from(bounds::Proof::fact_components(&storage).next().is_some());
+    }
     InlineNeed::IsolateInitialization=>{caller_initialization=Some(std::mem::take(&mut self.initialized));}
     InlineNeed::Materialize=>{self.materialize_array_bindings();}
     InlineNeed::OutputInputs=>{output_inputs=Some(unsafe{world.call(outputs::current_inputs(self,&instance)).await}?);}
     InlineNeed::BoundsInputs=>{facts.input_plain=plain_environment(&self.env,true);}
-    InlineNeed::EnterPath=>{result_type.take();caller_path=Some(std::mem::take(&mut self.path));}
+    InlineNeed::EnterPath=>{caller_path=Some(std::mem::take(&mut self.path));}
     InlineNeed::Body=>{
-     (result,_)=unsafe{world.call(self.function_body(&instance,&result_name,callee.function.body().as_ref().unwrap_unchecked())).await}?;
+     (result,_)=unsafe{world.call(self.function_body(&instance,&result_name,result_layout.take(),callee.function.body().as_ref().unwrap_unchecked())).await}?;
      facts.continuing=u32::from(self.flow.continues());facts.items=borrowed.len()as u64;facts.held=held.len()as u64;
     }
     InlineNeed::RestoreInitialization=>{self.initialized=unsafe{caller_initialization.take().unwrap_unchecked()};}

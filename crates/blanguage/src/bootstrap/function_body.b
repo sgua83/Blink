@@ -5,12 +5,17 @@ extern "C" BeginStep begin_step(Cursor state,BeginFacts facts) on cpu {
  if(c.phase==0){
   if(facts.void_name!=0&&facts.dataset==0&&facts.tile==0&&facts.view==0){c.phase=3;return BeginStep(c,BeginNeed::Void);}
   if(facts.never!=0){c.phase=3;return BeginStep(c,BeginNeed::Never);}
-  c.phase=1;return BeginStep(c,BeginNeed::Type);
+  c.phase=1;
+  if(facts.layout_ready==0){return BeginStep(c,BeginNeed::Type);}
  }
  if(c.phase==1){
   if(facts.owns!=0&&(facts.value_function==0||facts.cpu==0)){return BeginStep(c,BeginNeed::InvalidOwned);}
-  if(facts.dataset!=0){c.phase=2;return BeginStep(c,BeginNeed::Shape);}
-  c.phase=3;return BeginStep(c,BeginNeed::Value);
+  if(facts.dataset!=0){
+   c.phase=2;
+   if(facts.layout_ready==0){return BeginStep(c,BeginNeed::Shape);}
+  }else{
+   c.phase=3;return BeginStep(c,BeginNeed::Value);
+  }
  }
  if(c.phase==2){c.phase=3;return BeginStep(c,BeginNeed::Dataset);}
  if(c.phase==3){c.phase=4;return BeginStep(c,BeginNeed::Early);}

@@ -1,10 +1,11 @@
 //! Function body control borrows original return, model and IR owners.
 use super::*;
 use std::ffi::c_void;
+use owned_values::StorageLayout;
 #[derive(Clone,Copy)]
 #[repr(C)] struct Cursor{phase:u32,flags:u32,index:u64,part:u64}
 #[derive(Clone,Copy,Default)]
-#[repr(C)] struct BeginFacts{void_name:u32,dataset:u32,tile:u32,view:u32,never:u32,owns:u32,value_function:u32,cpu:u32,cooperative:u32,early:u32,scalars:u64}
+#[repr(C)] struct BeginFacts{void_name:u32,dataset:u32,tile:u32,view:u32,never:u32,owns:u32,value_function:u32,cpu:u32,cooperative:u32,early:u32,layout_ready:u32,scalars:u64}
 #[repr(u32)] enum BeginNeed{Void,Never,Type,InvalidOwned,Shape,Dataset,Value,Early,InvalidCooperative,Slot,Initial,Inputs,Context,Complete,Next}
 #[repr(C)] struct BeginStep{cursor:Cursor,need:BeginNeed}
 #[repr(u32)] enum SequenceNeed{StartNext,StartStop,Statement,After,Complete,Next}
@@ -88,8 +89,8 @@ fn parameter(definition:&Definition,name:&str)->usize{
 }
 
 impl Builder<'_>{
- pub(in crate::check) async fn function_body(&mut self,instance:&crate::generics::Instance,result_name:&TypeName,body:&Block)->Result<(Option<Returned>,Vec<Option<Returned>>)>{
-  let world=self.world;let state=unsafe{world.call(self.begin_function_body(instance,result_name,body)).await}?;
+ pub(in crate::check) async fn function_body(&mut self,instance:&crate::generics::Instance,result_name:&TypeName,layout:Option<StorageLayout>,body:&Block)->Result<(Option<Returned>,Vec<Option<Returned>>)>{
+  let world=self.world;let state=unsafe{world.call(self.begin_function_body(instance,result_name,layout,body)).await}?;
   let possible=u32::from(self.residency_path().possible());let mut sequence=Flow::STOP;let mut cursor=unsafe{b_start()};let mut statements=body.into_iter();let mut statement=None;
   loop{
    let step=unsafe{b_sequence_step(cursor,body.len()as u64,possible,u32::from(sequence.continues()))};cursor=step.cursor;
@@ -106,15 +107,21 @@ impl Builder<'_>{
   }
  }
  #[inline(never)]
- async fn begin_function_body(&mut self,instance:&crate::generics::Instance,result_name:&TypeName,body:&Block)->Result<Box<BodyState>>{
+ async fn begin_function_body(&mut self,instance:&crate::generics::Instance,result_name:&TypeName,layout:Option<StorageLayout>,body:&Block)->Result<Box<BodyState>>{
   let world=self.world;let entry=self.registers.len();let definition=&instance.definition;let mut cursor=unsafe{b_start()};
+  let (mut ty, mut count) = match layout {
+   Some(StorageLayout::Value(ty)) => (Some(ty), None),
+   Some(StorageLayout::Dataset { element, count }) => (Some(element), count),
+   None => (None, None),
+  };
   let mut facts=BeginFacts{
+   layout_ready:u32::from(ty.is_some()),owns:u32::from(ty.as_ref().is_some_and(Ty::owns_resources)),
    void_name:u32::from(result_name.name=="void"),dataset:u32::from(result_name.dataset),
    tile:u32::from(result_name.tile),view:u32::from(result_name.view),never:u32::from(result_name.is_never()),
    value_function:u32::from(definition.function.kind()==FunctionKind::Value),cpu:u32::from(self.program.target==Target::Cpu),
    cooperative:u32::from(definition.function.kind()==FunctionKind::Cooperative),..BeginFacts::default()
   };
-  let mut ty=None;let mut expected=None;let mut count=None;let mut slots=Vec::new();let mut initial=None;let mut inputs=None;let mut state=None;
+  let mut expected=None;let mut slots=Vec::new();let mut initial=None;let mut inputs=None;let mut state=None;
   loop{
    let step=unsafe{b_begin_step(cursor,facts)};cursor=step.cursor;
    match step.need{

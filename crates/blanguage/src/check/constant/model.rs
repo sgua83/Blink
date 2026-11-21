@@ -116,7 +116,7 @@ async fn module_body(
     builder.calls.extend_from_slice(calls);
     builder.calls.push(key.into());
     let body=definition.function.body().unwrap();
-    let(returned,_)=unsafe{world.call(builder.function_body(&instance,result_name,&body)).await}?;
+    let(returned,_)=unsafe{world.call(builder.function_body(&instance,result_name,None,&body)).await}?;
     let value=builder.ordinary_return(returned,definition.function.span())?.unwrap();
     if !constant_result(value.ty.contains_views(),value.constant.is_some(),&builder.code) {
         return definition.source.fail(definition.function.span(),"B234",

@@ -39,18 +39,51 @@ impl OwnedValuePayload {
     pub(super) fn resources_mut(&mut self,visit:&mut impl FnMut(&mut Data)){model::resources_mut(self,visit)}
 }
 
+pub(super) enum StorageLayout {
+    Value(Ty),
+    Dataset { element: Ty, count: Option<u32> },
+}
+
+impl StorageLayout {
+    async fn resolve(
+        world: &World, ty: &TypeName, context: (&Source, &str, &[String]), span: Span,
+    ) -> Result<Self> {
+        let (source, module, imports) = context;
+        let value = unsafe { world.call(world.ty(ty, source, span, module, imports)).await }?;
+        if ty.dataset {
+            let count = unsafe { world.call(world.shape(&ty.count, source, span, module, imports)).await }?;
+            Ok(Self::Dataset { element: value, count })
+        } else {
+            Ok(Self::Value(value))
+        }
+    }
+
+    pub(super) fn storage(&self) -> std::borrow::Cow<'_, Ty> {
+        match self {
+            Self::Value(ty) => std::borrow::Cow::Borrowed(ty),
+            Self::Dataset { element, count } => std::borrow::Cow::Owned(Ty::owned_dataset(element.syntax(), *count)),
+        }
+    }
+}
+
 pub(super) async fn storage_type(world:&World,ty:&TypeName,context:(&Source,&str,&[String]),span:Span)->Result<Ty> {
-    let(source,module,imports)=context;
-    let value=unsafe { world.call(world.ty(ty,source,span,module,imports)).await }?;
-    if ty.dataset {
-        Ok(Ty::owned_dataset(value.syntax(),unsafe { world.call(world.shape(&ty.count,source,span,module,imports)).await }?))
-    }else{Ok(value)}
+    let layout = unsafe { world.call(StorageLayout::resolve(world, ty, context, span)).await }?;
+    Ok(match layout {
+        StorageLayout::Value(value) => value,
+        dataset => dataset.storage().into_owned(),
+    })
 }
 
 impl Builder<'_> {
     pub(super) async fn expected_storage(&self,ty:&TypeName,span:Span)->Result<Ty> {
         unsafe { self.world.call(storage_type(self.world,ty,(self.scope.source(),self.scope.module(),self.scope.imports()),span)).await }
     }
+
+    pub(super) async fn storage_layout(&self, ty: &TypeName, span: Span) -> Result<StorageLayout> {
+        let context = (self.scope.source(), self.scope.module(), self.scope.imports());
+        unsafe { self.world.call(StorageLayout::resolve(self.world, ty, context, span)).await }
+    }
+
     pub(super) async fn check_returned_type(
         &self,
         value: &mut Returned,
