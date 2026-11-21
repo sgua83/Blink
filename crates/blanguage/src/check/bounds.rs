@@ -905,8 +905,18 @@ impl Proof {
             Fact::Below(lower, upper, strict, scalar) => {
                 let left = Proof::bound_input(bindings, &lower)?;
                 let right = Proof::bound_input(bindings, &upper)?;
-                let ids = [left.known_identity(0)?, right.known_identity(0)?];
-                return Some(comparison_conditions::call_below(ids, [left, right], strict, scalar));
+                return match [left.known_identity(0), right.known_identity(0)] {
+                    [Some(left_id), Some(right_id)] => Some(comparison_conditions::call_below(
+                        [left_id, right_id], [left, right], strict, scalar,
+                    )),
+                    _ => {
+                        let operation = if strict { Comparison::Less } else { Comparison::LessEqual };
+                        let predicate = ScalarPredicate::new(
+                            operation, scalar, Operand::Value(lower), Operand::Value(upper),
+                        ).at_call(bindings)?;
+                        Some(Clause::facts([Fact::Predicate(predicate, true)].into()))
+                    }
+                };
             }
             Fact::Equal(a, b) => {
                 let Some((left,right))=Self::call_identity(a,bindings).zip(Self::call_identity(b,bindings)) else{return None;};
