@@ -126,6 +126,7 @@ pub(crate) struct FrameArguments<'a> {
     bindings: &'a [DatasetBinding],
     by_handle: Vec<usize>,
     slots: Vec<usize>,
+    owner_count: usize,
 }
 
 impl<'a> FrameArguments<'a> {
@@ -154,8 +155,8 @@ impl<'a> FrameArguments<'a> {
             }
         }
 
-        // 保留每组的首个实参，按原句柄查找。紧凑槽仍按实参首次出现编号。
-        by_handle.retain(|&i| slots[i] == i);
+        // 保留本次已排序的实参索引，供按原句柄查找及归并同一字段。
+        // 紧凑槽按实参首次出现编号。
         let mut next = 0;
         for i in 0..slots.len() {
             let first = slots[i];
@@ -166,7 +167,7 @@ impl<'a> FrameArguments<'a> {
                 slots[i] = slots[first];
             }
         }
-        Ok(Self { bindings, by_handle, slots })
+        Ok(Self { bindings, by_handle, slots, owner_count: next })
     }
 
     fn selected_handles(&self) -> impl Iterator<Item = usize> + '_ {
@@ -186,6 +187,12 @@ impl<'a> FrameArguments<'a> {
 
     pub(crate) fn location(&self, i: usize) -> (usize, u32) {
         (self.slots[i], self.bindings[i].offset)
+    }
+
+    pub(crate) fn projected_fields(&self) -> impl Iterator<Item = &[usize]> + Clone {
+        self.by_handle
+            .chunk_by(|&a, &b| self.original(a) == self.original(b))
+            .filter(|group| self.bindings[group[0]].offset != 0)
     }
 
     pub(crate) fn original(&self, i: usize) -> (usize, u32) {
@@ -472,7 +479,7 @@ impl Frame {
         let arguments = FrameArguments::new(bindings, layout.buffers())?;
         match definition {
             ProgramSlot::Cpu(program) => {
-                let mut datasets = Vec::with_capacity(arguments.by_handle.len());
+                let mut datasets = Vec::with_capacity(arguments.owner_count);
                 let slots = self.data.datasets.as_mut_ptr();
                 for handle in arguments.selected_handles() {
                     // Argument validation indexes every handle. Selection above records
@@ -498,7 +505,7 @@ impl Frame {
                     return Err(error("GPU 执行需要先显式 upload 数据"));
                 }
                 let gpu_program = Self::load_gpu(definitions, &mut self.gpu_programs, &mut self.device, index, image)?;
-                let mut datasets = Vec::with_capacity(arguments.by_handle.len());
+                let mut datasets = Vec::with_capacity(arguments.owner_count);
                 let slots = self.data.datasets.as_mut_ptr();
                 for handle in arguments.selected_handles() {
                     // Selection records disjoint slots and the slot array stays in place.

@@ -2350,7 +2350,7 @@ impl GpuProgram {
         bindings::require(|slot| bindings.datasets.get(slot), &bindings.domains, program, slots)?;
         let location = |i| slots.location(i);
         let completion = self.submit_mapped(&mut bindings.datasets, dependencies, &accelerations,
-            textures, uniforms, steps, location)?;
+            textures, uniforms, steps, slots)?;
         bindings.completed(program, location);
         Ok(Submission { completion, bindings, accelerations })
     }
@@ -2363,9 +2363,10 @@ impl GpuProgram {
         textures: Vec<TextureInput>,
         mut uniforms: Vec<u32>,
         steps: NonZeroU32,
-        location: impl Fn(usize) -> (usize, u32) + Copy,
+        slots: StorageSlots<'_>,
     ) -> Result<GpuCompletion> {
         let c = &self.compiled;
+        let location = |i| slots.location(i);
         let physical = |i| location(i).0;
         if textures.len() != c.program.texture_count()
             || textures.iter().any(|t| !t.belongs_to(&c.inner))
@@ -2681,31 +2682,34 @@ impl GpuProgram {
                         (f.vkCreateDescriptorPool)(device, &pool, null(), &mut commands.descriptors),
                         "vkCreateDescriptorPool",
                     )?;
-                    let field_count = (0..data.len()).filter(|&i| location(i).1 != 0).count();
-                    let alignment = c.inner.properties.limits.minStorageBufferOffsetAlignment;
                     let bytes = u64::from(blanguage::spirv::BINDING_BYTES);
-                    let step = bytes.div_ceil(alignment) * alignment;
-                    if field_count != 0 {
-                        binding_parameters = Some(Allocation::new(c.inner.clone(), step * field_count as u64, 0x20, 6, 8)?);
-                    }
-                    let projected = binding_parameters.as_ref()
-                        .map(|parameters| parameters.mapping().map(|mapped| (parameters.buffer, mapped)))
-                        .transpose()?;
-                    let mut field_index = 0;
-                    data.iter().enumerate().map(|(i, d)| {
-                        let offset = location(i).1;
-                        if offset == 0 {
-                            VkDescriptorBufferInfo { buffer: d.allocation.buffer, offset: 0, range: bytes }
-                        } else {
-                            let at = step * field_index;
-                            let address = d.page_array_address();
-                            let (buffer, mapped) = projected.unwrap();
-                            mapped.add(at as usize).cast::<[u32; 4]>()
-                                .write(binding_header(address, d.stride, offset));
-                            field_index += 1;
-                            VkDescriptorBufferInfo { buffer, offset: at, range: bytes }
+                    let mut infos: Vec<_> = data.iter().map(|d| VkDescriptorBufferInfo {
+                        buffer: d.allocation.buffer, offset: 0, range: bytes,
+                    }).collect();
+                    if let StorageSlots::Frame(arguments) = slots {
+                        let fields = arguments.projected_fields();
+                        let field_count = fields.clone().count();
+                        if field_count != 0 {
+                            let alignment = c.inner.properties.limits.minStorageBufferOffsetAlignment;
+                            let step = bytes.div_ceil(alignment) * alignment;
+                            let parameters = Allocation::new(c.inner.clone(), step * field_count as u64, 0x20, 6, 8)?;
+                            let mapped = parameters.mapping()?;
+                            for (index, group) in fields.enumerate() {
+                                let first = group[0];
+                                let offset = location(first).1;
+                                let d = &data[first];
+                                let at = step * index as u64;
+                                mapped.add(at as usize).cast::<[u32; 4]>()
+                                    .write(binding_header(d.page_array_address(), d.stride, offset));
+                                let info = VkDescriptorBufferInfo { buffer: parameters.buffer, offset: at, range: bytes };
+                                for &i in group {
+                                    infos[i] = info;
+                                }
+                            }
+                            binding_parameters = Some(parameters);
                         }
-                    }).collect::<Vec<_>>()
+                    }
+                    infos
                 } else {
                     Vec::new()
                 };
@@ -3139,7 +3143,7 @@ impl GpuTemplate {
         let slots = StorageSlots::Frame(arguments);
         bindings::require(|slot| datasets.get(slot).map(|data| &**data), domains, self.program(), slots)?;
         self.code.submit_mapped(datasets, DependencySources::default(), &[], Vec::new(),
-            uniforms, NonZeroU32::MIN, |i| slots.location(i))
+            uniforms, NonZeroU32::MIN, slots)
     }
     pub fn submit_after(
         &self,
