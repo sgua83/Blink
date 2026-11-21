@@ -1,6 +1,8 @@
 module bootstrap.ir_dataflow;
 // One original instruction vocabulary, shared by the actual IR consumers.
-const u32 N_INSTRUCTION=0;
+const u32 N_INSTRUCTION=0;const u32 N_ARGUMENT=3;const u32 N_COMPARISON=32;
+const u32 ARGUMENT_REFERENCE=1;const u32 STORAGE_INDEXED=1;
+const u32 COMPARE_LESS=2;const u32 COMPARE_GREATER=3;const u32 COMPARE_GREATER_EQUAL=5;
 const u32 OP_TEXTURE_BINDING_ADDRESS=0;const u32 OP_TEXTURE_SAMPLE=1;const u32 OP_TEXTURE_SIZE=2;
 const u32 OP_TEXTURE_LEVELS=3;const u32 OP_TEXTURE_ADDRESS=4;const u32 OP_TEXTURE_FORMAT=5;
 const u32 OP_TEXTURE_READ=6;const u32 OP_TEXTURE_FETCH=7;const u32 OP_LOAD_INDEXED=8;

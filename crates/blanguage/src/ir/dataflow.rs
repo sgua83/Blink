@@ -10,7 +10,7 @@ enum Kind {
     Instruction, Call, Target, Argument, DatasetBorrow, Reference, Storage,
     Indexed, Stride, Texture, AtomicOp, Alias, Effect, Division, Divisor, Words3,
     Component, Stage, RayRange, Operation, Buffer, Uniform, ValueCode, CustomReduction, Scalar, Tile, Registers,
-    FirstComponentScalar, PageBuffer, PageType, PageVariant, PageField,
+    FirstComponentScalar, PageBuffer, PageType, PageVariant, PageField, Comparison,
 }
 #[derive(Clone, Copy)]
 #[repr(C)]
@@ -26,6 +26,10 @@ pub(crate) struct Span { data: *const c_void, count: usize, stride: usize }
 impl Span {
     const EMPTY: Self = Self { data: ptr::null(), count: 0, stride: 0 };
     pub(crate) fn slice<T>(values: &[T]) -> Self { Self { data: values.as_ptr().cast(), count: values.len(), stride: size_of::<T>() } }
+    // The caller must pass a span borrowed from a slice of T.
+    pub(crate) unsafe fn as_slice<'a, T>(self) -> &'a [T] {
+        unsafe { std::slice::from_raw_parts(self.data.cast(), self.count) }
+    }
     fn pairs(values: &[(u32, Reg)]) -> Self {
         Self {
             data: values.first().map_or(ptr::null(), |value| ptr::from_ref(&value.1).cast()),
@@ -335,6 +339,7 @@ unsafe extern "C" fn inspect(node: Node) -> View {
             view.left = Node::of(variant.ty.as_ref(), Kind::PageType);
             view
         }
+        Kind::Comparison => View::tag(unsafe { *node.data.cast::<Comparison>() } as u32),
         Kind::PageField => {
             let field = unsafe { &*node.data.cast::<(String, u32, Box<Ty>)>() };
             let mut view = View::tag(0);
@@ -447,7 +452,7 @@ fn instruction(value: &Inst) -> View {
             view.second = Span::slice(origin); view.left = Node::of(direction, Kind::Words3); view.a = *minimum; view.b = *maximum;
             if let Some(reg) = cull_back_faces { view.c = 1; view.d = *reg; }
         }
-        InstKind::Constant(dst, ..) => { view.tag = 23; view.a = *dst; }
+        InstKind::Constant(dst, _, bits) => { view.tag = 23; view.a = *dst; view.b = *bits as usize; }
         InstKind::FunctionAddress(dst, target) => { view.tag = 24; view.a = *dst; view.left = Node::of(target, Kind::Target); }
         InstKind::PositionAddress { dst, address } => { view.tag = 25; view.a = *dst; view.left = Node::of(address, Kind::Reference); }
         InstKind::BufferStride(dst, binding) => { view.tag = 26; view.a = *dst; view.b = *binding; }
@@ -460,7 +465,13 @@ fn instruction(value: &Inst) -> View {
         InstKind::Load { dst, binding, index, .. } => { view.tag = 33; view.a = *dst; view.b = *binding; view.c = *index; }
         InstKind::Store { binding, index, value, .. } => { view.tag = 34; view.a = *binding; view.b = *index; view.d = *value; }
         InstKind::Unary { dst, a, .. } => { view.tag = 35; view.a = *dst; view.b = *a; }
-        InstKind::Binary { dst, a, b, .. } => { view.tag = 36; view.a = *dst; view.b = *a; view.c = *b; view.d = usize::from(value.float_preserve); }
+        InstKind::Binary { dst, op, a, b } => {
+            view.tag = 36; view.a = *dst; view.b = *a; view.c = *b;
+            view.d = usize::from(value.float_preserve);
+            if let BinaryOp::Compare(comparison) = op {
+                view.left = Node::of(comparison, Kind::Comparison);
+            }
+        }
         InstKind::IntegerDivide { result, src, divisor } => {
             view.tag = 37; view.a = *src; view.left = Node::of(divisor, Kind::Divisor); view.right = Node::of(result, Kind::Division);
         }
@@ -484,7 +495,7 @@ fn instruction(value: &Inst) -> View {
 struct RegisterFacts { kind: u32, integer: u32, floating: u32, bytes: u32 }
 
 #[repr(C)]
-struct RegisterHost {
+pub(crate) struct RegisterHost {
     ir: Host,
     scalar: unsafe extern "C" fn(Span, usize) -> RegisterFacts,
 }
@@ -495,7 +506,7 @@ unsafe extern "C" {
 }
 
 unsafe extern "C" fn register_facts(registers: Span, index: usize) -> RegisterFacts {
-    let registers = unsafe { std::slice::from_raw_parts(registers.data.cast::<Scalar>(), registers.count) };
+    let registers = unsafe { registers.as_slice::<Scalar>() };
     let scalar = registers[index];
     RegisterFacts {
         kind: crate::builtin_types::ScalarCode::from(scalar) as u32,
@@ -505,7 +516,7 @@ unsafe extern "C" fn register_facts(registers: Span, index: usize) -> RegisterFa
     }
 }
 
-const REGISTER_HOST: RegisterHost = RegisterHost { ir: HOST, scalar: register_facts };
+pub(crate) const REGISTER_HOST: RegisterHost = RegisterHost { ir: HOST, scalar: register_facts };
 const PRESERVE_F32: u32 = 1 << (crate::builtin_types::ScalarCode::F32 as u32);
 const PRESERVE_F64: u32 = 1 << (crate::builtin_types::ScalarCode::F64 as u32);
 const PRESERVE_FLOATS: u32 = PRESERVE_F32 | PRESERVE_F64;

@@ -1,5 +1,6 @@
 module bootstrap.coloring;
 import bootstrap.names;
+import bootstrap.ir_dataflow;
 
 const u32 UNSEEN = 0;
 const u32 IMMEDIATE = 1;
@@ -271,11 +272,29 @@ extern "C" void graph_read(address graph,address live,GraphSpace space,u64 index
     graph_weight(graph,id,weight,core);
     core.slot(live,GraphSlotAction::Insert,space,index);
 }
-extern "C" u32 graph_block(address graph,GraphBlock code,GraphScalars registers,address live,
+Node graph_node_at(Span span, usize index, u32 kind) on cpu {
+    return Node(unsafe_address(address_bits(span.data)+u64(index)*u64(span.stride)),kind);
+}
+bool graph_indexed_reference(Node reference, Host ir) on cpu requires nonzero(ir.inspect) {
+    return ir.inspect(ir.inspect(reference).left).tag==STORAGE_INDEXED;
+}
+bool graph_call_uses_r15(Node call, Host ir) on cpu requires nonzero(ir.inspect) {
+    Span arguments=ir.inspect(call).first;
+    usize index=0u64;
+    while(index<arguments.count){
+        View argument=ir.inspect(graph_node_at(arguments,index,N_ARGUMENT));
+        if(argument.tag==ARGUMENT_REFERENCE && graph_indexed_reference(argument.left,ir)){return true;}
+        index+=1u64;
+    }
+    return false;
+}
+extern "C" u32 graph_block(address graph,Span code,Span registers,address live,
     address break_live,address continue_live,address exit_live,u64 weight,GraphHost host) on cpu 
     requires nonzero(host.core.addressable) requires nonzero(host.core.relation) requires nonzero(host.core.weight) requires nonzero(host.core.set_weight)
     requires nonzero(host.core.across) requires nonzero(host.core.counter) requires nonzero(host.core.set_outgoing) requires nonzero(host.core.location)
-    requires nonzero(host.core.visit_set) requires nonzero(host.core.slot) requires nonzero(host.read) requires nonzero(host.clone_set)
+    requires nonzero(host.core.visit_set) requires nonzero(host.core.slot)
+    requires nonzero(host.values.ir.inspect) requires nonzero(host.values.scalar)
+    requires nonzero(host.cast_bits) requires nonzero(host.call_outgoing) requires nonzero(host.math_outgoing) requires nonzero(host.clone_set)
     requires nonzero(host.drop_set) requires nonzero(host.change) requires nonzero(host.loop_live) requires nonzero(host.definitions)
     requires nonzero(host.reads) {
     address none=unsafe_address(0u64);
@@ -283,9 +302,9 @@ extern "C" u32 graph_block(address graph,GraphBlock code,GraphScalars registers,
     u64 remaining=code.count;
     while(remaining!=0u64){
         remaining-=1u64;
-        GraphNode node=host.read(code,remaining,registers);
-        uses_r15 |= node.uses_r15;
-        if(node.kind==GraphKind::If){
+        Node instruction=graph_node_at(code,remaining,N_INSTRUCTION);
+        View node=host.values.ir.inspect(instruction);
+        if(node.tag==OP_BRANCH){
             address yes=host.clone_set(live);
             uses_r15 |= graph_block(graph,node.first,registers,yes,break_live,continue_live,exit_live,weight,host);
             uses_r15 |= graph_block(graph,node.second,registers,live,break_live,continue_live,exit_live,weight,host);
@@ -293,7 +312,7 @@ extern "C" u32 graph_block(address graph,GraphBlock code,GraphScalars registers,
             host.drop_set(yes);
             host.core.slot(live,GraphSlotAction::Insert,GraphSpace::Register,node.a);
             graph_weight(graph,node.a,weight,host.core);
-        } else if(node.kind==GraphKind::Loop){
+        } else if(node.tag==OP_LOOP_VALUE){
             address header=host.loop_live(node.first,node.a,node.second,live,break_live,continue_live,exit_live);
             u64 nested=graph_nested_weight(weight);
             address before=host.clone_set(header);
@@ -305,58 +324,73 @@ extern "C" u32 graph_block(address graph,GraphBlock code,GraphScalars registers,
             host.change(GraphSetAction::Swap,live,before);
             host.drop_set(before);
             host.drop_set(header);
-        } else if(node.kind==GraphKind::Scope){
+        } else if(node.tag==OP_SCOPE){
             address before=host.clone_set(live);
             uses_r15 |= graph_block(graph,node.first,registers,before,break_live,continue_live,live,weight,host);
             host.change(GraphSetAction::Swap,live,before);
             host.drop_set(before);
-        } else if(node.kind==GraphKind::Raise){
+        } else if(node.tag==OP_RAISE){
             host.change(GraphSetAction::Clear,live,none);
             host.core.slot(live,GraphSlotAction::Insert,GraphSpace::Register,node.a);
             graph_weight(graph,node.a,weight,host.core);
-        } else if(node.kind==GraphKind::Exit){host.change(GraphSetAction::Copy,live,exit_live);}
-        else if(node.kind==GraphKind::Break){host.change(GraphSetAction::Copy,live,break_live);}
-        else if(node.kind==GraphKind::Continue){host.change(GraphSetAction::Copy,live,continue_live);}
+        } else if(node.tag==OP_EXIT_VALUE){host.change(GraphSetAction::Copy,live,exit_live);}
+        else if(node.tag==OP_BREAK_VALUE){host.change(GraphSetAction::Copy,live,break_live);}
+        else if(node.tag==OP_CONTINUE_VALUE){host.change(GraphSetAction::Copy,live,continue_live);}
         else {
+            u64 outgoing=0u64;
+            if(node.tag==OP_INVOKE){
+                outgoing=host.call_outgoing(node.left.data);
+                if(graph_call_uses_r15(node.left,host.values.ir)){uses_r15=1;}
+            } else if(node.tag==OP_POSITION_ADDRESS){
+                if(graph_indexed_reference(node.left,host.values.ir)){uses_r15=1;}
+            } else if(node.tag==OP_TEXTURE_BINDING_ADDRESS || (node.tag>=OP_TEXTURE_SIZE && node.tag<=OP_TEXTURE_FETCH) ||
+                node.tag==OP_VIEW_LOAD || node.tag==OP_LOAD_INDEXED || node.tag==OP_STORE_INDEXED || node.tag==OP_ATOMIC){
+                uses_r15=1;
+            } else if(node.tag==OP_PRINT){outgoing=32u64;}
+            else if(node.tag==OP_MATH){outgoing=host.math_outgoing(u32(node.b));}
+
             u32 transfer=0;
-            u64 destination=node.dst;
-            u64 source=node.a;
-            if(node.kind==GraphKind::LocalLoad){transfer=1;source+=host.core.counter(graph,GraphCounter::Registers);}
-            else if(node.kind==GraphKind::LocalStore){transfer=1;destination+=host.core.counter(graph,GraphCounter::Registers);}
-            else if(node.kind==GraphKind::Cast && (node.flags&1)!=0){transfer=1;}
+            u64 destination=node.a;
+            u64 source=node.b;
+            if(node.tag==OP_LOAD_LOCAL){transfer=1;source+=host.core.counter(graph,GraphCounter::Registers);}
+            else if(node.tag==OP_STORE_LOCAL){transfer=1;destination+=host.core.counter(graph,GraphCounter::Registers);}
+            else if(node.tag==OP_CAST && host.cast_bits(registers,node.b,node.a)!=0){transfer=1;}
             if(transfer!=0 && (host.core.addressable(graph,destination)!=0 || host.core.addressable(graph,source)!=0)){transfer=0;}
             u32 preferred=transfer;
             u64 preferred_destination=destination;
             u64 preferred_source=source;
             if(preferred==0){
-                if(node.kind==GraphKind::Unary || node.kind==GraphKind::Select){preferred=1;preferred_destination=node.dst;preferred_source=node.a;}
-                else if(node.kind==GraphKind::Binary){
-                    preferred=1;preferred_destination=node.dst;preferred_source=node.a;
-                    if((node.flags&4)!=0){
-                        bool reverse=(node.flags&2)!=0 ? (node.operation==3 || node.operation==5) : (node.operation==2 || node.operation==5);
-                        if(reverse){preferred_source=node.b;}
+                if(node.tag==OP_UNARY){preferred=1;}
+                else if(node.tag==OP_SELECT_VALUE){preferred=1;preferred_source=node.d;}
+                else if(node.tag==OP_BINARY){
+                    preferred=1;
+                    if(node.left.kind==N_COMPARISON){
+                        u32 comparison=host.values.ir.inspect(node.left).tag;
+                        bool floating=host.values.scalar(registers,node.b).floating!=0;
+                        bool reverse=floating ? (comparison==COMPARE_GREATER || comparison==COMPARE_GREATER_EQUAL) :
+                            (comparison==COMPARE_LESS || comparison==COMPARE_GREATER_EQUAL);
+                        if(reverse){preferred_source=node.c;}
                     }
-                } else if(node.kind==GraphKind::Math && node.outgoing==0u64){
-                    preferred=1;preferred_destination=node.dst;preferred_source=node.a;
+                } else if(node.tag==OP_MATH && outgoing==0u64){
+                    preferred=1;
+                    preferred_source=unsafe_position<usize>(node.first.data);
                 }
             }
             if(preferred!=0){
                 host.core.relation(graph,GraphRelation::Affinity,preferred_destination,preferred_source);
                 host.core.relation(graph,GraphRelation::Affinity,preferred_source,preferred_destination);
             }
-            u32 literal=node.kind==GraphKind::Constant ? 1 : 0;
-            GraphDefinition definitions=GraphDefinition(weight,destination,source,node.bits,transfer,literal,0);
-            host.definitions(node.instruction,graph,live,definitions);
-            definitions.pass=1;
-            host.definitions(node.instruction,graph,live,definitions);
-            bool calls=node.kind==GraphKind::Print || node.kind==GraphKind::Call ||
-                (node.kind==GraphKind::Math && node.outgoing!=0u64);
-            if(calls){
-                u64 outgoing=node.kind==GraphKind::Print ? 32u64 : node.outgoing;
+            u32 literal=node.tag==OP_CONSTANT ? 1 : 0;
+            for(pass in 0..2){
+                GraphDefinition definition=GraphDefinition(weight,destination,source,u64(node.b),transfer,literal,u32(pass));
+                if(node.tag==OP_STORE_LOCAL){graph_definition(graph,live,GraphSpace::Local,node.a,definition,host.core);}
+                else {host.definitions(instruction.data,graph,live,definition);}
+            }
+            if(node.tag==OP_INVOKE || outgoing!=0u64){
                 if(outgoing>host.core.counter(graph,GraphCounter::Outgoing)){host.core.set_outgoing(graph,outgoing);}
                 host.core.visit_set(live,18446744073709551615u64,graph,GraphEvent(0u64,0u64,2,0));
             }
-            host.reads(node.instruction,graph,live,weight);
+            host.reads(instruction.data,graph,live,weight);
         }
     }
     return uses_r15;

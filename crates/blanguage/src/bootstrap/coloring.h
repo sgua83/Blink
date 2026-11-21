@@ -1,4 +1,5 @@
 module bootstrap.coloring;
+import bootstrap.ir_dataflow;
 
 struct ColorNode { u64 weight; u64 degree; u64 across_call; };
 struct ColorPlace { u64 value; u32 kind; u8 width; u8 floating; };
@@ -25,14 +26,6 @@ enum GraphRelation:u32 { Edge=0; Affinity=1; };
 enum GraphCounter:u32 { Registers=0; Outgoing=1; };
 enum GraphSlotAction:u32 { Insert=0; Remove=1; };
 enum GraphSetAction:u32 { Copy=0; Union=1; DrainUnion=2; Swap=3; Clear=4; };
-enum GraphKind:u32 { Ordinary=0; If=1; Loop=2; Scope=3; Raise=4; Exit=5; Break=6; Continue=7; LocalLoad=8; LocalStore=9; Cast=10; Unary=11; Binary=12; Select=13; Math=14; Constant=15; Print=16; Call=17; };
-struct GraphBlock { address instructions; u64 count; };
-struct GraphScalars { address data; u64 count; };
-struct GraphNode {
-    GraphBlock first; GraphBlock second; address instruction;
-    u64 dst; u64 a; u64 b; u64 bits; u64 outgoing;
-    GraphKind kind; u32 flags; u32 operation; u32 uses_r15;
-};
 struct GraphEvent { u64 anchor; u64 skip; u32 kind; u32 skip_present; };
 struct GraphDefinition { u64 weight; u64 transfer_dst; u64 transfer_src; u64 bits; u32 transfer; u32 literal; u32 pass; };
 struct GraphCore {
@@ -49,20 +42,25 @@ struct GraphCore {
 };
 struct GraphHost {
     GraphCore core;
-    cfn<GraphNode,GraphBlock,u64,GraphScalars> read;
+    RegisterHost values;
+    cfn<u32,Span,usize,usize> cast_bits;
+    cfn<u64,address> call_outgoing;
+    cfn<u64,u32> math_outgoing;
     cfn<address,address> clone_set;
     cfn<void,address> drop_set;
     cfn<void,GraphSetAction,address,address> change;
-    cfn<address,GraphBlock,u64,GraphBlock,address,address,address,address> loop_live;
+    cfn<address,Span,usize,Span,address,address,address,address> loop_live;
     cfn<void,address,address,address,GraphDefinition> definitions;
     cfn<void,address,address,address,u64> reads;
 };
 // All sets, graph arrays and IR blocks are this synchronous caller's real containers.
-extern "C" u32 graph_block(address graph,GraphBlock code,GraphScalars registers,address live,
+extern "C" u32 graph_block(address graph,Span code,Span registers,address live,
     address break_live,address continue_live,address exit_live,u64 weight,GraphHost host) on cpu 
     requires nonzero(host.core.addressable) requires nonzero(host.core.relation) requires nonzero(host.core.weight) requires nonzero(host.core.set_weight)
     requires nonzero(host.core.across) requires nonzero(host.core.counter) requires nonzero(host.core.set_outgoing) requires nonzero(host.core.location)
-    requires nonzero(host.core.visit_set) requires nonzero(host.core.slot) requires nonzero(host.read) requires nonzero(host.clone_set)
+    requires nonzero(host.core.visit_set) requires nonzero(host.core.slot)
+    requires nonzero(host.values.ir.inspect) requires nonzero(host.values.scalar)
+    requires nonzero(host.cast_bits) requires nonzero(host.call_outgoing) requires nonzero(host.math_outgoing) requires nonzero(host.clone_set)
     requires nonzero(host.drop_set) requires nonzero(host.change) requires nonzero(host.loop_live) requires nonzero(host.definitions)
     requires nonzero(host.reads);
 extern "C" void graph_together(address graph,address live,GraphCore core) on cpu 

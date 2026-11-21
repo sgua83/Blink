@@ -2,7 +2,7 @@ module bootstrap.ir_dataflow;
 
 // These tags describe the existing borrowed Rust IR fields at this one
 // private native handoff. They do not name a public IR format or registry.
-const u32 N_CALL=1;const u32 N_TARGET=2;const u32 N_ARGUMENT=3;
+const u32 N_CALL=1;const u32 N_TARGET=2;
 const u32 N_DATASET_BORROW=4;const u32 N_REFERENCE=5;const u32 N_STORAGE=6;
 const u32 N_INDEXED=7;const u32 N_STRIDE=8;const u32 N_TEXTURE=9;const u32 N_ATOMIC_OP=10;
 const u32 N_MEMORY_ALIAS=11;const u32 N_MEMORY_EFFECT=12;const u32 N_DIVISION=13;

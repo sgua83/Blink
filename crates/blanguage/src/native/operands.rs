@@ -191,10 +191,6 @@ unsafe extern "C" {
     fn write_scalar_move(memory: MoveLocation, src: MoveLocation, size: u32, output: *mut u8) -> u64;
 }
 
-pub(super) fn math_outgoing(operation: MathOp) -> u64 {
-    unsafe { scalar_math_outgoing(operation as u32) }
-}
-
 impl Emitter<'_> {
     pub(super) fn operand(&mut self, location: Location, temporary: u8) -> Operand {
         match location {
