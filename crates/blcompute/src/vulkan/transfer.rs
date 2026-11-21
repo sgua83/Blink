@@ -1,16 +1,20 @@
 //! 显式传输闭合资源图；一次操作内保留共享，不解析源平台地址或维护跨操作缓存。
 use super::*;
+use crate::cpu::CpuDataset;
 use std::collections::BTreeMap;
 
 impl Device {
     /// Accept the CPU source before obtaining a device for the upload.
     pub(crate) fn upload_cpu<'a>(
-        data: &crate::cpu::CpuDataset,
+        data: &CpuDataset,
         device: impl FnOnce() -> Result<&'a Self>,
     ) -> Result<GpuDataset> {
         Upload::accept(data)?;
         let mut upload = Upload::new(device()?);
-        let root = upload.record_root(data)?;
+        let root = match data {
+            CpuDataset::Owned(data) => UploadRoot::Owned(upload.record_borrowed(data)?),
+            CpuDataset::Read(source) => UploadRoot::Read(upload.record_read(source)?),
+        };
         Ok(upload.submit()?.root(root))
     }
 
@@ -136,17 +140,21 @@ impl<'a> Upload<'a> {
         }
     }
 
-    pub(super) fn accept(data: &crate::cpu::CpuDataset) -> Result<()> {
-        if let crate::cpu::CpuDataset::Owned(data) = data {
+    fn accept(data: &CpuDataset) -> Result<()> {
+        if let CpuDataset::Owned(data) = data {
             data.require_views()?;
         }
         Ok(())
     }
 
-    pub(super) fn record_root(&mut self, data: &crate::cpu::CpuDataset) -> Result<UploadRoot> {
+    pub(super) fn record_root(&mut self, data: CpuDataset) -> Result<UploadRoot> {
+        Self::accept(&data)?;
         match data {
-            crate::cpu::CpuDataset::Owned(data) => self.record(data).map(UploadRoot::Owned),
-            crate::cpu::CpuDataset::Read(source) => self.record_read(source).map(UploadRoot::Read),
+            CpuDataset::Owned(data) => self.record(
+                data.stride, data.count, &data.words, &data.views.sources,
+                || (data.ty, data.views.bindings),
+            ).map(UploadRoot::Owned),
+            CpuDataset::Read(source) => self.record_read(&source).map(UploadRoot::Read),
         }
     }
 
@@ -155,30 +163,42 @@ impl<'a> Upload<'a> {
         if let Some(&index) = self.identities.get(&identity) {
             return Ok(index);
         }
-        let target = self.record(source)?;
+        let target = self.record_borrowed(source)?;
         let index = self.shared.len();
         self.shared.push(target);
         self.identities.insert(identity, index);
         Ok(index)
     }
 
-    fn record(&mut self, source: &Dataset) -> Result<StagedDataset> {
-        let sources = source.views.sources.iter()
+    fn record_borrowed(&mut self, source: &Dataset) -> Result<StagedDataset> {
+        self.record(
+            source.stride, source.count, &source.words, &source.views.sources,
+            || (source.ty.clone(), source.views.bindings.clone()),
+        )
+    }
+
+    fn record(
+        &mut self,
+        stride: u32,
+        count: u32,
+        words: &[u32],
+        view_sources: &[crate::ReadDataset],
+        metadata: impl FnOnce() -> (Ty, Vec<(usize, usize)>),
+    ) -> Result<StagedDataset> {
+        let sources = view_sources.iter()
             .map(|source| self.record_read(source))
             .collect::<Result<Vec<_>>>()?;
-        let views = Views {
-            sources,
-            bindings: source.views.bindings.clone(),
-        };
-        let data = GpuDataset::new(self.device.inner.clone(), source.ty.clone(), source.stride, source.count)?;
-        if !source.words.is_empty() {
+        let (ty, bindings) = metadata();
+        let views = Views { sources, bindings };
+        let data = GpuDataset::new(self.device.inner.clone(), ty, stride, count)?;
+        if !words.is_empty() {
             let commands = match &mut self.commands {
                 Some(commands) => commands,
                 slot @ None => slot.insert(Commands::new(self.device.inner.clone())?),
             };
             self.device.stage_payload(
                 &data,
-                &source.words,
+                words,
                 |start, mapped| views.encode(start, mapped, |&index| self.shared[index].data.view_header()),
                 commands,
                 &mut self.staging,
