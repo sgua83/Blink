@@ -265,7 +265,7 @@ pub(super) enum ExecutionResources {
     },
     ImageCopy {
         commands: Commands,
-        _staging: Vec<Allocation>,
+        _staging: Option<Allocation>,
         discarded: Option<texture::Storage>,
     },
     DatasetUpload {

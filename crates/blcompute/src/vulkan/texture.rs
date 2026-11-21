@@ -303,7 +303,7 @@ impl Device {
         let dependencies = dependencies.prepare()?;
         let texture = self.create_image::<2>([dimensions[0], dimensions[1], 1],
             [address[0], address[1], crate::TextureAddress::Clamp], format, levels.len() as u32)?;
-        let texture = self.write_image(texture, Vec::new(), dependencies, |commands, texture| {
+        let texture = self.write_image(texture, None, dependencies, |commands, texture| {
             commands.barrier(source_stage, 0x1000, source_access, 0x800);
             let mut size = dimensions;
             for (mip, level) in levels.iter().enumerate() {
@@ -363,7 +363,7 @@ impl Device {
             }
         }
         let buffer = staging.buffer;
-        self.write_image(texture, vec![staging], Vec::new(), |commands, texture| {
+        self.write_image(texture, Some(staging), Vec::new(), |commands, texture| {
             unsafe {
                 (self.inner.functions.vkCmdCopyBufferToImage)(
                     commands.command, buffer, texture.image, 7, copies.len() as u32, copies.as_ptr(),
@@ -515,7 +515,7 @@ impl Device {
             Ok(texture)
         }
     }
-    fn write_image<const D: usize>(&self, texture: Storage, staging: Vec<Allocation>,
+    fn write_image<const D: usize>(&self, texture: Storage, staging: Option<Allocation>,
         dependencies: Vec<Rc<Execution>>, record: impl FnOnce(&Commands, &Storage)) -> Result<Texture<D>> {
         let f = &self.inner.functions;
         let commands = Commands::new(self.inner.clone())?;
