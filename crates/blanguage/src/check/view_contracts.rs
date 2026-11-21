@@ -84,6 +84,45 @@ impl Access {
         }
     }
 
+    fn at_recursive_entry(
+        mut self, inputs: &BTreeMap<ValueIdentity, bounds::Proof>, invoked: &bounds::Condition,
+    ) -> Option<Self> {
+        let (borrows, when) = match &mut self {
+            Self::Position { borrows, when, position } => {
+                position.written = position.written.as_ref().map(|proof| proof.at_call(inputs));
+                (borrows, when)
+            }
+            Self::Initialized { borrows, when, initialized } => {
+                *initialized = initialized.iter().map(|fact| fact.at_call(inputs)).collect();
+                (borrows, when)
+            }
+            Self::Resource { resources, borrows, when, .. } => {
+                *resources = resources.at_call(inputs);
+                (borrows, when)
+            }
+            Self::Dataset { borrows, when, index, .. } => {
+                *index = index.and_then(|value| value.at_call(inputs));
+                (borrows, when)
+            }
+            Self::Memory { borrows, when, .. } => (borrows, when),
+            Self::Stored { .. } => return None,
+        };
+        *borrows = borrows.at_call(inputs);
+        *when = when.guard_at_call(inputs).logical(invoked.clone(), false);
+        Some(self)
+    }
+
+    fn active_entry_access(&self) -> bool {
+        match self {
+            Self::Resource { resources, borrows, when, .. } =>
+                resources.active() && borrows.active() && when.active(),
+            Self::Position { borrows, when, .. } | Self::Memory { borrows, when, .. } |
+            Self::Dataset { borrows, when, .. } | Self::Initialized { borrows, when, .. } =>
+                borrows.active() && when.active(),
+            Self::Stored { .. } => false,
+        }
+    }
+
     pub(super) fn when_mut(&mut self)->&mut bounds::Condition {match self {
         Self::Resource{when,..}|Self::Position{when,..}|Self::Memory{when,..}|Self::Dataset{when,..}|Self::Initialized{when,..}|Self::Stored{when,..}=>when,
     }}
@@ -1586,18 +1625,53 @@ fn converge_access(
     worker: &crate::compiler::Worker, functions: &BTreeMap<String, &Function>, known: &mut States,
     owns_input: &(impl Fn(&str, ValueIdentity) -> bool + Sync),
 ) -> Result<()> {
-    fn feeds_back(name:&str,functions:&BTreeMap<String,&Function>)->bool {
-        let mut pending=functions[name].calls.iter().map(|call|call.function.as_str()).collect::<Vec<_>>();
-        let mut visited=BTreeSet::new();
-        while let Some(next)=pending.pop() {
-            if next==name{return true;}
-            if visited.insert(next) && let Some(function)=functions.get(next) {
-                pending.extend(function.calls.iter().map(|call|call.function.as_str()));
+    fn recursive_groups<'a>(functions: &'a BTreeMap<String, &Function>) -> BTreeMap<&'a str, Arc<[&'a str]>> {
+        let callees = functions.iter().map(|(name, function)| {
+            let calls = function.calls.iter().map(|call| call.function.as_str())
+                .filter(|callee| functions.contains_key(*callee)).collect::<Vec<_>>();
+            (name.as_str(), calls)
+        }).collect::<BTreeMap<_, _>>();
+        let mut callers = callees.keys().map(|&name| (name, Vec::new())).collect::<BTreeMap<_, _>>();
+        for (&name, targets) in &callees {
+            for target in targets {
+                callers.get_mut(target).unwrap().push(name);
             }
         }
-        false
+        let mut ordered = Vec::new();
+        let mut seen = BTreeSet::new();
+        for &name in callees.keys() {
+            let mut work = vec![(name, false)];
+            while let Some((next, exit)) = work.pop() {
+                if exit {
+                    ordered.push(next);
+                } else if seen.insert(next) {
+                    work.push((next, true));
+                    work.extend(callees[next].iter().map(|&target| (target, false)));
+                }
+            }
+        }
+        seen.clear();
+        let mut groups = BTreeMap::new();
+        for name in ordered.into_iter().rev() {
+            if !seen.insert(name) {
+                continue;
+            }
+            let mut members = vec![name];
+            let mut at = 0;
+            while at < members.len() {
+                let parents = &callers[members[at]];
+                members.extend(parents.iter().copied().filter(|&parent| seen.insert(parent)));
+                at += 1;
+            }
+            if members.len() > 1 || callees[name].contains(&name) {
+                members.sort_unstable();
+                let group: Arc<[_]> = Arc::from(members);
+                groups.extend(group.iter().map(|&name| (name, Arc::clone(&group))));
+            }
+        }
+        groups
     }
-    let feedback=functions.keys().filter(|name|feeds_back(name,functions)).map(|name|name.as_str()).collect::<BTreeSet<_>>();
+    let groups = recursive_groups(functions);
     fn insert(accesses:&mut BTreeMap<Access,bounds::Condition>,mut access:Access) {
         let when=std::mem::replace(access.when_mut(),bounds::Condition::constant(true));
         accesses.entry(access).and_modify(|old|{if *old!=when {
@@ -1646,7 +1720,7 @@ fn converge_access(
             };
             if let Some(value)=value{insert(&mut access,value);}
         }
-        Ok((name, (parameters, access)))
+        Ok((name.as_str(), (parameters, access)))
     }).map_err(|error| borrow_worker_error(functions, error))?
         .into_iter().collect::<BTreeMap<_, _>>();
 
@@ -1676,25 +1750,56 @@ fn converge_access(
         }).collect()
     }
 
+    let components = groups.iter().filter_map(|(&entry, members)| {
+        if members.len() < 2 { return None; }
+        let entries = relation::Graph::component_inputs(entry, members, functions, known)?;
+        let (parameters, _) = &direct[entry];
+        let invoked = functions[entry].calls.iter().filter(|call| members.contains(&call.function.as_str()))
+            .map(|call| bounds::Condition::execution(&call.path).guard_at_call(parameters))
+            .reduce(|a,b|a.logical(b,true)).unwrap();
+        let inputs = entries.into_iter().map(|(member, scalars, arguments)| {
+            let bindings = arguments.into_iter().map(|(input, value)| {
+                let mut proof = scalars[&input].clone();
+                proof.set_view_borrow(0, value);
+                (input, proof)
+            }).collect::<BTreeMap<_, _>>();
+            (member, bindings)
+        }).collect::<Vec<_>>();
+        Some((entry, (members, invoked, inputs)))
+    }).collect::<BTreeMap<_,_>>();
+
     let mut call_accesses = functions.keys().map(|name| {
         (name.as_str(), BTreeMap::<usize, CallProjection<'_>>::new())
     }).collect::<BTreeMap<_, _>>();
     let mut ready = call_accesses.keys().copied().collect::<BTreeSet<_>>();
     while !ready.is_empty() {
+        let peers = ready.iter().filter_map(|name| groups.get(name)).filter(|group| {
+            group.iter().any(|name| components.contains_key(name))
+        }).flat_map(|group| group.iter().copied()).collect::<Vec<_>>();
+        ready.extend(peers);
         let tasks = call_accesses.iter_mut().filter(|(name, _)| ready.contains(*name)).collect();
-        let changed = crate::parallel::try_map(worker, tasks, Clone::clone, |worker, (&name, projections)| {
+        let bases = crate::parallel::try_map(worker, tasks, Clone::clone, |worker, (&name, projections)| {
             // This function reads one immutable round of call contracts.
             let _required_scope = bounds::required_scope();
             let (name, function) = functions.get_key_value(name).unwrap();
-            let normalize=feedback.contains(name.as_str());
             let state=&known[name];
-            let (parameters, local_access)=&direct[name];
+            let (parameters, local_access)=&direct[name.as_str()];
             let mut access=local_access.clone();
+            let component = components.get(name.as_str());
             let evaluation = || BorrowEvaluation {
                 function, state: state.loop_scope(), known, expand_loops: true, deferred_reads: false,
                 loop_bindings: Vec::new(), values: BTreeMap::new(), stored: None, exit_writes: None, stored_paths: Default::default(),
             };
-            for (index, call) in function.calls.iter().enumerate().filter(|(_, call)| call.function != *name || state.entries.is_none()) {
+            let internal = |call: &Call| {
+                component.is_some_and(|(members, _, _)| members.contains(&call.function.as_str()))
+            };
+            for (index, call) in function.calls.iter().enumerate() {
+                if call.function == *name && state.entries.is_some() && component.is_none() {
+                    continue;
+                }
+                if internal(call) && !call.live_task_places.active() {
+                    continue;
+                }
                 let requirements = &known[&call.function].interface.access;
                 projections.entry(index).or_insert_with(|| CallProjection {
                     condition: bounds::GuardProjection::new(&call.path, parameters),
@@ -1712,12 +1817,16 @@ fn converge_access(
                 let projected = &mut projection.access;
                 let live_task_places=evaluation.evaluate(&call.live_task_places);
                 let task_access=live_task_places.active();
+                let recursive = internal(call);
                 let initialized = std::cell::LazyCell::new(|| initialization_effects(&call.initialization, function, state, known).positions(&call.path));
                 for (requirement, previous) in requirements.iter().zip(&mut *projected) {
                     if previous.is_some() {
                         continue;
                     }
                     let projected = previous.insert(Vec::new());
+                    if recursive && (!task_access || requirement.accessed().is_none()) {
+                        continue;
+                    }
                     if !task_access && (matches!(requirement,Access::Stored{..})
                         || matches!(requirement,Access::Position{position,..} if !position.writable && !position.initialized && (call.deferred || position.written.is_none()))) {
                         continue;
@@ -1728,6 +1837,11 @@ fn converge_access(
                         && let Some(exclusion)=function.access(parameters,accessed.clone(),live_task_places.clone(),view::Exclusion::Position(mode),when,&project)
                     {
                         projected.push(exclusion);
+                    }
+                    // The entry graph owns ordinary access transfer within this component.
+                    // This call contributes only the exclusion of its own live tasks.
+                    if recursive {
+                        continue;
                     }
                     let value=match value {
                         Access::Position{mut position,borrows,when}=>{
@@ -1760,26 +1874,39 @@ fn converge_access(
                     insert(&mut access, value.clone());
                 }
             }
-            if let Some(entries)=&state.entries{
+            if let Some(entries)=&state.entries && component.is_none(){
                 let invoked=function.calls.iter().filter(|call|call.function==*name).map(|call|bounds::Condition::execution(&call.path).guard_at_call(parameters)).reduce(|a,b|a.logical(b,true)).unwrap();
                 let inputs=entries.iter().map(|(input,value)|(*input,{let mut component_proof=bounds::Proof::default();component_proof.set_view_borrow(0,value.clone());component_proof})).collect::<BTreeMap<_,_>>();
                 let direct=access.iter().map(|(access,when)|{let mut a=access.clone();*a.when_mut()=when.clone();a}).collect::<Vec<_>>();
-                for value in direct{let value=match value{
-                    Access::Position{borrows,when,position}=>Access::Position{borrows:borrows.at_call(&inputs),when:when.guard_at_call(&inputs),position:PositionAccess{written:position.written.as_ref().map(|p|p.at_call(&inputs)),..position}},
-                    Access::Memory{borrows,when,access}=>Access::Memory{borrows:borrows.at_call(&inputs),when:when.guard_at_call(&inputs),access},
-                    Access::Initialized{borrows,when,initialized}=>Access::Initialized{borrows:borrows.at_call(&inputs),when:when.guard_at_call(&inputs),initialized:initialized.iter().map(|f|f.at_call(&inputs)).collect()},
-                    Access::Resource{resources,borrows,when,kind}=>Access::Resource{resources:resources.at_call(&inputs),borrows:borrows.at_call(&inputs),when:when.guard_at_call(&inputs),kind},
-                    Access::Dataset{borrows,when,index,access,atomic}=>Access::Dataset{borrows:borrows.at_call(&inputs),when:when.guard_at_call(&inputs),index:index.and_then(|i|i.at_call(&inputs)),access,atomic},
-                    Access::Stored{..}=>continue,
-                };let mut value=value;let when=value.when_mut();*when=when.clone().logical(invoked.clone(),false);insert(&mut access,value);}
+                for value in direct.into_iter().filter_map(|value| value.at_recursive_entry(&inputs, &invoked)) {
+                    insert(&mut access, value);
+                }
             }
-            let access = access.into_iter().map(|(mut access, when)| {
-                *access.when_mut() = if normalize { normalized_condition(when) } else { when };
-                access
-            }).collect::<BTreeSet<_>>();
-            Ok((access != state.interface.access).then_some((name, access)))
+            Ok((name, access))
         }).map_err(|error| borrow_worker_error(functions, error))?;
-        let changed = changed.into_iter().flatten().collect::<Vec<_>>();
+        let changed = bases.into_iter().filter_map(|(name, mut access)| {
+            if let Some((_, invoked, inputs)) = components.get(name.as_str()) {
+                for (member, bindings) in inputs {
+                    let local = direct[member].1.iter().map(|(value, when)| {
+                        let mut value = value.clone();
+                        *value.when_mut() = when.clone();
+                        value
+                    });
+                    let projected = call_accesses[member].values().flat_map(|projection| {
+                        projection.access.iter().flatten().flatten().cloned()
+                    });
+                    for value in local.chain(projected).filter_map(|value| value.at_recursive_entry(bindings, invoked)) {
+                        if value.active_entry_access() { insert(&mut access, value); }
+                    }
+                }
+            }
+            let normalize = groups.contains_key(name.as_str());
+            let next = access.into_iter().map(|(mut value, when)| {
+                *value.when_mut() = if normalize { normalized_condition(when) } else { when };
+                value
+            }).collect::<BTreeSet<_>>();
+            (next != known[name].interface.access).then_some((name, next))
+        }).collect::<Vec<_>>();
         if changed.is_empty() {
             break;
         }

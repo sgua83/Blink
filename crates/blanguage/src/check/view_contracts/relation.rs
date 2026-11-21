@@ -238,6 +238,122 @@ impl Graph {
         let parameters=residency::input_parameters(&function.parameters,function.input_width);
         Some(roots.into_iter().map(|(input,root)|{let value=graph.solve(root,&mut evaluation);(input,function.address_borrows(&parameters,value).unwrap_or_default())}).collect())
     }
+    pub(super) fn component_inputs<'name, 'state>(
+        entry: &'name str,
+        members: &[&'name str],
+        functions: &'state BTreeMap<String, &Function>,
+        known: &'state States<'state>,
+    ) -> Option<Vec<(&'name str, BTreeMap<ValueIdentity, bounds::Proof>, BTreeMap<ValueIdentity, Borrow>)>> {
+        fn roots(builder: &mut Builder<'_>, scalars: &BTreeMap<ValueIdentity, bounds::Proof>, initial: bool)
+            -> BTreeMap<ValueIdentity,usize>
+        {
+            scalars.keys().map(|&input| {
+                let root = builder.empty();
+                builder.graph.variables.insert(root);
+                if initial {
+                    builder.graph.nodes[root].seeds = Borrow::source(Origin::Parameter(input, Vec::new()));
+                }
+                (input, root)
+            }).collect()
+        }
+
+        let function = functions[entry];
+        let state = known[entry].loop_scope();
+        let mut builder = Self::builder(function, state, known);
+        let formals = members.iter().map(|&name| {
+            let function = functions[name];
+            (name, function.parameters.values().copied().filter(|&formal| function.input(formal)).collect::<BTreeSet<_>>())
+        }).collect::<BTreeMap<_,_>>();
+        let entry_scalars = formals[entry].iter().map(|&input| {
+            (input, bounds::Proof::default().with_identity(input))
+        }).collect::<BTreeMap<_,_>>();
+        let entry_roots = roots(&mut builder, &entry_scalars, true);
+        let mut ports = vec![(entry, entry_scalars, entry_roots)];
+        let mut port = 0;
+        let mut reads_content = false;
+        while port < ports.len() {
+            let (caller, scalars, parameters) = ports[port].clone();
+            port += 1;
+            let function = functions[caller];
+            let state = known[caller].loop_scope();
+            let public = residency::input_parameters(&function.parameters, function.input_width);
+            let mut local = Self::builder(function, state, known);
+            let mut operands = Vec::new();
+            let empty = BTreeMap::new();
+            for call in &function.calls {
+                let Some((&callee, inputs)) = formals.get_key_value(call.function.as_str()) else { continue; };
+                let when = call.path.project_guard(&public).project_guard(&scalars);
+                if !when.possible() { continue; }
+                let incoming = inputs.iter().map(|&input| {
+                    let scalar = call.arguments.get(&input).map_or_else(bounds::Proof::default, |proof| {
+                        let local = proof.numeric_at_call(&empty);
+                        if local.known_boolean_value(1).is_some() {
+                            return local;
+                        }
+                        proof.known_identity(0).and_then(|id| function.parameters.get(&id))
+                            .and_then(|id| scalars.get(id)).cloned().unwrap_or(local)
+                    });
+                    (input, scalar)
+                }).collect::<BTreeMap<_,_>>();
+                let target = match ports.iter().position(|(name, known, _)| *name == callee && *known == incoming) {
+                    Some(index) => index,
+                    None => {
+                        let nodes = roots(&mut builder, &incoming, false);
+                        let index = ports.len();
+                        ports.push((callee, incoming, nodes));
+                        index
+                    }
+                };
+                let epoch = Epoch::Local { memory: call.memory, snapshots: call.snapshots.clone() };
+                for (input, proof) in &call.arguments {
+                    let Some(&node) = ports[target].2.get(input) else { continue; };
+                    let actual = proof.view_borrow(0).restricted(&call.path);
+                    if actual.active() {
+                        let source = local.borrow(&actual, &epoch);
+                        operands.push((node, source, when.clone()));
+                    }
+                }
+            }
+            reads_content = reads_content || operands.iter().any(|&(_, root, _)| {
+                local.graph.any_reachable(root, |node| node.edges.iter().any(
+                    |edge| matches!(edge.op, Op::Read { .. } | Op::Initial { .. }),
+                ))
+            });
+            let local = Arc::new(local.graph);
+            let mut evaluation = BorrowEvaluation {
+                function, state, known, expand_loops: true, deferred_reads: false,
+                loop_bindings: Vec::new(), values: BTreeMap::new(), stored: None, exit_writes: None,
+                stored_paths: Default::default(),
+            };
+            let identities = scalars.into_iter().map(|(input, mut proof)| {
+                proof.set_view_borrow(0, Borrow::source(Origin::Parameter(input, Vec::new())));
+                (input, proof)
+            }).collect::<BTreeMap<_,_>>();
+            builder.parameters = parameters;
+            for (target, source, when) in operands {
+                let value = local.solve(source, &mut evaluation);
+                if let Some(actual) = function.address_borrows(&public, value) {
+                    let source = builder.borrow(&actual.at_call(&identities), &Epoch::Input);
+                    builder.edge(target, source, Op::Identity, when);
+                }
+            }
+        }
+        // A write can resolve a read before the operands join the shared graph.
+        if !reads_content {
+            return None;
+        }
+        let graph = Arc::new(builder.graph);
+        let mut evaluation = BorrowEvaluation {
+            function, state, known, expand_loops: true, deferred_reads: false,
+            loop_bindings: Vec::new(), values: BTreeMap::new(), stored: None, exit_writes: None,
+            stored_paths: Default::default(),
+        };
+        Some(ports.into_iter().map(|(name, scalars, nodes)| {
+            let inputs = nodes.into_iter().map(|(input, node)| (input, graph.solve(node, &mut evaluation))).collect();
+            (name, scalars, inputs)
+        }).collect())
+    }
+
     pub(super) fn loops(
         inputs: &BTreeSet<LoopInput>, function: &Function, name: &str, known: &States,
     ) -> Option<Arc<Self>> {

@@ -30,7 +30,7 @@ impl Builder<'_> {
             .map(|((s, _), b)| self.constant_with_origin(*s, *b, generated_origin.clone()).regs[0])
             .collect();
         Value {
-            proof: bounds::Proof::default().with_external_borrows(&ty),
+            proof: bounds::Proof::default().with_constant_address_borrows(&ty, &bits),
             literal: false,
             ty,
             regs,

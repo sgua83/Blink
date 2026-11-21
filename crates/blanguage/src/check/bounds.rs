@@ -645,18 +645,29 @@ impl Proof {
     pub(super) fn view_borrow(&self,component:usize)->view::Borrow {self.view_borrow_ref(component).cloned().unwrap_or_default()}
     pub(super) fn borrowed_view(&self)->view::Borrow {self.views.iter().fold(view::Borrow::default(),|mut all,value|{all.union(value);all})}
     pub(super) fn borrowed_views(&self)->BTreeSet<view::Source> {self.borrowed_view().sources.entries().filter_map(|(source,when)|when.possible().then_some(source.clone())).collect()}
-    pub(super) fn with_external_borrows(mut self,ty:&Ty)->Self {
-        for (offset,field) in ty.borrow_fields() {
+    pub(super) fn with_external_borrows(self, ty: &Ty) -> Self {
+        self.with_address_borrows(ty, |_| view::Source::External)
+    }
+    pub(super) fn with_constant_address_borrows(self, ty: &Ty, bits: &[Bits]) -> Self {
+        self.with_address_borrows(ty, |component| {
+            if bits[component] == 0 { view::Source::Inactive } else { view::Source::External }
+        })
+    }
+    fn with_address_borrows(mut self, ty: &Ty, source: impl Fn(usize) -> view::Source) -> Self {
+        for (offset, field) in ty.borrow_fields() {
             if field.is_address() {
-                let component=ty.components.iter().position(|(_,at)|*at==offset).unwrap();
-                self.mark_external_borrow(component);
+                let component = ty.components.iter().position(|(_, at)| *at == offset).unwrap();
+                self.mark_address_borrow(component, source(component));
             }
         }
         self
     }
-    pub(super) fn mark_external_borrow(&mut self,component:usize) {
-        self.views.resize_with(self.views.len().max(component+1),view::Borrow::default);
-        self.views[component].sources.union_when(view::Source::External,&Clause::default());
+    pub(super) fn mark_external_borrow(&mut self, component: usize) {
+        self.mark_address_borrow(component, view::Source::External);
+    }
+    fn mark_address_borrow(&mut self, component: usize, source: view::Source) {
+        self.views.resize_with(self.views.len().max(component + 1), view::Borrow::default);
+        self.views[component].sources.union_when(source, &Clause::default());
     }
     pub(super) fn set_view_borrow(&mut self,component:usize,borrow:view::Borrow) {
         self.views.resize_with(self.views.len().max(component+1),view::Borrow::default);self.views[component]=borrow;
