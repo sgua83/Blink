@@ -563,19 +563,38 @@ struct TextureAccess {
 
 // R12 is the binding table. R15 holds the transient binding and source address.
 // The caller owns the result locations and room for the whole operation.
-// CPU texel color lowering writes into the original four result registers.
 enum TextureColor:u32 { Rgba8=1; Srgb=2; R8=3; Rg16=4; Rgb10A2=5; Rg11B10=6; };
-enum ColorScalar:u32 { Word=0; Float=1; Bool=2; };
-enum ColorOp:u32 {
+enum SampleScalar:u32 { Word=0; Float=1; Bool=2; Index=3; };
+enum SampleOp:u32 {
     Constant=0; Cast=1; Bitcast=2; Add=3; Divide=4; Multiply=5; LessEqual=6; Equal=7;
     ShiftRight=8; ShiftLeft=9; And=10; Or=11; Power=12; Select=13; Into=14; Set=15;
+    Subtract=16; Less=17; GreaterEqual=18; NotEqual=19; Minimum=20; Maximum=21;
+    Floor=22; Register=23; Format=24; AddressMode=25; Levels=26;
 };
-struct ColorHost {
+enum SampleBlock:u32 {
+    Output=0; FloatArm=1; FormatTest=2; ByteArm=3; PackedArm=4;
+    FormatArm=5; PreviousArm=6; FormatChoice=7; SrgbArm=8; Empty=9;
+};
+enum SampleBlockAction:u32 { Select=0; Append=1; Branch=2; };
+enum SampleReadKind:u32 { Size=0; Float=1; Byte=2; Word=3; };
+struct SampleRegisters { array<u64,4> values; };
+struct SampleRead {
+    SampleReadKind kind;
+    u32 dimensions;
+    u64 level;
+    SampleRegisters coordinate;
+    SampleRegisters result;
+};
+struct SampleHost {
     address context;
-    cfn<u64,address,ColorOp,ColorScalar,u64,u64,u64> instruction;
+    cfn<u64,address,SampleOp,SampleScalar,u64,u64,u64> instruction;
+    cfn<u64,address,SampleRead> read_texture;
+    cfn<void,address,SampleBlockAction,SampleBlock,SampleBlock,u64> block;
 };
-extern "C" void texture_color(TextureColor format, u64 raw, address result, ColorHost host) on cpu
-    requires nonzero(host.instruction);
+// The host only materializes the original IR nodes. The coordinate span has
+// two or three entries, as determined by the typed texture instruction.
+extern "C" void texture_sample_ir(address coordinate, u32 dimensions, u64 lod, address result, SampleHost host) on cpu
+    requires nonzero(host.instruction) requires nonzero(host.read_texture) requires nonzero(host.block);
 
 extern "C" u64 texture_access(TextureAccess input, address results, u64 count, address output) on cpu;
 

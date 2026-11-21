@@ -3331,81 +3331,81 @@ u64 texture_texel_at(u64 at, TextureAccess input, u32 texel_bytes) on cpu {
     return register_instruction(cursor, u16(0x01), u8(0), true, u8(0), u8(15));
 }
 
-u64 color_op(ColorHost host, ColorOp op, ColorScalar scalar, u64 a, u64 b) on cpu
+u64 color_op(SampleHost host, SampleOp op, SampleScalar scalar, u64 a, u64 b) on cpu
     requires nonzero(host.instruction) {
     return host.instruction(host.context, op, scalar, a, b, 0u64);
 }
 
-u64 color_word(ColorHost host, u32 bits) on cpu requires nonzero(host.instruction) {
-    return color_op(host, ColorOp::Constant, ColorScalar::Word, u64(bits), 0u64);
+u64 color_word(SampleHost host, u32 bits) on cpu requires nonzero(host.instruction) {
+    return color_op(host, SampleOp::Constant, SampleScalar::Word, u64(bits), 0u64);
 }
 
-u64 color_float(ColorHost host, f32 value) on cpu requires nonzero(host.instruction) {
-    return color_op(host, ColorOp::Constant, ColorScalar::Float, u64(bitcast_u32(value)), 0u64);
+u64 color_float(SampleHost host, f32 value) on cpu requires nonzero(host.instruction) {
+    return color_op(host, SampleOp::Constant, SampleScalar::Float, u64(bitcast_u32(value)), 0u64);
 }
 
-u64 color_select(ColorHost host, u64 condition, u64 yes, u64 no, ColorScalar scalar) on cpu
+u64 color_select(SampleHost host, u64 condition, u64 yes, u64 no, SampleScalar scalar) on cpu
     requires nonzero(host.instruction) {
-    return host.instruction(host.context, ColorOp::Select, scalar, condition, yes, no);
+    return host.instruction(host.context, SampleOp::Select, scalar, condition, yes, no);
 }
 
-u64 color_srgb(ColorHost host, u64 value) on cpu requires nonzero(host.instruction) {
+u64 color_srgb(SampleHost host, u64 value) on cpu requires nonzero(host.instruction) {
     u64 threshold = color_float(host, 0.04045);
-    u64 low = color_op(host, ColorOp::LessEqual, ColorScalar::Bool, value, threshold);
+    u64 low = color_op(host, SampleOp::LessEqual, SampleScalar::Bool, value, threshold);
     u64 divisor = color_float(host, 12.92);
-    u64 linear = color_op(host, ColorOp::Divide, ColorScalar::Float, value, divisor);
+    u64 linear = color_op(host, SampleOp::Divide, SampleScalar::Float, value, divisor);
     u64 offset = color_float(host, 0.055);
     u64 scale = color_float(host, 1.055);
     u64 exponent = color_float(host, 2.4);
-    u64 shifted = color_op(host, ColorOp::Add, ColorScalar::Float, value, offset);
-    u64 unit = color_op(host, ColorOp::Divide, ColorScalar::Float, shifted, scale);
-    u64 curve = color_op(host, ColorOp::Power, ColorScalar::Float, unit, exponent);
-    return color_select(host, low, linear, curve, ColorScalar::Float);
+    u64 shifted = color_op(host, SampleOp::Add, SampleScalar::Float, value, offset);
+    u64 unit = color_op(host, SampleOp::Divide, SampleScalar::Float, shifted, scale);
+    u64 curve = color_op(host, SampleOp::Power, SampleScalar::Float, unit, exponent);
+    return color_select(host, low, linear, curve, SampleScalar::Float);
 }
 
-u64 color_unsigned_float(ColorHost host, u64 value, u32 mantissa_bits, u32 mask) on cpu
+u64 color_unsigned_float(SampleHost host, u64 value, u32 mantissa_bits, u32 mask) on cpu
     requires nonzero(host.instruction) {
     u64 shift = color_word(host, mantissa_bits);
-    u64 exponent = color_op(host, ColorOp::ShiftRight, ColorScalar::Word, value, shift);
-    u64 fraction = color_op(host, ColorOp::And, ColorScalar::Word, value, color_word(host, mask));
+    u64 exponent = color_op(host, SampleOp::ShiftRight, SampleScalar::Word, value, shift);
+    u64 fraction = color_op(host, SampleOp::And, SampleScalar::Word, value, color_word(host, mask));
     shift = color_word(host, 23 - mantissa_bits);
-    u64 payload = color_op(host, ColorOp::ShiftLeft, ColorScalar::Word, fraction, shift);
-    u64 biased = color_op(host, ColorOp::Add, ColorScalar::Word, exponent, color_word(host, 112));
+    u64 payload = color_op(host, SampleOp::ShiftLeft, SampleScalar::Word, fraction, shift);
+    u64 biased = color_op(host, SampleOp::Add, SampleScalar::Word, exponent, color_word(host, 112));
     shift = color_word(host, 23);
-    biased = color_op(host, ColorOp::ShiftLeft, ColorScalar::Word, biased, shift);
-    u64 normal = color_op(host, ColorOp::Or, ColorScalar::Word, biased, payload);
-    u64 special = color_op(host, ColorOp::Equal, ColorScalar::Bool, exponent, color_word(host, 31));
-    u64 exceptional = color_op(host, ColorOp::Or, ColorScalar::Word, color_word(host, 0x7f800000), payload);
-    u64 bits = color_select(host, special, exceptional, normal, ColorScalar::Word);
-    u64 converted = color_op(host, ColorOp::Bitcast, ColorScalar::Float, bits, 0u64);
-    u64 integer = color_op(host, ColorOp::Cast, ColorScalar::Float, fraction, 0u64);
+    biased = color_op(host, SampleOp::ShiftLeft, SampleScalar::Word, biased, shift);
+    u64 normal = color_op(host, SampleOp::Or, SampleScalar::Word, biased, payload);
+    u64 special = color_op(host, SampleOp::Equal, SampleScalar::Bool, exponent, color_word(host, 31));
+    u64 exceptional = color_op(host, SampleOp::Or, SampleScalar::Word, color_word(host, 0x7f800000), payload);
+    u64 bits = color_select(host, special, exceptional, normal, SampleScalar::Word);
+    u64 converted = color_op(host, SampleOp::Bitcast, SampleScalar::Float, bits, 0u64);
+    u64 integer = color_op(host, SampleOp::Cast, SampleScalar::Float, fraction, 0u64);
     f32 scale = bitcast_f32((127 - 14 - mantissa_bits) << 23);
-    u64 subnormal = color_op(host, ColorOp::Multiply, ColorScalar::Float, integer, color_float(host, scale));
-    u64 tiny = color_op(host, ColorOp::Equal, ColorScalar::Bool, exponent, color_word(host, 0));
-    return color_select(host, tiny, subnormal, converted, ColorScalar::Float);
+    u64 subnormal = color_op(host, SampleOp::Multiply, SampleScalar::Float, integer, color_float(host, scale));
+    u64 tiny = color_op(host, SampleOp::Equal, SampleScalar::Bool, exponent, color_word(host, 0));
+    return color_select(host, tiny, subnormal, converted, SampleScalar::Float);
 }
 
 u64 color_result(address result, u32 channel) on cpu {
     return unsafe_position<u64>(unsafe_address(address_bits(result) + u64(channel) * 8u64));
 }
 
-extern "C" void texture_color(TextureColor format, u64 raw, address result, ColorHost host) on cpu
+void texture_color(TextureColor format, u64 raw, address result, SampleHost host) on cpu
     requires nonzero(host.instruction) {
     if (format == TextureColor::Srgb) {
         for (channel in 0..3) {
             u64 dst = color_result(result, channel);
             u64 value = color_srgb(host, dst);
-            color_op(host, ColorOp::Into, ColorScalar::Float, dst, value);
+            color_op(host, SampleOp::Into, SampleScalar::Float, dst, value);
         }
         return;
     }
     if (format == TextureColor::R8) {
-        u64 value = color_op(host, ColorOp::Cast, ColorScalar::Float, raw, 0u64);
-        u64 red = color_op(host, ColorOp::Divide, ColorScalar::Float, value, color_float(host, 255.0));
-        color_op(host, ColorOp::Into, ColorScalar::Float, color_result(result, 0), red);
+        u64 value = color_op(host, SampleOp::Cast, SampleScalar::Float, raw, 0u64);
+        u64 red = color_op(host, SampleOp::Divide, SampleScalar::Float, value, color_float(host, 255.0));
+        color_op(host, SampleOp::Into, SampleScalar::Float, color_result(result, 0), red);
         for (channel in 1..4) {
             u64 bits = channel == 3 ? 0x3f800000u64 : 0u64;
-            color_op(host, ColorOp::Set, ColorScalar::Float, color_result(result, channel), bits);
+            color_op(host, SampleOp::Set, SampleScalar::Float, color_result(result, channel), bits);
         }
         return;
     }
@@ -3421,22 +3421,230 @@ extern "C" void texture_color(TextureColor format, u64 raw, address result, Colo
             if (format == TextureColor::Rg11B10) { width = channel == 2 ? 10 : 11; }
             u64 shift = color_word(host, offset);
             offset += width;
-            u64 shifted = color_op(host, ColorOp::ShiftRight, ColorScalar::Word, raw, shift);
+            u64 shifted = color_op(host, SampleOp::ShiftRight, SampleScalar::Word, raw, shift);
             u32 mask = (1 << width) - 1;
-            u64 component = color_op(host, ColorOp::And, ColorScalar::Word, shifted, color_word(host, mask));
+            u64 component = color_op(host, SampleOp::And, SampleScalar::Word, shifted, color_word(host, mask));
             u64 value;
             if (format == TextureColor::Rg11B10) {
                 u32 mantissa = width - 5;
                 value = color_unsigned_float(host, component, mantissa, (1 << mantissa) - 1);
             } else {
-                value = color_op(host, ColorOp::Cast, ColorScalar::Float, component, 0u64);
-                value = color_op(host, ColorOp::Divide, ColorScalar::Float, value, color_float(host, f32(mask)));
+                value = color_op(host, SampleOp::Cast, SampleScalar::Float, component, 0u64);
+                value = color_op(host, SampleOp::Divide, SampleScalar::Float, value, color_float(host, f32(mask)));
             }
-            color_op(host, ColorOp::Into, ColorScalar::Float, dst, value);
+            color_op(host, SampleOp::Into, SampleScalar::Float, dst, value);
         } else {
             u64 bits = channel == 3 ? 0x3f800000u64 : 0u64;
-            color_op(host, ColorOp::Set, ColorScalar::Float, dst, bits);
+            color_op(host, SampleOp::Set, SampleScalar::Float, dst, bits);
         }
+    }
+}
+
+SampleRegisters sample_values(u64 r, u64 g, u64 b, u64 a) on cpu {
+    return SampleRegisters(array<u64,4>(r, g, b, a));
+}
+
+void sample_block(SampleHost host, SampleBlock block) on cpu requires nonzero(host.block) {
+    host.block(host.context, SampleBlockAction::Select, block, SampleBlock::Empty, 0u64);
+}
+
+void sample_append(SampleHost host, SampleBlock source) on cpu requires nonzero(host.block) {
+    host.block(host.context, SampleBlockAction::Append, source, SampleBlock::Empty, 0u64);
+}
+
+void sample_branch(SampleHost host, u64 test, SampleBlock yes, SampleBlock no) on cpu requires nonzero(host.block) {
+    host.block(host.context, SampleBlockAction::Branch, yes, no, test);
+}
+
+u64 sample_equal(SampleHost host, u64 value, u32 tag) on cpu requires nonzero(host.instruction) {
+    return color_op(host, SampleOp::Equal, SampleScalar::Bool, value, color_word(host, tag));
+}
+
+SampleRegisters sample_texel(SampleHost host, SampleRegisters coordinate, u32 dimensions, u64 level, u64 format) on cpu
+    requires nonzero(host.instruction) requires nonzero(host.read_texture) requires nonzero(host.block) {
+    u64 r = color_op(host, SampleOp::Register, SampleScalar::Float, 0u64, 0u64);
+    u64 g = color_op(host, SampleOp::Register, SampleScalar::Float, 0u64, 0u64);
+    u64 b = color_op(host, SampleOp::Register, SampleScalar::Float, 0u64, 0u64);
+    u64 a = color_op(host, SampleOp::Register, SampleScalar::Float, 0u64, 0u64);
+    SampleRegisters result = sample_values(r, g, b, a);
+    u64 floating = sample_equal(host, format, 0);
+    sample_block(host, SampleBlock::FloatArm);
+    host.read_texture(host.context, SampleRead(SampleReadKind::Float, dimensions, level, coordinate, result));
+
+    sample_block(host, SampleBlock::FormatTest);
+    u64 single = sample_equal(host, format, 3);
+    sample_block(host, SampleBlock::ByteArm);
+    u64 raw = host.read_texture(host.context, SampleRead(SampleReadKind::Byte, dimensions, level, coordinate, result));
+    texture_color(TextureColor::R8, raw, address_of(result), host);
+
+    sample_block(host, SampleBlock::PackedArm);
+    raw = host.read_texture(host.context, SampleRead(SampleReadKind::Word, dimensions, level, coordinate, result));
+    sample_block(host, SampleBlock::PreviousArm);
+    texture_color(TextureColor::Rgba8, raw, address_of(result), host);
+    array<TextureColor,3> packed = array<TextureColor,3>(TextureColor::Rg16, TextureColor::Rgb10A2, TextureColor::Rg11B10);
+    for (index in 0..3) {
+        TextureColor kind = packed[index];
+        sample_block(host, SampleBlock::FormatArm);
+        texture_color(kind, raw, address_of(result), host);
+        sample_block(host, SampleBlock::FormatChoice);
+        u64 test = sample_equal(host, format, u32(kind));
+        sample_branch(host, test, SampleBlock::FormatArm, SampleBlock::PreviousArm);
+        sample_block(host, SampleBlock::PreviousArm);
+        sample_append(host, SampleBlock::FormatChoice);
+    }
+
+    sample_block(host, SampleBlock::PackedArm);
+    sample_append(host, SampleBlock::PreviousArm);
+    u64 encoded = sample_equal(host, format, 2);
+    sample_block(host, SampleBlock::SrgbArm);
+    texture_color(TextureColor::Srgb, 0u64, address_of(result), host);
+    sample_block(host, SampleBlock::PackedArm);
+    sample_branch(host, encoded, SampleBlock::SrgbArm, SampleBlock::Empty);
+
+    sample_block(host, SampleBlock::FormatTest);
+    sample_branch(host, single, SampleBlock::ByteArm, SampleBlock::PackedArm);
+    sample_block(host, SampleBlock::Output);
+    sample_branch(host, floating, SampleBlock::FloatArm, SampleBlock::FormatTest);
+    return result;
+}
+
+struct SampleAxis { u64 first; u64 next; u64 weight; };
+struct SampleConstants { u64 one; u64 zero_i; u64 zero_u; u64 zero; u64 half; };
+
+u64 sample_min_index(SampleHost host, SampleScalar scalar, u64 a, u64 b) on cpu requires nonzero(host.instruction) {
+    u64 test = color_op(host, SampleOp::Less, SampleScalar::Bool, a, b);
+    return color_select(host, test, a, b, scalar);
+}
+
+SampleAxis sample_axis(SampleHost host, SampleConstants k, u64 coordinate, u64 dimension, u64 address_mode, u32 bit) on cpu
+    requires nonzero(host.instruction) {
+    // Integer texel addressing stays in 64 bits even when the normalized
+    // coordinate or the converted dimension rounds at an edge.
+    u64 size = color_op(host, SampleOp::Cast, SampleScalar::Index, dimension, 0u64);
+    u64 last = color_op(host, SampleOp::Subtract, SampleScalar::Index, size, k.one);
+    u64 size_float = color_op(host, SampleOp::Cast, SampleScalar::Float, dimension, 0u64);
+    u64 scaled = color_op(host, SampleOp::Multiply, SampleScalar::Float, coordinate, size_float);
+    u64 centered = color_op(host, SampleOp::Subtract, SampleScalar::Float, scaled, k.half);
+    u64 positive = color_op(host, SampleOp::Maximum, SampleScalar::Float, centered, k.zero);
+    u64 at = color_op(host, SampleOp::Minimum, SampleScalar::Float, positive, size_float);
+    u64 raw = color_op(host, SampleOp::Cast, SampleScalar::Index, at, 0u64);
+    u64 clamped = sample_min_index(host, SampleScalar::Index, raw, last);
+    u64 base = color_op(host, SampleOp::Cast, SampleScalar::Float, raw, 0u64);
+    u64 weight_clamped = color_op(host, SampleOp::Subtract, SampleScalar::Float, at, base);
+    u64 adjacent = color_op(host, SampleOp::Add, SampleScalar::Index, raw, k.one);
+    u64 clamped_next = sample_min_index(host, SampleScalar::Index, adjacent, last);
+
+    u64 floor = color_op(host, SampleOp::Floor, SampleScalar::Float, coordinate, coordinate);
+    u64 unit = color_op(host, SampleOp::Subtract, SampleScalar::Float, coordinate, floor);
+    scaled = color_op(host, SampleOp::Multiply, SampleScalar::Float, unit, size_float);
+    centered = color_op(host, SampleOp::Subtract, SampleScalar::Float, scaled, k.half);
+    base = color_op(host, SampleOp::Floor, SampleScalar::Float, centered, centered);
+    u64 index = color_op(host, SampleOp::Cast, SampleScalar::Index, base, 0u64);
+    u64 negative = color_op(host, SampleOp::Less, SampleScalar::Bool, index, k.zero_i);
+    u64 at_limit = color_op(host, SampleOp::GreaterEqual, SampleScalar::Bool, index, size);
+    u64 reduced = color_op(host, SampleOp::Subtract, SampleScalar::Index, index, size);
+    u64 wrapped = color_select(host, at_limit, reduced, index, SampleScalar::Index);
+    wrapped = color_select(host, negative, last, wrapped, SampleScalar::Index);
+    u64 next_index = color_op(host, SampleOp::Add, SampleScalar::Index, wrapped, k.one);
+    u64 at_end = color_op(host, SampleOp::Equal, SampleScalar::Bool, wrapped, last);
+    u64 wrapped_next = color_select(host, at_end, k.zero_i, next_index, SampleScalar::Index);
+    u64 weight = color_op(host, SampleOp::Subtract, SampleScalar::Float, centered, base);
+    u64 flag = color_op(host, SampleOp::And, SampleScalar::Word, address_mode, color_word(host, bit));
+    u64 repeat = color_op(host, SampleOp::NotEqual, SampleScalar::Bool, flag, k.zero_u);
+    u64 first = color_select(host, repeat, wrapped, clamped, SampleScalar::Index);
+    u64 next = color_select(host, repeat, wrapped_next, clamped_next, SampleScalar::Index);
+    u64 amount = color_select(host, repeat, weight, weight_clamped, SampleScalar::Float);
+    return SampleAxis(first, next, amount);
+}
+
+u64 sample_lerp(SampleHost host, u64 a, u64 b, u64 weight) on cpu requires nonzero(host.instruction) {
+    u64 difference = color_op(host, SampleOp::Subtract, SampleScalar::Float, b, a);
+    u64 scaled = color_op(host, SampleOp::Multiply, SampleScalar::Float, difference, weight);
+    return color_op(host, SampleOp::Add, SampleScalar::Float, a, scaled);
+}
+
+SampleRegisters sample_blend(SampleHost host, read SampleRegisters a, read SampleRegisters b, u64 weight) on cpu
+    requires nonzero(host.instruction) {
+    SampleRegisters result = sample_values(0u64, 0u64, 0u64, 0u64);
+    for (channel in 0..4) {
+        result.values[channel] = sample_lerp(host, a.values[channel], b.values[channel], weight);
+    }
+    return result;
+}
+
+SampleRegisters sample_level(SampleHost host, read SampleRegisters coordinate, u32 dimensions, u64 level, u64 address_mode, u64 format) on cpu
+    requires nonzero(host.instruction) requires nonzero(host.read_texture) requires nonzero(host.block) {
+    bool volume = dimensions == 3;
+    u64 width = color_op(host, SampleOp::Register, SampleScalar::Word, 0u64, 0u64);
+    u64 height = color_op(host, SampleOp::Register, SampleScalar::Word, 0u64, 0u64);
+    u64 depth = volume ? color_op(host, SampleOp::Register, SampleScalar::Word, 0u64, 0u64) : 0u64;
+    SampleRegisters sizes = sample_values(width, height, depth, 0u64);
+    host.read_texture(host.context, SampleRead(SampleReadKind::Size, dimensions, level, coordinate, sizes));
+    u64 one = color_op(host, SampleOp::Constant, SampleScalar::Index, 1u64, 0u64);
+    u64 zero_i = color_op(host, SampleOp::Constant, SampleScalar::Index, 0u64, 0u64);
+    u64 zero_u = color_word(host, 0);
+    u64 zero = color_float(host, 0.0);
+    u64 half = color_float(host, 0.5);
+    SampleConstants constants = SampleConstants(one, zero_i, zero_u, zero, half);
+    SampleAxis x = sample_axis(host, constants, coordinate.values[0], width, address_mode, 1);
+    SampleAxis y = sample_axis(host, constants, coordinate.values[1], height, address_mode, 2);
+    SampleAxis z = SampleAxis(0u64, 0u64, 0u64);
+    if (volume) {
+        z = sample_axis(host, constants, coordinate.values[2], depth, address_mode, 4);
+    }
+
+    SampleRegisters a = sample_texel(host, sample_values(x.first, y.first, z.first, 0u64), dimensions, level, format);
+    SampleRegisters b = sample_texel(host, sample_values(x.next, y.first, z.first, 0u64), dimensions, level, format);
+    SampleRegisters c = sample_texel(host, sample_values(x.first, y.next, z.first, 0u64), dimensions, level, format);
+    SampleRegisters d = sample_texel(host, sample_values(x.next, y.next, z.first, 0u64), dimensions, level, format);
+    if (volume) {
+        SampleRegisters e = sample_texel(host, sample_values(x.first, y.first, z.next, 0u64), dimensions, level, format);
+        SampleRegisters f = sample_texel(host, sample_values(x.next, y.first, z.next, 0u64), dimensions, level, format);
+        SampleRegisters g = sample_texel(host, sample_values(x.first, y.next, z.next, 0u64), dimensions, level, format);
+        SampleRegisters h = sample_texel(host, sample_values(x.next, y.next, z.next, 0u64), dimensions, level, format);
+        SampleRegisters ab = sample_blend(host, a, b, x.weight);
+        SampleRegisters cd = sample_blend(host, c, d, x.weight);
+        SampleRegisters ef = sample_blend(host, e, f, x.weight);
+        SampleRegisters gh = sample_blend(host, g, h, x.weight);
+        SampleRegisters lower = sample_blend(host, ab, cd, y.weight);
+        SampleRegisters upper = sample_blend(host, ef, gh, y.weight);
+        return sample_blend(host, lower, upper, z.weight);
+    }
+    SampleRegisters ab = sample_blend(host, a, b, x.weight);
+    SampleRegisters cd = sample_blend(host, c, d, x.weight);
+    return sample_blend(host, ab, cd, y.weight);
+}
+
+extern "C" void texture_sample_ir(address coordinate, u32 dimensions, u64 lod, address result, SampleHost host) on cpu
+    requires nonzero(host.instruction) requires nonzero(host.read_texture) requires nonzero(host.block) {
+    u64 x = color_result(coordinate, 0);
+    u64 y = color_result(coordinate, 1);
+    u64 z = dimensions == 3 ? color_result(coordinate, 2) : 0u64;
+    SampleRegisters point = sample_values(x, y, z, 0u64);
+
+    u64 zero = color_float(host, 0.0);
+    u64 one = color_word(host, 1);
+    u64 levels = color_op(host, SampleOp::Register, SampleScalar::Word, 0u64, 0u64);
+    u64 address_mode = color_op(host, SampleOp::Register, SampleScalar::Word, 0u64, 0u64);
+    u64 format = color_op(host, SampleOp::Register, SampleScalar::Word, 0u64, 0u64);
+    color_op(host, SampleOp::Format, SampleScalar::Word, format, 0u64);
+    color_op(host, SampleOp::AddressMode, SampleScalar::Word, address_mode, 0u64);
+    color_op(host, SampleOp::Levels, SampleScalar::Word, levels, 0u64);
+
+    u64 last = color_op(host, SampleOp::Subtract, SampleScalar::Word, levels, one);
+    u64 last_float = color_op(host, SampleOp::Cast, SampleScalar::Float, last, 0u64);
+    u64 positive = color_op(host, SampleOp::Maximum, SampleScalar::Float, lod, zero);
+    u64 clamped = color_op(host, SampleOp::Minimum, SampleScalar::Float, positive, last_float);
+    u64 first = color_op(host, SampleOp::Cast, SampleScalar::Word, clamped, 0u64);
+    u64 first_float = color_op(host, SampleOp::Cast, SampleScalar::Float, first, 0u64);
+    u64 fraction = color_op(host, SampleOp::Subtract, SampleScalar::Float, clamped, first_float);
+    u64 adjacent = color_op(host, SampleOp::Add, SampleScalar::Word, first, one);
+    u64 next = sample_min_index(host, SampleScalar::Word, adjacent, last);
+    SampleRegisters a = sample_level(host, point, dimensions, first, address_mode, format);
+    SampleRegisters b = sample_level(host, point, dimensions, next, address_mode, format);
+    for (channel in 0..4) {
+        u64 value = sample_lerp(host, a.values[channel], b.values[channel], fraction);
+        color_op(host, SampleOp::Into, SampleScalar::Float, color_result(result, channel), value);
     }
 }
 

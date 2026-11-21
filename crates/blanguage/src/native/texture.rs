@@ -34,339 +34,175 @@ unsafe extern "C" {
         count: usize, output: *mut u8) -> u64;
 }
 
+use std::ffi::c_void;
+
+#[allow(dead_code)]
 #[derive(Clone, Copy)]
 #[repr(u32)]
-enum TextureColor { Rgba8 = 1, Srgb, R8, Rg16, Rgb10A2, Rg11B10 }
+enum SampleScalar { Word, Float, Bool, Index }
 
 #[allow(dead_code)]
+#[derive(Clone, Copy)]
 #[repr(u32)]
-enum ColorScalar { Word, Float, Bool }
-
-#[allow(dead_code)]
-#[repr(u32)]
-enum ColorOp {
+enum SampleOp {
     Constant, Cast, Bitcast, Add, Divide, Multiply, LessEqual, Equal,
     ShiftRight, ShiftLeft, And, Or, Power, Select, Into, Set,
+    Subtract, Less, GreaterEqual, NotEqual, Minimum, Maximum,
+    Floor, Register, Format, AddressMode, Levels,
+}
+
+#[allow(dead_code)]
+#[derive(Clone, Copy)]
+#[repr(u32)]
+enum SampleBlock {
+    Output, FloatArm, FormatTest, ByteArm, PackedArm,
+    FormatArm, PreviousArm, FormatChoice, SrgbArm, Empty,
+}
+
+#[allow(dead_code)]
+#[repr(u32)]
+enum SampleBlockAction { Select, Append, Branch }
+
+#[allow(dead_code)]
+#[repr(u32)]
+enum SampleReadKind { Size, Float, Byte, Word }
+
+#[repr(C)]
+struct SampleRead {
+    kind: SampleReadKind,
+    dimensions: u32,
+    level: Reg,
+    coordinate: [Reg; 4],
+    result: [Reg; 4],
 }
 
 #[repr(C)]
-struct ColorHost {
-    context: *mut std::ffi::c_void,
-    instruction: unsafe extern "C" fn(*mut std::ffi::c_void, ColorOp, ColorScalar, Reg, Reg, Reg) -> Reg,
+struct SampleHost {
+    context: *mut c_void,
+    instruction: unsafe extern "C" fn(*mut c_void, SampleOp, SampleScalar, Reg, Reg, Reg) -> Reg,
+    read_texture: unsafe extern "C" fn(*mut c_void, SampleRead) -> Reg,
+    block: unsafe extern "C" fn(*mut c_void, SampleBlockAction, SampleBlock, SampleBlock, Reg),
 }
 
 unsafe extern "C" {
-    #[link_name = "bootstrap.x64_instruction::texture_color"]
-    fn lower_texture_color(format: TextureColor, raw: Reg, result: *const Reg, host: ColorHost);
-}
-
-unsafe extern "C" fn color_instruction(
-    context: *mut std::ffi::c_void, operation: ColorOp, scalar: ColorScalar, a: Reg, b: Reg, c: Reg,
-) -> Reg {
-    let lower = unsafe { &mut *context.cast::<Lower<'_>>() };
-    let scalar = match scalar {
-        ColorScalar::Word => Scalar::U32,
-        ColorScalar::Float => Scalar::F32,
-        ColorScalar::Bool => Scalar::Bool,
-    };
-    match operation {
-        ColorOp::Constant => lower.constant(scalar, a as u32),
-        ColorOp::Cast => lower.cast(scalar, a),
-        ColorOp::Power => lower.math(MathOp::Pow, a, b),
-        ColorOp::Select => lower.select(scalar, a, b, c),
-        ColorOp::Bitcast => {
-            let dst = lower.reg(scalar);
-            lower.code.push(Inst::generated(InstKind::Unary {
-                dst, op: UnaryOp::Bitcast, a,
-            }, lower.origin.clone()));
-            dst
-        }
-        ColorOp::Into => {
-            lower.code.push(Inst::generated(InstKind::Cast { dst: a, src: b }, lower.origin.clone()));
-            a
-        }
-        ColorOp::Set => {
-            lower.code.push(Inst::generated(InstKind::Constant(a, scalar, Bits::from(b as u32)), lower.origin.clone()));
-            a
-        }
-        ColorOp::Add => lower.binary(scalar, if scalar == Scalar::F32 { BinaryOp::FAdd } else { BinaryOp::IAdd }, a, b),
-        ColorOp::Divide => lower.binary(scalar, BinaryOp::FDiv, a, b),
-        ColorOp::Multiply => lower.binary(scalar, BinaryOp::FMul, a, b),
-        ColorOp::LessEqual => lower.binary(scalar, BinaryOp::Compare(Comparison::LessEqual), a, b),
-        ColorOp::Equal => lower.binary(scalar, BinaryOp::Compare(Comparison::Equal), a, b),
-        ColorOp::ShiftRight => lower.binary(scalar, BinaryOp::ShiftRightLogical, a, b),
-        ColorOp::ShiftLeft => lower.binary(scalar, BinaryOp::ShiftLeft, a, b),
-        ColorOp::And => lower.binary(scalar, BinaryOp::And, a, b),
-        ColorOp::Or => lower.binary(scalar, BinaryOp::Or, a, b),
-    }
+    #[link_name = "bootstrap.x64_instruction::texture_sample_ir"]
+    fn texture_sample_ir(coordinate: *const Reg, dimensions: u32, lod: Reg, result: *const Reg, host: SampleHost);
 }
 
 struct Lower<'a> {
     registers: &'a mut Vec<Scalar>,
     origin: std::sync::Arc<GeneratedOrigin>,
-    code: Vec<Inst>,
+    texture: TextureSource,
+    blocks: [Vec<Inst>; SampleBlock::Empty as usize + 1],
+    current: SampleBlock,
 }
+
 impl Lower<'_> {
-    fn reg(&mut self, s: Scalar) -> Reg {
-        let r = self.registers.len();
-        self.registers.push(s);
-        r
+    fn reg(&mut self, scalar: Scalar) -> Reg {
+        let reg = self.registers.len();
+        self.registers.push(scalar);
+        reg
     }
-    fn constant(&mut self, s: Scalar, bits: u32) -> Reg {
-        let r = self.reg(s);
-        self.code.push(Inst::generated(InstKind::Constant(r, s, Bits::from(bits)), self.origin.clone()));
-        r
+
+    fn emit(&mut self, kind: InstKind) {
+        self.blocks[self.current as usize].push(Inst::generated(kind, self.origin.clone()));
     }
-    fn binary(&mut self, s: Scalar, op: BinaryOp, a: Reg, b: Reg) -> Reg {
-        let dst = self.reg(s);
-        self.code.push(Inst::generated(InstKind::Binary { dst, op, a, b }, self.origin.clone()));
-        dst
-    }
-    fn cast(&mut self, s: Scalar, src: Reg) -> Reg {
-        let dst = self.reg(s);
-        self.code.push(Inst::generated(InstKind::Cast { dst, src }, self.origin.clone()));
-        dst
-    }
-    fn math(&mut self, op: MathOp, a: Reg, b: Reg) -> Reg {
-        let dst = self.reg(Scalar::F32);
-        self.code.push(Inst::generated(InstKind::Math {
-            dst,
-            op,
-            args: vec![a, b],
-        }, self.origin.clone()));
-        dst
-    }
-    fn min_u(&mut self, a: Reg, b: Reg) -> Reg {
-        let condition = self.binary(Scalar::Bool, BinaryOp::Compare(Comparison::Less), a, b);
-        let dst = self.reg(self.registers[a]);
-        self.code.push(Inst::generated(InstKind::Select {
-            dst,
-            condition,
-            a,
-            b,
-        }, self.origin.clone()));
-        dst
-    }
-    fn lerp(&mut self, a: Reg, b: Reg, t: Reg) -> Reg {
-        let difference = self.binary(Scalar::F32, BinaryOp::FSub, b, a);
-        let scaled = self.binary(Scalar::F32, BinaryOp::FMul, difference, t);
-        self.binary(Scalar::F32, BinaryOp::FAdd, a, scaled)
-    }
-    fn select(&mut self, s: Scalar, condition: Reg, a: Reg, b: Reg) -> Reg {
-        let dst = self.reg(s);
-        self.code.push(Inst::generated(InstKind::Select {
-            dst,
-            condition,
-            a,
-            b,
-        }, self.origin.clone()));
-        dst
-    }
-    fn color(&mut self, format: TextureColor, raw: Reg, result: &[Reg; 4]) {
-        let host = ColorHost { context: std::ptr::from_mut(self).cast(), instruction: color_instruction };
-        unsafe { lower_texture_color(format, raw, result.as_ptr(), host); }
-    }
-    fn texel(
-        &mut self,
-        texture: TextureSource,
-        coordinate: &[Reg],
-        level: Reg,
-        format: Reg,
-    ) -> [Reg; 4] {
-        let result = std::array::from_fn(|_| self.reg(Scalar::F32));
-        let zero_format = self.constant(Scalar::U32, 0);
-        let floating = self.binary(
-            Scalar::Bool,
-            BinaryOp::Compare(Comparison::Equal),
-            format,
-            zero_format,
-        );
-        let outer = std::mem::take(&mut self.code);
-        self.code.push(Inst::generated(InstKind::TextureFetch {
-            result,
-            texture,
-            coordinate: coordinate.to_vec(),
-            level,
-        }, self.origin.clone()));
-        let floats = std::mem::take(&mut self.code);
-        let byte_format = self.constant(Scalar::U32, 3);
-        let single = self.binary(
-            Scalar::Bool,
-            BinaryOp::Compare(Comparison::Equal),
-            format,
-            byte_format,
-        );
-        let packed_outer = std::mem::take(&mut self.code);
-        let raw = self.reg(Scalar::U32);
-        self.code.push(Inst::generated(InstKind::TextureRead {
-            dst: raw,
-            texture,
-            coordinate: coordinate.to_vec(),
-            level,
-            byte: true,
-        }, self.origin.clone()));
-        self.color(TextureColor::R8, raw, &result);
-        let singles = std::mem::take(&mut self.code);
-        let raw = self.reg(Scalar::U32);
-        self.code.push(Inst::generated(InstKind::TextureRead {
-            dst: raw,
-            texture,
-            coordinate: coordinate.to_vec(),
-            level,
-            byte: false,
-        }, self.origin.clone()));
-        let unpack_outer = std::mem::take(&mut self.code);
-        let mut rgba = Vec::new();
-        for color in [TextureColor::Rgba8, TextureColor::Rg16, TextureColor::Rgb10A2, TextureColor::Rg11B10] {
-            self.color(color, raw, &result);
-            let tag = color as u32;
-            let unpacked = std::mem::take(&mut self.code);
-            if tag == 1 { rgba = unpacked; } else {
-                let packed_format = self.constant(Scalar::U32, tag);
-                let packed = self.binary(Scalar::Bool, BinaryOp::Compare(Comparison::Equal), format, packed_format);
-                self.code.push(Inst::generated(InstKind::If { condition: packed, yes: unpacked, no: rgba }, self.origin.clone()));
-                rgba = std::mem::take(&mut self.code);
-            }
+}
+
+unsafe extern "C" fn sample_instruction(
+    context: *mut c_void, operation: SampleOp, scalar: SampleScalar, a: Reg, b: Reg, c: Reg,
+) -> Reg {
+    let lower = unsafe { &mut *context.cast::<Lower<'_>>() };
+    let scalar = match scalar {
+        SampleScalar::Word => Scalar::U32,
+        SampleScalar::Float => Scalar::F32,
+        SampleScalar::Bool => Scalar::Bool,
+        SampleScalar::Index => Scalar::I64,
+    };
+    let dst = match operation {
+        SampleOp::Into | SampleOp::Set | SampleOp::Format | SampleOp::AddressMode | SampleOp::Levels => a,
+        _ => lower.reg(scalar),
+    };
+    let binary = |op| InstKind::Binary { dst, op, a, b };
+    let compare = |op| binary(BinaryOp::Compare(op));
+    let math = |op| InstKind::Math { dst, op, args: vec![a, b] };
+    let texture = lower.texture;
+    let kind = match operation {
+        SampleOp::Register => return dst,
+        SampleOp::Constant => InstKind::Constant(dst, scalar, a as u64),
+        SampleOp::Set => InstKind::Constant(dst, scalar, b as u64),
+        SampleOp::Cast => InstKind::Cast { dst, src: a },
+        SampleOp::Into => InstKind::Cast { dst, src: b },
+        SampleOp::Bitcast => InstKind::Unary { dst, op: UnaryOp::Bitcast, a },
+        SampleOp::Select => InstKind::Select { dst, condition: a, a: b, b: c },
+        SampleOp::Add => binary(if scalar == Scalar::F32 { BinaryOp::FAdd } else { BinaryOp::IAdd }),
+        SampleOp::Subtract => binary(if scalar == Scalar::F32 { BinaryOp::FSub } else { BinaryOp::ISub }),
+        SampleOp::Divide => binary(BinaryOp::FDiv),
+        SampleOp::Multiply => binary(BinaryOp::FMul),
+        SampleOp::LessEqual => compare(Comparison::LessEqual),
+        SampleOp::Equal => compare(Comparison::Equal),
+        SampleOp::Less => compare(Comparison::Less),
+        SampleOp::GreaterEqual => compare(Comparison::GreaterEqual),
+        SampleOp::NotEqual => compare(Comparison::NotEqual),
+        SampleOp::ShiftRight => binary(BinaryOp::ShiftRightLogical),
+        SampleOp::ShiftLeft => binary(BinaryOp::ShiftLeft),
+        SampleOp::And => binary(BinaryOp::And),
+        SampleOp::Or => binary(BinaryOp::Or),
+        SampleOp::Power => math(MathOp::Pow),
+        SampleOp::Minimum => math(MathOp::Min),
+        SampleOp::Maximum => math(MathOp::Max),
+        SampleOp::Floor => math(MathOp::Floor),
+        SampleOp::Format => InstKind::TextureFormat { dst, texture },
+        SampleOp::AddressMode => InstKind::TextureAddress { dst, texture },
+        SampleOp::Levels => InstKind::TextureLevels { dst, texture },
+    };
+    lower.emit(kind);
+    dst
+}
+
+unsafe extern "C" fn sample_read(context: *mut c_void, read: SampleRead) -> Reg {
+    let lower = unsafe { &mut *context.cast::<Lower<'_>>() };
+    let count = read.dimensions as usize;
+    let coordinate = || read.coordinate[..count].to_vec();
+    let texture = lower.texture;
+    let level = read.level;
+    match read.kind {
+        SampleReadKind::Size => {
+            lower.emit(InstKind::TextureSize { result: read.result[..count].to_vec(), texture, level });
         }
-        self.code = unpack_outer;
-        self.code.extend(rgba);
-        let srgb_format = self.constant(Scalar::U32, 2);
-        let encoded = self.binary(
-            Scalar::Bool,
-            BinaryOp::Compare(Comparison::Equal),
-            format,
-            srgb_format,
-        );
-        let rgba = std::mem::take(&mut self.code);
-        self.color(TextureColor::Srgb, 0, &result);
-        let decode = std::mem::replace(&mut self.code, rgba);
-        self.code.push(Inst::generated(InstKind::If {
-            condition: encoded,
-            yes: decode,
-            no: Vec::new(),
-        }, self.origin.clone()));
-        let rgba = std::mem::replace(&mut self.code, packed_outer);
-        self.code.push(Inst::generated(InstKind::If {
-            condition: single,
-            yes: singles,
-            no: rgba,
-        }, self.origin.clone()));
-        let packed = std::mem::replace(&mut self.code, outer);
-        self.code.push(Inst::generated(InstKind::If {
-            condition: floating,
-            yes: floats,
-            no: packed,
-        }, self.origin.clone()));
-        result
+        SampleReadKind::Float => {
+            lower.emit(InstKind::TextureFetch { result: read.result, texture, coordinate: coordinate(), level });
+        }
+        SampleReadKind::Byte | SampleReadKind::Word => {
+            let dst = lower.reg(Scalar::U32);
+            lower.emit(InstKind::TextureRead {
+                dst, texture, coordinate: coordinate(), level,
+                byte: matches!(read.kind, SampleReadKind::Byte),
+            });
+            return dst;
+        }
     }
-    fn level_sample(
-        &mut self,
-        texture: TextureSource,
-        coordinate: &[Reg],
-        level: Reg,
-        address: Reg,
-        format: Reg,
-    ) -> [Reg; 4] {
-        let dimensions: Vec<_> = coordinate.iter().map(|_| self.reg(Scalar::U32)).collect();
-        self.code.push(Inst::generated(InstKind::TextureSize {
-            result: dimensions.clone(), texture, level,
-        }, self.origin.clone()));
-        let one = self.constant(Scalar::I64, 1);
-        let zero_i = self.constant(Scalar::I64, 0);
-        let zero_u = self.constant(Scalar::U32, 0);
-        let zero = self.constant(Scalar::F32, 0);
-        let half = self.constant(Scalar::F32, 0.5f32.to_bits());
-        let mut first = Vec::new();
-        let mut next = Vec::new();
-        let mut fraction = Vec::new();
-        for axis in 0..coordinate.len() {
-            // u32资源尺寸在64位地址域中运算；f32舍入不能制造越界texel。
-            let size = self.cast(Scalar::I64, dimensions[axis]);
-            let last = self.binary(Scalar::I64, BinaryOp::ISub, size, one);
-            let size_float = self.cast(Scalar::F32, dimensions[axis]);
-            let scaled = self.binary(Scalar::F32, BinaryOp::FMul, coordinate[axis], size_float);
-            let centered = self.binary(Scalar::F32, BinaryOp::FSub, scaled, half);
-            let positive = self.math(MathOp::Max, centered, zero);
-            let at = self.math(MathOp::Min, positive, size_float);
-            let raw = self.cast(Scalar::I64, at);
-            let clamped = self.min_u(raw, last);
-            let base = self.cast(Scalar::F32, raw);
-            let weight_clamped = self.binary(Scalar::F32, BinaryOp::FSub, at, base);
-            let adjacent = self.binary(Scalar::I64, BinaryOp::IAdd, raw, one);
-            let clamped_next = self.min_u(adjacent, last);
-            // 归一坐标先周期化，各真实tap分别寻址，跨边界共同参与过滤。
-            let floor = self.math(MathOp::Floor, coordinate[axis], coordinate[axis]);
-            let unit = self.binary(Scalar::F32, BinaryOp::FSub, coordinate[axis], floor);
-            let scaled = self.binary(Scalar::F32, BinaryOp::FMul, unit, size_float);
-            let centered = self.binary(Scalar::F32, BinaryOp::FSub, scaled, half);
-            let base = self.math(MathOp::Floor, centered, centered);
-            let index = self.cast(Scalar::I64, base);
-            let negative = self.binary(Scalar::Bool, BinaryOp::Compare(Comparison::Less), index, zero_i);
-            let at_limit = self.binary(Scalar::Bool, BinaryOp::Compare(Comparison::GreaterEqual), index, size);
-            let reduced = self.binary(Scalar::I64, BinaryOp::ISub, index, size);
-            let wrapped = self.select(Scalar::I64, at_limit, reduced, index);
-            let wrapped = self.select(Scalar::I64, negative, last, wrapped);
-            let next_index = self.binary(Scalar::I64, BinaryOp::IAdd, wrapped, one);
-            let at_end = self.binary(Scalar::Bool, BinaryOp::Compare(Comparison::Equal), wrapped, last);
-            let wrapped_next = self.select(Scalar::I64, at_end, zero_i, next_index);
-            let weight = self.binary(Scalar::F32, BinaryOp::FSub, centered, base);
-            let bit = self.constant(Scalar::U32, 1 << axis);
-            let flag = self.binary(Scalar::U32, BinaryOp::And, address, bit);
-            let repeat = self.binary(Scalar::Bool, BinaryOp::Compare(Comparison::NotEqual), flag, zero_u);
-            first.push(self.select(Scalar::I64, repeat, wrapped, clamped));
-            next.push(self.select(Scalar::I64, repeat, wrapped_next, clamped_next));
-            fraction.push(self.select(Scalar::F32, repeat, weight, weight_clamped));
+    0
+}
+
+unsafe extern "C" fn sample_block(
+    context: *mut c_void, action: SampleBlockAction, first: SampleBlock, second: SampleBlock, condition: Reg,
+) {
+    let lower = unsafe { &mut *context.cast::<Lower<'_>>() };
+    match action {
+        SampleBlockAction::Select => lower.current = first,
+        SampleBlockAction::Append => {
+            let source = std::mem::take(&mut lower.blocks[first as usize]);
+            lower.blocks[lower.current as usize].extend(source);
         }
-        let mut taps = Vec::new();
-        for mask in 0..1 << coordinate.len() {
-            let at: Vec<_> = (0..coordinate.len()).map(|axis|
-                if mask & (1 << axis) == 0 { first[axis] } else { next[axis] }).collect();
-            taps.push(self.texel(texture, &at, level, format));
-        }
-        for weight in fraction {
-            taps = taps.chunks_exact(2).map(|pair|
-                std::array::from_fn(|i| self.lerp(pair[0][i], pair[1][i], weight))).collect();
-        }
-        taps[0]
-    }
-    fn sample(&mut self, result: [Reg; 4], texture: TextureSource, coordinate: &[Reg], lod: Reg) {
-        let zero = self.constant(Scalar::F32, 0);
-        let one = self.constant(Scalar::U32, 1);
-        let levels = self.reg(Scalar::U32);
-        let address = self.reg(Scalar::U32);
-        let format = self.reg(Scalar::U32);
-        self.code.push(Inst::generated(InstKind::TextureFormat {
-            dst: format,
-            texture,
-        }, self.origin.clone()));
-        self.code.push(Inst::generated(InstKind::TextureAddress {
-            dst: address,
-            texture,
-        }, self.origin.clone()));
-        self.code.push(Inst::generated(InstKind::TextureLevels {
-            dst: levels,
-            texture,
-        }, self.origin.clone()));
-        let last = self.binary(Scalar::U32, BinaryOp::ISub, levels, one);
-        let last_float = self.cast(Scalar::F32, last);
-        let positive = self.math(MathOp::Max, lod, zero);
-        let clamped = self.math(MathOp::Min, positive, last_float);
-        let first = self.cast(Scalar::U32, clamped);
-        let first_float = self.cast(Scalar::F32, first);
-        let fraction = self.binary(Scalar::F32, BinaryOp::FSub, clamped, first_float);
-        let adjacent = self.binary(Scalar::U32, BinaryOp::IAdd, first, one);
-        let next = self.min_u(adjacent, last);
-        let a = self.level_sample(texture, coordinate, first, address, format);
-        let b = self.level_sample(texture, coordinate, next, address, format);
-        for i in 0..4 {
-            let value = self.lerp(a[i], b[i], fraction);
-            self.code.push(Inst::generated(InstKind::Cast {
-                dst: result[i],
-                src: value,
-            }, self.origin.clone()));
+        SampleBlockAction::Branch => {
+            let yes = std::mem::take(&mut lower.blocks[first as usize]);
+            let no = std::mem::take(&mut lower.blocks[second as usize]);
+            lower.emit(InstKind::If { condition, yes, no });
         }
     }
 }
+
 fn block(code: Vec<Inst>, registers: &mut Vec<Scalar>) -> Vec<Inst> {
     let mut out = Vec::new();
     for inst in code {
@@ -378,9 +214,20 @@ fn block(code: Vec<Inst>, registers: &mut Vec<Scalar>) -> Vec<Inst> {
                         source_site: inst.source_site, generated_origin: inst.generated_origin,
                     } }),
                 });
-                let mut lower = Lower { registers, code: Vec::new(), origin };
-                lower.sample(result, texture, &coordinate, lod);
-                out.extend(lower.code);
+                let mut lower = Lower {
+                    registers, origin, texture,
+                    blocks: std::array::from_fn(|_| Vec::new()),
+                    current: SampleBlock::Output,
+                };
+                let host = SampleHost {
+                    context: std::ptr::from_mut(&mut lower).cast(), instruction: sample_instruction,
+                    read_texture: sample_read, block: sample_block,
+                };
+                unsafe {
+                    texture_sample_ir(coordinate.as_ptr(), coordinate.len() as u32, lod, result.as_ptr(), host);
+                }
+                let [code, ..] = lower.blocks;
+                out.extend(code);
             }
             InstKind::Scope(body) => {
                 out.push(Inst { kind: InstKind::Scope(block(body, registers)), ..inst });
