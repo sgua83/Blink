@@ -471,6 +471,19 @@ impl PartialEq for Proof {
     }
 }
 impl Eq for Proof {}
+fn element_known_bits(scalar: Scalar, ranges: &[(Bits, Bits)], domains: Option<&Domains>) -> (Bits, Bits) {
+    scalar.is_integer().then(|| {
+        known_bits::from_proof(scalar, ranges, domains.map(Domains::iter).unwrap_or_default())
+    }).flatten().map_or((0, 0), |bits| (bits.mask, bits.value))
+}
+
+fn element_range_fact(
+    binding: usize, offset: u32, scalar: Scalar, intervals: Vec<(Bits, Bits)>, known_bits: (Bits, Bits),
+) -> Option<ElementRange> {
+    (intervals != [(0, scalar.bit_mask())] || known_bits.0 != 0)
+        .then_some(ElementRange { binding, offset, scalar, intervals, known_bits })
+}
+
 impl Proof {
     // 阶段完成只交接共同数值和逻辑数据目标；值身份、路径及借用不跨阶段。
     pub(super) fn element_facts(&self, target: impl Fn(usize) -> Self) -> Self {
@@ -525,15 +538,13 @@ impl Proof {
     }
 
     fn element_known_bits(&self, component: usize, scalar: Scalar) -> (Bits, Bits) {
-        scalar.is_integer().then(|| self.known_bits(component, scalar)).flatten()
-            .map_or((0, 0), |bits| (bits.mask, bits.value))
+        element_known_bits(scalar, self.interval_source(component), self.domains.get(component))
     }
 
     fn element_range_fact(&self, binding: usize, component: usize, scalar: Scalar, offset: u32) -> Option<ElementRange> {
         let intervals = self.element_range(component, scalar).0;
         let known_bits = self.element_known_bits(component, scalar);
-        (intervals != [(0, scalar.bit_mask())] || known_bits.0 != 0)
-            .then_some(ElementRange { binding, offset, scalar, intervals, known_bits })
+        element_range_fact(binding, offset, scalar, intervals, known_bits)
     }
 
     pub(super) fn element_ranges(&self, binding: usize, ty: &Ty) -> Vec<ElementRange> {
@@ -1847,6 +1858,13 @@ impl Value {
     }
     fn component_range(&self, component: usize) -> (Bits, Bits) {
         self.component_ranges(component).hull()
+    }
+    pub(super) fn element_range_fact(
+        &self, binding: usize, component: usize, offset: u32, intervals: Vec<(Bits, Bits)>,
+    ) -> Option<ElementRange> {
+        let scalar = self.ty.components[component].0;
+        let known_bits = element_known_bits(scalar, &intervals, self.proof.domains.get(component));
+        element_range_fact(binding, offset, scalar, intervals, known_bits)
     }
     pub(super) fn component_range_intervals(&self, component: usize) -> Vec<(Bits, Bits)> {
         let scalar = self.ty.components[component].0;
@@ -3372,20 +3390,34 @@ impl Builder<'_> {
                 .min().unwrap_or(u32::MAX));
         Proof::unsigned(0, count.saturating_sub(1))
     }
-    pub(super) fn index_known(&self, value: &Value, domain: IndexDomain, limit: u32, lengths: &[(&Proof, usize)]) -> bool {
-        value.proof.domains(0).iter().any(|source| {
+    pub(super) fn index_known<'a>(
+        &self, value: &Value, component: usize, domain: IndexDomain, limit: u32,
+        upper: impl FnOnce() -> Option<Bits>,
+        lengths: impl Iterator<Item = (Cow<'a, [ValueIdentity]>, Cow<'a, Domains>)>,
+    ) -> bool {
+        let domains = value.proof.domains(component);
+        domains.iter().any(|source| {
             *source == domain || matches!((domain, source),
                 (IndexDomain::Data(target), IndexDomain::Data(other)) if self.program.same_length(target, *other))
         })
-            || value.component_ranges(0).0.iter().all(|&(_, upper)| upper < Bits::from(limit))
-            || lengths.iter().any(|(proof, component)| Proof::below_length((&value.component_origins(0), &value.proof.domains(0)), (proof.origins.get(*component).map(Vec::as_slice).unwrap_or_default(), &proof.domains(*component)), true))
+            || upper().is_none_or(|upper| upper < Bits::from(limit))
+            || {
+                let origins = value.component_origins(component);
+                lengths.into_iter().any(|(length_origins, length_domains)| {
+                    Proof::below_length((&origins, &domains), (&length_origins, &length_domains), true)
+                })
+            }
     }
     pub(super) fn index_in(&self, value: &Value, domain: IndexDomain, minimum: u32, selected_length: Option<&Proof>) -> bool {
         let mut lengths = self.resource_length_proofs(domain);
         lengths.extend(selected_length.map(|proof| (proof, 0)));
         let minimum = if let IndexDomain::Fixed(count) = domain { count } else { minimum };
         let limit = lengths.iter().map(|(proof, component)| proof.unsigned_minimum(*component)).fold(minimum, u32::max);
-        if self.index_known(value, domain, limit, &lengths) { return true; }
+        if self.index_known(value, 0, domain, limit, || value.component_ranges(0).0.last().map(|range| range.1),
+            lengths.iter().map(|&(proof, component)| (
+                Cow::Borrowed(proof.origins.get(component).map(Vec::as_slice).unwrap_or_default()),
+                proof.domains(component),
+            ))) { return true; }
         // 非固定范围消费同一条原路径；运算仍只求值一次，不新增运行时检查。
         let mut value = value.clone();
         value.proof = Proof::capture(&value);

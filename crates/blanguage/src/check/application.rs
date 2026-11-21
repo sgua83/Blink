@@ -3490,22 +3490,44 @@ impl Builder<'_> {
         let mut element_inputs = Vec::new();
         for (binding, (access, source)) in captured.iter().enumerate() {
             if !access.reads() || *access == Access::Atomic { continue; }
-            let elements=unsafe { self.world.call(self.element_model(&source.ty,&source.elements,(&source.residency,&[]),statement.span())).await }?;
-            let model = self.returned_storage(&elements);
+            let materialized;
+            let elements = match source.elements.known() {
+                Some(model) => model,
+                None => {
+                    materialized = unsafe { self.world.call(self.element_model(
+                        &source.ty, &source.elements, (&source.residency, &[]), statement.span(),
+                    )).await }?;
+                    &materialized
+                }
+            };
+            let storage;
+            let model = match elements.view_value() {
+                Some(value) => value,
+                None => {
+                    storage = self.returned_storage(elements);
+                    &storage
+                }
+            };
             let (offset, ty) = source.element_layout();
-            let components = ty.components.iter().map(|(scalar, word)|
-                source.data.ty.components.iter().position(|item| item == &(*scalar, offset + word)).unwrap()).collect::<Vec<_>>();
-            let common = model.projected_proof(&components);
-            element_inputs.extend(common.element_ranges(binding, ty).into_iter().map(ElementFact::Range));
-            for (component, (scalar, word)) in ty.components.iter().enumerate() {
-                if *scalar != Scalar::U32 { continue; }
-                let value = self.value_component(&model, components[component]);
-                for (target, (_, data)) in captured.iter().enumerate() {
-                    let length = bounds::Proof::capture(&data.length);
-                    if self.index_known(&value, IndexDomain::ApplicationData(data.root.identity()),
-                        data.length.minimum(), &[(&length, 0)]) {
-                        element_inputs.push(ElementFact::Index { binding, offset: *word, target });
+            for &(scalar, word) in &ty.components {
+                if scalar == Scalar::Bool { continue; }
+                let component = source.data.ty.components.iter()
+                    .position(|item| *item == (scalar, offset + word)).unwrap();
+                let intervals = model.component_ranges(component).0;
+                if scalar == Scalar::U32 {
+                    for (target, (_, data)) in captured.iter().enumerate() {
+                        let length = std::iter::once_with(|| (
+                            Cow::Owned(data.length.component_origins(0)),
+                            data.length.proof.domains(0),
+                        ));
+                        if self.index_known(&model, component, IndexDomain::ApplicationData(data.root.identity()),
+                            data.length.minimum(), || intervals.last().map(|range| range.1), length) {
+                            element_inputs.push(ElementFact::Index { binding, offset: word, target });
+                        }
                     }
+                }
+                if let Some(range) = model.element_range_fact(binding, component, word, intervals) {
+                    element_inputs.push(ElementFact::Range(range));
                 }
             }
         }
