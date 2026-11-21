@@ -53,6 +53,7 @@ enum AbiMemoryMode:u32 {
     FallibleResult=4;
     PackIntegerResult=5;
     UnpackIntegerResult=6;
+    RangeSummary=7;
 };
 
 struct AbiValueComponent {
@@ -62,8 +63,10 @@ struct AbiValueComponent {
     u32 offset;
 };
 
-// The existing allocation and value list are read synchronously. Output has
-// sixteen bytes for the pointer sequence plus forty-eight per component.
+// Components borrow their locations from the original allocation. For a
+// range summary the slot is the actual saved stack size; the output pointer
+// is the fifth Win64 parameter. Reserve sixteen bytes plus twenty-four per
+// component, or forty-eight per component for packed integer results.
 extern "C" u64 abi_value(u32 slot, u64 count, AbiMemoryMode mode, address context,
     cfn<AbiValueComponent,address,u64> component, address output) on cpu requires nonzero(component);
 // The caller owns sixteen bytes for computing and writing a frame address.

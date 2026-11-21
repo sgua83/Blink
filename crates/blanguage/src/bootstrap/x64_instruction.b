@@ -3206,14 +3206,17 @@ extern "C" u64 abi_value(u32 slot, u64 count, AbiMemoryMode mode, address contex
     u64 cursor = start;
     u8 base = u8(4);
     u32 offset = slot;
+    bool range = mode == AbiMemoryMode::RangeSummary;
     if (mode != AbiMemoryMode::StackLoad && mode != AbiMemoryMode::StackStore) {
-        MoveLocation pointer = MoveLocation(u64(slot), MOVE_MEMORY, u8(4), NO_INDEX, u8(0));
-        cursor = load_bits(cursor, u8(1), pointer, true);
-        base = u8(1);
+        // The return address and four shadow slots precede the range's output pointer.
+        u32 pointer_slot = slot + (range ? 40 : 0);
+        base = range ? u8(15) : u8(1);
+        MoveLocation pointer = MoveLocation(u64(pointer_slot), MOVE_MEMORY, u8(4), NO_INDEX, u8(0));
+        cursor = load_bits(cursor, base, pointer, true);
         offset = 0;
     }
     bool writing = mode == AbiMemoryMode::StackStore || mode == AbiMemoryMode::IndirectResult
-        || mode == AbiMemoryMode::FallibleResult;
+        || mode == AbiMemoryMode::FallibleResult || range;
     u64 index = 0u64;
     while (index < count) {
         AbiValueComponent value = component(context, index);

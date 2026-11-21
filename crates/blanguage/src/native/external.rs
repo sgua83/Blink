@@ -58,6 +58,7 @@ pub(super) enum AbiMemoryMode {
     FallibleResult,
     PackIntegerResult,
     UnpackIntegerResult,
+    RangeSummary,
 }
 
 #[repr(C)]
@@ -87,10 +88,49 @@ unsafe extern "C" fn abi_component(context: *const c_void, index: u64) -> AbiVal
     }
 }
 
+struct RangeSummary<'a> {
+    allocation: &'a Allocation,
+    first_slot: usize,
+    fields: &'a [(Scalar, u32)],
+    payload_words: usize,
+}
+
+unsafe extern "C" fn summary_component(context: *const c_void, index: u64) -> AbiValueComponent {
+    let input = unsafe { &*context.cast::<RangeSummary<'_>>() };
+    let index = index as usize;
+    let (scalar, offset) = match input.fields.get(index) {
+        Some(&field) => field,
+        None => (Scalar::U32, (input.payload_words + index - input.fields.len()) as u32 * 4),
+    };
+    let location = input.allocation.location(PrivateSlot::Local(input.first_slot + index));
+    AbiValueComponent {
+        location: location.into(), scalar: scalar.into(), field_scalar: scalar.into(), offset,
+    }
+}
+
+type AbiComponent = unsafe extern "C" fn(*const c_void, u64) -> AbiValueComponent;
+
+fn append_abi_value(
+    code: &mut Vec<u8>, slot: u32, count: usize, mode: AbiMemoryMode,
+    context: *const c_void, component: AbiComponent,
+) {
+    let per_component = match mode {
+        AbiMemoryMode::PackIntegerResult | AbiMemoryMode::UnpackIntegerResult => 48,
+        _ => 24,
+    };
+    code.reserve(16 + per_component * count);
+    let start = code.len();
+    unsafe {
+        let length = encode_abi_value(slot, count as u64, mode, context, component,
+            code.as_mut_ptr().add(start));
+        code.set_len(start + length as usize);
+    }
+}
+
 unsafe extern "C" {
     #[link_name = "bootstrap.x64_instruction::abi_value"]
     fn encode_abi_value(slot: u32, count: u64, mode: AbiMemoryMode, context: *const c_void,
-        component: unsafe extern "C" fn(*const c_void, u64) -> AbiValueComponent, output: *mut u8) -> u64;
+        component: AbiComponent, output: *mut u8) -> u64;
     #[link_name = "bootstrap.x64_instruction::abi_stack_pointer"]
     fn encode_abi_stack_pointer(offset: u32, slot: u32, output: *mut u8) -> u64;
     #[link_name = "bootstrap.x64_instruction::argument_register"]
@@ -211,24 +251,26 @@ impl Emitter<'_> {
         &mut self, slot: u32, ty: &Ty, values: &[Reg], mode: AbiMemoryMode,
     ) {
         let count = ty.components.len().min(values.len());
-        let per_component = match mode {
-            AbiMemoryMode::PackIntegerResult | AbiMemoryMode::UnpackIntegerResult => 48,
-            _ => 24,
-        };
-        self.code.reserve(16 + per_component * count);
-        let start = self.code.len();
         let input = AbiValue {
             allocation: &self.allocation,
             registers: &self.stage.registers,
             components: &ty.components,
             values,
         };
-        let context = (&input as *const AbiValue<'_>).cast();
-        unsafe {
-            let output = self.code.as_mut_ptr().add(start);
-            let length = encode_abi_value(slot, count as u64, mode, context, abi_component, output);
-            self.code.set_len(start + length as usize);
-        }
+        append_abi_value(&mut self.code, slot, count, mode, std::ptr::from_ref(&input).cast(),
+            abi_component);
+    }
+
+    pub(super) fn write_range_summary(
+        &mut self, stack_bytes: u32, first_slot: usize, ty: &Ty, payload_words: usize,
+        summary_words: usize,
+    ) {
+        let input = RangeSummary {
+            allocation: &self.allocation, first_slot, fields: &ty.components, payload_words,
+        };
+        let count = ty.components.len() + (summary_words - payload_words);
+        append_abi_value(&mut self.code, stack_bytes, count, AbiMemoryMode::RangeSummary,
+            std::ptr::from_ref(&input).cast(), summary_component);
     }
 
     fn abi_stack_pointer(&mut self, offset: u32, slot: u32) {

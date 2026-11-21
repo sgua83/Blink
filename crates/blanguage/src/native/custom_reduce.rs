@@ -363,17 +363,8 @@ pub(super) fn emit(
         e.close_breaks();
     }
     e.block(&stage.code[loop_end..])?;
-    // 第五个Win64参数位于返回地址和四个home槽之后。
     if plan.publish != 0 {
-        e.copy_scalar(allocation::Location::Gpr(15), allocation::Location::Stack(stack_bytes + 40), Scalar::U64);
-        for (field, (scalar, offset)) in r.ty.components.iter().enumerate() {
-            let value = e.allocation.location(PrivateSlot::Local(carry + field));
-            e.write_value_address(value, Memory::new(15, *offset), scalar.size());
-        }
-        for i in k..plan.summary {
-            let value = e.allocation.location(PrivateSlot::Local(carry + fields + i - k));
-            e.write_memory(value, 15, i as u32 * 4);
-        }
+        e.write_range_summary(stack_bytes, carry, &r.ty, k, plan.summary);
     }
     e.leave(frame);
     Ok(e.finish(stack_bytes))
