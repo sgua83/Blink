@@ -1,6 +1,6 @@
 //! Rust 执行框架的静态目标库使用既有 Windows 本机链接工具；不执行源码编译。
 use super::Result;
-use crate::{file_bytes::{self, FileBytes, host_path}, object::{Archive, encode_native}, source_path::join};
+use crate::{file_bytes::{self, FileBytes, host_path}, object::{Archive, encode_native, encode_native_with_imports}, source_path::join};
 use std::{
     ffi::{OsStr, OsString},
     fs::File,
@@ -345,16 +345,13 @@ pub(super) fn link(
             let path = join(directory, format!(".blink-link-{id}-{index}.lib"));
             write_input(&mut temporary, path, &archive.bytes)?;
         }
+        let mut imports = Vec::new();
         for (index, object) in objects.iter().enumerate() {
             let path = join(directory, format!(".blink-link-{id}-code-{index}.obj"));
-            write_input(&mut temporary, path, &encode_native(&object.name, &object.sections, &object.definitions)?)?;
+            let code = encode_native_with_imports(&object.name, &object.sections, &object.definitions, &mut imports)?;
+            write_input(&mut temporary, path, &code)?;
         }
-        // Same import-slot owner as the explicit native-host archive product.
-        let imports = objects.iter().flat_map(|object| &object.sections)
-            .flat_map(|section| &section.relocations)
-            .filter_map(|relocation| match &relocation.target {
-                crate::object::Target::Import(import) => Some(import), _ => None,
-            });
+        // The host archive and the MSVC inputs share one import-slot producer.
         let mut members = Vec::new();
         let mut symbols = Vec::new();
         super::imports::append_members(imports, &mut members, &mut symbols)?;

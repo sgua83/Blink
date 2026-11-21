@@ -46,6 +46,33 @@ struct BindingBytes { bytes: *const u8, length: usize }
 impl BindingBytes {
     fn new(bytes: &[u8]) -> Self { Self { bytes: bytes.as_ptr(), length: bytes.len() } }
 }
+// The key borrows the typed names in the selected relocation owner.
+#[repr(C)]
+pub(crate) struct ImportKey<'a> {
+    dll: BindingBytes,
+    symbol: BindingBytes,
+    source: std::marker::PhantomData<&'a str>,
+}
+
+impl<'a> From<&'a Import> for ImportKey<'a> {
+    fn from(import: &'a Import) -> Self {
+        Self {
+            dll: BindingBytes::new(import.dll.as_bytes()),
+            symbol: BindingBytes::new(import.name.as_bytes()),
+            source: std::marker::PhantomData,
+        }
+    }
+}
+
+impl<'a> ImportKey<'a> {
+    fn text(bytes: BindingBytes) -> &'a str {
+        unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(bytes.bytes, bytes.length)) }
+    }
+
+    pub(crate) fn dll(&self) -> &'a str { Self::text(self.dll) }
+    pub(crate) fn symbol(&self) -> &'a str { Self::text(self.symbol) }
+}
+
 #[repr(C)]
 struct BindingSection {
     name: BindingBytes, flags: u64, relocations: *const BindingRelocation, relocation_count: usize,
@@ -61,9 +88,17 @@ struct BindingInput {
     name: BindingBytes, sections: *mut BindingSection, section_count: usize,
     definitions: *const BindingDefinition, definition_count: usize,
 }
+type EmitImport<'a> = unsafe extern "C" fn(*mut c_void, ImportKey<'a>);
+
 #[repr(C)]
 #[derive(Clone, Copy)]
-struct BindingWork { symbols: *mut CoffSymbolView, nodes: *mut [u64; 9], relocations: *mut CoffRelocationView }
+struct BindingWork<'a> {
+    symbols: *mut CoffSymbolView,
+    nodes: *mut [u64; 9],
+    relocations: *mut CoffRelocationView,
+    import_context: *mut c_void,
+    emit_import: Option<EmitImport<'a>>,
+}
 #[repr(u32)]
 #[derive(Clone, Copy)]
 enum BindingError { None = 0, SectionCount = 2, RelocationOffset = 5 }
@@ -72,9 +107,9 @@ enum BindingError { None = 0, SectionCount = 2, RelocationOffset = 5 }
 struct BindingPlan { symbols: usize, names: usize, relocations: usize, error: BindingError }
 unsafe extern "C" {
     #[link_name = "bootstrap.bindings::prepare"]
-    fn binding_prepare(input: BindingInput, work: BindingWork) -> BindingPlan;
+    fn binding_prepare(input: BindingInput, work: BindingWork<'_>) -> BindingPlan;
     #[link_name = "bootstrap.bindings::materialize"]
-    fn binding_materialize(input: BindingInput, work: BindingWork, plan: BindingPlan, names: *mut u8);
+    fn binding_materialize(input: BindingInput, work: BindingWork<'_>, plan: BindingPlan, names: *mut u8);
 }
 
 #[repr(C)]
@@ -637,12 +672,23 @@ pub(super) fn encode_build(o: &Object, build: Option<&[u8]>) -> Result<Vec<u8>> 
         let extra = std::iter::once((META, CoffPayload::Metadata(&input, length), 0x840, &[][..]))
             .chain(build.map(|bytes| (BUILD, CoffPayload::Borrowed(bytes), 0x840, &[][..])))
             .chain(o.archive.as_ref().map(|archive| (ARCHIVE, CoffPayload::Borrowed(archive.bytes.as_ref()), 0x840, &[][..])));
-        encode_sections(&o.name, &o.sections, o.symbols.iter().map(|symbol| &symbol.definition), extra)
+        encode_sections(&o.name, &o.sections, o.symbols.iter().map(|symbol| &symbol.definition), extra, None)
     })
 }
 
 pub(crate) fn encode_native(name: &str, source: &[Section], declared: &[Definition]) -> Result<Vec<u8>> {
-    encode_sections(name, source, declared.iter(), std::iter::empty())
+    encode_sections(name, source, declared.iter(), std::iter::empty(), None)
+}
+
+pub(crate) fn encode_native_with_imports<'a>(
+    name: &str, source: &'a [Section], declared: &'a [Definition],
+    imports: &mut Vec<ImportKey<'a>>,
+) -> Result<Vec<u8>> {
+    encode_sections(name, source, declared.iter(), std::iter::empty(), Some(imports))
+}
+
+unsafe extern "C" fn collect_import<'a>(context: *mut c_void, key: ImportKey<'a>) {
+    unsafe { &mut *context.cast::<Vec<ImportKey<'a>>>() }.push(key);
 }
 
 enum CoffPayload<'a> {
@@ -663,6 +709,7 @@ impl CoffPayload<'_> {
 fn encode_sections<'a>(
     name: &str, source: &'a [Section], declared: impl Iterator<Item = &'a Definition>,
     extra: impl Iterator<Item = (&'a str, CoffPayload<'a>, u32, &'a [Relocation])>,
+    imports: Option<&mut Vec<ImportKey<'a>>>,
 ) -> Result<Vec<u8>> {
     let sections = source.iter().map(|section|
         (section.name.as_str(), CoffPayload::Borrowed(section.bytes.as_slice()), section.flags, section.relocations.as_slice())
@@ -698,7 +745,16 @@ fn encode_sections<'a>(
         sections: binding_sections.as_mut_ptr(), section_count: binding_sections.len(),
         definitions: definitions.as_ptr(), definition_count: definitions.len(),
     };
-    let work = BindingWork { symbols: symbols.as_mut_ptr(), nodes: nodes.as_mut_ptr(), relocations: relocations.as_mut_ptr() };
+    // Only the MSVC input producer keeps names across objects. B borrows the
+    // source and emits each object's existing unique keys into that same list.
+    let (import_context, emit_import): (*mut c_void, Option<EmitImport<'a>>) = match imports {
+        Some(imports) => (std::ptr::from_mut(imports).cast(), Some(collect_import)),
+        None => (std::ptr::null_mut(), None),
+    };
+    let work = BindingWork {
+        symbols: symbols.as_mut_ptr(), nodes: nodes.as_mut_ptr(), relocations: relocations.as_mut_ptr(),
+        import_context, emit_import,
+    };
     let plan = unsafe { binding_prepare(binding_input, work) };
     match plan.error {
         BindingError::None => (),

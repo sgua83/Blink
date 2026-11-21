@@ -208,6 +208,9 @@ extern "C" BindingPlan prepare(BindingInput input,BindingWork work) on cpu {
         BindingNode node=node_at(forest,at);
         u64 length=import_name_size(node.key.first,node.key.second);
         symbol_put(work,count,symbol(BindingBytes(unsafe_address(0u64),length),0u64,0u64,1u64,1u64,0u64,0u64,3u64,at));
+        if (work.emit_import != cfn<void,address,BindingKey>()) {
+            work.emit_import(work.import_context, node.key);
+        }
         node.value=row;node_put(forest,at,node);count+=1u64;row+=1u64;names+=length;
         
         at=next(forest,at);
