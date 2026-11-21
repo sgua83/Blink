@@ -10,7 +10,6 @@ use blanguage::{
 };
 use blanguage::{
     ExecutableProgram,
-    native::ProgramImage as NativeProgramImage,
     resource::{ModuleFactory, ModuleImage},
     spirv::ProgramImage as ShaderProgramImage,
 };
@@ -201,16 +200,11 @@ pub unsafe extern "C" fn blink_library_create(
                 let cpu = unsafe { cpu.as_ref() }.ok_or_else(|| error("GPU 专属程序不能提交给 CPU"))?;
                 let bytes = unsafe { std::slice::from_raw_parts(cpu.data, cpu.bytes) };
                 let code = unsafe { std::slice::from_raw_parts(cpu.code, cpu.codes) };
-                let image = unsafe {
-                    NativeProgramImage::<ExecutableProgram, *const u8>::from_linked_compiler_output_bytes(bytes, code)
-                }?;
-                let program = if factories.is_null() {
-                    unsafe { CpuProgram::from_linked(image) }?
-                } else {
-                    let factories = unsafe { std::slice::from_raw_parts(factories, factory_count) };
-                    unsafe { CpuProgram::from_linked_modules(image, factories) }?
-                };
-                LibraryProgram::Cpu(program)
+                let image = unsafe { blanguage::resource::decode_linked_program::<ExecutableProgram>(bytes) }?;
+                let factories = (!factories.is_null()).then(|| unsafe {
+                    std::slice::from_raw_parts(factories, factory_count)
+                });
+                LibraryProgram::Cpu(unsafe { CpuProgram::from_linked_indices(image, code, factories) }?)
             }
             1 => {
                 let gpu = unsafe { gpu.as_ref() }.ok_or_else(|| error("CPU 专属程序不能提交给 GPU"))?;

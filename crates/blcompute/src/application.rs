@@ -52,7 +52,7 @@ impl Definitions {
     }
     pub(crate) unsafe fn linked(
         factories: &[blanguage::resource::ModuleFactory],
-        mut cpu: impl FnMut(blanguage::native::ProgramImage<TemplateProgram, *const u8>) -> Result<CpuTemplate>,
+        mut cpu: impl FnMut(blanguage::native::ProgramImage<TemplateProgram, usize>, &[*const u8]) -> Result<CpuTemplate>,
     ) -> Result<Self> {
         let mut types = Vec::new();
         let mut programs = Vec::new();
@@ -60,12 +60,12 @@ impl Definitions {
             let image = unsafe { factory() };
             let bytes = unsafe { std::slice::from_raw_parts(image.data, image.bytes) };
             let code = unsafe { std::slice::from_raw_parts(image.code, image.codes) };
-            let module = unsafe { blanguage::resource::from_linked_compiler_output(bytes, code) }
+            let module = unsafe { blanguage::resource::decode_linked_module(bytes) }
                 .map_err(|e| error(e.to_string()))?;
             types.extend(module.types);
             for image in module.images {
                 programs.push(match image {
-                    blanguage::resource::Image::Cpu(image) => ProgramSlot::Cpu(cpu(image)?),
+                    blanguage::resource::Image::Cpu(image) => ProgramSlot::Cpu(cpu(image, code)?),
                     blanguage::resource::Image::Gpu(image) => ProgramSlot::Gpu(Arc::new(image)),
                 });
             }
@@ -208,7 +208,9 @@ impl Frame {
     }
 
     unsafe fn linked_frame(factories: &[blanguage::resource::ModuleFactory]) -> Result<Self> {
-        let definitions = unsafe { Definitions::linked(factories, |image| CpuTemplate::from_linked(image).map_err(|(error, _)| error)) }?;
+        let definitions = unsafe {
+            Definitions::linked(factories, |image, code| CpuTemplate::from_linked_indices(image, code))
+        }?;
         Ok(unsafe { Self::from_definitions(Arc::new(definitions), &[], None) })
     }
 

@@ -189,6 +189,25 @@ pub unsafe fn from_compiler_output(bytes: &[u8]) -> codec::Result<Module> {
     decode_compiler_output(bytes)
 }
 
+/// 解码原模块工厂的布局和代码索引，供最终执行入口绑定同次链接的代码表。
+///
+/// # Safety
+/// bytes必须来自可信模块工厂；绑定时使用该工厂同次链接的代码表。
+#[doc(hidden)]
+pub unsafe fn decode_linked_module(bytes: &[u8]) -> codec::Result<Module<usize>> {
+    decode_compiler_output(bytes)
+}
+
+/// 解码同一原生程序的布局和已链接代码索引。
+///
+/// # Safety
+/// bytes必须来自可信原生编译产物的同一P入口，绑定时使用同次链接的代码表。
+#[doc(hidden)]
+pub unsafe fn decode_linked_program<P>(bytes: &[u8]) -> std::io::Result<native::ProgramImage<P, usize>> {
+    decode_compiler_output(bytes).map_err(|error|
+        std::io::Error::new(std::io::ErrorKind::InvalidData, error.to_string()))
+}
+
 /// 恢复所属原生模块的静态布局并绑定同次链接的CPU入口；不分配代码VM。
 ///
 /// # Safety
@@ -196,7 +215,7 @@ pub unsafe fn from_compiler_output(bytes: &[u8]) -> codec::Result<Module> {
 /// 必须保持到最后CPU工作和程序消费者结束。地址表不转移代码所有权。
 #[doc(hidden)]
 pub unsafe fn from_linked_compiler_output(bytes: &[u8], code: &[*const u8]) -> codec::Result<Module<*const u8>> {
-    let module: Module<usize> = decode_compiler_output(bytes)?;
+    let module = unsafe { decode_linked_module(bytes) }?;
     let images = module.images.into_iter().map(|image| match image {
         Image::Cpu(image) => Image::Cpu(image.map_code(&mut |index| code[index])),
         Image::Gpu(image) => Image::Gpu(image),
@@ -229,8 +248,7 @@ impl<P> native::ProgramImage<P,*const u8>{
     /// bytes与code来自同一次原生编译及链接，索引、入口类别和完整资源目录一致；
     /// 原模块与依赖保持到最后真实代码及资源消费者完成。
     pub unsafe fn from_linked_compiler_output_bytes(bytes:&[u8],code:&[*const u8])->std::io::Result<Self>{
-        let image:native::ProgramImage<P,usize>=decode_compiler_output(bytes).map_err(|error|
-            std::io::Error::new(std::io::ErrorKind::InvalidData,error.to_string()))?;
+        let image = unsafe { decode_linked_program::<P>(bytes) }?;
         Ok(image.map_code(&mut |index|code[index]))
     }
 }

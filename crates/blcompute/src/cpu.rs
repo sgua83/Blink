@@ -519,10 +519,8 @@ impl Allocation {
         let definitions = if factories.is_empty() {
             None
         } else {
-            Some(unsafe { crate::application::Definitions::linked(factories, |image| {
-                Ok(CpuTemplate { code: CpuCode::from_image(image, workers, &mut |stages, _| {
-                    CpuCode::load_linked_stages(stages, Some(&allocation))
-                }, None) })
+            Some(unsafe { crate::application::Definitions::linked(factories, |image, code| {
+                Ok(CpuTemplate { code: CpuCode::bind_indices(image, workers, code, Some(&allocation)) })
             }) }?)
         };
         Ok((Some(LoadedCode { allocation, table: root_table }), definitions))
@@ -703,12 +701,35 @@ impl CpuProgram {
         image: blanguage::native::ProgramImage<ExecutableProgram, *const u8>,
         factories: &[blanguage::resource::ModuleFactory],
     ) -> Result<Self> {
+        unsafe { Self::bind_linked_root(image, |address| *address, factories) }
+    }
+
+    /// The image, entry addresses and optional factory table come from the same trusted link.
+    pub(crate) unsafe fn from_linked_indices(
+        image: blanguage::native::ProgramImage<ExecutableProgram, usize>,
+        entries: &[*const u8],
+        factories: Option<&[blanguage::resource::ModuleFactory]>,
+    ) -> Result<Self> {
+        if let Some(factories) = factories {
+            return unsafe { Self::bind_linked_root(image, |index| entries[*index], factories) };
+        }
         let workers = std::thread::available_parallelism()?.get();
-        let stages = CpuCode::load_linked_stages(image.stages(), None);
+        Ok(Self { code: CpuCode::bind_indices(image, workers, entries, None) })
+    }
+
+    unsafe fn bind_linked_root<C>(
+        image: blanguage::native::ProgramImage<ExecutableProgram, C>,
+        entry: impl FnMut(&C) -> *const u8,
+        factories: &[blanguage::resource::ModuleFactory],
+    ) -> Result<Self> {
+        let workers = std::thread::available_parallelism()?.get();
+        let stages = CpuCode::load_linked_stages(image.stages(), entry, None);
         let (program, _, _, _) = image.into_parts();
-        let definitions = unsafe { crate::application::Definitions::linked(factories, |image| CpuTemplate::from_linked(image).map_err(|(error, _)| error)) }?;
+        let definitions = unsafe {
+            crate::application::Definitions::linked(factories, |image, code| CpuTemplate::from_linked_indices(image, code))
+        }?;
         Ok(Self { code: CpuCode {
-            program, stages, workers, definitions: Some(std::sync::Arc::new(definitions)),
+            program, stages, workers, definitions: Some(Arc::new(definitions)),
         } })
     }
     pub fn run(&self, datasets: &mut [Dataset], values: &[Value]) -> Result<()> {
@@ -754,6 +775,14 @@ impl CpuTemplate {
     #[doc(hidden)]
     pub unsafe fn from_linked(image: blanguage::native::ProgramImage<TemplateProgram, *const u8>) -> std::result::Result<Self, (Box<dyn std::error::Error + Send + Sync>, blanguage::native::ProgramImage<TemplateProgram, *const u8>)> {
         CpuCode::linked(image).map(|code| Self { code })
+    }
+    /// The template and entry table belong to the same linked module.
+    pub(crate) unsafe fn from_linked_indices(
+        image: blanguage::native::ProgramImage<TemplateProgram, usize>,
+        entries: &[*const u8],
+    ) -> Result<Self> {
+        let workers = std::thread::available_parallelism()?.get();
+        Ok(Self { code: CpuCode::bind_indices(image, workers, entries, None) })
     }
     /// 装入失败交回原错误和同一未改映像；本调用没有执行数据。
     pub fn from_image(image: blanguage::native::ProgramImage<TemplateProgram>) -> std::result::Result<Self, (Box<dyn std::error::Error + Send + Sync>, blanguage::native::ProgramImage<TemplateProgram>)> {
@@ -898,7 +927,17 @@ impl CpuCode {
     }
     fn linked<P>(image: blanguage::native::ProgramImage<P, *const u8>) -> std::result::Result<Self, (Box<dyn std::error::Error + Send + Sync>, blanguage::native::ProgramImage<P, *const u8>)> {
         let workers=match std::thread::available_parallelism(){Ok(workers)=>workers.get(),Err(error)=>return Err((error.into(),image))};
-        Ok(Self::from_image(image, workers, &mut |stages, _| Self::load_linked_stages(stages, None), None))
+        Ok(Self::from_image(image, workers, &mut |stages, _| {
+            Self::load_linked_stages(stages, |address| *address, None)
+        }, None))
+    }
+    fn bind_indices<P>(
+        image: blanguage::native::ProgramImage<P, usize>, workers: usize,
+        entries: &[*const u8], allocation: Option<&Arc<Allocation>>,
+    ) -> Self {
+        Self::from_image(image, workers, &mut |stages, _| {
+            Self::load_linked_stages(stages, |index| entries[*index], allocation)
+        }, None)
     }
     fn from_image<P, C>(
         image: blanguage::native::ProgramImage<P, C>, workers: usize,
@@ -932,11 +971,13 @@ impl CpuCode {
         }.map(std::sync::Arc::new);
         Self { program, stages, workers, definitions }
     }
-    fn load_linked_stages(
-        stages: &[blanguage::native::StageCode<*const u8>], allocation: Option<&std::sync::Arc<Allocation>>,
+    fn load_linked_stages<C>(
+        stages: &[blanguage::native::StageCode<C>],
+        mut entry: impl FnMut(&C) -> *const u8,
+        allocation: Option<&Arc<Allocation>>,
     ) -> Vec<StageCode> {
-        Self::load_stages(stages, &mut |address| Executable {
-            address: address.cast_mut().cast(), _allocation: allocation.cloned(),
+        Self::load_stages(stages, &mut |code| Executable {
+            address: entry(code).cast_mut().cast(), _allocation: allocation.cloned(),
         })
     }
     fn load_stages<C>(stages: &[blanguage::native::StageCode<C>], load: &mut impl FnMut(&C) -> Executable) -> Vec<StageCode> {
