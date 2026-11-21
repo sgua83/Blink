@@ -1,5 +1,6 @@
 //! 固定数组与数值向量按原逻辑分量索引；动态位置直接访问真实存储。
 use super::*;
+use std::{borrow::Cow, ffi::c_void};
 impl Place {
     pub(super) fn read_only(self) -> Self {
         match self {
@@ -172,6 +173,86 @@ impl FixedProjection {
     }
 }
 
+#[repr(C)]
+struct ComponentChoice { key: u32, registers: [Reg; 2] }
+
+#[repr(C)]
+struct SelectedComponents { registers: [Reg; 2] }
+
+#[repr(C)]
+struct ComponentEmitter {
+    context: *mut c_void,
+    choice: unsafe extern "C" fn(*mut c_void, usize) -> ComponentChoice,
+    equal: unsafe extern "C" fn(*mut c_void, Reg, u32) -> Reg,
+    select: unsafe extern "C" fn(*mut c_void, Reg, Reg, Reg) -> Reg,
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.operator_types::select_indexed_components"]
+    fn select_indexed_components(index: Reg, count: usize, paired: u32, emitter: ComponentEmitter) -> SelectedComponents;
+}
+
+enum ComponentChoices<'a> {
+    Values(Scalar, &'a [Reg]),
+    Offsets(&'a [u32]),
+    Addresses(&'a [u32], &'a BTreeMap<u32, [Reg; 2]>),
+}
+
+struct ComponentSelection<'a, 'w> {
+    builder: &'a mut Builder<'w>,
+    choices: ComponentChoices<'a>,
+    scalar: Scalar,
+}
+
+impl ComponentChoices<'_> {
+    fn select(self, builder: &mut Builder<'_>, index: Reg) -> [Reg; 2] {
+        let (scalar, count, paired) = match self {
+            Self::Values(scalar, values) => (scalar, values.len(), 0),
+            Self::Offsets(words) => (Scalar::U32, words.len(), 0),
+            Self::Addresses(words, _) => (Scalar::U32, words.len(), 1),
+        };
+        let mut state = ComponentSelection { builder, choices: self, scalar };
+        let emitter = ComponentEmitter {
+            context: std::ptr::from_mut(&mut state).cast(),
+            choice: component_choice, equal: component_equal, select: component_select,
+        };
+        unsafe { select_indexed_components(index, count, paired, emitter) }.registers
+    }
+}
+
+unsafe extern "C" fn component_choice(context: *mut c_void, ordinal: usize) -> ComponentChoice {
+    let state = unsafe { &mut *context.cast::<ComponentSelection<'_, '_>>() };
+    match state.choices {
+        ComponentChoices::Values(_, values) => ComponentChoice { key: ordinal as u32, registers: [values[ordinal], 0] },
+        ComponentChoices::Offsets(words) => {
+            let word = state.builder.constant(Scalar::U32, Bits::from(words[ordinal])).regs[0];
+            ComponentChoice { key: ordinal as u32, registers: [word, 0] }
+        }
+        ComponentChoices::Addresses(words, addresses) => {
+            let key = words[ordinal];
+            ComponentChoice { key, registers: addresses[&key] }
+        }
+    }
+}
+
+unsafe extern "C" fn component_equal(context: *mut c_void, index: Reg, key: u32) -> Reg {
+    let state = unsafe { &mut *context.cast::<ComponentSelection<'_, '_>>() };
+    let b = &mut *state.builder;
+    let number = b.constant(Scalar::U32, Bits::from(key)).regs[0];
+    let dst = b.reg(Scalar::Bool);
+    b.emit(InstKind::Binary {
+        dst, op: BinaryOp::Compare(ir::Comparison::Equal), a: index, b: number,
+    });
+    dst
+}
+
+unsafe extern "C" fn component_select(context: *mut c_void, condition: Reg, a: Reg, b: Reg) -> Reg {
+    let state = unsafe { &mut *context.cast::<ComponentSelection<'_, '_>>() };
+    let dst = state.builder.reg(state.scalar);
+    state.builder.emit(InstKind::Select { dst, condition, a, b });
+    dst
+}
+
 impl Builder<'_> {
     pub(super) fn local_slots(&mut self, ty: &Ty) -> (Vec<usize>, std::ops::Range<usize>) {
         let base = self.locals.last_key_value().map_or(0, |(end, _)| *end);
@@ -263,8 +344,8 @@ impl Builder<'_> {
             }
             FixedProjectionKind::Vector => {
                 let proof = bounds::Proof::capture(&value);
-                let choices: Vec<_> = value.regs.iter().enumerate().map(|(i, r)| (i as u32, *r)).collect();
-                let reg = self.select_component(index.regs[0], ty.components[0].0, &choices);
+                let [reg, _] = ComponentChoices::Values(ty.components[0].0, &value.regs)
+                    .select(self, index.regs[0]);
                 let selected = ownership::ApplicationIndex::of(&index);
                 let proof = self.array_value_proof(&proof, &value.ty, &ty, count, selected, &[reg]);
                 let constant = proof.known_value(&ty);
@@ -365,39 +446,26 @@ impl Builder<'_> {
             words,
         })
     }
-    fn select_component(&mut self, index: Reg, scalar: Scalar, choices: &[(u32, Reg)]) -> Reg {
-        let mut selected = choices[0].1;
-        for (component, value) in &choices[1..] {
-            let number = self.constant(Scalar::U32, Bits::from(*component)).regs[0];
-            let condition = self.reg(Scalar::Bool);
-            self.emit(InstKind::Binary {
-                dst: condition, op: BinaryOp::Compare(ir::Comparison::Equal), a: index, b: number,
-            });
-            let dst = self.reg(scalar);
-            self.emit(InstKind::Select { dst, condition, a: *value, b: selected });
-            selected = dst;
-        }
-        selected
-    }
     fn vector_index(&mut self, mut place: Place, index: Value, ty: Ty) -> Place {
         let initialization = self.indexed_positions(&place, &index, 1);
         let locations = Position::index(place.data_positions(), ownership::ApplicationIndex::of(&index), 1);
-        let offsets: Vec<_> = match &mut place {
-            Place::Local(_, slots, storage) | Place::ReadOnlyLocal(_, slots, storage) => {
-                let layout = &self.locals[&storage.end];
-                let offsets: Vec<_> = slots.iter().map(|slot| layout.components[*slot - storage.start].1).collect();
-                let first = *offsets.iter().min().unwrap();
-                slots.sort_unstable();
-                offsets.into_iter().map(|offset| offset - first).collect()
-            }
-            Place::Reference { words, .. } | Place::ApplicationElement { words, .. }
-            | Place::Element { words, .. } | Place::ViewElement { words, .. }
-            | Place::TileElement { words, .. } | Place::Indexed { words, .. } => words.clone(),
-            Place::AtomicParameter(ty) => ty.components.iter().map(|(_, offset)| *offset).collect(),
+        let [relative, _] = {
+            let offsets: Cow<'_, [u32]> = match &mut place {
+                Place::Local(_, slots, storage) | Place::ReadOnlyLocal(_, slots, storage) => {
+                    let layout = &self.locals[&storage.end];
+                    let mut offsets: Vec<_> = slots.iter().map(|slot| layout.components[*slot - storage.start].1).collect();
+                    let first = *offsets.iter().min().unwrap();
+                    slots.sort_unstable();
+                    for offset in &mut offsets { *offset -= first; }
+                    Cow::Owned(offsets)
+                }
+                Place::Reference { words, .. } | Place::ApplicationElement { words, .. }
+                | Place::Element { words, .. } | Place::ViewElement { words, .. }
+                | Place::TileElement { words, .. } | Place::Indexed { words, .. } => Cow::Borrowed(words),
+                Place::AtomicParameter(ty) => Cow::Owned(ty.components.iter().map(|(_, offset)| *offset).collect()),
+            };
+            ComponentChoices::Offsets(&offsets).select(self, index.regs[0])
         };
-        let choices: Vec<_> = offsets.iter().enumerate()
-            .map(|(i, offset)| (i as u32, self.constant(Scalar::U32, Bits::from(*offset)).regs[0])).collect();
-        let relative = self.select_component(index.regs[0], Scalar::U32, &choices);
         let (base, offset) = match place {
             Place::Indexed { base, offset, .. } => {
                 let dst = self.reg(Scalar::U32);
@@ -416,11 +484,7 @@ impl Builder<'_> {
                 self.emit(InstKind::Binary { dst, op: BinaryOp::IAdd, a: offset, b: number });
                 dst
             };
-            let mut address = [0; 2];
-            for (part, reg) in address.iter_mut().enumerate() {
-                let choices: Vec<_> = words.iter().map(|word| (*word, addresses[word][part])).collect();
-                *reg = self.select_component(selected, Scalar::U32, &choices);
-            }
+            let address = ComponentChoices::Addresses(words, addresses).select(self, selected);
             let zero = self.constant(Scalar::U32, 0).regs[0];
             return Ok((IndexedSource::View { address, index: zero, stride: ElementStride::Constant(0) }, zero, 0));
         }

@@ -148,6 +148,24 @@ extern "C" FixedProjection fixed_projection(u32 array, usize width, u32 known, u
     return FixedProjection(array != 0 ? FixedProjectionKind::Array : FixedProjectionKind::Vector, 0u64);
 }
 
+extern "C" SelectedComponents select_indexed_components(
+    usize index, usize count, u32 paired, ComponentEmitter emitter
+) on cpu requires nonzero(emitter.choice) requires nonzero(emitter.equal) requires nonzero(emitter.select) {
+    ComponentChoice first = emitter.choice(emitter.context, 0u64);
+    SelectedComponents selected = SelectedComponents(first.registers);
+    usize ordinal = 1u64;
+    while (ordinal < count) {
+        ComponentChoice item = emitter.choice(emitter.context, ordinal);
+        let test = emitter.equal(emitter.context, index, item.key);
+        selected.registers[0] = emitter.select(emitter.context, test, item.registers[0], selected.registers[0]);
+        if (paired != 0) {
+            selected.registers[1] = emitter.select(emitter.context, test, item.registers[1], selected.registers[1]);
+        }
+        ordinal += 1u64;
+    }
+    return selected;
+}
+
 MatrixOperand read_matrix_slot(u32 slot) on cpu { return MatrixOperand(slot,0); }
 MatrixOperand take_matrix_slot(u32 slot) on cpu { return MatrixOperand(slot,1); }
 
