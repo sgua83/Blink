@@ -159,13 +159,20 @@ unsafe fn write_slice<T: Native>(values: &[T], output: Slot) {
         )
     }
 }
-unsafe extern "C" fn push<T: Native>(context: Slot, output: Slot) -> ReadStatus {
+unsafe extern "C" fn push<T: Native, F: FnMut(T)>(context: Slot, output: Slot) -> ReadStatus {
     let mut value = T::empty();
     let status = unsafe { T::read(context, &mut value) };
     if status == ReadStatus::Success {
-        unsafe { &mut *output.cast::<Vec<T>>() }.push(value);
+        let receive = unsafe { &mut *output.cast::<F>() };
+        receive(value);
     }
     status
+}
+pub(crate) unsafe fn read_elements<T: Native, F: FnMut(T)>(
+    context: Slot, receive: &mut F,
+) -> ReadStatus {
+    let (bytes, position) = unsafe { input(context) };
+    unsafe { read_sequence(bytes, position, context, slot(receive), push::<T, F>) }
 }
 impl<T: Native> Native for Vec<T> {
     fn empty() -> Self {
@@ -175,8 +182,7 @@ impl<T: Native> Native for Vec<T> {
         unsafe { write_slice(self, output) }
     }
     unsafe fn read(context: Slot, output: &mut Self) -> ReadStatus {
-        let (bytes, position) = unsafe { input(context) };
-        unsafe { read_sequence(bytes, position, context, slot(output), push::<T>) }
+        unsafe { read_elements(context, &mut |value| output.push(value)) }
     }
 }
 unsafe extern "C" fn some<T: Native>(context: Slot, output: Slot) -> ReadStatus {

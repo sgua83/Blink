@@ -60,15 +60,15 @@ impl Definitions {
             let image = unsafe { factory() };
             let bytes = unsafe { std::slice::from_raw_parts(image.data, image.bytes) };
             let code = unsafe { std::slice::from_raw_parts(image.code, image.codes) };
-            let module = unsafe { blanguage::resource::decode_linked_module(bytes) }
-                .map_err(|e| error(e.to_string()))?;
-            types.extend(module.types);
-            for image in module.images {
+            let bind = |image| -> Result<()> {
                 programs.push(match image {
                     blanguage::resource::Image::Cpu(image) => ProgramSlot::Cpu(cpu(image, code)?),
                     blanguage::resource::Image::Gpu(image) => ProgramSlot::Gpu(Arc::new(image)),
                 });
-            }
+                Ok(())
+            };
+            unsafe { blanguage::resource::decode_linked_module_into(bytes, &mut types, bind) }
+                .map_err(|e| error(e.to_string()))??;
         }
         Ok(Self { types, programs })
     }

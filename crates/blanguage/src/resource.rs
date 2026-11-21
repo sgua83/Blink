@@ -166,9 +166,11 @@ pub(crate) fn compiler_output<T: Encode>(value: &T) -> Vec<u8> {
     value.encode(&mut writer);
     writer.0
 }
+fn resource_payload(bytes: &[u8]) -> codec::Result<&[u8]> {
+    bytes.strip_prefix(ABI).ok_or_else(|| "不支持的模块资源 ABI".into())
+}
 fn decode_compiler_output<T: Decode>(bytes: &[u8]) -> codec::Result<T> {
-    let bytes = bytes.strip_prefix(ABI).ok_or("不支持的模块资源 ABI")?;
-    T::from_bytes(bytes)
+    T::from_bytes(resource_payload(bytes)?)
 }
 impl ExecutionPlan {
     pub(crate) fn compiler_output_bytes(&self) -> Vec<u8> { compiler_output(self) }
@@ -196,6 +198,28 @@ pub unsafe fn from_compiler_output(bytes: &[u8]) -> codec::Result<Module> {
 #[doc(hidden)]
 pub unsafe fn decode_linked_module(bytes: &[u8]) -> codec::Result<Module<usize>> {
     decode_compiler_output(bytes)
+}
+
+/// 按原工厂顺序将类型追加到构造中的目录，并交接每幅已解码的程序映像。
+/// 解码失败优先于装入失败。调用者持有构造中的值，并在失败时释放它们。
+///
+/// # Safety
+/// bytes必须来自可信模块工厂；绑定时使用该工厂同次链接的代码表。
+#[doc(hidden)]
+pub unsafe fn decode_linked_module_into<E>(
+    bytes: &[u8],
+    types: &mut Vec<Ty>,
+    mut bind: impl FnMut(Image<TemplateProgram, usize>) -> Result<(), E>,
+) -> codec::Result<Result<(), E>> {
+    let mut reader = codec::Reader::new(resource_payload(bytes)?);
+    let mut binding = Ok(());
+    image_codec::read_linked_module(&mut reader, types, |image| {
+        if binding.is_ok() {
+            binding = bind(image);
+        }
+    })?;
+    reader.finish()?;
+    Ok(binding)
 }
 
 /// 解码同一原生程序的布局和已链接代码索引。

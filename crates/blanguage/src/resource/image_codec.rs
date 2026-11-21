@@ -125,6 +125,37 @@ where
     }
 }
 
+unsafe fn read_module<F>(
+    context: Slot, types: &mut Vec<Ty>, images: &mut F, read_images: Read,
+) -> ReadStatus {
+    unsafe {
+        module_read(context, ModuleFields {
+            types: contracts::slot(types),
+            images: contracts::slot(images),
+        }, ModuleFields {
+            types: contracts::read_value::<Vec<Ty>>,
+            images: read_images,
+        })
+    }
+}
+
+pub(super) fn read_linked_module<F>(
+    reader: &mut codec::Reader<'_>, types: &mut Vec<Ty>, mut receive: F,
+) -> codec::Result<()>
+where
+    F: FnMut(Image<TemplateProgram, usize>),
+{
+    unsafe extern "C" fn read_images<F: FnMut(Image<TemplateProgram, usize>)>(
+        context: Slot, output: Slot,
+    ) -> ReadStatus {
+        unsafe { contracts::read_elements(context, &mut *output.cast::<F>()) }
+    }
+    codec::types::reading::with_context(reader, |context| {
+        let status = unsafe { read_module(context, types, &mut receive, read_images::<F>) };
+        (status, ())
+    })
+}
+
 impl<C> Native for Module<C>
 where
     Image<TemplateProgram, C>: Native,
@@ -137,13 +168,8 @@ where
     }
     unsafe fn read(context: Slot, output: &mut Self) -> ReadStatus {
         unsafe {
-            module_read(context, ModuleFields {
-                types: contracts::slot(&mut output.types),
-                images: contracts::slot(&mut output.images),
-            }, ModuleFields {
-                types: contracts::read_value::<Vec<Ty>>,
-                images: contracts::read_value::<Vec<Image<TemplateProgram, C>>>,
-            })
+            read_module(context, &mut output.types, &mut output.images,
+                contracts::read_value::<Vec<Image<TemplateProgram, C>>>)
         }
     }
 }
