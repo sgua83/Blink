@@ -42,9 +42,13 @@ struct TypeNode {
     usize variants; usize fields; u32 count; u32 alignment;
 };
 enum StorageMode:u32 { Borrow=0; CleanupBorrow=1; CleanupRequirement=2; };
-enum StorageAction:u32 { Absent=0; Present=1; Contract=2; Children=3; };
-struct StoragePlan { StorageMode mode; StorageAction action; u32 array; u32 dataset; };
-extern "C" StoragePlan storage_plan(TypeNode node, StorageMode mode, u32 empty_dataset) on cpu;
+enum StorageNeed:u32 {
+    Absent=0; Present=1; Enter=2; Contract=3; Field=4; Variant=5; Array=6; Dataset=7;
+};
+struct StorageCursor { usize next; StorageMode mode; };
+struct StorageStep { usize index; StorageNeed need; };
+extern "C" StorageStep storage_step(inout StorageCursor cursor, read TypeNode node,
+    u32 empty_dataset, u32 found) on cpu;
 
 enum ReferenceNeed:u32 {
     Done=0; Enter=1; Signature=2; Parameter=3; Result=4;

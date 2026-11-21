@@ -750,36 +750,40 @@ impl World {
         &self, ty: &ir::Ty, origin: (&Source, Span, &str, &[String]),
         consumed: &mut BTreeSet<(String, ir::StorageMode)>, mode: ir::StorageMode,
     ) -> crate::Result<bool> {
-        let plan = ir::storage_plan(ty, mode);
-        if !consumed.insert((ty.name.clone(), plan.mode)) {
-            return Ok(false);
+        use ir::StorageNeed;
+
+        let mut walk = ir::StorageWalk::new(ty, mode);
+        let mut found = false;
+        loop {
+            let step = walk.step(found);
+            let child = match step.need {
+                StorageNeed::Absent => return Ok(false),
+                StorageNeed::Present => return Ok(true),
+                StorageNeed::Enter => {
+                    if !consumed.insert((ty.name.clone(), walk.mode())) {
+                        return Ok(false);
+                    }
+                    continue;
+                }
+                StorageNeed::Contract => {
+                    let cleanup = &self.functions[ty.cleanup.as_ref().unwrap()];
+                    return Ok(cleanup.function.contracts().iter()
+                        .any(|contract| contract.kind() == ContractKind::Requires));
+                }
+                StorageNeed::Field => ty.fields[step.index].2.as_ref(),
+                StorageNeed::Variant => ty.variants[step.index].ty.as_ref(),
+                StorageNeed::Array => ty.array.as_deref().unwrap(),
+                StorageNeed::Dataset => {
+                    let (source, span, module, imports) = origin;
+                    let reference = ty.dataset.as_deref().unwrap();
+                    let element = unsafe { self.call(self.ty_inner(reference, source, span, module, imports,
+                        &mut BTreeSet::new())).await }?;
+                    found = unsafe { self.call(self.storage_query(&element, origin, consumed, walk.mode())).await }?;
+                    continue;
+                }
+            };
+            found = unsafe { self.call(self.storage_query(child, origin, consumed, walk.mode())).await }?;
         }
-        match plan.action {
-            ir::StorageAction::Absent => return Ok(false),
-            ir::StorageAction::Present => return Ok(true),
-            ir::StorageAction::Contract => {
-                let cleanup = &self.functions[ty.cleanup.as_ref().unwrap()];
-                return Ok(cleanup.function.contracts().iter()
-                    .any(|contract| contract.kind() == ContractKind::Requires));
-            }
-            ir::StorageAction::Children => {}
-        }
-        let children = ty.fields.iter().map(|(_, _, field)| field.as_ref())
-            .chain(ty.variants.iter().map(|variant| variant.ty.as_ref()))
-            .chain(ty.array.as_deref().filter(|_| plan.array != 0));
-        for child in children {
-            if unsafe { self.call(self.storage_query(child, origin, consumed, plan.mode)).await }? {
-                return Ok(true);
-            }
-        }
-        if plan.dataset != 0 {
-            let (source, span, module, imports) = origin;
-            let reference = ty.dataset.as_deref().unwrap();
-            let element = unsafe { self.call(self.ty_inner(reference, source, span, module, imports,
-                &mut BTreeSet::new())).await }?;
-            return unsafe { self.call(self.storage_query(&element, origin, consumed, plan.mode)).await };
-        }
-        Ok(false)
     }
 
     pub(crate) async fn validate_type_references(

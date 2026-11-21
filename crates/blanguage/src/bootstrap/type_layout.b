@@ -86,21 +86,41 @@ extern "C" ReferenceStep reference_step(inout ReferenceCursor cursor, read Refer
     return ReferenceStep(0u64, ReferenceNeed::Done);
 }
 
-extern "C" StoragePlan storage_plan(TypeNode node, StorageMode mode, u32 empty_dataset) on cpu {
-    StorageMode access = mode;
-    if (mode == StorageMode::CleanupBorrow && node.cleanup != 0) {
-        access = StorageMode::Borrow;
-    }
-    if (access == StorageMode::CleanupRequirement) {
-        if (node.cleanup != 0) {
-            return StoragePlan(access, StorageAction::Contract, 0, 0);
+extern "C" StorageStep storage_step(inout StorageCursor cursor, read TypeNode node,
+        u32 empty_dataset, u32 found) on cpu {
+    if (found != 0) { return StorageStep(0u64, StorageNeed::Present); }
+
+    bool array = node.array != 0 && node.count != 0;
+    bool dataset = node.dataset != 0 && empty_dataset == 0;
+    if (cursor.next == 0u64) {
+        if (cursor.mode == StorageMode::CleanupBorrow && node.cleanup != 0) {
+            cursor.mode = StorageMode::Borrow;
         }
-    } else if (node.view != 0 || node.address != 0) {
-        StorageAction result = access == StorageMode::Borrow ? StorageAction::Present : StorageAction::Absent;
-        return StoragePlan(access, result, 0, 0);
+        if (cursor.mode == StorageMode::CleanupRequirement) {
+            if (node.cleanup != 0) { return StorageStep(0u64, StorageNeed::Contract); }
+        } else if (node.view != 0 || node.address != 0) {
+            StorageNeed leaf = cursor.mode == StorageMode::Borrow ? StorageNeed::Present : StorageNeed::Absent;
+            return StorageStep(0u64, leaf);
+        }
+        if (node.fields == 0u64 && node.variants == 0u64 && !array && !dataset) {
+            return StorageStep(0u64, StorageNeed::Absent);
+        }
+        cursor.next = 1u64;
+        return StorageStep(0u64, StorageNeed::Enter);
     }
-    return StoragePlan(access, StorageAction::Children, u32(node.array != 0 && node.count != 0),
-        u32(node.dataset != 0 && empty_dataset == 0));
+
+    usize index = cursor.next - 1u64;
+    cursor.next += 1u64;
+    if (index < node.fields) { return StorageStep(index, StorageNeed::Field); }
+    index -= node.fields;
+    if (index < node.variants) { return StorageStep(index, StorageNeed::Variant); }
+    index -= node.variants;
+    if (array) {
+        if (index == 0u64) { return StorageStep(0u64, StorageNeed::Array); }
+        index -= 1u64;
+    }
+    if (dataset && index == 0u64) { return StorageStep(0u64, StorageNeed::Dataset); }
+    return StorageStep(0u64, StorageNeed::Absent);
 }
 
 extern "C" u32 contains(address value, Property property, TypeHost host) on cpu

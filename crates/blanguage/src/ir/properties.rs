@@ -39,13 +39,40 @@ struct PathHost {
 #[repr(u32)]
 pub(crate) enum StorageMode { Borrow, CleanupBorrow, CleanupRequirement }
 #[repr(u32)]
-pub(crate) enum StorageAction { Absent, Present, Contract, Children }
+pub(crate) enum StorageNeed { Absent, Present, Enter, Contract, Field, Variant, Array, Dataset }
 #[repr(C)]
-pub(crate) struct StoragePlan {
-    pub(crate) mode: StorageMode,
-    pub(crate) action: StorageAction,
-    pub(crate) array: u32,
-    pub(crate) dataset: u32,
+struct StorageCursor {
+    next: usize,
+    mode: StorageMode,
+}
+#[repr(C)]
+pub(crate) struct StorageStep {
+    pub(crate) index: usize,
+    pub(crate) need: StorageNeed,
+}
+
+pub(crate) struct StorageWalk {
+    cursor: StorageCursor,
+    node: Node,
+    empty_dataset: u32,
+}
+
+impl StorageWalk {
+    pub(crate) fn new(ty: &Ty, mode: StorageMode) -> Self {
+        Self {
+            cursor: StorageCursor { next: 0, mode },
+            node: unsafe { inspect(ty) },
+            empty_dataset: u32::from(ty.values.first() == Some(&0)),
+        }
+    }
+
+    pub(crate) fn mode(&self) -> StorageMode {
+        self.cursor.mode
+    }
+
+    pub(crate) fn step(&mut self, found: bool) -> StorageStep {
+        unsafe { b_storage_step(&mut self.cursor, &self.node, self.empty_dataset, u32::from(found)) }
+    }
 }
 
 #[repr(u32)]
@@ -112,8 +139,8 @@ impl ReferenceWalk {
 unsafe extern "C" {
     #[link_name = "bootstrap.type_layout::reference_step"]
     fn b_reference_step(cursor: &mut ReferenceCursor, shape: &ReferenceShape) -> ReferenceStep;
-    #[link_name = "bootstrap.type_layout::storage_plan"]
-    fn b_storage_plan(node: Node, mode: StorageMode, empty_dataset: u32) -> StoragePlan;
+    #[link_name = "bootstrap.type_layout::storage_step"]
+    fn b_storage_step(cursor: &mut StorageCursor, node: &Node, empty_dataset: u32, found: u32) -> StorageStep;
     #[link_name = "bootstrap.type_layout::contains"]
     fn b_contains(value: *const Ty, query: Query, host: Host) -> u32;
     #[link_name = "bootstrap.type_layout::zero_valid"]
@@ -128,11 +155,6 @@ unsafe extern "C" {
     #[link_name = "bootstrap.type_layout::field"]
     fn b_field(value: *const Ty, path: Text, words: *const u32, word_count: usize,
         active: u32, host: PathHost) -> Part;
-}
-
-pub(crate) fn storage_plan(value: &Ty, mode: StorageMode) -> StoragePlan {
-    let shape = unsafe { inspect(value) };
-    unsafe { b_storage_plan(shape, mode, u32::from(value.values.first() == Some(&0))) }
 }
 
 pub(super) fn contains(value: &Ty, query: Query) -> bool {
