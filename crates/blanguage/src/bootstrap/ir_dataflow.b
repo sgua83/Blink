@@ -1562,11 +1562,17 @@ u32 float_operation_remaining(Node source,u32 requested,RegisterHost host) on cp
  return remaining;
 }
 
+CodeRequirements stage_code_requirements<const Queries:u32>(
+ View stage,RegisterHost host,CodeRequirements initial) on cpu
+ requires nonzero(host.ir.inspect) requires nonzero(host.scalar) {
+ u32 remaining=float_operation_remaining(stage.left,initial.remaining_floats,host);
+ return code_requirements<Queries>(stage.first,stage.second,host,
+  CodeRequirements(initial.subgroup,initial.atomic64,remaining));
+}
+
 extern "C" u32 float_preserve(Node source,u32 requested,RegisterHost host) on cpu
  requires nonzero(host.ir.inspect) requires nonzero(host.scalar) {
- View stage=host.ir.inspect(source);
- let remaining=float_operation_remaining(stage.left,requested,host);
- let facts=code_requirements<0>(stage.first,stage.second,host,CodeRequirements(0,0,remaining));
+ let facts=stage_code_requirements<0>(host.ir.inspect(source),host,CodeRequirements(0,0,requested));
  return requested^facts.remaining_floats;
 }
 
@@ -1808,10 +1814,18 @@ extern "C" u32 subgroup_operations(Span code,RegisterHost host) on cpu
  requires nonzero(host.ir.inspect) requires nonzero(host.scalar) {
  return shader_subgroup_uses(code,host)&SUBGROUP_OPERATIONS;
 }
-extern "C" ShaderSubgroups shader_subgroups(Span code,RegisterHost host) on cpu
+extern "C" ShaderCodeRequirements shader_code_requirements(
+ Node source,u32 requested,bool subgroups,RegisterHost host) on cpu
  requires nonzero(host.ir.inspect) requires nonzero(host.scalar) {
- let used=shader_subgroup_uses(code,host);
- return ShaderSubgroups(subgroup_flags(used),used&SUBGROUP_BUILTINS,u32((used&SUBGROUP_APPEND)!=0));
+ View stage=host.ir.inspect(source);
+ CodeRequirements initial=CodeRequirements(0,0,requested);
+ CodeRequirements facts=subgroups
+  ? stage_code_requirements<5>(stage,host,initial)
+  : stage_code_requirements<4>(stage,host,initial);
+ u32 used=facts.subgroup;
+ ShaderSubgroups uses=ShaderSubgroups(subgroup_flags(used),used&SUBGROUP_BUILTINS,
+  u32((used&SUBGROUP_APPEND)!=0));
+ return ShaderCodeRequirements(uses,facts.atomic64,requested^facts.remaining_floats);
 }
 extern "C" SubgroupFlags subgroup_from_operations(address context,cfn<Word,address> next) on cpu
  requires nonzero(next) {
@@ -1840,8 +1854,7 @@ extern "C" ProgramCodeRequirements program_code_requirements(Span stages,u32 req
  usize index=0u64;
  while(index<stages.count) {
   View stage=host.ir.inspect(node_at(stages,index,N_STAGE));
-  facts.remaining_floats=float_operation_remaining(stage.left,facts.remaining_floats,host);
-  facts=code_requirements<7>(stage.first,stage.second,host,facts);
+  facts=stage_code_requirements<7>(stage,host,facts);
   index+=1u64;
  }
  return ProgramCodeRequirements(subgroup_flags(facts.subgroup),facts.atomic64,
@@ -1993,11 +2006,6 @@ extern "C" NumericRequirements numeric_requirements(Span stages,Span buffers,Spa
   index+=1u64;
  }
  return flags;
-}
-
-extern "C" u32 atomic64_requirements(Span code,RegisterHost host) on cpu
- requires nonzero(host.ir.inspect) requires nonzero(host.scalar) {
- return code_requirements<4>(code,empty_span(),host,CodeRequirements(0,0,0)).atomic64;
 }
 
 extern "C" u32 maximal_reconvergence(Span code,Host host) on cpu requires nonzero(host.inspect) {

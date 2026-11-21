@@ -76,27 +76,23 @@ pub struct Atomic {
     pub op: AtomicOp,
     pub order: MemoryOrder,
 }
+#[cfg(not(feature = "compiler"))]
 impl Stage {
     pub(crate) fn atomic64_requirements(&self) -> (bool, bool) {
-        #[cfg(feature = "compiler")]
-        { dataflow::atomic64_requirements(self) }
-        #[cfg(not(feature = "compiler"))]
-        {
-            fn uses(code: &[Inst]) -> (bool, bool) {
-                code.iter().map(|inst| match &(inst).kind {
-                    InstKind::Atomic(a) if a.scalar.size() == 8 => match a.target {
-                        IndexedSource::Tile { .. } => (false, true),
-                        IndexedSource::Data { .. } => (true, false),
-                        IndexedSource::View { .. } | IndexedSource::Pointer { .. } => (false, false),
-                    },
-                    InstKind::Scope(body) => uses(body),
-                    InstKind::If { yes, no, .. } => merge(uses(yes), uses(no)),
-                    InstKind::Loop { condition, body, .. } => merge(uses(condition), uses(body)),
-                    _ => (false, false),
-                }).fold((false, false), merge)
-            }
-            fn merge(a: (bool, bool), b: (bool, bool)) -> (bool, bool) { (a.0 || b.0, a.1 || b.1) }
-            uses(&self.code)
+        fn uses(code: &[Inst]) -> (bool, bool) {
+            code.iter().map(|inst| match &(inst).kind {
+                InstKind::Atomic(a) if a.scalar.size() == 8 => match a.target {
+                    IndexedSource::Tile { .. } => (false, true),
+                    IndexedSource::Data { .. } => (true, false),
+                    IndexedSource::View { .. } | IndexedSource::Pointer { .. } => (false, false),
+                },
+                InstKind::Scope(body) => uses(body),
+                InstKind::If { yes, no, .. } => merge(uses(yes), uses(no)),
+                InstKind::Loop { condition, body, .. } => merge(uses(condition), uses(body)),
+                _ => (false, false),
+            }).fold((false, false), merge)
         }
+        fn merge(a: (bool, bool), b: (bool, bool)) -> (bool, bool) { (a.0 || b.0, a.1 || b.1) }
+        uses(&self.code)
     }
 }

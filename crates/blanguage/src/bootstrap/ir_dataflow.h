@@ -471,7 +471,11 @@ struct ProgramCodeRequirements {
 extern "C" u32 has_subgroups(Span code,Host host) on cpu requires nonzero(host.inspect);
 extern "C" u32 subgroup_operations(Span code,RegisterHost host) on cpu
  requires nonzero(host.ir.inspect) requires nonzero(host.scalar);
-extern "C" ShaderSubgroups shader_subgroups(Span code,RegisterHost host) on cpu
+struct ShaderCodeRequirements {
+ ShaderSubgroups subgroups; u32 atomic64; u32 float_preserve;
+};
+extern "C" ShaderCodeRequirements shader_code_requirements(
+ Node source,u32 requested,bool subgroups,RegisterHost host) on cpu
  requires nonzero(host.ir.inspect) requires nonzero(host.scalar);
 extern "C" SubgroupFlags subgroup_from_operations(address context,cfn<Word,address> next) on cpu
  requires nonzero(next);
@@ -508,9 +512,6 @@ struct NumericHost {
 };
 extern "C" NumericRequirements numeric_requirements(Span stages,Span buffers,Span uniforms,NumericHost host) on cpu
  requires nonzero(host.ir.inspect) requires nonzero(host.locals);
-
-extern "C" u32 atomic64_requirements(Span code,RegisterHost host) on cpu
- requires nonzero(host.ir.inspect) requires nonzero(host.scalar);
 
 extern "C" u32 maximal_reconvergence(Span code,Host host) on cpu requires nonzero(host.inspect);
 extern "C" u32 program_maximal_reconvergence(Span stages,Host host) on cpu requires nonzero(host.inspect);

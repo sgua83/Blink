@@ -1889,8 +1889,7 @@ unsafe extern "C" {
 
 struct ShaderStageFacts {
     ray_queries: Vec<(Reg, crate::ir::dataflow::RayFields)>,
-    atomic64: bool,
-    float_preserve: (bool, bool),
+    code: crate::ir::dataflow::ShaderCodeRequirements,
 }
 
 fn uses_float_modes(pass: Pass) -> bool {
@@ -1901,17 +1900,12 @@ fn uses_float_modes(pass: Pass) -> bool {
 }
 
 impl ShaderStageFacts {
-    fn new(stage: &Stage, uses_float_modes: bool) -> Self {
-        let (buffer_atomic64, shared_atomic64) = stage.atomic64_requirements();
-        let float_preserve = if uses_float_modes {
-            crate::ir::dataflow::stage_float_preserve(stage)
-        } else {
-            (false, false)
-        };
+    fn new(stage: &Stage, pass: Pass) -> Self {
         Self {
             ray_queries: crate::ir::dataflow::shader_ray_queries(stage),
-            atomic64: buffer_atomic64 || shared_atomic64,
-            float_preserve,
+            code: crate::ir::dataflow::shader_code_requirements(
+                stage, uses_float_modes(pass), pass == Pass::Main,
+            ),
         }
     }
 }
@@ -1944,7 +1938,7 @@ fn prepare_reduction(stage: &Stage, pass: Pass) -> Option<PreparedReduction> {
     };
     let kernel = reduction.kernel(stage, project, identity);
     let layout = kernel.stage.tile_layout(true, None);
-    let facts = ShaderStageFacts::new(&kernel.stage, uses_float_modes(pass));
+    let facts = ShaderStageFacts::new(&kernel.stage, pass);
     Some(PreparedReduction { kernel, layout, facts })
 }
 
@@ -1965,7 +1959,7 @@ fn emit_shader(
             let facts = match shared_original_facts {
                 Some(shared) => shared,
                 None => {
-                    local_facts = ShaderStageFacts::new(original_stage, numeric_pass);
+                    local_facts = ShaderStageFacts::new(original_stage, pass);
                     &local_facts
                 }
             };
@@ -2018,19 +2012,16 @@ fn emit_shader(
     };
     let ProgramShaderFeatures { float64, integer8, integer16, acceleration, descriptor_indexing } = program_features;
     let (float32_preserve, float64_preserve) = if numeric_pass {
-        facts.float_preserve
+        facts.code.float_modes()
     } else {
         (false, false)
     };
     let ranks = matches!(pass, Pass::SortHistogram(_) | Pass::SortScatter(_));
-    let subgroups = if pass == Pass::Main {
-        crate::ir::dataflow::shader_subgroups(stage)
-    } else {
-        Default::default()
-    };
+    let empty_subgroups = Default::default();
+    let subgroups = if pass == Pass::Main { &facts.code.subgroups } else { &empty_subgroups };
     let subgroup_caps = subgroups.capabilities();
     let features = ShaderFeatures {
-        atomic64: u32::from(facts.atomic64),
+        atomic64: u32::from(facts.code.has_atomic64()),
         float64: u32::from(float64),
         integer8: u32::from(integer8),
         integer16: u32::from(integer16),

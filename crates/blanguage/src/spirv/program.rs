@@ -150,7 +150,7 @@ pub(crate) fn compile_stage(
     let [root_scan, tail_scan] = scan_shaders(
         &stage.operation, stage.selection.is_some(), program.buffers[stage.domain].count,
     );
-    let original_facts = (entries.original_main != 0).then(|| ShaderStageFacts::new(stage, true));
+    let original_facts = (entries.original_main != 0).then(|| ShaderStageFacts::new(stage, Pass::Main));
     let mut emit = |pass, kernel: Option<&PreparedReduction>, publishes_summary| {
         let (words, bytes) = emit_shader(
             program, stage, pass, &mut inputs, &tile_layout, features, kernel, original_facts.as_ref(), publishes_summary,

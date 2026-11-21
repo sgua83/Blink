@@ -519,10 +519,6 @@ pub(super) fn float_preserve(stage: &Stage, scalar: Scalar) -> bool {
     unsafe { b_float_preserve(Node::of(stage, Kind::Stage), requested, REGISTER_HOST) != 0 }
 }
 
-pub(crate) fn stage_float_preserve(stage: &Stage) -> (bool, bool) {
-    float_modes(unsafe { b_float_preserve(Node::of(stage, Kind::Stage), PRESERVE_FLOATS, REGISTER_HOST) })
-}
-
 unsafe extern "C" {
     #[link_name = "bootstrap.ir_dataflow::has_tile_scope"]
     fn b_has_tile_scope(code: Span, has_tiles: u32, host: Host) -> u32;
@@ -735,6 +731,17 @@ impl ShaderSubgroups {
     }
 }
 #[repr(C)]
+pub(crate) struct ShaderCodeRequirements {
+    pub(crate) subgroups: ShaderSubgroups,
+    atomic64: u32,
+    float_preserve: u32,
+}
+impl ShaderCodeRequirements {
+    pub(crate) fn has_atomic64(&self) -> bool { self.atomic64 != 0 }
+
+    pub(crate) fn float_modes(&self) -> (bool, bool) { float_modes(self.float_preserve) }
+}
+#[repr(C)]
 struct ProgramCodeRequirements {
     subgroup: SubgroupFlags,
     atomic64: u32,
@@ -748,8 +755,9 @@ unsafe extern "C" {
     fn b_has_subgroups(code: Span, host: Host) -> u32;
     #[link_name = "bootstrap.ir_dataflow::subgroup_operations"]
     fn b_subgroup_operations(code: Span, host: RegisterHost) -> u32;
-    #[link_name = "bootstrap.ir_dataflow::shader_subgroups"]
-    fn b_shader_subgroups(code: Span, host: RegisterHost) -> ShaderSubgroups;
+    #[link_name = "bootstrap.ir_dataflow::shader_code_requirements"]
+    fn b_shader_code_requirements(source: Node, requested: u32, subgroups: bool,
+        host: RegisterHost) -> ShaderCodeRequirements;
     #[link_name = "bootstrap.ir_dataflow::subgroup_from_operations"]
     fn b_subgroup_from_operations(context: *mut c_void,
         next: unsafe extern "C" fn(*mut c_void) -> Word) -> SubgroupFlags;
@@ -781,8 +789,11 @@ pub(super) fn subgroup_operations(stage: &Stage) -> BTreeSet<SubgroupOp> {
         .filter_map(|(bit, operation)| (used & (1 << bit) != 0).then_some(operation))
         .collect()
 }
-pub(crate) fn shader_subgroups(stage: &Stage) -> ShaderSubgroups {
-    unsafe { b_shader_subgroups(Span::slice(&stage.code), REGISTER_HOST) }
+pub(crate) fn shader_code_requirements(
+    stage: &Stage, float_preserve: bool, subgroups: bool,
+) -> ShaderCodeRequirements {
+    let requested = if float_preserve { PRESERVE_FLOATS } else { 0 };
+    unsafe { b_shader_code_requirements(Node::of(stage, Kind::Stage), requested, subgroups, REGISTER_HOST) }
 }
 pub(super) fn subgroup_from_operations<I: IntoIterator<Item = SubgroupOp>>(operations: I) -> SubgroupCapabilities {
     let mut operations = operations.into_iter();
@@ -937,14 +948,7 @@ pub(crate) fn numeric_requirements(program: &Program) -> (bool, bool, bool) {
     (flags.float64 != 0, flags.integer8 != 0, flags.integer16 != 0)
 }
 
-unsafe extern "C" {
-    #[link_name = "bootstrap.ir_dataflow::atomic64_requirements"]
-    fn b_atomic64_requirements(code: Span, host: RegisterHost) -> u32;
-}
 fn atomic64_flags(flags: u32) -> (bool, bool) { (flags & 1 != 0, flags & 2 != 0) }
-pub(super) fn atomic64_requirements(stage: &Stage) -> (bool, bool) {
-    atomic64_flags(unsafe { b_atomic64_requirements(Span::slice(&stage.code), REGISTER_HOST) })
-}
 
 unsafe extern "C" {
     #[link_name = "bootstrap.ir_dataflow::maximal_reconvergence"]
