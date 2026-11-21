@@ -54,12 +54,18 @@ fn mip_copies(dimensions: [u32; 3], levels: u32, texel_bytes: u64) -> (Vec<Buffe
     (copies, offset)
 }
 #[repr(C)]
+#[derive(Clone, Copy)]
 pub(super) struct SubresourceRange {
     pub(super) aspect: u32,
     pub(super) base_mip: u32,
     pub(super) levels: u32,
     pub(super) base_layer: u32,
     pub(super) layers: u32,
+}
+impl SubresourceRange {
+    fn color(levels: u32) -> Self {
+        Self { aspect: 1, base_mip: 0, levels, base_layer: 0, layers: 1 }
+    }
 }
 #[repr(C)]
 pub(super) struct ImageBarrier {
@@ -208,32 +214,37 @@ pub(super) struct Storage {
     inner: Rc<Inner>,
     image: u64,
     memory: u64,
-    view: u64,
     allocated_bytes: u64,
+}
+struct ImageView {
+    inner: Rc<Inner>,
+    handle: u64,
+}
+impl Drop for ImageView {
+    fn drop(&mut self) {
+        unsafe { (self.inner.functions.vkDestroyImageView)(self.inner.owner.device, self.handle, null()) };
+    }
+}
+struct SampledImage {
+    view: ImageView,
+    sampler: Rc<Sampler>,
+    storage: Storage,
     dimensions: [u32; 3],
     mips: u32,
     format: crate::TextureFormat,
 }
-impl Storage {
-    fn range(&self) -> SubresourceRange {
-        SubresourceRange {
-            aspect: 1,
-            base_mip: 0,
-            levels: self.mips,
-            base_layer: 0,
-            layers: 1,
-        }
-    }
-}
-// 最后一个图像引用结束时，尚在复制的存储交回原生产执行。
+// 采样视图与采样器在最后一个采样持有者退出时释放。原复制只接收图像分配。
 struct Image {
-    storage: ManuallyDrop<Storage>,
-    sampler: Rc<Sampler>,
+    sampled: ManuallyDrop<SampledImage>,
     produced: Rc<Execution>,
 }
 impl Drop for Image {
     fn drop(&mut self) {
-        self.produced.discard_image(unsafe { ManuallyDrop::take(&mut self.storage) });
+        let SampledImage { view, sampler, storage, .. } =
+            unsafe { ManuallyDrop::take(&mut self.sampled) };
+        drop(view);
+        drop(sampler);
+        self.produced.discard_image(storage);
     }
 }
 /// 一个既有二维mip在原GPU数据集中的记录布局；每条记录是一份已编码texel。
@@ -247,19 +258,19 @@ pub struct TextureCopyLevel {
 pub struct Texture<const D: usize = 2>(Rc<Image>);
 impl<const D: usize> Texture<D> {
     pub fn format(&self) -> crate::TextureFormat {
-        self.0.storage.format
+        self.0.sampled.format
     }
     pub fn address(&self) -> [crate::TextureAddress; D] {
-        std::array::from_fn(|i| self.0.sampler.address[i])
+        std::array::from_fn(|i| self.0.sampled.sampler.address[i])
     }
     pub fn dimensions(&self) -> [u32; D] {
-        std::array::from_fn(|i| self.0.storage.dimensions[i])
+        std::array::from_fn(|i| self.0.sampled.dimensions[i])
     }
     pub fn mip_count(&self) -> u32 {
-        self.0.storage.mips
+        self.0.sampled.mips
     }
     pub fn allocated_bytes(&self) -> u64 {
-        self.0.storage.allocated_bytes
+        self.0.sampled.storage.allocated_bytes
     }
     /// 只观察本张图像的生产复制，不代表后续采样消费者已经完成。
     pub fn is_complete(&self) -> Result<bool> {
@@ -272,12 +283,12 @@ impl<const D: usize> Texture<D> {
         &self.0.produced
     }
     pub(super) fn belongs_to(&self, inner: &Rc<Inner>) -> bool {
-        Rc::ptr_eq(&self.0.storage.inner, inner)
+        Rc::ptr_eq(&self.0.sampled.storage.inner, inner)
     }
     pub(super) fn descriptor(&self) -> DescriptorImageInfo {
         DescriptorImageInfo {
-            sampler: self.0.sampler.handle,
-            view: self.0.storage.view,
+            sampler: self.0.sampled.sampler.handle,
+            view: self.0.sampled.view.handle,
             layout: 5,
         }
     }
@@ -396,9 +407,9 @@ impl Device {
             }
         }
         let dependencies = dependencies.prepare()?;
-        let (texture, sampler) = self.create_image::<2>([dimensions[0], dimensions[1], 1],
+        let texture = self.create_image::<2>([dimensions[0], dimensions[1], 1],
             [address[0], address[1], crate::TextureAddress::Clamp], format, levels.len() as u32)?;
-        let texture = self.write_image(texture, sampler, None, dependencies, |commands, texture| {
+        let texture = self.write_image(texture, None, dependencies, |commands, texture| {
             commands.barrier(source_stage, 0x1000, source_access, 0x800);
             let mut size = dimensions;
             for (mip, level) in levels.iter().enumerate() {
@@ -417,7 +428,7 @@ impl Device {
     }
     fn upload_image<'a, const D: usize>(&self, dimensions: [u32; 3], address: [crate::TextureAddress; 3],
         format: crate::TextureFormat, levels: impl ExactSizeIterator<Item = &'a crate::TextureTexels>) -> Result<Texture<D>> {
-        let (texture, sampler) = self.create_image::<D>(dimensions, address, format, levels.len() as u32)?;
+        let texture = self.create_image::<D>(dimensions, address, format, levels.len() as u32)?;
         let (copies, bytes) = mip_copies(dimensions, texture.mips, format.texel_bytes() as u64);
         let staging = Allocation::new(self.inner.clone(), bytes, 1, 6, 1)?;
         let mapped = staging.mapping()?;
@@ -430,7 +441,7 @@ impl Device {
             }
         }
         let buffer = staging.buffer;
-        self.write_image(texture, sampler, Some(staging), Dependencies::Empty, |commands, texture| {
+        self.write_image(texture, Some(staging), Dependencies::Empty, |commands, texture| {
             unsafe {
                 (self.inner.functions.vkCmdCopyBufferToImage)(
                     commands.command, buffer, texture.image, 7, copies.len() as u32, copies.as_ptr(),
@@ -439,8 +450,8 @@ impl Device {
         })
     }
     fn create_image<const D: usize>(&self, dimensions: [u32; 3], address: [crate::TextureAddress; 3],
-        format: crate::TextureFormat, mips: u32) -> Result<(Storage, Rc<Sampler>)> {
-        let inner = self.inner.clone();
+        format: crate::TextureFormat, mips: u32) -> Result<SampledImage> {
+        let inner = &self.inner;
         let native_format = match format {
             crate::TextureFormat::Rgba32Float => 109,
             crate::TextureFormat::Rgba8Unorm => 37,
@@ -482,11 +493,7 @@ impl Device {
                 inner: inner.clone(),
                 image: 0,
                 memory: 0,
-                view: 0,
                 allocated_bytes: 0,
-                dimensions,
-                mips,
-                format,
             };
             let f = &inner.functions;
             let device = inner.owner.device;
@@ -499,7 +506,7 @@ impl Device {
                 height: dimensions[1],
                 depth: dimensions[2],
             };
-            ci.mips = texture.mips;
+            ci.mips = mips;
             ci.layers = 1;
             ci.samples = 1;
             ci.usage = 7;
@@ -538,19 +545,24 @@ impl Device {
                 view_type: D as u32 - 1,
                 format: native_format,
                 components: [0; 4],
-                range: texture.range(),
+                range: SubresourceRange::color(mips),
             };
+            let mut handle = 0;
             check(
-                (f.vkCreateImageView)(device, &vi, null(), &mut texture.view),
+                (f.vkCreateImageView)(device, &vi, null(), &mut handle),
                 "vkCreateImageView",
             )?;
-            Ok((texture, inner.sampler(address)?))
+            let view = ImageView { inner: inner.clone(), handle };
+            let sampler = inner.sampler(address)?;
+            Ok(SampledImage { view, sampler, storage: texture, dimensions, mips, format })
         }
     }
-    fn write_image<const D: usize>(&self, texture: Storage, sampler: Rc<Sampler>, staging: Option<Allocation>,
+    fn write_image<const D: usize>(&self, sampled: SampledImage, staging: Option<Allocation>,
         dependencies: Dependencies, record: impl FnOnce(&Commands, &Storage)) -> Result<Texture<D>> {
         let f = &self.inner.functions;
         let commands = Commands::new(self.inner.clone())?;
+        let texture = &sampled.storage;
+        let range = SubresourceRange::color(sampled.mips);
         unsafe {
             let barrier = ImageBarrier {
                 kind: 45,
@@ -562,7 +574,7 @@ impl Device {
                 source_family: u32::MAX,
                 target_family: u32::MAX,
                 image: texture.image,
-                range: texture.range(),
+                range,
             };
             (f.vkCmdPipelineBarrier)(
                 commands.command,
@@ -577,7 +589,7 @@ impl Device {
                 (&barrier as *const ImageBarrier).cast(),
             );
         }
-        record(&commands, &texture);
+        record(&commands, texture);
         unsafe {
             let barrier = ImageBarrier {
                 kind: 45,
@@ -589,7 +601,7 @@ impl Device {
                 source_family: u32::MAX,
                 target_family: u32::MAX,
                 image: texture.image,
-                range: texture.range(),
+                range,
             };
             (f.vkCmdPipelineBarrier)(
                 commands.command,
@@ -608,7 +620,7 @@ impl Device {
             ExecutionResources::ImageCopy { commands, _staging: staging, discarded: None },
             dependencies,
         )?;
-        Ok(Texture(Rc::new(Image { storage: ManuallyDrop::new(texture), sampler, produced })))
+        Ok(Texture(Rc::new(Image { sampled: ManuallyDrop::new(sampled), produced })))
     }
     /// 显式同步读回真实图像的全部 mip；返回独立 CPU 存储并恢复采样布局。
     pub fn download_texture(&self, source: &Texture) -> Result<crate::Texture2D> {
@@ -625,11 +637,12 @@ impl Device {
         if !source.belongs_to(&self.inner) {
             return Err(error("纹理属于另一设备"));
         }
-        let texture = &source.0.storage;
+        let sampled = &source.0.sampled;
+        let texture = &sampled.storage;
         let (copies, bytes) = mip_copies(
-            texture.dimensions,
-            texture.mips,
-            texture.format.texel_bytes() as u64,
+            sampled.dimensions,
+            sampled.mips,
+            sampled.format.texel_bytes() as u64,
         );
         let target = Allocation::new(self.inner.clone(), bytes, 2, 6, 1)?;
         let commands = Commands::new(self.inner.clone())?;
@@ -645,7 +658,7 @@ impl Device {
                 source_family: u32::MAX,
                 target_family: u32::MAX,
                 image: texture.image,
-                range: texture.range(),
+                range: SubresourceRange::color(sampled.mips),
             };
             (self.inner.functions.vkCmdPipelineBarrier)(
                 commands.command,
@@ -700,10 +713,10 @@ impl Device {
                 let width = copy.extent.width;
                 let height = copy.extent.height;
                 let depth = copy.extent.depth;
-                let count = width as usize * height as usize * depth as usize * texture.format.texel_bytes();
+                let count = width as usize * height as usize * depth as usize * sampled.format.texel_bytes();
                 let bytes =
                     unsafe { std::slice::from_raw_parts(mapped.add(copy.offset as usize), count) };
-                let pixels = crate::TextureTexels::from_bytes(texture.format, bytes)?;
+                let pixels = crate::TextureTexels::from_bytes(sampled.format, bytes)?;
                 levels.push(mip([width, height, depth], pixels));
             }
             Ok(())
@@ -716,9 +729,6 @@ impl Drop for Storage {
         unsafe {
             let f = &self.inner.functions;
             let device = self.inner.owner.device;
-            if self.view != 0 {
-                (f.vkDestroyImageView)(device, self.view, null());
-            }
             if self.image != 0 {
                 (f.vkDestroyImage)(device, self.image, null());
             }
