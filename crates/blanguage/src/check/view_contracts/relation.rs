@@ -620,7 +620,11 @@ impl Graph {
         let indices: BTreeMap<_, _> = order.iter().enumerate().map(|(i, &id)| (id, i)).collect();
         let fi: BTreeMap<_, _> = frames.iter().enumerate().map(|(i, &id)| (id, i)).collect();
         let nodes=order.iter().map(|&id|Node{seeds:self.nodes[id].seeds.clone(),edges:self.nodes[id].edges.iter().map(|edge|{let mut op=edge.op.clone();if let Op::Read{frame,..}|Op::Initial{frame,..}=&mut op{*frame=frame.map(|id|fi[&id]);}Edge{from:indices[&edge.from],op,when:edge.when.clone()}}).collect()}).collect();
-        let variables=self.variables.iter().filter_map(|id|indices.get(id).copied()).collect();let frames=frames.iter().map(|id|{let f=&self.frames[*id];Frame{parent:f.parent.map(|p|fi[&p]),writes:f.writes.iter().map(|w|Write{target:indices[&w.target],fields:w.fields.as_ref().map(|v|v.iter().map(|(word,id)|(*word,indices[id])).collect()),when:w.when.clone()}).collect()}}).collect();Self{nodes,variables,frames,inputs:BTreeMap::new()}
+        let variables=self.variables.iter().filter_map(|id|indices.get(id).copied()).collect();let frames=frames.iter().map(|id|{let f=&self.frames[*id];Frame{parent:f.parent.map(|p|fi[&p]),writes:f.writes.iter().map(|w|Write{target:indices[&w.target],fields:w.fields.as_ref().map(|v|v.iter().map(|(word,id)|(*word,indices[id])).collect()),when:w.when.clone()}).collect()}}).collect();
+        let inputs = self.inputs.iter().filter_map(|(input, id)| {
+            indices.get(id).map(|&id| (*input, id))
+        }).collect();
+        Self { nodes, variables, frames, inputs }
     }
     pub(in crate::check) fn has_local(&self, root: usize) -> bool {
         self.any_reachable(root, |node| node.seeds.has_local())
@@ -799,7 +803,7 @@ impl Graph {
                         inputs: graph.inputs.clone(),
                     })
                 };
-                Borrow::source(Origin::Relation(graph, root))
+                Borrow::source(Origin::Relation(Arc::new(graph.selected(root)), 0))
             },
             Origin::Element{parent,fields,index}=>Borrow::element(self.rebind(&parent,residual),fields,index),
             Origin::Projection{parent,fields}=>Borrow::projection(self.rebind(&parent,residual),fields),
