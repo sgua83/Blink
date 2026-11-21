@@ -39,19 +39,6 @@ impl crate::Compiler {
     }
 }
 
-#[repr(u32)]
-enum EntryOperation {
-    Map,
-    Reduce,
-    Scan,
-    Segmented,
-    Compact,
-    Sort,
-    CustomScan,
-    CustomSegmented,
-    CustomReduce,
-}
-
 #[allow(dead_code)]
 #[repr(u32)]
 enum EntryTail {
@@ -132,16 +119,12 @@ pub(crate) fn compile_stage(
     let can_use_single_group = program.buffers[stage.domain].count
         .is_none_or(|count| count <= layout.workgroup_width());
     let features = ProgramShaderFeatures::from(requirements);
-    let (operation, root_add, keys) = match &stage.operation {
-        Operation::Map => (EntryOperation::Map, false, 0),
-        Operation::Reduce(_) => (EntryOperation::Reduce, false, 0),
-        Operation::CustomReduce(_) => (EntryOperation::CustomReduce, false, 0),
-        Operation::ScanExclusive(scan) => (EntryOperation::Scan, scan.needs_root_add(program), 0),
-        Operation::CustomScan(scan) => (EntryOperation::CustomScan, scan.needs_root_add(program), 0),
-        Operation::SegmentedReduce(_) => (EntryOperation::Segmented, false, 0),
-        Operation::CustomSegmentedReduce(_) => (EntryOperation::CustomSegmented, false, 0),
-        Operation::Compact(_) => (EntryOperation::Compact, false, 0),
-        Operation::StableSort(sort) => (EntryOperation::Sort, false, sort.keys.len()),
+    let operation = EntryOperation::from(&stage.operation);
+    let (root_add, keys) = match &stage.operation {
+        Operation::ScanExclusive(scan) => (scan.needs_root_add(program), 0),
+        Operation::CustomScan(scan) => (scan.needs_root_add(program), 0),
+        Operation::StableSort(sort) => (false, sort.keys.len()),
+        _ => (false, 0),
     };
     let entries = unsafe { stage_entries(
         operation, u32::from(stage.selection.is_some()), u32::from(stage.prefix.is_some()),

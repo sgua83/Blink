@@ -3279,6 +3279,23 @@ extern "C" SortShaderEntry sort_shader_entry(usize index) on cpu {
  return SortShaderEntry(6,index-20u64);
 }
 
+extern "C" WorkgroupLayout workgroup_layout(
+    u32 operation, WorkgroupPass pass, u32 selected, u32 summary_words, u32 scan_width
+) on cpu {
+    bool main = pass == WorkgroupPass::Main;
+    bool tail = pass == WorkgroupPass::ScanTail;
+    bool scan = ((operation == ENTRY_SCAN || operation == ENTRY_CUSTOM_SCAN || operation == ENTRY_COMPACT) && (main || tail))
+        || (selected != 0 && (pass == WorkgroupPass::SelectionScan || tail))
+        || (operation == ENTRY_SORT && (pass == WorkgroupPass::SortScan || tail))
+        || ((operation == ENTRY_SEGMENTED || operation == ENTRY_CUSTOM_SEGMENTED)
+            && (main || tail || pass == WorkgroupPass::ScanRoot));
+    bool local_index = scan || ((operation == ENTRY_REDUCE || operation == ENTRY_CUSTOM_REDUCE)
+        && (main || pass == WorkgroupPass::ReductionTail));
+    bool ranks = pass == WorkgroupPass::SortHistogram || pass == WorkgroupPass::SortScatter;
+    u32 words = ranks ? 32 : (local_index ? scan_width * summary_words : 0);
+    return WorkgroupLayout(u32(scan), u32(local_index), u32(ranks), words);
+}
+
 extern "C" u32 custom_kernel_preparation(u32 pass,u32 segmented) on cpu {
  if(pass==3){return 0;}
  if(pass==0 || pass==2 && segmented!=0){return 1;}

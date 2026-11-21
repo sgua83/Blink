@@ -1,7 +1,7 @@
 //! 按 SPIR-V 1.4 标准直接编码；不调用 HLSL/GLSL 或第三方编译器。
 use crate::ir::*;
 use crate::builtin_types::{ScalarBinaryOp, ScalarCode};
-use super::{PAGE_BYTES, PREFIX_LEVELS, ProgramImage, ShaderCode, StageCode};
+use super::{PAGE_BYTES, PREFIX_LEVELS, SCAN_WIDTH, ProgramImage, ShaderCode, StageCode};
 #[path = "append.rs"]
 mod append;
 #[path = "atomic.rs"]
@@ -55,6 +55,71 @@ pub enum Pass {
     DispatchArguments(PrefixCount),
 }
 use std::collections::{BTreeMap, BTreeSet};
+
+#[repr(u32)]
+enum EntryOperation {
+    Map,
+    Reduce,
+    Scan,
+    Segmented,
+    Compact,
+    Sort,
+    CustomScan,
+    CustomSegmented,
+    CustomReduce,
+}
+
+impl<R> From<&Operation<R>> for EntryOperation {
+    fn from(operation: &Operation<R>) -> Self {
+        match operation {
+            Operation::Map => Self::Map,
+            Operation::Reduce(_) => Self::Reduce,
+            Operation::ScanExclusive(_) => Self::Scan,
+            Operation::SegmentedReduce(_) => Self::Segmented,
+            Operation::Compact(_) => Self::Compact,
+            Operation::StableSort(_) => Self::Sort,
+            Operation::CustomScan(_) => Self::CustomScan,
+            Operation::CustomSegmentedReduce(_) => Self::CustomSegmented,
+            Operation::CustomReduce(_) => Self::CustomReduce,
+        }
+    }
+}
+
+#[repr(u32)]
+enum WorkgroupPass {
+    Main, ReductionTail, ScanTail, ScanRoot, SelectionScan, SortScan, SortHistogram, SortScatter, Other,
+}
+
+impl From<Pass> for WorkgroupPass {
+    fn from(pass: Pass) -> Self {
+        match pass {
+            Pass::Main => Self::Main,
+            Pass::ReductionTail => Self::ReductionTail,
+            Pass::ScanTail => Self::ScanTail,
+            Pass::ScanRootAdd | Pass::SegmentedSingleGroup => Self::ScanRoot,
+            Pass::SelectionScan => Self::SelectionScan,
+            Pass::SortScan => Self::SortScan,
+            Pass::SortHistogram(_) => Self::SortHistogram,
+            Pass::SortScatter(_) => Self::SortScatter,
+            _ => Self::Other,
+        }
+    }
+}
+
+#[repr(C)]
+struct WorkgroupLayout {
+    scan: u32,
+    local_index: u32,
+    ranks: u32,
+    words: u32,
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.spirv_envelope::workgroup_layout"]
+    fn workgroup_layout(
+        operation: EntryOperation, pass: WorkgroupPass, selected: u32, summary_words: u32, scan_width: u32,
+    ) -> WorkgroupLayout;
+}
 
 #[repr(C)]
 struct ShaderFeatures {
@@ -2016,7 +2081,23 @@ fn emit_shader(
     } else {
         (false, false)
     };
-    let ranks = matches!(pass, Pass::SortHistogram(_) | Pass::SortScatter(_));
+    let summary_words = match &stage.operation {
+        Operation::Reduce(r) => r.ty.size.div_ceil(4),
+        Operation::CustomReduce(r) => r.ty.size.div_ceil(4),
+        Operation::CustomScan(r) => r.summary_words() as u32,
+        Operation::CustomSegmentedReduce(r) => r.summary_words() as u32,
+        Operation::ScanExclusive(r) => r.summary_words() as u32,
+        Operation::SegmentedReduce(r) => r.summary_words() as u32,
+        _ => 1,
+    };
+    let workgroup = unsafe {
+        workgroup_layout(
+            EntryOperation::from(&stage.operation), WorkgroupPass::from(pass),
+            u32::from(stage.selection.is_some()), summary_words, SCAN_WIDTH,
+        )
+    };
+    let scan_local = workgroup.scan != 0;
+    let ranks = workgroup.ranks != 0;
     let empty_subgroups = Default::default();
     let subgroups = if pass == Pass::Main { &facts.code.subgroups } else { &empty_subgroups };
     let subgroup_caps = subgroups.capabilities();
@@ -2129,27 +2210,11 @@ fn emit_shader(
     let push_ptr = e.declare_resource_block(u, length);
     e.push = e.declare_variable(StorageClass::PushConstant, push_ptr);
     e.ptr_push_u32 = e.declare_pointer(StorageClass::PushConstant, u);
-    let scan_local = (matches!(
-        stage.operation,
-        Operation::ScanExclusive(_) | Operation::CustomScan(_) | Operation::Compact(_)
-    ) && matches!(pass, Pass::Main | Pass::ScanTail))
-        || (stage.selection.is_some() && matches!(pass, Pass::SelectionScan | Pass::ScanTail))
-        || (matches!(stage.operation, Operation::StableSort(_))
-            && matches!(pass, Pass::SortScan | Pass::ScanTail))
-        || (matches!(
-            stage.operation,
-            Operation::SegmentedReduce(_) | Operation::CustomSegmentedReduce(_)
-        ) && matches!(pass, Pass::Main | Pass::ScanTail | Pass::ScanRootAdd));
-    let reduction = (matches!(
-        stage.operation,
-        Operation::Reduce(_) | Operation::CustomReduce(_)
-    ) && matches!(pass, Pass::Main | Pass::ReductionTail))
-        || scan_local;
     let shared_scalar = Scalar::U32;
     let mut local_input = 0;
     let mut shared = 0;
     let mut shared_pointer = 0;
-    if reduction {
+    if workgroup.local_index != 0 {
         let input_ptr = e.declare_pointer(StorageClass::Input, u);
         local_input = e.declare_annotated(VariableAnnotation::BuiltIn, input_ptr, 29);
     }
@@ -2177,25 +2242,8 @@ fn emit_shader(
         }
     }
     let mut shared_bytes = 0u64;
-    if reduction || ranks {
-        let words =
-            if ranks {
-                32
-            } else if let Operation::Reduce(r) = &stage.operation {
-                64 * r.ty.size.div_ceil(4)
-            } else if let Operation::CustomReduce(r) = &stage.operation {
-                64 * r.ty.size.div_ceil(4)
-            } else if let Operation::CustomScan(r) = &stage.operation {
-                64 * r.summary_words() as u32
-            } else if let Operation::CustomSegmentedReduce(r) = &stage.operation {
-                64 * r.summary_words() as u32
-            } else if let Operation::ScanExclusive(r) = &stage.operation {
-                64 * r.summary_words() as u32
-            } else if let Operation::SegmentedReduce(r) = &stage.operation {
-                64 * r.summary_words() as u32
-            } else {
-                64
-            };
+    if workgroup.local_index != 0 || ranks {
+        let words = workgroup.words;
         shared_bytes += u64::from(words) * 4;
         let count = e.constant(Scalar::U32, words);
         let array = e.declare_type(TypeShape::Array, e.types[&shared_scalar], count);

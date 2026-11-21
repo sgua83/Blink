@@ -1004,5 +1004,15 @@ struct SortShaderEntry { u32 kind; usize parameter; };
 extern "C" StageEntries stage_entries(u32 operation,u32 selected,u32 prefix,u32 root_add,usize keys) on cpu;
 extern "C" SortShaderEntry sort_shader_entry(usize index) on cpu;
 
+enum WorkgroupPass:u32 {
+    Main=0; ReductionTail=1; ScanTail=2; ScanRoot=3; SelectionScan=4;
+    SortScan=5; SortHistogram=6; SortScatter=7; Other=8;
+};
+
+struct WorkgroupLayout { u32 scan; u32 local_index; u32 ranks; u32 words; };
+extern "C" WorkgroupLayout workgroup_layout(
+    u32 operation, WorkgroupPass pass, u32 selected, u32 summary_words, u32 scan_width
+) on cpu;
+
 // The pass class is Main, Add, Root, Arguments, or the remaining identity-bearing pass.
 extern "C" u32 custom_kernel_preparation(u32 pass,u32 segmented) on cpu;
