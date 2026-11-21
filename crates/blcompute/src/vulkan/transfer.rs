@@ -262,13 +262,12 @@ impl<'a> Readback<'a> {
         }
     }
 
-    pub(super) fn download_cpu(&mut self, data: &GpuDataset) -> Result<crate::cpu::CpuDataset> {
+    pub(super) fn download_cpu(&mut self, data: GpuDataset) -> Result<CpuDataset> {
         match &*data.storage {
-            DatasetStorage::Owned(_) => self.download_graph(data).map(Into::into),
+            DatasetStorage::Owned(_) => self.download_graph(&data).map(Into::into),
             DatasetStorage::Read(source) => {
                 let key = Rc::as_ptr(&source.0) as usize;
-                self.download_read(data, key)
-                    .map(|target| target.binding())
+                self.download_read(&data, key).map(Into::into)
             }
         }
     }
