@@ -82,6 +82,7 @@ impl Module {
         ).map_err(|error| std::io::Error::other(error.to_string()))?;
         let (compiled_resources, resource_code, resource_imports) =
             crate::application::compile_resources(&self.name, resources.as_deref(), false, worker, has_tasks)?;
+        let factory_entry_count = resource_code.len();
         let resource_names: Vec<_> = resource_code.iter().map(|(name, _)| name.clone()).collect();
         code.extend(resource_code);
         let mut imports = self.imports.clone();
@@ -91,11 +92,10 @@ impl Module {
             .map(|(_, code)| code.stack_bytes)
             .max()
             .unwrap_or(0);
-        let (sections, positions, stack) = object::module_code(
-            code,
-            &imports,
-            &crate::application::resource_prefix(&self.name),
+        let emitted = object::module_code(
+            code, factory_entry_count, &imports, &crate::application::resource_prefix(&self.name),
         )?;
+        let positions = emitted.positions;
         let symbols = self
             .exports
             .iter()
@@ -120,14 +120,14 @@ impl Module {
                 requirements: self.requirements.clone(),
                 stack_bytes,
             },
-            sections,
-            stack,
+            sections: emitted.sections,
+            stack: emitted.stack,
             symbols,
             imports,
             archive,
         };
         if let Some(factory) = factory {
-            factory.emit(&mut object, &positions);
+            factory.emit(&mut object, emitted.factory_entries);
         }
         Ok(object)
     }

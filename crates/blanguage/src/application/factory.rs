@@ -1,11 +1,12 @@
 //! 资源工厂在原编译COFF持有已编码映像和代码地址表。
 use crate::object::{Definition, Object, Relocation, ResourceBinding, Section, Symbol, Target, stack::Frame};
-use std::collections::BTreeMap;
-
 pub(crate) struct ResourceFactory {
-    pub(crate) binding: ResourceBinding,
-    pub(crate) image: Vec<u8>,
-    pub(crate) ranges_symbol: Option<String>,
+    prefix: String,
+    factory: String,
+    types: u32,
+    programs: u32,
+    image: Vec<u8>,
+    ranges_symbol: Option<String>,
 }
 
 #[repr(C)]
@@ -21,24 +22,29 @@ unsafe extern "C" {
 }
 
 impl ResourceFactory {
-    pub(crate) fn emit(
-        self, object: &mut Object, positions: &BTreeMap<String, (usize, u32)>,
-    ) {
-        let Self { mut binding, image, ranges_symbol } = self;
-        let factory = format!("{}_resources", binding.prefix);
+    pub(crate) fn new(
+        prefix: String, types: u32, programs: u32, image: Vec<u8>, ranges_symbol: Option<String>,
+    ) -> Self {
+        let factory = format!("{prefix}_resources");
+        Self { prefix, factory, types, programs, image, ranges_symbol }
+    }
+
+    pub(crate) fn symbol(&self) -> &str {
+        &self.factory
+    }
+
+    pub(crate) fn emit(self, object: &mut Object, entries: Vec<Relocation>) {
+        let Self { prefix, factory, types, programs, image, ranges_symbol } = self;
         let bytes = image.len() as u64;
-        let codes = binding.code.len() as u64;
+        let codes = entries.len() as u64;
         let image_section = object.sections.len();
         object.sections.push(read_only(image, Vec::new()));
-        let ranges_section = if binding.code.is_empty() {
+        let ranges_section = if entries.is_empty() {
             // An empty slice still carries a valid aligned address.
             image_section
         } else {
-            let relocations = binding.code.iter().enumerate().map(|(index, name)| Relocation {
-                offset: index * 8, kind: 1, target: Target::Section(positions[name].0, 0),
-            }).collect();
             let section = object.sections.len();
-            object.sections.push(read_only(vec![0; binding.code.len() * 8], relocations));
+            object.sections.push(read_only(vec![0; entries.len() * 8], entries));
             section
         };
         let mut entry = vec![0; 64];
@@ -64,9 +70,9 @@ impl ResourceFactory {
             });
         }
         object.stack.push(Frame { name: factory.clone(), coff: Some((section, 0)), local: 0, calls: Vec::new() });
-        binding.code.clear();
-        binding.code.push(factory);
-        object.archive.as_mut().unwrap().resources = Some(binding);
+        object.archive.as_mut().unwrap().resources = Some(ResourceBinding {
+            prefix, types, programs, abi: crate::resource::ABI.to_vec(), code: vec![factory],
+        });
     }
 }
 

@@ -144,21 +144,30 @@ fn print(scalar: crate::ir::Scalar) -> Helper {
     ]);
     Helper { local: encoded.local, bytes, patches, unwind }
 }
+pub(crate) struct EmittedFunctions {
+    pub(crate) sections: Vec<Section>,
+    pub(crate) positions: BTreeMap<String, (usize, u32)>,
+    pub(crate) stack: Vec<Frame>,
+    pub(crate) factory_entries: Vec<Relocation>,
+}
+
 pub(crate) fn application(
     native: NativeCode,
     defined: Vec<(String, NativeCode)>,
+    factory_entry_count: usize,
     imports: &BTreeMap<String, Vec<u8>>,
     prefix: &str,
     name: &str,
-) -> Result<(Vec<Section>, BTreeMap<String, (usize, u32)>, Vec<Frame>)> {
-    functions(Some((name.into(), native)), defined, imports, prefix)
+) -> Result<EmittedFunctions> {
+    functions(Some((name.into(), native)), defined, factory_entry_count, imports, prefix)
 }
 pub(crate) fn module(
     defined: Vec<(String, NativeCode)>,
+    factory_entry_count: usize,
     imports: &BTreeMap<String, Vec<u8>>,
     prefix: &str,
-) -> Result<(Vec<Section>, BTreeMap<String, (usize, u32)>, Vec<Frame>)> {
-    functions(None, defined, imports, prefix)
+) -> Result<EmittedFunctions> {
+    functions(None, defined, factory_entry_count, imports, prefix)
 }
 fn native_calls(calls: Vec<Option<usize>>, relocations: &[crate::native::Relocation]) -> Vec<Call> {
     // The emitter appends both sequences in machine-field order.
@@ -175,9 +184,10 @@ fn native_calls(calls: Vec<Option<usize>>, relocations: &[crate::native::Relocat
 fn functions(
     native: Option<(String, NativeCode)>,
     defined: Vec<(String, NativeCode)>,
+    factory_entry_count: usize,
     imports: &BTreeMap<String, Vec<u8>>,
     prefix: &str,
-) -> Result<(Vec<Section>, BTreeMap<String, (usize, u32)>, Vec<Frame>)> {
+) -> Result<EmittedFunctions> {
     let mut sections = Vec::new();
     let mut frames = Vec::new();
     let mut images = Vec::new();
@@ -203,9 +213,17 @@ fn functions(
         images.push((main, native.relocations));
     }
     let mut targets = BTreeMap::new();
-    for (name, code) in defined {
+    // Callers append factory entries in the same order used by the encoded indices.
+    let first_factory_entry = defined.len() - factory_entry_count;
+    let mut factory_entries = Vec::with_capacity(factory_entry_count);
+    for (index, (name, code)) in defined.into_iter().enumerate() {
         let calls = native_calls(code.calls, &code.relocations);
         let text = function(&mut sections, &mut frames, name.clone(), code.stack_bytes, calls, code.bytes, Some((code.function_end.try_into()?, code.unwind)), code.tail_regions.map(|tails| Layout::Function { tails, references: code.tail_references, sources: code.sources }));
+        if let Some(entry) = index.checked_sub(first_factory_entry) {
+            factory_entries.push(Relocation {
+                offset: entry * 8, kind: 1, target: Target::Section(text, 0),
+            });
+        }
         symbols.insert(name.clone(), (text, 0));
         targets.insert(NativeSymbol::Function(name), text);
         images.push((text, code.relocations));
@@ -259,5 +277,5 @@ fn functions(
             sections[section].relocations.push(Relocation { offset: relocation.offset, kind: 1, target });
         }
     }
-    Ok((sections, symbols, frames))
+    Ok(EmittedFunctions { sections, positions: symbols, stack: frames, factory_entries })
 }

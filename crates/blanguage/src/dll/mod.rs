@@ -265,13 +265,14 @@ pub(crate) fn compile_in(worker: &crate::compiler::Worker, program: &ExecutableP
     let mut imports = program.imports.clone();
     imports.extend(program.resources.iter().flat_map(|resources| &resources.programs)
         .flat_map(|(_, program)| program.imports.clone()));
-    let (sections, positions, stack) = crate::object::module_code(functions, &imports, &prefix)?;
+    let factory_entry_count = resources.as_ref().map_or(0, |_| functions.len());
+    let emitted = crate::object::module_code(functions, factory_entry_count, &imports, &prefix)?;
     let mut exports: Vec<String> = ["create", "run", "destroy"]
         .into_iter()
         .map(|n| format!("{prefix}_{n}"))
         .collect();
     if let Some(resource) = &resources {
-        exports.push(format!("{}_resources", resource.binding.prefix));
+        exports.push(resource.symbol().to_owned());
     }
     let archive = crate::object::compile_archive(Some(native), exports, true, worker)?;
     let mut object = crate::object::Object {
@@ -281,15 +282,16 @@ pub(crate) fn compile_in(worker: &crate::compiler::Worker, program: &ExecutableP
             header,
             binding,
         },
-        sections, stack,
+        sections: emitted.sections,
+        stack: emitted.stack,
         symbols: Vec::new(),
         imports,
         archive: Some(archive),
     };
     if let Some(factory) = resources {
-        factory.emit(&mut object, &positions);
+        factory.emit(&mut object, emitted.factory_entries);
     }
-    object.symbols.extend(positions.into_iter().map(|(name, (section, value))| crate::object::Symbol {
+    object.symbols.extend(emitted.positions.into_iter().map(|(name, (section, value))| crate::object::Symbol {
         definition: crate::object::Definition { name, section, value, function: true },
         contract: Vec::new(),
     }));

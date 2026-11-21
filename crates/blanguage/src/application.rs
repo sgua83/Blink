@@ -56,6 +56,7 @@ impl Application {
             |_, function| native::emit_function(function).map(|code| (function.name.clone(), code)))
             .map_err(|error| std::io::Error::other(error.to_string()))?;
         let (compiled_resources, resource_code, resource_imports) = compile_resources(&self.name, resources.as_deref(), true, worker, has_tasks)?;
+        let factory_entry_count = resource_code.len();
         let resource_names: Vec<_> = resource_code.iter().map(|(name, _)| name.clone()).collect();
         functions.extend(resource_code);
         let mut imports = self.imports.clone();
@@ -63,8 +64,10 @@ impl Application {
         for (_, function) in &functions {
             stack_bytes = stack_bytes.max(function.stack_bytes);
         }
-        let (sections, positions, stack) =
-            object::application_code(code, functions, &imports, &resource_prefix(&self.name), &self.name)?;
+        let emitted = object::application_code(
+            code, functions, factory_entry_count, &imports, &resource_prefix(&self.name), &self.name,
+        )?;
+        let positions = emitted.positions;
         let symbols = std::iter::once("main".to_owned()).chain(resource_names).map(|name| object::Symbol {
             definition: object::Definition {
                 section: positions[&name].0, value: positions[&name].1, name, function: true,
@@ -75,14 +78,14 @@ impl Application {
         let mut object = Object {
             name: self.name.clone(),
             kind: Kind::Application { stack_bytes },
-            sections,
-            stack,
+            sections: emitted.sections,
+            stack: emitted.stack,
             symbols,
             imports,
             archive,
         };
         if let Some(factory) = factory {
-            factory.emit(&mut object, &positions);
+            factory.emit(&mut object, emitted.factory_entries);
         }
         Ok(object)
     }
@@ -153,19 +156,11 @@ pub(crate) fn compile_resources(
             exports.extend(["blink_create".into(), "blink_application_error".into()]);
         }
         if has_tasks { exports.push(format!("{prefix}_task_start")); }
-        exports.push(format!("{prefix}_resources"));
+        let factory = factory::ResourceFactory::new(
+            prefix, types, u32::try_from(resources.programs.len())?, image, None,
+        );
+        exports.push(factory.symbol().to_owned());
         let archive = object::compile_archive(native, exports, root, worker)?;
-        let factory = factory::ResourceFactory {
-            binding: object::ResourceBinding {
-                prefix,
-                types,
-                programs: u32::try_from(resources.programs.len())?,
-                abi: crate::resource::ABI.to_vec(),
-                code: code.iter().map(|(name, _)| name.clone()).collect(),
-            },
-            image,
-            ranges_symbol: None,
-        };
         (Some((archive, factory)), code, imports)
     } else {
         (None, Vec::new(), std::collections::BTreeMap::new())

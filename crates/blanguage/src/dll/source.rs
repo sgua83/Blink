@@ -96,15 +96,10 @@ pub(super) fn compile(
         let code = if let Some(module) = root.resources.take() {
             let resource_prefix = crate::application::resource_prefix(p.name());
             let ranges = format!("{resource_prefix}_ranges");
-            resources = Some(ResourceFactory {
-                binding: crate::object::ResourceBinding {
-                    prefix: resource_prefix, types: module.types.len().try_into()?,
-                    programs: module.images.len().try_into()?, abi: crate::resource::ABI.to_vec(),
-                    code: functions.iter().map(|(name, _)| name.clone()).collect(),
-                },
-                image: crate::resource::linked_output(&module),
-                ranges_symbol: Some(ranges.clone()),
-            });
+            resources = Some(ResourceFactory::new(
+                resource_prefix, module.types.len().try_into()?, module.images.len().try_into()?,
+                crate::resource::linked_output(&module), Some(ranges.clone()),
+            ));
             Address::Symbol(ranges)
         } else if functions.is_empty() {
             // The CPU runtime borrows an aligned slice even when it has no entries.
