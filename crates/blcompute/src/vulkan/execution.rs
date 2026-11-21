@@ -290,12 +290,22 @@ impl ExecutionResources {
         }
     }
 }
+enum DiscardedDataset {
+    Owned {
+        _binding_table: Allocation,
+        _pages: Vec<Allocation>,
+        _sources: Vec<ReadDataset>,
+        _instances: Option<ray::InstanceInput>,
+    },
+    Read { _source: ReadDataset },
+}
+
 pub(super) struct Execution {
     pub point: Completion,
     resources: RefCell<Option<ExecutionResources>>,
     // Some(empty) is still a live execution whose dependency list has not been moved.
     dependencies: RefCell<Option<Vec<Rc<Self>>>>,
-    discarded: RefCell<Vec<DatasetStorage>>,
+    discarded: RefCell<Vec<DiscardedDataset>>,
     discarded_structures: RefCell<Vec<ray::StructureStorage>>,
 }
 
@@ -361,17 +371,33 @@ impl Execution {
     pub(super) fn uploads_dataset_graph(&self) -> bool {
         matches!(self.resources.borrow().as_ref(), Some(ExecutionResources::DatasetUpload { .. }))
     }
-    pub fn discard(&self, mut storage: DatasetStorage) {
+    pub fn discard(&self, storage: DatasetStorage) {
         if matches!(self.point.result.get(), Some(0 | -4)) {
             drop(storage);
-        } else {
-            if self.uploads_dataset_graph() && let DatasetStorage::Owned(target) = &mut storage {
-                // Initial copies access only these destination pages. Releasing the
-                // dead graph here also releases references to this very execution.
-                drop(std::mem::take(&mut target.views));
-            }
-            self.discarded.borrow_mut().push(storage);
+            return;
         }
+        let storage = match storage {
+            DatasetStorage::Owned(GpuStorage {
+                allocation, pages, views: Views { sources, .. }, instances, ..
+            }) => {
+                let sources = if self.uploads_dataset_graph() {
+                    // Initial copies access only these destination pages. Releasing the
+                    // dead graph here also releases references to this very execution.
+                    drop(sources);
+                    Vec::new()
+                } else {
+                    sources
+                };
+                DiscardedDataset::Owned {
+                    _binding_table: allocation,
+                    _pages: pages,
+                    _sources: sources,
+                    _instances: instances,
+                }
+            }
+            DatasetStorage::Read(source) => DiscardedDataset::Read { _source: source },
+        };
+        self.discarded.borrow_mut().push(storage);
     }
     pub fn discard_structure(&self, storage: ray::StructureStorage) {
         if matches!(self.point.result.get(), Some(0 | -4)) {
