@@ -81,7 +81,11 @@ pub struct Module<C = native::NativeCode> {
     pub images: Vec<Image<TemplateProgram, C>>,
 }
 #[cfg(feature = "compiler")]
-pub(crate) fn compile_image( resources: &crate::application::Resources, worker: &crate::compiler::Worker) -> codec::Result<Module> {
+fn compile_images<C>(
+    resources: &crate::application::Resources,
+    worker: &crate::compiler::Worker,
+    mut cpu_stage: impl FnMut(native::StageCode) -> native::StageCode<C>,
+) -> codec::Result<Vec<Image<TemplateProgram, C>>> {
     let requirements: Vec<_> = resources.programs.iter().map(|(_, program)| program.requirements()).collect();
     let cpu_jobs = resources.programs.iter().enumerate()
         .filter(|(_, (target, _))| *target == Target::Cpu)
@@ -109,7 +113,10 @@ pub(crate) fn compile_image( resources: &crate::application::Resources, worker: 
     let images = resources.programs.iter().zip(requirements).map(|((target, program), requirements)| {
         let count = program.stages().len();
         if *target == Target::Cpu {
-            let (layout, stages) = (0..count).map(|_| cpu.next().unwrap()).unzip();
+            let (layout, stages) = (0..count).map(|_| {
+                let (layout, stage) = cpu.next().unwrap();
+                (layout, cpu_stage(stage))
+            }).unzip();
             let plan = ExecutionPlan::from_program(program, layout, requirements);
             let image = unsafe { native::ProgramImage::from_compiler_output(plan, stages, Vec::new(), None) };
             Image::Cpu(image)
@@ -119,17 +126,30 @@ pub(crate) fn compile_image( resources: &crate::application::Resources, worker: 
             Image::Gpu(unsafe { spirv::ProgramImage::from_compiler_output(plan, stages) })
         }
     }).collect();
+    Ok(images)
+}
+
+#[cfg(feature = "compiler")]
+pub(crate) fn compile_image(
+    resources: &crate::application::Resources,
+    worker: &crate::compiler::Worker,
+) -> codec::Result<Module> {
+    let images = compile_images(resources, worker, std::convert::identity)?;
     Ok(Module { types: resources.types.clone(), images })
 }
+
 #[cfg(feature = "compiler")]
 pub(crate) fn compile(resources: &crate::application::Resources,worker:&crate::compiler::Worker)
     -> codec::Result<(Vec<u8>, Vec<native::NativeCode>, std::collections::BTreeMap<String, Vec<u8>>)> {
-    let mut code=Vec::new();let module=compile_image(resources,worker)?;
-    let images=module.images.into_iter().map(|image|match image{
-        Image::Cpu(image)=>Image::Cpu(image.map_code(|entry|{let index=code.len();code.push(entry);index})),
-        Image::Gpu(image)=>Image::Gpu(image),
-    }).collect();
-    let bytes=compiler_output(&Module{types:module.types,images});
+    let mut code = Vec::new();
+    let images = compile_images(resources, worker, |stage| {
+        stage.map_code(|entry| {
+            let index = code.len();
+            code.push(entry);
+            index
+        })
+    })?;
+    let bytes = image_codec::linked_module_bytes(&resources.types, &images);
     let imports=resources.programs.iter().flat_map(|(_,program)|program.imports.clone()).collect();
     Ok((bytes,code,imports))
 }

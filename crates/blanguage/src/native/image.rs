@@ -206,6 +206,31 @@ pub struct ProgramImage<P, C = NativeCode> {
     pub(crate) resources: Option<crate::resource::Module<C>>,
     pub(crate) module_code: Option<super::ModuleCode>,
 }
+impl<C> StageCode<C> {
+    pub(crate) fn map_code<D>(self, mut code: impl FnMut(C) -> D) -> StageCode<D> {
+        match self {
+            Self::Element { main, continuation, result } => {
+                let main = code(main);
+                let continuation = continuation.map(|continuation| match continuation {
+                    ContinuationCode::ReductionTail(entry) => ContinuationCode::ReductionTail(code(entry)),
+                    ContinuationCode::ScanAdd(entry) => ContinuationCode::ScanAdd(code(entry)),
+                    ContinuationCode::CompactScatter(entry) => ContinuationCode::CompactScatter(code(entry)),
+                    ContinuationCode::SegmentedFinish(entry) => ContinuationCode::SegmentedFinish(code(entry)),
+                    ContinuationCode::Scan { prefix, apply, source, target } => ContinuationCode::Scan {
+                        prefix: code(prefix), apply: code(apply), source, target,
+                    },
+                });
+                StageCode::Element { main, continuation, result }
+            }
+            Self::Sort(sort) => StageCode::Sort(SortCode {
+                source: sort.source, target: sort.target,
+                initialize: sort.initialize.into_iter().map(&mut code).collect(),
+                histogram: code(sort.histogram), scatter: code(sort.scatter), gather: code(sort.gather),
+            }),
+        }
+    }
+}
+
 impl<P, C> ProgramImage<P, C> {
     /// 恢复本版本编译器输出的原生代码与执行布局。
     ///
@@ -278,25 +303,9 @@ impl<P, C> ProgramImage<P, C> {
         self.map_code_with(&mut |_, value| code(value))
     }
     pub(crate) fn map_code_with<D, F: FnMut(Option<&str>, C) -> D>(self, code: &mut F) -> ProgramImage<P, D> {
-        let stages = self.stages.into_iter().map(|stage| match stage {
-            StageCode::Element { main, continuation, result } => {
-                let main = code(None,main);
-                let continuation = continuation.map(|continuation| match continuation {
-                    ContinuationCode::ReductionTail(c) => ContinuationCode::ReductionTail(code(None,c)),
-                    ContinuationCode::ScanAdd(c) => ContinuationCode::ScanAdd(code(None,c)),
-                    ContinuationCode::CompactScatter(c) => ContinuationCode::CompactScatter(code(None,c)),
-                    ContinuationCode::SegmentedFinish(c) => ContinuationCode::SegmentedFinish(code(None,c)),
-                    ContinuationCode::Scan { prefix, apply, source, target } =>
-                        ContinuationCode::Scan { prefix: code(None,prefix), apply: code(None,apply), source, target },
-                });
-                StageCode::Element { main, continuation, result }
-            }
-            StageCode::Sort(c) => StageCode::Sort(SortCode {
-                source: c.source, target: c.target,
-                initialize: c.initialize.into_iter().map(|value| code(None,value)).collect(),
-                histogram: code(None,c.histogram), scatter: code(None,c.scatter), gather: code(None,c.gather),
-            }),
-        }).collect();
+        let stages = self.stages.into_iter()
+            .map(|stage| stage.map_code(|entry| code(None, entry)))
+            .collect();
         let functions = self.functions.into_iter().map(|(name, function)| {let value=code(Some(&name),function);(name,value)}).collect();
         let resources=self.resources.map(|module|crate::resource::Module{
             types:module.types,

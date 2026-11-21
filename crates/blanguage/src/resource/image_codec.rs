@@ -97,14 +97,65 @@ dispatch:Option<Vec<u32>>,
 selector:Option<Vec<u32>>,
 additional:Option<Vec<spirv::ShaderCode>>,
 },{});
-projected_record!(@ [],Module<native::NativeCode>,"codec.value_format::resource_write_module","codec.value_format::resource_read_module",{
-types:Vec<Ty>,
-images:Vec<Image<TemplateProgram,native::NativeCode>>,
-},{});
-projected_record!(@ [],Module<usize>,"codec.value_format::resource_write_module","codec.value_format::resource_read_module",{
-types:Vec<Ty>,
-images:Vec<Image<TemplateProgram,usize>>,
-},{});
+#[repr(C)]
+struct ModuleFields<T> {
+    types: T,
+    images: T,
+}
+
+unsafe extern "C" {
+    #[link_name = "codec.value_format::resource_write_module"]
+    fn module_write(output: Slot, fields: ModuleFields<Slot>, host: ModuleFields<Write>);
+    #[link_name = "codec.value_format::resource_read_module"]
+    fn module_read(context: Slot, fields: ModuleFields<Slot>, host: ModuleFields<Read>) -> ReadStatus;
+}
+
+unsafe fn write_module<C>(types: &[Ty], images: &[Image<TemplateProgram, C>], output: Slot)
+where
+    Image<TemplateProgram, C>: Native,
+{
+    unsafe {
+        module_write(output, ModuleFields {
+            types: contracts::address(&types).cast_mut(),
+            images: contracts::address(&images).cast_mut(),
+        }, ModuleFields {
+            types: contracts::write_slice_value::<Ty>,
+            images: contracts::write_slice_value::<Image<TemplateProgram, C>>,
+        })
+    }
+}
+
+impl<C> Native for Module<C>
+where
+    Image<TemplateProgram, C>: Native,
+{
+    fn empty() -> Self {
+        Self { types: Vec::new(), images: Vec::new() }
+    }
+    unsafe fn write(&self, output: Slot) {
+        unsafe { write_module(&self.types, &self.images, output) }
+    }
+    unsafe fn read(context: Slot, output: &mut Self) -> ReadStatus {
+        unsafe {
+            module_read(context, ModuleFields {
+                types: contracts::slot(&mut output.types),
+                images: contracts::slot(&mut output.images),
+            }, ModuleFields {
+                types: contracts::read_value::<Vec<Ty>>,
+                images: contracts::read_value::<Vec<Image<TemplateProgram, C>>>,
+            })
+        }
+    }
+}
+contracts::codec!(Module<native::NativeCode>);
+contracts::codec!(Module<usize>);
+
+#[cfg(feature = "compiler")]
+pub(super) fn linked_module_bytes(types: &[Ty], images: &[Image<TemplateProgram, usize>]) -> Vec<u8> {
+    let mut output = Writer(ABI.to_vec());
+    unsafe { write_module(types, images, contracts::slot(&mut output)) };
+    output.0
+}
 
 const _: () = {
     type Value = Image<TemplateProgram, native::NativeCode>;
