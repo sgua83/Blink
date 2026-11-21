@@ -3136,12 +3136,10 @@ impl GpuTemplate {
     pub(crate) fn submit_projected(
         &self,
         datasets: &mut [&mut GpuDataset],
-        domains: &[crate::DomainRelation],
         arguments: &FrameArguments<'_>,
         uniforms: Vec<u32>,
     ) -> Result<GpuCompletion> {
         let slots = StorageSlots::Frame(arguments);
-        bindings::require(|slot| datasets.get(slot).map(|data| &**data), domains, self.program(), slots)?;
         self.code.submit_mapped(datasets, DependencySources::default(), &[], Vec::new(),
             uniforms, NonZeroU32::MIN, slots)
     }

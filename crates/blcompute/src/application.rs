@@ -504,7 +504,6 @@ impl Frame {
                 if cpu_resident {
                     return Err(error("GPU 执行需要先显式 upload 数据"));
                 }
-                let gpu_program = Self::load_gpu(definitions, &mut self.gpu_programs, &mut self.device, index, image)?;
                 let mut datasets = Vec::with_capacity(arguments.owner_count);
                 let slots = self.data.datasets.as_mut_ptr();
                 for handle in arguments.selected_handles() {
@@ -514,8 +513,12 @@ impl Frame {
                     };
                     datasets.push(data);
                 }
-                let result = gpu_program.submit_projected(&mut datasets, &self.data.domains,
-                    &arguments, uniforms).and_then(|completion| {
+                let storage_slots = bindings::StorageSlots::Frame(&arguments);
+                bindings::require(|slot| datasets.get(slot).map(|data| &**data),
+                    &self.data.domains, layout, storage_slots)
+                    .inspect_err(|_| self.data.domains.sort_unique())?;
+                let gpu_program = Self::load_gpu(definitions, &mut self.gpu_programs, &mut self.device, index, image)?;
+                let result = gpu_program.submit_projected(&mut datasets, &arguments, uniforms).and_then(|completion| {
                     let result = completion.wait_bound(datasets.iter_mut().map(|data| &mut **data))
                         .map(|_| ());
                     let original = |i| arguments.original(i);
