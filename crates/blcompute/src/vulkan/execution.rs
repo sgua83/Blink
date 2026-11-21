@@ -292,6 +292,7 @@ impl ExecutionResources {
     }
 }
 enum DiscardedDataset {
+    UploadPages { _pages: Vec<Allocation> },
     Owned {
         _binding_table: Allocation,
         _pages: Vec<Allocation>,
@@ -376,24 +377,19 @@ impl Execution {
             return;
         }
         let storage = match storage {
+            DatasetStorage::Owned(GpuStorage { pages, .. }) if self.uploads_dataset_graph() => {
+                // The initial copies only write destination pages. The binding table
+                // and source graph have no remaining consumer once this owner drops.
+                DiscardedDataset::UploadPages { _pages: pages }
+            }
             DatasetStorage::Owned(GpuStorage {
                 allocation, pages, views: Views { sources, .. }, instances, ..
-            }) => {
-                let sources = if self.uploads_dataset_graph() {
-                    // Initial copies access only these destination pages. Releasing the
-                    // dead graph here also releases references to this very execution.
-                    drop(sources);
-                    Vec::new()
-                } else {
-                    sources
-                };
-                DiscardedDataset::Owned {
-                    _binding_table: allocation,
-                    _pages: pages,
-                    _sources: sources,
-                    _instances: instances,
-                }
-            }
+            }) => DiscardedDataset::Owned {
+                _binding_table: allocation,
+                _pages: pages,
+                _sources: sources,
+                _instances: instances,
+            },
             DatasetStorage::Read(source) => DiscardedDataset::Read { _source: source },
         };
         self.discarded.borrow_mut().push(storage);
