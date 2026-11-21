@@ -92,36 +92,19 @@ fn native_modules() -> Result<(), Box<dyn std::error::Error>> {
     if compiler {
         println!("cargo:rustc-env=BLINK_BUILT_SHARED_OBJECTS={}", out.display());
         println!("cargo:rerun-if-changed=src/bootstrap");
+        println!("cargo:rerun-if-changed=../../library/blink");
         for (name, source) in [
             ("unicode_scalar", "../../library/blink/unicode_scalar"),
             ("path_core", "../../library/blink/windows/path_core"),
             ("process_core", "../../library/blink/windows/process_core"),
             ("text_core", "../../library/blink/text_core"),
         ] {
-            for extension in ["b", "h"] {
-                println!("cargo:rerun-if-changed={source}.{extension}");
-            }
             jobs.push(compile(
                 name,
                 &format!("{source}.b"),
                 "../../library",
                 object(name),
             ));
-        }
-        for header in [
-            "sequence",
-            "unicode",
-            "windows/directory",
-            "windows/error",
-            "windows/file",
-            "windows/path",
-            "windows/process",
-            "windows/process_extended",
-            "windows/system",
-            "windows/thread",
-            "windows/time",
-        ] {
-            println!("cargo:rerun-if-changed=../../library/blink/{header}.h");
         }
         for &name in MODULES {
             let mut job = compile(
