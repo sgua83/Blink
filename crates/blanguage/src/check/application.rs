@@ -2811,6 +2811,11 @@ impl Builder<'_> {
         index: &Value,
         index_range: (u32, u32),
     ) -> Place {
+        let position = ownership::ApplicationIndex::of(index);
+        let index_value = match position {
+            ownership::ApplicationIndex::Constant(at) => bounds::Operand::Constant(Scalar::U32, Bits::from(at)),
+            ownership::ApplicationIndex::Value(id, _) => bounds::Operand::Value(id),
+        };
         Place::ApplicationElement {
             ty: data.ty.clone(),
             handle: data.root.regs[0],
@@ -2819,9 +2824,9 @@ impl Builder<'_> {
             resource: view::resource_borrow(data),
             initialization: data
                 .initialization.clone()
-                .map(|scope| (scope, ownership::ApplicationIndex::of(index))),
+                .map(|scope| (scope, position)),
             index: index.regs[0],
-            index_value: bounds::Operand::of(index,0),
+            index_value,
             parent: data.place.clone().map(Box::new),
             element_layout: address::Layout::of(&data.ty),
             index_range,
