@@ -1,6 +1,21 @@
 //! 输入与中间发布共用共享布局；阶段屏障覆盖所有 workgroup invocations。
 use super::*;
 
+#[repr(C)]
+struct TileRangeWords {
+    words: u64,
+    next: u32,
+    lane: u32,
+    length: u32,
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.spirv_envelope::tile_range"]
+    fn emit_tile_range(
+        body: *mut u32, uint_type: u32, bool_type: u32, index: u32, count: u32, width: u32, first: u32,
+    ) -> TileRangeWords;
+}
+
 pub(super) enum TileByte {
     Fixed(u32),
     Dynamic(u32),
@@ -10,15 +25,20 @@ impl Emitter<'_> {
     pub(super) fn tile_input(
         &mut self, count: u32, active: u32, inputs: &mut crate::ir::dataflow::InputFragments,
     ) {
-        let u = self.types[&Scalar::U32];
         let width = self.constant(Scalar::U32, self.workgroup_width);
-        self.tile_lane = self.id();
-        self.emit(137, &[u, self.tile_lane, self.index, width]);
-        let remaining = self.group_remaining(self.tile_lane, count);
-        let tail = self.id();
-        self.emit(176, &[self.types[&Scalar::Bool], tail, remaining, width]);
-        self.tile_length = self.id();
-        self.select(u, self.tile_length, tail, remaining, width);
+        let at = self.body.len();
+        self.body.reserve(26);
+        let range = unsafe {
+            let range = emit_tile_range(
+                self.body.as_mut_ptr().add(at), self.types[&Scalar::U32], self.types[&Scalar::Bool],
+                self.index, count, width, self.next,
+            );
+            self.body.set_len(at + range.words as usize);
+            range
+        };
+        self.next = range.next;
+        self.tile_lane = range.lane;
+        self.tile_length = range.length;
         for (key, (unit, _, part)) in self.tile_layout {
             if *unit == Scalar::U64 && *part == 0 {
                 if let SharedWord::Input { binding, word } = key {

@@ -1785,6 +1785,15 @@ extern "C" void group_remaining(address body, u32 uint_type, u32 index, u32 lane
     stage_group_remaining(out, uint_type, index, lane, count);
 }
 
+extern "C" TileRangeWords tile_range(address body, u32 uint_type, u32 bool_type, u32 index, u32 count, u32 width, u32 first) on cpu {
+    StageCursor out = StageCursor(body, 0u64, first);
+    u32 lane = stage_op(out, 137, uint_type, index, width);
+    u32 remaining = stage_group_remaining(out, uint_type, index, lane, count);
+    u32 tail = stage_op(out, 176, bool_type, remaining, width);
+    u32 length = stage_select(out, uint_type, tail, remaining, width);
+    return TileRangeWords(out.words, out.next, lane, length);
+}
+
 array<u32,2> stage_collective_writer(inout StageCursor out, u32 bool_type, u32 lane,
     u32 active, u32 count, u32 zero) on cpu {
     u32 first_lane = stage_op(out, 170, bool_type, lane, zero);

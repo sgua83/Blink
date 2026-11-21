@@ -386,6 +386,9 @@ struct TreeComponent {
 };
 // group_remaining writes 10 words and two IDs, with the count at first + 1.
 extern "C" void group_remaining(address body, u32 uint_type, u32 index, u32 lane, u32 count, u32 first) on cpu;
+struct TileRangeWords { u64 words; u32 next; u32 lane; u32 length; };
+// The same tile range feeds shared storage and the visible lane and length.
+extern "C" TileRangeWords tile_range(address body, u32 uint_type, u32 bool_type, u32 index, u32 count, u32 width, u32 first) on cpu;
 
 struct CustomTreeInput {
     u32 uint_type;
