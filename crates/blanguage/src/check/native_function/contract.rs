@@ -102,5 +102,6 @@ pub(super) fn encode(original:&Contract,writer:&mut crate::module::codec::Writer
     if let Some(access)=&mut view_access{accesses(access,&mut normal);}
     if let Some(values)=&mut initialized{initialization(values,&mut normal);}
     if let Some(domain)=&mut domain{for proof in domain.elements.values_mut(){normal.proof(proof);}}
+    drop(normal);
     unsafe{Contract::write_public(writer,&original.parameters,&original.result,&original.inputs,&original.element_inputs,&returned,&written,&original.requires,&original.target,&original.frame,&original.fallible,&domain,&residency,view_access.as_ref().unwrap(),initialized.as_ref().unwrap());}
 }
