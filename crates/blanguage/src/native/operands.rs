@@ -155,8 +155,8 @@ unsafe extern "C" {
         scalar: ScalarEncoding, stride: u32, output: *mut u8) -> u64;
     #[link_name = "bootstrap.x64_instruction::scaled_memory"]
     fn encode_scaled_memory(base: u8, index: u8, stride: u32, offset: u32, output: *mut u8) -> AddressEncoding;
-    #[link_name = "bootstrap.x64_instruction::reference_address"]
-    fn encode_reference_address(base: u8, offset: u32, indexed: u32, output: *mut u8) -> u64;
+    #[link_name = "bootstrap.x64_instruction::effective_address"]
+    fn encode_effective_address(target: u8, memory: MoveLocation, output: *mut u8) -> u64;
     #[link_name = "bootstrap.x64_instruction::bit_copy"]
     fn scalar_bit_copy(from: ScalarEncoding, into: ScalarEncoding) -> u32;
     #[link_name = "bootstrap.x64_instruction::value_unary"]
@@ -248,12 +248,9 @@ impl Emitter<'_> {
     pub(super) fn scaled_memory(&mut self, base: u8, index: u8, stride: u32, offset: u32) -> Memory {
         self.emit_address(16, |output| unsafe { encode_scaled_memory(base, index, stride, offset, output) })
     }
-    pub(super) fn borrow_address(&mut self, base: u8, offset: u32, index: Option<Reg>) {
-        if let Some(index) = index {
-            self.load(index);
-        }
+    pub(super) fn effective_address(&mut self, target: u8, memory: Memory) {
         self.emit_bytes(8, |output| unsafe {
-            encode_reference_address(base, offset, u32::from(index.is_some()), output)
+            encode_effective_address(target, memory.into(), output)
         });
     }
     fn emit_instruction(&mut self, opcode: &[u8], input: InstructionEncoding) {

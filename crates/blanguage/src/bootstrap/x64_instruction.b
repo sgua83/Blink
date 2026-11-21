@@ -2267,11 +2267,9 @@ u64 address_pair_at(u64 at, MoveLocation low, MoveLocation high, bool packet, u8
     return register_instruction(cursor, u16(0x09), u8(0), true, u8(0), target);
 }
 
-extern "C" u64 reference_address(u8 base, u32 offset, bool indexed, address output) on cpu {
+extern "C" u64 effective_address(u8 target, MoveLocation memory, address output) on cpu {
     u64 start = address_bits(output);
-    u8 index = indexed ? u8(0) : NO_INDEX;
-    MoveLocation memory = MoveLocation(u64(offset), MOVE_MEMORY, base, index, u8(0));
-    return encode_operand_instruction(start, u16(0x8d), u8(0), true, u8(0), memory) - start;
+    return encode_operand_instruction(start, u16(0x8d), u8(0), true, target, memory) - start;
 }
 
 AddressEncoding view_memory_dynamic_at(u8 base, MoveLocation index, MoveLocation low,
@@ -2302,7 +2300,7 @@ extern "C" u64 view_element_base(ViewElement source, address output) on cpu {
     AddressEncoding memory = view_element_memory(source, 0, output);
     u64 start = address_bits(output);
     MoveLocation operand = MoveLocation(u64(memory.offset), MOVE_MEMORY, memory.base, memory.index, memory.shift);
-    return encode_operand_instruction(start + memory.length, u16(0x8d), u8(0), true, u8(15), operand) - start;
+    return memory.length + effective_address(u8(15), operand, unsafe_address(start + memory.length));
 }
 
 extern "C" u64 packet_lane(MoveLocation src, u8 lane, u8 gpr, address output) on cpu {
@@ -2323,7 +2321,7 @@ u64 offset_address(u32 stride, address output) on cpu {
     u8 shift = address_shift(stride);
     if ((stride >> u32(shift)) == 1 && stride <= 8) {
         MoveLocation memory = MoveLocation(0u64, MOVE_MEMORY, u8(15), u8(0), shift);
-        return encode_operand_instruction(start, u16(0x8d), u8(0), true, u8(15), memory) - start;
+        return effective_address(u8(15), memory, output);
     }
     u64 cursor = address_scale_at(start, u8(0), stride);
     put_byte(cursor, u8(0x49)); put_byte(cursor + 1u64, u8(0x01)); put_byte(cursor + 2u64, u8(0xc7));

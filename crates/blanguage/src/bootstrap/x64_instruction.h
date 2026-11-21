@@ -383,7 +383,7 @@ extern "C" AddressEncoding indexed_memory(MoveLocation index, ScalarEncoding sca
 
 // Place the effective address in RAX. An indexed address consumes RAX as its
 // index. The caller owns eight output bytes.
-extern "C" u64 reference_address(u8 base, u32 offset, bool indexed, address output) on cpu;
+extern "C" u64 effective_address(u8 target, MoveLocation memory, address output) on cpu;
 
 // Field offsets refer to the caller's original table in R12.
 extern "C" u64 buffer_load(u32 offset, u8 target, address output) on cpu;

@@ -283,29 +283,31 @@ impl Emitter<'_> {
         });
     }
     pub(super) fn reference_address(&mut self, address: &CallReference) -> Result<(), &'static str> {
-        match &address.storage {
+        let memory = match &address.storage {
             CallStorage::Local { base, len } => {
                 let offset = if *len == 0 { 0 } else {
                     let Location::Stack(offset) = self.allocation.location(PrivateSlot::Local(*base))
                     else { return Err("C ABI 局部借用没有实际栈地址"); };
                     offset
                 };
-                self.borrow_address(4, offset + address.word, address.offset);
+                let word = offset + address.word;
+                match address.offset {
+                    Some(index) => self.value_memory(4, self.location(index), 1, word),
+                    None => Memory::new(4, word),
+                }
             }
-            CallStorage::Indexed(source) => {
-                let word = if let Some(offset) = address.offset {
-                    self.indexed_address(source, offset, address.word);
-                    0
-                } else {
+            CallStorage::Indexed(source) => match address.offset {
+                Some(offset) => self.indexed_memory(source, offset, address.word),
+                None => {
                     if matches!(source, IndexedSource::Tile { .. }) {
                         return Err("C ABI 不接受块内分量存储");
                     }
                     self.indexed_base(source);
-                    address.word
-                };
-                self.borrow_address(15, word, None);
-            }
-        }
+                    Memory::new(15, address.word)
+                }
+            },
+        };
+        self.effective_address(0, memory);
         Ok(())
     }
     pub(super) fn print_call(&mut self, dst: Reg, value: Reg) {
