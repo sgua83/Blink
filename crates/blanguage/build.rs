@@ -109,17 +109,19 @@ fn native_modules() -> Result<(), Box<dyn std::error::Error>> {
             ));
         }
         for header in [
-            "directory",
-            "error",
-            "file",
-            "path",
-            "process",
-            "process_extended",
-            "system",
-            "thread",
-            "time",
+            "sequence",
+            "unicode",
+            "windows/directory",
+            "windows/error",
+            "windows/file",
+            "windows/path",
+            "windows/process",
+            "windows/process_extended",
+            "windows/system",
+            "windows/thread",
+            "windows/time",
         ] {
-            println!("cargo:rerun-if-changed=../../library/blink/windows/{header}.h");
+            println!("cargo:rerun-if-changed=../../library/blink/{header}.h");
         }
         for &name in MODULES {
             let mut job = compile(
