@@ -147,17 +147,38 @@ ObjectTarget resolve_target(ObjectRows rows,ReadBytes name,i64 section,u64 value
     return ObjectTarget(2u64,0u64,0u64,empty_bytes(),name,0);
 }
 
-extern "C" ObjectRelocation object_relocation(
-    ReadBytes input,ObjectRows rows,ObjectSymbols symbols,u64 table,u64 index
-) on cpu {
-    ReadRelocation record=relocation(input,table,index);
-    if(record.error!=0){return ObjectRelocation(record,failure(0));}
-    if(record.symbol>=symbols.count){return ObjectRelocation(record,failure(15));}
-    address row=unsafe_address(address_bits(symbols.values)+record.symbol*24u64);
-    ObjectSymbol symbol=unsafe_position<ObjectSymbol>(row);
-    if(address_bits(symbol.name.bytes)==0u64){return ObjectRelocation(record,failure(15));}
-    ObjectTarget target=resolve_target(rows,symbol.name,i64(symbol.section),u64(symbol.value));
-    return ObjectRelocation(record,target);
+ObjectTarget relocation_target(ObjectRows rows, ObjectSymbols symbols, u64 index) on cpu {
+    if (index >= symbols.count) { return failure(15); }
+    address slot = unsafe_address(address_bits(symbols.values) + index * size_of<ObjectSymbol>());
+    ObjectSymbol symbol = unsafe_position<ObjectSymbol>(slot);
+    if (address_bits(symbol.name.bytes) == 0u64) { return failure(15); }
+    return resolve_target(rows, symbol.name, i64(symbol.section), u64(symbol.value));
+}
+
+extern "C" ObjectRelocationStatus object_relocations(
+    ReadBytes input, ObjectRows rows, ObjectSymbols symbols, read ObjectSection row,
+    address context, cfn<u32,address,u64,u32,ObjectTarget> consume
+) on cpu requires nonzero(consume) {
+    ReadRelocations table = relocations(input, row.relocations, row.relocation_count, row.flags);
+    if (table.error != 0) { return ObjectRelocationStatus(table.error, 0); }
+
+    u64 length = row.zero_fill == 0u64 ? row.bytes.length : row.zero_fill;
+    u64 index = 0u64;
+    while (index < table.count) {
+        ReadRelocation record = relocation(input, table.offset, index);
+        if (record.error != 0) { return ObjectRelocationStatus(record.error, 0); }
+        u32 kind = u32(record.kind);
+        // OutsideSection is a read error. Other kinds remain for the applicator.
+        if (relocation_span(length, record.offset, kind) == 2) {
+            return ObjectRelocationStatus(0, 17);
+        }
+
+        ObjectTarget target = relocation_target(rows, symbols, record.symbol);
+        if (target.error != 0) { return ObjectRelocationStatus(0, target.error); }
+        if (consume(context, record.offset, kind, target) == 0) { break; }
+        index += 1u64;
+    }
+    return ObjectRelocationStatus(0, 0);
 }
 
 address stack_frame_address(address frames,u64 index) on cpu {

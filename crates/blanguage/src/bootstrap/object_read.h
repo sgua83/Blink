@@ -25,10 +25,12 @@ extern "C" u32 object_symbols(ReadBytes input, ReadSymbols table, address rows,
     address definitions, u64 definition_count, address context,
     cfn<u32,address,ReadBytes> validate) on cpu requires nonzero(validate);
 extern "C" ObjectAssociation association(ObjectRows rows,address definitions,u64 index) on cpu;
-struct ObjectRelocation {ReadRelocation record;ObjectTarget target;};
-extern "C" ObjectRelocation object_relocation(
-    ReadBytes input,ObjectRows rows,ObjectSymbols symbols,u64 table,u64 index
-) on cpu;
+struct ObjectRelocationStatus { u32 format; u32 object; };
+// The accepted record borrows the original bytes only through the synchronous consumer.
+extern "C" ObjectRelocationStatus object_relocations(
+    ReadBytes input, ObjectRows rows, ObjectSymbols symbols, read ObjectSection row,
+    address context, cfn<u32,address,u64,u32,ObjectTarget> consume
+) on cpu requires nonzero(consume);
 // Decoded relocations borrow each owning section's records. Offset is their
 // first field and stride is the size of one complete owning record.
 extern "C" u32 recover_stack(ObjectRows rows,address frames,u64 count,address calls,address nodes,u64 stride,u32 stack_output) on cpu;

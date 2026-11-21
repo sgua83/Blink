@@ -162,7 +162,7 @@ enum ObjectReadError {
     None, OwnerNumber, OwnerUnavailable, OwnerNotComdat, Selection, SectionUnavailable,
     DllLengthMissing, DllLengthEmpty, DllLengthDigit, DllLengthOverflow, DllLength,
     StackSection, StackPosition, StackNoLocation, StackRelocation, RelocationSymbol,
-    MissingSectionDefinition,
+    MissingSectionDefinition, RelocationBounds,
 }
 impl ObjectReadError {
     fn check(self) -> Result<()> {
@@ -184,6 +184,7 @@ impl ObjectReadError {
             Self::StackRelocation => Err("栈调用信息缺少对应的原生重定位".into()),
             Self::RelocationSymbol => Err("COFF 重定位符号越界".into()),
             Self::MissingSectionDefinition => Err("COFF COMDAT节缺少定义辅助记录".into()),
+            Self::RelocationBounds => Err("COFF 重定位位置越界".into()),
         }
     }
 }
@@ -216,7 +217,7 @@ struct ObjectTarget {
     kind: ObjectTargetKind, section: usize, value: u64, dll: ReadBytes, name: ReadBytes, error: ObjectReadError,
 }
 #[repr(C)]
-struct ObjectRelocation { record: ReadRelocation, target: ObjectTarget }
+struct ObjectRelocationStatus { format: ReadError, object: ObjectReadError }
 
 unsafe extern "C" {
     #[link_name = "bootstrap.object_read::object_sections"]
@@ -229,10 +230,28 @@ unsafe extern "C" {
     #[link_name = "bootstrap.object_read::association"]
     fn object_association(rows: ObjectRows, definitions: *const SectionDefinition,
         index: usize) -> ObjectAssociation;
-    #[link_name = "bootstrap.object_read::object_relocation"]
-    fn object_relocation(input: ReadBytes, rows: ObjectRows, symbols: ObjectSymbols,
-        table: usize, index: usize) -> ObjectRelocation;
+    #[link_name = "bootstrap.object_read::object_relocations"]
+    fn object_relocations(input: ReadBytes, rows: ObjectRows, symbols: ObjectSymbols,
+        section: &ObjectSection, context: *mut c_void,
+        consume: unsafe extern "C" fn(*mut c_void, usize, u32, ObjectTarget) -> u32,
+    ) -> ObjectRelocationStatus;
 }
+struct RelocationConsumer<F> {
+    consume: F,
+    result: Result<()>,
+}
+
+unsafe extern "C" fn consume_relocation<F>(
+    context: *mut c_void, offset: usize, kind: u32, target: ObjectTarget,
+) -> u32
+where
+    F: FnMut(usize, u16, ObjectTarget) -> Result<()>,
+{
+    let receiver = unsafe { &mut *context.cast::<RelocationConsumer<F>>() };
+    receiver.result = (receiver.consume)(offset, kind as u16, target);
+    u32::from(receiver.result.is_ok())
+}
+
 type ValidateObjectName = unsafe extern "C" fn(*mut c_void, ReadBytes) -> u32;
 
 unsafe extern "C" fn validate_object_name(context: *mut c_void, bytes: ReadBytes) -> u32 {
@@ -826,24 +845,23 @@ impl<'a, Input: AsRef<[u8]> + ?Sized> Reader<'a, Input> {
         unsafe { symbols.set_len(table.count) };
         Ok(symbols)
     }
-    fn relocations<'rows>(&'rows self, raw: &'rows [ObjectSection], symbols: &'rows [ObjectSymbol], row: &'rows ObjectSection)
-        -> Result<impl Iterator<Item = Result<(ReadRelocation, ObjectTarget)>> + 'rows>
+    fn relocations<F>(&self, raw: &[ObjectSection], symbols: &[ObjectSymbol],
+        row: &ObjectSection, consume: F,
+    ) -> Result<()>
+    where
+        F: FnMut(usize, u16, ObjectTarget) -> Result<()>,
     {
         let input = ReadBytes::new(self.bytes.as_ref());
         let rows = ObjectRows::new(raw);
         let symbols = ObjectSymbols { values: symbols.as_ptr(), count: symbols.len() };
-        let table = unsafe { read_relocations(input, row.relocations, row.relocation_count, row.flags) };
-        table.error.check()?;
-        let length = if row.zero_fill == 0 { row.bytes.length } else { row.zero_fill };
-        Ok((0..table.count).map(move |index| {
-            let ObjectRelocation { record, target } = unsafe { object_relocation(input, rows, symbols, table.offset, index) };
-            record.error.check()?;
-            if !crate::native::coff_relocation_within_section(length, record.offset, record.kind as u16) {
-                return Err("COFF 重定位位置越界".into());
-            }
-            target.error.check()?;
-            Ok((record, target))
-        }))
+        let mut receiver = RelocationConsumer { consume, result: Ok(()) };
+        let status = unsafe {
+            object_relocations(input, rows, symbols, row,
+                std::ptr::from_mut(&mut receiver).cast(), consume_relocation::<F>)
+        };
+        status.format.check()?;
+        status.object.check()?;
+        receiver.result
     }
     fn module_symbols(&self) -> Result<Option<(Vec<ObjectSection>, Vec<ObjectSymbol>)>> {
         let (parts, raw) = self.sections(true)?;
@@ -866,12 +884,12 @@ impl<'a, Input: AsRef<[u8]> + ?Sized> Reader<'a, Input> {
         let names = export_names(&raw, &symbols)?;
         let mut imports = Vec::new();
         for row in raw.iter().filter(|row| row.mapped != 0) {
-            for value in self.relocations(&raw, &symbols, row)? {
-                let (_, target) = value?;
+            self.relocations(&raw, &symbols, row, |_, _, target| {
                 if matches!(target.kind, ObjectTargetKind::Import) {
                     imports.push(Import { dll: read_text(target.dll)?, name: read_text(target.name)? });
                 }
-            }
+                Ok(())
+            })?;
         }
         Ok(Some((names, imports)))
     }
@@ -1070,8 +1088,8 @@ fn decode_object<Bytes: super::ReadSection>(
     }
     for row in &raw {
         if row.mapped == 0 { continue; }
-        for value in reader.relocations(&raw, &symbols, row)? {
-            let (r, value) = value?;
+        let relocations = &mut sections[row.mapped - 1].relocations;
+        reader.relocations(&raw, &symbols, row, |offset, kind, value| {
             let target = match value.kind {
                 ObjectTargetKind::Section => Target::Section(value.section, value.value as u32),
                 ObjectTargetKind::Import => Target::Import(Import { dll: read_text(value.dll)?, name: read_text(value.name)? }),
@@ -1083,8 +1101,9 @@ fn decode_object<Bytes: super::ReadSection>(
                     Target::Symbol(name.to_owned())
                 }
             };
-            sections[row.mapped - 1].relocations.push(Relocation { offset: r.offset, kind: r.kind as u16, target });
-        }
+            relocations.push(Relocation { offset, kind, target });
+            Ok(())
+        })?;
     }
     let symbols = symbols
             .into_iter()

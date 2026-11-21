@@ -44,23 +44,11 @@ impl CoffRelocationStatus {
 }
 
 unsafe extern "C" {
-    #[cfg(feature = "compiler")]
-    #[link_name = "blink.windows.coff::relocation_span"]
-    fn relocation_span(length: usize, offset: usize, kind: u32) -> CoffRelocationStatus;
-
     #[link_name = "blink.windows.coff::apply_relocation"]
     fn apply_relocation(
         bytes: *mut u8, length: usize, offset: usize, kind: u32,
         base: u64, source: u64, target: u64,
     ) -> CoffRelocationStatus;
-}
-
-#[cfg(feature = "compiler")]
-pub(crate) fn coff_relocation_within_section(length: usize, offset: usize, kind: u16) -> bool {
-    !matches!(
-        unsafe { relocation_span(length, offset, u32::from(kind)) },
-        CoffRelocationStatus::OutsideSection
-    )
 }
 
 /// PE写出与原始VM装入消费同一COFF地址计算；target／source相对于同一映像基址。
