@@ -2849,7 +2849,7 @@ impl Builder<'_> {
         let held = self.hold_binding(Binding::DataReference(data.clone()));
         let value = unsafe { self.world.call(self.expr(index)).await }?;
         self.env.remove(&held);
-        let Some(value) = value else {
+        let Some(mut value) = value else {
             return Ok(None);
         };
         self.require_same(&Ty::scalar(Scalar::U32), &value.ty, index.span())?;
@@ -2865,11 +2865,16 @@ impl Builder<'_> {
                 "dataset 索引需要由本资源的长度条件或有界游标证明",
             );
         }
-        let place = data.element(&value, (value.minimum(), value.maximum()));
-        if place.ty().owns_resources() {
+        if data.element_layout().1.owns_resources() {
             self.observe_bounds(&value);
+            if value.proof.domains(0).iter().any(|domain| matches!(domain, IndexDomain::Computed(_))) {
+                let scope = self.path_proof(&value.ty, bounds::Proof::capture(&value));
+                let identity = scope.origins.first().into_iter().flatten().copied()
+                    .fold(value.identity(), std::cmp::min);
+                value.proof = std::mem::take(&mut value.proof).with_identity(identity);
+            }
         }
-        Ok(Some(place))
+        Ok(Some(data.element(&value, (value.minimum(), value.maximum()))))
     }
     fn application_cpu_source(&mut self,identity:ValueIdentity,span:Span)->Result<()> {
         if let Some(data) = self
