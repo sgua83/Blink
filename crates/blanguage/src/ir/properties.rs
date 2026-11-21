@@ -25,6 +25,14 @@ struct FieldHost {
     types: Host,
     part: unsafe extern "C" fn(*const Ty, usize) -> Part,
 }
+
+#[repr(C)]
+struct DatasetPathsHost {
+    types: Host,
+    push: unsafe extern "C" fn(*mut c_void, usize),
+    pop: unsafe extern "C" fn(*mut c_void),
+    emit: unsafe extern "C" fn(*mut c_void),
+}
 #[repr(C)]
 struct Text { bytes: *const u8, length: usize }
 #[repr(C)]
@@ -152,9 +160,64 @@ unsafe extern "C" {
     #[link_name = "bootstrap.type_layout::task_output_owners"]
     fn b_task_output_owners(value: *const Ty, base: u32, host: FieldHost, context: *mut c_void,
         emit: unsafe extern "C" fn(*mut c_void, u32, *const Ty));
+    #[link_name = "bootstrap.type_layout::dataset_count"]
+    fn source_dataset_count(value: *const Ty, host: Host) -> usize;
+    #[link_name = "bootstrap.type_layout::dataset_path"]
+    fn source_dataset_path(
+        value: *const Ty, ordinal: usize, host: Host, context: *mut c_void,
+        push: unsafe extern "C" fn(*mut c_void, usize),
+    ) -> u32;
+    #[link_name = "bootstrap.type_layout::dataset_paths"]
+    fn source_dataset_paths(value: *const Ty, context: *mut c_void, host: DatasetPathsHost);
     #[link_name = "bootstrap.type_layout::field"]
     fn b_field(value: *const Ty, path: Text, words: *const u32, word_count: usize,
         active: u32, host: PathHost) -> Part;
+}
+
+pub(crate) fn dataset_count(value: &Ty) -> usize {
+    unsafe { source_dataset_count(value, Host { inspect, child }) }
+}
+
+pub(crate) fn dataset_path(value: &Ty, ordinal: usize) -> Option<Vec<usize>> {
+    unsafe extern "C" fn push(out: *mut c_void, index: usize) {
+        unsafe { &mut *out.cast::<Vec<usize>>() }.push(index);
+    }
+    let mut path = Vec::new();
+    let found = unsafe {
+        source_dataset_path(value, ordinal, Host { inspect, child }, ptr::from_mut(&mut path).cast(), push)
+    };
+    if found == 0 {
+        return None;
+    }
+    // B appends only the chosen indices while returning from the leaf.
+    path.reverse();
+    Some(path)
+}
+
+pub(crate) fn dataset_paths(value: &Ty) -> Vec<Vec<usize>> {
+    #[derive(Default)]
+    struct Paths {
+        path: Vec<usize>,
+        output: Vec<Vec<usize>>,
+    }
+    unsafe extern "C" fn push(context: *mut c_void, index: usize) {
+        unsafe { &mut *context.cast::<Paths>() }.path.push(index);
+    }
+    unsafe extern "C" fn pop(context: *mut c_void) {
+        unsafe { &mut *context.cast::<Paths>() }.path.pop();
+    }
+    unsafe extern "C" fn emit(context: *mut c_void) {
+        let paths = unsafe { &mut *context.cast::<Paths>() };
+        paths.output.push(paths.path.clone());
+    }
+
+    let mut paths = Paths::default();
+    unsafe {
+        source_dataset_paths(value, ptr::from_mut(&mut paths).cast(), DatasetPathsHost {
+            types: Host { inspect, child }, push, pop, emit,
+        });
+    }
+    paths.output
 }
 
 pub(super) fn contains(value: &Ty, query: Query) -> bool {

@@ -77,7 +77,7 @@ async fn source_bindings(builder:&Builder<'_>,bindings:&mut Bindings)->Result<()
   SourceNeed::Storage=>{let id=ValueIdentity::ParameterStorage(index);bindings.insert(id,with_borrow(identity(id),view::Borrow::source(view::Source::Parameter(id,Vec::new()))));}
   SourceNeed::InspectContent=>{let p=unsafe{bound.as_ref().unwrap_unchecked()};facts.content=builder.env.get(p.name.as_str()).and_then(Binding::stored_place).map(|place|place.ty().components.len()).unwrap_or(0)as u64;}
   SourceNeed::Content=>{let id=ValueIdentity::ParameterContent(index,cursor.part as usize);bindings.insert(id,identity(id));}
-  SourceNeed::InspectResources=>{let p=unsafe{bound.as_ref().unwrap_unchecked()};let(kind,count)=match builder.env.get(p.name.as_str()){Some(Binding::ApplicationData(_))=>(ResourceKind::Application,0),Some(Binding::OwnedValue(value))=>(ResourceKind::Owned,view::resource_paths(&value.value.ty).len()),_=>(ResourceKind::None,0)};facts.resource=kind;facts.resources=count as u64;}
+  SourceNeed::InspectResources=>{let p=unsafe{bound.as_ref().unwrap_unchecked()};let(kind,count)=match builder.env.get(p.name.as_str()){Some(Binding::ApplicationData(_))=>(ResourceKind::Application,0),Some(Binding::OwnedValue(value))=>(ResourceKind::Owned,view::resource_count(&value.value.ty)),_=>(ResourceKind::None,0)};facts.resource=kind;facts.resources=count as u64;}
   SourceNeed::Resource=>{let id=ValueIdentity::ResourceParameter(index,cursor.part as usize);bindings.insert(id,with_borrow(identity(id),view::Borrow::source(view::Source::Data(id))));}
   SourceNeed::Continue=>{},
   SourceNeed::Complete=>return Ok(()),

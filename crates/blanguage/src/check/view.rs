@@ -995,15 +995,9 @@ impl Binding {
     }
 
 }
-pub(super) fn resource_paths(ty:&Ty)->Vec<Vec<usize>> {
-    fn visit(ty:&Ty,path:&mut Vec<usize>,result:&mut Vec<Vec<usize>>) {
-        if !ty.owns_resources(){return;}
-        if ty.dataset.is_some(){result.push(path.clone());return;}
-        if ty.has_variants(){for(index,variant)in ty.variants.iter().enumerate(){path.push(index);visit(&variant.ty,path,result);path.pop();}}
-        else{for index in 0..ty.aggregate_len(){let(_,field)=ty.aggregate_part(index);path.push(index);visit(field,path,result);path.pop();}}
-    }
-    let mut result=Vec::new();visit(ty,&mut Vec::new(),&mut result);result
-}
+pub(super) use crate::ir::{
+    dataset_count as resource_count, dataset_path as resource_path, dataset_paths as resource_paths,
+};
 pub(super) use owned_values::{owned_data_at, owned_data_at_mut};
 
 impl Builder<'_> {
@@ -1116,7 +1110,7 @@ impl Builder<'_> {
     pub(super) fn require_return_borrow(&mut self,borrow:Borrow,owned:Borrow,span:Span)->Result<()> {
         let mut allowed=self.env.values().flat_map(Binding::application_resources).filter(|data|data.ownership==application::Ownership::Borrowed).flat_map(|data|std::iter::once(data.root.identity()).chain(data.root.proof.borrowed_views().into_iter().filter_map(|source|match source {Source::Data(id)=>Some(id),_=>None}))).collect::<BTreeSet<_>>();
         for param in self.scope.parameters() {if matches!(param.access(),Access::Write|Access::InOut) && let Some(Binding::OwnedValue(value))=self.env.get(param.name()){for data in value.resources(){if data.ownership!=application::Ownership::Moved{allowed.insert(data.root.identity());allowed.extend(data.root.proof.borrowed_views().into_iter().filter_map(|source|match source{Source::Data(id)=>Some(id),_=>None}));}}}}
-        for(index,param)in self.scope.parameters().enumerate(){if param.access()==Access::Read && let Some(Binding::OwnedValue(value))=self.env.get(param.name()){for resource in 0..resource_paths(&value.value.ty).len(){allowed.insert(ValueIdentity::ResourceParameter(index,resource));}}}
+        for(index,param)in self.scope.parameters().enumerate(){if param.access()==Access::Read && let Some(Binding::OwnedValue(value))=self.env.get(param.name()){for resource in 0..resource_count(&value.value.ty){allowed.insert(ValueIdentity::ResourceParameter(index,resource));}}}
         self.check_view_requirement(Requirement::Return{borrow,allowed,owned,span})
     }
     pub(super) async fn create_application_view(

@@ -69,6 +69,22 @@ struct TypeHost {
 extern "C" u32 contains(address value, Property property, TypeHost host) on cpu
     requires nonzero(host.inspect) requires nonzero(host.child);
 
+extern "C" usize dataset_count(address value, TypeHost host) on cpu
+    requires nonzero(host.inspect) requires nonzero(host.child);
+extern "C" u32 dataset_path(address value, usize ordinal, TypeHost host, address context,
+    cfn<void,address,usize> push) on cpu
+    requires nonzero(host.inspect) requires nonzero(host.child) requires nonzero(push);
+
+struct DatasetPathsHost {
+    TypeHost types;
+    cfn<void,address,usize> push;
+    cfn<void,address> pop;
+    cfn<void,address> emit;
+};
+extern "C" void dataset_paths(address value, address context, DatasetPathsHost host) on cpu
+    requires nonzero(host.types.inspect) requires nonzero(host.types.child)
+    requires nonzero(host.push) requires nonzero(host.pop) requires nonzero(host.emit);
+
 struct TypePart { address value; u32 offset; };
 struct FieldHost {
     TypeHost types;

@@ -253,7 +253,7 @@ pub(super) fn resource_borrows(value:&returns::Returned)->Vec<Borrow>{
 }
 pub(super) fn resource_value_mut(value:&mut returns::Returned,index:usize)->Option<&mut application::Data>{match value{
     returns::Returned::Dataset(value)if index==0=>Some(value),
-    returns::Returned::OwnedValue(value)=>{let path=view::resource_paths(&value.value.ty).get(index)?.clone();view::owned_data_at_mut(value,&path)},_=>None,
+    returns::Returned::OwnedValue(value)=>{let path=view::resource_path(&value.value.ty, index)?;view::owned_data_at_mut(value,&path)},_=>None,
 }}
 fn visit_resource_outputs<'a, const BORROW: bool>(
     value: &'a returns::Returned,
@@ -313,7 +313,7 @@ pub(super) fn resource_output_paths(value: &returns::Returned) -> Vec<ResourcePa
 
 pub(super) fn root_resource(value:&returns::Returned,index:usize)->Option<&application::Data>{match value{
     returns::Returned::Dataset(data)if index==0=>Some(data),
-    returns::Returned::OwnedValue(value)=>view::resource_paths(&value.value.ty).get(index).and_then(|path|view::owned_data_at(value,path)),_=>None,
+    returns::Returned::OwnedValue(value)=>view::resource_path(&value.value.ty, index).and_then(|path|view::owned_data_at(value,&path)),_=>None,
 }}
 
 pub(super) fn resource_outputs(

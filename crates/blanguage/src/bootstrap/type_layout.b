@@ -150,6 +150,103 @@ extern "C" u32 contains(address value, Property property, TypeHost host) on cpu
     return 0;
 }
 
+struct DatasetBranch { Child kind; usize count; };
+
+DatasetBranch dataset_branch(TypeNode node) on cpu {
+    if (node.variants != 0u64) { return DatasetBranch(Child::Variant, node.variants); }
+    if (node.array != 0) { return DatasetBranch(Child::Array, usize(node.count)); }
+    return DatasetBranch(Child::Field, node.fields);
+}
+
+extern "C" usize dataset_count(address value, TypeHost host) on cpu
+    requires nonzero(host.inspect) requires nonzero(host.child) {
+    TypeNode node = host.inspect(value);
+    if (node.dataset != 0) { return 1u64; }
+    DatasetBranch branch = dataset_branch(node);
+    if (branch.kind == Child::Array && branch.count != 0u64) {
+        return branch.count * dataset_count(host.child(value, Child::Array, 0u64), host);
+    }
+    usize count = 0u64;
+    usize index = 0u64;
+    while (index < branch.count) {
+        count += dataset_count(host.child(value, branch.kind, index), host);
+        index += 1u64;
+    }
+    return count;
+}
+
+struct DatasetPath { usize remaining; u32 found; };
+
+DatasetPath select_dataset_path(address value, usize ordinal, TypeHost host, address context,
+        cfn<void,address,usize> push) on cpu
+    requires nonzero(host.inspect) requires nonzero(host.child) requires nonzero(push) {
+    TypeNode node = host.inspect(value);
+    if (node.dataset != 0) {
+        if (ordinal == 0u64) { return DatasetPath(0u64, 1); }
+        return DatasetPath(ordinal - 1u64, 0);
+    }
+    DatasetBranch branch = dataset_branch(node);
+    if (branch.kind == Child::Array && branch.count != 0u64) {
+        address element = host.child(value, Child::Array, 0u64);
+        usize width = dataset_count(element, host);
+        if (width == 0u64) { return DatasetPath(ordinal, 0); }
+        usize index = ordinal / width;
+        if (index >= branch.count) { return DatasetPath(ordinal - branch.count * width, 0); }
+        DatasetPath selected = select_dataset_path(element, ordinal % width, host, context, push);
+        push(context, index);
+        return selected;
+    }
+    usize index = 0u64;
+    usize remaining = ordinal;
+    while (index < branch.count) {
+        DatasetPath selected = select_dataset_path(host.child(value, branch.kind, index),
+            remaining, host, context, push);
+        if (selected.found != 0) {
+            push(context, index);
+            return selected;
+        }
+        remaining = selected.remaining;
+        index += 1u64;
+    }
+    return DatasetPath(remaining, 0);
+}
+
+extern "C" u32 dataset_path(address value, usize ordinal, TypeHost host, address context,
+        cfn<void,address,usize> push) on cpu
+    requires nonzero(host.inspect) requires nonzero(host.child) requires nonzero(push) {
+    return select_dataset_path(value, ordinal, host, context, push).found;
+}
+
+extern "C" void dataset_paths(address value, address context, DatasetPathsHost host) on cpu
+    requires nonzero(host.types.inspect) requires nonzero(host.types.child)
+    requires nonzero(host.push) requires nonzero(host.pop) requires nonzero(host.emit) {
+    TypeNode node = host.types.inspect(value);
+    if (node.dataset != 0) {
+        host.emit(context);
+        return;
+    }
+    DatasetBranch branch = dataset_branch(node);
+    if (branch.kind == Child::Array && branch.count != 0u64) {
+        address element = host.types.child(value, Child::Array, 0u64);
+        if (contains(element, Property::Dataset, host.types) == 0) { return; }
+        usize index = 0u64;
+        while (index < branch.count) {
+            host.push(context, index);
+            dataset_paths(element, context, host);
+            host.pop(context);
+            index += 1u64;
+        }
+        return;
+    }
+    usize index = 0u64;
+    while (index < branch.count) {
+        host.push(context, index);
+        dataset_paths(host.types.child(value, branch.kind, index), context, host);
+        host.pop(context);
+        index += 1u64;
+    }
+}
+
 extern "C" void borrow_fields(address value, u32 base, FieldHost host, address context,
     cfn<void,address,u32,address> emit) on cpu
     requires nonzero(host.types.inspect) requires nonzero(host.types.child)

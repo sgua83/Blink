@@ -12,7 +12,7 @@ mod layout;
 #[cfg(feature = "compiler")]
 mod properties;
 #[cfg(feature = "compiler")]
-pub(crate) use properties::{ReferenceNeed, ReferenceWalk, SourceMember, StorageMode, StorageNeed, StorageWalk, source_member};
+pub(crate) use properties::{ReferenceNeed, ReferenceWalk, SourceMember, StorageMode, StorageNeed, StorageWalk, source_member, dataset_count, dataset_path, dataset_paths};
 pub use layout::interface_layout_json;
 pub(crate) use layout::TypeJson;
 mod external;

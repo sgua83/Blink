@@ -839,7 +839,7 @@ impl Builder<'_> {
                     self.require_same(&ty, &value.value.ty, span)?;
                     if p.access==Access::Read {
                         value.borrow();
-                        if launch.is_some() && !view::resource_paths(&ty).is_empty() {
+                        if launch.is_some() && ty.contains_dataset() {
                             for data in value.resources() {
                                 self.application_cpu(data,span)?;
                             }

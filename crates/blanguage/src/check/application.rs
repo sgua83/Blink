@@ -3850,7 +3850,7 @@ pub(super) fn model_data_mut<'a>(model:Option<&'a mut returns::Returned>,path:&[
 pub(super) fn binding_element_count(binding:&Binding)->usize {
     match binding {
         Binding::ApplicationData(_)|Binding::DataReference(_)=>1,
-        Binding::OwnedValue(value)=>view::resource_paths(&value.value.ty).len(),
+        Binding::OwnedValue(value)=>view::resource_count(&value.value.ty),
         _=>0,
     }
 }
@@ -3858,8 +3858,8 @@ fn binding_element_data<'a>(binding:&'a Binding,resource:usize)->Option<&'a Data
     match binding {
         Binding::ApplicationData(data) if resource==0=>Some(data),
         Binding::DataReference(data) if resource==0=>Some(&data.data),
-        Binding::OwnedValue(value)=>view::resource_paths(&value.value.ty).get(resource)
-            .and_then(|path|view::owned_data_at(value,path)),
+        Binding::OwnedValue(value)=>view::resource_path(&value.value.ty, resource)
+            .and_then(|path|view::owned_data_at(value,&path)),
         _=>None,
     }
 }
@@ -3867,7 +3867,7 @@ pub(super) fn binding_element_data_mut(binding:&mut Binding,resource:usize)->Opt
     match binding{
         Binding::ApplicationData(data)if resource==0=>Some(data),
         Binding::DataReference(data)if resource==0=>Some(&mut data.data),
-        Binding::OwnedValue(value)=>{let path=view::resource_paths(&value.value.ty).get(resource)?.clone();view::owned_data_at_mut(value,&path)},
+        Binding::OwnedValue(value)=>{let path=view::resource_path(&value.value.ty, resource)?;view::owned_data_at_mut(value,&path)},
         _=>None,
     }
 }
@@ -3958,7 +3958,7 @@ pub(super) fn element_input_bindings(builder:&mut Builder<'_>,definition:outputs
                         },&mut |when|when);
                         &projected
                     }else{data};
-                    let fields=match binding{Binding::OwnedValue(value)=>view::resource_paths(&value.value.ty)[resource].clone(),_=>Vec::new()};
+                    let fields=match binding{Binding::OwnedValue(value)=>view::resource_path(&value.value.ty, resource).unwrap(),_=>Vec::new()};
                     let input=residency::Input{parameter,fields:fields.into_iter().map(residency::Part::Field).chain([residency::Part::Elements]).collect()};
                     collect(builder,data,builder.data_value_borrow(data),builder.element_owner_bindings(data),parameter,resource,&mut 0,&mut out,&mut memory,p.access()!=Access::Write&&data.length.maximum()!=0,&input,paths,declared);
                 }
