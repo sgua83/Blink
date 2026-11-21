@@ -2259,9 +2259,14 @@ fn resolve_range_views(
     module: &Module, program: &mut Program, scopes: &BTreeMap<usize, RangeContext>,
 ) -> Result<()> {
     if scopes.is_empty() { return Ok(()); }
-    let closed = module.units.iter().map(|(name, unit)|
-        (name.clone(), view_outputs(&unit.as_ref().unwrap().contract)))
-        .collect::<BTreeMap<_, _>>();
+    let mut closed = BTreeMap::new();
+    for call in scopes.values().flat_map(|scope| &scope.view_model.calls) {
+        let callee = &call.function;
+        if !closed.contains_key(callee) {
+            let contract = &module.units[callee].as_ref().unwrap().contract;
+            closed.insert(callee.clone(), view_outputs(contract));
+        }
+    }
     let names = scopes.keys().map(|&index| (format!("{}@range{index}", program.name), index))
         .collect::<BTreeMap<_, _>>();
     let functions = names.iter().map(|(name, index)| (name.clone(), &scopes[index].view_model))
