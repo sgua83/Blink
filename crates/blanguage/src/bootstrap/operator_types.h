@@ -1,4 +1,5 @@
 module bootstrap.operator_types;
+import bootstrap.ir_dataflow;
 import bootstrap.c_function;
 // Scalar IDs are the original compiler Scalar order. These records borrow no
 // native containers and carry only actual type facts and the final decision.
@@ -67,3 +68,13 @@ enum AtomicSourceKind:u32 {
 struct AtomicBuiltin { AtomicSourceKind kind; Access access; u32 arity; u32 order_index; };
 extern "C" AtomicBuiltin source_atomic(address bytes, usize length, bool statement) on cpu;
 extern "C" bool atomic_order_allowed(AtomicSourceKind kind, u32 order, u32 failure) on cpu;
+
+enum SubgroupRule:u32 { Unknown=0; Index=1; Elect=2; Vote=3; VoteCount=4; Transfer=5; Arithmetic=6; Bits=7; };
+struct SubgroupBuiltin { SubgroupOperation operation; u32 arity; SubgroupRule rule; };
+enum SubgroupFact:u32 { Shape=0; Numeric=1; Integer=2; };
+enum SubgroupResult:u32 {
+    U32=0; Bool=1; PredicateU32=2; PredicateBool=3; Operand=4; BadShape=5; BadBits=6;
+};
+extern "C" SubgroupBuiltin source_subgroup(address bytes, usize length) on cpu;
+extern "C" SubgroupResult subgroup_result(SubgroupRule rule, address ty, cfn<u32,address,SubgroupFact> fact) on cpu
+    requires nonzero(fact);

@@ -13,7 +13,7 @@ impl Emitter<'_> {
             _ => self.constant(Scalar::U32, 3),
         };
         let input = SubgroupEmission {
-            operation: op as u32,
+            operation: op,
             scalar: self.stage.registers[dst].into(),
             result_type: self.ty(dst),
             result: self.value(dst),

@@ -417,7 +417,7 @@ struct LoopReturn {
 
 #[repr(C)]
 struct SubgroupEmission {
-    operation: u32,
+    operation: SubgroupOp,
     scalar: ScalarCode,
     result_type: u32,
     result: u32,

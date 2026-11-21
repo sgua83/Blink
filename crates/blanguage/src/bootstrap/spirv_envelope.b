@@ -1,4 +1,5 @@
 module bootstrap.spirv_envelope;
+import bootstrap.ir_dataflow;
 
 const u32 CAPABILITIES = 21;
 const array<u32,CAPABILITIES> CAPABILITY_CODES = array<u32,CAPABILITIES>(

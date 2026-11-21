@@ -1709,6 +1709,7 @@ pub(crate) use dataflow::private_spans;
 #[cfg(feature = "compiler")]
 pub(crate) use tile::{PrivateSlot, live_before, loop_live};
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[repr(u32)]
 pub enum SubgroupOp {
     Lane,
     Size,

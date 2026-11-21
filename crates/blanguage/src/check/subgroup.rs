@@ -1,5 +1,40 @@
 //! Subgroup 值协作不提供任意地址写入；活动集合由当前 GPU 控制流决定。
 use super::*;
+use std::ffi::c_void;
+
+#[repr(C)]
+struct SubgroupBuiltin {
+    operation: SubgroupOp,
+    arity: u32,
+    rule: u32,
+}
+
+#[allow(dead_code)]
+#[repr(u32)]
+enum SubgroupFact { Shape, Numeric, Integer }
+
+#[allow(dead_code)]
+#[repr(u32)]
+enum SubgroupResult { U32, Bool, PredicateU32, PredicateBool, Operand, BadShape, BadBits }
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.operator_types::source_subgroup"]
+    fn source_subgroup(bytes: *const u8, length: usize) -> SubgroupBuiltin;
+    #[link_name = "bootstrap.operator_types::subgroup_result"]
+    fn subgroup_result(rule: u32, ty: *const c_void,
+        fact: unsafe extern "C" fn(*const c_void, SubgroupFact) -> u32) -> SubgroupResult;
+}
+
+unsafe extern "C" fn subgroup_fact(ty: *const c_void, fact: SubgroupFact) -> u32 {
+    let ty = unsafe { &*ty.cast::<Ty>() };
+    u32::from(match fact {
+        SubgroupFact::Shape => !ty.components.is_empty() && ty.fields.is_empty()
+            && ty.view.is_none() && ty.array.is_none(),
+        SubgroupFact::Numeric => ty.is_numeric(),
+        SubgroupFact::Integer => ty.components[0].0.is_integer(),
+    })
+}
+
 impl Builder<'_> {
     pub(super) async fn subgroup(
         &mut self,
@@ -9,37 +44,15 @@ impl Builder<'_> {
         argument: impl std::ops::AsyncFnMut(&mut Self,usize)->Result<Option<Value>>,
         argument_span: impl Fn(usize)->Span,
     ) -> Option<Result<Option<Value>>> {
-        let op = match name {
-            "subgroup_lane" => SubgroupOp::Lane,
-            "subgroup_size" => SubgroupOp::Size,
-            "subgroup_id" => SubgroupOp::Id,
-            "subgroup_elect" => SubgroupOp::Elect,
-            "subgroup_any" => SubgroupOp::Any,
-            "subgroup_all" => SubgroupOp::All,
-            "subgroup_count" => SubgroupOp::Count,
-            "subgroup_prefix_count" => SubgroupOp::PrefixCount,
-            "subgroup_broadcast_first" => SubgroupOp::BroadcastFirst,
-            "subgroup_shuffle" => SubgroupOp::Shuffle,
-            "subgroup_shuffle_xor" => SubgroupOp::ShuffleXor,
-            "subgroup_shuffle_up" => SubgroupOp::ShuffleUp,
-            "subgroup_shuffle_down" => SubgroupOp::ShuffleDown,
-            "subgroup_sum" => SubgroupOp::Sum,
-            "subgroup_exclusive_sum" => SubgroupOp::ExclusiveSum,
-            "subgroup_min" => SubgroupOp::Min,
-            "subgroup_max" => SubgroupOp::Max,
-            "subgroup_bit_and" => SubgroupOp::BitAnd,
-            "subgroup_bit_or" => SubgroupOp::BitOr,
-            "subgroup_bit_xor" => SubgroupOp::BitXor,
-            "subgroup_exclusive_bit_and" => SubgroupOp::ExclusiveBitAnd,
-            "subgroup_exclusive_bit_or" => SubgroupOp::ExclusiveBitOr,
-            "subgroup_exclusive_bit_xor" => SubgroupOp::ExclusiveBitXor,
-            _ => return None,
-        };
-        Some(unsafe { self.world.call(self.subgroup_value(op,count,span,argument,argument_span)).await })
+        let suffix = name.strip_prefix("subgroup_")?;
+        let builtin = unsafe { source_subgroup(suffix.as_ptr(), suffix.len()) };
+        if builtin.rule == 0 { return None; }
+        Some(unsafe { self.world.call(self.subgroup_value(builtin,count,span,argument,argument_span)).await })
     }
+
     async fn subgroup_value(
         &mut self,
-        op: SubgroupOp,
+        builtin: SubgroupBuiltin,
         count: usize,
         span: Span,
         mut lower: impl std::ops::AsyncFnMut(&mut Self,usize)->Result<Option<Value>>,
@@ -52,18 +65,7 @@ impl Builder<'_> {
                 "subgroup 协作需要显式 on gpu，不能作为 CPU／通用 compute 语义",
             );
         }
-        let nullary = matches!(
-            op,
-            SubgroupOp::Lane | SubgroupOp::Size | SubgroupOp::Id | SubgroupOp::Elect
-        );
-        let shuffle = matches!(
-            op,
-            SubgroupOp::Shuffle
-                | SubgroupOp::ShuffleXor
-                | SubgroupOp::ShuffleUp
-                | SubgroupOp::ShuffleDown
-        );
-        if count != usize::from(!nullary) + usize::from(shuffle) {
+        if count != builtin.arity as usize {
             return self.fail(span, "B196", "subgroup 操作参数数量不符");
         }
         let value = if count>0 {
@@ -85,62 +87,30 @@ impl Builder<'_> {
         if let Some(argument) = &argument {
             self.require_same(&Ty::scalar(Scalar::U32), &argument.ty, argument_span(1))?;
         }
-        let ty = match op {
-            SubgroupOp::Elect => Ty::scalar(Scalar::Bool),
-            SubgroupOp::Lane | SubgroupOp::Size | SubgroupOp::Id => Ty::scalar(Scalar::U32),
-            SubgroupOp::Any | SubgroupOp::All | SubgroupOp::Count | SubgroupOp::PrefixCount => {
+        let operand = value.as_ref().map_or(std::ptr::null(), |value| std::ptr::from_ref(&value.ty));
+        let result = unsafe { subgroup_result(builtin.rule, operand.cast(), subgroup_fact) };
+        let ty = match result {
+            SubgroupResult::U32 => Ty::scalar(Scalar::U32),
+            SubgroupResult::Bool => Ty::scalar(Scalar::Bool),
+            SubgroupResult::PredicateBool | SubgroupResult::PredicateU32 => {
                 self.require_bool(value.as_ref().unwrap(), span)?;
-                Ty::scalar(if matches!(op, SubgroupOp::Any | SubgroupOp::All) {
-                    Scalar::Bool
-                } else {
-                    Scalar::U32
+                Ty::scalar(match result {
+                    SubgroupResult::PredicateBool => Scalar::Bool,
+                    _ => Scalar::U32,
                 })
             }
-            SubgroupOp::Sum
-            | SubgroupOp::ExclusiveSum
-            | SubgroupOp::Min
-            | SubgroupOp::Max
-            | SubgroupOp::BitAnd
-            | SubgroupOp::BitOr
-            | SubgroupOp::BitXor
-            | SubgroupOp::ExclusiveBitAnd
-            | SubgroupOp::ExclusiveBitOr
-            | SubgroupOp::ExclusiveBitXor
-            | SubgroupOp::Shuffle
-            | SubgroupOp::ShuffleXor
-            | SubgroupOp::ShuffleUp
-            | SubgroupOp::ShuffleDown
-            | SubgroupOp::BroadcastFirst => {
-                let ty = &value.as_ref().unwrap().ty;
-                if ty.components.is_empty()
-                    || !ty.fields.is_empty()
-                    || ty.view.is_some()
-                    || ty.array.is_some()
-                    || (op != SubgroupOp::BroadcastFirst && !shuffle && !ty.is_numeric())
-                {
-                    return self.fail(span, "B197", "subgroup 数值协作需要数值标量／向量，广播与 shuffle 也支持 bool；不能传记录或资源 view");
-                }
-                if matches!(
-                    op,
-                    SubgroupOp::BitAnd
-                        | SubgroupOp::BitOr
-                        | SubgroupOp::BitXor
-                        | SubgroupOp::ExclusiveBitAnd
-                        | SubgroupOp::ExclusiveBitOr
-                        | SubgroupOp::ExclusiveBitXor
-                ) && !ty.components[0].0.is_integer()
-                {
-                    return self.fail(span, "B197", "subgroup 按位协作只接受整数标量或向量");
-                }
-                ty.clone()
-            }
+            SubgroupResult::Operand => value.as_ref().unwrap().ty.clone(),
+            SubgroupResult::BadShape => return self.fail(span, "B197",
+                "subgroup 数值协作需要数值标量／向量，广播与 shuffle 也支持 bool；不能传记录或资源 view"),
+            SubgroupResult::BadBits => return self.fail(span, "B197",
+                "subgroup 按位协作只接受整数标量或向量"),
         };
         let mut regs = Vec::new();
         for (component, (scalar, _)) in ty.components.iter().enumerate() {
             let dst = self.reg(*scalar);
             self.emit(InstKind::Subgroup {
                 dst,
-                op,
+                op: builtin.operation,
                 value: value.as_ref().map(|v| v.regs[component]),
                 argument: argument.as_ref().map(|v| v.regs[0]),
             });

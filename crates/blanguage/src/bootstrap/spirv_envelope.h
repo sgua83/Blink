@@ -1,4 +1,5 @@
 module bootstrap.spirv_envelope;
+import bootstrap.ir_dataflow;
 import bootstrap.type_families;
 import bootstrap.scalar_fold;
 
@@ -282,13 +283,6 @@ extern "C" ControlWords open_function_scope(u32 merge, u32 selector, u32 begin, 
 extern "C" ControlWords leave_control(u32 target, address body) on cpu;
 extern "C" ControlWords dispatch_loop_return(LoopReturn input, address edges, address body) on cpu;
 
-// Operation identities follow the original IR SubgroupOp.
-enum SubgroupOperation:u32 {
-    Lane=0; Size=1; Id=2; Elect=3; Any=4; All=5; Count=6; PrefixCount=7;
-    BroadcastFirst=8; Shuffle=9; ShuffleXor=10; ShuffleUp=11; ShuffleDown=12;
-    Sum=13; ExclusiveSum=14; Min=15; Max=16; BitAnd=17; BitOr=18; BitXor=19;
-    ExclusiveBitAnd=20; ExclusiveBitOr=21; ExclusiveBitXor=22;
-};
 struct SubgroupEmission {
     SubgroupOperation operation;
     BuiltinScalar scalar;

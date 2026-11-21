@@ -1,5 +1,12 @@
 module bootstrap.ir_dataflow;
 // One original instruction vocabulary, shared by the actual IR consumers.
+// Operation identities follow the original IR SubgroupOp.
+enum SubgroupOperation:u32 {
+    Lane=0; Size=1; Id=2; Elect=3; Any=4; All=5; Count=6; PrefixCount=7;
+    BroadcastFirst=8; Shuffle=9; ShuffleXor=10; ShuffleUp=11; ShuffleDown=12;
+    Sum=13; ExclusiveSum=14; Min=15; Max=16; BitAnd=17; BitOr=18; BitXor=19;
+    ExclusiveBitAnd=20; ExclusiveBitOr=21; ExclusiveBitXor=22;
+};
 const u32 N_INSTRUCTION=0;const u32 N_ARGUMENT=3;const u32 N_COMPARISON=32;
 const u32 ARGUMENT_REFERENCE=1;const u32 STORAGE_INDEXED=1;
 const u32 N_MEMORY_ALIAS=11;const u32 N_MEMORY_EFFECT=12;

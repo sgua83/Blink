@@ -1,4 +1,5 @@
 module bootstrap.operator_types;
+import bootstrap.ir_dataflow;
 import bootstrap.c_function;
 
 Plan decision(u32 status) on cpu {return Plan(status,0,0,0,0,0,0,0u64,0u64,0u64,0u64);}
@@ -291,7 +292,7 @@ extern "C" void expand_matrix_binary(Plan plan,u32 left_count,u32 input_count,Ma
     }
 }
 
-bool atomic_spelling<const N:u32>(address bytes, usize length, read array<u8,N> expected) on cpu {
+bool source_spelling<const N:u32>(address bytes, usize length, read array<u8,N> expected) on cpu {
     if (length != usize(N)) { return false; }
     for (index in 0..N) {
         if (unsafe_position<u8>(unsafe_address(address_bits(bytes) + u64(index))) != expected[index]) {
@@ -301,25 +302,25 @@ bool atomic_spelling<const N:u32>(address bytes, usize length, read array<u8,N> 
     return true;
 }
 extern "C" AtomicBuiltin source_atomic(address bytes, usize length, bool statement) on cpu {
-    if (atomic_spelling(bytes, length, "store")) {
+    if (source_spelling(bytes, length, "store")) {
         return AtomicBuiltin(AtomicSourceKind::Store, Access::Write, 3, 2);
     }
     if (statement) { return AtomicBuiltin(AtomicSourceKind::Unknown, Access::Value, 0, 0); }
-    if (atomic_spelling(bytes, length, "load")) {
+    if (source_spelling(bytes, length, "load")) {
         return AtomicBuiltin(AtomicSourceKind::Load, Access::Read, 2, 1);
     }
-    if (atomic_spelling(bytes, length, "compare_exchange")) {
+    if (source_spelling(bytes, length, "compare_exchange")) {
         return AtomicBuiltin(AtomicSourceKind::CompareExchange, Access::InOut, 5, 3);
     }
     AtomicSourceKind kind;
-    if (atomic_spelling(bytes, length, "add")) { kind = AtomicSourceKind::Add; }
-    else if (atomic_spelling(bytes, length, "sub")) { kind = AtomicSourceKind::Sub; }
-    else if (atomic_spelling(bytes, length, "exchange")) { kind = AtomicSourceKind::Exchange; }
-    else if (atomic_spelling(bytes, length, "min")) { kind = AtomicSourceKind::Min; }
-    else if (atomic_spelling(bytes, length, "max")) { kind = AtomicSourceKind::Max; }
-    else if (atomic_spelling(bytes, length, "and")) { kind = AtomicSourceKind::And; }
-    else if (atomic_spelling(bytes, length, "or")) { kind = AtomicSourceKind::Or; }
-    else if (atomic_spelling(bytes, length, "xor")) { kind = AtomicSourceKind::Xor; }
+    if (source_spelling(bytes, length, "add")) { kind = AtomicSourceKind::Add; }
+    else if (source_spelling(bytes, length, "sub")) { kind = AtomicSourceKind::Sub; }
+    else if (source_spelling(bytes, length, "exchange")) { kind = AtomicSourceKind::Exchange; }
+    else if (source_spelling(bytes, length, "min")) { kind = AtomicSourceKind::Min; }
+    else if (source_spelling(bytes, length, "max")) { kind = AtomicSourceKind::Max; }
+    else if (source_spelling(bytes, length, "and")) { kind = AtomicSourceKind::And; }
+    else if (source_spelling(bytes, length, "or")) { kind = AtomicSourceKind::Or; }
+    else if (source_spelling(bytes, length, "xor")) { kind = AtomicSourceKind::Xor; }
     else { return AtomicBuiltin(AtomicSourceKind::Unknown, Access::Value, 0, 0); }
     return AtomicBuiltin(kind, Access::InOut, 3, 2);
 }
@@ -328,4 +329,44 @@ extern "C" bool atomic_order_allowed(AtomicSourceKind kind, u32 order, u32 failu
     if (kind == AtomicSourceKind::Load) { return (order & 2) == 0; }
     if (kind == AtomicSourceKind::Store) { return (order & 1) == 0; }
     return (failure & 2) == 0 && (failure & order) == failure;
+}
+
+extern "C" SubgroupBuiltin source_subgroup(address bytes, usize length) on cpu {
+    if (source_spelling(bytes, length, "lane")) { return SubgroupBuiltin(SubgroupOperation::Lane, 0, SubgroupRule::Index); }
+    if (source_spelling(bytes, length, "size")) { return SubgroupBuiltin(SubgroupOperation::Size, 0, SubgroupRule::Index); }
+    if (source_spelling(bytes, length, "id")) { return SubgroupBuiltin(SubgroupOperation::Id, 0, SubgroupRule::Index); }
+    if (source_spelling(bytes, length, "elect")) { return SubgroupBuiltin(SubgroupOperation::Elect, 0, SubgroupRule::Elect); }
+    if (source_spelling(bytes, length, "any")) { return SubgroupBuiltin(SubgroupOperation::Any, 1, SubgroupRule::Vote); }
+    if (source_spelling(bytes, length, "all")) { return SubgroupBuiltin(SubgroupOperation::All, 1, SubgroupRule::Vote); }
+    if (source_spelling(bytes, length, "count")) { return SubgroupBuiltin(SubgroupOperation::Count, 1, SubgroupRule::VoteCount); }
+    if (source_spelling(bytes, length, "prefix_count")) { return SubgroupBuiltin(SubgroupOperation::PrefixCount, 1, SubgroupRule::VoteCount); }
+    if (source_spelling(bytes, length, "broadcast_first")) { return SubgroupBuiltin(SubgroupOperation::BroadcastFirst, 1, SubgroupRule::Transfer); }
+    if (source_spelling(bytes, length, "shuffle")) { return SubgroupBuiltin(SubgroupOperation::Shuffle, 2, SubgroupRule::Transfer); }
+    if (source_spelling(bytes, length, "shuffle_xor")) { return SubgroupBuiltin(SubgroupOperation::ShuffleXor, 2, SubgroupRule::Transfer); }
+    if (source_spelling(bytes, length, "shuffle_up")) { return SubgroupBuiltin(SubgroupOperation::ShuffleUp, 2, SubgroupRule::Transfer); }
+    if (source_spelling(bytes, length, "shuffle_down")) { return SubgroupBuiltin(SubgroupOperation::ShuffleDown, 2, SubgroupRule::Transfer); }
+    if (source_spelling(bytes, length, "sum")) { return SubgroupBuiltin(SubgroupOperation::Sum, 1, SubgroupRule::Arithmetic); }
+    if (source_spelling(bytes, length, "exclusive_sum")) { return SubgroupBuiltin(SubgroupOperation::ExclusiveSum, 1, SubgroupRule::Arithmetic); }
+    if (source_spelling(bytes, length, "min")) { return SubgroupBuiltin(SubgroupOperation::Min, 1, SubgroupRule::Arithmetic); }
+    if (source_spelling(bytes, length, "max")) { return SubgroupBuiltin(SubgroupOperation::Max, 1, SubgroupRule::Arithmetic); }
+    if (source_spelling(bytes, length, "bit_and")) { return SubgroupBuiltin(SubgroupOperation::BitAnd, 1, SubgroupRule::Bits); }
+    if (source_spelling(bytes, length, "bit_or")) { return SubgroupBuiltin(SubgroupOperation::BitOr, 1, SubgroupRule::Bits); }
+    if (source_spelling(bytes, length, "bit_xor")) { return SubgroupBuiltin(SubgroupOperation::BitXor, 1, SubgroupRule::Bits); }
+    if (source_spelling(bytes, length, "exclusive_bit_and")) { return SubgroupBuiltin(SubgroupOperation::ExclusiveBitAnd, 1, SubgroupRule::Bits); }
+    if (source_spelling(bytes, length, "exclusive_bit_or")) { return SubgroupBuiltin(SubgroupOperation::ExclusiveBitOr, 1, SubgroupRule::Bits); }
+    if (source_spelling(bytes, length, "exclusive_bit_xor")) { return SubgroupBuiltin(SubgroupOperation::ExclusiveBitXor, 1, SubgroupRule::Bits); }
+    return SubgroupBuiltin(SubgroupOperation::Lane, 0, SubgroupRule::Unknown);
+}
+extern "C" SubgroupResult subgroup_result(SubgroupRule rule, address ty, cfn<u32,address,SubgroupFact> fact) on cpu
+    requires nonzero(fact) {
+    if (rule == SubgroupRule::Index) { return SubgroupResult::U32; }
+    if (rule == SubgroupRule::Elect) { return SubgroupResult::Bool; }
+    if (rule == SubgroupRule::Vote) { return SubgroupResult::PredicateBool; }
+    if (rule == SubgroupRule::VoteCount) { return SubgroupResult::PredicateU32; }
+    if (rule == SubgroupRule::Transfer) {
+        return fact(ty, SubgroupFact::Shape) != 0 ? SubgroupResult::Operand : SubgroupResult::BadShape;
+    }
+    if (fact(ty, SubgroupFact::Numeric) == 0) { return SubgroupResult::BadShape; }
+    if (rule == SubgroupRule::Bits && fact(ty, SubgroupFact::Integer) == 0) { return SubgroupResult::BadBits; }
+    return SubgroupResult::Operand;
 }
