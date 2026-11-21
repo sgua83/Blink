@@ -56,10 +56,6 @@ pub enum Pass {
 }
 use std::collections::{BTreeMap, BTreeSet};
 
-fn op(out: &mut Vec<u32>, code: u16, args: &[u32]) {
-    out.push(((args.len() as u32 + 1) << 16) | code as u32);
-    out.extend_from_slice(args);
-}
 #[repr(C)]
 struct ShaderFeatures {
     atomic64: u32,
@@ -758,6 +754,29 @@ unsafe extern "C" {
     ) -> u64;
     #[link_name = "bootstrap.spirv_envelope::open_selection"]
     fn open_selection(merge: u32, condition: u32, yes: u32, no: u32, body: *mut u32) -> ControlWords;
+    #[link_name = "bootstrap.spirv_envelope::open_index_selection"]
+    fn open_index_selection(bool_type: u32, test: u32, index: u32, bound: u32,
+        less: bool, run: u32, end: u32, body: *mut u32) -> ControlWords;
+    #[link_name = "bootstrap.spirv_envelope::open_tile_padding"]
+    fn open_tile_padding(uint_type: u32, bool_type: u32, lane: u32, width: u32,
+        capacity: u32, index: u32, test: u32, run: u32, end: u32, body: *mut u32) -> ControlWords;
+    #[link_name = "bootstrap.spirv_envelope::copy_shader_value"]
+    fn copy_shader_value(body: *mut u32, at: u64, type_id: u32, result: u32, value: u32) -> u64;
+    #[link_name = "bootstrap.spirv_envelope::plain_load"]
+    fn plain_load(body: *mut u32, at: u64, type_id: u32, result: u32, pointer: u32) -> u64;
+    #[link_name = "bootstrap.spirv_envelope::plain_store"]
+    fn plain_store(body: *mut u32, at: u64, pointer: u32, value: u32) -> u64;
+    #[link_name = "bootstrap.spirv_envelope::aligned_load"]
+    fn aligned_load(body: *mut u32, at: u64, type_id: u32, result: u32, pointer: u32, alignment: u32) -> u64;
+    #[link_name = "bootstrap.spirv_envelope::read_shader_index"]
+    fn read_shader_index(vector_type: u32, uint_type: u32, input: u32, global: u32, x: u32, body: *mut u32) -> u64;
+    #[link_name = "bootstrap.spirv_envelope::unpack_summary_word"]
+    fn unpack_summary_word(type_id: u32, result: u32, word: u32, shift: u32, body: *mut u32) -> u64;
+    #[link_name = "bootstrap.spirv_envelope::declare_dispatch_continuation"]
+    fn declare_dispatch_continuation(type_id: u32, result: u32, spec_id: u32, bytes: u32,
+        definitions: *mut u32, decorations: *mut u32);
+    #[link_name = "bootstrap.spirv_envelope::dispatch_count_index"]
+    fn dispatch_count_index(push: DispatchPush, word: u32, field: u32, first: u32, body: *mut u32) -> PayloadRead;
     #[link_name = "bootstrap.spirv_envelope::next_control_block"]
     fn next_control_block(target: u32, label: u32, reaches: u32, body: *mut u32) -> ControlWords;
     #[link_name = "bootstrap.spirv_envelope::close_selection"]
@@ -982,8 +1001,34 @@ impl Emitter<'_> {
         }
         pointer
     }
-    fn emit(&mut self, code: u16, args: &[u32]) {
-        op(&mut self.body, code, args);
+    fn emit_body(&mut self, capacity: usize, encode: impl FnOnce(*mut u32) -> u64) {
+        let start = self.body.len();
+        self.body.reserve(capacity);
+        unsafe {
+            let words = encode(self.body.as_mut_ptr().add(start));
+            self.body.set_len(start + words as usize);
+        }
+    }
+    fn copy_register(&mut self, dst: Reg, source: u32) {
+        let (ty, dst) = (self.ty(dst), self.value(dst));
+        self.emit_body(4, |body| unsafe { copy_shader_value(body, 0, ty, dst, source) });
+    }
+    fn read_pointer(&mut self, ty: u32, result: u32, pointer: u32) {
+        self.emit_body(4, |body| unsafe { plain_load(body, 0, ty, result, pointer) });
+    }
+    fn load_pointer(&mut self, ty: u32, pointer: u32) -> u32 {
+        let result = self.id();
+        self.read_pointer(ty, result, pointer);
+        result
+    }
+    fn load_aligned_word(&mut self, pointer: u32) -> u32 {
+        let ty = self.types[&Scalar::U32];
+        let result = self.id();
+        self.emit_body(6, |body| unsafe { aligned_load(body, 0, ty, result, pointer, 4) });
+        result
+    }
+    fn store_pointer(&mut self, pointer: u32, value: u32) {
+        self.emit_body(3, |body| unsafe { plain_store(body, 0, pointer, value) });
     }
     fn read_summary_words(&mut self, pointers: &[u32]) -> Vec<u32> {
         let at = self.body.len();
@@ -1193,6 +1238,10 @@ impl Emitter<'_> {
         self.emit_control(9, |body| unsafe { open_selection(merge, condition, run, merge, body) });
     }
 
+    fn open_index_branch(&mut self, test: u32, index: u32, bound: u32, less: bool, run: u32, end: u32) {
+        let ty = self.types[&Scalar::Bool];
+        self.emit_control(14, |body| unsafe { open_index_selection(ty, test, index, bound, less, run, end, body) });
+    }
     fn merge_active(&mut self, merge: u32, reaches: bool) {
         self.emit_control(4, |body| unsafe { next_control_block(merge, merge, u32::from(reaches), body) });
     }
@@ -1241,12 +1290,8 @@ impl Emitter<'_> {
                 InstKind::TileBarrier => self.tile_barrier(),
                 InstKind::TilePublish(publication) => self.publish_values(publication),
                 InstKind::TileCollective(collective) => self.tile_collective(collective),
-                InstKind::TileLength(dst) => {
-                    self.emit(83, &[self.ty(*dst), self.value(*dst), self.tile_length])
-                }
-                InstKind::TileLane(dst) => {
-                    self.emit(83, &[self.ty(*dst), self.value(*dst), self.tile_lane])
-                }
+                InstKind::TileLength(dst) => self.copy_register(*dst, self.tile_length),
+                InstKind::TileLane(dst) => self.copy_register(*dst, self.tile_lane),
                 InstKind::TileLoad {
                     dst,
                     tile,
@@ -1315,14 +1360,14 @@ impl Emitter<'_> {
                 InstKind::Constant(dst, s, bits) => {
                     self.regs[*dst] = self.constant_bits(*s, *bits);
                 }
-                InstKind::Index(dst) => self.emit(83, &[self.ty(*dst), self.value(*dst), self.index]),
+                InstKind::Index(dst) => self.copy_register(*dst, self.index),
                 InstKind::Uniform(dst, offset) => self.uniform(*dst, *offset),
                 InstKind::LoadLocal(dst, slot) => {
                     let pointer = self.locals[*slot];
                     if pointer == 0 {
                         self.load_private(*dst, *slot, None, 0);
                     } else {
-                        self.emit(61, &[self.ty(*dst), self.value(*dst), pointer]);
+                        self.read_pointer(self.ty(*dst), self.value(*dst), pointer);
                     }
                 }
                 InstKind::StoreLocal(slot, src) => {
@@ -1330,7 +1375,7 @@ impl Emitter<'_> {
                     if pointer == 0 {
                         self.store_private(*src, *slot, None, 0);
                     } else {
-                        self.emit(62, &[pointer, self.value(*src)]);
+                        self.store_pointer(pointer, self.value(*src));
                     }
                 }
                 InstKind::LoadLocalIndexed { dst, base, index, word, .. } =>
@@ -2284,9 +2329,8 @@ fn emit_shader(
         }
     }
     let gid = e.id();
-    e.emit(61, &[v3, gid, global]);
     let local_index = e.id();
-    e.emit(81, &[u, local_index, gid, 0]);
+    e.emit_body(9, |body| unsafe { read_shader_index(v3, u, global, gid, local_index, body) });
     match pass {
         Pass::DispatchArguments(prefix) => {
             e.prefix_arguments(Some(&prefix), local_index);
@@ -2319,8 +2363,7 @@ fn emit_shader(
         if pass == Pass::SelectionScatter {
             e.selection_scatter(selection, count, active, groups);
         } else if scan_local {
-            let local = e.id();
-            e.emit(61, &[u, local, local_input]);
+            let local = e.load_pointer(u, local_input);
             e.scan(
                 &Scan::counts(selection.scan(program.selection_buffer())),
                 pass == Pass::ScanTail,
@@ -2354,8 +2397,7 @@ fn emit_shader(
                 shared_pointer,
             ),
             Pass::SortScan | Pass::ScanTail => {
-                let local = e.id();
-                e.emit(61, &[u, local, local_input]);
+                let local = e.load_pointer(u, local_input);
                 let r = Reduction {
                     source: s.source,
                     source_word: 0,
@@ -2389,8 +2431,7 @@ fn emit_shader(
         }
     } else if let Operation::CustomSegmentedReduce(r) = &stage.operation {
         let local = if scan_local {
-            let local = e.id();
-            e.emit(61, &[u, local, local_input]);
+            let local = e.load_pointer(u, local_input);
             local
         } else {
             0
@@ -2409,8 +2450,7 @@ fn emit_shader(
     } else if let Operation::CustomScan(r) = &stage.operation {
         let kernel = custom_kernel.unwrap();
         if scan_local {
-            let local = e.id();
-            e.emit(61, &[u, local, local_input]);
+            let local = e.load_pointer(u, local_input);
             e.custom_scan(
                 r,
                 kernel,
@@ -2425,8 +2465,7 @@ fn emit_shader(
             e.custom_scan_add(r, kernel, pass == Pass::ScanRootAdd, active)?;
         }
     } else if let Operation::CustomReduce(r) = &stage.operation {
-        let local = e.id();
-        e.emit(61, &[u, local, local_input]);
+        let local = e.load_pointer(u, local_input);
         e.custom_reduce(
             r,
             custom_kernel.unwrap(),
@@ -2438,8 +2477,7 @@ fn emit_shader(
             count,
         )?;
     } else if let Operation::Reduce(r) = &stage.operation {
-        let local = e.id();
-        e.emit(61, &[u, local, local_input]);
+        let local = e.load_pointer(u, local_input);
         e.reduce(
             r,
             pass == Pass::ReductionTail,
@@ -2454,8 +2492,7 @@ fn emit_shader(
             e.segmented_reduce_add(r, active, [execute, end]);
         } else {
             let local = if scan_local {
-                let local = e.id();
-                e.emit(61, &[u, local, local_input]);
+                let local = e.load_pointer(u, local_input);
                 local
             } else {
                 0
@@ -2466,8 +2503,7 @@ fn emit_shader(
         if pass == Pass::CompactScatter {
             e.compact_scatter(c, count, active);
         } else if scan_local {
-            let local = e.id();
-            e.emit(61, &[u, local, local_input]);
+            let local = e.load_pointer(u, local_input);
             e.scan(
                 &Scan::counts(c.scan()),
                 pass == Pass::ScanTail,
@@ -2485,8 +2521,7 @@ fn emit_shader(
     } else if let Operation::ScanExclusive(r) = &stage.operation {
         if let Some(head) = r.head_word {
             if scan_local {
-                let local = e.id();
-                e.emit(61, &[u, local, local_input]);
+                let local = e.load_pointer(u, local_input);
                 e.segmented_scan(
                     r,
                     head,
@@ -2510,8 +2545,7 @@ fn emit_shader(
             }
         } else {
             if scan_local {
-                let local = e.id();
-                e.emit(61, &[u, local, local_input]);
+                let local = e.load_pointer(u, local_input);
                 e.scan(
                     r,
                     pass == Pass::ScanTail,
@@ -2537,9 +2571,7 @@ fn emit_shader(
             e.open_active(active, execute, end);
             if stage.selection.is_some() {
                 let at = e.address_scalar(Scalar::U32, program.buffers.len(), e.index, 0);
-                let original = e.id();
-                e.emit(61, &[u, original, at, 2, 4]);
-                e.index = original;
+                e.index = e.load_aligned_word(at);
             }
             let reaches = e.block(&stage.code, None)?;
             e.merge_active(end, reaches);

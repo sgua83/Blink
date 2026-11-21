@@ -243,6 +243,13 @@ extern "C" PayloadWrite typed_payload_read(PayloadEmission input, PayloadResult 
 extern "C" u64 payload_write_bits(u32 type_id, u32 result, u32 value, u32 one, u32 zero, address body) on cpu;
 extern "C" PayloadWrite payload_write(PayloadEmission input, u32 value, address pointers, address shifts, address output, address body) on cpu;
 
+extern "C" u64 copy_shader_value(address body, u64 at, u32 type_id, u32 result, u32 value) on cpu;
+extern "C" u64 plain_load(address body, u64 at, u32 type_id, u32 result, u32 pointer) on cpu;
+extern "C" u64 plain_store(address body, u64 at, u32 pointer, u32 value) on cpu;
+extern "C" u64 aligned_load(address body, u64 at, u32 type_id, u32 result, u32 pointer, u32 alignment) on cpu;
+extern "C" u64 read_shader_index(u32 vector_type, u32 uint_type, u32 input, u32 global, u32 x, address body) on cpu;
+extern "C" u64 unpack_summary_word(u32 type_id, u32 result, u32 word, u32 shift, address body) on cpu;
+
 struct ControlWords { u64 words; u32 label; u32 reaches_next; };
 struct LoopLabels { u32 header; u32 check; u32 run; u32 next; u32 end; };
 struct LoopReturn {
@@ -260,6 +267,10 @@ struct LoopReturn {
 extern "C" ControlWords begin_shader_body(u32 result_type, u32 function, u32 signature, u32 entry, address body) on cpu;
 extern "C" ControlWords end_shader_body(address body) on cpu;
 extern "C" ControlWords open_selection(u32 merge, u32 condition, u32 yes, u32 no, address body) on cpu;
+extern "C" ControlWords open_index_selection(u32 bool_type, u32 test, u32 index, u32 bound,
+    bool less, u32 run, u32 end, address body) on cpu;
+extern "C" ControlWords open_tile_padding(u32 uint_type, u32 bool_type, u32 lane, u32 width,
+    u32 capacity, u32 index, u32 test, u32 run, u32 end, address body) on cpu;
 extern "C" ControlWords next_control_block(u32 target, u32 label, u32 reaches, address body) on cpu;
 extern "C" ControlWords close_selection(u32 merge, u32 yes_reaches, u32 no_reaches, address body) on cpu;
 extern "C" u64 phi_two(address body, u64 at, u32 type, u32 result,
@@ -971,6 +982,9 @@ struct PrefixIndexWords {
 };
 
 struct DispatchPush { u32 uint_type; u32 pointer_type; u32 block; u32 zero; };
+extern "C" void declare_dispatch_continuation(u32 type_id, u32 result, u32 spec_id, u32 bytes,
+    address definitions, address decorations) on cpu;
+extern "C" PayloadRead dispatch_count_index(DispatchPush push, u32 word, u32 field, u32 first, address body) on cpu;
 extern "C" PayloadRead read_dispatch_word(DispatchPush push, u32 word, u32 first, address body) on cpu;
 extern "C" PrefixIndexWords encode_linear_index(DispatchPush push, u32 wide_type, u32 bool_type,
     u32 local, u32 one, u32 first, address body) on cpu;

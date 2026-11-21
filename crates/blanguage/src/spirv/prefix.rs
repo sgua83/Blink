@@ -55,16 +55,13 @@ impl Emitter<'_> {
     pub(super) fn prefix_arguments(&mut self, prefix: Option<&PrefixCount>, invocation: u32) {
         let zero = self.constant(Scalar::U32, 0);
         let first = self.id();
-        self.emit(170, &[self.types[&Scalar::Bool], first, invocation, zero]);
         let run = self.id();
         let end = self.id();
-        self.open_active(first, run, end);
+        self.open_index_branch(first, invocation, zero, false, run, end);
         let count = match prefix {
             Some(prefix) => {
                 let source = self.address_scalar(Scalar::U32, prefix.binding, zero, prefix.word);
-                let count = self.id();
-                self.emit(61, &[self.types[&Scalar::U32], count, source, 2, 4]);
-                count
+                self.load_aligned_word(source)
             }
             None => self.prefix_push(2 + self.stage.domain as u32),
         };
@@ -99,9 +96,17 @@ impl Emitter<'_> {
 
     pub(super) fn continuation_byte(&mut self) -> u32 {
         let id = self.id();
-        op(&mut self.decorations, 71, &[id, 1, DISPATCH_CONTINUATION_SPEC_ID]); // SpecId
         let legacy = (PREFIX_LEVELS * DISPATCH_RECORD_BYTES) as u32;
-        op(&mut self.defs, 50, &[self.u64_type, id, legacy, 0]); // OpSpecConstant
+        let defs = self.defs.len();
+        let decorations = self.decorations.len();
+        self.defs.reserve(5);
+        self.decorations.reserve(4);
+        unsafe {
+            declare_dispatch_continuation(self.u64_type, id, DISPATCH_CONTINUATION_SPEC_ID,
+                legacy, self.defs.as_mut_ptr().add(defs), self.decorations.as_mut_ptr().add(decorations));
+            self.defs.set_len(defs + 5);
+            self.decorations.set_len(decorations + 4);
+        }
         id
     }
 
@@ -146,9 +151,18 @@ impl Emitter<'_> {
         collective: bool,
     ) -> (u32, u32, [u32; 2]) {
         let three = self.constant(Scalar::U32, 3);
-        let base = self.prefix_push(1);
-        let word = self.id();
-        self.emit(128, &[self.types[&Scalar::U32], word, base, three]);
+        let zero = self.constant(Scalar::U32, 0);
+        let y_limit = self.constant(Scalar::U32, 1);
+        let push = self.dispatch_push(zero);
+        let at = self.body.len();
+        self.body.reserve(15);
+        let index = unsafe {
+            let index = dispatch_count_index(push, y_limit, three, self.next, self.body.as_mut_ptr().add(at));
+            self.body.set_len(at + index.words as usize);
+            index
+        };
+        self.next = index.next;
+        let word = index.value;
         let count_pointer = self.address_scalar(Scalar::U32, self.program.indirect_buffer(), word, 0);
         let input = PrefixIndexEmission {
             uint_type: self.types[&Scalar::U32],

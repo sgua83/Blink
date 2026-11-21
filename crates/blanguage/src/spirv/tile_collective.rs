@@ -35,11 +35,10 @@ impl Emitter<'_> {
                 let tree = *tree;
                 let identity = self.raw_constant(tree.scalar, tree.operator.identity(tree.scalar));
                 let active = self.id();
-                self.emit(176, &[b, active, self.tile_lane, self.tile_length]);
                 let before = self.current_label;
                 let read = self.id();
                 let read_end = self.id();
-                self.open_active(active, read, read_end);
+                self.open_index_branch(active, self.tile_lane, self.tile_length, true, read, read_end);
                 let value = self.tile_read(tree.scalar, collective.tile, self.tile_lane, *word, None);
                 self.merge_active(read_end, true);
                 let input = self.id();
@@ -49,12 +48,13 @@ impl Emitter<'_> {
                     let capacity = self.constant(Scalar::U32, padded);
                     let size = self.constant(Scalar::U32, width);
                     let index = self.id();
-                    self.emit(128, &[u, index, self.tile_lane, size]);
                     let fill = self.id();
-                    self.emit(176, &[b, fill, index, capacity]);
                     let run = self.id();
                     let end = self.id();
-                    self.open_active(fill, run, end);
+                    let lane = self.tile_lane;
+                    self.emit_control(19, |body| unsafe {
+                        open_tile_padding(u, b, lane, size, capacity, index, fill, run, end, body)
+                    });
                     self.tree_store(tree,index,identity);
                     self.merge_active(end, true);
                 }
@@ -68,10 +68,9 @@ impl Emitter<'_> {
             }
             let final_index = if collective.op.exclusive() {
                 let first = self.id();
-                self.emit(170, &[b, first, self.tile_lane, zero]);
                 let run = self.id();
                 let end = self.id();
-                self.open_active(first, run, end);
+                self.open_index_branch(first, self.tile_lane, zero, false, run, end);
                 let last = self.constant(Scalar::U32, padded - 1);
                 for tree in &trees {
                     let identity = self.raw_constant(tree.scalar, tree.operator.identity(tree.scalar));

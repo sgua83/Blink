@@ -59,7 +59,7 @@ impl Emitter<'_> {
                 if part == 0 {
                     let raw = self.load_raw_buffer(unit, source, self.index, word);
                     let at = self.tile_word_address(key, self.tile_lane, None).0;
-                    self.emit(62, &[at, raw]);
+                    self.store_pointer(at, raw);
                 }
                 continue;
             }
@@ -76,7 +76,7 @@ impl Emitter<'_> {
                 self.tile_lane,
                 None,
             );
-            self.emit(62, &[target.0, raw]);
+            self.store_pointer(target.0, raw);
         }
         self.merge_active(end, true);
         self.tile_barrier();
@@ -176,7 +176,7 @@ impl Emitter<'_> {
                 let key = self.stage.shared_word(publication.tile, *word);
                 if self.tile_layout.contains_key(&key.aligned()) {
                     let at = self.tile_word_address(key, self.tile_lane, None).0;
-                    self.emit(62, &[at, raw]);
+                    self.store_pointer(at, raw);
                 }
             } else {
                 components.push((scalar, *word, raw));
@@ -193,7 +193,7 @@ impl Emitter<'_> {
                 self.tile_lane,
                 None,
             );
-            self.emit(62, &[at.0, packed[word as usize]]);
+            self.store_pointer(at.0, packed[word as usize]);
         }
     }
     pub(super) fn tile_phases(&mut self, active: u32) -> Result<(), &'static str> {

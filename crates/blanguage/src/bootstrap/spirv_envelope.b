@@ -716,12 +716,33 @@ u32 read_word(address words, u32 part) on cpu {
     return unsafe_position<u32>(word_at(words, u64(part)));
 }
 
-u64 aligned_load(address body, u64 at, u32 type_id, u32 result, u32 pointer, u32 alignment) on cpu {
+extern "C" u64 copy_shader_value(address body, u64 at, u32 type_id, u32 result, u32 value) on cpu {
+    return words_three(body, at, 83, type_id, result, value);
+}
+
+extern "C" u64 plain_load(address body, u64 at, u32 type_id, u32 result, u32 pointer) on cpu {
+    return words_three(body, at, 61, type_id, result, pointer);
+}
+
+extern "C" u64 plain_store(address body, u64 at, u32 pointer, u32 value) on cpu {
+    return words_two(body, at, 62, pointer, value);
+}
+
+extern "C" u64 aligned_load(address body, u64 at, u32 type_id, u32 result, u32 pointer, u32 alignment) on cpu {
     return words_five(body, at, 61, type_id, result, pointer, 2, alignment);
 }
 
 u64 aligned_store(address body, u64 at, u32 pointer, u32 value, u32 alignment) on cpu {
     return words_four(body, at, 62, pointer, value, 2, alignment);
+}
+
+extern "C" u64 read_shader_index(u32 vector_type, u32 uint_type, u32 input, u32 global, u32 x, address body) on cpu {
+    u64 at = plain_load(body, 0u64, vector_type, global, input);
+    return words_four(body, at, 81, uint_type, x, global, 0);
+}
+
+extern "C" u64 unpack_summary_word(u32 type_id, u32 result, u32 word, u32 shift, address body) on cpu {
+    return words_four(body, 0u64, 194, type_id, result, word, shift);
 }
 
 extern "C" u64 read_summary_words(address body, u32 type_id, u32 first, address pointers, u32 count) on cpu {
@@ -749,7 +770,7 @@ extern "C" PayloadRead payload_read(PayloadEmission input, address operands, add
             if (input.access == PayloadAccess::Physical) {
                 at = aligned_load(body, at, input.unit_type, next, pointer, input.unit_bytes);
             } else {
-                at = words_three(body, at, 61, input.unit_type, next, pointer);
+                at = plain_load(body, at, input.unit_type, next, pointer);
             }
             next += 1;
         }
@@ -850,7 +871,7 @@ extern "C" PayloadWrite payload_write(PayloadEmission input, u32 value, address 
         } else if (input.access == PayloadAccess::Physical) {
             out.words = aligned_store(body, out.words, read_word(pointers, part), word, input.unit_bytes);
         } else {
-            out.words = words_two(body, out.words, 62, read_word(pointers, part), word);
+            out.words = plain_store(body, out.words, read_word(pointers, part), word);
         }
     }
     return PayloadWrite(out.words, out.next);
@@ -890,9 +911,30 @@ extern "C" ControlWords end_shader_body(address body) on cpu {
     return ControlWords(2u64, 0, 0);
 }
 
+ControlWords selection_entry(address body, u64 at, u32 merge, u32 condition, u32 yes, u32 no) on cpu {
+    u64 branch = open_conditional(body, at, merge, condition, yes, no);
+    return ControlWords(words_one(body, branch, 248, yes), yes, 1);
+}
+
 extern "C" ControlWords open_selection(u32 merge, u32 condition, u32 yes, u32 no, address body) on cpu {
-    u64 at = open_conditional(body, 0u64, merge, condition, yes, no);
-    return ControlWords(words_one(body, at, 248, yes), yes, 1);
+    return selection_entry(body, 0u64, merge, condition, yes, no);
+}
+
+ControlWords index_selection(address body, u64 at, u32 bool_type, u32 test,
+    u32 index, u32 bound, bool less, u32 run, u32 end) on cpu {
+    u64 compared = words_four(body, at, less ? 176 : 170, bool_type, test, index, bound);
+    return selection_entry(body, compared, end, test, run, end);
+}
+
+extern "C" ControlWords open_index_selection(u32 bool_type, u32 test, u32 index, u32 bound,
+    bool less, u32 run, u32 end, address body) on cpu {
+    return index_selection(body, 0u64, bool_type, test, index, bound, less, run, end);
+}
+
+extern "C" ControlWords open_tile_padding(u32 uint_type, u32 bool_type, u32 lane, u32 width,
+    u32 capacity, u32 index, u32 test, u32 run, u32 end, address body) on cpu {
+    u64 at = words_four(body, 0u64, 128, uint_type, index, lane, width);
+    return index_selection(body, at, bool_type, test, index, capacity, true, run, end);
 }
 
 u64 branch_if_reached(address body, u64 at, u32 target, u32 reaches) on cpu {
@@ -1663,6 +1705,19 @@ u32 dispatch_push_word(inout StageCursor out, DispatchPush push, u32 word) on cp
     out.words = words_five(out.body, out.words, 65, push.pointer_type, pointer, push.block, push.zero, word);
     out.next = pointer + 1;
     return stage_load(out, push.uint_type, pointer, false);
+}
+
+extern "C" void declare_dispatch_continuation(u32 type_id, u32 result, u32 spec_id, u32 bytes,
+    address definitions, address decorations) on cpu {
+    words_three(decorations, 0u64, 71, result, 1, spec_id);
+    words_four(definitions, 0u64, 50, type_id, result, bytes, 0);
+}
+
+extern "C" PayloadRead dispatch_count_index(DispatchPush push, u32 word, u32 field, u32 first, address body) on cpu {
+    StageCursor out = StageCursor(body, 0u64, first);
+    u32 base = dispatch_push_word(out, push, word);
+    u32 index = stage_op(out, 128, push.uint_type, base, field);
+    return PayloadRead(out.words, out.next, index);
 }
 
 extern "C" PayloadRead read_dispatch_word(DispatchPush push, u32 word, u32 first, address body) on cpu {

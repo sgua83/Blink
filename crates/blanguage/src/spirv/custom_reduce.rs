@@ -239,7 +239,8 @@ impl Emitter<'_> {
             if offset % 4 != 0 {
                 let shift = self.constant(Scalar::U32, offset % 4 * 8);
                 let raw = self.id();
-                self.emit(194, &[self.types[&Scalar::U32], raw, values[at], shift]);
+                let ty = self.types[&Scalar::U32];
+                self.emit_body(5, |body| unsafe { unpack_summary_word(ty, raw, values[at], shift, body) });
                 self.from_words(*reg, &[raw], Scalar::U32);
             } else {
                 self.from_words(*reg, &values[at..at + scalar.size().div_ceil(4) as usize], Scalar::U32);
