@@ -123,7 +123,81 @@ pub(super) struct Borrow{
     pub calls:Edges<view_contracts::CallResult>,
     pub reads:Edges<view_contracts::ContentRead>,
 }
+#[repr(C)]
+struct LoopBorrowEdge {
+    level: usize,
+    input: usize,
+    present: u32,
+}
+
+#[repr(C)]
+struct LoopBorrowHost {
+    inspect: unsafe extern "C" fn(*mut std::ffi::c_void) -> LoopBorrowEdge,
+    source: unsafe extern "C" fn(*mut std::ffi::c_void, usize) -> *const Borrow,
+    replace: unsafe extern "C" fn(*mut std::ffi::c_void, *const Borrow),
+    retain: unsafe extern "C" fn(*mut std::ffi::c_void),
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.ir_dataflow::project_loop_borrow"]
+    fn source_project_loop_borrow(context: *mut std::ffi::c_void, scope: usize, host: LoopBorrowHost);
+}
+
 impl Borrow {
+    pub(super) fn project_loop_inputs<'a>(
+        mut self, scope: usize, source: impl Fn(usize) -> Option<&'a Borrow>,
+    ) -> Self {
+        use std::{ffi::c_void, iter::Peekable, ptr};
+
+        struct Projection<I: Iterator, F> {
+            inputs: Peekable<I>,
+            result: Borrow,
+            source: F,
+        }
+        type Input = (LoopInput, bounds::Clause);
+
+        fn project<'a, I: Iterator<Item = Input>, F: Fn(usize) -> Option<&'a Borrow>>(
+            inputs: I, result: Borrow, scope: usize, source: F,
+        ) -> Borrow {
+            unsafe extern "C" fn inspect<I: Iterator<Item = Input>, F>(raw: *mut c_void) -> LoopBorrowEdge {
+                let state = unsafe { &mut *raw.cast::<Projection<I, F>>() };
+                match state.inputs.peek() {
+                    Some((input, _)) => LoopBorrowEdge { level: input.level, input: input.index, present: 1 },
+                    None => LoopBorrowEdge { level: 0, input: 0, present: 0 },
+                }
+            }
+            unsafe extern "C" fn source_at<'a, I: Iterator<Item = Input>, F: Fn(usize) -> Option<&'a Borrow>>(
+                raw: *mut c_void, index: usize,
+            ) -> *const Borrow {
+                let state = unsafe { &*raw.cast::<Projection<I, F>>() };
+                (state.source)(index).map_or(ptr::null(), ptr::from_ref)
+            }
+            unsafe extern "C" fn replace<I: Iterator<Item = Input>, F>(raw: *mut c_void, source: *const Borrow) {
+                let state = unsafe { &mut *raw.cast::<Projection<I, F>>() };
+                // A replace or retain consumes exactly the edge exposed by inspect.
+                let (_, when) = unsafe { state.inputs.next().unwrap_unchecked() };
+                state.result.union_restricted(unsafe { &*source }, &when);
+            }
+            unsafe extern "C" fn retain<I: Iterator<Item = Input>, F>(raw: *mut c_void) {
+                let state = unsafe { &mut *raw.cast::<Projection<I, F>>() };
+                let (input, when) = unsafe { state.inputs.next().unwrap_unchecked() };
+                state.result.inputs.insert_when(input, when);
+            }
+
+            let mut state = Projection { inputs: inputs.peekable(), result, source };
+            unsafe {
+                source_project_loop_borrow(ptr::from_mut(&mut state).cast(), scope, LoopBorrowHost {
+                    inspect: inspect::<I, F>, source: source_at::<I, F>,
+                    replace: replace::<I, F>, retain: retain::<I, F>,
+                });
+            }
+            state.result
+        }
+
+        let inputs = std::mem::take(&mut self.inputs).into_entries();
+        project(inputs, self, scope, source)
+    }
+
     pub(super) fn normalize_contract(&mut self,normal:&mut bounds::Normalizer) {
         let sources=std::mem::take(&mut self.sources.0);
         for(mut source,when)in sources {

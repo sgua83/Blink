@@ -639,7 +639,10 @@ impl Proof {
         }).collect();
     }
     pub(super) fn retain_view_borrows(&mut self,ty:&Ty) {let selected=view_contracts::components(ty);for(component,borrow)in self.views.iter_mut().enumerate(){if !selected.contains(&component){*borrow=view::Borrow::default();}}}
-    pub(super) fn view_borrow(&self,component:usize)->view::Borrow {self.views.get(component).cloned().unwrap_or_default()}
+    pub(super) fn view_borrow_ref(&self, component: usize) -> Option<&view::Borrow> {
+        self.views.get(component)
+    }
+    pub(super) fn view_borrow(&self,component:usize)->view::Borrow {self.view_borrow_ref(component).cloned().unwrap_or_default()}
     pub(super) fn borrowed_view(&self)->view::Borrow {self.views.iter().fold(view::Borrow::default(),|mut all,value|{all.union(value);all})}
     pub(super) fn borrowed_views(&self)->BTreeSet<view::Source> {self.borrowed_view().sources.entries().filter_map(|(source,when)|when.possible().then_some(source.clone())).collect()}
     pub(super) fn with_external_borrows(mut self,ty:&Ty)->Self {

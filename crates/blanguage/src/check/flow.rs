@@ -142,27 +142,41 @@ impl Builder<'_> {
             });
         }
         let data_value=view::resource_borrow;
-        let mut definitions=sources.clone();
-        let mut continued=vec![Borrow::default();definitions.len()];
-        for state in &context.continues {
-            for (index,slot) in context.view_inputs.iter().enumerate() {
-                let value=match slot {
-                    InputSlot::Value{component,..}=>slot.value_proof(&state.env).map(|proof|proof.view_borrow(*component)).unwrap_or_default(),
-                    InputSlot::Data{name,path,..}=>state.env.get(name).and_then(|b|data_at(b,path)).map(&data_value).unwrap_or_default(),
-                };
-                definitions[index].union(&value);continued[index].union(&value);
+        let mut definitions = sources.clone();
+        let natural = if nonempty { natural } else { None };
+        let mut continued = BTreeMap::new();
+        if let Some(natural) = natural {
+            let env = &context.exits[natural].env;
+            for slot in &context.view_inputs {
+                if let InputSlot::Value { component, .. } = slot {
+                    let proof = slot.value_proof(env).unwrap();
+                    for input in proof.view_borrow_ref(*component).into_iter().flat_map(|borrow| borrow.inputs.iter()) {
+                        if input.level == scope {
+                            continued.entry(input.index).or_insert_with(Borrow::default);
+                        }
+                    }
+                }
             }
         }
-        if nonempty {
-            if let Some(natural)=natural {
-                for slot in &context.view_inputs {
-                    if let InputSlot::Value{component,..}=slot {
-                        let proof=slot.value_proof_mut(&mut context.exits[natural].env).unwrap();
-                        let mut borrow=proof.view_borrow(*component);
-                        let inputs=std::mem::take(&mut borrow.inputs);
-                        for(input,when)in inputs.into_entries(){if input.level==scope{borrow.union(&continued[input.index].restricted(&when));}else{borrow.inputs.insert_when(input,when);}}
-                        proof.set_view_borrow(*component,borrow);
-                    }
+        for state in &context.continues {
+            for (index, slot) in context.view_inputs.iter().enumerate() {
+                let value = match slot {
+                    InputSlot::Value { component, .. } => slot.value_proof(&state.env).map(|proof| proof.view_borrow(*component)).unwrap_or_default(),
+                    InputSlot::Data { name, path, .. } => state.env.get(name).and_then(|b| data_at(b, path)).map(&data_value).unwrap_or_default(),
+                };
+                definitions[index].union(&value);
+                if let Some(continued) = continued.get_mut(&index) {
+                    continued.union(&value);
+                }
+            }
+        }
+        if let Some(natural) = natural {
+            for slot in &context.view_inputs {
+                if let InputSlot::Value { component, .. } = slot {
+                    let proof = slot.value_proof_mut(&mut context.exits[natural].env).unwrap();
+                    let borrow = proof.view_borrow(*component)
+                        .project_loop_inputs(scope, |index| Some(&continued[&index]));
+                    proof.set_view_borrow(*component, borrow);
                 }
             }
         }
@@ -172,13 +186,8 @@ impl Builder<'_> {
             definition.inputs.remove(&LoopInput{level:scope,index});
             direct[index]=*definition==sources[index];
         }
-        let resolve=|mut borrow:Borrow,direct:&[bool],sources:&[Borrow]| {
-            let inputs=std::mem::take(&mut borrow.inputs);
-            for(input,when)in inputs.into_entries(){
-                if input.level==scope&&direct[input.index]{borrow.union(&sources[input.index].restricted(&when));}
-                else{borrow.inputs.insert_when(input,when);}
-            }
-            borrow
+        let resolve = |borrow: Borrow, direct: &[bool], sources: &[Borrow]| {
+            borrow.project_loop_inputs(scope, |input| direct[input].then(|| &sources[input]))
         };
         for slot in &context.view_inputs {
             if let InputSlot::Value{name,contents,component,identity:Some((id,_))}=slot {
@@ -208,20 +217,17 @@ impl Builder<'_> {
                     proof.set_view_borrow(*component,borrow);
                 }
             }
+            let mut resolve_data = |data: &mut application::Data| {
+                if data.ownership != application::Ownership::Moved {
+                    let borrow = resolve(data_value(data), &direct, &sources);
+                    data.root.proof.set_view_borrow(0, borrow);
+                }
+            };
             for binding in environment.values_mut() {
-                let mut data_borrows=data_paths(binding).into_iter().map(|(path,data,_)|(path,resolve(data_value(data),&direct,&sources))).collect::<BTreeMap<_,_>>();
                 match binding {
-                    Binding::ApplicationData(data)=>{if let Some(value)=data_borrows.remove(&Vec::new()){data.root.proof.set_view_borrow(0,value);}}
-                    Binding::OwnedValue(value)=>{
-                        fn assign(value:&mut owned_values::OwnedValue,path:&mut Vec<usize>,borrows:&mut BTreeMap<Vec<usize>,Borrow>) {
-                            for (index,payload) in value.payloads.iter_mut().enumerate(){let Some(payload)=payload.as_deref_mut()else{continue};path.push(index);
-                                match payload {returns::Returned::Dataset(data)=>{if let Some(value)=borrows.remove(path){data.root.proof.set_view_borrow(0,value);}},returns::Returned::OwnedValue(value)=>assign(value,path,borrows),_=>{}}
-                                path.pop();
-                            }
-                        }
-                        assign(value,&mut Vec::new(),&mut data_borrows);
-                    }
-                    _=>{},
+                    Binding::ApplicationData(data) => resolve_data(data),
+                    Binding::OwnedValue(value) => value.resources_mut(&mut resolve_data),
+                    _ => {}
                 }
             }
         };

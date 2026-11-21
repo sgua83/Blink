@@ -52,6 +52,16 @@ extern "C" void loop_path_branch(Span yes_code,Span no_code,LoopPaths parent,
 extern "C" void loop_path_scope(Span code,LoopPaths parent,LoopPaths child,LoopPathHost host) on cpu
  requires nonzero(host.ir.inspect) requires nonzero(host.record_break) requires nonzero(host.clear)
  requires nonzero(host.union_paths) requires nonzero(host.with_branch) requires nonzero(host.with_scope);
+struct LoopBorrowEdge { usize level; usize input; u32 present; };
+struct LoopBorrowHost {
+ cfn<LoopBorrowEdge,address> inspect;
+ cfn<address,address,usize> source;
+ cfn<void,address,address> replace;
+ cfn<void,address> retain;
+};
+extern "C" void project_loop_borrow(address context, usize scope, LoopBorrowHost host) on cpu
+ requires nonzero(host.inspect) requires nonzero(host.source)
+ requires nonzero(host.replace) requires nonzero(host.retain);
 struct Word { u32 present; usize value; };
 struct Results { Span first; Span second; usize a; usize b; usize inline_count; usize index; };
 struct Locals {

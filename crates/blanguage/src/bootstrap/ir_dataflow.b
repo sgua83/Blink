@@ -94,6 +94,24 @@ extern "C" void loop_exit_paths(Span code,LoopPaths paths,LoopPathHost host) on 
  }
 }
 
+
+extern "C" void project_loop_borrow(address context, usize scope, LoopBorrowHost host) on cpu
+ requires nonzero(host.inspect) requires nonzero(host.source)
+ requires nonzero(host.replace) requires nonzero(host.retain) {
+ while (true) {
+  LoopBorrowEdge edge = host.inspect(context);
+  if (edge.present == 0) { return; }
+  if (edge.level == scope) {
+   address source = host.source(context, edge.input);
+   if (source != unsafe_address(0u64)) {
+    host.replace(context, source);
+    continue;
+   }
+  }
+  host.retain(context);
+ }
+}
+
 void ordinary_results(address value,address output) on cpu {
  u32 kind=unsafe_position<View>(value).tag;
  if(kind==OP_INVOKE||kind==OP_TEXTURE_SAMPLE||kind==OP_TEXTURE_FETCH||kind==OP_TEXTURE_SIZE
