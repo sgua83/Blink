@@ -374,7 +374,7 @@ impl Swapchain {
                 return Ok(Poll::Pending);
             }
             let acquired = PresentStatus::read(result, "vkAcquireNextImageKHR")?;
-            let dependencies = Execution::prepare_one(display.dependency())?;
+            let previous = Execution::prepare_one(display.dependency())?;
             let commands = Commands::new(self.inner.clone())?;
             commands.barrier(
                 display.producer.stage(),
@@ -480,7 +480,7 @@ impl Swapchain {
                     commands,
                     _staging: Vec::new(),
                 },
-                dependencies,
+                previous.into_iter().cloned().collect(),
                 &[self.acquired],
                 &[0x1000],
                 &[signal],

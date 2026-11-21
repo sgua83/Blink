@@ -359,13 +359,13 @@ impl Execution {
             discarded_structures: RefCell::new(Vec::new()),
         }))
     }
-    pub fn prepare_one(source: Option<&Rc<Self>>) -> Result<Vec<Rc<Self>>> {
+    pub fn prepare_one(source: Option<&Rc<Self>>) -> Result<Option<&Rc<Self>>> {
         if let Some(source) = source
             && !source.is_complete()?
         {
-            return Ok(vec![source.clone()]);
+            return Ok(Some(source));
         }
-        Ok(Vec::new())
+        Ok(None)
     }
     /// The retained initial upload owns the copies for this storage and its CPU view sources.
     pub(super) fn uploads_dataset_graph(&self) -> bool {
@@ -418,10 +418,13 @@ impl Execution {
         Self::release_dependencies(self.dependencies.take().unwrap_or_default(), self.point.result.get());
         self.release_resources(resources);
     }
-    pub fn wait_synchronous(point: &Completion, dependencies: Vec<Rc<Self>>) -> Result<()> {
+    pub fn wait_synchronous(point: &Completion, previous: Option<&Rc<Self>>) -> Result<()> {
         let result = point.wait();
         point.finish_for_drop();
-        Self::release_dependencies(dependencies, point.result.get());
+        if let Some(previous) = previous {
+            previous.point.result.set(previous.point.result.get().or(point.result.get()));
+            previous.release_known();
+        }
         result
     }
     fn release_dependencies(mut completed: Vec<Rc<Self>>, result: Option<i32>) {

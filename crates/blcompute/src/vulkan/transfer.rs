@@ -353,7 +353,7 @@ impl<'a> Readback<'a> {
                 );
             }
             commands.barrier(0x1000, 0x4000, 0x1000, 0x2000);
-            let dependencies = Execution::prepare_one(producer.take())?;
+            let previous = Execution::prepare_one(producer.take())?;
             let point = match &mut self.completion {
                 Some(point) => {
                     commands.resubmit(point)?;
@@ -361,7 +361,7 @@ impl<'a> Readback<'a> {
                 }
                 slot @ None => slot.insert(commands.submit_with(&[], &[], &[])?),
             };
-            Execution::wait_synchronous(point, dependencies)?;
+            Execution::wait_synchronous(point, previous)?;
             staging.read_with(|pointer| unsafe {
                 std::ptr::copy_nonoverlapping(pointer, output.add(written), bytes);
             })?;
