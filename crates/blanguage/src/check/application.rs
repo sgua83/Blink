@@ -3203,7 +3203,7 @@ impl Builder<'_> {
         };
         let instance = unsafe { self.world.call(self.specialized_arguments(key, &arguments, explicit.as_deref(), span)).await }?;
         let input = DomainInput::Declaration { instance: &instance, signature: None };
-        unsafe { self.world.call(self.application_execute(input, arguments, target, span, &[])).await }
+        unsafe { self.world.call(self.application_execute(input, arguments, target, span)).await }
     }
     pub(super) async fn application_execute(
         &mut self,
@@ -3211,7 +3211,6 @@ impl Builder<'_> {
         prepared: Vec<Argument>,
         target: Target,
         span: Span,
-        element_inputs: &[ElementFact],
     ) -> Result<Option<returns::Returned>> {
         let frame = self.application_frame(span)?;
         let callee = &input.owner().definition;
@@ -3280,7 +3279,7 @@ impl Builder<'_> {
         for value in &data {
             self.application_handle_available(value.root.identity(), span, &[],&self.path)?;
         }
-        let interface = unsafe { self.world.call(self.prepare_domain(input, target, element_inputs, &bound_parameters)).await }?;
+        let interface = unsafe { self.world.call(self.prepare_domain(input, target, &bound_parameters)).await }?;
         if let DomainInput::Declaration { .. } = input {
             for &(left, right) in &interface.length_requirements {
                 if !self.lengths_equal(&data[left].length, &data[right].length) {
@@ -3301,27 +3300,29 @@ impl Builder<'_> {
         for (value, uniform) in uniform_values.zip(&interface.uniforms) {
             self.require_same(&uniform.ty, &value.ty, span)?;
         }
-        for requirement in &interface.element_requirements {
-            let (binding, offset) = match requirement {
-                ElementFact::Range(range) => (range.binding, range.offset),
-                ElementFact::Index { binding, offset, .. } => (*binding, *offset),
-            };
-            let source = &data[binding];
-            if source.length.maximum() == 0 { continue; }
-            let shallow;
-            let elements=match source.elements.known(){Some(elements)=>elements,None=>{shallow=unsafe { self.world.call(self.unknown_element_model(&source.ty,(&source.residency,&[]))).await }?;&shallow}};
-            let model = self.returned_storage(elements);
-            let word = source.element_layout().0 + offset;
-            let component = source.data.ty.components.iter().position(|(_, at)| *at == word).unwrap();
-            let value = self.value_component(&model, component);
-            let proven = match requirement {
-                ElementFact::Range(range) => value.proof.holds_range(0, range.scalar, &range.intervals,range.known_bits),
-                ElementFact::Index { target, .. } => {
-                    let target = &data[*target];
-                    self.index_in(&value, IndexDomain::ApplicationData(target.root.identity()), target.length.minimum(), None)
-                },
-            };
-            if !proven { return self.fail(span, "B226", "整域调用前尚未证明共同字段输入前提"); }
+        if let DomainInput::Declaration { .. } = input {
+            for requirement in &interface.element_requirements {
+                let (binding, offset) = match requirement {
+                    ElementFact::Range(range) => (range.binding, range.offset),
+                    ElementFact::Index { binding, offset, .. } => (*binding, *offset),
+                };
+                let source = &data[binding];
+                if source.length.maximum() == 0 { continue; }
+                let shallow;
+                let elements=match source.elements.known(){Some(elements)=>elements,None=>{shallow=unsafe { self.world.call(self.unknown_element_model(&source.ty,(&source.residency,&[]))).await }?;&shallow}};
+                let model = self.returned_storage(elements);
+                let word = source.element_layout().0 + offset;
+                let component = source.data.ty.components.iter().position(|(_, at)| *at == word).unwrap();
+                let value = self.value_component(&model, component);
+                let proven = match requirement {
+                    ElementFact::Range(range) => value.proof.holds_range(0, range.scalar, &range.intervals,range.known_bits),
+                    ElementFact::Index { target, .. } => {
+                        let target = &data[*target];
+                        self.index_in(&value, IndexDomain::ApplicationData(target.root.identity()), target.length.minimum(), None)
+                    },
+                };
+                if !proven { return self.fail(span, "B226", "整域调用前尚未证明共同字段输入前提"); }
+            }
         }
         for (&binding, written) in &interface.write_regions {
             let reference = &data[binding];
@@ -3545,8 +3546,9 @@ impl Builder<'_> {
         unsafe { self.world.call(self.application_execute(
             DomainInput::Parallel{owner:&owner,name:&name,parameters:&parameters,
                 length_requirements:&length_requirements,prefix_requirements:&prefix_requirements,
+                element_requirements:&element_inputs,
                 statement,element,domain,body,site:&site},
-            args,Target::Cpu,statement.span(),&element_inputs,
+            args,Target::Cpu,statement.span(),
         )).await }?;
         Ok(())
     }

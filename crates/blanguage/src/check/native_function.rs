@@ -2600,7 +2600,6 @@ async fn ensure_domain<'a>(
     input: DomainInput<'_>,
     functions: &'a mut Module,
     target: Target,
-    element_inputs: &[ElementFact],
     parameters: Option<&[Param]>,
 ) -> Result<&'a crate::module::domain::Interface> {
     let name = crate::module::domain::symbol(input.name(), target);
@@ -2611,7 +2610,7 @@ async fn ensure_domain<'a>(
             reference.name = name.clone();
             *functions = unsafe { world.call(declaration(world, &reference, std::mem::take(functions), ViewDemand::Caller)).await }?;
         } else {
-            unsafe { world.call(build_domain(world, input, functions, target, element_inputs, parameters)).await }?;
+            unsafe { world.call(build_domain(world, input, functions, target, parameters)).await }?;
         }
     }
     functions.units[&name]
@@ -2632,11 +2631,10 @@ impl Builder<'_> {
         &mut self,
         input: DomainInput<'_>,
         target: Target,
-        element_inputs: &[ElementFact],
         parameters: &[Param],
     ) -> Result<crate::module::domain::Interface> {
         let interface = unsafe {
-            self.world.call(ensure_domain(self.world, input, &mut self.functions, target, element_inputs, Some(parameters))).await
+            self.world.call(ensure_domain(self.world, input, &mut self.functions, target, Some(parameters))).await
         }?;
         Ok(interface.clone())
     }
@@ -2709,7 +2707,7 @@ async fn domain_declaration(
     };
     let input = DomainInput::Declaration { instance, signature: Some(signature) };
     for &target in targets {
-        unsafe { world.call(ensure_domain(world, input, functions, target, &[], Some(&signature.parameters))).await }?;
+        unsafe { world.call(ensure_domain(world, input, functions, target, Some(&signature.parameters))).await }?;
     }
     Ok(targets)
 }
@@ -2765,7 +2763,6 @@ async fn build_domain(
     input: DomainInput<'_>,
     functions: &mut Module,
     target: Target,
-    element_inputs: &[ElementFact],
     parameters: Option<&[Param]>,
 ) -> Result<()> {
     let d = &input.owner().definition;
@@ -2788,7 +2785,7 @@ async fn build_domain(
     };
     let mut entry = DomainEntry::new();
     let (expanded, bound_contracts) = unsafe {
-        world.call(expand_domain(world, input, &bound_parameters, uniform_types, functions, element_inputs, Some(&mut entry))).await
+        world.call(expand_domain(world, input, &bound_parameters, uniform_types, functions, Some(&mut entry))).await
     }?;
     let mut signature = expanded.program;
     let mut scopes = expanded.scopes;
@@ -2858,7 +2855,7 @@ async fn build_domain(
             &mut registers,
             &mut code,
         )?;
-        unsafe { world.call(ensure_domain(world, DomainInput::Declaration { instance: &call.instance, signature: None }, functions, target, &[], None)).await }?;
+        unsafe { world.call(ensure_domain(world, DomainInput::Declaration { instance: &call.instance, signature: None }, functions, target, None)).await }?;
         let mut arguments = vec![frame.clone()];
         for root in &call.arguments {
             arguments.push(match root {

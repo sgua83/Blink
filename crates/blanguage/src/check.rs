@@ -395,7 +395,7 @@ pub(crate) async fn compile_program(
     let mut uniform_types = uniform_types.into_iter();
     let mut functions = native_function::Module::default();
     let (expanded, _) = unsafe {
-        world.call(expand_domain(world, input, &parameters, Some(&mut uniform_types), &mut functions, &[], None)).await
+        world.call(expand_domain(world, input, &parameters, Some(&mut uniform_types), &mut functions, None)).await
     }?;
     if !expanded.calls.is_empty() {
         return instance.definition.source.fail(
@@ -418,6 +418,7 @@ enum DomainInput<'a> {
         parameters: &'a Arc<[Param]>,
         length_requirements: &'a [(usize, usize)],
         prefix_requirements: &'a [PrefixRelation],
+        element_requirements: &'a [ElementFact],
         statement: &'a Stmt,
         element: &'a str,
         domain: &'a ParallelDomain,
@@ -481,7 +482,6 @@ async fn expand_domain(
     parameters: &[Param],
     mut uniform_types: Option<&mut dyn Iterator<Item = Ty>>,
     functions: &mut native_function::Module,
-    element_inputs: &[ElementFact],
     mut entry: Option<&mut native_function::DomainEntry>,
 ) -> Result<(ExpandedDomain, Vec<FunctionContract>)> {
     let name = input.name();
@@ -581,9 +581,10 @@ async fn expand_domain(
         prefix_guarantees: Vec::new(), element_requirements: Vec::new(), element_guarantees: Vec::new(), length_requirements: Vec::new(), imports: BTreeMap::new(),
     };
     let (bound_contracts, guarantees) = match input {
-        DomainInput::Parallel { length_requirements, prefix_requirements, .. } => {
+        DomainInput::Parallel { length_requirements, prefix_requirements, element_requirements, .. } => {
             program.length_requirements.extend_from_slice(length_requirements);
             program.prefix_requirements.extend_from_slice(prefix_requirements);
+            program.element_requirements.extend_from_slice(element_requirements);
             (Vec::new(), Vec::new())
         }
         DomainInput::Declaration { instance, .. } => {
@@ -596,9 +597,6 @@ async fn expand_domain(
             (contracts, guarantees)
         }
     };
-    program.element_requirements.extend_from_slice(element_inputs);
-    program.element_requirements.sort();
-    program.element_requirements.dedup();
     let mut facts = prefix::Facts::new(&program.prefix_requirements);
     facts.assume_elements(&program);
     let mut calls = Vec::new();

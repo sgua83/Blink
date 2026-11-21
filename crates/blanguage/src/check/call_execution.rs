@@ -88,7 +88,7 @@ impl<'a> Builder<'a>{
    }
    InvokeNeed::Domain => {
     let input = DomainInput::Declaration { instance: &instance, signature: signature.as_ref() };
-    return unsafe { self.world.call(self.application_execute(input, args, Target::Cpu, span, &[])).await };
+    return unsafe { self.world.call(self.application_execute(input, args, Target::Cpu, span)).await };
    }
    InvokeNeed::InvalidDomain=>return self.fail(span,"B159","整域执行需要发起位置，不能由元素实例或协作成员发起"),
    InvokeNeed::InvalidCooperative=>return self.fail(span,"B208","cooperative 函数需要显式 cooperate 根块调用"),
