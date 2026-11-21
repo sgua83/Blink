@@ -164,21 +164,26 @@ impl RayDevice {
     }
 }
 pub(super) struct StructureStorage {
-    inner: Rc<Inner>,
     handle: u64,
     address: u64,
-    _storage: Allocation,
+    allocation: Allocation,
     models: Option<Rc<[BottomLevel]>>,
     count: u32,
     flags: u32,
     max_vertex: Option<u32>,
 }
+impl StructureStorage {
+    fn belongs_to(&self, inner: &Rc<Inner>) -> bool {
+        Rc::ptr_eq(&self.allocation.inner, inner)
+    }
+}
 impl Drop for StructureStorage {
     fn drop(&mut self) {
         if self.handle != 0 {
             unsafe {
-                (self.inner.ray.as_ref().unwrap().destroy)(
-                    self.inner.owner.device,
+                let inner = &self.allocation.inner;
+                (inner.ray.as_ref().unwrap().destroy)(
+                    inner.owner.device,
                     self.handle,
                     null(),
                 );
@@ -273,21 +278,21 @@ impl Acceleration {
         &self.0.built
     }
     pub fn allocated_bytes(&self) -> u64 {
-        self.0._storage.allocated_size
+        self.0.allocation.allocated_size
             + self
                 .0
                 .models
                 .as_deref()
                 .unwrap_or_default()
                 .iter()
-                .map(|m| m.0._storage.allocated_size)
+                .map(|m| m.0.allocation.allocated_size)
                 .sum::<u64>()
     }
     pub(super) fn handle(&self) -> &u64 {
         &self.0.handle
     }
     pub(super) fn belongs_to(&self, inner: &Rc<Inner>) -> bool {
-        Rc::ptr_eq(&self.0.inner, inner)
+        self.0.belongs_to(inner)
     }
 }
 impl Device {
@@ -361,7 +366,7 @@ impl Device {
             BuildOperation::Static => (static_flags, None),
             BuildOperation::Updatable => (static_flags | 1, None),
             BuildOperation::Refit(source) => {
-                if !Rc::ptr_eq(&self.inner, &source.inner) {
+                if !source.belongs_to(&self.inner) {
                     return Err(error("refit 来源不属于目标设备"));
                 }
                 if source.flags & 1 == 0 {
@@ -409,10 +414,9 @@ impl Device {
         }
         let dependencies = dependencies.prepare()?;
         let mut out = StructureStorage {
-            inner: self.inner.clone(),
             handle: 0,
             address: 0,
-            _storage: storage,
+            allocation: storage,
             models,
             count,
             flags,
@@ -422,7 +426,7 @@ impl Device {
             kind: 1000150017,
             next: null(),
             flags: 0,
-            buffer: out._storage.buffer,
+            buffer: out.allocation.buffer,
             offset: 0,
             size: sizes.structure,
             structure_type,
@@ -675,7 +679,7 @@ impl Device {
         instances: Vec<RayInstance>,
         operation: BuildOperation<'_>,
     ) -> Result<Acceleration> {
-        if instances.iter().any(|instance| !Rc::ptr_eq(&instance.model.0.inner, &self.inner)) {
+        if instances.iter().any(|instance| !instance.model.0.belongs_to(&self.inner)) {
             return Err(error("BLAS 不属于目标设备"));
         }
         let count = u32::try_from(instances.len())?;
@@ -758,7 +762,7 @@ impl Device {
                 "Vulkan 实例输入需要 64 字节 stride 与 offset 0 的 3×4 f32 矩阵",
             ));
         }
-        if models.iter().any(|model| !Rc::ptr_eq(&model.0.inner, &self.inner)) {
+        if models.iter().any(|model| !model.0.belongs_to(&self.inner)) {
             return Err(error("BLAS 不属于目标设备"));
         }
         let mut target = GpuDataset::allocate(
