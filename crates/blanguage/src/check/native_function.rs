@@ -2913,9 +2913,7 @@ async fn build_domain(
         })) });
         start = call.stage;
         required = call.after;
-        element_required = Cow::Owned(
-            element_requirements.iter().cloned().chain(call.element_after).collect(),
-        );
+        element_required = Cow::Owned(call.element_after);
     }
     emit_domain_part(
         &world.worker,
