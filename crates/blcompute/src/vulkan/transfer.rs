@@ -351,7 +351,7 @@ impl<'a> Readback<'a> {
                 );
             }
             commands.barrier(0x1000, 0x4000, 0x1000, 0x2000);
-            let previous = Execution::prepare_one(producer.take())?;
+            let previous = Execution::borrow_synchronous(producer.take())?;
             let point = match &mut self.completion {
                 Some(point) => {
                     commands.resubmit(point)?;

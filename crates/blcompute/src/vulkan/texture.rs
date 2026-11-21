@@ -665,7 +665,7 @@ impl Device {
             );
         }
         commands.barrier(0x1000, 0x4000, 0x1000, 0x2000);
-        let previous = Execution::prepare_one(Some(source.produced()))?;
+        let previous = Execution::borrow_synchronous(Some(source.produced()))?;
         let point = commands.submit_with(&[], &[], &[])?;
         let result = Execution::wait_synchronous(&point, previous);
         drop(commands);

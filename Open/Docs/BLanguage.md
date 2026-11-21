@@ -4458,7 +4458,7 @@ let persistent = pending.wait().map_err(|(error, _)| error)?.into_bindings();
 
 `submit_after` 消费前项提交和数据，不先等待它。GPU 直接读取前项 Count 并生成间接启动参数，CPU 不读回计数。跨提交只支持同一设备队列；原生宿主绑定边界检查实际存储与接口条件，类型、访问、条件证明和模块实现继续在编译期检查，不把动态 Rust 绑定顺序误称为静态证明。
 
-每份 `GpuDataset` 的唯一存储持有最后一次实际使用它的执行上下文。分支共享原生完成事实和命令资源，分别拥有独立数据，不再维护另一张存储来源表。继续提交前，执行上下文按同队列成功提交次序归并依赖，在分配新临时页之前用已有 Fence 的 [vkGetFenceStatus](https://docs.vulkan.org/refpages/latest/refpages/source/vkGetFenceStatus.html) 观察完成前缀；完成的命令、pipeline 引用、描述符、临时页和已丢弃存储立即释放。没有新增计数读回、等待线程、全局票据或定时轮询。仍有分支持有的数据及不可变 view 的真实引用继续存活，已经观察完成的命令资源不随这些数据长期保留。
+每份 `GpuDataset` 的唯一存储持有最后一次实际使用它的执行上下文。分支共享原生完成事实和命令资源，分别拥有独立数据，不再维护另一张存储来源表。后续计算提交前，执行上下文按同队列成功提交次序归并依赖，在分配新临时页之前用已有 Fence 的 [vkGetFenceStatus](https://docs.vulkan.org/refpages/latest/refpages/source/vkGetFenceStatus.html) 观察完成前缀；完成的命令、pipeline 引用、描述符、临时页和已丢弃存储立即释放。没有新增计数读回、等待线程、全局票据或定时轮询。仍有分支持有的数据及不可变 view 的真实引用继续存活，已经观察完成的命令资源不随这些数据长期保留。
 
 回收前仍先记录同队列 RAW／WAW／WAR 依赖：Fence 完成观察不替代设备内存可见性，依据 [Vulkan 跨提交屏障](https://docs.vulkan.org/refpages/latest/refpages/source/vkCmdPipelineBarrier.html)。成功观察到 signaled 后复用原有完成结果，资源析构不会再次调用原生等待。显式 `wait()` 只等待当前末项 Fence；它的作用域包括同队列此前命令，因此前序资源可直接释放，依据 [Vulkan Fence 作用域](https://docs.vulkan.org/spec/latest/chapters/synchronization.html#synchronization-fences-signaling)。丢弃尚未完成的数据，只把它的物理存储移交给最后使用点，已有兄弟分支可继续推进；最后一个执行所有者退出时才结束仍未完成的真实消费者。原生完成后允许销毁命令池，见 [vkDestroyCommandPool](https://docs.vulkan.org/refpages/latest/refpages/source/vkDestroyCommandPool.html)。
 

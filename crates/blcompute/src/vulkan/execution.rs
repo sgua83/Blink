@@ -476,7 +476,18 @@ impl Execution {
         Self::release_dependencies(self.dependencies.take().unwrap_or_default(), self.point.result.get());
         self.release_resources(resources);
     }
-    pub fn wait_synchronous(point: &Completion, previous: Option<&Rc<Self>>) -> Result<()> {
+    pub fn borrow_synchronous(source: Option<&Rc<Self>>) -> Result<Option<&Self>> {
+        let Some(source) = source else {
+            return Ok(None);
+        };
+        if let Some(result) = source.point.result.get() {
+            check(result, "vkGetFenceStatus")?;
+            return Ok(None);
+        }
+        // The readback fence covers earlier work on this queue.
+        Ok(Some(source))
+    }
+    pub fn wait_synchronous(point: &Completion, previous: Option<&Self>) -> Result<()> {
         let result = point.wait();
         point.finish_for_drop();
         if let Some(previous) = previous {
