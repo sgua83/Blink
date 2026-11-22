@@ -73,6 +73,19 @@ extern "C" void expand_square_matrix(u32 width, bool inverse, MatrixEmitter emit
 extern "C" void expand_matrix_binary(Plan plan,u32 left_count,u32 input_count,MatrixEmitter emitter) on cpu
     requires nonzero(emitter.emit) requires nonzero(emitter.output);
 
+enum MatrixBuiltin:u32 { Unknown=0; Transpose=1; Determinant=2; Inverse=3; };
+enum MatrixIntrinsicStatus:u32 { Valid=0; Arity=1; Matrix=2; Square=3; };
+struct MatrixIntrinsicInput { u32 present; u32 rows; u32 columns; };
+struct MatrixIntrinsicPlan {
+    MatrixIntrinsicStatus status; u32 rows; u32 columns; u32 result_rows; u32 result_columns;
+    u32 outputs; u32 transpose; u32 inverse;
+};
+extern "C" MatrixBuiltin source_matrix_intrinsic(address bytes,usize length) on cpu;
+extern "C" MatrixIntrinsicPlan matrix_intrinsic(MatrixBuiltin builtin,usize count,address context,
+    cfn<MatrixIntrinsicInput,address> ensures memory(read) inspect) on cpu requires nonzero(inspect);
+extern "C" void expand_transpose(u32 rows,u32 columns,address context,
+    cfn<void,address,u32> output) on cpu requires nonzero(output);
+
 // Source operation IDs do not depend on either machine backend's opcode order.
 enum AtomicSourceKind:u32 {
     Unknown=0; Load=1; Store=2; Add=3; Sub=4; Exchange=5; CompareExchange=6;

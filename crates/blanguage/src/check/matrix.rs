@@ -2,6 +2,53 @@
 use super::*;
 
 #[repr(u32)]
+#[derive(Clone,Copy,PartialEq,Eq)]
+pub(super) enum MatrixBuiltin { Unknown,Transpose,Determinant,Inverse }
+#[repr(u32)]
+#[derive(Clone,Copy)]
+enum MatrixIntrinsicStatus { Valid,Arity,Matrix,Square }
+#[repr(C)]
+struct MatrixIntrinsicInput { present:u32, rows:u32, columns:u32 }
+#[repr(C)]
+struct MatrixIntrinsicPlan {
+    status:MatrixIntrinsicStatus, rows:u32, columns:u32, result_rows:u32, result_columns:u32,
+    outputs:u32, transpose:u32, inverse:u32,
+}
+struct MatrixArguments<'a> { values:&'a [Value] }
+unsafe extern "C" {
+    #[link_name="bootstrap.operator_types::source_matrix_intrinsic"]
+    fn source_matrix_intrinsic(bytes:*const u8,length:usize)->MatrixBuiltin;
+    #[link_name="bootstrap.operator_types::matrix_intrinsic"]
+    fn source_matrix_plan(builtin:MatrixBuiltin,count:usize,context:*const std::ffi::c_void,
+        inspect:unsafe extern "C" fn(*const std::ffi::c_void)->MatrixIntrinsicInput)->MatrixIntrinsicPlan;
+    #[link_name="bootstrap.operator_types::expand_transpose"]
+    fn expand_transpose(rows:u32,columns:u32,context:*mut std::ffi::c_void,
+        output:unsafe extern "C" fn(*mut std::ffi::c_void,u32));
+}
+impl MatrixBuiltin {
+    pub(super) fn recognize(name:&str)->Self { unsafe { source_matrix_intrinsic(name.as_ptr(),name.len()) } }
+}
+unsafe extern "C" fn inspect_intrinsic_matrix(context:*const std::ffi::c_void)->MatrixIntrinsicInput {
+    let values=&unsafe { &*context.cast::<MatrixArguments<'_>>() }.values;
+    match values[0].ty.matrix_shape() {
+        Some((rows,columns))=>MatrixIntrinsicInput { present:1,rows:rows as u32,columns:columns as u32 },
+        None=>MatrixIntrinsicInput { present:0,rows:0,columns:0 },
+    }
+}
+fn matrix_plan(builtin:MatrixBuiltin,values:&[Value])->MatrixIntrinsicPlan {
+    let context=MatrixArguments { values };
+    unsafe { source_matrix_plan(builtin,values.len(),std::ptr::from_ref(&context).cast(),inspect_intrinsic_matrix) }
+}
+
+// Transpose reads only the original matrix and appends to its final value.
+struct TransposeValues<'a> { input:&'a Value, output:Value }
+unsafe extern "C" fn output_transpose(context:*mut std::ffi::c_void,slot:u32) {
+    let values=unsafe { &mut *context.cast::<TransposeValues<'_>>() };
+    let component=Builder::matrix_component(values.input,slot as usize);
+    Builder::append_matrix_result(&mut values.output,component);
+}
+
+#[repr(u32)]
 enum MatrixAction { Copy, Add, Subtract, Multiply, Divide, Negate }
 
 #[derive(Clone, Copy)]
@@ -107,27 +154,19 @@ impl Builder<'_> {
             constant: value.constant.as_ref().map(|v| vec![v[at]]),
         }
     }
-    fn matrix_result(ty: Ty, values: Vec<Value>) -> Value {
-        let uniform = values.iter().all(|v| v.uniform);
-        let mut proof = bounds::Proof::default();
-        let mut regs = Vec::new();
-        let mut constant = Some(Vec::new());
-        for value in values {
-            proof.append(&value);
-            regs.extend(value.regs);
-            constant = constant.zip(value.constant).map(|(mut a, b)| {
-                a.extend(b);
-                a
-            });
-        }
-        Value {
-            proof,
-            literal: false,
-            ty,
-            regs,
-            uniform,
-            constant,
-        }
+    fn append_matrix_result(result:&mut Value,value:Value) {
+        result.uniform &= value.uniform;
+        result.proof.append(&value);
+        result.regs.extend(value.regs);
+        result.constant=result.constant.take().zip(value.constant).map(|(mut a,b)|{a.extend(b);a});
+    }
+    fn matrix_result(ty:Ty,values:Vec<Value>)->Value {
+        let mut result=Value {
+            proof:bounds::Proof::default(),literal:false,ty,regs:Vec::new(),uniform:true,
+            constant:Some(Vec::new()),
+        };
+        for value in values { Self::append_matrix_result(&mut result,value); }
+        result
     }
     pub(super) fn matrix_construct(
         &mut self,
@@ -203,50 +242,37 @@ impl Builder<'_> {
 
     pub(super) fn matrix_intrinsic(
         &mut self,
-        name: &str,
-        mut args: Vec<Value>,
-        span: Span,
-    ) -> Result<Value> {
-        if args.len() != 1 {
-            return self.fail(span, "B153", "矩阵内建需要一个矩阵参数");
+        builtin:MatrixBuiltin,
+        mut args:Vec<Value>,
+        span:Span,
+    )->Result<Value> {
+        let plan=matrix_plan(builtin,&args);
+        match plan.status {
+            MatrixIntrinsicStatus::Valid=>{},
+            MatrixIntrinsicStatus::Arity=>return self.fail(span,"B153","矩阵内建需要一个矩阵参数"),
+            MatrixIntrinsicStatus::Matrix=>return self.fail(span,"B237","矩阵内建需要 floatRxC 矩阵"),
+            MatrixIntrinsicStatus::Square=>return self.fail(span,"B237","行列式和逆矩阵需要方阵"),
         }
-        let value = args.pop().unwrap();
-        let Some((rows, columns)) = value.ty.matrix_shape() else {
-            return self.fail(span, "B237", "矩阵内建需要 floatRxC 矩阵");
+        let value=args.pop().unwrap();
+        if plan.transpose!=0 {
+            let mut values=TransposeValues {
+                input:&value,
+                output:Value {
+                    proof:bounds::Proof::default(),literal:false,
+                    ty:Ty::matrix(plan.result_rows as usize,plan.result_columns as usize),
+                    regs:Vec::with_capacity(plan.outputs as usize),uniform:true,constant:Some(Vec::new()),
+                },
+            };
+            unsafe { expand_transpose(plan.rows,plan.columns,std::ptr::from_mut(&mut values).cast(),output_transpose); }
+            return Ok(values.output);
+        }
+        let components=(0..plan.rows as usize*plan.columns as usize).map(|at|Self::matrix_component(&value,at));
+        let mut values=MatrixValues {
+            builder:self,slots:components.map(Some).collect(),output:Vec::with_capacity(plan.outputs as usize),
         };
-        let components = (0..rows * columns).map(|at| Self::matrix_component(&value, at));
-        if name == "transpose" {
-            let components: Vec<_> = components.collect();
-            return Ok(Self::matrix_result(
-                Ty::matrix(columns, rows),
-                (0..columns)
-                    .flat_map(|c| {
-                        let components = &components;
-                        (0..rows).map(move |r| components[r * columns + c].clone())
-                    })
-                    .collect(),
-            ));
-        }
-        if rows != columns {
-            return self.fail(span, "B237", "行列式和逆矩阵需要方阵");
-        }
-
-        let inverse = name != "determinant";
-        let mut values = MatrixValues {
-            builder: self,
-            slots: components.map(Some).collect(),
-            output: Vec::with_capacity(if inverse { rows * columns } else { 1 }),
-        };
-        let emitter = MatrixEmitter {
-            context: &mut values,
-            emit: emit_matrix,
-            output: output_matrix,
-        };
-        unsafe { expand_square_matrix(rows as u32, u32::from(inverse), emitter); }
-        if inverse {
-            Ok(Self::matrix_result(value.ty, values.output))
-        } else {
-            Ok(values.output.pop().unwrap())
-        }
+        let emitter=MatrixEmitter { context:&mut values,emit:emit_matrix,output:output_matrix };
+        unsafe { expand_square_matrix(plan.rows,plan.inverse,emitter); }
+        if plan.inverse!=0 { Ok(Self::matrix_result(value.ty,values.output)) }
+        else { Ok(values.output.pop().unwrap()) }
     }
 }

@@ -60,6 +60,39 @@ extern "C" MathShape floating_math(usize count,MathQueries queries) on cpu
     return result;
 }
 
+extern "C" MatrixBuiltin source_matrix_intrinsic(address bytes,usize length) on cpu {
+    if (source_spelling(bytes,length,"transpose")) { return MatrixBuiltin::Transpose; }
+    if (source_spelling(bytes,length,"determinant")) { return MatrixBuiltin::Determinant; }
+    if (source_spelling(bytes,length,"inverse")) { return MatrixBuiltin::Inverse; }
+    return MatrixBuiltin::Unknown;
+}
+extern "C" MatrixIntrinsicPlan matrix_intrinsic(MatrixBuiltin builtin,usize count,address context,
+    cfn<MatrixIntrinsicInput,address> ensures memory(read) inspect) on cpu requires nonzero(inspect) {
+    MatrixIntrinsicPlan result=MatrixIntrinsicPlan(MatrixIntrinsicStatus::Valid,0,0,0,0,0,0,0);
+    if (count!=1u64) { result.status=MatrixIntrinsicStatus::Arity;return result; }
+    MatrixIntrinsicInput input=inspect(context);
+    if (input.present==0) { result.status=MatrixIntrinsicStatus::Matrix;return result; }
+    result.rows=input.rows;result.columns=input.columns;
+    if (builtin==MatrixBuiltin::Transpose) {
+        result.result_rows=input.columns;result.result_columns=input.rows;
+        result.outputs=input.rows*input.columns;result.transpose=1;
+        return result;
+    }
+    if (input.rows!=input.columns) { result.status=MatrixIntrinsicStatus::Square;return result; }
+    result.inverse=builtin!=MatrixBuiltin::Determinant ? 1 : 0;
+    if (result.inverse!=0) {
+        result.result_rows=input.rows;result.result_columns=input.columns;
+        result.outputs=input.rows*input.columns;
+    } else { result.outputs=1; }
+    return result;
+}
+extern "C" void expand_transpose(u32 rows,u32 columns,address context,
+    cfn<void,address,u32> output) on cpu requires nonzero(output) {
+    for (column in 0..columns) {
+        for (row in 0..rows) { output(context,row*columns+column); }
+    }
+}
+
 extern "C" Plan numeric(Operand a,bool a_literal,Operand b,bool b_literal) on cpu {
     Plan result=decision(0);
     if(a.scalar==b.scalar){result.scalar=a.scalar;}

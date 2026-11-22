@@ -3309,9 +3309,10 @@ impl<'a> Builder<'a> {
             let Some(values) = values(self).await? else { return Ok(None); };
             return self.math(name,math_signature,values,span).map(Some);
         }
-        if matches!(name, "transpose" | "determinant" | "inverse") {
+        let matrix_builtin=matrix::MatrixBuiltin::recognize(name);
+        if matrix_builtin!=matrix::MatrixBuiltin::Unknown {
             let Some(values) = values(self).await? else { return Ok(None); };
-            return self.matrix_intrinsic(name, values, span).map(Some);
+            return self.matrix_intrinsic(matrix_builtin,values,span).map(Some);
         }
         if name == "dot" {
             let Some(values) = values(self).await? else { return Ok(None); };
