@@ -317,3 +317,145 @@ impl Builder<'_> {
         Ok(context.output.unwrap())
     }
 }
+
+
+#[repr(u32)]
+#[derive(Clone,Copy)]
+pub(super) enum ConstructEntry { Value,Matrix }
+#[repr(u32)]
+enum ConstructFact { CFunction,Address,Handle,Variants,Enumeration,Array,Matrix,Views,Fields,Width }
+#[repr(u32)]
+#[derive(Clone,Copy)]
+enum ConstructStatus { Valid,CFunctionTarget,CFunctionInput,AddressTarget,AddressInput,HandleTarget,HandleInput,Variants,Enumeration,Array,Matrix,Views,MatrixInput,Components,MatrixComponents }
+#[repr(u32)]
+#[derive(Clone,Copy,PartialEq,Eq)]
+enum ConstructKind { Zero,Identity,Enumeration,Numeric,Diagonal,Matrix }
+#[repr(C)]
+#[derive(Clone,Copy)]
+struct ConstructPlan { status:ConstructStatus,kind:ConstructKind,scalar:u32,splat:u32,width:usize,rows:usize,columns:usize }
+#[repr(C)]
+struct ConstructQueries {
+    context:*const c_void,
+    fact:unsafe extern "C" fn(*const c_void,usize,ConstructFact)->usize,
+    same:unsafe extern "C" fn(*const c_void,usize)->u32,
+    scalar_identity:unsafe extern "C" fn(*const c_void)->u32,
+}
+struct ConstructTypes<'a> { target:&'a Ty,values:&'a [Value] }
+unsafe extern "C" fn construct_fact(context:*const c_void,index:usize,fact:ConstructFact)->usize {
+    let value=&unsafe { &*context.cast::<ConstructTypes<'_>>() }.values[index];
+    let ty=&value.ty;
+    match fact {
+        ConstructFact::CFunction=>usize::from(ty.is_c_function()),
+        ConstructFact::Address=>usize::from(ty.is_address()),
+        ConstructFact::Handle=>usize::from(ty.is_handle()),
+        ConstructFact::Variants=>usize::from(ty.has_variants()),
+        ConstructFact::Enumeration=>usize::from(ty.enumeration),
+        ConstructFact::Array=>usize::from(ty.array.is_some()),
+        ConstructFact::Matrix=>usize::from(ty.matrix_shape().is_some()),
+        ConstructFact::Views=>usize::from(ty.contains_views()),
+        ConstructFact::Fields=>usize::from(!ty.fields.is_empty()),
+        ConstructFact::Width=>value.regs.len(),
+    }
+}
+unsafe extern "C" fn construct_same(context:*const c_void,index:usize)->u32 {
+    let context=unsafe { &*context.cast::<ConstructTypes<'_>>() };
+    u32::from(context.target==&context.values[index].ty)
+}
+unsafe extern "C" fn construct_scalar_identity(context:*const c_void)->u32 {
+    let context=unsafe { &*context.cast::<ConstructTypes<'_>>() };
+    u32::from(context.target==&Ty::scalar(context.values[0].ty.components[0].0))
+}
+#[repr(u32)]
+enum ConstructArgument { Append,ReplaceProof,Matrix,Diagonal }
+#[repr(u32)]
+enum ConstructComponent { Project,Diagonal,Zero }
+#[repr(C)]
+struct ConstructEmitter<'a,'w> {
+    context:*mut ConstructValues<'a,'w>,
+    argument:unsafe extern "C" fn(*mut ConstructValues<'a,'w>,u32,ConstructArgument)->usize,
+    component:unsafe extern "C" fn(*mut ConstructValues<'a,'w>,ConstructComponent,usize,u32),
+    splat:unsafe extern "C" fn(*mut ConstructValues<'a,'w>,usize),
+}
+unsafe extern "C" {
+    #[link_name="bootstrap.operator_types::construct_plan"]
+    fn source_construct_plan(entry:ConstructEntry,target:Operand,count:usize,queries:ConstructQueries)->ConstructPlan;
+    #[link_name="bootstrap.operator_types::expand_construct"]
+    fn expand_construct(plan:ConstructPlan,count:usize,emitter:ConstructEmitter<'_,'_>);
+}
+struct ConstructValues<'a,'w> {
+    builder:&'a mut Builder<'w>,input:std::vec::IntoIter<Value>,current:Option<Value>,zero:Option<Value>,output:Value,
+}
+unsafe extern "C" fn construct_argument(context:*mut ConstructValues<'_,'_>,scalar:u32,mode:ConstructArgument)->usize {
+    let values=unsafe { &mut *context };
+    let input=values.input.next().unwrap();
+    let value=values.builder.cast(input,SCALARS[scalar as usize]);
+    let width=value.regs.len();
+    match mode {
+        ConstructArgument::Append=>Builder::append_value(&mut values.output,value,false),
+        ConstructArgument::ReplaceProof=>Builder::append_value(&mut values.output,value,true),
+        ConstructArgument::Matrix=>values.current=Some(value),
+        ConstructArgument::Diagonal=>{
+            values.current=Some(value);values.zero=Some(values.builder.constant(Scalar::F32,0));
+        },
+    }
+    width
+}
+unsafe extern "C" fn construct_component(context:*mut ConstructValues<'_,'_>,kind:ConstructComponent,index:usize,last:u32) {
+    let values=unsafe { &mut *context };
+    let value=match kind {
+        ConstructComponent::Project=>{
+            let value=Builder::matrix_component(values.current.as_ref().unwrap(),index);
+            if last!=0 { values.current=None; }
+            value
+        },
+        ConstructComponent::Diagonal=>if last!=0 {values.current.take().unwrap()}else{values.current.as_ref().unwrap().clone()},
+        ConstructComponent::Zero=>if last!=0 {values.zero.take().unwrap()}else{values.zero.as_ref().unwrap().clone()},
+    };
+    Builder::append_value(&mut values.output,value,false);
+}
+unsafe extern "C" fn construct_splat(context:*mut ConstructValues<'_,'_>,width:usize) {
+    let output=&mut unsafe { &mut *context }.output;
+    output.proof.splat(width);output.regs.resize(width,output.regs[0]);
+    if let Some(bits)=&mut output.constant { bits.resize(width,bits[0]); }
+}
+impl Builder<'_> {
+    pub(super) fn construct_value(&mut self,entry:ConstructEntry,ty:Ty,values:Vec<Value>,span:Span)->Result<Value> {
+        let types=ConstructTypes { target:&ty,values:&values };
+        let plan=unsafe { source_construct_plan(entry,Operand::of(&ty),values.len(),ConstructQueries {
+            context:std::ptr::from_ref(&types).cast(),fact:construct_fact,same:construct_same,scalar_identity:construct_scalar_identity,
+        }) };
+        let error=match plan.status {
+            ConstructStatus::Valid=>None,
+            ConstructStatus::CFunctionTarget=>Some(("B154","cfn构造只接受空值或同签名函数值；原生地址解释须显式unsafe_function")),
+            ConstructStatus::CFunctionInput=>Some(("B154","C函数地址不能转换为数值或其他身份；地址解释须显式function_address")),
+            ConstructStatus::AddressTarget=>Some(("B154","address构造只接受空值或同型地址；整数解释须显式unsafe_address")),
+            ConstructStatus::AddressInput=>Some(("B154","address不能隐式转换为数值；位模式须显式address_bits")),
+            ConstructStatus::HandleTarget=>Some(("B154","handle构造只接受空值或同类型身份；外部身份解释须显式unsafe_handle")),
+            ConstructStatus::HandleInput=>Some(("B154","不透明handle不能转换为数值或公开其载荷")),
+            ConstructStatus::Variants=>Some(("B269","结果值须先通过 match 或 try 取得对应载荷")),
+            ConstructStatus::Enumeration=>Some(("B268","枚举值只直接取回其声明的整数表示；其他数值转换在该整数上显式进行")),
+            ConstructStatus::Array=>Some(("B238","数组不能转换成数值标量／向量；先取得数组元素")),
+            ConstructStatus::Matrix=>Some(("B237","矩阵不能转换成数值标量／向量；先取得行字段")),
+            ConstructStatus::Views=>Some(("B185","view 不能转换成数值或重解释设备地址")),
+            ConstructStatus::MatrixInput=>Some(("B237","矩阵构造接收数值分量或相同类型矩阵")),
+            ConstructStatus::Components=>Some(("B157","类型构造的分量数不匹配")),
+            ConstructStatus::MatrixComponents=>Some(("B157","矩阵构造需要全部行优先分量，或一个对角标量")),
+        };
+        if let Some((code,message))=error { return self.fail(span,code,message); }
+        let uniform=plan.kind!=ConstructKind::Numeric || values.iter().all(|value|value.uniform);
+        let count=values.len();let mut input=values.into_iter();
+        match plan.kind {
+            ConstructKind::Zero=>return Ok(self.constant_value(ty,vec![0;plan.width],None)),
+            ConstructKind::Identity=>{let mut value=input.next().unwrap();value.literal=false;return Ok(value);},
+            ConstructKind::Enumeration=>return Ok(self.cast(input.next().unwrap(),SCALARS[plan.scalar as usize])),
+            ConstructKind::Numeric|ConstructKind::Diagonal|ConstructKind::Matrix=>{},
+        }
+        let output=Value { proof:bounds::Proof::default(),literal:false,ty,regs:Vec::with_capacity(plan.width),
+            uniform,constant:Some(Vec::with_capacity(plan.width)) };
+        let mut context=ConstructValues { builder:self,input,current:None,zero:None,output };
+        unsafe { expand_construct(plan,count,ConstructEmitter {
+            context:&mut context,argument:construct_argument,component:construct_component,splat:construct_splat,
+        }) };
+        Ok(context.output)
+    }
+}

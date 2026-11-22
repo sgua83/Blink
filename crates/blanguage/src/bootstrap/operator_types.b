@@ -554,3 +554,109 @@ extern "C" bool collective_accepts(CollectiveOperator operation, bool numeric, b
     return numeric && (integer || operation == CollectiveOperator::Sum
         || operation == CollectiveOperator::Min || operation == CollectiveOperator::Max);
 }
+
+
+bool construct_has(usize count,ConstructFact fact,ConstructQueries queries) on cpu requires nonzero(queries.fact) {
+    usize index=0u64;
+    while (index<count) {
+        if (queries.fact(queries.context,index,fact)!=0u64) { return true; }
+        index+=1u64;
+    }
+    return false;
+}
+ConstructPlan construct_identity(ConstructPlan input,usize count,ConstructStatus failure,ConstructQueries queries) on cpu
+    requires nonzero(queries.same) {
+    ConstructPlan plan=input;
+    if (count==0u64) { plan.kind=ConstructKind::Zero;return plan; }
+    if (count==1u64 && queries.same(queries.context,0u64)!=0) { plan.kind=ConstructKind::Identity;return plan; }
+    plan.status=failure;return plan;
+}
+ConstructPlan construct_matrix(ConstructPlan input,usize count,ConstructQueries queries) on cpu
+    requires nonzero(queries.fact) requires nonzero(queries.same) {
+    ConstructPlan plan=input;
+    if (count==1u64 && queries.same(queries.context,0u64)!=0) { plan.kind=ConstructKind::Identity;return plan; }
+    usize index=0u64;
+    while (index<count) {
+        if (queries.fact(queries.context,index,ConstructFact::Fields)!=0u64 ||
+            queries.fact(queries.context,index,ConstructFact::Views)!=0u64 ||
+            queries.fact(queries.context,index,ConstructFact::Array)!=0u64) {
+            plan.status=ConstructStatus::MatrixInput;return plan;
+        }
+        index+=1u64;
+    }
+    plan.scalar=0;
+    if (count==1u64 && queries.fact(queries.context,0u64,ConstructFact::Width)==1u64) {
+        plan.kind=ConstructKind::Diagonal;return plan;
+    }
+    usize width=0u64;index=0u64;
+    while (index<count) { width+=queries.fact(queries.context,index,ConstructFact::Width);index+=1u64; }
+    if (width!=plan.rows*plan.columns) { plan.status=ConstructStatus::MatrixComponents;return plan; }
+    plan.kind=ConstructKind::Matrix;return plan;
+}
+extern "C" ConstructPlan construct_plan(ConstructEntry entry,Operand target,usize count,ConstructQueries queries) on cpu
+    requires nonzero(queries.fact) requires nonzero(queries.same) requires nonzero(queries.scalar_identity) {
+    ConstructPlan plan=ConstructPlan(ConstructStatus::Valid,ConstructKind::Numeric,target.scalar,0,
+        usize(target.components),usize(target.rows),usize(target.columns));
+    if (entry==ConstructEntry::Matrix) { return construct_matrix(plan,count,queries); }
+    if (has(target,1)) { return construct_identity(plan,count,ConstructStatus::CFunctionTarget,queries); }
+    if (construct_has(count,ConstructFact::CFunction,queries)) { plan.status=ConstructStatus::CFunctionInput;return plan; }
+    if (has(target,2)) { return construct_identity(plan,count,ConstructStatus::AddressTarget,queries); }
+    if (construct_has(count,ConstructFact::Address,queries)) { plan.status=ConstructStatus::AddressInput;return plan; }
+    if (has(target,4)) { return construct_identity(plan,count,ConstructStatus::HandleTarget,queries); }
+    if (construct_has(count,ConstructFact::Handle,queries)) { plan.status=ConstructStatus::HandleInput;return plan; }
+    if (construct_has(count,ConstructFact::Variants,queries)) { plan.status=ConstructStatus::Variants;return plan; }
+    if (construct_has(count,ConstructFact::Enumeration,queries)) {
+        if (count!=1u64 || queries.scalar_identity(queries.context)==0) { plan.status=ConstructStatus::Enumeration;return plan; }
+        plan.kind=ConstructKind::Enumeration;return plan;
+    }
+    if (has(target,128)) { return construct_matrix(plan,count,queries); }
+    if (construct_has(count,ConstructFact::Array,queries)) { plan.status=ConstructStatus::Array;return plan; }
+    if (construct_has(count,ConstructFact::Matrix,queries)) { plan.status=ConstructStatus::Matrix;return plan; }
+    if (construct_has(count,ConstructFact::Views,queries)) { plan.status=ConstructStatus::Views;return plan; }
+    if (count==1u64 && queries.same(queries.context,0u64)!=0) { plan.kind=ConstructKind::Identity;return plan; }
+    usize width=0u64;usize index=0u64;
+    while (index<count) { width+=queries.fact(queries.context,index,ConstructFact::Width);index+=1u64; }
+    if (width==1u64 && plan.width>1u64) { plan.splat=1; }
+    else if (width!=plan.width) { plan.status=ConstructStatus::Components; }
+    return plan;
+}
+extern "C" void expand_construct(ConstructPlan plan,usize count,ConstructEmitter emitter) on cpu
+    requires nonzero(emitter.argument) requires nonzero(emitter.component) requires nonzero(emitter.splat) {
+    if (plan.kind==ConstructKind::Numeric) {
+        ConstructArgument mode=plan.width==1u64 ? ConstructArgument::ReplaceProof : ConstructArgument::Append;
+        usize index=0u64;
+        while (index<count) { emitter.argument(emitter.context,plan.scalar,mode);index+=1u64; }
+        if (plan.splat!=0) { emitter.splat(emitter.context,plan.width); }
+        return;
+    }
+    if (plan.kind==ConstructKind::Diagonal) {
+        emitter.argument(emitter.context,0,ConstructArgument::Diagonal);
+        usize row=0u64;
+        while (row<plan.rows) {
+            usize column=0u64;
+            while (column<plan.columns) {
+                if (row==column) {
+                    u32 last=row+1u64==plan.rows || column+1u64==plan.columns ? 1 : 0;
+                    emitter.component(emitter.context,ConstructComponent::Diagonal,0u64,last);
+                } else {
+                    u32 last=row*plan.columns+column+1u64==plan.width ||
+                        (plan.rows==plan.columns && row+1u64==plan.rows && column+2u64==plan.columns) ? 1 : 0;
+                    emitter.component(emitter.context,ConstructComponent::Zero,0u64,last);
+                }
+                column+=1u64;
+            }
+            row+=1u64;
+        }
+        return;
+    }
+    usize index=0u64;
+    while (index<count) {
+        usize width=emitter.argument(emitter.context,0,ConstructArgument::Matrix);
+        usize component=0u64;
+        while (component<width) {
+            emitter.component(emitter.context,ConstructComponent::Project,component,component+1u64==width ? 1 : 0);
+            component+=1u64;
+        }
+        index+=1u64;
+    }
+}

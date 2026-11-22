@@ -138,3 +138,32 @@ enum CollectiveOperator:u32 { Sum=0; Min=1; Max=2; BitAnd=3; BitOr=4; BitXor=5; 
 struct CollectiveBuiltin { CollectiveForm form; CollectiveOperator operation; };
 extern "C" CollectiveBuiltin source_collective(address bytes, usize length) on cpu;
 extern "C" bool collective_accepts(CollectiveOperator operation, bool numeric, bool integer) on cpu;
+
+
+enum ConstructEntry:u32 { Value=0; Matrix=1; };
+enum ConstructFact:u32 { CFunction=0; Address=1; Handle=2; Variants=3; Enumeration=4; Array=5; Matrix=6; Views=7; Fields=8; Width=9; };
+enum ConstructStatus:u32 {
+    Valid=0; CFunctionTarget=1; CFunctionInput=2; AddressTarget=3; AddressInput=4;
+    HandleTarget=5; HandleInput=6; Variants=7; Enumeration=8; Array=9; Matrix=10;
+    Views=11; MatrixInput=12; Components=13; MatrixComponents=14;
+};
+enum ConstructKind:u32 { Zero=0; Identity=1; Enumeration=2; Numeric=3; Diagonal=4; Matrix=5; };
+struct ConstructPlan { ConstructStatus status; ConstructKind kind; u32 scalar; u32 splat; usize width; usize rows; usize columns; };
+struct ConstructQueries {
+    address context;
+    cfn<usize,address,usize,ConstructFact> ensures memory(read) fact;
+    cfn<u32,address,usize> ensures memory(read) same;
+    cfn<u32,address> ensures memory(read) scalar_identity;
+};
+extern "C" ConstructPlan construct_plan(ConstructEntry entry,Operand target,usize count,ConstructQueries queries) on cpu
+    requires nonzero(queries.fact) requires nonzero(queries.same) requires nonzero(queries.scalar_identity);
+enum ConstructArgument:u32 { Append=0; ReplaceProof=1; Matrix=2; Diagonal=3; };
+enum ConstructComponent:u32 { Project=0; Diagonal=1; Zero=2; };
+struct ConstructEmitter {
+    address context;
+    cfn<usize,address,u32,ConstructArgument> argument;
+    cfn<void,address,ConstructComponent,usize,u32> component;
+    cfn<void,address,usize> splat;
+};
+extern "C" void expand_construct(ConstructPlan plan,usize count,ConstructEmitter emitter) on cpu
+    requires nonzero(emitter.argument) requires nonzero(emitter.component) requires nonzero(emitter.splat);

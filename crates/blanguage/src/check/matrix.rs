@@ -45,7 +45,7 @@ struct TransposeValues<'a> { input:&'a Value, output:Value }
 unsafe extern "C" fn output_transpose(context:*mut std::ffi::c_void,slot:u32) {
     let values=unsafe { &mut *context.cast::<TransposeValues<'_>>() };
     let component=Builder::matrix_component(values.input,slot as usize);
-    Builder::append_matrix_result(&mut values.output,component);
+    Builder::append_value(&mut values.output,component,false);
 }
 
 #[repr(u32)]
@@ -144,7 +144,7 @@ unsafe extern "C" fn output_matrix(context: *mut MatrixValues<'_, '_>, slot: u32
 }
 
 impl Builder<'_> {
-    fn matrix_component(value: &Value, at: usize) -> Value {
+    pub(super) fn matrix_component(value: &Value, at: usize) -> Value {
         Value {
             proof: value.projected_proof(&[at]),
             literal: false,
@@ -154,9 +154,9 @@ impl Builder<'_> {
             constant: value.constant.as_ref().map(|v| vec![v[at]]),
         }
     }
-    fn append_matrix_result(result:&mut Value,value:Value) {
+    pub(super) fn append_value(result:&mut Value,value:Value,replace_proof:bool) {
         result.uniform &= value.uniform;
-        result.proof.append(&value);
+        if replace_proof { result.proof=value.proof; } else { result.proof.append(&value); }
         result.regs.extend(value.regs);
         result.constant=result.constant.take().zip(value.constant).map(|(mut a,b)|{a.extend(b);a});
     }
@@ -165,56 +165,11 @@ impl Builder<'_> {
             proof:bounds::Proof::default(),literal:false,ty,regs:Vec::new(),uniform:true,
             constant:Some(Vec::new()),
         };
-        for value in values { Self::append_matrix_result(&mut result,value); }
+        for value in values { Self::append_value(&mut result,value,false); }
         result
     }
-    pub(super) fn matrix_construct(
-        &mut self,
-        ty: Ty,
-        mut values: Vec<Value>,
-        span: Span,
-    ) -> Result<Value> {
-        let (rows, columns) = ty.matrix_shape().unwrap();
-        if values.len() == 1 && values[0].ty == ty {
-            let mut value = values.pop().unwrap();
-            value.literal = false;
-            return Ok(value);
-        }
-        for value in &values {
-            if !value.ty.fields.is_empty() || value.ty.contains_views() || value.ty.array.is_some()
-            {
-                return self.fail(span, "B237", "矩阵构造接收数值分量或相同类型矩阵");
-            }
-        }
-        if values.len() == 1 && values[0].regs.len() == 1 {
-            let diagonal = self.cast(values.pop().unwrap(), Scalar::F32);
-            let zero = self.constant(Scalar::F32, 0);
-            return Ok(Self::matrix_result(
-                ty,
-                (0..rows)
-                    .flat_map(|r| {
-                        let diagonal = &diagonal;
-                        let zero = &zero;
-                        (0..columns).map(move |c| {
-                            if r == c {
-                                diagonal.clone()
-                            } else {
-                                zero.clone()
-                            }
-                        })
-                    })
-                    .collect(),
-            ));
-        }
-        let mut components = Vec::new();
-        for value in values {
-            let value = self.cast(value, Scalar::F32);
-            components.extend((0..value.regs.len()).map(|at| Self::matrix_component(&value, at)));
-        }
-        if components.len() != rows * columns {
-            return self.fail(span, "B157", "矩阵构造需要全部行优先分量，或一个对角标量");
-        }
-        Ok(Self::matrix_result(ty, components))
+    pub(super) fn matrix_construct(&mut self,ty:Ty,values:Vec<Value>,span:Span)->Result<Value> {
+        self.construct_value(operators::ConstructEntry::Matrix,ty,values,span)
     }
 
     pub(super) fn matrix_binary(&mut self, ty: Ty, plan: operators::Plan, a: Value, b: Value) -> Value {
