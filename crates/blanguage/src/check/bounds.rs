@@ -69,6 +69,105 @@ pub(super) enum Operand {
     Value(ValueIdentity),
     Constant(Scalar, Bits),
 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(super) enum Selector {
+    Direct(Operand),
+    Affine { base: ValueIdentity, scale: i128, offset: i128 },
+    Prefix(Operand),
+}
+
+impl Selector {
+    pub(super) fn identity(self) -> Option<ValueIdentity> {
+        match self {
+            Self::Direct(Operand::Constant(..)) | Self::Prefix(Operand::Constant(..)) => None,
+            Self::Direct(Operand::Value(id)) | Self::Prefix(Operand::Value(id)) | Self::Affine { base: id, .. } => Some(id),
+        }
+    }
+
+    pub(super) fn operand(self) -> Option<Operand> {
+        match self {
+            Self::Direct(operand) => Some(operand),
+            Self::Affine { .. } | Self::Prefix(_) => None,
+        }
+    }
+
+    pub(super) fn map(self, name: impl Fn(ValueIdentity) -> Option<ValueIdentity>) -> Option<Self> {
+        match self {
+            Self::Direct(operand) => operand.map(name).map(Self::Direct),
+            Self::Prefix(length) => length.map(name).map(Self::Prefix),
+            Self::Affine { base, scale, offset } => Some(Self::Affine { base: name(base)?, scale, offset }),
+        }
+    }
+
+    pub(super) fn at_call(self, bindings: &BTreeMap<ValueIdentity, Proof>) -> Option<Self> {
+        let (base, scale, offset) = match self {
+            Self::Direct(index) => return index.at_call(bindings).map(Self::Direct),
+            Self::Prefix(length) => return length.at_call(bindings).map(Self::Prefix),
+            Self::Affine { base, scale, offset } => (base, scale, offset),
+        };
+        let proof = bindings.get(&base)?;
+        if let [(lower, upper)] = proof.range_set(0).0.as_slice() && lower == upper {
+            let value = i128::from(*lower).checked_mul(scale)?.checked_add(offset)?;
+            return Some(Self::Direct(Operand::Constant(Scalar::U32, u32::try_from(value).ok()?.into())));
+        }
+        Some(Self::Affine { base: proof.known_identity(0)?, scale, offset })
+    }
+
+    fn affine(self, query: &mut IntegerQuery<'_>) -> Option<IntegerAffine> {
+        match self {
+            Self::Direct(operand) | Self::Prefix(operand) => Some(query.operand(operand, Scalar::U32)),
+            Self::Affine { base, scale, offset } => {
+                let value = query.operand(Operand::Value(base), Scalar::U32);
+                Some(IntegerAffine {
+                    source: value.source,
+                    scale: value.scale.checked_mul(scale)?,
+                    offset: value.offset.checked_mul(scale)?.checked_add(offset)?,
+                })
+            }
+        }
+    }
+
+    pub(super) fn equality(self, other: Self, path: &Clause) -> Option<bool> {
+        if let (Some(a), Some(b)) = (self.operand(), other.operand()) {
+            return Condition::index_equal(a, b).truth_in(path);
+        }
+        self.affine_equality(other, &path.required_in(&Facts::new())?)
+    }
+
+    fn affine_equality(self, other: Self, required: &RequiredFacts) -> Option<bool> {
+        let mut query = IntegerQuery::new(&required.facts, &required.roots);
+        let a = self.affine(&mut query)?;
+        let b = other.affine(&mut query)?;
+        let same_base = a.source == b.source && a.scale == b.scale;
+        let a_prefix = matches!(self, Self::Prefix(_));
+        let b_prefix = matches!(other, Self::Prefix(_));
+        if same_base {
+            return match (a_prefix, b_prefix) {
+                (false, false) => Some(a.offset == b.offset),
+                (true, false) => (b.offset >= a.offset).then_some(false),
+                (false, true) => (a.offset >= b.offset).then_some(false),
+                (true, true) => None,
+            };
+        }
+        let (a_low, a_high) = query.interval(a, Scalar::U32)?;
+        let (b_low, b_high) = query.interval(b, Scalar::U32)?;
+        match (a_prefix, b_prefix) {
+            (false, false) => a_high < b_low || b_high < a_low,
+            (true, false) => b_low >= a_high,
+            (false, true) => a_low >= b_high,
+            (true, true) => false,
+        }.then_some(false)
+    }
+
+    pub(super) fn overlaps(self, other: Self, path: &Clause) -> bool {
+        let Some(required) = path.required_in(&Facts::new()) else { return false; };
+        if let (Some(a), Some(b)) = (self.operand(), other.operand()) {
+            return Condition::index_equal(a, b).assume(path, true).required_in(&required.facts).is_some();
+        }
+        self.affine_equality(other, &required) != Some(false)
+    }
+}
+
 impl Operand {
     pub(super) fn of(value: &Value, component: usize) -> Self {
         match &value.constant {
@@ -674,7 +773,7 @@ impl Proof {
     }
     pub(super) fn view_parameters(mut self, ty: &Ty, indices:&[Option<Operand>], identity: impl Fn(usize) -> ValueIdentity) -> Self {
         for at in view_contracts::components(ty) {
-            self.set_view_borrow(at,view::Borrow::source(view::Source::Parameter(identity(at),indices.to_vec())));
+            self.set_view_borrow(at,view::Borrow::source(view::Source::Parameter(identity(at),indices.iter().map(|index| index.map(Selector::Direct)).collect())));
         }
         self
     }
@@ -2688,6 +2787,30 @@ impl Condition {
 
     pub(super) fn substitute_values(&self, values: &BTreeMap<ValueIdentity, Proof>) -> Self {
         self.at_call(&self.value_bindings(|id| values.get(&id)))
+    }
+
+    pub(super) fn return_selector(&self, id: ValueIdentity, source: &Clause) -> Option<Selector> {
+        let path = Clause::both(&self.cases[1], source);
+        let required = path.required_in(&Facts::new())?;
+        let mut query = IntegerQuery::new(&required.facts, &required.roots);
+        let value = query.operand(Operand::Value(id), Scalar::U32);
+        match value.source {
+            Some(base) if base != id => Some(Selector::Affine { base, scale: value.scale, offset: value.offset }),
+            None => Some(Selector::Direct(Operand::Constant(Scalar::U32, u32::try_from(value.offset).ok()?.into()))),
+            Some(_) => None,
+        }
+    }
+
+    // Closing a projected prefix keeps its public upper bound. Repeated
+    // forwarding through a smaller prefix does not grow nested expressions.
+    pub(super) fn return_prefix(&self, index: Selector, source: &Clause) -> Option<Selector> {
+        let offset = if matches!(index, Selector::Prefix(_)) { 0 } else { -1 };
+        let path = Clause::both(&self.cases[1], source);
+        let required = path.required_in(&Facts::new())?;
+        let mut query = IntegerQuery::new(&required.facts, &required.roots);
+        let value = index.affine(&mut query)?;
+        let base = value.source?;
+        (value.scale == 1 && value.offset <= offset).then_some(Selector::Prefix(Operand::Value(base)))
     }
 
     pub(super) fn element_index(depth:usize,index:Operand)->Self {

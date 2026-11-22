@@ -1605,7 +1605,7 @@ impl Builder<'_> {
                     let active=bounds::Clause::both(path,&when);
                     match source {
                         view::Source::Element{parent,fields,index}=>{
-                            if overlaps(parent,&write.resource,&active)&&index.zip(write.index).is_none_or(|(a,b)|bounds::Condition::index_equal(a,b).assume(&active,true).possible()){
+                            if overlaps(parent,&write.resource,&active)&&index.zip(write.index).is_none_or(|(a,b)|a.overlaps(bounds::Selector::Direct(b),&active)){
                                 let(mut offset,mut ty)=(0,&write.base);
                                 for field in fields {let(word,next)=ty.aggregate_part(*field);offset+=word;ty=next;}
                                 if write.value.1.iter().flatten().any(|part|{let(scalar,word)=write.base.components[*part];word<offset+ty.size&&offset<word+scalar.size()}){return true;}

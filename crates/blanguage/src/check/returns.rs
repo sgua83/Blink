@@ -248,6 +248,68 @@ fn early_returns(body: &Block) -> bool {
     }
 }
 impl Builder<'_> {
+    fn inherit_recursive_element_ranges(&mut self, name: &str, code_start: usize, exits: &mut [ReturnExit]) {
+        let arguments = self.view_model.calls.iter().filter(|call| call.function == name)
+            .map(|call| (call.memory, &call.arguments)).collect::<BTreeMap<_, _>>();
+        if arguments.is_empty() {
+            return;
+        }
+        let mut forwarded = BTreeMap::new();
+        native_function::calls(&mut self.code[code_start..], &mut |call| {
+            if let ir::CallTarget::Defined(target) = &call.target
+                && target == name
+                && let Some(arguments) = call.memory_use.and_then(|memory| arguments.get(&memory))
+            {
+                forwarded.extend(call.values.iter().enumerate().map(|(component, &reg)| (reg, (component, *arguments))));
+            }
+        });
+        let values = exits.iter().filter_map(|exit| exit.value.as_ref().and_then(Returned::view_value)).collect::<Vec<_>>();
+        let Some(first) = values.first() else { return; };
+        let mut inherited = BTreeMap::<Reg, Domains>::new();
+        for component in 0..first.regs.len() {
+            let (forwarding, established): (Vec<_>, Vec<_>) = values.iter().copied().partition(|value|
+                forwarded.get(&value.regs[component]).is_some_and(|(part, _)| *part == component)
+            );
+            let Some(first_exit) = established.first() else { continue; };
+            for domain in first_exit.proof.domains(component).iter().copied() {
+                let IndexDomain::CommonRange(origin @ ValueIdentity::DatasetContent(..), ..) = domain else { continue; };
+                if established[1..].iter().all(|value| value.proof.domains(component).contains(&domain))
+                    && forwarding.iter().all(|value| forwarded[&value.regs[component]].1.get(&origin)
+                        .is_some_and(|proof| proof.origins.first().is_some_and(|origins| origins.contains(&origin))))
+                {
+                    for value in &forwarding {
+                        inherited.entry(value.regs[component]).or_default().insert(domain);
+                    }
+                }
+            }
+        }
+        fn apply_value(value: &mut Value, inherited: &BTreeMap<Reg, Domains>) {
+            for (component, reg) in value.regs.iter().enumerate() {
+                if let Some(domains) = inherited.get(reg) {
+                    for domain in domains {
+                        value.proof.mark_domain(component, *domain);
+                    }
+                }
+            }
+        }
+        fn apply(value: &mut Returned, inherited: &BTreeMap<Reg, Domains>) {
+            match value {
+                Returned::Value(value) => apply_value(value, inherited),
+                Returned::OwnedValue(value) => {
+                    apply_value(&mut value.value, inherited);
+                    for payload in value.payloads.iter_mut().flatten() {
+                        apply(payload, inherited);
+                    }
+                }
+                Returned::Dataset(data) => apply_value(&mut data.length, inherited),
+                Returned::Unit => {}
+            }
+        }
+        for value in exits.iter_mut().filter_map(|exit| exit.value.as_mut()) {
+            apply(value, &inherited);
+        }
+    }
+
     fn bind_return_exit(
         &mut self,
         value: &mut Option<Returned>,

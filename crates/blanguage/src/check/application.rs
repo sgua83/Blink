@@ -389,7 +389,7 @@ impl ApplicationLoads<'_, '_> {
                 let index_equal=|at|{
                     let actual=match self.constant(at){Some(value)=>bounds::Operand::Constant(Scalar::U32,value),None=>bounds::Operand::Value(ValueIdentity::Register(at))};
                     let actual=self.0.element_index_operand(actual,(&self.0.path,&self.0.env));
-                    bounds::Condition::index_equal(actual,*index).truth_in(&self.0.path)==Some(true)
+                    bounds::Selector::Direct(actual).equality(*index,&self.0.path)==Some(true)
                 };
                 let mut at=self.len();
                 let loaded=self.code().rev().find_map(|inst|{
@@ -2429,6 +2429,7 @@ impl Builder<'_> {
         if !self.index_in(&last,IndexDomain::ApplicationData(data.root.identity()),data.length.minimum(),None) {
             return self.fail(source.span(),"B137","take_last需要由原长度条件证明输入非空");
         }
+        self.observe_bounds(&data.length);
         let held=self.hold_binding(Binding::ApplicationData(data.clone()));
         let destination=unsafe { self.world.call(self.mutable_place(output,Access::Write)).await }?;
         if !self.flow.continues(){return Ok(None);}
@@ -4144,7 +4145,7 @@ impl Builder<'_> {
                 if truth==Some(false){continue;}
                 match source {
                     view::Source::Element{parent,fields,index}=>for(mut nested,complete,choice)in collect(builder,parent,owner,path,env){
-                        let choice=choice.scope_element_indices(1).logical(index.map(|index|bounds::Condition::element_index(0,builder.element_index_operand(index,(path,env)))).unwrap_or_default(),false);
+                        let choice=choice.scope_element_indices(1).logical(index.and_then(bounds::Selector::operand).map(|index|bounds::Condition::element_index(0,builder.element_index_operand(index,(path,env)))).unwrap_or_default(),false);
                         nested.push(fields.clone());paths.push((nested,complete&&truth==Some(true),choice));
                     },
                     view::Source::Projection{parent,..}=>for(nested,complete,choice)in collect(builder,parent,owner,path,env){paths.push((nested,complete&&truth==Some(true),choice));},

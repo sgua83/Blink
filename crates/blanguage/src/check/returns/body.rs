@@ -183,6 +183,7 @@ impl Builder<'_>{
     FinishNeed::Initial=>{self.initialized=unsafe{initial.take().unwrap_unchecked()};}
     FinishNeed::First=>{
      let value=unsafe{context.as_mut().unwrap_unchecked()};facts.slots=value.slots.len()as u64;facts.scalars=value.expected.scalar_count()as u64;
+     self.inherit_recursive_element_ranges(&instance.name, code_start, &mut value.exits);
      exits=Some(std::mem::take(&mut value.exits).into_iter());exit=unsafe{exits.as_mut().unwrap_unchecked()}.next();facts.present=u32::from(exit.is_some());
     }
     FinishNeed::NoExit=>{self.flow=Flow::STOP;self.path=bounds::Clause::impossible();return Ok((None,vec![None;definition.function.params().len()]));}

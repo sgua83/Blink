@@ -19,6 +19,8 @@ struct NumericIdentity { IdentityKind kind; u64 first; u64 second; u64 third; };
 
 struct NumericOperand { OperandKind kind; NumericIdentity identity; ScalarTag scalar; u64 bits; };
 
+struct NumericSelection { u32 affine; NumericOperand operand; NumericIdentity base; u64 scale_low; u64 scale_high; u64 offset_low; u64 offset_high; };
+
 struct NumericExpression { IntegerKind operation; ScalarTag scalar; NumericOperand left; NumericOperand right; };
 
 struct NumericFloating { NumericIdentity source; u64 lower; u64 upper; array<u64,3> terms; ScalarTag scalar; FloatingKind form; };
@@ -565,6 +567,9 @@ extern "C" ReadStatus numeric_read_identity(Bytes input,inout u64 position,inout
 extern "C" void numeric_write_operand(NumericOperand value,address output,cfn<void,address,address,u64> append) on cpu requires nonzero(append);
 
 extern "C" ReadStatus numeric_read_operand(Bytes input,inout u64 position,inout NumericOperand output) on cpu;
+
+extern "C" void numeric_write_selection(NumericSelection value,address output,cfn<void,address,address,u64> append) on cpu requires nonzero(append);
+extern "C" ReadStatus numeric_read_selection(Bytes input,inout u64 position,inout NumericSelection output) on cpu;
 
 extern "C" void numeric_write_integer(IntegerKind value,address output,cfn<void,address,address,u64> append) on cpu requires nonzero(append);
 

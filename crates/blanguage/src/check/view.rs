@@ -269,7 +269,7 @@ impl Borrow{
                 Source::Position(origin)=>origin.substitute_values(values).normalize(),
                 Source::Relation(graph,root)=>Self::source(Source::Relation(Arc::new(graph.substitute_values(values)),*root)),
                 Source::Contents{origin,word}=>Self::source(Source::Contents{origin:Arc::new(origin.substitute_values(values)),word:*word}),
-                Source::Element{parent,fields,index}=>Self::element(parent.substitute_values(values),fields.clone(),Source::index_substitute(*index,values)),
+                Source::Element{parent,fields,index}=>Self::selected_element(parent.substitute_values(values),fields.clone(),Source::index_substitute(*index,values)),
                 Source::Projection{parent,fields}=>Self::projection(parent.substitute_values(values),fields.clone()),
                 Source::Task{captures,outputs,initialized,guards,completions}=>Self::source(Source::Task{
                     captures:Box::new(captures.substitute_values(values)),
@@ -302,10 +302,14 @@ impl Borrow{
     pub fn from_sources(sources:impl IntoIterator<Item=Source>)->Self{Self{sources:sources.into_iter().collect(),..Self::default()}}
     pub fn source(source:Source)->Self{Self::from_sources([source])}
     pub fn element(parent:Self,fields:Vec<usize>,index:Option<bounds::Operand>)->Self {
+        Self::selected_element(parent, fields, index.map(bounds::Selector::Direct))
+    }
+
+    pub(super) fn selected_element(parent:Self,fields:Vec<usize>,index:Option<bounds::Selector>)->Self {
         let mut result=Self::default();
         for(source,when)in parent.sources.entries(){
             let value=match source {
-                Source::Projection{parent,fields:prefix}=>Self::element((**parent).clone(),prefix.iter().chain(&fields).copied().collect(),index),
+                Source::Projection{parent,fields:prefix}=>Self::selected_element((**parent).clone(),prefix.iter().chain(&fields).copied().collect(),index),
                 _=>Self::source(Source::Element{parent:Box::new(Self::source(source.clone())),fields:fields.clone(),index}),
             };
             result.union(&value.restricted(&when));
@@ -316,21 +320,29 @@ impl Borrow{
         result
     }
     // This projects a common input family; existing caller identities are not rebound.
-    pub(super) fn select_elements(&self,indices:&[Option<bounds::Operand>])->Self {
+    pub(super) fn select_elements(&self,indices:&[Option<bounds::Selector>])->Self {
         if indices.is_empty(){return self.clone();}
         let values=indices.iter().enumerate().map(|(at,index)|{
             let id=ValueIdentity::ElementIndex(indices.len()-1-at);
-            let proof=match index{Some(index)=>bounds::Proof::element_operand(*index,(0,u32::MAX)),None=>bounds::Proof::default()};
+            let proof=index.and_then(bounds::Selector::operand).map(|index|bounds::Proof::element_operand(index,(0,u32::MAX))).unwrap_or_default();
             (id,proof)
         }).collect::<BTreeMap<_,_>>();
+        let select = |index: Option<bounds::Selector>| {
+            if let Some(bounds::Selector::Direct(bounds::Operand::Value(ValueIdentity::ElementIndex(depth)))) = index
+                && depth < indices.len()
+            {
+                return indices[indices.len() - 1 - depth];
+            }
+            Source::index_substitute(index, &values)
+        };
         let mut out=Self{inputs:self.inputs.substitute_values(&values),calls:self.calls.substitute_values(&values),reads:self.reads.substitute_values(&values),..Self::default()};
         for(source,when)in self.sources.entries(){
             let value=match source{
-                Source::Element{parent,fields,index}=>Self::element(parent.select_elements(indices),fields.clone(),Source::index_substitute(*index,&values)),
+                Source::Element{parent,fields,index}=>Self::selected_element(parent.select_elements(indices),fields.clone(),select(*index)),
                 Source::Relation(graph,root)=>graph.select(*root,indices),
                 Source::Parameter(id,selected)=>{
                     let selected=if matches!(id,ValueIdentity::DatasetContent(..))&&selected.is_empty(){indices.to_vec()}
-                        else{selected.iter().map(|index|Source::index_substitute(*index,&values)).collect()};
+                        else{selected.iter().copied().map(select).collect()};
                     Self::source(Source::Parameter(*id,selected))
                 },
                 Source::Projection{parent,fields}=>Self::projection(parent.select_elements(indices),fields.clone()),
@@ -486,11 +498,10 @@ impl Borrow{
     }
 
     pub(super) fn map_sources_at_call(
-        &self, bindings: &BTreeMap<ValueIdentity, bounds::Proof>, map: impl Fn(Source) -> Self,
+        &self, bindings: &BTreeMap<ValueIdentity, bounds::Proof>, map: impl Fn(Source, &bounds::Clause) -> Self,
     ) -> Self {
         self.map_sources_into(self.pending_guards_at_call(bindings), |source, condition| {
-            let condition = condition.project_guard(bindings);
-            map(source).restricted_by(&condition)
+            map(source,condition).restricted_by(&condition.project_guard(bindings))
         })
     }
 
@@ -511,11 +522,15 @@ impl Borrow{
     }
 
     pub fn map_sources(&self, map: impl Fn(Source) -> Self) -> Self {
+        self.map_source_paths(|source,_| map(source))
+    }
+
+    pub(super) fn map_source_paths(&self, map: impl Fn(Source, &bounds::Clause) -> Self) -> Self {
         let result = Self {
             inputs: self.inputs.clone(), calls: self.calls.clone(),
             reads: self.reads.clone(), ..Self::default()
         };
-        self.map_sources_into(result, |source, condition| map(source).restricted_by(condition))
+        self.map_sources_into(result, |source, condition| map(source,condition).restricted_by(condition))
     }
 
     fn map_sources_into(
@@ -634,7 +649,7 @@ impl Borrow{
         self.map_sources(|source|match source {
             Source::Position(origin)=>origin.resources(),
             Source::Relation(graph,root)=>graph.resources(root),
-            Source::Element{parent,fields,index}=>Self::element(parent.resources(),fields,index),
+            Source::Element{parent,fields,index}=>Self::selected_element(parent.resources(),fields,index),
             Source::Projection{parent,..}=>parent.resources(),
             Source::Task{captures,..}=>captures.resources(),
             Source::TaskOutput{task,..}=>task.resources(),
@@ -645,7 +660,7 @@ impl Borrow{
         self.map_sources(|source|match source{
             Source::Position(origin)=>origin.owners(),
             Source::Relation(graph,root)=>graph.owners(root),
-            Source::Element{parent,fields,index}=>Self::element(parent.resources(),fields,index).joined(parent.owners()),
+            Source::Element{parent,fields,index}=>Self::selected_element(parent.resources(),fields,index).joined(parent.owners()),
             Source::Projection{parent,..}=>parent.owners(),
             Source::Task{captures,..}=>captures.owners(),
             Source::TaskOutput{task,..}=>task.owners(),
@@ -666,7 +681,7 @@ impl Borrow{
         aliases.into_iter().collect()
     }
     pub fn at_call(&self, bindings: &BTreeMap<ValueIdentity, bounds::Proof>) -> Self {
-        self.map_sources_at_call(bindings, |source| source.at_call(bindings))
+        self.map_sources_at_call(bindings, |source, _| source.at_call(bindings))
     }
     pub fn output_bound(&self,bindings:&BTreeMap<ValueIdentity,ValueIdentity>)->Self{
         let mut result=Self{inputs:self.inputs.output_bound(bindings),calls:self.calls.output_bound(bindings),reads:self.reads.output_bound(bindings),..Self::default()};
@@ -870,8 +885,9 @@ impl Requirement {
                     Exclusion::Resource => borrow.resources(),
                     Exclusion::View => borrow.view_resources(),
                 };
-                if held.sources.entries().any(|(source,when)|
-                    matches!(source,Source::Data(_)|Source::Element{..}) && resource.resources().overlaps_source(source,&when))
+                let target = resource.resources();
+                if held.sources.entries().any(|(source, when)|
+                    matches!(source, Source::Data(_) | Source::Element { .. }) && target.overlaps_source(source, &when))
                 {
                     source.fail(*span,"B227","dataset仍被实际view消费者借用，不能写入、移动、传输或释放")
                 } else { Ok(()) }
@@ -885,9 +901,9 @@ impl Requirement {
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) enum Source {
     Data(ValueIdentity),
-    Element { parent:Box<Borrow>, fields:Vec<usize>, index:Option<bounds::Operand> },
+    Element { parent:Box<Borrow>, fields:Vec<usize>, index:Option<bounds::Selector> },
     Projection { parent:Box<Borrow>, fields:Vec<usize> },
-    Parameter(ValueIdentity,Vec<Option<bounds::Operand>>),
+    Parameter(ValueIdentity,Vec<Option<bounds::Selector>>),
     Unresolved,
     // 实际变体分支在此槽没有view；区别于尚未知的来源。
     Inactive,
@@ -905,25 +921,28 @@ fn identity_proof(id:ValueIdentity)->bounds::Proof {
 }
 
 impl Source {
-    pub(in crate::check) fn index_substitute(index:Option<bounds::Operand>,values:&BTreeMap<ValueIdentity,bounds::Proof>)->Option<bounds::Operand>{
-        match index{
-            Some(index@bounds::Operand::Value(id))if values.contains_key(&id)=>index.at_call(values),
-            other=>other,
-        }
+    pub(in crate::check) fn index_substitute(index:Option<bounds::Selector>,values:&BTreeMap<ValueIdentity,bounds::Proof>)->Option<bounds::Selector>{
+        index.and_then(|index| {
+            if index.identity().is_some_and(|id| values.contains_key(&id)) { index.at_call(values) }
+            else { Some(index) }
+        })
     }
-    pub(in crate::check) fn index_at_call(index:Option<bounds::Operand>,values:&BTreeMap<ValueIdentity,bounds::Proof>)->Option<bounds::Operand>{
-        match index{
-            Some(index@bounds::Operand::Value(id@ValueIdentity::ElementIndex(_)))if !values.contains_key(&id)=>Some(index),
-            index=>index.and_then(|index|index.at_call(values)),
-        }
+    pub(in crate::check) fn index_at_call(index:Option<bounds::Selector>,values:&BTreeMap<ValueIdentity,bounds::Proof>)->Option<bounds::Selector>{
+        index.and_then(|index| match index.identity() {
+            Some(id @ ValueIdentity::ElementIndex(_)) if !values.contains_key(&id) => Some(index),
+            _ => index.at_call(values),
+        })
     }
     fn overlaps(&self,other:&Self,path:impl FnOnce()->bounds::Clause)->bool{
         match(self,other){
             (Self::Element{parent,fields,index},Self::Element{parent:other,fields:other_fields,index:other_index})=>{
                 if fields!=other_fields{return false;}
                 let path=path();
-                if !path.possible(){return false;}
-                if let(Some(a),Some(b))=(index,other_index){if !bounds::Condition::index_equal(*a,*b).assume(&path,true).possible(){return false;}}
+                let overlaps = match (index, other_index) {
+                    (Some(a), Some(b)) => a.overlaps(*b, &path),
+                    _ => path.possible(),
+                };
+                if !overlaps { return false; }
                 parent.sources.entries().any(|(source,when)|other.overlaps_source(source,&bounds::Clause::both(&path,&when)))
                     ||parent.inputs.entries().any(|(input,when)|bounds::Clause::both(&path,&when).overlaps(&other.inputs.when(input)))
                     ||parent.calls.entries().any(|(call,when)|bounds::Clause::both(&path,&when).overlaps(&other.calls.when(call)))
@@ -973,7 +992,7 @@ impl Source {
             Self::Position(origin)=>origin.at_call(bindings),
             Self::Relation(graph,root)=>Borrow::source(Self::Relation(Arc::new(graph.at_call(bindings)),root)),
             Self::Contents{origin,word}=>Borrow::source(Self::Contents{origin:Arc::new(origin.bound_at_call(bindings)),word}),
-            Self::Element{parent,fields,index}=>Borrow::element(parent.at_call(bindings),fields,Self::index_at_call(index,bindings)),
+            Self::Element{parent,fields,index}=>Borrow::selected_element(parent.at_call(bindings),fields,Self::index_at_call(index,bindings)),
             Self::Projection{parent,fields}=>Borrow::projection(parent.at_call(bindings),fields),
             Self::Task{captures,outputs,initialized,guards,completions}=>Borrow::source(Self::Task{
                 captures:Box::new(captures.at_call(bindings)),
@@ -1884,7 +1903,7 @@ const _: () = {
     }
     unsafe extern "C" fn build_parameter(context: Slot, destination: Slot) -> ReadStatus {
         let mut id = <ValueIdentity as Native>::empty();
-        let mut indices = <Vec<Option<bounds::Operand>> as Native>::empty();
+        let mut indices = <Vec<Option<bounds::Selector>> as Native>::empty();
         #[repr(C)]
         struct Fields {
             id: Slot,
@@ -1908,7 +1927,7 @@ const _: () = {
                 },
                 Host {
                     id: contracts::read_value::<ValueIdentity>,
-                    indices: contracts::read_value::<Vec<Option<bounds::Operand>>>,
+                    indices: contracts::read_value::<Vec<Option<bounds::Selector>>>,
                 },
             )
         };
@@ -1974,7 +1993,7 @@ const _: () = {
     unsafe extern "C" fn build_element(context: Slot, destination: Slot) -> ReadStatus {
         let mut parent = <Box<Borrow> as Native>::empty();
         let mut fields = <Vec<usize> as Native>::empty();
-        let mut index = <Option<bounds::Operand> as Native>::empty();
+        let mut index = <Option<bounds::Selector> as Native>::empty();
         #[repr(C)]
         struct Fields {
             parent: Slot,
@@ -2002,7 +2021,7 @@ const _: () = {
                 Host {
                     parent: contracts::read_value::<Box<Borrow>>,
                     fields: contracts::read_value::<Vec<usize>>,
-                    index: contracts::read_value::<Option<bounds::Operand>>,
+                    index: contracts::read_value::<Option<bounds::Selector>>,
                 },
             )
         };
@@ -2300,7 +2319,7 @@ const _: () = {
                             },
                             Host {
                                 id: contracts::write_value::<ValueIdentity>,
-                                indices: contracts::write_value::<Vec<Option<bounds::Operand>>>,
+                                indices: contracts::write_value::<Vec<Option<bounds::Selector>>>,
                             },
                             contracts::append,
                         )
@@ -2404,7 +2423,7 @@ const _: () = {
                             Host {
                                 parent: contracts::write_value::<Box<Borrow>>,
                                 fields: contracts::write_value::<Vec<usize>>,
-                                index: contracts::write_value::<Option<bounds::Operand>>,
+                                index: contracts::write_value::<Option<bounds::Selector>>,
                             },
                             contracts::append,
                         )

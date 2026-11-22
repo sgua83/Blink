@@ -139,6 +139,17 @@ struct NumericOperand {
 }
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
+struct NumericSelection {
+    affine: u32,
+    operand: NumericOperand,
+    base: NumericIdentity,
+    scale_low: u64,
+    scale_high: u64,
+    offset_low: u64,
+    offset_high: u64,
+}
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
 struct NumericExpression {
     operation: IntegerKind,
     scalar: ScalarTag,
@@ -379,6 +390,59 @@ impl NativeValue for ValueIdentity {
         }
     }
 }
+impl NativeValue for Selector {
+    type Frame = NumericSelection;
+
+    fn into_frame(self) -> NumericSelection {
+        match self {
+            Self::Direct(operand) => NumericSelection {
+                operand: operand.into_frame(),
+                ..Default::default()
+            },
+            Self::Prefix(length) => {
+                let (base, scale_low, offset_low) = match length {
+                    Operand::Value(id) => (id.into_frame(), 1, 0),
+                    Operand::Constant(_, bits) => (NumericIdentity::default(), 0, bits),
+                };
+                NumericSelection {
+                    affine: 2,
+                    base,
+                    scale_low,
+                    offset_low,
+                    ..Default::default()
+                }
+            },
+            Self::Affine { base, scale, offset } => NumericSelection {
+                affine: 1,
+                base: base.into_frame(),
+                scale_low: scale as u64,
+                scale_high: (scale >> 64) as u64,
+                offset_low: offset as u64,
+                offset_high: (offset >> 64) as u64,
+                ..Default::default()
+            },
+        }
+    }
+
+    fn from_frame(value: NumericSelection) -> Self {
+        if value.affine == 0 {
+            return Self::Direct(Operand::from_frame(value.operand));
+        }
+        if value.affine == 2 {
+            return Self::Prefix(if value.scale_low == 0 && value.scale_high == 0 {
+                Operand::Constant(Scalar::U32, value.offset_low)
+            } else {
+                Operand::Value(ValueIdentity::from_frame(value.base))
+            });
+        }
+        Self::Affine {
+            base: ValueIdentity::from_frame(value.base),
+            scale: ((u128::from(value.scale_high) << 64) | u128::from(value.scale_low)) as i128,
+            offset: ((u128::from(value.offset_high) << 64) | u128::from(value.offset_low)) as i128,
+        }
+    }
+}
+
 impl NativeValue for Operand {
     type Frame = NumericOperand;
     fn into_frame(self) -> NumericOperand {
@@ -552,6 +616,15 @@ unsafe extern "C" {
         position: *mut usize,
         output: *mut NumericIdentity,
     ) -> ReadStatus;
+    #[link_name = "bootstrap.contract_codec::numeric_write_selection"]
+    fn write_selection(
+        value: NumericSelection,
+        output: *mut c_void,
+        append: unsafe extern "C" fn(*mut c_void, *const u8, usize),
+    );
+    #[link_name = "bootstrap.contract_codec::numeric_read_selection"]
+    fn read_selection(input: Bytes, position: *mut usize, output: *mut NumericSelection) -> ReadStatus;
+
     #[link_name = "bootstrap.contract_codec::numeric_write_operand"]
     fn write_operand(
         value: NumericOperand,
@@ -685,6 +758,7 @@ macro_rules! native_codec {
 }
 native_codec!(ValueIdentity, write_identity, read_identity);
 native_codec!(Operand, write_operand, read_operand);
+native_codec!(Selector, write_selection, read_selection);
 native_codec!(IntegerOperation, write_integer, read_integer);
 native_codec!(IntegerExpression, write_expression, read_expression);
 native_codec!(Comparison, write_comparison, read_comparison);

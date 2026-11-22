@@ -89,7 +89,7 @@ impl Builder<'_>{
     self.code.push(Inst::generated(InstKind::Binary{dst:reg,op:ir::BinaryOp::ISub,a:unsafe{cursor_reg.unwrap_unchecked()},b:unsafe{one.unwrap_unchecked()}},generated(GenerationReason::DatasetDropIndex,&trigger)));
    }
    d::LoopNeed::Place=>{
-    let value=Value{ty:unsafe{scalar.take().unwrap_unchecked()},regs:vec![unsafe{index.unwrap_unchecked()}],proof:bounds::Proof::unsigned(0,unsafe{d::index_maximum(data.length.maximum())}),uniform:false,literal:false,constant:None};
+    let value=Value{ty:unsafe{scalar.take().unwrap_unchecked()},regs:vec![unsafe{index.unwrap_unchecked()}],proof:bounds::Proof::unsigned(0,unsafe{d::index_maximum(data.length.maximum())}).with_domains(Domains::from([IndexDomain::Upper(data.length.identity(),1)])),uniform:false,literal:false,constant:None};
     let cursor=bounds::Clause::values([(Scalar::U32,value.identity(),&value.proof)]);
     place=Some((data.element(&value,(value.minimum(),value.maximum())),cursor));
    }

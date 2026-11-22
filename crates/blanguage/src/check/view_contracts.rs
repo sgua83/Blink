@@ -422,8 +422,8 @@ fn resource_index_values(borrow:&Borrow)->BTreeSet<ValueIdentity>{
             ids.extend(bounds::Clause::scalar_identities([&path]).into_iter().filter(|id|matches!(id,ValueIdentity::ElementIndex(_))));
         }
         for source in &borrow.sources{match source{
-            Origin::Element{parent,index,..}=>{if let Some(bounds::Operand::Value(id))=index{ids.insert(*id);}visit(parent,ids);},
-            Origin::Parameter(_,indices)=>{for index in indices{if let Some(bounds::Operand::Value(id))=index{ids.insert(*id);}}},
+            Origin::Element{parent,index,..}=>{if let Some(id)=index.and_then(bounds::Selector::identity){ids.insert(id);}visit(parent,ids);},
+            Origin::Parameter(_,indices)=>{for index in indices{if let Some(id)=index.and_then(bounds::Selector::identity){ids.insert(id);}}},
             Origin::Projection{parent,..}=>visit(parent,ids),
             Origin::Position(origin)=>visit(&origin.resources(),ids),
             _=>{},
@@ -479,7 +479,7 @@ impl Function {
     fn address_borrows(&self,parameters:&BTreeMap<ValueIdentity,bounds::Proof>,borrow:Borrow)->Option<Borrow> {
         let selected=borrow.map_sources(|source|match source {
             Origin::Parameter(id,indices)=>self.parameters.get(&id).copied().filter(|id|self.input(*id))
-                .map(|id|Borrow::source(Origin::Parameter(id,indices.into_iter().map(|index|contract_index(index,self,BorrowProjection::Input)).collect()))).unwrap_or_else(||Borrow::source(Origin::Unresolved)),
+                .map(|id|Borrow::source(Origin::Parameter(id,indices.into_iter().map(|index|contract_index(index,self,BorrowProjection::Input,None)).collect()))).unwrap_or_else(||Borrow::source(Origin::Unresolved)),
             Origin::Position(origin) if matches!(origin.root,address::Root::Parameter(_)|address::Root::Derived(_)|address::Root::External(_)|address::Root::Dataset{..}|address::Root::Resource{..}) =>
                 {
                     let mut origin=(*origin).clone();
@@ -550,7 +550,7 @@ impl Function {
             borrow.map_sources(|source|match source{
                 Origin::Data(id)=>function.parameters.get(&id).copied().filter(|id|function.input(*id)).map(|id|Borrow::source(Origin::Data(id))).unwrap_or_default(),
                 Origin::Parameter(id,indices)=>Borrow::source(function.parameters.get(&id).copied().filter(|id|function.input(*id)).map(|id|Origin::Parameter(id,indices.into_iter().map(|index|index.and_then(|index|index.at_call(parameters))).collect())).unwrap_or(Origin::Unresolved)),
-                Origin::Element{parent,fields,index}=>Borrow::element(external(function,*parent,parameters),fields,index.and_then(|index|index.at_call(parameters))),
+                Origin::Element{parent,fields,index}=>Borrow::selected_element(external(function,*parent,parameters),fields,index.and_then(|index|index.at_call(parameters))),
                 Origin::Projection{parent,fields}=>Borrow::projection(external(function,*parent,parameters),fields),
                 Origin::Position(origin)=>origin.resources(),
                 Origin::Contents{..}|Origin::Relation(..)=>canonical(Borrow::source(source),function,&BTreeMap::new()),
@@ -573,7 +573,7 @@ impl Function {
         fn inputs(borrow:&Borrow,function:&Function,owns_input:&impl Fn(ValueIdentity)->bool)->Borrow {
             borrow.map_sources(|source|match source {
                 Origin::Data(id) if !function.parameters.get(&id).is_some_and(|id|function.input(*id)&&!owns_input(*id))=>Borrow::default(),
-                Origin::Element{parent,fields,index}=>Borrow::element(inputs(&parent,function,owns_input),fields,index),
+                Origin::Element{parent,fields,index}=>Borrow::selected_element(inputs(&parent,function,owns_input),fields,index),
                 Origin::Projection{parent,fields}=>Borrow::projection(inputs(&parent,function,owns_input),fields),
                 Origin::Position(origin)=>{
                     let mut origin=origin.map_borrows(|borrow|inputs(borrow,function,owns_input));
@@ -703,7 +703,7 @@ fn call_content_sources(borrow:&Borrow,call:&Call,arguments:&BTreeMap<ValueIdent
             Borrow{reads:view::Edges::from([ContentRead::Call{memory:call.memory,origin:Arc::new(origin),word,snapshots:call.snapshots.clone()}]),..Borrow::default()}
         },
         Origin::Position(origin)=>origin.map_borrows(|parent|call_content_sources(parent,call,arguments)).normalize(),
-        Origin::Element{parent,fields,index}=>Borrow::element(call_content_sources(&parent,call,arguments),fields,index),
+        Origin::Element{parent,fields,index}=>Borrow::selected_element(call_content_sources(&parent,call,arguments),fields,index),
         Origin::Projection{parent,fields}=>Borrow::projection(call_content_sources(&parent,call,arguments),fields),
         Origin::Task{captures,outputs,initialized,guards,completions}=>Borrow::source(Origin::Task{
             captures:Box::new(call_content_sources(&captures,call,arguments)),
@@ -1179,7 +1179,7 @@ impl BorrowEvaluation<'_>{
                         self.relation(graph, *root, sources)
                     }
                 },
-                Origin::Element{parent,fields,index}=>Borrow::element(self.evaluate(parent),fields.clone(),*index),
+                Origin::Element{parent,fields,index}=>Borrow::selected_element(self.evaluate(parent),fields.clone(),*index),
                 Origin::Projection{parent,fields}=>Borrow::projection(self.evaluate(parent),fields.clone()),
                 Origin::Task{captures,outputs,initialized,guards,completions}=>Borrow::source(Origin::Task{
                     captures:Box::new(self.evaluate(captures)),
@@ -1227,7 +1227,7 @@ fn stored_target<'p>(
         borrow.map_sources(|source|match source{
             Origin::Data(id) if !function.parameters.get(&id).is_some_and(|id|function.input(*id))&&!exposed.contains_key(&Origin::Data(id))=>Borrow::default(),
             Origin::Position(origin) if origin.has_local()=>Borrow::default(),
-            Origin::Element{parent,fields,index}=>Borrow::element(escaping(&parent,function,exposed),fields,index),
+            Origin::Element{parent,fields,index}=>Borrow::selected_element(escaping(&parent,function,exposed),fields,index),
             Origin::Projection{parent,fields}=>Borrow::projection(escaping(&parent,function,exposed),fields),
             source=>Borrow::source(source),
         })
@@ -1248,14 +1248,27 @@ enum BorrowProjection {
     Initialization,
 }
 
-fn contract_index(index: Option<bounds::Operand>, function: &Function, projection: BorrowProjection) -> Option<bounds::Operand> {
-    index.and_then(|index| index.map(|id| match id {
+fn contract_index(
+    index: Option<bounds::Selector>, function: &Function, projection: BorrowProjection,
+    source: Option<&bounds::Clause>,
+) -> Option<bounds::Selector> {
+    let name = |id| match id {
         ValueIdentity::ElementIndex(_) => Some(id),
         _ => function.parameters.get(&id).copied().filter(|id| {
             function.input(*id)
                 || matches!(projection, BorrowProjection::Result) && matches!(id, ValueIdentity::Register(_))
         }),
-    }))
+    };
+    let index = index?;
+    if let Some(public) = index.map(name) { return Some(public); }
+    if !matches!(projection, BorrowProjection::Result) { return None; }
+    let exits = function.normal_returns.as_ref()?;
+    let source = source?;
+    match index {
+        bounds::Selector::Direct(bounds::Operand::Value(id)) => exits.return_selector(id, source),
+        bounds::Selector::Affine { .. } | bounds::Selector::Prefix(_) => exits.return_prefix(index, source),
+        bounds::Selector::Direct(bounds::Operand::Constant(..)) => Some(index),
+    }?.map(name)
 }
 fn public_parameters(function: &Function) -> BTreeMap<ValueIdentity, bounds::Proof> {
     function.parameters.iter()
@@ -1301,7 +1314,7 @@ fn canonical_with_guards(
             if !matches!(value.root,address::Root::Local { .. }) {value.positions=Arc::from([]);}
         value
     };
-    let renamed=|source|{
+    let renamed=|source, when: &bounds::Clause|{
         if matches!(&source,Origin::Element{..}|Origin::Projection{..}) && let Some(outputs)=exposed.get(&source){
             return match resource{Some(resource)=>resource.clone(),None=>outputs.clone()};
         }
@@ -1313,8 +1326,8 @@ fn canonical_with_guards(
             else if let Some(outputs)=exposed.get(&Origin::Data(id)){outputs.clone()}
             else{Borrow::source(Origin::Unresolved)}
         }
-        Origin::Parameter(id,indices)=>Borrow::source(function.parameters.get(&id).copied().map(|id|Origin::Parameter(id,indices.into_iter().map(|index|contract_index(index,function,selection)).collect())).unwrap_or(Origin::Unresolved)),
-        Origin::Element{parent,fields,index}=>Borrow::element(canonical_with_guards(*parent,function,None,exposed,guards,selection),fields,contract_index(index,function,selection)),
+        Origin::Parameter(id,indices)=>Borrow::source(function.parameters.get(&id).copied().map(|id|Origin::Parameter(id,indices.into_iter().map(|index|contract_index(index,function,selection,Some(when))).collect())).unwrap_or(Origin::Unresolved)),
+        Origin::Element{parent,fields,index}=>Borrow::selected_element(canonical_with_guards(*parent,function,None,exposed,guards,selection),fields,contract_index(index,function,selection,Some(when))),
         Origin::Projection{parent,fields}=>Borrow::projection(canonical_with_guards(*parent,function,None,exposed,guards,selection),fields),
         Origin::Task{captures,outputs,initialized,guards:task_guards,completions}=>Borrow::source(Origin::Task{
             captures:Box::new(canonical_with_guards(*captures,function,None,exposed,guards,BorrowProjection::Input)),
@@ -1335,13 +1348,13 @@ fn canonical_with_guards(
         Origin::Unresolved|Origin::Inactive|Origin::External=>Borrow::source(source),
     }};
     if matches!(projection, BorrowProjection::Initialization) {
-        return borrow.initialization_at_call(parameters).map_sources(renamed);
+        return borrow.initialization_at_call(parameters).map_source_paths(renamed);
     }
     match resource {
         // 拥有输出的来源改名不附加条件，先投影正式输入关系。
         Some(_) => borrow.map_sources_at_call(parameters, renamed),
         // 借用输出需先合成实际拥有者条件，保留来源相关性。
-        None=>borrow.map_sources(renamed).project_guards(guards),
+        None=>borrow.map_source_paths(renamed).project_guards(guards),
     }
 }
 

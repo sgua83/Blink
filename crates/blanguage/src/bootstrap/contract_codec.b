@@ -169,18 +169,58 @@ wide(value.bits,output,append);
 }
 }
 
-extern "C" ReadStatus numeric_read_operand(Bytes input,inout u64 position,inout NumericOperand output) on cpu {
-ReadValue tag=fixed_value(input,position,4);if(tag.status!=ReadStatus::Success){return tag.status;}
-if(tag.value==0u64){
+ReadStatus numeric_read_operand_payload(u64 tag,Bytes input,inout u64 position,inout NumericOperand output) on cpu {
+if(tag==0u64){
 output.kind=OperandKind::Value;
 ReadStatus status_26=numeric_read_identity(input,position,output.identity);if(status_26!=ReadStatus::Success){return status_26;}
 return ReadStatus::Success;}
-else if(tag.value==1u64){
+else if(tag==1u64){
 output.kind=OperandKind::Constant;
 ReadStatus status_27=numeric_read_scalar(input,position,output.scalar);if(status_27!=ReadStatus::Success){return status_27;}
 ReadValue part_28=fixed_value(input,position,8);if(part_28.status!=ReadStatus::Success){return part_28.status;}output.bits=part_28.value;
 return ReadStatus::Success;}
 return ReadStatus::Operand;
+}
+
+extern "C" ReadStatus numeric_read_operand(Bytes input,inout u64 position,inout NumericOperand output) on cpu {
+ ReadValue tag=fixed_value(input,position,4);
+ if(tag.status!=ReadStatus::Success){return tag.status;}
+ return numeric_read_operand_payload(tag.value,input,position,output);
+}
+
+extern "C" void numeric_write_selection(NumericSelection value,address output,cfn<void,address,address,u64> append) on cpu requires nonzero(append) {
+ if(value.affine==0){numeric_write_operand(value.operand,output,append);return;}
+ word(value.affine+1,output,append);
+ numeric_write_identity(value.base,output,append);
+ wide(value.scale_low,output,append);
+ wide(value.scale_high,output,append);
+ wide(value.offset_low,output,append);
+ wide(value.offset_high,output,append);
+}
+
+extern "C" ReadStatus numeric_read_selection(Bytes input,inout u64 position,inout NumericSelection output) on cpu {
+ ReadValue tag=fixed_value(input,position,4);
+ if(tag.status!=ReadStatus::Success){return tag.status;}
+ if((tag.value>>1u64)!=1u64){
+  output.affine=0;
+  return numeric_read_operand_payload(tag.value,input,position,output.operand);
+ }
+ output.affine=u32(tag.value-1u64);
+ ReadStatus identity=numeric_read_identity(input,position,output.base);
+ if(identity!=ReadStatus::Success){return identity;}
+ ReadValue scale_low=fixed_value(input,position,8);
+ if(scale_low.status!=ReadStatus::Success){return scale_low.status;}
+ ReadValue scale_high=fixed_value(input,position,8);
+ if(scale_high.status!=ReadStatus::Success){return scale_high.status;}
+ ReadValue offset_low=fixed_value(input,position,8);
+ if(offset_low.status!=ReadStatus::Success){return offset_low.status;}
+ ReadValue offset_high=fixed_value(input,position,8);
+ if(offset_high.status!=ReadStatus::Success){return offset_high.status;}
+ output.scale_low=scale_low.value;
+ output.scale_high=scale_high.value;
+ output.offset_low=offset_low.value;
+ output.offset_high=offset_high.value;
+ return ReadStatus::Success;
 }
 
 extern "C" void numeric_write_integer(IntegerKind value,address output,cfn<void,address,address,u64> append) on cpu requires nonzero(append) {

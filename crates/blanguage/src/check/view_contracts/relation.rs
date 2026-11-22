@@ -11,7 +11,7 @@ impl Ord for Epoch{fn cmp(&self,b:&Self)->std::cmp::Ordering{self.key().cmp(&b.k
 
 
 #[derive(Clone,PartialEq,Eq,PartialOrd,Ord)]
-enum Op { Identity, Position(address::Origin), Initial{origin:address::Origin,frame:Option<usize>}, Read{word:u32,epoch:Epoch,frame:Option<usize>}, Element{fields:Vec<usize>,index:Option<bounds::Operand>}, Projection(Vec<usize>), Resources, Owners, Select(Vec<Option<bounds::Operand>>) }
+enum Op { Identity, Position(address::Origin), Initial{origin:address::Origin,frame:Option<usize>}, Read{word:u32,epoch:Epoch,frame:Option<usize>}, Element{fields:Vec<usize>,index:Option<bounds::Selector>}, Projection(Vec<usize>), Resources, Owners, Select(Vec<Option<bounds::Selector>>) }
 
 #[derive(Clone,PartialEq,Eq,PartialOrd,Ord)]
 struct Edge { from:usize, op:Op, when:bounds::Condition }
@@ -686,15 +686,15 @@ impl Graph {
     pub(in crate::check) fn owners(self: &Arc<Self>, root: usize) -> Borrow {
         self.project(root, Op::Owners)
     }
-    pub(in crate::check) fn select(self: &Arc<Self>, root: usize, indices: &[Option<bounds::Operand>]) -> Borrow {
+    pub(in crate::check) fn select(self: &Arc<Self>, root: usize, indices: &[Option<bounds::Selector>]) -> Borrow {
         self.project(root, Op::Select(indices.to_vec()))
     }
     pub(in crate::check) fn seed_borrows(&self, root: usize) -> Vec<&Borrow> {
         let (reachable, _) = self.reachable(root);
         reachable.into_iter().map(|id| &self.nodes[id].seeds).collect()
     }
-    pub(in crate::check) fn at_call(&self,values:&BTreeMap<ValueIdentity,bounds::Proof>)->Self{let mut v=self.clone();for n in &mut v.nodes{n.seeds=n.seeds.at_call(values);for e in &mut n.edges{e.when=e.when.guard_at_call(values);match &mut e.op{Op::Position(p)=>*p=p.bound_at_call(values),Op::Element{index,..}=>*index=Origin::index_at_call(*index,values),_=>{}}}}for f in &mut v.frames{for w in &mut f.writes{w.when=w.when.at_call(values);}}v}
-    pub(in crate::check) fn substitute_values(&self,values:&BTreeMap<ValueIdentity,bounds::Proof>)->Self{let mut v=self.clone();for n in &mut v.nodes{n.seeds=n.seeds.substitute_values(values);for e in &mut n.edges{e.when=e.when.substitute_values(values);match &mut e.op{Op::Position(p)=>*p=p.substitute_values(values),Op::Element{index,..}=>*index=Origin::index_substitute(*index,values),_=>{}}}}for f in &mut v.frames{for w in &mut f.writes{w.when=w.when.substitute_values(values);}}v}
+    pub(in crate::check) fn at_call(&self,values:&BTreeMap<ValueIdentity,bounds::Proof>)->Self{let mut v=self.clone();for n in &mut v.nodes{n.seeds=n.seeds.at_call(values);for e in &mut n.edges{e.when=e.when.guard_at_call(values);match &mut e.op{Op::Position(p)=>*p=p.bound_at_call(values),Op::Element{index,..}=>*index=Origin::index_at_call(*index,values),Op::Select(indices)=>indices.iter_mut().for_each(|index|*index=Origin::index_at_call(*index,values)),_=>{}}}}for f in &mut v.frames{for w in &mut f.writes{w.when=w.when.at_call(values);}}v}
+    pub(in crate::check) fn substitute_values(&self,values:&BTreeMap<ValueIdentity,bounds::Proof>)->Self{let mut v=self.clone();for n in &mut v.nodes{n.seeds=n.seeds.substitute_values(values);for e in &mut n.edges{e.when=e.when.substitute_values(values);match &mut e.op{Op::Position(p)=>*p=p.substitute_values(values),Op::Element{index,..}=>*index=Origin::index_substitute(*index,values),Op::Select(indices)=>indices.iter_mut().for_each(|index|*index=Origin::index_substitute(*index,values)),_=>{}}}}for f in &mut v.frames{for w in &mut f.writes{w.when=w.when.substitute_values(values);}}v}
     pub(in crate::check) fn output_bound(&self,values:&BTreeMap<ValueIdentity,ValueIdentity>)->Self{let mut v=self.clone();for n in &mut v.nodes{n.seeds=n.seeds.output_bound(values);for e in &mut n.edges{e.when=bounds::Condition::guard(e.when.assume(&bounds::Clause::default(),true).output_bound(values));if let Op::Position(p)=&mut e.op{*p=p.bind_outputs(values);}}}for f in &mut v.frames{for w in &mut f.writes{w.when=w.when.output_bound(values);}}v}
     pub(in crate::check) fn normalize(&mut self,normal:&mut bounds::Normalizer){for n in &mut self.nodes{n.seeds.normalize_contract(normal);for e in &mut n.edges{e.when=normal.condition(&e.when);if let Op::Position(p)=&mut e.op{normal.origin(p);}}}for f in &mut self.frames{for w in &mut f.writes{w.when=normal.condition(&w.when);}}}
     pub(super) fn canonical(
@@ -805,7 +805,7 @@ impl Graph {
                 };
                 Borrow::source(Origin::Relation(Arc::new(graph.selected(root)), 0))
             },
-            Origin::Element{parent,fields,index}=>Borrow::element(self.rebind(&parent,residual),fields,index),
+            Origin::Element{parent,fields,index}=>Borrow::selected_element(self.rebind(&parent,residual),fields,index),
             Origin::Projection{parent,fields}=>Borrow::projection(self.rebind(&parent,residual),fields),
             Origin::Position(p)=>p.map_borrows(|b|self.rebind(b,residual)).normalize(),
             Origin::Contents{origin,word}=>Borrow::source(Origin::Contents{origin:Arc::new(origin.map_borrows(|b|self.rebind(b,residual))),word}),
@@ -907,7 +907,7 @@ impl<'g> Query<'g> {
         if let Op::Read { word, epoch, frame } = op {
             return self.read(id, from_id, from, *word, epoch, *frame, evaluation);
         }
-        from.map_sources(|source|match op{Op::Identity=>Borrow::source(source),Op::Resources=>Borrow::source(source).resources(),Op::Owners=>Borrow::source(source).owners(),Op::Select(indices)=>Borrow::source(source).select_elements(indices),Op::Element{fields,index}=>Borrow::element(Borrow::source(source),fields.clone(),*index),Op::Projection(fields)=>Borrow::projection(Borrow::source(source),fields.clone()),Op::Position(p)=>p.map_borrows(|_|Borrow::source(source)).normalize(),Op::Read{..}|Op::Initial{..}=>Borrow::default()})
+        from.map_sources(|source|match op{Op::Identity=>Borrow::source(source),Op::Resources=>Borrow::source(source).resources(),Op::Owners=>Borrow::source(source).owners(),Op::Select(indices)=>Borrow::source(source).select_elements(indices),Op::Element{fields,index}=>Borrow::selected_element(Borrow::source(source),fields.clone(),*index),Op::Projection(fields)=>Borrow::projection(Borrow::source(source),fields.clone()),Op::Position(p)=>p.map_borrows(|_|Borrow::source(source)).normalize(),Op::Read{..}|Op::Initial{..}=>Borrow::default()})
     }
     fn local_definition(&self, id: usize) -> Cow<'g, Node> {
         let node = &self.graph.nodes[id];
@@ -1211,7 +1211,7 @@ const _: () = {
     }
     unsafe extern "C" fn build_element(context: Slot, destination: Slot) -> ReadStatus {
         let mut fields = <Vec<usize> as Native>::empty();
-        let mut index = <Option<bounds::Operand> as Native>::empty();
+        let mut index = <Option<bounds::Selector> as Native>::empty();
         #[repr(C)]
         struct Fields {
             fields: Slot,
@@ -1235,7 +1235,7 @@ const _: () = {
                 },
                 Host {
                     fields: contracts::read_value::<Vec<usize>>,
-                    index: contracts::read_value::<Option<bounds::Operand>>,
+                    index: contracts::read_value::<Option<bounds::Selector>>,
                 },
             )
         };
@@ -1293,7 +1293,7 @@ const _: () = {
         ReadStatus::Success
     }
     unsafe extern "C" fn build_select(context: Slot, destination: Slot) -> ReadStatus {
-        let mut indices = <Vec<Option<bounds::Operand>> as Native>::empty();
+        let mut indices = <Vec<Option<bounds::Selector>> as Native>::empty();
         #[repr(C)]
         struct Fields {
             indices: Slot,
@@ -1313,7 +1313,7 @@ const _: () = {
                     indices: contracts::slot(&mut indices),
                 },
                 Host {
-                    indices: contracts::read_value::<Vec<Option<bounds::Operand>>>,
+                    indices: contracts::read_value::<Vec<Option<bounds::Selector>>>,
                 },
             )
         };
@@ -1484,7 +1484,7 @@ const _: () = {
                             },
                             Host {
                                 fields: contracts::write_value::<Vec<usize>>,
-                                index: contracts::write_value::<Option<bounds::Operand>>,
+                                index: contracts::write_value::<Option<bounds::Selector>>,
                             },
                             contracts::append,
                         )
@@ -1566,7 +1566,7 @@ const _: () = {
                                 indices: contracts::address(indices).cast_mut(),
                             },
                             Host {
-                                indices: contracts::write_value::<Vec<Option<bounds::Operand>>>,
+                                indices: contracts::write_value::<Vec<Option<bounds::Selector>>>,
                             },
                             contracts::append,
                         )

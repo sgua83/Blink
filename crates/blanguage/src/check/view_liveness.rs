@@ -164,7 +164,7 @@ async fn stored_element_borrow(builder:&Builder<'_>,binding:&Binding,path:&[Step
         borrow.resources().map_sources(|source|match source{
             view::Source::Data(ValueIdentity::ElementComponent(_)) if depth.is_some()=>view::Borrow::default(),
             view::Source::Data(ValueIdentity::ElementParent(parent,_)) if depth.is_some_and(|depth|parent<depth)=>view::Borrow::default(),
-            view::Source::Element{parent,fields,index}=>view::Borrow::element(external(*parent,depth),fields,index),
+            view::Source::Element{parent,fields,index}=>view::Borrow::selected_element(external(*parent,depth),fields,index),
             view::Source::Projection{parent,fields}=>view::Borrow::projection(external(*parent,depth),fields),
             source=>view::Borrow::source(source),
         })
