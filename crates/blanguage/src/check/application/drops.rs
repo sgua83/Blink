@@ -90,9 +90,17 @@ impl Builder<'_>{
    }
    d::LoopNeed::Place=>{
     let value=Value{ty:unsafe{scalar.take().unwrap_unchecked()},regs:vec![unsafe{index.unwrap_unchecked()}],proof:bounds::Proof::unsigned(0,unsafe{d::index_maximum(data.length.maximum())}),uniform:false,literal:false,constant:None};
-    place=Some(data.element(&value,(value.minimum(),value.maximum())));
+    let cursor=bounds::Clause::values([(Scalar::U32,value.identity(),&value.proof)]);
+    place=Some((data.element(&value,(value.minimum(),value.maximum())),cursor));
    }
-   d::LoopNeed::Drop=>{(unsafe{drop_element.take().unwrap_unchecked()})(self,data,unsafe{place.take().unwrap_unchecked()}).await?;}
+   d::LoopNeed::Drop=>{
+    let(place,cursor)=unsafe{place.take().unwrap_unchecked()};
+    let path=bounds::Clause::both(&self.path,&cursor);
+    let outer_path=std::mem::replace(&mut self.path,path);
+    let result=(unsafe{drop_element.take().unwrap_unchecked()})(self,data,place).await;
+    self.path=outer_path;
+    result?;
+   }
    d::LoopNeed::Advance=>{self.code.push(Inst::generated(InstKind::StoreLocal(unsafe{slot.unwrap_unchecked()},unsafe{index.unwrap_unchecked()}),generated(GenerationReason::DatasetDropAdvance,&trigger)));}
    d::LoopNeed::Loop=>{
     let body=std::mem::replace(&mut self.code,std::mem::take(&mut outer));
