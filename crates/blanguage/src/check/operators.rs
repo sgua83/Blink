@@ -64,7 +64,7 @@ struct Queries {
     views: unsafe extern "C" fn(*const c_void,u32)->u32,
 }
 struct Context<'a> { types: [&'a Ty;2] }
-const SCALARS: [Scalar;11] = [
+pub(super) const SCALARS: [Scalar;11] = [
     Scalar::F32,Scalar::U32,Scalar::I32,Scalar::Bool,Scalar::U64,Scalar::I64,
     Scalar::F64,Scalar::U8,Scalar::I8,Scalar::U16,Scalar::I16,
 ];

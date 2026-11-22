@@ -952,3 +952,87 @@ extern "C" u32 lower_source_binary(SourceBinaryInput input,SourceBinaryEmitter e
     }
     return emitter.action(emitter.context,SourceBinaryAction::Numeric,literal);
 }
+
+
+WordScalar word_raw(WordScalar scalar) on cpu {
+    if (scalar.encoding.width==64) { return WordScalar(4,ScalarEncoding(ScalarKind::Unsigned,64)); }
+    return WordScalar(1,ScalarEncoding(ScalarKind::Unsigned,32));
+}
+extern "C" void lower_variant_component(WordScalar source,WordScalar target,usize index,WordEmitter emitter) on cpu
+    requires nonzero(emitter.action) {
+    emitter.action(emitter.context,WordStep(WordAction::BeginComponent,index,source.code,WordOperation::ShiftRight,0,0u64));
+    if (source.encoding.kind==ScalarKind::Float || target.encoding.kind==ScalarKind::Float) {
+        if (source.code==target.code) { return; }
+        if (source.encoding.kind==ScalarKind::Float) {
+            emitter.action(emitter.context,WordStep(WordAction::Bitcast,0u64,word_raw(source).code,WordOperation::ShiftRight,0,0u64));
+        }
+        WordScalar raw=target.encoding.kind==ScalarKind::Float ? word_raw(target) : target;
+        emitter.action(emitter.context,WordStep(WordAction::Cast,0u64,raw.code,WordOperation::ShiftRight,0,0u64));
+        if (target.encoding.kind==ScalarKind::Float) {
+            emitter.action(emitter.context,WordStep(WordAction::Bitcast,0u64,target.code,WordOperation::ShiftRight,0,0u64));
+        }
+        return;
+    }
+    WordAction action=(source.code==3 && target.code==1)||(source.code==1 && target.code==3) ? WordAction::CastKeepProof : WordAction::Cast;
+    emitter.action(emitter.context,WordStep(action,0u64,target.code,WordOperation::ShiftRight,0,0u64));
+}
+void emit_word_operation(WordOperation operation,WordScalar target,WordEmitter emitter) on cpu
+    requires nonzero(emitter.known) requires nonzero(emitter.action) {
+    WordConstants known=emitter.known(emitter.context);
+    u32 present=known.left_present!=0 && known.right_present!=0 ? 1 : 0;
+    u64 bits=0u64;
+    if (present!=0) {
+        u32 code=18;
+        if (operation==WordOperation::And) { code=14; }
+        else if (operation==WordOperation::ShiftLeft) { code=17; }
+        else if (operation==WordOperation::Or) { code=15; }
+        bits=numeric_binary_fold(code,target.encoding,known.left,known.right).bits;
+    }
+    emitter.action(emitter.context,WordStep(WordAction::Emit,0u64,target.code,operation,present,bits));
+}
+void emit_word_slice(WordOperation operation,WordScalar target,u64 bits,bool needed,WordEmitter emitter) on cpu
+    requires nonzero(emitter.known) requires nonzero(emitter.action) {
+    emitter.action(emitter.context,WordStep(WordAction::Cast,0u64,target.code,WordOperation::ShiftRight,0,0u64));
+    if (!needed) { return; }
+    emitter.action(emitter.context,WordStep(WordAction::RightConstant,0u64,target.code,WordOperation::ShiftRight,0,bits));
+    emit_word_operation(operation,target,emitter);
+}
+extern "C" void lower_variant_word(WordInput input,WordEmitter emitter) on cpu
+    requires nonzero(emitter.component) requires nonzero(emitter.known) requires nonzero(emitter.action) {
+    WordScalar raw=word_raw(input.target);
+    u64 mask=18446744073709551615u64 >> u64(64-raw.encoding.width);
+    usize index=0u64;
+    while (index<input.components) {
+        WordComponent source=emitter.component(emitter.context,index);
+        u32 begin=max(input.offset,source.offset);
+        u32 end=min(input.offset+input.target.encoding.width/8,source.offset+source.scalar.encoding.width/8);
+        if (begin<end) {
+            if (input.offset==source.offset && input.target.encoding.width==source.scalar.encoding.width) {
+                emitter.action(emitter.context,WordStep(WordAction::Project,index,input.target.code,WordOperation::ShiftRight,0,0u64));return;
+            }
+            WordScalar source_raw=word_raw(source.scalar);
+            emitter.action(emitter.context,WordStep(WordAction::Project,index,source_raw.code,WordOperation::ShiftRight,0,0u64));
+            u64 right=u64((begin-source.offset)*8);
+            emit_word_slice(WordOperation::ShiftRight,source_raw,right,right!=0u64,emitter);
+            u64 selected=mask >> u64(raw.encoding.width-(end-begin)*8);
+            emit_word_slice(WordOperation::And,raw,selected,selected!=mask,emitter);
+            u64 left=u64((begin-input.offset)*8);
+            emit_word_slice(WordOperation::ShiftLeft,raw,left,left!=0u64,emitter);
+            emitter.action(emitter.context,WordStep(WordAction::Cast,0u64,raw.code,WordOperation::ShiftRight,0,0u64));
+            if (emitter.action(emitter.context,WordStep(WordAction::TakeJoined,0u64,raw.code,WordOperation::ShiftRight,0,0u64))!=0) {
+                emit_word_operation(WordOperation::Or,raw,emitter);
+            }
+            emitter.action(emitter.context,WordStep(WordAction::Accumulate,0u64,raw.code,WordOperation::ShiftRight,0,0u64));
+        }
+        index+=1u64;
+    }
+    if (emitter.action(emitter.context,WordStep(WordAction::TakeAccumulated,0u64,raw.code,WordOperation::ShiftRight,0,0u64))==0) {
+        emitter.action(emitter.context,WordStep(WordAction::Zero,0u64,raw.code,WordOperation::ShiftRight,0,0u64));
+    }
+    emitter.action(emitter.context,WordStep(WordAction::FinalComponent,0u64,input.target.code,WordOperation::ShiftRight,0,0u64));
+    if (input.target.encoding.kind==ScalarKind::Unsigned || input.target.encoding.kind==ScalarKind::Signed) {
+        if (emitter.action(emitter.context,WordStep(WordAction::NonzeroBytes,0u64,input.target.code,WordOperation::ShiftRight,0,0u64))!=0) {
+            emitter.action(emitter.context,WordStep(WordAction::MarkNonzero,0u64,input.target.code,WordOperation::ShiftRight,0,0u64));
+        }
+    }
+}

@@ -276,3 +276,26 @@ struct SourceBinaryEmitter {
 };
 extern "C" u32 lower_source_binary(SourceBinaryInput input,SourceBinaryEmitter emitter) on cpu
     requires nonzero(emitter.action) requires nonzero(emitter.reenter);
+
+
+struct WordScalar { u32 code; ScalarEncoding encoding; };
+struct WordComponent { WordScalar scalar; u32 offset; };
+struct WordConstants { u64 left; u64 right; u32 left_present; u32 right_present; };
+struct WordInput { usize components; u32 offset; WordScalar target; };
+enum WordOperation:u32 { ShiftRight=0; And=1; ShiftLeft=2; Or=3; };
+enum WordAction:u32 {
+    BeginComponent=0; Bitcast=1; Cast=2; CastKeepProof=3; Project=4; RightConstant=5;
+    TakeJoined=6; Emit=7; Accumulate=8; TakeAccumulated=9; Zero=10; FinalComponent=11;
+    NonzeroBytes=12; MarkNonzero=13;
+};
+struct WordStep { WordAction action; usize index; u32 scalar; WordOperation operation; u32 present; u64 bits; };
+struct WordEmitter {
+    address context;
+    cfn<WordComponent,address,usize> ensures memory(read) component;
+    cfn<WordConstants,address> ensures memory(read) known;
+    cfn<u32,address,WordStep> action;
+};
+extern "C" void lower_variant_component(WordScalar source,WordScalar target,usize index,WordEmitter emitter) on cpu
+    requires nonzero(emitter.action);
+extern "C" void lower_variant_word(WordInput input,WordEmitter emitter) on cpu
+    requires nonzero(emitter.component) requires nonzero(emitter.known) requires nonzero(emitter.action);

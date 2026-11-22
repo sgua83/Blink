@@ -66,98 +66,17 @@ impl Builder<'_> {
         };
         Ok(Some(self.variant_value(ty,index,value)))
     }
-    fn result_component(&mut self, value: &Value, index: usize, scalar: Scalar) -> Value {
-        let source = value.ty.components[index].0;
-        let mut word = Value {
-            ty: Ty::scalar(source),
-            regs: vec![value.regs[index]],
-            proof: value.projected_proof(&[index]),
-            uniform: value.uniform,
-            literal: false,
-            constant: value.constant.as_ref().map(|bits| vec![bits[index]]),
-        };
-        if source.is_float() || scalar.is_float() {
-            if source == scalar { return word; }
-            if source.is_float() {
-                let raw = if source.size() == 8 { Scalar::U64 } else { Scalar::U32 };
-                let reg = self.reg(raw);
-                self.emit(InstKind::Unary {
-                    dst: reg,
-                    op: UnaryOp::Bitcast,
-                    a: word.regs[0],
-                });
-                word.ty = Ty::scalar(raw);
-                word.regs = vec![reg];
-                word.proof = bounds::Proof::default();
-            }
-            let raw = if scalar.is_float() {
-                if scalar.size() == 8 { Scalar::U64 } else { Scalar::U32 }
-            } else { scalar };
-            word = self.cast(word, raw);
-            if scalar.is_float() {
-                let reg = self.reg(scalar);
-                self.emit(InstKind::Unary { dst: reg, op: UnaryOp::Bitcast, a: word.regs[0] });
-                word.ty = Ty::scalar(scalar);
-                word.regs = vec![reg];
-                word.proof = bounds::Proof::default();
-            }
-            word
-        } else if matches!(
-            (source, scalar),
-            (Scalar::Bool, Scalar::U32) | (Scalar::U32, Scalar::Bool)
-        ) {
-            // Result 的普通字存储只改变逻辑类型，不撤回活动 bool 载荷的事实。
-            let proof = bounds::Proof::capture(&word);
-            let mut word = self.cast(word, scalar);
-            word.proof = proof;
-            word
-        } else {
-            self.cast(word, scalar)
-        }
+    fn result_component(&mut self,value:&Value,index:usize,scalar:Scalar)->Value {
+        let source=value.ty.components[index].0;
+        let mut values=WordValues {builder:self,input:value,offset:0,current:None,right:None,joined:None};
+        unsafe {lower_variant_component(WordScalar::of(source),WordScalar::of(scalar),index,values.emitter())};
+        values.current.unwrap()
     }
-    fn result_word(&mut self, value: &Value, offset: u32, scalar: Scalar) -> Value {
-        let raw = if scalar.size() == 8 { Scalar::U64 } else { Scalar::U32 };
-        let mut joined: Option<Value> = None;
-        for (index, (source, at)) in value.ty.components.iter().enumerate() {
-            let begin = offset.max(*at);
-            let end = (offset + scalar.size()).min(at + source.size());
-            if begin >= end { continue; }
-            if offset == *at && scalar.size() == source.size() {
-                return self.result_component(value, index, scalar);
-            }
-            let source_raw = if source.size() == 8 { Scalar::U64 } else { Scalar::U32 };
-            let mut word = self.result_component(value, index, source_raw);
-            let mask = raw.bit_mask() >> (raw.bit_width() - (end - begin) * 8);
-            for (name, op, target, bits) in [
-                (">>", BinaryOp::ShiftRightLogical, source_raw, Some(Bits::from((begin - at) * 8))),
-                ("&", BinaryOp::And, raw, Some(mask)),
-                ("<<", BinaryOp::ShiftLeft, raw, Some(Bits::from((begin - offset) * 8))),
-                ("|", BinaryOp::Or, raw, None),
-            ] {
-                word = self.cast(word, target);
-                let rhs = if let Some(bits) = bits {
-                    if (op == BinaryOp::And && bits == target.bit_mask()) || (op != BinaryOp::And && bits == 0) { continue; }
-                    self.constant(target, bits)
-                } else {
-                    let Some(previous) = joined.take() else { continue; };
-                    previous
-                };
-                let constant = word.constant.as_ref().zip(rhs.constant.as_ref())
-                    .and_then(|(a,b)| constant::binary(op, target, a[0], b[0]).map(|bits| vec![bits]));
-                let proof = bounds::arithmetic(self, name, &word, &rhs);
-                let dst = self.reg(target);
-                self.emit(InstKind::Binary { dst, op, a: word.regs[0], b: rhs.regs[0] });
-                word = Value { ty: Ty::scalar(target), regs: vec![dst], proof, uniform: word.uniform && rhs.uniform,
-                    literal: false, constant };
-            }
-            joined = Some(word);
-        }
-        let word = joined.unwrap_or_else(|| self.constant(raw, 0));
-        let mut word = self.result_component(&word, 0, scalar);
-        if scalar.is_integer() && value.nonzero_bytes(offset, scalar.size(), &self.residency_path()) {
-            word.proof.mark_nonzero(0);
-        }
-        word
+    fn result_word(&mut self,value:&Value,offset:u32,scalar:Scalar)->Value {
+        let input=WordInput {components:value.ty.components.len(),offset,target:WordScalar::of(scalar)};
+        let mut values=WordValues {builder:self,input:value,offset,current:None,right:None,joined:None};
+        unsafe {lower_variant_word(input,values.emitter())};
+        values.current.unwrap()
     }
     pub(super) fn result_value(&mut self, ty: Ty, success: bool, payload: Option<Value>) -> Value {
         self.variant_value(ty,usize::from(!success),payload)
@@ -278,4 +197,86 @@ impl Builder<'_> {
             unsafe { self.world.call(self.block(&arm.body())).await }?; self.env.remove(name); Ok(())
         } else { unsafe { self.world.call(self.block(&arm.body())).await } }
     }
+}
+
+
+#[repr(C)]
+struct WordScalar {code:u32,encoding:crate::builtin_types::ScalarEncoding}
+impl WordScalar {fn of(scalar:Scalar)->Self {Self {code:scalar as u32,encoding:scalar.into()}}}
+#[repr(C)]
+struct WordComponent {scalar:WordScalar,offset:u32}
+#[repr(C)]
+struct WordConstants {left:Bits,right:Bits,left_present:u32,right_present:u32}
+#[repr(C)]
+struct WordInput {components:usize,offset:u32,target:WordScalar}
+#[repr(u32)]
+#[derive(Clone,Copy)]
+enum WordOperation {ShiftRight,And,ShiftLeft,Or}
+#[repr(u32)]
+enum WordAction {BeginComponent,Bitcast,Cast,CastKeepProof,Project,RightConstant,TakeJoined,Emit,Accumulate,TakeAccumulated,Zero,FinalComponent,NonzeroBytes,MarkNonzero}
+#[repr(C)]
+struct WordStep {action:WordAction,index:usize,scalar:u32,operation:WordOperation,present:u32,bits:Bits}
+#[repr(C)]
+struct WordEmitter<'a,'w> {
+    context:*mut WordValues<'a,'w>,
+    component:unsafe extern "C" fn(*const WordValues<'a,'w>,usize)->WordComponent,
+    known:unsafe extern "C" fn(*const WordValues<'a,'w>)->WordConstants,
+    action:unsafe extern "C" fn(*mut WordValues<'a,'w>,WordStep)->u32,
+}
+unsafe extern "C" {
+    #[link_name="bootstrap.operator_types::lower_variant_component"]
+    fn lower_variant_component(source:WordScalar,target:WordScalar,index:usize,emitter:WordEmitter<'_,'_>);
+    #[link_name="bootstrap.operator_types::lower_variant_word"]
+    fn lower_variant_word(input:WordInput,emitter:WordEmitter<'_,'_>);
+}
+struct WordValues<'a,'w> {builder:&'a mut Builder<'w>,input:&'a Value,offset:u32,current:Option<Value>,right:Option<Value>,joined:Option<Value>}
+impl<'a,'w> WordValues<'a,'w> {
+    fn emitter(&mut self)->WordEmitter<'a,'w> {WordEmitter {context:self,component:word_component,known:word_known,action:word_action}}
+}
+unsafe extern "C" fn word_component(context:*const WordValues<'_,'_>,index:usize)->WordComponent {
+    let input=unsafe {&*context}.input;let(scalar,offset)=input.ty.components[index];WordComponent {scalar:WordScalar::of(scalar),offset}
+}
+unsafe extern "C" fn word_known(context:*const WordValues<'_,'_>)->WordConstants {
+    let values=unsafe {&*context};
+    let bits=|value:&Value|value.constant.as_ref().map_or((0,0),|bits|(bits[0],1));
+    let(left,left_present)=bits(values.current.as_ref().unwrap());let(right,right_present)=bits(values.right.as_ref().unwrap());
+    WordConstants {left,right,left_present,right_present}
+}
+unsafe extern "C" fn word_action(context:*mut WordValues<'_,'_>,step:WordStep)->u32 {
+    let values=unsafe {&mut *context};let scalar=operators::SCALARS[step.scalar as usize];
+    match step.action {
+        WordAction::BeginComponent=>{
+            let input=values.input;let index=step.index;
+            values.current=Some(Value {ty:Ty::scalar(scalar),regs:vec![input.regs[index]],proof:input.projected_proof(&[index]),
+                uniform:input.uniform,literal:false,constant:input.constant.as_ref().map(|bits|vec![bits[index]])});
+        },
+        WordAction::Bitcast=>{
+            let value=values.current.as_mut().unwrap();let reg=values.builder.reg(scalar);
+            values.builder.emit(InstKind::Unary {dst:reg,op:UnaryOp::Bitcast,a:value.regs[0]});
+            value.ty=Ty::scalar(scalar);value.regs=vec![reg];value.proof=bounds::Proof::default();
+        },
+        WordAction::Cast=>values.current=Some(values.builder.cast(values.current.take().unwrap(),scalar)),
+        WordAction::CastKeepProof=>{
+            let value=values.current.take().unwrap();let proof=bounds::Proof::capture(&value);
+            let mut value=values.builder.cast(value,scalar);value.proof=proof;values.current=Some(value);
+        },
+        WordAction::Project=>values.current=Some(values.builder.result_component(values.input,step.index,scalar)),
+        WordAction::RightConstant=>values.right=Some(values.builder.constant(scalar,step.bits)),
+        WordAction::TakeJoined=>{values.right=values.joined.take();return u32::from(values.right.is_some());},
+        WordAction::Emit=>{
+            let word=values.current.take().unwrap();let rhs=values.right.take().unwrap();
+            let(name,op)=match step.operation {WordOperation::ShiftRight=>(">>",BinaryOp::ShiftRightLogical),WordOperation::And=>("&",BinaryOp::And),
+                WordOperation::ShiftLeft=>("<<",BinaryOp::ShiftLeft),WordOperation::Or=>("|",BinaryOp::Or)};
+            let proof=bounds::arithmetic(values.builder,name,&word,&rhs);let dst=values.builder.reg(scalar);
+            values.builder.emit(InstKind::Binary {dst,op,a:word.regs[0],b:rhs.regs[0]});
+            values.current=Some(Value {ty:Ty::scalar(scalar),regs:vec![dst],proof,uniform:word.uniform&&rhs.uniform,literal:false,
+                constant:(step.present!=0).then(||vec![step.bits])});
+        },
+        WordAction::Accumulate=>values.joined=values.current.take(),
+        WordAction::TakeAccumulated=>{values.current=values.joined.take();return u32::from(values.current.is_some());},
+        WordAction::Zero=>values.current=Some(values.builder.constant(scalar,0)),
+        WordAction::FinalComponent=>values.current=Some(values.builder.result_component(values.current.as_ref().unwrap(),0,scalar)),
+        WordAction::NonzeroBytes=>return u32::from(values.input.nonzero_bytes(values.offset,scalar.size(),&values.builder.residency_path())),
+        WordAction::MarkNonzero=>values.current.as_mut().unwrap().proof.mark_nonzero(0),
+    }1
 }
