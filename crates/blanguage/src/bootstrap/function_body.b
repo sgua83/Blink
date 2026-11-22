@@ -268,3 +268,44 @@ extern "C" SelectionStep selection_step(SelectionCursor cursor,SelectionFacts fa
  }
  return SelectionStep(c,SelectionNeed::Finish,0);
 }
+
+bool temporary_owner_name(OwnerName name) on cpu {
+ if(name.length<10u64){return false;}u64 index=0u64;
+ while(index<10u64){u64 part=index<8u64 ? 7954884667833999616u64 : 14964u64;u64 shift=(index<8u64 ? index : index-8u64)*8u64;
+  if(unsafe_position<u8>(unsafe_address(address_bits(name.data)+index))!=u8(part>>shift)){return false;}index+=1u64;
+ }return true;
+}
+extern "C" OwnerStep owner_step(OwnerCursor cursor,OwnerFacts facts) on cpu {
+ OwnerCursor c=cursor;
+ if(c.phase==0){c.phase=1;return OwnerStep(c,OwnerNeed::NextBinding);}
+ if(c.phase==1){if(facts.present==0){c.phase=15;return OwnerStep(c,OwnerNeed::Complete);}if(!temporary_owner_name(facts.name)){return OwnerStep(c,OwnerNeed::NextBinding);}c.phase=2;return OwnerStep(c,OwnerNeed::Original);}
+ if(c.phase==2){if(facts.answer!=0){c.phase=1;return OwnerStep(c,OwnerNeed::NextBinding);}c.phase=3;return OwnerStep(c,OwnerNeed::Kind);}
+ if(c.phase==3){if(facts.kind!=1&&facts.kind!=2){c.phase=1;return OwnerStep(c,OwnerNeed::NextBinding);}c.phase=4;return OwnerStep(c,OwnerNeed::MayOwn);}
+ if(c.phase==4){if(facts.answer==0){c.phase=1;return OwnerStep(c,OwnerNeed::NextBinding);}if(facts.kind==1){c.phase=5;return OwnerStep(c,OwnerNeed::Reference);}c.phase=6;return OwnerStep(c,OwnerNeed::Borrow);}
+ if(c.phase==5){if(facts.answer!=0){c.phase=1;return OwnerStep(c,OwnerNeed::NextBinding);}c.phase=6;return OwnerStep(c,OwnerNeed::Borrow);}
+ if(c.phase==6){c.phase=7;return OwnerStep(c,OwnerNeed::NextResource);}
+ if(c.phase==7){if(facts.present!=0){c.phase=6;return OwnerStep(c,OwnerNeed::UnionResource);}c.phase=8;return OwnerStep(c,OwnerNeed::Restrict);}
+ if(c.phase==8){c.phase=9;return OwnerStep(c,OwnerNeed::BorrowPending);}
+ if(c.phase==9){if(facts.answer!=0){c.phase=14;return OwnerStep(c,OwnerNeed::Keep);}c.phase=10;return OwnerStep(c,OwnerNeed::ReferencesPending);}
+ if(c.phase==10){if(facts.answer!=0){c.phase=14;return OwnerStep(c,OwnerNeed::Keep);}c.phase=11;return OwnerStep(c,OwnerNeed::StartSources);}
+ if(c.phase==11){c.phase=12;return OwnerStep(c,OwnerNeed::NextSource);}
+ if(c.phase==12){if(facts.present==0){c.phase=1;return OwnerStep(c,OwnerNeed::NextBinding);}c.phase=13;return OwnerStep(c,OwnerNeed::Overlap);}
+ if(c.phase==13){if(facts.answer!=0){c.phase=14;return OwnerStep(c,OwnerNeed::Keep);}c.phase=12;return OwnerStep(c,OwnerNeed::NextSource);}
+ if(c.phase==14){c.phase=1;return OwnerStep(c,OwnerNeed::NextBinding);}
+ return OwnerStep(c,OwnerNeed::Complete);
+}
+u64 owner_ordinal(OwnerName name) on cpu {u64 index=10u64;u64 value=0u64;while(index<name.length){value=value*10u64+u64(unsafe_position<u8>(unsafe_address(address_bits(name.data)+index)))-48u64;index+=1u64;}return value;}
+void sift_owner_names(u64 root,u64 end,OwnerNamesHost host) on cpu
+ requires nonzero(host.name) requires nonzero(host.exchange) {
+ u64 at=root;while(at<end/2u64){u64 child=at*2u64+1u64;
+  if(child+1u64<end&&owner_ordinal(host.name(host.context,child))<owner_ordinal(host.name(host.context,child+1u64))){child+=1u64;}
+  if(owner_ordinal(host.name(host.context,at))>=owner_ordinal(host.name(host.context,child))){break;}
+  host.exchange(host.context,at,child);at=child;
+ }
+}
+extern "C" void move_owners(u64 count,OwnerNamesHost host) on cpu
+ requires nonzero(host.name) requires nonzero(host.exchange) requires nonzero(host.begin) requires nonzero(host.take) {
+ u64 root=count/2u64;while(root>0u64){root-=1u64;sift_owner_names(root,count,host);}
+ u64 end=count;while(end>1u64){end-=1u64;host.exchange(host.context,0u64,end);sift_owner_names(0u64,end,host);}
+ host.begin(host.context);u64 index=0u64;while(index<count){host.take(host.context);index+=1u64;}
+}

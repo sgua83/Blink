@@ -69,3 +69,13 @@ struct SelectionFacts {u32 continuing;u32 present;u32 other;u32 outer;u32 condit
 enum SelectionNeed:u32 {Prepare=0;Modified=1;EnterYes=2;Yes=3;Missing=4;EnterNo=5;No=6;Same=7;Finish=8;};
 struct SelectionStep {SelectionCursor cursor;SelectionNeed need;u32 uniform;};
 extern "C" SelectionStep selection_step(SelectionCursor cursor,SelectionFacts facts) on cpu;
+
+struct OwnerName {address data;u64 length;};
+struct OwnerCursor {u32 phase;};
+struct OwnerFacts {OwnerName name;u32 present;u32 kind;u32 answer;};
+enum OwnerNeed:u32 {NextBinding=0;Original=1;Kind=2;MayOwn=3;Reference=4;Borrow=5;NextResource=6;UnionResource=7;Restrict=8;BorrowPending=9;ReferencesPending=10;StartSources=11;NextSource=12;Overlap=13;Keep=14;Complete=15;};
+struct OwnerStep {OwnerCursor cursor;OwnerNeed need;};
+struct OwnerNamesHost {address context;cfn<OwnerName,address,u64> name;cfn<void,address,u64,u64> exchange;cfn<void,address> begin;cfn<void,address> take;};
+extern "C" OwnerStep owner_step(OwnerCursor cursor,OwnerFacts facts) on cpu;
+extern "C" void move_owners(u64 count,OwnerNamesHost host) on cpu
+ requires nonzero(host.name) requires nonzero(host.exchange) requires nonzero(host.begin) requires nonzero(host.take);

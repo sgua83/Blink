@@ -125,17 +125,40 @@ impl Builder<'_> {
             let value=lower(builder).await?;
             let retained=value.as_ref().and_then(returns::Returned::view_value).map(|value|value.proof.typed_view_borrow(&value.ty)).unwrap_or_default();
             let borrow=retained.owners().restricted(&builder.path);
-            let mut names=Vec::new();
-            for(name,binding)in builder.env.iter().filter(|(name,_)|name.starts_with("\0argument:")&&!original.contains(*name))
-                .filter(|(_,binding)|matches!(binding,Binding::OwnedValue(value)if value.ownership.may_own()&&!matches!(value.place(),Some(Place::Reference{..})))||matches!(binding,Binding::ApplicationData(data)if data.ownership.may_own()))
-                {
-                    let mut references=unsafe { builder.world.call(binding.view_borrow(builder)).await }?.owners();
-                    for data in binding.application_resources(){references.union(&builder.owned_resource_borrow(data).owners());}
-                    references=references.restricted(&builder.path);
-                    if borrow.pending()||references.pending()||borrow.sources.entries().any(|(source,when)|references.overlaps_source(source,&when)){names.push(name.clone());}
+            let names={
+                let mut bindings=builder.env.iter();let mut current=None;let mut resources=None;let mut resource=None;
+                let mut references:Option<view::Borrow>=None;let mut sources=None;let mut source=None;let mut names=Vec::new();
+                let mut cursor=OwnerCursor {phase:0};let mut facts=OwnerFacts {name:OwnerName {data:std::ptr::null(),length:0},present:0,kind:0,answer:0};
+                loop {
+                    let step=unsafe {owner_step(cursor,facts)};cursor=step.cursor;
+                    match step.need {
+                        OwnerNeed::NextBinding=>{
+                            references=None;resources=None;resource=None;sources=None;source=None;current=bindings.next();
+                            facts.present=u32::from(current.is_some());facts.name=current.map_or(OwnerName {data:std::ptr::null(),length:0},|(name,_)|OwnerName {data:name.as_ptr(),length:name.len()});
+                        },
+                        OwnerNeed::Original=>facts.answer=u32::from(original.contains(current.unwrap().0)),
+                        OwnerNeed::Kind=>facts.kind=match current.unwrap().1 {Binding::OwnedValue(_)=>1,Binding::ApplicationData(_)=>2,_=>0},
+                        OwnerNeed::MayOwn=>facts.answer=u32::from(matches!(current.unwrap().1,Binding::OwnedValue(value)if value.ownership.may_own())||matches!(current.unwrap().1,Binding::ApplicationData(data)if data.ownership.may_own())),
+                        OwnerNeed::Reference=>facts.answer=u32::from(matches!(current.unwrap().1,Binding::OwnedValue(value)if matches!(value.place(),Some(Place::Reference{..})))),
+                        OwnerNeed::Borrow=>{
+                            let binding=current.unwrap().1;references=Some(unsafe {builder.world.call(binding.view_borrow(builder)).await}?.owners());resources=Some(binding.application_resources().into_iter());
+                        },
+                        OwnerNeed::NextResource=>{resource=resources.as_mut().unwrap().next();facts.present=u32::from(resource.is_some());},
+                        OwnerNeed::UnionResource=>references.as_mut().unwrap().union(&builder.owned_resource_borrow(resource.unwrap()).owners()),
+                        OwnerNeed::Restrict=>references=Some(references.take().unwrap().restricted(&builder.path)),
+                        OwnerNeed::BorrowPending=>facts.answer=u32::from(borrow.pending()),
+                        OwnerNeed::ReferencesPending=>facts.answer=u32::from(references.as_ref().unwrap().pending()),
+                        OwnerNeed::StartSources=>sources=Some(borrow.sources.entries()),
+                        OwnerNeed::NextSource=>{source=sources.as_mut().unwrap().next();facts.present=u32::from(source.is_some());},
+                        OwnerNeed::Overlap=>{let(source,when)=source.take().unwrap();facts.answer=u32::from(references.as_ref().unwrap().overlaps_source(source,&when));},
+                        OwnerNeed::Keep=>names.push(current.unwrap().0.clone()),
+                        OwnerNeed::Complete=>break names,
+                    }
                 }
-            names.sort_by_key(|name|name.strip_prefix("\0argument:").unwrap().parse::<usize>().unwrap());
-            let owners=names.into_iter().map(|name|builder.env.remove(&name).unwrap()).collect();
+            };
+            let count=names.len();let mut moves=OwnerMoves {builder,names:Some(names),ordered:None,owners:Vec::new()};
+            unsafe {move_owners(count,OwnerNamesHost {context:&mut moves,name:owner_name,exchange:exchange_owner_names,begin:begin_owner_moves,take:take_owner_move})};
+            let owners=moves.owners;
             Ok(((value,owners),retained))
         })).await }
     }
@@ -389,4 +412,34 @@ struct SelectionFirst {
  prefix:usize,outer_regions:SelectionRegions,original:BTreeSet<String>,yes_flow:Flow,yes_env:BTreeMap<String,Binding>,yes_path:bounds::Clause,
  yes_init:BTreeSet<Position>,yes_effects:SelectionEffects,yes:Vec<Inst>,yes_regions:SelectionRegions,first_exit:usize,yes_exit:usize,
  a_result:Option<returns::Returned>,yes_owners:Vec<Binding>,
+}
+
+#[repr(C)]
+#[derive(Clone,Copy)]
+struct OwnerName {data:*const u8,length:usize}
+#[repr(C)]
+#[derive(Clone,Copy)]
+struct OwnerCursor {phase:u32}
+#[repr(C)]
+#[derive(Clone,Copy)]
+struct OwnerFacts {name:OwnerName,present:u32,kind:u32,answer:u32}
+#[repr(u32)]
+enum OwnerNeed {NextBinding,Original,Kind,MayOwn,Reference,Borrow,NextResource,UnionResource,Restrict,BorrowPending,ReferencesPending,StartSources,NextSource,Overlap,Keep,Complete}
+#[repr(C)]
+struct OwnerStep {cursor:OwnerCursor,need:OwnerNeed}
+#[repr(C)]
+struct OwnerNamesHost<'a,'w> {context:*mut OwnerMoves<'a,'w>,name:unsafe extern "C" fn(*const OwnerMoves<'a,'w>,usize)->OwnerName,
+ exchange:unsafe extern "C" fn(*mut OwnerMoves<'a,'w>,usize,usize),begin:unsafe extern "C" fn(*mut OwnerMoves<'a,'w>),take:unsafe extern "C" fn(*mut OwnerMoves<'a,'w>)}
+unsafe extern "C" {
+ #[link_name="bootstrap.function_body::owner_step"] fn owner_step(cursor:OwnerCursor,facts:OwnerFacts)->OwnerStep;
+ #[link_name="bootstrap.function_body::move_owners"] fn move_owners(count:usize,host:OwnerNamesHost<'_,'_>);
+}
+struct OwnerMoves<'a,'w> {builder:&'a mut Builder<'w>,names:Option<Vec<String>>,ordered:Option<std::vec::IntoIter<String>>,owners:Vec<Binding>}
+unsafe extern "C" fn owner_name(context:*const OwnerMoves<'_,'_>,index:usize)->OwnerName {
+ let name=&unsafe {&*context}.names.as_ref().unwrap()[index];OwnerName {data:name.as_ptr(),length:name.len()}
+}
+unsafe extern "C" fn exchange_owner_names(context:*mut OwnerMoves<'_,'_>,a:usize,b:usize) {unsafe {&mut *context}.names.as_mut().unwrap().swap(a,b);}
+unsafe extern "C" fn begin_owner_moves(context:*mut OwnerMoves<'_,'_>) {let values=unsafe {&mut *context};values.ordered=Some(values.names.take().unwrap().into_iter());}
+unsafe extern "C" fn take_owner_move(context:*mut OwnerMoves<'_,'_>) {
+ let values=unsafe {&mut *context};let name=values.ordered.as_mut().unwrap().next().unwrap();values.owners.push(values.builder.env.remove(&name).unwrap());
 }
