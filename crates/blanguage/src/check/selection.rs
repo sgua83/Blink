@@ -288,3 +288,68 @@ impl Builder<'_> {
         })).await }
     }
 }
+
+
+#[repr(C)]
+#[derive(Clone,Copy)]
+struct BranchCursor {phase:u32}
+#[repr(C)]
+#[derive(Clone,Copy)]
+struct BranchFacts {truth:u32,outer_control:u32,condition_uniform:u32,yes_live:u32,no_live:u32}
+#[repr(u32)]
+enum BranchNeed {KnownYes,KnownNo,DynamicYes,DynamicNo,OnlyYes,OnlyNo,Both,Neither,Complete}
+#[repr(C)]
+struct BranchStep {cursor:BranchCursor,need:BranchNeed,uniform:u32}
+unsafe extern "C" {
+    #[link_name="bootstrap.function_body::branch_step"]
+    fn branch_step(cursor:BranchCursor,facts:BranchFacts)->BranchStep;
+}
+struct BranchEntry {environment:BTreeMap<String,Binding>,path:bounds::Clause,initialized:BTreeSet<Position>}
+struct BranchExit {code:Vec<Inst>,initialized:BTreeSet<Position>,environment:BTreeMap<String,Binding>,path:bounds::Clause,flow:Flow}
+impl Builder<'_> {
+    pub(super) async fn conditional_blocks(&mut self,c:Value,
+        yes_body:impl std::ops::AsyncFnOnce(&mut Self)->Result<()>,no_body:impl std::ops::AsyncFnOnce(&mut Self)->Result<()>,span:Span)->Result<()> {
+        let partition=Arc::new(bounds::Condition::of(&c));
+        let mut facts=BranchFacts {truth:match partition.boolean_constant(){None=>0,Some(false)=>1,Some(true)=>2},
+            outer_control:u32::from(self.control_uniform),condition_uniform:u32::from(c.uniform),yes_live:0,no_live:0};
+        let mut cursor=BranchCursor {phase:0};let mut yes_body=Some(yes_body);let mut no_body=Some(no_body);
+        let mut entry=None;let mut original=None;let mut yes_exit=None;let mut no_exit=None;let mut prefix=0;
+        loop {
+            let step=unsafe {branch_step(cursor,facts)};cursor=step.cursor;
+            match step.need {
+                BranchNeed::KnownYes=>{self.refine_bounds(&partition,true);yes_body.take().unwrap()(self).await?;},
+                BranchNeed::KnownNo=>{self.refine_bounds(&partition,false);no_body.take().unwrap()(self).await?;},
+                BranchNeed::DynamicYes=>{
+                    self.remember_loop_control(&c);
+                    let environment=self.env.clone();let path=self.path.clone();prefix=self.code.len();let initialized=self.application_initialization_state();
+                    entry=Some(BranchEntry {environment,path,initialized});
+                    self.control_uniform=step.uniform!=0;self.refine_bounds(&partition,true);yes_body.take().unwrap()(self).await?;
+                },
+                BranchNeed::DynamicNo=>{
+                    let code=self.code.split_off(prefix);let initialized=self.take_application_initialization_state();let environment=self.env.clone();let path=self.path.clone();let flow=self.flow;
+                    facts.yes_live=u32::from(flow.continues());yes_exit=Some(BranchExit {code,initialized,environment,path,flow});
+                    let outer=entry.take().unwrap();self.flow=Flow::NEXT;self.initialized=outer.initialized;self.env=outer.environment.clone();self.path=outer.path;
+                    original=Some(outer.environment);self.refine_bounds(&partition,false);no_body.take().unwrap()(self).await?;
+                    let code=self.code.split_off(prefix);let initialized=self.take_application_initialization_state();let flow=self.flow;facts.no_live=u32::from(flow.continues());
+                    let environment=self.env.clone();let path=self.path.clone();no_exit=Some(BranchExit {code,initialized,environment,path,flow});
+                },
+                need @ (BranchNeed::OnlyYes|BranchNeed::OnlyNo|BranchNeed::Both|BranchNeed::Neither)=>{
+                    let yes=yes_exit.take().unwrap();let mut no=no_exit.take().unwrap();
+                    match need {
+                        BranchNeed::OnlyYes=>{self.path=yes.path;self.env=yes.environment;self.initialized=yes.initialized;},
+                        BranchNeed::OnlyNo=>{self.path=no.path;self.env=no.environment;self.initialized=no.initialized;},
+                        BranchNeed::Both=>{
+                            self.path=bounds::Clause::either(&yes.path,&no.path);self.view_uses.after(span);self.env=yes.environment;
+                            let when=owned_presence::Presence::input(&c);self.join_initialization(&when,yes.initialized,no.initialized);
+                            self.join_environment_selected(&mut no.environment,&when,&when.condition());
+                        },
+                        _=>{self.path=bounds::Clause::impossible();self.env=original.take().unwrap();self.join_initialization(&owned_presence::Presence::input(&c),yes.initialized,no.initialized);},
+                    }
+                    self.flow=yes.flow.union(no.flow);self.control_uniform=step.uniform!=0;
+                    self.emit(InstKind::If {condition:c.regs[0],yes:yes.code,no:no.code});
+                },
+                BranchNeed::Complete=>return Ok(()),
+            }
+        }
+    }
+}

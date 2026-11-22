@@ -29,3 +29,12 @@ extern "C" u32 allocate_written(address context,WrittenHost host) on cpu
 extern "C" void models(address context,ModelsHost host) on cpu requires nonzero(host.next) requires nonzero(host.visit);
 extern "C" void snapshot(u64 count,address context,cfn<void,address,u64> append) on cpu requires nonzero(append);
 extern "C" u64 parameter(u64 count,address context,cfn<u32,address,u64> equal) on cpu requires nonzero(equal);
+
+
+// A branch body is advanced once by its existing Rust future owner. Only the
+// actual completed flow facts are supplied before the join decision.
+struct BranchCursor { u32 phase; };
+struct BranchFacts { u32 truth; u32 outer_control; u32 condition_uniform; u32 yes_live; u32 no_live; };
+enum BranchNeed:u32 { KnownYes=0; KnownNo=1; DynamicYes=2; DynamicNo=3; OnlyYes=4; OnlyNo=5; Both=6; Neither=7; Complete=8; };
+struct BranchStep { BranchCursor cursor; BranchNeed need; u32 uniform; };
+extern "C" BranchStep branch_step(BranchCursor cursor,BranchFacts facts) on cpu;

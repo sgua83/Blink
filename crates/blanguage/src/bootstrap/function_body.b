@@ -164,3 +164,24 @@ extern "C" void snapshot(u64 count,address context,cfn<void,address,u64> append)
 extern "C" u64 parameter(u64 count,address context,cfn<u32,address,u64> equal) on cpu requires nonzero(equal) {
  u64 index=0u64;while(index<count){if(equal(context,index)!=0){return index;}index+=1u64;}return count;
 }
+
+
+extern "C" BranchStep branch_step(BranchCursor cursor,BranchFacts facts) on cpu {
+    BranchCursor c=cursor;
+    if (c.phase==0) {
+        if (facts.truth!=0) { c.phase=3;return BranchStep(c,facts.truth==2 ? BranchNeed::KnownYes : BranchNeed::KnownNo,0); }
+        c.phase=1;
+        return BranchStep(c,BranchNeed::DynamicYes,facts.outer_control!=0 && facts.condition_uniform!=0 ? 1 : 0);
+    }
+    if (c.phase==1) { c.phase=2;return BranchStep(c,BranchNeed::DynamicNo,0); }
+    if (c.phase==2) {
+        c.phase=3;BranchNeed need;
+        if (facts.yes_live!=0 && facts.no_live==0) { need=BranchNeed::OnlyYes; }
+        else if (facts.yes_live==0 && facts.no_live!=0) { need=BranchNeed::OnlyNo; }
+        else if (facts.yes_live!=0 && facts.no_live!=0) { need=BranchNeed::Both; }
+        else { need=BranchNeed::Neither; }
+        u32 uniform=facts.outer_control!=0 && (facts.condition_uniform!=0 || (facts.yes_live!=0 && facts.no_live!=0)) ? 1 : 0;
+        return BranchStep(c,need,uniform);
+    }
+    return BranchStep(c,BranchNeed::Complete,0);
+}
