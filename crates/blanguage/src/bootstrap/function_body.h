@@ -79,3 +79,9 @@ struct OwnerNamesHost {address context;cfn<OwnerName,address,u64> name;cfn<void,
 extern "C" OwnerStep owner_step(OwnerCursor cursor,OwnerFacts facts) on cpu;
 extern "C" void move_owners(u64 count,OwnerNamesHost host) on cpu
  requires nonzero(host.name) requires nonzero(host.exchange) requires nonzero(host.begin) requires nonzero(host.take);
+
+struct WhileCursor {u32 phase;};
+struct WhileFacts {u32 initial;u32 present;u32 truth;u32 possible;u32 continuing;u32 outer;u32 condition;u32 flow;u32 next;};
+enum WhileNeed:u32 {Enter=0;Writes=1;Condition=2;Empty=3;Inspect=4;Refine=5;Bounds=6;NextBound=7;Bound=8;Retain=9;Impossible=10;SaveBody=11;Natural=12;RestoreBody=13;EnterBody=14;Body=15;CheckBackedge=16;Split=17;Expand=18;Leave=19;Emit=20;};
+struct WhileStep {WhileCursor cursor;WhileNeed need;u32 uniform;u32 flow;};
+extern "C" WhileStep while_step(WhileCursor cursor,WhileFacts facts) on cpu;

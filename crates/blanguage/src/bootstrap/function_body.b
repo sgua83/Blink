@@ -309,3 +309,25 @@ extern "C" void move_owners(u64 count,OwnerNamesHost host) on cpu
  u64 end=count;while(end>1u64){end-=1u64;host.exchange(host.context,0u64,end);sift_owner_names(0u64,end,host);}
  host.begin(host.context);u64 index=0u64;while(index<count){host.take(host.context);index+=1u64;}
 }
+
+extern "C" WhileStep while_step(WhileCursor cursor,WhileFacts facts) on cpu {
+ WhileCursor c=cursor;
+ if(c.phase==0){c.phase=1;return WhileStep(c,WhileNeed::Enter,0,0);}
+ if(c.phase==1){c.phase=2;return WhileStep(c,WhileNeed::Writes,0,0);}
+ if(c.phase==2){c.phase=3;return WhileStep(c,WhileNeed::Condition,0,0);}
+ if(c.phase==3){if(facts.present==0){return WhileStep(c,WhileNeed::Empty,0,0);}c.phase=4;return WhileStep(c,WhileNeed::Inspect,0,0);}
+ if(c.phase==4){if(facts.truth==1){return WhileStep(c,WhileNeed::Impossible,0,0);}c.phase=5;return WhileStep(c,WhileNeed::Refine,0,0);}
+ if(c.phase==5){if(facts.initial==0){c.phase=6;return WhileStep(c,WhileNeed::Bounds,0,0);}c.phase=10;return WhileStep(c,WhileNeed::SaveBody,0,0);}
+ if(c.phase==6){c.phase=7;return WhileStep(c,WhileNeed::NextBound,0,0);}
+ if(c.phase==7){if(facts.present!=0){c.phase=6;return WhileStep(c,WhileNeed::Bound,0,0);}c.phase=8;return WhileStep(c,WhileNeed::Retain,0,0);}
+ if(c.phase==8){if(facts.possible==0){return WhileStep(c,WhileNeed::Impossible,0,0);}c.phase=10;return WhileStep(c,WhileNeed::SaveBody,0,0);}
+ if(c.phase==10){c.phase=11;if(facts.truth!=2){return WhileStep(c,WhileNeed::Natural,0,0);}}
+ if(c.phase==11){c.phase=12;return WhileStep(c,WhileNeed::RestoreBody,0,0);}
+ if(c.phase==12){c.phase=13;return WhileStep(c,WhileNeed::EnterBody,facts.outer!=0&&facts.condition!=0 ? 1 : 0,0);}
+ if(c.phase==13){c.phase=14;return WhileStep(c,WhileNeed::Body,0,0);}
+ if(c.phase==14){c.phase=15;if(facts.continuing!=0){return WhileStep(c,WhileNeed::CheckBackedge,0,0);}}
+ if(c.phase==15){c.phase=16;return WhileStep(c,WhileNeed::Split,0,0);}
+ if(c.phase==16){c.phase=17;if(facts.initial!=0){return WhileStep(c,WhileNeed::Expand,0,0);}}
+ if(c.phase==17){c.phase=18;return WhileStep(c,WhileNeed::Leave,0,0);}
+ return WhileStep(c,WhileNeed::Emit,0,(facts.flow&2)|(facts.next!=0 ? 1 : 0));
+}

@@ -1033,3 +1033,81 @@ pub(super) fn iteration_positions(iteration:&address::Iteration,states:&[BTreeSe
     result
 }
 
+
+#[repr(C)]
+#[derive(Clone,Copy)]
+struct WhileCursor {phase:u32}
+#[repr(C)]
+#[derive(Clone,Copy)]
+struct WhileFacts {initial:u32,present:u32,truth:u32,possible:u32,continuing:u32,outer:u32,condition:u32,flow:u32,next:u32}
+#[repr(u32)]
+enum WhileNeed {Enter,Writes,Condition,Empty,Inspect,Refine,Bounds,NextBound,Bound,Retain,Impossible,SaveBody,Natural,RestoreBody,EnterBody,Body,CheckBackedge,Split,Expand,Leave,Emit}
+#[repr(C)]
+struct WhileStep {cursor:WhileCursor,need:WhileNeed,uniform:u32,flow:u32}
+unsafe extern "C" {
+ #[link_name="bootstrap.function_body::while_step"] fn while_step(cursor:WhileCursor,facts:WhileFacts)->WhileStep;
+}
+impl Builder<'_> {
+ pub(super) async fn while_loop(&mut self,condition:&Expr,body:&Block,initial:bool,span:Span)->Result<()> {
+  let mut cursor=WhileCursor {phase:0};let mut facts=WhileFacts {initial:u32::from(initial),present:0,truth:0,possible:0,continuing:0,outer:0,condition:0,flow:0,next:0};
+  let mut environment=None;let mut c=None;let mut partition=None;let mut condition_prefix=0;let mut condition_env=None;let mut condition_path=None;
+  let mut bounds=None;let mut bound=None;let mut body_env=None;let mut body_path=None;let mut natural=None;let mut control=false;
+  let mut body_flow=Flow::NEXT;let mut code=None;let mut condition_code=None;let mut outer=None;
+  loop {
+   let step=unsafe {while_step(cursor,facts)};cursor=step.cursor;
+   match step.need {
+    WhileNeed::Enter=>{
+     self.flow=Flow::NEXT;let saved=self.env.clone();self.enter_loop(&saved);self.configure_initial_loop(initial,None,None);self.prepare_view_loop();environment=Some(saved);
+    },
+    WhileNeed::Writes=>{let writes=unsafe {self.world.call(self.loop_writes(Some(condition),body,None,initial)).await}?;self.loop_contexts.last_mut().unwrap().writes=writes;},
+    WhileNeed::Condition=>{
+     self.loop_contexts.last_mut().unwrap().outer=std::mem::take(&mut self.code);
+     c=unsafe {self.world.call(self.temporary_scope(condition.span(),async |builder|Ok((unsafe {builder.world.call(builder.expr(condition)).await}?,view::Borrow::default())))).await}?;
+     facts.present=u32::from(c.is_some());
+    },
+    WhileNeed::Empty=>{
+     let outer=std::mem::take(&mut self.loop_contexts.last_mut().unwrap().outer);self.finish_view_condition()?;
+     let code=std::mem::replace(&mut self.code,outer);self.code.extend(code);return Ok(());
+    },
+    WhileNeed::Inspect=>{
+     let value=c.as_ref().unwrap();self.require_bool(value,condition.span())?;
+     self.loop_contexts.last_mut().unwrap().control_source=view_contracts::LoopControl::capture(value,&self.env,None);
+     partition=Some(Arc::new(bounds::Condition::of(value)));condition_prefix=self.code.len();condition_env=Some(self.env.clone());condition_path=Some(self.path.clone());
+     facts.truth=value.constant.as_ref().map_or(0,|bits|if bits[0]==0{1}else{2});facts.condition=u32::from(value.uniform);
+    },
+    WhileNeed::Refine=>self.refine_bounds(partition.as_ref().unwrap(),true),
+    WhileNeed::Bounds=>bounds=Some(std::mem::take(&mut self.loop_contexts.last_mut().unwrap().writes.body_bounds).into_iter()),
+    WhileNeed::NextBound=>{bound=bounds.as_mut().unwrap().next();facts.present=u32::from(bound.is_some());},
+    WhileNeed::Bound=>{
+     let(name,(low,high))=bound.take().unwrap();if let Some(Binding::Owned(owner))=self.env.get_mut(&name){owner.proof.retain_loop_bounds(&bounds::Proof::unsigned(low,high),0,true,true);}
+    },
+    WhileNeed::Retain=>{bounds=None;facts.possible=u32::from(unsafe {self.world.call(self.retain_loop_bounds(Some(condition),body,environment.as_ref().unwrap(),condition_env.as_mut().unwrap())).await}?);},
+    WhileNeed::Impossible=>{
+     self.env=condition_env.take().unwrap();self.path=condition_path.take().unwrap();let outer=std::mem::take(&mut self.loop_contexts.last_mut().unwrap().outer);
+     self.finish_view_condition()?;self.refine_bounds(partition.as_ref().unwrap(),false);let code=std::mem::replace(&mut self.code,outer);self.code.extend(code);return Ok(());
+    },
+    WhileNeed::SaveBody=>{body_env=Some(std::mem::replace(&mut self.env,condition_env.take().unwrap()));body_path=Some(std::mem::replace(&mut self.path,condition_path.take().unwrap()));environment=None;},
+    WhileNeed::Natural=>{self.refine_bounds(partition.as_ref().unwrap(),false);natural=Some(self.loop_state());},
+    WhileNeed::RestoreBody=>{self.env=body_env.take().unwrap();self.path=body_path.take().unwrap();facts.outer=u32::from(self.control_uniform);},
+    WhileNeed::EnterBody=>{control=self.control_uniform;self.control_uniform=step.uniform!=0;self.loop_depth+=1;self.iterators.push(None);},
+    WhileNeed::Body=>{unsafe {self.world.call(self.block(body)).await}?;body_flow=self.flow;facts.continuing=u32::from(body_flow.continues());facts.flow=u32::from(body_flow.0);},
+    WhileNeed::CheckBackedge=>{unsafe {self.world.call(self.check_application_loop(condition.span())).await}?;},
+    WhileNeed::Split=>{self.iterators.pop();self.loop_depth-=1;code=Some(self.code.split_off(condition_prefix));condition_code=Some(std::mem::take(&mut self.code));},
+    WhileNeed::Expand=>{
+     let(expanded,flow)=unsafe {self.world.call(self.expand_initial_loop(code.take().unwrap(),body_flow.continues(),async |builder,_|{
+      let initial=unsafe {builder.world.call(builder.next_initial_loop(body)).await}?;
+      unsafe {builder.world.call(builder.while_loop(condition,body,initial,span)).await}
+     })).await}?;code=Some(expanded);body_flow=body_flow.union(flow);facts.flow=u32::from(body_flow.0);
+    },
+    WhileNeed::Leave=>{
+     outer=Some(std::mem::take(&mut self.loop_contexts.last_mut().unwrap().outer));
+     let(next,_)=self.leave_loop(natural.take(),c.as_ref().unwrap(),condition_code.as_ref().unwrap(),code.as_ref().unwrap(),span,false,None)?;facts.next=u32::from(next);
+    },
+    WhileNeed::Emit=>{
+     self.flow=Flow(step.flow as u8);self.control_uniform=control;self.code=outer.take().unwrap();
+     self.emit(InstKind::Loop {condition:condition_code.take().unwrap(),test:c.as_ref().unwrap().regs[0],body:code.take().unwrap()});return Ok(());
+    },
+   }
+  }
+ }
+}
