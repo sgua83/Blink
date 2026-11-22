@@ -147,7 +147,7 @@ extern "C" void encode(ArchiveInput input,ArchiveLayout layout,address out) on c
         ArchiveMember member=member_at(input,i);copy(out,at,member.name,member.name_length);
         at+=member.name_length;put(out,at,0);at+=1u64;
         header(out,member.offset,member.byte_length,2,member.name_offset);
-        copy(out,member.offset+60u64,member.bytes,member.byte_length);i+=1u64;
+        i+=1u64;
     }
 }
 

@@ -157,6 +157,8 @@ struct ReadRelocations { offset: usize, count: usize, error: ReadError }
 #[derive(Clone, Copy)]
 struct ReadRelocation { offset: usize, symbol: usize, kind: u64, error: ReadError }
 unsafe extern "C" {
+    #[link_name = "bootstrap.coff::host_headers"]
+    fn host_headers(output: *mut u8, sections: usize, symbols: usize, cache_end: usize, cache_length: usize);
     #[link_name = "blink.windows.coff::headers"]
     fn read_headers(input: ReadBytes) -> ReadRange;
     #[link_name = "blink.windows.coff::build_inputs"]
@@ -850,6 +852,33 @@ impl ReuseInputs<'_> {
     }
 }
 
+pub(super) struct HostBuildSection {
+    section: usize,
+    sections: usize,
+    record: std::ops::Range<usize>,
+    symbols: usize,
+}
+
+impl HostBuildSection {
+    pub(super) fn length(&self, bytes: &[u8]) -> usize {
+        bytes.len() - 40 - self.record.len()
+    }
+
+    // The final archive already owns this member's output range.
+    pub(super) unsafe fn write(&self, bytes: &[u8], output: *mut u8) {
+        let header = &bytes[..self.section];
+        let body = &bytes[self.section + 40..self.record.start];
+        let tail = &bytes[self.record.end..];
+        unsafe {
+            std::ptr::copy_nonoverlapping(header.as_ptr(), output, header.len());
+            std::ptr::copy_nonoverlapping(body.as_ptr(), output.add(header.len()), body.len());
+            std::ptr::copy_nonoverlapping(tail.as_ptr(), output.add(header.len() + body.len()), tail.len());
+            host_headers(
+                output, self.sections, self.symbols - 40 - self.record.len(), self.record.end, self.record.len(),
+            );
+        }
+    }
+}
 /// 同一COFF包络的借用视图；构建调用先消费输入记录，命中后才消费代码ABI。
 pub(crate) struct Reader<'a, Input: ?Sized = [u8]> {
     bytes: &'a Input,
@@ -866,6 +895,30 @@ impl<'a, Input: AsRef<[u8]> + ?Sized> Reader<'a, Input> {
         input.error.check()?;
         Ok(if input.present == 0 { None } else { Some(unsafe { input.bytes.borrowed() }) })
     }
+    pub(super) fn host_build_section(&self) -> Result<Option<HostBuildSection>> {
+        let Some(index) = self.headers.chunks_exact(40).position(|section| &section[..8] == BUILD.as_bytes())
+        else { return Ok(None); };
+        let bytes = self.bytes.as_ref();
+        let build = unsafe { read_build_inputs(ReadBytes::new(bytes), ReadBytes::new(self.headers)) };
+        build.error.check()?;
+        let table = unsafe { read_symbols(ReadBytes::new(bytes)) };
+        table.error.check()?;
+        let start = build.bytes.bytes.addr() - bytes.as_ptr().addr();
+        let end = start + build.bytes.length;
+        let following = &self.headers[(index + 1) * 40..];
+        if start < 20 + self.headers.len() || end > table.offset
+            || following.chunks_exact(40).any(|section| &section[..8] != b".blrt\0\0\0")
+        {
+            return Err("宿主模块的构建记录不在原COFF元数据区".into());
+        }
+        Ok(Some(HostBuildSection {
+            section: 20 + index * 40,
+            sections: self.headers.len() / 40 - 1,
+            record: start..end,
+            symbols: table.offset,
+        }))
+    }
+
     fn sections(&self, materialize: bool) -> Result<(ObjectParts, Vec<ObjectSection>)> {
         let count = self.headers.len() / 40;
         let mut parts = ObjectParts::default();

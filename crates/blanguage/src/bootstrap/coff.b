@@ -119,3 +119,28 @@ extern "C" void encode(CoffInput input,CoffLayout layout,address output) on cpu 
         i+=1u64;
     }
 }
+
+extern "C" void host_headers(address output, u64 sections, u64 symbols, u64 cache_end, u64 cache_length) on cpu {
+    le16(output, 2u64, sections);
+    le32(output, 8u64, symbols);
+    u64 section = 0u64;
+    while (section < sections) {
+        u64 field = 20u64 + 40u64 * section + 20u64;
+        u64 end = field + 12u64;
+        while (field < end) {
+            u64 original = 0u64;
+            u64 byte = 0u64;
+            while (byte < 4u64) {
+                original |= u64(unsafe_position<u8>(unsafe_address(address_bits(output) + field + byte))) << (byte * 8u64);
+                byte += 1u64;
+            }
+            if (original != 0u64) {
+                u64 removed = 40u64;
+                if (original >= cache_end) { removed += cache_length; }
+                le32(output, field, original - removed);
+            }
+            field += 4u64;
+        }
+        section += 1u64;
+    }
+}

@@ -81,7 +81,7 @@ pub fn host_archive(inputs: &[impl AsRef<Path>], path: &Path) -> Result<()> {
     let mut members = object::library_members(inputs)?;
     let mut symbols = Vec::new();
     let mut imports = Vec::new();
-    for (index, member) in members.iter().enumerate() {
+    for (index, member) in members.iter_mut().enumerate() {
         let (names, member_imports) = member.host_links()?
             .ok_or_else(||format!("{} 不是独立模块产物",member.name))?;
         symbols.extend(names.into_iter().map(|name|(index,name)));

@@ -112,15 +112,34 @@ impl AsRef<[u8]> for ObjectBytes {
 pub(crate) struct Member {
     pub(crate) name: String,
     bytes: ObjectBytes,
+    build: Option<coff::HostBuildSection>,
 }
 impl Member {
     pub(crate) fn new(name:String,bytes:Vec<u8>)->Self {
-        Self { name, bytes: ObjectBytes::generated(bytes) }
+        Self { name, bytes: ObjectBytes::generated(bytes), build: None }
     }
-    fn bytes(&self)->&[u8] { &self.bytes }
-    pub(crate) fn host_links(&self)->Result<Option<(Vec<String>,Vec<super::Import>)>> {
-        coff::Reader::new(&self.bytes).and_then(|reader|reader.host_links())
-            .map_err(|error|format!("静态库成员 {}：{error}",self.name).into())
+    fn output_length(&self) -> usize {
+        self.build.as_ref().map_or(self.bytes.len(), |build| build.length(&self.bytes))
+    }
+
+    unsafe fn write(&self, output: *mut u8) {
+        unsafe {
+            if let Some(build) = &self.build {
+                build.write(&self.bytes, output);
+            } else {
+                std::ptr::copy_nonoverlapping(self.bytes.as_ptr(), output, self.bytes.len());
+            }
+        }
+    }
+
+    pub(crate) fn host_links(&mut self) -> Result<Option<(Vec<String>, Vec<super::Import>)>> {
+        let result = (|| {
+            let reader = coff::Reader::new(&self.bytes)?;
+            let Some(links) = reader.host_links()? else { return Ok(None); };
+            self.build = reader.host_build_section()?;
+            Ok(Some(links))
+        })();
+        result.map_err(|error: Box<dyn std::error::Error>| format!("静态库成员 {}：{error}", self.name).into())
     }
     pub(crate) fn archive_symbols(&self)->Result<Option<Vec<String>>> {
         coff::Reader::new(&self.bytes).and_then(|reader|reader.archive_symbols())
@@ -260,7 +279,6 @@ impl Library {
 struct ArchiveMember {
     name: *const u8,
     name_length: usize,
-    bytes: *const u8,
     byte_length: usize,
     offset: usize,
     name_offset: usize,
@@ -326,14 +344,14 @@ pub(crate) fn members(inputs: &[impl AsRef<Path>]) -> Result<Vec<Member>> {
             for index in 0..library.member_count() {
                 let member=library.member(index).member;
                 let (name,bytes)=library.member_bytes(member);
-                members.push(Member{name:name.into(),bytes});
+                members.push(Member { name: name.into(), bytes, build: None });
             }
         } else {
             let name = input.file_name()
                 .and_then(|name| name.to_str())
                 .ok_or("静态库输入名不是 UTF-8")?
                 .into();
-            members.push(Member { name, bytes });
+            members.push(Member { name, bytes, build: None });
         }
     }
     Ok(members)
@@ -342,7 +360,7 @@ pub(crate) fn members(inputs: &[impl AsRef<Path>]) -> Result<Vec<Member>> {
 pub(crate) fn encode(members: &[Member], symbols: &[(usize, String)]) -> Result<Vec<u8>> {
     let mut member_views: Vec<_> = members.iter().map(|member| ArchiveMember {
         name: member.name.as_ptr(), name_length: member.name.len(),
-        bytes: member.bytes().as_ptr(), byte_length: member.bytes().len(),
+        byte_length: member.output_length(),
         offset: 0, name_offset: 0,
     }).collect();
     let mut symbol_views: Vec<_> = symbols.iter().map(|(member, name)| ArchiveSymbol {
@@ -362,10 +380,13 @@ pub(crate) fn encode(members: &[Member], symbols: &[(usize, String)]) -> Result<
         ArchiveError::MemberIndex => return Err("静态库符号的成员编号超出 COFF u16 范围".into()),
     }
     let mut output = Vec::<u8>::with_capacity(layout.length);
-    // Layout initialized every member position. Encode initializes the complete
-    // final buffer, including headers and padding, before the Vec takes its length.
+    // B initializes the archive envelope and the layout supplies each member's
+    // final span. Its owner writes the payload there before the Vec takes length.
     unsafe {
         archive_encode(input, layout, output.as_mut_ptr());
+        for (member, view) in members.iter().zip(member_views) {
+            member.write(output.as_mut_ptr().add(view.offset + 60));
+        }
         output.set_len(layout.length);
     }
     Ok(output)
