@@ -1101,10 +1101,6 @@ extern "C" usize contract_fact(address context,FactView input,ContractSemanticHo
  }
  if(fact.kind==FactKind::Equal||fact.kind==FactKind::NotEqual){
   if(host.compare(fact.first,fact.second)==0){return fact.kind==FactKind::Equal ? 1u64 : 0u64;}
-  address scalar=host.integer(context,fact.first,0);address other=host.integer(context,fact.second,1);
-  if(scalar!=address()&&other!=address()&&host.same_scalar(scalar,other)!=0){
-   return contract_compare(context,fact.kind==FactKind::Equal ? BinaryOperation::Equal : BinaryOperation::NotEqual,scalar,contract_value(fact.first),contract_value(fact.second),host).value;
-  }
  }
  if(fact.kind==FactKind::Below&&host.scalar(fact.scalar).kind<2){
   return contract_compare(context,fact.flag!=0 ? BinaryOperation::Less : BinaryOperation::LessEqual,fact.scalar,contract_value(fact.first),contract_value(fact.second),host).value;
