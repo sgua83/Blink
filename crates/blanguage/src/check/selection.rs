@@ -112,87 +112,14 @@ impl Builder<'_> {
         let no_flow = self.flow;
         let no_path = self.path.clone();
         let no_init = self.take_application_initialization_state();
-        let yes_initial = yes_init.clone();
-        let no_initial = no_init.clone();
-        self.join_initialization(&owned_presence::Presence::input(&c),yes_init,no_init);
-        let no = self.code.split_off(prefix);
-        let no_regions = std::mem::replace(&mut self.memory_regions, outer_regions);
-        let selected = c.constant.as_ref().map(|bits| bits[0] != 0);
-        for (retain, regions) in [
-            (selected != Some(false), yes_regions),
-            (selected != Some(true), no_regions),
-        ] {
-            if retain {
-                for (binding, (reads, writes)) in regions {
-                    let entry = self.memory_regions.entry(binding).or_default();
-                    entry.0.extend(reads);
-                    for (range, value) in writes {
-                        entry.1.entry(range).and_modify(|stored| match (stored.as_deref_mut(), value.as_deref()) {
-                            (Some(stored), Some(value)) => stored.join(value, 1, None),
-                            _ => *stored = None,
-                        }).or_insert(value);
-                    }
-                }
-            }
-        }
-        let mut no_env = std::mem::replace(&mut self.env, yes_env);
-        if let Some(bits) = &c.constant {
-            if bits[0] != 0 {
-                (self.reads, self.writes, self.cross_access) = yes_effects;
-            } else {
-                self.env = no_env.clone();
-            }
-        } else {
-            self.reads.extend(yes_effects.0);
-            self.writes.extend(yes_effects.1);
-            self.cross_access.extend(yes_effects.2);
-        }
-        if let Some(bits) = &c.constant {
-            self.path = if bits[0] != 0 {
-                yes_path.clone()
-            } else {
-                no_path.clone()
-            };
-            if let Some(context) = &mut self.return_context {
-                context.select_exits(first_exit, yes_exit, bits[0] != 0);
-            }
-            self.flow = if bits[0] != 0 { yes_flow } else { no_flow };
-            self.initialized = if bits[0] != 0 {
-                yes_initial
-            } else {
-                no_initial
-            };
-        } else {
-            self.path = match (yes_flow.continues(), no_flow.continues()) {
-                (true, true) => bounds::Clause::either(&yes_path, &no_path),
-                (true, false) => yes_path,
-                (false, true) => no_path,
-                (false, false) => bounds::Clause::impossible(),
-            };
-            if yes_flow.continues() && no_flow.continues() {
-                let when = owned_presence::Presence::input(&c);
-                self.join_environment_selected(&mut no_env, &when, &when.condition());
-            }
-            if yes_flow.continues() && !no_flow.continues() {
-                self.initialized = yes_initial;
-            } else if !yes_flow.continues() && no_flow.continues() {
-                self.env = no_env;
-                self.initialized = no_initial;
-            }
-            self.flow = yes_flow.union(no_flow);
-        }
-        self.control_uniform = control;
-        for (owners,present) in [(yes_owners,owned_presence::Presence::input(&c)),(no_owners,owned_presence::Presence::input(&c).not())] {
-            if !self.owned_possible(&present){continue;}
-            for mut binding in owners {
-                match &mut binding {
-                    Binding::OwnedValue(value)=>value.restrict_owned(&present),
-                    Binding::ApplicationData(data)=>data.ownership=data.ownership.restricted(&present),
-                    _=>{},
-                }
-                self.hold_binding(binding);
-            }
-        }
+        let input=SelectionMergeInput {truth:c.constant.as_ref().map_or(0,|bits|if bits[0]!=0{2}else{1}),yes_live:u32::from(yes_flow.continues()),no_live:u32::from(no_flow.continues()),
+            returns:u32::from(self.return_context.is_some()),uniform:u32::from(control)};
+        let mut merge=SelectionMerge {builder:self,condition:&c,prefix,first_exit,yes_exit,yes_flow,no_flow,
+            yes_env:Some(yes_env),no_env:None,yes_path:Some(yes_path),no_path:Some(no_path),yes_init:Some(yes_init),no_init:Some(no_init),selected_init:None,yes_effects:Some(yes_effects),
+            outer_regions:Some(outer_regions),regions:[Some(yes_regions),None],no:None,region_entries:None,region:None,binding:0,write_entries:None,write:None,
+            owners:[Some(yes_owners),Some(no_owners)],presences:[None,None],owner_entries:None,present:None,owner:None};
+        unsafe {selection_merge(input,SelectionMergeHost {context:&mut merge,next_region:merge_region,next_write:merge_write,owner_possible:merge_owner_possible,next_owner:merge_owner,action:merge_action})};
+        let no=merge.no.take().unwrap();drop(merge);
         let input=SelectionResultInput {truth:c.constant.as_ref().map_or(0,|bits|if bits[0]!=0{2}else{1}),uniform:u32::from(c.uniform)};
         let mut values=SelectionValues {builder:self,condition:c,partition,yes,no,yes_result:a_result,no_result:b_result,
             a:None,b:None,slots:Vec::new(),regs:Vec::new(),selected:None,proof:None,output:None};
@@ -356,5 +283,96 @@ unsafe extern "C" fn selection_action(context:*mut SelectionValues<'_,'_>,action
    let result=v.output.as_mut().unwrap();v.builder.rebind_returned(result,std::mem::take(&mut v.regs));
    if let returns::Returned::Value(value)=result {value.proof=v.proof.take().unwrap();value.uniform=side!=0;value.literal=false;value.constant=None;}
   },
+ }
+}
+
+#[repr(C)]
+struct SelectionMergeInput {truth:u32,yes_live:u32,no_live:u32,returns:u32,uniform:u32}
+#[repr(C)]
+struct SelectionWriteFacts {present:u32,occupied:u32,stored:u32,value:u32}
+#[repr(u32)]
+enum SelectionMergeAction {
+ RememberYes,RememberNo,Initialize,Split,BeginRegions,Region,InsertWrite,JoinWrite,ClearWrite,EndRegions,
+ Environment,YesEffects,MergeEffects,YesPath,NoPath,EitherPath,ImpossiblePath,SelectExits,
+ YesFlow,NoFlow,UnionFlow,RestoreInit,NoEnvironment,JoinEnvironment,Control,PrepareOwners,BeginOwners,HoldOwner,EndOwners,
+}
+#[repr(C)]
+struct SelectionMergeHost<'a,'w> {
+ context:*mut SelectionMerge<'a,'w>,next_region:unsafe extern "C" fn(*mut SelectionMerge<'a,'w>)->u32,
+ next_write:unsafe extern "C" fn(*mut SelectionMerge<'a,'w>)->SelectionWriteFacts,
+ owner_possible:unsafe extern "C" fn(*mut SelectionMerge<'a,'w>,u32)->u32,next_owner:unsafe extern "C" fn(*mut SelectionMerge<'a,'w>)->u32,
+ action:unsafe extern "C" fn(*mut SelectionMerge<'a,'w>,SelectionMergeAction,u32),
+}
+unsafe extern "C" {
+ #[link_name="bootstrap.function_body::selection_merge"] fn selection_merge(input:SelectionMergeInput,host:SelectionMergeHost<'_,'_>);
+}
+type SelectionWrites=BTreeMap<(u32,u32),Option<Box<bounds::Proof>>>;
+type SelectionRegion=(BTreeSet<(bool,u32,u32)>,SelectionWrites);
+type SelectionRegions=BTreeMap<usize,SelectionRegion>;
+type SelectionEffects=(BTreeSet<usize>,BTreeSet<usize>,BTreeSet<usize>);
+struct SelectionMerge<'a,'w> {
+ builder:&'a mut Builder<'w>,condition:&'a Value,prefix:usize,first_exit:usize,yes_exit:usize,yes_flow:Flow,no_flow:Flow,
+ yes_env:Option<BTreeMap<String,Binding>>,no_env:Option<BTreeMap<String,Binding>>,yes_path:Option<bounds::Clause>,no_path:Option<bounds::Clause>,
+ yes_init:Option<BTreeSet<Position>>,no_init:Option<BTreeSet<Position>>,selected_init:Option<BTreeSet<Position>>,yes_effects:Option<SelectionEffects>,
+ outer_regions:Option<SelectionRegions>,regions:[Option<SelectionRegions>;2],no:Option<Vec<Inst>>,
+ region_entries:Option<std::collections::btree_map::IntoIter<usize,SelectionRegion>>,region:Option<(usize,SelectionRegion)>,binding:usize,
+ write_entries:Option<std::collections::btree_map::IntoIter<(u32,u32),Option<Box<bounds::Proof>>>>,write:Option<((u32,u32),Option<Box<bounds::Proof>>)>,
+ owners:[Option<Vec<Binding>>;2],presences:[Option<owned_presence::Presence>;2],owner_entries:Option<std::vec::IntoIter<Binding>>,present:Option<owned_presence::Presence>,owner:Option<Binding>,
+}
+unsafe extern "C" fn merge_region(context:*mut SelectionMerge<'_,'_>)->u32 {
+ let v=unsafe {&mut *context};v.region=v.region_entries.as_mut().unwrap().next();u32::from(v.region.is_some())
+}
+unsafe extern "C" fn merge_write(context:*mut SelectionMerge<'_,'_>)->SelectionWriteFacts {
+ let v=unsafe {&mut *context};v.write=v.write_entries.as_mut().unwrap().next();
+ let Some((range,value))=&v.write else{return SelectionWriteFacts {present:0,occupied:0,stored:0,value:0}};
+ let stored=v.builder.memory_regions[&v.binding].1.get(range);
+ SelectionWriteFacts {present:1,occupied:u32::from(stored.is_some()),stored:u32::from(stored.is_some_and(|v|v.is_some())),value:u32::from(value.is_some())}
+}
+unsafe extern "C" fn merge_owner_possible(context:*mut SelectionMerge<'_,'_>,side:u32)->u32 {
+ let v=unsafe {&mut *context};u32::from(v.builder.owned_possible(v.presences[side as usize].as_ref().unwrap()))
+}
+unsafe extern "C" fn merge_owner(context:*mut SelectionMerge<'_,'_>)->u32 {
+ let v=unsafe {&mut *context};v.owner=v.owner_entries.as_mut().unwrap().next();u32::from(v.owner.is_some())
+}
+unsafe extern "C" fn merge_action(context:*mut SelectionMerge<'_,'_>,action:SelectionMergeAction,side:u32) {
+ let v=unsafe {&mut *context};
+ match action {
+  SelectionMergeAction::RememberYes=>v.selected_init=Some(v.yes_init.as_ref().unwrap().clone()),
+  SelectionMergeAction::RememberNo=>v.selected_init=Some(v.no_init.as_ref().unwrap().clone()),
+  SelectionMergeAction::Initialize=>v.builder.join_initialization(&owned_presence::Presence::input(v.condition),v.yes_init.take().unwrap(),v.no_init.take().unwrap()),
+  SelectionMergeAction::Split=>{v.no=Some(v.builder.code.split_off(v.prefix));v.regions[1]=Some(std::mem::replace(&mut v.builder.memory_regions,v.outer_regions.take().unwrap()));},
+  SelectionMergeAction::BeginRegions=>v.region_entries=Some(v.regions[side as usize].take().unwrap().into_iter()),
+  SelectionMergeAction::Region=>{
+   let(binding,(reads,writes))=v.region.take().unwrap();v.binding=binding;v.builder.memory_regions.entry(binding).or_default().0.extend(reads);v.write_entries=Some(writes.into_iter());
+  },
+  SelectionMergeAction::InsertWrite=>{let(range,value)=v.write.take().unwrap();v.builder.memory_regions.get_mut(&v.binding).unwrap().1.insert(range,value);},
+  SelectionMergeAction::JoinWrite=>{
+   let(range,value)=v.write.take().unwrap();v.builder.memory_regions.get_mut(&v.binding).unwrap().1.get_mut(&range).unwrap().as_deref_mut().unwrap().join(value.as_deref().unwrap(),1,None);
+  },
+  SelectionMergeAction::ClearWrite=>{let(range,_value)=v.write.take().unwrap();*v.builder.memory_regions.get_mut(&v.binding).unwrap().1.get_mut(&range).unwrap()=None;},
+  SelectionMergeAction::EndRegions=>{v.regions[side as usize].take();v.region_entries=None;v.write_entries=None;},
+  SelectionMergeAction::Environment=>v.no_env=Some(std::mem::replace(&mut v.builder.env,v.yes_env.take().unwrap())),
+  SelectionMergeAction::YesEffects=>{(v.builder.reads,v.builder.writes,v.builder.cross_access)=v.yes_effects.take().unwrap();},
+  SelectionMergeAction::MergeEffects=>{let(reads,writes,cross)=v.yes_effects.take().unwrap();v.builder.reads.extend(reads);v.builder.writes.extend(writes);v.builder.cross_access.extend(cross);},
+  SelectionMergeAction::YesPath=>v.builder.path=v.yes_path.take().unwrap(),
+  SelectionMergeAction::NoPath=>v.builder.path=v.no_path.take().unwrap(),
+  SelectionMergeAction::EitherPath=>v.builder.path=bounds::Clause::either(v.yes_path.as_ref().unwrap(),v.no_path.as_ref().unwrap()),
+  SelectionMergeAction::ImpossiblePath=>v.builder.path=bounds::Clause::impossible(),
+  SelectionMergeAction::SelectExits=>v.builder.return_context.as_mut().unwrap().select_exits(v.first_exit,v.yes_exit,side!=0),
+  SelectionMergeAction::YesFlow=>v.builder.flow=v.yes_flow,
+  SelectionMergeAction::NoFlow=>v.builder.flow=v.no_flow,
+  SelectionMergeAction::UnionFlow=>v.builder.flow=v.yes_flow.union(v.no_flow),
+  SelectionMergeAction::RestoreInit=>v.builder.initialized=v.selected_init.take().unwrap(),
+  SelectionMergeAction::NoEnvironment=>v.builder.env=v.no_env.take().unwrap(),
+  SelectionMergeAction::JoinEnvironment=>{let when=owned_presence::Presence::input(v.condition);v.builder.join_environment_selected(v.no_env.as_mut().unwrap(),&when,&when.condition());},
+  SelectionMergeAction::Control=>v.builder.control_uniform=side!=0,
+  SelectionMergeAction::PrepareOwners=>v.presences=[Some(owned_presence::Presence::input(v.condition)),Some(owned_presence::Presence::input(v.condition).not())],
+  SelectionMergeAction::BeginOwners=>{v.owner_entries=Some(v.owners[side as usize].take().unwrap().into_iter());v.present=v.presences[side as usize].take();},
+  SelectionMergeAction::HoldOwner=>{
+   let mut binding=v.owner.take().unwrap();let present=v.present.as_ref().unwrap();
+   match &mut binding {Binding::OwnedValue(value)=>value.restrict_owned(present),Binding::ApplicationData(data)=>data.ownership=data.ownership.restricted(present),_=>{},}
+   v.builder.hold_binding(binding);
+  },
+  SelectionMergeAction::EndOwners=>{v.owners[side as usize].take();v.presences[side as usize].take();v.owner_entries=None;v.present=None;},
  }
 }

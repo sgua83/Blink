@@ -49,3 +49,17 @@ struct SelectionHost {
 };
 extern "C" void selection_result(SelectionResultInput input,SelectionHost host) on cpu
  requires nonzero(host.storage) requires nonzero(host.layout) requires nonzero(host.action);
+
+struct SelectionMergeInput {u32 truth;u32 yes_live;u32 no_live;u32 returns;u32 uniform;};
+struct SelectionWriteFacts {u32 present;u32 occupied;u32 stored;u32 value;};
+enum SelectionMergeAction:u32 {
+ RememberYes=0;RememberNo=1;Initialize=2;Split=3;BeginRegions=4;Region=5;InsertWrite=6;JoinWrite=7;ClearWrite=8;EndRegions=9;
+ Environment=10;YesEffects=11;MergeEffects=12;YesPath=13;NoPath=14;EitherPath=15;ImpossiblePath=16;SelectExits=17;
+ YesFlow=18;NoFlow=19;UnionFlow=20;RestoreInit=21;NoEnvironment=22;JoinEnvironment=23;Control=24;PrepareOwners=25;BeginOwners=26;HoldOwner=27;EndOwners=28;
+};
+struct SelectionMergeHost {
+ address context;cfn<u32,address> next_region;cfn<SelectionWriteFacts,address> next_write;
+ cfn<u32,address,u32> owner_possible;cfn<u32,address> next_owner;cfn<void,address,SelectionMergeAction,u32> action;
+};
+extern "C" void selection_merge(SelectionMergeInput input,SelectionMergeHost host) on cpu
+ requires nonzero(host.next_region) requires nonzero(host.next_write) requires nonzero(host.owner_possible) requires nonzero(host.next_owner) requires nonzero(host.action);

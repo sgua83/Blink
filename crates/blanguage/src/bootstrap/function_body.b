@@ -207,3 +207,46 @@ extern "C" void selection_result(SelectionResultInput input,SelectionHost host) 
  u32 uniform=input.uniform!=0&&(values.yes==0||values.yes_uniform!=0)&&(values.no==0||values.no_uniform!=0) ? 1 : 0;
  host.action(host.context,SelectionAction::Finish,uniform,0u64);
 }
+
+extern "C" void selection_merge(SelectionMergeInput input,SelectionMergeHost host) on cpu
+ requires nonzero(host.next_region) requires nonzero(host.next_write) requires nonzero(host.owner_possible) requires nonzero(host.next_owner) requires nonzero(host.action) {
+ bool yes=input.yes_live!=0;bool no=input.no_live!=0;
+ if(input.truth==2||(input.truth==0&&yes&&!no)){host.action(host.context,SelectionMergeAction::RememberYes,0);}
+ else if(input.truth==1||(input.truth==0&&!yes&&no)){host.action(host.context,SelectionMergeAction::RememberNo,0);}
+ host.action(host.context,SelectionMergeAction::Initialize,0);host.action(host.context,SelectionMergeAction::Split,0);
+ u32 side=0;while(side<2){
+  bool retain=side==0 ? input.truth!=1 : input.truth!=2;
+  if(retain){
+   host.action(host.context,SelectionMergeAction::BeginRegions,side);
+   while(host.next_region(host.context)!=0){
+    host.action(host.context,SelectionMergeAction::Region,0);
+    while(true){SelectionWriteFacts write=host.next_write(host.context);if(write.present==0){break;}
+     SelectionMergeAction action=write.occupied==0 ? SelectionMergeAction::InsertWrite : (write.stored!=0&&write.value!=0 ? SelectionMergeAction::JoinWrite : SelectionMergeAction::ClearWrite);
+     host.action(host.context,action,0);
+    }
+   }
+  }
+  host.action(host.context,SelectionMergeAction::EndRegions,side);side+=1;
+ }
+ host.action(host.context,SelectionMergeAction::Environment,0);
+ if(input.truth==2){host.action(host.context,SelectionMergeAction::YesEffects,0);}
+ else if(input.truth==1){host.action(host.context,SelectionMergeAction::NoEnvironment,0);}
+ else {host.action(host.context,SelectionMergeAction::MergeEffects,0);}
+ if(input.truth!=0){
+  host.action(host.context,input.truth==2 ? SelectionMergeAction::YesPath : SelectionMergeAction::NoPath,0);
+  if(input.returns!=0){host.action(host.context,SelectionMergeAction::SelectExits,input.truth==2 ? 1 : 0);}
+  host.action(host.context,input.truth==2 ? SelectionMergeAction::YesFlow : SelectionMergeAction::NoFlow,0);
+  host.action(host.context,SelectionMergeAction::RestoreInit,0);
+ }else{
+  host.action(host.context,yes ? (no ? SelectionMergeAction::EitherPath : SelectionMergeAction::YesPath) : (no ? SelectionMergeAction::NoPath : SelectionMergeAction::ImpossiblePath),0);
+  if(yes&&no){host.action(host.context,SelectionMergeAction::JoinEnvironment,0);}
+  if(yes&&!no){host.action(host.context,SelectionMergeAction::RestoreInit,0);}
+  else if(!yes&&no){host.action(host.context,SelectionMergeAction::NoEnvironment,0);host.action(host.context,SelectionMergeAction::RestoreInit,0);}
+  host.action(host.context,SelectionMergeAction::UnionFlow,0);
+ }
+ host.action(host.context,SelectionMergeAction::Control,input.uniform);host.action(host.context,SelectionMergeAction::PrepareOwners,0);
+ side=0;while(side<2){
+  if(host.owner_possible(host.context,side)!=0){host.action(host.context,SelectionMergeAction::BeginOwners,side);while(host.next_owner(host.context)!=0){host.action(host.context,SelectionMergeAction::HoldOwner,0);}}
+  host.action(host.context,SelectionMergeAction::EndOwners,side);side+=1;
+ }
+}
