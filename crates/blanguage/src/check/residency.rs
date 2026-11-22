@@ -3,31 +3,85 @@ use super::*;
 use returns::Returned;
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub(super) enum Part { Field(usize), Elements, Selected(Option<bounds::Operand>) }
-impl Part {
-    fn at_call(&self,bindings:&BTreeMap<ValueIdentity,bounds::Proof>)->Self{match self{
-        Self::Selected(index)=>Self::Selected(index.and_then(|index|index.at_call(bindings))),other=>other.clone(),
-    }}
-    fn output_bound(&self,bindings:&BTreeMap<ValueIdentity,ValueIdentity>)->Self{match self{
-        Self::Selected(index)=>Self::Selected(index.and_then(|index|index.map(|id|Some(bindings.get(&id).copied().unwrap_or(id))))),other=>other.clone(),
-    }}
-    fn element_indices(&self,indices:&BTreeMap<ValueIdentity,bounds::Proof>)->Self{match self{
-        Self::Selected(Some(bounds::Operand::Value(id)))if indices.contains_key(id)=>Self::Selected(bounds::Operand::Value(*id).at_call(indices)),other=>other.clone(),
-    }}
+pub(super) enum Part {
+    Field(usize),
+    Elements,
+    Selected(Option<bounds::Selector>),
 }
-fn path_family(fields:&[Part])->Vec<Part>{fields.iter().map(|part|match part{Part::Selected(_)=>Part::Elements,other=>other.clone()}).collect()}
-fn path_model(fields:&[Part])->Vec<Part>{
-    let mut depth=fields.iter().filter(|part|!matches!(part,Part::Field(_))).count();
-    fields.iter().map(|part|match part{
-        Part::Elements=>{depth-=1;Part::Selected(Some(bounds::Operand::Value(ValueIdentity::ElementIndex(depth))))},
-        Part::Selected(_)=>{depth-=1;part.clone()},other=>other.clone(),
+
+impl Part {
+    fn from_binding(index: bounds::Selector, bindings: &BTreeMap<ValueIdentity, bounds::Proof>) -> Self {
+        if let bounds::Selector::Direct(bounds::Operand::Value(id @ ValueIdentity::ElementIndex(_))) = index
+            && let Some(index) = bindings.get(&id).and_then(|proof| {
+                proof.domains(0).iter().find_map(|domain| match *domain {
+                    IndexDomain::Computed(expression) => expression.selector(),
+                    _ => None,
+                })
+            })
+        {
+            return Self::Selected(Some(index));
+        }
+        Self::Selected(index.at_call(bindings))
+    }
+
+    fn at_call(&self, bindings: &BTreeMap<ValueIdentity, bounds::Proof>) -> Self {
+        match self {
+            Self::Selected(Some(index)) => Self::from_binding(*index, bindings),
+            other => other.clone(),
+        }
+    }
+
+    fn output_bound(&self, bindings: &BTreeMap<ValueIdentity, ValueIdentity>) -> Self {
+        match self {
+            Self::Selected(index) => Self::Selected(index.and_then(|index|
+                index.map(|id| Some(bindings.get(&id).copied().unwrap_or(id))))),
+            other => other.clone(),
+        }
+    }
+
+    fn element_indices(&self, indices: &BTreeMap<ValueIdentity, bounds::Proof>) -> Self {
+        match self {
+            Self::Selected(Some(index)) if index.identity().is_some_and(|id| indices.contains_key(&id)) =>
+                Self::from_binding(*index, indices),
+            other => other.clone(),
+        }
+    }
+}
+
+fn path_family(fields: &[Part]) -> Vec<Part> {
+    fields.iter().map(|part| match part {
+        Part::Selected(_) => Part::Elements,
+        other => other.clone(),
     }).collect()
 }
-fn path_selection(fields:&[Part])->BTreeMap<ValueIdentity,bounds::Proof>{
-    let mut depth=fields.iter().filter(|part|!matches!(part,Part::Field(_))).count();
-    fields.iter().filter_map(|part|match part{
-        Part::Field(_)=>None,
-        part=>{depth-=1;let proof=match part{Part::Selected(Some(index))=>bounds::Proof::element_operand(*index,(0,u32::MAX)),_=>bounds::Proof::default()};Some((ValueIdentity::ElementIndex(depth),proof))},
+fn path_model(fields: &[Part]) -> Vec<Part> {
+    let mut depth = fields.iter().filter(|part| !matches!(part, Part::Field(_))).count();
+    fields.iter().map(|part| match part {
+        Part::Elements => {
+            depth -= 1;
+            Part::Selected(Some(bounds::Selector::Direct(bounds::Operand::Value(ValueIdentity::ElementIndex(depth)))))
+        },
+        Part::Selected(_) => { depth -= 1; part.clone() },
+        other => other.clone(),
+    }).collect()
+}
+fn path_selection(fields: &[Part]) -> BTreeMap<ValueIdentity, bounds::Proof> {
+    let mut depth = fields.iter().filter(|part| !matches!(part, Part::Field(_))).count();
+    fields.iter().filter_map(|part| match part {
+        Part::Field(_) => None,
+        part => {
+            depth -= 1;
+            let ordinal = ValueIdentity::ElementIndex(depth);
+            let proof = match part {
+                Part::Selected(Some(bounds::Selector::Direct(index))) =>
+                    bounds::Proof::element_operand(*index, (0, u32::MAX)),
+                Part::Selected(Some(index @ bounds::Selector::Affine { .. })) =>
+                    bounds::Proof::default()
+                        .with_domains(Domains::from([IndexDomain::Computed(bounds::IntegerExpression::selection(*index))])),
+                _ => bounds::Proof::default(),
+            };
+            Some((ordinal, proof))
+        },
     }).collect()
 }
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -178,17 +232,40 @@ impl Residency {
         Self::Origins(origins)=>Self::Origins(origins.iter().map(|origin|match origin{Origin::Input(input)=>Origin::Input(input.output_bound(bindings)),Origin::Output(output)=>Origin::Output(Output{function:output.function.clone(),kind:output.kind.clone(),fields:output.fields.clone(),arguments:output.arguments.iter().map(|(input,value)|(input.clone(),value.output_bound(&scoped_names(bindings,input.depth())))).collect(),bindings:output.bindings.iter().map(|(input,value)|(*input,value.output_bound(bindings))).collect()}),_=>origin.clone()}).collect()),
         Self::Absent=>Self::Absent,
     }}
-    pub(super) fn element_indices(&self,indices:&BTreeMap<ValueIdentity,bounds::Proof>)->Self{
+    pub(super) fn element_indices(&self, indices: &BTreeMap<ValueIdentity, bounds::Proof>) -> Self {
+        let unnamed = |proof: &bounds::Proof| {
+            proof.known_identity(0).is_none()
+                && matches!(proof.index_expression().and_then(bounds::IntegerExpression::selector), Some(bounds::Selector::Affine { .. }))
+        };
+        if !indices.values().any(unnamed) {
+            return self.rebind_elements(indices);
+        }
+        let mut next = self.index_names().into_iter()
+            .chain(indices.keys().copied())
+            .chain(indices.values().flat_map(bounds::Proof::scalar_identities))
+            .filter_map(|id| match id { ValueIdentity::ElementIndex(index) => Some(index + 1), _ => None })
+            .max().unwrap_or(0);
+
+        // The selection expression names the outer path; its result binds one inner ordinal.
+        let mut bindings = indices.clone();
+        for proof in bindings.values_mut().filter(|proof| unnamed(proof)) {
+            *proof = std::mem::take(proof).with_identity(ValueIdentity::ElementIndex(next));
+            next += 1;
+        }
+        self.rebind_elements(&bindings)
+    }
+
+    fn rebind_elements(&self, indices: &BTreeMap<ValueIdentity, bounds::Proof>) -> Self {
         if indices.is_empty(){return self.clone();}
         match self{
             Self::Absent=>Self::Absent,
-            Self::Selected(when,a,b)=>Self::conditional(when.substitute_values(indices),a.element_indices(indices),b.element_indices(indices)),
+            Self::Selected(when,a,b)=>Self::conditional(when.substitute_index_values(indices),a.rebind_elements(indices),b.rebind_elements(indices)),
             Self::Origins(origins)=>Self::Origins(origins.iter().map(|origin|match origin{
                 Origin::Input(input)=>Origin::Input(input.element_indices(indices)),
                 Origin::Output(output)=>{
                     Origin::Output(Output {
                         function: output.function.clone(), kind: output.kind.clone(), fields: output.fields.clone(),
-                        arguments: output.arguments.iter().map(|(input,value)|(input.clone(),value.element_indices(&scoped_indices(indices,input.depth())))).collect(),
+                        arguments: output.arguments.iter().map(|(input,value)|(input.clone(),value.rebind_elements(&scoped_indices(indices,input.depth())))).collect(),
                         bindings: output.bindings.iter().map(|(id,proof)|(*id,proof.substitute_values(indices))).collect(),
                     })
                 },
@@ -202,7 +279,10 @@ impl Residency {
         match self{
             Self::Selected(when,a,b)=>{names.extend(when.scalar_identities());names.extend(a.index_names());names.extend(b.index_names());},
             Self::Origins(origins)=>for origin in origins{match origin{
-                Origin::Input(input)=>names.extend(input.fields.iter().filter_map(|part|match part{Part::Selected(Some(bounds::Operand::Value(id)))=>Some(*id),_=>None})),
+                Origin::Input(input)=>names.extend(input.fields.iter().filter_map(|part| match part {
+                    Part::Selected(Some(index)) => index.identity(),
+                    _ => None,
+                })),
                 Origin::Output(output)=>{
                     for proof in output.bindings.values(){names.extend(proof.scalar_identities());}
                     for(input,value)in &output.arguments{names.extend(value.index_names().into_iter().filter_map(|id|match id{ValueIdentity::ElementIndex(index)if index>=input.depth()=>Some(ValueIdentity::ElementIndex(index-input.depth())),_=>None}));}
@@ -460,7 +540,7 @@ fn bind_arguments(declared:&Arguments,actual:&Arguments,bindings:&BTreeMap<Value
         Residency::Origins(origins)=>Residency::Origins(origins.iter().map(|origin|match origin{
             Origin::Input(input)=>{
                 let mut left=input.fields.iter().filter(|part|matches!(part,Part::Elements)).count();
-                let fields=input.fields.iter().map(|part|match part{Part::Elements=>{left-=1;Part::Selected(Some(bounds::Operand::Value(ValueIdentity::ElementIndex(depth+left))))},other=>other.clone()}).collect();
+                let fields=input.fields.iter().map(|part|match part{Part::Elements=>{left-=1;Part::Selected(Some(bounds::Selector::Direct(bounds::Operand::Value(ValueIdentity::ElementIndex(depth+left)))))},other=>other.clone()}).collect();
                 Origin::Input(Input{parameter:input.parameter,fields})
             },
             other=>other.clone(),
@@ -779,10 +859,14 @@ fn output_source(output:&Output,outputs:&Outputs)->Option<Residency>{
         if let Some(value)=values.get(&prefix){
             let end=prefix.1.len();let removed=fields[end..].iter().filter(|part|!matches!(part,Part::Field(_))).count();
             let value=value.scope_indices(removed,0).project(&fields[end..],&selection).at_call(&bindings);
-            return value.bind(&arguments).map(|value|{
-                let mut selected=value.index_names().into_iter().filter_map(|id|match id{ValueIdentity::ElementIndex(index)if index>=depth=>Some((id,bounds::Proof::default().with_identity(ValueIdentity::ElementIndex(index-depth)))),_=>None}).collect::<BTreeMap<_,_>>();
-                selected.extend(output.bindings.iter().filter(|(id,_)|matches!(id,ValueIdentity::ElementIndex(index)if *index<depth)).map(|(id,proof)|(*id,proof.clone())));
-                value.element_indices(&selected)
+            let selected=output.bindings.iter().filter(|(id,_)|matches!(id,ValueIdentity::ElementIndex(index)if *index<depth))
+                .map(|(id,proof)|(*id,proof.clone())).collect();
+            return value.element_indices(&selected).bind(&arguments).map(|value|{
+                let outer=value.index_names().into_iter().filter_map(|id|match id{
+                    ValueIdentity::ElementIndex(index)if index>=depth=>Some((id,bounds::Proof::default().with_identity(ValueIdentity::ElementIndex(index-depth)))),
+                    _=>None,
+                }).collect();
+                value.element_indices(&outer)
             });
         }
         prefix.1.pop()?;
@@ -991,38 +1075,45 @@ const _: () = {
         }
         ReadStatus::Success
     }
-    unsafe extern "C" fn build_selected(context: Slot, destination: Slot) -> ReadStatus {
-        let mut index = <Option<bounds::Operand> as Native>::empty();
-        #[repr(C)]
-        struct Fields {
-            index: Slot,
-        }
-        #[repr(C)]
-        struct Host {
-            index: ReadCallback,
-        }
+    #[repr(C)]
+    struct Selection { index: Slot }
+
+    #[repr(C)]
+    struct SelectionReader { index: ReadCallback }
+
+    unsafe fn read_selection<T: Native>(context: Slot, destination: Slot, make: impl FnOnce(T) -> Part) -> ReadStatus {
         unsafe extern "C" {
             #[link_name = "bootstrap.contract_codec::contract_read_residency_part_selected"]
-            fn payload(context: Slot, fields: Fields, host: Host) -> ReadStatus;
+            fn payload(context: Slot, fields: Selection, host: SelectionReader) -> ReadStatus;
         }
+        let mut index = T::empty();
         let status = unsafe {
-            payload(
-                context,
-                Fields {
-                    index: contracts::slot(&mut index),
-                },
-                Host {
-                    index: contracts::read_value::<Option<bounds::Operand>>,
-                },
-            )
+            payload(context, Selection { index: contracts::slot(&mut index) },
+                SelectionReader { index: contracts::read_value::<T> })
         };
-        if status != ReadStatus::Success {
-            return status;
+        if status == ReadStatus::Success {
+            unsafe { *destination.cast::<Part>() = make(index); }
+        }
+        status
+    }
+
+    unsafe extern "C" fn build_selected(context: Slot, destination: Slot) -> ReadStatus {
+        unsafe { read_selection(context, destination, Part::Selected) }
+    }
+
+    #[repr(C)]
+    struct SelectionWriter { index: WriteCallback }
+
+    unsafe fn write_selection<T: Native>(output: Slot, selection: &T) {
+        unsafe extern "C" {
+            #[link_name = "bootstrap.contract_codec::contract_write_residency_part_selected"]
+            fn write(output: Slot, fields: Selection, host: SelectionWriter,
+                append: unsafe extern "C" fn(Slot, *const u8, usize));
         }
         unsafe {
-            *destination.cast::<Part>() = Part::Selected(index);
+            write(output, Selection { index: contracts::address(selection).cast_mut() },
+                SelectionWriter { index: contracts::write_value::<T> }, contracts::append);
         }
-        ReadStatus::Success
     }
     unsafe extern "C" {
         #[link_name = "bootstrap.contract_codec::contract_read_residency_part"]
@@ -1081,37 +1172,7 @@ const _: () = {
                     }
                     unsafe { write(destination, contracts::append) }
                 }
-                Self::Selected(index) => {
-                    #[repr(C)]
-                    struct Fields {
-                        index: Slot,
-                    }
-                    #[repr(C)]
-                    struct Host {
-                        index: WriteCallback,
-                    }
-                    unsafe extern "C" {
-                        #[link_name = "bootstrap.contract_codec::contract_write_residency_part_selected"]
-                        fn write(
-                            output: Slot,
-                            fields: Fields,
-                            host: Host,
-                            append: unsafe extern "C" fn(Slot, *const u8, usize),
-                        );
-                    }
-                    unsafe {
-                        write(
-                            destination,
-                            Fields {
-                                index: contracts::address(index).cast_mut(),
-                            },
-                            Host {
-                                index: contracts::write_value::<Option<bounds::Operand>>,
-                            },
-                            contracts::append,
-                        )
-                    }
-                }
+                Self::Selected(index) => unsafe { write_selection(destination, index); },
             }
         }
         unsafe fn read(context: Slot, destination: &mut Self) -> ReadStatus {

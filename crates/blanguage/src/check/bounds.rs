@@ -99,13 +99,13 @@ impl Selector {
         }
     }
 
-    pub(super) fn at_call(self, bindings: &BTreeMap<ValueIdentity, Proof>) -> Option<Self> {
+    pub(super) fn at_call(self, bindings: &BTreeMap<ValueIdentity, impl std::borrow::Borrow<Proof>>) -> Option<Self> {
         let (base, scale, offset) = match self {
             Self::Direct(index) => return index.at_call(bindings).map(Self::Direct),
             Self::Prefix(length) => return length.at_call(bindings).map(Self::Prefix),
             Self::Affine { base, scale, offset } => (base, scale, offset),
         };
-        let proof = bindings.get(&base)?;
+        let proof = Proof::bound_input(bindings, &base)?;
         if let [(lower, upper)] = proof.range_set(0).0.as_slice() && lower == upper {
             let value = i128::from(*lower).checked_mul(scale)?.checked_add(offset)?;
             return Some(Self::Direct(Operand::Constant(Scalar::U32, u32::try_from(value).ok()?.into())));
@@ -181,10 +181,10 @@ impl Operand {
             constant => constant,
         })
     }
-    pub(super) fn at_call(self, bindings: &BTreeMap<ValueIdentity, Proof>) -> Option<Self> {
+    pub(super) fn at_call(self, bindings: &BTreeMap<ValueIdentity, impl std::borrow::Borrow<Proof>>) -> Option<Self> {
         Some(match self {
             Self::Value(id) => {
-                let proof = bindings.get(&id)?;
+                let proof = Proof::bound_input(bindings, &id)?;
                 match (proof.known_identity(0), proof.range_set(0).0.as_slice()) {
                     (Some(id), _) => Self::Value(id),
                     (None, [(a, b)]) if a == b => Self::Constant(Scalar::U32, *a),
@@ -236,20 +236,46 @@ impl ScalarPredicate {
 }
 
 
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) enum IntegerOperation { Add, Subtract, Multiply, Divide, Remainder, And, Or, Xor, ShiftLeft, ShiftRight }
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+// Numeric facts use eight-byte alignment. Keep the same selector without
+// imposing the alignment of its affine coefficients on every captured fact.
+#[repr(packed(8))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(super) struct IndexSelection(Selector);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) enum IntegerExpression {
     Binary(IntegerOperation, Scalar, Operand, Operand),
+    Selection(IndexSelection),
 }
 impl IntegerExpression {
-    fn map(self, identity: impl Fn(ValueIdentity) -> Option<ValueIdentity>) -> Option<Self> {
+    pub(super) fn selection(index: Selector) -> Self {
+        Self::Selection(IndexSelection(index))
+    }
+
+    fn scalar(self) -> Scalar {
+        match self {
+            Self::Binary(_, scalar, ..) => scalar,
+            Self::Selection(_) => Scalar::U32,
+        }
+    }
+    pub(super) fn selector(self) -> Option<Selector> {
+        match self {
+            Self::Selection(index) => Some(index.0),
+            Self::Binary(..) => None,
+        }
+    }
+    pub(super) fn map(self, identity: impl Fn(ValueIdentity) -> Option<ValueIdentity>) -> Option<Self> {
         Some(match self {
             Self::Binary(op, scalar, a, b) => Self::Binary(op, scalar, a.map(&identity)?, b.map(&identity)?),
+            Self::Selection(index) => Self::selection(index.0.map(identity)?),
         })
     }
-    fn at_call(self, bindings: &BTreeMap<ValueIdentity, impl std::borrow::Borrow<Proof>>) -> Option<Self> {
-        let Self::Binary(op, scalar, a, b) = self;
+    pub(super) fn at_call(self, bindings: &BTreeMap<ValueIdentity, impl std::borrow::Borrow<Proof>>) -> Option<Self> {
+        let Self::Binary(op, scalar, a, b) = self else {
+            return self.selector()?.at_call(bindings).map(Self::selection);
+        };
         let operand = |value| Some(match value {
             Operand::Value(id) => {
                 let proof = Proof::bound_input(bindings, &id)?;
@@ -262,8 +288,13 @@ impl IntegerExpression {
         });
         Some(Self::Binary(op, scalar, operand(a)?, operand(b)?))
     }
-    fn constant(self) -> Option<(Scalar, Bits)> {
-        let Self::Binary(op, scalar, Operand::Constant(_, a), Operand::Constant(_, b)) = self else { return None; };
+    pub(super) fn constant(self) -> Option<(Scalar, Bits)> {
+        let Self::Binary(op, scalar, Operand::Constant(_, a), Operand::Constant(_, b)) = self else {
+            return match self.selector()? {
+                Selector::Direct(Operand::Constant(scalar, bits)) => Some((scalar, bits)),
+                _ => None,
+            };
+        };
         let operation = match op {
             IntegerOperation::Add => BinaryOp::IAdd,
             IntegerOperation::Subtract => BinaryOp::ISub,
@@ -280,7 +311,10 @@ impl IntegerExpression {
         constant::binary(operation, scalar, a, b).map(|bits| (scalar, bits))
     }
     fn ranges_at_call(self, bindings: &BTreeMap<ValueIdentity, impl std::borrow::Borrow<Proof>>) -> Option<ScalarRanges> {
-        let Self::Binary(op, scalar, a, b) = self;
+        let Self::Binary(op, scalar, a, b) = self else {
+            let (_, bits) = self.at_call(bindings)?.constant()?;
+            return Some(ScalarRanges::interval(bits, bits));
+        };
         let range = |operand| Some(match operand {
             Operand::Value(id) => Proof::bound_input(bindings, &id)?.range_set(0).restrict(0, scalar.bit_mask()),
             Operand::Constant(_, bits) => ScalarRanges::interval(bits ^ scalar.order_bias(), bits ^ scalar.order_bias()),
@@ -2740,6 +2774,12 @@ impl Ord for Condition {
 
 
 impl Proof{
+    pub(super) fn index_expression(&self) -> Option<IntegerExpression> {
+        self.domains(0).iter().find_map(|domain| match domain {
+            IndexDomain::Computed(expression) if expression.scalar() == Scalar::U32 => Some(*expression),
+            _ => None,
+        })
+    }
     pub(super) fn element_operand(index:Operand,range:(u32,u32))->Self{
         let mut proof=match index{
             Operand::Value(id)=>Self::unsigned(range.0,range.1).with_identity(id),
@@ -2811,6 +2851,22 @@ impl Condition {
         let value = index.affine(&mut query)?;
         let base = value.source?;
         (value.scale == 1 && value.offset <= offset).then_some(Selector::Prefix(Operand::Value(base)))
+    }
+
+    pub(super) fn with_index_computations(self, computations: impl IntoIterator<Item=(ValueIdentity,IntegerExpression)>) -> Self {
+        let facts: Facts = computations.into_iter().map(|(id, value)| Fact::Index(id, IndexDomain::Computed(value))).collect();
+        if facts.is_empty() {
+            return self;
+        }
+        let facts = Clause::facts(facts);
+        Self { cases: self.cases.each_ref().map(|case| Clause::both(case, &facts)) }
+    }
+
+    pub(super) fn substitute_index_values(&self, indices: &BTreeMap<ValueIdentity, Proof>) -> Self {
+        let bindings = self.value_bindings(|id| indices.get(&id));
+        self.at_call(&bindings).with_index_computations(bindings.values().filter_map(|proof| {
+            proof.known_identity(0).zip(proof.index_expression())
+        }))
     }
 
     pub(super) fn element_index(depth:usize,index:Operand)->Self {
@@ -3536,6 +3592,22 @@ impl Builder<'_> {
             }
         }
     }
+    pub(super) fn normalized_element_index(&self, value: &Value) -> Option<IntegerExpression> {
+        let input = Clause::facts(Proof::capture(value).facts(&value.ty));
+        let path = Clause::both(&self.path, &input);
+        let required = path.required_in(&Facts::new())?;
+        let mut query = IntegerQuery::new(&required.facts, &required.roots);
+        let id = value.identity();
+        let affine = query.operand(Operand::of(value, 0), Scalar::U32);
+        let index = match affine.source {
+            Some(base) if base != id || affine.scale != 1 || affine.offset != 0 =>
+                Selector::Affine { base, scale: affine.scale, offset: affine.offset },
+            None => Selector::Direct(Operand::Constant(Scalar::U32, u32::try_from(affine.offset).ok()?.into())),
+            _ => return None,
+        };
+        Some(IntegerExpression::selection(index))
+    }
+
     pub(super) fn path_proof(&self, ty: &Ty, proof: Proof) -> Proof { scoped_proof(ty, proof, &self.path, &self.env) }
     pub(super) fn data_index_proof(&self, binding: usize) -> Proof {
         let count = self.program.buffers[binding].count.unwrap_or_else(||

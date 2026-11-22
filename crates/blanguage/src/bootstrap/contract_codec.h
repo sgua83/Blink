@@ -21,7 +21,7 @@ struct NumericOperand { OperandKind kind; NumericIdentity identity; ScalarTag sc
 
 struct NumericSelection { u32 affine; NumericOperand operand; NumericIdentity base; u64 scale_low; u64 scale_high; u64 offset_low; u64 offset_high; };
 
-struct NumericExpression { IntegerKind operation; ScalarTag scalar; NumericOperand left; NumericOperand right; };
+struct NumericExpression { u32 form; IntegerKind operation; ScalarTag scalar; NumericOperand left; NumericOperand right; NumericSelection selection; };
 
 struct NumericFloating { NumericIdentity source; u64 lower; u64 upper; array<u64,3> terms; ScalarTag scalar; FloatingKind form; };
 

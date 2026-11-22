@@ -4,7 +4,7 @@ use std::{collections::{BTreeMap, BTreeSet}, ffi::c_void, sync::Arc};
 const META: &str = ".blmeta";
 const ARCHIVE: &str = ".blrt";
 const BUILD: &str = ".blbuild";
-const FORMAT: u32 = 92;
+const FORMAT: u32 = 93;
 // Caller-owned views; original names and bodies stay in Object until encoding ends.
 #[repr(C)]
 struct CoffSectionView {

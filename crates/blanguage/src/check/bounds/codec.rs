@@ -151,10 +151,12 @@ struct NumericSelection {
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
 struct NumericExpression {
+    form: u32,
     operation: IntegerKind,
     scalar: ScalarTag,
     left: NumericOperand,
     right: NumericOperand,
+    selection: NumericSelection,
 }
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
@@ -512,9 +514,15 @@ impl NativeValue for IntegerExpression {
                 value.right = v3.into_frame();
                 value
             }
+            Self::Selection(index) => NumericExpression {
+                form: 1,
+                selection: index.0.into_frame(),
+                ..Default::default()
+            },
         }
     }
     fn from_frame(value: NumericExpression) -> Self {
+        if value.form == 1 { return Self::selection(Selector::from_frame(value.selection)); }
         Self::Binary(
             IntegerOperation::from_frame(value.operation),
             Scalar::from_frame(value.scalar),

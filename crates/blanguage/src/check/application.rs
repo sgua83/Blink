@@ -2837,6 +2837,7 @@ impl Builder<'_> {
                 .map(|scope| (scope, position)),
             index: index.regs[0],
             index_value,
+            index_expression: index.proof.index_expression(),
             parent: data.place.clone().map(Box::new),
             element_layout: address::Layout::of(&data.ty),
             index_range,
@@ -2875,17 +2876,23 @@ impl Builder<'_> {
                 "dataset 索引需要由本资源的长度条件或有界游标证明",
             );
         }
+        let mut calculation = None;
         if data.element_layout().1.owns_resources() {
             self.observe_bounds(&data.length);
             self.observe_bounds(&value);
-            if value.proof.domains(0).iter().any(|domain| matches!(domain, IndexDomain::Computed(_))) {
+            if value.proof.index_expression().is_some() {
                 let scope = self.path_proof(&value.ty, bounds::Proof::capture(&value));
                 let identity = scope.origins.first().into_iter().flatten().copied()
                     .fold(value.identity(), std::cmp::min);
                 value.proof = std::mem::take(&mut value.proof).with_identity(identity);
+                calculation = self.normalized_element_index(&value);
             }
         }
-        Ok(Some(data.element(&value, (value.minimum(), value.maximum()))))
+        let mut place = data.element(&value, (value.minimum(), value.maximum()));
+        if let Place::ApplicationElement { index_expression, .. } = &mut place {
+            *index_expression = calculation;
+        }
+        Ok(Some(place))
     }
     fn application_cpu_source(&mut self,identity:ValueIdentity,span:Span)->Result<()> {
         if let Some(data) = self
@@ -4042,7 +4049,7 @@ impl Builder<'_> {
         let mut model=unsafe { self.world.call(self.template_returned(Value{ty:ty.clone(),regs:(0..ty.components.len()).collect(),proof,uniform:false,literal:false,constant:None},true)).await }?;
         let parent=location.0.scope_indices(1,0);
         let index=ValueIdentity::ElementIndex(0);let selection=BTreeMap::from([(index,bounds::Proof::default().with_identity(index))]);
-        let mut input=residency::Input{parameter:0,fields:std::iter::once(residency::Part::Selected(Some(bounds::Operand::Value(index)))).chain(location.1.iter().copied().map(residency::Part::Field)).collect()};
+        let mut input=residency::Input{parameter:0,fields:std::iter::once(residency::Part::Selected(Some(bounds::Selector::Direct(bounds::Operand::Value(index))))).chain(location.1.iter().copied().map(residency::Part::Field)).collect()};
         residency::visit(&mut model,&mut input,&mut|data,input|data.residency=parent.project(&input.fields,&selection));
         Ok(Box::new(model))
     }
@@ -4235,15 +4242,15 @@ impl Builder<'_> {
     // These are the original already-evaluated metadata positions, not a second element table.
     fn element_selection(
         &self, place:Option<&Place>, first:usize, count:usize,
-        mut bind:impl FnMut(ValueIdentity,usize),
+        mut bind:impl FnMut(ValueIdentity,usize,Option<bounds::IntegerExpression>),
     )->Option<owned_presence::Presence> {
         let mut current=place;let mut selected=owned_presence::Presence::All;
         for depth in first..first+count{
-            let Place::ApplicationElement{index,index_value,parent,..}=current.map(Place::storage)?else{return None;};
+            let Place::ApplicationElement{index,index_value,index_expression,parent,..}=current.map(Place::storage)?else{return None;};
             let actual=match *index_value{
                 bounds::Operand::Constant(_,at)=>ownership::ApplicationIndex::Constant(at as u32),
                 bounds::Operand::Value(id)=>{
-                    bind(id,depth);
+                    bind(id,depth,*index_expression);
                     ownership::ApplicationIndex::Value(id,*index)
                 },
             };
@@ -4263,11 +4270,16 @@ impl Builder<'_> {
                     let count=scope.len()+1;
                     let precise=unique&&complete_scope&&paths.len()==1;
                     let qualifier=if precise{bounds::Condition::constant(true)}else{bounds::Condition::default()};
-                    let mut indices=BTreeMap::new();
-                    let selection=self.element_selection(Some(place),0,count,|id,depth|{
-                        if precise{indices.entry(id).or_insert(ValueIdentity::ElementIndex(depth));}
+                    let mut indices = BTreeMap::new();
+                    let mut computations = Vec::new();
+                    let selection = self.element_selection(Some(place),0,count,|id,depth,expression|{
+                        if precise {
+                            indices.entry(id).or_insert(ValueIdentity::ElementIndex(depth));
+                            computations.extend(expression.map(|value| (id, value)));
+                        }
                     });
-                    let selected=qualifier.logical(match &selection{Some(selection)=>selection.condition(),None=>bounds::Condition::default()},false);
+                    let selected = qualifier.logical(match &selection{Some(selection)=>selection.condition(),None=>bounds::Condition::default()},false)
+                        .with_index_computations(computations);
                     let presence=selection.filter(|_|precise);
                     let mut complete_scope=bounds::Condition::constant(complete_scope);
                     let mut target=Some(&mut *target);
@@ -4475,10 +4487,13 @@ impl Builder<'_> {
         }
         let original=model.clone();let storage=self.returned_storage(&model);let mut bindings=self.element_owner_bindings(data);
         let mut selected=Some(place);let mut depth=0;let mut parent_indices=BTreeMap::new();
-        while let Some(Place::ApplicationElement{index_value,index_range,parent,..})=selected.map(Place::storage){
-            let proof = bounds::Proof::element_operand(*index_value, *index_range);
+        while let Some(Place::ApplicationElement{index_value,index_expression,index_range,parent,..})=selected.map(Place::storage){
+            let proof = self.path_proof(
+                &Ty::scalar(Scalar::U32), bounds::Proof::element_operand(*index_value, *index_range)
+                    .with_domains(index_expression.iter().copied().map(IndexDomain::Computed).collect()),
+            );
             if depth!=0{parent_indices.insert(ValueIdentity::ElementIndex(depth-1),proof.clone());}
-            if let bounds::Operand::Value(identity) = *index_value {
+            for &identity in proof.origins.first().into_iter().flatten() {
                 bindings.entry(identity).or_insert_with(|| proof.clone());
             }
             bindings.insert(ValueIdentity::ElementIndex(depth), proof);
@@ -4505,7 +4520,12 @@ impl Builder<'_> {
             let mut fields=data.projection.clone();fields.extend_from_slice(path);
             let index=match place.storage(){Place::ApplicationElement{index_value,..}=>Some(*index_value),_=>None};
             if data.elements.known().is_none(){
-                let path=std::iter::once(residency::Part::Selected(index)).chain(fields.iter().copied().map(residency::Part::Field)).collect::<Vec<_>>();
+                let selected = match place.storage() {
+                    Place::ApplicationElement { index_expression, .. } => index_expression.and_then(bounds::IntegerExpression::selector),
+                    _ => None,
+                }.or_else(|| index.map(bounds::Selector::Direct));
+                let part = residency::Part::Selected(selected);
+                let path=std::iter::once(part).chain(fields.iter().copied().map(residency::Part::Field)).collect::<Vec<_>>();
                 // Data's stored parent indices exclude the element being loaded now.
                 child.residency=data.residency.element_indices(&parent_indices).project(&path,&bindings);
             }
@@ -4587,8 +4607,8 @@ impl Builder<'_> {
                             }
                         }
                         let mut selected=Some(place);let mut depth=0;
-                        while let Some(Place::ApplicationElement{index_value,index_range,parent,..})=selected.map(Place::storage){
-                            bindings.insert(ValueIdentity::ElementIndex(depth),bounds::Proof::element_operand(*index_value,*index_range));
+                        while let Some(Place::ApplicationElement{index_value,index_expression,index_range,parent,..})=selected.map(Place::storage){
+                            bindings.insert(ValueIdentity::ElementIndex(depth),bounds::Proof::element_operand(*index_value,*index_range).with_domains(index_expression.iter().copied().map(IndexDomain::Computed).collect()));
                             selected=parent.as_deref();depth+=1;
                         }
                         self.bind_element_resource_borrows(data,&parent,&mut bindings);
@@ -4793,7 +4813,7 @@ impl Builder<'_> {
                 for(scope,mut complete,_)in scopes{
                     let count=scope.len()+1;
                     let qualifier=if unique&&complete{bounds::Condition::constant(true)}else{bounds::Condition::default()};
-                    let selection=self.element_selection(reference.data.place.as_ref(),1,scope.len(),|_,_|{});
+                    let selection=self.element_selection(reference.data.place.as_ref(),1,scope.len(),|_,_,_|{});
                     let selected=qualifier.logical(match selection{Some(selection)=>selection.condition(),None=>bounds::Condition::default()},false);
                     let mut selected_data=Some(&mut *data);
                     for fields in scope{selected_data=match selected_data{

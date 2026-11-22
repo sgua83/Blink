@@ -316,6 +316,7 @@ enum Place {
         initialization: Option<(Position, ownership::ApplicationIndex)>,
         index: Reg,
         index_value: bounds::Operand,
+        index_expression: Option<bounds::IntegerExpression>,
         parent: Option<Box<Place>>,
         element_layout: address::Layout,
         index_range: (u32, u32),

@@ -282,22 +282,24 @@ return ReadStatus::IntegerOperation;
 }
 
 extern "C" void numeric_write_expression(NumericExpression value,address output,cfn<void,address,address,u64> append) on cpu requires nonzero(append) {
-if(true){word(0,output,append);
+word(value.form,output,append);
+if(value.form==1){numeric_write_selection(value.selection,output,append);return;}
 numeric_write_integer(value.operation,output,append);
 numeric_write_scalar(value.scalar,output,append);
 numeric_write_operand(value.left,output,append);
 numeric_write_operand(value.right,output,append);
 }
-}
 
 extern "C" ReadStatus numeric_read_expression(Bytes input,inout u64 position,inout NumericExpression output) on cpu {
 ReadValue tag=fixed_value(input,position,4);if(tag.status!=ReadStatus::Success){return tag.status;}
 if(tag.value==0u64){
+output.form=0;
 ReadStatus status_29=numeric_read_integer(input,position,output.operation);if(status_29!=ReadStatus::Success){return status_29;}
 ReadStatus status_30=numeric_read_scalar(input,position,output.scalar);if(status_30!=ReadStatus::Success){return status_30;}
 ReadStatus status_31=numeric_read_operand(input,position,output.left);if(status_31!=ReadStatus::Success){return status_31;}
 ReadStatus status_32=numeric_read_operand(input,position,output.right);if(status_32!=ReadStatus::Success){return status_32;}
 return ReadStatus::Success;}
+if(tag.value==1u64){output.form=1;return numeric_read_selection(input,position,output.selection);}
 return ReadStatus::IntegerExpression;
 }
 

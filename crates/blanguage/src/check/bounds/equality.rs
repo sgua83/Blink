@@ -174,10 +174,9 @@ unsafe extern "C" fn step(slot: Slot) -> ComputedStep {
         let root = |id| context.roots.get(&id).copied().unwrap_or(id);
         let expression = expression.map(|id| Some(root(id))).unwrap();
         let resolved = root(*result);
-        if context.roots.contains_key(result) {
+        if context.roots.contains_key(result) && let IntegerExpression::Binary(op, scalar, a, b) = expression {
             use IntegerOperation::{Add, Subtract};
             use Operand::{Constant, Value};
-            let IntegerExpression::Binary(op, scalar, a, b) = expression;
             context.inverse = match (op, a, b) {
                 (Add, Value(input), constant @ Constant(..))
                 | (Add, constant @ Constant(..), Value(input)) => Some((

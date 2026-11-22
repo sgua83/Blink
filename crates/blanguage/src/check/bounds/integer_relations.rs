@@ -276,13 +276,12 @@ pub(super) fn operand(
 struct ExpressionFrame<'a> {
     query: *mut IntegerQuery<'a>,
     scalar: Scalar,
-    expression: *const IntegerExpression,
+    operands: [Operand; 2],
     values: [*mut IntegerAffine; 2],
 }
 unsafe extern "C" fn expression_operand(s: Slot, side: u32) -> Affine {
     let c = unsafe { frame::<ExpressionFrame<'_>>(s) };
-    let IntegerExpression::Binary(_, _, a, b) = unsafe { *c.expression };
-    let value = unsafe { &mut *c.query }.operand([a, b][side as usize], c.scalar);
+    let value = unsafe { &mut *c.query }.operand(c.operands[side as usize], c.scalar);
     let out = c.values[side as usize];
     unsafe { out.write(value) };
     Affine::from(unsafe { &*out })
@@ -314,12 +313,21 @@ pub(super) fn expression(
     expression: IntegerExpression,
     scalar: Scalar,
 ) -> Option<IntegerAffine> {
+    let operands = match expression {
+        IntegerExpression::Binary(_, _, a, b) => [a, b],
+        IntegerExpression::Selection(index) => {
+            if scalar != Scalar::U32 { return None; }
+            let value = index.0.affine(query)?;
+            let (lower, upper) = query.interval(value, scalar)?;
+            return (lower >= 0 && upper <= i128::from(u32::MAX)).then_some(value);
+        }
+    };
     let mut a = MaybeUninit::<IntegerAffine>::uninit();
     let mut b = MaybeUninit::<IntegerAffine>::uninit();
     let mut c = ExpressionFrame {
         query,
         scalar,
-        expression: &expression,
+        operands,
         values: [a.as_mut_ptr(), b.as_mut_ptr()],
     };
     let value = unsafe {

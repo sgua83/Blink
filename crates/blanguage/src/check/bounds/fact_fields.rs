@@ -343,7 +343,15 @@ pub(super) struct ExpressionView {
 }
 pub(super) fn expression(value: &super::IntegerExpression) -> ExpressionView {
     use super::{IntegerExpression, IntegerOperation};
-    let IntegerExpression::Binary(op, scalar, left, right) = value;
+    let IntegerExpression::Binary(op, scalar, left, right) = value else {
+        return ExpressionView {
+            present: 1,
+            operation: 10,
+            scalar: ptr::from_ref(&Scalar::U32).cast(),
+            definition: ptr::from_ref(value).cast(),
+            ..Default::default()
+        };
+    };
     let operation = match op {
         IntegerOperation::Add => 0,
         IntegerOperation::Subtract => 1,
