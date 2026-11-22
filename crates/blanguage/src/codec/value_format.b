@@ -487,6 +487,101 @@ extern "C" SourceFormat source_texture_format(address source, Host host) on cpu 
 }
 
 
+struct SourceAccessName { u32 count; array<u8,6> bytes; };
+SourceAccessName source_access_name(u32 access) on cpu {
+    if (access==1) { return SourceAccessName(4,"read\0\0"); }
+    if (access==2) { return SourceAccessName(5,"write\0"); }
+    if (access==3) { return SourceAccessName(5,"inout\0"); }
+    if (access==4) { return SourceAccessName(6,"atomic"); }
+    return SourceAccessName(0,"\0\0\0\0\0\0");
+}
+Bytes source_syntax_base(Bytes name) on cpu {
+    u64 count=0u64;
+    while (count<name.count) {
+        u8 value=unsafe_position<u8>(unsafe_address(address_bits(name.data)+count));
+        if (value==60) { break; }
+        count+=1u64;
+    }
+    return Bytes(name.data,count);
+}
+u32 source_syntax_canonical(Bytes name) on cpu {
+    u64 index=1u64;
+    while (index<name.count) {
+        u8 previous=unsafe_position<u8>(unsafe_address(address_bits(name.data)+index-1u64));
+        u8 current=unsafe_position<u8>(unsafe_address(address_bits(name.data)+index));
+        if (previous==58&&current==58) { return 1; }
+        index+=1u64;
+    }
+    return 0;
+}
+void source_syntax_named<const N:u32 in {3,5}>(address output,read array<u8,N> name,u32 canonical,u64 arguments,SourceSyntaxHost construct) on cpu requires nonzero(construct.name) {
+    construct.name(output,Bytes(address_of(name[0]),u64(N)),canonical,arguments);
+}
+extern "C" void function_syntax(address source,address output,Host host,SourceSyntaxHost construct) on cpu requires nonzero(host.function) requires nonzero(host.parameter) requires nonzero(construct.name) requires nonzero(construct.name_argument) requires nonzero(construct.contracts) {
+    Function value=host.function(source);
+    source_syntax_named(output,"cfn",0,value.parameters.count+1u64,construct);
+    construct.name_argument(value.result,output,Bytes(address(),0u64));
+    u64 index=0u64;
+    while (index<value.parameters.count) {
+        Parameter parameter=host.parameter(item(value.parameters,index));
+        SourceAccessName wrapper=source_access_name(parameter.access);
+        construct.name_argument(parameter.ty,output,Bytes(address_of(wrapper.bytes[0]),u64(wrapper.count)));
+        index+=1u64;
+    }
+    if (value.contracts.count!=0u64) { construct.contracts(source,output); }
+}
+extern "C" void type_syntax(address source,address output,Host host,SourceSyntaxHost construct) on cpu requires nonzero(host.ty) requires nonzero(host.function) requires nonzero(host.parameter) requires nonzero(construct.name) requires nonzero(construct.type_argument) requires nonzero(construct.name_argument) requires nonzero(construct.contracts) requires nonzero(construct.dataset) requires nonzero(construct.view) requires nonzero(construct.value_argument) requires nonzero(construct.release_argument) {
+    Type value=host.ty(source);
+    if (address_bits(value.function)!=0u64) { function_syntax(value.function,output,host,construct);return; }
+    if (value.cleanup_present!=0) {
+        source_syntax_named(output,"owned",0,2u64,construct);
+        construct.type_argument(value.arguments,0u64,output);
+        construct.release_argument(output,value.cleanup);
+        return;
+    }
+    if (address_bits(value.dataset)!=0u64) {
+        u32 present=value.values.count!=0u64?1:0;
+        u32 count=0;
+        if (present!=0) { count=unsafe_position<u32>(item(value.values,0u64)); }
+        construct.dataset(value.dataset,output,present,count);
+        return;
+    }
+    if (address_bits(value.array)!=0u64) {
+        source_syntax_named(output,"array",0,2u64,construct);
+        construct.type_argument(Span(value.array,1u64,value.arguments.stride),0u64,output);
+        construct.value_argument(value.values,0u64,output);
+        return;
+    }
+    if (address_bits(value.view)!=0u64) { type_syntax(value.view,output,host,construct);construct.view(output);return; }
+    Bytes name=source_syntax_base(value.name);
+    construct.name(output,name,source_syntax_canonical(name),value.arguments.count+value.values.count);
+    u64 index=0u64;
+    while (index<value.arguments.count) { construct.type_argument(value.arguments,index,output);index+=1u64; }
+    index=0u64;
+    while (index<value.values.count) { construct.value_argument(value.values,index,output);index+=1u64; }
+}
+extern "C" void write_function_name(address source,address output,Host host) on cpu requires nonzero(host.append) requires nonzero(host.ty) requires nonzero(host.function) requires nonzero(host.parameter) requires nonzero(host.type_name) requires nonzero(host.argument) requires nonzero(host.shape) requires nonzero(host.expression) requires nonzero(host.predicate) requires nonzero(host.condition) requires nonzero(host.constant) {
+    Function value=host.function(source);
+    name_token("cfn",output,host);byte(u8(60),output,host.append);
+    write_source_type_name(value.result,output,host);
+    u64 index=0u64;
+    while (index<value.parameters.count) {
+        byte(u8(44),output,host.append);
+        Parameter parameter=host.parameter(item(value.parameters,index));
+        SourceAccessName wrapper=source_access_name(parameter.access);
+        if (wrapper.count!=0) {
+            name_bytes(Bytes(address_of(wrapper.bytes[0]),u64(wrapper.count)),output,host);
+            byte(u8(60),output,host.append);
+        }
+        write_source_type_name(parameter.ty,output,host);
+        if (wrapper.count!=0) { byte(u8(62),output,host.append); }
+        index+=1u64;
+    }
+    byte(u8(62),output,host.append);
+    write_contract_names(value.contracts,output,host);
+}
+
+
 ReadBytes take_bytes(Bytes input,inout u64 position,u64 size) on cpu {
  if(size>0xffffffffffffffffu64-position){return ReadBytes(Bytes(address(),0u64),ReadStatus::Overflow);}
  u64 end=position+size;

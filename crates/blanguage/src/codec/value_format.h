@@ -90,6 +90,21 @@ extern "C" SourceTexture source_texture(address source,u32 arrays,Host host) on 
 extern "C" SourceFormat source_texture_format(address source,Host host) on cpu requires nonzero(host.type_name) requires nonzero(host.argument);
 
 
+struct SourceSyntaxHost {
+    cfn<void,address,Bytes,u32,u64> name;
+    cfn<void,Span,u64,address> type_argument;
+    cfn<void,address,address,Bytes> name_argument;
+    cfn<void,address,address> contracts;
+    cfn<void,address,address,u32,u32> dataset;
+    cfn<void,Span,u64,address> value_argument;
+    cfn<void,address,Bytes> release_argument;
+    cfn<void,address> view;
+};
+extern "C" void type_syntax(address source,address output,Host host,SourceSyntaxHost construct) on cpu requires nonzero(host.ty) requires nonzero(host.function) requires nonzero(host.parameter) requires nonzero(construct.name) requires nonzero(construct.type_argument) requires nonzero(construct.name_argument) requires nonzero(construct.contracts) requires nonzero(construct.dataset) requires nonzero(construct.view) requires nonzero(construct.value_argument) requires nonzero(construct.release_argument);
+extern "C" void function_syntax(address source,address output,Host host,SourceSyntaxHost construct) on cpu requires nonzero(host.function) requires nonzero(host.parameter) requires nonzero(construct.name) requires nonzero(construct.name_argument) requires nonzero(construct.contracts);
+extern "C" void write_function_name(address source,address output,Host host) on cpu requires nonzero(host.append) requires nonzero(host.ty) requires nonzero(host.function) requires nonzero(host.parameter) requires nonzero(host.type_name) requires nonzero(host.argument) requires nonzero(host.shape) requires nonzero(host.expression) requires nonzero(host.predicate) requires nonzero(host.condition) requires nonzero(host.constant);
+
+
 enum ReadStatus:u32 { Success=0; Overflow=1; Truncated=2; Boolean=3; Scalar=4; Access=5; Target=6; Shape=7; Argument=8; Expression=9; Predicate=10; Condition=11; RustError=12; Identity=13; Operand=14; IntegerOperation=15; IntegerExpression=16; Comparison=17; FloatingForm=18; IndexDomain=19; Fact=20; ConditionVersion=21; ConditionNode=22; ContractAddressRoot=23; ContractInitializationSource=24; ContractElementFacts=25; ContractDataLayout=26; ContractReturned=27; ContractTaskProjection=28; ContractExclusion=29; ContractViewAccess=30; ContractResidencyPart=31; ContractResidencyOrigin=32; ContractResidency=33; ContractResidencyOutputKind=34; ContractTextureDimension=35; ContractTextureFormat=36; ContractElementFact=37; ContractCallParameterKind=38; ContractContractKind=39; ContractRelationOp=40; ContractOwnership=41; ContractAddressIdentity=42; ContractBorrowSource=43; ResourceSortOrder=44; ResourceCollectiveOperator=45; ResourceOperation=46; ResourceImage=47; ResourceLinkedImage=48; ResourceModuleTarget=49; ResourceNativeSymbol=50; ResourceRangeResult=51; ResourceContinuationCode=52; ResourceCpuStageCode=53;  };
 
 enum ScalarTag:u32 { F32=0; U32=1; I32=2; Bool=3; U64=4; I64=5; F64=6; U8=7; I8=8; U16=9; I16=10; };

@@ -318,6 +318,128 @@ pub(crate) fn texture_format(value: &ast::TypeName) -> Option<ast::TextureFormat
 }
 
 
+// B selects syntax structure; these callbacks only construct the actual AST.
+#[repr(C)]
+struct SourceSyntaxHost {
+    name: unsafe extern "C" fn(*mut c_void, Bytes, u32, usize),
+    type_argument: unsafe extern "C" fn(Span, usize, *mut c_void),
+    name_argument: unsafe extern "C" fn(Address, *mut c_void, Bytes),
+    contracts: unsafe extern "C" fn(Address, *mut c_void),
+    dataset: unsafe extern "C" fn(Address, *mut c_void, u32, u32),
+    value_argument: unsafe extern "C" fn(Span, usize, *mut c_void),
+    release_argument: unsafe extern "C" fn(*mut c_void, Bytes),
+    view: unsafe extern "C" fn(*mut c_void),
+}
+unsafe extern "C" {
+    #[link_name="codec.value_format::type_syntax"]
+    fn native_type_syntax(source: Address, output: *mut c_void, host: Host, construct: SourceSyntaxHost);
+    #[link_name="codec.value_format::function_syntax"]
+    fn native_function_syntax(source: Address, output: *mut c_void, host: Host, construct: SourceSyntaxHost);
+    #[link_name="codec.value_format::write_function_name"]
+    fn native_function_name(source: Address, output: *mut c_void, host: Host);
+}
+pub(crate) fn syntax(value: &ir::Ty) -> ast::TypeName {
+    let mut result=ast::TypeName::named("");
+    unsafe { native_type_syntax(address(value),ptr::from_mut(&mut result).cast(),HOST,SYNTAX_HOST); }
+    result
+}
+pub(crate) fn function_syntax(mut value: ir::CFunctionType) -> ast::TypeName {
+    let mut result=ast::TypeName::named("");
+    // The consumed input owns every name and contract until it is moved below.
+    let host=Host { function: syntax_owned_function, parameter: syntax_owned_parameter, ..HOST };
+    let construct=SourceSyntaxHost { name_argument: syntax_take_argument, contracts: syntax_take_contracts, ..SYNTAX_HOST };
+    unsafe { native_function_syntax(ptr::from_mut(&mut value).cast_const().cast(),ptr::from_mut(&mut result).cast(),host,construct); }
+    result
+}
+pub(crate) fn function_name(value: &ir::CFunctionType) -> String {
+    let mut result=String::new();
+    let host=Host { append: append_name, ..HOST };
+    unsafe { native_function_name(address(value),ptr::from_mut(&mut result).cast(),host); }
+    result
+}
+fn syntax_string(value: Bytes) -> String {
+    // Source names are Rust UTF-8; B supplies only its fixed ASCII keywords.
+    let bytes=unsafe { std::slice::from_raw_parts(value.data,value.count) };
+    unsafe { std::str::from_utf8_unchecked(bytes) }.to_owned()
+}
+unsafe extern "C" fn syntax_name(output: *mut c_void, name: Bytes, canonical: u32, arguments: usize) {
+    let mut value=ast::TypeName::named(syntax_string(name));
+    value.canonical=canonical!=0;
+    value.arguments=Vec::with_capacity(arguments);
+    unsafe { *output.cast::<ast::TypeName>()=value; }
+}
+unsafe extern "C" fn syntax_type_argument(source: Span, index: usize, output: *mut c_void) {
+    // B selects the child; the original typed slice retains its indexing semantics.
+    let values=unsafe { std::slice::from_raw_parts(source.data.cast::<ir::Ty>(),source.count) };
+    let value=syntax(&values[index]);
+    unsafe { &mut *output.cast::<ast::TypeName>() }.arguments.push(ast::GenericArgument::Type(value));
+}
+fn syntax_append_name(mut value: ast::TypeName, output: *mut c_void, wrapper: Bytes) {
+    if wrapper.count!=0 {
+        let mut position=ast::TypeName::named(syntax_string(wrapper));
+        position.arguments=vec![ast::GenericArgument::Type(value)];
+        value=position;
+    }
+    unsafe { &mut *output.cast::<ast::TypeName>() }.arguments.push(ast::GenericArgument::Type(value));
+}
+unsafe extern "C" fn syntax_name_argument(source: Address, output: *mut c_void, wrapper: Bytes) {
+    let value=unsafe { &*source.cast::<ast::TypeName>() }.clone();
+    syntax_append_name(value,output,wrapper);
+}
+unsafe extern "C" fn syntax_take_argument(source: Address, output: *mut c_void, wrapper: Bytes) {
+    // Owned projections below originate in mutable pointers, never shared casts.
+    let value=std::mem::replace(unsafe { &mut *source.cast_mut().cast::<ast::TypeName>() },ast::TypeName::named(""));
+    syntax_append_name(value,output,wrapper);
+}
+unsafe extern "C" fn syntax_contracts(source: Address, output: *mut c_void) {
+    let value=unsafe { &*source.cast::<ir::CFunctionType>() };
+    unsafe { &mut *output.cast::<ast::TypeName>() }.contracts=Some(Box::new(value.contracts.clone()));
+}
+unsafe extern "C" fn syntax_take_contracts(source: Address, output: *mut c_void) {
+    let value=unsafe { &mut *source.cast_mut().cast::<ir::CFunctionType>() };
+    unsafe { &mut *output.cast::<ast::TypeName>() }.contracts=Some(Box::new(std::mem::take(&mut value.contracts)));
+}
+unsafe extern "C" fn syntax_dataset(source: Address, output: *mut c_void, present: u32, count: u32) {
+    let value=unsafe { &*source.cast::<ast::TypeName>() };
+    // The original count is replaced, so only fields consumed by the result are copied.
+    let result=ast::TypeName {
+        name:value.name.clone(),canonical:value.canonical,arguments:value.arguments.clone(),
+        dataset:true,view:value.view,tile:value.tile,
+        count:(present!=0).then_some(ast::Shape::Literal(count)),contracts:value.contracts.clone(),
+    };
+    unsafe { *output.cast::<ast::TypeName>()=result; }
+}
+unsafe extern "C" fn syntax_value_argument(source: Span, index: usize, output: *mut c_void) {
+    let values=unsafe { std::slice::from_raw_parts(source.data.cast::<u32>(),source.count) };
+    let value=values[index];
+    unsafe { &mut *output.cast::<ast::TypeName>() }.arguments.push(ast::GenericArgument::Value(ast::Shape::Literal(value)));
+}
+unsafe extern "C" fn syntax_release_argument(output: *mut c_void, name: Bytes) {
+    let mut value=ast::TypeName::named(syntax_string(name));value.canonical=true;
+    unsafe { &mut *output.cast::<ast::TypeName>() }.arguments.push(ast::GenericArgument::Type(value));
+}
+unsafe extern "C" fn syntax_view(output: *mut c_void) {
+    unsafe { &mut *output.cast::<ast::TypeName>() }.view=true;
+}
+unsafe extern "C" fn syntax_owned_function(source: Address) -> Function {
+    let value=unsafe { &mut *source.cast_mut().cast::<ir::CFunctionType>() };
+    Function {
+        result: ptr::from_mut(&mut value.result).cast_const().cast(),
+        parameters: Span { data: value.parameters.as_mut_ptr().cast_const().cast(),count:value.parameters.len(),stride:std::mem::size_of::<(ast::Access,ast::TypeName)>() },
+        contracts: Span::of(&value.contracts),
+    }
+}
+unsafe extern "C" fn syntax_owned_parameter(source: Address) -> Parameter {
+    let value=unsafe { &mut *source.cast_mut().cast::<(ast::Access,ast::TypeName)>() };
+    Parameter { access:value.0 as u32,ty:ptr::from_mut(&mut value.1).cast_const().cast() }
+}
+const SYNTAX_HOST:SourceSyntaxHost=SourceSyntaxHost {
+    name:syntax_name,type_argument:syntax_type_argument,name_argument:syntax_name_argument,
+    contracts:syntax_contracts,dataset:syntax_dataset,
+    value_argument:syntax_value_argument,release_argument:syntax_release_argument,view:syntax_view,
+};
+
+
 // The reader owns only synchronous construction frames and the original Result.
 pub(crate) mod reading;
 

@@ -218,48 +218,7 @@ pub struct Ty {
     pub function: Option<Box<CFunctionType>>,
 }
 impl Ty {
-    pub(crate) fn syntax(&self) -> crate::ast::TypeName {
-        if let Some(function) = &self.function { return (**function).clone().into_syntax(); }
-        if let Some(cleanup) = &self.cleanup {
-            let mut ty=crate::ast::TypeName::named("owned");
-            let mut release=crate::ast::TypeName::named(cleanup);release.canonical=true;
-            ty.arguments=vec![crate::ast::GenericArgument::Type(self.arguments[0].syntax()),crate::ast::GenericArgument::Type(release)];return ty;
-        }
-        if let Some(element) = &self.dataset {
-            let mut ty = (**element).clone();
-            ty.dataset = true;
-            ty.count = self.values.first().map(|v| crate::ast::Shape::Literal(*v));
-            return ty;
-        }
-        if let Some(element) = &self.array {
-            let mut ty = crate::ast::TypeName::named("array");
-            ty.arguments = vec![
-                crate::ast::GenericArgument::Type(element.syntax()),
-                crate::ast::GenericArgument::Value(crate::ast::Shape::Literal(self.values[0])),
-            ];
-            return ty;
-        }
-        if let Some(element) = &self.view {
-            let mut ty = element.syntax();
-            ty.view = true;
-            return ty;
-        }
-        let mut ty = crate::ast::TypeName::named(
-            self.name
-                .split_once('<')
-                .map_or(self.name.as_str(), |(base, _)| base),
-        );
-        ty.canonical = ty.name.contains("::");
-        ty.arguments = self
-            .arguments
-            .iter()
-            .map(|ty| crate::ast::GenericArgument::Type(ty.syntax()))
-            .chain(self.values.iter().map(|value| {
-                crate::ast::GenericArgument::Value(crate::ast::Shape::Literal(*value))
-            }))
-            .collect();
-        ty
-    }
+    pub(crate) fn syntax(&self) -> crate::ast::TypeName { crate::codec::types::syntax(self) }
     pub(crate) fn task_result(&self) -> Option<&Self> {
         if self.name.starts_with("task<") { self.arguments.first() } else { None }
     }
@@ -2314,56 +2273,15 @@ impl Ty {
 }
 
 impl CFunctionType {
-    fn access_wrapper(access: Access) -> Option<&'static str> {
-        match access {
-            Access::Value => None,
-            Access::Read => Some("read"),
-            Access::Write => Some("write"),
-            Access::InOut => Some("inout"),
-            Access::Atomic => Some("atomic"),
-        }
-    }
 
-    pub(crate) fn into_syntax(self) -> crate::ast::TypeName {
-        use crate::ast::{GenericArgument, TypeName};
-        let mut syntax = TypeName::named("cfn");
-        syntax.arguments.reserve(self.parameters.len() + 1);
-        syntax.arguments.push(GenericArgument::Type(self.result));
-        syntax.arguments.extend(self.parameters.into_iter().map(|(access, ty)| {
-            let ty = if let Some(wrapper) = Self::access_wrapper(access) {
-                let mut position = TypeName::named(wrapper);
-                position.arguments.push(GenericArgument::Type(ty));
-                position
-            } else {
-                ty
-            };
-            GenericArgument::Type(ty)
-        }));
-        if !self.contracts.is_empty() { syntax.contracts = Some(Box::new(self.contracts)); }
-        syntax
-    }
+    pub(crate) fn into_syntax(self) -> crate::ast::TypeName { crate::codec::types::function_syntax(self) }
 
     #[cfg(feature = "compiler")]
     pub(crate) fn into_ty(self) -> Ty {
-        use crate::ast::{write_type_contracts, write_type_name};
-        let mut name = String::from("cfn<");
-        write_type_name(&mut name, &self.result);
-        for (access, ty) in &self.parameters {
-            name.push(',');
-            if let Some(wrapper) = Self::access_wrapper(*access) {
-                name.push_str(wrapper);
-                name.push('<');
-                write_type_name(&mut name, ty);
-                name.push('>');
-            } else {
-                write_type_name(&mut name, ty);
-            }
-        }
-        name.push('>');
-        write_type_contracts(&mut name, &self.contracts);
-        let mut ty = Ty::scalar(Scalar::U64);
-        ty.name = name;
-        ty.function = Some(Box::new(self));
+        let name=crate::codec::types::function_name(&self);
+        let mut ty=Ty::scalar(Scalar::U64);
+        ty.name=name;
+        ty.function=Some(Box::new(self));
         ty
     }
 }
