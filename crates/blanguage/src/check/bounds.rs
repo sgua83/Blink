@@ -919,14 +919,22 @@ impl Proof {
                 };
             }
             Fact::Equal(a, b) => {
-                let Some((left,right))=Self::call_identity(a,bindings).zip(Self::call_identity(b,bindings)) else{return None;};
+                let a = Proof::bound_input(bindings, &a)?;
+                let b = Proof::bound_input(bindings, &b)?;
+                let (al, ah) = a.range(0);
+                let (bl, bh) = b.range(0);
+                if ah < bl || bh < al {
+                    return Some(Clause::impossible());
+                }
+                let left = a.known_identity(0)?;
+                let right = b.known_identity(0)?;
                 let mut facts=Facts::from([Fact::equal(left,right)]);
                 for(source,target)in [(a,right),(b,left)] {
-                    facts.extend(Proof::bound_input(bindings, &source).unwrap().domains(0).iter().copied().map(|domain|Fact::Index(target,domain)));
+                    facts.extend(source.domains(0).iter().copied().map(|domain|Fact::Index(target,domain)));
                 }
                 let mut clause=Clause::facts(facts);
                 for source in [a,b] {
-                    if let Some(condition)=Proof::bound_input(bindings, &source).unwrap().component_condition(0){
+                    if let Some(condition)=source.component_condition(0){
                         clause=Clause::both(&clause,&Clause::either(&condition.cases[0],&condition.cases[1]));
                     }
                 }
