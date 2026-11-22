@@ -3092,13 +3092,16 @@ impl<'a> Builder<'a> {
         let Some((scalar,n))=operators::floating_math(&args) else {
             return self.fail(span,"B154",format!("{op} 需要相同浮点类型；f32 向量须维度相容"));
         };
-        let uniform = args.iter().all(|v| v.uniform);
         let operation = signature.operation().ok_or_else(|| Diagnostic {
             source: self.scope.source().clone(),
             span,
             code: "B179",
             message: format!("未知数学运算 {op}"),
         })?;
+        Ok(self.lower_math(operation,args,scalar,n))
+    }
+    fn lower_math(&mut self,operation:MathOp,args:Vec<Value>,scalar:Scalar,n:usize)->Value {
+        let uniform=args.iter().all(|value|value.uniform);
         let mut regs = Vec::new();
         for i in 0..n {
             let dst = self.reg(scalar);
@@ -3109,14 +3112,14 @@ impl<'a> Builder<'a> {
             });
             regs.push(dst);
         }
-        Ok(Value {
+        Value {
             proof: bounds::math(operation, &args),
             literal: false,
             ty: Ty::vector(scalar, n),
             regs,
             uniform,
             constant: None,
-        })
+        }
     }
     async fn builtin_call(&mut self, name: &str, args: &Expressions, span: Span, record:Option<Option<Ty>>) -> Result<Option<Value>> {
         if name == "c_function" { return unsafe { self.world.call(self.c_function_value(args, span)).await }.map(Some); }
@@ -3314,19 +3317,10 @@ impl<'a> Builder<'a> {
             let Some(values) = values(self).await? else { return Ok(None); };
             return self.matrix_intrinsic(matrix_builtin,values,span).map(Some);
         }
-        if name == "dot" {
+        let geometry_builtin=operators::GeometryBuiltin::recognize(name);
+        if geometry_builtin!=operators::GeometryBuiltin::Unknown {
             let Some(values) = values(self).await? else { return Ok(None); };
-            return self.dot_value(values, span).map(Some);
-        }
-        if matches!(name, "length" | "normalize") {
-            let Some(values) = values(self).await? else { return Ok(None); };
-            return self
-                .length_value(values, name == "normalize", span)
-                .map(Some);
-        }
-        if name == "cross" {
-            let Some(values) = values(self).await? else { return Ok(None); };
-            return self.cross_value(values, span).map(Some);
+            return self.geometry_value(geometry_builtin,values,span).map(Some);
         }
         if name == "clamp" {
             let Some(values) = values(self).await? else { return Ok(None); };
@@ -4140,130 +4134,6 @@ impl<'a> Builder<'a> {
             regs: flat,
             uniform,
             constant,
-        });
-    }
-    fn dot_value(&mut self, values: Vec<Value>, span: Span) -> Result<Value> {
-        if values.len() != 2 {
-            return self.fail(span, "B153", "dot 需要两个向量");
-        }
-        self.require_same(&values[0].ty, &values[1].ty, span)?;
-        if values[0].ty.components[0].0 != Scalar::F32 || !values[0].ty.is_numeric() {
-            return self.fail(span, "B154", "dot 需要 float 向量");
-        }
-        let p = self.binary("*", values[0].clone(), values[1].clone(), span,None)?;
-        let mut r = Value {
-            proof: bounds::Proof::default(),
-            literal: false,
-            ty: Ty::scalar(Scalar::F32),
-            regs: vec![p.regs[0]],
-            uniform: p.uniform,
-            constant: None,
-        };
-        for x in p.regs.iter().skip(1) {
-            r = self.binary(
-                "+",
-                r,
-                Value {
-                    proof: bounds::Proof::default(),
-                    literal: false,
-                    ty: Ty::scalar(Scalar::F32),
-                    regs: vec![*x],
-                    uniform: p.uniform,
-                    constant: None,
-                },
-                span,
-                None,
-            )?;
-        }
-        return Ok(r);
-    }
-    fn length_value(
-        &mut self,
-        mut values: Vec<Value>,
-        normalize: bool,
-        span: Span,
-    ) -> Result<Value> {
-        if values.len() != 1 {
-            return self.fail(span, "B153", "length／normalize 需要一个向量");
-        }
-        let v = values.remove(0);
-        if v.ty.components[0].0 != Scalar::F32 || !v.ty.fields.is_empty() || v.ty.array.is_some() {
-            return self.fail(span, "B154", "需要 float 向量");
-        }
-        let p = self.binary("*", v.clone(), v.clone(), span,None)?;
-        let mut r = Value {
-            proof: bounds::Proof::default(),
-            literal: false,
-            ty: Ty::scalar(Scalar::F32),
-            regs: vec![p.regs[0]],
-            uniform: p.uniform,
-            constant: None,
-        };
-        for x in p.regs.iter().skip(1) {
-            r = self.binary(
-                "+",
-                r,
-                Value {
-                    proof: bounds::Proof::default(),
-                    literal: false,
-                    ty: Ty::scalar(Scalar::F32),
-                    regs: vec![*x],
-                    uniform: p.uniform,
-                    constant: None,
-                },
-                span,
-                None,
-            )?;
-        }
-        let length = self.math("sqrt", operators::MathSignature::recognize("sqrt"), vec![r], span)?;
-        if !normalize {
-            Ok(length)
-        } else {
-            self.binary("/", v, length, span,None)
-        }
-    }
-    fn cross_value(&mut self, values: Vec<Value>, span: Span) -> Result<Value> {
-        if values.len() != 2 {
-            return self.fail(span, "B153", "cross 需要两个 float3");
-        }
-        for v in &values {
-            self.require_same(&Ty::vector(Scalar::F32, 3), &v.ty, span)?;
-        }
-        let a = &values[0];
-        let b = &values[1];
-        let mut regs = Vec::new();
-        for (i, j) in [(1, 2), (2, 0), (0, 1)] {
-            let value = |r, u| Value {
-                proof: bounds::Proof::default(),
-                literal: false,
-                ty: Ty::scalar(Scalar::F32),
-                regs: vec![r],
-                uniform: u,
-                constant: None,
-            };
-            let x = self.binary(
-                "*",
-                value(a.regs[i], a.uniform),
-                value(b.regs[j], b.uniform),
-                span,
-                None,
-            )?;
-            let y = self.binary(
-                "*",
-                value(a.regs[j], a.uniform),
-                value(b.regs[i], b.uniform),
-                span,
-                None,
-            )?;
-            regs.push(self.binary("-", x, y, span,None)?.regs[0]);
-        }
-        return Ok(Value {
-            proof: bounds::Proof::default(),
-            literal: false,
-            ty: Ty::vector(Scalar::F32, 3),
-            regs,
-            uniform: a.uniform && b.uniform,
-            constant: None,
         });
     }
     async fn member_place(&mut self, base: &Expr, field: &str, e: &Expr) -> Result<Option<Place>> {

@@ -38,6 +38,33 @@ extern "C" u32 integer_math(u32 extremum,usize count,MathQueries queries) on cpu
 extern "C" MathShape floating_math(usize count,MathQueries queries) on cpu
     requires nonzero(queries.argument) requires nonzero(queries.width);
 
+
+enum GeometryBuiltin:u32 { Unknown=0; Dot=1; Length=2; Normalize=3; Cross=4; };
+enum GeometryStatus:u32 { Valid=0; Arity=1; Same=2; DotType=3; LengthType=4; CrossType=5; };
+struct GeometryPlan { GeometryStatus status; u32 side; usize width; usize result_width; };
+struct GeometryQueries {
+    MathQueries values;
+    cfn<u32,address> ensures memory(read) same;
+    cfn<u32,address,usize> ensures memory(read) float3;
+};
+extern "C" GeometryBuiltin source_geometry(address bytes,usize length) on cpu;
+extern "C" GeometryPlan geometry_plan(GeometryBuiltin builtin,usize count,GeometryQueries queries) on cpu
+    requires nonzero(queries.values.numeric) requires nonzero(queries.values.argument)
+    requires nonzero(queries.values.width) requires nonzero(queries.same) requires nonzero(queries.float3);
+
+enum GeometryAction:u32 { Copy=0; Add=1; Subtract=2; Multiply=3; Divide=4; Sqrt=5; };
+struct GeometryOperand { u32 slot; usize component; u32 projected; u32 take; };
+struct GeometryStep {
+    GeometryAction action; GeometryOperand left; GeometryOperand right; u32 destination; usize width;
+};
+struct GeometryEmitter {
+    address context;
+    cfn<void,address,GeometryStep> emit;
+    cfn<void,address,u32,u32> output;
+};
+extern "C" void expand_geometry(GeometryBuiltin builtin,usize width,GeometryEmitter emitter) on cpu
+    requires nonzero(emitter.emit) requires nonzero(emitter.output);
+
 enum FixedProjectionKind:u32 { Components=0; Vector=1; Array=2; };
 struct FixedProjection { FixedProjectionKind kind; usize first; };
 extern "C" FixedProjection fixed_projection(u32 array, usize width, u32 known, usize index) on cpu;

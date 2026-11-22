@@ -60,6 +60,88 @@ extern "C" MathShape floating_math(usize count,MathQueries queries) on cpu
     return result;
 }
 
+
+extern "C" GeometryBuiltin source_geometry(address bytes,usize length) on cpu {
+    if (source_spelling(bytes,length,"dot")) { return GeometryBuiltin::Dot; }
+    if (source_spelling(bytes,length,"length")) { return GeometryBuiltin::Length; }
+    if (source_spelling(bytes,length,"normalize")) { return GeometryBuiltin::Normalize; }
+    if (source_spelling(bytes,length,"cross")) { return GeometryBuiltin::Cross; }
+    return GeometryBuiltin::Unknown;
+}
+extern "C" GeometryPlan geometry_plan(GeometryBuiltin builtin,usize count,GeometryQueries queries) on cpu
+    requires nonzero(queries.values.numeric) requires nonzero(queries.values.argument)
+    requires nonzero(queries.values.width) requires nonzero(queries.same) requires nonzero(queries.float3) {
+    GeometryPlan result=GeometryPlan(GeometryStatus::Valid,0,0u64,1u64);
+    usize arity=builtin==GeometryBuiltin::Dot || builtin==GeometryBuiltin::Cross ? 2u64 : 1u64;
+    if (count!=arity) { result.status=GeometryStatus::Arity;return result; }
+    address context=queries.values.context;
+    if (builtin==GeometryBuiltin::Cross) {
+        for (side in 0..2) {
+            if (queries.float3(context,usize(side))==0) {
+                result.status=GeometryStatus::CrossType;result.side=side;return result;
+            }
+        }
+        result.width=3u64;result.result_width=3u64;return result;
+    }
+    if (builtin==GeometryBuiltin::Dot && queries.same(context)==0) {
+        result.status=GeometryStatus::Same;return result;
+    }
+    MathArgument argument=queries.values.argument(context,0u64);
+    if (builtin==GeometryBuiltin::Dot) {
+        if (argument.scalar!=0 || queries.values.numeric(context,0u64)==0) {
+            result.status=GeometryStatus::DotType;return result;
+        }
+    } else if (argument.scalar!=0 || argument.flags!=0) {
+        result.status=GeometryStatus::LengthType;return result;
+    }
+    result.width=queries.values.width(context,0u64);
+    if (builtin==GeometryBuiltin::Normalize) { result.result_width=result.width; }
+    return result;
+}
+GeometryOperand geometry_slot(u32 slot,u32 take) on cpu { return GeometryOperand(slot,0u64,0,take); }
+GeometryOperand geometry_component(u32 slot,usize component,u32 take) on cpu { return GeometryOperand(slot,component,1,take); }
+extern "C" void expand_geometry(GeometryBuiltin builtin,usize width,GeometryEmitter emitter) on cpu
+    requires nonzero(emitter.emit) requires nonzero(emitter.output) {
+    if (builtin==GeometryBuiltin::Cross) {
+        for (axis in 0..3) {
+            usize i=usize((axis+1)%3);usize j=usize((axis+2)%3);
+            emitter.emit(emitter.context,GeometryStep(GeometryAction::Multiply,
+                geometry_component(0,i,0),geometry_component(1,j,0),2,1u64));
+            u32 last=axis==2 ? 1 : 0;
+            emitter.emit(emitter.context,GeometryStep(GeometryAction::Multiply,
+                geometry_component(0,j,last),geometry_component(1,i,last),3,1u64));
+            emitter.emit(emitter.context,GeometryStep(GeometryAction::Subtract,
+                geometry_slot(2,1),geometry_slot(3,1),4,1u64));
+            emitter.output(emitter.context,4,1);
+        }
+        return;
+    }
+    if (builtin==GeometryBuiltin::Dot) {
+        emitter.emit(emitter.context,GeometryStep(GeometryAction::Multiply,
+            geometry_slot(0,1),geometry_slot(1,1),2,width));
+    } else {
+        emitter.emit(emitter.context,GeometryStep(GeometryAction::Multiply,
+            geometry_slot(0,0),geometry_slot(0,builtin==GeometryBuiltin::Length ? 1 : 0),2,width));
+    }
+    GeometryOperand first=geometry_component(2,0u64,width==1u64 ? 1 : 0);
+    emitter.emit(emitter.context,GeometryStep(GeometryAction::Copy,first,first,3,1u64));
+    usize index=1u64;
+    while (index<width) {
+        emitter.emit(emitter.context,GeometryStep(GeometryAction::Add,
+            geometry_slot(3,1),geometry_component(2,index,index+1u64==width ? 1 : 0),3,1u64));
+        index+=1u64;
+    }
+    if (builtin!=GeometryBuiltin::Dot) {
+        emitter.emit(emitter.context,GeometryStep(GeometryAction::Sqrt,
+            geometry_slot(3,1),geometry_slot(3,1),3,1u64));
+        if (builtin==GeometryBuiltin::Normalize) {
+            emitter.emit(emitter.context,GeometryStep(GeometryAction::Divide,
+                geometry_slot(0,1),geometry_slot(3,1),3,width));
+        }
+    }
+    emitter.output(emitter.context,3,0);
+}
+
 extern "C" MatrixBuiltin source_matrix_intrinsic(address bytes,usize length) on cpu {
     if (source_spelling(bytes,length,"transpose")) { return MatrixBuiltin::Transpose; }
     if (source_spelling(bytes,length,"determinant")) { return MatrixBuiltin::Determinant; }
