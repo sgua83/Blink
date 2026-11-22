@@ -1036,3 +1036,77 @@ extern "C" void lower_variant_word(WordInput input,WordEmitter emitter) on cpu
         }
     }
 }
+
+
+usize variant_component_at(VariantEmitter emitter,u32 offset) on cpu requires nonzero(emitter.field) {
+    usize index=0u64;
+    while (true) {
+        if (emitter.field(emitter.context,VariantSide::Storage,index).offset==offset) { return index; }
+        index+=1u64;
+    }
+}
+void variant_borrow_map(VariantInput input,bool packing,VariantEmitter emitter) on cpu
+    requires nonzero(emitter.field) requires nonzero(emitter.views) requires nonzero(emitter.next) requires nonzero(emitter.action) {
+    emitter.views(emitter.context,VariantSide::Payload);
+    while (true) {
+        VariantView view=emitter.next(emitter.context);
+        if (view.present==0) { return; }
+        u32 offset=input.offset+emitter.field(emitter.context,VariantSide::Payload,view.component).offset;
+        usize storage=variant_component_at(emitter,offset);
+        emitter.action(emitter.context,VariantStep(VariantAction::Borrow,packing ? storage : view.component,packing ? view.component : storage,0,0,0,0u64));
+    }
+}
+extern "C" void build_variant_value(VariantInput input,VariantEmitter emitter) on cpu
+    requires nonzero(emitter.field) requires nonzero(emitter.load) requires nonzero(emitter.views)
+    requires nonzero(emitter.next) requires nonzero(emitter.active) requires nonzero(emitter.action) {
+    emitter.action(emitter.context,VariantStep(VariantAction::InitializeBuild,0u64,0u64,0,0,0,0u64));
+    emitter.action(emitter.context,VariantStep(VariantAction::Tag,0u64,0u64,input.scalar,0,0,input.discriminant));
+    if (input.payload!=0) {
+        bool known=true;usize index=1u64;
+        while (index<input.components) {
+            VariantField field=emitter.field(emitter.context,VariantSide::Storage,index);
+            VariantWord word=emitter.load(emitter.context,field.offset-input.offset,field.scalar);
+            known=known && word.constant!=0;
+            emitter.action(emitter.context,VariantStep(VariantAction::StoreBuild,index,0u64,0,0,known ? 1 : 0,word.bits));index+=1u64;
+        }
+        variant_borrow_map(input,true,emitter);
+        emitter.action(emitter.context,VariantStep(VariantAction::PayloadFacts,0u64,0u64,0,0,0,0u64));
+    }
+    emitter.action(emitter.context,VariantStep(VariantAction::RetainBuild,0u64,0u64,0,0,0,0u64));
+    emitter.action(emitter.context,VariantStep(VariantAction::StartActive,0u64,0u64,0,0,0,0u64));
+    emitter.views(emitter.context,VariantSide::Selected);
+    while (true) {
+        VariantView view=emitter.next(emitter.context);if (view.present==0) { break; }
+        u32 offset=input.offset+emitter.field(emitter.context,VariantSide::Selected,view.component).offset;
+        usize storage=variant_component_at(emitter,offset);
+        emitter.action(emitter.context,VariantStep(VariantAction::AddActive,storage,0u64,0,0,0,0u64));
+    }
+    emitter.views(emitter.context,VariantSide::Storage);
+    while (true) {
+        VariantView view=emitter.next(emitter.context);if (view.present==0) { break; }
+        if (emitter.active(emitter.context,view.component)==0) {
+            emitter.action(emitter.context,VariantStep(VariantAction::Inactive,view.component,0u64,0,0,0,0u64));
+        }
+    }
+    emitter.action(emitter.context,VariantStep(VariantAction::EndActive,0u64,0u64,0,0,0,0u64));
+}
+extern "C" void read_variant_payload(VariantInput input,VariantEmitter emitter) on cpu
+    requires nonzero(emitter.field) requires nonzero(emitter.load) requires nonzero(emitter.views)
+    requires nonzero(emitter.next) requires nonzero(emitter.action) {
+    if (input.unit!=0) { return; }
+    emitter.action(emitter.context,VariantStep(VariantAction::InitializeRead,0u64,0u64,0,0,0,0u64));
+    bool known=true;usize index=0u64;
+    while (index<input.components) {
+        VariantField field=emitter.field(emitter.context,VariantSide::Payload,index);
+        VariantWord word=emitter.load(emitter.context,input.offset+field.offset,field.scalar);known=known && word.constant!=0;
+        emitter.action(emitter.context,VariantStep(VariantAction::StoreRead,index,0u64,0,0,known ? 1 : 0,word.bits));index+=1u64;
+    }
+    variant_borrow_map(input,false,emitter);
+    emitter.action(emitter.context,VariantStep(VariantAction::FinishRead,0u64,0u64,0,0,0,0u64));
+}
+extern "C" void test_variant_tag(VariantInput input,VariantEmitter emitter) on cpu
+    requires nonzero(emitter.load) requires nonzero(emitter.action) {
+    emitter.load(emitter.context,0,input.scalar);
+    emitter.action(emitter.context,VariantStep(VariantAction::ExpectedTag,0u64,0u64,input.scalar,0,0,input.discriminant));
+    emitter.action(emitter.context,VariantStep(VariantAction::CompareTag,0u64,0u64,0,0,0,0u64));
+}

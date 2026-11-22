@@ -299,3 +299,33 @@ extern "C" void lower_variant_component(WordScalar source,WordScalar target,usiz
     requires nonzero(emitter.action);
 extern "C" void lower_variant_word(WordInput input,WordEmitter emitter) on cpu
     requires nonzero(emitter.component) requires nonzero(emitter.known) requires nonzero(emitter.action);
+
+
+struct VariantInput { usize components; u32 offset; u32 payload; u32 unit; u32 scalar; u64 discriminant; };
+enum VariantSide:u32 { Storage=0; Payload=1; Selected=2; };
+struct VariantField { u32 scalar; u32 offset; };
+struct VariantWord { u64 bits; u32 constant; };
+struct VariantView { usize component; u32 present; };
+enum VariantAction:u32 {
+    InitializeBuild=0; Tag=1; StoreBuild=2; PayloadFacts=3; RetainBuild=4; StartActive=5;
+    AddActive=6; Inactive=7; EndActive=8; InitializeRead=9; StoreRead=10; Borrow=11;
+    FinishRead=12; ExpectedTag=13; CompareTag=14;
+};
+struct VariantStep { VariantAction action; usize component; usize other; u32 scalar; u32 offset; u32 known; u64 bits; };
+struct VariantEmitter {
+    address context;
+    cfn<VariantField,address,VariantSide,usize> ensures memory(read) field;
+    cfn<VariantWord,address,u32,u32> load;
+    cfn<void,address,VariantSide> views;
+    cfn<VariantView,address> next;
+    cfn<u32,address,usize> ensures memory(read) active;
+    cfn<void,address,VariantStep> action;
+};
+extern "C" void build_variant_value(VariantInput input,VariantEmitter emitter) on cpu
+    requires nonzero(emitter.field) requires nonzero(emitter.load) requires nonzero(emitter.views)
+    requires nonzero(emitter.next) requires nonzero(emitter.active) requires nonzero(emitter.action);
+extern "C" void read_variant_payload(VariantInput input,VariantEmitter emitter) on cpu
+    requires nonzero(emitter.field) requires nonzero(emitter.load) requires nonzero(emitter.views)
+    requires nonzero(emitter.next) requires nonzero(emitter.action);
+extern "C" void test_variant_tag(VariantInput input,VariantEmitter emitter) on cpu
+    requires nonzero(emitter.load) requires nonzero(emitter.action);

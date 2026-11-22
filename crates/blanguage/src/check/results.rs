@@ -82,92 +82,28 @@ impl Builder<'_> {
         self.variant_value(ty,usize::from(!success),payload)
     }
     pub(super) fn variant_value(&mut self, ty: Ty, index: usize, payload: Option<Value>) -> Value {
-        let mut value = self.constant_value(ty.clone(), vec![0; ty.components.len()],None);
-        let tag = self.constant(ty.components[0].0,Bits::from(ty.variants[index].discriminant));
-        value.regs[0] = tag.regs[0];
-        value
-            .proof
-            .assign(&[0], value.regs.len(), bounds::Proof::capture(&tag));
-        if let Some(bits) = &mut value.constant {
-            bits[0] = Bits::from(ty.variants[index].discriminant);
-        }
-        if let Some(payload) = payload {
-            let offset = ty.variant_payload_offset();
-            for (component, (scalar, position)) in ty.components.iter().enumerate().skip(1) {
-                let word = self.result_word(&payload, position - offset, *scalar);
-                value.regs[component] = word.regs[0];
-                value.proof.assign(&[component], value.regs.len(), bounds::Proof::capture(&word));
-                if let (Some(bits), Some(source)) = (&mut value.constant, &word.constant) {
-                    bits[component] = source[0];
-                } else {
-                    value.constant = None;
-                }
-            }
-            for component in view_contracts::components(&payload.ty) {
-                let word=offset+payload.ty.components[component].1;
-                let target=ty.components.iter().position(|(_,at)|*at==word).unwrap();
-                value.proof.set_view_borrow(target,payload.proof.view_borrow(component));
-            }
-            value.retain_payload_nonzero(&payload, offset);
-            value.uniform = payload.uniform;
-        }
-        value.proof.retain_view_borrows(&ty);
-        let offset=ty.variant_payload_offset();
-        let active=view_contracts::components(&ty.variants[index].ty).into_iter().map(|component|ty.components.iter().position(|(_,at)|*at==offset+ty.variants[index].ty.components[component].1).unwrap()).collect::<BTreeSet<_>>();
-        for component in view_contracts::components(&ty).difference(&active){value.proof.set_view_borrow(*component,view::Borrow::source(view::Source::Inactive));}
-        value.literal = false;
-        value
+        let input=VariantInput::of(&ty,index,ty.components.len(),payload.is_some());
+        let mut values=VariantValues {builder:self,mode:VariantMode::Build,input:None,ty:Some(ty),payload,output:None,
+            index,offset:input.offset,word:None,expected:None,views:None,active:None,span:None,origin:None,test:None};
+        unsafe {build_variant_value(input,values.emitter())};values.output.unwrap()
     }
     pub(super) fn result_payload(&mut self, value: &Value, success: bool) -> Option<Value> {
         self.variant_payload(value,usize::from(!success))
     }
     pub(super) fn variant_payload(&mut self, value: &Value, index: usize) -> Option<Value> {
-        let ty = (*value.ty.variants[index].ty).clone();
-        if ty.name == "void" {
-            return None;
-        }
-        let offset = value.ty.variant_payload_offset();
-        let mut proof = bounds::Proof::default();
-        let mut regs = Vec::new();
-        let mut constant = Some(Vec::new());
-        for (index, (scalar, at)) in ty.components.iter().enumerate() {
-            let fresh = self.result_word(value, offset + at, *scalar);
-            regs.push(fresh.regs[0]);
-            proof.assign(
-                &[index],
-                ty.components.len(),
-                bounds::Proof::capture(&fresh),
-            );
-            if let (Some(bits), Some(source)) = (&mut constant, fresh.constant) {
-                bits.push(source[0]);
-            } else {
-                constant = None;
-            }
-        }
-        for component in view_contracts::components(&ty) {
-            let word=offset+ty.components[component].1;
-            let source=value.ty.components.iter().position(|(_,at)|*at==word).unwrap();
-            proof.set_view_borrow(component,value.proof.view_borrow(source));
-        }
-        proof.retain_view_borrows(&ty);
-        let proof = self.path_proof(&ty, proof);
-        Some(Value {
-            ty,
-            regs,
-            proof,
-            literal: false,
-            uniform: value.uniform,
-            constant,
-        })
+        let input=VariantInput::of(&value.ty,index,value.ty.variants[index].ty.components.len(),false);
+        let mut values=VariantValues {builder:self,mode:VariantMode::Read,input:Some(value),ty:None,payload:None,output:None,
+            index,offset:input.offset,word:None,expected:None,views:None,active:None,span:None,origin:None,test:None};
+        unsafe {read_variant_payload(input,values.emitter())};values.output
     }
     pub(super) fn result_condition(&mut self, value: &Value, span: Span) -> Result<Value> {
         self.variant_condition(value,0,span,None)
     }
     pub(super) fn variant_condition(&mut self,value:&Value,index:usize,span:Span,origin:Option<Arc<GeneratedOrigin>>)->Result<Value> {
-        let scalar=value.ty.components[0].0;
-        let tag=self.result_word(value,0,scalar);
-        let expected=self.constant_with_origin(scalar,Bits::from(value.ty.variants[index].discriminant),origin.clone());
-        self.binary("==",tag,expected,span,origin)
+        let input=VariantInput::of(&value.ty,index,value.ty.components.len(),false);
+        let mut values=VariantValues {builder:self,mode:VariantMode::Test,input:Some(value),ty:None,payload:None,output:None,
+            index,offset:input.offset,word:None,expected:None,views:None,active:None,span:Some(span),origin,test:None};
+        unsafe {test_variant_tag(input,values.emitter())};values.test.unwrap()
     }
     pub(super) async fn check_variant_patterns(
         &self, ty: &Ty, arms: &MatchArms, span: Span,
@@ -279,4 +215,117 @@ unsafe extern "C" fn word_action(context:*mut WordValues<'_,'_>,step:WordStep)->
         WordAction::NonzeroBytes=>return u32::from(values.input.nonzero_bytes(values.offset,scalar.size(),&values.builder.residency_path())),
         WordAction::MarkNonzero=>values.current.as_mut().unwrap().proof.mark_nonzero(0),
     }1
+}
+
+
+#[repr(C)]
+struct VariantInput {components:usize,offset:u32,payload:u32,unit:u32,scalar:u32,discriminant:Bits}
+impl VariantInput {
+    fn of(ty:&Ty,index:usize,components:usize,payload:bool)->Self {
+        Self {components,offset:ty.variant_payload_offset(),payload:u32::from(payload),unit:u32::from(ty.variants[index].ty.name=="void"),
+            scalar:ty.components[0].0 as u32,discriminant:Bits::from(ty.variants[index].discriminant)}
+    }
+}
+#[repr(u32)]
+#[derive(Clone,Copy)]
+enum VariantSide {Storage,Payload,Selected}
+#[repr(C)]
+struct VariantField {scalar:u32,offset:u32}
+#[repr(C)]
+struct VariantWord {bits:Bits,constant:u32}
+#[repr(C)]
+struct VariantView {component:usize,present:u32}
+#[repr(u32)]
+enum VariantAction {InitializeBuild,Tag,StoreBuild,PayloadFacts,RetainBuild,StartActive,AddActive,Inactive,EndActive,
+    InitializeRead,StoreRead,Borrow,FinishRead,ExpectedTag,CompareTag}
+#[repr(C)]
+struct VariantStep {action:VariantAction,component:usize,other:usize,scalar:u32,offset:u32,known:u32,bits:Bits}
+#[repr(C)]
+struct VariantEmitter<'a,'w> {
+    context:*mut VariantValues<'a,'w>,
+    field:unsafe extern "C" fn(*const VariantValues<'a,'w>,VariantSide,usize)->VariantField,
+    load:unsafe extern "C" fn(*mut VariantValues<'a,'w>,u32,u32)->VariantWord,
+    views:unsafe extern "C" fn(*mut VariantValues<'a,'w>,VariantSide),
+    next:unsafe extern "C" fn(*mut VariantValues<'a,'w>)->VariantView,
+    active:unsafe extern "C" fn(*const VariantValues<'a,'w>,usize)->u32,
+    action:unsafe extern "C" fn(*mut VariantValues<'a,'w>,VariantStep),
+}
+unsafe extern "C" {
+    #[link_name="bootstrap.operator_types::build_variant_value"] fn build_variant_value(input:VariantInput,emitter:VariantEmitter<'_,'_>);
+    #[link_name="bootstrap.operator_types::read_variant_payload"] fn read_variant_payload(input:VariantInput,emitter:VariantEmitter<'_,'_>);
+    #[link_name="bootstrap.operator_types::test_variant_tag"] fn test_variant_tag(input:VariantInput,emitter:VariantEmitter<'_,'_>);
+}
+enum VariantMode {Build,Read,Test}
+struct VariantValues<'a,'w> {
+    builder:&'a mut Builder<'w>,mode:VariantMode,input:Option<&'a Value>,ty:Option<Ty>,payload:Option<Value>,output:Option<Value>,
+    index:usize,offset:u32,word:Option<Value>,expected:Option<Value>,views:Option<std::collections::btree_set::IntoIter<usize>>,
+    active:Option<BTreeSet<usize>>,span:Option<Span>,origin:Option<Arc<GeneratedOrigin>>,test:Option<Result<Value>>,
+}
+impl<'a,'w> VariantValues<'a,'w> {
+    fn storage(&self)->&Ty {match self.mode {VariantMode::Build=>&self.output.as_ref().unwrap().ty,VariantMode::Read|VariantMode::Test=>&self.input.unwrap().ty}}
+    fn value_type(&self,side:VariantSide)->&Ty {
+        match side {
+            VariantSide::Storage=>self.storage(),VariantSide::Selected=>&self.storage().variants[self.index].ty,
+            VariantSide::Payload=>match self.mode {VariantMode::Build=>&self.payload.as_ref().unwrap().ty,VariantMode::Read=>&self.output.as_ref().unwrap().ty,VariantMode::Test=>&self.input.unwrap().ty.variants[self.index].ty},
+        }
+    }
+    fn emitter(&mut self)->VariantEmitter<'a,'w> {VariantEmitter {context:self,field:variant_field,load:variant_load,views:variant_views,next:variant_next,active:variant_active,action:variant_action}}
+}
+unsafe extern "C" fn variant_field(context:*const VariantValues<'_,'_>,side:VariantSide,index:usize)->VariantField {
+    let(scalar,offset)=unsafe {&*context}.value_type(side).components[index];VariantField {scalar:scalar as u32,offset}
+}
+unsafe extern "C" fn variant_load(context:*mut VariantValues<'_,'_>,offset:u32,scalar:u32)->VariantWord {
+    let values=unsafe {&mut *context};let source=match values.mode {VariantMode::Build=>values.payload.as_ref().unwrap(),VariantMode::Read|VariantMode::Test=>values.input.unwrap()};
+    let word=values.builder.result_word(source,offset,operators::SCALARS[scalar as usize]);
+    let(bits,constant)=word.constant.as_ref().map_or((0,0),|bits|(bits[0],1));values.word=Some(word);VariantWord {bits,constant}
+}
+unsafe extern "C" fn variant_views(context:*mut VariantValues<'_,'_>,side:VariantSide) {
+    let values=unsafe {&mut *context};values.views=Some(view_contracts::components(values.value_type(side)).into_iter());
+}
+unsafe extern "C" fn variant_next(context:*mut VariantValues<'_,'_>)->VariantView {
+    let values=unsafe {&mut *context};match values.views.as_mut().unwrap().next() {
+        Some(component)=>VariantView {component,present:1},None=>{values.views=None;VariantView {component:0,present:0}},
+    }
+}
+unsafe extern "C" fn variant_active(context:*const VariantValues<'_,'_>,index:usize)->u32 {u32::from(unsafe {&*context}.active.as_ref().unwrap().contains(&index))}
+unsafe extern "C" fn variant_action(context:*mut VariantValues<'_,'_>,step:VariantStep) {
+    let values=unsafe {&mut *context};
+    match step.action {
+        VariantAction::InitializeBuild=>{
+            let ty=values.ty.take().unwrap();let bits=vec![0;ty.components.len()];values.output=Some(values.builder.constant_value(ty,bits,None));
+        },
+        VariantAction::Tag=>{
+            let tag=values.builder.constant(operators::SCALARS[step.scalar as usize],step.bits);let output=values.output.as_mut().unwrap();
+            output.regs[0]=tag.regs[0];output.proof.assign(&[0],output.regs.len(),bounds::Proof::capture(&tag));output.constant.as_mut().unwrap()[0]=step.bits;
+        },
+        VariantAction::StoreBuild=>{
+            let word=values.word.take().unwrap();let output=values.output.as_mut().unwrap();output.regs[step.component]=word.regs[0];
+            output.proof.assign(&[step.component],output.regs.len(),bounds::Proof::capture(&word));
+            if step.known!=0 {output.constant.as_mut().unwrap()[step.component]=step.bits;}else{output.constant=None;}
+        },
+        VariantAction::PayloadFacts=>{let payload=values.payload.take().unwrap();let output=values.output.as_mut().unwrap();output.retain_payload_nonzero(&payload,values.offset);output.uniform=payload.uniform;},
+        VariantAction::RetainBuild=>{let output=values.output.as_mut().unwrap();output.proof.retain_view_borrows(&output.ty);},
+        VariantAction::StartActive=>values.active=Some(BTreeSet::new()),
+        VariantAction::AddActive=>{values.active.as_mut().unwrap().insert(step.component);},
+        VariantAction::Inactive=>values.output.as_mut().unwrap().proof.set_view_borrow(step.component,view::Borrow::source(view::Source::Inactive)),
+        VariantAction::EndActive=>values.active=None,
+        VariantAction::InitializeRead=>{
+            let input=values.input.unwrap();let ty=(*input.ty.variants[values.index].ty).clone();values.output=Some(Value {ty,proof:bounds::Proof::default(),regs:Vec::new(),constant:Some(Vec::new()),literal:false,uniform:input.uniform});
+        },
+        VariantAction::StoreRead=>{
+            let word=values.word.take().unwrap();let output=values.output.as_mut().unwrap();output.regs.push(word.regs[0]);
+            output.proof.assign(&[step.component],output.ty.components.len(),bounds::Proof::capture(&word));
+            if step.known!=0 {output.constant.as_mut().unwrap().push(step.bits);}else{output.constant=None;}
+        },
+        VariantAction::Borrow=>{
+            let source=match values.mode {VariantMode::Build=>values.payload.as_ref().unwrap(),VariantMode::Read|VariantMode::Test=>values.input.unwrap()};
+            values.output.as_mut().unwrap().proof.set_view_borrow(step.component,source.proof.view_borrow(step.other));
+        },
+        VariantAction::FinishRead=>{
+            let output=values.output.as_mut().unwrap();output.proof.retain_view_borrows(&output.ty);
+            output.proof=values.builder.path_proof(&output.ty,std::mem::take(&mut output.proof));
+        },
+        VariantAction::ExpectedTag=>values.expected=Some(values.builder.constant_with_origin(operators::SCALARS[step.scalar as usize],step.bits,values.origin.clone())),
+        VariantAction::CompareTag=>values.test=Some(values.builder.binary("==",values.word.take().unwrap(),values.expected.take().unwrap(),values.span.unwrap(),values.origin.take())),
+    }
 }
