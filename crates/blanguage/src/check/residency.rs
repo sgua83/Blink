@@ -11,15 +11,20 @@ pub(super) enum Part {
 
 impl Part {
     fn from_binding(index: bounds::Selector, bindings: &BTreeMap<ValueIdentity, bounds::Proof>) -> Self {
-        if let bounds::Selector::Direct(bounds::Operand::Value(id @ ValueIdentity::ElementIndex(_))) = index
-            && let Some(index) = bindings.get(&id).and_then(|proof| {
-                proof.domains(0).iter().find_map(|domain| match *domain {
+        if let bounds::Selector::Direct(bounds::Operand::Value(id)) = index
+            && let Some(proof) = bindings.get(&id)
+        {
+            if let Some((value, _)) = proof.known_integer_component(Scalar::U32, 0) {
+                return Self::Selected(Some(bounds::Selector::Direct(bounds::Operand::Constant(Scalar::U32, value))));
+            }
+            if matches!(id, ValueIdentity::ElementIndex(_))
+                && let Some(index) = proof.domains(0).iter().find_map(|domain| match *domain {
                     IndexDomain::Computed(expression) => expression.selector(),
                     _ => None,
                 })
-            })
-        {
-            return Self::Selected(Some(index));
+            {
+                return Self::Selected(Some(index));
+            }
         }
         Self::Selected(index.at_call(bindings))
     }

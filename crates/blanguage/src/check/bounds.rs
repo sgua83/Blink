@@ -1299,7 +1299,7 @@ impl Proof {
     pub(super) fn known_boolean_value(&self, width: usize) -> Option<Vec<(Bits, [bool; 2])>> {
         (0..width).map(|component| self.known_boolean_component(component)).collect()
     }
-    fn known_integer_component(&self, scalar: Scalar, component: usize) -> Option<(Bits, IntegerKnownValueBasis)> {
+    pub(super) fn known_integer_component(&self, scalar: Scalar, component: usize) -> Option<(Bits, IntegerKnownValueBasis)> {
         if !scalar.is_integer() { return None; }
         let bias = scalar.order_bias();
         match self.range_set(component).restrict(0, scalar.bit_mask()).0.as_slice() {
