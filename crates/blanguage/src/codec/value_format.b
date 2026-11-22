@@ -357,6 +357,136 @@ extern "C" void write_expression_name(address source, address output, Host host)
 }
 
 
+bool source_token<const N:u32 in {5,8,9,10,11,12,13,15}>(Bytes value, read array<u8,N> token) on cpu {
+    if (value.count != u64(N)) { return false; }
+    for (index in 0..N) {
+        u8 byte = unsafe_position<u8>(unsafe_address(address_bits(value.data) + u64(index)));
+        if (byte != token[index]) { return false; }
+    }
+    return true;
+}
+
+bool source_equal(Bytes left, Bytes right) on cpu {
+    if (left.count != right.count) { return false; }
+    u64 index = 0u64;
+    while (index < left.count) {
+        u8 a = unsafe_position<u8>(unsafe_address(address_bits(left.data) + index));
+        u8 b = unsafe_position<u8>(unsafe_address(address_bits(right.data) + index));
+        if (a != b) { return false; }
+        index += 1u64;
+    }
+    return true;
+}
+
+bool source_wrapped(TypeName value) on cpu {
+    return value.dataset != 0 || value.view != 0 || value.tile != 0;
+}
+
+extern "C" SourceBasicKind source_basic_kind(address source, Host host) on cpu requires nonzero(host.type_name) {
+    TypeName value = host.type_name(source);
+    if (source_wrapped(value) || value.arguments.count != 0u64) { return SourceBasicKind::Other; }
+    if (source_token(value.name, "acceleration")) { return SourceBasicKind::Acceleration; }
+    if (source_token(value.name, "never") && address_bits(value.count) == 0u64 && value.contracts_present == 0) {
+        return SourceBasicKind::Never;
+    }
+    return SourceBasicKind::Other;
+}
+
+extern "C" u32 source_mentions_owned(address source, Host host) on cpu requires nonzero(host.type_name) requires nonzero(host.argument) {
+    TypeName value = host.type_name(source);
+    if (value.dataset != 0) { return 1; }
+    u64 index = 0u64;
+    while (index < value.arguments.count) {
+        Argument argument = host.argument(item(value.arguments, index));
+        if (argument.kind == 0 && source_mentions_owned(argument.value, host) != 0) { return 1; }
+        index += 1u64;
+    }
+    return 0;
+}
+
+extern "C" u32 source_mentions(address source, Bytes name, Host host) on cpu requires nonzero(host.type_name) requires nonzero(host.argument) {
+    TypeName value = host.type_name(source);
+    if (source_equal(value.name, name)) { return 1; }
+    u64 index = 0u64;
+    while (index < value.arguments.count) {
+        Argument argument = host.argument(item(value.arguments, index));
+        if (argument.kind == 0 && source_mentions(argument.value, name, host) != 0) { return 1; }
+        index += 1u64;
+    }
+    return 0;
+}
+
+extern "C" SourceFormat source_format_name(Bytes name) on cpu {
+    if (source_token(name, "rgba32_float")) { return SourceFormat(1, SourceTexelFormat::Rgba32Float); }
+    if (source_token(name, "rgba8_unorm")) { return SourceFormat(1, SourceTexelFormat::Rgba8Unorm); }
+    if (source_token(name, "rgba8_srgb")) { return SourceFormat(1, SourceTexelFormat::Rgba8Srgb); }
+    if (source_token(name, "r8_unorm")) { return SourceFormat(1, SourceTexelFormat::R8Unorm); }
+    if (source_token(name, "rg16_unorm")) { return SourceFormat(1, SourceTexelFormat::Rg16Unorm); }
+    if (source_token(name, "rgb10a2_unorm")) { return SourceFormat(1, SourceTexelFormat::Rgb10A2Unorm); }
+    if (source_token(name, "r11g11b10_float")) { return SourceFormat(1, SourceTexelFormat::R11G11B10Float); }
+    if (source_token(name, "r16_float")) { return SourceFormat(1, SourceTexelFormat::R16Float); }
+    return SourceFormat(0, SourceTexelFormat::Rgba32Float);
+}
+
+extern "C" u32 source_argument_shape(address source, Host host) on cpu requires nonzero(host.type_name) requires nonzero(host.argument) {
+    Argument argument = host.argument(source);
+    if (argument.kind == 1) { return 1; }
+    TypeName value = host.type_name(argument.value);
+    return value.arguments.count == 0u64 && !source_wrapped(value) ? 1 : 0;
+}
+
+SourceFormat source_format_argument(TypeName value, Host host) on cpu requires nonzero(host.type_name) requires nonzero(host.argument) {
+    SourceFormat missing = SourceFormat(0, SourceTexelFormat::Rgba32Float);
+    if (value.arguments.count != 1u64) { return missing; }
+    Argument argument = host.argument(item(value.arguments, 0u64));
+    if (argument.kind != 0) { return missing; }
+    TypeName format = host.type_name(argument.value);
+    if (format.canonical != 0 || format.arguments.count != 0u64 || source_wrapped(format)
+        || address_bits(format.count) != 0u64 || format.contracts_present != 0) { return missing; }
+    return source_format_name(format.name);
+}
+
+SourceTexture classify_source_texture(TypeName value, u32 arrays, Host host) on cpu requires nonzero(host.type_name) requires nonzero(host.argument) {
+    SourceFormat no_format = SourceFormat(0, SourceTexelFormat::Rgba32Float);
+    SourceTexture missing = SourceTexture(SourceTextureKind::Missing, no_format, address());
+    if (source_wrapped(value)) { return missing; }
+    if (arrays != 0 && source_token(value.name, "array")) {
+        if (value.arguments.count != 2u64) { return missing; }
+        Argument element = host.argument(item(value.arguments, 0u64));
+        if (element.kind != 0) { return missing; }
+        address length = item(value.arguments, 1u64);
+        if (source_argument_shape(length, host) == 0) { return missing; }
+        SourceTexture result = classify_source_texture(host.type_name(element.value), 0, host);
+        if (result.kind == SourceTextureKind::Missing) { return missing; }
+        result.length = length;
+        return result;
+    }
+    SourceTextureKind kind;
+    if (source_token(value.name, "texture2d")) { kind = SourceTextureKind::D2; }
+    else if (source_token(value.name, "texture3d")) { kind = SourceTextureKind::D3; }
+    else { return missing; }
+    SourceFormat format = no_format;
+    if (value.arguments.count != 0u64) {
+        format = source_format_argument(value, host);
+        if (format.present == 0) { return missing; }
+    }
+    return SourceTexture(kind, format, address());
+}
+
+extern "C" SourceTexture source_texture(address source, u32 arrays, Host host) on cpu requires nonzero(host.type_name) requires nonzero(host.argument) {
+    return classify_source_texture(host.type_name(source), arrays, host);
+}
+
+extern "C" SourceFormat source_texture_format(address source, Host host) on cpu requires nonzero(host.type_name) requires nonzero(host.argument) {
+    TypeName value = host.type_name(source);
+    if (source_token(value.name, "array")) {
+        SourceTexture texture = classify_source_texture(value, 1, host);
+        if (texture.kind != SourceTextureKind::Missing) { return texture.format; }
+    }
+    return source_format_argument(value, host);
+}
+
+
 ReadBytes take_bytes(Bytes input,inout u64 position,u64 size) on cpu {
  if(size>0xffffffffffffffffu64-position){return ReadBytes(Bytes(address(),0u64),ReadStatus::Overflow);}
  u64 end=position+size;

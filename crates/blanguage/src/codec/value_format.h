@@ -72,6 +72,24 @@ extern "C" void write_source_type_name(address source,address output,Host host) 
 extern "C" void write_expression_name(address source,address output,Host host) on cpu requires nonzero(host.append) requires nonzero(host.ty) requires nonzero(host.type_name) requires nonzero(host.argument) requires nonzero(host.shape) requires nonzero(host.expression) requires nonzero(host.predicate) requires nonzero(host.condition) requires nonzero(host.constant);
 extern "C" void write_contract_names(Span values,address output,Host host) on cpu requires nonzero(host.append) requires nonzero(host.ty) requires nonzero(host.type_name) requires nonzero(host.argument) requires nonzero(host.shape) requires nonzero(host.expression) requires nonzero(host.predicate) requires nonzero(host.condition) requires nonzero(host.constant);
 
+enum SourceBasicKind:u32 { Other=0; Never=1; Acceleration=2; };
+enum SourceTextureKind:u32 { Missing=0; D2=2; D3=3; };
+enum SourceTexelFormat:u32 {
+    Rgba32Float=0; Rgba8Unorm=1; Rgba8Srgb=2; R8Unorm=3;
+    Rg16Unorm=4; Rgb10A2Unorm=5; R11G11B10Float=6; R16Float=7;
+};
+struct SourceFormat { u32 present; SourceTexelFormat value; };
+struct SourceTexture { SourceTextureKind kind; SourceFormat format; address length; };
+
+extern "C" SourceBasicKind source_basic_kind(address source,Host host) on cpu requires nonzero(host.type_name);
+extern "C" u32 source_mentions_owned(address source,Host host) on cpu requires nonzero(host.type_name) requires nonzero(host.argument);
+extern "C" u32 source_mentions(address source,Bytes name,Host host) on cpu requires nonzero(host.type_name) requires nonzero(host.argument);
+extern "C" SourceFormat source_format_name(Bytes name) on cpu;
+extern "C" u32 source_argument_shape(address source,Host host) on cpu requires nonzero(host.type_name) requires nonzero(host.argument);
+extern "C" SourceTexture source_texture(address source,u32 arrays,Host host) on cpu requires nonzero(host.type_name) requires nonzero(host.argument);
+extern "C" SourceFormat source_texture_format(address source,Host host) on cpu requires nonzero(host.type_name) requires nonzero(host.argument);
+
+
 enum ReadStatus:u32 { Success=0; Overflow=1; Truncated=2; Boolean=3; Scalar=4; Access=5; Target=6; Shape=7; Argument=8; Expression=9; Predicate=10; Condition=11; RustError=12; Identity=13; Operand=14; IntegerOperation=15; IntegerExpression=16; Comparison=17; FloatingForm=18; IndexDomain=19; Fact=20; ConditionVersion=21; ConditionNode=22; ContractAddressRoot=23; ContractInitializationSource=24; ContractElementFacts=25; ContractDataLayout=26; ContractReturned=27; ContractTaskProjection=28; ContractExclusion=29; ContractViewAccess=30; ContractResidencyPart=31; ContractResidencyOrigin=32; ContractResidency=33; ContractResidencyOutputKind=34; ContractTextureDimension=35; ContractTextureFormat=36; ContractElementFact=37; ContractCallParameterKind=38; ContractContractKind=39; ContractRelationOp=40; ContractOwnership=41; ContractAddressIdentity=42; ContractBorrowSource=43; ResourceSortOrder=44; ResourceCollectiveOperator=45; ResourceOperation=46; ResourceImage=47; ResourceLinkedImage=48; ResourceModuleTarget=49; ResourceNativeSymbol=50; ResourceRangeResult=51; ResourceContinuationCode=52; ResourceCpuStageCode=53;  };
 
 enum ScalarTag:u32 { F32=0; U32=1; I32=2; Bool=3; U64=4; I64=5; F64=6; U8=7; I8=8; U16=9; I16=10; };

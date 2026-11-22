@@ -112,16 +112,7 @@ impl TextureFormat {
             Self::R16Float => "r16_float",
         }
     }
-    pub fn from_name(name: &str) -> Option<Self> {
-        match name {
-            "rgba32_float" => Some(Self::Rgba32Float), "rgba8_unorm" => Some(Self::Rgba8Unorm),
-            "rgba8_srgb" => Some(Self::Rgba8Srgb), "r8_unorm" => Some(Self::R8Unorm),
-            "rg16_unorm" => Some(Self::Rg16Unorm), "rgb10a2_unorm" => Some(Self::Rgb10A2Unorm),
-            "r11g11b10_float" => Some(Self::R11G11B10Float),
-            "r16_float" => Some(Self::R16Float),
-            _ => None,
-        }
-    }
+    pub fn from_name(name: &str) -> Option<Self> { crate::codec::types::format_name(name) }
     pub fn from_code(code: u32) -> Option<Self> {
         match code {
             0 => Some(Self::Rgba32Float), 1 => Some(Self::Rgba8Unorm), 2 => Some(Self::Rgba8Srgb),
@@ -192,87 +183,24 @@ pub(crate) struct TextureType<'a> {
 }
 
 impl TypeName {
-    pub fn is_never(&self) -> bool {
-        self.name == "never"
-            && self.arguments.is_empty()
-            && !self.dataset
-            && !self.view
-            && !self.tile
-            && self.count.is_none()
-            && self.contracts.is_none()
-    }
-    pub fn mentions_owned(&self) -> bool {
-        self.dataset
-            || self
-                .arguments
-                .iter()
-                .any(|arg| matches!(arg,GenericArgument::Type(ty) if ty.mentions_owned()))
-    }
-    pub fn is_acceleration(&self) -> bool {
-        self.name == "acceleration"
-            && self.arguments.is_empty()
-            && !self.dataset
-            && !self.view
-            && !self.tile
-    }
-    fn texture_element(&self) -> Option<TextureType<'_>> {
-        if self.dataset || self.view || self.tile {
-            return None;
-        }
-        let dimension = match self.name.as_str() {
-            "texture2d" => TextureDimension::D2,
-            "texture3d" => TextureDimension::D3,
-            _ => return None,
-        };
-        let format = if self.arguments.is_empty() { None } else { Some(self.texture_format_argument()?) };
-        Some(TextureType { dimension, format, length: None })
-    }
+    pub fn is_never(&self) -> bool { crate::codec::types::is_never(self) }
+    pub fn mentions_owned(&self) -> bool { crate::codec::types::mentions_owned(self) }
+    pub fn is_acceleration(&self) -> bool { crate::codec::types::is_acceleration(self) }
 
-    pub(crate) fn texture_type(&self) -> Option<TextureType<'_>> {
-        if self.name != "array" {
-            return self.texture_element();
-        }
-        if self.dataset || self.view || self.tile {
-            return None;
-        }
-        let [GenericArgument::Type(element), length] = self.arguments.as_slice() else { return None; };
-        let mut texture = element.texture_element()?;
-        texture.length = Some(length.borrowed_shape()?);
-        Some(texture)
-    }
+    pub(crate) fn texture_type(&self) -> Option<TextureType<'_>> { crate::codec::types::texture_type(self) }
 
     pub fn texture_array_shape(&self) -> Option<Shape> {
         self.texture_type()?.length.map(BorrowedShape::into_owned)
     }
 
-    pub fn is_texture_resource(&self) -> bool {
-        self.texture_type().is_some()
-    }
+    pub fn is_texture_resource(&self) -> bool { crate::codec::types::texture_dimension(self, true).is_some() }
 
-    pub fn texture_dimension(&self) -> Option<TextureDimension> {
-        self.texture_type().map(|texture| texture.dimension)
-    }
+    pub fn texture_dimension(&self) -> Option<TextureDimension> { crate::codec::types::texture_dimension(self, true) }
 
-    pub fn texture_format(&self) -> Option<TextureFormat> {
-        if self.name == "array" && let Some(texture) = self.texture_type() {
-            return texture.format;
-        }
-        self.texture_format_argument()
-    }
+    pub fn texture_format(&self) -> Option<TextureFormat> { crate::codec::types::texture_format(self) }
 
-    fn texture_format_argument(&self) -> Option<TextureFormat> {
-        let [GenericArgument::Type(format)] = self.arguments.as_slice() else { return None; };
-        if format.canonical || !format.arguments.is_empty() || format.dataset || format.view
-            || format.tile || format.count.is_some() || format.contracts.is_some()
-        {
-            return None;
-        }
-        TextureFormat::from_name(&format.name)
-    }
 
-    pub fn is_texture(&self) -> bool {
-        self.texture_element().is_some()
-    }
+    pub fn is_texture(&self) -> bool { crate::codec::types::texture_dimension(self, false).is_some() }
 
     pub fn named(name: impl Into<String>) -> Self {
         Self {
@@ -286,13 +214,7 @@ impl TypeName {
             contracts: None,
         }
     }
-    pub fn mentions(&self, name: &str) -> bool {
-        self.name == name
-            || self
-                .arguments
-                .iter()
-                .any(|arg| matches!(arg,GenericArgument::Type(ty) if ty.mentions(name)))
-    }
+    pub fn mentions(&self, name: &str) -> bool { crate::codec::types::mentions(self, name) }
 }
 #[derive(Clone, Debug)]
 pub struct Field {
@@ -436,15 +358,7 @@ pub enum GenericArgument {
     Value(Shape),
 }
 impl GenericArgument {
-    fn borrowed_shape(&self) -> Option<BorrowedShape<'_>> {
-        match self {
-            Self::Value(shape) => Some(shape.borrowed()),
-            Self::Type(ty) if ty.arguments.is_empty() && !ty.dataset && !ty.view && !ty.tile => {
-                Some(BorrowedShape::Constant(&ty.name))
-            }
-            _ => None,
-        }
-    }
+    fn borrowed_shape(&self) -> Option<BorrowedShape<'_>> { crate::codec::types::argument_shape(self) }
 
     pub(crate) fn shape(&self) -> Option<Shape> {
         self.borrowed_shape().map(BorrowedShape::into_owned)

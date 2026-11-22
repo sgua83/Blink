@@ -1,5 +1,5 @@
 //! The original typed contract fields and the owning output byte vector.
-//! B selects the wire order/tags and recursively writes the actual fields.
+//! B selects wire order, source text and structural queries over the actual fields.
 use crate::{ast, ir};
 use super::Writer;
 use std::{ffi::c_void, ptr};
@@ -218,6 +218,105 @@ unsafe extern "C" fn constant(source:Address)->Constant {
     Constant { ty:address(&value.ty),bits:Span::of(&value.bits) }
 }
 const HOST:Host=Host { append,ty,component,field,variant,function,parameter,type_name,argument,shape,expression,predicate,interval,condition,constant };
+
+#[repr(u32)]
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SourceBasicKind { Other = 0, Never = 1, Acceleration = 2 }
+
+#[repr(u32)]
+#[derive(Clone, Copy)]
+enum SourceTextureKind { Missing = 0, D2 = 2, D3 = 3 }
+
+impl SourceTextureKind {
+    fn dimension(self) -> Option<ast::TextureDimension> {
+        match self {
+            Self::Missing => None,
+            Self::D2 => Some(ast::TextureDimension::D2),
+            Self::D3 => Some(ast::TextureDimension::D3),
+        }
+    }
+}
+
+#[repr(C)]
+struct SourceFormat { present: u32, value: ast::TextureFormat }
+
+impl SourceFormat {
+    fn into_option(self) -> Option<ast::TextureFormat> {
+        (self.present != 0).then_some(self.value)
+    }
+}
+
+#[repr(C)]
+struct SourceTexture {
+    kind: SourceTextureKind,
+    format: SourceFormat,
+    length: Address,
+}
+
+unsafe extern "C" {
+    #[link_name = "codec.value_format::source_basic_kind"]
+    fn source_basic_kind(value: Address, host: Host) -> SourceBasicKind;
+    #[link_name = "codec.value_format::source_mentions_owned"]
+    fn source_mentions_owned(value: Address, host: Host) -> u32;
+    #[link_name = "codec.value_format::source_mentions"]
+    fn source_mentions(value: Address, name: Bytes, host: Host) -> u32;
+    #[link_name = "codec.value_format::source_format_name"]
+    fn source_format_name(name: Bytes) -> SourceFormat;
+    #[link_name = "codec.value_format::source_argument_shape"]
+    fn source_argument_shape(value: Address, host: Host) -> u32;
+    #[link_name = "codec.value_format::source_texture"]
+    fn source_texture(value: Address, arrays: u32, host: Host) -> SourceTexture;
+    #[link_name = "codec.value_format::source_texture_format"]
+    fn source_texture_format(value: Address, host: Host) -> SourceFormat;
+}
+
+pub(crate) fn is_never(value: &ast::TypeName) -> bool {
+    unsafe { source_basic_kind(address(value), HOST) == SourceBasicKind::Never }
+}
+
+pub(crate) fn is_acceleration(value: &ast::TypeName) -> bool {
+    unsafe { source_basic_kind(address(value), HOST) == SourceBasicKind::Acceleration }
+}
+
+pub(crate) fn mentions_owned(value: &ast::TypeName) -> bool {
+    unsafe { source_mentions_owned(address(value), HOST) != 0 }
+}
+
+pub(crate) fn mentions(value: &ast::TypeName, name: &str) -> bool {
+    unsafe { source_mentions(address(value), Bytes::of(name), HOST) != 0 }
+}
+
+pub(crate) fn format_name(name: &str) -> Option<ast::TextureFormat> {
+    unsafe { source_format_name(Bytes::of(name)) }.into_option()
+}
+
+fn projected_shape(value: &ast::GenericArgument) -> ast::BorrowedShape<'_> {
+    match value {
+        ast::GenericArgument::Type(ty) => ast::BorrowedShape::Constant(&ty.name),
+        ast::GenericArgument::Value(shape) => shape.borrowed(),
+    }
+}
+
+pub(crate) fn argument_shape(value: &ast::GenericArgument) -> Option<ast::BorrowedShape<'_>> {
+    (unsafe { source_argument_shape(address(value), HOST) } != 0).then(|| projected_shape(value))
+}
+
+pub(crate) fn texture_type(value: &ast::TypeName) -> Option<ast::TextureType<'_>> {
+    let result = unsafe { source_texture(address(value), 1, HOST) };
+    let dimension = result.kind.dimension()?;
+    // length borrows an original GenericArgument owned by value, including its Shape.
+    let length = unsafe { result.length.cast::<ast::GenericArgument>().as_ref() }.map(projected_shape);
+    Some(ast::TextureType { dimension, format: result.format.into_option(), length })
+}
+
+pub(crate) fn texture_dimension(value: &ast::TypeName, arrays: bool) -> Option<ast::TextureDimension> {
+    unsafe { source_texture(address(value), u32::from(arrays), HOST) }.kind.dimension()
+}
+
+pub(crate) fn texture_format(value: &ast::TypeName) -> Option<ast::TextureFormat> {
+    unsafe { source_texture_format(address(value), HOST) }.into_option()
+}
+
 
 // The reader owns only synchronous construction frames and the original Result.
 pub(crate) mod reading;
