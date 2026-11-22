@@ -260,3 +260,19 @@ struct ValueBinaryEmitter {
 extern "C" ValueBinaryOutcome expand_binary_value(ValueBinaryInput input,ValueBinaryEmitter emitter) on cpu
     requires nonzero(emitter.divisor) requires nonzero(emitter.divide)
     requires nonzero(emitter.constant) requires nonzero(emitter.action);
+
+
+enum SourceBinaryAction:u32 {
+    Identity=0; Handle=1; HandleLeft=2; HandleRight=3; DifferenceWithZero=4; Matrix=5;
+    CastLeft=6; CastRight=7; IntegerDivisors=8; PendingDivisors=9;
+    DeferredDivisors=10; MissingDivisors=11; Numeric=12;
+};
+enum SourceBinaryToken:u32 { Original=0; Xor=1; Or=2; };
+struct SourceBinaryInput { Plan plan; u32 division; u32 left_literal; u32 right_literal; };
+struct SourceBinaryEmitter {
+    address context;
+    cfn<u32,address,SourceBinaryAction,u32> action;
+    cfn<u32,address,SourceBinaryToken> reenter;
+};
+extern "C" u32 lower_source_binary(SourceBinaryInput input,SourceBinaryEmitter emitter) on cpu
+    requires nonzero(emitter.action) requires nonzero(emitter.reenter);

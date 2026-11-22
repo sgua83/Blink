@@ -148,31 +148,36 @@ pub(super) fn numeric(a:&Ty,a_literal:bool,b:&Ty,b_literal:bool,source:&Source,s
 pub(super) enum Binary {
     Identity,Handle,Matrix(Plan),Numeric {operands:Numeric,comparison:bool,operation:Option<BinaryOp>},
 }
-pub(super) fn binary(op:&str,a:&Ty,a_literal:bool,b:&Ty,b_literal:bool,source:&Source,span:Span)->Result<(Ty,Binary)> {
+fn binary_plan(op:&str,a:&Ty,a_literal:bool,b:&Ty,b_literal:bool,source:&Source,span:Span)->Result<Plan> {
     let context=Context {types:[a,b]};
     let plan=unsafe {source_binary(op.as_ptr(),op.len() as u64,Operand::of(a),u32::from(a_literal),Operand::of(b),u32::from(b_literal),context.queries())};
-    finish(plan,source,span,op,||format!("类型不匹配：需要 {}，实际为 {}",a.name,b.name),|plan| {
-        let count=plan.count as usize;let rows=plan.rows as usize;let columns=plan.columns as usize;
-        match plan.kind {
-            Kind::Identity=>(Ty::scalar(Scalar::Bool),Binary::Identity),
-            Kind::Handle=>(Ty::scalar(Scalar::Bool),Binary::Handle),
-            Kind::Elements|Kind::MatrixScalar=>(a.clone(),Binary::Matrix(plan)),
-            Kind::ScalarMatrix=>(b.clone(),Binary::Matrix(plan)),
-            Kind::Product=>(Ty::matrix(rows,columns),Binary::Matrix(plan)),
-            Kind::MatrixVector=>(Ty::vector(Scalar::F32,rows),Binary::Matrix(plan)),
-            Kind::VectorMatrix=>(Ty::vector(Scalar::F32,columns),Binary::Matrix(plan)),
-            Kind::Numeric=>{
-                use BinaryOp::*;use Comparison as C;
-                let operations=[None,Some(FAdd),Some(FSub),Some(FMul),Some(FDiv),Some(IAdd),Some(ISub),Some(IMul),
-                    Some(Compare(C::Equal)),Some(Compare(C::NotEqual)),Some(Compare(C::Less)),Some(Compare(C::Greater)),
-                    Some(Compare(C::LessEqual)),Some(Compare(C::GreaterEqual)),Some(And),Some(Or),Some(Xor),
-                    Some(ShiftLeft),Some(ShiftRightLogical),Some(ShiftRightArithmetic)];
-                let operands=numeric_result(plan);let comparison=plan.comparison!=0;
-                (Ty::vector(if comparison {Scalar::Bool} else {operands.scalar},count),
-                    Binary::Numeric {operands,comparison,operation:operations[plan.operation as usize]})
-            },
-        }
-    })
+    finish(plan,source,span,op,||format!("类型不匹配：需要 {}，实际为 {}",a.name,b.name),|plan|plan)
+}
+fn binary_result_type(plan:Plan,a:&Ty,b:&Ty)->Ty {
+    let count=plan.count as usize;let rows=plan.rows as usize;let columns=plan.columns as usize;
+    match plan.kind {
+        Kind::Identity|Kind::Handle=>Ty::scalar(Scalar::Bool),
+        Kind::Elements|Kind::MatrixScalar=>a.clone(),Kind::ScalarMatrix=>b.clone(),
+        Kind::Product=>Ty::matrix(rows,columns),Kind::MatrixVector=>Ty::vector(Scalar::F32,rows),
+        Kind::VectorMatrix=>Ty::vector(Scalar::F32,columns),
+        Kind::Numeric=>Ty::vector(if plan.comparison!=0 {Scalar::Bool} else {SCALARS[plan.scalar as usize]},count),
+    }
+}
+fn binary_instruction(code:u32)->Option<BinaryOp> {
+    use BinaryOp::*;use Comparison as C;
+    [None,Some(FAdd),Some(FSub),Some(FMul),Some(FDiv),Some(IAdd),Some(ISub),Some(IMul),
+        Some(Compare(C::Equal)),Some(Compare(C::NotEqual)),Some(Compare(C::Less)),Some(Compare(C::Greater)),
+        Some(Compare(C::LessEqual)),Some(Compare(C::GreaterEqual)),Some(And),Some(Or),Some(Xor),
+        Some(ShiftLeft),Some(ShiftRightLogical),Some(ShiftRightArithmetic)][code as usize]
+}
+pub(super) fn binary(op:&str,a:&Ty,a_literal:bool,b:&Ty,b_literal:bool,source:&Source,span:Span)->Result<(Ty,Binary)> {
+    let plan=binary_plan(op,a,a_literal,b,b_literal,source,span)?;
+    let kind=match plan.kind {
+        Kind::Identity=>Binary::Identity,Kind::Handle=>Binary::Handle,
+        Kind::Numeric=>Binary::Numeric {operands:numeric_result(plan),comparison:plan.comparison!=0,operation:binary_instruction(plan.operation)},
+        _=>Binary::Matrix(plan),
+    };
+    Ok((binary_result_type(plan,a,b),kind))
 }
 struct UnaryRule { instruction:Option<UnaryOp>,code:u32 }
 fn unary_rule(op:&str,ty:&Ty,source:&Source,span:Span)->Result<UnaryRule> {
@@ -970,5 +975,99 @@ impl Builder<'_> {
         unsafe {expand_binary_value(input,ValueBinaryEmitter {context:&mut values,divisor:binary_divisor,divide:binary_divide,
             constant:binary_constant,action:binary_action})};
         values.output.unwrap()
+    }
+}
+
+
+#[repr(u32)]
+enum SourceBinaryAction {
+    Identity,Handle,HandleLeft,HandleRight,DifferenceWithZero,Matrix,CastLeft,CastRight,
+    IntegerDivisors,PendingDivisors,DeferredDivisors,MissingDivisors,Numeric,
+}
+#[repr(u32)]
+enum SourceBinaryToken {Original,Xor,Or}
+#[repr(C)]
+struct SourceBinaryInput {plan:Plan,division:u32,left_literal:u32,right_literal:u32}
+#[repr(C)]
+struct SourceBinaryEmitter<'a,'w> {
+    context:*mut SourceBinaryValues<'a,'w>,
+    action:unsafe extern "C" fn(*mut SourceBinaryValues<'a,'w>,SourceBinaryAction,u32)->u32,
+    reenter:unsafe extern "C" fn(*mut SourceBinaryValues<'a,'w>,SourceBinaryToken)->u32,
+}
+unsafe extern "C" {
+    #[link_name="bootstrap.operator_types::lower_source_binary"]
+    fn lower_source_binary(input:SourceBinaryInput,emitter:SourceBinaryEmitter<'_,'_>)->u32;
+}
+struct SourceBinaryValues<'a,'w> {
+    builder:&'a mut Builder<'w>,name:&'a str,span:Span,plan:Plan,left:Option<Value>,right:Option<Value>,
+    origin:Option<Arc<GeneratedOrigin>>,divisors:Option<Vec<IntegerDivisor>>,path:Option<bounds::Clause>,result:Option<Result<Value>>,
+}
+unsafe extern "C" fn source_binary_reenter(context:*mut SourceBinaryValues<'_,'_>,token:SourceBinaryToken)->u32 {
+    let values=unsafe {&mut *context};
+    let name=match token {SourceBinaryToken::Original=>values.name,SourceBinaryToken::Xor=>"^",SourceBinaryToken::Or=>"|"};
+    let result=values.builder.binary(name,values.left.take().unwrap(),values.right.take().unwrap(),values.span,values.origin.clone());
+    let ok=u32::from(result.is_ok());values.result=Some(result);ok
+}
+unsafe extern "C" fn source_binary_action(context:*mut SourceBinaryValues<'_,'_>,action:SourceBinaryAction,argument:u32)->u32 {
+    let values=unsafe {&mut *context};let plan=values.plan;
+    match action {
+        SourceBinaryAction::Identity=>{
+            values.left.as_mut().unwrap().ty=Ty::scalar(Scalar::U64);
+            values.right.as_mut().unwrap().ty=Ty::scalar(Scalar::U64);
+        },
+        SourceBinaryAction::Handle=>{
+            values.left.as_mut().unwrap().ty=Ty::vector(Scalar::U32,2);
+            values.right.as_mut().unwrap().ty=Ty::vector(Scalar::U32,2);
+        },
+        SourceBinaryAction::HandleLeft|SourceBinaryAction::HandleRight=>{
+            let index=argument as usize;let input=values.result.as_ref().unwrap().as_ref().unwrap();
+            let word=Value {ty:Ty::scalar(Scalar::U32),regs:vec![input.regs[index]],proof:input.projected_proof(&[index]),
+                literal:false,uniform:input.uniform,constant:input.constant.as_ref().map(|bits|vec![bits[index]])};
+            match action {
+                SourceBinaryAction::HandleLeft=>values.left=Some(word),
+                _=>{values.right=Some(word);values.result=None;},
+            }
+        },
+        SourceBinaryAction::DifferenceWithZero=>{
+            values.left=Some(values.result.take().unwrap().unwrap());values.right=Some(values.builder.constant(Scalar::U32,0));
+        },
+        SourceBinaryAction::Matrix=>{
+            let a=values.left.take().unwrap();let b=values.right.take().unwrap();let ty=binary_result_type(plan,&a.ty,&b.ty);
+            values.result=Some(Ok(values.builder.matrix_binary(ty,plan,a,b)));
+        },
+        SourceBinaryAction::CastLeft=>values.left=Some(values.builder.cast(values.left.take().unwrap(),SCALARS[argument as usize])),
+        SourceBinaryAction::CastRight=>values.right=Some(values.builder.cast(values.right.take().unwrap(),SCALARS[argument as usize])),
+        SourceBinaryAction::IntegerDivisors=>{
+            let path=values.builder.residency_path();
+            values.divisors=bounds::integer_divisors(values.right.as_ref().unwrap(),&path);values.path=Some(path);
+            return u32::from(values.divisors.is_some());
+        },
+        SourceBinaryAction::PendingDivisors=>return u32::from(values.builder.view_model.pending_values()||values.builder.loop_contexts.iter()
+            .any(|context|context.view_inputs.iter().any(|slot|matches!(slot,view::InputSlot::Value{identity:Some(_),..})))),
+        SourceBinaryAction::DeferredDivisors=>{
+            let result=values.builder.check_view_requirement(view::Requirement::Nonzero {
+                value:Box::new(values.right.as_ref().unwrap().clone()),path:values.path.take().unwrap(),span:values.span,
+            });
+            if let Err(error)=result {values.result=Some(Err(error));return 0;}
+            values.divisors=Some(values.right.as_ref().unwrap().regs.iter().copied().map(IntegerDivisor::Value).collect());
+        },
+        SourceBinaryAction::MissingDivisors=>{
+            values.result=Some(values.builder.fail(values.span,"B152",bounds::INTEGER_DIVISOR_MESSAGE));return 0;
+        },
+        SourceBinaryAction::Numeric=>{
+            values.path=None;
+            let a=values.left.as_ref().unwrap();let b=values.right.as_ref().unwrap();let ty=binary_result_type(plan,&a.ty,&b.ty);
+            values.result=Some(Ok(values.builder.lower_numeric_binary(values.name,ty,a,b,SCALARS[plan.scalar as usize],
+                plan.comparison!=0,binary_instruction(plan.operation),argument!=0,values.divisors.take(),values.origin.take())));
+        },
+    }1
+}
+impl Builder<'_> {
+    pub(super) fn source_binary_value(&mut self,name:&str,a:Value,b:Value,span:Span,origin:Option<Arc<GeneratedOrigin>>)->Result<Value> {
+        let plan=binary_plan(name,&a.ty,a.literal,&b.ty,b.literal,self.scope.source(),span)?;
+        let input=SourceBinaryInput {plan,division:u32::from(matches!(name,"/"|"%")),left_literal:u32::from(a.literal),right_literal:u32::from(b.literal)};
+        let mut values=SourceBinaryValues {builder:self,name,span,plan,left:Some(a),right:Some(b),origin,divisors:None,path:None,result:None};
+        unsafe {lower_source_binary(input,SourceBinaryEmitter {context:&mut values,action:source_binary_action,reenter:source_binary_reenter})};
+        values.result.unwrap()
     }
 }

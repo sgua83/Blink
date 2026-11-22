@@ -2747,53 +2747,7 @@ impl<'a> Builder<'a> {
     }
     #[inline(never)]
     fn binary(&mut self, op: &str, a: Value, b: Value, span: Span, generated_origin: Option<Arc<GeneratedOrigin>>) -> Result<Value> {
-        let (ty, kind) = operators::binary(op, &a.ty, a.literal, &b.ty, b.literal,
-            self.scope.source(), span)?;
-        let operands = match kind {
-            operators::Binary::Identity => {
-                let mut a = a; let mut b = b;
-                a.ty = Ty::scalar(Scalar::U64); b.ty = Ty::scalar(Scalar::U64);
-                return self.binary(op, a, b, span,generated_origin.clone());
-            }
-            operators::Binary::Handle => {
-                let mut a = a; let mut b = b;
-                a.ty = Ty::vector(Scalar::U32, 2);
-                b.ty = Ty::vector(Scalar::U32, 2);
-                let bits = self.binary("^", a, b, span,generated_origin.clone())?;
-                let word = |component| Value {
-                    ty: Ty::scalar(Scalar::U32),
-                    regs: vec![bits.regs[component]],
-                    proof: bits.projected_proof(&[component]),
-                    literal: false, uniform: bits.uniform,
-                    constant: bits.constant.as_ref().map(|values| vec![values[component]]),
-                };
-                let difference = self.binary("|", word(0), word(1), span,generated_origin.clone())?;
-                let zero = self.constant(Scalar::U32, 0);
-                return self.binary(op, difference, zero, span,generated_origin.clone());
-            }
-            operators::Binary::Matrix(plan) => return Ok(self.matrix_binary(ty, plan, a, b)),
-            operators::Binary::Numeric { operands, comparison, operation } => (operands, comparison, operation),
-        };
-        let (operands, comparison, operation) = operands;
-        let literal = a.literal && b.literal && !operands.scalar.is_float() && !comparison;
-        let a = if operands.cast_left { self.cast(a, operands.scalar) } else { a };
-        let b = if operands.cast_right { self.cast(b, operands.scalar) } else { b };
-        let scalar = operands.scalar;
-        let divisors = if matches!(op, "/" | "%") && !scalar.is_float() {
-            let path=self.residency_path();
-            match bounds::integer_divisors(&b,&path) {
-                Some(divisors)=>Some(divisors),
-                None if self.view_model.pending_values()||self.loop_contexts.iter().any(|context|context.view_inputs.iter().any(|slot|matches!(slot,view::InputSlot::Value{identity:Some(_),..})))=>{
-                    self.check_view_requirement(view::Requirement::Nonzero{value:Box::new(b.clone()),path,span})?;
-                    Some(b.regs.iter().copied().map(IntegerDivisor::Value).collect())
-                },
-                None=>return self.fail(span,"B152",bounds::INTEGER_DIVISOR_MESSAGE),
-            }
-        } else {
-            None
-        };
-        Ok(self.lower_numeric_binary(op, ty, &a, &b, scalar, comparison, operation, literal,
-            divisors, generated_origin))
+        self.source_binary_value(op,a,b,span,generated_origin)
     }
 
     fn lower_numeric_binary(

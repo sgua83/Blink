@@ -922,3 +922,33 @@ extern "C" ValueBinaryOutcome expand_binary_value(ValueBinaryInput input,ValueBi
     emitter.action(emitter.context,ValueBinaryStep(ValueBinaryAction::ObserveInteger,0u64,0u64,0u64,0u64));
     return ValueBinaryOutcome::Registers;
 }
+
+
+extern "C" u32 lower_source_binary(SourceBinaryInput input,SourceBinaryEmitter emitter) on cpu
+    requires nonzero(emitter.action) requires nonzero(emitter.reenter) {
+    if (input.plan.kind==1) {
+        emitter.action(emitter.context,SourceBinaryAction::Identity,0);
+        return emitter.reenter(emitter.context,SourceBinaryToken::Original);
+    }
+    if (input.plan.kind==2) {
+        emitter.action(emitter.context,SourceBinaryAction::Handle,0);
+        if (emitter.reenter(emitter.context,SourceBinaryToken::Xor)==0) { return 0; }
+        emitter.action(emitter.context,SourceBinaryAction::HandleLeft,0);
+        emitter.action(emitter.context,SourceBinaryAction::HandleRight,1);
+        if (emitter.reenter(emitter.context,SourceBinaryToken::Or)==0) { return 0; }
+        emitter.action(emitter.context,SourceBinaryAction::DifferenceWithZero,0);
+        return emitter.reenter(emitter.context,SourceBinaryToken::Original);
+    }
+    if (input.plan.kind!=0) { return emitter.action(emitter.context,SourceBinaryAction::Matrix,0); }
+    u32 literal=input.left_literal!=0 && input.right_literal!=0 && !floating(input.plan.scalar) && input.plan.comparison==0 ? 1 : 0;
+    if (input.plan.cast_left!=0) { emitter.action(emitter.context,SourceBinaryAction::CastLeft,input.plan.scalar); }
+    if (input.plan.cast_right!=0) { emitter.action(emitter.context,SourceBinaryAction::CastRight,input.plan.scalar); }
+    if (input.division!=0 && !floating(input.plan.scalar)) {
+        if (emitter.action(emitter.context,SourceBinaryAction::IntegerDivisors,0)==0) {
+            if (emitter.action(emitter.context,SourceBinaryAction::PendingDivisors,0)!=0) {
+                if (emitter.action(emitter.context,SourceBinaryAction::DeferredDivisors,0)==0) { return 0; }
+            } else { return emitter.action(emitter.context,SourceBinaryAction::MissingDivisors,0); }
+        }
+    }
+    return emitter.action(emitter.context,SourceBinaryAction::Numeric,literal);
+}
