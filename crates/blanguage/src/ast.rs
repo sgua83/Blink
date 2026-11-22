@@ -564,90 +564,15 @@ pub(crate) fn type_name(ty: &TypeName) -> String {
 }
 
 pub(crate) fn write_type_name(name: &mut String, ty: &TypeName) {
-    let shape = |value: &Shape| match value {
-        Shape::Literal(value) => value.to_string(),
-        Shape::Constant(name) => name.clone(),
-        Shape::Expression(expression) => expression_name(expression),
-    };
-    let wrappers = [(ty.tile, "tile"), (ty.view, "view"), (ty.dataset, "dataset")];
-    for (present, prefix) in wrappers {
-        if present {
-            name.push_str(prefix);
-            name.push('<');
-        }
-    }
-    name.push_str(&ty.name);
-    if !ty.arguments.is_empty() {
-        name.push('<');
-        for (index, argument) in ty.arguments.iter().enumerate() {
-            if index != 0 { name.push(','); }
-            match argument {
-                GenericArgument::Type(ty) => write_type_name(name, ty),
-                GenericArgument::Value(value) => name.push_str(&shape(value)),
-            }
-        }
-        name.push('>');
-    }
-    for (present, _) in wrappers.into_iter().rev() {
-        if present {
-            if let Some(count) = &ty.count {
-                name.push(',');
-                name.push_str(&shape(count));
-            }
-            name.push('>');
-        }
-    }
-    if let Some(outputs) = &ty.contracts {
-        write_type_contracts(name, outputs);
-    }
+    crate::codec::types::source_type_name(ty, name);
 }
 
 pub(crate) fn write_type_contracts(name: &mut String, outputs: &[ContractPredicate]) {
-    for output in outputs {
-        if let ContractPredicate::Nonzero(value) = output {
-            name.push_str(&format!(" requires nonzero({value})"));
-        } else if let ContractPredicate::Memory(access)=output {
-            let mode=match access{None=>"none",Some(Access::Read)=>"read",Some(Access::Write)=>"write",Some(Access::InOut)=>"inout",Some(Access::Value)=>"value",Some(Access::Atomic)=>"atomic"};
-            name.push_str(&format!(" ensures memory({mode})"));
-        } else if let ContractPredicate::Initialized { value, condition } = output {
-            name.push_str(&format!(" ensures initialized({value},{})", condition_name(condition)));
-        }
-    }
+    crate::codec::types::contract_names(outputs, name);
 }
-pub(crate) fn expression_name(expression:&Expr)->String {
-    let arguments=|values:&[Expr]|values.iter().map(expression_name).collect::<Vec<_>>().join(",");
-    let generic=|values:&[GenericArgument]|values.iter().map(|value|match value {
-        GenericArgument::Type(ty)=>type_name(ty),
-        GenericArgument::Value(Shape::Literal(value))=>value.to_string(),
-        GenericArgument::Value(Shape::Constant(name))=>name.clone(),
-        GenericArgument::Value(Shape::Expression(value))=>expression_name(value),
-    }).collect::<Vec<_>>().join(",");
-    match &expression.kind {
-        ExprKind::Number(value)|ExprKind::Name(value)=>value.clone(),
-        ExprKind::StaticU32(value)=>value.to_string(),ExprKind::Bool(value)=>value.to_string(),
-        ExprKind::Member(base,field)=>format!("{}.{}",expression_name(base),field),
-        ExprKind::Index(base,index)=>format!("{}[{}]",expression_name(base),expression_name(index)),
-        ExprKind::Unary(op,value)=>format!("({op}{})",expression_name(value)),
-        ExprKind::Binary(op,a,b)=>format!("({}{op}{})",expression_name(a),expression_name(b)),
-        ExprKind::Select(a,b,c)=>format!("({}?{}:{})",expression_name(a),expression_name(b),expression_name(c)),
-        ExprKind::Call(name,args)=>format!("{name}({})",arguments(args)),
-        ExprKind::Invoke(callee,args)=>format!("{}({})",expression_name(callee),arguments(args)),
-        ExprKind::Construct(ty,args)=>format!("{}({})",type_name(ty),arguments(args)),
-        ExprKind::Specialize(name,types,args)=>format!("{name}<{}>({})",generic(types),arguments(args)),
-        ExprKind::FunctionRef(name,types)=>format!("{name}<{}>",generic(types)),
-        ExprKind::Cooperate(name,types,args)=>format!("cooperate {name}{}({})",types.as_ref().map(|types|format!("<{}>",generic(types))).unwrap_or_default(),arguments(args)),
-        ExprKind::Target(target,value)=>format!("target({},{})",match target {Target::Cpu=>"cpu",Target::Gpu=>"gpu",Target::Compute=>"compute"},expression_name(value)),
-    }
-}
-fn condition_name(condition: &OutputCondition) -> String {
-    match condition {
-        OutputCondition::Name(name) | OutputCondition::Number(name) => name.clone(),
-        OutputCondition::Bool(value) => value.to_string(),
-        OutputCondition::StaticU32(value) => value.to_string(),
-        OutputCondition::Member(base, field) => format!("{}.{}", condition_name(base), field),
-        OutputCondition::Unary(op, value) => format!("({op}{})", condition_name(value)),
-        OutputCondition::Binary(op, a, b) => format!("({}{op}{})", condition_name(a), condition_name(b)),
-        OutputCondition::Constant(value) => format!("{}[{}]", value.ty.name,
-            value.bits.iter().map(|bits| format!("{bits:016x}")).collect::<Vec<_>>().join(",")),
-    }
+
+pub(crate) fn expression_name(expression: &Expr) -> String {
+    let mut name = String::new();
+    crate::codec::types::expression_name(expression, &mut name);
+    name
 }

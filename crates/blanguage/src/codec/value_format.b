@@ -152,6 +152,211 @@ extern "C" void write_type(address source,address output,Host host) on cpu requi
  }
 }
 
+void name_token<const N:u32 in {3,4,5,6,7,8,10,16,18,21}>(
+    read array<u8,N> token, address output, Host host
+) on cpu requires nonzero(host.append) {
+    host.append(output, address_of(token[0]), u64(N));
+}
+
+void name_bytes(Bytes value, address output, Host host) on cpu requires nonzero(host.append) {
+    host.append(output, value.data, value.count);
+}
+
+void name_decimal(u32 value, address output, Host host) on cpu requires nonzero(host.append) {
+    array<u8,10> digits;
+    u64 cursor = 10u64;
+    u32 remaining = value;
+    while (cursor == 10u64 || remaining != 0) {
+        cursor -= 1u64;
+        unsafe_position<u8>(unsafe_address(address_bits(address_of(digits[0])) + cursor)) =
+            u8(48 + remaining % 10);
+        remaining /= 10;
+    }
+    host.append(output, unsafe_address(address_bits(address_of(digits[0])) + cursor), 10u64 - cursor);
+}
+
+void name_boolean(u32 value, address output, Host host) on cpu requires nonzero(host.append) {
+    if (value != 0) { name_token("true", output, host); }
+    else { name_token("false", output, host); }
+}
+
+void name_shape(address source, address output, Host host) on cpu requires nonzero(host.append) requires nonzero(host.ty) requires nonzero(host.type_name) requires nonzero(host.argument) requires nonzero(host.shape) requires nonzero(host.expression) requires nonzero(host.predicate) requires nonzero(host.condition) requires nonzero(host.constant) {
+    Shape value = host.shape(source);
+    if (value.kind == 0) { name_decimal(value.literal, output, host); }
+    else if (value.kind == 1) { name_bytes(value.name, output, host); }
+    else { write_expression_name(value.expression, output, host); }
+}
+
+void name_arguments(Span values, address output, Host host) on cpu requires nonzero(host.append) requires nonzero(host.ty) requires nonzero(host.type_name) requires nonzero(host.argument) requires nonzero(host.shape) requires nonzero(host.expression) requires nonzero(host.predicate) requires nonzero(host.condition) requires nonzero(host.constant) {
+    u64 index = 0u64;
+    while (index < values.count) {
+        if (index != 0u64) { byte(u8(44), output, host.append); }
+        Argument value = host.argument(item(values, index));
+        if (value.kind == 0) { write_source_type_name(value.value, output, host); }
+        else { name_shape(value.value, output, host); }
+        index += 1u64;
+    }
+}
+
+void name_expressions(Span values, address output, Host host) on cpu requires nonzero(host.append) requires nonzero(host.ty) requires nonzero(host.type_name) requires nonzero(host.argument) requires nonzero(host.shape) requires nonzero(host.expression) requires nonzero(host.predicate) requires nonzero(host.condition) requires nonzero(host.constant) {
+    u64 index = 0u64;
+    while (index < values.count) {
+        if (index != 0u64) { byte(u8(44), output, host.append); }
+        write_expression_name(item(values, index), output, host);
+        index += 1u64;
+    }
+}
+
+void name_hexadecimal(u64 value, address output, Host host) on cpu requires nonzero(host.append) {
+    array<u8,16> digits;
+    for (index in 0..16) {
+        u32 digit = u32((value >> (u64(15 - index) * 4u64)) & 15u64);
+        digits[index] = digit < 10 ? u8(48 + digit) : u8(87 + digit);
+    }
+    host.append(output, address_of(digits[0]), 16u64);
+}
+
+void name_condition(address source, address output, Host host) on cpu requires nonzero(host.append) requires nonzero(host.ty) requires nonzero(host.type_name) requires nonzero(host.argument) requires nonzero(host.shape) requires nonzero(host.expression) requires nonzero(host.predicate) requires nonzero(host.condition) requires nonzero(host.constant) {
+    Condition value = host.condition(source);
+    if (value.kind == 0 || value.kind == 1) { name_bytes(value.name, output, host); }
+    else if (value.kind == 2) { name_boolean(value.literal, output, host); }
+    else if (value.kind == 6) { name_decimal(value.literal, output, host); }
+    else if (value.kind == 3) {
+        name_condition(value.a, output, host);
+        byte(u8(46), output, host.append);
+        name_bytes(value.name, output, host);
+    } else if (value.kind == 4 || value.kind == 5) {
+        byte(u8(40), output, host.append);
+        if (value.kind == 5) { name_condition(value.a, output, host); }
+        name_bytes(value.name, output, host);
+        name_condition(value.kind == 4 ? value.a : value.b, output, host);
+        byte(u8(41), output, host.append);
+    } else {
+        Constant constant = host.constant(value.constant);
+        name_bytes(host.ty(constant.ty).name, output, host);
+        byte(u8(91), output, host.append);
+        u64 index = 0u64;
+        while (index < constant.bits.count) {
+            if (index != 0u64) { byte(u8(44), output, host.append); }
+            name_hexadecimal(unsafe_position<u64>(item(constant.bits, index)), output, host);
+            index += 1u64;
+        }
+        byte(u8(93), output, host.append);
+    }
+}
+
+extern "C" void write_contract_names(Span values, address output, Host host) on cpu requires nonzero(host.append) requires nonzero(host.ty) requires nonzero(host.type_name) requires nonzero(host.argument) requires nonzero(host.shape) requires nonzero(host.expression) requires nonzero(host.predicate) requires nonzero(host.condition) requires nonzero(host.constant) {
+    u64 index = 0u64;
+    while (index < values.count) {
+        Predicate value = host.predicate(item(values, index));
+        if (value.kind == 1) {
+            name_token(" requires nonzero(", output, host);
+            name_bytes(value.first, output, host);
+            byte(u8(41), output, host.append);
+        } else if (value.kind == 4) {
+            name_token(" ensures memory(", output, host);
+            if (value.access_present == 0) { name_token("none", output, host); }
+            else if (value.access == 0) { name_token("value", output, host); }
+            else if (value.access == 1) { name_token("read", output, host); }
+            else if (value.access == 2) { name_token("write", output, host); }
+            else if (value.access == 3) { name_token("inout", output, host); }
+            else { name_token("atomic", output, host); }
+            byte(u8(41), output, host.append);
+        } else if (value.kind == 8) {
+            name_token(" ensures initialized(", output, host);
+            name_bytes(value.first, output, host);
+            byte(u8(44), output, host.append);
+            name_condition(value.condition, output, host);
+            byte(u8(41), output, host.append);
+        }
+        index += 1u64;
+    }
+}
+
+extern "C" void write_source_type_name(address source, address output, Host host) on cpu requires nonzero(host.append) requires nonzero(host.ty) requires nonzero(host.type_name) requires nonzero(host.argument) requires nonzero(host.shape) requires nonzero(host.expression) requires nonzero(host.predicate) requires nonzero(host.condition) requires nonzero(host.constant) {
+    TypeName value = host.type_name(source);
+    if (value.tile != 0) { name_token("tile<", output, host); }
+    if (value.view != 0) { name_token("view<", output, host); }
+    if (value.dataset != 0) { name_token("dataset<", output, host); }
+    name_bytes(value.name, output, host);
+    if (value.arguments.count != 0u64) {
+        byte(u8(60), output, host.append);
+        name_arguments(value.arguments, output, host);
+        byte(u8(62), output, host.append);
+    }
+    u32 wrappers = value.tile + value.view + value.dataset;
+    for (index in 0..wrappers) {
+        if (address_bits(value.count) != 0u64) {
+            byte(u8(44), output, host.append);
+            name_shape(value.count, output, host);
+        }
+        byte(u8(62), output, host.append);
+    }
+    write_contract_names(value.contracts, output, host);
+}
+
+extern "C" void write_expression_name(address source, address output, Host host) on cpu requires nonzero(host.append) requires nonzero(host.ty) requires nonzero(host.type_name) requires nonzero(host.argument) requires nonzero(host.shape) requires nonzero(host.expression) requires nonzero(host.predicate) requires nonzero(host.condition) requires nonzero(host.constant) {
+    Expression value = host.expression(source);
+    if (value.kind == 0 || value.kind == 3) { name_bytes(value.name, output, host); }
+    else if (value.kind == 1) { name_decimal(value.literal, output, host); }
+    else if (value.kind == 2) { name_boolean(value.literal, output, host); }
+    else if (value.kind == 4) {
+        write_expression_name(value.a, output, host);
+        byte(u8(46), output, host.append);
+        name_bytes(value.name, output, host);
+    } else if (value.kind == 5) {
+        write_expression_name(value.a, output, host);
+        byte(u8(91), output, host.append);
+        write_expression_name(value.b, output, host);
+        byte(u8(93), output, host.append);
+    } else if (value.kind == 6 || value.kind == 7 || value.kind == 8) {
+        if (value.kind == 6) { name_bytes(value.name, output, host); }
+        else if (value.kind == 7) { write_expression_name(value.a, output, host); }
+        else { write_source_type_name(value.ty, output, host); }
+        byte(u8(40), output, host.append);
+        name_expressions(value.arguments, output, host);
+        byte(u8(41), output, host.append);
+    } else if (value.kind == 9 || value.kind == 10 || value.kind == 11) {
+        if (value.kind == 11) { name_token("cooperate ", output, host); }
+        name_bytes(value.name, output, host);
+        if (value.kind != 11 || value.types_present != 0) {
+            byte(u8(60), output, host.append);
+            name_arguments(value.types, output, host);
+            byte(u8(62), output, host.append);
+        }
+        if (value.kind != 10) {
+            byte(u8(40), output, host.append);
+            name_expressions(value.arguments, output, host);
+            byte(u8(41), output, host.append);
+        }
+    } else if (value.kind == 12) {
+        name_token("target(", output, host);
+        if (value.target == 0) { name_token("compute", output, host); }
+        else if (value.target == 1) { name_token("cpu", output, host); }
+        else { name_token("gpu", output, host); }
+        byte(u8(44), output, host.append);
+        write_expression_name(value.a, output, host);
+        byte(u8(41), output, host.append);
+    } else {
+        byte(u8(40), output, host.append);
+        if (value.kind == 13) {
+            name_bytes(value.name, output, host);
+            write_expression_name(value.a, output, host);
+        } else {
+            write_expression_name(value.a, output, host);
+            if (value.kind == 14) { name_bytes(value.name, output, host); }
+            else { byte(u8(63), output, host.append); }
+            write_expression_name(value.b, output, host);
+            if (value.kind == 15) {
+                byte(u8(58), output, host.append);
+                write_expression_name(value.c, output, host);
+            }
+        }
+        byte(u8(41), output, host.append);
+    }
+}
+
+
 ReadBytes take_bytes(Bytes input,inout u64 position,u64 size) on cpu {
  if(size>0xffffffffffffffffu64-position){return ReadBytes(Bytes(address(),0u64),ReadStatus::Overflow);}
  u64 end=position+size;

@@ -70,10 +70,39 @@ struct Host {
 unsafe extern "C" {
     #[link_name="codec.value_format::write_type"]
     fn write_type(value:Address,output:*mut c_void,host:Host);
+    #[link_name = "codec.value_format::write_source_type_name"]
+    fn write_source_type_name(value: Address, output: *mut c_void, host: Host);
+    #[link_name = "codec.value_format::write_expression_name"]
+    fn write_expression_name(value: Address, output: *mut c_void, host: Host);
+    #[link_name = "codec.value_format::write_contract_names"]
+    fn write_contract_names(values: Span, output: *mut c_void, host: Host);
 }
 pub(super) fn encode(value:&ir::Ty,output:&mut Writer) {
     unsafe { write_type(address(value),ptr::from_mut(output).cast(),HOST); }
 }
+
+pub(crate) fn source_type_name(value: &ast::TypeName, output: &mut String) {
+    let host = Host { append: append_name, ..HOST };
+    unsafe { write_source_type_name(address(value), ptr::from_mut(output).cast(), host); }
+}
+
+pub(crate) fn expression_name(value: &ast::Expr, output: &mut String) {
+    let host = Host { append: append_name, ..HOST };
+    unsafe { write_expression_name(address(value), ptr::from_mut(output).cast(), host); }
+}
+
+pub(crate) fn contract_names(values: &[ast::ContractPredicate], output: &mut String) {
+    let host = Host { append: append_name, ..HOST };
+    unsafe { write_contract_names(Span::of(values), ptr::from_mut(output).cast(), host); }
+}
+
+unsafe extern "C" fn append_name(output: *mut c_void, data: *const u8, count: usize) {
+    // B only appends borrowed Rust strings or its own ASCII punctuation and digits.
+    let bytes = unsafe { std::slice::from_raw_parts(data, count) };
+    let text = unsafe { std::str::from_utf8_unchecked(bytes) };
+    unsafe { &mut *output.cast::<String>() }.push_str(text);
+}
+
 unsafe extern "C" fn append(output:*mut c_void,data:*const u8,count:usize) {
     unsafe { &mut *output.cast::<Writer>() }.0.extend_from_slice(unsafe { std::slice::from_raw_parts(data,count) });
 }
