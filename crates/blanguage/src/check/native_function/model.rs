@@ -69,7 +69,15 @@ fn translate_value(value:&mut Value,model:Option<&Value>,bindings:&BTreeMap<Valu
   ValueNeed::Complete=>return,
  }}
 }
-fn translate_model(value:&mut Returned,model:Option<&Returned>,bindings:&BTreeMap<ValueIdentity,bounds::Proof>,stored:bool){
+type ResidencyBinding = fn(&residency::Residency, &BTreeMap<ValueIdentity, bounds::Proof>) -> residency::Residency;
+
+fn translate_model(
+    value: &mut Returned,
+    model: Option<&Returned>,
+    bindings: &BTreeMap<ValueIdentity, bounds::Proof>,
+    stored: bool,
+    bind_residency: ResidencyBinding,
+) {
  let k=kind(value);let mut cursor=unsafe{start()};
  let mut facts=TranslateFacts{kind:k,model:model.map(kind).unwrap_or(k),present:0,model_present:0,payloads:match value{Returned::OwnedValue(value)=>value.payloads.len()as u64,_=>0},model_payloads:0};
  facts.model_payloads=model.map(|model|match model{Returned::OwnedValue(value)=>value.payloads.len()as u64,_=>0}).unwrap_or(facts.payloads);
@@ -79,7 +87,10 @@ fn translate_model(value:&mut Returned,model:Option<&Returned>,bindings:&BTreeMa
   TranslateNeed::Length=>translate_value(&mut data_mut(value).length,model.map(|model|&data(model).length),bindings),
   TranslateNeed::RootProof=>{let value=data_mut(value);value.root.proof=bounds::Proof::capture(&value.root);}
   TranslateNeed::LengthProof=>{let value=data_mut(value);value.length.proof=bounds::Proof::capture(&value.length).with_domains(Domains::from([IndexDomain::ApplicationLength(value.root.identity())]));}
-  TranslateNeed::Residency=>{let value=data_mut(value);value.residency=model.map(data).unwrap_or(value).residency.at_call(bindings);}
+  TranslateNeed::Residency=>{
+   let value=data_mut(value);
+   value.residency=bind_residency(&model.map(data).unwrap_or(value).residency,bindings);
+  }
   TranslateNeed::Prefixes=>{
    let value=data_mut(value);
    value.prefixes=match model{Some(model)=>data(model).prefixes.iter().map(|(word,fact)|(*word,fact.at_call(bindings))).collect(),None=>std::mem::take(&mut value.prefixes).into_iter().map(|(word,fact)|(word,fact.at_call(bindings))).collect()};
@@ -89,7 +100,7 @@ fn translate_model(value:&mut Returned,model:Option<&Returned>,bindings:&BTreeMa
    let value=data_mut(value);let elements=match model{Some(model)=>data(model).elements.clone(),None=>std::mem::take(&mut value.elements)};
    value.elements=elements.map(&mut|mut model|{
     let element_bindings=application::element_scope_bindings(bindings,model.registers().len(),stored);
-    translate_model(&mut model,None,&element_bindings,true);model
+    translate_model(&mut model,None,&element_bindings,true,bind_residency);model
    },&mut|when|when.at_call(bindings));
   }
   TranslateNeed::Inspect=>{
@@ -98,12 +109,31 @@ fn translate_model(value:&mut Returned,model:Option<&Returned>,bindings:&BTreeMa
   }
   TranslateNeed::Payload=>{
    let index=cursor.index as usize;let source=model.map(|model|unsafe{owned(model).payloads[index].as_ref().unwrap_unchecked().as_ref()});
-   translate_model(unsafe{owned_mut(value).payloads[index].as_mut().unwrap_unchecked()},source,bindings,stored);
+   translate_model(unsafe{owned_mut(value).payloads[index].as_mut().unwrap_unchecked()},source,bindings,stored,bind_residency);
   }
   TranslateNeed::Clear=>owned_mut(value).payloads[cursor.index as usize]=None,
   TranslateNeed::Next=>{},
   TranslateNeed::Complete=>return,
  }}
 }
-pub(in crate::check) fn translate_returned(value:&mut Returned,model:&Returned,bindings:&BTreeMap<ValueIdentity,bounds::Proof>,stored:bool){translate_model(value,Some(model),bindings,stored)}
-pub(in crate::check) fn translate_in_place(value:&mut Returned,bindings:&BTreeMap<ValueIdentity,bounds::Proof>,stored:bool){translate_model(value,None,bindings,stored)}
+pub(in crate::check) fn translate_returned(
+    value: &mut Returned,
+    model: &Returned,
+    bindings: &BTreeMap<ValueIdentity, bounds::Proof>,
+    stored: bool,
+) {
+    // A local element rebind still owns the original call snapshots.
+    let bind_residency: ResidencyBinding = if stored {
+        residency::Residency::element_indices
+    } else {
+        residency::Residency::at_call
+    };
+    translate_model(value, Some(model), bindings, stored, bind_residency);
+}
+pub(in crate::check) fn translate_in_place(
+    value: &mut Returned,
+    bindings: &BTreeMap<ValueIdentity, bounds::Proof>,
+    stored: bool,
+) {
+    translate_model(value, None, bindings, stored, residency::Residency::at_call);
+}
