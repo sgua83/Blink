@@ -174,16 +174,18 @@ pub(super) fn binary(op:&str,a:&Ty,a_literal:bool,b:&Ty,b_literal:bool,source:&S
         }
     })
 }
-pub(super) fn unary(op:&str,ty:&Ty,source:&Source,span:Span)->Result<Option<UnaryOp>> {
+struct UnaryRule { instruction:Option<UnaryOp>,code:u32 }
+fn unary_rule(op:&str,ty:&Ty,source:&Source,span:Span)->Result<UnaryRule> {
     let context=Context {types:[ty,ty]};
     let plan=unsafe {source_unary(op.as_ptr(),op.len() as u64,Operand::of(ty),context.queries())};
-    finish(plan,source,span,op,||format!("类型不匹配：需要 bool，实际为 {}",ty.name),|plan| {
-        [None,Some(UnaryOp::FloatNegate),Some(UnaryOp::SignedNegate),Some(UnaryOp::UnsignedNegate),
-            Some(UnaryOp::LogicalNot),Some(UnaryOp::BitNot)][plan.operation as usize]
+    finish(plan,source,span,op,||format!("类型不匹配：需要 bool，实际为 {}",ty.name),|plan|UnaryRule {
+        instruction:[None,Some(UnaryOp::FloatNegate),Some(UnaryOp::SignedNegate),Some(UnaryOp::UnsignedNegate),
+            Some(UnaryOp::LogicalNot),Some(UnaryOp::BitNot)][plan.operation as usize],code:plan.operation,
     })
 }
-
-
+pub(super) fn unary(op:&str,ty:&Ty,source:&Source,span:Span)->Result<Option<UnaryOp>> {
+    unary_rule(op,ty,source,span).map(|rule|rule.instruction)
+}
 
 #[repr(u32)]
 #[derive(Clone,Copy,PartialEq,Eq)]
@@ -717,5 +719,84 @@ impl Builder<'_> {
             let mut value=values.output.unwrap();value.literal=outcome.literal!=0;value.uniform=outcome.uniform!=0;value
         } else { Value {proof:values.proof.unwrap(),literal:outcome.literal!=0,ty:values.ty.unwrap(),regs:values.registers,
             uniform:outcome.uniform!=0,constant:None} }
+    }
+}
+
+
+#[repr(u32)]
+enum ValueUnaryAction { BeginConstants,Proof,ConstantValue,Origin,Emit }
+#[repr(u32)]
+enum ValueUnaryOutcome { Registers,Constant }
+#[repr(C)]
+struct ValueUnaryInput { operation:u32,width:u32,registers:usize,constants:*const Bits,constant_count:usize,constant_present:u32 }
+#[repr(C)]
+struct ValueUnaryEmitter<'a,'w> {
+    context:*mut UnaryValues<'a,'w>,
+    constant:unsafe extern "C" fn(*mut UnaryValues<'a,'w>,Bits),
+    action:unsafe extern "C" fn(*mut UnaryValues<'a,'w>,ValueUnaryAction,usize)->usize,
+}
+unsafe extern "C" {
+    #[link_name="bootstrap.operator_types::expand_unary_value"]
+    fn expand_unary_value(input:ValueUnaryInput,emitter:ValueUnaryEmitter<'_,'_>)->ValueUnaryOutcome;
+}
+struct UnaryValues<'a,'w> {
+    builder:&'a mut Builder<'w>,input:Option<Value>,operation:UnaryOp,scalar:Scalar,
+    constant:Option<Vec<Bits>>,source_bits:Option<Vec<Bits>>,proof:Option<bounds::Proof>,
+    registers:Vec<Reg>,first:usize,output:Option<Value>,
+}
+unsafe extern "C" fn unary_constant(context:*mut UnaryValues<'_,'_>,bits:Bits) {
+    unsafe { &mut *context }.constant.as_mut().unwrap().push(bits);
+}
+unsafe extern "C" fn unary_action(context:*mut UnaryValues<'_,'_>,action:ValueUnaryAction,index:usize)->usize {
+    let values=unsafe { &mut *context };
+    match action {
+        ValueUnaryAction::BeginConstants=>values.constant=Some(Vec::with_capacity(values.input.as_ref().unwrap().constant.as_ref().unwrap().len())),
+        ValueUnaryAction::Proof=>values.proof=Some(bounds::unary(values.operation,values.input.as_ref().unwrap())),
+        ValueUnaryAction::ConstantValue=>{
+            let input=values.input.take().unwrap();
+            values.source_bits=input.constant;values.first=values.builder.code.len();
+            let mut value=values.builder.constant_value(input.ty,values.constant.take().unwrap(),None);
+            value.literal=input.literal;value.proof=values.proof.take().unwrap();values.output=Some(value);
+            return values.builder.code.len()-values.first;
+        },
+        ValueUnaryAction::Origin=>{
+            let value=values.output.as_ref().unwrap();
+            let inst=&mut values.builder.code[values.first+index];
+            inst.generated_origin=Some(Arc::new(GeneratedOrigin {
+                reason:GenerationReason::UnaryConstantFold,
+                trigger:Some(GenerationAnchor::UnaryConstantFold {
+                    expression:inst.source_site.clone(),operation:values.operation,scalar:values.scalar,
+                    input_bits:values.source_bits.as_ref().unwrap()[index],result_bits:value.constant.as_ref().unwrap()[index],
+                    component_index:index,component_count:value.regs.len(),
+                }),
+            }));
+        },
+        ValueUnaryAction::Emit=>{
+            let a=values.input.as_ref().unwrap().regs[index];
+            let dst=values.builder.reg(values.builder.registers[a]);
+            values.builder.emit(InstKind::Unary {dst,op:values.operation,a});values.registers.push(dst);
+        },
+    }
+    0
+}
+impl Builder<'_> {
+    pub(super) fn lower_unary_value(&mut self,name:&str,input:Value,span:Span)->Result<Value> {
+        let rule=unary_rule(name,&input.ty,self.scope.source(),span)?;
+        let Some(operation)=rule.instruction else {return Ok(input);};
+        let scalar=input.ty.components[0].0;
+        let bits=input.constant.as_deref();
+        let facts=ValueUnaryInput { operation:rule.code,width:scalar.bit_width(),registers:input.regs.len(),
+            constants:bits.map_or(std::ptr::null(),|bits|bits.as_ptr()),constant_count:bits.map_or(0,|bits|bits.len()),
+            constant_present:u32::from(bits.is_some()) };
+        let mut values=UnaryValues {builder:self,input:Some(input),operation,scalar,constant:None,source_bits:None,
+            proof:None,registers:Vec::new(),first:0,output:None};
+        let outcome=unsafe { expand_unary_value(facts,ValueUnaryEmitter {context:&mut values,constant:unary_constant,action:unary_action}) };
+        Ok(match outcome {
+            ValueUnaryOutcome::Constant=>values.output.unwrap(),
+            ValueUnaryOutcome::Registers=>{
+                let input=values.input.unwrap();
+                Value {proof:values.proof.unwrap(),literal:input.literal,ty:input.ty,regs:values.registers,uniform:input.uniform,constant:None}
+            },
+        })
     }
 }

@@ -219,3 +219,17 @@ struct MathEmitter {
 struct MathOutcome { u32 constant; u32 literal; u32 uniform; };
 extern "C" MathOutcome expand_math(MathPath path,usize count,usize width,MathEmitter emitter) on cpu
     requires nonzero(emitter.value) requires nonzero(emitter.action);
+
+
+// operation is the original unary Plan instruction: 1 float negate, 2/3 integer negate,
+// 4 logical not, 5 bit not. The identity plan returns the original value directly.
+enum ValueUnaryAction:u32 { BeginConstants=0; Proof=1; ConstantValue=2; Origin=3; Emit=4; };
+enum ValueUnaryOutcome:u32 { Registers=0; Constant=1; };
+struct ValueUnaryInput { u32 operation; u32 width; usize registers; address constants; usize constant_count; u32 constant_present; };
+struct ValueUnaryEmitter {
+    address context;
+    cfn<void,address,u64> constant;
+    cfn<usize,address,ValueUnaryAction,usize> action;
+};
+extern "C" ValueUnaryOutcome expand_unary_value(ValueUnaryInput input,ValueUnaryEmitter emitter) on cpu
+    requires nonzero(emitter.constant) requires nonzero(emitter.action);

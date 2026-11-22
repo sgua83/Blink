@@ -138,14 +138,6 @@ impl World {
     }
 }
 
-#[repr(u32)]
-enum FoldUnary {
-    Negate,
-    LogicalNot,
-    BitNot,
-    FloatNegate,
-}
-
 #[repr(C)]
 struct FoldedCast {
     bits: Bits,
@@ -155,8 +147,6 @@ struct FoldedCast {
 unsafe extern "C" {
     #[link_name = "bootstrap.scalar_fold::cast"]
     fn fold_cast(source: ScalarEncoding, target: ScalarEncoding, bits: Bits) -> FoldedCast;
-    #[link_name = "bootstrap.scalar_fold::unary"]
-    fn fold_unary(operation: FoldUnary, width: u32, bits: Bits) -> Bits;
     #[link_name = "bootstrap.scalar_fold::binary"]
     fn fold_integer_binary(operation: ScalarBinaryOp, width: u32, signed: u32, left: Bits, right: Bits) -> Bits;
     #[link_name = "bootstrap.scalar_fold::float_binary"]
@@ -167,16 +157,6 @@ unsafe extern "C" {
     fn divide_signed(left: i64, right: i64, remainder: u32) -> i64;
 }
 
-pub(super) fn unary(operation: UnaryOp, scalar: Scalar, bits: Bits) -> Bits {
-    let operation = match operation {
-        UnaryOp::FloatNegate => FoldUnary::FloatNegate,
-        UnaryOp::Bitcast => return bits,
-        UnaryOp::SignedNegate | UnaryOp::UnsignedNegate => FoldUnary::Negate,
-        UnaryOp::LogicalNot => FoldUnary::LogicalNot,
-        UnaryOp::BitNot => FoldUnary::BitNot,
-    };
-    unsafe { fold_unary(operation, scalar.bit_width(), bits) }
-}
 pub(super) fn cast(from: Scalar, into: Scalar, bits: Bits) -> Option<Bits> {
     if from == into {
         return Some(into.truncate(bits));

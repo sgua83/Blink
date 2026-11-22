@@ -3156,54 +3156,8 @@ impl<'a> Builder<'a> {
         value.literal = scalar.size() == 4;
         Ok(value)
     }
-    fn unary_value(&mut self, op: &str, a: Value, span: Span) -> Result<Value> {
-        let Some(operation) = operators::unary(op, &a.ty, self.scope.source(), span)? else {
-            return Ok(a);
-        };
-        let scalar = a.ty.components[0].0;
-        let constant = a.constant.as_ref().map(|values| {
-            values
-                .iter()
-                .map(|bits| constant::unary(operation, scalar, *bits))
-                .collect()
-        });
-        let proof = bounds::unary(operation, &a);
-        if let Some(bits) = constant {
-            let first = self.code.len();
-            let mut value = self.constant_value(a.ty, bits,None);
-            for (component_index, (inst, (input_bits, result_bits))) in self.code[first..].iter_mut()
-                .zip(a.constant.iter().flatten().zip(value.constant.iter().flatten())).enumerate() {
-                inst.generated_origin = Some(Arc::new(GeneratedOrigin {
-                    reason: GenerationReason::UnaryConstantFold,
-                    trigger: Some(GenerationAnchor::UnaryConstantFold {
-                        expression: inst.source_site.clone(), operation, scalar,
-                        input_bits: *input_bits, result_bits: *result_bits,
-                        component_index, component_count: value.regs.len(),
-                    }),
-                }));
-            }
-            value.literal = a.literal;
-            value.proof = proof;
-            return Ok(value);
-        }
-        let mut regs = Vec::new();
-        for x in a.regs {
-            let dst = self.reg(self.registers[x]);
-            self.emit(InstKind::Unary {
-                dst,
-                op: operation,
-                a: x,
-            });
-            regs.push(dst);
-        }
-        Ok(Value {
-            proof,
-            literal: a.literal,
-            ty: a.ty,
-            regs,
-            uniform: a.uniform,
-            constant: None,
-        })
+    fn unary_value(&mut self,name:&str,value:Value,span:Span)->Result<Value> {
+        self.lower_unary_value(name,value,span)
     }
     #[inline(never)]
     async fn binary_expr(&mut self, op: &str, a: &Expr, b: &Expr, span: Span) -> Result<Option<Value>> {

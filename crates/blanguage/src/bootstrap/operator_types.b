@@ -800,3 +800,31 @@ extern "C" MathOutcome expand_math(MathPath path,usize count,usize width,MathEmi
     emitter.action(emitter.context,MathStep(MathAction::FloatingProof,0u64,0u64,0u64));
     return MathOutcome(0,0,uniform ? 1 : 0);
 }
+
+
+extern "C" ValueUnaryOutcome expand_unary_value(ValueUnaryInput input,ValueUnaryEmitter emitter) on cpu
+    requires nonzero(emitter.constant) requires nonzero(emitter.action) {
+    if (input.constant_present!=0) {
+        emitter.action(emitter.context,ValueUnaryAction::BeginConstants,0u64);
+        UnaryOperation operation=UnaryOperation::Negate;
+        if (input.operation==1) { operation=UnaryOperation::FloatNegate; }
+        else if (input.operation==4) { operation=UnaryOperation::LogicalNot; }
+        else if (input.operation==5) { operation=UnaryOperation::BitNot; }
+        usize index=0u64;
+        while (index<input.constant_count) {
+            u64 bits=unsafe_position<u64>(unsafe_address(address_bits(input.constants)+u64(index)*8u64));
+            emitter.constant(emitter.context,bootstrap.scalar_fold::unary(operation,input.width,bits));
+            index+=1u64;
+        }
+    }
+    emitter.action(emitter.context,ValueUnaryAction::Proof,0u64);
+    if (input.constant_present!=0) {
+        usize emitted=emitter.action(emitter.context,ValueUnaryAction::ConstantValue,0u64);
+        usize index=0u64;
+        while (index<emitted) { emitter.action(emitter.context,ValueUnaryAction::Origin,index);index+=1u64; }
+        return ValueUnaryOutcome::Constant;
+    }
+    usize index=0u64;
+    while (index<input.registers) { emitter.action(emitter.context,ValueUnaryAction::Emit,index);index+=1u64; }
+    return ValueUnaryOutcome::Registers;
+}
