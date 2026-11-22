@@ -706,7 +706,7 @@ impl Graph {
         let fallback = std::cell::LazyCell::new(bindings);
         let input_parameters = relation.map_or_else(|| &*fallback, |scope| &scope.bindings);
         let nodes = self.nodes.iter().map(|node| {
-            let seeds = canonical_with_guards(node.seeds.clone(), function, None, exposed, guards, false);
+            let seeds = canonical_with_guards(node.seeds.clone(), function, None, exposed, guards, BorrowProjection::Input);
             let edges = node.edges.iter().map(|edge| {
                 let when = relation.map_or_else(
                     || edge.when.guard_at_call(input_parameters), |scope| scope.edge(&edge.when),
@@ -719,7 +719,7 @@ impl Graph {
                     },
                     Op::Position(origin) => {
                         let borrow = Borrow::source(Origin::Position(Arc::new(origin.clone())));
-                        let value = canonical_with_guards(borrow, function, None, exposed, guards, false);
+                        let value = canonical_with_guards(borrow, function, None, exposed, guards, BorrowProjection::Input);
                         match value.sources.iter().next() {
                             Some(Origin::Position(position)) => Op::Position(position.as_ref().clone()),
                             _ => edge.op.clone(),

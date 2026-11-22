@@ -479,7 +479,7 @@ impl Function {
     fn address_borrows(&self,parameters:&BTreeMap<ValueIdentity,bounds::Proof>,borrow:Borrow)->Option<Borrow> {
         let selected=borrow.map_sources(|source|match source {
             Origin::Parameter(id,indices)=>self.parameters.get(&id).copied().filter(|id|self.input(*id))
-                .map(|id|Borrow::source(Origin::Parameter(id,indices.into_iter().map(|index|input_index(index,self)).collect()))).unwrap_or_else(||Borrow::source(Origin::Unresolved)),
+                .map(|id|Borrow::source(Origin::Parameter(id,indices.into_iter().map(|index|contract_index(index,self,BorrowProjection::Input)).collect()))).unwrap_or_else(||Borrow::source(Origin::Unresolved)),
             Origin::Position(origin) if matches!(origin.root,address::Root::Parameter(_)|address::Root::Derived(_)|address::Root::External(_)|address::Root::Dataset{..}|address::Root::Resource{..}) =>
                 {
                     let mut origin=(*origin).clone();
@@ -1235,14 +1235,27 @@ fn stored_target<'p>(
     if origin.has_local(){return Borrow::default();}
     let origin=origin.map_borrows(|borrow|escaping(borrow,function,exposed));
     if matches!(&origin.root,address::Root::Resource{borrow,..}|address::Root::Dataset{borrow,..}|address::Root::Derived(borrow)|address::Root::External(address::Identity::Storage(borrow)) if !borrow.active()){return Borrow::default();}
-    canonical_relation(Borrow::source(Origin::Position(Arc::new(origin))), function, None, exposed, parameters(), false)
+    canonical_relation(Borrow::source(Origin::Position(Arc::new(origin))), function, None, exposed, parameters(), BorrowProjection::Input)
 }
 fn evaluate(borrow:&Borrow,function:&Function,state:&State,known:&States,expand_loops:bool)->Borrow {
     BorrowEvaluation{function,state:state.loop_scope(),known,expand_loops,deferred_reads:false,loop_bindings:Vec::new(),values:BTreeMap::new(),stored: None, exit_writes: None,stored_paths:Default::default()}.evaluate(borrow)
 }
 
-fn input_index(index:Option<bounds::Operand>,function:&Function)->Option<bounds::Operand>{
-    index.and_then(|index|index.map(|id|match id{ValueIdentity::ElementIndex(_)=>Some(id),_=>function.parameters.get(&id).copied().filter(|id|function.input(*id))}))
+#[derive(Clone, Copy)]
+enum BorrowProjection {
+    Input,
+    Result,
+    Initialization,
+}
+
+fn contract_index(index: Option<bounds::Operand>, function: &Function, projection: BorrowProjection) -> Option<bounds::Operand> {
+    index.and_then(|index| index.map(|id| match id {
+        ValueIdentity::ElementIndex(_) => Some(id),
+        _ => function.parameters.get(&id).copied().filter(|id| {
+            function.input(*id)
+                || matches!(projection, BorrowProjection::Result) && matches!(id, ValueIdentity::Register(_))
+        }),
+    }))
 }
 fn public_parameters(function: &Function) -> BTreeMap<ValueIdentity, bounds::Proof> {
     function.parameters.iter()
@@ -1251,27 +1264,31 @@ fn public_parameters(function: &Function) -> BTreeMap<ValueIdentity, bounds::Pro
 }
 
 fn canonical(borrow: Borrow, function: &Function, exposed: &BTreeMap<Origin, Borrow>) -> Borrow {
-    canonical_relation(borrow, function, None, exposed, &public_parameters(function), false)
+    canonical_relation(borrow, function, None, exposed, &public_parameters(function), BorrowProjection::Input)
 }
 fn canonical_relation(
     borrow: Borrow, function: &Function, resource: Option<&Borrow>, exposed: &BTreeMap<Origin, Borrow>,
-    parameters: &BTreeMap<ValueIdentity, bounds::Proof>, initialization: bool,
+    parameters: &BTreeMap<ValueIdentity, bounds::Proof>, projection: BorrowProjection,
 ) -> Borrow {
-    canonical_with_guards(borrow, function, resource, exposed, &bounds::PublicGuards::new(parameters), initialization)
+    canonical_with_guards(borrow, function, resource, exposed, &bounds::PublicGuards::new(parameters), projection)
 }
 
 fn canonical_with_guards(
     mut borrow: Borrow, function: &Function, resource: Option<&Borrow>, exposed: &BTreeMap<Origin, Borrow>,
-    guards: &bounds::PublicGuards<'_>, initialization: bool,
+    guards: &bounds::PublicGuards<'_>, projection: BorrowProjection,
 ) -> Borrow {
     let parameters = guards.bindings;
+    let selection = match projection {
+        BorrowProjection::Result => BorrowProjection::Result,
+        _ => BorrowProjection::Input,
+    };
     // Impossible source edges carry known absence, not a live private owner.
     // Keep that knowledge in the existing Inactive representation at the ABI.
     let known=!borrow.sources.is_empty();
     borrow.sources.retain_paths(|path| guards.possible(path));
     if known&&borrow.sources.is_empty(){borrow.sources.insert(Origin::Inactive);}
     let address=|origin:&address::Origin|{
-        let mut value=origin.map_borrows(|borrow|canonical_with_guards(borrow.clone(),function,None,exposed,guards,false));
+        let mut value=origin.map_borrows(|borrow|canonical_with_guards(borrow.clone(),function,None,exposed,guards,BorrowProjection::Input));
             if let address::Root::External(address::Identity::Value(ids))=&mut value.root {
                 *ids=ids.iter().filter_map(|id|function.parameters.get(id).copied().filter(|id|function.input(*id))).collect();
             }
@@ -1296,28 +1313,28 @@ fn canonical_with_guards(
             else if let Some(outputs)=exposed.get(&Origin::Data(id)){outputs.clone()}
             else{Borrow::source(Origin::Unresolved)}
         }
-        Origin::Parameter(id,indices)=>Borrow::source(function.parameters.get(&id).copied().map(|id|Origin::Parameter(id,indices.into_iter().map(|index|input_index(index,function)).collect())).unwrap_or(Origin::Unresolved)),
-        Origin::Element{parent,fields,index}=>Borrow::element(canonical_with_guards(*parent,function,None,exposed,guards,false),fields,input_index(index,function)),
-        Origin::Projection{parent,fields}=>Borrow::projection(canonical_with_guards(*parent,function,None,exposed,guards,false),fields),
+        Origin::Parameter(id,indices)=>Borrow::source(function.parameters.get(&id).copied().map(|id|Origin::Parameter(id,indices.into_iter().map(|index|contract_index(index,function,selection)).collect())).unwrap_or(Origin::Unresolved)),
+        Origin::Element{parent,fields,index}=>Borrow::element(canonical_with_guards(*parent,function,None,exposed,guards,selection),fields,contract_index(index,function,selection)),
+        Origin::Projection{parent,fields}=>Borrow::projection(canonical_with_guards(*parent,function,None,exposed,guards,selection),fields),
         Origin::Task{captures,outputs,initialized,guards:task_guards,completions}=>Borrow::source(Origin::Task{
-            captures:Box::new(canonical_with_guards(*captures,function,None,exposed,guards,false)),
-            initialized:Box::new(canonical_with_guards(*initialized,function,None,exposed,guards,true)),
-            outputs:outputs.into_iter().map(|output|canonical_with_guards(output,function,None,exposed,guards,false)).collect(),
-            completions:completions.iter().map(|completion|completion.map_task(|task|canonical_with_guards(task.clone(),function,None,exposed,guards,false))).collect(),
+            captures:Box::new(canonical_with_guards(*captures,function,None,exposed,guards,BorrowProjection::Input)),
+            initialized:Box::new(canonical_with_guards(*initialized,function,None,exposed,guards,BorrowProjection::Initialization)),
+            outputs:outputs.into_iter().map(|output|canonical_with_guards(output,function,None,exposed,guards,BorrowProjection::Input)).collect(),
+            completions:completions.iter().map(|completion|completion.map_task(|task|canonical_with_guards(task.clone(),function,None,exposed,guards,BorrowProjection::Input))).collect(),
             guards:task_guards.into_iter().map(|mut guard|{
-                guard.target=canonical_with_guards(guard.target,function,None,exposed,guards,false);
+                guard.target=canonical_with_guards(guard.target,function,None,exposed,guards,BorrowProjection::Input);
                 guard.map_arguments(|proof|proof.at_call(parameters));
                 guard.map_inputs(|word|word.map(|id|function.parameters.get(&id).copied()));
                 guard
             }).collect(),
         }),
-        Origin::TaskOutput{task,projection}=>canonical_with_guards(*task,function,None,exposed,guards,false).task_projection(projection.map_result(|id|function.parameters.get(&id).copied())),
+        Origin::TaskOutput{task,projection}=>canonical_with_guards(*task,function,None,exposed,guards,BorrowProjection::Input).task_projection(projection.map_result(|id|function.parameters.get(&id).copied())),
         Origin::Position(origin)=>Borrow::source(Origin::Position(Arc::new(address(&origin)))),
         Origin::Contents{origin,word}=>Borrow::source(Origin::Contents{origin:Arc::new(address(&origin)),word}),
         Origin::Relation(graph,root)=>Borrow::source(Origin::Relation(Arc::new(graph.canonical(function,exposed,guards)),root)),
         Origin::Unresolved|Origin::Inactive|Origin::External=>Borrow::source(source),
     }};
-    if initialization {
+    if matches!(projection, BorrowProjection::Initialization) {
         return borrow.initialization_at_call(parameters).map_sources(renamed);
     }
     match resource {
@@ -1584,7 +1601,7 @@ fn initializations(function:&Function,state:&State,known:&States,exit_paths:Opti
         if function.calls.iter().any(|call|call.memory==memory)||matches!(&usage.requirement,Requirement::Memory{access:Some(access),..}if access.writes()){break;}
         if let Requirement::Address{borrow,initialized:true,..}=&usage.requirement && !borrow.pending(){
             for(source,when)in borrow.sources.entries(){
-                let value=canonical_relation(Borrow::source(source.clone()), function, None, &exposed, parameters(), false);
+                let value=canonical_relation(Borrow::source(source.clone()), function, None, &exposed, parameters(), BorrowProjection::Input);
                 for selected in value.sources.iter(){if let Origin::Position(origin)=selected{required.push((origin.clone(),bounds::Condition::guard(bounds::Clause::both(&usage.path,&when))));}}
             }
         }
@@ -1604,7 +1621,7 @@ fn initializations(function:&Function,state:&State,known:&States,exit_paths:Opti
                     origin=selected.as_ref().clone();
                 }
                 if origin.has_local(){return None;}
-                origin=origin.map_borrows(|borrow|canonical_relation(borrow.clone(), function, None, &exposed, parameters(), false));
+                origin=origin.map_borrows(|borrow|canonical_relation(borrow.clone(), function, None, &exposed, parameters(), BorrowProjection::Input));
                 if let address::Root::Resource{index:Some(index),..}|address::Root::Dataset{index:Some(index),..}=&mut origin.root {
                     *index=index.map(|id|function.parameters.get(&id).copied().filter(|id|function.input(*id)))?;
                 }
@@ -1618,7 +1635,7 @@ fn initializations(function:&Function,state:&State,known:&States,exit_paths:Opti
             },
             address::InitializationSource::Task(borrow)=>{
                 if borrow.has_local(){return None;}
-                address::InitializationSource::Task(canonical_relation(borrow, function, None, &exposed, parameters(), false))
+                address::InitializationSource::Task(canonical_relation(borrow, function, None, &exposed, parameters(), BorrowProjection::Input))
             },
         };
         if exit_paths.is_none(){fact.when=bounds::Condition::constant(true);}
@@ -2035,7 +2052,7 @@ fn stored_outputs<'p>(
         for &memory in &exits {
             for origin in &origins {
                 let incoming = evaluation.content_at_exit(origin, word, memory);
-                let incoming = canonical_with_guards(incoming, function, None, exposed, guards, false);
+                let incoming = canonical_with_guards(incoming, function, None, exposed, guards, BorrowProjection::Input);
                 value.union(&incoming);
             }
         }
@@ -2128,7 +2145,11 @@ fn converge(
             let exposed=exposed_resources(function, |output| &physical[output]);
             let parameters = std::cell::LazyCell::new(|| public_parameters(function));
             let outputs = physical.into_iter().map(|(output, definition)| {
-                let mut value = canonical_relation(definition, function, function.resource_names.get(&output), &exposed, &parameters, false);
+                let projection = match output {
+                    Output::Returned(_) | Output::ReturnedResource(_) => BorrowProjection::Result,
+                    _ => BorrowProjection::Input,
+                };
+                let mut value = canonical_relation(definition, function, function.resource_names.get(&output), &exposed, &parameters, projection);
                 if unknown.contains(&(name.clone(),output.clone())){value.sources.insert(Origin::Unresolved);}
                 (output, value)
             }).collect::<Outputs>();

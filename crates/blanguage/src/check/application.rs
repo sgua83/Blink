@@ -2875,6 +2875,7 @@ impl Builder<'_> {
             );
         }
         if data.element_layout().1.owns_resources() {
+            self.observe_bounds(&data.length);
             self.observe_bounds(&value);
             if value.proof.domains(0).iter().any(|domain| matches!(domain, IndexDomain::Computed(_))) {
                 let scope = self.path_proof(&value.ty, bounds::Proof::capture(&value));
