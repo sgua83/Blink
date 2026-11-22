@@ -26,6 +26,40 @@ u32 operation(address bytes,u64 length) on cpu {
     }
     return 0;
 }
+extern "C" u32 integer_math(u32 extremum,usize count,MathQueries queries) on cpu
+    requires nonzero(queries.numeric) requires nonzero(queries.argument) {
+    if (extremum==0) { return 0; }
+    usize index=0u64;
+    while (index<count) {
+        if (queries.numeric(queries.context,index)==0) { return 0; }
+        MathArgument argument=queries.argument(queries.context,index);
+        if (floating(argument.scalar) || argument.scalar==3) { return 0; }
+        index+=1u64;
+    }
+    return extremum;
+}
+extern "C" MathShape floating_math(usize count,MathQueries queries) on cpu
+    requires nonzero(queries.argument) requires nonzero(queries.width) {
+    MathShape result=MathShape(0,queries.argument(queries.context,0u64).scalar,0u64);
+    usize index=0u64;
+    while (index<count) {
+        usize width=queries.width(queries.context,index);
+        if (width>result.width) { result.width=width; }
+        index+=1u64;
+    }
+    index=0u64;
+    while (index<count) {
+        MathArgument argument=queries.argument(queries.context,index);
+        if (!floating(argument.scalar) || argument.scalar!=result.scalar || argument.flags!=0) {
+            result.status=154;return result;
+        }
+        usize width=queries.width(queries.context,index);
+        if (width!=1u64 && width!=result.width) { result.status=154;return result; }
+        index+=1u64;
+    }
+    return result;
+}
+
 extern "C" Plan numeric(Operand a,bool a_literal,Operand b,bool b_literal) on cpu {
     Plan result=decision(0);
     if(a.scalar==b.scalar){result.scalar=a.scalar;}

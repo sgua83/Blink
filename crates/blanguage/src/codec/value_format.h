@@ -72,6 +72,9 @@ extern "C" void write_source_type_name(address source,address output,Host host) 
 extern "C" void write_expression_name(address source,address output,Host host) on cpu requires nonzero(host.append) requires nonzero(host.ty) requires nonzero(host.type_name) requires nonzero(host.argument) requires nonzero(host.shape) requires nonzero(host.expression) requires nonzero(host.predicate) requires nonzero(host.condition) requires nonzero(host.constant);
 extern "C" void write_contract_names(Span values,address output,Host host) on cpu requires nonzero(host.append) requires nonzero(host.ty) requires nonzero(host.type_name) requires nonzero(host.argument) requires nonzero(host.shape) requires nonzero(host.expression) requires nonzero(host.predicate) requires nonzero(host.condition) requires nonzero(host.constant);
 
+struct SourceMath { u32 present; u32 operation; u32 arity; u32 extremum; };
+extern "C" SourceMath source_math(Bytes name) on cpu;
+
 enum SourceBasicKind:u32 { Other=0; Never=1; Acceleration=2; };
 enum SourceTextureKind:u32 { Missing=0; D2=2; D3=3; };
 enum SourceTexelFormat:u32 {

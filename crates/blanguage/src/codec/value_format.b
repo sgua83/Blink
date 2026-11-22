@@ -357,7 +357,7 @@ extern "C" void write_expression_name(address source, address output, Host host)
 }
 
 
-bool source_token<const N:u32 in {5,8,9,10,11,12,13,15}>(Bytes value, read array<u8,N> token) on cpu {
+bool source_token<const N:u32 in {3,4,5,8,9,10,11,12,13,15}>(Bytes value, read array<u8,N> token) on cpu {
     if (value.count != u64(N)) { return false; }
     for (index in 0..N) {
         u8 byte = unsafe_position<u8>(unsafe_address(address_bits(value.data) + u64(index)));
@@ -376,6 +376,23 @@ bool source_equal(Bytes left, Bytes right) on cpu {
         index += 1u64;
     }
     return true;
+}
+
+extern "C" SourceMath source_math(Bytes name) on cpu {
+    if (source_token(name,"abs")) { return SourceMath(1,0,1,0); }
+    if (source_token(name,"floor")) { return SourceMath(1,1,1,0); }
+    if (source_token(name,"sin")) { return SourceMath(1,2,1,0); }
+    if (source_token(name,"cos")) { return SourceMath(1,3,1,0); }
+    if (source_token(name,"pow")) { return SourceMath(1,4,2,0); }
+    if (source_token(name,"exp")) { return SourceMath(1,5,1,0); }
+    if (source_token(name,"log")) { return SourceMath(1,6,1,0); }
+    if (source_token(name,"exp2")) { return SourceMath(1,7,1,0); }
+    if (source_token(name,"log2")) { return SourceMath(1,8,1,0); }
+    if (source_token(name,"sqrt")) { return SourceMath(1,9,1,0); }
+    if (source_token(name,"min")) { return SourceMath(1,10,2,1); }
+    if (source_token(name,"max")) { return SourceMath(1,11,2,2); }
+    if (source_token(name,"ceil")) { return SourceMath(1,12,1,0); }
+    return SourceMath(0,0,1,0);
 }
 
 bool source_wrapped(TypeName value) on cpu {

@@ -3019,20 +3019,13 @@ impl<'a> Builder<'a> {
         self.observe_integer_binary(op, &a, &b, &mut value);
         value
     }
-    fn math(&mut self, op: &str, mut args: Vec<Value>, span: Span) -> Result<Value> {
-        let arity = if matches!(op, "min" | "max" | "pow") {
-            2
-        } else {
-            1
-        };
+    fn math(&mut self, op: &str, signature:operators::MathSignature, mut args: Vec<Value>, span: Span) -> Result<Value> {
+        let arity=signature.arity as usize;
         if args.len() != arity {
             return self.fail(span, "B153", format!("{op} 需要 {arity} 个参数"));
         }
-        if matches!(op, "min" | "max")
-            && args.iter().all(|a| {
-                a.ty.is_numeric() && a.ty.components[0].0.is_integer()
-            })
-        {
+        let integer=operators::integer_math(signature.extremum,&args);
+        if integer!=0 {
             let mut args = args.into_iter();
             let (a, b) = self.numeric_operands(args.next().unwrap(), args.next().unwrap(), span)?;
             let n = a.regs.len().max(b.regs.len());
@@ -3064,7 +3057,7 @@ impl<'a> Builder<'a> {
                 return Ok(value);
             }
             let comparison = self.binary(
-                if op == "min" { "<" } else { ">" },
+                if integer==1 { "<" } else { ">" },
                 a.clone(),
                 b.clone(),
                 span,
@@ -3096,19 +3089,11 @@ impl<'a> Builder<'a> {
             let (a,b) = self.numeric_operands(a,b,span)?;
             args = vec![a,b];
         }
-        let scalar = args[0].ty.components[0].0;
-        let n = args.iter().map(|v| v.regs.len()).max().unwrap();
-        for a in &args {
-            if !a.ty.components[0].0.is_float() || a.ty.components[0].0 != scalar
-                || !a.ty.fields.is_empty()
-                || a.ty.array.is_some()
-                || (a.regs.len() != 1 && a.regs.len() != n)
-            {
-                return self.fail(span, "B154", format!("{op} 需要相同浮点类型；f32 向量须维度相容"));
-            }
-        }
+        let Some((scalar,n))=operators::floating_math(&args) else {
+            return self.fail(span,"B154",format!("{op} 需要相同浮点类型；f32 向量须维度相容"));
+        };
         let uniform = args.iter().all(|v| v.uniform);
-        let operation = MathOp::from_source(op).ok_or_else(|| Diagnostic {
+        let operation = signature.operation().ok_or_else(|| Diagnostic {
             source: self.scope.source().clone(),
             span,
             code: "B179",
@@ -3319,24 +3304,10 @@ impl<'a> Builder<'a> {
             let Some(values) = values(self).await? else { return Ok(None); };
             return self.bitcast(name, values, span).map(Some);
         }
-        if matches!(
-            name,
-            "sqrt"
-                | "abs"
-                | "floor"
-                | "ceil"
-                | "sin"
-                | "cos"
-                | "exp"
-                | "exp2"
-                | "log"
-                | "log2"
-                | "min"
-                | "max"
-                | "pow"
-        ) {
+        let math_signature=operators::MathSignature::recognize(name);
+        if math_signature.is_present() {
             let Some(values) = values(self).await? else { return Ok(None); };
-            return self.math(name, values, span).map(Some);
+            return self.math(name,math_signature,values,span).map(Some);
         }
         if matches!(name, "transpose" | "determinant" | "inverse") {
             let Some(values) = values(self).await? else { return Ok(None); };
@@ -3361,8 +3332,8 @@ impl<'a> Builder<'a> {
             if values.len() != 3 {
                 return self.fail(span, "B153", "clamp 需要三个参数");
             }
-            let a = self.math("max", vec![values[0].clone(), values[1].clone()], span)?;
-            return self.math("min", vec![a, values[2].clone()], span).map(Some);
+            let a = self.math("max", operators::MathSignature::recognize("max"), vec![values[0].clone(), values[1].clone()], span)?;
+            return self.math("min", operators::MathSignature::recognize("min"), vec![a, values[2].clone()], span).map(Some);
         }
         self.fail(span, "B158", format!("未知或未导出的函数或能力 {name}"))
     }
@@ -4243,7 +4214,7 @@ impl<'a> Builder<'a> {
                 None,
             )?;
         }
-        let length = self.math("sqrt", vec![r], span)?;
+        let length = self.math("sqrt", operators::MathSignature::recognize("sqrt"), vec![r], span)?;
         if !normalize {
             Ok(length)
         } else {

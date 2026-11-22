@@ -2,6 +2,52 @@
 use super::*;
 use std::ffi::c_void;
 
+pub(super) use crate::codec::types::SourceMath as MathSignature;
+#[repr(C)]
+struct MathArgument { scalar:u32, flags:u32 }
+#[repr(C)]
+struct MathShape { status:u32, scalar:u32, width:usize }
+#[repr(C)]
+struct MathQueries {
+    context:*const c_void,
+    numeric:unsafe extern "C" fn(*const c_void,usize)->u32,
+    argument:unsafe extern "C" fn(*const c_void,usize)->MathArgument,
+    width:unsafe extern "C" fn(*const c_void,usize)->usize,
+}
+struct MathContext<'a> { values:&'a [Value] }
+unsafe extern "C" fn math_numeric(context:*const c_void,index:usize)->u32 {
+    let context=unsafe { &*context.cast::<MathContext<'_>>() };
+    u32::from(context.values[index].ty.is_numeric())
+}
+unsafe extern "C" fn math_argument(context:*const c_void,index:usize)->MathArgument {
+    let value=&unsafe { &*context.cast::<MathContext<'_>>() }.values[index];
+    MathArgument { scalar:value.ty.components[0].0 as u32,
+        flags:u32::from(!value.ty.fields.is_empty()) | (u32::from(value.ty.array.is_some())<<1) }
+}
+unsafe extern "C" fn math_width(context:*const c_void,index:usize)->usize {
+    unsafe { &*context.cast::<MathContext<'_>>() }.values[index].regs.len()
+}
+impl MathContext<'_> {
+    fn queries(&self)->MathQueries {
+        MathQueries { context:std::ptr::from_ref(self).cast(),numeric:math_numeric,argument:math_argument,width:math_width }
+    }
+}
+unsafe extern "C" {
+    #[link_name="bootstrap.operator_types::integer_math"]
+    fn source_integer_math(extremum:u32,count:usize,queries:MathQueries)->u32;
+    #[link_name="bootstrap.operator_types::floating_math"]
+    fn source_floating_math(count:usize,queries:MathQueries)->MathShape;
+}
+pub(super) fn integer_math(extremum:u32,values:&[Value])->u32 {
+    let context=MathContext { values };
+    unsafe { source_integer_math(extremum,values.len(),context.queries()) }
+}
+pub(super) fn floating_math(values:&[Value])->Option<(Scalar,usize)> {
+    let context=MathContext { values };
+    let shape=unsafe { source_floating_math(values.len(),context.queries()) };
+    (shape.status==0).then(||(SCALARS[shape.scalar as usize],shape.width))
+}
+
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct Operand { components: u64, rows: u64, columns: u64, scalar: u32, flags: u32 }

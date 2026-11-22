@@ -966,25 +966,9 @@ pub enum MathOp {
     Ceil,
 }
 impl MathOp {
-    pub fn from_source(name: &str) -> Option<Self> {
-        Some(match name {
-            "abs" => Self::Abs,
-            "floor" => Self::Floor,
-            "ceil" => Self::Ceil,
-            "sin" => Self::Sin,
-            "cos" => Self::Cos,
-            "pow" => Self::Pow,
-            "exp" => Self::Exp,
-            "log" => Self::Log,
-            "exp2" => Self::Exp2,
-            "log2" => Self::Log2,
-            "sqrt" => Self::Sqrt,
-            "min" => Self::Min,
-            "max" => Self::Max,
-            _ => return None,
-        })
-    }
+    pub fn from_source(name: &str) -> Option<Self> { crate::codec::types::SourceMath::recognize(name).operation() }
 }
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ElementStride {
     Constant(u64),

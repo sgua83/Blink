@@ -318,6 +318,26 @@ pub(crate) fn texture_format(value: &ast::TypeName) -> Option<ast::TextureFormat
 }
 
 
+#[repr(C)]
+#[derive(Clone,Copy)]
+pub(crate) struct SourceMath { present:u32, operation:u32, pub(crate) arity:u32, pub(crate) extremum:u32 }
+unsafe extern "C" {
+    #[link_name="codec.value_format::source_math"]
+    fn native_source_math(name:Bytes) -> SourceMath;
+}
+impl SourceMath {
+    pub(crate) fn recognize(name:&str) -> Self { unsafe { native_source_math(Bytes::of(name)) } }
+    pub(crate) fn is_present(self) -> bool { self.present!=0 }
+    pub(crate) fn operation(self) -> Option<ir::MathOp> {
+        const OPERATIONS:[ir::MathOp;13]=[
+            ir::MathOp::Abs,ir::MathOp::Floor,ir::MathOp::Sin,ir::MathOp::Cos,ir::MathOp::Pow,
+            ir::MathOp::Exp,ir::MathOp::Log,ir::MathOp::Exp2,ir::MathOp::Log2,ir::MathOp::Sqrt,
+            ir::MathOp::Min,ir::MathOp::Max,ir::MathOp::Ceil,
+        ];
+        self.is_present().then(||OPERATIONS[self.operation as usize])
+    }
+}
+
 // B selects syntax structure; these callbacks only construct the actual AST.
 #[repr(C)]
 struct SourceSyntaxHost {

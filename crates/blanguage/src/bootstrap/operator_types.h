@@ -25,6 +25,19 @@ extern "C" Plan unary(address bytes,u64 length,Operand value,Queries queries) on
     requires nonzero(queries.builtin)
     requires nonzero(queries.numeric);
 
+struct MathArgument { u32 scalar; u32 flags; };
+struct MathShape { u32 status; u32 scalar; usize width; };
+struct MathQueries {
+    address context;
+    cfn<u32,address,usize> ensures memory(read) numeric;
+    cfn<MathArgument,address,usize> ensures memory(read) argument;
+    cfn<usize,address,usize> ensures memory(read) width;
+};
+extern "C" u32 integer_math(u32 extremum,usize count,MathQueries queries) on cpu
+    requires nonzero(queries.numeric) requires nonzero(queries.argument);
+extern "C" MathShape floating_math(usize count,MathQueries queries) on cpu
+    requires nonzero(queries.argument) requires nonzero(queries.width);
+
 enum FixedProjectionKind:u32 { Components=0; Vector=1; Array=2; };
 struct FixedProjection { FixedProjectionKind kind; usize first; };
 extern "C" FixedProjection fixed_projection(u32 array, usize width, u32 known, usize index) on cpu;
