@@ -105,6 +105,19 @@ extern "C" void function_syntax(address source,address output,Host host,SourceSy
 extern "C" void write_function_name(address source,address output,Host host) on cpu requires nonzero(host.append) requires nonzero(host.ty) requires nonzero(host.function) requires nonzero(host.parameter) requires nonzero(host.type_name) requires nonzero(host.argument) requires nonzero(host.shape) requires nonzero(host.expression) requires nonzero(host.predicate) requires nonzero(host.condition) requires nonzero(host.constant);
 
 
+struct ViewWalkFailure { address ty; u32 tag; };
+struct ViewWalkHost {
+    cfn<u32,address> ensures memory(read) contains;
+    cfn<u32,address,address,u32> ensures memory(read) tag;
+    cfn<void,address,u32,address> emit;
+};
+extern "C" void view_fields(address source,u32 base,Host host,address context,
+    cfn<void,address,u32,address> emit) on cpu
+    requires nonzero(host.ty) requires nonzero(host.variant) requires nonzero(host.field) requires nonzero(emit);
+extern "C" ViewWalkFailure visit_view_fields(address source,u32 base,Host host,address context,ViewWalkHost visit) on cpu
+    requires nonzero(host.ty) requires nonzero(host.variant) requires nonzero(host.field)
+    requires nonzero(visit.contains) requires nonzero(visit.tag) requires nonzero(visit.emit);
+
 enum ReadStatus:u32 { Success=0; Overflow=1; Truncated=2; Boolean=3; Scalar=4; Access=5; Target=6; Shape=7; Argument=8; Expression=9; Predicate=10; Condition=11; RustError=12; Identity=13; Operand=14; IntegerOperation=15; IntegerExpression=16; Comparison=17; FloatingForm=18; IndexDomain=19; Fact=20; ConditionVersion=21; ConditionNode=22; ContractAddressRoot=23; ContractInitializationSource=24; ContractElementFacts=25; ContractDataLayout=26; ContractReturned=27; ContractTaskProjection=28; ContractExclusion=29; ContractViewAccess=30; ContractResidencyPart=31; ContractResidencyOrigin=32; ContractResidency=33; ContractResidencyOutputKind=34; ContractTextureDimension=35; ContractTextureFormat=36; ContractElementFact=37; ContractCallParameterKind=38; ContractContractKind=39; ContractRelationOp=40; ContractOwnership=41; ContractAddressIdentity=42; ContractBorrowSource=43; ResourceSortOrder=44; ResourceCollectiveOperator=45; ResourceOperation=46; ResourceImage=47; ResourceLinkedImage=48; ResourceModuleTarget=49; ResourceNativeSymbol=50; ResourceRangeResult=51; ResourceContinuationCode=52; ResourceCpuStageCode=53;  };
 
 enum ScalarTag:u32 { F32=0; U32=1; I32=2; Bool=3; U64=4; I64=5; F64=6; U8=7; I8=8; U16=9; I16=10; };

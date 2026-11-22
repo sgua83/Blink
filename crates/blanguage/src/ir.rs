@@ -446,7 +446,7 @@ impl Ty {
         })
     }
     pub fn has_variants(&self) -> bool { !self.variants.is_empty() }
-    fn variant_tag(&self, bits: u32) -> u32 {
+    pub(crate) fn variant_tag(&self, bits: u32) -> u32 {
         if self.components[0].0 == Scalar::Bool { u32::from(bits != 0) } else { bits }
     }
     pub(crate) fn variant_payload_offset(&self) -> u32 {
@@ -724,51 +724,10 @@ impl Ty {
         properties::visit_borrows(self, visit);
     }
     /// 全部可能的view字段，仅用于类型能力；重叠载荷不同时活动。
-    pub fn view_fields(&self) -> Vec<(u32, &Ty)> {
-        if self.has_variants() {
-            let payload=self.variant_payload_offset();
-            return self.variants.iter().flat_map(|variant|variant.ty.view_fields().into_iter().map(move |(at,ty)|(payload+at,ty))).collect();
-        }
-        if let Some(element) = &self.view {
-            return vec![(0, element.as_ref())];
-        }
-        if let Some(element) = &self.array {
-            let stride = align_up(element.size, element.align);
-            return (0..self.values[0])
-                .flat_map(|i| {
-                    element
-                        .view_fields()
-                        .into_iter()
-                        .map(move |(at, ty)| (i * stride + at, ty))
-                })
-                .collect();
-        }
-        self.fields
-            .iter()
-            .flat_map(|(_, offset, t)| {
-                t.view_fields()
-                    .into_iter()
-                    .map(move |(o, element)| (offset + o, element))
-            })
-            .collect()
-    }
+    pub fn view_fields(&self) -> Vec<(u32, &Ty)> { crate::codec::types::view_fields(self) }
     /// 只遍历本条记录的实际活动载荷，引用子存储由其自身类型和所有者处理。
-    pub fn visit_view_fields<'a>(&'a self, words:&[u32], mut field:impl FnMut(u32,&'a Ty))->Result<(),String> {
-        fn visit<'a>(ty:&'a Ty,base:u32,words:&[u32],field:&mut impl FnMut(u32,&'a Ty))->Result<(),String> {
-            if let Some(element)=&ty.view {field(base,element);}
-            else if ty.has_variants(){
-                if !ty.contains_views(){return Ok(());}
-                let tag=ty.variant_tag(words[base as usize/4]);
-                let variant=ty.variants.iter().find(|variant|variant.discriminant==tag).ok_or_else(||format!("{}的活动变体编号{}没有声明的载荷",ty.name,tag))?;
-                visit(&variant.ty,base+ty.variant_payload_offset(),words,field)?;
-            }else if let Some(element)=&ty.array {
-                if ty.values[0]==0 || !element.contains_views(){return Ok(());}
-                let stride=align_up(element.size,element.align);
-                for i in 0..ty.values[0]{visit(element,base+i*stride,words,field)?;}
-            }else{for(_,offset,ty)in &ty.fields{visit(ty,base+offset,words,field)?;}}
-            Ok(())
-        }
-        visit(self,0,words,&mut field)
+    pub fn visit_view_fields<'a>(&'a self, words:&[u32], field:impl FnMut(u32,&'a Ty))->Result<(),String> {
+        crate::codec::types::visit_view_fields(self,words,field)
     }
     /// 已编译逻辑参数按真实字节位置借用同一声明字段；不改写物理根类型。
     pub fn field_layout_at(&self, offset: u32, expected: &Ty) -> Option<&Ty> {

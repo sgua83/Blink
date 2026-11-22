@@ -582,6 +582,77 @@ extern "C" void write_function_name(address source,address output,Host host) on 
 }
 
 
+extern "C" void view_fields(address source,u32 base,Host host,address context,
+    cfn<void,address,u32,address> emit) on cpu
+    requires nonzero(host.ty) requires nonzero(host.variant) requires nonzero(host.field) requires nonzero(emit) {
+    Type value=host.ty(source);
+    if (value.variants.count!=0u64) {
+        u64 index=0u64;
+        while (index<value.variants.count) {
+            Variant variant=host.variant(item(value.variants,index));
+            view_fields(variant.ty,base+value.alignment,host,context,emit);
+            index+=1u64;
+        }
+        return;
+    }
+    if (address_bits(value.view)!=0u64) { emit(context,base,value.view);return; }
+    if (address_bits(value.array)!=0u64) {
+        Type element=host.ty(value.array);
+        u32 stride=(element.size+element.alignment-1)&~(element.alignment-1);
+        u32 count=unsafe_position<u32>(item(value.values,0u64));
+        u32 index=0;
+        while (index<count) { view_fields(value.array,base+index*stride,host,context,emit);index+=1; }
+        return;
+    }
+    u64 index=0u64;
+    while (index<value.fields.count) {
+        Field field=host.field(item(value.fields,index));
+        view_fields(field.ty,base+field.word,host,context,emit);
+        index+=1u64;
+    }
+}
+extern "C" ViewWalkFailure visit_view_fields(address source,u32 base,Host host,address context,ViewWalkHost visit) on cpu
+    requires nonzero(host.ty) requires nonzero(host.variant) requires nonzero(host.field)
+    requires nonzero(visit.contains) requires nonzero(visit.tag) requires nonzero(visit.emit) {
+    Type value=host.ty(source);
+    ViewWalkFailure success=ViewWalkFailure(address(),0);
+    if (address_bits(value.view)!=0u64) { visit.emit(context,base,value.view);return success; }
+    if (value.variants.count!=0u64) {
+        if (visit.contains(source)==0) { return success; }
+        u32 tag=visit.tag(source,context,base);
+        u64 index=0u64;
+        while (index<value.variants.count) {
+            Variant variant=host.variant(item(value.variants,index));
+            if (variant.discriminant==tag) {
+                return visit_view_fields(variant.ty,base+value.alignment,host,context,visit);
+            }
+            index+=1u64;
+        }
+        return ViewWalkFailure(source,tag);
+    }
+    if (address_bits(value.array)!=0u64) {
+        u32 count=unsafe_position<u32>(item(value.values,0u64));
+        if (count==0 || visit.contains(value.array)==0) { return success; }
+        Type element=host.ty(value.array);
+        u32 stride=(element.size+element.alignment-1)&~(element.alignment-1);
+        u32 index=0;
+        while (index<count) {
+            ViewWalkFailure failure=visit_view_fields(value.array,base+index*stride,host,context,visit);
+            if (address_bits(failure.ty)!=0u64) { return failure; }
+            index+=1;
+        }
+        return success;
+    }
+    u64 index=0u64;
+    while (index<value.fields.count) {
+        Field field=host.field(item(value.fields,index));
+        ViewWalkFailure failure=visit_view_fields(field.ty,base+field.word,host,context,visit);
+        if (address_bits(failure.ty)!=0u64) { return failure; }
+        index+=1u64;
+    }
+    return success;
+}
+
 ReadBytes take_bytes(Bytes input,inout u64 position,u64 size) on cpu {
  if(size>0xffffffffffffffffu64-position){return ReadBytes(Bytes(address(),0u64),ReadStatus::Overflow);}
  u64 end=position+size;

@@ -440,6 +440,55 @@ const SYNTAX_HOST:SourceSyntaxHost=SourceSyntaxHost {
 };
 
 
+// Both queries borrow the original types for the whole synchronous walk.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct ViewWalkFailure { ty: Address, tag: u32 }
+#[repr(C)]
+struct ViewWalkHost {
+    contains: unsafe extern "C" fn(Address) -> u32,
+    tag: unsafe extern "C" fn(Address, *mut c_void, u32) -> u32,
+    emit: unsafe extern "C" fn(*mut c_void, u32, Address),
+}
+unsafe extern "C" {
+    #[link_name="codec.value_format::view_fields"]
+    fn native_view_fields(source: Address, base: u32, host: Host, context: *mut c_void,
+        emit: unsafe extern "C" fn(*mut c_void, u32, Address));
+    #[link_name="codec.value_format::visit_view_fields"]
+    fn native_visit_view_fields(source: Address, base: u32, host: Host,
+        context: *mut c_void, visit: ViewWalkHost) -> ViewWalkFailure;
+}
+pub(crate) fn view_fields(value: &ir::Ty) -> Vec<(u32, &ir::Ty)> {
+    let mut result=Vec::new();
+    unsafe { native_view_fields(address(value),0,HOST,ptr::from_mut(&mut result).cast(),append_view_field); }
+    result
+}
+unsafe extern "C" fn append_view_field(context: *mut c_void, offset: u32, element: Address) {
+    unsafe { &mut *context.cast::<Vec<(u32,&ir::Ty)>>() }.push((offset,unsafe { &*element.cast::<ir::Ty>() }));
+}
+struct ViewVisitContext<'w,F> { words: &'w [u32], field: F }
+pub(crate) fn visit_view_fields<'a>(value: &'a ir::Ty, words: &[u32], field: impl FnMut(u32,&'a ir::Ty)) -> Result<(),String> {
+    visit_views(value,ViewVisitContext { words,field })
+}
+fn visit_views<'a,F:FnMut(u32,&'a ir::Ty)>(value:&'a ir::Ty,mut context:ViewVisitContext<'_,F>) -> Result<(),String> {
+    let visit=ViewWalkHost { contains:contains_view_fields,tag:view_field_tag::<F>,emit:visit_view_field::<F> };
+    let failure=unsafe { native_visit_view_fields(address(value),0,HOST,ptr::from_mut(&mut context).cast(),visit) };
+    if failure.ty.is_null() { Ok(()) }
+    else { Err(format!("{}的活动变体编号{}没有声明的载荷",unsafe { &*failure.ty.cast::<ir::Ty>() }.name,failure.tag)) }
+}
+unsafe extern "C" fn contains_view_fields(value: Address) -> u32 {
+    u32::from(unsafe { &*value.cast::<ir::Ty>() }.contains_views())
+}
+unsafe extern "C" fn view_field_tag<F>(value: Address, context: *mut c_void, base: u32) -> u32 {
+    let value=unsafe { &*value.cast::<ir::Ty>() };
+    let context=unsafe { &*context.cast::<ViewVisitContext<'_,F>>() };
+    value.variant_tag(context.words[base as usize/4])
+}
+unsafe extern "C" fn visit_view_field<'a,F:FnMut(u32,&'a ir::Ty)>(context: *mut c_void,offset:u32,element:Address) {
+    let context=unsafe { &mut *context.cast::<ViewVisitContext<'_,F>>() };
+    (context.field)(offset,unsafe { &*element.cast::<ir::Ty>() });
+}
+
 // The reader owns only synchronous construction frames and the original Result.
 pub(crate) mod reading;
 
