@@ -338,16 +338,16 @@ pub(super) fn link(
             .duration_since(std::time::UNIX_EPOCH)?
             .as_nanos()
     );
+    let directory = std::env::temp_dir();
     let mut temporary = Vec::new();
     let mut result = (|| {
-        let directory = path.parent().unwrap();
         for (index, archive) in archives.iter().enumerate() {
-            let path = join(directory, format!(".blink-link-{id}-{index}.lib"));
+            let path = join(&directory, format!(".blink-link-{id}-{index}.lib"));
             write_input(&mut temporary, path, &archive.bytes)?;
         }
         let mut imports = Vec::new();
         for (index, object) in objects.iter().enumerate() {
-            let path = join(directory, format!(".blink-link-{id}-code-{index}.obj"));
+            let path = join(&directory, format!(".blink-link-{id}-code-{index}.obj"));
             let code = encode_native_with_imports(&object.name, &object.sections, &object.definitions, &mut imports)?;
             write_input(&mut temporary, path, &code)?;
         }
@@ -356,12 +356,12 @@ pub(super) fn link(
         let mut symbols = Vec::new();
         super::imports::append_members(imports, &mut members, &mut symbols)?;
         if !members.is_empty() {
-            let path = join(directory, format!(".blink-link-{id}-imports.lib"));
+            let path = join(&directory, format!(".blink-link-{id}-imports.lib"));
             let bytes = crate::object::library_bytes(&members, &symbols)?;
             write_input(&mut temporary, path, &bytes)?;
         }
         if let Some(binding) = binding {
-            let path = join(directory, format!(".blink-link-{id}-resources.obj"));
+            let path = join(&directory, format!(".blink-link-{id}-resources.obj"));
             write_input(&mut temporary, path, &encode_native(super::resources::Generated::NAME, &binding.sections, &binding.definitions)?)?;
         }
         let (status, stdout, stderr) = link_process(
