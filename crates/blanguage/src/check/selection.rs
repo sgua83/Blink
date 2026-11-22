@@ -53,78 +53,69 @@ impl Builder<'_> {
         modified: impl std::ops::AsyncFnOnce(&Self, &mut BTreeSet<String>) -> Result<()>,
         span: Span,
     ) -> Result<Option<returns::Returned>> {
-        self.remember_loop_control(&c);
-        let partition = Arc::new(bounds::Condition::of(&c));
-        let prefix = self.code.len();
-        let outer_regions = std::mem::take(&mut self.memory_regions);
-        let environment = self.env.clone();
-        let original=environment.keys().cloned().collect::<BTreeSet<_>>();
-        let path = self.path.clone();
-        let initialized = self.application_initialization_state();
-        let effects = (
-            self.reads.clone(),
-            self.writes.clone(),
-            self.cross_access.clone(),
-        );
-        let mut yes_modified = BTreeSet::new();
-        modified(self, &mut yes_modified).await?;
-        let control = self.control_uniform;
-        self.control_uniform &= c.uniform;
-        self.refine_bounds(&partition, true);
-        self.flow = Flow::NEXT;
-        let first_exit = self
-            .return_context
-            .as_ref()
-            .map_or(0, |context| context.exit_count());
-        let (a_result,yes_owners)=unsafe { self.world.call(self.selection_arm(yes.0,&original,yes.1)).await }?;
-        let yes_exit = self
-            .return_context
-            .as_ref()
-            .map_or(0, |context| context.exit_count());
-        if self.flow.continues() && a_result.is_none() {
-            return self.fail(span, "B228", "选择式需要值");
+        let (yes_span,yes_body)=yes;let (no_span,no_body)=no;
+        let mut yes_body=Some(yes_body);let mut no_body=Some(no_body);let mut modified=Some(modified);
+        let mut cursor=SelectionCursor {phase:0};let mut facts=SelectionFacts {continuing:0,present:0,other:0,outer:0,condition:u32::from(c.uniform)};
+        let mut entry:Option<SelectionEntry>=None;let mut first:Option<SelectionFirst>=None;let mut partition=None;
+        let mut yes_modified=BTreeSet::new();let mut control=false;let mut first_exit=0;let mut yes_exit=0;
+        let mut a_result=None;let mut yes_owners=Vec::new();let mut b_result=None;let mut no_owners=Vec::new();
+        loop {
+            let step=unsafe {selection_step(cursor,facts)};cursor=step.cursor;
+            match step.need {
+                SelectionNeed::Prepare=>{
+                    self.remember_loop_control(&c);partition=Some(Arc::new(bounds::Condition::of(&c)));
+                    let prefix=self.code.len();let outer_regions=std::mem::take(&mut self.memory_regions);let environment=self.env.clone();
+                    let original=environment.keys().cloned().collect::<BTreeSet<_>>();let path=self.path.clone();let initialized=self.application_initialization_state();
+                    let effects=(self.reads.clone(),self.writes.clone(),self.cross_access.clone());
+                    entry=Some(SelectionEntry {prefix,outer_regions,environment,original,path,initialized,effects});
+                },
+                SelectionNeed::Modified=>{modified.take().unwrap()(self,&mut yes_modified).await?;control=self.control_uniform;facts.outer=u32::from(control);},
+                SelectionNeed::EnterYes=>{self.control_uniform=step.uniform!=0;self.refine_bounds(partition.as_ref().unwrap(),true);self.flow=Flow::NEXT;},
+                SelectionNeed::Yes=>{
+                    first_exit=self.return_context.as_ref().map_or(0,|context|context.exit_count());
+                    (a_result,yes_owners)=unsafe {self.world.call(self.selection_arm(yes_span,&entry.as_ref().unwrap().original,yes_body.take().unwrap())).await}?;
+                    yes_exit=self.return_context.as_ref().map_or(0,|context|context.exit_count());facts.present=u32::from(a_result.is_some());facts.continuing=u32::from(self.flow.continues());
+                },
+                SelectionNeed::Missing=>return self.fail(span,"B228","选择式需要值"),
+                SelectionNeed::EnterNo=>{
+                    let SelectionEntry {prefix,outer_regions,environment,original,path,initialized,effects}=entry.take().unwrap();
+                    let yes_flow=self.flow;let yes_env=self.env.clone();let yes_path=self.path.clone();
+                    let yes_effects=(std::mem::replace(&mut self.reads,effects.0),std::mem::replace(&mut self.writes,effects.1),std::mem::replace(&mut self.cross_access,effects.2));
+                    let yes_init=std::mem::replace(&mut self.initialized,initialized);let yes_init=self.application_empty_initialization(yes_init);
+                    let yes=self.code.split_off(prefix);let yes_regions=std::mem::take(&mut self.memory_regions);
+                    self.restore_expression_environment(environment,&yes_modified);self.path=path;self.refine_bounds(partition.as_ref().unwrap(),false);self.flow=Flow::NEXT;
+                    first=Some(SelectionFirst {prefix,outer_regions,original,yes_flow,yes_env,yes_path,yes_init,yes_effects,yes,yes_regions,first_exit,yes_exit,a_result:a_result.take(),yes_owners:std::mem::take(&mut yes_owners)});
+                },
+                SelectionNeed::No=>{
+                    (b_result,no_owners)=unsafe {self.world.call(self.selection_arm(no_span,&first.as_ref().unwrap().original,no_body.take().unwrap())).await}?;
+                    facts.present=u32::from(b_result.is_some());facts.other=u32::from(first.as_ref().unwrap().a_result.is_some());facts.continuing=u32::from(self.flow.continues());
+                },
+                SelectionNeed::Same=>{
+                    let a=self.returned_storage(first.as_ref().unwrap().a_result.as_ref().unwrap());let b=self.returned_storage(b_result.as_ref().unwrap());self.require_same(&a.ty,&b.ty,span)?;
+                },
+                SelectionNeed::Finish=>{
+                    let SelectionFirst {prefix,outer_regions,original:_,yes_flow,yes_env,yes_path,yes_init,yes_effects,yes,yes_regions,first_exit,yes_exit,a_result,yes_owners}=first.take().unwrap();
+                    let partition=partition.take().unwrap();
+                    let no_flow = self.flow;
+                    let no_path = self.path.clone();
+                    let no_init = self.take_application_initialization_state();
+                    let input=SelectionMergeInput {truth:c.constant.as_ref().map_or(0,|bits|if bits[0]!=0{2}else{1}),yes_live:u32::from(yes_flow.continues()),no_live:u32::from(no_flow.continues()),
+                        returns:u32::from(self.return_context.is_some()),uniform:u32::from(control)};
+                    let mut merge=SelectionMerge {builder:self,condition:&c,prefix,first_exit,yes_exit,yes_flow,no_flow,
+                        yes_env:Some(yes_env),no_env:None,yes_path:Some(yes_path),no_path:Some(no_path),yes_init:Some(yes_init),no_init:Some(no_init),selected_init:None,yes_effects:Some(yes_effects),
+                        outer_regions:Some(outer_regions),regions:[Some(yes_regions),None],no:None,region_entries:None,region:None,binding:0,write_entries:None,write:None,
+                        owners:[Some(yes_owners),Some(no_owners)],presences:[None,None],owner_entries:None,present:None,owner:None};
+                    unsafe {selection_merge(input,SelectionMergeHost {context:&mut merge,next_region:merge_region,next_write:merge_write,owner_possible:merge_owner_possible,next_owner:merge_owner,action:merge_action})};
+                    let no=merge.no.take().unwrap();drop(merge);
+                    let input=SelectionResultInput {truth:c.constant.as_ref().map_or(0,|bits|if bits[0]!=0{2}else{1}),uniform:u32::from(c.uniform)};
+                    let mut values=SelectionValues {builder:self,condition:c,partition,yes,no,yes_result:a_result,no_result:b_result,
+                        a:None,b:None,slots:Vec::new(),regs:Vec::new(),selected:None,proof:None,output:None};
+                    unsafe {selection_result(input,SelectionHost {context:&mut values,storage:selection_storage,layout:selection_layout,action:selection_action})};
+                    return Ok(values.output);
+                },
+            }
         }
-        let yes_flow = self.flow;
-        let yes_env = self.env.clone();
-        let yes_path = self.path.clone();
-        let yes_effects = (
-            std::mem::replace(&mut self.reads, effects.0),
-            std::mem::replace(&mut self.writes, effects.1),
-            std::mem::replace(&mut self.cross_access, effects.2),
-        );
-        let yes_init = std::mem::replace(&mut self.initialized, initialized);
-        let yes_init = self.application_empty_initialization(yes_init);
-        let yes = self.code.split_off(prefix);
-        let yes_regions = std::mem::take(&mut self.memory_regions);
-        self.restore_expression_environment(environment, &yes_modified);
-        self.path = path;
-        self.refine_bounds(&partition, false);
-        self.flow = Flow::NEXT;
-        let (b_result,no_owners)=unsafe { self.world.call(self.selection_arm(no.0,&original,no.1)).await }?;
-        if self.flow.continues() && b_result.is_none() {
-            return self.fail(span, "B228", "选择式需要值");
-        }
-        if let (Some(a), Some(b)) = (&a_result, &b_result) {
-            let a = self.returned_storage(a);
-            let b = self.returned_storage(b);
-            self.require_same(&a.ty, &b.ty, span)?;
-        }
-        let no_flow = self.flow;
-        let no_path = self.path.clone();
-        let no_init = self.take_application_initialization_state();
-        let input=SelectionMergeInput {truth:c.constant.as_ref().map_or(0,|bits|if bits[0]!=0{2}else{1}),yes_live:u32::from(yes_flow.continues()),no_live:u32::from(no_flow.continues()),
-            returns:u32::from(self.return_context.is_some()),uniform:u32::from(control)};
-        let mut merge=SelectionMerge {builder:self,condition:&c,prefix,first_exit,yes_exit,yes_flow,no_flow,
-            yes_env:Some(yes_env),no_env:None,yes_path:Some(yes_path),no_path:Some(no_path),yes_init:Some(yes_init),no_init:Some(no_init),selected_init:None,yes_effects:Some(yes_effects),
-            outer_regions:Some(outer_regions),regions:[Some(yes_regions),None],no:None,region_entries:None,region:None,binding:0,write_entries:None,write:None,
-            owners:[Some(yes_owners),Some(no_owners)],presences:[None,None],owner_entries:None,present:None,owner:None};
-        unsafe {selection_merge(input,SelectionMergeHost {context:&mut merge,next_region:merge_region,next_write:merge_write,owner_possible:merge_owner_possible,next_owner:merge_owner,action:merge_action})};
-        let no=merge.no.take().unwrap();drop(merge);
-        let input=SelectionResultInput {truth:c.constant.as_ref().map_or(0,|bits|if bits[0]!=0{2}else{1}),uniform:u32::from(c.uniform)};
-        let mut values=SelectionValues {builder:self,condition:c,partition,yes,no,yes_result:a_result,no_result:b_result,
-            a:None,b:None,slots:Vec::new(),regs:Vec::new(),selected:None,proof:None,output:None};
-        unsafe {selection_result(input,SelectionHost {context:&mut values,storage:selection_storage,layout:selection_layout,action:selection_action})};
-        Ok(values.output)
+
     }
 }
 
@@ -375,4 +366,27 @@ unsafe extern "C" fn merge_action(context:*mut SelectionMerge<'_,'_>,action:Sele
   },
   SelectionMergeAction::EndOwners=>{v.owners[side as usize].take();v.presences[side as usize].take();v.owner_entries=None;v.present=None;},
  }
+}
+
+#[repr(C)]
+#[derive(Clone,Copy)]
+struct SelectionCursor {phase:u32}
+#[repr(C)]
+#[derive(Clone,Copy)]
+struct SelectionFacts {continuing:u32,present:u32,other:u32,outer:u32,condition:u32}
+#[repr(u32)]
+enum SelectionNeed {Prepare,Modified,EnterYes,Yes,Missing,EnterNo,No,Same,Finish}
+#[repr(C)]
+struct SelectionStep {cursor:SelectionCursor,need:SelectionNeed,uniform:u32}
+unsafe extern "C" {
+ #[link_name="bootstrap.function_body::selection_step"] fn selection_step(cursor:SelectionCursor,facts:SelectionFacts)->SelectionStep;
+}
+struct SelectionEntry {
+ prefix:usize,outer_regions:SelectionRegions,environment:BTreeMap<String,Binding>,original:BTreeSet<String>,
+ path:bounds::Clause,initialized:BTreeSet<Position>,effects:SelectionEffects,
+}
+struct SelectionFirst {
+ prefix:usize,outer_regions:SelectionRegions,original:BTreeSet<String>,yes_flow:Flow,yes_env:BTreeMap<String,Binding>,yes_path:bounds::Clause,
+ yes_init:BTreeSet<Position>,yes_effects:SelectionEffects,yes:Vec<Inst>,yes_regions:SelectionRegions,first_exit:usize,yes_exit:usize,
+ a_result:Option<returns::Returned>,yes_owners:Vec<Binding>,
 }

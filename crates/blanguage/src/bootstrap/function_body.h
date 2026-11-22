@@ -63,3 +63,9 @@ struct SelectionMergeHost {
 };
 extern "C" void selection_merge(SelectionMergeInput input,SelectionMergeHost host) on cpu
  requires nonzero(host.next_region) requires nonzero(host.next_write) requires nonzero(host.owner_possible) requires nonzero(host.next_owner) requires nonzero(host.action);
+
+struct SelectionCursor {u32 phase;};
+struct SelectionFacts {u32 continuing;u32 present;u32 other;u32 outer;u32 condition;};
+enum SelectionNeed:u32 {Prepare=0;Modified=1;EnterYes=2;Yes=3;Missing=4;EnterNo=5;No=6;Same=7;Finish=8;};
+struct SelectionStep {SelectionCursor cursor;SelectionNeed need;u32 uniform;};
+extern "C" SelectionStep selection_step(SelectionCursor cursor,SelectionFacts facts) on cpu;

@@ -250,3 +250,21 @@ extern "C" void selection_merge(SelectionMergeInput input,SelectionMergeHost hos
   host.action(host.context,SelectionMergeAction::EndOwners,side);side+=1;
  }
 }
+
+extern "C" SelectionStep selection_step(SelectionCursor cursor,SelectionFacts facts) on cpu {
+ SelectionCursor c=cursor;
+ if(c.phase==0){c.phase=1;return SelectionStep(c,SelectionNeed::Prepare,0);}
+ if(c.phase==1){c.phase=2;return SelectionStep(c,SelectionNeed::Modified,0);}
+ if(c.phase==2){c.phase=3;return SelectionStep(c,SelectionNeed::EnterYes,facts.outer!=0&&facts.condition!=0 ? 1 : 0);}
+ if(c.phase==3){c.phase=4;return SelectionStep(c,SelectionNeed::Yes,0);}
+ if(c.phase==4){
+  if(facts.continuing!=0&&facts.present==0){return SelectionStep(c,SelectionNeed::Missing,0);}
+  c.phase=5;return SelectionStep(c,SelectionNeed::EnterNo,0);
+ }
+ if(c.phase==5){c.phase=6;return SelectionStep(c,SelectionNeed::No,0);}
+ if(c.phase==6){
+  if(facts.continuing!=0&&facts.present==0){return SelectionStep(c,SelectionNeed::Missing,0);}
+  c.phase=7;if(facts.present!=0&&facts.other!=0){return SelectionStep(c,SelectionNeed::Same,0);}
+ }
+ return SelectionStep(c,SelectionNeed::Finish,0);
+}
