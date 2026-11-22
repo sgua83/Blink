@@ -76,7 +76,7 @@ impl Builder<'_> {
             .return_context
             .as_ref()
             .map_or(0, |context| context.exit_count());
-        let (mut a_result,yes_owners)=unsafe { self.world.call(self.selection_arm(yes.0,&original,yes.1)).await }?;
+        let (a_result,yes_owners)=unsafe { self.world.call(self.selection_arm(yes.0,&original,yes.1)).await }?;
         let yes_exit = self
             .return_context
             .as_ref()
@@ -94,7 +94,7 @@ impl Builder<'_> {
         );
         let yes_init = std::mem::replace(&mut self.initialized, initialized);
         let yes_init = self.application_empty_initialization(yes_init);
-        let mut yes = self.code.split_off(prefix);
+        let yes = self.code.split_off(prefix);
         let yes_regions = std::mem::take(&mut self.memory_regions);
         self.restore_expression_environment(environment, &yes_modified);
         self.path = path;
@@ -115,7 +115,7 @@ impl Builder<'_> {
         let yes_initial = yes_init.clone();
         let no_initial = no_init.clone();
         self.join_initialization(&owned_presence::Presence::input(&c),yes_init,no_init);
-        let mut no = self.code.split_off(prefix);
+        let no = self.code.split_off(prefix);
         let no_regions = std::mem::replace(&mut self.memory_regions, outer_regions);
         let selected = c.constant.as_ref().map(|bits| bits[0] != 0);
         for (retain, regions) in [
@@ -193,77 +193,11 @@ impl Builder<'_> {
                 self.hold_binding(binding);
             }
         }
-        if let Some(bits) = &c.constant {
-            if bits[0] != 0 {
-                self.code.extend(yes);
-                return Ok(a_result);
-            }
-            self.code.extend(no);
-            return Ok(b_result);
-        }
-        let a = a_result.as_ref().map(|v| self.returned_storage(v));
-        let b = b_result.as_ref().map(|v| self.returned_storage(v));
-        let Some(storage) = a.as_ref().or(b.as_ref()) else {
-            self.emit(InstKind::If {
-                condition: c.regs[0],
-                yes,
-                no,
-            });
-            return Ok(None);
-        };
-        let ty = storage.ty.clone();
-        let slots = self.local_slots(&ty).0;
-        if let Some(a) = &a {
-            for (slot, reg) in slots.iter().zip(&a.regs) {
-                yes.push(Inst::new(InstKind::StoreLocal(*slot, *reg)));
-            }
-        }
-        if let Some(b) = &b {
-            for (slot, reg) in slots.iter().zip(&b.regs) {
-                no.push(Inst::new(InstKind::StoreLocal(*slot, *reg)));
-            }
-        }
-        self.emit(InstKind::If {
-            condition: c.regs[0],
-            yes,
-            no,
-        });
-        let regs:Vec<Reg> = slots
-            .iter()
-            .zip(&ty.components)
-            .map(|(slot, (scalar, _))| {
-                let reg = self.reg(*scalar);
-                self.emit(InstKind::LoadLocal(reg, *slot));
-                reg
-            })
-            .collect();
-        let mut selected = bounds::Clause::impossible();
-        for (value, truth) in [(a.as_ref(), true), (b.as_ref(), false)] {
-            let Some(value) = value else { continue; };
-            let aliases = bounds::Proof::capture(value).output_aliases(&regs, &self.registers, &BTreeMap::new());
-            selected = bounds::Clause::either(&selected, &partition.assume(&aliases, truth));
-        }
-        self.path = bounds::Clause::both(&self.path, &selected);
-        let proof = match (&a, &b) {
-            (Some(a), Some(b)) => bounds::Proof::common(a,b,Some(&partition),Some(&regs)),
-            _ => bounds::Proof::capture(storage),
-        };
-        let mut result = match (a_result.take(), b_result) {
-            (Some(mut a), Some(b)) => {
-                a.join(b,false,Some(&partition));
-                a
-            }
-            (Some(a), None) | (None, Some(a)) => a,
-            _ => unreachable!(),
-        };
-        self.rebind_returned(&mut result, regs);
-        if let returns::Returned::Value(value) = &mut result {
-            value.proof = proof;
-            value.uniform = c.uniform && a.iter().chain(b.iter()).all(|v| v.uniform);
-            value.literal = false;
-            value.constant = None;
-        }
-        Ok(Some(result))
+        let input=SelectionResultInput {truth:c.constant.as_ref().map_or(0,|bits|if bits[0]!=0{2}else{1}),uniform:u32::from(c.uniform)};
+        let mut values=SelectionValues {builder:self,condition:c,partition,yes,no,yes_result:a_result,no_result:b_result,
+            a:None,b:None,slots:Vec::new(),regs:Vec::new(),selected:None,proof:None,output:None};
+        unsafe {selection_result(input,SelectionHost {context:&mut values,storage:selection_storage,layout:selection_layout,action:selection_action})};
+        Ok(values.output)
     }
 }
 
@@ -352,4 +286,75 @@ impl Builder<'_> {
             }
         }
     }
+}
+
+#[repr(C)]
+struct SelectionResultInput {truth:u32,uniform:u32}
+#[repr(C)]
+struct SelectionStorage {yes:u32,no:u32,yes_regs:usize,no_regs:usize,yes_uniform:u32,no_uniform:u32}
+#[repr(C)]
+struct SelectionLayout {slots:usize,components:usize}
+#[repr(u32)]
+enum SelectionAction {Known,Store,Emit,Load,BeginPaths,Aliases,Path,CommonProof,CaptureProof,Join,Take,Finish}
+#[repr(C)]
+struct SelectionHost<'a,'w> {
+ context:*mut SelectionValues<'a,'w>,
+ storage:unsafe extern "C" fn(*mut SelectionValues<'a,'w>)->SelectionStorage,
+ layout:unsafe extern "C" fn(*mut SelectionValues<'a,'w>)->SelectionLayout,
+ action:unsafe extern "C" fn(*mut SelectionValues<'a,'w>,SelectionAction,u32,usize),
+}
+unsafe extern "C" {
+ #[link_name="bootstrap.function_body::selection_result"] fn selection_result(input:SelectionResultInput,host:SelectionHost<'_,'_>);
+}
+struct SelectionValues<'a,'w> {
+ builder:&'a mut Builder<'w>,condition:Value,partition:Arc<bounds::Condition>,
+ yes:Vec<Inst>,no:Vec<Inst>,yes_result:Option<returns::Returned>,no_result:Option<returns::Returned>,
+ a:Option<Value>,b:Option<Value>,slots:Vec<usize>,regs:Vec<Reg>,selected:Option<bounds::Clause>,proof:Option<bounds::Proof>,output:Option<returns::Returned>,
+}
+impl SelectionValues<'_,'_> {
+ fn storage(&self)->&Value {self.a.as_ref().or(self.b.as_ref()).unwrap()}
+}
+unsafe extern "C" fn selection_storage(context:*mut SelectionValues<'_,'_>)->SelectionStorage {
+ let v=unsafe {&mut *context};
+ v.a=v.yes_result.as_ref().map(|value|v.builder.returned_storage(value));v.b=v.no_result.as_ref().map(|value|v.builder.returned_storage(value));
+ SelectionStorage {yes:u32::from(v.a.is_some()),no:u32::from(v.b.is_some()),yes_regs:v.a.as_ref().map_or(0,|v|v.regs.len()),no_regs:v.b.as_ref().map_or(0,|v|v.regs.len()),
+  yes_uniform:u32::from(v.a.as_ref().is_none_or(|v|v.uniform)),no_uniform:u32::from(v.b.as_ref().is_none_or(|v|v.uniform))}
+}
+unsafe extern "C" fn selection_layout(context:*mut SelectionValues<'_,'_>)->SelectionLayout {
+ let v=unsafe {&mut *context};let ty=&v.a.as_ref().or(v.b.as_ref()).unwrap().ty;v.slots=v.builder.local_slots(ty).0;
+ SelectionLayout {slots:v.slots.len(),components:ty.components.len()}
+}
+unsafe extern "C" fn selection_action(context:*mut SelectionValues<'_,'_>,action:SelectionAction,side:u32,index:usize) {
+ let v=unsafe {&mut *context};
+ match action {
+  SelectionAction::Known=>{
+   let(code,result)=if side==0{(&mut v.yes,&mut v.yes_result)}else{(&mut v.no,&mut v.no_result)};
+   v.builder.code.extend(std::mem::take(code));v.output=result.take();
+  },
+  SelectionAction::Store=>{
+   let(code,value)=if side==0{(&mut v.yes,v.a.as_ref().unwrap())}else{(&mut v.no,v.b.as_ref().unwrap())};
+   code.push(Inst::new(InstKind::StoreLocal(v.slots[index],value.regs[index])));
+  },
+  SelectionAction::Emit=>v.builder.emit(InstKind::If {condition:v.condition.regs[0],yes:std::mem::take(&mut v.yes),no:std::mem::take(&mut v.no)}),
+  SelectionAction::Load=>{
+   let scalar=v.storage().ty.components[index].0;let reg=v.builder.reg(scalar);v.builder.emit(InstKind::LoadLocal(reg,v.slots[index]));v.regs.push(reg);
+  },
+  SelectionAction::BeginPaths=>v.selected=Some(bounds::Clause::impossible()),
+  SelectionAction::Aliases=>{
+   let value=if side==0{v.a.as_ref().unwrap()}else{v.b.as_ref().unwrap()};
+   let aliases=bounds::Proof::capture(value).output_aliases(&v.regs,&v.builder.registers,&BTreeMap::new());
+   v.selected=Some(bounds::Clause::either(v.selected.as_ref().unwrap(),&v.partition.assume(&aliases,side==0)));
+  },
+  SelectionAction::Path=>v.builder.path=bounds::Clause::both(&v.builder.path,v.selected.as_ref().unwrap()),
+  SelectionAction::CommonProof=>v.proof=Some(bounds::Proof::common(v.a.as_ref().unwrap(),v.b.as_ref().unwrap(),Some(&v.partition),Some(&v.regs))),
+  SelectionAction::CaptureProof=>v.proof=Some(bounds::Proof::capture(v.storage())),
+  SelectionAction::Join=>{
+   let mut a=v.yes_result.take().unwrap();a.join(v.no_result.take().unwrap(),false,Some(&v.partition));v.output=Some(a);
+  },
+  SelectionAction::Take=>v.output=if side==0{v.yes_result.take()}else{v.no_result.take()},
+  SelectionAction::Finish=>{
+   let result=v.output.as_mut().unwrap();v.builder.rebind_returned(result,std::mem::take(&mut v.regs));
+   if let returns::Returned::Value(value)=result {value.proof=v.proof.take().unwrap();value.uniform=side!=0;value.literal=false;value.constant=None;}
+  },
+ }
 }

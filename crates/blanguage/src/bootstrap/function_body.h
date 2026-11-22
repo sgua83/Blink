@@ -38,3 +38,14 @@ struct BranchFacts { u32 truth; u32 outer_control; u32 condition_uniform; u32 ye
 enum BranchNeed:u32 { KnownYes=0; KnownNo=1; DynamicYes=2; DynamicNo=3; OnlyYes=4; OnlyNo=5; Both=6; Neither=7; Complete=8; };
 struct BranchStep { BranchCursor cursor; BranchNeed need; u32 uniform; };
 extern "C" BranchStep branch_step(BranchCursor cursor,BranchFacts facts) on cpu;
+
+struct SelectionResultInput {u32 truth;u32 uniform;};
+struct SelectionStorage {u32 yes;u32 no;u64 yes_regs;u64 no_regs;u32 yes_uniform;u32 no_uniform;};
+struct SelectionLayout {u64 slots;u64 components;};
+enum SelectionAction:u32 {Known=0;Store=1;Emit=2;Load=3;BeginPaths=4;Aliases=5;Path=6;CommonProof=7;CaptureProof=8;Join=9;Take=10;Finish=11;};
+struct SelectionHost {
+ address context;cfn<SelectionStorage,address> storage;cfn<SelectionLayout,address> layout;
+ cfn<void,address,SelectionAction,u32,u64> action;
+};
+extern "C" void selection_result(SelectionResultInput input,SelectionHost host) on cpu
+ requires nonzero(host.storage) requires nonzero(host.layout) requires nonzero(host.action);

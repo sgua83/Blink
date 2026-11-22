@@ -185,3 +185,25 @@ extern "C" BranchStep branch_step(BranchCursor cursor,BranchFacts facts) on cpu 
     }
     return BranchStep(c,BranchNeed::Complete,0);
 }
+
+extern "C" void selection_result(SelectionResultInput input,SelectionHost host) on cpu
+ requires nonzero(host.storage) requires nonzero(host.layout) requires nonzero(host.action) {
+ if(input.truth!=0){host.action(host.context,SelectionAction::Known,input.truth==2 ? 0 : 1,0u64);return;}
+ SelectionStorage values=host.storage(host.context);
+ if(values.yes==0&&values.no==0){host.action(host.context,SelectionAction::Emit,0,0u64);return;}
+ SelectionLayout layout=host.layout(host.context);u64 index=0u64;
+ while(values.yes!=0&&index<layout.slots&&index<values.yes_regs){host.action(host.context,SelectionAction::Store,0,index);index+=1u64;}
+ index=0u64;
+ while(values.no!=0&&index<layout.slots&&index<values.no_regs){host.action(host.context,SelectionAction::Store,1,index);index+=1u64;}
+ host.action(host.context,SelectionAction::Emit,0,0u64);index=0u64;
+ while(index<layout.slots&&index<layout.components){host.action(host.context,SelectionAction::Load,0,index);index+=1u64;}
+ host.action(host.context,SelectionAction::BeginPaths,0,0u64);
+ if(values.yes!=0){host.action(host.context,SelectionAction::Aliases,0,0u64);}
+ if(values.no!=0){host.action(host.context,SelectionAction::Aliases,1,0u64);}
+ host.action(host.context,SelectionAction::Path,0,0u64);
+ host.action(host.context,values.yes!=0&&values.no!=0 ? SelectionAction::CommonProof : SelectionAction::CaptureProof,0,0u64);
+ if(values.yes!=0&&values.no!=0){host.action(host.context,SelectionAction::Join,0,0u64);}
+ else {host.action(host.context,SelectionAction::Take,values.yes!=0 ? 0 : 1,0u64);}
+ u32 uniform=input.uniform!=0&&(values.yes==0||values.yes_uniform!=0)&&(values.no==0||values.no_uniform!=0) ? 1 : 0;
+ host.action(host.context,SelectionAction::Finish,uniform,0u64);
+}
