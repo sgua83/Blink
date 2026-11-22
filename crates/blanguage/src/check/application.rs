@@ -4474,9 +4474,12 @@ impl Builder<'_> {
         let original=model.clone();let storage=self.returned_storage(&model);let mut bindings=self.element_owner_bindings(data);
         let mut selected=Some(place);let mut depth=0;let mut parent_indices=BTreeMap::new();
         while let Some(Place::ApplicationElement{index_value,index_range,parent,..})=selected.map(Place::storage){
-            let proof=bounds::Proof::element_operand(*index_value,*index_range);
+            let proof = bounds::Proof::element_operand(*index_value, *index_range);
             if depth!=0{parent_indices.insert(ValueIdentity::ElementIndex(depth-1),proof.clone());}
-            bindings.insert(ValueIdentity::ElementIndex(depth),proof);
+            if let bounds::Operand::Value(identity) = *index_value {
+                bindings.entry(identity).or_insert_with(|| proof.clone());
+            }
+            bindings.insert(ValueIdentity::ElementIndex(depth), proof);
             selected=parent.as_deref();depth+=1;
         }
         let registers = if let Some(value) = value {
