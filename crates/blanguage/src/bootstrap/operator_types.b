@@ -1,6 +1,7 @@
 module bootstrap.operator_types;
 import bootstrap.ir_dataflow;
 import bootstrap.c_function;
+import bootstrap.scalar_fold;
 
 Plan decision(u32 status) on cpu {return Plan(status,0,0,0,0,0,0,0u64,0u64,0u64,0u64);}
 bool floating(u32 scalar) on cpu {return scalar==0||scalar==6;}
@@ -659,4 +660,84 @@ extern "C" void expand_construct(ConstructPlan plan,usize count,ConstructEmitter
         }
         index+=1u64;
     }
+}
+
+
+extern "C" BitcastSignature source_bitcast(address bytes,usize length) on cpu {
+    if (source_spelling(bytes,length,"bitcast_u32")) { return BitcastSignature(1,0,1,4u64); }
+    if (source_spelling(bytes,length,"bitcast_f32")) { return BitcastSignature(1,1,0,4u64); }
+    if (source_spelling(bytes,length,"bitcast_u64")) { return BitcastSignature(1,6,4,1u64); }
+    if (source_spelling(bytes,length,"bitcast_f64")) { return BitcastSignature(1,4,6,1u64); }
+    return BitcastSignature(0,0,0,0u64);
+}
+extern "C" BitcastPlan bitcast_plan(BitcastSignature signature,usize count,address context,
+    cfn<usize,address> ensures memory(read) width,
+    cfn<u32,address,u32,usize> ensures memory(read) builtin) on cpu requires nonzero(width) requires nonzero(builtin) {
+    BitcastPlan result=BitcastPlan(BitcastStatus::Valid,signature.source,signature.target,0u64);
+    if (count!=1u64) { result.status=BitcastStatus::Arity;return result; }
+    result.width=width(context);
+    if (result.width<1u64 || result.width>signature.maximum || builtin(context,signature.source,result.width)==0) {
+        result.status=BitcastStatus::Type;return result;
+    }
+    return result;
+}
+bool same_conversion_scalar(ScalarEncoding a,ScalarEncoding b) on cpu {
+    return a.kind==b.kind && a.width==b.width;
+}
+extern "C" ConversionOutcome convert_value(ConversionInput input,ConversionEmitter emitter) on cpu
+    requires nonzero(emitter.source) requires nonzero(emitter.constant) requires nonzero(emitter.action) {
+    bool constant=input.constant_present!=0;
+    usize index=0u64;
+    if (constant && input.mode==ConversionMode::Bitcast) {
+        usize emitted=emitter.action(emitter.context,ConversionAction::ConstantBitcast,0u64);
+        while (index<emitted) { emitter.action(emitter.context,ConversionAction::BitcastOrigin,index);index+=1u64; }
+        return ConversionOutcome::Constant;
+    }
+    if (constant) {
+        emitter.action(emitter.context,ConversionAction::BeginConstants,0u64);
+        while (index<input.constant_count) {
+            u64 bits=unsafe_position<u64>(unsafe_address(address_bits(input.constants)+u64(index)*8u64));
+            ScalarEncoding source=emitter.source(emitter.context,index,ConversionSource::Type);
+                FoldedCast value;
+                if (same_conversion_scalar(source,input.target)) {
+                    value=FoldedCast(bits & (18446744073709551615u64 >> u64(64-input.target.width)),1);
+                } else { value=bootstrap.scalar_fold::cast(source,input.target,bits); }
+                if (value.present==0) {
+                    emitter.action(emitter.context,ConversionAction::DiscardConstants,0u64);constant=false;break;
+                }
+                bits=value.bits;
+            emitter.constant(emitter.context,bits);index+=1u64;
+        }
+    }
+    if (input.mode==ConversionMode::Numeric) {
+        emitter.action(emitter.context,ConversionAction::CastProof,0u64);
+        bool changed=false;index=0u64;
+        while (index<input.types) {
+            if (!same_conversion_scalar(emitter.source(emitter.context,index,ConversionSource::Type),input.target)) {
+                changed=true;break;
+            }
+            index+=1u64;
+        }
+        if (changed && constant) {
+            usize emitted=emitter.action(emitter.context,ConversionAction::ConstantValue,0u64);
+            index=0u64;
+            while (index<emitted) {
+                if (!same_conversion_scalar(emitter.source(emitter.context,index,ConversionSource::Type),input.target)) {
+                    emitter.action(emitter.context,ConversionAction::CastOrigin,index);
+                }
+                index+=1u64;
+            }
+            return ConversionOutcome::Constant;
+        }
+    } else { emitter.action(emitter.context,ConversionAction::BitcastProof,0u64); }
+    index=0u64;
+    while (index<input.registers) {
+        ConversionAction action=ConversionAction::Bitcast;
+        if (input.mode==ConversionMode::Numeric) {
+            action=same_conversion_scalar(emitter.source(emitter.context,index,ConversionSource::Register),input.target)
+                ? ConversionAction::Reuse : ConversionAction::Cast;
+        }
+        emitter.action(emitter.context,action,index);index+=1u64;
+    }
+    return ConversionOutcome::Registers;
 }

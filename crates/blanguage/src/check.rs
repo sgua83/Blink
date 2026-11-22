@@ -2737,103 +2737,7 @@ impl<'a> Builder<'a> {
         value.literal = scalar.size() == 4;
         Ok(Some(value))
     }
-    fn bitcast(&mut self, name: &str, mut args: Vec<Value>, span: Span) -> Result<Value> {
-        if args.len() != 1 {
-            return self.fail(span, "B153", format!("{name} 需要一个参数"));
-        }
-        let (source, target) = match name {
-            "bitcast_u32" => (Scalar::F32, Scalar::U32),
-            "bitcast_f32" => (Scalar::U32, Scalar::F32),
-            "bitcast_u64" => (Scalar::F64, Scalar::U64),
-            _ => (Scalar::U64, Scalar::F64),
-        };
-        let value = args.remove(0);
-        let n = value.regs.len();
-        if !(1..=if source.size() == 8 { 1 } else { 4 }).contains(&n) || value.ty != Ty::vector(source, n) {
-            return self.fail(span, "B154", format!("{name} 需要对应位宽的数值标量；32位也接受向量"));
-        }
-        let ty = Ty::vector(target, n);
-        if let Some(bits) = value.constant {
-            let first = self.code.len();
-            let mut result = self.constant_value(ty, bits,None);
-            for (component_index, (inst, bits)) in self.code[first..].iter_mut()
-                .zip(result.constant.iter().flatten()).enumerate() {
-                inst.generated_origin = Some(Arc::new(GeneratedOrigin {
-                    reason: GenerationReason::BitcastConstantFold,
-                    trigger: Some(GenerationAnchor::BitcastConstantFold {
-                        expression: inst.source_site.clone(), source_scalar: source, target_scalar: target,
-                        bits: *bits, component_index, component_count: n,
-                    }),
-                }));
-            }
-            result.literal = false;
-            return Ok(result);
-        }
-        let proof = bounds::Proof::bitcast(&value, target);
-        let mut regs = Vec::with_capacity(n);
-        for a in value.regs {
-            let dst = self.reg(target);
-            self.emit(InstKind::Unary {
-                dst,
-                op: UnaryOp::Bitcast,
-                a,
-            });
-            regs.push(dst);
-        }
-        Ok(Value {
-            proof,
-            literal: false,
-            ty,
-            regs,
-            uniform: value.uniform,
-            constant: None,
-        })
-    }
-    fn cast(&mut self, v: Value, s: Scalar) -> Value {
-        let constant = v.constant.as_ref().and_then(|values| {
-            values.iter().enumerate().map(|(i, bits)| constant::cast(v.ty.components[i].0, s, *bits)).collect::<Option<Vec<_>>>()
-        });
-        let proof = bounds::Proof::cast(&v, s);
-        let mut regs = Vec::new();
-        let n = v.regs.len();
-        if v.ty.components.iter().any(|(source, _)| *source != s) && let Some(bits) = constant {
-            let first = self.code.len();
-            let mut value = self.constant_value(Ty::vector(s, n), bits,None);
-            for (component_index, (inst, (input_bits, result_bits))) in self.code[first..].iter_mut()
-                .zip(v.constant.iter().flatten().zip(value.constant.iter().flatten())).enumerate() {
-                let source_scalar = v.ty.components[component_index].0;
-                if source_scalar != s {
-                    inst.generated_origin = Some(Arc::new(GeneratedOrigin {
-                        reason: GenerationReason::CastConstantFold,
-                        trigger: Some(GenerationAnchor::CastConstantFold {
-                            expression: inst.source_site.clone(), source_scalar, target_scalar: s,
-                            input_bits: *input_bits, result_bits: *result_bits,
-                            component_index, component_count: n,
-                        }),
-                    }));
-                }
-            }
-            value.proof = proof;
-            return value;
-        }
-        for src in v.regs {
-            if self.registers[src] == s {
-                regs.push(src);
-            } else {
-                let dst = self.reg(s);
-                self.emit(InstKind::Cast { dst, src });
-                regs.push(dst);
-            }
-        }
-        Value {
-            proof,
-            literal: false,
-            ty: Ty::vector(s, n),
-            regs,
-            uniform: v.uniform,
-            constant,
-        }
-    }
+    fn cast(&mut self,value:Value,target:Scalar)->Value { self.cast_value(value,target) }
     fn numeric_operands(&mut self, a: Value, b: Value, span: Span) -> Result<(Value, Value)> {
         let types = operators::numeric(&a.ty, a.literal, &b.ty, b.literal,
             self.scope.source(), span)?;
@@ -3303,9 +3207,10 @@ impl<'a> Builder<'a> {
             let Some(values) = values(self).await? else { return Ok(None); };
             return self.value_constructor(ty, values, span).map(Some);
         }
-        if matches!(name, "bitcast_u32" | "bitcast_f32" | "bitcast_u64" | "bitcast_f64") {
+        let bitcast_signature=operators::BitcastSignature::recognize(name);
+        if bitcast_signature.is_present() {
             let Some(values) = values(self).await? else { return Ok(None); };
-            return self.bitcast(name, values, span).map(Some);
+            return self.bitcast_value(name,bitcast_signature,values,span).map(Some);
         }
         let math_signature=operators::MathSignature::recognize(name);
         if math_signature.is_present() {

@@ -1,6 +1,7 @@
 module bootstrap.operator_types;
 import bootstrap.ir_dataflow;
 import bootstrap.c_function;
+import bootstrap.scalar_fold;
 // Scalar IDs are the original compiler Scalar order. These records borrow no
 // native containers and carry only actual type facts and the final decision.
 struct Operand {u64 components;u64 rows;u64 columns;u32 scalar;u32 flags;};
@@ -167,3 +168,32 @@ struct ConstructEmitter {
 };
 extern "C" void expand_construct(ConstructPlan plan,usize count,ConstructEmitter emitter) on cpu
     requires nonzero(emitter.argument) requires nonzero(emitter.component) requires nonzero(emitter.splat);
+
+
+struct BitcastSignature { u32 present; u32 source; u32 target; usize maximum; };
+enum BitcastStatus:u32 { Valid=0; Arity=1; Type=2; };
+struct BitcastPlan { BitcastStatus status; u32 source; u32 target; usize width; };
+extern "C" BitcastSignature source_bitcast(address bytes,usize length) on cpu;
+extern "C" BitcastPlan bitcast_plan(BitcastSignature signature,usize count,address context,
+    cfn<usize,address> ensures memory(read) width,
+    cfn<u32,address,u32,usize> ensures memory(read) builtin) on cpu requires nonzero(width) requires nonzero(builtin);
+
+enum ConversionMode:u32 { Numeric=0; Bitcast=1; };
+enum ConversionSource:u32 { Type=0; Register=1; };
+enum ConversionAction:u32 {
+    DiscardConstants=0; CastProof=1; BitcastProof=2; ConstantValue=3;
+    CastOrigin=4; BitcastOrigin=5; Reuse=6; Cast=7; Bitcast=8; ConstantBitcast=9; BeginConstants=10;
+};
+enum ConversionOutcome:u32 { Registers=0; Constant=1; };
+struct ConversionInput {
+    ConversionMode mode; ScalarEncoding target; usize types; usize registers;
+    address constants; usize constant_count; u32 constant_present;
+};
+struct ConversionEmitter {
+    address context;
+    cfn<ScalarEncoding,address,usize,ConversionSource> ensures memory(read) source;
+    cfn<void,address,u64> constant;
+    cfn<usize,address,ConversionAction,usize> action;
+};
+extern "C" ConversionOutcome convert_value(ConversionInput input,ConversionEmitter emitter) on cpu
+    requires nonzero(emitter.source) requires nonzero(emitter.constant) requires nonzero(emitter.action);

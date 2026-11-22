@@ -459,3 +459,155 @@ impl Builder<'_> {
         Ok(context.output)
     }
 }
+
+
+#[repr(C)]
+#[derive(Clone,Copy)]
+pub(super) struct BitcastSignature { present:u32,source:u32,target:u32,maximum:usize }
+#[repr(u32)]
+enum BitcastStatus { Valid,Arity,Type }
+#[repr(C)]
+struct BitcastPlan { status:BitcastStatus,source:u32,target:u32,width:usize }
+unsafe extern "C" {
+    #[link_name="bootstrap.operator_types::source_bitcast"]
+    fn source_bitcast(bytes:*const u8,length:usize)->BitcastSignature;
+    #[link_name="bootstrap.operator_types::bitcast_plan"]
+    fn source_bitcast_plan(signature:BitcastSignature,count:usize,context:*const c_void,
+        width:unsafe extern "C" fn(*const c_void)->usize,
+        builtin:unsafe extern "C" fn(*const c_void,u32,usize)->u32)->BitcastPlan;
+}
+impl BitcastSignature {
+    pub(super) fn recognize(name:&str)->Self { unsafe { source_bitcast(name.as_ptr(),name.len()) } }
+    pub(super) fn is_present(self)->bool { self.present!=0 }
+}
+unsafe extern "C" fn bitcast_width(context:*const c_void)->usize {
+    unsafe { &*context.cast::<MathContext<'_>>() }.values[0].regs.len()
+}
+unsafe extern "C" fn bitcast_builtin(context:*const c_void,scalar:u32,width:usize)->u32 {
+    let value=&unsafe { &*context.cast::<MathContext<'_>>() }.values[0];
+    u32::from(value.ty==Ty::vector(SCALARS[scalar as usize],width))
+}
+#[repr(u32)]
+enum ConversionMode { Numeric,Bitcast }
+#[repr(u32)]
+enum ConversionSource { Type,Register }
+#[repr(u32)]
+enum ConversionAction { DiscardConstants,CastProof,BitcastProof,ConstantValue,CastOrigin,BitcastOrigin,Reuse,Cast,Bitcast,ConstantBitcast,BeginConstants }
+#[repr(u32)]
+enum ConversionOutcome { Registers,Constant }
+#[repr(C)]
+struct ConversionInput {
+    mode:ConversionMode,target:crate::builtin_types::ScalarEncoding,types:usize,registers:usize,
+    constants:*const Bits,constant_count:usize,constant_present:u32,
+}
+#[repr(C)]
+struct ConversionEmitter<'a,'w> {
+    context:*mut ConversionValues<'a,'w>,
+    source:unsafe extern "C" fn(*const ConversionValues<'a,'w>,usize,ConversionSource)->crate::builtin_types::ScalarEncoding,
+    constant:unsafe extern "C" fn(*mut ConversionValues<'a,'w>,Bits),
+    action:unsafe extern "C" fn(*mut ConversionValues<'a,'w>,ConversionAction,usize)->usize,
+}
+unsafe extern "C" {
+    #[link_name="bootstrap.operator_types::convert_value"]
+    fn source_convert_value(input:ConversionInput,emitter:ConversionEmitter<'_,'_>)->ConversionOutcome;
+}
+struct ConversionValues<'a,'w> {
+    builder:&'a mut Builder<'w>,input:Value,target:Scalar,ty:Option<Ty>,proof:Option<bounds::Proof>,
+    constant:Option<Vec<Bits>>,registers:Vec<Reg>,first:usize,output:Option<Value>,
+}
+impl ConversionValues<'_,'_> {
+    fn constant_value(&mut self,bits:Vec<Bits>)->usize {
+        self.first=self.builder.code.len();
+        self.output=Some(self.builder.constant_value(self.ty.take().unwrap(),bits,None));
+        self.builder.code.len()-self.first
+    }
+}
+unsafe extern "C" fn conversion_source(context:*const ConversionValues<'_,'_>,index:usize,source:ConversionSource)->crate::builtin_types::ScalarEncoding {
+    let values=unsafe { &*context };
+    match source {
+        ConversionSource::Type=>values.input.ty.components[index].0,
+        ConversionSource::Register=>values.builder.registers[values.input.regs[index]],
+    }.into()
+}
+unsafe extern "C" fn conversion_constant(context:*mut ConversionValues<'_,'_>,bits:Bits) {
+    unsafe { &mut *context }.constant.as_mut().unwrap().push(bits);
+}
+unsafe extern "C" fn conversion_action(context:*mut ConversionValues<'_,'_>,action:ConversionAction,index:usize)->usize {
+    let values=unsafe { &mut *context };
+    match action {
+        ConversionAction::DiscardConstants=>values.constant=None,
+        ConversionAction::CastProof=>values.proof=Some(bounds::Proof::cast(&values.input,values.target)),
+        ConversionAction::BitcastProof=>values.proof=Some(bounds::Proof::bitcast(&values.input,values.target)),
+        ConversionAction::ConstantValue=>{
+            let bits=values.constant.take().unwrap();
+            let count=values.constant_value(bits);
+            values.output.as_mut().unwrap().proof=values.proof.take().unwrap();
+            return count;
+        },
+        ConversionAction::ConstantBitcast=>{
+            let bits=values.input.constant.take().unwrap();
+            return values.constant_value(bits);
+        },
+        ConversionAction::BeginConstants=>values.constant=Some(Vec::with_capacity(values.input.constant.as_ref().unwrap().len())),
+        ConversionAction::CastOrigin|ConversionAction::BitcastOrigin=>{
+            let inst=&mut values.builder.code[values.first+index];
+            let result_bits=values.output.as_ref().unwrap().constant.as_ref().unwrap()[index];
+            let source=values.input.ty.components[index].0;
+            let (reason,trigger)=match action {
+                ConversionAction::CastOrigin=>(GenerationReason::CastConstantFold,GenerationAnchor::CastConstantFold {
+                    expression:inst.source_site.clone(),source_scalar:source,target_scalar:values.target,
+                    input_bits:values.input.constant.as_ref().unwrap()[index],result_bits,
+                    component_index:index,component_count:values.input.regs.len(),
+                }),
+                _=>(GenerationReason::BitcastConstantFold,GenerationAnchor::BitcastConstantFold {
+                    expression:inst.source_site.clone(),source_scalar:source,target_scalar:values.target,
+                    bits:result_bits,component_index:index,component_count:values.input.regs.len(),
+                }),
+            };
+            inst.generated_origin=Some(Arc::new(GeneratedOrigin { reason,trigger:Some(trigger) }));
+        },
+        ConversionAction::Reuse=>values.registers.push(values.input.regs[index]),
+        ConversionAction::Cast=>{
+            let src=values.input.regs[index];let dst=values.builder.reg(values.target);
+            values.builder.emit(InstKind::Cast { dst,src });values.registers.push(dst);
+        },
+        ConversionAction::Bitcast=>{
+            let a=values.input.regs[index];let dst=values.builder.reg(values.target);
+            values.builder.emit(InstKind::Unary { dst,op:UnaryOp::Bitcast,a });values.registers.push(dst);
+        },
+    }
+    0
+}
+impl Builder<'_> {
+    fn convert_value(&mut self,mode:ConversionMode,input:Value,target:Scalar)->Value {
+        let constants=input.constant.as_deref();
+        let fact=ConversionInput {
+            mode,target:target.into(),types:input.ty.components.len(),registers:input.regs.len(),
+            constants:constants.map_or(std::ptr::null(),|bits|bits.as_ptr()),
+            constant_count:constants.map_or(0,|bits|bits.len()),constant_present:u32::from(constants.is_some()),
+        };
+        let ty=Some(Ty::vector(target,input.regs.len()));
+        let mut context=ConversionValues { builder:self,input,target,ty,proof:None,constant:None,registers:Vec::new(),first:0,output:None };
+        let outcome=unsafe { source_convert_value(fact,ConversionEmitter {
+            context:&mut context,source:conversion_source,constant:conversion_constant,action:conversion_action,
+        }) };
+        match outcome {
+            ConversionOutcome::Constant=>context.output.unwrap(),
+            ConversionOutcome::Registers=>Value {
+                proof:context.proof.unwrap(),literal:false,ty:context.ty.unwrap(),regs:context.registers,
+                uniform:context.input.uniform,constant:context.constant,
+            },
+        }
+    }
+    pub(super) fn cast_value(&mut self,value:Value,target:Scalar)->Value { self.convert_value(ConversionMode::Numeric,value,target) }
+    pub(super) fn bitcast_value(&mut self,name:&str,signature:BitcastSignature,values:Vec<Value>,span:Span)->Result<Value> {
+        let context=MathContext { values:&values };
+        let plan=unsafe { source_bitcast_plan(signature,values.len(),std::ptr::from_ref(&context).cast(),bitcast_width,bitcast_builtin) };
+        match plan.status {
+            BitcastStatus::Valid=>{},
+            BitcastStatus::Arity=>return self.fail(span,"B153",format!("{name} 需要一个参数")),
+            BitcastStatus::Type=>return self.fail(span,"B154",format!("{name} 需要对应位宽的数值标量；32位也接受向量")),
+        }
+        Ok(self.convert_value(ConversionMode::Bitcast,values.into_iter().next().unwrap(),SCALARS[plan.target as usize]))
+    }
+}
