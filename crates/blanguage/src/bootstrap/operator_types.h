@@ -233,3 +233,30 @@ struct ValueUnaryEmitter {
 };
 extern "C" ValueUnaryOutcome expand_unary_value(ValueUnaryInput input,ValueUnaryEmitter emitter) on cpu
     requires nonzero(emitter.constant) requires nonzero(emitter.action);
+
+
+// Borrowed original operands and divisor fields remain alive during this call.
+struct BinaryWords { address constants; usize constant_count; usize registers; u32 constant_present; };
+struct ValueBinaryInput {
+    usize count; ScalarEncoding scalar; u32 operation; u32 comparison; u32 remainder;
+    BinaryWords left; BinaryWords right; usize divisor_count; u32 divisors_present;
+};
+struct ValueDivisor { u32 constant; u64 bits; address nonzero; };
+enum ValueBinaryAction:u32 {
+    BeginConstants=0; DiscardConstants=1; ArithmeticProof=2; ComparisonProof=3;
+    KnownComparison=4; FoldConstantValue=5; KnownConstantValue=6;
+    ConstantOrigin=7; KnownOrigin=8; Binary=9; Quotient=10; Remainder=11;
+    Negate=12; Zero=13; PreserveFloat=14; FinishRegisters=15; ObserveInteger=16;
+};
+enum ValueBinaryOutcome:u32 { Registers=0; Constant=1; };
+struct ValueBinaryStep { ValueBinaryAction action; usize component; usize left; usize right; usize divisor; };
+struct ValueBinaryEmitter {
+    address context;
+    cfn<ValueDivisor,address,usize> ensures memory(read) divisor;
+    cfn<u64,address,u64,address> ensures memory(read) divide;
+    cfn<void,address,u64> constant;
+    cfn<usize,address,ValueBinaryStep> action;
+};
+extern "C" ValueBinaryOutcome expand_binary_value(ValueBinaryInput input,ValueBinaryEmitter emitter) on cpu
+    requires nonzero(emitter.divisor) requires nonzero(emitter.divide)
+    requires nonzero(emitter.constant) requires nonzero(emitter.action);

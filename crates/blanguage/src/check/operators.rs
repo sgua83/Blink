@@ -800,3 +800,175 @@ impl Builder<'_> {
         })
     }
 }
+
+
+fn binary_code(operation:BinaryOp)->u32 {
+    use BinaryOp::*;use Comparison as C;
+    match operation {
+        FAdd=>1,FSub=>2,FMul=>3,FDiv=>4,IAdd=>5,ISub=>6,IMul=>7,
+        Compare(C::Equal)=>8,Compare(C::NotEqual)=>9,Compare(C::Less)=>10,Compare(C::Greater)=>11,
+        Compare(C::LessEqual)=>12,Compare(C::GreaterEqual)=>13,And=>14,Or=>15,Xor=>16,
+        ShiftLeft=>17,ShiftRightLogical=>18,ShiftRightArithmetic=>19,
+    }
+}
+#[repr(C)]
+struct BinaryWords { constants:*const Bits,constant_count:usize,registers:usize,constant_present:u32 }
+impl BinaryWords {
+    fn of(value:&Value)->Self {
+        let bits=value.constant.as_deref();
+        Self {constants:bits.map_or(std::ptr::null(),|bits|bits.as_ptr()),constant_count:bits.map_or(0,|bits|bits.len()),
+            registers:value.regs.len(),constant_present:u32::from(bits.is_some())}
+    }
+}
+#[repr(C)]
+struct ValueBinaryInput {
+    count:usize,scalar:crate::builtin_types::ScalarEncoding,operation:u32,comparison:u32,remainder:u32,
+    left:BinaryWords,right:BinaryWords,divisor_count:usize,divisors_present:u32,
+}
+#[repr(C)]
+struct ValueDivisor { constant:u32,bits:Bits,nonzero:*const std::num::NonZeroU64 }
+#[repr(u32)]
+#[derive(Clone,Copy)]
+enum ValueBinaryAction {
+    BeginConstants,DiscardConstants,ArithmeticProof,ComparisonProof,KnownComparison,FoldConstantValue,KnownConstantValue,
+    ConstantOrigin,KnownOrigin,Binary,Quotient,Remainder,Negate,Zero,PreserveFloat,FinishRegisters,ObserveInteger,
+}
+#[repr(u32)]
+enum ValueBinaryOutcome { Registers,Constant }
+#[repr(C)]
+struct ValueBinaryStep {action:ValueBinaryAction,component:usize,left:usize,right:usize,divisor:usize}
+#[repr(C)]
+struct ValueBinaryEmitter<'a,'w> {
+    context:*mut BinaryValues<'a,'w>,
+    divisor:unsafe extern "C" fn(*const BinaryValues<'a,'w>,usize)->ValueDivisor,
+    divide:unsafe extern "C" fn(*const BinaryValues<'a,'w>,Bits,*const std::num::NonZeroU64)->Bits,
+    constant:unsafe extern "C" fn(*mut BinaryValues<'a,'w>,Bits),
+    action:unsafe extern "C" fn(*mut BinaryValues<'a,'w>,ValueBinaryStep)->usize,
+}
+unsafe extern "C" {
+    #[link_name="bootstrap.operator_types::expand_binary_value"]
+    fn expand_binary_value(input:ValueBinaryInput,emitter:ValueBinaryEmitter<'_,'_>)->ValueBinaryOutcome;
+}
+struct BinaryValues<'a,'w> {
+    builder:&'a mut Builder<'w>,name:&'a str,left:&'a Value,right:&'a Value,scalar:Scalar,
+    comparison:bool,operation:Option<BinaryOp>,literal:bool,ty:Option<Ty>,
+    divisors:Option<Vec<IntegerDivisor>>,generated_origin:Option<Arc<GeneratedOrigin>>,
+    proof:Option<bounds::Proof>,known:Option<Vec<(Bits,[bool;2])>>,constant:Option<Vec<Bits>>,
+    registers:Vec<Reg>,first:usize,origin_operation:Option<Arc<str>>,output:Option<Value>,
+}
+unsafe extern "C" fn binary_divisor(context:*const BinaryValues<'_,'_>,index:usize)->ValueDivisor {
+    let values=unsafe { &*context };
+    match &values.divisors.as_ref().unwrap()[index] {
+        IntegerDivisor::Constant(divisor)=>ValueDivisor {constant:1,bits:divisor.get(),nonzero:std::ptr::from_ref(divisor)},
+        IntegerDivisor::Value(register)=>ValueDivisor {constant:0,bits:*register as Bits,nonzero:std::ptr::null()},
+    }
+}
+unsafe extern "C" fn binary_divide(context:*const BinaryValues<'_,'_>,left:Bits,divisor:*const std::num::NonZeroU64)->Bits {
+    let values=unsafe { &*context };
+    constant::divide(values.scalar,left,unsafe { *divisor },values.name=="%")
+}
+unsafe extern "C" fn binary_constant(context:*mut BinaryValues<'_,'_>,bits:Bits) {
+    unsafe { &mut *context }.constant.as_mut().unwrap().push(bits);
+}
+unsafe extern "C" fn binary_action(context:*mut BinaryValues<'_,'_>,step:ValueBinaryStep)->usize {
+    let values=unsafe { &mut *context };
+    let a=values.left;let b=values.right;let scalar=values.scalar;
+    match step.action {
+        ValueBinaryAction::BeginConstants=>values.constant=Some(Vec::with_capacity(values.ty.as_ref().unwrap().components.len())),
+        ValueBinaryAction::DiscardConstants=>values.constant=None,
+        ValueBinaryAction::ArithmeticProof=>values.proof=Some(bounds::arithmetic(values.builder,values.name,a,b)),
+        ValueBinaryAction::ComparisonProof=>{
+            let comparison=[Comparison::Equal,Comparison::NotEqual,Comparison::Less,Comparison::Greater,Comparison::LessEqual,Comparison::GreaterEqual]
+                [(binary_code(values.operation.unwrap())-8) as usize];
+            values.proof=Some(bounds::Proof::comparison(comparison,a,b));
+        },
+        ValueBinaryAction::KnownComparison=>{
+            values.known=values.proof.as_ref().unwrap().known_boolean_value(values.ty.as_ref().unwrap().components.len());
+            return usize::from(values.known.is_some());
+        },
+        action @ (ValueBinaryAction::FoldConstantValue|ValueBinaryAction::KnownConstantValue)=>{
+            let bits=match action {
+                ValueBinaryAction::FoldConstantValue=>values.constant.take().unwrap(),
+                _=>values.known.as_ref().unwrap().iter().map(|(bits,_)|*bits).collect(),
+            };
+            values.first=values.builder.code.len();
+            let mut value=values.builder.constant_value(values.ty.take().unwrap(),bits,values.generated_origin.take());
+            value.literal=values.literal;value.proof=values.proof.take().unwrap();values.output=Some(value);values.origin_operation=Some(values.name.into());
+            return values.builder.code.len()-values.first;
+        },
+        ValueBinaryAction::ConstantOrigin=>{
+            let value=values.output.as_ref().unwrap();
+            let left=a.constant.as_ref().unwrap();let right=b.constant.as_ref().unwrap();
+            let inst=&mut values.builder.code[values.first+step.component];
+            inst.generated_origin=Some(Arc::new(GeneratedOrigin {
+                reason:GenerationReason::BinaryConstantFold,
+                trigger:Some(GenerationAnchor::BinaryConstantFold {
+                    expression:inst.source_site.clone(),operation:values.origin_operation.as_ref().unwrap().clone(),scalar,
+                    result_scalar:value.ty.components[step.component].0,left_bits:left[step.left],right_bits:right[step.right],
+                    result_bits:value.constant.as_ref().unwrap()[step.component],
+                    left_component_index:step.left,left_component_count:left.len(),right_component_index:step.right,right_component_count:right.len(),
+                    component_index:step.component,component_count:value.regs.len(),retained:inst.generated_origin.clone(),
+                }),
+            }));
+        },
+        ValueBinaryAction::KnownOrigin=>{
+            let (result_bits,[false_possible,true_possible])=values.known.as_ref().unwrap()[step.component];
+            let numeric=scalar.is_integer()||scalar.is_float();
+            let inst=&mut values.builder.code[values.first+step.component];
+            inst.generated_origin=Some(Arc::new(GeneratedOrigin {
+                reason:GenerationReason::ComparisonKnownValue,
+                trigger:Some(GenerationAnchor::ComparisonKnownValue {
+                    expression:inst.source_site.clone(),operation:values.origin_operation.as_ref().unwrap().clone(),scalar,
+                    left_ranges:numeric.then(||a.component_range_intervals(step.left)),right_ranges:numeric.then(||b.component_range_intervals(step.right)),
+                    left_constant_present:a.constant.is_some(),right_constant_present:b.constant.is_some(),same_value:a.same_component(step.left,b,step.right),
+                    result_bits,false_possible,true_possible,left_component_index:step.left,left_component_count:a.regs.len(),
+                    right_component_index:step.right,right_component_count:b.regs.len(),component_index:step.component,
+                    component_count:values.output.as_ref().unwrap().regs.len(),retained:inst.generated_origin.clone(),
+                }),
+            }));
+        },
+        ValueBinaryAction::PreserveFloat=>{
+            values.builder.code[step.left].float_preserve=values.proof.as_ref().unwrap()
+                .binary_requires_float_preserve(scalar,step.component,a,b,values.comparison);
+        },
+        ValueBinaryAction::FinishRegisters=>values.output=Some(Value {
+            proof:values.proof.take().unwrap(),literal:values.literal,ty:values.ty.take().unwrap(),regs:std::mem::take(&mut values.registers),
+            uniform:a.uniform&&b.uniform,constant:None,
+        }),
+        ValueBinaryAction::ObserveInteger=>values.builder.observe_integer_binary(values.name,a,b,values.output.as_mut().unwrap()),
+        action @ (ValueBinaryAction::Binary|ValueBinaryAction::Quotient|ValueBinaryAction::Remainder|ValueBinaryAction::Negate|ValueBinaryAction::Zero)=>{
+            let dst=values.builder.reg(if values.comparison {Scalar::Bool} else {scalar});
+            let ar=a.regs[step.left];let br=b.regs[step.right];
+            let kind=if matches!(action,ValueBinaryAction::Binary) {
+                InstKind::Binary {dst,op:values.operation.unwrap(),a:ar,b:br}
+            } else if matches!(action,ValueBinaryAction::Negate) {
+                InstKind::Unary {dst,op:UnaryOp::SignedNegate,a:ar}
+            } else if matches!(action,ValueBinaryAction::Zero) {
+                InstKind::Constant(dst,scalar,0)
+            } else {
+                InstKind::IntegerDivide {
+                    result:if matches!(action,ValueBinaryAction::Quotient) {IntegerDivisionResult::Quotient(dst)} else {IntegerDivisionResult::Remainder(dst)},
+                    src:ar,divisor:values.divisors.as_ref().unwrap()[step.divisor],
+                }
+            };
+            let instruction=values.builder.code.len();
+            if let Some(origin)=&values.generated_origin {values.builder.code.push(Inst::generated(kind,origin.clone()));}
+            else {values.builder.emit(kind);}
+            values.registers.push(dst);return instruction;
+        },
+    }
+    0
+}
+impl Builder<'_> {
+    pub(super) fn numeric_binary_value(&mut self,name:&str,ty:Ty,a:&Value,b:&Value,scalar:Scalar,comparison:bool,
+        operation:Option<BinaryOp>,literal:bool,divisors:Option<Vec<IntegerDivisor>>,generated_origin:Option<Arc<GeneratedOrigin>>)->Value {
+        let input=ValueBinaryInput {count:ty.components.len(),scalar:scalar.into(),operation:operation.map(binary_code).unwrap_or(0),
+            comparison:u32::from(comparison),remainder:u32::from(name=="%"),left:BinaryWords::of(a),right:BinaryWords::of(b),
+            divisor_count:divisors.as_ref().map_or(0,|divisors|divisors.len()),divisors_present:u32::from(divisors.is_some())};
+        let mut values=BinaryValues {builder:self,name,left:a,right:b,scalar,comparison,operation,literal,ty:Some(ty),divisors,generated_origin,
+            proof:None,known:None,constant:None,registers:Vec::new(),first:0,origin_operation:None,output:None};
+        unsafe {expand_binary_value(input,ValueBinaryEmitter {context:&mut values,divisor:binary_divisor,divide:binary_divide,
+            constant:binary_constant,action:binary_action})};
+        values.output.unwrap()
+    }
+}

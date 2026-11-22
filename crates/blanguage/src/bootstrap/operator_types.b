@@ -828,3 +828,97 @@ extern "C" ValueUnaryOutcome expand_unary_value(ValueUnaryInput input,ValueUnary
     while (index<input.registers) { emitter.action(emitter.context,ValueUnaryAction::Emit,index);index+=1u64; }
     return ValueUnaryOutcome::Registers;
 }
+
+
+FoldedCast numeric_binary_fold(u32 code,ScalarEncoding scalar,u64 left,u64 right) on cpu {
+    bool floating=scalar.kind==ScalarKind::Float;
+    if ((!floating && code>=1 && code<=4) || (floating && ((code>=5 && code<=7) || code>=14))) {
+        return FoldedCast(0u64,0);
+    }
+    BinaryOperation operation=BinaryOperation::Add;
+    if (code==2 || code==6) { operation=BinaryOperation::Subtract; }
+    else if (code==3 || code==7) { operation=BinaryOperation::Multiply; }
+    else if (code==4) { operation=BinaryOperation::Divide; }
+    else if (code==8) { operation=BinaryOperation::Equal; }
+    else if (code==9) { operation=BinaryOperation::NotEqual; }
+    else if (code==10) { operation=BinaryOperation::Less; }
+    else if (code==11) { operation=BinaryOperation::Greater; }
+    else if (code==12) { operation=BinaryOperation::LessEqual; }
+    else if (code==13) { operation=BinaryOperation::GreaterEqual; }
+    else if (code==14) { operation=BinaryOperation::And; }
+    else if (code==15) { operation=BinaryOperation::Or; }
+    else if (code==16) { operation=BinaryOperation::Xor; }
+    else if (code==17) { operation=BinaryOperation::ShiftLeft; }
+    else if (code==18) { operation=BinaryOperation::ShiftRight; }
+    else if (code==19) { operation=BinaryOperation::ShiftRightSigned; }
+    u64 bits;
+    if (floating) { bits=bootstrap.scalar_fold::float_binary(operation,scalar.width,left,right); }
+    else { bits=bootstrap.scalar_fold::binary(operation,scalar.width,scalar.kind==ScalarKind::Signed ? 1 : 0,left,right); }
+    return FoldedCast(bits,1);
+}
+extern "C" ValueBinaryOutcome expand_binary_value(ValueBinaryInput input,ValueBinaryEmitter emitter) on cpu
+    requires nonzero(emitter.divisor) requires nonzero(emitter.divide)
+    requires nonzero(emitter.constant) requires nonzero(emitter.action) {
+    bool folded=input.left.constant_present!=0 && input.right.constant_present!=0;
+    usize index=0u64;
+    if (folded) {
+        emitter.action(emitter.context,ValueBinaryStep(ValueBinaryAction::BeginConstants,0u64,0u64,0u64,0u64));
+        while (index<input.count) {
+            usize ai=input.left.constant_count==1u64 ? 0u64 : index;
+            usize bi=input.right.constant_count==1u64 ? 0u64 : index;
+            u64 left=unsafe_position<u64>(unsafe_address(address_bits(input.left.constants)+u64(ai)*8u64));
+            u64 right=unsafe_position<u64>(unsafe_address(address_bits(input.right.constants)+u64(bi)*8u64));
+            FoldedCast result;
+            if (input.divisors_present!=0) {
+                ValueDivisor divisor=emitter.divisor(emitter.context,input.divisor_count==1u64 ? 0u64 : index);
+                if (divisor.constant!=0) { result=FoldedCast(emitter.divide(emitter.context,left,divisor.nonzero),1); }
+                else { result=FoldedCast(0u64,0); }
+            } else { result=numeric_binary_fold(input.operation,input.scalar,left,right); }
+            if (result.present==0) {
+                emitter.action(emitter.context,ValueBinaryStep(ValueBinaryAction::DiscardConstants,0u64,0u64,0u64,0u64));
+                folded=false;break;
+            }
+            emitter.constant(emitter.context,result.bits);index+=1u64;
+        }
+    }
+    ValueBinaryAction proof=input.operation>=8 && input.operation<=13 ? ValueBinaryAction::ComparisonProof : ValueBinaryAction::ArithmeticProof;
+    emitter.action(emitter.context,ValueBinaryStep(proof,0u64,0u64,0u64,0u64));
+    bool known=false;
+    if (!folded && input.comparison!=0) {
+        known=emitter.action(emitter.context,ValueBinaryStep(ValueBinaryAction::KnownComparison,0u64,0u64,0u64,0u64))!=0u64;
+    }
+    if (folded || known) {
+        ValueBinaryAction action=folded ? ValueBinaryAction::FoldConstantValue : ValueBinaryAction::KnownConstantValue;
+        usize emitted=emitter.action(emitter.context,ValueBinaryStep(action,0u64,0u64,0u64,0u64));
+        index=0u64;
+        while (index<emitted) {
+            usize left=folded ? input.left.constant_count : input.left.registers;
+            usize right=folded ? input.right.constant_count : input.right.registers;
+            ValueBinaryAction origin=folded ? ValueBinaryAction::ConstantOrigin : ValueBinaryAction::KnownOrigin;
+            emitter.action(emitter.context,ValueBinaryStep(origin,index,left==1u64 ? 0u64 : index,right==1u64 ? 0u64 : index,0u64));
+            index+=1u64;
+        }
+        return ValueBinaryOutcome::Constant;
+    }
+    index=0u64;
+    while (index<input.count) {
+        usize di=input.divisor_count==1u64 ? 0u64 : index;
+        ValueBinaryAction action=ValueBinaryAction::Binary;
+        if (input.divisors_present!=0) {
+            ValueDivisor divisor=emitter.divisor(emitter.context,di);
+            if (input.scalar.kind==ScalarKind::Signed && divisor.constant!=0 &&
+                divisor.bits==(18446744073709551615u64 >> u64(64-input.scalar.width))) {
+                action=input.remainder!=0 ? ValueBinaryAction::Zero : ValueBinaryAction::Negate;
+            } else { action=input.remainder!=0 ? ValueBinaryAction::Remainder : ValueBinaryAction::Quotient; }
+        }
+        usize instruction=emitter.action(emitter.context,ValueBinaryStep(action,index,
+            input.left.registers==1u64 ? 0u64 : index,input.right.registers==1u64 ? 0u64 : index,di));
+        if (input.scalar.kind==ScalarKind::Float) {
+            emitter.action(emitter.context,ValueBinaryStep(ValueBinaryAction::PreserveFloat,index,instruction,0u64,0u64));
+        }
+        index+=1u64;
+    }
+    emitter.action(emitter.context,ValueBinaryStep(ValueBinaryAction::FinishRegisters,0u64,0u64,0u64,0u64));
+    emitter.action(emitter.context,ValueBinaryStep(ValueBinaryAction::ObserveInteger,0u64,0u64,0u64,0u64));
+    return ValueBinaryOutcome::Registers;
+}
