@@ -197,3 +197,25 @@ struct ConversionEmitter {
 };
 extern "C" ConversionOutcome convert_value(ConversionInput input,ConversionEmitter emitter) on cpu
     requires nonzero(emitter.source) requires nonzero(emitter.constant) requires nonzero(emitter.action);
+
+
+enum MathPath:u32 { Floating=0; Minimum=1; Maximum=2; };
+struct MathPreparation { u32 status; MathPath path; u32 pair; };
+extern "C" MathPreparation prepare_math(usize arity,u32 extremum,usize count,MathQueries queries) on cpu
+    requires nonzero(queries.numeric) requires nonzero(queries.argument);
+extern "C" MathShape math_shape(MathPath path,usize count,MathQueries queries) on cpu
+    requires nonzero(queries.argument) requires nonzero(queries.width);
+enum MathAction:u32 {
+    IntegerProof=0; IntegerConstant=1; KnownOrigin=2; CompareMinimum=3; CompareMaximum=4;
+    Select=5; FloatBegin=6; FloatInput=7; FloatEnd=8; FloatingProof=9;
+};
+struct MathValueFacts { usize width; u32 literal; u32 uniform; };
+struct MathStep { MathAction action; usize component; usize left; usize right; };
+struct MathEmitter {
+    address context;
+    cfn<MathValueFacts,address,usize> ensures memory(read) value;
+    cfn<usize,address,MathStep> action;
+};
+struct MathOutcome { u32 constant; u32 literal; u32 uniform; };
+extern "C" MathOutcome expand_math(MathPath path,usize count,usize width,MathEmitter emitter) on cpu
+    requires nonzero(emitter.value) requires nonzero(emitter.action);

@@ -741,3 +741,62 @@ extern "C" ConversionOutcome convert_value(ConversionInput input,ConversionEmitt
     }
     return ConversionOutcome::Registers;
 }
+
+
+extern "C" MathPreparation prepare_math(usize arity,u32 extremum,usize count,MathQueries queries) on cpu
+    requires nonzero(queries.numeric) requires nonzero(queries.argument) {
+    if (count!=arity) { return MathPreparation(1,MathPath::Floating,0); }
+    u32 integer=integer_math(extremum,count,queries);
+    MathPath path=MathPath::Floating;
+    if (integer==1) { path=MathPath::Minimum; }
+    else if (integer==2) { path=MathPath::Maximum; }
+    return MathPreparation(0,path,count==2u64 ? 1 : 0);
+}
+extern "C" MathShape math_shape(MathPath path,usize count,MathQueries queries) on cpu
+    requires nonzero(queries.argument) requires nonzero(queries.width) {
+    if (path==MathPath::Floating) { return floating_math(count,queries); }
+    usize first=queries.width(queries.context,0u64);usize second=queries.width(queries.context,1u64);
+    return MathShape(0,queries.argument(queries.context,0u64).scalar,first>second ? first : second);
+}
+extern "C" MathOutcome expand_math(MathPath path,usize count,usize width,MathEmitter emitter) on cpu
+    requires nonzero(emitter.value) requires nonzero(emitter.action) {
+    if (path!=MathPath::Floating) {
+        MathValueFacts left=emitter.value(emitter.context,0u64);MathValueFacts right=emitter.value(emitter.context,1u64);
+        u32 literal=left.literal!=0 && right.literal!=0 ? 1 : 0;
+        if (emitter.action(emitter.context,MathStep(MathAction::IntegerProof,0u64,0u64,0u64))!=0u64) {
+            usize emitted=emitter.action(emitter.context,MathStep(MathAction::IntegerConstant,0u64,0u64,0u64));
+            usize index=0u64;
+            while (index<emitted) {
+                emitter.action(emitter.context,MathStep(MathAction::KnownOrigin,index,left.width==1u64 ? 0u64 : index,right.width==1u64 ? 0u64 : index));
+                index+=1u64;
+            }
+            return MathOutcome(1,literal,1);
+        }
+        MathAction comparison=path==MathPath::Minimum ? MathAction::CompareMinimum : MathAction::CompareMaximum;
+        emitter.action(emitter.context,MathStep(comparison,0u64,0u64,0u64));
+        usize index=0u64;
+        while (index<width) {
+            emitter.action(emitter.context,MathStep(MathAction::Select,index,left.width==1u64 ? 0u64 : index,right.width==1u64 ? 0u64 : index));
+            index+=1u64;
+        }
+        return MathOutcome(0,literal,left.uniform!=0 && right.uniform!=0 ? 1 : 0);
+    }
+    bool uniform=true;usize argument=0u64;
+    while (argument<count) {
+        if (emitter.value(emitter.context,argument).uniform==0) { uniform=false;break; }
+        argument+=1u64;
+    }
+    usize index=0u64;
+    while (index<width) {
+        emitter.action(emitter.context,MathStep(MathAction::FloatBegin,index,0u64,0u64));
+        argument=0u64;
+        while (argument<count) {
+            MathValueFacts value=emitter.value(emitter.context,argument);
+            emitter.action(emitter.context,MathStep(MathAction::FloatInput,index,argument,value.width==1u64 ? 0u64 : index));
+            argument+=1u64;
+        }
+        emitter.action(emitter.context,MathStep(MathAction::FloatEnd,index,0u64,0u64));index+=1u64;
+    }
+    emitter.action(emitter.context,MathStep(MathAction::FloatingProof,0u64,0u64,0u64));
+    return MathOutcome(0,0,uniform ? 1 : 0);
+}

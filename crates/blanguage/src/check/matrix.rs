@@ -123,7 +123,7 @@ impl MatrixValues<'_, '_> {
             MatrixAction::Divide => ("/", BinaryOp::FDiv),
         };
         let right = self.operand(step.right);
-        self.builder.lower_numeric_binary(token, Ty::scalar(Scalar::F32), left, right,
+        self.builder.lower_numeric_binary(token, Ty::scalar(Scalar::F32), &left, &right,
             Scalar::F32, false, Some(operation), false, None, None)
     }
 }

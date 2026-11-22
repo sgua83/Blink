@@ -32,21 +32,6 @@ impl MathContext<'_> {
         MathQueries { context:std::ptr::from_ref(self).cast(),numeric:math_numeric,argument:math_argument,width:math_width }
     }
 }
-unsafe extern "C" {
-    #[link_name="bootstrap.operator_types::integer_math"]
-    fn source_integer_math(extremum:u32,count:usize,queries:MathQueries)->u32;
-    #[link_name="bootstrap.operator_types::floating_math"]
-    fn source_floating_math(count:usize,queries:MathQueries)->MathShape;
-}
-pub(super) fn integer_math(extremum:u32,values:&[Value])->u32 {
-    let context=MathContext { values };
-    unsafe { source_integer_math(extremum,values.len(),context.queries()) }
-}
-pub(super) fn floating_math(values:&[Value])->Option<(Scalar,usize)> {
-    let context=MathContext { values };
-    let shape=unsafe { source_floating_math(values.len(),context.queries()) };
-    (shape.status==0).then(||(SCALARS[shape.scalar as usize],shape.width))
-}
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -253,7 +238,7 @@ struct GeometryValues<'a,'w> {
 impl GeometryValues<'_,'_> {
     fn binary(&mut self,token:&str,operation:BinaryOp,left:Value,right:GeometryOperand,width:usize)->Value {
         let right=self.operand(right);
-        self.builder.lower_numeric_binary(token,Ty::vector(Scalar::F32,width),left,right,
+        self.builder.lower_numeric_binary(token,Ty::vector(Scalar::F32,width),&left,&right,
             Scalar::F32,false,Some(operation),false,None,None)
     }
     fn operand(&mut self,operand:GeometryOperand)->Value {
@@ -609,5 +594,128 @@ impl Builder<'_> {
             BitcastStatus::Type=>return self.fail(span,"B154",format!("{name} 需要对应位宽的数值标量；32位也接受向量")),
         }
         Ok(self.convert_value(ConversionMode::Bitcast,values.into_iter().next().unwrap(),SCALARS[plan.target as usize]))
+    }
+}
+
+
+#[repr(u32)]
+#[derive(Clone,Copy,PartialEq,Eq)]
+pub(super) enum MathPath { Floating,Minimum,Maximum }
+#[repr(C)]
+struct MathPreparation { status:u32,path:MathPath,pair:u32 }
+#[repr(u32)]
+enum MathAction { IntegerProof,IntegerConstant,KnownOrigin,CompareMinimum,CompareMaximum,Select,FloatBegin,FloatInput,FloatEnd,FloatingProof }
+#[repr(C)]
+struct MathValueFacts { width:usize,literal:u32,uniform:u32 }
+#[repr(C)]
+struct MathStep { action:MathAction,component:usize,left:usize,right:usize }
+#[repr(C)]
+struct MathEmitter<'a,'w> {
+    context:*mut MathValues<'a,'w>,
+    value:unsafe extern "C" fn(*const MathValues<'a,'w>,usize)->MathValueFacts,
+    action:unsafe extern "C" fn(*mut MathValues<'a,'w>,MathStep)->usize,
+}
+#[repr(C)]
+struct MathOutcome { constant:u32,literal:u32,uniform:u32 }
+unsafe extern "C" {
+    #[link_name="bootstrap.operator_types::prepare_math"]
+    fn prepare_math(arity:usize,extremum:u32,count:usize,queries:MathQueries)->MathPreparation;
+    #[link_name="bootstrap.operator_types::math_shape"]
+    fn source_math_shape(path:MathPath,count:usize,queries:MathQueries)->MathShape;
+    #[link_name="bootstrap.operator_types::expand_math"]
+    fn expand_math(path:MathPath,count:usize,width:usize,emitter:MathEmitter<'_,'_>)->MathOutcome;
+}
+struct MathValues<'a,'w> {
+    builder:&'a mut Builder<'w>,name:&'a str,args:Vec<Value>,operation:Option<MathOp>,scalar:Scalar,width:usize,
+    ty:Option<Ty>,proof:Option<bounds::Proof>,known:Option<Vec<(Bits,IntegerKnownValueBasis)>>,
+    comparison:Option<Value>,registers:Vec<Reg>,current:Vec<Reg>,pending:Option<Reg>,first:usize,output:Option<Value>,
+}
+unsafe extern "C" fn math_value_facts(context:*const MathValues<'_,'_>,index:usize)->MathValueFacts {
+    let value=&unsafe { &*context }.args[index];
+    MathValueFacts { width:value.regs.len(),literal:u32::from(value.literal),uniform:u32::from(value.uniform) }
+}
+unsafe extern "C" fn math_action(context:*mut MathValues<'_,'_>,step:MathStep)->usize {
+    let values=unsafe { &mut *context };
+    match step.action {
+        MathAction::IntegerProof=>{
+            let proof=bounds::arithmetic(values.builder,values.name,&values.args[0],&values.args[1]);
+            values.known=proof.known_integer_value(values.ty.as_ref().unwrap());values.proof=Some(proof);
+            return usize::from(values.known.is_some());
+        },
+        MathAction::IntegerConstant=>{
+            values.first=values.builder.code.len();
+            let bits=values.known.as_ref().unwrap().iter().map(|(bits,_)|*bits).collect();
+            let mut value=values.builder.constant_value(values.ty.take().unwrap(),bits,None);
+            value.proof=values.proof.take().unwrap();values.output=Some(value);
+            return values.builder.code.len()-values.first;
+        },
+        MathAction::KnownOrigin=>{
+            let (result_bits,basis)=values.known.as_ref().unwrap()[step.component];
+            let a=&values.args[0];let b=&values.args[1];let ai=step.left;let bi=step.right;
+            let inst=&mut values.builder.code[values.first+step.component];
+            inst.generated_origin=Some(Arc::new(GeneratedOrigin {
+                reason:GenerationReason::MinmaxKnownValue,
+                trigger:Some(GenerationAnchor::MinmaxKnownValue {
+                    expression:inst.source_site.clone(),operation:values.name.into(),scalar:values.scalar,
+                    left_ranges:a.component_range_intervals(ai),right_ranges:b.component_range_intervals(bi),
+                    left_constant_present:a.constant.is_some(),right_constant_present:b.constant.is_some(),
+                    same_value:a.same_component(ai,b,bi),result_bits,basis,
+                    left_component_index:ai,left_component_count:a.regs.len(),right_component_index:bi,right_component_count:b.regs.len(),
+                    component_index:step.component,component_count:values.width,
+                }),
+            }));
+        },
+        MathAction::CompareMinimum|MathAction::CompareMaximum=>{
+            let (name,comparison)=match step.action {MathAction::CompareMinimum=>("<",Comparison::Less),_=>(">",Comparison::Greater)};
+            values.comparison=Some(values.builder.lower_numeric_binary(name,Ty::vector(Scalar::Bool,values.width),
+                &values.args[0],&values.args[1],values.scalar,true,Some(BinaryOp::Compare(comparison)),false,None,None));
+        },
+        MathAction::Select=>{
+            let dst=values.builder.reg(values.scalar);
+            values.builder.emit(InstKind::Select { dst,condition:values.comparison.as_ref().unwrap().regs[step.component],
+                a:values.args[0].regs[step.left],b:values.args[1].regs[step.right] });values.registers.push(dst);
+        },
+        MathAction::FloatBegin=>{
+            values.pending=Some(values.builder.reg(values.scalar));values.current=Vec::with_capacity(values.args.len());
+        },
+        MathAction::FloatInput=>values.current.push(values.args[step.left].regs[step.right]),
+        MathAction::FloatEnd=>{
+            let dst=values.pending.take().unwrap();
+            values.builder.emit(InstKind::Math { dst,op:values.operation.unwrap(),args:std::mem::take(&mut values.current) });
+            values.registers.push(dst);
+        },
+        MathAction::FloatingProof=>values.proof=Some(bounds::math(values.operation.unwrap(),&values.args)),
+    }
+    0
+}
+impl Builder<'_> {
+    pub(super) fn math_value(&mut self,name:&str,signature:MathSignature,mut args:Vec<Value>,span:Span)->Result<Value> {
+        let context=MathContext { values:&args };
+        let preparation=unsafe { prepare_math(signature.arity as usize,signature.extremum,args.len(),context.queries()) };
+        if preparation.status!=0 { return self.fail(span,"B153",format!("{name} 需要 {} 个参数",signature.arity)); }
+        if preparation.pair!=0 {
+            let b=args.pop().unwrap();let a=args.pop().unwrap();
+            let (a,b)=self.numeric_operands(a,b,span)?;args.push(a);args.push(b);
+        }
+        let context=MathContext { values:&args };
+        let shape=unsafe { source_math_shape(preparation.path,args.len(),context.queries()) };
+        if shape.status!=0 { return self.fail(span,"B154",format!("{name} 需要相同浮点类型；f32 向量须维度相容")); }
+        let operation=if preparation.path==MathPath::Floating {
+            Some(signature.operation().ok_or_else(||Diagnostic {source:self.scope.source().clone(),span,code:"B179",message:format!("未知数学运算 {name}")})?)
+        } else {None};
+        Ok(self.expand_math_value(name,preparation.path,operation,args,SCALARS[shape.scalar as usize],shape.width))
+    }
+    pub(super) fn floating_math_value(&mut self,operation:MathOp,args:Vec<Value>,scalar:Scalar,width:usize)->Value {
+        self.expand_math_value("",MathPath::Floating,Some(operation),args,scalar,width)
+    }
+    fn expand_math_value(&mut self,name:&str,path:MathPath,operation:Option<MathOp>,args:Vec<Value>,scalar:Scalar,width:usize)->Value {
+        let count=args.len();
+        let mut values=MathValues { builder:self,name,args,operation,scalar,width,ty:Some(Ty::vector(scalar,width)),proof:None,known:None,
+            comparison:None,registers:Vec::new(),current:Vec::new(),pending:None,first:0,output:None };
+        let outcome=unsafe { expand_math(path,count,width,MathEmitter {context:&mut values,value:math_value_facts,action:math_action}) };
+        if outcome.constant!=0 {
+            let mut value=values.output.unwrap();value.literal=outcome.literal!=0;value.uniform=outcome.uniform!=0;value
+        } else { Value {proof:values.proof.unwrap(),literal:outcome.literal!=0,ty:values.ty.unwrap(),regs:values.registers,
+            uniform:outcome.uniform!=0,constant:None} }
     }
 }

@@ -2792,12 +2792,12 @@ impl<'a> Builder<'a> {
         } else {
             None
         };
-        Ok(self.lower_numeric_binary(op, ty, a, b, scalar, comparison, operation, literal,
+        Ok(self.lower_numeric_binary(op, ty, &a, &b, scalar, comparison, operation, literal,
             divisors, generated_origin))
     }
 
     fn lower_numeric_binary(
-        &mut self, op: &str, ty: Ty, a: Value, b: Value, scalar: Scalar,
+        &mut self, op: &str, ty: Ty, a: &Value, b: &Value, scalar: Scalar,
         comparison: bool, operation: Option<BinaryOp>, literal: bool,
         divisors: Option<Vec<IntegerDivisor>>, generated_origin: Option<Arc<GeneratedOrigin>>,
     ) -> Value {
@@ -2826,9 +2826,9 @@ impl<'a> Builder<'a> {
             });
         let constant_fold = constant.is_some();
         let proof = if let Some(BinaryOp::Compare(op)) = operation {
-            bounds::Proof::comparison(op, &a, &b)
+            bounds::Proof::comparison(op, a, b)
         } else {
-            bounds::arithmetic(self, op, &a, &b)
+            bounds::arithmetic(self, op, a, b)
         };
         let known_comparison = if !constant_fold && comparison { proof.known_boolean_value(n) } else { None };
         let constant = constant.or_else(|| known_comparison.as_ref().map(|known| known.iter().map(|(bits, _)| *bits).collect()));
@@ -2908,7 +2908,7 @@ impl<'a> Builder<'a> {
             else { self.emit(kind); }
             if scalar.is_float() {
                 self.code[instruction].float_preserve =
-                    proof.binary_requires_float_preserve(scalar, i, &a, &b, comparison);
+                    proof.binary_requires_float_preserve(scalar, i, a, b, comparison);
             }
             regs.push(dst);
         }
@@ -2920,110 +2920,14 @@ impl<'a> Builder<'a> {
             uniform: a.uniform && b.uniform,
             constant: None,
         };
-        self.observe_integer_binary(op, &a, &b, &mut value);
+        self.observe_integer_binary(op, a, b, &mut value);
         value
     }
-    fn math(&mut self, op: &str, signature:operators::MathSignature, mut args: Vec<Value>, span: Span) -> Result<Value> {
-        let arity=signature.arity as usize;
-        if args.len() != arity {
-            return self.fail(span, "B153", format!("{op} 需要 {arity} 个参数"));
-        }
-        let integer=operators::integer_math(signature.extremum,&args);
-        if integer!=0 {
-            let mut args = args.into_iter();
-            let (a, b) = self.numeric_operands(args.next().unwrap(), args.next().unwrap(), span)?;
-            let n = a.regs.len().max(b.regs.len());
-            let scalar = a.ty.components[0].0;
-            let ty = Ty::vector(scalar, n);
-            let proof = bounds::arithmetic(self, op, &a, &b);
-            let literal = a.literal && b.literal;
-            if let Some(known) = proof.known_integer_value(&ty) {
-                let first = self.code.len();
-                let mut value = self.constant_value(ty, known.iter().map(|(bits, _)| *bits).collect(),None);
-                for (component_index, (inst, (result_bits, basis))) in self.code[first..].iter_mut().zip(known).enumerate() {
-                    let ai = component_index % a.regs.len();
-                    let bi = component_index % b.regs.len();
-                    inst.generated_origin = Some(Arc::new(GeneratedOrigin {
-                        reason: GenerationReason::MinmaxKnownValue,
-                        trigger: Some(GenerationAnchor::MinmaxKnownValue {
-                            expression: inst.source_site.clone(), operation: op.into(), scalar,
-                            left_ranges: a.component_range_intervals(ai), right_ranges: b.component_range_intervals(bi),
-                            left_constant_present: a.constant.is_some(), right_constant_present: b.constant.is_some(),
-                            same_value: a.same_component(ai, &b, bi), result_bits, basis,
-                            left_component_index: ai, left_component_count: a.regs.len(),
-                            right_component_index: bi, right_component_count: b.regs.len(),
-                            component_index, component_count: n,
-                        }),
-                    }));
-                }
-                value.proof = proof;
-                value.literal = literal;
-                return Ok(value);
-            }
-            let comparison = self.binary(
-                if integer==1 { "<" } else { ">" },
-                a.clone(),
-                b.clone(),
-                span,
-                None,
-            )?;
-            let mut regs = Vec::with_capacity(n);
-            for i in 0..n {
-                let dst = self.reg(scalar);
-                self.emit(InstKind::Select {
-                    dst,
-                    condition: comparison.regs[i],
-                    a: a.regs[i % a.regs.len()],
-                    b: b.regs[i % b.regs.len()],
-                });
-                regs.push(dst);
-            }
-            return Ok(Value {
-                proof,
-                literal,
-                ty,
-                regs,
-                uniform: a.uniform && b.uniform,
-                constant: None,
-            });
-        }
-        if args.len() == 2 {
-            let b = args.pop().unwrap();
-            let a = args.pop().unwrap();
-            let (a,b) = self.numeric_operands(a,b,span)?;
-            args = vec![a,b];
-        }
-        let Some((scalar,n))=operators::floating_math(&args) else {
-            return self.fail(span,"B154",format!("{op} 需要相同浮点类型；f32 向量须维度相容"));
-        };
-        let operation = signature.operation().ok_or_else(|| Diagnostic {
-            source: self.scope.source().clone(),
-            span,
-            code: "B179",
-            message: format!("未知数学运算 {op}"),
-        })?;
-        Ok(self.lower_math(operation,args,scalar,n))
+    fn math(&mut self,name:&str,signature:operators::MathSignature,args:Vec<Value>,span:Span)->Result<Value> {
+        self.math_value(name,signature,args,span)
     }
-    fn lower_math(&mut self,operation:MathOp,args:Vec<Value>,scalar:Scalar,n:usize)->Value {
-        let uniform=args.iter().all(|value|value.uniform);
-        let mut regs = Vec::new();
-        for i in 0..n {
-            let dst = self.reg(scalar);
-            self.emit(InstKind::Math {
-                dst,
-                op: operation,
-                args: args.iter().map(|a| a.regs[i % a.regs.len()]).collect(),
-            });
-            regs.push(dst);
-        }
-        Value {
-            proof: bounds::math(operation, &args),
-            literal: false,
-            ty: Ty::vector(scalar, n),
-            regs,
-            uniform,
-            constant: None,
-        }
+    fn lower_math(&mut self,operation:MathOp,args:Vec<Value>,scalar:Scalar,width:usize)->Value {
+        self.floating_math_value(operation,args,scalar,width)
     }
     async fn builtin_call(&mut self, name: &str, args: &Expressions, span: Span, record:Option<Option<Ty>>) -> Result<Option<Value>> {
         if name == "c_function" { return unsafe { self.world.call(self.c_function_value(args, span)).await }.map(Some); }
