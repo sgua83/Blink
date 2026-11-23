@@ -836,52 +836,7 @@ async fn expand_stages(
                     program.native_frame = Some(offset);
                     program.uniform_bytes = offset + 8;
                 }
-                for (&binding, written) in &stage.write_regions {
-                    let output = if access[&binding] == Access::Atomic {
-                        facts.elements.get(&binding).map(|old| {
-                            let ty = &program.buffers[binding].ty;
-                            let mut output = old.clone();
-                            for (component, &(scalar, offset)) in ty.components.iter().enumerate() {
-                                let mut value = old.project(&[component], ty.components.len());
-                                for (&(start, end), stored) in &memory_regions[&binding].1 {
-                                    if u64::from(offset) < u64::from(end)
-                                        && u64::from(start) < u64::from(offset) + u64::from(scalar.size())
-                                    {
-                                        if start == offset && u64::from(end) == u64::from(offset) + u64::from(scalar.size())
-                                            && let Some(stored) = stored
-                                        {
-                                            value.join(stored, 1, None);
-                                        } else {
-                                            value.forget_value(&[0], 1);
-                                        }
-                                    }
-                                }
-                                output.assign_elements(&[component], ty.components.len(), &value);
-                            }
-                            output
-                        })
-                    } else if prefix.is_none() && selection.is_none()
-                        && access[&binding] != Access::Atomic
-                        && !appends.iter().any(|(target, count)| *target == binding || count.binding == binding)
-                    {
-                        elements.values().find_map(|value| match value {
-                            Binding::Owned(OwnedBinding { place: Place::Element { binding: target, index: current, ty, .. }, proof, .. })
-                                if *target == binding && *current == index && *ty == program.buffers[binding].ty =>
-                                Some(proof.element_facts(|target| bounds::Proof::default()
-                                    .with_domains(Domains::from([IndexDomain::Data(target)])))),
-                            _ => None,
-                        })
-                    } else { None };
-                    for &(start, end) in written { facts.written(program, binding, start, end, output.as_ref()); }
-                    if let Some(output) = output {
-                        stage.element_guarantees.extend(output.element_guarantees(binding, &program.buffers[binding].ty,
-                            |offset, bytes| written.iter().any(|&(start, end)|
-                                u64::from(offset) < u64::from(end) && u64::from(start) < u64::from(offset) + u64::from(bytes))));
-                    }
-                }
-                for &relation in &stage.prefix_guarantees {
-                    facts.grant(relation);
-                }
+                parallel_stage_facts(program,facts,&mut stage,&access,&appends,&elements,&memory_regions,index);
                 program.stages.push(stage);
             }
             StmtKind::Expr(expression) => {
@@ -1099,6 +1054,64 @@ async fn expand_stage_control(
         StageControlNeed::Return=>return Ok(Some((true,first_stage))),
         StageControlNeed::Complete=>return Ok(Some((false,first_stage))),
     }step=unsafe{stage_control_step(cursor,statement.signature_node(),StageControlFacts{..control})};}
+}
+
+type StageMemoryRegions=BTreeMap<usize,(BTreeSet<(bool,u32,u32)>,BTreeMap<(u32,u32),Option<Box<bounds::Proof>>>)>;
+
+fn parallel_output(
+    program:&Program,facts:&prefix::Facts,binding:usize,access:Access,index:Reg,prefix:bool,selection:bool,
+    appends:&BTreeMap<usize,PrefixCount>,elements:&BTreeMap<String,Binding>,memory_regions:&StageMemoryRegions,
+)->Option<bounds::Proof> {
+    let ty=&program.buffers[binding].ty;let mut cursor=EnvironmentCursor{index:0,part:0,phase:0};
+    let mut control=ParallelOutputFacts{items:0,components:0,regions:0,binding:binding as u64,expected_index:index as u64,source_binding:0,source_index:0,append_output:0,append_count:0,access:access as u32,prefix:u32::from(prefix),selection:u32::from(selection),present:0,same_type:0,offset:0,bytes:0,start:0,end:0,stored:0};
+    let mut old=None;let mut output=None;let mut value=None;let mut regions=None;let mut stored=None;let mut appending=None;let mut entries=None;let mut element:Option<&OwnedBinding>=None;
+    loop {let step=unsafe{parallel_output_step(cursor,ParallelOutputFacts{..control})};cursor=step.cursor;match step.need {
+        ParallelOutputNeed::Old=>{old=facts.elements.get(&binding);control.present=u32::from(old.is_some());},
+        ParallelOutputNeed::Atomic=>{output=Some(old.unwrap().clone());control.components=ty.components.len()as u64;control.regions=memory_regions[&binding].1.len()as u64;},
+        ParallelOutputNeed::Component=>{
+            let(scalar,offset)=ty.components[cursor.index as usize];control.offset=offset;control.bytes=scalar.size();
+            value=Some(old.unwrap().project(&[cursor.index as usize],ty.components.len()));regions=Some(memory_regions[&binding].1.iter());
+        },
+        ParallelOutputNeed::Region=>{let(&(start,end),proof)=regions.as_mut().unwrap().next().unwrap();control.start=start;control.end=end;control.stored=u32::from(proof.is_some());stored=proof.as_deref();},
+        ParallelOutputNeed::Join=>{value.as_mut().unwrap().join(stored.unwrap(),1,None);},
+        ParallelOutputNeed::Forget=>{value.as_mut().unwrap().forget_value(&[0],1);},
+        ParallelOutputNeed::Assign=>{output.as_mut().unwrap().assign_elements(&[cursor.index as usize],ty.components.len(),value.as_ref().unwrap());value.take();regions.take();stored.take();},
+        ParallelOutputNeed::Appends=>{control.items=appends.len()as u64;appending=Some(appends.iter());},
+        ParallelOutputNeed::Append=>{let(&target,count)=appending.as_mut().unwrap().next().unwrap();control.append_output=target as u64;control.append_count=count.binding as u64;},
+        ParallelOutputNeed::Elements=>{appending.take();control.items=elements.len()as u64;entries=Some(elements.values());},
+        ParallelOutputNeed::Element=>{
+            let candidate=entries.as_mut().unwrap().next().unwrap();element=match candidate {
+                Binding::Owned(owner)=>match &owner.place{Place::Element{binding,index,..}=>{control.source_binding=*binding as u64;control.source_index=*index as u64;Some(owner)},_=>None},
+                _=>None,
+            };control.present=u32::from(element.is_some());
+        },
+        ParallelOutputNeed::Type=>control.same_type=u32::from(element.unwrap().place.ty()==ty),
+        ParallelOutputNeed::Proof=>output=Some(element.unwrap().proof.element_facts(|target|bounds::Proof::default().with_domains(Domains::from([IndexDomain::Data(target)])))),
+        ParallelOutputNeed::Complete=>return output,
+    }}
+}
+
+unsafe extern "C" fn next_written_region(context:*mut std::ffi::c_void)->WrittenRegion {
+    let entries=unsafe{&mut *context.cast::<std::collections::btree_set::Iter<'_,(u32,u32)>>()};let &(start,end)=entries.next().unwrap();WrittenRegion{start,end}
+}
+fn parallel_stage_facts(
+    program:&Program,facts:&mut prefix::Facts,stage:&mut Stage,access:&BTreeMap<usize,Access>,appends:&BTreeMap<usize,PrefixCount>,
+    elements:&BTreeMap<String,Binding>,memory_regions:&StageMemoryRegions,index:Reg,
+) {
+    let mut cursor=EnvironmentCursor{index:0,part:0,phase:0};let mut control=ParallelEffectsFacts{writes:stage.write_regions.len()as u64,regions:0,guarantees:stage.prefix_guarantees.len()as u64,output:0};
+    let mut bindings=stage.write_regions.iter();let mut binding=0;let mut written=None;let mut regions=None;let mut output=None;
+    loop {let step=unsafe{parallel_effects_step(cursor,ParallelEffectsFacts{..control})};cursor=step.cursor;match step.need {
+        ParallelEffectsNeed::Binding=>{let(&current,words)=bindings.next().unwrap();binding=current;control.regions=words.len()as u64;written=Some(words);regions=Some(words.iter());},
+        ParallelEffectsNeed::Output=>{output=parallel_output(program,facts,binding,access[&binding],index,stage.prefix.is_some(),stage.selection.is_some(),appends,elements,memory_regions);control.output=u32::from(output.is_some());},
+        ParallelEffectsNeed::Written=>{let &(start,end)=regions.as_mut().unwrap().next().unwrap();facts.written(program,binding,start,end,output.as_ref());},
+        ParallelEffectsNeed::Elements=>{
+            let written=written.unwrap();stage.element_guarantees.extend(output.as_ref().unwrap().element_guarantees(binding,&program.buffers[binding].ty,|offset,bytes|{
+                let mut entries=written.iter();unsafe{parallel_written_overlap(offset,bytes,written.len()as u64,std::ptr::from_mut(&mut entries).cast(),next_written_region)!=0}
+            }));
+        },
+        ParallelEffectsNeed::Grant=>facts.grant(stage.prefix_guarantees[cursor.index as usize]),
+        ParallelEffectsNeed::Complete=>return,
+    }}
 }
 
 fn initialize_parallel(b:&mut Builder<'_>,name:&str,domain:usize,access:Access,index:Reg,facts:&prefix::Facts) {
@@ -2709,6 +2722,18 @@ unsafe extern "C"{
 
 #[repr(C)]#[derive(Clone,Copy)]struct SourceValueCursor {phase:u32}
 #[repr(C)]#[derive(Clone,Copy)]struct EnvironmentCursor {index:u64,part:u64,phase:u32}
+#[repr(C)]struct ParallelOutputFacts {items:u64,components:u64,regions:u64,binding:u64,expected_index:u64,source_binding:u64,source_index:u64,append_output:u64,append_count:u64,access:u32,prefix:u32,selection:u32,present:u32,same_type:u32,offset:u32,bytes:u32,start:u32,end:u32,stored:u32}
+#[repr(u32)]enum ParallelOutputNeed {Old,Atomic,Component,Region,Join,Forget,Assign,Appends,Append,Elements,Element,Type,Proof,Complete}
+#[repr(C)]struct ParallelOutputStep {cursor:EnvironmentCursor,need:ParallelOutputNeed}
+#[repr(C)]struct ParallelEffectsFacts {writes:u64,regions:u64,guarantees:u64,output:u32}
+#[repr(u32)]enum ParallelEffectsNeed {Binding,Output,Written,Elements,Grant,Complete}
+#[repr(C)]struct ParallelEffectsStep {cursor:EnvironmentCursor,need:ParallelEffectsNeed}
+#[repr(C)]struct WrittenRegion {start:u32,end:u32}
+unsafe extern "C" {
+    #[link_name="bootstrap.function_body::parallel_output_step"]fn parallel_output_step(state:EnvironmentCursor,facts:ParallelOutputFacts)->ParallelOutputStep;
+    #[link_name="bootstrap.function_body::parallel_effects_step"]fn parallel_effects_step(state:EnvironmentCursor,facts:ParallelEffectsFacts)->ParallelEffectsStep;
+    #[link_name="bootstrap.function_body::parallel_written_overlap"]fn parallel_written_overlap(offset:u32,bytes:u32,count:u64,context:*mut std::ffi::c_void,next:unsafe extern "C" fn(*mut std::ffi::c_void)->WrittenRegion)->u32;
+}
 #[repr(C)]struct RootEnvironmentFacts {roots:u64,components:u64,kind:u32}
 #[repr(u32)]enum RootEnvironmentNeed {Entry,Texture,Acceleration,Data,Literal,BeginUniform,UniformComponent,BindUniform,Complete}
 #[repr(C)]struct RootEnvironmentStep {cursor:EnvironmentCursor,need:RootEnvironmentNeed}

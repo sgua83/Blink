@@ -356,3 +356,14 @@ struct ParallelInitializeFacts {u64 views;u64 components;u64 binding;u64 domain;
 enum ParallelInitializeNeed:u32 {Element=0;View=1;Component=2;Initialized=3;Mark=4;BindElement=5;Reset=6;AliasView=7;SameLength=8;Alias=9;Complete=10;};
 struct ParallelInitializeStep {EnvironmentCursor cursor;ParallelInitializeNeed need;u32 flags;};
 extern "C" ParallelInitializeStep parallel_initialize_step(EnvironmentCursor state,ParallelInitializeFacts facts) on cpu;
+
+struct ParallelOutputFacts {u64 items;u64 components;u64 regions;u64 binding;u64 expected_index;u64 source_binding;u64 source_index;u64 append_output;u64 append_count;u32 access;u32 prefix;u32 selection;u32 present;u32 same_type;u32 offset;u32 bytes;u32 start;u32 end;u32 stored;};
+enum ParallelOutputNeed:u32 {Old=0;Atomic=1;Component=2;Region=3;Join=4;Forget=5;Assign=6;Appends=7;Append=8;Elements=9;Element=10;Type=11;Proof=12;Complete=13;};
+struct ParallelOutputStep {EnvironmentCursor cursor;ParallelOutputNeed need;};
+extern "C" ParallelOutputStep parallel_output_step(EnvironmentCursor state,ParallelOutputFacts facts) on cpu;
+struct ParallelEffectsFacts {u64 writes;u64 regions;u64 guarantees;u32 output;};
+enum ParallelEffectsNeed:u32 {Binding=0;Output=1;Written=2;Elements=3;Grant=4;Complete=5;};
+struct ParallelEffectsStep {EnvironmentCursor cursor;ParallelEffectsNeed need;};
+extern "C" ParallelEffectsStep parallel_effects_step(EnvironmentCursor state,ParallelEffectsFacts facts) on cpu;
+struct WrittenRegion {u32 start;u32 end;};
+extern "C" u32 parallel_written_overlap(u32 offset,u32 bytes,u64 count,address context,cfn<WrittenRegion,address> next) on cpu requires nonzero(next);

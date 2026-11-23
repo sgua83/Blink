@@ -1464,3 +1464,51 @@ extern "C" ParallelInitializeStep parallel_initialize_step(EnvironmentCursor sta
   if(cursor.phase==15){cursor.index+=1u64;cursor.phase=12;}
  }
 }
+
+extern "C" ParallelOutputStep parallel_output_step(EnvironmentCursor state,ParallelOutputFacts facts) on cpu {
+ EnvironmentCursor cursor=state;
+ while(true){
+  if(cursor.phase==0){
+   if(facts.access==4){cursor.phase=1;return ParallelOutputStep(cursor,ParallelOutputNeed::Old);}
+   if(facts.prefix!=0||facts.selection!=0){return ParallelOutputStep(cursor,ParallelOutputNeed::Complete);}
+   cursor.phase=10;return ParallelOutputStep(cursor,ParallelOutputNeed::Appends);
+  }
+  if(cursor.phase==1){if(facts.present==0){return ParallelOutputStep(cursor,ParallelOutputNeed::Complete);}cursor.phase=2;return ParallelOutputStep(cursor,ParallelOutputNeed::Atomic);}
+  if(cursor.phase==2){if(cursor.index<facts.components){cursor.phase=3;return ParallelOutputStep(cursor,ParallelOutputNeed::Component);}return ParallelOutputStep(cursor,ParallelOutputNeed::Complete);}
+  if(cursor.phase==3){cursor.part=0u64;cursor.phase=4;}
+  if(cursor.phase==4){if(cursor.part<facts.regions){cursor.phase=5;return ParallelOutputStep(cursor,ParallelOutputNeed::Region);}cursor.phase=7;return ParallelOutputStep(cursor,ParallelOutputNeed::Assign);}
+  if(cursor.phase==5){
+   if(u64(facts.offset)<u64(facts.end)&&u64(facts.start)<u64(facts.offset)+u64(facts.bytes)){
+    cursor.phase=6;
+    return ParallelOutputStep(cursor,facts.start==facts.offset&&u64(facts.end)==u64(facts.offset)+u64(facts.bytes)&&facts.stored!=0?ParallelOutputNeed::Join:ParallelOutputNeed::Forget);
+   }
+   cursor.part+=1u64;cursor.phase=4;
+  }
+  if(cursor.phase==6){cursor.part+=1u64;cursor.phase=4;}
+  if(cursor.phase==7){cursor.index+=1u64;cursor.phase=2;}
+  if(cursor.phase==10){if(cursor.index<facts.items){cursor.phase=11;return ParallelOutputStep(cursor,ParallelOutputNeed::Append);}cursor.index=0u64;cursor.phase=20;return ParallelOutputStep(cursor,ParallelOutputNeed::Elements);}
+  if(cursor.phase==11){if(facts.append_output==facts.binding||facts.append_count==facts.binding){return ParallelOutputStep(cursor,ParallelOutputNeed::Complete);}cursor.index+=1u64;cursor.phase=10;}
+  if(cursor.phase==20){if(cursor.index<facts.items){cursor.phase=21;return ParallelOutputStep(cursor,ParallelOutputNeed::Element);}return ParallelOutputStep(cursor,ParallelOutputNeed::Complete);}
+  if(cursor.phase==21){if(facts.present!=0&&facts.source_binding==facts.binding&&facts.source_index==facts.expected_index){cursor.phase=22;return ParallelOutputStep(cursor,ParallelOutputNeed::Type);}cursor.index+=1u64;cursor.phase=20;}
+  if(cursor.phase==22){if(facts.same_type!=0){cursor.phase=23;return ParallelOutputStep(cursor,ParallelOutputNeed::Proof);}cursor.index+=1u64;cursor.phase=20;}
+  if(cursor.phase==23){return ParallelOutputStep(cursor,ParallelOutputNeed::Complete);}
+ }
+}
+extern "C" ParallelEffectsStep parallel_effects_step(EnvironmentCursor state,ParallelEffectsFacts facts) on cpu {
+ EnvironmentCursor cursor=state;
+ while(true){
+  if(cursor.phase==0){if(cursor.index<facts.writes){cursor.phase=1;return ParallelEffectsStep(cursor,ParallelEffectsNeed::Binding);}cursor.index=0u64;cursor.phase=10;}
+  if(cursor.phase==1){cursor.phase=2;return ParallelEffectsStep(cursor,ParallelEffectsNeed::Output);}
+  if(cursor.phase==2){cursor.part=0u64;cursor.phase=3;}
+  if(cursor.phase==3){if(cursor.part<facts.regions){cursor.phase=4;return ParallelEffectsStep(cursor,ParallelEffectsNeed::Written);}cursor.phase=6;if(facts.output!=0){return ParallelEffectsStep(cursor,ParallelEffectsNeed::Elements);}}
+  if(cursor.phase==4){cursor.part+=1u64;cursor.phase=3;}
+  if(cursor.phase==6){cursor.index+=1u64;cursor.phase=0;}
+  if(cursor.phase==10){if(cursor.index<facts.guarantees){cursor.phase=11;return ParallelEffectsStep(cursor,ParallelEffectsNeed::Grant);}return ParallelEffectsStep(cursor,ParallelEffectsNeed::Complete);}
+  if(cursor.phase==11){cursor.index+=1u64;cursor.phase=10;}
+ }
+}
+extern "C" u32 parallel_written_overlap(u32 offset,u32 bytes,u64 count,address context,cfn<WrittenRegion,address> next) on cpu requires nonzero(next) {
+ u64 index=0u64;
+ while(index<count){WrittenRegion region=next(context);if(u64(offset)<u64(region.end)&&u64(region.start)<u64(offset)+u64(bytes)){return 1;}index+=1u64;}
+ return 0;
+}
