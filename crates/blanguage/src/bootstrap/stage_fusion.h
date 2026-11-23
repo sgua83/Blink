@@ -12,14 +12,18 @@ extern "C" u64 merge_bindings(address output, u64 left_count, BindingSpan right)
 struct TilePlacement {
     i64 begin;
     i64 end;
+    u64 first;
+    u64 count;
     u64 width;
     u64 plane;
-    u64 slot;
 };
+struct TileMember { u64 storage; u64 owner; u64 byte; u64 slot; };
+struct TilePlanes { address narrow; address wide; };
 
-// Rows are in the original lifetime order. Each scratch plane has capacity
-// for the sum of its row widths. Only assigned slots have been initialized.
-extern "C" void place_tile(address rows, u64 count, address narrow, address wide) on cpu;
+// Each interval owns its original ordered members. Return the actual narrow
+// extent and write slots into those same member rows.
+extern "C" u64 place_tile(address rows, u64 count, address members, address context,
+    cfn<TilePlanes,address,u64,u64> reserve) on cpu requires nonzero(reserve);
 
 struct StageWrite {
     u64 binding;

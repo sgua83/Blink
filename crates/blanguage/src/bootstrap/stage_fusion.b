@@ -37,17 +37,44 @@ address tile_end(address plane, u64 slot) on cpu {
     return unsafe_address(address_bits(plane) + slot * size_of<i64>());
 }
 
-extern "C" void place_tile(address rows, u64 count, address narrow, address wide) on cpu {
-    u64 narrow_used = 0u64;
-    u64 wide_used = 0u64;
+address tile_placement_at(address rows, u64 index) on cpu {
+    return unsafe_address(address_bits(rows) + index * size_of<TilePlacement>());
+}
+
+address tile_member_at(address members, u64 index) on cpu {
+    return unsafe_address(address_bits(members) + index * size_of<TileMember>());
+}
+
+extern "C" u64 place_tile(address rows, u64 count, address members, address context,
+    cfn<TilePlanes,address,u64,u64> reserve) on cpu requires nonzero(reserve) {
+    u64 narrow_capacity = 0u64;
+    u64 wide_capacity = 0u64;
     u64 index = 0u64;
     while (index < count) {
-        address row = unsafe_address(address_bits(rows) + index * size_of<TilePlacement>());
+        address row = tile_placement_at(rows, index);
         TilePlacement item = unsafe_position<TilePlacement>(row);
-        address plane = narrow;
+        let first = unsafe_position<TileMember>(tile_member_at(members, item.first)).byte;
+        let last = unsafe_position<TileMember>(tile_member_at(members, item.first + item.count - 1u64)).byte;
+        let shift = item.plane == 0u64 ? 2u64 : 3u64;
+        item.width = ((last - first) >> shift) + 1u64;
+        unsafe_position<TilePlacement>(row) = item;
+        if (item.plane == 0u64) {
+            narrow_capacity += item.width;
+        } else {
+            wide_capacity += item.width;
+        }
+        index += 1u64;
+    }
+    let planes = reserve(context, narrow_capacity, wide_capacity);
+    u64 narrow_used = 0u64;
+    u64 wide_used = 0u64;
+    index = 0u64;
+    while (index < count) {
+        TilePlacement item = unsafe_position<TilePlacement>(tile_placement_at(rows, index));
+        address plane = planes.narrow;
         u64 used = narrow_used;
         if (item.plane != 0u64) {
-            plane = wide;
+            plane = planes.wide;
             used = wide_used;
         }
         u64 slot = 0u64;
@@ -69,10 +96,19 @@ extern "C" void place_tile(address rows, u64 count, address narrow, address wide
         } else {
             wide_used = used;
         }
-        item.slot = slot;
-        unsafe_position<TilePlacement>(row) = item;
+        let first = unsafe_position<TileMember>(tile_member_at(members, item.first)).byte;
+        let shift = item.plane == 0u64 ? 2u64 : 3u64;
+        u64 member = 0u64;
+        while (member < item.count) {
+            address row = tile_member_at(members, item.first + member);
+            TileMember word = unsafe_position<TileMember>(row);
+            word.slot = slot + ((word.byte - first) >> shift);
+            unsafe_position<TileMember>(row) = word;
+            member += 1u64;
+        }
         index += 1u64;
     }
+    return narrow_used;
 }
 
 address stage_write_at(address writes, u64 index) on cpu {

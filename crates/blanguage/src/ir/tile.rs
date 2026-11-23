@@ -25,15 +25,79 @@ impl SharedWord {
 struct TilePlacement {
     begin: i64,
     end: i64,
+    first: usize,
+    count: usize,
     width: usize,
     plane: usize,
+}
+
+#[cfg(feature = "compiler")]
+impl TilePlacement {
+    fn members<'a>(&self, words: &'a [TileMember]) -> &'a [TileMember] {
+        &words[self.first..self.first + self.count]
+    }
+}
+
+#[cfg(feature = "compiler")]
+#[repr(C)]
+struct TileMember {
+    storage: u64,
+    owner: usize,
+    byte: u64,
     slot: usize,
 }
 
 #[cfg(feature = "compiler")]
+impl From<SharedWord> for TileMember {
+    fn from(word: SharedWord) -> Self {
+        let (storage, owner, byte) = match word {
+            SharedWord::Input { binding, word } => (0, binding, word),
+            SharedWord::Published { tile, word } => (1, tile, word),
+        };
+        Self { storage, owner, byte: u64::from(byte), slot: 0 }
+    }
+}
+
+#[cfg(feature = "compiler")]
+impl TileMember {
+    fn key(&self) -> SharedWord {
+        let word = self.byte as u32;
+        if self.storage == 0 {
+            SharedWord::Input { binding: self.owner, word }
+        } else {
+            SharedWord::Published { tile: self.owner, word }
+        }
+    }
+}
+
+#[cfg(feature = "compiler")]
+#[derive(Default)]
+struct TilePlan {
+    rows: Vec<TilePlacement>,
+    words: Vec<TileMember>,
+    cells: BTreeMap<SharedWord, (Scalar, SharedWord, u32)>,
+    data_words: usize,
+}
+
+#[cfg(feature = "compiler")]
+#[repr(C)]
+struct TilePlanes { narrow: *mut i64, wide: *mut i64 }
+
+#[cfg(feature = "compiler")]
+type TileReserve = unsafe extern "C" fn(*mut std::ffi::c_void, usize, usize) -> TilePlanes;
+
+#[cfg(feature = "compiler")]
 unsafe extern "C" {
     #[link_name = "bootstrap.stage_fusion::place_tile"]
-    fn place_tile(rows: *mut TilePlacement, count: usize, narrow: *mut i64, wide: *mut i64);
+    fn place_tile(rows: *mut TilePlacement, count: usize, words: *mut TileMember,
+        context: *mut std::ffi::c_void, reserve: TileReserve) -> usize;
+}
+
+#[cfg(feature = "compiler")]
+unsafe extern "C" fn reserve_tile_planes(context: *mut std::ffi::c_void, narrow: usize, wide: usize) -> TilePlanes {
+    let planes = unsafe { &mut *context.cast::<[Vec<i64>; 2]>() };
+    *planes = [Vec::with_capacity(narrow), Vec::with_capacity(wide)];
+    TilePlanes { narrow: planes[0].as_mut_ptr(), wide: planes[1].as_mut_ptr() }
 }
 
 #[cfg(feature = "compiler")]
@@ -81,8 +145,31 @@ impl Stage {
     pub(crate) fn tile_layout(
         &self, wide: bool, used: Option<&mut BTreeSet<SharedWord>>,
     ) -> dataflow::TileLayout {
+        let TilePlan { rows, words, cells, .. } = self.tile_placement(wide, used);
+        let mut layout = BTreeMap::new();
+        for row in rows {
+            let unit = [Scalar::U32, Scalar::U64][row.plane];
+            for member in row.members(&words) {
+                let key = member.key();
+                if wide {
+                    // A cell belongs to this key at its low word or the next word.
+                    for (&part, &(_, canonical, byte)) in cells.range(key..).take(2) {
+                        if canonical == key {
+                            layout.insert(part, (unit, member.slot, byte));
+                        }
+                    }
+                } else {
+                    layout.insert(key, (unit, member.slot, 0));
+                }
+            }
+        }
+        layout
+    }
+
+    #[cfg(feature = "compiler")]
+    fn tile_placement(&self, wide: bool, used: Option<&mut BTreeSet<SharedWord>>) -> TilePlan {
         if self.tiles.is_empty() {
-            return BTreeMap::new();
+            return TilePlan::default();
         }
         let dataflow::LayoutFacts { mut last, births, groups } = dataflow::tile_layout_facts(self, used);
         let mut cells = BTreeMap::new();
@@ -119,58 +206,43 @@ impl Stage {
             SharedWord::Input { .. } => -1,
             SharedWord::Published { tile, .. } => births[&tile],
         };
-        let mut units: Vec<_> = groups
-            .into_iter()
-            .map(|group| {
-                let (begin, end) = group.iter().filter_map(|word| {
-                    last.remove(word).map(|end| (birth(*word), end))
-                }).reduce(|(begin, end), (next_begin, next_end)| {
-                    (begin.min(next_begin), end.max(next_end))
-                }).unwrap();
-                (begin, group, end)
-            })
-            .collect();
-        units.extend(last.into_iter().map(|(word, end)| (birth(word), vec![word], end)));
-        units.sort_unstable();
-        let byte = |word: SharedWord| match word {
-            SharedWord::Input { word, .. } | SharedWord::Published { word, .. } => word,
+        let mut rows = Vec::new();
+        let mut words = Vec::new();
+        let mut place = |begin, group: &[SharedWord], end| {
+            let plane = usize::from(wide && cells[&group[0]].0 == Scalar::U64);
+            let first = words.len();
+            words.extend(group.iter().copied().map(TileMember::from));
+            rows.push(TilePlacement { begin, end, first, count: group.len(), width: 0, plane });
         };
-        let mut capacity = [0; 2];
-        let mut placements: Vec<_> = units.iter().map(|(begin, group, end)| {
-            let unit = if wide { cells[&group[0]].0 } else { Scalar::U32 };
-            let width = ((byte(*group.last().unwrap()) - byte(group[0])) / unit.size() + 1) as usize;
-            let plane = usize::from(unit == Scalar::U64);
-            capacity[plane] += width;
-            TilePlacement { begin: *begin, end: *end, width, plane, slot: 0 }
-        }).collect();
-        let mut narrow = Vec::<i64>::with_capacity(capacity[0]);
-        let mut wide_slots = Vec::<i64>::with_capacity(capacity[1]);
-        // B initializes each plane as it assigns rows. A row adds at most its
-        // width to the occupied extent, so the sum of widths bounds all writes.
-        unsafe {
-            place_tile(placements.as_mut_ptr(), placements.len(), narrow.as_mut_ptr(), wide_slots.as_mut_ptr());
+        for group in groups {
+            let (begin, end) = group.iter().filter_map(|word| {
+                last.remove(word).map(|end| (birth(*word), end))
+            }).reduce(|(begin, end), (next_begin, next_end)| {
+                (begin.min(next_begin), end.max(next_end))
+            }).unwrap();
+            place(begin, &group, end);
         }
-        let mut layout = BTreeMap::new();
-        for ((_, group, _), placement) in units.into_iter().zip(placements) {
-            let unit = [Scalar::U32, Scalar::U64][placement.plane];
-            let first = byte(group[0]);
-            for word in group {
-                layout.insert(word, (unit, placement.slot + ((byte(word) - first) / unit.size()) as usize, 0));
-            }
+        for (word, end) in last {
+            place(birth(word), std::slice::from_ref(&word), end);
         }
-        if wide {
-            cells.into_iter().filter_map(|(word, (_, canonical, byte))| {
-                layout.get(&canonical).map(|(unit, slot, _)| (word, (*unit, *slot, byte)))
-            }).collect()
-        } else {
-            layout
-        }
+        rows.sort_unstable_by(|left, right| {
+            left.begin.cmp(&right.begin).then_with(|| {
+                left.members(&words).iter().map(TileMember::key)
+                    .cmp(right.members(&words).iter().map(TileMember::key))
+            }).then_with(|| left.end.cmp(&right.end))
+        });
+        let mut planes = [Vec::<i64>::new(), Vec::new()];
+        let data_words = unsafe {
+            place_tile(rows.as_mut_ptr(), rows.len(), words.as_mut_ptr(),
+                std::ptr::from_mut(&mut planes).cast(), reserve_tile_planes)
+        };
+        TilePlan { rows, words, cells, data_words }
     }
+
     #[cfg(feature = "compiler")]
     pub fn tile_data_bytes(&self) -> u64 {
-        self.tile_layout(false, None).values().map(|(_, slot, _)| slot).max().map_or(0, |slot| {
-            (*slot as u64 + 1) * self.workgroup_width() as u64 * 4
-        })
+        let words = self.tile_placement(false, None).data_words;
+        if words == 0 { 0 } else { words as u64 * self.workgroup_width() as u64 * 4 }
     }
     pub fn tile_scratch_bytes(&self) -> u64 {
         let bytes_per_lane = self
