@@ -7,17 +7,18 @@ pub(super) enum Kind {
     SegmentedScan,
     SegmentedReduce,
 }
+unsafe extern "C" {
+    #[link_name="bootstrap.operator_types::source_custom_reduce"]
+    fn source_custom_reduce(bytes:*const u8,length:usize)->u32;
+}
 impl Kind {
     pub fn from_source(name: &str) -> Option<Self> {
-        Some(match name.strip_suffix("_map").unwrap_or(name) {
-            "reduce" => Self::Reduce,
-            "scan_exclusive" => Self::Scan,
-            "scan_segmented_exclusive" => Self::SegmentedScan,
-            "reduce_segmented" => Self::SegmentedReduce,
-            _ => return None,
-        })
+        match unsafe{source_custom_reduce(name.as_ptr(),name.len())}{
+            1=>Some(Self::Reduce),2=>Some(Self::Scan),3=>Some(Self::SegmentedScan),4=>Some(Self::SegmentedReduce),_=>None,
+        }
     }
 }
+
 async fn function(
     world: &World,
     program: &mut Program,

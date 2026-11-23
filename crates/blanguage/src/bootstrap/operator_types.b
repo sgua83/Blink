@@ -474,6 +474,76 @@ extern "C" AtomicBuiltin source_atomic(address bytes, usize length, bool stateme
     else { return AtomicBuiltin(AtomicSourceKind::Unknown, Access::Value, 0, 0); }
     return AtomicBuiltin(kind, Access::InOut, 3, 2);
 }
+extern "C" AtomicBuiltin source_atomic_name(address bytes,usize length,bool statement) on cpu {
+    if(length>=7u64&&source_spelling(bytes,7u64,"atomic_")){
+        return source_atomic(unsafe_address(address_bits(bytes)+7u64),length-7u64,statement);
+    }
+    return AtomicBuiltin(AtomicSourceKind::Unknown,Access::Value,0,0);
+}
+extern "C" u32 source_custom_reduce(address bytes,usize length) on cpu {
+    usize size=length;
+    if(size>=4u64&&source_spelling(unsafe_address(address_bits(bytes)+u64(size)-4u64),4u64,"_map")){size-=4u64;}
+    if(source_spelling(bytes,size,"reduce")){return 1;}
+    if(source_spelling(bytes,size,"scan_exclusive")){return 2;}
+    if(source_spelling(bytes,size,"scan_segmented_exclusive")){return 3;}
+    if(source_spelling(bytes,size,"reduce_segmented")){return 4;}
+    return 0;
+}
+BuiltinCallStep builtin_call_need(BuiltinCallCursor cursor,BuiltinCallNeed need) on cpu {
+    return BuiltinCallStep(cursor,need,AtomicBuiltin(AtomicSourceKind::Unknown,Access::Value,0,0));
+}
+BuiltinCallStep builtin_call_values(BuiltinCallCursor cursor,address bytes,usize length) on cpu {
+    if(source_spelling(bytes,length,"address_of")){return builtin_call_need(cursor,BuiltinCallNeed::AddressOf);}
+    BuiltinCallCursor c=cursor;c.phase=3;c.index=0u64;
+    return builtin_call_need(c,BuiltinCallNeed::Values);
+}
+extern "C" BuiltinCallStep builtin_call_step(BuiltinCallCursor cursor,BuiltinCallFacts facts,address bytes,usize length) on cpu {
+    BuiltinCallCursor c=cursor;
+    if(c.phase==0){
+        if(source_spelling(bytes,length,"c_function")){return builtin_call_need(c,BuiltinCallNeed::CFunction);}
+        if(source_spelling(bytes,length,"Ok")||source_spelling(bytes,length,"Err")){return builtin_call_need(c,BuiltinCallNeed::ResultContext);}
+        if(source_spelling(bytes,length,"upload")||source_spelling(bytes,length,"download")){return builtin_call_need(c,BuiltinCallNeed::Transfer);}
+        if(source_spelling(bytes,length,"println")){return builtin_call_need(c,BuiltinCallNeed::Println);}
+        if(source_spelling(bytes,length,"texture_sample")){return builtin_call_need(c,BuiltinCallNeed::TextureSample);}
+        if(source_spelling(bytes,length,"append")){return builtin_call_need(c,BuiltinCallNeed::Append);}
+        c.collective=source_collective(bytes,length).form;
+        if(c.collective==CollectiveForm::TileReduce||c.collective==CollectiveForm::TileScan){return builtin_call_need(c,BuiltinCallNeed::TileCollective);}
+        if(source_spelling(bytes,length,"tile_publish")){return builtin_call_need(c,BuiltinCallNeed::TilePublish);}
+        if(source_spelling(bytes,length,"tile_input")){return builtin_call_need(c,BuiltinCallNeed::TileInput);}
+        c.phase=1;return builtin_call_need(c,BuiltinCallNeed::Subgroup);
+    }
+    if(c.phase==1){
+        if(facts.present!=0){return builtin_call_need(c,BuiltinCallNeed::SubgroupResult);}
+        if(source_spelling(bytes,length,"trace_closest")||source_spelling(bytes,length,"trace_any")){return builtin_call_need(c,BuiltinCallNeed::RayQuery);}
+        if(source_spelling(bytes,length,"unsafe_read")){return builtin_call_need(c,BuiltinCallNeed::UnsafeRead);}
+        if(source_spelling(bytes,length,"ordinal")){return builtin_call_need(c,BuiltinCallNeed::Ordinal);}
+        if(source_spelling(bytes,length,"index")){
+            return builtin_call_need(c,facts.count!=0u64||facts.in_function!=0 ? BuiltinCallNeed::IndexScope : BuiltinCallNeed::Index);
+        }
+        if(source_spelling(bytes,length,"bind")||source_spelling(bytes,length,"barrier")||source_spelling(bytes,length,"group_barrier")
+            ||source_spelling(bytes,length,"compact")||source_spelling(bytes,length,"stable_sort_by_key")||source_spelling(bytes,length,"ddx")||source_spelling(bytes,length,"ddy")
+            ||source_custom_reduce(bytes,length)!=0||c.collective==CollectiveForm::Reduce||c.collective==CollectiveForm::SegmentedReduce
+            ||c.collective==CollectiveForm::Scan||c.collective==CollectiveForm::SegmentedScan){return builtin_call_need(c,BuiltinCallNeed::Unsupported);}
+        AtomicBuiltin atomic=source_atomic_name(bytes,length,false);
+        if(atomic.kind==AtomicSourceKind::Store){return builtin_call_need(c,BuiltinCallNeed::AtomicStore);}
+        if(atomic.kind!=AtomicSourceKind::Unknown){return BuiltinCallStep(c,BuiltinCallNeed::Atomic,atomic);}
+        if(source_spelling(bytes,length,"tile_barrier")){return builtin_call_need(c,BuiltinCallNeed::TileBarrier);}
+        if(facts.record==2){return builtin_call_need(c,BuiltinCallNeed::RecordValues);}
+        if(facts.record==0){c.phase=2;return builtin_call_need(c,BuiltinCallNeed::RecordLookup);}
+        return builtin_call_values(c,bytes,length);
+    }
+    if(c.phase==2){
+        if(facts.present!=0){return builtin_call_need(c,BuiltinCallNeed::RecordExpression);}
+        return builtin_call_values(c,bytes,length);
+    }
+    if(c.phase==4){
+        if(facts.present==0){return builtin_call_need(c,BuiltinCallNeed::Empty);}
+        c.phase=5;return builtin_call_need(c,BuiltinCallNeed::ArgumentValue);
+    }
+    if(c.phase==5){c.index+=1u64;c.phase=3;}
+    if(c.index>=facts.count){return builtin_call_need(c,BuiltinCallNeed::ArgumentsComplete);}
+    c.phase=4;return builtin_call_need(c,BuiltinCallNeed::Argument);
+}
 extern "C" bool atomic_order_allowed(AtomicSourceKind kind, u32 order, u32 failure) on cpu {
     // Compiler MemoryOrder encodes acquire in bit 0 and release in bit 1.
     if (kind == AtomicSourceKind::Load) { return (order & 2) == 0; }

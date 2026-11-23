@@ -2488,120 +2488,53 @@ impl<'a> Builder<'a> {
     fn lower_math(&mut self,operation:MathOp,args:Vec<Value>,scalar:Scalar,width:usize)->Value {
         self.floating_math_value(operation,args,scalar,width)
     }
-    async fn builtin_call(&mut self, name: &str, args: &Expressions, span: Span, record:Option<Option<Ty>>) -> Result<Option<Value>> {
-        if name == "c_function" { return unsafe { self.world.call(self.c_function_value(args, span)).await }.map(Some); }
-        if matches!(name, "Ok" | "Err") {
-            return self.fail(
-                span,
-                "B269",
-                "Ok／Err 需要 result<T,E> 上下文或两个显式类型实参",
-            );
-        }
-        if matches!(name, "upload" | "download") {
-            return unsafe { self.world.call(self.application_transfer(name, args, span)).await };
-        }
-        if name == "println" {
-            return unsafe { self.world.call(self.println(args, span)).await };
-        }
-        if name == "texture_sample" {
-            return unsafe { self.world.call(self.texture_sample(args, span)).await };
-        }
-        if name == "append" {
-            return unsafe { self.world.call(self.append(args, span)).await };
-        }
-        let collective = collective::from_source(name);
-        if collective.is_tile() {
-            return self.fail(
-                span,
-                "B205",
-                "tile 集合运算只能作为 parallel 根块的局部变量声明",
-            );
-        }
-        if name == "tile_publish" {
-            return self.fail(
-                span,
-                "B203",
-                "tile_publish 只能作为 parallel 根块的 let 发布声明",
-            );
-        }
-        if name == "tile_input" {
-            return self.fail(
-                span,
-                "B198",
-                "tile_input 只能作为 parallel 开头的 let 输入声明，不能创建普通值或在控制流中构造",
-            );
-        }
-        if let Some(value) = unsafe { self.world.call(self.subgroup(name,args.len(),span,async |builder,index|unsafe { builder.world.call(builder.expr(&args.at(index))).await },|index|args.at(index).span())).await } {
-            return value;
-        }
-        if matches!(name, "trace_closest" | "trace_any") {
-            return unsafe { self.world.call(self.ray_query_call(name, args, span)).await };
-        }
-        if name == "unsafe_read" {
-            return unsafe { self.world.call(self.unsafe_read_call(args, span)).await };
-        }
-        if name == "ordinal" {
-            return self.ordinal_call(args, span);
-        }
-        if name == "index" {
-            if !args.is_empty() || self.in_function {
-                return self.fail(
-                    span,
-                    "B155",
-                    "index() 只能在当前 program 的 parallel 域中使用",
-                );
-            }
-            return Ok(Some(Value {
-                proof: self.path_proof(
-                    &Ty::scalar(Scalar::U32),
-                    self.data_index_proof(self.domain)
-                        .with_domains(Domains::from([IndexDomain::Data(self.domain)])).with_identity(ValueIdentity::Register(self.global_index)),
-                ),
-                literal: false,
-                ty: Ty::scalar(Scalar::U32),
-                regs: vec![self.global_index],
-                uniform: false,
-                constant: None,
-            }));
-        }
-        if matches!(
-            name,
-            "bind" | "barrier" | "group_barrier" | "compact" | "stable_sort_by_key" | "ddx" | "ddy"
-        ) || custom_reduce::Kind::from_source(name).is_some()
-            || collective.is_stage()
-        {
-            return self.fail(
-                span,
-                "B156",
-                format!("{name} 的作用域／能力语义尚未实现，当前编译器明确拒绝"),
-            );
-        }
-        if let Some(builtin) = atomic::AtomicBuiltin::from_source(name, false) {
-            if builtin.is_store() {
-                return self.fail(span, "B218", "atomic_store 是语句，没有可绑定的返回值");
-            }
-            return unsafe { self.world.call(self.atomic_operation(builtin, name, args, span)).await };
-        }
-        if name == "tile_barrier" {
-            return self.fail(span, "B218", "tile_barrier 是语句，没有可绑定的返回值");
-        }
-        match record{
-            Some(Some(ty))=>return unsafe{self.world.call(self.record_values(ty,args.len(),span,
+    async fn builtin_call(&mut self, name: &str, args: &Expressions, span: Span, mut record:Option<Option<Ty>>) -> Result<Option<Value>> {
+        let mut cursor=BuiltinCallCursor{phase:0,collective:collective::Form::Unknown,index:0};
+        let mut facts=BuiltinCallFacts{present:0,record:match &record{None=>0,Some(None)=>1,Some(Some(_))=>2},in_function:u32::from(self.in_function),count:args.len()};
+        let mut subgroup=None;
+        loop{let step=unsafe{builtin_call_step(cursor,BuiltinCallFacts{..facts},name.as_ptr(),name.len())};cursor=step.cursor;match step.need{
+            BuiltinCallNeed::CFunction=>return unsafe{self.world.call(self.c_function_value(args,span)).await}.map(Some),
+            BuiltinCallNeed::ResultContext=>return self.fail(span,"B269","Ok／Err 需要 result<T,E> 上下文或两个显式类型实参"),
+            BuiltinCallNeed::Transfer=>return unsafe{self.world.call(self.application_transfer(name,args,span)).await},
+            BuiltinCallNeed::Println=>return unsafe{self.world.call(self.println(args,span)).await},
+            BuiltinCallNeed::TextureSample=>return unsafe{self.world.call(self.texture_sample(args,span)).await},
+            BuiltinCallNeed::Append=>return unsafe{self.world.call(self.append(args,span)).await},
+            BuiltinCallNeed::TileCollective=>return self.fail(span,"B205","tile 集合运算只能作为 parallel 根块的局部变量声明"),
+            BuiltinCallNeed::TilePublish=>return self.fail(span,"B203","tile_publish 只能作为 parallel 根块的 let 发布声明"),
+            BuiltinCallNeed::TileInput=>return self.fail(span,"B198","tile_input 只能作为 parallel 开头的 let 输入声明，不能创建普通值或在控制流中构造"),
+            BuiltinCallNeed::Subgroup=>{subgroup=unsafe{self.world.call(self.subgroup(name,args.len(),span,async |builder,index|unsafe{builder.world.call(builder.expr(&args.at(index))).await},|index|args.at(index).span())).await};facts.present=u32::from(subgroup.is_some());},
+            BuiltinCallNeed::SubgroupResult=>return subgroup.take().unwrap(),
+            BuiltinCallNeed::RayQuery=>return unsafe{self.world.call(self.ray_query_call(name,args,span)).await},
+            BuiltinCallNeed::UnsafeRead=>return unsafe{self.world.call(self.unsafe_read_call(args,span)).await},
+            BuiltinCallNeed::Ordinal=>return self.ordinal_call(args,span),
+            BuiltinCallNeed::IndexScope=>return self.fail(span,"B155","index() 只能在当前 program 的 parallel 域中使用"),
+            BuiltinCallNeed::Index=>return Ok(Some(Value{
+                proof:self.path_proof(&Ty::scalar(Scalar::U32),self.data_index_proof(self.domain)
+                    .with_domains(Domains::from([IndexDomain::Data(self.domain)])).with_identity(ValueIdentity::Register(self.global_index))),
+                literal:false,ty:Ty::scalar(Scalar::U32),regs:vec![self.global_index],uniform:false,constant:None,
+            })),
+            BuiltinCallNeed::Unsupported=>return self.fail(span,"B156",format!("{name} 的作用域／能力语义尚未实现，当前编译器明确拒绝")),
+            BuiltinCallNeed::AtomicStore=>return self.fail(span,"B218","atomic_store 是语句，没有可绑定的返回值"),
+            BuiltinCallNeed::Atomic=>return unsafe{self.world.call(self.atomic_operation(step.atomic,name,args,span)).await},
+            BuiltinCallNeed::TileBarrier=>return self.fail(span,"B218","tile_barrier 是语句，没有可绑定的返回值"),
+            BuiltinCallNeed::RecordValues=>return unsafe{self.world.call(self.record_values(record.take().unwrap().unwrap(),args.len(),span,
                 async |builder,index,expected|unsafe{builder.world.call(builder.expr_expected(&args.at(index),expected)).await})).await},
-            Some(None)=>{},
-            None=>if !self.world.resolve(name,self.scope.module(),self.scope.imports(),false).is_missing(){
-                return unsafe{self.world.call(self.record_expression(&TypeName::named(name),args,span)).await};
-            },
-        }
-        if name == "address_of" { return unsafe { self.world.call(self.position_address(args, span)).await }; }
-        unsafe { self.world.call(self.builtin_values(name,span,async |builder| {
-            let mut values=Vec::new();
-            for arg in args.iter() {
-                let Some(value)=unsafe { builder.world.call(builder.expr(&arg)).await }? else { return Ok(None); };
-                values.push(value);
-            }
-            Ok(Some(values))
-        })).await }
+            BuiltinCallNeed::RecordLookup=>facts.present=u32::from(!self.world.resolve(name,self.scope.module(),self.scope.imports(),false).is_missing()),
+            BuiltinCallNeed::RecordExpression=>return unsafe{self.world.call(self.record_expression(&TypeName::named(name),args,span)).await},
+            BuiltinCallNeed::AddressOf=>return unsafe{self.world.call(self.position_address(args,span)).await},
+            BuiltinCallNeed::Values=>return unsafe{self.world.call(self.builtin_values(name,span,async |builder|{
+                let mut cursor=step.cursor;let mut facts=BuiltinCallFacts{present:0,record:0,in_function:0,count:args.len()};
+                let mut values=Vec::new();let mut value=None;
+                loop{let step=unsafe{builtin_call_step(cursor,BuiltinCallFacts{..facts},name.as_ptr(),name.len())};cursor=step.cursor;match step.need{
+                    BuiltinCallNeed::Argument=>{value=unsafe{builder.world.call(builder.expr(&args.at(step.cursor.index))).await}?;facts.present=u32::from(value.is_some());},
+                    BuiltinCallNeed::ArgumentValue=>values.push(value.take().unwrap()),
+                    BuiltinCallNeed::ArgumentsComplete=>return Ok(Some(values)),
+                    BuiltinCallNeed::Empty=>return Ok(None),
+                    _=>unsafe{std::hint::unreachable_unchecked()},
+                }}
+            })).await},
+            _=>unsafe{std::hint::unreachable_unchecked()},
+        }}
     }
     // The original value/IR owner consumes values from either actual input reader.
     // Argument evaluation stays lazy until this owner has selected a known operation.
@@ -3180,6 +3113,12 @@ const _: () = {
         }
     }
 };
+
+#[repr(C)]#[derive(Clone,Copy)]struct BuiltinCallCursor{phase:u32,collective:collective::Form,index:usize}
+#[repr(C)]struct BuiltinCallFacts{present:u32,record:u32,in_function:u32,count:usize}
+#[repr(u32)]enum BuiltinCallNeed{CFunction,ResultContext,Transfer,Println,TextureSample,Append,TileCollective,TilePublish,TileInput,Subgroup,SubgroupResult,RayQuery,UnsafeRead,Ordinal,IndexScope,Index,Unsupported,AtomicStore,Atomic,TileBarrier,RecordValues,RecordLookup,RecordExpression,AddressOf,Values,Argument,ArgumentValue,Empty,ArgumentsComplete}
+#[repr(C)]struct BuiltinCallStep{cursor:BuiltinCallCursor,need:BuiltinCallNeed,atomic:atomic::AtomicBuiltin}
+unsafe extern "C"{#[link_name="bootstrap.operator_types::builtin_call_step"]fn builtin_call_step(cursor:BuiltinCallCursor,facts:BuiltinCallFacts,bytes:*const u8,length:usize)->BuiltinCallStep;}
 
 #[repr(u32)]#[derive(Clone,Copy)]enum BuiltinValueKind{Other,FunctionAddress,UnsafeHandle,UnsafeAddress,AddressBits,Type,Bitcast,Math,Matrix,Geometry,Clamp}
 #[repr(C)]#[derive(Clone,Copy)]struct BuiltinValueCursor{phase:u32,kind:BuiltinValueKind}

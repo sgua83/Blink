@@ -121,6 +121,8 @@ enum AtomicSourceKind:u32 {
 };
 struct AtomicBuiltin { AtomicSourceKind kind; Access access; u32 arity; u32 order_index; };
 extern "C" AtomicBuiltin source_atomic(address bytes, usize length, bool statement) on cpu;
+extern "C" AtomicBuiltin source_atomic_name(address bytes, usize length, bool statement) on cpu;
+extern "C" u32 source_custom_reduce(address bytes, usize length) on cpu;
 extern "C" bool atomic_order_allowed(AtomicSourceKind kind, u32 order, u32 failure) on cpu;
 
 enum SubgroupRule:u32 { Unknown=0; Index=1; Elect=2; Vote=3; VoteCount=4; Transfer=5; Arithmetic=6; Bits=7; };
@@ -342,3 +344,9 @@ struct FunctionFromAddressFacts {u32 cpu;u32 explicit_type;u64 count;u32 functio
 enum FunctionFromAddressNeed:u32 {BadTarget=0;BadArguments=1;Type=2;BadSignature=3;Argument=4;Empty=5;RequireAddress=6;Retype=7;Complete=8;};
 struct FunctionFromAddressStep {FunctionFromAddressCursor cursor;FunctionFromAddressNeed need;};
 extern "C" FunctionFromAddressStep function_from_address_step(FunctionFromAddressCursor cursor,FunctionFromAddressFacts facts) on cpu;
+
+struct BuiltinCallCursor {u32 phase;CollectiveForm collective;usize index;};
+struct BuiltinCallFacts {u32 present;u32 record;u32 in_function;usize count;};
+enum BuiltinCallNeed:u32 {CFunction=0;ResultContext=1;Transfer=2;Println=3;TextureSample=4;Append=5;TileCollective=6;TilePublish=7;TileInput=8;Subgroup=9;SubgroupResult=10;RayQuery=11;UnsafeRead=12;Ordinal=13;IndexScope=14;Index=15;Unsupported=16;AtomicStore=17;Atomic=18;TileBarrier=19;RecordValues=20;RecordLookup=21;RecordExpression=22;AddressOf=23;Values=24;Argument=25;ArgumentValue=26;Empty=27;ArgumentsComplete=28;};
+struct BuiltinCallStep {BuiltinCallCursor cursor;BuiltinCallNeed need;AtomicBuiltin atomic;};
+extern "C" BuiltinCallStep builtin_call_step(BuiltinCallCursor cursor,BuiltinCallFacts facts,address bytes,usize length) on cpu;
