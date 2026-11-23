@@ -2206,26 +2206,18 @@ impl<'a> Builder<'a> {
     fn require_bool(&self, v: &Value, span: Span) -> Result<()> {
         self.require_same(&Ty::scalar(Scalar::Bool), &v.ty, span)
     }
-    async fn block(&mut self, body: &Block) -> Result<()> {
-        let original = self.env.keys().cloned().collect::<BTreeSet<_>>();
-        self.block_depth += 1;
-        let mut flow = Flow::NEXT;
-        for s in body {
-            if !flow.continues() {
-                break;
-            }
-            self.flow = Flow::NEXT;
-            unsafe { self.world.call(self.statement(&s)).await }?;
-            self.view_uses.after(s.span());
-            flow = flow.then(self.flow);
-        }
-        self.flow = flow;
-        self.block_depth -= 1;
-        if flow.continues() {
-            unsafe { self.world.call(self.release_application_data(Some(&original),view::Borrow::default())).await }?;
-        }
-        self.env.retain(|k, _| original.contains(k));
-        Ok(())
+    async fn block(&mut self,body:&Block)->Result<()> {
+        let mut cursor=unsafe {lexical_start()};let mut flow=Flow::NEXT;let mut original=None;let mut current=None;
+        loop {let step=unsafe {lexical_block_step(cursor,body.len()as u64,u32::from(flow.continues()))};cursor=step.cursor;match step.need {
+            LexicalNeed::Enter=>{original=Some(self.env.keys().cloned().collect::<BTreeSet<_>>());self.block_depth+=1;},
+            LexicalNeed::Statement=>{let statement=body.at(cursor.index as usize);self.flow=Flow::NEXT;unsafe {self.world.call(self.statement(&statement)).await}?;current=Some(statement);},
+            LexicalNeed::After=>{let statement=current.take().unwrap();self.view_uses.after(statement.span());flow=flow.then(self.flow);},
+            LexicalNeed::Finish=>{self.flow=flow;self.block_depth-=1;},
+            LexicalNeed::Release=>{unsafe {self.world.call(self.release_application_data(original.as_ref(),view::Borrow::default())).await}?;},
+            LexicalNeed::Retain=>self.env.retain(|name,_|original.as_ref().unwrap().contains(name)),
+            LexicalNeed::Complete=>return Ok(()),
+            LexicalNeed::Next=>{},
+        }}
     }
     async fn statement(&mut self, s: &Stmt) -> Result<()> {
         let world = self.world;
@@ -2235,45 +2227,30 @@ impl<'a> Builder<'a> {
                 Ok(((),view::Borrow::default()))
             })) .await })) .await }
     }
-    async fn statement_syntax(&mut self, s: &Stmt) -> Result<()> {
-        self.view_uses.before(s.span());
-        match s.kind() {
-            StmtKind::Declare(annotation, name) => {
-                let annotation=unsafe { self.world.call(self.scope.bindings().type_name(self.world,&annotation,
-                    (self.scope.source(),self.scope.module(),self.scope.imports()),s.span())).await }?;
-                return unsafe { self.world.call(self.declare_statement(&annotation, name, s.span())).await };
-            }
-            StmtKind::Let(annotation, name, e) => {
-                let annotation=match annotation.as_ref() {
-                    Some(annotation)=>Some(unsafe { self.world.call(self.scope.bindings().type_name(self.world,annotation,
-                        (self.scope.source(),self.scope.module(),self.scope.imports()),s.span())).await }?),
-                    None=>None,
-                };
-                return unsafe { self.world.call(self.let_statement(&annotation, name, &e, s.span())).await };
-            }
-            StmtKind::Assign(lhs, op, rhs) => return unsafe { self.world.call(self.assign_statement(&lhs, op, &rhs, s.span())).await },
-            StmtKind::Expr(e) => return unsafe { self.world.call(self.expression_statement(&e)).await },
-            StmtKind::If(condition, yes_body, no_body) => {
-                return unsafe { self.world.call(self.if_statement(&condition, &yes_body, &no_body, s.span())).await };
-            }
-            StmtKind::While(condition, body) => {
-                return unsafe { self.world.call(self.while_statement(&condition, &body, s.span())).await };
-            }
-            StmtKind::For(name, start, end, body) => {
-                return unsafe { self.world.call(self.for_statement(name, &start, &end, &body, s.span())).await };
-            }
-            StmtKind::Break | StmtKind::Continue => return unsafe { self.world.call(self.loop_control_statement(s)).await },
-            StmtKind::Match(value, arms) => { return unsafe { self.world.call(self.match_returned(&value,&arms,s.span())).await }; }
-            StmtKind::Return(value) => unsafe { self.world.call(self.return_statement(value.as_ref(), s.span())).await }?,
-            StmtKind::Parallel(element,domain,body) => return unsafe { self.world.call(self.application_parallel(s,element,&domain,&body)).await },
-            StmtKind::Phase => {
-                if !self.application_entry() {
-                    return self.fail(s.span(), "B163", "phase 需要整域同步位置，不能位于元素实例中");
-                }
-            }
-            StmtKind::Seek(name, position) => return unsafe { self.world.call(self.seek_statement(name, &position, s.span())).await },
-        }
-        Ok(())
+    async fn statement_syntax(&mut self,s:&Stmt)->Result<()> {
+        self.view_uses.before(s.span());let source=s.source_view();let mut cursor=SourceValueCursor {phase:0};
+        let mut facts=SourceStatementFacts {present:0,entry:0};let mut annotation=None;let mut condition=None;let mut initial=None;
+        loop {let step=unsafe {source_statement_step(cursor,s.signature_node(),SourceStatementFacts {..facts})};cursor=step.cursor;match step.need {
+            SourceStatementNeed::Bind=>{let ty=s.child::<crate::syntax::wire::TypeNode>(step.first);annotation=Some(unsafe {self.world.call(self.scope.bindings().type_name(self.world,&ty,(self.scope.source(),self.scope.module(),self.scope.imports()),s.span())).await}?);},
+            SourceStatementNeed::Declare=>return unsafe {self.world.call(self.declare_statement(annotation.as_ref().unwrap(),source.text(step.name),s.span())).await},
+            SourceStatementNeed::Let=>{let value=s.child(step.second);return unsafe {self.world.call(self.let_statement(&annotation,source.text(step.name),&value,s.span())).await};},
+            SourceStatementNeed::Assign=>{let left=s.child(step.first);let right=s.child(step.second);return unsafe {self.world.call(self.assign_statement(&left,source.text(step.operation),&right,s.span())).await};},
+            SourceStatementNeed::Expression=>{let value=s.child(step.first);return unsafe {self.world.call(self.expression_statement(&value)).await};},
+            SourceStatementNeed::Condition=>{let expr:Expr=s.child(step.first);condition=unsafe {self.world.call(self.temporary_scope(expr.span(),async |builder|Ok((unsafe {builder.world.call(builder.expr(&expr)).await}?,view::Borrow::default())))).await}?;facts.present=u32::from(condition.is_some());},
+            SourceStatementNeed::RequireBool=>{let expr:Expr=s.child(step.first);self.require_bool(condition.as_ref().unwrap(),expr.span())?;},
+            SourceStatementNeed::Conditional=>{let yes=s.list::<crate::syntax::wire::StmtNode>(step.body);let no=s.list::<crate::syntax::wire::StmtNode>(step.other);return unsafe {self.world.call(self.conditional_blocks(condition.take().unwrap(),async |builder|unsafe {builder.world.call(builder.block(&yes)).await},async |builder|unsafe {builder.world.call(builder.block(&no)).await},s.span())).await};},
+            SourceStatementNeed::InitialLoop=>{let body=s.list::<crate::syntax::wire::StmtNode>(step.body);initial=Some(unsafe {self.world.call(self.application_initial_loop(&body)).await}?);},
+            SourceStatementNeed::While=>{let expr=s.child(step.first);let body=s.list::<crate::syntax::wire::StmtNode>(step.body);return unsafe {self.world.call(self.while_loop(&expr,&body,initial.take().unwrap(),s.span())).await};},
+            SourceStatementNeed::For=>{let start=s.child(step.first);let end=(step.present!=0).then(||s.child::<crate::syntax::wire::ExprNode>(step.second));let body=s.list::<crate::syntax::wire::StmtNode>(step.body);return unsafe {self.world.call(self.for_statement(source.text(step.name),&start,&end,&body,s.span())).await};},
+            SourceStatementNeed::LoopControl=>return unsafe {self.world.call(self.loop_control_statement(s)).await},
+            SourceStatementNeed::Match=>{let value=s.child(step.first);let arms=s.list::<crate::syntax::wire::ArmNode>(step.body);return unsafe {self.world.call(self.match_returned(&value,&arms,s.span())).await};},
+            SourceStatementNeed::Return=>{let value=(step.present!=0).then(||s.child::<crate::syntax::wire::ExprNode>(step.first));return unsafe {self.world.call(self.return_statement(value.as_ref(),s.span())).await};},
+            SourceStatementNeed::Parallel=>{let domain=s.child::<crate::syntax::wire::ParallelNode>(step.first);let body=s.list::<crate::syntax::wire::StmtNode>(step.body);return unsafe {self.world.call(self.application_parallel(s,source.text(step.name),&domain,&body)).await};},
+            SourceStatementNeed::Entry=>facts.entry=u32::from(self.application_entry()),
+            SourceStatementNeed::BadPhase=>return self.fail(s.span(),"B163","phase 需要整域同步位置，不能位于元素实例中"),
+            SourceStatementNeed::Seek=>{let position=s.child(step.first);return unsafe {self.world.call(self.seek_statement(source.text(step.name),&position,s.span())).await};},
+            SourceStatementNeed::Complete=>return Ok(()),
+        }}
     }
     fn value_result(&self, result: Option<Value>, span: Span) -> Result<Value> {
         match result {
@@ -2911,24 +2888,6 @@ impl<'a> Builder<'a> {
         };
         self.returned_expression(result,span,true)
     }
-    #[inline(never)]
-    async fn if_statement(
-        &mut self,
-        condition: &Expr,
-        yes_body: &Block,
-        no_body: &Block,
-        span: Span,
-    ) -> Result<()> {
-        let Some(c) = unsafe { self.world.call(self.temporary_scope(condition.span(), async |builder| Ok((unsafe { builder.world.call(builder.expr(condition)).await }?, view::Borrow::default())))).await }? else {
-            return Ok(());
-        };
-        self.require_bool(&c, condition.span())?;
-        unsafe { self.world.call(self.conditional_blocks(c, async |b| unsafe { b.world.call(b.block(yes_body)).await }, async |b| unsafe { b.world.call(b.block(no_body)).await }, span)).await }
-    }
-    async fn while_statement(&mut self, condition: &Expr, body: &Block, span: Span) -> Result<()> {
-        let initial = unsafe { self.world.call(self.application_initial_loop(body)).await }?;
-        unsafe { self.world.call(self.while_loop(condition, body, initial, span)).await }
-    }
     fn value_constructor(&mut self,ty:Ty,values:Vec<Value>,span:Span)->Result<Value> {
         self.construct_value(operators::ConstructEntry::Value,ty,values,span)
     }
@@ -3552,4 +3511,17 @@ unsafe extern "C" {
  #[link_name="bootstrap.function_body::index_position_step"]fn index_position_step(cursor:SourceValueCursor,source:crate::syntax::wire::SignatureNode,facts:IndexPositionFacts)->IndexPositionStep;
  #[link_name="bootstrap.function_body::position_append"]fn position_append(binding:u64,context:*mut PositionAppendIter<'_>,next:unsafe extern "C" fn(*mut PositionAppendIter<'_>)->PositionAppend)->u32;
  #[link_name="bootstrap.function_body::view_position_step"]fn view_position_step(cursor:SourceValueCursor,facts:ViewPositionFacts)->ViewPositionStep;
+}
+
+
+#[repr(C)]struct LexicalCursor {phase:u32,flags:u32,index:u64,part:u64}
+#[repr(u32)]enum LexicalNeed {Enter,Statement,After,Finish,Release,Retain,Complete,Next}
+#[repr(C)]struct LexicalStep {cursor:LexicalCursor,need:LexicalNeed}
+#[repr(C)]struct SourceStatementFacts {present:u32,entry:u32}
+#[repr(u32)]enum SourceStatementNeed {Bind,Declare,Let,Assign,Expression,Condition,RequireBool,Conditional,InitialLoop,While,For,LoopControl,Match,Return,Parallel,Entry,BadPhase,Seek,Complete}
+#[repr(C)]struct SourceStatementStep {cursor:SourceValueCursor,need:SourceStatementNeed,name:crate::syntax::wire::Text,operation:crate::syntax::wire::Text,first:u64,second:u64,body:crate::syntax::wire::Slice,other:crate::syntax::wire::Slice,present:u32}
+unsafe extern "C" {
+ #[link_name="bootstrap.function_body::start"]fn lexical_start()->LexicalCursor;
+ #[link_name="bootstrap.function_body::lexical_block_step"]fn lexical_block_step(cursor:LexicalCursor,count:u64,continuing:u32)->LexicalStep;
+ #[link_name="bootstrap.function_body::source_statement_step"]fn source_statement_step(cursor:SourceValueCursor,source:crate::syntax::wire::SignatureNode,facts:SourceStatementFacts)->SourceStatementStep;
 }

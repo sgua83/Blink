@@ -245,3 +245,12 @@ struct ViewPositionFacts {u32 placed;u32 present;u32 dataset;u32 indexed;u32 con
 enum ViewPositionNeed:u32 {Parent=0;DatasetType=1;IndexedType=2;Reference=3;ApplicationIndex=4;Read=5;Returned=6;Kind=7;OwnedArray=8;HoldDataset=9;HoldOwned=10;Ordinary=11;ArrayType=12;Materialize=13;ArrayPlace=14;View=15;Empty=16;};
 struct ViewPositionStep {LocalCursor cursor;ViewPositionNeed need;};
 extern "C" ViewPositionStep view_position_step(LocalCursor cursor,ViewPositionFacts facts) on cpu;
+
+
+enum LexicalNeed:u32 {Enter=0;Statement=1;After=2;Finish=3;Release=4;Retain=5;Complete=6;Next=7;};
+struct LexicalStep {Cursor cursor;LexicalNeed need;};
+extern "C" LexicalStep lexical_block_step(Cursor cursor,u64 count,u32 continuing) on cpu;
+struct SourceStatementFacts {u32 present;u32 entry;};
+enum SourceStatementNeed:u32 {Bind=0;Declare=1;Let=2;Assign=3;Expression=4;Condition=5;RequireBool=6;Conditional=7;InitialLoop=8;While=9;For=10;LoopControl=11;Match=12;Return=13;Parallel=14;Entry=15;BadPhase=16;Seek=17;Complete=18;};
+struct SourceStatementStep {LocalCursor cursor;SourceStatementNeed need;Text name;Text operation;u64 first;u64 second;Slice body;Slice other;u32 present;};
+extern "C" SourceStatementStep source_statement_step(LocalCursor cursor,SignatureNode source,SourceStatementFacts facts) on cpu;

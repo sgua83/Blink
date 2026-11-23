@@ -874,3 +874,46 @@ extern "C" ViewPositionStep view_position_step(LocalCursor cursor,ViewPositionFa
  if(facts.array!=0){c.phase=9;return ViewPositionStep(c,ViewPositionNeed::Materialize);}
  return ViewPositionStep(c,ViewPositionNeed::View);
 }
+
+
+extern "C" LexicalStep lexical_block_step(Cursor cursor,u64 count,u32 continuing) on cpu {
+ Cursor c=cursor;
+ if(c.phase<10){
+  SequenceStep sequence=sequence_step(c,count,1,continuing);c=sequence.cursor;
+  if(sequence.need==SequenceNeed::StartNext||sequence.need==SequenceNeed::StartStop){return LexicalStep(c,LexicalNeed::Enter);}
+  if(sequence.need==SequenceNeed::Statement){return LexicalStep(c,LexicalNeed::Statement);}
+  if(sequence.need==SequenceNeed::After){return LexicalStep(c,LexicalNeed::After);}
+  if(sequence.need==SequenceNeed::Complete){c.phase=10;return LexicalStep(c,LexicalNeed::Finish);}
+  return LexicalStep(c,LexicalNeed::Next);
+ }
+ if(c.phase==10){if(continuing!=0){c.phase=11;return LexicalStep(c,LexicalNeed::Release);}c.phase=12;return LexicalStep(c,LexicalNeed::Retain);}
+ if(c.phase==11){c.phase=12;return LexicalStep(c,LexicalNeed::Retain);}
+ return LexicalStep(c,LexicalNeed::Complete);
+}
+extern "C" SourceStatementStep source_statement_step(LocalCursor cursor,SignatureNode source,SourceStatementFacts facts) on cpu {
+ SourceStatementStep result=SourceStatementStep(cursor,SourceStatementNeed::Complete,Text(0,Span(0u64,0u64)),Text(0,Span(0u64,0u64)),0u64,0u64,Slice(0u64,0u64),Slice(0u64,0u64),0);
+ StmtNode statement=binding_node<StmtNode>(source.storage.nodes,source.offset);
+ match(statement.kind){
+  StmtKind::Declare(value){result.name=value.name;result.first=value.ty.offset;if(cursor.phase==0){result.cursor.phase=1;result.need=SourceStatementNeed::Bind;}else{result.need=SourceStatementNeed::Declare;}}
+  StmtKind::Let(value){result.name=value.name;result.first=value.annotation.value.offset;result.second=value.value.offset;
+   if(cursor.phase==0&&value.annotation.present!=0){result.cursor.phase=1;result.need=SourceStatementNeed::Bind;}else{result.need=SourceStatementNeed::Let;}
+  }
+  StmtKind::Assign(value){result.need=SourceStatementNeed::Assign;result.operation=value.operation;result.first=value.target.offset;result.second=value.value.offset;}
+  StmtKind::Expr(value){result.need=SourceStatementNeed::Expression;result.first=value.offset;}
+  StmtKind::If(value){result.first=value.condition.offset;result.body=value.yes;result.other=value.no;
+   if(cursor.phase==0){result.cursor.phase=1;result.need=SourceStatementNeed::Condition;}
+   else if(cursor.phase==1){if(facts.present!=0){result.cursor.phase=2;result.need=SourceStatementNeed::RequireBool;}}
+   else{result.need=SourceStatementNeed::Conditional;}
+  }
+  StmtKind::While(value){result.first=value.condition.offset;result.body=value.body;if(cursor.phase==0){result.cursor.phase=1;result.need=SourceStatementNeed::InitialLoop;}else{result.need=SourceStatementNeed::While;}}
+  StmtKind::For(value){result.need=SourceStatementNeed::For;result.name=value.name;result.first=value.start.offset;result.second=value.end.value.offset;result.present=value.end.present;result.body=value.body;}
+  StmtKind::Break(){result.need=SourceStatementNeed::LoopControl;}
+  StmtKind::Continue(){result.need=SourceStatementNeed::LoopControl;}
+  StmtKind::Match(value){result.need=SourceStatementNeed::Match;result.first=value.value.offset;result.body=value.arms;}
+  StmtKind::Return(value){result.need=SourceStatementNeed::Return;result.first=value.value.offset;result.present=value.present;}
+  StmtKind::Parallel(value){result.need=SourceStatementNeed::Parallel;result.name=value.name;result.first=value.domain.offset;result.body=value.body;}
+  StmtKind::Phase(){if(cursor.phase==0){result.cursor.phase=1;result.need=SourceStatementNeed::Entry;}else if(facts.entry==0){result.need=SourceStatementNeed::BadPhase;}}
+  StmtKind::Seek(value){result.need=SourceStatementNeed::Seek;result.name=value.name;result.first=value.value.offset;}
+ }
+ return result;
+}
