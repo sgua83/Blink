@@ -814,6 +814,9 @@ impl Graph {
     }
     pub(super) fn solve(self: &Arc<Self>, root: usize, evaluation: &mut BorrowEvaluation<'_>) -> Borrow {
         let (reachable, _) = self.reachable(root);
+        let loop_scopes = self.inputs.iter().filter_map(|(input, &node)| {
+            evaluation.function.history.get(&input.level).map(|history| (node, (input.level, history)))
+        }).collect::<BTreeMap<_, _>>();
         let mut fixed_inputs = BTreeSet::new();
         let (mut stable, feedback): (Vec<_>, Vec<_>) =
             self.order(&reachable, Some(&mut fixed_inputs)).into_iter().partition(|&(_, changes)| !changes);
@@ -847,7 +850,28 @@ impl Graph {
             }
             // A fixed input has no reads or dependencies that can change on a backedge.
             let next = variables.keys().copied().filter(|id| initial || !fixed_inputs.contains(id))
-                .map(|id| (id, query.definition(id, &mut scope))).collect::<BTreeMap<_, _>>();
+                .map(|id| {
+                    let mut value = query.definition(id, &mut scope);
+                    if let Some((level, history)) = loop_scopes.get(&id) {
+                        // A carried source can come from any earlier iteration.
+                        // Its local predicates do not describe the current test.
+                        let paths = value.sources.entries().map(|(_, when)| when).collect::<Vec<_>>();
+                        let bindings = bounds::Clause::scalar_identities(paths.iter()).into_iter()
+                            .filter(|identity| !match identity {
+                                ValueIdentity::Register(reg) | ValueIdentity::TaskControl(reg)
+                                | ValueIdentity::TaskCompletion(reg, _) => history.registers.contains(reg),
+                                ValueIdentity::MemoryValue(memory, _) => history.uses.contains(memory),
+                                ValueIdentity::LoopValue(scope, _) => scope == level || evaluation.function.history.get(scope)
+                                    .is_some_and(|inner| inner.registers.start >= history.registers.start
+                                        && inner.registers.end <= history.registers.end),
+                                _ => false,
+                            })
+                            .map(|identity| (identity, bounds::Proof::default().with_identity(identity)))
+                            .collect();
+                        value = value.guards_at_call(&bindings);
+                    }
+                    (id, value)
+                }).collect::<BTreeMap<_, _>>();
             if let Some(observe) = scope.known.observe {
                 use crate::compiler::{AnalysisStorage, BorrowSolveStorage};
                 observe(scope.state.name, BorrowSolveStorage::Relation {

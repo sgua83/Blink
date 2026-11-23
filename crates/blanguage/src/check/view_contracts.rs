@@ -798,6 +798,30 @@ fn content_write_overlap<'a>(
     let position = position?;
     address::MemoryEffect::position_may_write(target, active()?, position).then_some(false)
 }
+
+fn content_write_paths(
+    query: Option<(&address::Origin, u32)>, position: Option<&Position>,
+    targets: &Borrow, word: u32, execution: &bounds::Condition,
+) -> bounds::Condition {
+    let mut hit = bounds::Clause::impossible();
+    let mut miss = execution.assume(&bounds::Clause::default(), false);
+    for (source, selected) in targets.sources.entries() {
+        let active = execution.assume(&selected, true);
+        if !active.possible() { continue; }
+        let overlap = match source {
+            Origin::Position(origin) => content_write_overlap(query, position, origin, word, || Some(&active)),
+            Origin::External => Some(false),
+            _ => None,
+        };
+        if overlap.is_some() {
+            hit = bounds::Clause::either(&hit, &active);
+        }
+        if overlap != Some(true) {
+            miss = bounds::Clause::either(&miss, &active);
+        }
+    }
+    bounds::Condition::paths(hit, miss)
+}
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum LoopSources {
     Symbolic,
@@ -849,7 +873,7 @@ struct BorrowEvaluation<'a>{
 // The callee contracts and argument bindings stay fixed inside this evaluation,
 // including the nested relation scopes that replay its writes.
 type CallWritePaths = std::sync::Mutex<
-    BTreeMap<(usize, usize), Arc<std::sync::OnceLock<bounds::Clause>>>,
+    BTreeMap<(usize, usize), Arc<std::sync::OnceLock<bounds::Condition>>>,
 >;
 
 enum StoredPaths<'a> {
@@ -871,11 +895,11 @@ impl StoredPaths<'_> {
 
     fn project(&self, call_index: usize, index: usize, guard: &bounds::Condition,
         usage: &Use, call: &Call,
-    ) -> bounds::Clause {
+    ) -> bounds::Condition {
         let projected = self.paths().lock().unwrap().entry((call_index, index))
             .or_default().clone();
         projected.get_or_init(|| {
-            bounds::Clause::both(&usage.path, &guard.projected_case(true, &call.arguments))
+            bounds::Condition::execution(&usage.path).logical(guard.at_call(&call.arguments), false)
         }).clone()
     }
 }
@@ -933,26 +957,11 @@ impl BorrowEvaluation<'_>{
             for (index, access) in known[&call.function].interface.access.iter().enumerate().rev() {
                 let Access::Stored { borrows, word, value, when } = access else { continue; };
                 let target = self.evaluate(&call_content_sources(borrows, call, &call.arguments).at_call(&call.arguments));
-                let projected = std::cell::OnceCell::new();
-                let stored = std::cell::OnceCell::new();
-                for (source, selected) in target.sources.entries().rev() {
-                    let Origin::Position(origin) = source else { continue; };
-                    let overlap = {
-                        let path = std::cell::LazyCell::new(|| {
-                            let when = projected.get_or_init(|| {
-                                self.stored_paths.project(call_index, index, when, usage, call)
-                            });
-                            bounds::Clause::both(when, &selected)
-                        });
-                        content_write_overlap(query, position, origin, *word, || path.possible().then_some(&*path))
-                            .map(|complete| (complete, bounds::Condition::execution(&path)))
-                    };
-                    if let Some((complete, path)) = overlap {
-                        let stored = stored.get_or_init(|| {
-                            self.evaluate(&call_content_sources(value, call, &call.arguments).at_call(&call.arguments))
-                        });
-                        write(stored, &path, complete);
-                    }
+                let execution = self.stored_paths.project(call_index, index, when, usage, call);
+                let path = content_write_paths(query, position, &target, *word, &execution);
+                if path.active() {
+                    let stored = self.evaluate(&call_content_sources(value, call, &call.arguments).at_call(&call.arguments));
+                    write(&stored, &path, true);
                 }
             }
             return;
@@ -971,21 +980,23 @@ impl BorrowEvaluation<'_>{
             return;
         }
         let targets=self.evaluate(borrow);
+        if let Some(written) = written {
+            let execution = bounds::Condition::execution(&usage.path);
+            for &(word, component) in address_fields.iter().rev() {
+                let path = content_write_paths(query, position, &targets, word, &execution);
+                if path.active() {
+                    let stored = self.evaluate(&written.view_borrow(component));
+                    write(&stored, &path, true);
+                }
+            }
+            return;
+        }
         for (source, selected) in targets.sources.entries().rev() {
             let when = std::cell::LazyCell::new(|| bounds::Clause::both(&usage.path, &selected));
             let active = std::cell::LazyCell::new(|| when.possible().then_some(&*when));
             match source {
-                Origin::Position(origin) => {
-                    if let Some(written) = written {
-                        for &(word, component) in address_fields.iter().rev() {
-                            if let Some(complete) = content_write_overlap(
-                                query, position, origin, word, || *active,
-                            ) {
-                                let stored = self.evaluate(&written.view_borrow(component));
-                                write(&stored, &bounds::Condition::execution(&when), complete);
-                            }
-                        }
-                    } else if let Some(position) = position && let Some(path) = *active {
+                Origin::Position(_) => {
+                    if let Some(position) = position && let Some(path) = *active {
                         let effect = address::MemoryEffect::of(
                             &Borrow::source(source.clone()).restricted(path), super::Access::Write, None,
                         );
@@ -1043,7 +1054,8 @@ impl BorrowEvaluation<'_>{
                 for (index, access) in known[&call.function].interface.access.iter().enumerate() {
                     let Access::Stored{borrows,word,when,..}=access else{continue;};
                     let target = self.evaluate(&call_content_sources(borrows, call, &call.arguments).at_call(&call.arguments));
-                    let path = std::cell::LazyCell::new(|| self.stored_paths.project(call_index, index, when, usage, call));
+                    let path = std::cell::LazyCell::new(|| self.stored_paths.project(call_index, index, when, usage, call)
+                        .assume(&bounds::Clause::default(), true));
                     for (source, when) in target.sources.entries() {
                         if let Origin::Position(origin) = source
                             && bounds::Clause::both(&when, &path).possible()

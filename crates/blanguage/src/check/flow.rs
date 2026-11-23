@@ -132,7 +132,7 @@ impl Builder<'_> {
         }
         self.loop_contexts[level].view_inputs=slots;self.loop_contexts[level].view_resources=resources;
     }
-    pub(super) fn close_view_context(&mut self,context:&mut LoopContext,natural:Option<usize>,nonempty:bool)->Result<()> {
+    pub(super) fn close_view_context(&mut self,context:&mut LoopContext)->Result<()> {
         let Some(scope)=context.view_scope else{return Ok(());};
         let mut sources=Vec::new();
         for slot in &context.view_inputs {
@@ -143,21 +143,6 @@ impl Builder<'_> {
         }
         let data_value=view::resource_borrow;
         let mut definitions = sources.clone();
-        let natural = if nonempty { natural } else { None };
-        let mut continued = BTreeMap::new();
-        if let Some(natural) = natural {
-            let env = &context.exits[natural].env;
-            for slot in &context.view_inputs {
-                if let InputSlot::Value { component, .. } = slot {
-                    let proof = slot.value_proof(env).unwrap();
-                    for input in proof.view_borrow_ref(*component).into_iter().flat_map(|borrow| borrow.inputs.iter()) {
-                        if input.level == scope {
-                            continued.entry(input.index).or_insert_with(Borrow::default);
-                        }
-                    }
-                }
-            }
-        }
         for state in &context.continues {
             for (index, slot) in context.view_inputs.iter().enumerate() {
                 let value = match slot {
@@ -165,19 +150,6 @@ impl Builder<'_> {
                     InputSlot::Data { name, path, .. } => state.env.get(name).and_then(|b| data_at(b, path)).map(&data_value).unwrap_or_default(),
                 };
                 definitions[index].union(&value);
-                if let Some(continued) = continued.get_mut(&index) {
-                    continued.union(&value);
-                }
-            }
-        }
-        if let Some(natural) = natural {
-            for slot in &context.view_inputs {
-                if let InputSlot::Value { component, .. } = slot {
-                    let proof = slot.value_proof_mut(&mut context.exits[natural].env).unwrap();
-                    let borrow = proof.view_borrow(*component)
-                        .project_loop_inputs(scope, |index| Some(&continued[&index]));
-                    proof.set_view_borrow(*component, borrow);
-                }
             }
         }
         // 直接自身边不向循环来源的最小不动点贡献新来源。
@@ -201,7 +173,6 @@ impl Builder<'_> {
         for (index,definition)in definitions.into_iter().enumerate(){
             let input=LoopInput{level:scope,index};let definition=resolve(definition,&direct,&sources);
             direct[index]=definition==sources[index];
-            if matches!(context.view_inputs[index],InputSlot::Value{..})&&!definition.pending(){sources[index]=definition.clone();direct[index]=true;}
             let resource=match &context.view_inputs[index] {
                 InputSlot::Data{name,path,..}=>Some(view_contracts::LoopResource{name:name.clone(),path:path.clone()}),
                 _=>None,
@@ -236,7 +207,7 @@ impl Builder<'_> {
         Ok(())
     }
     pub(super) fn finish_view_condition(&mut self)->Result<()> {
-        let mut context=self.loop_contexts.pop().unwrap();self.close_view_context(&mut context,None,false)
+        let mut context=self.loop_contexts.pop().unwrap();self.close_view_context(&mut context)
     }
 
     pub(super) async fn application_iteration_elements(&mut self, exit: &mut LoopState, source: Option<&application::DataReference>, index: &Value, limit: &Value)->Result<()> {
@@ -671,7 +642,7 @@ impl Builder<'_> {
         nonempty:bool,
         range: Option<(&Value, &Value)>,
     )->Result<(bool,effects::LoopWrites)>{
-        let mut context=self.loop_contexts.pop().unwrap();let natural_index=context.exits.len();
+        let mut context=self.loop_contexts.pop().unwrap();
         let terminal = range.filter(|_| !context.initial && natural.is_some()
             && context.entry.env.values().any(|b| matches!(b, Binding::ApplicationData(_))))
             .map(|(begin, limit)| {
@@ -783,7 +754,7 @@ impl Builder<'_> {
         }
         let has_natural = natural.is_some();
         context.exits.extend(natural);
-        self.close_view_context(&mut context, has_natural.then_some(natural_index), nonempty)?;
+        self.close_view_context(&mut context)?;
         let guards = if context.exits.len() == 2 && has_natural
             && let Some((entered, paths)) = terminal
             && paths.iter().all(Option::is_none)
