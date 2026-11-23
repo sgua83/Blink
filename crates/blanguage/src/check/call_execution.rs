@@ -317,3 +317,65 @@ impl<'a> Builder<'a>{
   }
  }
 }
+
+#[derive(Clone,Copy)]
+#[repr(C)]struct DomainParameterCursor{index:u64,phase:u32}
+#[repr(C)]struct DomainParameterFacts{
+ parameters:u64,argument:u32,access:Access,actual_access:Access,dataset:u32,acceleration:u32,counted:u32,same:u32,present:u32,
+ expected_count:Count,actual_count:Count,previous:Access,
+}
+#[repr(u32)]enum DomainParameterNeed{Parameter,Texture,InvalidTexture,InvalidAcceleration,DatasetType,InvalidDataset,Shape,InvalidShape,InvalidAccess,ValueType,InvalidValue,BindData,BindRoot,AliasParameter,Previous,InvalidAlias,Complete}
+#[repr(C)]struct DomainParameterStep{cursor:DomainParameterCursor,need:DomainParameterNeed}
+unsafe extern "C"{#[link_name="bootstrap.call_execution::domain_parameter_step"]fn domain_parameter_step(cursor:DomainParameterCursor,facts:DomainParameterFacts)->DomainParameterStep;}
+
+pub(super) async fn domain_parameters(
+ world:&World,program:&Program,instance:&crate::generics::Instance,args:Expressions,roots:Vec<Root>,caller:&Source,span:Span,
+)->Result<BTreeMap<String,Root>>{
+ let callee=&instance.definition;let declared=callee.function.params();
+ let mut parameters=instance.parameters(world).zip(args).zip(roots);let mut aliases=declared.iter();
+ let mut cursor=DomainParameterCursor{index:0,phase:0};
+ let mut facts=DomainParameterFacts{parameters:declared.len()as u64,argument:0,access:Access::Value,actual_access:Access::Value,dataset:0,acceleration:0,counted:0,same:0,present:0,expected_count:Count::default(),actual_count:Count::default(),previous:Access::Value};
+ let mut parameter:Option<Param>=None;let mut argument:Option<Expr>=None;let mut root:Option<Root>=None;let mut binding=None;let mut alias=None;
+ let mut child=BTreeMap::new();let mut used=BTreeMap::new();
+ loop{let step=unsafe{domain_parameter_step(cursor,DomainParameterFacts{..facts})};cursor=step.cursor;match step.need{
+  DomainParameterNeed::Parameter=>{
+   let((pending,source),value)=parameters.next().unwrap();let p=unsafe{world.call(pending).await}?;
+   facts.access=p.access;facts.dataset=u32::from(p.ty.dataset);facts.acceleration=u32::from(p.ty.name=="acceleration");facts.counted=u32::from(p.ty.count.is_some());
+   facts.argument=match &value{
+    Root::Data(index,access)=>{binding=Some(*index);facts.actual_access=*access;facts.actual_count=program.buffers[*index].count.into();4},
+    Root::Acceleration(_)=>1,Root::Texture(index)=>{binding=Some(*index);2},Root::Uniform(_)|Root::Literal(..)=>3,
+   };
+   parameter=Some(p);argument=Some(source);root=Some(value);
+  },
+  DomainParameterNeed::Texture=>{
+   let p=parameter.as_ref().unwrap();let resource=&program.textures[binding.unwrap()];
+   facts.present=u32::from(unsafe{world.call(texture::compatible(world,p,resource,resource.count,(&callee.source,&callee.module,&callee.imports))).await}?);
+  },
+  DomainParameterNeed::InvalidTexture=>return caller.fail(argument.as_ref().unwrap().span(),"B239","纹理资源与只读纹理参数的维度／形状／格式不匹配"),
+  DomainParameterNeed::InvalidAcceleration=>return caller.fail(argument.as_ref().unwrap().span(),"B182","加速资源的类型或访问权限不匹配"),
+  need@(DomainParameterNeed::DatasetType|DomainParameterNeed::ValueType)=>{
+   let p=parameter.as_ref().unwrap();let ty=unsafe{world.call(world.ty(&p.ty,&callee.source,p.span,&callee.module,&callee.imports)).await}?;
+   facts.same=u32::from(match need{
+    DomainParameterNeed::DatasetType=>ty==program.buffers[binding.unwrap()].ty,
+    _=>match root.as_ref().unwrap(){Root::Uniform(index)=>ty==program.uniforms[*index].ty,Root::Literal(actual,..)=>ty==*actual,_=>false},
+   });
+  },
+  DomainParameterNeed::InvalidDataset=>return caller.fail(argument.as_ref().unwrap().span(),"B115","数据集类型不匹配"),
+  DomainParameterNeed::Shape=>{
+   let p=parameter.as_ref().unwrap();facts.expected_count=unsafe{world.call(world.shape(&p.ty.count,&callee.source,p.span,&callee.module,&callee.imports)).await}?.into();
+  },
+  DomainParameterNeed::InvalidShape=>return caller.fail(argument.as_ref().unwrap().span(),"B167","调用方没有声明子程序需要的数据形状"),
+  DomainParameterNeed::InvalidAccess=>return caller.fail(argument.as_ref().unwrap().span(),"B116","子程序请求了调用方没有的数据访问权限"),
+  DomainParameterNeed::InvalidValue=>return caller.fail(argument.as_ref().unwrap().span(),"B117","标量参数类型不匹配"),
+  DomainParameterNeed::BindData=>{let p=parameter.take().unwrap();child.insert(p.name,Root::Data(binding.unwrap(),p.access));},
+  DomainParameterNeed::BindRoot=>{let p=parameter.take().unwrap();child.insert(p.name,root.take().unwrap());},
+  DomainParameterNeed::AliasParameter=>{
+   let p=aliases.next().unwrap();facts.access=p.access();alias=match child.get(p.name()){Some(Root::Data(index,_))=>Some((*index,p.access())),_=>None};facts.present=u32::from(alias.is_some());
+  },
+  DomainParameterNeed::Previous=>{
+   let(index,access)=alias.unwrap();let previous=used.insert(index,access);facts.present=u32::from(previous.is_some());if let Some(previous)=previous{facts.previous=previous;}
+  },
+  DomainParameterNeed::InvalidAlias=>return caller.fail(span,"B118","同一数据集通过多个参数别名进入可写子程序"),
+  DomainParameterNeed::Complete=>return Ok(child),
+ }}
+}

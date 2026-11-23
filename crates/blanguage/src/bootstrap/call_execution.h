@@ -36,3 +36,9 @@ extern "C" InlineCursor inline_start() on cpu;
 extern "C" InlineStep inline_step(InlineCursor state,InlineFacts facts) on cpu;
 extern "C" u32 environment_plain(address iterator,u32 facts,EnvironmentHost host) on cpu requires nonzero(host.next) requires nonzero(host.borrows) requires nonzero(host.owns) requires nonzero(host.facts);
 extern "C" u32 keep_position(address iterator,address position,PositionHost host) on cpu requires nonzero(host.next);
+
+struct DomainParameterCursor {u64 index;u32 phase;};
+struct DomainParameterFacts {u64 parameters;ArgumentKind argument;CallAccess access;CallAccess actual_access;u32 dataset;u32 acceleration;u32 counted;u32 same;u32 present;Count expected_count;Count actual_count;CallAccess previous;};
+enum DomainParameterNeed:u32 {Parameter=0;Texture=1;InvalidTexture=2;InvalidAcceleration=3;DatasetType=4;InvalidDataset=5;Shape=6;InvalidShape=7;InvalidAccess=8;ValueType=9;InvalidValue=10;BindData=11;BindRoot=12;AliasParameter=13;Previous=14;InvalidAlias=15;Complete=16;};
+struct DomainParameterStep {DomainParameterCursor cursor;DomainParameterNeed need;};
+extern "C" DomainParameterStep domain_parameter_step(DomainParameterCursor state,DomainParameterFacts facts) on cpu;
