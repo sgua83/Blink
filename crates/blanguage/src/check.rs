@@ -2288,10 +2288,12 @@ impl<'a> Builder<'a> {
         if breaking {
             self.emit_loop_break();
         } else {
-            if let Some(Some((_, slot, _))) = self.iterators.last() {
-                self.advance_iterator(*slot)?;
-            }
-            unsafe { self.world.call(self.check_application_loop(s.span())).await }?;
+            let cursor = if let Some(Some((_, slot, _))) = self.iterators.last() {
+                Some(self.advance_iterator(*slot)?)
+            } else {
+                None
+            };
+            unsafe { self.world.call(self.check_application_loop(s.span(),cursor)).await }?;
             self.emit(InstKind::Continue);
             self.flow = Flow::CONTINUE;
         }
@@ -3448,14 +3450,14 @@ impl<'a> Builder<'a> {
 
         Ok(())
     }
-    fn advance_iterator(&mut self, slot: usize) -> Result<()> {
+    fn advance_iterator(&mut self, slot: usize) -> Result<Value> {
         let source=self.loop_cursor().unwrap();
         let one=self.constant(Scalar::U32,1);
         let mut value=self.binary("+",source,one,self.scope.span(),None)?;
         let (_, _, limit) = self.iterators.last().unwrap().as_ref().unwrap();
         value.proof.mark_domain(0, IndexDomain::Upper(limit.identity(), 0));
         self.emit(InstKind::StoreLocal(slot,value.regs[0]));
-        self.capture_loop_cursor(value);Ok(())
+        Ok(value)
     }
     #[inline(never)]
     async fn seek_statement(&mut self, name: &str, position: &Expr, span: Span) -> Result<()> {
@@ -3478,8 +3480,7 @@ impl<'a> Builder<'a> {
             return Ok(());
         }
         self.emit(InstKind::StoreLocal(slot, value.regs[0]));
-        self.capture_loop_cursor(value);
-        unsafe { self.world.call(self.check_application_loop(span)).await }?;
+        unsafe { self.world.call(self.check_application_loop(span,Some(value))).await }?;
         self.emit(InstKind::Continue);
         self.flow = Flow::CONTINUE;
 

@@ -469,15 +469,8 @@ impl Builder<'_> {
             match &self.env[name]{Binding::Value(value)=>value.clone(),_=>cursor.clone()}
         })
     }
-    pub(super) fn capture_loop_cursor(&mut self, value: Value) {
-        if let Some((_,cursor))=self.loop_contexts.last_mut().and_then(|context|context.iterator.as_mut()) {
-            *cursor=value.clone();
-
-        }
-    }
-    fn loop_compatibility_inputs(&self) -> (bounds::Clause, BTreeMap<ValueIdentity, bounds::Proof>) {
+    fn loop_compatibility_inputs(&self,cursor:Option<&Value>) -> (bounds::Clause, BTreeMap<ValueIdentity, bounds::Proof>) {
         let context = self.loop_contexts.last().unwrap();
-        let cursor = context.iterator.as_ref().map(|(_, cursor)| cursor);
         let inputs = context.control_source.bindings_from(cursor, |name| {
             self.env.get(name).filter(|_| context.carries_binding(name))
         });
@@ -491,9 +484,9 @@ impl Builder<'_> {
         (path, inputs)
     }
 
-    pub(super) async fn check_application_loop(&mut self, span: Span) -> Result<()> {
+    pub(super) async fn check_application_loop(&mut self, span: Span,cursor:Option<Value>) -> Result<()> {
         if self.loop_contexts.last().unwrap().initial {
-            let state = self.loop_state();
+            let state = self.loop_state(cursor);
             self.loop_contexts.last_mut().unwrap().continues.push(state);
             return Ok(());
         }
@@ -513,7 +506,7 @@ impl Builder<'_> {
                     );
                 }
                 if result.ownership == application::Ownership::Owned {
-                    let (path, inputs) = compatibility.get_or_insert_with(|| self.loop_compatibility_inputs());
+                    let (path, inputs) = compatibility.get_or_insert_with(|| self.loop_compatibility_inputs(cursor.as_ref()));
                     if !unsafe { self.world.call(before.loop_compatible(
                         result, self, span, path, inputs,
                     )).await }? {
@@ -532,14 +525,14 @@ impl Builder<'_> {
                     );
                 }
                 if before.ownership != application::Ownership::Moved {
-                    let (path, inputs) = compatibility.get_or_insert_with(|| self.loop_compatibility_inputs());
+                    let (path, inputs) = compatibility.get_or_insert_with(|| self.loop_compatibility_inputs(cursor.as_ref()));
                     if !unsafe { self.world.call(before.loop_compatible(data, self, span, path, inputs)).await }? {
                         return self.fail(span,"B266","循环继续前须归还入口及其拥有子资源相同的 CPU／GPU 存储位置；在循环内完成配对的显式传输");
                     }
                 }
             }
         }
-        let state = self.loop_state();
+        let state = self.loop_state(cursor);
         self.loop_contexts.last_mut().unwrap().continues.push(state);
         Ok(())
     }
@@ -599,7 +592,7 @@ impl Builder<'_> {
             view_inputs: Vec::new(),view_resources: BTreeMap::new(),view_scope:None,
         });
     }
-    pub(super) fn loop_state(&self) -> LoopState {
+    pub(super) fn loop_state(&self,cursor:Option<Value>) -> LoopState {
         let context=self.loop_contexts.last().unwrap();
         LoopState {
             path: self.path.clone(),
@@ -611,7 +604,7 @@ impl Builder<'_> {
                 .collect(),
             initialized: self.application_initialization_state(),
             control: self.control_uniform,
-            cursor: context.iterator.as_ref().map(|(_,cursor)|cursor.clone()),
+            cursor,
         }
     }
     fn restore_initial_edge(&mut self, state: LoopState) {
@@ -663,7 +656,7 @@ impl Builder<'_> {
     }
     pub(super) fn emit_loop_break(&mut self) {
         self.emit(InstKind::Break);
-        let state = self.loop_state();
+        let state = self.loop_state(self.loop_contexts.last().unwrap().iterator.as_ref().map(|(_,cursor)|cursor.clone()));
         self.loop_contexts.last_mut().unwrap().exits.push(state);
         self.flow = Flow::BREAK;
     }
@@ -943,7 +936,7 @@ where
     *flow = flow.union(builder.flow);
     let mut code = std::mem::take(&mut builder.code);
     if builder.flow.continues() {
-        exits.push(builder.loop_state());
+        exits.push(builder.loop_state(builder.loop_contexts.last().unwrap().iterator.as_ref().map(|(_,cursor)|cursor.clone())));
         code.push(Inst::new(InstKind::Break));
     }
     Ok(code)
@@ -1081,11 +1074,11 @@ impl Builder<'_> {
      self.finish_view_condition()?;self.refine_bounds(partition.as_ref().unwrap(),false);let code=std::mem::replace(&mut self.code,outer);self.code.extend(code);return Ok(());
     },
     WhileNeed::SaveBody=>{body_env=Some(std::mem::replace(&mut self.env,condition_env.take().unwrap()));body_path=Some(std::mem::replace(&mut self.path,condition_path.take().unwrap()));environment=None;},
-    WhileNeed::Natural=>{self.refine_bounds(partition.as_ref().unwrap(),false);natural=Some(self.loop_state());},
+    WhileNeed::Natural=>{self.refine_bounds(partition.as_ref().unwrap(),false);natural=Some(self.loop_state(None));},
     WhileNeed::RestoreBody=>{self.env=body_env.take().unwrap();self.path=body_path.take().unwrap();facts.outer=u32::from(self.control_uniform);},
     WhileNeed::EnterBody=>{control=self.control_uniform;self.control_uniform=step.uniform!=0;self.loop_depth+=1;self.iterators.push(None);},
     WhileNeed::Body=>{unsafe {self.world.call(self.block(body)).await}?;body_flow=self.flow;facts.continuing=u32::from(body_flow.continues());facts.flow=u32::from(body_flow.0);},
-    WhileNeed::CheckBackedge=>{unsafe {self.world.call(self.check_application_loop(condition.span())).await}?;},
+    WhileNeed::CheckBackedge=>{unsafe {self.world.call(self.check_application_loop(condition.span(),None)).await}?;},
     WhileNeed::Split=>{self.iterators.pop();self.loop_depth-=1;code=Some(self.code.split_off(condition_prefix));condition_code=Some(std::mem::take(&mut self.code));},
     WhileNeed::Expand=>{
      let(expanded,flow)=unsafe {self.world.call(self.expand_initial_loop(code.take().unwrap(),body_flow.continues(),async |builder,_|{
@@ -1134,7 +1127,7 @@ impl Builder<'_> {
   let mut facts=ForFacts {initial:u32::from(initial),minimum:begin.minimum(),maximum:limit.maximum(),same:u32::from(begin.identity()==limit.identity()),seeks:0,domain,present:0,outer:0,begin_uniform:u32::from(begin.uniform),limit_uniform:u32::from(limit.uniform),flow:0,next:0,nonempty:u32::from(nonempty)};
   let mut empty=None;let mut empty_item=None;let mut environment=None;let mut index=0;let mut cursor=None;let mut body_cursor=None;let mut test=None;let mut condition=None;
   let mut binding=None;let mut place=None;let mut input=bounds::Proof::default();let mut component=0;let mut natural=None;let mut iteration=None;
-  let mut limit=Some(limit);let mut control=false;let mut body_flow=Flow::NEXT;let mut body_reachable=false;let mut code=None;let mut outer=None;let mut writes=None;
+  let mut limit=Some(limit);let mut control=false;let mut body_flow=Flow::NEXT;let mut body_reachable=false;let mut successor=None;let mut code=None;let mut outer=None;let mut writes=None;
   loop {
    let step=unsafe {for_step(state,facts)};state=step.cursor;let initial=state.initial!=0;
    match step.need {
@@ -1177,18 +1170,18 @@ impl Builder<'_> {
     ForNeed::Writes=>{let mut writes=unsafe {self.world.call(self.loop_writes(None,body,borrowed,initial)).await}?;writes.locals.insert(slot);self.loop_contexts.last_mut().unwrap().writes=writes;},
     ForNeed::Capture=>{
      self.loop_contexts.last_mut().unwrap().control_source=view_contracts::LoopControl::capture(test.as_ref().unwrap(),&self.env,Some(body_cursor.as_ref().unwrap().clone()));
-     self.capture_loop_cursor(body_cursor.take().unwrap());
+     self.loop_contexts.last_mut().unwrap().iterator.as_mut().unwrap().1=body_cursor.take().unwrap();
      iteration=Some(match self.env.get(&name) {Some(Binding::Value(value))=>ownership::ApplicationIndex::of(value),_=>ownership::ApplicationIndex::of(cursor.as_ref().unwrap())});
     },
     ForNeed::Natural=>{
-     let condition_env=self.env.clone();let condition_path=self.path.clone();let partition=Arc::new(bounds::Condition::of(test.as_ref().unwrap()));self.refine_bounds(&partition,false);natural=Some(self.loop_state());
+     let condition_env=self.env.clone();let condition_path=self.path.clone();let partition=Arc::new(bounds::Condition::of(test.as_ref().unwrap()));self.refine_bounds(&partition,false);natural=Some(self.loop_state(self.loop_contexts.last().unwrap().iterator.as_ref().map(|(_,cursor)|cursor.clone())));
      self.env=condition_env;self.path=condition_path;self.refine_bounds(&partition,true);facts.outer=u32::from(self.control_uniform);
     },
     ForNeed::Retain=>{unsafe {self.world.call(self.retain_loop_bounds(None,body,environment.as_ref().unwrap(),&mut natural.as_mut().unwrap().env)).await}?;facts.outer=u32::from(self.control_uniform);},
     ForNeed::EnterBody=>{environment=None;control=self.control_uniform;self.control_uniform=step.uniform!=0;self.loop_depth+=1;self.iterators.push(Some((name.clone(),slot,limit.take().unwrap())));},
     ForNeed::Body=>{unsafe {self.world.call(self.block(body)).await}?;body_flow=self.flow;body_reachable=body_flow.continues();facts.flow=u32::from(body_flow.0);},
-    ForNeed::Advance=>self.advance_iterator(slot)?,
-    ForNeed::CheckBackedge=>{unsafe {self.world.call(self.check_application_loop(span)).await}?;},
+    ForNeed::Advance=>successor=Some(self.advance_iterator(slot)?),
+    ForNeed::CheckBackedge=>{unsafe {self.world.call(self.check_application_loop(span,Some(successor.take().unwrap()))).await}?;},
     ForNeed::EndBody=>{let(_,_,value)=self.iterators.pop().unwrap().unwrap();limit=Some(value);self.loop_depth-=1;},
     ForNeed::IterationElements=>{
      let source=match &cursor_specification.data {Some(CursorSource::ApplicationData(data))=>Some(data),_=>None};
