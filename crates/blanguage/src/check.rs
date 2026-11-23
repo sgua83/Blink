@@ -3066,13 +3066,13 @@ unsafe extern "C" {
 #[repr(C)]struct IndexPositionFacts {present:u32,bounded:u32,current:u32,same_domain:u32,same_shape:u32,access:u32,whole:u32,appending:u32}
 #[repr(u32)]enum IndexPositionNeed {Application,ApplicationIndex,TileBinding,TileIndex,Dataset,View,Index,Type,Bounds,BadBounds,Append,BadAppend,Domain,Element,Empty}
 #[repr(C)]struct IndexPositionStep {cursor:SourceValueCursor,need:IndexPositionNeed,name:crate::syntax::wire::Text,writable:u32}
-#[repr(C)]struct PositionAppend {present:u32,output:u64,count:u64}
+#[repr(C)]struct PositionAppend {present:u32,output:u64,count:u64,word:u32}
 #[repr(C)]struct ViewPositionFacts {placed:u32,present:u32,dataset:u32,indexed:u32,continuing:u32,kind:u32,array:u32}
 #[repr(u32)]enum ViewPositionNeed {Parent,DatasetType,IndexedType,Reference,ApplicationIndex,Read,Returned,Kind,OwnedArray,HoldDataset,HoldOwned,Ordinary,ArrayType,Materialize,ArrayPlace,View,Empty}
 #[repr(C)]struct ViewPositionStep {cursor:SourceValueCursor,need:ViewPositionNeed}
 type PositionAppendIter<'a>=std::collections::btree_map::Iter<'a,usize,PrefixCount>;
 unsafe extern "C" fn next_position_append(entries:*mut PositionAppendIter<'_>)->PositionAppend {
- match unsafe {&mut *entries}.next(){Some((output,count))=>PositionAppend {present:1,output:*output as u64,count:count.binding as u64},None=>PositionAppend {present:0,output:0,count:0}}
+ match unsafe {&mut *entries}.next(){Some((output,count))=>PositionAppend {present:1,output:*output as u64,count:count.binding as u64,word:count.word},None=>PositionAppend {present:0,output:0,count:0,word:0}}
 }
 unsafe extern "C" {
  #[link_name="bootstrap.function_body::source_place_step"]fn source_place_step(cursor:SourceValueCursor,source:crate::syntax::wire::SignatureNode,present:u32)->SourcePlaceStep;

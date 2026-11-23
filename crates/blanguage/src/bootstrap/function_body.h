@@ -239,7 +239,7 @@ struct IndexPositionFacts {u32 present;u32 bounded;u32 current;u32 same_domain;u
 enum IndexPositionNeed:u32 {Application=0;ApplicationIndex=1;TileBinding=2;TileIndex=3;Dataset=4;View=5;Index=6;Type=7;Bounds=8;BadBounds=9;Append=10;BadAppend=11;Domain=12;Element=13;Empty=14;};
 struct IndexPositionStep {LocalCursor cursor;IndexPositionNeed need;Text name;u32 writable;};
 extern "C" IndexPositionStep index_position_step(LocalCursor cursor,SignatureNode source,IndexPositionFacts facts) on cpu;
-struct PositionAppend {u32 present;u64 output;u64 count;};
+struct PositionAppend {u32 present;u64 output;u64 count;u32 word;};
 extern "C" u32 position_append(u64 binding,address context,cfn<PositionAppend,address> next) on cpu requires nonzero(next);
 struct ViewPositionFacts {u32 placed;u32 present;u32 dataset;u32 indexed;u32 continuing;u32 kind;u32 array;};
 enum ViewPositionNeed:u32 {Parent=0;DatasetType=1;IndexedType=2;Reference=3;ApplicationIndex=4;Read=5;Returned=6;Kind=7;OwnedArray=8;HoldDataset=9;HoldOwned=10;Ordinary=11;ArrayType=12;Materialize=13;ArrayPlace=14;View=15;Empty=16;};
@@ -297,3 +297,9 @@ struct TextureSampleFacts {u64 count;u32 present;u32 array;u32 texture_uniform;u
 enum TextureSampleNeed:u32 {BadArguments=0;Texture=1;Shape=2;BadArray=3;Coordinate=4;Lod=5;Binding=6;CoordinateType=7;LodType=8;Proof=9;Registers=10;Emit=11;Value=12;Empty=13;};
 struct TextureSampleStep {LocalCursor cursor;TextureSampleNeed need;u32 uniform;};
 extern "C" TextureSampleStep texture_sample_step(LocalCursor cursor,TextureSampleFacts facts) on cpu;
+
+struct AppendFacts {u32 present;u32 access;u32 views;u32 target_domain;u32 count_domain;u64 target;u64 count;u64 target_components;u64 value_components;u64 registers;};
+enum AppendNeed:u32 {BadArguments=0;Binding=1;BadOutput=2;Count=3;TargetAccess=4;CountAccess=5;Initialized=6;Shape=7;CountType=8;BadContract=9;Value=10;Empty=11;ValueType=12;BadViews=13;Domains=14;BadDomain=15;Pairs=16;BadPair=17;Pair=18;Read=19;Writes=20;CountRegion=21;MemoryField=22;Cross=23;Register=24;ValueField=25;Emit=26;Complete=27;};
+struct AppendStep {Cursor cursor;AppendNeed need;Text name;};
+extern "C" AppendStep append_step(Cursor cursor,StorageView source,Slice arguments,AppendFacts facts) on cpu;
+extern "C" u32 append_pair_conflict(u64 target,u64 count,u32 word,address context,cfn<PositionAppend,address> next) on cpu requires nonzero(next);

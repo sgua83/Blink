@@ -1177,3 +1177,44 @@ extern "C" TextureSampleStep texture_sample_step(LocalCursor cursor,TextureSampl
  if(c.phase==9){c.phase=10;return TextureSampleStep(c,TextureSampleNeed::Emit,0);}
  return TextureSampleStep(c,TextureSampleNeed::Value,facts.texture_uniform!=0&&facts.coordinate_uniform!=0&&facts.lod_uniform!=0 ? 1 : 0);
 }
+
+extern "C" AppendStep append_step(Cursor cursor,StorageView source,Slice arguments,AppendFacts facts) on cpu {
+ Cursor c=cursor;AppendStep result=AppendStep(c,AppendNeed::BadOutput,Text(0,Span(0u64,0u64)));
+ if(c.phase==0){
+  if(arguments.count!=3u64){result.need=AppendNeed::BadArguments;return result;}
+  ExprNode first=binding_node<ExprNode>(source.nodes,binding_member(source.nodes,arguments,0u64));
+  match(first.kind){
+   ExprKind::Name(value){result.cursor.phase=1;result.need=AppendNeed::Binding;result.name=value;}
+   ExprKind::Number(unused){}ExprKind::StaticU32(unused){}ExprKind::Bool(unused){}ExprKind::Member(unused){}ExprKind::Index(unused){}
+   ExprKind::Call(unused){}ExprKind::Invoke(unused){}ExprKind::Construct(unused){}ExprKind::Specialize(unused){}ExprKind::FunctionRef(unused){}
+   ExprKind::Cooperate(unused){}ExprKind::Target(unused){}ExprKind::Unary(unused){}ExprKind::Binary(unused){}ExprKind::Select(unused){}
+  }
+  return result;
+ }
+ if(c.phase==1){if(facts.present==0){return result;}c.phase=2;result.cursor=c;result.need=AppendNeed::Count;return result;}
+ if(c.phase==2){c.phase=3;result.cursor=c;result.need=AppendNeed::TargetAccess;return result;}
+ if(c.phase==3){if(facts.access!=2&&facts.access!=3){result.need=AppendNeed::BadContract;return result;}c.phase=4;result.cursor=c;result.need=AppendNeed::CountAccess;return result;}
+ if(c.phase==4){if(facts.access!=2&&facts.access!=3){result.need=AppendNeed::BadContract;return result;}if(facts.access==2){c.phase=5;result.cursor=c;result.need=AppendNeed::Initialized;return result;}c.phase=6;}
+ if(c.phase==5){if(facts.present==0){result.need=AppendNeed::BadContract;return result;}c.phase=6;}
+ if(c.phase==6){if(facts.target==facts.count){result.need=AppendNeed::BadContract;return result;}c.phase=7;result.cursor=c;result.need=AppendNeed::Shape;return result;}
+ if(c.phase==7){if(facts.present==0){result.need=AppendNeed::BadContract;return result;}c.phase=8;result.cursor=c;result.need=AppendNeed::CountType;return result;}
+ if(c.phase==8){if(facts.present==0){result.need=AppendNeed::BadContract;return result;}c.phase=9;result.cursor=c;result.need=AppendNeed::Value;return result;}
+ if(c.phase==9){if(facts.present==0){result.need=AppendNeed::Empty;return result;}c.phase=10;result.cursor=c;result.need=AppendNeed::ValueType;return result;}
+ if(c.phase==10){if(facts.views!=0){result.need=AppendNeed::BadViews;return result;}c.phase=11;result.cursor=c;result.need=AppendNeed::Domains;return result;}
+ if(c.phase==11){if(facts.target_domain!=0||facts.count_domain!=0){result.need=AppendNeed::BadDomain;return result;}c.phase=12;result.cursor=c;result.need=AppendNeed::Pairs;return result;}
+ if(c.phase==12){if(facts.present!=0){result.need=AppendNeed::BadPair;return result;}c.phase=13;result.cursor=c;result.need=AppendNeed::Pair;return result;}
+ if(c.phase==13){c.phase=14;result.cursor=c;result.need=AppendNeed::Read;return result;}
+ if(c.phase==14){c.phase=15;result.cursor=c;result.need=AppendNeed::Writes;return result;}
+ if(c.phase==15){c.phase=16;result.cursor=c;result.need=AppendNeed::CountRegion;return result;}
+ if(c.phase==16){c.index=0u64;c.phase=17;}
+ if(c.phase==18){c.index+=1u64;c.phase=17;}
+ if(c.phase==17){if(c.index<facts.target_components){c.phase=18;result.cursor=c;result.need=AppendNeed::MemoryField;return result;}c.phase=19;result.cursor=c;result.need=AppendNeed::Cross;return result;}
+ if(c.phase==19){c.phase=20;result.cursor=c;result.need=AppendNeed::Register;return result;}
+ if(c.phase==20){c.index=0u64;c.phase=21;}
+ if(c.phase==22){c.index+=1u64;c.phase=21;}
+ if(c.phase==21){if(c.index<facts.value_components&&c.index<facts.registers){c.phase=22;result.cursor=c;result.need=AppendNeed::ValueField;return result;}c.phase=23;result.cursor=c;result.need=AppendNeed::Emit;return result;}
+ result.need=AppendNeed::Complete;return result;
+}
+extern "C" u32 append_pair_conflict(u64 target,u64 count,u32 word,address context,cfn<PositionAppend,address> next) on cpu requires nonzero(next) {
+ while(true){PositionAppend item=next(context);if(item.present==0){return 0;}if((item.output==target||item.count==count)&&(item.output!=target||item.count!=count||item.word!=word)){return 1;}}
+}
