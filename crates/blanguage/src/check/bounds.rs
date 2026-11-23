@@ -2304,6 +2304,17 @@ impl Clause {
                     None => Clause::impossible(),
                 };
                 let mapped = clauses.get_mut(&root.key()).unwrap();
+                let numeric = match &**numeric.0 {
+                    ClauseNode::Facts(bounds) if !bounds.is_empty() => {
+                        let missing = condition_graph::missing_call_bounds(mapped, bounds);
+                        if missing.is_empty() {
+                            continue;
+                        }
+                        // These are the remaining members of the already checked numeric clause.
+                        Clause::node(ClauseNode::Facts(missing))
+                    }
+                    _ => numeric,
+                };
                 *mapped = Clause::both(mapped, &numeric);
             }
         }

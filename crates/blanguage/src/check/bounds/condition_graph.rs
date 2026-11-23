@@ -1,6 +1,6 @@
 //! B owns the complete shared-Clause overlap search. The original query owns
 //! its physical containers and borrows immutable Clause/Fact fields until return.
-use super::{Clause, ClauseNode, Fact, Facts, Proof, ValueIdentity, contradictory};
+use super::{Clause, ClauseNode, Fact, Facts, IndexDomain, Proof, ValueIdentity, internal_conflicts};
 use std::{
     borrow::Borrow,
     collections::{BTreeMap, HashMap, btree_set},
@@ -194,6 +194,7 @@ struct Context<'a> {
     alternatives: Vec<(Alternative<'a>, Checkpoint)>,
     facts: Facts,
     additions: Vec<Fact>,
+    conflict_input: Option<internal_conflicts::Prepared>,
     required: Option<btree_set::Iter<'a, Fact>>,
     next_fact: Option<(Fact, Option<btree_set::Iter<'a, Fact>>)>,
 }
@@ -218,6 +219,7 @@ impl<'a> Context<'a> {
             alternatives: Vec::new(),
             facts: Facts::new(),
             additions: Vec::new(),
+            conflict_input: None,
             required: None,
             next_fact: None,
         }
@@ -225,7 +227,17 @@ impl<'a> Context<'a> {
     fn add(&mut self, fact: Fact) {
         if self.facts.insert(fact) {
             self.additions.push(fact);
+            if let Some(input) = self.conflict_input_after(&fact) {
+                input.insert(fact);
+            }
         }
+    }
+
+    fn conflict_input_after(&mut self, fact: &Fact) -> Option<&mut internal_conflicts::Prepared> {
+        if matches!(fact, Fact::Equal(..) | Fact::Index(_, IndexDomain::Computed(_))) {
+            self.conflict_input = None;
+        }
+        self.conflict_input.as_mut()
     }
 }
 unsafe fn context<'a, 'b>(slot: Slot) -> &'a mut Context<'b> {
@@ -349,6 +361,78 @@ pub(super) fn project_call<P: Borrow<Proof>>(
     };
     (ctx.results, private != 0)
 }
+
+struct CallBounds<'a> {
+    ordered: std::slice::Iter<'a, &'a Clause>,
+    candidates: &'a Facts,
+    indices: HashMap<usize, usize>,
+    words: usize,
+    covered: Vec<u64>,
+}
+impl CallBounds<'_> {
+    fn offset(&self, key: usize) -> usize {
+        self.indices[&key] * self.words
+    }
+}
+unsafe extern "C" fn bound_next(slot: Slot) -> CallProjectionNode {
+    let ctx = unsafe { &mut *slot.cast::<CallBounds<'_>>() };
+    ctx.ordered.next().map_or_else(CallProjectionNode::default, |&clause| CallProjectionNode {
+        original: std::ptr::from_ref(clause).cast(),
+        node: source_node(clause),
+    })
+}
+unsafe extern "C" fn bound_impossible(slot: Slot, source: Borrowed) {
+    let ctx = unsafe { &mut *slot.cast::<CallBounds<'_>>() };
+    let at = ctx.offset(unsafe { call_key(source) });
+    ctx.covered[at..at + ctx.words].fill(u64::MAX);
+}
+unsafe extern "C" fn bound_leaf(slot: Slot, source: Borrowed, facts: Borrowed, _: u32) -> u32 {
+    let ctx = unsafe { &mut *slot.cast::<CallBounds<'_>>() };
+    let at = ctx.offset(unsafe { call_key(source) });
+    let present = unsafe { &*facts.cast::<Facts>() };
+    for (index, fact) in ctx.candidates.iter().enumerate() {
+        if present.contains(fact) {
+            ctx.covered[at + index / 64] |= 1 << (index % 64);
+        }
+    }
+    0
+}
+unsafe extern "C" fn bound_pair<const EITHER: bool>(slot: Slot, source: Borrowed, left: Borrowed, right: Borrowed) {
+    let ctx = unsafe { &mut *slot.cast::<CallBounds<'_>>() };
+    let out = ctx.offset(unsafe { call_key(source) });
+    let left = ctx.offset(unsafe { call_key(left) });
+    let right = ctx.offset(unsafe { call_key(right) });
+    for i in 0..ctx.words {
+        let a = ctx.covered[left + i];
+        let b = ctx.covered[right + i];
+        ctx.covered[out + i] = if EITHER { a & b } else { a | b };
+    }
+}
+pub(super) fn missing_call_bounds(root: &Clause, candidates: &Facts) -> Facts {
+    let ordered = Clause::ordered([root]);
+    let words = candidates.len().div_ceil(64);
+    let mut ctx = CallBounds {
+        ordered: ordered.iter(),
+        candidates,
+        indices: ordered.iter().enumerate().map(|(i, clause)| (clause.key(), i)).collect(),
+        words,
+        covered: vec![0; ordered.len() * words],
+    };
+    unsafe {
+        project_call_graph(std::ptr::from_mut(&mut ctx).cast(), CallProjectionHost {
+            next: bound_next,
+            impossible: bound_impossible,
+            facts: bound_leaf,
+            both: bound_pair::<false>,
+            either: bound_pair::<true>,
+        });
+    }
+    let at = ctx.offset(root.key());
+    candidates.iter().enumerate().filter_map(|(index, value)| {
+        (ctx.covered[at + index / 64] & (1 << (index % 64)) == 0).then_some(*value)
+    }).collect()
+}
+
 unsafe extern "C" fn define(slot: Slot, id: usize, kind: u32, left: usize, right: usize) {
     let context = unsafe { context(slot) };
     let view = &mut context.nodes[id].view;
@@ -402,6 +486,7 @@ unsafe extern "C" fn reset_search(slot: Slot) {
     context.alternatives.clear();
     context.facts.clear();
     context.additions.clear();
+    context.conflict_input = None;
     context.required = None;
     context.next_fact = None;
 }
@@ -425,6 +510,9 @@ unsafe extern "C" fn undo_addition(slot: Slot) {
     let context = unsafe { context(slot) };
     let fact = context.additions.pop().unwrap();
     context.facts.remove(&fact);
+    if let Some(input) = context.conflict_input_after(&fact) {
+        input.remove(fact);
+    }
 }
 unsafe extern "C" fn add_leaf(slot: Slot, id: usize) {
     let context = unsafe { context(slot) };
@@ -434,7 +522,10 @@ unsafe extern "C" fn add_leaf(slot: Slot, id: usize) {
     }
 }
 unsafe extern "C" fn conflict(slot: Slot) -> u32 {
-    u32::from(contradictory(&unsafe { context(slot) }.facts))
+    let context = unsafe { context(slot) };
+    let input = context.conflict_input
+        .get_or_insert_with(|| internal_conflicts::Prepared::new(&context.facts));
+    u32::from(input.conflict(&context.facts))
 }
 unsafe extern "C" fn add_next(slot: Slot) -> u32 {
     let context = unsafe { context(slot) };

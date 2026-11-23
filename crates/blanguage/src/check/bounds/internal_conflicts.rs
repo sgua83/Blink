@@ -2,7 +2,7 @@
 use super::fact_fields::{ScalarView, same_scalar, scalar};
 use super::{Fact, Facts, Scalar, ValueIdentity, fact_fields, map_domain};
 use std::{
-    collections::{BTreeMap, btree_set},
+    collections::{BTreeMap, btree_map, btree_set},
     ffi::c_void,
     ptr,
 };
@@ -10,49 +10,100 @@ use std::{
 type Borrowed = *const c_void;
 type Slot = *mut c_void;
 
+type Roots = BTreeMap<ValueIdentity, ValueIdentity>;
+type OrderedFacts = BTreeMap<Fact, usize>;
+
+fn canonical(fact: Fact, roots: &Roots) -> Option<Fact> {
+    let root = |id| roots.get(&id).copied().unwrap_or(id);
+    Some(match fact {
+        Fact::Equal(..) => return None,
+        Fact::NotEqual(a, b) => {
+            let (a, b) = (root(a), root(b));
+            Fact::NotEqual(a.min(b), a.max(b))
+        }
+        Fact::Below(a, b, strict, scalar) => Fact::Below(root(a), root(b), strict, scalar),
+        Fact::Predicate(predicate, truth) => {
+            Fact::Predicate(predicate.map(|id| Some(root(id))).unwrap(), truth)
+        }
+        Fact::Index(id, domain) => Fact::Index(root(id), map_domain(domain, &root)),
+        Fact::Outside(id, domain) => Fact::Outside(root(id), map_domain(domain, &root)),
+        value => value.identity().map(|id| value.at(root(id))).unwrap_or(value),
+    })
+}
+
+fn ordered_facts(facts: &Facts, roots: &Roots) -> OrderedFacts {
+    let mut ordered = OrderedFacts::new();
+    for fact in facts.iter().copied().filter_map(|fact| canonical(fact, roots)) {
+        *ordered.entry(fact).or_default() += 1;
+    }
+    ordered
+}
+
+struct Aliases {
+    roots: Roots,
+    facts: OrderedFacts,
+}
+
+pub(super) struct Prepared {
+    aliases: Option<Aliases>,
+}
+
+impl Prepared {
+    pub(super) fn new(facts: &Facts) -> Self {
+        let roots = super::equality_roots(facts);
+        let aliases = if roots.is_empty() {
+            None
+        } else {
+            Some(Aliases { facts: ordered_facts(facts, &roots), roots })
+        };
+        Self { aliases }
+    }
+
+    pub(super) fn insert(&mut self, fact: Fact) {
+        if let Some(aliases) = &mut self.aliases
+            && let Some(key) = canonical(fact, &aliases.roots)
+        {
+            *aliases.facts.entry(key).or_default() += 1;
+        }
+    }
+
+    pub(super) fn remove(&mut self, fact: Fact) {
+        if let Some(aliases) = &mut self.aliases
+            && let Some(key) = canonical(fact, &aliases.roots)
+            && let btree_map::Entry::Occupied(mut entry) = aliases.facts.entry(key)
+        {
+            if *entry.get() == 1 {
+                entry.remove();
+            } else {
+                *entry.get_mut() -= 1;
+            }
+        }
+    }
+
+    pub(super) fn conflict(&self, facts: &Facts) -> bool {
+        match &self.aliases {
+            Some(aliases) => check(Input::aliased(&aliases.facts)),
+            None => check(Input::direct(facts)),
+        }
+    }
+}
+
 enum Input<'a> {
     Direct {
         facts: &'a Facts,
         cursor: btree_set::Iter<'a, Fact>,
     },
     Aliased {
-        facts: Vec<Fact>,
-        cursor: usize,
+        facts: &'a OrderedFacts,
+        cursor: btree_map::Keys<'a, Fact, usize>,
     },
 }
 impl<'a> Input<'a> {
-    fn new(facts: &'a Facts, roots: &BTreeMap<ValueIdentity, ValueIdentity>) -> Self {
-        if roots.is_empty() {
-            return Self::Direct {
-                facts,
-                cursor: facts.iter(),
-            };
-        }
-        let root = |id| roots.get(&id).copied().unwrap_or(id);
-        let canonical = |fact: Fact| match fact {
-            Fact::Equal(a, b) => Fact::equal(root(a), root(b)),
-            Fact::NotEqual(a, b) => {
-                let (a, b) = (root(a), root(b));
-                Fact::NotEqual(a.min(b), a.max(b))
-            }
-            Fact::Below(a, b, strict, scalar) => Fact::Below(root(a), root(b), strict, scalar),
-            Fact::Predicate(predicate, truth) => {
-                Fact::Predicate(predicate.map(|id| Some(root(id))).unwrap(), truth)
-            }
-            Fact::Index(id, domain) => Fact::Index(root(id), map_domain(domain, &root)),
-            Fact::Outside(id, domain) => Fact::Outside(root(id), map_domain(domain, &root)),
-            value => value
-                .identity()
-                .map(|id| value.at(root(id)))
-                .unwrap_or(value),
-        };
-        let mut values: Vec<_> = facts.iter().copied().map(canonical).collect();
-        values.sort_unstable();
-        values.dedup();
-        Self::Aliased {
-            facts: values,
-            cursor: 0,
-        }
+    fn direct(facts: &'a Facts) -> Self {
+        Self::Direct { facts, cursor: facts.iter() }
+    }
+    fn aliased(facts: &'a OrderedFacts) -> Self {
+        Self::Aliased { facts, cursor: facts.keys() }
     }
     fn select(&self, query: Fact, preceding: bool) -> Option<&Fact> {
         match self {
@@ -64,18 +115,12 @@ impl<'a> Input<'a> {
                 }
             }
             Self::Aliased { facts, .. } => {
-                let index = facts.partition_point(|fact| {
-                    if preceding {
-                        *fact <= query
-                    } else {
-                        *fact < query
-                    }
-                });
-                if preceding {
-                    index.checked_sub(1).and_then(|index| facts.get(index))
+                let entry = if preceding {
+                    facts.range(..=query).next_back()
                 } else {
-                    facts.get(index)
-                }
+                    facts.range(query..).next()
+                };
+                entry.map(|(fact, _)| fact)
             }
         }
     }
@@ -84,17 +129,11 @@ unsafe fn input<'a, 'b>(slot: Slot) -> &'a mut Input<'b> {
     unsafe { &mut *slot.cast::<Input<'b>>() }
 }
 unsafe extern "C" fn next(slot: Slot) -> fact_fields::Fields {
-    match unsafe { input(slot) } {
-        Input::Direct { cursor, .. } => cursor
-            .next()
-            .map(fact_fields::Fields::from)
-            .unwrap_or_default(),
-        Input::Aliased { facts, cursor } => {
-            let value = facts.get(*cursor);
-            *cursor += usize::from(value.is_some());
-            value.map(fact_fields::Fields::from).unwrap_or_default()
-        }
-    }
+    let fact = match unsafe { input(slot) } {
+        Input::Direct { cursor, .. } => cursor.next(),
+        Input::Aliased { cursor, .. } => cursor.next(),
+    };
+    fact.map(fact_fields::Fields::from).unwrap_or_default()
 }
 unsafe extern "C" fn select(
     slot: Slot,
@@ -133,8 +172,16 @@ unsafe extern "C" {
     #[link_name = "bootstrap.condition_graph::internal_conflict"]
     fn evaluate(context: Slot, integers: Scalars, host: Host) -> u32;
 }
-pub(super) fn conflict(facts: &Facts, roots: &BTreeMap<ValueIdentity, ValueIdentity>) -> bool {
-    let mut input = Input::new(facts, roots);
+pub(super) fn conflict(facts: &Facts, roots: &Roots) -> bool {
+    if roots.is_empty() {
+        check(Input::direct(facts))
+    } else {
+        let facts = ordered_facts(facts, roots);
+        check(Input::aliased(&facts))
+    }
+}
+
+fn check(mut input: Input<'_>) -> bool {
     let integers = [Scalar::U32, Scalar::I32, Scalar::U64, Scalar::I64];
     let scalars = Scalars {
         values: integers.each_ref().map(|value| ptr::from_ref(value).cast()),
