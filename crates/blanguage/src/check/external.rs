@@ -222,57 +222,43 @@ impl Builder<'_> {
         span: Span,
         c_abi: bool,
     ) -> Result<Vec<(Ty, CallReference)>> {
-        let expose_writes = access.writes() && expose_writes;
-        if c_abi { return Ok(vec![(place.ty().clone(), unsafe { self.world.call(self.external_reference(place, access, expose_writes, span)).await }?)]); }
-        let ty = place.ty();
-        match function_inputs::reference_layout(ty, false).form {
-            function_inputs::ReferenceForm::Empty => return Ok(Vec::new()),
-            function_inputs::ReferenceForm::Whole => {
-                let reference = self.call_reference(place, access, expose_writes, span)?;
-                return Ok(vec![(ty.clone(), reference)]);
-            }
-            function_inputs::ReferenceForm::Split => {}
-        }
-        if let Place::Reference { address: ReferenceAddress::Components(_), .. } = place {
-            return ty.components.iter().enumerate().map(|(component, &(scalar, _))| {
-                let ty = Ty::scalar(scalar);
-                let part = place.clone().project(ty.clone(), &[component]);
-                Ok((ty, self.call_reference(&part, access, expose_writes, span)?))
-            }).collect();
-        }
-        let Some(words) = reference_words(place, &self.locals) else {
-            return self.fail(span, "B264", "原生借用需要CPU普通值的实际位置");
-        };
-        let base = self.call_reference(place, access, expose_writes, span)?;
-        Ok(ty.components.iter().zip(words).map(|(&(scalar, _), word)| {
-            let mut address = base.clone();
-            address.word = word;
-            (Ty::scalar(scalar), address)
-        }).collect())
+        let ty=place.ty();let mut cursor=CCallCursor{index:0,phase:0};
+        let mut facts=NativeReferenceFacts{c_abi:u32::from(c_abi),access,expose_writes:u32::from(expose_writes),form:0,components:0,present:0};
+        let mut result=Vec::new();
+        let base=loop{let index=cursor.index as usize;let step=unsafe{native_reference_step(cursor,facts,ty.components.len() as u64)};cursor=step.cursor;let expose=step.expose_writes!=0;match step.need{
+            NativeReferenceNeed::CAbi=>return Ok(vec![(ty.clone(),unsafe{self.world.call(self.external_reference(place,access,expose,span)).await}?)]),
+            NativeReferenceNeed::Layout=>facts.form=function_inputs::reference_layout(ty,false).form as u32,
+            NativeReferenceNeed::Empty=>return Ok(Vec::new()),
+            NativeReferenceNeed::Whole=>return Ok(vec![(ty.clone(),self.call_reference(place,access,expose,span)?)]),
+            NativeReferenceNeed::Components=>facts.components=u32::from(matches!(place,Place::Reference{address:ReferenceAddress::Components(_),..})),
+            NativeReferenceNeed::Part=>{let ty=Ty::scalar(ty.components[index].0);let part=place.clone().project(ty.clone(),&[index]);result.push((ty,self.call_reference(&part,access,expose,span)?));},
+            NativeReferenceNeed::Words=>facts.present=u32::from(reference_word_source(place,&self.locals).is_some()),
+            NativeReferenceNeed::Invalid=>return self.fail(span,"B264","原生借用需要CPU普通值的实际位置"),
+            NativeReferenceNeed::Base=>break self.call_reference(place,access,expose,span)?,
+            NativeReferenceNeed::Complete=>return Ok(result),
+            NativeReferenceNeed::Word=>unsafe{std::hint::unreachable_unchecked()},
+        }};
+        let mut words=reference_word_source(place,&self.locals).unwrap().iter();let count=ty.components.len().min(words.len()) as u64;
+        loop{let index=cursor.index as usize;let step=unsafe{native_reference_step(cursor,facts,count)};cursor=step.cursor;match step.need{
+            NativeReferenceNeed::Word=>{let mut address=base.clone();address.word=words.next().unwrap();result.push((Ty::scalar(ty.components[index].0),address));},
+            NativeReferenceNeed::Complete=>return Ok(result),
+            _=>unsafe{std::hint::unreachable_unchecked()},
+        }}
     }
     pub(super) async fn reference_is_contiguous(&self, place: &Place, span: Span) -> Result<bool> {
-        let ty = place.ty();
-        if let Place::Reference {
-            address: ReferenceAddress::Components(_),
-            scope: Some(scope),
-            words,
-            ..
-        } = place
-        {
-            if ty.components.len() == 1 {
-                return Ok(true);
-            }
-            return unsafe { self.world.call(contracts::contiguous_assumed(self, *scope, words, ty, span)).await };
+        fn physical<I:Iterator<Item=ReferenceOffset>>(first:u32,alignment:u32,count:usize,mut offsets:I)->bool{
+            unsafe extern "C" fn next<I:Iterator<Item=ReferenceOffset>>(context:*mut std::ffi::c_void)->ReferenceOffset{unsafe{&mut*context.cast::<I>()}.next().unwrap()}
+            unsafe{physical_contiguous(first,alignment,count as u64,(&mut offsets as *mut I).cast(),next::<I>)!=0}
         }
-        let Some(words) = reference_word_source(place, &self.locals) else {
-            return self.fail(span, "B264", "C ABI借用需要CPU普通值的实际位置");
-        };
-        let mut words = words.iter();
-        let first = words.next().unwrap();
-        Ok(first % ty.align == 0
-            && std::iter::once(first).chain(words)
-                .zip(&ty.components)
-                .all(|(word, (_, offset))| word.checked_sub(first) == Some(*offset)))
+        let ty=place.ty();let symbolic=u32::from(matches!(place,Place::Reference{address:ReferenceAddress::Components(_),scope:Some(_),..}));
+        let mut cursor=ReadInputCursor{phase:0};let mut present=0;let mut source=None;
+        loop{let step=unsafe{contiguous_step(cursor,symbolic,ty.components.len() as u64,present)};cursor=step.cursor;match step.need{
+            ContiguousNeed::True=>return Ok(true),
+            ContiguousNeed::Assumed=>{let Place::Reference{scope:Some(scope),words,..}=place else{unsafe{std::hint::unreachable_unchecked()}};return unsafe{self.world.call(contracts::contiguous_assumed(self,*scope,words,ty,span)).await};},
+            ContiguousNeed::Words=>{source=reference_word_source(place,&self.locals);present=u32::from(source.is_some());},
+            ContiguousNeed::Invalid=>return self.fail(span,"B264","C ABI借用需要CPU普通值的实际位置"),
+            ContiguousNeed::Physical=>{let mut words=source.take().unwrap().iter();let first=words.next().unwrap();let count=(words.len()+1).min(ty.components.len());let offsets=std::iter::once(first).chain(words).zip(&ty.components).map(|(word,(_,offset))|ReferenceOffset{word,offset:*offset});return Ok(physical(first,ty.align,count,offsets));},
+        }}
     }
 }
 
@@ -297,3 +283,15 @@ unsafe extern "C" {#[link_name="bootstrap.call_arguments::call_reference_step"]f
 #[repr(u32)]enum CCallNeed {BadTarget,Inputs,Inspect,Scoped,Materialize,Value,CaptureName,CapturedValue,PlainValue,Reference,Address,WrittenReference,PlainReference,Invalid,Prove,Registers,Memory,Emit,Stop,Returned,WrittenInspect,Guards,Forget,AllGuards,Assign,Initialize,Finish,Complete}
 #[repr(C)]struct CCallStep {cursor:CCallCursor,need:CCallNeed,reading:u32}
 unsafe extern "C" {#[link_name="bootstrap.call_arguments::c_call_step"]fn c_call_step(cursor:CCallCursor,facts:CCallFacts,arguments:u64,written:u64,held:u64)->CCallStep;}
+
+#[repr(C)]#[derive(Clone,Copy)]struct NativeReferenceFacts{c_abi:u32,access:Access,expose_writes:u32,form:u32,components:u32,present:u32}
+#[repr(u32)]enum NativeReferenceNeed{CAbi,Layout,Empty,Whole,Components,Part,Words,Invalid,Base,Word,Complete}
+#[repr(C)]struct NativeReferenceStep{cursor:CCallCursor,need:NativeReferenceNeed,expose_writes:u32}
+#[repr(u32)]enum ContiguousNeed{Words,Assumed,True,Invalid,Physical}
+#[repr(C)]struct ContiguousStep{cursor:ReadInputCursor,need:ContiguousNeed}
+#[repr(C)]struct ReferenceOffset{word:u32,offset:u32}
+unsafe extern "C"{
+ #[link_name="bootstrap.call_arguments::native_reference_step"]fn native_reference_step(cursor:CCallCursor,facts:NativeReferenceFacts,count:u64)->NativeReferenceStep;
+ #[link_name="bootstrap.call_arguments::contiguous_step"]fn contiguous_step(cursor:ReadInputCursor,symbolic:u32,components:u64,present:u32)->ContiguousStep;
+ #[link_name="bootstrap.call_arguments::physical_contiguous"]fn physical_contiguous(first:u32,alignment:u32,count:u64,context:*mut std::ffi::c_void,next:unsafe extern "C" fn(*mut std::ffi::c_void)->ReferenceOffset)->u32;
+}

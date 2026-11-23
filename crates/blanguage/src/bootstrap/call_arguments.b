@@ -341,3 +341,24 @@ extern "C" CCallStep c_call_step(CCallCursor cursor,CCallFacts facts,u64 argumen
  if(c.index<held){c.index+=1u64;return CCallStep(c,CCallNeed::Finish,0);}
  return CCallStep(c,CCallNeed::Complete,0);
 }
+
+extern "C" NativeReferenceStep native_reference_step(CCallCursor cursor,NativeReferenceFacts facts,u64 count) on cpu {
+ CCallCursor c=cursor;u32 expose=writes(facts.access)&&facts.expose_writes!=0 ? 1 : 0;
+ if(c.phase==0){if(facts.c_abi!=0){return NativeReferenceStep(c,NativeReferenceNeed::CAbi,expose);}c.phase=1;return NativeReferenceStep(c,NativeReferenceNeed::Layout,expose);}
+ if(c.phase==1){if(facts.form==0){return NativeReferenceStep(c,NativeReferenceNeed::Empty,expose);}if(facts.form==1){return NativeReferenceStep(c,NativeReferenceNeed::Whole,expose);}c.phase=2;return NativeReferenceStep(c,NativeReferenceNeed::Components,expose);}
+ if(c.phase==2){if(facts.components!=0){c.phase=3;}else{c.phase=4;return NativeReferenceStep(c,NativeReferenceNeed::Words,expose);}}
+ if(c.phase==3){if(c.index<count){c.index+=1u64;return NativeReferenceStep(c,NativeReferenceNeed::Part,expose);}return NativeReferenceStep(c,NativeReferenceNeed::Complete,expose);}
+ if(c.phase==4){if(facts.present==0){return NativeReferenceStep(c,NativeReferenceNeed::Invalid,expose);}c.phase=5;return NativeReferenceStep(c,NativeReferenceNeed::Base,expose);}
+ if(c.index<count){c.index+=1u64;return NativeReferenceStep(c,NativeReferenceNeed::Word,expose);}
+ return NativeReferenceStep(c,NativeReferenceNeed::Complete,expose);
+}
+extern "C" ContiguousStep contiguous_step(Phase cursor,u32 symbolic,u64 components,u32 present) on cpu {
+ Phase c=cursor;if(c.phase==0){if(symbolic!=0){return ContiguousStep(c,components==1u64 ? ContiguousNeed::True : ContiguousNeed::Assumed);}c.phase=1;return ContiguousStep(c,ContiguousNeed::Words);}
+ return ContiguousStep(c,present!=0 ? ContiguousNeed::Physical : ContiguousNeed::Invalid);
+}
+extern "C" u32 physical_contiguous(u32 first,u32 alignment,u64 count,address context,cfn<ReferenceOffset,address> next) on cpu
+ requires nonzero(alignment) requires nonzero(next) {
+ if(first%alignment!=0){return 0;}
+ u64 i=0u64;while(i<count){ReferenceOffset part=next(context);if(part.word<first||part.word-first!=part.offset){return 0;}i+=1u64;}
+ return 1;
+}

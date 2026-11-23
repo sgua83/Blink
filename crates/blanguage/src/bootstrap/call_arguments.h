@@ -71,3 +71,14 @@ struct CCallFacts {u32 cpu;u32 never;u32 contract;u32 capture_names;u32 referenc
 enum CCallNeed:u32 {BadTarget=0;Inputs=1;Inspect=2;Scoped=3;Materialize=4;Value=5;CaptureName=6;CapturedValue=7;PlainValue=8;Reference=9;Address=10;WrittenReference=11;PlainReference=12;Invalid=13;Prove=14;Registers=15;Memory=16;Emit=17;Stop=18;Returned=19;WrittenInspect=20;Guards=21;Forget=22;AllGuards=23;Assign=24;Initialize=25;Finish=26;Complete=27;};
 struct CCallStep {CCallCursor cursor;CCallNeed need;u32 reading;};
 extern "C" CCallStep c_call_step(CCallCursor cursor,CCallFacts facts,u64 arguments,u64 written,u64 held) on cpu;
+
+struct NativeReferenceFacts {u32 c_abi;CallAccess access;u32 expose_writes;u32 form;u32 components;u32 present;};
+enum NativeReferenceNeed:u32 {CAbi=0;Layout=1;Empty=2;Whole=3;Components=4;Part=5;Words=6;Invalid=7;Base=8;Word=9;Complete=10;};
+struct NativeReferenceStep {CCallCursor cursor;NativeReferenceNeed need;u32 expose_writes;};
+extern "C" NativeReferenceStep native_reference_step(CCallCursor cursor,NativeReferenceFacts facts,u64 count) on cpu;
+enum ContiguousNeed:u32 {Words=0;Assumed=1;True=2;Invalid=3;Physical=4;};
+struct ContiguousStep {Phase cursor;ContiguousNeed need;};
+struct ReferenceOffset {u32 word;u32 offset;};
+extern "C" ContiguousStep contiguous_step(Phase cursor,u32 symbolic,u64 components,u32 present) on cpu;
+extern "C" u32 physical_contiguous(u32 first,u32 alignment,u64 count,address context,cfn<ReferenceOffset,address> next) on cpu
+ requires nonzero(alignment) requires nonzero(next);
