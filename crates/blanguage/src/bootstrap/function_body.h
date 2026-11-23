@@ -303,3 +303,8 @@ enum AppendNeed:u32 {BadArguments=0;Binding=1;BadOutput=2;Count=3;TargetAccess=4
 struct AppendStep {Cursor cursor;AppendNeed need;Text name;};
 extern "C" AppendStep append_step(Cursor cursor,StorageView source,Slice arguments,AppendFacts facts) on cpu;
 extern "C" u32 append_pair_conflict(u64 target,u64 count,u32 word,address context,cfn<PositionAppend,address> next) on cpu requires nonzero(next);
+
+struct ClearPrefixFacts {u32 present;u32 target_access;u32 count_access;u32 single;u64 target;u64 count;u32 word;};
+enum ClearPrefixNeed:u32 {BadArguments=0;Binding=1;BadOutput=2;Count=3;Shape=4;BadContract=5;Written=6;Relation=7;Origin=8;RegisterU32=9;Constant=10;Store=11;WriteCount=12;WriteRegion=13;StageMap=14;Output=15;};
+struct ClearPrefixStep {LocalCursor cursor;ClearPrefixNeed need;Text name;usize reg;u32 end;u64 bits;u32 boundary;};
+extern "C" ClearPrefixStep clear_prefix_step(LocalCursor cursor,StorageView source,Slice arguments,ClearPrefixFacts facts) on cpu;

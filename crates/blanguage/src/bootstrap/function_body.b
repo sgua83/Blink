@@ -1218,3 +1218,30 @@ extern "C" AppendStep append_step(Cursor cursor,StorageView source,Slice argumen
 extern "C" u32 append_pair_conflict(u64 target,u64 count,u32 word,address context,cfn<PositionAppend,address> next) on cpu requires nonzero(next) {
  while(true){PositionAppend item=next(context);if(item.present==0){return 0;}if((item.output==target||item.count==count)&&(item.output!=target||item.count!=count||item.word!=word)){return 1;}}
 }
+
+extern "C" ClearPrefixStep clear_prefix_step(LocalCursor cursor,StorageView source,Slice arguments,ClearPrefixFacts facts) on cpu {
+ LocalCursor c=cursor;ClearPrefixStep result=ClearPrefixStep(c,ClearPrefixNeed::BadOutput,Text(0,Span(0u64,0u64)),0u64,0,0u64,0);
+ if(c.phase==0){
+  if(arguments.count!=2u64){result.need=ClearPrefixNeed::BadArguments;return result;}
+  ExprNode first=binding_node<ExprNode>(source.nodes,binding_member(source.nodes,arguments,0u64));
+  match(first.kind){
+   ExprKind::Name(value){result.cursor.phase=1;result.need=ClearPrefixNeed::Binding;result.name=value;}
+   ExprKind::Number(unused){}ExprKind::StaticU32(unused){}ExprKind::Bool(unused){}ExprKind::Member(unused){}ExprKind::Index(unused){}
+   ExprKind::Call(unused){}ExprKind::Invoke(unused){}ExprKind::Construct(unused){}ExprKind::Specialize(unused){}ExprKind::FunctionRef(unused){}
+   ExprKind::Cooperate(unused){}ExprKind::Target(unused){}ExprKind::Unary(unused){}ExprKind::Binary(unused){}ExprKind::Select(unused){}
+  }
+  return result;
+ }
+ if(c.phase==1){if(facts.present==0){return result;}c.phase=2;result.cursor=c;result.need=ClearPrefixNeed::Count;return result;}
+ if(c.phase==2){if((facts.target_access!=2&&facts.target_access!=3)||(facts.count_access!=2&&facts.count_access!=3)||facts.target==facts.count){result.need=ClearPrefixNeed::BadContract;return result;}c.phase=3;result.cursor=c;result.need=ClearPrefixNeed::Shape;return result;}
+ if(c.phase==3){if(facts.single==0){result.need=ClearPrefixNeed::BadContract;return result;}c.phase=4;result.cursor=c;result.need=ClearPrefixNeed::Written;result.end=facts.word+4;return result;}
+ if(c.phase==4){c.phase=5;result.cursor=c;result.need=ClearPrefixNeed::Relation;return result;}
+ if(c.phase==5){c.phase=6;result.cursor=c;result.need=ClearPrefixNeed::Origin;return result;}
+ if(c.phase==6){c.phase=7;result.cursor=c;result.need=ClearPrefixNeed::RegisterU32;return result;}
+ if(c.phase==7){c.phase=8;result.cursor=c;result.need=ClearPrefixNeed::Constant;return result;}
+ if(c.phase==8){c.phase=9;result.cursor=c;result.need=ClearPrefixNeed::Store;return result;}
+ if(c.phase==9){c.phase=10;result.cursor=c;result.need=ClearPrefixNeed::WriteCount;return result;}
+ if(c.phase==10){c.phase=11;result.cursor=c;result.need=ClearPrefixNeed::WriteRegion;result.end=facts.word+4;return result;}
+ if(c.phase==11){c.phase=12;result.cursor=c;result.need=ClearPrefixNeed::StageMap;result.boundary=1;return result;}
+ result.need=ClearPrefixNeed::Output;return result;
+}
