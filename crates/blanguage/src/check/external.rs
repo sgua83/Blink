@@ -118,81 +118,49 @@ impl Builder<'_> {
     #[inline(never)]
     async fn c_call(&mut self, target: CallTarget, parameters: &[CallParameter], args: Vec<Argument>, result: Option<Ty>,
         never: bool, definition: Option<outputs::Contract<'_>>, span: Span, generated_origin: Option<Arc<GeneratedOrigin>>) -> Result<Option<Value>> {
-        if self.program.target != Target::Cpu { return self.fail(span, "B265", "C ABI调用只能在CPU位置执行"); }
-        let mut arguments = Vec::new();
-        let mut written = Vec::new();
-        let mut held = Vec::new();
-        let mut output_inputs = BTreeMap::new();
-        let (opaque, capture_names)=definition.map_or_else(
-            ||(Some(Access::InOut), BTreeSet::new()), |contract|contract.c_call_inputs(!never),
-        );
-        let mut memory=vec![(view::Borrow::source(view::Source::External),opaque)];
-        for (index, (parameter, arg)) in parameters.iter().zip(args).enumerate() {
-            let arg = if let Argument::Scoped { value, owner } = arg { held.push(owner); Argument::resource(value) } else { arg };
-            let arg = match arg {
-                Argument::Value(value) if matches!(&parameter.kind, CallParameterKind::Reference { access: Access::Read, .. }) =>
-                    Argument::Reference(self.materialize_array(value,None)),
-                other => other,
-            };
-            arguments.push(match (&parameter.kind, arg) {
-                (CallParameterKind::Value(ty), Argument::Value(value)) => {
-                    self.require_same(ty, &value.ty, span)?;
-                    memory[0].0.union(&self.address_contents(&value.ty,&value.proof));
-                    let captured=definition.filter(|_|!capture_names.is_empty())
-                        .map(|contract|contract.parameter_name(index))
-                        .filter(|name|capture_names.contains(name));
-                    let values=if let Some(name)=captured {
-                        let registers=value.regs.clone();
-                        output_inputs.insert(name,value);
-                        registers
-                    } else {
-                        value.regs
-                    };
-                    CallArgument::Value { #[cfg(feature = "compiler")] origin: None, dataset_borrow:None, ty: ty.clone(), values }
-                }
-                (CallParameterKind::Reference { ty, access }, Argument::Reference(owner)) => {
-                    if access.reads(){memory[0].0.union(&self.address_contents(ty,&owner.proof));}
-                    let place = owner.place;
-                    self.require_same(ty, place.ty(), span)?;
-                    let origin=unsafe { self.world.call(self.position_origin(&place,span)).await }?;
-                    memory.push((view::Borrow::source(view::Source::Position(Arc::new(origin))),Some(*access)));
-                    let address = unsafe { self.world.call(self.external_reference(&place, *access, access.writes(), span)).await }?;
-                    if access.writes() { written.push((index, place)); }
-                    CallArgument::Reference { #[cfg(feature = "compiler")] origin: None, ty: ty.clone(), access: *access, address }
-                }
-                _ => return self.fail(span, "B263", "C ABI实参只接收普通值及实际位置"),
-            });
-        }
-        if let Some(contract) = definition {
-            unsafe { self.world.call(contracts::prove_c_inputs(self, contract, &output_inputs, span)).await }?;
-        }
-        let values = result.iter().flat_map(|ty| ty.components.iter().map(|(scalar, _)| *scalar))
-            .map(|scalar| self.reg(scalar)).collect::<Vec<_>>();
-        let memory_use=unsafe { self.world.call(self.call_address_memory(memory,span)).await }?;
-        let kind=InstKind::Call(Call { failure:None, error:None, target, arguments, memory: Vec::new(), memory_use:Some(memory_use), result: result.clone(), values: values.clone() });
-        let first = self.code.len();
-        if let Some(origin)=generated_origin { self.code.push(Inst::generated(kind,origin)); }
-        else { self.emit(kind); }
-        if let Some(declaration) = definition.and_then(outputs::Contract::declaration_origin) {
-            let declaration = Arc::new(declaration);
-            for instruction in &mut self.code[first..] { instruction.reference_declaration(declaration.clone()); }
-        }
-        if never { self.flow = Flow::STOP; return Ok(None); }
-        let returned = result.clone().map(|ty| Value {
-            proof: bounds::Proof::default().with_external_borrows(&ty),
-            ty, regs: values.clone(), literal: false, uniform: false, constant: None,
-        });
-        for (index, place) in written {
-            let guards = if let Some(d) = definition {
-                let guards = unsafe { self.world.call(outputs::guards(self, d, index, place.ty(), &output_inputs, returned.as_ref())).await }?;
-                if outputs::declared(d, index) { self.forget_output_initialization(&place, span)?; }
-                guards
-            } else { vec![owned_presence::Presence::All; place.ty().components.len()] };
-            unsafe { self.world.call(self.assign_owned_proof(&place, bounds::Proof::default().with_external_borrows(place.ty()), false)).await }?;
-            self.initialize_output(&place, &guards);
-        }
-        for name in held { unsafe { self.world.call(self.finish_scoped_argument(&name, span)).await }?; }
-        Ok(returned)
+        fn kind(argument:&Argument)->CArgumentKind {match argument {Argument::Scoped{..}=>CArgumentKind::Scoped,Argument::Value(_)=>CArgumentKind::Value,Argument::Reference(_)=>CArgumentKind::Reference,_=>CArgumentKind::Other}}
+        let mut cursor=CCallCursor {index:0,phase:0};
+        let mut facts=CCallFacts {cpu:u32::from(self.program.target==Target::Cpu),never:u32::from(never),contract:u32::from(definition.is_some()),capture_names:0,reference:0,access:Access::Value,kind:CArgumentKind::Other,captured:0,declared:0};
+        let count=parameters.len().min(args.len()) as u64;let mut source=args.into_iter();
+        let mut arguments=Vec::new();let mut written=Vec::new();let mut held=Vec::new();let mut output_inputs=BTreeMap::new();
+        let mut memory=Vec::new();let mut capture_names=BTreeSet::new();let mut argument=None;let mut captured=None;
+        let mut place=None;let mut address=None;let mut values=Vec::new();let mut memory_use=None;
+        let mut target=Some(target);let mut generated_origin=generated_origin;
+        loop {let index=cursor.index as usize;let step=unsafe{c_call_step(cursor,facts,count,0,0)};cursor=step.cursor;match step.need {
+            CCallNeed::BadTarget=>return self.fail(span,"B265","C ABI调用只能在CPU位置执行"),
+            CCallNeed::Inputs=>{let(opaque,names)=definition.map_or_else(||(Some(Access::InOut),BTreeSet::new()),|contract|contract.c_call_inputs(!never));capture_names=names;facts.capture_names=u32::from(!capture_names.is_empty());memory.push((view::Borrow::source(view::Source::External),opaque));},
+            CCallNeed::Inspect=>{argument=source.next();facts.kind=kind(argument.as_ref().unwrap());facts.reference=u32::from(matches!(parameters[index].kind,CallParameterKind::Reference{..}));facts.access=match &parameters[index].kind{CallParameterKind::Value(_)=>Access::Value,CallParameterKind::Reference{access,..}=>*access};facts.captured=0;captured=None;},
+            CCallNeed::Scoped=>{let Argument::Scoped{value,owner}=argument.take().unwrap()else{unsafe{std::hint::unreachable_unchecked()}};held.push(owner);argument=Some(Argument::resource(value));facts.kind=kind(argument.as_ref().unwrap());},
+            CCallNeed::Materialize=>{let Argument::Value(value)=argument.take().unwrap()else{unsafe{std::hint::unreachable_unchecked()}};argument=Some(Argument::Reference(self.materialize_array(value,None)));facts.kind=CArgumentKind::Reference;},
+            CCallNeed::Value=>{let(CallParameterKind::Value(ty),Argument::Value(value))=(&parameters[index].kind,argument.as_ref().unwrap())else{unsafe{std::hint::unreachable_unchecked()}};self.require_same(ty,&value.ty,span)?;memory[0].0.union(&self.address_contents(&value.ty,&value.proof));},
+            CCallNeed::CaptureName=>{let name=definition.unwrap().parameter_name(index);facts.captured=u32::from(capture_names.contains(&name));captured=Some(name);},
+            CCallNeed::CapturedValue|CCallNeed::PlainValue=>{let Argument::Value(value)=argument.take().unwrap()else{unsafe{std::hint::unreachable_unchecked()}};let registers=if matches!(step.need,CCallNeed::CapturedValue){let registers=value.regs.clone();output_inputs.insert(captured.take().unwrap(),value);registers}else{value.regs};let CallParameterKind::Value(ty)=&parameters[index].kind else{unsafe{std::hint::unreachable_unchecked()}};arguments.push(CallArgument::Value{#[cfg(feature="compiler")]origin:None,dataset_borrow:None,ty:ty.clone(),values:registers});},
+            CCallNeed::Reference=>{let Argument::Reference(owner)=argument.take().unwrap()else{unsafe{std::hint::unreachable_unchecked()}};let CallParameterKind::Reference{ty,..}=&parameters[index].kind else{unsafe{std::hint::unreachable_unchecked()}};if step.reading!=0{memory[0].0.union(&self.address_contents(ty,&owner.proof));}place=Some(owner.place);self.require_same(ty,place.as_ref().unwrap().ty(),span)?;let origin=unsafe{self.world.call(self.position_origin(place.as_ref().unwrap(),span)).await}?;memory.push((view::Borrow::source(view::Source::Position(Arc::new(origin))),Some(facts.access)));},
+            CCallNeed::Address=>address=Some(unsafe{self.world.call(self.external_reference(place.as_ref().unwrap(),facts.access,facts.access.writes(),span)).await}?),
+            CCallNeed::WrittenReference|CCallNeed::PlainReference=>{let CallParameterKind::Reference{ty,access}=&parameters[index].kind else{unsafe{std::hint::unreachable_unchecked()}};if matches!(step.need,CCallNeed::WrittenReference){written.push((index,place.take().unwrap()));}else{place=None;}arguments.push(CallArgument::Reference{#[cfg(feature="compiler")]origin:None,ty:ty.clone(),access:*access,address:address.take().unwrap()});},
+            CCallNeed::Invalid=>return self.fail(span,"B263","C ABI实参只接收普通值及实际位置"),
+            CCallNeed::Prove=>unsafe{self.world.call(contracts::prove_c_inputs(self,definition.unwrap(),&output_inputs,span)).await}?,
+            CCallNeed::Registers=>values=result.iter().flat_map(|ty|ty.components.iter().map(|(scalar,_)|*scalar)).map(|scalar|self.reg(scalar)).collect(),
+            CCallNeed::Memory=>memory_use=Some(unsafe{self.world.call(self.call_address_memory(std::mem::take(&mut memory),span)).await}?),
+            CCallNeed::Emit=>{let kind=InstKind::Call(Call{failure:None,error:None,target:target.take().unwrap(),arguments:std::mem::take(&mut arguments),memory:Vec::new(),memory_use:memory_use.take(),result:result.clone(),values:values.clone()});let first=self.code.len();if let Some(origin)=generated_origin.take(){self.code.push(Inst::generated(kind,origin));}else{self.emit(kind);}if let Some(declaration)=definition.and_then(outputs::Contract::declaration_origin){let declaration=Arc::new(declaration);for instruction in &mut self.code[first..]{instruction.reference_declaration(declaration.clone());}}},
+            CCallNeed::Stop=>{self.flow=Flow::STOP;return Ok(None);},
+            CCallNeed::Returned=>break,
+            _=>unsafe{std::hint::unreachable_unchecked()},
+        }}
+        let returned=result.map(|ty|Value{proof:bounds::Proof::default().with_external_borrows(&ty),ty,regs:values,literal:false,uniform:false,constant:None});
+        let written_count=written.len() as u64;let held_count=held.len() as u64;let mut written=written.into_iter();let mut held=held.into_iter();
+        let mut output=None;let mut guards=Vec::new();
+        loop {let step=unsafe{c_call_step(cursor,facts,count,written_count,held_count)};cursor=step.cursor;match step.need {
+            CCallNeed::WrittenInspect=>output=written.next(),
+            CCallNeed::Guards=>{let(index,place)=output.as_ref().unwrap();let d=definition.unwrap();guards=unsafe{self.world.call(outputs::guards(self,d,*index,place.ty(),&output_inputs,returned.as_ref())).await}?;facts.declared=u32::from(outputs::declared(d,*index));},
+            CCallNeed::Forget=>self.forget_output_initialization(&output.as_ref().unwrap().1,span)?,
+            CCallNeed::AllGuards=>guards=vec![owned_presence::Presence::All;output.as_ref().unwrap().1.ty().components.len()],
+            CCallNeed::Assign=>{let place=&output.as_ref().unwrap().1;unsafe{self.world.call(self.assign_owned_proof(place,bounds::Proof::default().with_external_borrows(place.ty()),false)).await}?;},
+            CCallNeed::Initialize=>{let(_,place)=output.take().unwrap();self.initialize_output(&place,&guards);},
+            CCallNeed::Finish=>{let name=held.next().unwrap();unsafe{self.world.call(self.finish_scoped_argument(&name,span)).await}?;},
+            CCallNeed::Complete=>return Ok(returned),
+            _=>unsafe{std::hint::unreachable_unchecked()},
+        }}
     }
 
 }
@@ -322,3 +290,10 @@ unsafe extern "C" {
 #[repr(u32)]enum CallReferenceNeed {Kind,BadAtomic,Base,ElementFacts,Read,Write,Cross,Reference,Local,Element,Application,View,IndexedReference,IndexedLocal,IndexedElement,IndexedApplication,IndexedView,BadStorage,DataAccess,Complete}
 #[repr(C)]struct CallReferenceStep {cursor:ReadInputCursor,need:CallReferenceNeed}
 unsafe extern "C" {#[link_name="bootstrap.call_arguments::call_reference_step"]fn call_reference_step(cursor:ReadInputCursor,facts:CallReferenceFacts)->CallReferenceStep;}
+
+#[repr(C)]#[derive(Clone,Copy)]struct CCallCursor {index:u64,phase:u32}
+#[repr(u32)]#[derive(Clone,Copy)]enum CArgumentKind {Other,Value,Reference,Scoped}
+#[repr(C)]#[derive(Clone,Copy)]struct CCallFacts {cpu:u32,never:u32,contract:u32,capture_names:u32,reference:u32,access:Access,kind:CArgumentKind,captured:u32,declared:u32}
+#[repr(u32)]enum CCallNeed {BadTarget,Inputs,Inspect,Scoped,Materialize,Value,CaptureName,CapturedValue,PlainValue,Reference,Address,WrittenReference,PlainReference,Invalid,Prove,Registers,Memory,Emit,Stop,Returned,WrittenInspect,Guards,Forget,AllGuards,Assign,Initialize,Finish,Complete}
+#[repr(C)]struct CCallStep {cursor:CCallCursor,need:CCallNeed,reading:u32}
+unsafe extern "C" {#[link_name="bootstrap.call_arguments::c_call_step"]fn c_call_step(cursor:CCallCursor,facts:CCallFacts,arguments:u64,written:u64,held:u64)->CCallStep;}

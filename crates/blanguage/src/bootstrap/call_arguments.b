@@ -313,3 +313,31 @@ extern "C" CallReferenceStep call_reference_step(Phase cursor,CallReferenceFacts
  if(c.phase==10){c.phase=11;return CallReferenceStep(c,CallReferenceNeed::DataAccess);}
  return CallReferenceStep(c,CallReferenceNeed::Complete);
 }
+
+extern "C" CCallStep c_call_step(CCallCursor cursor,CCallFacts facts,u64 arguments,u64 written,u64 held) on cpu {
+ CCallCursor c=cursor;
+ if(c.phase==0){if(facts.cpu==0){return CCallStep(c,CCallNeed::BadTarget,0);}c.phase=1;return CCallStep(c,CCallNeed::Inputs,0);}
+ if(c.phase==1){if(c.index<arguments){c.phase=2;return CCallStep(c,CCallNeed::Inspect,0);}c.phase=20;if(facts.contract!=0){return CCallStep(c,CCallNeed::Prove,0);}}
+ if(c.phase==2){c.phase=3;if(facts.kind==CCallArgument::Scoped){return CCallStep(c,CCallNeed::Scoped,0);}}
+ if(c.phase==3){c.phase=4;if(facts.reference!=0&&facts.access==CallAccess::Read&&facts.kind==CCallArgument::Value){return CCallStep(c,CCallNeed::Materialize,0);}}
+ if(c.phase==4){
+  if(facts.reference==0&&facts.kind==CCallArgument::Value){c.phase=5;return CCallStep(c,CCallNeed::Value,0);}
+  if(facts.reference!=0&&facts.kind==CCallArgument::Reference){c.phase=10;return CCallStep(c,CCallNeed::Reference,reads(facts.access) ? 1 : 0);}
+  return CCallStep(c,CCallNeed::Invalid,0);
+ }
+ if(c.phase==5){c.phase=6;if(facts.contract!=0&&facts.capture_names!=0){return CCallStep(c,CCallNeed::CaptureName,0);}}
+ if(c.phase==6){c.index+=1u64;c.phase=1;return CCallStep(c,facts.captured!=0 ? CCallNeed::CapturedValue : CCallNeed::PlainValue,0);}
+ if(c.phase==10){c.phase=11;return CCallStep(c,CCallNeed::Address,0);}
+ if(c.phase==11){c.index+=1u64;c.phase=1;return CCallStep(c,writes(facts.access) ? CCallNeed::WrittenReference : CCallNeed::PlainReference,0);}
+ if(c.phase==20){c.phase=21;return CCallStep(c,CCallNeed::Registers,0);}
+ if(c.phase==21){c.phase=22;return CCallStep(c,CCallNeed::Memory,0);}
+ if(c.phase==22){c.phase=23;return CCallStep(c,CCallNeed::Emit,0);}
+ if(c.phase==23){if(facts.never!=0){return CCallStep(c,CCallNeed::Stop,0);}c.index=0u64;c.phase=24;return CCallStep(c,CCallNeed::Returned,0);}
+ if(c.phase==24){if(c.index<written){c.phase=25;return CCallStep(c,CCallNeed::WrittenInspect,0);}c.index=0u64;c.phase=32;}
+ if(c.phase==25){if(facts.contract!=0){c.phase=26;return CCallStep(c,CCallNeed::Guards,0);}c.phase=28;return CCallStep(c,CCallNeed::AllGuards,0);}
+ if(c.phase==26){c.phase=28;if(facts.declared!=0){return CCallStep(c,CCallNeed::Forget,0);}}
+ if(c.phase==28){c.phase=29;return CCallStep(c,CCallNeed::Assign,0);}
+ if(c.phase==29){c.index+=1u64;c.phase=24;return CCallStep(c,CCallNeed::Initialize,0);}
+ if(c.index<held){c.index+=1u64;return CCallStep(c,CCallNeed::Finish,0);}
+ return CCallStep(c,CCallNeed::Complete,0);
+}
