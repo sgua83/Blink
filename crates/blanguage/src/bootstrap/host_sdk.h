@@ -1,5 +1,6 @@
 module bootstrap.host_sdk;
 import bootstrap.ast_storage;
+import blink.windows.path_core;
 
 // The original process-heap allocation owns the selected UTF-16 span.
 struct HostWide {
@@ -54,3 +55,17 @@ struct HostProcessExit { u32 exit_code; u32 status; };
 // A zero mask keeps the ordinary process choice; otherwise the Job binds the selected group.
 extern "C" HostProcessExit run_compiler_process(address directory,address arguments,
     usize argument_units,address stdio,usize mask,u16 group) on cpu;
+
+// Paths own the original Windows heap allocations, including the terminating NUL.
+// The link caller borrows them through argument construction and process completion.
+enum MsvcDiscovery:u32 {
+    Found=0; System=1; Locator=2; MissingTools=3; FileRead=4;
+    VersionText=5; SdkRoot=6; MissingSdk=7; InvalidPath=8; TextLength=9;
+};
+struct MsvcTools {
+    array<UnitSpan,4> paths;
+    HostProcessOutput output;
+    MsvcDiscovery failure;
+    u32 status;
+};
+extern "C" MsvcTools discover_msvc_tools(UnitSpan program_files) on cpu;

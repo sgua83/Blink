@@ -618,3 +618,166 @@ extern "C" HostProcessExit run_compiler_process(address directory,address argume
     }
     if(job!=handle()){CloseHandle(job);}return result;
 }
+
+UnitSpan empty_tool_path() on cpu { return UnitSpan(address(),0u64); }
+
+void release_tool_path(UnitSpan path) on cpu {
+    if(address_bits(path.data)!=0u64){release_host_wide(path.data);}
+}
+
+UnitSpan join_tool_path(UnitSpan base,UnitSpan tail) on cpu {
+    handle heap=GetProcessHeap();
+    usize rows=join_scratch(base,tail);
+    address scratch=address();
+    if(rows!=0u64){
+        scratch=HeapAlloc(heap,0,rows*size_of<JoinComponent>());
+        if(address_bits(scratch)==0u64){return empty_tool_path();}
+    }
+    JoinPlan plan=join_prepare(base,tail,scratch);
+    address output=HeapAlloc(heap,0,(plan.length+1u64)*2u64);
+    if(address_bits(output)!=0u64){
+        join_encode(base,tail,scratch,plan,output);
+        unsafe_position<u16>(unsafe_address(address_bits(output)+plan.length*2u64))=u16(0);
+    }
+    if(rows!=0u64){HeapFree(heap,0,scratch);}
+    return UnitSpan(output,plan.length);
+}
+
+UnitSpan join_tool_literal<const N:u32>(UnitSpan base,read array<u8,N> tail) on cpu {
+    array<u16,N> units=array<u16,N>(u16(0));
+    for(index in 0..N){units[index]=u16(tail[index]);}
+    return join_tool_path(base,UnitSpan(address_of(units[0]),u64(N)));
+}
+
+UnitSpan decoded_units(HostWide text) on cpu {
+    return UnitSpan(unsafe_address(address_bits(text.data)+u64(text.first)*2u64),u64(text.units));
+}
+
+void release_tool_bytes(SourceBytes bytes) on cpu {
+    if(address_bits(bytes.data)!=0u64){release_source(bytes.data);}
+}
+
+bool tool_path_has_nul(UnitSpan path) on cpu {
+    usize index=0u64;
+    while(index<path.length){
+        if(wide_unit(path.data,index)==0){return true;}
+        index+=1u64;
+    }
+    return false;
+}
+
+HostProcessOutput run_vswhere<const N:u32>(UnitSpan installer,read array<u8,N> arguments) on cpu {
+    array<u16,N> units=array<u16,N>(u16(0));
+    for(index in 0..N){
+        u8 byte=arguments[index];
+        units[index]=byte==u8(124) ? u16(0) : u16(byte);
+    }
+    return run_host_process(installer.data,installer.length,address_of(units[0]),u64(N));
+}
+
+void fail_tool_allocation(inout MsvcTools tools) on cpu {
+    tools.failure=MsvcDiscovery::System;
+    tools.status=u32(ERROR_NOT_ENOUGH_MEMORY);
+}
+
+void locate_vc_tools(UnitSpan installation,inout MsvcTools tools) on cpu {
+    UnitSpan file=join_tool_literal(installation,"VC/Auxiliary/Build/Microsoft.VCToolsVersion.default.txt");
+    if(address_bits(file.data)==0u64){fail_tool_allocation(tools);return;}
+    if(tool_path_has_nul(file)){
+        release_tool_path(file);tools.failure=MsvcDiscovery::InvalidPath;return;
+    }
+    HostFileOpen opened=open_host_file(file.data,file.length,GENERIC_READ,SHARE_ALL,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL);
+    release_tool_path(file);
+    if(opened.status!=0){tools.failure=MsvcDiscovery::System;tools.status=opened.status;return;}
+    SourceBytes bytes=read_source(opened.file);
+    CloseHandle(opened.file);
+    if(bytes.error.kind!=0){
+        tools.output.stdout=bytes;tools.failure=MsvcDiscovery::FileRead;return;
+    }
+    if(bytes.length>2147483647u64){
+        release_tool_bytes(bytes);tools.failure=MsvcDiscovery::TextLength;return;
+    }
+    HostWide version=HostWide(address(),0,0,i32(0));
+    if(bytes.length!=0u64){version=decode_host_text(bytes.data,i32(bytes.length),HostText::ToolVersion);}
+    release_tool_bytes(bytes);
+    if(version.status!=i32(0)){
+        tools.failure=MsvcDiscovery::VersionText;tools.status=u32(version.status);return;
+    }
+    UnitSpan root=join_tool_literal(installation,"VC/Tools/MSVC");
+    UnitSpan vc=empty_tool_path();
+    if(address_bits(root.data)!=0u64){vc=join_tool_path(root,decoded_units(version));release_tool_path(root);}
+    if(address_bits(version.data)!=0u64){release_host_wide(version.data);}
+    if(address_bits(vc.data)==0u64){fail_tool_allocation(tools);return;}
+    tools.paths[0]=join_tool_literal(vc,"bin/Hostx64/x64/link.exe");
+    tools.paths[1]=join_tool_literal(vc,"lib/x64");
+    release_tool_path(vc);
+    if(address_bits(tools.paths[0].data)==0u64 || address_bits(tools.paths[1].data)==0u64){
+        fail_tool_allocation(tools);
+    }
+}
+
+void locate_sdk_libraries(inout MsvcTools tools) on cpu {
+    HostWide installed=read_sdk_root();
+    if(installed.status!=i32(0)){
+        tools.failure=MsvcDiscovery::SdkRoot;tools.status=u32(installed.status);return;
+    }
+    UnitSpan lib=join_tool_literal(decoded_units(installed),"Lib");
+    release_host_wide(installed.data);
+    if(address_bits(lib.data)==0u64){fail_tool_allocation(tools);return;}
+    UnitSpan pattern=join_tool_literal(lib,"*");
+    if(address_bits(pattern.data)==0u64){release_tool_path(lib);fail_tool_allocation(tools);return;}
+    if(tool_path_has_nul(pattern)){
+        release_tool_path(pattern);release_tool_path(lib);tools.failure=MsvcDiscovery::InvalidPath;return;
+    }
+    array<u16,260> version=array<u16,260>(u16(0));
+    SdkVersionResult selected=find_sdk_version(pattern.data,pattern.length,address_of(version[0]));
+    release_tool_path(pattern);
+    if(selected.status!=0 || selected.units==0){
+        release_tool_path(lib);
+        tools.failure=selected.status!=0 ? MsvcDiscovery::System : MsvcDiscovery::MissingSdk;
+        tools.status=selected.status;
+        return;
+    }
+    UnitSpan sdk=join_tool_path(lib,UnitSpan(address_of(version[0]),u64(selected.units)));
+    release_tool_path(lib);
+    if(address_bits(sdk.data)==0u64){fail_tool_allocation(tools);return;}
+    tools.paths[2]=join_tool_literal(sdk,"um/x64");
+    tools.paths[3]=join_tool_literal(sdk,"ucrt/x64");
+    release_tool_path(sdk);
+    if(address_bits(tools.paths[2].data)==0u64 || address_bits(tools.paths[3].data)==0u64){
+        fail_tool_allocation(tools);
+    }
+}
+
+extern "C" MsvcTools discover_msvc_tools(UnitSpan program_files) on cpu {
+    SourceBytes empty=SourceBytes(address(),0u64,StorageError(0,0));
+    MsvcTools tools=MsvcTools(array<UnitSpan,4>(empty_tool_path()),HostProcessOutput(empty,empty,0,0),MsvcDiscovery::Found,0);
+    UnitSpan installer=join_tool_literal(program_files,"Microsoft Visual Studio/Installer/vswhere.exe");
+    if(address_bits(installer.data)==0u64){fail_tool_allocation(tools);return tools;}
+    HostProcessOutput process=run_vswhere(installer,
+        "-utf8|-latest|-products|*|-requires|Microsoft.VisualStudio.Component.VC.Tools.x86.x64|-property|installationPath|");
+    release_tool_path(installer);
+    if(process.status!=0 || process.exit_code!=0 || process.stdout.error.kind!=0 || process.stderr.error.kind!=0){
+        tools.failure=MsvcDiscovery::Locator;tools.output=process;return tools;
+    }
+    if(process.stdout.length>2147483647u64){
+        release_tool_bytes(process.stdout);release_tool_bytes(process.stderr);
+        tools.failure=MsvcDiscovery::TextLength;return tools;
+    }
+    if(process.stdout.length==0u64){
+        release_tool_bytes(process.stdout);release_tool_bytes(process.stderr);
+        tools.failure=MsvcDiscovery::MissingTools;return tools;
+    }
+    HostWide installation=decode_host_text(process.stdout.data,i32(process.stdout.length),HostText::InstallationPath);
+    release_tool_bytes(process.stdout);release_tool_bytes(process.stderr);
+    if(installation.status!=i32(0)){
+        tools.failure=MsvcDiscovery::System;tools.status=u32(installation.status);return tools;
+    }
+    if(installation.units==0){
+        release_host_wide(installation.data);tools.failure=MsvcDiscovery::MissingTools;return tools;
+    }
+    locate_vc_tools(decoded_units(installation),tools);
+    release_host_wide(installation.data);
+    if(tools.failure==MsvcDiscovery::Found){locate_sdk_libraries(tools);}
+    return tools;
+}

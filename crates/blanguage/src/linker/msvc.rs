@@ -2,11 +2,10 @@
 use super::Result;
 use crate::{file_bytes::{self, FileBytes, host_path}, object::{Archive, encode_native, encode_native_with_imports}, source_path::join};
 use std::{
-    ffi::{OsStr, OsString},
-    fs::File,
+    ffi::OsStr,
     io,
     os::windows::{
-        ffi::{OsStrExt, OsStringExt},
+        ffi::OsStrExt,
         process::ExitStatusExt,
     },
     path::{Path, PathBuf},
@@ -24,8 +23,6 @@ struct HostWide {
 #[derive(Clone, Copy)]
 enum HostText {
     LinkOutput = 0,
-    InstallationPath = 1,
-    ToolVersion = 2,
 }
 
 impl HostWide {
@@ -40,12 +37,6 @@ impl HostWide {
         }
         Ok(result)
     }
-}
-
-#[repr(C)]
-struct SdkVersionResult {
-    units: u32,
-    status: u32,
 }
 
 #[repr(C)]
@@ -135,22 +126,12 @@ unsafe extern "C" {
     ) -> HostProcessOutput;
     #[link_name = "bootstrap.host_sdk::remove_host_input"]
     fn remove_host_input(path: *const u16, units: usize) -> u32;
-    #[link_name = "bootstrap.host_sdk::find_sdk_version"]
-    fn find_sdk_version(pattern: *const u16, units: usize, selected: *mut u16) -> SdkVersionResult;
-    #[link_name = "bootstrap.host_sdk::read_sdk_root"]
-    fn read_sdk_root() -> HostWide;
+    #[link_name = "bootstrap.host_sdk::discover_msvc_tools"]
+    fn discover_msvc_tools(program_files: ToolPath) -> MsvcTools;
     #[link_name = "bootstrap.host_sdk::decode_host_text"]
     fn decode_host_text(input: *const u8, bytes: i32, kind: HostText) -> HostWide;
     #[link_name = "bootstrap.host_sdk::release_host_wide"]
     fn release_host_wide(data: *const u16) -> i32;
-}
-
-fn sdk_root() -> Result<PathBuf> {
-    let root = unsafe { read_sdk_root() };
-    if root.status != 0 {
-        return Err(format!("无法读取 Windows SDK KitsRoot10：{}", std::io::Error::from_raw_os_error(root.status)).into());
-    }
-    Ok(root.consume(|units| PathBuf::from(OsString::from_wide(units)))?)
 }
 
 fn host_text<T>(bytes: &[u8], kind: HostText, copy: impl FnOnce(&[u16]) -> T) -> Result<T> {
@@ -158,27 +139,10 @@ fn host_text<T>(bytes: &[u8], kind: HostText, copy: impl FnOnce(&[u16]) -> T) ->
         return Ok(copy(&[]));
     }
     let decoded = unsafe { decode_host_text(bytes.as_ptr(), i32::try_from(bytes.len())?, kind) };
-    const ERROR_NO_UNICODE_TRANSLATION: i32 = 1113;
-    if matches!(kind, HostText::ToolVersion) && decoded.status == ERROR_NO_UNICODE_TRANSLATION {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "stream did not contain valid UTF-8").into());
-    }
     if decoded.status != 0 {
         return Err(io::Error::from_raw_os_error(decoded.status).into());
     }
     Ok(decoded.consume(copy)?)
-}
-
-fn host_process(
-    program: &Path,
-    arguments: impl IntoIterator<Item = impl AsRef<OsStr>>,
-) -> Result<(ExitStatus, FileBytes, FileBytes)> {
-    let executable = host_path(program)?;
-    let mut units = Vec::new();
-    for argument in arguments {
-        append_wide(&mut units, argument.as_ref())?;
-        units.push(0);
-    }
-    run_host_units(&executable, &units)
 }
 
 fn append_wide(units: &mut Vec<u16>, argument: &OsStr) -> io::Result<MsvcText> {
@@ -190,64 +154,98 @@ fn append_wide(units: &mut Vec<u16>, argument: &OsStr) -> io::Result<MsvcText> {
     Ok(MsvcText { start: start as u64, units: (units.len() - start) as u64 })
 }
 
-fn run_host_units(executable: &[u16], units: &[u16]) -> Result<(ExitStatus, FileBytes, FileBytes)> {
-    let result = unsafe {
-        run_host_process(executable.as_ptr(), executable.len() - 1, units.as_ptr(), units.len())
-    };
-    if result.status != 0 {
-        return Err(io::Error::from_raw_os_error(result.status as i32).into());
+impl HostProcessOutput {
+    fn checked_status(&self) -> io::Result<ExitStatus> {
+        if self.status != 0 {
+            return Err(io::Error::from_raw_os_error(self.status as i32));
+        }
+        self.stdout.check()?;
+        self.stderr.check()?;
+        Ok(ExitStatus::from_raw(self.exit_code))
     }
-    Ok((ExitStatus::from_raw(result.exit_code), result.stdout.into_result()?, result.stderr.into_result()?))
 }
 
-fn tools() -> Result<(PathBuf, Vec<PathBuf>)> {
-    let program_files = std::env::var_os("ProgramFiles(x86)").ok_or("缺少 Windows ProgramFiles(x86)")?;
-    let installer = join(Path::new(&program_files), "Microsoft Visual Studio/Installer/vswhere.exe");
-    let (status, stdout, stderr) = host_process(&installer, [
-        "-utf8",
-        "-latest",
-        "-products",
-        "*",
-        "-requires",
-        "Microsoft.VisualStudio.Component.VC.Tools.x86.x64",
-        "-property",
-        "installationPath",
-    ])?;
-    if !status.success() {
-        return Err(format!(
-            "Visual Studio 工具定位失败（{}）\n{}{}",
-            status,
-            String::from_utf8_lossy(&stdout),
-            String::from_utf8_lossy(&stderr)
-        ).into());
-    }
-    let installation = host_text(&stdout, HostText::InstallationPath, OsString::from_wide)?;
-    if installation.is_empty() {
-        return Err("未安装 Visual Studio C++ 本机工具".into());
-    }
-    let vs = Path::new(&installation);
-    let vc = {
-        let path = join(vs, "VC/Auxiliary/Build/Microsoft.VCToolsVersion.default.txt");
-        let bytes = FileBytes::read(&File::open(path)?)?;
-        let version = host_text(&bytes, HostText::ToolVersion, OsString::from_wide)?;
-        join(&join(vs, "VC/Tools/MSVC"), version)
+fn run_host_units(executable: &[u16], units: &[u16]) -> Result<(ExitStatus, FileBytes, FileBytes)> {
+    let result = unsafe {
+        run_host_process(executable.as_ptr(), executable.len(), units.as_ptr(), units.len())
     };
-    let lib = join(&sdk_root()?, "Lib");
-    let pattern = host_path(&join(&lib, "*"))?;
-    let mut version = [0u16; 260];
-    let selected = unsafe { find_sdk_version(pattern.as_ptr(), pattern.len() - 1, version.as_mut_ptr()) };
-    if selected.status != 0 {
-        return Err(io::Error::from_raw_os_error(selected.status as i32).into());
-    }
-    if selected.units == 0 {
-        return Err("Windows SDK 没有已安装的本机库".into());
-    }
-    let sdk = join(&lib, OsString::from_wide(&version[..selected.units as usize]));
-    Ok((
-        join(&vc, "bin/Hostx64/x64/link.exe"),
-        vec![join(&vc, "lib/x64"), join(&sdk, "um/x64"), join(&sdk, "ucrt/x64")],
-    ))
+    let status = result.checked_status()?;
+    Ok((status, result.stdout, result.stderr))
 }
+
+#[repr(C)]
+struct ToolPath { data: *const u16, length: usize }
+
+impl ToolPath {
+    fn units(&self) -> &[u16] {
+        // Discovery owns initialized, NUL-terminated paths through the link call.
+        unsafe { std::slice::from_raw_parts(self.data, self.length) }
+    }
+}
+
+#[allow(dead_code)]
+#[repr(u32)]
+enum MsvcDiscovery {
+    Found, System, Locator, MissingTools, FileRead, VersionText, SdkRoot, MissingSdk,
+    InvalidPath, TextLength,
+}
+
+#[repr(C)]
+struct MsvcTools {
+    paths: [ToolPath; 4],
+    output: HostProcessOutput,
+    failure: MsvcDiscovery,
+    status: u32,
+}
+
+impl Drop for MsvcTools {
+    fn drop(&mut self) {
+        for path in &self.paths {
+            if !path.data.is_null() {
+                unsafe { release_host_wide(path.data); }
+            }
+        }
+    }
+}
+
+fn invalid_tool_name() -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidInput, "file name contained an unexpected NUL byte")
+}
+
+fn tools() -> Result<MsvcTools> {
+    let program_files = std::env::var_os("ProgramFiles(x86)").ok_or("缺少 Windows ProgramFiles(x86)")?;
+    let units = host_path(Path::new(&program_files))?;
+    let tools = unsafe {
+        discover_msvc_tools(ToolPath { data: units.as_ptr(), length: units.len() - 1 })
+    };
+    match tools.failure {
+        MsvcDiscovery::Found => Ok(tools),
+        MsvcDiscovery::System => Err(io::Error::from_raw_os_error(tools.status as i32).into()),
+        MsvcDiscovery::Locator => {
+            let status = tools.output.checked_status()?;
+            Err(format!("Visual Studio 工具定位失败（{}）\n{}{}", status,
+                String::from_utf8_lossy(&tools.output.stdout),
+                String::from_utf8_lossy(&tools.output.stderr)).into())
+        }
+        MsvcDiscovery::MissingTools => Err("未安装 Visual Studio C++ 本机工具".into()),
+        MsvcDiscovery::FileRead => Err(tools.output.stdout.read_error().into()),
+        MsvcDiscovery::VersionText => {
+            const ERROR_NO_UNICODE_TRANSLATION: u32 = 1113;
+            let error = if tools.status == ERROR_NO_UNICODE_TRANSLATION {
+                io::Error::new(io::ErrorKind::InvalidData, "stream did not contain valid UTF-8")
+            } else {
+                io::Error::from_raw_os_error(tools.status as i32)
+            };
+            Err(error.into())
+        }
+        MsvcDiscovery::SdkRoot => Err(format!("无法读取 Windows SDK KitsRoot10：{}",
+            io::Error::from_raw_os_error(tools.status as i32)).into()),
+        MsvcDiscovery::MissingSdk => Err("Windows SDK 没有已安装的本机库".into()),
+        MsvcDiscovery::InvalidPath => Err(invalid_tool_name().into()),
+        MsvcDiscovery::TextLength => Err("out of range integral type conversion attempted".into()),
+    }
+}
+
 impl<'a> MsvcNames<'a> {
     fn from_archives(archives: &[&'a Archive]) -> Self {
         let mut libraries: Vec<_> = archives.iter().flat_map(|archive| &archive.libraries)
@@ -269,10 +267,13 @@ impl<'a> MsvcNames<'a> {
 }
 
 fn link_process(
-    linker: &Path, output: &Path, inputs: &[PathBuf], search_paths: &[PathBuf],
+    tools: &MsvcTools, output: &Path, inputs: &[PathBuf],
     names: &MsvcNames<'_>, sdk: Option<&Path>, stack_reserve: u64, import_library: bool,
 ) -> Result<(ExitStatus, FileBytes, FileBytes)> {
-    let executable = host_path(linker)?;
+    let executable = tools.paths[0].units();
+    if executable.contains(&0) {
+        return Err(invalid_tool_name().into());
+    }
     let mut text = Vec::new();
     let output_path = append_wide(&mut text, output.as_os_str())?;
     let inputs: Vec<_> = inputs.iter().map(|path| append_wide(&mut text, path.as_os_str()))
@@ -283,8 +284,15 @@ fn link_process(
     } else {
         MsvcText::default()
     };
-    let search_paths: Vec<_> = search_paths.iter().map(|path| append_wide(&mut text, path.as_os_str()))
-        .collect::<io::Result<_>>()?;
+    let search_paths = tools.paths[1..].iter().map(|path| {
+        let argument = path.units();
+        if argument.contains(&0) {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "nul byte found in provided data"));
+        }
+        let start = text.len() as u64;
+        text.extend_from_slice(argument);
+        Ok(MsvcText { start, units: argument.len() as u64 })
+    }).collect::<io::Result<Vec<_>>>()?;
     let libraries: Vec<_> = names.libraries.iter().map(|name| {
         if let Some(sdk) = sdk.filter(|_| name.sdk_relative != 0) {
             append_wide(&mut text, sdk.join(name.text()).as_os_str())
@@ -308,7 +316,7 @@ fn link_process(
         let used = write_msvc_arguments(request, arguments.as_mut_ptr());
         arguments.set_len(used as usize);
     }
-    run_host_units(&executable, &arguments)
+    run_host_units(executable, &arguments)
 }
 
 fn write_input(temporary: &mut Vec<PathBuf>, path: PathBuf, bytes: &[u8]) -> io::Result<()> {
@@ -324,7 +332,7 @@ pub(super) fn link(
 ) -> Result<()> {
     let archives = objects.iter().filter_map(|object| object.archive.as_ref()).collect::<Vec<_>>();
     let binding = super::resources::resources(&archives, 0, 0, std::iter::empty(), std::iter::empty(), None)?;
-    let (linker, libraries) = tools()?;
+    let tools = tools()?;
     let names = MsvcNames::from_archives(&archives);
     let sdk = if names.needs_sdk {
         Some(crate::object::InstalledSdk::open()?)
@@ -365,7 +373,7 @@ pub(super) fn link(
             write_input(&mut temporary, path, &encode_native(super::resources::Generated::NAME, &binding.sections, &binding.definitions)?)?;
         }
         let (status, stdout, stderr) = link_process(
-            &linker, path, &temporary, &libraries, &names,
+            &tools, path, &temporary, &names,
             sdk.as_ref().map(|sdk| sdk.root.as_path()), stack_reserve, import_library)?;
         if status.success() {
             return Ok(());

@@ -105,11 +105,20 @@ impl FileBytes {
     }
 
     pub(crate) fn into_result(self) -> io::Result<Self> {
+        self.check()?;
+        Ok(self)
+    }
+
+    pub(crate) fn check(&self) -> io::Result<()> {
+        if self.error.kind == 0 { Ok(()) } else { Err(self.read_error()) }
+    }
+
+    pub(crate) fn read_error(&self) -> io::Error {
         const SOURCE_READ_ERROR: u32 = 4;
+        let native_code = self.error.native_code;
         match self.error.kind {
-            0 => Ok(self),
-            SOURCE_READ_ERROR => Err(io::Error::from_raw_os_error(self.error.native_code as i32)),
-            kind => Err(io::Error::other(syntax::StorageFailure { kind, native_code: self.error.native_code })),
+            SOURCE_READ_ERROR => io::Error::from_raw_os_error(native_code as i32),
+            kind => io::Error::other(syntax::StorageFailure { kind, native_code }),
         }
     }
 }
