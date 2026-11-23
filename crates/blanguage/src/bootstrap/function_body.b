@@ -1001,7 +1001,8 @@ extern "C" WritePlaceStep write_place_step(Cursor cursor,WritePlaceFacts facts) 
  if(c.phase==7){c.phase=8;return WritePlaceStep(c,WritePlaceNeed::ReferenceMemory);}
  if(c.phase==8){if(facts.memory!=0){c.phase=9;return WritePlaceStep(c,WritePlaceNeed::Pending);}c.phase=20;}
  if(c.phase==9){c.phase=10;if(facts.pending!=0){return WritePlaceStep(c,WritePlaceNeed::Resolved);}}
- if(c.phase==10){c.phase=11;return WritePlaceStep(c,facts.pending!=0&&facts.resolved==0 ? WritePlaceNeed::Snapshot : WritePlaceNeed::AddressWrite);}
+ if(c.phase==10){if(facts.pending!=0&&facts.resolved==0){c.phase=11;return WritePlaceStep(c,WritePlaceNeed::Snapshot);}if(facts.kind==2){c.phase=18;return WritePlaceStep(c,WritePlaceNeed::NumericProof);}c.phase=11;return WritePlaceStep(c,WritePlaceNeed::AddressWrite);}
+ if(c.phase==18){c.phase=11;return WritePlaceStep(c,WritePlaceNeed::AddressWrite);}
  if(c.phase==11){c.part=0u64;c.phase=12;return WritePlaceStep(c,WritePlaceNeed::BorrowFields);}
  if(c.phase==13){if(facts.field_address!=0){c.phase=14;return WritePlaceStep(c,WritePlaceNeed::AddField);}c.part+=1u64;c.phase=12;}
  if(c.phase==14){c.part+=1u64;c.phase=12;}

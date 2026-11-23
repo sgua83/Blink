@@ -1219,6 +1219,25 @@ impl Builder<'_> {
     }
     pub(super) async fn position_borrows(&self,place:&Place,span:Span)->Result<view::Borrow> {
         let origin=unsafe { self.world.call(self.position_origin(place,span)).await }?;
+        if let Place::Indexed {base,offset,words,..}=place
+            &&let Place::Reference {address:ReferenceAddress::Borrowed {..}|ReferenceAddress::External {..},words:base_words,..}=&**base {
+            let mut result=view::Borrow::default();
+            let index=ownership::ApplicationIndex::Value(ValueIdentity::Register(*offset),*offset);
+            let (first_scalar,_)=place.ty().components[0];
+            let parts=base_words.iter().zip(&base.ty().components).map(|(word,(scalar,_))|(u64::from(*word),*scalar)).collect::<BTreeSet<_>>();
+            for ((scalar,_),at) in base.ty().components.iter().zip(base_words) {
+                if *scalar!=first_scalar||*at<words[0]{continue;}
+                let relative=*at-words[0];
+                if !words.iter().zip(&place.ty().components).all(|(word,(scalar,_))|
+                    parts.contains(&(u64::from(*word)+u64::from(relative),*scalar))) {continue;}
+                let when=bounds::Clause::both(&self.path,&bounds::Clause::selection(index,relative as usize));
+                if !when.possible(){continue;}
+                let mut selected=origin.clone();
+                selected.words=words.iter().map(|word|word+relative).collect();
+                result.union(&selected.normalize().restricted(&when));
+            }
+            return Ok(result);
+        }
         let positions=place.data_positions();
         if !matches!(place,Place::Indexed{..}) || !matches!(origin.root,Root::Resource{..}) || positions.is_empty() {
             return Ok(view::Borrow::source(view::Source::Position(Arc::new(origin))));
@@ -1249,8 +1268,11 @@ impl Builder<'_> {
         Ok(borrow)
     }
     pub(super) async fn reference_memory(&self,place:&Place,span:Span)->Result<Option<(MemoryTarget,view::Borrow)>> {
-        if let Place::Reference{address:ReferenceAddress::Borrowed{address,..}|ReferenceAddress::External{address,..},..}=place{
-            return Ok(Some((MemoryTarget::Value(address[0]),unsafe { self.world.call(self.position_origin(place,span)).await }?.normalize())));
+        if let Place::Reference{address:ReferenceAddress::Borrowed{address,..}|ReferenceAddress::External{address,..},..}=place.storage(){
+            let borrow=if matches!(place,Place::Indexed {..}) {
+                unsafe {self.world.call(self.position_borrows(place,span)).await}?
+            }else{unsafe {self.world.call(self.position_origin(place,span)).await}?.normalize()};
+            return Ok(Some((MemoryTarget::Value(address[0]),borrow)));
         }
         Ok(None)
     }
