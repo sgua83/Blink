@@ -1352,39 +1352,30 @@ impl Builder<'_> {
         }else{let memory=[(written,Some(Access::Write),None)];unsafe { self.world.call(self.write_address_values(&memory[0].0,&memory)).await }?;}
         Ok(usage)
     }
-    pub(super) async fn position_address(&mut self,args:&Expressions,span:Span)->Result<Option<Value>> {
-        if self.program.target!=Target::Cpu{return self.fail(span,"B265","address_of只取得本进程CPU位置");}
-        if args.len()!=1{return self.fail(span,"B153","address_of需要一个实际位置");}
-        let arg=&args.at(0);
-        fn root_name(expr:&Expr)->Option<String>{match expr.kind(){ExprKind::Name(name)=>Some(name.into()),ExprKind::Member(base,_)|ExprKind::Index(base,_)=>root_name(&base),_=>None}}
-        if let Some(name)=root_name(arg)
-            && let Some(Binding::Value(value))=self.env.get(&name).cloned() {
-            let mut owner=self.materialize_array(value,None);owner.place=owner.place.read_only();self.env.insert(name.clone(),Binding::Owned(owner));
-        }
-        let Some(place)=unsafe { self.world.call(self.place(arg)).await }?else{return Ok(None);};
-        if place.ty().owns_resources()||place.ty().contains_views()||place.ty().components.is_empty(){
-            return self.fail(span,"B263","address_of需要非空普通值位置，资源通过原拥有者或借用接口交接");
-        }
-        let origin=unsafe { self.world.call(self.position_origin(&place,span)).await }?;
-        let access=if origin.writable{Access::InOut}else{Access::Read};
-        let address=unsafe { self.world.call(self.external_reference(&place,access,access.writes(),span)).await }?;
-        let dst=self.reg(Scalar::U64);
-        let ty=Ty::builtin("address").unwrap();
-
-        let mut numeric=origin.clone();
-        if let Place::Local(_,_,storage)|Place::ReadOnlyLocal(_,_,storage)=place.storage() {
-            let ty=self.locals[&storage.end].clone();let whole=Place::Local(ty,(storage.clone()).collect(),storage.clone());
-            numeric=unsafe { self.world.call(self.position_origin(&whole,span)).await }?;
-            let first=address.word;let selected=numeric.layout.parts.iter().enumerate().filter_map(|(i,(_,at))|(*at>=first).then_some(i)).collect::<Vec<_>>();
-            numeric.layout=Layout{size:numeric.layout.size-first,align:place.ty().align,parts:selected.iter().map(|&i|{let(scalar,at)=numeric.layout.parts[i];(scalar,at-first)}).collect()};
-            numeric.positions=selected.iter().map(|&i|numeric.positions[i].clone()).collect();numeric.initialized=selected.iter().map(|&i|numeric.initialized[i]).collect();
-            numeric.base=numeric.layout.clone();numeric.words=numeric.layout.parts.iter().map(|(_,at)|*at).collect();
-        }
-        let identity=match place.storage(){Place::Reference{address:ReferenceAddress::External{identity,..}|ReferenceAddress::Borrowed{identity,..},..}=>identity.clone(),_=>Identity::Storage(view::Borrow::source(view::Source::Position(Arc::new(numeric))))};
-        let mut proof=bounds::Proof::default();proof.addresses.push(Some(identity));
-        self.emit(InstKind::PositionAddress{dst,address});
-        let borrow=view::Borrow::source(view::Source::Position(Arc::new(origin)));
-        Ok(Some(Value{ty,regs:vec![dst],proof:{let mut component_proof=proof;component_proof.set_view_borrow(0,borrow);component_proof},literal:false,uniform:false,constant:None}))
+    pub(super) async fn position_address(&mut self,args:&Expressions,span:Span)->Result<Option<Value>>{
+        let mut cursor=AddressPhase{phase:0};let mut facts=TakeAddressFacts{cpu:u32::from(self.program.target==Target::Cpu),arguments:args.len()as u64,..TakeAddressFacts::default()};
+        let mut argument=None;let mut root=None;let mut place:Option<Place>=None;let mut origin:Option<Origin>=None;let mut address=None;let mut dst=None;let mut ty=None;let mut numeric=None;let mut identity=None;let mut proof=None;
+        loop{let step=unsafe{take_address_step(cursor,TakeAddressFacts{..facts})};cursor=step.cursor;match step.need{
+            TakeAddressNeed::BadTarget=>return self.fail(span,"B265","address_of只取得本进程CPU位置"),
+            TakeAddressNeed::BadCount=>return self.fail(span,"B153","address_of需要一个实际位置"),
+            TakeAddressNeed::Root=>{argument=Some(args.at(0));let name=unsafe{address_root(argument.as_ref().unwrap().signature_node())};root=(name.present!=0).then(||args.source_view().text(name.value));facts.value=u32::from(root.is_some_and(|name|matches!(self.env.get(name),Some(Binding::Value(_)))));},
+            TakeAddressNeed::Materialize=>{let(name,Binding::Value(value))=self.env.remove_entry(root.unwrap()).unwrap()else{unsafe{std::hint::unreachable_unchecked()}};let mut owner=self.materialize_array(value,None);owner.place=owner.place.read_only();self.env.insert(name,Binding::Owned(owner));},
+            TakeAddressNeed::Place=>{place=unsafe{self.world.call(self.place(argument.as_ref().unwrap())).await}?;facts.present=u32::from(place.is_some());},
+            TakeAddressNeed::Empty=>return Ok(None),
+            TakeAddressNeed::Layout=>{let ty=place.as_ref().unwrap().ty();facts.owns=u32::from(ty.owns_resources());facts.views=u32::from(ty.contains_views());facts.empty=u32::from(ty.components.is_empty());},
+            TakeAddressNeed::BadLayout=>return self.fail(span,"B263","address_of需要非空普通值位置，资源通过原拥有者或借用接口交接"),
+            TakeAddressNeed::Origin=>{origin=Some(unsafe{self.world.call(self.position_origin(place.as_ref().unwrap(),span)).await}?);facts.writable=u32::from(origin.as_ref().unwrap().writable);},
+            TakeAddressNeed::Reference=>address=Some(unsafe{self.world.call(self.external_reference(place.as_ref().unwrap(),step.access,step.access.writes(),span)).await}?),
+            TakeAddressNeed::Register=>{dst=Some(self.reg(Scalar::U64));ty=Some(Ty::builtin("address").unwrap());},
+            TakeAddressNeed::Storage=>facts.storage=match place.as_ref().unwrap().storage(){Place::Local(..)|Place::ReadOnlyLocal(..)=>1,Place::Reference{address:ReferenceAddress::External{..}|ReferenceAddress::Borrowed{..},..}=>2,_=>0},
+            TakeAddressNeed::LocalOrigin=>{let(Place::Local(_,_,storage)|Place::ReadOnlyLocal(_,_,storage))=place.as_ref().unwrap().storage()else{unsafe{std::hint::unreachable_unchecked()}};let ty=self.locals[&storage.end].clone();let whole=Place::Local(ty,storage.clone().collect(),storage.clone());numeric=Some(unsafe{self.world.call(self.position_origin(&whole,span)).await}?);},
+            TakeAddressNeed::ReferenceIdentity=>{let Place::Reference{address:ReferenceAddress::External{identity:source,..}|ReferenceAddress::Borrowed{identity:source,..},..}=place.as_ref().unwrap().storage()else{unsafe{std::hint::unreachable_unchecked()}};identity=Some(source.clone());},
+            TakeAddressNeed::CopyOrigin=>numeric=origin.clone(),
+            TakeAddressNeed::Tail=>project_address_tail(numeric.as_mut().unwrap(),address.as_ref().unwrap().word,place.as_ref().unwrap().ty().align),
+            TakeAddressNeed::StorageIdentity=>identity=Some(Identity::Storage(view::Borrow::source(view::Source::Position(Arc::new(numeric.take().unwrap()))))),
+            TakeAddressNeed::Emit=>{let mut component=bounds::Proof::default();component.addresses.push(identity.take());proof=Some(component);self.emit(InstKind::PositionAddress{dst:dst.unwrap(),address:address.take().unwrap()});},
+            TakeAddressNeed::Complete=>{let borrow=view::Borrow::source(view::Source::Position(Arc::new(origin.take().unwrap())));let mut proof=proof.take().unwrap();proof.set_view_borrow(0,borrow);return Ok(Some(Value{ty:ty.take().unwrap(),regs:vec![dst.unwrap()],proof,literal:false,uniform:false,constant:None}));},
+        }}
     }
 
     pub(super) async fn external_position(&mut self,explicit:&[GenericArgument],args:&Expressions,span:Span)->Result<Option<Place>> {
@@ -1392,45 +1383,63 @@ impl Builder<'_> {
             async |builder|unsafe { builder.world.call(builder.expr(&args.at(0))).await })).await }
     }
     pub(super) async fn external_position_value(&mut self,explicit:&[GenericArgument],count:usize,span:Span,argument_span:Span,
-        argument:impl std::ops::AsyncFnOnce(&mut Self)->Result<Option<Value>>)->Result<Option<Place>> {
-        if self.program.target != Target::Cpu {
-            return self.fail(span, "B265", "unsafe_position只解释本进程CPU地址");
-        }
-        let ([GenericArgument::Type(name)], 1) = (explicit, count) else {
-            return self.fail(span, "B153", "unsafe_position<T>需要一个明确普通类型和一个address实参");
-        };
-        let ty = unsafe { self.world.call(self.world.ty(name, self.scope.source(), span, self.scope.module(), self.scope.imports())).await }?;
-        if ty.owns_resources() {
-            return self.fail(span, "B224", "外部地址位置不能创建Blink拥有资源");
-        }
-        if ty.contains_views() || ty.components.is_empty() {
-            return self.fail(span, "B263", "外部地址位置需要非空普通值布局，不能解释Blink资源引用");
-        }
-        let Some(mut value) = argument(self).await? else { return Ok(None); };
-        self.require_same(&Ty::builtin("address").unwrap(), &value.ty, argument_span)?;
-        let borrow=borrow_in_path(&self.current_address_borrow(&value.proof.view_borrow(0)),&self.path);
-        self.check_view_requirement(view::Requirement::Address{borrow:borrow.clone(),layout:Layout::of(&ty),written:None,writable:false,initialized:false,span})?;
-        let external=!borrow.pending()&&!borrow.sources.is_empty()&&borrow.sources.iter().all(|source|matches!(source,view::Source::External));
-        let identity = value.proof.addresses.first().cloned().flatten().unwrap_or_else(||match bounds::Proof::capture(&value).known_value(&value.ty) {
-            Some(bits) => Identity::Constant(bits[0]),
-            None => Identity::Value(value.component_origins(0)),
-        });
-        value.ty = Ty::scalar(Scalar::U64);
-        let low = self.cast(value.clone(), Scalar::U32).regs[0];
-        let shift = self.constant(Scalar::U64, 32);
-        let high = self.binary(">>", value, shift, span,None)?;
-        let high = self.cast(high, Scalar::U32).regs[0];
-        let place=Place::Reference {
-            words: ty.components.iter().map(|(_, offset)| *offset).collect(),
-            ty:ty.clone(),
-            address: if external{ReferenceAddress::External{address:[low,high],identity}}
-                else{ReferenceAddress::Borrowed{address:[low,high],identity,borrow:borrow.clone(),layout:Layout::of(&ty)}},
-            scope: None,
-            access: Access::InOut,
-        };
-        Ok(Some(place))
+        argument:impl std::ops::AsyncFnOnce(&mut Self)->Result<Option<Value>>)->Result<Option<Place>>{
+        let mut cursor=AddressPhase{phase:0};let mut facts=ExternalPositionFacts{cpu:u32::from(self.program.target==Target::Cpu),explicit_type:match explicit{[GenericArgument::Type(name)]=>if name.dataset{2}else{1},_=>0},arguments:count as u64,..ExternalPositionFacts::default()};
+        let mut argument=Some(argument);let mut ty:Option<Ty>=None;let mut value=None;let mut borrow:Option<view::Borrow>=None;let mut identity=None;let mut bits=None;let mut low=None;let mut high=None;
+        let external=loop{let step=unsafe{external_position_step(cursor,ExternalPositionFacts{..facts})};cursor=step.cursor;match step.need{
+            ExternalPositionNeed::BadTarget=>return self.fail(span,"B265","unsafe_position只解释本进程CPU地址"),
+            ExternalPositionNeed::BadArguments=>return self.fail(span,"B153","unsafe_position<T>需要一个明确普通类型和一个address实参"),
+            ExternalPositionNeed::Type=>{let[GenericArgument::Type(name)]=explicit else{unsafe{std::hint::unreachable_unchecked()}};let actual=unsafe{self.world.call(self.world.ty(name,self.scope.source(),span,self.scope.module(),self.scope.imports())).await}?;facts.owns=u32::from(actual.owns_resources());facts.views=u32::from(actual.contains_views());facts.empty=u32::from(actual.components.is_empty());ty=Some(actual);},
+            ExternalPositionNeed::Owned=>return self.fail(span,"B224","外部地址位置不能创建Blink拥有资源"),
+            ExternalPositionNeed::BadLayout=>return self.fail(span,"B263","外部地址位置需要非空普通值布局，不能解释Blink资源引用"),
+            ExternalPositionNeed::Argument=>{value=argument.take().unwrap()(self).await?;facts.present=u32::from(value.is_some());},
+            ExternalPositionNeed::Empty=>return Ok(None),
+            ExternalPositionNeed::RequireAddress=>self.require_same(&Ty::builtin("address").unwrap(),&value.as_ref().unwrap().ty,argument_span)?,
+            ExternalPositionNeed::Borrow=>borrow=Some(borrow_in_path(&self.current_address_borrow(&value.as_ref().unwrap().proof.view_borrow(0)),&self.path)),
+            ExternalPositionNeed::Requirement=>self.check_view_requirement(view::Requirement::Address{borrow:borrow.as_ref().unwrap().clone(),layout:Layout::of(ty.as_ref().unwrap()),written:None,writable:false,initialized:false,span})?,
+            ExternalPositionNeed::BorrowKind=>{let source=borrow.as_ref().unwrap();facts.external=u32::from(data_sources_external(source.pending(),source.sources.iter()));},
+            ExternalPositionNeed::Identity=>{identity=value.as_ref().unwrap().proof.addresses.first().cloned().flatten();facts.identity=u32::from(identity.is_some());},
+            ExternalPositionNeed::KnownBits=>{let value=value.as_ref().unwrap();bits=bounds::Proof::capture(value).known_value(&value.ty);facts.constant=u32::from(bits.is_some());},
+            ExternalPositionNeed::ConstantIdentity=>identity=Some(Identity::Constant(bits.take().unwrap()[0])),
+            ExternalPositionNeed::DynamicIdentity=>identity=Some(Identity::Value(value.as_ref().unwrap().component_origins(0))),
+            ExternalPositionNeed::Reword=>value.as_mut().unwrap().ty=Ty::scalar(Scalar::U64),
+            ExternalPositionNeed::Low=>low=Some(self.cast(value.as_ref().unwrap().clone(),Scalar::U32).regs[0]),
+            ExternalPositionNeed::High=>{let shift=self.constant(Scalar::U64,32);let shifted=self.binary(">>",value.take().unwrap(),shift,span,None)?;high=Some(self.cast(shifted,Scalar::U32).regs[0]);},
+            ExternalPositionNeed::ReadyExternal=>break true,
+            ExternalPositionNeed::ReadyBorrowed=>break false,
+        }};
+        let ty=ty.take().unwrap();let words=ty.components.iter().map(|(_,offset)|*offset).collect();let identity=identity.take().unwrap();let address=[low.unwrap(),high.unwrap()];
+        let address=if external{ReferenceAddress::External{address,identity}}else{ReferenceAddress::Borrowed{address,identity,borrow:borrow.take().unwrap(),layout:Layout::of(&ty)}};
+        Ok(Some(Place::Reference{words,ty,address,scope:None,access:Access::InOut}))
     }
 }
+
+
+#[repr(C)]#[derive(Clone,Copy)]struct AddressPhase{phase:u32}
+#[repr(C)]#[derive(Default)]struct TakeAddressFacts{cpu:u32,arguments:u64,value:u32,present:u32,owns:u32,views:u32,empty:u32,writable:u32,storage:u32}
+#[repr(u32)]enum TakeAddressNeed{BadTarget,BadCount,Root,Materialize,Place,Empty,Layout,BadLayout,Origin,Reference,Register,Storage,LocalOrigin,ReferenceIdentity,CopyOrigin,Tail,StorageIdentity,Emit,Complete}
+#[repr(C)]struct TakeAddressStep{cursor:AddressPhase,need:TakeAddressNeed,access:Access}
+#[repr(C)]struct AddressTailHost{offset:unsafe extern "C" fn(*mut std::ffi::c_void,u64)->u32,append:unsafe extern "C" fn(*mut std::ffi::c_void,u64,u32)}
+#[repr(C)]#[derive(Default)]struct ExternalPositionFacts{cpu:u32,explicit_type:u32,arguments:u64,owns:u32,views:u32,empty:u32,present:u32,external:u32,identity:u32,constant:u32}
+#[repr(u32)]enum ExternalPositionNeed{BadTarget,BadArguments,Type,Owned,BadLayout,Argument,Empty,RequireAddress,Borrow,Requirement,BorrowKind,Identity,KnownBits,ConstantIdentity,DynamicIdentity,Reword,Low,High,ReadyExternal,ReadyBorrowed}
+#[repr(C)]struct ExternalPositionStep{cursor:AddressPhase,need:ExternalPositionNeed}
+unsafe extern "C"{
+ #[link_name="bootstrap.call_arguments::read_input_root"]fn address_root(source:crate::syntax::wire::SignatureNode)->crate::syntax::wire::Optional<crate::syntax::wire::Text>;
+ #[link_name="bootstrap.call_arguments::take_address_step"]fn take_address_step(cursor:AddressPhase,facts:TakeAddressFacts)->TakeAddressStep;
+ #[link_name="bootstrap.call_arguments::address_tail"]fn address_tail(context:*mut std::ffi::c_void,count:u64,size:u32,first:u32,host:AddressTailHost)->u32;
+ #[link_name="bootstrap.call_arguments::external_position_step"]fn external_position_step(cursor:AddressPhase,facts:ExternalPositionFacts)->ExternalPositionStep;
+ #[link_name="bootstrap.call_arguments::data_external_sources"]fn b_data_external_sources(pending:u32,context:*mut std::ffi::c_void,next:unsafe extern "C" fn(*mut std::ffi::c_void)->u32)->u32;
+}
+struct AddressTail<'a>{source:&'a Origin,parts:Vec<(Scalar,u32)>,positions:Vec<Position>,initialized:Vec<bool>,words:Vec<u32>}
+unsafe extern "C" fn tail_offset(context:*mut std::ffi::c_void,index:u64)->u32{unsafe{&*context.cast::<AddressTail<'_>>()}.source.layout.parts[index as usize].1}
+unsafe extern "C" fn tail_append(context:*mut std::ffi::c_void,index:u64,offset:u32){let tail=unsafe{&mut *context.cast::<AddressTail<'_>>()};let i=index as usize;tail.parts.push((tail.source.layout.parts[i].0,offset));tail.positions.push(tail.source.positions[i].clone());tail.initialized.push(tail.source.initialized[i]);tail.words.push(offset);}
+fn project_address_tail(source:&mut Origin,first:u32,align:u32){
+ let mut tail=AddressTail{source,parts:Vec::new(),positions:Vec::new(),initialized:Vec::new(),words:Vec::new()};
+ let size=unsafe{address_tail(std::ptr::from_mut(&mut tail).cast(),source.layout.parts.len()as u64,source.layout.size,first,AddressTailHost{offset:tail_offset,append:tail_append})};
+ let AddressTail{parts,positions,initialized,words,..}=tail;source.layout=Layout{size,align,parts:parts.into()};source.positions=positions.into();source.initialized=initialized.into();source.words=words.into();source.base=source.layout.clone();
+}
+unsafe extern "C" fn data_source_next<'a,I:Iterator<Item=&'a view::Source>>(context:*mut std::ffi::c_void)->u32{match unsafe{&mut *context.cast::<I>()}.next(){None=>0,Some(view::Source::External)=>1,Some(_)=>2}}
+fn data_sources_external<'a,I:Iterator<Item=&'a view::Source>>(pending:bool,mut sources:I)->bool{unsafe{b_data_external_sources(u32::from(pending),std::ptr::from_mut(&mut sources).cast(),data_source_next::<I>)!=0}}
 
 // Physical construction for the original public contract wire.
 crate::codec::contracts::codec!(Layout);

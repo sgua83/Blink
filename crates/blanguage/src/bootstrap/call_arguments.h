@@ -87,3 +87,17 @@ struct FunctionValueFacts {u32 cpu;u32 present;u32 signature;u32 nonzero;u32 con
 enum FunctionValueNeed:u32 {BadTarget=0;Lower=1;Empty=2;Kind=3;BadKind=4;Nonzero=5;Zero=6;Signature=7;Arguments=8;Contracts=9;ReadyPlain=10;ReadyContract=11;};
 struct FunctionValueStep {Phase cursor;FunctionValueNeed need;};
 extern "C" FunctionValueStep function_value_step(Phase cursor,FunctionValueFacts facts) on cpu;
+
+struct TakeAddressFacts {u32 cpu;u64 arguments;u32 value;u32 present;u32 owns;u32 views;u32 empty;u32 writable;u32 storage;};
+enum TakeAddressNeed:u32 {BadTarget=0;BadCount=1;Root=2;Materialize=3;Place=4;Empty=5;Layout=6;BadLayout=7;Origin=8;Reference=9;Register=10;Storage=11;LocalOrigin=12;ReferenceIdentity=13;CopyOrigin=14;Tail=15;StorageIdentity=16;Emit=17;Complete=18;};
+struct TakeAddressStep {Phase cursor;TakeAddressNeed need;CallAccess access;};
+extern "C" TakeAddressStep take_address_step(Phase cursor,TakeAddressFacts facts) on cpu;
+struct AddressTailHost {cfn<u32,address,u64> offset;cfn<void,address,u64,u32> append;};
+extern "C" u32 address_tail(address context,u64 count,u32 size,u32 first,AddressTailHost host) on cpu
+ requires nonzero(host.offset) requires nonzero(host.append);
+// explicit_type: 0 is not one type, 1 is a type, 2 is a root dataset.
+struct ExternalPositionFacts {u32 cpu;u32 explicit_type;u64 arguments;u32 owns;u32 views;u32 empty;u32 present;u32 external;u32 identity;u32 constant;};
+enum ExternalPositionNeed:u32 {BadTarget=0;BadArguments=1;Type=2;Owned=3;BadLayout=4;Argument=5;Empty=6;RequireAddress=7;Borrow=8;Requirement=9;BorrowKind=10;Identity=11;KnownBits=12;ConstantIdentity=13;DynamicIdentity=14;Reword=15;Low=16;High=17;ReadyExternal=18;ReadyBorrowed=19;};
+struct ExternalPositionStep {Phase cursor;ExternalPositionNeed need;};
+extern "C" ExternalPositionStep external_position_step(Phase cursor,ExternalPositionFacts facts) on cpu;
+extern "C" u32 data_external_sources(u32 pending,address context,cfn<u32,address> next) on cpu requires nonzero(next);

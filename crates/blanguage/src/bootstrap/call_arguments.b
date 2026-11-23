@@ -373,3 +373,44 @@ extern "C" FunctionValueStep function_value_step(Phase cursor,FunctionValueFacts
  if(c.phase==5){if(facts.present==0){return FunctionValueStep(c,FunctionValueNeed::Empty);}c.phase=6;return FunctionValueStep(c,FunctionValueNeed::Contracts);}
  return FunctionValueStep(c,facts.contracts!=0 ? FunctionValueNeed::ReadyContract : FunctionValueNeed::ReadyPlain);
 }
+
+extern "C" TakeAddressStep take_address_step(Phase cursor,TakeAddressFacts facts) on cpu {
+ Phase c=cursor;CallAccess access=CallAccess::Read;
+ if(c.phase==0){if(facts.cpu==0){return TakeAddressStep(c,TakeAddressNeed::BadTarget,access);}if(facts.arguments!=1u64){return TakeAddressStep(c,TakeAddressNeed::BadCount,access);}c.phase=1;return TakeAddressStep(c,TakeAddressNeed::Root,access);}
+ if(c.phase==1){if(facts.value!=0){c.phase=2;return TakeAddressStep(c,TakeAddressNeed::Materialize,access);}c.phase=3;return TakeAddressStep(c,TakeAddressNeed::Place,access);}
+ if(c.phase==2){c.phase=3;return TakeAddressStep(c,TakeAddressNeed::Place,access);}
+ if(c.phase==3){if(facts.present==0){return TakeAddressStep(c,TakeAddressNeed::Empty,access);}c.phase=4;return TakeAddressStep(c,TakeAddressNeed::Layout,access);}
+ if(c.phase==4){if(facts.owns!=0||facts.views!=0||facts.empty!=0){return TakeAddressStep(c,TakeAddressNeed::BadLayout,access);}c.phase=5;return TakeAddressStep(c,TakeAddressNeed::Origin,access);}
+ if(c.phase==5){c.phase=6;return TakeAddressStep(c,TakeAddressNeed::Reference,facts.writable!=0?CallAccess::InOut:CallAccess::Read);}
+ if(c.phase==6){c.phase=7;return TakeAddressStep(c,TakeAddressNeed::Register,access);}
+ if(c.phase==7){c.phase=8;return TakeAddressStep(c,TakeAddressNeed::Storage,access);}
+ if(c.phase==8){if(facts.storage==1){c.phase=9;return TakeAddressStep(c,TakeAddressNeed::LocalOrigin,access);}if(facts.storage==2){c.phase=11;return TakeAddressStep(c,TakeAddressNeed::ReferenceIdentity,access);}c.phase=10;return TakeAddressStep(c,TakeAddressNeed::CopyOrigin,access);}
+ if(c.phase==9){c.phase=10;return TakeAddressStep(c,TakeAddressNeed::Tail,access);}
+ if(c.phase==10){c.phase=11;return TakeAddressStep(c,TakeAddressNeed::StorageIdentity,access);}
+ if(c.phase==11){c.phase=12;return TakeAddressStep(c,TakeAddressNeed::Emit,access);}
+ return TakeAddressStep(c,TakeAddressNeed::Complete,access);
+}
+extern "C" u32 address_tail(address context,u64 count,u32 size,u32 first,AddressTailHost host) on cpu
+ requires nonzero(host.offset) requires nonzero(host.append) {
+ u64 i=0u64;while(i<count){u32 at=host.offset(context,i);if(at>=first){host.append(context,i,at-first);}i+=1u64;}return size-first;
+}
+extern "C" ExternalPositionStep external_position_step(Phase cursor,ExternalPositionFacts facts) on cpu {
+ Phase c=cursor;
+ if(c.phase==0){if(facts.cpu==0){return ExternalPositionStep(c,ExternalPositionNeed::BadTarget);}if(facts.explicit_type==0||facts.arguments!=1u64){return ExternalPositionStep(c,ExternalPositionNeed::BadArguments);}if(facts.explicit_type==2){return ExternalPositionStep(c,ExternalPositionNeed::Owned);}c.phase=1;return ExternalPositionStep(c,ExternalPositionNeed::Type);}
+ if(c.phase==1){if(facts.owns!=0){return ExternalPositionStep(c,ExternalPositionNeed::Owned);}if(facts.views!=0||facts.empty!=0){return ExternalPositionStep(c,ExternalPositionNeed::BadLayout);}c.phase=2;return ExternalPositionStep(c,ExternalPositionNeed::Argument);}
+ if(c.phase==2){if(facts.present==0){return ExternalPositionStep(c,ExternalPositionNeed::Empty);}c.phase=3;return ExternalPositionStep(c,ExternalPositionNeed::RequireAddress);}
+ if(c.phase==3){c.phase=4;return ExternalPositionStep(c,ExternalPositionNeed::Borrow);}
+ if(c.phase==4){c.phase=5;return ExternalPositionStep(c,ExternalPositionNeed::Requirement);}
+ if(c.phase==5){c.phase=6;return ExternalPositionStep(c,ExternalPositionNeed::BorrowKind);}
+ if(c.phase==6){c.phase=7;return ExternalPositionStep(c,ExternalPositionNeed::Identity);}
+ if(c.phase==7){if(facts.identity!=0){c.phase=10;return ExternalPositionStep(c,ExternalPositionNeed::Reword);}c.phase=8;return ExternalPositionStep(c,ExternalPositionNeed::KnownBits);}
+ if(c.phase==8){c.phase=9;return ExternalPositionStep(c,facts.constant!=0?ExternalPositionNeed::ConstantIdentity:ExternalPositionNeed::DynamicIdentity);}
+ if(c.phase==9){c.phase=10;return ExternalPositionStep(c,ExternalPositionNeed::Reword);}
+ if(c.phase==10){c.phase=11;return ExternalPositionStep(c,ExternalPositionNeed::Low);}
+ if(c.phase==11){c.phase=12;return ExternalPositionStep(c,ExternalPositionNeed::High);}
+ return ExternalPositionStep(c,facts.external!=0?ExternalPositionNeed::ReadyExternal:ExternalPositionNeed::ReadyBorrowed);
+}
+extern "C" u32 data_external_sources(u32 pending,address context,cfn<u32,address> next) on cpu requires nonzero(next) {
+ if(pending!=0){return 0;}u32 source=next(context);if(source==0){return 0;}
+ while(source!=0){if(source!=1){return 0;}source=next(context);}return 1;
+}
