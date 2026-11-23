@@ -392,6 +392,13 @@ impl Device {
         };
         let mut inputs = BuildInputs::new(&self.inner)?;
         let (geometry, producer, models) = prepare(&mut inputs)?;
+        let BuildInputs { commands, allocations, mut dependencies } = inputs;
+        for previous in models.as_deref().unwrap_or_default().iter().map(|model| &model.0.built)
+            .chain(source.iter().map(|source| &source.built))
+        {
+            dependencies.insert(previous);
+        }
+        let dependencies = dependencies.prepare()?;
         let mut info = Build {
             kind: 1000150000,
             next: null(),
@@ -416,13 +423,6 @@ impl Device {
             (ray.sizes)(self.inner.owner.device, 1, &info, &count, &mut sizes);
         }
         let storage = Allocation::new(self.inner.clone(), sizes.structure, 0x120000, 1, 1)?;
-        let BuildInputs { commands, allocations, mut dependencies } = inputs;
-        for previous in models.as_deref().unwrap_or_default().iter().map(|model| &model.0.built)
-            .chain(source.iter().map(|source| &source.built))
-        {
-            dependencies.insert(previous);
-        }
-        let dependencies = dependencies.prepare()?;
         let mut out = StructureStorage {
             handle: 0,
             allocation: storage,

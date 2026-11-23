@@ -142,9 +142,13 @@ impl Completion {
         };
         check(r, "vkWaitForFences")
     }
+    fn observed_complete(&self) -> Result<bool> {
+        let Some(result) = self.result.get() else { return Ok(false); };
+        check(result, "vkGetFenceStatus")?;
+        Ok(true)
+    }
     fn is_complete(&self) -> Result<bool> {
-        if let Some(r) = self.result.get() {
-            check(r, "vkGetFenceStatus")?;
+        if self.observed_complete()? {
             return Ok(true);
         }
         let r = unsafe {
@@ -425,13 +429,20 @@ impl DependencySources {
             Self::Multiple(sources) => sources.into_values(),
         };
         while let Some(source) = sources.next() {
-            if !source.is_complete()? {
-                return Ok(if sources.len() == 0 {
-                    Dependencies::Single(source)
-                } else {
-                    Dependencies::Multiple(std::iter::once(source).chain(sources).collect())
-                });
+            if source.is_complete()? {
+                continue;
             }
+            if sources.len() == 0 {
+                return Ok(Dependencies::Single(source));
+            }
+            let mut pending = Vec::with_capacity(1 + sources.len());
+            pending.push(source);
+            // A later point can already hold an error. Read its recorded result without polling.
+            for later in sources {
+                later.point.observed_complete()?;
+                pending.push(later);
+            }
+            return Ok(Dependencies::Multiple(pending));
         }
         Ok(Dependencies::Empty)
     }
@@ -505,8 +516,7 @@ impl Execution {
         let Some(source) = source else {
             return Ok(None);
         };
-        if let Some(result) = source.point.result.get() {
-            check(result, "vkGetFenceStatus")?;
+        if source.point.observed_complete()? {
             return Ok(None);
         }
         // The readback fence covers earlier work on this queue.

@@ -83,7 +83,7 @@ top_level_device_read也复用此路径，AS不再保留独立的_read_inputs持
 | unsafe top_level_updatable(instances) | unsafe refit_top_level(&source,instances) | 本次实际 RayInstance 变换和 BLAS；矩阵有限可逆，实例活动状态保持 |
 | unsafe top_level_device_updatable(data) | unsafe refit_top_level_device(&source,data) | 原 B 原生实例数据、页内地址及 BLAS；维持 top_level_device 的矩阵及原生尾部前提 |
 
-原 bottom_level／top_level／top_level_device／top_level_device_read 仍为原静态构建，未声明 ALLOW_UPDATE 的来源不能进入 refit。原构建入口在创建本次命令、分配专用输入或录制拷贝前，检查逻辑设备的硬件光线查询能力、实际 primitive／instance 数量上限和 refit 来源的设备、ALLOW_UPDATE、原数量与三角形 maxVertex；不同数量或顶点范围属于不同构建形状。GPU 只读实例输入直接用 `frozen.binding()` 交给可更新构建／refit，不再增加专用读取包装；同形 CPU 与 GPU 输入可在更新中交接。
+原 bottom_level／top_level／top_level_device／top_level_device_read 仍为原静态构建，未声明 ALLOW_UPDATE 的来源不能进入 refit。原构建入口在创建本次命令、分配专用输入或录制拷贝前，检查逻辑设备的硬件光线查询能力、实际 primitive／instance 数量上限和 refit 来源的设备、ALLOW_UPDATE、原数量与三角形 maxVertex；不同数量或顶点范围属于不同构建形状。选定原生输入后，构建接收实际前序及模型依赖，接受后查询尺寸并取得本次输出和scratch。GPU 只读实例输入直接用 `frozen.binding()` 交给可更新构建／refit，不再增加专用读取包装；同形 CPU 与 GPU 输入可在更新中交接。
 
 新入口复用 build_acceleration，source 为原 AS，target 为独立新 AS，选择真实 UPDATE 与 updateScratchSize；原静态入口继续 BUILD 和 buildScratchSize，build flags 在后续更新中保持。source 本体而非仅其旧完成点由本次原 Execution 持有，更新完成后归还；新 TLAS 唯一存储持有本次真实 BLAS 集合，旧查询保留旧集合。没有主机等待才能开始更新的额外前置，也没有原地改写共享资源、全局版本表、自动重建或后台回收。
 
