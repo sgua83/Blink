@@ -2275,212 +2275,55 @@ impl<'a> Builder<'a> {
             SourcePlaceNeed::Empty=>return Ok(None),
         }}
     }
-    async fn read_place(&mut self, p: &Place, span: Span, element_read_origin: Option<Arc<GeneratedOrigin>>) -> Result<Value> {
-        unsafe { self.world.call(self.require_place_access(p,Access::Read,span)).await }?;
-        if p.ty().owns_resources() {
-            return self.fail(
-                span,
-                "B224",
-                "拥有资源需要移动、字段借用或match交接，不能按普通值复制",
-            );
-        }
-        match p {
-            Place::AtomicParameter(_)
-            | Place::Reference { access: Access::Atomic, .. }
-            | Place::ApplicationElement { access: Access::Atomic, .. } => {
-                self.fail(span, "B214", "原子借用只能通过显式原子操作读取")
-            }
-            Place::Reference {
-                ty, address, words, ..
-            } => {
-                let mut content_read=None;
-                if let Some((target,borrow))=unsafe { self.world.call(self.reference_memory(p,span)).await }? {
-                    self.check_view_requirement(view::Requirement::Address{borrow:borrow.clone(),layout:address::Layout::of(ty),written:None,writable:false,initialized:true,span})?;
-                    content_read=Some((self.view_model.uses.len(),Arc::new(borrow.clone())));
-                    self.check_view_requirement(view::Requirement::Memory{target,borrow,access:Some(Access::Read),written:None,snapshots:None,span,address_fields:Arc::from([])})?;
-                }else{unsafe { self.world.call(self.require_initialized(p, span)).await }?;}
-                let zero = self.constant(Scalar::U32, 0).regs[0];
-                let mut regs = Vec::new();
-                for ((scalar, _), word) in ty.components.iter().zip(words) {
-                    let (source, word) = address.source_at(*word, zero);
-                    let dst = self.reg(*scalar);
-                    self.emit(InstKind::LoadIndexed {
-                        dst,
-                        source,
-                        offset: zero,
-                        word,
-                    });
-                    regs.push(dst);
-                }
-                let (mut proof, uniform, known) = unsafe { self.world.call(self.read_owned_proof(p, &regs, &[])).await }?;
-                if !known && matches!(address,ReferenceAddress::Borrowed{..}) && let Some((memory,borrow))=content_read {
-                    let snapshots:Arc<[view_contracts::ValueSnapshot]>=self.capture_address_values(memory,address::Capture::Read).into();
-                    if let view::Requirement::Memory{snapshots:captured,..}=&mut self.view_model.uses[memory].requirement{*captured=Some(snapshots.clone());}
-                    for (word,field) in ty.borrow_fields(){
-                        if !field.is_address(){continue;}
-                        let component=ty.components.iter().position(|(_,at)|*at==word).unwrap();
-                        proof.set_view_borrow(component,view::Borrow{reads:view::Edges::from([view_contracts::ContentRead::Value{memory,word,borrow:borrow.clone(),snapshots:snapshots.clone()}]),..view::Borrow::default()});
-                    }
-                }
-                if matches!(address, ReferenceAddress::External { .. }) {
-                    proof = proof.with_external_borrows(ty);
-                }
-                Ok(Value {
-                    proof,
-                    literal: false,
-                    ty: ty.clone(),
-                    regs,
-                    uniform,
-                    constant: None,
-                })
-            }
-            Place::ApplicationElement {
-                ty,
-                handle,
-                identity,
-                index,
-                stride,
-                words,
-                ..
-            } => {
-                unsafe { self.world.call(self.require_initialized(p, span)).await }?;
-                let reads=self.dataset_effect(p,Access::Read,false,span)?;
-                let mut value = self
-                    .read_application_place(ty, *handle, *identity, *index, *stride, words, span, element_read_origin)?;
-                let (proof, uniform, _) = unsafe { self.world.call(self.read_owned_proof(p, &value.regs, &reads)).await }?;
-                value.constant = proof.known_value(ty);
-                value.proof = proof;
-                value.uniform = uniform;
-                Ok(value)
-            }
-            Place::Indexed { .. } => unsafe { self.world.call(self.read_array_place(p, span)).await },
-            Place::ViewElement {
-                ty,
-                address,
-                index,
-                stride,
-                words,
-                ..
-            } => {
-                let mut regs = Vec::new();
-                for ((scalar, _), word) in ty.components.iter().zip(words) {
-                    let dst = self.reg(*scalar);
-                    self.emit(InstKind::ViewLoad {
-                        dst,
-                        address: *address,
-                        index: *index,
-                        stride: *stride,
-                        word: *word,
-                    });
-                    regs.push(dst);
-                }
-                let (proof, uniform, _) = unsafe { self.world.call(self.read_owned_proof(p, &regs, &[])).await }?;
-                Ok(Value {
-                    proof,
-                    literal: false,
-                    ty: ty.clone(),
-                    regs,
-                    uniform,
-                    constant: None,
-                })
-            }
-            Place::TileElement {
-                ty,
-                tile,
-                index,
-                words,
-            } => {
-                if self.tiles[*tile].access == Access::Atomic {
-                    return self.fail(span, "B214", "atomic tile 元素只能通过显式原子操作读取");
-                }
-                if let TileOrigin::Input { binding, .. } =
-                    &self.tiles[*tile].source
-                {
-                    self.reads.insert(*binding);
-                    self.cross_access.insert(*binding);
-                }
-                let mut regs = Vec::new();
-                for ((scalar, _), word) in ty.components.iter().zip(words) {
-                    let dst = self.reg(*scalar);
-                    self.emit(InstKind::TileLoad {
-                        dst,
-                        tile: *tile,
-                        index: *index,
-                        word: *word,
-                    });
-                    regs.push(dst);
-                }
-                let (proof, uniform, _) = unsafe { self.world.call(self.read_owned_proof(p, &regs, &[])).await }?;
-                Ok(Value {
-                    proof,
-                    literal: false,
-                    ty: ty.clone(),
-                    regs,
-                    uniform,
-                    constant: None,
-                })
-            }
-            Place::Local(ty, slots, ..) | Place::ReadOnlyLocal(ty, slots, ..) => {
-                if matches!(p, Place::Local(..)) {
-                    unsafe { self.world.call(self.require_initialized(p, span)).await }?;
-                }
-                let mut regs = Vec::new();
-                for (s, slot) in ty.components.iter().zip(slots) {
-                    let r = self.reg(s.0);
-                    self.emit(InstKind::LoadLocal(r, *slot));
-                    regs.push(r);
-                }
-                let (proof, uniform, _) = unsafe { self.world.call(self.read_owned_proof(p, &regs, &[])).await }?;
-                let constant = proof.known_value(ty);
-                Ok(Value {
-                    proof,
-                    literal: false,
-                    ty: ty.clone(),
-                    regs,
-                    uniform,
-                    constant,
-                })
-            }
-            Place::Element {
-                ty,
-                binding,
-                index,
-                words,
-                ..
-            } => {
-                if self.view_access[binding] == Access::Atomic {
-                    return self.fail(span, "B214", "atomic 数据集元素只能通过显式原子操作读取");
-                }
-                if self.view_access[binding].writes() {
-                    unsafe { self.world.call(self.require_initialized(p, span)).await }?;
-                }
-                self.data_access(p, Access::Read, None);
-                self.reads.insert(*binding);
-                if *index != self.global_index {
-                    self.cross_access.insert(*binding);
-                }
-                let mut regs = Vec::new();
-                for ((s, _), word) in ty.components.iter().zip(words) {
-                    let dst = self.reg(*s);
-                    self.emit(InstKind::Load {
-                        dst,
-                        binding: *binding,
-                        index: *index,
-                        word: *word,
-                    });
-                    regs.push(dst);
-                }
-                let proof = unsafe { self.world.call(self.read_owned_proof(p, &regs, &[])).await }?.0;
-                Ok(Value {
-                    proof,
-                    literal: false,
-                    ty: ty.clone(),
-                    regs,
-                    uniform: false,
-                    constant: None,
-                })
-            }
-        }
+    async fn read_place(&mut self,p:&Place,span:Span,mut element_read_origin:Option<Arc<GeneratedOrigin>>)->Result<Value> {
+        let mut cursor=unsafe {lexical_start()};let mut facts=ReadPlaceFacts {owns:0,kind:0,access:0,reference:0,memory:0,known:0,input:0,current:0,field_address:0,components:0,words:0,fields:0};
+        let mut memory=None;let mut content_read=None;let mut snapshots=None;let mut shared=None;let mut fields=Vec::new();let mut zero=None;let mut regs=Vec::new();let mut reads=Vec::new();let mut proof=None;let mut uniform=false;let mut value=None;
+        loop {let step=unsafe {read_place_step(cursor,ReadPlaceFacts {..facts})};cursor=step.cursor;match step.need {
+            ReadPlaceNeed::Access=>{unsafe {self.world.call(self.require_place_access(p,Access::Read,span)).await}?;},
+            ReadPlaceNeed::Owns=>facts.owns=u32::from(p.ty().owns_resources()),
+            ReadPlaceNeed::Kind=>{facts.components=p.ty().components.len()as u64;match p {
+                Place::Reference {address,words,access,..}=>{facts.kind=0;facts.access=*access as u32;facts.reference=match address{ReferenceAddress::Borrowed {..}=>1,ReferenceAddress::External {..}=>2,_=>0};facts.words=words.len()as u64;},
+                Place::ApplicationElement {words,access,..}=>{facts.kind=1;facts.access=*access as u32;facts.words=words.len()as u64;},
+                Place::Indexed {..}=>facts.kind=2,
+                Place::ViewElement {words,..}=>{facts.kind=3;facts.words=words.len()as u64;},
+                Place::TileElement {tile,words,..}=>{facts.kind=4;facts.access=self.tiles[*tile].access as u32;facts.input=u32::from(matches!(self.tiles[*tile].source,TileOrigin::Input {..}));facts.words=words.len()as u64;},
+                Place::Local(_,slots,_)=>{facts.kind=5;facts.words=slots.len()as u64;},
+                Place::ReadOnlyLocal(_,slots,_)=>{facts.kind=6;facts.words=slots.len()as u64;},
+                Place::Element {binding,index,words,..}=>{facts.kind=7;facts.access=self.view_access[binding] as u32;facts.current=u32::from(*index==self.global_index);facts.words=words.len()as u64;},
+                Place::AtomicParameter(_)=>facts.kind=8,
+            }},
+            ReadPlaceNeed::OwnedError=>return self.fail(span,"B224","拥有资源需要移动、字段借用或match交接，不能按普通值复制"),
+            ReadPlaceNeed::AtomicError=>return self.fail(span,"B214","原子借用只能通过显式原子操作读取"),
+            ReadPlaceNeed::AtomicTileError=>return self.fail(span,"B214","atomic tile 元素只能通过显式原子操作读取"),
+            ReadPlaceNeed::AtomicDataError=>return self.fail(span,"B214","atomic 数据集元素只能通过显式原子操作读取"),
+            ReadPlaceNeed::Array=>return unsafe {self.world.call(self.read_array_place(p,span)).await},
+            ReadPlaceNeed::ReferenceMemory=>{memory=unsafe {self.world.call(self.reference_memory(p,span)).await}?;facts.memory=u32::from(memory.is_some());},
+            ReadPlaceNeed::Address=>{let(_,borrow)=memory.as_ref().unwrap();self.check_view_requirement(view::Requirement::Address {borrow:borrow.clone(),layout:address::Layout::of(p.ty()),written:None,writable:false,initialized:true,span})?;},
+            ReadPlaceNeed::RememberRead=>content_read=Some((self.view_model.uses.len(),memory.as_ref().unwrap().1.clone())),
+            ReadPlaceNeed::Memory=>{let(target,borrow)=memory.take().unwrap();self.check_view_requirement(view::Requirement::Memory {target,borrow,access:Some(Access::Read),written:None,snapshots:None,span,address_fields:Arc::from([])})?;},
+            ReadPlaceNeed::Initialize=>{unsafe {self.world.call(self.require_initialized(p,span)).await}?;},
+            ReadPlaceNeed::Zero=>zero=Some(self.constant(Scalar::U32,0).regs[0]),
+            ReadPlaceNeed::LoadReference=>{let Place::Reference {ty,address,words,..}=p else{unsafe {std::hint::unreachable_unchecked()}};let i=cursor.index as usize;let(source,word)=address.source_at(words[i],zero.unwrap());let dst=self.reg(ty.components[i].0);self.emit(InstKind::LoadIndexed {dst,source,offset:zero.unwrap(),word});regs.push(dst);},
+            ReadPlaceNeed::LoadView=>{let Place::ViewElement {ty,address,index,stride,words,..}=p else{unsafe {std::hint::unreachable_unchecked()}};let i=cursor.index as usize;let dst=self.reg(ty.components[i].0);self.emit(InstKind::ViewLoad {dst,address:*address,index:*index,stride:*stride,word:words[i]});regs.push(dst);},
+            ReadPlaceNeed::LoadTile=>{let Place::TileElement {ty,tile,index,words}=p else{unsafe {std::hint::unreachable_unchecked()}};let i=cursor.index as usize;let dst=self.reg(ty.components[i].0);self.emit(InstKind::TileLoad {dst,tile:*tile,index:*index,word:words[i]});regs.push(dst);},
+            ReadPlaceNeed::LoadLocal=>{let(Place::Local(ty,slots,_)|Place::ReadOnlyLocal(ty,slots,_))=p else{unsafe {std::hint::unreachable_unchecked()}};let i=cursor.index as usize;let dst=self.reg(ty.components[i].0);self.emit(InstKind::LoadLocal(dst,slots[i]));regs.push(dst);},
+            ReadPlaceNeed::LoadData=>{let Place::Element {ty,binding,index,words,..}=p else{unsafe {std::hint::unreachable_unchecked()}};let i=cursor.index as usize;let dst=self.reg(ty.components[i].0);self.emit(InstKind::Load {dst,binding:*binding,index:*index,word:words[i]});regs.push(dst);},
+            ReadPlaceNeed::Proof=>{let(actual,is_uniform,known)=unsafe {self.world.call(self.read_owned_proof(p,&regs,&[])).await}?;proof=Some(actual);uniform=is_uniform;facts.known=u32::from(known);},
+            ReadPlaceNeed::Snapshot=>{let(memory,borrow)=content_read.take().unwrap();let captured:Arc<[view_contracts::ValueSnapshot]>=self.capture_address_values(memory,address::Capture::Read).into();if let view::Requirement::Memory {snapshots,..}=&mut self.view_model.uses[memory].requirement{*snapshots=Some(captured.clone());}snapshots=Some((memory,borrow,captured));},
+            ReadPlaceNeed::ShareBorrow=>{let(memory,borrow,captured)=snapshots.take().unwrap();shared=Some((memory,Arc::new(borrow),captured));},
+            ReadPlaceNeed::BorrowFields=>{fields=p.ty().borrow_fields();facts.fields=fields.len()as u64;},
+            ReadPlaceNeed::BorrowField=>facts.field_address=u32::from(fields[cursor.part as usize].1.is_address()),
+            ReadPlaceNeed::SetBorrow=>{let word=fields[cursor.part as usize].0;let component=p.ty().components.iter().position(|(_,at)|*at==word).unwrap();let(memory,borrow,captured)=shared.as_ref().unwrap();proof.as_mut().unwrap().set_view_borrow(component,view::Borrow {reads:view::Edges::from([view_contracts::ContentRead::Value {memory:*memory,word,borrow:borrow.clone(),snapshots:captured.clone()}]),..view::Borrow::default()});},
+            ReadPlaceNeed::ExternalProof=>proof=Some(proof.take().unwrap().with_external_borrows(p.ty())),
+            ReadPlaceNeed::DatasetEffect=>reads=self.dataset_effect(p,Access::Read,false,span)?,
+            ReadPlaceNeed::ApplicationRead=>{let Place::ApplicationElement {ty,handle,identity,index,stride,words,..}=p else{unsafe {std::hint::unreachable_unchecked()}};value=Some(self.read_application_place(ty,*handle,*identity,*index,*stride,words,span,element_read_origin.take())?);},
+            ReadPlaceNeed::ApplicationProof=>{let(actual,is_uniform,_)=unsafe {self.world.call(self.read_owned_proof(p,&value.as_ref().unwrap().regs,&reads)).await}?;proof=Some(actual);uniform=is_uniform;},
+            ReadPlaceNeed::TileInput=>{let Place::TileElement {tile,..}=p else{unsafe {std::hint::unreachable_unchecked()}};let TileOrigin::Input {binding,..}=&self.tiles[*tile].source else{unsafe {std::hint::unreachable_unchecked()}};self.reads.insert(*binding);self.cross_access.insert(*binding);},
+            ReadPlaceNeed::DataAccess=>{let Place::Element {binding,..}=p else{unsafe {std::hint::unreachable_unchecked()}};self.data_access(p,Access::Read,None);self.reads.insert(*binding);},
+            ReadPlaceNeed::DataCross=>{let Place::Element {binding,..}=p else{unsafe {std::hint::unreachable_unchecked()}};self.cross_access.insert(*binding);},
+            ReadPlaceNeed::FinishApplication=>{let mut value=value.take().unwrap();let proof=proof.take().unwrap();value.constant=proof.known_value(p.ty());value.proof=proof;value.uniform=uniform;return Ok(value);},
+            ReadPlaceNeed::Finish=>{let proof=proof.take().unwrap();let constant=if step.flags&1!=0{proof.known_value(p.ty())}else{None};return Ok(Value {proof,literal:false,ty:p.ty().clone(),regs,uniform:step.flags&2!=0&&uniform,constant});},
+        }}
     }
     async fn write_place(&mut self, p: &Place, value: Value, span: Span, local_origin: Option<Arc<GeneratedOrigin>>) -> Result<()> {
         unsafe { self.world.call(self.require_place_access(p,Access::Write,span)).await }?;
@@ -2919,7 +2762,7 @@ impl<'a> Builder<'a> {
         }}
     }
     fn name_place(&mut self,name:&str,span:Span)->Result<Place> {
-        let kind=match self.env.get(name){Some(Binding::AtomicBorrow(_))=>1,Some(Binding::Owned(_))=>2,Some(Binding::OwnedValue(_))=>3,Some(Binding::Value(_))=>4,Some(Binding::ViewElement {..})=>5,_=>0};
+        let kind=named_binding_kind(self.env.get(name));
         let mut cursor=SourceValueCursor {phase:0};let mut facts=NamePositionFacts {kind,present:0,arrays:0};let mut place=None;
         loop {let step=unsafe {name_position_step(cursor,NamePositionFacts {..facts})};cursor=step.cursor;match step.need {
             NamePositionNeed::Atomic=>{let Some(Binding::AtomicBorrow(place))=self.env.get(name)else{unsafe {std::hint::unreachable_unchecked()}};return Ok(place.clone());},
@@ -3204,60 +3047,27 @@ impl<'a> Builder<'a> {
         unsafe { self.world.call(self.read_place(&p, e.span(), None)).await }.map(Some)
     }
     #[inline(never)]
-    async fn name_expr(&mut self, name: &str, span: Span) -> Result<Value> {
-        if let Some(value) = self.scope.bindings().values.get(name).copied() {
-            return Ok(self.constant(Scalar::U32, Bits::from(value)));
-        }
-        match self.env.get(name).cloned() {
-            Some(Binding::Value(v)) => Ok(v),
-            Some(Binding::Owned(owner)) => unsafe { self.world.call(self.read_place(&owner.place, span, None)).await },
-            Some(
-                Binding::AtomicBorrow(_)
-                | Binding::ViewElement { .. },
-            ) => {
-                let p = self.name_place(name, span)?;
-                unsafe { self.world.call(self.read_place(&p, span, None)).await }
-            }
-            None => {
-                let key = self
-                    .world
-                    .resolve(
-                        name,
-                        self.scope.module(),
-                        self.scope.imports(),
-                        true,
-                    ).unique()
-                    .filter(|key| self.world.functions[key].function.kind() == FunctionKind::Constant)
-                    .ok_or_else(|| Diagnostic {
-                        source: self.scope.source().clone(),
-                        span: span,
-                        code: "B145",
-                        message: format!("未知值 {name}"),
-                    })?;
-                unsafe { self.world.call(self.module_constant(key)).await }
-            }
-            _ => self.fail(span, "B145", format!("未知值 {name}")),
-        }
+    async fn name_expr(&mut self,name:&str,span:Span)->Result<Value> {
+        let mut cursor=SourceValueCursor {phase:0};let mut facts=NameValueFacts {present:0,kind:0,constant:0};let mut scope_value=None;let mut place=None;let mut key=None;
+        loop {let step=unsafe {name_value_step(cursor,NameValueFacts {..facts})};cursor=step.cursor;match step.need {
+            NameValueNeed::Scope=>{scope_value=self.scope.bindings().values.get(name).copied();facts.present=u32::from(scope_value.is_some());},
+            NameValueNeed::ScopeValue=>return Ok(self.constant(Scalar::U32,Bits::from(scope_value.unwrap()))),
+            NameValueNeed::Binding=>facts.kind=named_binding_kind(self.env.get(name)),
+            NameValueNeed::Value=>{let Some(Binding::Value(value))=self.env.get(name)else{unsafe {std::hint::unreachable_unchecked()}};return Ok(value.clone());},
+            NameValueNeed::OwnedPlace=>{let Some(Binding::Owned(owner))=self.env.get(name)else{unsafe {std::hint::unreachable_unchecked()}};place=Some(owner.place.clone());},
+            NameValueNeed::NamedPlace=>place=Some(self.name_place(name,span)?),
+            NameValueNeed::Read=>return unsafe {self.world.call(self.read_place(place.as_ref().unwrap(),span,None)).await},
+            NameValueNeed::Resolve=>{key=self.world.resolve(name,self.scope.module(),self.scope.imports(),true).unique();facts.present=u32::from(key.is_some());},
+            NameValueNeed::FunctionKind=>facts.constant=u32::from(self.world.functions[key.as_ref().unwrap()].function.kind()==FunctionKind::Constant),
+            NameValueNeed::ModuleConstant=>return unsafe {self.world.call(self.module_constant(key.take().unwrap())).await},
+            NameValueNeed::Unknown=>return self.fail(span,"B145",format!("未知值 {name}")),
+        }}
     }
-    fn is_place(&self, e: &Expr) -> bool {
-        match e.kind() {
-            ExprKind::Name(n) => {
-                matches!(
-                    self.env.get(n),
-                    Some(
-                        Binding::AtomicBorrow(_)
-                            | Binding::ViewElement { .. }
-                            | Binding::Owned(_)
-                            | Binding::OwnedValue(_)
-                    )
-                )
-            }
-            ExprKind::Member(b, _) => self.is_place(&b),
-            ExprKind::Index(..) => true,
-            ExprKind::Specialize(name, _, _) if name == "unsafe_position" => true,
-            _ => false,
-        }
+    fn is_place(&self,e:&Expr)->bool {
+        let context=SourcePlaceQuery {builder:self,source:e.source_view()};
+        unsafe {source_is_place(e.signature_node(),SourcePlaceQueryHost {context:&context,binding:query_named_binding})!=0}
     }
+
 }
 use effects::{assigned_names, expression_assignments};
 
@@ -3524,4 +3334,25 @@ unsafe extern "C" {
  #[link_name="bootstrap.function_body::start"]fn lexical_start()->LexicalCursor;
  #[link_name="bootstrap.function_body::lexical_block_step"]fn lexical_block_step(cursor:LexicalCursor,count:u64,continuing:u32)->LexicalStep;
  #[link_name="bootstrap.function_body::source_statement_step"]fn source_statement_step(cursor:SourceValueCursor,source:crate::syntax::wire::SignatureNode,facts:SourceStatementFacts)->SourceStatementStep;
+}
+
+
+fn named_binding_kind(binding:Option<&Binding>)->u32 {
+    match binding {None=>0,Some(Binding::AtomicBorrow(_))=>1,Some(Binding::Owned(_))=>2,Some(Binding::OwnedValue(_))=>3,Some(Binding::Value(_))=>4,Some(Binding::ViewElement {..})=>5,Some(_)=>6}
+}
+#[repr(C)]struct ReadPlaceFacts {owns:u32,kind:u32,access:u32,reference:u32,memory:u32,known:u32,input:u32,current:u32,field_address:u32,components:u64,words:u64,fields:u64}
+#[repr(u32)]enum ReadPlaceNeed {Access,Owns,Kind,OwnedError,AtomicError,AtomicTileError,AtomicDataError,Array,ReferenceMemory,Address,RememberRead,Memory,Initialize,Zero,LoadReference,LoadView,LoadTile,LoadLocal,LoadData,Proof,Snapshot,BorrowFields,BorrowField,SetBorrow,ExternalProof,DatasetEffect,ApplicationRead,ApplicationProof,TileInput,DataAccess,DataCross,FinishApplication,Finish,ShareBorrow}
+#[repr(C)]struct ReadPlaceStep {cursor:LexicalCursor,need:ReadPlaceNeed,flags:u32}
+#[repr(C)]struct NameValueFacts {present:u32,kind:u32,constant:u32}
+#[repr(u32)]enum NameValueNeed {Scope,ScopeValue,Binding,Value,OwnedPlace,NamedPlace,Read,Resolve,FunctionKind,ModuleConstant,Unknown}
+#[repr(C)]struct NameValueStep {cursor:SourceValueCursor,need:NameValueNeed}
+struct SourcePlaceQuery<'a,'b,'c> {builder:&'a Builder<'b>,source:crate::syntax::SourceView<'c>}
+#[repr(C)]struct SourcePlaceQueryHost<'a,'b,'c> {context:*const SourcePlaceQuery<'a,'b,'c>,binding:unsafe extern "C" fn(*const SourcePlaceQuery<'a,'b,'c>,crate::syntax::wire::Text)->u32}
+unsafe extern "C" fn query_named_binding(context:*const SourcePlaceQuery<'_,'_,'_>,name:crate::syntax::wire::Text)->u32 {
+    let context=unsafe {&*context};named_binding_kind(context.builder.env.get(context.source.text(name)))
+}
+unsafe extern "C" {
+ #[link_name="bootstrap.function_body::read_place_step"]fn read_place_step(cursor:LexicalCursor,facts:ReadPlaceFacts)->ReadPlaceStep;
+ #[link_name="bootstrap.function_body::name_value_step"]fn name_value_step(cursor:SourceValueCursor,facts:NameValueFacts)->NameValueStep;
+ #[link_name="bootstrap.function_body::source_is_place"]fn source_is_place(source:crate::syntax::wire::SignatureNode,host:SourcePlaceQueryHost<'_,'_,'_>)->u32;
 }

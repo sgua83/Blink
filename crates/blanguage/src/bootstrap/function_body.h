@@ -254,3 +254,15 @@ struct SourceStatementFacts {u32 present;u32 entry;};
 enum SourceStatementNeed:u32 {Bind=0;Declare=1;Let=2;Assign=3;Expression=4;Condition=5;RequireBool=6;Conditional=7;InitialLoop=8;While=9;For=10;LoopControl=11;Match=12;Return=13;Parallel=14;Entry=15;BadPhase=16;Seek=17;Complete=18;};
 struct SourceStatementStep {LocalCursor cursor;SourceStatementNeed need;Text name;Text operation;u64 first;u64 second;Slice body;Slice other;u32 present;};
 extern "C" SourceStatementStep source_statement_step(LocalCursor cursor,SignatureNode source,SourceStatementFacts facts) on cpu;
+
+
+struct ReadPlaceFacts {u32 owns;u32 kind;u32 access;u32 reference;u32 memory;u32 known;u32 input;u32 current;u32 field_address;u64 components;u64 words;u64 fields;};
+enum ReadPlaceNeed:u32 {Access=0;Owns=1;Kind=2;OwnedError=3;AtomicError=4;AtomicTileError=5;AtomicDataError=6;Array=7;ReferenceMemory=8;Address=9;RememberRead=10;Memory=11;Initialize=12;Zero=13;LoadReference=14;LoadView=15;LoadTile=16;LoadLocal=17;LoadData=18;Proof=19;Snapshot=20;BorrowFields=21;BorrowField=22;SetBorrow=23;ExternalProof=24;DatasetEffect=25;ApplicationRead=26;ApplicationProof=27;TileInput=28;DataAccess=29;DataCross=30;FinishApplication=31;Finish=32;ShareBorrow=33;};
+struct ReadPlaceStep {Cursor cursor;ReadPlaceNeed need;u32 flags;};
+extern "C" ReadPlaceStep read_place_step(Cursor cursor,ReadPlaceFacts facts) on cpu;
+struct NameValueFacts {u32 present;u32 kind;u32 constant;};
+enum NameValueNeed:u32 {Scope=0;ScopeValue=1;Binding=2;Value=3;OwnedPlace=4;NamedPlace=5;Read=6;Resolve=7;FunctionKind=8;ModuleConstant=9;Unknown=10;};
+struct NameValueStep {LocalCursor cursor;NameValueNeed need;};
+extern "C" NameValueStep name_value_step(LocalCursor cursor,NameValueFacts facts) on cpu;
+struct SourcePlaceQueryHost {address context;cfn<u32,address,Text> ensures memory(read) binding;};
+extern "C" u32 source_is_place(SignatureNode source,SourcePlaceQueryHost host) on cpu requires nonzero(host.binding);

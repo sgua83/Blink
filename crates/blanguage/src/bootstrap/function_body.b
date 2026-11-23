@@ -917,3 +917,74 @@ extern "C" SourceStatementStep source_statement_step(LocalCursor cursor,Signatur
  }
  return result;
 }
+
+
+extern "C" ReadPlaceStep read_place_step(Cursor cursor,ReadPlaceFacts facts) on cpu {
+ Cursor c=cursor;
+ if(c.phase==0){c.phase=1;return ReadPlaceStep(c,ReadPlaceNeed::Access,0);}
+ if(c.phase==1){c.phase=2;return ReadPlaceStep(c,ReadPlaceNeed::Owns,0);}
+ if(c.phase==2){if(facts.owns!=0){return ReadPlaceStep(c,ReadPlaceNeed::OwnedError,0);}c.phase=3;return ReadPlaceStep(c,ReadPlaceNeed::Kind,0);}
+ if(c.phase==3){
+  if(facts.kind==8||((facts.kind==0||facts.kind==1)&&facts.access==4)){return ReadPlaceStep(c,ReadPlaceNeed::AtomicError,0);}
+  if(facts.kind==2){return ReadPlaceStep(c,ReadPlaceNeed::Array,0);}
+  if(facts.kind==0){c.phase=4;return ReadPlaceStep(c,ReadPlaceNeed::ReferenceMemory,0);}
+  if(facts.kind==1){c.phase=21;return ReadPlaceStep(c,ReadPlaceNeed::Initialize,0);}
+  c.index=0u64;
+  if(facts.kind==4){if(facts.access==4){return ReadPlaceStep(c,ReadPlaceNeed::AtomicTileError,0);}c.phase=30;if(facts.input!=0){return ReadPlaceStep(c,ReadPlaceNeed::TileInput,0);}}
+  else if(facts.kind==5){c.phase=30;return ReadPlaceStep(c,ReadPlaceNeed::Initialize,0);}
+  else if(facts.kind==7){if(facts.access==4){return ReadPlaceStep(c,ReadPlaceNeed::AtomicDataError,0);}if(facts.access==2||facts.access==3){c.phase=41;return ReadPlaceStep(c,ReadPlaceNeed::Initialize,0);}c.phase=42;return ReadPlaceStep(c,ReadPlaceNeed::DataAccess,0);}
+  else{c.phase=30;}
+ }
+ if(c.phase==4){if(facts.memory!=0){c.phase=5;return ReadPlaceStep(c,ReadPlaceNeed::Address,0);}c.phase=8;return ReadPlaceStep(c,ReadPlaceNeed::Initialize,0);}
+ if(c.phase==5){if(facts.reference==1){c.phase=6;return ReadPlaceStep(c,ReadPlaceNeed::RememberRead,0);}c.phase=7;return ReadPlaceStep(c,ReadPlaceNeed::Memory,0);}
+ if(c.phase==6){c.phase=7;return ReadPlaceStep(c,ReadPlaceNeed::Memory,0);}
+ if(c.phase==7||c.phase==8){c.phase=9;return ReadPlaceStep(c,ReadPlaceNeed::Zero,0);}
+ if(c.phase==9){c.index=0u64;c.phase=30;}
+ if(c.phase==21){c.phase=22;return ReadPlaceStep(c,ReadPlaceNeed::DatasetEffect,0);}
+ if(c.phase==22){c.phase=23;return ReadPlaceStep(c,ReadPlaceNeed::ApplicationRead,0);}
+ if(c.phase==23){c.phase=24;return ReadPlaceStep(c,ReadPlaceNeed::ApplicationProof,0);}
+ if(c.phase==24){return ReadPlaceStep(c,ReadPlaceNeed::FinishApplication,0);}
+ if(c.phase==41){c.phase=42;return ReadPlaceStep(c,ReadPlaceNeed::DataAccess,0);}
+ if(c.phase==42){c.phase=30;if(facts.current==0){return ReadPlaceStep(c,ReadPlaceNeed::DataCross,0);}}
+ if(c.phase==31){c.index+=1u64;c.phase=30;}
+ if(c.phase==30){
+  if(c.index<facts.components&&c.index<facts.words){c.phase=31;ReadPlaceNeed load=facts.kind==0 ? ReadPlaceNeed::LoadReference : facts.kind==3 ? ReadPlaceNeed::LoadView : facts.kind==4 ? ReadPlaceNeed::LoadTile : facts.kind==7 ? ReadPlaceNeed::LoadData : ReadPlaceNeed::LoadLocal;return ReadPlaceStep(c,load,0);}
+  c.phase=32;return ReadPlaceStep(c,ReadPlaceNeed::Proof,0);
+ }
+ if(c.phase==32&&facts.kind==0&&facts.reference==1&&facts.memory!=0&&facts.known==0){c.phase=33;return ReadPlaceStep(c,ReadPlaceNeed::Snapshot,0);}
+ if(c.phase==33){c.part=0u64;c.phase=34;return ReadPlaceStep(c,ReadPlaceNeed::BorrowFields,0);}
+ if(c.phase==35&&facts.field_address!=0){if(c.flags==0){c.flags=1;c.phase=37;return ReadPlaceStep(c,ReadPlaceNeed::ShareBorrow,0);}c.phase=36;return ReadPlaceStep(c,ReadPlaceNeed::SetBorrow,0);}
+ if(c.phase==37){c.phase=36;return ReadPlaceStep(c,ReadPlaceNeed::SetBorrow,0);}
+ if(c.phase==35||c.phase==36){c.part+=1u64;c.phase=34;}
+ if(c.phase==34&&c.part<facts.fields){c.phase=35;return ReadPlaceStep(c,ReadPlaceNeed::BorrowField,0);}
+ if(c.phase!=50&&facts.kind==0&&facts.reference==2){c.phase=50;return ReadPlaceStep(c,ReadPlaceNeed::ExternalProof,0);}
+ u32 flags=facts.kind==5||facts.kind==6 ? 3 : facts.kind==7 ? 0 : 2;
+ return ReadPlaceStep(c,ReadPlaceNeed::Finish,flags);
+}
+extern "C" NameValueStep name_value_step(LocalCursor cursor,NameValueFacts facts) on cpu {
+ LocalCursor c=cursor;
+ if(c.phase==0){c.phase=1;return NameValueStep(c,NameValueNeed::Scope);}
+ if(c.phase==1){if(facts.present!=0){return NameValueStep(c,NameValueNeed::ScopeValue);}c.phase=2;return NameValueStep(c,NameValueNeed::Binding);}
+ if(c.phase==2){
+  if(facts.kind==4){return NameValueStep(c,NameValueNeed::Value);}
+  if(facts.kind==2){c.phase=3;return NameValueStep(c,NameValueNeed::OwnedPlace);}
+  if(facts.kind==1||facts.kind==5){c.phase=3;return NameValueStep(c,NameValueNeed::NamedPlace);}
+  if(facts.kind==0){c.phase=4;return NameValueStep(c,NameValueNeed::Resolve);}
+  return NameValueStep(c,NameValueNeed::Unknown);
+ }
+ if(c.phase==3){return NameValueStep(c,NameValueNeed::Read);}
+ if(c.phase==4){if(facts.present==0){return NameValueStep(c,NameValueNeed::Unknown);}c.phase=5;return NameValueStep(c,NameValueNeed::FunctionKind);}
+ return NameValueStep(c,facts.constant!=0 ? NameValueNeed::ModuleConstant : NameValueNeed::Unknown);
+}
+extern "C" u32 source_is_place(SignatureNode source,SourcePlaceQueryHost host) on cpu requires nonzero(host.binding) {
+ u64 offset=source.offset;
+ while(true){ExprNode expression=binding_node<ExprNode>(source.storage.nodes,offset);
+  match(expression.kind){
+   ExprKind::Name(name){u32 kind=host.binding(host.context,name);return kind==1||kind==2||kind==3||kind==5 ? 1 : 0;}
+   ExprKind::Member(value){offset=value.base.offset;}
+   ExprKind::Index(unused){return 1;}
+   ExprKind::Specialize(value){address bytes=binding_at(value.name.kind==0 ? source.storage.source : source.storage.text,value.name.range.start);return local_spelling(bytes,value.name.range.end-value.name.range.start,"unsafe_position") ? 1 : 0;}
+   ExprKind::Number(unused){return 0;} ExprKind::StaticU32(unused){return 0;} ExprKind::Bool(unused){return 0;} ExprKind::Call(unused){return 0;} ExprKind::Invoke(unused){return 0;} ExprKind::Construct(unused){return 0;} ExprKind::FunctionRef(unused){return 0;} ExprKind::Cooperate(unused){return 0;} ExprKind::Target(unused){return 0;} ExprKind::Unary(unused){return 0;} ExprKind::Binary(unused){return 0;} ExprKind::Select(unused){return 0;}
+  }
+ }
+}
