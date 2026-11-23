@@ -58,3 +58,9 @@ struct OwnedInputFacts {u32 application;u32 borrowed;u32 available;CallAccess ac
 enum OwnedInputNeed:u32 {Application=0;Model=1;Borrowed=2;Prepare=3;Available=4;Unavailable=5;Load=6;Reference=7;};
 struct OwnedInputStep {Phase cursor;OwnedInputNeed need;u32 reading;};
 extern "C" OwnedInputStep owned_input_step(Phase cursor,OwnedInputFacts facts) on cpu;
+
+enum ReferenceKind:u32 {Other=0;Reference=1;Local=2;Element=3;Application=4;View=5;Indexed=6;};
+struct CallReferenceFacts {u32 atomic;CallAccess access;ReferenceKind kind;ReferenceKind base;u32 cross;};
+enum CallReferenceNeed:u32 {Kind=0;BadAtomic=1;Base=2;ElementFacts=3;Read=4;Write=5;Cross=6;Reference=7;Local=8;Element=9;Application=10;View=11;IndexedReference=12;IndexedLocal=13;IndexedElement=14;IndexedApplication=15;IndexedView=16;BadStorage=17;DataAccess=18;Complete=19;};
+struct CallReferenceStep {Phase cursor;CallReferenceNeed need;};
+extern "C" CallReferenceStep call_reference_step(Phase cursor,CallReferenceFacts facts) on cpu;

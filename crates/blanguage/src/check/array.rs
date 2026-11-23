@@ -502,7 +502,7 @@ impl Builder<'_> {
                 stride,
                 ..
             } => {
-                let(address,index,stride)=self.application_memory(*handle,*identity,*index,*stride,write,Some(offset),&[(scalar,word)],span)?;
+                let(address,index,stride)=self.application_memory(*handle,*identity,*index,*stride,write,Some(offset),[(scalar,word)],span)?;
                 IndexedSource::View{address,index,stride:ElementStride::Constant(u64::from(stride))}
             },
             Place::Element { binding, index, .. } => IndexedSource::Data {

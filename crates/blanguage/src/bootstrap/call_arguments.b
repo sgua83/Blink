@@ -292,3 +292,24 @@ extern "C" OwnedInputStep owned_input_step(Phase cursor,OwnedInputFacts facts) o
  if(c.phase==3){if(facts.available==0){return OwnedInputStep(c,OwnedInputNeed::Unavailable,0);}c.phase=4;return OwnedInputStep(c,OwnedInputNeed::Load,0);}
  return OwnedInputStep(c,OwnedInputNeed::Reference,0);
 }
+
+extern "C" CallReferenceStep call_reference_step(Phase cursor,CallReferenceFacts facts) on cpu {
+ Phase c=cursor;
+ if(c.phase==0){if(facts.atomic!=0&&facts.access!=CallAccess::Atomic){return CallReferenceStep(c,CallReferenceNeed::BadAtomic);}c.phase=1;return CallReferenceStep(c,CallReferenceNeed::Kind);}
+ if(c.phase==1){
+  if(facts.kind==ReferenceKind::Indexed){c.phase=2;return CallReferenceStep(c,CallReferenceNeed::Base);}
+  if(facts.kind==ReferenceKind::Element){c.phase=3;return CallReferenceStep(c,CallReferenceNeed::ElementFacts);}
+  c.phase=10;
+  if(facts.kind==ReferenceKind::Reference){return CallReferenceStep(c,CallReferenceNeed::Reference);}if(facts.kind==ReferenceKind::Local){return CallReferenceStep(c,CallReferenceNeed::Local);}if(facts.kind==ReferenceKind::Application){return CallReferenceStep(c,CallReferenceNeed::Application);}if(facts.kind==ReferenceKind::View){return CallReferenceStep(c,CallReferenceNeed::View);}return CallReferenceStep(c,CallReferenceNeed::BadStorage);
+ }
+ if(c.phase==2){
+  if(facts.base==ReferenceKind::Element){c.phase=3;return CallReferenceStep(c,CallReferenceNeed::ElementFacts);}c.phase=10;
+  if(facts.base==ReferenceKind::Reference){return CallReferenceStep(c,CallReferenceNeed::IndexedReference);}if(facts.base==ReferenceKind::Local){return CallReferenceStep(c,CallReferenceNeed::IndexedLocal);}if(facts.base==ReferenceKind::Application){return CallReferenceStep(c,CallReferenceNeed::IndexedApplication);}if(facts.base==ReferenceKind::View){return CallReferenceStep(c,CallReferenceNeed::IndexedView);}return CallReferenceStep(c,CallReferenceNeed::BadStorage);
+ }
+ if(c.phase==3){c.phase=4;if(reads(facts.access)){return CallReferenceStep(c,CallReferenceNeed::Read);}}
+ if(c.phase==4){c.phase=5;if(writes(facts.access)){return CallReferenceStep(c,CallReferenceNeed::Write);}}
+ if(c.phase==5){c.phase=6;if(facts.cross!=0){return CallReferenceStep(c,CallReferenceNeed::Cross);}}
+ if(c.phase==6){c.phase=10;return CallReferenceStep(c,facts.kind==ReferenceKind::Indexed ? CallReferenceNeed::IndexedElement : CallReferenceNeed::Element);}
+ if(c.phase==10){c.phase=11;return CallReferenceStep(c,CallReferenceNeed::DataAccess);}
+ return CallReferenceStep(c,CallReferenceNeed::Complete);
+}

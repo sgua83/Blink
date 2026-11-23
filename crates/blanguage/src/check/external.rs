@@ -35,158 +35,32 @@ impl Builder<'_> {
             ReadInputNeed::Empty=>return Ok(None),
         }}
     }
-    pub(super) fn call_reference(
-        &mut self,
-        place: &Place,
-        access: Access,
-        expose_writes: bool,
-        span: Span,
-    ) -> Result<CallReference> {
-        if self.atomic_storage(place) && access != Access::Atomic {
-            return self.fail(span, "B214", "原子位置只能转借给atomic参数");
-        }
-        let (storage, offset, word) = match place {
-            Place::Reference { address, words, .. } => {
-                let zero=self.constant(Scalar::U32,0).regs[0];
-                let (source,word)=address.source_at(words[0],zero);
-                (
-                    CallStorage::Indexed(source),
-                    None,
-                    word,
-                )
-            }
-            Place::Local(_, _, storage) | Place::ReadOnlyLocal(_, _, storage) => (
-                CallStorage::Local {
-                    base: storage.start,
-                    len: storage.len(),
-                },
-                None,
-                first_reference_word(place, &self.locals),
-            ),
-            Place::Element {
-                binding,
-                index,
-                words,
-                ..
-            } => {
-                if access.reads() {
-                    self.reads.insert(*binding);
-                }
-                if access.writes() {
-                    self.writes.insert(*binding);
-                }
-                if *index != self.global_index {
-                    self.cross_access.insert(*binding);
-                }
-                (
-                    CallStorage::Indexed(IndexedSource::Data {
-                        binding: *binding,
-                        index: *index,
-                    }),
-                    None,
-                    words[0],
-                )
-            }
-            Place::ApplicationElement {
-                handle,
-                identity,
-                index,
-                stride,
-                words,
-                ..
-            } => {
-                let components: Vec<_> = place.ty().components.iter().zip(words).map(|(&(scalar, _), &word)| (scalar, word)).collect();
-                let(address,index,stride)=self.application_memory(*handle,*identity,*index,*stride,expose_writes,None,&components,span)?;
-                (CallStorage::Indexed(IndexedSource::View{address,index,stride:ElementStride::Constant(u64::from(stride))}),None,words[0])
-            },
-            Place::ViewElement {
-                address,
-                index,
-                stride,
-                words,
-                ..
-            } => (
-                CallStorage::Indexed(IndexedSource::View {
-                    address: *address,
-                    index: *index,
-                    stride: *stride,
-                }),
-                None,
-                words[0],
-            ),
-            Place::Indexed { base, offset, words, .. }
-                if matches!(&**base, Place::Reference { .. }) =>
-            {
-                let scalar = place.ty().components[0].0;
-                let (source, offset, word) =
-                    self.array_memory(base, *offset, words[0], scalar, expose_writes, span)?;
-                (CallStorage::Indexed(source), Some(offset), word)
-            }
-            Place::Indexed {
-                base,
-                offset,
-                ..
-            } => {
-                let storage = match &**base {
-                    Place::Local(_, _, storage) | Place::ReadOnlyLocal(_, _, storage) => {
-                        CallStorage::Local {
-                            base: storage.start,
-                            len: storage.len(),
-                        }
-                    }
-                    Place::Element { binding, index, .. } => {
-                        if access.reads() {
-                            self.reads.insert(*binding);
-                        }
-                        if access.writes() {
-                            self.writes.insert(*binding);
-                        }
-                        if *index != self.global_index {
-                            self.cross_access.insert(*binding);
-                        }
-                        CallStorage::Indexed(IndexedSource::Data {
-                            binding: *binding,
-                            index: *index,
-                        })
-                    }
-                    Place::ApplicationElement {
-                        handle,
-                        identity,
-                        index,
-                        stride,
-                        ..
-                    } => {
-                        let words = reference_word_source(place, &self.locals).unwrap().iter();
-                        let components: Vec<_> = place.ty().components.iter().zip(words).map(|(&(scalar, _), word)| (scalar, word)).collect();
-                        let(address,index,stride)=self.application_memory(*handle,*identity,*index,*stride,expose_writes,Some(*offset),&components,span)?;
-                        CallStorage::Indexed(IndexedSource::View{address,index,stride:ElementStride::Constant(u64::from(stride))})
-                    },
-                    Place::ViewElement {
-                        address,
-                        index,
-                        stride,
-                        ..
-                    } => CallStorage::Indexed(IndexedSource::View {
-                        address: *address,
-                        index: *index,
-                        stride: *stride,
-                    }),
-                    _ => return self.fail(span, "B264", "外部引用需要 CPU 普通值的实际存储"),
-                };
-                (
-                    storage,
-                    Some(*offset),
-                    first_reference_word(place, &self.locals),
-                )
-            }
-            _ => return self.fail(span, "B264", "外部引用需要 CPU 普通值的实际存储"),
-        };
-        self.data_access(place, access, None);
-        Ok(CallReference {
-            storage,
-            offset,
-            word,
-        })
+    pub(super) fn call_reference(&mut self,place:&Place,access:Access,expose_writes:bool,span:Span)->Result<CallReference> {
+        fn kind(place:&Place)->ReferenceKind {match place {Place::Reference{..}=>ReferenceKind::Reference,Place::Local(..)|Place::ReadOnlyLocal(..)=>ReferenceKind::Local,Place::Element{..}=>ReferenceKind::Element,Place::ApplicationElement{..}=>ReferenceKind::Application,Place::ViewElement{..}=>ReferenceKind::View,Place::Indexed{..}=>ReferenceKind::Indexed,_=>ReferenceKind::Other}}
+        let mut cursor=ReadInputCursor {phase:0};let mut facts=CallReferenceFacts {atomic:u32::from(self.atomic_storage(place)),access,kind:ReferenceKind::Other,base:ReferenceKind::Other,cross:0};
+        let mut element=None;let mut result=None;
+        loop {let step=unsafe{call_reference_step(cursor,facts)};cursor=step.cursor;match step.need {
+            CallReferenceNeed::BadAtomic=>return self.fail(span,"B214","原子位置只能转借给atomic参数"),
+            CallReferenceNeed::Kind=>facts.kind=kind(place),
+            CallReferenceNeed::Base=>{let Place::Indexed{base,..}=place else{unsafe{std::hint::unreachable_unchecked()}};facts.base=kind(base);},
+            CallReferenceNeed::ElementFacts=>{let source=match place{Place::Indexed{base,..}=>&**base,place=>place};let Place::Element{binding,index,..}=source else{unsafe{std::hint::unreachable_unchecked()}};element=Some((*binding,*index));facts.cross=u32::from(*index!=self.global_index);},
+            CallReferenceNeed::Read=>{self.reads.insert(element.unwrap().0);},
+            CallReferenceNeed::Write=>{self.writes.insert(element.unwrap().0);},
+            CallReferenceNeed::Cross=>{self.cross_access.insert(element.unwrap().0);},
+            CallReferenceNeed::Reference=>{let Place::Reference{address,words,..}=place else{unsafe{std::hint::unreachable_unchecked()}};let zero=self.constant(Scalar::U32,0).regs[0];let(source,word)=address.source_at(words[0],zero);result=Some(CallReference{storage:CallStorage::Indexed(source),offset:None,word});},
+            CallReferenceNeed::Local=>{let(Place::Local(_,_,storage)|Place::ReadOnlyLocal(_,_,storage))=place else{unsafe{std::hint::unreachable_unchecked()}};result=Some(CallReference{storage:CallStorage::Local{base:storage.start,len:storage.len()},offset:None,word:first_reference_word(place,&self.locals)});},
+            CallReferenceNeed::Element=>{let Place::Element{words,..}=place else{unsafe{std::hint::unreachable_unchecked()}};let(binding,index)=element.unwrap();result=Some(CallReference{storage:CallStorage::Indexed(IndexedSource::Data{binding,index}),offset:None,word:words[0]});},
+            CallReferenceNeed::Application=>{let Place::ApplicationElement{handle,identity,index,stride,words,..}=place else{unsafe{std::hint::unreachable_unchecked()}};let components=place.ty().components.iter().zip(words).map(|(&(scalar,_),&word)|(scalar,word));let(address,index,stride)=self.application_memory(*handle,*identity,*index,*stride,expose_writes,None,components,span)?;result=Some(CallReference{storage:CallStorage::Indexed(IndexedSource::View{address,index,stride:ElementStride::Constant(u64::from(stride))}),offset:None,word:words[0]});},
+            CallReferenceNeed::View=>{let Place::ViewElement{address,index,stride,words,..}=place else{unsafe{std::hint::unreachable_unchecked()}};result=Some(CallReference{storage:CallStorage::Indexed(IndexedSource::View{address:*address,index:*index,stride:*stride}),offset:None,word:words[0]});},
+            CallReferenceNeed::IndexedReference=>{let Place::Indexed{base,offset,words,..}=place else{unsafe{std::hint::unreachable_unchecked()}};let scalar=place.ty().components[0].0;let(source,offset,word)=self.array_memory(base,*offset,words[0],scalar,expose_writes,span)?;result=Some(CallReference{storage:CallStorage::Indexed(source),offset:Some(offset),word});},
+            CallReferenceNeed::IndexedLocal=>{let Place::Indexed{base,offset,..}=place else{unsafe{std::hint::unreachable_unchecked()}};let(Place::Local(_,_,storage)|Place::ReadOnlyLocal(_,_,storage))=&**base else{unsafe{std::hint::unreachable_unchecked()}};result=Some(CallReference{storage:CallStorage::Local{base:storage.start,len:storage.len()},offset:Some(*offset),word:first_reference_word(place,&self.locals)});},
+            CallReferenceNeed::IndexedElement=>{let Place::Indexed{offset,..}=place else{unsafe{std::hint::unreachable_unchecked()}};let(binding,index)=element.unwrap();result=Some(CallReference{storage:CallStorage::Indexed(IndexedSource::Data{binding,index}),offset:Some(*offset),word:first_reference_word(place,&self.locals)});},
+            CallReferenceNeed::IndexedApplication=>{let Place::Indexed{base,offset,words,..}=place else{unsafe{std::hint::unreachable_unchecked()}};let Place::ApplicationElement{handle,identity,index,stride,..}=&**base else{unsafe{std::hint::unreachable_unchecked()}};let components=place.ty().components.iter().zip(words).map(|(&(scalar,_),&word)|(scalar,word));let(address,index,stride)=self.application_memory(*handle,*identity,*index,*stride,expose_writes,Some(*offset),components,span)?;result=Some(CallReference{storage:CallStorage::Indexed(IndexedSource::View{address,index,stride:ElementStride::Constant(u64::from(stride))}),offset:Some(*offset),word:first_reference_word(place,&self.locals)});},
+            CallReferenceNeed::IndexedView=>{let Place::Indexed{base,offset,..}=place else{unsafe{std::hint::unreachable_unchecked()}};let Place::ViewElement{address,index,stride,..}=&**base else{unsafe{std::hint::unreachable_unchecked()}};result=Some(CallReference{storage:CallStorage::Indexed(IndexedSource::View{address:*address,index:*index,stride:*stride}),offset:Some(*offset),word:first_reference_word(place,&self.locals)});},
+            CallReferenceNeed::BadStorage=>return self.fail(span,"B264","外部引用需要 CPU 普通值的实际存储"),
+            CallReferenceNeed::DataAccess=>self.data_access(place,access,None),
+            CallReferenceNeed::Complete=>return Ok(result.take().unwrap()),
+        }}
     }
     pub(super) async fn external_reference(
         &mut self,
@@ -442,3 +316,9 @@ unsafe extern "C" {
  #[link_name="bootstrap.call_arguments::read_input_root"]fn read_input_root(source:crate::syntax::wire::SignatureNode)->crate::syntax::wire::Optional<crate::syntax::wire::Text>;
  #[link_name="bootstrap.call_arguments::read_input_step"]fn read_input_step(cursor:ReadInputCursor,facts:ReadInputFacts)->ReadInputStep;
 }
+
+#[repr(u32)]#[derive(Clone,Copy)]enum ReferenceKind {Other,Reference,Local,Element,Application,View,Indexed}
+#[repr(C)]#[derive(Clone,Copy)]struct CallReferenceFacts {atomic:u32,access:Access,kind:ReferenceKind,base:ReferenceKind,cross:u32}
+#[repr(u32)]enum CallReferenceNeed {Kind,BadAtomic,Base,ElementFacts,Read,Write,Cross,Reference,Local,Element,Application,View,IndexedReference,IndexedLocal,IndexedElement,IndexedApplication,IndexedView,BadStorage,DataAccess,Complete}
+#[repr(C)]struct CallReferenceStep {cursor:ReadInputCursor,need:CallReferenceNeed}
+unsafe extern "C" {#[link_name="bootstrap.call_arguments::call_reference_step"]fn call_reference_step(cursor:ReadInputCursor,facts:CallReferenceFacts)->CallReferenceStep;}

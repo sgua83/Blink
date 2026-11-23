@@ -3074,7 +3074,7 @@ impl Builder<'_> {
         let result=[self.reg(Scalar::U32),self.reg(Scalar::U32)];
         self.code.push(Inst::generated(InstKind::Cast{dst:result[0],src:pointer},origin.clone()));self.code.push(Inst::generated(InstKind::Cast{dst:result[1],src:high},origin));result
     }
-    pub(super) fn application_memory(&mut self,handle:Reg,identity:ValueIdentity,index:Reg,stride:DataStride,write:bool,relative:Option<Reg>,components:&[(Scalar,u32)],span:Span)->Result<([Reg;2],Reg,u32)>{
+    pub(super) fn application_memory(&mut self,handle:Reg,identity:ValueIdentity,index:Reg,stride:DataStride,write:bool,relative:Option<Reg>,components:impl IntoIterator<Item=(Scalar,u32)>,span:Span)->Result<([Reg;2],Reg,u32)>{
         let layout_origin = Arc::new(GeneratedOrigin {
             reason: GenerationReason::DatasetAccessLayout,
             trigger: self.source_site.clone().map(GenerationAnchor::Syntax),
@@ -3116,7 +3116,7 @@ impl Builder<'_> {
                 start = dst;
             }
             let mut address = None;
-            for &(scalar, word) in components {
+            for (scalar, word) in components {
                 let word = self.constant_with_origin(Scalar::U64, Bits::from(word), Some(origin.clone())).regs[0];
                 let dst = self.reg(Scalar::U64);
                 self.code.push(Inst::generated(InstKind::Binary { dst, op: BinaryOp::IAdd, a: start, b: word }, origin.clone()));
@@ -3159,7 +3159,7 @@ impl Builder<'_> {
         span: Span,
         element_read_origin: Option<Arc<GeneratedOrigin>>,
     ) -> Result<Value> {
-        let (address,index,stride) = self.application_memory(handle,identity,index,stride,false,None,&[],span)?;
+        let (address,index,stride) = self.application_memory(handle,identity,index,stride,false,None,[],span)?;
         let mut regs = Vec::new();
         for (&(scalar, _), &word) in ty.components.iter().zip(words) {
             let dst = self.reg(scalar);
@@ -3193,7 +3193,7 @@ impl Builder<'_> {
         }
         let zero = self.constant_with_origin(Scalar::U32, 0, generation.clone()).regs[0];
         for ((&(scalar, _), &word), value) in value.ty.components.iter().zip(words).zip(value.regs) {
-            let (address,index,stride) = self.application_memory(handle,identity,index,stride,true,None,&[(scalar,word)],span)?;
+            let (address,index,stride) = self.application_memory(handle,identity,index,stride,true,None,[(scalar,word)],span)?;
             let kind = InstKind::StoreIndexed {
                 source: IndexedSource::View {
                     address,
