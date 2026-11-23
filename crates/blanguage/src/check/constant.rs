@@ -94,7 +94,7 @@ pub(super) async fn stage_expression(
                 }));
                 let root=Root::Literal(value.ty,value.constant.unwrap(),origin);
                 return Ok(if matches!(need,model::ValueNeed::Reference){
-                    root.reference_literal(builder.source_at(expression.span(),SourceSyntax::Expression))
+                    root.reference_literal(||builder.source_at(expression.span(),SourceSyntax::Expression))
                 }else{root});
             }
         }

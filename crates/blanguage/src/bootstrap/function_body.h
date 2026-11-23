@@ -331,3 +331,8 @@ struct DatasetProjectionHost {address context;cfn<DatasetProjection,address,Text
 extern "C" u32 dataset_layout(u64 count,address context,cfn<u32,address,u64> part) on cpu requires nonzero(part);
 extern "C" DatasetProjection dataset_projection(SignatureNode source,DatasetProjectionUse usage,DatasetProjectionHost host) on cpu requires nonzero(host.root) requires nonzero(host.declared) requires nonzero(host.field) requires nonzero(host.select);
 extern "C" u32 dataset_element_words(u32 base,u64 count,u32 access,u32 requested,address context,cfn<u32,address,u64> ensures memory(read) component,cfn<void,address,u32> append) on cpu requires nonzero(component) requires nonzero(append);
+
+struct StageRootFacts {u32 present;u32 constant;};
+enum StageRootNeed:u32 {Binding=0;Bound=1;Scope=2;ScopeValue=3;Resolve=4;FunctionKind=5;Constant=6;Unknown=7;StaticU32=8;Number=9;Expression=10;};
+struct StageRootStep {LocalCursor cursor;StageRootNeed need;Text spelling;u32 bits;};
+extern "C" StageRootStep stage_root_step(LocalCursor cursor,SignatureNode source,StageRootFacts facts) on cpu;

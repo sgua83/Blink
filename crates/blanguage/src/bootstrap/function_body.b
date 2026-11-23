@@ -1337,3 +1337,24 @@ extern "C" DatasetProjection dataset_projection(SignatureNode source,DatasetProj
 extern "C" u32 dataset_element_words(u32 base,u64 count,u32 access,u32 requested,address context,cfn<u32,address,u64> ensures memory(read) component,cfn<void,address,u32> append) on cpu requires nonzero(component) requires nonzero(append) {
  u64 index=0u64;while(index<count){u32 word=component(context,index);append(context,base+word);index+=1u64;}return requested!=0&&(access==2||access==3||access==4)?1:0;
 }
+
+extern "C" StageRootStep stage_root_step(LocalCursor cursor,SignatureNode source,StageRootFacts facts) on cpu {
+ StageRootStep result=StageRootStep(cursor,StageRootNeed::Unknown,Text(0,Span(0u64,0u64)),0);
+ if(cursor.phase==0){
+  ExprNode expression=binding_node<ExprNode>(source.storage.nodes,source.offset);
+  result.need=StageRootNeed::Expression;
+  match(expression.kind){
+   ExprKind::Name(name){result.cursor.phase=1;result.need=StageRootNeed::Binding;result.spelling=name;}
+   ExprKind::Number(number){result.need=StageRootNeed::Number;result.spelling=number;}
+   ExprKind::StaticU32(bits){result.need=StageRootNeed::StaticU32;result.bits=bits;}
+   ExprKind::Bool(unused){}ExprKind::Member(unused){}ExprKind::Index(unused){}ExprKind::Call(unused){}ExprKind::Invoke(unused){}
+   ExprKind::Construct(unused){}ExprKind::Specialize(unused){}ExprKind::FunctionRef(unused){}ExprKind::Cooperate(unused){}
+   ExprKind::Target(unused){}ExprKind::Unary(unused){}ExprKind::Binary(unused){}ExprKind::Select(unused){}
+  }
+  return result;
+ }
+ if(cursor.phase==1){result.cursor.phase=2;result.need=facts.present!=0?StageRootNeed::Bound:StageRootNeed::Scope;return result;}
+ if(cursor.phase==2){result.cursor.phase=3;result.need=facts.present!=0?StageRootNeed::ScopeValue:StageRootNeed::Resolve;return result;}
+ if(cursor.phase==3){if(facts.present!=0){result.cursor.phase=4;result.need=StageRootNeed::FunctionKind;}return result;}
+ if(facts.constant!=0){result.need=StageRootNeed::Constant;}return result;
+}

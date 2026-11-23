@@ -125,11 +125,11 @@ enum Root {
     Literal(Ty, Vec<Bits>, Option<Arc<GeneratedOrigin>>),
 }
 impl Root {
-    fn reference_literal(self, reference: Option<Arc<SourceSite>>) -> Self {
+    fn reference_literal(self, reference: impl FnOnce() -> Option<Arc<SourceSite>>) -> Self {
         match self {
             Self::Literal(ty, bits, retained) => Self::Literal(ty, bits, Some(Arc::new(GeneratedOrigin {
                 reason: GenerationReason::StageConstantReference,
-                trigger: Some(GenerationAnchor::StageConstantReference { reference, retained }),
+                trigger: Some(GenerationAnchor::StageConstantReference { reference: reference(), retained }),
             }))),
             root => root,
         }
@@ -1490,30 +1490,53 @@ async fn stage_root(
     domain_path: &Arc<[DomainSite]>,
 ) -> Result<Root> {
     let d = &instance.definition;
-    match arg.kind() {
-        ExprKind::Name(n) => {
-            if let Some(root) = env.get(n) {
-                Ok(root.clone().reference_literal(operation_source(instance, arg.span(), SourceSyntax::Expression, domain_path)))
-            } else if let Some(value) = instance.bindings.values.get(n) {
-                Ok(Root::Literal(Ty::scalar(Scalar::U32), vec![Bits::from(*value)], None).reference_literal(operation_source(instance, arg.span(), SourceSyntax::Expression, domain_path)))
-            } else if let Some(key) = world
-                .resolve(n, &d.module, &d.imports, true).unique()
-                .filter(|key| world.functions[key].function.kind() == FunctionKind::Constant)
-            {
+    let source = arg.source_view();
+    let mut cursor = SourceValueCursor { phase: 0 };
+    let mut facts = StageRootFacts { present: 0, constant: 0 };
+    let mut name = "";
+    let mut bound = None;
+    let mut value = None;
+    let mut key = None;
+    loop {
+        let step = unsafe { stage_root_step(cursor, arg.signature_node(), StageRootFacts { ..facts }) };
+        cursor = step.cursor;
+        match step.need {
+            StageRootNeed::Binding => {
+                name = source.text(step.spelling);
+                bound = env.get(name);
+                facts.present = u32::from(bound.is_some());
+            }
+            StageRootNeed::Bound => return Ok(bound.unwrap().clone()
+                .reference_literal(|| operation_source(instance, arg.span(), SourceSyntax::Expression, domain_path))),
+            StageRootNeed::Scope => {
+                value = instance.bindings.values.get(name);
+                facts.present = u32::from(value.is_some());
+            }
+            StageRootNeed::ScopeValue => return Ok(Root::Literal(Ty::scalar(Scalar::U32), vec![Bits::from(*value.unwrap())], None)
+                .reference_literal(|| operation_source(instance, arg.span(), SourceSyntax::Expression, domain_path))),
+            StageRootNeed::Resolve => {
+                key = world.resolve(name, &d.module, &d.imports, true).unique();
+                facts.present = u32::from(key.is_some());
+            }
+            StageRootNeed::FunctionKind => facts.constant = u32::from(
+                world.functions[key.as_ref().unwrap()].function.kind() == FunctionKind::Constant),
+            StageRootNeed::Constant => {
+                let key = key.unwrap();
                 let constant = unsafe { world.call(constant::evaluate(world, &key, &[])).await }?;
                 let (ty, words, origin) = constant.value.clone();
-                Ok(Root::Literal(ty, words, origin).reference_literal(operation_source(instance, arg.span(), SourceSyntax::Expression, domain_path)))
-            } else {
-                d.source
-                    .fail(arg.span(), "B113", format!("未知参数或 const {n}"))
+                return Ok(Root::Literal(ty, words, origin)
+                    .reference_literal(|| operation_source(instance, arg.span(), SourceSyntax::Expression, domain_path)));
             }
+            StageRootNeed::Unknown => return d.source.fail(arg.span(), "B113", format!("未知参数或 const {name}")),
+            StageRootNeed::StaticU32 => return Ok(Root::Literal(Ty::scalar(Scalar::U32), vec![Bits::from(step.bits)], None)),
+            StageRootNeed::Number => {
+                let (ty, bits) = number(&d.source, arg.span(), source.text(step.spelling))?;
+                return Ok(Root::Literal(ty, vec![bits], None));
+            }
+            StageRootNeed::Expression => return unsafe {
+                world.call(constant::stage_expression(world, instance, env, program, arg, None, domain_path)).await
+            },
         }
-        ExprKind::StaticU32(bits) => Ok(Root::Literal(Ty::scalar(Scalar::U32), vec![Bits::from(bits)], None)),
-        ExprKind::Number(n) => {
-            let (ty, bits) = number(&d.source, arg.span(), n)?;
-            Ok(Root::Literal(ty, vec![bits], None))
-        }
-        _ => unsafe { world.call(constant::stage_expression(world, instance, env, program, arg, None, domain_path)).await },
     }
 }
 fn collective_field(
@@ -3018,6 +3041,10 @@ unsafe extern "C"{
 
 
 #[repr(C)]#[derive(Clone,Copy)]struct SourceValueCursor {phase:u32}
+#[repr(C)]struct StageRootFacts {present:u32,constant:u32}
+#[repr(u32)]enum StageRootNeed {Binding,Bound,Scope,ScopeValue,Resolve,FunctionKind,Constant,Unknown,StaticU32,Number,Expression}
+#[repr(C)]struct StageRootStep {cursor:SourceValueCursor,need:StageRootNeed,spelling:crate::syntax::wire::Text,bits:u32}
+unsafe extern "C" {#[link_name="bootstrap.function_body::stage_root_step"]fn stage_root_step(cursor:SourceValueCursor,source:crate::syntax::wire::SignatureNode,facts:StageRootFacts)->StageRootStep;}
 #[repr(u32)]enum SourceValueNeed {BadFunction,BadCooperate,StaticU32,Bool,Number,Name,Specialized,Member,Index,Select,Target,ConstructType,Construct,Returned,FinishReturned,Negative,Operand,Unary,Left,Right,Binary,Condition,RequireCondition,ShortCircuit,Empty}
 #[repr(C)]struct SourceValueStep {cursor:SourceValueCursor,need:SourceValueNeed,spelling:crate::syntax::wire::Text,first:u64,second:u64,third:u64,arguments:crate::syntax::wire::Slice,bits:u32,target:Target}
 #[repr(u32)]enum ReturnedValueNeed {Empty,Ordinary,Value,Bool,Complete}
