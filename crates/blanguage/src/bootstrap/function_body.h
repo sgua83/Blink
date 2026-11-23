@@ -342,3 +342,17 @@ struct StageControlFacts {u32 present;u32 literal;u32 same_type;u32 bits;u32 ret
 enum StageControlNeed:u32 {Unhandled=0;Invalid=1;Name=2;BadLetName=3;Annotation=4;LetValue=5;Bind=6;Condition=7;BadCondition=8;BadBoolean=9;ConditionValue=10;IfBody=11;IfOrigin=12;First=13;FirstValue=14;Last=15;LastValue=16;BadCounterName=17;BadBound=18;BeginFor=19;Iteration=20;IterationOrigin=21;ForOrigin=22;Boundary=23;Return=24;Complete=25;};
 struct StageControlStep {StageControlCursor cursor;StageControlNeed need;Text name;u64 expression;Slice body;};
 extern "C" StageControlStep stage_control_step(StageControlCursor state,SignatureNode source,StageControlFacts facts) on cpu;
+
+struct EnvironmentCursor {u64 index;u64 part;u32 phase;};
+struct RootEnvironmentFacts {u64 roots;u64 components;u32 kind;};
+enum RootEnvironmentNeed:u32 {Entry=0;Texture=1;Acceleration=2;Data=3;Literal=4;BeginUniform=5;UniformComponent=6;BindUniform=7;Complete=8;};
+struct RootEnvironmentStep {EnvironmentCursor cursor;RootEnvironmentNeed need;};
+extern "C" RootEnvironmentStep root_environment_step(EnvironmentCursor state,RootEnvironmentFacts facts) on cpu;
+struct ParallelPrepareFacts {u32 present;u32 access;u32 initialized;u32 cpu;u32 known_domain;u32 domain_count;u32 known_selection;u32 selection_count;};
+enum ParallelPrepareNeed:u32 {Root=0;BadRoot=1;Prefix=2;Selection=3;Initialized=4;BadSelection=5;Counts=6;BadCapacity=7;Builder=8;Frame=9;Context=10;Roots=11;Index=12;Refine=13;Name=14;BadName=15;Initialize=16;Complete=17;};
+struct ParallelPrepareStep {LocalCursor cursor;ParallelPrepareNeed need;Text spelling;u64 expression;};
+extern "C" ParallelPrepareStep parallel_prepare_step(LocalCursor state,SignatureNode source,ParallelPrepareFacts facts) on cpu;
+struct ParallelInitializeFacts {u64 views;u64 components;u64 binding;u64 domain;u32 access;u32 present;u32 domain_access;};
+enum ParallelInitializeNeed:u32 {Element=0;View=1;Component=2;Initialized=3;Mark=4;BindElement=5;Reset=6;AliasView=7;SameLength=8;Alias=9;Complete=10;};
+struct ParallelInitializeStep {EnvironmentCursor cursor;ParallelInitializeNeed need;u32 flags;};
+extern "C" ParallelInitializeStep parallel_initialize_step(EnvironmentCursor state,ParallelInitializeFacts facts) on cpu;

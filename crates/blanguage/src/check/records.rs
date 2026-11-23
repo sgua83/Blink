@@ -20,9 +20,8 @@ impl Builder<'_> {
         Ok(matches!(self.dataset_projection(expr,DatasetProjectionUse::Presence)?.0.kind,DatasetProjectionKind::Found))
     }
     pub(super) fn dataset_element(&self,view:&DatasetView,index:Reg,writable:bool)->Place {
-        let (offset,ty)=self.dataset_layout(view);let mut output=DatasetWords {ty,words:Vec::with_capacity(ty.components.len())};
-        let writable=unsafe {dataset_element_words(offset,ty.components.len()as u64,view.access as u32,u32::from(writable),std::ptr::from_mut(&mut output).cast(),dataset_component,append_dataset_word)}!=0;
-        Place::Element {ty:ty.clone(),binding:view.binding,index,words:output.words,writable}
+        let (offset,ty)=self.dataset_layout(view);
+        element_at(ty,view.binding,index,offset,view.access,writable)
     }
     pub(super) fn dataset_field(&self,expr:&Expr)->Result<(usize,u32,Ty)> {
         let (result,_,ty)=self.dataset_projection(expr,DatasetProjectionUse::Field)?;
@@ -112,6 +111,11 @@ unsafe extern "C" {
 #[repr(C)]struct DatasetProjectionHost {context:*mut std::ffi::c_void,root:unsafe extern "C" fn(*mut std::ffi::c_void,crate::syntax::wire::Text,u32)->DatasetProjection,declared:unsafe extern "C" fn(*mut std::ffi::c_void,u64)->DatasetField,field:unsafe extern "C" fn(*mut std::ffi::c_void,crate::syntax::wire::Text)->DatasetField,select:unsafe extern "C" fn(*mut std::ffi::c_void,u64,u32)}
 struct DatasetProjectionContext<'a,'b,'c> {builder:&'a Builder<'b>,source:crate::syntax::SourceView<'c>,view:Option<DatasetView>,ty:Option<&'a Ty>}
 struct DatasetLayoutContext<'a,'b> {ty:&'a Ty,view:&'b DatasetView}
+pub(super) fn element_at(ty:&Ty,binding:usize,index:Reg,offset:u32,access:Access,writable:bool)->Place {
+    let mut output=DatasetWords {ty,words:Vec::with_capacity(ty.components.len())};
+    let writable=unsafe {dataset_element_words(offset,ty.components.len()as u64,access as u32,u32::from(writable),std::ptr::from_mut(&mut output).cast(),dataset_component,append_dataset_word)}!=0;
+    Place::Element {ty:ty.clone(),binding,index,words:output.words,writable}
+}
 struct DatasetWords<'a> {ty:&'a Ty,words:Vec<u32>}
 unsafe extern "C" fn dataset_projection_part(context:*mut std::ffi::c_void,index:u64)->u32 {
     let context=unsafe {&mut *context.cast::<DatasetLayoutContext<'_,'_>>()};let ty=context.ty;let (_,offset,field)=&ty.fields[context.view.projection[index as usize]];

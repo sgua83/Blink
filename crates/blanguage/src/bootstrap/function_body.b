@@ -1407,3 +1407,60 @@ extern "C" StageControlStep stage_control_step(StageControlCursor state,Signatur
  }
  return result;
 }
+
+extern "C" RootEnvironmentStep root_environment_step(EnvironmentCursor state,RootEnvironmentFacts facts) on cpu {
+ EnvironmentCursor cursor=state;
+ while(true){
+  if(cursor.phase==0){if(cursor.index>=facts.roots){return RootEnvironmentStep(cursor,RootEnvironmentNeed::Complete);}cursor.phase=1;return RootEnvironmentStep(cursor,RootEnvironmentNeed::Entry);}
+  if(cursor.phase==1){
+   cursor.phase=9;
+   if(facts.kind==0){return RootEnvironmentStep(cursor,RootEnvironmentNeed::Texture);}
+   if(facts.kind==1){return RootEnvironmentStep(cursor,RootEnvironmentNeed::Acceleration);}
+   if(facts.kind==2){return RootEnvironmentStep(cursor,RootEnvironmentNeed::Data);}
+   if(facts.kind==4){return RootEnvironmentStep(cursor,RootEnvironmentNeed::Literal);}
+   cursor.part=0u64;cursor.phase=2;return RootEnvironmentStep(cursor,RootEnvironmentNeed::BeginUniform);
+  }
+  if(cursor.phase==3){cursor.part+=1u64;cursor.phase=2;}
+  if(cursor.phase==2){if(cursor.part<facts.components){cursor.phase=3;return RootEnvironmentStep(cursor,RootEnvironmentNeed::UniformComponent);}cursor.phase=9;return RootEnvironmentStep(cursor,RootEnvironmentNeed::BindUniform);}
+  if(cursor.phase==9){cursor.index+=1u64;cursor.phase=0;}
+ }
+}
+extern "C" ParallelPrepareStep parallel_prepare_step(LocalCursor state,SignatureNode source,ParallelPrepareFacts facts) on cpu {
+ ParallelPrepareStep result=ParallelPrepareStep(state,ParallelPrepareNeed::Complete,Text(0,Span(0u64,0u64)),0u64);
+ ParallelNode syntax=binding_node<ParallelNode>(source.storage.nodes,source.offset);result.spelling=syntax.dataset;
+ if(state.phase==0){result.cursor.phase=1;result.need=ParallelPrepareNeed::Root;return result;}
+ if(state.phase==1){if(facts.present==0){result.need=ParallelPrepareNeed::BadRoot;return result;}result.cursor.phase=2;if(syntax.count.present!=0){result.need=ParallelPrepareNeed::Prefix;result.expression=syntax.count.value.offset;return result;}}
+ if(result.cursor.phase==2){if(syntax.selection.present!=0){result.cursor.phase=3;result.need=ParallelPrepareNeed::Selection;result.expression=syntax.selection.value.offset;return result;}result.cursor.phase=5;result.need=ParallelPrepareNeed::Builder;return result;}
+ if(state.phase==3||state.phase==4||state.phase==41){result.expression=syntax.selection.value.offset;}
+ if(state.phase==3){
+  if(facts.access!=1&&facts.access!=3){if(facts.access==2){result.cursor.phase=4;result.need=ParallelPrepareNeed::Initialized;return result;}result.need=ParallelPrepareNeed::BadSelection;return result;}
+  result.cursor.phase=41;result.need=ParallelPrepareNeed::Counts;return result;
+ }
+ if(state.phase==4){if(facts.initialized==0){result.need=ParallelPrepareNeed::BadSelection;return result;}result.cursor.phase=41;result.need=ParallelPrepareNeed::Counts;return result;}
+ if(state.phase==41){if(facts.known_domain!=0&&facts.known_selection!=0&&facts.selection_count<facts.domain_count){result.need=ParallelPrepareNeed::BadCapacity;return result;}result.cursor.phase=5;result.need=ParallelPrepareNeed::Builder;return result;}
+ if(state.phase==5){result.cursor.phase=6;if(facts.cpu!=0){result.need=ParallelPrepareNeed::Frame;return result;}}
+ if(result.cursor.phase==6){result.cursor.phase=7;result.need=ParallelPrepareNeed::Context;return result;}
+ if(state.phase==7){result.cursor.phase=8;result.need=ParallelPrepareNeed::Roots;return result;}
+ if(state.phase==8){result.cursor.phase=9;result.need=ParallelPrepareNeed::Index;return result;}
+ if(state.phase==9){result.cursor.phase=10;result.need=ParallelPrepareNeed::Refine;return result;}
+ if(state.phase==10){result.cursor.phase=11;result.need=ParallelPrepareNeed::Name;return result;}
+ if(state.phase==11){if(facts.present!=0){result.need=ParallelPrepareNeed::BadName;return result;}result.cursor.phase=12;result.need=ParallelPrepareNeed::Initialize;return result;}
+ return result;
+}
+extern "C" ParallelInitializeStep parallel_initialize_step(EnvironmentCursor state,ParallelInitializeFacts facts) on cpu {
+ EnvironmentCursor cursor=state;
+ while(true){
+  if(cursor.phase==0){cursor.phase=1;u32 flags=(facts.domain_access==2||facts.domain_access==3?1:0)+(facts.domain_access!=4?2:0);return ParallelInitializeStep(cursor,ParallelInitializeNeed::Element,flags);}
+  if(cursor.phase==1){if(cursor.index<facts.views){cursor.phase=2;return ParallelInitializeStep(cursor,ParallelInitializeNeed::View,0);}cursor.phase=10;return ParallelInitializeStep(cursor,ParallelInitializeNeed::BindElement,0);}
+  if(cursor.phase==2){cursor.part=0u64;cursor.phase=3;}
+  if(cursor.phase==3){if(cursor.part<facts.components){cursor.phase=4;return ParallelInitializeStep(cursor,ParallelInitializeNeed::Component,0);}cursor.index+=1u64;cursor.phase=1;}
+  if(cursor.phase==4){if(facts.access==1||facts.access==3||facts.access==4){cursor.phase=6;return ParallelInitializeStep(cursor,ParallelInitializeNeed::Mark,0);}cursor.phase=5;return ParallelInitializeStep(cursor,ParallelInitializeNeed::Initialized,0);}
+  if(cursor.phase==5){if(facts.present!=0){cursor.phase=6;return ParallelInitializeStep(cursor,ParallelInitializeNeed::Mark,0);}cursor.part+=1u64;cursor.phase=3;}
+  if(cursor.phase==6){cursor.part+=1u64;cursor.phase=3;}
+  if(cursor.phase==10){cursor.phase=12;cursor.index=0u64;return ParallelInitializeStep(cursor,ParallelInitializeNeed::Reset,0);}
+  if(cursor.phase==12){if(cursor.index<facts.views){cursor.phase=13;return ParallelInitializeStep(cursor,ParallelInitializeNeed::AliasView,0);}return ParallelInitializeStep(cursor,ParallelInitializeNeed::Complete,0);}
+  if(cursor.phase==13){if(facts.binding!=facts.domain&&(facts.access==2||facts.access==3)){cursor.phase=14;return ParallelInitializeStep(cursor,ParallelInitializeNeed::SameLength,0);}cursor.index+=1u64;cursor.phase=12;}
+  if(cursor.phase==14){if(facts.present!=0){cursor.phase=15;return ParallelInitializeStep(cursor,ParallelInitializeNeed::Alias,3);}cursor.index+=1u64;cursor.phase=12;}
+  if(cursor.phase==15){cursor.index+=1u64;cursor.phase=12;}
+ }
+}

@@ -722,105 +722,10 @@ async fn expand_stages(
         } else { match statement.kind() {
             StmtKind::Parallel(name, syntax, body) => {
                 begin_segment(program, facts, calls);
-                let data = &syntax.dataset();
-                let Some(Root::Data(domain, domain_access)) = env.get(*data) else {
-                    return d
-                        .source
-                        .fail(statement.span(), "B106", format!("{data} 不是数据集参数"));
-                };
-                let prefix = syntax
-                    .count()
-                    .as_ref()
-                    .map(|expr| prefix::resolve(program, env, *domain, expr, d, facts))
-                    .transpose()?;
-                let selection = syntax
-                    .selection()
-                    .as_ref()
-                    .map(|expr| {
-                        let (binding, word, access) =
-                            collective_field(program, env, expr, d, Scalar::Bool)?;
-                        if !matches!(access, Access::Read | Access::InOut)
-                            && !(access == Access::Write && facts.initialized(program, binding, word))
-                        {
-                            return d.source.fail(
-                                expr.span(),
-                                "B170",
-                                "where 谓词必须是只读 bool 字段，或当前 inout 独占域的 bool 字段",
-                            );
-                        }
-                        if let (Some(domain_count), Some(flags_count)) = (
-                            program.buffers[*domain].count,
-                            program.buffers[binding].count,
-                        ) && flags_count < domain_count
-                        {
-                            return d.source.fail(
-                                expr.span(),
-                                "B187",
-                                "where 谓词容量不能小于原始域",
-                            );
-                        }
-                        Ok(Selection { binding, word })
-                    })
-                    .transpose()?;
-                let mut b = unsafe { world.call(Builder::domain(world, input, program, *domain)).await }?;
-                if program.target == Target::Cpu {
-                    let frame = vec![b.reg(Scalar::U32), b.reg(Scalar::U32)];
-                    b.application = Some(application::Context { frame: Some(frame), range: true });
-                }
-                b.element_facts = Some(&facts.elements);
-                b.prefix_facts = Some(&facts.scopes.last().unwrap().0);
-                b.source_context = Arc::new(SourceContext { domain_path: domain_path.clone(), ..(*b.source_context).clone() });
-                b.functions = std::mem::take(functions);
-                b.roots(env);
-                let operation_source = input.operation_source(statement.span(), SourceSyntax::Statement, domain_path);
-                let index = b.reg(Scalar::U32);
-                b.code.push(Inst::generated(InstKind::Index(index), Arc::new(GeneratedOrigin {
-                    reason: GenerationReason::ParallelIndex, trigger: operation_source.clone().map(GenerationAnchor::Syntax),
-                })));
-                b.global_index = index;
-                b.refine_parallel_domain();
-                if b.env.contains_key(name) {
-                    return d
-                        .source
-                        .fail(statement.span(), "B107", "迭代变量不能覆盖参数");
-                }
-                let ty = program.buffers[*domain].ty.clone();
-                let words = ty.components.iter().map(|x| x.1).collect();
-                let element = Binding::Owned(OwnedBinding {
-                        place: Place::Element {
-                            ty,
-                            binding: *domain,
-                            index,
-                            words,
-                            writable: matches!(domain_access, Access::InOut | Access::Write),
-                        },
-                        proof: if *domain_access == Access::Atomic { bounds::Proof::default() }
-                            else { facts.elements.get(domain).cloned().unwrap_or_default() },
-                        uniform: false,
-                        initialization: None,
-                    });
-                // 输入内容与前序阶段的真实输出共同提供当前元素初值。
-                for (binding, access) in &b.view_access {
-                    b.initialized.extend(program.buffers[*binding].ty.components.iter()
-                        .filter(|(_, offset)| access.reads() || facts.initialized(program, *binding, *offset))
-                        .map(|(_, offset)| Position::Element(*binding, *offset)));
-                }
-                b.env.insert(name.to_string(), element);
-                // 同一次迭代的其他普通写目标与命名游标共用原位置事实和合流。
-                for (&binding, &access) in &b.view_access {
-                    if binding != *domain && matches!(access, Access::Write | Access::InOut)
-                        && program.same_length(binding, *domain)
-                    {
-                        let ty = program.buffers[binding].ty.clone();
-                        let words = ty.components.iter().map(|x| x.1).collect();
-                        b.env.insert(format!("\0{binding}"), Binding::Owned(OwnedBinding {
-                            place: Place::Element { ty, binding, index, words, writable: true },
-                            proof: facts.elements.get(&binding).cloned().unwrap_or_default(),
-                            uniform: false,
-                            initialization: None,
-                        }));
-                    }
-                }
+                let (mut b, domain, prefix, selection, operation_source, index) = unsafe { world.call(parallel_environment(
+                    world, input, &statement, name, &syntax, env, program, facts,
+                    &facts.elements, &facts.scopes.last().unwrap().0, domain_path, functions,
+                )).await }?;
                 if let Some(limit) = &prefix {
                     b.reads.insert(limit.binding);
                     b.cross_access.insert(limit.binding);
@@ -832,8 +737,8 @@ async fn expand_stages(
                 let appended: Vec<_> = b
                     .appends
                     .iter()
-                    .map(|(domain, count)| PrefixRelation { domain_region: None,
-                        domain: *domain,
+                    .map(|(target, count)| PrefixRelation { domain_region: None,
+                        domain: *target,
                         count: *count,
                     })
                     .collect();
@@ -856,7 +761,7 @@ async fn expand_stages(
                                 .filter(|(_, offset)| b.initialized.contains(&Position::Element(binding, *offset)) && !facts.initialized(program, binding, *offset))
                                 .map(|(_, offset)| *offset).collect();
                             if !words.is_empty() {
-                                facts.outputs.push(crate::module::domain::Output { binding, domain: Some(*domain), words });
+                                facts.outputs.push(crate::module::domain::Output { binding, domain: Some(domain), words });
                             }
                         }
                     }
@@ -896,7 +801,7 @@ async fn expand_stages(
                 *functions = std::mem::take(&mut b.functions);
                 let (elements, access, appends) = (b.env, b.view_access, b.appends);
                 let mut stage = Stage {
-                    domain: *domain,
+                    domain: domain,
                     prefix,
                     selection,
                     operation: Operation::Map,
@@ -1194,6 +1099,75 @@ async fn expand_stage_control(
         StageControlNeed::Return=>return Ok(Some((true,first_stage))),
         StageControlNeed::Complete=>return Ok(Some((false,first_stage))),
     }step=unsafe{stage_control_step(cursor,statement.signature_node(),StageControlFacts{..control})};}
+}
+
+fn initialize_parallel(b:&mut Builder<'_>,name:&str,domain:usize,access:Access,index:Reg,facts:&prefix::Facts) {
+    let mut cursor=EnvironmentCursor{index:0,part:0,phase:0};
+    let mut control=ParallelInitializeFacts{views:b.view_access.len()as u64,components:0,binding:0,domain:domain as u64,access:0,present:0,domain_access:access as u32};
+    let mut entries=b.view_access.iter();let mut element=None;let mut binding=0;let mut word=0;
+    loop {let step=unsafe{parallel_initialize_step(cursor,ParallelInitializeFacts{..control})};cursor=step.cursor;match step.need {
+        ParallelInitializeNeed::Element=>{
+            let ty=&b.program.buffers[domain].ty;
+            element=Some(Binding::Owned(OwnedBinding{place:records::element_at(ty,domain,index,0,access,step.flags&1!=0),proof:if step.flags&2!=0{facts.elements.get(&domain).cloned().unwrap_or_default()}else{bounds::Proof::default()},uniform:false,initialization:None}));
+        },
+        ParallelInitializeNeed::View|ParallelInitializeNeed::AliasView=>{
+            let(&current,&access)=entries.next().unwrap();binding=current;control.binding=current as u64;control.access=access as u32;control.components=b.program.buffers[current].ty.components.len()as u64;
+        },
+        ParallelInitializeNeed::Component=>{word=b.program.buffers[binding].ty.components[cursor.part as usize].1;},
+        ParallelInitializeNeed::Initialized=>control.present=u32::from(facts.initialized(b.program,binding,word)),
+        ParallelInitializeNeed::Mark=>{b.initialized.insert(Position::Element(binding,word));},
+        ParallelInitializeNeed::BindElement=>{b.env.insert(name.to_string(),element.take().unwrap());},
+        ParallelInitializeNeed::Reset=>{entries=b.view_access.iter();},
+        ParallelInitializeNeed::SameLength=>control.present=u32::from(b.program.same_length(binding,domain)),
+        ParallelInitializeNeed::Alias=>{
+            let ty=&b.program.buffers[binding].ty;
+            b.env.insert(format!("\0{binding}"),Binding::Owned(OwnedBinding{place:records::element_at(ty,binding,index,0,b.view_access[&binding],step.flags&1!=0),proof:facts.elements.get(&binding).cloned().unwrap_or_default(),uniform:false,initialization:None}));
+        },
+        ParallelInitializeNeed::Complete=>return,
+    }}
+}
+
+async fn parallel_environment<'a>(
+    world:&'a World,input:DomainInput<'_>,statement:&Stmt,name:&str,syntax:&ParallelDomain,
+    env:&BTreeMap<String,Root>,program:&'a Program,facts:&prefix::Facts,
+    elements:&'a BTreeMap<usize,bounds::Proof>,scoped:&'a BTreeSet<PrefixRelation>,path:&Arc<[DomainSite]>,functions:&mut native_function::Module,
+)->Result<(Builder<'a>,usize,Option<PrefixCount>,Option<Selection>,Option<Arc<SourceSite>>,Reg)> {
+    let d=&input.owner().definition;let source=syntax.source_view();let mut cursor=SourceValueCursor{phase:0};
+    let mut control=ParallelPrepareFacts{present:0,access:0,initialized:0,cpu:u32::from(program.target==Target::Cpu),known_domain:0,domain_count:0,known_selection:0,selection_count:0};
+    let mut domain=0;let mut access=Access::Value;let mut prefix=None;let mut selection:Option<Selection>=None;let mut builder:Option<Builder<'a>>=None;let mut operation_source=None;let mut index=0;
+    loop {let step=unsafe{parallel_prepare_step(cursor,syntax.signature_node(),ParallelPrepareFacts{..control})};cursor=step.cursor;match step.need {
+        ParallelPrepareNeed::Root=>match env.get(source.text(step.spelling)) {
+            Some(Root::Data(binding,permission))=>{domain=*binding;access=*permission;control.present=1;},
+            _=>{control.present=0;},
+        },
+        ParallelPrepareNeed::BadRoot=>return d.source.fail(statement.span(),"B106",format!("{} 不是数据集参数",source.text(step.spelling))),
+        ParallelPrepareNeed::Prefix=>{let expression=syntax.child(step.expression);prefix=Some(prefix::resolve(program,env,domain,&expression,d,facts)?);},
+        ParallelPrepareNeed::Selection=>{
+            let expression=syntax.child(step.expression);let(binding,word,access)=collective_field(program,env,&expression,d,Scalar::Bool)?;selection=Some(Selection{binding,word});control.access=access as u32;
+        },
+        ParallelPrepareNeed::Initialized=>{let selected=selection.unwrap();control.initialized=u32::from(facts.initialized(program,selected.binding,selected.word));},
+        ParallelPrepareNeed::BadSelection=>{
+            let expression:Expr=syntax.child(step.expression);return d.source.fail(expression.span(),"B170","where 谓词必须是只读 bool 字段，或当前 inout 独占域的 bool 字段");
+        },
+        ParallelPrepareNeed::Counts=>{
+            let selected=selection.unwrap();let domain=program.buffers[domain].count;let count=program.buffers[selected.binding].count;control.known_domain=u32::from(domain.is_some());control.known_selection=u32::from(count.is_some());if let Some(domain)=domain{control.domain_count=domain;}if let Some(count)=count{control.selection_count=count;}
+        },
+        ParallelPrepareNeed::BadCapacity=>{let expression:Expr=syntax.child(step.expression);return d.source.fail(expression.span(),"B187","where 谓词容量不能小于原始域");},
+        ParallelPrepareNeed::Builder=>builder=Some(unsafe{world.call(Builder::domain(world,input,program,domain)).await}?),
+        ParallelPrepareNeed::Frame=>{let b=builder.as_mut().unwrap();let frame=vec![b.reg(Scalar::U32),b.reg(Scalar::U32)];b.application=Some(application::Context{frame:Some(frame),range:true});},
+        ParallelPrepareNeed::Context=>{
+            let b=builder.as_mut().unwrap();b.element_facts=Some(elements);b.prefix_facts=Some(scoped);b.source_context=Arc::new(SourceContext{domain_path:path.clone(),..(*b.source_context).clone()});b.functions=std::mem::take(functions);
+        },
+        ParallelPrepareNeed::Roots=>{builder.as_mut().unwrap().roots(env);},
+        ParallelPrepareNeed::Index=>{
+            operation_source=input.operation_source(statement.span(),SourceSyntax::Statement,path);let b=builder.as_mut().unwrap();index=b.reg(Scalar::U32);b.code.push(Inst::generated(InstKind::Index(index),Arc::new(GeneratedOrigin{reason:GenerationReason::ParallelIndex,trigger:operation_source.clone().map(GenerationAnchor::Syntax)})));b.global_index=index;
+        },
+        ParallelPrepareNeed::Refine=>{builder.as_mut().unwrap().refine_parallel_domain();},
+        ParallelPrepareNeed::Name=>control.present=u32::from(builder.as_ref().unwrap().env.contains_key(name)),
+        ParallelPrepareNeed::BadName=>return d.source.fail(statement.span(),"B107","迭代变量不能覆盖参数"),
+        ParallelPrepareNeed::Initialize=>initialize_parallel(builder.as_mut().unwrap(),name,domain,access,index,facts),
+        ParallelPrepareNeed::Complete=>return Ok((builder.take().unwrap(),domain,prefix,selection,operation_source,index)),
+    }}
 }
 
 async fn stage_root(
@@ -1868,49 +1842,27 @@ impl<'a> Builder<'a> {
         Ok(())
     }
     fn roots(&mut self, env: &BTreeMap<String, Root>) {
-        for (name, root) in env {
-            match root {
-                Root::Texture(i) => {
-                    self.env.insert(
-                        name.clone(),
-                        Binding::Texture(texture::TextureReference::binding(*i)),
-                    );
-                }
-                Root::Acceleration(i) => {
-                    self.env.insert(name.clone(), Binding::Acceleration(*i));
-                }
-                Root::Data(i, access) => {
-                    let view = self.dataset_view(*i,*access,false);
-                    self.env.insert(name.clone(), Binding::Data(view));
-                    self.view_access.insert(*i, *access);
-                }
-                Root::Uniform(i) => {
-                    let program = self.program;
-                    let uniform = &program.uniforms[*i];
-                    let mut regs = Vec::new();
-                    for (s, o) in &uniform.ty.components {
-                        let r = self.reg(*s);
-                        self.emit(InstKind::Uniform(r, uniform.offset + o));
-                        regs.push(r);
-                    }
-                    self.env.insert(
-                        name.clone(),
-                        Binding::Value(Value {
-                            proof: bounds::Proof::default(),
-                            literal: false,
-                            ty: uniform.ty.clone(),
-                            regs,
-                            uniform: true,
-                            constant: None,
-                        }),
-                    );
-                }
-                Root::Literal(ty, bits, origin) => {
-                    let value = self.evaluated_constant(ty.clone(), bits.clone(), origin.clone());
-                    self.env.insert(name.clone(), Binding::Value(value));
-                }
-            }
-        }
+        let mut entries=env.iter();let mut current=None;let mut regs=Vec::new();
+        let mut cursor=EnvironmentCursor{index:0,part:0,phase:0};let mut facts=RootEnvironmentFacts{roots:env.len()as u64,components:0,kind:0};
+        loop {let step=unsafe{root_environment_step(cursor,RootEnvironmentFacts{..facts})};cursor=step.cursor;match step.need {
+            RootEnvironmentNeed::Entry=>{
+                let entry=entries.next().unwrap();facts.kind=match entry.1{Root::Texture(_)=>0,Root::Acceleration(_)=>1,Root::Data(..)=>2,Root::Uniform(i)=>{facts.components=self.program.uniforms[*i].ty.components.len()as u64;3},Root::Literal(..)=>4};current=Some(entry);
+            },
+            RootEnvironmentNeed::Texture=>{let(name,Root::Texture(i))=current.take().unwrap()else{unsafe{std::hint::unreachable_unchecked()}};self.env.insert(name.clone(),Binding::Texture(texture::TextureReference::binding(*i)));},
+            RootEnvironmentNeed::Acceleration=>{let(name,Root::Acceleration(i))=current.take().unwrap()else{unsafe{std::hint::unreachable_unchecked()}};self.env.insert(name.clone(),Binding::Acceleration(*i));},
+            RootEnvironmentNeed::Data=>{
+                let(name,Root::Data(i,access))=current.take().unwrap()else{unsafe{std::hint::unreachable_unchecked()}};let view=self.dataset_view(*i,*access,false);self.env.insert(name.clone(),Binding::Data(view));self.view_access.insert(*i,*access);
+            },
+            RootEnvironmentNeed::Literal=>{let(name,Root::Literal(ty,bits,origin))=current.take().unwrap()else{unsafe{std::hint::unreachable_unchecked()}};let value=self.evaluated_constant(ty.clone(),bits.clone(),origin.clone());self.env.insert(name.clone(),Binding::Value(value));},
+            RootEnvironmentNeed::BeginUniform=>{regs=Vec::new();},
+            RootEnvironmentNeed::UniformComponent=>{
+                let(_,Root::Uniform(i))=current.unwrap()else{unsafe{std::hint::unreachable_unchecked()}};let uniform=&self.program.uniforms[*i];let(scalar,offset)=uniform.ty.components[cursor.part as usize];let offset=uniform.offset+offset;let reg=self.reg(scalar);self.emit(InstKind::Uniform(reg,offset));regs.push(reg);
+            },
+            RootEnvironmentNeed::BindUniform=>{
+                let(name,Root::Uniform(i))=current.take().unwrap()else{unsafe{std::hint::unreachable_unchecked()}};self.env.insert(name.clone(),Binding::Value(Value{proof:bounds::Proof::default(),literal:false,ty:self.program.uniforms[*i].ty.clone(),regs:std::mem::take(&mut regs),uniform:true,constant:None}));
+            },
+            RootEnvironmentNeed::Complete=>return,
+        }}
     }
     fn fail<T>(&self, span: Span, code: &'static str, message: impl Into<String>) -> Result<T> {
         self.scope.source().fail(span, code, message)
@@ -2756,6 +2708,21 @@ unsafe extern "C"{
 
 
 #[repr(C)]#[derive(Clone,Copy)]struct SourceValueCursor {phase:u32}
+#[repr(C)]#[derive(Clone,Copy)]struct EnvironmentCursor {index:u64,part:u64,phase:u32}
+#[repr(C)]struct RootEnvironmentFacts {roots:u64,components:u64,kind:u32}
+#[repr(u32)]enum RootEnvironmentNeed {Entry,Texture,Acceleration,Data,Literal,BeginUniform,UniformComponent,BindUniform,Complete}
+#[repr(C)]struct RootEnvironmentStep {cursor:EnvironmentCursor,need:RootEnvironmentNeed}
+#[repr(C)]struct ParallelPrepareFacts {present:u32,access:u32,initialized:u32,cpu:u32,known_domain:u32,domain_count:u32,known_selection:u32,selection_count:u32}
+#[repr(u32)]enum ParallelPrepareNeed {Root,BadRoot,Prefix,Selection,Initialized,BadSelection,Counts,BadCapacity,Builder,Frame,Context,Roots,Index,Refine,Name,BadName,Initialize,Complete}
+#[repr(C)]struct ParallelPrepareStep {cursor:SourceValueCursor,need:ParallelPrepareNeed,spelling:crate::syntax::wire::Text,expression:u64}
+#[repr(C)]struct ParallelInitializeFacts {views:u64,components:u64,binding:u64,domain:u64,access:u32,present:u32,domain_access:u32}
+#[repr(u32)]enum ParallelInitializeNeed {Element,View,Component,Initialized,Mark,BindElement,Reset,AliasView,SameLength,Alias,Complete}
+#[repr(C)]struct ParallelInitializeStep {cursor:EnvironmentCursor,need:ParallelInitializeNeed,flags:u32}
+unsafe extern "C" {
+    #[link_name="bootstrap.function_body::root_environment_step"]fn root_environment_step(state:EnvironmentCursor,facts:RootEnvironmentFacts)->RootEnvironmentStep;
+    #[link_name="bootstrap.function_body::parallel_prepare_step"]fn parallel_prepare_step(state:SourceValueCursor,source:crate::syntax::wire::SignatureNode,facts:ParallelPrepareFacts)->ParallelPrepareStep;
+    #[link_name="bootstrap.function_body::parallel_initialize_step"]fn parallel_initialize_step(state:EnvironmentCursor,facts:ParallelInitializeFacts)->ParallelInitializeStep;
+}
 #[repr(C)]#[derive(Clone,Copy)]struct StageControlCursor {phase:u32,index:u32,last:u32}
 #[repr(C)]struct StageControlFacts {present:u32,literal:u32,same_type:u32,bits:u32,returned:u32}
 #[repr(u32)]enum StageControlNeed {Unhandled,Invalid,Name,BadLetName,Annotation,LetValue,Bind,Condition,BadCondition,BadBoolean,ConditionValue,IfBody,IfOrigin,First,FirstValue,Last,LastValue,BadCounterName,BadBound,BeginFor,Iteration,IterationOrigin,ForOrigin,Boundary,Return,Complete}
