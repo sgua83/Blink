@@ -414,15 +414,11 @@ impl Builder<'_> {
             place: None, declaration: 0,
         })))
     }
-    fn owned_condition(&mut self, value: &OwnedValue, span: Span) -> Result<Value> {
-        self.owned_variant_condition(value,0,span,None)
-    }
     fn owned_variant_condition(&mut self,value:&OwnedValue,index:usize,span:Span,origin:Option<Arc<GeneratedOrigin>>)->Result<Value> {
         if value.payloads[index].is_none(){return Ok(self.constant_with_origin(Scalar::Bool,0,origin));}
         if value.payloads.iter().enumerate().all(|(i,p)|i==index||p.is_none()){return Ok(self.constant_with_origin(Scalar::Bool,1,origin));}
         self.variant_condition(&value.value,index,span,origin)
     }
-    async fn unpack_owned(&mut self,value:&OwnedValue,success:bool)->Result<Returned> {unsafe { self.world.call(self.unpack_variant(value,usize::from(!success))).await }}
     pub(super) async fn unpack_variant(&mut self,value:&OwnedValue,index:usize)->Result<Returned> {
         let payload=self.variant_payload(&value.value,index);
         let Some(meta)=&value.payloads[index] else {return match payload {Some(value)=>unsafe { self.world.call(self.template_returned(value,false)).await },None=>Ok(Returned::Unit)};};
@@ -527,79 +523,52 @@ impl Builder<'_> {
             unsafe { builder.world.call(builder.expr_expected(&args.at(index),expected)).await })).await }.map(|value|value.map(Returned::value))
     }
     #[inline(never)]
-    pub(super) async fn propagate_returned(
-        &mut self,
-        args: &Expressions,
-        span: Span,
-    ) -> Result<Option<Returned>> {
-        if args.len() != 1 {
-            return self.fail(span, "B269", "try需要一个结果表达式");
-        }
-        let returned = unsafe { self.world.call(self.evaluate_returned(&args.at(0), None)).await }?;
-        if !self.flow.continues() {
-            return Ok(None);
-        }
-        let source = returned.ok_or_else(|| Diagnostic {
-            source: self.scope.source().clone(),
-            span,
-            code: "B269",
-            message: "try需要结果".into(),
-        })?;
-        let (value, owned) = match &source {
-            Returned::OwnedValue(r) if r.value.ty.result => (r.value.clone(), Some(r)),
-            Returned::Value(v) if v.ty.result => ((**v).clone(), None),
-            _ => return self.fail(span, "B269", "try需要结果"),
-        };
-        let Some(expected) = self.result_return_type().filter(|ty| ty.result) else {
-            return self.fail(span, "B269", "try所在函数必须返回结果");
-        };
-        self.require_same(&expected.arguments[1], &value.ty.arguments[1], span)?;
-        let condition = if let Some(r) = owned {
-            self.owned_condition(r, span)?
-        } else {
-            self.result_condition(&value, span)?
-        };
-        unsafe { self.world.call(self.conditional_blocks(
-            condition,
-            async |_| Ok(()),
-            async |b| {
-                let error = if let Some(r) = owned {
-                    unsafe { b.world.call(b.unpack_owned(r, false)).await }?
-                } else {
-                    b.result_payload(&value, false)
-                        .map_or(Returned::Unit, Returned::value)
-                };
-                let result = b.wrap_returned_result(expected, false, error);
-                unsafe { b.world.call(b.finish_return(Some(result), span)).await }
-            },
-            span,
-        )).await }?;
-        if !self.flow.continues() {
-            return Ok(None);
-        }
-        Ok(Some(if let Some(r) = owned {
-            unsafe { self.world.call(self.unpack_owned(r, true)).await }?
-        } else {
-            match self.result_payload(&value, true) {
-                Some(v) => Returned::value(v),
-                None => return Ok(None),
+    pub(super) async fn propagate_returned(&mut self,args:&Expressions,span:Span)->Result<Option<Returned>> {
+        let mut cursor=TryCursor {phase:0};
+        let mut facts=TryFacts {arguments:args.len(),continuing:0,present:0,kind:0,result:0,expected:0};
+        let mut source=None;let mut condition=None;
+        loop {
+            facts.continuing=u32::from(self.flow.continues());facts.present=u32::from(source.is_some());
+            let step=unsafe {try_step(cursor,facts)};cursor=step.cursor;
+            match step.need {
+                TryNeed::Arity=>return self.fail(span,"B269","try需要一个结果表达式"),
+                TryNeed::Evaluate=>source=unsafe {self.world.call(self.evaluate_returned(&args.at(0),None)).await}?,
+                TryNeed::Inspect=>{let source=source.as_ref().unwrap();facts.kind=source.kind();facts.result=u32::from(source.view_value().is_some_and(|value|value.ty.result));},
+                TryNeed::BadSource=>return self.fail(span,"B269","try需要结果"),
+                TryNeed::Expected=>facts.expected=u32::from(self.result_return_type().is_some_and(|ty|ty.result)),
+                TryNeed::BadFunction=>return self.fail(span,"B269","try所在函数必须返回结果"),
+                TryNeed::ErrorType=>self.require_same(&self.result_return_type().unwrap().arguments[1],&source.as_ref().unwrap().view_value().unwrap().ty.arguments[1],span)?,
+                TryNeed::ValueCondition=>condition=Some(self.result_condition(source.as_ref().unwrap().view_value().unwrap(),span)?),
+                TryNeed::OwnedCondition=>{let Returned::OwnedValue(value)=source.as_ref().unwrap() else{unreachable!()};condition=Some(self.owned_variant_condition(value,0,span,None)?);},
+                TryNeed::Branches=>{
+                    let source=source.as_ref().unwrap();let source_kind=facts.kind;
+                    unsafe {self.world.call(self.conditional_blocks(condition.take().unwrap(),async |_|Ok(()),async |builder|{
+                        let mut cursor=TryCursor {phase:0};let mut facts=TryErrorFacts {kind:source_kind,owns:0,item:0};
+                        let mut item=None;let mut expected=None;let mut payload=None;let mut value=None;
+                        loop {
+                            facts.item=item.as_ref().map_or(0,Returned::kind);
+                            let step=unsafe {try_error_step(cursor,facts)};cursor=step.cursor;
+                            match step.need {
+                                TryErrorNeed::Value=>item=Some(builder.result_payload(source.view_value().unwrap(),false).map_or(Returned::Unit,Returned::value)),
+                                TryErrorNeed::Owned=>{let Returned::OwnedValue(source)=source else{unreachable!()};item=Some(unsafe {builder.world.call(builder.unpack_variant(source,1)).await}?);},
+                                TryErrorNeed::Expected=>{let ty=builder.result_return_type().unwrap().clone();facts.owns=u32::from(ty.owns_resources());expected=Some(ty);},
+                                TryErrorNeed::Storage=>payload=Some(builder.returned_storage(item.as_ref().unwrap())),
+                                TryErrorNeed::MoveValue=>{let Returned::Value(item)=item.take().unwrap() else{unreachable!()};payload=Some(*item);},
+                                TryErrorNeed::Build=>value=Some(builder.result_value(expected.take().unwrap(),false,payload.take())),
+                                TryErrorNeed::ValueReturn=>return unsafe {builder.world.call(builder.finish_return(Some(Returned::value(value.take().unwrap())),span)).await},
+                                TryErrorNeed::OwnedReturn=>{
+                                    let value=value.take().unwrap();let mut payloads=vec![None;value.ty.variants.len()];payloads[1]=Some(Box::new(item.take().unwrap()));
+                                    let result=Returned::OwnedValue(Box::new(OwnedValuePayload {value,payloads,ownership:Ownership::Owned,place:None,declaration:0}));
+                                    return unsafe {builder.world.call(builder.finish_return(Some(result),span)).await};
+                                }
+                            }
+                        }
+                    },span)).await}?;
+                },
+                TryNeed::ValueSuccess=>return Ok(self.result_payload(source.as_ref().unwrap().view_value().unwrap(),true).map(Returned::value)),
+                TryNeed::OwnedSuccess=>{let Returned::OwnedValue(value)=source.as_ref().unwrap() else{unreachable!()};return unsafe {self.world.call(self.unpack_variant(value,0)).await}.map(Some);},
+                TryNeed::Complete=>return Ok(None),
             }
-        }))
-    }
-    fn wrap_returned_result(&mut self, ty: Ty, success: bool, item: Returned) -> Returned {
-        let payload = self.returned_storage(&item);
-        let value = self.result_value(ty.clone(), success, Some(payload));
-        if ty.owns_resources() {
-            let mut payloads = vec![None;value.ty.variants.len()];
-            payloads[usize::from(!success)] = Some(Box::new(item));
-            Returned::OwnedValue(Box::new(OwnedValuePayload {
-                value,
-                payloads,
-                ownership: Ownership::Owned,
-                place: None, declaration: 0,
-            }))
-        } else {
-            Returned::value(value)
         }
     }
     #[inline(never)]
@@ -877,4 +846,16 @@ unsafe extern "C" {
  #[link_name="bootstrap.function_body::match_branch"]fn match_branch(index:usize,count:usize,kind:u32)->MatchBranch;
  #[link_name="bootstrap.function_body::match_binding"]fn match_binding(present:u32,data:*const u8,length:usize)->u32;
  #[link_name="bootstrap.function_body::match_arm_step"]fn match_arm_step(cursor:MatchCursor,facts:MatchArmFacts)->MatchArmStep;
+}
+
+#[repr(C)]#[derive(Clone,Copy)]struct TryCursor {phase:u32}
+#[repr(C)]#[derive(Clone,Copy)]struct TryFacts {arguments:usize,continuing:u32,present:u32,kind:u32,result:u32,expected:u32}
+#[repr(u32)]enum TryNeed {Arity,Evaluate,Inspect,BadSource,Expected,BadFunction,ErrorType,ValueCondition,OwnedCondition,Branches,ValueSuccess,OwnedSuccess,Complete}
+#[repr(C)]struct TryStep {cursor:TryCursor,need:TryNeed}
+#[repr(C)]#[derive(Clone,Copy)]struct TryErrorFacts {kind:u32,owns:u32,item:u32}
+#[repr(u32)]enum TryErrorNeed {Value,Owned,Expected,Storage,MoveValue,Build,ValueReturn,OwnedReturn}
+#[repr(C)]struct TryErrorStep {cursor:TryCursor,need:TryErrorNeed}
+unsafe extern "C" {
+ #[link_name="bootstrap.function_body::try_step"]fn try_step(cursor:TryCursor,facts:TryFacts)->TryStep;
+ #[link_name="bootstrap.function_body::try_error_step"]fn try_error_step(cursor:TryCursor,facts:TryErrorFacts)->TryErrorStep;
 }

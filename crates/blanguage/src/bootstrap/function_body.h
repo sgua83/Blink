@@ -168,3 +168,12 @@ struct PatternFacts {u32 eligible;u32 owner;u32 found;u32 duplicate;u32 unit;u32
 enum PatternNeed:u32 {InvalidType=0;Arm=1;Owner=2;Find=3;Unknown=4;Select=5;Duplicate=6;Inspect=7;MissingBinding=8;UnitBinding=9;Coverage=10;Incomplete=11;Complete=12;};
 struct PatternStep {ValueCursor cursor;PatternNeed need;};
 extern "C" PatternStep pattern_step(ValueCursor cursor,PatternFacts facts) on cpu;
+
+struct TryFacts {u64 arguments;u32 continuing;u32 present;u32 kind;u32 result;u32 expected;};
+enum TryNeed:u32 {Arity=0;Evaluate=1;Inspect=2;BadSource=3;Expected=4;BadFunction=5;ErrorType=6;ValueCondition=7;OwnedCondition=8;Branches=9;ValueSuccess=10;OwnedSuccess=11;Complete=12;};
+struct TryStep {LocalCursor cursor;TryNeed need;};
+extern "C" TryStep try_step(LocalCursor cursor,TryFacts facts) on cpu;
+struct TryErrorFacts {u32 kind;u32 owns;u32 item;};
+enum TryErrorNeed:u32 {Value=0;Owned=1;Expected=2;Storage=3;MoveValue=4;Build=5;ValueReturn=6;OwnedReturn=7;};
+struct TryErrorStep {LocalCursor cursor;TryErrorNeed need;};
+extern "C" TryErrorStep try_error_step(LocalCursor cursor,TryErrorFacts facts) on cpu;

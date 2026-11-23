@@ -372,9 +372,9 @@ impl Builder<'_> {
             ),
         }
     }
-    pub(super) fn result_return_type(&self) -> Option<Ty> {
+    pub(super) fn result_return_type(&self) -> Option<&Ty> {
         match self.return_context.as_ref()?.expected.as_ref() {
-            Expected::Value(ty) => Some(ty.clone()),
+            Expected::Value(ty) => Some(ty),
             _ => None,
         }
     }

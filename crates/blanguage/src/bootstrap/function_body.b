@@ -567,3 +567,22 @@ extern "C" PatternStep pattern_step(ValueCursor cursor,PatternFacts facts) on cp
   if(facts.present==0){return PatternStep(c,PatternNeed::Incomplete);}c.index+=1u64;c.phase=7;
  }
 }
+
+extern "C" TryStep try_step(LocalCursor cursor,TryFacts facts) on cpu {
+ LocalCursor c=cursor;
+ if(c.phase==0){if(facts.arguments!=1u64){return TryStep(c,TryNeed::Arity);}c.phase=1;return TryStep(c,TryNeed::Evaluate);}
+ if(c.phase==1){if(facts.continuing==0){return TryStep(c,TryNeed::Complete);}if(facts.present==0){return TryStep(c,TryNeed::BadSource);}c.phase=2;return TryStep(c,TryNeed::Inspect);}
+ if(c.phase==2){if((facts.kind!=1&&facts.kind!=3)||facts.result==0){return TryStep(c,TryNeed::BadSource);}c.phase=3;return TryStep(c,TryNeed::Expected);}
+ if(c.phase==3){if(facts.expected==0){return TryStep(c,TryNeed::BadFunction);}c.phase=4;return TryStep(c,TryNeed::ErrorType);}
+ if(c.phase==4){c.phase=5;return TryStep(c,facts.kind==3 ? TryNeed::OwnedCondition : TryNeed::ValueCondition);}
+ if(c.phase==5){c.phase=6;return TryStep(c,TryNeed::Branches);}
+ if(facts.continuing==0){return TryStep(c,TryNeed::Complete);}return TryStep(c,facts.kind==3 ? TryNeed::OwnedSuccess : TryNeed::ValueSuccess);
+}
+extern "C" TryErrorStep try_error_step(LocalCursor cursor,TryErrorFacts facts) on cpu {
+ LocalCursor c=cursor;
+ if(c.phase==0){c.phase=1;return TryErrorStep(c,facts.kind==3 ? TryErrorNeed::Owned : TryErrorNeed::Value);}
+ if(c.phase==1){c.phase=2;return TryErrorStep(c,TryErrorNeed::Expected);}
+ if(c.phase==2){c.phase=3;return TryErrorStep(c,facts.owns==0&&facts.item==1 ? TryErrorNeed::MoveValue : TryErrorNeed::Storage);}
+ if(c.phase==3){c.phase=4;return TryErrorStep(c,TryErrorNeed::Build);}
+ return TryErrorStep(c,facts.owns!=0 ? TryErrorNeed::OwnedReturn : TryErrorNeed::ValueReturn);
+}
