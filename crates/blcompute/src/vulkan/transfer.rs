@@ -258,28 +258,23 @@ struct ReadbackPayload {
 
 /// 已提交的设备到主机传输。完成后仍持有领取 CPU 结果所需的暂存。
 pub struct GpuReadback {
-    // Drop the execution before the mapped destinations if the caller abandons the result.
-    execution: Option<Rc<Execution>>,
+    // End the native work before freeing the mapped destinations on abandonment.
+    executions: Dependencies,
     sources: Vec<PendingDataset>,
     roots: Vec<ReadbackRoot<PendingDataset>>,
     domains: bindings::DomainRelations,
 }
 
 impl GpuReadback {
-    /// 查询原提交的完成点，不等待或领取主机结果。
+    /// 查询实际GPU执行的完成点，不等待或领取主机结果。
     pub fn is_complete(&self) -> Result<bool> {
-        match &self.execution {
-            Some(execution) => execution.is_complete(),
-            None => Ok(true),
-        }
+        self.executions.observe(Execution::is_complete)
     }
 
-    /// 等待原拷贝完成并领取 CPU 数据及原域关系。
+    /// 等待实际GPU执行完成并领取 CPU 数据及原域关系。
     pub fn wait(self) -> Result<DomainBindings<CpuDataset>> {
-        let Self { execution, sources, roots, domains } = self;
-        if let Some(execution) = execution {
-            execution.wait()?;
-        }
+        let Self { executions, sources, roots, domains } = self;
+        executions.observe(|execution| execution.wait().map(|()| true))?;
         let mut ready = Vec::with_capacity(sources.len());
         for source in sources {
             ready.push(source.finish(&ready)?.freeze()?);
@@ -364,16 +359,15 @@ impl<'a> PendingReadback<'a> {
             })
             .collect::<Result<Vec<_>>>()?;
         let dependencies = readback.dependencies.prepare()?;
-        let execution = match readback.commands {
+        let executions = match readback.commands {
             Some(commands) => {
                 commands.barrier(0x1000, 0x4000, 0x1000, 0x2000);
-                Some(Execution::submit(
+                Dependencies::Single(Execution::submit(
                     ExecutionResources::DatasetReadback { commands, _source_pages: readback.source_pages },
                     dependencies,
                 )?)
             }
-            None if matches!(dependencies, Dependencies::Empty) => None,
-            None => Some(Execution::submit_fence(device.inner.clone(), dependencies)?),
+            None => dependencies,
         };
         let roots = datasets
             .into_iter()
@@ -386,7 +380,7 @@ impl<'a> PendingReadback<'a> {
                 ReadbackRoot::Read(source) => ReadbackRoot::Read(source),
             })
             .collect();
-        Ok(GpuReadback { execution, sources: readback.sources, roots, domains })
+        Ok(GpuReadback { executions, sources: readback.sources, roots, domains })
     }
 
     fn record_read(&mut self, data: &GpuDataset, source: &ReadDataset) -> Result<usize> {

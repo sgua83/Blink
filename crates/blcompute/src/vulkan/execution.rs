@@ -379,6 +379,24 @@ pub(super) enum Dependencies {
 }
 
 impl Dependencies {
+    pub fn observe(&self, mut observe: impl FnMut(&Execution) -> Result<bool>) -> Result<bool> {
+        let sources = match self {
+            Self::Empty => &[][..],
+            Self::Single(source) => std::slice::from_ref(source),
+            Self::Multiple(sources) => sources.as_slice(),
+        };
+        let mut complete = true;
+        for source in sources {
+            if complete {
+                complete = observe(source)?;
+            } else {
+                // A later execution can already know an error.
+                source.point.observed_complete()?;
+            }
+        }
+        Ok(complete)
+    }
+
     fn append_to(self, completed: &mut Vec<Rc<Execution>>) {
         match self {
             Self::Empty => {}
