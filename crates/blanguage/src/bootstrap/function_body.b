@@ -497,3 +497,27 @@ extern "C" ExpressionStep expression_step(LocalCursor cursor,ExpressionFacts fac
  if(c.phase==3){if(facts.barrier!=0){return ExpressionStep(c,ExpressionNeed::Barrier);}c.phase=4;return ExpressionStep(c,ExpressionNeed::Evaluate);}
  return ExpressionStep(c,facts.present!=0 ? ExpressionNeed::Drop : ExpressionNeed::Complete);
 }
+
+extern "C" JumpStep jump_step(LocalCursor cursor,JumpFacts facts) on cpu {
+ LocalCursor c=cursor;
+ if(c.phase==0){if(facts.local==0){return JumpStep(c,JumpNeed::Outside);}c.phase=1;return JumpStep(c,JumpNeed::Release);}
+ if(c.phase==1){if(facts.breaking!=0){return JumpStep(c,JumpNeed::Break);}c.phase=2;return JumpStep(c,JumpNeed::Iterator);}
+ if(c.phase==2){c.phase=3;if(facts.iterator!=0){return JumpStep(c,JumpNeed::Advance);}}
+ if(c.phase==3){c.phase=4;return JumpStep(c,JumpNeed::Backedge);}
+ return JumpStep(c,JumpNeed::Continue);
+}
+bool seek_same_name(SeekName requested,SeekName current) on cpu {
+ if(requested.length!=current.length){return false;}u64 index=0u64;
+ while(index<requested.length){if(unsafe_position<u8>(unsafe_address(address_bits(requested.data)+index))!=unsafe_position<u8>(unsafe_address(address_bits(current.data)+index))){return false;}index+=1u64;}return true;
+}
+extern "C" SeekStep seek_step(LocalCursor cursor,SeekFacts facts) on cpu {
+ LocalCursor c=cursor;
+ if(c.phase==0){c.phase=1;return SeekStep(c,SeekNeed::Iterator);}
+ if(c.phase==1){if(facts.iterator==0){return SeekStep(c,SeekNeed::Missing);}if(!seek_same_name(facts.requested,facts.current)){return SeekStep(c,SeekNeed::WrongName);}c.phase=2;return SeekStep(c,SeekNeed::Position);}
+ if(c.phase==2){if(facts.present==0){return SeekStep(c,SeekNeed::Complete);}c.phase=3;return SeekStep(c,SeekNeed::Type);}
+ if(c.phase==3){c.phase=4;return SeekStep(c,SeekNeed::Release);}
+ if(c.phase==4){c.phase=5;return SeekStep(c,SeekNeed::Compare);}
+ if(c.phase==5){if(facts.outside!=0){return SeekStep(c,SeekNeed::Break);}c.phase=6;return SeekStep(c,SeekNeed::Store);}
+ if(c.phase==6){c.phase=7;return SeekStep(c,SeekNeed::Backedge);}
+ return SeekStep(c,SeekNeed::Continue);
+}

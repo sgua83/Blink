@@ -139,3 +139,13 @@ enum ExpressionNeed:u32 {Inspect=0;AtomicQuery=1;BarrierQuery=2;Atomic=3;Barrier
 struct ExpressionStep {LocalCursor cursor;ExpressionNeed need;};
 extern "C" u32 statement_barrier(address bytes,u64 length) on cpu;
 extern "C" ExpressionStep expression_step(LocalCursor cursor,ExpressionFacts facts) on cpu;
+
+struct JumpFacts {u32 local;u32 breaking;u32 iterator;};
+enum JumpNeed:u32 {Outside=0;Release=1;Break=2;Iterator=3;Advance=4;Backedge=5;Continue=6;};
+struct JumpStep {LocalCursor cursor;JumpNeed need;};
+extern "C" JumpStep jump_step(LocalCursor cursor,JumpFacts facts) on cpu;
+struct SeekName {address data;u64 length;};
+struct SeekFacts {SeekName requested;SeekName current;u32 iterator;u32 present;u32 outside;};
+enum SeekNeed:u32 {Iterator=0;Missing=1;WrongName=2;Position=3;Type=4;Release=5;Compare=6;Break=7;Store=8;Backedge=9;Continue=10;Complete=11;};
+struct SeekStep {LocalCursor cursor;SeekNeed need;};
+extern "C" SeekStep seek_step(LocalCursor cursor,SeekFacts facts) on cpu;

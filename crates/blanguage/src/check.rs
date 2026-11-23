@@ -2273,32 +2273,6 @@ impl<'a> Builder<'a> {
         }
         Ok(())
     }
-    // 循环出口的资源交接只在本语句分析时存活。
-    #[inline(never)]
-    async fn loop_control_statement(&mut self, s: &Stmt) -> Result<()> {
-        let breaking = matches!(s.kind(), StmtKind::Break);
-        if self.loop_depth == 0 {
-            return self.fail(s.span(), "B129", if breaking {
-                "break 只能用于局部顺序循环"
-            } else {
-                "continue 只能用于局部顺序循环"
-            });
-        }
-        unsafe { self.world.call(self.release_application_loop()).await }?;
-        if breaking {
-            self.emit_loop_break();
-        } else {
-            let cursor = if let Some(Some((_, slot, _))) = self.iterators.last() {
-                Some(self.advance_iterator(*slot)?)
-            } else {
-                None
-            };
-            unsafe { self.world.call(self.check_application_loop(s.span(),cursor)).await }?;
-            self.emit(InstKind::Continue);
-            self.flow = Flow::CONTINUE;
-        }
-        Ok(())
-    }
     fn value_result(&self, result: Option<Value>, span: Span) -> Result<Value> {
         match result {
             Some(value) => Ok(value),
@@ -3152,33 +3126,6 @@ impl<'a> Builder<'a> {
         value.proof.mark_domain(0, IndexDomain::Upper(limit.identity(), 0));
         self.emit(InstKind::StoreLocal(slot,value.regs[0]));
         Ok(value)
-    }
-    #[inline(never)]
-    async fn seek_statement(&mut self, name: &str, position: &Expr, span: Span) -> Result<()> {
-        let Some(Some((iterator, slot, _))) = self.iterators.last() else {
-            return self.fail(span, "B164", "seek 需要当前有界 for 游标");
-        };
-        if iterator != name {
-            return self.fail(span, "B165", "seek 只能推进当前最内层游标");
-        }
-        let slot = *slot;
-        let Some(value) = unsafe { self.world.call(self.temporary_scope(position.span(), async |builder| Ok((unsafe { builder.world.call(builder.expr(position)).await }?, view::Borrow::default())))).await }? else {
-            return Ok(());
-        };
-        self.require_same(&Ty::scalar(Scalar::U32), &value.ty, position.span())?;
-        unsafe { self.world.call(self.release_application_loop()).await }?;
-        let (_, _, limit) = self.iterators.last().unwrap().as_ref().unwrap();
-        let next = bounds::Condition::comparison(Comparison::Less, &value, limit);
-        if self.condition_truth(&next, None) == Some(false) {
-            self.emit_loop_break();
-            return Ok(());
-        }
-        self.emit(InstKind::StoreLocal(slot, value.regs[0]));
-        unsafe { self.world.call(self.check_application_loop(span,Some(value))).await }?;
-        self.emit(InstKind::Continue);
-        self.flow = Flow::CONTINUE;
-
-        Ok(())
     }
     async fn ray_query_call(&mut self, name: &str, args: &Expressions, span: Span) -> Result<Option<Value>> {
         if !matches!(args.len(), 5 | 6) {

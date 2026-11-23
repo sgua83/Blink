@@ -1433,3 +1433,54 @@ impl Builder<'_> {
   }}
  }
 }
+
+#[repr(C)]#[derive(Clone,Copy)]struct JumpFacts {local:u32,breaking:u32,iterator:u32}
+#[repr(u32)]enum JumpNeed {Outside,Release,Break,Iterator,Advance,Backedge,Continue}
+#[repr(C)]struct JumpStep {cursor:LocalCursor,need:JumpNeed}
+#[repr(C)]#[derive(Clone,Copy)]struct SeekName {data:*const u8,length:usize}
+#[repr(C)]#[derive(Clone,Copy)]struct SeekFacts {requested:SeekName,current:SeekName,iterator:u32,present:u32,outside:u32}
+#[repr(u32)]enum SeekNeed {Iterator,Missing,WrongName,Position,Type,Release,Compare,Break,Store,Backedge,Continue,Complete}
+#[repr(C)]struct SeekStep {cursor:LocalCursor,need:SeekNeed}
+unsafe extern "C" {
+ #[link_name="bootstrap.function_body::jump_step"]fn jump_step(cursor:LocalCursor,facts:JumpFacts)->JumpStep;
+ #[link_name="bootstrap.function_body::seek_step"]fn seek_step(cursor:LocalCursor,facts:SeekFacts)->SeekStep;
+}
+impl Builder<'_> {
+ // 循环出口的资源交接只在本语句分析时存活。
+ #[inline(never)]
+ pub(super) async fn loop_control_statement(&mut self,s:&Stmt)->Result<()> {
+  let mut cursor=LocalCursor {phase:0};
+  let mut facts=JumpFacts {local:u32::from(self.loop_depth!=0),breaking:u32::from(matches!(s.kind(),StmtKind::Break)),iterator:0};
+  let mut slot=None;let mut next=None;
+  loop {let step=unsafe {jump_step(cursor,facts)};cursor=step.cursor;match step.need {
+   JumpNeed::Outside=>return self.fail(s.span(),"B129",if facts.breaking!=0 {"break 只能用于局部顺序循环"}else{"continue 只能用于局部顺序循环"}),
+   JumpNeed::Release=>unsafe {self.world.call(self.release_application_loop()).await}?,
+   JumpNeed::Break=>{self.emit_loop_break();return Ok(());},
+   JumpNeed::Iterator=>{slot=self.iterators.last().and_then(Option::as_ref).map(|(_,slot,_)|*slot);facts.iterator=u32::from(slot.is_some());},
+   JumpNeed::Advance=>next=Some(self.advance_iterator(slot.unwrap())?),
+   JumpNeed::Backedge=>unsafe {self.world.call(self.check_application_loop(s.span(),next.take())).await}?,
+   JumpNeed::Continue=>{self.emit(InstKind::Continue);self.flow=Flow::CONTINUE;return Ok(());},
+  }}
+ }
+ #[inline(never)]
+ pub(super) async fn seek_statement(&mut self,name:&str,position:&Expr,span:Span)->Result<()> {
+  let mut cursor=LocalCursor {phase:0};
+  let requested=SeekName {data:name.as_ptr(),length:name.len()};
+  let mut facts=SeekFacts {requested,current:requested,iterator:0,present:0,outside:0};
+  let mut slot=None;let mut value=None;
+  loop {let step=unsafe {seek_step(cursor,facts)};cursor=step.cursor;match step.need {
+   SeekNeed::Iterator=>{if let Some(Some((iterator,local,_)))=self.iterators.last(){facts.iterator=1;facts.current=SeekName {data:iterator.as_ptr(),length:iterator.len()};slot=Some(*local);}},
+   SeekNeed::Missing=>return self.fail(span,"B164","seek 需要当前有界 for 游标"),
+   SeekNeed::WrongName=>return self.fail(span,"B165","seek 只能推进当前最内层游标"),
+   SeekNeed::Position=>{value=unsafe {self.world.call(self.temporary_scope(position.span(),async |builder| Ok((unsafe {builder.world.call(builder.expr(position)).await}?,view::Borrow::default())))).await}?;facts.present=u32::from(value.is_some());},
+   SeekNeed::Type=>self.require_same(&Ty::scalar(Scalar::U32),&value.as_ref().unwrap().ty,position.span())?,
+   SeekNeed::Release=>unsafe {self.world.call(self.release_application_loop()).await}?,
+   SeekNeed::Compare=>{let(_,_,limit)=self.iterators.last().unwrap().as_ref().unwrap();let next=bounds::Condition::comparison(Comparison::Less,value.as_ref().unwrap(),limit);facts.outside=u32::from(self.condition_truth(&next,None)==Some(false));},
+   SeekNeed::Break=>{self.emit_loop_break();return Ok(());},
+   SeekNeed::Store=>self.emit(InstKind::StoreLocal(slot.unwrap(),value.as_ref().unwrap().regs[0])),
+   SeekNeed::Backedge=>unsafe {self.world.call(self.check_application_loop(span,value.take())).await}?,
+   SeekNeed::Continue=>{self.emit(InstKind::Continue);self.flow=Flow::CONTINUE;return Ok(());},
+   SeekNeed::Complete=>return Ok(()),
+  }}
+ }
+}
