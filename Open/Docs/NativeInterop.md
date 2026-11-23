@@ -120,6 +120,8 @@ bc 在构建时完成 B 的模块、类型、访问权限、阶段及入口检�
 
 需要从原生入口构建缓存单独交付计算映像时，可用`bc image <entry.blbi> -o <deployment.blri>`或Rust `build::execution_image`取得原BLRI image字节，原BLBI构建记录与缓存保持。原运行SDK关闭compiler功能后，通过resource::from_compiler_output及原CpuTemplate／GpuTemplate装入，CPU／GPU代码、展开、布局与真实条件合同不变；不把原构建身份作为运行前置，也不把移除身份解释为取消prefix等前提。这是原执行映像交接，区别于COFF链接生成EXE／算法DLL及其C ABI工厂。compiler SDK可在原生成结果显式导出独立CPU范围材料，装入后按同代码恢复到原映像；bc code可在无源码时查询，运行角色不消费材料，详见[保存／恢复范围](BLanguage.md#保存和恢复可选cpu范围材料)。符号裁剪和正式安装仍沿原职责。完整接口与输出所有权见[部署执行映像](BLanguage.md#构建记录与可部署执行映像)。 原COFF可由`bc code --object`或`object::code_facts`直接查询物理节、符号／辅助记录、重定位及.pdata已有代码范围，不读源码或装入代码；原Object可显式捕获独立COFF范围材料，`--observations <ranges.blcf>`及object::code_facts_with_observations匹配后查询完整生成分区；无材料仍明确未分类，最终PE／内嵌归档分别交付，见[COFF查询](BLanguage.md#已保存coff的物理结构与代码查询)。 加--source-range start:end或用object::source_facts，可按原物理节的字节半开范围反查全部相交来源，直接借用既有材料，不反汇编；null与已采集无命中的空列表分开，无命中不推断已消除。原BLBI／BLRI的code入口也接受--source-range start:end，SDK使用build::source_facts／image_source_facts或NativeCode／ProgramImage::source_json；沿原阶段、延续、函数及资源结构保留每个代码映像的字节零，缺少CPU材料为null，ModuleCode来源未采集与GPU来源不支持分别标明。源码正查仍待实现，详见[CPU映像来源查询](BLanguage.md#cpu映像机器区间反查原来源)及[COFF区间查询](BLanguage.md#coff机器区间反查原来源)。
 
+算法DLL的 GPU run 按生成接口读取宿主绑定的实际字段，一次交给 Device::upload_domains。存在载荷时由同一原生传输提交持有各绑定的暂存，随后 GPU 程序消费该批绑定。零载荷保留声明的元素数。调用同步等到 GPU 执行与各实际输出读回完成，再写回宿主的可写字段。传输或设备执行失败沿原返回值和可选错误文本交回。
+
 部署机器需要 Windows x64 与 [Microsoft Visual C++ x64 运行库](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist)。GPU 后端另需支持程序所需 Vulkan 能力的显卡驱动；不要求安装 Vulkan SDK。
 
 ## 三种宿主

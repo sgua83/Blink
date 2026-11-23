@@ -87,10 +87,8 @@ impl LibraryProgram {
                     .collect::<Vec<_>>()
             }
             Self::Gpu { device, program } => {
-                let uploaded = datasets
-                    .into_iter()
-                    .map(|d| device.upload(d))
-                    .collect::<Result<Vec<_>>>()?;
+                let datasets = datasets.into_iter().map(Into::into).collect::<Vec<_>>();
+                let uploaded = device.upload_domains(datasets)?;
                 let completed = program.submit(uploaded, values)?.wait().map_err(|(error, _)| error)?;
                 completed
                     .datasets()
