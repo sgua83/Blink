@@ -193,3 +193,8 @@ struct ReadIndexFacts {u32 present;u32 kind;u32 indexed;u32 owns;u32 array;u32 o
 enum ReadIndexNeed:u32 {Reference=0;Parent=1;Kind=2;ArrayValue=3;ViewPlace=4;Data=5;DataIndex=6;DataType=7;Plain=8;Storage=9;Materialize=10;BorrowElement=11;Return=12;BadIndex=13;ArrayType=14;BadArray=15;Owner=16;Hold=17;Expression=18;Type=19;Bounds=20;BadBounds=21;Range=22;Unpack=23;First=24;Join=25;SourcePlace=26;MaterializeArray=27;ArrayPlace=28;Component=29;Rebind=30;ModelKind=31;BorrowModel=32;Complete=33;SetPlace=34;};
 struct ReadIndexStep {ReadIndexCursor cursor;ReadIndexNeed need;u64 position;};
 extern "C" ReadIndexStep read_index_step(ReadIndexCursor cursor,ReadIndexFacts facts) on cpu;
+
+struct VariantBuildFacts {u32 owned;u32 cpu;u32 application;u32 unit;u64 arguments;u32 continuing;u32 present;};
+enum VariantBuildNeed:u32 {InvalidTarget=0;Payload=1;VoidArguments=2;PayloadArguments=3;Unit=4;Evaluate=5;Missing=6;Check=7;Storage=8;Build=9;Complete=10;};
+struct VariantBuildStep {LocalCursor cursor;VariantBuildNeed need;};
+extern "C" VariantBuildStep variant_build_step(LocalCursor cursor,VariantBuildFacts facts) on cpu;

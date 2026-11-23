@@ -652,3 +652,15 @@ extern "C" ReadIndexStep read_index_step(ReadIndexCursor cursor,ReadIndexFacts f
  if(c.phase==29){c.phase=28;return ReadIndexStep(c,ReadIndexNeed::BorrowModel,0u64);}
  if(facts.kind==3&&c.phase==27){if(c.model!=0){c.phase=29;return ReadIndexStep(c,ReadIndexNeed::SetPlace,0u64);}c.phase=28;return ReadIndexStep(c,ReadIndexNeed::BorrowModel,0u64);}return ReadIndexStep(c,ReadIndexNeed::Return,0u64);
 }
+
+extern "C" VariantBuildStep variant_build_step(LocalCursor cursor,VariantBuildFacts facts) on cpu {
+ LocalCursor c=cursor;
+ if(c.phase==0){if(facts.owned!=0&&(facts.cpu==0||facts.application==0)){return VariantBuildStep(c,VariantBuildNeed::InvalidTarget);}c.phase=1;return VariantBuildStep(c,VariantBuildNeed::Payload);}
+ if(c.phase==1){
+  if(facts.unit!=0){if(facts.arguments!=0u64){return VariantBuildStep(c,VariantBuildNeed::VoidArguments);}c.phase=4;return VariantBuildStep(c,facts.owned!=0 ? VariantBuildNeed::Unit : VariantBuildNeed::Build);}
+  if(facts.arguments!=1u64){return VariantBuildStep(c,VariantBuildNeed::PayloadArguments);}c.phase=2;return VariantBuildStep(c,VariantBuildNeed::Evaluate);
+ }
+ if(c.phase==2){if(facts.owned!=0&&facts.continuing==0){return VariantBuildStep(c,VariantBuildNeed::Complete);}if(facts.present==0){return VariantBuildStep(c,facts.owned!=0 ? VariantBuildNeed::Missing : VariantBuildNeed::Complete);}c.phase=3;return VariantBuildStep(c,VariantBuildNeed::Check);}
+ if(c.phase==3||c.phase==4){c.phase=5;return VariantBuildStep(c,facts.owned!=0 ? VariantBuildNeed::Storage : VariantBuildNeed::Build);}
+ return VariantBuildStep(c,VariantBuildNeed::Build);
+}

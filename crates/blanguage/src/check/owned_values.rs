@@ -362,54 +362,34 @@ impl Builder<'_> {
         Ok(())
     }
     #[inline(never)]
-    pub(super) async fn make_owned_result(
-        &mut self,
-        ty: Ty,
-        success: bool,
-        args: &Expressions,
-        span: Span,
-    ) -> Result<Option<OwnedValue>> {
-        unsafe { self.world.call(self.make_owned_variant(ty,usize::from(!success),args,span)).await }
-    }
-    #[inline(never)]
     pub(super) async fn make_owned_variant(&mut self,ty:Ty,index:usize,args:&Expressions,span:Span)->Result<Option<OwnedValue>> {
-        if self.program.target != Target::Cpu || self.application.is_none() {
-            return self.fail(span,"B224","拥有变体属于普通CPU应用资源组织");
+        use super::results::{VariantBuildFacts,VariantBuildNeed,variant_build_step};
+        let mut cursor=super::flow::LocalCursor {phase:0};
+        let mut facts=VariantBuildFacts {owned:1,cpu:u32::from(self.program.target==Target::Cpu),application:u32::from(self.application.is_some()),unit:0,arguments:args.len(),continuing:0,present:0};
+        let mut item=None;let mut payload=None;
+        loop {
+            let step=unsafe {variant_build_step(cursor,facts)};cursor=step.cursor;
+            match step.need {
+                VariantBuildNeed::InvalidTarget=>return self.fail(span,"B224","拥有变体属于普通CPU应用资源组织"),
+                VariantBuildNeed::Payload=>facts.unit=u32::from(ty.variants[index].ty.name=="void"),
+                VariantBuildNeed::VoidArguments=>return self.fail(span,"B269","void分支没有载荷"),
+                VariantBuildNeed::PayloadArguments=>return self.fail(span,"B269","结果分支需要一个载荷"),
+                VariantBuildNeed::Unit=>item=Some(Returned::Unit),
+                VariantBuildNeed::Evaluate=>{
+                    item=unsafe {self.world.call(self.evaluate_returned(&args.at(0),Some(&ty.variants[index].ty))).await}?;
+                    facts.continuing=u32::from(self.flow.continues());facts.present=u32::from(item.is_some());
+                }
+                VariantBuildNeed::Missing=>return self.fail(span,"B228","结果分支需要载荷"),
+                VariantBuildNeed::Check=>unsafe {self.world.call(self.check_returned_type(item.as_mut().unwrap(),&ty.variants[index].ty,span)).await}?,
+                VariantBuildNeed::Storage=>payload=Some(self.returned_storage(item.as_ref().unwrap())),
+                VariantBuildNeed::Build=>{
+                    let count=ty.variants.len();let value=self.variant_value(ty,index,payload);
+                    let mut payloads=vec![None;count];payloads[index]=Some(Box::new(item.take().unwrap()));
+                    return Ok(Some(Box::new(OwnedValuePayload {value,payloads,ownership:Ownership::Owned,place:None,declaration:0})));
+                }
+                VariantBuildNeed::Complete=>return Ok(None),
+            }
         }
-        let expected=(*ty.variants[index].ty).clone();
-        let item = if expected.name == "void" {
-            if !args.is_empty() {
-                return self.fail(span, "B269", "void分支没有载荷");
-            }
-            Returned::Unit
-        } else {
-            if args.len() != 1 {
-                return self.fail(span, "B269", "结果分支需要一个载荷");
-            }
-            let result = unsafe { self.world.call(self.evaluate_returned(&args.at(0), Some(&expected))).await }?;
-            if !self.flow.continues() {
-                return Ok(None);
-            }
-            let mut value = result.ok_or_else(|| Diagnostic {
-                source: self.scope.source().clone(),
-                span,
-                code: "B228",
-                message: "结果分支需要载荷".into(),
-            })?;
-            unsafe { self.world.call(self.check_returned_type(&mut value, &expected, span)).await }?;
-            value
-        };
-        let payload = self.returned_storage(&item);
-        let count=ty.variants.len();
-        let value=self.variant_value(ty,index,Some(payload));
-        let mut payloads=vec![None;count];
-        payloads[index] = Some(Box::new(item));
-        Ok(Some(Box::new(OwnedValuePayload {
-            value,
-            payloads,
-            ownership: Ownership::Owned,
-            place: None, declaration: 0,
-        })))
     }
     fn owned_variant_condition(&mut self,value:&OwnedValue,index:usize,span:Span,origin:Option<Arc<GeneratedOrigin>>)->Result<Value> {
         if value.payloads[index].is_none(){return Ok(self.constant_with_origin(Scalar::Bool,0,origin));}
@@ -472,10 +452,6 @@ impl Builder<'_> {
     #[inline(never)]
     async fn typed_value_returned(&mut self, expr: &Expr, expected: Option<&Ty>) -> Result<Option<Returned>> {
         unsafe { self.world.call(self.expr_expected(expr,expected)).await }.map(|value|value.map(Returned::value))
-    }
-    #[inline(never)]
-    pub(super) async fn expected_owned_result(&mut self, expected: &Ty, success: bool, args: &Expressions, span: Span) -> Result<Option<Returned>> {
-        unsafe { self.world.call(self.make_owned_result(expected.clone(),success,args,span)).await }.map(|value|value.map(Returned::OwnedValue))
     }
     #[inline(never)]
     pub(super) fn require_returned_projection(&self, expr: &Expr) -> Result<()> {

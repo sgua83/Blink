@@ -33,38 +33,28 @@ impl Builder<'_> {
         unsafe{self.world.call(source_call::expected(self,e,expected)).await}
     }
 
-    pub(super) async fn result_constructor(
-        &mut self,
-        ty: Ty,
-        success: bool,
-        args: &Expressions,
-        span: Span,
-    ) -> Result<Option<Value>> {
-        unsafe { self.world.call(self.value_variant_constructor(ty,usize::from(!success),args,span)).await }
-    }
     #[inline(never)]
     pub(super) async fn value_variant_constructor(&mut self,ty:Ty,index:usize,args:&Expressions,span:Span)->Result<Option<Value>> {
         unsafe { self.world.call(self.variant_values(ty,index,args.len(),span,async |builder,expected|unsafe { builder.world.call(builder.expr_expected(&args.at(0),Some(expected))).await })).await }
     }
     pub(super) async fn variant_values(&mut self,ty:Ty,index:usize,count:usize,span:Span,
         argument:impl std::ops::AsyncFnOnce(&mut Self,&Ty)->Result<Option<Value>>)->Result<Option<Value>> {
-        let payload=(*ty.variants[index].ty).clone();
-        let value = if payload.name == "void" {
-            if count!=0 {
-                return self.fail(span, "B269", "void 结果分支不接受载荷");
+        let mut cursor=super::flow::LocalCursor {phase:0};
+        let mut facts=VariantBuildFacts {owned:0,cpu:0,application:0,unit:0,arguments:count,continuing:0,present:0};
+        let mut argument=Some(argument);let mut value=None;
+        loop {
+            let step=unsafe {variant_build_step(cursor,facts)};cursor=step.cursor;
+            match step.need {
+                VariantBuildNeed::Payload=>facts.unit=u32::from(ty.variants[index].ty.name=="void"),
+                VariantBuildNeed::VoidArguments=>return self.fail(span,"B269","void 结果分支不接受载荷"),
+                VariantBuildNeed::PayloadArguments=>return self.fail(span,"B269","结果分支需要一个匹配类型的载荷"),
+                VariantBuildNeed::Evaluate=>{value=argument.take().unwrap()(self,&ty.variants[index].ty).await?;facts.present=u32::from(value.is_some());}
+                VariantBuildNeed::Check=>self.require_same(&ty.variants[index].ty,&value.as_ref().unwrap().ty,span)?,
+                VariantBuildNeed::Build=>return Ok(Some(self.variant_value(ty,index,value))),
+                VariantBuildNeed::Complete=>return Ok(None),
+                VariantBuildNeed::InvalidTarget|VariantBuildNeed::Unit|VariantBuildNeed::Missing|VariantBuildNeed::Storage=>unsafe {std::hint::unreachable_unchecked()},
             }
-            None
-        } else {
-            if count != 1 {
-                return self.fail(span, "B269", "结果分支需要一个匹配类型的载荷");
-            }
-            let Some(value) = argument(self,&payload).await? else {
-                return Ok(None);
-            };
-            self.require_same(&payload, &value.ty, span)?;
-            Some(value)
-        };
-        Ok(Some(self.variant_value(ty,index,value)))
+        }
     }
     fn result_component(&mut self,value:&Value,index:usize,scalar:Scalar)->Value {
         let source=value.ty.components[index].0;
@@ -337,3 +327,10 @@ unsafe extern "C" {
  #[link_name="bootstrap.function_body::pattern_step"]fn pattern_step(cursor:PatternCursor,facts:PatternFacts)->PatternStep;
 }
 unsafe extern "C" fn pattern_variant_name(context:*const Ty,index:usize)->PatternName {PatternName::of(&unsafe {&*context}.variants[index].name)}
+
+#[repr(C)]#[derive(Clone,Copy)]pub(super) struct VariantBuildFacts {pub owned:u32,pub cpu:u32,pub application:u32,pub unit:u32,pub arguments:usize,pub continuing:u32,pub present:u32}
+#[repr(u32)]pub(super) enum VariantBuildNeed {InvalidTarget,Payload,VoidArguments,PayloadArguments,Unit,Evaluate,Missing,Check,Storage,Build,Complete}
+#[repr(C)]pub(super) struct VariantBuildStep {pub cursor:super::flow::LocalCursor,pub need:VariantBuildNeed}
+unsafe extern "C" {
+ #[link_name="bootstrap.function_body::variant_build_step"]pub(super) fn variant_build_step(cursor:super::flow::LocalCursor,facts:VariantBuildFacts)->VariantBuildStep;
+}

@@ -83,7 +83,7 @@ async fn specialized_with(builder:&mut Builder<'_>,expression:&Expr,mut cursor:C
      let mut syntax=unsafe{explicit.take().unwrap_unchecked()};syntax.name="result".into();
      unsafe{world.call(world.ty(&syntax,builder.scope.source(),expression.span(),builder.scope.module(),builder.scope.imports())).await}?
     };
-    value=unsafe{world.call(builder.result_constructor(actual,name=="Ok",&args,expression.span())).await}?;
+    value=unsafe{world.call(builder.value_variant_constructor(actual,usize::from(name!="Ok"),&args,expression.span())).await}?;
    }
    SpecializedNeed::RecordName=>{facts.present=u32::from(!world.resolve(name,builder.scope.module(),builder.scope.imports(),false).is_missing());}
    SpecializedNeed::Record=>{
@@ -166,8 +166,8 @@ pub(super) async fn expected(builder:&mut Builder<'_>,expression:&Expr,expected:
    }
    need @ (ExpectedNeed::ResultOk|ExpectedNeed::ResultErr)=>{
     let args=expression.list::<wire::ExprNode>(cursor.syntax.arguments);
-    return unsafe{world.call(builder.result_constructor(expected.unwrap_unchecked().clone(),
-     matches!(need,ExpectedNeed::ResultOk),&args,expression.span())).await};
+    return unsafe{world.call(builder.value_variant_constructor(expected.unwrap_unchecked().clone(),
+     usize::from(!matches!(need,ExpectedNeed::ResultOk)),&args,expression.span())).await};
    }
    ExpectedNeed::MissingResult=>return builder.fail(expression.span(),"B269",
     "Ok／Err 需要已声明的 result<T,E> 上下文，或显式给出两个类型实参"),
@@ -279,14 +279,14 @@ async fn returned_with(builder:&mut Builder<'_>,expression:&Expr,expected:Option
    ReturnedNeed::Dataset=>return unsafe{world.call(builder.create_application_dataset(expression,
     explicit.as_ref().unwrap_unchecked().arguments.as_slice(),&args,expression.span())).await}.map(|value|value.map(Returned::Dataset)),
    ReturnedNeed::ExpectedOwns=>facts.present=u32::from(unsafe{expected.unwrap_unchecked()}.owns_resources()),
-   ReturnedNeed::ExpectedOwnedResult=>return unsafe{world.call(builder.expected_owned_result(expected.unwrap_unchecked(),name=="Ok",&args,expression.span())).await},
+   ReturnedNeed::ExpectedOwnedResult=>return unsafe{world.call(builder.make_owned_variant(expected.unwrap_unchecked().clone(),usize::from(name!="Ok"),&args,expression.span())).await}.map(|value|value.map(Returned::OwnedValue)),
    ReturnedNeed::ResultType=>{
     let syntax=unsafe{explicit.as_mut().unwrap_unchecked()};syntax.name="result".into();
     let ty=unsafe{world.call(builder.expected_storage(syntax,expression.span())).await}?;
     facts.present=u32::from(ty.owns_resources());result_ty=Some(ty);
    }
-   ReturnedNeed::OwnedResult=>return unsafe{world.call(builder.make_owned_result(
-    result_ty.take().unwrap_unchecked(),name=="Ok",&args,expression.span())).await}.map(|value|value.map(Returned::OwnedValue)),
+   ReturnedNeed::OwnedResult=>return unsafe{world.call(builder.make_owned_variant(
+    result_ty.take().unwrap_unchecked(),usize::from(name!="Ok"),&args,expression.span())).await}.map(|value|value.map(Returned::OwnedValue)),
    ReturnedNeed::RecordName=>facts.present=u32::from(!world.resolve(name,builder.scope.module(),builder.scope.imports(),false).is_missing()),
    ReturnedNeed::RecordType=>{
     let syntax=explicit.get_or_insert_with(||TypeName::named(name));syntax.name=name.into();
@@ -323,8 +323,8 @@ async fn returned_with(builder:&mut Builder<'_>,expression:&Expr,expected:Option
     if let Some(value)=&mut value{builder.bound_value(value);}
     return Ok(value.map(Returned::value));
    }
-   ReturnedNeed::ExpectedResult=>return unsafe{world.call(builder.result_constructor(expected.unwrap_unchecked().clone(),
-    name=="Ok",&args,expression.span())).await}.map(|value|value.map(Returned::value)),
+   ReturnedNeed::ExpectedResult=>return unsafe{world.call(builder.value_variant_constructor(expected.unwrap_unchecked().clone(),
+    usize::from(name!="Ok"),&args,expression.span())).await}.map(|value|value.map(Returned::value)),
    ReturnedNeed::MissingResult=>return builder.fail(expression.span(),"B269",
     "Ok／Err 需要已声明的 result<T,E> 上下文，或显式给出两个类型实参"),
    ReturnedNeed::Resize=>return unsafe{world.call(builder.resize_application_dataset(&args,expression.span())).await}.map(|value|value.map(Returned::Dataset)),
