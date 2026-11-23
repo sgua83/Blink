@@ -13,6 +13,13 @@ pub(crate) struct Imported {
     pub definitions: Arc<BTreeMap<String, Vec<u8>>>,
     pub requirements: Arc<BTreeMap<String, crate::execution::Requirement>>,
 }
+/// The compiled declarations and contracts consumed by source compilation.
+pub struct CompiledInterface {
+    pub(crate) name: String,
+    pub(crate) kind: Kind,
+    pub(crate) definitions: BTreeMap<String, Vec<u8>>,
+}
+
 #[derive(Default)]
 pub(crate) struct Imports {
     pub modules: BTreeMap<String, Imported>,
@@ -27,6 +34,16 @@ impl Imports {
         let mut imports = Self::default();
         for input in inputs { input.imports(&mut imports)?; }
         Ok(imports)
+    }
+    pub(crate) fn interfaces(interfaces: Vec<CompiledInterface>) -> codec::Result<Self> {
+        let mut imports = Self::default();
+        for interface in interfaces {
+            imports.interface(interface)?;
+        }
+        Ok(imports)
+    }
+    pub(crate) fn interface(&mut self, interface: CompiledInterface) -> codec::Result<()> {
+        self.insert(interface.name, interface.kind, interface.definitions)
     }
     pub(crate) fn object(&mut self, object: &Object) -> codec::Result<()> {
         self.insert(object.name.clone(), object.kind.clone(), object.symbols.iter()
@@ -146,12 +163,26 @@ impl crate::Compiler {
     pub fn compile_native_module(
         &self, path: &Path, module_root: &Path, dependencies: &[Object], instances: &[String],
     ) -> crate::ast::Result<Module> {
+        self.compile_native_module_importing(path, module_root, instances, || Imports::new(dependencies))
+    }
+
+    /// Compiles a native module against the declared interfaces of compiled providers.
+    pub fn compile_native_module_with_interfaces(
+        &self, path: &Path, module_root: &Path, interfaces: Vec<CompiledInterface>, instances: &[String],
+    ) -> crate::ast::Result<Module> {
+        self.compile_native_module_importing(path, module_root, instances, || Imports::interfaces(interfaces))
+    }
+
+    fn compile_native_module_importing(
+        &self, path: &Path, module_root: &Path, instances: &[String],
+        load: impl FnOnce() -> codec::Result<Imports> + Send,
+    ) -> crate::ast::Result<Module> {
         self.ast(path, |worker| {
-            let imports = Imports::new(dependencies).map_err(|error| crate::ast::Diagnostic {
+            let imports = load().map_err(|error| crate::ast::Diagnostic {
                 source: crate::ast::Source { path: path.into(), text: "".into() },
                 span: crate::ast::Span::default(), code: "B270", message: error.to_string(),
             })?;
-            let imported = if dependencies.is_empty() { None } else { Some(&imports) };
+            let imported = (!imports.modules.is_empty()).then_some(&imports);
             let (world, entry, requests) = crate::read_world(path, module_root, imported, instances, worker, None, None)?;
             unsafe { world.run(crate::check::compile_native_module(&world, &entry, requests, imported)) }
         })

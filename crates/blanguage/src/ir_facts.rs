@@ -52,10 +52,10 @@ pub(super) fn print(
     let function = (line.function_index != args.len()).then(|| text(line.function_index));
     let stage = (line.has_stage != 0).then_some(line.stage);
     let mut imports = Vec::new();
-    for path in &import_paths { imports.extend(blanguage::object::Input::read(path)?.objects()?); }
+    for path in &import_paths { imports.extend(blanguage::module::CompiledInterface::read(path)?); }
     let (mode, phase, value) = match line.mode {
         EntryMode::Application => {
-            let application = compiler.compile_application_with_modules(&path, root, entry, &imports)?;
+            let application = compiler.compile_application_with_interfaces(&path, root, entry, imports)?;
             let value = if let Some(function) = function {
                 application.function_ir_json(function).ok_or_else(|| format!("本次应用没有保留普通函数 {function}"))?
             } else { application.ir_json() };
@@ -71,7 +71,7 @@ pub(super) fn print(
             ("program", "optimized_program_ir", value)
         }
         EntryMode::Module => {
-            let module = compiler.compile_native_module(&path, root, &imports, &instances)?;
+            let module = compiler.compile_native_module_with_interfaces(&path, root, imports, &instances)?;
             let value = if let Some(function) = function {
                 module.function_ir_json(function).ok_or_else(|| format!("本次模块没有保留普通函数 {function}"))?
             } else { module.ir_json() };

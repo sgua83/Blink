@@ -1,6 +1,6 @@
 //! 正式COFF对象的构建输入与最终产物复用；链接端不参与。
 use super::{identity, publish, Result};
-use crate::{object::Object, source_path};
+use crate::{module::{CompiledInterface, Imports}, object::Object, source_path};
 use std::{fs, io::{ErrorKind, Error}, path::{Path, PathBuf}};
 /// 与现有三个-c分支相同的产物选择。
 #[derive(Clone, Copy)]
@@ -36,7 +36,21 @@ impl crate::Compiler {
     pub fn build_object(
         &self, path: &Path, root: &Path, dependencies: &[Object], kind: ObjectKind<'_>, output: &Path,
     ) -> Result<ObjectCompilation> {
-        self.execute(|worker| compile(worker, path, root, dependencies, kind, output, None))
+        self.build_object_importing(path, root, kind, output, || Imports::new(dependencies))
+    }
+
+    /// Builds an object using the declared interfaces of compiled providers.
+    pub fn build_object_with_interfaces(
+        &self, path: &Path, root: &Path, interfaces: Vec<CompiledInterface>, kind: ObjectKind<'_>, output: &Path,
+    ) -> Result<ObjectCompilation> {
+        self.build_object_importing(path, root, kind, output, || Imports::interfaces(interfaces))
+    }
+
+    fn build_object_importing(
+        &self, path: &Path, root: &Path, kind: ObjectKind<'_>, output: &Path,
+        load: impl FnOnce() -> crate::codec::Result<Imports> + Send,
+    ) -> Result<ObjectCompilation> {
+        self.execute(|worker| compile_importing(worker, path, root, kind, output, None, load))
             .map_err(|value| match value {
                 crate::parallel::Error::Work(error) => error,
                 crate::parallel::Error::Resource(value) => Box::new(value) as Box<dyn std::error::Error + Send + Sync>,
@@ -48,6 +62,14 @@ pub(super) fn compile<'a>(
     dependencies: impl IntoIterator<Item = &'a Object>,
     kind: ObjectKind<'_>, output: &Path, inputs: Option<&super::Inputs>,
 ) -> Result<ObjectCompilation> {
+    compile_importing(worker, path, root, kind, output, inputs, || Imports::new(dependencies))
+}
+
+fn compile_importing(
+    worker: &crate::compiler::Worker, path: &Path, root: &Path,
+    kind: ObjectKind<'_>, output: &Path, inputs: Option<&super::Inputs>,
+    load: impl FnOnce() -> crate::codec::Result<Imports>,
+) -> Result<ObjectCompilation> {
     // .h是模块来源；纯类型模块不依赖伪造的.b。
     let header = source_path::with_extension(path, u16::from(b'h'));
     let (source_path, path, root, artifact) = if inputs.is_some() {
@@ -55,7 +77,7 @@ pub(super) fn compile<'a>(
     } else {
         (source_path::absolute(path)?, source_path::canonicalize(&header)?, source_path::canonicalize(root)?, source_path::absolute(output)?)
     };
-    let imports = crate::module::Imports::new(dependencies).map_err(|value| crate::ast::Diagnostic {
+    let imports = load().map_err(|value| crate::ast::Diagnostic {
             source: crate::ast::Source { path: source_path.clone(), text: "".into() },
             span: crate::ast::Span::default(), code: "B270", message: value.to_string(),
         })?;

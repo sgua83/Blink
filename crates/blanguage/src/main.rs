@@ -279,7 +279,7 @@ fn build_object(
     // Imports encountered before a syntax error still perform their original I/O first.
     for (arg, role) in args.iter().zip(roles) {
         match role {
-            1 => imports.extend(blanguage::object::Input::read(Path::new(arg))?.objects()?),
+            1 => imports.extend(blanguage::module::CompiledInterface::read(Path::new(arg))?),
             2 if line.mode == EntryMode::Module => {
                 instances.push(arg.to_str().ok_or("实例不是UTF-8文本")?.to_owned());
             }
@@ -304,7 +304,7 @@ fn build_object(
             ObjectKind::Application(entry)
         }
     };
-    let compiled = compiler.build_object(&path, &root, &imports, kind, &output)
+    let compiled = compiler.build_object_with_interfaces(&path, &root, imports, kind, &output)
         .map_err(|error| -> Box<dyn std::error::Error> { error })?;
     if let Some(path) = args.get(line.report_index).map(PathBuf::from) {
         if let Some(parent) = path.parent() {

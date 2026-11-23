@@ -1,6 +1,6 @@
 //! 标准 COFF 静态库保存原对象；目录归库所有，实际符号绑定仍归链接器。
 use super::{Kind, Object, ReadSection, Result, coff};
-use crate::file_bytes::FileBytes;
+use crate::{file_bytes::FileBytes, module::CompiledInterface};
 use std::{fs::File, ops::{Deref, Range}, path::Path, ptr::NonNull, sync::Arc};
 fn has_signature(bytes: &[u8]) -> bool {
     unsafe { archive_has_signature(bytes.as_ptr(), bytes.len()) }
@@ -18,13 +18,8 @@ impl Input {
         match self {
             Self::Object(object) => imports.object(object)?,
             Self::Library(library) => {
-                for index in 0..library.member_count() {
-                    let member=library.member(index);
-                    if member.available==0 { continue; }
-                    let (name,bytes)=library.member_bytes(member.member);
-                    let (module,kind,definitions)=coff::Reader::new(&bytes)?.interface()
-                        .map_err(|error| format!("静态库成员 {name}：{error}"))?;
-                    imports.insert(module,kind,definitions)?;
+                for interface in library.interfaces() {
+                    imports.interface(interface?)?;
                 }
             }
         }
@@ -45,6 +40,23 @@ impl Input {
         }
     }
 }
+impl CompiledInterface {
+    /// Reads source-facing interfaces in the original COFF input order.
+    pub fn read(path: &Path) -> Result<Vec<Self>> {
+        let bytes = ObjectBytes::read(path)?;
+        if has_signature(&bytes) {
+            Library::decode(bytes, false)?.interfaces().collect()
+        } else {
+            Ok(vec![read_interface(&bytes)?])
+        }
+    }
+}
+
+fn read_interface(bytes: &ObjectBytes) -> Result<CompiledInterface> {
+    let (name, kind, definitions) = coff::Reader::new(bytes)?.interface()?;
+    Ok(CompiledInterface { name, kind, definitions })
+}
+
 #[derive(Clone)]
 enum Storage {
     Captured(Arc<FileBytes>),
@@ -155,6 +167,18 @@ pub struct Library {
     bytes: ObjectBytes,
     native: bool,
 }
+impl Library {
+    fn interfaces(&self) -> impl Iterator<Item = Result<CompiledInterface>> + '_ {
+        (0..self.member_count()).filter_map(move |index| {
+            let member = self.member(index);
+            (member.available != 0).then(|| {
+                let (name, bytes) = self.member_bytes(member.member);
+                read_interface(&bytes).map_err(|error| format!("静态库成员 {name}：{error}").into())
+            })
+        })
+    }
+}
+
 // The compiler moves this unique directory into its native worker. B keeps
 // only CRT allocations and immutable input ranges; mutation requires &mut Self.
 unsafe impl Send for Library {}

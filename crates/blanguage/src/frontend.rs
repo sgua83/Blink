@@ -230,12 +230,21 @@ pub(crate) fn compile_module_on(
     compiler: &Compiler, path: &Path, module_root: &Path, require_program: bool,
     requested: Option<(EntryKind, &str)>, dependencies: &[object::Object],
 ) -> Result<Compilation> {
+    compile_module_importing(compiler, path, module_root, require_program, requested,
+        || module::Imports::new(dependencies))
+}
+
+fn compile_module_importing(
+    compiler: &Compiler, path: &Path, module_root: &Path, require_program: bool,
+    requested: Option<(EntryKind, &str)>,
+    load: impl FnOnce() -> crate::codec::Result<module::Imports> + Send,
+) -> Result<Compilation> {
     compiler.ast(path, |worker| {
-        let imports = module::Imports::new(dependencies).map_err(|error| Diagnostic {
+        let imports = load().map_err(|error| Diagnostic {
             source: Source { path: path.into(), text: "".into() },
             span: Span::default(), code: "B270", message: error.to_string(),
         })?;
-        let imported = if dependencies.is_empty() { None } else { Some(&imports) };
+        let imported = (!imports.modules.is_empty()).then_some(&imports);
         let (world, entry, _) = read_world(path, module_root, imported, &[], worker, None, None)?;
         compile_world(&world, entry, require_program, requested, None)
     })
@@ -308,6 +317,13 @@ impl Compiler {
     ) -> Result<application::Application> {
         Ok(compile_module_on(self, path, root, false,
             Some((EntryKind::Application, entry)), dependencies)?.applications.remove(0))
+    }
+    /// Compiles an application against the declared interfaces of compiled providers.
+    pub fn compile_application_with_interfaces(
+        &self, path: &Path, root: &Path, entry: &str, interfaces: Vec<module::CompiledInterface>,
+    ) -> Result<application::Application> {
+        Ok(compile_module_importing(self, path, root, false, Some((EntryKind::Application, entry)),
+            || module::Imports::interfaces(interfaces))?.applications.remove(0))
     }
 }
 #[repr(u32)]
