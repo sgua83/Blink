@@ -1,7 +1,7 @@
 //! 编译器生成 DLL 的公共 C ABI 执行边界；原生 Rust API 不经过此层。
 use crate::{
     Dataset, Result, Value,
-    cpu::CpuProgram,
+    cpu::{CpuDataset, CpuProgram},
     error,
     vulkan::{Device, GpuProgram},
 };
@@ -77,26 +77,28 @@ impl LibraryProgram {
             }
             datasets.push(data);
         }
-        let outputs = match self {
+        let outputs: Vec<(usize, CpuDataset)> = match self {
             Self::Cpu(p) => {
                 p.run(&mut datasets, values)?;
                 datasets
                     .into_iter()
                     .enumerate()
                     .filter(|(i, _)| p.program().buffers()[*i].access.writes())
+                    .map(|(i, data)| (i, data.into()))
                     .collect::<Vec<_>>()
             }
             Self::Gpu { device, program } => {
                 let datasets = datasets.into_iter().map(Into::into).collect::<Vec<_>>();
                 let uploaded = device.upload_domains(datasets)?;
                 let completed = program.submit(uploaded, values)?.wait().map_err(|(error, _)| error)?;
-                completed
-                    .datasets()
-                    .iter()
+                let (output_slots, datasets): (Vec<_>, Vec<_>) = completed
+                    .into_datasets()
+                    .into_iter()
                     .enumerate()
                     .filter(|(i, _)| program.program().buffers()[*i].access.writes())
-                    .map(|(i, d)| Ok((i, device.download(d)?)))
-                    .collect::<Result<Vec<_>>>()?
+                    .unzip();
+                let outputs = device.download_domains(datasets.into())?;
+                output_slots.into_iter().zip(outputs.into_datasets()).collect()
             }
         };
         for (i, data) in outputs {
