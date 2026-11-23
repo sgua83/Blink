@@ -149,3 +149,22 @@ struct SeekFacts {SeekName requested;SeekName current;u32 iterator;u32 present;u
 enum SeekNeed:u32 {Iterator=0;Missing=1;WrongName=2;Position=3;Type=4;Release=5;Compare=6;Break=7;Store=8;Backedge=9;Continue=10;Complete=11;};
 struct SeekStep {LocalCursor cursor;SeekNeed need;};
 extern "C" SeekStep seek_step(LocalCursor cursor,SeekFacts facts) on cpu;
+
+struct MatchFacts {u32 owns;u32 root;u32 borrowed;u32 continuing;u32 present;u32 kind;};
+enum MatchNeed:u32 {Type=0;Root=1;RootKind=2;Parent=3;Borrowed=4;Read=5;Evaluate=6;Missing=7;InvalidType=8;Patterns=9;Arms=10;Complete=11;};
+struct MatchStep {LocalCursor cursor;MatchNeed need;};
+extern "C" MatchStep match_step(LocalCursor cursor,MatchFacts facts) on cpu;
+enum MatchBranch:u32 {Last=0;Value=1;Owned=2;};
+extern "C" MatchBranch match_branch(u64 index,u64 count,u32 kind) on cpu;
+extern "C" u32 match_binding(u32 present,address data,u64 length) on cpu;
+struct MatchArmFacts {u32 owned;u32 named;u32 continuing;u32 present;};
+enum MatchArmNeed:u32 {Unpack=0;Payload=1;Name=2;BindValue=3;BindReturned=4;Body=5;Lookup=6;DropBinding=7;Remove=8;DropValue=9;Complete=10;};
+struct MatchArmStep {LocalCursor cursor;MatchArmNeed need;};
+extern "C" MatchArmStep match_arm_step(LocalCursor cursor,MatchArmFacts facts) on cpu;
+struct PatternLabel {u32 qualified;u64 owner;u64 start;};
+extern "C" PatternLabel pattern_label(SeekName spelling) on cpu;
+extern "C" u64 pattern_find(SeekName name,u64 count,address context,cfn<SeekName,address,u64> variant) on cpu requires nonzero(variant);
+struct PatternFacts {u32 eligible;u32 owner;u32 found;u32 duplicate;u32 unit;u32 binding;u32 named;u32 present;u64 arms;u64 variants;};
+enum PatternNeed:u32 {InvalidType=0;Arm=1;Owner=2;Find=3;Unknown=4;Select=5;Duplicate=6;Inspect=7;MissingBinding=8;UnitBinding=9;Coverage=10;Incomplete=11;Complete=12;};
+struct PatternStep {ValueCursor cursor;PatternNeed need;};
+extern "C" PatternStep pattern_step(ValueCursor cursor,PatternFacts facts) on cpu;

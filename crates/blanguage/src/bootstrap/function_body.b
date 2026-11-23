@@ -521,3 +521,49 @@ extern "C" SeekStep seek_step(LocalCursor cursor,SeekFacts facts) on cpu {
  if(c.phase==6){c.phase=7;return SeekStep(c,SeekNeed::Backedge);}
  return SeekStep(c,SeekNeed::Continue);
 }
+
+extern "C" MatchStep match_step(LocalCursor cursor,MatchFacts facts) on cpu {
+ LocalCursor c=cursor;
+ if(c.phase==0){c.phase=1;return MatchStep(c,MatchNeed::Type);}
+ if(c.phase==1){if(facts.owns!=0){c.phase=2;return MatchStep(c,MatchNeed::Root);}c.phase=5;return MatchStep(c,MatchNeed::Evaluate);}
+ if(c.phase==2){c.phase=3;return MatchStep(c,MatchNeed::RootKind);}
+ if(c.phase==3){if(facts.root==1||facts.root==2){c.phase=2;return MatchStep(c,MatchNeed::Parent);}if(facts.root==3){c.phase=4;return MatchStep(c,MatchNeed::Borrowed);}c.phase=5;return MatchStep(c,MatchNeed::Evaluate);}
+ if(c.phase==4){c.phase=5;return MatchStep(c,facts.borrowed!=0 ? MatchNeed::Read : MatchNeed::Evaluate);}
+ if(c.phase==5){if(facts.continuing==0){return MatchStep(c,MatchNeed::Complete);}if(facts.present==0){return MatchStep(c,MatchNeed::Missing);}if(facts.kind!=1&&facts.kind!=3){return MatchStep(c,MatchNeed::InvalidType);}c.phase=6;return MatchStep(c,MatchNeed::Patterns);}
+ if(c.phase==6){c.phase=7;return MatchStep(c,MatchNeed::Arms);}
+ return MatchStep(c,MatchNeed::Complete);
+}
+extern "C" MatchBranch match_branch(u64 index,u64 count,u32 kind) on cpu {if(index+1u64==count){return MatchBranch::Last;}return kind==3 ? MatchBranch::Owned : MatchBranch::Value;}
+extern "C" u32 match_binding(u32 present,address data,u64 length) on cpu {if(present==0){return 0;}return length==1u64&&unsafe_position<u8>(data)==95 ? 0 : 1;}
+extern "C" MatchArmStep match_arm_step(LocalCursor cursor,MatchArmFacts facts) on cpu {
+ LocalCursor c=cursor;
+ if(c.phase==0){c.phase=1;return MatchArmStep(c,facts.owned!=0 ? MatchArmNeed::Unpack : MatchArmNeed::Payload);}
+ if(c.phase==1){c.phase=2;return MatchArmStep(c,MatchArmNeed::Name);}
+ if(c.phase==2){if(facts.named!=0){c.phase=3;return MatchArmStep(c,facts.owned!=0 ? MatchArmNeed::BindReturned : MatchArmNeed::BindValue);}if(facts.owned!=0){c.phase=7;return MatchArmStep(c,MatchArmNeed::DropValue);}c.phase=4;return MatchArmStep(c,MatchArmNeed::Body);}
+ if(c.phase==3||c.phase==7){c.phase=4;return MatchArmStep(c,MatchArmNeed::Body);}
+ if(c.phase==4){if(facts.named==0){return MatchArmStep(c,MatchArmNeed::Complete);}if(facts.owned!=0&&facts.continuing!=0){c.phase=5;return MatchArmStep(c,MatchArmNeed::Lookup);}return MatchArmStep(c,MatchArmNeed::Remove);}
+ if(c.phase==5){c.phase=6;if(facts.present!=0){return MatchArmStep(c,MatchArmNeed::DropBinding);}}
+ return MatchArmStep(c,MatchArmNeed::Remove);
+}
+extern "C" PatternLabel pattern_label(SeekName spelling) on cpu {
+ u64 index=spelling.length;while(index>1u64){
+  if(unsafe_position<u8>(unsafe_address(address_bits(spelling.data)+index-2u64))==58&&unsafe_position<u8>(unsafe_address(address_bits(spelling.data)+index-1u64))==58){return PatternLabel(1,index-2u64,index);}index-=1u64;
+ }return PatternLabel(0,0u64,0u64);
+}
+extern "C" u64 pattern_find(SeekName name,u64 count,address context,cfn<SeekName,address,u64> variant) on cpu requires nonzero(variant) {
+ u64 index=0u64;while(index<count){if(seek_same_name(name,variant(context,index))){return index;}index+=1u64;}return count;
+}
+extern "C" PatternStep pattern_step(ValueCursor cursor,PatternFacts facts) on cpu {
+ ValueCursor c=cursor;
+ if(c.phase==0){if(facts.eligible==0){return PatternStep(c,PatternNeed::InvalidType);}c.phase=1;}
+ while(true){
+  if(c.phase==1){if(c.index>=facts.arms){c.index=0u64;c.phase=7;}else{c.phase=2;return PatternStep(c,PatternNeed::Arm);}}
+  if(c.phase==2){if(facts.owner!=0){c.phase=3;return PatternStep(c,PatternNeed::Owner);}c.phase=4;return PatternStep(c,PatternNeed::Find);}
+  if(c.phase==3){c.phase=4;return PatternStep(c,PatternNeed::Find);}
+  if(c.phase==4){if(facts.found==0){return PatternStep(c,PatternNeed::Unknown);}c.phase=5;return PatternStep(c,PatternNeed::Select);}
+  if(c.phase==5){if(facts.duplicate!=0){return PatternStep(c,PatternNeed::Duplicate);}c.phase=6;return PatternStep(c,PatternNeed::Inspect);}
+  if(c.phase==6){if(facts.binding==0&&facts.unit==0){return PatternStep(c,PatternNeed::MissingBinding);}if(facts.unit!=0&&facts.named!=0){return PatternStep(c,PatternNeed::UnitBinding);}c.index+=1u64;c.phase=1;continue;}
+  if(c.phase==7){if(c.index>=facts.variants){return PatternStep(c,PatternNeed::Complete);}c.phase=8;return PatternStep(c,PatternNeed::Coverage);}
+  if(facts.present==0){return PatternStep(c,PatternNeed::Incomplete);}c.index+=1u64;c.phase=7;
+ }
+}

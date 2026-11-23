@@ -603,45 +603,55 @@ impl Builder<'_> {
         }
     }
     #[inline(never)]
-    pub(super) async fn match_returned(&mut self, expr: &Expr, arms: &MatchArms, span: Span) -> Result<()> {
-        let mut root=expr.clone();
-        while let ExprKind::Member(base,_)|ExprKind::Index(base,_)=root.kind(){root=base;}
-        let borrowed=self.owned_element_type(expr).is_some_and(|ty|ty.owns_resources()) && matches!(root.kind(),ExprKind::Name(name)if matches!(self.env.get(name),Some(Binding::OwnedValue(value))if value.ownership==Ownership::Borrowed));
-        let (returned,held)=if borrowed {match unsafe { self.world.call(self.read_aggregate(expr,None)).await }? {Some((value,held))=>(Some(value),held),None=>(None,None)}}else{(unsafe { self.world.call(self.evaluate_returned(expr,None)).await }?,None)};
-        if !self.flow.continues() { return Ok(()); }
-        let returned = returned.ok_or_else(|| Diagnostic { source:self.scope.source().clone(),span,code:"B269",message:"match需要变体值".into() })?;
-        let value = self.returned_storage(&returned);
-        let selected = unsafe { self.world.call(self.check_variant_patterns(&value.ty,arms,span)).await }?;
-        unsafe { self.world.call(self.match_variant_arms(&returned,&selected,0,span)).await }?;
-        if let Some(name)=held {if self.flow.continues(){unsafe { self.world.call(self.finish_scoped_argument(&name,span)).await }?;}else{self.env.remove(&name);}}
-        Ok(())
-    }
-    async fn match_variant_arms(&mut self, value: &Returned, arms: &[MatchArm], index: usize, span: Span) -> Result<()> {
-        if index+1==arms.len() { return unsafe { self.world.call(self.match_variant_arm(value,index,&arms[index])).await }; }
-        let condition = match value {
-            Returned::Value(value) => self.variant_condition(value,index,span,None)?,
-            Returned::OwnedValue(value) => self.owned_variant_condition(value,index,span,None)?,
-            _=>unreachable!(),
-        };
-        unsafe { self.world.call(self.conditional_blocks(condition, async |b|unsafe { b.world.call(b.match_variant_arm(value,index,&arms[index])).await }, async |b|unsafe { b.world.call(b.match_variant_arms(value,arms,index+1,span)).await },span)).await }
-    }
-    async fn match_variant_arm(&mut self, value: &Returned, index: usize, arm: &MatchArm) -> Result<()> {
-        match value {
-            Returned::Value(value)=>unsafe { self.world.call(self.value_variant_arm(value,index,arm)).await },
-            Returned::OwnedValue(value)=>unsafe { self.world.call(self.owned_arm(value,index,arm.binding(),&arm.body(),arm.span())).await },
-            _=>unreachable!(),
+    pub(super) async fn match_returned(&mut self,expr:&Expr,arms:&MatchArms,span:Span)->Result<()> {
+        let mut cursor=MatchCursor {phase:0};let mut facts=MatchFacts {owns:0,root:0,borrowed:0,continuing:0,present:0,kind:0};
+        let mut root=None;let mut parent=None;let mut returned=None;let mut selected=Vec::new();
+        loop {
+            facts.continuing=u32::from(self.flow.continues());facts.present=u32::from(returned.is_some());facts.kind=returned.as_ref().map_or(0,Returned::kind);
+            let step=unsafe {match_step(cursor,facts)};cursor=step.cursor;
+            match step.need {
+                MatchNeed::Type=>facts.owns=u32::from(self.owned_element_type(expr).is_some_and(Ty::owns_resources)),
+                MatchNeed::Root=>root=Some(expr.clone()),
+                MatchNeed::RootKind=>{facts.root=match root.as_ref().unwrap().kind(){ExprKind::Member(base,_)=>{parent=Some(base);1},ExprKind::Index(base,_)=>{parent=Some(base);2},ExprKind::Name(_)=>3,_=>0};},
+                MatchNeed::Parent=>root=parent.take(),
+                MatchNeed::Borrowed=>{facts.borrowed=u32::from(matches!(root.as_ref().unwrap().kind(),ExprKind::Name(name)if matches!(self.env.get(name),Some(Binding::OwnedValue(value))if value.ownership==Ownership::Borrowed)));},
+                MatchNeed::Read=>returned=unsafe {self.world.call(self.read_aggregate(expr,None)).await}?.map(|(value,_)|value),
+                MatchNeed::Evaluate=>returned=unsafe {self.world.call(self.evaluate_returned(expr,None)).await}?,
+                MatchNeed::Missing=>return self.fail(span,"B269","match需要变体值"),
+                MatchNeed::InvalidType=>return self.fail(span,"B269","match需要带载荷变体或result值"),
+                MatchNeed::Patterns=>{selected=unsafe {self.world.call(self.check_variant_patterns(&returned.as_ref().unwrap().view_value().unwrap().ty,arms,span)).await}?;},
+                MatchNeed::Arms=>unsafe {self.world.call(self.match_variant_arms(returned.as_ref().unwrap(),&selected,0,span)).await}?,
+                MatchNeed::Complete=>return Ok(()),
+            }
         }
     }
-    async fn owned_arm(&mut self,value:&OwnedValue,index:usize,name:Option<&str>,body:&Block,span:Span)->Result<()> {
-        let item=unsafe { self.world.call(self.unpack_variant(value,index)).await }?;
-        if let Some(name)=name.filter(|n|*n!="_") {
-            self.bind_returned(name,item,span)?;unsafe { self.world.call(self.block(body)).await }?;
-            if self.flow.continues() && let Some(binding)=self.env.get(name).cloned() {
-                unsafe { self.world.call(self.drop_binding(binding,&view::Borrow::default(),span)).await }?;
+    async fn match_variant_arms(&mut self,value:&Returned,arms:&[MatchArm],index:usize,span:Span)->Result<()> {
+        let condition=match unsafe {match_branch(index,arms.len(),value.kind())} {
+            MatchBranch::Last=>return unsafe {self.world.call(self.match_variant_arm(value,index,&arms[index])).await},
+            MatchBranch::Value=>{let Returned::Value(value)=value else{unreachable!()};self.variant_condition(value,index,span,None)?},
+            MatchBranch::Owned=>{let Returned::OwnedValue(value)=value else{unreachable!()};self.owned_variant_condition(value,index,span,None)?},
+        };
+        unsafe {self.world.call(self.conditional_blocks(condition,async |b|unsafe {b.world.call(b.match_variant_arm(value,index,&arms[index])).await},async |b|unsafe {b.world.call(b.match_variant_arms(value,arms,index+1,span)).await},span)).await}
+    }
+    async fn match_variant_arm(&mut self,value:&Returned,index:usize,arm:&MatchArm)->Result<()> {
+        let mut cursor=MatchCursor {phase:0};let mut facts=MatchArmFacts {owned:u32::from(matches!(value,Returned::OwnedValue(_))),named:0,continuing:0,present:0};
+        let mut item=None;let mut payload=None;let mut name=None;let mut binding=None;
+        loop {
+            facts.continuing=u32::from(self.flow.continues());let step=unsafe {match_arm_step(cursor,facts)};cursor=step.cursor;
+            match step.need {
+                MatchArmNeed::Unpack=>{let Returned::OwnedValue(value)=value else{unreachable!()};item=Some(unsafe {self.world.call(self.unpack_variant(value,index)).await}?);},
+                MatchArmNeed::Payload=>{let Returned::Value(value)=value else{unreachable!()};payload=self.variant_payload(value,index);},
+                MatchArmNeed::Name=>{name=arm.binding();let spelling=name.unwrap_or("");facts.named=unsafe {match_binding(u32::from(name.is_some()),spelling.as_ptr(),spelling.len())};},
+                MatchArmNeed::BindValue=>self.bind_local_value(name.unwrap(),payload.take().unwrap(),arm.span())?,
+                MatchArmNeed::BindReturned=>self.bind_returned(name.unwrap(),item.take().unwrap(),arm.span())?,
+                MatchArmNeed::Body=>unsafe {self.world.call(self.block(&arm.body())).await}?,
+                MatchArmNeed::Lookup=>{binding=self.env.get(name.unwrap()).cloned();facts.present=u32::from(binding.is_some());},
+                MatchArmNeed::DropBinding=>unsafe {self.world.call(self.drop_binding(binding.take().unwrap(),&view::Borrow::default(),arm.span())).await}?,
+                MatchArmNeed::Remove=>{self.env.remove(name.unwrap());return Ok(());},
+                MatchArmNeed::DropValue=>unsafe {self.world.call(self.drop_returned(item.take().unwrap(),&view::Borrow::default(),arm.span())).await}?,
+                MatchArmNeed::Complete=>return Ok(()),
             }
-            self.env.remove(name);
-            Ok(())
-        } else {unsafe { self.world.call(self.drop_returned(item,&view::Borrow::default(),span)).await }?;unsafe { self.world.call(self.block(body)).await }}
+        }
     }
     pub(super) async fn drop_returned(&mut self,value:Returned,retained:&view::Borrow,span:Span) -> Result<()> {
         let transferred=match &value{
@@ -852,4 +862,19 @@ impl Builder<'_> {
    ReturnedNeed::Dataset=>{let data=self.application_bind(data.take().unwrap(),step.mutable!=0);self.env.insert(name.to_string(),Binding::ApplicationData(data));return Ok(());},
   }}
  }
+}
+
+#[repr(C)]#[derive(Clone,Copy)]struct MatchCursor {phase:u32}
+#[repr(C)]#[derive(Clone,Copy)]struct MatchFacts {owns:u32,root:u32,borrowed:u32,continuing:u32,present:u32,kind:u32}
+#[repr(u32)]enum MatchNeed {Type,Root,RootKind,Parent,Borrowed,Read,Evaluate,Missing,InvalidType,Patterns,Arms,Complete}
+#[repr(C)]struct MatchStep {cursor:MatchCursor,need:MatchNeed}
+#[repr(u32)]enum MatchBranch {Last,Value,Owned}
+#[repr(C)]#[derive(Clone,Copy)]struct MatchArmFacts {owned:u32,named:u32,continuing:u32,present:u32}
+#[repr(u32)]enum MatchArmNeed {Unpack,Payload,Name,BindValue,BindReturned,Body,Lookup,DropBinding,Remove,DropValue,Complete}
+#[repr(C)]struct MatchArmStep {cursor:MatchCursor,need:MatchArmNeed}
+unsafe extern "C" {
+ #[link_name="bootstrap.function_body::match_step"]fn match_step(cursor:MatchCursor,facts:MatchFacts)->MatchStep;
+ #[link_name="bootstrap.function_body::match_branch"]fn match_branch(index:usize,count:usize,kind:u32)->MatchBranch;
+ #[link_name="bootstrap.function_body::match_binding"]fn match_binding(present:u32,data:*const u8,length:usize)->u32;
+ #[link_name="bootstrap.function_body::match_arm_step"]fn match_arm_step(cursor:MatchCursor,facts:MatchArmFacts)->MatchArmStep;
 }

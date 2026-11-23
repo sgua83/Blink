@@ -105,34 +105,27 @@ impl Builder<'_> {
             index,offset:input.offset,word:None,expected:None,views:None,active:None,span:Some(span),origin,test:None};
         unsafe {test_variant_tag(input,values.emitter())};values.test.unwrap()
     }
-    pub(super) async fn check_variant_patterns(
-        &self, ty: &Ty, arms: &MatchArms, span: Span,
-    ) -> Result<Vec<MatchArm>> {
-        if !ty.has_variants() { return self.fail(span, "B269", "match需要带载荷变体或result值"); }
-        let mut selected = vec![None; ty.variants.len()];
-        for arm in arms {
-            let (owner, name) = arm.variant().rsplit_once("::").map_or((None, arm.variant()), |(owner, name)| (Some(owner), name));
-            if let Some(owner) = owner {
-                let mut syntax = ty.syntax(); syntax.name = owner.into(); syntax.canonical = false;
-                let expected = unsafe { self.world.call(self.expected_storage(&syntax, arm.span())).await }?;
-                self.require_same(ty, &expected, arm.span())?;
-            }
-            let Some(index) = ty.variants.iter().position(|v| v.name == name) else { return self.fail(arm.span(),"B269",format!("{}没有变体分支{name}",ty.name)); };
-            if selected[index].replace(arm.clone()).is_some() { return self.fail(arm.span(),"B269","同一变体分支不能重复"); }
-            let unit = ty.variants[index].ty.name == "void";
-            if arm.binding().is_none() && !unit { return self.fail(arm.span(),"B269","有载荷分支需要名称或_模式"); }
-            if unit && arm.binding().is_some_and(|name| name!="_") { return self.fail(arm.span(),"B269","无载荷分支没有可绑定的数据"); }
-        }
-        if selected.iter().any(Option::is_none) { return self.fail(span,"B269","match必须处理声明的全部变体分支"); }
-        Ok(selected.into_iter().map(Option::unwrap).collect())
+    pub(super) async fn check_variant_patterns(&self,ty:&Ty,arms:&MatchArms,span:Span)->Result<Vec<MatchArm>> {
+        let mut cursor=PatternCursor {phase:0,index:0};
+        let mut facts=PatternFacts {eligible:u32::from(ty.has_variants()),owner:0,found:0,duplicate:0,unit:0,binding:0,named:0,present:0,arms:arms.len(),variants:ty.variants.len()};
+        let mut selected=vec![None;ty.variants.len()];let mut arm=None;let mut label=PatternLabel {qualified:0,owner:0,start:0};let mut index=0;
+        loop {let step=unsafe {pattern_step(cursor,facts)};cursor=step.cursor;match step.need {
+            PatternNeed::InvalidType=>return self.fail(span,"B269","match需要带载荷变体或result值"),
+            PatternNeed::Arm=>{let current=arms.at(cursor.index);let spelling=current.variant();label=unsafe {pattern_label(PatternName::of(spelling))};facts.owner=label.qualified;arm=Some(current);},
+            PatternNeed::Owner=>{let arm=arm.as_ref().unwrap();let mut syntax=ty.syntax();syntax.name=arm.variant()[..label.owner].into();syntax.canonical=false;let expected=unsafe {self.world.call(self.expected_storage(&syntax,arm.span())).await}?;self.require_same(ty,&expected,arm.span())?;},
+            PatternNeed::Find=>{let name=&arm.as_ref().unwrap().variant()[label.start..];index=unsafe {pattern_find(PatternName::of(name),ty.variants.len(),ty,pattern_variant_name)};facts.found=u32::from(index<ty.variants.len());},
+            PatternNeed::Unknown=>return self.fail(arm.as_ref().unwrap().span(),"B269",format!("{}没有变体分支{}",ty.name,&arm.as_ref().unwrap().variant()[label.start..])),
+            PatternNeed::Select=>{facts.duplicate=u32::from(selected[index].replace(arm.as_ref().unwrap().clone()).is_some());},
+            PatternNeed::Duplicate=>return self.fail(arm.as_ref().unwrap().span(),"B269","同一变体分支不能重复"),
+            PatternNeed::Inspect=>{let name=arm.as_ref().unwrap().binding();let spelling=name.unwrap_or("");facts.unit=u32::from(ty.variants[index].ty.name=="void");facts.binding=u32::from(name.is_some());facts.named=unsafe {pattern_binding(facts.binding,spelling.as_ptr(),spelling.len())};},
+            PatternNeed::MissingBinding=>return self.fail(arm.as_ref().unwrap().span(),"B269","有载荷分支需要名称或_模式"),
+            PatternNeed::UnitBinding=>return self.fail(arm.as_ref().unwrap().span(),"B269","无载荷分支没有可绑定的数据"),
+            PatternNeed::Coverage=>facts.present=u32::from(selected[cursor.index].is_some()),
+            PatternNeed::Incomplete=>return self.fail(span,"B269","match必须处理声明的全部变体分支"),
+            PatternNeed::Complete=>return Ok(selected.into_iter().map(Option::unwrap).collect()),
+        }}
     }
-    pub(super) async fn value_variant_arm(&mut self, value: &Value, index: usize, arm: &MatchArm) -> Result<()> {
-        let payload = self.variant_payload(value,index);
-        if let Some(name) = arm.binding().filter(|name| *name!="_") {
-            self.bind_local_value(name,payload.unwrap(),arm.span())?;
-            unsafe { self.world.call(self.block(&arm.body())).await }?; self.env.remove(name); Ok(())
-        } else { unsafe { self.world.call(self.block(&arm.body())).await } }
-    }
+
 }
 
 
@@ -329,3 +322,18 @@ unsafe extern "C" fn variant_action(context:*mut VariantValues<'_,'_>,step:Varia
         VariantAction::CompareTag=>values.test=Some(values.builder.binary("==",values.word.take().unwrap(),values.expected.take().unwrap(),values.span.unwrap(),values.origin.take())),
     }
 }
+
+#[repr(C)]#[derive(Clone,Copy)]struct PatternCursor {phase:u32,index:usize}
+#[repr(C)]#[derive(Clone,Copy)]struct PatternName {data:*const u8,length:usize}
+impl PatternName {fn of(name:&str)->Self {Self {data:name.as_ptr(),length:name.len()}}}
+#[repr(C)]#[derive(Clone,Copy)]struct PatternLabel {qualified:u32,owner:usize,start:usize}
+#[repr(C)]#[derive(Clone,Copy)]struct PatternFacts {eligible:u32,owner:u32,found:u32,duplicate:u32,unit:u32,binding:u32,named:u32,present:u32,arms:usize,variants:usize}
+#[repr(u32)]enum PatternNeed {InvalidType,Arm,Owner,Find,Unknown,Select,Duplicate,Inspect,MissingBinding,UnitBinding,Coverage,Incomplete,Complete}
+#[repr(C)]struct PatternStep {cursor:PatternCursor,need:PatternNeed}
+unsafe extern "C" {
+ #[link_name="bootstrap.function_body::pattern_label"]fn pattern_label(spelling:PatternName)->PatternLabel;
+ #[link_name="bootstrap.function_body::pattern_find"]fn pattern_find(name:PatternName,count:usize,context:*const Ty,variant:unsafe extern "C" fn(*const Ty,usize)->PatternName)->usize;
+ #[link_name="bootstrap.function_body::match_binding"]fn pattern_binding(present:u32,data:*const u8,length:usize)->u32;
+ #[link_name="bootstrap.function_body::pattern_step"]fn pattern_step(cursor:PatternCursor,facts:PatternFacts)->PatternStep;
+}
+unsafe extern "C" fn pattern_variant_name(context:*const Ty,index:usize)->PatternName {PatternName::of(&unsafe {&*context}.variants[index].name)}
