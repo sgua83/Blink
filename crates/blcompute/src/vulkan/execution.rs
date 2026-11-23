@@ -124,6 +124,13 @@ impl Completion {
     fn terminal_result(&self) -> Option<i32> {
         self.result.get().or_else(|| self.inner.queue_lost().then_some(-4))
     }
+    fn record_observation(&self, result: i32) -> i32 {
+        self.inner.observe_device_loss(result);
+        if matches!(result, 0 | -4) {
+            self.result.set(Some(result));
+        }
+        result
+    }
     pub fn wait(&self) -> Result<()> {
         let r = if let Some(r) = self.terminal_result() {
             r
@@ -138,10 +145,7 @@ impl Completion {
                     u64::MAX,
                 )
             };
-            if matches!(r, 0 | -4) {
-                self.result.set(Some(r));
-            }
-            r
+            self.record_observation(r)
         };
         check(r, "vkWaitForFences")
     }
@@ -157,15 +161,12 @@ impl Completion {
         let r = unsafe {
             (self.inner.functions.vkGetFenceStatus)(self.inner.owner.device, self.fence.get())
         };
-        match r {
-            0 | -4 => {
-                self.result.set(Some(r));
-                check(r, "vkGetFenceStatus")?;
-                Ok(true)
-            }
-            1 => Ok(false),
-            _ => Err(error(format!("vkGetFenceStatus 返回 VkResult {r}"))),
+        let r = self.record_observation(r);
+        if r == 1 {
+            return Ok(false);
         }
+        check(r, "vkGetFenceStatus")?;
+        Ok(true)
     }
     pub fn finish_for_drop(&self) {
         if self.terminal_result().is_some() {
@@ -209,23 +210,22 @@ impl QueryPool {
     }
 
     fn read(&self) -> Result<Vec<u64>> {
+        self.inner.active_sequence()?;
         let count = self.count as usize;
         let mut stamps = vec![0u64; count];
-        unsafe {
-            check(
-                (self.inner.functions.vkGetQueryPoolResults)(
-                    self.inner.owner.device,
-                    self.handle,
-                    0,
-                    self.count,
-                    count * 8,
-                    stamps.as_mut_ptr().cast(),
-                    8,
-                    1,
-                ),
-                "vkGetQueryPoolResults",
-            )?;
-        }
+        let result = unsafe {
+            (self.inner.functions.vkGetQueryPoolResults)(
+                self.inner.owner.device,
+                self.handle,
+                0,
+                self.count,
+                count * 8,
+                stamps.as_mut_ptr().cast(),
+                8,
+                1,
+            )
+        };
+        check(self.inner.observe_device_loss(result), "vkGetQueryPoolResults")?;
         Ok(stamps)
     }
 

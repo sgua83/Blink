@@ -364,8 +364,12 @@ impl Inner {
         let count = u32::from(batch.is_some());
         let info = batch.map_or(null(), std::ptr::from_ref);
         let result = unsafe { (self.functions.vkQueueSubmit)(self.queue, count, info, fence) };
+        self.observe_device_loss(result)
+    }
+
+    fn observe_device_loss(&self, result: i32) -> i32 {
         if result == -4 {
-            // A lost-device submission can still own the batch and its synchronization objects.
+            // Other submissions and WSI operations can still own native resources.
             self.wait_idle_for_release();
             self.submission_sequence.set(None);
         }

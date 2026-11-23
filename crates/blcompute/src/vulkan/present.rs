@@ -146,6 +146,7 @@ impl Device {
         width: u32,
         height: u32,
     ) -> Result<Swapchain> {
+        self.inner.active_sequence()?;
         unsafe {
             let window_dpi = GetWindowDpiAwarenessContext(window);
             if window_dpi.is_null() {
@@ -287,10 +288,8 @@ impl Device {
             };
             let f = &out.functions;
             let device = self.inner.owner.device;
-            check(
-                (f.vkCreateSwapchainKHR)(device, &info, null(), &mut out.chain),
-                "vkCreateSwapchainKHR",
-            )?;
+            let result = (f.vkCreateSwapchainKHR)(device, &info, null(), &mut out.chain);
+            check(self.inner.observe_device_loss(result), "vkCreateSwapchainKHR")?;
             let mut count = 0;
             check(
                 (f.vkGetSwapchainImagesKHR)(device, out.chain, &mut count, null_mut()),
@@ -390,6 +389,7 @@ impl Swapchain {
                 0,
                 &mut index,
             );
+            let result = self.inner.observe_device_loss(result);
             if result == 1 || result == 2 {
                 return Ok(Poll::Pending);
             }
@@ -482,10 +482,8 @@ impl Swapchain {
                 indices: &index,
                 results: null_mut(),
             };
-            let queued = PresentStatus::read(
-                (self.functions.vkQueuePresentKHR)(self.inner.queue, &info),
-                "vkQueuePresentKHR",
-            )?;
+            let result = (self.functions.vkQueuePresentKHR)(self.inner.queue, &info);
+            let queued = PresentStatus::read(self.inner.observe_device_loss(result), "vkQueuePresentKHR")?;
             let status =
                 if acquired == PresentStatus::Suboptimal || queued == PresentStatus::Suboptimal {
                     PresentStatus::Suboptimal
