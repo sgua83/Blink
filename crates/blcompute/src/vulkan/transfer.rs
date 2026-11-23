@@ -261,7 +261,7 @@ pub struct GpuReadback {
     // End the native work before freeing the mapped destinations on abandonment.
     executions: Dependencies,
     sources: Vec<PendingDataset>,
-    roots: Vec<ReadbackRoot<PendingDataset>>,
+    roots: Vec<ReadbackRoot>,
     domains: bindings::DomainRelations,
 }
 
@@ -290,8 +290,8 @@ impl GpuReadback {
     }
 }
 
-enum ReadbackRoot<T> {
-    Owned(T),
+enum ReadbackRoot {
+    Owned(PendingDataset),
     Read(usize),
 }
 
@@ -351,11 +351,17 @@ impl<'a> PendingReadback<'a> {
             sources: Vec::new(),
             recorded_sources: BTreeMap::new(),
         };
-        let recorded = datasets
-            .iter()
+        let roots = datasets
+            .into_iter()
             .map(|data| match &*data.storage {
-                DatasetStorage::Owned(_) => readback.record_payload(data).map(ReadbackRoot::Owned),
-                DatasetStorage::Read(source) => readback.record_read(data, source).map(ReadbackRoot::Read),
+                DatasetStorage::Owned(_) => {
+                    let payload = readback.record_payload(&data)?;
+                    Ok(ReadbackRoot::Owned(PendingDataset {
+                        layout: data.into_readback_layout(),
+                        data: payload,
+                    }))
+                }
+                DatasetStorage::Read(source) => readback.record_read(&data, source).map(ReadbackRoot::Read),
             })
             .collect::<Result<Vec<_>>>()?;
         let dependencies = readback.dependencies.prepare()?;
@@ -369,17 +375,6 @@ impl<'a> PendingReadback<'a> {
             }
             None => dependencies,
         };
-        let roots = datasets
-            .into_iter()
-            .zip(recorded)
-            .map(|(data, root)| match root {
-                ReadbackRoot::Owned(payload) => ReadbackRoot::Owned(PendingDataset {
-                    layout: data.into_readback_layout(),
-                    data: payload,
-                }),
-                ReadbackRoot::Read(source) => ReadbackRoot::Read(source),
-            })
-            .collect();
         Ok(GpuReadback { executions, sources: readback.sources, roots, domains })
     }
 
