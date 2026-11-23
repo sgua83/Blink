@@ -1110,3 +1110,52 @@ extern "C" void test_variant_tag(VariantInput input,VariantEmitter emitter) on c
     emitter.action(emitter.context,VariantStep(VariantAction::ExpectedTag,0u64,0u64,input.scalar,0,0,input.discriminant));
     emitter.action(emitter.context,VariantStep(VariantAction::CompareTag,0u64,0u64,0,0,0,0u64));
 }
+
+extern "C" BuiltinValueCursor builtin_value_start(address bytes,u64 length) on cpu {
+ BuiltinValueKind kind=BuiltinValueKind::Other;
+ if(source_spelling(bytes,length,"function_address")){kind=BuiltinValueKind::FunctionAddress;}
+ else if(source_spelling(bytes,length,"unsafe_handle")){kind=BuiltinValueKind::UnsafeHandle;}
+ else if(source_spelling(bytes,length,"unsafe_address")){kind=BuiltinValueKind::UnsafeAddress;}
+ else if(source_spelling(bytes,length,"address_bits")){kind=BuiltinValueKind::AddressBits;}
+ return BuiltinValueCursor(0,kind);
+}
+BuiltinValueStep builtin_values(BuiltinValueCursor cursor,BuiltinValueKind kind) on cpu {BuiltinValueCursor c=cursor;c.kind=kind;c.phase=20;return BuiltinValueStep(c,BuiltinValueNeed::Values,0);}
+extern "C" BuiltinValueStep builtin_value_step(BuiltinValueCursor cursor,BuiltinValueFacts facts,address bytes,u64 length) on cpu {
+ BuiltinValueCursor c=cursor;
+ if(c.phase==0){if(c.kind!=BuiltinValueKind::Other){return builtin_values(c,c.kind);}c.phase=1;return BuiltinValueStep(c,BuiltinValueNeed::Type,0);}
+ if(c.phase==1){if(facts.present!=0){return builtin_values(c,BuiltinValueKind::Type);}c.phase=2;return BuiltinValueStep(c,BuiltinValueNeed::Bitcast,0);}
+ if(c.phase==2){if(facts.present!=0){return builtin_values(c,BuiltinValueKind::Bitcast);}c.phase=3;return BuiltinValueStep(c,BuiltinValueNeed::Math,0);}
+ if(c.phase==3){if(facts.present!=0){return builtin_values(c,BuiltinValueKind::Math);}c.phase=4;return BuiltinValueStep(c,BuiltinValueNeed::Matrix,0);}
+ if(c.phase==4){if(facts.present!=0){return builtin_values(c,BuiltinValueKind::Matrix);}c.phase=5;return BuiltinValueStep(c,BuiltinValueNeed::Geometry,0);}
+ if(c.phase==5){if(facts.present!=0){return builtin_values(c,BuiltinValueKind::Geometry);}if(source_spelling(bytes,length,"clamp")){return builtin_values(c,BuiltinValueKind::Clamp);}return BuiltinValueStep(c,BuiltinValueNeed::Unknown,0);}
+ if(c.phase==20){
+  if(facts.present==0){return BuiltinValueStep(c,BuiltinValueNeed::Empty,0);}
+  if(c.kind==BuiltinValueKind::FunctionAddress){if(facts.cpu==0){return BuiltinValueStep(c,BuiltinValueNeed::BadFunctionTarget,0);}if(facts.count!=1u64){return BuiltinValueStep(c,BuiltinValueNeed::BadFunctionCount,0);}c.phase=21;return BuiltinValueStep(c,BuiltinValueNeed::Pop,0);}
+  if(c.kind==BuiltinValueKind::UnsafeHandle){if(facts.count!=1u64){return BuiltinValueStep(c,BuiltinValueNeed::BadHandleCount,0);}c.phase=23;return BuiltinValueStep(c,BuiltinValueNeed::Pop,0);}
+  if(c.kind==BuiltinValueKind::UnsafeAddress||c.kind==BuiltinValueKind::AddressBits){if(facts.cpu==0){return BuiltinValueStep(c,BuiltinValueNeed::BadAddressTarget,0);}if(facts.count!=1u64){return BuiltinValueStep(c,BuiltinValueNeed::BadAddressCount,0);}c.phase=27;return BuiltinValueStep(c,BuiltinValueNeed::Pop,0);}
+  if(c.kind==BuiltinValueKind::Type){return BuiltinValueStep(c,BuiltinValueNeed::Constructor,0);}
+  if(c.kind==BuiltinValueKind::Bitcast){return BuiltinValueStep(c,BuiltinValueNeed::InvokeBitcast,0);}
+  if(c.kind==BuiltinValueKind::Math){return BuiltinValueStep(c,BuiltinValueNeed::InvokeMath,0);}
+  if(c.kind==BuiltinValueKind::Matrix){return BuiltinValueStep(c,BuiltinValueNeed::InvokeMatrix,0);}
+  if(c.kind==BuiltinValueKind::Geometry){return BuiltinValueStep(c,BuiltinValueNeed::InvokeGeometry,0);}
+  if(facts.count!=3u64){return BuiltinValueStep(c,BuiltinValueNeed::BadClampCount,0);}c.phase=30;return BuiltinValueStep(c,BuiltinValueNeed::ClampMax,0);
+ }
+ if(c.phase==21){c.phase=22;return BuiltinValueStep(c,BuiltinValueNeed::FunctionKind,0);}
+ if(c.phase==22){if(facts.function==0){return BuiltinValueStep(c,BuiltinValueNeed::BadFunctionKind,0);}c.phase=40;return BuiltinValueStep(c,BuiltinValueNeed::FunctionToAddress,0);}
+ if(c.phase==23){c.phase=24;return BuiltinValueStep(c,BuiltinValueNeed::RequireU64,0);}
+ if(c.phase==24){c.phase=25;return BuiltinValueStep(c,BuiltinValueNeed::HandleLow,0);}
+ if(c.phase==25){c.phase=26;return BuiltinValueStep(c,BuiltinValueNeed::HandleHigh,0);}
+ if(c.phase==26){c.phase=40;u32 flags=0;if(facts.low_known!=0&&facts.high_known!=0){flags|=1;}if(facts.low_uniform!=0&&facts.high_uniform!=0){flags|=2;}return BuiltinValueStep(c,BuiltinValueNeed::HandlePackage,flags);}
+ if(c.phase==27){c.phase=28;return BuiltinValueStep(c,c.kind==BuiltinValueKind::UnsafeAddress?BuiltinValueNeed::RequireU64:BuiltinValueNeed::RequireAddress,0);}
+ if(c.phase==28){c.phase=40;return BuiltinValueStep(c,c.kind==BuiltinValueKind::UnsafeAddress?BuiltinValueNeed::RawToAddress:BuiltinValueNeed::AddressToBits,0);}
+ if(c.phase==30){c.phase=40;return BuiltinValueStep(c,BuiltinValueNeed::ClampMin,0);}
+ return BuiltinValueStep(c,BuiltinValueNeed::Complete,0);
+}
+extern "C" FunctionFromAddressStep function_from_address_step(FunctionFromAddressCursor cursor,FunctionFromAddressFacts facts) on cpu {
+ FunctionFromAddressCursor c=cursor;
+ if(c.phase==0){if(facts.cpu==0){return FunctionFromAddressStep(c,FunctionFromAddressNeed::BadTarget);}if(facts.explicit_type==0||facts.count!=1u64){return FunctionFromAddressStep(c,FunctionFromAddressNeed::BadArguments);}c.phase=1;return FunctionFromAddressStep(c,FunctionFromAddressNeed::Type);}
+ if(c.phase==1){if(facts.function==0){return FunctionFromAddressStep(c,FunctionFromAddressNeed::BadSignature);}c.phase=2;return FunctionFromAddressStep(c,FunctionFromAddressNeed::Argument);}
+ if(c.phase==2){if(facts.present==0){return FunctionFromAddressStep(c,FunctionFromAddressNeed::Empty);}c.phase=3;return FunctionFromAddressStep(c,FunctionFromAddressNeed::RequireAddress);}
+ if(c.phase==3){c.phase=4;return FunctionFromAddressStep(c,FunctionFromAddressNeed::Retype);}
+ return FunctionFromAddressStep(c,FunctionFromAddressNeed::Complete);
+}

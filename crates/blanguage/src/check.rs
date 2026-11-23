@@ -2691,21 +2691,20 @@ impl<'a> Builder<'a> {
         self.value_result(value, span).map(Some)
     }
     async fn function_from_address(&mut self,explicit:&[GenericArgument],count:usize,span:Span,argument_span:Span,
-        argument:impl std::ops::AsyncFnOnce(&mut Self)->Result<Option<Value>>)->Result<Option<Value>> {
-            if self.program.target != Target::Cpu {
-                return self.fail(span, "B265", "unsafe_function只解释本进程CPU函数地址");
-            }
-            let ([GenericArgument::Type(signature)], 1) = (explicit, count) else {
-                return self.fail(span, "B153", "unsafe_function<cfn<...>>需要明确签名和一个address实参");
-            };
-            let ty = unsafe { self.world.call(self.world.ty(signature, self.scope.source(), span, self.scope.module(), self.scope.imports())).await }?;
-            if !ty.is_c_function() { return self.fail(span, "B263", "unsafe_function需要cfn原生C签名"); }
-            let Some(mut value) = argument(self).await? else { return Ok(None); };
-            self.require_same(&Ty::builtin("address").unwrap(), &value.ty, argument_span)?;
-            value.ty = ty;
-            value.proof.retain_view_borrows(&value.ty);
-            value.literal = false;
-            Ok(Some(value))
+        argument:impl std::ops::AsyncFnOnce(&mut Self)->Result<Option<Value>>)->Result<Option<Value>>{
+        let mut cursor=FunctionFromAddressCursor{phase:0};let mut facts=FunctionFromAddressFacts{cpu:u32::from(self.program.target==Target::Cpu),explicit_type:u32::from(matches!(explicit,[GenericArgument::Type(_)])),count:count as u64,function:0,present:0};
+        let mut argument=Some(argument);let mut ty=None;let mut value=None;
+        loop{let step=unsafe{function_from_address_step(cursor,FunctionFromAddressFacts{..facts})};cursor=step.cursor;match step.need{
+            FunctionFromAddressNeed::BadTarget=>return self.fail(span,"B265","unsafe_function只解释本进程CPU函数地址"),
+            FunctionFromAddressNeed::BadArguments=>return self.fail(span,"B153","unsafe_function<cfn<...>>需要明确签名和一个address实参"),
+            FunctionFromAddressNeed::Type=>{let[GenericArgument::Type(signature)]=explicit else{unsafe{std::hint::unreachable_unchecked()}};let actual=unsafe{self.world.call(self.world.ty(signature,self.scope.source(),span,self.scope.module(),self.scope.imports())).await}?;facts.function=u32::from(actual.is_c_function());ty=Some(actual);},
+            FunctionFromAddressNeed::BadSignature=>return self.fail(span,"B263","unsafe_function需要cfn原生C签名"),
+            FunctionFromAddressNeed::Argument=>{value=argument.take().unwrap()(self).await?;facts.present=u32::from(value.is_some());},
+            FunctionFromAddressNeed::Empty=>return Ok(None),
+            FunctionFromAddressNeed::RequireAddress=>self.require_same(&Ty::builtin("address").unwrap(),&value.as_ref().unwrap().ty,argument_span)?,
+            FunctionFromAddressNeed::Retype=>{let value=value.as_mut().unwrap();value.ty=ty.take().unwrap();value.proof.retain_view_borrows(&value.ty);value.literal=false;},
+            FunctionFromAddressNeed::Complete=>return Ok(value.take()),
+        }}
     }
     #[inline(never)]
     fn number_expression(&mut self, n: &str, span: Span) -> Result<Option<Value>> {
@@ -2859,99 +2858,43 @@ impl<'a> Builder<'a> {
     // The original value/IR owner consumes values from either actual input reader.
     // Argument evaluation stays lazy until this owner has selected a known operation.
     async fn builtin_values(&mut self,name:&str,span:Span,
-        values:impl std::ops::AsyncFnOnce(&mut Self)->Result<Option<Vec<Value>>>)->Result<Option<Value>> {
-        if name == "function_address" {
-            let Some(mut values) = values(self).await? else { return Ok(None); };
-            if self.program.target != Target::Cpu { return self.fail(span, "B265", "function_address只取得本进程CPU函数地址"); }
-            if values.len() != 1 { return self.fail(span, "B153", "function_address需要一个cfn实参"); }
-            let mut value = values.pop().unwrap();
-            if !value.ty.is_c_function() { return self.fail(span, "B263", "function_address需要cfn原生C签名值"); }
-            value.ty = Ty::builtin("address").unwrap();
-            value.proof = value.proof.with_external_borrows(&value.ty);
-            value.literal = false;
-            return Ok(Some(value));
-        }
-        if name == "unsafe_handle" {
-            let Some(mut values) = values(self).await? else { return Ok(None); };
-            if values.len() != 1 {
-                return self.fail(span, "B153", "unsafe_handle需要一个usize实参");
-            }
-            let value = values.pop().unwrap();
-            self.require_same(&Ty::scalar(Scalar::U64), &value.ty, span)?;
-            let low = self.cast(value.clone(), Scalar::U32);
-            let shift = self.constant(Scalar::U64, 32);
-            let high = self.binary(">>", value, shift, span,None)?;
-            let high = self.cast(high, Scalar::U32);
-            let constant = low.constant.as_ref().zip(high.constant.as_ref())
-                .map(|(low, high)| vec![low[0], high[0]]);
-            return Ok(Some(Value {
-                ty: Ty::builtin("handle").unwrap(),
-                regs: vec![low.regs[0], high.regs[0]],
-                proof: bounds::Proof::default(),
-                literal: false,
-                uniform: low.uniform && high.uniform,
-                constant,
-            }));
-        }
-        if matches!(name, "unsafe_address" | "address_bits") {
-            let Some(mut values) = values(self).await? else { return Ok(None); };
-            if self.program.target != Target::Cpu {
-                return self.fail(span, "B265", "CPU本地地址只能在on cpu位置解释或取得位模式");
-            }
-            if values.len() != 1 {
-                return self.fail(span, "B153", format!("{name}需要一个实参"));
-            }
-            let address = Ty::builtin("address").unwrap();
-            let integer = Ty::scalar(Scalar::U64);
-            let (input, output) = if name == "unsafe_address" {
-                (integer, address)
-            } else {
-                (address, integer)
-            };
-            let mut value = values.pop().unwrap();
-            self.require_same(&input, &value.ty, span)?;
-            value.ty = output;
-            if name == "unsafe_address" {
-                value.proof = value.proof.with_external_borrows(&value.ty);
-            } else {
-                value.proof.retain_view_borrows(&value.ty);
-            }
-            value.literal = false;
-            return Ok(Some(value));
-        }
-        if let Some(ty) = Ty::builtin(name) {
-            let Some(values) = values(self).await? else { return Ok(None); };
-            return self.value_constructor(ty, values, span).map(Some);
-        }
-        let bitcast_signature=operators::BitcastSignature::recognize(name);
-        if bitcast_signature.is_present() {
-            let Some(values) = values(self).await? else { return Ok(None); };
-            return self.bitcast_value(name,bitcast_signature,values,span).map(Some);
-        }
-        let math_signature=operators::MathSignature::recognize(name);
-        if math_signature.is_present() {
-            let Some(values) = values(self).await? else { return Ok(None); };
-            return self.math(name,math_signature,values,span).map(Some);
-        }
-        let matrix_builtin=matrix::MatrixBuiltin::recognize(name);
-        if matrix_builtin!=matrix::MatrixBuiltin::Unknown {
-            let Some(values) = values(self).await? else { return Ok(None); };
-            return self.matrix_intrinsic(matrix_builtin,values,span).map(Some);
-        }
-        let geometry_builtin=operators::GeometryBuiltin::recognize(name);
-        if geometry_builtin!=operators::GeometryBuiltin::Unknown {
-            let Some(values) = values(self).await? else { return Ok(None); };
-            return self.geometry_value(geometry_builtin,values,span).map(Some);
-        }
-        if name == "clamp" {
-            let Some(values) = values(self).await? else { return Ok(None); };
-            if values.len() != 3 {
-                return self.fail(span, "B153", "clamp 需要三个参数");
-            }
-            let a = self.math("max", operators::MathSignature::recognize("max"), vec![values[0].clone(), values[1].clone()], span)?;
-            return self.math("min", operators::MathSignature::recognize("min"), vec![a, values[2].clone()], span).map(Some);
-        }
-        self.fail(span, "B158", format!("未知或未导出的函数或能力 {name}"))
+        values:impl std::ops::AsyncFnOnce(&mut Self)->Result<Option<Vec<Value>>>)->Result<Option<Value>>{
+        let mut cursor=unsafe{builtin_value_start(name.as_ptr(),name.len()as u64)};let mut facts=BuiltinValueFacts{present:0,cpu:u32::from(self.program.target==Target::Cpu),count:0,function:0,low_known:0,high_known:0,low_uniform:0,high_uniform:0};
+        let mut values=Some(values);let mut arguments=None;let mut value:Option<Value>=None;let mut ty=None;let mut bitcast=None;let mut math=None;let mut matrix=None;let mut geometry=None;let mut low=None;let mut high=None;let mut last=None;
+        loop{let step=unsafe{builtin_value_step(cursor,BuiltinValueFacts{..facts},name.as_ptr(),name.len()as u64)};cursor=step.cursor;match step.need{
+            BuiltinValueNeed::Type=>{ty=Ty::builtin(name);facts.present=u32::from(ty.is_some());},
+            BuiltinValueNeed::Bitcast=>{let actual=operators::BitcastSignature::recognize(name);facts.present=u32::from(actual.is_present());bitcast=Some(actual);},
+            BuiltinValueNeed::Math=>{let actual=operators::MathSignature::recognize(name);facts.present=u32::from(actual.is_present());math=Some(actual);},
+            BuiltinValueNeed::Matrix=>{let actual=matrix::MatrixBuiltin::recognize(name);facts.present=u32::from(actual!=matrix::MatrixBuiltin::Unknown);matrix=Some(actual);},
+            BuiltinValueNeed::Geometry=>{let actual=operators::GeometryBuiltin::recognize(name);facts.present=u32::from(actual!=operators::GeometryBuiltin::Unknown);geometry=Some(actual);},
+            BuiltinValueNeed::Values=>{arguments=values.take().unwrap()(self).await?;facts.present=u32::from(arguments.is_some());facts.count=arguments.as_ref().map_or(0,|v|v.len()as u64);},
+            BuiltinValueNeed::Empty=>return Ok(None),
+            BuiltinValueNeed::Unknown=>return self.fail(span,"B158",format!("未知或未导出的函数或能力 {name}")),
+            BuiltinValueNeed::Constructor=>return self.value_constructor(ty.take().unwrap(),arguments.take().unwrap(),span).map(Some),
+            BuiltinValueNeed::InvokeBitcast=>return self.bitcast_value(name,bitcast.take().unwrap(),arguments.take().unwrap(),span).map(Some),
+            BuiltinValueNeed::InvokeMath=>return self.math(name,math.take().unwrap(),arguments.take().unwrap(),span).map(Some),
+            BuiltinValueNeed::InvokeMatrix=>return self.matrix_intrinsic(matrix.take().unwrap(),arguments.take().unwrap(),span).map(Some),
+            BuiltinValueNeed::InvokeGeometry=>return self.geometry_value(geometry.take().unwrap(),arguments.take().unwrap(),span).map(Some),
+            BuiltinValueNeed::BadFunctionTarget=>return self.fail(span,"B265","function_address只取得本进程CPU函数地址"),
+            BuiltinValueNeed::BadAddressTarget=>return self.fail(span,"B265","CPU本地地址只能在on cpu位置解释或取得位模式"),
+            BuiltinValueNeed::BadFunctionCount=>return self.fail(span,"B153","function_address需要一个cfn实参"),
+            BuiltinValueNeed::BadHandleCount=>return self.fail(span,"B153","unsafe_handle需要一个usize实参"),
+            BuiltinValueNeed::BadAddressCount=>return self.fail(span,"B153",format!("{name}需要一个实参")),
+            BuiltinValueNeed::BadClampCount=>return self.fail(span,"B153","clamp 需要三个参数"),
+            BuiltinValueNeed::Pop=>value=arguments.as_mut().unwrap().pop(),
+            BuiltinValueNeed::FunctionKind=>facts.function=u32::from(value.as_ref().unwrap().ty.is_c_function()),
+            BuiltinValueNeed::BadFunctionKind=>return self.fail(span,"B263","function_address需要cfn原生C签名值"),
+            BuiltinValueNeed::FunctionToAddress|BuiltinValueNeed::RawToAddress=>{let mut actual=value.take().unwrap();actual.ty=Ty::builtin("address").unwrap();actual.proof=actual.proof.with_external_borrows(&actual.ty);actual.literal=false;value=Some(actual);},
+            BuiltinValueNeed::RequireU64=>self.require_same(&Ty::scalar(Scalar::U64),&value.as_ref().unwrap().ty,span)?,
+            BuiltinValueNeed::RequireAddress=>self.require_same(&Ty::builtin("address").unwrap(),&value.as_ref().unwrap().ty,span)?,
+            BuiltinValueNeed::HandleLow=>{let actual=self.cast(value.as_ref().unwrap().clone(),Scalar::U32);facts.low_known=u32::from(actual.constant.is_some());facts.low_uniform=u32::from(actual.uniform);low=Some(actual);},
+            BuiltinValueNeed::HandleHigh=>{let shift=self.constant(Scalar::U64,32);let shifted=self.binary(">>",value.take().unwrap(),shift,span,None)?;let actual=self.cast(shifted,Scalar::U32);facts.high_known=u32::from(actual.constant.is_some());facts.high_uniform=u32::from(actual.uniform);high=Some(actual);},
+            BuiltinValueNeed::HandlePackage=>{let low=low.take().unwrap();let high=high.take().unwrap();let constant=(step.flags&1!=0).then(||vec![low.constant.as_ref().unwrap()[0],high.constant.as_ref().unwrap()[0]]);value=Some(Value{ty:Ty::builtin("handle").unwrap(),regs:vec![low.regs[0],high.regs[0]],proof:bounds::Proof::default(),literal:false,uniform:step.flags&2!=0,constant});},
+            BuiltinValueNeed::AddressToBits=>{let value=value.as_mut().unwrap();value.ty=Ty::scalar(Scalar::U64);value.proof.retain_view_borrows(&value.ty);value.literal=false;},
+            BuiltinValueNeed::ClampMax=>{let mut source=arguments.take().unwrap().into_iter();let a=source.next().unwrap();let b=source.next().unwrap();last=source.next();value=Some(self.math("max",operators::MathSignature::recognize("max"),vec![a,b],span)?);},
+            BuiltinValueNeed::ClampMin=>value=Some(self.math("min",operators::MathSignature::recognize("min"),vec![value.take().unwrap(),last.take().unwrap()],span)?),
+            BuiltinValueNeed::Complete=>return Ok(value.take()),
+        }}
     }
     #[inline(never)]
     async fn unary_expr(&mut self, op: &str, a: &Expr, span: Span) -> Result<Option<Value>> {
@@ -3642,3 +3585,18 @@ const _: () = {
         }
     }
 };
+
+#[repr(u32)]#[derive(Clone,Copy)]enum BuiltinValueKind{Other,FunctionAddress,UnsafeHandle,UnsafeAddress,AddressBits,Type,Bitcast,Math,Matrix,Geometry,Clamp}
+#[repr(C)]#[derive(Clone,Copy)]struct BuiltinValueCursor{phase:u32,kind:BuiltinValueKind}
+#[repr(C)]struct BuiltinValueFacts{present:u32,cpu:u32,count:u64,function:u32,low_known:u32,high_known:u32,low_uniform:u32,high_uniform:u32}
+#[repr(u32)]enum BuiltinValueNeed{Type,Bitcast,Math,Matrix,Geometry,Values,Empty,Unknown,Constructor,InvokeBitcast,InvokeMath,InvokeMatrix,InvokeGeometry,BadFunctionTarget,BadAddressTarget,BadFunctionCount,BadHandleCount,BadAddressCount,BadClampCount,Pop,FunctionKind,BadFunctionKind,FunctionToAddress,RequireU64,HandleLow,HandleHigh,HandlePackage,RequireAddress,RawToAddress,AddressToBits,ClampMax,ClampMin,Complete}
+#[repr(C)]struct BuiltinValueStep{cursor:BuiltinValueCursor,need:BuiltinValueNeed,flags:u32}
+#[repr(C)]#[derive(Clone,Copy)]struct FunctionFromAddressCursor{phase:u32}
+#[repr(C)]struct FunctionFromAddressFacts{cpu:u32,explicit_type:u32,count:u64,function:u32,present:u32}
+#[repr(u32)]enum FunctionFromAddressNeed{BadTarget,BadArguments,Type,BadSignature,Argument,Empty,RequireAddress,Retype,Complete}
+#[repr(C)]struct FunctionFromAddressStep{cursor:FunctionFromAddressCursor,need:FunctionFromAddressNeed}
+unsafe extern "C"{
+ #[link_name="bootstrap.operator_types::builtin_value_start"]fn builtin_value_start(bytes:*const u8,length:u64)->BuiltinValueCursor;
+ #[link_name="bootstrap.operator_types::builtin_value_step"]fn builtin_value_step(cursor:BuiltinValueCursor,facts:BuiltinValueFacts,bytes:*const u8,length:u64)->BuiltinValueStep;
+ #[link_name="bootstrap.operator_types::function_from_address_step"]fn function_from_address_step(cursor:FunctionFromAddressCursor,facts:FunctionFromAddressFacts)->FunctionFromAddressStep;
+}

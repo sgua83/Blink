@@ -329,3 +329,16 @@ extern "C" void read_variant_payload(VariantInput input,VariantEmitter emitter) 
     requires nonzero(emitter.next) requires nonzero(emitter.action);
 extern "C" void test_variant_tag(VariantInput input,VariantEmitter emitter) on cpu
     requires nonzero(emitter.load) requires nonzero(emitter.action);
+
+enum BuiltinValueKind:u32 {Other=0;FunctionAddress=1;UnsafeHandle=2;UnsafeAddress=3;AddressBits=4;Type=5;Bitcast=6;Math=7;Matrix=8;Geometry=9;Clamp=10;};
+struct BuiltinValueCursor {u32 phase;BuiltinValueKind kind;};
+struct BuiltinValueFacts {u32 present;u32 cpu;u64 count;u32 function;u32 low_known;u32 high_known;u32 low_uniform;u32 high_uniform;};
+enum BuiltinValueNeed:u32 {Type=0;Bitcast=1;Math=2;Matrix=3;Geometry=4;Values=5;Empty=6;Unknown=7;Constructor=8;InvokeBitcast=9;InvokeMath=10;InvokeMatrix=11;InvokeGeometry=12;BadFunctionTarget=13;BadAddressTarget=14;BadFunctionCount=15;BadHandleCount=16;BadAddressCount=17;BadClampCount=18;Pop=19;FunctionKind=20;BadFunctionKind=21;FunctionToAddress=22;RequireU64=23;HandleLow=24;HandleHigh=25;HandlePackage=26;RequireAddress=27;RawToAddress=28;AddressToBits=29;ClampMax=30;ClampMin=31;Complete=32;};
+struct BuiltinValueStep {BuiltinValueCursor cursor;BuiltinValueNeed need;u32 flags;};
+extern "C" BuiltinValueCursor builtin_value_start(address bytes,u64 length) on cpu;
+extern "C" BuiltinValueStep builtin_value_step(BuiltinValueCursor cursor,BuiltinValueFacts facts,address bytes,u64 length) on cpu;
+struct FunctionFromAddressCursor {u32 phase;};
+struct FunctionFromAddressFacts {u32 cpu;u32 explicit_type;u64 count;u32 function;u32 present;};
+enum FunctionFromAddressNeed:u32 {BadTarget=0;BadArguments=1;Type=2;BadSignature=3;Argument=4;Empty=5;RequireAddress=6;Retype=7;Complete=8;};
+struct FunctionFromAddressStep {FunctionFromAddressCursor cursor;FunctionFromAddressNeed need;};
+extern "C" FunctionFromAddressStep function_from_address_step(FunctionFromAddressCursor cursor,FunctionFromAddressFacts facts) on cpu;
