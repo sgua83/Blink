@@ -30,7 +30,7 @@ struct SelectParams {u64 native_mode;address roots;u64 root_count;u64 types;u64 
 struct SelectReply {SelectView view;u64 object;u64 error;};
 struct SelectResource {address archives;u64 archive_count;address runtime;u64 runtime_count;address locals;u64 local_count;u64 types;u64 programs;};
 enum EntryProduct:u32 { None=0; Pe=1; HostApplication=2; Dll=3; DllWithoutArchive=4; };
-struct EntryPlan {EntryProduct product;u64 stack_reserve;};
+struct EntryPlan {EntryProduct product;u32 uses_runtime;u64 stack_reserve;};
 struct SelectResult {u64 error;BindingBytes name;BindingBytes owner;u64 entry;EntryPlan plan;};
 extern "C" SelectResult choose(SelectView input,SelectParams params,address context,
     cfn<SelectReply,address,u64,BindingBytes> extract,cfn<SelectReply,address,u64> native_archive,

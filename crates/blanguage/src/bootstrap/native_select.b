@@ -1,10 +1,10 @@
 module bootstrap.native_select;
 import bootstrap.bindings;
 
-struct SelectState {SelectView view;BindingForest forest;u64 runtime_root;u64 head;u64 tail;u64 local_count;u64 entry;};
+struct SelectState {SelectView view;BindingForest forest;u64 runtime_root;u64 head;u64 tail;u64 local_count;u64 entry;bool runtime_import;};
 struct SelectTarget {u64 object;u64 section;SelectResult result;};
 BindingBytes empty() on cpu {return BindingBytes(unsafe_address(0u64),0u64);}
-SelectResult result(u64 error,BindingBytes name,BindingBytes owner,u64 entry) on cpu {return SelectResult(error,name,owner,entry,EntryPlan(EntryProduct::None,0u64));}
+SelectResult result(u64 error,BindingBytes name,BindingBytes owner,u64 entry) on cpu {return SelectResult(error,name,owner,entry,EntryPlan(EntryProduct::None,0,0u64));}
 SelectResult success(u64 entry) on cpu {return result(0u64,empty(),empty(),entry);}
 SelectObject object_at(SelectView view,u64 i) on cpu {return unsafe_position<SelectObject>(unsafe_address(address_bits(view.objects)+i*OBJECT_BYTES));}
 void object_put(SelectView view,u64 i,SelectObject row) on cpu {unsafe_position<SelectObject>(unsafe_address(address_bits(view.objects)+i*OBJECT_BYTES))=row;}
@@ -83,6 +83,7 @@ SelectImport required_import(SelectView view,SelectObject object,BindingBytes na
 }
 EntryPlan finish(inout SelectState state,SelectParams params) on cpu {
     bool retained_archive=false;
+    bool uses_runtime=state.runtime_import;
     u64 stack_bytes=0u64;
     u64 o=0u64;while(o<state.view.object_count){SelectObject object=object_at(state.view,o);
         if(object.selected!=0u64){
@@ -100,6 +101,7 @@ EntryPlan finish(inout SelectState state,SelectParams params) on cpu {
                 if(!used){object.keep_archive=0u64;}
             }
             retained_archive=retained_archive||object.keep_archive!=0u64;
+            uses_runtime=uses_runtime||(object.keep_archive!=0u64&&object.has_resources!=0u64);
             if(object.kind!=2u64&&object.stack_bytes>stack_bytes){stack_bytes=object.stack_bytes;}
             i=object.section_start;while(i<object.section_start+object.section_count){SelectSection section=section_at(state.view,i);if(section.live!=0u64){
                 u64 r=section.relocation_start;while(r<section.relocation_start+section.relocation_count){SelectRelocation row=relocation_at(state.view,r);
@@ -114,21 +116,22 @@ EntryPlan finish(inout SelectState state,SelectParams params) on cpu {
             object_put(state.view,o,object);
         }o+=1u64;
     }
-    if(params.native_mode!=0u64){return EntryPlan(EntryProduct::None,0u64);}
+    if(params.native_mode!=0u64){return EntryPlan(EntryProduct::None,0,0u64);}
     if(object_at(state.view,state.entry).kind==2u64){
-        if(retained_archive){return EntryPlan(EntryProduct::Dll,0u64);}
-        return EntryPlan(EntryProduct::DllWithoutArchive,0u64);
+        if(retained_archive){return EntryPlan(EntryProduct::Dll,1,0u64);}
+        return EntryPlan(EntryProduct::DllWithoutArchive,1,0u64);
     }
     u64 stack=u64(u32(stack_bytes))+1048576u64;
     u64 reserve=((stack+65535u64)/65536u64)*65536u64;
-    if(retained_archive){return EntryPlan(EntryProduct::HostApplication,reserve);}
-    return EntryPlan(EntryProduct::Pe,reserve);
+    u32 runtime=uses_runtime ? 1 : 0;
+    if(retained_archive){return EntryPlan(EntryProduct::HostApplication,runtime,reserve);}
+    return EntryPlan(EntryProduct::Pe,runtime,reserve);
 }
 extern "C" SelectResult choose(SelectView input,SelectParams params,address context,
     cfn<SelectReply,address,u64,BindingBytes> extract,cfn<SelectReply,address,u64> native_archive,
     cfn<SelectReply,address,SelectResource> resources,cfn<BindingBytes,address,BindingBytes> slot) on cpu
     requires nonzero(extract) requires nonzero(native_archive) requires nonzero(resources) requires nonzero(slot) {
-    SelectState state=SelectState(input,BindingForest(input.nodes,0u64,0u64,0u64),0u64,0u64,0u64,0u64,0u64);
+    SelectState state=SelectState(input,BindingForest(input.nodes,0u64,0u64,0u64),0u64,0u64,0u64,0u64,0u64,false);
     if(params.native_mode==0u64){u64 count=0u64;u64 i=0u64;while(i<input.object_count){if(object_at(input,i).kind!=0u64){state.entry=i;count+=1u64;}i+=1u64;}
         if(count!=1u64){return result(1u64,empty(),empty(),0u64);}}
     u64 o=0u64;while(o<state.view.object_count){SelectResult defined=define(state,ordered(o,state.entry));if(defined.error!=0u64){return defined;}o+=1u64;}
@@ -143,7 +146,9 @@ extern "C" SelectResult choose(SelectView input,SelectParams params,address cont
             u64 r=section.relocation_start;
             while(r<section.relocation_start+section.relocation_count){
                 SelectRelocation relocation=relocation_at(state.view,r);
-                if(relocation.kind==2u64&&equal(relocation.dll,params.runtime_library)&&object.archive!=0u64&&exported(state.view,object,relocation.name)){
+                bool runtime_import=relocation.kind==2u64&&equal(relocation.dll,params.runtime_library);
+                state.runtime_import=state.runtime_import||runtime_import;
+                if(runtime_import&&object.archive!=0u64&&exported(state.view,object,relocation.name)){
                     u64 c=object.code_start;while(c<object.code_start+object.code_count){BindingBytes name=name_at(state.view.code,c);u64 at=find(state.forest,state.forest.names,BindingKey(name,empty()));
                         if(at==0u64){return result(6u64,name,empty(),state.entry);}SelectSymbol symbol=symbol_at(state.view,node_at(state.forest,at).value-1u64);
                         if(symbol.owner!=object_index){return result(6u64,name,empty(),state.entry);}include(state,object_index,symbol.section);c+=1u64;}

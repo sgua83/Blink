@@ -92,6 +92,7 @@ enum EntryProduct {
 #[repr(C)]
 struct EntryPlan {
     product: EntryProduct,
+    uses_runtime: u32,
     stack_reserve: u64,
 }
 
@@ -128,8 +129,7 @@ pub fn write_stack_report(inputs: &[impl AsRef<Path>], output: &Path, budget: Op
 
 fn stack_report(inputs: Inputs<'_, usize>, budget: Option<u64>) -> Result<String> {
     let Selection { mut objects, plan } = entry(inputs, true)?;
-    let runtime = matches!(plan.product, EntryProduct::Dll | EntryProduct::DllWithoutArchive)
-        || objects.iter().any(|object| stack::uses_runtime(object.archive.as_ref(), false, &object.sections));
+    let runtime = plan.uses_runtime != 0;
     let reserve = match plan.product {
         EntryProduct::Pe | EntryProduct::HostApplication => Some(plan.stack_reserve),
         _ => None,
