@@ -266,3 +266,8 @@ struct NameValueStep {LocalCursor cursor;NameValueNeed need;};
 extern "C" NameValueStep name_value_step(LocalCursor cursor,NameValueFacts facts) on cpu;
 struct SourcePlaceQueryHost {address context;cfn<u32,address,Text> ensures memory(read) binding;};
 extern "C" u32 source_is_place(SignatureNode source,SourcePlaceQueryHost host) on cpu requires nonzero(host.binding);
+
+struct WritePlaceFacts {u32 views;u32 persistent;u32 kind;u32 access;u32 writable;u32 memory;u32 pending;u32 resolved;u32 field_address;u32 unique;u32 iterator;u32 loops_empty;u64 words;u64 values;u64 fields;};
+enum WritePlaceNeed:u32 {Access=0;ViewType=1;ViewPayloadError=2;Owned=3;ViewAvailable=4;Same=5;Kind=6;NumericProof=7;ReferenceMemory=8;Pending=9;Resolved=10;Snapshot=11;AddressWrite=12;BorrowFields=13;BorrowField=14;AddField=15;Memory=16;AtomicError=17;AtomicTileError=18;AtomicDataError=19;Array=20;ReadOnlyError=21;ViewError=22;TileError=23;WriteError=24;Unique=25;DuplicateError=26;Writable=27;AssignProof=28;Initialize=29;Zero=30;DatasetEffect=31;CaptureProof=32;Alias=33;ApplicationWrite=34;AssignApplicationProof=35;CompleteWrites=36;DataAccess=37;StoreReference=38;StoreLocal=39;StoreData=40;Complete=41;};
+struct WritePlaceStep {Cursor cursor;WritePlaceNeed need;};
+extern "C" WritePlaceStep write_place_step(Cursor cursor,WritePlaceFacts facts) on cpu;

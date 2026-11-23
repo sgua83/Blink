@@ -988,3 +988,56 @@ extern "C" u32 source_is_place(SignatureNode source,SourcePlaceQueryHost host) o
   }
  }
 }
+
+extern "C" WritePlaceStep write_place_step(Cursor cursor,WritePlaceFacts facts) on cpu {
+ Cursor c=cursor;
+ if(c.phase==0){c.phase=1;return WritePlaceStep(c,WritePlaceNeed::Access);}
+ if(c.phase==1){c.phase=2;return WritePlaceStep(c,WritePlaceNeed::ViewType);}
+ if(c.phase==2){if(facts.views!=0&&facts.persistent!=0){return WritePlaceStep(c,WritePlaceNeed::ViewPayloadError);}c.phase=3;return WritePlaceStep(c,WritePlaceNeed::Owned);}
+ if(c.phase==3){c.phase=4;return WritePlaceStep(c,WritePlaceNeed::ViewAvailable);}
+ if(c.phase==4){c.phase=5;return WritePlaceStep(c,WritePlaceNeed::Same);}
+ if(c.phase==5){c.phase=6;return WritePlaceStep(c,WritePlaceNeed::Kind);}
+ if(c.phase==6){c.phase=7;if(facts.kind==0){return WritePlaceStep(c,WritePlaceNeed::NumericProof);}}
+ if(c.phase==7){c.phase=8;return WritePlaceStep(c,WritePlaceNeed::ReferenceMemory);}
+ if(c.phase==8){if(facts.memory!=0){c.phase=9;return WritePlaceStep(c,WritePlaceNeed::Pending);}c.phase=20;}
+ if(c.phase==9){c.phase=10;if(facts.pending!=0){return WritePlaceStep(c,WritePlaceNeed::Resolved);}}
+ if(c.phase==10){c.phase=11;return WritePlaceStep(c,facts.pending!=0&&facts.resolved==0 ? WritePlaceNeed::Snapshot : WritePlaceNeed::AddressWrite);}
+ if(c.phase==11){c.part=0u64;c.phase=12;return WritePlaceStep(c,WritePlaceNeed::BorrowFields);}
+ if(c.phase==13){if(facts.field_address!=0){c.phase=14;return WritePlaceStep(c,WritePlaceNeed::AddField);}c.part+=1u64;c.phase=12;}
+ if(c.phase==14){c.part+=1u64;c.phase=12;}
+ if(c.phase==12){if(c.part<facts.fields){c.phase=13;return WritePlaceStep(c,WritePlaceNeed::BorrowField);}c.phase=20;return WritePlaceStep(c,WritePlaceNeed::Memory);}
+ if(c.phase==20){
+  if(facts.kind==8||((facts.kind==0||facts.kind==1)&&facts.access==4)){return WritePlaceStep(c,WritePlaceNeed::AtomicError);}
+  if(facts.kind==0){c.phase=21;return WritePlaceStep(c,WritePlaceNeed::Writable);}
+  if(facts.kind==1){c.phase=40;return WritePlaceStep(c,WritePlaceNeed::Writable);}
+  if(facts.kind==2){return WritePlaceStep(c,WritePlaceNeed::Array);}
+  if(facts.kind==6){return WritePlaceStep(c,WritePlaceNeed::ReadOnlyError);}
+  if(facts.kind==3){return WritePlaceStep(c,WritePlaceNeed::ViewError);}
+  if(facts.kind==4){return WritePlaceStep(c,facts.access==4 ? WritePlaceNeed::AtomicTileError : WritePlaceNeed::TileError);}
+  if(facts.kind==7){if(facts.access==4){return WritePlaceStep(c,WritePlaceNeed::AtomicDataError);}if(facts.writable==0||(facts.access!=2&&facts.access!=3&&facts.access!=4)){return WritePlaceStep(c,WritePlaceNeed::WriteError);}}
+  c.part=0u64;c.phase=60;
+ }
+ if(c.phase==21){c.phase=22;return WritePlaceStep(c,WritePlaceNeed::AssignProof);}
+ if(c.phase==22){c.phase=23;return WritePlaceStep(c,WritePlaceNeed::Initialize);}
+ if(c.phase==23){c.phase=24;return WritePlaceStep(c,WritePlaceNeed::Zero);}
+ if(c.phase==24){c.index=0u64;c.phase=70;}
+ if(c.phase==40){c.phase=41;return WritePlaceStep(c,WritePlaceNeed::DatasetEffect);}
+ if(c.phase==41){c.phase=42;return WritePlaceStep(c,WritePlaceNeed::CaptureProof);}
+ if(c.phase==42){c.phase=43;if(facts.iterator!=0){return WritePlaceStep(c,WritePlaceNeed::Alias);}}
+ if(c.phase==43){c.phase=44;return WritePlaceStep(c,WritePlaceNeed::ApplicationWrite);}
+ if(c.phase==44){c.phase=45;return WritePlaceStep(c,WritePlaceNeed::Initialize);}
+ if(c.phase==45){c.phase=46;return WritePlaceStep(c,WritePlaceNeed::AssignApplicationProof);}
+ if(c.phase==46){c.phase=47;if(facts.loops_empty!=0){return WritePlaceStep(c,WritePlaceNeed::CompleteWrites);}}
+ if(c.phase==47){return WritePlaceStep(c,WritePlaceNeed::Complete);}
+ if(c.phase==61){if(facts.unique==0){return WritePlaceStep(c,WritePlaceNeed::DuplicateError);}c.part+=1u64;c.phase=60;}
+ if(c.phase==60){if(c.part<facts.words){c.phase=61;return WritePlaceStep(c,WritePlaceNeed::Unique);}c.phase=63;if(facts.kind==7){return WritePlaceStep(c,WritePlaceNeed::DataAccess);}}
+ if(c.phase==63){c.phase=64;return WritePlaceStep(c,WritePlaceNeed::AssignProof);}
+ if(c.phase==64){c.phase=65;if(facts.kind==5){return WritePlaceStep(c,WritePlaceNeed::Initialize);}}
+ if(c.phase==65){c.index=0u64;c.phase=70;}
+ if(c.phase==71){c.index+=1u64;c.phase=70;}
+ if(c.phase==70){
+  if(c.index<facts.words&&c.index<facts.values){c.phase=71;return WritePlaceStep(c,facts.kind==0 ? WritePlaceNeed::StoreReference : facts.kind==5 ? WritePlaceNeed::StoreLocal : WritePlaceNeed::StoreData);}
+  c.phase=72;if(facts.kind==7){return WritePlaceStep(c,WritePlaceNeed::Initialize);}
+ }
+ return WritePlaceStep(c,WritePlaceNeed::Complete);
+}

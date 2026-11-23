@@ -2325,127 +2325,63 @@ impl<'a> Builder<'a> {
             ReadPlaceNeed::Finish=>{let proof=proof.take().unwrap();let constant=if step.flags&1!=0{proof.known_value(p.ty())}else{None};return Ok(Value {proof,literal:false,ty:p.ty().clone(),regs,uniform:step.flags&2!=0&&uniform,constant});},
         }}
     }
-    async fn write_place(&mut self, p: &Place, value: Value, span: Span, local_origin: Option<Arc<GeneratedOrigin>>) -> Result<()> {
-        unsafe { self.world.call(self.require_place_access(p,Access::Write,span)).await }?;
-        if p.ty().contains_views() && matches!(p.storage(), Place::Element { .. } | Place::ApplicationElement { .. }) {
-            return self.fail(span,"B185","持久dataset的view载荷不可写或独占借出；数值字段按原权限修改");
-        }
-        self.require_owned_writable(p,span)?;
-        self.require_view_available(&value, &[], span)?;
-        let ty = p.ty();
-        self.require_same(ty, &value.ty, span)?;
-        let stored=bounds::Proof::capture(&value);
-        let written=if matches!(p,Place::Reference{..}){self.path_proof(ty,bounds::Proof::capture(&value)).numeric_facts()}else{bounds::Proof::default()};
-        if let Some((target,borrow))=unsafe { self.world.call(self.reference_memory(p,span)).await }? {
-            let memory=self.view_model.uses.len();
-            let snapshots=if borrow.pending()&&!self.resolved_address_write(&borrow){Some(self.capture_address_values(memory,address::Capture::Write).into())}else{unsafe { self.world.call(self.write_address_values(&borrow,&[(borrow.clone(),Some(Access::Write),Some(written.clone()))])).await }?;None};
-            self.check_view_requirement(view::Requirement::Memory{target,borrow,access:Some(Access::Write),written:Some(stored.clone()),snapshots,span,address_fields:p.ty().borrow_fields().into_iter().filter(|(_,field)|field.is_address()).map(|(word,_)|(word,p.ty().components.iter().position(|(_,at)|*at==word).unwrap())).collect()})?;
-        }
-        match p {
-            Place::AtomicParameter(_)
-            | Place::Reference { access: Access::Atomic, .. }
-            | Place::ApplicationElement { access: Access::Atomic, .. } => {
-                return self.fail(span, "B214", "原子借用只能通过显式原子操作修改");
-            }
-            Place::Reference { address, words, .. } => {
-                unsafe { self.world.call(self.writable_storage(p, span, Some(written.clone()))).await }?;
-                unsafe { self.world.call(self.assign_owned_proof(p, bounds::Proof::capture(&value), false)).await }?;
-                self.initialize(p);
-                let zero = self.constant(Scalar::U32, 0).regs[0];
-                for (word, value) in words.iter().zip(value.regs) {
-                    let (source, word) = address.source_at(*word, zero);
-                    self.emit(InstKind::StoreIndexed {
-                        source,
-                        offset: zero,
-                        word,
-                        value,
-                    });
-                }
-            }
-            Place::ApplicationElement {
-                handle,
-                identity,
-                sources,
-                index,
-                stride,
-                words,
-                ..
-            } => {
-                unsafe { self.world.call(self.writable_storage(p, span, Some(written))).await }?;
-                self.dataset_effect(p,Access::Write,false,span)?;
-                let proof = bounds::Proof::capture(&value);
-                if self.iterators.last().is_some_and(Option::is_some) {
-                    self.path = bounds::Clause::both(&self.path, &proof.output_aliases(&value.regs, &self.registers, &BTreeMap::new()));
-                }
-                self.write_application_place(
-                    *handle, *identity, *index, *stride, words, value, span, None,
-                )?;
-                self.initialize(p);
-                unsafe { self.world.call(self.assign_owned_proof(p, proof, false)).await }?;
-                if self.loop_contexts.is_empty() {
-                    unsafe { self.world.call(self.complete_application_writes(|_,data| sources.contains(&data.root.identity()), span)).await }?;
-                }
-                return Ok(());
-            }
-            Place::Indexed { .. } => return unsafe { self.world.call(self.write_array_place(p, value, span)).await },
-            Place::ReadOnlyLocal(..) => {
-                return self.fail(span, "B144", "按值参数或不可变局部值不可写");
-            }
-            Place::ViewElement { .. } => return self.fail(span, "B185", "view 的元素不可写"),
-            Place::TileElement { tile, .. } => {
-                if self.tiles[*tile].access == Access::Atomic {
-                    return self.fail(span, "B214", "atomic tile 元素只能通过显式原子操作修改");
-                }
-                return self.fail(span, "B202", "tile 值不可写；只修改当前独占的全局元素");
-            }
-            Place::Local(_, slots, ..) => {
-                if slots.iter().copied().collect::<BTreeSet<_>>().len() != slots.len() {
-                    return self.fail(span, "B143", "赋值位置包含重复分量");
-                }
-                unsafe { self.world.call(self.assign_owned_proof(p, bounds::Proof::capture(&value), false)).await }?;
-                self.initialize(p);
-                for (slot, value) in slots.iter().zip(value.regs) {
-                    let kind=InstKind::StoreLocal(*slot,value);
-                    if let Some(origin)=&local_origin {self.code.push(Inst::generated(kind,origin.clone()));}
-                    else {self.emit(kind);}
-                }
-            }
-            Place::Element {
-                binding,
-                index,
-                words,
-                writable,
-                ..
-            } => {
-                if self.view_access[binding] == Access::Atomic {
-                    return self.fail(span, "B214", "atomic 数据集元素只能通过显式原子操作修改");
-                }
-                let b = &self.program.buffers[*binding];
-                if !*writable || !self.view_access[binding].writes() {
-                    return self.fail(
-                        span,
-                        "B144",
-                        format!("没有 {} 当前元素的独占修改权", b.name),
-                    );
-                }
-                if words.iter().copied().collect::<BTreeSet<_>>().len() != words.len() {
-                    return self.fail(span, "B143", "赋值位置包含重复分量");
-                }
-                self.data_access(p, Access::Write, None);
-                self.writes.insert(*binding);
-                unsafe { self.world.call(self.assign_owned_proof(p, bounds::Proof::capture(&value), false)).await }?;
-                for (word, value) in words.iter().zip(value.regs) {
-                    self.emit(InstKind::Store {
-                        binding: *binding,
-                        index: *index,
-                        word: *word,
-                        value,
-                    });
-                }
-                self.initialize(p);
-            }
-        }
-        Ok(())
+    async fn write_place(&mut self,p:&Place,value:Value,span:Span,local_origin:Option<Arc<GeneratedOrigin>>)->Result<()> {
+        let mut cursor=unsafe {lexical_start()};let mut facts=WritePlaceFacts {views:0,persistent:0,kind:0,access:0,writable:0,memory:0,pending:0,resolved:0,field_address:0,unique:0,iterator:0,loops_empty:0,words:0,values:0,fields:0};
+        let mut value=Some(value);let mut written=None;let mut memory=None;let mut snapshots=None;let mut fields=Vec::new();let mut address_fields=Vec::new();let mut unique=BTreeSet::new();let mut proof=None;let mut zero=None;
+        loop {let step=unsafe {write_place_step(cursor,WritePlaceFacts {..facts})};cursor=step.cursor;match step.need {
+            WritePlaceNeed::Access=>{unsafe {self.world.call(self.require_place_access(p,Access::Write,span)).await}?;},
+            WritePlaceNeed::ViewType=>{facts.views=u32::from(p.ty().contains_views());facts.persistent=u32::from(matches!(p.storage(),Place::Element {..}|Place::ApplicationElement {..}));},
+            WritePlaceNeed::ViewPayloadError=>return self.fail(span,"B185","持久dataset的view载荷不可写或独占借出；数值字段按原权限修改"),
+            WritePlaceNeed::Owned=>self.require_owned_writable(p,span)?,
+            WritePlaceNeed::ViewAvailable=>self.require_view_available(value.as_ref().unwrap(),&[],span)?,
+            WritePlaceNeed::Same=>self.require_same(p.ty(),&value.as_ref().unwrap().ty,span)?,
+            WritePlaceNeed::Kind=>{facts.values=value.as_ref().unwrap().regs.len()as u64;match p {
+                Place::Reference {words,access,..}=>{facts.kind=0;facts.access=*access as u32;facts.words=words.len()as u64;},
+                Place::ApplicationElement {words,access,..}=>{facts.kind=1;facts.access=*access as u32;facts.words=words.len()as u64;},
+                Place::Indexed {..}=>facts.kind=2,
+                Place::ViewElement {..}=>facts.kind=3,
+                Place::TileElement {tile,..}=>{facts.kind=4;facts.access=self.tiles[*tile].access as u32;},
+                Place::Local(_,slots,_)=>{facts.kind=5;facts.words=slots.len()as u64;},
+                Place::ReadOnlyLocal(..)=>facts.kind=6,
+                Place::Element {binding,words,writable,..}=>{facts.kind=7;facts.access=self.view_access[binding] as u32;facts.words=words.len()as u64;facts.writable=u32::from(*writable);},
+                Place::AtomicParameter(_)=>facts.kind=8,
+            }},
+            WritePlaceNeed::NumericProof=>written=Some(self.path_proof(p.ty(),bounds::Proof::capture(value.as_ref().unwrap())).numeric_facts()),
+            WritePlaceNeed::ReferenceMemory=>{memory=unsafe {self.world.call(self.reference_memory(p,span)).await}?;facts.memory=u32::from(memory.is_some());},
+            WritePlaceNeed::Pending=>facts.pending=u32::from(memory.as_ref().unwrap().1.pending()),
+            WritePlaceNeed::Resolved=>facts.resolved=u32::from(self.resolved_address_write(&memory.as_ref().unwrap().1)),
+            WritePlaceNeed::Snapshot=>snapshots=Some(self.capture_address_values(self.view_model.uses.len(),address::Capture::Write).into()),
+            WritePlaceNeed::AddressWrite=>{let(_,borrow)=memory.as_ref().unwrap();unsafe {self.world.call(self.write_address_values(borrow,&[(borrow.clone(),Some(Access::Write),written.clone())])).await}?;},
+            WritePlaceNeed::BorrowFields=>{fields=p.ty().borrow_fields();facts.fields=fields.len()as u64;},
+            WritePlaceNeed::BorrowField=>facts.field_address=u32::from(fields[cursor.part as usize].1.is_address()),
+            WritePlaceNeed::AddField=>{let word=fields[cursor.part as usize].0;address_fields.push((word,p.ty().components.iter().position(|(_,at)|*at==word).unwrap()));},
+            WritePlaceNeed::Memory=>{let(target,borrow)=memory.take().unwrap();self.check_view_requirement(view::Requirement::Memory {target,borrow,access:Some(Access::Write),written:Some(bounds::Proof::capture(value.as_ref().unwrap())),snapshots:snapshots.take(),span,address_fields:std::mem::take(&mut address_fields).into()})?;},
+            WritePlaceNeed::AtomicError=>return self.fail(span,"B214","原子借用只能通过显式原子操作修改"),
+            WritePlaceNeed::AtomicTileError=>return self.fail(span,"B214","atomic tile 元素只能通过显式原子操作修改"),
+            WritePlaceNeed::AtomicDataError=>return self.fail(span,"B214","atomic 数据集元素只能通过显式原子操作修改"),
+            WritePlaceNeed::Array=>return unsafe {self.world.call(self.write_array_place(p,value.take().unwrap(),span)).await},
+            WritePlaceNeed::ReadOnlyError=>return self.fail(span,"B144","按值参数或不可变局部值不可写"),
+            WritePlaceNeed::ViewError=>return self.fail(span,"B185","view 的元素不可写"),
+            WritePlaceNeed::TileError=>return self.fail(span,"B202","tile 值不可写；只修改当前独占的全局元素"),
+            WritePlaceNeed::WriteError=>{let Place::Element {binding,..}=p else{unsafe {std::hint::unreachable_unchecked()}};return self.fail(span,"B144",format!("没有 {} 当前元素的独占修改权",self.program.buffers[*binding].name));},
+            WritePlaceNeed::Unique=>{let i=cursor.part as usize;let position=match p {Place::Local(_,slots,_)=>slots[i],Place::Element {words,..}=>words[i]as usize,_=>unsafe {std::hint::unreachable_unchecked()}};facts.unique=u32::from(unique.insert(position));},
+            WritePlaceNeed::DuplicateError=>return self.fail(span,"B143","赋值位置包含重复分量"),
+            WritePlaceNeed::Writable=>{unsafe {self.world.call(self.writable_storage(p,span,written.take())).await}?;},
+            WritePlaceNeed::AssignProof=>{unsafe {self.world.call(self.assign_owned_proof(p,bounds::Proof::capture(value.as_ref().unwrap()),false)).await}?;},
+            WritePlaceNeed::Initialize=>self.initialize(p),
+            WritePlaceNeed::Zero=>zero=Some(self.constant(Scalar::U32,0).regs[0]),
+            WritePlaceNeed::DatasetEffect=>{self.dataset_effect(p,Access::Write,false,span)?;},
+            WritePlaceNeed::CaptureProof=>{proof=Some(bounds::Proof::capture(value.as_ref().unwrap()));facts.iterator=u32::from(self.iterators.last().is_some_and(Option::is_some));},
+            WritePlaceNeed::Alias=>self.path=bounds::Clause::both(&self.path,&proof.as_ref().unwrap().output_aliases(&value.as_ref().unwrap().regs,&self.registers,&BTreeMap::new())),
+            WritePlaceNeed::ApplicationWrite=>{let Place::ApplicationElement {handle,identity,index,stride,words,..}=p else{unsafe {std::hint::unreachable_unchecked()}};self.write_application_place(*handle,*identity,*index,*stride,words,value.take().unwrap(),span,None)?;},
+            WritePlaceNeed::AssignApplicationProof=>{unsafe {self.world.call(self.assign_owned_proof(p,proof.take().unwrap(),false)).await}?;facts.loops_empty=u32::from(self.loop_contexts.is_empty());},
+            WritePlaceNeed::CompleteWrites=>{let Place::ApplicationElement {sources,..}=p else{unsafe {std::hint::unreachable_unchecked()}};unsafe {self.world.call(self.complete_application_writes(|_,data|sources.contains(&data.root.identity()),span)).await}?;},
+            WritePlaceNeed::DataAccess=>{let Place::Element {binding,..}=p else{unsafe {std::hint::unreachable_unchecked()}};self.data_access(p,Access::Write,None);self.writes.insert(*binding);},
+            WritePlaceNeed::StoreReference=>{let Place::Reference {address,words,..}=p else{unsafe {std::hint::unreachable_unchecked()}};let i=cursor.index as usize;let(source,word)=address.source_at(words[i],zero.unwrap());self.emit(InstKind::StoreIndexed {source,offset:zero.unwrap(),word,value:value.as_ref().unwrap().regs[i]});},
+            WritePlaceNeed::StoreLocal=>{let Place::Local(_,slots,_)=p else{unsafe {std::hint::unreachable_unchecked()}};let i=cursor.index as usize;let kind=InstKind::StoreLocal(slots[i],value.as_ref().unwrap().regs[i]);if let Some(origin)=&local_origin{self.code.push(Inst::generated(kind,origin.clone()));}else{self.emit(kind);}},
+            WritePlaceNeed::StoreData=>{let Place::Element {binding,index,words,..}=p else{unsafe {std::hint::unreachable_unchecked()}};let i=cursor.index as usize;self.emit(InstKind::Store {binding:*binding,index:*index,word:words[i],value:value.as_ref().unwrap().regs[i]});},
+            WritePlaceNeed::Complete=>return Ok(()),
+        }}
     }
     async fn expr(&mut self, e: &Expr) -> Result<Option<Value>> {
         let world = self.world;
@@ -3356,3 +3292,8 @@ unsafe extern "C" {
  #[link_name="bootstrap.function_body::name_value_step"]fn name_value_step(cursor:SourceValueCursor,facts:NameValueFacts)->NameValueStep;
  #[link_name="bootstrap.function_body::source_is_place"]fn source_is_place(source:crate::syntax::wire::SignatureNode,host:SourcePlaceQueryHost<'_,'_,'_>)->u32;
 }
+
+#[repr(C)]struct WritePlaceFacts {views:u32,persistent:u32,kind:u32,access:u32,writable:u32,memory:u32,pending:u32,resolved:u32,field_address:u32,unique:u32,iterator:u32,loops_empty:u32,words:u64,values:u64,fields:u64}
+#[repr(u32)]enum WritePlaceNeed {Access,ViewType,ViewPayloadError,Owned,ViewAvailable,Same,Kind,NumericProof,ReferenceMemory,Pending,Resolved,Snapshot,AddressWrite,BorrowFields,BorrowField,AddField,Memory,AtomicError,AtomicTileError,AtomicDataError,Array,ReadOnlyError,ViewError,TileError,WriteError,Unique,DuplicateError,Writable,AssignProof,Initialize,Zero,DatasetEffect,CaptureProof,Alias,ApplicationWrite,AssignApplicationProof,CompleteWrites,DataAccess,StoreReference,StoreLocal,StoreData,Complete}
+#[repr(C)]struct WritePlaceStep {cursor:LexicalCursor,need:WritePlaceNeed}
+unsafe extern "C" {#[link_name="bootstrap.function_body::write_place_step"]fn write_place_step(cursor:LexicalCursor,facts:WritePlaceFacts)->WritePlaceStep;}
