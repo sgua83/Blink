@@ -172,101 +172,98 @@ impl Builder<'_> {
         Ok(result)
     }
     pub(super) async fn read_aggregate(&mut self,expr:&Expr,expected:Option<&Ty>)->Result<Option<(Returned,Option<String>)>> {
-        if let ExprKind::Name(name)=expr.kind()
-            && let Some(Binding::Owned(owner))=self.env.get(name).cloned()
-            && matches!(owner.place.storage(),Place::ApplicationElement{..})
-            && owner.place.ty().owns_resources() && owner.place.ty().dataset.is_none() {
-            let Returned::OwnedValue(mut value)=unsafe { self.world.call(self.application_owned_argument(&owner.place,true,expr.span())).await }? else{return self.fail(expr.span(),"B224","read聚合需要拥有记录、数组或变体")};
-            if !value.available(){return self.fail(expr.span(),"B227","只读借用需要已初始化且未移动的全部活动资源");}
-            self.prepare_owned_value(&value);value.borrow();
-            return Ok(Some((Returned::OwnedValue(value),None)));
-        }
-        if self.owned_element_type(expr).is_some_and(|ty|ty.owns_resources()){
-            let Some(place)=unsafe { self.world.call(self.place(expr)).await }?else{return Ok(None)};let model=self.owned_place_model(&place);let Returned::OwnedValue(mut value)=model else{return self.fail(expr.span(),"B224","read聚合需要拥有记录、数组或变体")};
-            if !value.available(){return self.fail(expr.span(),"B227","只读借用需要已初始化且未移动的全部活动资源");}self.prepare_owned_value(&value);if !value.value.ty.has_variants(){unsafe { self.world.call(self.require_initialized(&place,expr.span())).await }?;}unsafe { self.world.call(self.load_owned_value(&mut value,expr.span())).await }?;value.borrow();return Ok(Some((Returned::OwnedValue(value),None)));
-        }
-        if let Some(projection)=self.owned_projection(expr) {
-            let Returned::OwnedValue(mut value)=unsafe { self.world.call(self.projected_owned(&projection,expr.span())).await }? else{return self.fail(expr.span(),"B224","read聚合需要拥有记录、数组或变体")};
-            if !value.available(){return self.fail(expr.span(),"B227","只读借用需要已初始化且未移动的全部活动资源");}
-            if !value.value.ty.has_variants() && let Some(place)=value.place(){unsafe { self.world.call(self.require_initialized(&place,expr.span())).await }?;}
-            unsafe { self.world.call(self.load_owned_value(&mut value,expr.span())).await }?;value.borrow();return Ok(Some((Returned::OwnedValue(value),None)));
-        }
-        if let ExprKind::Member(base,field) = expr.kind() {
-            let Some((value,owner))=unsafe { self.world.call(self.read_aggregate(&base,None)).await }? else{return Ok(None)};
-            let item=match value {
-                Returned::OwnedValue(value)=>{
-                    let index=value.value.ty.fields.iter().position(|(name,_,_)|name==field).ok_or_else(||Diagnostic{source:self.scope.source().clone(),span:expr.span(),code:"B141",message:"拥有值字段不存在".into()})?;
-                    self.unpack_record(&value,index)
-                }
-                Returned::Value(value)=>Returned::value(self.member_value(*value,field,expr.span())?),
-                Returned::Dataset(data) if field=="length"=>Returned::value(data.length),
-                _=>return self.fail(expr.span(),"B141","read字段需要实际记录或普通值"),
-            };
-            if let Returned::Value(value)=&item {
-                let retained=value.proof.typed_view_borrow(&value.ty);
-                if retained.empty() && let Some(owner)=owner {
-                    let binding=self.env.remove(&owner).unwrap();
-                    unsafe { self.world.call(self.drop_binding(binding,&retained,expr.span())).await }?;
-                }
-                return Ok(Some((item,None)));
+        let mut cursor=ReadCursor {phase:0,path:0};let mut facts=ReadFacts {source:0,binding:0,application:0,owns:0,dataset:0,present:0,kind:0,available:0,variants:0,place:0,continuing:0};
+        let mut syntax=None;let mut place=None;let mut projection=None;let mut model=None;let mut owner=None;
+        loop {
+            facts.continuing=u32::from(self.flow.continues());let step=unsafe {read_step(cursor,facts)};cursor=step.cursor;
+            match step.need {
+                ReadNeed::Inspect=>{let kind=expr.kind();facts.source=match &kind{ExprKind::Name(_)=>1,ExprKind::Member(..)=>2,ExprKind::Index(..)=>3,_=>0};syntax=Some(kind);},
+                ReadNeed::Name=>{let ExprKind::Name(name)=syntax.as_ref().unwrap()else{unreachable!()};facts.binding=u32::from(matches!(self.env.get(*name),Some(Binding::Owned(_))));},
+                ReadNeed::NameStorage=>{let ExprKind::Name(name)=syntax.as_ref().unwrap()else{unreachable!()};let Some(Binding::Owned(value))=self.env.get(*name)else{unreachable!()};facts.application=u32::from(matches!(value.place.storage(),Place::ApplicationElement{..}));},
+                ReadNeed::NameType=>{let ExprKind::Name(name)=syntax.as_ref().unwrap()else{unreachable!()};let Some(Binding::Owned(value))=self.env.get(*name)else{unreachable!()};facts.owns=u32::from(value.place.ty().owns_resources());facts.dataset=u32::from(value.place.ty().dataset.is_some());},
+                ReadNeed::Application=>{let ExprKind::Name(name)=syntax.as_ref().unwrap()else{unreachable!()};let Some(Binding::Owned(value))=self.env.get(*name)else{unreachable!()};let place=value.place.clone();model=Some(unsafe {self.world.call(self.application_owned_argument(&place,true,expr.span())).await}?);facts.kind=model.as_ref().unwrap().kind();},
+                ReadNeed::ElementType=>facts.owns=u32::from(self.owned_element_type(expr).is_some_and(Ty::owns_resources)),
+                ReadNeed::Place=>{place=unsafe {self.world.call(self.place(expr)).await}?;facts.present=u32::from(place.is_some());},
+                ReadNeed::Model=>{model=Some(self.owned_place_model(place.as_ref().unwrap()));facts.kind=model.as_ref().unwrap().kind();},
+                ReadNeed::Projection=>{projection=self.owned_projection(expr);facts.present=u32::from(projection.is_some());},
+                ReadNeed::Projected=>{model=Some(unsafe {self.world.call(self.projected_owned(projection.as_ref().unwrap(),expr.span())).await}?);projection=None;facts.kind=model.as_ref().unwrap().kind();},
+                ReadNeed::BadOwned=>return self.fail(expr.span(),"B224","read聚合需要拥有记录、数组或变体"),
+                ReadNeed::Available=>{let Returned::OwnedValue(value)=model.as_ref().unwrap()else{unreachable!()};facts.available=u32::from(value.available());},
+                ReadNeed::BadAvailable=>return self.fail(expr.span(),"B227","只读借用需要已初始化且未移动的全部活动资源"),
+                ReadNeed::Prepare=>{let Returned::OwnedValue(value)=model.as_ref().unwrap()else{unreachable!()};self.prepare_owned_value(value);},
+                ReadNeed::Variants=>facts.variants=u32::from(model.as_ref().unwrap().view_value().unwrap().ty.has_variants()),
+                ReadNeed::ProjectionPlace=>{let Returned::OwnedValue(value)=model.as_ref().unwrap()else{unreachable!()};place=value.place();facts.place=u32::from(place.is_some());},
+                ReadNeed::Initialize=>unsafe {self.world.call(self.require_initialized(place.as_ref().unwrap(),expr.span())).await}?,
+                ReadNeed::Load=>{let Returned::OwnedValue(value)=model.as_mut().unwrap()else{unreachable!()};unsafe {self.world.call(self.load_owned_value(value,expr.span())).await}?;},
+                ReadNeed::HoldOwned=>{let Returned::OwnedValue(value)=model.as_ref().unwrap()else{unreachable!()};owner=Some(self.hold_binding(Binding::OwnedValue(value.clone())));},
+                ReadNeed::Borrow=>{let Returned::OwnedValue(value)=model.as_mut().unwrap()else{unreachable!()};value.borrow();},
+                ReadNeed::HoldData=>{let Returned::Dataset(data)=model.as_mut().unwrap()else{unreachable!()};owner=Some(self.hold_binding(Binding::ApplicationData(data.clone())));data.ownership=Ownership::Borrowed;},
+                ReadNeed::Return=>return Ok(Some((model.take().unwrap(),owner))),
+                ReadNeed::BadRead=>return self.fail(expr.span(),"B224","read需要实际普通值或拥有聚合"),
+                ReadNeed::Complete=>return Ok(None),
+                ReadNeed::Evaluate=>{model=unsafe {self.world.call(self.evaluate_returned(expr,expected)).await}?;facts.present=u32::from(model.is_some());facts.kind=model.as_ref().map_or(0,Returned::kind);},
+                ReadNeed::Member=>{
+                    let ExprKind::Member(base,field)=syntax.as_ref().unwrap()else{unreachable!()};let mut cursor=ReadLocalCursor {phase:0};
+                    let mut facts=ReadMemberFacts {field:ReadName::of(field),present:0,kind:0,found:0,empty:0,owner:0};
+                    let mut parent=None;let mut owner=None;let mut item=None;let mut retained=None;let mut index=0;
+                    loop {let step=unsafe {read_member_step(cursor,facts)};cursor=step.cursor;match step.need {
+                        ReadMemberNeed::Parent=>{if let Some((value,name))=unsafe {self.world.call(self.read_aggregate(base,None)).await}? {parent=Some(value);owner=name;}facts.present=u32::from(parent.is_some());facts.kind=parent.as_ref().map_or(0,Returned::kind);},
+                        ReadMemberNeed::Find=>{let Returned::OwnedValue(value)=parent.as_ref().unwrap()else{unreachable!()};index=unsafe {read_field(ReadName::of(field),value.value.ty.fields.len(),&value.value.ty,read_field_name)};facts.found=u32::from(index<value.value.ty.fields.len());},
+                        ReadMemberNeed::MissingField=>return self.fail(expr.span(),"B141","拥有值字段不存在"),
+                        ReadMemberNeed::Unpack=>{let Returned::OwnedValue(value)=parent.take().unwrap()else{unreachable!()};item=Some(self.unpack_record(&value,index));},
+                        ReadMemberNeed::Value=>{let Returned::Value(value)=parent.take().unwrap()else{unreachable!()};item=Some(Returned::value(self.member_value(*value,field,expr.span())?));},
+                        ReadMemberNeed::Length=>{let Returned::Dataset(data)=parent.take().unwrap()else{unreachable!()};item=Some(Returned::value(data.length));},
+                        ReadMemberNeed::BadField=>return self.fail(expr.span(),"B141","read字段需要实际记录或普通值"),
+                        ReadMemberNeed::Item=>facts.kind=item.as_ref().unwrap().kind(),
+                        ReadMemberNeed::Retained=>{let value=item.as_ref().unwrap().view_value().unwrap();let borrow=value.proof.typed_view_borrow(&value.ty);facts.empty=u32::from(borrow.empty());facts.owner=u32::from(owner.is_some());retained=Some(borrow);},
+                        ReadMemberNeed::Release=>{let binding=self.env.remove(&owner.take().unwrap()).unwrap();unsafe {self.world.call(self.drop_binding(binding,retained.as_ref().unwrap(),expr.span())).await}?;},
+                        ReadMemberNeed::Plain=>return Ok(Some((item.take().unwrap(),None))),
+                        ReadMemberNeed::Return=>return Ok(Some((item.take().unwrap(),owner))),
+                        ReadMemberNeed::Complete=>return Ok(None),
+                    }}
+                },
+                ReadNeed::Index=>{
+                    let ExprKind::Index(base,expression)=syntax.as_ref().unwrap()else{unreachable!()};let mut cursor=ReadIndexCursor {phase:0,model:0,index:0};
+                    let mut facts=ReadIndexFacts {present:0,kind:0,indexed:0,owns:0,array:0,owner:0,place:0,valid:0,count:0,minimum:0,maximum:0,components:0};
+                    let mut parent=None;let mut owner=None;let mut data=None;let mut place=None;let mut packed=None;let mut item=None;let mut index=None;let mut regs=Vec::new();
+                    loop {let step=unsafe {read_index_step(cursor,facts)};cursor=step.cursor;match step.need {
+                        ReadIndexNeed::Reference=>{data=unsafe {self.world.call(self.application_reference(base)).await}?;facts.present=u32::from(data.is_some());},
+                        ReadIndexNeed::Parent=>{if let Some((value,name))=unsafe {self.world.call(self.read_aggregate(base,None)).await}? {parent=Some(value);owner=name;}facts.present=u32::from(parent.is_some());},
+                        ReadIndexNeed::Kind=>{facts.kind=parent.as_ref().unwrap().kind();if let Returned::Value(value)=parent.as_ref().unwrap(){facts.indexed=u32::from(value.ty.indexed_count().is_some());}},
+                        ReadIndexNeed::ArrayValue=>{let Returned::Value(value)=parent.take().unwrap()else{unreachable!()};item=unsafe {self.world.call(self.array_value_index(*value,expression)).await}?.map(Returned::value);facts.present=u32::from(item.is_some());},
+                        ReadIndexNeed::ViewPlace=>{let Returned::Value(value)=parent.take().unwrap()else{unreachable!()};place=unsafe {self.world.call(self.view_value_place(*value,expression)).await}?;facts.present=u32::from(place.is_some());},
+                        ReadIndexNeed::Data=>{let Returned::Dataset(value)=parent.take().unwrap()else{unreachable!()};data=Some(application::DataReference::direct(value));},
+                        ReadIndexNeed::DataIndex=>{place=unsafe {self.world.call(self.application_index(data.as_ref().unwrap().clone(),expression)).await}?;facts.present=u32::from(place.is_some());},
+                        ReadIndexNeed::DataType=>facts.owns=u32::from(place.as_ref().unwrap().ty().owns_resources()),
+                        ReadIndexNeed::Plain=>item=Some(Returned::value(unsafe {self.world.call(self.read_place(place.as_ref().unwrap(),expr.span(),None)).await}?)),
+                        ReadIndexNeed::Storage=>packed=Some(unsafe {self.world.call(self.read_storage_value(place.as_ref().unwrap(),expr.span(),None)).await}?),
+                        ReadIndexNeed::Materialize=>item=Some(unsafe {self.world.call(self.materialize_element(data.as_ref().unwrap(),packed.take(),place.as_ref().unwrap())).await}?),
+                        ReadIndexNeed::BorrowElement=>{let Returned::OwnedValue(value)=item.as_mut().unwrap()else{unreachable!()};value.borrow();value.place=place.take();},
+                        ReadIndexNeed::Return=>return Ok(Some((item.take().unwrap(),owner))),
+                        ReadIndexNeed::BadIndex=>return self.fail(expr.span(),"B224","read下标需要实际数组或存储"),
+                        ReadIndexNeed::ArrayType=>{let Returned::OwnedValue(value)=parent.as_ref().unwrap()else{unreachable!()};facts.array=u32::from(value.value.ty.array.is_some());if value.value.ty.array.is_some(){facts.count=u64::from(value.value.ty.values[0]);}},
+                        ReadIndexNeed::BadArray=>return self.fail(expr.span(),"B224","聚合只读下标需要固定拥有数组"),
+                        ReadIndexNeed::Owner=>{let Returned::OwnedValue(value)=parent.as_ref().unwrap()else{unreachable!()};facts.owner=u32::from(owner.is_some());facts.place=u32::from(value.place.is_some());},
+                        ReadIndexNeed::Hold=>{let Returned::OwnedValue(value)=parent.as_ref().unwrap()else{unreachable!()};owner=Some(self.hold_binding(Binding::OwnedValue(value.clone())));},
+                        ReadIndexNeed::Expression=>{index=unsafe {self.world.call(self.expr(expression)).await}?;facts.present=u32::from(index.is_some());},
+                        ReadIndexNeed::Type=>self.require_same(&Ty::scalar(Scalar::U32),&index.as_ref().unwrap().ty,expr.span())?,
+                        ReadIndexNeed::Bounds=>facts.valid=u32::from(self.index_in(index.as_ref().unwrap(),IndexDomain::Fixed(facts.count as u32),facts.count as u32,None)),
+                        ReadIndexNeed::BadBounds=>return self.fail(expr.span(),"B137","拥有数组下标有效性无法静态证明"),
+                        ReadIndexNeed::Range=>{facts.minimum=u64::from(index.as_ref().unwrap().minimum());facts.maximum=u64::from(index.as_ref().unwrap().maximum());},
+                        ReadIndexNeed::Unpack|ReadIndexNeed::First=>{let Returned::OwnedValue(value)=parent.as_ref().unwrap()else{unreachable!()};item=Some(self.unpack_record(value,step.position as usize));},
+                        ReadIndexNeed::Join=>{let Returned::OwnedValue(value)=parent.as_ref().unwrap()else{unreachable!()};let next=self.unpack_record(value,step.position as usize);item.as_mut().unwrap().join(next,false,None);},
+                        ReadIndexNeed::SourcePlace=>{let Returned::OwnedValue(value)=parent.as_ref().unwrap()else{unreachable!()};place=value.place();facts.place=u32::from(place.is_some());},
+                        ReadIndexNeed::MaterializeArray=>{let Returned::OwnedValue(value)=parent.take().unwrap()else{unreachable!()};place=Some(self.materialize_array(value.value,None).place);},
+                        ReadIndexNeed::ArrayPlace=>{place=Some(self.array_index(place.take().unwrap(),index.take().unwrap(),expr.span())?);facts.components=place.as_ref().unwrap().ty().components.len()as u64;},
+                        ReadIndexNeed::Component=>{let place=place.as_ref().unwrap();let scalar=place.ty().components[step.position as usize].0;regs.push(unsafe {self.world.call(self.read_place(&place.clone().project(Ty::scalar(scalar),&[step.position as usize]),expr.span(),None)).await}?.regs[0]);},
+                        ReadIndexNeed::Rebind=>self.rebind_returned(item.as_mut().unwrap(),std::mem::take(&mut regs)),
+                        ReadIndexNeed::ModelKind=>facts.kind=item.as_ref().unwrap().kind(),
+                        ReadIndexNeed::SetPlace=>{let Returned::OwnedValue(value)=item.as_mut().unwrap()else{unreachable!()};value.place=place.take();},
+                        ReadIndexNeed::BorrowModel=>{let Returned::OwnedValue(value)=item.as_mut().unwrap()else{unreachable!()};value.borrow();},
+                        ReadIndexNeed::Complete=>return Ok(None),
+                    }}
+                },
             }
-            return Ok(Some((item,owner)));
-        }
-        if let ExprKind::Index(base,index) = expr.kind() {
-            if let Some(data)=unsafe { self.world.call(self.application_reference(&base)).await }? {
-                let Some(place)=unsafe { self.world.call(self.application_index(data.clone(),&index)).await }?else{return Ok(None)};
-                if !place.ty().owns_resources(){return unsafe { self.world.call(self.read_place(&place,expr.span(), None)).await }.map(|value|Some((Returned::value(value),None)));}
-                let packed=unsafe { self.world.call(self.read_storage_value(&place,expr.span(), None)).await }?;
-                let Returned::OwnedValue(mut value)=unsafe { self.world.call(self.materialize_element(&data,Some(packed),&place)).await }? else{unreachable!()};
-                value.borrow();value.place=Some(place);return Ok(Some((Returned::OwnedValue(value),None)));
-            }
-            let Some((value,mut owner))=unsafe { self.world.call(self.read_aggregate(&base,None)).await }? else{return Ok(None)};
-            let value=match value {
-                Returned::Value(value)=>{
-                    let value=if value.ty.indexed_count().is_some(){let Some(value)=unsafe { self.world.call(self.array_value_index(*value,&index)).await }?else{return Ok(None)};value}
-                        else {let Some(place)=unsafe { self.world.call(self.view_value_place(*value,&index)).await }?else{return Ok(None)};unsafe { self.world.call(self.read_place(&place,expr.span(), None)).await }?};
-                    return Ok(Some((Returned::value(value),owner)));
-                }
-                Returned::Dataset(data)=>{
-                    let data=application::DataReference::direct(data);
-                    let Some(place)=unsafe { self.world.call(self.application_index(data.clone(),&index)).await }?else{return Ok(None)};
-                    if !place.ty().owns_resources(){return unsafe { self.world.call(self.read_place(&place,expr.span(), None)).await }.map(|value|Some((Returned::value(value),owner)));}
-                    let packed=unsafe { self.world.call(self.read_storage_value(&place,expr.span(), None)).await }?;
-                    let Returned::OwnedValue(mut value)=unsafe { self.world.call(self.materialize_element(&data,Some(packed),&place)).await }?else{unreachable!()};
-                    value.borrow();value.place=Some(place);return Ok(Some((Returned::OwnedValue(value),owner)));
-                }
-                Returned::OwnedValue(value)=>value,
-                Returned::Unit=>return self.fail(expr.span(),"B224","read下标需要实际数组或存储"),
-            };
-            let Some(element)=value.value.ty.array.as_deref().cloned()else{return self.fail(expr.span(),"B224","聚合只读下标需要固定拥有数组")};
-            if owner.is_none()&&value.place.is_none(){owner=Some(self.hold_binding(Binding::OwnedValue(value.clone())));}
-            let Some(index)=unsafe { self.world.call(self.expr(&index)).await }? else{return Ok(None)};
-            self.require_same(&Ty::scalar(Scalar::U32),&index.ty,expr.span())?;
-            let count=value.value.ty.values[0];
-            if !self.index_in(&index,IndexDomain::Fixed(count),count,None){return self.fail(expr.span(),"B137","拥有数组下标有效性无法静态证明")};
-            let mut item=if index.minimum()==index.maximum(){self.unpack_record(&value,index.minimum()as usize)}else{
-                let mut selected=(0..count).filter(|i|*i>=index.minimum()&&*i<=index.maximum());
-                let mut model=self.unpack_record(&value,selected.next().unwrap()as usize);
-                for i in selected{model.join(self.unpack_record(&value,i as usize),false,None);}
-                let place=match value.place(){Some(place)=>place,None=>self.materialize_array(value.value.clone(),None).place};let place=self.array_index(place,index,expr.span())?;
-                let mut regs=Vec::new();
-                for(i,(scalar,_))in element.components.iter().enumerate(){regs.push(unsafe { self.world.call(self.read_place(&place.clone().project(Ty::scalar(*scalar),&[i]),expr.span(), None)).await }?.regs[0]);}
-                self.rebind_returned(&mut model,regs);
-                if let Returned::OwnedValue(value)=&mut model{value.place=Some(place);}model
-            };
-            if let Returned::OwnedValue(value)=&mut item {value.borrow();}
-            return Ok(Some((item,owner)));
-        }
-        let returned=unsafe { self.world.call(self.evaluate_returned(expr,expected)).await }?;
-        if !self.flow.continues(){return Ok(None);}
-        match returned {
-            Some(Returned::OwnedValue(mut value))=>{
-                if !value.available(){return self.fail(expr.span(),"B227","只读借用需要已初始化且未移动的全部活动资源");}
-                let owner=self.hold_binding(Binding::OwnedValue(value.clone()));value.borrow();Ok(Some((Returned::OwnedValue(value),Some(owner))))
-            }
-            Some(Returned::Dataset(mut data))=>{let owner=self.hold_binding(Binding::ApplicationData(data.clone()));data.ownership=Ownership::Borrowed;Ok(Some((Returned::Dataset(data),Some(owner))))}
-            Some(Returned::Value(value))=>Ok(Some((Returned::Value(value),None))),
-            _=>self.fail(expr.span(),"B224","read需要实际普通值或拥有聚合"),
         }
     }
     // 资源只读取实际位置中的元数据；载荷仍由原Frame持有。
@@ -859,3 +856,25 @@ unsafe extern "C" {
  #[link_name="bootstrap.function_body::try_step"]fn try_step(cursor:TryCursor,facts:TryFacts)->TryStep;
  #[link_name="bootstrap.function_body::try_error_step"]fn try_error_step(cursor:TryCursor,facts:TryErrorFacts)->TryErrorStep;
 }
+
+#[repr(C)]#[derive(Clone,Copy)]struct ReadCursor {phase:u32,path:u32}
+#[repr(C)]#[derive(Clone,Copy)]struct ReadFacts {source:u32,binding:u32,application:u32,owns:u32,dataset:u32,present:u32,kind:u32,available:u32,variants:u32,place:u32,continuing:u32}
+#[repr(u32)]enum ReadNeed {Inspect,Name,NameStorage,NameType,Application,ElementType,Place,Model,Projection,Projected,BadOwned,Available,BadAvailable,Prepare,Variants,ProjectionPlace,Initialize,Load,HoldOwned,Borrow,HoldData,Return,Member,Index,Evaluate,BadRead,Complete}
+#[repr(C)]struct ReadStep {cursor:ReadCursor,need:ReadNeed}
+#[repr(C)]#[derive(Clone,Copy)]struct ReadLocalCursor {phase:u32}
+#[repr(C)]#[derive(Clone,Copy)]struct ReadName {data:*const u8,length:usize}
+impl ReadName {fn of(value:&str)->Self{Self{data:value.as_ptr(),length:value.len()}}}
+#[repr(C)]#[derive(Clone,Copy)]struct ReadMemberFacts {field:ReadName,present:u32,kind:u32,found:u32,empty:u32,owner:u32}
+#[repr(u32)]enum ReadMemberNeed {Parent,Find,MissingField,Unpack,Value,Length,BadField,Item,Retained,Release,Plain,Return,Complete}
+#[repr(C)]struct ReadMemberStep {cursor:ReadLocalCursor,need:ReadMemberNeed}
+#[repr(C)]#[derive(Clone,Copy)]struct ReadIndexCursor {phase:u32,model:u32,index:u64}
+#[repr(C)]#[derive(Clone,Copy)]struct ReadIndexFacts {present:u32,kind:u32,indexed:u32,owns:u32,array:u32,owner:u32,place:u32,valid:u32,count:u64,minimum:u64,maximum:u64,components:u64}
+#[repr(u32)]enum ReadIndexNeed {Reference,Parent,Kind,ArrayValue,ViewPlace,Data,DataIndex,DataType,Plain,Storage,Materialize,BorrowElement,Return,BadIndex,ArrayType,BadArray,Owner,Hold,Expression,Type,Bounds,BadBounds,Range,Unpack,First,Join,SourcePlace,MaterializeArray,ArrayPlace,Component,Rebind,ModelKind,BorrowModel,Complete,SetPlace}
+#[repr(C)]struct ReadIndexStep {cursor:ReadIndexCursor,need:ReadIndexNeed,position:u64}
+unsafe extern "C" {
+ #[link_name="bootstrap.function_body::read_step"]fn read_step(cursor:ReadCursor,facts:ReadFacts)->ReadStep;
+ #[link_name="bootstrap.function_body::read_member_step"]fn read_member_step(cursor:ReadLocalCursor,facts:ReadMemberFacts)->ReadMemberStep;
+ #[link_name="bootstrap.function_body::read_field"]fn read_field(name:ReadName,count:usize,context:*const Ty,field:unsafe extern "C" fn(*const Ty,usize)->ReadName)->usize;
+ #[link_name="bootstrap.function_body::read_index_step"]fn read_index_step(cursor:ReadIndexCursor,facts:ReadIndexFacts)->ReadIndexStep;
+}
+unsafe extern "C" fn read_field_name(context:*const Ty,index:usize)->ReadName {ReadName::of(&unsafe{&*context}.fields[index].0)}

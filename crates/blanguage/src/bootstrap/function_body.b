@@ -586,3 +586,69 @@ extern "C" TryErrorStep try_error_step(LocalCursor cursor,TryErrorFacts facts) o
  if(c.phase==3){c.phase=4;return TryErrorStep(c,TryErrorNeed::Build);}
  return TryErrorStep(c,facts.owns!=0 ? TryErrorNeed::OwnedReturn : TryErrorNeed::ValueReturn);
 }
+
+extern "C" ReadStep read_step(ReadCursor cursor,ReadFacts facts) on cpu {
+ ReadCursor c=cursor;
+ if(c.phase==0){c.phase=1;return ReadStep(c,ReadNeed::Inspect);}
+ if(c.phase==1){if(facts.source==1){c.phase=2;return ReadStep(c,ReadNeed::Name);}c.phase=5;return ReadStep(c,ReadNeed::ElementType);}
+ if(c.phase==2){if(facts.binding!=0){c.phase=3;return ReadStep(c,ReadNeed::NameStorage);}c.phase=5;return ReadStep(c,ReadNeed::ElementType);}
+ if(c.phase==3){if(facts.application!=0){c.phase=4;return ReadStep(c,ReadNeed::NameType);}c.phase=5;return ReadStep(c,ReadNeed::ElementType);}
+ if(c.phase==4){if(facts.owns!=0&&facts.dataset==0){c.phase=6;c.path=1;return ReadStep(c,ReadNeed::Application);}c.phase=5;return ReadStep(c,ReadNeed::ElementType);}
+ if(c.phase==5){if(facts.owns!=0){c.phase=7;return ReadStep(c,ReadNeed::Place);}c.phase=9;return ReadStep(c,ReadNeed::Projection);}
+ if(c.phase==6||c.phase==8||c.phase==10){if(facts.kind!=3){return ReadStep(c,ReadNeed::BadOwned);}c.phase=12;return ReadStep(c,ReadNeed::Available);}
+ if(c.phase==7){if(facts.present==0){return ReadStep(c,ReadNeed::Complete);}c.phase=8;c.path=2;return ReadStep(c,ReadNeed::Model);}
+ if(c.phase==9){if(facts.present!=0){c.phase=10;c.path=3;return ReadStep(c,ReadNeed::Projected);}c.phase=11;}
+ if(c.phase==11){if(facts.source==2){return ReadStep(c,ReadNeed::Member);}if(facts.source==3){return ReadStep(c,ReadNeed::Index);}c.phase=20;return ReadStep(c,ReadNeed::Evaluate);}
+ if(c.phase==12){if(facts.available==0){return ReadStep(c,ReadNeed::BadAvailable);}if(c.path==4){c.phase=16;return ReadStep(c,ReadNeed::HoldOwned);}if(c.path==1||c.path==2){c.phase=13;return ReadStep(c,ReadNeed::Prepare);}c.phase=14;return ReadStep(c,ReadNeed::Variants);}
+ if(c.phase==13){if(c.path==1){c.phase=17;return ReadStep(c,ReadNeed::Borrow);}c.phase=14;return ReadStep(c,ReadNeed::Variants);}
+ if(c.phase==14){if(facts.variants!=0){c.phase=16;return ReadStep(c,ReadNeed::Load);}if(c.path==2){c.phase=15;return ReadStep(c,ReadNeed::Initialize);}c.phase=18;return ReadStep(c,ReadNeed::ProjectionPlace);}
+ if(c.phase==18){if(facts.place!=0){c.phase=15;return ReadStep(c,ReadNeed::Initialize);}c.phase=16;return ReadStep(c,ReadNeed::Load);}
+ if(c.phase==15){c.phase=16;return ReadStep(c,ReadNeed::Load);}
+ if(c.phase==16){c.phase=17;return ReadStep(c,ReadNeed::Borrow);}
+ if(c.phase==17||c.phase==21){return ReadStep(c,ReadNeed::Return);}
+ if(c.phase==20){if(facts.continuing==0){return ReadStep(c,ReadNeed::Complete);}if(facts.present==0){return ReadStep(c,ReadNeed::BadRead);}if(facts.kind==3){c.path=4;c.phase=12;return ReadStep(c,ReadNeed::Available);}if(facts.kind==2){c.phase=21;return ReadStep(c,ReadNeed::HoldData);}if(facts.kind==1){return ReadStep(c,ReadNeed::Return);}}
+ return ReadStep(c,ReadNeed::BadRead);
+}
+extern "C" ReadMemberStep read_member_step(LocalCursor cursor,ReadMemberFacts facts) on cpu {
+ LocalCursor c=cursor;
+ if(c.phase==0){c.phase=1;return ReadMemberStep(c,ReadMemberNeed::Parent);}
+ if(c.phase==1){if(facts.present==0){return ReadMemberStep(c,ReadMemberNeed::Complete);}c.phase=3;if(facts.kind==3){c.phase=2;return ReadMemberStep(c,ReadMemberNeed::Find);}if(facts.kind==1){return ReadMemberStep(c,ReadMemberNeed::Value);}if(facts.kind==2&&local_spelling(facts.field.data,facts.field.length,"length")){return ReadMemberStep(c,ReadMemberNeed::Length);}return ReadMemberStep(c,ReadMemberNeed::BadField);}
+ if(c.phase==2){if(facts.found==0){return ReadMemberStep(c,ReadMemberNeed::MissingField);}c.phase=3;return ReadMemberStep(c,ReadMemberNeed::Unpack);}
+ if(c.phase==3){c.phase=4;return ReadMemberStep(c,ReadMemberNeed::Item);}
+ if(c.phase==4){if(facts.kind!=1){return ReadMemberStep(c,ReadMemberNeed::Return);}c.phase=5;return ReadMemberStep(c,ReadMemberNeed::Retained);}
+ if(c.phase==5){if(facts.empty!=0&&facts.owner!=0){c.phase=6;return ReadMemberStep(c,ReadMemberNeed::Release);}}
+ return ReadMemberStep(c,ReadMemberNeed::Plain);
+}
+extern "C" u64 read_field(SeekName name,u64 count,address context,cfn<SeekName,address,u64> field) on cpu requires nonzero(field) {
+ u64 index=0u64;while(index<count){if(seek_same_name(name,field(context,index))){return index;}index+=1u64;}return count;
+}
+extern "C" ReadIndexStep read_index_step(ReadIndexCursor cursor,ReadIndexFacts facts) on cpu {
+ ReadIndexCursor c=cursor;
+ if(c.phase==0){c.phase=1;return ReadIndexStep(c,ReadIndexNeed::Reference,0u64);}
+ if(c.phase==1){if(facts.present!=0){c.phase=3;return ReadIndexStep(c,ReadIndexNeed::DataIndex,0u64);}c.phase=2;return ReadIndexStep(c,ReadIndexNeed::Parent,0u64);}
+ if(c.phase==2){if(facts.present==0){return ReadIndexStep(c,ReadIndexNeed::Complete,0u64);}c.phase=4;return ReadIndexStep(c,ReadIndexNeed::Kind,0u64);}
+ if(c.phase==4){if(facts.kind==1){if(facts.indexed!=0){c.phase=5;return ReadIndexStep(c,ReadIndexNeed::ArrayValue,0u64);}c.phase=6;return ReadIndexStep(c,ReadIndexNeed::ViewPlace,0u64);}if(facts.kind==2){c.phase=7;return ReadIndexStep(c,ReadIndexNeed::Data,0u64);}if(facts.kind==3){c.phase=10;return ReadIndexStep(c,ReadIndexNeed::ArrayType,0u64);}return ReadIndexStep(c,ReadIndexNeed::BadIndex,0u64);}
+ if(c.phase==5){return ReadIndexStep(c,facts.present!=0 ? ReadIndexNeed::Return : ReadIndexNeed::Complete,0u64);}
+ if(c.phase==6){if(facts.present==0){return ReadIndexStep(c,ReadIndexNeed::Complete,0u64);}c.phase=9;return ReadIndexStep(c,ReadIndexNeed::Plain,0u64);}
+ if(c.phase==7){c.phase=3;return ReadIndexStep(c,ReadIndexNeed::DataIndex,0u64);}
+ if(c.phase==3){if(facts.present==0){return ReadIndexStep(c,ReadIndexNeed::Complete,0u64);}c.phase=8;return ReadIndexStep(c,ReadIndexNeed::DataType,0u64);}
+ if(c.phase==8){if(facts.owns!=0){c.phase=11;return ReadIndexStep(c,ReadIndexNeed::Storage,0u64);}c.phase=9;return ReadIndexStep(c,ReadIndexNeed::Plain,0u64);}
+ if(c.phase==9||c.phase==13||c.phase==28){return ReadIndexStep(c,ReadIndexNeed::Return,0u64);}
+ if(c.phase==11){c.phase=12;return ReadIndexStep(c,ReadIndexNeed::Materialize,0u64);}
+ if(c.phase==12){c.phase=13;return ReadIndexStep(c,ReadIndexNeed::BorrowElement,0u64);}
+ if(c.phase==10){if(facts.array==0){return ReadIndexStep(c,ReadIndexNeed::BadArray,0u64);}c.phase=14;return ReadIndexStep(c,ReadIndexNeed::Owner,0u64);}
+ if(c.phase==14){if(facts.owner==0&&facts.place==0){c.phase=15;return ReadIndexStep(c,ReadIndexNeed::Hold,0u64);}c.phase=16;return ReadIndexStep(c,ReadIndexNeed::Expression,0u64);}
+ if(c.phase==15){c.phase=16;return ReadIndexStep(c,ReadIndexNeed::Expression,0u64);}
+ if(c.phase==16){if(facts.present==0){return ReadIndexStep(c,ReadIndexNeed::Complete,0u64);}c.phase=17;return ReadIndexStep(c,ReadIndexNeed::Type,0u64);}
+ if(c.phase==17){c.phase=18;return ReadIndexStep(c,ReadIndexNeed::Bounds,0u64);}
+ if(c.phase==18){if(facts.valid==0){return ReadIndexStep(c,ReadIndexNeed::BadBounds,0u64);}c.phase=19;return ReadIndexStep(c,ReadIndexNeed::Range,0u64);}
+ if(c.phase==19){if(facts.minimum==facts.maximum){c.phase=26;return ReadIndexStep(c,ReadIndexNeed::Unpack,facts.minimum);}c.phase=20;c.index=0u64;c.model=0;}
+ if(c.phase==20){while(c.index<facts.count){u64 at=c.index;c.index+=1u64;if(at>=facts.minimum&&at<=facts.maximum){u32 first=c.model;c.model=1;return ReadIndexStep(c,first==0 ? ReadIndexNeed::First : ReadIndexNeed::Join,at);}}c.phase=21;return ReadIndexStep(c,ReadIndexNeed::SourcePlace,0u64);}
+ if(c.phase==21){if(facts.place==0){c.phase=22;return ReadIndexStep(c,ReadIndexNeed::MaterializeArray,0u64);}c.phase=23;return ReadIndexStep(c,ReadIndexNeed::ArrayPlace,0u64);}
+ if(c.phase==22){c.phase=23;return ReadIndexStep(c,ReadIndexNeed::ArrayPlace,0u64);}
+ if(c.phase==23){c.phase=24;c.index=0u64;}
+ if(c.phase==24){if(c.index<facts.components){u64 at=c.index;c.index+=1u64;return ReadIndexStep(c,ReadIndexNeed::Component,at);}c.phase=26;return ReadIndexStep(c,ReadIndexNeed::Rebind,0u64);}
+ if(c.phase==26){c.phase=27;return ReadIndexStep(c,ReadIndexNeed::ModelKind,0u64);}
+ if(c.phase==29){c.phase=28;return ReadIndexStep(c,ReadIndexNeed::BorrowModel,0u64);}
+ if(facts.kind==3&&c.phase==27){if(c.model!=0){c.phase=29;return ReadIndexStep(c,ReadIndexNeed::SetPlace,0u64);}c.phase=28;return ReadIndexStep(c,ReadIndexNeed::BorrowModel,0u64);}return ReadIndexStep(c,ReadIndexNeed::Return,0u64);
+}
