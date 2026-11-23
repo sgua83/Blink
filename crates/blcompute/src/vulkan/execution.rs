@@ -295,7 +295,7 @@ impl ExecutionResources {
         }
     }
 }
-enum DiscardedDataset {
+pub(super) enum DiscardedDataset {
     TransferTargets {
         _pages: Vec<Allocation>,
         _instance_pointers: Option<Allocation>,
@@ -307,6 +307,45 @@ enum DiscardedDataset {
         _instances: Option<ray::InstanceInput>,
     },
     Read { _source: ReadDataset },
+}
+impl DatasetStorage {
+    pub(super) fn into_retirement(self) -> (Option<HostDatasetLayout>, DiscardedDataset) {
+        match self {
+            Self::Owned(GpuStorage {
+                allocation, pages, ty, views: Views { sources, bindings }, instances, ..
+            }) => (
+                Some(HostDatasetLayout { ty, bindings }),
+                DiscardedDataset::Owned {
+                    _binding_table: allocation,
+                    _pages: pages,
+                    _sources: sources,
+                    _instances: instances,
+                },
+            ),
+            Self::Read(source) => (None, DiscardedDataset::Read { _source: source }),
+        }
+    }
+}
+impl DiscardedDataset {
+    pub(super) fn retire(self, execution: Option<&Execution>) {
+        let Some(execution) = execution else { return; };
+        if matches!(execution.point.result.get(), Some(0 | -4)) {
+            return;
+        }
+        let storage = match self {
+            Self::Owned { _pages, _instances, .. }
+                if matches!(execution.resources.borrow().as_ref(), Some(ExecutionResources::DatasetTransfer { .. })) =>
+            {
+                // Initialization writes pages and instance pointers without following the binding table.
+                Self::TransferTargets {
+                    _pages,
+                    _instance_pointers: _instances.and_then(|input| input.pointers),
+                }
+            }
+            storage => storage,
+        };
+        execution.discarded.borrow_mut().push(storage);
+    }
 }
 
 pub(super) struct Execution {
@@ -442,34 +481,6 @@ impl Execution {
             self.resources.borrow().as_ref(),
             Some(ExecutionResources::DatasetTransfer { covers_view_sources: true, .. }),
         )
-    }
-    pub fn discard(&self, storage: DatasetStorage) {
-        if matches!(self.point.result.get(), Some(0 | -4)) {
-            drop(storage);
-            return;
-        }
-        let storage = match storage {
-            DatasetStorage::Owned(GpuStorage { pages, instances, .. })
-                if matches!(self.resources.borrow().as_ref(), Some(ExecutionResources::DatasetTransfer { .. })) =>
-            {
-                // Initialization writes the destination pages and, for instances,
-                // the pointer buffer. It never reads the binding table or follows its addresses.
-                DiscardedDataset::TransferTargets {
-                    _pages: pages,
-                    _instance_pointers: instances.and_then(|input| input.pointers),
-                }
-            }
-            DatasetStorage::Owned(GpuStorage {
-                allocation, pages, views: Views { sources, .. }, instances, ..
-            }) => DiscardedDataset::Owned {
-                _binding_table: allocation,
-                _pages: pages,
-                _sources: sources,
-                _instances: instances,
-            },
-            DatasetStorage::Read(source) => DiscardedDataset::Read { _source: source },
-        };
-        self.discarded.borrow_mut().push(storage);
     }
     pub fn discard_structure(&self, storage: ray::StructureStorage) {
         if !matches!(self.point.result.get(), Some(0 | -4))

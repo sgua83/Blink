@@ -249,6 +249,28 @@ pub(super) struct Readback<'a> {
     commands: Option<Commands>,
     staging: Option<Allocation>,
 }
+struct ReadbackPayload {
+    stride: u32,
+    count: u32,
+    words: Vec<u32>,
+    sources: Vec<crate::ReadDataset>,
+}
+impl ReadbackPayload {
+    fn finish(self, layout: HostDatasetLayout) -> Dataset {
+        let mut target = Dataset {
+            ty: layout.ty,
+            stride: self.stride,
+            count: self.count,
+            words: self.words,
+            views: Views::default(),
+        };
+        target.attach_views(Views {
+            sources: self.sources,
+            bindings: layout.bindings,
+        });
+        target
+    }
+}
 impl<'a> Readback<'a> {
     pub(super) fn new(device: &'a Device) -> Self {
         Self {
@@ -262,7 +284,10 @@ impl<'a> Readback<'a> {
 
     pub(super) fn download_cpu(&mut self, data: GpuDataset) -> Result<CpuDataset> {
         match &*data.storage {
-            DatasetStorage::Owned(_) => self.download_graph(&data).map(Into::into),
+            DatasetStorage::Owned(_) => {
+                let payload = self.read_graph(&data)?;
+                Ok(payload.finish(data.into_readback_layout()).into())
+            }
             DatasetStorage::Read(source) => {
                 let key = Rc::as_ptr(&source.0) as usize;
                 self.download_read(&data, key).map(Into::into)
@@ -285,30 +310,33 @@ impl<'a> Readback<'a> {
     }
 
     pub(super) fn download_graph(&mut self, data: &GpuDataset) -> Result<Dataset> {
+        let payload = self.read_graph(data)?;
+        Ok(payload.finish(HostDatasetLayout {
+            ty: data.ty.clone(),
+            bindings: data.views.bindings.clone(),
+        }))
+    }
+
+    fn read_graph(&mut self, data: &GpuDataset) -> Result<ReadbackPayload> {
         let previous = Execution::borrow_synchronous(data.dependency())?;
         let mut sources = Vec::with_capacity(data.views.sources.len());
         for source in &data.views.sources {
             let key = Rc::as_ptr(&source.0) as usize;
             sources.push(self.download_read(&source.0, key)?);
         }
-        let mut target = Dataset {
-            ty: data.ty.clone(),
-            stride: data.stride,
-            count: data.count,
-            words: self.read_payload(data, previous)?,
-            views: Views::default(),
-        };
+        let mut words = self.read_payload(data, previous)?;
         // 原生实例尾部不是可移植数据；主机只接收 B 声明的矩阵。
         if data.instances.is_some() {
-            for record in target.words.chunks_exact_mut(16) {
+            for record in words.chunks_exact_mut(16) {
                 record[12..16].fill(0);
             }
         }
-        target.attach_views(Views {
+        Ok(ReadbackPayload {
+            stride: data.stride,
+            count: data.count,
+            words,
             sources,
-            bindings: data.views.bindings.clone(),
-        });
-        Ok(target)
+        })
     }
 
     fn read_payload(&mut self, data: &GpuDataset, mut previous: Option<&Execution>) -> Result<Vec<u32>> {

@@ -1145,6 +1145,10 @@ enum DatasetStorage {
     Owned(GpuStorage),
     Read(ReadDataset),
 }
+struct HostDatasetLayout {
+    ty: Ty,
+    bindings: Vec<(usize, usize)>,
+}
 /// 不透明物理存储；可读借用不允许交换存储与它的执行寿命。
 #[doc(hidden)]
 pub struct GpuStorage {
@@ -1181,13 +1185,10 @@ impl std::ops::Deref for GpuDataset {
 }
 impl Drop for GpuDataset {
     fn drop(&mut self) {
-        // Rust 唯一析构入口移交一次物理存储；外层不再重复释放页和依赖。
         let storage = unsafe { ManuallyDrop::take(&mut self.storage) };
-        if let Some(execution) = &self.last_use {
-            execution.discard(storage);
-        } else {
-            drop(storage);
-        }
+        let (layout, resources) = storage.into_retirement();
+        drop(layout);
+        resources.retire(self.last_use.as_deref());
     }
 }
 #[derive(Clone)]
@@ -1258,6 +1259,15 @@ impl ReadDataset {
     }
 }
 impl GpuDataset {
+    fn into_readback_layout(self) -> HostDatasetLayout {
+        // The consuming readback takes both fields and replaces the normal Drop path.
+        let mut owner = ManuallyDrop::new(self);
+        let execution = owner.last_use.take();
+        let storage = unsafe { ManuallyDrop::take(&mut owner.storage) };
+        let (layout, resources) = storage.into_retirement();
+        resources.retire(execution.as_deref());
+        layout.expect("the readback consumed an owned dataset")
+    }
     pub(crate) fn storage_address(&self) -> u64 {
         self.page_array_address() - u64::from(blanguage::spirv::BINDING_BYTES)
     }
