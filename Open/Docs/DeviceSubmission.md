@@ -28,4 +28,8 @@ Swapchain持有本次已取得的图像和acquire信号，拷贝由队列接受�
 
 `present(&GpuDataset)`与`try_present`可在同一交换链交替使用。同步入口在返回前沿原执行结束已提交复制对源的借用，即使呈现失败或首次等待返回非终态错误。呈现失败时交回原呈现错误，否则交回复制等待的结果。异步入口交回普通呈现错误时无需等待源复制；驱动的呈现调用本身可能阻塞，设备丢失仍沿原逻辑设备退役。[Khronos队列呈现](https://docs.vulkan.org/refpages/latest/refpages/source/vkQueuePresentKHR.html)
 
-获取前的输入拒绝或获取返回错误时，交回原诊断。取得图像之后录制、拷贝提交或队列呈现失败时，调用者收到原诊断，结束当前链并显式重建。拷贝确定未获队列接受且逻辑设备仍活动时，析构排入单独的获取等待，实际完成后销毁原信号量和交换链。首次成功获取前可直接释放已经创建的本地句柄；成功获取后的交换链析构结束实际设备使用，再销毁呈现资源。设备丢失时复用原逻辑设备退役结果。原生获取要求信号量未触发且无未完成操作。[Khronos图像获取](https://docs.vulkan.org/refpages/latest/refpages/source/vkAcquireNextImageKHR.html) 多队列、动态extent及完整引擎调度仍未完成。
+获取前的输入拒绝或获取返回错误时，交回原诊断。取得图像之后录制、拷贝提交或队列呈现失败时，调用者结束当前链并显式重建。析构先结束该链原生资源的使用。首次成功获取前可直接销毁已创建的句柄。从未入队呈现时，若拷贝未获队列接受，析构以带 Fence 的获取等待结束原信号的使用。若拷贝已获队列接受，析构沿原复制执行确认交换链图像的使用结束。设备丢失时复用原逻辑设备退役结果。[Khronos图像获取](https://docs.vulkan.org/refpages/latest/refpages/source/vkAcquireNextImageKHR.html)
+
+设备按实际实例扩展与物理设备特性启用 KHR 或 EXT 的 swapchain maintenance1。支持该特性时，Swapchain 持有每份已入队呈现的 Fence，轮询确认后复用，正常 `try_present` 无需为持有或复用 Fence 增设同步等待。呈现引擎报告图像过期或表面丢失时，已经入队的呈现仍交接原 Fence。关闭时以同一链、同一队列上尚未确认的最后一份呈现 Fence 收齐呈现资源的使用，并结束尚未交给呈现的获取或复制。驱动继续拥有上屏过程及图像载荷。[Khronos呈现 Fence](https://docs.vulkan.org/refpages/latest/refpages/source/VkSwapchainPresentFenceInfoKHR.html)
+
+无扩展的设备在交换链曾实际入队呈现时沿基础兼容路径调用 `vkDeviceWaitIdle` 后销毁资源。基础 Vulkan 缺少等价的呈现资源完成点，该路径依赖驱动的兼容行为。多队列、动态extent及完整引擎调度仍未完成。[Khronos交换链资源退出](https://docs.vulkan.org/guide/latest/swapchain_semaphore_reuse.html#_vk_ext_swapchain_maintenance1_extension)

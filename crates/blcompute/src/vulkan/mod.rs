@@ -78,6 +78,7 @@ struct InstanceOwner {
     destroy: DestroyInstance,
     library: Library,
     presentation: bool,
+    present_maintenance: present::MaintenanceExtensions,
 }
 impl Drop for InstanceOwner {
     fn drop(&mut self) {
@@ -112,10 +113,12 @@ impl Instance {
             app.pApplicationName = c"BLCompute".as_ptr();
             app.pEngineName = c"BLCompute".as_ptr();
             app.apiVersion = (1 << 22) | (2 << 12);
-            let extensions = if presentation {
-                vec![c"VK_KHR_surface".as_ptr(), c"VK_KHR_win32_surface".as_ptr()]
+            let mut extensions = Vec::new();
+            let present_maintenance = if presentation {
+                extensions.extend([c"VK_KHR_surface".as_ptr(), c"VK_KHR_win32_surface".as_ptr()]);
+                present::MaintenanceExtensions::enable(&library, &mut extensions)?
             } else {
-                Vec::new()
+                present::MaintenanceExtensions::default()
             };
             let mut info: VkInstanceCreateInfo = zero();
             info.sType = 1;
@@ -131,6 +134,7 @@ impl Instance {
                     destroy,
                     library,
                     presentation,
+                    present_maintenance,
                 }),
             })
         }
@@ -316,6 +320,7 @@ struct Inner {
     physical: VkPhysicalDevice,
     queue: VkQueue,
     family: u32,
+    present_fences: bool,
     memory: VkPhysicalDeviceMemoryProperties,
     memory_budget: Option<memory::BudgetQuery>,
     buffer_memory: RefCell<buffer_memory::Pool>,
@@ -341,6 +346,17 @@ struct Inner {
     submission_sequence: Cell<Option<u64>>,
 }
 impl Inner {
+    fn create_fence(&self) -> Result<VkFence> {
+        let mut fence = 0;
+        let mut info: VkFenceCreateInfo = zero();
+        info.sType = 8;
+        let result = unsafe {
+            (self.functions.vkCreateFence)(self.owner.device, &info, null(), &mut fence)
+        };
+        check(result, "vkCreateFence")?;
+        Ok(fence)
+    }
+
     fn queue_lost(&self) -> bool {
         self.submission_sequence.get().is_none()
     }
@@ -904,6 +920,22 @@ impl Device {
                     Some(memory::BudgetQuery::load(&owner)?)
                 } else { None };
                 let max_buffer_size = memory::max_buffer_size(&owner, physical, properties.apiVersion)?;
+                let mut maintenance = present::MaintenanceFeatures {
+                    kind: 1000275000,
+                    next: null_mut(),
+                    enabled: 0,
+                };
+                if let Some(extension) = owner.present_maintenance.device_extension(extensions) {
+                    let mut query: VkPhysicalDeviceFeatures2 = zero();
+                    query.sType = 1000059000;
+                    query.pNext = (&mut maintenance as *mut present::MaintenanceFeatures).cast();
+                    features_fn(physical, &mut query);
+                    if maintenance.enabled != 0 {
+                        device_extensions.push(extension.as_ptr());
+                        maintenance.next = features.pNext;
+                        features.pNext = (&mut maintenance as *mut present::MaintenanceFeatures).cast();
+                    }
+                }
                 let mut ci: VkDeviceCreateInfo = zero();
                 ci.sType = 3;
                 ci.pNext = (&features as *const VkPhysicalDeviceFeatures2).cast();
@@ -938,6 +970,7 @@ impl Device {
                         physical,
                         queue,
                         family: family as u32,
+                        present_fences: maintenance.enabled != 0,
                         memory,
                         memory_budget,
                         buffer_memory: RefCell::default(),

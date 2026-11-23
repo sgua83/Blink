@@ -1,5 +1,63 @@
 use super::*;
-use std::task::Poll;
+use std::{collections::VecDeque, rc::Weak, task::Poll};
+
+#[derive(Default)]
+pub(super) struct MaintenanceExtensions {
+    khr: bool,
+    ext: bool,
+}
+impl MaintenanceExtensions {
+    pub(super) fn enable(library: &Library, extensions: &mut Vec<*const c_char>) -> Result<Self> {
+        let enumerate: unsafe extern "system" fn(*const c_char, *mut u32, *mut ExtensionProperties) -> i32 =
+            unsafe { library.get(null_mut(), c"vkEnumerateInstanceExtensionProperties")? };
+        let mut count = 0;
+        check(
+            unsafe { enumerate(null(), &mut count, null_mut()) },
+            "vkEnumerateInstanceExtensionProperties(count)",
+        )?;
+        let mut available: Vec<ExtensionProperties> = (0..count).map(|_| zero()).collect();
+        check(
+            unsafe { enumerate(null(), &mut count, available.as_mut_ptr()) },
+            "vkEnumerateInstanceExtensionProperties",
+        )?;
+        let available = &available[..count as usize];
+        let has = |name| available.iter().any(|e| unsafe { CStr::from_ptr(e.name.as_ptr()) } == name);
+        if !has(c"VK_KHR_get_surface_capabilities2") {
+            return Ok(Self::default());
+        }
+        let khr = has(c"VK_KHR_surface_maintenance1");
+        let ext = has(c"VK_EXT_surface_maintenance1");
+        if khr || ext {
+            extensions.push(c"VK_KHR_get_surface_capabilities2".as_ptr());
+        }
+        if khr {
+            extensions.push(c"VK_KHR_surface_maintenance1".as_ptr());
+        }
+        if ext {
+            extensions.push(c"VK_EXT_surface_maintenance1".as_ptr());
+        }
+        Ok(Self { khr, ext })
+    }
+
+    pub(super) fn device_extension(&self, available: &[ExtensionProperties]) -> Option<&'static CStr> {
+        [
+            (self.khr, c"VK_KHR_swapchain_maintenance1"),
+            (self.ext, c"VK_EXT_swapchain_maintenance1"),
+        ]
+        .into_iter()
+        .find_map(|(enabled, name)| {
+            (enabled && available.iter().any(|e| unsafe { CStr::from_ptr(e.name.as_ptr()) } == name))
+                .then_some(name)
+        })
+    }
+}
+
+#[repr(C)]
+pub(super) struct MaintenanceFeatures {
+    pub kind: u32,
+    pub next: *mut c_void,
+    pub enabled: u32,
+}
 
 #[link(name = "user32")]
 unsafe extern "system" {
@@ -97,6 +155,13 @@ pub(super) struct PresentInfo {
     indices: *const u32,
     results: *mut i32,
 }
+#[repr(C)]
+struct PresentFenceInfo {
+    kind: u32,
+    next: *const c_void,
+    chain_count: u32,
+    fences: *const VkFence,
+}
 type DestroySurface = unsafe extern "system" fn(VkInstance, u64, *const c_void);
 
 /// 两者均成功取得并提交图像；Suboptimal保留WSI报告的非最优表面事实。
@@ -116,11 +181,16 @@ impl PresentStatus {
 }
 
 enum Acquisition {
-    Unused,
     Idle,
     Acquired,
     CopyPending(Rc<Execution>),
-    Failed,
+    Failed(Option<Weak<Execution>>),
+}
+
+enum PresentCompletion {
+    NoPresent,
+    Unfenced,
+    Fenced(VecDeque<VkFence>),
 }
 
 struct PresentCopy {
@@ -141,6 +211,7 @@ pub struct Swapchain {
     acquired: u64,
     rendered: Vec<u64>,
     acquisition: Acquisition,
+    presentation: PresentCompletion,
 }
 impl Device {
     /// 窗口必须在 Swapchain 析构之后销毁；调用者拥有原生窗口生命周期。
@@ -199,7 +270,12 @@ impl Device {
                 images: Vec::new(),
                 acquired: 0,
                 rendered: Vec::new(),
-                acquisition: Acquisition::Unused,
+                acquisition: Acquisition::Idle,
+                presentation: if self.inner.present_fences {
+                    PresentCompletion::Fenced(VecDeque::new())
+                } else {
+                    PresentCompletion::NoPresent
+                },
             };
             let info = Win32SurfaceInfo {
                 kind: 1000009000,
@@ -362,7 +438,7 @@ impl Swapchain {
     }
     fn ready_for_acquire(&mut self, wait: bool) -> Result<bool> {
         match &self.acquisition {
-            Acquisition::Unused | Acquisition::Idle => Ok(true),
+            Acquisition::Idle => Ok(true),
             Acquisition::CopyPending(previous) => {
                 if wait {
                     previous.wait()?;
@@ -372,7 +448,7 @@ impl Swapchain {
                 self.acquisition = Acquisition::Idle;
                 Ok(true)
             }
-            Acquisition::Acquired | Acquisition::Failed => Err(error("交换链在取得图像后呈现失败，须结束并重新创建")),
+            Acquisition::Acquired | Acquisition::Failed(_) => Err(error("交换链在取得图像后呈现失败，须结束并重新创建")),
         }
     }
     fn submit_copy(
@@ -483,14 +559,27 @@ impl Swapchain {
                 &[signal],
             )?;
             // The accepted copy owns the wait on the acquire semaphore.
-            self.acquisition = Acquisition::Failed;
+            self.acquisition = Acquisition::Failed(
+                (!matches!(self.presentation, PresentCompletion::Unfenced))
+                    .then(|| Rc::downgrade(&execution)),
+            );
             Ok(Poll::Ready(PresentCopy { index, acquired, execution }))
         }
     }
-    fn queue_present(&self, index: u32, acquired: PresentStatus) -> Result<PresentStatus> {
+    fn queue_present(&mut self, index: u32, acquired: PresentStatus) -> Result<PresentStatus> {
+        let fence = match &mut self.presentation {
+            PresentCompletion::Fenced(pending) => take_present_fence(&self.inner, pending)?,
+            PresentCompletion::NoPresent | PresentCompletion::Unfenced => 0,
+        };
+        let fence_info = PresentFenceInfo {
+            kind: 1000275001,
+            next: null(),
+            chain_count: 1,
+            fences: &fence,
+        };
         let info = PresentInfo {
             kind: 1000001001,
-            next: null(),
+            next: if fence != 0 { (&fence_info as *const PresentFenceInfo).cast() } else { null() },
             wait_count: 1,
             wait: &self.rendered[index as usize],
             chain_count: 1,
@@ -499,7 +588,19 @@ impl Swapchain {
             results: null_mut(),
         };
         let result = unsafe { (self.functions.vkQueuePresentKHR)(self.inner.queue, &info) };
-        let queued = PresentStatus::read(self.inner.observe_device_loss(result), "vkQueuePresentKHR")?;
+        let result = self.inner.observe_device_loss(result);
+        // These rejection results still enqueue the wait on the copy signal.
+        if matches!(result, 0 | 1000001003 | -1000000000 | -1000001004 | -1000255000 | -1000208000) {
+            if let PresentCompletion::Fenced(pending) = &mut self.presentation {
+                pending.push_back(fence);
+            } else {
+                self.presentation = PresentCompletion::Unfenced;
+            }
+            self.acquisition = Acquisition::Failed(None);
+        } else if fence != 0 {
+            destroy_present_fence(&self.inner, fence);
+        }
+        let queued = PresentStatus::read(result, "vkQueuePresentKHR")?;
         if acquired == PresentStatus::Suboptimal {
             Ok(acquired)
         } else {
@@ -507,8 +608,44 @@ impl Swapchain {
         }
     }
 }
+
+fn take_present_fence(inner: &Inner, pending: &mut VecDeque<VkFence>) -> Result<VkFence> {
+    if let Some(&oldest) = pending.front() {
+        let device = inner.owner.device;
+        let functions = &inner.functions;
+        let status = unsafe { (functions.vkGetFenceStatus)(device, oldest) };
+        if status != 1 {
+            check(inner.observe_device_loss(status), "vkGetFenceStatus(present)")?;
+            pending.pop_front();
+            let reset = unsafe { (functions.vkResetFences)(device, 1, &oldest) };
+            if let Err(error) = check(inner.observe_device_loss(reset), "vkResetFences(present)") {
+                destroy_present_fence(inner, oldest);
+                return Err(error);
+            }
+            return Ok(oldest);
+        }
+    }
+    pending.try_reserve(1)?;
+    inner.create_fence()
+}
+
+fn wait_present_fence(inner: &Inner, fence: VkFence) {
+    let result = unsafe {
+        (inner.functions.vkWaitForFences)(inner.owner.device, 1, &fence, 1, u64::MAX)
+    };
+    if !matches!(inner.observe_device_loss(result), 0 | -4) {
+        eprintln!("呈现资源终止：vkWaitForFences={result}");
+        std::process::abort();
+    }
+}
+
+fn destroy_present_fence(inner: &Inner, fence: VkFence) {
+    unsafe { (inner.functions.vkDestroyFence)(inner.owner.device, fence, null()); }
+}
+
 impl Drop for Swapchain {
     fn drop(&mut self) {
+        let needs_idle = matches!(self.presentation, PresentCompletion::Unfenced);
         unsafe {
             let f = &self.functions;
             let d = self.inner.owner.device;
@@ -522,14 +659,45 @@ impl Drop for Swapchain {
                     pWaitDstStageMask: &stage,
                     ..zero()
                 };
-                let result = self.inner.submit_queue(0, Some(&submit));
-                if !matches!(result, 0 | -4) {
-                    eprintln!("窗口获取信号量无法结束：vkQueueSubmit={result}");
-                    std::process::abort();
+                if !needs_idle {
+                    let completion = self.inner.next_submission().and_then(|next| {
+                        Completion::submit(self.inner.clone(), next, Some(&submit))
+                    });
+                    match completion {
+                        Ok(completion) => completion.finish_for_drop(),
+                        Err(error) if !self.inner.queue_lost() => {
+                            eprintln!("窗口获取信号量无法结束：{error}");
+                            std::process::abort();
+                        }
+                        Err(_) => {}
+                    }
+                } else {
+                    let result = self.inner.submit_queue(0, Some(&submit));
+                    if !matches!(result, 0 | -4) {
+                        eprintln!("窗口获取信号量无法结束：vkQueueSubmit={result}");
+                        std::process::abort();
+                    }
                 }
             }
-            if !matches!(self.acquisition, Acquisition::Unused) {
+            if needs_idle {
                 self.inner.wait_idle_for_release();
+            } else {
+                if let PresentCompletion::Fenced(pending) = &mut self.presentation {
+                    // The last present fence covers earlier presents to this chain on the same queue.
+                    if !self.inner.queue_lost()
+                        && let Some(&last) = pending.back()
+                    {
+                        wait_present_fence(&self.inner, last);
+                    }
+                    for fence in pending.drain(..) {
+                        destroy_present_fence(&self.inner, fence);
+                    }
+                }
+                if let Acquisition::Failed(Some(copy)) = &self.acquisition
+                    && let Some(copy) = copy.upgrade()
+                {
+                    copy.point.finish_for_drop();
+                }
             }
             for s in &self.rendered {
                 (f.vkDestroySemaphore)(d, *s, null());

@@ -93,15 +93,7 @@ impl Completion {
     }
 
     fn new(inner: Rc<Inner>, sequence: u64) -> Result<Self> {
-        let mut fence = 0;
-        let mut info: VkFenceCreateInfo = zero();
-        info.sType = 8;
-        unsafe {
-            check(
-                (inner.functions.vkCreateFence)(inner.owner.device, &info, null(), &mut fence),
-                "vkCreateFence",
-            )?;
-        }
+        let fence = inner.create_fence()?;
         Ok(Self {
             inner,
             fence: Cell::new(fence),
