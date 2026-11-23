@@ -708,113 +708,18 @@ async fn expand_stages(
             }
         }
         let mut first_stage = program.stages.len();
-        match statement.kind() {
-            StmtKind::Return(None) => return Ok(true),
-            StmtKind::Let(annotation, name, expression) => {
-                if env.contains_key(name) {
-                    return d.source.fail(statement.span(), "B125", format!("重复局部变量或覆盖参数 {name}"));
-                }
-                let annotation=match annotation.as_ref() {
-                    Some(ty)=>Some(unsafe { world.call(instance.bindings.type_name(world,ty,
-                        (&d.source,&d.module,&d.imports),statement.span())).await }?),
-                    None=>None,
-                };
-                let value = unsafe { world.call(constant::stage_expression(
-                    world, instance, env, program, &expression, annotation.as_ref(), domain_path,
-                )).await }?;
-                env.insert(name.to_string(), value);
-            }
-            StmtKind::If(condition, yes, no) => {
-                let Root::Literal(ty, words, evaluation) = unsafe { world.call(stage_root(world, instance, env, program, &condition, domain_path)).await }? else {
-                    return d.source.fail(condition.span(), "B251", "阶段 if 条件必须是编译期 bool；动态条件放在 parallel 或CPU主流程中");
-                };
-                if ty != Ty::scalar(Scalar::Bool) {
-                    return d.source.fail(condition.span(), "B251", "阶段 if 条件必须是编译期 bool");
-                }
-                let selected = if words[0] == 0 { no } else { yes };
-                let mut child = env.clone();
-                let first_call = calls.len();
-                let returned = unsafe { world.call(expand_stages(world, input, selected.iter(), &mut child, program, stack, boundary, facts, calls, domain_path, functions, scopes)).await }?;
-                program.generated_origin = Some(Arc::new(GeneratedOrigin {
-                    reason: GenerationReason::StageIfSelection,
-                    trigger: Some(GenerationAnchor::StageIfSelection {
-                        condition: input.operation_source(condition.span(), SourceSyntax::Expression, domain_path),
-                        value: words[0] != 0, evaluation, returned,
-                        stages: program.stages[first_stage..].iter().map(|stage| OperationOrigin {
-                            source_site: stage.operation_source.clone(), generated_origin: stage.generated_origin.clone(),
-                        }).collect(),
-                        calls: calls[first_call..].iter().map(|call| OperationOrigin {
-                            source_site: call.source.clone(), generated_origin: None,
-                        }).collect(),
-                        retained: program.generated_origin.clone(),
-                    }),
-                }));
-                if returned {
-                    return Ok(true);
-                }
-                first_stage = program.stages.len();
-            }
-            StmtKind::For(name, first, Some(last), body) => {
-                if env.contains_key(name) {
-                    return d.source.fail(
-                        statement.span(),
-                        "B125",
-                        format!("重复阶段 for 计数器或覆盖参数 {name}"),
-                    );
-                }
-                let bound = async |expr: &Expr| -> Result<StageForBound> {
-                    match unsafe { world.call(stage_root(world, instance, env, program, expr, domain_path)).await }? {
-                        Root::Literal(ty, words, evaluation) if ty == Ty::scalar(Scalar::U32) => Ok(StageForBound {
-                            expression: input.operation_source(expr.span(), SourceSyntax::Expression, domain_path),
-                            value: words[0] as u32, evaluation,
-                        }),
-                        _ => d.source.fail(
-                            expr.span(),
-                            "B251",
-                            "program 阶段 for 的范围必须是编译期 u32；动态循环放在 parallel 中",
-                        ),
-                    }
-                };
-                let first = bound(&first).await?;
-                let last = bound(&last).await?;
-                let retained = program.generated_origin.take();
-                let mut iterations = Vec::new();
-                let mut returned = false;
-                for index in first.value..last.value {
-                    let first_stage = program.stages.len();
-                    let first_call = calls.len();
-                    let mut child = env.clone();
-                    child.insert(
-                        name.to_string(),
-                        Root::Literal(Ty::scalar(Scalar::U32), vec![Bits::from(index)], None),
-                    );
-                    returned = unsafe { world.call(expand_stages(
-                        world, input, body.iter(), &mut child, program, stack, boundary, facts, calls, domain_path, functions, scopes,
-                    )).await }?;
-                    iterations.push(StageForIteration {
-                        index, returned,
-                        stages: program.stages[first_stage..].iter().map(|stage| OperationOrigin {
-                            source_site: stage.operation_source.clone(), generated_origin: stage.generated_origin.clone(),
-                        }).collect(),
-                        calls: calls[first_call..].iter().map(|call| OperationOrigin {
-                            source_site: call.source.clone(), generated_origin: None,
-                        }).collect(),
-                        expansion: program.generated_origin.take(),
-                    });
-                    if returned { break; }
-                }
-                program.generated_origin = Some(Arc::new(GeneratedOrigin {
-                    reason: GenerationReason::StageForExpansion,
-                    trigger: Some(GenerationAnchor::StageForExpansion {
-                        statement: input.operation_source(statement.span(), SourceSyntax::Statement, domain_path),
-                        counter: name.into(), first, last, iterations, retained,
-                    }),
-                }));
-                if returned {
-                    return Ok(true);
-                }
-                first_stage = program.stages.len();
-            }
+        let start=unsafe{stage_control_step(StageControlCursor{phase:0,index:0,last:0},statement.signature_node(),StageControlFacts{present:0,literal:0,same_type:0,bits:0,returned:0})};
+        let controlled=match start.need {
+            StageControlNeed::Unhandled=>None,
+            _=>unsafe { world.call(expand_stage_control(
+                world, input, &statement, env, program, stack, boundary, facts, calls,
+                domain_path, functions, scopes, start, first_stage,
+            )).await }?,
+        };
+        if let Some((returned, after)) = controlled {
+            if returned { return Ok(true); }
+            first_stage = after;
+        } else { match statement.kind() {
             StmtKind::Parallel(name, syntax, body) => {
                 begin_segment(program, facts, calls);
                 let data = &syntax.dataset();
@@ -1172,17 +1077,8 @@ async fn expand_stages(
                         "program 顶层表达阶段；局部控制流放在 parallel 内"),
                 }
             }
-            StmtKind::Phase => {
-                *boundary = true;
-            }
-            _ => {
-                return d.source.fail(
-                    statement.span(),
-                    "B119",
-                    "program 顶层表达阶段；局部控制流放在 parallel 内",
-                );
-            }
-        }
+            _ => unsafe { std::hint::unreachable_unchecked() },
+        }}
         let mut add = |binding, domain, first, ty: &Ty| facts.outputs.push(crate::module::domain::Output {
             binding,
             domain,
@@ -1215,6 +1111,91 @@ async fn expand_stages(
     }
     Ok(false)
 }
+async fn expand_stage_control(
+    world:&World,input:DomainInput<'_>,statement:&Stmt,env:&mut BTreeMap<String,Root>,program:&mut Program,
+    stack:&mut Vec<String>,boundary:&mut bool,facts:&mut prefix::Facts,calls:&mut Vec<DomainCall>,
+    path:&Arc<[DomainSite]>,functions:&mut native_function::Module,scopes:&mut BTreeMap<usize,RangeContext>,start:StageControlStep,mut first_stage:usize,
+)->Result<Option<(bool,usize)>> {
+    let instance=input.owner();let d=&instance.definition;let source=statement.source_view();
+    let mut step=start;
+    let mut control=StageControlFacts{present:0,literal:0,same_type:0,bits:0,returned:0};
+    let mut annotation=None;let mut value=None;let mut literal=None;let mut evaluation=None;
+    let mut first=None;let mut last=None;let mut retained=None;let mut iterations=Vec::new();
+    let mut first_call=0;
+    loop {let cursor=step.cursor;match step.need {
+        StageControlNeed::Unhandled=>return Ok(None),
+        StageControlNeed::Invalid=>return d.source.fail(statement.span(),"B119","program 顶层表达阶段；局部控制流放在 parallel 内"),
+        StageControlNeed::Name=>control.present=u32::from(env.contains_key(source.text(step.name))),
+        StageControlNeed::BadLetName=>return d.source.fail(statement.span(),"B125",format!("重复局部变量或覆盖参数 {}",source.text(step.name))),
+        StageControlNeed::BadCounterName=>return d.source.fail(statement.span(),"B125",format!("重复阶段 for 计数器或覆盖参数 {}",source.text(step.name))),
+        StageControlNeed::Annotation=>{
+            let ty=statement.child::<crate::syntax::wire::TypeNode>(step.expression);
+            annotation=Some(unsafe{world.call(instance.bindings.type_name(world,&ty,(&d.source,&d.module,&d.imports),statement.span())).await}?);
+        },
+        StageControlNeed::LetValue=>{
+            let expression=statement.child(step.expression);
+            value=Some(unsafe{world.call(constant::stage_expression(world,instance,env,program,&expression,annotation.as_ref(),path)).await}?);
+            annotation.take();
+        },
+        StageControlNeed::Bind=>{env.insert(source.text(step.name).to_string(),value.take().unwrap());},
+        need@(StageControlNeed::Condition|StageControlNeed::First|StageControlNeed::Last)=>{
+            let expression=statement.child(step.expression);
+            let root=unsafe{world.call(stage_root(world,instance,env,program,&expression,path)).await}?;
+            let expected=match need{StageControlNeed::Condition=>Scalar::Bool,_=>Scalar::U32};
+            match root {
+                Root::Literal(ty,words,origin)=>{control.literal=1;control.same_type=u32::from(ty==Ty::scalar(expected));literal=Some((words,origin));},
+                _=>{control.literal=0;control.same_type=0;},
+            }
+        },
+        StageControlNeed::BadCondition=>{
+            let expression:Expr=statement.child(step.expression);
+            return d.source.fail(expression.span(),"B251","阶段 if 条件必须是编译期 bool；动态条件放在 parallel 或CPU主流程中");
+        },
+        StageControlNeed::BadBoolean=>{
+            let expression:Expr=statement.child(step.expression);return d.source.fail(expression.span(),"B251","阶段 if 条件必须是编译期 bool");
+        },
+        StageControlNeed::ConditionValue=>{let(words,origin)=literal.take().unwrap();control.bits=words[0]as u32;evaluation=origin;},
+        StageControlNeed::IfBody=>{
+            let body=statement.list::<crate::syntax::wire::StmtNode>(step.body);let mut child=env.clone();first_call=calls.len();
+            control.returned=u32::from(unsafe{world.call(expand_stages(world,input,body.iter(),&mut child,program,stack,boundary,facts,calls,path,functions,scopes)).await}?);
+        },
+        StageControlNeed::IfOrigin=>{
+            let expression:Expr=statement.child(step.expression);
+            program.generated_origin=Some(Arc::new(GeneratedOrigin{reason:GenerationReason::StageIfSelection,trigger:Some(GenerationAnchor::StageIfSelection{
+                condition:input.operation_source(expression.span(),SourceSyntax::Expression,path),value:control.bits!=0,evaluation:evaluation.take(),returned:control.returned!=0,
+                stages:program.stages[first_stage..].iter().map(|stage|OperationOrigin{source_site:stage.operation_source.clone(),generated_origin:stage.generated_origin.clone()}).collect(),
+                calls:calls[first_call..].iter().map(|call|OperationOrigin{source_site:call.source.clone(),generated_origin:None}).collect(),retained:program.generated_origin.clone(),
+            })}));first_stage=program.stages.len();
+        },
+        need@(StageControlNeed::FirstValue|StageControlNeed::LastValue)=>{
+            let expression:Expr=statement.child(step.expression);let(words,evaluation)=literal.take().unwrap();control.bits=words[0]as u32;
+            let bound=StageForBound{expression:input.operation_source(expression.span(),SourceSyntax::Expression,path),value:control.bits,evaluation};
+            match need{StageControlNeed::FirstValue=>first=Some(bound),_=>last=Some(bound)}
+        },
+        StageControlNeed::BadBound=>{
+            let expression:Expr=statement.child(step.expression);return d.source.fail(expression.span(),"B251","program 阶段 for 的范围必须是编译期 u32；动态循环放在 parallel 中");
+        },
+        StageControlNeed::BeginFor=>{retained=program.generated_origin.take();},
+        StageControlNeed::Iteration=>{
+            let body=statement.list::<crate::syntax::wire::StmtNode>(step.body);let mut child=env.clone();first_stage=program.stages.len();first_call=calls.len();
+            child.insert(source.text(step.name).to_string(),Root::Literal(Ty::scalar(Scalar::U32),vec![Bits::from(cursor.index)],None));
+            control.returned=u32::from(unsafe{world.call(expand_stages(world,input,body.iter(),&mut child,program,stack,boundary,facts,calls,path,functions,scopes)).await}?);
+        },
+        StageControlNeed::IterationOrigin=>iterations.push(StageForIteration{index:cursor.index,returned:control.returned!=0,
+            stages:program.stages[first_stage..].iter().map(|stage|OperationOrigin{source_site:stage.operation_source.clone(),generated_origin:stage.generated_origin.clone()}).collect(),
+            calls:calls[first_call..].iter().map(|call|OperationOrigin{source_site:call.source.clone(),generated_origin:None}).collect(),expansion:program.generated_origin.take(),
+        }),
+        StageControlNeed::ForOrigin=>{
+            program.generated_origin=Some(Arc::new(GeneratedOrigin{reason:GenerationReason::StageForExpansion,trigger:Some(GenerationAnchor::StageForExpansion{
+                statement:input.operation_source(statement.span(),SourceSyntax::Statement,path),counter:source.text(step.name).into(),first:first.take().unwrap(),last:last.take().unwrap(),iterations:std::mem::take(&mut iterations),retained:retained.take(),
+            })}));first_stage=program.stages.len();
+        },
+        StageControlNeed::Boundary=>{*boundary=true;},
+        StageControlNeed::Return=>return Ok(Some((true,first_stage))),
+        StageControlNeed::Complete=>return Ok(Some((false,first_stage))),
+    }step=unsafe{stage_control_step(cursor,statement.signature_node(),StageControlFacts{..control})};}
+}
+
 async fn stage_root(
     world: &World,
     instance: &crate::generics::Instance,
@@ -2775,6 +2756,11 @@ unsafe extern "C"{
 
 
 #[repr(C)]#[derive(Clone,Copy)]struct SourceValueCursor {phase:u32}
+#[repr(C)]#[derive(Clone,Copy)]struct StageControlCursor {phase:u32,index:u32,last:u32}
+#[repr(C)]struct StageControlFacts {present:u32,literal:u32,same_type:u32,bits:u32,returned:u32}
+#[repr(u32)]enum StageControlNeed {Unhandled,Invalid,Name,BadLetName,Annotation,LetValue,Bind,Condition,BadCondition,BadBoolean,ConditionValue,IfBody,IfOrigin,First,FirstValue,Last,LastValue,BadCounterName,BadBound,BeginFor,Iteration,IterationOrigin,ForOrigin,Boundary,Return,Complete}
+#[repr(C)]struct StageControlStep {cursor:StageControlCursor,need:StageControlNeed,name:crate::syntax::wire::Text,expression:u64,body:crate::syntax::wire::Slice}
+unsafe extern "C" {#[link_name="bootstrap.function_body::stage_control_step"]fn stage_control_step(state:StageControlCursor,source:crate::syntax::wire::SignatureNode,facts:StageControlFacts)->StageControlStep;}
 #[repr(C)]struct StageRootFacts {present:u32,constant:u32}
 #[repr(u32)]enum StageRootNeed {Binding,Bound,Scope,ScopeValue,Resolve,FunctionKind,Constant,Unknown,StaticU32,Number,Expression}
 #[repr(C)]struct StageRootStep {cursor:SourceValueCursor,need:StageRootNeed,spelling:crate::syntax::wire::Text,bits:u32}

@@ -1358,3 +1358,52 @@ extern "C" StageRootStep stage_root_step(LocalCursor cursor,SignatureNode source
  if(cursor.phase==3){if(facts.present!=0){result.cursor.phase=4;result.need=StageRootNeed::FunctionKind;}return result;}
  if(facts.constant!=0){result.need=StageRootNeed::Constant;}return result;
 }
+
+extern "C" StageControlStep stage_control_step(StageControlCursor state,SignatureNode source,StageControlFacts facts) on cpu {
+ StageControlStep result=StageControlStep(state,StageControlNeed::Complete,Text(0,Span(0u64,0u64)),0u64,Slice(0u64,0u64));
+ StmtNode statement=binding_node<StmtNode>(source.storage.nodes,source.offset);
+ match(statement.kind){
+  StmtKind::Let(value){
+   result.name=value.name;
+   if(state.phase==0){result.cursor.phase=1;result.need=StageControlNeed::Name;return result;}
+   if(state.phase==1){if(facts.present!=0){result.need=StageControlNeed::BadLetName;return result;}if(value.annotation.present!=0){result.cursor.phase=2;result.expression=value.annotation.value.offset;result.need=StageControlNeed::Annotation;return result;}}
+   if(state.phase==1||state.phase==2){result.cursor.phase=3;result.expression=value.value.offset;result.need=StageControlNeed::LetValue;return result;}
+   if(state.phase==3){result.cursor.phase=4;result.need=StageControlNeed::Bind;return result;}
+  }
+  StmtKind::If(value){
+   result.expression=value.condition.offset;
+   if(state.phase==0){result.cursor.phase=10;result.need=StageControlNeed::Condition;return result;}
+   if(state.phase==10){if(facts.literal==0){result.need=StageControlNeed::BadCondition;return result;}if(facts.same_type==0){result.need=StageControlNeed::BadBoolean;return result;}result.cursor.phase=11;result.need=StageControlNeed::ConditionValue;return result;}
+   if(state.phase==11){result.cursor.phase=12;result.need=StageControlNeed::IfBody;result.body=facts.bits==0?value.no:value.yes;return result;}
+   if(state.phase==12){result.cursor.phase=13;result.need=StageControlNeed::IfOrigin;return result;}
+   if(facts.returned!=0){result.need=StageControlNeed::Return;}
+  }
+  StmtKind::For(value){
+   result.name=value.name;result.body=value.body;result.expression=value.start.offset;
+   if(value.end.present==0){result.need=StageControlNeed::Invalid;return result;}
+   if(state.phase==0){result.cursor.phase=20;result.need=StageControlNeed::Name;return result;}
+   if(state.phase==20){if(facts.present!=0){result.need=StageControlNeed::BadCounterName;return result;}result.cursor.phase=21;result.need=StageControlNeed::First;return result;}
+   if(state.phase==21){if(facts.literal==0||facts.same_type==0){result.need=StageControlNeed::BadBound;return result;}result.cursor.phase=22;result.need=StageControlNeed::FirstValue;return result;}
+   if(state.phase==22){result.cursor.index=facts.bits;result.cursor.phase=23;result.expression=value.end.value.offset;result.need=StageControlNeed::Last;return result;}
+   if(state.phase==23||state.phase==24){result.expression=value.end.value.offset;}
+   if(state.phase==23){if(facts.literal==0||facts.same_type==0){result.need=StageControlNeed::BadBound;return result;}result.cursor.phase=24;result.need=StageControlNeed::LastValue;return result;}
+   if(state.phase==24){result.cursor.last=facts.bits;result.cursor.phase=25;result.need=StageControlNeed::BeginFor;return result;}
+   if(state.phase==26){result.cursor.phase=27;result.need=StageControlNeed::IterationOrigin;return result;}
+   if(state.phase==27){if(facts.returned!=0){result.cursor.phase=29;result.need=StageControlNeed::ForOrigin;return result;}result.cursor.index+=1;result.cursor.phase=25;}
+   if(result.cursor.phase==25){if(result.cursor.index<result.cursor.last){result.cursor.phase=26;result.need=StageControlNeed::Iteration;return result;}result.cursor.phase=29;result.need=StageControlNeed::ForOrigin;return result;}
+   if(facts.returned!=0){result.need=StageControlNeed::Return;}
+  }
+  StmtKind::Return(value){result.need=value.present==0?StageControlNeed::Return:StageControlNeed::Invalid;}
+  StmtKind::Phase(){if(state.phase==0){result.cursor.phase=40;result.need=StageControlNeed::Boundary;}}
+  StmtKind::Parallel(value){result.need=StageControlNeed::Unhandled;}
+  StmtKind::Expr(value){result.need=StageControlNeed::Unhandled;}
+  StmtKind::Declare(value){result.need=StageControlNeed::Invalid;}
+  StmtKind::Assign(value){result.need=StageControlNeed::Invalid;}
+  StmtKind::While(value){result.need=StageControlNeed::Invalid;}
+  StmtKind::Break(){result.need=StageControlNeed::Invalid;}
+  StmtKind::Continue(){result.need=StageControlNeed::Invalid;}
+  StmtKind::Match(value){result.need=StageControlNeed::Invalid;}
+  StmtKind::Seek(value){result.need=StageControlNeed::Invalid;}
+ }
+ return result;
+}

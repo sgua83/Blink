@@ -336,3 +336,9 @@ struct StageRootFacts {u32 present;u32 constant;};
 enum StageRootNeed:u32 {Binding=0;Bound=1;Scope=2;ScopeValue=3;Resolve=4;FunctionKind=5;Constant=6;Unknown=7;StaticU32=8;Number=9;Expression=10;};
 struct StageRootStep {LocalCursor cursor;StageRootNeed need;Text spelling;u32 bits;};
 extern "C" StageRootStep stage_root_step(LocalCursor cursor,SignatureNode source,StageRootFacts facts) on cpu;
+
+struct StageControlCursor {u32 phase;u32 index;u32 last;};
+struct StageControlFacts {u32 present;u32 literal;u32 same_type;u32 bits;u32 returned;};
+enum StageControlNeed:u32 {Unhandled=0;Invalid=1;Name=2;BadLetName=3;Annotation=4;LetValue=5;Bind=6;Condition=7;BadCondition=8;BadBoolean=9;ConditionValue=10;IfBody=11;IfOrigin=12;First=13;FirstValue=14;Last=15;LastValue=16;BadCounterName=17;BadBound=18;BeginFor=19;Iteration=20;IterationOrigin=21;ForOrigin=22;Boundary=23;Return=24;Complete=25;};
+struct StageControlStep {StageControlCursor cursor;StageControlNeed need;Text name;u64 expression;Slice body;};
+extern "C" StageControlStep stage_control_step(StageControlCursor state,SignatureNode source,StageControlFacts facts) on cpu;
