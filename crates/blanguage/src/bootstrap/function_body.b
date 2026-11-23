@@ -1245,3 +1245,26 @@ extern "C" ClearPrefixStep clear_prefix_step(LocalCursor cursor,StorageView sour
  if(c.phase==11){c.phase=12;result.cursor=c;result.need=ClearPrefixNeed::StageMap;result.boundary=1;return result;}
  result.need=ClearPrefixNeed::Output;return result;
 }
+
+extern "C" OrdinalStep ordinal_step(LocalCursor cursor,StorageView source,Slice arguments,OrdinalFacts facts) on cpu {
+ OrdinalStep result=OrdinalStep(cursor,OrdinalNeed::BadCursor,Text(0,Span(0u64,0u64)),0,0);
+ if(cursor.phase==0){
+  if(arguments.count!=1u64){result.need=OrdinalNeed::BadArguments;return result;}
+  ExprNode argument=binding_node<ExprNode>(source.nodes,binding_member(source.nodes,arguments,0u64));
+  result.need=OrdinalNeed::BadName;
+  match(argument.kind){
+   ExprKind::Name(value){result.cursor.phase=1;result.need=OrdinalNeed::Binding;result.name=value;}
+   ExprKind::Number(unused){}ExprKind::StaticU32(unused){}ExprKind::Bool(unused){}ExprKind::Member(unused){}ExprKind::Index(unused){}
+   ExprKind::Call(unused){}ExprKind::Invoke(unused){}ExprKind::Construct(unused){}ExprKind::Specialize(unused){}ExprKind::FunctionRef(unused){}
+   ExprKind::Cooperate(unused){}ExprKind::Target(unused){}ExprKind::Unary(unused){}ExprKind::Binary(unused){}ExprKind::Select(unused){}
+  }
+  return result;
+ }
+ if(facts.binding==2){
+  if(facts.place==1){result.need=OrdinalNeed::Application;result.minimum=facts.minimum;result.maximum=facts.maximum;}
+  if(facts.place==7){result.need=OrdinalNeed::Dataset;}
+  if(facts.place==4){result.need=OrdinalNeed::Tile;}
+ }
+ if(facts.binding==5&&facts.place==3){result.need=OrdinalNeed::View;result.maximum=facts.maximum==0?0:facts.maximum-1;}
+ return result;
+}

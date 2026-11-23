@@ -2717,50 +2717,26 @@ impl<'a> Builder<'a> {
         }}
     }
     fn ordinal_call(&mut self, args: &Expressions, span: Span) -> Result<Option<Value>> {
-        if args.len() != 1 {
-            return self.fail(span, "B168", "ordinal 需要一个有界游标");
-        }
-        let argument=args.at(0);
-        let ExprKind::Name(name) = argument.kind() else {
-            return self.fail(span, "B168", "ordinal 需要命名游标");
-        };
-        let (domain, index, proof) = match self.env.get(name).cloned() {
-            Some(Binding::Owned(OwnedBinding {
-                place:
-                    Place::ApplicationElement {
-                        identity,
-                        index,
-                        index_range,
-                        ..
-                    },
-                ..
-            })) => (
-                IndexDomain::ApplicationData(identity),
-                index,
-                bounds::Proof::unsigned(index_range.0, index_range.1),
-            ),
-            Some(Binding::Owned(OwnedBinding {
-                place: Place::Element { binding, index, .. },
-                ..
-            })) => (
-                IndexDomain::Data(binding),
-                index,
-                self.data_index_proof(binding),
-            ),
-            Some(Binding::Owned(OwnedBinding {
-                place: Place::TileElement { index, .. }, ..
-            })) => (IndexDomain::Tile, index, self.tile_index_proof()),
-            Some(Binding::ViewElement {
-                view,
-                element: OwnedBinding { place: Place::ViewElement { index, .. }, .. },
-            }) => {
-                let proof = bounds::Proof::unsigned(
-                    0,
-                    Self::view_length(&view).maximum().saturating_sub(1),
-                );
-                (IndexDomain::View(view.view_identity()), index, proof)
+        let source=args.source_view();let mut cursor=SourceValueCursor {phase:0};
+        let mut facts=OrdinalFacts {binding:0,place:0,minimum:0,maximum:0};let mut binding:Option<&Binding>=None;
+        let (domain,index,proof)=loop {
+            let step=unsafe {ordinal_step(cursor,source.storage(),args.source_slice(),OrdinalFacts {..facts})};cursor=step.cursor;
+            match (step.need,binding) {
+                (OrdinalNeed::BadArguments,_)=>return self.fail(span,"B168","ordinal 需要一个有界游标"),
+                (OrdinalNeed::BadName,_)=>return self.fail(span,"B168","ordinal 需要命名游标"),
+                (OrdinalNeed::BadCursor,_)=>return self.fail(span,"B168","ordinal 只能用于元素游标"),
+                (OrdinalNeed::Binding,_)=>{
+                    binding=self.env.get(source.text(step.name));facts.binding=named_binding_kind(binding);
+                    let place=match binding {Some(Binding::Owned(value))=>Some(&value.place),Some(Binding::ViewElement {element,..})=>Some(&element.place),_=>None};
+                    facts.place=match place {Some(Place::ApplicationElement {index_range,..})=>{facts.minimum=index_range.0;facts.maximum=index_range.1;1},Some(Place::ViewElement {..})=>3,Some(Place::TileElement {..})=>4,Some(Place::Element {..})=>7,_=>0};
+                    if let Some(Binding::ViewElement {view,..})=binding {facts.maximum=Self::view_length(view).maximum();}
+                },
+                (OrdinalNeed::Application,Some(Binding::Owned(OwnedBinding {place:Place::ApplicationElement {identity,index,..},..})))=>break (IndexDomain::ApplicationData(*identity),*index,bounds::Proof::unsigned(step.minimum,step.maximum)),
+                (OrdinalNeed::Dataset,Some(Binding::Owned(OwnedBinding {place:Place::Element {binding,index,..},..})))=>break (IndexDomain::Data(*binding),*index,self.data_index_proof(*binding)),
+                (OrdinalNeed::Tile,Some(Binding::Owned(OwnedBinding {place:Place::TileElement {index,..},..})))=>break (IndexDomain::Tile,*index,self.tile_index_proof()),
+                (OrdinalNeed::View,Some(Binding::ViewElement {view,element:OwnedBinding {place:Place::ViewElement {index,..},..}}))=>break (IndexDomain::View(view.view_identity()),*index,bounds::Proof::unsigned(step.minimum,step.maximum)),
+                _=>unsafe {std::hint::unreachable_unchecked()},
             }
-            _ => return self.fail(span, "B168", "ordinal 只能用于元素游标"),
         };
         return Ok(Some(Value {
             proof: self.path_proof(&Ty::scalar(Scalar::U32), proof.with_domains(Domains::from([domain])).with_identity(ValueIdentity::Register(index))),
@@ -3133,6 +3109,11 @@ unsafe extern "C" {
  #[link_name="bootstrap.function_body::unsafe_read_step"]fn unsafe_read_step(cursor:SourceValueCursor,source:crate::syntax::wire::StorageView,arguments:crate::syntax::wire::Slice,facts:UnsafeReadFacts)->UnsafeReadStep;
  #[link_name="bootstrap.function_body::unsafe_view_step"]fn unsafe_view_step(cursor:SourceValueCursor,facts:UnsafeViewFacts)->UnsafeViewStep;
 }
+
+#[repr(C)]struct OrdinalFacts {binding:u32,place:u32,minimum:u32,maximum:u32}
+#[repr(u32)]enum OrdinalNeed {BadArguments,BadName,Binding,BadCursor,Application,Dataset,Tile,View}
+#[repr(C)]struct OrdinalStep {cursor:SourceValueCursor,need:OrdinalNeed,name:crate::syntax::wire::Text,minimum:u32,maximum:u32}
+unsafe extern "C" {#[link_name="bootstrap.function_body::ordinal_step"]fn ordinal_step(cursor:SourceValueCursor,source:crate::syntax::wire::StorageView,arguments:crate::syntax::wire::Slice,facts:OrdinalFacts)->OrdinalStep;}
 
 #[repr(C)]struct RayQueryFacts{count:u64,any:u32,present:u32}
 #[repr(u32)]enum RayQueryNeed{BadArguments,Name,MissingName,Binding,BadSource,Origin,Minimum,Direction,Maximum,Empty,OriginType,MinimumType,DirectionType,MaximumType,Cull,CullType,AnyType,ClosestType,Registers,AnyResult,ClosestResult,Emit,Value}
