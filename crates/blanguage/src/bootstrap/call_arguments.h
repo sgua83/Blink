@@ -82,3 +82,8 @@ struct ReferenceOffset {u32 word;u32 offset;};
 extern "C" ContiguousStep contiguous_step(Phase cursor,u32 symbolic,u64 components,u32 present) on cpu;
 extern "C" u32 physical_contiguous(u32 first,u32 alignment,u64 count,address context,cfn<ReferenceOffset,address> next) on cpu
  requires nonzero(alignment) requires nonzero(next);
+
+struct FunctionValueFacts {u32 cpu;u32 present;u32 signature;u32 nonzero;u32 contracts;};
+enum FunctionValueNeed:u32 {BadTarget=0;Lower=1;Empty=2;Kind=3;BadKind=4;Nonzero=5;Zero=6;Signature=7;Arguments=8;Contracts=9;ReadyPlain=10;ReadyContract=11;};
+struct FunctionValueStep {Phase cursor;FunctionValueNeed need;};
+extern "C" FunctionValueStep function_value_step(Phase cursor,FunctionValueFacts facts) on cpu;

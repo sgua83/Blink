@@ -362,3 +362,14 @@ extern "C" u32 physical_contiguous(u32 first,u32 alignment,u64 count,address con
  u64 i=0u64;while(i<count){ReferenceOffset part=next(context);if(part.word<first||part.word-first!=part.offset){return 0;}i+=1u64;}
  return 1;
 }
+
+extern "C" FunctionValueStep function_value_step(Phase cursor,FunctionValueFacts facts) on cpu {
+ Phase c=cursor;
+ if(c.phase==0){if(facts.cpu==0){return FunctionValueStep(c,FunctionValueNeed::BadTarget);}c.phase=1;return FunctionValueStep(c,FunctionValueNeed::Lower);}
+ if(c.phase==1){if(facts.present==0){return FunctionValueStep(c,FunctionValueNeed::Empty);}c.phase=2;return FunctionValueStep(c,FunctionValueNeed::Kind);}
+ if(c.phase==2){if(facts.signature==0){return FunctionValueStep(c,FunctionValueNeed::BadKind);}c.phase=3;return FunctionValueStep(c,FunctionValueNeed::Nonzero);}
+ if(c.phase==3){if(facts.nonzero==0){return FunctionValueStep(c,FunctionValueNeed::Zero);}c.phase=4;return FunctionValueStep(c,FunctionValueNeed::Signature);}
+ if(c.phase==4){c.phase=5;return FunctionValueStep(c,FunctionValueNeed::Arguments);}
+ if(c.phase==5){if(facts.present==0){return FunctionValueStep(c,FunctionValueNeed::Empty);}c.phase=6;return FunctionValueStep(c,FunctionValueNeed::Contracts);}
+ return FunctionValueStep(c,facts.contracts!=0 ? FunctionValueNeed::ReadyContract : FunctionValueNeed::ReadyPlain);
+}

@@ -94,26 +94,27 @@ impl Builder<'_> {
     pub(super) async fn function_value_arguments(&mut self,callee_span:Span,span:Span,
         lower:impl std::ops::AsyncFnOnce(&mut Self)->Result<Option<Value>>,
         prepare:impl std::ops::AsyncFnOnce(&mut Self,&[CallParameter])->Result<Option<Vec<Argument>>>)->Result<Option<returns::Returned>> {
-        if self.program.target != Target::Cpu {
-            return self.fail(span, "B265", "原生C函数地址只能在CPU位置调用");
-        }
-        let Some(value) = lower(self).await? else { return Ok(None); };
-        let Some(function) = value.ty.function.as_deref() else {
-            return self.fail(callee_span, "B263", "间接调用目标需要cfn原生C签名值");
-        };
-        if !value.is_nonzero() {
-            return self.fail(callee_span, "B137", "调用cfn需要已证明的非零目标；使用同签名空值比较或requires nonzero");
-        }
-        let (parameters, result, never) = unsafe { self.world.call(self.world.c_function_signature(
-            function, self.scope.source(), span, self.scope.module(), self.scope.imports())).await }?;
-        let Some(arguments) = prepare(self,&parameters).await? else { return Ok(None); };
-        let scope = self.scope.clone();
-        let contract = if function.contracts.is_empty() { None } else {
-            Some(outputs::Contract::signature(scope.source(), scope.module(),
-                scope.imports(), parameters.len(), &function.contracts, span))
-        };
-        unsafe { self.world.call(self.c_call(CallTarget::Indirect(value.regs[0]), &parameters, arguments, result, never, contract, span, None)).await }
-            .map(|value| value.map(returns::Returned::value))
+        let mut cursor=ReadInputCursor{phase:0};let mut facts=FunctionValueFacts{cpu:u32::from(self.program.target==Target::Cpu),present:0,signature:0,nonzero:0,contracts:0};
+        let mut lower=Some(lower);let mut prepare=Some(prepare);let mut value=None;let mut signature=None;let mut arguments=None;
+        let with_contract=loop{let step=unsafe{function_value_step(cursor,facts)};cursor=step.cursor;match step.need{
+            FunctionValueNeed::BadTarget=>return self.fail(span,"B265","原生C函数地址只能在CPU位置调用"),
+            FunctionValueNeed::Lower=>{value=lower.take().unwrap()(self).await?;facts.present=u32::from(value.is_some());},
+            FunctionValueNeed::Empty=>return Ok(None),
+            FunctionValueNeed::Kind=>facts.signature=u32::from(value.as_ref().unwrap().ty.function.is_some()),
+            FunctionValueNeed::BadKind=>return self.fail(callee_span,"B263","间接调用目标需要cfn原生C签名值"),
+            FunctionValueNeed::Nonzero=>facts.nonzero=u32::from(value.as_ref().unwrap().is_nonzero()),
+            FunctionValueNeed::Zero=>return self.fail(callee_span,"B137","调用cfn需要已证明的非零目标；使用同签名空值比较或requires nonzero"),
+            FunctionValueNeed::Signature=>{let function=value.as_ref().unwrap().ty.function.as_deref().unwrap();signature=Some(unsafe{self.world.call(self.world.c_function_signature(function,self.scope.source(),span,self.scope.module(),self.scope.imports())).await}?);},
+            FunctionValueNeed::Arguments=>{arguments=prepare.take().unwrap()(self,&signature.as_ref().unwrap().0).await?;facts.present=u32::from(arguments.is_some());},
+            FunctionValueNeed::Contracts=>facts.contracts=u32::from(!value.as_ref().unwrap().ty.function.as_deref().unwrap().contracts.is_empty()),
+            FunctionValueNeed::ReadyPlain=>break false,
+            FunctionValueNeed::ReadyContract=>break true,
+        }};
+        let value=value.unwrap();let(parameters,result,never)=signature.unwrap();
+        let scope=with_contract.then(||self.scope.clone());
+        let contract=scope.as_ref().map(|scope|outputs::Contract::signature(scope.source(),scope.module(),scope.imports(),parameters.len(),&value.ty.function.as_deref().unwrap().contracts,span));
+        unsafe{self.world.call(self.c_call(CallTarget::Indirect(value.regs[0]),&parameters,arguments.unwrap(),result,never,contract,span,None)).await}
+            .map(|value|value.map(returns::Returned::value))
     }
     #[inline(never)]
     async fn c_call(&mut self, target: CallTarget, parameters: &[CallParameter], args: Vec<Argument>, result: Option<Ty>,
@@ -295,3 +296,8 @@ unsafe extern "C"{
  #[link_name="bootstrap.call_arguments::contiguous_step"]fn contiguous_step(cursor:ReadInputCursor,symbolic:u32,components:u64,present:u32)->ContiguousStep;
  #[link_name="bootstrap.call_arguments::physical_contiguous"]fn physical_contiguous(first:u32,alignment:u32,count:u64,context:*mut std::ffi::c_void,next:unsafe extern "C" fn(*mut std::ffi::c_void)->ReferenceOffset)->u32;
 }
+
+#[repr(C)]#[derive(Clone,Copy)]struct FunctionValueFacts{cpu:u32,present:u32,signature:u32,nonzero:u32,contracts:u32}
+#[repr(u32)]enum FunctionValueNeed{BadTarget,Lower,Empty,Kind,BadKind,Nonzero,Zero,Signature,Arguments,Contracts,ReadyPlain,ReadyContract}
+#[repr(C)]struct FunctionValueStep{cursor:ReadInputCursor,need:FunctionValueNeed}
+unsafe extern "C"{#[link_name="bootstrap.call_arguments::function_value_step"]fn function_value_step(cursor:ReadInputCursor,facts:FunctionValueFacts)->FunctionValueStep;}
