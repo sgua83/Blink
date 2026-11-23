@@ -224,13 +224,10 @@ fn link_inputs(
     links: Vec<ModuleLink<'_>>, mut inputs: Vec<crate::object::Input>,
     borrowed: &[&crate::object::Object], imports: &crate::module::Imports,
 ) -> Result<bool> {
-    let contracts = crate::native::program::link_contracts(
-        links.iter().flat_map(|link| link.external.iter().copied()),
-        imports.modules.values().flat_map(|module| &*module.definitions),
-    );
     let mut changed = false;
     for image in links {
-        changed |= crate::native::program::link_inputs(image, std::mem::take(&mut inputs), borrowed, &contracts)
+        let sources = imports.modules.values().map(|module| module.definitions.as_ref());
+        changed |= crate::native::program::link_inputs(image, std::mem::take(&mut inputs), borrowed, sources)
             .map_err(std::io::Error::other)?;
     }
     Ok(changed)

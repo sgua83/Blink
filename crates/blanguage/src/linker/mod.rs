@@ -2,7 +2,7 @@
 mod combine;
 mod selection;
 use selection::entry;
-pub(crate) use selection::RootView;
+pub(crate) use selection::{RootView, bind_root_contracts};
 #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
 mod msvc;
 mod imports;

@@ -25,7 +25,31 @@ u64 index_at(address data,u64 i) on cpu {return unsafe_position<u64>(unsafe_addr
 void index_put(address data,u64 i,u64 value) on cpu {unsafe_position<u64>(unsafe_address(address_bits(data)+i*8u64))=value;}
 BindingBytes name_at(address data,u64 i) on cpu {return unsafe_position<BindingBytes>(unsafe_address(address_bits(data)+i*16u64));}
 void name_put(address data,u64 i,BindingBytes value) on cpu {unsafe_position<BindingBytes>(unsafe_address(address_bits(data)+i*16u64))=value;}
-SelectRoot root_at(SelectParams params,u64 i) on cpu {return unsafe_position<SelectRoot>(unsafe_address(address_bits(params.roots)+i*32u64));}
+address root_address(address roots, u64 index) on cpu {
+    return unsafe_address(address_bits(roots) + index * size_of<SelectRoot>());
+}
+SelectRoot root_at(SelectParams params,u64 i) on cpu {return unsafe_position<SelectRoot>(root_address(params.roots,i));}
+
+extern "C" u64 bind_root_contracts(address roots,u64 count,address context,u64 sources,
+    cfn<BindingBytes,address,u64,BindingBytes> lookup) on cpu requires nonzero(lookup) {
+    u64 index=0u64;
+    while(index<count) {
+        address slot=root_address(roots,index);
+        SelectRoot root=unsafe_position<SelectRoot>(slot);
+        BindingBytes contract=empty();
+        u64 source=sources;
+        while(source!=0u64) {
+            source-=1u64;
+            contract=lookup(context,source,root.name);
+            if(address_bits(contract.bytes)!=0u64){break;}
+        }
+        if(address_bits(contract.bytes)==0u64){return index+1u64;}
+        root.contract=contract;
+        unsafe_position<SelectRoot>(slot)=root;
+        index+=1u64;
+    }
+    return 0u64;
+}
 u8 byte_at(BindingBytes name,u64 i) on cpu {return unsafe_position<u8>(unsafe_address(address_bits(name.bytes)+i));}
 bool equal(BindingBytes a,BindingBytes b) on cpu {return bytes_compare(a,b)==0;}
 u64 ordered(u64 i,u64 entry) on cpu {if(i==0u64){return entry;}if(i==entry){return 0u64;}return i;}

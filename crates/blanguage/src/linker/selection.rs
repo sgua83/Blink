@@ -3,7 +3,7 @@
 use super::{EntryPlan, Inputs, LibraryBinding, Result, Roots, Selected, Selection, Source, resources};
 use crate::object::{self, Object, Kind, Target, Library, ReadSection};
 use resources::ImportBytes as Bytes;
-use std::{ffi::c_void, marker::PhantomData};
+use std::{collections::BTreeMap, ffi::c_void, marker::PhantomData};
 #[derive(Clone,Copy)]#[repr(C)]
 struct ObjectView {
     kind:u64,name:Bytes,section_start:u64,section_count:u64,symbol_start:u64,symbol_count:u64,
@@ -30,9 +30,38 @@ pub(crate) struct RootView<'a> {
     contract: Bytes,
     owner: PhantomData<&'a [u8]>,
 }
-impl<'a> RootView<'a> {
-    pub(crate) fn new(name: &'a str, contract: &'a [u8]) -> Self {
-        Self { name: Bytes::new(name), contract: borrowed(contract), owner: PhantomData }
+unsafe extern "C" {
+    #[link_name = "bootstrap.native_select::bind_root_contracts"]
+    fn bind_native_roots(roots: *mut RootView<'_>, count: usize, context: *const c_void, sources: usize,
+        lookup: unsafe extern "C" fn(*const c_void, usize, Bytes) -> Bytes) -> usize;
+}
+
+unsafe extern "C" fn lookup_contract(context: *const c_void, index: usize, name: Bytes) -> Bytes {
+    let contracts = unsafe { *context.cast::<&BTreeMap<String, Vec<u8>>>().add(index) };
+    contracts.get(text(&name)).map_or(
+        Bytes { bytes: std::ptr::null(), length: 0 },
+        |contract| borrowed(contract),
+    )
+}
+
+pub(crate) fn bind_root_contracts<'a>(
+    names: Vec<&'a str>, sources: impl IntoIterator<Item = &'a BTreeMap<String, Vec<u8>>>,
+) -> std::result::Result<Vec<RootView<'a>>, String> {
+    let mut roots: Vec<_> = names.into_iter().map(|name| RootView {
+        name: Bytes::new(name), contract: borrowed(&[]), owner: PhantomData,
+    }).collect();
+    if roots.is_empty() {
+        return Ok(roots);
+    }
+    let sources: Vec<_> = sources.into_iter().collect();
+    let missing = unsafe {
+        bind_native_roots(roots.as_mut_ptr(), roots.len(), sources.as_ptr().cast(), sources.len(),
+            lookup_contract)
+    };
+    if missing == 0 {
+        Ok(roots)
+    } else {
+        Err(format!("缺少模块函数接口 {}", text(&roots[missing - 1].name)))
     }
 }
 #[derive(Clone,Copy)]#[repr(C)]
