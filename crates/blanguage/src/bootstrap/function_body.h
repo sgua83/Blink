@@ -283,3 +283,8 @@ extern "C" UnsafeViewStep unsafe_view_step(LocalCursor cursor,UnsafeViewFacts fa
 
 enum MemberValueNeed:u32 {ArrayLength=0;ViewLength=1;Project=2;};
 extern "C" MemberValueNeed member_value_need(u32 array,u32 view,address bytes,usize length) on cpu;
+
+struct RayQueryFacts {u64 count;u32 any;u32 present;};
+enum RayQueryNeed:u32 {BadArguments=0;Name=1;MissingName=2;Binding=3;BadSource=4;Origin=5;Minimum=6;Direction=7;Maximum=8;Empty=9;OriginType=10;MinimumType=11;DirectionType=12;MaximumType=13;Cull=14;CullType=15;AnyType=16;ClosestType=17;Registers=18;AnyResult=19;ClosestResult=20;Emit=21;Value=22;};
+struct RayQueryStep {LocalCursor cursor;RayQueryNeed need;};
+extern "C" RayQueryStep ray_query_step(LocalCursor cursor,RayQueryFacts facts) on cpu;

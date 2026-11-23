@@ -347,6 +347,6 @@ extern "C" FunctionFromAddressStep function_from_address_step(FunctionFromAddres
 
 struct BuiltinCallCursor {u32 phase;CollectiveForm collective;usize index;};
 struct BuiltinCallFacts {u32 present;u32 record;u32 in_function;usize count;};
-enum BuiltinCallNeed:u32 {CFunction=0;ResultContext=1;Transfer=2;Println=3;TextureSample=4;Append=5;TileCollective=6;TilePublish=7;TileInput=8;Subgroup=9;SubgroupResult=10;RayQuery=11;UnsafeRead=12;Ordinal=13;IndexScope=14;Index=15;Unsupported=16;AtomicStore=17;Atomic=18;TileBarrier=19;RecordValues=20;RecordLookup=21;RecordExpression=22;AddressOf=23;Values=24;Argument=25;ArgumentValue=26;Empty=27;ArgumentsComplete=28;};
+enum BuiltinCallNeed:u32 {CFunction=0;ResultContext=1;Transfer=2;Println=3;TextureSample=4;Append=5;TileCollective=6;TilePublish=7;TileInput=8;Subgroup=9;SubgroupResult=10;RayQueryAny=11;UnsafeRead=12;Ordinal=13;IndexScope=14;Index=15;Unsupported=16;AtomicStore=17;Atomic=18;TileBarrier=19;RecordValues=20;RecordLookup=21;RecordExpression=22;AddressOf=23;Values=24;Argument=25;ArgumentValue=26;Empty=27;ArgumentsComplete=28;RayQueryClosest=29;};
 struct BuiltinCallStep {BuiltinCallCursor cursor;BuiltinCallNeed need;AtomicBuiltin atomic;};
 extern "C" BuiltinCallStep builtin_call_step(BuiltinCallCursor cursor,BuiltinCallFacts facts,address bytes,usize length) on cpu;

@@ -2504,7 +2504,7 @@ impl<'a> Builder<'a> {
             BuiltinCallNeed::TileInput=>return self.fail(span,"B198","tile_input 只能作为 parallel 开头的 let 输入声明，不能创建普通值或在控制流中构造"),
             BuiltinCallNeed::Subgroup=>{subgroup=unsafe{self.world.call(self.subgroup(name,args.len(),span,async |builder,index|unsafe{builder.world.call(builder.expr(&args.at(index))).await},|index|args.at(index).span())).await};facts.present=u32::from(subgroup.is_some());},
             BuiltinCallNeed::SubgroupResult=>return subgroup.take().unwrap(),
-            BuiltinCallNeed::RayQuery=>return unsafe{self.world.call(self.ray_query_call(name,args,span)).await},
+            BuiltinCallNeed::RayQueryAny|BuiltinCallNeed::RayQueryClosest=>return unsafe{self.world.call(self.ray_query_call(args,span,matches!(step.need,BuiltinCallNeed::RayQueryAny))).await},
             BuiltinCallNeed::UnsafeRead=>return unsafe{self.world.call(self.unsafe_read_call(args,span)).await},
             BuiltinCallNeed::Ordinal=>return self.ordinal_call(args,span),
             BuiltinCallNeed::IndexScope=>return self.fail(span,"B155","index() 只能在当前 program 的 parallel 域中使用"),
@@ -2654,75 +2654,34 @@ impl<'a> Builder<'a> {
         self.emit(InstKind::StoreLocal(slot,value.regs[0]));
         Ok(value)
     }
-    async fn ray_query_call(&mut self, name: &str, args: &Expressions, span: Span) -> Result<Option<Value>> {
-        if !matches!(args.len(), 5 | 6) {
-            return self.fail(
-                span,
-                "B183",
-                "光线查询需要 acceleration、origin、minimum、direction、maximum，以及可选的 bool cull_back_faces",
-            );
-        }
-        let argument=args.at(0);
-        let ExprKind::Name(scene) = argument.kind() else {
-            return self.fail(span, "B183", "光线查询需要命名 acceleration 资源");
-        };
-        let Some(Binding::Acceleration(scene)) = self.env.get(scene).cloned() else {
-            return self.fail(span, "B183", "光线查询需要 read acceleration 资源");
-        };
-        let Some(origin) = unsafe { self.world.call(self.expr(&args.at(1))).await }? else {
-            return Ok(None);
-        };
-        let Some(minimum) = unsafe { self.world.call(self.expr(&args.at(2))).await }? else {
-            return Ok(None);
-        };
-        let Some(direction) = unsafe { self.world.call(self.expr(&args.at(3))).await }? else {
-            return Ok(None);
-        };
-        let Some(maximum) = unsafe { self.world.call(self.expr(&args.at(4))).await }? else {
-            return Ok(None);
-        };
-        self.require_same(&Ty::vector(Scalar::F32, 3), &origin.ty, args.at(1).span())?;
-        self.require_same(&Ty::scalar(Scalar::F32), &minimum.ty, args.at(2).span())?;
-        self.require_same(&origin.ty, &direction.ty, args.at(3).span())?;
-        self.require_same(&minimum.ty, &maximum.ty, args.at(4).span())?;
-        let cull_back_faces = if args.len() == 6 {
-            let arg = args.at(5);
-            let Some(value) = unsafe { self.world.call(self.expr(&arg)).await }? else {
-                return Ok(None);
-            };
-            self.require_same(&Ty::scalar(Scalar::Bool), &value.ty, arg.span())?;
-            Some(value.regs[0])
-        } else {
-            None
-        };
-        let ty = if name == "trace_any" {
-            Ty::scalar(Scalar::Bool)
-        } else {
-            Ty::builtin("RayHit").unwrap()
-        };
-        let regs: Vec<_> = ty.components.iter().map(|(s, _)| self.reg(*s)).collect();
-        let result = if name == "trace_any" {
-            RayResult::Any(regs[0])
-        } else {
-            RayResult::Closest(regs.as_slice().try_into().unwrap())
-        };
-        self.emit(InstKind::RayQuery {
-            scene,
-            origin: origin.regs.as_slice().try_into().unwrap(),
-            direction: direction.regs.as_slice().try_into().unwrap(),
-            minimum: minimum.regs[0],
-            maximum: maximum.regs[0],
-            cull_back_faces,
-            result,
-        });
-        return Ok(Some(Value {
-            proof: bounds::Proof::default(),
-            literal: false,
-            ty,
-            regs,
-            uniform: false,
-            constant: None,
-        }));
+    async fn ray_query_call(&mut self,args:&Expressions,span:Span,any:bool)->Result<Option<Value>>{
+        let mut cursor=SourceValueCursor{phase:0};let mut facts=RayQueryFacts{count:args.len()as u64,any:u32::from(any),present:0};
+        let mut first=None;let mut scene=None;let mut origin=None;let mut minimum=None;let mut direction=None;let mut maximum=None;let mut cull=None;let mut cull_back_faces=None;let mut ty=None;let mut regs:Option<Vec<Reg>>=None;let mut result=None;
+        loop{let step=unsafe{ray_query_step(cursor,RayQueryFacts{..facts})};cursor=step.cursor;match step.need{
+            RayQueryNeed::BadArguments=>return self.fail(span,"B183","光线查询需要 acceleration、origin、minimum、direction、maximum，以及可选的 bool cull_back_faces"),
+            RayQueryNeed::Name=>{let argument=args.at(0);facts.present=u32::from(matches!(argument.kind(),ExprKind::Name(_)));first=Some(argument);},
+            RayQueryNeed::MissingName=>return self.fail(span,"B183","光线查询需要命名 acceleration 资源"),
+            RayQueryNeed::Binding=>{let argument=first.take().unwrap();let ExprKind::Name(name)=argument.kind()else{unsafe{std::hint::unreachable_unchecked()}};scene=match self.env.get(name){Some(Binding::Acceleration(scene))=>Some(*scene),_=>None};facts.present=u32::from(scene.is_some());},
+            RayQueryNeed::BadSource=>return self.fail(span,"B183","光线查询需要 read acceleration 资源"),
+            RayQueryNeed::Origin=>{origin=unsafe{self.world.call(self.expr(&args.at(1))).await}?;facts.present=u32::from(origin.is_some());},
+            RayQueryNeed::Minimum=>{minimum=unsafe{self.world.call(self.expr(&args.at(2))).await}?;facts.present=u32::from(minimum.is_some());},
+            RayQueryNeed::Direction=>{direction=unsafe{self.world.call(self.expr(&args.at(3))).await}?;facts.present=u32::from(direction.is_some());},
+            RayQueryNeed::Maximum=>{maximum=unsafe{self.world.call(self.expr(&args.at(4))).await}?;facts.present=u32::from(maximum.is_some());},
+            RayQueryNeed::Empty=>return Ok(None),
+            RayQueryNeed::OriginType=>self.require_same(&Ty::vector(Scalar::F32,3),&origin.as_ref().unwrap().ty,args.at(1).span())?,
+            RayQueryNeed::MinimumType=>self.require_same(&Ty::scalar(Scalar::F32),&minimum.as_ref().unwrap().ty,args.at(2).span())?,
+            RayQueryNeed::DirectionType=>self.require_same(&origin.as_ref().unwrap().ty,&direction.as_ref().unwrap().ty,args.at(3).span())?,
+            RayQueryNeed::MaximumType=>self.require_same(&minimum.as_ref().unwrap().ty,&maximum.as_ref().unwrap().ty,args.at(4).span())?,
+            RayQueryNeed::Cull=>{cull=unsafe{self.world.call(self.expr(&args.at(5))).await}?;facts.present=u32::from(cull.is_some());},
+            RayQueryNeed::CullType=>{let value=cull.take().unwrap();self.require_same(&Ty::scalar(Scalar::Bool),&value.ty,args.at(5).span())?;cull_back_faces=Some(value.regs[0]);},
+            RayQueryNeed::AnyType=>ty=Some(Ty::scalar(Scalar::Bool)),
+            RayQueryNeed::ClosestType=>ty=Some(Ty::builtin("RayHit").unwrap()),
+            RayQueryNeed::Registers=>regs=Some(ty.as_ref().unwrap().components.iter().map(|(scalar,_)|self.reg(*scalar)).collect()),
+            RayQueryNeed::AnyResult=>result=Some(RayResult::Any(regs.as_ref().unwrap()[0])),
+            RayQueryNeed::ClosestResult=>result=Some(RayResult::Closest(regs.as_ref().unwrap().as_slice().try_into().unwrap())),
+            RayQueryNeed::Emit=>self.emit(InstKind::RayQuery{scene:scene.unwrap(),origin:origin.as_ref().unwrap().regs.as_slice().try_into().unwrap(),direction:direction.as_ref().unwrap().regs.as_slice().try_into().unwrap(),minimum:minimum.as_ref().unwrap().regs[0],maximum:maximum.as_ref().unwrap().regs[0],cull_back_faces,result:result.take().unwrap()}),
+            RayQueryNeed::Value=>return Ok(Some(Value{proof:bounds::Proof::default(),literal:false,ty:ty.take().unwrap(),regs:regs.take().unwrap(),uniform:false,constant:None})),
+        }}
     }
     async fn unsafe_read_call(&mut self, args: &Expressions, span: Span) -> Result<Option<Value>> {
         let storage=args.source_view().storage();let arguments=args.source_slice();let mut cursor=SourceValueCursor {phase:0};
@@ -3062,7 +3021,7 @@ const _: () = {
 
 #[repr(C)]#[derive(Clone,Copy)]struct BuiltinCallCursor{phase:u32,collective:collective::Form,index:usize}
 #[repr(C)]struct BuiltinCallFacts{present:u32,record:u32,in_function:u32,count:usize}
-#[repr(u32)]enum BuiltinCallNeed{CFunction,ResultContext,Transfer,Println,TextureSample,Append,TileCollective,TilePublish,TileInput,Subgroup,SubgroupResult,RayQuery,UnsafeRead,Ordinal,IndexScope,Index,Unsupported,AtomicStore,Atomic,TileBarrier,RecordValues,RecordLookup,RecordExpression,AddressOf,Values,Argument,ArgumentValue,Empty,ArgumentsComplete}
+#[repr(u32)]enum BuiltinCallNeed{CFunction,ResultContext,Transfer,Println,TextureSample,Append,TileCollective,TilePublish,TileInput,Subgroup,SubgroupResult,RayQueryAny,UnsafeRead,Ordinal,IndexScope,Index,Unsupported,AtomicStore,Atomic,TileBarrier,RecordValues,RecordLookup,RecordExpression,AddressOf,Values,Argument,ArgumentValue,Empty,ArgumentsComplete,RayQueryClosest}
 #[repr(C)]struct BuiltinCallStep{cursor:BuiltinCallCursor,need:BuiltinCallNeed,atomic:atomic::AtomicBuiltin}
 unsafe extern "C"{#[link_name="bootstrap.operator_types::builtin_call_step"]fn builtin_call_step(cursor:BuiltinCallCursor,facts:BuiltinCallFacts,bytes:*const u8,length:usize)->BuiltinCallStep;}
 
@@ -3174,3 +3133,8 @@ unsafe extern "C" {
  #[link_name="bootstrap.function_body::unsafe_read_step"]fn unsafe_read_step(cursor:SourceValueCursor,source:crate::syntax::wire::StorageView,arguments:crate::syntax::wire::Slice,facts:UnsafeReadFacts)->UnsafeReadStep;
  #[link_name="bootstrap.function_body::unsafe_view_step"]fn unsafe_view_step(cursor:SourceValueCursor,facts:UnsafeViewFacts)->UnsafeViewStep;
 }
+
+#[repr(C)]struct RayQueryFacts{count:u64,any:u32,present:u32}
+#[repr(u32)]enum RayQueryNeed{BadArguments,Name,MissingName,Binding,BadSource,Origin,Minimum,Direction,Maximum,Empty,OriginType,MinimumType,DirectionType,MaximumType,Cull,CullType,AnyType,ClosestType,Registers,AnyResult,ClosestResult,Emit,Value}
+#[repr(C)]struct RayQueryStep{cursor:SourceValueCursor,need:RayQueryNeed}
+unsafe extern "C"{#[link_name="bootstrap.function_body::ray_query_step"]fn ray_query_step(cursor:SourceValueCursor,facts:RayQueryFacts)->RayQueryStep;}

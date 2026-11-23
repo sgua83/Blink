@@ -1112,3 +1112,25 @@ extern "C" MemberValueNeed member_value_need(u32 array,u32 view,address bytes,us
  }
  return MemberValueNeed::Project;
 }
+
+extern "C" RayQueryStep ray_query_step(LocalCursor cursor,RayQueryFacts facts) on cpu {
+ LocalCursor c=cursor;
+ if(c.phase==0){if(facts.count!=5u64&&facts.count!=6u64){return RayQueryStep(c,RayQueryNeed::BadArguments);}c.phase=1;return RayQueryStep(c,RayQueryNeed::Name);}
+ if(c.phase==1){if(facts.present==0){return RayQueryStep(c,RayQueryNeed::MissingName);}c.phase=2;return RayQueryStep(c,RayQueryNeed::Binding);}
+ if(c.phase==2){if(facts.present==0){return RayQueryStep(c,RayQueryNeed::BadSource);}c.phase=3;return RayQueryStep(c,RayQueryNeed::Origin);}
+ if(c.phase==3){if(facts.present==0){return RayQueryStep(c,RayQueryNeed::Empty);}c.phase=4;return RayQueryStep(c,RayQueryNeed::Minimum);}
+ if(c.phase==4){if(facts.present==0){return RayQueryStep(c,RayQueryNeed::Empty);}c.phase=5;return RayQueryStep(c,RayQueryNeed::Direction);}
+ if(c.phase==5){if(facts.present==0){return RayQueryStep(c,RayQueryNeed::Empty);}c.phase=6;return RayQueryStep(c,RayQueryNeed::Maximum);}
+ if(c.phase==6){if(facts.present==0){return RayQueryStep(c,RayQueryNeed::Empty);}c.phase=7;return RayQueryStep(c,RayQueryNeed::OriginType);}
+ if(c.phase==7){c.phase=8;return RayQueryStep(c,RayQueryNeed::MinimumType);}
+ if(c.phase==8){c.phase=9;return RayQueryStep(c,RayQueryNeed::DirectionType);}
+ if(c.phase==9){c.phase=10;return RayQueryStep(c,RayQueryNeed::MaximumType);}
+ if(c.phase==10){if(facts.count==6u64){c.phase=11;return RayQueryStep(c,RayQueryNeed::Cull);}c.phase=13;}
+ if(c.phase==11){if(facts.present==0){return RayQueryStep(c,RayQueryNeed::Empty);}c.phase=12;return RayQueryStep(c,RayQueryNeed::CullType);}
+ if(c.phase==12){c.phase=13;}
+ if(c.phase==13){c.phase=14;return RayQueryStep(c,facts.any!=0 ? RayQueryNeed::AnyType : RayQueryNeed::ClosestType);}
+ if(c.phase==14){c.phase=15;return RayQueryStep(c,RayQueryNeed::Registers);}
+ if(c.phase==15){c.phase=16;return RayQueryStep(c,facts.any!=0 ? RayQueryNeed::AnyResult : RayQueryNeed::ClosestResult);}
+ if(c.phase==16){c.phase=17;return RayQueryStep(c,RayQueryNeed::Emit);}
+ return RayQueryStep(c,RayQueryNeed::Value);
+}

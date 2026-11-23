@@ -514,7 +514,8 @@ extern "C" BuiltinCallStep builtin_call_step(BuiltinCallCursor cursor,BuiltinCal
     }
     if(c.phase==1){
         if(facts.present!=0){return builtin_call_need(c,BuiltinCallNeed::SubgroupResult);}
-        if(source_spelling(bytes,length,"trace_closest")||source_spelling(bytes,length,"trace_any")){return builtin_call_need(c,BuiltinCallNeed::RayQuery);}
+        if(source_spelling(bytes,length,"trace_any")){return builtin_call_need(c,BuiltinCallNeed::RayQueryAny);}
+        if(source_spelling(bytes,length,"trace_closest")){return builtin_call_need(c,BuiltinCallNeed::RayQueryClosest);}
         if(source_spelling(bytes,length,"unsafe_read")){return builtin_call_need(c,BuiltinCallNeed::UnsafeRead);}
         if(source_spelling(bytes,length,"ordinal")){return builtin_call_need(c,BuiltinCallNeed::Ordinal);}
         if(source_spelling(bytes,length,"index")){
