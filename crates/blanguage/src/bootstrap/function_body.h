@@ -85,3 +85,9 @@ struct WhileFacts {u32 initial;u32 present;u32 truth;u32 possible;u32 continuing
 enum WhileNeed:u32 {Enter=0;Writes=1;Condition=2;Empty=3;Inspect=4;Refine=5;Bounds=6;NextBound=7;Bound=8;Retain=9;Impossible=10;SaveBody=11;Natural=12;RestoreBody=13;EnterBody=14;Body=15;CheckBackedge=16;Split=17;Expand=18;Leave=19;Emit=20;};
 struct WhileStep {WhileCursor cursor;WhileNeed need;u32 uniform;u32 flow;};
 extern "C" WhileStep while_step(WhileCursor cursor,WhileFacts facts) on cpu;
+
+struct ForCursor {u32 phase;u32 initial;};
+struct ForFacts {u32 initial;u32 minimum;u32 maximum;u32 same;u32 seeks;u32 domain;u32 present;u32 outer;u32 begin_uniform;u32 limit_uniform;u32 flow;u32 next;u32 nonempty;};
+enum ForNeed:u32 {EmptyBegin=0;EmptyNext=1;EmptyInitialize=2;EmptyDone=3;Seeks=4;ClearInitialization=5;Enter=6;Cursor=7;Test=8;BodyCursor=9;RefineStart=10;Application=11;ApplicationInput=12;ApplicationBinding=13;DatasetBinding=14;TileBinding=15;ViewBinding=16;NextComponent=17;Component=18;FinishOwned=19;FinishView=20;IndexBinding=21;Install=22;Writes=23;Capture=24;Natural=25;Retain=26;EnterBody=27;Body=28;Advance=29;CheckBackedge=30;EndBody=31;IterationElements=32;ExitInitialization=33;TestEntry=34;DropNatural=35;Expand=36;Leave=37;Emit=38;};
+struct ForStep {ForCursor cursor;ForNeed need;u32 uniform;u32 flow;};
+extern "C" ForStep for_step(ForCursor cursor,ForFacts facts) on cpu;

@@ -331,3 +331,44 @@ extern "C" WhileStep while_step(WhileCursor cursor,WhileFacts facts) on cpu {
  if(c.phase==17){c.phase=18;return WhileStep(c,WhileNeed::Leave,0,0);}
  return WhileStep(c,WhileNeed::Emit,0,(facts.flow&2)|(facts.next!=0 ? 1 : 0));
 }
+
+extern "C" ForStep for_step(ForCursor cursor,ForFacts facts) on cpu {
+ ForCursor c=cursor;
+ if(c.phase==0){if(facts.minimum>=facts.maximum||facts.same!=0){c.phase=1;return ForStep(c,ForNeed::EmptyBegin,0,0);}c.phase=4;return ForStep(c,ForNeed::Seeks,0,0);}
+ if(c.phase==1){c.phase=2;return ForStep(c,ForNeed::EmptyNext,0,0);}
+ if(c.phase==2){if(facts.present==0){return ForStep(c,ForNeed::EmptyDone,0,0);}c.phase=1;return ForStep(c,ForNeed::EmptyInitialize,0,0);}
+ if(c.phase==4){c.initial=facts.initial!=0||(facts.seeks==0&&facts.minimum+1==facts.maximum) ? 1 : 0;c.phase=5;if(facts.seeks!=0){return ForStep(c,ForNeed::ClearInitialization,0,0);}}
+ if(c.phase==5){c.phase=6;return ForStep(c,ForNeed::Enter,0,0);}
+ if(c.phase==6){c.phase=7;return ForStep(c,ForNeed::Cursor,facts.begin_uniform!=0&&facts.limit_uniform!=0 ? 1 : 0,0);}
+ if(c.phase==7){c.phase=8;return ForStep(c,ForNeed::Test,0,0);}
+ if(c.phase==8){c.phase=9;return ForStep(c,ForNeed::BodyCursor,0,0);}
+ if(c.phase==9){c.phase=10;if(facts.seeks==0){return ForStep(c,ForNeed::RefineStart,0,0);}}
+ if(c.phase==10){
+  if(facts.domain==1){c.phase=11;return ForStep(c,ForNeed::Application,0,0);}
+  if(facts.domain==2){c.phase=16;return ForStep(c,ForNeed::DatasetBinding,0,0);}
+  if(facts.domain==3){c.phase=13;return ForStep(c,ForNeed::TileBinding,0,0);}
+  if(facts.domain==4){c.phase=13;return ForStep(c,ForNeed::ViewBinding,0,0);}
+  c.phase=16;return ForStep(c,ForNeed::IndexBinding,0,0);
+ }
+ if(c.phase==11){c.phase=12;if(c.initial==0&&facts.seeks==0){return ForStep(c,ForNeed::ApplicationInput,0,0);}}
+ if(c.phase==12){c.phase=16;return ForStep(c,ForNeed::ApplicationBinding,0,0);}
+ if(c.phase==13){c.phase=14;return ForStep(c,ForNeed::NextComponent,0,0);}
+ if(c.phase==14){if(facts.present!=0){c.phase=13;return ForStep(c,ForNeed::Component,0,0);}c.phase=16;return ForStep(c,facts.domain==4 ? ForNeed::FinishView : ForNeed::FinishOwned,0,0);}
+ if(c.phase==16){c.phase=17;return ForStep(c,ForNeed::Install,0,0);}
+ if(c.phase==17){c.phase=18;return ForStep(c,ForNeed::Writes,0,0);}
+ if(c.phase==18){c.phase=19;return ForStep(c,ForNeed::Capture,0,0);}
+ if(c.phase==19){c.phase=20;return ForStep(c,ForNeed::Natural,0,0);}
+ if(c.phase==20){c.phase=21;if(c.initial==0){return ForStep(c,ForNeed::Retain,0,0);}}
+ if(c.phase==21){c.phase=22;return ForStep(c,ForNeed::EnterBody,facts.outer!=0&&facts.begin_uniform!=0&&facts.limit_uniform!=0 ? 1 : 0,0);}
+ if(c.phase==22){c.phase=23;return ForStep(c,ForNeed::Body,0,0);}
+ if(c.phase==23){c.phase=24;if((facts.flow&1)!=0){return ForStep(c,ForNeed::Advance,0,0);}}
+ if(c.phase==24){c.phase=25;if((facts.flow&1)!=0){return ForStep(c,ForNeed::CheckBackedge,0,0);}}
+ if(c.phase==25){c.phase=26;return ForStep(c,ForNeed::EndBody,0,0);}
+ if(c.phase==26){c.phase=27;if(c.initial==0&&facts.seeks==0&&(facts.domain==0||facts.domain==1)){return ForStep(c,ForNeed::IterationElements,0,0);}}
+ if(c.phase==27){c.phase=28;return ForStep(c,ForNeed::ExitInitialization,0,0);}
+ if(c.phase==28){c.phase=29;if((facts.flow&9)==0){return ForStep(c,ForNeed::TestEntry,0,0);}}
+ if(c.phase==29){c.phase=30;if(facts.nonempty!=0&&(c.initial!=0||(facts.flow&9)==0)){return ForStep(c,ForNeed::DropNatural,0,0);}}
+ if(c.phase==30){c.phase=31;if(c.initial!=0){return ForStep(c,ForNeed::Expand,0,0);}}
+ if(c.phase==31){c.phase=32;return ForStep(c,ForNeed::Leave,0,0);}
+ return ForStep(c,ForNeed::Emit,0,(facts.flow&2)|(facts.next!=0 ? 1 : 0));
+}

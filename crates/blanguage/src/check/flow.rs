@@ -34,17 +34,11 @@ impl Flow {
     pub fn continues(self) -> bool {
         self.0 & 1 != 0
     }
-    pub fn iterates(self) -> bool {
-        self.0 & (1 | 8) != 0
-    }
     pub fn then(self, next: Self) -> Self {
         Self((self.0 & !1) | next.0)
     }
     pub fn union(self, other: Self) -> Self {
         Self(self.0 | other.0)
-    }
-    pub fn loop_result(self, next: bool) -> Self {
-        Self((self.0 & 2) | u8::from(next))
     }
 }
 #[derive(Clone,Default)]
@@ -1106,6 +1100,120 @@ impl Builder<'_> {
     WhileNeed::Emit=>{
      self.flow=Flow(step.flow as u8);self.control_uniform=control;self.code=outer.take().unwrap();
      self.emit(InstKind::Loop {condition:condition_code.take().unwrap(),test:c.as_ref().unwrap().regs[0],body:code.take().unwrap()});return Ok(());
+    },
+   }
+  }
+ }
+}
+
+#[repr(C)]
+#[derive(Clone,Copy)]
+struct ForCursor {phase:u32,initial:u32}
+#[repr(C)]
+#[derive(Clone,Copy)]
+struct ForFacts {initial:u32,minimum:u32,maximum:u32,same:u32,seeks:u32,domain:u32,present:u32,outer:u32,begin_uniform:u32,limit_uniform:u32,flow:u32,next:u32,nonempty:u32}
+#[repr(u32)]
+enum ForNeed {EmptyBegin,EmptyNext,EmptyInitialize,EmptyDone,Seeks,ClearInitialization,Enter,Cursor,Test,BodyCursor,RefineStart,Application,ApplicationInput,ApplicationBinding,DatasetBinding,TileBinding,ViewBinding,NextComponent,Component,FinishOwned,FinishView,IndexBinding,Install,Writes,Capture,Natural,Retain,EnterBody,Body,Advance,CheckBackedge,EndBody,IterationElements,ExitInitialization,TestEntry,DropNatural,Expand,Leave,Emit}
+#[repr(C)]
+struct ForStep {cursor:ForCursor,need:ForNeed,uniform:u32,flow:u32}
+unsafe extern "C" {
+ #[link_name="bootstrap.function_body::for_step"] fn for_step(cursor:ForCursor,facts:ForFacts)->ForStep;
+}
+impl Builder<'_> {
+ pub(super) async fn for_loop(&mut self,cursor_specification:ForLoop,body:&Block,span:Span,initial:bool,nonempty:bool,original_begin:&Value)->Result<effects::LoopWrites> {
+  self.flow=Flow::NEXT;
+  let ForLoop {name,begin,limit,data,borrowed,slot,mut initialization}=cursor_specification.clone();
+  let(mut application,mut dataset,mut tile,mut view,domain)=match data {
+   Some(CursorSource::ApplicationData(value))=>(Some(value),None,None,None,1),
+   Some(CursorSource::Data(value))=>(None,Some(value),None,None,2),
+   Some(CursorSource::Tile(value))=>(None,None,Some(value),None,3),
+   Some(CursorSource::View(value))=>(None,None,None,Some(value),4),
+   None=>(None,None,None,None,0),
+  };
+  let mut state=ForCursor {phase:0,initial:0};
+  let mut facts=ForFacts {initial:u32::from(initial),minimum:begin.minimum(),maximum:limit.maximum(),same:u32::from(begin.identity()==limit.identity()),seeks:0,domain,present:0,outer:0,begin_uniform:u32::from(begin.uniform),limit_uniform:u32::from(limit.uniform),flow:0,next:0,nonempty:u32::from(nonempty)};
+  let mut empty=None;let mut empty_item=None;let mut environment=None;let mut index=0;let mut cursor=None;let mut body_cursor=None;let mut test=None;let mut condition=None;
+  let mut binding=None;let mut place=None;let mut input=bounds::Proof::default();let mut component=0;let mut natural=None;let mut iteration=None;
+  let mut limit=Some(limit);let mut control=false;let mut body_flow=Flow::NEXT;let mut body_reachable=false;let mut code=None;let mut outer=None;let mut writes=None;
+  loop {
+   let step=unsafe {for_step(state,facts)};state=step.cursor;let initial=state.initial!=0;
+   match step.need {
+    ForNeed::EmptyBegin=>empty=Some(std::mem::take(&mut initialization).into_iter()),
+    ForNeed::EmptyNext=>{empty_item=empty.as_mut().unwrap().next();facts.present=u32::from(empty_item.is_some());},
+    ForNeed::EmptyInitialize=>{let(data,words)=empty_item.take().unwrap();self.initialize_application_words(&data,&words);},
+    ForNeed::EmptyDone=>return Ok(effects::LoopWrites::default()),
+    ForNeed::Seeks=>facts.seeks=u32::from(bounds::seeks(body)),
+    ForNeed::ClearInitialization=>initialization.clear(),
+    ForNeed::Enter=>{
+     let saved=self.env.clone();self.enter_loop(&saved);self.configure_initial_loop(initial,Some(name.clone()),Some(begin.clone()));self.prepare_view_loop();
+     self.loop_contexts.last_mut().unwrap().outer=std::mem::take(&mut self.code);environment=Some(saved);
+    },
+    ForNeed::Cursor=>{
+     index=self.reg(Scalar::U32);self.emit(InstKind::LoadLocal(index,slot));
+     cursor=Some(Value {proof:if initial {bounds::Proof::capture(&begin)}else{bounds::Proof::default()},literal:false,ty:Ty::scalar(Scalar::U32),regs:vec![index],uniform:step.uniform!=0,constant:if initial {begin.constant.clone()}else{None}});
+    },
+    ForNeed::Test=>{test=Some(self.binary("<",cursor.as_ref().unwrap().clone(),limit.as_ref().unwrap().clone(),span,None)?);condition=Some(std::mem::take(&mut self.code));},
+    ForNeed::BodyCursor=>{body_cursor=Some(Value {proof:if initial {bounds::Proof::capture(&begin)}else{bounds::for_cursor(&begin,limit.as_ref().unwrap(),facts.seeks!=0)},..cursor.as_ref().unwrap().clone()});},
+    ForNeed::RefineStart=>{self.refine_bounds(&Arc::new(bounds::Condition::comparison(Comparison::LessEqual,original_begin,cursor.as_ref().unwrap())),true);},
+    ForNeed::Application=>{
+     let data=application.as_mut().unwrap();data.data.root.proof.set_view_borrow(0,data.root.proof.view_borrow(0).joined(self.data_borrow(&data.sources)));
+    },
+    ForNeed::ApplicationInput=>{input=unsafe {self.world.call(self.application_cursor_input(application.as_ref().unwrap(),body_cursor.as_ref().unwrap())).await}?;},
+    ForNeed::ApplicationBinding=>{
+     let data=application.take().unwrap();let value=cursor.as_ref().unwrap();binding=Some(Binding::Owned(OwnedBinding {place:data.element(value,(value.minimum(),value.maximum().min(data.length.maximum().saturating_sub(1)))),proof:std::mem::take(&mut input),uniform:false,initialization:None}));
+    },
+    ForNeed::DatasetBinding=>{binding=Some(Binding::Owned(OwnedBinding {place:self.dataset_element(&dataset.take().unwrap(),index,false),proof:bounds::Proof::default(),uniform:false,initialization:None}));},
+    ForNeed::TileBinding=>{let value=tile.take().unwrap();place=Some(Place::TileElement {ty:value.ty,tile:value.tile,index,words:value.words});},
+    ForNeed::ViewBinding=>place=Some(Self::view_element(view.as_ref().unwrap(),index)),
+    ForNeed::NextComponent=>facts.present=u32::from(component<place.as_ref().unwrap().ty().components.len()),
+    ForNeed::Component=>{
+     let ty=place.as_ref().unwrap().ty();let width=ty.components.len();let scalar=ty.components[component].0;
+     input.assign(&[component],width,bounds::Proof::default().with_identity(ValueIdentity::Register(self.reg(scalar))));component+=1;
+    },
+    ForNeed::FinishOwned=>binding=Some(Binding::Owned(OwnedBinding {place:place.take().unwrap(),proof:std::mem::take(&mut input),uniform:false,initialization:None})),
+    ForNeed::FinishView=>binding=Some(Binding::ViewElement {element:OwnedBinding {place:place.take().unwrap(),proof:std::mem::take(&mut input),uniform:false,initialization:None},view:view.take().unwrap()}),
+    ForNeed::IndexBinding=>binding=Some(Binding::Value(body_cursor.as_ref().unwrap().clone())),
+    ForNeed::Install=>{self.env.insert(name.clone(),binding.take().unwrap());},
+    ForNeed::Writes=>{let mut writes=unsafe {self.world.call(self.loop_writes(None,body,borrowed,initial)).await}?;writes.locals.insert(slot);self.loop_contexts.last_mut().unwrap().writes=writes;},
+    ForNeed::Capture=>{
+     self.loop_contexts.last_mut().unwrap().control_source=view_contracts::LoopControl::capture(test.as_ref().unwrap(),&self.env,Some(body_cursor.as_ref().unwrap().clone()));
+     self.capture_loop_cursor(body_cursor.take().unwrap());
+     iteration=Some(match self.env.get(&name) {Some(Binding::Value(value))=>ownership::ApplicationIndex::of(value),_=>ownership::ApplicationIndex::of(cursor.as_ref().unwrap())});
+    },
+    ForNeed::Natural=>{
+     let condition_env=self.env.clone();let condition_path=self.path.clone();let partition=Arc::new(bounds::Condition::of(test.as_ref().unwrap()));self.refine_bounds(&partition,false);natural=Some(self.loop_state());
+     self.env=condition_env;self.path=condition_path;self.refine_bounds(&partition,true);facts.outer=u32::from(self.control_uniform);
+    },
+    ForNeed::Retain=>{unsafe {self.world.call(self.retain_loop_bounds(None,body,environment.as_ref().unwrap(),&mut natural.as_mut().unwrap().env)).await}?;facts.outer=u32::from(self.control_uniform);},
+    ForNeed::EnterBody=>{environment=None;control=self.control_uniform;self.control_uniform=step.uniform!=0;self.loop_depth+=1;self.iterators.push(Some((name.clone(),slot,limit.take().unwrap())));},
+    ForNeed::Body=>{unsafe {self.world.call(self.block(body)).await}?;body_flow=self.flow;body_reachable=body_flow.continues();facts.flow=u32::from(body_flow.0);},
+    ForNeed::Advance=>self.advance_iterator(slot)?,
+    ForNeed::CheckBackedge=>{unsafe {self.world.call(self.check_application_loop(span)).await}?;},
+    ForNeed::EndBody=>{let(_,_,value)=self.iterators.pop().unwrap().unwrap();limit=Some(value);self.loop_depth-=1;},
+    ForNeed::IterationElements=>{
+     let source=match &cursor_specification.data {Some(CursorSource::ApplicationData(data))=>Some(data),_=>None};
+     unsafe {self.world.call(self.application_iteration_elements(natural.as_mut().unwrap(),source,cursor.as_ref().unwrap(),limit.as_ref().unwrap())).await}?;
+    },
+    ForNeed::ExitInitialization=>{
+     code=Some(std::mem::take(&mut self.code));let natural=natural.as_mut().unwrap();let iteration=iteration.unwrap();let limit=limit.as_ref().unwrap();
+     self.initialize_iteration_exit(natural,&initialization,iteration,initial);self.initialize_array_iteration_exit(natural,&begin,limit,iteration,initial,body);self.defer_iteration_exit(natural,&begin,limit,&initialization,iteration,initial,body);
+    },
+    ForNeed::TestEntry=>{test.as_mut().unwrap().proof=bounds::Proof::condition(bounds::Condition::comparison(Comparison::Less,&begin,limit.as_ref().unwrap()));},
+    ForNeed::DropNatural=>natural=None,
+    ForNeed::Expand=>{
+     let specification=cursor_specification.clone();let iteration=iteration.unwrap();
+     let(expanded,flow)=unsafe {self.world.call(self.expand_initial_loop(code.take().unwrap(),body_reachable,async |builder,next|{
+      let mut cursor=specification.clone();cursor.initialization=builder.application_iteration_prefix(&initialization,iteration);cursor.begin=next.unwrap();
+      let initial=unsafe {builder.world.call(builder.next_initial_loop(body)).await}?;let nonempty=cursor.begin.maximum()<cursor.limit.minimum();
+      unsafe {builder.world.call(builder.for_loop(cursor,body,span,initial,nonempty,original_begin)).await}.map(|_|())
+     })).await}?;code=Some(expanded);body_flow=body_flow.union(flow);facts.flow=u32::from(body_flow.0);
+    },
+    ForNeed::Leave=>{
+     outer=Some(std::mem::take(&mut self.loop_contexts.last_mut().unwrap().outer));
+     let(next,result)=self.leave_loop(natural.take(),test.as_ref().unwrap(),condition.as_ref().unwrap(),code.as_ref().unwrap(),span,nonempty,Some((&begin,limit.as_ref().unwrap())))?;facts.next=u32::from(next);writes=Some(result);
+    },
+    ForNeed::Emit=>{
+     self.flow=Flow(step.flow as u8);self.control_uniform=control;self.code=outer.take().unwrap();self.emit(InstKind::Loop {condition:condition.take().unwrap(),test:test.as_ref().unwrap().regs[0],body:code.take().unwrap()});return Ok(writes.take().unwrap());
     },
    }
   }
