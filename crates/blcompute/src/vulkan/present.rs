@@ -123,6 +123,12 @@ enum Acquisition {
     Failed,
 }
 
+struct PresentCopy {
+    index: u32,
+    acquired: PresentStatus,
+    execution: Rc<Execution>,
+}
+
 pub struct Swapchain {
     window_dpi: *mut c_void,
     extent: Extent2D,
@@ -322,29 +328,36 @@ impl Device {
     }
 }
 impl Swapchain {
-    /// 同步呈现；返回前源图像的实际GPU拷贝已完成。
+    /// 同步呈现；返回前已提交的源图像拷贝结束对借用的使用。
     pub fn present(&mut self, display: &GpuDataset) -> Result<PresentStatus> {
         self.ready_for_acquire(true)?;
-        match self.submit_present(display, u64::MAX)? {
-            Poll::Ready((status, execution)) => {
-                self.acquisition = Acquisition::CopyPending(execution);
-                self.ready_for_acquire(true)?;
-                Ok(status)
-            }
-            Poll::Pending => Err(error("无限等待的呈现图像获取未完成")),
-        }
+        let _dpi = WindowDpi::enter(self.window_dpi)?;
+        let Poll::Ready(copy) = self.submit_copy(display, u64::MAX)? else {
+            return Err(error("无限等待的呈现图像获取未完成"));
+        };
+        let presented = self.queue_present(copy.index, copy.acquired);
+        let copied = copy.execution.wait();
+        // The borrowed display must outlive the copy, including a nonterminal wait error.
+        drop(copy.execution);
+        let status = presented?;
+        self.acquisition = Acquisition::Idle;
+        copied?;
+        Ok(status)
     }
     /// 只在原acquire信号量已消费且交换链图像可用时提交；Pending不提交或改写输入。
     /// Ready表示已排入呈现；拷贝沿display的真实最后使用点完成，不表示已经上屏。
+    /// 已入队的拷贝在呈现报错时同样更新display的最后使用点。
     pub fn try_present(&mut self, display: &mut GpuDataset) -> Result<Poll<PresentStatus>> {
         if !self.ready_for_acquire(false)? {
             return Ok(Poll::Pending);
         }
-        let Poll::Ready((status, execution)) = self.submit_present(display, 0)? else {
+        let _dpi = WindowDpi::enter(self.window_dpi)?;
+        let Poll::Ready(copy) = self.submit_copy(display, 0)? else {
             return Ok(Poll::Pending);
         };
-        display.last_use = Some(execution.clone());
-        self.acquisition = Acquisition::CopyPending(execution);
+        display.last_use = Some(copy.execution.clone());
+        let status = self.queue_present(copy.index, copy.acquired)?;
+        self.acquisition = Acquisition::CopyPending(copy.execution);
         Ok(Poll::Ready(status))
     }
     fn ready_for_acquire(&mut self, wait: bool) -> Result<bool> {
@@ -362,12 +375,11 @@ impl Swapchain {
             Acquisition::Acquired | Acquisition::Failed => Err(error("交换链在取得图像后呈现失败，须结束并重新创建")),
         }
     }
-    fn submit_present(
+    fn submit_copy(
         &mut self,
         display: &GpuDataset,
         timeout: u64,
-    ) -> Result<Poll<(PresentStatus, Rc<Execution>)>> {
-        let _dpi = WindowDpi::enter(self.window_dpi)?;
+    ) -> Result<Poll<PresentCopy>> {
         if !Rc::ptr_eq(&self.inner, &display.allocation.inner)
             || display.count != self.extent.width * self.extent.height
             || display.stride != 4
@@ -472,25 +484,26 @@ impl Swapchain {
             )?;
             // The accepted copy owns the wait on the acquire semaphore.
             self.acquisition = Acquisition::Failed;
-            let info = PresentInfo {
-                kind: 1000001001,
-                next: null(),
-                wait_count: 1,
-                wait: &signal,
-                chain_count: 1,
-                chains: &self.chain,
-                indices: &index,
-                results: null_mut(),
-            };
-            let result = (self.functions.vkQueuePresentKHR)(self.inner.queue, &info);
-            let queued = PresentStatus::read(self.inner.observe_device_loss(result), "vkQueuePresentKHR")?;
-            let status =
-                if acquired == PresentStatus::Suboptimal || queued == PresentStatus::Suboptimal {
-                    PresentStatus::Suboptimal
-                } else {
-                    PresentStatus::Optimal
-                };
-            Ok(Poll::Ready((status, execution)))
+            Ok(Poll::Ready(PresentCopy { index, acquired, execution }))
+        }
+    }
+    fn queue_present(&self, index: u32, acquired: PresentStatus) -> Result<PresentStatus> {
+        let info = PresentInfo {
+            kind: 1000001001,
+            next: null(),
+            wait_count: 1,
+            wait: &self.rendered[index as usize],
+            chain_count: 1,
+            chains: &self.chain,
+            indices: &index,
+            results: null_mut(),
+        };
+        let result = unsafe { (self.functions.vkQueuePresentKHR)(self.inner.queue, &info) };
+        let queued = PresentStatus::read(self.inner.observe_device_loss(result), "vkQueuePresentKHR")?;
+        if acquired == PresentStatus::Suboptimal {
+            Ok(acquired)
+        } else {
+            Ok(queued)
         }
     }
 }
