@@ -1212,3 +1212,88 @@ impl Builder<'_> {
   }
  }
 }
+
+#[repr(C)]
+#[derive(Clone,Copy)]
+struct ForInputCursor {phase:u32,nonempty:u32}
+#[repr(C)]
+#[derive(Clone,Copy)]
+struct ForInputFacts {collision:u32,range:u32,present:u32,name:u32,kind:u32,access:u32,view:u32,begin_min:u32,begin_max:u32,limit_min:u32,limit_max:u32,continuing:u32}
+#[repr(u32)]
+enum ForInputNeed {Collision,RangeBegin,RangeEnd,BeginType,EndType,ApplicationReference,SourceKind,NameBinding,DatasetReference,Zero,Classify,Application,Dataset,Tile,ViewExpression,InvalidAccess,InvalidSource,View,Bounds,Borrowed,Initial,Slot,Initialization,BindApplication,Loop,CompleteWrites,Complete}
+#[repr(C)]
+struct ForInputStep {cursor:ForInputCursor,need:ForInputNeed}
+#[repr(C)]
+struct ForWrittenHost<'a,'w> {context:*mut ForWritten<'a,'w>,storage:unsafe extern "C" fn(*mut ForWritten<'a,'w>,usize)->u32,locals:unsafe extern "C" fn(*mut ForWritten<'a,'w>)->usize,local:unsafe extern "C" fn(*mut ForWritten<'a,'w>,usize)->u32}
+unsafe extern "C" {
+ #[link_name="bootstrap.function_body::for_input_step"] fn for_input_step(cursor:ForInputCursor,facts:ForInputFacts)->ForInputStep;
+ #[link_name="bootstrap.function_body::for_written"] fn for_written(unknown:u32,count:usize,host:ForWrittenHost<'_,'_>)->u32;
+}
+struct ForWritten<'a,'w> {builder:&'a Builder<'w>,writes:&'a effects::LoopWrites,data:&'a application::Data,slots:&'a [usize]}
+unsafe extern "C" fn for_written_storage(context:*mut ForWritten<'_,'_>,index:usize)->u32 {
+ let v=unsafe {&*context};u32::from(v.writes.storage[index].includes_root(v.builder,v.data.root.regs[0]))
+}
+unsafe extern "C" fn for_written_locals(context:*mut ForWritten<'_,'_>)->usize {
+ let v=unsafe {&mut *context};v.slots=match v.data.place.as_ref().map(Place::storage) {Some(Place::Local(_,slots,_))=>slots.as_slice(),_=>&[]};v.slots.len()
+}
+unsafe extern "C" fn for_written_local(context:*mut ForWritten<'_,'_>,index:usize)->u32 {
+ let v=unsafe {&*context};u32::from(v.writes.locals.contains(&v.slots[index]))
+}
+impl Builder<'_> {
+ #[inline(never)]
+ pub(super) async fn for_statement(&mut self,name:&str,start:&Expr,end:&Option<Expr>,body:&Block,span:Span)->Result<()> {
+  let mut cursor=ForInputCursor {phase:0,nonempty:0};let mut facts=ForInputFacts {collision:u32::from(self.env.contains_key(name)),range:u32::from(end.is_some()),present:0,name:0,kind:0,access:0,view:0,begin_min:0,begin_max:0,limit_min:0,limit_max:0,continuing:0};
+  let mut begin=None;let mut limit=None;let mut source=None;let mut source_name=None;let mut application=None;let mut dataset=None;let mut tile=None;let mut value=None;let mut data=None;
+  let mut borrowed=None;let mut initial=false;let mut slot=0;let mut initialization=None;let mut writes=None;
+  loop {
+   let step=unsafe {for_input_step(cursor,facts)};cursor=step.cursor;
+   match step.need {
+    ForInputNeed::Collision=>return self.fail(span,"B125","循环变量不能覆盖已有绑定"),
+    ForInputNeed::RangeBegin=>{
+     begin=unsafe {self.world.call(self.temporary_scope(start.span(),async |builder|Ok((unsafe {builder.world.call(builder.expr(start)).await}?,view::Borrow::default())))).await}?;facts.present=u32::from(begin.is_some());
+    },
+    ForInputNeed::RangeEnd=>{
+     let end=end.as_ref().unwrap();limit=unsafe {self.world.call(self.temporary_scope(end.span(),async |builder|Ok((unsafe {builder.world.call(builder.expr(end)).await}?,view::Borrow::default())))).await}?;facts.present=u32::from(limit.is_some());
+    },
+    ForInputNeed::BeginType=>self.require_same(&Ty::scalar(Scalar::U32),&begin.as_ref().unwrap().ty,start.span())?,
+    ForInputNeed::EndType=>self.require_same(&begin.as_ref().unwrap().ty,&limit.as_ref().unwrap().ty,start.span())?,
+    ForInputNeed::ApplicationReference=>{source=unsafe {self.world.call(self.application_reference(start)).await}?.map(Binding::DataReference);facts.present=u32::from(source.is_some());},
+    ForInputNeed::SourceKind=>{source_name=match start.kind(){ExprKind::Name(name)=>Some(name),_=>None};facts.name=u32::from(source_name.is_some());},
+    ForInputNeed::NameBinding=>source=self.env.get(source_name.take().unwrap()).cloned(),
+    ForInputNeed::DatasetReference=>source=self.dataset_reference(start)?.map(Binding::Data),
+    ForInputNeed::Zero=>begin=Some(self.constant(Scalar::U32,0)),
+    ForInputNeed::Classify=>{
+     match source.take() {
+      Some(Binding::DataReference(v))=>{application=Some(v);facts.kind=1;},
+      Some(Binding::Data(v))=>{facts.access=v.access as u32;dataset=Some(v);facts.kind=2;},
+      Some(Binding::Tile(v))=>{tile=Some(v);facts.kind=3;},
+      _=>facts.kind=0,
+     }
+    },
+    ForInputNeed::Application=>{let data=application.as_ref().unwrap();self.application_cpu(data,start.span())?;limit=Some(data.length.clone());},
+    ForInputNeed::Dataset=>{let v=dataset.take().unwrap();limit=Some(self.data_length(&v));data=Some(CursorSource::Data(v));},
+    ForInputNeed::Tile=>{let v=tile.take().unwrap();limit=Some(self.tile_length(&v));data=Some(CursorSource::Tile(v));},
+    ForInputNeed::ViewExpression=>{value=unsafe {self.world.call(self.expr(start)).await}?;facts.present=u32::from(value.is_some());facts.view=u32::from(value.as_ref().is_some_and(|v|v.ty.view.is_some()));},
+    ForInputNeed::InvalidAccess=>return self.fail(start.span(),"B128","只读顺序遍历需要 read／inout 或 atomic 数据集；atomic 游标仍须显式原子访问"),
+    ForInputNeed::InvalidSource=>return self.fail(start.span(),"B127","顺序遍历需要 dataset、tile 或不可变 view"),
+    ForInputNeed::View=>{let v=value.take().unwrap();limit=Some(Self::view_length(&v));data=Some(CursorSource::View(v));},
+    ForInputNeed::Bounds=>{let a=begin.as_ref().unwrap();let b=limit.as_ref().unwrap();facts.begin_min=a.minimum();facts.begin_max=a.maximum();facts.limit_min=b.minimum();facts.limit_max=b.maximum();},
+    ForInputNeed::Borrowed=>borrowed=Some(application.as_ref().unwrap().root.identity()),
+    ForInputNeed::Initial=>initial=unsafe {self.world.call(self.application_initial_loop(body)).await}?,
+    ForInputNeed::Slot=>{slot=self.local_slots(&Ty::scalar(Scalar::U32)).0[0];self.emit(InstKind::StoreLocal(slot,begin.as_ref().unwrap().regs[0]));},
+    ForInputNeed::Initialization=>initialization=Some(self.application_iteration_outputs(begin.as_ref().unwrap(),limit.as_ref().unwrap(),application.as_ref().map(|v|&v.data))),
+    ForInputNeed::BindApplication=>data=Some(CursorSource::ApplicationData(application.take().unwrap())),
+    ForInputNeed::Loop=>{
+     writes=Some(unsafe {self.world.call(self.for_loop(ForLoop {name:name.to_string(),begin:begin.as_ref().unwrap().clone(),limit:limit.take().unwrap(),data:data.take(),borrowed,slot,initialization:initialization.take().unwrap()},body,span,initial,cursor.nonempty!=0,begin.as_ref().unwrap())).await}?);facts.continuing=u32::from(self.flow.continues());
+    },
+    ForInputNeed::CompleteWrites=>{
+     let writes=writes.as_ref().unwrap();unsafe {self.world.call(self.complete_application_writes(|builder,data|{
+      let mut context=ForWritten {builder,writes,data,slots:&[]};
+      (unsafe {for_written(u32::from(writes.unknown_storage),writes.storage.len(),ForWrittenHost {context:&mut context,storage:for_written_storage,locals:for_written_locals,local:for_written_local})})!=0
+     },span)).await}?;
+    },
+    ForInputNeed::Complete=>return Ok(()),
+   }
+  }
+ }
+}

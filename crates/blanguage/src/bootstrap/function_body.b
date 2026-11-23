@@ -372,3 +372,39 @@ extern "C" ForStep for_step(ForCursor cursor,ForFacts facts) on cpu {
  if(c.phase==31){c.phase=32;return ForStep(c,ForNeed::Leave,0,0);}
  return ForStep(c,ForNeed::Emit,0,(facts.flow&2)|(facts.next!=0 ? 1 : 0));
 }
+
+extern "C" ForInputStep for_input_step(ForInputCursor cursor,ForInputFacts facts) on cpu {
+ ForInputCursor c=cursor;
+ if(c.phase==0){if(facts.collision!=0){return ForInputStep(c,ForInputNeed::Collision);}if(facts.range!=0){c.phase=1;return ForInputStep(c,ForInputNeed::RangeBegin);}c.phase=5;return ForInputStep(c,ForInputNeed::ApplicationReference);}
+ if(c.phase==1){if(facts.present==0){return ForInputStep(c,ForInputNeed::Complete);}c.phase=2;return ForInputStep(c,ForInputNeed::RangeEnd);}
+ if(c.phase==2){if(facts.present==0){return ForInputStep(c,ForInputNeed::Complete);}c.phase=3;return ForInputStep(c,ForInputNeed::BeginType);}
+ if(c.phase==3){c.phase=4;return ForInputStep(c,ForInputNeed::EndType);}
+ if(c.phase==4){c.phase=21;return ForInputStep(c,ForInputNeed::Bounds);}
+ if(c.phase==5){if(facts.present!=0){c.phase=8;}else{c.phase=6;return ForInputStep(c,ForInputNeed::SourceKind);}}
+ if(c.phase==6){c.phase=8;return ForInputStep(c,facts.name!=0 ? ForInputNeed::NameBinding : ForInputNeed::DatasetReference);}
+ if(c.phase==8){c.phase=9;return ForInputStep(c,ForInputNeed::Zero);}
+ if(c.phase==9){c.phase=10;return ForInputStep(c,ForInputNeed::Classify);}
+ if(c.phase==10){
+  c.phase=4;
+  if(facts.kind==1){return ForInputStep(c,ForInputNeed::Application);}
+  if(facts.kind==2){return ForInputStep(c,facts.access==1||facts.access==3||facts.access==4 ? ForInputNeed::Dataset : ForInputNeed::InvalidAccess);}
+  if(facts.kind==3){return ForInputStep(c,ForInputNeed::Tile);}
+  c.phase=11;return ForInputStep(c,ForInputNeed::ViewExpression);
+ }
+ if(c.phase==11){if(facts.present==0){return ForInputStep(c,ForInputNeed::Complete);}if(facts.view==0){return ForInputStep(c,ForInputNeed::InvalidSource);}c.phase=4;return ForInputStep(c,ForInputNeed::View);}
+ if(c.phase==21){if(facts.begin_min>=facts.limit_max){return ForInputStep(c,ForInputNeed::Complete);}c.nonempty=facts.begin_max<facts.limit_min ? 1 : 0;if(facts.kind==1){c.phase=22;return ForInputStep(c,ForInputNeed::Borrowed);}c.phase=23;return ForInputStep(c,ForInputNeed::Initial);}
+ if(c.phase==22){c.phase=23;return ForInputStep(c,ForInputNeed::Initial);}
+ if(c.phase==23){c.phase=24;return ForInputStep(c,ForInputNeed::Slot);}
+ if(c.phase==24){c.phase=25;return ForInputStep(c,ForInputNeed::Initialization);}
+ if(c.phase==25){if(facts.kind==1){c.phase=26;return ForInputStep(c,ForInputNeed::BindApplication);}c.phase=27;return ForInputStep(c,ForInputNeed::Loop);}
+ if(c.phase==26){c.phase=27;return ForInputStep(c,ForInputNeed::Loop);}
+ if(c.phase==27){c.phase=28;if(facts.continuing!=0){return ForInputStep(c,ForInputNeed::CompleteWrites);}}
+ return ForInputStep(c,ForInputNeed::Complete);
+}
+extern "C" u32 for_written(u32 unknown,u64 count,ForWrittenHost host) on cpu
+ requires nonzero(host.storage) requires nonzero(host.locals) requires nonzero(host.local) {
+ if(unknown!=0){return 1;}u64 index=0u64;
+ while(index<count){if(host.storage(host.context,index)!=0){return 1;}index+=1u64;}
+ u64 locals=host.locals(host.context);index=0u64;
+ while(index<locals){if(host.local(host.context,index)!=0){return 1;}index+=1u64;}return 0;
+}

@@ -91,3 +91,12 @@ struct ForFacts {u32 initial;u32 minimum;u32 maximum;u32 same;u32 seeks;u32 doma
 enum ForNeed:u32 {EmptyBegin=0;EmptyNext=1;EmptyInitialize=2;EmptyDone=3;Seeks=4;ClearInitialization=5;Enter=6;Cursor=7;Test=8;BodyCursor=9;RefineStart=10;Application=11;ApplicationInput=12;ApplicationBinding=13;DatasetBinding=14;TileBinding=15;ViewBinding=16;NextComponent=17;Component=18;FinishOwned=19;FinishView=20;IndexBinding=21;Install=22;Writes=23;Capture=24;Natural=25;Retain=26;EnterBody=27;Body=28;Advance=29;CheckBackedge=30;EndBody=31;IterationElements=32;ExitInitialization=33;TestEntry=34;DropNatural=35;Expand=36;Leave=37;Emit=38;};
 struct ForStep {ForCursor cursor;ForNeed need;u32 uniform;u32 flow;};
 extern "C" ForStep for_step(ForCursor cursor,ForFacts facts) on cpu;
+
+struct ForInputCursor {u32 phase;u32 nonempty;};
+struct ForInputFacts {u32 collision;u32 range;u32 present;u32 name;u32 kind;u32 access;u32 view;u32 begin_min;u32 begin_max;u32 limit_min;u32 limit_max;u32 continuing;};
+enum ForInputNeed:u32 {Collision=0;RangeBegin=1;RangeEnd=2;BeginType=3;EndType=4;ApplicationReference=5;SourceKind=6;NameBinding=7;DatasetReference=8;Zero=9;Classify=10;Application=11;Dataset=12;Tile=13;ViewExpression=14;InvalidAccess=15;InvalidSource=16;View=17;Bounds=18;Borrowed=19;Initial=20;Slot=21;Initialization=22;BindApplication=23;Loop=24;CompleteWrites=25;Complete=26;};
+struct ForInputStep {ForInputCursor cursor;ForInputNeed need;};
+extern "C" ForInputStep for_input_step(ForInputCursor cursor,ForInputFacts facts) on cpu;
+struct ForWrittenHost {address context;cfn<u32,address,u64> storage;cfn<u64,address> locals;cfn<u32,address,u64> local;};
+extern "C" u32 for_written(u32 unknown,u64 count,ForWrittenHost host) on cpu
+ requires nonzero(host.storage) requires nonzero(host.locals) requires nonzero(host.local);
