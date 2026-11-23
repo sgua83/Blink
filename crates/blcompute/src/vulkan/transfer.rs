@@ -273,8 +273,8 @@ impl GpuReadback {
 
     /// 等待实际GPU执行完成并领取 CPU 数据及原域关系。
     pub fn wait(self) -> Result<DomainBindings<CpuDataset>> {
-        let Self { executions, sources, roots, domains } = self;
-        executions.observe(|execution| execution.wait().map(|()| true))?;
+        self.executions.observe(|execution| execution.wait().map(|()| true))?;
+        let Self { sources, roots, domains, .. } = self;
         let mut ready = Vec::with_capacity(sources.len());
         for source in sources {
             ready.push(source.finish(&ready)?.freeze()?);

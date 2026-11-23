@@ -16,7 +16,7 @@
 
 `Device::download`、`download_domains`和二维／三维纹理下载是同步接口。`download_domains`先核对所有根的逻辑设备归属，再按绑定顺序读回。各源在读取子视图、分配暂存或录制复制之前，直接交回自身已经观察到的同队列前序错误。零页数据集也读取这一终态。多个只读绑定可以复用同一冻结存储的CPU载荷，各绑定仍消费自己的最后使用点。实际拷贝提交成功后等待本次原生fence，将终态交给尚未确认的前序并释放相关资源。CPU数据在读回成功后交回。拥有式域组逐根接手独占存储的主机布局和视图绑定索引，原GPU页、绑定表和设备视图依赖沿实际完成点释放。借用根由调用方继续持有，冻结来源继续共享CPU读回结果。
 
-`Device::download_async` 消费一个GPU数据集，`download_domains_async` 消费一组带原域关系的绑定。原逻辑设备核对所有根，为闭合资源图的实际页录制一次同队列读回。每个已录制的独占根把原主机布局直接交给 `GpuReadback`，其GPU绑定沿实际前序退役。原读回执行持有复制所需的GPU源页，完成后释放这些引用。`GpuReadback` 持有主机结果所需的映射暂存。`is_complete()` 查询实际执行的原生Fence，任一所需前序未就绪时返回 `false`。调用者可推进自己的工作，随后通过 `wait()` 领取 `DomainBindings<CpuDataset>`。客户端先观察到成功时，领取直接沿该终态准备主机结果。每个冻结来源在这一结果内共享，域关系及根顺序随结果交回。只有零页结果时，直接保留各实际绑定仍需的原执行完成点，原队列无需额外的空提交。放弃结果时先结束真实执行，再释放主机暂存。[Vulkan Fence与主机可见性](https://docs.vulkan.org/spec/latest/chapters/synchronization.html#synchronization-fences)
+`Device::download_async` 消费一个GPU数据集，`download_domains_async` 消费一组带原域关系的绑定。原逻辑设备核对所有根，为闭合资源图的实际页录制一次同队列读回。每个已录制的独占根把原主机布局直接交给 `GpuReadback`，其GPU绑定沿实际前序退役。原读回执行持有复制所需的GPU源页，完成后释放这些引用。`GpuReadback` 持有主机结果所需的映射暂存。`is_complete()` 查询实际执行的原生Fence，任一所需前序未就绪时返回 `false`。调用者可推进自己的工作，随后通过 `wait()` 领取 `DomainBindings<CpuDataset>`。客户端先观察到成功时，领取直接沿该终态准备主机结果。每个冻结来源在这一结果内共享，域关系及根顺序随结果交回。只有零页结果时，直接保留各实际绑定仍需的原执行完成点，原队列无需额外的空提交。等待返回错误或放弃结果时，先沿原完成点结束真实执行，再释放主机暂存。等待错误原样交回。[Vulkan Fence与主机可见性](https://docs.vulkan.org/spec/latest/chapters/synchronization.html#synchronization-fences)
 
 BLEngine的 `submit_to` 直接消费这些绑定，将同一工作图像和输出交回原所有者；下一次提交沿原依赖使用它们，无需CPU等待，也不为每个在途执行复制一份内部8K工作图像。渲染算法及阶段仍由B表达，实际执行、Vulkan内存依赖与寿命仍归Blink。
 
