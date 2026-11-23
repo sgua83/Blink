@@ -638,6 +638,7 @@ impl Device {
         if !source.belongs_to(&self.inner) {
             return Err(error("纹理属于另一设备"));
         }
+        let previous = Execution::borrow_synchronous(Some(source.produced()))?;
         let sampled = &source.0.sampled;
         let texture = &sampled.storage;
         let (copies, bytes) = mip_copies(
@@ -702,7 +703,6 @@ impl Device {
             );
         }
         commands.barrier(0x1000, 0x4000, 0x1000, 0x2000);
-        let previous = Execution::borrow_synchronous(Some(source.produced()))?;
         let point = commands.submit_with(&[], &[], &[])?;
         let result = Execution::wait_synchronous(&point, previous);
         drop(commands);

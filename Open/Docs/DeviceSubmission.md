@@ -8,7 +8,7 @@
 
 观察者可以先于结果退出。结果和AS的物理使用期仍由原资源／Execution管理，不以观察者退出或CPU tick结束作为GPU完成。最后真实资源所有者退出时仍履行原有完成后释放职责；异步不等于允许提前销毁设备资源。`Submission::wait()`借用同一完成点与查询池等待，成功交回Completed，并仅清除本次提交为实际绑定记录的使用点；失败交回(error, submission)，同一提交继续持有原绑定、AS、查询池与真实最后使用点。调用者决定继续持有或明确结束它，错误不保证设备数据可用。原Execution::wait／is_complete在同一Completion已记录0或VK_ERROR_DEVICE_LOST时，沿原release_known结束本执行的命令、scratch、绑定参数和依赖持有，再原样交回原Result；已终止执行的中间资源不因失败观察者继续存在而延长。DEVICE_LOST仍作为错误返回，不发布成功，也不改变原绑定、AS及查询池的观察所有权。GpuDataset或Structure明确交出原存储时，Execution::discard／discard_structure在同一Completion已缓存0或DEVICE_LOST后直接drop原DatasetStorage／StructureStorage；尚未确认终止时仍由原discarded／discarded_structures保留。ReadDataset、AS及其BLAS来源通过原Rc维持真实拥有关系，最后一个拥有者退出前底层资源保持；查询仍持有AS、其他TLAS或调用者仍持有BLAS时，不以某个构建点结束提前释放共享资源，不添加等待或第二释放链。其他未确认终止的错误不提前释放在途资源。终态资源规则见[Khronos设备丢失语义](https://docs.vulkan.org/spec/latest/chapters/devsandqueues.html#devsandqueues-lost-device)。执行器不自动重放。`into_bindings()`及原按绑定交接继续存在。
 
-`Device::download`、`download_domains`和二维／三维纹理下载是同步接口。它们借用源存储的同队列前序，直接返回已经观察到的前序错误。读回提交成功后，等本次原生拷贝的fence达到终态，再将原结果交给尚未确认的前序并释放相关资源。可用CPU数据由读回成功返回。`download_domains`在创建读回前核对所有根属于调用它的逻辑设备，发现异设备根即返回设备归属错误。
+`Device::download`、`download_domains`和二维／三维纹理下载是同步接口。`download_domains`先核对所有根的逻辑设备归属，再按绑定顺序读回。各源在读取子视图、分配暂存或录制复制之前，直接交回自身已经观察到的同队列前序错误。零页数据集也读取这一终态。多个只读绑定可以复用同一冻结存储的CPU载荷，各绑定仍消费自己的最后使用点。实际拷贝提交成功后等待本次原生fence，将终态交给尚未确认的前序并释放相关资源。CPU数据在读回成功后交回。
 
 BLEngine的 `submit_to` 直接消费这些绑定，将同一工作图像和输出交回原所有者；下一次提交沿原依赖使用它们，无需CPU等待，也不为每个在途执行复制一份内部8K工作图像。渲染算法及阶段仍由B表达，实际执行、Vulkan内存依赖与寿命仍归Blink。
 

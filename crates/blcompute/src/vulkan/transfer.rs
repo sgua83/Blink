@@ -275,6 +275,8 @@ impl<'a> Readback<'a> {
         key: usize,
     ) -> Result<crate::ReadDataset> {
         if let Some(target) = self.sources.get(&key) {
+            // Bindings of the same frozen storage can have different last uses.
+            Execution::borrow_synchronous(source.dependency())?;
             return Ok(target.clone());
         }
         let target = self.download_graph(source)?.freeze()?;
@@ -283,6 +285,7 @@ impl<'a> Readback<'a> {
     }
 
     pub(super) fn download_graph(&mut self, data: &GpuDataset) -> Result<Dataset> {
+        let previous = Execution::borrow_synchronous(data.dependency())?;
         let mut sources = Vec::with_capacity(data.views.sources.len());
         for source in &data.views.sources {
             let key = Rc::as_ptr(&source.0) as usize;
@@ -292,7 +295,7 @@ impl<'a> Readback<'a> {
             ty: data.ty.clone(),
             stride: data.stride,
             count: data.count,
-            words: self.read_payload(data)?,
+            words: self.read_payload(data, previous)?,
             views: Views::default(),
         };
         // 原生实例尾部不是可移植数据；主机只接收 B 声明的矩阵。
@@ -308,7 +311,7 @@ impl<'a> Readback<'a> {
         Ok(target)
     }
 
-    fn read_payload(&mut self, data: &GpuDataset) -> Result<Vec<u32>> {
+    fn read_payload(&mut self, data: &GpuDataset, mut previous: Option<&Execution>) -> Result<Vec<u32>> {
         let Some(first) = data.pages.first() else {
             return Ok(Vec::new());
         };
@@ -325,7 +328,6 @@ impl<'a> Readback<'a> {
         let staging = self.staging.as_ref().unwrap();
         let page_bytes = data.page_records() as usize * data.stride as usize;
         let mut written = 0;
-        let mut producer = data.dependency();
         let commands = match &mut self.commands {
             Some(commands) => commands,
             slot @ None => slot.insert(Commands::with_pool_flags(self.device.inner.clone(), 3)?),
@@ -351,7 +353,6 @@ impl<'a> Readback<'a> {
                 );
             }
             commands.barrier(0x1000, 0x4000, 0x1000, 0x2000);
-            let previous = Execution::borrow_synchronous(producer.take())?;
             let point = match &mut self.completion {
                 Some(point) => {
                     commands.resubmit(point)?;
@@ -359,7 +360,7 @@ impl<'a> Readback<'a> {
                 }
                 slot @ None => slot.insert(commands.submit_with(&[], &[], &[])?),
             };
-            Execution::wait_synchronous(point, previous)?;
+            Execution::wait_synchronous(point, previous.take())?;
             staging.read_with(|pointer| unsafe {
                 std::ptr::copy_nonoverlapping(pointer, output.add(written), bytes);
             })?;
