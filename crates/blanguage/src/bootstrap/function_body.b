@@ -408,3 +408,59 @@ extern "C" u32 for_written(u32 unknown,u64 count,ForWrittenHost host) on cpu
  u64 locals=host.locals(host.context);index=0u64;
  while(index<locals){if(host.local(host.context,index)!=0){return 1;}index+=1u64;}return 0;
 }
+
+bool local_spelling<const N:u32>(address bytes,u64 length,read array<u8,N> expected) on cpu {
+ if(length!=u64(N)){return false;}for(i in 0..N){if(unsafe_position<u8>(unsafe_address(address_bits(bytes)+u64(i)))!=expected[i]){return false;}}return true;
+}
+extern "C" u32 local_publish(address bytes,u64 length) on cpu {if(local_spelling(bytes,length,"tile_publish")){return 1;}if(local_spelling(bytes,length,"tile_atomic")){return 2;}return 0;}
+extern "C" LetStep let_step(LocalCursor cursor,LetFacts facts) on cpu {
+ LocalCursor c=cursor;
+ if(c.phase==0){if(facts.collision!=0){return LetStep(c,LetNeed::Collision,0);}c.phase=1;return LetStep(c,LetNeed::Inspect,0);}
+ if(c.phase==1){if(facts.publish!=0){return LetStep(c,LetNeed::Publish,facts.publish==2 ? 1 : 0);}c.phase=2;if(facts.annotation!=0){return LetStep(c,LetNeed::Expected,0);}}
+ if(c.phase==2){c.phase=4;if(facts.kind==2){return LetStep(c,LetNeed::Cooperate,0);}if(facts.kind==1){c.phase=3;return LetStep(c,LetNeed::Collective,0);}return LetStep(c,LetNeed::Evaluate,0);}
+ if(c.phase==3){c.phase=4;return LetStep(c,facts.tile!=0 ? LetNeed::Tile : LetNeed::Evaluate,0);}
+ if(c.phase==4){if(facts.continuing==0){return LetStep(c,LetNeed::Complete,0);}if(facts.present==0){return LetStep(c,LetNeed::Missing,0);}c.phase=5;if(facts.annotation!=0){return LetStep(c,LetNeed::CheckType,0);}}
+ return LetStep(c,LetNeed::Bind,0);
+}
+extern "C" DeclareStep declare_step(LocalCursor cursor,DeclareFacts facts) on cpu {
+ LocalCursor c=cursor;if(c.phase==0){if(facts.collision!=0){return DeclareStep(c,DeclareNeed::Collision);}if(facts.dataset!=0){return DeclareStep(c,DeclareNeed::Dataset);}c.phase=1;return DeclareStep(c,DeclareNeed::Type);}return DeclareStep(c,facts.owns!=0 ? DeclareNeed::Owned : DeclareNeed::Plain);
+}
+extern "C" ValueStep value_step(ValueCursor cursor,ValueFacts facts) on cpu {
+ ValueCursor c=cursor;u32 uniform=facts.uniform!=0&&facts.control!=0 ? 1 : 0;
+ if(c.phase==0){c.phase=1;return ValueStep(c,ValueNeed::View,0,0u64);}
+ if(c.phase==1){if(facts.collision!=0){return ValueStep(c,ValueNeed::Collision,0,0u64);}c.phase=2;return ValueStep(c,ValueNeed::Mutability,0,0u64);}
+ if(c.phase==2){if(facts.mutable!=0){c.phase=6;return ValueStep(c,ValueNeed::Slots,0,0u64);}c.phase=3;return ValueStep(c,ValueNeed::Arrays,0,0u64);}
+ if(c.phase==3){if(facts.arrays==0){return ValueStep(c,ValueNeed::Immutable,uniform,0u64);}c.phase=4;return ValueStep(c,ValueNeed::Array,0,0u64);}
+ if(c.phase==4){return ValueStep(c,ValueNeed::ArrayFinish,uniform,0u64);}
+ if(c.index<facts.slots&&c.index<facts.regs){u64 at=c.index;c.index+=1u64;return ValueStep(c,ValueNeed::Store,0,at);}return ValueStep(c,ValueNeed::Finish,uniform,0u64);
+}
+extern "C" OwnedStep owned_step(LocalCursor cursor,OwnedFacts facts) on cpu {
+ LocalCursor c=cursor;if(c.phase==0){if(facts.collision!=0){return OwnedStep(c,OwnedNeed::Collision,0);}c.phase=1;return OwnedStep(c,OwnedNeed::Rebound,0);}if(c.phase==1){if(facts.rebound!=0){return OwnedStep(c,OwnedNeed::Bind,1);}c.phase=2;return OwnedStep(c,OwnedNeed::Variants,0);}return OwnedStep(c,OwnedNeed::Bind,facts.variants==0 ? 1 : 0);
+}
+extern "C" ReturnedStep returned_step(LocalCursor cursor,ReturnedFacts facts) on cpu {
+ LocalCursor c=cursor;if(c.phase==0){if(facts.kind==0){return ReturnedStep(c,ReturnedNeed::Value,0);}if(facts.kind==1){return ReturnedStep(c,ReturnedNeed::Owned,0);}if(facts.kind==3){return ReturnedStep(c,ReturnedNeed::Unit,0);}c.phase=1;return ReturnedStep(c,ReturnedNeed::Name,0);}if(c.phase==1){if(facts.collision!=0){return ReturnedStep(c,ReturnedNeed::Collision,0);}c.phase=2;return ReturnedStep(c,ReturnedNeed::Rebound,0);}return ReturnedStep(c,ReturnedNeed::Dataset,facts.rebound!=0 ? 1 : 0);
+}
+address binding_at(address base,u64 offset) on cpu {return unsafe_address(address_bits(base)+offset);}
+T binding_node<T>(address nodes,u64 offset) on cpu {return unsafe_position<T>(binding_at(nodes,offset));}
+u64 binding_member(address nodes,Slice list,u64 index) on cpu {return binding_node<u64>(nodes,list.offset+index*8u64);}
+bool binding_name(address source,address stored,Text text,address name,u64 length) on cpu {
+ if(text.range.end-text.range.start!=length){return false;}address bytes=binding_at(text.kind==0 ? source : stored,text.range.start);u64 i=0u64;
+ while(i<length){if(unsafe_position<u8>(binding_at(bytes,i))!=unsafe_position<u8>(binding_at(name,i))){return false;}i+=1u64;}return true;
+}
+bool binding_root(address nodes,address source,address stored,ExprRef reference,address name,u64 length) on cpu {
+ ExprNode expression=binding_node<ExprNode>(nodes,reference.offset);
+ match(expression.kind){ExprKind::Name(value){return binding_name(source,stored,value,name,length);}ExprKind::Member(value){return binding_root(nodes,source,stored,value.base,name,length);}ExprKind::Number(unused){return false;}ExprKind::StaticU32(unused){return false;}ExprKind::Bool(unused){return false;}ExprKind::Index(unused){return false;}ExprKind::Call(unused){return false;}ExprKind::Invoke(unused){return false;}ExprKind::Construct(unused){return false;}ExprKind::Specialize(unused){return false;}ExprKind::FunctionRef(unused){return false;}ExprKind::Cooperate(unused){return false;}ExprKind::Target(unused){return false;}ExprKind::Unary(unused){return false;}ExprKind::Binary(unused){return false;}ExprKind::Select(unused){return false;}}
+}
+bool rebound_body(address nodes,address source,address stored,Slice body,address name,u64 length) on cpu {
+ u64 i=0u64;while(i<body.count){StmtNode statement=binding_node<StmtNode>(nodes,binding_member(nodes,body,i));
+  match(statement.kind){
+   StmtKind::Assign(value){if(binding_root(nodes,source,stored,value.target,name,length)){return true;}}
+   StmtKind::If(value){if(rebound_body(nodes,source,stored,value.yes,name,length)||rebound_body(nodes,source,stored,value.no,name,length)){return true;}}
+   StmtKind::Match(value){u64 arm=0u64;while(arm<value.arms.count){ArmNode item=binding_node<ArmNode>(nodes,binding_member(nodes,value.arms,arm));if(rebound_body(nodes,source,stored,item.body,name,length)){return true;}arm+=1u64;}}
+   StmtKind::For(value){if(rebound_body(nodes,source,stored,value.body,name,length)){return true;}}
+   StmtKind::While(value){if(rebound_body(nodes,source,stored,value.body,name,length)){return true;}}
+   StmtKind::Declare(unused){}   StmtKind::Let(unused){}   StmtKind::Expr(unused){}   StmtKind::Parallel(unused){}   StmtKind::Return(unused){}   StmtKind::Break(){}   StmtKind::Continue(){}   StmtKind::Phase(){}   StmtKind::Seek(unused){}
+  }i+=1u64;
+ }return false;
+}
+extern "C" u32 binding_rebound(address nodes,address source,address stored,Slice body,address name,u64 length) on cpu {return rebound_body(nodes,source,stored,body,name,length) ? 1 : 0;}

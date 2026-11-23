@@ -1,4 +1,5 @@
 module bootstrap.function_body;
+import bootstrap.ast_storage;
 struct Cursor {u32 phase;u32 flags;u64 index;u64 part;};
 enum BeginNeed:u32 {Void=0;Never=1;Type=2;InvalidOwned=3;Shape=4;Dataset=5;Value=6;Early=7;InvalidCooperative=8;Slot=9;Initial=10;Inputs=11;Context=12;Complete=13;Next=14;};
 struct BeginStep {Cursor cursor;BeginNeed need;};
@@ -100,3 +101,28 @@ extern "C" ForInputStep for_input_step(ForInputCursor cursor,ForInputFacts facts
 struct ForWrittenHost {address context;cfn<u32,address,u64> storage;cfn<u64,address> locals;cfn<u32,address,u64> local;};
 extern "C" u32 for_written(u32 unknown,u64 count,ForWrittenHost host) on cpu
  requires nonzero(host.storage) requires nonzero(host.locals) requires nonzero(host.local);
+
+struct LocalCursor {u32 phase;};
+struct LetFacts {u32 collision;u32 annotation;u32 kind;u32 publish;u32 tile;u32 continuing;u32 present;};
+enum LetNeed:u32 {Collision=0;Inspect=1;Publish=2;Expected=3;Collective=4;Cooperate=5;Tile=6;Evaluate=7;Missing=8;CheckType=9;Bind=10;Complete=11;};
+struct LetStep {LocalCursor cursor;LetNeed need;u32 atomic;};
+extern "C" u32 local_publish(address bytes,u64 length) on cpu;
+extern "C" LetStep let_step(LocalCursor cursor,LetFacts facts) on cpu;
+struct DeclareFacts {u32 collision;u32 dataset;u32 owns;};
+enum DeclareNeed:u32 {Collision=0;Dataset=1;Type=2;Owned=3;Plain=4;};
+struct DeclareStep {LocalCursor cursor;DeclareNeed need;};
+extern "C" DeclareStep declare_step(LocalCursor cursor,DeclareFacts facts) on cpu;
+struct ValueCursor {u32 phase;u64 index;};
+struct ValueFacts {u32 collision;u32 mutable;u32 arrays;u32 uniform;u32 control;u64 slots;u64 regs;};
+enum ValueNeed:u32 {View=0;Collision=1;Mutability=2;Arrays=3;Array=4;ArrayFinish=5;Immutable=6;Slots=7;Store=8;Finish=9;};
+struct ValueStep {ValueCursor cursor;ValueNeed need;u32 uniform;u64 index;};
+extern "C" ValueStep value_step(ValueCursor cursor,ValueFacts facts) on cpu;
+struct OwnedFacts {u32 collision;u32 rebound;u32 variants;};
+enum OwnedNeed:u32 {Collision=0;Rebound=1;Variants=2;Bind=3;};
+struct OwnedStep {LocalCursor cursor;OwnedNeed need;u32 mutable;};
+extern "C" OwnedStep owned_step(LocalCursor cursor,OwnedFacts facts) on cpu;
+struct ReturnedFacts {u32 kind;u32 collision;u32 rebound;};
+enum ReturnedNeed:u32 {Value=0;Owned=1;Unit=2;Collision=3;Rebound=4;Dataset=5;Name=6;};
+struct ReturnedStep {LocalCursor cursor;ReturnedNeed need;u32 mutable;};
+extern "C" ReturnedStep returned_step(LocalCursor cursor,ReturnedFacts facts) on cpu;
+extern "C" u32 binding_rebound(address nodes,address source,address stored,Slice body,address name,u64 length) on cpu;

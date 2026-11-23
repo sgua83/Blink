@@ -3731,24 +3731,13 @@ impl Builder<'_> {
     }
 }
 
-// Only whole binding assignment needs mutable handle/length storage; payload writes do not.
-pub(super) fn rebound(body: &Block, name: &str) -> bool {
-    fn root(expr: &Expr, name: &str) -> bool {
-        match expr.kind() {
-            ExprKind::Name(root) => root == name,
-            ExprKind::Member(base, _) => root(&base, name),
-            _ => false,
-        }
-    }
-    body.iter().any(|s| match s.kind() {
-        StmtKind::Assign(lhs, _, _) => root(&lhs, name),
-        StmtKind::If(_, yes, no) => {
-            rebound(&yes, name) || rebound(&no, name)
-        }
-        StmtKind::Match(_, arms) => arms.iter().any(|arm| rebound(&arm.body(),name)),
-        StmtKind::For(_, _, _, body) | StmtKind::While(_, body) => rebound(&body, name),
-        _ => false,
-    })
+unsafe extern "C" {
+    #[link_name="bootstrap.function_body::binding_rebound"]
+    fn source_binding_rebound(nodes:*const std::ffi::c_void,source:*const std::ffi::c_void,stored:*const std::ffi::c_void,body:crate::syntax::wire::Slice,name:*const u8,length:usize)->u32;
+}
+pub(super) fn rebound(body:&Block,name:&str)->bool {
+    let storage=body.source_view().storage();
+    (unsafe {source_binding_rebound(storage.nodes.cast_const(),storage.source.cast_const(),storage.text.cast_const(),body.source_slice(),name.as_ptr(),name.len())})!=0
 }
 
 fn captured_names(statement: &Stmt, names: &mut BTreeSet<String>) {

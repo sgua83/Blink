@@ -1297,3 +1297,76 @@ impl Builder<'_> {
   }
  }
 }
+
+#[repr(C)]#[derive(Clone,Copy)]pub(super) struct LocalCursor {pub(super) phase:u32}
+#[repr(C)]#[derive(Clone,Copy)]struct LetFacts {collision:u32,annotation:u32,kind:u32,publish:u32,tile:u32,continuing:u32,present:u32}
+#[repr(u32)]enum LetNeed {Collision,Inspect,Publish,Expected,Collective,Cooperate,Tile,Evaluate,Missing,CheckType,Bind,Complete}
+#[repr(C)]struct LetStep {cursor:LocalCursor,need:LetNeed,atomic:u32}
+#[repr(C)]#[derive(Clone,Copy)]struct DeclareFacts {collision:u32,dataset:u32,owns:u32}
+#[repr(u32)]enum DeclareNeed {Collision,Dataset,Type,Owned,Plain}
+#[repr(C)]struct DeclareStep {cursor:LocalCursor,need:DeclareNeed}
+#[repr(C)]#[derive(Clone,Copy)]struct ValueCursor {phase:u32,index:usize}
+#[repr(C)]#[derive(Clone,Copy)]struct ValueFacts {collision:u32,mutable:u32,arrays:u32,uniform:u32,control:u32,slots:usize,regs:usize}
+#[repr(u32)]enum ValueNeed {View,Collision,Mutability,Arrays,Array,ArrayFinish,Immutable,Slots,Store,Finish}
+#[repr(C)]struct ValueStep {cursor:ValueCursor,need:ValueNeed,uniform:u32,index:usize}
+unsafe extern "C" {
+ #[link_name="bootstrap.function_body::local_publish"]fn local_publish(bytes:*const u8,length:usize)->u32;
+ #[link_name="bootstrap.function_body::let_step"]fn let_step(cursor:LocalCursor,facts:LetFacts)->LetStep;
+ #[link_name="bootstrap.function_body::declare_step"]fn declare_step(cursor:LocalCursor,facts:DeclareFacts)->DeclareStep;
+ #[link_name="bootstrap.function_body::value_step"]fn value_step(cursor:ValueCursor,facts:ValueFacts)->ValueStep;
+}
+impl Builder<'_> {
+ #[inline(never)]
+ pub(super) async fn let_statement(&mut self,annotation:&Option<TypeName>,name:&str,e:&Expr,span:Span)->Result<()> {
+  let mut cursor=LocalCursor {phase:0};let mut facts=LetFacts {collision:u32::from(self.env.contains_key(name)),annotation:u32::from(annotation.is_some()),kind:0,publish:0,tile:0,continuing:0,present:0};
+  let mut call=None;let mut cooperative=None;let mut expected=None;let mut op=None;let mut result=None;
+  loop {
+   facts.continuing=u32::from(self.flow.continues());facts.present=u32::from(result.is_some());let step=unsafe {let_step(cursor,facts)};cursor=step.cursor;
+   match step.need {
+    LetNeed::Collision=>return self.fail(span,"B125",format!("重复局部变量或覆盖参数 {name}")),
+    LetNeed::Inspect=>match e.kind(){
+     ExprKind::Call(name,args)=>{facts.kind=1;facts.publish=unsafe {local_publish(name.as_ptr(),name.len())};call=Some((name,args));},
+     ExprKind::Cooperate(name,explicit,args)=>{facts.kind=2;cooperative=Some((name,explicit,args));},
+     _=>facts.kind=0,
+    },
+    LetNeed::Publish=>{let(_,args)=call.as_ref().unwrap();return unsafe {self.world.call(self.tile_publish(annotation.is_some(),name,args,span,step.atomic!=0)).await};},
+    LetNeed::Expected=>expected=Some(unsafe {self.world.call(self.expected_storage(annotation.as_ref().unwrap(),span)).await}?),
+    LetNeed::Collective=>{op=collective::from_source(call.as_ref().unwrap().0).tile();facts.tile=u32::from(op.is_some());},
+    LetNeed::Cooperate=>{let(name,explicit,args)=cooperative.as_ref().unwrap();result=unsafe {self.world.call(self.cooperate(name,explicit.as_ref(),args,e.span())).await}?.map(returns::Returned::value);},
+    LetNeed::Tile=>{result=Some(returns::Returned::value(self.tile_collective(op.take().unwrap(),&call.as_ref().unwrap().1,span)?));},
+    LetNeed::Evaluate=>result=unsafe {self.world.call(self.evaluate_returned(e,expected.as_ref())).await}?,
+    LetNeed::Missing=>return self.fail(span,"B228","局部绑定需要值或拥有资源"),
+    LetNeed::CheckType=>{unsafe {self.world.call(self.check_returned_type(result.as_mut().unwrap(),expected.as_ref().unwrap(),span)).await}?;},
+    LetNeed::Bind=>return self.bind_returned(name,result.take().unwrap(),span),
+    LetNeed::Complete=>return Ok(()),
+   }
+  }
+ }
+ #[inline(never)]
+ pub(super) async fn declare_statement(&mut self,annotation:&TypeName,name:&str,span:Span)->Result<()> {
+  let mut cursor=LocalCursor {phase:0};let mut facts=DeclareFacts {collision:u32::from(self.env.contains_key(name)),dataset:u32::from(annotation.dataset),owns:0};let mut ty=None;
+  loop {let step=unsafe {declare_step(cursor,facts)};cursor=step.cursor;match step.need {
+   DeclareNeed::Collision=>return self.fail(span,"B125",format!("重复局部变量或覆盖参数 {name}")),
+   DeclareNeed::Dataset=>return unsafe {self.world.call(self.application_declare(annotation,name,span)).await},
+   DeclareNeed::Type=>{let value=unsafe {self.world.call(self.world.ty(annotation,self.scope.source(),span,self.scope.module(),self.scope.imports())).await}?;facts.owns=u32::from(value.owns_resources());ty=Some(value);},
+   DeclareNeed::Owned=>return unsafe {self.world.call(self.owned_value_declare(name,ty.take().unwrap(),span)).await},
+   DeclareNeed::Plain=>{let ty=ty.take().unwrap();let(slots,storage)=self.local_slots(&ty);self.env.insert(name.to_string(),Binding::Owned(OwnedBinding {place:Place::Local(ty,slots,storage),proof:bounds::Proof::default(),uniform:false,initialization:None}));return Ok(());},
+  }}
+ }
+ pub(super) fn bind_local_value(&mut self,name:&str,value:Value,span:Span)->Result<()> {
+  let mut cursor=ValueCursor {phase:0,index:0};let mut facts=ValueFacts {collision:0,mutable:0,arrays:0,uniform:u32::from(value.uniform),control:u32::from(self.control_uniform),slots:0,regs:value.regs.len()};
+  let mut value=Some(value);let mut owner=None;let mut slots=Vec::new();let mut storage=0..0;
+  loop {let step=unsafe {value_step(cursor,facts)};cursor=step.cursor;match step.need {
+   ValueNeed::View=>{self.require_view_available(value.as_ref().unwrap(),&[],span)?;facts.collision=u32::from(self.env.contains_key(name));},
+   ValueNeed::Collision=>return self.fail(span,"B125",format!("重复局部变量或覆盖参数 {name}")),
+   ValueNeed::Mutability=>facts.mutable=u32::from(self.mutable_names.contains(name)),
+   ValueNeed::Arrays=>facts.arrays=u32::from(value.as_ref().unwrap().ty.contains_arrays()),
+   ValueNeed::Array=>{let materialized=self.materialize_array(value.take().unwrap(),None);facts.uniform=u32::from(materialized.uniform);owner=Some(materialized);},
+   ValueNeed::ArrayFinish=>{let mut owner=owner.take().unwrap();owner.place=owner.place.read_only();owner.uniform=step.uniform!=0;self.env.insert(name.to_string(),Binding::Owned(owner));return Ok(());},
+   ValueNeed::Immutable=>{let mut value=value.take().unwrap();value.literal=false;value.uniform=step.uniform!=0;self.env.insert(name.to_string(),Binding::Value(value));return Ok(());},
+   ValueNeed::Slots=>{(slots,storage)=self.local_slots(&value.as_ref().unwrap().ty);facts.slots=slots.len();},
+   ValueNeed::Store=>self.emit(InstKind::StoreLocal(slots[step.index],value.as_ref().unwrap().regs[step.index])),
+   ValueNeed::Finish=>{let value=value.take().unwrap();let proof=bounds::Proof::capture(&value);let place=Place::Local(value.ty,slots,storage);self.initialize(&place);self.env.insert(name.to_string(),Binding::Owned(OwnedBinding {proof,place,uniform:step.uniform!=0,initialization:None}));return Ok(());},
+  }}
+ }
+}

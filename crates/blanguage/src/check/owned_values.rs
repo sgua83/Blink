@@ -331,22 +331,6 @@ impl Builder<'_> {
         }
         result
     }
-    pub(super) fn bind_owned_value(
-        &mut self,
-        name: &str,
-        result: OwnedValue,
-        span: Span,
-    ) -> Result<()> {
-        if self.env.contains_key(name) {
-            return self.fail(span, "B125", format!("重复局部变量或覆盖参数 {name}"));
-        }
-        let mutable = self.scope.body().is_some_and(|body| application::rebound(&body, name))
-            || !result.value.ty.has_variants();
-        let mut result = self.owned_value_binding(result, mutable);
-        result.declaration=span.start;
-        self.env.insert(name.to_string(), Binding::OwnedValue(result));
-        Ok(())
-    }
     pub(super) async fn owned_value_declare(&mut self, name: &str, ty: Ty, span: Span) -> Result<()> {
         if self.program.target != Target::Cpu || self.application.is_none() {
             return self.fail(span, "B224", "拥有结果属于普通CPU应用资源组织");
@@ -659,29 +643,6 @@ impl Builder<'_> {
             Ok(())
         } else {unsafe { self.world.call(self.drop_returned(item,&view::Borrow::default(),span)).await }?;unsafe { self.world.call(self.block(body)).await }}
     }
-    pub(super) fn bind_returned(
-        &mut self,
-        name: &str,
-        value: Returned,
-        span: Span,
-    ) -> Result<()> {
-        match value {
-            Returned::Value(value) => self.bind_local_value(name, *value, span),
-            Returned::OwnedValue(value) => self.bind_owned_value(name, value, span),
-            Returned::Dataset(data) => {
-                if self.env.contains_key(name) {
-                    return self.fail(span, "B125", "重复局部绑定");
-                }
-                let mutable =
-                    self.scope.body().is_some_and(|body| application::rebound(&body, name));
-                let data = self.application_bind(data, mutable);
-                self.env
-                    .insert(name.to_string(), Binding::ApplicationData(data));
-                Ok(())
-            }
-            Returned::Unit => self.fail(span, "B228", "void分支没有可绑定值"),
-        }
-    }
     pub(super) async fn drop_returned(&mut self,value:Returned,retained:&view::Borrow,span:Span) -> Result<()> {
         let transferred=match &value{
             Returned::OwnedValue(value)if value.ownership.may_own()=>view_liveness::Transfer::Owned{value,place:value.place.as_ref()},
@@ -857,3 +818,38 @@ const _: () = {
         }
     }
 };
+
+#[repr(C)]#[derive(Clone,Copy)]struct OwnedFacts {collision:u32,rebound:u32,variants:u32}
+#[repr(u32)]enum OwnedNeed {Collision,Rebound,Variants,Bind}
+#[repr(C)]struct OwnedStep {cursor:super::flow::LocalCursor,need:OwnedNeed,mutable:u32}
+#[repr(C)]#[derive(Clone,Copy)]struct ReturnedFacts {kind:u32,collision:u32,rebound:u32}
+#[repr(u32)]enum ReturnedNeed {Value,Owned,Unit,Collision,Rebound,Dataset,Name}
+#[repr(C)]struct ReturnedStep {cursor:super::flow::LocalCursor,need:ReturnedNeed,mutable:u32}
+unsafe extern "C" {
+ #[link_name="bootstrap.function_body::owned_step"]fn owned_step(cursor:super::flow::LocalCursor,facts:OwnedFacts)->OwnedStep;
+ #[link_name="bootstrap.function_body::returned_step"]fn returned_step(cursor:super::flow::LocalCursor,facts:ReturnedFacts)->ReturnedStep;
+}
+impl Builder<'_> {
+ pub(super) fn bind_owned_value(&mut self,name:&str,result:OwnedValue,span:Span)->Result<()> {
+  let mut cursor=super::flow::LocalCursor {phase:0};let mut facts=OwnedFacts {collision:u32::from(self.env.contains_key(name)),rebound:0,variants:0};let mut result=Some(result);
+  loop {let step=unsafe {owned_step(cursor,facts)};cursor=step.cursor;match step.need {
+   OwnedNeed::Collision=>return self.fail(span,"B125",format!("重复局部变量或覆盖参数 {name}")),
+   OwnedNeed::Rebound=>facts.rebound=u32::from(self.scope.body().is_some_and(|body|application::rebound(&body,name))),
+   OwnedNeed::Variants=>facts.variants=u32::from(result.as_ref().unwrap().value.ty.has_variants()),
+   OwnedNeed::Bind=>{let mut result=self.owned_value_binding(result.take().unwrap(),step.mutable!=0);result.declaration=span.start;self.env.insert(name.to_string(),Binding::OwnedValue(result));return Ok(());},
+  }}
+ }
+ pub(super) fn bind_returned(&mut self,name:&str,value:Returned,span:Span)->Result<()> {
+  let(kind,mut plain,mut owned,mut data)=match value {Returned::Value(v)=>(0,Some(v),None,None),Returned::OwnedValue(v)=>(1,None,Some(v),None),Returned::Dataset(v)=>(2,None,None,Some(v)),Returned::Unit=>(3,None,None,None)};
+  let mut cursor=super::flow::LocalCursor {phase:0};let mut facts=ReturnedFacts {kind,collision:0,rebound:0};
+  loop {let step=unsafe {returned_step(cursor,facts)};cursor=step.cursor;match step.need {
+   ReturnedNeed::Value=>return self.bind_local_value(name,*plain.take().unwrap(),span),
+   ReturnedNeed::Owned=>return self.bind_owned_value(name,owned.take().unwrap(),span),
+   ReturnedNeed::Unit=>return self.fail(span,"B228","void分支没有可绑定值"),
+   ReturnedNeed::Name=>facts.collision=u32::from(self.env.contains_key(name)),
+   ReturnedNeed::Collision=>return self.fail(span,"B125","重复局部绑定"),
+   ReturnedNeed::Rebound=>facts.rebound=u32::from(self.scope.body().is_some_and(|body|application::rebound(&body,name))),
+   ReturnedNeed::Dataset=>{let data=self.application_bind(data.take().unwrap(),step.mutable!=0);self.env.insert(name.to_string(),Binding::ApplicationData(data));return Ok(());},
+  }}
+ }
+}
