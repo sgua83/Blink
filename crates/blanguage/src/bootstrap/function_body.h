@@ -288,3 +288,12 @@ struct RayQueryFacts {u64 count;u32 any;u32 present;};
 enum RayQueryNeed:u32 {BadArguments=0;Name=1;MissingName=2;Binding=3;BadSource=4;Origin=5;Minimum=6;Direction=7;Maximum=8;Empty=9;OriginType=10;MinimumType=11;DirectionType=12;MaximumType=13;Cull=14;CullType=15;AnyType=16;ClosestType=17;Registers=18;AnyResult=19;ClosestResult=20;Emit=21;Value=22;};
 struct RayQueryStep {LocalCursor cursor;RayQueryNeed need;};
 extern "C" RayQueryStep ray_query_step(LocalCursor cursor,RayQueryFacts facts) on cpu;
+
+struct TextureArgumentFacts {u32 present;u32 array;u32 bounded;};
+enum TextureArgumentNeed:u32 {Binding=0;Resource=1;Base=2;Shape=3;BadShape=4;Index=5;IndexType=6;Bounds=7;BadBounds=8;Select=9;Empty=10;BadArguments=11;BadSource=12;};
+struct TextureArgumentStep {Cursor cursor;TextureArgumentNeed need;Text name;};
+extern "C" TextureArgumentStep texture_argument_step(Cursor cursor,SignatureNode source,TextureArgumentFacts facts) on cpu;
+struct TextureSampleFacts {u64 count;u32 present;u32 array;u32 texture_uniform;u32 coordinate_uniform;u32 lod_uniform;};
+enum TextureSampleNeed:u32 {BadArguments=0;Texture=1;Shape=2;BadArray=3;Coordinate=4;Lod=5;Binding=6;CoordinateType=7;LodType=8;Proof=9;Registers=10;Emit=11;Value=12;Empty=13;};
+struct TextureSampleStep {LocalCursor cursor;TextureSampleNeed need;u32 uniform;};
+extern "C" TextureSampleStep texture_sample_step(LocalCursor cursor,TextureSampleFacts facts) on cpu;

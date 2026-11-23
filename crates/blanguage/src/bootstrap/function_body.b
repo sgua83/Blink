@@ -1134,3 +1134,46 @@ extern "C" RayQueryStep ray_query_step(LocalCursor cursor,RayQueryFacts facts) o
  if(c.phase==16){c.phase=17;return RayQueryStep(c,RayQueryNeed::Emit);}
  return RayQueryStep(c,RayQueryNeed::Value);
 }
+
+extern "C" TextureArgumentStep texture_argument_step(Cursor cursor,SignatureNode source,TextureArgumentFacts facts) on cpu {
+ Cursor c=cursor;TextureArgumentStep result=TextureArgumentStep(c,TextureArgumentNeed::BadSource,Text(0,Span(0u64,0u64)));
+ if(c.phase==0){
+  ExprNode expression=binding_node<ExprNode>(source.storage.nodes,source.offset);
+  match(expression.kind){
+   ExprKind::Name(value){result.cursor.phase=1;result.need=TextureArgumentNeed::Binding;result.name=value;return result;}
+   ExprKind::Index(value){c.flags=1;c.part=value.base.offset;c.index=value.index.offset;c.phase=2;result.cursor=c;result.need=TextureArgumentNeed::Base;return result;}
+   ExprKind::Call(value){
+    address spelling=binding_at(value.name.kind==0 ? source.storage.source : source.storage.text,value.name.range.start);
+    if(local_spelling(spelling,value.name.range.end-value.name.range.start,"unsafe_read")){
+     if(value.arguments.count!=2u64){result.need=TextureArgumentNeed::BadArguments;return result;}
+     c.flags=0;c.part=binding_member(source.storage.nodes,value.arguments,0u64);c.index=binding_member(source.storage.nodes,value.arguments,1u64);c.phase=2;result.cursor=c;result.need=TextureArgumentNeed::Base;return result;
+    }
+   }
+   ExprKind::Number(unused){}ExprKind::StaticU32(unused){}ExprKind::Bool(unused){}ExprKind::Member(unused){}
+   ExprKind::Invoke(unused){}ExprKind::Construct(unused){}ExprKind::Specialize(unused){}ExprKind::FunctionRef(unused){}
+   ExprKind::Cooperate(unused){}ExprKind::Target(unused){}ExprKind::Unary(unused){}ExprKind::Binary(unused){}ExprKind::Select(unused){}
+  }
+  return result;
+ }
+ if(c.phase==1){result.need=facts.present!=0 ? TextureArgumentNeed::Resource : TextureArgumentNeed::BadSource;return result;}
+ if(c.phase==2){if(facts.present==0){result.need=TextureArgumentNeed::Empty;return result;}c.phase=3;result.cursor=c;result.need=TextureArgumentNeed::Shape;return result;}
+ if(c.phase==3){if(facts.array==0){result.need=TextureArgumentNeed::BadShape;return result;}c.phase=4;result.cursor=c;result.need=TextureArgumentNeed::Index;return result;}
+ if(c.phase==4){if(facts.present==0){result.need=TextureArgumentNeed::Empty;return result;}c.phase=5;result.cursor=c;result.need=TextureArgumentNeed::IndexType;return result;}
+ if(c.phase==5&&c.flags!=0){c.phase=6;result.cursor=c;result.need=TextureArgumentNeed::Bounds;return result;}
+ if(c.phase==6&&facts.bounded==0){result.need=TextureArgumentNeed::BadBounds;return result;}
+ result.need=TextureArgumentNeed::Select;return result;
+}
+extern "C" TextureSampleStep texture_sample_step(LocalCursor cursor,TextureSampleFacts facts) on cpu {
+ LocalCursor c=cursor;
+ if(c.phase==0){if(facts.count!=3u64){return TextureSampleStep(c,TextureSampleNeed::BadArguments,0);}c.phase=1;return TextureSampleStep(c,TextureSampleNeed::Texture,0);}
+ if(c.phase==1){if(facts.present==0){return TextureSampleStep(c,TextureSampleNeed::Empty,0);}c.phase=2;return TextureSampleStep(c,TextureSampleNeed::Shape,0);}
+ if(c.phase==2){if(facts.array!=0){return TextureSampleStep(c,TextureSampleNeed::BadArray,0);}c.phase=3;return TextureSampleStep(c,TextureSampleNeed::Coordinate,0);}
+ if(c.phase==3){if(facts.present==0){return TextureSampleStep(c,TextureSampleNeed::Empty,0);}c.phase=4;return TextureSampleStep(c,TextureSampleNeed::Lod,0);}
+ if(c.phase==4){if(facts.present==0){return TextureSampleStep(c,TextureSampleNeed::Empty,0);}c.phase=5;return TextureSampleStep(c,TextureSampleNeed::Binding,0);}
+ if(c.phase==5){c.phase=6;return TextureSampleStep(c,TextureSampleNeed::CoordinateType,0);}
+ if(c.phase==6){c.phase=7;return TextureSampleStep(c,TextureSampleNeed::LodType,0);}
+ if(c.phase==7){c.phase=8;return TextureSampleStep(c,TextureSampleNeed::Proof,0);}
+ if(c.phase==8){c.phase=9;return TextureSampleStep(c,TextureSampleNeed::Registers,0);}
+ if(c.phase==9){c.phase=10;return TextureSampleStep(c,TextureSampleNeed::Emit,0);}
+ return TextureSampleStep(c,TextureSampleNeed::Value,facts.texture_uniform!=0&&facts.coordinate_uniform!=0&&facts.lod_uniform!=0 ? 1 : 0);
+}
