@@ -313,3 +313,12 @@ struct OrdinalFacts {u32 binding;u32 place;u32 minimum;u32 maximum;};
 enum OrdinalNeed:u32 {BadArguments=0;BadName=1;Binding=2;BadCursor=3;Application=4;Dataset=5;Tile=6;View=7;};
 struct OrdinalStep {LocalCursor cursor;OrdinalNeed need;Text name;u32 minimum;u32 maximum;};
 extern "C" OrdinalStep ordinal_step(LocalCursor cursor,StorageView source,Slice arguments,OrdinalFacts facts) on cpu;
+
+struct RecordConstructFacts {u64 arguments;u64 held;u64 fields;u64 elements;u32 owns;u32 variants;u32 enumeration;u32 matrix;u32 c_function;u32 numeric;u32 array;u32 empty;u32 present;u32 borrows;u32 same;u32 uniform;u32 constant;};
+enum RecordConstructNeed:u32 {Argument=0;Hold=1;Push=2;ReleaseBegin=3;Release=4;Owned=5;Variant=6;BadEnum=7;EnumValue=8;EnumType=9;EnumReturn=10;Matrix=11;Numeric=12;SameArray=13;Single=14;ArrayType=15;BadArray=16;EmptyArray=17;ArrayBegin=18;ArrayElement=19;ArrayValue=20;Record=21;Empty=22;};
+struct RecordConstructStep {Cursor cursor;RecordConstructNeed need;u32 expected;};
+extern "C" RecordConstructStep record_construct_step(Cursor cursor,RecordConstructFacts facts) on cpu;
+struct RecordPackFacts {u64 fields;u64 values;u32 uniform;u32 constant;};
+enum RecordPackNeed:u32 {BadCount=0;Field=1;Append=2;Value=3;};
+struct RecordPackStep {Cursor cursor;RecordPackNeed need;};
+extern "C" RecordPackStep record_pack_step(Cursor cursor,RecordPackFacts facts) on cpu;

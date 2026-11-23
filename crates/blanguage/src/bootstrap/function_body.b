@@ -1268,3 +1268,48 @@ extern "C" OrdinalStep ordinal_step(LocalCursor cursor,StorageView source,Slice 
  if(facts.binding==5&&facts.place==3){result.need=OrdinalNeed::View;result.maximum=facts.maximum==0?0:facts.maximum-1;}
  return result;
 }
+
+u32 record_properties(u32 flags,u32 uniform,u32 constant) on cpu {u32 result=flags;if(uniform==0){result=result&2;}if(constant==0){result=result&1;}return result;}
+extern "C" RecordConstructStep record_construct_step(Cursor cursor,RecordConstructFacts facts) on cpu {
+ Cursor c=cursor;
+ while(true){
+  if(c.phase==0){
+   if(c.index<facts.arguments){c.phase=1;return RecordConstructStep(c,RecordConstructNeed::Argument,facts.array!=0?1:(c.index<facts.fields?2:0));}
+   c.phase=4;return RecordConstructStep(c,RecordConstructNeed::ReleaseBegin,0);
+  }
+  if(c.phase==1){if(facts.present==0){return RecordConstructStep(c,RecordConstructNeed::Empty,0);}if(facts.borrows!=0){c.phase=2;return RecordConstructStep(c,RecordConstructNeed::Hold,0);}c.phase=3;return RecordConstructStep(c,RecordConstructNeed::Push,0);}
+  if(c.phase==2){c.phase=3;return RecordConstructStep(c,RecordConstructNeed::Push,0);}
+  if(c.phase==3){c.index+=1u64;c.phase=0;}
+  if(c.phase==4){c.index=0u64;c.phase=5;}
+  if(c.phase==5){if(c.index<facts.held){c.phase=6;return RecordConstructStep(c,RecordConstructNeed::Release,0);}c.phase=7;}
+  if(c.phase==6){c.index+=1u64;c.phase=5;}
+  if(c.phase==7){
+   if(facts.owns!=0){return RecordConstructStep(c,RecordConstructNeed::Owned,0);}
+   if(facts.variants!=0){return RecordConstructStep(c,RecordConstructNeed::Variant,0);}
+   if(facts.enumeration!=0){if(facts.arguments!=1u64){return RecordConstructStep(c,RecordConstructNeed::BadEnum,0);}c.phase=8;return RecordConstructStep(c,RecordConstructNeed::EnumValue,0);}
+   if(facts.matrix!=0){return RecordConstructStep(c,RecordConstructNeed::Matrix,0);}
+   if(facts.c_function!=0||facts.numeric!=0){return RecordConstructStep(c,RecordConstructNeed::Numeric,0);}
+   if(facts.array==0){return RecordConstructStep(c,RecordConstructNeed::Record,0);}
+   if(facts.arguments==1u64){c.phase=10;return RecordConstructStep(c,RecordConstructNeed::SameArray,0);}c.phase=11;c.index=0u64;c.flags=3;
+  }
+  if(c.phase==8){c.phase=9;return RecordConstructStep(c,facts.same!=0?RecordConstructNeed::EnumReturn:RecordConstructNeed::EnumType,0);}
+  if(c.phase==9){return RecordConstructStep(c,RecordConstructNeed::EnumReturn,0);}
+  if(c.phase==10){if(facts.same!=0){return RecordConstructStep(c,RecordConstructNeed::Single,0);}c.phase=11;c.index=0u64;c.flags=3;}
+  if(c.phase==11){
+   if(c.index<facts.arguments){c.phase=12;return RecordConstructStep(c,RecordConstructNeed::ArrayType,0);}
+   if(facts.arguments!=1u64&&facts.arguments!=facts.elements){return RecordConstructStep(c,RecordConstructNeed::BadArray,0);}
+   if(facts.empty!=0){if(facts.elements==0u64){c.flags=3;}return RecordConstructStep(c,RecordConstructNeed::EmptyArray,0);}
+   c.phase=13;c.index=0u64;c.part=0u64;return RecordConstructStep(c,RecordConstructNeed::ArrayBegin,0);
+  }
+  if(c.phase==12){c.flags=record_properties(c.flags,facts.uniform,facts.constant);c.index+=1u64;c.phase=11;}
+  if(c.phase==13){if(c.part<facts.elements){c.phase=14;return RecordConstructStep(c,RecordConstructNeed::ArrayElement,0);}return RecordConstructStep(c,RecordConstructNeed::ArrayValue,0);}
+  if(c.phase==14){c.part+=1u64;c.index+=1u64;if(c.index==facts.arguments){c.index=0u64;}c.phase=13;}
+ }
+}
+extern "C" RecordPackStep record_pack_step(Cursor cursor,RecordPackFacts facts) on cpu {
+ Cursor c=cursor;
+ if(c.phase==0){if(facts.values!=facts.fields){return RecordPackStep(c,RecordPackNeed::BadCount);}c.flags=3;c.phase=1;}
+ if(c.phase==3){c.index+=1u64;c.phase=1;}
+ if(c.phase==1){if(c.index<facts.values){c.phase=2;return RecordPackStep(c,RecordPackNeed::Field);}return RecordPackStep(c,RecordPackNeed::Value);}
+ c.flags=record_properties(c.flags,facts.uniform,facts.constant);c.phase=3;return RecordPackStep(c,RecordPackNeed::Append);
+}
