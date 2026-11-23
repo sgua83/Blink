@@ -984,19 +984,32 @@ extern "C" PrefixIndexWords encode_linear_index(DispatchPush push, u32 wide_type
     u32 local, u32 one, u32 first, address body) on cpu;
 extern "C" PrefixIndexWords encode_prefix_index(PrefixIndexEmission input, address body) on cpu;
 
-// Complete Vulkan stages produce these existing StageCode fields.
-struct StageEntries {
- u32 tail;
- u32 finish;
- u32 dispatch;
- u32 scan_add;
- u32 finish_kernel;
- u32 original_main;
- usize sort_passes;
+// Requests are sent in the native emitter's order, stopping at its first error.
+enum EntryPass:u32 {
+    Main=0; ReductionTail=1; ScanTail=2; ScanAdd=3; ScanRootAdd=4;
+    SegmentedSingleGroup=5; CompactScatter=6; SelectionArguments=7;
+    SelectionScan=8; SelectionScatter=9; SortHistogram=10; SortScatter=11;
+    SortKey=12; SortScan=13; SortGather=14; DispatchArguments=15;
 };
-struct SortShaderEntry { u32 kind; usize parameter; };
-extern "C" StageEntries stage_entries(u32 operation,u32 selected,u32 prefix,u32 root_add,usize keys) on cpu;
-extern "C" SortShaderEntry sort_shader_entry(usize index) on cpu;
+enum EntryOutput:u32 {
+    Main=0; Tail=1; ScanAdd=2; Scatter=3; SegmentedFinish=4; RootAdd=5;
+    Dispatch=6; Selector=7; Additional=8;
+};
+enum EntryKernel:u32 {
+    None=0; PrepareMain=1; PrepareTail=2; PrepareAdd=3; Temporary=4;
+    Main=5; Tail=6; Add=7;
+};
+struct StageEntryInput {
+    u32 operation; u32 selected; u32 prefix; u32 root_add;
+    usize keys; usize prefix_binding; u32 prefix_word;
+    u32 root_scan; u32 tail_scan; u32 single_group;
+};
+struct StageEntryRequest {
+    EntryPass pass; EntryOutput output; EntryKernel kernel; u32 flags;
+    usize parameter; u32 word;
+};
+struct StageEntrySink { address context; cfn<u32,address,StageEntryRequest> emit; };
+extern "C" void emit_stage_entries(StageEntryInput input, StageEntrySink sink) on cpu requires nonzero(sink.emit);
 
 enum WorkgroupPass:u32 {
     Main=0; ReductionTail=1; ScanTail=2; ScanRoot=3; SelectionScan=4;

@@ -3244,7 +3244,12 @@ const u32 ENTRY_CUSTOM_SCAN=6;
 const u32 ENTRY_CUSTOM_SEGMENTED=7;
 const u32 ENTRY_CUSTOM_REDUCE=8;
 
-extern "C" StageEntries stage_entries(u32 operation,u32 selected,u32 prefix,u32 root_add,usize keys) on cpu {
+struct StageEntries {
+    u32 tail; u32 finish; u32 dispatch; u32 scan_add;
+    u32 finish_kernel; u32 original_main; usize sort_passes;
+};
+
+StageEntries stage_entries(u32 operation,u32 selected,u32 prefix,u32 root_add,usize keys) on cpu {
  u32 original_main=u32(operation!=ENTRY_CUSTOM_REDUCE &&
      operation!=ENTRY_CUSTOM_SCAN && operation!=ENTRY_CUSTOM_SEGMENTED);
  StageEntries entries=StageEntries(0,0,selected!=0 ? 2 : prefix,selected,0,original_main,0u64);
@@ -3273,11 +3278,112 @@ extern "C" StageEntries stage_entries(u32 operation,u32 selected,u32 prefix,u32 
  return entries;
 }
 
-extern "C" SortShaderEntry sort_shader_entry(usize index) on cpu {
- if(index<8u64){return SortShaderEntry(0,index*4u64);}
- if(index<16u64){return SortShaderEntry(1,(index-8u64)*4u64);}
- if(index<20u64){return SortShaderEntry(u32(index-14u64),0u64);}
- return SortShaderEntry(6,index-20u64);
+const u32 ENTRY_SUMMARY = 1;
+const u32 ENTRY_RANKS = 2;
+const u32 ENTRY_SHARED_FACTS = 4;
+const u32 SCAN_TERMINAL = 1;
+const u32 SCAN_BOTH = 2;
+
+bool send_stage_entry(StageEntrySink sink, EntryPass pass, EntryOutput output, EntryKernel kernel,
+    u32 flags, usize parameter, u32 word) on cpu requires nonzero(sink.emit) {
+    return sink.emit(sink.context, StageEntryRequest(pass, output, kernel, flags, parameter, word)) != 0;
+}
+
+StageEntryRequest sort_stage_entry(usize index, u32 root, u32 tail, u32 shared) on cpu {
+    EntryPass pass = EntryPass::SortGather;
+    u32 flags = shared | ENTRY_SUMMARY;
+    usize parameter = 0u64;
+    if (index < 8u64) {
+        pass = EntryPass::SortHistogram;
+        parameter = index * 4u64;
+        flags |= ENTRY_RANKS;
+    } else if (index < 16u64) {
+        pass = EntryPass::SortScatter;
+        parameter = (index - 8u64) * 4u64;
+        flags |= ENTRY_RANKS;
+    } else if (index == 16u64) {
+        pass = EntryPass::SortScan;
+        if (root == SCAN_TERMINAL) { flags = shared; }
+    } else if (index == 17u64) {
+        pass = EntryPass::ScanTail;
+        if (tail == SCAN_TERMINAL) { flags = shared; }
+    } else if (index == 18u64) {
+        pass = EntryPass::ScanAdd;
+    } else if (index >= 20u64) {
+        pass = EntryPass::SortKey;
+        parameter = index - 20u64;
+    }
+    return StageEntryRequest(pass, EntryOutput::Additional, EntryKernel::None, flags, parameter, 0);
+}
+
+extern "C" void emit_stage_entries(StageEntryInput input, StageEntrySink sink) on cpu requires nonzero(sink.emit) {
+    StageEntries entries = stage_entries(input.operation, input.selected, input.prefix, input.root_add, input.keys);
+    bool custom = entries.original_main == 0;
+    u32 shared = custom ? 0 : ENTRY_SHARED_FACTS;
+    u32 summary = shared | ENTRY_SUMMARY;
+    bool sorting = entries.sort_passes != 0u64;
+    bool selected = entries.dispatch == 2;
+    usize index = 0u64;
+    while (index < entries.sort_passes) {
+        StageEntryRequest request = sort_stage_entry(index, input.root_scan, input.tail_scan, shared);
+        if (sink.emit(sink.context, request) == 0) { return; }
+        index += 1u64;
+    }
+
+    u32 main_flags = selected || sorting || input.root_scan != SCAN_TERMINAL ? summary : shared;
+    if (!send_stage_entry(sink, EntryPass::Main, EntryOutput::Main,
+        custom ? EntryKernel::PrepareMain : EntryKernel::None, main_flags, 0u64, 0)) { return; }
+
+    if (entries.tail != 0) {
+        EntryPass pass = entries.tail == 1 ? EntryPass::ReductionTail : EntryPass::ScanTail;
+        u32 flags = input.tail_scan != SCAN_TERMINAL ? summary : shared;
+        if (!send_stage_entry(sink, pass, EntryOutput::Tail,
+            custom ? EntryKernel::PrepareTail : EntryKernel::None, flags, 0u64, 0)) { return; }
+    }
+
+    if (entries.scan_add != 0) {
+        EntryKernel kernel = EntryKernel::None;
+        if (custom) { kernel = entries.finish_kernel == 2 ? EntryKernel::PrepareAdd : EntryKernel::Temporary; }
+        if (!send_stage_entry(sink, EntryPass::ScanAdd, EntryOutput::ScanAdd, kernel, summary, 0u64, 0)) { return; }
+    }
+
+    if (entries.finish != 0) {
+        EntryKernel kernel = EntryKernel::None;
+        EntryPass pass = EntryPass::ScanRootAdd;
+        EntryOutput output = EntryOutput::RootAdd;
+        if (entries.finish_kernel == 1) { kernel = EntryKernel::Main; }
+        if (entries.finish_kernel == 2) { kernel = EntryKernel::Add; }
+        if (entries.finish == 1) {
+            pass = EntryPass::SelectionScatter;
+            output = EntryOutput::Scatter;
+        } else if (entries.finish == 2) {
+            pass = EntryPass::CompactScatter;
+            output = EntryOutput::Scatter;
+        } else if (entries.finish == 3) {
+            output = EntryOutput::SegmentedFinish;
+            if (input.single_group != 0 && !send_stage_entry(sink, EntryPass::SegmentedSingleGroup,
+                EntryOutput::Additional, kernel, summary, 0u64, 0)) { return; }
+        }
+        if (!send_stage_entry(sink, pass, output, kernel, summary, 0u64, 0)) { return; }
+    }
+
+    if (input.root_scan == SCAN_BOTH) {
+        EntryPass pass = sorting ? EntryPass::SortScan : (selected ? EntryPass::SelectionScan : EntryPass::Main);
+        if (!send_stage_entry(sink, pass, EntryOutput::Additional,
+            custom ? EntryKernel::Main : EntryKernel::None, shared, 0u64, 0)) { return; }
+    }
+    if (input.tail_scan == SCAN_BOTH && !send_stage_entry(sink, EntryPass::ScanTail, EntryOutput::Additional,
+        custom ? EntryKernel::Tail : EntryKernel::None, shared, 0u64, 0)) { return; }
+
+    if (selected) {
+        if (!send_stage_entry(sink, EntryPass::SelectionArguments, EntryOutput::Dispatch,
+            EntryKernel::None, summary, 0u64, 0)) { return; }
+        u32 flags = input.root_scan != SCAN_TERMINAL ? summary : shared;
+        send_stage_entry(sink, EntryPass::SelectionScan, EntryOutput::Selector, EntryKernel::None, flags, 0u64, 0);
+    } else if (entries.dispatch == 1) {
+        send_stage_entry(sink, EntryPass::DispatchArguments, EntryOutput::Dispatch,
+            EntryKernel::None, summary, input.prefix_binding, input.prefix_word);
+    }
 }
 
 extern "C" WorkgroupLayout workgroup_layout(

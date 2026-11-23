@@ -38,6 +38,7 @@ pub fn sort_histogram_count(count: u32) -> u32 {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
+#[repr(u32)]
 pub(crate) enum ScanShader {
     Summary,
     Terminal,
