@@ -377,6 +377,7 @@ impl Swapchain {
                 "呈现输入必须是同设备上与交换链尺寸一致的完整 BGRA8 数据",
             ));
         }
+        self.inner.active_sequence()?;
         unsafe {
             let f = &self.inner.functions;
             let d = self.inner.owner.device;
@@ -500,7 +501,7 @@ impl Drop for Swapchain {
         unsafe {
             let f = &self.functions;
             let d = self.inner.owner.device;
-            if matches!(self.acquisition, Acquisition::Acquired) {
+            if matches!(self.acquisition, Acquisition::Acquired) && !self.inner.queue_lost() {
                 // No copy reached the queue. Finish the outstanding WSI signal before destroying it.
                 let stage = 1;
                 let submit = VkSubmitInfo {
@@ -510,20 +511,14 @@ impl Drop for Swapchain {
                     pWaitDstStageMask: &stage,
                     ..zero()
                 };
-                let result = (self.inner.functions.vkQueueSubmit)(self.inner.queue, 1, &submit, 0);
+                let result = self.inner.submit_queue(0, Some(&submit));
                 if !matches!(result, 0 | -4) {
                     eprintln!("窗口获取信号量无法结束：vkQueueSubmit={result}");
                     std::process::abort();
                 }
             }
             if !matches!(self.acquisition, Acquisition::Unused) {
-                let result = (f.vkDeviceWaitIdle)(d);
-                if result != 0 {
-                    eprintln!("窗口呈现资源终止：vkDeviceWaitIdle={result}");
-                    if result != -4 {
-                        std::process::abort();
-                    }
-                }
+                self.inner.wait_idle_for_release();
             }
             for s in &self.rendered {
                 (f.vkDestroySemaphore)(d, *s, null());

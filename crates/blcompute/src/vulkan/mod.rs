@@ -285,6 +285,7 @@ functions! { Functions {
     vkWaitForFences:unsafe extern "system" fn(VkDevice,u32,*const VkFence,u32,u64)->i32,
     vkGetFenceStatus:unsafe extern "system" fn(VkDevice,VkFence)->i32,
     vkQueueSubmit:unsafe extern "system" fn(VkQueue,u32,*const VkSubmitInfo,VkFence)->i32,
+    vkDeviceWaitIdle:unsafe extern "system" fn(VkDevice)->i32,
     vkCreateQueryPool:unsafe extern "system" fn(VkDevice,*const QueryPoolCreateInfo,*const c_void,*mut u64)->i32,
     vkDestroyQueryPool:unsafe extern "system" fn(VkDevice,u64,*const c_void),
     vkCmdResetQueryPool:unsafe extern "system" fn(VkCommandBuffer,u64,u32,u32),
@@ -299,7 +300,6 @@ functions! { PresentFunctions {
     vkQueuePresentKHR:unsafe extern "system" fn(VkQueue,*const present::PresentInfo)->i32,
     vkCreateSemaphore:unsafe extern "system" fn(VkDevice,*const present::SemaphoreCreateInfo,*const c_void,*mut u64)->i32,
     vkDestroySemaphore:unsafe extern "system" fn(VkDevice,u64,*const c_void),
-    vkDeviceWaitIdle:unsafe extern "system" fn(VkDevice)->i32,
 }}
 #[repr(C)]
 struct QueryPoolCreateInfo {
@@ -337,25 +337,53 @@ struct Inner {
     atomic64: bool,
     shared_atomic64: bool,
     float64_preserve: bool,
-    next_submission: Cell<u64>,
+    // None means the device reported loss and its native use has ended.
+    submission_sequence: Cell<Option<u64>>,
 }
 impl Inner {
+    fn queue_lost(&self) -> bool {
+        self.submission_sequence.get().is_none()
+    }
+
+    fn active_sequence(&self) -> Result<u64> {
+        self.submission_sequence.get().ok_or_else(|| error("vkQueueSubmit 返回 VkResult -4"))
+    }
+
     fn next_submission(&self) -> Result<u64> {
-        self.next_submission.get().checked_add(1)
+        self.active_sequence()?.checked_add(1)
             .ok_or_else(|| error("设备队列提交序号耗尽"))
     }
 
     fn enqueue(&self, next: u64, fence: VkFence, batch: Option<&VkSubmitInfo>) -> Result<()> {
+        check(self.submit_queue(fence, batch), "vkQueueSubmit")?;
+        self.submission_sequence.set(Some(next));
+        Ok(())
+    }
+
+    fn submit_queue(&self, fence: VkFence, batch: Option<&VkSubmitInfo>) -> i32 {
         let count = u32::from(batch.is_some());
         let info = batch.map_or(null(), std::ptr::from_ref);
-        unsafe {
-            check(
-                (self.functions.vkQueueSubmit)(self.queue, count, info, fence),
-                "vkQueueSubmit",
-            )?;
+        let result = unsafe { (self.functions.vkQueueSubmit)(self.queue, count, info, fence) };
+        if result == -4 {
+            // A lost-device submission can still own the batch and its synchronization objects.
+            self.wait_idle_for_release();
+            self.submission_sequence.set(None);
         }
-        self.next_submission.set(next);
-        Ok(())
+        result
+    }
+
+    fn wait_idle_for_release(&self) {
+        if self.queue_lost() {
+            return;
+        }
+        match unsafe { (self.functions.vkDeviceWaitIdle)(self.owner.device) } {
+            0 => {}
+            -4 => self.submission_sequence.set(None),
+            result => {
+                eprintln!("设备资源终止：vkDeviceWaitIdle={result}");
+                std::process::abort();
+            }
+        }
     }
 }
 #[derive(Clone)]
@@ -920,7 +948,7 @@ impl Device {
                         position_fetch,
                         subgroup_extended_types,
                         subgroup_operations,
-                        next_submission: Cell::new(0),
+                        submission_sequence: Cell::new(Some(0)),
                         float64,
                         integer8,
                         integer16,
@@ -1012,6 +1040,7 @@ impl Device {
         if !Rc::ptr_eq(&self.inner, &data.allocation.inner) {
             return Err(error("数据集属于另一设备"));
         }
+        self.inner.active_sequence()?;
         Readback::new(self).download_graph(data)
     }
     pub fn load(
@@ -1057,6 +1086,7 @@ impl Device {
         if datasets.iter().any(|data| !Rc::ptr_eq(&self.inner, &data.allocation.inner)) {
             return Err(error("数据集属于另一设备"));
         }
+        self.inner.active_sequence()?;
         let mut readback = Readback::new(self);
         let datasets = datasets
             .into_iter()
@@ -1579,6 +1609,7 @@ impl Commands {
         Self::with_pool_flags(inner, 1)
     }
     fn with_pool_flags(inner: Rc<Inner>, flags: u32) -> Result<Self> {
+        inner.active_sequence()?;
         unsafe {
             let mut out = Self {
                 inner,

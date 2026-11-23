@@ -121,8 +121,11 @@ impl Completion {
         self.result.set(None);
         Ok(())
     }
+    fn terminal_result(&self) -> Option<i32> {
+        self.result.get().or_else(|| self.inner.queue_lost().then_some(-4))
+    }
     pub fn wait(&self) -> Result<()> {
-        let r = if let Some(r) = self.result.get() {
+        let r = if let Some(r) = self.terminal_result() {
             r
         } else {
             let fence = self.fence.get();
@@ -143,7 +146,7 @@ impl Completion {
         check(r, "vkWaitForFences")
     }
     fn observed_complete(&self) -> Result<bool> {
-        let Some(result) = self.result.get() else { return Ok(false); };
+        let Some(result) = self.terminal_result() else { return Ok(false); };
         check(result, "vkGetFenceStatus")?;
         Ok(true)
     }
@@ -165,7 +168,7 @@ impl Completion {
         }
     }
     pub fn finish_for_drop(&self) {
-        if self.result.get().is_some() {
+        if self.terminal_result().is_some() {
             return;
         }
         if let Err(e) = self.wait() {
@@ -333,7 +336,7 @@ impl DatasetStorage {
 impl DiscardedDataset {
     pub(super) fn retire(self, execution: Option<&Execution>) {
         let Some(execution) = execution else { return; };
-        if matches!(execution.point.result.get(), Some(0 | -4)) {
+        if execution.point.terminal_result().is_some() {
             return;
         }
         let storage = match self {
@@ -494,14 +497,16 @@ impl Execution {
         )
     }
     pub fn discard_structure(&self, storage: ray::StructureStorage) {
-        if !matches!(self.point.result.get(), Some(0 | -4))
+        if self.point.terminal_result().is_none()
             && let Some(ExecutionResources::Acceleration { retired, .. }) = self.resources.borrow_mut().as_mut()
         {
             *retired = Some(Box::new(storage));
         }
     }
     pub(super) fn discard_image(&self, storage: texture::Storage) {
-        if let Some(ExecutionResources::ImageCopy { discarded, .. }) = self.resources.borrow_mut().as_mut() {
+        if self.point.terminal_result().is_none()
+            && let Some(ExecutionResources::ImageCopy { discarded, .. }) = self.resources.borrow_mut().as_mut()
+        {
             *discarded = Some(storage);
         }
     }
@@ -509,7 +514,7 @@ impl Execution {
         let Some(dependencies) = self.dependencies.take() else {
             return;
         };
-        Self::release_dependencies(dependencies, self.point.result.get());
+        Self::release_dependencies(dependencies, self.point.terminal_result());
         self.release_resources();
     }
     pub fn borrow_synchronous(source: Option<&Rc<Self>>) -> Result<Option<&Self>> {
@@ -576,14 +581,14 @@ impl Execution {
     }
     pub fn is_complete(&self) -> Result<bool> {
         let result = self.point.is_complete();
-        if matches!(self.point.result.get(), Some(0 | -4)) {
+        if self.point.terminal_result().is_some() {
             self.release_known();
         }
         result
     }
     pub fn wait(&self) -> Result<()> {
         let result = self.point.wait();
-        if matches!(self.point.result.get(), Some(0 | -4)) {
+        if self.point.terminal_result().is_some() {
             self.release_known();
         }
         result

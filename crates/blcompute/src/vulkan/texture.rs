@@ -638,6 +638,7 @@ impl Device {
         if !source.belongs_to(&self.inner) {
             return Err(error("纹理属于另一设备"));
         }
+        self.inner.active_sequence()?;
         let previous = Execution::borrow_synchronous(Some(source.produced()))?;
         let sampled = &source.0.sampled;
         let texture = &sampled.storage;
