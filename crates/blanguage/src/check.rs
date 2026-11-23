@@ -329,6 +329,8 @@ enum Place {
     ViewElement {
         ty: Ty,
         source: [ValueIdentity; 3],
+        resource: view::Borrow,
+        element_layout: address::Layout,
         address: [Reg; 2],
         index: Reg,
         stride: ElementStride,

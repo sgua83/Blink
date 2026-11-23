@@ -1280,9 +1280,12 @@ impl Builder<'_> {
         let ty = view.ty.view.as_deref().unwrap().clone();
         let stride = ElementStride::Value([view.regs[3],view.regs[4]]);
         let words = ty.components.iter().map(|(_, offset)| *offset).collect();
+        let element_layout=address::Layout::of(&ty);
         Place::ViewElement {
             ty,
             source: view.view_identity(),
+            resource: view.proof.typed_view_borrow(&view.ty),
+            element_layout,
             address: [view.regs[0], view.regs[1]],
             index,
             stride,

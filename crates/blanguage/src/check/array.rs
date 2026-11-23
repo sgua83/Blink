@@ -112,6 +112,8 @@ impl Place {
             },
             Self::ViewElement {
                 source,
+                resource,
+                element_layout,
                 address,
                 index,
                 stride,
@@ -120,6 +122,8 @@ impl Place {
             } => Self::ViewElement {
                 ty,
                 source,
+                resource,
+                element_layout,
                 address,
                 index,
                 stride,

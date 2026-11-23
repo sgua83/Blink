@@ -1205,14 +1205,9 @@ impl Builder<'_> {
                 Root::Resource{borrow:resource.clone(),index:Some(*index_value)}
             },
             Place::Element{binding,..}=>Root::Buffer(*binding),
-            Place::ViewElement{source,..}=>{
-                let mut borrow=view::Borrow::default();
-                for binding in self.env.values() {
-                    if let Some((ty,proof))=binding.view_parts()
-                        && (0..3).all(|i|proof.known_identity(i)==Some(source[i])) {borrow.union(&proof.typed_view_borrow(ty));}
-                }
-                if borrow.empty(){borrow=view::Borrow::source(view::Source::Unresolved);}
-                Root::Resource{borrow,index:None}
+            Place::ViewElement{resource,element_layout,words:actual,..}=>{
+                base=element_layout.clone();words=actual.clone();
+                Root::Resource{borrow:resource.clone(),index:None}
             }
             _=>return self.fail(span,"B264","address_of需要CPU普通值的实际连续位置"),
         };
@@ -1243,7 +1238,7 @@ impl Builder<'_> {
             } else {
                 let mut origin=origin.clone();
                 origin.words=positions.iter().map(|position| {
-                    let Position::Borrowed(_,_,word)=position else{unreachable!()};
+                    let (Position::Borrowed(_,_,word)|Position::ViewElement(_,_,_,word))=position else{unreachable!()};
                     *word
                 }).collect();
                 out.sources.insert_when(view::Source::Position(Arc::new(origin)),when.clone());
