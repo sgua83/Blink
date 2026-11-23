@@ -126,3 +126,16 @@ enum ReturnedNeed:u32 {Value=0;Owned=1;Unit=2;Collision=3;Rebound=4;Dataset=5;Na
 struct ReturnedStep {LocalCursor cursor;ReturnedNeed need;u32 mutable;};
 extern "C" ReturnedStep returned_step(LocalCursor cursor,ReturnedFacts facts) on cpu;
 extern "C" u32 binding_rebound(address nodes,address source,address stored,Slice body,address name,u64 length) on cpu;
+
+struct AssignmentCursor {u32 phase;u32 compound;};
+struct OperatorSpelling {address data;u64 length;};
+struct AssignmentFacts {OperatorSpelling operation;u32 owns;u32 kind;u32 dataset;u32 present;u32 name;u32 borrowed;};
+enum AssignmentNeed:u32 {Type=0;Projection=1;Inspect=2;BaseType=3;ElementType=4;Reference=5;Project=6;Name=7;NamedData=8;Application=9;Place=10;PlaceType=11;Owned=12;BorrowKind=13;Hold=14;Right=15;Release=16;Read=17;Combine=18;Write=19;Reverse=20;Element=21;Complete=22;};
+struct AssignmentStep {AssignmentCursor cursor;AssignmentNeed need;};
+extern "C" AssignmentStep assignment_step(AssignmentCursor cursor,AssignmentFacts facts) on cpu;
+extern "C" void reverse_projection(u64 count,address context,cfn<void,address,u64,u64> exchange) on cpu requires nonzero(exchange);
+struct ExpressionFacts {u32 kind;u32 atomic;u32 barrier;u32 present;};
+enum ExpressionNeed:u32 {Inspect=0;AtomicQuery=1;BarrierQuery=2;Atomic=3;Barrier=4;Cooperate=5;Evaluate=6;Drop=7;Complete=8;};
+struct ExpressionStep {LocalCursor cursor;ExpressionNeed need;};
+extern "C" u32 statement_barrier(address bytes,u64 length) on cpu;
+extern "C" ExpressionStep expression_step(LocalCursor cursor,ExpressionFacts facts) on cpu;

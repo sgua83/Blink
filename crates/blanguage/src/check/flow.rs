@@ -1370,3 +1370,66 @@ impl Builder<'_> {
   }}
  }
 }
+
+#[repr(C)]#[derive(Clone,Copy)]struct AssignmentCursor {phase:u32,compound:u32}
+#[repr(C)]#[derive(Clone,Copy)]struct OperatorSpelling {data:*const u8,length:usize}
+#[repr(C)]#[derive(Clone,Copy)]struct AssignmentFacts {operation:OperatorSpelling,owns:u32,kind:u32,dataset:u32,present:u32,name:u32,borrowed:u32}
+#[repr(u32)]enum AssignmentNeed {Type,Projection,Inspect,BaseType,ElementType,Reference,Project,Name,NamedData,Application,Place,PlaceType,Owned,BorrowKind,Hold,Right,Release,Read,Combine,Write,Reverse,Element,Complete}
+#[repr(C)]struct AssignmentStep {cursor:AssignmentCursor,need:AssignmentNeed}
+#[repr(C)]#[derive(Clone,Copy)]struct ExpressionFacts {kind:u32,atomic:u32,barrier:u32,present:u32}
+#[repr(u32)]enum ExpressionNeed {Inspect,AtomicQuery,BarrierQuery,Atomic,Barrier,Cooperate,Evaluate,Drop,Complete}
+#[repr(C)]struct ExpressionStep {cursor:LocalCursor,need:ExpressionNeed}
+unsafe extern "C" {
+ #[link_name="bootstrap.function_body::assignment_step"]fn assignment_step(cursor:AssignmentCursor,facts:AssignmentFacts)->AssignmentStep;
+ #[link_name="bootstrap.function_body::reverse_projection"]fn reverse_projection(count:usize,context:*mut Vec<Expr>,exchange:unsafe extern "C" fn(*mut Vec<Expr>,usize,usize));
+ #[link_name="bootstrap.function_body::statement_barrier"]fn statement_barrier(bytes:*const u8,length:usize)->u32;
+ #[link_name="bootstrap.function_body::expression_step"]fn expression_step(cursor:LocalCursor,facts:ExpressionFacts)->ExpressionStep;
+}
+unsafe extern "C" fn exchange_projection(context:*mut Vec<Expr>,a:usize,b:usize){unsafe {&mut *context}.swap(a,b);}
+impl Builder<'_> {
+ #[inline(never)]
+ pub(super) async fn assign_statement(&mut self,lhs:&Expr,op:&str,rhs:&Expr,span:Span)->Result<()> {
+  let mut cursor=AssignmentCursor {phase:0,compound:0};let mut facts=AssignmentFacts {operation:OperatorSpelling {data:op.as_ptr(),length:op.len()},owns:0,kind:0,dataset:0,present:0,name:0,borrowed:0};
+  let mut element=None;let mut base=None;let mut index=None;let mut reference=None;let mut projection=Vec::new();let mut resource=None;let mut name=None;let mut data=None;let mut place=None;let mut borrowed=None;let mut value=None;let mut current=None;
+  loop {let step=unsafe {assignment_step(cursor,facts)};cursor=step.cursor;match step.need {
+   AssignmentNeed::Type=>facts.owns=u32::from(unsafe {self.world.call(self.read_expression_type(lhs)).await}?.is_some_and(|ty|ty.owns_resources())),
+   AssignmentNeed::Projection=>element=Some(lhs.clone()),
+   AssignmentNeed::Inspect=>{base=None;index=None;match element.as_ref().unwrap().kind(){ExprKind::Index(b,i)=>{base=Some(b);index=Some(i);facts.kind=1;},ExprKind::Member(b,_)=>{base=Some(b);facts.kind=2;},_=>facts.kind=0}},
+   AssignmentNeed::BaseType=>{reference=unsafe {self.world.call(self.read_expression_type(base.as_ref().unwrap())).await}?.and_then(|ty|ty.dataset);facts.dataset=u32::from(reference.is_some());},
+   AssignmentNeed::ElementType=>{let base=base.as_ref().unwrap();facts.owns=u32::from(unsafe {self.world.call(self.expected_storage(&reference.take().unwrap(),base.span())).await}?.owns_resources());},
+   AssignmentNeed::Reference=>{resource=unsafe {self.world.call(self.application_reference(base.as_ref().unwrap())).await}?;facts.present=u32::from(resource.is_some());},
+   AssignmentNeed::Project=>{projection.push(element.take().unwrap());element=base.take();index=None;},
+   AssignmentNeed::Name=>{element=None;base=None;index=None;reference=None;projection=Vec::new();name=match lhs.kind(){ExprKind::Name(name)=>Some(name),_=>None};facts.name=u32::from(name.is_some());},
+   AssignmentNeed::NamedData=>{data=match self.env.get(name.unwrap()){Some(Binding::ApplicationData(data))=>Some(data.clone()),_=>None};facts.present=u32::from(data.is_some());},
+   AssignmentNeed::Application=>return unsafe {self.world.call(self.application_assign(name.unwrap(),data.take().unwrap(),op,rhs,span)).await},
+   AssignmentNeed::Place=>{place=unsafe {self.world.call(self.place(lhs)).await}?;facts.present=u32::from(place.is_some());},
+   AssignmentNeed::PlaceType=>facts.owns=u32::from(place.as_ref().unwrap().ty().owns_resources()),
+   AssignmentNeed::Owned=>return unsafe {self.world.call(self.assign_owned_storage(place.take().unwrap(),op,rhs,span)).await},
+   AssignmentNeed::BorrowKind=>facts.borrowed=u32::from(matches!(place.as_ref().unwrap().storage(),Place::ApplicationElement{..})),
+   AssignmentNeed::Hold=>borrowed=Some(self.hold_binding(Binding::AtomicBorrow(place.as_ref().unwrap().clone()))),
+   AssignmentNeed::Right=>{value=unsafe {self.world.call(self.expr_expected(rhs,Some(place.as_ref().unwrap().ty()))).await}?;facts.present=u32::from(value.is_some());},
+   AssignmentNeed::Release=>{self.env.remove(&borrowed.take().unwrap());},
+   AssignmentNeed::Read=>current=Some(unsafe {self.world.call(self.read_place(place.as_ref().unwrap(),lhs.span(),None)).await}?),
+   AssignmentNeed::Combine=>value=Some(self.binary(&op[..op.len()-1],current.take().unwrap(),value.take().unwrap(),span,None)?),
+   AssignmentNeed::Write=>{self.view_uses.after(span);return unsafe {self.world.call(self.write_place(place.as_ref().unwrap(),value.take().unwrap(),span,None)).await};},
+   AssignmentNeed::Reverse=>{unsafe {reverse_projection(projection.len(),&mut projection,exchange_projection)};},
+   AssignmentNeed::Element=>return unsafe {self.world.call(self.assign_application_element(resource.take().unwrap(),index.as_ref().unwrap(),&projection,op,rhs,span)).await},
+   AssignmentNeed::Complete=>return Ok(()),
+  }}
+ }
+ #[inline(never)]
+ pub(super) async fn expression_statement(&mut self,e:&Expr)->Result<()> {
+  let mut cursor=LocalCursor {phase:0};let mut facts=ExpressionFacts {kind:0,atomic:0,barrier:0,present:0};let mut call=None;let mut cooperative=None;let mut builtin=None;let mut result=None;
+  loop {let step=unsafe {expression_step(cursor,facts)};cursor=step.cursor;match step.need {
+   ExpressionNeed::Inspect=>match e.kind(){ExprKind::Call(name,args)=>{call=Some((name,args));facts.kind=1;},ExprKind::Cooperate(name,explicit,args)=>{cooperative=Some((name,explicit,args));facts.kind=2;},_=>facts.kind=0},
+   ExpressionNeed::AtomicQuery=>{builtin=atomic::AtomicBuiltin::from_source(call.as_ref().unwrap().0,true);facts.atomic=u32::from(builtin.is_some());},
+   ExpressionNeed::BarrierQuery=>{let name=call.as_ref().unwrap().0;facts.barrier=unsafe {statement_barrier(name.as_ptr(),name.len())};},
+   ExpressionNeed::Atomic=>{let(name,args)=call.as_ref().unwrap();unsafe {self.world.call(self.atomic_operation(builtin.take().unwrap(),name,args,e.span())).await}?;return Ok(());},
+   ExpressionNeed::Barrier=>return self.tile_barrier(&call.as_ref().unwrap().1,e.span()),
+   ExpressionNeed::Cooperate=>{let(name,explicit,args)=cooperative.as_ref().unwrap();unsafe {self.world.call(self.cooperate(name,explicit.as_ref(),args,e.span())).await}?;return Ok(());},
+   ExpressionNeed::Evaluate=>{result=unsafe {self.world.call(self.evaluate_returned(e,None)).await}?;facts.present=u32::from(result.is_some());},
+   ExpressionNeed::Drop=>return unsafe {self.world.call(self.drop_returned(result.take().unwrap(),&view::Borrow::default(),e.span())).await},
+   ExpressionNeed::Complete=>return Ok(()),
+  }}
+ }
+}

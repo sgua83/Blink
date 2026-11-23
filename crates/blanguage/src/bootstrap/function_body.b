@@ -464,3 +464,36 @@ bool rebound_body(address nodes,address source,address stored,Slice body,address
  }return false;
 }
 extern "C" u32 binding_rebound(address nodes,address source,address stored,Slice body,address name,u64 length) on cpu {return rebound_body(nodes,source,stored,body,name,length) ? 1 : 0;}
+
+extern "C" AssignmentStep assignment_step(AssignmentCursor cursor,AssignmentFacts facts) on cpu {
+ AssignmentCursor c=cursor;
+ if(c.phase==0){c.compound=facts.operation.length!=1u64||unsafe_position<u8>(facts.operation.data)!=61 ? 1 : 0;c.phase=1;return AssignmentStep(c,AssignmentNeed::Type);}
+ if(c.phase==1){if(facts.owns!=0){c.phase=2;return AssignmentStep(c,AssignmentNeed::Projection);}c.phase=10;return AssignmentStep(c,AssignmentNeed::Name);}
+ if(c.phase==2){c.phase=3;return AssignmentStep(c,AssignmentNeed::Inspect);}
+ if(c.phase==3){if(facts.kind==1){c.phase=4;return AssignmentStep(c,AssignmentNeed::BaseType);}if(facts.kind==2){c.phase=2;return AssignmentStep(c,AssignmentNeed::Project);}c.phase=10;return AssignmentStep(c,AssignmentNeed::Name);}
+ if(c.phase==4){if(facts.dataset!=0){c.phase=5;return AssignmentStep(c,AssignmentNeed::ElementType);}c.phase=2;return AssignmentStep(c,AssignmentNeed::Project);}
+ if(c.phase==5){if(facts.owns!=0){c.phase=6;return AssignmentStep(c,AssignmentNeed::Reference);}c.phase=2;return AssignmentStep(c,AssignmentNeed::Project);}
+ if(c.phase==6){if(facts.present==0){return AssignmentStep(c,AssignmentNeed::Complete);}c.phase=7;return AssignmentStep(c,AssignmentNeed::Reverse);}
+ if(c.phase==7){return AssignmentStep(c,AssignmentNeed::Element);}
+ if(c.phase==10){if(facts.name!=0){c.phase=11;return AssignmentStep(c,AssignmentNeed::NamedData);}c.phase=12;return AssignmentStep(c,AssignmentNeed::Place);}
+ if(c.phase==11){if(facts.present!=0){return AssignmentStep(c,AssignmentNeed::Application);}c.phase=12;return AssignmentStep(c,AssignmentNeed::Place);}
+ if(c.phase==12){if(facts.present==0){return AssignmentStep(c,AssignmentNeed::Complete);}c.phase=13;return AssignmentStep(c,AssignmentNeed::PlaceType);}
+ if(c.phase==13){if(facts.owns!=0){return AssignmentStep(c,AssignmentNeed::Owned);}c.phase=14;return AssignmentStep(c,AssignmentNeed::BorrowKind);}
+ if(c.phase==14){if(facts.borrowed!=0){c.phase=15;return AssignmentStep(c,AssignmentNeed::Hold);}c.phase=16;return AssignmentStep(c,AssignmentNeed::Right);}
+ if(c.phase==15){c.phase=16;return AssignmentStep(c,AssignmentNeed::Right);}
+ if(c.phase==16){if(facts.present==0){return AssignmentStep(c,AssignmentNeed::Complete);}c.phase=17;if(facts.borrowed!=0){return AssignmentStep(c,AssignmentNeed::Release);}}
+ if(c.phase==17){if(c.compound!=0){c.phase=18;return AssignmentStep(c,AssignmentNeed::Read);}return AssignmentStep(c,AssignmentNeed::Write);}
+ if(c.phase==18){c.phase=19;return AssignmentStep(c,AssignmentNeed::Combine);}
+ return AssignmentStep(c,AssignmentNeed::Write);
+}
+extern "C" void reverse_projection(u64 count,address context,cfn<void,address,u64,u64> exchange) on cpu requires nonzero(exchange) {
+ u64 index=0u64;while(index<count/2u64){exchange(context,index,count-1u64-index);index+=1u64;}
+}
+extern "C" u32 statement_barrier(address bytes,u64 length) on cpu {return local_spelling(bytes,length,"tile_barrier") ? 1 : 0;}
+extern "C" ExpressionStep expression_step(LocalCursor cursor,ExpressionFacts facts) on cpu {
+ LocalCursor c=cursor;if(c.phase==0){c.phase=1;return ExpressionStep(c,ExpressionNeed::Inspect);}
+ if(c.phase==1){if(facts.kind==1){c.phase=2;return ExpressionStep(c,ExpressionNeed::AtomicQuery);}if(facts.kind==2){return ExpressionStep(c,ExpressionNeed::Cooperate);}c.phase=4;return ExpressionStep(c,ExpressionNeed::Evaluate);}
+ if(c.phase==2){if(facts.atomic!=0){return ExpressionStep(c,ExpressionNeed::Atomic);}c.phase=3;return ExpressionStep(c,ExpressionNeed::BarrierQuery);}
+ if(c.phase==3){if(facts.barrier!=0){return ExpressionStep(c,ExpressionNeed::Barrier);}c.phase=4;return ExpressionStep(c,ExpressionNeed::Evaluate);}
+ return ExpressionStep(c,facts.present!=0 ? ExpressionNeed::Drop : ExpressionNeed::Complete);
+}
