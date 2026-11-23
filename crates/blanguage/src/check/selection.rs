@@ -20,11 +20,7 @@ impl Builder<'_> {
         expected: Option<&Ty>,
     ) -> Result<Option<Value>> {
         let result = unsafe { self.world.call(self.selection_returned(condition, yes, no, span, expected)).await }?;
-        if !self.flow.continues() {
-            return Ok(None);
-        }
-        let value = self.ordinary_return(result, span)?;
-        self.value_result(value, span).map(Some)
+        self.returned_expression(result, span, false)
     }
     #[inline(never)]
     pub(super) async fn selection_returned(

@@ -2638,57 +2638,52 @@ impl<'a> Builder<'a> {
         Ok(value)
     }
     async fn expr_syntax(&mut self, e: &Expr) -> Result<Option<Value>> {
-        let world = self.world;
-        self.view_uses.before(e.span());
-        match e.kind() {
-            ExprKind::FunctionRef(..) => self.fail(
-                e.span(),
-                "B236",
-                "静态函数引用只能作为集合算法参数或 bind 的首参数，不能作为普通值",
-            ),
-            ExprKind::Cooperate(..) => {
-                self.fail(e.span(), "B208", "cooperate 调用只能作为协作根块的局部声明")
-            }
-            ExprKind::StaticU32(bits) => self.constant_expression(Scalar::U32, Bits::from(bits)),
-            ExprKind::Specialize(..) =>
-                unsafe { world.call(source_call::specialized(self,e)).await },
-            ExprKind::Number(n) => self.number_expression(n, e.span()),
-            ExprKind::Bool(b) => self.constant_expression(Scalar::Bool, Bits::from(b)),
-            ExprKind::Name(name) => unsafe { world.call(self.name_expr(name, e.span())) .await }.map(Some),
-            ExprKind::Member(base, field) => {
-                let result = unsafe { world.call(self.member_returned(e, &base, field)) .await }?;
-                self.returned_expression(result, e.span())
-            }
-            ExprKind::Index(base, index) => unsafe { world.call(self.index_expr(&base, &index, e)) .await },
-            ExprKind::Unary(op, a) => unsafe { world.call(self.unary_expr(op, &a, e.span())) .await },
-            ExprKind::Binary(op, a, b) => unsafe { world.call(self.binary_expr(op, &a, &b, e.span())) .await },
-            ExprKind::Select(c, a, b) => unsafe { world.call(self.selection(&c, &a, &b, e.span())) .await },
-            ExprKind::Target(target, call) => {
-                let result = unsafe { world.call(self.target_call(target, &call, e.span())) .await }?;
-                self.returned_expression(result, e.span())
-            }
-            ExprKind::Construct(ty, args) => {
-                let ty = unsafe { world.call(self.scope.bindings().type_name(world, &ty,
-                    (self.scope.source(),self.scope.module(),self.scope.imports()),e.span())) .await }?;
-                unsafe { world.call(self.record_expression(&ty, &args, e.span())) .await }
-            },
-            ExprKind::Call(..) | ExprKind::Invoke(..) => {
-                let result = unsafe { world.call(self.evaluate_returned(e, None)) .await }?;
-                self.returned_expression(result, e.span())
-            }
-        }
+        let world=self.world;let source=e.source_view();self.view_uses.before(e.span());
+        let mut cursor=SourceValueCursor {phase:0};let mut present=0;
+        let mut first:Option<Box<Value>>=None;let mut second=None;let mut ty=None;let mut returned=None;
+        loop {let step=unsafe {source_value_step(cursor,e.signature_node(),present)};cursor=step.cursor;match step.need {
+            SourceValueNeed::BadFunction=>return self.fail(e.span(),"B236","静态函数引用只能作为集合算法参数或 bind 的首参数，不能作为普通值"),
+            SourceValueNeed::BadCooperate=>return self.fail(e.span(),"B208","cooperate 调用只能作为协作根块的局部声明"),
+            SourceValueNeed::StaticU32=>return self.constant_expression(Scalar::U32,Bits::from(step.bits)),
+            SourceValueNeed::Bool=>return self.constant_expression(Scalar::Bool,Bits::from(step.bits)),
+            SourceValueNeed::Number=>return self.number_expression(source.text(step.spelling),e.span()),
+            SourceValueNeed::Name=>return unsafe {world.call(self.name_expr(source.text(step.spelling),e.span())).await}.map(Some),
+            SourceValueNeed::Specialized=>return unsafe {world.call(source_call::specialized(self,e)).await},
+            SourceValueNeed::Member=>{let base=e.child(step.first);returned=unsafe {world.call(self.member_returned(e,&base,source.text(step.spelling))).await}?;},
+            SourceValueNeed::Index=>{let base=e.child(step.first);let index=e.child(step.second);return unsafe {world.call(self.index_expr(&base,&index,e)).await};},
+            SourceValueNeed::Select=>{let condition=e.child(step.first);let yes=e.child(step.second);let no=e.child(step.third);return unsafe {world.call(self.selection(&condition,&yes,&no,e.span())).await};},
+            SourceValueNeed::Target=>{let call=e.child(step.first);returned=unsafe {world.call(self.target_call(step.target,&call,e.span())).await}?;},
+            SourceValueNeed::ConstructType=>{let name=e.child(step.first);ty=Some(unsafe {world.call(self.scope.bindings().type_name(world,&name,(self.scope.source(),self.scope.module(),self.scope.imports()),e.span())).await}?);},
+            SourceValueNeed::Construct=>{let args=e.list(step.arguments);return unsafe {world.call(self.record_expression(ty.as_ref().unwrap(),&args,e.span())).await};},
+            SourceValueNeed::Returned=>returned=unsafe {world.call(self.evaluate_returned(e,None)).await}?,
+            SourceValueNeed::FinishReturned=>return self.returned_expression(returned.take(),e.span(),false),
+            SourceValueNeed::Negative=>return self.negative_number(source.text(step.spelling),e.span()).map(Some),
+            SourceValueNeed::Operand|SourceValueNeed::Left=>{let operand=e.child(step.first);first=unsafe {world.call(self.expr(&operand)).await}?.map(Box::new);present=u32::from(first.is_some());},
+            SourceValueNeed::Unary=>return self.unary_value(source.text(step.spelling),*first.take().unwrap(),e.span()).map(Some),
+            SourceValueNeed::Right=>{let operand=e.child(step.second);second=unsafe {world.call(self.expr(&operand)).await}?;present=u32::from(second.is_some());},
+            SourceValueNeed::Binary=>return self.binary(source.text(step.spelling),*first.take().unwrap(),second.take().unwrap(),e.span(),None).map(Some),
+            SourceValueNeed::Condition=>{let condition:Expr=e.child(step.first);first=unsafe {world.call(self.temporary_scope(condition.span(),async |builder|Ok((unsafe {builder.world.call(builder.expr(&condition)).await}?,view::Borrow::default())))).await}?.map(Box::new);present=u32::from(first.is_some());},
+            SourceValueNeed::RequireCondition=>{let condition=e.child::<crate::syntax::wire::ExprNode>(step.first);self.require_bool(first.as_ref().unwrap(),condition.span())?;},
+            SourceValueNeed::ShortCircuit=>{let right:Expr=e.child(step.second);return unsafe {world.call(self.short_circuit_value(source.text(step.spelling),*first.take().unwrap(),right.span(),
+                async |builder|unsafe {builder.world.call(builder.evaluate_returned(&right,None)).await},
+                async |builder,names|unsafe {builder.world.call(expression_assignments(builder,&right,names)).await},e.span())).await};},
+            SourceValueNeed::Empty=>return Ok(None),
+        }}
     }
     #[inline(never)]
     fn constant_expression(&mut self, scalar: Scalar, bits: Bits) -> Result<Option<Value>> {
         Ok(Some(self.constant(scalar, bits)))
     }
     #[inline(never)]
-    fn returned_expression(&mut self, result: Option<returns::Returned>, span: Span) -> Result<Option<Value>> {
-        if !self.flow.continues() {
-            return Ok(None);
-        }
-        let value = self.ordinary_return(result, span)?;
-        self.value_result(value, span).map(Some)
+    fn returned_expression(&mut self, mut result: Option<returns::Returned>, span: Span, boolean: bool) -> Result<Option<Value>> {
+        let mut cursor=SourceValueCursor {phase:0};let mut ordinary=None;let mut value=None;
+        loop {let step=unsafe {returned_value_step(cursor,u32::from(self.flow.continues()),u32::from(boolean))};cursor=step.cursor;match step.need {
+            ReturnedValueNeed::Empty=>return Ok(None),
+            ReturnedValueNeed::Ordinary=>ordinary=Some(self.ordinary_return(result.take(),span)?),
+            ReturnedValueNeed::Value=>value=Some(self.value_result(ordinary.take().unwrap(),span)?),
+            ReturnedValueNeed::Bool=>self.require_bool(value.as_ref().unwrap(),span)?,
+            ReturnedValueNeed::Complete=>return Ok(value.take()),
+        }}
     }
     async fn function_from_address(&mut self,explicit:&[GenericArgument],count:usize,span:Span,argument_span:Span,
         argument:impl std::ops::AsyncFnOnce(&mut Self)->Result<Option<Value>>)->Result<Option<Value>>{
@@ -2896,14 +2891,6 @@ impl<'a> Builder<'a> {
             BuiltinValueNeed::Complete=>return Ok(value.take()),
         }}
     }
-    #[inline(never)]
-    async fn unary_expr(&mut self, op: &str, a: &Expr, span: Span) -> Result<Option<Value>> {
-        if op == "-" && let ExprKind::Number(literal) = a.kind() {
-            return self.negative_number(literal, span).map(Some);
-        }
-        let Some(value) = unsafe { self.world.call(self.expr(a)).await }? else { return Ok(None); };
-        self.unary_value(op, value, span).map(Some)
-    }
     fn negative_number(&mut self, literal: &str, span: Span) -> Result<Value> {
         let (ty, bits) = numeric_literal::number(self.scope.source(), span, literal, true)?;
         let scalar = ty.components[0].0;
@@ -2914,51 +2901,18 @@ impl<'a> Builder<'a> {
     fn unary_value(&mut self,name:&str,value:Value,span:Span)->Result<Value> {
         self.lower_unary_value(name,value,span)
     }
-    #[inline(never)]
-    async fn binary_expr(&mut self, op: &str, a: &Expr, b: &Expr, span: Span) -> Result<Option<Value>> {
-        if op == "&&" || op == "||" { return unsafe { self.world.call(self.short_circuit_expr(op,a,b,span)).await }; }
-        let Some(a) = unsafe { self.world.call(self.expr(a)).await }? else { return Ok(None); };
-        unsafe { self.world.call(self.binary_after_left(op,Box::new(a),b,span)).await }
-    }
-    #[inline(never)]
-    async fn short_circuit_expr(&mut self, op: &str, a: &Expr, b: &Expr, span: Span) -> Result<Option<Value>> {
-        let Some(condition) = unsafe { self.world.call(self.temporary_scope(a.span(), async |builder| Ok((unsafe { builder.world.call(builder.expr(a)).await }?, view::Borrow::default())))).await }? else {
-            return Ok(None);
-        };
-        self.require_bool(&condition, a.span())?;
-        unsafe { self.world.call(self.short_circuit_value(op, condition, b.span(),
-            async |builder| unsafe { builder.world.call(builder.evaluate_returned(b, None)).await },
-            async |builder, names| unsafe { builder.world.call(expression_assignments(builder, b, names)).await }, span)).await }
-    }
     async fn short_circuit_value(
         &mut self, op: &str, condition: Value, right_span: Span,
         right: impl std::ops::AsyncFnOnce(&mut Self) -> Result<Option<returns::Returned>>,
         modified: impl std::ops::AsyncFnOnce(&Self, &mut BTreeSet<String>) -> Result<()>, span: Span,
     ) -> Result<Option<Value>> {
-        let skipped = op == "||";
-        let skip = async |builder: &mut Self| {
-            let value = builder.constant(Scalar::Bool, Bits::from(skipped));
-            Ok(Some(returns::Returned::Value(Box::new(value))))
+        let plan=unsafe {short_circuit_plan(SourceOperation {data:op.as_ptr(),length:op.len()as u64})};
+        let skip=async |builder:&mut Self|Ok(Some(returns::Returned::Value(Box::new(builder.constant(Scalar::Bool,Bits::from(plan.skipped))))));
+        let result=match plan.order {
+            ShortCircuitOrder::RightYes=>unsafe {self.world.call(self.selection_after_condition(condition,(right_span,right),(span,skip),modified,span)).await}?,
+            ShortCircuitOrder::RightNo=>unsafe {self.world.call(self.selection_after_condition(condition,(span,skip),(right_span,right),async |_,_|Ok(()),span)).await}?,
         };
-        let result = if op == "&&" {
-            unsafe { self.world.call(self.selection_after_condition(condition, (right_span, right), (span, skip), modified, span)).await }?
-        } else {
-            unsafe { self.world.call(self.selection_after_condition(condition, (span, skip), (right_span, right), async |_, _| Ok(()), span)).await }?
-        };
-        if !self.flow.continues() { return Ok(None); }
-        let value = self.ordinary_return(result, span)?;
-        let value = self.value_result(value, span)?;
-        self.require_bool(&value, span)?;
-        Ok(Some(value))
-    }
-    #[inline(never)]
-    async fn binary_after_left(&mut self, op: &str, a: Box<Value>, b: &Expr, span: Span) -> Result<Option<Value>> {
-        let Some(b) = unsafe { self.world.call(self.expr(b)).await }? else { return Ok(None); };
-        self.binary_operands(op,a,b,span)
-    }
-    #[inline(never)]
-    fn binary_operands(&mut self, op: &str, a: Box<Value>, b: Value, span: Span) -> Result<Option<Value>> {
-        self.binary(op,*a,b,span,None).map(Some)
+        self.returned_expression(result,span,true)
     }
     #[inline(never)]
     async fn if_statement(
@@ -3599,4 +3553,19 @@ unsafe extern "C"{
  #[link_name="bootstrap.operator_types::builtin_value_start"]fn builtin_value_start(bytes:*const u8,length:u64)->BuiltinValueCursor;
  #[link_name="bootstrap.operator_types::builtin_value_step"]fn builtin_value_step(cursor:BuiltinValueCursor,facts:BuiltinValueFacts,bytes:*const u8,length:u64)->BuiltinValueStep;
  #[link_name="bootstrap.operator_types::function_from_address_step"]fn function_from_address_step(cursor:FunctionFromAddressCursor,facts:FunctionFromAddressFacts)->FunctionFromAddressStep;
+}
+
+
+#[repr(C)]#[derive(Clone,Copy)]struct SourceValueCursor {phase:u32}
+#[repr(u32)]enum SourceValueNeed {BadFunction,BadCooperate,StaticU32,Bool,Number,Name,Specialized,Member,Index,Select,Target,ConstructType,Construct,Returned,FinishReturned,Negative,Operand,Unary,Left,Right,Binary,Condition,RequireCondition,ShortCircuit,Empty}
+#[repr(C)]struct SourceValueStep {cursor:SourceValueCursor,need:SourceValueNeed,spelling:crate::syntax::wire::Text,first:u64,second:u64,third:u64,arguments:crate::syntax::wire::Slice,bits:u32,target:Target}
+#[repr(u32)]enum ReturnedValueNeed {Empty,Ordinary,Value,Bool,Complete}
+#[repr(C)]struct ReturnedValueStep {cursor:SourceValueCursor,need:ReturnedValueNeed}
+#[repr(C)]struct SourceOperation {data:*const u8,length:u64}
+#[repr(u32)]enum ShortCircuitOrder {RightYes,RightNo}
+#[repr(C)]struct ShortCircuitPlan {order:ShortCircuitOrder,skipped:u32}
+unsafe extern "C" {
+ #[link_name="bootstrap.function_body::source_value_step"]fn source_value_step(cursor:SourceValueCursor,source:crate::syntax::wire::SignatureNode,present:u32)->SourceValueStep;
+ #[link_name="bootstrap.function_body::returned_value_step"]fn returned_value_step(cursor:SourceValueCursor,continuing:u32,boolean:u32)->ReturnedValueStep;
+ #[link_name="bootstrap.function_body::short_circuit_plan"]fn short_circuit_plan(operation:SourceOperation)->ShortCircuitPlan;
 }

@@ -349,7 +349,7 @@ async fn named_value_scoped(builder:&mut Builder<'_>,expression:&Expr,call:Call)
    Some(returns::Returned::OwnedValue(value))=>builder.bound_value(&mut value.value),
    _=>{}
   }
-  builder.returned_expression(returned,expression.span())
+  builder.returned_expression(returned,expression.span(),false)
  })).await}?;
  if let Some(value)=&mut value{builder.bound_value(value);}
  Ok(value)

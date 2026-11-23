@@ -212,3 +212,15 @@ struct OwnedIndexFacts {u32 defined;u32 present;u32 continuing;u32 kind;u32 arra
 enum OwnedIndexNeed:u32 {ExistingType=0;Place=1;TakePlace=2;Evaluate=3;Inspect=4;BadArray=5;HoldData=6;DataIndex=7;DataType=8;TakeData=9;ReadData=10;Storage=11;Release=12;Return=13;HoldOwner=14;Index=15;ArrayPlace=16;TakeElement=17;ArrayValue=18;ViewPlace=19;ReadView=20;Complete=21;};
 struct OwnedIndexStep {LocalCursor cursor;OwnedIndexNeed need;};
 extern "C" OwnedIndexStep owned_index_step(LocalCursor cursor,OwnedIndexFacts facts) on cpu;
+
+// Borrow selectors from the sealed source store. Actual typed products remain
+// with the one World future; a step never retains a pointer into that future.
+enum SourceValueNeed:u32 {BadFunction=0;BadCooperate=1;StaticU32=2;Bool=3;Number=4;Name=5;Specialized=6;Member=7;Index=8;Select=9;Target=10;ConstructType=11;Construct=12;Returned=13;FinishReturned=14;Negative=15;Operand=16;Unary=17;Left=18;Right=19;Binary=20;Condition=21;RequireCondition=22;ShortCircuit=23;Empty=24;};
+struct SourceValueStep {LocalCursor cursor;SourceValueNeed need;Text spelling;u64 first;u64 second;u64 third;Slice arguments;u32 bits;u32 target;};
+extern "C" SourceValueStep source_value_step(LocalCursor cursor,SignatureNode source,u32 present) on cpu;
+enum ReturnedValueNeed:u32 {Empty=0;Ordinary=1;Value=2;Bool=3;Complete=4;};
+struct ReturnedValueStep {LocalCursor cursor;ReturnedValueNeed need;};
+extern "C" ReturnedValueStep returned_value_step(LocalCursor cursor,u32 continuing,u32 boolean) on cpu;
+enum ShortCircuitOrder:u32 {RightYes=0;RightNo=1;};
+struct ShortCircuitPlan {ShortCircuitOrder order;u32 skipped;};
+extern "C" ShortCircuitPlan short_circuit_plan(SeekName operation) on cpu;

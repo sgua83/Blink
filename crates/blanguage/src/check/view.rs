@@ -1322,7 +1322,7 @@ impl Builder<'_> {
                     return unsafe { self.world.call(self.array_place(place, index)).await };
                 }
                 returned => {
-                    let Some(value) = self.returned_expression(returned, base.span())? else {
+                    let Some(value) = self.returned_expression(returned, base.span(), false)? else {
                         return Ok(None);
                     };
                     value

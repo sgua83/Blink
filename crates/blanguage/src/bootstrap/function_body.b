@@ -728,3 +728,69 @@ extern "C" OwnedIndexStep owned_index_step(LocalCursor cursor,OwnedIndexFacts fa
  if(c.phase==18){return OwnedIndexStep(c,facts.present!=0 ? OwnedIndexNeed::ReadView : OwnedIndexNeed::Complete);}
  return OwnedIndexStep(c,OwnedIndexNeed::Return);
 }
+
+
+extern "C" SourceValueStep source_value_step(LocalCursor cursor,SignatureNode source,u32 present) on cpu {
+ SourceValueStep result=SourceValueStep(cursor,SourceValueNeed::Empty,Text(0,Span(0u64,0u64)),0u64,0u64,0u64,Slice(0u64,0u64),0,0);
+ if(cursor.phase==7){result.need=SourceValueNeed::FinishReturned;return result;}
+ ExprNode expression=binding_node<ExprNode>(source.storage.nodes,source.offset);
+ match(expression.kind){
+  ExprKind::FunctionRef(unused){result.need=SourceValueNeed::BadFunction;}
+  ExprKind::Cooperate(unused){result.need=SourceValueNeed::BadCooperate;}
+  ExprKind::StaticU32(value){result.need=SourceValueNeed::StaticU32;result.bits=value;}
+  ExprKind::Bool(value){result.need=SourceValueNeed::Bool;result.bits=value!=0 ? 1 : 0;}
+  ExprKind::Number(value){result.need=SourceValueNeed::Number;result.spelling=value;}
+  ExprKind::Name(value){result.need=SourceValueNeed::Name;result.spelling=value;}
+  ExprKind::Specialize(unused){result.need=SourceValueNeed::Specialized;}
+  ExprKind::Member(value){result.cursor.phase=7;result.need=SourceValueNeed::Member;result.first=value.base.offset;result.spelling=value.field;}
+  ExprKind::Index(value){result.need=SourceValueNeed::Index;result.first=value.base.offset;result.second=value.index.offset;}
+  ExprKind::Select(value){result.need=SourceValueNeed::Select;result.first=value.condition.offset;result.second=value.yes.offset;result.third=value.no.offset;}
+  ExprKind::Target(value){result.cursor.phase=7;result.need=SourceValueNeed::Target;result.target=value.target;result.first=value.value.offset;}
+  ExprKind::Construct(value){
+   result.first=value.ty.offset;result.arguments=value.arguments;
+   if(cursor.phase==0){result.cursor.phase=6;result.need=SourceValueNeed::ConstructType;}
+   else{result.need=SourceValueNeed::Construct;}
+  }
+  ExprKind::Call(unused){result.cursor.phase=7;result.need=SourceValueNeed::Returned;}
+  ExprKind::Invoke(unused){result.cursor.phase=7;result.need=SourceValueNeed::Returned;}
+  ExprKind::Unary(value){
+   result.spelling=value.operation;result.first=value.value.offset;
+   if(cursor.phase==0){
+    address bytes=binding_at(value.operation.kind==0 ? source.storage.source : source.storage.text,value.operation.range.start);
+    if(local_spelling(bytes,value.operation.range.end-value.operation.range.start,"-")){
+     ExprNode operand=binding_node<ExprNode>(source.storage.nodes,value.value.offset);
+     match(operand.kind){
+      ExprKind::Number(number){result.need=SourceValueNeed::Negative;result.spelling=number;return result;}
+      ExprKind::StaticU32(unused){} ExprKind::Bool(unused){} ExprKind::Name(unused){} ExprKind::Member(unused){} ExprKind::Index(unused){} ExprKind::Call(unused){} ExprKind::Invoke(unused){} ExprKind::Construct(unused){} ExprKind::Specialize(unused){} ExprKind::FunctionRef(unused){} ExprKind::Cooperate(unused){} ExprKind::Target(unused){} ExprKind::Unary(unused){} ExprKind::Binary(unused){} ExprKind::Select(unused){}
+     }
+    }
+    result.cursor.phase=1;result.need=SourceValueNeed::Operand;
+   }else{result.need=present!=0 ? SourceValueNeed::Unary : SourceValueNeed::Empty;}
+  }
+  ExprKind::Binary(value){
+   result.spelling=value.operation;result.first=value.left.offset;result.second=value.right.offset;
+   if(cursor.phase==0){
+    address bytes=binding_at(value.operation.kind==0 ? source.storage.source : source.storage.text,value.operation.range.start);
+    u64 length=value.operation.range.end-value.operation.range.start;
+    bool shorted=local_spelling(bytes,length,"&&")||local_spelling(bytes,length,"||");
+    result.cursor.phase=shorted ? 4 : 2;result.need=shorted ? SourceValueNeed::Condition : SourceValueNeed::Left;
+   }else if(present==0){result.need=SourceValueNeed::Empty;}
+   else if(cursor.phase==2){result.cursor.phase=3;result.need=SourceValueNeed::Right;}
+   else if(cursor.phase==3){result.need=SourceValueNeed::Binary;}
+   else if(cursor.phase==4){result.cursor.phase=5;result.need=SourceValueNeed::RequireCondition;}
+   else{result.need=SourceValueNeed::ShortCircuit;}
+  }
+ }
+ return result;
+}
+extern "C" ReturnedValueStep returned_value_step(LocalCursor cursor,u32 continuing,u32 boolean) on cpu {
+ LocalCursor c=cursor;
+ if(c.phase==0){if(continuing==0){return ReturnedValueStep(c,ReturnedValueNeed::Empty);}c.phase=1;return ReturnedValueStep(c,ReturnedValueNeed::Ordinary);}
+ if(c.phase==1){c.phase=2;return ReturnedValueStep(c,ReturnedValueNeed::Value);}
+ if(c.phase==2){c.phase=3;if(boolean!=0){return ReturnedValueStep(c,ReturnedValueNeed::Bool);}}
+ return ReturnedValueStep(c,ReturnedValueNeed::Complete);
+}
+extern "C" ShortCircuitPlan short_circuit_plan(SeekName operation) on cpu {
+ return ShortCircuitPlan(local_spelling(operation.data,operation.length,"&&") ? ShortCircuitOrder::RightYes : ShortCircuitOrder::RightNo,
+  local_spelling(operation.data,operation.length,"||") ? 1 : 0);
+}
