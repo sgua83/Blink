@@ -1,4 +1,6 @@
 module bootstrap.call_arguments;
+import bootstrap.ast_storage;
+import bootstrap.signatures;
 enum CallAccess:u32 {Value=0;Read=1;Write=2;InOut=3;Atomic=4;};
 enum ParameterForm:u32 {Ordinary=0;Dataset=1;Tile=2;Acceleration=3;Texture=4;};
 enum ArgumentKind:u32 {BorrowedData=0;Acceleration=1;Texture=2;Value=3;Dataset=4;Data=5;Scoped=6;OwnedValue=7;OwnedReference=8;Tile=9;Atomic=10;Reference=11;};
@@ -38,3 +40,9 @@ extern "C" Cursor retain_start() on cpu;
 extern "C" RetainNeed retain_step(inout Cursor cursor,u64 count,RetainFacts facts) on cpu;
 extern "C" CheckCursor checks_start() on cpu;
 extern "C" CheckNeed checks_step(inout CheckCursor cursor,u64 count,CheckFacts facts) on cpu;
+
+struct ReadInputFacts {u32 present;u32 bound;u32 place;u32 temporary;u32 owns;u32 value;u32 storage;u32 writable;u32 kind;u32 owner;u32 application;};
+enum ReadInputNeed:u32 {Reference=0;BorrowedData=1;Root=2;IsPlace=3;Temporary=4;Type=5;Binding=6;Materialize=7;Place=8;Storage=9;Writable=10;Initialize=11;Borrow=12;Aggregate=13;Application=14;OwnedReference=15;Scoped=16;Resource=17;Empty=18;};
+struct ReadInputStep {Phase cursor;ReadInputNeed need;};
+extern "C" Optional<Text> read_input_root(SignatureNode source) on cpu;
+extern "C" ReadInputStep read_input_step(Phase cursor,ReadInputFacts facts) on cpu;

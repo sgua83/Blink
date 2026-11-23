@@ -10,50 +10,30 @@ pub(crate) async fn check_declaration(world: &World, instance: &crate::generics:
 }
 
 impl Builder<'_> {
-    pub(super) async fn read_argument(&mut self, expr: &Expr, expected:Option<&Ty>) -> Result<Option<cooperative::Argument>> {
-        use cooperative::Argument;
-        if let Some(data)=unsafe { self.world.call(self.application_reference(expr)).await }?{
-            return Ok(Some(Argument::BorrowedData(data)));
-        }
-        fn root(expr: &Expr) -> Option<String> {
-            match expr.kind() {
-                ExprKind::Name(name) => Some(name.into()),
-                ExprKind::Member(base, _) | ExprKind::Index(base, _) => root(&base),
-                _ => None,
-            }
-        }
-        if (root(expr).is_some_and(|name| self.env.contains_key(&name))
-            || self.is_place(expr) && !self.temporary_projection(expr))
-            && !unsafe { self.world.call(self.read_expression_type(expr)).await }?.is_some_and(|ty|ty.owns_resources()) {
-            if let Some(name) = root(expr)
-                && let Some(Binding::Value(value)) = self.env.get(&name).cloned() {
-                let mut owner = self.materialize_array(value,None);
-                owner.place = owner.place.read_only();
-                self.env.insert(name.clone(), Binding::Owned(owner));
-            }
-            let Some(place) = unsafe { self.world.call(self.place(expr)).await }? else {
-                return Ok(None);
-            };
-            match place.storage() {
-                Place::Local(..) | Place::Reference { .. } | Place::ApplicationElement { .. } => {
-                    unsafe { self.world.call(self.require_initialized(&place, expr.span())).await }?
-                }
-                Place::Element { binding, .. } if self.view_access[binding].writes() => {
-                    unsafe { self.world.call(self.require_initialized(&place, expr.span())).await }?
-                }
-                _ => {}
-            }
-            Ok(Some(Argument::Reference(self.borrow_owned(place))))
-        } else {
-            let Some((value,owner))=unsafe { self.world.call(self.read_aggregate(expr,expected)).await }?else{return Ok(None)};
-            Ok(Some(match (value,owner) {
-                (returns::Returned::OwnedValue(value),None)
-                    if value.place.as_ref().is_some_and(|place|matches!(place.storage(),Place::ApplicationElement{..})) =>
-                    Argument::OwnedReference{place:value.place().unwrap(),value,owner:None},
-                (value,Some(owner)) => Argument::Scoped{value,owner},
-                (value,None) => Argument::resource(value),
-            }))
-        }
+    pub(super) async fn read_argument(&mut self,expr:&Expr,expected:Option<&Ty>)->Result<Option<Argument>> {
+        let mut cursor=ReadInputCursor {phase:0};let mut facts=ReadInputFacts::default();
+        let mut reference=None;let mut root=None;let mut place=None;let mut item=None;let mut owner=None;
+        loop {let step=unsafe{read_input_step(cursor,facts)};cursor=step.cursor;match step.need {
+            ReadInputNeed::Reference=>{reference=unsafe{self.world.call(self.application_reference(expr)).await}?;facts.present=u32::from(reference.is_some());},
+            ReadInputNeed::BorrowedData=>return Ok(Some(Argument::BorrowedData(reference.take().unwrap()))),
+            ReadInputNeed::Root=>{let name=unsafe{read_input_root(expr.signature_node())};root=(name.present!=0).then(||expr.source_view().text(name.value));facts.bound=u32::from(root.is_some_and(|name|self.env.contains_key(name)));},
+            ReadInputNeed::IsPlace=>facts.place=u32::from(self.is_place(expr)),
+            ReadInputNeed::Temporary=>facts.temporary=u32::from(self.temporary_projection(expr)),
+            ReadInputNeed::Type=>facts.owns=u32::from(unsafe{self.world.call(self.read_expression_type(expr)).await}?.is_some_and(|ty|ty.owns_resources())),
+            ReadInputNeed::Binding=>facts.value=u32::from(root.is_some_and(|name|matches!(self.env.get(name),Some(Binding::Value(_))))),
+            ReadInputNeed::Materialize=>{let(name,Binding::Value(value))=self.env.remove_entry(root.unwrap()).unwrap()else{unsafe{std::hint::unreachable_unchecked()}};let mut owner=self.materialize_array(value,None);owner.place=owner.place.read_only();self.env.insert(name,Binding::Owned(owner));},
+            ReadInputNeed::Place=>{place=unsafe{self.world.call(self.place(expr)).await}?;facts.present=u32::from(place.is_some());},
+            ReadInputNeed::Storage=>facts.storage=match place.as_ref().unwrap().storage(){Place::Local(..)|Place::Reference{..}|Place::ApplicationElement{..}=>1,Place::Element{..}=>2,_=>0},
+            ReadInputNeed::Writable=>{let Place::Element{binding,..}=place.as_ref().unwrap().storage()else{unsafe{std::hint::unreachable_unchecked()}};facts.writable=u32::from(self.view_access[binding].writes());},
+            ReadInputNeed::Initialize=>unsafe{self.world.call(self.require_initialized(place.as_ref().unwrap(),expr.span())).await}?,
+            ReadInputNeed::Borrow=>return Ok(Some(Argument::Reference(self.borrow_owned(place.take().unwrap())))),
+            ReadInputNeed::Aggregate=>{if let Some((value,name))=unsafe{self.world.call(self.read_aggregate(expr,expected)).await}?{item=Some(value);owner=name;}facts.present=u32::from(item.is_some());facts.kind=item.as_ref().map_or(0,returns::Returned::kind);facts.owner=u32::from(owner.is_some());},
+            ReadInputNeed::Application=>{let returns::Returned::OwnedValue(value)=item.as_ref().unwrap()else{unsafe{std::hint::unreachable_unchecked()}};facts.application=u32::from(value.place.as_ref().is_some_and(|place|matches!(place.storage(),Place::ApplicationElement{..})));},
+            ReadInputNeed::OwnedReference=>{let returns::Returned::OwnedValue(value)=item.take().unwrap()else{unsafe{std::hint::unreachable_unchecked()}};return Ok(Some(Argument::OwnedReference{place:value.place().unwrap(),value,owner:None}));},
+            ReadInputNeed::Scoped=>return Ok(Some(Argument::Scoped{value:item.take().unwrap(),owner:owner.take().unwrap()})),
+            ReadInputNeed::Resource=>return Ok(Some(Argument::resource(item.take().unwrap()))),
+            ReadInputNeed::Empty=>return Ok(None),
+        }}
     }
     pub(super) fn call_reference(
         &mut self,
@@ -452,4 +432,13 @@ impl Builder<'_> {
                 .zip(&ty.components)
                 .all(|(word, (_, offset))| word.checked_sub(first) == Some(*offset)))
     }
+}
+
+#[repr(C)]#[derive(Clone,Copy)]struct ReadInputCursor {phase:u32}
+#[repr(C)]#[derive(Clone,Copy,Default)]struct ReadInputFacts {present:u32,bound:u32,place:u32,temporary:u32,owns:u32,value:u32,storage:u32,writable:u32,kind:u32,owner:u32,application:u32}
+#[repr(u32)]enum ReadInputNeed {Reference,BorrowedData,Root,IsPlace,Temporary,Type,Binding,Materialize,Place,Storage,Writable,Initialize,Borrow,Aggregate,Application,OwnedReference,Scoped,Resource,Empty}
+#[repr(C)]struct ReadInputStep {cursor:ReadInputCursor,need:ReadInputNeed}
+unsafe extern "C" {
+ #[link_name="bootstrap.call_arguments::read_input_root"]fn read_input_root(source:crate::syntax::wire::SignatureNode)->crate::syntax::wire::Optional<crate::syntax::wire::Text>;
+ #[link_name="bootstrap.call_arguments::read_input_step"]fn read_input_step(cursor:ReadInputCursor,facts:ReadInputFacts)->ReadInputStep;
 }

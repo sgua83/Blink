@@ -233,3 +233,34 @@ extern "C" CheckNeed checks_step(inout CheckCursor cursor,u64 count,CheckFacts f
   if(cursor.phase==90){return CheckNeed::Complete;}
  }
 }
+
+extern "C" Optional<Text> read_input_root(SignatureNode source) on cpu {
+ u64 offset=source.offset;
+ while(true){
+  ExprNode expression=unsafe_position<ExprNode>(unsafe_address(address_bits(source.storage.nodes)+offset));
+  match(expression.kind){
+   ExprKind::Name(name){return Optional<Text>(1,name);}
+   ExprKind::Member(value){offset=value.base.offset;}
+   ExprKind::Index(value){offset=value.base.offset;}
+   ExprKind::Number(unused){break;} ExprKind::StaticU32(unused){break;} ExprKind::Bool(unused){break;} ExprKind::Call(unused){break;} ExprKind::Invoke(unused){break;} ExprKind::Construct(unused){break;} ExprKind::Specialize(unused){break;} ExprKind::FunctionRef(unused){break;} ExprKind::Cooperate(unused){break;} ExprKind::Target(unused){break;} ExprKind::Unary(unused){break;} ExprKind::Binary(unused){break;} ExprKind::Select(unused){break;}
+  }
+ }
+ return Optional<Text>(0,Text(0,Span(0u64,0u64)));
+}
+extern "C" ReadInputStep read_input_step(Phase cursor,ReadInputFacts facts) on cpu {
+ Phase c=cursor;
+ if(c.phase==0){c.phase=1;return ReadInputStep(c,ReadInputNeed::Reference);}
+ if(c.phase==1){if(facts.present!=0){return ReadInputStep(c,ReadInputNeed::BorrowedData);}c.phase=2;return ReadInputStep(c,ReadInputNeed::Root);}
+ if(c.phase==2){if(facts.bound!=0){c.phase=5;return ReadInputStep(c,ReadInputNeed::Type);}c.phase=3;return ReadInputStep(c,ReadInputNeed::IsPlace);}
+ if(c.phase==3){if(facts.place!=0){c.phase=4;return ReadInputStep(c,ReadInputNeed::Temporary);}c.phase=9;return ReadInputStep(c,ReadInputNeed::Aggregate);}
+ if(c.phase==4){if(facts.temporary!=0){c.phase=9;return ReadInputStep(c,ReadInputNeed::Aggregate);}c.phase=5;return ReadInputStep(c,ReadInputNeed::Type);}
+ if(c.phase==5){if(facts.owns!=0){c.phase=9;return ReadInputStep(c,ReadInputNeed::Aggregate);}c.phase=6;return ReadInputStep(c,ReadInputNeed::Binding);}
+ if(c.phase==6){if(facts.value!=0){c.phase=7;return ReadInputStep(c,ReadInputNeed::Materialize);}c.phase=8;return ReadInputStep(c,ReadInputNeed::Place);}
+ if(c.phase==7){c.phase=8;return ReadInputStep(c,ReadInputNeed::Place);}
+ if(c.phase==8){if(facts.present==0){return ReadInputStep(c,ReadInputNeed::Empty);}c.phase=10;return ReadInputStep(c,ReadInputNeed::Storage);}
+ if(c.phase==10){if(facts.storage==1){c.phase=12;return ReadInputStep(c,ReadInputNeed::Initialize);}if(facts.storage==2){c.phase=11;return ReadInputStep(c,ReadInputNeed::Writable);}return ReadInputStep(c,ReadInputNeed::Borrow);}
+ if(c.phase==11){if(facts.writable!=0){c.phase=12;return ReadInputStep(c,ReadInputNeed::Initialize);}return ReadInputStep(c,ReadInputNeed::Borrow);}
+ if(c.phase==12){return ReadInputStep(c,ReadInputNeed::Borrow);}
+ if(c.phase==9){if(facts.present==0){return ReadInputStep(c,ReadInputNeed::Empty);}if(facts.owner!=0){return ReadInputStep(c,ReadInputNeed::Scoped);}if(facts.kind==3){c.phase=14;return ReadInputStep(c,ReadInputNeed::Application);}return ReadInputStep(c,ReadInputNeed::Resource);}
+ return ReadInputStep(c,facts.application!=0 ? ReadInputNeed::OwnedReference : ReadInputNeed::Resource);
+}
