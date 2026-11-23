@@ -1006,8 +1006,10 @@ impl<'a, Input: AsRef<[u8]> + ?Sized> Reader<'a, Input> {
     /// 从库成员借用公开接口与合同。完整对象负责代码、重定位和诊断材料。
     pub(crate) fn interface(&self) -> Result<(String, Kind, BTreeMap<String, Vec<u8>>)> {
         let (parts, _) = self.sections(false)?;
-        let (name, kind, mut bindings, _, _) = read_metadata(
-            Metadata::read(self.metadata(parts.metadata)?)?, None, false, None,
+        let metadata = Metadata::read(self.metadata(parts.metadata)?)?;
+        let (name, kind) = read_metadata_kind(&metadata.prefix)?;
+        let mut bindings = read_metadata_bindings(
+            &mut metadata.bindings_cursor(), metadata.prefix.binding_count, false,
         )?;
         let mut definitions = BTreeMap::new();
         self.for_each_definition(|symbol| {
@@ -1066,12 +1068,8 @@ impl<'a> Reader<'a, super::ObjectBytes> {
         decode_object(self, Some(name), None, false)
     }
 }
-fn read_metadata(
-    meta: Metadata<'_>, archive: Option<super::ObjectBytes>, keep_stack: bool, reuse_libraries: Option<Vec<String>>,
-) -> Result<(String, Kind, BTreeMap<String, Vec<u8>>, StackMetadata, Option<Archive>)> {
-    let mut c = meta.bindings_cursor();
-    let prefix = meta.prefix;
-    let header = prefix.header;
+fn read_metadata_kind(prefix: &MetadataReadPrefix) -> Result<(String, Kind)> {
+    let header = &prefix.header;
     let name = read_text(header.name)?;
     let kind = match header.kind {
         ReadObjectKind::Module => {
@@ -1094,6 +1092,27 @@ fn read_metadata(
             prefix: read_text(header.prefix)?, header: read_text(header.header)?, binding: read_text(header.binding)?,
         },
     };
+    Ok((name, kind))
+}
+
+fn read_metadata_bindings(
+    cursor: &mut MetadataReadCursor, count: u64, same_producer: bool,
+) -> Result<BTreeMap<String, Vec<u8>>> {
+    let mut bindings = BTreeMap::new();
+    for _ in 0..count {
+        let value = unsafe { metadata_read_binding(cursor) };
+        value.error.check()?;
+        bindings.insert(read_text(value.name)?, crate::check::read_function_contract(unsafe { value.value.borrowed() }, same_producer)?);
+    }
+    Ok(bindings)
+}
+
+fn read_metadata(
+    meta: Metadata<'_>, archive: Option<super::ObjectBytes>, reuse_libraries: Option<Vec<String>>,
+) -> Result<(String, Kind, BTreeMap<String, Vec<u8>>, StackMetadata, Option<Archive>)> {
+    let (name, kind) = read_metadata_kind(&meta.prefix)?;
+    let mut c = meta.bindings_cursor();
+    let prefix = meta.prefix;
     let keep_archive = archive.is_some();
     let same_producer = reuse_libraries.is_some();
     let libraries = match reuse_libraries {
@@ -1123,12 +1142,7 @@ fn read_metadata(
     } else {
         None
     };
-    let mut bindings = BTreeMap::new();
-    for _ in 0..prefix.binding_count {
-        let value = unsafe { metadata_read_binding(&mut c) };
-        value.error.check()?;
-        bindings.insert(read_text(value.name)?, crate::check::read_function_contract(unsafe { value.value.borrowed() }, same_producer)?);
-    }
+    let bindings = read_metadata_bindings(&mut c, prefix.binding_count, same_producer)?;
     let mut stack = StackMetadata::default();
     for _ in 0..c.word()? {
         let frame = unsafe { metadata_read_frame(&mut c) };
@@ -1140,9 +1154,9 @@ fn read_metadata(
             if matches!(call.kind, ReadCallKind::Unreported) {
                 std::str::from_utf8(unsafe { call.reason.borrowed() })?;
             }
-            if keep_stack { stack.calls.push(call); }
+            stack.calls.push(call);
         }
-        if keep_stack { stack.frames.push(frame); }
+        stack.frames.push(frame);
     }
     let archive = archive.map(|bytes| Archive {
         bytes,
@@ -1171,7 +1185,7 @@ fn decode_object<Bytes: super::ReadSection>(
                 Some((metadata, libraries)) => (metadata, Some(libraries)),
                 None => (Metadata::read(reader.metadata(parts.metadata)?)?, None),
             };
-            read_metadata(metadata, archive, true, libraries)?
+            read_metadata(metadata, archive, libraries)?
         }
     };
     let mut sections = Vec::new();
