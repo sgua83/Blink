@@ -84,7 +84,7 @@ impl Stage {
         if self.tiles.is_empty() {
             return BTreeMap::new();
         }
-        let dataflow::LayoutFacts { mut last, births, mut groups } = dataflow::tile_layout_facts(self, used);
+        let dataflow::LayoutFacts { mut last, births, groups } = dataflow::tile_layout_facts(self, used);
         let mut cells = BTreeMap::new();
         if wide {
             for (tile, data) in self.tiles.iter().enumerate() {
@@ -102,45 +102,35 @@ impl Stage {
                 canonical.entry(cells[&word].1).and_modify(|old| *old = (*old).max(end)).or_insert(end);
             }
             last = canonical;
+        }
+        let groups: Vec<Vec<SharedWord>> = if wide {
             let cells = &cells;
-            groups = groups.into_iter().flat_map(|group| {
+            groups.into_iter().flat_map(|group| {
                 [Scalar::U32, Scalar::U64].into_iter().filter_map(move |unit| {
-                    let words: BTreeSet<_> = group.iter().filter_map(|word| cells.get(word))
+                    let words: BTreeSet<_> = group.words().filter_map(|word| cells.get(&word))
                         .filter(|(kind, _, _)| *kind == unit).map(|(_, word, _)| *word).collect();
                     (!words.is_empty()).then(|| words.into_iter().collect())
                 })
-            }).collect();
-        }
-        let mut words: Vec<_> = last
-            .iter()
-            .map(|(word, end)| {
-                let begin = match word {
-                    SharedWord::Input { .. } => -1,
-                    SharedWord::Published { tile, .. } => births[tile],
-                };
-                (begin, *word, *end)
-            })
-            .collect();
+            }).collect()
+        } else {
+            groups.into_iter().map(|group| group.words().collect()).collect()
+        };
+        let birth = |word: SharedWord| match word {
+            SharedWord::Input { .. } => -1,
+            SharedWord::Published { tile, .. } => births[&tile],
+        };
         let mut units: Vec<_> = groups
             .into_iter()
             .map(|group| {
-                let begin = words
-                    .iter()
-                    .filter(|(_, w, _)| group.contains(w))
-                    .map(|(b, _, _)| *b)
-                    .min()
-                    .unwrap();
-                let end = words
-                    .iter()
-                    .filter(|(_, w, _)| group.contains(w))
-                    .map(|(_, _, e)| *e)
-                    .max()
-                    .unwrap();
-                words.retain(|(_, w, _)| !group.contains(w));
+                let (begin, end) = group.iter().filter_map(|word| {
+                    last.remove(word).map(|end| (birth(*word), end))
+                }).reduce(|(begin, end), (next_begin, next_end)| {
+                    (begin.min(next_begin), end.max(next_end))
+                }).unwrap();
                 (begin, group, end)
             })
             .collect();
-        units.extend(words.into_iter().map(|(b, w, e)| (b, vec![w], e)));
+        units.extend(last.into_iter().map(|(word, end)| (birth(word), vec![word], end)));
         units.sort_unstable();
         let byte = |word: SharedWord| match word {
             SharedWord::Input { word, .. } | SharedWord::Published { word, .. } => word,

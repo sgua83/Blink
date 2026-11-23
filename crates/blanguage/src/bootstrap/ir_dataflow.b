@@ -1730,6 +1730,36 @@ extern "C" void storage_facts(Span code,Span tiles,StorageHost host,i64 phase,St
  storage_visit(code,tiles,host,phase,true,output);
 }
 
+address tile_group_at(address groups,u64 index) on cpu {
+ return unsafe_address(address_bits(groups)+index*size_of<TileGroup>());
+}
+
+extern "C" u64 coalesce_tile_groups(address groups,u64 count) on cpu {
+ u64 used=0u64;
+ u64 index=0u64;
+ while(index<count) {
+  TileGroup current=unsafe_position<TileGroup>(tile_group_at(groups,index));
+  u64 kept=0u64;
+  u64 read=0u64;
+  while(read<used) {
+   TileGroup prior=unsafe_position<TileGroup>(tile_group_at(groups,read));
+   if(prior.storage==current.storage && prior.owner==current.owner
+       && max(prior.first,current.first)<min(prior.end,current.end)) {
+    current.first=min(prior.first,current.first);
+    current.end=max(prior.end,current.end);
+   }else{
+    unsafe_position<TileGroup>(tile_group_at(groups,kept))=prior;
+    kept+=1u64;
+   }
+   read+=1u64;
+  }
+  unsafe_position<TileGroup>(tile_group_at(groups,kept))=current;
+  used=kept+1u64;
+  index+=1u64;
+ }
+ return used;
+}
+
 extern "C" void tile_input_words(Span tiles,Host host,address used,
  cfn<u32,address,usize,u32> ensures memory(read) contains,address output,
  cfn<void,address,usize,u32,u32,u32> emit) on cpu

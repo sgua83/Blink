@@ -606,11 +606,47 @@ unsafe extern "C" fn emit_word(context: *mut c_void, _: StorageEvent, tile: usiz
 
 pub(crate) type TileLayout = BTreeMap<SharedWord, (Scalar, usize, u32)>;
 
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(super) struct TileGroup {
+    storage: u64,
+    owner: usize,
+    first: u32,
+    end: u32,
+}
+
+impl TileGroup {
+    fn new(word: SharedWord, count: u32) -> Self {
+        let (storage, owner, offset) = match word {
+            SharedWord::Input { binding, word } => (0, binding, word),
+            SharedWord::Published { tile, word } => (1, tile, word),
+        };
+        let first = offset / 4;
+        Self { storage, owner, first, end: first + count }
+    }
+
+    pub(super) fn words(self) -> impl Iterator<Item = SharedWord> {
+        (self.first..self.end).map(move |index| {
+            let word = index * 4;
+            if self.storage == 0 {
+                SharedWord::Input { binding: self.owner, word }
+            } else {
+                SharedWord::Published { tile: self.owner, word }
+            }
+        })
+    }
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.ir_dataflow::coalesce_tile_groups"]
+    fn b_coalesce_tile_groups(groups: *mut TileGroup, count: usize) -> usize;
+}
+
 #[derive(Default)]
 pub(super) struct LayoutFacts {
     pub(super) last: BTreeMap<SharedWord, i64>,
     pub(super) births: BTreeMap<usize, i64>,
-    pub(super) groups: Vec<Vec<SharedWord>>,
+    pub(super) groups: Vec<TileGroup>,
 }
 
 struct LayoutOutput<'a> {
@@ -622,6 +658,9 @@ struct LayoutOutput<'a> {
 pub(super) fn tile_layout_facts(stage: &Stage, used: Option<&mut BTreeSet<SharedWord>>) -> LayoutFacts {
     let mut output = LayoutOutput { stage, used, facts: LayoutFacts::default() };
     storage_facts(stage, 0, StorageOutput { context: ptr::from_mut(&mut output).cast(), emit: emit_layout });
+    let groups = &mut output.facts.groups;
+    let count = unsafe { b_coalesce_tile_groups(groups.as_mut_ptr(), groups.len()) };
+    groups.truncate(count);
     output.facts
 }
 
@@ -641,19 +680,8 @@ unsafe extern "C" fn emit_layout(context: *mut c_void, event: StorageEvent, tile
             output.facts.births.insert(tile, phase);
         }
         StorageEvent::Group => {
-            let mut group: Vec<_> = (0..offset_or_count).map(|word| output.stage.shared_word(tile, word * 4).aligned()).collect();
-            let groups = &mut output.facts.groups;
-            let mut index = 0;
-            while index < groups.len() {
-                if groups[index].iter().any(|word| group.contains(word)) {
-                    group.extend(groups.remove(index));
-                } else {
-                    index += 1;
-                }
-            }
-            group.sort_unstable();
-            group.dedup();
-            groups.push(group);
+            let first = output.stage.shared_word(tile, 0);
+            output.facts.groups.push(TileGroup::new(first, offset_or_count));
         }
     }
 }
