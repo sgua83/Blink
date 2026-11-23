@@ -1,5 +1,6 @@
 module bootstrap.function_body;
 import bootstrap.ast_storage;
+import bootstrap.signatures;
 struct Cursor {u32 phase;u32 flags;u64 index;u64 part;};
 enum BeginNeed:u32 {Void=0;Never=1;Type=2;InvalidOwned=3;Shape=4;Dataset=5;Value=6;Early=7;InvalidCooperative=8;Slot=9;Initial=10;Inputs=11;Context=12;Complete=13;Next=14;};
 struct BeginStep {Cursor cursor;BeginNeed need;};
@@ -198,3 +199,16 @@ struct VariantBuildFacts {u32 owned;u32 cpu;u32 application;u32 unit;u64 argumen
 enum VariantBuildNeed:u32 {InvalidTarget=0;Payload=1;VoidArguments=2;PayloadArguments=3;Unit=4;Evaluate=5;Missing=6;Check=7;Storage=8;Build=9;Complete=10;};
 struct VariantBuildStep {LocalCursor cursor;VariantBuildNeed need;};
 extern "C" VariantBuildStep variant_build_step(LocalCursor cursor,VariantBuildFacts facts) on cpu;
+
+struct ReturnExprFacts {u32 binding;u32 owns;u32 temporary;u32 present;u32 task;};
+enum ReturnExprNeed:u32 {Target=0;Member=1;IndexType=2;Temporary=3;ExpressionType=4;OwnedIndex=5;Place=6;Take=7;BindType=8;Storage=9;BadTask=10;OwnedRecord=11;Record=12;Binding=13;Dataset=14;Owned=15;Selection=16;Value=17;Complete=18;};
+struct ReturnExprStep {LocalCursor cursor;ReturnExprNeed need;};
+extern "C" ReturnExprStep return_expr_step(LocalCursor cursor,SignatureNode source,ReturnExprFacts facts) on cpu;
+struct MemberFacts {SeekName name;u32 owns;u32 present;u32 variants;u32 temporary;u32 place;u32 resource;u32 named;u32 continuing;u32 kind;u32 found;u32 field_owns;u32 item_kind;u32 empty;};
+enum MemberNeed:u32 {Type=0;Place=1;Take=2;Projection=3;Projected=4;Reference=5;ReferenceLength=6;BadField=7;Variants=8;BadVariant=9;Temporary=10;IsPlace=11;Resource=12;Named=13;Member=14;Evaluate=15;Find=16;MissingField=17;Unpack=18;FieldType=19;ItemKind=20;MoveData=21;MoveOwner=22;Retained=23;DropOwner=24;HoldOwner=25;Length=26;DropData=27;Value=28;Missing=29;Return=30;Complete=31;};
+struct MemberStep {LocalCursor cursor;MemberNeed need;};
+extern "C" MemberStep member_step(LocalCursor cursor,MemberFacts facts) on cpu;
+struct OwnedIndexFacts {u32 defined;u32 present;u32 continuing;u32 kind;u32 array;u32 indexed;u32 owns;u32 empty;};
+enum OwnedIndexNeed:u32 {ExistingType=0;Place=1;TakePlace=2;Evaluate=3;Inspect=4;BadArray=5;HoldData=6;DataIndex=7;DataType=8;TakeData=9;ReadData=10;Storage=11;Release=12;Return=13;HoldOwner=14;Index=15;ArrayPlace=16;TakeElement=17;ArrayValue=18;ViewPlace=19;ReadView=20;Complete=21;};
+struct OwnedIndexStep {LocalCursor cursor;OwnedIndexNeed need;};
+extern "C" OwnedIndexStep owned_index_step(LocalCursor cursor,OwnedIndexFacts facts) on cpu;

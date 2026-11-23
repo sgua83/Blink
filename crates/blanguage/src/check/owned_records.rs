@@ -1,7 +1,7 @@
 //! 记录的字段投影保持原局部槽、Frame 数据和每个资源叶的唯一拥有关系。
 use super::*;
 use application::Ownership;
-use owned_values::OwnedValue;
+use owned_values::{OwnedValue,ReadName as MemberName,read_field as member_field,read_field_name as member_field_name};
 use returns::Returned;
 mod projection;
 
@@ -134,84 +134,46 @@ impl Builder<'_> {
         Ok(Some(application::DataReference::direct(data)))
     }
     #[inline(never)]
-    pub(super) async fn member_returned(
-        &mut self,
-        expr: &Expr,
-        base: &Expr,
-        name: &str,
-    ) -> Result<Option<Returned>> {
-        if self
-            .owned_element_type(expr)
-            .is_some_and(|ty| ty.owns_resources())
-        {
-            let Some(place)=unsafe { self.world.call(self.place(expr)).await }?else{return Ok(None)};
-            return unsafe { self.world.call(self.take_owned_place(place,expr.span())).await }.map(Some);
-        }
-        if let Some(p) = self.owned_projection(expr) {
-            return unsafe { self.world.call(self.projected_owned(&p, expr.span())).await }.map(Some);
-        }
-        if let Some(data) = unsafe { self.world.call(self.application_reference(base)).await }? {
-            return if name == "length" {
-                Ok(Some(Returned::value(data.length.clone())))
-            } else {
-                self.fail(expr.span(), "B141", "dataset只公开只读length")
-            };
-        }
-        if self.owned_element_type(base).is_some_and(|ty|ty.has_variants()) {return self.fail(expr.span(),"B269","变体载荷通过match使用");}
-        if !self.temporary_projection(base)
-            && (self.is_place(expr)
-                || self.dataset_reference(base)?.is_some()
-                || matches!(base.kind(),ExprKind::Name(n) if matches!(self.env.get(n),Some(Binding::Tile(_)|Binding::Texture(_)))))
-        {
-            return unsafe { self.world.call(self
-                .member_expr(base, name, expr)).await }
-                .map(|v| v.map(Returned::value));
-        }
-        let value = unsafe { self.world.call(self.evaluate_returned(base, None)).await }?;
-        if !self.flow.continues() {
-            return Ok(None);
-        }
-        match value {
-            Some(Returned::OwnedValue(mut owner)) => {
-                let Some(i) = owner
-                    .value
-                    .ty
-                    .fields
-                    .iter()
-                    .position(|(field, _, _)| field == name)
-                else {
-                    return self.fail(expr.span(), "B141", "拥有值字段不存在");
-                };
-                let item = self.unpack_record(&owner, i);
-                if owner.value.ty.aggregate_part(i).1.owns_resources() {
-                    match owner.payloads[i].as_deref_mut().unwrap() {
-                        Returned::Dataset(d) => d.ownership = Ownership::Moved,
-                        Returned::OwnedValue(v) => v.mark_moved(),
-                        _ => unreachable!(),
-                    }
-                }
-                let retained=item.view_value().map(|value|value.proof.typed_view_borrow(&value.ty)).unwrap_or_default();
-                if retained.empty() {
-                    unsafe { self.world.call(self.drop_returned(Returned::OwnedValue(owner),&retained,expr.span())).await }?;
-                } else {
-                    self.hold_binding(Binding::OwnedValue(owner));
-                }
-                Ok(Some(item))
-            }
-            Some(Returned::Dataset(data)) => {
-                if name != "length" {
-                    return self.fail(expr.span(), "B141", "dataset只公开只读length");
-                }
-                let length = data.length.clone();
-                unsafe { self.world.call(self.drop_returned(Returned::Dataset(data),&view::Borrow::default(),expr.span())).await }?;
-                Ok(Some(Returned::value(length)))
-            }
-            Some(Returned::Value(value)) => self
-                .member_value(*value, name, expr.span())
-                .map(|v| Some(Returned::value(v))),
-            _ => self.fail(expr.span(), "B228", "字段访问需要值"),
-        }
+    pub(super) async fn member_returned(&mut self,expr:&Expr,base:&Expr,name:&str)->Result<Option<Returned>> {
+        let mut cursor=super::flow::LocalCursor {phase:0};
+        let mut facts=MemberFacts {name:MemberName::of(name),owns:0,present:0,variants:0,temporary:0,place:0,resource:0,named:0,continuing:0,kind:0,found:0,field_owns:0,item_kind:0,empty:0};
+        let mut place=None;let mut projection=None;let mut reference=None;let mut parent=None;let mut item=None;let mut field=0usize;let mut retained=None;
+        loop {let step=unsafe {member_step(cursor,facts)};cursor=step.cursor;match step.need {
+            MemberNeed::Type=>facts.owns=u32::from(self.owned_element_type(expr).is_some_and(|ty|ty.owns_resources())),
+            MemberNeed::Place=>{place=unsafe{self.world.call(self.place(expr)).await}?;facts.present=u32::from(place.is_some());},
+            MemberNeed::Take=>return unsafe{self.world.call(self.take_owned_place(place.take().unwrap(),expr.span())).await}.map(Some),
+            MemberNeed::Projection=>{projection=self.owned_projection(expr);facts.present=u32::from(projection.is_some());},
+            MemberNeed::Projected=>return unsafe{self.world.call(self.projected_owned(projection.as_ref().unwrap(),expr.span())).await}.map(Some),
+            MemberNeed::Reference=>{reference=unsafe{self.world.call(self.application_reference(base)).await}?;facts.present=u32::from(reference.is_some());},
+            MemberNeed::ReferenceLength=>return Ok(Some(Returned::value(reference.take().unwrap().data.length))),
+            MemberNeed::BadField=>return self.fail(expr.span(),"B141","dataset只公开只读length"),
+            MemberNeed::Variants=>facts.variants=u32::from(self.owned_element_type(base).is_some_and(|ty|ty.has_variants())),
+            MemberNeed::BadVariant=>return self.fail(expr.span(),"B269","变体载荷通过match使用"),
+            MemberNeed::Temporary=>facts.temporary=u32::from(self.temporary_projection(base)),
+            MemberNeed::IsPlace=>facts.place=u32::from(self.is_place(expr)),
+            MemberNeed::Resource=>facts.resource=u32::from(self.dataset_reference(base)?.is_some()),
+            MemberNeed::Named=>facts.named=u32::from(matches!(base.kind(),ExprKind::Name(n)if matches!(self.env.get(n),Some(Binding::Tile(_)|Binding::Texture(_))))),
+            MemberNeed::Member=>return unsafe{self.world.call(self.member_expr(base,name,expr)).await}.map(|value|value.map(Returned::value)),
+            MemberNeed::Evaluate=>{parent=unsafe{self.world.call(self.evaluate_returned(base,None)).await}?;facts.continuing=u32::from(self.flow.continues());facts.kind=parent.as_ref().map_or(0,Returned::kind);},
+            MemberNeed::Find=>{let Returned::OwnedValue(owner)=parent.as_ref().unwrap()else{unsafe{std::hint::unreachable_unchecked()}};field=unsafe{member_field(MemberName::of(name),owner.value.ty.fields.len(),&owner.value.ty,member_field_name)};facts.found=u32::from(field<owner.value.ty.fields.len());},
+            MemberNeed::MissingField=>return self.fail(expr.span(),"B141","拥有值字段不存在"),
+            MemberNeed::Unpack=>{let Returned::OwnedValue(owner)=parent.as_ref().unwrap()else{unsafe{std::hint::unreachable_unchecked()}};item=Some(self.unpack_record(owner,field));},
+            MemberNeed::FieldType=>{let Returned::OwnedValue(owner)=parent.as_ref().unwrap()else{unsafe{std::hint::unreachable_unchecked()}};facts.field_owns=u32::from(owner.value.ty.aggregate_part(field).1.owns_resources());},
+            MemberNeed::ItemKind=>{let Returned::OwnedValue(owner)=parent.as_ref().unwrap()else{unsafe{std::hint::unreachable_unchecked()}};facts.item_kind=owner.payloads[field].as_deref().unwrap().kind();},
+            MemberNeed::MoveData=>{let Returned::OwnedValue(owner)=parent.as_mut().unwrap()else{unsafe{std::hint::unreachable_unchecked()}};let Returned::Dataset(data)=owner.payloads[field].as_deref_mut().unwrap()else{unsafe{std::hint::unreachable_unchecked()}};data.ownership=Ownership::Moved;},
+            MemberNeed::MoveOwner=>{let Returned::OwnedValue(owner)=parent.as_mut().unwrap()else{unsafe{std::hint::unreachable_unchecked()}};let Returned::OwnedValue(value)=owner.payloads[field].as_deref_mut().unwrap()else{unsafe{std::hint::unreachable_unchecked()}};value.mark_moved();},
+            MemberNeed::Retained=>{let borrow=item.as_ref().unwrap().view_value().map(|value|value.proof.typed_view_borrow(&value.ty)).unwrap_or_default();facts.empty=u32::from(borrow.empty());retained=Some(borrow);},
+            MemberNeed::DropOwner=>unsafe{self.world.call(self.drop_returned(parent.take().unwrap(),retained.as_ref().unwrap(),expr.span())).await}?,
+            MemberNeed::HoldOwner=>{let Returned::OwnedValue(owner)=parent.take().unwrap()else{unsafe{std::hint::unreachable_unchecked()}};self.hold_binding(Binding::OwnedValue(owner));},
+            MemberNeed::Length=>{let Returned::Dataset(data)=parent.as_ref().unwrap()else{unsafe{std::hint::unreachable_unchecked()}};item=Some(Returned::value(data.length.clone()));},
+            MemberNeed::DropData=>unsafe{self.world.call(self.drop_returned(parent.take().unwrap(),&view::Borrow::default(),expr.span())).await}?,
+            MemberNeed::Value=>{let Returned::Value(value)=parent.take().unwrap()else{unsafe{std::hint::unreachable_unchecked()}};return self.member_value(*value,name,expr.span()).map(|value|Some(Returned::value(value)));},
+            MemberNeed::Missing=>return self.fail(expr.span(),"B228","字段访问需要值"),
+            MemberNeed::Return=>return Ok(item),
+            MemberNeed::Complete=>return Ok(None),
+        }}
     }
+
 }
 
 impl Binding {
@@ -268,55 +230,35 @@ impl Builder<'_> {
         self.owned_expression_type(expr)
     }
     #[inline(never)]
-    pub(super) async fn owned_array_index(
-        &mut self,
-        expr: &Expr,
-        base: &Expr,
-        index: &Expr,
-    ) -> Result<Option<Returned>> {
-        if self.owned_expression_type(base).is_some() {
-            let Some(place)=unsafe { self.world.call(self.place(expr)).await }?else{return Ok(None)};
-            return unsafe { self.world.call(self.take_owned_place(place,expr.span())).await }.map(Some);
-        }
-        let returned = unsafe { self.world.call(self.evaluate_returned(base, None)).await }?;
-        if !self.flow.continues() {
-            return Ok(None);
-        }
-        let owner = match returned {
-            Some(Returned::OwnedValue(owner)) if owner.value.ty.array.is_some() => owner,
-            Some(Returned::Dataset(data)) => {
-                let held = self.hold_binding(Binding::ApplicationData(data.clone()));
-                let Some(place) =
-                    unsafe { self.world.call(self.application_index(application::DataReference::direct(data), index)).await }?
-                else {
-                    return Ok(None);
-                };
-                let value=if place.ty().owns_resources(){unsafe { self.world.call(self.take_owned_place(place,expr.span())).await }?}
-                    else{Returned::value(unsafe { self.world.call(self.read_place(&place,expr.span(),None)).await }?)};
-                let stored=self.returned_storage(&value);
-                if stored.proof.typed_view_borrow(&stored.ty).empty(){unsafe { self.world.call(self.finish_scoped_argument(&held,expr.span())).await }?;}
-                return Ok(Some(value));
-            }
-            Some(Returned::Value(value)) if value.ty.indexed_count().is_some() => {
-                return unsafe { self.world.call(self
-                    .array_value_index(*value, index)).await }
-                    .map(|v| v.map(Returned::value));
-            }
-            Some(Returned::Value(value)) => {
-                let Some(place) = unsafe { self.world.call(self.view_value_place(*value, index)).await }? else {
-                    return Ok(None);
-                };
-                return unsafe { self.world.call(self
-                    .read_place(&place, expr.span(), None)).await }
-                    .map(|v| Some(Returned::value(v)));
-            }
-            _ => return self.fail(expr.span(), "B224", "拥有数组元素需要实际拥有数组值"),
-        };
-        let owner=self.owned_value_binding(owner,true);let place=owner.place().unwrap();let held=self.hold_binding(Binding::OwnedValue(owner));
-        let Some(value)=unsafe { self.world.call(self.expr(index)).await }?else{return Ok(None)};let place=self.array_index(place,value,index.span())?;let item=unsafe { self.world.call(self.take_owned_place(place,expr.span())).await }?;
-        unsafe { self.world.call(self.finish_scoped_argument(&held,expr.span())).await }?;
-        Ok(Some(item))
+    pub(super) async fn owned_array_index(&mut self,expr:&Expr,base:&Expr,index:&Expr)->Result<Option<Returned>> {
+        let mut cursor=super::flow::LocalCursor {phase:0};let mut facts=OwnedIndexFacts::default();
+        let mut parent=None;let mut place=None;let mut held=None;let mut data=None;let mut offset=None;let mut item=None;
+        loop {let step=unsafe{owned_index_step(cursor,facts)};cursor=step.cursor;match step.need {
+            OwnedIndexNeed::ExistingType=>facts.defined=u32::from(self.owned_expression_type(base).is_some()),
+            OwnedIndexNeed::Place=>{place=unsafe{self.world.call(self.place(expr)).await}?;facts.present=u32::from(place.is_some());},
+            OwnedIndexNeed::TakePlace=>return unsafe{self.world.call(self.take_owned_place(place.take().unwrap(),expr.span())).await}.map(Some),
+            OwnedIndexNeed::Evaluate=>{parent=unsafe{self.world.call(self.evaluate_returned(base,None)).await}?;facts.continuing=u32::from(self.flow.continues());},
+            OwnedIndexNeed::Inspect=>{facts.kind=parent.as_ref().map_or(0,Returned::kind);facts.array=u32::from(matches!(parent.as_ref(),Some(Returned::OwnedValue(value))if value.value.ty.array.is_some()));facts.indexed=u32::from(matches!(parent.as_ref(),Some(Returned::Value(value))if value.ty.indexed_count().is_some()));},
+            OwnedIndexNeed::BadArray=>return self.fail(expr.span(),"B224","拥有数组元素需要实际拥有数组值"),
+            OwnedIndexNeed::HoldData=>{let Returned::Dataset(value)=parent.take().unwrap()else{unsafe{std::hint::unreachable_unchecked()}};held=Some(self.hold_binding(Binding::ApplicationData(value.clone())));data=Some(application::DataReference::direct(value));},
+            OwnedIndexNeed::DataIndex=>{place=unsafe{self.world.call(self.application_index(data.take().unwrap(),index)).await}?;facts.present=u32::from(place.is_some());},
+            OwnedIndexNeed::DataType=>facts.owns=u32::from(place.as_ref().unwrap().ty().owns_resources()),
+            OwnedIndexNeed::TakeData=>item=Some(unsafe{self.world.call(self.take_owned_place(place.take().unwrap(),expr.span())).await}?),
+            OwnedIndexNeed::ReadData=>item=Some(Returned::value(unsafe{self.world.call(self.read_place(place.as_ref().unwrap(),expr.span(),None)).await}?)),
+            OwnedIndexNeed::Storage=>{let value=self.returned_storage(item.as_ref().unwrap());facts.empty=u32::from(value.proof.typed_view_borrow(&value.ty).empty());},
+            OwnedIndexNeed::Release=>unsafe{self.world.call(self.finish_scoped_argument(held.as_ref().unwrap(),expr.span())).await}?,
+            OwnedIndexNeed::Return=>return Ok(item),
+            OwnedIndexNeed::HoldOwner=>{let Returned::OwnedValue(owner)=parent.take().unwrap()else{unsafe{std::hint::unreachable_unchecked()}};let owner=self.owned_value_binding(owner,true);place=Some(owner.place().unwrap());held=Some(self.hold_binding(Binding::OwnedValue(owner)));},
+            OwnedIndexNeed::Index=>{offset=unsafe{self.world.call(self.expr(index)).await}?;facts.present=u32::from(offset.is_some());},
+            OwnedIndexNeed::ArrayPlace=>place=Some(self.array_index(place.take().unwrap(),offset.take().unwrap(),index.span())?),
+            OwnedIndexNeed::TakeElement=>item=Some(unsafe{self.world.call(self.take_owned_place(place.take().unwrap(),expr.span())).await}?),
+            OwnedIndexNeed::ArrayValue=>{let Returned::Value(value)=parent.take().unwrap()else{unsafe{std::hint::unreachable_unchecked()}};return unsafe{self.world.call(self.array_value_index(*value,index)).await}.map(|value|value.map(Returned::value));},
+            OwnedIndexNeed::ViewPlace=>{let Returned::Value(value)=parent.take().unwrap()else{unsafe{std::hint::unreachable_unchecked()}};place=unsafe{self.world.call(self.view_value_place(*value,index)).await}?;facts.present=u32::from(place.is_some());},
+            OwnedIndexNeed::ReadView=>return unsafe{self.world.call(self.read_place(place.as_ref().unwrap(),expr.span(),None)).await}.map(|value|Some(Returned::value(value))),
+            OwnedIndexNeed::Complete=>return Ok(None),
+        }}
     }
+
 }
 
 impl Builder<'_> {
@@ -347,4 +289,15 @@ impl Builder<'_> {
     pub(super) fn temporary_projection(&self, expr: &Expr) -> bool {
         projection::temporary(expr)
     }
+}
+
+#[repr(C)]#[derive(Clone,Copy)]struct MemberFacts {name:MemberName,owns:u32,present:u32,variants:u32,temporary:u32,place:u32,resource:u32,named:u32,continuing:u32,kind:u32,found:u32,field_owns:u32,item_kind:u32,empty:u32}
+#[repr(u32)]enum MemberNeed {Type,Place,Take,Projection,Projected,Reference,ReferenceLength,BadField,Variants,BadVariant,Temporary,IsPlace,Resource,Named,Member,Evaluate,Find,MissingField,Unpack,FieldType,ItemKind,MoveData,MoveOwner,Retained,DropOwner,HoldOwner,Length,DropData,Value,Missing,Return,Complete}
+#[repr(C)]struct MemberStep {cursor:super::flow::LocalCursor,need:MemberNeed}
+#[repr(C)]#[derive(Clone,Copy,Default)]struct OwnedIndexFacts {defined:u32,present:u32,continuing:u32,kind:u32,array:u32,indexed:u32,owns:u32,empty:u32}
+#[repr(u32)]enum OwnedIndexNeed {ExistingType,Place,TakePlace,Evaluate,Inspect,BadArray,HoldData,DataIndex,DataType,TakeData,ReadData,Storage,Release,Return,HoldOwner,Index,ArrayPlace,TakeElement,ArrayValue,ViewPlace,ReadView,Complete}
+#[repr(C)]struct OwnedIndexStep {cursor:super::flow::LocalCursor,need:OwnedIndexNeed}
+unsafe extern "C" {
+ #[link_name="bootstrap.function_body::member_step"]fn member_step(cursor:super::flow::LocalCursor,facts:MemberFacts)->MemberStep;
+ #[link_name="bootstrap.function_body::owned_index_step"]fn owned_index_step(cursor:super::flow::LocalCursor,facts:OwnedIndexFacts)->OwnedIndexStep;
 }

@@ -410,7 +410,7 @@ impl Builder<'_> {
     ) -> Result<Option<Returned>> {
         let world = self.world;
         let mut returned = unsafe { world.call(self.at_source(expr.span(), SourceSyntax::Expression,
-            async |b| unsafe { world.call(b.evaluate_returned_syntax(expr, expected)) .await })) .await }?;
+            async |b| {b.view_uses.before(expr.span());b.require_returned_projection(expr)?;unsafe {world.call(source_call::returned(b,expr,expected)).await}})) .await }?;
         match &mut returned {
             Some(Returned::Value(value)) => self.bound_value(value),
             Some(Returned::OwnedValue(value)) => self.bound_value(&mut value.value),
@@ -418,40 +418,30 @@ impl Builder<'_> {
         }
         Ok(returned)
     }
-    async fn evaluate_returned_syntax(&mut self, expr: &Expr, expected: Option<&Ty>) -> Result<Option<Returned>> {
-        self.view_uses.before(expr.span());
-        self.require_returned_projection(expr)?;
-        unsafe{self.world.call(source_call::returned(self,expr,expected)).await}
-    }
-    pub(super) async fn evaluate_returned_other(&mut self,expr:&Expr,expected:Option<&Ty>)->Result<Option<Returned>>{
-        match expr.kind() {
-            ExprKind::Target(target, call) => return unsafe { self.world.call(self.target_call(target, &call, expr.span())).await },
-            ExprKind::Member(base, name) => return unsafe { self.world.call(self.member_returned(expr, &base, name)).await },
-            ExprKind::Index(base, index) => return unsafe { self.world.call(self.indexed_returned(expr, &base, &index, expected)).await },
-            ExprKind::Construct(name, args) => {
-                let name=unsafe { self.world.call(self.scope.bindings().type_name(self.world,&name,(self.scope.source(),self.scope.module(),self.scope.imports()),expr.span())).await }?;
-                return unsafe { self.world.call(self.construct_record_returned(&name,&args,expr.span())).await };
-            }
-            ExprKind::Name(name)
-                if matches!(self.env.get(name), Some(Binding::ApplicationData(_))) =>
-            {
-                return unsafe { self.world.call(self
-                    .move_application_dataset(name, expr.span())).await }
-                    .map(|v| v.map(Returned::Dataset));
-            }
-            ExprKind::Name(name) if matches!(self.env.get(name), Some(Binding::OwnedValue(_))) => {
-                return unsafe { self.world.call(self
-                    .take_owned_value(name, expr.span())).await }
-                    .map(|v| Some(Returned::OwnedValue(v)));
-            }
-            ExprKind::Select(c,a,b)=>return unsafe{self.world.call(self.selection_returned(&c,&a,&b,expr.span(),expected)).await},
-            _=>{}
-        }
-        unsafe{self.world.call(self.typed_value_returned(expr,expected)).await}
-    }
-    #[inline(never)]
-    async fn typed_value_returned(&mut self, expr: &Expr, expected: Option<&Ty>) -> Result<Option<Returned>> {
-        unsafe { self.world.call(self.expr_expected(expr,expected)).await }.map(|value|value.map(Returned::value))
+    pub(super) async fn evaluate_returned_other(&mut self,expr:&Expr,expected:Option<&Ty>)->Result<Option<Returned>> {
+        let syntax=expr.kind();let source=expr.signature_node();let mut cursor=super::flow::LocalCursor {phase:0};
+        let mut facts=ReturnExprFacts::default();let mut name=None;let mut ty:Option<Ty>=None;let mut place=None;
+        loop {let step=unsafe {return_expr_step(cursor,source,facts)};cursor=step.cursor;match step.need {
+            ReturnExprNeed::Target=>{let ExprKind::Target(target,call)=&syntax else{unsafe{std::hint::unreachable_unchecked()}};return unsafe{self.world.call(self.target_call(*target,call,expr.span())).await};},
+            ReturnExprNeed::Member=>{let ExprKind::Member(base,field)=&syntax else{unsafe{std::hint::unreachable_unchecked()}};return unsafe{self.world.call(self.member_returned(expr,base,field)).await};},
+            ReturnExprNeed::IndexType=>{let ExprKind::Index(base,_)=&syntax else{unsafe{std::hint::unreachable_unchecked()}};facts.owns=u32::from(self.owned_element_type(base).is_some_and(|ty|ty.array.is_some()&&ty.owns_resources()));},
+            ReturnExprNeed::Temporary=>{let ExprKind::Index(base,_)=&syntax else{unsafe{std::hint::unreachable_unchecked()}};facts.temporary=u32::from(self.temporary_projection(base));},
+            ReturnExprNeed::ExpressionType=>facts.owns=u32::from(unsafe{self.world.call(self.read_expression_type(expr)).await}?.is_some_and(|ty|ty.owns_resources())),
+            ReturnExprNeed::OwnedIndex=>{let ExprKind::Index(base,index)=&syntax else{unsafe{std::hint::unreachable_unchecked()}};return unsafe{self.world.call(self.owned_array_index(expr,base,index)).await};},
+            ReturnExprNeed::Place=>{place=unsafe{self.world.call(self.place(expr)).await}?;facts.present=u32::from(place.is_some());},
+            ReturnExprNeed::Take=>return unsafe{self.world.call(self.take_owned_place(place.take().unwrap(),expr.span())).await}.map(Some),
+            ReturnExprNeed::BindType=>{let ExprKind::Construct(raw,_)=&syntax else{unsafe{std::hint::unreachable_unchecked()}};name=Some(unsafe{self.world.call(self.scope.bindings().type_name(self.world,raw,(self.scope.source(),self.scope.module(),self.scope.imports()),expr.span())).await}?);},
+            ReturnExprNeed::Storage=>{let value=unsafe{self.world.call(self.expected_storage(name.as_ref().unwrap(),expr.span())).await}?;facts.task=u32::from(value.task_result().is_some());facts.owns=u32::from(value.owns_resources());ty=Some(value);},
+            ReturnExprNeed::BadTask=>return self.fail(expr.span(),"B224","任务只能从start_task取得"),
+            ReturnExprNeed::OwnedRecord=>{let ExprKind::Construct(_,args)=&syntax else{unsafe{std::hint::unreachable_unchecked()}};return unsafe{self.world.call(self.make_owned_record(ty.take().unwrap(),args,expr.span())).await};},
+            ReturnExprNeed::Record=>{let ExprKind::Construct(_,args)=&syntax else{unsafe{std::hint::unreachable_unchecked()}};return unsafe{self.world.call(self.record_values(ty.take().unwrap(),args.len(),expr.span(),async |builder,index,expected|unsafe{builder.world.call(builder.expr_expected(&args.at(index),expected)).await})).await}.map(|value|value.map(Returned::value));},
+            ReturnExprNeed::Binding=>{let ExprKind::Name(name)=&syntax else{unsafe{std::hint::unreachable_unchecked()}};facts.binding=match self.env.get(*name){Some(Binding::ApplicationData(_))=>1,Some(Binding::OwnedValue(_))=>2,_=>0};},
+            ReturnExprNeed::Dataset=>{let ExprKind::Name(name)=&syntax else{unsafe{std::hint::unreachable_unchecked()}};return unsafe{self.world.call(self.move_application_dataset(name,expr.span())).await}.map(|value|value.map(Returned::Dataset));},
+            ReturnExprNeed::Owned=>{let ExprKind::Name(name)=&syntax else{unsafe{std::hint::unreachable_unchecked()}};return unsafe{self.world.call(self.take_owned_value(name,expr.span())).await}.map(|value|Some(Returned::OwnedValue(value)));},
+            ReturnExprNeed::Selection=>{let ExprKind::Select(condition,yes,no)=&syntax else{unsafe{std::hint::unreachable_unchecked()}};return unsafe{self.world.call(self.selection_returned(condition,yes,no,expr.span(),expected)).await};},
+            ReturnExprNeed::Value=>return unsafe{self.world.call(self.expr_expected(expr,expected)).await}.map(|value|value.map(Returned::value)),
+            ReturnExprNeed::Complete=>return Ok(None),
+        }}
     }
     #[inline(never)]
     pub(super) fn require_returned_projection(&self, expr: &Expr) -> Result<()> {
@@ -475,25 +465,6 @@ impl Builder<'_> {
             _=>{}
         }
         Ok(returned)
-    }
-    #[inline(never)]
-    async fn indexed_returned(&mut self, expr: &Expr, base: &Expr, index: &Expr, expected: Option<&Ty>) -> Result<Option<Returned>> {
-        if self.owned_element_type(base).is_some_and(|ty|ty.array.is_some() && ty.owns_resources()) || self.temporary_projection(base) {
-            return unsafe { self.world.call(self.owned_array_index(expr,base,index)).await };
-        }
-        if unsafe { self.world.call(self.read_expression_type(expr)).await }?.is_some_and(|ty|ty.owns_resources()){
-            let Some(place)=unsafe { self.world.call(self.place(expr)).await }?else{return Ok(None)};
-            return unsafe { self.world.call(self.take_owned_place(place,expr.span())).await }.map(Some);
-        }
-        unsafe { self.world.call(self.expr_expected(expr,expected)).await }.map(|value|value.map(Returned::value))
-    }
-    #[inline(never)]
-    pub(super) async fn construct_record_returned(&mut self,name:&TypeName,args:&Expressions,span:Span)->Result<Option<Returned>> {
-        let ty=unsafe { self.world.call(self.expected_storage(name,span)).await }?;
-        if ty.task_result().is_some(){return self.fail(span,"B224","任务只能从start_task取得");}
-        if ty.owns_resources(){return unsafe { self.world.call(self.make_owned_record(ty,args,span)).await };}
-        unsafe { self.world.call(self.record_values(ty,args.len(),span,async |builder,index,expected|
-            unsafe { builder.world.call(builder.expr_expected(&args.at(index),expected)).await })).await }.map(|value|value.map(Returned::value))
     }
     #[inline(never)]
     pub(super) async fn propagate_returned(&mut self,args:&Expressions,span:Span)->Result<Option<Returned>> {
@@ -838,8 +809,8 @@ unsafe extern "C" {
 #[repr(u32)]enum ReadNeed {Inspect,Name,NameStorage,NameType,Application,ElementType,Place,Model,Projection,Projected,BadOwned,Available,BadAvailable,Prepare,Variants,ProjectionPlace,Initialize,Load,HoldOwned,Borrow,HoldData,Return,Member,Index,Evaluate,BadRead,Complete}
 #[repr(C)]struct ReadStep {cursor:ReadCursor,need:ReadNeed}
 #[repr(C)]#[derive(Clone,Copy)]struct ReadLocalCursor {phase:u32}
-#[repr(C)]#[derive(Clone,Copy)]struct ReadName {data:*const u8,length:usize}
-impl ReadName {fn of(value:&str)->Self{Self{data:value.as_ptr(),length:value.len()}}}
+#[repr(C)]#[derive(Clone,Copy)]pub(super) struct ReadName {data:*const u8,length:usize}
+impl ReadName {pub(super) fn of(value:&str)->Self{Self{data:value.as_ptr(),length:value.len()}}}
 #[repr(C)]#[derive(Clone,Copy)]struct ReadMemberFacts {field:ReadName,present:u32,kind:u32,found:u32,empty:u32,owner:u32}
 #[repr(u32)]enum ReadMemberNeed {Parent,Find,MissingField,Unpack,Value,Length,BadField,Item,Retained,Release,Plain,Return,Complete}
 #[repr(C)]struct ReadMemberStep {cursor:ReadLocalCursor,need:ReadMemberNeed}
@@ -850,7 +821,14 @@ impl ReadName {fn of(value:&str)->Self{Self{data:value.as_ptr(),length:value.len
 unsafe extern "C" {
  #[link_name="bootstrap.function_body::read_step"]fn read_step(cursor:ReadCursor,facts:ReadFacts)->ReadStep;
  #[link_name="bootstrap.function_body::read_member_step"]fn read_member_step(cursor:ReadLocalCursor,facts:ReadMemberFacts)->ReadMemberStep;
- #[link_name="bootstrap.function_body::read_field"]fn read_field(name:ReadName,count:usize,context:*const Ty,field:unsafe extern "C" fn(*const Ty,usize)->ReadName)->usize;
+ #[link_name="bootstrap.function_body::read_field"]pub(super) fn read_field(name:ReadName,count:usize,context:*const Ty,field:unsafe extern "C" fn(*const Ty,usize)->ReadName)->usize;
  #[link_name="bootstrap.function_body::read_index_step"]fn read_index_step(cursor:ReadIndexCursor,facts:ReadIndexFacts)->ReadIndexStep;
 }
-unsafe extern "C" fn read_field_name(context:*const Ty,index:usize)->ReadName {ReadName::of(&unsafe{&*context}.fields[index].0)}
+pub(super) unsafe extern "C" fn read_field_name(context:*const Ty,index:usize)->ReadName {ReadName::of(&unsafe{&*context}.fields[index].0)}
+
+#[repr(C)]#[derive(Clone,Copy,Default)]struct ReturnExprFacts {binding:u32,owns:u32,temporary:u32,present:u32,task:u32}
+#[repr(u32)]enum ReturnExprNeed {Target,Member,IndexType,Temporary,ExpressionType,OwnedIndex,Place,Take,BindType,Storage,BadTask,OwnedRecord,Record,Binding,Dataset,Owned,Selection,Value,Complete}
+#[repr(C)]struct ReturnExprStep {cursor:super::flow::LocalCursor,need:ReturnExprNeed}
+unsafe extern "C" {
+ #[link_name="bootstrap.function_body::return_expr_step"]fn return_expr_step(cursor:super::flow::LocalCursor,source:crate::syntax::wire::SignatureNode,facts:ReturnExprFacts)->ReturnExprStep;
+}

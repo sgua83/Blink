@@ -664,3 +664,67 @@ extern "C" VariantBuildStep variant_build_step(LocalCursor cursor,VariantBuildFa
  if(c.phase==3||c.phase==4){c.phase=5;return VariantBuildStep(c,facts.owned!=0 ? VariantBuildNeed::Storage : VariantBuildNeed::Build);}
  return VariantBuildStep(c,VariantBuildNeed::Build);
 }
+
+extern "C" ReturnExprStep return_expr_step(LocalCursor cursor,SignatureNode source,ReturnExprFacts facts) on cpu {
+ LocalCursor c=cursor;
+ if(c.phase==0){
+  ExprNode expression=unsafe_position<ExprNode>(unsafe_address(address_bits(source.storage.nodes)+source.offset));
+  match(expression.kind){
+   ExprKind::Target(unused){return ReturnExprStep(c,ReturnExprNeed::Target);}
+   ExprKind::Member(unused){return ReturnExprStep(c,ReturnExprNeed::Member);}
+   ExprKind::Index(unused){c.phase=2;return ReturnExprStep(c,ReturnExprNeed::IndexType);}
+   ExprKind::Construct(unused){c.phase=5;return ReturnExprStep(c,ReturnExprNeed::BindType);}
+   ExprKind::Name(unused){c.phase=1;return ReturnExprStep(c,ReturnExprNeed::Binding);}
+   ExprKind::Select(unused){return ReturnExprStep(c,ReturnExprNeed::Selection);}
+   ExprKind::Number(unused){} ExprKind::StaticU32(unused){} ExprKind::Bool(unused){} ExprKind::Call(unused){} ExprKind::Invoke(unused){} ExprKind::Specialize(unused){} ExprKind::FunctionRef(unused){} ExprKind::Cooperate(unused){} ExprKind::Unary(unused){} ExprKind::Binary(unused){}
+  }return ReturnExprStep(c,ReturnExprNeed::Value);
+ }
+ if(c.phase==1){return ReturnExprStep(c,facts.binding==1 ? ReturnExprNeed::Dataset : facts.binding==2 ? ReturnExprNeed::Owned : ReturnExprNeed::Value);}
+ if(c.phase==2){if(facts.owns!=0){return ReturnExprStep(c,ReturnExprNeed::OwnedIndex);}c.phase=3;return ReturnExprStep(c,ReturnExprNeed::Temporary);}
+ if(c.phase==3){if(facts.temporary!=0){return ReturnExprStep(c,ReturnExprNeed::OwnedIndex);}c.phase=4;return ReturnExprStep(c,ReturnExprNeed::ExpressionType);}
+ if(c.phase==4){if(facts.owns!=0){c.phase=8;return ReturnExprStep(c,ReturnExprNeed::Place);}return ReturnExprStep(c,ReturnExprNeed::Value);}
+ if(c.phase==5){c.phase=6;return ReturnExprStep(c,ReturnExprNeed::Storage);}
+ if(c.phase==6){if(facts.task!=0){return ReturnExprStep(c,ReturnExprNeed::BadTask);}return ReturnExprStep(c,facts.owns!=0 ? ReturnExprNeed::OwnedRecord : ReturnExprNeed::Record);}
+ return ReturnExprStep(c,facts.present!=0 ? ReturnExprNeed::Take : ReturnExprNeed::Complete);
+}
+extern "C" MemberStep member_step(LocalCursor cursor,MemberFacts facts) on cpu {
+ LocalCursor c=cursor;
+ if(c.phase==0){c.phase=1;return MemberStep(c,MemberNeed::Type);}
+ if(c.phase==1){if(facts.owns!=0){c.phase=2;return MemberStep(c,MemberNeed::Place);}c.phase=3;return MemberStep(c,MemberNeed::Projection);}
+ if(c.phase==2){return MemberStep(c,facts.present!=0 ? MemberNeed::Take : MemberNeed::Complete);}
+ if(c.phase==3){if(facts.present!=0){return MemberStep(c,MemberNeed::Projected);}c.phase=4;return MemberStep(c,MemberNeed::Reference);}
+ if(c.phase==4){if(facts.present!=0){return MemberStep(c,local_spelling(facts.name.data,facts.name.length,"length") ? MemberNeed::ReferenceLength : MemberNeed::BadField);}c.phase=5;return MemberStep(c,MemberNeed::Variants);}
+ if(c.phase==5){if(facts.variants!=0){return MemberStep(c,MemberNeed::BadVariant);}c.phase=6;return MemberStep(c,MemberNeed::Temporary);}
+ if(c.phase==6){if(facts.temporary!=0){c.phase=10;return MemberStep(c,MemberNeed::Evaluate);}c.phase=7;return MemberStep(c,MemberNeed::IsPlace);}
+ if(c.phase==7){if(facts.place!=0){return MemberStep(c,MemberNeed::Member);}c.phase=8;return MemberStep(c,MemberNeed::Resource);}
+ if(c.phase==8){if(facts.resource!=0){return MemberStep(c,MemberNeed::Member);}c.phase=9;return MemberStep(c,MemberNeed::Named);}
+ if(c.phase==9){if(facts.named!=0){return MemberStep(c,MemberNeed::Member);}c.phase=10;return MemberStep(c,MemberNeed::Evaluate);}
+ if(c.phase==10){if(facts.continuing==0){return MemberStep(c,MemberNeed::Complete);}if(facts.kind==3){c.phase=11;return MemberStep(c,MemberNeed::Find);}if(facts.kind==2){if(!local_spelling(facts.name.data,facts.name.length,"length")){return MemberStep(c,MemberNeed::BadField);}c.phase=18;return MemberStep(c,MemberNeed::Length);}if(facts.kind==1){return MemberStep(c,MemberNeed::Value);}return MemberStep(c,MemberNeed::Missing);}
+ if(c.phase==11){if(facts.found==0){return MemberStep(c,MemberNeed::MissingField);}c.phase=12;return MemberStep(c,MemberNeed::Unpack);}
+ if(c.phase==12){c.phase=13;return MemberStep(c,MemberNeed::FieldType);}
+ if(c.phase==13){if(facts.field_owns!=0){c.phase=14;return MemberStep(c,MemberNeed::ItemKind);}c.phase=16;return MemberStep(c,MemberNeed::Retained);}
+ if(c.phase==14){c.phase=15;return MemberStep(c,facts.item_kind==2 ? MemberNeed::MoveData : MemberNeed::MoveOwner);}
+ if(c.phase==15){c.phase=16;return MemberStep(c,MemberNeed::Retained);}
+ if(c.phase==16){c.phase=17;return MemberStep(c,facts.empty!=0 ? MemberNeed::DropOwner : MemberNeed::HoldOwner);}
+ if(c.phase==18){c.phase=17;return MemberStep(c,MemberNeed::DropData);}
+ return MemberStep(c,MemberNeed::Return);
+}
+extern "C" OwnedIndexStep owned_index_step(LocalCursor cursor,OwnedIndexFacts facts) on cpu {
+ LocalCursor c=cursor;
+ if(c.phase==0){c.phase=1;return OwnedIndexStep(c,OwnedIndexNeed::ExistingType);}
+ if(c.phase==1){if(facts.defined!=0){c.phase=2;return OwnedIndexStep(c,OwnedIndexNeed::Place);}c.phase=3;return OwnedIndexStep(c,OwnedIndexNeed::Evaluate);}
+ if(c.phase==2){return OwnedIndexStep(c,facts.present!=0 ? OwnedIndexNeed::TakePlace : OwnedIndexNeed::Complete);}
+ if(c.phase==3){if(facts.continuing==0){return OwnedIndexStep(c,OwnedIndexNeed::Complete);}c.phase=4;return OwnedIndexStep(c,OwnedIndexNeed::Inspect);}
+ if(c.phase==4){if(facts.kind==3&&facts.array!=0){c.phase=6;return OwnedIndexStep(c,OwnedIndexNeed::HoldOwner);}if(facts.kind==2){c.phase=11;return OwnedIndexStep(c,OwnedIndexNeed::HoldData);}if(facts.kind==1){if(facts.indexed!=0){return OwnedIndexStep(c,OwnedIndexNeed::ArrayValue);}c.phase=18;return OwnedIndexStep(c,OwnedIndexNeed::ViewPlace);}return OwnedIndexStep(c,OwnedIndexNeed::BadArray);}
+ if(c.phase==6){c.phase=7;return OwnedIndexStep(c,OwnedIndexNeed::Index);}
+ if(c.phase==7){if(facts.present==0){return OwnedIndexStep(c,OwnedIndexNeed::Complete);}c.phase=8;return OwnedIndexStep(c,OwnedIndexNeed::ArrayPlace);}
+ if(c.phase==8){c.phase=9;return OwnedIndexStep(c,OwnedIndexNeed::TakeElement);}
+ if(c.phase==9){c.phase=10;return OwnedIndexStep(c,OwnedIndexNeed::Release);}
+ if(c.phase==11){c.phase=12;return OwnedIndexStep(c,OwnedIndexNeed::DataIndex);}
+ if(c.phase==12){if(facts.present==0){return OwnedIndexStep(c,OwnedIndexNeed::Complete);}c.phase=13;return OwnedIndexStep(c,OwnedIndexNeed::DataType);}
+ if(c.phase==13){c.phase=14;return OwnedIndexStep(c,facts.owns!=0 ? OwnedIndexNeed::TakeData : OwnedIndexNeed::ReadData);}
+ if(c.phase==14){c.phase=15;return OwnedIndexStep(c,OwnedIndexNeed::Storage);}
+ if(c.phase==15){if(facts.empty!=0){c.phase=10;return OwnedIndexStep(c,OwnedIndexNeed::Release);}return OwnedIndexStep(c,OwnedIndexNeed::Return);}
+ if(c.phase==18){return OwnedIndexStep(c,facts.present!=0 ? OwnedIndexNeed::ReadView : OwnedIndexNeed::Complete);}
+ return OwnedIndexStep(c,OwnedIndexNeed::Return);
+}
