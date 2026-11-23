@@ -64,40 +64,7 @@ impl Stage {
     }
     #[cfg(feature = "compiler")]
     pub(crate) fn tile_phases(&self) -> Vec<TilePhase<'_>> {
-        let mut phases = Vec::new();
-        let mut begin = 0;
-        for (i, inst) in self.code.iter().enumerate() {
-            let step = matches!(&inst.kind,
-                InstKind::TilePublish(_) | InstKind::TileCollective(_) | InstKind::TileBarrier).then_some(inst);
-            if step.is_some() {
-                phases.push(TilePhase {
-                    code: &self.code[begin..i],
-                    step,
-                    live_in: BTreeSet::new(),
-                    saved: BTreeSet::new(),
-                });
-                begin = i + 1;
-            }
-        }
-        if phases.is_empty() {
-            return phases;
-        }
-        phases.push(TilePhase {
-            code: &self.code[begin..],
-            step: None,
-            live_in: BTreeSet::new(),
-            saved: BTreeSet::new(),
-        });
-        let empty = BTreeSet::new();
-        let mut live = BTreeSet::new();
-        for phase in phases.iter_mut().rev() {
-            if let Some(inst) = phase.step {
-                private_live::phase_step(inst, &mut live, &mut phase.saved);
-            }
-            live = live_before(phase.code, live, &empty, &empty, &empty);
-            phase.live_in = live.clone();
-        }
-        phases
+        private_live::tile_phases(&self.code)
     }
     #[cfg(feature = "compiler")]
     pub(crate) fn private_scalar(&self, slot: PrivateSlot) -> Scalar {

@@ -1606,13 +1606,17 @@ extern "C" u32 float_preserve(Node source,u32 requested,RegisterHost host) on cp
  return requested^facts.remaining_floats;
 }
 
+bool tile_phase_step(u32 tag) on cpu {
+ return tag==OP_TILE_PUBLISH || tag==OP_TILE_COLLECTIVE || tag==OP_TILE_BARRIER;
+}
+
 extern "C" u32 has_tile_scope(Span code,u32 has_tiles,Host host) on cpu
  requires nonzero(host.inspect) {
  usize index=0u64;
  while(index<code.count) {
   View value=host.inspect(node_at(code,index,N_INSTRUCTION));
-  if(value.tag==OP_TILE_LENGTH || value.tag==OP_TILE_LANE || value.tag==OP_TILE_PUBLISH
-      || value.tag==OP_TILE_BARRIER || value.tag==OP_TILE_COLLECTIVE || value.tag==OP_TILE_LOAD
+  if(value.tag==OP_TILE_LENGTH || value.tag==OP_TILE_LANE || value.tag==OP_TILE_LOAD
+      || tile_phase_step(value.tag)
       || (has_tiles!=0 && (value.tag==OP_SUBGROUP || value.tag==OP_APPEND))){return 1;}
   if(value.tag==OP_ATOMIC || value.tag==OP_LOAD_INDEXED) {
    View source=host.inspect(value.left);
@@ -1713,7 +1717,7 @@ void storage_visit(Span code,Span tiles,StorageHost host,i64 first_phase,bool ro
    if(value.tag==OP_TILE_PUBLISH) {
     output.emit(output.context,StorageEvent::Birth,value.a,0,phase);
    }
-   if(value.tag==OP_TILE_PUBLISH || value.tag==OP_TILE_COLLECTIVE || value.tag==OP_TILE_BARRIER) {
+   if(tile_phase_step(value.tag)) {
     phase+=i64(1);
    }
   }

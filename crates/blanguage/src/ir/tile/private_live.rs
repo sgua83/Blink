@@ -1,5 +1,6 @@
 //! B propagates liveness; the original IR and sets keep their native ownership.
-use super::{BTreeSet, Inst, PrivateSlot, Reg};
+use super::{BTreeSet, Inst, PrivateSlot, Reg, TilePhase};
+use std::{ffi::c_void, mem, ptr};
 use crate::ir::dataflow::{self, Span};
 type Slots = BTreeSet<PrivateSlot>;
 
@@ -22,8 +23,9 @@ unsafe extern "C" {
     fn native_loop(condition: Span, test: Reg, body: Span, after: *const Slots,
         break_live: *const Slots, continue_live: *const Slots, exit_live: *const Slots,
         result: *mut Slots, empty: *const Slots, host: Host);
-    #[link_name = "bootstrap.stage_fusion::private_phase_step"]
-    fn native_phase_step(inst: *const Inst, live: *mut Slots, saved: *mut Slots, host: Host);
+    #[link_name = "bootstrap.stage_fusion::private_tile_phases"]
+    fn native_tile_phases(code: Span, live: *mut Slots, saved: *mut Slots, empty: *const Slots,
+        host: Host, context: *mut c_void, emit: PhaseOutput);
 }
 
 unsafe extern "C" fn insert_register(live: *mut Slots, reg: Reg) -> u32 {
@@ -47,8 +49,36 @@ unsafe extern "C" fn change(action: Action, output: *mut Slots, input: *const Sl
 }
 pub(crate) const HOST: Host = Host { ir: dataflow::HOST, insert_register, clone_set, drop_set, change };
 
-pub(super) fn phase_step(inst: &Inst, live: &mut Slots, saved: &mut Slots) {
-    unsafe { native_phase_step(inst, live, saved, HOST) };
+type PhaseOutput = unsafe extern "C" fn(*mut c_void, usize, usize, *const Slots, *mut Slots);
+
+struct Phases<'a> {
+    code: &'a [Inst],
+    phases: Vec<TilePhase<'a>>,
+}
+
+unsafe extern "C" fn append_phase(
+    context: *mut c_void, begin: usize, end: usize, live: *const Slots, saved: *mut Slots,
+) {
+    let output = unsafe { &mut *context.cast::<Phases<'_>>() };
+    output.phases.push(TilePhase {
+        code: &output.code[begin..end],
+        step: output.code.get(end),
+        live_in: unsafe { &*live }.clone(),
+        saved: mem::take(unsafe { &mut *saved }),
+    });
+}
+
+pub(super) fn tile_phases(code: &[Inst]) -> Vec<TilePhase<'_>> {
+    let mut output = Phases { code, phases: Vec::new() };
+    let empty = Slots::new();
+    let mut live = Slots::new();
+    let mut saved = Slots::new();
+    unsafe {
+        native_tile_phases(Span::slice(code), &mut live, &mut saved, &empty, HOST,
+            ptr::from_mut(&mut output).cast(), append_phase);
+    }
+    output.phases.reverse();
+    output.phases
 }
 
 pub(super) fn before(code: &[Inst], mut live: Slots, break_live: &Slots,

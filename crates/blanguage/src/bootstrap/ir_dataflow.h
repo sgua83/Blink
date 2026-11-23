@@ -442,6 +442,7 @@ extern "C" u32 float_preserve(Node source,u32 requested,RegisterHost host) on cp
  requires nonzero(host.ir.inspect) requires nonzero(host.scalar);
 
 // Query only the tile usage facts consumed by the original Stage caller.
+bool tile_phase_step(u32 tag) on cpu;
 extern "C" u32 has_tile_scope(Span code,u32 has_tiles,Host host) on cpu
  requires nonzero(host.inspect);
 extern "C" void private_spans(Span code,Host host,address context,

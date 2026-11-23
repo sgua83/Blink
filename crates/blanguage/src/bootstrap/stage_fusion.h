@@ -72,9 +72,12 @@ extern "C" void private_loop(Span condition, u64 test, Span body,
     address result, address empty, LiveHost host) on cpu
     requires nonzero(host.ir.inspect) requires nonzero(host.insert_register)
     requires nonzero(host.clone_set) requires nonzero(host.drop_set) requires nonzero(host.change);
-// The step's own results are produced after saving, before the next restore.
-extern "C" void private_phase_step(address instruction,address live,address saved,LiveHost host) on cpu
-    requires nonzero(host.ir.inspect) requires nonzero(host.insert_register) requires nonzero(host.change);
+// Emit borrowed code ranges and the original slot sets from the last phase to the first.
+extern "C" void private_tile_phases(Span code, address live, address saved, address empty,
+    LiveHost host, address context, cfn<void,address,u64,u64,address,address> emit) on cpu
+    requires nonzero(host.ir.inspect) requires nonzero(host.insert_register)
+    requires nonzero(host.clone_set) requires nonzero(host.drop_set) requires nonzero(host.change)
+    requires nonzero(emit);
 
 enum DceRemovalKind:u32 { Values=0; Division=1; DirectWrite=2; IndexedWrite=3; };
 enum DceDivisionChoice:u32 { Quotient=1; Remainder=2; Both=3; };

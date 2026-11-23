@@ -190,14 +190,6 @@ void private_reads(View value,address live,LiveHost host) on cpu
     }
 }
 
-extern "C" void private_phase_step(address instruction,address live,address saved,LiveHost host) on cpu
-    requires nonzero(host.ir.inspect) requires nonzero(host.insert_register) requires nonzero(host.change) {
-    View value=host.ir.inspect(Node(instruction,N_INSTRUCTION));
-    private_kill(value,live,host);
-    host.change(LiveSetAction::Copy,saved,live,0u64);
-    private_reads(value,live,host);
-}
-
 extern "C" void private_loop(Span condition,u64 test,Span body,
     address after,address break_live,address continue_live,address exit_live,
     address result,address empty,LiveHost host) on cpu
@@ -259,6 +251,37 @@ extern "C" void private_before(Span code,address live,address break_live,
         address instruction=span_item_at(code,index);
         View value=host.ir.inspect(Node(instruction,N_INSTRUCTION));
         private_instruction(value,live,break_live,continue_live,exit_live,empty,host);
+    }
+}
+
+extern "C" void private_tile_phases(Span code, address live, address saved, address empty,
+    LiveHost host, address context, cfn<void,address,u64,u64,address,address> emit) on cpu
+    requires nonzero(host.ir.inspect) requires nonzero(host.insert_register)
+    requires nonzero(host.clone_set) requires nonzero(host.drop_set) requires nonzero(host.change)
+    requires nonzero(emit) {
+    u64 index = code.count;
+    u64 end = code.count;
+    while (index != 0u64) {
+        index -= 1u64;
+        View value = host.ir.inspect(Node(span_item_at(code,index),N_INSTRUCTION));
+        if (tile_phase_step(value.tag)) {
+            u64 begin = index + 1u64;
+            if (end == code.count) {
+                Span tail = Span(span_item_at(code,begin), code.count - begin, code.stride);
+                private_before(tail,live,empty,empty,empty,empty,host);
+            }
+            emit(context,begin,end,live,saved);
+            // The step produces its own results after saving the other live slots.
+            private_kill(value,live,host);
+            host.change(LiveSetAction::Copy,saved,live,0u64);
+            private_reads(value,live,host);
+            end = index;
+        } else if (end != code.count) {
+            private_instruction(value,live,empty,empty,empty,empty,host);
+        }
+    }
+    if (end != code.count) {
+        emit(context,0u64,end,live,saved);
     }
 }
 
