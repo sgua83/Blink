@@ -635,7 +635,7 @@ impl Device {
         })?;
         for data in [&mut vertices, &mut triangles] {
             if data.count != 0 {
-                data.last_use = Some(result.0.built.clone());
+                data.last_use = Some(DatasetUse::Binding(result.0.built.clone()));
             }
         }
         Ok(result)
@@ -851,7 +851,7 @@ impl Device {
             models: collect_models(models),
         });
         if let Some((commands, staging)) = transfer {
-            target.last_use = Some(self.submit_dataset_transfer(commands, staging, false)?);
+            target.last_use = Some(DatasetUse::Binding(self.submit_dataset_transfer(commands, staging, false)?));
         }
         Ok(target)
     }
@@ -914,7 +914,7 @@ impl Device {
             }
             Ok((geometry, data.producer, input.models.clone()))
         })?;
-        data.last_use = Some(structure.built.clone());
+        data.last_use = Some(DatasetUse::Binding(structure.built.clone()));
         drop(data);
         Ok(Acceleration(Rc::new(structure)))
     }

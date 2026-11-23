@@ -318,14 +318,22 @@ impl TextureInput {
 impl Commands {
     pub(super) fn copy_dataset_to_image(
         &self, source: &GpuDataset, image: u64, mip: u32, size: [u32; 2],
-        first_pixel: u64, row_stride: u32,
+        first_pixel: u64, row_stride: u32, source_pages: &mut Vec<Rc<Allocation>>,
     ) {
         let page_records = u64::from(source.page_records());
         let mut row = 0;
         let mut column = 0;
+        let mut previous_page = None;
         while row < size[1] {
             let pixel = first_pixel + u64::from(row) * u64::from(row_stride) + u64::from(column);
             let page = (pixel / page_records) as usize;
+            let buffer = &source.pages[page];
+            if previous_page != Some(page) {
+                if !source_pages.iter().any(|retained| Rc::ptr_eq(retained, buffer)) {
+                    source_pages.push(buffer.clone());
+                }
+                previous_page = Some(page);
+            }
             let offset = pixel % page_records;
             let available = page_records.min(u64::from(source.count) - page as u64 * page_records) - offset;
             let (width, rows) = if column == 0 && available >= u64::from(size[0]) {
@@ -344,7 +352,7 @@ impl Commands {
             };
             unsafe {
                 (self.inner.functions.vkCmdCopyBufferToImage)(
-                    self.command, source.pages[page].buffer, image, 7, 1, &copy,
+                    self.command, buffer.buffer, image, 7, 1, &copy,
                 );
             }
             column += width;
@@ -409,12 +417,12 @@ impl Device {
         let dependencies = dependencies.prepare()?;
         let texture = self.create_image::<2>([dimensions[0], dimensions[1], 1],
             [address[0], address[1], crate::TextureAddress::Clamp], format, levels.len() as u32)?;
-        let texture = self.write_image(texture, None, dependencies, |commands, texture| {
+        let texture = self.write_image(texture, None, dependencies, |commands, texture, source_pages| {
             commands.barrier(source_stage, 0x1000, source_access, 0x800);
             let mut size = dimensions;
             for (mip, level) in levels.iter().enumerate() {
                 commands.copy_dataset_to_image(
-                    &sources[level.source], texture.image, mip as u32, size, level.offset, level.row_stride,
+                    &sources[level.source], texture.image, mip as u32, size, level.offset, level.row_stride, source_pages,
                 );
                 size = size.map(|n| (n / 2).max(1));
             }
@@ -422,7 +430,7 @@ impl Device {
             commands.barrier(0x1000, 0x1800, 0x800, 0x1040);
         })?;
         for index in used_sources {
-            sources[index].last_use = Some(texture.produced().clone());
+            sources[index].used_by_image_copy(texture.produced().clone());
         }
         Ok(texture)
     }
@@ -441,7 +449,7 @@ impl Device {
             }
         }
         let buffer = staging.buffer;
-        self.write_image(texture, Some(staging), Dependencies::Empty, |commands, texture| {
+        self.write_image(texture, Some(staging), Dependencies::Empty, |commands, texture, _| {
             unsafe {
                 (self.inner.functions.vkCmdCopyBufferToImage)(
                     commands.command, buffer, texture.image, 7, copies.len() as u32, copies.as_ptr(),
@@ -559,7 +567,7 @@ impl Device {
         }
     }
     fn write_image<const D: usize>(&self, sampled: SampledImage, staging: Option<Allocation>,
-        dependencies: Dependencies, record: impl FnOnce(&Commands, &Storage)) -> Result<Texture<D>> {
+        dependencies: Dependencies, record: impl FnOnce(&Commands, &Storage, &mut Vec<Rc<Allocation>>)) -> Result<Texture<D>> {
         let f = &self.inner.functions;
         let commands = Commands::new(self.inner.clone())?;
         let texture = &sampled.storage;
@@ -590,7 +598,8 @@ impl Device {
                 (&barrier as *const ImageBarrier).cast(),
             );
         }
-        record(&commands, texture);
+        let mut source_pages = Vec::new();
+        record(&commands, texture, &mut source_pages);
         unsafe {
             let barrier = ImageBarrier {
                 kind: 45,
@@ -618,7 +627,7 @@ impl Device {
             );
         }
         let produced = Execution::submit(
-            ExecutionResources::ImageCopy { commands, _staging: staging, discarded: None },
+            ExecutionResources::ImageCopy { commands, _staging: staging, _source_pages: source_pages, discarded: None },
             dependencies,
         )?;
         Ok(Texture(Rc::new(Image { sampled: ManuallyDrop::new(sampled), produced })))

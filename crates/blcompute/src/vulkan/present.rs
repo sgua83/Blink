@@ -431,7 +431,7 @@ impl Swapchain {
         let Poll::Ready(copy) = self.submit_copy(display, 0)? else {
             return Ok(Poll::Pending);
         };
-        display.last_use = Some(copy.execution.clone());
+        display.used_by_image_copy(copy.execution.clone());
         let status = self.queue_present(copy.index, copy.acquired)?;
         self.acquisition = Acquisition::CopyPending(copy.execution);
         Ok(Poll::Ready(status))
@@ -523,8 +523,9 @@ impl Swapchain {
                 1,
                 (&barrier as *const ImageBarrier).cast(),
             );
+            let mut source_pages = Vec::new();
             commands.copy_dataset_to_image(
-                display, image, 0, [self.extent.width, self.extent.height], 0, self.extent.width,
+                display, image, 0, [self.extent.width, self.extent.height], 0, self.extent.width, &mut source_pages,
             );
             let barrier = ImageBarrier {
                 kind: 45,
@@ -552,7 +553,7 @@ impl Swapchain {
             );
             let signal = self.rendered[index as usize];
             let execution = Execution::submit_with(
-                ExecutionResources::Present { commands },
+                ExecutionResources::Present { commands, _source_pages: source_pages },
                 previous.cloned().map_or(Dependencies::Empty, Dependencies::Single),
                 &[self.acquired],
                 &[0x1000],

@@ -1068,7 +1068,7 @@ impl Device {
                     );
                 }
             }
-            target.last_use = Some(self.submit_dataset_transfer(commands, Vec::new(), false)?);
+            target.last_use = Some(DatasetUse::Binding(self.submit_dataset_transfer(commands, Vec::new(), false)?));
         }
         Ok(target)
     }
@@ -1206,7 +1206,21 @@ pub struct GpuDatasetUse {
 }
 pub struct GpuDataset {
     storage: ManuallyDrop<DatasetStorage>,
-    last_use: Option<Rc<Execution>>,
+    last_use: Option<DatasetUse>,
+}
+enum DatasetUse {
+    Binding(Rc<Execution>),
+    ImageCopy {
+        execution: Rc<Execution>,
+        binding: std::rc::Weak<Execution>,
+    },
+}
+impl DatasetUse {
+    fn execution(&self) -> &Rc<Execution> {
+        match self {
+            Self::Binding(execution) | Self::ImageCopy { execution, .. } => execution,
+        }
+    }
 }
 enum DatasetStorage {
     Owned(GpuStorage),
@@ -1221,7 +1235,7 @@ struct HostDatasetLayout {
 pub struct GpuStorage {
     // allocation 持有16字节绑定头及原页数组；数据页随唯一存储转移。
     allocation: Allocation,
-    pages: Vec<Allocation>,
+    pages: Vec<Rc<Allocation>>,
     ty: Ty,
     stride: u32,
     count: u32,
@@ -1255,7 +1269,7 @@ impl Drop for GpuDataset {
         let storage = unsafe { ManuallyDrop::take(&mut self.storage) };
         let (layout, resources) = storage.into_retirement();
         drop(layout);
-        resources.retire(self.last_use.as_deref());
+        resources.retire(self.last_use.as_ref());
     }
 }
 #[derive(Clone)]
@@ -1332,7 +1346,7 @@ impl GpuDataset {
         let execution = owner.last_use.take();
         let storage = unsafe { ManuallyDrop::take(&mut owner.storage) };
         let (layout, resources) = storage.into_retirement();
-        resources.retire(execution.as_deref());
+        resources.retire(execution.as_ref());
         layout.expect("the readback consumed an owned dataset")
     }
     pub(crate) fn storage_address(&self) -> u64 {
@@ -1400,10 +1414,19 @@ impl GpuDataset {
         ReadDataset(Rc::new(self))
     }
     fn dependency(&self) -> Option<&Rc<Execution>> {
-        self.last_use.as_ref().or_else(|| match &*self.storage {
+        self.last_use.as_ref().map(DatasetUse::execution).or_else(|| match &*self.storage {
             DatasetStorage::Owned(_) => None,
             DatasetStorage::Read(source) => source.0.dependency(),
         })
+    }
+    fn used_by_image_copy(&mut self, execution: Rc<Execution>) {
+        // The copy retains its actual pages. A pending earlier binding still owns its other resources.
+        let binding = match &self.last_use {
+            Some(DatasetUse::Binding(previous)) => Rc::downgrade(previous),
+            Some(DatasetUse::ImageCopy { binding, .. }) => binding.clone(),
+            None => std::rc::Weak::new(),
+        };
+        self.last_use = Some(DatasetUse::ImageCopy { execution, binding });
     }
     fn owned_storage(&mut self) -> Result<&mut GpuStorage> {
         match &mut *self.storage {
@@ -1417,7 +1440,7 @@ impl GpuDataset {
     /// 各实际buffer的Vulkan需求大小之和，不是共享VkDeviceMemory块的去重总额。
     pub fn allocated_bytes(&self) -> u64 {
         self.allocation.range_bytes()
-            + self.pages.iter().map(Allocation::range_bytes).sum::<u64>()
+            + self.pages.iter().map(|page| page.range_bytes()).sum::<u64>()
             + self
                 .instances
                 .as_ref()
@@ -1443,8 +1466,8 @@ impl GpuDataset {
         extra_usage: u32,
         alignment: u64,
     ) -> Result<Self> {
-        let PagedBuffer { table: allocation, pages } =
-            PagedBuffer::new(inner, stride, count, extra_usage, alignment.max(u64::from(ty.align)))?;
+        let (allocation, pages) =
+            PagedBuffer::allocate(inner, stride, count, extra_usage, alignment.max(u64::from(ty.align)))?;
         Ok(Self {
             storage: ManuallyDrop::new(DatasetStorage::Owned(GpuStorage {
                 allocation,
@@ -1486,6 +1509,16 @@ impl PagedBuffer {
         extra_usage: u32,
         alignment: u64,
     ) -> Result<Self> {
+        let (table, pages) = Self::allocate(inner, stride, count, extra_usage, alignment)?;
+        Ok(Self { table, pages })
+    }
+    fn allocate<Page: From<Allocation> + std::borrow::Borrow<Allocation>>(
+        inner: Rc<Inner>,
+        stride: u32,
+        count: u32,
+        extra_usage: u32,
+        alignment: u64,
+    ) -> Result<(Allocation, Vec<Page>)> {
         let mut pages = Vec::new();
         let mut remaining = u64::from(count) * u64::from(stride);
         while remaining > 0 {
@@ -1500,13 +1533,13 @@ impl PagedBuffer {
                 0x20023 | extra_usage,
                 1,
                 alignment,
-            )?);
+            )?.into());
             remaining -= bytes;
         }
         let table = Self::table(inner, &pages, stride)?;
-        Ok(Self { table, pages })
+        Ok((table, pages))
     }
-    fn table(inner: Rc<Inner>, pages: &[Allocation], stride: u32) -> Result<Allocation> {
+    fn table(inner: Rc<Inner>, pages: &[impl std::borrow::Borrow<Allocation>], stride: u32) -> Result<Allocation> {
         let header = u64::from(blanguage::spirv::BINDING_BYTES);
         let table = Allocation::new(inner, header + pages.len() as u64 * 8, 0x20020, 6, 8)?;
         let address = table.address() + header;
@@ -1516,7 +1549,7 @@ impl PagedBuffer {
             mapped.cast::<[u32; 4]>().write(binding_header(address, stride, 0));
             let entries = mapped.add(header as usize).cast::<[u32; 2]>();
             for (index, page) in pages.iter().enumerate() {
-                let address = page.address();
+                let address = page.borrow().address();
                 entries.add(index).write([address as u32, (address >> 32) as u32]);
             }
         }
@@ -3200,7 +3233,7 @@ impl GpuProgram {
                 if let DatasetStorage::Owned(storage) = &mut *dataset.storage {
                     storage.producer = access.producer;
                 }
-                dataset.last_use = Some(execution.clone());
+                dataset.last_use = Some(DatasetUse::Binding(execution.clone()));
             }
         }
         Ok(GpuCompletion { execution, queries })

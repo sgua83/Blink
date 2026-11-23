@@ -31,7 +31,7 @@ impl Device {
             &mut commands,
             &mut staging,
         )?;
-        target.last_use = Some(self.submit_dataset_transfer(commands, staging, false)?);
+        target.last_use = Some(DatasetUse::Binding(self.submit_dataset_transfer(commands, staging, false)?));
         Ok(())
     }
     fn stage_payload(
@@ -227,7 +227,7 @@ impl StagedDataset {
             bindings: self.views.bindings,
         };
         if !self.data.pages.is_empty() {
-            self.data.last_use = execution.cloned();
+            self.data.last_use = execution.cloned().map(DatasetUse::Binding);
         }
         self.data
     }

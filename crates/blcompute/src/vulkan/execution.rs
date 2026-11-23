@@ -24,7 +24,7 @@ impl GpuCompletion {
     pub(crate) fn wait_bound<'a>(&self, datasets: impl Iterator<Item = &'a mut GpuDataset>) -> Result<Option<GpuTimings>> {
         let timings = self.wait_timings()?;
         for dataset in datasets {
-            if dataset.last_use.as_ref().is_some_and(|point| Rc::ptr_eq(point, &self.execution)) {
+            if dataset.last_use.as_ref().is_some_and(|used| Rc::ptr_eq(used.execution(), &self.execution)) {
                 dataset.last_use = None;
             }
         }
@@ -269,10 +269,11 @@ pub(super) enum ExecutionResources {
         _staging: Vec<Allocation>,
         covers_view_sources: bool,
     },
-    Present { commands: Commands },
+    Present { commands: Commands, _source_pages: Vec<Rc<Allocation>> },
     ImageCopy {
         commands: Commands,
         _staging: Option<Allocation>,
+        _source_pages: Vec<Rc<Allocation>>,
         discarded: Option<texture::Storage>,
     },
     Acceleration {
@@ -288,7 +289,7 @@ impl ExecutionResources {
         match self {
             Self::Compute { commands, .. }
             | Self::DatasetTransfer { commands, .. }
-            | Self::Present { commands }
+            | Self::Present { commands, .. }
             | Self::ImageCopy { commands, .. }
             | Self::Acceleration { commands, .. } => commands,
         }
@@ -296,12 +297,12 @@ impl ExecutionResources {
 }
 pub(super) enum DiscardedDataset {
     TransferTargets {
-        _pages: Vec<Allocation>,
+        _pages: Vec<Rc<Allocation>>,
         _instance_pointers: Option<Allocation>,
     },
     Owned {
         _binding_table: Allocation,
-        _pages: Vec<Allocation>,
+        _pages: Vec<Rc<Allocation>>,
         _sources: Vec<ReadDataset>,
         _instances: Option<ray::InstanceInput>,
     },
@@ -326,8 +327,17 @@ impl DatasetStorage {
     }
 }
 impl DiscardedDataset {
-    pub(super) fn retire(self, execution: Option<&Execution>) {
-        let Some(execution) = execution else { return; };
+    pub(super) fn retire(self, last_use: Option<&DatasetUse>) {
+        let previous;
+        let execution = match last_use {
+            Some(DatasetUse::Binding(execution)) => execution,
+            Some(DatasetUse::ImageCopy { binding, .. }) => {
+                let Some(execution) = binding.upgrade() else { return; };
+                previous = execution;
+                &previous
+            }
+            None => return,
+        };
         if execution.point.terminal_result().is_some() {
             return;
         }
