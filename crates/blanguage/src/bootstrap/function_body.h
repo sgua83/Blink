@@ -204,8 +204,8 @@ struct ReturnExprFacts {u32 binding;u32 owns;u32 temporary;u32 present;u32 task;
 enum ReturnExprNeed:u32 {Target=0;Member=1;IndexType=2;Temporary=3;ExpressionType=4;OwnedIndex=5;Place=6;Take=7;BindType=8;Storage=9;BadTask=10;OwnedRecord=11;Record=12;Binding=13;Dataset=14;Owned=15;Selection=16;Value=17;Complete=18;};
 struct ReturnExprStep {LocalCursor cursor;ReturnExprNeed need;};
 extern "C" ReturnExprStep return_expr_step(LocalCursor cursor,SignatureNode source,ReturnExprFacts facts) on cpu;
-struct MemberFacts {SeekName name;u32 owns;u32 present;u32 variants;u32 temporary;u32 place;u32 resource;u32 named;u32 continuing;u32 kind;u32 found;u32 field_owns;u32 item_kind;u32 empty;};
-enum MemberNeed:u32 {Type=0;Place=1;Take=2;Projection=3;Projected=4;Reference=5;ReferenceLength=6;BadField=7;Variants=8;BadVariant=9;Temporary=10;IsPlace=11;Resource=12;Named=13;Member=14;Evaluate=15;Find=16;MissingField=17;Unpack=18;FieldType=19;ItemKind=20;MoveData=21;MoveOwner=22;Retained=23;DropOwner=24;HoldOwner=25;Length=26;DropData=27;Value=28;Missing=29;Return=30;Complete=31;};
+struct MemberFacts {SeekName name;u32 owns;u32 present;u32 variants;u32 temporary;u32 place;u32 resource;u32 binding;u32 continuing;u32 kind;u32 found;u32 field_owns;u32 item_kind;u32 empty;u32 array;u32 view;};
+enum MemberNeed:u32 {Type=0;Place=1;Take=2;Projection=3;Projected=4;Reference=5;ReferenceLength=6;BadField=7;Variants=8;BadVariant=9;Temporary=10;IsPlace=11;Resource=12;Binding=13;TextureShape=14;Evaluate=15;Find=16;MissingField=17;Unpack=18;FieldType=19;ItemKind=20;MoveData=21;MoveOwner=22;Retained=23;DropOwner=24;HoldOwner=25;Length=26;DropData=27;Value=28;Missing=29;Return=30;Complete=31;TextureLength=32;BadTexture=33;TileLength=34;TileLane=35;BadTile=36;DatasetLength=37;BasePlace=38;OrdinaryPlace=39;PlaceKind=40;ArrayLength=41;ReadView=42;BadView=43;ReadField=44;OrdinaryValue=45;OrdinaryMemberValue=46;};
 struct MemberStep {LocalCursor cursor;MemberNeed need;};
 extern "C" MemberStep member_step(LocalCursor cursor,MemberFacts facts) on cpu;
 struct OwnedIndexFacts {u32 defined;u32 present;u32 continuing;u32 kind;u32 array;u32 indexed;u32 owns;u32 empty;};
@@ -280,3 +280,6 @@ struct UnsafeViewFacts {u32 view;u32 present;};
 enum UnsafeViewNeed:u32 {BadView=0;Hold=1;Index=2;Release=3;Result=4;IndexType=5;Read=6;Empty=7;};
 struct UnsafeViewStep {LocalCursor cursor;UnsafeViewNeed need;};
 extern "C" UnsafeViewStep unsafe_view_step(LocalCursor cursor,UnsafeViewFacts facts) on cpu;
+
+enum MemberValueNeed:u32 {ArrayLength=0;ViewLength=1;Project=2;};
+extern "C" MemberValueNeed member_value_need(u32 array,u32 view,address bytes,usize length) on cpu;

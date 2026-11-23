@@ -696,9 +696,26 @@ extern "C" MemberStep member_step(LocalCursor cursor,MemberFacts facts) on cpu {
  if(c.phase==4){if(facts.present!=0){return MemberStep(c,local_spelling(facts.name.data,facts.name.length,"length") ? MemberNeed::ReferenceLength : MemberNeed::BadField);}c.phase=5;return MemberStep(c,MemberNeed::Variants);}
  if(c.phase==5){if(facts.variants!=0){return MemberStep(c,MemberNeed::BadVariant);}c.phase=6;return MemberStep(c,MemberNeed::Temporary);}
  if(c.phase==6){if(facts.temporary!=0){c.phase=10;return MemberStep(c,MemberNeed::Evaluate);}c.phase=7;return MemberStep(c,MemberNeed::IsPlace);}
- if(c.phase==7){if(facts.place!=0){return MemberStep(c,MemberNeed::Member);}c.phase=8;return MemberStep(c,MemberNeed::Resource);}
- if(c.phase==8){if(facts.resource!=0){return MemberStep(c,MemberNeed::Member);}c.phase=9;return MemberStep(c,MemberNeed::Named);}
- if(c.phase==9){if(facts.named!=0){return MemberStep(c,MemberNeed::Member);}c.phase=10;return MemberStep(c,MemberNeed::Evaluate);}
+ if(c.phase==7){if(facts.place!=0){c.phase=20;return MemberStep(c,MemberNeed::Binding);}c.phase=8;return MemberStep(c,MemberNeed::Resource);}
+ if(c.phase==8){if(facts.resource!=0){c.phase=20;return MemberStep(c,MemberNeed::Binding);}c.phase=9;return MemberStep(c,MemberNeed::Binding);}
+ if(c.phase==9){if(facts.binding!=0){c.phase=21;}else{c.phase=10;return MemberStep(c,MemberNeed::Evaluate);}}
+ if(c.phase==20){c.phase=21;}
+ if(c.phase==21){
+  if(facts.binding==1){if(local_spelling(facts.name.data,facts.name.length,"length")){c.phase=22;return MemberStep(c,MemberNeed::TextureShape);}return MemberStep(c,MemberNeed::BadTexture);}
+  if(facts.binding==2){if(local_spelling(facts.name.data,facts.name.length,"length")){return MemberStep(c,MemberNeed::TileLength);}if(local_spelling(facts.name.data,facts.name.length,"lane")){return MemberStep(c,MemberNeed::TileLane);}return MemberStep(c,MemberNeed::BadTile);}
+  if(local_spelling(facts.name.data,facts.name.length,"length")){if(facts.resource!=0){return MemberStep(c,MemberNeed::DatasetLength);}c.phase=23;return MemberStep(c,MemberNeed::Resource);}
+  c.phase=24;return MemberStep(c,MemberNeed::BasePlace);
+ }
+ if(c.phase==22){return MemberStep(c,facts.present!=0 ? MemberNeed::TextureLength : MemberNeed::BadTexture);}
+ if(c.phase==23){if(facts.resource!=0){return MemberStep(c,MemberNeed::DatasetLength);}c.phase=24;return MemberStep(c,MemberNeed::BasePlace);}
+ if(c.phase==24){if(facts.present!=0){c.phase=25;return MemberStep(c,MemberNeed::OrdinaryPlace);}c.phase=28;return MemberStep(c,MemberNeed::OrdinaryValue);}
+ if(c.phase==25){if(facts.present==0){return MemberStep(c,MemberNeed::Complete);}c.phase=26;return MemberStep(c,MemberNeed::PlaceKind);}
+ if(c.phase==26){
+  if(facts.array!=0&&local_spelling(facts.name.data,facts.name.length,"length")){return MemberStep(c,MemberNeed::ArrayLength);}
+  if(facts.view!=0){return MemberStep(c,local_spelling(facts.name.data,facts.name.length,"length") ? MemberNeed::ReadView : MemberNeed::BadView);}
+  return MemberStep(c,MemberNeed::ReadField);
+ }
+ if(c.phase==28){return MemberStep(c,facts.present!=0 ? MemberNeed::OrdinaryMemberValue : MemberNeed::Complete);}
  if(c.phase==10){if(facts.continuing==0){return MemberStep(c,MemberNeed::Complete);}if(facts.kind==3){c.phase=11;return MemberStep(c,MemberNeed::Find);}if(facts.kind==2){if(!local_spelling(facts.name.data,facts.name.length,"length")){return MemberStep(c,MemberNeed::BadField);}c.phase=18;return MemberStep(c,MemberNeed::Length);}if(facts.kind==1){return MemberStep(c,MemberNeed::Value);}return MemberStep(c,MemberNeed::Missing);}
  if(c.phase==11){if(facts.found==0){return MemberStep(c,MemberNeed::MissingField);}c.phase=12;return MemberStep(c,MemberNeed::Unpack);}
  if(c.phase==12){c.phase=13;return MemberStep(c,MemberNeed::FieldType);}
@@ -1086,4 +1103,12 @@ extern "C" UnsafeViewStep unsafe_view_step(LocalCursor cursor,UnsafeViewFacts fa
  if(c.phase==3){c.phase=4;return UnsafeViewStep(c,UnsafeViewNeed::Result);}
  if(c.phase==4){if(facts.present==0){return UnsafeViewStep(c,UnsafeViewNeed::Empty);}c.phase=5;return UnsafeViewStep(c,UnsafeViewNeed::IndexType);}
  return UnsafeViewStep(c,UnsafeViewNeed::Read);
+}
+
+extern "C" MemberValueNeed member_value_need(u32 array,u32 view,address bytes,usize length) on cpu {
+ if(local_spelling(bytes,length,"length")){
+  if(array!=0){return MemberValueNeed::ArrayLength;}
+  if(view!=0){return MemberValueNeed::ViewLength;}
+ }
+ return MemberValueNeed::Project;
 }

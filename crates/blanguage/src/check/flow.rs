@@ -1243,7 +1243,7 @@ impl Builder<'_> {
     },
     ForInputNeed::Application=>{let data=application.as_ref().unwrap();self.application_cpu(data,start.span())?;limit=Some(data.length.clone());},
     ForInputNeed::Dataset=>{let v=dataset.take().unwrap();limit=Some(self.data_length(&v));data=Some(CursorSource::Data(v));},
-    ForInputNeed::Tile=>{let v=tile.take().unwrap();limit=Some(self.tile_length(&v));data=Some(CursorSource::Tile(v));},
+    ForInputNeed::Tile=>{let v=tile.take().unwrap();limit=Some(self.tile_length(v.length.clone()));data=Some(CursorSource::Tile(v));},
     ForInputNeed::ViewExpression=>{value=unsafe {self.world.call(self.expr(start)).await}?;facts.present=u32::from(value.is_some());facts.view=u32::from(value.as_ref().is_some_and(|v|v.ty.view.is_some()));},
     ForInputNeed::InvalidAccess=>return self.fail(start.span(),"B128","只读顺序遍历需要 read／inout 或 atomic 数据集；atomic 游标仍须显式原子访问"),
     ForInputNeed::InvalidSource=>return self.fail(start.span(),"B127","顺序遍历需要 dataset、tile 或不可变 view"),

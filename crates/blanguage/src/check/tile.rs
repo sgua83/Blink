@@ -288,11 +288,11 @@ impl Builder<'_> {
             })
             .collect()
     }
-    pub(super) fn tile_length(&mut self, view: &TileView) -> Value {
+    pub(super) fn tile_length(&mut self, length: bounds::Proof) -> Value {
         let r = self.reg(Scalar::U32);
         self.emit(InstKind::TileLength(r));
         Value {
-            proof: view.length.clone(),
+            proof: length,
             literal: false,
             ty: Ty::scalar(Scalar::U32),
             regs: vec![r],

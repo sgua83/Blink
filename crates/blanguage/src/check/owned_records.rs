@@ -136,8 +136,8 @@ impl Builder<'_> {
     #[inline(never)]
     pub(super) async fn member_returned(&mut self,expr:&Expr,base:&Expr,name:&str)->Result<Option<Returned>> {
         let mut cursor=super::flow::LocalCursor {phase:0};
-        let mut facts=MemberFacts {name:MemberName::of(name),owns:0,present:0,variants:0,temporary:0,place:0,resource:0,named:0,continuing:0,kind:0,found:0,field_owns:0,item_kind:0,empty:0};
-        let mut place=None;let mut projection=None;let mut reference=None;let mut parent=None;let mut item=None;let mut field=0usize;let mut retained=None;
+        let mut facts=MemberFacts {name:MemberName::of(name),owns:0,present:0,variants:0,temporary:0,place:0,resource:0,binding:0,continuing:0,kind:0,found:0,field_owns:0,item_kind:0,empty:0,array:0,view:0};
+        let mut place=None;let mut projection=None;let mut reference=None;let mut parent=None;let mut item=None;let mut field=0usize;let mut retained=None;let mut dataset=None;let mut ordinary=None;let mut count=None;
         loop {let step=unsafe {member_step(cursor,facts)};cursor=step.cursor;match step.need {
             MemberNeed::Type=>facts.owns=u32::from(self.owned_element_type(expr).is_some_and(|ty|ty.owns_resources())),
             MemberNeed::Place=>{place=unsafe{self.world.call(self.place(expr)).await}?;facts.present=u32::from(place.is_some());},
@@ -151,9 +151,24 @@ impl Builder<'_> {
             MemberNeed::BadVariant=>return self.fail(expr.span(),"B269","变体载荷通过match使用"),
             MemberNeed::Temporary=>facts.temporary=u32::from(self.temporary_projection(base)),
             MemberNeed::IsPlace=>facts.place=u32::from(self.is_place(expr)),
-            MemberNeed::Resource=>facts.resource=u32::from(self.dataset_reference(base)?.is_some()),
-            MemberNeed::Named=>facts.named=u32::from(matches!(base.kind(),ExprKind::Name(n)if matches!(self.env.get(n),Some(Binding::Tile(_)|Binding::Texture(_))))),
-            MemberNeed::Member=>return unsafe{self.world.call(self.member_expr(base,name,expr)).await}.map(|value|value.map(Returned::value)),
+            MemberNeed::Resource=>{dataset=self.dataset_reference(base)?;facts.resource=u32::from(dataset.is_some());},
+            MemberNeed::Binding=>facts.binding=match base.kind(){ExprKind::Name(n)=>match self.env.get(n){Some(Binding::Texture(_))=>1,Some(Binding::Tile(_))=>2,_=>0},_=>0},
+            MemberNeed::TextureShape=>{let ExprKind::Name(n)=base.kind()else{unsafe{std::hint::unreachable_unchecked()}};let Some(Binding::Texture(reference))=self.env.get(n)else{unsafe{std::hint::unreachable_unchecked()}};count=reference.shape(self.program);facts.present=u32::from(count.is_some());},
+            MemberNeed::TextureLength=>return Ok(Some(Returned::value(self.constant(Scalar::U32,Bits::from(count.unwrap()))))),
+            MemberNeed::BadTexture=>return self.fail(expr.span(),"B239","纹理资源数组只公开只读 length"),
+            MemberNeed::TileLength=>{let ExprKind::Name(n)=base.kind()else{unsafe{std::hint::unreachable_unchecked()}};let Some(Binding::Tile(view))=self.env.get(n)else{unsafe{std::hint::unreachable_unchecked()}};let length=view.length.clone();return Ok(Some(Returned::value(self.tile_length(length))));},
+            MemberNeed::TileLane=>return Ok(Some(Returned::value(self.tile_lane()))),
+            MemberNeed::BadTile=>return self.fail(expr.span(),"B141","tile 只公开只读 length 与 lane"),
+            MemberNeed::DatasetLength=>return Ok(Some(Returned::value(self.data_length(dataset.as_ref().unwrap())))),
+            MemberNeed::BasePlace=>facts.present=u32::from(self.is_place(base)),
+            MemberNeed::OrdinaryPlace=>{place=unsafe{self.world.call(self.place(base)).await}?;facts.present=u32::from(place.is_some());},
+            MemberNeed::PlaceKind=>{let ty=place.as_ref().unwrap().ty();facts.array=u32::from(ty.array.is_some());facts.view=u32::from(ty.view.is_some());},
+            MemberNeed::ArrayLength=>{let length=place.as_ref().unwrap().ty().values[0];return Ok(Some(Returned::value(self.constant(Scalar::U32,Bits::from(length)))));},
+            MemberNeed::ReadView=>{let view=unsafe{self.world.call(self.read_place(place.as_ref().unwrap(),expr.span(),None)).await}?;return Ok(Some(Returned::value(Self::view_length(&view))));},
+            MemberNeed::BadView=>return self.fail(expr.span(),"B185","view 只公开只读 length，不公开设备地址分量"),
+            MemberNeed::ReadField=>{let p=place.take().unwrap();let(sub,components)=member_type(p.ty(),name,self.scope.source(),expr.span())?;return unsafe{self.world.call(self.read_place(&p.project(sub,&components),expr.span(),None)).await}.map(|value|Some(Returned::value(value)));},
+            MemberNeed::OrdinaryValue=>{ordinary=unsafe{self.world.call(self.expr(base)).await}?;facts.present=u32::from(ordinary.is_some());},
+            MemberNeed::OrdinaryMemberValue=>return self.member_value(ordinary.take().unwrap(),name,expr.span()).map(|value|Some(Returned::value(value))),
             MemberNeed::Evaluate=>{parent=unsafe{self.world.call(self.evaluate_returned(base,None)).await}?;facts.continuing=u32::from(self.flow.continues());facts.kind=parent.as_ref().map_or(0,Returned::kind);},
             MemberNeed::Find=>{let Returned::OwnedValue(owner)=parent.as_ref().unwrap()else{unsafe{std::hint::unreachable_unchecked()}};field=unsafe{member_field(MemberName::of(name),owner.value.ty.fields.len(),&owner.value.ty,member_field_name)};facts.found=u32::from(field<owner.value.ty.fields.len());},
             MemberNeed::MissingField=>return self.fail(expr.span(),"B141","拥有值字段不存在"),
@@ -291,8 +306,8 @@ impl Builder<'_> {
     }
 }
 
-#[repr(C)]#[derive(Clone,Copy)]struct MemberFacts {name:MemberName,owns:u32,present:u32,variants:u32,temporary:u32,place:u32,resource:u32,named:u32,continuing:u32,kind:u32,found:u32,field_owns:u32,item_kind:u32,empty:u32}
-#[repr(u32)]enum MemberNeed {Type,Place,Take,Projection,Projected,Reference,ReferenceLength,BadField,Variants,BadVariant,Temporary,IsPlace,Resource,Named,Member,Evaluate,Find,MissingField,Unpack,FieldType,ItemKind,MoveData,MoveOwner,Retained,DropOwner,HoldOwner,Length,DropData,Value,Missing,Return,Complete}
+#[repr(C)]#[derive(Clone,Copy)]struct MemberFacts {name:MemberName,owns:u32,present:u32,variants:u32,temporary:u32,place:u32,resource:u32,binding:u32,continuing:u32,kind:u32,found:u32,field_owns:u32,item_kind:u32,empty:u32,array:u32,view:u32}
+#[repr(u32)]enum MemberNeed {Type,Place,Take,Projection,Projected,Reference,ReferenceLength,BadField,Variants,BadVariant,Temporary,IsPlace,Resource,Binding,TextureShape,Evaluate,Find,MissingField,Unpack,FieldType,ItemKind,MoveData,MoveOwner,Retained,DropOwner,HoldOwner,Length,DropData,Value,Missing,Return,Complete,TextureLength,BadTexture,TileLength,TileLane,BadTile,DatasetLength,BasePlace,OrdinaryPlace,PlaceKind,ArrayLength,ReadView,BadView,ReadField,OrdinaryValue,OrdinaryMemberValue}
 #[repr(C)]struct MemberStep {cursor:super::flow::LocalCursor,need:MemberNeed}
 #[repr(C)]#[derive(Clone,Copy,Default)]struct OwnedIndexFacts {defined:u32,present:u32,continuing:u32,kind:u32,array:u32,indexed:u32,owns:u32,empty:u32}
 #[repr(u32)]enum OwnedIndexNeed {ExistingType,Place,TakePlace,Evaluate,Inspect,BadArray,HoldData,DataIndex,DataType,TakeData,ReadData,Storage,Release,Return,HoldOwner,Index,ArrayPlace,TakeElement,ArrayValue,ViewPlace,ReadView,Complete}

@@ -2812,65 +2812,11 @@ impl<'a> Builder<'a> {
             constant: None,
         }));
     }
-    async fn member_expr(&mut self, base: &Expr, field: &str, e: &Expr) -> Result<Option<Value>> {
-        if let Some(data) = unsafe { self.world.call(self.application_reference(base)).await }? {
-            return if field == "length" {
-                Ok(Some(data.length.clone()))
-            } else {
-                self.fail(e.span(), "B141", "dataset只公开只读length")
-            };
-        }
-        if let ExprKind::Name(name) = base.kind() {
-            if let Some(Binding::Texture(reference)) = self.env.get(name).cloned() {
-                if field == "length"
-                    && let Some(count) = reference.shape(self.program)
-                {
-                    return Ok(Some(self.constant(Scalar::U32, Bits::from(count))));
-                }
-                return self.fail(e.span(), "B239", "纹理资源数组只公开只读 length");
-            }
-            if let Some(Binding::Tile(view)) = self.env.get(name).cloned() {
-                return match field {
-                    "length" => Ok(Some(self.tile_length(&view))),
-                    "lane" => Ok(Some(self.tile_lane())),
-                    _ => self.fail(e.span(), "B141", "tile 只公开只读 length 与 lane"),
-                };
-            }
-        }
-        if field == "length" && let Some(view) = self.dataset_reference(base)? {
-            return Ok(Some(self.data_length(&view)));
-        }
-        if self.is_place(base) {
-            // 保留字段访问，避免为了读取一个字段先加载整个结构体。
-            let Some(p) = unsafe { self.world.call(self.place(base)).await }? else {
-                return Ok(None);
-            };
-            if p.ty().array.is_some() && field == "length" {
-                return Ok(Some(self.constant(Scalar::U32, Bits::from(p.ty().values[0]))));
-            }
-            if p.ty().view.is_some() {
-                if field == "length" {
-                    let view = unsafe { self.world.call(self.read_place(&p, e.span(), None)).await }?;
-                    return Ok(Some(Self::view_length(&view)));
-                }
-                return self.fail(e.span(), "B185", "view 只公开只读 length，不公开设备地址分量");
-            }
-            let (sub, components) = member_type(p.ty(), field, self.scope.source(), e.span())?;
-            return unsafe { self.world.call(self
-                .read_place(&p.project(sub, &components), e.span(), None)).await }
-                .map(Some);
-        }
-        let Some(v) = unsafe { self.world.call(self.expr(base)).await }? else {
-            return Ok(None);
-        };
-        self.member_value(v, field, e.span()).map(Some)
-    }
     pub(super) fn member_value(&mut self, v: Value, field: &str, span: Span) -> Result<Value> {
-        if v.ty.array.is_some() && field == "length" {
-            return Ok(self.constant(Scalar::U32, Bits::from(v.ty.values[0])));
-        }
-        if v.ty.view.is_some() && field == "length" {
-            return Ok(Self::view_length(&v));
+        match unsafe{member_value_need(u32::from(v.ty.array.is_some()),u32::from(v.ty.view.is_some()),field.as_ptr(),field.len())}{
+            MemberValueNeed::ArrayLength=>return Ok(self.constant(Scalar::U32,Bits::from(v.ty.values[0]))),
+            MemberValueNeed::ViewLength=>return Ok(Self::view_length(&v)),
+            MemberValueNeed::Project=>{},
         }
         let (ty, indices) = member_type(&v.ty, field, self.scope.source(), span)?;
         Ok(Value {
@@ -3154,6 +3100,7 @@ unsafe extern "C" {
 #[repr(u32)]enum SourcePlaceNeed {Name,Bind,External,Parent,Project,Index,Bad,Empty}
 #[repr(C)]struct SourcePlaceStep {cursor:SourceValueCursor,need:SourcePlaceNeed,spelling:crate::syntax::wire::Text,first:u64,second:u64,types:crate::syntax::wire::Slice,arguments:crate::syntax::wire::Slice}
 #[repr(u32)]enum MemberPositionNeed {Project,BadView}
+#[repr(u32)]enum MemberValueNeed {ArrayLength,ViewLength,Project}
 #[repr(C)]struct NamePositionFacts {kind:u32,present:u32,arrays:u32}
 #[repr(u32)]enum NamePositionNeed {Atomic,Owned,ViewElement,InspectOwned,ExistingOwned,MaterializeOwned,ArrayType,MaterializeArray,Bad}
 #[repr(C)]struct NamePositionStep {cursor:SourceValueCursor,need:NamePositionNeed}
@@ -3171,6 +3118,7 @@ unsafe extern "C" fn next_position_append(entries:*mut PositionAppendIter<'_>)->
 unsafe extern "C" {
  #[link_name="bootstrap.function_body::source_place_step"]fn source_place_step(cursor:SourceValueCursor,source:crate::syntax::wire::SignatureNode,present:u32)->SourcePlaceStep;
  #[link_name="bootstrap.function_body::member_position"]fn member_position(view:u32)->MemberPositionNeed;
+ #[link_name="bootstrap.function_body::member_value_need"]fn member_value_need(array:u32,view:u32,bytes:*const u8,length:usize)->MemberValueNeed;
  #[link_name="bootstrap.function_body::name_position_step"]fn name_position_step(cursor:SourceValueCursor,facts:NamePositionFacts)->NamePositionStep;
  #[link_name="bootstrap.function_body::index_position_step"]fn index_position_step(cursor:SourceValueCursor,source:crate::syntax::wire::SignatureNode,facts:IndexPositionFacts)->IndexPositionStep;
  #[link_name="bootstrap.function_body::position_append"]fn position_append(binding:u64,context:*mut PositionAppendIter<'_>,next:unsafe extern "C" fn(*mut PositionAppendIter<'_>)->PositionAppend)->u32;
