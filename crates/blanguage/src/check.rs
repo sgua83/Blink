@@ -2792,58 +2792,37 @@ impl<'a> Builder<'a> {
         }));
     }
     async fn unsafe_read_call(&mut self, args: &Expressions, span: Span) -> Result<Option<Value>> {
-        if args.len() != 2 {
-            return self.fail(
-                span,
-                "B181",
-                "unsafe_read 需要 read 数据集与 u32 索引；调用者负责外部索引有效性",
-            );
-        }
-        if let ExprKind::Name(data) = &args.at(0).kind() {
-            if let Some(data) = unsafe { self.world.call(self.application_value(data, span)).await }? {
-                self.application_cpu(&data, span)?;
-                let Some(index) = unsafe { self.world.call(self.expr(&args.at(1))).await }? else {
-                    return Ok(None);
-                };
-                self.require_same(&Ty::scalar(Scalar::U32), &index.ty, args.at(1).span())?;
-                return unsafe { self.world.call(self
-                    .read_place(
-                        &Self::application_element(
-                            &data,
-                            &index,
-                            (index.minimum(), index.maximum()),
-                        ),
-                        span, None
-                    )).await }
-                    .map(Some);
-            }
-        }
-        if let Some(view) = self.dataset_reference(&args.at(0))? {
-            if !matches!(view.access, Access::Read | Access::InOut) {
-                return self.fail(span, "B181", "unsafe_read 需要 read 或本阶段共享只读的 inout 数据集");
-            }
-            let Some(index) = unsafe { self.world.call(self.expr(&args.at(1))).await }? else { return Ok(None); };
-            self.require_same(&Ty::scalar(Scalar::U32), &index.ty, args.at(1).span())?;
-            return unsafe { self.world.call(self.read_place(&self.dataset_element(&view, index.regs[0], false), span, None)).await }.map(Some);
-        }
-        let Some(view) = unsafe { self.world.call(self.expr(&args.at(0))).await }? else {
-            return Ok(None);
-        };
-        unsafe { self.world.call(self.unsafe_read_view(view,span,args.at(1).span(),async |builder|unsafe { builder.world.call(builder.expr(&args.at(1))).await })).await }
+        let source=args.source_view();let storage=source.storage();let arguments=args.source_slice();let mut cursor=SourceValueCursor {phase:0};
+        let mut facts=UnsafeReadFacts {present:0,access:0};let mut data=None;let mut dataset=None;let mut value=None;let mut index=None;
+        loop {let step=unsafe {unsafe_read_step(cursor,storage,arguments,UnsafeReadFacts {..facts})};cursor=step.cursor;match step.need {
+            UnsafeReadNeed::BadArguments=>return self.fail(span,"B181","unsafe_read 需要 read 数据集与 u32 索引；调用者负责外部索引有效性"),
+            UnsafeReadNeed::Application=>{data=unsafe {self.world.call(self.application_value(source.text(step.name),span)).await}?;facts.present=u32::from(data.is_some());},
+            UnsafeReadNeed::ApplicationCpu=>self.application_cpu(data.as_ref().unwrap(),span)?,
+            UnsafeReadNeed::Dataset=>{dataset=self.dataset_reference(&args.at(0))?;facts.present=u32::from(dataset.is_some());facts.access=dataset.as_ref().map_or(0,|view|view.access as u32);},
+            UnsafeReadNeed::BadAccess=>return self.fail(span,"B181","unsafe_read 需要 read 或本阶段共享只读的 inout 数据集"),
+            UnsafeReadNeed::Value=>{value=unsafe {self.world.call(self.expr(&args.at(0))).await}?;facts.present=u32::from(value.is_some());},
+            UnsafeReadNeed::Index=>{index=unsafe {self.world.call(self.expr(&args.at(1))).await}?;facts.present=u32::from(index.is_some());},
+            UnsafeReadNeed::IndexType=>self.require_same(&Ty::scalar(Scalar::U32),&index.as_ref().unwrap().ty,args.at(1).span())?,
+            UnsafeReadNeed::ApplicationRead=>{let index=index.as_ref().unwrap();return unsafe {self.world.call(self.read_place(&Self::application_element(data.as_ref().unwrap(),index,(index.minimum(),index.maximum())),span,None)).await}.map(Some);},
+            UnsafeReadNeed::DatasetRead=>return unsafe {self.world.call(self.read_place(&self.dataset_element(dataset.as_ref().unwrap(),index.as_ref().unwrap().regs[0],false),span,None)).await}.map(Some),
+            UnsafeReadNeed::ViewRead=>return unsafe {self.world.call(self.unsafe_read_view(value.take().unwrap(),span,args.at(1).span(),async |builder|unsafe {builder.world.call(builder.expr(&args.at(1))).await})).await},
+            UnsafeReadNeed::Empty=>return Ok(None),
+        }}
     }
     async fn unsafe_read_view(&mut self,view:Value,span:Span,index_span:Span,
         read_index:impl std::ops::AsyncFnOnce(&mut Self)->Result<Option<Value>>)->Result<Option<Value>> {
-        if view.ty.view.is_none() {
-            return self.fail(span, "B181", "unsafe_read 需要 read dataset 或不可变 view");
-        }
-        let held = self.hold_binding(Binding::Value(view.clone()));
-        let evaluated = read_index(self).await;
-        self.env.remove(&held);
-        let Some(index) = evaluated? else { return Ok(None); };
-        self.require_same(&Ty::scalar(Scalar::U32), &index.ty, index_span)?;
-        return unsafe { self.world.call(self
-            .read_place(&Self::view_element(&view, index.regs[0]), span, None)).await }
-            .map(Some);
+        let mut cursor=SourceValueCursor {phase:0};let mut facts=UnsafeViewFacts {view:u32::from(view.ty.view.is_some()),present:0};
+        let mut read_index=Some(read_index);let mut held=None;let mut evaluated=None;let mut index=None;
+        loop {let step=unsafe {unsafe_view_step(cursor,UnsafeViewFacts {..facts})};cursor=step.cursor;match step.need {
+            UnsafeViewNeed::BadView=>return self.fail(span,"B181","unsafe_read 需要 read dataset 或不可变 view"),
+            UnsafeViewNeed::Hold=>held=Some(self.hold_binding(Binding::Value(view.clone()))),
+            UnsafeViewNeed::Index=>evaluated=Some(read_index.take().unwrap()(self).await),
+            UnsafeViewNeed::Release=>{self.env.remove(held.as_ref().unwrap());},
+            UnsafeViewNeed::Result=>{index=evaluated.take().unwrap()?;facts.present=u32::from(index.is_some());},
+            UnsafeViewNeed::IndexType=>self.require_same(&Ty::scalar(Scalar::U32),&index.as_ref().unwrap().ty,index_span)?,
+            UnsafeViewNeed::Read=>return unsafe {self.world.call(self.read_place(&Self::view_element(&view,index.as_ref().unwrap().regs[0]),span,None)).await}.map(Some),
+            UnsafeViewNeed::Empty=>return Ok(None),
+        }}
     }
     fn ordinal_call(&mut self, args: &Expressions, span: Span) -> Result<Option<Value>> {
         if args.len() != 1 {
@@ -3297,3 +3276,14 @@ unsafe extern "C" {
 #[repr(u32)]enum WritePlaceNeed {Access,ViewType,ViewPayloadError,Owned,ViewAvailable,Same,Kind,NumericProof,ReferenceMemory,Pending,Resolved,Snapshot,AddressWrite,BorrowFields,BorrowField,AddField,Memory,AtomicError,AtomicTileError,AtomicDataError,Array,ReadOnlyError,ViewError,TileError,WriteError,Unique,DuplicateError,Writable,AssignProof,Initialize,Zero,DatasetEffect,CaptureProof,Alias,ApplicationWrite,AssignApplicationProof,CompleteWrites,DataAccess,StoreReference,StoreLocal,StoreData,Complete}
 #[repr(C)]struct WritePlaceStep {cursor:LexicalCursor,need:WritePlaceNeed}
 unsafe extern "C" {#[link_name="bootstrap.function_body::write_place_step"]fn write_place_step(cursor:LexicalCursor,facts:WritePlaceFacts)->WritePlaceStep;}
+
+#[repr(C)]struct UnsafeReadFacts {present:u32,access:u32}
+#[repr(u32)]enum UnsafeReadNeed {BadArguments,Application,ApplicationCpu,Dataset,BadAccess,Value,Index,IndexType,ApplicationRead,DatasetRead,ViewRead,Empty}
+#[repr(C)]struct UnsafeReadStep {cursor:SourceValueCursor,need:UnsafeReadNeed,name:crate::syntax::wire::Text}
+#[repr(C)]struct UnsafeViewFacts {view:u32,present:u32}
+#[repr(u32)]enum UnsafeViewNeed {BadView,Hold,Index,Release,Result,IndexType,Read,Empty}
+#[repr(C)]struct UnsafeViewStep {cursor:SourceValueCursor,need:UnsafeViewNeed}
+unsafe extern "C" {
+ #[link_name="bootstrap.function_body::unsafe_read_step"]fn unsafe_read_step(cursor:SourceValueCursor,source:crate::syntax::wire::StorageView,arguments:crate::syntax::wire::Slice,facts:UnsafeReadFacts)->UnsafeReadStep;
+ #[link_name="bootstrap.function_body::unsafe_view_step"]fn unsafe_view_step(cursor:SourceValueCursor,facts:UnsafeViewFacts)->UnsafeViewStep;
+}

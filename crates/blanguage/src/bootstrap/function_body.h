@@ -271,3 +271,12 @@ struct WritePlaceFacts {u32 views;u32 persistent;u32 kind;u32 access;u32 writabl
 enum WritePlaceNeed:u32 {Access=0;ViewType=1;ViewPayloadError=2;Owned=3;ViewAvailable=4;Same=5;Kind=6;NumericProof=7;ReferenceMemory=8;Pending=9;Resolved=10;Snapshot=11;AddressWrite=12;BorrowFields=13;BorrowField=14;AddField=15;Memory=16;AtomicError=17;AtomicTileError=18;AtomicDataError=19;Array=20;ReadOnlyError=21;ViewError=22;TileError=23;WriteError=24;Unique=25;DuplicateError=26;Writable=27;AssignProof=28;Initialize=29;Zero=30;DatasetEffect=31;CaptureProof=32;Alias=33;ApplicationWrite=34;AssignApplicationProof=35;CompleteWrites=36;DataAccess=37;StoreReference=38;StoreLocal=39;StoreData=40;Complete=41;};
 struct WritePlaceStep {Cursor cursor;WritePlaceNeed need;};
 extern "C" WritePlaceStep write_place_step(Cursor cursor,WritePlaceFacts facts) on cpu;
+
+struct UnsafeReadFacts {u32 present;u32 access;};
+enum UnsafeReadNeed:u32 {BadArguments=0;Application=1;ApplicationCpu=2;Dataset=3;BadAccess=4;Value=5;Index=6;IndexType=7;ApplicationRead=8;DatasetRead=9;ViewRead=10;Empty=11;};
+struct UnsafeReadStep {LocalCursor cursor;UnsafeReadNeed need;Text name;};
+extern "C" UnsafeReadStep unsafe_read_step(LocalCursor cursor,StorageView source,Slice arguments,UnsafeReadFacts facts) on cpu;
+struct UnsafeViewFacts {u32 view;u32 present;};
+enum UnsafeViewNeed:u32 {BadView=0;Hold=1;Index=2;Release=3;Result=4;IndexType=5;Read=6;Empty=7;};
+struct UnsafeViewStep {LocalCursor cursor;UnsafeViewNeed need;};
+extern "C" UnsafeViewStep unsafe_view_step(LocalCursor cursor,UnsafeViewFacts facts) on cpu;
