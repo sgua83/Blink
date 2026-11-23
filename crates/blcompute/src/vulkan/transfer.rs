@@ -255,6 +255,215 @@ struct ReadbackPayload {
     words: Vec<u32>,
     sources: Vec<crate::ReadDataset>,
 }
+
+/// 已提交的设备到主机传输。完成后仍持有领取 CPU 结果所需的暂存。
+pub struct GpuReadback {
+    // Drop the execution before the mapped destinations if the caller abandons the result.
+    execution: Option<Rc<Execution>>,
+    sources: Vec<PendingDataset>,
+    roots: Vec<ReadbackRoot<PendingDataset>>,
+    domains: bindings::DomainRelations,
+}
+
+impl GpuReadback {
+    /// 查询原提交的完成点，不等待或领取主机结果。
+    pub fn is_complete(&self) -> Result<bool> {
+        match &self.execution {
+            Some(execution) => execution.is_complete(),
+            None => Ok(true),
+        }
+    }
+
+    /// 等待原拷贝完成并领取 CPU 数据及原域关系。
+    pub fn wait(self) -> Result<DomainBindings<CpuDataset>> {
+        let Self { execution, sources, roots, domains } = self;
+        if let Some(execution) = execution {
+            execution.wait()?;
+        }
+        let mut ready = Vec::with_capacity(sources.len());
+        for source in sources {
+            ready.push(source.finish(&ready)?.freeze()?);
+        }
+        let datasets = roots
+            .into_iter()
+            .map(|root| match root {
+                ReadbackRoot::Owned(dataset) => dataset.finish(&ready).map(Into::into),
+                ReadbackRoot::Read(source) => Ok(ready[source].clone().into()),
+            })
+            .collect::<Result<Vec<_>>>()?;
+        Ok(DomainBindings { datasets, domains })
+    }
+}
+
+enum ReadbackRoot<T> {
+    Owned(T),
+    Read(usize),
+}
+
+struct PendingDataset {
+    layout: HostDatasetLayout,
+    data: PendingPayload,
+}
+
+impl PendingDataset {
+    fn finish(self, ready: &[crate::ReadDataset]) -> Result<Dataset> {
+        let PendingPayload { stride, count, instance_input, sources, pages } = self.data;
+        let byte_count = stride as usize * count as usize;
+        // Each mapped page contributes its recorded logical bytes in storage order.
+        let words = unsafe {
+            readback_words(byte_count, instance_input, |output| {
+                let mut written = 0;
+                for (page, bytes) in pages {
+                    page.read_with(|pointer| {
+                        std::ptr::copy_nonoverlapping(pointer, output.add(written), bytes);
+                    })?;
+                    written += bytes;
+                }
+                Ok(())
+            })
+        }?;
+        let sources = sources.into_iter().map(|source| ready[source].clone()).collect();
+        Ok(ReadbackPayload { stride, count, words, sources }.finish(self.layout))
+    }
+}
+
+struct PendingPayload {
+    stride: u32,
+    count: u32,
+    instance_input: bool,
+    sources: Vec<usize>,
+    pages: Vec<(Allocation, usize)>,
+}
+
+/// Transient recorder for one closed GPU graph.
+pub(super) struct PendingReadback<'a> {
+    device: &'a Device,
+    commands: Option<Commands>,
+    dependencies: DependencySources,
+    source_pages: Vec<Rc<Allocation>>,
+    sources: Vec<PendingDataset>,
+    recorded_sources: BTreeMap<usize, usize>,
+}
+
+impl<'a> PendingReadback<'a> {
+    pub(super) fn submit(device: &'a Device, bindings: DomainBindings<GpuDataset>) -> Result<GpuReadback> {
+        let DomainBindings { datasets, domains } = bindings;
+        let mut readback = Self {
+            device,
+            commands: None,
+            dependencies: DependencySources::default(),
+            source_pages: Vec::new(),
+            sources: Vec::new(),
+            recorded_sources: BTreeMap::new(),
+        };
+        let recorded = datasets
+            .iter()
+            .map(|data| match &*data.storage {
+                DatasetStorage::Owned(_) => readback.record_payload(data).map(ReadbackRoot::Owned),
+                DatasetStorage::Read(source) => readback.record_read(data, source).map(ReadbackRoot::Read),
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let dependencies = readback.dependencies.prepare()?;
+        let execution = match readback.commands {
+            Some(commands) => {
+                commands.barrier(0x1000, 0x4000, 0x1000, 0x2000);
+                Some(Execution::submit(
+                    ExecutionResources::DatasetReadback { commands, _source_pages: readback.source_pages },
+                    dependencies,
+                )?)
+            }
+            None if matches!(dependencies, Dependencies::Empty) => None,
+            None => Some(Execution::submit_fence(device.inner.clone(), dependencies)?),
+        };
+        let roots = datasets
+            .into_iter()
+            .zip(recorded)
+            .map(|(data, root)| match root {
+                ReadbackRoot::Owned(payload) => ReadbackRoot::Owned(PendingDataset {
+                    layout: data.into_readback_layout(),
+                    data: payload,
+                }),
+                ReadbackRoot::Read(source) => ReadbackRoot::Read(source),
+            })
+            .collect();
+        Ok(GpuReadback { execution, sources: readback.sources, roots, domains })
+    }
+
+    fn record_read(&mut self, data: &GpuDataset, source: &ReadDataset) -> Result<usize> {
+        let key = Rc::as_ptr(&source.0) as usize;
+        // Shared storage can be reached through bindings with distinct last uses.
+        if let Some(&index) = self.recorded_sources.get(&key) {
+            self.dependencies.insert_pending(data.dependency())?;
+            return Ok(index);
+        }
+        let payload = self.record_payload(data)?;
+        let index = self.sources.len();
+        self.sources.push(PendingDataset {
+            layout: HostDatasetLayout { ty: data.ty.clone(), bindings: data.views.bindings.clone() },
+            data: payload,
+        });
+        self.recorded_sources.insert(key, index);
+        Ok(index)
+    }
+
+    fn record_payload(&mut self, data: &GpuDataset) -> Result<PendingPayload> {
+        self.dependencies.insert_pending(data.dependency())?;
+        let sources = data.views.sources.iter()
+            .map(|source| self.record_read(&source.0, source))
+            .collect::<Result<Vec<_>>>()?;
+        let mut pages = Vec::with_capacity(data.pages.len());
+        if !data.pages.is_empty() {
+            let commands = match &mut self.commands {
+                Some(commands) => commands,
+                slot @ None => slot.insert(Commands::new(self.device.inner.clone())?),
+            };
+            commands.barrier(data.producer.stage(), 0x1000, data.producer.access(), 0x800);
+            let page_bytes = u64::from(data.page_records()) * u64::from(data.stride);
+            let mut remaining = data.bytes();
+            for source in &data.pages {
+                let bytes = remaining.min(page_bytes);
+                let staging = Allocation::new(self.device.inner.clone(), bytes, 2, 6, 4)?;
+                record_readback_page(commands, source, &staging, bytes);
+                self.source_pages.push(source.clone());
+                pages.push((staging, bytes as usize));
+                remaining -= bytes;
+            }
+        }
+        Ok(PendingPayload { stride: data.stride, count: data.count, instance_input: data.instances.is_some(), sources, pages })
+    }
+}
+
+fn record_readback_page(commands: &Commands, source: &Allocation, target: &Allocation, bytes: u64) {
+    let copy = VkBufferCopy { srcOffset: 0, dstOffset: 0, size: bytes.div_ceil(4) * 4 };
+    unsafe {
+        (commands.inner.functions.vkCmdCopyBuffer)(commands.command, source.buffer, target.buffer, 1, &copy);
+    }
+}
+
+// A successful writer must initialize exactly byte_count bytes at the provided pointer.
+unsafe fn readback_words(
+    byte_count: usize,
+    instance_input: bool,
+    write: impl FnOnce(*mut u8) -> Result<()>,
+) -> Result<Vec<u32>> {
+    let word_count = byte_count.div_ceil(4);
+    let mut words = Vec::<u32>::new();
+    words.try_reserve_exact(word_count)?;
+    let output = words.spare_capacity_mut().as_mut_ptr().cast::<u8>();
+    write(output)?;
+    // A successful write initializes all logical bytes. Only the final word can need padding.
+    unsafe {
+        output.add(byte_count).write_bytes(0, word_count * 4 - byte_count);
+        words.set_len(word_count);
+    }
+    // Native instance metadata is not portable. The host receives the declared matrix.
+    if instance_input {
+        for record in words.chunks_exact_mut(16) {
+            record[12..16].fill(0);
+        }
+    }
+    Ok(words)
+}
 impl ReadbackPayload {
     fn finish(self, layout: HostDatasetLayout) -> Dataset {
         let mut target = Dataset {
@@ -324,13 +533,7 @@ impl<'a> Readback<'a> {
             let key = Rc::as_ptr(&source.0) as usize;
             sources.push(self.download_read(&source.0, key)?);
         }
-        let mut words = self.read_payload(data, previous)?;
-        // 原生实例尾部不是可移植数据；主机只接收 B 声明的矩阵。
-        if data.instances.is_some() {
-            for record in words.chunks_exact_mut(16) {
-                record[12..16].fill(0);
-            }
-        }
+        let words = self.read_payload(data, previous)?;
         Ok(ReadbackPayload {
             stride: data.stride,
             count: data.count,
@@ -344,62 +547,44 @@ impl<'a> Readback<'a> {
             return Ok(Vec::new());
         };
         let byte_count = data.bytes() as usize;
-        let word_count = byte_count.div_ceil(4);
-        let mut words = Vec::<u32>::new();
-        words.try_reserve_exact(word_count)?;
-        let output = words.spare_capacity_mut().as_mut_ptr().cast::<u8>();
-        if self.staging.as_ref().is_none_or(|staging| staging.size < first.size) {
-            // A previous copy has finished and its bytes have reached the CPU result.
-            drop(self.staging.take());
-            self.staging = Some(Allocation::new(self.device.inner.clone(), first.size, 2, 6, 4)?);
-        }
-        let staging = self.staging.as_ref().unwrap();
-        let page_bytes = data.page_records() as usize * data.stride as usize;
-        let mut written = 0;
-        let commands = match &mut self.commands {
-            Some(commands) => commands,
-            slot @ None => slot.insert(Commands::with_pool_flags(self.device.inner.clone(), 3)?),
-        };
-        for page in &data.pages {
-            let bytes = (byte_count - written).min(page_bytes);
-            if self.completion.is_some() {
-                commands.begin()?;
-            }
-            commands.barrier(data.producer.stage(), 0x1000, data.producer.access(), 0x800);
-            let copy = VkBufferCopy {
-                srcOffset: 0,
-                dstOffset: 0,
-                size: (bytes.div_ceil(4) * 4) as u64,
-            };
-            unsafe {
-                (self.device.inner.functions.vkCmdCopyBuffer)(
-                    commands.command,
-                    page.buffer,
-                    staging.buffer,
-                    1,
-                    &copy,
-                );
-            }
-            commands.barrier(0x1000, 0x4000, 0x1000, 0x2000);
-            let point = match &mut self.completion {
-                Some(point) => {
-                    commands.resubmit(point)?;
-                    point
-                }
-                slot @ None => slot.insert(commands.submit_with(&[], &[], &[])?),
-            };
-            Execution::wait_synchronous(point, previous.take())?;
-            staging.read_with(|pointer| unsafe {
-                std::ptr::copy_nonoverlapping(pointer, output.add(written), bytes);
-            })?;
-            written += bytes;
-        }
-        // The allocated pages cover all logical bytes. Initialize only the final
-        // word's padding before exposing the fully written CPU storage.
+        // The allocated pages cover all logical bytes, in storage order.
         unsafe {
-            output.add(byte_count).write_bytes(0, word_count * 4 - byte_count);
-            words.set_len(word_count);
+            readback_words(byte_count, data.instances.is_some(), |output| {
+                if self.staging.as_ref().is_none_or(|staging| staging.size < first.size) {
+                    // A previous copy has finished and its bytes have reached the CPU result.
+                    drop(self.staging.take());
+                    self.staging = Some(Allocation::new(self.device.inner.clone(), first.size, 2, 6, 4)?);
+                }
+                let staging = self.staging.as_ref().unwrap();
+                let page_bytes = data.page_records() as usize * data.stride as usize;
+                let mut written = 0;
+                let commands = match &mut self.commands {
+                    Some(commands) => commands,
+                    slot @ None => slot.insert(Commands::with_pool_flags(self.device.inner.clone(), 3)?),
+                };
+                for page in &data.pages {
+                    let bytes = (byte_count - written).min(page_bytes);
+                    if self.completion.is_some() {
+                        commands.begin()?;
+                    }
+                    commands.barrier(data.producer.stage(), 0x1000, data.producer.access(), 0x800);
+                    record_readback_page(commands, page, staging, bytes as u64);
+                    commands.barrier(0x1000, 0x4000, 0x1000, 0x2000);
+                    let point = match &mut self.completion {
+                        Some(point) => {
+                            commands.resubmit(point)?;
+                            point
+                        }
+                        slot @ None => slot.insert(commands.submit_with(&[], &[], &[])?),
+                    };
+                    Execution::wait_synchronous(point, previous.take())?;
+                    staging.read_with(|pointer| {
+                        std::ptr::copy_nonoverlapping(pointer, output.add(written), bytes);
+                    })?;
+                    written += bytes;
+                }
+                Ok(())
+            })
         }
-        Ok(words)
     }
 }

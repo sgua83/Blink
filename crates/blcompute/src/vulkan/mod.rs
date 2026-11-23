@@ -16,6 +16,7 @@ use crate::application::FrameArguments;
 use crate::bindings::{self, StorageSlots};
 use crate::views::Views;
 use transfer::Readback;
+pub use transfer::GpuReadback;
 use crate::{Dataset, DomainBindings, Result, Value, arguments, error};
 use blanguage::{
     ExecutableProgram, TemplateProgram,
@@ -1130,6 +1131,20 @@ impl Device {
             .map(|data| readback.download_cpu(data))
             .collect::<Result<Vec<_>>>()?;
         Ok(DomainBindings { datasets, domains })
+    }
+
+    /// 提交闭合数据图的读回，在调用者领取结果前保留原主机数据。
+    pub fn download_async(&self, data: GpuDataset) -> Result<GpuReadback> {
+        self.download_domains_async(vec![data].into())
+    }
+
+    /// 在原设备队列提交传输，保留真实域关系和冻结来源共享。
+    pub fn download_domains_async(&self, bindings: DomainBindings<GpuDataset>) -> Result<GpuReadback> {
+        if bindings.datasets.iter().any(|data| !Rc::ptr_eq(&self.inner, &data.allocation.inner)) {
+            return Err(error("数据集属于另一设备"));
+        }
+        self.inner.active_sequence()?;
+        transfer::PendingReadback::submit(self, bindings)
     }
 }
 #[derive(Clone, Copy)]

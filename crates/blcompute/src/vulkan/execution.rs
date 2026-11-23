@@ -269,6 +269,10 @@ pub(super) enum ExecutionResources {
         _staging: Vec<Allocation>,
         covers_view_sources: bool,
     },
+    DatasetReadback {
+        commands: Commands,
+        _source_pages: Vec<Rc<Allocation>>,
+    },
     Present { commands: Commands, _source_pages: Vec<Rc<Allocation>> },
     ImageCopy {
         commands: Commands,
@@ -289,6 +293,7 @@ impl ExecutionResources {
         match self {
             Self::Compute { commands, .. }
             | Self::DatasetTransfer { commands, .. }
+            | Self::DatasetReadback { commands, .. }
             | Self::Present { commands, .. }
             | Self::ImageCopy { commands, .. }
             | Self::Acceleration { commands, .. } => commands,
@@ -402,6 +407,15 @@ impl DependencySources {
 
     pub fn insert_owned(&mut self, source: Rc<Execution>) {
         self.insert_with(source.point.sequence, || source);
+    }
+
+    pub fn insert_pending(&mut self, source: Option<&Rc<Execution>>) -> Result<()> {
+        if let Some(source) = source
+            && !source.point.observed_complete()?
+        {
+            self.insert(source);
+        }
+        Ok(())
     }
 
     fn insert_with(&mut self, sequence: u64, source: impl FnOnce() -> Rc<Execution>) {
