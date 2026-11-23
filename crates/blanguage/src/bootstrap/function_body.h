@@ -322,3 +322,12 @@ struct RecordPackFacts {u64 fields;u64 values;u32 uniform;u32 constant;};
 enum RecordPackNeed:u32 {BadCount=0;Field=1;Append=2;Value=3;};
 struct RecordPackStep {Cursor cursor;RecordPackNeed need;};
 extern "C" RecordPackStep record_pack_step(Cursor cursor,RecordPackFacts facts) on cpu;
+
+enum DatasetProjectionUse:u32 {Reference=0;Field=1;Presence=2;};
+enum DatasetProjectionKind:u32 {Missing=0;Found=1;BadField=2;BadRoot=3;};
+struct DatasetProjection {DatasetProjectionKind kind;u32 offset;u64 binding;u64 fields;Span span;};
+struct DatasetField {u32 present;u32 offset;u64 fields;SeekName name;};
+struct DatasetProjectionHost {address context;cfn<DatasetProjection,address,Text,u32> root;cfn<DatasetField,address,u64> ensures memory(read) declared;cfn<DatasetField,address,Text> field;cfn<void,address,u64,u32> select;};
+extern "C" u32 dataset_layout(u64 count,address context,cfn<u32,address,u64> part) on cpu requires nonzero(part);
+extern "C" DatasetProjection dataset_projection(SignatureNode source,DatasetProjectionUse usage,DatasetProjectionHost host) on cpu requires nonzero(host.root) requires nonzero(host.declared) requires nonzero(host.field) requires nonzero(host.select);
+extern "C" u32 dataset_element_words(u32 base,u64 count,u32 access,u32 requested,address context,cfn<u32,address,u64> ensures memory(read) component,cfn<void,address,u32> append) on cpu requires nonzero(component) requires nonzero(append);

@@ -1313,3 +1313,27 @@ extern "C" RecordPackStep record_pack_step(Cursor cursor,RecordPackFacts facts) 
  if(c.phase==1){if(c.index<facts.values){c.phase=2;return RecordPackStep(c,RecordPackNeed::Field);}return RecordPackStep(c,RecordPackNeed::Value);}
  c.flags=record_properties(c.flags,facts.uniform,facts.constant);c.phase=3;return RecordPackStep(c,RecordPackNeed::Append);
 }
+
+extern "C" u32 dataset_layout(u64 count,address context,cfn<u32,address,u64> part) on cpu requires nonzero(part) {
+ u32 offset=0;u64 index=0u64;while(index<count){offset+=part(context,index);index+=1u64;}return offset;
+}
+extern "C" DatasetProjection dataset_projection(SignatureNode source,DatasetProjectionUse usage,DatasetProjectionHost host) on cpu requires nonzero(host.root) requires nonzero(host.declared) requires nonzero(host.field) requires nonzero(host.select) {
+ ExprNode expression=binding_node<ExprNode>(source.storage.nodes,source.offset);
+ DatasetProjection result=DatasetProjection(usage==DatasetProjectionUse::Field?DatasetProjectionKind::BadRoot:DatasetProjectionKind::Missing,0,0u64,0u64,expression.span);
+ match(expression.kind){
+  ExprKind::Name(name){result=host.root(host.context,name,usage==DatasetProjectionUse::Reference?1:0);result.span=expression.span;if(result.kind==DatasetProjectionKind::Missing&&usage==DatasetProjectionUse::Field){result.kind=DatasetProjectionKind::BadRoot;}return result;}
+  ExprKind::Member(member){
+   result=dataset_projection(SignatureNode(source.storage,member.base.offset),usage,host);if(result.kind!=DatasetProjectionKind::Found){return result;}
+   DatasetField field=DatasetField(0,0,0u64,SeekName(unsafe_address(0u64),0u64));u64 index=0u64;
+   if(usage==DatasetProjectionUse::Field){field=host.field(host.context,member.field);}else{
+    while(index<result.fields){field=host.declared(host.context,index);if(binding_name(source.storage.source,source.storage.text,member.field,field.name.data,field.name.length)){break;}field.present=0;index+=1u64;}
+   }
+   if(field.present==0){result.kind=DatasetProjectionKind::BadField;result.span=expression.span;return result;}
+   if(usage!=DatasetProjectionUse::Field){host.select(host.context,index,usage==DatasetProjectionUse::Reference?1:0);}result.offset+=field.offset;result.fields=field.fields;return result;
+  }
+  ExprKind::Number(unused){}ExprKind::StaticU32(unused){}ExprKind::Bool(unused){}ExprKind::Index(unused){}ExprKind::Call(unused){}ExprKind::Invoke(unused){}ExprKind::Construct(unused){}ExprKind::Specialize(unused){}ExprKind::FunctionRef(unused){}ExprKind::Cooperate(unused){}ExprKind::Target(unused){}ExprKind::Unary(unused){}ExprKind::Binary(unused){}ExprKind::Select(unused){}
+ }return result;
+}
+extern "C" u32 dataset_element_words(u32 base,u64 count,u32 access,u32 requested,address context,cfn<u32,address,u64> ensures memory(read) component,cfn<void,address,u32> append) on cpu requires nonzero(component) requires nonzero(append) {
+ u64 index=0u64;while(index<count){u32 word=component(context,index);append(context,base+word);index+=1u64;}return requested!=0&&(access==2||access==3||access==4)?1:0;
+}

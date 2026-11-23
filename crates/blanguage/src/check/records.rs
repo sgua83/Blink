@@ -1,60 +1,32 @@
 //! 记录按声明字段构造；不对异构分量作统一数值强转，不产生运行时对象。
 use super::*;
 impl Builder<'_> {
-    pub(super) fn dataset_layout<'a>(&'a self, view: &DatasetView) -> (u32, &'a Ty) {
-        let mut ty = &self.program.buffers[view.binding].ty;
-        let mut offset = 0;
-        for index in &view.projection {
-            let (_, at, field) = &ty.fields[*index];
-            offset += at;
-            ty = field;
-        }
-        (offset, ty)
+    pub(super) fn dataset_layout<'a>(&'a self,view:&DatasetView)->(u32,&'a Ty) {
+        let mut context=DatasetLayoutContext {ty:&self.program.buffers[view.binding].ty,view};
+        let offset=unsafe {dataset_layout(view.projection.len()as u64,std::ptr::from_mut(&mut context).cast(),dataset_projection_part)};
+        (offset,context.ty)
     }
-    pub(super) fn dataset_reference(&self, expr: &Expr) -> Result<Option<DatasetView>> {
-        match expr.kind() {
-            ExprKind::Name(name) => Ok(match self.env.get(name) {
-                Some(Binding::Data(view)) => Some(view.clone()),
-                _ => None,
-            }),
-            ExprKind::Member(base, field) => {
-                let Some(mut view) = self.dataset_reference(&base)? else { return Ok(None); };
-                let (_, ty) = self.dataset_layout(&view);
-                let Some(index) = ty.fields.iter().position(|(name, _, _)| name == field) else {
-                    return self.fail(expr.span(), "B141", "dataset 字段不存在");
-                };
-                view.projection.push(index);
-                Ok(Some(view))
-            }
-            _ => Ok(None),
-        }
+    fn dataset_projection<'a>(&'a self,expr:&Expr,usage:DatasetProjectionUse)->Result<(DatasetProjection,Option<DatasetView>,Option<&'a Ty>)> {
+        let mut context=DatasetProjectionContext {builder:self,source:expr.source_view(),view:None,ty:None};
+        let result=unsafe {dataset_projection(expr.signature_node(),usage,DatasetProjectionHost {context:std::ptr::from_mut(&mut context).cast(),root:dataset_projection_root,declared:dataset_declared_field,field:dataset_selected_field,select:dataset_projection_append})};
+        let span=Span {start:result.span.start as usize,end:result.span.end as usize};
+        match result.kind {DatasetProjectionKind::BadField=>return self.fail(span,"B141","dataset 字段不存在"),DatasetProjectionKind::BadRoot=>return self.fail(span,"B200","需要命名 dataset 或其字段"),_=>{}}
+        Ok((result,context.view,context.ty))
     }
-    pub(super) fn dataset_element(&self, view: &DatasetView, index: Reg, writable: bool) -> Place {
-        let (offset, ty) = self.dataset_layout(view);
-        Place::Element {
-            ty: ty.clone(), binding: view.binding, index,
-            words: ty.components.iter().map(|(_, word)| offset + word).collect(),
-            writable: writable && view.access.writes(),
-        }
+    pub(super) fn dataset_reference(&self,expr:&Expr)->Result<Option<DatasetView>> {
+        Ok(self.dataset_projection(expr,DatasetProjectionUse::Reference)?.1)
     }
-    pub(super) fn dataset_field(&self, expr: &Expr) -> Result<(usize, u32, Ty)> {
-        match expr.kind() {
-            ExprKind::Name(name) => {
-                let Some(Binding::Data(view)) = self.env.get(name) else {
-                    return self.fail(expr.span(), "B200", "需要命名 dataset 或其字段");
-                };
-                let (offset, ty) = self.dataset_layout(view);
-                Ok((view.binding, offset, ty.clone()))
-            }
-            ExprKind::Member(base, name) => {
-                let (binding, word, ty) = self.dataset_field(&base)?;
-                let Some((offset, field)) = ty.field(name) else {
-                    return self.fail(expr.span(), "B141", "dataset 字段不存在");
-                };
-                Ok((binding, word + offset, field.clone()))
-            }
-            _ => self.fail(expr.span(), "B200", "需要命名 dataset 或其字段"),
-        }
+    pub(super) fn is_dataset_reference(&self,expr:&Expr)->Result<bool> {
+        Ok(matches!(self.dataset_projection(expr,DatasetProjectionUse::Presence)?.0.kind,DatasetProjectionKind::Found))
+    }
+    pub(super) fn dataset_element(&self,view:&DatasetView,index:Reg,writable:bool)->Place {
+        let (offset,ty)=self.dataset_layout(view);let mut output=DatasetWords {ty,words:Vec::with_capacity(ty.components.len())};
+        let writable=unsafe {dataset_element_words(offset,ty.components.len()as u64,view.access as u32,u32::from(writable),std::ptr::from_mut(&mut output).cast(),dataset_component,append_dataset_word)}!=0;
+        Place::Element {ty:ty.clone(),binding:view.binding,index,words:output.words,writable}
+    }
+    pub(super) fn dataset_field(&self,expr:&Expr)->Result<(usize,u32,Ty)> {
+        let (result,_,ty)=self.dataset_projection(expr,DatasetProjectionUse::Field)?;
+        Ok((result.binding as usize,result.offset,ty.unwrap().clone()))
     }
     #[inline(never)]
     pub(super) async fn record_expression(
@@ -130,4 +102,44 @@ impl Builder<'_> {
 unsafe extern "C" {
     #[link_name="bootstrap.function_body::record_construct_step"]fn record_construct_step(cursor:LexicalCursor,facts:RecordConstructFacts)->RecordConstructStep;
     #[link_name="bootstrap.function_body::record_pack_step"]fn record_pack_step(cursor:LexicalCursor,facts:RecordPackFacts)->RecordPackStep;
+}
+
+
+#[repr(u32)]enum DatasetProjectionUse {Reference,Field,Presence}
+#[derive(Clone,Copy)]#[repr(u32)]enum DatasetProjectionKind {Missing,Found,BadField,BadRoot}
+#[repr(C)]struct DatasetProjection {kind:DatasetProjectionKind,offset:u32,binding:u64,fields:u64,span:crate::syntax::wire::Span}
+#[repr(C)]struct DatasetField {present:u32,offset:u32,fields:u64,name:SourceOperation}
+#[repr(C)]struct DatasetProjectionHost {context:*mut std::ffi::c_void,root:unsafe extern "C" fn(*mut std::ffi::c_void,crate::syntax::wire::Text,u32)->DatasetProjection,declared:unsafe extern "C" fn(*mut std::ffi::c_void,u64)->DatasetField,field:unsafe extern "C" fn(*mut std::ffi::c_void,crate::syntax::wire::Text)->DatasetField,select:unsafe extern "C" fn(*mut std::ffi::c_void,u64,u32)}
+struct DatasetProjectionContext<'a,'b,'c> {builder:&'a Builder<'b>,source:crate::syntax::SourceView<'c>,view:Option<DatasetView>,ty:Option<&'a Ty>}
+struct DatasetLayoutContext<'a,'b> {ty:&'a Ty,view:&'b DatasetView}
+struct DatasetWords<'a> {ty:&'a Ty,words:Vec<u32>}
+unsafe extern "C" fn dataset_projection_part(context:*mut std::ffi::c_void,index:u64)->u32 {
+    let context=unsafe {&mut *context.cast::<DatasetLayoutContext<'_,'_>>()};let ty=context.ty;let (_,offset,field)=&ty.fields[context.view.projection[index as usize]];
+    context.ty=field;*offset
+}
+unsafe extern "C" fn dataset_projection_root(context:*mut std::ffi::c_void,name:crate::syntax::wire::Text,collect:u32)->DatasetProjection {
+    let context=unsafe {&mut *context.cast::<DatasetProjectionContext<'_,'_,'_>>()};
+    match context.builder.env.get(context.source.text(name)) {
+        Some(Binding::Data(view))=>{let (offset,ty)=context.builder.dataset_layout(view);context.ty=Some(ty);if collect!=0 {context.view=Some(view.clone());}DatasetProjection {kind:DatasetProjectionKind::Found,offset,binding:view.binding as u64,fields:ty.fields.len()as u64,span:Default::default()}},
+        _=>DatasetProjection {kind:DatasetProjectionKind::Missing,offset:0,binding:0,fields:0,span:Default::default()},
+    }
+}
+unsafe extern "C" fn dataset_declared_field(context:*mut std::ffi::c_void,index:u64)->DatasetField {
+    let context=unsafe {&*context.cast::<DatasetProjectionContext<'_,'_,'_>>()};let (name,offset,field)=&context.ty.unwrap().fields[index as usize];
+    DatasetField {present:1,offset:*offset,fields:field.fields.len()as u64,name:SourceOperation {data:name.as_ptr(),length:name.len()as u64}}
+}
+unsafe extern "C" fn dataset_selected_field(context:*mut std::ffi::c_void,name:crate::syntax::wire::Text)->DatasetField {
+    let context=unsafe {&mut *context.cast::<DatasetProjectionContext<'_,'_,'_>>()};let ty=context.ty.unwrap();
+    match ty.field(context.source.text(name)) {Some((offset,field))=>{context.ty=Some(field);DatasetField {present:1,offset,fields:field.fields.len()as u64,name:SourceOperation {data:std::ptr::null(),length:0}}},None=>DatasetField {present:0,offset:0,fields:0,name:SourceOperation {data:std::ptr::null(),length:0}}}
+}
+unsafe extern "C" fn dataset_projection_append(context:*mut std::ffi::c_void,index:u64,collect:u32) {
+    let context=unsafe {&mut *context.cast::<DatasetProjectionContext<'_,'_,'_>>()};let ty=context.ty.unwrap();context.ty=Some(&ty.fields[index as usize].2);
+    if collect!=0 {context.view.as_mut().unwrap().projection.push(index as usize);}
+}
+unsafe extern "C" fn dataset_component(context:*mut std::ffi::c_void,index:u64)->u32 {unsafe {&*context.cast::<DatasetWords<'_>>()}.ty.components[index as usize].1}
+unsafe extern "C" fn append_dataset_word(context:*mut std::ffi::c_void,word:u32) {unsafe {&mut *context.cast::<DatasetWords<'_>>()}.words.push(word);}
+unsafe extern "C" {
+    #[link_name="bootstrap.function_body::dataset_layout"]fn dataset_layout(count:u64,context:*mut std::ffi::c_void,part:unsafe extern "C" fn(*mut std::ffi::c_void,u64)->u32)->u32;
+    #[link_name="bootstrap.function_body::dataset_projection"]fn dataset_projection(source:crate::syntax::wire::SignatureNode,usage:DatasetProjectionUse,host:DatasetProjectionHost)->DatasetProjection;
+    #[link_name="bootstrap.function_body::dataset_element_words"]fn dataset_element_words(base:u32,count:u64,access:u32,requested:u32,context:*mut std::ffi::c_void,component:unsafe extern "C" fn(*mut std::ffi::c_void,u64)->u32,append:unsafe extern "C" fn(*mut std::ffi::c_void,u32))->u32;
 }

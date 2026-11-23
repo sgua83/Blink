@@ -2765,7 +2765,7 @@ impl<'a> Builder<'a> {
     }
     #[inline(never)]
     async fn index_expr(&mut self, base: &Expr, index: &Expr, e: &Expr) -> Result<Option<Value>> {
-        let resource = self.dataset_reference(base)?.is_some() || matches!(base.kind(), ExprKind::Name(name) if matches!(self.env.get(name), Some(Binding::Tile(_) | Binding::ApplicationData(_))));
+        let resource = self.is_dataset_reference(base)? || matches!(base.kind(), ExprKind::Name(name) if matches!(self.env.get(name), Some(Binding::Tile(_) | Binding::ApplicationData(_))));
         if !resource && !self.is_place(base) {
             let returned = unsafe { self.world.call(self.owned_array_index(e, base, index)).await }?;
             return self.ordinary_return(returned, e.span());
