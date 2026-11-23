@@ -264,3 +264,31 @@ extern "C" ReadInputStep read_input_step(Phase cursor,ReadInputFacts facts) on c
  if(c.phase==9){if(facts.present==0){return ReadInputStep(c,ReadInputNeed::Empty);}if(facts.owner!=0){return ReadInputStep(c,ReadInputNeed::Scoped);}if(facts.kind==3){c.phase=14;return ReadInputStep(c,ReadInputNeed::Application);}return ReadInputStep(c,ReadInputNeed::Resource);}
  return ReadInputStep(c,facts.application!=0 ? ReadInputNeed::OwnedReference : ReadInputNeed::Resource);
 }
+
+extern "C" MutableInputStep mutable_input_step(Phase cursor,MutableInputFacts facts) on cpu {
+ Phase c=cursor;
+ if(c.phase==0){c.phase=1;return MutableInputStep(c,MutableInputNeed::Reference);}
+ if(c.phase==1){if(facts.present!=0){return MutableInputStep(c,MutableInputNeed::Borrowed);}c.phase=2;return MutableInputStep(c,MutableInputNeed::IsPlace);}
+ if(c.phase==2){if(facts.place!=0){c.phase=3;return MutableInputStep(c,MutableInputNeed::Place);}c.phase=5;return MutableInputStep(c,MutableInputNeed::Evaluate);}
+ if(c.phase==3){if(facts.present==0){return MutableInputStep(c,MutableInputNeed::Empty);}c.phase=4;return MutableInputStep(c,MutableInputNeed::Dataset);}
+ if(c.phase==4){if(facts.dataset!=0){return MutableInputStep(c,MutableInputNeed::Application);}c.phase=6;return MutableInputStep(c,MutableInputNeed::Owns);}
+ if(c.phase==6){return MutableInputStep(c,facts.owns!=0 ? MutableInputNeed::Owned : MutableInputNeed::Plain);}
+ return MutableInputStep(c,facts.continuing!=0 ? MutableInputNeed::Returned : MutableInputNeed::Empty);
+}
+extern "C" MutableValueStep mutable_value_step(Phase cursor,u32 kind) on cpu {
+ Phase c=cursor;
+ if(c.phase==0){if(kind==2){c.phase=1;return MutableValueStep(c,MutableValueNeed::HoldData);}if(kind==3){c.phase=3;return MutableValueStep(c,MutableValueNeed::BindOwner);}return MutableValueStep(c,MutableValueNeed::Invalid);}
+ if(c.phase==1){c.phase=2;return MutableValueStep(c,MutableValueNeed::BorrowData);}
+ if(c.phase==2){return MutableValueStep(c,MutableValueNeed::Scoped);}
+ if(c.phase==3){c.phase=4;return MutableValueStep(c,MutableValueNeed::OwnerPlace);}
+ if(c.phase==4){c.phase=5;return MutableValueStep(c,MutableValueNeed::HoldOwner);}
+ return MutableValueStep(c,MutableValueNeed::Reference);
+}
+extern "C" OwnedInputStep owned_input_step(Phase cursor,OwnedInputFacts facts) on cpu {
+ Phase c=cursor;
+ if(c.phase==0){c.phase=1;return OwnedInputStep(c,facts.application!=0 ? OwnedInputNeed::Application : OwnedInputNeed::Model,reads(facts.access) ? 1 : 0);}
+ if(c.phase==1){if(facts.borrowed!=0){return OwnedInputStep(c,OwnedInputNeed::Borrowed,0);}c.phase=2;return OwnedInputStep(c,OwnedInputNeed::Prepare,0);}
+ if(c.phase==2){if(facts.access==CallAccess::InOut){c.phase=3;return OwnedInputStep(c,OwnedInputNeed::Available,0);}return OwnedInputStep(c,OwnedInputNeed::Reference,0);}
+ if(c.phase==3){if(facts.available==0){return OwnedInputStep(c,OwnedInputNeed::Unavailable,0);}c.phase=4;return OwnedInputStep(c,OwnedInputNeed::Load,0);}
+ return OwnedInputStep(c,OwnedInputNeed::Reference,0);
+}

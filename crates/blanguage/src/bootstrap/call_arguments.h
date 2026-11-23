@@ -46,3 +46,15 @@ enum ReadInputNeed:u32 {Reference=0;BorrowedData=1;Root=2;IsPlace=3;Temporary=4;
 struct ReadInputStep {Phase cursor;ReadInputNeed need;};
 extern "C" Optional<Text> read_input_root(SignatureNode source) on cpu;
 extern "C" ReadInputStep read_input_step(Phase cursor,ReadInputFacts facts) on cpu;
+
+struct MutableInputFacts {u32 present;u32 place;u32 dataset;u32 owns;u32 continuing;};
+enum MutableInputNeed:u32 {Reference=0;Borrowed=1;IsPlace=2;Place=3;Dataset=4;Application=5;Owns=6;Plain=7;Owned=8;Evaluate=9;Returned=10;Empty=11;};
+struct MutableInputStep {Phase cursor;MutableInputNeed need;};
+extern "C" MutableInputStep mutable_input_step(Phase cursor,MutableInputFacts facts) on cpu;
+enum MutableValueNeed:u32 {HoldData=0;BorrowData=1;Scoped=2;BindOwner=3;OwnerPlace=4;HoldOwner=5;Reference=6;Invalid=7;};
+struct MutableValueStep {Phase cursor;MutableValueNeed need;};
+extern "C" MutableValueStep mutable_value_step(Phase cursor,u32 kind) on cpu;
+struct OwnedInputFacts {u32 application;u32 borrowed;u32 available;CallAccess access;};
+enum OwnedInputNeed:u32 {Application=0;Model=1;Borrowed=2;Prepare=3;Available=4;Unavailable=5;Load=6;Reference=7;};
+struct OwnedInputStep {Phase cursor;OwnedInputNeed need;u32 reading;};
+extern "C" OwnedInputStep owned_input_step(Phase cursor,OwnedInputFacts facts) on cpu;

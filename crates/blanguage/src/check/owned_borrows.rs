@@ -23,45 +23,52 @@ impl Builder<'_>{
 each_data(&mut model,&mut Vec::new(),&mut|data,path|data.initialization=Some(initialization(&root,path,candidates)));set_storage(&mut model,place.clone());self.resolve_owned_model(&mut model,None);model
     }
     pub(super) async fn mutable_argument(&mut self,expr:&Expr,access:Access)->Result<Option<cooperative::Argument>> {
-        if let Some(data)=unsafe { self.world.call(self.application_reference(expr)).await }?{
-            return Ok(Some(cooperative::Argument::BorrowedData(data)));
-        }
-        let(place,owner)=if self.is_place(expr){
-            let Some(place)=unsafe { self.world.call(self.mutable_place(expr,access)).await }?else{return Ok(None)};
-            if place.ty().dataset.is_some(){
-                let data=unsafe { self.world.call(self.application_place_reference(place,expr.span())).await }?;
-                return Ok(Some(cooperative::Argument::BorrowedData(data)));
-            }
-            if !place.ty().owns_resources(){return Ok(Some(cooperative::Argument::Reference(self.borrow_owned(place))));}
-            (place,None)
-        }else{
-            let result=unsafe { self.world.call(self.evaluate_returned(expr,None)).await }?;if !self.flow.continues(){return Ok(None);}
-            return unsafe { self.world.call(self.mutable_returned_argument(result,access,expr.span())).await };
-        };
-        unsafe { self.world.call(self.owned_reference_argument(place,owner,access,expr.span())).await }
+        let mut cursor=MutableCursor {phase:0};let mut facts=MutableInputFacts::default();
+        let mut data=None;let mut place=None;let mut result=None;
+        loop {let step=unsafe{mutable_input_step(cursor,facts)};cursor=step.cursor;match step.need {
+            MutableInputNeed::Reference=>{data=unsafe{self.world.call(self.application_reference(expr)).await}?;facts.present=u32::from(data.is_some());},
+            MutableInputNeed::Borrowed=>return Ok(Some(cooperative::Argument::BorrowedData(data.take().unwrap()))),
+            MutableInputNeed::IsPlace=>facts.place=u32::from(self.is_place(expr)),
+            MutableInputNeed::Place=>{place=unsafe{self.world.call(self.mutable_place(expr,access)).await}?;facts.present=u32::from(place.is_some());},
+            MutableInputNeed::Dataset=>facts.dataset=u32::from(place.as_ref().unwrap().ty().dataset.is_some()),
+            MutableInputNeed::Application=>{let data=unsafe{self.world.call(self.application_place_reference(place.take().unwrap(),expr.span())).await}?;return Ok(Some(cooperative::Argument::BorrowedData(data)));},
+            MutableInputNeed::Owns=>facts.owns=u32::from(place.as_ref().unwrap().ty().owns_resources()),
+            MutableInputNeed::Plain=>return Ok(Some(cooperative::Argument::Reference(self.borrow_owned(place.take().unwrap())))),
+            MutableInputNeed::Owned=>return unsafe{self.world.call(self.owned_reference_argument(place.take().unwrap(),None,access,expr.span())).await},
+            MutableInputNeed::Evaluate=>{result=unsafe{self.world.call(self.evaluate_returned(expr,None)).await}?;facts.continuing=u32::from(self.flow.continues());},
+            MutableInputNeed::Returned=>return unsafe{self.world.call(self.mutable_returned_argument(result,access,expr.span())).await},
+            MutableInputNeed::Empty=>return Ok(None),
+        }}
     }
-    pub(super) async fn mutable_returned_argument(&mut self,result:Option<Returned>,access:Access,span:Span)->Result<Option<cooperative::Argument>> {
-            let value=match result{
-                Some(Returned::Dataset(mut data))=>{
-                    let owner=self.hold_binding(Binding::ApplicationData(data.clone()));
-                    data.ownership=Ownership::Borrowed;
-                    return Ok(Some(cooperative::Argument::Scoped{value:Returned::Dataset(data),owner}));
-                },
-                Some(Returned::OwnedValue(value))=>value,
-                _=>return self.fail(span,"B224","独占临时参数需要实际拥有值或dataset"),
-            };
-            let value=self.owned_value_binding(value,true);
-            let place=value.place().unwrap();
-            let owner=self.hold_binding(Binding::OwnedValue(value));
-        unsafe { self.world.call(self.owned_reference_argument(place,Some(owner),access,span)).await }
+    pub(super) async fn mutable_returned_argument(&mut self,mut result:Option<Returned>,access:Access,span:Span)->Result<Option<cooperative::Argument>> {
+        let mut cursor=MutableCursor {phase:0};let kind=result.as_ref().map_or(0,Returned::kind);
+        let mut owner=None;let mut value=None;let mut place=None;
+        loop {let step=unsafe{mutable_value_step(cursor,kind)};cursor=step.cursor;match step.need {
+            MutableValueNeed::HoldData=>{let Returned::Dataset(data)=result.as_ref().unwrap()else{unsafe{std::hint::unreachable_unchecked()}};owner=Some(self.hold_binding(Binding::ApplicationData(data.clone())));},
+            MutableValueNeed::BorrowData=>{let Returned::Dataset(data)=result.as_mut().unwrap()else{unsafe{std::hint::unreachable_unchecked()}};data.ownership=Ownership::Borrowed;},
+            MutableValueNeed::Scoped=>return Ok(Some(cooperative::Argument::Scoped{value:result.take().unwrap(),owner:owner.take().unwrap()})),
+            MutableValueNeed::BindOwner=>{let Returned::OwnedValue(item)=result.take().unwrap()else{unsafe{std::hint::unreachable_unchecked()}};value=Some(self.owned_value_binding(item,true));},
+            MutableValueNeed::OwnerPlace=>place=value.as_ref().unwrap().place(),
+            MutableValueNeed::HoldOwner=>owner=Some(self.hold_binding(Binding::OwnedValue(value.take().unwrap()))),
+            MutableValueNeed::Reference=>return unsafe{self.world.call(self.owned_reference_argument(place.take().unwrap(),owner,access,span)).await},
+            MutableValueNeed::Invalid=>return self.fail(span,"B224","独占临时参数需要实际拥有值或dataset"),
+        }}
     }
     async fn owned_reference_argument(&mut self,place:Place,owner:Option<String>,access:Access,span:Span)->Result<Option<cooperative::Argument>> {
-        let model=if matches!(place.storage(),Place::ApplicationElement{..}){unsafe { self.world.call(self.application_owned_argument(&place,access.reads(),span)).await }?}else{self.owned_place_model(&place)};
-        let Returned::OwnedValue(mut value)=model else{unreachable!()};
-        if value.ownership==Ownership::Borrowed{return self.fail(span,"B227","read聚合不能提升为独占借用");}
-        self.prepare_owned_value(&value);
-        if access==Access::InOut{if !value.all_available(){return self.fail(span,"B227","inout聚合需要全部活动拥有资源");}unsafe { self.world.call(self.load_owned_value(&mut value,span)).await }?;}
-        Ok(Some(cooperative::Argument::OwnedReference{value,place,owner}))
+        let mut cursor=MutableCursor {phase:0};let mut facts=OwnedInputFacts {application:u32::from(matches!(place.storage(),Place::ApplicationElement{..})),borrowed:0,available:0,access};
+        let mut value=None;
+        loop {let step=unsafe{owned_input_step(cursor,facts)};cursor=step.cursor;match step.need {
+            need @ (OwnedInputNeed::Application|OwnedInputNeed::Model)=>{
+                let model=match need{OwnedInputNeed::Application=>unsafe{self.world.call(self.application_owned_argument(&place,step.reading!=0,span)).await}?,_=>self.owned_place_model(&place)};
+                let Returned::OwnedValue(item)=model else{unsafe{std::hint::unreachable_unchecked()}};facts.borrowed=u32::from(item.ownership==Ownership::Borrowed);value=Some(item);
+            }
+            OwnedInputNeed::Borrowed=>return self.fail(span,"B227","read聚合不能提升为独占借用"),
+            OwnedInputNeed::Prepare=>self.prepare_owned_value(value.as_ref().unwrap()),
+            OwnedInputNeed::Available=>facts.available=u32::from(value.as_ref().unwrap().all_available()),
+            OwnedInputNeed::Unavailable=>return self.fail(span,"B227","inout聚合需要全部活动拥有资源"),
+            OwnedInputNeed::Load=>unsafe{self.world.call(self.load_owned_value(value.as_mut().unwrap(),span)).await}?,
+            OwnedInputNeed::Reference=>return Ok(Some(cooperative::Argument::OwnedReference{value:value.take().unwrap(),place,owner})),
+        }}
     }
     pub(super) async fn complete_task_owned_places(
         &mut self,sources:&view::Borrow,
@@ -282,4 +289,19 @@ each_data(&mut model,&mut Vec::new(),&mut|data,path|data.initialization=Some(ini
         self.env.remove(&held);
         Ok(())
     }
+}
+
+#[repr(C)]#[derive(Clone,Copy)]struct MutableCursor {phase:u32}
+#[repr(C)]#[derive(Clone,Copy,Default)]struct MutableInputFacts {present:u32,place:u32,dataset:u32,owns:u32,continuing:u32}
+#[repr(u32)]enum MutableInputNeed {Reference,Borrowed,IsPlace,Place,Dataset,Application,Owns,Plain,Owned,Evaluate,Returned,Empty}
+#[repr(C)]struct MutableInputStep {cursor:MutableCursor,need:MutableInputNeed}
+#[repr(u32)]enum MutableValueNeed {HoldData,BorrowData,Scoped,BindOwner,OwnerPlace,HoldOwner,Reference,Invalid}
+#[repr(C)]struct MutableValueStep {cursor:MutableCursor,need:MutableValueNeed}
+#[repr(C)]#[derive(Clone,Copy)]struct OwnedInputFacts {application:u32,borrowed:u32,available:u32,access:Access}
+#[repr(u32)]enum OwnedInputNeed {Application,Model,Borrowed,Prepare,Available,Unavailable,Load,Reference}
+#[repr(C)]struct OwnedInputStep {cursor:MutableCursor,need:OwnedInputNeed,reading:u32}
+unsafe extern "C" {
+ #[link_name="bootstrap.call_arguments::mutable_input_step"]fn mutable_input_step(cursor:MutableCursor,facts:MutableInputFacts)->MutableInputStep;
+ #[link_name="bootstrap.call_arguments::mutable_value_step"]fn mutable_value_step(cursor:MutableCursor,kind:u32)->MutableValueStep;
+ #[link_name="bootstrap.call_arguments::owned_input_step"]fn owned_input_step(cursor:MutableCursor,facts:OwnedInputFacts)->OwnedInputStep;
 }
