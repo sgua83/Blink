@@ -51,3 +51,13 @@ enum DomainInstanceNeed:u32 {Actuals=0;Explicit=1;Specialize=2;Complete=3;};
 extern "C" DomainCallStep domain_call_step(DomainCallCursor state,DomainCallFacts facts) on cpu;
 extern "C" DomainInstanceNeed domain_instance_step(inout Phase cursor,u32 explicit) on cpu;
 extern "C" void domain_actuals(u64 count,address context,cfn<void,address,u64> append) on cpu requires nonzero(append);
+
+struct DomainExecutionCursor {u64 index;u32 phase;};
+struct DomainExecutionFacts {u64 items;u32 compiled;u32 present;u32 valid;u64 stage;u64 segment_start;u64 domain;u64 count;};
+enum DomainExecutionNeed:u32 {Contracts=0;Lengths=1;LengthPair=2;InvalidLength=3;Requirements=4;Elements=5;ProveElements=6;Prefix=7;Source=8;Compiled=9;Binding=10;AppendBinding=11;Segment=12;SegmentFacts=13;Writes=14;Write=15;Outputs=16;Output=17;OutputDomain=18;AppendOutput=19;Arguments=20;Argument=21;Publish=22;Guarantees=23;Guarantee=24;InvalidPrefix=25;Enter=26;Expand=27;Proved=28;Leave=29;Grants=30;Grant=31;Complete=32;};
+struct DomainExecutionStep {DomainExecutionCursor cursor;DomainExecutionNeed need;};
+extern "C" DomainExecutionStep domain_execution_step(DomainExecutionCursor state,DomainExecutionFacts facts) on cpu;
+struct DomainWriteFacts {u64 regions;u32 output;};
+enum DomainWriteNeed:u32 {Proof=0;Region=1;Complete=2;};
+struct DomainWriteStep {DomainExecutionCursor cursor;DomainWriteNeed need;};
+extern "C" DomainWriteStep domain_write_step(DomainExecutionCursor state,DomainWriteFacts facts) on cpu;

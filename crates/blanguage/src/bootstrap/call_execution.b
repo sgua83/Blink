@@ -256,3 +256,49 @@ extern "C" DomainInstanceNeed domain_instance_step(inout Phase cursor,u32 explic
 extern "C" void domain_actuals(u64 count,address context,cfn<void,address,u64> append) on cpu requires nonzero(append) {
  u64 index=0u64;while(index<count){append(context,index);index+=1u64;}
 }
+
+extern "C" DomainExecutionStep domain_execution_step(DomainExecutionCursor state,DomainExecutionFacts facts) on cpu {
+ DomainExecutionCursor cursor=state;
+ while(true){
+  if(cursor.phase==0){cursor.phase=1;return DomainExecutionStep(cursor,DomainExecutionNeed::Contracts);}
+  if(cursor.phase==1){cursor.phase=2;cursor.index=0u64;return DomainExecutionStep(cursor,DomainExecutionNeed::Lengths);}
+  if(cursor.phase==2){if(cursor.index<facts.items){cursor.phase=3;return DomainExecutionStep(cursor,DomainExecutionNeed::LengthPair);}cursor.phase=4;}
+  if(cursor.phase==3){if(facts.valid==0){return DomainExecutionStep(cursor,DomainExecutionNeed::InvalidLength);}cursor.index+=1u64;cursor.phase=2;}
+  if(cursor.phase==4){cursor.phase=5;return DomainExecutionStep(cursor,DomainExecutionNeed::Requirements);}
+  if(cursor.phase==5){cursor.phase=6;return DomainExecutionStep(cursor,DomainExecutionNeed::Elements);}
+  if(cursor.phase==6){cursor.phase=7;cursor.index=0u64;return DomainExecutionStep(cursor,DomainExecutionNeed::ProveElements);}
+  if(cursor.phase==7){if(cursor.index<facts.items){cursor.phase=8;return DomainExecutionStep(cursor,DomainExecutionNeed::Prefix);}cursor.phase=9;}
+  if(cursor.phase==8){cursor.index+=1u64;cursor.phase=7;}
+  if(cursor.phase==9){cursor.phase=10;return DomainExecutionStep(cursor,DomainExecutionNeed::Source);}
+  if(cursor.phase==10){if(facts.compiled!=0){cursor.phase=11;cursor.index=0u64;return DomainExecutionStep(cursor,DomainExecutionNeed::Compiled);}cursor.phase=40;return DomainExecutionStep(cursor,DomainExecutionNeed::Enter);}
+  if(cursor.phase==11){if(cursor.index<facts.items){cursor.phase=12;return DomainExecutionStep(cursor,DomainExecutionNeed::Binding);}cursor.phase=15;return DomainExecutionStep(cursor,DomainExecutionNeed::Segment);}
+  if(cursor.phase==12){cursor.phase=13;if(facts.present!=0){return DomainExecutionStep(cursor,DomainExecutionNeed::AppendBinding);}}
+  if(cursor.phase==13){cursor.index+=1u64;cursor.phase=11;}
+  if(cursor.phase==15){cursor.phase=16;if(facts.segment_start!=facts.stage){return DomainExecutionStep(cursor,DomainExecutionNeed::SegmentFacts);}}
+  if(cursor.phase==16){cursor.phase=17;cursor.index=0u64;return DomainExecutionStep(cursor,DomainExecutionNeed::Writes);}
+  if(cursor.phase==17){if(cursor.index<facts.items){cursor.phase=18;return DomainExecutionStep(cursor,DomainExecutionNeed::Write);}cursor.phase=19;cursor.index=0u64;return DomainExecutionStep(cursor,DomainExecutionNeed::Outputs);}
+  if(cursor.phase==18){cursor.index+=1u64;cursor.phase=17;}
+  if(cursor.phase==19){if(cursor.index<facts.items){cursor.phase=20;return DomainExecutionStep(cursor,DomainExecutionNeed::Output);}cursor.phase=23;cursor.index=0u64;return DomainExecutionStep(cursor,DomainExecutionNeed::Arguments);}
+  if(cursor.phase==20){cursor.phase=21;if(facts.present!=0){return DomainExecutionStep(cursor,DomainExecutionNeed::OutputDomain);}}
+  if(cursor.phase==21){cursor.phase=22;return DomainExecutionStep(cursor,DomainExecutionNeed::AppendOutput);}
+  if(cursor.phase==22){cursor.index+=1u64;cursor.phase=19;}
+  if(cursor.phase==23){if(cursor.index<facts.items){cursor.phase=24;return DomainExecutionStep(cursor,DomainExecutionNeed::Argument);}cursor.phase=25;return DomainExecutionStep(cursor,DomainExecutionNeed::Publish);}
+  if(cursor.phase==24){cursor.index+=1u64;cursor.phase=23;}
+  if(cursor.phase==25){cursor.phase=26;cursor.index=0u64;return DomainExecutionStep(cursor,DomainExecutionNeed::Guarantees);}
+  if(cursor.phase==26){if(cursor.index<facts.items){cursor.phase=27;return DomainExecutionStep(cursor,DomainExecutionNeed::Guarantee);}cursor.phase=44;}
+  if(cursor.phase==27){if(facts.domain==facts.count){return DomainExecutionStep(cursor,DomainExecutionNeed::InvalidPrefix);}cursor.index+=1u64;cursor.phase=26;}
+  if(cursor.phase==40){cursor.phase=41;return DomainExecutionStep(cursor,DomainExecutionNeed::Expand);}
+  if(cursor.phase==41){cursor.phase=42;return DomainExecutionStep(cursor,DomainExecutionNeed::Proved);}
+  if(cursor.phase==42){cursor.phase=44;return DomainExecutionStep(cursor,DomainExecutionNeed::Leave);}
+  if(cursor.phase==44){cursor.phase=45;cursor.index=0u64;return DomainExecutionStep(cursor,DomainExecutionNeed::Grants);}
+  if(cursor.phase==45){if(cursor.index<facts.items){cursor.phase=46;return DomainExecutionStep(cursor,DomainExecutionNeed::Grant);}return DomainExecutionStep(cursor,DomainExecutionNeed::Complete);}
+  if(cursor.phase==46){cursor.index+=1u64;cursor.phase=45;}
+ }
+}
+extern "C" DomainWriteStep domain_write_step(DomainExecutionCursor state,DomainWriteFacts facts) on cpu {
+ DomainExecutionCursor cursor=state;
+ if(cursor.phase==0){cursor.phase=1;if(facts.output!=0){return DomainWriteStep(cursor,DomainWriteNeed::Proof);}}
+ if(cursor.phase==2){cursor.index+=1u64;cursor.phase=1;}
+ if(cursor.index<facts.regions){cursor.phase=2;return DomainWriteStep(cursor,DomainWriteNeed::Region);}
+ return DomainWriteStep(cursor,DomainWriteNeed::Complete);
+}
