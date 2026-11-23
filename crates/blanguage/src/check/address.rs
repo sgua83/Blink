@@ -1324,7 +1324,7 @@ impl Builder<'_> {
                 if capture_kind==Capture::Write{
                     *proof=std::mem::take(proof).with_component_identity(component,identity);
                     if fields.contains(&component){
-                        proof.set_view_borrow(component,view::Borrow{reads:view::Edges::from([view_contracts::ContentRead::Snapshot{memory,component:snapshot,position,initial}]),..view::Borrow::default()});
+                        proof.set_view_borrow(component,view::Borrow{reads:view::Edges::from([view_contracts::ContentRead::Snapshot{memory,component:snapshot,position,index,initial}]),..view::Borrow::default()});
                     }
                 }
             }
@@ -1356,7 +1356,7 @@ impl Builder<'_> {
                 let resources=view::resource_paths(&selected.ty).into_iter().filter(|fields|application::model_data(selected.elements.known(),fields).is_some()).collect();
                 if let Some(value)=selected.elements.known_mut().and_then(returns::Returned::view_value_mut){
                     let positions=value.ty.components.iter().enumerate().map(|(component,(_,word))|(component,Position::Borrowed(borrow.clone(),layout.clone(),*word))).collect();
-                    value.proof=bounds::Proof::capture(value);capture(&mut value.proof,&mut value.uniform,&value.ty,positions,None,resources);if capture_kind==Capture::Write{value.constant=None;value.proof=bounds::Proof::capture(value);}
+                    value.proof=bounds::Proof::capture(value);capture(&mut value.proof,&mut value.uniform,&value.ty,positions,Some(bounds::Operand::Value(ValueIdentity::ElementIndex(0))),resources);if capture_kind==Capture::Write{value.constant=None;value.proof=bounds::Proof::capture(value);}
                 }
             }
         });}

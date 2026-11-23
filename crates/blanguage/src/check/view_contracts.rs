@@ -12,7 +12,7 @@ pub(super) type Outputs=BTreeMap<Output,Borrow>;
 #[derive(Clone)]
 pub(super) enum ContentRead {
     Value {memory:usize,word:u32,borrow:Arc<Borrow>,snapshots:Arc<[ValueSnapshot]>},
-    Snapshot {memory:usize,component:usize,position:Position,initial:Arc<bounds::Proof>},
+    Snapshot {memory:usize,component:usize,position:Position,index:Option<bounds::Operand>,initial:Arc<bounds::Proof>},
     Call {memory:usize,origin:Arc<address::Origin>,word:u32,snapshots:Option<Arc<[ValueSnapshot]>>},
     Returned {memory:usize},
     Relation {memory:usize,graph:Arc<relation::Graph>,root:usize,snapshots:Option<Arc<[ValueSnapshot]>>},
@@ -733,6 +733,14 @@ fn same_content_storage(a:&address::Root,b:&address::Root)->bool {
         _=>a==b,
     }
 }
+fn content_indices(a:&address::Root,b:&address::Root)->Option<(Option<bounds::Operand>,Option<bounds::Operand>)> {
+    match(a,b) {
+        (address::Root::Resource{borrow:a,index:at}|address::Root::Dataset{borrow:a,index:at},
+         address::Root::Resource{borrow:b,index:bt}|address::Root::Dataset{borrow:b,index:bt})
+            if a==b=>Some((*at,*bt)),
+        _=>None,
+    }
+}
 fn content_word(origin:&address::Origin,word:u32)->Option<(usize,u32)>{
     let component=origin.layout.parts.iter().position(|(scalar,at)|*at==word&&*scalar==Scalar::U64)?;
     Some((component,origin.words[component]))
@@ -786,17 +794,24 @@ fn content_write_overlap<'a>(
     query: Option<(&address::Origin, u32)>, position: Option<&Position>,
     target: &address::Origin, word: u32, active: impl FnOnce() -> Option<&'a bounds::Clause>,
 ) -> Option<bool> {
+    let active=active()?;
     let complete = query.is_some_and(|(origin, at)| {
-        origin.base == target.base && same_content_storage(&origin.root, &target.root)
+        let storage=match content_indices(&origin.root,&target.root) {
+            Some((Some(a),Some(b)))=>bounds::Condition::index_equal(a,b).truth_in(active)==Some(true),
+            Some(_)=>false,
+            None=>same_content_storage(&origin.root,&target.root),
+        };
+        origin.base == target.base && storage
             && content_word(origin, at).zip(content_word(target, word))
                 .is_some_and(|((_, read), (_, written))| read == written)
-    }) || position.zip(content_position(target, word).as_ref()).is_some_and(|(read, written)| read == written);
+    }) || query.is_none_or(|(origin,_)|content_indices(&origin.root,&target.root).is_none())
+        && position.zip(content_position(target, word).as_ref()).is_some_and(|(read, written)| read == written);
 
     if complete {
-        return active().map(|_| true);
+        return Some(true);
     }
     let position = position?;
-    address::MemoryEffect::position_may_write(target, active()?, position).then_some(false)
+    address::MemoryEffect::position_may_write(target, active, position).then_some(false)
 }
 
 fn content_write_paths(
@@ -806,7 +821,14 @@ fn content_write_paths(
     let mut hit = bounds::Clause::impossible();
     let mut miss = execution.assume(&bounds::Clause::default(), false);
     for (source, selected) in targets.sources.entries() {
-        let active = execution.assume(&selected, true);
+        let mut active = execution.assume(&selected, true);
+        if let (Some((read,_)),Origin::Position(target))=(query,source)
+            && let Some((Some(a),Some(b)))=content_indices(&read.root,&target.root)
+        {
+            let same=bounds::Condition::index_equal(a,b);
+            miss=bounds::Clause::either(&miss,&same.assume(&active,false));
+            active=same.assume(&active,true);
+        }
         if !active.possible() { continue; }
         let overlap = match source {
             Origin::Position(origin) => content_write_overlap(query, position, origin, word, || Some(&active)),
@@ -1019,10 +1041,42 @@ impl BorrowEvaluation<'_>{
 
         let position=content_position(origin,word);
         if let Some(snapshots)=snapshots{
+            let index = match &origin.root {
+                address::Root::Resource { index, .. } | address::Root::Dataset { index, .. } => *index,
+                _ => None,
+            };
+            let captured_position = match &origin.root {
+                address::Root::Resource { .. } | address::Root::Dataset { .. } => origin
+                    .memory_regions(&self.function.uses[memory].path)
+                    .and_then(|regions| regions.into_iter().find(|region| region.word == word
+                        && region.offset == 0 && region.size == Scalar::U64.size()))
+                    .map(|region| region.position),
+                _ => position.clone(),
+            };
             let mut captured=None;
             for snapshot in snapshots.iter(){
-                if snapshot.scalar==Scalar::U64 && position.as_ref()==Some(&snapshot.position){
-                    let value=self.evaluate(&snapshot.proof.view_borrow(0));
+                if snapshot.scalar!=Scalar::U64 {continue;}
+                let snapshot_position=match &snapshot.position {
+                    Position::Borrowed(borrow,layout,word)=>Position::Borrowed(
+                        Arc::new(self.evaluate(borrow)),layout.clone(),*word,
+                    ),
+                    position=>position.clone(),
+                };
+                if captured_position.as_ref()==Some(&snapshot_position){
+                    let mut bindings = BTreeMap::new();
+                    match (snapshot.index, index) {
+                        (Some(bounds::Operand::Value(id @ ValueIdentity::ElementIndex(_))), Some(index)) => {
+                            bindings.insert(id, bounds::Proof::element_operand(index, (0, u32::MAX)));
+                        }
+                        (Some(bounds::Operand::Value(id @ ValueIdentity::ElementIndex(_))), None) => {
+                            bindings.insert(id,bounds::Proof::default());
+                        }
+                        (Some(selected), Some(index)) if bounds::Condition::index_equal(selected, index)
+                            .truth_in(&self.function.uses[memory].path) != Some(true) => continue,
+                        (Some(_), None)=>continue,
+                        _ => {}
+                    }
+                    let value=self.evaluate(&snapshot.proof.view_borrow(0)).substitute_values(&bindings);
                     if let Some(old)=&mut captured{Borrow::union(old,&value);}else{captured=Some(value);}
                 }
             }
@@ -1137,10 +1191,18 @@ impl BorrowEvaluation<'_>{
                 }
                 value.restricted_by(&function.uses[*memory].path)
             },
-            ContentRead::Snapshot{memory,position,initial,..}=>{
+            ContentRead::Snapshot{memory,position,index,initial,..}=>{
                 let value=self.evaluate_sources(&initial.view_borrow(0),sources);
                 let mut result=ContentAtRead::default();
-                self.content_event(None, Some(position), *memory,
+                let query=match (position,index) {
+                    (Position::Borrowed(borrow,base,word),Some(index))=>Some(address::Origin{
+                        root:address::Root::Resource{borrow:borrow.as_ref().clone(),index:Some(*index)},
+                        layout:address::Layout::of(&Ty::scalar(Scalar::U64)),base:base.clone(),
+                        words:Arc::from([*word]),positions:Arc::from([]),writable:false,initialized:Arc::from([true]),
+                    }),
+                    _=>None,
+                };
+                self.content_event(query.as_ref().map(|origin|(origin,0)), Some(position), *memory,
                     |borrow, when, complete| result.write(borrow, when, complete));
                 result.with_initial(value).restricted_by(&function.uses[*memory].path)
             },
@@ -2284,7 +2346,12 @@ fn solve_loop_value(
             conditions.terms.push(value.condition_for_join(0));
         }
     }
-    proof.set_loop_condition(conditions.terms.into_iter().reduce(bounds::Condition::common));
+    // A memory snapshot can carry the same loop value back with an extra
+    // condition. Close that logical union here instead of unfolding its syntax
+    // again on every value round.
+    let condition = conditions.terms.into_iter().reduce(bounds::Condition::common)
+        .map(|condition| bounds::Normalizer::new().condition(&condition));
+    proof.set_loop_condition(condition);
     proof
 }
 
