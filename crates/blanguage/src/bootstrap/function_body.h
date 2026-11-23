@@ -224,3 +224,24 @@ extern "C" ReturnedValueStep returned_value_step(LocalCursor cursor,u32 continui
 enum ShortCircuitOrder:u32 {RightYes=0;RightNo=1;};
 struct ShortCircuitPlan {ShortCircuitOrder order;u32 skipped;};
 extern "C" ShortCircuitPlan short_circuit_plan(SeekName operation) on cpu;
+
+
+enum SourcePlaceNeed:u32 {Name=0;Bind=1;External=2;Parent=3;Project=4;Index=5;Bad=6;Empty=7;};
+struct SourcePlaceStep {LocalCursor cursor;SourcePlaceNeed need;Text spelling;u64 first;u64 second;Slice types;Slice arguments;};
+extern "C" SourcePlaceStep source_place_step(LocalCursor cursor,SignatureNode source,u32 present) on cpu;
+enum MemberPositionNeed:u32 {Project=0;BadView=1;};
+extern "C" MemberPositionNeed member_position(u32 view) on cpu;
+struct NamePositionFacts {u32 kind;u32 present;u32 arrays;};
+enum NamePositionNeed:u32 {Atomic=0;Owned=1;ViewElement=2;InspectOwned=3;ExistingOwned=4;MaterializeOwned=5;ArrayType=6;MaterializeArray=7;Bad=8;};
+struct NamePositionStep {LocalCursor cursor;NamePositionNeed need;};
+extern "C" NamePositionStep name_position_step(LocalCursor cursor,NamePositionFacts facts) on cpu;
+struct IndexPositionFacts {u32 present;u32 bounded;u32 current;u32 same_domain;u32 same_shape;u32 access;u32 whole;u32 appending;};
+enum IndexPositionNeed:u32 {Application=0;ApplicationIndex=1;TileBinding=2;TileIndex=3;Dataset=4;View=5;Index=6;Type=7;Bounds=8;BadBounds=9;Append=10;BadAppend=11;Domain=12;Element=13;Empty=14;};
+struct IndexPositionStep {LocalCursor cursor;IndexPositionNeed need;Text name;u32 writable;};
+extern "C" IndexPositionStep index_position_step(LocalCursor cursor,SignatureNode source,IndexPositionFacts facts) on cpu;
+struct PositionAppend {u32 present;u64 output;u64 count;};
+extern "C" u32 position_append(u64 binding,address context,cfn<PositionAppend,address> next) on cpu requires nonzero(next);
+struct ViewPositionFacts {u32 placed;u32 present;u32 dataset;u32 indexed;u32 continuing;u32 kind;u32 array;};
+enum ViewPositionNeed:u32 {Parent=0;DatasetType=1;IndexedType=2;Reference=3;ApplicationIndex=4;Read=5;Returned=6;Kind=7;OwnedArray=8;HoldDataset=9;HoldOwned=10;Ordinary=11;ArrayType=12;Materialize=13;ArrayPlace=14;View=15;Empty=16;};
+struct ViewPositionStep {LocalCursor cursor;ViewPositionNeed need;};
+extern "C" ViewPositionStep view_position_step(LocalCursor cursor,ViewPositionFacts facts) on cpu;

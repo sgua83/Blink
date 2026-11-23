@@ -794,3 +794,83 @@ extern "C" ShortCircuitPlan short_circuit_plan(SeekName operation) on cpu {
  return ShortCircuitPlan(local_spelling(operation.data,operation.length,"&&") ? ShortCircuitOrder::RightYes : ShortCircuitOrder::RightNo,
   local_spelling(operation.data,operation.length,"||") ? 1 : 0);
 }
+
+
+extern "C" SourcePlaceStep source_place_step(LocalCursor cursor,SignatureNode source,u32 present) on cpu {
+ SourcePlaceStep result=SourcePlaceStep(cursor,SourcePlaceNeed::Bad,Text(0,Span(0u64,0u64)),0u64,0u64,Slice(0u64,0u64),Slice(0u64,0u64));
+ if(cursor.phase==2&&present==0){result.need=SourcePlaceNeed::Empty;return result;}
+ ExprNode expression=binding_node<ExprNode>(source.storage.nodes,source.offset);
+ match(expression.kind){
+  ExprKind::Name(name){result.need=SourcePlaceNeed::Name;result.spelling=name;}
+  ExprKind::Specialize(value){
+   address bytes=binding_at(value.name.kind==0 ? source.storage.source : source.storage.text,value.name.range.start);
+   if(local_spelling(bytes,value.name.range.end-value.name.range.start,"unsafe_position")){
+    result.types=value.types;result.arguments=value.arguments;
+    if(cursor.phase==0){result.cursor.phase=1;result.need=SourcePlaceNeed::Bind;}else{result.need=SourcePlaceNeed::External;}
+   }
+  }
+  ExprKind::Member(value){result.first=value.base.offset;result.spelling=value.field;if(cursor.phase==0){result.cursor.phase=2;result.need=SourcePlaceNeed::Parent;}else{result.need=SourcePlaceNeed::Project;}}
+  ExprKind::Index(value){result.need=SourcePlaceNeed::Index;result.first=value.base.offset;result.second=value.index.offset;}
+  ExprKind::Number(unused){} ExprKind::StaticU32(unused){} ExprKind::Bool(unused){} ExprKind::Call(unused){} ExprKind::Invoke(unused){} ExprKind::Construct(unused){} ExprKind::FunctionRef(unused){} ExprKind::Cooperate(unused){} ExprKind::Target(unused){} ExprKind::Unary(unused){} ExprKind::Binary(unused){} ExprKind::Select(unused){}
+ }
+ return result;
+}
+extern "C" MemberPositionNeed member_position(u32 view) on cpu {return view!=0 ? MemberPositionNeed::BadView : MemberPositionNeed::Project;}
+extern "C" NamePositionStep name_position_step(LocalCursor cursor,NamePositionFacts facts) on cpu {
+ LocalCursor c=cursor;
+ if(c.phase==0){
+  if(facts.kind==1){return NamePositionStep(c,NamePositionNeed::Atomic);}
+  if(facts.kind==2){return NamePositionStep(c,NamePositionNeed::Owned);}
+  if(facts.kind==5){return NamePositionStep(c,NamePositionNeed::ViewElement);}
+  if(facts.kind==3){c.phase=1;return NamePositionStep(c,NamePositionNeed::InspectOwned);}
+  if(facts.kind==4){c.phase=2;return NamePositionStep(c,NamePositionNeed::ArrayType);}
+  return NamePositionStep(c,NamePositionNeed::Bad);
+ }
+ if(c.phase==1){return NamePositionStep(c,facts.present!=0 ? NamePositionNeed::ExistingOwned : NamePositionNeed::MaterializeOwned);}
+ return NamePositionStep(c,facts.arrays!=0 ? NamePositionNeed::MaterializeArray : NamePositionNeed::Bad);
+}
+extern "C" IndexPositionStep index_position_step(LocalCursor cursor,SignatureNode source,IndexPositionFacts facts) on cpu {
+ IndexPositionStep r=IndexPositionStep(cursor,IndexPositionNeed::Empty,Text(0,Span(0u64,0u64)),0);
+ if(cursor.phase==0){r.cursor.phase=1;r.need=IndexPositionNeed::Application;return r;}
+ if(cursor.phase==1){
+  if(facts.present!=0){r.need=IndexPositionNeed::ApplicationIndex;return r;}
+  ExprNode expression=binding_node<ExprNode>(source.storage.nodes,source.offset);
+  match(expression.kind){
+   ExprKind::Name(name){r.cursor.phase=2;r.need=IndexPositionNeed::TileBinding;r.name=name;return r;}
+   ExprKind::Number(unused){} ExprKind::StaticU32(unused){} ExprKind::Bool(unused){} ExprKind::Member(unused){} ExprKind::Index(unused){} ExprKind::Call(unused){} ExprKind::Invoke(unused){} ExprKind::Construct(unused){} ExprKind::Specialize(unused){} ExprKind::FunctionRef(unused){} ExprKind::Cooperate(unused){} ExprKind::Target(unused){} ExprKind::Unary(unused){} ExprKind::Binary(unused){} ExprKind::Select(unused){}
+  }
+  r.cursor.phase=3;r.need=IndexPositionNeed::Dataset;return r;
+ }
+ if(cursor.phase==2){if(facts.present!=0){r.need=IndexPositionNeed::TileIndex;return r;}r.cursor.phase=3;r.need=IndexPositionNeed::Dataset;return r;}
+ if(cursor.phase==3){if(facts.present==0){r.need=IndexPositionNeed::View;return r;}r.cursor.phase=4;r.need=IndexPositionNeed::Index;return r;}
+ if(cursor.phase==4){if(facts.present==0){return r;}r.cursor.phase=5;r.need=IndexPositionNeed::Type;return r;}
+ if(cursor.phase==5){r.cursor.phase=6;r.need=IndexPositionNeed::Bounds;return r;}
+ if(cursor.phase==6){
+  if(facts.bounded==0&&!(facts.current!=0&&(facts.same_domain!=0||facts.same_shape!=0))){r.need=IndexPositionNeed::BadBounds;return r;}
+  if(facts.access==2||facts.access==3){r.cursor.phase=7;r.need=IndexPositionNeed::Append;return r;}
+ }
+ if(cursor.phase==7){if(facts.appending!=0){r.need=IndexPositionNeed::BadAppend;return r;}r.cursor.phase=8;r.need=IndexPositionNeed::Domain;return r;}
+ r.need=IndexPositionNeed::Element;r.writable=(facts.access==2||facts.access==3||facts.access==4)&&(facts.whole!=0||facts.current!=0) ? 1 : 0;return r;
+}
+extern "C" u32 position_append(u64 binding,address context,cfn<PositionAppend,address> next) on cpu requires nonzero(next) {
+ while(true){PositionAppend item=next(context);if(item.present==0){return 0;}if(item.output==binding||item.count==binding){return 1;}}
+}
+extern "C" ViewPositionStep view_position_step(LocalCursor cursor,ViewPositionFacts facts) on cpu {
+ LocalCursor c=cursor;
+ if(c.phase==0){c.phase=facts.placed!=0 ? 1 : 5;return ViewPositionStep(c,facts.placed!=0 ? ViewPositionNeed::Parent : ViewPositionNeed::Returned);}
+ if(c.phase==1){if(facts.present==0){return ViewPositionStep(c,ViewPositionNeed::Empty);}c.phase=2;return ViewPositionStep(c,ViewPositionNeed::DatasetType);}
+ if(c.phase==2){if(facts.dataset!=0){c.phase=4;return ViewPositionStep(c,ViewPositionNeed::Reference);}c.phase=3;return ViewPositionStep(c,ViewPositionNeed::IndexedType);}
+ if(c.phase==3){if(facts.indexed!=0){return ViewPositionStep(c,ViewPositionNeed::ArrayPlace);}c.phase=8;return ViewPositionStep(c,ViewPositionNeed::Read);}
+ if(c.phase==4){return ViewPositionStep(c,ViewPositionNeed::ApplicationIndex);}
+ if(c.phase==5){if(facts.continuing==0){return ViewPositionStep(c,ViewPositionNeed::Empty);}c.phase=6;return ViewPositionStep(c,ViewPositionNeed::Kind);}
+ if(c.phase==6){
+  if(facts.kind==1){c.phase=4;return ViewPositionStep(c,ViewPositionNeed::HoldDataset);}
+  if(facts.kind==2){c.phase=7;return ViewPositionStep(c,ViewPositionNeed::OwnedArray);}
+  c.phase=8;return ViewPositionStep(c,ViewPositionNeed::Ordinary);
+ }
+ if(c.phase==7){if(facts.array!=0){c.phase=9;return ViewPositionStep(c,ViewPositionNeed::HoldOwned);}c.phase=8;return ViewPositionStep(c,ViewPositionNeed::Ordinary);}
+ if(c.phase==8){if(facts.present==0){return ViewPositionStep(c,ViewPositionNeed::Empty);}c.phase=10;return ViewPositionStep(c,ViewPositionNeed::ArrayType);}
+ if(c.phase==9){return ViewPositionStep(c,ViewPositionNeed::ArrayPlace);}
+ if(facts.array!=0){c.phase=9;return ViewPositionStep(c,ViewPositionNeed::Materialize);}
+ return ViewPositionStep(c,ViewPositionNeed::View);
+}

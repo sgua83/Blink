@@ -2285,21 +2285,18 @@ impl<'a> Builder<'a> {
         unsafe { self.world.call(self.at_source(e.span(), SourceSyntax::Place, async |b| unsafe { b.world.call(b.place_syntax(e)).await })).await }
     }
     async fn place_syntax(&mut self, e: &Expr) -> Result<Option<Place>> {
-        self.require_user_projection(e)?;
-        self.view_uses.before(e.span());
-        match e.kind() {
-            ExprKind::Name(name) => self.name_place(name, e.span()).map(Some),
-            ExprKind::Specialize(name, explicit, args) if name == "unsafe_position" => {
-                {
-                let explicit=unsafe { self.world.call(self.scope.bindings().arguments(self.world,&explicit,
-                    (self.scope.source(),self.scope.module(),self.scope.imports()),e.span())).await }?;
-                unsafe { self.world.call(self.external_position(&explicit, &args, e.span())).await }
-            }
-            }
-            ExprKind::Member(base, field) => unsafe { self.world.call(self.member_place(&base, field, e)).await },
-            ExprKind::Index(base, index) => unsafe { self.world.call(self.index_place(&base, &index)).await },
-            _ => self.fail(e.span(), "B138", "表达式不是可赋值位置"),
-        }
+        self.require_user_projection(e)?;self.view_uses.before(e.span());
+        let mut cursor=SourceValueCursor {phase:0};let mut present=0;let mut explicit=None;let mut place=None;
+        loop {let step=unsafe {source_place_step(cursor,e.signature_node(),present)};cursor=step.cursor;match step.need {
+            SourcePlaceNeed::Name=>return self.name_place(e.source_view().text(step.spelling),e.span()).map(Some),
+            SourcePlaceNeed::Bind=>{let types=e.list(step.types);explicit=Some(unsafe {self.world.call(self.scope.bindings().arguments(self.world,&types,(self.scope.source(),self.scope.module(),self.scope.imports()),e.span())).await}?);},
+            SourcePlaceNeed::External=>{let args=e.list(step.arguments);return unsafe {self.world.call(self.external_position(explicit.as_ref().unwrap(),&args,e.span())).await};},
+            SourcePlaceNeed::Parent=>{let base=e.child(step.first);place=unsafe {self.world.call(self.place(&base)).await}?;present=u32::from(place.is_some());},
+            SourcePlaceNeed::Project=>return self.member_position(place.take().unwrap(),e.source_view().text(step.spelling),e.span()),
+            SourcePlaceNeed::Index=>{let base=e.child(step.first);let index=e.child(step.second);return unsafe {self.world.call(self.index_place(&base,&index)).await};},
+            SourcePlaceNeed::Bad=>return self.fail(e.span(),"B138","表达式不是可赋值位置"),
+            SourcePlaceNeed::Empty=>return Ok(None),
+        }}
     }
     async fn read_place(&mut self, p: &Place, span: Span, element_read_origin: Option<Arc<GeneratedOrigin>>) -> Result<Value> {
         unsafe { self.world.call(self.require_place_access(p,Access::Read,span)).await }?;
@@ -2935,87 +2932,47 @@ impl<'a> Builder<'a> {
     fn value_constructor(&mut self,ty:Ty,values:Vec<Value>,span:Span)->Result<Value> {
         self.construct_value(operators::ConstructEntry::Value,ty,values,span)
     }
-    async fn member_place(&mut self, base: &Expr, field: &str, e: &Expr) -> Result<Option<Place>> {
-        let Some(p) = unsafe { self.world.call(self.place(base)).await }? else {
-            return Ok(None);
-        };
-        self.member_position(p,field,e.span())
-    }
     fn member_position(&mut self,p:Place,field:&str,span:Span)->Result<Option<Place>> {
-        if p.ty().view.is_some() {
-            return self.fail(span, "B185", "view 元数据不可修改或按分量访问");
+        match unsafe {member_position(u32::from(p.ty().view.is_some()))} {
+            MemberPositionNeed::BadView=>self.fail(span,"B185","view 元数据不可修改或按分量访问"),
+            MemberPositionNeed::Project=>{let(sub,components)=member_type(p.ty(),field,self.scope.source(),span)?;Ok(Some(p.project(sub,&components)))},
         }
-        let (sub, components) = member_type(p.ty(), field, self.scope.source(), span)?;
-        Ok(Some(p.project(sub, &components)))
     }
-    async fn index_place(&mut self, base: &Expr, index: &Expr) -> Result<Option<Place>> {
-        if let Some(data) = unsafe { self.world.call(self.application_reference(base)).await }? {
-            return unsafe { self.world.call(self.application_index(data, index)).await };
-        }
-        if let ExprKind::Name(name) = base.kind()
-            && let Some(Binding::Tile(view)) = self.env.get(name).cloned()
-        {
-            return unsafe { self.world.call(self.tile_place(view, index)).await };
-        }
-        let Some(view) = self.dataset_reference(base)? else {
-            return unsafe { self.world.call(self.view_place(base, index)).await };
-        };
-        let binding = view.binding;
-        let Some(i) = unsafe { self.world.call(self.expr(index)).await }? else {
-            return Ok(None);
-        };
-        self.require_same(&Ty::scalar(Scalar::U32), &i.ty, index.span())?;
-        let current = i.regs[0] == self.global_index;
-        let same_shape = self.program.same_length(binding, self.domain);
-        if !self.index_in(
-            &i,
-            IndexDomain::Data(binding),
-            self.program.buffers[binding].count.unwrap_or(0),
-            None,
-        ) && !(current && (binding == self.domain || same_shape))
-        {
-            return self.fail(
-                index.span(),
-                "B137",
-                "索引有效性无法静态证明；使用有界游标、同域 index()、有效长度条件或形状约束",
-            );
-        }
-        if matches!(view.access, Access::Write | Access::InOut) {
-            if self
-                .appends
-                .iter()
-                .any(|(output, count)| *output == binding || count.binding == binding)
-            {
-                return self.fail(
-                    index.span(),
-                    "B221",
-                    "append 的共享输出／计数不能在同一阶段借为普通独占元素",
-                );
-            }
-            self.element_domains.insert(binding);
-        }
-        Ok(Some(self.dataset_element(
-            &view, i.regs[0], view.access.writes() && (view.whole || current),
-        )))
+    async fn index_place(&mut self,base:&Expr,index:&Expr)->Result<Option<Place>> {
+        let mut cursor=SourceValueCursor {phase:0};let mut facts=IndexPositionFacts {present:0,bounded:0,current:0,same_domain:0,same_shape:0,access:0,whole:0,appending:0};
+        let mut data=None;let mut tile=None;let mut view=None;let mut value=None;
+        loop {let step=unsafe {index_position_step(cursor,base.signature_node(),IndexPositionFacts {..facts})};cursor=step.cursor;match step.need {
+            IndexPositionNeed::Application=>{data=unsafe {self.world.call(self.application_reference(base)).await}?;facts.present=u32::from(data.is_some());},
+            IndexPositionNeed::ApplicationIndex=>return unsafe {self.world.call(self.application_index(data.take().unwrap(),index)).await},
+            IndexPositionNeed::TileBinding=>{tile=match self.env.get(base.source_view().text(step.name)){Some(Binding::Tile(tile))=>Some(tile.clone()),_=>None};facts.present=u32::from(tile.is_some());},
+            IndexPositionNeed::TileIndex=>return unsafe {self.world.call(self.tile_place(tile.take().unwrap(),index)).await},
+            IndexPositionNeed::Dataset=>{view=self.dataset_reference(base)?;facts.present=u32::from(view.is_some());if let Some(view)=&view{facts.access=view.access as u32;facts.whole=u32::from(view.whole);}},
+            IndexPositionNeed::View=>return unsafe {self.world.call(self.view_place(base,index)).await},
+            IndexPositionNeed::Index=>{value=unsafe {self.world.call(self.expr(index)).await}?;facts.present=u32::from(value.is_some());},
+            IndexPositionNeed::Type=>self.require_same(&Ty::scalar(Scalar::U32),&value.as_ref().unwrap().ty,index.span())?,
+            IndexPositionNeed::Bounds=>{let view=view.as_ref().unwrap();let value=value.as_ref().unwrap();facts.current=u32::from(value.regs[0]==self.global_index);facts.same_domain=u32::from(view.binding==self.domain);facts.same_shape=u32::from(self.program.same_length(view.binding,self.domain));facts.bounded=u32::from(self.index_in(value,IndexDomain::Data(view.binding),self.program.buffers[view.binding].count.unwrap_or(0),None));},
+            IndexPositionNeed::BadBounds=>return self.fail(index.span(),"B137","索引有效性无法静态证明；使用有界游标、同域 index()、有效长度条件或形状约束"),
+            IndexPositionNeed::Append=>{let mut entries=self.appends.iter();facts.appending=unsafe {position_append(view.as_ref().unwrap().binding as u64,&mut entries,next_position_append)};},
+            IndexPositionNeed::BadAppend=>return self.fail(index.span(),"B221","append 的共享输出／计数不能在同一阶段借为普通独占元素"),
+            IndexPositionNeed::Domain=>{self.element_domains.insert(view.as_ref().unwrap().binding);},
+            IndexPositionNeed::Element=>return Ok(Some(self.dataset_element(view.as_ref().unwrap(),value.as_ref().unwrap().regs[0],step.writable!=0))),
+            IndexPositionNeed::Empty=>return Ok(None),
+        }}
     }
-    fn name_place(&mut self, name: &str, span: Span) -> Result<Place> {
-        match self.env.get(name).cloned() {
-            Some(Binding::AtomicBorrow(place)) => Ok(place),
-            Some(Binding::Owned(owner)) => Ok(owner.place),
-            Some(Binding::OwnedValue(owner))=>{
-                if let Some(place)=owner.place(){return Ok(place);}
-                let owner=self.owned_value_binding(owner,true);let place=owner.place().unwrap();self.env.insert(name.to_string(),Binding::OwnedValue(owner));Ok(place)
-            },
-            Some(Binding::Value(value)) if value.ty.contains_arrays() => {
-                let mut owner = self.materialize_array(value,None);
-                owner.place = owner.place.read_only();
-                let place = owner.place.clone();
-                self.env.insert(name.to_string(), Binding::Owned(owner));
-                Ok(place)
-            }
-            Some(Binding::ViewElement { element, .. }) => Ok(element.place),
-            _ => self.fail(span, "B134", format!("{name} 不是可赋值的元素或局部变量")),
-        }
+    fn name_place(&mut self,name:&str,span:Span)->Result<Place> {
+        let kind=match self.env.get(name){Some(Binding::AtomicBorrow(_))=>1,Some(Binding::Owned(_))=>2,Some(Binding::OwnedValue(_))=>3,Some(Binding::Value(_))=>4,Some(Binding::ViewElement {..})=>5,_=>0};
+        let mut cursor=SourceValueCursor {phase:0};let mut facts=NamePositionFacts {kind,present:0,arrays:0};let mut place=None;
+        loop {let step=unsafe {name_position_step(cursor,NamePositionFacts {..facts})};cursor=step.cursor;match step.need {
+            NamePositionNeed::Atomic=>{let Some(Binding::AtomicBorrow(place))=self.env.get(name)else{unsafe {std::hint::unreachable_unchecked()}};return Ok(place.clone());},
+            NamePositionNeed::Owned=>{let Some(Binding::Owned(owner))=self.env.get(name)else{unsafe {std::hint::unreachable_unchecked()}};return Ok(owner.place.clone());},
+            NamePositionNeed::ViewElement=>{let Some(Binding::ViewElement {element,..})=self.env.get(name)else{unsafe {std::hint::unreachable_unchecked()}};return Ok(element.place.clone());},
+            NamePositionNeed::InspectOwned=>{let Some(Binding::OwnedValue(owner))=self.env.get(name)else{unsafe {std::hint::unreachable_unchecked()}};place=owner.place();facts.present=u32::from(place.is_some());},
+            NamePositionNeed::ExistingOwned=>return Ok(place.take().unwrap()),
+            NamePositionNeed::MaterializeOwned=>{let(key,Binding::OwnedValue(owner))=self.env.remove_entry(name).unwrap()else{unsafe {std::hint::unreachable_unchecked()}};let owner=self.owned_value_binding(owner,true);let place=owner.place().unwrap();self.env.insert(key,Binding::OwnedValue(owner));return Ok(place);},
+            NamePositionNeed::ArrayType=>{let Some(Binding::Value(value))=self.env.get(name)else{unsafe {std::hint::unreachable_unchecked()}};facts.arrays=u32::from(value.ty.contains_arrays());},
+            NamePositionNeed::MaterializeArray=>{let(key,Binding::Value(value))=self.env.remove_entry(name).unwrap()else{unsafe {std::hint::unreachable_unchecked()}};let mut owner=self.materialize_array(value,None);owner.place=owner.place.read_only();let place=owner.place.clone();self.env.insert(key,Binding::Owned(owner));return Ok(place);},
+            NamePositionNeed::Bad=>return self.fail(span,"B134",format!("{name} 不是可赋值的元素或局部变量")),
+        }}
     }
     fn advance_iterator(&mut self, slot: usize) -> Result<Value> {
         let source=self.loop_cursor().unwrap();
@@ -3568,4 +3525,31 @@ unsafe extern "C" {
  #[link_name="bootstrap.function_body::source_value_step"]fn source_value_step(cursor:SourceValueCursor,source:crate::syntax::wire::SignatureNode,present:u32)->SourceValueStep;
  #[link_name="bootstrap.function_body::returned_value_step"]fn returned_value_step(cursor:SourceValueCursor,continuing:u32,boolean:u32)->ReturnedValueStep;
  #[link_name="bootstrap.function_body::short_circuit_plan"]fn short_circuit_plan(operation:SourceOperation)->ShortCircuitPlan;
+}
+
+
+#[repr(u32)]enum SourcePlaceNeed {Name,Bind,External,Parent,Project,Index,Bad,Empty}
+#[repr(C)]struct SourcePlaceStep {cursor:SourceValueCursor,need:SourcePlaceNeed,spelling:crate::syntax::wire::Text,first:u64,second:u64,types:crate::syntax::wire::Slice,arguments:crate::syntax::wire::Slice}
+#[repr(u32)]enum MemberPositionNeed {Project,BadView}
+#[repr(C)]struct NamePositionFacts {kind:u32,present:u32,arrays:u32}
+#[repr(u32)]enum NamePositionNeed {Atomic,Owned,ViewElement,InspectOwned,ExistingOwned,MaterializeOwned,ArrayType,MaterializeArray,Bad}
+#[repr(C)]struct NamePositionStep {cursor:SourceValueCursor,need:NamePositionNeed}
+#[repr(C)]struct IndexPositionFacts {present:u32,bounded:u32,current:u32,same_domain:u32,same_shape:u32,access:u32,whole:u32,appending:u32}
+#[repr(u32)]enum IndexPositionNeed {Application,ApplicationIndex,TileBinding,TileIndex,Dataset,View,Index,Type,Bounds,BadBounds,Append,BadAppend,Domain,Element,Empty}
+#[repr(C)]struct IndexPositionStep {cursor:SourceValueCursor,need:IndexPositionNeed,name:crate::syntax::wire::Text,writable:u32}
+#[repr(C)]struct PositionAppend {present:u32,output:u64,count:u64}
+#[repr(C)]struct ViewPositionFacts {placed:u32,present:u32,dataset:u32,indexed:u32,continuing:u32,kind:u32,array:u32}
+#[repr(u32)]enum ViewPositionNeed {Parent,DatasetType,IndexedType,Reference,ApplicationIndex,Read,Returned,Kind,OwnedArray,HoldDataset,HoldOwned,Ordinary,ArrayType,Materialize,ArrayPlace,View,Empty}
+#[repr(C)]struct ViewPositionStep {cursor:SourceValueCursor,need:ViewPositionNeed}
+type PositionAppendIter<'a>=std::collections::btree_map::Iter<'a,usize,PrefixCount>;
+unsafe extern "C" fn next_position_append(entries:*mut PositionAppendIter<'_>)->PositionAppend {
+ match unsafe {&mut *entries}.next(){Some((output,count))=>PositionAppend {present:1,output:*output as u64,count:count.binding as u64},None=>PositionAppend {present:0,output:0,count:0}}
+}
+unsafe extern "C" {
+ #[link_name="bootstrap.function_body::source_place_step"]fn source_place_step(cursor:SourceValueCursor,source:crate::syntax::wire::SignatureNode,present:u32)->SourcePlaceStep;
+ #[link_name="bootstrap.function_body::member_position"]fn member_position(view:u32)->MemberPositionNeed;
+ #[link_name="bootstrap.function_body::name_position_step"]fn name_position_step(cursor:SourceValueCursor,facts:NamePositionFacts)->NamePositionStep;
+ #[link_name="bootstrap.function_body::index_position_step"]fn index_position_step(cursor:SourceValueCursor,source:crate::syntax::wire::SignatureNode,facts:IndexPositionFacts)->IndexPositionStep;
+ #[link_name="bootstrap.function_body::position_append"]fn position_append(binding:u64,context:*mut PositionAppendIter<'_>,next:unsafe extern "C" fn(*mut PositionAppendIter<'_>)->PositionAppend)->u32;
+ #[link_name="bootstrap.function_body::view_position_step"]fn view_position_step(cursor:SourceValueCursor,facts:ViewPositionFacts)->ViewPositionStep;
 }

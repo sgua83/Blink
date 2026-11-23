@@ -1292,48 +1292,28 @@ impl Builder<'_> {
             words,
         }
     }
-    pub(super) async fn view_place(&mut self, base: &Expr, index: &Expr) -> Result<Option<Place>> {
-        let view = if self.is_place(base) {
-            let Some(place) = unsafe { self.world.call(self.place(base)).await }? else {
-                return Ok(None);
-            };
-            if place.ty().dataset.is_some() {
-                let data = unsafe { self.world.call(self.application_place_reference(place, base.span())).await }?;
-                return unsafe { self.world.call(self.application_index(data, index)).await };
-            }
-            if place.ty().indexed_count().is_some() {
-                return unsafe { self.world.call(self.array_place(place, index)).await };
-            }
-            unsafe { self.world.call(self.read_place(&place, base.span(), None)).await }?
-        } else {
-            let returned = unsafe { self.world.call(self.evaluate_returned(base, None)).await }?;
-            if !self.flow.continues() {
-                return Ok(None);
-            }
-            match returned {
-                Some(returns::Returned::Dataset(data)) => {
-                    self.hold_binding(Binding::ApplicationData(data.clone()));
-                    return unsafe { self.world.call(self.application_index(application::DataReference::direct(data), index)).await };
-                }
-                Some(returns::Returned::OwnedValue(value)) if value.value.ty.array.is_some() => {
-                    let owner = self.owned_value_binding(value, true);
-                    let place = owner.place().unwrap();
-                    self.hold_binding(Binding::OwnedValue(owner));
-                    return unsafe { self.world.call(self.array_place(place, index)).await };
-                }
-                returned => {
-                    let Some(value) = self.returned_expression(returned, base.span(), false)? else {
-                        return Ok(None);
-                    };
-                    value
-                }
-            }
-        };
-        if view.ty.array.is_some() {
-            let place = self.materialize_array(view,None).place;
-            return unsafe { self.world.call(self.array_place(place, index)).await };
-        }
-        unsafe { self.world.call(self.view_value_place(view, index)).await }
+    pub(super) async fn view_place(&mut self,base:&Expr,index:&Expr)->Result<Option<Place>> {
+        let mut cursor=SourceValueCursor {phase:0};let mut facts=ViewPositionFacts {placed:u32::from(self.is_place(base)),present:0,dataset:0,indexed:0,continuing:0,kind:0,array:0};
+        let mut place=None;let mut value=None;let mut returned=None;let mut data=None;
+        loop {let step=unsafe {view_position_step(cursor,ViewPositionFacts {..facts})};cursor=step.cursor;match step.need {
+            ViewPositionNeed::Parent=>{place=unsafe {self.world.call(self.place(base)).await}?;facts.present=u32::from(place.is_some());},
+            ViewPositionNeed::DatasetType=>facts.dataset=u32::from(place.as_ref().unwrap().ty().dataset.is_some()),
+            ViewPositionNeed::IndexedType=>facts.indexed=u32::from(place.as_ref().unwrap().ty().indexed_count().is_some()),
+            ViewPositionNeed::Reference=>data=Some(unsafe {self.world.call(self.application_place_reference(place.take().unwrap(),base.span())).await}?),
+            ViewPositionNeed::ApplicationIndex=>return unsafe {self.world.call(self.application_index(data.take().unwrap(),index)).await},
+            ViewPositionNeed::Read=>{value=Some(unsafe {self.world.call(self.read_place(place.as_ref().unwrap(),base.span(),None)).await}?);facts.present=1;},
+            ViewPositionNeed::Returned=>{returned=unsafe {self.world.call(self.evaluate_returned(base,None)).await}?;facts.continuing=u32::from(self.flow.continues());},
+            ViewPositionNeed::Kind=>facts.kind=match &returned{Some(returns::Returned::Dataset(_))=>1,Some(returns::Returned::OwnedValue(_))=>2,_=>0},
+            ViewPositionNeed::OwnedArray=>{let Some(returns::Returned::OwnedValue(owner))=&returned else{unsafe {std::hint::unreachable_unchecked()}};facts.array=u32::from(owner.value.ty.array.is_some());},
+            ViewPositionNeed::HoldDataset=>{let Some(returns::Returned::Dataset(actual))=returned.take()else{unsafe {std::hint::unreachable_unchecked()}};self.hold_binding(Binding::ApplicationData(actual.clone()));data=Some(application::DataReference::direct(actual));},
+            ViewPositionNeed::HoldOwned=>{let Some(returns::Returned::OwnedValue(actual))=returned.take()else{unsafe {std::hint::unreachable_unchecked()}};let owner=self.owned_value_binding(actual,true);place=owner.place();self.hold_binding(Binding::OwnedValue(owner));},
+            ViewPositionNeed::Ordinary=>{value=self.returned_expression(returned.take(),base.span(),false)?;facts.present=u32::from(value.is_some());},
+            ViewPositionNeed::ArrayType=>facts.array=u32::from(value.as_ref().unwrap().ty.array.is_some()),
+            ViewPositionNeed::Materialize=>place=Some(self.materialize_array(value.take().unwrap(),None).place),
+            ViewPositionNeed::ArrayPlace=>return unsafe {self.world.call(self.array_place(place.take().unwrap(),index)).await},
+            ViewPositionNeed::View=>return unsafe {self.world.call(self.view_value_place(value.take().unwrap(),index)).await},
+            ViewPositionNeed::Empty=>return Ok(None),
+        }}
     }
     pub(super) async fn view_value_place(&mut self, view: Value, index: &Expr) -> Result<Option<Place>> {
         unsafe { self.world.call(self.view_value_at(view,index.span(),async |builder|unsafe { builder.world.call(builder.expr(index)).await })).await }
