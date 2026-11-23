@@ -32,11 +32,11 @@ impl Job {
     ) -> io::Result<Child> {
         let mut process = if self.compiler {
             let mut command = Command::new(seed.join("bin/bc.exe"));
-            command.arg("--jobs").arg(workers.to_string());
             if let Some(cargo) = shared {
                 cargo.configure(&mut command);
                 command.env(worker_protocol::BOOTSTRAP_JOBSERVER, "1");
             } else {
+                command.arg("--jobs").arg(workers.to_string());
                 command.env_remove(worker_protocol::BOOTSTRAP_JOBSERVER);
             }
             command
