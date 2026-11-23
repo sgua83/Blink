@@ -109,3 +109,58 @@ extern "C" SignatureNeed signature_step(address state,ResultShape result,address
     if(!never&&!empty){cursor.stage=3;return give_signature(state,cursor,SignatureNeed::Result);}
     return give_signature(state,cursor,SignatureNeed::Done);
 }
+
+extern "C" NamedStep named_reference_step(NamedCursor cursor,NamedFacts facts) on cpu {
+ NamedCursor c=cursor;
+ if(c.phase==0){c.phase=1;return NamedStep(c,NamedNeed::Resolve);}
+ if(c.phase==1){if(facts.present==0){return NamedStep(c,NamedNeed::Unknown);}c.phase=2;return NamedStep(c,NamedNeed::CAbi);}
+ if(c.phase==2){if(facts.c_abi==0){return NamedStep(c,NamedNeed::InvalidAbi);}c.phase=3;return NamedStep(c,NamedNeed::Arguments);}
+ if(c.phase==3){c.phase=4;return NamedStep(c,NamedNeed::Instance);}
+ if(c.phase==4){c.phase=5;return NamedStep(c,NamedNeed::Contracts);}
+ if(c.phase==5){c.phase=6;return NamedStep(c,NamedNeed::Result);}
+ if(c.phase==7){c.index+=1u64;c.phase=6;}
+ if(c.phase==6){if(c.index<facts.parameters){c.phase=7;return NamedStep(c,NamedNeed::Parameter);}c.phase=8;return NamedStep(c,NamedNeed::Bind);}
+ return NamedStep(c,NamedNeed::Complete);
+}
+bool reference_same_text(Text left,Text right) on cpu {
+ if(left.length!=right.length){return false;}u64 i=0u64;
+ while(i<left.length){if(unsafe_position<u8>(unsafe_address(address_bits(left.bytes)+i))!=unsafe_position<u8>(unsafe_address(address_bits(right.bytes)+i))){return false;}i+=1u64;}
+ return true;
+}
+void reference_name(address value,address context,u64 parameters,ReferenceHost host) on cpu
+ requires nonzero(host.parameter) requires nonzero(host.name) requires nonzero(host.rename) {
+ Text name=host.name(value);u64 base=0u64;
+ while(base<name.length){if(unsafe_position<u8>(unsafe_address(address_bits(name.bytes)+base))==u8(46)){break;}base+=1u64;}
+ Text root=Text(name.bytes,base);u64 index=0u64;
+ while(index<parameters){if(reference_same_text(root,host.parameter(context,index))){u64 end=base;if(base<name.length&&base+1u64==name.length){end=name.length;}host.rename(value,index,end);return;}index+=1u64;}
+}
+void reference_condition(address value,address context,u64 parameters,ReferenceHost host) on cpu
+ requires nonzero(host.parameter) requires nonzero(host.name) requires nonzero(host.rename) requires nonzero(host.condition) {
+ ReferenceCondition node=host.condition(value);
+ if(node.kind==1){reference_name(node.left,context,parameters,host);}
+ else if(node.kind==2){reference_condition(node.left,context,parameters,host);}
+ else if(node.kind==3){reference_condition(node.left,context,parameters,host);reference_condition(node.right,context,parameters,host);}
+}
+extern "C" void reference_contracts(address context,u64 parameters,ReferenceHost host) on cpu
+ requires nonzero(host.next) requires nonzero(host.append) requires nonzero(host.parameter)
+ requires nonzero(host.name) requires nonzero(host.rename) requires nonzero(host.condition) {
+ ReferenceContract value=host.next(context);
+ while(value.present!=0){
+  if(value.predicate==1&&value.kind==0){reference_name(value.name,context,parameters,host);host.append(context);}
+  else if(value.predicate==2&&value.kind==1){host.append(context);}
+  else if(value.predicate==3){reference_name(value.name,context,parameters,host);reference_condition(value.condition,context,parameters,host);host.append(context);}
+  value=host.next(context);
+ }
+}
+extern "C" AddressStep address_value_step(AddressCursor cursor,AddressFacts facts) on cpu {
+ AddressCursor c=cursor;
+ if(c.phase==0){if(facts.cpu==0){return AddressStep(c,AddressNeed::BadTarget);}c.phase=1;return AddressStep(c,AddressNeed::Application);}
+ if(c.phase==1){if(facts.application==0){return AddressStep(c,AddressNeed::BadTarget);}c.phase=2;return AddressStep(c,AddressNeed::Signature);}
+ if(c.phase==2){c.phase=3;return AddressStep(c,AddressNeed::ExternalKind);}
+ if(c.phase==3){c.phase=4;return AddressStep(c,facts.external!=0?AddressNeed::ExternalTarget:AddressNeed::NativeTarget);}
+ if(c.phase==4){c.phase=5;return AddressStep(c,AddressNeed::Register);}
+ if(c.phase==5){c.phase=6;return AddressStep(c,AddressNeed::Emit);}
+ if(c.phase==6){c.phase=7;return AddressStep(c,AddressNeed::Declaration);}
+ if(c.phase==7){c.phase=8;if(facts.declaration!=0){return AddressStep(c,AddressNeed::Reference);}}
+ return AddressStep(c,AddressNeed::Complete);
+}
