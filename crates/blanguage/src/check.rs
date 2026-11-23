@@ -2792,18 +2792,18 @@ impl<'a> Builder<'a> {
         }));
     }
     async fn unsafe_read_call(&mut self, args: &Expressions, span: Span) -> Result<Option<Value>> {
-        let source=args.source_view();let storage=source.storage();let arguments=args.source_slice();let mut cursor=SourceValueCursor {phase:0};
+        let storage=args.source_view().storage();let arguments=args.source_slice();let mut cursor=SourceValueCursor {phase:0};
         let mut facts=UnsafeReadFacts {present:0,access:0};let mut data=None;let mut dataset=None;let mut value=None;let mut index=None;
         loop {let step=unsafe {unsafe_read_step(cursor,storage,arguments,UnsafeReadFacts {..facts})};cursor=step.cursor;match step.need {
             UnsafeReadNeed::BadArguments=>return self.fail(span,"B181","unsafe_read 需要 read 数据集与 u32 索引；调用者负责外部索引有效性"),
-            UnsafeReadNeed::Application=>{data=unsafe {self.world.call(self.application_value(source.text(step.name),span)).await}?;facts.present=u32::from(data.is_some());},
+            UnsafeReadNeed::Application=>{data=unsafe {self.world.call(self.application_reference(&args.at(0))).await}?;facts.present=u32::from(data.is_some());},
             UnsafeReadNeed::ApplicationCpu=>self.application_cpu(data.as_ref().unwrap(),span)?,
             UnsafeReadNeed::Dataset=>{dataset=self.dataset_reference(&args.at(0))?;facts.present=u32::from(dataset.is_some());facts.access=dataset.as_ref().map_or(0,|view|view.access as u32);},
             UnsafeReadNeed::BadAccess=>return self.fail(span,"B181","unsafe_read 需要 read 或本阶段共享只读的 inout 数据集"),
             UnsafeReadNeed::Value=>{value=unsafe {self.world.call(self.expr(&args.at(0))).await}?;facts.present=u32::from(value.is_some());},
             UnsafeReadNeed::Index=>{index=unsafe {self.world.call(self.expr(&args.at(1))).await}?;facts.present=u32::from(index.is_some());},
             UnsafeReadNeed::IndexType=>self.require_same(&Ty::scalar(Scalar::U32),&index.as_ref().unwrap().ty,args.at(1).span())?,
-            UnsafeReadNeed::ApplicationRead=>{let index=index.as_ref().unwrap();return unsafe {self.world.call(self.read_place(&Self::application_element(data.as_ref().unwrap(),index,(index.minimum(),index.maximum())),span,None)).await}.map(Some);},
+            UnsafeReadNeed::ApplicationRead=>{let index=index.as_ref().unwrap();return unsafe {self.world.call(self.read_place(&data.as_ref().unwrap().element(index,(index.minimum(),index.maximum())),span,None)).await}.map(Some);},
             UnsafeReadNeed::DatasetRead=>return unsafe {self.world.call(self.read_place(&self.dataset_element(dataset.as_ref().unwrap(),index.as_ref().unwrap().regs[0],false),span,None)).await}.map(Some),
             UnsafeReadNeed::ViewRead=>return unsafe {self.world.call(self.unsafe_read_view(value.take().unwrap(),span,args.at(1).span(),async |builder|unsafe {builder.world.call(builder.expr(&args.at(1))).await})).await},
             UnsafeReadNeed::Empty=>return Ok(None),
@@ -3279,7 +3279,7 @@ unsafe extern "C" {#[link_name="bootstrap.function_body::write_place_step"]fn wr
 
 #[repr(C)]struct UnsafeReadFacts {present:u32,access:u32}
 #[repr(u32)]enum UnsafeReadNeed {BadArguments,Application,ApplicationCpu,Dataset,BadAccess,Value,Index,IndexType,ApplicationRead,DatasetRead,ViewRead,Empty}
-#[repr(C)]struct UnsafeReadStep {cursor:SourceValueCursor,need:UnsafeReadNeed,name:crate::syntax::wire::Text}
+#[repr(C)]struct UnsafeReadStep {cursor:SourceValueCursor,need:UnsafeReadNeed}
 #[repr(C)]struct UnsafeViewFacts {view:u32,present:u32}
 #[repr(u32)]enum UnsafeViewNeed {BadView,Hold,Index,Release,Result,IndexType,Read,Empty}
 #[repr(C)]struct UnsafeViewStep {cursor:SourceValueCursor,need:UnsafeViewNeed}

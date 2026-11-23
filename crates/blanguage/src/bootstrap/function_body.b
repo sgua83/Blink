@@ -1044,37 +1044,38 @@ extern "C" WritePlaceStep write_place_step(Cursor cursor,WritePlaceFacts facts) 
 }
 
 extern "C" UnsafeReadStep unsafe_read_step(LocalCursor cursor,StorageView source,Slice arguments,UnsafeReadFacts facts) on cpu {
- LocalCursor c=cursor;Text name=Text(0,Span(0u64,0u64));
+ LocalCursor c=cursor;
  if(c.phase==0){
-  if(arguments.count!=2u64){return UnsafeReadStep(c,UnsafeReadNeed::BadArguments,name);}
+  if(arguments.count!=2u64){return UnsafeReadStep(c,UnsafeReadNeed::BadArguments);}
   ExprNode first=binding_node<ExprNode>(source.nodes,binding_member(source.nodes,arguments,0u64));
   match(first.kind){
-   ExprKind::Name(value){c.phase=1;return UnsafeReadStep(c,UnsafeReadNeed::Application,value);}
-   ExprKind::Member(unused){}ExprKind::Number(unused){}ExprKind::StaticU32(unused){}ExprKind::Bool(unused){}
+   ExprKind::Name(unused){c.phase=1;return UnsafeReadStep(c,UnsafeReadNeed::Application);}
+   ExprKind::Member(unused){c.phase=1;return UnsafeReadStep(c,UnsafeReadNeed::Application);}
+   ExprKind::Number(unused){}ExprKind::StaticU32(unused){}ExprKind::Bool(unused){}
    ExprKind::Index(unused){}ExprKind::Call(unused){}ExprKind::Invoke(unused){}ExprKind::Construct(unused){}
    ExprKind::Specialize(unused){}ExprKind::FunctionRef(unused){}ExprKind::Cooperate(unused){}ExprKind::Target(unused){}
    ExprKind::Unary(unused){}ExprKind::Binary(unused){}ExprKind::Select(unused){}
   }
-  c.phase=3;return UnsafeReadStep(c,UnsafeReadNeed::Dataset,name);
+  c.phase=3;return UnsafeReadStep(c,UnsafeReadNeed::Dataset);
  }
  if(c.phase==1){
-  if(facts.present!=0){c.phase=2;return UnsafeReadStep(c,UnsafeReadNeed::ApplicationCpu,name);}
-  c.phase=3;return UnsafeReadStep(c,UnsafeReadNeed::Dataset,name);
+  if(facts.present!=0){c.phase=2;return UnsafeReadStep(c,UnsafeReadNeed::ApplicationCpu);}
+  c.phase=3;return UnsafeReadStep(c,UnsafeReadNeed::Dataset);
  }
- if(c.phase==2){c.phase=10;return UnsafeReadStep(c,UnsafeReadNeed::Index,name);}
+ if(c.phase==2){c.phase=10;return UnsafeReadStep(c,UnsafeReadNeed::Index);}
  if(c.phase==3){
   if(facts.present!=0){
-   if(facts.access!=1&&facts.access!=3){return UnsafeReadStep(c,UnsafeReadNeed::BadAccess,name);}
-   c.phase=11;return UnsafeReadStep(c,UnsafeReadNeed::Index,name);
+   if(facts.access!=1&&facts.access!=3){return UnsafeReadStep(c,UnsafeReadNeed::BadAccess);}
+   c.phase=11;return UnsafeReadStep(c,UnsafeReadNeed::Index);
   }
-  c.phase=4;return UnsafeReadStep(c,UnsafeReadNeed::Value,name);
+  c.phase=4;return UnsafeReadStep(c,UnsafeReadNeed::Value);
  }
- if(c.phase==4){return UnsafeReadStep(c,facts.present!=0 ? UnsafeReadNeed::ViewRead : UnsafeReadNeed::Empty,name);}
+ if(c.phase==4){return UnsafeReadStep(c,facts.present!=0 ? UnsafeReadNeed::ViewRead : UnsafeReadNeed::Empty);}
  if(c.phase==10||c.phase==11){
-  if(facts.present==0){return UnsafeReadStep(c,UnsafeReadNeed::Empty,name);}
-  c.phase=c.phase==10 ? 12 : 13;return UnsafeReadStep(c,UnsafeReadNeed::IndexType,name);
+  if(facts.present==0){return UnsafeReadStep(c,UnsafeReadNeed::Empty);}
+  c.phase=c.phase==10 ? 12 : 13;return UnsafeReadStep(c,UnsafeReadNeed::IndexType);
  }
- return UnsafeReadStep(c,c.phase==12 ? UnsafeReadNeed::ApplicationRead : UnsafeReadNeed::DatasetRead,name);
+ return UnsafeReadStep(c,c.phase==12 ? UnsafeReadNeed::ApplicationRead : UnsafeReadNeed::DatasetRead);
 }
 
 extern "C" UnsafeViewStep unsafe_view_step(LocalCursor cursor,UnsafeViewFacts facts) on cpu {

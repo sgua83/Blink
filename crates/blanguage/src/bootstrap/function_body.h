@@ -274,7 +274,7 @@ extern "C" WritePlaceStep write_place_step(Cursor cursor,WritePlaceFacts facts) 
 
 struct UnsafeReadFacts {u32 present;u32 access;};
 enum UnsafeReadNeed:u32 {BadArguments=0;Application=1;ApplicationCpu=2;Dataset=3;BadAccess=4;Value=5;Index=6;IndexType=7;ApplicationRead=8;DatasetRead=9;ViewRead=10;Empty=11;};
-struct UnsafeReadStep {LocalCursor cursor;UnsafeReadNeed need;Text name;};
+struct UnsafeReadStep {LocalCursor cursor;UnsafeReadNeed need;};
 extern "C" UnsafeReadStep unsafe_read_step(LocalCursor cursor,StorageView source,Slice arguments,UnsafeReadFacts facts) on cpu;
 struct UnsafeViewFacts {u32 view;u32 present;};
 enum UnsafeViewNeed:u32 {BadView=0;Hold=1;Index=2;Release=3;Result=4;IndexType=5;Read=6;Empty=7;};
