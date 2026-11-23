@@ -42,3 +42,12 @@ struct DomainParameterFacts {u64 parameters;ArgumentKind argument;CallAccess acc
 enum DomainParameterNeed:u32 {Parameter=0;Texture=1;InvalidTexture=2;InvalidAcceleration=3;DatasetType=4;InvalidDataset=5;Shape=6;InvalidShape=7;InvalidAccess=8;ValueType=9;InvalidValue=10;BindData=11;BindRoot=12;AliasParameter=13;Previous=14;InvalidAlias=15;Complete=16;};
 struct DomainParameterStep {DomainParameterCursor cursor;DomainParameterNeed need;};
 extern "C" DomainParameterStep domain_parameter_step(DomainParameterCursor state,DomainParameterFacts facts) on cpu;
+
+struct DomainCallCursor {u64 index;u32 phase;};
+struct DomainCallFacts {u64 arguments;u64 parameters;u32 domain;CallTarget target;CallTarget callee_target;};
+enum DomainCallNeed:u32 {InvalidDomain=0;InvalidCount=1;InvalidTarget=2;Argument=3;Specialize=4;Bind=5;};
+struct DomainCallStep {DomainCallCursor cursor;DomainCallNeed need;};
+enum DomainInstanceNeed:u32 {Actuals=0;Explicit=1;Specialize=2;Complete=3;};
+extern "C" DomainCallStep domain_call_step(DomainCallCursor state,DomainCallFacts facts) on cpu;
+extern "C" DomainInstanceNeed domain_instance_step(inout Phase cursor,u32 explicit) on cpu;
+extern "C" void domain_actuals(u64 count,address context,cfn<void,address,u64> append) on cpu requires nonzero(append);

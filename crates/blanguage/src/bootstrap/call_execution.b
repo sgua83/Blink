@@ -233,3 +233,26 @@ extern "C" DomainParameterStep domain_parameter_step(DomainParameterCursor state
   if(cursor.phase==22){if(facts.present!=0&&(domain_writes(facts.previous)||domain_writes(facts.access))&&!(facts.previous==CallAccess::Atomic&&facts.access==CallAccess::Atomic)){return DomainParameterStep(cursor,DomainParameterNeed::InvalidAlias);}cursor.index+=1u64;cursor.phase=20;}
  }
 }
+
+extern "C" DomainCallStep domain_call_step(DomainCallCursor state,DomainCallFacts facts) on cpu {
+ DomainCallCursor cursor=state;
+ if(cursor.phase==0){
+  if(facts.domain==0){return DomainCallStep(cursor,DomainCallNeed::InvalidDomain);}
+  if(facts.arguments!=facts.parameters){return DomainCallStep(cursor,DomainCallNeed::InvalidCount);}
+  if(facts.target!=facts.callee_target&&facts.callee_target!=CallTarget::Compute){return DomainCallStep(cursor,DomainCallNeed::InvalidTarget);}
+  cursor.phase=1;
+ }
+ if(cursor.phase==2){cursor.index+=1u64;cursor.phase=1;}
+ if(cursor.phase==1){if(cursor.index<facts.arguments){cursor.phase=2;return DomainCallStep(cursor,DomainCallNeed::Argument);}cursor.phase=3;}
+ if(cursor.phase==3){cursor.phase=4;return DomainCallStep(cursor,DomainCallNeed::Specialize);}
+ return DomainCallStep(cursor,DomainCallNeed::Bind);
+}
+extern "C" DomainInstanceNeed domain_instance_step(inout Phase cursor,u32 explicit) on cpu {
+ if(cursor.phase==0){cursor.phase=1;return DomainInstanceNeed::Actuals;}
+ if(cursor.phase==1){cursor.phase=2;if(explicit!=0){return DomainInstanceNeed::Explicit;}}
+ if(cursor.phase==2){cursor.phase=3;return DomainInstanceNeed::Specialize;}
+ return DomainInstanceNeed::Complete;
+}
+extern "C" void domain_actuals(u64 count,address context,cfn<void,address,u64> append) on cpu requires nonzero(append) {
+ u64 index=0u64;while(index<count){append(context,index);index+=1u64;}
+}

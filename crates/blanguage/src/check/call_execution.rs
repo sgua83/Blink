@@ -379,3 +379,57 @@ pub(super) async fn domain_parameters(
   DomainParameterNeed::Complete=>return Ok(child),
  }}
 }
+
+#[derive(Clone,Copy)]
+#[repr(C)]struct DomainCallCursor{index:u64,phase:u32}
+#[repr(C)]struct DomainCallFacts{arguments:u64,parameters:u64,domain:u32,target:u32,callee_target:u32}
+#[repr(u32)]enum DomainCallNeed{InvalidDomain,InvalidCount,InvalidTarget,Argument,Specialize,Bind}
+#[repr(C)]struct DomainCallStep{cursor:DomainCallCursor,need:DomainCallNeed}
+#[repr(u32)]enum DomainInstanceNeed{Actuals,Explicit,Specialize,Complete}
+unsafe extern "C"{
+ #[link_name="bootstrap.call_execution::domain_call_step"]fn domain_call_step(state:DomainCallCursor,facts:DomainCallFacts)->DomainCallStep;
+ #[link_name="bootstrap.call_execution::domain_instance_step"]fn domain_instance_step(cursor:*mut Phase,explicit:u32)->DomainInstanceNeed;
+ #[link_name="bootstrap.call_execution::domain_actuals"]fn domain_actuals(count:u64,context:*mut c_void,append:unsafe extern "C" fn(*mut c_void,u64));
+}
+struct DomainActuals<'a>{program:&'a Program,roots:&'a[Root],values:Vec<generics::Actual<'a>>}
+unsafe extern "C" fn append_domain_actual(context:*mut c_void,index:u64){
+ let context=unsafe{&mut *context.cast::<DomainActuals<'_>>()};let program=context.program;let roots=context.roots;
+ let actual=match &roots[index as usize]{
+  Root::Data(index,_)=>generics::Actual{ty:Some(std::borrow::Cow::Borrowed(&program.buffers[*index].ty)),count:program.buffers[*index].count},
+  Root::Uniform(index)=>generics::Actual::value(&program.uniforms[*index].ty),
+  Root::Literal(ty,..)=>generics::Actual::value(ty),
+  Root::Acceleration(_)=>generics::Actual{ty:None,count:None},
+  Root::Texture(index)=>generics::Actual{ty:None,count:program.textures[*index].count},
+ };
+ context.values.push(actual);
+}
+async fn domain_instance(
+ world:&World,caller:&crate::generics::Instance,program:&Program,key:&str,roots:&[Root],
+ explicit:Option<&crate::syntax::List<crate::syntax::wire::ArgumentNode>>,span:Span,
+)->Result<crate::generics::Instance>{
+ let d=&caller.definition;let mut cursor=Phase{phase:0};let mut actuals=DomainActuals{program,roots,values:Vec::with_capacity(roots.len())};let mut arguments=None;let mut instance=None;
+ loop{match unsafe{domain_instance_step(&mut cursor,u32::from(explicit.is_some()))}{
+  DomainInstanceNeed::Actuals=>unsafe{domain_actuals(roots.len()as u64,std::ptr::from_mut(&mut actuals).cast(),append_domain_actual)},
+  DomainInstanceNeed::Explicit=>arguments=Some(unsafe{world.call(caller.bindings.arguments(world,explicit.unwrap(),(&d.source,&d.module,&d.imports),span)).await}?),
+  DomainInstanceNeed::Specialize=>instance=Some(unsafe{world.call(generics::specialize(world,key,&actuals.values,arguments.as_deref(),(&d.source,&d.module,&d.imports),span)).await}?),
+  DomainInstanceNeed::Complete=>return Ok(instance.take().unwrap()),
+ }}
+}
+pub(super) async fn domain_call(
+ world:&World,caller:&crate::generics::Instance,env:&BTreeMap<String,Root>,program:&Program,key:&str,args:Expressions,
+ explicit:Option<&crate::syntax::List<crate::syntax::wire::ArgumentNode>>,span:Span,path:&Arc<[DomainSite]>,
+)->Result<(crate::generics::Instance,BTreeMap<String,Root>)>{
+ let d=&caller.definition;let callee=&world.functions[key];let mut cursor=DomainCallCursor{index:0,phase:0};
+ let facts=DomainCallFacts{arguments:args.len()as u64,parameters:callee.function.params().len()as u64,domain:u32::from(callee.execution==crate::execution::Requirement::Domain),target:target(program.target),callee_target:target(callee.function.target())};
+ let mut args=Some(args);let mut roots=Vec::new();let mut instance=None;
+ loop{let step=unsafe{domain_call_step(cursor,DomainCallFacts{..facts})};cursor=step.cursor;match step.need{
+  DomainCallNeed::InvalidDomain=>return d.source.fail(span,"B110","program 顶层只能调用计算程序或声明 parallel 阶段"),
+  DomainCallNeed::InvalidCount=>return d.source.fail(span,"B111","计算程序参数数量不匹配"),
+  DomainCallNeed::InvalidTarget=>return d.source.fail(span,"B112","程序与子程序的设备目标不兼容"),
+  DomainCallNeed::Argument=>{let arg=args.as_ref().unwrap().at(cursor.index as usize);roots.push(unsafe{world.call(stage_root(world,caller,env,program,&arg,path)).await}?);},
+  DomainCallNeed::Specialize=>instance=Some(unsafe{world.call(domain_instance(world,caller,program,key,&roots,explicit,span)).await}?),
+  DomainCallNeed::Bind=>{
+   let instance=instance.take().unwrap();let child=unsafe{world.call(domain_parameters(world,program,&instance,args.take().unwrap(),roots,&d.source,span)).await}?;return Ok((instance,child));
+  },
+ }}
+}

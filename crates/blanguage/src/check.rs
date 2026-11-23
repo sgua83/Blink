@@ -1159,61 +1159,10 @@ async fn expand_stages(
                                 .source
                                 .fail(statement.span(), "B109", format!("未知计算程序 {name}"));
                         };
-                        let callee = &world.functions[&key];
-                        if callee.execution != crate::execution::Requirement::Domain {
-                            return d.source.fail(
-                                statement.span(),
-                                "B110",
-                                "program 顶层只能调用计算程序或声明 parallel 阶段",
-                            );
-                        }
-                        if args.len() != callee.function.params().len() {
-                            return d
-                                .source
-                                .fail(statement.span(), "B111", "计算程序参数数量不匹配");
-                        }
-                        if program.target != callee.function.target()
-                            && callee.function.target() != Target::Compute
-                        {
-                            return d
-                                .source
-                                .fail(statement.span(), "B112", "程序与子程序的设备目标不兼容");
-                        }
-                        let mut roots=Vec::new();
-                        for arg in args.iter() {
-                            roots.push(unsafe { world.call(stage_root(world,instance,env,program,&arg,domain_path)).await }?);
-                        }
-                        let actuals: Vec<_> = roots
-                            .iter()
-                            .map(|root| match root {
-                                Root::Data(i, _) => generics::Actual {
-                                    ty: Some(std::borrow::Cow::Borrowed(&program.buffers[*i].ty)),
-                                    count: program.buffers[*i].count,
-                                },
-                                Root::Uniform(i) => generics::Actual::value(&program.uniforms[*i].ty),
-                                Root::Literal(ty, ..) => generics::Actual::value(ty),
-                                Root::Acceleration(_) => generics::Actual {
-                                    ty: None,
-                                    count: None,
-                                },
-                                Root::Texture(i) => generics::Actual {
-                                    ty: None,
-                                    count: program.textures[*i].count,
-                                },
-                            })
-                            .collect();
-                        let (caller_origin, caller_context) = d.syntax_context(Some(&instance.name));
-                        let explicit=match explicit {
-                            Some(arguments)=>Some(unsafe { world.call(instance.bindings.arguments(world,arguments,
-                                (&d.source,&d.module,&d.imports),statement.span())).await }?),
-                            None=>None,
-                        };
-                        let instance =
-                            unsafe { world.call(generics::specialize(world, &key, &actuals, explicit.as_deref(), (&d.source, &d.module, &d.imports), statement.span())).await }?;
-                        let callee = &instance.definition;
-                        let mut child = unsafe { world.call(call_execution::domain_parameters(
-                            world, program, &instance, args, roots, &d.source, statement.span(),
+                        let (instance, mut child) = unsafe { world.call(call_execution::domain_call(
+                            world, instance, env, program, &key, args, explicit, statement.span(), domain_path,
                         )).await }?;
+                        let callee = &instance.definition;
                         let bound_contracts: Vec<_> = instance.contracts().collect();
                         for (left, right) in contracts::root_lengths(&child, callee, &bound_contracts)? {
                             if !program.same_length(left, right) {
@@ -1234,6 +1183,7 @@ async fn expand_stages(
                             )?;
                         }
                         let compiled = callee.compiled.is_some();
+                        let (caller_origin, caller_context) = d.syntax_context(Some(&input.owner().name));
                         let mut child_path = domain_path.to_vec();
                         child_path.push(DomainSite {
                             origin: caller_origin.clone(), instance: caller_context.instance.clone(),
