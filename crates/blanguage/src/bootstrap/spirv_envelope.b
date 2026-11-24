@@ -287,7 +287,7 @@ u64 resource_block(ResourceBlock input, address definitions, address decorations
     return at;
 }
 
-extern "C" void variable_declaration(StorageClass storage, u32 pointer, u32 id, address words) on cpu {
+void variable_declaration(StorageClass storage, u32 pointer, u32 id, address words) on cpu {
     words_three(words, 0u64, 59, pointer, id, u32(storage));
 }
 
@@ -453,6 +453,58 @@ extern "C" ShaderResourceIds shader_resources(ShaderResourceInput input, ShaderR
     return ShaderResourceIds(out.words, out.annotations, out.next, vec3, vec2, vec4, acceleration,
         ray_pointer, index_type, global, num_groups, words32, words64, bytes, shorts,
         table_pointer, push, push_pointer, sampled2, sampled3);
+}
+
+u32 function_variable(inout ResourceCursor out, address body, inout u64 words, u32 pointer) on cpu {
+    u32 id = definition_id(out);
+    variable_declaration(StorageClass::Function, pointer, id, word_at(body, words));
+    words += 4u64;
+    return id;
+}
+
+extern "C" FunctionStorageWords function_storage(FunctionStorageInput input, FunctionStorageHost host,
+    WordConstants constants, address locals, address definitions, address body) on cpu
+    requires nonzero(host.array) requires nonzero(host.scalar_group) requires nonzero(host.width)
+    requires nonzero(host.pointer) requires nonzero(host.retain_array) requires nonzero(constants.intern) {
+    ResourceCursor out = ResourceCursor(definitions, address(), 0u64, 0u64, input.next);
+    u64 words = 0u64;
+    usize ray = 0u64;
+    while (ray < input.rays) {
+        function_variable(out, body, words, input.ray_pointer);
+        ray += 1u64;
+    }
+
+    FunctionArray array = host.array(host.context);
+    while (array.shape != address()) {
+        u32 unit = 4;
+        usize field = 0u64;
+        while (field < array.fields) {
+            unit = min(unit, host.width(array.shape, field));
+            field += 1u64;
+        }
+        u32 element = unit == 1 ? input.byte_type : (unit == 2 ? input.short_type : input.word_type);
+        u32 shift = unit == 1 ? 0 : (unit == 2 ? 1 : 2);
+        u32 length = define_word(out, constants, input.word_type, array.bytes >> shift);
+        u32 ty = define_type(out, TypeShape::Array, element, length);
+        u32 pointer = define_pointer(out, StorageClass::Function, ty);
+        u32 variable = function_variable(out, body, words, pointer);
+        host.retain_array(host.context, array, unit, variable);
+        array = host.array(host.context);
+    }
+
+    FunctionLocals group = host.scalar_group(host.context);
+    while (group.shape != address()) {
+        usize field = 0u64;
+        while (field < group.fields) {
+            u32 pointer = host.pointer(host.context, group.shape, field);
+            u32 variable = function_variable(out, body, words, pointer);
+            put(locals, group.start + field, variable);
+            field += 1u64;
+        }
+        group = host.scalar_group(host.context);
+    }
+
+    return FunctionStorageWords(out.words, words, out.next);
 }
 
 extern "C" u64 flag_decoration(address decorations, u64 at, FlagDecoration decoration, u32 id) on cpu {

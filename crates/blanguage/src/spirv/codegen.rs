@@ -208,7 +208,6 @@ enum TypeShape {
     Matrix = 2,
     Array = 4,
     Function,
-    Pointer = 9,
 }
 
 #[repr(C)]
@@ -314,11 +313,6 @@ unsafe extern "C" fn intern_resource_word(
     *unsafe { &mut *constants.cast::<BTreeMap<(Scalar, Bits), u32>>() }.entry((Scalar::U32, Bits::from(bits))).or_insert(next)
 }
 
-
-#[repr(u32)]
-enum StorageClass {
-    Function = 7,
-}
 
 #[repr(C)]
 struct BinaryEmission {
@@ -1030,8 +1024,9 @@ unsafe extern "C" {
     fn type_declaration(shape: TypeShape, id: u32, first: u32, second: u32, words: *mut u32) -> u64;
     #[link_name = "bootstrap.spirv_envelope::shader_resources"]
     fn shader_resources(input: ShaderResourceInput, host: ShaderResourceHost, streams: ResourceStreams) -> ShaderResourceIds;
-    #[link_name = "bootstrap.spirv_envelope::variable_declaration"]
-    fn variable_declaration(storage: StorageClass, pointer: u32, id: u32, words: *mut u32);
+    #[link_name = "bootstrap.spirv_envelope::function_storage"]
+    fn function_storage(input: FunctionStorageInput, host: FunctionStorageHost, constants: WordConstants,
+        locals: *mut u32, definitions: *mut u32, body: *mut u32) -> FunctionStorageWords;
     #[link_name = "bootstrap.spirv_envelope::scalar_binary"]
     fn scalar_binary(input: BinaryEmission, body: *mut u32, decorations: *mut u32) -> BinaryWords;
     #[link_name = "bootstrap.spirv_envelope::scalar_cast"]
@@ -1129,10 +1124,105 @@ unsafe extern "C" {
     fn constant_declaration(scalar: ScalarCode, type_id: u32, id: u32, bits: u64, words: *mut u32) -> u64;
 }
 
-struct PrivateArray {
+struct PrivateArray<'a> {
     start: usize,
     unit: Scalar,
     variable: u32,
+    shape: &'a Ty,
+}
+
+#[repr(C)]
+struct FunctionArray {
+    start: usize,
+    end: usize,
+    fields: usize,
+    shape: *const std::ffi::c_void,
+    bytes: u32,
+}
+
+#[repr(C)]
+struct FunctionLocals {
+    start: usize,
+    fields: usize,
+    shape: *const std::ffi::c_void,
+}
+
+#[repr(C)]
+struct FunctionStorageInput {
+    rays: usize,
+    next: u32,
+    ray_pointer: u32,
+    word_type: u32,
+    byte_type: u32,
+    short_type: u32,
+}
+
+#[repr(C)]
+struct FunctionStorageWords {
+    definitions: u64,
+    body: u64,
+    next: u32,
+}
+
+type FunctionStorageContext = *mut std::ffi::c_void;
+
+#[repr(C)]
+struct FunctionStorageHost {
+    context: FunctionStorageContext,
+    array: unsafe extern "C" fn(FunctionStorageContext) -> FunctionArray,
+    scalar_group: unsafe extern "C" fn(FunctionStorageContext) -> FunctionLocals,
+    width: unsafe extern "C" fn(*const std::ffi::c_void, usize) -> u32,
+    pointer: unsafe extern "C" fn(FunctionStorageContext, *const std::ffi::c_void, usize) -> u32,
+    retain_array: unsafe extern "C" fn(FunctionStorageContext, FunctionArray, u32, u32),
+}
+
+struct FunctionStorage<'a, 'emit> {
+    stage: &'a Stage,
+    pending: std::collections::btree_set::IntoIter<(usize, usize)>,
+    locals: std::collections::btree_map::Iter<'a, usize, Ty>,
+    pointers: &'emit BTreeMap<Scalar, u32>,
+    arrays: &'emit mut BTreeMap<usize, PrivateArray<'a>>,
+}
+
+unsafe extern "C" fn next_function_array(context: FunctionStorageContext) -> FunctionArray {
+    let source = unsafe { &mut *context.cast::<FunctionStorage<'_, '_>>() };
+    let Some((start, end)) = source.pending.next() else {
+        return FunctionArray { start: 0, end: 0, fields: 0, shape: std::ptr::null(), bytes: 0 };
+    };
+    let shape = &source.stage.locals[&end];
+    FunctionArray { start, end, fields: shape.components.len(), shape: std::ptr::from_ref(shape).cast(), bytes: shape.size }
+}
+
+unsafe extern "C" fn next_function_locals(context: FunctionStorageContext) -> FunctionLocals {
+    let source = unsafe { &mut *context.cast::<FunctionStorage<'_, '_>>() };
+    let arrays = &*source.arrays;
+    let Some((&end, shape)) = source.locals.by_ref().find(|(end, _)| !arrays.contains_key(*end)) else {
+        return FunctionLocals { start: 0, fields: 0, shape: std::ptr::null() };
+    };
+    let fields = shape.components.len();
+    FunctionLocals { start: end - fields, fields, shape: std::ptr::from_ref(shape).cast() }
+}
+
+unsafe extern "C" fn function_component_width(shape: *const std::ffi::c_void, field: usize) -> u32 {
+    unsafe { &*shape.cast::<Ty>() }.components[field].0.size()
+}
+
+unsafe extern "C" fn function_component_pointer(
+    context: FunctionStorageContext, shape: *const std::ffi::c_void, field: usize,
+) -> u32 {
+    let source = unsafe { &*context.cast::<FunctionStorage<'_, '_>>() };
+    let shape = unsafe { &*shape.cast::<Ty>() };
+    source.pointers[&shape.components[field].0]
+}
+
+unsafe extern "C" fn retain_function_array(
+    context: FunctionStorageContext, array: FunctionArray, bytes: u32, variable: u32,
+) {
+    let source = unsafe { &mut *context.cast::<FunctionStorage<'_, '_>>() };
+    // The array's shape was borrowed from this stage by next_function_array.
+    let shape = unsafe { &*array.shape.cast::<Ty>() };
+    let unit = match bytes { 1 => Scalar::U8, 2 => Scalar::U16, _ => Scalar::U32 };
+    source.arrays.insert(array.end, PrivateArray { start: array.start, unit, variable, shape });
 }
 
 struct Emitter<'a> {
@@ -1162,7 +1252,7 @@ struct Emitter<'a> {
     index: u32,
     regs: Vec<u32>,
     locals: Vec<u32>,
-    private_arrays: BTreeMap<usize, PrivateArray>,
+    private_arrays: BTreeMap<usize, PrivateArray<'a>>,
     stage: &'a Stage,
     program: &'a Program,
     execution_buffers: ExecutionBuffers,
@@ -1186,8 +1276,8 @@ impl Emitter<'_> {
         &mut self, base: usize, index: Option<Reg>, word: u32, scalar: Scalar,
     ) -> (Scalar, [u32; 8], usize) {
         use std::ops::Bound::{Excluded, Unbounded};
-        let (&end, array) = self.private_arrays.range((Excluded(base), Unbounded)).next().unwrap();
-        let offset = self.stage.locals[&end].components[base - array.start].1 + word;
+        let (_, array) = self.private_arrays.range((Excluded(base), Unbounded)).next().unwrap();
+        let offset = array.shape.components[base - array.start].1 + word;
         let unit = array.unit;
         let variable = array.variable;
         let bytes = unit.size();
@@ -1269,21 +1359,49 @@ impl Emitter<'_> {
         }
         id
     }
-    fn declare_pointer(&mut self, storage: StorageClass, pointee: u32) -> u32 {
-        self.declare_type(TypeShape::Pointer, storage as u32, pointee)
-    }
-    fn append_variable(words: &mut Vec<u32>, storage: StorageClass, pointer: u32, id: u32) {
-        let start = words.len();
-        words.reserve(4);
+    fn declare_function_storage(&mut self, ray_pointer: u32, facts: &ShaderStageFacts) {
+        let stage = self.stage;
+        let spans = private_spans(&stage.code);
+        let slots = stage.locals.last_key_value().map_or(0, |(end, _)| *end);
+        let definitions = self.defs.len();
+        let body = self.body.len();
+        let rays = &facts.ray_queries;
+        let first_ray = self.next;
+        self.defs.reserve(12 * spans.len());
+        self.body.reserve(4 * (rays.len() + slots + spans.len()));
+        self.locals.resize(slots, 0);
+        let result = {
+            let mut storage = FunctionStorage {
+                stage, pending: spans.into_iter(), locals: stage.locals.iter(),
+                pointers: &self.pointers, arrays: &mut self.private_arrays,
+            };
+            let host = FunctionStorageHost {
+                context: std::ptr::from_mut(&mut storage).cast(),
+                array: next_function_array,
+                scalar_group: next_function_locals,
+                width: function_component_width,
+                pointer: function_component_pointer,
+                retain_array: retain_function_array,
+            };
+            let input = FunctionStorageInput {
+                rays: rays.len(), next: self.next, ray_pointer,
+                word_type: self.types[&Scalar::U32],
+                byte_type: self.types.get(&Scalar::U8).copied().unwrap_or(0),
+                short_type: self.types.get(&Scalar::U16).copied().unwrap_or(0),
+            };
+            unsafe {
+                function_storage(input, host, WordConstants::new(&mut self.constants), self.locals.as_mut_ptr(),
+                    self.defs.as_mut_ptr().add(definitions), self.body.as_mut_ptr().add(body))
+            }
+        };
         unsafe {
-            variable_declaration(storage, pointer, id, words.as_mut_ptr().add(start));
-            words.set_len(start + 4);
+            self.defs.set_len(definitions + result.definitions as usize);
+            self.body.set_len(body + result.body as usize);
         }
-    }
-    fn declare_function_variable(&mut self, pointer: u32) -> u32 {
-        let id = self.id();
-        Self::append_variable(&mut self.body, StorageClass::Function, pointer, id);
-        id
+        self.next = result.next;
+        for (offset, &(reg, fields)) in rays.iter().enumerate() {
+            self.ray_variables.insert(reg, (first_ray + offset as u32, fields));
+        }
     }
     fn declare_workgroup(&mut self, input: WorkgroupDeclaration) -> Result<WorkgroupVariables, &'static str> {
         let definitions = self.defs.len();
@@ -2533,30 +2651,7 @@ fn emit_shader(
     e.emit_control(7, |body| unsafe { begin_shader_body(void, main, fn_ty, entry, body) });
     if !argument_pass {
         e.regs = (0..stage.registers.len()).map(|_| e.id()).collect();
-        for &(result, fields) in &facts.ray_queries {
-            let id = e.declare_function_variable(ray_pointer);
-            e.ray_variables.insert(result, (id, fields));
-        }
-        e.locals.resize(stage.locals.last_key_value().map_or(0, |(end, _)| *end), 0);
-        for (begin, end) in private_spans(&stage.code) {
-            let ty = &stage.locals[&end];
-            let size = ty.components.iter().map(|(s, _)| s.size()).min().unwrap().min(4);
-            let unit = match size { 1 => Scalar::U8, 2 => Scalar::U16, _ => Scalar::U32 };
-            let length = e.constant(Scalar::U32, ty.size / size);
-            let array = e.declare_type(TypeShape::Array, e.types[&unit], length);
-            let pointer = e.declare_pointer(StorageClass::Function, array);
-            let variable = e.declare_function_variable(pointer);
-            e.private_arrays.insert(end, PrivateArray { start: begin, unit, variable });
-        }
-        for (&end, ty) in &stage.locals {
-            if e.private_arrays.contains_key(&end) {
-                continue;
-            }
-            let start = end - ty.components.len();
-            for (slot, (scalar, _)) in (start..end).zip(&ty.components) {
-                e.locals[slot] = e.declare_function_variable(e.pointers[scalar]);
-            }
-        }
+        e.declare_function_storage(ray_pointer, facts);
     }
     let gid = e.id();
     let local_index = e.id();
