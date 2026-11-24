@@ -448,6 +448,8 @@ fn instruction(value: &Inst) -> View {
         InstKind::Print { dst, value } => { view.tag = 19; view.a = *dst; view.b = *value; }
         InstKind::Call(call) => {
             view.tag = 20; view.first = Span::slice(&call.values); view.second = Span::slice(call.error.as_slice()); view.left = Node::of(call, Kind::Call);
+            #[cfg(feature="compiler")]
+            {view.a = usize::from(matches!(&call.failure, Some(crate::check::FailureContinuation::Scope(_))));}
         }
         InstKind::ViewLoad { dst, address, index, stride, .. } => {
             view.tag = 21; view.a = *dst; view.b = *index; view.first = Span::slice(address); view.left = Node::of(stride, Kind::Stride);
@@ -491,9 +493,23 @@ fn instruction(value: &Inst) -> View {
         InstKind::Scope(body) => { view.tag = 45; view.first = Span::slice(body); }
         InstKind::Exit => view.tag = 46,
         InstKind::Raise(error) => { view.tag = 47; view.a = *error; }
-        InstKind::Cleanup { body, .. } => { view.tag = 48; view.first = Span::slice(body); }
+        InstKind::Cleanup { body, failure, .. } => { view.tag = 48; view.first = Span::slice(body); view.a = usize::from(failure.is_some()); }
     }
     view
+}
+
+#[cfg(feature="compiler")]
+unsafe extern "C" {
+    #[link_name="bootstrap.ir_dataflow::parallel_frame_used"]fn b_parallel_frame_used(code:Span,frame:Span,host:Host)->u32;
+    #[link_name="bootstrap.ir_dataflow::parallel_scope_required"]fn b_parallel_scope_required(code:Span,host:Host)->u32;
+}
+#[cfg(feature="compiler")]
+pub(crate) fn parallel_frame_used(code:&[Inst],frame:&[Reg])->bool {
+    unsafe{b_parallel_frame_used(Span::slice(code),Span::slice(frame),HOST)!=0}
+}
+#[cfg(feature="compiler")]
+pub(crate) fn parallel_scope_required(code:&[Inst])->bool {
+    unsafe{b_parallel_scope_required(Span::slice(code),HOST)!=0}
 }
 
 #[derive(Clone, Copy)]

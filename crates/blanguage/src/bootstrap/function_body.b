@@ -1577,3 +1577,49 @@ extern "C" CollectiveInitStep collective_init_step(EnvironmentCursor state,Colle
   if(cursor.phase==8){cursor.index+=1u64;cursor.phase=0;}
  }
 }
+extern "C" ParallelBuildStep parallel_build_step(LocalCursor state,ParallelBuildFacts facts) on cpu {
+ LocalCursor cursor=state;
+ while(true){
+  if(cursor.phase==0){cursor.phase=1;if(facts.prefix!=0){return ParallelBuildStep(cursor,ParallelBuildNeed::Prefix,0);}}
+  if(cursor.phase==1){cursor.phase=2;return ParallelBuildStep(cursor,ParallelBuildNeed::SetPrefix,0);}
+  if(cursor.phase==2){cursor.phase=3;return ParallelBuildStep(cursor,ParallelBuildNeed::TileInputs,0);}
+  if(cursor.phase==3){cursor.phase=4;return ParallelBuildStep(cursor,ParallelBuildNeed::Body,0);}
+  if(cursor.phase==4){cursor.phase=5;return ParallelBuildStep(cursor,ParallelBuildNeed::Access,0);}
+  if(cursor.phase==5){cursor.phase=6;return ParallelBuildStep(cursor,ParallelBuildNeed::Appends,0);}
+  if(cursor.phase==6){cursor.phase=7;return ParallelBuildStep(cursor,ParallelBuildNeed::Initialize,0);}
+  if(cursor.phase==7){cursor.phase=8;return ParallelBuildStep(cursor,ParallelBuildNeed::Tiles,0);}
+  if(cursor.phase==8){
+   if(facts.selection!=0&&facts.tiles!=0){return ParallelBuildStep(cursor,ParallelBuildNeed::BadSparseTile,0);}
+   cursor.phase=9;if(facts.selection!=0){return ParallelBuildStep(cursor,ParallelBuildNeed::Selection,0);}
+  }
+  if(cursor.phase==9){cursor.phase=10;return ParallelBuildStep(cursor,ParallelBuildNeed::Frame,0);}
+  if(cursor.phase==10){cursor.phase=11;if(facts.frame!=0){return ParallelBuildStep(cursor,ParallelBuildNeed::FrameUse,0);}}
+  if(cursor.phase==11){cursor.phase=12;if(facts.used!=0){return ParallelBuildStep(cursor,ParallelBuildNeed::BindFrame,facts.has_native!=0?facts.native_frame:(facts.uniform_bytes+7)&4294967288);}}
+  if(cursor.phase==12){cursor.phase=13;if(facts.used==0){return ParallelBuildStep(cursor,ParallelBuildNeed::Scope,0);}}
+  if(cursor.phase==13){cursor.phase=20;return ParallelBuildStep(cursor,ParallelBuildNeed::Seal,0);}
+  if(cursor.phase==20){cursor.phase=21;if(facts.used!=0||facts.scope!=0){return ParallelBuildStep(cursor,ParallelBuildNeed::BindScope,0);}}
+  if(cursor.phase==21){cursor.phase=22;if(facts.used!=0){return ParallelBuildStep(cursor,ParallelBuildNeed::CommitFrame,0);}}
+  if(cursor.phase==22){cursor.phase=23;return ParallelBuildStep(cursor,ParallelBuildNeed::Facts,0);}
+  if(cursor.phase==23){cursor.phase=24;return ParallelBuildStep(cursor,ParallelBuildNeed::Publish,0);}
+  return ParallelBuildStep(cursor,ParallelBuildNeed::Complete,0);
+ }
+}
+extern "C" ParallelRelationsStep parallel_relations_step(EnvironmentCursor state,u64 relations) on cpu {
+ EnvironmentCursor cursor=state;
+ while(true){
+  if(cursor.phase==0){if(cursor.index<relations){cursor.phase=1;return ParallelRelationsStep(cursor,ParallelRelationsNeed::Relation);}cursor.index=0u64;cursor.phase=2;}
+  if(cursor.phase==1){cursor.index+=1u64;cursor.phase=0;}
+  if(cursor.phase==2){if(cursor.index<relations){cursor.phase=3;return ParallelRelationsStep(cursor,ParallelRelationsNeed::Prove);}return ParallelRelationsStep(cursor,ParallelRelationsNeed::Complete);}
+  if(cursor.phase==3){cursor.index+=1u64;cursor.phase=2;}
+ }
+}
+extern "C" ParallelRegionsStep parallel_regions_step(EnvironmentCursor state,ParallelRegionsFacts facts) on cpu {
+ EnvironmentCursor cursor=state;
+ while(true){
+  if(cursor.phase==0){if(cursor.index<facts.bindings){cursor.phase=1;return ParallelRegionsStep(cursor,ParallelRegionsNeed::Binding);}return ParallelRegionsStep(cursor,ParallelRegionsNeed::Complete);}
+  if(cursor.phase==1){if(facts.regions!=0){cursor.part=0u64;cursor.phase=2;}else{cursor.index+=1u64;cursor.phase=0;}}
+  if(cursor.phase==2){if(cursor.part<facts.regions){cursor.phase=3;return ParallelRegionsStep(cursor,ParallelRegionsNeed::Region);}cursor.phase=4;return ParallelRegionsStep(cursor,ParallelRegionsNeed::Emit);}
+  if(cursor.phase==3){cursor.part+=1u64;cursor.phase=2;}
+  if(cursor.phase==4){cursor.index+=1u64;cursor.phase=0;}
+ }
+}

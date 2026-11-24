@@ -720,105 +720,38 @@ async fn expand_stages(
                     world, input, &statement, name, &syntax, env, program, facts,
                     &facts.elements, &facts.scopes.last().unwrap().0, domain_path, functions,
                 )).await }?;
-                if let Some(limit) = &prefix {
-                    b.reads.insert(limit.binding);
-                    b.cross_access.insert(limit.binding);
-                }
-                b.prefix = prefix;
-                let inputs = unsafe { world.call(b.tile_inputs(&body)).await }?;
-                unsafe { world.call(b.block(&body.slice(inputs..))).await }?;
-                b.parallel_access(statement.span())?;
-                let appended: Vec<_> = b
-                    .appends
-                    .iter()
-                    .map(|(target, count)| PrefixRelation { domain_region: None,
-                        domain: *target,
-                        count: *count,
-                    })
-                    .collect();
-                for relation in &appended {
-                    prefix::prove(
-                        facts,
-                        program,
-                        relation.domain,
-                        relation.count,
-                        &d.source,
-                        statement.span(),
-                    )?;
-                }
-                parallel_initialized_outputs(&b,&mut facts.outputs,facts.scopes.last().unwrap().1,domain,prefix.is_some(),selection.is_some());
-                let tiles = b.lower_tiles(statement.span())?;
-                if selection.is_some() && !tiles.is_empty() {
-                    return d.source.fail(
-                        statement.span(),
-                        "B250",
-                        "where 稀疏域尚未定义 tile 邻接与发布语义",
-                    );
-                }
-                if let Some(selection) = selection {
-                    b.reads.insert(selection.binding);
-                    b.cross_access.insert(selection.binding);
-                }
-                let range_frame = b.application.as_ref().and_then(|context| context.frame.as_ref())
-                    .filter(|frame| {
-                        let mut used = false;
-                        crate::optimize::visit(&b.code, &mut |inst| {
-                            used |= !inst.all_operands(&mut |reg| !frame.contains(&reg));
-                        });
-                        used
-                    })
-                    .map(|frame| {
-                        let offset = program.native_frame.unwrap_or_else(|| ir::align_up(program.uniform_bytes, 8));
-                        b.code.splice(0..0, [
-                            Inst::new(InstKind::Uniform(frame[0], offset)),
-                            Inst::new(InstKind::Uniform(frame[1], offset + 4)),
-                        ]);
-                        offset
-                    });
-                let memory_regions = std::mem::take(&mut b.memory_regions);
-                let write_regions = memory_regions.iter()
-                    .filter_map(|(&binding, (_, written))| (!written.is_empty())
-                        .then(|| (binding, written.keys().copied().collect()))).collect();
-                *functions = std::mem::take(&mut b.functions);
-                let (elements, access, appends) = (b.env, b.view_access, b.appends);
-                let mut stage = Stage {
-                    domain: domain,
-                    prefix,
-                    selection,
-                    operation: Operation::Map,
-                    operation_source,
-                    generated_origin: None,
-                    tiles,
-                    boundary_before: std::mem::take(boundary),
-                    registers: b.registers,
-                    locals: b.locals,
-                    code: b.code,
-                    reads: b.reads.into_iter().collect(),
-                    writes: b.writes.into_iter().collect(),
-                    write_regions,
-                    prefix_guarantees: appended,
-                    element_guarantees: Vec::new(),
-                    cross_access: b.cross_access.into_iter().collect(),
-                };
-                let mut scoped = range_frame.is_some();
-                crate::optimize::visit(&stage.code, &mut |inst| {
-                    scoped |= matches!(&inst.kind,
-                        InstKind::Call(Call { failure: Some(FailureContinuation::Scope(_)), .. })
-                        | InstKind::Cleanup { failure: Some(_), .. });
-                });
-                if scoped {
-                    scopes.insert(program.stages.len(), RangeContext {
-                        output_scopes: b.output_scopes,
-                        view_model: b.view_model,
-                        residency: b.residency,
-                    });
-                }
-                if let Some(offset) = range_frame {
-                    program.native_frame = Some(offset);
-                    program.uniform_bytes = offset + 8;
-                }
-                parallel_stage_facts(program,facts,&mut stage,&access,&appends,&elements,&memory_regions,index);
-                program.stages.push(stage);
+                let mut cursor=SourceValueCursor{phase:0};let mut control=ParallelBuildFacts{prefix:u32::from(prefix.is_some()),selection:u32::from(selection.is_some()),tiles:0,frame:0,used:0,scope:0,has_native:u32::from(program.native_frame.is_some()),native_frame:program.native_frame.unwrap_or(0),uniform_bytes:program.uniform_bytes};
+                let mut inputs=0;let mut appended=Vec::new();let mut tiles=Vec::new();let mut range_frame=None;
+                loop{let step=unsafe{parallel_build_step(cursor,ParallelBuildFacts{..control})};cursor=step.cursor;match step.need{
+                    ParallelBuildNeed::Prefix=>{let limit=prefix.unwrap();b.reads.insert(limit.binding);b.cross_access.insert(limit.binding);},
+                    ParallelBuildNeed::SetPrefix=>b.prefix=prefix,
+                    ParallelBuildNeed::TileInputs=>inputs=unsafe{world.call(b.tile_inputs(&body)).await}?,
+                    ParallelBuildNeed::Body=>unsafe{world.call(b.block(&body.slice(inputs..))).await}?,
+                    ParallelBuildNeed::Access=>b.parallel_access(statement.span())?,
+                    ParallelBuildNeed::Appends=>appended=parallel_relations(&b.appends,facts,program,d,statement.span())?,
+                    ParallelBuildNeed::Initialize=>parallel_initialized_outputs(&b,&mut facts.outputs,facts.scopes.last().unwrap().1,domain,prefix.is_some(),selection.is_some()),
+                    ParallelBuildNeed::Tiles=>{tiles=b.lower_tiles(statement.span())?;control.tiles=u32::from(!tiles.is_empty());},
+                    ParallelBuildNeed::BadSparseTile=>return d.source.fail(statement.span(),"B250","where 稀疏域尚未定义 tile 邻接与发布语义"),
+                    ParallelBuildNeed::Selection=>{let selection=selection.unwrap();b.reads.insert(selection.binding);b.cross_access.insert(selection.binding);},
+                    ParallelBuildNeed::Frame=>control.frame=u32::from(b.application.as_ref().and_then(|context|context.frame.as_ref()).is_some()),
+                    ParallelBuildNeed::FrameUse=>control.used=u32::from(ir::dataflow::parallel_frame_used(&b.code,b.application.as_ref().unwrap().frame.as_ref().unwrap())),
+                    ParallelBuildNeed::BindFrame=>{let frame=b.application.as_ref().unwrap().frame.as_ref().unwrap();b.code.splice(0..0,[Inst::new(InstKind::Uniform(frame[0],step.offset)),Inst::new(InstKind::Uniform(frame[1],step.offset+4))]);range_frame=Some(step.offset);},
+                    ParallelBuildNeed::Scope=>control.scope=u32::from(ir::dataflow::parallel_scope_required(&b.code)),
+                    ParallelBuildNeed::Seal=>break,
+                    _=>unsafe{std::hint::unreachable_unchecked()},
+                }}
+                let memory_regions=std::mem::take(&mut b.memory_regions);let write_regions=parallel_write_regions(&memory_regions);
+                *functions=std::mem::take(&mut b.functions);let(elements,access,appends)=(b.env,b.view_access,b.appends);
+                let output_scopes=b.output_scopes;let mut view_model=Some(b.view_model);let mut residency=Some(b.residency);
+                let mut stage=Some(Stage{domain,prefix,selection,operation:Operation::Map,operation_source,generated_origin:None,tiles,boundary_before:std::mem::take(boundary),registers:b.registers,locals:b.locals,code:b.code,reads:b.reads.into_iter().collect(),writes:b.writes.into_iter().collect(),write_regions,prefix_guarantees:appended,element_guarantees:Vec::new(),cross_access:b.cross_access.into_iter().collect()});
+                loop{let step=unsafe{parallel_build_step(cursor,ParallelBuildFacts{..control})};cursor=step.cursor;match step.need{
+                    ParallelBuildNeed::BindScope=>{scopes.insert(program.stages.len(),RangeContext{output_scopes,view_model:view_model.take().unwrap(),residency:residency.take().unwrap()});},
+                    ParallelBuildNeed::CommitFrame=>{let offset=range_frame.unwrap();program.native_frame=Some(offset);program.uniform_bytes=offset+8;},
+                    ParallelBuildNeed::Facts=>parallel_stage_facts(program,facts,stage.as_mut().unwrap(),&access,&appends,&elements,&memory_regions,index),
+                    ParallelBuildNeed::Publish=>program.stages.push(stage.take().unwrap()),
+                    ParallelBuildNeed::Complete=>break,
+                    _=>unsafe{std::hint::unreachable_unchecked()},
+                }}
             }
             StmtKind::Expr(expression) => {
                 let call_span = expression.span();
@@ -1058,6 +991,24 @@ fn collective_initialized_outputs(program:&Program,stages:&[Stage],outputs:&mut 
 }
 
 type StageMemoryRegions=BTreeMap<usize,(BTreeSet<(bool,u32,u32)>,BTreeMap<(u32,u32),Option<Box<bounds::Proof>>>)>;
+
+fn parallel_relations(appends:&BTreeMap<usize,PrefixCount>,facts:&prefix::Facts,program:&Program,d:&Definition,span:Span)->Result<Vec<PrefixRelation>> {
+    let mut cursor=EnvironmentCursor{index:0,part:0,phase:0};let mut entries=appends.iter();let mut relations=Vec::new();
+    loop{let step=unsafe{parallel_relations_step(cursor,appends.len()as u64)};cursor=step.cursor;match step.need{
+        ParallelRelationsNeed::Relation=>{let(&domain,&count)=entries.next().unwrap();relations.push(PrefixRelation{domain_region:None,domain,count});},
+        ParallelRelationsNeed::Prove=>{let relation=relations[cursor.index as usize];prefix::prove(facts,program,relation.domain,relation.count,&d.source,span)?;},
+        ParallelRelationsNeed::Complete=>return Ok(relations),
+    }}
+}
+fn parallel_write_regions(memory:&StageMemoryRegions)->BTreeMap<usize,BTreeSet<(u32,u32)>> {
+    let mut cursor=EnvironmentCursor{index:0,part:0,phase:0};let mut facts=ParallelRegionsFacts{bindings:memory.len()as u64,regions:0};let mut entries=memory.iter();let mut binding=0;let mut regions=None;let mut words=BTreeSet::new();let mut output=BTreeMap::new();
+    loop{let step=unsafe{parallel_regions_step(cursor,ParallelRegionsFacts{..facts})};cursor=step.cursor;match step.need{
+        ParallelRegionsNeed::Binding=>{let(&current,(_,written))=entries.next().unwrap();binding=current;facts.regions=written.len()as u64;regions=Some(written.keys());},
+        ParallelRegionsNeed::Region=>{words.insert(*regions.as_mut().unwrap().next().unwrap());},
+        ParallelRegionsNeed::Emit=>{output.insert(binding,std::mem::take(&mut words));},
+        ParallelRegionsNeed::Complete=>return output,
+    }}
+}
 
 fn parallel_output(
     program:&Program,facts:&prefix::Facts,binding:usize,access:Access,index:Reg,prefix:bool,selection:bool,
@@ -2724,6 +2675,19 @@ unsafe extern "C"{
 #[repr(C)]#[derive(Clone,Copy)]struct SourceValueCursor {phase:u32}
 #[repr(C)]#[derive(Clone,Copy)]struct EnvironmentCursor {index:u64,part:u64,phase:u32}
 #[repr(C)]struct PromoteStageFacts{roots:u64,components:u64,access:u32,initialized:u32}
+#[repr(C)]struct ParallelBuildFacts{prefix:u32,selection:u32,tiles:u32,frame:u32,used:u32,scope:u32,has_native:u32,native_frame:u32,uniform_bytes:u32}
+#[repr(u32)]enum ParallelBuildNeed{Prefix,SetPrefix,TileInputs,Body,Access,Appends,Initialize,Tiles,BadSparseTile,Selection,Frame,FrameUse,BindFrame,Scope,Seal,BindScope,CommitFrame,Facts,Publish,Complete}
+#[repr(C)]struct ParallelBuildStep{cursor:SourceValueCursor,need:ParallelBuildNeed,offset:u32}
+#[repr(u32)]enum ParallelRelationsNeed{Relation,Prove,Complete}
+#[repr(C)]struct ParallelRelationsStep{cursor:EnvironmentCursor,need:ParallelRelationsNeed}
+#[repr(C)]struct ParallelRegionsFacts{bindings:u64,regions:u64}
+#[repr(u32)]enum ParallelRegionsNeed{Binding,Region,Emit,Complete}
+#[repr(C)]struct ParallelRegionsStep{cursor:EnvironmentCursor,need:ParallelRegionsNeed}
+unsafe extern "C"{
+    #[link_name="bootstrap.function_body::parallel_build_step"]fn parallel_build_step(cursor:SourceValueCursor,facts:ParallelBuildFacts)->ParallelBuildStep;
+    #[link_name="bootstrap.function_body::parallel_relations_step"]fn parallel_relations_step(cursor:EnvironmentCursor,relations:u64)->ParallelRelationsStep;
+    #[link_name="bootstrap.function_body::parallel_regions_step"]fn parallel_regions_step(cursor:EnvironmentCursor,facts:ParallelRegionsFacts)->ParallelRegionsStep;
+}
 #[repr(u32)]enum PromoteStageNeed{Root,Component,Promote,Complete}
 #[repr(C)]struct PromoteStageStep{cursor:EnvironmentCursor,need:PromoteStageNeed}
 #[repr(C)]struct StageWriteInitFacts{writes:u64,appends:u64,components:u64,binding:u64,append_output:u64,append_count:u64,selected:u64,access:u32,prefix:u32,selection:u32,local:u32,known:u32}

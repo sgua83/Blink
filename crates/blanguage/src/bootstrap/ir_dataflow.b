@@ -305,6 +305,37 @@ extern "C" u32 operands(Node source,Host host,address context,cfn<u32,address,us
  if(source.kind==N_STRIDE){return visit_stride(source,host,context,visit);}
  return visit_instruction(host.inspect(source),host,context,visit);
 }
+extern "C" u32 parallel_frame_operand(address context,usize reg) on cpu {
+ Span frame=unsafe_position<Span>(context);usize index=0u64;
+ while(index<frame.count){if(word_at(frame,index)==reg){return 0;}index+=1u64;}
+ return 1;
+}
+extern "C" u32 parallel_frame_used(Span code,Span frame,Host host) on cpu requires nonzero(host.inspect) {
+ usize index=0u64;
+ while(index<code.count){
+  View value=host.inspect(node_at(code,index,N_INSTRUCTION));
+  if(visit_instruction(value,host,address_of(frame),c_function(parallel_frame_operand))==0){return 1;}
+  if(value.tag==OP_SCOPE||value.tag==OP_CLEANUP||value.tag==OP_BRANCH||value.tag==OP_LOOP_VALUE){
+   if(parallel_frame_used(value.first,frame,host)!=0){return 1;}
+   if(parallel_frame_used(value.second,frame,host)!=0){return 1;}
+  }
+  index+=1u64;
+ }
+ return 0;
+}
+extern "C" u32 parallel_scope_required(Span code,Host host) on cpu requires nonzero(host.inspect) {
+ usize index=0u64;
+ while(index<code.count){
+  View value=host.inspect(node_at(code,index,N_INSTRUCTION));
+  if((value.tag==OP_INVOKE||value.tag==OP_CLEANUP)&&value.a!=0u64){return 1;}
+  if(value.tag==OP_SCOPE||value.tag==OP_CLEANUP||value.tag==OP_BRANCH||value.tag==OP_LOOP_VALUE){
+   if(parallel_scope_required(value.first,host)!=0){return 1;}
+   if(parallel_scope_required(value.second,host)!=0){return 1;}
+  }
+  index+=1u64;
+ }
+ return 0;
+}
 
 extern "C" bool accessed(usize access,u32 writing) on cpu {
  return writing!=0 ? access==2u64||access==3u64||access==4u64 : access==1u64||access==3u64||access==4u64;

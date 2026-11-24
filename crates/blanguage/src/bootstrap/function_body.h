@@ -382,3 +382,15 @@ struct CollectiveInitFacts {u64 stages;u64 components;u64 target;u64 source;u64 
 enum CollectiveInitNeed:u32 {Stage=0;Descriptor=1;Component=2;Word=3;Emit=4;Complete=5;};
 struct CollectiveInitStep {EnvironmentCursor cursor;CollectiveInitNeed need;u32 flags;u64 binding;u64 domain;u32 word;};
 extern "C" CollectiveInitStep collective_init_step(EnvironmentCursor state,CollectiveInitFacts facts) on cpu;
+
+struct ParallelBuildFacts {u32 prefix;u32 selection;u32 tiles;u32 frame;u32 used;u32 scope;u32 has_native;u32 native_frame;u32 uniform_bytes;};
+enum ParallelBuildNeed:u32 {Prefix=0;SetPrefix=1;TileInputs=2;Body=3;Access=4;Appends=5;Initialize=6;Tiles=7;BadSparseTile=8;Selection=9;Frame=10;FrameUse=11;BindFrame=12;Scope=13;Seal=14;BindScope=15;CommitFrame=16;Facts=17;Publish=18;Complete=19;};
+struct ParallelBuildStep {LocalCursor cursor;ParallelBuildNeed need;u32 offset;};
+extern "C" ParallelBuildStep parallel_build_step(LocalCursor state,ParallelBuildFacts facts) on cpu;
+enum ParallelRelationsNeed:u32 {Relation=0;Prove=1;Complete=2;};
+struct ParallelRelationsStep {EnvironmentCursor cursor;ParallelRelationsNeed need;};
+extern "C" ParallelRelationsStep parallel_relations_step(EnvironmentCursor state,u64 relations) on cpu;
+struct ParallelRegionsFacts {u64 bindings;u64 regions;};
+enum ParallelRegionsNeed:u32 {Binding=0;Region=1;Emit=2;Complete=3;};
+struct ParallelRegionsStep {EnvironmentCursor cursor;ParallelRegionsNeed need;};
+extern "C" ParallelRegionsStep parallel_regions_step(EnvironmentCursor state,ParallelRegionsFacts facts) on cpu;

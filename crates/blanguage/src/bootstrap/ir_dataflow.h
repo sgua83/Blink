@@ -53,6 +53,9 @@ struct LoopPathHost {
 extern "C" usize next_loop_edit(Span code,usize first,Host host) on cpu
  requires nonzero(host.inspect);
 extern "C" u32 has_function_exit(Span code,Host host) on cpu requires nonzero(host.inspect);
+extern "C" u32 parallel_frame_operand(address context,usize reg) on cpu;
+extern "C" u32 parallel_frame_used(Span code,Span frame,Host host) on cpu requires nonzero(host.inspect);
+extern "C" u32 parallel_scope_required(Span code,Host host) on cpu requires nonzero(host.inspect);
 extern "C" void loop_exit_paths(Span code,LoopPaths paths,LoopPathHost host) on cpu
  requires nonzero(host.ir.inspect) requires nonzero(host.record_break) requires nonzero(host.clear)
  requires nonzero(host.union_paths) requires nonzero(host.with_branch) requires nonzero(host.with_scope);
