@@ -2,7 +2,7 @@
 mod archive;
 mod static_library;
 pub use static_library::{Input, archive};
-pub(crate) use static_library::{Member as LibraryMember, members as library_members, encode as library_bytes};
+pub(crate) use static_library::{HostMember, Member as LibraryMember, members as library_members, encode as library_bytes};
 pub(crate) use static_library::{Library, ObjectBytes};
 mod coff;
 pub(crate) use coff::{ImportKey, encode_native, encode_native_with_imports, native_import_member, rust_link_binding};

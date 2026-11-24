@@ -124,42 +124,76 @@ impl AsRef<[u8]> for ObjectBytes {
 pub(crate) struct Member {
     pub(crate) name: String,
     bytes: ObjectBytes,
-    build: Option<coff::HostBuildSection>,
 }
-impl Member {
-    pub(crate) fn new(name:String,bytes:Vec<u8>)->Self {
-        Self { name, bytes: ObjectBytes::generated(bytes), build: None }
-    }
+
+pub(crate) struct MemberView<'a> {
+    name: &'a str,
+    bytes: &'a [u8],
+    build: Option<&'a coff::HostBuildSection>,
+}
+
+impl MemberView<'_> {
     fn output_length(&self) -> usize {
-        self.build.as_ref().map_or(self.bytes.len(), |build| build.length(&self.bytes))
+        self.build.map_or(self.bytes.len(), |build| build.length(self.bytes))
     }
 
     unsafe fn write(&self, output: *mut u8) {
         unsafe {
-            if let Some(build) = &self.build {
-                build.write(&self.bytes, output);
+            if let Some(build) = self.build {
+                build.write(self.bytes, output);
             } else {
                 std::ptr::copy_nonoverlapping(self.bytes.as_ptr(), output, self.bytes.len());
             }
         }
     }
+}
 
-    pub(crate) fn host_members<'a>(
+pub(crate) struct HostMember<'a> {
+    name: Cow<'a, str>,
+    bytes: Cow<'a, [u8]>,
+    build: Option<coff::HostBuildSection>,
+}
+
+impl HostMember<'_> {
+    pub(crate) fn view(&self) -> MemberView<'_> {
+        MemberView { name: &self.name, bytes: &self.bytes, build: self.build.as_ref() }
+    }
+}
+
+impl Member {
+    pub(crate) fn new(name:String,bytes:Vec<u8>)->Self {
+        Self { name, bytes: ObjectBytes::generated(bytes) }
+    }
+    pub(crate) fn view(&self) -> MemberView<'_> {
+        MemberView { name: &self.name, bytes: &self.bytes, build: None }
+    }
+
+    pub(crate) fn emit_host_members<'a>(
         &'a self, imports: &mut Vec<coff::ImportKey<'a>>,
-    ) -> Result<Vec<(Self, Vec<Cow<'a, str>>)>> {
+        mut emit: impl FnMut(HostMember<'a>, Vec<Cow<'a, str>>),
+    ) -> Result<()> {
         let output = coff::Reader::new(&self.bytes).and_then(|reader| reader.host_links(imports))
             .map_err(|error| format!("静态库成员 {}：{error}", self.name))?
             .ok_or_else(|| format!("{} 不是独立模块产物", self.name))?;
-        Ok(match output {
+        match output {
             coff::HostArchiveMember::Original(names, build) => {
-                vec![(Self { name: self.name.clone(), bytes: self.bytes.clone(), build }, names)]
+                emit(HostMember {
+                    name: Cow::Borrowed(&self.name),
+                    bytes: Cow::Borrowed(&self.bytes),
+                    build,
+                }, names);
             }
-            coff::HostArchiveMember::Groups(groups) => groups.into_iter().enumerate()
-                .map(|(index, (bytes, names))| {
-                    (Self::new(format!("{}.{}.obj", self.name, index + 1), bytes), names)
-                })
-                .collect(),
-        })
+            coff::HostArchiveMember::Groups(groups) => {
+                for (index, (bytes, names)) in groups.into_iter().enumerate() {
+                    emit(HostMember {
+                        name: Cow::Owned(format!("{}.{}.obj", self.name, index + 1)),
+                        bytes: Cow::Owned(bytes),
+                        build: None,
+                    }, names);
+                }
+            }
+        }
+        Ok(())
     }
     fn archive_symbols<'a>(&'a self, emit: impl FnMut(&'a str)) -> Result<bool> {
         coff::Reader::new(&self.bytes).and_then(|reader| reader.archive_symbols(emit))
@@ -358,7 +392,7 @@ pub fn archive(inputs: &[impl AsRef<Path>], path: &Path) -> Result<()> {
             return Err(format!("{} 不是独立模块产物", member.name).into());
         }
     }
-    let output = encode(members.iter(), symbols.into_iter())?;
+    let output = encode(members.iter().map(Member::view), symbols.into_iter())?;
     if let Some(parent) = path.parent() {
         crate::file_bytes::create_dir_all(parent)?;
     }
@@ -376,21 +410,21 @@ pub(crate) fn members(inputs: &[impl AsRef<Path>]) -> Result<Vec<Member>> {
             for index in 0..library.member_count() {
                 let member=library.member(index).member;
                 let (name,bytes)=library.member_bytes(member);
-                members.push(Member { name: name.into(), bytes, build: None });
+                members.push(Member { name: name.into(), bytes });
             }
         } else {
             let name = input.file_name()
                 .and_then(|name| name.to_str())
                 .ok_or("静态库输入名不是 UTF-8")?
                 .into();
-            members.push(Member { name, bytes, build: None });
+            members.push(Member { name, bytes });
         }
     }
     Ok(members)
 }
 
 pub(crate) fn encode<'a>(
-    members: impl Iterator<Item = &'a Member> + Clone,
+    members: impl Iterator<Item = MemberView<'a>> + Clone,
     symbols: impl Iterator<Item = (usize, &'a str)>,
 ) -> Result<Vec<u8>> {
     let mut member_views: Vec<_> = members.clone().map(|member| ArchiveMember {

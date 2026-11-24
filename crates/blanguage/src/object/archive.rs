@@ -151,7 +151,7 @@ pub(crate) fn compile(
         members.push(super::static_library::Member::new("entry.obj".into(), bytes));
     }
     let bytes = super::static_library::encode(
-        members.iter(), symbols.iter().map(|(index, name)| (*index, name.as_str())),
+        members.iter().map(|member| member.view()), symbols.iter().map(|(index, name)| (*index, name.as_str())),
     )?;
     Ok(Archive {
         bytes: super::ObjectBytes::generated(bytes),
