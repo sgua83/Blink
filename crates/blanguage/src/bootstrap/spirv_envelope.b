@@ -1020,7 +1020,7 @@ extern "C" BlockFlow lower_structured(StructuredControl input, StructuredHost ho
     return BlockFlow::Next;
 }
 
-extern "C" ControlWords open_function_scope(u32 merge, u32 selector, u32 begin, address body) on cpu {
+ControlWords open_function_scope(u32 merge, u32 selector, u32 begin, address body) on cpu {
     u64 at = words_two(body, 0u64, 247, merge, 0);
     at = words_two(body, at, 251, selector, begin);
     return ControlWords(words_one(body, at, 248, begin), begin, 1);
@@ -1030,7 +1030,17 @@ extern "C" ControlWords leave_control(u32 target, address body) on cpu {
     return ControlWords(words_one(body, 0u64, 249, target), 0, 0);
 }
 
-extern "C" ControlWords dispatch_loop_return(LoopReturn input, address edges, address body) on cpu {
+struct LoopReturn {
+    u32 bool_type;
+    u32 result;
+    u32 target;
+    u32 merge;
+    u32 not_returned;
+    u32 returned;
+    u32 edge_count;
+};
+
+ControlWords dispatch_loop_return(LoopReturn input, address edges, address body) on cpu {
     put(body, 0u64, instruction(245, 3 + 2 * input.edge_count));
     put(body, 1u64, input.bool_type);
     put(body, 2u64, input.result);
@@ -1044,6 +1054,63 @@ extern "C" ControlWords dispatch_loop_return(LoopReturn input, address edges, ad
     }
     at = open_conditional(body, at, input.merge, input.result, input.target, input.merge);
     return ControlWords(words_one(body, at, 248, input.merge), input.merge, 1);
+}
+
+extern "C" void lower_function_scope(InstructionBlock body, StructuredHost host) on cpu
+    requires nonzero(host.labels) requires nonzero(host.constant) requires nonzero(host.reserve_words)
+    requires nonzero(host.finish_words) requires nonzero(host.open_function) requires nonzero(host.block)
+    requires nonzero(host.close_function) {
+    address context = host.context;
+    u32 merge = host.labels(context, 2);
+    u32 begin = merge + 1;
+    u32 selector = host.constant(context, ControlConstant::Selector, 0);
+    host.finish_words(context, open_function_scope(merge, selector, begin, host.reserve_words(context, 8u64)));
+    host.open_function(context, merge);
+    BlockFlow flow = host.block(context, body, ControlTargets(0, 0));
+    if (flow == BlockFlow::Error) { return; }
+    host.close_function(context);
+    host.finish_words(context, next_control_block(merge, merge, u32(flow == BlockFlow::Next),
+        host.reserve_words(context, 4u64)));
+}
+
+u32 return_destination(StructuredHost host) on cpu
+    requires nonzero(host.exit_targets) requires nonzero(host.record_return) {
+    ReturnTargets targets = host.exit_targets(host.context);
+    if (targets.loop_merge != 0) {
+        host.record_return(targets.loop_edges, targets.label);
+        return targets.loop_merge;
+    }
+    return targets.function_merge;
+}
+
+extern "C" u32 lower_function_exit(StructuredHost host) on cpu
+    requires nonzero(host.exit_targets) requires nonzero(host.record_return) requires nonzero(host.reserve_words)
+    requires nonzero(host.finish_words) {
+    u32 target = return_destination(host);
+    ControlWords emitted = leave_control(target, host.reserve_words(host.context, 2u64));
+    host.finish_words(host.context, emitted);
+    return emitted.reaches_next;
+}
+
+extern "C" void lower_return_loop(address edges, u32 count, u32 bool_type, StructuredHost host) on cpu
+    requires nonzero(host.labels) requires nonzero(host.constant) requires nonzero(host.exit_targets)
+    requires nonzero(host.record_return) requires nonzero(host.reserve_words) requires nonzero(host.finish_words) {
+    address context = host.context;
+    u32 result = host.labels(context, 1);
+    u32 not_returned = 0;
+    u32 returned = 0;
+    for (edge in 0..count) {
+        if (read_word(edges, edge * 2 + 1) == 0) {
+            if (not_returned == 0) { not_returned = host.constant(context, ControlConstant::Flag, 0); }
+        } else {
+            if (returned == 0) { returned = host.constant(context, ControlConstant::Flag, 1); }
+        }
+        if (not_returned != 0 && returned != 0) { break; }
+    }
+    u32 target = return_destination(host);
+    u32 merge = host.labels(context, 1);
+    LoopReturn input = LoopReturn(bool_type, result, target, merge, not_returned, returned, count);
+    host.finish_words(context, dispatch_loop_return(input, edges, host.reserve_words(context, 12u64 + 2u64 * u64(count))));
 }
 
 struct SubgroupArithmetic { u32 opcode; u32 group; };

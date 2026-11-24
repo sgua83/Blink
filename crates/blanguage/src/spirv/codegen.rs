@@ -431,6 +431,18 @@ struct StructuredControl {
     kind: StructuredKind,
 }
 
+#[allow(dead_code)] // B requests these two constants.
+#[repr(u32)]
+enum ControlConstant { Selector, Flag }
+
+#[repr(C)]
+struct ReturnTargets {
+    function_merge: u32,
+    loop_merge: u32,
+    loop_edges: *mut std::ffi::c_void,
+    label: u32,
+}
+
 #[repr(C)]
 struct StructuredHost {
     context: *mut std::ffi::c_void,
@@ -442,11 +454,37 @@ struct StructuredHost {
     begin_return: unsafe extern "C" fn(*mut std::ffi::c_void, InstructionBlock, u32) -> u32,
     normal_exit: unsafe extern "C" fn(*mut std::ffi::c_void, u32),
     finish_return: unsafe extern "C" fn(*mut std::ffi::c_void),
+    constant: unsafe extern "C" fn(StructuredContext, ControlConstant, u32) -> u32,
+    open_function: unsafe extern "C" fn(StructuredContext, u32),
+    close_function: unsafe extern "C" fn(StructuredContext),
+    exit_targets: unsafe extern "C" fn(StructuredContext) -> ReturnTargets,
+    record_return: unsafe extern "C" fn(*mut std::ffi::c_void, u32),
 }
 
 struct StructuredEmission<'a, 'program> {
     emitter: &'a mut Emitter<'program>,
     error: Option<&'static str>,
+}
+
+impl StructuredEmission<'_, '_> {
+    fn host(&mut self) -> StructuredHost {
+        StructuredHost {
+            context: std::ptr::from_mut(self).cast(),
+            labels: structured_labels,
+            reserve_words: structured_reserve,
+            finish_words: structured_finish,
+            block: structured_block,
+            value: structured_value,
+            begin_return: structured_begin_return,
+            normal_exit: structured_normal_exit,
+            finish_return: structured_finish_return,
+            constant: returns::structured_constant,
+            open_function: returns::structured_open_function,
+            close_function: returns::structured_close_function,
+            exit_targets: returns::structured_exit_targets,
+            record_return: returns::structured_record_return,
+        }
+    }
 }
 
 type StructuredContext = *mut std::ffi::c_void;
@@ -486,17 +524,6 @@ unsafe extern "C" fn structured_normal_exit(context: StructuredContext, end: u32
 }
 unsafe extern "C" fn structured_finish_return(context: StructuredContext) {
     unsafe { &mut *context.cast::<StructuredEmission<'_, '_>>() }.emitter.finish_return_loop();
-}
-
-#[repr(C)]
-struct LoopReturn {
-    bool_type: u32,
-    result: u32,
-    target: u32,
-    merge: u32,
-    not_returned: u32,
-    returned: u32,
-    edge_count: u32,
 }
 
 #[repr(C)]
@@ -930,12 +957,14 @@ unsafe extern "C" {
     fn next_control_block(target: u32, label: u32, reaches: u32, body: *mut u32) -> ControlWords;
     #[link_name = "bootstrap.spirv_envelope::lower_structured"]
     fn lower_structured(input: StructuredControl, host: StructuredHost) -> BlockFlow;
-    #[link_name = "bootstrap.spirv_envelope::open_function_scope"]
-    fn open_function_scope(merge: u32, selector: u32, begin: u32, body: *mut u32) -> ControlWords;
+    #[link_name = "bootstrap.spirv_envelope::lower_function_scope"]
+    fn lower_function_scope(body: InstructionBlock, host: StructuredHost);
+    #[link_name = "bootstrap.spirv_envelope::lower_function_exit"]
+    fn lower_function_exit(host: StructuredHost) -> u32;
+    #[link_name = "bootstrap.spirv_envelope::lower_return_loop"]
+    fn lower_return_loop(edges: *const returns::ReturnEdge, count: u32, bool_type: u32, host: StructuredHost);
     #[link_name = "bootstrap.spirv_envelope::leave_control"]
     fn leave_control(target: u32, body: *mut u32) -> ControlWords;
-    #[link_name = "bootstrap.spirv_envelope::dispatch_loop_return"]
-    fn dispatch_loop_return(input: LoopReturn, edges: *const returns::ReturnEdge, body: *mut u32) -> ControlWords;
     #[link_name = "bootstrap.spirv_envelope::encode_subgroup"]
     fn encode_subgroup(input: SubgroupEmission, body: *mut u32) -> SubgroupWords;
     #[link_name = "bootstrap.spirv_envelope::scalar_declaration"]
@@ -1386,17 +1415,7 @@ impl Emitter<'_> {
 
     fn structured_control(&mut self, input: StructuredControl) -> Result<bool, &'static str> {
         let mut emission = StructuredEmission { emitter: self, error: None };
-        let host = StructuredHost {
-            context: std::ptr::from_mut(&mut emission).cast(),
-            labels: structured_labels,
-            reserve_words: structured_reserve,
-            finish_words: structured_finish,
-            block: structured_block,
-            value: structured_value,
-            begin_return: structured_begin_return,
-            normal_exit: structured_normal_exit,
-            finish_return: structured_finish_return,
-        };
+        let host = emission.host();
         let flow = unsafe { lower_structured(input, host) };
         emission.error.map_or(Ok(matches!(flow, BlockFlow::Next)), Err)
     }
