@@ -361,7 +361,6 @@ extern "C" u64 effective_address(u8 target, MoveLocation memory, address output)
 
 // Scale an index by the stored u64 stride. Base 255 leaves the scaled index
 // available as an operand; otherwise add it to the given pointer register.
-extern "C" u64 buffer_index(u32 stride_offset, u8 index, u8 base, address output) on cpu;
 // The caller owns twelve bytes for the range ABI register moves.
 extern "C" u64 range_arguments(address output) on cpu;
 // The caller owns sixteen bytes. The final four bytes are the exit rel32.
@@ -434,16 +433,6 @@ extern "C" u64 sort_histogram(u32 buffer_bytes, address output) on cpu;
 extern "C" u64 sort_scatter(u32 buffer_bytes, address output) on cpu;
 extern "C" u64 sort_gather(u32 buffer_bytes, u32 stride_offset, u32 record_bytes, address output) on cpu;
 
-struct AppendBranch {
-    u64 length;
-    u64 full;
-};
-
-// The emitter supplies 96 reservation bytes and 16 result bytes. The
-// reservation returns the full-path disp32; the result returns its target.
-extern "C" AppendBranch reserve_append(u32 counter_slot, u32 counter_word,
-    u32 capacity_slot, u32 target_slot, address output) on cpu;
-extern "C" AppendBranch append_result(address output) on cpu;
 
 enum ReductionOperator:u32 { Sum=0; Min=1; Max=2; BitAnd=3; BitOr=4; BitXor=5; };
 
@@ -795,3 +784,8 @@ extern "C" u64 emit_view_load(Node instruction, ScalarValueHost host, address ou
 extern "C" u64 emit_atomic(Node instruction, IndexedAddressHost host, address output) on cpu
     requires nonzero(host.values.ir.inspect) requires nonzero(host.values.location)
     requires nonzero(host.values.scalar) requires nonzero(host.tile_stream);
+
+// Reserves, writes and delivers the accepted flag of the original append.
+extern "C" u64 emit_append(Node instruction, ScalarValueHost host, u32 buffer_bytes,
+    u32 stride_field, address output) on cpu
+    requires nonzero(host.ir.inspect) requires nonzero(host.location) requires nonzero(host.scalar);

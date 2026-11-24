@@ -4,8 +4,6 @@ use crate::ir::*;
 use super::{BufferAddress,NativeCode,NativeSymbol,Relocation,ContinuationCode,ProgramImage,RangeResult,SortCode,StageCode};
 #[path="allocation.rs"]
 mod allocation;
-#[path="append.rs"]
-mod append;
 use allocation::{Allocation, Frame, PacketAllocation};
 #[path="application.rs"]
 mod application;
@@ -128,8 +126,6 @@ unsafe extern "C" {
     #[link_name = "bootstrap.x64_instruction::finish_range"]
     fn encode_range_end(image: *mut u8, at: usize, begin: usize, exit_field: usize,
         skip_field: usize, step: u8) -> RangeEnd;
-    #[link_name = "bootstrap.x64_instruction::buffer_index"]
-    fn encode_buffer_index(stride_offset: u32, index: u8, base: u8, output: *mut u8) -> u64;
 
 }
 
@@ -323,10 +319,6 @@ impl Emitter<'_> {
         self.patch_scope(&fields);
     }
 
-    fn offset_buffer_address(&mut self, binding: usize) {
-        let stride = binding as u32 * BUFFER_BYTES + BUFFER_STRIDE;
-        self.emit_bytes(12, |output| unsafe { encode_buffer_index(stride, 0, 15, output) });
-    }
     fn abi_range(&mut self, start: usize, kind: super::AbiRangeKind) {
         self.record_abi_range(start..self.code.len(), kind);
     }
@@ -386,7 +378,7 @@ impl Emitter<'_> {
                 }
                 InstKind::Scope(body) => self.lower_control(Flow::Scope(body), Self::block, Self::load)?,
                 InstKind::Exit => self.lower_control(Flow::Exit, Self::block, Self::load)?,
-                InstKind::Append(append) => self.append(append),
+                InstKind::Append(append) => self.append(inst, append.values.len()),
                 InstKind::Atomic(..) => self.atomic(inst),
                 // tile_phases 先完成全部有效 lane，再进入下一块内阶段。
                 InstKind::TileBarrier => {}

@@ -222,6 +222,9 @@ unsafe extern "C" {
     #[link_name = "bootstrap.x64_instruction::emit_indexed_operand"]
     fn emit_indexed_operand(source: Node, offset: Reg, word: u32, memory: u32,
         host: IndexedAddressHost, output: *mut u8) -> AddressEncoding;
+    #[link_name = "bootstrap.x64_instruction::emit_append"]
+    fn emit_append(instruction: Node, host: ScalarValueHost, buffer_bytes: u32,
+        stride_field: u32, output: *mut u8) -> u64;
     #[link_name = "bootstrap.x64_instruction::emit_atomic"]
     fn emit_atomic(instruction: Node, host: IndexedAddressHost, output: *mut u8) -> u64;
     #[link_name = "bootstrap.x64_instruction::emit_view_load"]
@@ -291,6 +294,18 @@ impl Emitter<'_> {
                 self.code.as_mut_ptr().add(start));
             self.code.set_len(start + encoded.length as usize);
             Memory::indexed(encoded.base, encoded.index, encoded.shift, encoded.offset)
+        }
+    }
+
+    pub(super) fn append(&mut self, inst: &Inst, field_count: usize) {
+        let locations = ScalarLocations { allocation: &self.allocation, stage: self.stage, frame: &self.frame };
+        let host = locations.host();
+        let start = self.code.len();
+        self.code.reserve(148 + field_count * 24);
+        unsafe {
+            let length = emit_append(Node::instruction(inst), host, BUFFER_BYTES, BUFFER_STRIDE,
+                self.code.as_mut_ptr().add(start));
+            self.code.set_len(start + length as usize);
         }
     }
 
@@ -414,9 +429,6 @@ impl Emitter<'_> {
     }
     pub(super) fn write_address(&mut self, src: Location, memory: Memory) {
         self.write_value_address(src, memory, 4);
-    }
-    pub(super) fn write_scalar(&mut self, src: Reg, base: u8, offset: u32) {
-        self.write_scalar_address(src, Memory::new(base, offset));
     }
     pub(super) fn write_scalar_address(&mut self, src: Reg, memory: Memory) {
         self.write_value_address(self.location(src), memory, self.stage.registers[src].size());

@@ -2453,11 +2453,6 @@ MoveLocation buffer_element_operand(u32 offset) on cpu {
     return MoveLocation(u64(offset), MOVE_MEMORY, u8(15), u8(0), u8(0));
 }
 
-extern "C" u64 buffer_index(u32 stride_offset, u8 index, u8 base, address output) on cpu {
-    u64 start = address_bits(output);
-    return buffer_index_at(start, stride_offset, index, base) - start;
-}
-
 u64 buffer_selection_at(u64 at, u32 data_offset, u32 stride_offset, u32 word) on cpu {
     u64 cursor = buffer_field_at(at, data_offset, u16(0x8b), u8(15));
     cursor = register_instruction(cursor, u16(0x89), u8(0), false, u8(3), u8(0));
@@ -3149,7 +3144,12 @@ extern "C" u64 sort_gather(u32 buffer_bytes, u32 stride_offset, u32 record_bytes
     return cursor + 10u64 - start;
 }
 
-extern "C" AppendBranch reserve_append(u32 counter_slot, u32 counter_word,
+struct AppendBranch {
+    u64 length;
+    u64 full;
+};
+
+AppendBranch reserve_append(u32 counter_slot, u32 counter_word,
     u32 capacity_slot, u32 target_slot, address output) on cpu {
     u64 start = address_bits(output);
     u64 cursor = buffer_field_at(start, counter_slot, u16(0x8b), u8(15));
@@ -3160,7 +3160,6 @@ extern "C" AppendBranch reserve_append(u32 counter_slot, u32 counter_word,
     u64 begin = cursor;
     cursor = register_instruction(cursor, u16(0x39), u8(0), false, u8(1), u8(0));
     u64 full = condition_field(cursor, u8(0x83));
-    write_word(full, 0); // The emitter patches across the record stores.
     MoveLocation successor = MoveLocation(1u64, MOVE_MEMORY, u8(0), NO_INDEX, u8(0));
     cursor = encode_operand_instruction(full + 4u64, u16(0x8d), u8(0), false, u8(2), successor);
     cursor = encode_operand_instruction(cursor, u16(0xb10f), u8(0xf0), false, u8(2), counter);
@@ -3171,7 +3170,7 @@ extern "C" AppendBranch reserve_append(u32 counter_slot, u32 counter_word,
     return AppendBranch(cursor - start, full - start);
 }
 
-extern "C" AppendBranch append_result(address output) on cpu {
+AppendBranch append_result(address output) on cpu {
     u64 start = address_bits(output);
     u64 cursor = move_immediate(start, u8(0), 1u64, false);
     u64 done = jump_field(cursor);
@@ -5264,4 +5263,32 @@ extern "C" u64 emit_atomic(Node instruction, IndexedAddressHost host, address ou
         cursor += stored.length;
     }
     return cursor - start;
+}
+
+extern "C" u64 emit_append(Node instruction, ScalarValueHost host, u32 buffer_bytes,
+    u32 stride_field, address output) on cpu
+    requires nonzero(host.ir.inspect) requires nonzero(host.location) requires nonzero(host.scalar) {
+    View value = host.ir.inspect(instruction);
+    u32 target = u32(value.c) * buffer_bytes;
+    // R13 contains the runtime's two header words, then one length per binding.
+    u32 capacity = (2 + u32(value.c)) * 4;
+    AppendBranch reservation = reserve_append(u32(value.b) * buffer_bytes, u32(value.d), capacity, target, output);
+    u64 start = address_bits(output);
+    u64 cursor = buffer_index_at(start + reservation.length, target + stride_field, u8(0), u8(15));
+    u64 index = 0u64;
+    while (index < u64(value.first.count)) {
+        usize reg = indexed_pair_word(value.first, index);
+        u32 word = unsafe_position<u32>(unsafe_address(address_bits(value.second.data) + index * u64(value.second.stride)));
+        MoveLocation memory = MoveLocation(u64(word), MOVE_MEMORY, u8(15), NO_INDEX, u8(0));
+        cursor += write_scalar_move(memory, host.location(host.context, reg),
+            host.scalar(host.context, reg).width / 8, unsafe_address(cursor));
+        index += 1u64;
+    }
+    AppendBranch result = append_result(unsafe_address(cursor));
+    patch_relative(unsafe_address(start + reservation.full), reservation.full, cursor - start + result.full);
+    cursor += result.length;
+    ScalarEncoding flag = host.scalar(host.context, value.a);
+    MoveEncoding stored = copy_scalar_move(host.location(host.context, value.a), move_gpr(u8(0)),
+        flag.width / 8, flag.kind == ScalarKind::Signed, unsafe_address(cursor));
+    return cursor + stored.length - start;
 }

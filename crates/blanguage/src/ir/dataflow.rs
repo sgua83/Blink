@@ -433,7 +433,12 @@ fn instruction(value: &Inst) -> View {
         }
         InstKind::Append(value) => {
             view.tag = 11; view.a = value.accepted; view.b = value.count.binding; view.c = value.target;
+            view.d = value.count.word as usize;
             view.first = Span::pairs(&value.values);
+            view.second = Span {
+                data: value.values.first().map_or(ptr::null(), |value| ptr::from_ref(&value.0).cast()),
+                count: value.values.len(), stride: size_of::<(u32, Reg)>(),
+            };
         }
         InstKind::TileBarrier => view.tag = 12,
         InstKind::TilePublish(value) => { view.tag = 13; view.a = value.tile; view.first = Span::pairs(&value.values); }
