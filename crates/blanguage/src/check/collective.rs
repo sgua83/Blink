@@ -60,7 +60,7 @@ pub(super) fn accepts(operation: CollectiveOperator, ty: &Ty) -> bool {
 
 #[derive(Clone, Copy)]
 #[repr(u32)]
-pub(super) enum NumericKind { Reduce, Scan, SegmentedScan, SegmentedReduce }
+pub(super) enum ValueKind { Reduce, Scan, SegmentedScan, SegmentedReduce }
 #[allow(dead_code)]
 #[repr(u32)]
 enum NumericNeed { Source, Target, Head, Count, Types, Access, TargetShape, CountShape, Capacity, Fields, CountWrite, GrantInput, GrantOutput, Reads, Publish, Error }
@@ -69,7 +69,7 @@ enum NumericNeed { Source, Target, Head, Count, Types, Access, TargetShape, Coun
 enum NumericError { ReduceArity, ScanArity, SegmentedArity, ReduceType, ScanType, SegmentedType, HeadAccess, ReduceAccess, ScanAccess, SegmentedAccess, ReduceShape, CountShape, ScanCapacity, SegmentedCapacity }
 #[allow(dead_code)]
 #[repr(u32)]
-enum NumericOperation { Reduce, Scan, SegmentedReduce }
+enum ValueOperation { Reduce, Scan, SegmentedReduce }
 #[derive(Clone, Copy, Default)]
 #[repr(C)]
 struct NumericFacts {
@@ -80,14 +80,14 @@ struct NumericFacts {
     source_known:u32,source_size:u32,target_known:u32,target_size:u32,count_known:u32,count_size:u32,
 }
 #[repr(C)]
-struct NumericStep { cursor:SourceValueCursor,need:NumericNeed,error:NumericError,operation:NumericOperation,argument:u64 }
+struct NumericStep { cursor:SourceValueCursor,need:NumericNeed,error:NumericError,operation:ValueOperation,argument:u64 }
 #[repr(C)]
 struct CollectiveComponent { offset:u32,size:u32 }
 #[repr(C)]
 struct CollectiveReads { first:u64,second:u64,third:u64,count:u64 }
 unsafe extern "C" {
     #[link_name="bootstrap.function_body::numeric_step"]
-    fn numeric_step(kind:NumericKind,operation:CollectiveOperator,cursor:SourceValueCursor,facts:NumericFacts)->NumericStep;
+    fn numeric_step(kind:ValueKind,operation:CollectiveOperator,cursor:SourceValueCursor,facts:NumericFacts)->NumericStep;
     #[link_name="bootstrap.function_body::collective_write_fields"]
     fn collective_write_fields(ty:*const std::ffi::c_void,context:*mut std::ffi::c_void,base:u32,count:u64,
         component:unsafe extern "C" fn(*const std::ffi::c_void,u64)->CollectiveComponent,
@@ -113,7 +113,7 @@ unsafe extern "C" fn collective_written(context:*mut std::ffi::c_void,start:u32,
 }
 
 pub(super) fn compile(
-    program:&mut Program,env:&BTreeMap<String,Root>,operator:CollectiveOperator,kind:NumericKind,
+    program:&mut Program,env:&BTreeMap<String,Root>,operator:CollectiveOperator,kind:ValueKind,
     args:&Expressions,d:&Definition,span:Span,facts:&mut prefix::Facts,
     operation_source:Option<Arc<SourceSite>>,
 )->Result<()> {
@@ -194,9 +194,9 @@ pub(super) fn compile(
                 let (source,source_word,_,prefix,ty)=source.unwrap();let (target,target_word,_,_)=target.unwrap();
                 let fields=Reduction{source,source_word,target,target_word};let mut writes=vec![target];
                 let operation=match step.operation {
-                    NumericOperation::Reduce=>Operation::Reduce(ReductionSpec{fields,ty,operator}),
-                    NumericOperation::Scan=>Operation::ScanExclusive(Scan{values:fields,ty,operator,head_word:head.map(|(_,word,_,_)|word)}),
-                    NumericOperation::SegmentedReduce=>{
+                    ValueOperation::Reduce=>Operation::Reduce(ReductionSpec{fields,ty,operator}),
+                    ValueOperation::Scan=>Operation::ScanExclusive(Scan{values:fields,ty,operator,head_word:head.map(|(_,word,_,_)|word)}),
+                    ValueOperation::SegmentedReduce=>{
                         let (binding,word,_)=count.unwrap();writes.push(binding);
                         Operation::SegmentedReduce(SegmentedReduction{values:ReductionSpec{fields,ty,operator},head_word:head.unwrap().1,count:PrefixCount{binding,word}})
                     },
@@ -394,6 +394,229 @@ pub(super) fn compile_record(
                     RecordError::CountShape=>args.at(3).span(),_=>span,
                 };
                 return d.source.fail(span,code,message);
+            },
+        }
+    }
+}
+
+#[repr(u32)]enum ValueKernelError {Valid,Missing,Reference}
+#[repr(C)]struct ValueKernelSource {error:ValueKernelError,explicit:u32,reference:u64,name:crate::syntax::wire::Text,captures:crate::syntax::wire::Slice,types:crate::syntax::wire::Slice}
+#[repr(C)]#[derive(Clone,Copy)]struct ValueKernelCursor {phase:u32,index:u64}
+#[repr(C)]#[derive(Clone,Copy)]struct ValueKernelFacts {unique:u32,valid:u32,parameters:u64,captures:u64,explicit:u32,uniform:u32,views:u32,reads:u32,writes:u32}
+#[repr(u32)]enum ValueKernelNeed {Resolve,Unknown,Signature,InvalidSignature,Begin,Parameter,BeginCaptures,Capture,InvalidCapture,PushCapture,EndCaptures,Explicit,Specialize,Origin,Invoke,Ordinary,Value,Same,Publish}
+#[repr(C)]struct ValueKernelStep {cursor:ValueKernelCursor,need:ValueKernelNeed,index:u64}
+unsafe extern "C" {
+ #[link_name="bootstrap.function_body::value_kernel_source"]fn value_kernel_source(source:crate::syntax::wire::SignatureNode)->ValueKernelSource;
+ #[link_name="bootstrap.function_body::value_kernel_signature"]fn value_kernel_signature(declaration:crate::syntax::wire::SignatureNode,invocation:u32,parameters:u64,captures:u64)->u32;
+ #[link_name="bootstrap.function_body::value_kernel_step"]fn value_kernel_step(cursor:ValueKernelCursor,facts:ValueKernelFacts)->ValueKernelStep;
+}
+async fn value_kernel(
+    world: &World,
+    program: &mut Program,
+    env: &BTreeMap<String, Root>,
+    owner: &crate::generics::Instance,
+    domain_path: &Arc<[DomainSite]>,
+    expr: &Expr,
+    ty: &Ty,
+    parameters: &[&Ty],
+    functions: &mut native_function::Module,
+) -> Result<ValueCode> {
+    let d=&owner.definition;
+    let source=unsafe {value_kernel_source(expr.signature_node())};
+    let reference=expr.child::<crate::syntax::wire::ExprNode>(source.reference);
+    match source.error {
+        ValueKernelError::Valid=>{},
+        ValueKernelError::Missing=>return d.source.fail(expr.span(),"B212","bind 需要静态值函数引用"),
+        ValueKernelError::Reference=>return d.source.fail(reference.span(),"B212","集合需要静态函数引用，或 bind(静态函数引用, 统一值…)"),
+    }
+    let captures=expr.list::<crate::syntax::wire::ExprNode>(source.captures);
+    let mut cursor=ValueKernelCursor {phase:0,index:0};
+    let mut facts=ValueKernelFacts {unique:0,valid:0,parameters:parameters.len() as u64,captures:source.captures.count,explicit:source.explicit,uniform:0,views:0,reads:0,writes:0};
+    let mut key=None;let mut builder=None;let mut inputs=Vec::new();let mut args=Vec::new();
+    let mut explicit=None;let mut instance=None;let mut entry_origin=None;
+    let mut returned=None;let mut ordinary=None;let mut value=None;
+    loop {
+        let step=unsafe {value_kernel_step(cursor,facts)};cursor=step.cursor;
+        match step.need {
+            ValueKernelNeed::Resolve=>{
+                key=world.resolve(expr.source_view().text(source.name),&d.module,&d.imports,true).unique();
+                facts.unique=u32::from(key.is_some());
+            }
+            ValueKernelNeed::Unknown=>return d.source.fail(expr.span(),"B158","未知或未导出的集合值函数"),
+            ValueKernelNeed::Signature=>{
+                let callee=&world.functions[key.as_ref().unwrap()];
+                facts.valid=unsafe {value_kernel_signature(callee.function.signature_node(),u32::from(callee.execution==crate::execution::Requirement::Invocation),parameters.len() as u64,captures.len() as u64)};
+            }
+            ValueKernelNeed::InvalidSignature=>return d.source.fail(expr.span(),"B212","集合需要 compute 值函数：投影接收一个源值，单位元无元素参数，合并器接收两个结果值；bind 参数追加在元素参数之后"),
+            ValueKernelNeed::Begin=>{
+                let mut b=unsafe {world.call(Builder::new(world,owner,program,0,Some(&owner.name))).await}?;
+                b.source_context=Arc::new(SourceContext {domain_path:domain_path.clone(),..(*b.source_context).clone()});
+                b.functions=std::mem::take(functions);b.roots(env);builder=Some(b);
+            }
+            ValueKernelNeed::Parameter=>{
+                let b=builder.as_mut().unwrap();let ty=parameters[step.index as usize];
+                let regs:Vec<_>=ty.components.iter().map(|(s,_)|b.reg(*s)).collect();inputs.extend(&regs);
+                args.push(cooperative::Argument::Value(Value {proof:bounds::Proof::default(),literal:false,ty:ty.clone(),regs,uniform:false,constant:None}));
+            }
+            ValueKernelNeed::BeginCaptures=>builder.as_mut().unwrap().in_function=true,
+            ValueKernelNeed::Capture=>{
+                let capture=captures.at(step.index as usize);let b=builder.as_mut().unwrap();
+                let result=unsafe {world.call(b.expr(&capture)).await}?;let captured=b.value_result(result,capture.span())?;
+                facts.uniform=u32::from(captured.uniform);facts.views=u32::from(captured.ty.contains_views());
+                facts.reads=u32::from(!b.reads.is_empty());facts.writes=u32::from(!b.writes.is_empty());value=Some(captured);
+            }
+            ValueKernelNeed::InvalidCapture=>return d.source.fail(captures.at(step.index as usize).span(),"B213","bind 只能捕获执行统一的普通值，不能捕获资源或读取数据集元素"),
+            ValueKernelNeed::PushCapture=>args.push(cooperative::Argument::Value(value.take().unwrap())),
+            ValueKernelNeed::EndCaptures=>builder.as_mut().unwrap().in_function=false,
+            ValueKernelNeed::Explicit=>{
+                let arguments=expr.list(source.types);
+                explicit=Some(unsafe {world.call(owner.bindings.arguments(world,&arguments,(&d.source,&d.module,&d.imports),reference.span())).await}?);
+            }
+            ValueKernelNeed::Specialize=>{
+                instance=Some(unsafe {world.call(builder.as_ref().unwrap().specialized_arguments(key.take().unwrap(),&args,explicit.as_deref(),reference.span())).await}?);explicit=None;
+            }
+            ValueKernelNeed::Origin=>{
+                let b=builder.as_ref().unwrap();let instance=instance.as_ref().unwrap();
+                let source_site=|span|b.source_definition.as_ref().map(|origin|Arc::new(SourceSite {origin:origin.clone(),context:b.source_context.clone(),span,syntax:SourceSyntax::Expression}));
+                entry_origin=Some(Arc::new(ValueCodeEntry {definition:instance.definition.source_origin().map(Arc::new),instance:Arc::from(instance.name.as_str()),reference:source_site(reference.span()),capture_parameter_start:parameters.len(),captures:captures.iter().map(|capture|source_site(capture.span())).collect()}));
+            }
+            ValueKernelNeed::Invoke=>returned=unsafe {world.call(builder.as_mut().unwrap().invoke_returned(instance.take().unwrap(),std::mem::take(&mut args),reference.span(),None,None)).await}?,
+            ValueKernelNeed::Ordinary=>ordinary=builder.as_ref().unwrap().ordinary_return(returned.take(),expr.span())?,
+            ValueKernelNeed::Value=>value=Some(builder.as_ref().unwrap().value_result(ordinary.take(),expr.span())?),
+            ValueKernelNeed::Same=>builder.as_ref().unwrap().require_same(ty,&value.as_ref().unwrap().ty,expr.span())?,
+            ValueKernelNeed::Publish=>{
+                let mut b=builder.take().unwrap();*functions=std::mem::take(&mut b.functions);
+                return Ok(ValueCode {entry_origin,generated_origin:None,registers:b.registers,locals:b.locals,code:b.code,inputs,outputs:value.take().unwrap().regs});
+            }
+        }
+    }
+}
+
+unsafe extern "C" {
+    #[link_name="bootstrap.operator_types::source_custom_reduce"]
+    fn source_custom_reduce(bytes:*const u8,length:usize)->u32;
+}
+impl ValueKind {
+    pub(super) fn from_custom_source(name:&str)->Option<Self> {
+        match unsafe{source_custom_reduce(name.as_ptr(),name.len())}{
+            1=>Some(Self::Reduce),2=>Some(Self::Scan),3=>Some(Self::SegmentedScan),4=>Some(Self::SegmentedReduce),_=>None,
+        }
+    }
+}
+#[allow(dead_code)]
+#[repr(u32)]
+enum CustomNeed {Source,Head,Target,Types,Access,Count,CountShape,TargetShape,Capacity,Project,Identity,Combine,Fields,CountWrite,GrantInput,GrantOutput,Reads,Publish,Error}
+#[allow(dead_code)]
+#[repr(u32)]
+enum CustomError {Arity,Head,Type,Access,CountAccess,CountShape,Capacity,TargetShape}
+#[derive(Clone,Copy,Default)]
+#[repr(C)]
+struct CustomFacts {
+    arguments:u64,source:u64,target:u64,heads:u64,count:u64,prefix_count:u64,head_count:u64,
+    has_prefix:u32,has_head_prefix:u32,prefix_word:u32,head_count_word:u32,
+    source_access:u32,target_access:u32,head_access:u32,count_access:u32,
+    same:u32,source_views:u32,target_views:u32,source_overlap:u32,head_overlap:u32,
+    source_known:u32,source_size:u32,target_known:u32,target_size:u32,count_known:u32,count_size:u32,
+}
+#[repr(C)]
+struct CustomStep {cursor:SourceValueCursor,need:CustomNeed,error:CustomError,operation:ValueOperation,argument:u64}
+unsafe extern "C" {
+    #[link_name="bootstrap.function_body::custom_collection_step"]
+    fn custom_collection_step(kind:ValueKind,map:u32,cursor:SourceValueCursor,facts:CustomFacts)->CustomStep;
+}
+pub(super) async fn compile_custom(
+    world:&World,program:&mut Program,env:&BTreeMap<String,Root>,args:&Expressions,
+    owner:&crate::generics::Instance,span:Span,facts:&mut prefix::Facts,map:bool,kind:ValueKind,
+    domain_path:Arc<[DomainSite]>,native_functions:&mut native_function::Module,
+    operation_source:Option<Arc<SourceSite>>,
+)->Result<()> {
+    let d=&owner.definition;let mut cursor=SourceValueCursor{phase:0};let mut control=CustomFacts{arguments:args.len() as u64,..Default::default()};
+    let mut source=None;let mut target=None;let mut head=None;let mut count=None;
+    let mut project=None;let mut identity=None;let mut combine=None;
+    let mut write_regions=BTreeMap::new();let mut prefix_guarantees=Vec::new();let mut reads=Vec::new();
+    loop {
+        let step=unsafe{custom_collection_step(kind,u32::from(map),cursor,control)};cursor=step.cursor;
+        match step.need {
+            CustomNeed::Source=>{
+                let value=prefix::typed_field(program,env,&args.at(step.argument as usize),d,facts)?;
+                control.source=value.0 as u64;control.source_access=value.2 as u32;
+                if let Some(prefix)=value.3{control.has_prefix=1;control.prefix_count=prefix.binding as u64;control.prefix_word=prefix.word;}
+                source=Some(value);
+            },
+            CustomNeed::Head=>{
+                let value=prefix::field(program,env,&args.at(step.argument as usize),d,facts,Scalar::Bool)?;
+                control.heads=value.0 as u64;control.head_access=value.2 as u32;
+                if let Some(prefix)=value.3{control.has_head_prefix=1;control.head_count=prefix.binding as u64;control.head_count_word=prefix.word;}
+                head=Some(value);
+            },
+            CustomNeed::Target=>{
+                let value=collective_value_field(program,env,&args.at(step.argument as usize),d)?;
+                control.target=value.0 as u64;control.target_access=value.2 as u32;target=Some(value);
+            },
+            CustomNeed::Types=>{
+                let source_ty=&source.as_ref().unwrap().4;let ty=&target.as_ref().unwrap().3;
+                control.same=u32::from(source_ty==ty);control.source_views=u32::from(source_ty.contains_views());control.target_views=u32::from(ty.contains_views());
+            },
+            CustomNeed::Access=>{
+                let (source,word,_,_,source_ty)=source.as_ref().unwrap();let (target,target_word,_,ty)=target.as_ref().unwrap();
+                control.source_overlap=u32::from(prefix::fields_overlap(*source,*word,source_ty,*target,*target_word,ty));
+                if let Some((heads,word,_,_))=head{control.head_overlap=u32::from(prefix::fields_overlap(heads,word,&Ty::scalar(Scalar::Bool),*target,*target_word,ty));}
+            },
+            CustomNeed::Count=>{
+                let (binding,word,access)=collective_field(program,env,&args.at(step.argument as usize),d,Scalar::U32)?;
+                control.count=binding as u64;control.count_access=access as u32;count=Some(PrefixCount{binding,word});
+            },
+            CustomNeed::CountShape=>{let size=program.buffers[count.unwrap().binding].count;control.count_known=u32::from(size.is_some());control.count_size=size.unwrap_or(0);},
+            CustomNeed::TargetShape=>{let size=program.buffers[target.as_ref().unwrap().0].count;control.target_known=u32::from(size.is_some());control.target_size=size.unwrap_or(0);},
+            CustomNeed::Capacity=>{
+                let source_size=program.buffers[source.as_ref().unwrap().0].count;let target_size=program.buffers[target.as_ref().unwrap().0].count;
+                control.source_known=u32::from(source_size.is_some());control.source_size=source_size.unwrap_or(0);
+                control.target_known=u32::from(target_size.is_some());control.target_size=target_size.unwrap_or(0);
+            },
+            CustomNeed::Project=>project=Some(unsafe{world.call(value_kernel(world,program,env,owner,&domain_path,&args.at(step.argument as usize),&target.as_ref().unwrap().3,&[&source.as_ref().unwrap().4],native_functions)).await}?),
+            CustomNeed::Identity=>identity=Some(unsafe{world.call(value_kernel(world,program,env,owner,&domain_path,&args.at(step.argument as usize),&target.as_ref().unwrap().3,&[],native_functions)).await}?),
+            CustomNeed::Combine=>combine=Some(unsafe{world.call(value_kernel(world,program,env,owner,&domain_path,&args.at(step.argument as usize),&target.as_ref().unwrap().3,&[&target.as_ref().unwrap().3,&target.as_ref().unwrap().3],native_functions)).await}?),
+            CustomNeed::Fields=>{
+                let (binding,base,_,ty)=target.as_ref().unwrap();let mut context=CollectiveWrite{program,facts,binding:*binding,regions:&mut write_regions,proof:None};
+                unsafe{collective_write_fields((ty as *const Ty).cast(),(&mut context as *mut CollectiveWrite<'_>).cast(),*base,ty.components.len() as u64,collective_component,collective_written)};
+            },
+            CustomNeed::CountWrite=>{
+                let count=count.unwrap();let mut context=CollectiveWrite{program,facts,binding:count.binding,regions:&mut write_regions,proof:None};
+                unsafe{collective_write_count((&mut context as *mut CollectiveWrite<'_>).cast(),count.word,collective_written)};
+            },
+            CustomNeed::GrantInput=>{
+                let relation=PrefixRelation{domain_region:None,domain:target.as_ref().unwrap().0,count:source.as_ref().unwrap().3.unwrap()};facts.grant(relation);prefix_guarantees.push(relation);
+            },
+            CustomNeed::GrantOutput=>{
+                let relation=PrefixRelation{domain_region:None,domain:target.as_ref().unwrap().0,count:count.unwrap()};facts.grant(relation);prefix_guarantees.push(relation);
+            },
+            CustomNeed::Reads=>{
+                let value=unsafe{collective_reads(control.source,control.has_prefix,control.prefix_count,0,0)};
+                reads.extend_from_slice(&[value.first as usize,value.second as usize,value.third as usize][..value.count as usize]);
+            },
+            CustomNeed::Publish=>{
+                let (source,source_word,_,prefix,source_ty)=source.unwrap();let (target,target_word,_,ty)=target.unwrap();let mut writes=vec![target];
+                let values=CustomReduction{fields:Reduction{source,source_word,target,target_word},source_ty,ty,project,identity:identity.unwrap(),combine:combine.unwrap()};
+                let operation=match step.operation{
+                    ValueOperation::Reduce=>Operation::CustomReduce(values),
+                    ValueOperation::Scan=>Operation::CustomScan(CustomScan{values,head_word:head.map(|(_,word,_,_)|word)}),
+                    ValueOperation::SegmentedReduce=>{let count=count.unwrap();writes.push(count.binding);Operation::CustomSegmentedReduce(CustomSegmentedReduction{values,head_word:head.unwrap().1,count})},
+                };
+                program.stages.push(Stage{operation_source,generated_origin:None,domain:source,prefix,selection:None,operation,boundary_before:true,
+                    registers:Vec::new(),locals:Default::default(),code:Vec::new(),reads:reads.clone(),writes,write_regions,prefix_guarantees,element_guarantees:Vec::new(),cross_access:reads,tiles:Vec::new()});
+                return Ok(());
+            },
+            CustomNeed::Error=>{
+                let (code,message)=match step.error{
+                    CustomError::Arity=>("B169","自定义集合需要源字段、目标字段、单位元和合并函数；分段形式在源值后提供同源 bool 段头，分段归约在目标后提供输出计数，映射形式在单位元前提供投影函数"),
+                    CustomError::Head=>("B170","分段起点必须来自同一可读输入记录，和源值共享元素域"),
+                    CustomError::Type=>("B175","无投影的集合需要相同普通值类型，聚合值不能持有资源引用"),
+                    CustomError::Access=>("B170","集合需要可读输入和可写输出，目标不能覆盖源值、段头或输入域计数"),
+                    CustomError::CountAccess=>("B170","分段归约需要独立的可写目标与输出计数，不能改写输入域计数"),
+                    CustomError::CountShape=>("B171","分段归约计数必须为形状 1 的 u32 计数字段"),
+                    CustomError::Capacity=>("B188","扫描／分段归约输出容量必须容纳全部源元素"),
+                    CustomError::TargetShape=>("B171","归约输出形状必须为 1"),
+                };return d.source.fail(span,code,message);
             },
         }
     }

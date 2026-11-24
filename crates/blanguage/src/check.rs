@@ -22,7 +22,6 @@ pub(crate) use constant::variant_discriminant;
 mod application;
 mod contracts;
 mod cooperative;
-mod custom_reduce;
 mod effects;
 pub(crate) mod external;
 mod native_function;
@@ -763,13 +762,13 @@ async fn expand_stage_expression(
         StageExpressionNeed::Clear=>{let output=append::clear(program,env,args.as_ref().unwrap(),d,statement.span(),facts,input.operation_source(expression.span(),SourceSyntax::Expression,path))?;facts.outputs.push(output);},
         StageExpressionNeed::Sort=>collective::compile_record(program,env,collective::RecordKind::Sort,args.as_ref().unwrap(),d,statement.span(),facts,input.operation_source(expression.span(),SourceSyntax::Expression,path))?,
         StageExpressionNeed::Compact=>collective::compile_record(program,env,collective::RecordKind::Compact,args.as_ref().unwrap(),d,statement.span(),facts,input.operation_source(expression.span(),SourceSyntax::Expression,path))?,
-        StageExpressionNeed::Reduce=>collective::compile(program,env,step.operation,collective::NumericKind::Reduce,args.as_ref().unwrap(),d,statement.span(),facts,input.operation_source(expression.span(),SourceSyntax::Expression,path))?,
-        StageExpressionNeed::SegmentedReduce=>collective::compile(program,env,step.operation,collective::NumericKind::SegmentedReduce,args.as_ref().unwrap(),d,statement.span(),facts,input.operation_source(expression.span(),SourceSyntax::Expression,path))?,
-        StageExpressionNeed::Scan=>collective::compile(program,env,step.operation,collective::NumericKind::Scan,args.as_ref().unwrap(),d,statement.span(),facts,input.operation_source(expression.span(),SourceSyntax::Expression,path))?,
-        StageExpressionNeed::SegmentedScan=>collective::compile(program,env,step.operation,collective::NumericKind::SegmentedScan,args.as_ref().unwrap(),d,statement.span(),facts,input.operation_source(expression.span(),SourceSyntax::Expression,path))?,
+        StageExpressionNeed::Reduce=>collective::compile(program,env,step.operation,collective::ValueKind::Reduce,args.as_ref().unwrap(),d,statement.span(),facts,input.operation_source(expression.span(),SourceSyntax::Expression,path))?,
+        StageExpressionNeed::SegmentedReduce=>collective::compile(program,env,step.operation,collective::ValueKind::SegmentedReduce,args.as_ref().unwrap(),d,statement.span(),facts,input.operation_source(expression.span(),SourceSyntax::Expression,path))?,
+        StageExpressionNeed::Scan=>collective::compile(program,env,step.operation,collective::ValueKind::Scan,args.as_ref().unwrap(),d,statement.span(),facts,input.operation_source(expression.span(),SourceSyntax::Expression,path))?,
+        StageExpressionNeed::SegmentedScan=>collective::compile(program,env,step.operation,collective::ValueKind::SegmentedScan,args.as_ref().unwrap(),d,statement.span(),facts,input.operation_source(expression.span(),SourceSyntax::Expression,path))?,
         need@(StageExpressionNeed::CustomReduce|StageExpressionNeed::CustomScan|StageExpressionNeed::CustomSegmentedScan|StageExpressionNeed::CustomSegmentedReduce)=>{
-            let kind=match need{StageExpressionNeed::CustomReduce=>custom_reduce::Kind::Reduce,StageExpressionNeed::CustomScan=>custom_reduce::Kind::Scan,StageExpressionNeed::CustomSegmentedScan=>custom_reduce::Kind::SegmentedScan,StageExpressionNeed::CustomSegmentedReduce=>custom_reduce::Kind::SegmentedReduce,_=>unsafe{std::hint::unreachable_unchecked()}};
-            unsafe{world.call(custom_reduce::compile(world,program,env,args.as_ref().unwrap(),instance,statement.span(),facts,cursor.flags&2!=0,kind,path.clone(),functions,input.operation_source(expression.span(),SourceSyntax::Expression,path))).await}?;
+            let kind=match need{StageExpressionNeed::CustomReduce=>collective::ValueKind::Reduce,StageExpressionNeed::CustomScan=>collective::ValueKind::Scan,StageExpressionNeed::CustomSegmentedScan=>collective::ValueKind::SegmentedScan,StageExpressionNeed::CustomSegmentedReduce=>collective::ValueKind::SegmentedReduce,_=>unsafe{std::hint::unreachable_unchecked()}};
+            unsafe{world.call(collective::compile_custom(world,program,env,args.as_ref().unwrap(),instance,statement.span(),facts,cursor.flags&2!=0,kind,path.clone(),functions,input.operation_source(expression.span(),SourceSyntax::Expression,path))).await}?;
         },
         StageExpressionNeed::CallPrepare=>{let(bound,environment)=unsafe{world.call(call_execution::domain_call(world,instance,env,program,key.as_ref().unwrap(),args.take().unwrap(),types.as_ref(),statement.span(),path)).await}?;callee=Some(bound);child=Some(environment);key.take();types.take();},
         StageExpressionNeed::CallExecute=>{unsafe{world.call(call_execution::execute_domain_call(world,instance,callee.as_ref().unwrap(),child.as_mut().unwrap(),program,stack,boundary,facts,calls,path,functions,scopes,statement.span(),expression.span())).await}?;callee.take();child.take();},
@@ -2402,7 +2401,7 @@ use effects::{assigned_names, expression_assignments};
 pub(crate) fn stage_intrinsic(name: &str) -> bool {
     matches!(name, "clear_prefix" | "stable_sort_by_key" | "compact")
         || collective::from_source(name).is_stage()
-        || custom_reduce::Kind::from_source(name).is_some()
+        || collective::ValueKind::from_custom_source(name).is_some()
 }
 
 pub(crate) struct KernelSignature {

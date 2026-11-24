@@ -1857,55 +1857,55 @@ extern "C" u32 collective_read_access(u32 access,u64 components,address context,
 
 bool numeric_readable(u32 access) on cpu {return access==1||access==3;}
 bool numeric_writable(u32 access) on cpu {return access==2||access==3||access==4;}
-bool numeric_scan(NumericKind kind) on cpu {return kind==NumericKind::Scan||kind==NumericKind::SegmentedScan;}
+bool numeric_scan(ValueKind kind) on cpu {return kind==ValueKind::Scan||kind==ValueKind::SegmentedScan;}
 bool numeric_head_mismatch(NumericFacts facts) on cpu {return facts.heads!=facts.source||!numeric_readable(facts.head_access)||(facts.has_head_prefix!=0&&(facts.has_prefix==0||facts.head_count!=facts.prefix_count||facts.head_count_word!=facts.prefix_word));}
-extern "C" NumericStep numeric_step(NumericKind kind,CollectiveOperator operation,LocalCursor cursor,NumericFacts facts) on cpu {
- NumericStep result=NumericStep(cursor,NumericNeed::Error,NumericError::ReduceArity,NumericOperation::Reduce,0u64);
+extern "C" NumericStep numeric_step(ValueKind kind,CollectiveOperator operation,LocalCursor cursor,NumericFacts facts) on cpu {
+ NumericStep result=NumericStep(cursor,NumericNeed::Error,NumericError::ReduceArity,ValueOperation::Reduce,0u64);
  if(cursor.phase==0){
-  u64 expected=kind==NumericKind::SegmentedReduce?4u64:(kind==NumericKind::SegmentedScan?3u64:2u64);
-  if(facts.arguments!=expected){if(numeric_scan(kind)){result.error=NumericError::ScanArity;}if(kind==NumericKind::SegmentedReduce){result.error=NumericError::SegmentedArity;}return result;}
+  u64 expected=kind==ValueKind::SegmentedReduce?4u64:(kind==ValueKind::SegmentedScan?3u64:2u64);
+  if(facts.arguments!=expected){if(numeric_scan(kind)){result.error=NumericError::ScanArity;}if(kind==ValueKind::SegmentedReduce){result.error=NumericError::SegmentedArity;}return result;}
   result.cursor.phase=1;result.need=NumericNeed::Source;return result;
  }
  if(cursor.phase==1){
-  if(kind==NumericKind::SegmentedReduce){result.cursor.phase=2;result.need=NumericNeed::Head;result.argument=1u64;return result;}
-  result.cursor.phase=4;result.need=NumericNeed::Target;result.argument=kind==NumericKind::SegmentedScan?2u64:1u64;return result;
+  if(kind==ValueKind::SegmentedReduce){result.cursor.phase=2;result.need=NumericNeed::Head;result.argument=1u64;return result;}
+  result.cursor.phase=4;result.need=NumericNeed::Target;result.argument=kind==ValueKind::SegmentedScan?2u64:1u64;return result;
  }
  if(cursor.phase==2){result.cursor.phase=3;result.need=NumericNeed::Target;result.argument=2u64;return result;}
  if(cursor.phase==3){result.cursor.phase=4;result.need=NumericNeed::Count;result.argument=3u64;return result;}
  if(cursor.phase==4){result.cursor.phase=5;result.need=NumericNeed::Types;return result;}
  if(cursor.phase==5){
-  if(!collective_accepts(operation,facts.numeric!=0,facts.integer!=0)||facts.same==0){result.error=NumericError::ReduceType;if(numeric_scan(kind)){result.error=NumericError::ScanType;}if(kind==NumericKind::SegmentedReduce){result.error=NumericError::SegmentedType;}return result;}
-  if(kind==NumericKind::SegmentedScan){result.cursor.phase=6;result.need=NumericNeed::Head;result.argument=1u64;return result;}
+  if(!collective_accepts(operation,facts.numeric!=0,facts.integer!=0)||facts.same==0){result.error=NumericError::ReduceType;if(numeric_scan(kind)){result.error=NumericError::ScanType;}if(kind==ValueKind::SegmentedReduce){result.error=NumericError::SegmentedType;}return result;}
+  if(kind==ValueKind::SegmentedScan){result.cursor.phase=6;result.need=NumericNeed::Head;result.argument=1u64;return result;}
   result.cursor.phase=8;result.need=NumericNeed::Access;return result;
  }
  if(cursor.phase==6){if(numeric_head_mismatch(facts)){result.error=NumericError::HeadAccess;return result;}result.cursor.phase=8;result.need=NumericNeed::Access;return result;}
  if(cursor.phase==8){
   bool bad=facts.source_overlap!=0||facts.head_overlap!=0||!numeric_readable(facts.source_access)||!numeric_writable(facts.target_access)||(facts.has_prefix!=0&&facts.prefix_count==facts.target);
-  if(kind==NumericKind::SegmentedReduce){bad=bad||numeric_head_mismatch(facts)||!numeric_writable(facts.count_access)||facts.source==facts.count||facts.target==facts.count||(facts.has_prefix!=0&&facts.prefix_count==facts.count);}
-  if(bad){result.error=NumericError::ReduceAccess;if(numeric_scan(kind)){result.error=NumericError::ScanAccess;}if(kind==NumericKind::SegmentedReduce){result.error=NumericError::SegmentedAccess;}return result;}
-  if(kind==NumericKind::Reduce){result.cursor.phase=9;result.need=NumericNeed::TargetShape;return result;}
-  if(kind==NumericKind::SegmentedReduce){result.cursor.phase=10;result.need=NumericNeed::CountShape;return result;}
+  if(kind==ValueKind::SegmentedReduce){bad=bad||numeric_head_mismatch(facts)||!numeric_writable(facts.count_access)||facts.source==facts.count||facts.target==facts.count||(facts.has_prefix!=0&&facts.prefix_count==facts.count);}
+  if(bad){result.error=NumericError::ReduceAccess;if(numeric_scan(kind)){result.error=NumericError::ScanAccess;}if(kind==ValueKind::SegmentedReduce){result.error=NumericError::SegmentedAccess;}return result;}
+  if(kind==ValueKind::Reduce){result.cursor.phase=9;result.need=NumericNeed::TargetShape;return result;}
+  if(kind==ValueKind::SegmentedReduce){result.cursor.phase=10;result.need=NumericNeed::CountShape;return result;}
   result.cursor.phase=11;result.need=NumericNeed::Capacity;return result;
  }
  if(cursor.phase==9){if(facts.target_known==0||facts.target_size!=1){result.error=NumericError::ReduceShape;return result;}result.cursor.phase=12;result.need=NumericNeed::Fields;return result;}
  if(cursor.phase==10){if(facts.count_known==0||facts.count_size!=1){result.error=NumericError::CountShape;return result;}result.cursor.phase=11;result.need=NumericNeed::Capacity;return result;}
  if(cursor.phase==11){
   if(facts.source_known!=0&&facts.target_known!=0){
-   if(kind==NumericKind::SegmentedReduce&&facts.target_size<facts.source_size){result.error=NumericError::SegmentedCapacity;return result;}
+   if(kind==ValueKind::SegmentedReduce&&facts.target_size<facts.source_size){result.error=NumericError::SegmentedCapacity;return result;}
    if(numeric_scan(kind)&&((facts.has_prefix==0&&facts.source_size!=facts.target_size)||(facts.has_prefix!=0&&facts.target_size<facts.source_size))){result.error=NumericError::ScanCapacity;return result;}
   }
   result.cursor.phase=12;result.need=NumericNeed::Fields;return result;
  }
  if(cursor.phase==12){
-  if(kind==NumericKind::SegmentedReduce){result.cursor.phase=13;result.need=NumericNeed::CountWrite;return result;}
+  if(kind==ValueKind::SegmentedReduce){result.cursor.phase=13;result.need=NumericNeed::CountWrite;return result;}
   if(numeric_scan(kind)&&facts.has_prefix!=0){result.cursor.phase=14;result.need=NumericNeed::GrantInput;return result;}
   result.cursor.phase=15;result.need=NumericNeed::Reads;return result;
  }
  if(cursor.phase==13){result.cursor.phase=14;result.need=NumericNeed::GrantOutput;return result;}
  if(cursor.phase==14){result.cursor.phase=15;result.need=NumericNeed::Reads;return result;}
  result.cursor.phase=16;result.need=NumericNeed::Publish;
- if(numeric_scan(kind)){result.operation=NumericOperation::Scan;}
- if(kind==NumericKind::SegmentedReduce){result.operation=NumericOperation::SegmentedReduce;}
+ if(numeric_scan(kind)){result.operation=ValueOperation::Scan;}
+ if(kind==ValueKind::SegmentedReduce){result.operation=ValueOperation::SegmentedReduce;}
  return result;
 }
 extern "C" void collective_write_fields(address type,address context,u32 base,u64 count,cfn<CollectiveComponent,address,u64> component,cfn<void,address,u32,u32> write) on cpu requires nonzero(component) requires nonzero(write) {
@@ -2015,4 +2015,44 @@ extern "C" void record_sort_components(address type,address keys,u32 word,u32 or
   if(value.size==8){u32 high=value.scalar==6?0:(value.scalar==5?2:1);push(keys,offset+4,high,order);}
   push(keys,offset,value.scalar,order);i+=1u64;
  }
+}
+
+extern "C" CustomStep custom_collection_step(ValueKind kind,u32 map,LocalCursor cursor,CustomFacts facts) on cpu {
+ bool scan=numeric_scan(kind);bool counted=kind==ValueKind::SegmentedReduce;bool segmented=kind==ValueKind::SegmentedScan||counted;
+ u64 offset=segmented?1u64:0u64;u64 functions=2u64+offset+(counted?1u64:0u64);u64 mapping=map!=0?1u64:0u64;
+ CustomStep result=CustomStep(cursor,CustomNeed::Error,CustomError::Arity,ValueOperation::Reduce,0u64);
+ if(cursor.phase==0){if(facts.arguments!=functions+2u64+mapping){return result;}result.cursor.phase=1;result.need=CustomNeed::Source;return result;}
+ if(cursor.phase==1){if(segmented){result.cursor.phase=2;result.need=CustomNeed::Head;result.argument=1u64;return result;}result.cursor.phase=3;result.need=CustomNeed::Target;result.argument=1u64;return result;}
+ if(cursor.phase==2){
+  if(facts.heads!=facts.source||!numeric_readable(facts.head_access)||(facts.has_head_prefix!=0&&(facts.has_prefix==0||facts.head_count!=facts.prefix_count||facts.head_count_word!=facts.prefix_word))){result.error=CustomError::Head;return result;}
+  result.cursor.phase=3;result.need=CustomNeed::Target;result.argument=2u64;return result;
+ }
+ if(cursor.phase==3){result.cursor.phase=4;result.need=CustomNeed::Types;return result;}
+ if(cursor.phase==4){if((map==0&&facts.same==0)||facts.source_views!=0||facts.target_views!=0){result.error=CustomError::Type;return result;}result.cursor.phase=5;result.need=CustomNeed::Access;return result;}
+ if(cursor.phase==5){
+  if(facts.source_overlap!=0||facts.head_overlap!=0||!numeric_readable(facts.source_access)||!numeric_writable(facts.target_access)||(facts.has_prefix!=0&&facts.prefix_count==facts.target)){result.error=CustomError::Access;return result;}
+  if(counted){result.cursor.phase=6;result.need=CustomNeed::Count;result.argument=3u64;return result;}
+  result.cursor.phase=9;result.need=scan?CustomNeed::Capacity:CustomNeed::TargetShape;return result;
+ }
+ if(cursor.phase==6){if(!numeric_writable(facts.count_access)||facts.count==facts.source||facts.count==facts.target||(facts.has_prefix!=0&&facts.prefix_count==facts.count)){result.error=CustomError::CountAccess;return result;}result.cursor.phase=7;result.need=CustomNeed::CountShape;return result;}
+ if(cursor.phase==7){if(facts.count_known==0||facts.count_size!=1){result.error=CustomError::CountShape;return result;}result.cursor.phase=9;result.need=CustomNeed::Capacity;return result;}
+ if(cursor.phase==9){
+  if(scan||counted){if(facts.source_known!=0&&facts.target_known!=0&&facts.target_size<facts.source_size){result.error=CustomError::Capacity;return result;}}
+  else if(facts.target_known==0||facts.target_size!=1){result.error=CustomError::TargetShape;return result;}
+  if(map!=0){result.cursor.phase=10;result.need=CustomNeed::Project;result.argument=functions;return result;}
+  result.cursor.phase=11;result.need=CustomNeed::Identity;result.argument=functions;return result;
+ }
+ if(cursor.phase==10){result.cursor.phase=11;result.need=CustomNeed::Identity;result.argument=functions+1u64;return result;}
+ if(cursor.phase==11){result.cursor.phase=12;result.need=CustomNeed::Combine;result.argument=functions+1u64+mapping;return result;}
+ if(cursor.phase==12){result.cursor.phase=13;result.need=CustomNeed::Fields;return result;}
+ if(cursor.phase==13){
+  if(counted){result.cursor.phase=14;result.need=CustomNeed::CountWrite;return result;}
+  if(scan&&facts.has_prefix!=0){result.cursor.phase=15;result.need=CustomNeed::GrantInput;return result;}
+  result.cursor.phase=16;result.need=CustomNeed::Reads;return result;
+ }
+ if(cursor.phase==14){result.cursor.phase=15;result.need=CustomNeed::GrantOutput;return result;}
+ if(cursor.phase==15){result.cursor.phase=16;result.need=CustomNeed::Reads;return result;}
+ result.cursor.phase=17;result.need=CustomNeed::Publish;
+ if(scan){result.operation=ValueOperation::Scan;}if(counted){result.operation=ValueOperation::SegmentedReduce;}
+ return result;
 }
