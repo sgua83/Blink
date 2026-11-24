@@ -65,7 +65,7 @@ impl Builder<'_> {
             RecordConstructNeed::EnumValue=>{value=values.pop();facts.same=u32::from(value.as_ref().unwrap().ty==ty);},
             RecordConstructNeed::EnumType=>self.require_same(&Ty::scalar(ty.components[0].0),&value.as_ref().unwrap().ty,span)?,
             RecordConstructNeed::EnumReturn=>{let mut value=value.take().unwrap();value.ty=ty;value.literal=false;return Ok(Some(value));},
-            RecordConstructNeed::Matrix=>return self.matrix_construct(ty,values,span).map(Some),
+                    RecordConstructNeed::Matrix=>return self.construct_value(operators::ConstructEntry::Matrix,ty,values,span).map(Some),
             RecordConstructNeed::Numeric=>return self.value_constructor(ty,values,span).map(Some),
             RecordConstructNeed::SameArray=>facts.same=u32::from(values[0].ty==ty),
             RecordConstructNeed::Single=>return Ok(values.pop()),

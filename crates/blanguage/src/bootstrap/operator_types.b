@@ -334,7 +334,7 @@ void expand_matrix_minor(u32 width,u32 size,u32 rows,u32 columns,u32 destination
     let next_rows=rows & ~(1 << u32(row));
     if (size==1) {
         let source=read_matrix_slot(row*width+first_matrix_axis(columns,width));
-        emitter.emit(emitter.context,MatrixStep(u32(MatrixAction::Copy),source,source,destination));
+        emitter.emit(emitter.context,MatrixStep(u32(MatrixAction::Copy),source,source,destination,0));
         return;
     }
     let next_row=size==2 ? first_matrix_axis(next_rows,width) : 0;
@@ -352,7 +352,7 @@ void expand_matrix_minor(u32 width,u32 size,u32 rows,u32 columns,u32 destination
             minor=take_matrix_slot(child);
         }
         let element=read_matrix_slot(row*width+column);
-        let product=MatrixStep(u32(MatrixAction::Multiply),element,minor,scratch+produced);
+        let product=MatrixStep(u32(MatrixAction::Multiply),element,minor,scratch+produced,0);
         emitter.emit(emitter.context,product);
         produced+=1;
     }
@@ -360,13 +360,13 @@ void expand_matrix_minor(u32 width,u32 size,u32 rows,u32 columns,u32 destination
     for (term in 1..size) {
         let action=(term & 1)==0 ? MatrixAction::Add : MatrixAction::Subtract;
         let target=term+1==size ? destination : scratch;
-        let combine=MatrixStep(u32(action),take_matrix_slot(scratch),take_matrix_slot(scratch+term),target);
+        let combine=MatrixStep(u32(action),take_matrix_slot(scratch),take_matrix_slot(scratch+term),target,0);
         emitter.emit(emitter.context,combine);
     }
 }
 
 extern "C" void expand_square_matrix(u32 width,bool inverse,MatrixEmitter emitter) on cpu
-    requires nonzero(emitter.emit) requires nonzero(emitter.output) {
+    requires nonzero(emitter.emit) requires nonzero(emitter.output) requires nonzero(emitter.constant) {
     let inputs=width*width;
     let axes=(1 << u32(width))-1;
     if (!inverse) {
@@ -385,23 +385,25 @@ extern "C" void expand_square_matrix(u32 width,bool inverse,MatrixEmitter emitte
             expand_matrix_minor(width,width-1,rows,columns,target,scratch,emitter);
             if (((row+column) & 1)!=0) {
                 let value=take_matrix_slot(target);
-                emitter.emit(emitter.context,MatrixStep(u32(MatrixAction::Negate),value,value,target));
+                MatrixConstant constant=emitter.constant(emitter.context,value.slot);
+                if(constant.present!=0){emitter.emit(emitter.context,MatrixStep(u32(MatrixAction::Constant),value,value,target,constant.bits^0x80000000));}
+                else{emitter.emit(emitter.context,MatrixStep(u32(MatrixAction::Negate),value,value,target,0));}
             }
         }
     }
     for (column in 0..width) {
         let target=column==0 ? determinant : scratch;
-        let product=MatrixStep(u32(MatrixAction::Multiply),read_matrix_slot(column),read_matrix_slot(inputs+column),target);
+        let product=MatrixStep(u32(MatrixAction::Multiply),read_matrix_slot(column),read_matrix_slot(inputs+column),target,0);
         emitter.emit(emitter.context,product);
         if (column!=0) {
-            let sum=MatrixStep(u32(MatrixAction::Add),take_matrix_slot(determinant),take_matrix_slot(scratch),determinant);
+            let sum=MatrixStep(u32(MatrixAction::Add),take_matrix_slot(determinant),take_matrix_slot(scratch),determinant,0);
             emitter.emit(emitter.context,sum);
         }
     }
     for (row in 0..width) {
         for (column in 0..width) {
             let numerator=take_matrix_slot(inputs+column*width+row);
-            let quotient=MatrixStep(u32(MatrixAction::Divide),numerator,read_matrix_slot(determinant),scratch);
+            let quotient=MatrixStep(u32(MatrixAction::Divide),numerator,read_matrix_slot(determinant),scratch,0);
             emitter.emit(emitter.context,quotient);
             emitter.output(emitter.context,scratch);
         }
@@ -415,7 +417,7 @@ extern "C" void expand_matrix_binary(Plan plan,u32 left_count,u32 input_count,Ma
         for (component in 0..u32(plan.count)) {
             let left=read_matrix_slot(plan.kind==6 ? 0 : component);
             let right=read_matrix_slot(left_count+(plan.kind==5 ? 0 : component));
-            emitter.emit(emitter.context,MatrixStep(plan.operation,left,right,scratch));
+            emitter.emit(emitter.context,MatrixStep(plan.operation,left,right,scratch,0));
             emitter.output(emitter.context,scratch);
         }
         return;
@@ -429,13 +431,13 @@ extern "C" void expand_matrix_binary(Plan plan,u32 left_count,u32 input_count,Ma
             let right_column=left_count+column;
             let left=read_matrix_slot(left_row);
             let right=read_matrix_slot(right_column);
-            emitter.emit(emitter.context,MatrixStep(u32(MatrixAction::Multiply),left,right,scratch));
+            emitter.emit(emitter.context,MatrixStep(u32(MatrixAction::Multiply),left,right,scratch,0));
             for (index in 1..inner) {
                 let next_left=read_matrix_slot(left_row+index);
                 let next_right=read_matrix_slot(right_column+index*columns);
                 let term=scratch+1;
-                emitter.emit(emitter.context,MatrixStep(u32(MatrixAction::Multiply),next_left,next_right,term));
-                emitter.emit(emitter.context,MatrixStep(u32(MatrixAction::Add),take_matrix_slot(scratch),take_matrix_slot(term),scratch));
+                emitter.emit(emitter.context,MatrixStep(u32(MatrixAction::Multiply),next_left,next_right,term,0));
+                emitter.emit(emitter.context,MatrixStep(u32(MatrixAction::Add),take_matrix_slot(scratch),take_matrix_slot(term),scratch,0));
             }
             emitter.output(emitter.context,scratch);
         }
@@ -1354,4 +1356,50 @@ extern "C" SubgroupStep subgroup_step(SubgroupCursor cursor,SubgroupBuiltin buil
  if(c.phase==7){c.index+=1u64;c.phase=6;}
  if(c.index<facts.components){c.phase=7;return SubgroupStep(c,SubgroupNeed::Component);}
  return SubgroupStep(c,c.result==SubgroupResult::Operand?SubgroupNeed::CompleteOperand:SubgroupNeed::CompleteScalar);
+}
+
+u64 matrix_control(MatrixHost host,MatrixControl need,u64 first,u64 second) on cpu requires nonzero(host.action) {
+ return host.action(host.emitter.context,MatrixCommand(need,first,second));
+}
+void matrix_input(MatrixHost host,u64 side,u64 width) on cpu requires nonzero(host.action) {
+ matrix_control(host,MatrixControl::Select,side,0u64);
+ if(width==1u64){matrix_control(host,MatrixControl::Whole,0u64,0u64);}
+ else{
+  u64 index=0u64;while(index<width){matrix_control(host,MatrixControl::Part,index,0u64);index+=1u64;}
+  matrix_control(host,MatrixControl::Release,0u64,0u64);
+ }
+}
+void matrix_result(MatrixHost host) on cpu requires nonzero(host.action) {
+ u64 count=matrix_control(host,MatrixControl::ResultBegin,0u64,0u64);
+ u64 index=0u64;while(index<count){matrix_control(host,MatrixControl::ResultPart,0u64,0u64);index+=1u64;}
+}
+extern "C" void matrix_binary_value(Plan plan,MatrixHost host) on cpu
+ requires nonzero(host.action) requires nonzero(host.emitter.emit) requires nonzero(host.emitter.output) {
+ if(plan.cast_left!=0){matrix_control(host,MatrixControl::Cast,0u64,0u64);}
+ if(plan.cast_right!=0){matrix_control(host,MatrixControl::Cast,1u64,0u64);}
+ u64 left=matrix_control(host,MatrixControl::Width,0u64,0u64);u64 right=matrix_control(host,MatrixControl::Width,1u64,0u64);
+ matrix_control(host,MatrixControl::Reserve,left+right,0u64);
+ matrix_input(host,0u64,left);matrix_input(host,1u64,right);
+ expand_matrix_binary(plan,u32(left),u32(left+right),host.emitter);
+ matrix_result(host);
+}
+extern "C" MatrixIntrinsicStatus matrix_intrinsic_value(MatrixBuiltin builtin,u64 count,MatrixHost host) on cpu
+ requires nonzero(host.action) requires nonzero(host.inspect) requires nonzero(host.transpose)
+ requires nonzero(host.emitter.emit) requires nonzero(host.emitter.output) requires nonzero(host.emitter.constant) {
+ MatrixIntrinsicPlan plan=matrix_intrinsic(builtin,count,host.emitter.context,host.inspect);
+ if(plan.status!=MatrixIntrinsicStatus::Valid){return plan.status;}
+ matrix_control(host,MatrixControl::Select,0u64,0u64);
+ if(plan.transpose!=0){
+  matrix_control(host,MatrixControl::TransposeBegin,u64(plan.result_rows),u64(plan.result_columns));
+  expand_transpose(plan.rows,plan.columns,host.emitter.context,host.transpose);
+  matrix_control(host,MatrixControl::Release,0u64,0u64);
+  return MatrixIntrinsicStatus::Valid;
+ }
+ u64 index=0u64;u64 components=u64(plan.rows)*u64(plan.columns);
+ matrix_control(host,MatrixControl::Reserve,components,u64(plan.outputs));
+ while(index<components){matrix_control(host,MatrixControl::Part,index,0u64);index+=1u64;}
+ matrix_control(host,plan.inverse!=0?MatrixControl::OriginalType:MatrixControl::Release,0u64,0u64);
+ expand_square_matrix(plan.rows,plan.inverse!=0,host.emitter);
+ if(plan.inverse!=0){matrix_result(host);}else{matrix_control(host,MatrixControl::Scalar,0u64,0u64);}
+ return MatrixIntrinsicStatus::Valid;
 }

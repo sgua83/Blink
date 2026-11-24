@@ -83,21 +83,24 @@ extern "C" SelectedComponents select_indexed_components(usize index, usize count
     requires nonzero(emitter.choice) requires nonzero(emitter.equal) requires nonzero(emitter.select);
 
 // The f32 arithmetic IDs agree with binary_instruction.
-enum MatrixAction:u32 { Copy=0; Add=1; Subtract=2; Multiply=3; Divide=4; Negate=5; };
+enum MatrixAction:u32 { Copy=0; Add=1; Subtract=2; Multiply=3; Divide=4; Negate=5; Constant=6; };
+struct MatrixConstant {u32 present;u32 bits;};
 struct MatrixOperand { u32 slot; u32 take; };
 struct MatrixStep {
     u32 action;
     MatrixOperand left;
     MatrixOperand right;
     u32 destination;
+    u32 bits;
 };
 struct MatrixEmitter {
     address context;
+    cfn<MatrixConstant,address,u32> ensures memory(read) constant;
     cfn<void,address,MatrixStep> emit;
     cfn<void,address,u32> output;
 };
 extern "C" void expand_square_matrix(u32 width, bool inverse, MatrixEmitter emitter) on cpu
-    requires nonzero(emitter.emit) requires nonzero(emitter.output);
+    requires nonzero(emitter.emit) requires nonzero(emitter.output) requires nonzero(emitter.constant);
 extern "C" void expand_matrix_binary(Plan plan,u32 left_count,u32 input_count,MatrixEmitter emitter) on cpu
     requires nonzero(emitter.emit) requires nonzero(emitter.output);
 
@@ -375,3 +378,17 @@ enum SubgroupNeed:u32 {BadTarget=0;BadArity=1;Value=2;Argument=3;ArgumentType=4;
 struct SubgroupStep {SubgroupCursor cursor;SubgroupNeed need;};
 extern "C" SubgroupStep subgroup_step(SubgroupCursor cursor,SubgroupBuiltin builtin,SubgroupFacts facts,address ty,
  cfn<u32,address,SubgroupFact> fact) on cpu requires nonzero(fact);
+
+enum MatrixControl:u32 {Cast=0;Select=1;Whole=2;Part=3;Release=4;OriginalType=5;TransposeBegin=6;ResultBegin=7;ResultPart=8;Scalar=9;Width=10;Reserve=11;};
+struct MatrixCommand {MatrixControl need;u64 first;u64 second;};
+struct MatrixHost {
+ MatrixEmitter emitter;
+ cfn<u64,address,MatrixCommand> action;
+ cfn<MatrixIntrinsicInput,address> ensures memory(read) inspect;
+ cfn<void,address,u32> transpose;
+};
+extern "C" void matrix_binary_value(Plan plan,MatrixHost host) on cpu
+ requires nonzero(host.action) requires nonzero(host.emitter.emit) requires nonzero(host.emitter.output);
+extern "C" MatrixIntrinsicStatus matrix_intrinsic_value(MatrixBuiltin builtin,u64 count,MatrixHost host) on cpu
+ requires nonzero(host.action) requires nonzero(host.inspect) requires nonzero(host.transpose)
+ requires nonzero(host.emitter.emit) requires nonzero(host.emitter.output) requires nonzero(host.emitter.constant);
