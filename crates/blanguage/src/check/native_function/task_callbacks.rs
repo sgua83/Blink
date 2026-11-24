@@ -1,5 +1,6 @@
 //! B owns shared callback lifetime and actual output ready selection.
 use super::*;
+use crate::check::application::TaskOutputSelection;
 #[derive(Clone,Copy)]
 #[repr(C)] struct Cursor{phase:u32,index:u64,part:u64}
 #[repr(C)] struct Step<T>{cursor:Cursor,need:T}
@@ -53,12 +54,12 @@ impl Builder<'_>{
    CallbackNeed::Next=>{},
   }}
  }
- pub(in crate::check) async fn task_selection(&mut self,packet:&Value,result:&Ty,outputs:&[(u32,&outputs::TaskGuard)],span:Span)->Result<String>{
+ pub(in crate::check) async fn task_selection(&mut self,packet:&Value,result:&Ty,outputs:&[TaskOutputSelection<'_>],span:Span)->Result<String>{
   let name=format!("{}::@task_selection{}",self.scope.module(),self.functions.units.len());let pointer=Ty::vector(Scalar::U32,2);
   unsafe{self.world.call(self.task_callback(name,&[("input",pointer.clone()),("output",pointer)],false,span,async |b,registers|{
    let[a,b0,c,d]=*registers else{unreachable!()};let(input,output)=([a,b0],[c,d]);
    let mut cursor=unsafe{start()};let mut facts=SelectionFacts{packet_components:packet.ty.components.len()as u64,packet_registers:packet.regs.len()as u64,result_components:result.components.len()as u64,outputs:outputs.len()as u64,owners:0};
-   let mut zero=None;let mut snapshot=BTreeMap::new();let mut regs=Vec::new();let mut returned=None;let mut owners=Vec::new();let mut selected=Vec::new();
+   let mut zero=None;let mut snapshot=BTreeMap::new();let mut regs=Vec::new();let mut returned=None;let mut selected=Vec::new();
    let load=|b:&mut Builder<'_>,zero,address,scalar,word|{
     let dst=b.reg(scalar);b.emit(InstKind::LoadIndexed{dst,source:IndexedSource::Pointer{address,index:zero,stride:1,aliases:Vec::new()},offset:zero,word});dst
    };
@@ -70,15 +71,25 @@ impl Builder<'_>{
     SelectionNeed::Result=>{let(scalar,offset)=result.components[cursor.index as usize];regs.push(load(b,unsafe{zero.unwrap_unchecked()},output,scalar,offset));}
     SelectionNeed::Returned=>{returned=Some(Value{ty:result.clone(),regs:std::mem::take(&mut regs),proof:bounds::Proof::default(),uniform:false,literal:false,constant:None});}
     SelectionNeed::Guard=>{
-     selected=unsafe{b.world.call(outputs[cursor.index as usize].1.guards(b,returned.as_ref(),span,|operand|match operand{
+     selected=unsafe{b.world.call(outputs[cursor.index as usize].guard.guards(b,returned.as_ref(),span,|operand|match operand{
       bounds::Operand::Value(ValueIdentity::Register(reg))=>snapshot.get(&reg).map(|reg|bounds::Operand::Value(ValueIdentity::Register(*reg))),
       _=>Some(operand),
      })).await}?;
     }
-    SelectionNeed::Owners=>{owners=outputs[cursor.index as usize].1.ty.task_output_owners();facts.owners=owners.len()as u64;}
-    SelectionNeed::Ready=>{
-     let(base,guard)=&outputs[cursor.index as usize];let ready=outputs::resource_guard(&guard.ty,owners[cursor.part as usize].0,&selected);let value=b.presence_register(&ready,None);
-     b.emit(InstKind::StoreIndexed{source:IndexedSource::Pointer{address:output,index:unsafe{zero.unwrap_unchecked()},stride:1,aliases:Vec::new()},offset:unsafe{zero.unwrap_unchecked()},word:*base+cursor.part as u32*Scalar::Bool.size(),value});
+    SelectionNeed::Owners => {
+     facts.owners = outputs[cursor.index as usize].owners.len() as u64;
+    }
+    SelectionNeed::Ready => {
+     let item = &outputs[cursor.index as usize];
+     let offset = item.owners[cursor.part as usize].0;
+     let ready = outputs::resource_guard(&item.guard.ty, offset, &selected);
+     let value = b.presence_register(&ready, None);
+     b.emit(InstKind::StoreIndexed {
+      source: IndexedSource::Pointer { address: output, index: unsafe { zero.unwrap_unchecked() }, stride: 1, aliases: Vec::new() },
+      offset: unsafe { zero.unwrap_unchecked() },
+      word: item.base + cursor.part as u32 * Scalar::Bool.size(),
+      value,
+     });
     }
     SelectionNeed::Complete=>return Ok(()),
     SelectionNeed::Next=>{},

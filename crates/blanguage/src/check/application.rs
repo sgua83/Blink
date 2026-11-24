@@ -2,6 +2,12 @@
 use super::cooperative::Argument;
 use super::*;
 mod drops;
+
+pub(super) struct TaskOutputSelection<'a> {
+    pub(super) base: u32,
+    pub(super) guard: &'a outputs::TaskGuard,
+    pub(super) owners: Vec<(u32, &'a Ty)>,
+}
 #[derive(Default)]
 pub(super) struct Context {
     pub frame: Option<Vec<Reg>>,
@@ -1555,12 +1561,14 @@ impl Builder<'_> {
             let (name, offset, _) = &mut packed.ty.fields[*field];
             let ready = if let Some(guard) = guard {
                 let base = tail.checked_next_multiple_of(Scalar::Bool.align()).ok_or_else(&overflow)?;
-                let width = u32::try_from(ty.task_output_owners().len()).ok()
+                let owners = ty.task_output_owners();
+                let width = u32::try_from(owners.len()).ok()
                     .and_then(|count| count.checked_mul(Scalar::Bool.size())).ok_or_else(&overflow)?;
                 tail = base.checked_add(width).ok_or_else(&overflow)?;
                 name.push_str(&format!(":{base}"));
-                selection.push((base, *guard));
-                Some(base)
+                let index = selection.len();
+                selection.push(TaskOutputSelection { base, guard, owners });
+                Some(index)
             } else {
                 None
             };
@@ -1606,7 +1614,7 @@ impl Builder<'_> {
         let cleanup = if drop_positions.is_empty() && drop_datasets.is_empty() && !result.owns_resources() {
             None
         } else {
-            Some(unsafe { self.world.call(self.task_completion_cleanup(&drop_positions, &drop_datasets, &result, span)).await }?)
+            Some(unsafe { self.world.call(self.task_completion_cleanup(&drop_positions, &drop_datasets, &selection, &result, span)).await }?)
         };
         let selector = if selection.is_empty() {
             None

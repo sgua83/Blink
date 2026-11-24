@@ -1,5 +1,6 @@
 //! B owns task completion cleanup order, gates and owner traversal.
 use super::*;
+use crate::check::application::TaskOutputSelection;
 #[derive(Clone,Copy)]
 #[repr(C)] struct Cursor{phase:u32,index:u64,owner:u64}
 #[derive(Clone,Copy,Default)]
@@ -12,7 +13,8 @@ unsafe extern "C"{
 }
 impl Builder<'_>{
  pub(in crate::check) async fn task_completion_cleanup(
-  &mut self,positions:&[(u32,&Ty,Option<u32>)],datasets:&[(u32,&Ty,&Ty,Access,Option<u32>)],result:&Ty,span:Span,
+  &mut self, positions: &[(u32, &Ty, Option<usize>)], datasets: &[(u32, &Ty, &Ty, Access, Option<usize>)],
+  selection: &[TaskOutputSelection<'_>], result: &Ty, span: Span,
  )->Result<String>{
   let name=format!("{}::@task_completion_cleanup{}",self.scope.module(),self.functions.units.len());
   let pointer=Ty::vector(Scalar::U32,2);
@@ -24,7 +26,7 @@ impl Builder<'_>{
    let mut facts=Facts{result_owns:u32::from(result.owns_resources()),positions:positions.len()as u64,datasets:datasets.len()as u64,..Facts::default()};
    let mut slot=None;let mut zero=None;let mut error=None;
    let mut outer=Vec::new();let mut guarded=Vec::new();let mut yes=Vec::new();
-   let mut address=[0;2];let mut owners=Vec::new();let mut condition=None;let mut descriptor=Vec::new();let mut guards=Vec::new();
+   let mut address=[0;2];let mut ready = None;let mut condition=None;let mut descriptor=Vec::new();let mut guards=Vec::new();
    let load=|b:&mut Builder<'_>,zero,address,scalar,word|{
     let dst=b.reg(scalar);
     b.emit(InstKind::LoadIndexed{dst,source:IndexedSource::Pointer{address,index:zero,stride:1,aliases:Vec::new()},offset:zero,word});dst
@@ -37,19 +39,24 @@ impl Builder<'_>{
     Need::Zero=>{zero=Some(b.constant(Scalar::U32,0).regs[0]);}
     Need::BeginCompleted=>{outer=std::mem::take(&mut b.code);}
     Need::DropResult=>{unsafe{b.world.call(b.drop_task_completion_value(result,output,0,span)).await}?;}
-    Need::Position=>{facts.ready=u32::from(positions[cursor.index as usize].2.is_some());}
+    Need::Position => {
+     ready = positions[cursor.index as usize].2.map(|index| &selection[index]);
+     facts.ready = u32::from(ready.is_some());
+    }
     Need::Address=>{
      let packet=positions[cursor.index as usize].0;
      address=std::array::from_fn(|i|load(b,unsafe{zero.unwrap_unchecked()},input,Scalar::U32,packet+i as u32*4));
     }
-    Need::PositionOwners=>{owners=positions[cursor.index as usize].1.task_output_owners();facts.owners=owners.len()as u64;}
+    Need::PositionOwners | Need::DatasetOwners => {
+     facts.owners = unsafe { ready.unwrap_unchecked() }.owners.len() as u64;
+    }
     Need::OwnerGuard=>{
-     let base=unsafe{positions[cursor.index as usize].2.unwrap_unchecked()};
+     let base = unsafe { ready.unwrap_unchecked() }.base;
      condition=Some(load(b,unsafe{zero.unwrap_unchecked()},output,Scalar::Bool,base+cursor.owner as u32*Scalar::Bool.size()));
      guarded=std::mem::take(&mut b.code);
     }
     Need::DropOwner=>{
-     let(offset,owner)=owners[cursor.owner as usize];
+     let (offset, owner) = unsafe { ready.unwrap_unchecked() }.owners[cursor.owner as usize];
      unsafe{b.world.call(b.drop_task_completion_value(owner,address,offset,span)).await}?;
     }
     Need::EndOwner=>{
@@ -60,7 +67,10 @@ impl Builder<'_>{
     Need::EndCompleted=>{yes=std::mem::replace(&mut b.code,std::mem::take(&mut outer));facts.nonempty=u32::from(!yes.is_empty());}
     Need::CompletedIf=>{b.emit(InstKind::If{condition:completed,yes:std::mem::take(&mut yes),no:Vec::new()});}
     Need::Dataset=>{
-     let item=datasets[cursor.index as usize];facts.ready=u32::from(item.4.is_some());facts.writes=u32::from(item.3==Access::Write);
+     let item = datasets[cursor.index as usize];
+     ready = item.4.map(|index| &selection[index]);
+     facts.ready = u32::from(ready.is_some());
+     facts.writes = u32::from(item.3 == Access::Write);
     }
     Need::BeginDataset=>{outer=std::mem::take(&mut b.code);}
     Need::Descriptor=>{
@@ -68,11 +78,11 @@ impl Builder<'_>{
      descriptor=layout.components.iter().map(|&(scalar,offset)|load(b,unsafe{zero.unwrap_unchecked()},input,scalar,packet+offset)).collect();
     }
     Need::Guards=>{guards=vec![owned_presence::Presence::All;datasets[cursor.index as usize].2.components.len()];}
-    Need::DatasetOwners=>{owners=datasets[cursor.index as usize].2.task_output_owners();facts.owners=owners.len()as u64;}
     Need::Guard=>{
-     let(_,_,element,_,ready)=datasets[cursor.index as usize];
-     let offset=owners[cursor.owner as usize].0;
-     let reg=load(b,unsafe{zero.unwrap_unchecked()},output,Scalar::Bool,unsafe{ready.unwrap_unchecked()}+cursor.owner as u32*Scalar::Bool.size());
+     let element = datasets[cursor.index as usize].2;
+     let item = unsafe { ready.unwrap_unchecked() };
+     let offset = item.owners[cursor.owner as usize].0;
+     let reg=load(b,unsafe{zero.unwrap_unchecked()},output,Scalar::Bool,item.base+cursor.owner as u32*Scalar::Bool.size());
      let component=element.components.iter().position(|&(_,at)|at==offset).unwrap();
      guards[component]=owned_presence::Presence::input(&Value{
       ty:Ty::scalar(Scalar::Bool),regs:vec![reg],proof:bounds::Proof::default().with_identity(ValueIdentity::Register(reg)),
