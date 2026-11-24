@@ -32,6 +32,25 @@ fn finish<T>(result: Result<T>, cleanup: Result<()>) -> Result<T> {
         (Err(error), Err(cleanup)) => Err(format!("{error}\n编译暂存清理失败：{cleanup}").into()),
     }
 }
+fn runtime_artifact(stdout: &str) -> Result<PathBuf> {
+    let mut archive = None;
+    for line in stdout.lines().filter(|line| line.starts_with('{')) {
+        let message: serde_json::Value = serde_json::from_str(line)?;
+        if message["reason"] != "compiler-artifact" || message["target"]["name"] != "blcompute" {
+            continue;
+        }
+        let filenames = message["filenames"].as_array().ok_or("Cargo 未返回执行库的产物文件名")?;
+        let libraries = filenames.iter().filter_map(serde_json::Value::as_str)
+            .map(Path::new).filter(|path| path.extension().is_some_and(|ext| ext == "lib"));
+        for library in libraries {
+            if archive.replace(library.to_path_buf()).is_some() {
+                return Err("Cargo 返回了多个执行库静态归档".into());
+            }
+        }
+    }
+    archive.ok_or_else(|| "Cargo 未返回执行库的静态归档".into())
+}
+
 fn development_runtime(
     sdk: &Path,
     target: &Path,
@@ -42,8 +61,8 @@ fn development_runtime(
         "rustc".into(), "--offline".into(), "--locked".into(), "--release".into(),
         "--manifest-path".into(), sdk.join("Cargo.toml").into_os_string(),
         "--target-dir".into(), target.as_os_str().into(), "--package".into(), "blcompute".into(),
-        "--no-default-features".into(), "--config".into(), "profile.release.lto=false".into(),
-        "--color".into(), "never".into(),
+        "--lib".into(), "--no-default-features".into(), "--config".into(), "profile.release.lto=false".into(),
+        "--color".into(), "never".into(), "--message-format=json-render-diagnostics".into(),
     ].into();
     if let Some(directory) = option_env!("BLINK_BUILT_SHARED_OBJECTS") {
         let directory = directory.replace('\\', "\\\\");
@@ -58,13 +77,16 @@ fn development_runtime(
     let output = worker.cargo_output(arguments, work, sdk)?;
     let stderr = String::from_utf8(output.stderr)?;
     if !output.status.success() {
-        return Err(format!("执行库编译失败：\n{}{}", String::from_utf8_lossy(&output.stdout), stderr).into());
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let messages = stdout.split_inclusive('\n').filter(|line| !line.starts_with('{')).collect::<String>();
+        return Err(format!("执行库编译失败：\n{messages}{stderr}").into());
     }
     let dependencies = stderr.lines()
         .find_map(|line| line.trim().strip_prefix("note: native-static-libs: "))
         .ok_or("Rust 未返回静态目标库的本机库依赖")?;
 
-    let product = crate::file_bytes::FileBytes::read_path(&target.join("release/blcompute.lib"))?;
+    let archive = runtime_artifact(&String::from_utf8(output.stdout)?)?;
+    let product = crate::file_bytes::FileBytes::read_path(&archive)?;
     let hash = crate::build::hash::hex(&crate::build::hash::digest(&product));
     let shared = target.join(format!("blink-runtime-{hash}.lib"));
     if !shared.try_exists()? {
