@@ -19,6 +19,17 @@ struct Host {
     child: unsafe extern "C" fn(*const Ty, Child, usize) -> *const Ty,
 }
 #[repr(C)]
+struct NumericNode {
+    name:*const u8,length:usize,function:u32,enumeration:u32,variants:usize,
+    view:u32,array:u32,fields:usize,components:usize,
+}
+#[repr(C)]
+struct NumericHost {
+    types:Host,
+    inspect:unsafe extern "C" fn(*const Ty)->NumericNode,
+    scalar:unsafe extern "C" fn(*const Ty,usize)->u32,
+}
+#[repr(C)]
 struct Part { value: *const Ty, offset: u32 }
 #[repr(C)]
 struct FieldHost {
@@ -145,6 +156,8 @@ impl ReferenceWalk {
 }
 
 unsafe extern "C" {
+    #[link_name = "bootstrap.type_layout::numeric"]
+    fn b_numeric(value:*const Ty,host:NumericHost)->u32;
     #[link_name = "bootstrap.type_layout::reference_step"]
     fn b_reference_step(cursor: &mut ReferenceCursor, shape: &ReferenceShape) -> ReferenceStep;
     #[link_name = "bootstrap.type_layout::storage_step"]
@@ -222,6 +235,18 @@ pub(crate) fn dataset_paths(value: &Ty) -> Vec<Vec<usize>> {
 
 pub(super) fn contains(value: &Ty, query: Query) -> bool {
     unsafe { b_contains(value, query, Host { inspect, child }) != 0 }
+}
+pub(super) fn numeric(value:&Ty)->bool {
+    unsafe { b_numeric(value,NumericHost {types:Host {inspect,child},inspect:numeric_node,scalar:numeric_scalar})!=0 }
+}
+unsafe extern "C" fn numeric_node(value:*const Ty)->NumericNode {
+    let ty=unsafe { &*value };
+    NumericNode {name:ty.name.as_ptr(),length:ty.name.len(),function:u32::from(ty.function.is_some()),
+        enumeration:u32::from(ty.enumeration),variants:ty.variants.len(),view:u32::from(ty.view.is_some()),
+        array:u32::from(ty.array.is_some()),fields:ty.fields.len(),components:ty.components.len()}
+}
+unsafe extern "C" fn numeric_scalar(value:*const Ty,index:usize)->u32 {
+    unsafe { &*value }.components[index].0 as u32
 }
 unsafe extern "C" fn inspect(value: *const Ty) -> Node {
     let ty = unsafe { &*value };

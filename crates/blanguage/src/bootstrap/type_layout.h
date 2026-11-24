@@ -69,6 +69,19 @@ struct TypeHost {
 extern "C" u32 contains(address value, Property property, TypeHost host) on cpu
     requires nonzero(host.inspect) requires nonzero(host.child);
 
+struct NumericNode {
+    address name;usize length;u32 function;u32 enumeration;usize variants;
+    u32 view;u32 array;usize fields;usize components;
+};
+struct NumericHost {
+    TypeHost types;
+    cfn<NumericNode,address> ensures memory(read) inspect;
+    cfn<u32,address,usize> ensures memory(read) scalar;
+};
+extern "C" u32 numeric(address value,NumericHost host) on cpu
+    requires nonzero(host.types.inspect) requires nonzero(host.types.child)
+    requires nonzero(host.inspect) requires nonzero(host.scalar);
+
 extern "C" usize dataset_count(address value, TypeHost host) on cpu
     requires nonzero(host.inspect) requires nonzero(host.child);
 extern "C" u32 dataset_path(address value, usize ordinal, TypeHost host, address context,

@@ -559,7 +559,14 @@ impl Ty {
         }
     }
     pub fn matrix_shape(&self) -> Option<(usize, usize)> {
-        matrix_shape(&self.name)
+        #[cfg(feature = "compiler")]
+        {
+            let name=crate::builtin_types::Builtin::recognize(&self.name);
+            (name.kind==crate::builtin_types::Kind::Numeric && name.rows>1)
+                .then_some((name.rows as usize,name.columns as usize))
+        }
+        #[cfg(not(feature = "compiler"))]
+        { matrix_shape(&self.name) }
     }
     #[cfg(feature = "compiler")]
     pub fn builtin(s: &str) -> Option<Self> {
@@ -663,15 +670,25 @@ impl Ty {
             }
     }
     pub fn is_address(&self) -> bool {
-        self.name == "address"
+        #[cfg(feature = "compiler")]
+        { crate::builtin_types::Builtin::recognize(&self.name).kind==crate::builtin_types::Kind::Address }
+        #[cfg(not(feature = "compiler"))]
+        { self.name == "address" }
     }
     pub fn is_handle(&self) -> bool {
-        self.name == "handle"
+        #[cfg(feature = "compiler")]
+        { crate::builtin_types::Builtin::recognize(&self.name).kind==crate::builtin_types::Kind::Handle }
+        #[cfg(not(feature = "compiler"))]
+        { self.name == "handle" }
     }
     pub fn is_c_function(&self) -> bool {
         self.function.is_some()
     }
     pub fn is_numeric(&self) -> bool {
+        #[cfg(feature = "compiler")]
+        { properties::numeric(self) }
+        #[cfg(not(feature = "compiler"))]
+        {
         !self.is_c_function()
             && !self.is_handle()
             && !self.is_address()
@@ -682,6 +699,7 @@ impl Ty {
             && self.fields.is_empty()
             && !self.components.is_empty() && self.components.iter().all(|x| x.0 != Scalar::Bool)
             && !self.owns_resources()
+        }
     }
     pub fn contains_arrays(&self) -> bool {
         #[cfg(feature = "compiler")]
@@ -778,6 +796,7 @@ impl Ty {
         }
     }
 }
+#[cfg(not(feature = "compiler"))]
 fn matrix_shape(name: &str) -> Option<(usize, usize)> {
     match name.as_bytes() {
         [

@@ -1,4 +1,5 @@
 module bootstrap.type_layout;
+import bootstrap.type_families;
 
 extern "C" VectorLayout vector(u32 scalar_size, u32 scalar_alignment, u64 count) on cpu {
     u32 lanes = count == 2 ? 2 : 4;
@@ -148,6 +149,23 @@ extern "C" u32 contains(address value, Property property, TypeHost host) on cpu
         i+=1u64;
     }
     return 0;
+}
+
+extern "C" u32 numeric(address value,NumericHost host) on cpu
+    requires nonzero(host.types.inspect) requires nonzero(host.types.child)
+    requires nonzero(host.inspect) requires nonzero(host.scalar) {
+    NumericNode node=host.inspect(value);
+    if(node.function!=0){return 0;}
+    BuiltinType name=recognize(node.name,u64(node.length));
+    if(name.kind==BuiltinKind::Handle||name.kind==BuiltinKind::Address){return 0;}
+    if(node.enumeration!=0||node.variants!=0u64||node.view!=0||node.array!=0
+        ||node.fields!=0u64||node.components==0u64){return 0;}
+    usize index=0u64;
+    while(index<node.components){
+        if(host.scalar(value,index)==u32(BuiltinScalar::Bool)){return 0;}
+        index+=1u64;
+    }
+    return contains(value,Property::Resources,host.types)==0 ? 1 : 0;
 }
 
 struct DatasetBranch { Child kind; usize count; };
