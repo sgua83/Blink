@@ -1948,7 +1948,16 @@ pub struct Program {
     pub(crate) length_requirements: Vec<(usize, usize)>,
 }
 #[repr(C)]
-struct ExecutionBuffers { indirect: usize, auxiliary: usize }
+#[derive(Clone, Copy)]
+pub(crate) struct ExecutionBuffers {
+    pub(crate) indirect: usize,
+    pub(crate) auxiliary: usize,
+}
+#[cfg(feature = "compiler")]
+impl ExecutionBuffers {
+    pub(crate) fn selection(self) -> usize { self.indirect + 1 }
+    pub(crate) fn scan_source(self) -> usize { self.indirect + 2 }
+}
 impl Program {
     pub(crate) fn write_regions(&self) -> BTreeMap<usize, BTreeSet<(u32, u32)>> {
         Self::stage_write_regions(&self.stages)
@@ -2037,7 +2046,7 @@ impl Program {
             | Operation::CustomSegmentedReduce(_) | Operation::SegmentedReduce(_)
             | Operation::Compact(_) | Operation::StableSort(_))
     }
-    fn execution_buffers(&self) -> ExecutionBuffers {
+    pub(crate) fn execution_buffers(&self) -> ExecutionBuffers {
         #[cfg(feature = "compiler")]
         { dataflow::execution_buffers(self) }
         #[cfg(not(feature = "compiler"))]

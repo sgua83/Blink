@@ -162,40 +162,114 @@ enum TypeShape {
     Void,
     Vector,
     Matrix,
-    SampledImage,
-    Array,
+    Array = 4,
     Function,
-    Acceleration,
-    RayQuery,
-    Image,
-    Pointer,
+    Pointer = 9,
 }
 
 #[repr(C)]
-struct ResourceBlock {
-    element: u32,
+struct ShaderResourceInput {
+    buffers: usize,
+    slots: usize,
+    indirect: usize,
+    textures: usize,
+    accelerations: usize,
+    next: u32,
+    float_type: u32,
+    word_type: u32,
+    wide_type: u32,
+    byte_type: u32,
+    short_type: u32,
+    uniform_bytes: u32,
+    publishes_summary: u32,
+    single_group: u32,
+    argument_pass: u32,
+    grid: u32,
+}
+
+#[repr(C)]
+struct ResourceStreams {
+    definitions: *mut u32,
+    decorations: *mut u32,
+    pages: *mut u32,
+    textures: *mut u32,
+    accelerations: *mut u32,
+}
+
+#[repr(C)]
+struct TextureDeclaration {
+    dimensions: u32,
+    arrayed: u32,
     length: u32,
-    array: u32,
-    block: u32,
+}
+
+#[repr(C)]
+struct ShaderResourceHost {
+    textures: *const std::ffi::c_void,
+    texture: unsafe extern "C" fn(*const std::ffi::c_void, usize) -> TextureDeclaration,
+    constants: *mut std::ffi::c_void,
+    intern_word: unsafe extern "C" fn(*mut std::ffi::c_void, u32, u32) -> u32,
+}
+
+#[derive(Clone, Copy, Default)]
+#[repr(C)]
+struct SampledType {
+    sampled: u32,
     pointer: u32,
 }
 
+#[repr(C)]
+struct ShaderResourceIds {
+    definitions: u64,
+    decorations: u64,
+    next: u32,
+    vec3: u32,
+    vec2: u32,
+    vec4: u32,
+    acceleration: u32,
+    ray_pointer: u32,
+    index_type: u32,
+    global: u32,
+    num_groups: u32,
+    words32: u32,
+    words64: u32,
+    bytes: u32,
+    shorts: u32,
+    table_pointer: u32,
+    push: u32,
+    push_pointer: u32,
+    sampled2: SampledType,
+    sampled3: SampledType,
+}
+
+unsafe extern "C" fn texture_declaration(
+    textures: *const std::ffi::c_void, index: usize,
+) -> TextureDeclaration {
+    let texture = unsafe { &*textures.cast::<TextureBinding>().add(index) };
+    TextureDeclaration {
+        dimensions: texture.dimension.components() as u32,
+        arrayed: u32::from(texture.count.is_some()),
+        length: texture.count.unwrap_or(0),
+    }
+}
+
+unsafe extern "C" fn intern_resource_word(
+    constants: *mut std::ffi::c_void, bits: u32, next: u32,
+) -> u32 {
+    *unsafe { &mut *constants.cast::<BTreeMap<(Scalar, Bits), u32>>() }.entry((Scalar::U32, Bits::from(bits))).or_insert(next)
+}
+
+
 #[repr(u32)]
 enum StorageClass {
-    UniformConstant = 0,
     Input = 1,
     Workgroup = 4,
     Function = 7,
-    PushConstant = 9,
-    StorageBuffer = 12,
-    PhysicalStorageBuffer = 5349,
 }
 
 #[repr(u32)]
 enum VariableAnnotation {
-    Descriptor,
-    PageTable,
-    BuiltIn,
+    BuiltIn = 2,
 }
 
 #[repr(C)]
@@ -906,8 +980,8 @@ unsafe extern "C" {
     ) -> u64;
     #[link_name = "bootstrap.spirv_envelope::type_declaration"]
     fn type_declaration(shape: TypeShape, id: u32, first: u32, second: u32, words: *mut u32) -> u64;
-    #[link_name = "bootstrap.spirv_envelope::resource_block"]
-    fn resource_block(input: ResourceBlock, definitions: *mut u32, decorations: *mut u32) -> u64;
+    #[link_name = "bootstrap.spirv_envelope::shader_resources"]
+    fn shader_resources(input: ShaderResourceInput, host: ShaderResourceHost, streams: ResourceStreams) -> ShaderResourceIds;
     #[link_name = "bootstrap.spirv_envelope::variable_declaration"]
     fn variable_declaration(storage: StorageClass, pointer: u32, id: u32, words: *mut u32);
     #[link_name = "bootstrap.spirv_envelope::annotated_variable"]
@@ -1029,7 +1103,7 @@ struct Emitter<'a> {
     buffers: Vec<u32>,
     accelerations: Vec<u32>,
     textures: Vec<u32>,
-    texture_types: BTreeMap<crate::ast::TextureDimension, (u32, u32)>,
+    texture_types: [SampledType; 2],
     vec4_type: u32,
     acceleration_type: u32,
     ray_variables: BTreeMap<Reg, (u32, crate::ir::dataflow::RayFields)>,
@@ -1048,6 +1122,7 @@ struct Emitter<'a> {
     private_arrays: BTreeMap<usize, PrivateArray>,
     stage: &'a Stage,
     program: &'a Program,
+    execution_buffers: ExecutionBuffers,
     ext: u32,
     subgroup_inputs: BTreeMap<SubgroupOp, u32>,
     ballot_type: u32,
@@ -1193,23 +1268,73 @@ impl Emitter<'_> {
             self.decorations.set_len(start + words as usize);
         }
     }
-    fn declare_resource_block(&mut self, element: u32, length: u32) -> u32 {
-        let input = ResourceBlock {
-            element, length,
-            array: self.id(), block: self.id(), pointer: self.id(),
+    fn declare_shader_resources(
+        &mut self, publishes_summary: bool, single_group: bool, argument_pass: bool,
+    ) -> ShaderResourceIds {
+        let program = self.program;
+        let buffers = program.buffers.len();
+        let slots = buffers + self.execution_buffers.auxiliary;
+        let textures = program.textures.len();
+        let accelerations = program.accelerations.len();
+        let input = ShaderResourceInput {
+            buffers, slots, indirect: self.execution_buffers.indirect, textures, accelerations,
+            next: self.next,
+            float_type: self.types[&Scalar::F32],
+            word_type: self.types[&Scalar::U32],
+            wide_type: self.u64_type,
+            byte_type: self.types.get(&Scalar::U8).copied().unwrap_or(0),
+            short_type: self.types.get(&Scalar::U16).copied().unwrap_or(0),
+            uniform_bytes: program.uniform_bytes,
+            publishes_summary: u32::from(publishes_summary),
+            single_group: u32::from(single_group),
+            argument_pass: u32::from(argument_pass),
+            grid: u32::from(self.stage.prefix.is_some() || self.stage.selection.is_some()),
         };
-        let pointer = input.pointer;
-        let defs = self.defs.len();
-        let annotations = self.decorations.len();
-        self.defs.reserve(11);
-        self.decorations.reserve(12);
+        let definitions = self.defs.len();
+        let decorations = self.decorations.len();
+        // The fixed types and built-ins plus each resource's declarations and annotations.
+        self.defs.reserve(96 + 32 * textures + 4 * (accelerations + slots));
+        self.decorations.reserve(32 + 8 * (textures + accelerations) + 11 * slots);
+        self.buffers.reserve(slots);
+        self.accelerations.reserve(accelerations);
+        self.textures.reserve(textures);
+        let streams = ResourceStreams {
+            definitions: unsafe { self.defs.as_mut_ptr().add(definitions) },
+            decorations: unsafe { self.decorations.as_mut_ptr().add(decorations) },
+            pages: self.buffers.as_mut_ptr(),
+            textures: self.textures.as_mut_ptr(),
+            accelerations: self.accelerations.as_mut_ptr(),
+        };
+        let host = ShaderResourceHost {
+            textures: program.textures.as_ptr().cast(),
+            texture: texture_declaration,
+            constants: std::ptr::from_mut(&mut self.constants).cast(),
+            intern_word: intern_resource_word,
+        };
+        let ids = unsafe { shader_resources(input, host, streams) };
         unsafe {
-            let used = resource_block(input, self.defs.as_mut_ptr().add(defs),
-                self.decorations.as_mut_ptr().add(annotations));
-            self.defs.set_len(defs + used as usize);
-            self.decorations.set_len(annotations + 12);
+            self.defs.set_len(definitions + ids.definitions as usize);
+            self.decorations.set_len(decorations + ids.decorations as usize);
+            self.buffers.set_len(slots);
+            self.textures.set_len(textures);
+            self.accelerations.set_len(accelerations);
         }
-        pointer
+        self.next = ids.next;
+        self.vec3_type = ids.vec3;
+        self.vec2_type = ids.vec2;
+        self.vec4_type = ids.vec4;
+        self.texture_types = [ids.sampled2, ids.sampled3];
+        self.acceleration_type = ids.acceleration;
+        self.ptr_table_u64 = ids.table_pointer;
+        self.push = ids.push;
+        self.ptr_push_u32 = ids.push_pointer;
+        for (scalar, pointer) in [(Scalar::U32, ids.words32), (Scalar::U64, ids.words64),
+                                  (Scalar::U8, ids.bytes), (Scalar::U16, ids.shorts)] {
+            if pointer != 0 {
+                self.physical_pointers.insert(scalar, pointer);
+            }
+        }
+        ids
     }
     fn emit_body(&mut self, capacity: usize, encode: impl FnOnce(*mut u32) -> u64) {
         let start = self.body.len();
@@ -2036,16 +2161,18 @@ struct ProgramShaderFeatures {
     integer16: bool,
     acceleration: bool,
     descriptor_indexing: bool,
+    buffers: ExecutionBuffers,
 }
 
-impl From<DeviceRequirements> for ProgramShaderFeatures {
-    fn from(requirements: DeviceRequirements) -> Self {
+impl ProgramShaderFeatures {
+    fn new(requirements: DeviceRequirements, buffers: ExecutionBuffers) -> Self {
         Self {
             float64: requirements.float64,
             integer8: requirements.integer8,
             integer16: requirements.integer16,
             acceleration: requirements.ray_query,
             descriptor_indexing: requirements.texture_indexing,
+            buffers,
         }
     }
 }
@@ -2063,6 +2190,7 @@ pub fn emit_pass(
         float64, integer8, integer16,
         acceleration: !program.accelerations.is_empty(),
         descriptor_indexing: program.requires_texture_indexing(),
+        buffers: program.execution_buffers(),
     };
     let reduction = prepare_reduction(stage, pass);
     emit_shader(program, stage, pass, &mut inputs, &layout, features, reduction.as_ref(), None, true)
@@ -2189,7 +2317,7 @@ fn emit_shader(
         buffers: Vec::new(),
         accelerations: Vec::new(),
         textures: Vec::new(),
-        texture_types: BTreeMap::new(),
+        texture_types: [SampledType::default(); 2],
         vec4_type: 0,
         acceleration_type: 0,
         ray_variables: BTreeMap::new(),
@@ -2208,6 +2336,7 @@ fn emit_shader(
         private_arrays: BTreeMap::new(),
         stage,
         program,
+        execution_buffers: program_features.buffers,
         ext: 0,
         subgroup_inputs: BTreeMap::new(),
         ballot_type: 0,
@@ -2222,7 +2351,7 @@ fn emit_shader(
         current_label: 0,
         return_scopes: Vec::new(),
     };
-    let ProgramShaderFeatures { float64, integer8, integer16, acceleration, descriptor_indexing } = program_features;
+    let ProgramShaderFeatures { float64, integer8, integer16, acceleration, descriptor_indexing, .. } = program_features;
     let (float32_preserve, float64_preserve) = if numeric_pass {
         facts.code.float_modes()
     } else {
@@ -2284,79 +2413,9 @@ fn emit_shader(
         e.pointers.insert(s, ptr);
     }
     let u = e.types[&Scalar::U32];
-    let f = e.types[&Scalar::F32];
-    e.vec3_type = e.declare_type(TypeShape::Vector, f, 3);
-    e.vec2_type = e.declare_type(TypeShape::Vector, f, 2);
-    if !program.textures.is_empty() {
-        e.vec4_type = e.declare_type(TypeShape::Vector, f, 4);
-        for i in 0..program.textures.len() {
-            let dimension = program.textures[i].dimension;
-            if !e.texture_types.contains_key(&dimension) {
-                let image = e.declare_type(TypeShape::Image, f, dimension.components() as u32);
-                let sampled = e.declare_type(TypeShape::SampledImage, image, 0);
-                let pointer = e.declare_pointer(StorageClass::UniformConstant, sampled);
-                e.texture_types.insert(dimension, (sampled, pointer));
-            }
-            let (sampled, pointer) = e.texture_types[&dimension];
-            let pointer = if let Some(count) = program.textures[i].count {
-                let length = e.constant(Scalar::U32, count);
-                let array = e.declare_type(TypeShape::Array, sampled, length);
-                e.declare_pointer(StorageClass::UniformConstant, array)
-            } else { pointer };
-            let binding = (program.buffers.len() + program.accelerations.len() + i) as u32;
-            let id = e.declare_annotated(VariableAnnotation::Descriptor, pointer, binding);
-            e.textures.push(id);
-        }
-    }
-    let mut ray_pointer = 0;
-    if !program.accelerations.is_empty() {
-        e.acceleration_type = e.declare_type(TypeShape::Acceleration, 0, 0);
-        let pointer = e.declare_pointer(StorageClass::UniformConstant, e.acceleration_type);
-        for i in 0..program.accelerations.len() {
-            let binding = (program.buffers.len() + i) as u32;
-            let id = e.declare_annotated(VariableAnnotation::Descriptor, pointer, binding);
-            e.accelerations.push(id);
-        }
-        let query_type = e.declare_type(TypeShape::RayQuery, 0, 0);
-        ray_pointer = e.declare_pointer(StorageClass::Function, query_type);
-    }
     e.u64_type = e.types[&Scalar::U64];
-    let v3 = e.declare_type(TypeShape::Vector, u, 3);
-    let ptr_input = e.declare_pointer(StorageClass::Input, v3);
-    let global = e.declare_annotated(VariableAnnotation::BuiltIn, ptr_input, 28);
-    let mut num_groups = 0;
-    if (stage.prefix.is_some() || stage.selection.is_some())
-        && !argument_pass
-    {
-        num_groups = e.declare_annotated(VariableAnnotation::BuiltIn, ptr_input, 24);
-    }
-    let ptr = e.declare_resource_block(e.u64_type, 0);
-    for scalar in [Scalar::U32, Scalar::U64, Scalar::U8, Scalar::U16] {
-        if let Some(ty) = e.types.get(&scalar).copied() {
-            let pointer = e.declare_pointer(StorageClass::PhysicalStorageBuffer, ty);
-            e.physical_pointers.insert(scalar, pointer);
-        }
-    }
-    e.ptr_table_u64 = e.declare_pointer(StorageClass::StorageBuffer, e.u64_type);
-    for i in 0..program.buffers.len() + program.auxiliary_buffers() {
-        if i == program.buffers.len()
-            && (!publishes_summary || single_group || (argument_pass && program.indirect_buffer() != i))
-        {
-            e.buffers.push(0);
-            continue;
-        }
-        let binding = if i >= program.buffers.len() {
-            (i + program.accelerations.len() + program.textures.len()) as u32
-        } else {
-            i as u32
-        };
-        let id = e.declare_annotated(VariableAnnotation::PageTable, ptr, binding);
-        e.buffers.push(id);
-    }
-    let length = e.constant(Scalar::U32, program.uniform_bytes / 4);
-    let push_ptr = e.declare_resource_block(u, length);
-    e.push = e.declare_variable(StorageClass::PushConstant, push_ptr);
-    e.ptr_push_u32 = e.declare_pointer(StorageClass::PushConstant, u);
+    let resources = e.declare_shader_resources(publishes_summary, single_group, argument_pass);
+    let ShaderResourceIds { ray_pointer, index_type: v3, global, num_groups, .. } = resources;
     let shared_scalar = Scalar::U32;
     let mut local_input = 0;
     let mut shared = 0;
@@ -2527,7 +2586,7 @@ fn emit_shader(
         } else if scan_local {
             let local = e.load_pointer(u, local_input);
             e.scan(
-                &Scan::counts(selection.scan(program.selection_buffer())),
+                &Scan::counts(selection.scan(e.execution_buffers.selection())),
                 pass == Pass::ScanTail,
                 local,
                 shared,
@@ -2538,7 +2597,7 @@ fn emit_shader(
         } else {
             e.open_active(active, execute, end);
             e.scan_add(
-                &Scan::counts(selection.scan(program.selection_buffer())),
+                &Scan::counts(selection.scan(e.execution_buffers.selection())),
                 false,
             );
             e.merge_active(end, true);

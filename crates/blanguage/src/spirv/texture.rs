@@ -11,17 +11,17 @@ impl Emitter<'_> {
     ) {
         use crate::ast::TextureDimension;
         let dimension = self.program.textures[texture.binding].dimension;
-        let (sampled_type, sampled_pointer) = self.texture_types[&dimension];
+        let (sampled, coordinate_type) = match dimension {
+            TextureDimension::D2 => (self.texture_types[0], self.vec2_type),
+            TextureDimension::D3 => (self.texture_types[1], self.vec3_type),
+        };
         let input = TextureSampleEmission {
             variable: self.textures[texture.binding],
             element: texture.element.map_or(0, |reg| self.value(reg)),
             index_type: self.types[&Scalar::U32],
-            sampled_type,
-            sampled_pointer,
-            coordinate_type: match dimension {
-                TextureDimension::D2 => self.vec2_type,
-                TextureDimension::D3 => self.vec3_type,
-            },
+            sampled_type: sampled.sampled,
+            sampled_pointer: sampled.pointer,
+            coordinate_type,
             vector_type: self.vec4_type,
             component_type: self.types[&Scalar::F32],
             x: self.value(coordinate[0]),

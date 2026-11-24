@@ -260,7 +260,9 @@ extern "C" u64 type_declaration(TypeShape shape, u32 id, u32 first, u32 second, 
     return 9u64;
 }
 
-extern "C" u64 resource_block(ResourceBlock input, address definitions, address decorations) on cpu {
+struct ResourceBlock { u32 element; u32 length; u32 array; u32 block; u32 pointer; };
+
+u64 resource_block(ResourceBlock input, address definitions, address decorations) on cpu {
     u64 at = 0u64;
     StorageClass storage = StorageClass::StorageBuffer;
     u32 stride = 8;
@@ -306,6 +308,151 @@ extern "C" u64 annotated_variable(VariableAnnotation annotation, u32 pointer, u3
         at = words_two(decorations, at, 71, id, 24);
     }
     return at;
+}
+
+struct ResourceCursor {
+    address definitions;
+    address decorations;
+    u64 words;
+    u64 annotations;
+    u32 next;
+};
+
+u32 definition_id(inout ResourceCursor out) on cpu {
+    u32 id = out.next;
+    out.next += 1;
+    return id;
+}
+
+u32 define_type(inout ResourceCursor out, TypeShape shape, u32 first, u32 second) on cpu {
+    u32 id = definition_id(out);
+    out.words += type_declaration(shape, id, first, second, word_at(out.definitions, out.words));
+    return id;
+}
+
+u32 define_pointer(inout ResourceCursor out, StorageClass storage, u32 pointee) on cpu {
+    return define_type(out, TypeShape::Pointer, u32(storage), pointee);
+}
+
+u32 define_word(inout ResourceCursor out, ShaderResourceHost host, u32 word_type, u32 bits) on cpu
+    requires nonzero(host.intern_word) {
+    u32 id = host.intern_word(host.constants, bits, out.next);
+    if (id == out.next) {
+        out.next += 1;
+        out.words += constant_declaration(BuiltinScalar::U32, word_type, id, u64(bits),
+                                          word_at(out.definitions, out.words));
+    }
+    return id;
+}
+
+u32 define_resource_block(inout ResourceCursor out, u32 element, u32 length) on cpu {
+    u32 array = definition_id(out);
+    u32 record = definition_id(out);
+    u32 pointer = definition_id(out);
+    out.words += resource_block(ResourceBlock(element, length, array, record, pointer),
+                                word_at(out.definitions, out.words), word_at(out.decorations, out.annotations));
+    out.annotations += 12u64;
+    return pointer;
+}
+
+u32 define_annotated(inout ResourceCursor out, VariableAnnotation annotation, u32 pointer, u32 operand) on cpu {
+    u32 id = definition_id(out);
+    out.annotations += annotated_variable(annotation, pointer, id, operand,
+                                          word_at(out.definitions, out.words), word_at(out.decorations, out.annotations));
+    out.words += 4u64;
+    return id;
+}
+
+SampledType texture_type(inout ResourceCursor out, u32 float_type, u32 dimensions) on cpu {
+    u32 image = define_type(out, TypeShape::Image, float_type, dimensions);
+    u32 sampled = define_type(out, TypeShape::SampledImage, image, 0);
+    u32 pointer = define_pointer(out, StorageClass::UniformConstant, sampled);
+    return SampledType(sampled, pointer);
+}
+
+extern "C" ShaderResourceIds shader_resources(ShaderResourceInput input, ShaderResourceHost host, ResourceStreams streams) on cpu
+    requires nonzero(host.texture) requires nonzero(host.intern_word) {
+    ResourceCursor out = ResourceCursor(streams.definitions, streams.decorations, 0u64, 0u64, input.next);
+    u32 vec3 = define_type(out, TypeShape::Vector, input.float_type, 3);
+    u32 vec2 = define_type(out, TypeShape::Vector, input.float_type, 2);
+    u32 vec4 = 0;
+    SampledType sampled2 = SampledType(0, 0);
+    SampledType sampled3 = SampledType(0, 0);
+    if (input.textures != 0u64) {
+        vec4 = define_type(out, TypeShape::Vector, input.float_type, 4);
+        usize i = 0u64;
+        while (i < input.textures) {
+            TextureDeclaration texture = host.texture(host.textures, i);
+            SampledType sampled = texture.dimensions == 2 ? sampled2 : sampled3;
+            if (sampled.sampled == 0) {
+                sampled = texture_type(out, input.float_type, texture.dimensions);
+                if (texture.dimensions == 2) { sampled2 = sampled; }
+                else { sampled3 = sampled; }
+            }
+            u32 pointer = sampled.pointer;
+            if (texture.arrayed != 0) {
+                u32 length = define_word(out, host, input.word_type, texture.length);
+                u32 array = define_type(out, TypeShape::Array, sampled.sampled, length);
+                pointer = define_pointer(out, StorageClass::UniformConstant, array);
+            }
+            u32 binding = u32(input.buffers + input.accelerations + i);
+            u32 variable = define_annotated(out, VariableAnnotation::Descriptor, pointer, binding);
+            put(streams.textures, i, variable);
+            i += 1u64;
+        }
+    }
+
+    u32 acceleration = 0;
+    u32 ray_pointer = 0;
+    if (input.accelerations != 0u64) {
+        acceleration = define_type(out, TypeShape::Acceleration, 0, 0);
+        u32 pointer = define_pointer(out, StorageClass::UniformConstant, acceleration);
+        usize i = 0u64;
+        while (i < input.accelerations) {
+            u32 variable = define_annotated(out, VariableAnnotation::Descriptor, pointer, u32(input.buffers + i));
+            put(streams.accelerations, i, variable);
+            i += 1u64;
+        }
+        u32 query = define_type(out, TypeShape::RayQuery, 0, 0);
+        ray_pointer = define_pointer(out, StorageClass::Function, query);
+    }
+
+    u32 index_type = define_type(out, TypeShape::Vector, input.word_type, 3);
+    u32 index_pointer = define_pointer(out, StorageClass::Input, index_type);
+    u32 global = define_annotated(out, VariableAnnotation::BuiltIn, index_pointer, 28);
+    u32 num_groups = 0;
+    if (input.grid != 0 && input.argument_pass == 0) {
+        num_groups = define_annotated(out, VariableAnnotation::BuiltIn, index_pointer, 24);
+    }
+
+    u32 page = define_resource_block(out, input.wide_type, 0);
+    u32 words32 = define_pointer(out, StorageClass::PhysicalStorageBuffer, input.word_type);
+    u32 words64 = define_pointer(out, StorageClass::PhysicalStorageBuffer, input.wide_type);
+    u32 bytes = input.byte_type == 0 ? 0 : define_pointer(out, StorageClass::PhysicalStorageBuffer, input.byte_type);
+    u32 shorts = input.short_type == 0 ? 0 : define_pointer(out, StorageClass::PhysicalStorageBuffer, input.short_type);
+    u32 table_pointer = define_pointer(out, StorageClass::StorageBuffer, input.wide_type);
+    bool omit_summary = input.publishes_summary == 0 || input.single_group != 0
+        || (input.argument_pass != 0 && input.indirect != input.buffers);
+    usize i = 0u64;
+    while (i < input.slots) {
+        u32 variable = 0;
+        if (i != input.buffers || !omit_summary) {
+            usize binding = i < input.buffers ? i : i + input.accelerations + input.textures;
+            variable = define_annotated(out, VariableAnnotation::PageTable, page, u32(binding));
+        }
+        put(streams.pages, i, variable);
+        i += 1u64;
+    }
+
+    u32 length = define_word(out, host, input.word_type, input.uniform_bytes / 4);
+    u32 push_block = define_resource_block(out, input.word_type, length);
+    u32 push = definition_id(out);
+    variable_declaration(StorageClass::PushConstant, push_block, push, word_at(out.definitions, out.words));
+    out.words += 4u64;
+    u32 push_pointer = define_pointer(out, StorageClass::PushConstant, input.word_type);
+    return ShaderResourceIds(out.words, out.annotations, out.next, vec3, vec2, vec4, acceleration,
+        ray_pointer, index_type, global, num_groups, words32, words64, bytes, shorts,
+        table_pointer, push, push_pointer, sampled2, sampled3);
 }
 
 extern "C" u64 flag_decoration(address decorations, u64 at, FlagDecoration decoration, u32 id) on cpu {

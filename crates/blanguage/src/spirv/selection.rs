@@ -17,7 +17,7 @@ impl Emitter<'_> {
         let grid = self.dispatch_grid_input(zero, groups, 0, false, false, first);
         let target = self.buffers[self.program.buffers.len()];
         let input = self.scatter_input(
-            selection.binding, selection.word, self.program.selection_buffer(), count, active,
+            selection.binding, selection.word, self.execution_buffers.selection(), count, active,
         );
         let capacity = ScatterInput::WORD_CAPACITY + ScatterInput::STORE_CAPACITY
             + 2 * grid.word_capacity();

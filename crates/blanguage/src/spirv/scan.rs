@@ -146,7 +146,7 @@ impl Emitter<'_> {
                     | Operation::CustomSegmentedReduce(_)
             )
         {
-            self.program.scan_source_buffer()
+            self.execution_buffers.scan_source()
         } else {
             fields.source
         }

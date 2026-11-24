@@ -43,13 +43,69 @@ extern "C" u64 scalar_declaration(BuiltinScalar scalar, u32 type_id, u32 pointer
 extern "C" u64 constant_declaration(BuiltinScalar scalar, u32 type_id, u32 id, u64 bits, address words) on cpu;
 
 enum TypeShape:u32 { Void=0; Vector=1; Matrix=2; SampledImage=3; Array=4; Function=5; Acceleration=6; RayQuery=7; Image=8; Pointer=9; };
-struct ResourceBlock { u32 element; u32 length; u32 array; u32 block; u32 pointer; };
 
 // The existing shader supplies result IDs and type operands. Output has room for 9 words.
 extern "C" u64 type_declaration(TypeShape shape, u32 id, u32 first, u32 second, address words) on cpu;
 // A zero length ID selects the runtime array for the page table.
-// Definitions have room for 11 words, and the 12 decoration words are always written.
-extern "C" u64 resource_block(ResourceBlock input, address definitions, address decorations) on cpu;
+struct ShaderResourceInput {
+    usize buffers;
+    usize slots;
+    usize indirect;
+    usize textures;
+    usize accelerations;
+    u32 next;
+    u32 float_type;
+    u32 word_type;
+    u32 wide_type;
+    u32 byte_type;
+    u32 short_type;
+    u32 uniform_bytes;
+    u32 publishes_summary;
+    u32 single_group;
+    u32 argument_pass;
+    u32 grid;
+};
+struct ResourceStreams {
+    address definitions;
+    address decorations;
+    address pages;
+    address textures;
+    address accelerations;
+};
+struct TextureDeclaration { u32 dimensions; u32 arrayed; u32 length; };
+struct ShaderResourceHost {
+    address textures;
+    cfn<TextureDeclaration,address,usize> texture;
+    address constants;
+    cfn<u32,address,u32,u32> intern_word;
+};
+struct SampledType { u32 sampled; u32 pointer; };
+struct ShaderResourceIds {
+    u64 definitions;
+    u64 decorations;
+    u32 next;
+    u32 vec3;
+    u32 vec2;
+    u32 vec4;
+    u32 acceleration;
+    u32 ray_pointer;
+    u32 index_type;
+    u32 global;
+    u32 num_groups;
+    u32 words32;
+    u32 words64;
+    u32 bytes;
+    u32 shorts;
+    u32 table_pointer;
+    u32 push;
+    u32 push_pointer;
+    SampledType sampled2;
+    SampledType sampled3;
+};
+// Borrow the original texture list and constant pool. Initialize every interface slot
+// and write declarations into the emitter's definition and decoration buffers.
+extern "C" ShaderResourceIds shader_resources(ShaderResourceInput input, ShaderResourceHost host, ResourceStreams streams) on cpu
+    requires nonzero(host.texture) requires nonzero(host.intern_word);
 
 enum StorageClass:u32 {
     UniformConstant=0; Input=1; Workgroup=4; Function=7; PushConstant=9; StorageBuffer=12; PhysicalStorageBuffer=5349;

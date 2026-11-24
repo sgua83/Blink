@@ -332,8 +332,8 @@ impl ExecutionPlan {
     #[cfg(feature = "compiler")]
     pub(crate) fn from_program(
         program: &Program, stages: Vec<ExecutionStage>, requirements: DeviceRequirements,
+        buffers: ExecutionBuffers,
     ) -> Self {
-        let buffers = program.execution_buffers();
         Self {
             interface: ProgramLayout {
                 write_regions: program.write_regions(),

@@ -125,7 +125,7 @@ impl Emitter<'_> {
             table_pointer: self.ptr_table_u64,
             page_pointer: self.physical_pointers[&Scalar::U64],
             word_pointer: self.physical_pointers[&Scalar::U32],
-            descriptor: self.buffers[self.program.indirect_buffer()],
+            descriptor: self.buffers[self.execution_buffers.indirect],
             count,
             width: self.constant(Scalar::U32, self.workgroup_width),
             max_x: limits[0],
@@ -163,7 +163,7 @@ impl Emitter<'_> {
         };
         self.next = index.next;
         let word = index.value;
-        let count_pointer = self.address_scalar(Scalar::U32, self.program.indirect_buffer(), word, 0);
+        let count_pointer = self.address_scalar(Scalar::U32, self.execution_buffers.indirect, word, 0);
         let input = PrefixIndexEmission {
             uint_type: self.types[&Scalar::U32],
             wide_type: self.u64_type,

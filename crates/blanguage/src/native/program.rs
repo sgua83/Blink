@@ -32,7 +32,7 @@ pub(crate) fn compile_linked(
         let index = entry(Some(&name), code);
         (name, index)
     }).collect();
-    let plan = ExecutionPlan::from_program(program, layout, program.requirements());
+    let plan = ExecutionPlan::from_program(program, layout, program.requirements(), program.execution_buffers());
     Ok(unsafe { ProgramImage::from_compiler_output(plan, stages, functions, None) })
 }
 
@@ -43,7 +43,7 @@ pub(crate) fn compile_in<P: Deref<Target = Program>>(
     let functions = compile_functions(worker, &program)?;
     let resources=program.resources.as_ref().map(|resources|
         crate::resource::compile_image(resources,worker).map_err(|error|error.to_string())).transpose()?;
-    Ok(unsafe { ProgramImage::from_compiler_output(ExecutionPlan::from_program(&program, layout, program.requirements()), stages, functions,resources) })
+    Ok(unsafe { ProgramImage::from_compiler_output(ExecutionPlan::from_program(&program, layout, program.requirements(), program.execution_buffers()), stages, functions,resources) })
 }
 impl crate::Compiler {
     pub fn native<P: Deref<Target = Program>>(&self, program: P) -> Result<ProgramImage<P>, String> {

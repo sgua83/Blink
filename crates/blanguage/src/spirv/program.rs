@@ -19,10 +19,11 @@ fn compile_stages(worker: &crate::compiler::Worker, program: &Program) -> Result
     }
     check_shader_pages(program)?;
     let requirements = program.requirements();
+    let buffers = program.execution_buffers();
     let compiled = crate::parallel::try_map(worker, (0..program.stages().len()).collect(), |_| (),
-        |_, index| compile_stage(program, index, requirements)).map_err(|error| error.to_string())?;
+        |_, index| compile_stage(program, index, requirements, buffers)).map_err(|error| error.to_string())?;
     let (layout, stages) = compiled.into_iter().unzip();
-    Ok((ExecutionPlan::from_program(program, layout, requirements), stages))
+    Ok((ExecutionPlan::from_program(program, layout, requirements, buffers), stages))
 }
 pub(crate) fn compile_in<P: Deref<Target = Program>>(
     worker: &crate::compiler::Worker, program: &P,
@@ -126,7 +127,7 @@ fn compile_entries<F: FnMut(StageEntryRequest) -> bool>(input: StageEntryInput, 
 }
 
 pub(crate) fn compile_stage(
-    program: &Program, i: usize, requirements: DeviceRequirements,
+    program: &Program, i: usize, requirements: DeviceRequirements, buffers: ExecutionBuffers,
 ) -> Result<(ExecutionStage, StageCode), &'static str> {
     let stage = &program.stages()[i];
     let (tile_layout, mut inputs) = shader_stage_inputs(stage);
@@ -134,7 +135,7 @@ pub(crate) fn compile_stage(
     let mut layout = ExecutionStage::from_stage(stage, inputs.keys().copied().collect());
     let can_use_single_group = program.buffers[stage.domain].count
         .is_none_or(|count| count <= layout.workgroup_width());
-    let features = ProgramShaderFeatures::from(requirements);
+    let features = ProgramShaderFeatures::new(requirements, buffers);
     let operation = EntryOperation::from(&stage.operation);
     let (root_add, keys) = match &stage.operation {
         Operation::ScanExclusive(scan) => (scan.needs_root_add(program), 0),
