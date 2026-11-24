@@ -834,3 +834,46 @@ struct ProofFactsHost {
 extern "C" void proof_facts(address context,ProofFactsInput input,ProofFactsHost host) on cpu
  requires nonzero(host.origin) requires nonzero(host.range) requires nonzero(host.rewind) requires nonzero(host.next)
  requires nonzero(host.boolean_cases) requires nonzero(host.emit) requires nonzero(host.compare);
+
+// The original fact and input proofs stay borrowed for this synchronous call.
+struct CallFactInput {address original;address identity;u32 nonzero;};
+struct CallFactRange {u64 lower;u64 upper;};
+struct CallFactCase {address original;u32 empty;};
+struct CallFactCommon {address source;address from;address low;address extended;address to;};
+struct CallFactConverted {u64 lower;u64 upper;u32 contains_zero;u32 known;u64 value;};
+struct CallFactOrigin {address original;u32 element;};
+struct CallFactHost {
+ cfn<CallFactInput,address,address> input;
+ cfn<CallFactRange,address,u64,u32> range;
+ cfn<u32,address> boolean;
+ cfn<CallFactCase,address,u32> select_case;
+ cfn<void,address,address> include;
+ cfn<void,address,address> include_cases;
+ cfn<void,address> impossible;
+ cfn<void,address,FactView> emit;
+ cfn<void,address> commit;cfn<usize,address> count;
+ cfn<void,address,CallFactInput,CallFactInput,u32,address> below;
+ cfn<address,address,address> mapped_domain;
+ cfn<CallFactCommon,address> ensures memory(read) common;
+ cfn<CallFactConverted,address,CallFactCommon> converted;
+ cfn<void,address,address> begin;
+ cfn<ComparisonDomain,address> next;
+ cfn<address,address,address,CallFactCommon> cast_domain;
+ cfn<CallFactOrigin,address,usize> ensures memory(read) origin;
+ cfn<void,address,address,address,CallFactCommon> emit_common;
+ cfn<address,address,address> predicate;
+ cfn<address,address,address,address,address,u32> comparison;
+ cfn<InternalPredicate,address> ensures memory(read) inspect_predicate;
+ cfn<InternalScalar,address> ensures memory(read) scalar;
+ cfn<i32,address,address> ensures memory(read) compare;
+};
+extern "C" void call_fact(address context,FactView fact,CallFactHost host) on cpu
+ requires nonzero(host.input) requires nonzero(host.range) requires nonzero(host.boolean)
+ requires nonzero(host.select_case) requires nonzero(host.include) requires nonzero(host.include_cases)
+ requires nonzero(host.impossible) requires nonzero(host.emit) requires nonzero(host.commit) requires nonzero(host.count)
+ requires nonzero(host.below) requires nonzero(host.mapped_domain) requires nonzero(host.common) requires nonzero(host.converted)
+ requires nonzero(host.begin) requires nonzero(host.next) requires nonzero(host.cast_domain) requires nonzero(host.origin)
+ requires nonzero(host.emit_common) requires nonzero(host.predicate) requires nonzero(host.comparison)
+ requires nonzero(host.inspect_predicate) requires nonzero(host.scalar) requires nonzero(host.compare);
+void call_fact_domains(address context,CallFactHost host,CallFactInput input,address target,FactView key,u32 mode,CallFactCommon common) on cpu
+ requires nonzero(host.begin) requires nonzero(host.next) requires nonzero(host.cast_domain) requires nonzero(host.emit);

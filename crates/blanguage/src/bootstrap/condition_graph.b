@@ -1851,3 +1851,116 @@ extern "C" void proof_facts(address context,ProofFactsInput input,ProofFactsHost
   }
  }
 }
+
+void call_fact_domains(address context,CallFactHost host,CallFactInput input,address target,FactView key,u32 mode,CallFactCommon common) on cpu
+ requires nonzero(host.begin) requires nonzero(host.next) requires nonzero(host.cast_domain) requires nonzero(host.emit) {
+ host.begin(context,input.original);ComparisonDomain domain=host.next(context);
+ while(domain.present!=0){
+  if(mode!=2||domain.common!=0){
+   address value=domain.original;
+   if(mode==1){value=host.cast_domain(context,value,common);}
+   if(address_bits(value)!=0){FactView output=key;output.kind=FactKind::Index;output.first=target;output.payload=value;host.emit(context,output);}
+  }
+  domain=host.next(context);
+ }
+}
+extern "C" void call_fact(address context,FactView fact,CallFactHost host) on cpu
+ requires nonzero(host.input) requires nonzero(host.range) requires nonzero(host.boolean)
+ requires nonzero(host.select_case) requires nonzero(host.include) requires nonzero(host.include_cases)
+ requires nonzero(host.impossible) requires nonzero(host.emit) requires nonzero(host.commit) requires nonzero(host.count)
+ requires nonzero(host.below) requires nonzero(host.mapped_domain) requires nonzero(host.common) requires nonzero(host.converted)
+ requires nonzero(host.begin) requires nonzero(host.next) requires nonzero(host.cast_domain) requires nonzero(host.origin)
+ requires nonzero(host.emit_common) requires nonzero(host.predicate) requires nonzero(host.comparison)
+ requires nonzero(host.inspect_predicate) requires nonzero(host.scalar) requires nonzero(host.compare) {
+ if(fact.kind==FactKind::Boolean||fact.kind==FactKind::Zero||fact.kind==FactKind::NonZero){
+  u32 truth=0;if(fact.kind==FactKind::Boolean){truth=fact.flag;}if(fact.kind==FactKind::NonZero){truth=1;}
+  CallFactInput input=host.input(context,fact.first);if(address_bits(input.original)==0){return;}
+  if(truth==0&&input.nonzero!=0){host.impossible(context);return;}
+  CallFactCase selected=host.select_case(input.original,truth);
+  if(address_bits(selected.original)!=0&&selected.empty==0){host.include(context,selected.original);}
+  if(address_bits(input.identity)!=0){FactView output=fact;output.first=input.identity;host.emit(context,output);host.commit(context);}
+  return;
+ }
+ if(fact.kind==FactKind::Below){
+  CallFactInput left=host.input(context,fact.first);CallFactInput right=host.input(context,fact.second);
+  if(address_bits(left.original)==0||address_bits(right.original)==0){return;}
+  if(address_bits(left.identity)!=0&&address_bits(right.identity)!=0){host.below(context,left,right,fact.flag,fact.scalar);return;}
+  address mapped=host.comparison(context,fact.scalar,fact.first,fact.second,fact.flag);
+  if(address_bits(mapped)!=0){FactView output=fact;output.kind=FactKind::Predicate;output.payload=mapped;output.flag=1;host.emit(context,output);host.commit(context);}
+  return;
+ }
+ if(fact.kind==FactKind::Equal||fact.kind==FactKind::NotEqual){
+  CallFactInput left=host.input(context,fact.first);CallFactInput right=host.input(context,fact.second);
+  if(fact.kind==FactKind::Equal){
+   if(address_bits(left.original)==0||address_bits(right.original)==0){return;}
+   CallFactRange a=host.range(left.original,18446744073709551615u64,0);CallFactRange b=host.range(right.original,18446744073709551615u64,0);
+   if(a.upper<b.lower||b.upper<a.lower){host.impossible(context);return;}
+   if(address_bits(left.identity)==0||address_bits(right.identity)==0){return;}
+   FactView output=fact;output.first=left.identity;output.second=right.identity;
+   if(host.compare(output.first,output.second)>0){output.first=right.identity;output.second=left.identity;}
+   host.emit(context,output);
+   call_fact_domains(context,host,left,right.identity,fact,0,CallFactCommon(address(),address(),address(),address(),address()));
+   call_fact_domains(context,host,right,left.identity,fact,0,CallFactCommon(address(),address(),address(),address(),address()));
+   host.commit(context);host.include_cases(context,left.original);host.include_cases(context,right.original);return;
+  }
+  if(address_bits(left.original)!=0&&address_bits(right.original)!=0){
+   u32 same=0;if(address_bits(left.identity)!=0&&address_bits(right.identity)!=0&&host.compare(left.identity,right.identity)==0){same=1;}
+   u32 a_truth=host.boolean(left.original);u32 b_truth=host.boolean(right.original);
+   CallFactRange a=host.range(left.original,18446744073709551615u64,0);CallFactRange b=host.range(right.original,18446744073709551615u64,0);
+   if(same!=0||(a_truth==0&&b_truth==0)||(a.lower==a.upper&&b.lower==b.upper&&a.lower==b.lower)){host.impossible(context);return;}
+   if((a_truth<2&&b_truth<2&&a_truth!=b_truth)||a.upper<b.lower||b.upper<a.lower){return;}
+  }
+  if(address_bits(left.identity)!=0&&address_bits(right.identity)!=0){
+   FactView output=fact;output.first=left.identity;output.second=right.identity;
+   if(host.compare(output.first,output.second)>0){output.first=right.identity;output.second=left.identity;}
+   host.emit(context,output);host.commit(context);
+  }
+  return;
+ }
+ if(fact.kind==FactKind::Index||fact.kind==FactKind::Outside){
+  CallFactInput target=host.input(context,fact.first);
+  if(address_bits(target.identity)==0){return;}
+  if(fact.kind==FactKind::Index){
+   CallFactCommon common=host.common(fact.payload);
+   if(address_bits(common.source)!=0){
+    CallFactInput input=host.input(context,common.source);if(address_bits(input.original)==0){return;}
+    CallFactConverted value=host.converted(input.original,common);InternalScalar scalar=host.scalar(common.to);
+    if(scalar.kind==3){u32 truth=host.boolean(input.original);if(truth<2){FactView output=fact;output.kind=FactKind::Boolean;output.first=target.identity;output.flag=truth;host.emit(context,output);}}
+    u32 nonzero=input.nonzero;
+    if(scalar.kind==0||scalar.kind==1){nonzero=0;if(value.contains_zero==0||(value.known!=0&&value.value!=0u64)){nonzero=1;}}
+    if(nonzero!=0){FactView output=fact;output.kind=FactKind::NonZero;output.first=target.identity;host.emit(context,output);}
+    if(scalar.kind!=3){
+     FactView output=fact;output.first=target.identity;output.scalar=common.to;
+     if(value.lower!=0u64){output.kind=FactKind::Minimum;output.value=value.lower;host.emit(context,output);}
+     if(value.upper!=scalar.mask){output.kind=FactKind::Maximum;output.value=value.upper;host.emit(context,output);}
+    }
+    call_fact_domains(context,host,input,target.identity,fact,1,common);
+    usize at=0u64;CallFactOrigin source=host.origin(input.original,at);
+    while(address_bits(source.original)!=0){if(source.element==0){host.emit_common(context,target.identity,source.original,common);}at+=1u64;source=host.origin(input.original,at);}
+    if(host.count(context)!=0u64){host.commit(context);}return;
+   }
+  }
+  address mapped=host.mapped_domain(context,fact.payload);
+  if(address_bits(mapped)!=0){FactView output=fact;output.first=target.identity;output.payload=mapped;host.emit(context,output);host.commit(context);}return;
+ }
+ if(fact.kind==FactKind::Minimum||fact.kind==FactKind::Maximum){
+  CallFactInput input=host.input(context,fact.first);
+  if(address_bits(input.original)!=0){
+   CallFactRange value=host.range(input.original,fact.mask,1);
+   if(fact.kind==FactKind::Minimum){if(value.lower>=fact.value){return;}if(value.upper<fact.value){host.impossible(context);return;}}
+   else{if(value.upper<=fact.value){return;}if(value.lower>fact.value){host.impossible(context);return;}}
+  }
+  if(address_bits(input.identity)!=0){FactView output=fact;output.first=input.identity;host.emit(context,output);host.commit(context);}return;
+ }
+ if(fact.kind==FactKind::Predicate){
+  address mapped=host.predicate(context,fact.payload);if(address_bits(mapped)==0){return;}
+  FactView output=fact;output.payload=mapped;host.emit(context,output);
+  InternalPredicate original=host.inspect_predicate(fact.payload);u32 side=0;
+  while(side<2){
+   InternalOperand operand=original.left;if(side!=0){operand=original.right;}
+   if(operand.is_constant==0){CallFactInput input=host.input(context,operand.identity);if(address_bits(input.identity)!=0){call_fact_domains(context,host,input,input.identity,fact,2,CallFactCommon(address(),address(),address(),address(),address()));}}
+   side+=1;
+  }
+  host.commit(context);
+ }
+}

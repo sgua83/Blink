@@ -17,6 +17,7 @@ mod index_conditions;
 mod numeric_bounds;
 mod execution_conditions;
 mod proof_facts;
+mod call_projection;
 mod range_sets;
 #[path = "bounds/required_roots.rs"]
 mod required_roots;
@@ -1012,124 +1013,6 @@ impl Proof {
         let bits = input.known_bits(0, from)?;
         let targets = [low, extended, to];
         known_bits::cast_path(bits, targets, targets.len())
-    }
-    fn call_fact(value: Fact, bindings: &BTreeMap<ValueIdentity, impl std::borrow::Borrow<Proof>>) -> Option<Clause> {
-        let projected = |facts: Facts| (!facts.is_empty()).then(|| Clause::facts(facts));
-        let translated = match value {
-            Fact::Boolean(id, _) | Fact::Zero(id) | Fact::NonZero(id) => {
-                let truth=match value {Fact::Boolean(_,truth)=>truth,Fact::NonZero(_)=>true,_=>false};
-                let Some(input) = Proof::bound_input(bindings, &id) else {
-                    return None;
-                };
-                if !truth && input.nonzero.first()==Some(&true) {
-                    return Some(Clause::impossible());
-                }
-                let mut clause = input.component_condition(0).and_then(|condition| {
-                    let case = &condition.cases[usize::from(truth)];
-                    (!matches!(&**case.0, ClauseNode::Facts(facts) if facts.is_empty()))
-                        .then(|| case.clone())
-                });
-                if let Some(id) = input.known_identity(0) {
-                    let fact = Clause::facts([value.at(id)].into());
-                    clause = Some(match clause { Some(clause) => Clause::both(&clause,&fact), None => fact });
-                }
-                return clause;
-            }
-            Fact::Below(lower, upper, strict, scalar) => {
-                let left = Proof::bound_input(bindings, &lower)?;
-                let right = Proof::bound_input(bindings, &upper)?;
-                return match [left.known_identity(0), right.known_identity(0)] {
-                    [Some(left_id), Some(right_id)] => Some(comparison_conditions::call_below(
-                        [left_id, right_id], [left, right], strict, scalar,
-                    )),
-                    _ => {
-                        let operation = if strict { Comparison::Less } else { Comparison::LessEqual };
-                        let predicate = ScalarPredicate::new(
-                            operation, scalar, Operand::Value(lower), Operand::Value(upper),
-                        ).at_call(bindings)?;
-                        Some(Clause::facts([Fact::Predicate(predicate, true)].into()))
-                    }
-                };
-            }
-            Fact::Equal(a, b) => {
-                let a = Proof::bound_input(bindings, &a)?;
-                let b = Proof::bound_input(bindings, &b)?;
-                let (al, ah) = a.range(0);
-                let (bl, bh) = b.range(0);
-                if ah < bl || bh < al {
-                    return Some(Clause::impossible());
-                }
-                let left = a.known_identity(0)?;
-                let right = b.known_identity(0)?;
-                let mut facts=Facts::from([Fact::equal(left,right)]);
-                for(source,target)in [(a,right),(b,left)] {
-                    facts.extend(source.domains(0).iter().copied().map(|domain|Fact::Index(target,domain)));
-                }
-                let mut clause=Clause::facts(facts);
-                for source in [a,b] {
-                    if let Some(condition)=source.component_condition(0){
-                        clause=Clause::both(&clause,&Clause::either(&condition.cases[0],&condition.cases[1]));
-                    }
-                }
-                return Some(clause);
-            },
-            Fact::NotEqual(a, b) => {
-                if let Some((left, right)) = Proof::bound_input(bindings, &a).zip(Proof::bound_input(bindings, &b)) {
-                    let same = left.known_identity(0).zip(right.known_identity(0))
-                        .is_some_and(|(a, b)| a == b);
-                    let conditions = left.component_condition(0).and_then(Condition::boolean_constant)
-                        .zip(right.component_condition(0).and_then(Condition::boolean_constant));
-                    let (al, ah) = left.range(0);
-                    let (bl, bh) = right.range(0);
-                    if same || conditions == Some((false,false))
-                        || (al == ah && bl == bh && al == bl) {
-                        return Some(Clause::impossible());
-                    }
-                    if conditions.is_some_and(|(a,b)| a != b) || ah < bl || bh < al {
-                        return None;
-                    }
-                }
-                Self::call_identity(a, bindings).zip(Self::call_identity(b, bindings))
-                    .map(|(a,b)| Fact::NotEqual(a.min(b), a.max(b)))
-            },
-            Fact::Index(id, IndexDomain::CommonRange(source,from,low,extended,to)) => {
-                let mut facts=Facts::new();
-                if let Some(target)=Self::call_identity(id,bindings) && let Some(input)=Proof::bound_input(bindings, &source){
-                    let range = range_sets::cast_chain(
-                        input.interval_source(0), [from, low, extended, to], input.nonzero.first() == Some(&true),
-                    );
-                    if to==Scalar::Bool && let Some(truth)=input.component_condition(0).and_then(Condition::boolean_constant){facts.insert(Fact::Boolean(target,truth));}
-                    let nonzero=if to.is_integer(){!range.contains(to.order_bias())||Self::call_common_bits(input,from,low,extended,to).is_some_and(|bits|bits.value!=0)}else{input.nonzero.first()==Some(&true)};
-                    if nonzero{facts.insert(Fact::NonZero(target));}
-                    if to.is_integer()||to.is_float(){let(minimum,maximum)=range.hull();if minimum!=0{facts.insert(Fact::Minimum(target,to,minimum));}if maximum!=to.bit_mask(){facts.insert(Fact::Maximum(target,to,maximum));}}
-                    facts.extend(input.domains(0).iter().copied().filter_map(|domain|cast_domain(domain,[from,low,extended,to])).map(|domain|Fact::Index(target,domain)));
-                    facts.extend(input.origins.first().into_iter().flatten().filter(|source|!matches!(source,ValueIdentity::ElementComponent(_)|ValueIdentity::ElementParent(..)|ValueIdentity::ElementIndex(_))).map(|source|Fact::Index(target,IndexDomain::CommonRange(*source,from,low,extended,to))));
-                }
-                return projected(facts);
-            },
-            Fact::Index(id, d) => Self::call_identity(id, bindings)
-                .zip(Self::call_domain(d, bindings))
-                .map(|(id, d)| Fact::Index(id, d)),
-
-            Fact::Minimum(id, scalar, n)=>{
-                if let Some(value)=Proof::bound_input(bindings, &id){let range=value.range_set(0).restrict(0,scalar.bit_mask()).hull();if range.0>=n{return None;}if range.1<n{return Some(Clause::impossible());}}
-                Self::call_identity(id,bindings).map(|id|Fact::Minimum(id, scalar, n))
-            },
-            Fact::Maximum(id, scalar, n)=>{
-                if let Some(value)=Proof::bound_input(bindings, &id){let range=value.range_set(0).restrict(0,scalar.bit_mask()).hull();if range.1<=n{return None;}if range.0>n{return Some(Clause::impossible());}}
-                Self::call_identity(id,bindings).map(|id|Fact::Maximum(id, scalar, n))
-            },
-            Fact::Outside(id,d)=>Self::call_identity(id,bindings).zip(Self::call_domain(d,bindings)).map(|(id,d)|Fact::Outside(id,d)),
-            Fact::Predicate(predicate,truth)=>{
-                let Some(mapped)=predicate.at_call(bindings)else{return None};
-                let mut facts=Facts::from([Fact::Predicate(mapped,truth)]);
-                for operand in [predicate.a,predicate.b]{
-                    if let Operand::Value(source)=operand && let Some(target)=Proof::bound_input(bindings, &source).unwrap().known_identity(0){facts.extend(Proof::bound_input(bindings, &source).unwrap().domains(0).iter().copied().filter(|domain|matches!(domain,IndexDomain::CommonRange(..))).map(|domain|Fact::Index(target,domain)));}
-                }
-                return Some(Clause::facts(facts));
-            },
-        };
-        translated.map(|fact| Clause::facts([fact].into()))
     }
     pub(super) fn at_call(&self, bindings: &BTreeMap<ValueIdentity, Proof>) -> Self {
         let mut proof = self.numeric_at_call(bindings);
