@@ -294,7 +294,7 @@ impl Borrow{
                 Source::Data(id)if values.contains_key(id)=>source.clone().at_call(values),
                 source=>Self::source(source.clone()),
             };
-            result.union(&next.restricted(&when.substitute_values(values)));
+            result.union_restricted(&next,&when.substitute_values(values));
         }
         result
     }
@@ -307,12 +307,17 @@ impl Borrow{
 
     pub(super) fn selected_element(parent:Self,fields:Vec<usize>,index:Option<bounds::Selector>)->Self {
         let mut result=Self::default();
-        for(source,when)in parent.sources.entries(){
-            let value=match source {
-                Source::Projection{parent,fields:prefix}=>Self::selected_element((**parent).clone(),prefix.iter().chain(&fields).copied().collect(),index),
-                _=>Self::source(Source::Element{parent:Box::new(Self::source(source.clone())),fields:fields.clone(),index}),
+        for (source, when) in parent.sources.into_entries() {
+            let value = match source {
+                Source::Projection { parent, fields: mut prefix } => {
+                    prefix.extend_from_slice(&fields);
+                    Self::selected_element(*parent, prefix, index)
+                }
+                source => Self::source(Source::Element {
+                    parent: Box::new(Self::source(source)), fields: fields.clone(), index,
+                }),
             };
-            result.union(&value.restricted(&when));
+            result.union_restricted(&value,&when);
         }
         if !parent.inputs.is_empty()||!parent.calls.is_empty()||!parent.reads.is_empty(){
             result.sources.insert(Source::Element{parent:Box::new(Self{inputs:parent.inputs,calls:parent.calls,reads:parent.reads,..Self::default()}),fields,index});
@@ -361,7 +366,7 @@ impl Borrow{
                 Source::Contents{origin,word}=>Self::source(Source::Contents{origin:Arc::new(origin.map_borrows(|borrow|borrow.select_elements(indices)).substitute_values(&values)),word:*word}),
                 source=>Self::source(source.clone()),
             };
-            out.union(&value.restricted(&when.substitute_values(&values)));
+            out.union_restricted(&value,&when.substitute_values(&values));
         }
         out
     }
@@ -373,10 +378,15 @@ impl Borrow{
     pub fn projection(parent:Self,fields:Vec<usize>)->Self {
         if fields.is_empty(){return parent;}
         let mut result=Self::default();
-        for(source,when)in parent.sources.entries(){
-            let projected=match source {
-                Source::Projection{parent,fields:prefix}=>Source::Projection{parent:parent.clone(),fields:prefix.iter().chain(&fields).copied().collect()},
-                _=>Source::Projection{parent:Box::new(Self::source(source.clone())),fields:fields.clone()},
+        for (source, when) in parent.sources.into_entries() {
+            let projected = match source {
+                Source::Projection { parent, fields: mut prefix } => {
+                    prefix.extend_from_slice(&fields);
+                    Source::Projection { parent, fields: prefix }
+                }
+                source => Source::Projection {
+                    parent: Box::new(Self::source(source)), fields: fields.clone(),
+                },
             };
             result.sources.insert_when(projected,when);
         }
@@ -413,7 +423,7 @@ impl Borrow{
                 (Source::Inactive|Source::Unresolved,_) => Self::source(source.clone()),
                 _ => Self::source(Source::TaskOutput{task:Box::new(Self::source(source.clone())),projection:projection.clone()}),
             };
-            result.union(&value.restricted(&when));
+            result.union_restricted(&value,&when);
         }
         if !self.inputs.is_empty()||!self.calls.is_empty()||!self.reads.is_empty(){
             result.sources.insert(Source::TaskOutput{
@@ -461,7 +471,9 @@ impl Borrow{
     pub fn selected(self,choice:&bounds::Condition,b:&Self)->Self{
         // Equal complete borrows need no conditional path construction.
         if &self==b{return self;}
-        self.restricted_by(&choice.assume(&bounds::Clause::default(),true)).joined(b.restricted(&choice.assume(&bounds::Clause::default(),false)))
+        let mut selected = self.restricted_by(&choice.assume(&bounds::Clause::default(), true));
+        selected.union_restricted(b, &choice.assume(&bounds::Clause::default(), false));
+        selected
     }
     fn initialization_guards(&self, lookup:impl Fn(ValueIdentity)->Option<bounds::Proof>)->Self {
         let mut result=self.clone();
