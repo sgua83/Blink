@@ -79,6 +79,7 @@ unsafe extern "C" {
     fn shader_pass(kind: EntryPass, parameter: usize, word: u32) -> ShaderPass;
 }
 
+#[derive(Clone, Copy)]
 #[repr(u32)]
 enum EntryOperation {
     Map,
@@ -92,19 +93,24 @@ enum EntryOperation {
     CustomReduce,
 }
 
+fn entry_operation<R>(operation: &Operation<R>) -> (EntryOperation, *const std::ffi::c_void) {
+    use EntryOperation::*;
+    match operation {
+        Operation::Map => (Map, std::ptr::null()),
+        Operation::Reduce(r) => (Reduce, std::ptr::from_ref(r).cast()),
+        Operation::ScanExclusive(r) => (Scan, std::ptr::from_ref(r).cast()),
+        Operation::SegmentedReduce(r) => (Segmented, std::ptr::from_ref(r).cast()),
+        Operation::Compact(r) => (Compact, std::ptr::from_ref(r).cast()),
+        Operation::StableSort(r) => (Sort, std::ptr::from_ref(r).cast()),
+        Operation::CustomScan(r) => (CustomScan, std::ptr::from_ref(r).cast()),
+        Operation::CustomSegmentedReduce(r) => (CustomSegmented, std::ptr::from_ref(r).cast()),
+        Operation::CustomReduce(r) => (CustomReduce, std::ptr::from_ref(r).cast()),
+    }
+}
+
 impl<R> From<&Operation<R>> for EntryOperation {
     fn from(operation: &Operation<R>) -> Self {
-        match operation {
-            Operation::Map => Self::Map,
-            Operation::Reduce(_) => Self::Reduce,
-            Operation::ScanExclusive(_) => Self::Scan,
-            Operation::SegmentedReduce(_) => Self::Segmented,
-            Operation::Compact(_) => Self::Compact,
-            Operation::StableSort(_) => Self::Sort,
-            Operation::CustomScan(_) => Self::CustomScan,
-            Operation::CustomSegmentedReduce(_) => Self::CustomSegmented,
-            Operation::CustomReduce(_) => Self::CustomReduce,
-        }
+        entry_operation(operation).0
     }
 }
 
@@ -2495,6 +2501,209 @@ fn prepare_reduction(stage: &Stage, pass: ShaderPass) -> Option<PreparedReductio
     Some(PreparedReduction { kernel, layout, facts })
 }
 
+#[repr(C)]
+struct ShaderBodyInput {
+    operation: EntryOperation,
+    pass: EntryPass,
+    selection: u32,
+    scan_local: u32,
+    segmented_scan: u32,
+    invariants: u32,
+    tile_scope: u32,
+    prefix_index: u32,
+}
+
+#[allow(dead_code)] // Discriminants are selected by the B stage control.
+#[repr(u32)]
+enum BodyStep {
+    DispatchArguments, SelectionArguments, PrefixIndex, LinearIndex, Invariants,
+    Local, Open, Merge, SelectionScatter, SortKey, SortGather, SortRank,
+    Scan, ScanAdd, SegmentedScan, SegmentedAdd, SegmentedRoot,
+    CustomSegmented, CustomScan, CustomScanAdd, CustomReduce, Reduce,
+    SegmentedReduce, SegmentedReduceAdd, CompactScatter, TileInput, TilePhases,
+    SelectedIndex, Map,
+}
+
+#[allow(dead_code)]
+#[repr(u32)]
+enum BodyScan { Original, Selection, Compact, Sort }
+
+#[repr(u32)]
+enum BodyStepResult { Error, No, Yes }
+
+#[allow(dead_code)]
+#[repr(u32)]
+enum ShaderBodyEnd { Plain, Prepared, BadSortPass, BadSegmentedPass }
+
+#[repr(C)]
+struct ShaderBodySink {
+    context: *mut std::ffi::c_void,
+    emit: unsafe extern "C" fn(*mut std::ffi::c_void, BodyStep, BodyScan, u32) -> BodyStepResult,
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.spirv_envelope::emit_shader_body"]
+    fn emit_shader_body(input: ShaderBodyInput, sink: ShaderBodySink) -> ShaderBodyEnd;
+}
+
+struct ShaderBodyEmission<'a, 'ir> {
+    emitter: &'a mut Emitter<'ir>,
+    inputs: &'a mut crate::ir::dataflow::InputFragments,
+    operation: *const std::ffi::c_void,
+    selection: *const Selection,
+    kernel: Option<&'ir ReductionKernel>,
+    segment_head: u32,
+    request: ShaderPass,
+    pass: EntryPass,
+    single_group: bool,
+    gid: u32,
+    local_index: u32,
+    local_input: u32,
+    num_groups: u32,
+    vector_type: u32,
+    labels: [u32; 2],
+    shared: u32,
+    shared_pointer: u32,
+    subgroup_inputs: [u32; 2],
+    ballot_type: u32,
+    local: u32,
+    count: u32,
+    active: u32,
+    groups: [u32; 2],
+    error: Option<&'static str>,
+}
+
+unsafe extern "C" fn shader_body_step(
+    context: *mut std::ffi::c_void, step: BodyStep, source: BodyScan, flag: u32,
+) -> BodyStepResult {
+    let emission = unsafe { &mut *context.cast::<ShaderBodyEmission<'_, '_>>() };
+    match emission.emit(step, source, flag != 0) {
+        Ok(true) => BodyStepResult::Yes,
+        Ok(false) => BodyStepResult::No,
+        Err(error) => {
+            emission.error = Some(error);
+            BodyStepResult::Error
+        }
+    }
+}
+
+impl ShaderBodyEmission<'_, '_> {
+    fn emit(&mut self, step: BodyStep, source: BodyScan, flag: bool) -> Result<bool, &'static str> {
+        // B selects steps using the discriminant paired with this borrowed operation.
+        let operation = self.operation;
+        let selection = self.selection;
+        let e = &mut *self.emitter;
+        let [execute, end] = self.labels;
+        let (local, shared, pointer, active, count) =
+            (self.local, self.shared, self.shared_pointer, self.active, self.count);
+        match step {
+            BodyStep::DispatchArguments => {
+                let prefix = PrefixCount { binding: self.request.parameter, word: self.request.word };
+                return Ok(e.prefix_arguments(Some(&prefix), self.local_index));
+            }
+            BodyStep::SelectionArguments => return Ok(e.prefix_arguments(e.stage.prefix.as_ref(), self.local_index)),
+            BodyStep::PrefixIndex => {
+                (self.count, self.active, self.groups) = e.prefix_index(
+                    self.gid, self.local_index, self.num_groups, self.vector_type, flag,
+                );
+            }
+            BodyStep::LinearIndex => {
+                (self.count, self.active, self.groups) = e.linear_index(self.local_index);
+            }
+            BodyStep::Invariants => {
+                let kernel = self.kernel.unwrap();
+                e.block(&kernel.stage.code[..kernel.invariant_end], None)?;
+            }
+            BodyStep::Local => self.local = e.load_pointer(e.types[&Scalar::U32], self.local_input),
+            BodyStep::Open => e.open_active(active, execute, end),
+            BodyStep::Merge => e.merge_active(end, flag),
+            BodyStep::SelectionScatter => e.selection_scatter(unsafe { *selection }, count, active, self.groups),
+            BodyStep::SortKey => {
+                let sort = unsafe { &*operation.cast::<Sorting>() };
+                let key = if flag { sort.keys.len() - 1 } else { self.request.parameter };
+                e.sort_initialize(sort, key, flag, active);
+            }
+            BodyStep::SortGather => e.sort_gather(unsafe { &*operation.cast::<Sorting>() }, active),
+            BodyStep::SortRank => e.sort_rank(
+                unsafe { &*operation.cast::<Sorting>() }, self.request.parameter as u32, flag,
+                count, &self.subgroup_inputs, self.ballot_type, shared, pointer,
+            ),
+            BodyStep::Scan | BodyStep::ScanAdd => {
+                let counts;
+                let scan = match source {
+                    BodyScan::Original => unsafe { &*operation.cast::<Scan>() },
+                    BodyScan::Selection => {
+                        counts = Scan::counts(unsafe { *selection }.scan(e.execution_buffers.selection()));
+                        &counts
+                    }
+                    BodyScan::Compact => {
+                        counts = Scan::counts(unsafe { &*operation.cast::<Compaction>() }.scan());
+                        &counts
+                    }
+                    BodyScan::Sort => {
+                        let sort = unsafe { &*operation.cast::<Sorting>() };
+                        counts = Scan::counts(Reduction {
+                            source: sort.source, source_word: 0, target: sort.target, target_word: 0,
+                        });
+                        &counts
+                    }
+                };
+                if matches!(step, BodyStep::Scan) {
+                    e.scan(scan, flag, local, shared, pointer, active, count);
+                } else {
+                    e.scan_add(scan, flag);
+                }
+            }
+            BodyStep::SegmentedScan => {
+                let scan = unsafe { &*operation.cast::<Scan>() };
+                e.segmented_scan(scan, self.segment_head, flag, local, shared, pointer, active, count);
+            }
+            BodyStep::SegmentedAdd => e.segmented_add(unsafe { &*operation.cast::<Scan>() }, active, self.labels),
+            BodyStep::SegmentedRoot => e.segmented_root_add(unsafe { &*operation.cast::<Scan>() }),
+            BodyStep::CustomSegmented => {
+                e.custom_segmented_reduce(
+                    unsafe { &*operation.cast::<CustomSegmentedReduction>() }, self.kernel.unwrap(),
+                    self.pass, self.single_group, local, shared, pointer, active, count,
+                )?;
+            }
+            BodyStep::CustomScan => {
+                e.custom_scan(unsafe { &*operation.cast::<CustomScan>() }, self.kernel.unwrap(),
+                    flag, local, shared, pointer, active, count)?;
+            }
+            BodyStep::CustomScanAdd => {
+                e.custom_scan_add(unsafe { &*operation.cast::<CustomScan>() }, self.kernel.unwrap(), flag, active)?;
+            }
+            BodyStep::CustomReduce => {
+                e.custom_reduce(unsafe { &*operation.cast::<CustomReduction>() }, self.kernel.unwrap(),
+                    flag, local, shared, pointer, active, count)?;
+            }
+            BodyStep::Reduce => e.reduce(
+                unsafe { &*operation.cast::<ReductionSpec>() }, flag, local, shared, pointer, active, count,
+            ),
+            BodyStep::SegmentedReduce => e.segmented_reduce(
+                unsafe { &*operation.cast::<SegmentedReduction>() }, self.pass, self.single_group,
+                local, shared, pointer, active, count,
+            ),
+            BodyStep::SegmentedReduceAdd => {
+                e.segmented_reduce_add(unsafe { &*operation.cast::<SegmentedReduction>() }, active, self.labels);
+            }
+            BodyStep::CompactScatter => e.compact_scatter(unsafe { &*operation.cast::<Compaction>() }, count, active),
+            BodyStep::TileInput => e.tile_input(count, active, self.inputs),
+            BodyStep::TilePhases => {
+                let phases = e.stage.tile_phases();
+                if phases.is_empty() { return Ok(false); }
+                e.tile_phases(active, phases)?;
+            }
+            BodyStep::SelectedIndex => {
+                let at = e.address_scalar(Scalar::U32, e.program.buffers.len(), e.index, 0);
+                e.index = e.load_aligned_word(at);
+            }
+            BodyStep::Map => return e.block(&e.stage.code, None),
+        }
+        Ok(true)
+    }
+}
+
 fn emit_shader(
     program: &Program, original_stage: &Stage, request: ShaderPass,
     inputs: &mut crate::ir::dataflow::InputFragments, layout: &PlacedTiles,
@@ -2580,13 +2789,11 @@ fn emit_shader(
         Operation::SegmentedReduce(r) => r.summary_words() as u32,
         _ => 1,
     };
+    let (operation, operation_data) = entry_operation(&stage.operation);
     let workgroup = unsafe {
-        workgroup_layout(
-            EntryOperation::from(&stage.operation), request.kind,
-            u32::from(stage.selection.is_some()), summary_words, SCAN_WIDTH,
-        )
+        workgroup_layout(operation, request.kind, u32::from(stage.selection.is_some()), summary_words, SCAN_WIDTH)
     };
-    let scan_local = workgroup.scan != 0;
+    let scan_local = workgroup.scan;
     let ranks = workgroup.ranks != 0;
     let empty_subgroups = Default::default();
     let subgroups = if pass == EntryPass::Main { &facts.code.subgroups } else { &empty_subgroups };
@@ -2681,253 +2888,34 @@ fn emit_shader(
     let gid = e.id();
     let local_index = e.id();
     e.emit_body(9, |body| unsafe { read_shader_index(v3, u, global, gid, local_index, body) });
-    match pass {
-        EntryPass::DispatchArguments => {
-            let prefix = PrefixCount { binding: request.parameter, word: request.word };
-            let prepare = e.prefix_arguments(Some(&prefix), local_index);
-            return finish(e, prepare);
-        }
-        EntryPass::SelectionArguments => {
-            let prepare = e.prefix_arguments(stage.prefix.as_ref(), local_index);
-            return finish(e, prepare);
-        }
-        _ => {}
-    }
-    let (count, active, groups) = if num_groups != 0 {
-        e.prefix_index(
-            gid,
-            local_index,
-            num_groups,
-            v3,
-            !matches!(stage.operation, Operation::Map)
-                || (stage.selection.is_some() && pass != EntryPass::Main),
-        )
-    } else {
-        e.linear_index(local_index)
+    let selection = stage.selection.as_ref().map_or(std::ptr::null(), std::ptr::from_ref);
+    let segment_head = match &stage.operation {
+        Operation::ScanExclusive(scan) => scan.head_word,
+        _ => None,
     };
-    if let Some(kernel) = custom_kernel {
-        e.block(&kernel.stage.code[..kernel.invariant_end], None)?;
+    let input = ShaderBodyInput {
+        operation, pass,
+        selection: u32::from(!selection.is_null()), scan_local,
+        segmented_scan: u32::from(segment_head.is_some()),
+        invariants: u32::from(custom_kernel.is_some()),
+        tile_scope: u32::from(stage.has_tile_scope()),
+        prefix_index: u32::from(num_groups != 0),
+    };
+    let mut emission = ShaderBodyEmission {
+        emitter: &mut e, inputs, operation: operation_data, selection,
+        kernel: custom_kernel, segment_head: segment_head.unwrap_or_default(),
+        request, pass, single_group, gid, local_index, local_input,
+        num_groups, vector_type: v3, labels: [execute, end], shared, shared_pointer,
+        subgroup_inputs, ballot_type, local: 0, count: 0, active: 0, groups: [0; 2],
+        error: None,
+    };
+    let sink = ShaderBodySink { context: std::ptr::from_mut(&mut emission).cast(), emit: shader_body_step };
+    let result = unsafe { emit_shader_body(input, sink) };
+    if let Some(error) = emission.error { return Err(error); }
+    match result {
+        ShaderBodyEnd::Plain => finish(e, false),
+        ShaderBodyEnd::Prepared => finish(e, true),
+        ShaderBodyEnd::BadSortPass => Err("排序操作不支持该代码生成阶段"),
+        ShaderBodyEnd::BadSegmentedPass => Err("分段扫描不支持该代码生成阶段"),
     }
-    if let Some(selection) = stage.selection
-        && pass != EntryPass::Main
-    {
-        if pass == EntryPass::SelectionScatter {
-            e.selection_scatter(selection, count, active, groups);
-        } else if scan_local {
-            let local = e.load_pointer(u, local_input);
-            e.scan(
-                &Scan::counts(selection.scan(e.execution_buffers.selection())),
-                pass == EntryPass::ScanTail,
-                local,
-                shared,
-                shared_pointer,
-                active,
-                count,
-            );
-        } else {
-            e.open_active(active, execute, end);
-            e.scan_add(
-                &Scan::counts(selection.scan(e.execution_buffers.selection())),
-                false,
-            );
-            e.merge_active(end, true);
-        }
-    } else if let Operation::StableSort(s) = &stage.operation {
-        match pass {
-            EntryPass::Main => e.sort_initialize(s, s.keys.len() - 1, true, active),
-            EntryPass::SortKey => e.sort_initialize(s, request.parameter, false, active),
-            EntryPass::SortGather => e.sort_gather(s, active),
-            EntryPass::SortHistogram | EntryPass::SortScatter => e.sort_rank(
-                s,
-                request.parameter as u32,
-                pass == EntryPass::SortHistogram,
-                count,
-                &subgroup_inputs,
-                ballot_type,
-                shared,
-                shared_pointer,
-            ),
-            EntryPass::SortScan | EntryPass::ScanTail => {
-                let local = e.load_pointer(u, local_input);
-                let r = Reduction {
-                    source: s.source,
-                    source_word: 0,
-                    target: s.target,
-                    target_word: 0,
-                };
-                e.scan(
-                    &Scan::counts(r),
-                    true,
-                    local,
-                    shared,
-                    shared_pointer,
-                    active,
-                    count,
-                );
-            }
-            EntryPass::ScanAdd => {
-                e.open_active(active, execute, end);
-                e.scan_add(
-                    &Scan::counts(Reduction {
-                        source: s.source,
-                        source_word: 0,
-                        target: s.target,
-                        target_word: 0,
-                    }),
-                    false,
-                );
-                e.merge_active(end, true);
-            }
-            _ => return Err("排序操作不支持该代码生成阶段"),
-        }
-    } else if let Operation::CustomSegmentedReduce(r) = &stage.operation {
-        let local = if scan_local {
-            let local = e.load_pointer(u, local_input);
-            local
-        } else {
-            0
-        };
-        e.custom_segmented_reduce(
-            r,
-            custom_kernel.unwrap(),
-            pass,
-            single_group,
-            local,
-            shared,
-            shared_pointer,
-            active,
-            count,
-        )?;
-    } else if let Operation::CustomScan(r) = &stage.operation {
-        let kernel = custom_kernel.unwrap();
-        if scan_local {
-            let local = e.load_pointer(u, local_input);
-            e.custom_scan(
-                r,
-                kernel,
-                pass == EntryPass::ScanTail,
-                local,
-                shared,
-                shared_pointer,
-                active,
-                count,
-            )?;
-        } else {
-            e.custom_scan_add(r, kernel, pass == EntryPass::ScanRootAdd, active)?;
-        }
-    } else if let Operation::CustomReduce(r) = &stage.operation {
-        let local = e.load_pointer(u, local_input);
-        e.custom_reduce(
-            r,
-            custom_kernel.unwrap(),
-            pass == EntryPass::ReductionTail,
-            local,
-            shared,
-            shared_pointer,
-            active,
-            count,
-        )?;
-    } else if let Operation::Reduce(r) = &stage.operation {
-        let local = e.load_pointer(u, local_input);
-        e.reduce(
-            r,
-            pass == EntryPass::ReductionTail,
-            local,
-            shared,
-            shared_pointer,
-            active,
-            count,
-        );
-    } else if let Operation::SegmentedReduce(r) = &stage.operation {
-        if pass == EntryPass::ScanAdd {
-            e.segmented_reduce_add(r, active, [execute, end]);
-        } else {
-            let local = if scan_local {
-                let local = e.load_pointer(u, local_input);
-                local
-            } else {
-                0
-            };
-            e.segmented_reduce(r, pass, single_group, local, shared, shared_pointer, active, count);
-        }
-    } else if let Operation::Compact(c) = &stage.operation {
-        if pass == EntryPass::CompactScatter {
-            e.compact_scatter(c, count, active);
-        } else if scan_local {
-            let local = e.load_pointer(u, local_input);
-            e.scan(
-                &Scan::counts(c.scan()),
-                pass == EntryPass::ScanTail,
-                local,
-                shared,
-                shared_pointer,
-                active,
-                count,
-            );
-        } else {
-            e.open_active(active, execute, end);
-            e.scan_add(&Scan::counts(c.scan()), false);
-            e.merge_active(end, true);
-        }
-    } else if let Operation::ScanExclusive(r) = &stage.operation {
-        if let Some(head) = r.head_word {
-            if scan_local {
-                let local = e.load_pointer(u, local_input);
-                e.segmented_scan(
-                    r,
-                    head,
-                    pass == EntryPass::ScanTail,
-                    local,
-                    shared,
-                    shared_pointer,
-                    active,
-                    count,
-                );
-            } else {
-                match pass {
-                    EntryPass::ScanAdd => e.segmented_add(r, active, [execute, end]),
-                    EntryPass::ScanRootAdd => {
-                        e.open_active(active, execute, end);
-                        e.segmented_root_add(r);
-                        e.merge_active(end, true);
-                    }
-                    _ => return Err("分段扫描不支持该代码生成阶段"),
-                }
-            }
-        } else {
-            if scan_local {
-                let local = e.load_pointer(u, local_input);
-                e.scan(
-                    r,
-                    pass == EntryPass::ScanTail,
-                    local,
-                    shared,
-                    shared_pointer,
-                    active,
-                    count,
-                );
-            } else {
-                e.open_active(active, execute, end);
-                e.scan_add(r, pass == EntryPass::ScanRootAdd);
-                e.merge_active(end, true);
-            }
-        }
-    } else {
-        if stage.has_tile_scope() {
-            e.tile_input(count, active, inputs);
-        }
-        let phases = stage.tile_phases();
-        if !phases.is_empty() {
-            e.tile_phases(active, phases)?;
-        } else {
-            e.open_active(active, execute, end);
-            if stage.selection.is_some() {
-                let at = e.address_scalar(Scalar::U32, program.buffers.len(), e.index, 0);
-                e.index = e.load_aligned_word(at);
-            }
-            let reaches = e.block(&stage.code, None)?;
-            e.merge_active(end, reaches);
-        }
-    }
-    finish(e, false)
 }

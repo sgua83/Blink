@@ -4112,6 +4112,124 @@ extern "C" void emit_stage_entries(StageEntryInput input, StageEntrySink sink) o
     }
 }
 
+BodyStepResult body_step(ShaderBodySink sink, BodyStep action, u32 flag) on cpu
+    requires nonzero(sink.emit) {
+    return sink.emit(sink.context, action, BodyScan::Original, flag);
+}
+
+void body_scan(ShaderBodySink sink, BodyScan source, u32 local, u32 tail, u32 root) on cpu
+    requires nonzero(sink.emit) {
+    if (local != 0) {
+        body_step(sink, BodyStep::Local, 0);
+        sink.emit(sink.context, BodyStep::Scan, source, tail);
+    } else {
+        body_step(sink, BodyStep::Open, 0);
+        sink.emit(sink.context, BodyStep::ScanAdd, source, root);
+        body_step(sink, BodyStep::Merge, 1);
+    }
+}
+
+extern "C" ShaderBodyEnd emit_shader_body(ShaderBodyInput input, ShaderBodySink sink) on cpu
+    requires nonzero(sink.emit) {
+    EntryPass pass = input.pass;
+    u32 operation = input.operation;
+    if (pass == EntryPass::DispatchArguments || pass == EntryPass::SelectionArguments) {
+        BodyStep step = pass == EntryPass::DispatchArguments ? BodyStep::DispatchArguments : BodyStep::SelectionArguments;
+        BodyStepResult result = body_step(sink, step, 0);
+        return result == BodyStepResult::Yes ? ShaderBodyEnd::Prepared : ShaderBodyEnd::Plain;
+    }
+    if (input.prefix_index != 0) {
+        bool linear = operation != ENTRY_MAP || (input.selection != 0 && pass != EntryPass::Main);
+        body_step(sink, BodyStep::PrefixIndex, u32(linear));
+    } else {
+        body_step(sink, BodyStep::LinearIndex, 0);
+    }
+    if (input.invariants != 0 && body_step(sink, BodyStep::Invariants, 0) == BodyStepResult::Error) {
+        return ShaderBodyEnd::Plain;
+    }
+    u32 tail = u32(pass == EntryPass::ScanTail);
+    u32 root = u32(pass == EntryPass::ScanRootAdd);
+    if (input.selection != 0 && pass != EntryPass::Main) {
+        if (pass == EntryPass::SelectionScatter) {
+            body_step(sink, BodyStep::SelectionScatter, 0);
+        } else {
+            body_scan(sink, BodyScan::Selection, input.scan_local, tail, 0);
+        }
+        return ShaderBodyEnd::Plain;
+    }
+    if (operation == ENTRY_SORT) {
+        if (pass == EntryPass::Main || pass == EntryPass::SortKey) {
+            body_step(sink, BodyStep::SortKey, u32(pass == EntryPass::Main));
+        } else if (pass == EntryPass::SortGather) {
+            body_step(sink, BodyStep::SortGather, 0);
+        } else if (pass == EntryPass::SortHistogram || pass == EntryPass::SortScatter) {
+            body_step(sink, BodyStep::SortRank, u32(pass == EntryPass::SortHistogram));
+        } else if (pass == EntryPass::SortScan || pass == EntryPass::ScanTail) {
+            body_scan(sink, BodyScan::Sort, 1, 1, 0);
+        } else if (pass == EntryPass::ScanAdd) {
+            body_scan(sink, BodyScan::Sort, 0, 0, 0);
+        } else {
+            return ShaderBodyEnd::BadSortPass;
+        }
+        return ShaderBodyEnd::Plain;
+    }
+    if (operation == ENTRY_CUSTOM_SEGMENTED) {
+        if (input.scan_local != 0) { body_step(sink, BodyStep::Local, 0); }
+        body_step(sink, BodyStep::CustomSegmented, 0);
+    } else if (operation == ENTRY_CUSTOM_SCAN) {
+        if (input.scan_local != 0) {
+            body_step(sink, BodyStep::Local, 0);
+            body_step(sink, BodyStep::CustomScan, tail);
+        } else {
+            body_step(sink, BodyStep::CustomScanAdd, root);
+        }
+    } else if (operation == ENTRY_CUSTOM_REDUCE || operation == ENTRY_REDUCE) {
+        body_step(sink, BodyStep::Local, 0);
+        BodyStep step = operation == ENTRY_CUSTOM_REDUCE ? BodyStep::CustomReduce : BodyStep::Reduce;
+        body_step(sink, step, u32(pass == EntryPass::ReductionTail));
+    } else if (operation == ENTRY_SEGMENTED) {
+        if (pass == EntryPass::ScanAdd) {
+            body_step(sink, BodyStep::SegmentedReduceAdd, 0);
+        } else {
+            if (input.scan_local != 0) { body_step(sink, BodyStep::Local, 0); }
+            body_step(sink, BodyStep::SegmentedReduce, 0);
+        }
+    } else if (operation == ENTRY_COMPACT) {
+        if (pass == EntryPass::CompactScatter) {
+            body_step(sink, BodyStep::CompactScatter, 0);
+        } else {
+            body_scan(sink, BodyScan::Compact, input.scan_local, tail, 0);
+        }
+    } else if (operation == ENTRY_SCAN) {
+        if (input.segmented_scan == 0) {
+            body_scan(sink, BodyScan::Original, input.scan_local, tail, root);
+        } else if (input.scan_local != 0) {
+            body_step(sink, BodyStep::Local, 0);
+            body_step(sink, BodyStep::SegmentedScan, tail);
+        } else if (pass == EntryPass::ScanAdd) {
+            body_step(sink, BodyStep::SegmentedAdd, 0);
+        } else if (pass == EntryPass::ScanRootAdd) {
+            body_step(sink, BodyStep::Open, 0);
+            body_step(sink, BodyStep::SegmentedRoot, 0);
+            body_step(sink, BodyStep::Merge, 1);
+        } else {
+            return ShaderBodyEnd::BadSegmentedPass;
+        }
+    } else {
+        if (input.tile_scope != 0) { body_step(sink, BodyStep::TileInput, 0); }
+        if (body_step(sink, BodyStep::TilePhases, 0) != BodyStepResult::No) {
+            return ShaderBodyEnd::Plain;
+        }
+        body_step(sink, BodyStep::Open, 0);
+        if (input.selection != 0) { body_step(sink, BodyStep::SelectedIndex, 0); }
+        BodyStepResult flow = body_step(sink, BodyStep::Map, 0);
+        if (flow != BodyStepResult::Error) {
+            body_step(sink, BodyStep::Merge, u32(flow == BodyStepResult::Yes));
+        }
+    }
+    return ShaderBodyEnd::Plain;
+}
+
 extern "C" WorkgroupLayout workgroup_layout(
     u32 operation, EntryPass pass, u32 selected, u32 summary_words, u32 scan_width
 ) on cpu {
