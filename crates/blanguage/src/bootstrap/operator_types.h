@@ -350,3 +350,20 @@ struct BuiltinCallFacts {u32 present;u32 record;u32 in_function;usize count;};
 enum BuiltinCallNeed:u32 {CFunction=0;ResultContext=1;Transfer=2;Println=3;TextureSample=4;Append=5;TileCollective=6;TilePublish=7;TileInput=8;Subgroup=9;SubgroupResult=10;RayQueryAny=11;UnsafeRead=12;Ordinal=13;IndexScope=14;Index=15;Unsupported=16;AtomicStore=17;Atomic=18;TileBarrier=19;RecordValues=20;RecordLookup=21;RecordExpression=22;AddressOf=23;Values=24;Argument=25;ArgumentValue=26;Empty=27;ArgumentsComplete=28;RayQueryClosest=29;};
 struct BuiltinCallStep {BuiltinCallCursor cursor;BuiltinCallNeed need;AtomicBuiltin atomic;};
 extern "C" BuiltinCallStep builtin_call_step(BuiltinCallCursor cursor,BuiltinCallFacts facts,address bytes,usize length) on cpu;
+
+extern "C" u32 atomic_storage(u32 kind,u32 access) on cpu;
+extern "C" u32 atomic_scalar(address context,cfn<u32,address,u32> ensures memory(read) same) on cpu requires nonzero(same);
+enum AtomicOrder:u32 {Unknown=0;Relaxed=1;Acquire=2;Release=3;AcquireRelease=4;};
+extern "C" AtomicOrder source_atomic_order(u32 named,address bytes,usize length) on cpu;
+struct AtomicLocationCursor {u32 phase;};
+struct AtomicLocationFacts {u32 valid;u32 kind;u32 offset;};
+enum AtomicLocationNeed:u32 {Place=0;Type=1;BadType=2;Access=3;Effect=4;Position=5;Data=6;Tile=7;Array=8;Reference=9;Application=10;Complete=11;};
+struct AtomicLocationStep {AtomicLocationCursor cursor;AtomicLocationNeed need;};
+extern "C" AtomicLocationStep atomic_location_step(AtomicLocationCursor cursor,AtomicLocationFacts facts) on cpu;
+
+struct AtomicCursor {u32 phase;};
+struct AtomicFacts {u64 count;u32 present;u32 order;u32 failure;u32 location;u32 data;};
+enum AtomicInstruction:u32 {Load=0;Store=1;Add=2;Sub=3;Exchange=4;CompareExchange=5;Min=6;Max=7;And=8;Or=9;Xor=10;};
+enum AtomicNeed:u32 {BadStoreArity=0;BadArity=1;Location=2;Order=3;Failure=4;Value=5;Desired=6;ValueType=7;DesiredType=8;BadStoreOrder=9;BadLoadOrder=10;BadFailureOrder=11;BadOperation=12;Build=13;Result=14;Proof=15;Access=16;Read=17;Write=18;Cross=19;Emit=20;Empty=21;Complete=22;};
+struct AtomicStep {AtomicCursor cursor;AtomicNeed need;AtomicInstruction operation;u32 stored;};
+extern "C" AtomicStep atomic_step(AtomicCursor cursor,AtomicBuiltin builtin,AtomicFacts facts) on cpu;

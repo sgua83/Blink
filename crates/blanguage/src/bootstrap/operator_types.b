@@ -1230,3 +1230,90 @@ extern "C" FunctionFromAddressStep function_from_address_step(FunctionFromAddres
  if(c.phase==3){c.phase=4;return FunctionFromAddressStep(c,FunctionFromAddressNeed::Retype);}
  return FunctionFromAddressStep(c,FunctionFromAddressNeed::Complete);
 }
+
+extern "C" u32 atomic_storage(u32 kind,u32 access) on cpu {
+ return kind==1||((kind==2||kind==3||kind==4||kind==5)&&access==4)?1:0;
+}
+extern "C" u32 atomic_scalar(address context,cfn<u32,address,u32> ensures memory(read) same) on cpu requires nonzero(same) {
+ u32 index=0;while(index<4){if(same(context,index)!=0){return 1;}index+=1;}return 0;
+}
+extern "C" AtomicOrder source_atomic_order(u32 named,address bytes,usize length) on cpu {
+ if(named==0){return AtomicOrder::Unknown;}
+ if(source_spelling(bytes,length,"relaxed")){return AtomicOrder::Relaxed;}
+ if(source_spelling(bytes,length,"acquire")){return AtomicOrder::Acquire;}
+ if(source_spelling(bytes,length,"release")){return AtomicOrder::Release;}
+ if(source_spelling(bytes,length,"acq_rel")){return AtomicOrder::AcquireRelease;}
+ return AtomicOrder::Unknown;
+}
+extern "C" AtomicLocationStep atomic_location_step(AtomicLocationCursor cursor,AtomicLocationFacts facts) on cpu {
+ AtomicLocationCursor c=cursor;
+ if(c.phase==0){c.phase=1;return AtomicLocationStep(c,AtomicLocationNeed::Place);}
+ if(c.phase==1){c.phase=2;return AtomicLocationStep(c,AtomicLocationNeed::Type);}
+ if(c.phase==2){if(facts.valid==0){return AtomicLocationStep(c,AtomicLocationNeed::BadType);}c.phase=3;return AtomicLocationStep(c,AtomicLocationNeed::Access);}
+ if(c.phase==3){c.phase=4;return AtomicLocationStep(c,AtomicLocationNeed::Effect);}
+ if(c.phase==4){c.phase=5;return AtomicLocationStep(c,AtomicLocationNeed::Position);}
+ if(c.phase==5){
+  c.phase=6;
+  if(facts.kind==1){return AtomicLocationStep(c,AtomicLocationNeed::Data);}
+  if(facts.kind==2){return AtomicLocationStep(c,AtomicLocationNeed::Tile);}
+  if((facts.kind==3||facts.kind==4)&&facts.offset!=0){return AtomicLocationStep(c,AtomicLocationNeed::Array);}
+  if(facts.kind==3){return AtomicLocationStep(c,AtomicLocationNeed::Reference);}
+  if(facts.kind==4){return AtomicLocationStep(c,AtomicLocationNeed::Application);}
+ }
+ return AtomicLocationStep(c,AtomicLocationNeed::Complete);
+}
+AtomicStep atomic_need(AtomicCursor cursor,AtomicNeed need,AtomicSourceKind kind) on cpu {
+ AtomicInstruction operation=AtomicInstruction::Load;u32 stored=0;
+ if(need==AtomicNeed::Proof){
+  if(kind==AtomicSourceKind::CompareExchange){stored=2;}
+  else if(kind==AtomicSourceKind::Store||kind==AtomicSourceKind::Exchange||kind==AtomicSourceKind::Min||kind==AtomicSourceKind::Max){stored=1;}
+  return AtomicStep(cursor,need,operation,stored);
+ }
+ if(need!=AtomicNeed::Build){return AtomicStep(cursor,need,operation,stored);}
+ if(kind==AtomicSourceKind::Store){operation=AtomicInstruction::Store;stored=1;}
+ else if(kind==AtomicSourceKind::Add){operation=AtomicInstruction::Add;}
+ else if(kind==AtomicSourceKind::Sub){operation=AtomicInstruction::Sub;}
+ else if(kind==AtomicSourceKind::Exchange){operation=AtomicInstruction::Exchange;stored=1;}
+ else if(kind==AtomicSourceKind::CompareExchange){operation=AtomicInstruction::CompareExchange;stored=2;}
+ else if(kind==AtomicSourceKind::Min){operation=AtomicInstruction::Min;stored=1;}
+ else if(kind==AtomicSourceKind::Max){operation=AtomicInstruction::Max;stored=1;}
+ else if(kind==AtomicSourceKind::And){operation=AtomicInstruction::And;}
+ else if(kind==AtomicSourceKind::Or){operation=AtomicInstruction::Or;}
+ else if(kind==AtomicSourceKind::Xor){operation=AtomicInstruction::Xor;}
+ return AtomicStep(cursor,need,operation,stored);
+}
+extern "C" AtomicStep atomic_step(AtomicCursor cursor,AtomicBuiltin builtin,AtomicFacts facts) on cpu {
+ AtomicCursor c=cursor;AtomicSourceKind kind=builtin.kind;
+ if(c.phase==0){
+  if(facts.count!=u64(builtin.arity)){return atomic_need(c,kind==AtomicSourceKind::Store?AtomicNeed::BadStoreArity:AtomicNeed::BadArity,kind);}
+  c.phase=1;return atomic_need(c,AtomicNeed::Location,kind);
+ }
+ if(c.phase==1){if(facts.present==0){return atomic_need(c,AtomicNeed::Empty,kind);}if(kind==AtomicSourceKind::Store){c.phase=2;return atomic_need(c,AtomicNeed::Value,kind);}c.phase=5;return atomic_need(c,AtomicNeed::Order,kind);}
+ if(c.phase==2){if(facts.present==0){return atomic_need(c,AtomicNeed::Empty,kind);}c.phase=3;return atomic_need(c,AtomicNeed::ValueType,kind);}
+ if(c.phase==3){c.phase=4;return atomic_need(c,AtomicNeed::Order,kind);}
+ if(c.phase==4){if(!atomic_order_allowed(kind,facts.order,0)){return atomic_need(c,AtomicNeed::BadStoreOrder,kind);}c.phase=20;return atomic_need(c,AtomicNeed::Build,kind);}
+ if(c.phase==5){
+  if(kind==AtomicSourceKind::Load){if(!atomic_order_allowed(kind,facts.order,0)){return atomic_need(c,AtomicNeed::BadLoadOrder,kind);}c.phase=20;return atomic_need(c,AtomicNeed::Build,kind);}
+  c.phase=6;return atomic_need(c,AtomicNeed::Value,kind);
+ }
+ if(c.phase==6){if(facts.present==0){return atomic_need(c,AtomicNeed::Empty,kind);}c.phase=7;return atomic_need(c,AtomicNeed::ValueType,kind);}
+ if(c.phase==7){
+  if(kind==AtomicSourceKind::CompareExchange){c.phase=8;return atomic_need(c,AtomicNeed::Desired,kind);}
+  if(kind!=AtomicSourceKind::Add&&kind!=AtomicSourceKind::Sub&&kind!=AtomicSourceKind::Exchange&&kind!=AtomicSourceKind::Min&&kind!=AtomicSourceKind::Max&&kind!=AtomicSourceKind::And&&kind!=AtomicSourceKind::Or&&kind!=AtomicSourceKind::Xor){return atomic_need(c,AtomicNeed::BadOperation,kind);}
+  c.phase=20;return atomic_need(c,AtomicNeed::Build,kind);
+ }
+ if(c.phase==8){if(facts.present==0){return atomic_need(c,AtomicNeed::Empty,kind);}c.phase=9;return atomic_need(c,AtomicNeed::DesiredType,kind);}
+ if(c.phase==9){c.phase=10;return atomic_need(c,AtomicNeed::Failure,kind);}
+ if(c.phase==10){if(!atomic_order_allowed(kind,facts.order,facts.failure)){return atomic_need(c,AtomicNeed::BadFailureOrder,kind);}c.phase=20;return atomic_need(c,AtomicNeed::Build,kind);}
+ if(c.phase==20){c.phase=21;if(kind!=AtomicSourceKind::Store){return atomic_need(c,AtomicNeed::Result,kind);}}
+ if(c.phase==21){
+  if(facts.location==0){c.phase=30;}
+  else{c.phase=23;if(kind!=AtomicSourceKind::Load){AtomicStep proof=atomic_need(c,AtomicNeed::Proof,kind);if(proof.stored!=0){return proof;}}else{c.phase=24;}}
+ }
+ if(c.phase==23){c.phase=24;return atomic_need(c,AtomicNeed::Access,kind);}
+ if(c.phase==24){c.phase=25;if(facts.data==0){c.phase=28;}else if(kind!=AtomicSourceKind::Store){return atomic_need(c,AtomicNeed::Read,kind);}}
+ if(c.phase==25){c.phase=26;if(kind!=AtomicSourceKind::Load){return atomic_need(c,AtomicNeed::Write,kind);}}
+ if(c.phase==26){c.phase=28;return atomic_need(c,AtomicNeed::Cross,kind);}
+ if(c.phase==28){c.phase=30;return atomic_need(c,AtomicNeed::Emit,kind);}
+ return atomic_need(c,kind==AtomicSourceKind::Store?AtomicNeed::Empty:AtomicNeed::Complete,kind);
+}
