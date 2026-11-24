@@ -1317,3 +1317,41 @@ extern "C" AtomicStep atomic_step(AtomicCursor cursor,AtomicBuiltin builtin,Atom
  if(c.phase==28){c.phase=30;return atomic_need(c,AtomicNeed::Emit,kind);}
  return atomic_need(c,kind==AtomicSourceKind::Store?AtomicNeed::Empty:AtomicNeed::Complete,kind);
 }
+
+extern "C" SubgroupBuiltin source_subgroup_name(address bytes,usize length) on cpu {
+ if(length>=9u64&&source_spelling(bytes,9u64,"subgroup_")){
+  return source_subgroup(unsafe_address(address_bits(bytes)+9u64),length-9u64);
+ }
+ return SubgroupBuiltin(SubgroupOperation::Lane,0,SubgroupRule::Unknown);
+}
+extern "C" SubgroupStep subgroup_step(SubgroupCursor cursor,SubgroupBuiltin builtin,SubgroupFacts facts,address ty,
+ cfn<u32,address,SubgroupFact> fact) on cpu requires nonzero(fact) {
+ SubgroupCursor c=cursor;
+ if(c.phase==0){
+  if(facts.gpu==0){return SubgroupStep(c,SubgroupNeed::BadTarget);}
+  if(facts.count!=u64(builtin.arity)){return SubgroupStep(c,SubgroupNeed::BadArity);}
+  if(facts.count>0u64){c.phase=1;return SubgroupStep(c,SubgroupNeed::Value);}c.phase=4;
+ }
+ if(c.phase==1){
+  if(facts.present==0){return SubgroupStep(c,SubgroupNeed::Empty);}
+  if(facts.count>1u64){c.phase=2;return SubgroupStep(c,SubgroupNeed::Argument);}c.phase=4;
+ }
+ if(c.phase==2){if(facts.present==0){return SubgroupStep(c,SubgroupNeed::Empty);}c.phase=3;return SubgroupStep(c,SubgroupNeed::ArgumentType);}
+ if(c.phase==3){c.phase=4;}
+ if(c.phase==4){
+  c.result=subgroup_result(builtin.rule,ty,fact);
+  if(c.result==SubgroupResult::BadShape){return SubgroupStep(c,SubgroupNeed::BadShape);}
+  if(c.result==SubgroupResult::BadBits){return SubgroupStep(c,SubgroupNeed::BadBits);}
+  c.phase=5;
+  if(c.result==SubgroupResult::PredicateBool||c.result==SubgroupResult::PredicateU32){return SubgroupStep(c,SubgroupNeed::Predicate);}
+ }
+ if(c.phase==5){
+  if(c.result==SubgroupResult::PredicateBool){c.result=SubgroupResult::Bool;}
+  if(c.result==SubgroupResult::PredicateU32){c.result=SubgroupResult::U32;}
+  c.phase=6;c.index=0u64;
+  return SubgroupStep(c,c.result==SubgroupResult::U32?SubgroupNeed::U32:c.result==SubgroupResult::Bool?SubgroupNeed::Bool:SubgroupNeed::Operand);
+ }
+ if(c.phase==7){c.index+=1u64;c.phase=6;}
+ if(c.index<facts.components){c.phase=7;return SubgroupStep(c,SubgroupNeed::Component);}
+ return SubgroupStep(c,c.result==SubgroupResult::Operand?SubgroupNeed::CompleteOperand:SubgroupNeed::CompleteScalar);
+}

@@ -367,3 +367,11 @@ enum AtomicInstruction:u32 {Load=0;Store=1;Add=2;Sub=3;Exchange=4;CompareExchang
 enum AtomicNeed:u32 {BadStoreArity=0;BadArity=1;Location=2;Order=3;Failure=4;Value=5;Desired=6;ValueType=7;DesiredType=8;BadStoreOrder=9;BadLoadOrder=10;BadFailureOrder=11;BadOperation=12;Build=13;Result=14;Proof=15;Access=16;Read=17;Write=18;Cross=19;Emit=20;Empty=21;Complete=22;};
 struct AtomicStep {AtomicCursor cursor;AtomicNeed need;AtomicInstruction operation;u32 stored;};
 extern "C" AtomicStep atomic_step(AtomicCursor cursor,AtomicBuiltin builtin,AtomicFacts facts) on cpu;
+
+extern "C" SubgroupBuiltin source_subgroup_name(address bytes,usize length) on cpu;
+struct SubgroupCursor {u32 phase;SubgroupResult result;u64 index;};
+struct SubgroupFacts {u64 count;u64 components;u32 gpu;u32 present;};
+enum SubgroupNeed:u32 {BadTarget=0;BadArity=1;Value=2;Argument=3;ArgumentType=4;Predicate=5;U32=6;Bool=7;Operand=8;Component=9;CompleteScalar=10;CompleteOperand=11;Empty=12;BadShape=13;BadBits=14;};
+struct SubgroupStep {SubgroupCursor cursor;SubgroupNeed need;};
+extern "C" SubgroupStep subgroup_step(SubgroupCursor cursor,SubgroupBuiltin builtin,SubgroupFacts facts,address ty,
+ cfn<u32,address,SubgroupFact> fact) on cpu requires nonzero(fact);

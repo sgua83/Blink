@@ -3667,13 +3667,13 @@ subgroup 是 GPU 在一个 workgroup 内实际划分的协作集合。Blink 现�
 | `subgroup_elect()` | bool，仅当前活动集合里 lane 编号最小者为 true |
 | `subgroup_any(predicate)`／`subgroup_all(predicate)` | bool 标量谓词的投票，返回 bool |
 | `subgroup_count(predicate)`／`subgroup_prefix_count(predicate)` | bool 标量谓词的总计数／低于当前 lane 的计数，返回 u32 |
-| `subgroup_broadcast_first(value)` | 广播当前活动集合中最小 lane 的值，支持数值或 bool 标量／向量 |
+| `subgroup_broadcast_first(value)` | 广播当前活动集合中最小 lane 的普通值，保持其实际类型；形态与下述 shuffle 相同 |
 | `subgroup_shuffle(value, lane)` | 读取指定物理 lane 的值；lane 为 u32 标量，可逐 invocation 不同 |
 | `subgroup_shuffle_xor(value, mask)` | 从当前 lane 编号 XOR mask 所得的 lane 读取值，mask 为 u32 标量 |
 | `subgroup_shuffle_up(value, delta)`／`subgroup_shuffle_down(value, delta)` | 从当前 lane 编号减／加 delta 所得的 lane 读取值，delta 为 u32 标量 |
-| `subgroup_sum(value)`／`subgroup_exclusive_sum(value)` | f32／u32／i32／u64／i64标量及现有32位向量的组内和／独占前缀和，返回同类型 |
-| `subgroup_min(value)`／`subgroup_max(value)` | f32／u32／i32／u64／i64标量及现有32位向量的逐分量最小／最大值，返回同类型 |
-| `subgroup_bit_and(value)`／`subgroup_bit_or(value)`／`subgroup_bit_xor(value)` | u32／i32／u64／i64标量及现有32位整数向量在实际参与集合中的逐分量按位归约 |
+| `subgroup_sum(value)`／`subgroup_exclusive_sum(value)` | u8／i8／u16／i16／u32／i32／u64／i64／f32／f64标量及现有32位数值向量的组内和／独占前缀和，返回同类型 |
+| `subgroup_min(value)`／`subgroup_max(value)` | 支持与 subgroup_sum 相同的数值类型，返回实际参与集合的逐分量最小／最大值，类型保持 |
+| `subgroup_bit_and(value)`／`subgroup_bit_or(value)`／`subgroup_bit_xor(value)` | u8／i8／u16／i16／u32／i32／u64／i64标量及现有32位整数向量在实际参与集合中的逐分量按位归约 |
 | `subgroup_exclusive_bit_and(value)`／`subgroup_exclusive_bit_or(value)`／`subgroup_exclusive_bit_xor(value)` | 当前物理 lane 之前、实际参与者的逐分量独占按位前缀，返回同类型 |
 
 `.h` 接口示例：
@@ -3697,11 +3697,11 @@ void annotate(inout dataset<WorkItem> work) on gpu {
 
 B 后端按原 SubgroupOp 和实际类型发射内建读取、交换、投票和归约等指令。所需设备能力沿原合同交接。同一调用只包含当时实际参与的 invocation：尾组只处理有效元素，分歧分支只处理进入该分支的参与者，循环按各次动态调用的参与者协作。`subgroup_size()` 仍是物理宽度，不是活动数量；活动数量使用 `subgroup_count(true)`。lane 不是 `index()`，subgroup 编号也不是全局任务编号，不能假定相邻记录必然按某种 lane 顺序分组。这些规则遵循 [Vulkan group operations](https://docs.vulkan.org/spec/latest/chapters/shaders.html#shaders-group-operations) 与 [SPIR-V non-uniform instructions](https://registry.khronos.org/SPIR-V/specs/unified1/SPIRV.html#_non_uniform_instructions)。
 
-四种shuffle返回与value相同的类型，接收f32／u32／i32／u64／i64标量、现有32位向量及bool；记录、数组、矩阵和 view 不作为交换值。两个实参各求值一次，再对已有值逐分量编码；参数可来自普通 GPU 值函数，跨模块调用和循环继续使用同一指令及寄存器依赖。它们是寄存器值交换，不执行浮点算术；被交换的 NaN 载荷、有符号零和次正规数保留，bool 使用语言的规范真假值。
+广播与四种shuffle均返回value的实际类型，接收现有数值或bool标量及32位向量，也保持普通枚举的原类型；记录、数组、矩阵和 view 不作为交换值。四种shuffle的两个实参各按从左到右求值一次，再对已有值逐分量编码；参数可来自普通 GPU 值函数，跨模块调用和循环继续使用同一指令及寄存器依赖。它们是寄存器值交换，不执行浮点算术；被交换的 NaN 载荷、有符号零和次正规数保留，bool 使用语言的规范真假值。
 
 调用者必须选取同一次动态调用中实际参与的源 lane。目标越出物理 subgroup、源 invocation 未参与、up 减法越界或 down 加法越界时，结果按 [SPIR-V shuffle 语义](https://registry.khronos.org/SPIR-V/specs/unified1/SPIRV.html#OpGroupNonUniformShuffle) 未定义；编译器不钳制 lane、不改换源值，也不插入运行时判断。例如可先在当前活动集合中取得 `first=subgroup_min(subgroup_lane())`、`last=subgroup_max(subgroup_lane())`，再让各 lane 按算法选择 first 或 last 后交换。若在分歧分支中调用，源也必须进入该分支；不能用物理 subgroup_size 代替活动集合。交换得到的 u32 不自动继承原值的索引证明或唯一写权限。
 
-整数和按 32 位取低位。浮点和的运算次序由实现决定，不承诺与 CPU、其他 subgroup 宽度或另一种归约算法逐位相同；NaN、无穷、带符号零和数学定义域仍按设备运算语义处理，不自动修正数值。
+整数和按所选标量的实际位宽回绕，并返回相同类型。浮点和的运算次序由实现决定，不承诺与 CPU、其他 subgroup 宽度或另一种归约算法逐位相同；NaN、无穷、带符号零和数学定义域仍按设备运算语义处理，不自动修正数值。
 
 这些操作只交换值，不授予跨元素写权限，不建立设备存储的可见性，也不代替 workgroup／全域阶段屏障。组内 rank 不是全局唯一写索引；`data[subgroup_prefix_count(...)]` 不会自动得到安全散写能力。组内计数也不能签发 `prefix(data,count.value)` 关系，接口 requires／ensures 继续使用既有域生产证明。普通 GPU 值函数可以封装协作并在模块间复用，CPU／compute 调用不相容的 GPU 函数在编译期拒绝。
 
