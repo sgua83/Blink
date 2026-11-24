@@ -1,5 +1,12 @@
 module bootstrap.x64_instruction;
 import bootstrap.unwind;
+import bootstrap.ir_dataflow;
+
+struct BinaryEncoding {
+    u64 length;
+    u64 left_literal;
+    u64 right_literal;
+};
 
 const u8 OPCODE_REGISTER = u8(0);
 const u8 DIRECT_REGISTER = u8(1);
@@ -1175,7 +1182,7 @@ u64 integer_immediate(u64 at, u8 extension, u8 left, u64 bits, bool wide) on cpu
     return cursor + 4u64;
 }
 
-extern "C" BinaryEncoding scalar_compare(MoveLocation dst, MoveLocation left, MoveLocation right,
+BinaryEncoding scalar_compare(MoveLocation dst, MoveLocation left, MoveLocation right,
     u32 size, bool signed, bool floating, BinaryOperation operation, address output) on cpu {
     u64 start = address_bits(output);
     u8 target = u8(0);
@@ -1276,7 +1283,7 @@ BinaryEncoding float_binary(MoveLocation dst, MoveLocation left, MoveLocation ri
     return BinaryEncoding(cursor + store.length - start, load.literal_field, right_literal);
 }
 
-extern "C" BinaryEncoding scalar_binary(MoveLocation dst, MoveLocation left, MoveLocation right,
+BinaryEncoding scalar_binary(MoveLocation dst, MoveLocation left, MoveLocation right,
     u32 size, bool signed, bool floating, u32 count_size, bool count_signed,
     BinaryOperation operation, address output) on cpu {
     if (floating) {
@@ -1363,7 +1370,7 @@ MoveEncoding float_sign(MoveLocation dst, MoveLocation src, u32 size, bool negat
     return MoveEncoding(cursor + 1u64 + store.length - start, 0u64);
 }
 
-extern "C" MoveEncoding value_unary(MoveLocation dst, MoveLocation src, ScalarEncoding scalar,
+MoveEncoding value_unary(MoveLocation dst, MoveLocation src, ScalarEncoding scalar,
     ValueUnaryOperation operation, address output) on cpu {
     u32 size = scalar.width / 8;
     bool signed = scalar.kind == ScalarKind::Signed;
@@ -1445,14 +1452,14 @@ CrtMathName crt_math_name(CrtMath operation) on cpu {
     return CrtMathName("ceilf ", 4);
 }
 
-ScalarMathEncoding crt_math(CrtMath operation, MoveLocation dst, MoveLocation left,
-    address right, u32 size, address output) on cpu {
+ScalarValueEncoding crt_math(CrtMath operation, MoveLocation dst, MoveLocation left,
+    MoveLocation right, u32 size, address output) on cpu {
     u64 start = address_bits(output);
     u64 cursor = start;
     u64 right_literal = 0u64;
     if (operation == CrtMath::Pow) {
         MoveLocation xmm1 = MoveLocation(0u64, MOVE_XMM, u8(1), NO_INDEX, u8(0));
-        MoveEncoding argument = copy_scalar_move(xmm1, unsafe_position<MoveLocation>(right), size, false, output);
+        MoveEncoding argument = copy_scalar_move(xmm1, right, size, false, output);
         right_literal = argument.literal_field;
         cursor += argument.length;
     }
@@ -1467,26 +1474,29 @@ ScalarMathEncoding crt_math(CrtMath operation, MoveLocation dst, MoveLocation le
     cursor += call.length;
     MoveEncoding result = copy_scalar_move(dst, xmm0, size, false, unsafe_address(cursor));
     CrtMathName name = crt_math_name(operation);
-    return ScalarMathEncoding(BinaryEncoding(cursor + result.length - start, left_literal, right_literal),
+    u32 wide = u32(size == 8);
+    return ScalarValueEncoding(cursor + result.length - start,
+        ScalarLiteral(right.value, right_literal, wide), ScalarLiteral(left.value, left_literal, wide),
         call_field, name.length + u32(size == 4), name.bytes);
 }
 
-extern "C" ScalarMathEncoding scalar_math(ScalarMathOperation operation, MoveLocation dst,
-    MoveLocation left, address right, u32 size, address output) on cpu {
+ScalarValueEncoding scalar_math(ScalarMathOperation operation, MoveLocation dst,
+    MoveLocation left, MoveLocation right, u32 size, address output) on cpu {
     match (scalar_math_route(operation)) {
         ScalarMathRoute::Unary(sqrt) {
             MoveEncoding value = unary_math(dst, left, size, sqrt, output);
-            return ScalarMathEncoding(BinaryEncoding(value.length, value.literal_field, 0u64), 0u64, 0, array<u8,6>(u8(0)));
+            return value_encoding(BinaryEncoding(value.length, value.literal_field, 0u64),
+                left.value, size == 8, 0u64, false);
         }
         ScalarMathRoute::Binary(opcode) {
-            BinaryEncoding value = float_binary(dst, left, unsafe_position<MoveLocation>(right), size, opcode, output);
-            return ScalarMathEncoding(value, 0u64, 0, array<u8,6>(u8(0)));
+            BinaryEncoding value = float_binary(dst, left, right, size, opcode, output);
+            return value_encoding(value, left.value, size == 8, right.value, size == 8);
         }
         ScalarMathRoute::Crt(imported) { return crt_math(imported, dst, left, right, size, output); }
     }
 }
 
-extern "C" BinaryEncoding value_cast(MoveLocation dst, MoveLocation src, ScalarEncoding from,
+BinaryEncoding value_cast(MoveLocation dst, MoveLocation src, ScalarEncoding from,
     ScalarEncoding into, address output) on cpu {
     u64 start = address_bits(output);
     u64 cursor = start;
@@ -1601,7 +1611,7 @@ extern "C" BinaryEncoding value_cast(MoveLocation dst, MoveLocation src, ScalarE
     return BinaryEncoding(cursor - start, source_literal, constant_literal);
 }
 
-extern "C" BinaryEncoding value_select(MoveLocation dst, MoveLocation condition, MoveLocation left,
+BinaryEncoding value_select(MoveLocation dst, MoveLocation condition, MoveLocation left,
     MoveLocation right, u32 size, bool signed, address output) on cpu {
     if (condition.kind == MOVE_IMMEDIATE) {
         if (condition.value != 0u64) {
@@ -4812,4 +4822,74 @@ extern "C" RangeEntries range_entries(RangeOperation operation, usize words_or_k
         follow = RangeFollow::CompactScatter;
     }
     return RangeEntries(follow, 1, words_or_keys, 0u64);
+}
+
+ScalarValueEncoding value_encoding(BinaryEncoding body, u64 left, bool left_wide,
+    u64 right, bool right_wide) on cpu {
+    return ScalarValueEncoding(body.length, ScalarLiteral(left, body.left_literal, u32(left_wide)),
+        ScalarLiteral(right, body.right_literal, u32(right_wide)), 0u64, 0, array<u8,6>(u8(0)));
+}
+
+BinaryOperation value_binary_operation(u32 operation) on cpu {
+    // The original IR distinguishes integer and floating arithmetic. The same
+    // x64 operation uses the actual scalar kind to pick the instruction.
+    if (operation < 4) { return BinaryOperation(operation); }
+    if (operation < 7) { return BinaryOperation(operation - 4); }
+    if (operation < 13) { return BinaryOperation(operation + 3); }
+    return BinaryOperation(operation - 9);
+}
+
+ScalarValueEncoding emit_scalar_math_value(View value, ScalarValueHost host,
+    MoveLocation dst, address output) on cpu requires nonzero(host.location) requires nonzero(host.scalar) {
+    usize operand = unsafe_position<usize>(value.first.data);
+    MoveLocation left = host.location(host.context, operand);
+    u32 size = host.scalar(host.context, operand).width / 8;
+    MoveLocation right = MoveLocation(0u64, MOVE_IMMEDIATE, u8(0), NO_INDEX, u8(0));
+    if (value.first.count > usize(1)) {
+        usize other = unsafe_position<usize>(unsafe_address(address_bits(value.first.data) + u64(value.first.stride)));
+        right = host.location(host.context, other);
+    }
+    return scalar_math(ScalarMathOperation(u32(value.b)), dst, left, right, size, output);
+}
+
+extern "C" ScalarValueEncoding emit_scalar_value(Node source,
+    ScalarValueHost host, address output) on cpu
+    requires nonzero(host.ir.inspect) requires nonzero(host.location) requires nonzero(host.scalar) {
+    View value = host.ir.inspect(source);
+    MoveLocation dst = host.location(host.context, value.a);
+    if (value.tag == OP_MATH) {
+        return emit_scalar_math_value(value, host, dst, output);
+    }
+    bool comparison = value.tag == OP_BINARY && value.left.kind == N_COMPARISON;
+    usize scalar_reg = comparison ? value.b : value.a;
+    ScalarEncoding scalar = host.scalar(host.context, scalar_reg);
+    MoveLocation first = host.location(host.context, value.b);
+    if (value.tag == OP_UNARY) {
+        MoveEncoding emitted = value_unary(dst, first, scalar, ValueUnaryOperation(u32(value.c)), output);
+        BinaryEncoding body = BinaryEncoding(emitted.length, emitted.literal_field, 0u64);
+        return value_encoding(body, first.value, false, 0u64, false);
+    }
+    if (value.tag == OP_CAST) {
+        ScalarEncoding from = host.scalar(host.context, value.b);
+        BinaryEncoding emitted = value_cast(dst, first, from, scalar, output);
+        return value_encoding(emitted, first.value, from.width == 64, 0x5f000000u64, false);
+    }
+    MoveLocation second = host.location(host.context, value.c);
+    if (value.tag == OP_BINARY) {
+        BinaryOperation operation = value_binary_operation(host.ir.inspect(value.right).tag);
+        if (comparison) {
+            BinaryEncoding emitted = scalar_compare(dst, first, second, scalar.width / 8,
+                scalar.kind == ScalarKind::Signed, scalar.kind == ScalarKind::Float, operation, output);
+            return value_encoding(emitted, first.value, false, second.value, scalar.width == 64);
+        }
+        ScalarEncoding count = host.scalar(host.context, value.c);
+        BinaryEncoding emitted = scalar_binary(dst, first, second, scalar.width / 8,
+            scalar.kind == ScalarKind::Signed, scalar.kind == ScalarKind::Float, count.width / 8,
+            count.kind == ScalarKind::Signed, operation, output);
+        return value_encoding(emitted, first.value, false, second.value, scalar.width == 64);
+    }
+    MoveLocation right = host.location(host.context, value.d);
+    BinaryEncoding emitted = value_select(dst, first, second, right, scalar.width / 8,
+        scalar.kind == ScalarKind::Signed, output);
+    return value_encoding(emitted, second.value, false, right.value, scalar.width == 64);
 }

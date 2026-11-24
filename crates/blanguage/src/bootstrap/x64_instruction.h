@@ -1,5 +1,6 @@
 module bootstrap.x64_instruction;
 import bootstrap.scalar_fold;
+import bootstrap.ir_dataflow;
 
 struct Encoding {
     u32 displacement;
@@ -277,50 +278,17 @@ extern "C" SymbolEncoding print_call(MoveLocation dst, MoveLocation src, ScalarE
 extern "C" u64 read_scalar_move(MoveLocation dst, MoveLocation memory, u32 size, bool signed, bool boolean, address output) on cpu;
 extern "C" u64 write_scalar_move(MoveLocation memory, MoveLocation src, u32 size, address output) on cpu;
 
-struct BinaryEncoding {
-    u64 length;
-    u64 left_literal;
-    u64 right_literal;
-};
-
-// The caller owns 64 output bytes. Literal fields are output-relative disp32
-// offsets, or zero when that input does not use the original literal pool.
-extern "C" BinaryEncoding scalar_compare(MoveLocation dst, MoveLocation left, MoveLocation right,
-    u32 size, bool signed, bool floating, BinaryOperation operation, address output) on cpu;
-extern "C" BinaryEncoding scalar_binary(MoveLocation dst, MoveLocation left, MoveLocation right,
-    u32 size, bool signed, bool floating, u32 count_size, bool count_signed,
-    BinaryOperation operation, address output) on cpu;
-
 // These identities follow the original IR UnaryOp, including its bit-copy operation.
 enum ValueUnaryOperation:u32 {
     FloatNegate=0; SignedNegate=1; UnsignedNegate=2; LogicalNot=3; BitNot=4; Bitcast=5;
 };
 extern "C" bool bit_copy(ScalarEncoding from, ScalarEncoding into) on cpu;
-// Unary and selection receive 64 output bytes. Cast receives 80 bytes.
-// Cast's left literal is the original input; its right literal is f32 2^63.
-extern "C" MoveEncoding value_unary(MoveLocation dst, MoveLocation src, ScalarEncoding scalar,
-    ValueUnaryOperation operation, address output) on cpu;
 // These discriminants are the IR MathOp identities.
 enum ScalarMathOperation:u32 {
     Abs=0; Floor=1; Sin=2; Cos=3; Pow=4; Exp=5; Log=6;
     Exp2=7; Log2=8; Sqrt=9; Min=10; Max=11; Ceil=12;
 };
-struct ScalarMathEncoding {
-    BinaryEncoding body;
-    u64 call_field;
-    u32 symbol_length;
-    array<u8,6> symbol;
-};
-// A unary operation has no right operand. The caller owns 84 bytes.
-extern "C" ScalarMathEncoding scalar_math(ScalarMathOperation operation, MoveLocation dst,
-    MoveLocation left, address right, u32 size, address output) on cpu;
 extern "C" u64 scalar_math_outgoing(ScalarMathOperation operation) on cpu;
-extern "C" BinaryEncoding value_cast(MoveLocation dst, MoveLocation src, ScalarEncoding from,
-    ScalarEncoding into, address output) on cpu;
-extern "C" BinaryEncoding value_select(MoveLocation dst, MoveLocation condition, MoveLocation left,
-    MoveLocation right, u32 size, bool signed, address output) on cpu;
-
-// kind is 1 for quotient, 2 for remainder, or 3 for both. Only kind 3 uses second.
 struct DivisionOutputs { MoveLocation first; MoveLocation second; u32 kind; };
 // The packet caller already has its numerator in EAX and divisor in ECX.
 // Output has room for the original eleven-byte signed sequence.
@@ -798,3 +766,27 @@ struct RangeEntries {
     usize first_key;
 };
 extern "C" RangeEntries range_entries(RangeOperation operation, usize words_or_keys, u32 complete) on cpu;
+
+struct ScalarValueHost {
+    Host ir;
+    address context;
+    cfn<MoveLocation,address,usize> ensures memory(read) location;
+    cfn<ScalarEncoding,address,usize> ensures memory(read) scalar;
+};
+struct ScalarLiteral {
+    u64 bits;
+    u64 field;
+    u32 wide;
+};
+struct ScalarValueEncoding {
+    u64 length;
+    ScalarLiteral first;
+    ScalarLiteral second;
+    u64 call_field;
+    u32 symbol_length;
+    array<u8,6> symbol;
+};
+// The borrowed IR is Unary, Binary, Cast, Math or Select. Output has 84 writable bytes.
+extern "C" ScalarValueEncoding emit_scalar_value(Node source,
+    ScalarValueHost host, address output) on cpu
+    requires nonzero(host.ir.inspect) requires nonzero(host.location) requires nonzero(host.scalar);

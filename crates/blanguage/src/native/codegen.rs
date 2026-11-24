@@ -589,11 +589,6 @@ impl Emitter<'_> {
                     let memory = self.data_memory(*binding, *index, *word);
                     self.write_scalar_address(*value, memory);
                 }
-                InstKind::Unary { dst, op, a } => self.unary(*dst, *a, *op),
-                InstKind::Binary { dst, op, a, b } => match op {
-                    BinaryOp::Compare(comparison) => self.compare(*dst, *a, *b, *comparison),
-                    operation => self.binary(*dst, *a, *b, *operation),
-                },
                 InstKind::IntegerDivide {
                     result,
                     src,
@@ -606,16 +601,8 @@ impl Emitter<'_> {
                         self.integer_divide_value(*result, *src, *divisor)
                     }
                 },
-                InstKind::Cast { dst, src } => self.cast(*dst, *src),
-                InstKind::Math { dst, op, args } => self.math(*dst, *op, args),
-                InstKind::Select {
-                    dst,
-                    condition,
-                    a,
-                    b,
-                } => {
-                    self.select(*dst, *condition, *a, *b);
-                }
+                InstKind::Unary { .. } | InstKind::Binary { .. } | InstKind::Cast { .. }
+                | InstKind::Math { .. } | InstKind::Select { .. } => self.scalar_value(inst),
                 InstKind::If { condition, yes, no } => {
                     self.lower_control(Flow::If(*condition, yes, no), Self::block, Self::load)?;
                 }

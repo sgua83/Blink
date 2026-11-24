@@ -2,6 +2,7 @@
 use super::*;
 use allocation::Location;
 use crate::builtin_types::ScalarEncoding;
+use crate::ir::dataflow::{HOST, Host, Node};
 
 pub(super) fn bit_copy(from: Scalar, into: Scalar) -> bool {
     unsafe { scalar_bit_copy(from.into(), into.into()) != 0 }
@@ -104,21 +105,6 @@ struct MoveEncoding {
 }
 
 #[repr(C)]
-struct BinaryEncoding {
-    length: u64,
-    left_literal: u64,
-    right_literal: u64,
-}
-
-#[repr(C)]
-struct MathEncoding {
-    body: BinaryEncoding,
-    call_field: u64,
-    symbol_length: u32,
-    symbol: [u8; 6],
-}
-
-#[repr(C)]
 pub(super) struct AddressEncoding {
     length: u64,
     offset: u32,
@@ -136,6 +122,46 @@ struct ViewElement {
     stride_high: MoveLocation,
     stride: u64,
     dynamic: u32,
+}
+
+#[repr(C)]
+struct ScalarLiteral {
+    bits: u64,
+    field: u64,
+    wide: u32,
+}
+
+#[repr(C)]
+struct ScalarValueEncoding {
+    length: u64,
+    first: ScalarLiteral,
+    second: ScalarLiteral,
+    call_field: u64,
+    symbol_length: u32,
+    symbol: [u8; 6],
+}
+
+#[repr(C)]
+struct ScalarValueHost {
+    ir: Host,
+    context: *const std::ffi::c_void,
+    location: unsafe extern "C" fn(*const std::ffi::c_void, Reg) -> MoveLocation,
+    scalar: unsafe extern "C" fn(*const std::ffi::c_void, Reg) -> ScalarEncoding,
+}
+
+struct ScalarLocations<'a> {
+    allocation: &'a Allocation,
+    registers: &'a [Scalar],
+}
+
+unsafe extern "C" fn value_location(context: *const std::ffi::c_void, reg: Reg) -> MoveLocation {
+    let locations = unsafe { &*context.cast::<ScalarLocations<'_>>() };
+    locations.allocation.location(PrivateSlot::Register(reg)).into()
+}
+
+unsafe extern "C" fn value_scalar(context: *const std::ffi::c_void, reg: Reg) -> ScalarEncoding {
+    let locations = unsafe { &*context.cast::<ScalarLocations<'_>>() };
+    locations.registers[reg].into()
 }
 
 unsafe extern "C" {
@@ -159,28 +185,10 @@ unsafe extern "C" {
     fn encode_effective_address(target: u8, memory: MoveLocation, output: *mut u8) -> u64;
     #[link_name = "bootstrap.x64_instruction::bit_copy"]
     fn scalar_bit_copy(from: ScalarEncoding, into: ScalarEncoding) -> u32;
-    #[link_name = "bootstrap.x64_instruction::value_unary"]
-    fn value_unary(dst: MoveLocation, src: MoveLocation, scalar: ScalarEncoding,
-        operation: u32, output: *mut u8) -> MoveEncoding;
-    #[link_name = "bootstrap.x64_instruction::scalar_math"]
-    fn scalar_math(operation: u32, dst: MoveLocation, left: MoveLocation,
-        right: *const MoveLocation, size: u32, output: *mut u8) -> MathEncoding;
+    #[link_name = "bootstrap.x64_instruction::emit_scalar_value"]
+    fn emit_scalar_value(value: Node, host: ScalarValueHost, output: *mut u8) -> ScalarValueEncoding;
     #[link_name = "bootstrap.x64_instruction::scalar_math_outgoing"]
     pub(super) fn scalar_math_outgoing(operation: u32) -> u64;
-    #[link_name = "bootstrap.x64_instruction::value_cast"]
-    fn value_cast(dst: MoveLocation, src: MoveLocation, from: ScalarEncoding,
-        into: ScalarEncoding, output: *mut u8) -> BinaryEncoding;
-    #[link_name = "bootstrap.x64_instruction::value_select"]
-    fn value_select(dst: MoveLocation, condition: MoveLocation, left: MoveLocation,
-        right: MoveLocation, size: u32, signed: u32, output: *mut u8) -> BinaryEncoding;
-    #[link_name = "bootstrap.x64_instruction::scalar_binary"]
-    fn scalar_binary(dst: MoveLocation, left: MoveLocation, right: MoveLocation,
-        size: u32, signed: u32, floating: u32, count_size: u32, count_signed: u32,
-        operation: crate::builtin_types::ScalarBinaryOp, output: *mut u8) -> BinaryEncoding;
-    #[link_name = "bootstrap.x64_instruction::scalar_compare"]
-    fn scalar_compare(dst: MoveLocation, left: MoveLocation, right: MoveLocation,
-        size: u32, signed: u32, floating: u32, operation: crate::builtin_types::ScalarBinaryOp,
-        output: *mut u8) -> BinaryEncoding;
     #[link_name = "bootstrap.x64_instruction::encode"]
     fn encode_instruction(input: InstructionEncoding, opcode: *const u8, length: u64, output: *mut u8) -> u64;
     #[link_name = "bootstrap.x64_instruction::copy_scalar_move"]
@@ -306,19 +314,17 @@ impl Emitter<'_> {
         self.copy_move(dst, src, scalar.size(), scalar.is_signed());
     }
     fn copy_move(&mut self, dst: Location, src: Location, size: u32, signed: bool) {
-        self.emit_scalar(24, dst, src, false, |d, s, output| unsafe {
-            copy_scalar_move(d, s, size, u32::from(signed), output)
-        });
-    }
-    fn emit_scalar(&mut self, capacity: usize, dst: Location, src: Location, wide: bool,
-        emit: impl FnOnce(MoveLocation, MoveLocation, *mut u8) -> MoveEncoding) {
-        let destination = MoveLocation::from(dst);
+        let start = self.code.len();
         let source = MoveLocation::from(src);
-        let literal = (source.value, wide);
-        self.emit_literals(capacity, literal, (0, false), |output| {
-            let result = emit(destination, source, output);
-            BinaryEncoding { length: result.length, left_literal: result.literal_field, right_literal: 0 }
-        });
+        let literal = (source.value, false);
+        self.code.reserve(24);
+        let encoded = unsafe {
+            let encoded = copy_scalar_move(dst.into(), source, size, u32::from(signed),
+                self.code.as_mut_ptr().add(start));
+            self.code.set_len(start + encoded.length as usize);
+            encoded
+        };
+        self.record_literal(start, literal, encoded.literal_field as usize);
     }
     pub(super) fn load(&mut self, r: Reg) {
         self.copy_scalar(Location::Gpr(0), self.location(r), self.stage.registers[r]);
@@ -363,99 +369,35 @@ impl Emitter<'_> {
     pub(super) fn write_value_address(&mut self, src: Location, memory: Memory, size: u32) {
         self.emit_bytes(24, |output| unsafe { write_scalar_move(memory.into(), src.into(), size, output) });
     }
-    pub(super) fn binary(&mut self, dst: Reg, a: Reg, b: Reg, operation: BinaryOp) {
-        let scalar = self.stage.registers[dst];
-        let count = self.stage.registers[b];
-        self.emit_binary(dst, a, b, scalar, |d, a, b, output| unsafe {
-            scalar_binary(d, a, b, scalar.size(), u32::from(scalar.is_signed()),
-                u32::from(scalar.is_float()), count.size(), u32::from(count.is_signed()),
-                operation.into(), output)
-        });
-    }
-    pub(super) fn cast(&mut self, dst: Reg, src: Reg) {
-        let from = self.stage.registers[src];
-        let into = self.stage.registers[dst];
-        let destination = MoveLocation::from(self.location(dst));
-        let source = MoveLocation::from(self.location(src));
-        let literal = (source.value, from.size() == 8);
-        self.emit_literals(80, literal, (0x5f000000, false), |output| unsafe {
-            value_cast(destination, source, from.into(), into.into(), output)
-        });
-    }
-    pub(super) fn unary(&mut self, dst: Reg, src: Reg, operation: UnaryOp) {
-        let scalar = self.stage.registers[dst];
-        self.emit_scalar(64, self.location(dst), self.location(src), false, |d, s, output| unsafe {
-            value_unary(d, s, scalar.into(), operation as u32, output)
-        });
-    }
-    pub(super) fn math(&mut self, dst: Reg, operation: MathOp, args: &[Reg]) {
-        let size = self.stage.registers[args[0]].size();
-        let left = MoveLocation::from(self.location(args[0]));
-        let right = args.get(1).map(|&reg| MoveLocation::from(self.location(reg)));
-        let left_bits = left.value;
-        let right_bits = right.as_ref().map_or(0, |arg| arg.value);
-        let right = right.as_ref().map_or(std::ptr::null(), std::ptr::from_ref);
-        let dst = MoveLocation::from(self.location(dst));
+    pub(super) fn scalar_value(&mut self, inst: &Inst) {
+        let locations = ScalarLocations { allocation: &self.allocation, registers: &self.stage.registers };
+        let host = ScalarValueHost {
+            ir: HOST, context: std::ptr::from_ref(&locations).cast(),
+            location: value_location, scalar: value_scalar,
+        };
         let start = self.code.len();
         self.code.reserve(84);
-        let encoding = unsafe {
-            let encoding = scalar_math(operation as u32, dst, left, right, size, self.code.as_mut_ptr().add(start));
-            self.code.set_len(start + encoding.body.length as usize);
-            encoding
+        let encoded = unsafe {
+            let encoded = emit_scalar_value(Node::instruction(inst), host, self.code.as_mut_ptr().add(start));
+            self.code.set_len(start + encoded.length as usize);
+            encoded
         };
-        let mut literals = [(left_bits, encoding.body.left_literal), (right_bits, encoding.body.right_literal)];
-        if encoding.symbol_length != 0 {
-            // The B encoder returns the actual ASCII CRT symbol.
-            let name = unsafe { std::str::from_utf8_unchecked(&encoding.symbol[..encoding.symbol_length as usize]) };
+        if encoded.symbol_length != 0 {
+            // The B encoder produces the actual ASCII CRT symbol.
+            let name = unsafe { std::str::from_utf8_unchecked(&encoded.symbol[..encoded.symbol_length as usize]) };
             let target = NativeSymbol::External(crate::ast::ExternalName {
-                library: "ucrtbase.dll".into(),
-                symbol: name.into(),
+                library: "ucrtbase.dll".into(), symbol: name.into(),
             });
-            self.record_symbol_target(start + encoding.call_field as usize, target, true);
-            literals.swap(0, 1);
+            self.record_symbol_target(start + encoded.call_field as usize, target, true);
         }
-        for (bits, field) in literals {
-            self.record_literal(start, (bits, size == 8), field as usize);
+        for literal in [encoded.first, encoded.second] {
+            self.record_literal(start, (literal.bits, literal.wide != 0), literal.field as usize);
         }
-    }
-    pub(super) fn compare(&mut self, dst: Reg, a: Reg, b: Reg, comparison: Comparison) {
-        let scalar = self.stage.registers[a];
-        self.emit_binary(dst, a, b, scalar, |d, a, b, output| unsafe {
-            scalar_compare(d, a, b, scalar.size(), u32::from(scalar.is_signed()),
-                u32::from(scalar.is_float()), BinaryOp::Compare(comparison).into(), output)
-        });
-    }
-    fn emit_binary(&mut self, dst: Reg, a: Reg, b: Reg, scalar: Scalar,
-        emit: impl FnOnce(MoveLocation, MoveLocation, MoveLocation, *mut u8) -> BinaryEncoding) {
-        let destination = MoveLocation::from(self.location(dst));
-        let left = MoveLocation::from(self.location(a));
-        let right = MoveLocation::from(self.location(b));
-        self.emit_literals(64, (left.value, false), (right.value, scalar.size() == 8),
-            |output| emit(destination, left, right, output));
-    }
-    fn emit_literals(&mut self, capacity: usize, left: (Bits, bool), right: (Bits, bool),
-        emit: impl FnOnce(*mut u8) -> BinaryEncoding) {
-        let start = self.code.len();
-        let mut fields = (0, 0);
-        self.emit_bytes(capacity, |output| {
-            let result = emit(output);
-            fields = (result.left_literal as usize, result.right_literal as usize);
-            result.length
-        });
-        self.record_literal(start, left, fields.0);
-        self.record_literal(start, right, fields.1);
     }
     fn record_literal(&mut self, start: usize, literal: (Bits, bool), field: usize) {
         if field != 0 {
             self.literals.entry(literal).or_default().push(start + field);
         }
-    }
-    pub(super) fn select(&mut self, dst: Reg, condition: Reg, a: Reg, b: Reg) {
-        let scalar = self.stage.registers[dst];
-        let condition = MoveLocation::from(self.location(condition));
-        self.emit_binary(dst, a, b, scalar, |d, a, b, output| unsafe {
-            value_select(d, condition, a, b, scalar.size(), u32::from(scalar.is_signed()), output)
-        });
     }
     pub(super) fn preserve_registers(&mut self, restore: bool) {
         let saved = &self.frame.saved;
