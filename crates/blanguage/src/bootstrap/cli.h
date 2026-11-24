@@ -60,6 +60,12 @@ enum CompileError:u32 {
 
 enum EntryMode:u32 { Module=0; Application=1; Program=2; };
 
+struct OperandSink {
+    address context;
+    cfn<void,address,u64> import_path;
+    cfn<void,address,u64> instance_name;
+};
+
 struct CompileCommandLine {
     CompileCommand command;
     CompileError prefix_error;
@@ -83,8 +89,9 @@ struct CompileCommandLine {
 // The output has room for length + 30 bytes. The result is its written length.
 extern "C" u64 write_export_stem(address name, u64 length, u64 ordinal, address output) on cpu;
 
-// The caller owns count role bytes and enough CPU slots for the longest argument.
-extern "C" CompileCommandLine parse_compile_arguments(address arguments, u64 count, address roles, address cpus) on cpu;
+// The caller's operand sink is synchronous, and it owns the CPU selection slots.
+extern "C" CompileCommandLine parse_compile_arguments(address arguments, u64 count, OperandSink operands, address cpus) on cpu
+    requires nonzero(operands.import_path) requires nonzero(operands.instance_name);
 
 enum CodeInput:u32 { Entry=0; Image=1; Object=2; };
 
@@ -115,9 +122,9 @@ struct IrCommandLine {
     u64 has_stage;
 };
 
-// The original source operand is handled before the options. The role buffer
-// keeps imports and instances encountered before a later syntax error.
-extern "C" IrCommandLine parse_ir_arguments(address arguments, u64 count, address roles) on cpu;
+// Report operands as encountered, including those before a later syntax error.
+extern "C" IrCommandLine parse_ir_arguments(address arguments, u64 count, OperandSink operands) on cpu
+    requires nonzero(operands.import_path) requires nonzero(operands.instance_name);
 
 struct LayoutCommandLine {
     CompileError error;

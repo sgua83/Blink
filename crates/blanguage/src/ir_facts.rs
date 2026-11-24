@@ -1,5 +1,5 @@
 //! Selects original compilation consumers, then prints their actual IR values.
-use super::{Argument, CompileError, EntryMode};
+use super::{Argument, CompileError, EntryMode, OperandSink, Operands, parsed_text};
 use crate::json::string;
 use std::{ffi::OsString, fmt::Write, path::Path};
 
@@ -19,27 +19,22 @@ struct IrCommandLine {
 
 unsafe extern "C" {
     #[link_name = "bootstrap.cli::parse_ir_arguments"]
-    fn parse_ir_arguments(arguments: *const Argument, count: usize, roles: *mut u8) -> IrCommandLine;
+    fn parse_ir_arguments(arguments: *const Argument, count: usize, operands: OperandSink) -> IrCommandLine;
 }
 
 pub(super) fn print(
-    compiler: &blanguage::Compiler, args: &[OsString], arguments: &[Argument], roles: &mut [u8],
+    compiler: &blanguage::Compiler, args: &[OsString], arguments: &[Argument],
 ) -> Result<(), Box<dyn std::error::Error>> {
     let path = blanguage::canonicalize_source_path(Path::new(args.get(1).ok_or(USAGE)?))?;
-    let line = unsafe { parse_ir_arguments(arguments.as_ptr(), arguments.len(), roles.as_mut_ptr()) };
-    // Every returned text index has been checked by the parser against the original argument.
-    let text = |index: usize| unsafe { std::str::from_utf8_unchecked(args[index].as_encoded_bytes()) };
-    let mut import_paths = Vec::new();
-    let mut instances = Vec::new();
+    let mut operands = Operands::default();
+    let line = unsafe { parse_ir_arguments(arguments.as_ptr(), arguments.len(), operands.sink()) };
     // Preserve path errors from imports encountered before the reported syntax error.
-    for (index, (&role, arg)) in roles.iter().zip(args).enumerate() {
-        match role {
-            1 => import_paths.push(blanguage::canonicalize_source_path(Path::new(arg))?),
-            2 => instances.push(text(index).to_owned()),
-            _ => {}
-        }
-    }
+    let import_paths = operands.imports.iter()
+        .map(|&index| blanguage::canonicalize_source_path(Path::new(&args[index])))
+        .collect::<std::io::Result<Vec<_>>>()?;
     line.error.result(args, line.error_index)?;
+    let instances = operands.instances(args);
+    let text = |index: usize| unsafe { parsed_text(&args[index]) };
     let explicit_root;
     let root: &Path = match args.get(line.root_index) {
         Some(root) => {

@@ -10,13 +10,56 @@ mod layout_facts;
 mod x64_facts;
 mod spirv_facts;
 
-use std::{ffi::OsString, num::NonZeroUsize, path::{Path, PathBuf}, process::ExitCode};
+use std::{ffi::{OsStr, OsString, c_void}, num::NonZeroUsize, path::{Path, PathBuf}, process::ExitCode};
 
 #[repr(C)]
 struct Argument {
     bytes: *const u8,
     length: u64,
     text: u64,
+}
+
+#[repr(C)]
+struct OperandSink {
+    context: *mut c_void,
+    import_path: unsafe extern "C" fn(*mut c_void, usize),
+    instance_name: unsafe extern "C" fn(*mut c_void, usize),
+}
+
+#[derive(Default)]
+struct Operands {
+    imports: Vec<usize>,
+    instances: Vec<usize>,
+}
+
+impl Operands {
+    fn sink(&mut self) -> OperandSink {
+        OperandSink {
+            context: std::ptr::from_mut(self).cast(),
+            import_path: collect_import,
+            instance_name: collect_instance,
+        }
+    }
+
+    fn instances(&self, args: &[OsString]) -> Vec<String> {
+        self.instances.iter().map(|&index| {
+            // The parser emits instance operands only after checking their text flag.
+            unsafe { parsed_text(&args[index]) }.to_owned()
+        }).collect()
+    }
+}
+
+unsafe extern "C" fn collect_import(context: *mut c_void, index: usize) {
+    unsafe { &mut *context.cast::<Operands>() }.imports.push(index);
+}
+
+unsafe extern "C" fn collect_instance(context: *mut c_void, index: usize) {
+    unsafe { &mut *context.cast::<Operands>() }.instances.push(index);
+}
+
+/// The index must name an operand whose original OsString was marked as UTF-8 by B's caller.
+unsafe fn parsed_text(arg: &OsStr) -> &str {
+    unsafe { std::str::from_utf8_unchecked(arg.as_encoded_bytes()) }
 }
 
 #[derive(Clone, Copy)]
@@ -72,7 +115,7 @@ unsafe extern "C" {
     fn parse_compile_arguments(
         arguments: *const Argument,
         count: usize,
-        roles: *mut u8,
+        operands: OperandSink,
         cpus: *mut u32,
     ) -> CompileCommandLine;
     #[link_name = "bootstrap.cli::write_export_stem"]
@@ -173,10 +216,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let longest = arguments.iter().map(|arg| arg.length as usize).max().unwrap_or(0);
     // The smallest processor spelling is g:n, with one comma between entries.
     let mut cpus = vec![0; (longest + 1) / 4];
-    let mut roles = vec![0; args.len()];
-    // B borrows the original argument bytes and writes only within the two buffers.
+    let mut operands = Operands::default();
+    // The original argument bytes and operand receiver stay live through parsing.
     let line = unsafe {
-        parse_compile_arguments(arguments.as_ptr(), args.len(), roles.as_mut_ptr(), cpus.as_mut_ptr())
+        parse_compile_arguments(arguments.as_ptr(), args.len(), operands.sink(), cpus.as_mut_ptr())
     };
     line.prefix_error.result(&args, line.error_index)?;
     match line.command {
@@ -214,16 +257,16 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             &compiler, &args[line.command_index..], &arguments[line.command_index..],
         ),
         CompileCommand::Ir => return ir_facts::print(
-            &compiler, &args[line.command_index..], &arguments[line.command_index..], &mut roles[line.command_index..],
+            &compiler, &args[line.command_index..], &arguments[line.command_index..],
         ),
-        CompileCommand::Object => return build_object(&compiler, &args, &roles, &line),
+        CompileCommand::Object => return build_object(&compiler, &args, operands, &line),
         _ => line.error.result(&args, line.error_index)?,
     }
     let path = PathBuf::from(&args[line.source_index]);
     let root = args.get(line.root_index).map(PathBuf::from).unwrap_or_else(|| path.parent().unwrap().into());
     let has_output = matches!(line.command, CompileCommand::Build);
     let compilation = if let Some(entry) = args.get(line.entry_index) {
-        compiler.compile_entry(&path, &root, entry.to_str().ok_or("入口不是UTF-8文本")?)?
+        compiler.compile_entry(&path, &root, unsafe { parsed_text(entry) })?
     } else if has_output {
         compiler.compile(&path, &root)?
     } else {
@@ -266,7 +309,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 fn build_object(
     compiler: &blanguage::Compiler,
     args: &[OsString],
-    roles: &[u8],
+    operands: Operands,
     line: &CompileCommandLine,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let path = PathBuf::from(&args[line.source_index]);
@@ -275,31 +318,27 @@ fn build_object(
         if parent.as_os_str().is_empty() { PathBuf::from(".") } else { parent.to_path_buf() }
     });
     let mut imports = Vec::new();
-    let mut instances = Vec::new();
     // Imports encountered before a syntax error still perform their original I/O first.
-    for (arg, role) in args.iter().zip(roles) {
-        match role {
-            1 => imports.extend(blanguage::module::CompiledInterface::read(Path::new(arg))?),
-            2 if line.mode == EntryMode::Module => {
-                instances.push(arg.to_str().ok_or("实例不是UTF-8文本")?.to_owned());
-            }
-            _ => {}
-        }
+    for &index in &operands.imports {
+        imports.extend(blanguage::module::CompiledInterface::read(Path::new(&args[index]))?);
     }
     line.error.result(args, line.error_index)?;
     let output = PathBuf::from(&args[line.output_index]);
     use blanguage::build::ObjectKind;
+    let instances;
     let kind = match line.mode {
-        EntryMode::Module => ObjectKind::Module(&instances),
+        EntryMode::Module => {
+            instances = operands.instances(args);
+            ObjectKind::Module(&instances)
+        }
         EntryMode::Program => {
-            let entry = args[line.entry_index].to_str().ok_or("入口不是UTF-8文本")?;
+            let entry = unsafe { parsed_text(&args[line.entry_index]) };
             let prefix = output.file_stem().and_then(|value| value.to_str()).ok_or("目标文件名不是UTF-8")?;
             ObjectKind::Library { entry, prefix }
         }
         EntryMode::Application => {
             let entry = args.get(line.entry_index)
-                .map(|entry| entry.to_str().ok_or("入口不是UTF-8文本"))
-                .transpose()?
+                .map(|entry| unsafe { parsed_text(entry) })
                 .unwrap_or("main");
             ObjectKind::Application(entry)
         }

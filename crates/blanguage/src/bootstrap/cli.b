@@ -237,7 +237,8 @@ CompileCommand compiler_command(CliArgument argument) on cpu {
     return CompileCommand::Unknown;
 }
 
-CompileCommandLine parse_object_options(address arguments, u64 count, address roles, CompileCommandLine line) on cpu {
+CompileCommandLine parse_object_options(address arguments, u64 count, OperandSink operands, CompileCommandLine line) on cpu
+    requires nonzero(operands.import_path) requires nonzero(operands.instance_name) {
     CompileCommandLine result = line;
     u64 index = line.source_index + 1u64;
     while (index < count) {
@@ -273,10 +274,10 @@ CompileCommandLine parse_object_options(address arguments, u64 count, address ro
                 result.entry_index = operand;
             }
         } else if (is_token(option, "--import")) {
-            unsafe_position<u8>(unsafe_address(address_bits(roles) + operand)) = u8(1);
+            operands.import_path(operands.context,operand);
         } else if (is_token(option, "--instance")) {
             if (argument.text == 0u64) { result.error = CompileError::InstanceText; return result; }
-            unsafe_position<u8>(unsafe_address(address_bits(roles) + operand)) = u8(2);
+            operands.instance_name(operands.context,operand);
         } else {
             result.error = CompileError::UnknownOption;
             return result;
@@ -288,7 +289,8 @@ CompileCommandLine parse_object_options(address arguments, u64 count, address ro
     return result;
 }
 
-extern "C" CompileCommandLine parse_compile_arguments(address arguments, u64 count, address roles, address cpus) on cpu {
+extern "C" CompileCommandLine parse_compile_arguments(address arguments, u64 count, OperandSink operands, address cpus) on cpu
+    requires nonzero(operands.import_path) requires nonzero(operands.instance_name) {
     CompileCommandLine result = CompileCommandLine(
         CompileCommand::Unknown, CompileError::None, CompileError::None, 0,
         0u64, count, count, count, count, count, count, 0u64, 0u64, EntryMode::Application, 0u64, 0u64, 0u64);
@@ -352,7 +354,7 @@ extern "C" CompileCommandLine parse_compile_arguments(address arguments, u64 cou
     if (result.command == CompileCommand::Layout || result.command == CompileCommand::Ir) { return result; }
     if (index + 1u64 == count) { result.command = CompileCommand::Unknown; result.error = CompileError::MissingSource; return result; }
     result.source_index = index + 1u64;
-    if (result.command == CompileCommand::Object) { return parse_object_options(arguments, count, roles, result); }
+    if (result.command == CompileCommand::Object) { return parse_object_options(arguments, count, operands, result); }
     if (result.command == CompileCommand::Unknown) { result.error = CompileError::UnknownCommand; result.error_index = index; return result; }
 
     u64 root = index + 2u64;
@@ -437,7 +439,8 @@ extern "C" CodeCommandLine parse_code_arguments(address arguments, u64 count) on
     return line;
 }
 
-extern "C" IrCommandLine parse_ir_arguments(address arguments, u64 count, address roles) on cpu {
+extern "C" IrCommandLine parse_ir_arguments(address arguments, u64 count, OperandSink operands) on cpu
+    requires nonzero(operands.import_path) requires nonzero(operands.instance_name) {
     IrCommandLine line = IrCommandLine(
         EntryMode::Module, CompileError::None, count, count, count, count, 0u64, 0u64);
     bool explicit_mode = false;
@@ -479,11 +482,11 @@ extern "C" IrCommandLine parse_ir_arguments(address arguments, u64 count, addres
             line.stage = stage.value;
             line.has_stage = 1u64;
         } else if (is_token(option, "--import")) {
-            unsafe_position<u8>(unsafe_address(address_bits(roles) + operand)) = u8(1);
+            operands.import_path(operands.context,operand);
             has_imports = true;
         } else if (is_token(option, "--instance")) {
             if (value.text == 0u64) { line.error = CompileError::IrUsage; return line; }
-            unsafe_position<u8>(unsafe_address(address_bits(roles) + operand)) = u8(2);
+            operands.instance_name(operands.context,operand);
             has_instances = true;
         } else {
             line.error = CompileError::IrOption;
