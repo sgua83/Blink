@@ -70,10 +70,61 @@ impl Groups {
             && (target.value != 0 || self.positions[source].0 != self.positions[target.section].0)
     }
 
+    fn combine_closed_groups(&mut self, raw: &[ObjectSection]) -> Option<usize> {
+        let mut needs_resolution = vec![false; self.members.len()];
+        let mut dependents = vec![Vec::new(); self.members.len()];
+        let mut pending = Vec::new();
+        for (section, relocations) in self.relocations.iter().enumerate() {
+            let member = self.positions[section].0;
+            for relocation in relocations {
+                let target = &relocation.target;
+                let external = match target.kind {
+                    ObjectTargetKind::Section => {
+                        let destination = self.positions[target.section].0;
+                        if destination != member {
+                            dependents[destination].push(member);
+                        }
+                        false
+                    }
+                    ObjectTargetKind::Symbol => true,
+                    ObjectTargetKind::Import => {
+                        let dll = unsafe { target.dll.borrowed() };
+                        dll == crate::resource::RUNTIME_LIBRARY.as_bytes()
+                    }
+                };
+                if external && !std::mem::replace(&mut needs_resolution[member], true) {
+                    pending.push(member);
+                }
+            }
+        }
+        // A member needs independent extraction if any referenced group does.
+        while let Some(member) = pending.pop() {
+            for &dependent in &dependents[member] {
+                if !std::mem::replace(&mut needs_resolution[dependent], true) {
+                    pending.push(dependent);
+                }
+            }
+        }
+        let mut closed = needs_resolution.iter().enumerate()
+            .filter_map(|(member, needs_resolution)| (!needs_resolution).then_some(member));
+        let first = closed.next()?;
+        let second = closed.next()?;
+        for member in std::iter::once(second).chain(closed) {
+            let group = std::mem::take(&mut self.members[member]);
+            self.members[first].extend(group);
+        }
+        self.members[first].sort_unstable();
+        for (index, &section) in self.members[first].iter().enumerate() {
+            self.positions[raw[section].mapped - 1] = (first, index);
+        }
+        Some(first)
+    }
+
     pub(super) fn encode(
-        self, bytes: &[u8], raw: &[ObjectSection], symbols: &[ObjectSymbol],
+        mut self, bytes: &[u8], raw: &[ObjectSection], symbols: &[ObjectSymbol],
         build: Option<&HostBuildSection>,
     ) -> Result<Vec<(Vec<u8>, Vec<String>)>> {
+        let combined = self.combine_closed_groups(raw);
         let identity = member_identity(bytes, raw, build);
         let mut anchors = BTreeMap::new();
         for (section, relocations) in self.relocations.iter().enumerate() {
@@ -109,6 +160,9 @@ impl Groups {
 
         let mut output = Vec::with_capacity(self.members.len());
         for (member, physical) in self.members.iter().enumerate() {
+            if physical.is_empty() {
+                continue;
+            }
             let mut associated = vec![Vec::new(); physical.len()];
             let mut relocations = Vec::with_capacity(physical.len());
             for (local, &index) in physical.iter().enumerate() {
@@ -150,7 +204,12 @@ impl Groups {
                 payloads.extend(raw.iter().filter(|row| row.mapped == 0 && row_name(row) != BUILD)
                     .map(|row| (row_name(row), row_payload(row), row.flags as u32, 0)));
             }
-            let group_name = format!("{identity}${member}");
+            // Retain the original COMDAT namespace of each independent member.
+            let group_name = if combined == Some(member) {
+                format!("{identity}$closed${member}")
+            } else {
+                format!("{identity}${member}")
+            };
             let code = encode_bound(&group_name, payloads, bindings, &definitions[member], None)?;
             output.push((code, std::mem::take(&mut names[member])));
         }
