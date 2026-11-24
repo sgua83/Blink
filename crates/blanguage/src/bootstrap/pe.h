@@ -25,4 +25,5 @@ struct PeLayout {
 struct PeRelocationResult { u32 status; u32 kind; };
 
 extern "C" PeLayout layout(PeInput input,address rows,address groups,u64 relocation_count) on cpu;
+// Initializes the complete file range before returning success.
 extern "C" PeRelocationResult encode(PeInput input,PeLayout layout,address rows,u64 row_count,address output) on cpu;

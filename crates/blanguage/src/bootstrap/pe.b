@@ -18,6 +18,10 @@ void le16(address output,u64 at,u64 value) on cpu {put(output,at,value);put(outp
 void le32(address output,u64 at,u64 value) on cpu {u64 i=0u64;while(i<4u64){put(output,at+i,value>>(i*8u64));i+=1u64;}}
 void le64(address output,u64 at,u64 value) on cpu {u64 i=0u64;while(i<8u64){put(output,at+i,value>>(i*8u64));i+=1u64;}}
 void copy(address output,u64 at,address data,u64 length) on cpu {u64 i=0u64;while(i<length){put(output,at+i,u64(byte_at(data,i)));i+=1u64;}}
+void zero_range(address output,u64 begin,u64 end) on cpu {
+    u64 at=begin;
+    while(at<end){put(output,at,0u64);at+=1u64;}
+}
 
 i32 compare(address a,u64 na,address b,u64 nb) on cpu {
     u64 i=0u64;while(i<na&&i<nb){u8 x=byte_at(a,i);u8 y=byte_at(b,i);if(x<y){return -1;}if(x>y){return i32(1);}i+=1u64;}
@@ -257,6 +261,7 @@ void section_header(address output,u64 index,address name,u64 name_length,u64 rv
     le32(output,header+16u64,align(length,512u64));le32(output,header+20u64,raw);le32(output,header+36u64,flags);
 }
 void encode_headers(PeInput input,PeLayout layout,address output) on cpu {
+    zero_range(output,0u64,layout.header);
     put(output,0u64,77u64);put(output,1u64,90u64);le32(output,60u64,128u64);
     put(output,128u64,80u64);put(output,129u64,69u64);le16(output,132u64,34404u64);
     le16(output,134u64,layout.section_count);le16(output,148u64,240u64);le16(output,150u64,34u64);
@@ -277,8 +282,12 @@ void encode_headers(PeInput input,PeLayout layout,address output) on cpu {
     u64 raw=layout.header;i=0u64;
     while(i<input.section_count){
         PeSection section=section_at(input,i);section_header(output,i,section.name,section.name_length,u64(section.rva),section.byte_length,section.raw,u64(section.flags)&4262461439u64);
-        raw=section.raw+align(section.byte_length,512u64);i+=1u64;
+        raw=section.raw+align(section.byte_length,512u64);
+        zero_range(output,section.raw+section.byte_length,raw);
+        i+=1u64;
     }
+    // The generated directories need their reserved fields, terminators and file padding.
+    zero_range(output,raw,layout.length);
     // Generated section names occupy their actual fixed PE name fields.
     u64 ih=392u64+input.section_count*40u64;
     put(output,ih,46u64);put(output,ih+1u64,105u64);put(output,ih+2u64,100u64);put(output,ih+3u64,97u64);put(output,ih+4u64,116u64);put(output,ih+5u64,97u64);
@@ -319,7 +328,7 @@ extern "C" PeRelocationResult encode(PeInput input,PeLayout layout,address rows,
     while(i<row_count){
         CombineSection row=bootstrap.combine::section_at(rows,i);
         PeSection group=section_at(input,row.group);
-        encode_section(row,unsafe_address(address_bits(output)+group.raw),true);
+        encode_section(row,unsafe_address(address_bits(output)+group.raw));
         i+=1u64;
     }
     return relocate_sections(input,layout.image_base,output);

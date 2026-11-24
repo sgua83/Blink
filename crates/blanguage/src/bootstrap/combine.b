@@ -142,20 +142,20 @@ extern "C" CombinePlan prepare(CombineInput input, address local, u64 local_coun
     return result;
 }
 bool is_text(CombineSection row) on cpu {return row.name_length==5u64&&byte_at(row.name,0u64)==u8(46)&&byte_at(row.name,1u64)==u8(116)&&byte_at(row.name,2u64)==u8(101)&&byte_at(row.name,3u64)==u8(120)&&byte_at(row.name,4u64)==u8(116);}
-void encode_section(CombineSection row,address output,bool output_zeroed) on cpu {
+void encode_section(CombineSection row,address output) on cpu {
     u8 padding=u8(0);if(is_text(row)){padding=u8(144);}u64 j=row.begin-row.padding;
     while(j<row.begin){byte_put(output,j,padding);j+=1u64;}
     j=0u64;
     if(address_bits(row.bytes)!=0u64){
         while(j<row.byte_length){byte_put(output,row.begin+j,byte_at(row.bytes,j));j+=1u64;}
-    }else if(!output_zeroed){
+    }else{
         while(j<row.byte_length){byte_put(output,row.begin+j,u8(0));j+=1u64;}
     }
 }
 extern "C" void encode(address sections,u64 section_count,address outputs) on cpu {
     u64 i=0u64;while(i<section_count){
         CombineSection row=section_at(sections,i);address output=unsafe_position<address>(unsafe_address(address_bits(outputs)+row.group*8u64));
-        encode_section(row,output,false);
+        encode_section(row,output);
         i+=1u64;
     }
 }

@@ -69,9 +69,12 @@ pub(super) fn link(
         4=>return Err("应用目标文件缺少展开信息".into()),
         code=>return Err(format!("PE格式生成失败 {code}").into()),
     }
-    let mut output=vec![0;usize::try_from(layout.length)?];
+    let length=usize::try_from(layout.length)?;
+    let mut output=Vec::with_capacity(length);
     // Both original plans and their source bytes stay alive through image encoding.
     let relocation = unsafe { pe_encode(input, layout, rows.as_ptr(), rows.len(), output.as_mut_ptr()) };
     relocation.status.result(relocation.kind)?;
+    // On success the writer initialized the entire file, including reserved bytes and padding.
+    unsafe { output.set_len(length); }
     Ok(output)
 }

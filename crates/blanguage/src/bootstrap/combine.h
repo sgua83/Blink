@@ -27,5 +27,5 @@ struct CombinePlan {u64 groups;u64 symbols;u64 imports;u64 absolutes;u64 error;u
 extern "C" CombinePlan prepare(CombineInput input, address local, u64 local_count, bool pe) on cpu;
 CombineSection section_at(address sections,u64 i) on cpu;
 CombineGroup group_at(address groups,u64 i) on cpu;
-void encode_section(CombineSection row,address output,bool output_zeroed) on cpu;
+void encode_section(CombineSection row,address output) on cpu;
 extern "C" void encode(address sections,u64 section_count,address outputs) on cpu;
