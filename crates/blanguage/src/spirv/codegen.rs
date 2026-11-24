@@ -394,14 +394,98 @@ struct ControlWords {
     reaches_next: u32,
 }
 
+#[repr(u32)]
+enum StructuredKind { Selection, Loop }
+
+#[repr(u32)]
+enum BlockFlow { Error, Stop, Next }
+
 #[repr(C)]
-#[derive(Clone, Copy)]
-struct LoopLabels {
-    header: u32,
-    check: u32,
-    run: u32,
-    next: u32,
-    end: u32,
+struct InstructionBlock { data: *const std::ffi::c_void, count: usize }
+impl From<&[Inst]> for InstructionBlock {
+    fn from(code: &[Inst]) -> Self {
+        Self { data: code.as_ptr().cast(), count: code.len() }
+    }
+}
+impl InstructionBlock {
+    unsafe fn original(&self) -> &[Inst] {
+        unsafe { std::slice::from_raw_parts(self.data.cast(), self.count) }
+    }
+}
+
+#[repr(C)]
+struct ControlTargets { end: u32, next: u32 }
+impl From<Option<(u32, u32)>> for ControlTargets {
+    fn from(targets: Option<(u32, u32)>) -> Self {
+        let (end, next) = targets.unwrap_or_default();
+        Self { end, next }
+    }
+}
+
+#[repr(C)]
+struct StructuredControl {
+    first: InstructionBlock,
+    second: InstructionBlock,
+    test: Reg,
+    targets: ControlTargets,
+    kind: StructuredKind,
+}
+
+#[repr(C)]
+struct StructuredHost {
+    context: *mut std::ffi::c_void,
+    labels: unsafe extern "C" fn(*mut std::ffi::c_void, u32) -> u32,
+    reserve_words: unsafe extern "C" fn(*mut std::ffi::c_void, usize) -> *mut u32,
+    finish_words: unsafe extern "C" fn(*mut std::ffi::c_void, ControlWords),
+    block: unsafe extern "C" fn(*mut std::ffi::c_void, InstructionBlock, ControlTargets) -> BlockFlow,
+    value: unsafe extern "C" fn(*mut std::ffi::c_void, Reg) -> u32,
+    begin_return: unsafe extern "C" fn(*mut std::ffi::c_void, InstructionBlock, u32) -> u32,
+    normal_exit: unsafe extern "C" fn(*mut std::ffi::c_void, u32),
+    finish_return: unsafe extern "C" fn(*mut std::ffi::c_void),
+}
+
+struct StructuredEmission<'a, 'program> {
+    emitter: &'a mut Emitter<'program>,
+    error: Option<&'static str>,
+}
+
+type StructuredContext = *mut std::ffi::c_void;
+unsafe extern "C" fn structured_labels(context: StructuredContext, count: u32) -> u32 {
+    let emitter = &mut unsafe { &mut *context.cast::<StructuredEmission<'_, '_>>() }.emitter;
+    let first = emitter.next;
+    emitter.next += count;
+    first
+}
+unsafe extern "C" fn structured_reserve(context: StructuredContext, capacity: usize) -> *mut u32 {
+    unsafe { &mut *context.cast::<StructuredEmission<'_, '_>>() }.emitter.reserve_control(capacity)
+}
+unsafe extern "C" fn structured_finish(context: StructuredContext, emitted: ControlWords) {
+    unsafe { (&mut *context.cast::<StructuredEmission<'_, '_>>()).emitter.finish_control(emitted); }
+}
+unsafe extern "C" fn structured_block(
+    context: StructuredContext, code: InstructionBlock, targets: ControlTargets,
+) -> BlockFlow {
+    let emission = unsafe { &mut *context.cast::<StructuredEmission<'_, '_>>() };
+    let targets = (targets.end != 0).then_some((targets.end, targets.next));
+    match emission.emitter.block(unsafe { code.original() }, targets) {
+        Ok(true) => BlockFlow::Next,
+        Ok(false) => BlockFlow::Stop,
+        Err(error) => { emission.error = Some(error); BlockFlow::Error }
+    }
+}
+unsafe extern "C" fn structured_value(context: StructuredContext, register: Reg) -> u32 {
+    unsafe { &*context.cast::<StructuredEmission<'_, '_>>() }.emitter.value(register)
+}
+unsafe extern "C" fn structured_begin_return(context: StructuredContext, body: InstructionBlock, merge: u32) -> u32 {
+    let emitter = &mut unsafe { &mut *context.cast::<StructuredEmission<'_, '_>>() }.emitter;
+    u32::from(emitter.begin_return_loop(unsafe { body.original() }, merge))
+}
+unsafe extern "C" fn structured_normal_exit(context: StructuredContext, end: u32) {
+    let emitter = &mut unsafe { &mut *context.cast::<StructuredEmission<'_, '_>>() }.emitter;
+    emitter.loop_exit_edge(end, emitter.current_label);
+}
+unsafe extern "C" fn structured_finish_return(context: StructuredContext) {
+    unsafe { &mut *context.cast::<StructuredEmission<'_, '_>>() }.emitter.finish_return_loop();
 }
 
 #[repr(C)]
@@ -844,14 +928,8 @@ unsafe extern "C" {
     fn dispatch_count_index(push: DispatchPush, word: u32, field: u32, first: u32, body: *mut u32) -> PayloadRead;
     #[link_name = "bootstrap.spirv_envelope::next_control_block"]
     fn next_control_block(target: u32, label: u32, reaches: u32, body: *mut u32) -> ControlWords;
-    #[link_name = "bootstrap.spirv_envelope::close_selection"]
-    fn close_selection(merge: u32, yes_reaches: u32, no_reaches: u32, body: *mut u32) -> ControlWords;
-    #[link_name = "bootstrap.spirv_envelope::open_loop"]
-    fn open_loop(labels: LoopLabels, body: *mut u32) -> ControlWords;
-    #[link_name = "bootstrap.spirv_envelope::test_loop"]
-    fn test_loop(labels: LoopLabels, test: u32, body: *mut u32) -> ControlWords;
-    #[link_name = "bootstrap.spirv_envelope::close_loop"]
-    fn close_loop(labels: LoopLabels, reaches: u32, body: *mut u32) -> ControlWords;
+    #[link_name = "bootstrap.spirv_envelope::lower_structured"]
+    fn lower_structured(input: StructuredControl, host: StructuredHost) -> BlockFlow;
     #[link_name = "bootstrap.spirv_envelope::open_function_scope"]
     fn open_function_scope(merge: u32, selector: u32, begin: u32, body: *mut u32) -> ControlWords;
     #[link_name = "bootstrap.spirv_envelope::leave_control"]
@@ -1287,15 +1365,40 @@ impl Emitter<'_> {
         }
     }
 
-    fn emit_control(&mut self, capacity: usize, encode: impl FnOnce(*mut u32) -> ControlWords) -> bool {
+    fn reserve_control(&mut self, capacity: usize) -> *mut u32 {
         let at = self.body.len();
         self.body.reserve(capacity);
-        let emitted = encode(unsafe { self.body.as_mut_ptr().add(at) });
-        unsafe { self.body.set_len(at + emitted.words as usize); }
+        unsafe { self.body.as_mut_ptr().add(at) }
+    }
+
+    unsafe fn finish_control(&mut self, emitted: ControlWords) -> bool {
+        unsafe { self.body.set_len(self.body.len() + emitted.words as usize); }
         if emitted.label != 0 {
             self.current_label = emitted.label;
         }
         emitted.reaches_next != 0
+    }
+
+    fn emit_control(&mut self, capacity: usize, encode: impl FnOnce(*mut u32) -> ControlWords) -> bool {
+        let emitted = encode(self.reserve_control(capacity));
+        unsafe { self.finish_control(emitted) }
+    }
+
+    fn structured_control(&mut self, input: StructuredControl) -> Result<bool, &'static str> {
+        let mut emission = StructuredEmission { emitter: self, error: None };
+        let host = StructuredHost {
+            context: std::ptr::from_mut(&mut emission).cast(),
+            labels: structured_labels,
+            reserve_words: structured_reserve,
+            finish_words: structured_finish,
+            block: structured_block,
+            value: structured_value,
+            begin_return: structured_begin_return,
+            normal_exit: structured_normal_exit,
+            finish_return: structured_finish_return,
+        };
+        let flow = unsafe { lower_structured(input, host) };
+        emission.error.map_or(Ok(matches!(flow, BlockFlow::Next)), Err)
     }
 
     fn open_active(&mut self, condition: u32, run: u32, merge: u32) {
@@ -1566,38 +1669,18 @@ impl Emitter<'_> {
                     self.ty(*dst), self.value(*dst), self.value(*condition), self.value(*a), self.value(*b),
                 ),
                 InstKind::If { condition, yes, no } => {
-                    let yes_label = self.id();
-                    let no_label = self.id();
-                    let merge = self.id();
-                    let condition = self.value(*condition);
-                    self.emit_control(9, |body| unsafe { open_selection(merge, condition, yes_label, no_label, body) });
-                    let yes_reaches = u32::from(self.block(yes, loop_targets)?);
-                    self.emit_control(4, |body| unsafe { next_control_block(merge, no_label, yes_reaches, body) });
-                    let no_reaches = u32::from(self.block(no, loop_targets)?);
-                    if !self.emit_control(4, |body| unsafe { close_selection(merge, yes_reaches, no_reaches, body) }) {
+                    if !self.structured_control(StructuredControl {
+                        first: yes.as_slice().into(), second: no.as_slice().into(),
+                        test: *condition, targets: loop_targets.into(), kind: StructuredKind::Selection,
+                    })? {
                         return Ok(false);
                     }
                 }
                 InstKind::Loop { condition, test, body } => {
-                    let labels = LoopLabels {
-                        header: self.id(),
-                        check: self.id(),
-                        run: self.id(),
-                        next: self.id(),
-                        end: self.id(),
-                    };
-                    let targets = Some((labels.end, labels.next));
-                    let returning = self.begin_return_loop(body, labels.end);
-                    self.emit_control(12, |words| unsafe { open_loop(labels, words) });
-                    self.block(condition, targets)?;
-                    self.loop_exit_edge(labels.end, self.current_label);
-                    let test = self.value(*test);
-                    self.emit_control(6, |words| unsafe { test_loop(labels, test, words) });
-                    let reaches = u32::from(self.block(body, targets)?);
-                    self.emit_control(8, |words| unsafe { close_loop(labels, reaches, words) });
-                    if returning {
-                        self.finish_return_loop();
-                    }
+                    self.structured_control(StructuredControl {
+                        first: condition.as_slice().into(), second: body.as_slice().into(),
+                        test: *test, targets: loop_targets.into(), kind: StructuredKind::Loop,
+                    })?;
                 }
                 InstKind::Break => {
                     let (end, _) = loop_targets.unwrap();

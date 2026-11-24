@@ -947,7 +947,7 @@ extern "C" ControlWords next_control_block(u32 target, u32 label, u32 reaches, a
     return ControlWords(words_one(body, at, 248, label), label, 1);
 }
 
-extern "C" ControlWords close_selection(u32 merge, u32 yes_reaches, u32 no_reaches, address body) on cpu {
+ControlWords close_selection(u32 merge, u32 yes_reaches, u32 no_reaches, address body) on cpu {
     u64 at = branch_if_reached(body, 0u64, merge, no_reaches);
     at = words_one(body, at, 248, merge);
     u32 reaches = yes_reaches | no_reaches;
@@ -958,7 +958,9 @@ extern "C" ControlWords close_selection(u32 merge, u32 yes_reaches, u32 no_reach
     return ControlWords(at, merge, reaches);
 }
 
-extern "C" ControlWords open_loop(LoopLabels labels, address body) on cpu {
+struct LoopLabels { u32 header; u32 check; u32 run; u32 next; u32 end; };
+
+ControlWords open_loop(LoopLabels labels, address body) on cpu {
     u64 at = words_one(body, 0u64, 249, labels.header);
     at = words_one(body, at, 248, labels.header);
     at = words_three(body, at, 246, labels.end, labels.next, 0);
@@ -966,16 +968,56 @@ extern "C" ControlWords open_loop(LoopLabels labels, address body) on cpu {
     return ControlWords(words_one(body, at, 248, labels.check), labels.check, 1);
 }
 
-extern "C" ControlWords test_loop(LoopLabels labels, u32 test, address body) on cpu {
+ControlWords test_loop(LoopLabels labels, u32 test, address body) on cpu {
     u64 at = words_three(body, 0u64, 250, test, labels.run, labels.end);
     return ControlWords(words_one(body, at, 248, labels.run), labels.run, 1);
 }
 
-extern "C" ControlWords close_loop(LoopLabels labels, u32 reaches, address body) on cpu {
+ControlWords close_loop(LoopLabels labels, u32 reaches, address body) on cpu {
     u64 at = branch_if_reached(body, 0u64, labels.next, reaches);
     at = words_one(body, at, 248, labels.next);
     at = words_one(body, at, 249, labels.header);
     return ControlWords(words_one(body, at, 248, labels.end), labels.end, 1);
+}
+
+extern "C" BlockFlow lower_structured(StructuredControl input, StructuredHost host) on cpu
+    requires nonzero(host.labels) requires nonzero(host.reserve_words) requires nonzero(host.finish_words)
+    requires nonzero(host.block) requires nonzero(host.value) requires nonzero(host.begin_return)
+    requires nonzero(host.normal_exit) requires nonzero(host.finish_return) {
+    address context = host.context;
+    if (input.kind == StructuredKind::Selection) {
+        u32 yes = host.labels(context, 3);
+        u32 no = yes + 1;
+        u32 merge = yes + 2;
+        u32 test = host.value(context, input.test);
+        host.finish_words(context, open_selection(merge, test, yes, no, host.reserve_words(context, 9u64)));
+        BlockFlow first = host.block(context, input.first, input.targets);
+        if (first == BlockFlow::Error) { return first; }
+        u32 yes_reaches = u32(first == BlockFlow::Next);
+        host.finish_words(context, next_control_block(merge, no, yes_reaches, host.reserve_words(context, 4u64)));
+        BlockFlow second = host.block(context, input.second, input.targets);
+        if (second == BlockFlow::Error) { return second; }
+        ControlWords close = close_selection(merge, yes_reaches, u32(second == BlockFlow::Next),
+            host.reserve_words(context, 4u64));
+        host.finish_words(context, close);
+        return close.reaches_next != 0 ? BlockFlow::Next : BlockFlow::Stop;
+    }
+
+    u32 first_id = host.labels(context, 5);
+    LoopLabels labels = LoopLabels(first_id, first_id + 1, first_id + 2, first_id + 3, first_id + 4);
+    ControlTargets targets = ControlTargets(labels.end, labels.next);
+    u32 returning = host.begin_return(context, input.second, labels.end);
+    host.finish_words(context, open_loop(labels, host.reserve_words(context, 12u64)));
+    BlockFlow condition = host.block(context, input.first, targets);
+    if (condition == BlockFlow::Error) { return condition; }
+    host.normal_exit(context, labels.end);
+    u32 test = host.value(context, input.test);
+    host.finish_words(context, test_loop(labels, test, host.reserve_words(context, 6u64)));
+    BlockFlow flow = host.block(context, input.second, targets);
+    if (flow == BlockFlow::Error) { return flow; }
+    host.finish_words(context, close_loop(labels, u32(flow == BlockFlow::Next), host.reserve_words(context, 8u64)));
+    if (returning != 0) { host.finish_return(context); }
+    return BlockFlow::Next;
 }
 
 extern "C" ControlWords open_function_scope(u32 merge, u32 selector, u32 begin, address body) on cpu {

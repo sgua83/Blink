@@ -252,7 +252,6 @@ extern "C" u64 read_shader_index(u32 vector_type, u32 uint_type, u32 input, u32 
 extern "C" u64 unpack_summary_word(u32 type_id, u32 result, u32 word, u32 shift, address body) on cpu;
 
 struct ControlWords { u64 words; u32 label; u32 reaches_next; };
-struct LoopLabels { u32 header; u32 check; u32 run; u32 next; u32 end; };
 struct LoopReturn {
     u32 bool_type;
     u32 result;
@@ -273,12 +272,36 @@ extern "C" ControlWords open_index_selection(u32 bool_type, u32 test, u32 index,
 extern "C" ControlWords open_tile_padding(u32 uint_type, u32 bool_type, u32 lane, u32 width,
     u32 capacity, u32 index, u32 test, u32 run, u32 end, address body) on cpu;
 extern "C" ControlWords next_control_block(u32 target, u32 label, u32 reaches, address body) on cpu;
-extern "C" ControlWords close_selection(u32 merge, u32 yes_reaches, u32 no_reaches, address body) on cpu;
 extern "C" u64 phi_two(address body, u64 at, u32 type, u32 result,
                         u32 first_value, u32 first_block, u32 second_value, u32 second_block) on cpu;
-extern "C" ControlWords open_loop(LoopLabels labels, address body) on cpu;
-extern "C" ControlWords test_loop(LoopLabels labels, u32 test, address body) on cpu;
-extern "C" ControlWords close_loop(LoopLabels labels, u32 reaches, address body) on cpu;
+// Borrowed original blocks. The host owns instruction storage and word buffers.
+enum StructuredKind:u32 { Selection=0; Loop=1; };
+enum BlockFlow:u32 { Error=0; Stop=1; Next=2; };
+struct InstructionBlock { address data; usize count; };
+struct ControlTargets { u32 end; u32 next; };
+struct StructuredControl {
+    InstructionBlock first;
+    InstructionBlock second;
+    usize test;
+    ControlTargets targets;
+    StructuredKind kind;
+};
+struct StructuredHost {
+    address context;
+    cfn<u32,address,u32> labels;
+    cfn<address,address,usize> reserve_words;
+    cfn<void,address,ControlWords> finish_words;
+    cfn<BlockFlow,address,InstructionBlock,ControlTargets> block;
+    cfn<u32,address,usize> value;
+    cfn<u32,address,InstructionBlock,u32> begin_return;
+    cfn<void,address,u32> normal_exit;
+    cfn<void,address> finish_return;
+};
+extern "C" BlockFlow lower_structured(StructuredControl input, StructuredHost host) on cpu
+    requires nonzero(host.labels) requires nonzero(host.reserve_words) requires nonzero(host.finish_words)
+    requires nonzero(host.block) requires nonzero(host.value) requires nonzero(host.begin_return)
+    requires nonzero(host.normal_exit) requires nonzero(host.finish_return);
+
 extern "C" ControlWords open_function_scope(u32 merge, u32 selector, u32 begin, address body) on cpu;
 extern "C" ControlWords leave_control(u32 target, address body) on cpu;
 extern "C" ControlWords dispatch_loop_return(LoopReturn input, address edges, address body) on cpu;
