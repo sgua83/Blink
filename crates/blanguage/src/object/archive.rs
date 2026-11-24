@@ -203,7 +203,14 @@ pub(crate) fn inputs(runtime: bool, worker: &crate::compiler::Worker) -> std::io
     let mut files = vec![sdk.join("Cargo.toml")];
     let compiler_sources = sdk.join("crates/blanguage/src/bootstrap");
     optional(&mut digest, &sdk.join("crates/blanguage/build-sdk.rs"))?;
-    optional(&mut digest, &sdk.join("crates/blanguage/native/blink_value_format.lib"))?;
+    if let Some(source) = option_env!("BLINK_RUNTIME_COFF_SOURCE") {
+        let source = sdk.join(source);
+        for extension in ["b", "h"] {
+            optional(&mut digest, &source.with_extension(extension))?;
+        }
+    } else {
+        optional(&mut digest, &sdk.join("crates/blanguage/native/blink_value_format.lib"))?;
+    }
     for name in ["blanguage", "blcompute"] {
         let package = sdk.join("crates").join(name);
         files.push(package.join("Cargo.toml"));

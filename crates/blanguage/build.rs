@@ -68,10 +68,10 @@ fn native_modules() -> Result<(), Box<dyn std::error::Error>> {
     let value_archive = out.join("blink_value_format.lib");
     let compiler_archive = out.join("blink_compiler_bootstrap.lib");
     let object = |name: &str| out.join(format!("blink_compiler_{name}.obj"));
-    let coff_source = "../../library/blink/windows/coff";
+    let coff_source = "library/blink/windows/coff";
     for extension in ["b", "h"] {
         println!("cargo:rerun-if-changed=src/codec/value_format.{extension}");
-        println!("cargo:rerun-if-changed={coff_source}.{extension}");
+        println!("cargo:rerun-if-changed=../../{coff_source}.{extension}");
     }
     let mut jobs = vec![
         compile(
@@ -82,7 +82,7 @@ fn native_modules() -> Result<(), Box<dyn std::error::Error>> {
         ),
         compile(
             "coff_read",
-            &format!("{coff_source}.b"),
+            &format!("../../{coff_source}.b"),
             "../../library",
             object("coff_read"),
         ),
@@ -91,6 +91,7 @@ fn native_modules() -> Result<(), Box<dyn std::error::Error>> {
     let compiler = env::var_os("CARGO_FEATURE_COMPILER").is_some();
     if compiler {
         println!("cargo:rustc-env=BLINK_BUILT_SHARED_OBJECTS={}", out.display());
+        println!("cargo:rustc-env=BLINK_RUNTIME_COFF_SOURCE={coff_source}");
         println!("cargo:rerun-if-changed=src/bootstrap");
         println!("cargo:rerun-if-changed=../../library/blink");
         for (name, source) in [
