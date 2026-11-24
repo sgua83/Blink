@@ -98,7 +98,7 @@ impl Module {
             |_, function| native::emit_function(function).map(|code| (function.name.clone(), code)),
         ).map_err(|error| std::io::Error::other(error.to_string()))?;
         let (compiled_resources, resource_code, resource_imports) =
-            crate::application::compile_resources(&self.name, resources.as_deref(), false, worker, has_tasks)?;
+            crate::application::compile_resources(&self.name, resources.as_deref(), false, worker, has_tasks, None)?;
         let factory_entry_count = resource_code.len();
         let resource_names: Vec<_> = resource_code.iter().map(|(name, _)| name.clone()).collect();
         code.extend(resource_code);

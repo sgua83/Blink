@@ -91,7 +91,6 @@ fn native_modules() -> Result<(), Box<dyn std::error::Error>> {
     let compiler = env::var_os("CARGO_FEATURE_COMPILER").is_some();
     if compiler {
         println!("cargo:rustc-env=BLINK_BUILT_SHARED_OBJECTS={}", out.display());
-        println!("cargo:rustc-env=BLINK_RUNTIME_COFF_SOURCE={coff_source}");
         println!("cargo:rerun-if-changed=src/bootstrap");
         println!("cargo:rerun-if-changed=../../library/blink");
         for (name, source) in [

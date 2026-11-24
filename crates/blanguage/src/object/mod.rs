@@ -9,7 +9,7 @@ pub(crate) use coff::{ImportKey, encode_native, encode_native_with_imports, rust
 pub(crate) mod stack;
 pub(crate) use coff::Reader as ObjectReader;
 mod emit;
-pub(crate) use archive::{compile as compile_archive, inputs as native_inputs};
+pub(crate) use archive::{compile as compile_archive, runtime_fingerprint, runtime_libraries};
 #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
 pub(crate) use archive::{InstalledSdk, SDK_RUNTIME};
 pub(crate) use emit::{application as application_code, function_sections, module as module_code};

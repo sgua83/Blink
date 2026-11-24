@@ -37,10 +37,10 @@ impl Application {
         &self.name
     }
     pub fn compile(&self) -> Result<Object, Box<dyn std::error::Error>> {
-        self.compiler.execute(|worker| self.compile_in(worker).map_err(|error| error.to_string()))
+        self.compiler.execute(|worker| self.compile_in(worker, None).map_err(|error| error.to_string()))
             .map_err(|error| std::io::Error::other(error.to_string()).into())
     }
-    pub(crate) fn compile_in(&self, worker: &crate::compiler::Worker) -> Result<Object, Box<dyn std::error::Error>> {
+    pub(crate) fn compile_in(&self, worker: &crate::compiler::Worker, libraries: Option<Vec<String>>) -> Result<Object, Box<dyn std::error::Error>> {
         use std::borrow::Cow;
         let mut resources = self.resources.as_ref().map(Cow::Borrowed);
         let mut body = Cow::Borrowed(&self.body);
@@ -55,7 +55,7 @@ impl Application {
         let mut functions = crate::parallel::try_map(worker, ordinary.iter().collect(), |_| (),
             |_, function| native::emit_function(function).map(|code| (function.name.clone(), code)))
             .map_err(|error| std::io::Error::other(error.to_string()))?;
-        let (compiled_resources, resource_code, resource_imports) = compile_resources(&self.name, resources.as_deref(), true, worker, has_tasks)?;
+        let (compiled_resources, resource_code, resource_imports) = compile_resources(&self.name, resources.as_deref(), true, worker, has_tasks, libraries)?;
         let factory_entry_count = resource_code.len();
         let resource_names: Vec<_> = resource_code.iter().map(|(name, _)| name.clone()).collect();
         functions.extend(resource_code);
@@ -113,6 +113,7 @@ pub(crate) fn compile_resources(
     root: bool,
     worker: &crate::compiler::Worker,
     has_tasks: bool,
+    libraries: Option<Vec<String>>,
 ) -> Result<(Option<(object::Archive, factory::ResourceFactory)>, Vec<(String, native::NativeCode)>, std::collections::BTreeMap<String, Vec<u8>>), Box<dyn std::error::Error>> {
     Ok(if let Some(resources) = resources {
         let prefix = resource_prefix(name);
@@ -160,7 +161,7 @@ pub(crate) fn compile_resources(
             prefix, types, u32::try_from(resources.programs.len())?, image, None,
         );
         exports.push(factory.symbol().to_owned());
-        let archive = object::compile_archive(native, exports, root, worker)?;
+        let archive = object::compile_archive(native, exports, root, worker, libraries)?;
         (Some((archive, factory)), code, imports)
     } else {
         (None, Vec::new(), std::collections::BTreeMap::new())

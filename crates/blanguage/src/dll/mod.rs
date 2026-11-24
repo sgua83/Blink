@@ -255,11 +255,16 @@ pub fn compile_object(program: &ExecutableProgram, prefix: &str) -> Result<crate
 }
 impl crate::Compiler {
     pub fn compile_dll(&self, program: &ExecutableProgram, prefix: &str) -> Result<crate::object::Object> {
-        self.execute(|worker| compile_in(worker, program, prefix).map_err(|error| error.to_string()))
+        self.execute(|worker| compile_in(worker, program, prefix, None).map_err(|error| error.to_string()))
             .map_err(|error| std::io::Error::other(error.to_string()).into())
     }
 }
-pub(crate) fn compile_in(worker: &crate::compiler::Worker, program: &ExecutableProgram, prefix: &str) -> Result<crate::object::Object> {
+pub(crate) fn compile_in(
+    worker: &crate::compiler::Worker,
+    program: &ExecutableProgram,
+    prefix: &str,
+    libraries: Option<Vec<String>>,
+) -> Result<crate::object::Object> {
     let prefix = identifier(prefix)?;
     let (header, binding, native, functions, resources) = generate(program, &prefix, worker)?;
     let mut imports = program.imports.clone();
@@ -274,7 +279,7 @@ pub(crate) fn compile_in(worker: &crate::compiler::Worker, program: &ExecutableP
     if let Some(resource) = &resources {
         exports.push(resource.symbol().to_owned());
     }
-    let archive = crate::object::compile_archive(Some(native), exports, true, worker)?;
+    let archive = crate::object::compile_archive(Some(native), exports, true, worker, libraries)?;
     let mut object = crate::object::Object {
         name: program.name().into(),
         kind: crate::object::Kind::Library {

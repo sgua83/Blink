@@ -106,7 +106,7 @@ fn development_runtime(
     Ok(libraries)
 }
 
-fn runtime_libraries(worker: &crate::compiler::Worker) -> Result<Vec<String>> {
+pub(crate) fn runtime_libraries(worker: &crate::compiler::Worker) -> Result<Vec<String>> {
     let sdk = sdk_root(worker)?;
     if cfg!(feature = "installed") {
         return Ok(std::fs::read_to_string(sdk.join(SDK_RUNTIME).join("native-static-libs.txt"))?
@@ -124,13 +124,23 @@ fn runtime_libraries(worker: &crate::compiler::Worker) -> Result<Vec<String>> {
     finish(result, std::fs::remove_dir_all(build).map_err(Into::into))
 }
 
+pub(crate) fn runtime_fingerprint(libraries: &[String]) -> [u8; 32] {
+    let mut digest = crate::build::hash::Digest::new();
+    digest.update(b"BlinkNativeLibraries1");
+    for library in libraries {
+        digest.field(library.as_bytes());
+    }
+    digest.finish()
+}
+
 pub(crate) fn compile(
     native: Option<Vec<u8>>,
     exports: Vec<String>,
     runtime: bool,
     worker: &crate::compiler::Worker,
+    libraries: Option<Vec<String>>,
 ) -> Result<Archive> {
-    let libraries = if runtime { runtime_libraries(worker)? } else { Vec::new() };
+    let libraries = if runtime { libraries.map_or_else(|| runtime_libraries(worker), Ok)? } else { Vec::new() };
     let mut symbols = Vec::new();
     let mut members = Vec::new();
     if let Some(bytes) = native {
@@ -147,107 +157,4 @@ pub(crate) fn compile(
         exports,
         resources: None,
     })
-}
-
-// 构建输入来自原原生生产者；不是资源ABI或另一份运行时状态。
-pub(crate) fn inputs(runtime: bool, worker: &crate::compiler::Worker) -> std::io::Result<[u8; 32]> {
-    use crate::{build::hash::Digest, file_bytes::FileBytes};
-    use std::{collections::BTreeSet, fs, io::ErrorKind};
-    fn optional(digest: &mut Digest, path: &Path) -> std::io::Result<bool> {
-        digest.field(path.as_os_str().as_encoded_bytes());
-        match FileBytes::read_path(path) {
-            Ok(value) => { digest.field(b"present"); digest.field(&value); Ok(true) }
-            Err(error) if error.kind() == ErrorKind::NotFound => { digest.field(b"absent"); Ok(false) }
-            Err(error) => Err(error),
-        }
-    }
-    fn configuration(digest: &mut Digest, directory: &Path) -> std::io::Result<()> {
-        if !optional(digest, &directory.join("config"))? {
-            optional(digest, &directory.join("config.toml"))?;
-        }
-        Ok(())
-    }
-    fn sources(path: &Path, compiler_sources: &Path, files: &mut Vec<PathBuf>) -> std::io::Result<()> {
-        for entry in fs::read_dir(path)? {
-            let path = entry?.path();
-            if path == compiler_sources { continue; }
-            if path.is_dir() {
-                sources(&path, compiler_sources, files)?;
-            } else {
-                files.push(path);
-            }
-        }
-        Ok(())
-    }
-    let mut digest = Digest::new();
-    digest.update(b"BlinkNativeInputs2");
-    if !runtime { return Ok(digest.finish()); }
-    let sdk = sdk_root(worker)?;
-    if cfg!(feature = "installed") {
-        let link_inputs = sdk.join(SDK_RUNTIME).join("native-static-libs.txt");
-        digest.field(b"installed-native-library");
-        digest.field(&FileBytes::read_path(&link_inputs)?);
-        return Ok(digest.finish());
-    }
-    digest.field(sdk.as_os_str().as_encoded_bytes());
-    let variables = std::env::vars_os().filter(|(name, _)| {
-        let name = name.to_string_lossy().to_ascii_uppercase();
-        // compile() fixes jobs, profile and both output directories with explicit Cargo arguments.
-        !matches!(name.as_str(), "CARGO_BUILD_JOBS" | "CARGO_BUILD_PROFILE"
-            | "CARGO_TARGET_DIR" | "CARGO_BUILD_TARGET_DIR" | "CARGO_BUILD_BUILD_DIR")
-            && (matches!(name.as_str(), "PATH" | "RUSTC" | "RUSTFLAGS" | "RUSTC_WRAPPER"
-                | "RUSTC_WORKSPACE_WRAPPER" | "RUSTUP_HOME" | "RUSTUP_TOOLCHAIN"
-                | "CARGO_HOME" | "CARGO_INCREMENTAL" | "CARGO_ENCODED_RUSTFLAGS"
-                | "LIB" | "LIBPATH" | "INCLUDE" | "SYSTEMROOT")
-                || matches!(name.as_str(), "BLINK_BOOTSTRAP_SDK" | "PROGRAMFILES")
-                || name.starts_with("CARGO_PROFILE_") || name.starts_with("CARGO_TARGET_")
-                || name.starts_with("CARGO_BUILD_"))
-    }).collect::<std::collections::BTreeMap<_, _>>();
-    for (name, value) in variables {
-        digest.field(name.as_encoded_bytes());
-        digest.field(value.as_encoded_bytes());
-    }
-    let mut configured = BTreeSet::new();
-    for directory in sdk.ancestors() {
-        let cargo = directory.join(".cargo");
-        configuration(&mut digest, &cargo)?;
-        configured.insert(cargo);
-        optional(&mut digest, &directory.join("rust-toolchain"))?;
-        optional(&mut digest, &directory.join("rust-toolchain.toml"))?;
-    }
-    let home = std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" })
-        .map(std::path::PathBuf::from);
-    let cargo = std::env::var_os("CARGO_HOME").map(std::path::PathBuf::from)
-        .or_else(|| home.as_ref().map(|home| home.join(".cargo")));
-    if let Some(cargo) = cargo {
-        let cargo = sdk.join(cargo);
-        if !configured.contains(&cargo) { configuration(&mut digest, &cargo)?; }
-    }
-    let rustup = std::env::var_os("RUSTUP_HOME").map(std::path::PathBuf::from)
-        .or_else(|| home.map(|home| home.join(".rustup")));
-    if let Some(rustup) = rustup { optional(&mut digest, &sdk.join(rustup).join("settings.toml"))?; }
-    optional(&mut digest, &sdk.join("Cargo.lock"))?;
-    let mut files = vec![sdk.join("Cargo.toml")];
-    let compiler_sources = sdk.join("crates/blanguage/src/bootstrap");
-    optional(&mut digest, &sdk.join("crates/blanguage/build-sdk.rs"))?;
-    if let Some(source) = option_env!("BLINK_RUNTIME_COFF_SOURCE") {
-        let source = sdk.join(source);
-        for extension in ["b", "h"] {
-            optional(&mut digest, &source.with_extension(extension))?;
-        }
-    } else {
-        optional(&mut digest, &sdk.join("crates/blanguage/native/blink_value_format.lib"))?;
-    }
-    for name in ["blanguage", "blcompute"] {
-        let package = sdk.join("crates").join(name);
-        files.push(package.join("Cargo.toml"));
-        optional(&mut digest, &package.join("build.rs"))?;
-        sources(&package.join("src"), &compiler_sources, &mut files)?;
-    }
-    files.sort();
-    for path in files {
-        digest.field(path.as_os_str().as_encoded_bytes());
-        digest.field(&FileBytes::read_path(&path)?);
-    }
-    Ok(digest.finish())
 }

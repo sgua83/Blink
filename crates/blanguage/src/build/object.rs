@@ -96,6 +96,7 @@ fn compile_importing(
     let source = identity::sources(&path, &root, selection,
         worker.compiler().max_parameter_bytes(), &world, &module, matches!(kind, ObjectKind::Module(_)))?;
     let runtime = !matches!(kind, ObjectKind::Module(_));
+    let mut libraries = None;
     match fs::File::open(&artifact) {
         Ok(file) => {
             let bytes = crate::object::ObjectBytes::capture(&file).map_err(error)?;
@@ -104,7 +105,10 @@ fn compile_importing(
                 if let Some(stored) = identity::match_source(bytes, &source)? {
                     let inputs = reader.reuse_inputs().map_err(error)?;
                     if stored.imports == identity::references(definitions, imported, inputs.imports.iter().copied(), &stored.declarations) {
-                        let native = stored.native.map(|_| crate::object::native_inputs(runtime, worker)).transpose()?;
+                        if stored.native.is_some() {
+                            libraries = Some(crate::object::runtime_libraries(worker).map_err(error)?);
+                        }
+                        let native = libraries.as_deref().map(crate::object::runtime_fingerprint);
                         if stored.native == native
                             && let Some(object) = inputs.restore().map_err(error)?
                         {
@@ -124,15 +128,16 @@ fn compile_importing(
         }
         ObjectKind::Application(entry) => {
             crate::compile_world(&world, module, false, Some((crate::EntryKind::Application, entry)), None)?
-                .applications.remove(0).compile_in(worker).map_err(error)?
+                .applications.remove(0).compile_in(worker, libraries).map_err(error)?
         }
         ObjectKind::Library { entry, prefix } => {
             let compilation = crate::compile_world(&world, module, true, Some((crate::EntryKind::Domain, entry)), None)?;
             let program = compilation.programs.first().ok_or_else(|| Error::other("DLL 编译需要无前置条件的具体 program"))?;
-            crate::dll::compile_in(worker, program, prefix).map_err(error)?
+            crate::dll::compile_in(worker, program, prefix, libraries).map_err(error)?
         }
     };
-    let native = if object.archive.is_some() { Some(crate::object::native_inputs(runtime, worker)?) } else { None };
+    let native = object.archive.as_ref().filter(|_| runtime)
+        .map(|archive| crate::object::runtime_fingerprint(&archive.libraries));
     let declarations = super::used_declarations(&world);
     let imports = identity::references(definitions, imported, object.imports.keys().map(String::as_str), &declarations);
     let stored = identity::Inputs { source, imports, native, declarations }.encode();
