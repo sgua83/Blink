@@ -51,7 +51,7 @@ extern "C" MetaResourceBody resource_body(inout MetaCursor cursor) on cpu {
     MetaWord code=number(cursor,8u64,8);
     return MetaResourceBody(types.value,programs.value,abi.value,code.value,code.error);
 }
-extern "C" MetaField bytes(inout MetaCursor cursor) on cpu {
+MetaField bytes(inout MetaCursor cursor) on cpu {
     MetaWord length=word(cursor);if(length.error!=0){return MetaField(empty(),length.error);}
     if(length.value>cursor.input.length-cursor.position){return MetaField(empty(),2);}
     ReadBytes value=ReadBytes(at(cursor.input.bytes,cursor.position),length.value);
@@ -84,7 +84,8 @@ extern "C" MetaHeader header(inout MetaCursor cursor,u64 format) on cpu {
     }
     return value;
 }
-extern "C" MetaRequirement requirement(inout MetaCursor cursor) on cpu {
+struct MetaRequirement {ReadBytes name;u64 kind;u32 error;};
+MetaRequirement requirement(inout MetaCursor cursor) on cpu {
     MetaField name=bytes(cursor);if(name.error!=0){return MetaRequirement(empty(),0u64,name.error);}
     MetaWord kind=word(cursor);if(kind.error!=0){return MetaRequirement(empty(),0u64,kind.error);}
     if(kind.value>2u64){return MetaRequirement(empty(),0u64,5);}
@@ -97,46 +98,83 @@ extern "C" MetaBinding binding(inout MetaCursor cursor) on cpu {
 ReadBytes since(MetaCursor cursor,u64 start) on cpu {
     return ReadBytes(at(cursor.input.bytes,start),cursor.position-start);
 }
-MetaField name_group(inout MetaCursor cursor) on cpu {
-    u64 start=cursor.position;
-    MetaWord count=word(cursor);if(count.error!=0){return MetaField(empty(),count.error);}
-    u64 i=0u64;
-    while(i<count.value){
-        MetaField name=bytes(cursor);if(name.error!=0){return name;}
-        i+=1u64;
-    }
-    return MetaField(since(cursor,start),0);
+bool receives(MetaNameSink sink,MetaNameGroup group) on cpu {
+    return (sink.groups & u32(group)) != 0;
 }
-extern "C" MetaPrefix prefix(inout MetaCursor cursor,u64 format) on cpu {
-    MetaPrefix value=MetaPrefix(header(cursor,format),empty(),empty(),empty(),empty(),0u64);
-    if(value.header.error!=0){return value;}
-    u64 start=cursor.position;
-    if(value.header.kind==2u64){
-        u64 i=0u64;
-        while(i<value.header.requirements){
-            MetaRequirement item=requirement(cursor);
-            if(item.error!=0){value.header.error=item.error;return value;}
-            i+=1u64;
-        }
-        value.requirements=since(cursor,start);
-        MetaWord stack=word(cursor);
-        if(stack.error!=0){value.header.error=stack.error;return value;}
-        value.header.stack=stack.value;
+
+u32 read_requirements(inout MetaCursor cursor,u64 count,MetaNameSink sink) on cpu requires nonzero(sink.emit) {
+    bool publish = receives(sink,MetaNameGroup::Requirement);
+    u64 left = count;
+    while (left != 0u64) {
+        MetaRequirement item = requirement(cursor);
+        if (item.error != 0) { return item.error; }
+        if (publish) { sink.emit(sink.context,MetaNameGroup::Requirement,item.name,item.kind); }
+        left -= 1u64;
     }
-    MetaField libraries=name_group(cursor);
-    if(libraries.error!=0){value.header.error=libraries.error;return value;}
-    value.libraries=libraries.value;
-    MetaField exports=name_group(cursor);
-    if(exports.error!=0){value.header.error=exports.error;return value;}
-    value.exports=exports.value;
-    MetaField resource=bytes(cursor);
-    if(resource.error!=0){value.header.error=resource.error;return value;}
-    value.resource=resource.value;
-    MetaWord count=word(cursor);
-    if(count.error!=0){value.header.error=count.error;return value;}
-    value.binding_count=count.value;
+    return 0;
+}
+
+u32 read_names(inout MetaCursor cursor,MetaNameGroup group,MetaNameSink sink) on cpu requires nonzero(sink.emit) {
+    MetaWord count = word(cursor);
+    if (count.error != 0) { return count.error; }
+    bool publish = receives(sink,group);
+    u64 left = count.value;
+    while (left != 0u64) {
+        MetaField name = bytes(cursor);
+        if (name.error != 0) { return name.error; }
+        if (publish) { sink.emit(sink.context,group,name.value,0u64); }
+        left -= 1u64;
+    }
+    return 0;
+}
+
+extern "C" MetaPrefix prefix(inout MetaCursor cursor,u64 format,MetaNameSink sink) on cpu requires nonzero(sink.emit) {
+    MetaPrefix value = MetaPrefix(header(cursor,format),empty(),empty(),empty(),empty(),0u64);
+    if (value.header.error != 0) { return value; }
+    u64 start = cursor.position;
+    if (value.header.kind == 2u64) {
+        value.header.error = read_requirements(cursor,value.header.requirements,sink);
+        if (value.header.error != 0) { return value; }
+        if (!receives(sink,MetaNameGroup::Requirement)) { value.requirements = since(cursor,start); }
+        MetaWord stack = word(cursor);
+        if (stack.error != 0) { value.header.error = stack.error; return value; }
+        value.header.stack = stack.value;
+    }
+    start = cursor.position;
+    value.header.error = read_names(cursor,MetaNameGroup::Library,sink);
+    if (value.header.error != 0) { return value; }
+    if (!receives(sink,MetaNameGroup::Library)) { value.libraries = since(cursor,start); }
+    start = cursor.position;
+    value.header.error = read_names(cursor,MetaNameGroup::Export,sink);
+    if (value.header.error != 0) { return value; }
+    if (!receives(sink,MetaNameGroup::Export)) { value.exports = since(cursor,start); }
+    MetaField resource = bytes(cursor);
+    if (resource.error != 0) { value.header.error = resource.error; return value; }
+    value.resource = resource.value;
+    MetaWord count = word(cursor);
+    value.header.error = count.error;
+    value.binding_count = count.value;
     return value;
 }
+
+extern "C" u32 project_names(MetaPrefix prefix,MetaNameSink sink) on cpu requires nonzero(sink.emit) {
+    if (receives(sink,MetaNameGroup::Requirement) && prefix.header.requirements != 0u64) {
+        MetaCursor cursor = MetaCursor(prefix.requirements,0u64);
+        u32 error = read_requirements(cursor,prefix.header.requirements,sink);
+        if (error != 0) { return error; }
+    }
+    if (receives(sink,MetaNameGroup::Library)) {
+        MetaCursor cursor = MetaCursor(prefix.libraries,0u64);
+        u32 error = read_names(cursor,MetaNameGroup::Library,sink);
+        if (error != 0) { return error; }
+    }
+    if (receives(sink,MetaNameGroup::Export)) {
+        MetaCursor cursor = MetaCursor(prefix.exports,0u64);
+        return read_names(cursor,MetaNameGroup::Export,sink);
+    }
+    return 0;
+}
+
 MetaFrame bad_frame(u32 error) on cpu {return MetaFrame(empty(),0u64,0u64,0u64,0u64,0u64,error);}
 extern "C" MetaFrame frame(inout MetaCursor cursor) on cpu {
     MetaField name=bytes(cursor);if(name.error!=0){return bad_frame(name.error);}

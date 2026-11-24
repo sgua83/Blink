@@ -359,17 +359,17 @@ struct MetadataReadWord { value: u64, error: MetadataReadError }
 #[repr(C)]
 struct MetadataReadField { value: ReadBytes, error: MetadataReadError }
 #[repr(C)]
+#[derive(Clone, Copy)]
 struct MetadataReadHeader {
     name: ReadBytes, kind: ReadObjectKind, interface: ReadBytes, prefix: ReadBytes, header: ReadBytes, binding: ReadBytes,
     requirements: u64, stack: u64, error: MetadataReadError,
 }
 #[repr(C)]
+#[derive(Clone, Copy)]
 struct MetadataReadPrefix {
     header: MetadataReadHeader, requirements: ReadBytes, libraries: ReadBytes, exports: ReadBytes,
     resource: ReadBytes, binding_count: u64,
 }
-#[repr(C)]
-struct MetadataReadRequirement { name: ReadBytes, kind: ReadRequirementKind, error: MetadataReadError }
 #[repr(C)]
 struct MetadataReadBinding { name: ReadBytes, value: ReadBytes, error: MetadataReadError }
 #[repr(C)]
@@ -395,12 +395,12 @@ unsafe extern "C" {
     fn metadata_read_resource_text(cursor: *mut MetadataReadCursor) -> MetadataReadField;
     #[link_name = "bootstrap.metadata_read::word"]
     fn metadata_read_word(cursor: *mut MetadataReadCursor) -> MetadataReadWord;
-    #[link_name = "bootstrap.metadata_read::bytes"]
-    fn metadata_read_bytes(cursor: *mut MetadataReadCursor) -> MetadataReadField;
     #[link_name = "bootstrap.metadata_read::prefix"]
-    fn metadata_read_prefix(cursor: *mut MetadataReadCursor, format: u64) -> MetadataReadPrefix;
-    #[link_name = "bootstrap.metadata_read::requirement"]
-    fn metadata_read_requirement(cursor: *mut MetadataReadCursor) -> MetadataReadRequirement;
+    fn metadata_read_prefix(
+        cursor: *mut MetadataReadCursor, format: u64, sink: MetadataNameSink,
+    ) -> MetadataReadPrefix;
+    #[link_name = "bootstrap.metadata_read::project_names"]
+    fn metadata_project_names(prefix: MetadataReadPrefix, sink: MetadataNameSink) -> MetadataReadError;
     #[link_name = "bootstrap.metadata_read::binding"]
     fn metadata_read_binding(cursor: *mut MetadataReadCursor) -> MetadataReadBinding;
     #[link_name = "bootstrap.metadata_read::frame"]
@@ -454,14 +454,66 @@ impl MetadataReadCursor {
         value.error.check()?;
         Ok(value.value as u32)
     }
-    fn bytes(&mut self) -> Result<ReadBytes> {
-        let value = unsafe { metadata_read_bytes(self) };
-        value.error.check()?;
-        Ok(value.value)
+}
+
+#[repr(u32)]
+enum MetadataNameGroup { Requirement = 1, Library = 2, Export = 4 }
+
+#[repr(C)]
+struct MetadataNameSink {
+    context: *mut c_void,
+    emit: unsafe extern "C" fn(*mut c_void, MetadataNameGroup, ReadBytes, ReadRequirementKind),
+    groups: u32,
+}
+
+#[derive(Default)]
+struct MetadataNames {
+    requirements: BTreeMap<String, crate::execution::Requirement>,
+    libraries: Vec<String>,
+    exports: Vec<String>,
+    archive: bool,
+    error: Option<std::str::Utf8Error>,
+}
+
+impl MetadataNames {
+    fn sink(&mut self, groups: u32) -> MetadataNameSink {
+        MetadataNameSink { context: std::ptr::from_mut(self).cast(), emit: consume_metadata_name, groups }
     }
-    fn strings(&mut self, keep: bool) -> Result<Vec<String>> {
-        let count = self.word()? as usize;
-        read_strings(count, keep, || Ok(std::str::from_utf8(unsafe { self.bytes()?.borrowed() })?))
+
+    fn check(&mut self) -> Result<()> {
+        match self.error.take() {
+            Some(error) => Err(error.into()),
+            None => Ok(()),
+        }
+    }
+}
+
+const REQUIREMENTS: u32 = MetadataNameGroup::Requirement as u32;
+const LIBRARIES: u32 = MetadataNameGroup::Library as u32;
+const EXPORTS: u32 = MetadataNameGroup::Export as u32;
+
+unsafe extern "C" fn consume_metadata_name(
+    context: *mut c_void, group: MetadataNameGroup, name: ReadBytes, requirement: ReadRequirementKind,
+) {
+    let names = unsafe { &mut *context.cast::<MetadataNames>() };
+    if names.error.is_some() { return; }
+    // Check borrowed text once, while its original COFF snapshot is live.
+    let name = match std::str::from_utf8(unsafe { name.borrowed() }) {
+        Ok(name) => name,
+        Err(error) => { names.error = Some(error); return; }
+    };
+    match group {
+        MetadataNameGroup::Requirement => {
+            let requirement = match requirement {
+                ReadRequirementKind::Invocation => crate::execution::Requirement::Invocation,
+                ReadRequirementKind::Domain => crate::execution::Requirement::Domain,
+                ReadRequirementKind::Host => crate::execution::Requirement::Host,
+            };
+            names.requirements.insert(name.to_owned(), requirement);
+        }
+        MetadataNameGroup::Library if names.archive => names.libraries.push(name.to_owned()),
+        MetadataNameGroup::Export if names.archive => names.exports.push(name.to_owned()),
+        _ => {}
     }
 }
 
@@ -818,11 +870,15 @@ struct Metadata<'a> {
 }
 
 impl<'a> Metadata<'a> {
-    fn read(input: &'a [u8]) -> Result<Self> {
+    fn read(input: &'a [u8], sink: MetadataNameSink) -> Result<Self> {
         let mut cursor = MetadataReadCursor::new(input);
-        let prefix = unsafe { metadata_read_prefix(&mut cursor, u64::from(FORMAT)) };
+        let prefix = unsafe { metadata_read_prefix(&mut cursor, u64::from(FORMAT), sink) };
         prefix.header.error.check()?;
         Ok(Self { input, prefix, binding_start: cursor.position })
+    }
+
+    fn project_names(&self, sink: MetadataNameSink) -> Result<()> {
+        unsafe { metadata_project_names(self.prefix, sink) }.check()
     }
 
     fn bindings_cursor(&self) -> MetadataReadCursor {
@@ -840,15 +896,16 @@ pub(crate) struct ReuseInputs<'a> {
 impl ReuseInputs<'_> {
     pub(crate) fn restore(self) -> Result<Option<Object>> {
         drop(self.imports);
-        let libraries = MetadataReadCursor::new(unsafe { self.metadata.prefix.libraries.borrowed() })
-            .strings(self.has_archive)?;
-        for library in &libraries {
+        let mut names = MetadataNames { archive: self.has_archive, ..Default::default() };
+        self.metadata.project_names(names.sink(LIBRARIES))?;
+        names.check()?;
+        for library in &names.libraries {
             let path = Path::new(library);
             if path.is_absolute() && !path.try_exists()? {
                 return Ok(None);
             }
         }
-        decode_object(&self.reader, None, Some((self.metadata, libraries)), true).map(Some)
+        decode_object(&self.reader, None, Some((self.metadata, names.libraries)), true).map(Some)
     }
 }
 
@@ -974,10 +1031,8 @@ impl<'a, Input: AsRef<[u8]> + ?Sized> Reader<'a, Input> {
     }
     fn module_symbols(&self) -> Result<Option<(Vec<ObjectSection>, Vec<ObjectSymbol>)>> {
         let (parts, raw) = self.sections(true)?;
-        let mut cursor = MetadataReadCursor::new(self.metadata(parts.metadata)?);
-        let header = unsafe { metadata_read_prefix(&mut cursor, u64::from(FORMAT)) }.header;
-        header.error.check()?;
-        if !matches!(header.kind, ReadObjectKind::Module) { return Ok(None); }
+        let metadata = Metadata::read(self.metadata(parts.metadata)?, MetadataNames::default().sink(0))?;
+        if !matches!(metadata.prefix.header.kind, ReadObjectKind::Module) { return Ok(None); }
         // The existing B reader omits section-definition output for this empty
         // receiver. The actual COFF symbol view remains the only symbol source.
         let symbols = self.symbol_rows(&mut [])?;
@@ -1006,8 +1061,9 @@ impl<'a, Input: AsRef<[u8]> + ?Sized> Reader<'a, Input> {
     /// 从库成员借用公开接口与合同。完整对象负责代码、重定位和诊断材料。
     pub(crate) fn interface(&self) -> Result<(String, Kind, BTreeMap<String, Vec<u8>>)> {
         let (parts, _) = self.sections(false)?;
-        let metadata = Metadata::read(self.metadata(parts.metadata)?)?;
-        let (name, kind) = read_metadata_kind(&metadata.prefix)?;
+        let mut names = MetadataNames::default();
+        let metadata = Metadata::read(self.metadata(parts.metadata)?, names.sink(REQUIREMENTS))?;
+        let (name, kind) = read_metadata_kind(&metadata.prefix.header, &mut names)?;
         let mut bindings = read_metadata_bindings(
             &mut metadata.bindings_cursor(), metadata.prefix.binding_count, false,
         )?;
@@ -1038,7 +1094,7 @@ impl<'a> Reader<'a, super::ObjectBytes> {
     /// 借用判等所需的名称，等采用后再恢复完整对象。
     pub(crate) fn reuse_inputs(self) -> Result<ReuseInputs<'a>> {
         let (parts, _) = self.sections(false)?;
-        let metadata = Metadata::read(self.metadata(parts.metadata)?)?;
+        let metadata = Metadata::read(self.metadata(parts.metadata)?, MetadataNames::default().sink(0))?;
         let mut cursor = metadata.bindings_cursor();
         let mut names = BTreeSet::new();
         for _ in 0..metadata.prefix.binding_count {
@@ -1068,30 +1124,24 @@ impl<'a> Reader<'a, super::ObjectBytes> {
         decode_object(self, Some(name), None, false)
     }
 }
-fn read_metadata_kind(prefix: &MetadataReadPrefix) -> Result<(String, Kind)> {
-    let header = &prefix.header;
+fn read_metadata_kind(header: &MetadataReadHeader, names: &mut MetadataNames) -> Result<(String, Kind)> {
     let name = read_text(header.name)?;
     let kind = match header.kind {
         ReadObjectKind::Module => {
             let interface: Arc<str> = std::str::from_utf8(unsafe { header.interface.borrowed() })?.into();
-            let mut cursor = MetadataReadCursor::new(unsafe { prefix.requirements.borrowed() });
-            let requirements = (0..header.requirements).map(|_| {
-                let value = unsafe { metadata_read_requirement(&mut cursor) };
-                value.error.check()?;
-                let requirement = match value.kind {
-                    ReadRequirementKind::Invocation => crate::execution::Requirement::Invocation,
-                    ReadRequirementKind::Domain => crate::execution::Requirement::Domain,
-                    ReadRequirementKind::Host => crate::execution::Requirement::Host,
-                };
-                Ok((read_text(value.name)?, requirement))
-            }).collect::<Result<_>>()?;
-            Kind::Module { interface, requirements: Arc::new(requirements), stack_bytes: header.stack as u32 }
+            Kind::Module {
+                interface,
+                requirements: Arc::new(std::mem::take(&mut names.requirements)),
+                stack_bytes: header.stack as u32,
+            }
         }
         ReadObjectKind::Application => Kind::Application { stack_bytes: header.stack as u32 },
         ReadObjectKind::Library => Kind::Library {
             prefix: read_text(header.prefix)?, header: read_text(header.header)?, binding: read_text(header.binding)?,
         },
     };
+    // Preserve format and header errors ahead of the first name error.
+    names.check()?;
     Ok((name, kind))
 }
 
@@ -1108,18 +1158,12 @@ fn read_metadata_bindings(
 }
 
 fn read_metadata(
-    meta: Metadata<'_>, archive: Option<super::ObjectBytes>, reuse_libraries: Option<Vec<String>>,
+    meta: Metadata<'_>, archive: Option<super::ObjectBytes>, mut names: MetadataNames, same_producer: bool,
 ) -> Result<(String, Kind, BTreeMap<String, Vec<u8>>, StackMetadata, Option<Archive>)> {
-    let (name, kind) = read_metadata_kind(&meta.prefix)?;
+    let (name, kind) = read_metadata_kind(&meta.prefix.header, &mut names)?;
     let mut c = meta.bindings_cursor();
     let prefix = meta.prefix;
     let keep_archive = archive.is_some();
-    let same_producer = reuse_libraries.is_some();
-    let libraries = match reuse_libraries {
-        Some(libraries) => libraries,
-        None => MetadataReadCursor::new(unsafe { prefix.libraries.borrowed() }).strings(keep_archive)?,
-    };
-    let exports = MetadataReadCursor::new(unsafe { prefix.exports.borrowed() }).strings(keep_archive)?;
     let mut resource = MetadataReadCursor::new(unsafe { prefix.resource.borrowed() });
     let head = unsafe { metadata_read_resource_head(&mut resource) };
     head.error.check()?;
@@ -1160,8 +1204,8 @@ fn read_metadata(
     }
     let archive = archive.map(|bytes| Archive {
         bytes,
-        libraries,
-        exports,
+        libraries: names.libraries,
+        exports: names.exports,
         resources,
     });
     Ok((name, kind, bindings, stack, archive))
@@ -1181,11 +1225,17 @@ fn decode_object<Bytes: super::ReadSection>(
                 let start = parts.runtime.bytes.addr() - b.as_ptr().addr();
                 b.slice(start..start + parts.runtime.length)
             });
-            let (metadata, libraries) = match reuse {
-                Some((metadata, libraries)) => (metadata, Some(libraries)),
-                None => (Metadata::read(reader.metadata(parts.metadata)?)?, None),
+            let mut names = MetadataNames { archive: archive.is_some(), ..Default::default() };
+            let same_producer = reuse.is_some();
+            let metadata = match reuse {
+                Some((metadata, libraries)) => {
+                    names.libraries = libraries;
+                    metadata.project_names(names.sink(REQUIREMENTS | EXPORTS))?;
+                    metadata
+                }
+                None => Metadata::read(reader.metadata(parts.metadata)?, names.sink(REQUIREMENTS | LIBRARIES | EXPORTS))?,
             };
-            read_metadata(metadata, archive, libraries)?
+            read_metadata(metadata, archive, names, same_producer)?
         }
     };
     let mut sections = Vec::new();
