@@ -79,15 +79,18 @@ pub(super) fn import_members(
 /// 保存已编译模块及其原生导入材料，供C／C++／Rust静态宿主链接。
 /// 不读取B源码、不生成执行代码；原生IAT成员不作为B接口模块装入。
 pub fn host_archive(inputs: &[impl AsRef<Path>], path: &Path) -> Result<()> {
-    let mut members = object::library_members(inputs)?;
+    let source = object::library_members(inputs)?;
+    let mut members = Vec::new();
     let mut symbols = Vec::new();
     let mut imports = Vec::new();
-    let first_import = members.len();
-    for (index, member) in members.iter_mut().enumerate() {
-        let names = member.host_links(&mut imports)?;
-        symbols.extend(names.into_iter().map(|name|(index,name)));
+    for original in &source {
+        for (member, names) in original.host_members(&mut imports)? {
+            let index = members.len();
+            symbols.extend(names.into_iter().map(|name| (index, name)));
+            members.push(member);
+        }
     }
-    let imported = import_members(imports, first_import, &mut symbols)?;
+    let imported = import_members(imports, members.len(), &mut symbols)?;
     members.extend(imported);
     let output = object::library_bytes(&members, &symbols)?;
     if let Some(parent) = path.parent() {

@@ -144,20 +144,22 @@ impl Member {
         }
     }
 
-    pub(crate) fn host_links<'a>(
-        &'a mut self, imports: &mut Vec<coff::ImportKey<'a>>,
-    ) -> Result<Vec<String>> {
-        let Self { name, bytes, build } = self;
-        let bytes = &*bytes;
-        let result = (move || {
-            let reader = coff::Reader::new(bytes)?;
-            let Some((names, build_section)) = reader.host_links(imports)? else { return Ok(None); };
-            *build = build_section;
-            Ok(Some(names))
-        })();
-        result
-            .map_err(|error: Box<dyn std::error::Error>| format!("静态库成员 {name}：{error}"))?
-            .ok_or_else(|| format!("{name} 不是独立模块产物").into())
+    pub(crate) fn host_members<'a>(
+        &'a self, imports: &mut Vec<coff::ImportKey<'a>>,
+    ) -> Result<Vec<(Self, Vec<String>)>> {
+        let output = coff::Reader::new(&self.bytes).and_then(|reader| reader.host_links(imports))
+            .map_err(|error| format!("静态库成员 {}：{error}", self.name))?
+            .ok_or_else(|| format!("{} 不是独立模块产物", self.name))?;
+        Ok(match output {
+            coff::HostArchiveMember::Original(names, build) => {
+                vec![(Self { name: self.name.clone(), bytes: self.bytes.clone(), build }, names)]
+            }
+            coff::HostArchiveMember::Groups(groups) => groups.into_iter().enumerate()
+                .map(|(index, (bytes, names))| {
+                    (Self::new(format!("{}.{}.obj", self.name, index + 1), bytes), names)
+                })
+                .collect(),
+        })
     }
     pub(crate) fn archive_symbols(&self)->Result<Option<Vec<String>>> {
         coff::Reader::new(&self.bytes).and_then(|reader|reader.archive_symbols())

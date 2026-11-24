@@ -745,15 +745,20 @@ unsafe extern "C" fn collect_import<'a>(context: *mut c_void, key: ImportKey<'a>
 
 enum CoffPayload<'a> {
     Borrowed(&'a [u8]),
+    ZeroFill(usize),
     Metadata(&'a MetadataInput, usize),
 }
 impl CoffPayload<'_> {
     fn len(&self) -> usize {
-        match self { Self::Borrowed(bytes) => bytes.len(), Self::Metadata(_, length) => *length }
+        match self {
+            Self::Borrowed(bytes) => bytes.len(),
+            Self::ZeroFill(length) | Self::Metadata(_, length) => *length,
+        }
     }
     unsafe fn write(&self, destination: *mut u8) {
         match self {
             Self::Borrowed(bytes) => unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), destination, bytes.len()); },
+            Self::ZeroFill(length) => unsafe { destination.write_bytes(0, *length); },
             Self::Metadata(input, _) => unsafe { metadata_encode(**input, destination); },
         }
     }
@@ -764,8 +769,8 @@ fn encode_sections<'a>(
     imports: Option<&mut Vec<ImportKey<'a>>>,
 ) -> Result<Vec<u8>> {
     let sections = source.iter().map(|section|
-        (section.name.as_str(), CoffPayload::Borrowed(section.bytes.as_slice()), section.flags, section.relocations.as_slice())
-    ).chain(extra).collect::<Vec<_>>();
+        (section.name.as_str(), CoffPayload::Borrowed(section.bytes.as_slice()), section.flags, section.relocations.len())
+    ).chain(extra.map(|(name, payload, flags, relocations)| (name, payload, flags, relocations.len()))).collect::<Vec<_>>();
     let input_relocations = source.iter().map(|section| {
         section.relocations.iter().map(|relocation| {
             let empty = BindingBytes::new(&[]);
@@ -777,7 +782,7 @@ fn encode_sections<'a>(
             BindingRelocation { offset: relocation.offset as u64, kind: u64::from(relocation.kind), target, section, name, dll }
         }).collect::<Vec<_>>()
     }).collect::<Vec<_>>();
-    let mut binding_sections = source.iter().zip(&input_relocations).map(|(section, relocations)| BindingSection {
+    let binding_sections = source.iter().zip(&input_relocations).map(|(section, relocations)| BindingSection {
         name: BindingBytes::new(section.name.as_bytes()), flags: u64::from(section.flags),
         relocations: relocations.as_ptr(), relocation_count: relocations.len(),
         associated: section.associated.as_ptr(), associated_count: section.associated.len(), owner: 0, symbol: 0,
@@ -786,10 +791,20 @@ fn encode_sections<'a>(
         name: BindingBytes::new(symbol.name.as_bytes()), section: symbol.section as u64,
         value: u64::from(symbol.value), function: u64::from(symbol.function),
     }).collect::<Vec<_>>();
-    let relocation_count: usize = input_relocations.iter().map(Vec::len).sum();
+    encode_bound(name, sections, binding_sections, &definitions, imports)
+}
+
+fn encode_bound<'a>(
+    name: &str,
+    sections: Vec<(&str, CoffPayload<'_>, u32, usize)>,
+    mut binding_sections: Vec<BindingSection>,
+    definitions: &[BindingDefinition],
+    imports: Option<&mut Vec<ImportKey<'a>>>,
+) -> Result<Vec<u8>> {
+    let relocation_count: usize = binding_sections.iter().map(|section| section.relocation_count).sum();
     // At most two symbols per section and one per definition/reference.
     // Each definition/reference contributes at most one shared tree node.
-    let mut symbols = Vec::<CoffSymbolView>::with_capacity(2 * source.len() + definitions.len() + relocation_count);
+    let mut symbols = Vec::<CoffSymbolView>::with_capacity(2 * binding_sections.len() + definitions.len() + relocation_count);
     let mut nodes = Vec::<[u64; 9]>::with_capacity(definitions.len() + relocation_count);
     let mut relocations = Vec::<CoffRelocationView>::with_capacity(relocation_count);
     let binding_input = BindingInput {
@@ -818,9 +833,9 @@ fn encode_sections<'a>(
         relocations.set_len(plan.relocations);
     }
     let mut at = 0;
-    let mut physical = sections.iter().map(|(name, payload, flags, source)| {
-        let bound = &relocations[at..at + source.len()];
-        at += source.len();
+    let mut physical = sections.iter().map(|(name, payload, flags, count)| {
+        let bound = &relocations[at..at + count];
+        at += count;
         CoffSectionView {
             name: name.as_ptr(), name_length: name.len(),
             byte_length: payload.len(), flags: u64::from(*flags),
@@ -912,6 +927,11 @@ pub(super) struct HostBuildSection {
     sections: usize,
     record: std::ops::Range<usize>,
     symbols: usize,
+}
+
+pub(super) enum HostArchiveMember {
+    Original(Vec<String>, Option<HostBuildSection>),
+    Groups(Vec<(Vec<u8>, Vec<String>)>),
 }
 
 impl HostBuildSection {
@@ -1028,25 +1048,29 @@ impl<'a, Input: AsRef<[u8]> + ?Sized> Reader<'a, Input> {
         status.object.check()?;
         receiver.result
     }
-    fn module_symbols(&self) -> Result<Option<(Vec<ObjectSection>, Vec<ObjectSymbol>, usize)>> {
+    fn module_symbols(&self, definitions: &mut [SectionDefinition]) -> Result<Option<(Vec<ObjectSection>, Vec<ObjectSymbol>, usize)>> {
         let (parts, raw) = self.sections(true)?;
         let metadata = Metadata::read(self.metadata(parts.metadata)?, MetadataNames::default().sink(0))?;
         if !matches!(metadata.prefix.header.kind, ReadObjectKind::Module) { return Ok(None); }
-        // The existing B reader omits section-definition output for this empty
-        // receiver. The actual COFF symbol view remains the only symbol source.
-        let (symbols, offset) = self.symbol_rows(&mut [])?;
+        let (symbols, offset) = self.symbol_rows(definitions)?;
         Ok(Some((raw, symbols, offset)))
     }
     /// B archives preserve member bytes and only produce the physical export directory.
     pub(crate) fn archive_symbols(&self) -> Result<Option<Vec<String>>> {
-        self.module_symbols()?.map(|(raw, symbols, _)| export_names(&raw, &symbols)).transpose()
+        self.module_symbols(&mut [])?.map(|(raw, symbols, _)| export_names(&raw, &symbols)).transpose()
     }
     /// Native archives additionally consume the actual DLL import relocations.
     pub(super) fn host_links(
         &self, imports: &mut Vec<ImportKey<'a>>,
-    ) -> Result<Option<(Vec<String>, Option<HostBuildSection>)>> {
-        let Some((raw, symbols, offset)) = self.module_symbols()? else { return Ok(None); };
-        let names = export_names(&raw, &symbols)?;
+    ) -> Result<Option<HostArchiveMember>> {
+        let mut definitions = vec![SectionDefinition::default(); self.headers.len() / 40];
+        let Some((raw, symbols, offset)) = self.module_symbols(&mut definitions)? else { return Ok(None); };
+        let mut groups = if host::needs_groups(&symbols) {
+            host::Groups::new(&raw, &definitions)?
+        } else {
+            None
+        };
+        let names = if groups.is_none() { export_names(&raw, &symbols)? } else { Vec::new() };
         let mut build = None;
         for (index, row) in raw.iter().enumerate() {
             if row.mapped == 0 {
@@ -1055,18 +1079,27 @@ impl<'a, Input: AsRef<[u8]> + ?Sized> Reader<'a, Input> {
                 }
                 continue;
             }
-            self.relocations(&raw, &symbols, row, |_, _, target| {
+            self.relocations(&raw, &symbols, row, |offset, kind, target| {
                 if matches!(target.kind, ObjectTargetKind::Import) {
                     // B returns two ranges of a symbol name in this COFF input.
                     let dll = std::str::from_utf8(unsafe { target.dll.borrowed() })?;
                     let symbol = std::str::from_utf8(unsafe { target.name.borrowed() })?;
                     imports.push(ImportKey::new(dll, symbol));
                 }
+                if let Some(groups) = &mut groups {
+                    groups.relocation(row.mapped - 1, offset, kind, target);
+                }
                 Ok(())
             })?;
         }
         let build = build.map(|(index, row)| self.host_build_section(index, row, offset)).transpose()?;
-        Ok(Some((names, build)))
+        let member = match groups {
+            Some(groups) => HostArchiveMember::Groups(
+                groups.encode(self.bytes.as_ref(), &raw, &symbols, build.as_ref())?,
+            ),
+            None => HostArchiveMember::Original(names, build),
+        };
+        Ok(Some(member))
     }
 
     /// 从库成员借用公开接口与合同。完整对象负责代码、重定位和诊断材料。
@@ -1329,3 +1362,4 @@ fn decode_object<Bytes: super::ReadSection>(
 }
 
 pub(super) mod facts;
+mod host;
