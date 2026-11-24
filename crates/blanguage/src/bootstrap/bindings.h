@@ -5,7 +5,6 @@ const u64 SECTION_BYTES=72u64;
 const u64 DEFINITION_BYTES=40u64;
 const u64 INPUT_RELOCATION_BYTES=64u64;
 const u64 NODE_BYTES=72u64;
-const u64 OUTPUT_RELOCATION_BYTES=24u64;
 struct BindingBytes {address bytes;u64 length;};
 struct BindingKey {BindingBytes first;BindingBytes second;};
 struct BindingNode {BindingKey key;u64 value;u64 parent;u64 left;u64 right;u64 red;};
@@ -15,15 +14,15 @@ struct BindingSection {
 };
 struct BindingDefinition {BindingBytes name;u64 section;u64 value;u64 function;};
 struct BindingRelocation {u64 offset;u64 kind;u64 target;u64 section;BindingBytes name;BindingBytes dll;};
-struct BoundRelocation {u64 offset;u64 symbol;u64 kind;};
 struct BindingInput {BindingBytes name;address sections;u64 section_count;address definitions;u64 definition_count;};
 struct BindingWork {
-    address symbols;address nodes;address relocations;
+    address symbols;address nodes;
     address import_context;cfn<void,address,BindingKey> emit_import;
 };
-struct BindingPlan {u64 symbols;u64 relocations;u32 error;};
+struct BindingPlan {u64 symbols;u64 names_root;u64 imports_root;u32 error;};
 extern "C" BindingPlan prepare(BindingInput input,BindingWork work) on cpu;
-extern "C" void write_generated_name(read CoffNameSource names,u64 kind,u64 source,address output) on cpu;
+extern "C" void write_generated_name(read CoffBindingSource binding,u64 kind,u64 source,address output) on cpu;
+extern "C" void write_section_relocations(read CoffBindingSource binding,u64 index,address output) on cpu;
 extern "C" u64 import_name_size(BindingBytes dll,BindingBytes name) on cpu;
 extern "C" void import_name(BindingBytes dll,BindingBytes name,address output) on cpu;
 

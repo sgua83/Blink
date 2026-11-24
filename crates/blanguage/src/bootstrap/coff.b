@@ -10,9 +10,6 @@ void section_put(CoffInput input,u64 index,CoffSection value) on cpu {
 CoffSymbol symbol_at(CoffInput input,u64 index) on cpu {
     return unsafe_position<CoffSymbol>(unsafe_address(address_bits(input.symbols)+index*SYMBOL_BYTES));
 }
-CoffRelocation relocation_at(CoffSection section,u64 index) on cpu {
-    return unsafe_position<CoffRelocation>(unsafe_address(address_bits(section.relocations)+index*RELOCATION_BYTES));
-}
 CoffLayout invalid(u32 code) on cpu {return CoffLayout(0u64,0u64,0u64,0u64,code);}
 
 extern "C" CoffLayout layout(CoffInput input) on cpu {
@@ -27,8 +24,8 @@ extern "C" CoffLayout layout(CoffInput input) on cpu {
         if(at>4294967295u64){return invalid(3);}
         section.relocation_offset=at;
         if(section.relocation_count>=4294967295u64){return invalid(4);}
-        if(section.relocation_count>=65535u64){at+=10u64;}
-        at+=10u64*section.relocation_count;
+        if(section.relocation_count>=65535u64){at+=COFF_RELOCATION_RECORD_BYTES;}
+        at+=COFF_RELOCATION_RECORD_BYTES*section.relocation_count;
         section_put(input,i,section);i+=1u64;
     }
     if(at>4294967295u64){return invalid(3);}
@@ -68,7 +65,7 @@ void copy(address output,u64 at,address bytes,u64 length) on cpu {
         i+=1u64;
     }
 }
-extern "C" void encode(CoffInput input,CoffLayout layout,CoffNameSource names,address output) on cpu {
+extern "C" void encode(CoffInput input,CoffLayout layout,CoffBindingSource binding,address output) on cpu {
     zero(output,0u64,20u64+40u64*input.section_count);
     le16(output,0u64,34404u64);le16(output,2u64,input.section_count);
     le32(output,8u64,layout.symbols);le32(output,12u64,layout.symbol_count);
@@ -83,14 +80,12 @@ extern "C" void encode(CoffInput input,CoffLayout layout,CoffNameSource names,ad
         u64 at=section.relocation_offset;
         if(count>=65535u64){
             count=65535u64;flags=flags|16777216u64;
-            le32(output,at,section.relocation_count+1u64);zero(output,at+4u64,6u64);at+=10u64;
+            le32(output,at,section.relocation_count+1u64);zero(output,at+4u64,6u64);at+=COFF_RELOCATION_RECORD_BYTES;
         }
         le16(output,h+32u64,count);le32(output,h+36u64,flags);
-        u64 j=0u64;
-        while(j<section.relocation_count){
-            CoffRelocation relocation=relocation_at(section,j);
-            le32(output,at,relocation.offset);le32(output,at+4u64,relocation.symbol);
-            le16(output,at+8u64,relocation.kind);at+=10u64;j+=1u64;
+        if(section.relocation_count!=0u64){
+            address destination=unsafe_address(address_bits(output)+at);
+            write_section_relocations(binding,i,destination);
         }
         i+=1u64;
     }
@@ -111,7 +106,7 @@ extern "C" void encode(CoffInput input,CoffLayout layout,CoffNameSource names,ad
             copy(output,name_offset,symbol.name,symbol.name_length);
         }else{
             address destination=unsafe_address(address_bits(output)+name_offset);
-            write_generated_name(names,symbol.generated,symbol.source,destination);
+            write_generated_name(binding,symbol.generated,symbol.source,destination);
         }
         le32(output,at+8u64,symbol.value);le16(output,at+12u64,symbol.section);
         if(symbol.function!=0u64){le16(output,at+14u64,32u64);}

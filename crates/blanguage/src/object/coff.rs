@@ -10,7 +10,7 @@ const FORMAT: u32 = 93;
 struct CoffSectionView {
     name: *const u8, name_length: usize,
     byte_length: usize, flags: u64,
-    relocations: *const CoffRelocationView, relocation_count: usize,
+    relocation_count: usize,
     offset: usize, relocation_offset: usize,
 }
 #[repr(C)]
@@ -18,8 +18,6 @@ struct CoffSymbolView {
     name: *const u8, name_length: usize, section: u64, value: u64,
     function: u64, external: u64, auxiliary: u64, owner: u64, generated: u64, source: u64,
 }
-#[repr(C)]
-struct CoffRelocationView { offset: u64, symbol: u64, kind: u64 }
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct CoffInput {
@@ -33,12 +31,15 @@ enum CoffError { None, SectionCount, SectionSize, Offset, RelocationCount, Symbo
 #[derive(Clone, Copy)]
 struct CoffLayout { length: usize, symbols: usize, strings: usize, symbol_count: usize, error: CoffError }
 #[repr(C)]
-struct CoffNameSource { module: BindingBytes, nodes: *const [u64; 9] }
+struct CoffBindingSource {
+    module: BindingBytes, sections: *const BindingSection, nodes: *const [u64; 9],
+    names_root: u64, imports_root: u64,
+}
 unsafe extern "C" {
     #[link_name = "bootstrap.coff::layout"]
     fn coff_layout(input: CoffInput) -> CoffLayout;
     #[link_name = "bootstrap.coff::encode"]
-    fn coff_encode(input: CoffInput, layout: CoffLayout, names: CoffNameSource, output: *mut u8);
+    fn coff_encode(input: CoffInput, layout: CoffLayout, binding: CoffBindingSource, output: *mut u8);
 }
 
 // Synchronous borrowed fields; Object and caller-owned storage outlive both B phases.
@@ -95,7 +96,6 @@ type EmitImport<'a> = unsafe extern "C" fn(*mut c_void, ImportKey<'a>);
 struct BindingWork<'a> {
     symbols: *mut CoffSymbolView,
     nodes: *mut [u64; 9],
-    relocations: *mut CoffRelocationView,
     import_context: *mut c_void,
     emit_import: Option<EmitImport<'a>>,
 }
@@ -104,7 +104,7 @@ struct BindingWork<'a> {
 enum BindingError { None = 0, SectionCount = 2, RelocationOffset = 5 }
 #[repr(C)]
 #[derive(Clone, Copy)]
-struct BindingPlan { symbols: usize, relocations: usize, error: BindingError }
+struct BindingPlan { symbols: usize, names_root: u64, imports_root: u64, error: BindingError }
 unsafe extern "C" {
     #[link_name = "bootstrap.bindings::prepare"]
     fn binding_prepare(input: BindingInput, work: BindingWork<'_>) -> BindingPlan;
@@ -730,9 +730,9 @@ pub(super) fn encode(o: &Object) -> Result<Vec<u8>> {
 }
 pub(super) fn encode_build(o: &Object, build: Option<&[u8]>) -> Result<Vec<u8>> {
     metadata(o, |input, length| {
-        let extra = std::iter::once((META, CoffPayload::Metadata(&input, length), 0x840, &[][..]))
-            .chain(build.map(|bytes| (BUILD, CoffPayload::Borrowed(bytes), 0x840, &[][..])))
-            .chain(o.archive.as_ref().map(|archive| (ARCHIVE, CoffPayload::Borrowed(archive.bytes.as_ref()), 0x840, &[][..])));
+        let extra = std::iter::once((META, CoffPayload::Metadata(&input, length), 0x840))
+            .chain(build.map(|bytes| (BUILD, CoffPayload::Borrowed(bytes), 0x840)))
+            .chain(o.archive.as_ref().map(|archive| (ARCHIVE, CoffPayload::Borrowed(archive.bytes.as_ref()), 0x840)));
         encode_sections(&o.name, &o.sections, o.symbols.iter().map(|symbol| &symbol.definition), extra, None)
     })
 }
@@ -777,12 +777,12 @@ impl CoffPayload<'_> {
 }
 fn encode_sections<'a>(
     name: &str, source: &'a [Section], declared: impl Iterator<Item = &'a Definition>,
-    extra: impl Iterator<Item = (&'a str, CoffPayload<'a>, u32, &'a [Relocation])>,
+    extra: impl Iterator<Item = (&'a str, CoffPayload<'a>, u32)>,
     imports: Option<&mut Vec<ImportKey<'a>>>,
 ) -> Result<Vec<u8>> {
     let sections = source.iter().map(|section|
-        (section.name.as_str(), CoffPayload::Borrowed(section.bytes.as_slice()), section.flags, section.relocations.len())
-    ).chain(extra.map(|(name, payload, flags, relocations)| (name, payload, flags, relocations.len()))).collect::<Vec<_>>();
+        (section.name.as_str(), CoffPayload::Borrowed(section.bytes.as_slice()), section.flags)
+    ).chain(extra).collect::<Vec<_>>();
     let input_relocations = source.iter().map(|section| {
         section.relocations.iter().map(|relocation| {
             let empty = BindingBytes::new(&[]);
@@ -808,7 +808,7 @@ fn encode_sections<'a>(
 
 fn encode_bound<'a>(
     name: &str,
-    sections: Vec<(&str, CoffPayload<'_>, u32, usize)>,
+    sections: Vec<(&str, CoffPayload<'_>, u32)>,
     mut binding_sections: Vec<BindingSection>,
     definitions: &[BindingDefinition],
     imports: Option<&mut Vec<ImportKey<'a>>>,
@@ -818,7 +818,6 @@ fn encode_bound<'a>(
     // Each definition/reference contributes at most one shared tree node.
     let mut symbols = Vec::<CoffSymbolView>::with_capacity(2 * binding_sections.len() + definitions.len() + relocation_count);
     let mut nodes = Vec::<[u64; 9]>::with_capacity(definitions.len() + relocation_count);
-    let mut relocations = Vec::<CoffRelocationView>::with_capacity(relocation_count);
     let binding_input = BindingInput {
         name: BindingBytes::new(name.as_bytes()),
         sections: binding_sections.as_mut_ptr(), section_count: binding_sections.len(),
@@ -831,7 +830,7 @@ fn encode_bound<'a>(
         None => (std::ptr::null_mut(), None),
     };
     let work = BindingWork {
-        symbols: symbols.as_mut_ptr(), nodes: nodes.as_mut_ptr(), relocations: relocations.as_mut_ptr(),
+        symbols: symbols.as_mut_ptr(), nodes: nodes.as_mut_ptr(),
         import_context, emit_import,
     };
     let plan = unsafe { binding_prepare(binding_input, work) };
@@ -840,19 +839,13 @@ fn encode_bound<'a>(
         BindingError::SectionCount => return Err("COFF符号节号超过有符号16位字段".into()),
         BindingError::RelocationOffset => return Err("COFF重定位偏移超过32位字段".into()),
     }
-    unsafe {
-        symbols.set_len(plan.symbols);
-        relocations.set_len(plan.relocations);
-    }
-    let mut at = 0;
-    let mut physical = sections.iter().map(|(name, payload, flags, count)| {
-        let bound = &relocations[at..at + count];
-        at += count;
-        CoffSectionView {
-            name: name.as_ptr(), name_length: name.len(),
-            byte_length: payload.len(), flags: u64::from(*flags),
-            relocations: bound.as_ptr(), relocation_count: bound.len(), offset: 0, relocation_offset: 0,
-        }
+    unsafe { symbols.set_len(plan.symbols) };
+    let mut physical = sections.iter().enumerate().map(|(index, (name, payload, flags))| CoffSectionView {
+        name: name.as_ptr(), name_length: name.len(),
+        byte_length: payload.len(), flags: u64::from(*flags),
+        // Metadata sections follow the bound machine sections.
+        relocation_count: binding_sections.get(index).map_or(0, |section| section.relocation_count),
+        offset: 0, relocation_offset: 0,
     }).collect::<Vec<_>>();
     let input = CoffInput {
         sections: physical.as_mut_ptr(), section_count: physical.len(),
@@ -868,11 +861,14 @@ fn encode_bound<'a>(
         CoffError::SymbolCount => return Err("COFF符号数量超过32位字段".into()),
         CoffError::Strings => return Err("COFF字符串表超过32位字段".into()),
     }
-    let names = CoffNameSource { module: binding_input.name, nodes: nodes.as_ptr() };
+    let binding = CoffBindingSource {
+        module: binding_input.name, sections: binding_sections.as_ptr(), nodes: nodes.as_ptr(),
+        names_root: plan.names_root, imports_root: plan.imports_root,
+    };
     let mut output = Vec::with_capacity(layout.length);
     unsafe {
-        coff_encode(input, layout, names, output.as_mut_ptr());
-        for ((_, payload, _, _), section) in sections.iter().zip(&physical) {
+        coff_encode(input, layout, binding, output.as_mut_ptr());
+        for ((_, payload, _), section) in sections.iter().zip(&physical) {
             payload.write(output.as_mut_ptr().add(section.offset));
         }
         output.set_len(layout.length);

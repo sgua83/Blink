@@ -197,13 +197,13 @@ impl Groups {
                     associated: children.as_ptr(), associated_count: children.len(), owner: 0, symbol: 0,
                 }
             }).collect();
-            let mut payloads: Vec<_> = physical.iter().zip(&relocations).map(|(&index, refs)| {
+            let mut payloads: Vec<_> = physical.iter().map(|&index| {
                 let row = &raw[index];
-                (row_name(row), row_payload(row), row.flags as u32, refs.len())
+                (row_name(row), row_payload(row), row.flags as u32)
             }).collect();
             if member == 0 {
                 payloads.extend(raw.iter().filter(|row| row.mapped == 0 && row_name(row) != BUILD)
-                    .map(|row| (row_name(row), row_payload(row), row.flags as u32, 0)));
+                    .map(|row| (row_name(row), row_payload(row), row.flags as u32)));
             }
             // Retain the original COMDAT namespace of each independent member.
             let group_name = if combined == Some(member) {

@@ -90,7 +90,7 @@ pub(crate) fn member(import: ImportKey<'_>) -> Result<(LibraryMember, Range<usiz
             std::str::from_utf8_unchecked(std::slice::from_raw_parts(row.name.bytes, row.name.length))
         };
         let payload = Payload { import: &import, section: section as u32, length: length as u32 };
-        (name, CoffPayload::NativeImport(payload), row.flags as u32, row.relocation_count)
+        (name, CoffPayload::NativeImport(payload), row.flags as u32)
     }).collect();
     let definition = BindingDefinition {
         name: BindingBytes::new(member[slot.clone()].as_bytes()), section: 0, value: 0, function: 0,
