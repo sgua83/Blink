@@ -1,6 +1,6 @@
 //! B owns this link's definition tree, section queue, resource closure and remapping.
 //! Rust keeps the original objects/libraries and only hands their current borrowed views across the synchronous call.
-use super::{EntryPlan, Inputs, LibraryBinding, Result, Roots, Selected, Selection, Source, resources};
+use super::{EntryPlan, EntryProduct, Inputs, LibraryBinding, Result, Roots, Selected, Selection, Source, resources};
 use crate::object::{self, Object, Kind, Target, Library, ReadSection};
 use resources::ImportBytes as Bytes;
 use std::{collections::BTreeMap, ffi::c_void, marker::PhantomData};
@@ -11,7 +11,7 @@ struct ObjectView {
     frame_start:u64,frame_count:u64,prefix:Bytes,archive:u64,has_resources:u64,selected:u64,resources:u64,keep_archive:u64,borrowed:u64,stack_bytes:u64,
 }
 #[derive(Clone,Copy)]#[repr(C)]
-struct SectionView {owner:u64,flags:u64,associated_start:u64,associated_count:u64,relocation_start:u64,relocation_count:u64,live:u64,mapping:u64}
+struct SectionView {owner:u64,flags:u64,associated:*const usize,associated_count:u64,relocation_start:u64,relocation_count:u64,live:u64,mapping:u64}
 #[derive(Clone,Copy)]#[repr(C)]
 struct RelocationView {kind:u64,section:u64,name:Bytes,dll:Bytes,rewrite:u64}
 #[derive(Clone,Copy)]#[repr(C)]
@@ -67,7 +67,7 @@ pub(crate) fn bind_root_contracts<'a>(
 #[derive(Clone,Copy)]#[repr(C)]
 struct View {
     objects:*mut ObjectView,object_count:u64,sections:*mut SectionView,section_count:u64,
-    relocations:*mut RelocationView,associated:*mut u64,symbols:*mut SymbolView,imports:*mut ImportView,
+    relocations:*mut RelocationView,symbols:*mut SymbolView,imports:*mut ImportView,
     exports:*mut ExportView,code:*mut Bytes,frames:*mut FrameView,nodes:*mut [u64;9],pending:*mut u64,
     locals:*mut LocalView,runtime:*mut Bytes,archives:*mut u64,library_count:u64,
 }
@@ -91,14 +91,14 @@ fn borrowed(bytes:&[u8])->Bytes {Bytes{bytes:bytes.as_ptr(),length:bytes.len() a
 fn text(bytes:&Bytes)->&str {unsafe{std::str::from_utf8_unchecked(std::slice::from_raw_parts(bytes.bytes,bytes.length as usize))}}
 struct Context<'a, Payload> {
     sources:Vec<Source<'a, Payload>>,libraries:Vec<Library>,objects:Vec<ObjectView>,sections:Vec<SectionView>,
-    relocations:Vec<RelocationView>,associated:Vec<u64>,symbols:Vec<SymbolView>,imports:Vec<ImportView>,
+    relocations:Vec<RelocationView>,symbols:Vec<SymbolView>,imports:Vec<ImportView>,
     exports:Vec<ExportView>,code:Vec<Bytes>,frames:Option<Vec<FrameView>>,nodes:Vec<[u64;9]>,pending:Vec<u64>,
     locals:Vec<LocalView>,runtime:Vec<Bytes>,archives:Vec<u64>,slots:Vec<String>,error:Option<Box<dyn std::error::Error>>,
 }
 impl<'a, Payload> Context<'a, Payload> {
     fn new(inputs: Inputs<'a, Payload>, stack_output: bool)->Self {
         let Inputs { sources, libraries } = inputs;
-        let mut context=Self{sources:Vec::new(),libraries,objects:Vec::new(),sections:Vec::new(),relocations:Vec::new(),associated:Vec::new(),
+        let mut context=Self{sources:Vec::new(),libraries,objects:Vec::new(),sections:Vec::new(),relocations:Vec::new(),
             symbols:Vec::new(),imports:Vec::new(),exports:Vec::new(),code:Vec::new(),frames:stack_output.then(Vec::new),nodes:Vec::new(),pending:Vec::new(),
             locals:Vec::new(),runtime:Vec::new(),archives:Vec::new(),slots:Vec::new(),error:None};
         for (index, source) in sources.iter().enumerate() {
@@ -125,9 +125,9 @@ impl<'a, Payload> Context<'a, Payload> {
             archive:object.archive.is_some() as u64,has_resources:0,selected:0,resources:0,keep_archive:0,borrowed:borrowed_source as u64,stack_bytes:u64::from(stack_bytes),
         };
         for section in &object.sections {
-            self.sections.push(SectionView{owner:index as u64,flags:section.flags.into(),associated_start:self.associated.len() as u64,associated_count:section.associated.len() as u64,
+            // The original object owns its association lists through the synchronous selection.
+            self.sections.push(SectionView{owner:index as u64,flags:section.flags.into(),associated:section.associated.as_ptr(),associated_count:section.associated.len() as u64,
                 relocation_start:self.relocations.len() as u64,relocation_count:section.relocations.len() as u64,live:0,mapping:0});
-            self.associated.extend(section.associated.iter().map(|&i|i as u64));
             for relocation in &section.relocations{
                 let(kind,section,name,dll)=match &relocation.target{
                     Target::Section(section,_)=>(0,*section as u64,empty,empty),
@@ -164,7 +164,7 @@ impl<'a, Payload> Context<'a, Payload> {
     }
     fn view(&mut self)->View {
         View{objects:self.objects.as_mut_ptr(),object_count:self.objects.len() as u64,sections:self.sections.as_mut_ptr(),section_count:self.sections.len() as u64,
-            relocations:self.relocations.as_mut_ptr(),associated:self.associated.as_mut_ptr(),symbols:self.symbols.as_mut_ptr(),imports:self.imports.as_mut_ptr(),
+            relocations:self.relocations.as_mut_ptr(),symbols:self.symbols.as_mut_ptr(),imports:self.imports.as_mut_ptr(),
             exports:self.exports.as_mut_ptr(),code:self.code.as_mut_ptr(),frames:self.frames.as_mut().map_or(std::ptr::null_mut(), Vec::as_mut_ptr),nodes:self.nodes.as_mut_ptr(),pending:self.pending.as_mut_ptr(),
             locals:self.locals.as_mut_ptr(),runtime:self.runtime.as_mut_ptr(),archives:self.archives.as_mut_ptr(),library_count:self.libraries.len() as u64}
     }
@@ -181,8 +181,7 @@ impl<'a, Payload> Context<'a, Payload> {
             Err(error)=>{self.error=Some(error);Reply{view:self.view(),object:0,error:1}},
         }
     }
-    fn section<Bytes>(&self,section:&mut object::Section<Bytes>,row:SectionView) {
-        section.associated=self.associated[row.associated_start as usize..(row.associated_start+row.associated_count) as usize].iter().map(|&i|i as usize).collect();
+    fn remap_relocations<Bytes>(&self,section:&mut object::Section<Bytes>,row:SectionView) {
         for(relocation,view)in section.relocations.iter_mut().zip(&self.relocations[row.relocation_start as usize..(row.relocation_start+row.relocation_count) as usize]){
             if let Target::Section(index,_)=&mut relocation.target{*index=view.section as usize;}
             if view.rewrite!=0{relocation.target=Target::Symbol(text(&self.locals[view.rewrite as usize-1].slot).to_owned());}
@@ -190,7 +189,7 @@ impl<'a, Payload> Context<'a, Payload> {
     }
     fn materialize(
         &self, source: Source<'a, Payload>, row: ObjectView,
-        borrowed: &impl Fn(&'a Vec<u8>) -> Payload,
+        borrowed: &impl Fn(&'a Vec<u8>) -> Payload, write_coff: bool,
     ) -> Selected<Payload> {
         let sections=&self.sections[row.section_start as usize..(row.section_start+row.section_count) as usize];
         let symbols=&self.symbols[row.symbol_start as usize..(row.symbol_start+row.symbol_count) as usize];
@@ -199,7 +198,15 @@ impl<'a, Payload> Context<'a, Payload> {
                 let Object { name, kind, sections: input, symbols: declared, archive, mut stack, .. } = object;
                 let sections = input.into_iter().zip(sections).filter_map(|(mut section, &row)| {
                     if row.live == 0 { return None; }
-                    self.section(&mut section, row);
+                    // MSVC consumes the same edges when writing the selected COFF.
+                    if write_coff {
+                        for index in &mut section.associated {
+                            *index = sections[*index].mapping as usize;
+                        }
+                    } else {
+                        section.associated = Vec::new();
+                    }
+                    self.remap_relocations(&mut section, row);
                     Some(section)
                 }).collect();
                 let definitions = declared.into_iter().zip(symbols).filter_map(|(symbol, row)| {
@@ -235,7 +242,7 @@ impl<'a, Payload> Context<'a, Payload> {
                         relocations:section.relocations.iter().map(|relocation|object::Relocation{offset:relocation.offset,kind:relocation.kind,target:match &relocation.target{
                             Target::Section(index,value)=>Target::Section(*index,*value),Target::Symbol(name)=>Target::Symbol(name.clone()),Target::Import(import)=>Target::Import(import.clone()),
                         }}).collect()};
-                    self.section(&mut section,row);Some(section)
+                    self.remap_relocations(&mut section,row);Some(section)
                 }).collect(),
                 definitions: object.symbols.iter().zip(symbols).filter(|(_, row)| row.keep != 0)
                     .map(|(symbol, row)| {
@@ -306,7 +313,9 @@ pub(super) fn select<'a, Payload: ReadSection>(
         code=>return Err(format!("原生链接选择失败 {code}").into()),
     }
     if native_mode==0{context.sources.swap(0,result.entry as usize);context.objects.swap(0,result.entry as usize);}
+    let write_coff = !stack_output
+        && matches!(result.plan.product, EntryProduct::HostApplication | EntryProduct::Dll);
     let sources=std::mem::take(&mut context.sources);let mut output=Vec::new();
-    for(source,row)in sources.into_iter().zip(&context.objects){if row.selected!=0{output.push(context.materialize(source,*row,&borrowed));}}
+    for(source,row)in sources.into_iter().zip(&context.objects){if row.selected!=0{output.push(context.materialize(source,*row,&borrowed,write_coff));}}
     Ok(Selection { objects: output, plan: result.plan })
 }

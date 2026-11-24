@@ -13,7 +13,7 @@ struct SelectObject {
     u64 import_start;u64 import_count;u64 export_start;u64 export_count;u64 code_start;u64 code_count;
     u64 frame_start;u64 frame_count;BindingBytes prefix;u64 archive;u64 has_resources;u64 selected;u64 resources;u64 keep_archive;u64 borrowed;u64 stack_bytes;
 };
-struct SelectSection {u64 owner;u64 flags;u64 associated_start;u64 associated_count;u64 relocation_start;u64 relocation_count;u64 live;u64 mapping;};
+struct SelectSection {u64 owner;u64 flags;address associated;u64 associated_count;u64 relocation_start;u64 relocation_count;u64 live;u64 mapping;};
 struct SelectRelocation {u64 kind;u64 section;BindingBytes name;BindingBytes dll;u64 rewrite;};
 struct SelectSymbol {BindingBytes name;BindingBytes contract;u64 owner;u64 section;u64 keep;};
 struct SelectImport {BindingBytes name;BindingBytes contract;};
@@ -24,7 +24,7 @@ struct SelectRoot {BindingBytes name;BindingBytes contract;};
 extern "C" u64 bind_root_contracts(address roots,u64 count,address context,u64 sources,
     cfn<BindingBytes,address,u64,BindingBytes> lookup) on cpu requires nonzero(lookup);
 struct SelectView {
-    address objects;u64 object_count;address sections;u64 section_count;address relocations;address associated;
+    address objects;u64 object_count;address sections;u64 section_count;address relocations;
     address symbols;address imports;address exports;address code;address frames;address nodes;address pending;
     address locals;address runtime;address archives;u64 library_count;
 };

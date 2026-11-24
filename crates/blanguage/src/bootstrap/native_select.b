@@ -129,8 +129,7 @@ EntryPlan finish(inout SelectState state,SelectParams params) on cpu {
             if(object.kind!=2u64&&object.stack_bytes>stack_bytes){stack_bytes=object.stack_bytes;}
             i=object.section_start;while(i<object.section_start+object.section_count){SelectSection section=section_at(state.view,i);if(section.live!=0u64){
                 u64 r=section.relocation_start;while(r<section.relocation_start+section.relocation_count){SelectRelocation row=relocation_at(state.view,r);
-                    if(row.kind==0u64){row.section=section_at(state.view,object.section_start+row.section).mapping;relocation_put(state.view,r,row);}r+=1u64;}
-                u64 a=section.associated_start;while(a<section.associated_start+section.associated_count){index_put(state.view.associated,a,section_at(state.view,object.section_start+index_at(state.view.associated,a)).mapping);a+=1u64;}}
+                    if(row.kind==0u64){row.section=section_at(state.view,object.section_start+row.section).mapping;relocation_put(state.view,r,row);}r+=1u64;}}
                 i+=1u64;
             }
             i=object.symbol_start;while(i<object.symbol_start+object.symbol_count){SelectSymbol symbol=symbol_at(state.view,i);SelectSection section=section_at(state.view,object.section_start+symbol.section);symbol.keep=section.live;symbol.section=section.mapping;symbol_put(state.view,i,symbol);i+=1u64;}
@@ -166,7 +165,11 @@ extern "C" SelectResult choose(SelectView input,SelectParams params,address cont
     bool bind=params.native_mode!=0u64;
     while(true){
         while(state.head<state.tail){u64 section_index=index_at(state.view.pending,state.head);state.head+=1u64;SelectSection section=section_at(state.view,section_index);u64 object_index=section.owner;SelectObject object=object_at(state.view,object_index);
-            u64 a=section.associated_start;while(a<section.associated_start+section.associated_count){include(state,object_index,index_at(state.view.associated,a));a+=1u64;}
+            u64 a=0u64;
+            while(a<section.associated_count){
+                include(state,object_index,index_at(section.associated,a));
+                a+=1u64;
+            }
             u64 r=section.relocation_start;
             while(r<section.relocation_start+section.relocation_count){
                 SelectRelocation relocation=relocation_at(state.view,r);
