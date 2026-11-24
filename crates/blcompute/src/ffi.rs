@@ -6,7 +6,7 @@ use crate::{
     vulkan::{Device, GpuProgram},
 };
 use blanguage::{
-    ir::{ExecutionPlan as Program, Scalar},
+    ir::{Buffer as BufferLayout, ExecutionPlan as Program, Scalar},
 };
 use blanguage::{
     ExecutableProgram,
@@ -53,32 +53,23 @@ impl LibraryProgram {
         if buffers.len() != p.buffers().len() {
             return Err(error("DLL 数据绑定数量与编译接口不一致"));
         }
-        let mut datasets = Vec::new();
-        for (i, (buffer, layout)) in buffers.iter().zip(p.buffers()).enumerate() {
+        for (buffer, layout) in buffers.iter().zip(p.buffers()) {
             if layout.ty.size != 0 && buffer.count != 0 && buffer.data.is_null() {
                 return Err(error(format!("{} 的非空数据指针为空", layout.name)));
             }
-            let mut data = Dataset::new(p, i, buffer.count)?;
-            if layout.access.reads() {
-                let words = data.words_mut();
-                for record in 0..buffer.count as usize {
-                    // 只读真实字段，不读取 C/C++ 结构体未初始化的填充字节。
-                    for &(scalar, offset) in &layout.ty.components {
-                        let byte = record * layout.stride as usize + offset as usize;
-                        unsafe {
-                            std::ptr::copy_nonoverlapping(
-                                buffer.data.cast::<u8>().add(byte),
-                                words.as_mut_ptr().cast::<u8>().add(byte),
-                                scalar.size() as usize,
-                            );
-                        }
-                    }
-                }
-            }
-            datasets.push(data);
         }
         let outputs: Vec<(usize, CpuDataset)> = match self {
             Self::Cpu(p) => {
+                let mut datasets = Vec::with_capacity(buffers.len());
+                for (i, (buffer, layout)) in buffers.iter().zip(p.program().buffers()).enumerate() {
+                    let mut data = Dataset::new(p.program(), i, buffer.count)?;
+                    if layout.access.reads() {
+                        unsafe {
+                            copy_fields(layout, buffer.count as usize, buffer.data.cast(), data.words_mut().as_mut_ptr().cast());
+                        }
+                    }
+                    datasets.push(data);
+                }
                 p.run(&mut datasets, values)?;
                 datasets
                     .into_iter()
@@ -88,8 +79,20 @@ impl LibraryProgram {
                     .collect::<Vec<_>>()
             }
             Self::Gpu { device, program } => {
-                let datasets = datasets.into_iter().map(Into::into).collect::<Vec<_>>();
-                let uploaded = device.upload_domains(datasets)?;
+                let layouts = program.program().buffers();
+                let uploaded = device.upload_fields(
+                    layouts.iter().zip(buffers.iter().map(|buffer| buffer.count)),
+                    |index, start, page| {
+                        let layout = &layouts[index];
+                        if layout.access.reads() {
+                            let records = page.len() / layout.stride as usize;
+                            unsafe {
+                                let source = buffers[index].data.cast::<u8>().add(start);
+                                copy_fields(layout, records, source, page.as_mut_ptr());
+                            }
+                        }
+                    },
+                )?;
                 let completed = program.submit(uploaded, values)?.wait().map_err(|(error, _)| error)?;
                 let (output_slots, datasets): (Vec<_>, Vec<_>) = completed
                     .into_datasets()
@@ -104,20 +107,23 @@ impl LibraryProgram {
         for (i, data) in outputs {
             let buffer = &buffers[i];
             let layout = &self.program().buffers()[i];
-            for record in 0..buffer.count as usize {
-                for &(scalar, offset) in &layout.ty.components {
-                    let byte = record * layout.stride as usize + offset as usize;
-                    unsafe {
-                        std::ptr::copy_nonoverlapping(
-                            data.words().as_ptr().cast::<u8>().add(byte),
-                            buffer.data.cast::<u8>().add(byte),
-                            scalar.size() as usize,
-                        );
-                    }
-                }
+            unsafe {
+                copy_fields(layout, buffer.count as usize, data.words().as_ptr().cast(), buffer.data.cast());
             }
         }
         Ok(())
+    }
+}
+
+// Each pointer covers the corresponding declared fields of these records.
+unsafe fn copy_fields(layout: &BufferLayout, records: usize, source: *const u8, target: *mut u8) {
+    for record in 0..records {
+        for &(scalar, offset) in &layout.ty.components {
+            let byte = record * layout.stride as usize + offset as usize;
+            unsafe {
+                std::ptr::copy_nonoverlapping(source.add(byte), target.add(byte), scalar.size() as usize);
+            }
+        }
     }
 }
 

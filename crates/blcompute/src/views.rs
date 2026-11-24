@@ -155,13 +155,22 @@ impl Dataset {
     }
 
     pub(crate) fn require_views(&self) -> Result<()> {
-        if self.views.sources.is_empty() && self.ty.contains_views() {
-            for words in self.words.chunks(self.stride as usize/4){
-                let mut present=false;
-                self.ty.visit_view_fields(words,|_,_|present=true).map_err(error)?;
-                if present{return Err(error("CPU view数据缺少实际子资源所有权；原始字节不能代替with_views绑定"));}
-            }
+        if self.views.sources.is_empty() {
+            require_unbound_views(&self.ty, self.stride, &self.words)?;
         }
         Ok(())
     }
+}
+
+pub(crate) fn require_unbound_views(ty: &Ty, stride: u32, words: &[u32]) -> Result<()> {
+    if ty.contains_views() {
+        for record in words.chunks(stride as usize / 4) {
+            let mut present = false;
+            ty.visit_view_fields(record, |_, _| present = true).map_err(error)?;
+            if present {
+                return Err(error("CPU view数据缺少实际子资源所有权；原始字节不能代替with_views绑定"));
+            }
+        }
+    }
+    Ok(())
 }

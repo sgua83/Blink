@@ -1,7 +1,7 @@
 //! 显式传输闭合资源图；一次操作内保留共享，不解析源平台地址或维护跨操作缓存。
 use super::*;
 use crate::cpu::CpuDataset;
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, ops::Range};
 
 impl Device {
     /// Accept the CPU source before obtaining a device for the upload.
@@ -18,49 +18,91 @@ impl Device {
         Ok(upload.submit()?.root(root))
     }
 
-    pub(super) fn upload_payload(&self, target: &mut GpuDataset, words: &[u32]) -> Result<()> {
-        if words.is_empty() {
-            return Ok(());
+    /// Stage original host fields into the same physical pages used by dataset uploads.
+    pub(crate) fn upload_fields<'a>(
+        &self,
+        bindings: impl IntoIterator<Item = (&'a blanguage::ir::Buffer, u32)>,
+        mut fill: impl FnMut(usize, usize, &mut [u8]),
+    ) -> Result<DomainBindings<GpuDataset>> {
+        let mut upload = Upload::new(self);
+        let mut roots = Vec::new();
+        for (index, (binding, count)) in bindings.into_iter().enumerate() {
+            let target = GpuDataset::new(self.inner.clone(), binding.ty.clone(), binding.stride, count)?;
+            self.stage_pages(&target, &mut upload.commands, &mut upload.staging, |source, range| {
+                let pointer = source.mapping()?;
+                // The newly mapped staging page is exclusive until the transfer is submitted.
+                // Clear untouched fields and the last partial copy word before exposing bytes.
+                let words = unsafe {
+                    pointer.write_bytes(0, source.size as usize);
+                    std::slice::from_raw_parts_mut(pointer.cast::<u32>(), source.size as usize / 4)
+                };
+                let bytes = unsafe { std::slice::from_raw_parts_mut(words.as_mut_ptr().cast::<u8>(), range.len()) };
+                fill(index, range.start, bytes);
+                crate::views::require_unbound_views(&binding.ty, binding.stride, words)
+            })?;
+            roots.push(UploadRoot::Owned(StagedDataset { data: target, views: Views::default() }));
         }
-        let mut commands = Commands::new(self.inner.clone())?;
+        let uploaded = upload.submit()?;
+        Ok(roots.into_iter().map(|root| uploaded.root(root)).collect::<Vec<_>>().into())
+    }
+
+    pub(super) fn upload_payload(&self, target: &mut GpuDataset, words: &[u32]) -> Result<()> {
+        let mut commands = None;
         let mut staging = Vec::new();
-        self.stage_payload(
+        self.stage_words(
             target,
             words,
             |start, mapped| target.views.encode(start, mapped, |source| source.0.view_header()),
             &mut commands,
             &mut staging,
         )?;
-        target.last_use = Some(DatasetUse::Binding(self.submit_dataset_transfer(commands, staging, false)?));
+        if let Some(commands) = commands {
+            target.last_use = Some(DatasetUse::Binding(self.submit_dataset_transfer(commands, staging, false)?));
+        }
         Ok(())
     }
-    fn stage_payload(
+
+    fn stage_words(
         &self,
         target: &GpuDataset,
         words: &[u32],
         encode_views: impl Fn(usize, &mut [u32]),
-        commands: &mut Commands,
+        commands: &mut Option<Commands>,
         staging: &mut Vec<Allocation>,
     ) -> Result<()> {
+        if words.is_empty() {
+            return Ok(());
+        }
         let bytes = unsafe { std::slice::from_raw_parts(words.as_ptr().cast::<u8>(), target.bytes() as usize) };
+        self.stage_pages(target, commands, staging, |source, range| {
+            let start = range.start;
+            source.write_with(&bytes[range], |mapped| encode_views(start / 4, mapped))
+        })
+    }
+
+    fn stage_pages(
+        &self,
+        target: &GpuDataset,
+        commands: &mut Option<Commands>,
+        staging: &mut Vec<Allocation>,
+        mut write: impl FnMut(&Allocation, Range<usize>) -> Result<()>,
+    ) -> Result<()> {
+        if target.pages.is_empty() {
+            return Ok(());
+        }
+        let commands = match commands {
+            Some(commands) => commands,
+            slot @ None => slot.insert(Commands::new(self.inner.clone())?),
+        };
+        let bytes_per_page = target.page_records() as usize * target.stride as usize;
         for (index, page) in target.pages.iter().enumerate() {
-            let bytes_per_page = target.page_records() as usize * target.stride as usize;
             let start = index * bytes_per_page;
-            let bytes = &bytes[start..(start + bytes_per_page).min(bytes.len())];
-            self.stage_page(
-                page,
-                bytes.len() as u64,
-                |source| {
-                    source.write_with(bytes, |mapped| {
-                        encode_views(start / 4, mapped);
-                    })
-                },
-                commands,
-                staging,
-            )?;
+            let range = start..(start + bytes_per_page).min(target.bytes() as usize);
+            self.stage_page(page, range.len() as u64, |source| write(source, range), commands, staging)?;
         }
         Ok(())
     }
+
     // The writer initializes the mapped source, including padding to the four-byte copy size.
     pub(super) fn stage_page(
         &self,
@@ -192,19 +234,13 @@ impl<'a> Upload<'a> {
         let (ty, bindings) = metadata();
         let views = Views { sources, bindings };
         let data = GpuDataset::new(self.device.inner.clone(), ty, stride, count)?;
-        if !words.is_empty() {
-            let commands = match &mut self.commands {
-                Some(commands) => commands,
-                slot @ None => slot.insert(Commands::new(self.device.inner.clone())?),
-            };
-            self.device.stage_payload(
-                &data,
-                words,
-                |start, mapped| views.encode(start, mapped, |&index| self.shared[index].data.view_header()),
-                commands,
-                &mut self.staging,
-            )?;
-        }
+        self.device.stage_words(
+            &data,
+            words,
+            |start, mapped| views.encode(start, mapped, |&index| self.shared[index].data.view_header()),
+            &mut self.commands,
+            &mut self.staging,
+        )?;
         Ok(StagedDataset { data, views })
     }
 
