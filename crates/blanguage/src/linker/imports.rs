@@ -61,18 +61,19 @@ fn member(import: ImportKey<'_>) -> Result<(LibraryMember, String)> {
     Ok((LibraryMember::new(member,bytes),symbol.name))
 }
 
-pub(super) fn append_members(
+pub(super) fn import_members(
     mut keys: Vec<ImportKey<'_>>,
-    members: &mut Vec<LibraryMember>,
+    first_member: usize,
     symbols: &mut Vec<(usize, String)>,
-) -> Result<()> {
+) -> Result<Vec<LibraryMember>> {
     let count = unsafe { order_import_keys(keys.as_mut_ptr(), keys.len() as u64) } as usize;
+    let mut members = Vec::with_capacity(count);
     for key in keys.into_iter().take(count) {
         let (member, symbol) = member(key)?;
-        symbols.push((members.len(), symbol));
+        symbols.push((first_member + members.len(), symbol));
         members.push(member);
     }
-    Ok(())
+    Ok(members)
 }
 
 /// 保存已编译模块及其原生导入材料，供C／C++／Rust静态宿主链接。
@@ -81,13 +82,13 @@ pub fn host_archive(inputs: &[impl AsRef<Path>], path: &Path) -> Result<()> {
     let mut members = object::library_members(inputs)?;
     let mut symbols = Vec::new();
     let mut imports = Vec::new();
+    let first_import = members.len();
     for (index, member) in members.iter_mut().enumerate() {
-        let (names, member_imports) = member.host_links()?
-            .ok_or_else(||format!("{} 不是独立模块产物",member.name))?;
+        let names = member.host_links(&mut imports)?;
         symbols.extend(names.into_iter().map(|name|(index,name)));
-        imports.extend(member_imports);
     }
-    append_members(imports.iter().map(ImportKey::from).collect(), &mut members, &mut symbols)?;
+    let imported = import_members(imports, first_import, &mut symbols)?;
+    members.extend(imported);
     let output = object::library_bytes(&members, &symbols)?;
     if let Some(parent) = path.parent() {
         crate::file_bytes::create_dir_all(parent)?;

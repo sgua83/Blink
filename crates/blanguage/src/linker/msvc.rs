@@ -360,9 +360,8 @@ pub(super) fn link(
             write_input(&mut temporary, path, &code)?;
         }
         // The host archive and the MSVC inputs share one import-slot producer.
-        let mut members = Vec::new();
         let mut symbols = Vec::new();
-        super::imports::append_members(imports, &mut members, &mut symbols)?;
+        let members = super::imports::import_members(imports, 0, &mut symbols)?;
         if !members.is_empty() {
             let path = join(&directory, format!(".blink-link-{id}-imports.lib"));
             let bytes = crate::object::library_bytes(&members, &symbols)?;

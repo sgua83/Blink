@@ -54,17 +54,15 @@ pub(crate) struct ImportKey<'a> {
     source: std::marker::PhantomData<&'a str>,
 }
 
-impl<'a> From<&'a Import> for ImportKey<'a> {
-    fn from(import: &'a Import) -> Self {
+impl<'a> ImportKey<'a> {
+    fn new(dll: &'a str, symbol: &'a str) -> Self {
         Self {
-            dll: BindingBytes::new(import.dll.as_bytes()),
-            symbol: BindingBytes::new(import.name.as_bytes()),
+            dll: BindingBytes::new(dll.as_bytes()),
+            symbol: BindingBytes::new(symbol.as_bytes()),
             source: std::marker::PhantomData,
         }
     }
-}
 
-impl<'a> ImportKey<'a> {
     fn text(bytes: BindingBytes) -> &'a str {
         unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(bytes.bytes, bytes.length)) }
     }
@@ -1043,19 +1041,21 @@ impl<'a, Input: AsRef<[u8]> + ?Sized> Reader<'a, Input> {
         self.module_symbols()?.map(|(raw, symbols)| export_names(&raw, &symbols)).transpose()
     }
     /// Native archives additionally consume the actual DLL import relocations.
-    pub(crate) fn host_links(&self) -> Result<Option<(Vec<String>, Vec<Import>)>> {
+    pub(crate) fn host_links(&self, imports: &mut Vec<ImportKey<'a>>) -> Result<Option<Vec<String>>> {
         let Some((raw, symbols)) = self.module_symbols()? else { return Ok(None); };
         let names = export_names(&raw, &symbols)?;
-        let mut imports = Vec::new();
         for row in raw.iter().filter(|row| row.mapped != 0) {
             self.relocations(&raw, &symbols, row, |_, _, target| {
                 if matches!(target.kind, ObjectTargetKind::Import) {
-                    imports.push(Import { dll: read_text(target.dll)?, name: read_text(target.name)? });
+                    // B returns two ranges of a symbol name in this COFF input.
+                    let dll = std::str::from_utf8(unsafe { target.dll.borrowed() })?;
+                    let symbol = std::str::from_utf8(unsafe { target.name.borrowed() })?;
+                    imports.push(ImportKey::new(dll, symbol));
                 }
                 Ok(())
             })?;
         }
-        Ok(Some((names, imports)))
+        Ok(Some(names))
     }
 
     /// 从库成员借用公开接口与合同。完整对象负责代码、重定位和诊断材料。

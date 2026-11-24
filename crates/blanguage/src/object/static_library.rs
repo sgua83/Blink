@@ -144,14 +144,20 @@ impl Member {
         }
     }
 
-    pub(crate) fn host_links(&mut self) -> Result<Option<(Vec<String>, Vec<super::Import>)>> {
-        let result = (|| {
-            let reader = coff::Reader::new(&self.bytes)?;
-            let Some(links) = reader.host_links()? else { return Ok(None); };
-            self.build = reader.host_build_section()?;
-            Ok(Some(links))
+    pub(crate) fn host_links<'a>(
+        &'a mut self, imports: &mut Vec<coff::ImportKey<'a>>,
+    ) -> Result<Vec<String>> {
+        let Self { name, bytes, build } = self;
+        let bytes = &*bytes;
+        let result = (move || {
+            let reader = coff::Reader::new(bytes)?;
+            let Some(names) = reader.host_links(imports)? else { return Ok(None); };
+            *build = reader.host_build_section()?;
+            Ok(Some(names))
         })();
-        result.map_err(|error: Box<dyn std::error::Error>| format!("静态库成员 {}：{error}", self.name).into())
+        result
+            .map_err(|error: Box<dyn std::error::Error>| format!("静态库成员 {name}：{error}"))?
+            .ok_or_else(|| format!("{name} 不是独立模块产物").into())
     }
     pub(crate) fn archive_symbols(&self)->Result<Option<Vec<String>>> {
         coff::Reader::new(&self.bytes).and_then(|reader|reader.archive_symbols())
