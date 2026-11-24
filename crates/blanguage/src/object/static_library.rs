@@ -1,7 +1,7 @@
 //! 标准 COFF 静态库保存原对象；目录归库所有，实际符号绑定仍归链接器。
 use super::{Kind, Object, ReadSection, Result, coff};
 use crate::{file_bytes::FileBytes, module::CompiledInterface};
-use std::{fs::File, ops::{Deref, Range}, path::Path, ptr::NonNull, sync::Arc};
+use std::{borrow::Cow, fs::File, ops::{Deref, Range}, path::Path, ptr::NonNull, sync::Arc};
 fn has_signature(bytes: &[u8]) -> bool {
     unsafe { archive_has_signature(bytes.as_ptr(), bytes.len()) }
 }
@@ -146,7 +146,7 @@ impl Member {
 
     pub(crate) fn host_members<'a>(
         &'a self, imports: &mut Vec<coff::ImportKey<'a>>,
-    ) -> Result<Vec<(Self, Vec<String>)>> {
+    ) -> Result<Vec<(Self, Vec<Cow<'a, str>>)>> {
         let output = coff::Reader::new(&self.bytes).and_then(|reader| reader.host_links(imports))
             .map_err(|error| format!("静态库成员 {}：{error}", self.name))?
             .ok_or_else(|| format!("{} 不是独立模块产物", self.name))?;

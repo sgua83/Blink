@@ -1,7 +1,7 @@
 //! Project a module's linked code groups into independently extractable native members.
 use super::*;
 
-pub(super) fn needs_groups(symbols: &[ObjectSymbol]) -> bool {
+pub(super) fn needs_groups(symbols: &[ObjectSymbol<'_>]) -> bool {
     symbols.iter().filter(|symbol| symbol.external != 0 && symbol.section <= 0).any(|symbol| {
         match symbol.role {
             ObjectSymbolRole::Import => {
@@ -118,10 +118,10 @@ impl Groups {
         Some(first)
     }
 
-    pub(super) fn encode(
-        mut self, bytes: &[u8], raw: &[ObjectSection], symbols: &[ObjectSymbol],
+    pub(super) fn encode<'a>(
+        mut self, bytes: &[u8], raw: &[ObjectSection], symbols: &[ObjectSymbol<'a>],
         build: Option<&HostBuildSection>,
-    ) -> Result<Vec<(Vec<u8>, Vec<String>)>> {
+    ) -> Result<Vec<(Vec<u8>, Vec<Cow<'a, str>>)>> {
         let combined = self.combine_closed_groups(raw);
         let identity = member_identity(bytes, raw, build);
         let mut anchors = BTreeMap::new();
@@ -144,24 +144,25 @@ impl Groups {
             }
         }
         let mut definitions: Vec<Vec<BindingDefinition>> = self.members.iter().map(|_| Vec::new()).collect();
-        let mut names: Vec<Vec<String>> = self.members.iter().map(|_| Vec::new()).collect();
+        let mut names: Vec<Vec<Cow<'a, str>>> = self.members.iter().map(|_| Vec::new()).collect();
         for symbol in symbols.iter().filter(|symbol| symbol.external != 0 && symbol.section > 0) {
             let index = object_index(raw, symbol.section as usize - 1)
                 .ok_or("导出符号引用不可装载的节")?;
             let (member, section) = self.positions[index];
-            let name = unsafe { std::str::from_utf8_unchecked(symbol.name.borrowed()) };
+            let name = unsafe { symbol.validated_name() };
             definitions[member].push(BindingDefinition {
                 name: BindingBytes::new(name.as_bytes()), section: section as u64,
                 value: u64::from(symbol.value), function: u64::from(symbol.is_function()),
             });
-            names[member].push(name.to_owned());
+            names[member].push(Cow::Borrowed(name));
         }
-        for (&(index, value), name) in &anchors {
+        for ((index, value), name) in anchors {
             let (member, section) = self.positions[index];
             definitions[member].push(BindingDefinition {
                 name: BindingBytes::new(name.as_bytes()), section: section as u64, value: u64::from(value), function: 0,
             });
-            names[member].push(name.clone());
+            // The same buffer stays live for the relocation and definition views.
+            names[member].push(Cow::Owned(name));
         }
 
         let mut output = Vec::with_capacity(self.members.len());

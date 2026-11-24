@@ -1,6 +1,6 @@
 //! COFF 节、符号与 AMD64 重定位；Blink 元数据不替代标准重定位表。
 use super::*;
-use std::{collections::{BTreeMap, BTreeSet}, ffi::c_void, sync::Arc};
+use std::{borrow::Cow, collections::{BTreeMap, BTreeSet}, ffi::c_void, sync::Arc};
 const META: &str = ".blmeta";
 const ARCHIVE: &str = ".blrt";
 const BUILD: &str = ".blbuild";
@@ -227,26 +227,33 @@ impl ObjectReadError {
 // One slot per physical symbol record. Auxiliary slots have no primary name.
 #[repr(C)]
 #[derive(Clone, Copy)]
-struct ObjectSymbol {
+struct ObjectSymbol<'a> {
     name: ReadBytes,
     // Section value, or the DLL split/error for an undefined import.
     value: u32,
     section: i16,
     external: u8,
     role: ObjectSymbolRole,
+    source: std::marker::PhantomData<&'a [u8]>,
 }
 
 #[repr(u8)]
 #[derive(Clone, Copy)]
 enum ObjectSymbolRole { Data, Function, Import, InvalidImport }
 
-impl ObjectSymbol {
+impl<'a> ObjectSymbol<'a> {
     fn is_function(&self) -> bool { matches!(self.role, ObjectSymbolRole::Function) }
+
+    // Primary names were checked by the original symbol reader and borrow
+    // its input. Auxiliary rows have no name.
+    unsafe fn validated_name(&self) -> &'a str {
+        unsafe { std::str::from_utf8_unchecked(self.name.borrowed()) }
+    }
 }
 
 #[repr(C)]
 #[derive(Clone, Copy)]
-struct ObjectSymbols { values: *const ObjectSymbol, count: usize }
+struct ObjectSymbols<'a> { values: *const ObjectSymbol<'a>, count: usize }
 
 
 #[repr(C)]
@@ -282,14 +289,14 @@ unsafe extern "C" {
     fn object_sections(input: ReadBytes, headers: ReadBytes, rows: *mut ObjectSection, loadable: *mut u8,
         parts: &mut ObjectParts, context: *mut c_void, validate: ValidateObjectName) -> ReadError;
     #[link_name = "bootstrap.object_read::object_symbols"]
-    fn object_symbols(input: ReadBytes, table: ReadSymbols, rows: *mut ObjectSymbol,
+    fn object_symbols<'a>(input: ReadBytes, table: ReadSymbols, rows: *mut ObjectSymbol<'a>,
         definitions: *mut SectionDefinition, definition_count: usize, context: *mut c_void,
         consume: unsafe extern "C" fn(*mut c_void, ReadBytes, usize) -> u32) -> ReadError;
     #[link_name = "bootstrap.object_read::association"]
     fn object_association(rows: ObjectRows, definitions: *const SectionDefinition,
         index: usize) -> ObjectAssociation;
     #[link_name = "bootstrap.object_read::object_relocations"]
-    fn object_relocations<'a>(input: ReadBytes, rows: ObjectRows, symbols: ObjectSymbols,
+    fn object_relocations<'a>(input: ReadBytes, rows: ObjectRows, symbols: ObjectSymbols<'a>,
         section: &ObjectSection, context: *mut c_void,
         consume: unsafe extern "C" fn(*mut c_void, usize, u32, ObjectTarget<'a>) -> u32,
     ) -> ObjectRelocationStatus;
@@ -364,11 +371,11 @@ fn read_object_names(read: impl FnOnce(*mut c_void) -> ReadError) -> Result<()> 
 fn object_index(rows: &[ObjectSection], index: usize) -> Option<usize> {
     rows.get(index)?.mapped.checked_sub(1)
 }
-fn export_names(rows: &[ObjectSection], symbols: &[ObjectSymbol]) -> Result<Vec<String>> {
+fn export_names<'a>(rows: &[ObjectSection], symbols: &[ObjectSymbol<'a>]) -> Result<Vec<Cow<'a, str>>> {
     symbols.iter().filter(|symbol| symbol.external != 0 && symbol.section > 0)
         .map(|symbol| {
             object_index(rows, symbol.section as usize - 1).ok_or("导出符号引用不可装载的节")?;
-            Ok(unsafe { std::str::from_utf8_unchecked(symbol.name.borrowed()) }.to_owned())
+            Ok(Cow::Borrowed(unsafe { symbol.validated_name() }))
         }).collect()
 }
 
@@ -980,9 +987,9 @@ pub(super) struct HostBuildSection {
     symbols: usize,
 }
 
-pub(super) enum HostArchiveMember {
-    Original(Vec<String>, Option<HostBuildSection>),
-    Groups(Vec<(Vec<u8>, Vec<String>)>),
+pub(super) enum HostArchiveMember<'a> {
+    Original(Vec<Cow<'a, str>>, Option<HostBuildSection>),
+    Groups(Vec<(Vec<u8>, Vec<Cow<'a, str>>)>),
 }
 
 impl HostBuildSection {
@@ -1072,7 +1079,7 @@ impl<'a, Input: AsRef<[u8]> + ?Sized> Reader<'a, Input> {
         if bytes.bytes.is_null() { return Err("缺少 Blink 目标文件元数据".into()); }
         Ok(unsafe { bytes.borrowed() })
     }
-    fn symbol_rows(&self, definitions: &mut [SectionDefinition]) -> Result<(Vec<ObjectSymbol>, usize)> {
+    fn symbol_rows(&self, definitions: &mut [SectionDefinition]) -> Result<(Vec<ObjectSymbol<'a>>, usize)> {
         let input = ReadBytes::new(self.bytes.as_ref());
         let table = unsafe { read_symbols(input) };
         table.error.check()?;
@@ -1086,7 +1093,7 @@ impl<'a, Input: AsRef<[u8]> + ?Sized> Reader<'a, Input> {
         unsafe { symbols.set_len(table.count) };
         Ok((symbols, table.offset))
     }
-    fn relocations<F>(&self, raw: &[ObjectSection], symbols: &[ObjectSymbol],
+    fn relocations<F>(&self, raw: &[ObjectSection], symbols: &[ObjectSymbol<'a>],
         row: &ObjectSection, consume: F,
     ) -> Result<()>
     where
@@ -1133,7 +1140,7 @@ impl<'a, Input: AsRef<[u8]> + ?Sized> Reader<'a, Input> {
     /// Native archives additionally consume the actual DLL import relocations.
     pub(super) fn host_links(
         &self, imports: &mut Vec<ImportKey<'a>>,
-    ) -> Result<Option<HostArchiveMember>> {
+    ) -> Result<Option<HostArchiveMember<'a>>> {
         let (parts, raw) = self.sections(true)?;
         if !self.is_module(parts)? { return Ok(None); }
         let mut definitions = vec![SectionDefinition::default(); self.headers.len() / 40];
@@ -1399,7 +1406,7 @@ fn decode_object<Bytes: super::ReadSection>(
             .into_iter()
             .filter(|symbol| symbol.external != 0 && symbol.section > 0)
             .map(|symbol| {
-                let name = unsafe { std::str::from_utf8_unchecked(symbol.name.borrowed()) };
+                let name = unsafe { symbol.validated_name() };
                 let (name, contract) = if native.is_some() {
                     (name.to_owned(), Vec::new())
                 } else {

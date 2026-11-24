@@ -1,7 +1,7 @@
 //! Share native import members between static hosts and MSVC.
 use super::Result;
 use crate::object::{self, ImportKey, LibraryMember};
-use std::path::Path;
+use std::{borrow::Cow, path::Path};
 
 unsafe extern "C" {
     #[link_name = "bootstrap.names::order_name_pairs"]
@@ -9,14 +9,14 @@ unsafe extern "C" {
 }
 
 pub(super) fn archive_with_imports(
-    members: &[LibraryMember], symbols: &[(usize, String)], mut keys: Vec<ImportKey<'_>>,
+    members: &[LibraryMember], symbols: &[(usize, Cow<'_, str>)], mut keys: Vec<ImportKey<'_>>,
 ) -> Result<Vec<u8>> {
     let count = unsafe { order_import_keys(keys.as_mut_ptr(), keys.len() as u64) } as usize;
     let imported = keys.into_iter().take(count).map(object::native_import_member).collect::<Result<Vec<_>>>()?;
     let slots = imported.iter().enumerate().map(|(index, (member, slot))| {
         (members.len() + index, &member.name[slot.clone()])
     });
-    let names = symbols.iter().map(|(index, name)| (*index, name.as_str())).chain(slots);
+    let names = symbols.iter().map(|(index, name)| (*index, name.as_ref())).chain(slots);
     object::library_bytes(members.iter().chain(imported.iter().map(|(member, _)| member)), names)
 }
 
