@@ -108,7 +108,8 @@ impl NativeWork {
 struct Context<'a, Payload> {
     sources:Vec<Source<'a, Payload>>,libraries:Vec<Library>,objects:Vec<ObjectView>,sections:Vec<SectionView>,
     relocations:Vec<RelocationView>,symbols:Vec<SymbolView>,imports:Vec<ImportView>,
-    exports:Vec<ExportView>,code:Vec<Bytes>,frames:Option<Vec<FrameView>>,nodes:Vec<[u64;9]>,pending:Vec<u64>,
+    exports:Vec<ExportView>,code:Vec<Bytes>,frames:Option<Vec<FrameView>>,
+    nodes:Vec<MaybeUninit<[u64;9]>>,pending:Vec<MaybeUninit<u64>>,
     native:Option<NativeWork>,error:Option<Box<dyn std::error::Error>>,
 }
 impl<'a, Payload> Context<'a, Payload> {
@@ -172,13 +173,21 @@ impl<'a, Payload> Context<'a, Payload> {
         self.objects.push(row);
     }
     fn grow(&mut self) {
-        self.nodes.resize(self.symbols.len()+2*self.relocations.len(),[0;9]);
-        self.pending.resize(self.sections.len(),0);
-        if let Some(work) = &mut self.native {
+        let definitions = self.symbols.len();
+        let relocations = self.relocations.len();
+        let nodes = if let Some(work) = &mut self.native {
             // Keep written prefixes across extraction. B supplies the initialized ranges to the resource consumer.
-            work.locals.resize_with(self.relocations.len(), MaybeUninit::uninit);
+            work.locals.resize_with(relocations, MaybeUninit::uninit);
             work.archives.resize_with(self.objects.len(), MaybeUninit::uninit);
-        }
+            // Local slots come from imports and runtime names from symbol relocations.
+            definitions + relocations
+        } else {
+            // Export filtering reuses the definition tree after selection.
+            definitions.max(relocations)
+        };
+        // B initializes each node or queue entry before making it reachable.
+        self.nodes.resize_with(nodes, MaybeUninit::uninit);
+        self.pending.resize_with(self.sections.len(), MaybeUninit::uninit);
     }
     fn view(&mut self)->View {
         let (locals, runtime, archives) = self.native.as_mut().map_or(
@@ -187,7 +196,7 @@ impl<'a, Payload> Context<'a, Payload> {
         );
         View{objects:self.objects.as_mut_ptr(),object_count:self.objects.len() as u64,sections:self.sections.as_mut_ptr(),section_count:self.sections.len() as u64,
             relocations:self.relocations.as_mut_ptr(),symbols:self.symbols.as_mut_ptr(),imports:self.imports.as_mut_ptr(),
-            exports:self.exports.as_mut_ptr(),code:self.code.as_mut_ptr(),frames:self.frames.as_mut().map_or(std::ptr::null_mut(), Vec::as_mut_ptr),nodes:self.nodes.as_mut_ptr(),pending:self.pending.as_mut_ptr(),
+            exports:self.exports.as_mut_ptr(),code:self.code.as_mut_ptr(),frames:self.frames.as_mut().map_or(std::ptr::null_mut(), Vec::as_mut_ptr),nodes:self.nodes.as_mut_ptr().cast(),pending:self.pending.as_mut_ptr().cast(),
             locals,runtime,archives,library_count:self.libraries.len() as u64}
     }
     fn append(&mut self, object: Object<Payload>) -> u64 {
