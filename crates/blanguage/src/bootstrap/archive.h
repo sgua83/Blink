@@ -14,7 +14,7 @@ extern "C" ArchiveLayout layout(ArchiveInput input) on cpu;
 extern "C" void encode(ArchiveInput input,ArchiveLayout layout,address out) on cpu;
 
 struct ArchiveRange {u64 start;u64 length;};
-struct ArchiveReadMember {u32 offset;ArchiveRange name;ArchiveRange body;};
+struct ArchiveReadMember {ArchiveRange name;ArchiveRange body;};
 struct ArchiveReadResult {u32 error;u64 at;};
 extern "C" bool has_signature(address bytes, u64 length) on cpu;
 // Visit validated physical members in input order. The caller owns the bytes
@@ -30,8 +30,9 @@ extern "C" ArchiveLoad load(address bytes, u64 length, address context,
     cfn<u32,address,ArchiveRange> validate) on cpu requires nonzero(validate);
 
 struct ArchiveMemberState {ArchiveReadMember member;u32 available;};
-struct ArchiveSelection {u32 result;u64 index;};
+struct ArchiveSelection {ArchiveReadMember member;u32 result;};
 extern "C" u64 library_member_count(address library) on cpu;
 extern "C" ArchiveMemberState library_member(address library,u64 index) on cpu;
+// On success the directory marks the row taken and returns its original ranges.
 extern "C" ArchiveSelection library_take(address library,address name,u64 length) on cpu;
 extern "C" void library_destroy(address library) on cpu;

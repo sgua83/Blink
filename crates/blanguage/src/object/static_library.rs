@@ -254,7 +254,7 @@ impl ArchiveRange {
 }
 #[repr(C)]
 #[derive(Clone, Copy)]
-struct ArchiveReadMember { offset: u32, name: ArchiveRange, body: ArchiveRange }
+struct ArchiveReadMember { name: ArchiveRange, body: ArchiveRange }
 #[repr(u32)]
 #[derive(Clone, Copy)]
 enum ArchiveReadError {
@@ -291,7 +291,7 @@ unsafe extern "C" {
 #[repr(C)]
 struct ArchiveMemberState {member:ArchiveReadMember,available:u32}
 #[repr(C)]
-struct ArchiveSelection {result:u32,index:usize}
+struct ArchiveSelection {member:ArchiveReadMember,result:u32}
 struct ArchiveNames<'a> {
     bytes: &'a [u8],
     error: Option<std::str::Utf8Error>,
@@ -352,8 +352,7 @@ impl Library {
             1=>{},
             _=>return Err("静态库目录未指向对象成员".into()),
         }
-        let member=self.member(selected.index).member;
-        let (name,bytes)=self.member_bytes(member);
+        let (name,bytes)=self.member_bytes(selected.member);
         let object=member_object(name,&bytes,self.native,stack_output)?;
         if !matches!(object.kind,Kind::Module{..}) {
             return Err(format!("静态库成员 {name} 不是独立模块").into());

@@ -243,16 +243,16 @@ ArchiveReadResult read_terminated(address bytes,ArchiveRange region,u64 offset) 
 extern "C" address malloc(u64 bytes) on cpu from "ucrtbase.dll";
 extern "C" void free(address bytes) on cpu from "ucrtbase.dll";
 
-struct LibraryMember {ArchiveReadMember member;u32 taken;};
+struct LibraryMember {ArchiveReadMember member;u32 offset;u32 taken;};
 struct LibraryDirectory {u64 member_count;u64 symbol_count;u64 symbol_offset;};
 u64 directory_member_offset(u64 index) on cpu {
     return size_of<LibraryDirectory>()+index*size_of<LibraryMember>();
 }
-LibraryMember directory_member(address library,u64 index) on cpu {
-    return unsafe_position<LibraryMember>(unsafe_address(address_bits(library)+directory_member_offset(index)));
+address directory_member_address(address library,u64 index) on cpu {
+    return unsafe_address(address_bits(library)+directory_member_offset(index));
 }
 void directory_member_put(address library,u64 index,LibraryMember member) on cpu {
-    unsafe_position<LibraryMember>(unsafe_address(address_bits(library)+directory_member_offset(index)))=member;
+    unsafe_position<LibraryMember>(directory_member_address(library,index))=member;
 }
 u64 directory_symbol_offset(address library,u64 index) on cpu {
     return unsafe_position<LibraryDirectory>(library).symbol_offset+index*size_of<ArchiveSymbol>();
@@ -282,25 +282,31 @@ void directory_add_symbol(address library,ArchiveSymbol name) on cpu {
 }
 extern "C" u64 library_member_count(address library) on cpu {return unsafe_position<LibraryDirectory>(library).member_count;}
 extern "C" ArchiveMemberState library_member(address library,u64 index) on cpu {
-    LibraryMember member=directory_member(library,index);
+    LibraryMember member=unsafe_position<LibraryMember>(directory_member_address(library,index));
     u32 available=0;if(member.taken==0){available=1;}
     return ArchiveMemberState(member.member,available);
 }
 extern "C" ArchiveSelection library_take(address library,address name,u64 length) on cpu {
     LibraryDirectory value=unsafe_position<LibraryDirectory>(library);
+    ArchiveRange empty=ArchiveRange(0u64,0u64);
+    ArchiveReadMember missing=ArchiveReadMember(empty,empty);
     ArchiveSymbol key=ArchiveSymbol(name,length,0u64);
     u64 symbol=directory_symbol_position(library,value.symbol_count,key);
-    if(symbol==value.symbol_count||compare_names(directory_symbol(library,symbol),key)!=i32(0)){return ArchiveSelection(0,0u64);}
+    if(symbol==value.symbol_count||compare_names(directory_symbol(library,symbol),key)!=i32(0)){return ArchiveSelection(missing,0);}
     u64 offset=directory_symbol(library,symbol).member;
     u64 first=0u64;u64 end=value.member_count;
     while(first<end){
         u64 middle=first+(end-first)/2u64;
-        if(u64(directory_member(library,middle).member.offset)<offset){first=middle+1u64;}else{end=middle;}
+        u32 candidate=unsafe_position<LibraryMember>(directory_member_address(library,middle)).offset;
+        if(u64(candidate)<offset){first=middle+1u64;}else{end=middle;}
     }
-    if(first==value.member_count||u64(directory_member(library,first).member.offset)!=offset){return ArchiveSelection(2,0u64);}
-    LibraryMember selected=directory_member(library,first);
-    if(selected.taken!=0){return ArchiveSelection(0,0u64);}
-    selected.taken=1;directory_member_put(library,first,selected);return ArchiveSelection(1,first);
+    if(first==value.member_count){return ArchiveSelection(missing,2);}
+    address slot=directory_member_address(library,first);
+    LibraryMember selected=unsafe_position<LibraryMember>(slot);
+    if(u64(selected.offset)!=offset){return ArchiveSelection(missing,2);}
+    if(selected.taken!=0){return ArchiveSelection(missing,0);}
+    unsafe_position<LibraryMember>(slot).taken=1;
+    return ArchiveSelection(selected.member,1);
 }
 
 extern "C" void library_destroy(address library) on cpu {free(library);}
@@ -352,7 +358,7 @@ ArchiveReadResult read_entries(address bytes,u64 length,ArchiveReadLayout layout
             if(emit!=cfn<void,address,ArchiveRange,ArchiveRange>()){
                 emit(member_context,name,item.body);
             }else{
-                directory_member_put(library,member_index,LibraryMember(ArchiveReadMember(u32(at),name,item.body),0));
+                directory_member_put(library,member_index,LibraryMember(ArchiveReadMember(name,item.body),u32(at),0));
                 member_index+=1u64;
             }
         }
