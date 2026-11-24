@@ -17,17 +17,17 @@ struct ObjectAssociation {u64 present;u64 owner;u32 error;};
 struct ObjectTarget {
     u64 kind;u64 section;u64 value;ReadBytes dll;ReadBytes name;u32 error;
 };
-// parts borrows the first metadata and runtime sections of this input.
-// Rows are optional for metadata consumers. Successful symbol reading writes
-// one slot per physical symbol. The host callback checks the original names.
-// A null definitions buffer requests directory names only. Object consumers
-// supply definitions and receive decoded relocation targets in the same rows.
-extern "C" u32 object_sections(ReadBytes input, ReadBytes headers, address rows,
+// Parts borrows the first metadata and runtime sections. Consumers can ask
+// for full rows, one loadable byte per physical section, or only the parts.
+extern "C" u32 object_sections(ReadBytes input, ReadBytes headers, address rows, address loadable,
     inout ObjectParts parts, address context, cfn<u32,address,ReadBytes> validate) on cpu
     requires nonzero(validate);
+// The callback receives every primary name and the one-based section of a
+// defined external symbol. Full object consumers also request physical rows
+// and section definitions for relocation and association lookup.
 extern "C" u32 object_symbols(ReadBytes input, ReadSymbols table, address rows,
     address definitions, u64 definition_count, address context,
-    cfn<u32,address,ReadBytes> validate) on cpu requires nonzero(validate);
+    cfn<u32,address,ReadBytes,u64> consume) on cpu requires nonzero(consume);
 extern "C" ObjectAssociation association(ObjectRows rows,address definitions,u64 index) on cpu;
 struct ObjectRelocationStatus { u32 format; u32 object; };
 // The accepted record borrows the original bytes only through the synchronous consumer.

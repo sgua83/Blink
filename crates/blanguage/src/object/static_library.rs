@@ -161,8 +161,8 @@ impl Member {
                 .collect(),
         })
     }
-    pub(crate) fn archive_symbols(&self)->Result<Option<Vec<String>>> {
-        coff::Reader::new(&self.bytes).and_then(|reader|reader.archive_symbols())
+    fn archive_symbols<'a>(&'a self, emit: impl FnMut(&'a str)) -> Result<bool> {
+        coff::Reader::new(&self.bytes).and_then(|reader| reader.archive_symbols(emit))
             .map_err(|error|format!("静态库成员 {}：{error}",self.name).into())
     }
 }
@@ -354,11 +354,11 @@ pub fn archive(inputs: &[impl AsRef<Path>], path: &Path) -> Result<()> {
     let members = members(inputs)?;
     let mut symbols = Vec::new();
     for (index, member) in members.iter().enumerate() {
-        let names = member.archive_symbols()?
-            .ok_or_else(||format!("{} 不是独立模块产物",member.name))?;
-        symbols.extend(names.into_iter().map(|name| (index, name)));
+        if !member.archive_symbols(|name| symbols.push((index, name)))? {
+            return Err(format!("{} 不是独立模块产物", member.name).into());
+        }
     }
-    let output = encode(members.iter(), symbols.iter().map(|(index, name)| (*index, name.as_str())))?;
+    let output = encode(members.iter(), symbols.into_iter())?;
     if let Some(parent) = path.parent() {
         crate::file_bytes::create_dir_all(parent)?;
     }

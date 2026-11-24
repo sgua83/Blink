@@ -279,12 +279,12 @@ struct ObjectRelocationStatus { format: ReadError, object: ObjectReadError }
 
 unsafe extern "C" {
     #[link_name = "bootstrap.object_read::object_sections"]
-    fn object_sections(input: ReadBytes, headers: ReadBytes, rows: *mut ObjectSection,
+    fn object_sections(input: ReadBytes, headers: ReadBytes, rows: *mut ObjectSection, loadable: *mut u8,
         parts: &mut ObjectParts, context: *mut c_void, validate: ValidateObjectName) -> ReadError;
     #[link_name = "bootstrap.object_read::object_symbols"]
     fn object_symbols(input: ReadBytes, table: ReadSymbols, rows: *mut ObjectSymbol,
         definitions: *mut SectionDefinition, definition_count: usize, context: *mut c_void,
-        validate: ValidateObjectName) -> ReadError;
+        consume: unsafe extern "C" fn(*mut c_void, ReadBytes, usize) -> u32) -> ReadError;
     #[link_name = "bootstrap.object_read::association"]
     fn object_association(rows: ObjectRows, definitions: *const SectionDefinition,
         index: usize) -> ObjectAssociation;
@@ -320,6 +320,39 @@ unsafe extern "C" fn validate_object_name(context: *mut c_void, bytes: ReadBytes
             0
         }
     }
+}
+
+unsafe extern "C" fn validate_symbol_name(context: *mut c_void, bytes: ReadBytes, _: usize) -> u32 {
+    unsafe { validate_object_name(context, bytes) }
+}
+
+struct ArchiveExports<'sections, F> {
+    loadable: &'sections [u8],
+    emit: F,
+    invalid_name: Option<std::str::Utf8Error>,
+    invalid_section: bool,
+}
+
+unsafe extern "C" fn collect_archive_export<'a, F: FnMut(&'a str)>(
+    context: *mut c_void, bytes: ReadBytes, section: usize,
+) -> u32 {
+    let exports = unsafe { &mut *context.cast::<ArchiveExports<'_, F>>() };
+    let name = match std::str::from_utf8(unsafe { bytes.borrowed() }) {
+        Ok(name) => name,
+        Err(error) => {
+            exports.invalid_name = Some(error);
+            return 0;
+        }
+    };
+    // Keep scanning names and physical rows even after an invalid export target.
+    if section != 0 && !exports.invalid_section {
+        if exports.loadable.get(section - 1) == Some(&1) {
+            (exports.emit)(name);
+        } else {
+            exports.invalid_section = true;
+        }
+    }
+    1
 }
 
 fn read_object_names(read: impl FnOnce(*mut c_void) -> ReadError) -> Result<()> {
@@ -1013,17 +1046,22 @@ impl<'a, Input: AsRef<[u8]> + ?Sized> Reader<'a, Input> {
         })
     }
 
-    fn sections(&self, materialize: bool) -> Result<(ObjectParts, Vec<ObjectSection>)> {
-        let count = self.headers.len() / 40;
+    fn read_sections(&self, rows: *mut ObjectSection, loadable: *mut u8) -> Result<ObjectParts> {
         let mut parts = ObjectParts::default();
-        let mut rows = Vec::with_capacity(if materialize { count } else { 0 });
-        let output = if materialize { rows.as_mut_ptr() } else { std::ptr::null_mut() };
         read_object_names(|context| unsafe {
             object_sections(
-                ReadBytes::new(self.bytes.as_ref()), ReadBytes::new(self.headers), output,
+                ReadBytes::new(self.bytes.as_ref()), ReadBytes::new(self.headers), rows, loadable,
                 &mut parts, context, validate_object_name,
             )
         })?;
+        Ok(parts)
+    }
+
+    fn sections(&self, materialize: bool) -> Result<(ObjectParts, Vec<ObjectSection>)> {
+        let count = self.headers.len() / 40;
+        let mut rows = Vec::with_capacity(if materialize { count } else { 0 });
+        let output = if materialize { rows.as_mut_ptr() } else { std::ptr::null_mut() };
+        let parts = self.read_sections(output, std::ptr::null_mut())?;
         if materialize {
             unsafe { rows.set_len(count) };
         }
@@ -1034,16 +1072,15 @@ impl<'a, Input: AsRef<[u8]> + ?Sized> Reader<'a, Input> {
         if bytes.bytes.is_null() { return Err("缺少 Blink 目标文件元数据".into()); }
         Ok(unsafe { bytes.borrowed() })
     }
-    fn symbol_rows(&self, definitions: Option<&mut [SectionDefinition]>) -> Result<(Vec<ObjectSymbol>, usize)> {
+    fn symbol_rows(&self, definitions: &mut [SectionDefinition]) -> Result<(Vec<ObjectSymbol>, usize)> {
         let input = ReadBytes::new(self.bytes.as_ref());
         let table = unsafe { read_symbols(input) };
         table.error.check()?;
         let mut symbols = Vec::with_capacity(table.count);
-        let (definitions, count) = definitions.map_or((std::ptr::null_mut(), 0), |rows| (rows.as_mut_ptr(), rows.len()));
         read_object_names(|context| unsafe {
             object_symbols(
-                input, table, symbols.as_mut_ptr(), definitions, count,
-                context, validate_object_name,
+                input, table, symbols.as_mut_ptr(), definitions.as_mut_ptr(), definitions.len(),
+                context, validate_symbol_name,
             )
         })?;
         unsafe { symbols.set_len(table.count) };
@@ -1067,23 +1104,40 @@ impl<'a, Input: AsRef<[u8]> + ?Sized> Reader<'a, Input> {
         status.object.check()?;
         receiver.result
     }
-    fn module_symbols(&self, definitions: Option<&mut [SectionDefinition]>) -> Result<Option<(Vec<ObjectSection>, Vec<ObjectSymbol>, usize)>> {
-        let (parts, raw) = self.sections(true)?;
+    fn is_module(&self, parts: ObjectParts) -> Result<bool> {
         let metadata = Metadata::read(self.metadata(parts.metadata)?, MetadataNames::default().sink(0))?;
-        if !matches!(metadata.prefix.header.kind, ReadObjectKind::Module) { return Ok(None); }
-        let (symbols, offset) = self.symbol_rows(definitions)?;
-        Ok(Some((raw, symbols, offset)))
+        Ok(matches!(metadata.prefix.header.kind, ReadObjectKind::Module))
     }
-    /// B archives preserve member bytes and only produce the physical export directory.
-    pub(crate) fn archive_symbols(&self) -> Result<Option<Vec<String>>> {
-        self.module_symbols(None)?.map(|(raw, symbols, _)| export_names(&raw, &symbols)).transpose()
+
+    /// B archives preserve member bytes and borrow names into the physical directory.
+    pub(crate) fn archive_symbols<F: FnMut(&'a str)>(&self, emit: F) -> Result<bool> {
+        let section_count = self.headers.len() / 40;
+        let mut loadable = Vec::with_capacity(section_count);
+        let parts = self.read_sections(std::ptr::null_mut(), loadable.as_mut_ptr())?;
+        if !self.is_module(parts)? { return Ok(false); }
+        unsafe { loadable.set_len(section_count) };
+
+        let input = ReadBytes::new(self.bytes.as_ref());
+        let table = unsafe { read_symbols(input) };
+        table.error.check()?;
+        let mut exports = ArchiveExports { loadable: &loadable, emit, invalid_name: None, invalid_section: false };
+        let error = unsafe {
+            object_symbols(input, table, std::ptr::null_mut(), std::ptr::null_mut(), 0,
+                std::ptr::from_mut(&mut exports).cast(), collect_archive_export::<F>)
+        };
+        error.check()?;
+        if let Some(error) = exports.invalid_name { return Err(error.into()); }
+        if exports.invalid_section { return Err("导出符号引用不可装载的节".into()); }
+        Ok(true)
     }
     /// Native archives additionally consume the actual DLL import relocations.
     pub(super) fn host_links(
         &self, imports: &mut Vec<ImportKey<'a>>,
     ) -> Result<Option<HostArchiveMember>> {
+        let (parts, raw) = self.sections(true)?;
+        if !self.is_module(parts)? { return Ok(None); }
         let mut definitions = vec![SectionDefinition::default(); self.headers.len() / 40];
-        let Some((raw, symbols, offset)) = self.module_symbols(Some(&mut definitions))? else { return Ok(None); };
+        let (symbols, offset) = self.symbol_rows(&mut definitions)?;
         let mut groups = if host::needs_groups(&symbols) {
             host::Groups::new(&raw, &definitions)?
         } else {
@@ -1276,7 +1330,7 @@ fn decode_object<Bytes: super::ReadSection>(
 ) -> Result<Object<Bytes>> {
     let b = reader.bytes;
     let mut definitions = vec![SectionDefinition::default(); reader.headers.len() / 40];
-    let (symbols, _) = reader.symbol_rows(Some(&mut definitions))?;
+    let (symbols, _) = reader.symbol_rows(&mut definitions)?;
     let (parts, mut raw) = reader.sections(true)?;
     let (name, kind, mut bindings, stack, archive) = match native {
         Some(name) => (name.to_owned(), Kind::Module { interface: "".into(), requirements: Arc::default(), stack_bytes: 0 }, BTreeMap::new(), StackMetadata::default(), None),

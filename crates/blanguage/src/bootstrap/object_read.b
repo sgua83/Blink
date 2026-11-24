@@ -58,12 +58,13 @@ ObjectSymbolResult object_symbol(
 struct ObjectSectionResult {ObjectSection value;u32 error;};
 struct ObjectSymbolResult {ObjectSymbol value;u64 next;u32 error;};
 
-extern "C" u32 object_sections(ReadBytes input, ReadBytes headers, address rows,
+extern "C" u32 object_sections(ReadBytes input, ReadBytes headers, address rows, address loadable,
     inout ObjectParts parts, address context, cfn<u32,address,ReadBytes> validate) on cpu
     requires nonzero(validate) {
     u64 mapped = 0u64;
     u64 count = headers.length / 40u64;
     bool keep_rows = address_bits(rows) != 0u64;
+    bool keep_loadable = address_bits(loadable) != 0u64;
     u64 index = 0u64;
     while (index < count) {
         let section = logical_section(input, headers, index, mapped, parts);
@@ -72,6 +73,9 @@ extern "C" u32 object_sections(ReadBytes input, ReadBytes headers, address rows,
         if (keep_rows) {
             address slot = unsafe_address(address_bits(rows) + index * size_of<ObjectSection>());
             unsafe_position<ObjectSection>(slot) = section.value;
+        } else if (keep_loadable) {
+            address slot = unsafe_address(address_bits(loadable) + index);
+            unsafe_position<u8>(slot) = section.value.mapped != 0u64 ? u8(1) : u8(0);
         }
         index += 1u64;
     }
@@ -80,24 +84,27 @@ extern "C" u32 object_sections(ReadBytes input, ReadBytes headers, address rows,
 
 extern "C" u32 object_symbols(ReadBytes input, ReadSymbols table, address rows,
     address definitions, u64 definition_count, address context,
-    cfn<u32,address,ReadBytes> validate) on cpu requires nonzero(validate) {
+    cfn<u32,address,ReadBytes,u64> consume) on cpu requires nonzero(consume) {
     u64 index = 0u64;
-    bool read_relocation_targets = address_bits(definitions) != 0u64;
+    bool keep_rows = address_bits(rows) != 0u64;
     let auxiliary = ObjectSymbol(empty_bytes(), 0, i16(0), u8(0), u8(0));
     while (index < table.count) {
         let primary = object_symbol(input, table, index, definitions, definition_count);
         if (primary.error != 0) { return primary.error; }
-        if (validate(context, primary.value.name) == 0) { return 0; }
-        address slot = unsafe_address(address_bits(rows) + index * size_of<ObjectSymbol>());
-        let value = read_relocation_targets && primary.value.section <= i16(0)
-            ? undefined_symbol(primary.value) : primary.value;
-        unsafe_position<ObjectSymbol>(slot) = value;
-        index += 1u64;
-        while (index < primary.next) {
-            address next = unsafe_address(address_bits(rows) + index * size_of<ObjectSymbol>());
-            unsafe_position<ObjectSymbol>(next) = auxiliary;
+        let value = primary.value;
+        u64 export_section = value.external != u8(0) && value.section > i16(0) ? u64(value.section) : 0u64;
+        if (consume(context, value.name, export_section) == 0) { return 0; }
+        if (keep_rows) {
+            address slot = unsafe_address(address_bits(rows) + index * size_of<ObjectSymbol>());
+            unsafe_position<ObjectSymbol>(slot) = value.section <= i16(0) ? undefined_symbol(value) : value;
             index += 1u64;
+            while (index < primary.next) {
+                address next = unsafe_address(address_bits(rows) + index * size_of<ObjectSymbol>());
+                unsafe_position<ObjectSymbol>(next) = auxiliary;
+                index += 1u64;
+            }
         }
+        index = primary.next;
     }
     return 0;
 }
