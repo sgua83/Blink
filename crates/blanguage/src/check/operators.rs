@@ -331,19 +331,10 @@ impl Builder<'_> {
 
 
 #[repr(u32)]
-#[derive(Clone,Copy)]
-pub(super) enum ConstructEntry { Value,Matrix }
-#[repr(u32)]
 enum ConstructFact { CFunction,Address,Handle,Variants,Enumeration,Array,Matrix,Views,Fields,Width }
 #[repr(u32)]
 #[derive(Clone,Copy)]
 enum ConstructStatus { Valid,CFunctionTarget,CFunctionInput,AddressTarget,AddressInput,HandleTarget,HandleInput,Variants,Enumeration,Array,Matrix,Views,MatrixInput,Components,MatrixComponents }
-#[repr(u32)]
-#[derive(Clone,Copy,PartialEq,Eq)]
-enum ConstructKind { Zero,Identity,Enumeration,Numeric,Diagonal,Matrix }
-#[repr(C)]
-#[derive(Clone,Copy)]
-struct ConstructPlan { status:ConstructStatus,kind:ConstructKind,scalar:u32,splat:u32,width:usize,rows:usize,columns:usize }
 #[repr(C)]
 struct ConstructQueries {
     context:*const c_void,
@@ -351,9 +342,8 @@ struct ConstructQueries {
     same:unsafe extern "C" fn(*const c_void,usize)->u32,
     scalar_identity:unsafe extern "C" fn(*const c_void)->u32,
 }
-struct ConstructTypes<'a> { target:&'a Ty,values:&'a [Value] }
 unsafe extern "C" fn construct_fact(context:*const c_void,index:usize,fact:ConstructFact)->usize {
-    let value=&unsafe { &*context.cast::<ConstructTypes<'_>>() }.values[index];
+    let value=&unsafe { &*context.cast::<ConstructValues<'_,'_>>() }.input.as_slice()[index];
     let ty=&value.ty;
     match fact {
         ConstructFact::CFunction=>usize::from(ty.is_c_function()),
@@ -369,12 +359,12 @@ unsafe extern "C" fn construct_fact(context:*const c_void,index:usize,fact:Const
     }
 }
 unsafe extern "C" fn construct_same(context:*const c_void,index:usize)->u32 {
-    let context=unsafe { &*context.cast::<ConstructTypes<'_>>() };
-    u32::from(context.target==&context.values[index].ty)
+    let context=unsafe { &*context.cast::<ConstructValues<'_,'_>>() };
+    u32::from(context.target.as_ref().unwrap()==&context.input.as_slice()[index].ty)
 }
 unsafe extern "C" fn construct_scalar_identity(context:*const c_void)->u32 {
-    let context=unsafe { &*context.cast::<ConstructTypes<'_>>() };
-    u32::from(context.target==&Ty::scalar(context.values[0].ty.components[0].0))
+    let context=unsafe { &*context.cast::<ConstructValues<'_,'_>>() };
+    u32::from(context.target.as_ref().unwrap()==&Ty::scalar(context.input.as_slice()[0].ty.components[0].0))
 }
 #[repr(u32)]
 enum ConstructArgument { Append,ReplaceProof,Matrix,Diagonal }
@@ -387,14 +377,38 @@ struct ConstructEmitter<'a,'w> {
     component:unsafe extern "C" fn(*mut ConstructValues<'a,'w>,ConstructComponent,usize,u32),
     splat:unsafe extern "C" fn(*mut ConstructValues<'a,'w>,usize),
 }
+#[repr(u32)]
+enum ConstructControl { Zero,Identity,Enumeration,Begin }
+#[repr(C)]
+struct ConstructHost<'a,'w> {
+    queries:ConstructQueries,
+    emitter:ConstructEmitter<'a,'w>,
+    uniform:unsafe extern "C" fn(*const c_void,usize)->u32,
+    action:unsafe extern "C" fn(*mut ConstructValues<'a,'w>,ConstructControl,usize,u32),
+}
 unsafe extern "C" {
-    #[link_name="bootstrap.operator_types::construct_plan"]
-    fn source_construct_plan(entry:ConstructEntry,target:Operand,count:usize,queries:ConstructQueries)->ConstructPlan;
-    #[link_name="bootstrap.operator_types::expand_construct"]
-    fn expand_construct(plan:ConstructPlan,count:usize,emitter:ConstructEmitter<'_,'_>);
+    #[link_name="bootstrap.operator_types::construct_value"]
+    fn source_construct_value(target:Operand,count:usize,host:ConstructHost<'_,'_>)->ConstructStatus;
 }
 struct ConstructValues<'a,'w> {
-    builder:&'a mut Builder<'w>,input:std::vec::IntoIter<Value>,current:Option<Value>,zero:Option<Value>,output:Value,
+    builder:&'a mut Builder<'w>,target:Option<Ty>,input:std::vec::IntoIter<Value>,
+    current:Option<Value>,zero:Option<Value>,output:Option<Value>,
+}
+unsafe extern "C" fn construct_uniform(context:*const c_void,index:usize)->u32 {
+    u32::from(unsafe { &*context.cast::<ConstructValues<'_,'_>>() }.input.as_slice()[index].uniform)
+}
+unsafe extern "C" fn construct_action(context:*mut ConstructValues<'_,'_>,control:ConstructControl,width:usize,value:u32) {
+    let values=unsafe { &mut *context };
+    match control {
+        ConstructControl::Zero=>values.output=Some(values.builder.constant_value(values.target.take().unwrap(),vec![0;width],None)),
+        ConstructControl::Identity=>{
+            let mut value=values.input.next().unwrap();value.literal=false;values.output=Some(value);
+        },
+        ConstructControl::Enumeration=>values.output=Some(values.builder.cast(values.input.next().unwrap(),SCALARS[value as usize])),
+        ConstructControl::Begin=>values.output=Some(Value {proof:bounds::Proof::default(),literal:false,
+            ty:values.target.take().unwrap(),regs:Vec::with_capacity(width),uniform:value!=0,
+            constant:Some(Vec::with_capacity(width))}),
+    }
 }
 unsafe extern "C" fn construct_argument(context:*mut ConstructValues<'_,'_>,scalar:u32,mode:ConstructArgument)->usize {
     let values=unsafe { &mut *context };
@@ -402,8 +416,8 @@ unsafe extern "C" fn construct_argument(context:*mut ConstructValues<'_,'_>,scal
     let value=values.builder.cast(input,SCALARS[scalar as usize]);
     let width=value.regs.len();
     match mode {
-        ConstructArgument::Append=>Builder::append_value(&mut values.output,value,false),
-        ConstructArgument::ReplaceProof=>Builder::append_value(&mut values.output,value,true),
+        ConstructArgument::Append=>Builder::append_value(values.output.as_mut().unwrap(),value,false),
+        ConstructArgument::ReplaceProof=>Builder::append_value(values.output.as_mut().unwrap(),value,true),
         ConstructArgument::Matrix=>values.current=Some(value),
         ConstructArgument::Diagonal=>{
             values.current=Some(value);values.zero=Some(values.builder.constant(Scalar::F32,0));
@@ -422,20 +436,24 @@ unsafe extern "C" fn construct_component(context:*mut ConstructValues<'_,'_>,kin
         ConstructComponent::Diagonal=>if last!=0 {values.current.take().unwrap()}else{values.current.as_ref().unwrap().clone()},
         ConstructComponent::Zero=>if last!=0 {values.zero.take().unwrap()}else{values.zero.as_ref().unwrap().clone()},
     };
-    Builder::append_value(&mut values.output,value,false);
+    Builder::append_value(values.output.as_mut().unwrap(),value,false);
 }
 unsafe extern "C" fn construct_splat(context:*mut ConstructValues<'_,'_>,width:usize) {
-    let output=&mut unsafe { &mut *context }.output;
+    let output=unsafe { &mut *context }.output.as_mut().unwrap();
     output.proof.splat(width);output.regs.resize(width,output.regs[0]);
     if let Some(bits)=&mut output.constant { bits.resize(width,bits[0]); }
 }
 impl Builder<'_> {
-    pub(super) fn construct_value(&mut self,entry:ConstructEntry,ty:Ty,values:Vec<Value>,span:Span)->Result<Value> {
-        let types=ConstructTypes { target:&ty,values:&values };
-        let plan=unsafe { source_construct_plan(entry,Operand::of(&ty),values.len(),ConstructQueries {
-            context:std::ptr::from_ref(&types).cast(),fact:construct_fact,same:construct_same,scalar_identity:construct_scalar_identity,
+    pub(super) fn construct_value(&mut self,ty:Ty,values:Vec<Value>,span:Span)->Result<Value> {
+        let target=Operand::of(&ty);let count=values.len();
+        let mut context=ConstructValues {builder:self,target:Some(ty),input:values.into_iter(),current:None,zero:None,output:None};
+        let pointer=std::ptr::from_mut(&mut context);
+        let status=unsafe { source_construct_value(target,count,ConstructHost {
+            queries:ConstructQueries {context:pointer.cast(),fact:construct_fact,same:construct_same,scalar_identity:construct_scalar_identity},
+            emitter:ConstructEmitter {context:pointer,argument:construct_argument,component:construct_component,splat:construct_splat},
+            uniform:construct_uniform,action:construct_action,
         }) };
-        let error=match plan.status {
+        let error=match status {
             ConstructStatus::Valid=>None,
             ConstructStatus::CFunctionTarget=>Some(("B154","cfn构造只接受空值或同签名函数值；原生地址解释须显式unsafe_function")),
             ConstructStatus::CFunctionInput=>Some(("B154","C函数地址不能转换为数值或其他身份；地址解释须显式function_address")),
@@ -452,22 +470,8 @@ impl Builder<'_> {
             ConstructStatus::Components=>Some(("B157","类型构造的分量数不匹配")),
             ConstructStatus::MatrixComponents=>Some(("B157","矩阵构造需要全部行优先分量，或一个对角标量")),
         };
-        if let Some((code,message))=error { return self.fail(span,code,message); }
-        let uniform=plan.kind!=ConstructKind::Numeric || values.iter().all(|value|value.uniform);
-        let count=values.len();let mut input=values.into_iter();
-        match plan.kind {
-            ConstructKind::Zero=>return Ok(self.constant_value(ty,vec![0;plan.width],None)),
-            ConstructKind::Identity=>{let mut value=input.next().unwrap();value.literal=false;return Ok(value);},
-            ConstructKind::Enumeration=>return Ok(self.cast(input.next().unwrap(),SCALARS[plan.scalar as usize])),
-            ConstructKind::Numeric|ConstructKind::Diagonal|ConstructKind::Matrix=>{},
-        }
-        let output=Value { proof:bounds::Proof::default(),literal:false,ty,regs:Vec::with_capacity(plan.width),
-            uniform,constant:Some(Vec::with_capacity(plan.width)) };
-        let mut context=ConstructValues { builder:self,input,current:None,zero:None,output };
-        unsafe { expand_construct(plan,count,ConstructEmitter {
-            context:&mut context,argument:construct_argument,component:construct_component,splat:construct_splat,
-        }) };
-        Ok(context.output)
+        if let Some((code,message))=error { return context.builder.fail(span,code,message); }
+        Ok(context.output.unwrap())
     }
 }
 

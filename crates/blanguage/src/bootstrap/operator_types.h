@@ -156,23 +156,18 @@ extern "C" CollectiveBuiltin source_collective(address bytes, usize length) on c
 extern "C" bool collective_accepts(CollectiveOperator operation, bool numeric, bool integer) on cpu;
 
 
-enum ConstructEntry:u32 { Value=0; Matrix=1; };
 enum ConstructFact:u32 { CFunction=0; Address=1; Handle=2; Variants=3; Enumeration=4; Array=5; Matrix=6; Views=7; Fields=8; Width=9; };
 enum ConstructStatus:u32 {
     Valid=0; CFunctionTarget=1; CFunctionInput=2; AddressTarget=3; AddressInput=4;
     HandleTarget=5; HandleInput=6; Variants=7; Enumeration=8; Array=9; Matrix=10;
     Views=11; MatrixInput=12; Components=13; MatrixComponents=14;
 };
-enum ConstructKind:u32 { Zero=0; Identity=1; Enumeration=2; Numeric=3; Diagonal=4; Matrix=5; };
-struct ConstructPlan { ConstructStatus status; ConstructKind kind; u32 scalar; u32 splat; usize width; usize rows; usize columns; };
 struct ConstructQueries {
     address context;
     cfn<usize,address,usize,ConstructFact> ensures memory(read) fact;
     cfn<u32,address,usize> ensures memory(read) same;
     cfn<u32,address> ensures memory(read) scalar_identity;
 };
-extern "C" ConstructPlan construct_plan(ConstructEntry entry,Operand target,usize count,ConstructQueries queries) on cpu
-    requires nonzero(queries.fact) requires nonzero(queries.same) requires nonzero(queries.scalar_identity);
 enum ConstructArgument:u32 { Append=0; ReplaceProof=1; Matrix=2; Diagonal=3; };
 enum ConstructComponent:u32 { Project=0; Diagonal=1; Zero=2; };
 struct ConstructEmitter {
@@ -181,8 +176,17 @@ struct ConstructEmitter {
     cfn<void,address,ConstructComponent,usize,u32> component;
     cfn<void,address,usize> splat;
 };
-extern "C" void expand_construct(ConstructPlan plan,usize count,ConstructEmitter emitter) on cpu
-    requires nonzero(emitter.argument) requires nonzero(emitter.component) requires nonzero(emitter.splat);
+enum ConstructControl:u32 {Zero=0;Identity=1;Enumeration=2;Begin=3;};
+struct ConstructHost {
+    ConstructQueries queries;
+    ConstructEmitter emitter;
+    cfn<u32,address,usize> ensures memory(read) uniform;
+    cfn<void,address,ConstructControl,usize,u32> action;
+};
+extern "C" ConstructStatus construct_value(Operand target,usize count,ConstructHost host) on cpu
+    requires nonzero(host.queries.fact) requires nonzero(host.queries.same) requires nonzero(host.queries.scalar_identity)
+    requires nonzero(host.emitter.argument) requires nonzero(host.emitter.component) requires nonzero(host.emitter.splat)
+    requires nonzero(host.uniform) requires nonzero(host.action);
 
 
 struct BitcastSignature { u32 present; u32 source; u32 target; usize maximum; };

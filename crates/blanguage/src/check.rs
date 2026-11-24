@@ -2149,7 +2149,7 @@ impl<'a> Builder<'a> {
             BuiltinValueNeed::Values=>{arguments=values.take().unwrap()(self).await?;facts.present=u32::from(arguments.is_some());facts.count=arguments.as_ref().map_or(0,|v|v.len()as u64);},
             BuiltinValueNeed::Empty=>return Ok(None),
             BuiltinValueNeed::Unknown=>return self.fail(span,"B158",format!("未知或未导出的函数或能力 {name}")),
-            BuiltinValueNeed::Constructor=>return self.value_constructor(ty.take().unwrap(),arguments.take().unwrap(),span).map(Some),
+            BuiltinValueNeed::Constructor=>return self.construct_value(ty.take().unwrap(),arguments.take().unwrap(),span).map(Some),
             BuiltinValueNeed::InvokeBitcast=>return self.bitcast_value(name,bitcast.take().unwrap(),arguments.take().unwrap(),span).map(Some),
             BuiltinValueNeed::InvokeMath=>return self.math(name,math.take().unwrap(),arguments.take().unwrap(),span).map(Some),
             BuiltinValueNeed::InvokeMatrix=>return self.matrix_intrinsic(matrix.take().unwrap(),arguments.take().unwrap(),span).map(Some),
@@ -2197,9 +2197,6 @@ impl<'a> Builder<'a> {
             ShortCircuitOrder::RightNo=>unsafe {self.world.call(self.selection_after_condition(condition,(span,skip),(right_span,right),async |_,_|Ok(()),span)).await}?,
         };
         self.returned_expression(result,span,true)
-    }
-    fn value_constructor(&mut self,ty:Ty,values:Vec<Value>,span:Span)->Result<Value> {
-        self.construct_value(operators::ConstructEntry::Value,ty,values,span)
     }
     fn member_position(&mut self,p:Place,field:&str,span:Span)->Result<Option<Place>> {
         match unsafe {member_position(u32::from(p.ty().view.is_some()))} {

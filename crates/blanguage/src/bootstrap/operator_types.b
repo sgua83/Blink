@@ -630,6 +630,9 @@ extern "C" bool collective_accepts(CollectiveOperator operation, bool numeric, b
 }
 
 
+enum ConstructKind:u32 { Zero=0; Identity=1; Enumeration=2; Numeric=3; Diagonal=4; Matrix=5; };
+struct ConstructPlan { ConstructStatus status; ConstructKind kind; u32 scalar; u32 splat; usize width; usize rows; usize columns; };
+
 bool construct_has(usize count,ConstructFact fact,ConstructQueries queries) on cpu requires nonzero(queries.fact) {
     usize index=0u64;
     while (index<count) {
@@ -667,11 +670,10 @@ ConstructPlan construct_matrix(ConstructPlan input,usize count,ConstructQueries 
     if (width!=plan.rows*plan.columns) { plan.status=ConstructStatus::MatrixComponents;return plan; }
     plan.kind=ConstructKind::Matrix;return plan;
 }
-extern "C" ConstructPlan construct_plan(ConstructEntry entry,Operand target,usize count,ConstructQueries queries) on cpu
+ConstructPlan construct_plan(Operand target,usize count,ConstructQueries queries) on cpu
     requires nonzero(queries.fact) requires nonzero(queries.same) requires nonzero(queries.scalar_identity) {
     ConstructPlan plan=ConstructPlan(ConstructStatus::Valid,ConstructKind::Numeric,target.scalar,0,
         usize(target.components),usize(target.rows),usize(target.columns));
-    if (entry==ConstructEntry::Matrix) { return construct_matrix(plan,count,queries); }
     if (has(target,1)) { return construct_identity(plan,count,ConstructStatus::CFunctionTarget,queries); }
     if (construct_has(count,ConstructFact::CFunction,queries)) { plan.status=ConstructStatus::CFunctionInput;return plan; }
     if (has(target,2)) { return construct_identity(plan,count,ConstructStatus::AddressTarget,queries); }
@@ -694,7 +696,7 @@ extern "C" ConstructPlan construct_plan(ConstructEntry entry,Operand target,usiz
     else if (width!=plan.width) { plan.status=ConstructStatus::Components; }
     return plan;
 }
-extern "C" void expand_construct(ConstructPlan plan,usize count,ConstructEmitter emitter) on cpu
+void expand_construct(ConstructPlan plan,usize count,ConstructEmitter emitter) on cpu
     requires nonzero(emitter.argument) requires nonzero(emitter.component) requires nonzero(emitter.splat) {
     if (plan.kind==ConstructKind::Numeric) {
         ConstructArgument mode=plan.width==1u64 ? ConstructArgument::ReplaceProof : ConstructArgument::Append;
@@ -735,6 +737,34 @@ extern "C" void expand_construct(ConstructPlan plan,usize count,ConstructEmitter
     }
 }
 
+
+extern "C" ConstructStatus construct_value(Operand target,usize count,ConstructHost host) on cpu
+    requires nonzero(host.queries.fact) requires nonzero(host.queries.same) requires nonzero(host.queries.scalar_identity)
+    requires nonzero(host.emitter.argument) requires nonzero(host.emitter.component) requires nonzero(host.emitter.splat)
+    requires nonzero(host.uniform) requires nonzero(host.action) {
+    ConstructPlan plan=construct_plan(target,count,host.queries);
+    if(plan.status!=ConstructStatus::Valid){return plan.status;}
+    if(plan.kind==ConstructKind::Zero){
+        host.action(host.emitter.context,ConstructControl::Zero,plan.width,0);return ConstructStatus::Valid;
+    }
+    if(plan.kind==ConstructKind::Identity){
+        host.action(host.emitter.context,ConstructControl::Identity,0u64,0);return ConstructStatus::Valid;
+    }
+    if(plan.kind==ConstructKind::Enumeration){
+        host.action(host.emitter.context,ConstructControl::Enumeration,0u64,plan.scalar);return ConstructStatus::Valid;
+    }
+    u32 uniform=1;
+    if(plan.kind==ConstructKind::Numeric){
+        usize index=0u64;
+        while(index<count){
+            if(host.uniform(host.queries.context,index)==0){uniform=0;break;}
+            index+=1u64;
+        }
+    }
+    host.action(host.emitter.context,ConstructControl::Begin,plan.width,uniform);
+    expand_construct(plan,count,host.emitter);
+    return ConstructStatus::Valid;
+}
 
 extern "C" BitcastSignature source_bitcast(address bytes,usize length) on cpu {
     if (source_spelling(bytes,length,"bitcast_u32")) { return BitcastSignature(1,0,1,4u64); }
