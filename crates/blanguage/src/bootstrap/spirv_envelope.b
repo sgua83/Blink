@@ -1199,6 +1199,64 @@ extern "C" ControlWords open_index_selection(u32 bool_type, u32 test, u32 index,
     return index_selection(body, 0u64, bool_type, test, index, bound, less, run, end);
 }
 
+extern "C" void emit_tile_collective(address context, TileCollectiveInput input, TileCollectiveHost host) on cpu
+    requires nonzero(host.constant) requires nonzero(host.tree) requires nonzero(host.seed)
+    requires nonzero(host.pad) requires nonzero(host.prepare) requires nonzero(host.layer)
+    requires nonzero(host.root) requires nonzero(host.read) requires nonzero(host.barrier) {
+    if (input.results == 0u64) {
+        host.barrier(context, 0x148);
+        return;
+    }
+    u32 zero = host.constant(context, 0);
+    u64 padded_width = 1u64;
+    while (padded_width < u64(input.width)) { padded_width *= 2u64; }
+    u32 padded = u32(padded_width);
+    u64 batch = input.sum != 0 ? 1u64 : input.results;
+    u64 first = 0u64;
+    while (first < input.results) {
+        u32 word = input.first_word;
+        u64 slot = 0u64;
+        while (slot < batch) {
+            u32 words_per_lane = host.tree(context, first + slot, slot, word);
+            word += padded * words_per_lane;
+            slot += 1u64;
+        }
+        slot = 0u64;
+        while (slot < batch) {
+            u32 identity = host.seed(context, first + slot, slot);
+            if (padded > input.width) { host.pad(context, slot, input.width, padded, identity); }
+            slot += 1u64;
+        }
+        host.barrier(context, 0x148);
+        host.prepare(context);
+        u32 stride = 1;
+        while (stride < padded) {
+            host.layer(context, stride, padded, 0);
+            stride *= 2;
+        }
+        u32 index = input.lane;
+        if (input.exclusive != 0) {
+            host.root(context, zero, padded - 1);
+            host.barrier(context, 0x108);
+            stride = padded / 2;
+            while (stride != 0) {
+                host.layer(context, stride, padded, 1);
+                stride /= 2;
+            }
+        } else {
+            index = host.constant(context, padded - 1);
+        }
+        slot = 0u64;
+        while (slot < batch) {
+            host.read(context, first + slot, slot, index);
+            slot += 1u64;
+        }
+        // The next batch can reuse the shared words after every lane takes its result.
+        host.barrier(context, 0x148);
+        first += batch;
+    }
+}
+
 extern "C" ControlWords open_tile_padding(u32 uint_type, u32 bool_type, u32 lane, u32 width,
     u32 capacity, u32 index, u32 test, u32 run, u32 end, address body) on cpu {
     u64 at = words_four(body, 0u64, 128, uint_type, index, lane, width);

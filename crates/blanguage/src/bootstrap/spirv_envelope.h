@@ -345,6 +345,30 @@ extern "C" ControlWords end_shader_body(address body) on cpu;
 extern "C" ControlWords open_selection(u32 merge, u32 condition, u32 yes, u32 no, address body) on cpu;
 extern "C" ControlWords open_index_selection(u32 bool_type, u32 test, u32 index, u32 bound,
     bool less, u32 run, u32 end, address body) on cpu;
+struct TileCollectiveInput {
+    u64 results;
+    u32 width;
+    u32 first_word;
+    u32 lane;
+    u32 sum;
+    u32 exclusive;
+};
+struct TileCollectiveHost {
+    cfn<u32,address,u32> constant;
+    cfn<u32,address,u64,u64,u32> tree;
+    cfn<u32,address,u64,u64> seed;
+    cfn<void,address,u64,u32,u32,u32> pad;
+    cfn<void,address> prepare;
+    cfn<void,address,u32,u32,u32> layer;
+    cfn<void,address,u32,u32> root;
+    cfn<void,address,u64,u64,u32> read;
+    cfn<void,address,u32> barrier;
+};
+extern "C" void emit_tile_collective(address context, TileCollectiveInput input, TileCollectiveHost host) on cpu
+    requires nonzero(host.constant) requires nonzero(host.tree) requires nonzero(host.seed)
+    requires nonzero(host.pad) requires nonzero(host.prepare) requires nonzero(host.layer)
+    requires nonzero(host.root) requires nonzero(host.read) requires nonzero(host.barrier);
+
 extern "C" ControlWords open_tile_padding(u32 uint_type, u32 bool_type, u32 lane, u32 width,
     u32 capacity, u32 index, u32 test, u32 run, u32 end, address body) on cpu;
 extern "C" ControlWords next_control_block(u32 target, u32 label, u32 reaches, address body) on cpu;
