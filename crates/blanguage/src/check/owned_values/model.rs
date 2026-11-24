@@ -233,6 +233,7 @@ unsafe extern "C" {
     #[link_name="bootstrap.ownership_payload::mark_moved"] fn source_moved(value:Address,host:Host);
     #[link_name="bootstrap.ownership_payload::handles"] fn source_handles(value:Address,context:Address,visit:unsafe extern "C" fn(Address,Address),host:Host);
     #[link_name="bootstrap.ownership_payload::resources"] fn source_resources(value:Address,context:Address,visit:unsafe extern "C" fn(Address,Address),host:Host);
+    #[link_name="bootstrap.ownership_payload::visit_values"] fn source_values(value:Item,context:Address,visit:unsafe extern "C" fn(Address,Address),host:Host);
     #[link_name = "bootstrap.ownership_payload::data_at"]
     fn source_data_at(value: Address, path: Indices, live: u32, host: DataPathHost) -> *mut Data;
     #[link_name = "bootstrap.ownership_payload::live_paths"]
@@ -340,6 +341,14 @@ unsafe extern "C" fn visit_resource<F:FnMut(&Data)>(data:Address,context:Address
 pub(super) fn visit_resources<F:FnMut(&Data)>(value:&OwnedValuePayload,visit:&mut F){unsafe{source_resources(pointer(value),(visit as *mut F).cast(),visit_resource::<F>,HOST)};}
 unsafe extern "C" fn visit_mut<F:FnMut(&mut Data)>(data:Address,context:Address){(unsafe{&mut *context.cast::<F>()})(unsafe{&mut *data.cast::<Data>()});}
 pub(super) fn resources_mut<F:FnMut(&mut Data)>(value:&mut OwnedValuePayload,visit:&mut F){unsafe{source_resources(pointer_mut(value),(visit as *mut F).cast(),visit_mut::<F>,MUT_HOST)};}
+unsafe extern "C" fn visit_value<F:FnMut(&mut Value)>(value:Address,context:Address){
+    (unsafe{&mut *context.cast::<F>()})(unsafe{&mut *value.cast::<Value>()});
+}
+impl Returned {
+    pub(in crate::check) fn visit_values_mut<F:FnMut(&mut Value)>(&mut self,visit:&mut F){
+        unsafe{source_values(mutable_item(Some(self)),(visit as *mut F).cast(),visit_value::<F>,MUT_HOST)};
+    }
+}
 
 
 #[repr(C)]

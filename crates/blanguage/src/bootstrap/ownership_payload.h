@@ -54,6 +54,10 @@ struct Host {
     cfn<void,address> drop_indices;
 };
 
+extern "C" void visit_values(Item item,address context,cfn<void,address,address> visit,Host host) on cpu
+ requires nonzero(host.inspect) requires nonzero(host.value) requires nonzero(host.child)
+ requires nonzero(host.data_length) requires nonzero(visit);
+
 extern "C" u32 available(address value,Host host) on cpu
     requires nonzero(host.inspect)
     requires nonzero(host.ownership)

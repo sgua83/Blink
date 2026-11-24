@@ -1,4 +1,16 @@
 module bootstrap.ownership_payload;
+
+extern "C" void visit_values(Item item,address context,cfn<void,address,address> visit,Host host) on cpu
+ requires nonzero(host.inspect) requires nonzero(host.value) requires nonzero(host.child)
+ requires nonzero(host.data_length) requires nonzero(visit) {
+ if(item.kind==2){visit(item.node,context);}
+ else if(item.kind==3){visit(host.data_length(item.node),context);}
+ else if(item.kind==4){
+  visit(host.value(item.node),context);
+  u64 count=host.inspect(item.node).count;u64 at=0u64;
+  while(at<count){visit_values(host.child(item.node,at),context,visit,host);at+=1u64;}
+ }
+}
 // Info flags: variants=1, own-presence=2. Item tags: absent=0, Unit=1,
 // ordinary Value=2, Dataset=3, OwnedValuePayload=4. All storage is original.
 void join(address left,address right,u32 stored,address choice,address presence,Host host) on cpu

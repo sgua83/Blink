@@ -514,3 +514,39 @@ struct TilePlaceFacts {u32 present;u32 bounded;u32 fixed;u32 prefix;u32 known;};
 enum TilePlaceNeed:u32 {Type=0;Range=1;Count=2;Minimum=3;Bound=4;Publish=5;Complete=6;Invalid=7;};
 struct TilePlaceStep {LocalCursor cursor;TilePlaceNeed need;};
 extern "C" TilePlaceStep tile_place_step(LocalCursor cursor,TilePlaceFacts facts) on cpu;
+
+// Original call/return fields borrowed only for this function's completion.
+struct RecursiveModelCall {SeekName function;usize memory;address arguments;};
+struct RecursiveNativeCall {u32 defined;SeekName function;u32 memory_present;usize memory;address regs;usize count;};
+struct RecursiveValue {address node;usize count;};
+struct RecursiveForward {usize component;address arguments;};
+struct RecursiveDomain {address original;u32 kind;address origin;u32 origin_kind;};
+struct RecursiveHost {
+ cfn<RecursiveModelCall,address,usize> model;
+ cfn<void,address,usize,address> remember_argument;
+ cfn<void,address> calls;
+ cfn<address,address,usize> arguments;
+ cfn<void,address,usize,usize,address> remember_forward;
+ cfn<RecursiveValue,address,usize> exit;
+ cfn<usize,address,usize> reg;
+ cfn<RecursiveForward,address,usize> forwarded;
+ cfn<void,address,address,usize> domains;
+ cfn<u32,address,usize,address> contains_domain;
+ cfn<address,address,address,usize> origin;
+ cfn<u32,address,address> same_origin;
+ cfn<void,address,usize,address> inherit;
+ cfn<void,address> apply;
+ cfn<address,address,usize> inherited;
+ cfn<void,address,usize,address> mark_domains;
+};
+extern "C" void recursive_ranges(address context,SeekName function,usize models,usize exits,RecursiveHost host) on cpu
+ requires nonzero(host.model) requires nonzero(host.remember_argument) requires nonzero(host.calls)
+ requires nonzero(host.exit) requires nonzero(host.reg) requires nonzero(host.forwarded)
+ requires nonzero(host.domains) requires nonzero(host.apply);
+extern "C" void recursive_call(address context,SeekName function,RecursiveNativeCall call,RecursiveHost host) on cpu
+ requires nonzero(host.arguments) requires nonzero(host.remember_forward);
+extern "C" void recursive_domain(address context,usize component,RecursiveDomain domain,usize exits,RecursiveHost host) on cpu
+ requires nonzero(host.exit) requires nonzero(host.reg) requires nonzero(host.forwarded)
+ requires nonzero(host.contains_domain) requires nonzero(host.origin) requires nonzero(host.same_origin) requires nonzero(host.inherit);
+extern "C" void recursive_apply(address context,RecursiveValue value,RecursiveHost host) on cpu
+ requires nonzero(host.reg) requires nonzero(host.inherited) requires nonzero(host.mark_domains);

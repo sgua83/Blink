@@ -1,4 +1,79 @@
 module bootstrap.function_body;
+
+extern "C" void recursive_ranges(address context,SeekName function,usize models,usize exits,RecursiveHost host) on cpu
+ requires nonzero(host.model) requires nonzero(host.remember_argument) requires nonzero(host.calls)
+ requires nonzero(host.exit) requires nonzero(host.reg) requires nonzero(host.forwarded)
+ requires nonzero(host.domains) requires nonzero(host.apply) {
+ usize at=0u64;bool called=false;
+ while(at<models){
+  RecursiveModelCall call=host.model(context,at);at+=1u64;
+  if(seek_same_name(function,call.function)){host.remember_argument(context,call.memory,call.arguments);called=true;}
+ }
+ if(!called){return;}
+ host.calls(context);
+ usize components=0u64;bool returned=false;at=0u64;
+ while(at<exits){RecursiveValue value=host.exit(context,at);at+=1u64;if(address_bits(value.node)!=0u64){components=value.count;returned=true;break;}}
+ if(!returned){return;}
+ usize component=0u64;
+ while(component<components){
+  at=0u64;
+  while(at<exits){
+   RecursiveValue value=host.exit(context,at);at+=1u64;
+   if(address_bits(value.node)!=0u64){
+    RecursiveForward forward=host.forwarded(context,host.reg(value.node,component));
+    if(address_bits(forward.arguments)==0u64||forward.component!=component){host.domains(context,value.node,component);break;}
+   }
+  }
+  component+=1u64;
+ }
+ host.apply(context);
+}
+extern "C" void recursive_call(address context,SeekName function,RecursiveNativeCall call,RecursiveHost host) on cpu
+ requires nonzero(host.arguments) requires nonzero(host.remember_forward) {
+ if(call.defined==0||!seek_same_name(function,call.function)||call.memory_present==0){return;}
+ address arguments=host.arguments(context,call.memory);if(address_bits(arguments)==0u64){return;}
+ usize component=0u64;
+ while(component<call.count){
+  usize reg=unsafe_position<usize>(unsafe_address(address_bits(call.regs)+u64(component)*8u64));
+  host.remember_forward(context,reg,component,arguments);component+=1u64;
+ }
+}
+extern "C" void recursive_domain(address context,usize component,RecursiveDomain domain,usize exits,RecursiveHost host) on cpu
+ requires nonzero(host.exit) requires nonzero(host.reg) requires nonzero(host.forwarded)
+ requires nonzero(host.contains_domain) requires nonzero(host.origin) requires nonzero(host.same_origin) requires nonzero(host.inherit) {
+ if(domain.kind!=1||domain.origin_kind!=1){return;}
+ usize at=0u64;
+ while(at<exits){
+  RecursiveValue value=host.exit(context,at);at+=1u64;
+  if(address_bits(value.node)!=0u64){
+   RecursiveForward forward=host.forwarded(context,host.reg(value.node,component));
+   if(address_bits(forward.arguments)!=0u64&&forward.component==component){
+    usize index=0u64;bool preserved=false;
+    while(true){
+     address origin=host.origin(forward.arguments,domain.origin,index);if(address_bits(origin)==0u64){break;}
+     if(host.same_origin(origin,domain.origin)!=0){preserved=true;break;}index+=1u64;
+    }
+    if(!preserved){return;}
+   }else if(host.contains_domain(value.node,component,domain.original)==0){return;}
+  }
+ }
+ at=0u64;
+ while(at<exits){
+  RecursiveValue value=host.exit(context,at);at+=1u64;
+  if(address_bits(value.node)!=0u64){
+   usize reg=host.reg(value.node,component);RecursiveForward forward=host.forwarded(context,reg);
+   if(address_bits(forward.arguments)!=0u64&&forward.component==component){host.inherit(context,reg,domain.original);}
+  }
+ }
+}
+extern "C" void recursive_apply(address context,RecursiveValue value,RecursiveHost host) on cpu
+ requires nonzero(host.reg) requires nonzero(host.inherited) requires nonzero(host.mark_domains) {
+ usize component=0u64;
+ while(component<value.count){
+  address domains=host.inherited(context,host.reg(value.node,component));
+  if(address_bits(domains)!=0u64){host.mark_domains(value.node,component,domains);}component+=1u64;
+ }
+}
 extern "C" Cursor start() on cpu {return Cursor(0,0,0u64,0u64);}
 extern "C" BeginStep begin_step(Cursor state,BeginFacts facts) on cpu {
  Cursor c=state;
