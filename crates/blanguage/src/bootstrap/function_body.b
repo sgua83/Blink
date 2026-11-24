@@ -1768,3 +1768,88 @@ extern "C" ValueKernelStep value_kernel_step(ValueCursor state,ValueKernelFacts 
  if(state.phase==12){result.cursor.phase=13;result.need=ValueKernelNeed::Same;return result;}
  return result;
 }
+
+extern "C" CollectiveFieldSyntax collective_field_syntax(SignatureNode source) on cpu {
+ CollectiveFieldSyntax result=CollectiveFieldSyntax(0,0,Text(0,Span(0u64,0u64)));
+ ExprNode expression=binding_node<ExprNode>(source.storage.nodes,source.offset);
+ match(expression.kind){
+ ExprKind::Name(value){result.named=1;result.name=value;}
+ ExprKind::Member(value){result.member=1;}
+ ExprKind::Number(unused){}
+ ExprKind::StaticU32(unused){}
+ ExprKind::Bool(unused){}
+ ExprKind::Index(unused){}
+ ExprKind::Call(unused){}
+ ExprKind::Invoke(unused){}
+ ExprKind::Construct(unused){}
+ ExprKind::Specialize(unused){}
+ ExprKind::FunctionRef(unused){}
+ ExprKind::Cooperate(unused){}
+ ExprKind::Target(unused){}
+ ExprKind::Unary(unused){}
+ ExprKind::Binary(unused){}
+ ExprKind::Select(unused){}
+
+ }
+ return result;
+}
+extern "C" u32 collective_project(SignatureNode source,address context,CollectiveProjectionHost host) on cpu requires nonzero(host.root) requires nonzero(host.field) {
+ ExprNode expression=binding_node<ExprNode>(source.storage.nodes,source.offset);
+ match(expression.kind){
+ ExprKind::Member(value){if(collective_project(SignatureNode(source.storage,value.base.offset),context,host)==0){return 0;}return host.field(context,value.field);}
+ ExprKind::Number(unused){return host.root(context,source.offset);}
+ ExprKind::StaticU32(unused){return host.root(context,source.offset);}
+ ExprKind::Bool(unused){return host.root(context,source.offset);}
+ ExprKind::Name(unused){return host.root(context,source.offset);}
+ ExprKind::Index(unused){return host.root(context,source.offset);}
+ ExprKind::Call(unused){return host.root(context,source.offset);}
+ ExprKind::Invoke(unused){return host.root(context,source.offset);}
+ ExprKind::Construct(unused){return host.root(context,source.offset);}
+ ExprKind::Specialize(unused){return host.root(context,source.offset);}
+ ExprKind::FunctionRef(unused){return host.root(context,source.offset);}
+ ExprKind::Cooperate(unused){return host.root(context,source.offset);}
+ ExprKind::Target(unused){return host.root(context,source.offset);}
+ ExprKind::Unary(unused){return host.root(context,source.offset);}
+ ExprKind::Binary(unused){return host.root(context,source.offset);}
+ ExprKind::Select(unused){return host.root(context,source.offset);}
+
+ }
+}
+extern "C" CollectivePrefixInput collective_prefix_input(SignatureNode source) on cpu {
+ CollectivePrefixInput result=CollectivePrefixInput(CollectivePrefixKind::Plain,source.offset,0u64,Text(0,Span(0u64,0u64)));
+ ExprNode expression=binding_node<ExprNode>(source.storage.nodes,source.offset);
+ match(expression.kind){
+ ExprKind::Call(value){
+  address bytes=binding_at(value.name.kind==0?source.storage.source:source.storage.text,value.name.range.start);
+  if(local_spelling(bytes,value.name.range.end-value.name.range.start,"prefix")){
+   if(value.arguments.count!=2u64){result.kind=CollectivePrefixKind::Arity;return result;}
+   result.root=binding_member(source.storage.nodes,value.arguments,0u64);result.count=binding_member(source.storage.nodes,value.arguments,1u64);
+   CollectiveFieldSyntax root=collective_field_syntax(SignatureNode(source.storage,result.root));
+   result.kind=CollectivePrefixKind::WrongName;
+   if(root.named!=0){result.kind=CollectivePrefixKind::Prefix;result.name=root.name;}
+  }
+ }
+ ExprKind::Number(unused){}
+ ExprKind::StaticU32(unused){}
+ ExprKind::Bool(unused){}
+ ExprKind::Name(unused){}
+ ExprKind::Member(unused){}
+ ExprKind::Index(unused){}
+ ExprKind::Invoke(unused){}
+ ExprKind::Construct(unused){}
+ ExprKind::Specialize(unused){}
+ ExprKind::FunctionRef(unused){}
+ ExprKind::Cooperate(unused){}
+ ExprKind::Target(unused){}
+ ExprKind::Unary(unused){}
+ ExprKind::Binary(unused){}
+ ExprKind::Select(unused){}
+
+ }
+ return result;
+}
+extern "C" u32 collective_read_access(u32 access,u64 components,address context,cfn<u32,address,u64> initialized) on cpu requires nonzero(initialized) {
+ if(access!=2){return access;}
+ u64 i=0u64;while(i<components){if(initialized(context,i)==0){return access;}i+=1u64;}
+ return 3;
+}

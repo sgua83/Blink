@@ -328,33 +328,19 @@ impl Facts {
 }
 
 /// 集合输入的 prefix 是域表达式；裸字段／输出仍由既有集合类型规则检查。
-pub(super) fn input(
-    program: &Program,
-    env: &BTreeMap<String, Root>,
-    expr: &Expr,
-    d: &Definition,
-    facts: &Facts,
-) -> Result<(Expr, Option<PrefixCount>)> {
-    if let ExprKind::Call(name, args) = expr.kind() {
-        if name == "prefix" {
-            if args.len() != 2 {
-                return d
-                    .source
-                    .fail(expr.span(), "B194", "集合前缀域需要 dataset 和计数字段");
-            }
-            let value = args.at(0);
-            if let ExprKind::Name(name) = value.kind() {
-                if let Some(Root::Data(domain, _)) = env.get(name) {
-                    let count = resolve(program, env, *domain, &args.at(1), d, facts)?;
-                    return Ok((value.clone(), Some(count)));
-                }
-            }
-            return d
-                .source
-                .fail(args.at(0).span(), "B194", "集合前缀域需要命名 dataset");
-        }
-    }
-    Ok((expr.clone(), None))
+pub(super) fn input(program:&Program,env:&BTreeMap<String,Root>,expr:&Expr,d:&Definition,facts:&Facts)->Result<(Expr,Option<PrefixCount>)> {
+ let source=unsafe {collective_prefix_input(expr.signature_node())};
+ match source.kind {
+  CollectivePrefixKind::Plain=>Ok((expr.clone(),None)),
+  CollectivePrefixKind::Arity=>d.source.fail(expr.span(),"B194","集合前缀域需要 dataset 和计数字段"),
+  CollectivePrefixKind::WrongName=>d.source.fail(expr.child::<crate::syntax::wire::ExprNode>(source.root).span(),"B194","集合前缀域需要命名 dataset"),
+  CollectivePrefixKind::Prefix=>{
+   let value:Expr=expr.child(source.root);
+   let Some(Root::Data(domain,_))=env.get(expr.source_view().text(source.name))else{return d.source.fail(value.span(),"B194","集合前缀域需要命名 dataset");};
+   let count=resolve(program,env,*domain,&expr.child(source.count),d,facts)?;
+   Ok((value,Some(count)))
+  }
+ }
 }
 pub(super) fn field(
     program: &Program,
@@ -372,24 +358,25 @@ pub(super) fn field(
     }
     Ok((binding, word, access, prefix))
 }
-pub(super) fn typed_field(
-    program: &Program, env: &BTreeMap<String, Root>, expr: &Expr, d: &Definition, facts: &Facts,
-) -> Result<(usize, u32, Access, Option<PrefixCount>, Ty)> {
-    if !matches!(expr.kind(), ExprKind::Member(..)) {
-        return d.source.fail(expr.span(), "B172", "集合输入需要 dataset.field 或 prefix(dataset,count.field).field");
-    }
-    let (binding, word, access, ty, prefix) = collective_projection(expr, d, expr.span(), |base| {
-        let (value, prefix) = input(program, env, base, d, facts)?;
-        let ExprKind::Name(name) = value.kind() else {
-            return d.source.fail(expr.span(), "B172", "集合运算参数必须是命名数据集字段");
-        };
-        let (binding, access, ty) = collective_root(program, env, name, d, expr.span())?;
-        Ok((binding, 0, access, ty, prefix))
-    })?;
-    let access = if access == Access::Write
-        && ty.components.iter().all(|(_, offset)| facts.initialized(program, binding, word + offset))
-    { Access::InOut } else { access };
-    Ok((binding, word, access, prefix, ty.clone()))
+struct FieldInitialization<'a> {program:&'a Program,facts:&'a Facts,binding:usize,word:u32,ty:&'a Ty}
+unsafe extern "C" fn field_initialized(context:*const std::ffi::c_void,index:u64)->u32 {
+ let context=unsafe {&*context.cast::<FieldInitialization<'_>>()};
+ u32::from(context.facts.initialized(context.program,context.binding,context.word+context.ty.components[index as usize].1))
+}
+pub(super) fn typed_field(program:&Program,env:&BTreeMap<String,Root>,expr:&Expr,d:&Definition,facts:&Facts)->Result<(usize,u32,Access,Option<PrefixCount>,Ty)> {
+ if unsafe {collective_field_syntax(expr.signature_node())}.member==0 {
+  return d.source.fail(expr.span(),"B172","集合输入需要 dataset.field 或 prefix(dataset,count.field).field");
+ }
+ let (binding,word,access,ty,prefix)=collective_projection(expr,d,expr.span(),|base| {
+  let (value,prefix)=input(program,env,base,d,facts)?;
+  let source=unsafe {collective_field_syntax(value.signature_node())};
+  if source.named==0 {return d.source.fail(expr.span(),"B172","集合运算参数必须是命名数据集字段");}
+  let (binding,access,ty)=collective_root(program,env,value.source_view().text(source.name),d,expr.span())?;
+  Ok((binding,0,access,ty,prefix))
+ })?;
+ let context=FieldInitialization {program,facts,binding,word,ty};
+ let access=unsafe {collective_read_access(access,ty.components.len() as u64,(&context as *const FieldInitialization<'_>).cast(),field_initialized)};
+ Ok((binding,word,access,prefix,ty.clone()))
 }
 
 /// 集合阶段只读取源字段并写目标的真实分量；同一独占记录的不同字不发生别名。

@@ -414,3 +414,12 @@ struct ValueKernelStep {ValueCursor cursor;ValueKernelNeed need;u64 index;};
 extern "C" ValueKernelSource value_kernel_source(SignatureNode source) on cpu;
 extern "C" u32 value_kernel_signature(SignatureNode declaration,u32 invocation,u64 parameters,u64 captures) on cpu;
 extern "C" ValueKernelStep value_kernel_step(ValueCursor state,ValueKernelFacts facts) on cpu;
+
+struct CollectiveFieldSyntax {u32 member;u32 named;Text name;};
+struct CollectiveProjectionHost {cfn<u32,address,u64> root;cfn<u32,address,Text> field;};
+enum CollectivePrefixKind:u32 {Plain=0;Arity=1;Prefix=2;WrongName=3;};
+struct CollectivePrefixInput {CollectivePrefixKind kind;u64 root;u64 count;Text name;};
+extern "C" CollectiveFieldSyntax collective_field_syntax(SignatureNode source) on cpu;
+extern "C" u32 collective_project(SignatureNode source,address context,CollectiveProjectionHost host) on cpu requires nonzero(host.root) requires nonzero(host.field);
+extern "C" CollectivePrefixInput collective_prefix_input(SignatureNode source) on cpu;
+extern "C" u32 collective_read_access(u32 access,u64 components,address context,cfn<u32,address,u64> initialized) on cpu requires nonzero(initialized);

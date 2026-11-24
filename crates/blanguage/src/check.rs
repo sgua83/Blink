@@ -1144,36 +1144,56 @@ fn collective_root<'a>(
     };
     Ok((*binding, *access, &program.buffers[*binding].ty))
 }
-fn collective_projection<'a, R>(
-    expr: &Expr, d: &Definition, span: Span,
-    root: impl FnOnce(&Expr) -> Result<(usize, u32, Access, &'a Ty, R)>,
-) -> Result<(usize, u32, Access, &'a Ty, R)> {
-    match expr.kind() {
-        ExprKind::Member(base, field) => {
-            let (binding, word, access, ty, result) = collective_projection(&base, d, span, root)?;
-            let Some((offset, ty)) = ty.field(field) else {
-                return d.source.fail(span, "B174", "未知集合运算字段");
-            };
-            Ok((binding, word + offset, access, ty, result))
-        }
-        _ => root(expr),
-    }
+#[repr(C)]struct CollectiveFieldSyntax {member:u32,named:u32,name:crate::syntax::wire::Text}
+#[repr(C)]struct CollectiveProjectionHost {
+ root:unsafe extern "C" fn(*mut std::ffi::c_void,u64)->u32,
+ field:unsafe extern "C" fn(*mut std::ffi::c_void,crate::syntax::wire::Text)->u32,
 }
-fn collective_value_field(
-    program: &Program, env: &BTreeMap<String, Root>, expr: &Expr, d: &Definition,
-) -> Result<(usize, u32, Access, Ty)> {
-    if !matches!(expr.kind(), ExprKind::Member(..)) {
-        return d.source.fail(expr.span(), "B172", "集合运算参数必须是 dataset.field");
-    }
-    let (binding, word, access, ty, ()) = collective_projection(expr, d, expr.span(), |base| {
-        let ExprKind::Name(name) = base.kind() else {
-            return d.source.fail(expr.span(), "B172", "集合运算参数必须是命名数据集字段");
-        };
-        let (binding, access, ty) = collective_root(program, env, name, d, expr.span())?;
-        Ok((binding, 0, access, ty, ()))
-    })?;
-    Ok((binding, word, access, ty.clone()))
+#[repr(u32)]enum CollectivePrefixKind {Plain,Arity,Prefix,WrongName}
+#[repr(C)]struct CollectivePrefixInput {kind:CollectivePrefixKind,root:u64,count:u64,name:crate::syntax::wire::Text}
+unsafe extern "C" {
+ #[link_name="bootstrap.function_body::collective_field_syntax"]fn collective_field_syntax(source:crate::syntax::wire::SignatureNode)->CollectiveFieldSyntax;
+ #[link_name="bootstrap.function_body::collective_project"]fn collective_project(source:crate::syntax::wire::SignatureNode,context:*mut std::ffi::c_void,host:CollectiveProjectionHost)->u32;
+ #[link_name="bootstrap.function_body::collective_prefix_input"]fn collective_prefix_input(source:crate::syntax::wire::SignatureNode)->CollectivePrefixInput;
+ #[link_name="bootstrap.function_body::collective_read_access"]fn collective_read_access(access:Access,components:u64,context:*const std::ffi::c_void,initialized:unsafe extern "C" fn(*const std::ffi::c_void,u64)->u32)->Access;
 }
+struct CollectiveProjection<'a,'s,R,F> {
+ source:crate::syntax::SourceView<'s>,definition:&'s Definition,span:Span,
+ root:Option<F>,value:Option<Result<(usize,u32,Access,&'a Ty,R)>>,
+}
+unsafe extern "C" fn collective_projection_root<'a,R,F>(context:*mut std::ffi::c_void,offset:u64)->u32
+where F:FnOnce(&Expr)->Result<(usize,u32,Access,&'a Ty,R)> {
+ let context=unsafe {&mut *context.cast::<CollectiveProjection<'a,'_,R,F>>()};
+ context.value=Some(context.root.take().unwrap()(&context.source.node(offset)));
+ u32::from(context.value.as_ref().unwrap().is_ok())
+}
+unsafe extern "C" fn collective_projection_field<'a,R,F>(context:*mut std::ffi::c_void,field:crate::syntax::wire::Text)->u32 {
+ let context=unsafe {&mut *context.cast::<CollectiveProjection<'a,'_,R,F>>()};
+ context.value=Some(context.value.take().unwrap().and_then(|(binding,word,access,ty,result)| {
+  let Some((offset,ty))=ty.field(context.source.text(field))else{return context.definition.source.fail(context.span,"B174","未知集合运算字段");};
+  Ok((binding,word+offset,access,ty,result))
+ }));
+ u32::from(context.value.as_ref().unwrap().is_ok())
+}
+fn collective_projection<'a,R,F>(expr:&Expr,d:&Definition,span:Span,root:F)->Result<(usize,u32,Access,&'a Ty,R)>
+where F:FnOnce(&Expr)->Result<(usize,u32,Access,&'a Ty,R)> {
+ let mut context:CollectiveProjection<'a,'_,R,F>=CollectiveProjection {source:expr.source_view(),definition:d,span,root:Some(root),value:None};
+ unsafe {collective_project(expr.signature_node(),(&mut context as *mut CollectiveProjection<'a,'_,R,F>).cast(),CollectiveProjectionHost {root:collective_projection_root::<R,F>,field:collective_projection_field::<R,F>})};
+ context.value.take().unwrap()
+}
+fn collective_value_field(program:&Program,env:&BTreeMap<String,Root>,expr:&Expr,d:&Definition)->Result<(usize,u32,Access,Ty)> {
+ if unsafe {collective_field_syntax(expr.signature_node())}.member==0 {
+  return d.source.fail(expr.span(),"B172","集合运算参数必须是 dataset.field");
+ }
+ let (binding,word,access,ty,())=collective_projection(expr,d,expr.span(),|base| {
+  let source=unsafe {collective_field_syntax(base.signature_node())};
+  if source.named==0 {return d.source.fail(expr.span(),"B172","集合运算参数必须是命名数据集字段");}
+  let (binding,access,ty)=collective_root(program,env,base.source_view().text(source.name),d,expr.span())?;
+  Ok((binding,0,access,ty,()))
+ })?;
+ Ok((binding,word,access,ty.clone()))
+}
+
 use crate::syntax::wire::DeclaredArgumentForm;
 
 fn declared_argument_form(ty: &crate::syntax::Type) -> DeclaredArgumentForm {
