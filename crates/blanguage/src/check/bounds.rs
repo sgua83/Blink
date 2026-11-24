@@ -2332,62 +2332,7 @@ impl Clause {
         if bindings.is_empty() {
             return roots.to_vec();
         }
-        let identity = |id| output_identity(id, bindings);
-        let mut clauses: BTreeMap<usize, Clause> = BTreeMap::new();
-        let mut conditions: BTreeMap<usize, Arc<Condition>> = BTreeMap::new();
-        let mut pending=roots.iter().rev().map(|root|(root,false)).collect::<Vec<_>>();
-        while let Some((clause,ready))=pending.pop(){
-            if clauses.contains_key(&clause.key()){continue;}
-            if !ready {
-                match &**clause.0 {
-                    ClauseNode::Both(a,b)|ClauseNode::Either(a,b)=>{
-                        pending.extend([(clause,true),(b,false),(a,false)]);
-                        continue;
-                    }
-                    ClauseNode::Branch(parent,condition,_)=>{
-                        pending.extend([(clause,true),(&condition.cases[1],false),(&condition.cases[0],false),(parent,false)]);
-                        continue;
-                    }
-                    _=>{}
-                }
-            }
-            let next = match &**clause.0 {
-                ClauseNode::Impossible => clause.clone(),
-                ClauseNode::Facts(facts) => {
-                    let renamed: Facts = facts
-                        .iter()
-                        .map(|fact|fact.map(&identity))
-                        .collect();
-                    if renamed == *facts {
-                        clause.clone()
-                    } else {
-                        Self::facts(renamed)
-                    }
-                }
-                ClauseNode::Both(a, b) | ClauseNode::Either(a, b)
-                    if Arc::ptr_eq(&clauses[&a.key()].0, &a.0)
-                        && Arc::ptr_eq(&clauses[&b.key()].0, &b.0) =>
-                {
-                    clause.clone()
-                }
-                ClauseNode::Both(a, b) => Self::both(&clauses[&a.key()], &clauses[&b.key()]),
-                ClauseNode::Either(a, b) => Self::either(&clauses[&a.key()], &clauses[&b.key()]),
-                ClauseNode::Branch(parent, condition, truth) => {
-                    let next_parent=&clauses[&parent.key()];
-                    let next_condition=conditions.entry(Arc::as_ptr(condition) as usize).or_insert_with(||{
-                        let cases=std::array::from_fn(|i|clauses[&condition.cases[i].key()].clone());
-                        if (0..2).all(|i|Arc::ptr_eq(&cases[i].0,&condition.cases[i].0)){
-                            condition.clone()
-                        }else{Arc::new(Condition{cases})}
-                    });
-                    if Arc::ptr_eq(&next_parent.0,&parent.0)&&Arc::ptr_eq(next_condition,condition){
-                        clause.clone()
-                    }else{Self::branch(next_parent,next_condition,*truth)}
-                }
-            };
-            clauses.insert(clause.key(), next);
-        }
-        roots.iter().map(|root| clauses[&root.key()].clone()).collect()
+        condition_graph::rename_outputs(roots, bindings)
     }
     pub(super) fn selection(index: ownership::ApplicationIndex, element: usize) -> Self {
         match index {

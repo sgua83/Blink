@@ -1,10 +1,15 @@
 //! B owns the complete shared-Clause overlap search. The original query owns
 //! its physical containers and borrows immutable Clause/Fact fields until return.
-use super::{Clause, ClauseNode, Fact, Facts, IndexDomain, Proof, ValueIdentity, internal_conflicts};
+use super::{
+    Clause, ClauseNode, Condition, Fact, Facts, IndexDomain, OutputBindings, Proof, ValueIdentity,
+    internal_conflicts, output_identity,
+};
 use std::{
     borrow::Borrow,
     collections::{BTreeMap, HashMap, btree_set},
     ffi::c_void,
+    ptr,
+    sync::Arc,
 };
 
 type Slot = *mut c_void;
@@ -284,6 +289,185 @@ pub(super) fn source_node(clause: &Clause) -> SourceNode {
         }
     }
     out
+}
+
+// Source roots keep the borrowed addresses valid until the synchronous walk returns.
+struct OutputRename<'a> {
+    bindings: &'a OutputBindings,
+    roots: std::slice::Iter<'a, Clause>,
+    pending: Vec<(&'a Clause, bool)>,
+    clauses: BTreeMap<usize, Clause>,
+    conditions: BTreeMap<usize, Arc<Condition>>,
+    facts: btree_set::Iter<'a, Fact>,
+    renamed: Facts,
+    outputs: Vec<Clause>,
+}
+
+#[derive(Default)]
+#[repr(C)]
+struct OutputPending {
+    present: u32,
+    ready: u32,
+    source: Borrowed,
+}
+
+#[repr(u32)]
+enum OutputStatus {
+    Pending,
+    Original,
+    Replaced,
+}
+
+#[derive(PartialEq)]
+#[repr(u32)]
+#[allow(dead_code, reason = "the B traversal constructs these discriminants")]
+enum OutputBuild {
+    Original,
+    Facts,
+    Both,
+    Either,
+    Branch,
+    MappedBranch,
+}
+
+unsafe fn output_rename<'a, 'b>(slot: Slot) -> &'a mut OutputRename<'b> {
+    unsafe { &mut *slot.cast::<OutputRename<'b>>() }
+}
+
+unsafe fn source_clause<'a>(source: Borrowed) -> &'a Clause {
+    unsafe { &*source.cast::<Clause>() }
+}
+
+unsafe extern "C" fn output_root(slot: Slot) -> Borrowed {
+    unsafe { output_rename(slot) }.roots.next()
+        .map_or(ptr::null(), |root| ptr::from_ref(root).cast())
+}
+
+unsafe extern "C" fn output_inspect(source: Borrowed) -> SourceNode {
+    source_node(unsafe { source_clause(source) })
+}
+
+unsafe extern "C" fn output_push(slot: Slot, source: Borrowed, ready: u32) {
+    unsafe { output_rename(slot) }.pending.push((unsafe { source_clause(source) }, ready != 0));
+}
+
+unsafe extern "C" fn output_pop(slot: Slot) -> OutputPending {
+    unsafe { output_rename(slot) }.pending.pop().map_or_else(OutputPending::default, |(source, ready)| {
+        OutputPending { present: 1, ready: u32::from(ready), source: ptr::from_ref(source).cast() }
+    })
+}
+
+unsafe extern "C" fn output_status(slot: Slot, source: Borrowed) -> OutputStatus {
+    let ctx = unsafe { &*slot.cast::<OutputRename<'_>>() };
+    let source = unsafe { source_clause(source) };
+    match ctx.clauses.get(&source.key()) {
+        None => OutputStatus::Pending,
+        Some(result) if Arc::ptr_eq(&source.0, &result.0) => OutputStatus::Original,
+        Some(_) => OutputStatus::Replaced,
+    }
+}
+
+unsafe extern "C" fn output_begin_facts(slot: Slot, facts: Borrowed) {
+    let ctx = unsafe { output_rename(slot) };
+    ctx.renamed.clear();
+    ctx.facts = unsafe { &*facts.cast::<Facts>() }.iter();
+}
+
+unsafe extern "C" fn output_map_fact(slot: Slot) -> u32 {
+    let ctx = unsafe { output_rename(slot) };
+    let Some(fact) = ctx.facts.next() else { return 0; };
+    ctx.renamed.insert(fact.map(&|id| output_identity(id, ctx.bindings)));
+    1
+}
+
+unsafe extern "C" fn output_same_facts(slot: Slot, facts: Borrowed) -> u32 {
+    let ctx = unsafe { &*slot.cast::<OutputRename<'_>>() };
+    u32::from(ctx.renamed == *unsafe { &*facts.cast::<Facts>() })
+}
+
+unsafe extern "C" fn output_build(slot: Slot, source: Borrowed, node: SourceNode, build: OutputBuild) {
+    let ctx = unsafe { output_rename(slot) };
+    let source = unsafe { source_clause(source) };
+    let result = match build {
+        OutputBuild::Original => source.clone(),
+        OutputBuild::Facts => Clause::facts(std::mem::take(&mut ctx.renamed)),
+        OutputBuild::Both | OutputBuild::Either => {
+            let left = &ctx.clauses[&unsafe { source_clause(node.left) }.key()];
+            let right = &ctx.clauses[&unsafe { source_clause(node.right) }.key()];
+            if build == OutputBuild::Both {
+                Clause::both(left, right)
+            } else {
+                Clause::either(left, right)
+            }
+        }
+        OutputBuild::Branch | OutputBuild::MappedBranch => {
+            let parent = &ctx.clauses[&unsafe { source_clause(node.left) }.key()];
+            let original = unsafe { &*node.condition.cast::<Arc<Condition>>() };
+            let condition = if build == OutputBuild::MappedBranch {
+                ctx.conditions.entry(Arc::as_ptr(original) as usize).or_insert_with(|| {
+                    Arc::new(Condition {
+                        cases: original.cases.each_ref().map(|case| ctx.clauses[&case.key()].clone()),
+                    })
+                })
+            } else {
+                original
+            };
+            Clause::branch(parent, condition, node.truth != 0)
+        }
+    };
+    ctx.clauses.insert(source.key(), result);
+}
+
+unsafe extern "C" fn output_emit(slot: Slot, source: Borrowed) {
+    let ctx = unsafe { output_rename(slot) };
+    ctx.outputs.push(ctx.clauses[&unsafe { source_clause(source) }.key()].clone());
+}
+
+#[repr(C)]
+struct OutputRenameHost {
+    root: unsafe extern "C" fn(Slot) -> Borrowed,
+    inspect: unsafe extern "C" fn(Borrowed) -> SourceNode,
+    push: unsafe extern "C" fn(Slot, Borrowed, u32),
+    pop: unsafe extern "C" fn(Slot) -> OutputPending,
+    status: unsafe extern "C" fn(Slot, Borrowed) -> OutputStatus,
+    begin_facts: unsafe extern "C" fn(Slot, Borrowed),
+    map_fact: unsafe extern "C" fn(Slot) -> u32,
+    same_facts: unsafe extern "C" fn(Slot, Borrowed) -> u32,
+    build: unsafe extern "C" fn(Slot, Borrowed, SourceNode, OutputBuild),
+    emit: unsafe extern "C" fn(Slot, Borrowed),
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.condition_graph::rename_output_graph"]
+    fn rename_output_graph(slot: Slot, host: OutputRenameHost);
+}
+
+pub(super) fn rename_outputs(roots: &[Clause], bindings: &OutputBindings) -> Vec<Clause> {
+    let mut ctx = OutputRename {
+        bindings,
+        roots: roots.iter(),
+        pending: Vec::new(),
+        clauses: BTreeMap::new(),
+        conditions: BTreeMap::new(),
+        facts: btree_set::Iter::default(),
+        renamed: Facts::new(),
+        outputs: Vec::with_capacity(roots.len()),
+    };
+    unsafe {
+        rename_output_graph(ptr::from_mut(&mut ctx).cast(), OutputRenameHost {
+            root: output_root,
+            inspect: output_inspect,
+            push: output_push,
+            pop: output_pop,
+            status: output_status,
+            begin_facts: output_begin_facts,
+            map_fact: output_map_fact,
+            same_facts: output_same_facts,
+            build: output_build,
+            emit: output_emit,
+        });
+    }
+    ctx.outputs
 }
 
 #[derive(Default)]

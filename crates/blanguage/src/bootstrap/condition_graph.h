@@ -877,3 +877,23 @@ extern "C" void call_fact(address context,FactView fact,CallFactHost host) on cp
  requires nonzero(host.inspect_predicate) requires nonzero(host.scalar) requires nonzero(host.compare);
 void call_fact_domains(address context,CallFactHost host,CallFactInput input,address target,FactView key,u32 mode,CallFactCommon common) on cpu
  requires nonzero(host.begin) requires nonzero(host.next) requires nonzero(host.cast_domain) requires nonzero(host.emit);
+
+enum OutputStatus : u32 { Pending=0; Original=1; Replaced=2; };
+enum OutputBuild : u32 { Original=0; Facts=1; Both=2; Either=3; Branch=4; MappedBranch=5; };
+struct OutputRenameHost {
+ cfn<address,address> root;
+ cfn<SourceNode,address> ensures memory(read) inspect;
+ cfn<void,address,address,u32> push;
+ cfn<NegatePending,address> pop;
+ cfn<OutputStatus,address,address> ensures memory(read) status;
+ cfn<void,address,address> begin_facts;
+ cfn<u32,address> map_fact;
+ cfn<u32,address,address> ensures memory(read) same_facts;
+ cfn<void,address,address,SourceNode,OutputBuild> build;
+ cfn<void,address,address> emit;
+};
+extern "C" void rename_output_graph(address context,OutputRenameHost host) on cpu
+ requires nonzero(host.root) requires nonzero(host.inspect) requires nonzero(host.push)
+ requires nonzero(host.pop) requires nonzero(host.status) requires nonzero(host.begin_facts)
+ requires nonzero(host.map_fact) requires nonzero(host.same_facts)
+ requires nonzero(host.build) requires nonzero(host.emit);

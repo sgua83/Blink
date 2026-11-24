@@ -1964,3 +1964,46 @@ extern "C" void call_fact(address context,FactView fact,CallFactHost host) on cp
   host.commit(context);
  }
 }
+
+extern "C" void rename_output_graph(address context,OutputRenameHost host) on cpu
+ requires nonzero(host.root) requires nonzero(host.inspect) requires nonzero(host.push)
+ requires nonzero(host.pop) requires nonzero(host.status) requires nonzero(host.begin_facts)
+ requires nonzero(host.map_fact) requires nonzero(host.same_facts)
+ requires nonzero(host.build) requires nonzero(host.emit) {
+ while(true){
+  address root=host.root(context);
+  if(address_bits(root)==0u64){return;}
+  host.push(context,root,0);
+  while(true){
+   NegatePending pending=host.pop(context);
+   if(pending.present==0){break;}
+   if(host.status(context,pending.source)!=OutputStatus::Pending){continue;}
+   SourceNode node=host.inspect(pending.source);
+   if(pending.ready==0&&node.kind>=2){
+    host.push(context,pending.source,1);
+    host.push(context,node.right,0);
+    if(node.kind==4){host.push(context,node.no,0);}
+    host.push(context,node.left,0);
+    continue;
+   }
+   OutputBuild build=OutputBuild::Original;
+   if(node.kind==1&&node.empty==0){
+    host.begin_facts(context,node.left);
+    while(host.map_fact(context)!=0){}
+    if(host.same_facts(context,node.left)==0){build=OutputBuild::Facts;}
+   }else if(node.kind>=2){
+    bool left_same=host.status(context,node.left)==OutputStatus::Original;
+    bool right_same=host.status(context,node.right)==OutputStatus::Original;
+    if(node.kind==4){
+     bool cases_same=right_same&&host.status(context,node.no)==OutputStatus::Original;
+     if(!cases_same){build=OutputBuild::MappedBranch;}
+     else if(!left_same){build=OutputBuild::Branch;}
+    }else if(!left_same||!right_same){
+     build=node.kind==2 ? OutputBuild::Both : OutputBuild::Either;
+    }
+   }
+   host.build(context,pending.source,node,build);
+  }
+  host.emit(context,root);
+ }
+}
