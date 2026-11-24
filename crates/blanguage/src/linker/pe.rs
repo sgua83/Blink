@@ -5,8 +5,7 @@ use crate::native::CoffRelocationStatus;
 
 #[repr(C)]
 struct PeSection {
-    name:*const u8, name_length:u64, byte_length:u64,
-    relocation_start:u64, relocation_count:u64, flags:u32, rva:u32, raw:u64,
+    rva:u64, raw:u64, relocation_start:u64,
 }
 #[repr(C)]
 struct PeImport {
@@ -41,7 +40,7 @@ unsafe extern "C" {
     fn pe_layout(input:PeInput, rows:*const CombineSection, groups:*const CombineGroup,
         relocation_count:usize)->PeLayout;
     #[link_name="bootstrap.pe::encode"]
-    fn pe_encode(input:PeInput,layout:PeLayout,rows:*const CombineSection,
+    fn pe_encode(input:PeInput,layout:PeLayout,rows:*const CombineSection,groups:*const CombineGroup,
         row_count:usize,output:*mut u8)->PeRelocationResult;
 }
 
@@ -72,7 +71,7 @@ pub(super) fn link(
     let length=usize::try_from(layout.length)?;
     let mut output=Vec::with_capacity(length);
     // Both original plans and their source bytes stay alive through image encoding.
-    let relocation = unsafe { pe_encode(input, layout, rows.as_ptr(), rows.len(), output.as_mut_ptr()) };
+    let relocation = unsafe { pe_encode(input, layout, rows.as_ptr(), groups.as_ptr(), rows.len(), output.as_mut_ptr()) };
     relocation.status.result(relocation.kind)?;
     // On success the writer initialized the entire file, including reserved bytes and padding.
     unsafe { output.set_len(length); }

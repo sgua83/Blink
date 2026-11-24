@@ -1,9 +1,7 @@
 module bootstrap.pe;
-const u64 SECTION_BYTES=56u64;
 const u64 IMPORT_BYTES=64u64;
 struct PeSection {
-    address name;u64 name_length;u64 byte_length;
-    u64 relocation_start;u64 relocation_count;u32 flags;u32 rva;u64 raw;
+    u64 rva;u64 raw;u64 relocation_start;
 };
 // Compacted rows reuse the relocation index for a relative thunk. Only a
 // DLL's first written row retains its DLL source and directory location.
@@ -27,4 +25,4 @@ struct PeRelocationResult { u32 status; u32 kind; };
 
 extern "C" PeLayout layout(PeInput input,address rows,address groups,u64 relocation_count) on cpu;
 // Initializes the complete file range before returning success.
-extern "C" PeRelocationResult encode(PeInput input,PeLayout layout,address rows,u64 row_count,address output) on cpu;
+extern "C" PeRelocationResult encode(PeInput input,PeLayout layout,address rows,address groups,u64 row_count,address output) on cpu;

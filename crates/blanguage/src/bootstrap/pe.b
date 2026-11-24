@@ -4,8 +4,8 @@ import blink.windows.coff;
 import bootstrap.combine;
 
 u64 align(u64 n,u64 by) on cpu requires nonzero(by) {return ((n+by-1u64)/by)*by;}
-PeSection section_at(PeInput input,u64 i) on cpu {return unsafe_position<PeSection>(unsafe_address(address_bits(input.sections)+i*SECTION_BYTES));}
-void section_put(PeInput input,u64 i,PeSection value) on cpu {unsafe_position<PeSection>(unsafe_address(address_bits(input.sections)+i*SECTION_BYTES))=value;}
+PeSection section_at(PeInput input,u64 i) on cpu {return unsafe_position<PeSection>(unsafe_address(address_bits(input.sections)+i*size_of<PeSection>()));}
+void section_put(PeInput input,u64 i,PeSection value) on cpu {unsafe_position<PeSection>(unsafe_address(address_bits(input.sections)+i*size_of<PeSection>()))=value;}
 CombineRelocation relocation_at(PeInput input,u64 i) on cpu {return unsafe_position<CombineRelocation>(unsafe_address(address_bits(input.relocations)+i*size_of<CombineRelocation>()));}
 void relocation_put(PeInput input,u64 i,CombineRelocation value) on cpu {unsafe_position<CombineRelocation>(unsafe_address(address_bits(input.relocations)+i*size_of<CombineRelocation>()))=value;}
 PeImport import_at(PeInput input,u64 i) on cpu {return unsafe_position<PeImport>(unsafe_address(address_bits(input.imports)+i*IMPORT_BYTES));}
@@ -143,18 +143,9 @@ void plan_imports(PeInput input, inout PeLayout result) on cpu {
 PeLayout invalid(u64 code) on cpu {
     return PeLayout(0u64,0u64,0u64,0u64,0u64,0u64,0u64,0u64,0u64,0u64,0u64,0u64,0u64,0u64,5368709120u64,code);
 }
-void pack_sections(PeInput input,address rows,address groups,u64 relocation_count) on cpu {
-    u64 start=0u64;u64 i=0u64;
-    while(i<input.section_count){
-        CombineGroup group=bootstrap.combine::group_at(groups,i);
-        CombineSection first=bootstrap.combine::section_at(rows,group.first);
-        section_put(input,i,PeSection(first.name,first.name_length,group.size,
-            start,group.relocation_count,u32(first.flags),0,0u64));
-        start+=group.relocation_count;
-        i+=1u64;
-    }
+void pack_relocations(PeInput input,u64 relocation_count) on cpu {
     u64 imports=0u64;
-    i=0u64;
+    u64 i=0u64;
     while(i<relocation_count){
         CombineRelocation row=relocation_at(input,i);
         PeSection section=section_at(input,row.source);
@@ -176,18 +167,30 @@ void pack_sections(PeInput input,address rows,address groups,u64 relocation_coun
 }
 
 extern "C" PeLayout layout(PeInput input,address rows,address groups,u64 relocation_count) on cpu {
-    pack_sections(input,rows,groups,relocation_count);
-    PeLayout result=invalid(0u64);u64 rva=4096u64;u64 i=0u64;bool pdata=false;
+    PeLayout result=invalid(0u64);
+    // A base relocation contributes a block, so the section table size is known up front.
+    result.section_count=input.section_count+1u64+(input.absolute_count==0u64 ? 0u64 : 1u64);
+    result.header=align(392u64+result.section_count*40u64,512u64);
+    u64 raw=result.header;
+    u64 rva=4096u64;
+    u64 start=0u64;
+    u64 i=0u64;
     while(i<input.section_count){
-        PeSection section=section_at(input,i);
-        if(section.byte_length>4294967295u64){return invalid(1u64);}
-        section.rva=u32(rva);section_put(input,i,section);
-        if(section.name_length==6u64&&byte_at(section.name,0u64)==u8(46)&&byte_at(section.name,1u64)==u8(112)&&byte_at(section.name,2u64)==u8(100)&&byte_at(section.name,3u64)==u8(97)&&byte_at(section.name,4u64)==u8(116)&&byte_at(section.name,5u64)==u8(97)&&!pdata){
-            pdata=true;result.pdata=rva;result.pdata_length=section.byte_length;
+        CombineGroup group=bootstrap.combine::group_at(groups,i);
+        if(group.size>4294967295u64){return invalid(1u64);}
+        section_put(input,i,PeSection(rva,raw,start));
+        CombineSection first=bootstrap.combine::section_at(rows,group.first);
+        if(result.pdata==0u64&&first.name_length==6u64&&byte_at(first.name,0u64)==u8(46)&&byte_at(first.name,1u64)==u8(112)&&byte_at(first.name,2u64)==u8(100)&&byte_at(first.name,3u64)==u8(97)&&byte_at(first.name,4u64)==u8(116)&&byte_at(first.name,5u64)==u8(97)){
+            result.pdata=rva;result.pdata_length=group.size;
         }
-        rva+=align(section.byte_length,4096u64);if(rva>4294967295u64){return invalid(1u64);}i+=1u64;
+        rva+=align(group.size,4096u64);
+        if(rva>4294967295u64){return invalid(1u64);}
+        raw+=align(group.size,512u64);
+        start+=group.relocation_count;
+        i+=1u64;
     }
-    if(!pdata){return invalid(4u64);}
+    if(result.pdata==0u64){return invalid(4u64);}
+    pack_relocations(input,relocation_count);
     result.idata = rva;
     plan_imports(input, result);
     u64 at = result.idata_length;
@@ -195,15 +198,16 @@ extern "C" PeLayout layout(PeInput input,address rows,address groups,u64 relocat
     result.reloc = result.idata + align(at, 4096u64);
     u64 absolute=0u64;i=0u64;
     while(i<input.section_count){
-        PeSection section=section_at(input,i);u64 j=0u64;
-        while(j<section.relocation_count){
-            u64 index=section.relocation_start+j;
+        PeSection section=section_at(input,i);
+        u64 index=section.relocation_start;
+        u64 end=index+bootstrap.combine::group_at(groups,i).relocation_count;
+        while(index<end){
             CombineRelocation relocation=relocation_at(input,index);
             // After grouping, these terms become the physical source and target RVAs.
-            relocation.source=u64(section.rva)+relocation.offset;
+            relocation.source=section.rva+relocation.offset;
             if(relocation.target_kind==0){
                 if(relocation.section>=input.section_count){return invalid(2u64);}
-                relocation.value+=u64(section_at(input,relocation.section).rva);
+                relocation.value+=section_at(input,relocation.section).rva;
             }else if(relocation.target_kind==1u64){
                 relocation.value+=result.iat_start;
             }
@@ -211,34 +215,28 @@ extern "C" PeLayout layout(PeInput input,address rows,address groups,u64 relocat
             if(relocation.kind==1){
                 absolute_put(input,absolute,PeAbsolute(u64(u32(relocation.source)),index));absolute+=1u64;
             }
-            j+=1u64;
+            index+=1u64;
         }
         i+=1u64;
     }
     result.reloc_length=plan_absolute_pages(input);
-    result.section_count=input.section_count+1u64;
-    if(result.reloc_length!=0u64){result.section_count+=1u64;}
     if(result.section_count>65535u64){return invalid(1u64);}
-    result.header=align(392u64+result.section_count*40u64,512u64);at=result.header;i=0u64;
-    while(i<input.section_count){
-        PeSection section=section_at(input,i);section.raw=at;section_put(input,i,section);
-        at+=align(section.byte_length,512u64);i+=1u64;
-    }
-    at+=align(result.idata_length,512u64);at+=align(result.reloc_length,512u64);result.length=at;
+    result.length=raw+align(result.idata_length,512u64)+align(result.reloc_length,512u64);
     if(result.reloc_length!=0u64){result.image_size=result.reloc+align(result.reloc_length,4096u64);}else{result.image_size=result.idata+align(result.idata_length,4096u64);}
     if(result.length>4294967295u64||result.image_size>4294967295u64){return invalid(1u64);}return result;
 }
-PeRelocationResult relocate_sections(PeInput input,u64 image_base,address output) on cpu {
+PeRelocationResult relocate_sections(PeInput input,address groups,u64 image_base,address output) on cpu {
     u64 i=0u64;
     while (i<input.section_count) {
         PeSection section=section_at(input,i);
+        CombineGroup group=bootstrap.combine::group_at(groups,i);
         address bytes=unsafe_address(address_bits(output)+section.raw);
         u64 j=section.relocation_start;
-        u64 end=j+section.relocation_count;
+        u64 end=j+group.relocation_count;
         while (j<end) {
             CombineRelocation relocation=relocation_at(input,j);
             u32 kind=u32(relocation.kind);
-            u32 status=apply_relocation(bytes,section.byte_length,relocation.offset,
+            u32 status=apply_relocation(bytes,group.size,relocation.offset,
                 kind,image_base,relocation.source,relocation.value);
             if (status!=0) { return PeRelocationResult(status,kind); }
             j+=1u64;
@@ -253,16 +251,15 @@ void section_header(address output,u64 index,address name,u64 name_length,u64 rv
     copy(output,header,name,count);le32(output,header+8u64,length);le32(output,header+12u64,rva);
     le32(output,header+16u64,align(length,512u64));le32(output,header+20u64,raw);le32(output,header+36u64,flags);
 }
-void encode_headers(PeInput input,PeLayout layout,address output) on cpu {
+void encode_headers(PeInput input,PeLayout layout,address rows,address groups,address output) on cpu {
     zero_range(output,0u64,layout.header);
     put(output,0u64,77u64);put(output,1u64,90u64);le32(output,60u64,128u64);
     put(output,128u64,80u64);put(output,129u64,69u64);le16(output,132u64,34404u64);
     le16(output,134u64,layout.section_count);le16(output,148u64,240u64);le16(output,150u64,34u64);
     u64 optional=152u64;le16(output,optional,523u64);
-    le32(output,optional+4u64,align(section_at(input,0u64).byte_length,512u64));
-    u64 initialized=0u64;u64 i=1u64;
-    while(i<input.section_count){initialized+=align(section_at(input,i).byte_length,512u64);i+=1u64;}
-    initialized+=align(layout.idata_length,512u64);initialized+=align(layout.reloc_length,512u64);
+    u64 code=align(bootstrap.combine::group_at(groups,0u64).size,512u64);
+    le32(output,optional+4u64,code);
+    u64 initialized=layout.length-layout.header-code;
     le32(output,optional+8u64,initialized);le32(output,optional+16u64,4096u64);le32(output,optional+20u64,4096u64);
     le64(output,optional+24u64,layout.image_base);le32(output,optional+32u64,4096u64);le32(output,optional+36u64,512u64);
     le16(output,optional+40u64,6u64);le16(output,optional+48u64,6u64);le32(output,optional+56u64,layout.image_size);le32(output,optional+60u64,layout.header);le16(output,optional+68u64,3u64);
@@ -272,11 +269,14 @@ void encode_headers(PeInput input,PeLayout layout,address output) on cpu {
     le32(output,optional+136u64,layout.pdata);le32(output,optional+140u64,layout.pdata_length);
     if(layout.reloc_length!=0u64){le32(output,optional+152u64,layout.reloc);}le32(output,optional+156u64,layout.reloc_length);
     le32(output,optional+208u64,layout.iat_start);le32(output,optional+212u64,layout.iat_size);
-    u64 raw=layout.header;i=0u64;
+    u64 raw=layout.header;u64 i=0u64;
     while(i<input.section_count){
-        PeSection section=section_at(input,i);section_header(output,i,section.name,section.name_length,u64(section.rva),section.byte_length,section.raw,u64(section.flags)&4262461439u64);
-        raw=section.raw+align(section.byte_length,512u64);
-        zero_range(output,section.raw+section.byte_length,raw);
+        PeSection section=section_at(input,i);
+        CombineGroup group=bootstrap.combine::group_at(groups,i);
+        CombineSection first=bootstrap.combine::section_at(rows,group.first);
+        section_header(output,i,first.name,first.name_length,section.rva,group.size,section.raw,first.flags&4262461439u64);
+        raw=section.raw+align(group.size,512u64);
+        zero_range(output,section.raw+group.size,raw);
         i+=1u64;
     }
     // The generated directories need their reserved fields, terminators and file padding.
@@ -326,8 +326,8 @@ void encode_headers(PeInput input,PeLayout layout,address output) on cpu {
     }
 }
 
-extern "C" PeRelocationResult encode(PeInput input,PeLayout layout,address rows,u64 row_count,address output) on cpu {
-    encode_headers(input,layout,output);
+extern "C" PeRelocationResult encode(PeInput input,PeLayout layout,address rows,address groups,u64 row_count,address output) on cpu {
+    encode_headers(input,layout,rows,groups,output);
     u64 i=0u64;
     while(i<row_count){
         CombineSection row=bootstrap.combine::section_at(rows,i);
@@ -335,5 +335,5 @@ extern "C" PeRelocationResult encode(PeInput input,PeLayout layout,address rows,
         encode_section(row,unsafe_address(address_bits(output)+group.raw));
         i+=1u64;
     }
-    return relocate_sections(input,layout.image_base,output);
+    return relocate_sections(input,groups,layout.image_base,output);
 }
