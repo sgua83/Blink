@@ -56,6 +56,29 @@ pub enum Pass {
 }
 use std::collections::{BTreeMap, BTreeSet};
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+#[repr(u32)]
+enum EntryPass {
+    Main, ReductionTail, ScanTail, ScanAdd, ScanRootAdd, SegmentedSingleGroup,
+    CompactScatter, SelectionArguments, SelectionScan, SelectionScatter,
+    SortHistogram, SortScatter, SortKey, SortScan, SortGather, DispatchArguments,
+}
+
+#[derive(Clone, Copy)]
+#[repr(C)]
+struct ShaderPass {
+    kind: EntryPass,
+    numeric: u32,
+    parameter: usize,
+    word: u32,
+    arguments: u32,
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.spirv_envelope::shader_pass"]
+    fn shader_pass(kind: EntryPass, parameter: usize, word: u32) -> ShaderPass;
+}
+
 #[repr(u32)]
 enum EntryOperation {
     Map,
@@ -81,27 +104,6 @@ impl<R> From<&Operation<R>> for EntryOperation {
             Operation::CustomScan(_) => Self::CustomScan,
             Operation::CustomSegmentedReduce(_) => Self::CustomSegmented,
             Operation::CustomReduce(_) => Self::CustomReduce,
-        }
-    }
-}
-
-#[repr(u32)]
-enum WorkgroupPass {
-    Main, ReductionTail, ScanTail, ScanRoot, SelectionScan, SortScan, SortHistogram, SortScatter, Other,
-}
-
-impl From<Pass> for WorkgroupPass {
-    fn from(pass: Pass) -> Self {
-        match pass {
-            Pass::Main => Self::Main,
-            Pass::ReductionTail => Self::ReductionTail,
-            Pass::ScanTail => Self::ScanTail,
-            Pass::ScanRootAdd | Pass::SegmentedSingleGroup => Self::ScanRoot,
-            Pass::SelectionScan => Self::SelectionScan,
-            Pass::SortScan => Self::SortScan,
-            Pass::SortHistogram(_) => Self::SortHistogram,
-            Pass::SortScatter(_) => Self::SortScatter,
-            _ => Self::Other,
         }
     }
 }
@@ -162,7 +164,7 @@ unsafe extern "C" {
 
     #[link_name = "bootstrap.spirv_envelope::workgroup_layout"]
     fn workgroup_layout(
-        operation: EntryOperation, pass: WorkgroupPass, selected: u32, summary_words: u32, scan_width: u32,
+        operation: EntryOperation, pass: EntryPass, selected: u32, summary_words: u32, scan_width: u32,
     ) -> WorkgroupLayout;
 }
 
@@ -2417,6 +2419,25 @@ pub fn emit_pass(
         descriptor_indexing: program.requires_texture_indexing(),
         buffers: program.execution_buffers(),
     };
+    let (kind, parameter, word) = match pass {
+        Pass::Main => (EntryPass::Main, 0, 0),
+        Pass::ReductionTail => (EntryPass::ReductionTail, 0, 0),
+        Pass::ScanTail => (EntryPass::ScanTail, 0, 0),
+        Pass::ScanAdd => (EntryPass::ScanAdd, 0, 0),
+        Pass::ScanRootAdd => (EntryPass::ScanRootAdd, 0, 0),
+        Pass::SegmentedSingleGroup => (EntryPass::SegmentedSingleGroup, 0, 0),
+        Pass::CompactScatter => (EntryPass::CompactScatter, 0, 0),
+        Pass::SelectionArguments => (EntryPass::SelectionArguments, 0, 0),
+        Pass::SelectionScan => (EntryPass::SelectionScan, 0, 0),
+        Pass::SelectionScatter => (EntryPass::SelectionScatter, 0, 0),
+        Pass::SortHistogram(shift) => (EntryPass::SortHistogram, shift as usize, 0),
+        Pass::SortScatter(shift) => (EntryPass::SortScatter, shift as usize, 0),
+        Pass::SortKey(key) => (EntryPass::SortKey, key, 0),
+        Pass::SortScan => (EntryPass::SortScan, 0, 0),
+        Pass::SortGather => (EntryPass::SortGather, 0, 0),
+        Pass::DispatchArguments(prefix) => (EntryPass::DispatchArguments, prefix.binding, prefix.word),
+    };
+    let pass = unsafe { shader_pass(kind, parameter, word) };
     let reduction = prepare_reduction(stage, pass);
     emit_shader(program, stage, pass, &mut inputs, &layout, features, reduction.as_ref(), None, true)
         .map(|(words, _)| words)
@@ -2429,15 +2450,6 @@ fn shader_stage_inputs(
     let inputs = crate::ir::dataflow::input_fragments(stage, &used);
     (layout, inputs)
 }
-#[repr(u32)]
-enum ReductionPass {
-    Main,
-    Add,
-    Root,
-    Arguments,
-    Tail,
-}
-
 #[allow(dead_code)]
 #[repr(u32)]
 enum KernelPreparation {
@@ -2449,7 +2461,7 @@ enum KernelPreparation {
 
 unsafe extern "C" {
     #[link_name = "bootstrap.spirv_envelope::custom_kernel_preparation"]
-    fn custom_kernel_preparation(pass: ReductionPass, segmented: u32) -> KernelPreparation;
+    fn custom_kernel_preparation(pass: EntryPass, segmented: u32) -> KernelPreparation;
 }
 
 struct ShaderStageFacts {
@@ -2457,19 +2469,12 @@ struct ShaderStageFacts {
     code: crate::ir::dataflow::ShaderCodeRequirements,
 }
 
-fn uses_float_modes(pass: Pass) -> bool {
-    matches!(
-        pass, Pass::Main | Pass::ReductionTail | Pass::ScanTail | Pass::ScanAdd
-            | Pass::ScanRootAdd | Pass::SegmentedSingleGroup
-    )
-}
-
 impl ShaderStageFacts {
-    fn new(stage: &Stage, pass: Pass) -> Self {
+    fn new(stage: &Stage, numeric: bool, subgroups: bool) -> Self {
         Self {
             ray_queries: crate::ir::dataflow::shader_ray_queries(stage),
             code: crate::ir::dataflow::shader_code_requirements(
-                stage, uses_float_modes(pass), pass == Pass::Main,
+                stage, numeric, subgroups,
             ),
         }
     }
@@ -2481,21 +2486,14 @@ struct PreparedReduction {
     facts: ShaderStageFacts,
 }
 
-fn prepare_reduction(stage: &Stage, pass: Pass) -> Option<PreparedReduction> {
+fn prepare_reduction(stage: &Stage, pass: ShaderPass) -> Option<PreparedReduction> {
     let (reduction, segmented) = match &stage.operation {
         Operation::CustomReduce(value)
         | Operation::CustomScan(CustomScan { values: value, .. }) => (value, false),
         Operation::CustomSegmentedReduce(value) => (&value.values, true),
         _ => return None,
     };
-    let selected = match pass {
-        Pass::Main => ReductionPass::Main,
-        Pass::ScanAdd => ReductionPass::Add,
-        Pass::ScanRootAdd | Pass::SegmentedSingleGroup => ReductionPass::Root,
-        Pass::DispatchArguments(_) | Pass::SelectionArguments => ReductionPass::Arguments,
-        _ => ReductionPass::Tail,
-    };
-    let (project, identity) = match unsafe { custom_kernel_preparation(selected, u32::from(segmented)) } {
+    let (project, identity) = match unsafe { custom_kernel_preparation(pass.kind, u32::from(segmented)) } {
         KernelPreparation::Original => return None,
         KernelPreparation::ProjectIdentity => (true, true),
         KernelPreparation::Identity => (false, true),
@@ -2503,20 +2501,20 @@ fn prepare_reduction(stage: &Stage, pass: Pass) -> Option<PreparedReduction> {
     };
     let kernel = reduction.kernel(stage, project, identity);
     let layout = kernel.stage.tile_layout(true, None);
-    let facts = ShaderStageFacts::new(&kernel.stage, pass);
+    let facts = ShaderStageFacts::new(&kernel.stage, pass.numeric != 0, pass.kind == EntryPass::Main);
     Some(PreparedReduction { kernel, layout, facts })
 }
 
 fn emit_shader(
-    program: &Program, original_stage: &Stage, pass: Pass,
+    program: &Program, original_stage: &Stage, request: ShaderPass,
     inputs: &mut crate::ir::dataflow::InputFragments, layout: &PlacedTiles,
     program_features: ProgramShaderFeatures, reduction: Option<&PreparedReduction>,
     shared_original_facts: Option<&ShaderStageFacts>, publishes_summary: bool,
 ) -> Result<(Vec<u32>, u64), &'static str> {
-    let single_group = pass == Pass::SegmentedSingleGroup;
-    let pass = if single_group { Pass::ScanRootAdd } else { pass };
-    let argument_pass = matches!(pass, Pass::DispatchArguments(_) | Pass::SelectionArguments);
-    let numeric_pass = uses_float_modes(pass);
+    let single_group = request.kind == EntryPass::SegmentedSingleGroup;
+    let pass = if single_group { EntryPass::ScanRootAdd } else { request.kind };
+    let argument_pass = request.arguments != 0;
+    let numeric_pass = request.numeric != 0;
     let local_facts;
     let (stage, tile_layout, facts, custom_kernel) = match reduction {
         Some(prepared) => (&prepared.kernel.stage, &prepared.layout, &prepared.facts, Some(&prepared.kernel)),
@@ -2524,7 +2522,7 @@ fn emit_shader(
             let facts = match shared_original_facts {
                 Some(shared) => shared,
                 None => {
-                    local_facts = ShaderStageFacts::new(original_stage, pass);
+                    local_facts = ShaderStageFacts::new(original_stage, numeric_pass, pass == EntryPass::Main);
                     &local_facts
                 }
             };
@@ -2594,14 +2592,14 @@ fn emit_shader(
     };
     let workgroup = unsafe {
         workgroup_layout(
-            EntryOperation::from(&stage.operation), WorkgroupPass::from(pass),
+            EntryOperation::from(&stage.operation), request.kind,
             u32::from(stage.selection.is_some()), summary_words, SCAN_WIDTH,
         )
     };
     let scan_local = workgroup.scan != 0;
     let ranks = workgroup.ranks != 0;
     let empty_subgroups = Default::default();
-    let subgroups = if pass == Pass::Main { &facts.code.subgroups } else { &empty_subgroups };
+    let subgroups = if pass == EntryPass::Main { &facts.code.subgroups } else { &empty_subgroups };
     let subgroup_caps = subgroups.capabilities();
     let features = ShaderFeatures {
         atomic64: u32::from(facts.code.has_atomic64()),
@@ -2627,7 +2625,7 @@ fn emit_shader(
     e.u64_type = e.types[&Scalar::U64];
     let resources = e.declare_shader_resources(publishes_summary, single_group, argument_pass);
     let ShaderResourceIds { ray_pointer, index_type: v3, global, num_groups, .. } = resources;
-    let (narrow_cells, wide_cells, scratch_words) = if pass == Pass::Main {
+    let (narrow_cells, wide_cells, scratch_words) = if pass == EntryPass::Main {
         (tile_layout.extents.narrow as u64, tile_layout.extents.wide as u64, stage.tile_scratch_bytes() / 4)
     } else {
         (0, 0, 0)
@@ -2695,11 +2693,12 @@ fn emit_shader(
     let local_index = e.id();
     e.emit_body(9, |body| unsafe { read_shader_index(v3, u, global, gid, local_index, body) });
     match pass {
-        Pass::DispatchArguments(prefix) => {
+        EntryPass::DispatchArguments => {
+            let prefix = PrefixCount { binding: request.parameter, word: request.word };
             e.prefix_arguments(Some(&prefix), local_index);
             return finish(e);
         }
-        Pass::SelectionArguments => {
+        EntryPass::SelectionArguments => {
             e.prefix_arguments(stage.prefix.as_ref(), local_index);
             return finish(e);
         }
@@ -2712,7 +2711,7 @@ fn emit_shader(
             num_groups,
             v3,
             !matches!(stage.operation, Operation::Map)
-                || (stage.selection.is_some() && pass != Pass::Main),
+                || (stage.selection.is_some() && pass != EntryPass::Main),
         )
     } else {
         e.linear_index(local_index)
@@ -2721,15 +2720,15 @@ fn emit_shader(
         e.block(&kernel.stage.code[..kernel.invariant_end], None)?;
     }
     if let Some(selection) = stage.selection
-        && pass != Pass::Main
+        && pass != EntryPass::Main
     {
-        if pass == Pass::SelectionScatter {
+        if pass == EntryPass::SelectionScatter {
             e.selection_scatter(selection, count, active, groups);
         } else if scan_local {
             let local = e.load_pointer(u, local_input);
             e.scan(
                 &Scan::counts(selection.scan(e.execution_buffers.selection())),
-                pass == Pass::ScanTail,
+                pass == EntryPass::ScanTail,
                 local,
                 shared,
                 shared_pointer,
@@ -2746,20 +2745,20 @@ fn emit_shader(
         }
     } else if let Operation::StableSort(s) = &stage.operation {
         match pass {
-            Pass::Main => e.sort_initialize(s, s.keys.len() - 1, true, active),
-            Pass::SortKey(key) => e.sort_initialize(s, key, false, active),
-            Pass::SortGather => e.sort_gather(s, active),
-            Pass::SortHistogram(shift) | Pass::SortScatter(shift) => e.sort_rank(
+            EntryPass::Main => e.sort_initialize(s, s.keys.len() - 1, true, active),
+            EntryPass::SortKey => e.sort_initialize(s, request.parameter, false, active),
+            EntryPass::SortGather => e.sort_gather(s, active),
+            EntryPass::SortHistogram | EntryPass::SortScatter => e.sort_rank(
                 s,
-                shift,
-                pass == Pass::SortHistogram(shift),
+                request.parameter as u32,
+                pass == EntryPass::SortHistogram,
                 count,
                 &subgroup_inputs,
                 ballot_type,
                 shared,
                 shared_pointer,
             ),
-            Pass::SortScan | Pass::ScanTail => {
+            EntryPass::SortScan | EntryPass::ScanTail => {
                 let local = e.load_pointer(u, local_input);
                 let r = Reduction {
                     source: s.source,
@@ -2777,7 +2776,7 @@ fn emit_shader(
                     count,
                 );
             }
-            Pass::ScanAdd => {
+            EntryPass::ScanAdd => {
                 e.open_active(active, execute, end);
                 e.scan_add(
                     &Scan::counts(Reduction {
@@ -2817,7 +2816,7 @@ fn emit_shader(
             e.custom_scan(
                 r,
                 kernel,
-                pass == Pass::ScanTail,
+                pass == EntryPass::ScanTail,
                 local,
                 shared,
                 shared_pointer,
@@ -2825,14 +2824,14 @@ fn emit_shader(
                 count,
             )?;
         } else {
-            e.custom_scan_add(r, kernel, pass == Pass::ScanRootAdd, active)?;
+            e.custom_scan_add(r, kernel, pass == EntryPass::ScanRootAdd, active)?;
         }
     } else if let Operation::CustomReduce(r) = &stage.operation {
         let local = e.load_pointer(u, local_input);
         e.custom_reduce(
             r,
             custom_kernel.unwrap(),
-            pass == Pass::ReductionTail,
+            pass == EntryPass::ReductionTail,
             local,
             shared,
             shared_pointer,
@@ -2843,7 +2842,7 @@ fn emit_shader(
         let local = e.load_pointer(u, local_input);
         e.reduce(
             r,
-            pass == Pass::ReductionTail,
+            pass == EntryPass::ReductionTail,
             local,
             shared,
             shared_pointer,
@@ -2851,7 +2850,7 @@ fn emit_shader(
             count,
         );
     } else if let Operation::SegmentedReduce(r) = &stage.operation {
-        if pass == Pass::ScanAdd {
+        if pass == EntryPass::ScanAdd {
             e.segmented_reduce_add(r, active, [execute, end]);
         } else {
             let local = if scan_local {
@@ -2863,13 +2862,13 @@ fn emit_shader(
             e.segmented_reduce(r, pass, single_group, local, shared, shared_pointer, active, count);
         }
     } else if let Operation::Compact(c) = &stage.operation {
-        if pass == Pass::CompactScatter {
+        if pass == EntryPass::CompactScatter {
             e.compact_scatter(c, count, active);
         } else if scan_local {
             let local = e.load_pointer(u, local_input);
             e.scan(
                 &Scan::counts(c.scan()),
-                pass == Pass::ScanTail,
+                pass == EntryPass::ScanTail,
                 local,
                 shared,
                 shared_pointer,
@@ -2888,7 +2887,7 @@ fn emit_shader(
                 e.segmented_scan(
                     r,
                     head,
-                    pass == Pass::ScanTail,
+                    pass == EntryPass::ScanTail,
                     local,
                     shared,
                     shared_pointer,
@@ -2897,8 +2896,8 @@ fn emit_shader(
                 );
             } else {
                 match pass {
-                    Pass::ScanAdd => e.segmented_add(r, active, [execute, end]),
-                    Pass::ScanRootAdd => {
+                    EntryPass::ScanAdd => e.segmented_add(r, active, [execute, end]),
+                    EntryPass::ScanRootAdd => {
                         e.open_active(active, execute, end);
                         e.segmented_root_add(r);
                         e.merge_active(end, true);
@@ -2911,7 +2910,7 @@ fn emit_shader(
                 let local = e.load_pointer(u, local_input);
                 e.scan(
                     r,
-                    pass == Pass::ScanTail,
+                    pass == EntryPass::ScanTail,
                     local,
                     shared,
                     shared_pointer,
@@ -2920,7 +2919,7 @@ fn emit_shader(
                 );
             } else {
                 e.open_active(active, execute, end);
-                e.scan_add(r, pass == Pass::ScanRootAdd);
+                e.scan_add(r, pass == EntryPass::ScanRootAdd);
                 e.merge_active(end, true);
             }
         }

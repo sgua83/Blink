@@ -3660,9 +3660,23 @@ const u32 ENTRY_SHARED_FACTS = 4;
 const u32 SCAN_TERMINAL = 1;
 const u32 SCAN_BOTH = 2;
 
+bool argument_pass(EntryPass pass) on cpu {
+    return pass == EntryPass::DispatchArguments || pass == EntryPass::SelectionArguments;
+}
+
+bool rank_pass(EntryPass pass) on cpu {
+    return pass == EntryPass::SortHistogram || pass == EntryPass::SortScatter;
+}
+
+extern "C" ShaderPass shader_pass(EntryPass kind, usize parameter, u32 word) on cpu {
+    bool numeric = kind == EntryPass::Main || kind == EntryPass::ReductionTail || kind == EntryPass::ScanTail
+        || kind == EntryPass::ScanAdd || kind == EntryPass::ScanRootAdd || kind == EntryPass::SegmentedSingleGroup;
+    return ShaderPass(kind, u32(numeric), parameter, word, u32(argument_pass(kind)));
+}
+
 bool send_stage_entry(StageEntrySink sink, EntryPass pass, EntryOutput output, EntryKernel kernel,
     u32 flags, usize parameter, u32 word) on cpu requires nonzero(sink.emit) {
-    return sink.emit(sink.context, StageEntryRequest(pass, output, kernel, flags, parameter, word)) != 0;
+    return sink.emit(sink.context, StageEntryRequest(shader_pass(pass, parameter, word), output, kernel, flags)) != 0;
 }
 
 StageEntryRequest sort_stage_entry(usize index, u32 root, u32 tail, u32 shared) on cpu {
@@ -3672,11 +3686,9 @@ StageEntryRequest sort_stage_entry(usize index, u32 root, u32 tail, u32 shared) 
     if (index < 8u64) {
         pass = EntryPass::SortHistogram;
         parameter = index * 4u64;
-        flags |= ENTRY_RANKS;
     } else if (index < 16u64) {
         pass = EntryPass::SortScatter;
         parameter = (index - 8u64) * 4u64;
-        flags |= ENTRY_RANKS;
     } else if (index == 16u64) {
         pass = EntryPass::SortScan;
         if (root == SCAN_TERMINAL) { flags = shared; }
@@ -3689,7 +3701,8 @@ StageEntryRequest sort_stage_entry(usize index, u32 root, u32 tail, u32 shared) 
         pass = EntryPass::SortKey;
         parameter = index - 20u64;
     }
-    return StageEntryRequest(pass, EntryOutput::Additional, EntryKernel::None, flags, parameter, 0);
+    if (rank_pass(pass)) { flags |= ENTRY_RANKS; }
+    return StageEntryRequest(shader_pass(pass, parameter, 0), EntryOutput::Additional, EntryKernel::None, flags);
 }
 
 extern "C" void emit_stage_entries(StageEntryInput input, StageEntrySink sink) on cpu requires nonzero(sink.emit) {
@@ -3763,18 +3776,18 @@ extern "C" void emit_stage_entries(StageEntryInput input, StageEntrySink sink) o
 }
 
 extern "C" WorkgroupLayout workgroup_layout(
-    u32 operation, WorkgroupPass pass, u32 selected, u32 summary_words, u32 scan_width
+    u32 operation, EntryPass pass, u32 selected, u32 summary_words, u32 scan_width
 ) on cpu {
-    bool main = pass == WorkgroupPass::Main;
-    bool tail = pass == WorkgroupPass::ScanTail;
+    bool main = pass == EntryPass::Main;
+    bool tail = pass == EntryPass::ScanTail;
     bool scan = ((operation == ENTRY_SCAN || operation == ENTRY_CUSTOM_SCAN || operation == ENTRY_COMPACT) && (main || tail))
-        || (selected != 0 && (pass == WorkgroupPass::SelectionScan || tail))
-        || (operation == ENTRY_SORT && (pass == WorkgroupPass::SortScan || tail))
+        || (selected != 0 && (pass == EntryPass::SelectionScan || tail))
+        || (operation == ENTRY_SORT && (pass == EntryPass::SortScan || tail))
         || ((operation == ENTRY_SEGMENTED || operation == ENTRY_CUSTOM_SEGMENTED)
-            && (main || tail || pass == WorkgroupPass::ScanRoot));
+            && (main || tail || pass == EntryPass::ScanRootAdd || pass == EntryPass::SegmentedSingleGroup));
     bool local_index = scan || ((operation == ENTRY_REDUCE || operation == ENTRY_CUSTOM_REDUCE)
-        && (main || pass == WorkgroupPass::ReductionTail));
-    bool ranks = pass == WorkgroupPass::SortHistogram || pass == WorkgroupPass::SortScatter;
+        && (main || pass == EntryPass::ReductionTail));
+    bool ranks = rank_pass(pass);
     u32 words = ranks ? 32 : (local_index ? scan_width * summary_words : 0);
     return WorkgroupLayout(u32(scan), u32(local_index), u32(ranks), words);
 }
@@ -3836,9 +3849,10 @@ extern "C" u32 workgroup_declarations(WorkgroupDeclaration input, ShaderConstant
     return 1;
 }
 
-extern "C" u32 custom_kernel_preparation(u32 pass,u32 segmented) on cpu {
- if(pass==3){return 0;}
- if(pass==0 || pass==2 && segmented!=0){return 1;}
- if(pass==1 || pass==2){return 3;}
- return 2;
+extern "C" KernelPreparation custom_kernel_preparation(EntryPass pass, u32 segmented) on cpu {
+    if (argument_pass(pass)) { return KernelPreparation::Original; }
+    bool root = pass == EntryPass::ScanRootAdd || pass == EntryPass::SegmentedSingleGroup;
+    if (pass == EntryPass::Main || (root && segmented != 0)) { return KernelPreparation::ProjectIdentity; }
+    if (pass == EntryPass::ScanAdd || root) { return KernelPreparation::Combine; }
+    return KernelPreparation::Identity;
 }

@@ -1106,6 +1106,11 @@ enum EntryPass:u32 {
     SelectionScan=8; SelectionScatter=9; SortHistogram=10; SortScatter=11;
     SortKey=12; SortScan=13; SortGather=14; DispatchArguments=15;
 };
+struct ShaderPass {
+    EntryPass kind; u32 numeric; usize parameter; u32 word; u32 arguments;
+};
+extern "C" ShaderPass shader_pass(EntryPass kind, usize parameter, u32 word) on cpu;
+
 enum EntryOutput:u32 {
     Main=0; Tail=1; ScanAdd=2; Scatter=3; SegmentedFinish=4; RootAdd=5;
     Dispatch=6; Selector=7; Additional=8;
@@ -1120,20 +1125,14 @@ struct StageEntryInput {
     u32 root_scan; u32 tail_scan; u32 single_group;
 };
 struct StageEntryRequest {
-    EntryPass pass; EntryOutput output; EntryKernel kernel; u32 flags;
-    usize parameter; u32 word;
+    ShaderPass pass; EntryOutput output; EntryKernel kernel; u32 flags;
 };
 struct StageEntrySink { address context; cfn<u32,address,StageEntryRequest> emit; };
 extern "C" void emit_stage_entries(StageEntryInput input, StageEntrySink sink) on cpu requires nonzero(sink.emit);
 
-enum WorkgroupPass:u32 {
-    Main=0; ReductionTail=1; ScanTail=2; ScanRoot=3; SelectionScan=4;
-    SortScan=5; SortHistogram=6; SortScatter=7; Other=8;
-};
-
 struct WorkgroupLayout { u32 scan; u32 local_index; u32 ranks; u32 words; };
 extern "C" WorkgroupLayout workgroup_layout(
-    u32 operation, WorkgroupPass pass, u32 selected, u32 summary_words, u32 scan_width
+    u32 operation, EntryPass pass, u32 selected, u32 summary_words, u32 scan_width
 ) on cpu;
 
 struct WorkgroupDeclaration {
@@ -1171,4 +1170,5 @@ extern "C" u32 workgroup_declarations(WorkgroupDeclaration input, ShaderConstant
     address decorations, address output) on cpu requires nonzero(constants.intern);
 
 // The pass class is Main, Add, Root, Arguments, or the remaining identity-bearing pass.
-extern "C" u32 custom_kernel_preparation(u32 pass,u32 segmented) on cpu;
+enum KernelPreparation:u32 { Original=0; ProjectIdentity=1; Identity=2; Combine=3; };
+extern "C" KernelPreparation custom_kernel_preparation(EntryPass pass, u32 segmented) on cpu;

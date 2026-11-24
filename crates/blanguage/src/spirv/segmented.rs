@@ -168,7 +168,7 @@ impl Emitter<'_> {
     pub(super) fn segmented_reduce(
         &mut self,
         reduction: &SegmentedReduction,
-        pass: Pass,
+        pass: EntryPass,
         single_group: bool,
         local: u32,
         shared: u32,
@@ -179,8 +179,8 @@ impl Emitter<'_> {
         let values = &reduction.values;
         let segment = self.segment(&values.ty, values.operator, true);
         let pass = match pass {
-            Pass::ScanTail => SegmentPass::Tail,
-            Pass::ScanRootAdd => SegmentPass::Finish,
+            EntryPass::ScanTail => SegmentPass::Tail,
+            EntryPass::ScanRootAdd => SegmentPass::Finish,
             _ => SegmentPass::Main,
         };
         let count_field = (pass == SegmentPass::Finish).then_some(&reduction.count);

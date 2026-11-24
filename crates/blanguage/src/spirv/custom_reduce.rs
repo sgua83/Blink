@@ -582,7 +582,7 @@ impl Emitter<'_> {
         &mut self,
         reduction: &CustomSegmentedReduction,
         kernel: &ReductionKernel,
-        pass: Pass,
+        pass: EntryPass,
         single_group: bool,
         local: u32,
         shared: u32,
@@ -593,13 +593,13 @@ impl Emitter<'_> {
         let r = &reduction.values;
         let summary = Summary::Counted(reduction.head_word);
         let words = reduction.summary_words();
-        if pass == Pass::ScanAdd {
+        if pass == EntryPass::ScanAdd {
             return self.custom_prefix_add(r, kernel, false, summary, active);
         }
         let (own, identity, input) = self.custom_input(
             r,
             kernel,
-            pass == Pass::ScanTail,
+            pass == EntryPass::ScanTail,
             local,
             shared,
             pointer,
@@ -609,17 +609,17 @@ impl Emitter<'_> {
         let remaining = self.group_remaining(local, count);
         self.custom_tree(r, kernel, local, shared, pointer, remaining, &own, false, summary)?;
         let (binding, word, mode) = match pass {
-            Pass::Main => (self.program.buffers.len(), 0, SummaryRootMode::Publish),
-            Pass::ScanTail => (self.program.buffers.len(), 0, SummaryRootMode::PublishReset),
+            EntryPass::Main => (self.program.buffers.len(), 0, SummaryRootMode::Publish),
+            EntryPass::ScanTail => (self.program.buffers.len(), 0, SummaryRootMode::PublishReset),
             _ => (reduction.count.binding, reduction.count.word, SummaryRootMode::EmptyCountReset),
         };
         let group = self.custom_summary_root(binding, word, mode, local, shared, pointer,
             active, count, &identity);
-        if pass == Pass::Main {
+        if pass == EntryPass::Main {
             return Ok(());
         }
         self.custom_tree(r, kernel, local, shared, pointer, remaining, &own, true, summary)?;
-        if pass != Pass::ScanTail {
+        if pass != EntryPass::ScanTail {
             return self.custom_segmented_finish(
                 reduction, kernel, active, count, group, single_group, &own, &identity, &input,
             );

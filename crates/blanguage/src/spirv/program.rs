@@ -42,14 +42,6 @@ impl crate::Compiler {
 
 #[allow(dead_code)] // Passed by bootstrap.spirv_envelope.
 #[repr(u32)]
-enum EntryPass {
-    Main, ReductionTail, ScanTail, ScanAdd, ScanRootAdd, SegmentedSingleGroup,
-    CompactScatter, SelectionArguments, SelectionScan, SelectionScatter,
-    SortHistogram, SortScatter, SortKey, SortScan, SortGather, DispatchArguments,
-}
-
-#[allow(dead_code)] // Passed by bootstrap.spirv_envelope.
-#[repr(u32)]
 enum EntryOutput {
     Main, Tail, ScanAdd, Scatter, SegmentedFinish, RootAdd, Dispatch, Selector, Additional,
 }
@@ -74,35 +66,10 @@ struct StageEntryInput {
 
 #[repr(C)]
 struct StageEntryRequest {
-    pass: EntryPass,
+    pass: ShaderPass,
     output: EntryOutput,
     kernel: EntryKernel,
     flags: u32,
-    parameter: usize,
-    word: u32,
-}
-
-impl StageEntryRequest {
-    fn pass(&self) -> Pass {
-        match self.pass {
-            EntryPass::Main => Pass::Main,
-            EntryPass::ReductionTail => Pass::ReductionTail,
-            EntryPass::ScanTail => Pass::ScanTail,
-            EntryPass::ScanAdd => Pass::ScanAdd,
-            EntryPass::ScanRootAdd => Pass::ScanRootAdd,
-            EntryPass::SegmentedSingleGroup => Pass::SegmentedSingleGroup,
-            EntryPass::CompactScatter => Pass::CompactScatter,
-            EntryPass::SelectionArguments => Pass::SelectionArguments,
-            EntryPass::SelectionScan => Pass::SelectionScan,
-            EntryPass::SelectionScatter => Pass::SelectionScatter,
-            EntryPass::SortHistogram => Pass::SortHistogram(self.parameter as u32),
-            EntryPass::SortScatter => Pass::SortScatter(self.parameter as u32),
-            EntryPass::SortKey => Pass::SortKey(self.parameter),
-            EntryPass::SortScan => Pass::SortScan,
-            EntryPass::SortGather => Pass::SortGather,
-            EntryPass::DispatchArguments => Pass::DispatchArguments(PrefixCount { binding: self.parameter, word: self.word }),
-        }
-    }
 }
 
 #[repr(C)]
@@ -164,7 +131,7 @@ pub(crate) fn compile_stage(
         const SUMMARY: u32 = 1;
         const RANKS: u32 = 2;
         const SHARED_FACTS: u32 = 4;
-        let pass = request.pass();
+        let pass = request.pass;
         let temporary;
         let kernel = match request.kernel {
             EntryKernel::None => None,
@@ -189,7 +156,7 @@ pub(crate) fn compile_stage(
             EntryKernel::Add => add_kernel.as_ref(),
         };
         let facts = (request.flags & SHARED_FACTS != 0)
-            .then(|| &*original_facts.get_or_insert_with(|| ShaderStageFacts::new(stage, Pass::Main)));
+            .then(|| &*original_facts.get_or_insert_with(|| ShaderStageFacts::new(stage, true, true)));
         let result = emit_shader(
             program, stage, pass, &mut inputs, &tile_layout, features, kernel, facts,
             request.flags & SUMMARY != 0,
