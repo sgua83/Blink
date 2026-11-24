@@ -2543,7 +2543,9 @@ pub(crate) async fn compile_module(
             if plan.schedule == 0 {
                 continue;
             }
-            for instance in unsafe { world.call(crate::generics::instances(world, key, definition)).await }? {
+            let mut instances = Vec::new();
+            unsafe { world.call(crate::generics::for_each_instance(world, key, definition, |instance| instances.push(instance))).await }?;
+            for instance in instances {
                 unsafe { world.call(module_instance(world, &instance, &mut functions, &mut roots, plan)).await }?;
                 prepared.push(instance.name.clone());
             }

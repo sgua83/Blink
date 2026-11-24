@@ -436,8 +436,10 @@ pub(crate) fn compile_world(
                 open_public_domain |= plan.public_domain != 0;
             }
             if plan.schedule != 0 {
-                let instances = unsafe { world.call(generics::instances(world, base, definition)).await }?;
-                jobs.extend(instances.into_iter().map(|instance| Job::Instance(instance, plan.route, plan.cpu_signature != 0)));
+                let start = jobs.len();
+                unsafe { world.call(generics::for_each_instance(world, base, definition, |instance| {
+                    jobs.push(Job::Instance(instance, plan.route, plan.cpu_signature != 0));
+                })).await }.inspect_err(|_| jobs.truncate(start))?;
             }
         }
         Ok(())

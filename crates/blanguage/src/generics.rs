@@ -166,24 +166,24 @@ pub(crate) fn validate_declaration(definition: &crate::Definition) -> Result<()>
     let error = unsafe { crate::syntax::wire::function_parameter_error(f.signature_node()) };
     parameter_diagnostic(error, &definition.source, f.span())
 }
-pub(crate) async fn instances(
+pub(crate) async fn for_each_instance(
     world: &World,
     base: &str,
     definition: &std::sync::Arc<crate::Definition>,
-) -> Result<Vec<Instance>> {
+    mut consume: impl FnMut(Instance),
+) -> Result<()> {
     let f = &definition.function;
-    let mut result = Vec::new();
     unsafe { world.call(for_each_combination(
         world,
         &f.types(),
         &f.values(),
         (&definition.source, f.span(), &definition.module, &definition.imports),
         async |arguments, values| {
-            result.push(unsafe { world.call(instantiate(world, base, definition, arguments, values)).await }?);
+            let instance = unsafe { world.call(instantiate(world, base, definition, arguments, values)).await }?;
+            consume(instance);
             Ok(())
         },
-    )).await }?;
-    Ok(result)
+    )).await }
 }
 pub(crate) fn validate_record_parameters(record: &crate::syntax::Record, source: &Source) -> Result<()> {
     let error = unsafe { crate::syntax::wire::record_parameter_error(record.signature_node()) };
