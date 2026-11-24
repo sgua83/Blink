@@ -245,7 +245,7 @@ extern "C" void optimize_program(PipelineProgram host) on cpu
  requires nonzero(host.fusion.stage) requires nonzero(host.fusion.append) requires nonzero(host.fusion.merge)
  requires nonzero(host.batch) requires nonzero(host.remove) requires nonzero(host.origin) requires nonzero(host.finish);
 extern "C" PipelineEmpty optimize_empty(PipelineStage stage,u32 carry) on cpu;
-extern "C" void optimize_stage(PipelineStageHost host) on cpu
+extern "C" void optimize_stage(PipelineStageHost host,u32 has_tiles) on cpu
  requires nonzero(host.ir.inspect) requires nonzero(host.stage) requires nonzero(host.custom)
  requires nonzero(host.values.flow) requires nonzero(host.values.eliminate) requires nonzero(host.values.compact)
  requires nonzero(host.flow) requires nonzero(host.eliminate) requires nonzero(host.words)

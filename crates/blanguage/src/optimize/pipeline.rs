@@ -108,7 +108,7 @@ struct AccessCounts { reads: usize, writes: usize, cross: usize }
 unsafe extern "C" {
     #[link_name = "bootstrap.ir_dataflow::optimize_program"] fn b_program(host: ProgramHost);
     #[link_name = "bootstrap.ir_dataflow::optimize_empty"] fn b_empty(stage: StageView, carry: u32) -> EmptyResult;
-    #[link_name = "bootstrap.ir_dataflow::optimize_stage"] fn b_stage(host: StageHost);
+    #[link_name = "bootstrap.ir_dataflow::optimize_stage"] fn b_stage(host: StageHost, has_tiles: u32);
     #[link_name = "bootstrap.ir_dataflow::optimize_value"] fn b_value(value: *mut c_void, host: ValueHost);
     #[link_name = "bootstrap.ir_dataflow::optimize_root"]
     fn b_root(instruction: *mut c_void, preserve: u32, host: ReadHost, rewrite: crate::ir::rewrite::Host) -> RootEdit;
@@ -254,12 +254,13 @@ unsafe extern "C" fn finish(context: *mut c_void) {
 
 struct StageState<'a> { stage: &'a mut Stage, bindings: usize, words: BTreeSet<SharedWord> }
 fn run_stage(stage: &mut Stage, bindings: usize) {
+    let has_tiles = u32::from(!stage.tiles.is_empty());
     let mut state = StageState { stage, bindings, words: BTreeSet::new() };
     unsafe { b_stage(StageHost {
         ir: crate::ir::dataflow::HOST, context: ptr::from_mut(&mut state).cast(), values: VALUE_HOST,
         stage: stage_state_view, custom, flow: stage_flow, eliminate: stage_eliminate, words: stage_words,
         prune, select, bindings: bindings_map, release_words, compact: stage_compact,
-    }); }
+    }, has_tiles); }
 }
 unsafe extern "C" fn stage_state_view(context: *const c_void) -> StageView {
     let state = unsafe { &*context.cast::<StageState<'_>>() };

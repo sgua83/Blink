@@ -887,7 +887,7 @@ extern "C" void optimize_value(address value,PipelineValue host) on cpu
  requires nonzero(host.flow) requires nonzero(host.eliminate) requires nonzero(host.compact) {
  host.flow(value);host.eliminate(value);host.compact(value);
 }
-extern "C" void optimize_stage(PipelineStageHost host) on cpu
+extern "C" void optimize_stage(PipelineStageHost host,u32 has_tiles) on cpu
  requires nonzero(host.ir.inspect) requires nonzero(host.stage) requires nonzero(host.custom)
  requires nonzero(host.values.flow) requires nonzero(host.values.eliminate) requires nonzero(host.values.compact)
  requires nonzero(host.flow) requires nonzero(host.eliminate) requires nonzero(host.words)
@@ -902,15 +902,19 @@ extern "C" void optimize_stage(PipelineStageHost host) on cpu
  host.flow(host.context);
  while(true){
   host.eliminate(host.context);
-  u32 preserve=has_subgroups(host.stage(host.context).code,host.ir);
-  host.words(host.context);
-  u32 changed=host.prune(host.context,preserve);
+  u32 changed=0;
+  if(has_tiles!=0){
+   u32 preserve=has_subgroups(host.stage(host.context).code,host.ir);
+   host.words(host.context);
+   changed=host.prune(host.context,preserve);
+  }
   if(host.select(host.context)!=0){changed=1;host.flow(host.context);}
   if(changed==0){break;}
-  host.release_words(host.context);
+  if(has_tiles!=0){host.release_words(host.context);}
  }
  if(operation==0){host.bindings(host.context);}
- host.release_words(host.context);host.compact(host.context);
+ if(has_tiles!=0){host.release_words(host.context);}
+ host.compact(host.context);
 }
 extern "C" PipelineRootEdit optimize_root(address instruction,u32 preserve_scope,PipelineRead host,RewriteHost rewrite) on cpu
  requires nonzero(host.contains) requires nonzero(host.scalar_bytes) requires nonzero(rewrite.inspect) {
