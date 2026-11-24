@@ -200,6 +200,7 @@ pub(crate) fn inputs(runtime: bool, worker: &crate::compiler::Worker) -> std::io
     let rustup = std::env::var_os("RUSTUP_HOME").map(std::path::PathBuf::from)
         .or_else(|| home.map(|home| home.join(".rustup")));
     if let Some(rustup) = rustup { optional(&mut digest, &sdk.join(rustup).join("settings.toml"))?; }
+    optional(&mut digest, &sdk.join("Cargo.lock"))?;
     let mut files = vec![sdk.join("Cargo.toml")];
     let compiler_sources = sdk.join("crates/blanguage/src/bootstrap");
     optional(&mut digest, &sdk.join("crates/blanguage/build-sdk.rs"))?;
