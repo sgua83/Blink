@@ -58,14 +58,6 @@ pub(crate) struct ImportKey<'a> {
 }
 
 impl<'a> ImportKey<'a> {
-    fn new(dll: &'a str, symbol: &'a str) -> Self {
-        Self {
-            dll: BindingBytes::new(dll.as_bytes()),
-            symbol: BindingBytes::new(symbol.as_bytes()),
-            source: std::marker::PhantomData,
-        }
-    }
-
     fn text(bytes: BindingBytes) -> &'a str {
         unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(bytes.bytes, bytes.length)) }
     }
@@ -124,6 +116,7 @@ struct ReadBytes { bytes: *const u8, length: usize }
 impl ReadBytes {
     fn new(bytes: &[u8]) -> Self { Self { bytes: bytes.as_ptr(), length: bytes.len() } }
     unsafe fn borrowed<'a>(self) -> &'a [u8] { unsafe { std::slice::from_raw_parts(self.bytes, self.length) } }
+    fn as_binding(self) -> BindingBytes { BindingBytes { bytes: self.bytes, length: self.length } }
 }
 #[repr(u32)]
 #[derive(Clone, Copy, Debug)]
@@ -265,8 +258,21 @@ struct ObjectAssociation { present: u64, owner: usize, error: ObjectReadError }
 #[repr(u64)]
 enum ObjectTargetKind { Section, Import, Symbol }
 #[repr(C)]
-struct ObjectTarget {
+struct ObjectTarget<'a> {
     kind: ObjectTargetKind, section: usize, value: u64, dll: ReadBytes, name: ReadBytes, error: ObjectReadError,
+    source: std::marker::PhantomData<&'a [u8]>,
+}
+
+impl<'a> ObjectTarget<'a> {
+    // Only import targets have both ranges. B splits the already validated
+    // primary name at a UTF-8 boundary, and both ranges borrow the reader input.
+    unsafe fn import_key(&self) -> ImportKey<'a> {
+        ImportKey {
+            dll: self.dll.as_binding(),
+            symbol: self.name.as_binding(),
+            source: std::marker::PhantomData,
+        }
+    }
 }
 #[repr(C)]
 struct ObjectRelocationStatus { format: ReadError, object: ObjectReadError }
@@ -283,9 +289,9 @@ unsafe extern "C" {
     fn object_association(rows: ObjectRows, definitions: *const SectionDefinition,
         index: usize) -> ObjectAssociation;
     #[link_name = "bootstrap.object_read::object_relocations"]
-    fn object_relocations(input: ReadBytes, rows: ObjectRows, symbols: ObjectSymbols,
+    fn object_relocations<'a>(input: ReadBytes, rows: ObjectRows, symbols: ObjectSymbols,
         section: &ObjectSection, context: *mut c_void,
-        consume: unsafe extern "C" fn(*mut c_void, usize, u32, ObjectTarget) -> u32,
+        consume: unsafe extern "C" fn(*mut c_void, usize, u32, ObjectTarget<'a>) -> u32,
     ) -> ObjectRelocationStatus;
 }
 struct RelocationConsumer<F> {
@@ -293,11 +299,11 @@ struct RelocationConsumer<F> {
     result: Result<()>,
 }
 
-unsafe extern "C" fn consume_relocation<F>(
-    context: *mut c_void, offset: usize, kind: u32, target: ObjectTarget,
+unsafe extern "C" fn consume_relocation<'a, F>(
+    context: *mut c_void, offset: usize, kind: u32, target: ObjectTarget<'a>,
 ) -> u32
 where
-    F: FnMut(usize, u16, ObjectTarget) -> Result<()>,
+    F: FnMut(usize, u16, ObjectTarget<'a>) -> Result<()>,
 {
     let receiver = unsafe { &mut *context.cast::<RelocationConsumer<F>>() };
     receiver.result = (receiver.consume)(offset, kind as u16, target);
@@ -1047,7 +1053,7 @@ impl<'a, Input: AsRef<[u8]> + ?Sized> Reader<'a, Input> {
         row: &ObjectSection, consume: F,
     ) -> Result<()>
     where
-        F: FnMut(usize, u16, ObjectTarget) -> Result<()>,
+        F: FnMut(usize, u16, ObjectTarget<'a>) -> Result<()>,
     {
         let input = ReadBytes::new(self.bytes.as_ref());
         let rows = ObjectRows::new(raw);
@@ -1094,10 +1100,7 @@ impl<'a, Input: AsRef<[u8]> + ?Sized> Reader<'a, Input> {
             }
             self.relocations(&raw, &symbols, row, |offset, kind, target| {
                 if matches!(target.kind, ObjectTargetKind::Import) {
-                    // B returns two ranges of a symbol name in this COFF input.
-                    let dll = std::str::from_utf8(unsafe { target.dll.borrowed() })?;
-                    let symbol = std::str::from_utf8(unsafe { target.name.borrowed() })?;
-                    imports.push(ImportKey::new(dll, symbol));
+                    imports.push(unsafe { target.import_key() });
                 }
                 if let Some(groups) = &mut groups {
                     groups.relocation(row.mapped - 1, offset, kind, target);
@@ -1322,7 +1325,10 @@ fn decode_object<Bytes: super::ReadSection>(
         reader.relocations(&raw, &symbols, row, |offset, kind, value| {
             let target = match value.kind {
                 ObjectTargetKind::Section => Target::Section(value.section, value.value as u32),
-                ObjectTargetKind::Import => Target::Import(Import { dll: read_text(value.dll)?, name: read_text(value.name)? }),
+                ObjectTargetKind::Import => {
+                    let key = unsafe { value.import_key() };
+                    Target::Import(Import { dll: key.dll().to_owned(), name: key.symbol().to_owned() })
+                }
                 ObjectTargetKind::Symbol => {
                     // The primary symbol's borrowed name was checked before target resolution.
                     let name = unsafe { std::str::from_utf8_unchecked(value.name.borrowed()) };

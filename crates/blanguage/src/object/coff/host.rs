@@ -56,7 +56,7 @@ impl Groups {
         Ok(Some(Self { members, positions, owners, relocations }))
     }
 
-    pub(super) fn relocation(&mut self, section: usize, offset: usize, kind: u16, target: ObjectTarget) {
+    pub(super) fn relocation(&mut self, section: usize, offset: usize, kind: u16, target: ObjectTarget<'_>) {
         let target_kind = match target.kind {
             ObjectTargetKind::Section => BindingTarget::Section,
             ObjectTargetKind::Symbol => BindingTarget::Symbol,
@@ -65,7 +65,7 @@ impl Groups {
         self.relocations[section].push(BindingRelocation {
             offset: offset as u64, kind, target: target_kind,
             value: target.value as u32, section: target.section as u64,
-            name: binding_bytes(target.name), dll: binding_bytes(target.dll),
+            name: target.name.as_binding(), dll: target.dll.as_binding(),
         });
     }
 
@@ -180,7 +180,7 @@ impl Groups {
                 let row = &raw[index];
                 let references = &self.relocations[row.mapped - 1];
                 BindingSection {
-                    name: binding_bytes(row.name), flags: row.flags,
+                    name: row.name.as_binding(), flags: row.flags,
                     relocations: references.as_ptr(), relocation_count: references.len(),
                     associated: children.as_ptr(), associated_count: children.len(), owner: 0, symbol: 0,
                 }
@@ -204,10 +204,6 @@ impl Groups {
         }
         Ok(output)
     }
-}
-
-fn binding_bytes(bytes: ReadBytes) -> BindingBytes {
-    BindingBytes { bytes: bytes.bytes, length: bytes.length }
 }
 
 fn row_name(row: &ObjectSection) -> &str {
