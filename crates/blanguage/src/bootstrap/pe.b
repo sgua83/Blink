@@ -10,8 +10,8 @@ CombineRelocation relocation_at(PeInput input,u64 i) on cpu {return unsafe_posit
 void relocation_put(PeInput input,u64 i,CombineRelocation value) on cpu {unsafe_position<CombineRelocation>(unsafe_address(address_bits(input.relocations)+i*size_of<CombineRelocation>()))=value;}
 PeImport import_at(PeInput input,u64 i) on cpu {return unsafe_position<PeImport>(unsafe_address(address_bits(input.imports)+i*IMPORT_BYTES));}
 void import_put(PeInput input,u64 i,PeImport value) on cpu {unsafe_position<PeImport>(unsafe_address(address_bits(input.imports)+i*IMPORT_BYTES))=value;}
-PeAbsolute absolute_at(PeInput input,u64 i) on cpu {return unsafe_position<PeAbsolute>(unsafe_address(address_bits(input.absolutes)+i*ABSOLUTE_BYTES));}
-void absolute_put(PeInput input,u64 i,PeAbsolute value) on cpu {unsafe_position<PeAbsolute>(unsafe_address(address_bits(input.absolutes)+i*ABSOLUTE_BYTES))=value;}
+PeAbsolute absolute_at(PeInput input,u64 i) on cpu {return unsafe_position<PeAbsolute>(unsafe_address(address_bits(input.absolutes)+i*size_of<PeAbsolute>()));}
+void absolute_put(PeInput input,u64 i,PeAbsolute value) on cpu {unsafe_position<PeAbsolute>(unsafe_address(address_bits(input.absolutes)+i*size_of<PeAbsolute>()))=value;}
 u8 byte_at(address data,u64 i) on cpu {return unsafe_position<u8>(unsafe_address(address_bits(data)+i));}
 void put(address output,u64 at,u64 value) on cpu {unsafe_position<u8>(unsafe_address(address_bits(output)+at))=u8(value);}
 void le16(address output,u64 at,u64 value) on cpu {put(output,at,value);put(output,at+1u64,value>>8u64);}
@@ -47,7 +47,12 @@ void sort_imports(PeInput input) on cpu {
     u64 root=input.import_count/2u64;while(root>0u64){root-=1u64;sift_import(input,root,input.import_count);}
     u64 end=input.import_count;while(end>1u64){end-=1u64;PeImport a=import_at(input,0u64);PeImport b=import_at(input,end);import_put(input,0u64,b);import_put(input,end,a);sift_import(input,0u64,end);}
 }
-bool absolute_less(PeAbsolute a,PeAbsolute b) on cpu {return a.page<b.page||(a.page==b.page&&a.order_or_page_end<b.order_or_page_end);}
+u64 absolute_page(u64 location) on cpu { return location / 4096u64; }
+bool absolute_less(PeAbsolute a,PeAbsolute b) on cpu {
+    u64 a_page = absolute_page(a.location);
+    u64 b_page = absolute_page(b.location);
+    return a_page < b_page || (a_page == b_page && a.order_or_page_end < b.order_or_page_end);
+}
 void sift_absolute(PeInput input,u64 start,u64 end) on cpu {
     u64 root=start;
     while(root<end/2u64){
@@ -71,8 +76,9 @@ u64 plan_absolute_pages(PeInput input) on cpu {
     u64 index = 0u64;
     while (index < input.absolute_count) {
         PeAbsolute first = absolute_at(input, index);
+        u64 page = absolute_page(first.location);
         u64 end = index + 1u64;
-        while (end < input.absolute_count && absolute_at(input, end).page == first.page) {
+        while (end < input.absolute_count && absolute_page(absolute_at(input, end).location) == page) {
             end += 1u64;
         }
         first.order_or_page_end = end;
@@ -203,8 +209,7 @@ extern "C" PeLayout layout(PeInput input,address rows,address groups,u64 relocat
             }
             relocation_put(input,index,relocation);
             if(relocation.kind==1){
-                u64 location=u64(u32(relocation.source));u64 page=(location/4096u64)*4096u64;
-                absolute_put(input,absolute,PeAbsolute(page,40960u64+(location-page),index));absolute+=1u64;
+                absolute_put(input,absolute,PeAbsolute(u64(u32(relocation.source)),index));absolute+=1u64;
             }
             j+=1u64;
         }
@@ -308,8 +313,14 @@ void encode_headers(PeInput input,PeLayout layout,address output) on cpu {
         u64 cursor=raw;i=0u64;
         while(i<input.absolute_count){
             PeAbsolute first=absolute_at(input,i);u64 end=first.order_or_page_end;
-            u64 size=absolute_page_bytes(end-i);le32(output,cursor,first.page);le32(output,cursor+4u64,size);
-            u64 j=i;while(j<end){le16(output,cursor+8u64+(j-i)*2u64,absolute_at(input,j).value);j+=1u64;}
+            u64 page=absolute_page(first.location)*4096u64;
+            u64 size=absolute_page_bytes(end-i);le32(output,cursor,page);le32(output,cursor+4u64,size);
+            u64 j=i;
+            while(j<end){
+                u64 location=absolute_at(input,j).location;
+                le16(output,cursor+8u64+(j-i)*2u64,40960u64+(location-page));
+                j+=1u64;
+            }
             cursor+=size;i=end;
         }
     }

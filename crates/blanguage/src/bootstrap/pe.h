@@ -1,7 +1,6 @@
 module bootstrap.pe;
 const u64 SECTION_BYTES=56u64;
 const u64 IMPORT_BYTES=64u64;
-const u64 ABSOLUTE_BYTES=24u64;
 struct PeSection {
     address name;u64 name_length;u64 byte_length;
     u64 relocation_start;u64 relocation_count;u32 flags;u32 rva;u64 raw;
@@ -14,7 +13,7 @@ struct PeImport {
 };
 // The original order is used only for sorting. Layout then stores the
 // exclusive end index in the first row of each page.
-struct PeAbsolute {u64 page;u64 value;u64 order_or_page_end;};
+struct PeAbsolute {u64 location;u64 order_or_page_end;};
 struct PeInput {
     address sections;u64 section_count;address relocations;
     address imports;u64 import_count;address absolutes;u64 absolute_count;u64 stack_reserve;

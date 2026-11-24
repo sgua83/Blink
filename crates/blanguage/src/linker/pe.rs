@@ -14,7 +14,7 @@ struct PeImport {
     hint:u64, dll_at:u64, directory:u64,
 }
 #[repr(C)]
-struct PeAbsolute {page:u64,value:u64,order_or_page_end:u64}
+struct PeAbsolute {location:u64,order_or_page_end:u64}
 #[derive(Clone,Copy)]
 #[repr(C)]
 struct PeInput {
