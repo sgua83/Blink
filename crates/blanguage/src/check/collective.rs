@@ -14,8 +14,6 @@ pub(super) struct Builtin {
 unsafe extern "C" {
     #[link_name = "bootstrap.operator_types::source_collective"]
     fn source_collective(bytes: *const u8, length: usize) -> Builtin;
-    #[link_name = "bootstrap.operator_types::collective_accepts"]
-    fn collective_accepts(operation: CollectiveOperator, numeric: u32, integer: u32) -> u32;
 }
 
 pub(super) fn from_source(name: &str) -> Builtin {
@@ -50,12 +48,6 @@ impl Builtin {
             _ => return None,
         })
     }
-}
-
-pub(super) fn accepts(operation: CollectiveOperator, ty: &Ty) -> bool {
-    let numeric = ty.is_numeric();
-    let integer = numeric && ty.components[0].0.is_integer();
-    unsafe { collective_accepts(operation, u32::from(numeric), u32::from(integer)) != 0 }
 }
 
 #[derive(Clone, Copy)]

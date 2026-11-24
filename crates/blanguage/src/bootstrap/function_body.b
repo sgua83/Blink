@@ -2056,3 +2056,106 @@ extern "C" CustomStep custom_collection_step(ValueKind kind,u32 map,LocalCursor 
  if(scan){result.operation=ValueOperation::Scan;}if(counted){result.operation=ValueOperation::SegmentedReduce;}
  return result;
 }
+
+extern "C" TileInputStep tile_input_step(TileCursor cursor,StorageView source,Slice body,TileInputFacts facts) on cpu {
+ TileCursor c=cursor;TileInputStep result=TileInputStep(c,TileInputNeed::Complete,Text(0,Span(0u64,0u64)),0u64,0u64);
+ if(c.phase==8){c.index+=1u64;c.phase=0;}
+ if(c.phase==0){
+  result.cursor=c;if(c.index>=body.count){return result;}
+  StmtNode statement=binding_node<StmtNode>(source.nodes,binding_member(source.nodes,body,c.index));
+  match(statement.kind){
+  StmtKind::Let(value){
+   ExprNode expression=binding_node<ExprNode>(source.nodes,value.value.offset);
+   match(expression.kind){
+   ExprKind::Call(call){
+    address name=binding_at(call.name.kind==0?source.source:source.text,call.name.range.start);
+    if(!local_spelling(name,call.name.range.end-call.name.range.start,"tile_input")){return result;}
+    if(value.annotation.present!=0||call.arguments.count!=2u64){result.need=TileInputNeed::BadSyntax;return result;}
+    result.cursor.phase=1;result.need=TileInputNeed::Name;result.name=value.name;
+    result.field=binding_member(source.nodes,call.arguments,0u64);result.width=binding_member(source.nodes,call.arguments,1u64);return result;
+   }
+   ExprKind::Number(unused){} ExprKind::StaticU32(unused){} ExprKind::Bool(unused){} ExprKind::Name(unused){} ExprKind::Member(unused){} ExprKind::Index(unused){} ExprKind::Invoke(unused){} ExprKind::Construct(unused){} ExprKind::Specialize(unused){} ExprKind::FunctionRef(unused){} ExprKind::Cooperate(unused){} ExprKind::Target(unused){} ExprKind::Unary(unused){} ExprKind::Binary(unused){} ExprKind::Select(unused){}
+   }
+  }
+  StmtKind::Declare(unused){} StmtKind::Assign(unused){} StmtKind::Expr(unused){} StmtKind::If(unused){} StmtKind::Match(unused){} StmtKind::While(unused){} StmtKind::For(unused){} StmtKind::Parallel(unused){} StmtKind::Return(unused){} StmtKind::Break(){} StmtKind::Continue(){} StmtKind::Phase(){} StmtKind::Seek(unused){}
+  }
+  return result;
+ }
+ result.cursor=c;
+ if(c.phase==1){if(facts.name_exists!=0){result.need=TileInputNeed::Duplicate;return result;}result.cursor.phase=2;result.need=TileInputNeed::Width;return result;}
+ if(c.phase==2){result.cursor.phase=3;result.need=TileInputNeed::Field;return result;}
+ if(c.phase==3){if(!numeric_readable(facts.access)||facts.views!=0||facts.nonempty==0){result.need=TileInputNeed::BadType;return result;}result.cursor.phase=4;result.need=TileInputNeed::Capacity;return result;}
+ if(c.phase==4){if(facts.source_known!=0&&facts.domain_known!=0&&facts.source_size<facts.domain_size){result.need=TileInputNeed::BadCapacity;return result;}if(facts.access==3){result.cursor.phase=5;result.need=TileInputNeed::ElementDomain;return result;}c.phase=5;}
+ if(c.phase==5){result.cursor.phase=6;result.need=TileInputNeed::Find;return result;}
+ if(c.phase==6){if(facts.found==0){result.cursor.phase=7;result.need=TileInputNeed::Push;return result;}c.phase=7;}
+ result.cursor.phase=8;result.need=TileInputNeed::Bind;return result;
+}
+extern "C" u64 tile_find_input(u64 count,u64 binding,u32 word,address context,cfn<TileCandidate,address,u64> candidate,cfn<u32,address,u64> same_type) on cpu requires nonzero(candidate) requires nonzero(same_type) {
+ u64 i=0u64;while(i<count){TileCandidate item=candidate(context,i);if(item.input!=0&&item.binding==binding&&item.word==word&&same_type(context,i)!=0){return i;}i+=1u64;}return count;
+}
+extern "C" TileWidthStep tile_width_step(LocalCursor cursor,TileWidthFacts facts) on cpu {
+ if(cursor.phase==0){if(facts.constant==0){return TileWidthStep(cursor,TileWidthNeed::ConstantError);}if(facts.scalar==0){return TileWidthStep(cursor,TileWidthNeed::WidthError);}return TileWidthStep(LocalCursor(1),TileWidthNeed::Read);}
+ if(facts.width==0||(facts.first.present!=0&&(facts.first.fixed==0||facts.first.width!=facts.width))){return TileWidthStep(cursor,TileWidthNeed::WidthError);}
+ return TileWidthStep(cursor,TileWidthNeed::Complete);
+}
+extern "C" TilePublishStep tile_publish_step(LocalCursor cursor,TilePublishFacts facts) on cpu {
+ TilePublishStep result=TilePublishStep(cursor,TilePublishNeed::Complete,facts.atomic!=0?4:0);
+ if(cursor.phase==0){
+  if(facts.annotated!=0||facts.root==0||(facts.arguments!=1u64&&facts.arguments!=2u64)){result.need=TilePublishNeed::BadRoot;return result;}
+  result.cursor.phase=1;
+  if(facts.arguments==2u64){if(facts.cooperative!=0){result.need=TilePublishNeed::BadFixed;return result;}result.need=TilePublishNeed::FixedWidth;return result;}
+  if(facts.has_tile==0){result.need=TilePublishNeed::MissingWidth;return result;}result.need=TilePublishNeed::InheritedWidth;return result;
+ }
+ if(cursor.phase==1){result.cursor.phase=2;result.need=TilePublishNeed::Value;return result;}
+ if(cursor.phase==2){if(facts.present==0){return result;}if(facts.views!=0||facts.nonempty==0){result.need=TilePublishNeed::BadValue;return result;}result.cursor.phase=3;result.need=TilePublishNeed::Publish;return result;}
+ if(cursor.phase==3){result.cursor.phase=4;result.need=TilePublishNeed::Bind;return result;}
+ return result;
+}
+extern "C" TileCollectiveStep tile_collective_step(CollectiveOperator operation,LocalCursor cursor,TileCollectiveFacts facts) on cpu {
+ LocalCursor c=cursor;TileCollectiveStep result=TileCollectiveStep(c,TileCollectiveNeed::Publish);
+ if(c.phase==0){if(facts.root==0||facts.arguments!=1u64){result.need=TileCollectiveNeed::BadRoot;return result;}result.cursor.phase=1;result.need=TileCollectiveNeed::View;return result;}
+ if(c.phase==1){if(facts.atomic!=0){result.need=TileCollectiveNeed::BadAtomic;return result;}if(facts.input!=0){result.cursor.phase=2;result.need=TileCollectiveNeed::Read;return result;}c.phase=2;}
+ if(c.phase==2){result.cursor.phase=3;result.need=TileCollectiveNeed::Type;return result;}
+ if(c.phase==3){if(!collective_accepts(operation,facts.numeric!=0,facts.integer!=0)){result.need=TileCollectiveNeed::BadType;return result;}if(facts.sum!=0){result.cursor.phase=4;result.need=TileCollectiveNeed::CommonProof;return result;}return result;}
+ if(c.phase==4&&facts.proof!=0){result.cursor.phase=5;result.need=TileCollectiveNeed::SumProof;return result;}
+ return result;
+}
+extern "C" u32 tile_project(SignatureNode source,address context,TileProjectionHost host) on cpu requires nonzero(host.root) requires nonzero(host.member) requires nonzero(host.invalid) {
+ ExprNode expression=binding_node<ExprNode>(source.storage.nodes,source.offset);
+ match(expression.kind){
+ ExprKind::Name(value){return host.root(context,source.offset,value);}
+ ExprKind::Member(value){if(tile_project(SignatureNode(source.storage,value.base.offset),context,host)==0){return 0;}return host.member(context,source.offset,value.field);}
+ ExprKind::Number(unused){} ExprKind::StaticU32(unused){} ExprKind::Bool(unused){} ExprKind::Call(unused){} ExprKind::Index(unused){} ExprKind::Invoke(unused){} ExprKind::Construct(unused){} ExprKind::Specialize(unused){} ExprKind::FunctionRef(unused){} ExprKind::Cooperate(unused){} ExprKind::Target(unused){} ExprKind::Unary(unused){} ExprKind::Binary(unused){} ExprKind::Select(unused){}
+ }
+ return host.invalid(context,source.offset);
+}
+extern "C" void tile_words(u64 count,address context,cfn<u32,address,u64> get,cfn<void,address,u32> push) on cpu requires nonzero(get) requires nonzero(push) {
+ u64 i=0u64;while(i<count){push(context,get(context,i));i+=1u64;}
+}
+extern "C" void tile_publication(u64 count,address context,cfn<TilePair,address,u64> get,cfn<void,address,TilePair> push) on cpu requires nonzero(get) requires nonzero(push) {
+ u64 i=0u64;while(i<count){push(context,get(context,i));i+=1u64;}
+}
+extern "C" void tile_results(u64 count,address context,TileResultHost host) on cpu requires nonzero(host.get) requires nonzero(host.allocate) requires nonzero(host.push) {
+ u64 i=0u64;while(i<count){TileComponent field=host.get(context,i);u64 reg=host.allocate(context,field.scalar);host.push(context,TilePair(field.word,reg));i+=1u64;}
+}
+extern "C" u32 tile_root(u32 function,u32 cooperative,u64 root,u64 depth) on cpu {return (function!=0?(cooperative!=0&&root==depth):depth==1u64)?1:0;}
+extern "C" u32 tile_barrier_allowed(u64 arguments,u32 root,u64 tiles) on cpu {return arguments==0u64&&root!=0&&tiles!=0u64?1:0;}
+extern "C" TileLowerStep tile_lower_step(LocalCursor cursor,TileLowerFacts facts) on cpu {
+ if(cursor.phase==0||cursor.phase==2){return TileLowerStep(LocalCursor(1),TileLowerNeed::Next);}
+ if(facts.present==0){return TileLowerStep(cursor,TileLowerNeed::Complete);}
+ if(facts.actual==0||facts.fixed==0){return TileLowerStep(cursor,TileLowerNeed::Invalid);}
+ return TileLowerStep(LocalCursor(2),TileLowerNeed::Publish);
+}
+extern "C" u32 tile_width_bound(TileRange range) on cpu {return range.fixed!=0?range.width:4294967295;}
+extern "C" TileLanePlan tile_lane_plan(TileRange range) on cpu {return TileLanePlan(tile_width_bound(range)-1,range.fixed,range.width);}
+extern "C" u32 tile_index_minimum(u32 width,u32 count) on cpu requires nonzero(width) {
+ u32 tail=count%width;return tail==0?width:tail;
+}
+extern "C" TilePlaceStep tile_place_step(LocalCursor cursor,TilePlaceFacts facts) on cpu {
+ if(cursor.phase==0){return TilePlaceStep(LocalCursor(1),facts.present!=0?TilePlaceNeed::Type:TilePlaceNeed::Complete);}
+ if(cursor.phase==1){return TilePlaceStep(LocalCursor(2),TilePlaceNeed::Range);}
+ if(cursor.phase==2&&facts.fixed!=0&&facts.prefix==0){return TilePlaceStep(LocalCursor(3),TilePlaceNeed::Count);}
+ if(cursor.phase==3&&facts.known!=0){return TilePlaceStep(LocalCursor(4),TilePlaceNeed::Minimum);}
+ if(cursor.phase==2||cursor.phase==3||cursor.phase==4){return TilePlaceStep(LocalCursor(5),TilePlaceNeed::Bound);}
+ return TilePlaceStep(cursor,facts.bounded!=0?TilePlaceNeed::Publish:TilePlaceNeed::Invalid);
+}
