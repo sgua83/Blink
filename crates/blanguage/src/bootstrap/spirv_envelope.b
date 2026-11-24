@@ -1305,6 +1305,45 @@ ControlWords close_loop(LoopLabels labels, u32 reaches, address body) on cpu {
     return ControlWords(words_one(body, at, 248, labels.end), labels.end, 1);
 }
 
+extern "C" void emit_tile_phases(u32 active, StructuredHost control, TilePhaseHost host) on cpu
+    requires nonzero(control.labels) requires nonzero(control.reserve_words)
+    requires nonzero(control.finish_words) requires nonzero(control.block)
+    requires nonzero(host.next_phase) requires nonzero(host.next_value) requires nonzero(host.label)
+    requires nonzero(host.publish) requires nonzero(host.barrier) requires nonzero(host.collective)
+    requires nonzero(host.zero) requires nonzero(host.bind) {
+    address context = control.context;
+    TilePhaseView phase = host.next_phase(host.cursor);
+    while (phase.kind != TilePhaseKind::End) {
+        u32 before = host.label(context);
+        u32 execute = control.labels(context, 2);
+        u32 end = execute + 1;
+        control.finish_words(context, open_selection(end, active, execute, end, control.reserve_words(context, 9u64)));
+        if (control.block(context, phase.code, ControlTargets(0, 0)) == BlockFlow::Error) { return; }
+        if (phase.kind == TilePhaseKind::Publish) { host.publish(context, phase.step); }
+        u32 producer = host.label(context);
+        control.finish_words(context, next_control_block(end, end, 1, control.reserve_words(context, 4u64)));
+        TilePhaseValue saved = host.next_value(host.cursor, context);
+        while (saved.value_type != 0) {
+            // Module constants dominate both paths. Only live SSA registers need a Phi for the inactive tail.
+            if (saved.module_constant == 0) {
+                u32 result = control.labels(context, 1);
+                u32 zero = host.zero(context, saved.register);
+                address body = control.reserve_words(context, 7u64);
+                u64 words = phi_two(body, 0u64, saved.value_type, result, saved.value, producer, zero, before);
+                control.finish_words(context, ControlWords(words, 0, 1));
+                host.bind(context, saved.register, result);
+            }
+            saved = host.next_value(host.cursor, context);
+        }
+        if (phase.kind == TilePhaseKind::Publish || phase.kind == TilePhaseKind::Barrier) {
+            host.barrier(context);
+        } else if (phase.kind == TilePhaseKind::Collective) {
+            host.collective(context, phase.step);
+        }
+        phase = host.next_phase(host.cursor);
+    }
+}
+
 extern "C" BlockFlow lower_structured(StructuredControl input, StructuredHost host) on cpu
     requires nonzero(host.labels) requires nonzero(host.reserve_words) requires nonzero(host.finish_words)
     requires nonzero(host.block) requires nonzero(host.value) requires nonzero(host.begin_return)

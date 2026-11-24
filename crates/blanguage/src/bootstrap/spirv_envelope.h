@@ -409,6 +409,27 @@ extern "C" BlockFlow lower_structured(StructuredControl input, StructuredHost ho
     requires nonzero(host.block) requires nonzero(host.value) requires nonzero(host.begin_return)
     requires nonzero(host.normal_exit) requires nonzero(host.finish_return);
 
+enum TilePhaseKind:u32 { End=0; Plain=1; Publish=2; Barrier=3; Collective=4; };
+struct TilePhaseView { InstructionBlock code; address step; TilePhaseKind kind; };
+struct TilePhaseValue { usize register; u32 value; u32 value_type; u32 module_constant; };
+struct TilePhaseHost {
+    address cursor;
+    cfn<TilePhaseView,address> next_phase;
+    cfn<TilePhaseValue,address,address> next_value;
+    cfn<u32,address> label;
+    cfn<void,address,address> publish;
+    cfn<void,address> barrier;
+    cfn<void,address,address> collective;
+    cfn<u32,address,usize> zero;
+    cfn<void,address,usize,u32> bind;
+};
+extern "C" void emit_tile_phases(u32 active, StructuredHost control, TilePhaseHost host) on cpu
+    requires nonzero(control.labels) requires nonzero(control.reserve_words)
+    requires nonzero(control.finish_words) requires nonzero(control.block)
+    requires nonzero(host.next_phase) requires nonzero(host.next_value) requires nonzero(host.label)
+    requires nonzero(host.publish) requires nonzero(host.barrier) requires nonzero(host.collective)
+    requires nonzero(host.zero) requires nonzero(host.bind);
+
 extern "C" void lower_function_scope(InstructionBlock body, StructuredHost host) on cpu
     requires nonzero(host.labels) requires nonzero(host.constant) requires nonzero(host.reserve_words)
     requires nonzero(host.finish_words) requires nonzero(host.open_function) requires nonzero(host.block)

@@ -1,5 +1,7 @@
 //! 输入与中间发布共用共享布局；阶段屏障覆盖所有 workgroup invocations。
 use super::*;
+use std::collections::btree_set;
+use std::ffi::c_void;
 
 #[repr(C)]
 struct TileRangeWords {
@@ -9,11 +11,109 @@ struct TileRangeWords {
     length: u32,
 }
 
+#[repr(u32)]
+enum TilePhaseKind { End, Plain, Publish, Barrier, Collective }
+
+#[repr(C)]
+struct TilePhaseView {
+    code: InstructionBlock,
+    step: *const c_void,
+    kind: TilePhaseKind,
+}
+
+#[derive(Default)]
+#[repr(C)]
+struct TilePhaseValue {
+    register: Reg,
+    value: u32,
+    value_type: u32,
+    module_constant: u32,
+}
+
+struct TilePhaseCursor<'a> {
+    phases: std::slice::Iter<'a, TilePhase<'a>>,
+    saved: btree_set::Iter<'a, PrivateSlot>,
+}
+
+#[repr(C)]
+struct TilePhaseHost {
+    cursor: *mut c_void,
+    next_phase: unsafe extern "C" fn(*mut c_void) -> TilePhaseView,
+    next_value: unsafe extern "C" fn(*mut c_void, StructuredContext) -> TilePhaseValue,
+    label: unsafe extern "C" fn(StructuredContext) -> u32,
+    publish: unsafe extern "C" fn(StructuredContext, *const c_void),
+    barrier: unsafe extern "C" fn(StructuredContext),
+    collective: unsafe extern "C" fn(StructuredContext, *const c_void),
+    zero: unsafe extern "C" fn(StructuredContext, Reg) -> u32,
+    bind: unsafe extern "C" fn(StructuredContext, Reg, u32),
+}
+
 unsafe extern "C" {
     #[link_name = "bootstrap.spirv_envelope::tile_range"]
     fn emit_tile_range(
         body: *mut u32, uint_type: u32, bool_type: u32, index: u32, count: u32, width: u32, first: u32,
     ) -> TileRangeWords;
+    #[link_name = "bootstrap.spirv_envelope::emit_tile_phases"]
+    fn emit_tile_phases(active: u32, control: StructuredHost, host: TilePhaseHost);
+}
+
+unsafe extern "C" fn next_tile_phase(cursor: *mut c_void) -> TilePhaseView {
+    let cursor = unsafe { &mut *cursor.cast::<TilePhaseCursor<'_>>() };
+    let Some(phase) = cursor.phases.next() else {
+        return TilePhaseView { code: (&[] as &[Inst]).into(), step: std::ptr::null(), kind: TilePhaseKind::End };
+    };
+    cursor.saved = phase.saved.iter();
+    let (kind, step) = match phase.step.map(|inst| &inst.kind) {
+        Some(InstKind::TilePublish(value)) => (TilePhaseKind::Publish, std::ptr::from_ref(value).cast()),
+        Some(InstKind::TileCollective(value)) => (TilePhaseKind::Collective, std::ptr::from_ref(value).cast()),
+        Some(InstKind::TileBarrier) => (TilePhaseKind::Barrier, std::ptr::null()),
+        _ => (TilePhaseKind::Plain, std::ptr::null()),
+    };
+    TilePhaseView { code: phase.code.into(), step, kind }
+}
+
+unsafe extern "C" fn next_tile_value(cursor: *mut c_void, context: StructuredContext) -> TilePhaseValue {
+    let cursor = unsafe { &mut *cursor.cast::<TilePhaseCursor<'_>>() };
+    for slot in &mut cursor.saved {
+        if let PrivateSlot::Register(register) = *slot {
+            let emitter = &unsafe { &*context.cast::<StructuredEmission<'_, '_>>() }.emitter;
+            let value = emitter.value(register);
+            return TilePhaseValue {
+                register,
+                value,
+                value_type: emitter.ty(register),
+                module_constant: u32::from(emitter.constants.values().any(|&constant| constant == value)),
+            };
+        }
+    }
+    TilePhaseValue::default()
+}
+
+unsafe extern "C" fn tile_phase_label(context: StructuredContext) -> u32 {
+    unsafe { &*context.cast::<StructuredEmission<'_, '_>>() }.emitter.current_label
+}
+
+unsafe extern "C" fn tile_phase_publish(context: StructuredContext, step: *const c_void) {
+    let emitter = &mut unsafe { &mut *context.cast::<StructuredEmission<'_, '_>>() }.emitter;
+    emitter.publish_values(unsafe { &*step.cast::<Publication>() });
+}
+
+unsafe extern "C" fn tile_phase_barrier(context: StructuredContext) {
+    unsafe { &mut *context.cast::<StructuredEmission<'_, '_>>() }.emitter.tile_barrier();
+}
+
+unsafe extern "C" fn tile_phase_collective(context: StructuredContext, step: *const c_void) {
+    let emitter = &mut unsafe { &mut *context.cast::<StructuredEmission<'_, '_>>() }.emitter;
+    emitter.tile_collective(unsafe { &*step.cast::<crate::ir::TileCollective>() });
+}
+
+unsafe extern "C" fn tile_phase_zero(context: StructuredContext, register: Reg) -> u32 {
+    let emitter = &mut unsafe { &mut *context.cast::<StructuredEmission<'_, '_>>() }.emitter;
+    emitter.constant(emitter.stage.registers[register], 0)
+}
+
+unsafe extern "C" fn tile_phase_bind(context: StructuredContext, register: Reg, value: u32) {
+    unsafe { &mut *context.cast::<StructuredEmission<'_, '_>>() }.emitter.regs[register] = value;
 }
 
 pub(super) enum TileByte {
@@ -193,35 +293,21 @@ impl Emitter<'_> {
         }
     }
     pub(super) fn tile_phases(&mut self, active: u32, phases: Vec<TilePhase<'_>>) -> Result<(), &'static str> {
-        for phase in phases {
-            let before = self.current_label;
-            let execute = self.id();
-            let end = self.id();
-            self.open_active(active, execute, end);
-            self.block(phase.code, None)?;
-            if let Some(InstKind::TilePublish(publication)) = phase.step.map(|inst| &inst.kind) {
-                self.publish_values(publication);
-            }
-            let producer = self.current_label;
-            self.merge_active(end, true);
-            // 有效 lane 的私有 SSA 值跨发布点延续；无效尾 lane 只参加统一屏障。
-            for slot in &phase.saved {
-                if let PrivateSlot::Register(r) = slot {
-                    // Module constants already dominate every lane and phase.
-                    if self.constants.values().any(|&id| id == self.value(*r)) { continue; }
-                    let value = self.id();
-                    let zero = self.constant(self.stage.registers[*r], 0);
-                    self.join_two(self.ty(*r), value, [self.value(*r), producer], [zero, before]);
-                    self.regs[*r] = value;
-                }
-            }
-            if matches!(phase.step.map(|inst| &inst.kind), Some(InstKind::TilePublish(_) | InstKind::TileBarrier)) {
-                self.tile_barrier();
-            }
-            if let Some(InstKind::TileCollective(c)) = phase.step.map(|inst| &inst.kind) {
-                self.tile_collective(c);
-            }
-        }
-        Ok(())
+        let empty = std::collections::BTreeSet::new();
+        let mut cursor = TilePhaseCursor { phases: phases.iter(), saved: empty.iter() };
+        let mut emission = StructuredEmission { emitter: self, error: None };
+        let host = TilePhaseHost {
+            cursor: std::ptr::from_mut(&mut cursor).cast(),
+            next_phase: next_tile_phase,
+            next_value: next_tile_value,
+            label: tile_phase_label,
+            publish: tile_phase_publish,
+            barrier: tile_phase_barrier,
+            collective: tile_phase_collective,
+            zero: tile_phase_zero,
+            bind: tile_phase_bind,
+        };
+        unsafe { emit_tile_phases(active, emission.host(), host); }
+        emission.error.map_or(Ok(()), Err)
     }
 }
