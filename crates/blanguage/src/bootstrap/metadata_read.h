@@ -45,19 +45,31 @@ struct ManifestIdentity {
 struct ManifestVariant { ReadBytes first; ReadBytes second; u32 tag; };
 struct ManifestReadSource { ReadBytes module_name; ReadBytes path; ReadBytes scope; address fingerprint; };
 struct ManifestReadRequirement { ReadBytes name; ReadBytes kind; };
-struct ManifestReadResult { ManifestIdentity identity; address imports_digest; address native_digest; u32 status; };
+struct ManifestChoice { ReadBytes first; ReadBytes second; address instances; u64 instance_count; u32 tag; };
+struct ManifestExpected {
+    ManifestIdentity identity; ManifestChoice selection;
+    address context; u64 source_count; u64 requirement_count;
+};
+struct ManifestReadResult {
+    ManifestIdentity identity; address imports_digest; address native_digest; u32 same_source; u32 status;
+};
 
 // The receiver builds the original records synchronously. All fields borrow input.
 struct ManifestReceiver {
     address context;
-    cfn<bool,address,ReadBytes> valid_text;
+    cfn<u32,address,ReadBytes> valid_text;
     cfn<void,address,ReadBytes> name;
     cfn<void,address,ManifestVariant> selection;
     cfn<void,address,ManifestReadSource> source;
     cfn<void,address,ManifestReadRequirement> requirement;
     cfn<void,address,ManifestVariant> declaration;
+    cfn<ReadBytes,address,u64> current_name;
+    cfn<ManifestReadSource,address,u64> current_source;
+    cfn<ManifestReadRequirement,address,u64> current_requirement;
 };
-extern "C" ManifestReadResult read_manifest(ReadBytes input, u64 magic, ManifestReceiver receiver) on cpu
+extern "C" ManifestReadResult read_manifest(ReadBytes input, u64 magic, ManifestReceiver receiver, address expected) on cpu
     requires nonzero(receiver.valid_text) requires nonzero(receiver.name)
     requires nonzero(receiver.selection) requires nonzero(receiver.source)
-    requires nonzero(receiver.requirement) requires nonzero(receiver.declaration);
+    requires nonzero(receiver.requirement) requires nonzero(receiver.declaration)
+    requires nonzero(receiver.current_name) requires nonzero(receiver.current_source)
+    requires nonzero(receiver.current_requirement);

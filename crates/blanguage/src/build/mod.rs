@@ -96,7 +96,7 @@ fn compile_in(
     match FileBytes::read_path(&artifact) {
         Ok(bytes) => {
             let (identity, stored_image) = decode(&bytes)?;
-            if let Some(inputs) = identity::decode(identity)? && inputs.source.same_code(&source) {
+            if let Some(inputs) = identity::match_source(identity, &source)? {
                 let mut image = unsafe { resource::from_compiler_output(stored_image) }
                     .map_err(|e| std::io::Error::other(e.to_string()))?;
                 let links = entry_links(&mut image);

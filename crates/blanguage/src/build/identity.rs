@@ -57,15 +57,6 @@ pub struct SourceInputs {
     pub sources: Vec<SourceInput>,
     pub requirements: Vec<(String, String)>,
 }
-impl SourceInputs {
-    pub(super) fn same_code(&self, other: &Self) -> bool {
-        self.path == other.path && self.root == other.root
-            && self.module == other.module && self.compiler == other.compiler
-            && self.max_parameter_bytes == other.max_parameter_bytes
-            && self.selection == other.selection && self.sources == other.sources
-            && self.requirements == other.requirements
-    }
-}
 pub struct Inputs {
     pub source: SourceInputs,
     pub imports: [u8; 32],
@@ -373,23 +364,38 @@ struct ManifestReadResult {
     identity: ManifestIdentity,
     imports_digest: *const u8,
     native_digest: *const u8,
+    same_source: u32,
     status: u32,
+}
+
+#[repr(C)]
+struct ManifestExpected {
+    identity: ManifestIdentity,
+    selection: ManifestSelection,
+    context: *const c_void,
+    source_count: usize,
+    requirement_count: usize,
 }
 
 #[repr(C)]
 struct ManifestReceiver {
     context: *mut c_void,
-    valid_text: unsafe extern "C" fn(*mut c_void, ByteField) -> bool,
+    valid_text: unsafe extern "C" fn(*mut c_void, ByteField) -> u32,
     name: unsafe extern "C" fn(*mut c_void, ByteField),
     selection: unsafe extern "C" fn(*mut c_void, ManifestVariant),
     source: unsafe extern "C" fn(*mut c_void, ManifestSource),
     requirement: unsafe extern "C" fn(*mut c_void, ManifestRequirement),
     declaration: unsafe extern "C" fn(*mut c_void, ManifestVariant),
+    current_name: NameField,
+    current_source: unsafe extern "C" fn(*const c_void, usize) -> ManifestSource,
+    current_requirement: unsafe extern "C" fn(*const c_void, usize) -> ManifestRequirement,
 }
 
 unsafe extern "C" {
     #[link_name = "bootstrap.metadata_read::read_manifest"]
-    fn read_manifest(input: ByteField, magic: u64, receiver: ManifestReceiver) -> ManifestReadResult;
+    fn read_manifest(
+        input: ByteField, magic: u64, receiver: ManifestReceiver, expected: *const ManifestExpected,
+    ) -> ManifestReadResult;
 }
 
 #[derive(Default)]
@@ -411,13 +417,13 @@ unsafe fn own_manifest_text(field: ByteField) -> String {
     unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(field.bytes, field.length)) }.into()
 }
 
-unsafe extern "C" fn validate_manifest_text(context: *mut c_void, field: ByteField) -> bool {
+unsafe extern "C" fn validate_manifest_text(context: *mut c_void, field: ByteField) -> u32 {
     let bytes = unsafe { std::slice::from_raw_parts(field.bytes, field.length) };
     match std::str::from_utf8(bytes) {
-        Ok(_) => true,
+        Ok(_) => 1,
         Err(error) => {
             unsafe { &mut *context.cast::<ManifestProjection>() }.invalid_text = Some(error);
-            false
+            0
         }
     }
 }
@@ -480,19 +486,24 @@ unsafe extern "C" fn collect_manifest_declaration(context: *mut c_void, variant:
     output.declarations.push(declaration);
 }
 
-pub(super) fn decode(bytes: &[u8]) -> Result<Option<Inputs>> {
-    let mut projection = ManifestProjection::default();
+fn read_manifest_fields(
+    bytes: &[u8], projection: &mut ManifestProjection, expected: Option<&ManifestExpected>,
+) -> Result<Option<ManifestReadResult>> {
     let receiver = ManifestReceiver {
-        context: ptr::from_mut(&mut projection).cast(),
+        context: ptr::from_mut(projection).cast(),
         valid_text: validate_manifest_text,
         name: collect_manifest_name,
         selection: collect_manifest_selection,
         source: collect_manifest_source,
         requirement: collect_manifest_requirement,
         declaration: collect_manifest_declaration,
+        current_name: name_field,
+        current_source: manifest_source,
+        current_requirement: manifest_requirement,
     };
-    // The B reader owns the wire order and calls the receiver with borrows of bytes.
-    let manifest = unsafe { read_manifest(bytes.into(), u64::from_le_bytes(*MAGIC), receiver) };
+    // All incoming fields borrow the original bytes and live through this B call.
+    let expected = expected.map_or(ptr::null(), ptr::from_ref);
+    let manifest = unsafe { read_manifest(bytes.into(), u64::from_le_bytes(*MAGIC), receiver, expected) };
     match manifest.status {
         0 => {}
         1 => return Ok(None),
@@ -504,6 +515,12 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Option<Inputs>> {
         13 => return Err(Error::other("模块枚举编码错误：Declaration").into()),
         _ => return Err(Error::other("模块接口有未消费内容").into()),
     }
+    Ok(Some(manifest))
+}
+
+pub(super) fn decode(bytes: &[u8]) -> Result<Option<Inputs>> {
+    let mut projection = ManifestProjection::default();
+    let Some(manifest) = read_manifest_fields(bytes, &mut projection, None)? else { return Ok(None); };
     let identity = manifest.identity;
     Ok(Some(Inputs {
         source: SourceInputs {
@@ -517,6 +534,32 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Option<Inputs>> {
             sources: projection.sources,
             requirements: projection.requirements,
         },
+        imports: unsafe { *manifest.imports_digest.cast::<[u8; 32]>() },
+        native: unsafe { manifest.native_digest.cast::<[u8; 32]>().as_ref() }.copied(),
+        declarations: projection.declarations,
+    }))
+}
+
+pub(super) struct ReuseInputs {
+    pub(super) imports: [u8; 32],
+    pub(super) native: Option<[u8; 32]>,
+    pub(super) declarations: Vec<Declaration>,
+}
+
+pub(super) fn match_source(bytes: &[u8], source: &SourceInputs) -> Result<Option<ReuseInputs>> {
+    let rows = ManifestRows { source, declarations: &[] };
+    let expected = ManifestExpected {
+        identity: ManifestIdentity::borrow(source),
+        selection: ManifestSelection::borrow(&source.selection),
+        context: ptr::from_ref(&rows).cast(),
+        source_count: source.sources.len(),
+        requirement_count: source.requirements.len(),
+    };
+    let mut projection = ManifestProjection::default();
+    let Some(manifest) = read_manifest_fields(bytes, &mut projection, Some(&expected))?
+        .filter(|manifest| manifest.same_source != 0)
+    else { return Ok(None); };
+    Ok(Some(ReuseInputs {
         imports: unsafe { *manifest.imports_digest.cast::<[u8; 32]>() },
         native: unsafe { manifest.native_digest.cast::<[u8; 32]>().as_ref() }.copied(),
         declarations: projection.declarations,
@@ -580,8 +623,13 @@ struct ManifestHost {
     declaration: unsafe extern "C" fn(*const c_void, usize) -> ManifestDeclaration,
 }
 
+struct ManifestRows<'a> {
+    source: &'a SourceInputs,
+    declarations: &'a [Declaration],
+}
+
 unsafe extern "C" fn manifest_source(context: *const c_void, index: usize) -> ManifestSource {
-    let input = unsafe { &*context.cast::<Inputs>() };
+    let input = unsafe { &*context.cast::<ManifestRows<'_>>() };
     let source = &input.source.sources[index];
     ManifestSource {
         module_name: source.module.as_bytes().into(),
@@ -592,13 +640,13 @@ unsafe extern "C" fn manifest_source(context: *const c_void, index: usize) -> Ma
 }
 
 unsafe extern "C" fn manifest_requirement(context: *const c_void, index: usize) -> ManifestRequirement {
-    let input = unsafe { &*context.cast::<Inputs>() };
+    let input = unsafe { &*context.cast::<ManifestRows<'_>>() };
     let (name, kind) = &input.source.requirements[index];
     ManifestRequirement { name: name.as_bytes().into(), kind: kind.as_bytes().into() }
 }
 
 unsafe extern "C" fn manifest_declaration(context: *const c_void, index: usize) -> ManifestDeclaration {
-    let input = unsafe { &*context.cast::<Inputs>() };
+    let input = unsafe { &*context.cast::<ManifestRows<'_>>() };
     let (tag, name, query) = input.declarations[index].fields();
     let (module, names) = query.unwrap_or(("", &[]));
     ManifestDeclaration {
@@ -619,26 +667,43 @@ unsafe extern "C" {
     fn encode_build_manifest(magic: u64, input: &BuildManifest, host: ManifestHost, output: *mut u8) -> usize;
 }
 
-impl Inputs {
-    pub(super) fn encode(&self) -> Vec<u8> {
-        let field = |text: &str| ByteField::from(text.as_bytes());
-        let source = &self.source;
-        let (tag, first, second, instances) = match &source.selection {
+impl ManifestIdentity {
+    fn borrow(source: &SourceInputs) -> Self {
+        Self {
+            path: source.path.as_slice().into(), root: source.root.as_slice().into(),
+            working_directory: source.working_directory.as_slice().into(),
+            module_name: source.module.as_bytes().into(), compiler: source.compiler.as_bytes().into(),
+            max_parameter_bytes: source.max_parameter_bytes,
+        }
+    }
+}
+
+impl ManifestSelection {
+    fn borrow(selection: &Selection) -> Self {
+        let (tag, first, second, instances) = match selection {
             Selection::Application(entry) => (0, entry.as_str(), "", &[][..]),
             Selection::Module(instances) => (1, "", "", instances.as_slice()),
             Selection::Library { entry, prefix } => (2, entry.as_str(), prefix.as_str(), &[][..]),
             Selection::Entry { entry, target } => (3, entry.as_str(), target.as_str(), &[][..]),
         };
-        let selection = ManifestSelection {
-            first: field(first), second: field(second), instances: instances.as_ptr().cast(),
-            instance_count: instances.len(), tag,
-        };
+        Self {
+            first: first.as_bytes().into(), second: second.as_bytes().into(),
+            instances: instances.as_ptr().cast(), instance_count: instances.len(), tag,
+        }
+    }
+}
+
+impl Inputs {
+    pub(super) fn encode(&self) -> Vec<u8> {
+        let source = &self.source;
+        let identity = ManifestIdentity::borrow(source);
+        let rows = ManifestRows { source, declarations: &self.declarations };
         let input = BuildManifest {
-            path: source.path.as_slice().into(), root: source.root.as_slice().into(),
-            working_directory: source.working_directory.as_slice().into(),
-            module_name: field(&source.module), compiler: field(&source.compiler),
-            max_parameter_bytes: source.max_parameter_bytes, selection,
-            context: ptr::from_ref(self).cast(),
+            path: identity.path, root: identity.root, working_directory: identity.working_directory,
+            module_name: identity.module_name, compiler: identity.compiler,
+            max_parameter_bytes: identity.max_parameter_bytes,
+            selection: ManifestSelection::borrow(&source.selection),
+            context: ptr::from_ref(&rows).cast(),
             source_count: source.sources.len(), requirement_count: source.requirements.len(),
             imports_digest: self.imports.as_ptr(),
             native_digest: self.native.as_ref().map_or(ptr::null(), |digest| digest.as_ptr()),

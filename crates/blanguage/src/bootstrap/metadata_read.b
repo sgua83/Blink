@@ -223,7 +223,28 @@ const u32 MANIFEST_DECLARATION = 13;
 const u32 MANIFEST_TRAILING = 14;
 
 // The first format error ends the cursor and prevents another record from reaching the receiver.
-struct ManifestScan { MetaCursor cursor; u32 status; };
+struct ManifestScan { MetaCursor cursor; u32 status; address expected; bool same_source; };
+
+bool comparing_manifest(ManifestScan scan) on cpu {
+    return scan.same_source && address_bits(scan.expected) != 0u64;
+}
+
+bool equal_manifest_bytes(ReadBytes left, ReadBytes right) on cpu {
+    if (left.length != right.length) { return false; }
+    u64 i = 0u64;
+    while (i < left.length) {
+        if (unsafe_position<u8>(at(left.bytes,i)) != unsafe_position<u8>(at(right.bytes,i))) { return false; }
+        i += 1u64;
+    }
+    return true;
+}
+
+bool equal_manifest_identity(ManifestIdentity left, ManifestIdentity right) on cpu {
+    return left.max_parameter_bytes == right.max_parameter_bytes
+        && equal_manifest_bytes(left.path,right.path) && equal_manifest_bytes(left.root,right.root)
+        && equal_manifest_bytes(left.module_name,right.module_name) && equal_manifest_bytes(left.compiler,right.compiler);
+}
+
 
 u64 manifest_number(inout ManifestScan scan, u64 width) on cpu {
     if (scan.status != 0) { return 0u64; }
@@ -242,7 +263,7 @@ ReadBytes manifest_bytes(inout ManifestScan scan, bool text) on cpu {
 ReadBytes manifest_text(inout ManifestScan scan, ManifestReceiver receiver) on cpu
     requires nonzero(receiver.valid_text) {
     ReadBytes field = manifest_bytes(scan,true);
-    if (scan.status == 0 && !receiver.valid_text(receiver.context,field)) {
+    if (scan.status == 0 && receiver.valid_text(receiver.context,field) == 0) {
         scan.status = MANIFEST_UTF8;
     }
     return field;
@@ -263,62 +284,101 @@ address manifest_native_digest(inout ManifestScan scan) on cpu {
     return unsafe_address(0u64);
 }
 
-void manifest_names(inout ManifestScan scan, ManifestReceiver receiver) on cpu
-    requires nonzero(receiver.valid_text) requires nonzero(receiver.name) {
+void manifest_names(inout ManifestScan scan, ManifestReceiver receiver, bool instances) on cpu
+    requires nonzero(receiver.valid_text) requires nonzero(receiver.name)
+    requires nonzero(receiver.current_name) {
     u64 count = manifest_number(scan,8u64);
-    while (count != 0u64 && scan.status == 0) {
+    if (instances && comparing_manifest(scan)) {
+        scan.same_source = count == unsafe_position<ManifestExpected>(scan.expected).selection.instance_count;
+    }
+    u64 index = 0u64;
+    while (index < count && scan.status == 0) {
         ReadBytes name = manifest_text(scan,receiver);
-        if (scan.status == 0) { receiver.name(receiver.context,name); }
-        count -= 1u64;
+        if (scan.status == 0 && scan.same_source) {
+            if (instances && comparing_manifest(scan)) {
+                address names = unsafe_position<ManifestExpected>(scan.expected).selection.instances;
+                scan.same_source = equal_manifest_bytes(name,receiver.current_name(names,index));
+            } else {
+                receiver.name(receiver.context,name);
+            }
+        }
+        index += 1u64;
     }
 }
 
 void manifest_selection(inout ManifestScan scan, ManifestReceiver receiver) on cpu
     requires nonzero(receiver.valid_text) requires nonzero(receiver.name)
-    requires nonzero(receiver.selection) {
+    requires nonzero(receiver.selection) requires nonzero(receiver.current_name) {
     u32 tag = u32(manifest_number(scan,4u64));
     if (tag > 3) { scan.status = MANIFEST_SELECTION; return; }
+    if (comparing_manifest(scan)) {
+        scan.same_source = tag == unsafe_position<ManifestExpected>(scan.expected).selection.tag;
+    }
     ReadBytes entry = empty();
     ReadBytes target = empty();
     if (tag == 1) {
-        manifest_names(scan,receiver);
+        manifest_names(scan,receiver,true);
     } else {
         entry = manifest_text(scan,receiver);
         if (tag != 0) { target = manifest_text(scan,receiver); }
     }
-    if (scan.status == 0) { receiver.selection(receiver.context,ManifestVariant(entry,target,tag)); }
+    if (scan.status == 0) {
+        if (comparing_manifest(scan)) {
+            ManifestChoice choice = unsafe_position<ManifestExpected>(scan.expected).selection;
+            if (tag != 1) {
+                scan.same_source = equal_manifest_bytes(entry,choice.first)
+                    && (tag == 0 || equal_manifest_bytes(target,choice.second));
+            }
+        } else if (address_bits(scan.expected) == 0u64) {
+            receiver.selection(receiver.context,ManifestVariant(entry,target,tag));
+        }
+    }
 }
 
 void manifest_declaration(inout ManifestScan scan, ManifestReceiver receiver) on cpu
     requires nonzero(receiver.valid_text) requires nonzero(receiver.name)
-    requires nonzero(receiver.declaration) {
+    requires nonzero(receiver.declaration) requires nonzero(receiver.current_name) {
     u32 tag = u32(manifest_number(scan,4u64));
     if (tag > 7) { scan.status = MANIFEST_DECLARATION; return; }
     ReadBytes name = manifest_text(scan,receiver);
     ReadBytes module_name = empty();
     if (tag >= 4 && tag <= 6) {
         module_name = manifest_text(scan,receiver);
-        manifest_names(scan,receiver);
+        manifest_names(scan,receiver,false);
     }
-    if (scan.status == 0) { receiver.declaration(receiver.context,ManifestVariant(name,module_name,tag)); }
+    if (scan.status == 0 && scan.same_source) { receiver.declaration(receiver.context,ManifestVariant(name,module_name,tag)); }
 }
 
-void manifest_source(inout ManifestScan scan, ManifestReceiver receiver) on cpu
-    requires nonzero(receiver.valid_text) requires nonzero(receiver.source) {
+void manifest_source(inout ManifestScan scan, ManifestReceiver receiver, u64 index) on cpu
+    requires nonzero(receiver.valid_text) requires nonzero(receiver.source) requires nonzero(receiver.current_source) {
     ReadBytes module_name = manifest_text(scan,receiver);
     ReadBytes path = manifest_bytes(scan,false);
     ReadBytes scope = manifest_text(scan,receiver);
     address fingerprint = manifest_digest(scan);
     if (scan.status == 0) {
-        receiver.source(receiver.context,ManifestReadSource(module_name,path,scope,fingerprint));
+        if (comparing_manifest(scan)) {
+            ManifestReadSource current = receiver.current_source(unsafe_position<ManifestExpected>(scan.expected).context,index);
+            scan.same_source = equal_manifest_bytes(module_name,current.module_name)
+                && equal_manifest_bytes(path,current.path) && equal_manifest_bytes(scope,current.scope)
+                && equal_manifest_bytes(ReadBytes(fingerprint,32u64),ReadBytes(current.fingerprint,32u64));
+        } else if (address_bits(scan.expected) == 0u64) {
+            receiver.source(receiver.context,ManifestReadSource(module_name,path,scope,fingerprint));
+        }
     }
 }
 
-void manifest_requirement(inout ManifestScan scan, ManifestReceiver receiver) on cpu
-    requires nonzero(receiver.valid_text) requires nonzero(receiver.requirement) {
+void manifest_requirement(inout ManifestScan scan, ManifestReceiver receiver, u64 index) on cpu
+    requires nonzero(receiver.valid_text) requires nonzero(receiver.requirement) requires nonzero(receiver.current_requirement) {
     ReadBytes name = manifest_text(scan,receiver);
     ReadBytes kind = manifest_text(scan,receiver);
-    if (scan.status == 0) { receiver.requirement(receiver.context,ManifestReadRequirement(name,kind)); }
+    if (scan.status == 0) {
+        if (comparing_manifest(scan)) {
+            ManifestReadRequirement current = receiver.current_requirement(unsafe_position<ManifestExpected>(scan.expected).context,index);
+            scan.same_source = equal_manifest_bytes(name,current.name) && equal_manifest_bytes(kind,current.kind);
+        } else if (address_bits(scan.expected) == 0u64) {
+            receiver.requirement(receiver.context,ManifestReadRequirement(name,kind));
+        }
+    }
 }
 
 ManifestIdentity manifest_identity(inout ManifestScan scan, ManifestReceiver receiver) on cpu
@@ -335,18 +395,31 @@ ManifestIdentity manifest_identity(inout ManifestScan scan, ManifestReceiver rec
 ManifestReadResult manifest_records(inout ManifestScan scan, ManifestReceiver receiver) on cpu
     requires nonzero(receiver.valid_text) requires nonzero(receiver.name)
     requires nonzero(receiver.selection) requires nonzero(receiver.source)
-    requires nonzero(receiver.requirement) requires nonzero(receiver.declaration) {
+    requires nonzero(receiver.requirement) requires nonzero(receiver.declaration)
+    requires nonzero(receiver.current_name) requires nonzero(receiver.current_source)
+    requires nonzero(receiver.current_requirement) {
     ManifestIdentity identity = manifest_identity(scan,receiver);
+    if (comparing_manifest(scan)) {
+        scan.same_source = equal_manifest_identity(identity,unsafe_position<ManifestExpected>(scan.expected).identity);
+    }
     manifest_selection(scan,receiver);
     u64 sources = manifest_number(scan,8u64);
-    while (sources != 0u64 && scan.status == 0) {
-        manifest_source(scan,receiver);
-        sources -= 1u64;
+    if (comparing_manifest(scan)) {
+        scan.same_source = sources == unsafe_position<ManifestExpected>(scan.expected).source_count;
+    }
+    u64 index = 0u64;
+    while (index < sources && scan.status == 0) {
+        manifest_source(scan,receiver,index);
+        index += 1u64;
     }
     u64 requirements = manifest_number(scan,8u64);
-    while (requirements != 0u64 && scan.status == 0) {
-        manifest_requirement(scan,receiver);
-        requirements -= 1u64;
+    if (comparing_manifest(scan)) {
+        scan.same_source = requirements == unsafe_position<ManifestExpected>(scan.expected).requirement_count;
+    }
+    index = 0u64;
+    while (index < requirements && scan.status == 0) {
+        manifest_requirement(scan,receiver,index);
+        index += 1u64;
     }
     address imports_digest = manifest_digest(scan);
     address native_digest = manifest_native_digest(scan);
@@ -358,21 +431,23 @@ ManifestReadResult manifest_records(inout ManifestScan scan, ManifestReceiver re
     if (scan.status == 0 && scan.cursor.position != scan.cursor.input.length) {
         scan.status = MANIFEST_TRAILING;
     }
-    return ManifestReadResult(identity,imports_digest,native_digest,scan.status);
+    return ManifestReadResult(identity,imports_digest,native_digest,u32(scan.same_source),scan.status);
 }
 
-extern "C" ManifestReadResult read_manifest(ReadBytes input, u64 magic, ManifestReceiver receiver) on cpu
+extern "C" ManifestReadResult read_manifest(ReadBytes input, u64 magic, ManifestReceiver receiver, address expected) on cpu
     requires nonzero(receiver.valid_text) requires nonzero(receiver.name)
     requires nonzero(receiver.selection) requires nonzero(receiver.source)
-    requires nonzero(receiver.requirement) requires nonzero(receiver.declaration) {
+    requires nonzero(receiver.requirement) requires nonzero(receiver.declaration)
+    requires nonzero(receiver.current_name) requires nonzero(receiver.current_source)
+    requires nonzero(receiver.current_requirement) {
     MetaCursor cursor = MetaCursor(input,0u64);
     MetaWord signature = number(cursor,8u64,8);
     if (signature.error != 0 || signature.value != magic) {
         ManifestIdentity identity = ManifestIdentity(empty(),empty(),empty(),empty(),empty(),0);
         address absent = unsafe_address(0u64);
-        return ManifestReadResult(identity,absent,absent,MANIFEST_ABSENT);
+        return ManifestReadResult(identity,absent,absent,0,MANIFEST_ABSENT);
     }
     ReadBytes payload = ReadBytes(at(input.bytes,cursor.position),input.length-cursor.position);
-    ManifestScan scan = ManifestScan(MetaCursor(payload,0u64),0);
+    ManifestScan scan = ManifestScan(MetaCursor(payload,0u64),0,expected,true);
     return manifest_records(scan,receiver);
 }

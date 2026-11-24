@@ -100,10 +100,8 @@ fn compile_importing(
         Ok(file) => {
             let bytes = crate::object::ObjectBytes::capture(&file).map_err(error)?;
             let reader = crate::object::ObjectReader::new(&bytes).map_err(error)?;
-            if let Some(bytes) = reader.build_inputs().map_err(error)?
-                && let Some(stored) = identity::decode(bytes)?
-            {
-                if stored.source.same_code(&source) {
+            if let Some(bytes) = reader.build_inputs().map_err(error)? {
+                if let Some(stored) = identity::match_source(bytes, &source)? {
                     let inputs = reader.reuse_inputs().map_err(error)?;
                     if stored.imports == identity::references(definitions, imported, inputs.imports.iter().copied(), &stored.declarations) {
                         let native = stored.native.map(|_| crate::object::native_inputs(runtime, worker)).transpose()?;
