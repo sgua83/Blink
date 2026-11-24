@@ -17,6 +17,12 @@ struct ArchiveRange {u64 start;u64 length;};
 struct ArchiveReadMember {u32 offset;ArchiveRange name;ArchiveRange body;};
 struct ArchiveReadResult {u32 error;u64 at;};
 extern "C" bool has_signature(address bytes, u64 length) on cpu;
+// Visit validated physical members in input order. The caller owns the bytes
+// and the receiver; the walk retains no symbol index or member state.
+extern "C" ArchiveReadResult visit_members(address bytes, u64 length, address name_context,
+    cfn<u32,address,ArchiveRange> validate, address member_context,
+    cfn<void,address,ArchiveRange,ArchiveRange> emit) on cpu requires nonzero(validate) requires nonzero(emit);
+
 // A successful load transfers the directory. Its ranges borrow the original
 // archive until library_destroy. validate checks only the UTF-8 name range.
 struct ArchiveLoad { address library; ArchiveReadResult read; };

@@ -305,23 +305,30 @@ extern "C" ArchiveSelection library_take(address library,address name,u64 length
 
 extern "C" void library_destroy(address library) on cpu {free(library);}
 
-ArchiveReadResult fill_directory(address library,address bytes,u64 length,ArchiveRange directory,
-    ArchiveRange names,u32 offset_count,u32 symbol_entries,address context,
-    cfn<u32,address,ArchiveRange> validate) on cpu requires nonzero(validate) {
-    u64 offsets=directory.start+4u64;
-    u64 indices=offsets+u64(offset_count)*4u64+4u64;
-    u64 at=indices+u64(symbol_entries)*2u64;
-    for(i in 0..symbol_entries){
-        u64 index_at=indices+u64(i)*2u64;
+struct ArchiveReadLayout {
+    ArchiveRange directory;ArchiveRange names;
+    u64 member_count;u64 offsets;u64 indices;
+    u32 offset_count;u32 symbol_entries;
+    ArchiveReadResult result;
+};
+
+ArchiveReadResult read_entries(address bytes,u64 length,ArchiveReadLayout layout,address library,
+    address name_context,cfn<u32,address,ArchiveRange> validate,
+    address member_context,cfn<void,address,ArchiveRange,ArchiveRange> emit) on cpu requires nonzero(validate) {
+    u64 at=layout.indices+u64(layout.symbol_entries)*2u64;
+    for(i in 0..layout.symbol_entries){
+        u64 index_at=layout.indices+u64(i)*2u64;
         u32 index=read_byte(bytes,index_at)|read_byte(bytes,index_at+1u64)<<8;
         if(index==0){return ArchiveReadResult(5,index_at);}
-        if(index>offset_count){return ArchiveReadResult(6,index_at);}
-        ArchiveReadResult name_end=read_terminated(bytes,directory,at-directory.start);
+        if(index>layout.offset_count){return ArchiveReadResult(6,index_at);}
+        ArchiveReadResult name_end=read_terminated(bytes,layout.directory,at-layout.directory.start);
         if(name_end.error!=0){return name_end;}
-        u32 offset=read_word(bytes,offsets+u64(index-1)*4u64);
         ArchiveRange name=ArchiveRange(at,name_end.at-at);
-        if(validate(context,name)==0){return ArchiveReadResult(11,at);}
-        directory_add_symbol(library,ArchiveSymbol(unsafe_address(address_bits(bytes)+at),name.length,u64(offset)));
+        if(validate(name_context,name)==0){return ArchiveReadResult(11,at);}
+        if(address_bits(library)!=0u64){
+            u32 offset=read_word(bytes,layout.offsets+u64(index-1)*4u64);
+            directory_add_symbol(library,ArchiveSymbol(unsafe_address(address_bits(bytes)+at),name.length,u64(offset)));
+        }
         at=name_end.at+1u64;
     }
     // The first pass validated every header. The input stays immutable here.
@@ -334,28 +341,32 @@ ArchiveReadResult fill_directory(address library,address bytes,u64 length,Archiv
             if(name.length!=0u64&&read_byte(bytes,name.start)==47){
                 ArchiveReadNumber index=read_decimal(bytes,ArchiveRange(name.start+1u64,name.length-1u64));
                 if(!index.valid){return ArchiveReadResult(3,name.start+1u64);}
-                ArchiveReadResult name_end=read_terminated(bytes,names,index.value);
+                ArchiveReadResult name_end=read_terminated(bytes,layout.names,index.value);
                 if(name_end.error!=0){return name_end;}
-                name=ArchiveRange(names.start+index.value,name_end.at-names.start-index.value);
+                name=ArchiveRange(layout.names.start+index.value,name_end.at-layout.names.start-index.value);
             }else{
                 if(name.length==0u64||read_byte(bytes,name.start+name.length-1u64)!=47){return ArchiveReadResult(9,name.start);}
                 name=ArchiveRange(name.start,name.length-1u64);
             }
-            if(validate(context,name)==0){return ArchiveReadResult(11,name.start);}
-            directory_member_put(library,member_index,LibraryMember(ArchiveReadMember(u32(at),name,item.body),0));
-            member_index+=1u64;
+            if(validate(name_context,name)==0){return ArchiveReadResult(11,name.start);}
+            if(emit!=cfn<void,address,ArchiveRange,ArchiveRange>()){
+                emit(member_context,name,item.body);
+            }else{
+                directory_member_put(library,member_index,LibraryMember(ArchiveReadMember(u32(at),name,item.body),0));
+                member_index+=1u64;
+            }
         }
         at=item.next;
     }
     return ArchiveReadResult(0,0u64);
 }
 
-ArchiveLoad load_error(u32 error,u64 at) on cpu {
-    return ArchiveLoad(unsafe_address(0u64),ArchiveReadResult(error,at));
+ArchiveReadLayout invalid_read(u32 error,u64 at) on cpu {
+    ArchiveRange empty=ArchiveRange(0u64,0u64);
+    return ArchiveReadLayout(empty,empty,0u64,0u64,0u64,0,0,ArchiveReadResult(error,at));
 }
-extern "C" ArchiveLoad load(address bytes,u64 length,address context,
-    cfn<u32,address,ArchiveRange> validate) on cpu requires nonzero(validate) {
-    if(length<8u64){return load_error(1,0u64);}
+ArchiveReadLayout inspect(address bytes,u64 length) on cpu {
+    if(length<8u64){return invalid_read(1,0u64);}
     u64 at=8u64;
     u32 links=0;
     u64 member_count=0u64;
@@ -363,32 +374,49 @@ extern "C" ArchiveLoad load(address bytes,u64 length,address context,
     ArchiveRange names=ArchiveRange(0u64,0u64);
     while(at<length){
         ArchiveReadHeader item=read_header(bytes,length,at);
-        if(item.error!=0){return load_error(item.error,item.at);}
+        if(item.error!=0){return invalid_read(item.error,item.at);}
         if(header_named(bytes,item.name,1)){links+=1;if(links==2){directory=item.body;}}
         else if(header_named(bytes,item.name,2)){names=item.body;}
         else {member_count+=1u64;}
         at=item.next;
     }
-    if(links<2){return load_error(4,0u64);}
+    if(links<2){return invalid_read(4,0u64);}
     u64 end=directory.start+directory.length;
-    if(directory.length<4u64){return load_error(1,directory.start);}
+    if(directory.length<4u64){return invalid_read(1,directory.start);}
     u32 offset_count=read_word(bytes,directory.start);
     u64 offsets=directory.start+4u64;
-    if(u64(offset_count)>(end-offsets)/4u64){return load_error(1,offsets);}
+    if(u64(offset_count)>(end-offsets)/4u64){return invalid_read(1,offsets);}
     at=offsets+u64(offset_count)*4u64;
-    if(end-at<4u64){return load_error(1,at);}
+    if(end-at<4u64){return invalid_read(1,at);}
     u32 symbol_entries=read_word(bytes,at);
     u64 indices=at+4u64;
-    if(u64(symbol_entries)>(end-indices)/2u64){return load_error(1,indices);}
+    if(u64(symbol_entries)>(end-indices)/2u64){return invalid_read(1,indices);}
+    return ArchiveReadLayout(directory,names,member_count,offsets,indices,offset_count,
+        symbol_entries,ArchiveReadResult(0,0u64));
+}
 
-    u64 symbol_offset=directory_member_offset(member_count);
-    address library=malloc(symbol_offset+u64(symbol_entries)*size_of<ArchiveSymbol>());
-    if(address_bits(library)==0u64){return load_error(12,0u64);}
-    unsafe_position<LibraryDirectory>(library)=LibraryDirectory(member_count,0u64,symbol_offset);
-    ArchiveReadResult result=fill_directory(library,bytes,length,directory,names,offset_count,symbol_entries,context,validate);
+extern "C" ArchiveReadResult visit_members(address bytes,u64 length,address name_context,
+    cfn<u32,address,ArchiveRange> validate,address member_context,
+    cfn<void,address,ArchiveRange,ArchiveRange> emit) on cpu requires nonzero(validate) requires nonzero(emit) {
+    ArchiveReadLayout layout=inspect(bytes,length);
+    if(layout.result.error!=0){return layout.result;}
+    return read_entries(bytes,length,layout,unsafe_address(0u64),name_context,validate,member_context,emit);
+}
+
+extern "C" ArchiveLoad load(address bytes,u64 length,address context,
+    cfn<u32,address,ArchiveRange> validate) on cpu requires nonzero(validate) {
+    address empty=unsafe_address(0u64);
+    ArchiveReadLayout layout=inspect(bytes,length);
+    if(layout.result.error!=0){return ArchiveLoad(empty,layout.result);}
+    u64 symbol_offset=directory_member_offset(layout.member_count);
+    address library=malloc(symbol_offset+u64(layout.symbol_entries)*size_of<ArchiveSymbol>());
+    if(library==empty){return ArchiveLoad(empty,ArchiveReadResult(12,0u64));}
+    unsafe_position<LibraryDirectory>(library)=LibraryDirectory(layout.member_count,0u64,symbol_offset);
+    ArchiveReadResult result=read_entries(bytes,length,layout,library,context,validate,empty,
+        cfn<void,address,ArchiveRange,ArchiveRange>());
     if(result.error!=0){
         library_destroy(library);
-        return ArchiveLoad(unsafe_address(0u64),result);
+        return ArchiveLoad(empty,result);
     }
     return ArchiveLoad(library,result);
 }

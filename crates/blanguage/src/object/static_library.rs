@@ -257,6 +257,11 @@ unsafe extern "C" {
     #[link_name = "bootstrap.archive::load"]
     fn archive_load(bytes: *const u8, length: usize, context: *mut std::ffi::c_void,
         validate: unsafe extern "C" fn(*mut std::ffi::c_void, ArchiveRange) -> u32) -> ArchiveLoad;
+    #[link_name = "bootstrap.archive::visit_members"]
+    fn archive_visit_members(bytes: *const u8, length: usize, name_context: *mut std::ffi::c_void,
+        validate: unsafe extern "C" fn(*mut std::ffi::c_void, ArchiveRange) -> u32,
+        member_context: *mut std::ffi::c_void,
+        emit: unsafe extern "C" fn(*mut std::ffi::c_void, ArchiveRange, ArchiveRange)) -> ArchiveReadResult;
     #[link_name="bootstrap.archive::library_member_count"]
     fn library_member_count(library:*mut std::ffi::c_void)->usize;
     #[link_name="bootstrap.archive::library_member"]
@@ -384,6 +389,30 @@ unsafe extern "C" {
     fn archive_encode(input: ArchiveInput, layout: ArchiveLayout, output: *mut u8);
 }
 
+struct ArchiveMembers<'a> {
+    source: &'a ObjectBytes,
+    output: &'a mut Vec<Member>,
+}
+
+unsafe extern "C" fn append_member(context: *mut std::ffi::c_void, name: ArchiveRange, body: ArchiveRange) {
+    let members = unsafe { &mut *context.cast::<ArchiveMembers<'_>>() };
+    // B calls this receiver after validate_name succeeds for the same range.
+    let name = unsafe { std::str::from_utf8_unchecked(name.bytes(members.source)) };
+    members.output.push(Member { name: name.into(), bytes: members.source.slice(body.range()) });
+}
+
+fn append_archive(source: &ObjectBytes, output: &mut Vec<Member>) -> Result<()> {
+    let mut names = ArchiveNames { bytes: source, error: None };
+    let mut members = ArchiveMembers { source, output };
+    let result = unsafe {
+        archive_visit_members(source.as_ptr(), source.len(),
+            (&mut names as *mut ArchiveNames<'_>).cast(), validate_name,
+            (&mut members as *mut ArchiveMembers<'_>).cast(), append_member)
+    };
+    if let Some(error) = names.error { return Err(error.into()); }
+    archive_read_result(result)
+}
+
 /// 将已编译模块保存为标准 COFF 静态库；原对象字节保持，不调用编译器。
 pub fn archive(inputs: &[impl AsRef<Path>], path: &Path) -> Result<()> {
     let members = members(inputs)?;
@@ -407,12 +436,7 @@ pub(crate) fn members(inputs: &[impl AsRef<Path>]) -> Result<Vec<Member>> {
         let input = input.as_ref();
         let bytes = ObjectBytes::read(input)?;
         if has_signature(&bytes) {
-            let library=Library::decode(bytes, false)?;
-            for index in 0..library.member_count() {
-                let member=library.member(index).member;
-                let (name,bytes)=library.member_bytes(member);
-                members.push(Member { name: name.into(), bytes });
-            }
+            append_archive(&bytes, &mut members)?;
         } else {
             let name = input.file_name()
                 .and_then(|name| name.to_str())
