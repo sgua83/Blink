@@ -53,14 +53,17 @@ fn runtime_artifact(stdout: &str) -> Result<PathBuf> {
 
 fn development_runtime(
     sdk: &Path,
-    target: &Path,
+    cache: &Path,
     work: &Path,
     worker: &crate::compiler::Worker,
 ) -> Result<Vec<String>> {
+    let cache_directory = cache.to_str().ok_or("运行库缓存路径不能编码为 UTF-8")?;
+    // Cargo shares its intermediates, while this call owns the reported final archive until publication.
     let mut arguments: Vec<OsString> = [
         "rustc".into(), "--offline".into(), "--locked".into(), "--release".into(),
         "--manifest-path".into(), sdk.join("Cargo.toml").into_os_string(),
-        "--target-dir".into(), target.as_os_str().into(), "--package".into(), "blcompute".into(),
+        "--target-dir".into(), work.as_os_str().into(), "--package".into(), "blcompute".into(),
+        "--config".into(), format!("build.build-dir={}", serde_json::to_string(cache_directory)?).into(),
         "--lib".into(), "--no-default-features".into(), "--config".into(), "profile.release.lto=false".into(),
         "--color".into(), "never".into(), "--message-format=json-render-diagnostics".into(),
     ].into();
@@ -88,8 +91,9 @@ fn development_runtime(
     let archive = runtime_artifact(&String::from_utf8(output.stdout)?)?;
     let product = crate::file_bytes::FileBytes::read_path(&archive)?;
     let hash = crate::build::hash::hex(&crate::build::hash::digest(&product));
-    let shared = target.join(format!("blink-runtime-{hash}.lib"));
+    let shared = cache.join(format!("blink-runtime-{hash}.lib"));
     if !shared.try_exists()? {
+        std::fs::create_dir_all(cache)?;
         if let Err(error) = crate::file_bytes::publish(&shared, &work.join("runtime.lib"), [&product])
             && !shared.try_exists()?
         {
@@ -188,9 +192,9 @@ pub(crate) fn inputs(runtime: bool, worker: &crate::compiler::Worker) -> std::io
     digest.field(sdk.as_os_str().as_encoded_bytes());
     let variables = std::env::vars_os().filter(|(name, _)| {
         let name = name.to_string_lossy().to_ascii_uppercase();
-        // compile() fixes jobs, profile and target-dir with explicit Cargo arguments.
+        // compile() fixes jobs, profile and both output directories with explicit Cargo arguments.
         !matches!(name.as_str(), "CARGO_BUILD_JOBS" | "CARGO_BUILD_PROFILE"
-            | "CARGO_TARGET_DIR" | "CARGO_BUILD_TARGET_DIR")
+            | "CARGO_TARGET_DIR" | "CARGO_BUILD_TARGET_DIR" | "CARGO_BUILD_BUILD_DIR")
             && (matches!(name.as_str(), "PATH" | "RUSTC" | "RUSTFLAGS" | "RUSTC_WRAPPER"
                 | "RUSTC_WORKSPACE_WRAPPER" | "RUSTUP_HOME" | "RUSTUP_TOOLCHAIN"
                 | "CARGO_HOME" | "CARGO_INCREMENTAL" | "CARGO_ENCODED_RUSTFLAGS"
