@@ -2650,7 +2650,7 @@ fn emit_shader(
     let entry = e.id();
     let execute = e.id();
     let end = e.id();
-    let finish = |mut e: Emitter<'_>| {
+    let finish = |mut e: Emitter<'_>, prepare: bool| {
         e.emit_control(2, |body| unsafe { end_shader_body(body) });
         let global_inputs = [global, num_groups];
         let workgroup_inputs = [e.push, shared, local_input];
@@ -2664,7 +2664,6 @@ fn emit_shader(
             data: part.as_ptr(),
             count: part.len() as u64,
         });
-        let prepare = argument_pass && (e.stage.selection.is_some() || !matches!(e.stage.operation, Operation::Map));
         let input = ShaderEnvelope {
             bound: e.next, ext: e.ext, entry: main, workgroup_width: e.workgroup_width,
             prepare: u32::from(prepare), features,
@@ -2695,12 +2694,12 @@ fn emit_shader(
     match pass {
         EntryPass::DispatchArguments => {
             let prefix = PrefixCount { binding: request.parameter, word: request.word };
-            e.prefix_arguments(Some(&prefix), local_index);
-            return finish(e);
+            let prepare = e.prefix_arguments(Some(&prefix), local_index);
+            return finish(e, prepare);
         }
         EntryPass::SelectionArguments => {
-            e.prefix_arguments(stage.prefix.as_ref(), local_index);
-            return finish(e);
+            let prepare = e.prefix_arguments(stage.prefix.as_ref(), local_index);
+            return finish(e, prepare);
         }
         _ => {}
     }
@@ -2940,5 +2939,5 @@ fn emit_shader(
             e.merge_active(end, reaches);
         }
     }
-    finish(e)
+    finish(e, false)
 }

@@ -1916,6 +1916,21 @@ DispatchValue dispatch_levels(address body, DispatchValue cursor, DispatchGrid i
     return DispatchValue(out.words, out.next, first.value);
 }
 
+extern "C" DispatchArgumentPlan plan_dispatch_arguments(
+    u32 operation, u32 selected, u32 prefix, u32 fixed, u32 scan_count, u32 scan_width
+) on cpu {
+    bool collective = operation != ENTRY_MAP || selected != 0;
+    DispatchCapacity capacity = DispatchCapacity::None;
+    if (collective && (fixed == 0 || scan_count > scan_width)) {
+        if (fixed != 0) {
+            capacity = DispatchCapacity::Fixed;
+        } else {
+            capacity = prefix == 0 ? DispatchCapacity::EntryCount : DispatchCapacity::ReadDomain;
+        }
+    }
+    return DispatchArgumentPlan(capacity, u32(collective), u32(operation == ENTRY_SORT));
+}
+
 extern "C" DispatchValue encode_dispatch_grid(DispatchGrid input, address body) on cpu {
     // The command and the shader consume the same first page of indirect records.
     u32 header = input.next;

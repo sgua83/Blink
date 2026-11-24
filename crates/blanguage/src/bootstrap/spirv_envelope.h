@@ -961,6 +961,19 @@ struct TileExtract {
 // fixed shift ID, or zero for the low bits. The body has room for 19 words.
 extern "C" PayloadRead tile_extract(TileExtract input, address body) on cpu;
 
+enum DispatchCapacity:u32 {
+    None=0; Fixed=1; EntryCount=2; ReadDomain=3;
+};
+struct DispatchArgumentPlan {
+    DispatchCapacity capacity;
+    u32 collective;
+    u32 sorting;
+};
+
+extern "C" DispatchArgumentPlan plan_dispatch_arguments(
+    u32 operation, u32 selected, u32 prefix, u32 fixed, u32 scan_count, u32 scan_width
+) on cpu;
+
 struct DispatchScalars {
     u32 uint_type;
     u32 bool_type;

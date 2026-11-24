@@ -1,6 +1,26 @@
 //! 有效前缀的 GPU 间接参数与多维工作组索引；实际数量始终驻留设备。
 use super::*;
 use crate::spirv::{DISPATCH_CONTINUATION_SPEC_ID, DISPATCH_RECORD_BYTES, SCAN_WIDTH, sort_histogram_count};
+
+#[repr(u32)]
+#[allow(dead_code)] // Returned by bootstrap.spirv_envelope.
+enum DispatchCapacity { None, Fixed, EntryCount, ReadDomain }
+
+#[repr(C)]
+struct DispatchArgumentPlan {
+    capacity: DispatchCapacity,
+    collective: u32,
+    sorting: u32,
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.spirv_envelope::plan_dispatch_arguments"]
+    fn plan_dispatch_arguments(
+        operation: EntryOperation, selected: u32, prefix: u32,
+        fixed: u32, scan_count: u32, scan_width: u32,
+    ) -> DispatchArgumentPlan;
+}
+
 impl Emitter<'_> {
     fn dispatch_push(&self, zero: u32) -> DispatchPush {
         DispatchPush {
@@ -52,7 +72,22 @@ impl Emitter<'_> {
         }
     }
 
-    pub(super) fn prefix_arguments(&mut self, prefix: Option<&PrefixCount>, invocation: u32) {
+    pub(super) fn prefix_arguments(&mut self, prefix: Option<&PrefixCount>, invocation: u32) -> bool {
+        let domain = self.stage.domain;
+        let operation = EntryOperation::from(&self.stage.operation);
+        let capacity = self.program.buffers[domain].count;
+        let fixed = capacity.unwrap_or(0);
+        let scan_count = match (&operation, capacity) {
+            (EntryOperation::Sort, Some(count)) => sort_histogram_count(count),
+            _ => fixed,
+        };
+        let plan = unsafe {
+            plan_dispatch_arguments(
+                operation, u32::from(self.stage.selection.is_some()), u32::from(prefix.is_some()),
+                u32::from(capacity.is_some()), scan_count, SCAN_WIDTH,
+            )
+        };
+        let count_word = 2 + domain as u32;
         let zero = self.constant(Scalar::U32, 0);
         let first = self.id();
         let run = self.id();
@@ -63,26 +98,20 @@ impl Emitter<'_> {
                 let source = self.address_scalar(Scalar::U32, prefix.binding, zero, prefix.word);
                 self.load_aligned_word(source)
             }
-            None => self.prefix_push(2 + self.stage.domain as u32),
+            None => self.prefix_push(count_word),
         };
         let max_x = self.prefix_push(0);
         let max_y = self.prefix_push(1);
-        let collective =
-            !matches!(self.stage.operation, Operation::Map) || self.stage.selection.is_some();
-        let sorting = matches!(self.stage.operation, Operation::StableSort(_));
-        let buffer = &self.program.buffers[self.stage.domain];
-        let capacity = if collective && buffer.count.is_none_or(|capacity| {
-            let elements = if sorting { sort_histogram_count(capacity) } else { capacity };
-            elements > SCAN_WIDTH
-        }) {
-            match buffer.count {
-                Some(capacity) => self.constant(Scalar::U32, capacity),
-                None => self.prefix_push(2 + self.stage.domain as u32),
-            }
-        } else {
-            0
+        let capacity = match plan.capacity {
+            DispatchCapacity::None => 0,
+            DispatchCapacity::Fixed => self.constant(Scalar::U32, fixed),
+            DispatchCapacity::EntryCount => count,
+            DispatchCapacity::ReadDomain => self.prefix_push(count_word),
         };
-        let input = self.dispatch_grid_input(count, [max_x, max_y], capacity, collective, sorting, 0);
+        let collective = plan.collective != 0;
+        let input = self.dispatch_grid_input(
+            count, [max_x, max_y], capacity, collective, plan.sorting != 0, 0,
+        );
         let at = self.body.len();
         self.body.reserve(input.word_capacity());
         let emitted = unsafe {
@@ -92,6 +121,7 @@ impl Emitter<'_> {
         };
         self.next = emitted.next;
         self.merge_active(end, true);
+        collective
     }
 
     pub(super) fn continuation_byte(&mut self) -> u32 {
