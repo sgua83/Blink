@@ -54,7 +54,10 @@ fn native_modules() -> Result<(), Box<dyn std::error::Error>> {
     println!("cargo:rerun-if-env-changed=BLINK_BOOTSTRAP_SDK");
     let seed = match env::var_os("BLINK_BOOTSTRAP_SDK") {
         Some(path) => PathBuf::from(path),
-        None => PathBuf::from(env::var_os("ProgramFiles").ok_or("缺少ProgramFiles")?).join("Blink"),
+        None => {
+            println!("cargo:rerun-if-env-changed=ProgramFiles");
+            PathBuf::from(env::var_os("ProgramFiles").ok_or("缺少ProgramFiles")?).join("Blink")
+        }
     };
     // The inputs stay installed until their final compiler and archiver have exited.
     let _seed_use = OpenOptions::new()
