@@ -535,7 +535,8 @@ impl<'a> Readback<'a> {
     ) -> Result<crate::ReadDataset> {
         if let Some(target) = self.sources.get(&key) {
             // Bindings of the same frozen storage can have different last uses.
-            Execution::borrow_synchronous(source.dependency())?;
+            let previous = Execution::borrow_synchronous(source.dependency())?;
+            self.finish_source(previous)?;
             return Ok(target.clone());
         }
         let target = self.download_graph(source)?.freeze()?;
@@ -567,8 +568,21 @@ impl<'a> Readback<'a> {
         })
     }
 
+    fn finish_source(&self, previous: Option<&Execution>) -> Result<()> {
+        let Some(previous) = previous else {
+            return Ok(());
+        };
+        if let Some(point) = &self.completion {
+            // Any earlier copy in this readback followed all of its input submissions.
+            Execution::wait_synchronous(point, Some(previous))
+        } else {
+            previous.wait()
+        }
+    }
+
     fn read_payload(&mut self, data: &GpuDataset, mut previous: Option<&Execution>) -> Result<Vec<u32>> {
         let Some(first) = data.pages.first() else {
+            self.finish_source(previous)?;
             return Ok(Vec::new());
         };
         let byte_count = data.bytes() as usize;
