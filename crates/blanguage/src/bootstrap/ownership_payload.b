@@ -1,7 +1,7 @@
 module bootstrap.ownership_payload;
 // Info flags: variants=1, own-presence=2. Item tags: absent=0, Unit=1,
 // ordinary Value=2, Dataset=3, OwnedValuePayload=4. All storage is original.
-extern "C" void join(address left,address right,u32 stored,address choice,address presence,Host host) on cpu
+void join(address left,address right,u32 stored,address choice,address presence,Host host) on cpu
     requires nonzero(host.inspect)
     requires nonzero(host.value)
     requires nonzero(host.ownership)
@@ -32,6 +32,71 @@ extern "C" void join(address left,address right,u32 stored,address choice,addres
         i+=1u64;
     }
 }
+void join_value(address left,address right,u32 stored,address choice,Host host) on cpu
+    requires nonzero(host.proof_join_stored) requires nonzero(host.proof_join_common)
+    requires nonzero(host.uniform) requires nonzero(host.set_uniform)
+    requires nonzero(host.constant_equal) requires nonzero(host.clear_constant) {
+    if(stored!=0){host.proof_join_stored(left,right,choice);}else{host.proof_join_common(left,right,choice);}
+    host.set_uniform(left,host.uniform(left)&host.uniform(right));
+    if(host.constant_equal(left,right)==0){host.clear_constant(left);}
+}
+void dataset_presence(address left,address right,address presence,u32 take_right,address choice,DataPresenceHost host) on cpu
+    requires nonzero(host.moved) requires nonzero(host.ownership)
+    requires nonzero(host.initialization) requires nonzero(host.residency) {
+    u32 first=host.moved(left);u32 second=0;
+    if(first==0){second=host.moved(right);}
+    host.ownership(left,right,presence,take_right);
+    if(first!=0){
+        host.initialization(left,right,DataInitial::Right,presence,take_right);
+        host.residency(left,right,DataJoin::Right,address(),take_right);
+    }else if(second!=0){
+        host.initialization(left,right,DataInitial::Left,presence,take_right);
+        host.residency(left,right,DataJoin::Left,address(),take_right);
+    }else{
+        host.initialization(left,right,DataInitial::Selected,presence,take_right);
+        if(address_bits(choice)!=0u64){host.residency(left,right,DataJoin::Selected,choice,take_right);}
+    }
+}
+extern "C" void join_returned(Item left,Item right,u32 stored,address choice,address presence,ReturnedHost host) on cpu
+    requires nonzero(host.values.inspect) requires nonzero(host.values.value)
+    requires nonzero(host.values.ownership) requires nonzero(host.values.child)
+    requires nonzero(host.values.state_equal) requires nonzero(host.values.state_set_moved)
+    requires nonzero(host.values.proof_join_stored) requires nonzero(host.values.proof_join_common)
+    requires nonzero(host.values.uniform) requires nonzero(host.values.set_uniform)
+    requires nonzero(host.values.constant_equal) requires nonzero(host.values.clear_constant)
+    requires nonzero(host.values.join_child) requires nonzero(host.values.join_ownership) requires nonzero(host.values.move_child)
+    requires nonzero(host.values.data_root) requires nonzero(host.values.data_length) requires nonzero(host.values.data_ownership)
+    requires nonzero(host.data.moved) requires nonzero(host.data.ownership)
+    requires nonzero(host.data.initialization) requires nonzero(host.data.residency)
+    requires nonzero(host.save) requires nonzero(host.restore) requires nonzero(host.maximum)
+    requires nonzero(host.elements) requires nonzero(host.prefixes) {
+    if(left.kind==1){return;}
+    if(left.kind==4){join(left.node,right.node,stored,choice,presence,host.values);return;}
+    if(left.kind==2){
+        address value=right.node;
+        if(right.kind==3){value=host.values.data_length(right.node);}
+        join_value(left.node,value,stored,choice,host.values);return;
+    }
+    if(address_bits(choice)!=0u64){host.save(host.context,left.node,right.node);}
+    if(address_bits(presence)!=0u64){dataset_presence(left.node,right.node,presence,0,choice,host.data);}
+    else{
+        address first=host.values.data_ownership(left.node);address second=host.values.data_ownership(right.node);
+        if(host.values.state_equal(first,second)==0){host.values.state_set_moved(first);}
+        host.data.residency(left.node,right.node,address_bits(choice)!=0u64?DataJoin::Selected:DataJoin::Common,choice,0);
+    }
+    address first=host.values.data_root(left.node);address second=host.values.data_root(right.node);
+    if(stored!=0){host.values.proof_join_stored(first,second,address());}
+    else{host.values.proof_join_common(first,second,address());}
+    if(address_bits(choice)!=0u64){host.restore(host.context,left.node,choice);}
+    DataJoin elements=DataJoin::Common;
+    if(host.maximum(left.node)==0){elements=DataJoin::Right;}
+    else if(host.maximum(right.node)==0){elements=DataJoin::Left;}
+    else if(address_bits(choice)!=0u64){elements=DataJoin::Selected;}
+    host.elements(left.node,right.node,elements,choice,presence);
+    host.prefixes(left.node,right.node,choice);
+    join_value(host.values.data_length(left.node),host.values.data_length(right.node),stored,choice,host.values);
+}
+
 extern "C" u32 available(address value,Host host) on cpu
     requires nonzero(host.inspect)
     requires nonzero(host.ownership)
@@ -429,10 +494,13 @@ extern "C" void retain_presence(PayloadPair pair,address presence,u32 take_right
     requires nonzero(host.inspect)
     requires nonzero(host.child)
     requires nonzero(host.ownership)
-    requires nonzero(host.dataset) {
+    requires nonzero(host.dataset)
+    requires nonzero(host.data.moved) requires nonzero(host.data.ownership)
+    requires nonzero(host.data.initialization) requires nonzero(host.data.residency) {
     if(pair.left.kind!=pair.right.kind){return;}
     if(pair.left.kind==3){
-        PayloadPair child=host.dataset(pair,presence,take_right);
+        dataset_presence(pair.left.node,pair.right.node,presence,take_right,address(),host.data);
+        PayloadPair child=host.dataset(pair);
         retain_presence(child,presence,take_right,host);
     }else if(pair.left.kind==4){
         host.ownership(pair,presence,take_right);

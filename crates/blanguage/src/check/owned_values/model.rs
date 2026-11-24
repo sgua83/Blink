@@ -222,7 +222,6 @@ struct LivePathHost {
 }
 
 unsafe extern "C" {
-    #[link_name="bootstrap.ownership_payload::join"] fn source_join(a:Address,b:Address,stored:u32,choice:Address,presence:Address,host:Host);
     #[link_name="bootstrap.ownership_payload::available"] fn source_available(value:Address,host:Host)->u32;
     #[link_name="bootstrap.ownership_payload::all_available"] fn source_all_available(value:Address,host:Host)->u32;
     #[link_name="bootstrap.ownership_payload::borrow"] fn source_borrow(value:Address,host:Host);
@@ -302,18 +301,6 @@ pub(in crate::check) fn owned_data_at_mut<'a>(
     }
 }
 
-pub(super) fn join(
-    value: &mut OwnedValuePayload, mut other: OwnedValue, stored: bool, choice: Option<&bounds::Condition>,
-    presence: Option<&owned_presence::Presence>,
-) {
-    unsafe {
-        source_join(
-            pointer_mut(value), pointer_mut(other.as_mut()), u32::from(stored),
-            choice.map_or(std::ptr::null_mut(), pointer),
-            presence.map_or(std::ptr::null_mut(), pointer), MUT_HOST,
-        );
-    }
-}
 unsafe extern "C" fn join_ownership(left: Address, right: Address, presence: Address) {
     let a = unsafe { &mut *left.cast::<Ownership>() };
     let b = unsafe { &*right.cast::<Ownership>() };
@@ -637,12 +624,113 @@ unsafe extern "C" fn visit_lookup_child(context: Address, parent: LookupNode, in
 #[repr(C)]
 struct PayloadPair { left: Item, right: Item }
 
+#[repr(u32)]
+enum DataInitial { Left,Right,Selected }
+#[repr(u32)]
+enum DataJoin { Left,Right,Selected,Common }
+#[derive(Clone,Copy)]
+#[repr(C)]
+struct DataPresenceHost {
+    moved:unsafe extern "C" fn(Address)->u32,
+    ownership:unsafe extern "C" fn(Address,Address,Address,u32),
+    initialization:unsafe extern "C" fn(Address,Address,DataInitial,Address,u32),
+    residency:unsafe extern "C" fn(Address,Address,DataJoin,Address,u32),
+}
+const DATA_PRESENCE:DataPresenceHost=DataPresenceHost {
+    moved:data_moved,ownership:data_merge_ownership,
+    initialization:data_merge_initialization,residency:data_merge_residency,
+};
+unsafe extern "C" fn data_moved(value:Address)->u32 {
+    u32::from(unsafe { &*value.cast::<Data>() }.ownership==Ownership::Moved)
+}
+unsafe extern "C" fn data_merge_ownership(a:Address,b:Address,when:Address,take_right:u32) {
+    let left=unsafe { &mut *a.cast::<Data>() };let right=unsafe { &mut *b.cast::<Data>() };
+    let selected=unsafe { &*when.cast::<owned_presence::Presence>() };
+    let ownership=Ownership::either(&left.ownership,&right.ownership,Some(selected));
+    let target=if take_right!=0 {right}else{left};target.ownership=ownership;
+}
+unsafe extern "C" fn data_merge_initialization(a:Address,b:Address,mode:DataInitial,when:Address,take_right:u32) {
+    let left=unsafe { &mut *a.cast::<Data>() };let right=unsafe { &mut *b.cast::<Data>() };
+    let initialization=match mode {
+        DataInitial::Left=>left.initialization.take().unwrap_or(Position::Initialized),
+        DataInitial::Right=>right.initialization.take().unwrap_or(Position::Initialized),
+        DataInitial::Selected=>Position::selected(unsafe { &*when.cast::<owned_presence::Presence>() }.clone(),
+            left.initialization.take().unwrap_or(Position::Initialized),right.initialization.take().unwrap_or(Position::Initialized)),
+    };
+    let target=if take_right!=0 {right}else{left};
+    target.initialization=match initialization {Position::Initialized=>None,position=>Some(position)};
+}
+unsafe extern "C" fn data_merge_residency(a:Address,b:Address,mode:DataJoin,when:Address,take_right:u32) {
+    let left=unsafe { &mut *a.cast::<Data>() };let right=unsafe { &mut *b.cast::<Data>() };
+    let residency=match mode {
+        DataJoin::Left=>std::mem::take(&mut left.residency),
+        DataJoin::Right=>std::mem::take(&mut right.residency),
+        DataJoin::Selected=>residency::Residency::conditional(unsafe { &*when.cast::<bounds::Condition>() }.clone(),
+            std::mem::take(&mut left.residency),std::mem::take(&mut right.residency)),
+        DataJoin::Common=>{left.residency.join(&right.residency);return;},
+    };
+    let target=if take_right!=0 {right}else{left};target.residency=residency;
+}
+struct ReturnedJoin {borrows:Option<(view::Borrow,view::Borrow)>}
+#[repr(C)]
+struct ReturnedHost {
+    context:Address,values:Host,data:DataPresenceHost,
+    save:unsafe extern "C" fn(Address,Address,Address),
+    restore:unsafe extern "C" fn(Address,Address,Address),
+    maximum:unsafe extern "C" fn(Address)->u32,
+    elements:unsafe extern "C" fn(Address,Address,DataJoin,Address,Address),
+    prefixes:unsafe extern "C" fn(Address,Address,Address),
+}
+unsafe extern "C" fn save_root_borrows(context:Address,a:Address,b:Address) {
+    let left=unsafe { &mut *a.cast::<Data>() };let right=unsafe { &mut *b.cast::<Data>() };
+    let first=view::resource_borrow(left);let second=view::resource_borrow(right);
+    left.root.proof.set_view_borrow(0,view::Borrow::default());right.root.proof.set_view_borrow(0,view::Borrow::default());
+    unsafe { &mut *context.cast::<ReturnedJoin>() }.borrows=Some((first,second));
+}
+unsafe extern "C" fn restore_root_borrows(context:Address,a:Address,when:Address) {
+    let (left,right)=unsafe { &mut *context.cast::<ReturnedJoin>() }.borrows.take().unwrap();
+    unsafe { &mut *a.cast::<Data>() }.root.proof.set_view_borrow(0,left.selected(unsafe { &*when.cast::<bounds::Condition>() },&right));
+}
+unsafe extern "C" fn data_maximum(value:Address)->u32 {unsafe { &*value.cast::<Data>() }.length.maximum()}
+unsafe extern "C" fn merge_elements(a:Address,b:Address,mode:DataJoin,when:Address,presence:Address) {
+    let left=unsafe { &mut *a.cast::<Data>() };let right=unsafe { &mut *b.cast::<Data>() };
+    let elements=std::mem::take(&mut left.elements);let other=std::mem::take(&mut right.elements);
+    let presence=unsafe { presence.cast::<owned_presence::Presence>().as_ref() };
+    left.elements=match mode {
+        DataJoin::Left=>elements.retain_side(other,false,presence),
+        DataJoin::Right=>elements.retain_side(other,true,presence),
+        DataJoin::Selected=>elements.join_selected(other,unsafe { &*when.cast::<bounds::Condition>() },presence),
+        DataJoin::Common=>elements.common(other),
+    };
+}
+unsafe extern "C" fn merge_prefixes(a:Address,b:Address,when:Address) {
+    let left=unsafe { &mut *a.cast::<Data>() };let right=unsafe { &*b.cast::<Data>() };
+    left.prefixes=prefix::join_fields(&left.prefixes,&right.prefixes,unsafe { choice(when) });
+}
+unsafe extern "C" {
+    #[link_name="bootstrap.ownership_payload::join_returned"]
+    fn source_join_returned(left:Item,right:Item,stored:u32,choice:Address,presence:Address,host:ReturnedHost);
+}
+impl Returned {
+    pub(in crate::check) fn join_with_presence(&mut self,mut other:Self,stored:bool,
+        choice:Option<&bounds::Condition>,presence:Option<&owned_presence::Presence>) {
+        let mut context=ReturnedJoin {borrows:None};
+        unsafe { source_join_returned(mutable_item(Some(self)),mutable_item(Some(&mut other)),u32::from(stored),
+            choice.map_or(std::ptr::null_mut(),pointer),presence.map_or(std::ptr::null_mut(),pointer),ReturnedHost {
+                context:pointer_mut(&mut context),values:MUT_HOST,data:DATA_PRESENCE,
+                save:save_root_borrows,restore:restore_root_borrows,maximum:data_maximum,
+                elements:merge_elements,prefixes:merge_prefixes,
+            }); }
+    }
+}
+
 #[repr(C)]
 struct RetainedHost {
     inspect: unsafe extern "C" fn(Address) -> Info,
     child: unsafe extern "C" fn(Address, u64) -> Item,
     ownership: unsafe extern "C" fn(PayloadPair, Address, u32),
-    dataset: unsafe extern "C" fn(PayloadPair, Address, u32) -> PayloadPair,
+    dataset: unsafe extern "C" fn(PayloadPair) -> PayloadPair,
+    data:DataPresenceHost,
 }
 
 unsafe extern "C" {
@@ -657,7 +745,7 @@ impl Returned {
         let pair = PayloadPair { left: mutable_item(Some(self)), right: mutable_item(Some(other)) };
         unsafe {
             source_retain_presence(pair, pointer(presence), u32::from(take_right), RetainedHost {
-                inspect, child: child_mut, ownership: retain_ownership, dataset: retain_dataset,
+                inspect, child: child_mut, ownership: retain_ownership, dataset: retain_dataset,data:DATA_PRESENCE,
             });
         }
     }
@@ -672,10 +760,8 @@ unsafe extern "C" fn retain_ownership(pair: PayloadPair, presence: Address, take
     *output = ownership;
 }
 
-unsafe extern "C" fn retain_dataset(pair: PayloadPair, presence: Address, take_right: u32) -> PayloadPair {
+unsafe extern "C" fn retain_dataset(pair: PayloadPair) -> PayloadPair {
     let left = unsafe { &mut *pair.left.node.cast::<Data>() };
     let right = unsafe { &mut *pair.right.node.cast::<Data>() };
-    let condition = unsafe { &*presence.cast::<owned_presence::Presence>() };
-    returns::merge_dataset_presence(left, right, condition, take_right != 0, None);
     PayloadPair { left: mutable_item(left.elements.known_mut()), right: mutable_item(right.elements.known_mut()) }
 }

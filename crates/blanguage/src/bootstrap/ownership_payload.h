@@ -54,22 +54,6 @@ struct Host {
     cfn<void,address> drop_indices;
 };
 
-extern "C" void join(address left,address right,u32 stored,address choice,address presence,Host host) on cpu
-    requires nonzero(host.inspect)
-    requires nonzero(host.value)
-    requires nonzero(host.ownership)
-    requires nonzero(host.child)
-    requires nonzero(host.state_equal)
-    requires nonzero(host.state_set_moved)
-    requires nonzero(host.proof_join_stored)
-    requires nonzero(host.proof_join_common)
-    requires nonzero(host.uniform)
-    requires nonzero(host.set_uniform)
-    requires nonzero(host.constant_equal)
-    requires nonzero(host.clear_constant)
-    requires nonzero(host.join_child)
-    requires nonzero(host.join_ownership)
-    requires nonzero(host.move_child);
 extern "C" u32 available(address value,Host host) on cpu
     requires nonzero(host.inspect)
     requires nonzero(host.ownership)
@@ -246,15 +230,47 @@ extern "C" void collect_owned_places(address context,LookupNode node,LookupHost 
     requires nonzero(host.visit_child);
 
 struct PayloadPair { Item left; Item right; };
+enum DataInitial:u32 {Left=0;Right=1;Selected=2;};
+enum DataJoin:u32 {Left=0;Right=1;Selected=2;Common=3;};
+struct DataPresenceHost {
+    cfn<u32,address> moved;
+    cfn<void,address,address,address,u32> ownership;
+    cfn<void,address,address,DataInitial,address,u32> initialization;
+    cfn<void,address,address,DataJoin,address,u32> residency;
+};
+struct ReturnedHost {
+    address context;Host values;DataPresenceHost data;
+    cfn<void,address,address,address> save;
+    cfn<void,address,address,address> restore;
+    cfn<u32,address> maximum;
+    cfn<void,address,address,DataJoin,address,address> elements;
+    cfn<void,address,address,address> prefixes;
+};
+extern "C" void join_returned(Item left,Item right,u32 stored,address choice,address presence,ReturnedHost host) on cpu
+    requires nonzero(host.values.inspect) requires nonzero(host.values.value)
+    requires nonzero(host.values.ownership) requires nonzero(host.values.child)
+    requires nonzero(host.values.state_equal) requires nonzero(host.values.state_set_moved)
+    requires nonzero(host.values.proof_join_stored) requires nonzero(host.values.proof_join_common)
+    requires nonzero(host.values.uniform) requires nonzero(host.values.set_uniform)
+    requires nonzero(host.values.constant_equal) requires nonzero(host.values.clear_constant)
+    requires nonzero(host.values.join_child) requires nonzero(host.values.join_ownership) requires nonzero(host.values.move_child)
+    requires nonzero(host.values.data_root) requires nonzero(host.values.data_length) requires nonzero(host.values.data_ownership)
+    requires nonzero(host.data.moved) requires nonzero(host.data.ownership)
+    requires nonzero(host.data.initialization) requires nonzero(host.data.residency)
+    requires nonzero(host.save) requires nonzero(host.restore) requires nonzero(host.maximum)
+    requires nonzero(host.elements) requires nonzero(host.prefixes);
 struct RetainedHost {
     cfn<Info,address> inspect;
     cfn<Item,address,u64> child;
     cfn<void,PayloadPair,address,u32> ownership;
-    cfn<PayloadPair,PayloadPair,address,u32> dataset;
+    cfn<PayloadPair,PayloadPair> dataset;
+    DataPresenceHost data;
 };
 
 extern "C" void retain_presence(PayloadPair pair,address presence,u32 take_right,RetainedHost host) on cpu
     requires nonzero(host.inspect)
     requires nonzero(host.child)
     requires nonzero(host.ownership)
-    requires nonzero(host.dataset);
+    requires nonzero(host.dataset)
+    requires nonzero(host.data.moved) requires nonzero(host.data.ownership)
+    requires nonzero(host.data.initialization) requires nonzero(host.data.residency);
