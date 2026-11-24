@@ -2,11 +2,12 @@
 use super::*;
 use allocation::{PacketAllocation, PacketPlace};
 use memory::{PacketAddress, PacketViewAddress};
+use super::operands::ScalarValueHost;
+use crate::builtin_types::ScalarEncoding;
+use crate::ir::dataflow::HOST;
 use std::collections::BTreeSet;
 #[path="packet/control.rs"]
 mod control;
-#[path="packet/integer.rs"]
-mod integer;
 #[path="packet/memory.rs"]
 mod memory;
 
@@ -61,11 +62,7 @@ enum StepKind<'a> {
         b: Reg,
         uniform_count: bool,
     },
-    IntegerDivide {
-        result: IntegerDivisionResult,
-        src: Reg,
-        divisor: IntegerDivisor,
-    },
+    IntegerDivide,
     Cast {
         dst: Reg,
         src: Reg,
@@ -132,6 +129,7 @@ enum PacketBodyKind {
     Cast,
     Math,
     Select,
+    IntegerDivide,
 }
 
 #[repr(C)]
@@ -145,6 +143,7 @@ struct PacketBodyOp {
     unary: u32,
     binary: crate::builtin_types::ScalarBinaryOp,
     math: Math,
+    instruction: *const Inst,
 }
 
 impl PacketBodyOp {
@@ -159,6 +158,7 @@ impl PacketBodyOp {
             unary: 0,
             binary: crate::builtin_types::ScalarBinaryOp::Add,
             math: Math::Sqrt,
+            instruction: std::ptr::null(),
         }
     }
 }
@@ -178,6 +178,7 @@ struct PacketBodyHost {
     range: unsafe extern "C" fn(PacketBodySlot, usize, PacketBodySpan),
     reserve: unsafe extern "C" fn(PacketBodySlot, usize) -> *mut u8,
     finish: unsafe extern "C" fn(PacketBodySlot, usize),
+    values: ScalarValueHost,
 }
 
 struct PacketBody<'a, 'b, 'c> {
@@ -217,6 +218,16 @@ unsafe extern "C" fn finish_packet_bytes(slot: PacketBodySlot, count: usize) {
     unsafe { code.set_len(code.len() + count) }
 }
 
+unsafe extern "C" fn division_location(slot: *const std::ffi::c_void, reg: Reg) -> operands::MoveLocation {
+    let body = unsafe { &*slot.cast::<PacketBody<'_, '_, '_>>() };
+    body.allocation.location(PrivateSlot::Register(reg)).into()
+}
+
+unsafe extern "C" fn division_scalar(slot: *const std::ffi::c_void, reg: Reg) -> ScalarEncoding {
+    let body = unsafe { &*slot.cast::<PacketBody<'_, '_, '_>>() };
+    body.emitter.stage.registers[reg].into()
+}
+
 unsafe extern "C" fn packet_body_step(slot: PacketBodySlot, index: usize) -> PacketBodyOp {
     use PacketBodyKind as Kind;
     use PrivateSlot::Register;
@@ -227,7 +238,8 @@ unsafe extern "C" fn packet_body_step(slot: PacketBodySlot, index: usize) -> Pac
     let register = |value| place(Register(value));
     let emit = |e: &mut Emitter<'_>, block: &[Step<'_>]| e.packet_block(block, allocation);
     let load = |e: &mut Emitter<'_>, reg| e.packet_lane(allocation, reg, 0, 0);
-    let flow = match &context.code[index].kind {
+    let step = &context.code[index];
+    let flow = match &step.kind {
         StepKind::If { condition, yes, no } => Flow::If(*condition, yes, no),
         StepKind::Loop { condition, test, body } => Flow::Loop(condition, *test, body),
         StepKind::Scope(body) => Flow::Scope(body),
@@ -246,12 +258,10 @@ unsafe extern "C" fn packet_body_step(slot: PacketBodySlot, index: usize) -> Pac
             emitter.packet_view(allocation, *dst, *address, *stride, *index, *word, *mode);
             return PacketBodyOp::new(Kind::Done);
         }
-        StepKind::IntegerDivide { result, src, divisor } => {
-            match divisor {
-                IntegerDivisor::Constant(divisor) => emitter.packet_divide(allocation, *result, *src, *divisor),
-                IntegerDivisor::Value(divisor) => emitter.packet_divide_value(allocation, *result, *src, *divisor),
-            }
-            return PacketBodyOp::new(Kind::Done);
+        StepKind::IntegerDivide => {
+            let mut op = PacketBodyOp::new(Kind::IntegerDivide);
+            op.instruction = step.instruction;
+            return op;
         }
         StepKind::Constant(dst, bits) => {
             let mut op = PacketBodyOp::new(Kind::Constant);
@@ -329,15 +339,20 @@ impl Emitter<'_> {
         let sparse = u32::from(self.stage.selection.is_some());
         let slots = self.frame.end as u32;
         let mut context = PacketBody { emitter: self, allocation, code, result: Ok(()) };
+        let context_slot: PacketBodySlot = std::ptr::from_mut(&mut context).cast();
         unsafe {
             emit_packet_body(
-                std::ptr::from_mut(&mut context).cast(), code.len(), sparse, slots,
+                context_slot, code.len(), sparse, slots,
                 PacketBodyHost {
                     step: packet_body_step,
                     span: packet_body_span,
                     range: packet_body_range,
                     reserve: reserve_packet_bytes,
                     finish: finish_packet_bytes,
+                    values: ScalarValueHost {
+                        ir: HOST, context: context_slot,
+                        location: division_location, scalar: division_scalar,
+                    },
                 },
             );
         }

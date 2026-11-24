@@ -142,11 +142,11 @@ struct ScalarValueEncoding {
 }
 
 #[repr(C)]
-struct ScalarValueHost {
-    ir: Host,
-    context: *const std::ffi::c_void,
-    location: unsafe extern "C" fn(*const std::ffi::c_void, Reg) -> MoveLocation,
-    scalar: unsafe extern "C" fn(*const std::ffi::c_void, Reg) -> ScalarEncoding,
+pub(super) struct ScalarValueHost {
+    pub(super) ir: Host,
+    pub(super) context: *const std::ffi::c_void,
+    pub(super) location: unsafe extern "C" fn(*const std::ffi::c_void, Reg) -> MoveLocation,
+    pub(super) scalar: unsafe extern "C" fn(*const std::ffi::c_void, Reg) -> ScalarEncoding,
 }
 
 struct ScalarLocations<'a> {
@@ -376,7 +376,7 @@ impl Emitter<'_> {
             location: value_location, scalar: value_scalar,
         };
         let start = self.code.len();
-        self.code.reserve(84);
+        self.code.reserve(128);
         let encoded = unsafe {
             let encoded = emit_scalar_value(Node::instruction(inst), host, self.code.as_mut_ptr().add(start));
             self.code.set_len(start + encoded.length as usize);

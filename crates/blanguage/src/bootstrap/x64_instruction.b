@@ -1686,12 +1686,14 @@ u64 store_division(u64 at, MoveLocation dst, u8 register, ScalarEncoding scalar)
     return at + store.length;
 }
 
+struct DivisionOutputs { MoveLocation first; MoveLocation second; u32 kind; };
+
 MoveLocation division_remainder(DivisionOutputs result) on cpu {
     if (result.kind == 3) { return result.second; }
     return result.first;
 }
 
-extern "C" u64 divide_constant32(DivisionOutputs result, MoveLocation src, u32 divisor,
+u64 divide_constant32(DivisionOutputs result, MoveLocation src, u32 divisor,
     ScalarEncoding scalar, address output) on cpu requires nonzero(divisor) {
     u64 start = address_bits(output);
     bool signed = scalar.kind == ScalarKind::Signed;
@@ -1734,7 +1736,7 @@ extern "C" u64 divide_constant32(DivisionOutputs result, MoveLocation src, u32 d
     return cursor - start;
 }
 
-extern "C" u64 divide_value(DivisionOutputs result, MoveLocation src, MoveLocation divisor,
+u64 divide_value(DivisionOutputs result, MoveLocation src, MoveLocation divisor,
     ScalarEncoding scalar, ScalarEncoding divisor_scalar, address output) on cpu {
     u64 start = address_bits(output);
     u32 size = scalar.width / 8;
@@ -1928,7 +1930,7 @@ u64 packet_division_lane_at(u64 at, u8 accumulator, u8 gpr, u8 lane) on cpu {
     return packet_instruction(cursor, u8(0x66), u8(0xeb), accumulator, u8(2));
 }
 
-extern "C" u64 packet_divide_value(DivisionOutputs result, MoveLocation src,
+u64 packet_divide_value(DivisionOutputs result, MoveLocation src,
     MoveLocation divisor, bool signed, address output) on cpu {
     u64 start = address_bits(output);
     u64 cursor = start;
@@ -1957,7 +1959,7 @@ u64 packet_magnitude_at(u64 at, MoveLocation src, u8 dst, bool signed) on cpu {
     return cursor;
 }
 
-extern "C" u64 packet_divide_constant(DivisionOutputs result, MoveLocation src,
+u64 packet_divide_constant(DivisionOutputs result, MoveLocation src,
     u32 divisor, bool signed, address output) on cpu requires nonzero(divisor) {
     u64 start = address_bits(output);
     DivisionPlan plan = division_plan(divisor, signed);
@@ -2208,7 +2210,8 @@ extern "C" u64 packet_select(MoveLocation dst, MoveLocation condition, MoveLocat
 
 extern "C" void emit_packet_body(address context, u64 count, bool sparse, u32 slots, PacketBodyHost host) on cpu
     requires nonzero(host.step) requires nonzero(host.span) requires nonzero(host.range)
-    requires nonzero(host.reserve) requires nonzero(host.finish) {
+    requires nonzero(host.reserve) requires nonzero(host.finish)
+    requires nonzero(host.values.ir.inspect) requires nonzero(host.values.location) requires nonzero(host.values.scalar) {
     u64 index = 0u64;
     while (index < count) {
         PacketBodySpan span = host.span(context);
@@ -2233,6 +2236,9 @@ extern "C" void emit_packet_body(address context, u64 count, bool sparse, u32 sl
         } else if (op.kind == PacketBodyKind::Math) {
             host.finish(context, packet_math(op.locations[0], op.locations[1], op.locations[2],
                 op.math, host.reserve(context, 256u64)));
+        } else if (op.kind == PacketBodyKind::IntegerDivide) {
+            View value = host.values.ir.inspect(Node(op.instruction, N_INSTRUCTION));
+            host.finish(context, emit_integer_division(value, host.values, true, host.reserve(context, 256u64)));
         } else if (op.kind == PacketBodyKind::Select) {
             host.finish(context, packet_select(op.locations[0], op.locations[1], op.locations[2],
                 op.locations[3], host.reserve(context, 256u64)));
@@ -4864,10 +4870,52 @@ ScalarValueEncoding emit_scalar_math_value(View value, ScalarValueHost host,
     return scalar_math(ScalarMathOperation(u32(value.b)), dst, left, right, size, output);
 }
 
+u32 division_literal32(View divisor, ScalarEncoding scalar) on cpu {
+    // The original IR supplies nonzero scalar-width constant bits, or a register.
+    if (divisor.tag != 0) { return 0; }
+    u32 bits = u32(divisor.a);
+    if (scalar.kind == ScalarKind::Signed) {
+        if (scalar.width == 8) { return u32(i32(i8(u8(bits)))); }
+        if (scalar.width == 16) { return u32(i32(i16(u16(bits)))); }
+    }
+    return bits;
+}
+
+u64 emit_integer_division(View value, ScalarValueHost host, bool packet, address output) on cpu
+    requires nonzero(host.ir.inspect) requires nonzero(host.location) requires nonzero(host.scalar) {
+    View result = host.ir.inspect(value.right);
+    MoveLocation first = host.location(host.context, result.a);
+    MoveLocation second = first;
+    if (result.tag == 2) { second = host.location(host.context, result.b); }
+    DivisionOutputs outputs = DivisionOutputs(first, second, result.tag + 1);
+    MoveLocation numerator = host.location(host.context, value.a);
+    ScalarEncoding scalar = host.scalar(host.context, value.a);
+    bool signed = scalar.kind == ScalarKind::Signed;
+
+    View divisor = host.ir.inspect(value.left);
+    if (packet || scalar.width != 64) {
+        u32 constant = division_literal32(divisor, scalar);
+        if (constant != 0) {
+            if (packet) { return packet_divide_constant(outputs, numerator, constant, signed, output); }
+            return divide_constant32(outputs, numerator, constant, scalar, output);
+        }
+    } else if (divisor.tag == 0) {
+        MoveLocation literal = MoveLocation(u64(divisor.a), MOVE_IMMEDIATE, u8(0), NO_INDEX, u8(0));
+        return divide_value(outputs, numerator, literal, scalar, scalar, output);
+    }
+
+    MoveLocation right = host.location(host.context, divisor.a);
+    if (packet) { return packet_divide_value(outputs, numerator, right, signed, output); }
+    return divide_value(outputs, numerator, right, scalar, host.scalar(host.context, divisor.a), output);
+}
 extern "C" ScalarValueEncoding emit_scalar_value(Node source,
     ScalarValueHost host, address output) on cpu
     requires nonzero(host.ir.inspect) requires nonzero(host.location) requires nonzero(host.scalar) {
     View value = host.ir.inspect(source);
+    if (value.tag == OP_INTEGER_DIVIDE) {
+        u64 length = emit_integer_division(value, host, false, output);
+        return value_encoding(BinaryEncoding(length, 0u64, 0u64), 0u64, false, 0u64, false);
+    }
     MoveLocation dst = host.location(host.context, value.a);
     if (value.tag == OP_MATH) {
         return emit_scalar_math_value(value, host, dst, output);

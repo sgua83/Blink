@@ -20,8 +20,6 @@ mod compact;
 mod custom_reduce;
 #[path="external.rs"]
 mod external;
-#[path="integer.rs"]
-mod integer;
 #[path="operands.rs"]
 mod operands;
 use operands::{AddressEncoding, Memory, MoveLocation};
@@ -581,20 +579,8 @@ impl Emitter<'_> {
                     let memory = self.data_memory(*binding, *index, *word);
                     self.write_scalar_address(*value, memory);
                 }
-                InstKind::IntegerDivide {
-                    result,
-                    src,
-                    divisor,
-                } => match divisor {
-                    IntegerDivisor::Constant(divisor) => {
-                        self.integer_divide(*result, *src, *divisor)
-                    }
-                    IntegerDivisor::Value(divisor) => {
-                        self.integer_divide_value(*result, *src, *divisor)
-                    }
-                },
                 InstKind::Unary { .. } | InstKind::Binary { .. } | InstKind::Cast { .. }
-                | InstKind::Math { .. } | InstKind::Select { .. } => self.scalar_value(inst),
+                | InstKind::Math { .. } | InstKind::Select { .. } | InstKind::IntegerDivide { .. } => self.scalar_value(inst),
                 InstKind::If { condition, yes, no } => {
                     self.lower_control(Flow::If(*condition, yes, no), Self::block, Self::load)?;
                 }

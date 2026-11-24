@@ -289,16 +289,6 @@ enum ScalarMathOperation:u32 {
     Exp2=7; Log2=8; Sqrt=9; Min=10; Max=11; Ceil=12;
 };
 extern "C" u64 scalar_math_outgoing(ScalarMathOperation operation) on cpu;
-struct DivisionOutputs { MoveLocation first; MoveLocation second; u32 kind; };
-// The packet caller already has its numerator in EAX and divisor in ECX.
-// Output has room for the original eleven-byte signed sequence.
-// Full scalar division entries borrow 128 output bytes. The 32-bit constant is
-// the original nonzero divisor normalized by its Scalar, including its sign.
-extern "C" u64 divide_constant32(DivisionOutputs result, MoveLocation src, u32 divisor,
-    ScalarEncoding scalar, address output) on cpu requires nonzero(divisor);
-extern "C" u64 divide_value(DivisionOutputs result, MoveLocation src, MoveLocation divisor,
-    ScalarEncoding scalar, ScalarEncoding divisor_scalar, address output) on cpu;
-
 enum PacketMathOperation:u32 { Sqrt=0; Abs=1; Min=2; Max=3; };
 // Packet entries borrow the existing four-lane allocation; scratch XMM0..3 and
 // EAX/ECX follow that allocation. Constant has 24 output bytes; load/store 16;
@@ -310,11 +300,6 @@ extern "C" u64 packet_index(MoveLocation dst, bool sparse, u32 slots, address ou
 // The caller owns 64 bytes. The uniform table is in R13.
 extern "C" u64 packet_uniform(MoveLocation dst, u32 offset, bool boolean, address output) on cpu;
 
-// The caller owns 256 output bytes and proves the divisor nonzero in every lane.
-extern "C" u64 packet_divide_value(DivisionOutputs result, MoveLocation src,
-    MoveLocation divisor, bool signed, address output) on cpu;
-extern "C" u64 packet_divide_constant(DivisionOutputs result, MoveLocation src,
-    u32 divisor, bool signed, address output) on cpu requires nonzero(divisor);
 extern "C" u64 packet_copy(MoveLocation dst, MoveLocation src, address output) on cpu;
 extern "C" u64 packet_binary(MoveLocation dst, MoveLocation left, MoveLocation right,
     ScalarEncoding scalar, BinaryOperation operation, bool uniform_count, address output) on cpu;
@@ -326,9 +311,16 @@ extern "C" u64 packet_math(MoveLocation dst, MoveLocation left, MoveLocation rig
 extern "C" u64 packet_select(MoveLocation dst, MoveLocation condition, MoveLocation left,
     MoveLocation right, address output) on cpu;
 
+struct ScalarValueHost {
+    Host ir;
+    address context;
+    cfn<MoveLocation,address,usize> ensures memory(read) location;
+    cfn<ScalarEncoding,address,usize> ensures memory(read) scalar;
+};
+
 enum PacketBodyKind:u32 {
     Done=0; Failed=1; Constant=2; Index=3; Uniform=4; Copy=5; Unary=6;
-    Binary=7; Cast=8; Math=9; Select=10;
+    Binary=7; Cast=8; Math=9; Select=10; IntegerDivide=11;
 };
 struct PacketBodyOp {
     array<MoveLocation,4> locations;
@@ -340,6 +332,7 @@ struct PacketBodyOp {
     ValueUnaryOperation unary;
     BinaryOperation binary;
     PacketMathOperation math;
+    address instruction;
 };
 struct PacketBodySpan { u64 start; u64 first; };
 struct PacketBodyHost {
@@ -348,10 +341,12 @@ struct PacketBodyHost {
     cfn<void,address,u64,PacketBodySpan> range;
     cfn<address,address,u64> reserve;
     cfn<void,address,u64> finish;
+    ScalarValueHost values;
 };
 extern "C" void emit_packet_body(address context, u64 count, bool sparse, u32 slots, PacketBodyHost host) on cpu
     requires nonzero(host.step) requires nonzero(host.span) requires nonzero(host.range)
-    requires nonzero(host.reserve) requires nonzero(host.finish);
+    requires nonzero(host.reserve) requires nonzero(host.finish)
+    requires nonzero(host.values.ir.inspect) requires nonzero(host.values.location) requires nonzero(host.values.scalar);
 
 // The caller owns the output and consumes the returned native memory operand.
 // B retains no address after return; the emitter owns the code and memory operand.
@@ -747,12 +742,6 @@ struct RangeEntries {
 };
 extern "C" RangeEntries range_entries(RangeOperation operation, usize words_or_keys, u32 complete) on cpu;
 
-struct ScalarValueHost {
-    Host ir;
-    address context;
-    cfn<MoveLocation,address,usize> ensures memory(read) location;
-    cfn<ScalarEncoding,address,usize> ensures memory(read) scalar;
-};
 struct ScalarLiteral {
     u64 bits;
     u64 field;
@@ -766,7 +755,7 @@ struct ScalarValueEncoding {
     u32 symbol_length;
     array<u8,6> symbol;
 };
-// The borrowed IR is Unary, Binary, Cast, Math or Select. Output has 84 writable bytes.
+// Borrows the original scalar value or integer division instruction and 128 writable bytes.
 extern "C" ScalarValueEncoding emit_scalar_value(Node source,
     ScalarValueHost host, address output) on cpu
     requires nonzero(host.ir.inspect) requires nonzero(host.location) requires nonzero(host.scalar);

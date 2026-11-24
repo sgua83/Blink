@@ -79,7 +79,7 @@ unsafe extern "C" fn read(context: *const Context<'_>, code: Block, index: usize
         InstKind::Store { binding, index, word, value } => { node.kind = Kind::Store; node.binding = *binding; node.a = *index; node.b = *value; node.word = *word; node.stride = context.program.buffers[*binding].stride; }
         InstKind::Unary { dst, op, a } => { node.kind = Kind::Unary; node.dst = *dst; node.a = *a; node.payload = (op as *const UnaryOp).cast(); }
         InstKind::Binary { dst, op, a, b } => { node.kind = Kind::Binary; node.dst = *dst; node.a = *a; node.b = *b; node.payload = (op as *const BinaryOp).cast(); }
-        InstKind::IntegerDivide { result, src, divisor } => { node.kind = Kind::Divide; node.a = *src; node.payload = (result as *const IntegerDivisionResult).cast(); node.other = (divisor as *const IntegerDivisor).cast(); }
+        InstKind::IntegerDivide { .. } => node.kind = Kind::Divide,
         InstKind::Cast { dst, src } => { node.kind = Kind::Cast; node.dst = *dst; node.a = *src; let from = &context.stage.registers[*src]; let into = &context.stage.registers[*dst]; node.from = (*from).into(); node.into = (*into).into(); node.payload = (from as *const Scalar).cast(); node.other = (into as *const Scalar).cast(); }
         InstKind::Math { dst, op, args } => { node.kind = Kind::Math; node.dst = *dst; node.math = *op as u32; node.arguments = args.as_ptr(); node.argument_count = args.len(); }
         InstKind::Select { dst, condition, a, b } => { node.kind = Kind::Select; node.dst = *dst; node.a = *condition; node.b = *a; node.c = *b; }
@@ -126,7 +126,7 @@ unsafe extern "C" fn append(plan: *mut c_void, node: Node, decision: Decision, f
         Operation::Store => StepKind::Store { binding: node.binding, word: node.word, value: node.b, mode: decision.dataset },
         Operation::Unary => StepKind::Unary { dst: node.dst, op: unsafe { *node.payload.cast::<UnaryOp>() }, a: node.a },
         Operation::Binary => StepKind::Binary { dst: node.dst, op: unsafe { *node.payload.cast::<BinaryOp>() }, a: node.a, b: node.b, uniform_count: decision.uniform_count != 0 },
-        Operation::Divide => StepKind::IntegerDivide { result: unsafe { *node.payload.cast::<IntegerDivisionResult>() }, src: node.a, divisor: unsafe { *node.other.cast::<IntegerDivisor>() } },
+        Operation::Divide => StepKind::IntegerDivide,
         Operation::Cast => StepKind::Cast { dst: node.dst, src: node.a, from: unsafe { *node.payload.cast::<Scalar>() }, into: unsafe { *node.other.cast::<Scalar>() } },
         Operation::Copy => StepKind::Copy(Register(node.dst), Register(node.a)),
         Operation::Math => StepKind::Math { dst: node.dst, op: decision.math, args: unsafe { std::slice::from_raw_parts(node.arguments, node.argument_count) } },
