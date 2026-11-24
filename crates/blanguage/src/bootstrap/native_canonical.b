@@ -48,7 +48,7 @@ extern "C" Step<SourceNeed> source_step(Cursor state,SourceFacts facts) on cpu {
  if(c.phase==7){
   u64 count=0u64;
   if(facts.resource==ResourceKind::Owned){count=facts.resources;}
-  if(facts.resource==ResourceKind::Application&&facts.access==SourceAccess::Value){count=1u64;}
+  if(facts.resource==ResourceKind::Application){count=1u64;}
   if(c.part<count){c.phase=8;return Step<SourceNeed>(c,SourceNeed::Resource);}
   c.index+=1u64;c.phase=0;return Step<SourceNeed>(c,SourceNeed::Continue);
  }

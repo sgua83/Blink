@@ -1167,7 +1167,7 @@ impl Builder<'_> {
         }
         let reg = self.reg(scalar);
         let mut handle = self.application_root(reg);
-        if access==Access::Value{handle.proof.set_view_borrow(0,view::Borrow::source(view::Source::Data(ValueIdentity::ResourceParameter(parameter,0))));}
+        handle.proof.set_view_borrow(0,view::Borrow::source(view::Source::Data(ValueIdentity::ResourceParameter(parameter,0))));
         let length_reg = self.reg(Scalar::U32);
         let count = self.program.buffers[binding].count;
         let mut length = Value {

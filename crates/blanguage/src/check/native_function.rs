@@ -564,6 +564,7 @@ impl Builder<'_> {
         let mut locations = residency::Arguments::new();
         let mut written = Vec::new();
         let mut written_data = Vec::new();
+        let mut dataset_inputs = BTreeMap::new();
         let mut written_stage = Vec::new();
         let mut held = Vec::new();
         let mut contents = BTreeMap::new();
@@ -816,6 +817,9 @@ impl Builder<'_> {
                                 initialized:vec![false;layout.parts.len()].into(),layout}.normalize()
                         };
                         value.proof.set_view_borrow(0,borrow);
+                    }
+                    if matches!(p.access,Access::Write|Access::InOut) {
+                        dataset_inputs.insert(index,actual.len());
                     }
                     append_actual(&mut actual,&value);
                     arguments.push(CallArgument::Value{ #[cfg(feature = "compiler")] origin: Some(argument_origin.clone()),dataset_borrow,ty:value.ty,values:value.regs});
@@ -1214,13 +1218,25 @@ impl Builder<'_> {
         let mut written_registers=BTreeMap::new();let mut semantic=input_width+values.len();
         // 所有输出位置沿原合同编号映射；这些编号不是机器参数或元数据副本。
         if model.is_none(){for(component,reg)in values.iter().enumerate(){bindings.insert(ValueIdentity::Register(semantic-values.len()+component),bounds::Proof::default().with_identity(ValueIdentity::Register(*reg)));}}
-        for(index,place)in &written {
+        let mut ordinary_outputs=written.iter().peekable();
+        for index in 0..bound_parameters.len() {
+            if let Some(&input)=dataset_inputs.get(&index) {
+                let ids=writes.get(index).and_then(Option::as_ref).map(Returned::registers)
+                    .unwrap_or_else(||(semantic..semantic+2).collect());
+                for(source,part)in ids.into_iter().zip(0..2) {
+                    bindings.insert(ValueIdentity::Register(source),view_arguments[&ValueIdentity::Register(input+part)].clone());
+                }
+                semantic+=2;
+                continue;
+            }
+            let Some((_,place))=ordinary_outputs.peek().copied().filter(|output|output.0==index) else{continue;};
             let regs=place.ty().components.iter().map(|(scalar,_)|self.reg(*scalar)).collect::<Vec<_>>();
-            let contract=writes.get(*index).and_then(Option::as_ref);
+            let contract=writes.get(index).and_then(Option::as_ref);
             let ids=contract.map(Returned::registers).unwrap_or_else(||(semantic..semantic+regs.len()).collect());
             for(source,target)in ids.into_iter().zip(&regs){bindings.insert(ValueIdentity::Register(source),bounds::Proof::default().with_identity(ValueIdentity::Register(*target)));}
             if let Some(model)=contract {let proof=bounds::Proof::capture(&self.returned_storage(model));for(component,reg)in regs.iter().enumerate(){if let Some(id)=proof.known_identity(component){bindings.entry(id).or_insert_with(||bounds::Proof::default().with_identity(ValueIdentity::Register(*reg)));}}}
-            semantic+=regs.len();written_registers.insert(*index,regs);
+            semantic+=regs.len();written_registers.insert(index,regs);
+            ordinary_outputs.next();
         }
         bindings.extend(completion_inputs);
         let task_return_sources=task_results.into_iter().zip(task_return_slots).map(|(component,slot)| {

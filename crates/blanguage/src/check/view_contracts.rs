@@ -2242,7 +2242,13 @@ fn converge(
             }).collect::<Outputs>();
             let access = stored_outputs(worker, &mut evaluation, &exposed, || &parameters)
                 .map_err(|error| borrow_worker_error(functions, error))?;
-            let interface_changed = outputs != state.interface.outputs || access != state.interface.access;
+            // 来源条件按语义收敛；等价路径的重新组合不是新的调用合同。
+            let interface_changed = access != state.interface.access || outputs.iter().any(|(output, value)| {
+                let old = &state.interface.outputs[output];
+                value.inputs != old.inputs || value.calls != old.calls || value.reads != old.reads
+                    || !value.sources.same_sources(&old.sources)
+                    || !value.sources.equivalent_paths(&old.sources)
+            });
             Ok((interface_changed || loops != state.loops || entries != state.entries)
                 .then_some(ConvergenceUpdate { name, loops, entries, outputs, stored: access, interface_changed }))
 
