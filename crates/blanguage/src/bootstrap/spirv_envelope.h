@@ -73,11 +73,11 @@ struct ResourceStreams {
     address accelerations;
 };
 struct TextureDeclaration { u32 dimensions; u32 arrayed; u32 length; };
+struct WordConstants { address context; cfn<u32,address,u32,u32> intern; };
 struct ShaderResourceHost {
     address textures;
     cfn<TextureDeclaration,address,usize> texture;
-    address constants;
-    cfn<u32,address,u32,u32> intern_word;
+    WordConstants words;
 };
 struct SampledType { u32 sampled; u32 pointer; };
 struct ShaderResourceIds {
@@ -105,7 +105,7 @@ struct ShaderResourceIds {
 // Borrow the original texture list and constant pool. Initialize every interface slot
 // and write declarations into the emitter's definition and decoration buffers.
 extern "C" ShaderResourceIds shader_resources(ShaderResourceInput input, ShaderResourceHost host, ResourceStreams streams) on cpu
-    requires nonzero(host.texture) requires nonzero(host.intern_word);
+    requires nonzero(host.texture) requires nonzero(host.words.intern);
 
 enum StorageClass:u32 {
     UniformConstant=0; Input=1; Workgroup=4; Function=7; PushConstant=9; StorageBuffer=12; PhysicalStorageBuffer=5349;
@@ -115,8 +115,6 @@ enum VariableAnnotation:u32 { Descriptor=0; PageTable=1; BuiltIn=2; };
 // The caller owns four definition words for a variable without an initializer.
 extern "C" void variable_declaration(StorageClass storage, u32 pointer, u32 id, address words) on cpu;
 // Output has room for four definition words and eleven decoration words.
-// Operand is the assigned descriptor binding or the built-in enumerant.
-extern "C" u64 annotated_variable(VariableAnnotation annotation, u32 pointer, u32 id, u32 operand, address definitions, address decorations) on cpu;
 
 enum FlagDecoration:u32 { NoContraction=42; NonUniform=5300; };
 // Appends one flag to the borrowed decoration words and returns the new end.
@@ -1113,6 +1111,40 @@ struct WorkgroupLayout { u32 scan; u32 local_index; u32 ranks; u32 words; };
 extern "C" WorkgroupLayout workgroup_layout(
     u32 operation, WorkgroupPass pass, u32 selected, u32 summary_words, u32 scan_width
 ) on cpu;
+
+struct WorkgroupDeclaration {
+    WorkgroupLayout layout;
+    u32 next;
+    u32 word_type;
+    u32 wide_type;
+    u32 subgroup_mask;
+    u32 ballot;
+    u32 width;
+    u64 narrow_cells;
+    u64 wide_cells;
+    u64 scratch_words;
+};
+struct SharedArray { u32 variable; u32 pointer; };
+struct WorkgroupVariables {
+    u64 definitions;
+    u64 decorations;
+    u64 shared_bytes;
+    u32 next;
+    u32 local;
+    u32 rank_id;
+    u32 rank_lane;
+    u32 ballot;
+    u32 lane;
+    u32 size;
+    u32 id;
+    u32 tile_words;
+    SharedArray reduction;
+    SharedArray tile;
+    SharedArray tile_wide;
+};
+// Initialize the result and append words when the tile arrays fit SPIR-V lengths.
+extern "C" u32 workgroup_declarations(WorkgroupDeclaration input, WordConstants constants, address definitions,
+    address decorations, address output) on cpu requires nonzero(constants.intern);
 
 // The pass class is Main, Add, Root, Arguments, or the remaining identity-bearing pass.
 extern "C" u32 custom_kernel_preparation(u32 pass,u32 segmented) on cpu;

@@ -71,12 +71,26 @@ impl TileMember {
 }
 
 #[cfg(feature = "compiler")]
+#[derive(Clone, Copy, Default)]
+#[repr(C)]
+pub(crate) struct TileExtents {
+    pub(crate) narrow: usize,
+    pub(crate) wide: usize,
+}
+
+#[cfg(feature = "compiler")]
+pub(crate) struct PlacedTiles {
+    pub(crate) words: dataflow::TileLayout,
+    pub(crate) extents: TileExtents,
+}
+
+#[cfg(feature = "compiler")]
 #[derive(Default)]
 struct TilePlan {
     rows: Vec<TilePlacement>,
     words: Vec<TileMember>,
     cells: BTreeMap<SharedWord, (Scalar, SharedWord, u32)>,
-    data_words: usize,
+    extents: TileExtents,
 }
 
 #[cfg(feature = "compiler")]
@@ -90,7 +104,7 @@ type TileReserve = unsafe extern "C" fn(*mut std::ffi::c_void, usize, usize) -> 
 unsafe extern "C" {
     #[link_name = "bootstrap.stage_fusion::place_tile"]
     fn place_tile(rows: *mut TilePlacement, count: usize, words: *mut TileMember,
-        context: *mut std::ffi::c_void, reserve: TileReserve) -> usize;
+        context: *mut std::ffi::c_void, reserve: TileReserve) -> TileExtents;
 }
 
 #[cfg(feature = "compiler")]
@@ -144,8 +158,8 @@ impl Stage {
     #[cfg(feature = "compiler")]
     pub(crate) fn tile_layout(
         &self, wide: bool, used: Option<&mut BTreeSet<SharedWord>>,
-    ) -> dataflow::TileLayout {
-        let TilePlan { rows, words, cells, .. } = self.tile_placement(wide, used);
+    ) -> PlacedTiles {
+        let TilePlan { rows, words, cells, extents } = self.tile_placement(wide, used);
         let mut layout = BTreeMap::new();
         for row in rows {
             let unit = [Scalar::U32, Scalar::U64][row.plane];
@@ -163,7 +177,7 @@ impl Stage {
                 }
             }
         }
-        layout
+        PlacedTiles { words: layout, extents }
     }
 
     #[cfg(feature = "compiler")]
@@ -232,17 +246,17 @@ impl Stage {
             }).then_with(|| left.end.cmp(&right.end))
         });
         let mut planes = [Vec::<i64>::new(), Vec::new()];
-        let data_words = unsafe {
+        let extents = unsafe {
             place_tile(rows.as_mut_ptr(), rows.len(), words.as_mut_ptr(),
                 std::ptr::from_mut(&mut planes).cast(), reserve_tile_planes)
         };
-        TilePlan { rows, words, cells, data_words }
+        TilePlan { rows, words, cells, extents }
     }
 
     #[cfg(feature = "compiler")]
     pub fn tile_data_bytes(&self) -> u64 {
-        let words = self.tile_placement(false, None).data_words;
-        if words == 0 { 0 } else { words as u64 * self.workgroup_width() as u64 * 4 }
+        let words = self.tile_placement(false, None).extents.narrow;
+        words as u64 * u64::from(self.workgroup_width()) * 4
     }
     pub fn tile_scratch_bytes(&self) -> u64 {
         let bytes_per_lane = self

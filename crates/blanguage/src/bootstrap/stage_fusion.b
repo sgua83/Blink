@@ -45,7 +45,7 @@ address tile_member_at(address members, u64 index) on cpu {
     return unsafe_address(address_bits(members) + index * size_of<TileMember>());
 }
 
-extern "C" u64 place_tile(address rows, u64 count, address members, address context,
+extern "C" TileExtents place_tile(address rows, u64 count, address members, address context,
     cfn<TilePlanes,address,u64,u64> reserve) on cpu requires nonzero(reserve) {
     u64 narrow_capacity = 0u64;
     u64 wide_capacity = 0u64;
@@ -108,7 +108,7 @@ extern "C" u64 place_tile(address rows, u64 count, address members, address cont
         }
         index += 1u64;
     }
-    return narrow_used;
+    return TileExtents(narrow_used, wide_used);
 }
 
 address stage_write_at(address writes, u64 index) on cpu {

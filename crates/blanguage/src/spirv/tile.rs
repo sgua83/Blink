@@ -81,10 +81,6 @@ impl Emitter<'_> {
         self.merge_active(end, true);
         self.tile_barrier();
     }
-    pub(super) fn tile_data_words(&self, unit: Scalar) -> u32 {
-        self.tile_layout.values().filter(|(kind, _, _)| *kind == unit)
-            .map(|(_, slot, _)| (*slot as u32 + 1) * self.workgroup_width).max().unwrap_or(0)
-    }
     pub(super) fn tile_word_address(
         &mut self, word: SharedWord, index: u32, offset: Option<u32>,
     ) -> (u32, TileByte) {

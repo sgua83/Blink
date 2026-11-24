@@ -216,7 +216,7 @@ pub fn emit(program: &Program, index: usize) -> Result<NativeCode, &'static str>
     let mut used = std::collections::BTreeSet::new();
     let layout = ir.tile_layout(false, Some(&mut used));
     let inputs = crate::ir::dataflow::input_fragments(ir, &used);
-    stage.first(&stage.entries(false), &inputs, &used, layout)
+    stage.first(&stage.entries(false), &inputs, &used, layout.words)
 }
 
 pub(crate) fn compile_stage(program: &Program, index: usize) -> Result<(ExecutionStage, StageCode), &'static str> {
@@ -227,7 +227,7 @@ pub(crate) fn compile_stage(program: &Program, index: usize) -> Result<(Executio
     let inputs = crate::ir::dataflow::input_fragments(ir, &used);
     let stage = RangeStage::new(program, index);
     let entries = stage.entries(true);
-    let main = stage.first(&entries, &inputs, &used, layout)?;
+    let main = stage.first(&entries, &inputs, &used, layout.words)?;
     let layout = ExecutionStage::from_stage(ir, inputs.into_keys().collect());
     let continuation = match entries.follow {
         RangeFollow::None => None,

@@ -291,7 +291,7 @@ extern "C" void variable_declaration(StorageClass storage, u32 pointer, u32 id, 
     words_three(words, 0u64, 59, pointer, id, u32(storage));
 }
 
-extern "C" u64 annotated_variable(VariableAnnotation annotation, u32 pointer, u32 id, u32 operand, address definitions, address decorations) on cpu {
+u64 annotated_variable(VariableAnnotation annotation, u32 pointer, u32 id, u32 operand, address definitions, address decorations) on cpu {
     if (annotation == VariableAnnotation::BuiltIn) {
         variable_declaration(StorageClass::Input, pointer, id, definitions);
         return words_three(decorations, 0u64, 71, id, 11, operand);
@@ -334,9 +334,9 @@ u32 define_pointer(inout ResourceCursor out, StorageClass storage, u32 pointee) 
     return define_type(out, TypeShape::Pointer, u32(storage), pointee);
 }
 
-u32 define_word(inout ResourceCursor out, ShaderResourceHost host, u32 word_type, u32 bits) on cpu
-    requires nonzero(host.intern_word) {
-    u32 id = host.intern_word(host.constants, bits, out.next);
+u32 define_word(inout ResourceCursor out, WordConstants constants, u32 word_type, u32 bits) on cpu
+    requires nonzero(constants.intern) {
+    u32 id = constants.intern(constants.context, bits, out.next);
     if (id == out.next) {
         out.next += 1;
         out.words += constant_declaration(BuiltinScalar::U32, word_type, id, u64(bits),
@@ -371,7 +371,7 @@ SampledType texture_type(inout ResourceCursor out, u32 float_type, u32 dimension
 }
 
 extern "C" ShaderResourceIds shader_resources(ShaderResourceInput input, ShaderResourceHost host, ResourceStreams streams) on cpu
-    requires nonzero(host.texture) requires nonzero(host.intern_word) {
+    requires nonzero(host.texture) requires nonzero(host.words.intern) {
     ResourceCursor out = ResourceCursor(streams.definitions, streams.decorations, 0u64, 0u64, input.next);
     u32 vec3 = define_type(out, TypeShape::Vector, input.float_type, 3);
     u32 vec2 = define_type(out, TypeShape::Vector, input.float_type, 2);
@@ -391,7 +391,7 @@ extern "C" ShaderResourceIds shader_resources(ShaderResourceInput input, ShaderR
             }
             u32 pointer = sampled.pointer;
             if (texture.arrayed != 0) {
-                u32 length = define_word(out, host, input.word_type, texture.length);
+                u32 length = define_word(out, host.words, input.word_type, texture.length);
                 u32 array = define_type(out, TypeShape::Array, sampled.sampled, length);
                 pointer = define_pointer(out, StorageClass::UniformConstant, array);
             }
@@ -444,7 +444,7 @@ extern "C" ShaderResourceIds shader_resources(ShaderResourceInput input, ShaderR
         i += 1u64;
     }
 
-    u32 length = define_word(out, host, input.word_type, input.uniform_bytes / 4);
+    u32 length = define_word(out, host.words, input.word_type, input.uniform_bytes / 4);
     u32 push_block = define_resource_block(out, input.word_type, length);
     u32 push = definition_id(out);
     variable_declaration(StorageClass::PushConstant, push_block, push, word_at(out.definitions, out.words));
@@ -3673,6 +3673,63 @@ extern "C" WorkgroupLayout workgroup_layout(
     bool ranks = pass == WorkgroupPass::SortHistogram || pass == WorkgroupPass::SortScatter;
     u32 words = ranks ? 32 : (local_index ? scan_width * summary_words : 0);
     return WorkgroupLayout(u32(scan), u32(local_index), u32(ranks), words);
+}
+
+u32 define_scalar_input(inout ResourceCursor out, u32 type_id, u32 builtin) on cpu {
+    u32 pointer = define_pointer(out, StorageClass::Input, type_id);
+    return define_annotated(out, VariableAnnotation::BuiltIn, pointer, builtin);
+}
+
+SharedArray define_shared(inout ResourceCursor out, WordConstants constants, u32 word_type, u32 element, u32 words)
+    on cpu requires nonzero(constants.intern) {
+    u32 length = define_word(out, constants, word_type, words);
+    u32 array = define_type(out, TypeShape::Array, element, length);
+    u32 array_pointer = define_pointer(out, StorageClass::Workgroup, array);
+    u32 variable = definition_id(out);
+    variable_declaration(StorageClass::Workgroup, array_pointer, variable, word_at(out.definitions, out.words));
+    out.words += 4u64;
+    u32 pointer = define_pointer(out, StorageClass::Workgroup, element);
+    return SharedArray(variable, pointer);
+}
+
+extern "C" u32 workgroup_declarations(WorkgroupDeclaration input, WordConstants constants, address definitions,
+    address decorations, address output) on cpu requires nonzero(constants.intern) {
+    u64 tile_words = input.narrow_cells * u64(input.width);
+    u64 narrow_words = tile_words + input.scratch_words;
+    u64 wide_words = input.wide_cells * u64(input.width);
+    if (narrow_words > 4294967295u64 || wide_words > 4294967295u64) { return 0; }
+
+    ResourceCursor out = ResourceCursor(definitions, decorations, 0u64, 0u64, input.next);
+    u32 local = input.layout.local_index != 0 ? define_scalar_input(out, input.word_type, 29) : 0;
+    u32 rank_id = 0;
+    u32 rank_lane = 0;
+    if (input.layout.ranks != 0) {
+        u32 pointer = define_pointer(out, StorageClass::Input, input.word_type);
+        rank_id = define_annotated(out, VariableAnnotation::BuiltIn, pointer, 40);
+        rank_lane = define_annotated(out, VariableAnnotation::BuiltIn, pointer, 41);
+    }
+    u32 ballot = input.ballot != 0 ? define_type(out, TypeShape::Vector, input.word_type, 4) : 0;
+    u32 lane = (input.subgroup_mask & 1) != 0 ? define_scalar_input(out, input.word_type, 41) : 0;
+    u32 size = (input.subgroup_mask & 2) != 0 ? define_scalar_input(out, input.word_type, 36) : 0;
+    u32 id = (input.subgroup_mask & 4) != 0 ? define_scalar_input(out, input.word_type, 40) : 0;
+
+    SharedArray reduction = SharedArray(0, 0);
+    u64 bytes = narrow_words * 4u64 + wide_words * 8u64;
+    if (input.layout.local_index != 0 || input.layout.ranks != 0) {
+        reduction = define_shared(out, constants, input.word_type, input.word_type, input.layout.words);
+        bytes += u64(input.layout.words) * 4u64;
+    }
+    SharedArray tile = SharedArray(0, 0);
+    if (narrow_words != 0u64) {
+        tile = define_shared(out, constants, input.word_type, input.word_type, u32(narrow_words));
+    }
+    SharedArray tile_wide = SharedArray(0, 0);
+    if (wide_words != 0u64) {
+        tile_wide = define_shared(out, constants, input.word_type, input.wide_type, u32(wide_words));
+    }
+    unsafe_position<WorkgroupVariables>(output) = WorkgroupVariables(out.words, out.annotations, bytes, out.next,
+        local, rank_id, rank_lane, ballot, lane, size, id, u32(tile_words), reduction, tile, tile_wide);
+    return 1;
 }
 
 extern "C" u32 custom_kernel_preparation(u32 pass,u32 segmented) on cpu {

@@ -114,7 +114,52 @@ struct WorkgroupLayout {
     words: u32,
 }
 
+#[repr(C)]
+struct WorkgroupDeclaration {
+    layout: WorkgroupLayout,
+    next: u32,
+    word_type: u32,
+    wide_type: u32,
+    subgroup_mask: u32,
+    ballot: u32,
+    width: u32,
+    narrow_cells: u64,
+    wide_cells: u64,
+    scratch_words: u64,
+}
+
+#[repr(C)]
+struct SharedArray {
+    variable: u32,
+    pointer: u32,
+}
+
+#[repr(C)]
+struct WorkgroupVariables {
+    definitions: u64,
+    decorations: u64,
+    shared_bytes: u64,
+    next: u32,
+    local: u32,
+    rank_id: u32,
+    rank_lane: u32,
+    ballot: u32,
+    lane: u32,
+    size: u32,
+    id: u32,
+    tile_words: u32,
+    reduction: SharedArray,
+    tile: SharedArray,
+    tile_wide: SharedArray,
+}
+
 unsafe extern "C" {
+    #[link_name = "bootstrap.spirv_envelope::workgroup_declarations"]
+    fn workgroup_declarations(
+        input: WorkgroupDeclaration, constants: WordConstants, defs: *mut u32, decorations: *mut u32,
+        output: *mut WorkgroupVariables,
+    ) -> u32;
+
     #[link_name = "bootstrap.spirv_envelope::workgroup_layout"]
     fn workgroup_layout(
         operation: EntryOperation, pass: WorkgroupPass, selected: u32, summary_words: u32, scan_width: u32,
@@ -160,8 +205,7 @@ struct ShaderWords {
 #[repr(u32)]
 enum TypeShape {
     Void,
-    Vector,
-    Matrix,
+    Matrix = 2,
     Array = 4,
     Function,
     Pointer = 9,
@@ -207,8 +251,19 @@ struct TextureDeclaration {
 struct ShaderResourceHost {
     textures: *const std::ffi::c_void,
     texture: unsafe extern "C" fn(*const std::ffi::c_void, usize) -> TextureDeclaration,
-    constants: *mut std::ffi::c_void,
-    intern_word: unsafe extern "C" fn(*mut std::ffi::c_void, u32, u32) -> u32,
+    words: WordConstants,
+}
+
+#[repr(C)]
+struct WordConstants {
+    context: *mut std::ffi::c_void,
+    intern: unsafe extern "C" fn(*mut std::ffi::c_void, u32, u32) -> u32,
+}
+
+impl WordConstants {
+    fn new(pool: &mut BTreeMap<(Scalar, Bits), u32>) -> Self {
+        Self { context: std::ptr::from_mut(pool).cast(), intern: intern_resource_word }
+    }
 }
 
 #[derive(Clone, Copy, Default)]
@@ -262,14 +317,7 @@ unsafe extern "C" fn intern_resource_word(
 
 #[repr(u32)]
 enum StorageClass {
-    Input = 1,
-    Workgroup = 4,
     Function = 7,
-}
-
-#[repr(u32)]
-enum VariableAnnotation {
-    BuiltIn = 2,
 }
 
 #[repr(C)]
@@ -984,11 +1032,6 @@ unsafe extern "C" {
     fn shader_resources(input: ShaderResourceInput, host: ShaderResourceHost, streams: ResourceStreams) -> ShaderResourceIds;
     #[link_name = "bootstrap.spirv_envelope::variable_declaration"]
     fn variable_declaration(storage: StorageClass, pointer: u32, id: u32, words: *mut u32);
-    #[link_name = "bootstrap.spirv_envelope::annotated_variable"]
-    fn annotated_variable(
-        annotation: VariableAnnotation, pointer: u32, id: u32, operand: u32,
-        definitions: *mut u32, decorations: *mut u32,
-    ) -> u64;
     #[link_name = "bootstrap.spirv_envelope::scalar_binary"]
     fn scalar_binary(input: BinaryEmission, body: *mut u32, decorations: *mut u32) -> BinaryWords;
     #[link_name = "bootstrap.spirv_envelope::scalar_cast"]
@@ -1124,7 +1167,7 @@ struct Emitter<'a> {
     program: &'a Program,
     execution_buffers: ExecutionBuffers,
     ext: u32,
-    subgroup_inputs: BTreeMap<SubgroupOp, u32>,
+    subgroup_inputs: [u32; 3],
     ballot_type: u32,
     workgroup_width: u32,
     tile_layout: &'a crate::ir::dataflow::TileLayout,
@@ -1132,6 +1175,7 @@ struct Emitter<'a> {
     tile_pointer64: u32,
     tile_shared: u32,
     tile_pointer: u32,
+    tile_data_words: u32,
     tile_length: u32,
     tile_lane: u32,
     current_label: u32,
@@ -1236,29 +1280,40 @@ impl Emitter<'_> {
             words.set_len(start + 4);
         }
     }
-    fn declare_variable(&mut self, storage: StorageClass, pointer: u32) -> u32 {
-        let id = self.id();
-        Self::append_variable(&mut self.defs, storage, pointer, id);
-        id
-    }
     fn declare_function_variable(&mut self, pointer: u32) -> u32 {
         let id = self.id();
         Self::append_variable(&mut self.body, StorageClass::Function, pointer, id);
         id
     }
-    fn declare_annotated(&mut self, annotation: VariableAnnotation, pointer: u32, operand: u32) -> u32 {
-        let id = self.id();
-        let defs = self.defs.len();
+    fn declare_workgroup(&mut self, input: WorkgroupDeclaration) -> Result<WorkgroupVariables, &'static str> {
+        let definitions = self.defs.len();
         let decorations = self.decorations.len();
-        self.defs.reserve(4);
-        self.decorations.reserve(11);
-        unsafe {
-            let used = annotated_variable(annotation, pointer, id, operand,
-                self.defs.as_mut_ptr().add(defs), self.decorations.as_mut_ptr().add(decorations));
-            self.defs.set_len(defs + 4);
-            self.decorations.set_len(decorations + used as usize);
+        // Up to six built-ins, one ballot type and three shared arrays with their lengths.
+        self.defs.reserve(108);
+        self.decorations.reserve(24);
+        let mut output = std::mem::MaybeUninit::<WorkgroupVariables>::uninit();
+        let success = unsafe {
+            workgroup_declarations(input, WordConstants::new(&mut self.constants),
+                self.defs.as_mut_ptr().add(definitions), self.decorations.as_mut_ptr().add(decorations),
+                output.as_mut_ptr())
+        };
+        if success == 0 {
+            return Err("tile 共享数组超过 SPIR-V 长度范围");
         }
-        id
+        let ids = unsafe { output.assume_init() };
+        unsafe {
+            self.defs.set_len(definitions + ids.definitions as usize);
+            self.decorations.set_len(decorations + ids.decorations as usize);
+        }
+        self.next = ids.next;
+        self.subgroup_inputs = [ids.lane, ids.size, ids.id];
+        self.ballot_type = ids.ballot;
+        self.tile_shared = ids.tile.variable;
+        self.tile_pointer = ids.tile.pointer;
+        self.tile_shared64 = ids.tile_wide.variable;
+        self.tile_pointer64 = ids.tile_wide.pointer;
+        self.tile_data_words = ids.tile_words;
+        Ok(ids)
     }
     fn decorate_flag(&mut self, decoration: FlagDecoration, id: u32) {
         let start = self.decorations.len();
@@ -1308,8 +1363,7 @@ impl Emitter<'_> {
         let host = ShaderResourceHost {
             textures: program.textures.as_ptr().cast(),
             texture: texture_declaration,
-            constants: std::ptr::from_mut(&mut self.constants).cast(),
-            intern_word: intern_resource_word,
+            words: WordConstants::new(&mut self.constants),
         };
         let ids = unsafe { shader_resources(input, host, streams) };
         unsafe {
@@ -2198,7 +2252,7 @@ pub fn emit_pass(
 }
 fn shader_stage_inputs(
     stage: &Stage,
-) -> (crate::ir::dataflow::TileLayout, crate::ir::dataflow::InputFragments) {
+) -> (PlacedTiles, crate::ir::dataflow::InputFragments) {
     let mut used = BTreeSet::new();
     let layout = stage.tile_layout(true, Some(&mut used));
     let inputs = crate::ir::dataflow::input_fragments(stage, &used);
@@ -2252,7 +2306,7 @@ impl ShaderStageFacts {
 
 struct PreparedReduction {
     kernel: ReductionKernel,
-    layout: crate::ir::dataflow::TileLayout,
+    layout: PlacedTiles,
     facts: ShaderStageFacts,
 }
 
@@ -2284,7 +2338,7 @@ fn prepare_reduction(stage: &Stage, pass: Pass) -> Option<PreparedReduction> {
 
 fn emit_shader(
     program: &Program, original_stage: &Stage, pass: Pass,
-    inputs: &mut crate::ir::dataflow::InputFragments, layout: &crate::ir::dataflow::TileLayout,
+    inputs: &mut crate::ir::dataflow::InputFragments, layout: &PlacedTiles,
     program_features: ProgramShaderFeatures, reduction: Option<&PreparedReduction>,
     shared_original_facts: Option<&ShaderStageFacts>, publishes_summary: bool,
 ) -> Result<(Vec<u32>, u64), &'static str> {
@@ -2338,14 +2392,15 @@ fn emit_shader(
         program,
         execution_buffers: program_features.buffers,
         ext: 0,
-        subgroup_inputs: BTreeMap::new(),
+        subgroup_inputs: [0; 3],
         ballot_type: 0,
         workgroup_width: stage.workgroup_width(),
-        tile_layout,
+        tile_layout: &tile_layout.words,
         tile_shared64: 0,
         tile_pointer64: 0,
         tile_shared: 0,
         tile_pointer: 0,
+        tile_data_words: 0,
         tile_length: 0,
         tile_lane: 0,
         current_label: 0,
@@ -2416,68 +2471,26 @@ fn emit_shader(
     e.u64_type = e.types[&Scalar::U64];
     let resources = e.declare_shader_resources(publishes_summary, single_group, argument_pass);
     let ShaderResourceIds { ray_pointer, index_type: v3, global, num_groups, .. } = resources;
-    let shared_scalar = Scalar::U32;
-    let mut local_input = 0;
-    let mut shared = 0;
-    let mut shared_pointer = 0;
-    if workgroup.local_index != 0 {
-        let input_ptr = e.declare_pointer(StorageClass::Input, u);
-        local_input = e.declare_annotated(VariableAnnotation::BuiltIn, input_ptr, 29);
-    }
-    let mut subgroup_inputs = [0; 2];
-    let mut ballot_type = 0;
-    if ranks {
-        let input_ptr = e.declare_pointer(StorageClass::Input, u);
-        for (input, builtin) in subgroup_inputs.iter_mut().zip([40, 41]) {
-            *input = e.declare_annotated(VariableAnnotation::BuiltIn, input_ptr, builtin);
-        }
-    }
-    if subgroup_caps.ballot || ranks {
-        ballot_type = e.declare_type(TypeShape::Vector, u, 4);
-        e.ballot_type = ballot_type;
-    }
-    for (operation, builtin) in [
-        (SubgroupOp::Lane, 41),
-        (SubgroupOp::Size, 36),
-        (SubgroupOp::Id, 40),
-    ] {
-        if subgroups.uses_builtin(operation) {
-            let input_ptr = e.declare_pointer(StorageClass::Input, u);
-            let variable = e.declare_annotated(VariableAnnotation::BuiltIn, input_ptr, builtin);
-            e.subgroup_inputs.insert(operation, variable);
-        }
-    }
-    let mut shared_bytes = 0u64;
-    if workgroup.local_index != 0 || ranks {
-        let words = workgroup.words;
-        shared_bytes += u64::from(words) * 4;
-        let count = e.constant(Scalar::U32, words);
-        let array = e.declare_type(TypeShape::Array, e.types[&shared_scalar], count);
-        let array_ptr = e.declare_pointer(StorageClass::Workgroup, array);
-        shared = e.declare_variable(StorageClass::Workgroup, array_ptr);
-        shared_pointer = e.declare_pointer(StorageClass::Workgroup, e.types[&shared_scalar]);
-    }
-    if pass == Pass::Main {
-        for unit in [Scalar::U32, Scalar::U64] {
-            let cells = e.tile_layout.values().filter(|(kind, _, _)| *kind == unit)
-                .map(|(_, slot, _)| *slot as u64 + 1).max().unwrap_or(0);
-            let words = cells * u64::from(e.workgroup_width)
-                + if unit == Scalar::U32 { stage.tile_scratch_bytes() / 4 } else { 0 };
-            if words == 0 { continue; }
-            let words = u32::try_from(words).map_err(|_| "tile 共享数组超过 SPIR-V 长度范围")?;
-            shared_bytes += u64::from(words) * u64::from(unit.size());
-            let length = e.constant(Scalar::U32, words);
-            let array = e.declare_type(TypeShape::Array, e.types[&unit], length);
-            let array_ptr = e.declare_pointer(StorageClass::Workgroup, array);
-            let shared = e.declare_variable(StorageClass::Workgroup, array_ptr);
-            let pointer = e.declare_pointer(StorageClass::Workgroup, e.types[&unit]);
-            if unit == Scalar::U32 {
-                e.tile_shared = shared; e.tile_pointer = pointer;
-            } else {
-                e.tile_shared64 = shared; e.tile_pointer64 = pointer;
-            }
-        }
-    }
+    let (narrow_cells, wide_cells, scratch_words) = if pass == Pass::Main {
+        (tile_layout.extents.narrow as u64, tile_layout.extents.wide as u64, stage.tile_scratch_bytes() / 4)
+    } else {
+        (0, 0, 0)
+    };
+    let groups = e.declare_workgroup(WorkgroupDeclaration {
+        layout: workgroup, next: e.next, word_type: u, wide_type: e.u64_type,
+        subgroup_mask: u32::from(subgroups.uses_builtin(SubgroupOp::Lane))
+            | (u32::from(subgroups.uses_builtin(SubgroupOp::Size)) << 1)
+            | (u32::from(subgroups.uses_builtin(SubgroupOp::Id)) << 2),
+        ballot: u32::from(subgroup_caps.ballot || ranks),
+        width: e.workgroup_width,
+        narrow_cells, wide_cells, scratch_words,
+    })?;
+    let local_input = groups.local;
+    let subgroup_inputs = [groups.rank_id, groups.rank_lane];
+    let ballot_type = groups.ballot;
+    let shared = groups.reduction.variable;
+    let shared_pointer = groups.reduction.pointer;
+    let shared_bytes = groups.shared_bytes;
     let fn_ty = e.declare_type(TypeShape::Function, void, 0);
     let main = e.id();
     let entry = e.id();
@@ -2487,14 +2500,10 @@ fn emit_shader(
         e.emit_control(2, |body| unsafe { end_shader_body(body) });
         let global_inputs = [global, num_groups];
         let workgroup_inputs = [e.push, shared, local_input];
-        let mut builtin_inputs = [0; 3];
-        for (input, &id) in builtin_inputs.iter_mut().zip(e.subgroup_inputs.values()) {
-            *input = id;
-        }
         let tile_inputs = [e.tile_shared, e.tile_shared64];
         let parts: [&[u32]; 8] = [
             &global_inputs, &e.buffers, &e.accelerations, &e.textures,
-            &workgroup_inputs, &subgroup_inputs, &builtin_inputs, &tile_inputs,
+            &workgroup_inputs, &subgroup_inputs, &e.subgroup_inputs, &tile_inputs,
         ];
         let interface_words: usize = parts.iter().map(|part| part.len()).sum();
         let interfaces = parts.map(|part| ShaderWords {

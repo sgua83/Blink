@@ -9,7 +9,7 @@ impl Emitter<'_> {
         argument: Option<Reg>,
     ) {
         let scope_or_pointer = match op {
-            SubgroupOp::Lane | SubgroupOp::Size | SubgroupOp::Id => self.subgroup_inputs[&op],
+            SubgroupOp::Lane | SubgroupOp::Size | SubgroupOp::Id => self.subgroup_inputs[op as usize],
             _ => self.constant(Scalar::U32, 3),
         };
         let input = SubgroupEmission {

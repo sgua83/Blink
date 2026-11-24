@@ -21,8 +21,9 @@ struct TileMember { u64 storage; u64 owner; u64 byte; u64 slot; };
 struct TilePlanes { address narrow; address wide; };
 
 // Each interval owns its original ordered members. Return the actual narrow
-// extent and write slots into those same member rows.
-extern "C" u64 place_tile(address rows, u64 count, address members, address context,
+// extents and write slots into those same member rows.
+struct TileExtents { u64 narrow; u64 wide; };
+extern "C" TileExtents place_tile(address rows, u64 count, address members, address context,
     cfn<TilePlanes,address,u64,u64> reserve) on cpu requires nonzero(reserve);
 
 struct StageWrite {
