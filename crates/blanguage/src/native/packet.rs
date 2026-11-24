@@ -126,30 +126,214 @@ unsafe extern "C" {
         output: *mut u8) -> SparseRangeEncoding;
     #[link_name = "bootstrap.x64_instruction::sparse_tail"]
     fn encode_sparse_tail(slots: u32, output: *mut u8) -> u64;
-    #[link_name = "bootstrap.x64_instruction::packet_constant"]
-    fn encode_packet_constant(dst: operands::MoveLocation, bits: u32, output: *mut u8) -> u64;
-    #[link_name = "bootstrap.x64_instruction::packet_index"]
-    fn encode_packet_index(dst: operands::MoveLocation, sparse: u32, slots: u32, output: *mut u8) -> u64;
-    #[link_name = "bootstrap.x64_instruction::packet_uniform"]
-    fn encode_packet_uniform(dst: operands::MoveLocation, offset: u32, boolean: u32, output: *mut u8) -> u64;
-    #[link_name = "bootstrap.x64_instruction::packet_copy"]
-    fn encode_packet_copy(dst: operands::MoveLocation, src: operands::MoveLocation, output: *mut u8) -> u64;
-    #[link_name = "bootstrap.x64_instruction::packet_binary"]
-    fn encode_packet_binary(dst: operands::MoveLocation, left: operands::MoveLocation, right: operands::MoveLocation,
-        scalar: crate::builtin_types::ScalarEncoding, operation: crate::builtin_types::ScalarBinaryOp,
-        uniform_count: u32, output: *mut u8) -> u64;
-    #[link_name = "bootstrap.x64_instruction::packet_unary"]
-    fn encode_packet_unary(dst: operands::MoveLocation, src: operands::MoveLocation, operation: u32, output: *mut u8) -> u64;
-    #[link_name = "bootstrap.x64_instruction::packet_cast"]
-    fn encode_packet_cast(dst: operands::MoveLocation, src: operands::MoveLocation,
-        from: crate::builtin_types::ScalarEncoding, into: crate::builtin_types::ScalarEncoding, output: *mut u8) -> u64;
-    #[link_name = "bootstrap.x64_instruction::packet_math"]
-    fn encode_packet_math(dst: operands::MoveLocation, left: operands::MoveLocation, right: operands::MoveLocation,
-        operation: Math, output: *mut u8) -> u64;
-    #[link_name = "bootstrap.x64_instruction::packet_select"]
-    fn encode_packet_select(dst: operands::MoveLocation, condition: operands::MoveLocation,
-        left: operands::MoveLocation, right: operands::MoveLocation, output: *mut u8) -> u64;
+    #[link_name = "bootstrap.x64_instruction::emit_packet_body"]
+    fn emit_packet_body(context: PacketBodySlot, count: usize, sparse: u32, slots: u32, host: PacketBodyHost);
 }
+
+#[repr(u32)]
+enum PacketBodyKind {
+    Done,
+    Failed,
+    Constant,
+    Index,
+    Uniform,
+    Copy,
+    Unary,
+    Binary,
+    Cast,
+    Math,
+    Select,
+}
+
+#[repr(C)]
+struct PacketBodyOp {
+    places: [operands::MoveLocation; 4],
+    from: crate::builtin_types::ScalarEncoding,
+    into: crate::builtin_types::ScalarEncoding,
+    kind: PacketBodyKind,
+    literal: u32,
+    flag: u32,
+    unary: u32,
+    binary: crate::builtin_types::ScalarBinaryOp,
+    math: Math,
+}
+
+impl PacketBodyOp {
+    fn new(kind: PacketBodyKind) -> Self {
+        Self {
+            places: std::array::from_fn(|_| allocation::Location::Xmm(0).into()),
+            from: Scalar::U32.into(),
+            into: Scalar::U32.into(),
+            kind,
+            literal: 0,
+            flag: 0,
+            unary: 0,
+            binary: crate::builtin_types::ScalarBinaryOp::Add,
+            math: Math::Sqrt,
+        }
+    }
+}
+
+type PacketBodySlot = *mut std::ffi::c_void;
+
+#[repr(C)]
+struct PacketBodySpan {
+    start: usize,
+    first: usize,
+    observed: u32,
+}
+
+#[repr(C)]
+struct PacketBodyHost {
+    step: unsafe extern "C" fn(PacketBodySlot, usize) -> PacketBodyOp,
+    span: unsafe extern "C" fn(PacketBodySlot) -> PacketBodySpan,
+    range: unsafe extern "C" fn(PacketBodySlot, usize, PacketBodySpan),
+    reserve: unsafe extern "C" fn(PacketBodySlot, usize) -> *mut u8,
+    finish: unsafe extern "C" fn(PacketBodySlot, usize),
+}
+
+struct PacketBody<'a, 'b, 'c> {
+    emitter: &'a mut Emitter<'b>,
+    allocation: &'a PacketAllocation,
+    code: &'a [Step<'c>],
+    result: Result<(), &'static str>,
+}
+
+unsafe fn packet_body<'a, 'b, 'c, 'd>(slot: PacketBodySlot) -> &'a mut PacketBody<'b, 'c, 'd> {
+    unsafe { &mut *slot.cast() }
+}
+
+unsafe extern "C" fn packet_body_span(slot: PacketBodySlot) -> PacketBodySpan {
+    let emitter = &unsafe { packet_body(slot) }.emitter;
+    let count = emitter.operation_ranges.as_ref().map(Vec::len);
+    PacketBodySpan {
+        start: emitter.code.len(),
+        first: count.unwrap_or(0),
+        observed: u32::from(count.is_some()),
+    }
+}
+
+unsafe extern "C" fn packet_body_range(slot: PacketBodySlot, index: usize, span: PacketBodySpan) {
+    let context = unsafe { packet_body(slot) };
+    context.emitter.operation_range(
+        context.code[index].instruction, span.start, (span.observed != 0).then_some(span.first),
+    );
+}
+
+unsafe extern "C" fn reserve_packet_bytes(slot: PacketBodySlot, count: usize) -> *mut u8 {
+    let code = &mut unsafe { packet_body(slot) }.emitter.code;
+    code.reserve(count);
+    unsafe { code.as_mut_ptr().add(code.len()) }
+}
+
+unsafe extern "C" fn finish_packet_bytes(slot: PacketBodySlot, count: usize) {
+    let code = &mut unsafe { packet_body(slot) }.emitter.code;
+    unsafe { code.set_len(code.len() + count) }
+}
+
+unsafe extern "C" fn packet_body_step(slot: PacketBodySlot, index: usize) -> PacketBodyOp {
+    use PacketBodyKind as Kind;
+    use PrivateSlot::Register;
+    let context = unsafe { packet_body(slot) };
+    let allocation = context.allocation;
+    let emitter = &mut context.emitter;
+    let place = |value| allocation.location(value).into();
+    let register = |value| place(Register(value));
+    let emit = |e: &mut Emitter<'_>, block: &[Step<'_>]| e.packet_block(block, allocation);
+    let load = |e: &mut Emitter<'_>, reg| e.packet_lane(allocation, reg, 0, 0);
+    let flow = match &context.code[index].kind {
+        StepKind::If { condition, yes, no } => Flow::If(*condition, yes, no),
+        StepKind::Loop { condition, test, body } => Flow::Loop(condition, *test, body),
+        StepKind::Scope(body) => Flow::Scope(body),
+        StepKind::Exit => Flow::Exit,
+        StepKind::Break => Flow::Break,
+        StepKind::Continue => Flow::Continue,
+        StepKind::Load { dst, binding, index, word, mode } => {
+            emitter.packet_read(allocation, *dst, *binding, *index, *word, *mode);
+            return PacketBodyOp::new(Kind::Done);
+        }
+        StepKind::Store { binding, word, value, mode } => {
+            emitter.packet_write(allocation, *value, *binding, *word, *mode);
+            return PacketBodyOp::new(Kind::Done);
+        }
+        StepKind::ViewLoad { dst, address, stride, index, word, mode } => {
+            emitter.packet_view(allocation, *dst, *address, *stride, *index, *word, *mode);
+            return PacketBodyOp::new(Kind::Done);
+        }
+        StepKind::IntegerDivide { result, src, divisor } => {
+            match divisor {
+                IntegerDivisor::Constant(divisor) => emitter.packet_divide(allocation, *result, *src, *divisor),
+                IntegerDivisor::Value(divisor) => emitter.packet_divide_value(allocation, *result, *src, *divisor),
+            }
+            return PacketBodyOp::new(Kind::Done);
+        }
+        StepKind::Constant(dst, bits) => {
+            let mut op = PacketBodyOp::new(Kind::Constant);
+            op.places[0] = register(*dst);
+            op.literal = *bits;
+            return op;
+        }
+        StepKind::Index(dst) => {
+            let mut op = PacketBodyOp::new(Kind::Index);
+            op.places[0] = register(*dst);
+            return op;
+        }
+        StepKind::Uniform(dst, offset) => {
+            let mut op = PacketBodyOp::new(Kind::Uniform);
+            op.places[0] = register(*dst);
+            op.literal = *offset;
+            op.flag = u32::from(emitter.stage.registers[*dst] == Scalar::Bool);
+            return op;
+        }
+        StepKind::Copy(dst, src) => {
+            let mut op = PacketBodyOp::new(Kind::Copy);
+            op.places[0] = place(*dst);
+            op.places[1] = place(*src);
+            return op;
+        }
+        StepKind::Unary { dst, op: source, a } => {
+            let mut op = PacketBodyOp::new(Kind::Unary);
+            op.places[0] = register(*dst);
+            op.places[1] = register(*a);
+            op.unary = *source as u32;
+            return op;
+        }
+        StepKind::Binary { dst, op: source, a, b, uniform_count } => {
+            let mut op = PacketBodyOp::new(Kind::Binary);
+            op.places[0] = register(*dst);
+            op.places[1] = register(*a);
+            op.places[2] = register(*b);
+            op.from = emitter.stage.registers[*a].into();
+            op.binary = (*source).into();
+            op.flag = u32::from(*uniform_count);
+            return op;
+        }
+        StepKind::Cast { dst, src, from, into } => {
+            let mut op = PacketBodyOp::new(Kind::Cast);
+            op.places[0] = register(*dst);
+            op.places[1] = register(*src);
+            op.from = (*from).into();
+            op.into = (*into).into();
+            return op;
+        }
+        StepKind::Math { dst, op: source, args } => {
+            let mut op = PacketBodyOp::new(Kind::Math);
+            op.places[0] = register(*dst);
+            op.places[1] = register(args[0]);
+            op.places[2] = register(*args.last().unwrap());
+            op.math = *source;
+            return op;
+        }
+        StepKind::Select { dst, condition, a, b } => {
+            let mut op = PacketBodyOp::new(Kind::Select);
+            op.places = [register(*dst), register(*condition), register(*a), register(*b)];
+            return op;
+        }
+    };
+    context.result = emitter.lower_control(flow, emit, load);
+    PacketBodyOp::new(if context.result.is_ok() { Kind::Done } else { Kind::Failed })
+}
+
 impl Emitter<'_> {
     pub(super) fn packet_loop(&mut self, plan: &Plan<'_>, allocation: &PacketAllocation) -> Result<(), &'static str> {
         let begin = self.code.len();
@@ -187,98 +371,21 @@ impl Emitter<'_> {
     }
 
     fn packet_block(&mut self, code: &[Step<'_>], allocation: &PacketAllocation) -> Result<(), &'static str> {
-        use PrivateSlot::Register;
-        let sparse = self.stage.selection.is_some();
-        let emit = |emitter: &mut Self, block: &[Step<'_>]| emitter.packet_block(block, allocation);
-        let load = |emitter: &mut Self, reg| emitter.packet_lane(allocation, reg, 0, 0);
-        for step in code {
-            let start = self.code.len();
-            let first = self.operation_ranges.as_ref().map(Vec::len);
-            match &step.kind {
-                StepKind::If { condition, yes, no } => self.lower_control(Flow::If(*condition, yes, no), emit, load)?,
-                StepKind::Loop { condition, test, body } => self.lower_control(Flow::Loop(condition, *test, body), emit, load)?,
-                StepKind::Scope(body) => self.lower_control(Flow::Scope(body), emit, load)?,
-                StepKind::Exit => self.lower_control(Flow::Exit, emit, load)?,
-                StepKind::Break => self.lower_control(Flow::Break, emit, load)?,
-                StepKind::Continue => self.lower_control(Flow::Continue, emit, load)?,
-                StepKind::Constant(dst, bits) => {
-                    let location = allocation.location(Register(*dst)).into();
-                    self.emit_bytes(24, |output| unsafe { encode_packet_constant(location, *bits, output) });
-                }
-                StepKind::Index(dst) => {
-                    let location = allocation.location(Register(*dst)).into();
-                    let slots = self.frame.end as u32;
-                    self.emit_bytes(48, |output| unsafe {
-                        encode_packet_index(location, u32::from(sparse), slots, output)
-                    });
-                }
-                StepKind::Uniform(dst, offset) => {
-                    let location = allocation.location(Register(*dst)).into();
-                    let boolean = u32::from(self.stage.registers[*dst] == Scalar::Bool);
-                    self.emit_bytes(64, |output| unsafe {
-                        encode_packet_uniform(location, *offset, boolean, output)
-                    });
-                }
-                StepKind::Copy(dst, src) => {
-                    let destination = allocation.location(*dst).into();
-                    let source = allocation.location(*src).into();
-                    self.emit_bytes(32, |output| unsafe { encode_packet_copy(destination, source, output) });
-                }
-                StepKind::Load { dst, binding, index, word, mode } =>
-                    self.packet_read(allocation, *dst, *binding, *index, *word, *mode),
-                StepKind::Store { binding, word, value, mode } =>
-                    self.packet_write(allocation, *value, *binding, *word, *mode),
-                StepKind::ViewLoad { dst, address, stride, index, word, mode } =>
-                    self.packet_view(allocation, *dst, *address, *stride, *index, *word, *mode),
-                StepKind::Unary { dst, op, a } => {
-                    let destination = allocation.location(Register(*dst)).into();
-                    let source = allocation.location(Register(*a)).into();
-                    self.emit_bytes(256, |output| unsafe { encode_packet_unary(destination, source, *op as u32, output) });
-                }
-                StepKind::Binary { dst, op, a, b, uniform_count } => {
-                    let destination = allocation.location(Register(*dst)).into();
-                    let left = allocation.location(Register(*a)).into();
-                    let right = allocation.location(Register(*b)).into();
-                    let scalar = self.stage.registers[*a].into();
-                    self.emit_bytes(256, |output| unsafe {
-                        encode_packet_binary(destination, left, right, scalar, (*op).into(), u32::from(*uniform_count), output)
-                    });
-                }
-                StepKind::IntegerDivide {
-                    result,
-                    src,
-                    divisor,
-                } => match divisor {
-                    IntegerDivisor::Constant(divisor) => {
-                        self.packet_divide(allocation, *result, *src, *divisor)
-                    }
-                    IntegerDivisor::Value(divisor) => {
-                        self.packet_divide_value(allocation, *result, *src, *divisor)
-                    }
+        let sparse = u32::from(self.stage.selection.is_some());
+        let slots = self.frame.end as u32;
+        let mut context = PacketBody { emitter: self, allocation, code, result: Ok(()) };
+        unsafe {
+            emit_packet_body(
+                std::ptr::from_mut(&mut context).cast(), code.len(), sparse, slots,
+                PacketBodyHost {
+                    step: packet_body_step,
+                    span: packet_body_span,
+                    range: packet_body_range,
+                    reserve: reserve_packet_bytes,
+                    finish: finish_packet_bytes,
                 },
-                StepKind::Cast { dst, src, from, into } => {
-                    let destination = allocation.location(Register(*dst)).into();
-                    let source = allocation.location(Register(*src)).into();
-                    self.emit_bytes(256, |output| unsafe {
-                        encode_packet_cast(destination, source, (*from).into(), (*into).into(), output)
-                    });
-                }
-                StepKind::Math { dst, op, args } => {
-                    let destination = allocation.location(Register(*dst)).into();
-                    let left = allocation.location(Register(args[0])).into();
-                    let right = allocation.location(Register(*args.last().unwrap())).into();
-                    self.emit_bytes(256, |output| unsafe { encode_packet_math(destination, left, right, *op, output) });
-                }
-                StepKind::Select { dst, condition, a, b } => {
-                    let destination = allocation.location(Register(*dst)).into();
-                    let condition = allocation.location(Register(*condition)).into();
-                    let left = allocation.location(Register(*a)).into();
-                    let right = allocation.location(Register(*b)).into();
-                    self.emit_bytes(256, |output| unsafe { encode_packet_select(destination, condition, left, right, output) });
-                }
-            }
-            self.operation_range(step.instruction, start, first);
+            );
         }
-        Ok(())
+        context.result
     }
 }

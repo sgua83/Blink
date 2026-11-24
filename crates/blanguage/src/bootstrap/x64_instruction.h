@@ -358,6 +358,33 @@ extern "C" u64 packet_math(MoveLocation dst, MoveLocation left, MoveLocation rig
 extern "C" u64 packet_select(MoveLocation dst, MoveLocation condition, MoveLocation left,
     MoveLocation right, address output) on cpu;
 
+enum PacketBodyKind:u32 {
+    Done=0; Failed=1; Constant=2; Index=3; Uniform=4; Copy=5; Unary=6;
+    Binary=7; Cast=8; Math=9; Select=10;
+};
+struct PacketBodyOp {
+    array<MoveLocation,4> locations;
+    ScalarEncoding source;
+    ScalarEncoding target;
+    PacketBodyKind kind;
+    u32 literal;
+    u32 flag;
+    ValueUnaryOperation unary;
+    BinaryOperation binary;
+    PacketMathOperation math;
+};
+struct PacketBodySpan { u64 start; u64 first; u32 observed; };
+struct PacketBodyHost {
+    cfn<PacketBodyOp,address,u64> step;
+    cfn<PacketBodySpan,address> span;
+    cfn<void,address,u64,PacketBodySpan> range;
+    cfn<address,address,u64> reserve;
+    cfn<void,address,u64> finish;
+};
+extern "C" void emit_packet_body(address context, u64 count, bool sparse, u32 slots, PacketBodyHost host) on cpu
+    requires nonzero(host.step) requires nonzero(host.span) requires nonzero(host.range)
+    requires nonzero(host.reserve) requires nonzero(host.finish);
+
 // The caller owns the output and consumes the returned native memory operand.
 // B retains no address after return; the emitter owns the code and memory operand.
 struct AddressEncoding { u64 length; u32 offset; u8 base; u8 index; u8 shift; };

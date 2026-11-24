@@ -2196,6 +2196,42 @@ extern "C" u64 packet_select(MoveLocation dst, MoveLocation condition, MoveLocat
     return packet_store_at(cursor, dst, target) - start;
 }
 
+extern "C" void emit_packet_body(address context, u64 count, bool sparse, u32 slots, PacketBodyHost host) on cpu
+    requires nonzero(host.step) requires nonzero(host.span) requires nonzero(host.range)
+    requires nonzero(host.reserve) requires nonzero(host.finish) {
+    u64 index = 0u64;
+    while (index < count) {
+        PacketBodySpan span = host.span(context);
+        PacketBodyOp op = host.step(context, index);
+        if (op.kind == PacketBodyKind::Failed) { return; }
+        if (op.kind == PacketBodyKind::Constant) {
+            host.finish(context, packet_constant(op.locations[0], op.literal, host.reserve(context, 24u64)));
+        } else if (op.kind == PacketBodyKind::Index) {
+            host.finish(context, packet_index(op.locations[0], sparse, slots, host.reserve(context, 48u64)));
+        } else if (op.kind == PacketBodyKind::Uniform) {
+            host.finish(context, packet_uniform(op.locations[0], op.literal, op.flag != 0, host.reserve(context, 64u64)));
+        } else if (op.kind == PacketBodyKind::Copy) {
+            host.finish(context, packet_copy(op.locations[0], op.locations[1], host.reserve(context, 32u64)));
+        } else if (op.kind == PacketBodyKind::Unary) {
+            host.finish(context, packet_unary(op.locations[0], op.locations[1], op.unary, host.reserve(context, 256u64)));
+        } else if (op.kind == PacketBodyKind::Binary) {
+            host.finish(context, packet_binary(op.locations[0], op.locations[1], op.locations[2],
+                op.source, op.binary, op.flag != 0, host.reserve(context, 256u64)));
+        } else if (op.kind == PacketBodyKind::Cast) {
+            host.finish(context, packet_cast(op.locations[0], op.locations[1], op.source, op.target,
+                host.reserve(context, 256u64)));
+        } else if (op.kind == PacketBodyKind::Math) {
+            host.finish(context, packet_math(op.locations[0], op.locations[1], op.locations[2],
+                op.math, host.reserve(context, 256u64)));
+        } else if (op.kind == PacketBodyKind::Select) {
+            host.finish(context, packet_select(op.locations[0], op.locations[1], op.locations[2],
+                op.locations[3], host.reserve(context, 256u64)));
+        }
+        host.range(context, index, span);
+        index += 1u64;
+    }
+}
+
 // A scalar input index is zero extended before the existing address arithmetic.
 u8 address_shift(u32 stride) on cpu {
     u8 shift = u8(0);
