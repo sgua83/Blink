@@ -130,8 +130,6 @@ unsafe extern "C" {
     #[link_name = "bootstrap.x64_instruction::finish_range"]
     fn encode_range_end(image: *mut u8, at: usize, begin: usize, exit_field: usize,
         skip_field: usize, step: u8) -> RangeEnd;
-    #[link_name = "bootstrap.x64_instruction::buffer_load"]
-    fn encode_buffer_load(offset: u32, target: u8, output: *mut u8) -> u64;
     #[link_name = "bootstrap.x64_instruction::buffer_index"]
     fn encode_buffer_index(stride_offset: u32, index: u8, base: u8, output: *mut u8) -> u64;
     #[link_name = "bootstrap.x64_instruction::dataset_index"]
@@ -335,40 +333,17 @@ impl Emitter<'_> {
         self.patch_scope(&fields);
     }
 
-    fn buffer_load(&mut self, offset: u32, target: u8) {
-        self.emit_bytes(8, |output| unsafe { encode_buffer_load(offset, target, output) });
-    }
-    fn dataset_index(&mut self, binding: usize, index: Reg, materialize: bool) {
+    fn address(&mut self, binding: usize, index: Reg) {
         let data = binding as u32 * BUFFER_BYTES;
         let location = self.location(index).into();
         let scalar = self.stage.registers[index].into();
         self.emit_bytes(44, |output| unsafe {
-            encode_dataset_index(data, data + BUFFER_STRIDE, location, scalar, u32::from(materialize), output)
+            encode_dataset_index(data, data + BUFFER_STRIDE, location, scalar, 1, output)
         });
-    }
-    fn address(&mut self, binding: usize, index: Reg) {
-        self.dataset_index(binding, index, true);
-    }
-    fn data_memory(&mut self, binding: usize, index: Reg, word: u32) -> Memory {
-        self.dataset_index(binding, index, false);
-        Memory::indexed(15, 0, 0, word)
     }
     fn offset_buffer_address(&mut self, binding: usize) {
         let stride = binding as u32 * BUFFER_BYTES + BUFFER_STRIDE;
         self.emit_bytes(12, |output| unsafe { encode_buffer_index(stride, 0, 15, output) });
-    }
-    fn private_memory(
-        &mut self,
-        base: usize,
-        index: Reg,
-        word: u32,
-    ) -> Result<Memory, &'static str> {
-        let allocation::Location::Stack(offset) =
-            self.allocation.location(PrivateSlot::Local(base))
-        else {
-            return Err("索引私有存储没有原生栈地址");
-        };
-        Ok(self.value_memory(4, self.location(index), 1, offset + word))
     }
     fn indexed_address(&mut self, source: &IndexedSource, offset: Reg, word: u32) {
         let stride = self.indexed_base(source);
@@ -505,10 +480,6 @@ impl Emitter<'_> {
                     self.write_scalar_address(*value, memory);
                 }
                 InstKind::PositionAddress { dst, address } => { self.reference_address(address)?; self.store(*dst); }
-                InstKind::BufferStride(dst,binding) => {
-                    self.buffer_load(*binding as u32 * BUFFER_BYTES + BUFFER_STRIDE, 0);
-                    self.store(*dst);
-                }
                 InstKind::FunctionAddress(dst, target) => {
                     match target {
                         CallTarget::Defined(name) => self.emit_symbol_target(NativeSymbol::Function(name.clone()), false),
@@ -517,68 +488,10 @@ impl Emitter<'_> {
                     }
                     self.store(*dst);
                 }
-                InstKind::Constant(dst, _, bits) => self.constant(*dst, *bits),
-                InstKind::Index(dst) => {
-                    self.copy(self.location(*dst), allocation::Location::Gpr(3));
-                }
-                InstKind::Uniform(dst, off) => {
-                    self.read_scalar(*dst, 13, *off);
-                }
-                InstKind::LoadLocal(dst, slot) => {
-                    let source = self.allocation.location(PrivateSlot::Local(*slot));
-                    if self.stage.registers[*dst] == Scalar::Bool
-                        && let allocation::Location::Stack(offset) = source
-                    {
-                        self.read_scalar(*dst, 4, offset);
-                    } else {
-                        self.copy_scalar(self.location(*dst), source, self.stage.registers[*dst]);
-                    }
-                }
-                InstKind::StoreLocal(slot, src) => {
-                    self.copy_scalar(
-                        self.allocation.location(PrivateSlot::Local(*slot)),
-                        self.location(*src),
-                        self.stage.registers[*src],
-                    );
-                }
-                InstKind::LoadLocalIndexed {
-                    dst,
-                    base,
-                    index,
-                    word,
-                    ..
-                } => {
-                    let memory = self.private_memory(*base, *index, *word)?;
-                    self.read_scalar_address(*dst, memory);
-                }
-                InstKind::StoreLocalIndexed {
-                    base,
-                    index,
-                    word,
-                    value,
-                    ..
-                } => {
-                    let memory = self.private_memory(*base, *index, *word)?;
-                    self.write_scalar_address(*value, memory);
-                }
-                InstKind::Load {
-                    dst,
-                    binding,
-                    index,
-                    word,
-                } => {
-                    let memory = self.data_memory(*binding, *index, *word);
-                    self.read_scalar_address(*dst, memory);
-                }
-                InstKind::Store {
-                    binding,
-                    index,
-                    word,
-                    value,
-                } => {
-                    let memory = self.data_memory(*binding, *index, *word);
-                    self.write_scalar_address(*value, memory);
-                }
+                InstKind::Constant(..) | InstKind::Index(..) | InstKind::Uniform(..)
+                | InstKind::BufferStride(..) | InstKind::LoadLocal(..) | InstKind::StoreLocal(..)
+                | InstKind::LoadLocalIndexed { .. } | InstKind::StoreLocalIndexed { .. }
+                | InstKind::Load { .. } | InstKind::Store { .. } => self.scalar_storage(inst),
                 InstKind::Unary { .. } | InstKind::Binary { .. } | InstKind::Cast { .. }
                 | InstKind::Math { .. } | InstKind::Select { .. } | InstKind::IntegerDivide { .. } => self.scalar_value(inst),
                 InstKind::If { condition, yes, no } => {

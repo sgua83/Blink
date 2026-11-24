@@ -32,8 +32,8 @@ const u32 OP_RAISE=47;const u32 OP_CLEANUP=48;
 
 struct Node { address data; u32 kind; };
 struct Span { address data; usize count; usize stride; };
-// StoreLocalIndexed.first borrows its original u32 byte offset; a/b/c/d
-// remain the actual base/local count/index/value register fields.
+// For LoadLocalIndexed and StoreLocalIndexed, first borrows the original u32 byte offset.
+// a/b/c/d retain the register and local-range fields of their respective instruction.
 struct View {
  u32 tag; usize a; usize b; usize c; usize d;
  Span first; Span second; Node left; Node right;

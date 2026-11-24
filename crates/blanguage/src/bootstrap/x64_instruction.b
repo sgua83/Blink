@@ -2448,11 +2448,6 @@ MoveLocation buffer_element_operand(u32 offset) on cpu {
     return MoveLocation(u64(offset), MOVE_MEMORY, u8(15), u8(0), u8(0));
 }
 
-extern "C" u64 buffer_load(u32 offset, u8 target, address output) on cpu {
-    u64 start = address_bits(output);
-    return buffer_field_at(start, offset, u16(0x8b), target) - start;
-}
-
 extern "C" u64 buffer_index(u32 stride_offset, u8 index, u8 base, address output) on cpu {
     u64 start = address_bits(output);
     return buffer_index_at(start, stride_offset, index, base) - start;
@@ -5039,4 +5034,88 @@ extern "C" u32 emit_map_range(MapRangeInput input, MapRangeHost host) on cpu
     u64 end = host.leave(host.context, input.frame);
     host.observe(host.context, MapRangeObservation(exit, end, usize(0), input.frame, MapRangePart::Exit));
     return entry.stack_bytes;
+}
+
+u64 scalar_storage_read(MoveLocation dst, MoveLocation memory, ScalarEncoding scalar, address output) on cpu {
+    return read_scalar_move(dst, memory, scalar.width / 8, scalar.kind == ScalarKind::Signed,
+        scalar.kind == ScalarKind::Boolean, output);
+}
+
+ScalarStorageEncoding scalar_storage_copy(MoveLocation dst, MoveLocation src, ScalarEncoding scalar,
+    address output) on cpu {
+    MoveEncoding move = copy_scalar_move(dst, src, scalar.width / 8, scalar.kind == ScalarKind::Signed, output);
+    return ScalarStorageEncoding(move.length, src.value, move.literal_field);
+}
+
+extern "C" ScalarStorageEncoding emit_scalar_storage(Node instruction, ScalarStorageHost host,
+    address output) on cpu
+    requires nonzero(host.values.ir.inspect) requires nonzero(host.values.location)
+    requires nonzero(host.values.scalar) requires nonzero(host.local) {
+    View value = host.values.ir.inspect(instruction);
+    ScalarValueHost values = host.values;
+    address context = values.context;
+    u32 kind = value.tag;
+    if (kind == OP_CONSTANT) {
+        MoveLocation immediate = MoveLocation(u64(value.b), MOVE_IMMEDIATE, u8(0), NO_INDEX, u8(0));
+        return scalar_storage_copy(values.location(context, value.a), immediate, values.scalar(context, value.a), output);
+    }
+    if (kind == OP_INDEX_VALUE) {
+        MoveEncoding move = copy_scalar_move(values.location(context, value.a), move_gpr(u8(3)), 4, false, output);
+        return ScalarStorageEncoding(move.length, 0u64, 0u64);
+    }
+    if (kind == OP_UNIFORM) {
+        MoveLocation memory = MoveLocation(u64(value.b), MOVE_MEMORY, u8(13), NO_INDEX, u8(0));
+        u64 length = scalar_storage_read(values.location(context, value.a), memory, values.scalar(context, value.a), output);
+        return ScalarStorageEncoding(length, 0u64, 0u64);
+    }
+    if (kind == OP_LOAD_LOCAL) {
+        MoveLocation src = host.local(context, value.b);
+        MoveLocation dst = values.location(context, value.a);
+        ScalarEncoding scalar = values.scalar(context, value.a);
+        if (src.kind == MOVE_MEMORY && scalar.kind == ScalarKind::Boolean) {
+            u64 length = scalar_storage_read(dst, src, scalar, output);
+            return ScalarStorageEncoding(length, 0u64, 0u64);
+        }
+        return scalar_storage_copy(dst, src, scalar, output);
+    }
+    if (kind == OP_STORE_LOCAL) {
+        return scalar_storage_copy(host.local(context, value.a), values.location(context, value.b),
+            values.scalar(context, value.b), output);
+    }
+    u64 start = address_bits(output);
+    if (kind == OP_BUFFER_STRIDE) {
+        u32 offset = u32(value.b) * host.buffer_bytes + host.stride_field;
+        u64 cursor = buffer_field_at(start, offset, u16(0x8b), u8(0));
+        ScalarStorageEncoding stored = scalar_storage_copy(values.location(context, value.a),
+            move_gpr(u8(0)), values.scalar(context, value.a), unsafe_address(cursor));
+        return ScalarStorageEncoding(cursor - start + stored.length, 0u64, 0u64);
+    }
+
+    bool local = kind == OP_LOAD_LOCAL_INDEXED || kind == OP_STORE_LOCAL_INDEXED;
+    bool read = kind == OP_LOAD_LOCAL_INDEXED || kind == OP_LOAD;
+    MoveLocation memory;
+    u64 prefix;
+    if (local) {
+        // Addressable local spans are placed in the original stack frame before emission.
+        MoveLocation stack = host.local(context, read ? value.b : value.a);
+        u32 word = unsafe_position<u32>(value.first.data);
+        MoveLocation index = values.location(context, read ? value.d : value.c);
+        AddressEncoding indexed = value_memory(u8(4), index, 1, u32(stack.value) + word, output);
+        memory = MoveLocation(u64(indexed.offset), MOVE_MEMORY, indexed.base, indexed.index, indexed.shift);
+        prefix = indexed.length;
+    } else {
+        usize binding = read ? value.b : value.a;
+        usize index = read ? value.c : value.b;
+        u32 data = u32(binding) * host.buffer_bytes;
+        prefix = dataset_index(data, data + host.stride_field, values.location(context, index),
+            values.scalar(context, index), false, output);
+        memory = buffer_element_operand(u32(read ? value.d : value.c));
+    }
+    usize reg = read ? value.a : value.d;
+    MoveLocation location = values.location(context, reg);
+    ScalarEncoding scalar = values.scalar(context, reg);
+    address cursor = unsafe_address(start + prefix);
+    u64 length = read ? scalar_storage_read(location, memory, scalar, cursor)
+        : write_scalar_move(memory, location, scalar.width / 8, cursor);
+    return ScalarStorageEncoding(prefix + length, 0u64, 0u64);
 }

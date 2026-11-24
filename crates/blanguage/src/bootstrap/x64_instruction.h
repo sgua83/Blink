@@ -376,7 +376,6 @@ extern "C" AddressEncoding indexed_memory(MoveLocation index, ScalarEncoding sca
 extern "C" u64 effective_address(u8 target, MoveLocation memory, address output) on cpu;
 
 // Field offsets refer to the caller's original table in R12.
-extern "C" u64 buffer_load(u32 offset, u8 target, address output) on cpu;
 // Shared dataset prefix for memory and effective-address consumers; 44 output bytes.
 extern "C" u64 dataset_index(u32 data, u32 stride, MoveLocation index, ScalarEncoding scalar,
     bool materialize, address output) on cpu;
@@ -795,3 +794,16 @@ struct MapRangeHost {
 extern "C" u32 emit_map_range(MapRangeInput input, MapRangeHost host) on cpu
     requires nonzero(host.enter) requires nonzero(host.leave) requires nonzero(host.reserve)
     requires nonzero(host.commit) requires nonzero(host.body) requires nonzero(host.observe);
+
+struct ScalarStorageEncoding { u64 length; u64 literal; u64 field; };
+struct ScalarStorageHost {
+    ScalarValueHost values;
+    cfn<MoveLocation,address,usize> ensures memory(read) local;
+    u32 buffer_bytes;
+    u32 stride_field;
+};
+// The original scalar storage instruction borrows 68 output bytes.
+extern "C" ScalarStorageEncoding emit_scalar_storage(Node instruction, ScalarStorageHost host,
+    address output) on cpu
+    requires nonzero(host.values.ir.inspect) requires nonzero(host.values.location)
+    requires nonzero(host.values.scalar) requires nonzero(host.local);

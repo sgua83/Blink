@@ -154,6 +154,35 @@ struct ScalarLocations<'a> {
     registers: &'a [Scalar],
 }
 
+impl ScalarLocations<'_> {
+    fn host(&self) -> ScalarValueHost {
+        ScalarValueHost {
+            ir: HOST, context: std::ptr::from_ref(self).cast(),
+            location: value_location, scalar: value_scalar,
+        }
+    }
+}
+
+#[repr(C)]
+struct ScalarStorageEncoding {
+    length: u64,
+    literal: Bits,
+    field: u64,
+}
+
+#[repr(C)]
+struct ScalarStorageHost {
+    values: ScalarValueHost,
+    local: unsafe extern "C" fn(*const std::ffi::c_void, usize) -> MoveLocation,
+    buffer_bytes: u32,
+    stride_field: u32,
+}
+
+unsafe extern "C" fn value_local(context: *const std::ffi::c_void, local: usize) -> MoveLocation {
+    let locations = unsafe { &*context.cast::<ScalarLocations<'_>>() };
+    locations.allocation.location(PrivateSlot::Local(local)).into()
+}
+
 unsafe extern "C" fn value_location(context: *const std::ffi::c_void, reg: Reg) -> MoveLocation {
     let locations = unsafe { &*context.cast::<ScalarLocations<'_>>() };
     locations.allocation.location(PrivateSlot::Register(reg)).into()
@@ -185,6 +214,8 @@ unsafe extern "C" {
     fn encode_effective_address(target: u8, memory: MoveLocation, output: *mut u8) -> u64;
     #[link_name = "bootstrap.x64_instruction::bit_copy"]
     fn scalar_bit_copy(from: ScalarEncoding, into: ScalarEncoding) -> u32;
+    #[link_name = "bootstrap.x64_instruction::emit_scalar_storage"]
+    fn emit_scalar_storage(instruction: Node, host: ScalarStorageHost, output: *mut u8) -> ScalarStorageEncoding;
     #[link_name = "bootstrap.x64_instruction::emit_scalar_value"]
     fn emit_scalar_value(value: Node, host: ScalarValueHost, output: *mut u8) -> ScalarValueEncoding;
     #[link_name = "bootstrap.x64_instruction::scalar_math_outgoing"]
@@ -338,9 +369,6 @@ impl Emitter<'_> {
     pub(super) fn store_float(&mut self, r: Reg) {
         self.copy_scalar(self.location(r), Location::Xmm(0), self.stage.registers[r]);
     }
-    pub(super) fn constant(&mut self, r: Reg, bits: Bits) {
-        self.copy_scalar(self.location(r), Location::Immediate(bits), self.stage.registers[r]);
-    }
     pub(super) fn literal_width(&mut self, dst: Location, bits: Bits, wide: bool) {
         self.copy_move(dst, Location::Immediate(bits), if wide { 8 } else { 4 }, false);
     }
@@ -369,12 +397,24 @@ impl Emitter<'_> {
     pub(super) fn write_value_address(&mut self, src: Location, memory: Memory, size: u32) {
         self.emit_bytes(24, |output| unsafe { write_scalar_move(memory.into(), src.into(), size, output) });
     }
+    pub(super) fn scalar_storage(&mut self, inst: &Inst) {
+        let locations = ScalarLocations { allocation: &self.allocation, registers: &self.stage.registers };
+        let host = ScalarStorageHost {
+            values: locations.host(), local: value_local,
+            buffer_bytes: BUFFER_BYTES, stride_field: BUFFER_STRIDE,
+        };
+        let start = self.code.len();
+        self.code.reserve(68);
+        let encoding = unsafe {
+            let encoding = emit_scalar_storage(Node::instruction(inst), host, self.code.as_mut_ptr().add(start));
+            self.code.set_len(start + encoding.length as usize);
+            encoding
+        };
+        self.record_literal(start, (encoding.literal, false), encoding.field as usize);
+    }
     pub(super) fn scalar_value(&mut self, inst: &Inst) {
         let locations = ScalarLocations { allocation: &self.allocation, registers: &self.stage.registers };
-        let host = ScalarValueHost {
-            ir: HOST, context: std::ptr::from_ref(&locations).cast(),
-            location: value_location, scalar: value_scalar,
-        };
+        let host = locations.host();
         let start = self.code.len();
         self.code.reserve(128);
         let encoded = unsafe {

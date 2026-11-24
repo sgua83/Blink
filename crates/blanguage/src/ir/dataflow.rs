@@ -467,7 +467,7 @@ fn instruction(value: &Inst) -> View {
         InstKind::Uniform(dst, word) => { view.tag = 28; view.a = *dst; view.b = *word as usize; }
         InstKind::LoadLocal(dst, slot) => { view.tag = 29; view.a = *dst; view.b = *slot; }
         InstKind::StoreLocal(slot, value) => { view.tag = 30; view.a = *slot; view.b = *value; }
-        InstKind::LoadLocalIndexed { dst, base, len, index, .. } => { view.tag = 31; view.a = *dst; view.b = *base; view.c = *len; view.d = *index; }
+        InstKind::LoadLocalIndexed { dst, base, len, index, word } => { view.tag = 31; view.a = *dst; view.b = *base; view.c = *len; view.d = *index; view.first = Span::slice(std::slice::from_ref(word)); }
         InstKind::StoreLocalIndexed { base, len, index, value, word } => { view.tag = 32; view.a = *base; view.b = *len; view.c = *index; view.d = *value; view.first = Span::slice(std::slice::from_ref(word)); }
         InstKind::Load { dst, binding, index, word } => { view.tag = 33; view.a = *dst; view.b = *binding; view.c = *index; view.d = *word as usize; }
         InstKind::Store { binding, index, word, value } => { view.tag = 34; view.a = *binding; view.b = *index; view.c = *word as usize; view.d = *value; }
