@@ -9,7 +9,7 @@ fn emitter<'a>(program: &'a Program) -> Emitter<'a> {
         code: Vec::new(),
         relocations: Vec::new(),
         calls: Vec::new(),
-        operation_ranges: None,
+        operation_ranges: Vec::new(),
         function_abi: None,
         literals: std::collections::BTreeMap::new(),
         stage: &program.stages[0],
@@ -48,7 +48,7 @@ pub(super) fn emit_count(program: &Program, c: &Compaction) -> NativeCode {
     emitter.emit_bytes(96, |output| unsafe {
         compact_count(flags, BUFFER_STRIDE, c.flag_word, output)
     });
-    emitter.finish(8)
+    emitter.finish(8, false)
 }
 
 pub fn emit_compact_scatter(program: &Program, c: &Compaction) -> NativeCode {
@@ -64,5 +64,5 @@ pub fn emit_compact_scatter(program: &Program, c: &Compaction) -> NativeCode {
         record_bytes: program.buffers[c.source].stride,
     };
     emitter.emit_bytes(224, |output| unsafe { compact_scatter(input, output) });
-    emitter.finish(56)
+    emitter.finish(56, false)
 }

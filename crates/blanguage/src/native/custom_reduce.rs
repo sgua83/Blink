@@ -338,7 +338,7 @@ pub(super) fn emit(
         code: Vec::new(),
         relocations: Vec::new(),
         calls: Vec::new(),
-        operation_ranges: Some(Vec::new()),
+        operation_ranges: Vec::new(),
         function_abi: None,
         literals: std::collections::BTreeMap::new(),
         stage: &stage,
@@ -367,5 +367,5 @@ pub(super) fn emit(
         e.write_range_summary(stack_bytes, carry, &r.ty, k, plan.summary);
     }
     e.leave(frame);
-    Ok(e.finish(stack_bytes))
+    Ok(e.finish(stack_bytes, true))
 }

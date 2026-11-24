@@ -42,7 +42,7 @@ pub(super) fn emit(program: &Program, reduction: &SegmentedReduction, finish: bo
         code: Vec::new(),
         relocations: Vec::new(),
         calls: Vec::new(),
-        operation_ranges: None,
+        operation_ranges: Vec::new(),
         function_abi: None,
         literals: std::collections::BTreeMap::new(),
         stage: &program.stages[0],
@@ -56,5 +56,5 @@ pub(super) fn emit(program: &Program, reduction: &SegmentedReduction, finish: bo
     };
     e.push_registers(&[12, 13]);
     e.emit_bytes(512, |output| unsafe { segmented_reduce_range(input, u32::from(finish), output) });
-    e.finish(16)
+    e.finish(16, false)
 }

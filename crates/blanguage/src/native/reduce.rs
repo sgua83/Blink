@@ -66,7 +66,7 @@ pub(super) fn emit(program: &Program, reduction: &ReductionSpec) -> NativeCode {
         code: Vec::new(),
         relocations: Vec::new(),
         calls: Vec::new(),
-        operation_ranges: None,
+        operation_ranges: Vec::new(),
         function_abi: None,
         literals: std::collections::BTreeMap::new(),
         stage: &program.stages[0],
@@ -82,7 +82,7 @@ pub(super) fn emit(program: &Program, reduction: &ReductionSpec) -> NativeCode {
 
     let input = ReductionRange::new(&reduction.fields, &reduction.ty, reduction.operator);
     e.emit_collective(256, input.identity, |output| unsafe { reduce_range(input, output) });
-    e.finish(8)
+    e.finish(8, false)
 }
 
 impl Emitter<'_> {

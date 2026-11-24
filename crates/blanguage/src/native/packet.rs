@@ -180,7 +180,6 @@ type PacketBodySlot = *mut std::ffi::c_void;
 struct PacketBodySpan {
     start: usize,
     first: usize,
-    observed: u32,
 }
 
 #[repr(C)]
@@ -205,18 +204,16 @@ unsafe fn packet_body<'a, 'b, 'c, 'd>(slot: PacketBodySlot) -> &'a mut PacketBod
 
 unsafe extern "C" fn packet_body_span(slot: PacketBodySlot) -> PacketBodySpan {
     let emitter = &unsafe { packet_body(slot) }.emitter;
-    let count = emitter.operation_ranges.as_ref().map(Vec::len);
     PacketBodySpan {
         start: emitter.code.len(),
-        first: count.unwrap_or(0),
-        observed: u32::from(count.is_some()),
+        first: emitter.operation_ranges.len(),
     }
 }
 
 unsafe extern "C" fn packet_body_range(slot: PacketBodySlot, index: usize, span: PacketBodySpan) {
     let context = unsafe { packet_body(slot) };
     context.emitter.operation_range(
-        context.code[index].instruction, span.start, (span.observed != 0).then_some(span.first),
+        context.code[index].instruction, span.start, span.first,
     );
 }
 

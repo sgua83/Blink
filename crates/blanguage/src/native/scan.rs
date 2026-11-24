@@ -52,7 +52,7 @@ fn emitter(program: &Program) -> Emitter<'_> {
         code: Vec::new(),
         relocations: Vec::new(),
         calls: Vec::new(),
-        operation_ranges: None,
+        operation_ranges: Vec::new(),
         function_abi: None,
         literals: std::collections::BTreeMap::new(),
         stage: &program.stages[0],
@@ -73,7 +73,7 @@ pub(super) fn emit(program: &Program, scan: &Scan, add: bool) -> NativeCode {
     let saved: &[u8] = if add { &[12] } else { &[12, 13] };
     e.push_registers(saved);
     e.emit_collective(512, identity, |output| unsafe { scan_range(input, u32::from(add), output) });
-    e.finish(saved.len() as u32 * 8)
+    e.finish(saved.len() as u32 * 8, false)
 }
 
 fn emit_segmented(program: &Program, scan: &Scan, head: u32, add: bool) -> NativeCode {
@@ -85,5 +85,5 @@ fn emit_segmented(program: &Program, scan: &Scan, head: u32, add: bool) -> Nativ
     let mut e = emitter(program);
     e.push_registers(&[12, 13]);
     e.emit_bytes(512, |output| unsafe { segmented_scan_range(input, u32::from(add), output) });
-    e.finish(16)
+    e.finish(16, false)
 }

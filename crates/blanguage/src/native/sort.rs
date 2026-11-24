@@ -9,7 +9,7 @@ fn emitter(program: &Program) -> Emitter<'_> {
         code: Vec::new(),
         relocations: Vec::new(),
         calls: Vec::new(),
-        operation_ranges: None,
+        operation_ranges: Vec::new(),
         function_abi: None,
         literals: std::collections::BTreeMap::new(),
         stage: &program.stages[0],
@@ -65,20 +65,20 @@ pub(super) fn initialize(program: &Program, s: &Sorting, key: usize, first: bool
     let mut e = emitter(program);
     e.push_registers(&[12]);
     e.emit_bytes(160, |output| unsafe { sort_key(input, output) });
-    e.finish(8)
+    e.finish(8, false)
 }
 
 pub fn emit_sort_histogram(program: &Program) -> NativeCode {
     let mut e = emitter(program);
     e.emit_bytes(96, |output| unsafe { sort_histogram(BUFFER_BYTES, output) });
-    e.finish(0)
+    e.finish(0, false)
 }
 
 pub fn emit_sort_scatter(program: &Program) -> NativeCode {
     let mut e = emitter(program);
     e.push_registers(&[3]);
     e.emit_bytes(128, |output| unsafe { sort_scatter(BUFFER_BYTES, output) });
-    e.finish(8)
+    e.finish(8, false)
 }
 
 pub fn emit_sort_gather(program: &Program, s: &Sorting) -> NativeCode {
@@ -88,5 +88,5 @@ pub fn emit_sort_gather(program: &Program, s: &Sorting) -> NativeCode {
     e.emit_bytes(192, |output| unsafe {
         sort_gather(BUFFER_BYTES, BUFFER_STRIDE, record_bytes, output)
     });
-    e.finish(40)
+    e.finish(40, false)
 }

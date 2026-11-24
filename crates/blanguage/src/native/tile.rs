@@ -296,7 +296,7 @@ impl Emitter<'_> {
             self.block(phase.code)?;
             if let Some(inst @ Inst { kind: InstKind::TilePublish(publication), .. }) = phase.step {
                 let start = self.code.len();
-                let first = self.operation_ranges.as_ref().map(Vec::len);
+                let first = self.operation_ranges.len();
                 self.publish_values(publication);
                 self.operation_range(inst, start, first);
             }
@@ -310,7 +310,7 @@ impl Emitter<'_> {
             self.parallel_abi(start, ParallelRangePart::TilePhaseAdvance { phase: phase_index });
             if let Some(inst @ Inst { kind: InstKind::TileCollective(collective), .. }) = phase.step {
                 let start = self.code.len();
-                let first = self.operation_ranges.as_ref().map(Vec::len);
+                let first = self.operation_ranges.len();
                 self.tile_collective(collective);
                 self.operation_range(inst, start, first);
             }

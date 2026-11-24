@@ -173,7 +173,7 @@ struct Emitter<'a> {
     probe: Option<usize>,
     relocations: Vec<Relocation>,
     calls: Vec<Option<usize>>,
-    operation_ranges: Option<Vec<super::OperationRange>>,
+    operation_ranges: Vec<super::OperationRange>,
     function_abi: Option<super::FunctionAbi>,
     literals: std::collections::BTreeMap<(Bits, bool), Vec<usize>>,
     stage: &'a Stage,
@@ -188,7 +188,7 @@ struct Emitter<'a> {
 impl Emitter<'_> {
     // Literal bytes belong to this code image, after all returning instructions
     // and any local helpers. Their references move with the same image.
-    fn finish(mut self, stack_bytes: u32) -> NativeCode {
+    fn finish(mut self, stack_bytes: u32, include_operation_ranges: bool) -> NativeCode {
         let function_end = self.code.len();
         let unwind = unwind::encode(self.prolog, &self.unwind);
         let mut literals: Vec<_> = self.literals.iter().map(|(&(bits, wide), references)| TailLiteral {
@@ -225,7 +225,10 @@ impl Emitter<'_> {
             unwind,
             tail_regions: Some(tail_regions),
             tail_references: Some(tail_references),
-            sources: super::CodeSources::Emitted { operation_ranges: self.operation_ranges, function_abi: self.function_abi },
+            sources: super::CodeSources::Emitted {
+                operation_ranges: include_operation_ranges.then_some(self.operation_ranges),
+                function_abi: self.function_abi,
+            },
         }
     }
     fn push_registers(&mut self, registers: &[u8]) {
@@ -420,16 +423,16 @@ impl Emitter<'_> {
             source_site: self.stage.operation_source.clone(), generated_origin: self.stage.generated_origin.clone(),
         } });
     }
-    fn operation_range(&mut self, inst: &Inst, start: usize, first: Option<usize>) {
-        if let (Some(first), Some(ranges)) = (first, &mut self.operation_ranges) {
-            ranges.push(super::OperationRange { start, end: self.code.len(),
-                includes_nested_operations: ranges.len() != first, origin: OperationOrigin::from_instruction(inst) });
-        }
+    fn operation_range(&mut self, inst: &Inst, start: usize, first: usize) {
+        let includes_nested_operations = self.operation_ranges.len() != first;
+        self.operation_ranges.push(super::OperationRange {
+            start, end: self.code.len(), includes_nested_operations, origin: OperationOrigin::from_instruction(inst),
+        });
     }
     fn block(&mut self, code: &[Inst]) -> Result<(), &'static str> {
         for inst in code {
             let start = self.code.len();
-            let first = self.operation_ranges.as_ref().map(Vec::len);
+            let first = self.operation_ranges.len();
             match &(inst).kind {
                 InstKind::Call(call) => self.native_call(call)?,
                 InstKind::Raise(error) => self.lower_control(Flow::Raise(*error), Self::block, Self::load)?,
@@ -663,7 +666,7 @@ fn emit_map(
         code: Vec::new(),
         relocations: Vec::new(),
         calls: Vec::new(),
-        operation_ranges: Some(Vec::new()),
+        operation_ranges: Vec::new(),
         function_abi: Some(super::FunctionAbi { definition: None, instance: None, ranges: Vec::new() }),
         literals: std::collections::BTreeMap::new(),
         stage,
@@ -716,5 +719,5 @@ fn emit_map(
     let start = e.code.len();
     e.leave(frame);
     e.parallel_abi(start, super::ParallelRangePart::Exit { frame_bytes: frame });
-    Ok(e.finish(stack_bytes))
+    Ok(e.finish(stack_bytes, true))
 }

@@ -249,7 +249,7 @@ fn emit_value(
         code: Vec::new(),
         relocations: Vec::new(),
         calls: Vec::new(),
-        operation_ranges: Some(Vec::new()),
+        operation_ranges: Vec::new(),
         function_abi: Some(FunctionAbi {
             definition: definition.cloned(), instance: instance.map(str::to_owned), ranges: Vec::new(),
         }),
@@ -275,5 +275,5 @@ fn emit_value(
     let stack = unsafe {
         function_epilogue(std::ptr::from_mut(&mut emission).cast(), plan, flags, emit_action)
     };
-    Ok(e.finish(stack as u32))
+    Ok(e.finish(stack as u32, true))
 }

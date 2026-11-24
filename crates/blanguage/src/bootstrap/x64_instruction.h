@@ -373,7 +373,7 @@ struct PacketBodyOp {
     BinaryOperation binary;
     PacketMathOperation math;
 };
-struct PacketBodySpan { u64 start; u64 first; u32 observed; };
+struct PacketBodySpan { u64 start; u64 first; };
 struct PacketBodyHost {
     cfn<PacketBodyOp,address,u64> step;
     cfn<PacketBodySpan,address> span;
