@@ -151,8 +151,8 @@ impl Member {
         let bytes = &*bytes;
         let result = (move || {
             let reader = coff::Reader::new(bytes)?;
-            let Some(names) = reader.host_links(imports)? else { return Ok(None); };
-            *build = reader.host_build_section()?;
+            let Some((names, build_section)) = reader.host_links(imports)? else { return Ok(None); };
+            *build = build_section;
             Ok(Some(names))
         })();
         result

@@ -950,28 +950,29 @@ impl<'a, Input: AsRef<[u8]> + ?Sized> Reader<'a, Input> {
         input.error.check()?;
         Ok(if input.present == 0 { None } else { Some(unsafe { input.bytes.borrowed() }) })
     }
-    pub(super) fn host_build_section(&self) -> Result<Option<HostBuildSection>> {
-        let Some(index) = self.headers.chunks_exact(40).position(|section| &section[..8] == BUILD.as_bytes())
-        else { return Ok(None); };
+    fn host_build_section(
+        &self, index: usize, build: &ObjectSection, symbols: usize,
+    ) -> Result<HostBuildSection> {
         let bytes = self.bytes.as_ref();
-        let build = unsafe { read_build_inputs(ReadBytes::new(bytes), ReadBytes::new(self.headers)) };
-        build.error.check()?;
-        let table = unsafe { read_symbols(ReadBytes::new(bytes)) };
-        table.error.check()?;
+        // A build record is physical data. Section decoding treats an
+        // uninitialized row at offset zero as zero-fill, retaining its size here.
+        if build.zero_fill > bytes.len() {
+            ReadError::Truncated.check()?;
+        }
         let start = build.bytes.bytes.addr() - bytes.as_ptr().addr();
-        let end = start + build.bytes.length;
+        let end = start + build.bytes.length + build.zero_fill;
         let following = &self.headers[(index + 1) * 40..];
-        if start < 20 + self.headers.len() || end > table.offset
+        if start < 20 + self.headers.len() || end > symbols
             || following.chunks_exact(40).any(|section| &section[..8] != b".blrt\0\0\0")
         {
             return Err("宿主模块的构建记录不在原COFF元数据区".into());
         }
-        Ok(Some(HostBuildSection {
+        Ok(HostBuildSection {
             section: 20 + index * 40,
             sections: self.headers.len() / 40 - 1,
             record: start..end,
-            symbols: table.offset,
-        }))
+            symbols,
+        })
     }
 
     fn sections(&self, materialize: bool) -> Result<(ObjectParts, Vec<ObjectSection>)> {
@@ -995,7 +996,7 @@ impl<'a, Input: AsRef<[u8]> + ?Sized> Reader<'a, Input> {
         if bytes.bytes.is_null() { return Err("缺少 Blink 目标文件元数据".into()); }
         Ok(unsafe { bytes.borrowed() })
     }
-    fn symbol_rows(&self, definitions: &mut [SectionDefinition]) -> Result<Vec<ObjectSymbol>> {
+    fn symbol_rows(&self, definitions: &mut [SectionDefinition]) -> Result<(Vec<ObjectSymbol>, usize)> {
         let input = ReadBytes::new(self.bytes.as_ref());
         let table = unsafe { read_symbols(input) };
         table.error.check()?;
@@ -1007,7 +1008,7 @@ impl<'a, Input: AsRef<[u8]> + ?Sized> Reader<'a, Input> {
             )
         })?;
         unsafe { symbols.set_len(table.count) };
-        Ok(symbols)
+        Ok((symbols, table.offset))
     }
     fn relocations<F>(&self, raw: &[ObjectSection], symbols: &[ObjectSymbol],
         row: &ObjectSection, consume: F,
@@ -1027,24 +1028,33 @@ impl<'a, Input: AsRef<[u8]> + ?Sized> Reader<'a, Input> {
         status.object.check()?;
         receiver.result
     }
-    fn module_symbols(&self) -> Result<Option<(Vec<ObjectSection>, Vec<ObjectSymbol>)>> {
+    fn module_symbols(&self) -> Result<Option<(Vec<ObjectSection>, Vec<ObjectSymbol>, usize)>> {
         let (parts, raw) = self.sections(true)?;
         let metadata = Metadata::read(self.metadata(parts.metadata)?, MetadataNames::default().sink(0))?;
         if !matches!(metadata.prefix.header.kind, ReadObjectKind::Module) { return Ok(None); }
         // The existing B reader omits section-definition output for this empty
         // receiver. The actual COFF symbol view remains the only symbol source.
-        let symbols = self.symbol_rows(&mut [])?;
-        Ok(Some((raw, symbols)))
+        let (symbols, offset) = self.symbol_rows(&mut [])?;
+        Ok(Some((raw, symbols, offset)))
     }
     /// B archives preserve member bytes and only produce the physical export directory.
     pub(crate) fn archive_symbols(&self) -> Result<Option<Vec<String>>> {
-        self.module_symbols()?.map(|(raw, symbols)| export_names(&raw, &symbols)).transpose()
+        self.module_symbols()?.map(|(raw, symbols, _)| export_names(&raw, &symbols)).transpose()
     }
     /// Native archives additionally consume the actual DLL import relocations.
-    pub(crate) fn host_links(&self, imports: &mut Vec<ImportKey<'a>>) -> Result<Option<Vec<String>>> {
-        let Some((raw, symbols)) = self.module_symbols()? else { return Ok(None); };
+    pub(super) fn host_links(
+        &self, imports: &mut Vec<ImportKey<'a>>,
+    ) -> Result<Option<(Vec<String>, Option<HostBuildSection>)>> {
+        let Some((raw, symbols, offset)) = self.module_symbols()? else { return Ok(None); };
         let names = export_names(&raw, &symbols)?;
-        for row in raw.iter().filter(|row| row.mapped != 0) {
+        let mut build = None;
+        for (index, row) in raw.iter().enumerate() {
+            if row.mapped == 0 {
+                if build.is_none() && unsafe { row.name.borrowed() } == BUILD.as_bytes() {
+                    build = Some((index, row));
+                }
+                continue;
+            }
             self.relocations(&raw, &symbols, row, |_, _, target| {
                 if matches!(target.kind, ObjectTargetKind::Import) {
                     // B returns two ranges of a symbol name in this COFF input.
@@ -1055,7 +1065,8 @@ impl<'a, Input: AsRef<[u8]> + ?Sized> Reader<'a, Input> {
                 Ok(())
             })?;
         }
-        Ok(Some(names))
+        let build = build.map(|(index, row)| self.host_build_section(index, row, offset)).transpose()?;
+        Ok(Some((names, build)))
     }
 
     /// 从库成员借用公开接口与合同。完整对象负责代码、重定位和诊断材料。
@@ -1216,7 +1227,7 @@ fn decode_object<Bytes: super::ReadSection>(
 ) -> Result<Object<Bytes>> {
     let b = reader.bytes;
     let mut definitions = vec![SectionDefinition::default(); reader.headers.len() / 40];
-    let symbols = reader.symbol_rows(&mut definitions)?;
+    let (symbols, _) = reader.symbol_rows(&mut definitions)?;
     let (parts, mut raw) = reader.sections(true)?;
     let (name, kind, mut bindings, stack, archive) = match native {
         Some(name) => (name.to_owned(), Kind::Module { interface: "".into(), requirements: Arc::default(), stack_bytes: 0 }, BTreeMap::new(), StackMetadata::default(), None),
