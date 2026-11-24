@@ -1925,7 +1925,7 @@ fn converge_access(
 
     let components = groups.iter().filter_map(|(&entry, members)| {
         if members.len() < 2 { return None; }
-        let entries = relation::Graph::component_inputs(entry, members, functions, known)?;
+        let entries = relation::Graph::component_inputs(entry, members, functions, known);
         let (parameters, _) = &direct[entry];
         let invoked = functions[entry].calls.iter().filter(|call| members.contains(&call.function.as_str()))
             .map(|call| bounds::Condition::execution(&call.path).guard_at_call(parameters))

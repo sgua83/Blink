@@ -294,7 +294,7 @@ impl Graph {
         members: &[&'name str],
         functions: &'state BTreeMap<String, &Function>,
         known: &'state States<'state>,
-    ) -> Option<Vec<(&'name str, BTreeMap<ValueIdentity, bounds::Proof>, BTreeMap<ValueIdentity, Borrow>)>> {
+    ) -> Vec<(&'name str, BTreeMap<ValueIdentity, bounds::Proof>, BTreeMap<ValueIdentity, Borrow>)> {
         fn roots(builder: &mut Builder<'_>, scalars: &BTreeMap<ValueIdentity, bounds::Proof>, initial: bool)
             -> BTreeMap<ValueIdentity,usize>
         {
@@ -321,7 +321,6 @@ impl Graph {
         let entry_roots = roots(&mut builder, &entry_scalars, true);
         let mut ports = vec![(entry, entry_scalars, entry_roots)];
         let mut port = 0;
-        let mut reads_content = false;
         while port < ports.len() {
             let (caller, scalars, parameters) = ports[port].clone();
             port += 1;
@@ -365,11 +364,6 @@ impl Graph {
                     }
                 }
             }
-            reads_content = reads_content || operands.iter().any(|&(_, root, _)| {
-                local.graph.any_reachable(root, |node| node.edges.iter().any(
-                    |edge| matches!(edge.op, Op::Read { .. } | Op::Initial { .. }),
-                ))
-            });
             let local = Arc::new(local.graph);
             let mut evaluation = BorrowEvaluation {
                 function, state, known, expand_loops: true, deferred_reads: false,
@@ -389,20 +383,16 @@ impl Graph {
                 }
             }
         }
-        // A write can resolve a read before the operands join the shared graph.
-        if !reads_content {
-            return None;
-        }
         let graph = Arc::new(builder.graph);
         let mut evaluation = BorrowEvaluation {
             function, state, known, expand_loops: true, deferred_reads: false,
             loop_bindings: Vec::new(), values: BTreeMap::new(), stored: None, exit_writes: None,
             stored_paths: Default::default(),
         };
-        Some(ports.into_iter().map(|(name, scalars, nodes)| {
+        ports.into_iter().map(|(name, scalars, nodes)| {
             let inputs = nodes.into_iter().map(|(input, node)| (input, graph.solve(node, &mut evaluation))).collect();
             (name, scalars, inputs)
-        }).collect())
+        }).collect()
     }
 
     pub(super) fn loops(
