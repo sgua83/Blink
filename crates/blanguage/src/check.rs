@@ -700,13 +700,7 @@ async fn expand_stages(
     let instance=input.owner();
     let d = &instance.definition;
     for statement in body {
-        for root in env.values_mut() {
-            if let Root::Data(binding, access @ Access::Write) = root
-                && program.buffers[*binding].ty.components.iter().all(|(_, offset)| facts.initialized(program, *binding, *offset))
-            {
-                *access = Access::InOut;
-            }
-        }
+        promote_stage_access(env,program,facts);
         let mut first_stage = program.stages.len();
         let start=unsafe{stage_control_step(StageControlCursor{phase:0,index:0,last:0},statement.signature_node(),StageControlFacts{present:0,literal:0,same_type:0,bits:0,returned:0})};
         let controlled=match start.need {
@@ -752,20 +746,7 @@ async fn expand_stages(
                         statement.span(),
                     )?;
                 }
-                if prefix.is_none() && selection.is_none() {
-                    for &binding in &b.writes {
-                        if b.view_access[&binding] == Access::Write
-                            && !b.appends.iter().any(|(output, count)| *output == binding || count.binding == binding)
-                        {
-                            let words: Vec<_> = program.buffers[binding].ty.components.iter()
-                                .filter(|(_, offset)| b.initialized.contains(&Position::Element(binding, *offset)) && !facts.initialized(program, binding, *offset))
-                                .map(|(_, offset)| *offset).collect();
-                            if !words.is_empty() {
-                                facts.outputs.push(crate::module::domain::Output { binding, domain: Some(domain), words });
-                            }
-                        }
-                    }
-                }
+                parallel_initialized_outputs(&b,&mut facts.outputs,facts.scopes.last().unwrap().1,domain,prefix.is_some(),selection.is_some());
                 let tiles = b.lower_tiles(statement.span())?;
                 if selection.is_some() && !tiles.is_empty() {
                     return d.source.fail(
@@ -939,35 +920,7 @@ async fn expand_stages(
             }
             _ => unsafe { std::hint::unreachable_unchecked() },
         }}
-        let mut add = |binding, domain, first, ty: &Ty| facts.outputs.push(crate::module::domain::Output {
-            binding,
-            domain,
-            words: ty.components.iter().map(|(_, offset)| first + offset).collect(),
-        });
-        for stage in &program.stages[first_stage..] {
-            match &stage.operation {
-                Operation::Reduce(v) => add(v.fields.target, None, v.fields.target_word, &v.ty),
-                Operation::CustomReduce(v) => add(v.fields.target, None, v.fields.target_word, &v.ty),
-                Operation::ScanExclusive(v) if stage.prefix.is_none() => add(
-                    v.values.target, Some(v.values.source), v.values.target_word, &v.ty,
-                ),
-                Operation::CustomScan(v) if stage.prefix.is_none() => add(
-                    v.values.fields.target, Some(v.values.fields.source),
-                    v.values.fields.target_word, &v.values.ty,
-                ),
-                Operation::StableSort(v) if stage.prefix.is_none() => {
-                    add(v.target, Some(v.source), 0, &program.buffers[v.target].ty);
-                }
-                Operation::Compact(v) => add(v.count, None, v.count_word, &Ty::scalar(Scalar::U32)),
-                Operation::SegmentedReduce(v) => add(
-                    v.count.binding, None, v.count.word, &Ty::scalar(Scalar::U32),
-                ),
-                Operation::CustomSegmentedReduce(v) => add(
-                    v.count.binding, None, v.count.word, &Ty::scalar(Scalar::U32),
-                ),
-                _ => {}
-            }
-        }
+        collective_initialized_outputs(program,&program.stages[first_stage..],&mut facts.outputs);
     }
     Ok(false)
 }
@@ -1054,6 +1007,54 @@ async fn expand_stage_control(
         StageControlNeed::Return=>return Ok(Some((true,first_stage))),
         StageControlNeed::Complete=>return Ok(Some((false,first_stage))),
     }step=unsafe{stage_control_step(cursor,statement.signature_node(),StageControlFacts{..control})};}
+}
+
+fn promote_stage_access(env:&mut BTreeMap<String,Root>,program:&Program,facts:&prefix::Facts) {
+    let mut cursor=EnvironmentCursor{index:0,part:0,phase:0};let mut control=PromoteStageFacts{roots:env.len()as u64,components:0,access:0,initialized:0};
+    let mut roots=env.values_mut();let mut access=None;let mut binding=0;
+    loop{let step=unsafe{promote_stage_step(cursor,PromoteStageFacts{..control})};cursor=step.cursor;match step.need{
+        PromoteStageNeed::Root=>{access=match roots.next().unwrap(){Root::Data(current,permission)=>{binding=*current;control.access=*permission as u32;control.components=program.buffers[binding].ty.components.len()as u64;Some(permission)},_=>{control.access=0;None}};},
+        PromoteStageNeed::Component=>control.initialized=u32::from(facts.initialized(program,binding,program.buffers[binding].ty.components[cursor.part as usize].1)),
+        PromoteStageNeed::Promote=>*access.take().unwrap()=Access::InOut,
+        PromoteStageNeed::Complete=>return,
+    }}
+}
+fn parallel_initialized_outputs(b:&Builder<'_>,outputs:&mut Vec<crate::module::domain::Output>,first:usize,domain:usize,prefix:bool,selection:bool) {
+    let mut cursor=EnvironmentCursor{index:0,part:0,phase:0};let mut control=StageWriteInitFacts{writes:b.writes.len()as u64,appends:b.appends.len()as u64,components:0,binding:0,append_output:0,append_count:0,selected:0,access:0,prefix:u32::from(prefix),selection:u32::from(selection),local:0,known:0};
+    let mut writes=b.writes.iter();let mut appends=None;let mut words=Vec::new();let mut binding=0;let mut offset=0;
+    loop{let step=unsafe{stage_write_init_step(cursor,StageWriteInitFacts{..control})};cursor=step.cursor;match step.need{
+        StageWriteInitNeed::Binding=>{binding=*writes.next().unwrap();control.binding=binding as u64;control.access=b.view_access[&binding]as u32;control.components=b.program.buffers[binding].ty.components.len()as u64;control.selected=words.len()as u64;appends=Some(b.appends.iter());},
+        StageWriteInitNeed::Append=>{let(&output,count)=appends.as_mut().unwrap().next().unwrap();control.append_output=output as u64;control.append_count=count.binding as u64;},
+        StageWriteInitNeed::Component=>{offset=b.program.buffers[binding].ty.components[cursor.part as usize].1;control.local=u32::from(b.initialized.contains(&Position::Element(binding,offset)));},
+        StageWriteInitNeed::Known=>control.known=u32::from(prefix::initialized(b.program,&outputs[first..],binding,offset)),
+        StageWriteInitNeed::Word=>{words.push(offset);control.selected=words.len()as u64;},
+        StageWriteInitNeed::Emit=>outputs.push(crate::module::domain::Output{binding,domain:Some(domain),words:std::mem::take(&mut words)}),
+        StageWriteInitNeed::Complete=>return,
+    }}
+}
+fn collective_initialized_outputs(program:&Program,stages:&[Stage],outputs:&mut Vec<crate::module::domain::Output>) {
+    let mut cursor=EnvironmentCursor{index:0,part:0,phase:0};let mut control=CollectiveInitFacts{stages:stages.len()as u64,components:0,target:0,source:0,count:0,kind:0,prefix:0,target_word:0,count_word:0,offset:0};
+    let mut entries=stages.iter();let mut stage=None;let mut ty=None;let mut words=Vec::new();
+    loop{let step=unsafe{collective_init_step(cursor,CollectiveInitFacts{..control})};cursor=step.cursor;match step.need{
+        CollectiveInitNeed::Stage=>{let current=entries.next().unwrap();control.prefix=u32::from(current.prefix.is_some());control.kind=match &current.operation{Operation::Map=>0,Operation::Reduce(_)=>1,Operation::CustomReduce(_)=>2,Operation::ScanExclusive(_)=>3,Operation::CustomScan(_)=>4,Operation::StableSort(_)=>5,Operation::Compact(_)=>6,Operation::SegmentedReduce(_)=>7,Operation::CustomSegmentedReduce(_)=>8};stage=Some(current);},
+        CollectiveInitNeed::Descriptor=>{
+            ty=match &stage.unwrap().operation{
+                Operation::Reduce(v)=>{control.target=v.fields.target as u64;control.target_word=v.fields.target_word;Some(&v.ty)},
+                Operation::CustomReduce(v)=>{control.target=v.fields.target as u64;control.target_word=v.fields.target_word;Some(&v.ty)},
+                Operation::ScanExclusive(v)=>{control.target=v.values.target as u64;control.source=v.values.source as u64;control.target_word=v.values.target_word;Some(&v.ty)},
+                Operation::CustomScan(v)=>{control.target=v.values.fields.target as u64;control.source=v.values.fields.source as u64;control.target_word=v.values.fields.target_word;Some(&v.values.ty)},
+                Operation::StableSort(v)=>{control.target=v.target as u64;control.source=v.source as u64;control.target_word=0;Some(&program.buffers[v.target].ty)},
+                Operation::Compact(v)=>{control.count=v.count as u64;control.count_word=v.count_word;None},
+                Operation::SegmentedReduce(v)=>{control.count=v.count.binding as u64;control.count_word=v.count.word;None},
+                Operation::CustomSegmentedReduce(v)=>{control.count=v.count.binding as u64;control.count_word=v.count.word;None},
+                Operation::Map=>unsafe{std::hint::unreachable_unchecked()},
+            };control.components=ty.map_or(0,|ty|ty.components.len())as u64;
+        },
+        CollectiveInitNeed::Component=>control.offset=ty.unwrap().components[cursor.part as usize].1,
+        CollectiveInitNeed::Word=>words.push(step.word),
+        CollectiveInitNeed::Emit=>{outputs.push(crate::module::domain::Output{binding:step.binding as usize,domain:match step.flags{1=>Some(step.domain as usize),_=>None},words:std::mem::take(&mut words)});ty.take();stage.take();},
+        CollectiveInitNeed::Complete=>return,
+    }}
 }
 
 type StageMemoryRegions=BTreeMap<usize,(BTreeSet<(bool,u32,u32)>,BTreeMap<(u32,u32),Option<Box<bounds::Proof>>>)>;
@@ -2722,6 +2723,20 @@ unsafe extern "C"{
 
 #[repr(C)]#[derive(Clone,Copy)]struct SourceValueCursor {phase:u32}
 #[repr(C)]#[derive(Clone,Copy)]struct EnvironmentCursor {index:u64,part:u64,phase:u32}
+#[repr(C)]struct PromoteStageFacts{roots:u64,components:u64,access:u32,initialized:u32}
+#[repr(u32)]enum PromoteStageNeed{Root,Component,Promote,Complete}
+#[repr(C)]struct PromoteStageStep{cursor:EnvironmentCursor,need:PromoteStageNeed}
+#[repr(C)]struct StageWriteInitFacts{writes:u64,appends:u64,components:u64,binding:u64,append_output:u64,append_count:u64,selected:u64,access:u32,prefix:u32,selection:u32,local:u32,known:u32}
+#[repr(u32)]enum StageWriteInitNeed{Binding,Append,Component,Known,Word,Emit,Complete}
+#[repr(C)]struct StageWriteInitStep{cursor:EnvironmentCursor,need:StageWriteInitNeed}
+#[repr(C)]struct CollectiveInitFacts{stages:u64,components:u64,target:u64,source:u64,count:u64,kind:u32,prefix:u32,target_word:u32,count_word:u32,offset:u32}
+#[repr(u32)]enum CollectiveInitNeed{Stage,Descriptor,Component,Word,Emit,Complete}
+#[repr(C)]struct CollectiveInitStep{cursor:EnvironmentCursor,need:CollectiveInitNeed,flags:u32,binding:u64,domain:u64,word:u32}
+unsafe extern "C"{
+    #[link_name="bootstrap.function_body::promote_stage_step"]fn promote_stage_step(cursor:EnvironmentCursor,facts:PromoteStageFacts)->PromoteStageStep;
+    #[link_name="bootstrap.function_body::stage_write_init_step"]fn stage_write_init_step(cursor:EnvironmentCursor,facts:StageWriteInitFacts)->StageWriteInitStep;
+    #[link_name="bootstrap.function_body::collective_init_step"]fn collective_init_step(cursor:EnvironmentCursor,facts:CollectiveInitFacts)->CollectiveInitStep;
+}
 #[repr(C)]struct ParallelOutputFacts {items:u64,components:u64,regions:u64,binding:u64,expected_index:u64,source_binding:u64,source_index:u64,append_output:u64,append_count:u64,access:u32,prefix:u32,selection:u32,present:u32,same_type:u32,offset:u32,bytes:u32,start:u32,end:u32,stored:u32}
 #[repr(u32)]enum ParallelOutputNeed {Old,Atomic,Component,Region,Join,Forget,Assign,Appends,Append,Elements,Element,Type,Proof,Complete}
 #[repr(C)]struct ParallelOutputStep {cursor:EnvironmentCursor,need:ParallelOutputNeed}

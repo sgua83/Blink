@@ -1512,3 +1512,68 @@ extern "C" u32 parallel_written_overlap(u32 offset,u32 bytes,u64 count,address c
  while(index<count){WrittenRegion region=next(context);if(u64(offset)<u64(region.end)&&u64(region.start)<u64(offset)+u64(bytes)){return 1;}index+=1u64;}
  return 0;
 }
+extern "C" u32 stage_initialized(u32 known,u32 count,u64 binding,u32 word,u64 outputs,address context,cfn<StageKnownOutput,address,u64> output,cfn<u32,address,u64,u64> field,cfn<u32,address,u64,u64> length) on cpu requires nonzero(output) requires nonzero(field) requires nonzero(length) {
+ if(known!=0&&count==0){return 1;}
+ u64 index=0u64;
+ while(index<outputs){
+  StageKnownOutput item=output(context,index);
+  if(item.binding==binding){
+   u64 part=0u64;
+   while(part<item.words){
+    if(field(context,index,part)==word){
+     if(item.has_domain!=0){if(length(context,item.domain,binding)!=0){return 1;}}
+     else{if(known!=0&&count==1){return 1;}}
+     break;
+    }
+    part+=1u64;
+   }
+  }
+  index+=1u64;
+ }
+ return 0;
+}
+extern "C" PromoteStageStep promote_stage_step(EnvironmentCursor state,PromoteStageFacts facts) on cpu {
+ EnvironmentCursor cursor=state;
+ while(true){
+  if(cursor.phase==0){if(cursor.index<facts.roots){cursor.phase=1;return PromoteStageStep(cursor,PromoteStageNeed::Root);}return PromoteStageStep(cursor,PromoteStageNeed::Complete);}
+  if(cursor.phase==1){if(facts.access==2){cursor.part=0u64;cursor.phase=2;}else{cursor.index+=1u64;cursor.phase=0;}}
+  if(cursor.phase==2){if(cursor.part<facts.components){cursor.phase=3;return PromoteStageStep(cursor,PromoteStageNeed::Component);}cursor.phase=4;return PromoteStageStep(cursor,PromoteStageNeed::Promote);}
+  if(cursor.phase==3){if(facts.initialized!=0){cursor.part+=1u64;cursor.phase=2;}else{cursor.index+=1u64;cursor.phase=0;}}
+  if(cursor.phase==4){cursor.index+=1u64;cursor.phase=0;}
+ }
+}
+extern "C" StageWriteInitStep stage_write_init_step(EnvironmentCursor state,StageWriteInitFacts facts) on cpu {
+ EnvironmentCursor cursor=state;
+ while(true){
+  if(cursor.phase==0){if(facts.prefix!=0||facts.selection!=0){return StageWriteInitStep(cursor,StageWriteInitNeed::Complete);}if(cursor.index<facts.writes){cursor.phase=1;return StageWriteInitStep(cursor,StageWriteInitNeed::Binding);}return StageWriteInitStep(cursor,StageWriteInitNeed::Complete);}
+  if(cursor.phase==1){if(facts.access==2){cursor.part=0u64;cursor.phase=2;}else{cursor.index+=1u64;cursor.phase=0;}}
+  if(cursor.phase==2){if(cursor.part<facts.appends){cursor.phase=3;return StageWriteInitStep(cursor,StageWriteInitNeed::Append);}cursor.part=0u64;cursor.phase=5;}
+  if(cursor.phase==3){if(facts.append_output==facts.binding||facts.append_count==facts.binding){cursor.index+=1u64;cursor.phase=0;}else{cursor.part+=1u64;cursor.phase=2;}}
+  if(cursor.phase==5){if(cursor.part<facts.components){cursor.phase=6;return StageWriteInitStep(cursor,StageWriteInitNeed::Component);}cursor.phase=9;if(facts.selected!=0){return StageWriteInitStep(cursor,StageWriteInitNeed::Emit);}}
+  if(cursor.phase==6){if(facts.local!=0){cursor.phase=7;return StageWriteInitStep(cursor,StageWriteInitNeed::Known);}cursor.part+=1u64;cursor.phase=5;}
+  if(cursor.phase==7){cursor.phase=8;if(facts.known==0){return StageWriteInitStep(cursor,StageWriteInitNeed::Word);}}
+  if(cursor.phase==8){cursor.part+=1u64;cursor.phase=5;}
+  if(cursor.phase==9){cursor.index+=1u64;cursor.phase=0;}
+ }
+}
+extern "C" CollectiveInitStep collective_init_step(EnvironmentCursor state,CollectiveInitFacts facts) on cpu {
+ EnvironmentCursor cursor=state;
+ while(true){
+  if(cursor.phase==0){if(cursor.index<facts.stages){cursor.phase=1;return CollectiveInitStep(cursor,CollectiveInitNeed::Stage,0,0u64,0u64,0);}return CollectiveInitStep(cursor,CollectiveInitNeed::Complete,0,0u64,0u64,0);}
+  if(cursor.phase==1){
+   if(facts.kind==1||facts.kind==2||facts.kind==6||facts.kind==7||facts.kind==8||((facts.kind==3||facts.kind==4||facts.kind==5)&&facts.prefix==0)){cursor.phase=2;return CollectiveInitStep(cursor,CollectiveInitNeed::Descriptor,0,0u64,0u64,0);}
+   cursor.index+=1u64;cursor.phase=0;
+  }
+  if(cursor.phase==2){if(facts.kind==6||facts.kind==7||facts.kind==8){cursor.phase=4;return CollectiveInitStep(cursor,CollectiveInitNeed::Word,0,0u64,0u64,facts.count_word);}cursor.part=0u64;cursor.phase=5;}
+  if(cursor.phase==5){if(cursor.part<facts.components){cursor.phase=6;return CollectiveInitStep(cursor,CollectiveInitNeed::Component,0,0u64,0u64,0);}cursor.phase=4;}
+  if(cursor.phase==6){cursor.phase=7;return CollectiveInitStep(cursor,CollectiveInitNeed::Word,0,0u64,0u64,facts.target_word+facts.offset);}
+  if(cursor.phase==7){cursor.part+=1u64;cursor.phase=5;}
+  if(cursor.phase==4){
+   cursor.phase=8;
+   if(facts.kind==6||facts.kind==7||facts.kind==8){return CollectiveInitStep(cursor,CollectiveInitNeed::Emit,0,facts.count,0u64,0);}
+   if(facts.kind==3||facts.kind==4||facts.kind==5){return CollectiveInitStep(cursor,CollectiveInitNeed::Emit,1,facts.target,facts.source,0);}
+   return CollectiveInitStep(cursor,CollectiveInitNeed::Emit,0,facts.target,0u64,0);
+  }
+  if(cursor.phase==8){cursor.index+=1u64;cursor.phase=0;}
+ }
+}

@@ -49,13 +49,7 @@ impl Facts {
         self.scopes.pop();
     }
     pub fn initialized(&self, program: &Program, binding: usize, word: u32) -> bool {
-        let buffer = &program.buffers[binding];
-        buffer.count == Some(0) || self.outputs[self.scopes.last().unwrap().1..].iter().any(|output| {
-            output.binding == binding && output.words.contains(&word) && match output.domain {
-                Some(domain) => program.same_length(domain, binding),
-                None => buffer.count == Some(1),
-            }
-        })
+        initialized(program,&self.outputs[self.scopes.last().unwrap().1..],binding,word)
     }
     pub fn relations(&self) -> Vec<PrefixRelation> {
         self.scopes
@@ -67,6 +61,24 @@ impl Facts {
             .into_iter()
             .collect()
     }
+}
+struct Initialization<'a>{program:&'a Program,outputs:&'a [crate::module::domain::Output]}
+#[repr(C)]struct StageKnownOutput{binding:u64,domain:u64,words:u64,has_domain:u32}
+unsafe extern "C" fn initialized_output(context:*const Initialization<'_>,index:u64)->StageKnownOutput {
+    let output=&unsafe{&*context}.outputs[index as usize];StageKnownOutput{binding:output.binding as u64,domain:output.domain.unwrap_or(0)as u64,words:output.words.len()as u64,has_domain:u32::from(output.domain.is_some())}
+}
+unsafe extern "C" fn initialized_word(context:*const Initialization<'_>,index:u64,part:u64)->u32 {
+    unsafe{&*context}.outputs[index as usize].words[part as usize]
+}
+unsafe extern "C" fn initialized_length(context:*const Initialization<'_>,domain:u64,binding:u64)->u32 {
+    u32::from(unsafe{&*context}.program.same_length(domain as usize,binding as usize))
+}
+pub(super) fn initialized(program:&Program,outputs:&[crate::module::domain::Output],binding:usize,word:u32)->bool {
+    let count=program.buffers[binding].count;let input=Initialization{program,outputs};
+    unsafe{stage_initialized(u32::from(count.is_some()),count.unwrap_or(0),binding as u64,word,outputs.len()as u64,&input,initialized_output,initialized_word,initialized_length)!=0}
+}
+unsafe extern "C"{
+    #[link_name="bootstrap.function_body::stage_initialized"]fn stage_initialized(known:u32,count:u32,binding:u64,word:u32,outputs:u64,context:*const Initialization<'_>,output:unsafe extern "C" fn(*const Initialization<'_>,u64)->StageKnownOutput,field:unsafe extern "C" fn(*const Initialization<'_>,u64,u64)->u32,length:unsafe extern "C" fn(*const Initialization<'_>,u64,u64)->u32)->u32;
 }
 pub(super) fn resolve(
     program: &Program,

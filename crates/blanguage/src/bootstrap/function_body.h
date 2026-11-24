@@ -367,3 +367,18 @@ struct ParallelEffectsStep {EnvironmentCursor cursor;ParallelEffectsNeed need;};
 extern "C" ParallelEffectsStep parallel_effects_step(EnvironmentCursor state,ParallelEffectsFacts facts) on cpu;
 struct WrittenRegion {u32 start;u32 end;};
 extern "C" u32 parallel_written_overlap(u32 offset,u32 bytes,u64 count,address context,cfn<WrittenRegion,address> next) on cpu requires nonzero(next);
+
+struct StageKnownOutput {u64 binding;u64 domain;u64 words;u32 has_domain;};
+extern "C" u32 stage_initialized(u32 known,u32 count,u64 binding,u32 word,u64 outputs,address context,cfn<StageKnownOutput,address,u64> output,cfn<u32,address,u64,u64> field,cfn<u32,address,u64,u64> length) on cpu requires nonzero(output) requires nonzero(field) requires nonzero(length);
+struct PromoteStageFacts {u64 roots;u64 components;u32 access;u32 initialized;};
+enum PromoteStageNeed:u32 {Root=0;Component=1;Promote=2;Complete=3;};
+struct PromoteStageStep {EnvironmentCursor cursor;PromoteStageNeed need;};
+extern "C" PromoteStageStep promote_stage_step(EnvironmentCursor state,PromoteStageFacts facts) on cpu;
+struct StageWriteInitFacts {u64 writes;u64 appends;u64 components;u64 binding;u64 append_output;u64 append_count;u64 selected;u32 access;u32 prefix;u32 selection;u32 local;u32 known;};
+enum StageWriteInitNeed:u32 {Binding=0;Append=1;Component=2;Known=3;Word=4;Emit=5;Complete=6;};
+struct StageWriteInitStep {EnvironmentCursor cursor;StageWriteInitNeed need;};
+extern "C" StageWriteInitStep stage_write_init_step(EnvironmentCursor state,StageWriteInitFacts facts) on cpu;
+struct CollectiveInitFacts {u64 stages;u64 components;u64 target;u64 source;u64 count;u32 kind;u32 prefix;u32 target_word;u32 count_word;u32 offset;};
+enum CollectiveInitNeed:u32 {Stage=0;Descriptor=1;Component=2;Word=3;Emit=4;Complete=5;};
+struct CollectiveInitStep {EnvironmentCursor cursor;CollectiveInitNeed need;u32 flags;u64 binding;u64 domain;u32 word;};
+extern "C" CollectiveInitStep collective_init_step(EnvironmentCursor state,CollectiveInitFacts facts) on cpu;
