@@ -1,9 +1,12 @@
 use std::{
     ffi::OsString,
     io,
-    os::windows::io::{AsHandle, AsRawHandle, RawHandle},
+    os::windows::{
+        io::{AsHandle, AsRawHandle, RawHandle},
+        process::ExitStatusExt,
+    },
     path::{Path, PathBuf},
-    process::{Child, Command},
+    process::{Child, Command, ExitStatus},
     sync::mpsc,
     thread,
 };
@@ -13,6 +16,17 @@ mod worker_protocol;
 #[link(name = "kernel32")]
 unsafe extern "system" {
     fn WaitForSingleObject(handle: RawHandle, milliseconds: u32) -> u32;
+    fn GetExitCodeProcess(process: RawHandle, exit_code: *mut u32) -> i32;
+}
+
+fn wait_for_exit(handle: RawHandle) -> io::Result<ExitStatus> {
+    let mut code = 0;
+    if unsafe {
+        WaitForSingleObject(handle, u32::MAX) != 0 || GetExitCodeProcess(handle, &mut code) == 0
+    } {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(ExitStatus::from_raw(code))
 }
 
 pub struct Job {
@@ -68,7 +82,7 @@ fn shared_workers(seed: &Path) -> io::Result<bool> {
 }
 
 struct Running {
-    child: Child,
+    child: Option<Child>,
     implicit: bool,
     shared: bool,
     _permits: Vec<jobserver::Acquired>,
@@ -76,19 +90,21 @@ struct Running {
 
 impl Drop for Running {
     fn drop(&mut self) {
-        if !matches!(self.child.try_wait(), Ok(Some(_))) {
+        if let Some(child) = &mut self.child
+            && !matches!(child.try_wait(), Ok(Some(_)))
+        {
             // A cooperating child can own permits from Cargo. Let it return them.
             if !self.shared {
-                let _ = self.child.kill();
+                let _ = child.kill();
             }
-            let _ = self.child.wait();
+            let _ = child.wait();
         }
     }
 }
 
 enum Event {
     Permit(io::Result<jobserver::Acquired>),
-    Complete(usize, io::Result<()>),
+    Complete(usize, io::Result<ExitStatus>),
 }
 
 pub fn run(seed: &Path, jobs: &[Job], cargo: jobserver::Client, limit: usize) -> io::Result<()> {
@@ -158,27 +174,22 @@ pub fn run(seed: &Path, jobs: &[Job], cargo: jobserver::Client, limit: usize) ->
                     implicit_free = false;
                     let owned =
                         permits.split_off(permits.len() - (workers - usize::from(implicit)));
+                    let child = job.start(seed, workers, shared)?;
+                    let wait_handle = child.as_handle().try_clone_to_owned();
                     let process = Running {
-                        child: job.start(seed, workers, shared)?,
+                        child: Some(child),
                         implicit,
                         shared: job.compiler && shared.is_some(),
                         _permits: owned,
                     };
-                    let handle = process.child.as_handle().try_clone_to_owned()?;
+                    let handle = wait_handle?;
                     running[index] = Some(process);
                     let send = send.clone();
                     started[index] = true;
                     active += 1;
                     thread::Builder::new().spawn_scoped(scope, move || {
                         // The scheduler retains the child so it can stop its own work on error.
-                        let result = if unsafe {
-                            WaitForSingleObject(handle.as_raw_handle(), u32::MAX)
-                        } == 0
-                        {
-                            Ok(())
-                        } else {
-                            Err(io::Error::last_os_error())
-                        };
+                        let result = wait_for_exit(handle.as_raw_handle());
                         let _ = send.send(Event::Complete(index, result));
                     })?;
                 }
@@ -195,9 +206,9 @@ pub fn run(seed: &Path, jobs: &[Job], cargo: jobserver::Client, limit: usize) ->
                     permits.push(token?);
                 }
                 Event::Complete(index, result) => {
-                    result?;
+                    let status = result?;
                     let mut process = running[index].take().expect("owned bootstrap process");
-                    let status = process.child.wait()?;
+                    drop(process.child.take());
                     if !status.success() {
                         return Err(io::Error::other(format!(
                             "Blink种子{}生成{}失败：{status}",
