@@ -15,5 +15,6 @@ struct CoffRelocation {u64 offset;u64 symbol;u64 kind;};
 struct CoffInput {address sections;u64 section_count;address symbols;u64 symbol_count;};
 struct CoffLayout {u64 length;u64 symbols;u64 strings;u64 symbol_count;u32 error;};
 extern "C" CoffLayout layout(CoffInput input) on cpu;
-extern "C" void encode(CoffInput input,CoffLayout layout,address output) on cpu;
+struct CoffNameSource {address module_name;u64 module_name_length;address nodes;};
+extern "C" void encode(CoffInput input,CoffLayout layout,CoffNameSource names,address output) on cpu;
 extern "C" void host_headers(address output, u64 sections, u64 symbols, u64 cache_end, u64 cache_length) on cpu;

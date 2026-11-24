@@ -32,11 +32,13 @@ enum CoffError { None, SectionCount, SectionSize, Offset, RelocationCount, Symbo
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct CoffLayout { length: usize, symbols: usize, strings: usize, symbol_count: usize, error: CoffError }
+#[repr(C)]
+struct CoffNameSource { module: BindingBytes, nodes: *const [u64; 9] }
 unsafe extern "C" {
     #[link_name = "bootstrap.coff::layout"]
     fn coff_layout(input: CoffInput) -> CoffLayout;
     #[link_name = "bootstrap.coff::encode"]
-    fn coff_encode(input: CoffInput, layout: CoffLayout, output: *mut u8);
+    fn coff_encode(input: CoffInput, layout: CoffLayout, names: CoffNameSource, output: *mut u8);
 }
 
 // Synchronous borrowed fields; Object and caller-owned storage outlive both B phases.
@@ -102,12 +104,10 @@ struct BindingWork<'a> {
 enum BindingError { None = 0, SectionCount = 2, RelocationOffset = 5 }
 #[repr(C)]
 #[derive(Clone, Copy)]
-struct BindingPlan { symbols: usize, names: usize, relocations: usize, error: BindingError }
+struct BindingPlan { symbols: usize, relocations: usize, error: BindingError }
 unsafe extern "C" {
     #[link_name = "bootstrap.bindings::prepare"]
     fn binding_prepare(input: BindingInput, work: BindingWork<'_>) -> BindingPlan;
-    #[link_name = "bootstrap.bindings::materialize"]
-    fn binding_materialize(input: BindingInput, work: BindingWork<'_>, plan: BindingPlan, names: *mut u8);
 }
 
 #[repr(C)]
@@ -868,14 +868,10 @@ fn encode_bound<'a>(
         CoffError::SymbolCount => return Err("COFF符号数量超过32位字段".into()),
         CoffError::Strings => return Err("COFF字符串表超过32位字段".into()),
     }
-    let mut names = Vec::<u8>::with_capacity(plan.names);
-    unsafe {
-        binding_materialize(binding_input, work, plan, names.as_mut_ptr());
-        names.set_len(plan.names);
-    }
+    let names = CoffNameSource { module: binding_input.name, nodes: nodes.as_ptr() };
     let mut output = Vec::with_capacity(layout.length);
     unsafe {
-        coff_encode(input, layout, output.as_mut_ptr());
+        coff_encode(input, layout, names, output.as_mut_ptr());
         for ((_, payload, _, _), section) in sections.iter().zip(&physical) {
             payload.write(output.as_mut_ptr().add(section.offset));
         }

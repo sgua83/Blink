@@ -1,4 +1,5 @@
 module bootstrap.coff;
+import bootstrap.bindings;
 
 CoffSection section_at(CoffInput input,u64 index) on cpu {
     return unsafe_position<CoffSection>(unsafe_address(address_bits(input.sections)+index*SECTION_BYTES));
@@ -67,7 +68,7 @@ void copy(address output,u64 at,address bytes,u64 length) on cpu {
         i+=1u64;
     }
 }
-extern "C" void encode(CoffInput input,CoffLayout layout,address output) on cpu {
+extern "C" void encode(CoffInput input,CoffLayout layout,CoffNameSource names,address output) on cpu {
     zero(output,0u64,20u64+40u64*input.section_count);
     le16(output,0u64,34404u64);le16(output,2u64,input.section_count);
     le32(output,8u64,layout.symbols);le32(output,12u64,layout.symbol_count);
@@ -98,11 +99,19 @@ extern "C" void encode(CoffInput input,CoffLayout layout,address output) on cpu 
     while(i<input.symbol_count){
         CoffSymbol symbol=symbol_at(input,i);
         zero(output,at,18u64);
-        if(symbol.name_length<=8u64){copy(output,at,symbol.name,symbol.name_length);}
-        else{
+        u64 name_offset=at;
+        if(symbol.name_length>8u64){
             le32(output,at+4u64,strings);
-            copy(output,layout.strings+strings,symbol.name,symbol.name_length);
-            strings+=symbol.name_length;put(output,layout.strings+strings,0);strings+=1u64;
+            name_offset=layout.strings+strings;
+            strings+=symbol.name_length;
+            put(output,layout.strings+strings,0);
+            strings+=1u64;
+        }
+        if(symbol.generated==0u64){
+            copy(output,name_offset,symbol.name,symbol.name_length);
+        }else{
+            address destination=unsafe_address(address_bits(output)+name_offset);
+            write_generated_name(names,symbol.generated,symbol.source,destination);
         }
         le32(output,at+8u64,symbol.value);le16(output,at+12u64,symbol.section);
         if(symbol.function!=0u64){le16(output,at+14u64,32u64);}

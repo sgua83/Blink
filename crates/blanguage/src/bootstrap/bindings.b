@@ -145,7 +145,7 @@ CoffSymbol symbol(BindingBytes name,u64 section,u64 value,u64 function,u64 exter
 u64 digits(u64 value) on cpu {
     u64 remaining=value;u64 count=1u64;while(remaining>=10u64){remaining/=10u64;count+=1u64;}return count;
 }
-BindingPlan invalid(u32 error) on cpu {return BindingPlan(0u64,0u64,0u64,error);}
+BindingPlan invalid(u32 error) on cpu {return BindingPlan(0u64,0u64,error);}
 extern "C" BindingPlan prepare(BindingInput input,BindingWork work) on cpu {
     if(input.section_count>32767u64){return invalid(2);}
     BindingForest forest=BindingForest(work.nodes,0u64,0u64,0u64);
@@ -158,7 +158,7 @@ extern "C" BindingPlan prepare(BindingInput input,BindingWork work) on cpu {
         }
         i+=1u64;
     }
-    u64 count=0u64;u64 row=0u64;u64 names=0u64;i=0u64;
+    u64 count=0u64;u64 row=0u64;i=0u64;
     while(i<input.section_count){
         BindingSection section=section_at(input,i);section.symbol=row;section_put(input,i,section);
         u64 auxiliary=0u64;if((section.flags&4096u64)!=0u64){auxiliary=1u64;}
@@ -171,7 +171,7 @@ extern "C" BindingPlan prepare(BindingInput input,BindingWork work) on cpu {
         if((section.flags&4096u64)!=0u64){
             u64 length=17u64+input.name.length+digits(i);
             symbol_put(work,count,symbol(BindingBytes(unsafe_address(0u64),length),i+1u64,0u64,0u64,0u64,0u64,0u64,1u64,i));
-            count+=1u64;row+=1u64;names+=length;
+            count+=1u64;row+=1u64;
         }
         i+=1u64;
     }
@@ -211,7 +211,7 @@ extern "C" BindingPlan prepare(BindingInput input,BindingWork work) on cpu {
         if (work.emit_import != cfn<void,address,BindingKey>()) {
             work.emit_import(work.import_context, node.key);
         }
-        node.value=row;node_put(forest,at,node);count+=1u64;row+=1u64;names+=length;
+        node.value=row;node_put(forest,at,node);count+=1u64;row+=1u64;
         
         at=next(forest,at);
     }
@@ -229,7 +229,7 @@ extern "C" BindingPlan prepare(BindingInput input,BindingWork work) on cpu {
         }
         i+=1u64;
     }
-    return BindingPlan(count,names,bound,0);
+    return BindingPlan(count,bound,0);
 }
 
 void literal(address output,u64 at,u64 value,u64 length) on cpu {
@@ -249,25 +249,18 @@ extern "C" void import_name(BindingBytes dll,BindingBytes name,address output) o
     decimal(output,15u64,dll.length);u64 begin=15u64+digits(dll.length);
     literal(output,begin,36u64,1u64);copy(output,begin+1u64,dll);copy(output,begin+1u64+dll.length,name);
 }
-extern "C" void materialize(BindingInput input,BindingWork work,BindingPlan plan,address names) on cpu {
-    BindingForest forest=BindingForest(work.nodes,0u64,0u64,0u64);
-    u64 at=0u64;u64 i=0u64;
-    while(i<plan.symbols){
-        CoffSymbol value=symbol_at(work,i);
-        if(value.generated!=0u64){
-            value.name=unsafe_address(address_bits(names)+at);
-            if(value.generated==1u64){
-                // "__blink_section$"
-                literal(names,at,6875710655180201823u64,8u64);literal(names,at+8u64,2625158131518498163u64,8u64);
-                copy(names,at+16u64,input.name);literal(names,at+16u64+input.name.length,36u64,1u64);
-                decimal(names,at+17u64+input.name.length,value.source);
-            }else{
-                BindingKey key=node_at(forest,value.source).key;
-                import_name(key.first,key.second,unsafe_address(address_bits(names)+at));
-            }
-            symbol_put(work,i,value);at+=value.name_length;
-        }
-        i+=1u64;
+extern "C" void write_generated_name(read CoffNameSource names,u64 kind,u64 source,address output) on cpu {
+    if(kind==1u64){
+        // "__blink_section$"
+        literal(output,0u64,6875710655180201823u64,8u64);
+        literal(output,8u64,2625158131518498163u64,8u64);
+        copy(output,16u64,BindingBytes(names.module_name,names.module_name_length));
+        literal(output,16u64+names.module_name_length,36u64,1u64);
+        decimal(output,17u64+names.module_name_length,source);
+    }else{
+        BindingForest forest=BindingForest(names.nodes,0u64,0u64,0u64);
+        BindingKey key=node_at(forest,source).key;
+        import_name(key.first,key.second,output);
     }
 }
 
