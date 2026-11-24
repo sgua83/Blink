@@ -439,21 +439,27 @@ enum AtomicOperation:u32 {
     Load=0; Store=1; Add=2; Sub=3; Exchange=4; CompareExchange=5;
     Min=6; Max=7; And=8; Or=9; Xor=10;
 };
-struct AtomicEmission {
+struct AtomicSource {
     AtomicOperation operation;
     BuiltinScalar scalar;
+    BuiltinScalar unit;
     u32 result_type;
-    u32 result;
     u32 pointer;
-    u32 scope;
-    u32 semantics;
-    u32 value;
-    u32 compare;
+    u32 workgroup;
+    u32 order;
     u32 failure;
+    u64 value;
+    u64 compare;
 };
-// The emitter supplies resolved SPIR-V IDs and room for nine words.
-// A zero result is the resultless 32-bit store.
-extern "C" u64 encode_atomic(AtomicEmission input, address body) on cpu;
+struct AtomicHost {
+    cfn<u32,address,u32> constant;
+    cfn<u32,address> id;
+    cfn<u32,address,u64> bits;
+    cfn<address,address> body;
+};
+struct AtomicWords { u64 words; u32 result; };
+extern "C" AtomicWords emit_source_atomic(address context, AtomicSource input, AtomicHost host) on cpu
+    requires nonzero(host.constant) requires nonzero(host.id) requires nonzero(host.bits) requires nonzero(host.body);
 
 struct AppendEmission {
     u32 uint_type;

@@ -772,27 +772,6 @@ struct TextureWords {
     next: u32,
 }
 
-#[repr(u32)]
-#[derive(Clone, Copy)]
-enum AtomicOperation {
-    Load, Store, Add, Sub, Exchange, CompareExchange, Min, Max, And, Or, Xor,
-}
-
-#[repr(C)]
-#[derive(Clone, Copy)]
-struct AtomicEmission {
-    operation: AtomicOperation,
-    scalar: ScalarCode,
-    result_type: u32,
-    result: u32,
-    pointer: u32,
-    scope: u32,
-    semantics: u32,
-    value: u32,
-    compare: u32,
-    failure: u32,
-}
-
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct DispatchScalars {
@@ -1049,8 +1028,6 @@ unsafe extern "C" {
     fn encode_prefix_index(input: PrefixIndexEmission, body: *mut u32) -> PrefixIndexWords;
     #[link_name = "bootstrap.spirv_envelope::encode_append_reservation"]
     fn encode_append_reservation(input: AppendEmission, body: *mut u32) -> AppendWords;
-    #[link_name = "bootstrap.spirv_envelope::encode_atomic"]
-    fn encode_atomic(input: AtomicEmission, body: *mut u32) -> u64;
     #[link_name = "bootstrap.spirv_envelope::flag_decoration"]
     fn flag_decoration(decorations: *mut u32, at: u64, decoration: FlagDecoration, id: u32) -> u64;
     #[link_name = "bootstrap.spirv_envelope::encode_texture_sample"]

@@ -1471,6 +1471,19 @@ extern "C" TextureWords encode_texture_sample(TextureSampleEmission input, addre
     return TextureWords(at, annotated, sampled + 3);
 }
 
+struct AtomicEmission {
+    AtomicOperation operation;
+    BuiltinScalar scalar;
+    u32 result_type;
+    u32 result;
+    u32 pointer;
+    u32 scope;
+    u32 semantics;
+    u32 value;
+    u32 compare;
+    u32 failure;
+};
+
 u32 atomic_update_opcode(AtomicOperation operation, BuiltinScalar scalar) on cpu {
     if (operation == AtomicOperation::Store || operation == AtomicOperation::Exchange) { return 229; }
     if (operation == AtomicOperation::Add || operation == AtomicOperation::Sub) {
@@ -1483,7 +1496,7 @@ u32 atomic_update_opcode(AtomicOperation operation, BuiltinScalar scalar) on cpu
     return 240 + u32(operation) - u32(AtomicOperation::And);
 }
 
-extern "C" u64 encode_atomic(AtomicEmission input, address body) on cpu {
+u64 atomic_instruction(AtomicEmission input, address body) on cpu {
     AtomicOperation operation = input.operation;
     if (operation == AtomicOperation::Load) {
         return words_five(body, 0u64, 227, input.result_type, input.result,
@@ -1509,6 +1522,28 @@ extern "C" u64 encode_atomic(AtomicEmission input, address body) on cpu {
         put(body, 6u64, input.value);
     }
     return u64(length);
+}
+
+u32 atomic_memory_semantics(u32 order, u32 storage) on cpu {
+    // Checked IR encodes Acquire in bit 0 and Release in bit 1.
+    return order == 0 ? 0 : storage | (u32(1) << order);
+}
+
+extern "C" AtomicWords emit_source_atomic(address context, AtomicSource input, AtomicHost host) on cpu
+    requires nonzero(host.constant) requires nonzero(host.id) requires nonzero(host.bits) requires nonzero(host.body) {
+    u32 scope = host.constant(context, input.workgroup != 0 ? 2 : 1);
+    u32 storage = input.workgroup != 0 ? 0x100 : 0x40;
+    u32 semantics = host.constant(context, atomic_memory_semantics(input.order, storage));
+    bool store_without_result = input.operation == AtomicOperation::Store && input.unit == BuiltinScalar::U32;
+    u32 result = store_without_result ? 0 : host.id(context);
+    bool compare_exchange = input.operation == AtomicOperation::CompareExchange;
+    u32 failure = compare_exchange ? host.constant(context, atomic_memory_semantics(input.failure, storage)) : 0;
+    u32 value = input.operation == AtomicOperation::Load ? 0 : host.bits(context, input.value);
+    u32 compare = compare_exchange ? host.bits(context, input.compare) : 0;
+    address body = host.body(context);
+    u64 words = atomic_instruction(AtomicEmission(input.operation, input.scalar, input.result_type, result,
+                                                  input.pointer, scope, semantics, value, compare, failure), body);
+    return AtomicWords(words, result);
 }
 
 extern "C" u64 phi_two(address body, u64 at, u32 type, u32 result,
@@ -1546,7 +1581,7 @@ extern "C" AppendWords encode_append_reservation(AppendEmission input, address b
     u32 initial = capacity + 1;
     at = words_five(body, at, 65, input.push_pointer_type, pointer, input.push, zero, input.capacity_word);
     at = words_five(body, at, 61, uint_type, capacity, pointer, 2, 4);
-    at += encode_atomic(AtomicEmission(AtomicOperation::Load, BuiltinScalar::U32,
+    at += atomic_instruction(AtomicEmission(AtomicOperation::Load, BuiltinScalar::U32,
                         uint_type, initial, input.counter, input.device_scope, zero, 0, 0, 0), word_at(body, at));
 
     u32 header = initial + 1;
@@ -1573,7 +1608,7 @@ extern "C" AppendWords encode_append_reservation(AppendEmission input, address b
     at = words_four(body, at, 176, bool_type, partial, available, size);
     at = select_words(body, at, uint_type, amount, partial, available, size);
     at = words_four(body, at, 128, uint_type, desired, old, amount);
-    at += encode_atomic(AtomicEmission(AtomicOperation::CompareExchange, BuiltinScalar::U32,
+    at += atomic_instruction(AtomicEmission(AtomicOperation::CompareExchange, BuiltinScalar::U32,
                         uint_type, observed, input.counter, input.device_scope, zero,
                         desired, old, zero), word_at(body, at));
     at = words_four(body, at, 170, bool_type, accepted, observed, old);

@@ -1,77 +1,111 @@
-//! 原子指令按实际地址区分 Device 存储与 Workgroup 共享作用域。
+//! Lower checked atomics through the SPIR-V emitter's address and value storage.
 use super::*;
-impl Emitter<'_> {
-    pub(super) fn emit_atomic(&mut self, input: AtomicEmission) {
-        let at = self.body.len();
-        self.body.reserve(9);
-        unsafe {
-            let words = encode_atomic(input, self.body.as_mut_ptr().add(at));
-            self.body.set_len(at + words as usize);
-        }
-    }
+use std::ffi::c_void;
 
-    fn atomic_semantics(&mut self, order: MemoryOrder, memory: u32) -> u32 {
-        let semantics = match order {
-            MemoryOrder::Relaxed => 0,
-            MemoryOrder::Acquire => memory | 2,
-            MemoryOrder::Release => memory | 4,
-            MemoryOrder::AcquireRelease => memory | 8,
-        };
-        self.constant(Scalar::U32, semantics)
-    }
+#[derive(Clone, Copy)]
+#[repr(u32)]
+enum AtomicOperation {
+    Load, Store, Add, Sub, Exchange, CompareExchange, Min, Max, And, Or, Xor,
+}
+
+#[repr(C)]
+struct AtomicSource {
+    operation: AtomicOperation,
+    scalar: ScalarCode,
+    unit: ScalarCode,
+    result_type: u32,
+    pointer: u32,
+    workgroup: u32,
+    order: u32,
+    failure: u32,
+    value: Reg,
+    compare: Reg,
+}
+
+#[repr(C)]
+struct AtomicWords {
+    words: usize,
+    result: u32,
+}
+
+#[repr(C)]
+struct AtomicHost {
+    constant: unsafe extern "C" fn(*mut c_void, u32) -> u32,
+    id: unsafe extern "C" fn(*mut c_void) -> u32,
+    bits: unsafe extern "C" fn(*mut c_void, Reg) -> u32,
+    body: unsafe extern "C" fn(*mut c_void) -> *mut u32,
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.spirv_envelope::emit_source_atomic"]
+    fn emit_source_atomic(context: *mut c_void, source: AtomicSource, host: AtomicHost) -> AtomicWords;
+}
+
+unsafe extern "C" fn constant(context: *mut c_void, bits: u32) -> u32 {
+    unsafe { &mut *context.cast::<Emitter<'_>>() }.constant(Scalar::U32, bits)
+}
+
+unsafe extern "C" fn id(context: *mut c_void) -> u32 {
+    unsafe { &mut *context.cast::<Emitter<'_>>() }.id()
+}
+
+unsafe extern "C" fn bits(context: *mut c_void, value: Reg) -> u32 {
+    unsafe { &mut *context.cast::<Emitter<'_>>() }.raw_bits(value)
+}
+
+unsafe extern "C" fn body(context: *mut c_void) -> *mut u32 {
+    let body = &mut unsafe { &mut *context.cast::<Emitter<'_>>() }.body;
+    body.reserve(9);
+    unsafe { body.as_mut_ptr().add(body.len()) }
+}
+
+const HOST: AtomicHost = AtomicHost { constant, id, bits, body };
+
+impl Emitter<'_> {
     pub(super) fn atomic(&mut self, atomic: &Atomic) -> Result<(), &'static str> {
         let unit = Self::raw_scalar(atomic.scalar);
-        let (pointer, scope, memory) = match atomic.target {
+        let (pointer, workgroup) = match atomic.target {
             IndexedSource::Data { binding, index } => {
                 let offset = atomic.offset.map_or(0, |reg| self.value(reg));
-                let at = self.page_address(
+                let pointer = self.page_address(
                     unit, PageSource::Dataset(self.buffers[binding]), self.value(index), atomic.word, offset,
                 );
-                (at, 1, 0x40)
+                (pointer, 0)
             }
             IndexedSource::Tile { tile, index } => (
                 self.tile_word_address(
                     self.stage.shared_word(tile, atomic.word),
                     self.value(index),
-                    atomic.offset.map(|r| self.value(r)),
+                    atomic.offset.map(|reg| self.value(reg)),
                 ).0,
-                2,
-                0x100,
+                1,
             ),
             IndexedSource::View { .. } | IndexedSource::Pointer { .. } => return Err("GPU原子不能使用CPU原生地址".into()),
         };
-        let scope = self.constant(Scalar::U32, scope);
-        let semantics = self.atomic_semantics(atomic.order, memory);
-        let u = self.types[&unit];
-        let result = if matches!(atomic.op, AtomicOp::Store(_)) && unit == Scalar::U32 {
-            0
-        } else {
-            self.id()
-        };
-        let (operation, operand, comparison) = match atomic.op {
-            AtomicOp::Load => (AtomicOperation::Load, None, None),
-            AtomicOp::Store(value) => (AtomicOperation::Store, Some(value), None),
-            AtomicOp::Add(value) => (AtomicOperation::Add, Some(value), None),
-            AtomicOp::Sub(value) => (AtomicOperation::Sub, Some(value), None),
-            AtomicOp::Exchange(value) => (AtomicOperation::Exchange, Some(value), None),
+        let (operation, value, compare, failure) = match atomic.op {
+            AtomicOp::Load => (AtomicOperation::Load, 0, 0, 0),
+            AtomicOp::Store(value) => (AtomicOperation::Store, value, 0, 0),
+            AtomicOp::Add(value) => (AtomicOperation::Add, value, 0, 0),
+            AtomicOp::Sub(value) => (AtomicOperation::Sub, value, 0, 0),
+            AtomicOp::Exchange(value) => (AtomicOperation::Exchange, value, 0, 0),
             AtomicOp::CompareExchange { expected, desired, failure } => (
-                AtomicOperation::CompareExchange, Some(desired), Some((expected, failure)),
+                AtomicOperation::CompareExchange, desired, expected, failure as u32,
             ),
-            AtomicOp::Min(value) => (AtomicOperation::Min, Some(value), None),
-            AtomicOp::Max(value) => (AtomicOperation::Max, Some(value), None),
-            AtomicOp::And(value) => (AtomicOperation::And, Some(value), None),
-            AtomicOp::Or(value) => (AtomicOperation::Or, Some(value), None),
-            AtomicOp::Xor(value) => (AtomicOperation::Xor, Some(value), None),
+            AtomicOp::Min(value) => (AtomicOperation::Min, value, 0, 0),
+            AtomicOp::Max(value) => (AtomicOperation::Max, value, 0, 0),
+            AtomicOp::And(value) => (AtomicOperation::And, value, 0, 0),
+            AtomicOp::Or(value) => (AtomicOperation::Or, value, 0, 0),
+            AtomicOp::Xor(value) => (AtomicOperation::Xor, value, 0, 0),
         };
-        let failure = comparison.map_or(0, |(_, order)| self.atomic_semantics(order, memory));
-        let value = operand.map_or(0, |reg| self.raw_bits(reg));
-        let compare = comparison.map_or(0, |(reg, _)| self.raw_bits(reg));
-        self.emit_atomic(AtomicEmission {
-            operation, scalar: atomic.scalar.into(), result_type: u, result,
-            pointer, scope, semantics, value, compare, failure,
-        });
+        let source = AtomicSource {
+            operation, scalar: atomic.scalar.into(), unit: unit.into(), result_type: self.types[&unit],
+            pointer, workgroup, order: atomic.order as u32, failure, value, compare,
+        };
+        // B asks for the final body pointer after raw operand materialization is finished.
+        let emitted = unsafe { emit_source_atomic(std::ptr::from_mut(&mut *self).cast(), source, HOST) };
+        unsafe { self.body.set_len(self.body.len() + emitted.words) };
         if let Some(dst) = atomic.result {
-            self.from_words(dst, &[result], unit);
+            self.from_words(dst, &[emitted.result], unit);
         }
         Ok(())
     }
