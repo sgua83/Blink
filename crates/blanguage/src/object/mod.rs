@@ -37,28 +37,62 @@ impl<Bytes> Section<Bytes> {
 }
 
 pub(crate) trait ReadSection: Sized {
-    fn from_coff(bytes: &[u8], zero_fill: usize) -> Self;
-    fn from_generated(object: Object) -> Object<Self>;
+    fn from_coff(source: &ObjectBytes, bytes: &[u8], zero_fill: usize) -> Self;
+    fn from_generated_bytes(bytes: Vec<u8>) -> Self;
+    fn from_generated(object: Object) -> Object<Self> {
+        let Object { name, kind, sections, symbols, imports, archive, stack } = object;
+        let sections = sections.into_iter().map(|section| section.map_bytes(Self::from_generated_bytes)).collect();
+        Object { name, kind, sections, symbols, imports, archive, stack }
+    }
 }
 
 impl ReadSection for Vec<u8> {
-    fn from_coff(bytes: &[u8], zero_fill: usize) -> Self {
+    fn from_coff(_: &ObjectBytes, bytes: &[u8], zero_fill: usize) -> Self {
         if zero_fill == 0 { bytes.to_vec() } else { vec![0; zero_fill] }
     }
 
+    fn from_generated_bytes(bytes: Vec<u8>) -> Self { bytes }
     fn from_generated(object: Object) -> Object<Self> { object }
 }
 
 // The report only needs the original logical length for section layout.
 impl ReadSection for usize {
-    fn from_coff(bytes: &[u8], zero_fill: usize) -> Self {
+    fn from_coff(_: &ObjectBytes, bytes: &[u8], zero_fill: usize) -> Self {
         if zero_fill == 0 { bytes.len() } else { zero_fill }
     }
 
-    fn from_generated(object: Object) -> Object<Self> {
-        let Object { name, kind, sections, symbols, imports, archive, stack } = object;
-        let sections = sections.into_iter().map(|section| section.map_bytes(|bytes| bytes.len())).collect();
-        Object { name, kind, sections, symbols, imports, archive, stack }
+    fn from_generated_bytes(bytes: Vec<u8>) -> Self { bytes.len() }
+}
+
+pub(crate) enum LinkSectionBytes<'a> {
+    Captured(ObjectBytes),
+    Owned(Vec<u8>),
+    Borrowed(&'a [u8]),
+}
+
+impl ReadSection for LinkSectionBytes<'_> {
+    fn from_coff(source: &ObjectBytes, bytes: &[u8], zero_fill: usize) -> Self {
+        if zero_fill != 0 {
+            return Self::Owned(vec![0; zero_fill]);
+        }
+        if bytes.is_empty() {
+            return Self::Borrowed(&[]);
+        }
+        // The COFF reader validated this range in the original snapshot.
+        let start = bytes.as_ptr().addr() - source.as_ptr().addr();
+        Self::Captured(source.slice(start..start + bytes.len()))
+    }
+
+    fn from_generated_bytes(bytes: Vec<u8>) -> Self { Self::Owned(bytes) }
+}
+
+impl AsRef<[u8]> for LinkSectionBytes<'_> {
+    fn as_ref(&self) -> &[u8] {
+        match self {
+            Self::Captured(bytes) => bytes,
+            Self::Owned(bytes) => bytes,
+            Self::Borrowed(bytes) => bytes,
+        }
     }
 }
 

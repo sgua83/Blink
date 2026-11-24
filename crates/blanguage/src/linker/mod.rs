@@ -11,7 +11,7 @@ mod pe;
 mod resources;
 pub(crate) mod native;
 use crate::{
-    object::{Archive, Definition, Input, Object, ObjectBytes, ReadSection, Section, stack},
+    object::{Archive, Definition, Input, LinkSectionBytes, Object, ObjectBytes, ReadSection, Section, stack},
 };
 use std::path::Path;
 pub(crate) type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
@@ -37,33 +37,34 @@ fn read_inputs<Bytes: ReadSection>(
     Ok(inputs)
 }
 
-#[derive(Default)]
-struct Inputs<'a, Bytes = Vec<u8>> {
+struct Inputs<'a, Bytes> {
     sources: Vec<Source<'a, Bytes>>,
     libraries: Vec<crate::object::Library>,
 }
 
-impl Inputs<'_> {
+impl<Payload: ReadSection> Inputs<'_, Payload> {
     fn push(&mut self, input: Input) {
         match input {
-            Input::Object(object) => self.sources.push(Source::Owned(object)),
+            Input::Object(object) => self.sources.push(Source::Owned(Payload::from_generated(object))),
             Input::Library(library) => self.libraries.push(library),
         }
     }
 }
 
 /// One original object owner; graph consumers borrow the same compiled value.
-enum Source<'a, Bytes = Vec<u8>> {
+enum Source<'a, Bytes> {
     Owned(Object<Bytes>),
-    Borrowed(&'a Object<Bytes>),
+    Borrowed(&'a Object),
 }
-impl<Bytes> std::ops::Deref for Source<'_, Bytes> {
-    type Target = Object<Bytes>;
-    fn deref(&self) -> &Self::Target {
-        match self { Self::Owned(object) => object, Self::Borrowed(object) => object }
+impl<Bytes> Source<'_, Bytes> {
+    fn archive(&self) -> Option<&Archive> {
+        match self {
+            Self::Owned(object) => object.archive.as_ref(),
+            Self::Borrowed(object) => object.archive.as_ref(),
+        }
     }
 }
-struct Selected<Bytes = Vec<u8>> {
+struct Selected<Bytes> {
     name: String,
     library: Option<LibraryBinding>,
     sections: Vec<Section<Bytes>>,
@@ -106,7 +107,7 @@ enum Roots<'a> {
     Symbols(&'a [RootView<'a>], u32, u32),
 }
 pub(crate) fn link_object(object: Object, path: &Path) -> Result<()> {
-    link_objects(Inputs { sources: vec![Source::Owned(object)], libraries: Vec::new() }, path)
+    link_objects(Inputs { sources: vec![Source::Owned(LinkSectionBytes::from_generated(object))], libraries: Vec::new() }, path)
 }
 pub fn stack_report_inputs(inputs: &[impl AsRef<Path>], budget: Option<u64>) -> Result<String> {
     let bytes = inputs.iter().map(|path| ObjectBytes::read(path.as_ref()));
@@ -128,7 +129,7 @@ pub fn write_stack_report(inputs: &[impl AsRef<Path>], output: &Path, budget: Op
 }
 
 fn stack_report(inputs: Inputs<'_, usize>, budget: Option<u64>) -> Result<String> {
-    let Selection { mut objects, plan } = entry(inputs, true)?;
+    let Selection { mut objects, plan } = entry(inputs, true, Vec::len)?;
     let runtime = plan.uses_runtime != 0;
     let reserve = match plan.product {
         EntryProduct::Pe | EntryProduct::HostApplication => Some(plan.stack_reserve),
@@ -154,16 +155,16 @@ fn stack_report(inputs: Inputs<'_, usize>, budget: Option<u64>) -> Result<String
     Ok(report)
 }
 #[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
-fn link_objects(inputs: Inputs<'_>, _: &Path) -> Result<()> {
-    entry(inputs, false)?;
+fn link_objects<'a>(inputs: Inputs<'a, LinkSectionBytes<'a>>, _: &Path) -> Result<()> {
+    entry(inputs, false, |bytes| LinkSectionBytes::Borrowed(bytes))?;
     Err("本机链接当前输出 Windows x64".into())
 }
 
 #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
-fn link_objects(inputs: Inputs<'_>, path: &Path) -> Result<()> {
+fn link_objects<'a>(inputs: Inputs<'a, LinkSectionBytes<'a>>, path: &Path) -> Result<()> {
     use crate::{file_bytes, source_path};
 
-    let Selection { objects, plan } = entry(inputs, false)?;
+    let Selection { objects, plan } = entry(inputs, false, |bytes| LinkSectionBytes::Borrowed(bytes))?;
     let output = source_path::absolute(path)?;
     file_bytes::create_dir_all(output.parent().unwrap())?;
     match plan.product {

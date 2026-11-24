@@ -328,7 +328,7 @@ fn write_input(temporary: &mut Vec<PathBuf>, path: PathBuf, bytes: &[u8]) -> io:
 }
 
 pub(super) fn link(
-    objects: &[super::Selected], path: &Path, stack_reserve: u64, import_library: bool,
+    objects: &[super::Selected<impl AsRef<[u8]>>], path: &Path, stack_reserve: u64, import_library: bool,
 ) -> Result<()> {
     let archives = objects.iter().filter_map(|object| object.archive.as_ref()).collect::<Vec<_>>();
     let binding = super::resources::resources(&archives, 0, 0, std::iter::empty(), std::iter::empty(), None)?;

@@ -77,7 +77,7 @@ pub(super) fn module<Payload: AsRef<[u8]>>(
     Ok(ModuleCode { sections, symbols })
 }
 
-pub(super) fn link_pe(objects: Vec<Selected>, stack_reserve: u64) -> Result<Vec<u8>> {
+pub(super) fn link_pe(objects: Vec<Selected<impl AsRef<[u8]>>>, stack_reserve: u64) -> Result<Vec<u8>> {
     let Prepared { rows, groups, mut relocations, plan, .. } = prepare(&objects, &[], extent, true)?;
     pe::link(&rows, &groups, &mut relocations, &plan, stack_reserve)
 }

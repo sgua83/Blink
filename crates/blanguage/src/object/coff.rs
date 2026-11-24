@@ -796,7 +796,7 @@ pub(crate) fn encode_native(name: &str, source: &[Section], declared: &[Definiti
 }
 
 pub(crate) fn encode_native_with_imports<'a>(
-    name: &str, source: &'a [Section], declared: &'a [Definition],
+    name: &str, source: &'a [Section<impl AsRef<[u8]>>], declared: &'a [Definition],
     imports: &mut Vec<ImportKey<'a>>,
 ) -> Result<Vec<u8>> {
     encode_sections(name, source, declared.iter(), std::iter::empty(), Some(imports))
@@ -830,12 +830,12 @@ impl CoffPayload<'_> {
     }
 }
 fn encode_sections<'a>(
-    name: &str, source: &'a [Section], declared: impl Iterator<Item = &'a Definition>,
+    name: &str, source: &'a [Section<impl AsRef<[u8]>>], declared: impl Iterator<Item = &'a Definition>,
     extra: impl Iterator<Item = (&'a str, CoffPayload<'a>, u32)>,
     imports: Option<&mut Vec<ImportKey<'a>>>,
 ) -> Result<Vec<u8>> {
     let sections = source.iter().map(|section|
-        (section.name.as_str(), CoffPayload::Borrowed(section.bytes.as_slice()), section.flags)
+        (section.name.as_str(), CoffPayload::Borrowed(section.bytes.as_ref()), section.flags)
     ).chain(extra).collect::<Vec<_>>();
     let input_relocations = source.iter().map(|section| {
         section.relocations.iter().map(|relocation| {
@@ -1367,7 +1367,7 @@ fn decode_object<Bytes: super::ReadSection>(
                 associated: Vec::new(),
                 layout: None,
                 name: unsafe { std::str::from_utf8_unchecked(row.name.borrowed()) }.to_owned(),
-                bytes: Bytes::from_coff(bytes, row.zero_fill),
+                bytes: Bytes::from_coff(b, bytes, row.zero_fill),
                 flags: row.flags as u32,
                 relocations: Vec::new(),
             });
