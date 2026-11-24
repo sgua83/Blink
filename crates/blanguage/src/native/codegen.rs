@@ -64,13 +64,6 @@ const BUFFER_BYTES: u32 = std::mem::size_of::<BufferAddress>() as u32;
 const BUFFER_STRIDE: u32 = std::mem::offset_of!(BufferAddress, stride) as u32;
 
 #[repr(C)]
-struct ScalarRangePrefix {
-    end: usize,
-    exit_field: usize,
-    skip_field: usize,
-}
-
-#[repr(C)]
 struct RangeEnd {
     back_edge: usize,
     end: usize,
@@ -134,9 +127,8 @@ unsafe extern "C" {
         image: *mut u8, end: usize, exits: *const usize, exit_count: usize) -> usize;
     #[link_name = "bootstrap.x64_instruction::range_bounds"]
     fn encode_range_bounds(packet: u32, output: *mut u8) -> u64;
-    #[link_name = "bootstrap.x64_instruction::scalar_range_prefix"]
-    fn encode_scalar_range_prefix(image: *mut u8, begin: usize, selected: u32,
-        data_offset: u32, stride_offset: u32, word: u32) -> ScalarRangePrefix;
+    #[link_name = "bootstrap.x64_instruction::emit_map_range"]
+    fn emit_map_range(input: MapRangeInput, host: MapRangeHost) -> u32;
     #[link_name = "bootstrap.x64_instruction::finish_range"]
     fn encode_range_end(image: *mut u8, at: usize, begin: usize, exit_field: usize,
         skip_field: usize, step: u8) -> RangeEnd;
@@ -619,6 +611,128 @@ impl Emitter<'_> {
 }
 /// 所有范围共用RangeEntry：buffers、uniforms、end、begin、output，返回执行状态。
 /// 算法输出（包括计数）只写第五参数，map及无摘要续阶段不读取该指针。
+#[repr(C)]
+struct MapRangeInput {
+    packet: *const std::ffi::c_void,
+    binding: usize,
+    word: u32,
+    selected: u32,
+    frame: u32,
+    slots: u32,
+    buffer_bytes: u32,
+    stride_field: u32,
+    tile_scope: u32,
+    has_phases: u32,
+}
+
+#[repr(u32)]
+enum MapRangePart {
+    Enter, PacketBounds, PacketCollect, PacketAdvance, PacketBackEdge, PacketTail,
+    ScalarBounds, ScalarSelection, ScalarAdvance, ScalarBackEdge, Exit,
+}
+
+#[repr(u32)]
+enum MapRangeBody { Packet, Scalar, TileInput, TilePhases }
+
+#[repr(C)]
+struct MapRangeBuffer { image: *mut u8, end: usize }
+
+#[repr(C)]
+struct MapRangeEntry { end: usize, stack_bytes: u32 }
+
+#[repr(C)]
+struct MapRangeObservation {
+    start: usize,
+    end: usize,
+    binding: usize,
+    value: u32,
+    part: MapRangePart,
+}
+
+type MapRangeSlot = *mut std::ffi::c_void;
+
+#[repr(C)]
+struct MapRangeHost {
+    context: MapRangeSlot,
+    enter: unsafe extern "C" fn(MapRangeSlot, u32) -> MapRangeEntry,
+    leave: unsafe extern "C" fn(MapRangeSlot, u32) -> usize,
+    reserve: unsafe extern "C" fn(MapRangeSlot, usize) -> MapRangeBuffer,
+    commit: unsafe extern "C" fn(MapRangeSlot, usize),
+    body: unsafe extern "C" fn(MapRangeSlot, MapRangeBody, *const std::ffi::c_void) -> u32,
+    observe: unsafe extern "C" fn(MapRangeSlot, MapRangeObservation),
+}
+
+struct MapRange<'a, 'b> {
+    emitter: &'a mut Emitter<'b>,
+    phases: &'a [TilePhase<'b>],
+    inputs: &'a crate::ir::dataflow::InputFragments,
+    result: Result<(), &'static str>,
+}
+
+unsafe extern "C" fn map_range_enter(slot: MapRangeSlot, frame: u32) -> MapRangeEntry {
+    let range = unsafe { &mut *slot.cast::<MapRange<'_, '_>>() };
+    let stack_bytes = range.emitter.enter(frame);
+    MapRangeEntry { end: range.emitter.code.len(), stack_bytes }
+}
+
+unsafe extern "C" fn map_range_leave(slot: MapRangeSlot, frame: u32) -> usize {
+    let range = unsafe { &mut *slot.cast::<MapRange<'_, '_>>() };
+    range.emitter.leave(frame);
+    range.emitter.code.len()
+}
+
+unsafe extern "C" fn map_range_reserve(slot: MapRangeSlot, count: usize) -> MapRangeBuffer {
+    let range = unsafe { &mut *slot.cast::<MapRange<'_, '_>>() };
+    let code = &mut range.emitter.code;
+    code.reserve(count);
+    MapRangeBuffer { image: code.as_mut_ptr(), end: code.len() }
+}
+
+unsafe extern "C" fn map_range_commit(slot: MapRangeSlot, end: usize) {
+    let range = unsafe { &mut *slot.cast::<MapRange<'_, '_>>() };
+    unsafe { range.emitter.code.set_len(end) };
+}
+
+unsafe extern "C" fn map_range_body(slot: MapRangeSlot, body: MapRangeBody, packet: *const std::ffi::c_void) -> u32 {
+    let range = unsafe { &mut *slot.cast::<MapRange<'_, '_>>() };
+    range.result = match body {
+        MapRangeBody::Packet => {
+            let (plan, allocation) = unsafe { &*packet.cast::<(packet::Plan<'_>, PacketAllocation)>() };
+            range.emitter.emit_packet_plan(plan, allocation)
+        }
+        MapRangeBody::Scalar => {
+            let stage = range.emitter.stage;
+            range.emitter.block(&stage.code)
+        },
+        MapRangeBody::TileInput => {
+            range.emitter.tile_input(range.inputs);
+            Ok(())
+        }
+        MapRangeBody::TilePhases => range.emitter.tile_phases(range.phases, range.inputs),
+    };
+    u32::from(range.result.is_ok())
+}
+
+unsafe extern "C" fn map_range_observe(slot: MapRangeSlot, event: MapRangeObservation) {
+    use super::ParallelRangePart as Part;
+    let range = unsafe { &mut *slot.cast::<MapRange<'_, '_>>() };
+    let part = match event.part {
+        MapRangePart::Enter => Part::Enter { frame_bytes: event.value },
+        MapRangePart::Exit => Part::Exit { frame_bytes: event.value },
+        MapRangePart::PacketBounds => Part::PacketBounds,
+        MapRangePart::PacketCollect => Part::PacketCollect { binding: event.binding, offset: event.value },
+        MapRangePart::PacketAdvance => Part::PacketAdvance,
+        MapRangePart::PacketBackEdge => Part::PacketBackEdge,
+        MapRangePart::PacketTail => Part::PacketTail,
+        MapRangePart::ScalarBounds => Part::ScalarBounds,
+        MapRangePart::ScalarSelection => Part::ScalarSelection { binding: event.binding, offset: event.value },
+        MapRangePart::ScalarAdvance => Part::ScalarAdvance,
+        MapRangePart::ScalarBackEdge => Part::ScalarBackEdge,
+    };
+    range.emitter.parallel_abi_range(event.start..event.end, part);
+}
+
+
 fn emit_map(
     program: &Program, index: usize, inputs: &crate::ir::dataflow::InputFragments,
     used: &std::collections::BTreeSet<SharedWord>, layout: crate::ir::dataflow::TileLayout,
@@ -637,7 +751,8 @@ fn emit_map(
         &allocation,
         packet.as_ref().map(|(_, allocation)| allocation),
     );
-    let data_end = if stage.has_tile_scope() {
+    let tile_scope = stage.has_tile_scope();
+    let data_end = if tile_scope {
         frame_layout.layout_tile(stage, &phases, layout)
     } else {
         frame_layout.end
@@ -665,46 +780,24 @@ fn emit_map(
         allocation,
         frame: frame_layout,
     };
-    let start = e.code.len();
-    let stack_bytes = e.enter(frame);
-    e.parallel_abi(start, super::ParallelRangePart::Enter { frame_bytes: frame });
-    if let Some((plan, allocation)) = packet {
-        e.packet_loop(&plan, &allocation)?;
-    }
-    let begin = e.code.len();
-    let (data, word) = stage.selection.map_or((0, 0), |selection| {
-        (selection.binding as u32 * BUFFER_BYTES, selection.word)
+    let (binding, word, selected) = stage.selection.map_or((0, 0, 0), |selection| {
+        (selection.binding, selection.word, 1)
     });
-    e.code.reserve(64);
-    let prefix = unsafe {
-        let prefix = encode_scalar_range_prefix(e.code.as_mut_ptr(), begin, u32::from(stage.selection.is_some()),
-            data, data + BUFFER_STRIDE, word);
-        e.code.set_len(prefix.end);
-        prefix
+    let input = MapRangeInput {
+        packet: packet.as_ref().map_or(std::ptr::null(), |packet| std::ptr::from_ref(packet).cast()),
+        binding, word, selected, frame, slots: e.frame.end as u32,
+        buffer_bytes: BUFFER_BYTES, stride_field: BUFFER_STRIDE,
+        tile_scope: u32::from(tile_scope), has_phases: u32::from(!phases.is_empty()),
     };
-    let bounds_end = prefix.exit_field + 4;
-    e.parallel_abi_range(begin..bounds_end, super::ParallelRangePart::ScalarBounds);
-    if let Some(selection) = stage.selection {
-        e.parallel_abi(bounds_end, super::ParallelRangePart::ScalarSelection { binding: selection.binding, offset: selection.word });
-    }
-    let step = if phases.is_empty() {
-        if stage.has_tile_scope() {
-            e.tile_input(inputs);
-        }
-        e.block(&stage.code)?;
-        1
-    } else {
-        e.tile_phases(phases, inputs)?;
-        0
+    let mut range = MapRange { emitter: &mut e, phases: &phases, inputs, result: Ok(()) };
+    let stack_bytes = unsafe {
+        emit_map_range(input, MapRangeHost {
+            context: std::ptr::from_mut(&mut range).cast(),
+            enter: map_range_enter, leave: map_range_leave,
+            reserve: map_range_reserve, commit: map_range_commit,
+            body: map_range_body, observe: map_range_observe,
+        })
     };
-    let start = e.code.len();
-    let back_edge = e.finish_range(begin, prefix.exit_field, prefix.skip_field, step);
-    if back_edge != start {
-        e.parallel_abi_range(start..back_edge, super::ParallelRangePart::ScalarAdvance);
-    }
-    e.parallel_abi(back_edge, super::ParallelRangePart::ScalarBackEdge);
-    let start = e.code.len();
-    e.leave(frame);
-    e.parallel_abi(start, super::ParallelRangePart::Exit { frame_bytes: frame });
+    range.result?;
     Ok(e.finish(stack_bytes, true))
 }

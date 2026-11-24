@@ -392,16 +392,6 @@ extern "C" u64 buffer_index(u32 stride_offset, u8 index, u8 base, address output
 extern "C" u64 range_arguments(address output) on cpu;
 // The caller owns sixteen bytes. The final four bytes are the exit rel32.
 extern "C" u64 range_bounds(bool packet, address output) on cpu;
-struct ScalarRangePrefix {
-    u64 end;
-    u64 exit_field;
-    u64 skip_field;
-};
-
-// Offsets are relative to image. The caller reserves 64 bytes after begin.
-extern "C" ScalarRangePrefix scalar_range_prefix(address image, u64 begin, u32 selected,
-    u32 data_offset, u32 stride_offset, u32 word) on cpu;
-
 struct RangeEnd {
     u64 back_edge;
     u64 end;
@@ -412,16 +402,6 @@ struct RangeEnd {
 extern "C" RangeEnd finish_range(address image, u64 at, u64 begin, u64 exit_field,
     u64 skip_field, u8 step) on cpu;
 
-struct SparseRangeEncoding {
-    u64 length;
-    u64 tail_field;
-};
-
-// The caller owns 96 bytes and supplies the existing four-index stack slot.
-extern "C" SparseRangeEncoding sparse_collect(u32 data_offset, u32 stride_offset,
-    u32 word, u32 slots, address output) on cpu;
-// Restore the first pending index when the final group was incomplete.
-extern "C" u64 sparse_tail(u32 slots, address output) on cpu;
 // Packet inputs use their original allocated XMM/stack lanes; no source is retained.
 // packet_lane needs 16 bytes; either packet view entry needs 64 bytes.
 extern "C" u64 packet_lane(MoveLocation src, u8 lane, u8 gpr, address output) on cpu;
@@ -790,3 +770,39 @@ struct ScalarValueEncoding {
 extern "C" ScalarValueEncoding emit_scalar_value(Node source,
     ScalarValueHost host, address output) on cpu
     requires nonzero(host.ir.inspect) requires nonzero(host.location) requires nonzero(host.scalar);
+
+
+enum MapRangePart:u32 {
+    Enter=0; PacketBounds=1; PacketCollect=2; PacketAdvance=3; PacketBackEdge=4;
+    PacketTail=5; ScalarBounds=6; ScalarSelection=7; ScalarAdvance=8; ScalarBackEdge=9; Exit=10;
+};
+enum MapRangeBody:u32 { Packet=0; Scalar=1; TileInput=2; TilePhases=3; };
+struct MapRangeInput {
+    address packet;
+    usize binding;
+    u32 word;
+    u32 selected;
+    u32 frame;
+    u32 slots;
+    u32 buffer_bytes;
+    u32 stride_field;
+    u32 tile_scope;
+    u32 has_phases;
+};
+struct MapRangeBuffer { address image; u64 end; };
+struct MapRangeEntry { u64 end; u32 stack_bytes; };
+struct MapRangeObservation { u64 start; u64 end; usize binding; u32 value; MapRangePart part; };
+struct MapRangeHost {
+    address context;
+    cfn<MapRangeEntry,address,u32> enter;
+    cfn<u64,address,u32> leave;
+    cfn<MapRangeBuffer,address,u64> reserve;
+    cfn<void,address,u64> commit;
+    cfn<u32,address,MapRangeBody,address> body;
+    cfn<void,address,MapRangeObservation> observe;
+};
+// The emitter starts with an empty code buffer. A reserved image is lent only
+// until the bytes are committed. The host keeps any diagnostic from body.
+extern "C" u32 emit_map_range(MapRangeInput input, MapRangeHost host) on cpu
+    requires nonzero(host.enter) requires nonzero(host.leave) requires nonzero(host.reserve)
+    requires nonzero(host.commit) requires nonzero(host.body) requires nonzero(host.observe);

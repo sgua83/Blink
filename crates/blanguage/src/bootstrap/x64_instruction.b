@@ -2496,7 +2496,13 @@ u64 range_step_at(u64 at, u8 reg, u8 count) on cpu {
     return immediate + 1u64;
 }
 
-extern "C" ScalarRangePrefix scalar_range_prefix(address image, u64 begin, u32 selected,
+struct ScalarRangePrefix {
+    u64 end;
+    u64 exit_field;
+    u64 skip_field;
+};
+
+ScalarRangePrefix scalar_range_prefix(address image, u64 begin, u32 selected,
     u32 data_offset, u32 stride_offset, u32 word) on cpu {
     u64 base = address_bits(image);
     u64 exit_field = range_exit_field(base + begin, false);
@@ -2528,7 +2534,12 @@ extern "C" RangeEnd finish_range(address image, u64 at, u64 begin, u64 exit_fiel
     return RangeEnd(back_edge, end);
 }
 
-extern "C" SparseRangeEncoding sparse_collect(u32 data_offset, u32 stride_offset,
+struct SparseRangeEncoding {
+    u64 length;
+    u64 tail_field;
+};
+
+SparseRangeEncoding sparse_collect(u32 data_offset, u32 stride_offset,
     u32 word, u32 slots, address output) on cpu {
     u64 start = address_bits(output);
     u64 collect = register_instruction(start, u16(0x31), u8(0), false, u8(1), u8(1));
@@ -2548,7 +2559,8 @@ extern "C" SparseRangeEncoding sparse_collect(u32 data_offset, u32 stride_offset
     return SparseRangeEncoding(back + 4u64 - start, tail - start);
 }
 
-extern "C" u64 sparse_tail(u32 slots, address output) on cpu {
+// Restore the first pending index when the final group was incomplete.
+u64 sparse_tail(u32 slots, address output) on cpu {
     u64 start = address_bits(output);
     u64 cursor = register_instruction(start, u16(0x85), u8(0), false, u8(1), u8(1));
     u64 empty = condition_field(cursor, u8(0x84));
@@ -4892,4 +4904,91 @@ extern "C" ScalarValueEncoding emit_scalar_value(Node source,
     BinaryEncoding emitted = value_select(dst, first, second, right, scalar.width / 8,
         scalar.kind == ScalarKind::Signed, output);
     return value_encoding(emitted, second.value, false, right.value, scalar.width == 64);
+}
+
+
+void map_range_part(MapRangeHost host, MapRangePart part, u64 start, u64 end) on cpu
+    requires nonzero(host.observe) {
+    host.observe(host.context, MapRangeObservation(start, end, usize(0), 0, part));
+}
+
+u64 close_map_loop(MapRangeHost host, u64 begin, u64 exit_field, u64 skip_field, u8 step,
+    MapRangePart advance, MapRangePart back_edge) on cpu
+    requires nonzero(host.reserve) requires nonzero(host.commit) requires nonzero(host.observe) {
+    MapRangeBuffer buffer = host.reserve(host.context, 8u64);
+    RangeEnd range = finish_range(buffer.image, buffer.end, begin, exit_field, skip_field, step);
+    host.commit(host.context, range.end);
+    if (range.back_edge != buffer.end) {
+        map_range_part(host, advance, buffer.end, range.back_edge);
+    }
+    map_range_part(host, back_edge, range.back_edge, range.end);
+    return range.end;
+}
+
+bool emit_map_packet(MapRangeInput input, MapRangeHost host, u32 data, u32 stride) on cpu
+    requires nonzero(host.reserve) requires nonzero(host.commit)
+    requires nonzero(host.body) requires nonzero(host.observe) {
+    bool sparse = input.selected != 0;
+    MapRangeBuffer buffer = host.reserve(host.context, sparse ? 96u64 : 16u64);
+    u64 begin = buffer.end;
+    address output = unsafe_address(address_bits(buffer.image) + begin);
+    u64 tail = 0u64;
+    if (sparse) {
+        SparseRangeEncoding encoded = sparse_collect(data, stride, input.word, input.slots, output);
+        u64 end = begin + encoded.length;
+        host.commit(host.context, end);
+        host.observe(host.context, MapRangeObservation(begin, end, input.binding, input.word, MapRangePart::PacketCollect));
+        tail = begin + encoded.tail_field;
+    } else {
+        u64 end = begin + range_bounds(true, output);
+        host.commit(host.context, end);
+        map_range_part(host, MapRangePart::PacketBounds, begin, end);
+        tail = end - 4u64;
+    }
+    if (host.body(host.context, MapRangeBody::Packet, input.packet) == 0) { return false; }
+    close_map_loop(host, begin, tail, 0u64, sparse ? u8(0) : u8(4),
+        MapRangePart::PacketAdvance, MapRangePart::PacketBackEdge);
+    if (sparse) {
+        MapRangeBuffer tail_buffer = host.reserve(host.context, 16u64);
+        address tail_output = unsafe_address(address_bits(tail_buffer.image) + tail_buffer.end);
+        u64 end = tail_buffer.end + sparse_tail(input.slots, tail_output);
+        host.commit(host.context, end);
+        map_range_part(host, MapRangePart::PacketTail, tail_buffer.end, end);
+    }
+    return true;
+}
+
+extern "C" u32 emit_map_range(MapRangeInput input, MapRangeHost host) on cpu
+    requires nonzero(host.enter) requires nonzero(host.leave) requires nonzero(host.reserve)
+    requires nonzero(host.commit) requires nonzero(host.body) requires nonzero(host.observe) {
+    MapRangeEntry entry = host.enter(host.context, input.frame);
+    host.observe(host.context, MapRangeObservation(0u64, entry.end, usize(0), input.frame, MapRangePart::Enter));
+    u32 data = u32(input.binding) * input.buffer_bytes;
+    u32 stride = data + input.stride_field;
+    if (address_bits(input.packet) != 0u64 && !emit_map_packet(input, host, data, stride)) {
+        return entry.stack_bytes;
+    }
+
+    MapRangeBuffer buffer = host.reserve(host.context, 64u64);
+    ScalarRangePrefix prefix = scalar_range_prefix(buffer.image, buffer.end, input.selected, data, stride, input.word);
+    host.commit(host.context, prefix.end);
+    u64 bounds_end = prefix.exit_field + 4u64;
+    map_range_part(host, MapRangePart::ScalarBounds, buffer.end, bounds_end);
+    if (input.selected != 0) {
+        host.observe(host.context, MapRangeObservation(bounds_end, prefix.end, input.binding, input.word,
+            MapRangePart::ScalarSelection));
+    }
+    u8 step = u8(0);
+    if (input.has_phases != 0) {
+        if (host.body(host.context, MapRangeBody::TilePhases, address()) == 0) { return entry.stack_bytes; }
+    } else {
+        if (input.tile_scope != 0) { host.body(host.context, MapRangeBody::TileInput, address()); }
+        if (host.body(host.context, MapRangeBody::Scalar, address()) == 0) { return entry.stack_bytes; }
+        step = u8(1);
+    }
+    u64 exit = close_map_loop(host, buffer.end, prefix.exit_field, prefix.skip_field, step,
+        MapRangePart::ScalarAdvance, MapRangePart::ScalarBackEdge);
+    u64 end = host.leave(host.context, input.frame);
+    host.observe(host.context, MapRangeObservation(exit, end, usize(0), input.frame, MapRangePart::Exit));
+    return entry.stack_bytes;
 }

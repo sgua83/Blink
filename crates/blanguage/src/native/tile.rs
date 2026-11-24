@@ -280,14 +280,14 @@ impl Emitter<'_> {
         }
     }
     pub(super) fn tile_phases(
-        &mut self, phases: Vec<TilePhase<'_>>, inputs: &crate::ir::dataflow::InputFragments,
+        &mut self, phases: &[TilePhase<'_>], inputs: &crate::ir::dataflow::InputFragments,
     ) -> Result<(), &'static str> {
         let start = self.code.len();
         let storage_offset = self.tile_base_slot();
         self.copy(Location::Stack(storage_offset), Location::Gpr(3));
         self.parallel_abi(start, ParallelRangePart::TileBase { storage_offset });
         self.tile_input(inputs);
-        for (phase_index, phase) in phases.into_iter().enumerate() {
+        for (phase_index, phase) in phases.iter().enumerate() {
             let start = self.code.len();
             self.copy(Location::Gpr(3), Location::Stack(storage_offset));
             self.parallel_abi(start, ParallelRangePart::TilePhaseEnter { phase: phase_index });

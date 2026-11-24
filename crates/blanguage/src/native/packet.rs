@@ -114,18 +114,7 @@ impl From<PacketPlace> for operands::MoveLocation {
         }
     }
 }
-#[repr(C)]
-struct SparseRangeEncoding {
-    length: u64,
-    tail_field: u64,
-}
-
 unsafe extern "C" {
-    #[link_name = "bootstrap.x64_instruction::sparse_collect"]
-    fn encode_sparse_collect(data_offset: u32, stride_offset: u32, word: u32, slots: u32,
-        output: *mut u8) -> SparseRangeEncoding;
-    #[link_name = "bootstrap.x64_instruction::sparse_tail"]
-    fn encode_sparse_tail(slots: u32, output: *mut u8) -> u64;
     #[link_name = "bootstrap.x64_instruction::emit_packet_body"]
     fn emit_packet_body(context: PacketBodySlot, count: usize, sparse: u32, slots: u32, host: PacketBodyHost);
 }
@@ -332,39 +321,8 @@ unsafe extern "C" fn packet_body_step(slot: PacketBodySlot, index: usize) -> Pac
 }
 
 impl Emitter<'_> {
-    pub(super) fn packet_loop(&mut self, plan: &Plan<'_>, allocation: &PacketAllocation) -> Result<(), &'static str> {
-        let begin = self.code.len();
-        let sparse = self.stage.selection.is_some();
-        let tail = if let Some(selection) = self.stage.selection {
-            let data = selection.binding as u32 * BUFFER_BYTES;
-            self.code.reserve(96);
-            let encoding = unsafe {
-                let encoding = encode_sparse_collect(data, data + BUFFER_STRIDE, selection.word,
-                    self.frame.end as u32, self.code.as_mut_ptr().add(begin));
-                self.code.set_len(begin + encoding.length as usize);
-                encoding
-            };
-            self.parallel_abi(begin, crate::native::ParallelRangePart::PacketCollect { binding: selection.binding, offset: selection.word });
-            begin + encoding.tail_field as usize
-        } else {
-            let tail = self.range_bounds(true);
-            self.parallel_abi(begin, crate::native::ParallelRangePart::PacketBounds);
-            tail
-        };
-        self.packet_block(&plan.code, allocation)?;
-        let start = self.code.len();
-        let back_edge = self.finish_range(begin, tail, 0, if sparse { 0 } else { 4 });
-        if back_edge != start {
-            self.parallel_abi_range(start..back_edge, crate::native::ParallelRangePart::PacketAdvance);
-        }
-        self.parallel_abi(back_edge, crate::native::ParallelRangePart::PacketBackEdge);
-        if sparse {
-            let start = self.code.len();
-            let slots = self.frame.end as u32;
-            self.emit_bytes(16, |output| unsafe { encode_sparse_tail(slots, output) });
-            self.parallel_abi(start, crate::native::ParallelRangePart::PacketTail);
-        }
-        Ok(())
+    pub(super) fn emit_packet_plan(&mut self, plan: &Plan<'_>, allocation: &PacketAllocation) -> Result<(), &'static str> {
+        self.packet_block(&plan.code, allocation)
     }
 
     fn packet_block(&mut self, code: &[Step<'_>], allocation: &PacketAllocation) -> Result<(), &'static str> {
