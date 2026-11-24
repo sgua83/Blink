@@ -31,9 +31,7 @@ impl Emitter<'_> {
         self.next = reservation.next;
         self.current_label = reservation.write_label;
         for (word, value) in &a.values {
-            let scalar = self.stage.registers[*value];
-            let raw = self.raw_bits(*value);
-            self.store_raw_buffer(scalar, a.target, reservation.ticket, *word, raw);
+            self.store_buffer(a.target, reservation.ticket, *word, *value);
         }
         let finish = reservation.finish;
         self.emit_control(4, |body| unsafe { next_control_block(finish, finish, 1, body) });

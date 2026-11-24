@@ -886,6 +886,25 @@ extern "C" u64 select_words(address body, u64 at, u32 result_type, u32 result,
     return words_five(body, at, 169, result_type, result, condition, yes, no);
 }
 
+extern "C" PageAddress prepare_page(PageInputs input, u32 result_pointer, ScalarHost host) on cpu
+    requires nonzero(host.constant) requires nonzero(host.type_id) requires nonzero(host.ids) {
+    address context = host.context;
+    u32 zero = 0;
+    u32 one = 0;
+    if (input.descriptor != 0) {
+        zero = host.constant(context, BuiltinScalar::U32, 0u64);
+        one = host.constant(context, BuiltinScalar::U32, 1u64);
+    }
+    u32 high_shift = host.constant(context, BuiltinScalar::U32, 32u64);
+    u32 page_shift = host.constant(context, BuiltinScalar::U32, 3u64);
+    u32 page_bytes = host.constant(context, BuiltinScalar::U32, u64(input.page_bytes));
+    u32 word = input.has_word == 0 ? 0 : host.constant(context, BuiltinScalar::U32, u64(input.word));
+    return PageAddress(host.type_id(context, BuiltinScalar::U32), host.type_id(context, BuiltinScalar::U64),
+        input.descriptor_pointer, input.page_pointer, result_pointer, input.descriptor, input.low,
+        input.high, input.stride, input.index, word, input.extra, zero, one, high_shift, page_shift,
+        page_bytes, host.ids(context, 0));
+}
+
 struct PageOrigin { u64 words; u32 next; u32 table; u32 stride; u32 field; };
 
 u64 dataset_header_word(address body, u64 at, PageAddress input, u32 field, u32 pointer, u32 value) on cpu {
@@ -1134,13 +1153,6 @@ extern "C" PayloadWrite typed_payload_read(PayloadEmission input, PayloadResult 
         result.id, read.value), read.next);
 }
 
-extern "C" u64 payload_write_bits(u32 type_id, u32 result, u32 value, u32 one, u32 zero, address body) on cpu {
-    if (one != 0) {
-        return select_words(body, 0u64, type_id, result, value, one, zero);
-    }
-    return words_three(body, 0u64, 124, type_id, result, value);
-}
-
 u32 uniform_word(inout StageCursor out, UniformRead input, u32 word) on cpu {
     u32 pointer = out.next;
     u32 value = pointer + 1;
@@ -1203,6 +1215,108 @@ extern "C" PayloadWrite payload_write(PayloadEmission input, u32 value, address 
         }
     }
     return PayloadWrite(out.words, out.next);
+}
+
+extern "C" u32 encode_raw_bits(BuiltinScalar scalar, u32 value, MemoryHost host) on cpu
+    requires nonzero(host.scalars.constant) requires nonzero(host.scalars.type_id)
+    requires nonzero(host.scalars.ids) requires nonzero(host.scalars.reserve)
+    requires nonzero(host.finish_body) {
+    BuiltinScalar raw = unsigned_scalar(scalar_definition(scalar).width);
+    if (scalar == raw) { return value; }
+    address context = host.scalars.context;
+    u32 bits = host.scalars.ids(context, 1);
+    u32 type_id = host.scalars.type_id(context, raw);
+    u64 words = 0u64;
+    if (scalar == BuiltinScalar::Bool) {
+        u32 one = host.scalars.constant(context, BuiltinScalar::U32, 1u64);
+        u32 zero = host.scalars.constant(context, BuiltinScalar::U32, 0u64);
+        address body = host.scalars.reserve(context, 6u64, 0u64).body;
+        words = select_words(body, 0u64, type_id, bits, value, one, zero);
+    } else {
+        address body = host.scalars.reserve(context, 4u64, 0u64).body;
+        words = words_three(body, 0u64, 124, type_id, bits, value);
+    }
+    host.finish_body(context, words);
+    return bits;
+}
+
+struct PhysicalShape { BuiltinScalar raw; BuiltinScalar unit; u32 bytes; u32 count; };
+
+PhysicalShape physical_shape(BuiltinScalar scalar) on cpu {
+    u32 width = scalar_definition(scalar).width;
+    u32 unit = width > 32 ? 32 : width;
+    return PhysicalShape(unsigned_scalar(width), unsigned_scalar(unit), unit / 8, width == 64 ? 2 : 1);
+}
+
+PageAddressResult locate_scalar(PageInputs input, PhysicalShape shape, MemoryHost host) on cpu
+    requires nonzero(host.scalars.constant) requires nonzero(host.scalars.type_id)
+    requires nonzero(host.scalars.ids) requires nonzero(host.scalars.reserve)
+    requires nonzero(host.pointer_type) requires nonzero(host.finish_body) {
+    address context = host.scalars.context;
+    u32 step = shape.count == 2 ? host.scalars.constant(context, BuiltinScalar::U64, u64(shape.bytes)) : 0;
+    PageAddress page = prepare_page(input, host.pointer_type(context, shape.unit), host.scalars);
+    address body = host.scalars.reserve(context, shape.count == 2 ? 118u64 : 109u64, 0u64).body;
+    PageAddressResult range = page_address(page, step, body);
+    host.finish_body(context, range.words);
+    host.scalars.ids(context, range.next - page.next);
+    return range;
+}
+
+PayloadEmission scalar_payload(PhysicalShape shape, ScalarHost host) on cpu
+    requires nonzero(host.type_id) requires nonzero(host.ids) {
+    return PayloadEmission(PayloadAccess::Physical, host.type_id(host.context, shape.raw),
+        host.type_id(host.context, shape.unit), shape.bytes, shape.count, host.ids(host.context, 0));
+}
+
+extern "C" u32 physical_scalar_read(PhysicalAccess input, MemoryHost host) on cpu
+    requires nonzero(host.scalars.constant) requires nonzero(host.scalars.type_id)
+    requires nonzero(host.scalars.ids) requires nonzero(host.scalars.reserve)
+    requires nonzero(host.pointer_type) requires nonzero(host.finish_body) {
+    address context = host.scalars.context;
+    PhysicalShape shape = physical_shape(input.scalar);
+    PageAddressResult range = locate_scalar(input.page, shape, host);
+    u32 high = shape.count == 2 ? host.scalars.constant(context, BuiltinScalar::U32, 32u64) : 0;
+    array<u32,2> pointers = array<u32,2>(range.pointer, range.second);
+    array<u32,2> shifts = array<u32,2>(0, high);
+    PayloadEmission access = scalar_payload(shape, host.scalars);
+    address body = host.scalars.reserve(context, 20u64 * u64(shape.count), 0u64).body;
+    PayloadRead raw = payload_read(access, address_of(pointers[0]), address_of(shifts[0]), body);
+    host.finish_body(context, raw.words);
+    host.scalars.ids(context, raw.next - access.next);
+    if (input.value != 0) {
+        u32 zero = input.scalar == BuiltinScalar::Bool ? host.scalars.constant(context, BuiltinScalar::U32, 0u64) : 0;
+        u32 next = host.scalars.ids(context, 0);
+        u32 value = raw.value;
+        PayloadEmission materialize = PayloadEmission(PayloadAccess::Words, access.raw_type, access.raw_type,
+            shape.count * shape.bytes, 1, next);
+        PayloadResult result = PayloadResult(input.value_type, input.value, zero);
+        address output = host.scalars.reserve(context, 5u64, 0u64).body;
+        PayloadWrite written = typed_payload_read(materialize, result, address_of(value), address_of(shifts[0]), output);
+        host.finish_body(context, written.words);
+        host.scalars.ids(context, written.next - next);
+    }
+    return raw.value;
+}
+
+extern "C" void physical_scalar_write(PhysicalAccess input, MemoryHost host) on cpu
+    requires nonzero(host.scalars.constant) requires nonzero(host.scalars.type_id)
+    requires nonzero(host.scalars.ids) requires nonzero(host.scalars.reserve)
+    requires nonzero(host.pointer_type) requires nonzero(host.finish_body) {
+    address context = host.scalars.context;
+    PhysicalShape shape = physical_shape(input.scalar);
+    // Keep the existing value and address emission order for direct and indexed stores.
+    u32 value = input.value;
+    if (input.page.extra == 0) { value = encode_raw_bits(input.scalar, value, host); }
+    PageAddressResult range = locate_scalar(input.page, shape, host);
+    if (input.page.extra != 0) { value = encode_raw_bits(input.scalar, value, host); }
+    u32 high = shape.count == 2 ? host.scalars.constant(context, BuiltinScalar::U32, 32u64) : 0;
+    array<u32,2> pointers = array<u32,2>(range.pointer, range.second);
+    array<u32,2> shifts = array<u32,2>(0, high);
+    PayloadEmission access = scalar_payload(shape, host.scalars);
+    address body = host.scalars.reserve(context, 14u64 * u64(shape.count), 0u64).body;
+    PayloadWrite written = payload_write(access, value, address_of(pointers[0]), address_of(shifts[0]), unsafe_address(0u64), body);
+    host.finish_body(context, written.words);
+    host.scalars.ids(context, written.next - access.next);
 }
 
 u32 packing_shift(inout StageCursor out, PackingHost host, u32 bits) on cpu

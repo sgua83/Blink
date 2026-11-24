@@ -462,6 +462,45 @@ enum PageSource {
 }
 
 #[repr(C)]
+struct PageInputs {
+    descriptor_pointer: u32,
+    page_pointer: u32,
+    descriptor: u32,
+    low: u32,
+    high: u32,
+    stride: u32,
+    index: u32,
+    word: u32,
+    has_word: u32,
+    extra: u32,
+    page_bytes: u32,
+}
+
+#[repr(C)]
+struct PhysicalAccess {
+    page: PageInputs,
+    scalar: ScalarCode,
+    value: u32,
+    value_type: u32,
+}
+
+#[repr(C)]
+struct MemoryHost {
+    scalars: ScalarHost,
+    pointer_type: unsafe extern "C" fn(*mut std::ffi::c_void, ScalarCode) -> u32,
+    finish_body: unsafe extern "C" fn(*mut std::ffi::c_void, u64),
+}
+
+unsafe extern "C" fn memory_pointer_type(context: *mut std::ffi::c_void, scalar: ScalarCode) -> u32 {
+    unsafe { &*context.cast::<Emitter<'_>>() }.physical_pointers.0[scalar as usize]
+}
+
+unsafe extern "C" fn memory_finish_body(context: *mut std::ffi::c_void, words: u64) {
+    let emitter = unsafe { &mut *context.cast::<Emitter<'_>>() };
+    unsafe { emitter.body.set_len(emitter.body.len() + words as usize); }
+}
+
+#[repr(C)]
 struct PageAddress {
     u32_type: u32,
     u64_type: u32,
@@ -1083,6 +1122,14 @@ unsafe extern "C" {
     fn scalar_unary(input: UnaryEmission, host: ScalarHost) -> ScalarWords;
     #[link_name = "bootstrap.spirv_envelope::scalar_math"]
     fn scalar_math(input: MathEmission, host: ScalarHost) -> ScalarWords;
+    #[link_name = "bootstrap.spirv_envelope::prepare_page"]
+    fn prepare_page(input: PageInputs, result_pointer: u32, host: ScalarHost) -> PageAddress;
+    #[link_name = "bootstrap.spirv_envelope::physical_scalar_read"]
+    fn physical_scalar_read(input: PhysicalAccess, host: MemoryHost) -> u32;
+    #[link_name = "bootstrap.spirv_envelope::physical_scalar_write"]
+    fn physical_scalar_write(input: PhysicalAccess, host: MemoryHost);
+    #[link_name = "bootstrap.spirv_envelope::encode_raw_bits"]
+    fn encode_raw_bits(scalar: ScalarCode, value: u32, host: MemoryHost) -> u32;
     #[link_name = "bootstrap.spirv_envelope::page_address"]
     fn page_address(input: PageAddress, step: u32, body: *mut u32) -> PageAddressResult;
     #[link_name = "bootstrap.spirv_envelope::summary_addresses"]
@@ -1101,8 +1148,6 @@ unsafe extern "C" {
         input: PayloadEmission, result: PayloadResult, operands: *const u32, shifts: *const u32,
         body: *mut u32,
     ) -> PayloadWrite;
-    #[link_name = "bootstrap.spirv_envelope::payload_write_bits"]
-    fn payload_write_bits(type_id: u32, result: u32, value: u32, one: u32, zero: u32, body: *mut u32) -> u64;
     #[link_name = "bootstrap.spirv_envelope::payload_write"]
     fn payload_write(
         input: PayloadEmission, value: u32, pointers: *const u32, shifts: *const u32,
@@ -1292,7 +1337,7 @@ struct Emitter<'a> {
     vec2_type: u32,
     push: u32,
     ptr_push_u32: u32,
-    physical_pointers: BTreeMap<Scalar, u32>,
+    physical_pointers: ScalarIds,
     ptr_table_u64: u32,
     u64_type: u32,
     index: u32,
@@ -1561,7 +1606,7 @@ impl Emitter<'_> {
         for (scalar, pointer) in [(Scalar::U32, ids.words32), (Scalar::U64, ids.words64),
                                   (Scalar::U8, ids.bytes), (Scalar::U16, ids.shorts)] {
             if pointer != 0 {
-                self.physical_pointers.insert(scalar, pointer);
+                self.physical_pointers.0[ScalarCode::from(scalar) as usize] = pointer;
             }
         }
         ids
@@ -1643,14 +1688,26 @@ impl Emitter<'_> {
     fn ty(&self, r: Reg) -> u32 {
         self.types[&self.stage.registers[r]]
     }
-    fn emit_scalar(&mut self, emit: impl FnOnce(ScalarHost) -> ScalarWords) -> u64 {
-        let words = emit(ScalarHost {
+    fn scalar_host(&mut self) -> ScalarHost {
+        ScalarHost {
             context: std::ptr::from_mut(self).cast(),
             constant: scalar_constant,
             type_id: scalar_type_id,
             ids: scalar_ids,
             reserve: scalar_reserve,
-        });
+        }
+    }
+
+    fn memory_host(&mut self) -> MemoryHost {
+        MemoryHost {
+            scalars: self.scalar_host(),
+            pointer_type: memory_pointer_type,
+            finish_body: memory_finish_body,
+        }
+    }
+
+    fn emit_scalar(&mut self, emit: impl FnOnce(ScalarHost) -> ScalarWords) -> u64 {
+        let words = emit(self.scalar_host());
         unsafe {
             self.body.set_len(self.body.len() + words.body as usize);
             self.decorations.set_len(self.decorations.len() + words.decorations as usize);
@@ -1714,28 +1771,25 @@ impl Emitter<'_> {
         }
     }
 
+    fn page_inputs(&self, source: PageSource, index: u32, word: Option<u32>, extra: u32) -> PageInputs {
+        let (descriptor, low, high, stride) = match source {
+            PageSource::Dataset(descriptor) => (descriptor, 0, 0, 0),
+            PageSource::View { low, high, stride } => (0, low, high, stride),
+        };
+        PageInputs {
+            descriptor_pointer: self.ptr_table_u64,
+            page_pointer: self.physical_pointers[&Scalar::U64],
+            descriptor, low, high, stride, index,
+            word: word.unwrap_or(0), has_word: u32::from(word.is_some()), extra, page_bytes: PAGE_BYTES,
+        }
+    }
+
     fn page_input(
         &mut self, unit: Scalar, source: PageSource, index: u32, word: Option<u32>, extra: u32,
     ) -> PageAddress {
-        let (descriptor, low, high, stride, zero, one) = match source {
-            PageSource::Dataset(descriptor) => (
-                descriptor, 0, 0, 0, self.constant(Scalar::U32, 0), self.constant(Scalar::U32, 1),
-            ),
-            PageSource::View { low, high, stride } => (0, low, high, stride, 0, 0),
-        };
-        PageAddress {
-            u32_type: self.types[&Scalar::U32],
-            u64_type: self.u64_type,
-            descriptor_pointer: self.ptr_table_u64,
-            page_pointer: self.physical_pointers[&Scalar::U64],
-            result_pointer: self.physical_pointers[&unit],
-            descriptor, low, high, stride, index, extra, zero, one,
-            high_shift: self.constant(Scalar::U32, 32),
-            page_shift: self.constant(Scalar::U32, 3),
-            page_bytes: self.constant(Scalar::U32, PAGE_BYTES),
-            word: word.map_or(0, |word| self.constant(Scalar::U32, word)),
-            next: self.next,
-        }
+        let input = self.page_inputs(source, index, word, extra);
+        let result_pointer = self.physical_pointers[&unit];
+        unsafe { prepare_page(input, result_pointer, self.scalar_host()) }
     }
     // 记录页不拆分记录。两端沿原物理地址与对齐复制全部字节。
     fn record_copy_input(
@@ -1895,10 +1949,8 @@ impl Emitter<'_> {
                     argument,
                 } => self.subgroup(*dst, *op, *value, *argument),
                 InstKind::ViewLoad { dst, address, index, stride, word } => {
-                    let scalar = self.stage.registers[*dst];
                     let source = self.view_source(address, *stride);
-                    let raw = self.load_physical(scalar, source, self.value(*index), *word, 0);
-                    self.from_words(*dst, &[raw], Self::raw_scalar(scalar));
+                    self.load_paged(*dst, source, self.value(*index), *word, 0);
                 }
                 InstKind::RayQuery { scene, origin, direction, minimum, maximum, cull_back_faces, result } => {
                     self.ray(*scene, origin, direction, *minimum, *maximum, *cull_back_faces, result);
@@ -1909,33 +1961,33 @@ impl Emitter<'_> {
                 | InstKind::StoreIndexed { source: IndexedSource::Pointer { .. }, .. } =>
                     return Err("CPU原生位置地址不能在GPU内核中使用"),
                 InstKind::LoadIndexed { dst, source, offset, word } => {
-                    let scalar = self.stage.registers[*dst];
-                    let raw = if let IndexedSource::Tile { tile, index } = source {
-                        self.tile_read(scalar, *tile, self.value(*index), *word, Some(self.value(*offset)))
+                    let offset = self.value(*offset);
+                    if let IndexedSource::Tile { tile, index } = source {
+                        let scalar = self.stage.registers[*dst];
+                        let raw = self.tile_read(scalar, *tile, self.value(*index), *word, Some(offset));
+                        self.from_words(*dst, &[raw], Self::raw_scalar(scalar));
                     } else {
                         let (page, index) = self.indexed_page(source);
-                        self.load_physical(scalar, page, index, *word, self.value(*offset))
-                    };
-                    self.from_words(*dst, &[raw], Self::raw_scalar(scalar));
+                        self.load_paged(*dst, page, index, *word, offset);
+                    }
                 }
                 InstKind::StoreIndexed { source, offset, word, value } => {
-                    let scalar = self.stage.registers[*value];
-                    let unit = Self::physical_unit(scalar);
-                    let count = scalar.size().div_ceil(4) as usize;
                     let offset = self.value(*offset);
-                    let pointers = if let IndexedSource::Tile { tile, index } = source {
+                    if let IndexedSource::Tile { tile, index } = source {
+                        let scalar = self.stage.registers[*value];
+                        let unit = Self::physical_unit(scalar);
+                        let count = scalar.size().div_ceil(4) as usize;
                         let mut pointers = [0; 2];
                         for (part, pointer) in pointers[..count].iter_mut().enumerate() {
                             let slot = self.stage.shared_word(*tile, *word + part as u32 * 4);
                             *pointer = self.tile_word_address(slot, self.value(*index), Some(offset)).0;
                         }
-                        pointers
+                        let raw = self.raw_bits(*value);
+                        self.store_raw(scalar, unit, &pointers[..count], raw, true);
                     } else {
                         let (page, index) = self.indexed_page(source);
-                        self.paged_pointers(unit, page, index, *word, offset, count == 2)
-                    };
-                    let raw = self.raw_bits(*value);
-                    self.store_raw(scalar, unit, &pointers[..count], raw, true);
+                        self.store_paged(*value, page, index, *word, offset);
+                    }
                 }
                 InstKind::FunctionAddress(..) => return Err("CPU函数符号地址不能在GPU内核中生成"),
                 InstKind::Constant(dst, s, bits) if s.is_float() => {
@@ -1969,14 +2021,11 @@ impl Emitter<'_> {
                 InstKind::StoreLocalIndexed { base, index, word, value, .. } =>
                     self.store_private(*value, *base, Some(*index), *word),
                 InstKind::Load { dst, binding, index, word } => {
-                    let scalar = self.stage.registers[*dst];
-                    let raw = self.load_raw_buffer(scalar, *binding, self.value(*index), *word);
-                    self.from_words(*dst, &[raw], Self::raw_scalar(scalar));
+                    let source = PageSource::Dataset(self.buffers[*binding]);
+                    self.load_paged(*dst, source, self.value(*index), *word, 0);
                 }
                 InstKind::Store { binding, index, word, value } => {
-                    let scalar = self.stage.registers[*value];
-                    let raw = self.raw_bits(*value);
-                    self.store_raw_buffer(scalar, *binding, self.value(*index), *word, raw);
+                    self.store_buffer(*binding, self.value(*index), *word, *value);
                 }
                 InstKind::Unary { dst, op, a } => {
                     let input = UnaryEmission {
@@ -2179,27 +2228,9 @@ impl Emitter<'_> {
     }
 
     fn raw_bits(&mut self, value: Reg) -> u32 {
-        let scalar = self.stage.registers[value];
+        let scalar = self.stage.registers[value].into();
         let value = self.value(value);
-        let raw = Self::raw_scalar(scalar);
-        if scalar == raw {
-            return value;
-        }
-        let bits = self.id();
-        let (one, zero) = if scalar == Scalar::Bool {
-            (self.constant(Scalar::U32, 1), self.constant(Scalar::U32, 0))
-        } else {
-            (0, 0)
-        };
-        let at = self.body.len();
-        self.body.reserve(6);
-        unsafe {
-            let words = payload_write_bits(
-                self.types[&raw], bits, value, one, zero, self.body.as_mut_ptr().add(at),
-            );
-            self.body.set_len(at + words as usize);
-        }
-        bits
+        unsafe { encode_raw_bits(scalar, value, self.memory_host()) }
     }
 
     fn write_payload(&mut self, input: PayloadEmission, value: u32, pointers: &[u32], shifts: &[u32; 8], output: *mut u32) {
@@ -2237,23 +2268,38 @@ impl Emitter<'_> {
         Self::raw_scalar(if scalar.size() < 4 { scalar } else { Scalar::U32 })
     }
 
-    fn load_physical(&mut self, scalar: Scalar, source: PageSource, index: u32, word: u32, extra: u32) -> u32 {
-        let unit = Self::physical_unit(scalar);
-        let count = scalar.size().div_ceil(4) as usize;
-        let pointers = self.paged_pointers(unit, source, index, word, extra, count == 2);
-        self.load_raw(scalar, unit, &pointers[..count], true)
+    fn load_paged(&mut self, dst: Reg, source: PageSource, index: u32, word: u32, extra: u32) {
+        let input = PhysicalAccess {
+            page: self.page_inputs(source, index, Some(word), extra),
+            scalar: self.stage.registers[dst].into(),
+            value: self.value(dst),
+            value_type: self.ty(dst),
+        };
+        unsafe { physical_scalar_read(input, self.memory_host()); }
     }
 
     fn load_raw_buffer(&mut self, scalar: Scalar, binding: usize, index: u32, word: u32) -> u32 {
-        self.load_physical(scalar, PageSource::Dataset(self.buffers[binding]), index, word, 0)
+        let input = PhysicalAccess {
+            page: self.page_inputs(PageSource::Dataset(self.buffers[binding]), index, Some(word), 0),
+            scalar: scalar.into(), value: 0, value_type: 0,
+        };
+        unsafe { physical_scalar_read(input, self.memory_host()) }
     }
 
-    fn store_raw_buffer(&mut self, scalar: Scalar, binding: usize, index: u32, word: u32, value: u32) {
-        let unit = Self::physical_unit(scalar);
-        let count = scalar.size().div_ceil(4) as usize;
-        let pointers = self.paged_pointers(unit, PageSource::Dataset(self.buffers[binding]), index, word, 0, count == 2);
-        self.store_raw(scalar, unit, &pointers[..count], value, true);
+    fn store_paged(&mut self, value: Reg, source: PageSource, index: u32, word: u32, extra: u32) {
+        let input = PhysicalAccess {
+            page: self.page_inputs(source, index, Some(word), extra),
+            scalar: self.stage.registers[value].into(),
+            value: self.value(value),
+            value_type: 0,
+        };
+        unsafe { physical_scalar_write(input, self.memory_host()); }
     }
+
+    fn store_buffer(&mut self, binding: usize, index: u32, word: u32, value: Reg) {
+        self.store_paged(value, PageSource::Dataset(self.buffers[binding]), index, word, 0);
+    }
+
     fn ray(
         &mut self,
         scene: usize,
@@ -2494,7 +2540,7 @@ fn emit_shader(
         vec2_type: 0,
         push: 0,
         ptr_push_u32: 0,
-        physical_pointers: BTreeMap::new(),
+        physical_pointers: ScalarIds::default(),
         ptr_table_u64: 0,
         u64_type: 0,
         index: 0,

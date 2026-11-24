@@ -258,6 +258,21 @@ struct PageAddress {
     u32 next;
 };
 struct PageAddressResult { u64 words; u32 next; u32 pointer; u32 second; };
+struct PageInputs {
+    u32 descriptor_pointer;
+    u32 page_pointer;
+    u32 descriptor;
+    u32 low;
+    u32 high;
+    u32 stride;
+    u32 index;
+    u32 word;
+    u32 has_word;
+    u32 extra;
+    u32 page_bytes;
+};
+extern "C" PageAddress prepare_page(PageInputs input, u32 result_pointer, ScalarHost host) on cpu
+    requires nonzero(host.constant) requires nonzero(host.type_id) requires nonzero(host.ids);
 // A descriptor ID selects the dataset header. Otherwise the input contains the
 // view page table and stride IDs. The extra byte offset is an optional ID.
 // A nonzero step ID adds a second pointer from the same physical address.
@@ -284,6 +299,30 @@ struct PayloadEmission {
 struct PayloadRead { u64 words; u32 next; u32 value; };
 struct PayloadWrite { u64 words; u32 next; };
 struct PayloadResult { u32 type_id; u32 id; u32 compare_zero; };
+struct PhysicalAccess {
+    PageInputs page;
+    BuiltinScalar scalar;
+    u32 value;
+    u32 value_type;
+};
+struct MemoryHost {
+    ScalarHost scalars;
+    cfn<u32,address,BuiltinScalar> pointer_type;
+    cfn<void,address,u64> finish_body;
+};
+// An absent result ID returns a raw payload to the existing shared-word consumer.
+extern "C" u32 physical_scalar_read(PhysicalAccess input, MemoryHost host) on cpu
+    requires nonzero(host.scalars.constant) requires nonzero(host.scalars.type_id)
+    requires nonzero(host.scalars.ids) requires nonzero(host.scalars.reserve)
+    requires nonzero(host.pointer_type) requires nonzero(host.finish_body);
+extern "C" void physical_scalar_write(PhysicalAccess input, MemoryHost host) on cpu
+    requires nonzero(host.scalars.constant) requires nonzero(host.scalars.type_id)
+    requires nonzero(host.scalars.ids) requires nonzero(host.scalars.reserve)
+    requires nonzero(host.pointer_type) requires nonzero(host.finish_body);
+extern "C" u32 encode_raw_bits(BuiltinScalar scalar, u32 value, MemoryHost host) on cpu
+    requires nonzero(host.scalars.constant) requires nonzero(host.scalars.type_id)
+    requires nonzero(host.scalars.ids) requires nonzero(host.scalars.reserve)
+    requires nonzero(host.finish_body);
 struct UniformRead {
     u32 next;
     u32 push_pointer;
@@ -325,7 +364,6 @@ extern "C" PayloadRead payload_read(PayloadEmission input, address operands, add
 // Result emission adds up to five words. compare_zero is the zero constant ID for a bool result.
 extern "C" PayloadWrite typed_payload_read(PayloadEmission input, PayloadResult result, address operands, address shifts, address body) on cpu;
 // Boolean storage supplies its one and zero constant IDs. Other inputs use a same-width bitcast.
-extern "C" u64 payload_write_bits(u32 type_id, u32 result, u32 value, u32 one, u32 zero, address body) on cpu;
 extern "C" PayloadWrite payload_write(PayloadEmission input, u32 value, address pointers, address shifts, address output, address body) on cpu;
 
 extern "C" u64 copy_shader_value(address body, u64 at, u32 type_id, u32 result, u32 value) on cpu;
