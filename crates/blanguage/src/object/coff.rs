@@ -1198,7 +1198,7 @@ impl<'a, Input: AsRef<[u8]> + ?Sized> Reader<'a, Input> {
         Ok((name, kind, definitions))
     }
 
-    pub(super) fn for_each_definition(&self, mut consume: impl FnMut(&str) -> Result<()>) -> Result<()> {
+    pub(super) fn for_each_definition(&self, mut consume: impl FnMut(&'a str) -> Result<()>) -> Result<()> {
         let input = ReadBytes::new(self.bytes.as_ref());
         let table = unsafe { read_symbols(input) };
         table.error.check()?;

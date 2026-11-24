@@ -13,11 +13,11 @@ pub(super) fn archive_with_imports(
 ) -> Result<Vec<u8>> {
     let count = unsafe { order_import_keys(keys.as_mut_ptr(), keys.len() as u64) } as usize;
     let imported = keys.into_iter().take(count).map(object::native_import_member).collect::<Result<Vec<_>>>()?;
-    let slots = imported.iter().enumerate().map(|(index, (member, slot))| {
-        (members.len() + index, &member.name[slot.clone()])
+    let slots = imported.iter().enumerate().map(|(index, member)| {
+        (members.len() + index, member.symbol())
     });
     let names = symbols.iter().map(|(index, name)| (*index, name.as_ref())).chain(slots);
-    let views = members.iter().map(HostMember::view).chain(imported.iter().map(|(member, _)| member.view()));
+    let views = members.iter().map(HostMember::view).chain(imported.iter().map(|member| member.view()));
     object::library_bytes(views, names)
 }
 

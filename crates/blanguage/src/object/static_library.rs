@@ -132,7 +132,11 @@ pub(crate) struct MemberView<'a> {
     build: Option<&'a coff::HostBuildSection>,
 }
 
-impl MemberView<'_> {
+impl<'a> MemberView<'a> {
+    pub(crate) fn new(name: &'a str, bytes: &'a [u8]) -> Self {
+        Self { name, bytes, build: None }
+    }
+
     fn output_length(&self) -> usize {
         self.build.map_or(self.bytes.len(), |build| build.length(self.bytes))
     }
@@ -161,11 +165,8 @@ impl HostMember<'_> {
 }
 
 impl Member {
-    pub(crate) fn new(name:String,bytes:Vec<u8>)->Self {
-        Self { name, bytes: ObjectBytes::generated(bytes) }
-    }
     pub(crate) fn view(&self) -> MemberView<'_> {
-        MemberView { name: &self.name, bytes: &self.bytes, build: None }
+        MemberView::new(&self.name, &self.bytes)
     }
 
     pub(crate) fn emit_host_members<'a>(

@@ -1,5 +1,6 @@
 //! Native import members use the same binding and COFF writer as other objects.
 use super::*;
+use crate::object::static_library::MemberView;
 use std::{mem::MaybeUninit, ops::Range};
 
 #[repr(C)]
@@ -51,7 +52,23 @@ impl Payload<'_> {
     }
 }
 
-pub(crate) fn member(import: ImportKey<'_>) -> Result<(LibraryMember, Range<usize>)> {
+pub(crate) struct NativeImportMember {
+    name: String,
+    bytes: Vec<u8>,
+    slot: Range<usize>,
+}
+
+impl NativeImportMember {
+    pub(crate) fn view(&self) -> MemberView<'_> {
+        MemberView::new(&self.name, &self.bytes)
+    }
+
+    pub(crate) fn symbol(&self) -> &str {
+        &self.name[self.slot.clone()]
+    }
+}
+
+pub(crate) fn member(import: ImportKey<'_>) -> Result<NativeImportMember> {
     let input = NativeImportInput {
         dll: BindingBytes::new(import.dll().as_bytes()),
         name: BindingBytes::new(import.symbol().as_bytes()),
@@ -96,5 +113,5 @@ pub(crate) fn member(import: ImportKey<'_>) -> Result<(LibraryMember, Range<usiz
         name: BindingBytes::new(member[slot.clone()].as_bytes()), section: 0, value: 0, function: 0,
     };
     let bytes = encode_bound(&member[..slot.end], sections, bindings, &[definition], None)?;
-    Ok((LibraryMember::new(member, bytes), slot))
+    Ok(NativeImportMember { name: member, bytes, slot })
 }

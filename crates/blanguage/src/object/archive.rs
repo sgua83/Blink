@@ -134,7 +134,7 @@ pub(crate) fn runtime_fingerprint(libraries: &[String]) -> [u8; 32] {
 }
 
 pub(crate) fn compile(
-    native: Option<Vec<u8>>,
+    native: Vec<u8>,
     exports: Vec<String>,
     runtime: bool,
     worker: &crate::compiler::Worker,
@@ -142,17 +142,13 @@ pub(crate) fn compile(
 ) -> Result<Archive> {
     let libraries = if runtime { libraries.map_or_else(|| runtime_libraries(worker), Ok)? } else { Vec::new() };
     let mut symbols = Vec::new();
-    let mut members = Vec::new();
-    if let Some(bytes) = native {
-        super::coff::Reader::new(bytes.as_slice())?.for_each_definition(|symbol| {
-            symbols.push((0, symbol.to_owned()));
-            Ok(())
-        })?;
-        members.push(super::static_library::Member::new("entry.obj".into(), bytes));
-    }
-    let bytes = super::static_library::encode(
-        members.iter().map(|member| member.view()), symbols.iter().map(|(index, name)| (*index, name.as_str())),
-    )?;
+    super::coff::Reader::new(native.as_slice())?.for_each_definition(|symbol| {
+        symbols.push((0, symbol));
+        Ok(())
+    })?;
+    let members = std::iter::once(native.as_slice())
+        .map(|bytes| super::static_library::MemberView::new("entry.obj", bytes));
+    let bytes = super::static_library::encode(members, symbols.into_iter())?;
     Ok(Archive {
         bytes: super::ObjectBytes::generated(bytes),
         libraries,

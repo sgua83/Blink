@@ -279,7 +279,7 @@ pub(crate) fn compile_in(
     if let Some(resource) = &resources {
         exports.push(resource.symbol().to_owned());
     }
-    let archive = crate::object::compile_archive(Some(native), exports, true, worker, libraries)?;
+    let archive = crate::object::compile_archive(native, exports, true, worker, libraries)?;
     let mut object = crate::object::Object {
         name: program.name().into(),
         kind: crate::object::Kind::Library {
