@@ -427,6 +427,7 @@ fn instruction(value: &Inst) -> View {
         }
         InstKind::Atomic(value) => {
             view.tag = 10; view.a = value.word as usize; view.b = value.scalar.size() as usize;
+            view.c = usize::from(value.scalar.is_signed());
             view.first = Span::slice(value.result.as_slice()); view.second = Span::slice(value.offset.as_slice());
             view.left = Node::of(&value.target, Kind::Indexed); view.right = Node::of(&value.op, Kind::AtomicOp);
         }

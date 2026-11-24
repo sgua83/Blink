@@ -145,6 +145,14 @@ struct ScalarLocations<'a> {
 }
 
 impl ScalarLocations<'_> {
+    fn indexed_host(&self) -> IndexedAddressHost {
+        IndexedAddressHost {
+            values: self.host(), tile_stream: indexed_tile_stream,
+            buffer_bytes: BUFFER_BYTES, stride_field: BUFFER_STRIDE,
+            workgroup: self.stage.workgroup_width(),
+        }
+    }
+
     fn host(&self) -> ScalarValueHost {
         ScalarValueHost {
             ir: HOST, context: std::ptr::from_ref(self).cast(),
@@ -168,21 +176,18 @@ struct ScalarStorageHost {
     stride_field: u32,
 }
 
-#[repr(u32)]
-enum IndexedAddressMode { Base, Memory, Address }
-
 #[repr(C)]
 struct IndexedAddressHost {
     values: ScalarValueHost,
-    tile_stream: unsafe extern "C" fn(*const std::ffi::c_void, usize) -> u32,
+    tile_stream: unsafe extern "C" fn(*const std::ffi::c_void, usize, u32) -> u32,
     buffer_bytes: u32,
     stride_field: u32,
     workgroup: u32,
 }
 
-unsafe extern "C" fn indexed_tile_stream(context: *const std::ffi::c_void, tile: usize) -> u32 {
+unsafe extern "C" fn indexed_tile_stream(context: *const std::ffi::c_void, tile: usize, word: u32) -> u32 {
     let locations = unsafe { &*context.cast::<ScalarLocations<'_>>() };
-    locations.frame.tile_shared[&locations.stage.shared_word(tile, 0).aligned()]
+    locations.frame.tile_shared[&locations.stage.shared_word(tile, word).aligned()]
 }
 
 unsafe extern "C" fn value_local(context: *const std::ffi::c_void, local: usize) -> MoveLocation {
@@ -215,8 +220,10 @@ unsafe extern "C" {
     #[link_name = "bootstrap.x64_instruction::bit_copy"]
     fn scalar_bit_copy(from: ScalarEncoding, into: ScalarEncoding) -> u32;
     #[link_name = "bootstrap.x64_instruction::emit_indexed_operand"]
-    fn emit_indexed_operand(source: Node, offset: Reg, word: u32, mode: IndexedAddressMode,
+    fn emit_indexed_operand(source: Node, offset: Reg, word: u32, memory: u32,
         host: IndexedAddressHost, output: *mut u8) -> AddressEncoding;
+    #[link_name = "bootstrap.x64_instruction::emit_atomic"]
+    fn emit_atomic(instruction: Node, host: IndexedAddressHost, output: *mut u8) -> u64;
     #[link_name = "bootstrap.x64_instruction::emit_view_load"]
     fn emit_view_load(instruction: Node, host: ScalarValueHost, output: *mut u8) -> u64;
     #[link_name = "bootstrap.x64_instruction::emit_scalar_storage"]
@@ -270,35 +277,39 @@ impl Emitter<'_> {
         }
     }
 
-    fn indexed_operand(&mut self, source: &IndexedSource, offset: Reg, word: u32, mode: IndexedAddressMode) -> Memory {
+    fn indexed_operand(&mut self, source: &IndexedSource, offset: Reg, word: u32, memory: bool) -> Memory {
         let locations = ScalarLocations {
             allocation: &self.allocation,
             stage: self.stage,
             frame: &self.frame,
         };
-        let host = IndexedAddressHost {
-            values: locations.host(), tile_stream: indexed_tile_stream,
-            buffer_bytes: BUFFER_BYTES, stride_field: BUFFER_STRIDE,
-            workgroup: self.stage.workgroup_width(),
-        };
+        let host = locations.indexed_host();
         let start = self.code.len();
         self.code.reserve(160);
         unsafe {
-            let encoded = emit_indexed_operand(Node::indexed_source(source), offset, word, mode, host,
+            let encoded = emit_indexed_operand(Node::indexed_source(source), offset, word, u32::from(memory), host,
                 self.code.as_mut_ptr().add(start));
             self.code.set_len(start + encoded.length as usize);
             Memory::indexed(encoded.base, encoded.index, encoded.shift, encoded.offset)
         }
     }
 
+    pub(super) fn atomic(&mut self, inst: &Inst) {
+        let locations = ScalarLocations { allocation: &self.allocation, stage: self.stage, frame: &self.frame };
+        let host = locations.indexed_host();
+        let start = self.code.len();
+        self.code.reserve(312);
+        unsafe {
+            let length = emit_atomic(Node::instruction(inst), host, self.code.as_mut_ptr().add(start));
+            self.code.set_len(start + length as usize);
+        }
+    }
+
     pub(super) fn indexed_base(&mut self, source: &IndexedSource) {
-        self.indexed_operand(source, 0, 0, IndexedAddressMode::Base);
+        self.indexed_operand(source, 0, 0, false);
     }
     pub(super) fn indexed_memory(&mut self, source: &IndexedSource, offset: Reg, word: u32) -> Memory {
-        self.indexed_operand(source, offset, word, IndexedAddressMode::Memory)
-    }
-    pub(super) fn indexed_address(&mut self, source: &IndexedSource, offset: Reg, word: u32) {
-        self.indexed_operand(source, offset, word, IndexedAddressMode::Address);
+        self.indexed_operand(source, offset, word, true)
     }
     pub(super) fn scaled_memory(&mut self, base: u8, index: u8, stride: u32, offset: u32) -> Memory {
         self.emit_address(16, |output| unsafe { encode_scaled_memory(base, index, stride, offset, output) })

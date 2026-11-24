@@ -2772,6 +2772,17 @@ u64 store_split_words(u64 at, MoveLocation low, MoveLocation high, u8 source) on
     return store_bits(cursor, high, source, 4);
 }
 
+enum AtomicOperation:u32 {
+    Load=0; Store=1; Add=2; Sub=3; Exchange=4; CompareExchange=5;
+    Min=6; Max=7; And=8; Or=9; Xor=10;
+};
+enum AtomicStorage:u32 { Shared=0; Private=1; Split=2; };
+struct AtomicSequence {
+    MoveLocation low; MoveLocation high; MoveLocation first; MoveLocation second;
+    ScalarEncoding scalar;
+    AtomicOperation operation; AtomicStorage storage;
+};
+
 u64 atomic_split_at(u64 at, AtomicSequence input) on cpu {
     AtomicOperation operation = input.operation;
     if (operation == AtomicOperation::Load) {
@@ -2846,14 +2857,6 @@ u64 atomic_contiguous_at(u64 at, AtomicSequence input) on cpu {
         return again + 4u64;
     }
     return encode_operand_instruction(cursor, u16(0x89), u8(0), wide, u8(1), input.low);
-}
-
-extern "C" u64 atomic_sequence(AtomicSequence input, address output) on cpu {
-    u64 start = address_bits(output);
-    if (input.storage == AtomicStorage::Split) {
-        return atomic_split_at(start, input) - start;
-    }
-    return atomic_contiguous_at(start, input) - start;
 }
 
 u64 compact_disp32(u64 at, u32 instruction, u32 displacement) on cpu {
@@ -5143,13 +5146,14 @@ ViewElement indexed_view_element(Span pair, usize index, View stride, ScalarValu
     return ViewElement(low, high, bound_index, step_low, step_high, 0u64, 1);
 }
 
-extern "C" AddressEncoding emit_indexed_operand(Node source, usize offset, u32 word,
+enum IndexedAddressMode:u32 { Base=0; Memory=1; Address=2; };
+
+AddressEncoding indexed_operand(View base, usize offset, u32 word,
     IndexedAddressMode mode, IndexedAddressHost host, address output) on cpu
     requires nonzero(host.values.ir.inspect) requires nonzero(host.values.location)
     requires nonzero(host.values.scalar) requires nonzero(host.tile_stream) {
     ScalarValueHost values = host.values;
     address context = values.context;
-    View base = values.ir.inspect(source);
     u64 prefix;
     u32 scale = 1;
     if (base.tag == INDEXED_DATA) {
@@ -5163,7 +5167,7 @@ extern "C" AddressEncoding emit_indexed_operand(Node source, usize offset, u32 w
             values.scalar(context, base.a), u32(base.b), output);
     } else if (base.tag == INDEXED_TILE) {
         prefix = tile_index_base(values.location(context, base.b), values.scalar(context, base.b),
-            host.tile_stream(context, base.a), output);
+            host.tile_stream(context, base.a, 0), output);
         scale = host.workgroup;
     } else {
         ViewElement view = indexed_view_element(base.first, base.a, values.ir.inspect(base.left), values);
@@ -5185,6 +5189,15 @@ extern "C" AddressEncoding emit_indexed_operand(Node source, usize offset, u32 w
     return memory;
 }
 
+extern "C" AddressEncoding emit_indexed_operand(Node source, usize offset, u32 word,
+    bool memory, IndexedAddressHost host, address output) on cpu
+    requires nonzero(host.values.ir.inspect) requires nonzero(host.values.location)
+    requires nonzero(host.values.scalar) requires nonzero(host.tile_stream) {
+    View view = host.values.ir.inspect(source);
+    IndexedAddressMode mode = memory ? IndexedAddressMode::Memory : IndexedAddressMode::Base;
+    return indexed_operand(view, offset, word, mode, host, output);
+}
+
 extern "C" u64 emit_view_load(Node instruction, ScalarValueHost host, address output) on cpu
     requires nonzero(host.ir.inspect) requires nonzero(host.location) requires nonzero(host.scalar) {
     View load = host.ir.inspect(instruction);
@@ -5194,4 +5207,61 @@ extern "C" u64 emit_view_load(Node instruction, ScalarValueHost host, address ou
     address cursor = unsafe_address(address_bits(output) + memory.length);
     return memory.length + scalar_storage_read(host.location(host.context, load.a), operand,
         host.scalar(host.context, load.a), cursor);
+}
+
+extern "C" u64 emit_atomic(Node instruction, IndexedAddressHost host, address output) on cpu
+    requires nonzero(host.values.ir.inspect) requires nonzero(host.values.location)
+    requires nonzero(host.values.scalar) requires nonzero(host.tile_stream) {
+    ScalarValueHost values = host.values;
+    address context = values.context;
+    View value = values.ir.inspect(instruction);
+    View target = values.ir.inspect(value.left);
+    View op = values.ir.inspect(value.right);
+    AtomicOperation operation = AtomicOperation(op.tag);
+    u32 word = u32(value.a);
+    bool tile = target.tag == INDEXED_TILE;
+    u64 prefix;
+    u32 low_word = 0;
+    bool indexed = value.second.count != 0u64;
+    if (indexed) {
+        usize offset = indexed_pair_word(value.second, 0u64);
+        prefix = indexed_operand(target, offset, word, IndexedAddressMode::Address, host, output).length;
+    } else if (tile) {
+        prefix = tile_index_base(values.location(context, target.b), values.scalar(context, target.b), 0, output);
+        low_word = host.tile_stream(context, target.a, word);
+    } else {
+        prefix = indexed_operand(target, 0u64, 0, IndexedAddressMode::Base, host, output).length;
+        low_word = word;
+    }
+
+    MoveLocation low = MoveLocation(u64(low_word), MOVE_MEMORY, u8(15), NO_INDEX, u8(0));
+    MoveLocation high = low;
+    AtomicStorage storage = AtomicStorage::Shared;
+    if (tile) {
+        storage = AtomicStorage::Private;
+        if (value.b == 8u64) {
+            storage = AtomicStorage::Split;
+            u32 high_stream = host.tile_stream(context, target.a, word + 4);
+            if (indexed) { high_stream -= host.tile_stream(context, target.a, word); }
+            high.value = u64(high_stream);
+        }
+    }
+
+    MoveLocation first = MoveLocation(0u64, MOVE_IMMEDIATE, u8(0), NO_INDEX, u8(0));
+    MoveLocation second = first;
+    if (operation != AtomicOperation::Load) { first = values.location(context, op.a); }
+    if (operation == AtomicOperation::CompareExchange) { second = values.location(context, op.b); }
+    ScalarEncoding scalar = ScalarEncoding(value.c != 0u64 ? ScalarKind::Signed : ScalarKind::Unsigned, u32(value.b) * 8);
+    u64 start = address_bits(output);
+    u64 cursor = start + prefix;
+    AtomicSequence input = AtomicSequence(low, high, first, second, scalar, operation, storage);
+    cursor = storage == AtomicStorage::Split ? atomic_split_at(cursor, input) : atomic_contiguous_at(cursor, input);
+    if (value.first.count != 0u64) {
+        usize reg = indexed_pair_word(value.first, 0u64);
+        ScalarEncoding result = values.scalar(context, reg);
+        MoveEncoding stored = copy_scalar_move(values.location(context, reg), move_gpr(u8(0)),
+            result.width / 8, result.kind == ScalarKind::Signed, unsafe_address(cursor));
+        cursor += stored.length;
+    }
+    return cursor - start;
 }

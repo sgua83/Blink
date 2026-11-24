@@ -35,6 +35,7 @@ struct Span { address data; usize count; usize stride; };
 // For LoadLocalIndexed and StoreLocalIndexed, first borrows the original u32 byte offset.
 // a/b/c/d retain the register and local-range fields of their respective instruction.
 // ViewLoad.c is the original byte offset. Indexed pointer.b and constant stride.a are byte strides.
+// Atomic.a/b/c are byte offset, width in bytes, and signedness.
 struct View {
  u32 tag; usize a; usize b; usize c; usize d;
  Span first; Span second; Node left; Node right;

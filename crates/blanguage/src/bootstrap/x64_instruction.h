@@ -406,19 +406,6 @@ extern "C" u64 packet_read(MoveLocation dst, PacketMemory memory, bool boolean, 
 extern "C" u64 packet_write(MoveLocation src, PacketMemory memory, address output) on cpu;
 extern "C" u64 packet_view(MoveLocation dst, PacketView input, bool boolean, address output) on cpu;
 
-enum AtomicOperation:u32 {
-    Load=0; Store=1; Add=2; Sub=3; Exchange=4; CompareExchange=5;
-    And=6; Or=7; Xor=8; Min=9; Max=10;
-};
-enum AtomicStorage:u32 { Shared=0; Private=1; Split=2; };
-struct AtomicSequence {
-    MoveLocation low; MoveLocation high; MoveLocation first; MoveLocation second;
-    ScalarEncoding scalar;
-    AtomicOperation operation; AtomicStorage storage;
-};
-// The caller supplies 128 output bytes. The original value, when consumed, is in RAX.
-extern "C" u64 atomic_sequence(AtomicSequence input, address output) on cpu;
-
 struct CompactScatter {
     u32 source; u32 target; u32 flags; u32 prefix;
     u32 stride_offset; u32 flag_word; u32 record_bytes;
@@ -788,19 +775,23 @@ extern "C" ScalarStorageEncoding emit_scalar_storage(Node instruction, ScalarSto
     requires nonzero(host.values.ir.inspect) requires nonzero(host.values.location)
     requires nonzero(host.values.scalar) requires nonzero(host.local);
 
-enum IndexedAddressMode:u32 { Base=0; Memory=1; Address=2; };
 struct IndexedAddressHost {
     ScalarValueHost values;
-    cfn<u32,address,usize> ensures memory(read) tile_stream;
+    cfn<u32,address,usize,u32> ensures memory(read) tile_stream;
     u32 buffer_bytes;
     u32 stride_field;
     u32 workgroup;
 };
 // Borrows the original indexed source and 160 writable bytes.
 extern "C" AddressEncoding emit_indexed_operand(Node source, usize offset, u32 word,
-    IndexedAddressMode mode, IndexedAddressHost host, address output) on cpu
+    bool memory, IndexedAddressHost host, address output) on cpu
     requires nonzero(host.values.ir.inspect) requires nonzero(host.values.location)
     requires nonzero(host.values.scalar) requires nonzero(host.tile_stream);
 // Borrows the original view load and 112 writable bytes.
 extern "C" u64 emit_view_load(Node instruction, ScalarValueHost host, address output) on cpu
     requires nonzero(host.ir.inspect) requires nonzero(host.location) requires nonzero(host.scalar);
+
+// An original atomic instruction borrows 312 writable bytes.
+extern "C" u64 emit_atomic(Node instruction, IndexedAddressHost host, address output) on cpu
+    requires nonzero(host.values.ir.inspect) requires nonzero(host.values.location)
+    requires nonzero(host.values.scalar) requires nonzero(host.tile_stream);

@@ -6,8 +6,6 @@ use super::{BufferAddress,NativeCode,NativeSymbol,Relocation,ContinuationCode,Pr
 mod allocation;
 #[path="append.rs"]
 mod append;
-#[path="atomic.rs"]
-mod atomic;
 use allocation::{Allocation, Frame, PacketAllocation};
 #[path="application.rs"]
 mod application;
@@ -389,7 +387,7 @@ impl Emitter<'_> {
                 InstKind::Scope(body) => self.lower_control(Flow::Scope(body), Self::block, Self::load)?,
                 InstKind::Exit => self.lower_control(Flow::Exit, Self::block, Self::load)?,
                 InstKind::Append(append) => self.append(append),
-                InstKind::Atomic(atomic) => self.atomic(atomic),
+                InstKind::Atomic(..) => self.atomic(inst),
                 // tile_phases 先完成全部有效 lane，再进入下一块内阶段。
                 InstKind::TileBarrier => {}
                 InstKind::TilePublish(publication) => self.publish_values(publication),
