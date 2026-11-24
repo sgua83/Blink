@@ -758,11 +758,14 @@ extern "C" u32 equality_extend(address context,EqualityHost host) on cpu
   EqualityLookup left=host.lookup(context,0,fact.first);
   EqualityLookup right=host.lookup(context,1,fact.second);
   i32 order=host.compare(left.root,right.root);
-  address root=order<=0 ? left.root : right.root;
-  if(order!=0){
-   address merged=order<=0 ? right.root : left.root;
-   changed=1;host.merge(context,merged,root);
+  if(order==0){
+   if(left.present==0){host.insert(context,fact.first,left.root);}
+   continue;
   }
+  address root=order<0 ? left.root : right.root;
+  EqualityLookup merged=order<0 ? right : left;
+  if(merged.present!=0){host.merge(context,merged.root,root);}
+  changed=1;
   if(left.present==0){host.insert(context,fact.first,root);}
   if(right.present==0){host.insert(context,fact.second,root);}
  }
