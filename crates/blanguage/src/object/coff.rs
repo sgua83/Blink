@@ -787,19 +787,23 @@ pub(super) fn encode_build(o: &Object, build: Option<&[u8]>) -> Result<Vec<u8>> 
         let extra = std::iter::once((META, CoffPayload::Metadata(&input, length), 0x840))
             .chain(build.map(|bytes| (BUILD, CoffPayload::Borrowed(bytes), 0x840)))
             .chain(o.archive.as_ref().map(|archive| (ARCHIVE, CoffPayload::Borrowed(archive.bytes.as_ref()), 0x840)));
-        encode_sections(&o.name, &o.sections, o.symbols.iter().map(|symbol| &symbol.definition), extra, None)
+        encode_sections(&o.name, &o.sections, o.symbols.iter().map(|symbol| &symbol.definition),
+            |bytes| CoffPayload::Borrowed(bytes), extra, None)
     })
 }
 
 pub(crate) fn encode_native(name: &str, source: &[Section], declared: &[Definition]) -> Result<Vec<u8>> {
-    encode_sections(name, source, declared.iter(), std::iter::empty(), None)
+    encode_sections(name, source, declared.iter(), |bytes| CoffPayload::Borrowed(bytes), std::iter::empty(), None)
 }
 
 pub(crate) fn encode_native_with_imports<'a>(
-    name: &str, source: &'a [Section<impl AsRef<[u8]>>], declared: &'a [Definition],
+    name: &str, source: &'a [Section<super::LinkSectionBytes<'_>>], declared: &'a [Definition],
     imports: &mut Vec<ImportKey<'a>>,
 ) -> Result<Vec<u8>> {
-    encode_sections(name, source, declared.iter(), std::iter::empty(), Some(imports))
+    encode_sections(name, source, declared.iter(), |bytes| match bytes.data() {
+        super::LinkSectionData::Initialized(bytes) => CoffPayload::Borrowed(bytes),
+        super::LinkSectionData::ZeroFill(length) => CoffPayload::ZeroFill(length),
+    }, std::iter::empty(), Some(imports))
 }
 
 unsafe extern "C" fn collect_import<'a>(context: *mut c_void, key: ImportKey<'a>) {
@@ -829,13 +833,14 @@ impl CoffPayload<'_> {
         }
     }
 }
-fn encode_sections<'a>(
-    name: &str, source: &'a [Section<impl AsRef<[u8]>>], declared: impl Iterator<Item = &'a Definition>,
+fn encode_sections<'a, Bytes>(
+    name: &str, source: &'a [Section<Bytes>], declared: impl Iterator<Item = &'a Definition>,
+    payload: impl Fn(&'a Bytes) -> CoffPayload<'a>,
     extra: impl Iterator<Item = (&'a str, CoffPayload<'a>, u32)>,
     imports: Option<&mut Vec<ImportKey<'a>>>,
 ) -> Result<Vec<u8>> {
     let sections = source.iter().map(|section|
-        (section.name.as_str(), CoffPayload::Borrowed(section.bytes.as_ref()), section.flags)
+        (section.name.as_str(), payload(&section.bytes), section.flags)
     ).chain(extra).collect::<Vec<_>>();
     let input_relocations = source.iter().map(|section| {
         section.relocations.iter().map(|relocation| {

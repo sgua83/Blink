@@ -68,12 +68,18 @@ pub(crate) enum LinkSectionBytes<'a> {
     Captured(ObjectBytes),
     Owned(Vec<u8>),
     Borrowed(&'a [u8]),
+    ZeroFill(usize),
+}
+
+pub(crate) enum LinkSectionData<'a> {
+    Initialized(&'a [u8]),
+    ZeroFill(usize),
 }
 
 impl ReadSection for LinkSectionBytes<'_> {
     fn from_coff(source: &ObjectBytes, bytes: &[u8], zero_fill: usize) -> Self {
         if zero_fill != 0 {
-            return Self::Owned(vec![0; zero_fill]);
+            return Self::ZeroFill(zero_fill);
         }
         if bytes.is_empty() {
             return Self::Borrowed(&[]);
@@ -86,12 +92,13 @@ impl ReadSection for LinkSectionBytes<'_> {
     fn from_generated_bytes(bytes: Vec<u8>) -> Self { Self::Owned(bytes) }
 }
 
-impl AsRef<[u8]> for LinkSectionBytes<'_> {
-    fn as_ref(&self) -> &[u8] {
+impl LinkSectionBytes<'_> {
+    pub(crate) fn data(&self) -> LinkSectionData<'_> {
         match self {
-            Self::Captured(bytes) => bytes,
-            Self::Owned(bytes) => bytes,
-            Self::Borrowed(bytes) => bytes,
+            Self::Captured(bytes) => LinkSectionData::Initialized(bytes),
+            Self::Owned(bytes) => LinkSectionData::Initialized(bytes),
+            Self::Borrowed(bytes) => LinkSectionData::Initialized(bytes),
+            Self::ZeroFill(length) => LinkSectionData::ZeroFill(*length),
         }
     }
 }

@@ -3,7 +3,7 @@
 use super::{Result, Selected, pe, resources::ImportBytes};
 use crate::{
     native::{ModuleCode, ModuleRelocation, ModuleSection, ModuleTarget},
-    object::{Relocation, Target, stack::{Call, Frame}},
+    object::{LinkSectionBytes, LinkSectionData, Relocation, Target, stack::{Call, Frame}},
 };
 use std::collections::BTreeMap;
 
@@ -48,8 +48,8 @@ unsafe extern "C" {
     fn combine_encode(sections: *const CombineSection, count: usize, outputs: *const *mut u8);
 }
 
-pub(super) fn module<Payload: AsRef<[u8]>>(
-    objects: Vec<Selected<Payload>>, local: &[&str],
+pub(super) fn module(
+    objects: Vec<Selected<LinkSectionBytes<'_>>>, local: &[&str],
 ) -> Result<ModuleCode> {
     let mut symbols = BTreeMap::new();
     let sections = combine(objects, Some((local, &mut symbols)), extent,
@@ -77,7 +77,7 @@ pub(super) fn module<Payload: AsRef<[u8]>>(
     Ok(ModuleCode { sections, symbols })
 }
 
-pub(super) fn link_pe(objects: Vec<Selected<impl AsRef<[u8]>>>, stack_reserve: u64) -> Result<Vec<u8>> {
+pub(super) fn link_pe(objects: Vec<Selected<LinkSectionBytes<'_>>>, stack_reserve: u64) -> Result<Vec<u8>> {
     let Prepared { rows, groups, mut relocations, plan, .. } = prepare(&objects, &[], extent, true)?;
     pe::link(&rows, &groups, &mut relocations, &plan, stack_reserve)
 }
@@ -89,9 +89,11 @@ pub(super) fn report(objects: Vec<Selected<usize>>) -> Result<(Vec<Vec<Relocatio
         |_, _, relocations, stack| Ok((relocations, stack)))
 }
 
-fn extent(bytes: &impl AsRef<[u8]>) -> (*const u8, usize) {
-    let bytes = bytes.as_ref();
-    (bytes.as_ptr(), bytes.len())
+fn extent(bytes: &LinkSectionBytes<'_>) -> (*const u8, usize) {
+    match bytes.data() {
+        LinkSectionData::Initialized(bytes) => (bytes.as_ptr(), bytes.len()),
+        LinkSectionData::ZeroFill(length) => (std::ptr::null(), length),
+    }
 }
 
 struct Prepared {

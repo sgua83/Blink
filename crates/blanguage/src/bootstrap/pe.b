@@ -319,7 +319,7 @@ extern "C" PeRelocationResult encode(PeInput input,PeLayout layout,address rows,
     while(i<row_count){
         CombineSection row=bootstrap.combine::section_at(rows,i);
         PeSection group=section_at(input,row.group);
-        encode_section(row,unsafe_address(address_bits(output)+group.raw));
+        encode_section(row,unsafe_address(address_bits(output)+group.raw),true);
         i+=1u64;
     }
     return relocate_sections(input,layout.image_base,output);

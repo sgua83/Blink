@@ -6,6 +6,7 @@ struct CombineObject {
     u64 frame_start;u64 frame_count;
 };
 struct CombineSection {
+    // A null source with nonzero byte_length denotes zero fill when writing.
     address name;u64 name_length;address bytes;u64 byte_length;u64 flags;u64 object;
     u64 group;u64 begin;u64 padding;u64 relocation_count;u64 relocation_base;
 };
@@ -26,5 +27,5 @@ struct CombinePlan {u64 groups;u64 symbols;u64 imports;u64 absolutes;u64 error;u
 extern "C" CombinePlan prepare(CombineInput input, address local, u64 local_count, bool pe) on cpu;
 CombineSection section_at(address sections,u64 i) on cpu;
 CombineGroup group_at(address groups,u64 i) on cpu;
-void encode_section(CombineSection row,address output) on cpu;
+void encode_section(CombineSection row,address output,bool output_zeroed) on cpu;
 extern "C" void encode(address sections,u64 section_count,address outputs) on cpu;
