@@ -132,15 +132,7 @@ unsafe extern "C" {
         skip_field: usize, step: u8) -> RangeEnd;
     #[link_name = "bootstrap.x64_instruction::buffer_index"]
     fn encode_buffer_index(stride_offset: u32, index: u8, base: u8, output: *mut u8) -> u64;
-    #[link_name = "bootstrap.x64_instruction::dataset_index"]
-    fn encode_dataset_index(data: u32, stride: u32, index: MoveLocation, scalar: ScalarEncoding,
-        materialize: u32, output: *mut u8) -> u64;
-    #[link_name = "bootstrap.x64_instruction::indexed_address"]
-    fn encode_indexed_address(index: MoveLocation, scalar: ScalarEncoding, stride: u32,
-        word: u32, output: *mut u8) -> u64;
-    #[link_name = "bootstrap.x64_instruction::indexed_memory"]
-    fn encode_indexed_memory(index: MoveLocation, scalar: ScalarEncoding, stride: u32,
-        word: u32, output: *mut u8) -> AddressEncoding;
+
 }
 
 enum Branch {
@@ -333,44 +325,9 @@ impl Emitter<'_> {
         self.patch_scope(&fields);
     }
 
-    fn address(&mut self, binding: usize, index: Reg) {
-        let data = binding as u32 * BUFFER_BYTES;
-        let location = self.location(index).into();
-        let scalar = self.stage.registers[index].into();
-        self.emit_bytes(44, |output| unsafe {
-            encode_dataset_index(data, data + BUFFER_STRIDE, location, scalar, 1, output)
-        });
-    }
     fn offset_buffer_address(&mut self, binding: usize) {
         let stride = binding as u32 * BUFFER_BYTES + BUFFER_STRIDE;
         self.emit_bytes(12, |output| unsafe { encode_buffer_index(stride, 0, 15, output) });
-    }
-    fn indexed_address(&mut self, source: &IndexedSource, offset: Reg, word: u32) {
-        let stride = self.indexed_base(source);
-        let index = self.location(offset).into();
-        let scalar = self.stage.registers[offset].into();
-        self.emit_bytes(48, |output| unsafe { encode_indexed_address(index, scalar, stride, word, output) });
-    }
-
-    fn indexed_memory(&mut self, source: &IndexedSource, offset: Reg, word: u32) -> Memory {
-        let stride = self.indexed_base(source);
-        let index = self.location(offset).into();
-        let scalar = self.stage.registers[offset].into();
-        self.emit_address(64, |output| unsafe { encode_indexed_memory(index, scalar, stride, word, output) })
-    }
-
-    fn indexed_base(&mut self, source: &IndexedSource) -> u32 {
-        match source {
-            IndexedSource::Data { binding, index } => self.address(*binding, *index),
-            IndexedSource::View { address, index, stride } => self.view_element_base(*address, *index, *stride),
-            IndexedSource::Pointer { address, index, stride, .. } => self.pointer_element_base(*address, *index, *stride),
-            IndexedSource::Tile { tile, index } => {
-                let storage = self.shared_stream(self.stage.shared_word(*tile, 0));
-                self.tile_index_base(*index, storage);
-                return self.stage.workgroup_width();
-            }
-        }
-        1
     }
     fn abi_range(&mut self, start: usize, kind: super::AbiRangeKind) {
         self.record_abi_range(start..self.code.len(), kind);
@@ -447,16 +404,7 @@ impl Emitter<'_> {
                 } => self.tile_load(*dst, *tile, *index, *word, None),
                 InstKind::Subgroup { .. } => return Err("CPU 后端不能执行 GPU subgroup 协作"),
                 InstKind::RayQuery { .. } => return Err("CPU 后端不能执行硬件光线查询"),
-                InstKind::ViewLoad {
-                    dst,
-                    address,
-                    index,
-                    stride,
-                    word,
-                } => {
-                    let memory = self.view_element_memory(*address, *index, *stride, *word);
-                    self.read_scalar_address(*dst, memory);
-                }
+                InstKind::ViewLoad { .. } => self.view_load(inst),
                 InstKind::LoadIndexed {
                     dst,
                     source,

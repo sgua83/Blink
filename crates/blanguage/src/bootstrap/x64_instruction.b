@@ -2333,7 +2333,12 @@ AddressEncoding view_memory_dynamic_at(u8 base, MoveLocation index, MoveLocation
     return AddressEncoding(cursor - start, offset, base, u8(0), u8(0));
 }
 
-extern "C" AddressEncoding view_element_memory(ViewElement source, u32 offset, address output) on cpu {
+struct ViewElement {
+    MoveLocation low; MoveLocation high; MoveLocation index;
+    MoveLocation stride_low; MoveLocation stride_high; u64 stride; u32 dynamic;
+};
+
+AddressEncoding view_element_memory(ViewElement source, u32 offset, address output) on cpu {
     u64 start = address_bits(output);
     u64 cursor = address_pair_at(start, source.low, source.high, false, u8(0), u8(15));
     address memory_output = unsafe_address(cursor);
@@ -2348,7 +2353,7 @@ extern "C" AddressEncoding view_element_memory(ViewElement source, u32 offset, a
     return memory;
 }
 
-extern "C" u64 view_element_base(ViewElement source, address output) on cpu {
+u64 view_element_base(ViewElement source, address output) on cpu {
     AddressEncoding memory = view_element_memory(source, 0, output);
     u64 start = address_bits(output);
     MoveLocation operand = MoveLocation(u64(memory.offset), MOVE_MEMORY, memory.base, memory.index, memory.shift);
@@ -2385,7 +2390,7 @@ u64 load_index_at(u64 at, MoveLocation index, ScalarEncoding scalar) on cpu {
         scalar.kind == ScalarKind::Signed, unsafe_address(at)).length;
 }
 
-extern "C" u64 pointer_element_base(MoveLocation low, MoveLocation high, MoveLocation index,
+u64 pointer_element_base(MoveLocation low, MoveLocation high, MoveLocation index,
     ScalarEncoding scalar, u32 stride, address output) on cpu {
     u64 start = address_bits(output);
     u64 cursor = address_pair_at(start, low, high, false, u8(0), u8(15));
@@ -2400,7 +2405,7 @@ u64 indexed_word_at(u64 at, MoveLocation index, ScalarEncoding scalar, u32 word)
     return cursor + 5u64;
 }
 
-extern "C" u64 indexed_address(MoveLocation index, ScalarEncoding scalar, u32 stride,
+u64 indexed_address(MoveLocation index, ScalarEncoding scalar, u32 stride,
     u32 word, address output) on cpu {
     u64 start = address_bits(output);
     u64 cursor = start;
@@ -2412,7 +2417,7 @@ extern "C" u64 indexed_address(MoveLocation index, ScalarEncoding scalar, u32 st
     return cursor - start + offset_address(stride, unsafe_address(cursor));
 }
 
-extern "C" AddressEncoding indexed_memory(MoveLocation index, ScalarEncoding scalar, u32 stride,
+AddressEncoding indexed_memory(MoveLocation index, ScalarEncoding scalar, u32 stride,
     u32 word, address output) on cpu {
     if (word == 0) { return value_memory(u8(15), index, stride, 0, output); }
     u64 start = address_bits(output);
@@ -2436,7 +2441,7 @@ u64 buffer_index_at(u64 at, u32 stride_offset, u8 index, u8 base) on cpu {
     return cursor;
 }
 
-extern "C" u64 dataset_index(u32 data, u32 stride, MoveLocation index, ScalarEncoding scalar,
+u64 dataset_index(u32 data, u32 stride, MoveLocation index, ScalarEncoding scalar,
     bool materialize, address output) on cpu {
     u64 start = address_bits(output);
     u64 cursor = buffer_field_at(start, data, u16(0x8b), u8(15));
@@ -5118,4 +5123,75 @@ extern "C" ScalarStorageEncoding emit_scalar_storage(Node instruction, ScalarSto
     u64 length = read ? scalar_storage_read(location, memory, scalar, cursor)
         : write_scalar_move(memory, location, scalar.width / 8, cursor);
     return ScalarStorageEncoding(prefix + length, 0u64, 0u64);
+}
+
+usize indexed_pair_word(Span pair, u64 index) on cpu {
+    return unsafe_position<usize>(unsafe_address(address_bits(pair.data) + index * u64(pair.stride)));
+}
+
+ViewElement indexed_view_element(Span pair, usize index, View stride, ScalarValueHost values) on cpu
+    requires nonzero(values.location) {
+    address context = values.context;
+    MoveLocation low = values.location(context, indexed_pair_word(pair, 0u64));
+    MoveLocation high = values.location(context, indexed_pair_word(pair, 1u64));
+    MoveLocation bound_index = values.location(context, index);
+    if (stride.tag == 0) {
+        return ViewElement(low, high, bound_index, move_gpr(u8(0)), move_gpr(u8(0)), u64(stride.a), 0);
+    }
+    MoveLocation step_low = values.location(context, indexed_pair_word(stride.first, 0u64));
+    MoveLocation step_high = values.location(context, indexed_pair_word(stride.first, 1u64));
+    return ViewElement(low, high, bound_index, step_low, step_high, 0u64, 1);
+}
+
+extern "C" AddressEncoding emit_indexed_operand(Node source, usize offset, u32 word,
+    IndexedAddressMode mode, IndexedAddressHost host, address output) on cpu
+    requires nonzero(host.values.ir.inspect) requires nonzero(host.values.location)
+    requires nonzero(host.values.scalar) requires nonzero(host.tile_stream) {
+    ScalarValueHost values = host.values;
+    address context = values.context;
+    View base = values.ir.inspect(source);
+    u64 prefix;
+    u32 scale = 1;
+    if (base.tag == INDEXED_DATA) {
+        u32 data = u32(base.a) * host.buffer_bytes;
+        prefix = dataset_index(data, data + host.stride_field, values.location(context, base.b),
+            values.scalar(context, base.b), true, output);
+    } else if (base.tag == INDEXED_POINTER) {
+        MoveLocation low = values.location(context, indexed_pair_word(base.first, 0u64));
+        MoveLocation high = values.location(context, indexed_pair_word(base.first, 1u64));
+        prefix = pointer_element_base(low, high, values.location(context, base.a),
+            values.scalar(context, base.a), u32(base.b), output);
+    } else if (base.tag == INDEXED_TILE) {
+        prefix = tile_index_base(values.location(context, base.b), values.scalar(context, base.b),
+            host.tile_stream(context, base.a), output);
+        scale = host.workgroup;
+    } else {
+        ViewElement view = indexed_view_element(base.first, base.a, values.ir.inspect(base.left), values);
+        prefix = view_element_base(view, output);
+    }
+
+    if (mode == IndexedAddressMode::Base) {
+        return AddressEncoding(prefix, 0, u8(15), NO_INDEX, u8(0));
+    }
+    address cursor = unsafe_address(address_bits(output) + prefix);
+    MoveLocation index = values.location(context, offset);
+    ScalarEncoding scalar = values.scalar(context, offset);
+    if (mode == IndexedAddressMode::Address) {
+        u64 length = indexed_address(index, scalar, scale, word, cursor);
+        return AddressEncoding(prefix + length, 0, u8(15), NO_INDEX, u8(0));
+    }
+    AddressEncoding memory = indexed_memory(index, scalar, scale, word, cursor);
+    memory.length += prefix;
+    return memory;
+}
+
+extern "C" u64 emit_view_load(Node instruction, ScalarValueHost host, address output) on cpu
+    requires nonzero(host.ir.inspect) requires nonzero(host.location) requires nonzero(host.scalar) {
+    View load = host.ir.inspect(instruction);
+    ViewElement view = indexed_view_element(load.first, load.b, host.ir.inspect(load.left), host);
+    AddressEncoding memory = view_element_memory(view, u32(load.c), output);
+    MoveLocation operand = MoveLocation(u64(memory.offset), MOVE_MEMORY, memory.base, memory.index, memory.shift);
+    address cursor = unsafe_address(address_bits(output) + memory.length);
+    return memory.length + scalar_storage_read(host.location(host.context, load.a), operand,
+        host.scalar(host.context, load.a), cursor);
 }

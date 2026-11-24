@@ -35,15 +35,11 @@ impl Emitter<'_> {
             Memory::new(15, 0)
         } else {
             match atomic.target {
-                IndexedSource::Data { binding, index } => {
-                    self.address(binding, index);
-                    Memory::new(15, atomic.word)
-                }
                 IndexedSource::Tile { tile, index } => {
                     self.tile_index_base(index, 0);
                     Memory::new(15, self.shared_stream(self.stage.shared_word(tile, atomic.word)))
                 }
-                IndexedSource::View { .. } | IndexedSource::Pointer { .. } => {
+                _ => {
                     self.indexed_base(&atomic.target);
                     Memory::new(15, atomic.word)
                 }

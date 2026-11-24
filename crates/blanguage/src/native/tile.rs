@@ -125,7 +125,8 @@ impl Emitter<'_> {
         let (memory, high) = if let Some(offset) = offset {
             let source = IndexedSource::Tile { tile, index };
             if scalar.size() < 4 {
-                let width = self.indexed_base(&source);
+                self.indexed_base(&source);
+                let width = self.stage.workgroup_width();
                 self.load(offset);
                 let bias = match self.stage.tiles[tile].source {
                     TileSource::Input { word, .. } => word % 4,

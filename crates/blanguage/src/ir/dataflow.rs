@@ -17,6 +17,7 @@ enum Kind {
 pub(crate) struct Node { data: *const c_void, kind: Kind }
 impl Node {
     pub(crate) fn instruction(value: &Inst) -> Self { Self::of(value, Kind::Instruction) }
+    pub(crate) fn indexed_source(value: &IndexedSource) -> Self { Self::of(value, Kind::Indexed) }
     fn of<T>(value: &T, kind: Kind) -> Self { Self { data: ptr::from_ref(value).cast(), kind } }
     pub(crate) const EMPTY: Self = Self { data: ptr::null(), kind: Kind::Instruction };
 }
@@ -214,14 +215,14 @@ unsafe extern "C" fn inspect(node: Node) -> View {
                 let mut view = View::tag(1); view.first = Span::slice(address); view.a = *index;
                 view.left = Node::of(stride, Kind::Stride); view
             }
-            IndexedSource::Pointer { address, index, aliases, .. } => {
+            IndexedSource::Pointer { address, index, stride, aliases } => {
                 let mut view = View::tag(2); view.first = Span::slice(address); view.a = *index;
-                view.second = Span::slice(aliases); view
+                view.b = *stride as usize; view.second = Span::slice(aliases); view
             }
             IndexedSource::Tile { tile, index } => { let mut view = View::tag(3); view.a = *tile; view.b = *index; view }
         },
         Kind::Stride => match unsafe { &*node.data.cast::<ElementStride>() } {
-            ElementStride::Constant(_) => View::tag(0),
+            ElementStride::Constant(bytes) => { let mut view = View::tag(0); view.a = *bytes as usize; view },
             ElementStride::Value(values) => { let mut view = View::tag(1); view.first = Span::slice(values); view }
         },
         Kind::Texture => {
@@ -451,8 +452,8 @@ fn instruction(value: &Inst) -> View {
             #[cfg(feature="compiler")]
             {view.a = usize::from(matches!(&call.failure, Some(crate::check::FailureContinuation::Scope(_))));}
         }
-        InstKind::ViewLoad { dst, address, index, stride, .. } => {
-            view.tag = 21; view.a = *dst; view.b = *index; view.first = Span::slice(address); view.left = Node::of(stride, Kind::Stride);
+        InstKind::ViewLoad { dst, address, index, stride, word } => {
+            view.tag = 21; view.a = *dst; view.b = *index; view.c = *word as usize; view.first = Span::slice(address); view.left = Node::of(stride, Kind::Stride);
         }
         InstKind::RayQuery { origin, direction, minimum, maximum, cull_back_faces, result, .. } => {
             view.tag = 22; view.first = Span::slice(match result { RayResult::Any(reg) => std::slice::from_ref(reg), RayResult::Closest(regs) => regs });

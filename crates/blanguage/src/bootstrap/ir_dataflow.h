@@ -10,7 +10,7 @@ enum SubgroupOperation:u32 {
 const u32 N_INSTRUCTION=0;const u32 N_ARGUMENT=3;const u32 N_COMPARISON=32;
 const u32 ARGUMENT_REFERENCE=1;const u32 STORAGE_INDEXED=1;
 const u32 N_MEMORY_ALIAS=11;const u32 N_MEMORY_EFFECT=12;
-const u32 INDEXED_DATA=0;const u32 INDEXED_POINTER=2;const u32 ALIAS_LOCAL=0;
+const u32 INDEXED_DATA=0;const u32 INDEXED_POINTER=2;const u32 INDEXED_TILE=3;const u32 ALIAS_LOCAL=0;
 const u32 COMPARE_LESS=2;const u32 COMPARE_GREATER=3;const u32 COMPARE_GREATER_EQUAL=5;
 const u32 OP_TEXTURE_BINDING_ADDRESS=0;const u32 OP_TEXTURE_SAMPLE=1;const u32 OP_TEXTURE_SIZE=2;
 const u32 OP_TEXTURE_LEVELS=3;const u32 OP_TEXTURE_ADDRESS=4;const u32 OP_TEXTURE_FORMAT=5;
@@ -34,6 +34,7 @@ struct Node { address data; u32 kind; };
 struct Span { address data; usize count; usize stride; };
 // For LoadLocalIndexed and StoreLocalIndexed, first borrows the original u32 byte offset.
 // a/b/c/d retain the register and local-range fields of their respective instruction.
+// ViewLoad.c is the original byte offset. Indexed pointer.b and constant stride.a are byte strides.
 struct View {
  u32 tag; usize a; usize b; usize c; usize d;
  Span first; Span second; Node left; Node right;

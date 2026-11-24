@@ -354,31 +354,11 @@ struct AddressEncoding { u64 length; u32 offset; u8 base; u8 index; u8 shift; };
 // value_memory needs 32 output bytes.
 // scaled_memory and offset_address need 16 output bytes.
 extern "C" AddressEncoding value_memory(u8 base, MoveLocation index, u32 stride, u32 offset, address output) on cpu;
-struct ViewElement {
-    MoveLocation low; MoveLocation high; MoveLocation index;
-    MoveLocation stride_low; MoveLocation stride_high; u64 stride; u32 dynamic;
-};
-// View prefix and direct memory use 88 output bytes. Materializing R15 needs 96.
-extern "C" AddressEncoding view_element_memory(ViewElement source, u32 offset, address output) on cpu;
-extern "C" u64 view_element_base(ViewElement source, address output) on cpu;
-// The pointer base and scaled index need 64 output bytes.
-extern "C" u64 pointer_element_base(MoveLocation low, MoveLocation high, MoveLocation index,
-    ScalarEncoding scalar, u32 stride, address output) on cpu;
 extern "C" AddressEncoding scaled_memory(u8 base, u8 index, u32 stride, u32 offset, address output) on cpu;
-// Both entries use the existing R15 base. The caller lends 48 or 64 output bytes, respectively.
-extern "C" u64 indexed_address(MoveLocation index, ScalarEncoding scalar, u32 stride,
-    u32 word, address output) on cpu;
-extern "C" AddressEncoding indexed_memory(MoveLocation index, ScalarEncoding scalar, u32 stride,
-    u32 word, address output) on cpu;
-
 // Place the effective address in RAX. An indexed address consumes RAX as its
 // index. The caller owns eight output bytes.
 extern "C" u64 effective_address(u8 target, MoveLocation memory, address output) on cpu;
 
-// Field offsets refer to the caller's original table in R12.
-// Shared dataset prefix for memory and effective-address consumers; 44 output bytes.
-extern "C" u64 dataset_index(u32 data, u32 stride, MoveLocation index, ScalarEncoding scalar,
-    bool materialize, address output) on cpu;
 // Scale an index by the stored u64 stride. Base 255 leaves the scaled index
 // available as an operand; otherwise add it to the given pointer register.
 extern "C" u64 buffer_index(u32 stride_offset, u8 index, u8 base, address output) on cpu;
@@ -807,3 +787,20 @@ extern "C" ScalarStorageEncoding emit_scalar_storage(Node instruction, ScalarSto
     address output) on cpu
     requires nonzero(host.values.ir.inspect) requires nonzero(host.values.location)
     requires nonzero(host.values.scalar) requires nonzero(host.local);
+
+enum IndexedAddressMode:u32 { Base=0; Memory=1; Address=2; };
+struct IndexedAddressHost {
+    ScalarValueHost values;
+    cfn<u32,address,usize> ensures memory(read) tile_stream;
+    u32 buffer_bytes;
+    u32 stride_field;
+    u32 workgroup;
+};
+// Borrows the original indexed source and 160 writable bytes.
+extern "C" AddressEncoding emit_indexed_operand(Node source, usize offset, u32 word,
+    IndexedAddressMode mode, IndexedAddressHost host, address output) on cpu
+    requires nonzero(host.values.ir.inspect) requires nonzero(host.values.location)
+    requires nonzero(host.values.scalar) requires nonzero(host.tile_stream);
+// Borrows the original view load and 112 writable bytes.
+extern "C" u64 emit_view_load(Node instruction, ScalarValueHost host, address output) on cpu
+    requires nonzero(host.ir.inspect) requires nonzero(host.location) requires nonzero(host.scalar);

@@ -114,17 +114,6 @@ pub(super) struct AddressEncoding {
 }
 
 #[repr(C)]
-struct ViewElement {
-    low: MoveLocation,
-    high: MoveLocation,
-    index: MoveLocation,
-    stride_low: MoveLocation,
-    stride_high: MoveLocation,
-    stride: u64,
-    dynamic: u32,
-}
-
-#[repr(C)]
 struct ScalarLiteral {
     bits: u64,
     field: u64,
@@ -151,7 +140,8 @@ pub(super) struct ScalarValueHost {
 
 struct ScalarLocations<'a> {
     allocation: &'a Allocation,
-    registers: &'a [Scalar],
+    stage: &'a Stage,
+    frame: &'a Frame,
 }
 
 impl ScalarLocations<'_> {
@@ -178,6 +168,23 @@ struct ScalarStorageHost {
     stride_field: u32,
 }
 
+#[repr(u32)]
+enum IndexedAddressMode { Base, Memory, Address }
+
+#[repr(C)]
+struct IndexedAddressHost {
+    values: ScalarValueHost,
+    tile_stream: unsafe extern "C" fn(*const std::ffi::c_void, usize) -> u32,
+    buffer_bytes: u32,
+    stride_field: u32,
+    workgroup: u32,
+}
+
+unsafe extern "C" fn indexed_tile_stream(context: *const std::ffi::c_void, tile: usize) -> u32 {
+    let locations = unsafe { &*context.cast::<ScalarLocations<'_>>() };
+    locations.frame.tile_shared[&locations.stage.shared_word(tile, 0).aligned()]
+}
+
 unsafe extern "C" fn value_local(context: *const std::ffi::c_void, local: usize) -> MoveLocation {
     let locations = unsafe { &*context.cast::<ScalarLocations<'_>>() };
     locations.allocation.location(PrivateSlot::Local(local)).into()
@@ -190,7 +197,7 @@ unsafe extern "C" fn value_location(context: *const std::ffi::c_void, reg: Reg) 
 
 unsafe extern "C" fn value_scalar(context: *const std::ffi::c_void, reg: Reg) -> ScalarEncoding {
     let locations = unsafe { &*context.cast::<ScalarLocations<'_>>() };
-    locations.registers[reg].into()
+    locations.stage.registers[reg].into()
 }
 
 unsafe extern "C" {
@@ -201,19 +208,17 @@ unsafe extern "C" {
     ) -> usize;
     #[link_name = "bootstrap.x64_instruction::value_memory"]
     fn encode_value_memory(base: u8, index: MoveLocation, stride: u32, offset: u32, output: *mut u8) -> AddressEncoding;
-    #[link_name = "bootstrap.x64_instruction::view_element_memory"]
-    fn encode_view_element_memory(source: ViewElement, offset: u32, output: *mut u8) -> AddressEncoding;
-    #[link_name = "bootstrap.x64_instruction::view_element_base"]
-    fn encode_view_element_base(source: ViewElement, output: *mut u8) -> u64;
-    #[link_name = "bootstrap.x64_instruction::pointer_element_base"]
-    fn encode_pointer_element_base(low: MoveLocation, high: MoveLocation, index: MoveLocation,
-        scalar: ScalarEncoding, stride: u32, output: *mut u8) -> u64;
     #[link_name = "bootstrap.x64_instruction::scaled_memory"]
     fn encode_scaled_memory(base: u8, index: u8, stride: u32, offset: u32, output: *mut u8) -> AddressEncoding;
     #[link_name = "bootstrap.x64_instruction::effective_address"]
     fn encode_effective_address(target: u8, memory: MoveLocation, output: *mut u8) -> u64;
     #[link_name = "bootstrap.x64_instruction::bit_copy"]
     fn scalar_bit_copy(from: ScalarEncoding, into: ScalarEncoding) -> u32;
+    #[link_name = "bootstrap.x64_instruction::emit_indexed_operand"]
+    fn emit_indexed_operand(source: Node, offset: Reg, word: u32, mode: IndexedAddressMode,
+        host: IndexedAddressHost, output: *mut u8) -> AddressEncoding;
+    #[link_name = "bootstrap.x64_instruction::emit_view_load"]
+    fn emit_view_load(instruction: Node, host: ScalarValueHost, output: *mut u8) -> u64;
     #[link_name = "bootstrap.x64_instruction::emit_scalar_storage"]
     fn emit_scalar_storage(instruction: Node, host: ScalarStorageHost, output: *mut u8) -> ScalarStorageEncoding;
     #[link_name = "bootstrap.x64_instruction::emit_scalar_value"]
@@ -254,35 +259,46 @@ impl Emitter<'_> {
         let index = index.into();
         self.emit_address(32, |output| unsafe { encode_value_memory(base, index, stride, offset, output) })
     }
-    fn view_element(&self, [low, high]: [Reg; 2], index: Reg, stride: ElementStride) -> ViewElement {
-        let (stride_low, stride_high, stride, dynamic) = match stride {
-            ElementStride::Constant(bytes) => (Location::Gpr(0), Location::Gpr(0), bytes, 0),
-            ElementStride::Value([low, high]) => (self.location(low), self.location(high), 0, 1),
-        };
-        ViewElement {
-            low: self.location(low).into(), high: self.location(high).into(),
-            index: self.location(index).into(), stride_low: stride_low.into(), stride_high: stride_high.into(),
-            stride, dynamic,
+    pub(super) fn view_load(&mut self, inst: &Inst) {
+        let locations = ScalarLocations { allocation: &self.allocation, stage: self.stage, frame: &self.frame };
+        let host = locations.host();
+        let start = self.code.len();
+        self.code.reserve(112);
+        unsafe {
+            let length = emit_view_load(Node::instruction(inst), host, self.code.as_mut_ptr().add(start));
+            self.code.set_len(start + length as usize);
         }
     }
-    pub(super) fn view_element_memory(
-        &mut self, address: [Reg; 2], index: Reg, stride: ElementStride, offset: u32,
-    ) -> Memory {
-        let source = self.view_element(address, index, stride);
-        self.emit_address(88, |output| unsafe { encode_view_element_memory(source, offset, output) })
+
+    fn indexed_operand(&mut self, source: &IndexedSource, offset: Reg, word: u32, mode: IndexedAddressMode) -> Memory {
+        let locations = ScalarLocations {
+            allocation: &self.allocation,
+            stage: self.stage,
+            frame: &self.frame,
+        };
+        let host = IndexedAddressHost {
+            values: locations.host(), tile_stream: indexed_tile_stream,
+            buffer_bytes: BUFFER_BYTES, stride_field: BUFFER_STRIDE,
+            workgroup: self.stage.workgroup_width(),
+        };
+        let start = self.code.len();
+        self.code.reserve(160);
+        unsafe {
+            let encoded = emit_indexed_operand(Node::indexed_source(source), offset, word, mode, host,
+                self.code.as_mut_ptr().add(start));
+            self.code.set_len(start + encoded.length as usize);
+            Memory::indexed(encoded.base, encoded.index, encoded.shift, encoded.offset)
+        }
     }
-    pub(super) fn view_element_base(&mut self, address: [Reg; 2], index: Reg, stride: ElementStride) {
-        let source = self.view_element(address, index, stride);
-        self.emit_bytes(96, |output| unsafe { encode_view_element_base(source, output) });
+
+    pub(super) fn indexed_base(&mut self, source: &IndexedSource) {
+        self.indexed_operand(source, 0, 0, IndexedAddressMode::Base);
     }
-    pub(super) fn pointer_element_base(&mut self, [low, high]: [Reg; 2], index: Reg, stride: u32) {
-        let low = self.location(low).into();
-        let high = self.location(high).into();
-        let location = self.location(index).into();
-        let scalar = self.stage.registers[index].into();
-        self.emit_bytes(64, |output| unsafe {
-            encode_pointer_element_base(low, high, location, scalar, stride, output)
-        });
+    pub(super) fn indexed_memory(&mut self, source: &IndexedSource, offset: Reg, word: u32) -> Memory {
+        self.indexed_operand(source, offset, word, IndexedAddressMode::Memory)
+    }
+    pub(super) fn indexed_address(&mut self, source: &IndexedSource, offset: Reg, word: u32) {
+        self.indexed_operand(source, offset, word, IndexedAddressMode::Address);
     }
     pub(super) fn scaled_memory(&mut self, base: u8, index: u8, stride: u32, offset: u32) -> Memory {
         self.emit_address(16, |output| unsafe { encode_scaled_memory(base, index, stride, offset, output) })
@@ -398,7 +414,7 @@ impl Emitter<'_> {
         self.emit_bytes(24, |output| unsafe { write_scalar_move(memory.into(), src.into(), size, output) });
     }
     pub(super) fn scalar_storage(&mut self, inst: &Inst) {
-        let locations = ScalarLocations { allocation: &self.allocation, registers: &self.stage.registers };
+        let locations = ScalarLocations { allocation: &self.allocation, stage: self.stage, frame: &self.frame };
         let host = ScalarStorageHost {
             values: locations.host(), local: value_local,
             buffer_bytes: BUFFER_BYTES, stride_field: BUFFER_STRIDE,
@@ -413,7 +429,7 @@ impl Emitter<'_> {
         self.record_literal(start, (encoding.literal, false), encoding.field as usize);
     }
     pub(super) fn scalar_value(&mut self, inst: &Inst) {
-        let locations = ScalarLocations { allocation: &self.allocation, registers: &self.stage.registers };
+        let locations = ScalarLocations { allocation: &self.allocation, stage: self.stage, frame: &self.frame };
         let host = locations.host();
         let start = self.code.len();
         self.code.reserve(128);
