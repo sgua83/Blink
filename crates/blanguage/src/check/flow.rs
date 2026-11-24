@@ -80,6 +80,12 @@ impl LoopContext {
         identity
     }
 }
+enum InitialWrite {
+    Ready,
+    IncompleteShape,
+    Unavailable,
+}
+
 impl Builder<'_> {
     pub(super) fn prepare_view_loop(&mut self) {
         if self.application.is_none() || self.loop_contexts.last().unwrap().initial{return;}
@@ -358,14 +364,79 @@ impl Builder<'_> {
         })));
     }
 
-    fn initial_target(&self,expr:&Expr,shape:bool)->Option<bool>{
-        use returns::Returned;use application::Ownership;
-        if let ExprKind::Name(name)=expr.kind(){if let Some(Binding::ApplicationData(data))=self.env.get(name){return Some(!self.resolve_ownership(&data.ownership,None).available());}}
-        if !self.owned_element_type(expr)?.owns_resources(){return Some(false);}
-        let projection=self.owned_projection(expr)?;let Binding::OwnedValue(root)=&self.env[&projection.root]else{unreachable!()};let mut model=Returned::OwnedValue(root.clone());
-        for index in projection.path{let Returned::OwnedValue(value)=model else{unreachable!()};model=value.payloads[index].as_deref().unwrap().clone();}
-        self.resolve_owned_model(&mut model,None);Some(match model{Returned::Dataset(data)=>!data.ownership.available(),Returned::OwnedValue(value)=>if value.value.ty.has_variants(){value.ownership==Ownership::Moved||matches!(value.ownership,Ownership::Conditional(_))||shape&&value.incomplete()}else{!value.available()},_=>false})
+    fn initial_target(&self, expr: &Expr, shape: bool) -> InitialWrite {
+        use application::Ownership;
+        use returns::Returned;
+
+        if let ExprKind::Name(name) = expr.kind()
+            && let Some(Binding::ApplicationData(data)) = self.env.get(name)
+        {
+            return if self.resolve_ownership(&data.ownership, None).available() {
+                InitialWrite::Ready
+            } else {
+                InitialWrite::Unavailable
+            };
+        }
+        let projection = match self.owned_element_type(expr) {
+            Some(ty) if !ty.owns_resources() => return InitialWrite::Ready,
+            Some(_) => self.owned_projection(expr),
+            None => None,
+        };
+        let Some(projection) = projection else {
+            return if shape && self.incomplete_loop_root(expr) {
+                InitialWrite::IncompleteShape
+            } else {
+                InitialWrite::Ready
+            };
+        };
+        let Binding::OwnedValue(root) = &self.env[&projection.root] else { unreachable!() };
+        let mut model = match projection.path.as_slice() {
+            [] => Returned::OwnedValue(root.clone()),
+            [first, tail @ ..] => {
+                let mut selected = root.payloads[*first].as_deref().unwrap();
+                for &index in tail {
+                    let Returned::OwnedValue(value) = selected else { unreachable!() };
+                    selected = value.payloads[index].as_deref().unwrap();
+                }
+                selected.clone()
+            }
+        };
+        self.resolve_owned_model(&mut model, None);
+        match model {
+            Returned::Dataset(data) if !data.ownership.available() => InitialWrite::Unavailable,
+            Returned::OwnedValue(value) if value.value.ty.has_variants() => {
+                if matches!(value.ownership, Ownership::Moved | Ownership::Conditional(_)) {
+                    InitialWrite::Unavailable
+                } else if shape && value.incomplete() {
+                    InitialWrite::IncompleteShape
+                } else {
+                    InitialWrite::Ready
+                }
+            }
+            Returned::OwnedValue(value) if !value.available() => InitialWrite::Unavailable,
+            _ => InitialWrite::Ready,
+        }
     }
+
+    fn incomplete_loop_root(&self, expr: &Expr) -> bool {
+        let mut target = expr.clone();
+        loop {
+            match target.kind() {
+                ExprKind::Name(name) => {
+                    return match self.env.get(name) {
+                        Some(Binding::OwnedValue(value)) => {
+                            value.ownership == application::Ownership::Moved || value.incomplete()
+                        }
+                        Some(Binding::ApplicationData(data)) => data.ownership == application::Ownership::Moved,
+                        _ => false,
+                    };
+                }
+                ExprKind::Member(base, _) | ExprKind::Index(base, _) => target = base,
+                _ => return false,
+            }
+        }
+    }
+
     fn loop_has_resource_exit(&self, body: &Block) -> bool {
         if self.application.is_none()
             || !self.env.values().any(|binding| !binding.application_resources().is_empty())
@@ -376,43 +447,26 @@ impl Builder<'_> {
         unsafe { source_loop_exit(storage.nodes.cast_const(), body.source_slice()) }
     }
 
-    fn loop_writes_incomplete_resource(&self, writes: &[Expr]) -> bool {
-        fn root(expr: &Expr) -> Option<String> {
-            match expr.kind() {
-                ExprKind::Name(name) => Some(name.into()),
-                ExprKind::Member(base, _) | ExprKind::Index(base, _) => root(&base),
-                _ => None,
-            }
-        }
-
-        writes.iter().any(|expr| match self.initial_target(expr, true) {
-            Some(value) => value,
-            None => match root(expr).and_then(|name| self.env.get(&name)) {
-                Some(Binding::OwnedValue(value)) => {
-                    value.ownership == application::Ownership::Moved || value.incomplete()
-                }
-                Some(Binding::ApplicationData(data)) => data.ownership == application::Ownership::Moved,
-                _ => false,
-            },
-        })
-    }
-
     pub(super) async fn application_initial_loop(&self, body: &Block) -> Result<bool> {
         if self.loop_has_resource_exit(body) {
             return Ok(true);
         }
         let writes = unsafe { self.world.call(effects::value_writes(self, body)).await }?;
-        Ok(self.loop_writes_incomplete_resource(&writes))
+        Ok(writes.iter().any(|expr| !matches!(self.initial_target(expr, true), InitialWrite::Ready)))
     }
 
     pub(super) async fn next_initial_loop(&self, body: &Block) -> Result<bool> {
-        let resource_exit = self.loop_has_resource_exit(body);
+        let mut initial = self.loop_has_resource_exit(body);
         let writes = unsafe { self.world.call(effects::value_writes(self, body)).await }?;
-        if !resource_exit && !self.loop_writes_incomplete_resource(&writes) {
-            return Ok(false);
+        for expr in &writes {
+            match self.initial_target(expr, !initial) {
+                InitialWrite::Unavailable => return Ok(true),
+                InitialWrite::IncompleteShape => initial = true,
+                InitialWrite::Ready => {}
+            }
         }
-        if writes.iter().any(|expr| self.initial_target(expr, false) == Some(true)) {
-            return Ok(true);
+        if !initial {
+            return Ok(false);
         }
         #[derive(PartialEq,Eq,PartialOrd,Ord)]enum Known{Owned(Vec<usize>),Payload(Vec<usize>),Boolean(usize,bool)}
         fn collect(model:&returns::Returned,path:&mut Vec<usize>,values:&mut BTreeSet<Known>){match model{returns::Returned::Dataset(data)=>{if data.ownership==application::Ownership::Owned{values.insert(Known::Owned(path.clone()));}},returns::Returned::OwnedValue(value)=>{if value.value.ty.has_variants()&&value.ownership==application::Ownership::Owned{values.insert(Known::Owned(path.clone()));}for(index,payload)in value.payloads.iter().enumerate(){if let Some(payload)=payload{path.push(index);if value.value.ty.has_variants(){values.insert(Known::Payload(path.clone()));}collect(payload,path,values);path.pop();}}},_=>{}}}
