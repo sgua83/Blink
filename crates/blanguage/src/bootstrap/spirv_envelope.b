@@ -878,20 +878,36 @@ extern "C" PayloadWrite payload_write(PayloadEmission input, u32 value, address 
     return PayloadWrite(out.words, out.next);
 }
 
-extern "C" PayloadWrite pack_field(PayloadEmission input, PackedField field, u32 high_shift, address packed, address body) on cpu {
-    StageCursor out = StageCursor(body, 0u64, input.next);
-    u32 first = field.offset / 4;
-    for (part in 0..input.count) {
-        u32 word = payload_word(out, input, field.value, part == 0 ? 0 : high_shift);
-        if (field.byte_shift != 0) {
-            word = stage_op(out, 196, input.unit_type, word, field.byte_shift);
+u32 packing_shift(inout StageCursor out, PackingHost host, u32 bits) on cpu
+    requires nonzero(host.constant) {
+    PackingConstant shift = host.constant(host.context, bits, out.next);
+    out.next = shift.next;
+    return shift.id;
+}
+
+extern "C" PayloadWrite pack_record(PackingHost host, u32 word_type, u32 zero, u32 next, address packed, address body) on cpu
+    requires nonzero(host.field) requires nonzero(host.constant) {
+    StageCursor out = StageCursor(body, 0u64, next);
+    PackedField field = PackedField(0, 0, 0, 0);
+    while (host.field(host.context, address_of(field)) != 0) {
+        u32 first = field.offset / 4;
+        u32 bit_offset = field.offset % 4 * 8;
+        u32 byte_shift = bit_offset == 0 ? 0 : packing_shift(out, host, bit_offset);
+        u32 parts = (field.bytes + 3) / 4;
+        u32 high_shift = parts == 2 ? packing_shift(out, host, 32) : 0;
+        PayloadEmission input = PayloadEmission(PayloadAccess::Words, field.raw_type, word_type, 4, parts, out.next);
+        for (part in 0..parts) {
+            u32 word = payload_word(out, input, field.value, part == 0 ? 0 : high_shift);
+            if (byte_shift != 0) {
+                word = stage_op(out, 196, word_type, word, byte_shift);
+            }
+            u32 slot = first + part;
+            u32 previous = read_word(packed, slot);
+            if (previous != zero) {
+                word = stage_op(out, 197, word_type, previous, word);
+            }
+            put(packed, u64(slot), word);
         }
-        u32 slot = first + part;
-        u32 previous = read_word(packed, slot);
-        if (previous != field.zero) {
-            word = stage_op(out, 197, input.unit_type, previous, word);
-        }
-        put(packed, u64(slot), word);
     }
     return PayloadWrite(out.words, out.next);
 }

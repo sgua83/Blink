@@ -348,8 +348,47 @@ struct PayloadEmission {
 struct PackedField {
     value: u32,
     offset: u32,
-    byte_shift: u32,
-    zero: u32,
+    raw_type: u32,
+    bytes: u32,
+}
+
+#[repr(C)]
+struct PackingConstant {
+    id: u32,
+    next: u32,
+}
+
+type PackingContext = *mut std::ffi::c_void;
+
+#[repr(C)]
+struct PackingHost {
+    context: PackingContext,
+    field: unsafe extern "C" fn(PackingContext, *mut PackedField) -> u32,
+    constant: unsafe extern "C" fn(PackingContext, u32, u32) -> PackingConstant,
+}
+
+struct PackingSource<'a, 'program, I> {
+    emitter: &'a mut Emitter<'program>,
+    components: I,
+}
+
+unsafe extern "C" fn packing_field<I: Iterator<Item = (Scalar, u32, u32)>>(
+    context: PackingContext, field: *mut PackedField,
+) -> u32 {
+    let source = unsafe { &mut *context.cast::<PackingSource<'_, '_, I>>() };
+    let Some((scalar, offset, value)) = source.components.next() else { return 0 };
+    let component = PackedField { value, offset, raw_type: source.emitter.raw_type(scalar), bytes: scalar.size() };
+    unsafe { field.write(component); }
+    1
+}
+
+unsafe extern "C" fn packing_constant<I>(
+    context: PackingContext, bits: u32, next: u32,
+) -> PackingConstant {
+    let emitter = &mut unsafe { &mut *context.cast::<PackingSource<'_, '_, I>>() }.emitter;
+    emitter.next = next;
+    let id = emitter.constant(Scalar::U32, bits);
+    PackingConstant { id, next: emitter.next }
 }
 
 #[repr(C)]
@@ -914,8 +953,8 @@ unsafe extern "C" {
         input: PayloadEmission, value: u32, pointers: *const u32, shifts: *const u32,
         output: *mut u32, body: *mut u32,
     ) -> PayloadWrite;
-    #[link_name = "bootstrap.spirv_envelope::pack_field"]
-    fn pack_field(input: PayloadEmission, field: PackedField, high_shift: u32,
+    #[link_name = "bootstrap.spirv_envelope::pack_record"]
+    fn pack_record(host: PackingHost, word_type: u32, zero: u32, next: u32,
         packed: *mut u32, body: *mut u32) -> PayloadWrite;
     #[link_name = "bootstrap.spirv_envelope::begin_shader_body"]
     fn begin_shader_body(
@@ -1775,23 +1814,29 @@ impl Emitter<'_> {
             self.next = read.next;
         }
     }
-    fn pack_words(&mut self, size: u32, components: impl IntoIterator<Item = (Scalar, u32, u32)>) -> Vec<u32> {
+    fn pack_words<I>(&mut self, size: u32, components: I) -> Vec<u32>
+    where
+        I: IntoIterator<Item = (Scalar, u32, u32)>,
+        I::IntoIter: ExactSizeIterator,
+    {
         let zero = self.constant(Scalar::U32, 0);
         let mut values = vec![zero; size.div_ceil(4) as usize];
-        for (scalar, offset, value) in components {
-            let byte_shift = if offset % 4 == 0 { 0 } else { self.constant(Scalar::U32, offset % 4 * 8) };
-            let count = scalar.size().div_ceil(4) as usize;
-            let (input, shifts) = self.payload_input(scalar, Scalar::U32, count, PayloadAccess::Words);
-            let field = PackedField { value, offset, byte_shift, zero };
-            let at = self.body.len();
-            // A field can emit one split shift, two conversions and two shift/merge pairs.
-            self.body.reserve(33);
-            unsafe {
-                let result = pack_field(input, field, shifts[1], values.as_mut_ptr(), self.body.as_mut_ptr().add(at));
-                self.body.set_len(at + result.words as usize);
-                self.next = result.next;
-            }
-        }
+        let components = components.into_iter();
+        let at = self.body.len();
+        // A field can emit one split shift, two conversions and two shift/merge pairs.
+        self.body.reserve(33 * components.len());
+        let body = unsafe { self.body.as_mut_ptr().add(at) };
+        let word_type = self.types[&Scalar::U32];
+        let next = self.next;
+        let mut source = PackingSource { emitter: self, components };
+        let host = PackingHost {
+            context: std::ptr::from_mut(&mut source).cast(),
+            field: packing_field::<I::IntoIter>,
+            constant: packing_constant::<I::IntoIter>,
+        };
+        let result = unsafe { pack_record(host, word_type, zero, next, values.as_mut_ptr(), body) };
+        unsafe { self.body.set_len(at + result.words as usize); }
+        self.next = result.next;
         values
     }
     fn raw_scalar(scalar: Scalar) -> Scalar {

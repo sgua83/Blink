@@ -223,10 +223,17 @@ struct UniformRead {
 // The emitter supplies the declared IDs and room for both word loads,
 // the original payload join and the final scalar definition.
 extern "C" PayloadWrite read_uniform(UniformRead input, address body) on cpu;
-struct PackedField { u32 value; u32 offset; u32 byte_shift; u32 zero; };
-// The caller owns the zero-initialized record IDs and supplies space for up to
-// 33 body words: one split shift, two conversions and two shift/merge pairs.
-extern "C" PayloadWrite pack_field(PayloadEmission input, PackedField field, u32 high_shift, address packed, address body) on cpu;
+struct PackedField { u32 value; u32 offset; u32 raw_type; u32 bytes; };
+struct PackingConstant { u32 id; u32 next; };
+struct PackingHost {
+    address context;
+    cfn<u32,address,address> field;
+    cfn<PackingConstant,address,u32,u32> constant;
+};
+// Borrow the component stream, constant pool and both output buffers for this record.
+// Record slots start at zero; the body can hold up to 33 words per component.
+extern "C" PayloadWrite pack_record(PackingHost host, u32 word_type, u32 zero, u32 next, address packed, address body) on cpu
+    requires nonzero(host.field) requires nonzero(host.constant);
 // The original paged record contains count consecutive u32 words. The caller
 // provides count pointer slots; step is the constant ID for a four-byte advance.
 extern "C" PayloadWrite summary_addresses(PageAddress input, u32 step, address pointers, u32 count, address body) on cpu;
