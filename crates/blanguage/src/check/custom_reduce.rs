@@ -19,6 +19,17 @@ impl Kind {
     }
 }
 
+#[repr(u32)]enum ValueKernelError {Valid,Missing,Reference}
+#[repr(C)]struct ValueKernelSource {error:ValueKernelError,explicit:u32,reference:u64,name:crate::syntax::wire::Text,captures:crate::syntax::wire::Slice,types:crate::syntax::wire::Slice}
+#[repr(C)]#[derive(Clone,Copy)]struct ValueKernelCursor {phase:u32,index:u64}
+#[repr(C)]#[derive(Clone,Copy)]struct ValueKernelFacts {unique:u32,valid:u32,parameters:u64,captures:u64,explicit:u32,uniform:u32,views:u32,reads:u32,writes:u32}
+#[repr(u32)]enum ValueKernelNeed {Resolve,Unknown,Signature,InvalidSignature,Begin,Parameter,BeginCaptures,Capture,InvalidCapture,PushCapture,EndCaptures,Explicit,Specialize,Origin,Invoke,Ordinary,Value,Same,Publish}
+#[repr(C)]struct ValueKernelStep {cursor:ValueKernelCursor,need:ValueKernelNeed,index:u64}
+unsafe extern "C" {
+ #[link_name="bootstrap.function_body::value_kernel_source"]fn value_kernel_source(source:crate::syntax::wire::SignatureNode)->ValueKernelSource;
+ #[link_name="bootstrap.function_body::value_kernel_signature"]fn value_kernel_signature(declaration:crate::syntax::wire::SignatureNode,invocation:u32,parameters:u64,captures:u64)->u32;
+ #[link_name="bootstrap.function_body::value_kernel_step"]fn value_kernel_step(cursor:ValueKernelCursor,facts:ValueKernelFacts)->ValueKernelStep;
+}
 async fn function(
     world: &World,
     program: &mut Program,
@@ -30,115 +41,77 @@ async fn function(
     parameters: &[&Ty],
     functions: &mut native_function::Module,
 ) -> Result<ValueCode> {
-    let d = &owner.definition;
-    let (reference, captures) = match expr.kind() {
-        ExprKind::Call(name, args) if name == "bind" => {
-            let Some(reference) = args.first() else {
-                return d.source.fail(expr.span(), "B212", "bind 需要静态值函数引用");
-            };
-            (reference, Some(args.slice(1..)))
-        }
-        _ => (expr.clone(), None),
-    };
-    let (name, explicit) = match reference.kind() {
-        ExprKind::Name(name) => (name, None),
-        ExprKind::FunctionRef(name, arguments) => (name, Some(arguments)),
-        _ => {
-            return d.source.fail(
-                reference.span(),
-                "B212",
-                "集合需要静态函数引用，或 bind(静态函数引用, 统一值…)",
-            );
-        }
-    };
-    let Some(key) = world.resolve(name, &d.module, &d.imports, true).unique() else {
-        return d.source.fail(expr.span(), "B158", "未知或未导出的集合值函数");
-    };
-    let callee = &world.functions[&key];
-    if callee.execution != crate::execution::Requirement::Invocation
-        || callee.function.kind() != FunctionKind::Value
-        || callee.function.target() != Target::Compute
-        || callee.function.params().len() != parameters.len() + captures.as_ref().map_or(0,|captures|captures.len())
-        || callee
-            .function
-            .params()
-            .iter()
-            .any(|p| p.access() != Access::Value || p.ty().dataset() || p.ty().tile() || p.ty().view())
-    {
-        return d.source.fail(
-            expr.span(),
-            "B212",
-            "集合需要 compute 值函数：投影接收一个源值，单位元无元素参数，合并器接收两个结果值；bind 参数追加在元素参数之后",
-        );
+    let d=&owner.definition;
+    let source=unsafe {value_kernel_source(expr.signature_node())};
+    let reference=expr.child::<crate::syntax::wire::ExprNode>(source.reference);
+    match source.error {
+        ValueKernelError::Valid=>{},
+        ValueKernelError::Missing=>return d.source.fail(expr.span(),"B212","bind 需要静态值函数引用"),
+        ValueKernelError::Reference=>return d.source.fail(reference.span(),"B212","集合需要静态函数引用，或 bind(静态函数引用, 统一值…)"),
     }
-    let mut builder = unsafe { world.call(Builder::new(world, owner, program, 0, Some(&owner.name))).await }?;
-    builder.source_context = Arc::new(SourceContext { domain_path: domain_path.clone(), ..(*builder.source_context).clone() });
-    builder.functions = std::mem::take(functions);
-    builder.roots(env);
-    let mut inputs = Vec::new();
-    let mut args = Vec::new();
-    for ty in parameters {
-        let regs: Vec<_> = ty.components.iter().map(|(s, _)| builder.reg(*s)).collect();
-        inputs.extend(&regs);
-        args.push(cooperative::Argument::Value(Value {
-            proof: bounds::Proof::default(),
-            literal: false,
-            ty: (*ty).clone(),
-            regs,
-            uniform: false,
-            constant: None,
-        }));
-    }
-    builder.in_function = true;
-    for capture in captures.iter().flat_map(|captures|captures.iter()) {
-        let result = unsafe { world.call(builder.expr(&capture)).await }?;
-        let value = builder.value_result(result, capture.span())?;
-        if !value.uniform
-            || value.ty.contains_views()
-            || !builder.reads.is_empty()
-            || !builder.writes.is_empty()
-        {
-            return d.source.fail(
-                capture.span(),
-                "B213",
-                "bind 只能捕获执行统一的普通值，不能捕获资源或读取数据集元素",
-            );
+    let captures=expr.list::<crate::syntax::wire::ExprNode>(source.captures);
+    let mut cursor=ValueKernelCursor {phase:0,index:0};
+    let mut facts=ValueKernelFacts {unique:0,valid:0,parameters:parameters.len() as u64,captures:source.captures.count,explicit:source.explicit,uniform:0,views:0,reads:0,writes:0};
+    let mut key=None;let mut builder=None;let mut inputs=Vec::new();let mut args=Vec::new();
+    let mut explicit=None;let mut instance=None;let mut entry_origin=None;
+    let mut returned=None;let mut ordinary=None;let mut value=None;
+    loop {
+        let step=unsafe {value_kernel_step(cursor,facts)};cursor=step.cursor;
+        match step.need {
+            ValueKernelNeed::Resolve=>{
+                key=world.resolve(expr.source_view().text(source.name),&d.module,&d.imports,true).unique();
+                facts.unique=u32::from(key.is_some());
+            }
+            ValueKernelNeed::Unknown=>return d.source.fail(expr.span(),"B158","未知或未导出的集合值函数"),
+            ValueKernelNeed::Signature=>{
+                let callee=&world.functions[key.as_ref().unwrap()];
+                facts.valid=unsafe {value_kernel_signature(callee.function.signature_node(),u32::from(callee.execution==crate::execution::Requirement::Invocation),parameters.len() as u64,captures.len() as u64)};
+            }
+            ValueKernelNeed::InvalidSignature=>return d.source.fail(expr.span(),"B212","集合需要 compute 值函数：投影接收一个源值，单位元无元素参数，合并器接收两个结果值；bind 参数追加在元素参数之后"),
+            ValueKernelNeed::Begin=>{
+                let mut b=unsafe {world.call(Builder::new(world,owner,program,0,Some(&owner.name))).await}?;
+                b.source_context=Arc::new(SourceContext {domain_path:domain_path.clone(),..(*b.source_context).clone()});
+                b.functions=std::mem::take(functions);b.roots(env);builder=Some(b);
+            }
+            ValueKernelNeed::Parameter=>{
+                let b=builder.as_mut().unwrap();let ty=parameters[step.index as usize];
+                let regs:Vec<_>=ty.components.iter().map(|(s,_)|b.reg(*s)).collect();inputs.extend(&regs);
+                args.push(cooperative::Argument::Value(Value {proof:bounds::Proof::default(),literal:false,ty:ty.clone(),regs,uniform:false,constant:None}));
+            }
+            ValueKernelNeed::BeginCaptures=>builder.as_mut().unwrap().in_function=true,
+            ValueKernelNeed::Capture=>{
+                let capture=captures.at(step.index as usize);let b=builder.as_mut().unwrap();
+                let result=unsafe {world.call(b.expr(&capture)).await}?;let captured=b.value_result(result,capture.span())?;
+                facts.uniform=u32::from(captured.uniform);facts.views=u32::from(captured.ty.contains_views());
+                facts.reads=u32::from(!b.reads.is_empty());facts.writes=u32::from(!b.writes.is_empty());value=Some(captured);
+            }
+            ValueKernelNeed::InvalidCapture=>return d.source.fail(captures.at(step.index as usize).span(),"B213","bind 只能捕获执行统一的普通值，不能捕获资源或读取数据集元素"),
+            ValueKernelNeed::PushCapture=>args.push(cooperative::Argument::Value(value.take().unwrap())),
+            ValueKernelNeed::EndCaptures=>builder.as_mut().unwrap().in_function=false,
+            ValueKernelNeed::Explicit=>{
+                let arguments=expr.list(source.types);
+                explicit=Some(unsafe {world.call(owner.bindings.arguments(world,&arguments,(&d.source,&d.module,&d.imports),reference.span())).await}?);
+            }
+            ValueKernelNeed::Specialize=>{
+                instance=Some(unsafe {world.call(builder.as_ref().unwrap().specialized_arguments(key.take().unwrap(),&args,explicit.as_deref(),reference.span())).await}?);explicit=None;
+            }
+            ValueKernelNeed::Origin=>{
+                let b=builder.as_ref().unwrap();let instance=instance.as_ref().unwrap();
+                let source_site=|span|b.source_definition.as_ref().map(|origin|Arc::new(SourceSite {origin:origin.clone(),context:b.source_context.clone(),span,syntax:SourceSyntax::Expression}));
+                entry_origin=Some(Arc::new(ValueCodeEntry {definition:instance.definition.source_origin().map(Arc::new),instance:Arc::from(instance.name.as_str()),reference:source_site(reference.span()),capture_parameter_start:parameters.len(),captures:captures.iter().map(|capture|source_site(capture.span())).collect()}));
+            }
+            ValueKernelNeed::Invoke=>returned=unsafe {world.call(builder.as_mut().unwrap().invoke_returned(instance.take().unwrap(),std::mem::take(&mut args),reference.span(),None,None)).await}?,
+            ValueKernelNeed::Ordinary=>ordinary=builder.as_ref().unwrap().ordinary_return(returned.take(),expr.span())?,
+            ValueKernelNeed::Value=>value=Some(builder.as_ref().unwrap().value_result(ordinary.take(),expr.span())?),
+            ValueKernelNeed::Same=>builder.as_ref().unwrap().require_same(ty,&value.as_ref().unwrap().ty,expr.span())?,
+            ValueKernelNeed::Publish=>{
+                let mut b=builder.take().unwrap();*functions=std::mem::take(&mut b.functions);
+                return Ok(ValueCode {entry_origin,generated_origin:None,registers:b.registers,locals:b.locals,code:b.code,inputs,outputs:value.take().unwrap().regs});
+            }
         }
-        args.push(cooperative::Argument::Value(value));
     }
-    builder.in_function = false;
-    let explicit=match explicit.as_ref() {
-        Some(arguments)=>Some(unsafe { world.call(owner.bindings.arguments(world,arguments,
-            (&d.source,&d.module,&d.imports),reference.span())).await }?),
-        None=>None,
-    };
-    let instance = unsafe { world.call(builder.specialized_arguments(key, &args, explicit.as_deref(), reference.span())).await }?;
-    let source_site = |span| builder.source_definition.as_ref().map(|origin| Arc::new(SourceSite {
-        origin: origin.clone(), context: builder.source_context.clone(), span, syntax: SourceSyntax::Expression,
-    }));
-    let entry_origin = Arc::new(ValueCodeEntry {
-        definition: instance.definition.source_origin().map(Arc::new),
-        instance: Arc::from(instance.name.as_str()),
-        reference: source_site(reference.span()),
-        capture_parameter_start: parameters.len(),
-        captures: captures.iter().flat_map(|captures|captures.iter()).map(|capture| source_site(capture.span())).collect(),
-    });
-    let result = unsafe { world.call(builder.invoke_returned(instance, args, reference.span(), None, None)).await }?;
-    let result = builder.ordinary_return(result, expr.span())?;
-    let result = builder.value_result(result, expr.span())?;
-    builder.require_same(ty, &result.ty, expr.span())?;
-    *functions = std::mem::take(&mut builder.functions);
-    let code = ValueCode {
-        entry_origin: Some(entry_origin),
-        generated_origin: None,
-        registers: builder.registers,
-        locals: builder.locals,
-        code: builder.code,
-        inputs,
-        outputs: result.regs,
-    };
-    Ok(code)
 }
+
 pub(super) async fn compile(
     world: &World,
     program: &mut Program,

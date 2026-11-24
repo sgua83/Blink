@@ -405,3 +405,12 @@ struct StageExpressionFacts {u32 missing;u32 unique;};
 enum StageExpressionNeed:u32 {Resolve=0;BeginSegment=1;Clear=2;Sort=3;Compact=4;Reduce=5;SegmentedReduce=6;Scan=7;SegmentedScan=8;CustomReduce=9;CustomScan=10;CustomSegmentedScan=11;CustomSegmentedReduce=12;CallPrepare=13;CallExecute=14;ResetBoundary=15;ResetFirst=16;Invalid=17;Unknown=18;Complete=19;};
 struct StageExpressionStep {StageExpressionCursor cursor;StageExpressionNeed need;Text name;Slice arguments;Slice types;CollectiveOperator operation;};
 extern "C" StageExpressionStep stage_expression_step(StageExpressionCursor state,SignatureNode source,StageExpressionFacts facts) on cpu;
+
+enum ValueKernelError:u32 {Valid=0;Missing=1;Reference=2;};
+struct ValueKernelSource {ValueKernelError error;u32 explicit;u64 reference;Text name;Slice captures;Slice types;};
+struct ValueKernelFacts {u32 unique;u32 valid;u64 parameters;u64 captures;u32 explicit;u32 uniform;u32 views;u32 reads;u32 writes;};
+enum ValueKernelNeed:u32 {Resolve=0;Unknown=1;Signature=2;InvalidSignature=3;Begin=4;Parameter=5;BeginCaptures=6;Capture=7;InvalidCapture=8;PushCapture=9;EndCaptures=10;Explicit=11;Specialize=12;Origin=13;Invoke=14;Ordinary=15;Value=16;Same=17;Publish=18;};
+struct ValueKernelStep {ValueCursor cursor;ValueKernelNeed need;u64 index;};
+extern "C" ValueKernelSource value_kernel_source(SignatureNode source) on cpu;
+extern "C" u32 value_kernel_signature(SignatureNode declaration,u32 invocation,u64 parameters,u64 captures) on cpu;
+extern "C" ValueKernelStep value_kernel_step(ValueCursor state,ValueKernelFacts facts) on cpu;

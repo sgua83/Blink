@@ -1688,3 +1688,83 @@ extern "C" StageExpressionStep stage_expression_step(StageExpressionCursor state
  if(state.phase==31){result.cursor.phase=32;result.need=StageExpressionNeed::ResetFirst;return result;}
  return result;
 }
+
+extern "C" ValueKernelSource value_kernel_source(SignatureNode source) on cpu {
+ ValueKernelSource result=ValueKernelSource(ValueKernelError::Valid,0,source.offset,Text(0,Span(0u64,0u64)),Slice(0u64,0u64),Slice(0u64,0u64));
+ ExprNode expression=binding_node<ExprNode>(source.storage.nodes,source.offset);
+ match(expression.kind){
+  ExprKind::Call(value){
+   address bytes=binding_at(value.name.kind==0?source.storage.source:source.storage.text,value.name.range.start);
+   if(local_spelling(bytes,value.name.range.end-value.name.range.start,"bind")){
+    if(value.arguments.count==0u64){result.error=ValueKernelError::Missing;return result;}
+    result.reference=binding_member(source.storage.nodes,value.arguments,0u64);
+    result.captures=Slice(value.arguments.offset+8u64,value.arguments.count-1u64);
+   }
+  }
+  ExprKind::Number(unused){}
+  ExprKind::StaticU32(unused){}
+  ExprKind::Bool(unused){}
+  ExprKind::Name(unused){}
+  ExprKind::Member(unused){}
+  ExprKind::Index(unused){}
+  ExprKind::Invoke(unused){}
+  ExprKind::Construct(unused){}
+  ExprKind::Specialize(unused){}
+  ExprKind::FunctionRef(unused){}
+  ExprKind::Cooperate(unused){}
+  ExprKind::Target(unused){}
+  ExprKind::Unary(unused){}
+  ExprKind::Binary(unused){}
+  ExprKind::Select(unused){}
+
+ }
+ ExprNode reference=binding_node<ExprNode>(source.storage.nodes,result.reference);
+ match(reference.kind){
+  ExprKind::Name(value){result.name=value;}
+  ExprKind::FunctionRef(value){result.name=value.name;result.types=value.types;result.explicit=1;}
+  ExprKind::Number(unused){result.error=ValueKernelError::Reference;}
+  ExprKind::StaticU32(unused){result.error=ValueKernelError::Reference;}
+  ExprKind::Bool(unused){result.error=ValueKernelError::Reference;}
+  ExprKind::Member(unused){result.error=ValueKernelError::Reference;}
+  ExprKind::Index(unused){result.error=ValueKernelError::Reference;}
+  ExprKind::Call(unused){result.error=ValueKernelError::Reference;}
+  ExprKind::Invoke(unused){result.error=ValueKernelError::Reference;}
+  ExprKind::Construct(unused){result.error=ValueKernelError::Reference;}
+  ExprKind::Specialize(unused){result.error=ValueKernelError::Reference;}
+  ExprKind::Cooperate(unused){result.error=ValueKernelError::Reference;}
+  ExprKind::Target(unused){result.error=ValueKernelError::Reference;}
+  ExprKind::Unary(unused){result.error=ValueKernelError::Reference;}
+  ExprKind::Binary(unused){result.error=ValueKernelError::Reference;}
+  ExprKind::Select(unused){result.error=ValueKernelError::Reference;}
+
+ }
+ return result;
+}
+extern "C" u32 value_kernel_signature(SignatureNode declaration,u32 invocation,u64 parameters,u64 captures) on cpu {
+ FunctionNode function=binding_node<FunctionNode>(declaration.storage.nodes,declaration.offset);
+ if(invocation==0||function.kind!=0||function.target!=0||function.params.count!=parameters+captures){return 0;}
+ u64 i=0u64;while(i<function.params.count){
+  ParamNode parameter=binding_node<ParamNode>(declaration.storage.nodes,binding_member(declaration.storage.nodes,function.params,i));
+  TypeNode type=binding_node<TypeNode>(declaration.storage.nodes,parameter.ty.offset);
+  if(parameter.access!=0||type.dataset!=0||type.tile!=0||type.view!=0){return 0;}
+  i+=1u64;
+ }
+ return 1;
+}
+extern "C" ValueKernelStep value_kernel_step(ValueCursor state,ValueKernelFacts facts) on cpu {
+ ValueKernelStep result=ValueKernelStep(state,ValueKernelNeed::Publish,state.index);
+ if(state.phase==0){result.cursor.phase=1;result.need=ValueKernelNeed::Resolve;return result;}
+ if(state.phase==1){if(facts.unique==0){result.need=ValueKernelNeed::Unknown;return result;}result.cursor.phase=2;result.need=ValueKernelNeed::Signature;return result;}
+ if(state.phase==2){if(facts.valid==0){result.need=ValueKernelNeed::InvalidSignature;return result;}result.cursor.phase=3;result.cursor.index=0u64;result.need=ValueKernelNeed::Begin;return result;}
+ if(state.phase==3){if(state.index<facts.parameters){result.cursor.index+=1u64;result.need=ValueKernelNeed::Parameter;return result;}result.cursor.phase=4;result.cursor.index=0u64;result.need=ValueKernelNeed::BeginCaptures;return result;}
+ if(state.phase==4){if(state.index<facts.captures){result.cursor.phase=5;result.need=ValueKernelNeed::Capture;return result;}result.cursor.phase=6;result.need=ValueKernelNeed::EndCaptures;return result;}
+ if(state.phase==5){if(facts.uniform==0||facts.views!=0||facts.reads!=0||facts.writes!=0){result.need=ValueKernelNeed::InvalidCapture;return result;}result.cursor.phase=4;result.cursor.index+=1u64;result.need=ValueKernelNeed::PushCapture;return result;}
+ if(state.phase==6){if(facts.explicit!=0){result.cursor.phase=7;result.need=ValueKernelNeed::Explicit;return result;}result.cursor.phase=8;result.need=ValueKernelNeed::Specialize;return result;}
+ if(state.phase==7){result.cursor.phase=8;result.need=ValueKernelNeed::Specialize;return result;}
+ if(state.phase==8){result.cursor.phase=9;result.need=ValueKernelNeed::Origin;return result;}
+ if(state.phase==9){result.cursor.phase=10;result.need=ValueKernelNeed::Invoke;return result;}
+ if(state.phase==10){result.cursor.phase=11;result.need=ValueKernelNeed::Ordinary;return result;}
+ if(state.phase==11){result.cursor.phase=12;result.need=ValueKernelNeed::Value;return result;}
+ if(state.phase==12){result.cursor.phase=13;result.need=ValueKernelNeed::Same;return result;}
+ return result;
+}
