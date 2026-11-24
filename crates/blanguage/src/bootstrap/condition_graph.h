@@ -92,7 +92,7 @@ struct RequiredHost {
  cfn<void,address,usize> leaf;
  cfn<void,address,usize,u32,u32> union;
  cfn<void,address,usize,u32,u32> common;
- cfn<u32,address,usize> ensures memory(read) valid_additions;
+ cfn<u32,address,usize> valid_additions;
  cfn<u32,address,usize,u32> release;
 };
 extern "C" void required_evaluate(RequiredGraph graph,address context,RequiredHost host) on cpu
