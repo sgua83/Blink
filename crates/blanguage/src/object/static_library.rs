@@ -44,17 +44,30 @@ impl CompiledInterface {
     /// Reads source-facing interfaces in the original COFF input order.
     pub fn read(path: &Path) -> Result<Vec<Self>> {
         let bytes = ObjectBytes::read(path)?;
-        if has_signature(&bytes) {
-            Library::decode(bytes, false)?.interfaces().collect()
-        } else {
-            Ok(vec![read_interface(&bytes)?])
+        if !has_signature(&bytes) {
+            return Ok(vec![read_interface(&bytes)?]);
         }
+        let mut interfaces = Vec::new();
+        let mut member_result = Ok(());
+        visit_archive(&bytes, |name, body| {
+            // The whole archive must pass format checks before a member error wins.
+            if member_result.is_ok() {
+                member_result = read_member_interface(name, body.bytes(&bytes))
+                    .map(|interface| interfaces.push(interface));
+            }
+        })?;
+        member_result?;
+        Ok(interfaces)
     }
 }
 
-fn read_interface(bytes: &ObjectBytes) -> Result<CompiledInterface> {
+fn read_interface(bytes: &[u8]) -> Result<CompiledInterface> {
     let (name, kind, definitions) = coff::Reader::new(bytes)?.interface()?;
     Ok(CompiledInterface { name, kind, definitions })
+}
+
+fn read_member_interface(name: &str, bytes: &[u8]) -> Result<CompiledInterface> {
+    read_interface(bytes).map_err(|error| format!("静态库成员 {name}：{error}").into())
 }
 
 #[derive(Clone)]
@@ -215,8 +228,8 @@ impl Library {
         (0..self.member_count()).filter_map(move |index| {
             let member = self.member(index);
             (member.available != 0).then(|| {
-                let (name, bytes) = self.member_bytes(member.member);
-                read_interface(&bytes).map_err(|error| format!("静态库成员 {name}：{error}").into())
+                let member = member.member;
+                read_member_interface(member.name.validated_name(&self.bytes), member.body.bytes(&self.bytes))
             })
         })
     }
@@ -234,6 +247,10 @@ struct ArchiveRange { start: usize, length: usize }
 impl ArchiveRange {
     fn range(self) -> Range<usize> { self.start..self.start + self.length }
     fn bytes<'a>(&self, bytes: &'a [u8]) -> &'a [u8] { &bytes[self.range()] }
+    fn validated_name<'a>(&self, bytes: &'a [u8]) -> &'a str {
+        // B hands off this name only after the UTF-8 receiver accepts it.
+        unsafe { std::str::from_utf8_unchecked(self.bytes(bytes)) }
+    }
 }
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -326,8 +343,7 @@ impl Library {
     fn member_count(&self)->usize {unsafe{library_member_count(self.directory.as_ptr())}}
     fn member(&self,index:usize)->ArchiveMemberState {unsafe{library_member(self.directory.as_ptr(),index)}}
     fn member_bytes(&self,member:ArchiveReadMember)->(&str,ObjectBytes) {
-        // The original receiver validated this name before B retained its range.
-        (unsafe{std::str::from_utf8_unchecked(member.name.bytes(&self.bytes))},self.bytes.slice(member.body.range()))
+        (member.name.validated_name(&self.bytes),self.bytes.slice(member.body.range()))
     }
     pub(crate) fn extract<Bytes: ReadSection>(&mut self, symbol: &str, stack_output: bool) -> Result<Option<Object<Bytes>>> {
         let selected=unsafe{library_take(self.directory.as_ptr(),symbol.as_ptr(),symbol.len())};
@@ -389,25 +405,25 @@ unsafe extern "C" {
     fn archive_encode(input: ArchiveInput, layout: ArchiveLayout, output: *mut u8);
 }
 
-struct ArchiveMembers<'a> {
-    source: &'a ObjectBytes,
-    output: &'a mut Vec<Member>,
+struct ArchiveVisitor<'a, Emit> {
+    source: &'a [u8],
+    emit: Emit,
 }
 
-unsafe extern "C" fn append_member(context: *mut std::ffi::c_void, name: ArchiveRange, body: ArchiveRange) {
-    let members = unsafe { &mut *context.cast::<ArchiveMembers<'_>>() };
-    // B calls this receiver after validate_name succeeds for the same range.
-    let name = unsafe { std::str::from_utf8_unchecked(name.bytes(members.source)) };
-    members.output.push(Member { name: name.into(), bytes: members.source.slice(body.range()) });
+unsafe extern "C" fn visit_member<Emit: FnMut(&str, ArchiveRange)>(
+    context: *mut std::ffi::c_void, name: ArchiveRange, body: ArchiveRange,
+) {
+    let visitor = unsafe { &mut *context.cast::<ArchiveVisitor<'_, Emit>>() };
+    (visitor.emit)(name.validated_name(visitor.source), body);
 }
 
-fn append_archive(source: &ObjectBytes, output: &mut Vec<Member>) -> Result<()> {
+fn visit_archive<Emit: FnMut(&str, ArchiveRange)>(source: &[u8], emit: Emit) -> Result<()> {
     let mut names = ArchiveNames { bytes: source, error: None };
-    let mut members = ArchiveMembers { source, output };
+    let mut visitor = ArchiveVisitor { source, emit };
     let result = unsafe {
         archive_visit_members(source.as_ptr(), source.len(),
             (&mut names as *mut ArchiveNames<'_>).cast(), validate_name,
-            (&mut members as *mut ArchiveMembers<'_>).cast(), append_member)
+            (&mut visitor as *mut ArchiveVisitor<'_, Emit>).cast(), visit_member::<Emit>)
     };
     if let Some(error) = names.error { return Err(error.into()); }
     archive_read_result(result)
@@ -436,7 +452,9 @@ pub(crate) fn members(inputs: &[impl AsRef<Path>]) -> Result<Vec<Member>> {
         let input = input.as_ref();
         let bytes = ObjectBytes::read(input)?;
         if has_signature(&bytes) {
-            append_archive(&bytes, &mut members)?;
+            visit_archive(&bytes, |name, body| {
+                members.push(Member { name: name.into(), bytes: bytes.slice(body.range()) });
+            })?;
         } else {
             let name = input.file_name()
                 .and_then(|name| name.to_str())
