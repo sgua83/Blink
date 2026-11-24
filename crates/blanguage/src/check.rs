@@ -699,22 +699,15 @@ async fn expand_stages(
 ) -> Result<bool> {
     let instance=input.owner();
     let d = &instance.definition;
-    for statement in body {
-        promote_stage_access(env,program,facts);
-        let mut first_stage = program.stages.len();
-        let start=unsafe{stage_control_step(StageControlCursor{phase:0,index:0,last:0},statement.signature_node(),StageControlFacts{present:0,literal:0,same_type:0,bits:0,returned:0})};
-        let controlled=match start.need {
-            StageControlNeed::Unhandled=>None,
-            _=>unsafe { world.call(expand_stage_control(
-                world, input, &statement, env, program, stack, boundary, facts, calls,
-                domain_path, functions, scopes, start, first_stage,
-            )).await }?,
-        };
-        if let Some((returned, after)) = controlled {
-            if returned { return Ok(true); }
-            first_stage = after;
-        } else { match statement.kind() {
-            StmtKind::Parallel(name, syntax, body) => {
+    let mut body=body;let mut statement=None;let mut cursor=SourceValueCursor{phase:0};let mut sequence=StageSequenceFacts{present:0,returned:0};let mut first_stage=0;
+    loop{let step=unsafe{stage_sequence_step(cursor,StageSequenceFacts{..sequence})};cursor=step.cursor;match step.need{
+        StageSequenceNeed::Next=>{statement.take();statement=body.next();sequence.present=u32::from(statement.is_some());},
+        StageSequenceNeed::Begin=>{promote_stage_access(env,program,facts);first_stage=program.stages.len();},
+        StageSequenceNeed::Dispatch=>{
+            let statement=statement.as_ref().unwrap();let start=unsafe{stage_control_step(StageControlCursor{phase:0,index:0,last:0},statement.signature_node(),StageControlFacts{present:0,literal:0,same_type:0,bits:0,returned:0})};
+            match start.need{
+                StageControlNeed::Parallel=>{
+                    let source=statement.source_view();let name=source.text(start.name);let syntax:ParallelDomain=statement.child(start.expression);let body:Block=statement.list(start.body);
                 begin_segment(program, facts, calls);
                 let (mut b, domain, prefix, selection, operation_source, index) = unsafe { world.call(parallel_environment(
                     world, input, &statement, name, &syntax, env, program, facts,
@@ -752,116 +745,51 @@ async fn expand_stages(
                     ParallelBuildNeed::Complete=>break,
                     _=>unsafe{std::hint::unreachable_unchecked()},
                 }}
+                },
+                StageControlNeed::Expression=>{let expression:Expr=statement.child(start.expression);unsafe{world.call(expand_stage_expression(world,input,statement,&expression,env,program,stack,boundary,facts,calls,domain_path,functions,scopes,&mut first_stage)).await}?;},
+                _=>{let(returned,after)=unsafe{world.call(expand_stage_control(world,input,statement,env,program,stack,boundary,facts,calls,domain_path,functions,scopes,start,first_stage)).await}?;sequence.returned=u32::from(returned);first_stage=after;},
             }
-            StmtKind::Expr(expression) => {
-                let call_span = expression.span();
-                match expression.kind() {
-                    ExprKind::Call(name, args) if name == "clear_prefix"
-                        && world.resolve(name, &d.module, &d.imports, true).is_missing() =>
-                    {
-                        begin_segment(program, facts, calls);
-                        let output = append::clear(program, env, &args, d, statement.span(), facts,
-                            input.operation_source(call_span, SourceSyntax::Expression, domain_path))?;
-                        facts.outputs.push(output);
-                        *boundary = false;
-                    }
-                    ExprKind::Call(name, args) if name == "stable_sort_by_key"
-                        && world.resolve(name, &d.module, &d.imports, true).is_missing() =>
-                    {
-                        begin_segment(program, facts, calls);
-                        sort::compile(program, env, &args, d, statement.span(), facts, input.operation_source(call_span, SourceSyntax::Expression, domain_path))?;
-                        *boundary = false;
-                    }
-                    ExprKind::Call(name, args) if name == "compact"
-                        && world.resolve(name, &d.module, &d.imports, true).is_missing() =>
-                    {
-                        begin_segment(program, facts, calls);
-                        compact::compile(program, env, &args, d, statement.span(), facts, input.operation_source(call_span, SourceSyntax::Expression, domain_path))?;
-                        *boundary = false;
-                    }
-                    ExprKind::Call(name, args) | ExprKind::Specialize(name, _, args) => 'call: {
-                        let arguments = if let ExprKind::Specialize(_, arguments, _) = expression.kind() {
-                            Some(arguments)
-                        } else {
-                            None
-                        };
-                        let explicit = arguments.as_ref();
-                        let callee_key = world.resolve(name, &d.module, &d.imports, true);
-                        if callee_key.is_missing() && explicit.is_none() {
-                            use collective::Form;
-                            let builtin = collective::from_source(name);
-                            let stage = match builtin.form {
-                                Form::Reduce => Some(reduce::compile(
-                                    program, env, builtin.operation, &args, d, statement.span(), facts,
-                                    input.operation_source(call_span, SourceSyntax::Expression, domain_path),
-                                )),
-                                Form::SegmentedReduce => Some(segmented_reduce::compile(
-                                    program, env, builtin.operation, &args, d, statement.span(), facts,
-                                    input.operation_source(call_span, SourceSyntax::Expression, domain_path),
-                                )),
-                                Form::Scan | Form::SegmentedScan => Some(scan::compile(
-                                    program, env, builtin.operation, matches!(builtin.form, Form::SegmentedScan),
-                                    &args, d, statement.span(), facts,
-                                    input.operation_source(call_span, SourceSyntax::Expression, domain_path),
-                                )),
-                                _ => None,
-                            };
-                            if let Some(stage) = stage {
-                                stage?;
-                                *boundary = false;
-                                break 'call;
-                            }
-                            if let Some(kind) =
-                                custom_reduce::Kind::from_source(name)
-                            {
-                                begin_segment(program, facts, calls);
-                                unsafe { world.call(custom_reduce::compile(
-                                    world,
-                                    program,
-                                    env,
-                                    &args,
-                                    instance,
-                                    statement.span(),
-                                    facts,
-                                    name.ends_with("_map"),
-                                    kind,
-                                    domain_path.clone(),
-                                    functions,
-                                    input.operation_source(call_span, SourceSyntax::Expression, domain_path),
-                                )).await }?;
-                                *boundary = false;
-                                break 'call;
-                            }
-                        }
-                        let Some(key) = callee_key.unique() else {
-                            return d
-                                .source
-                                .fail(statement.span(), "B109", format!("未知计算程序 {name}"));
-                        };
-                        let (instance, mut child) = unsafe { world.call(call_execution::domain_call(
-                            world, instance, env, program, &key, args, explicit, statement.span(), domain_path,
-                        )).await }?;
-                        unsafe { world.call(call_execution::execute_domain_call(
-                            world, input.owner(), &instance, &mut child, program, stack, boundary,
-                            facts, calls, domain_path, functions, scopes, statement.span(), call_span,
-                        )).await }?;
-                        first_stage = program.stages.len();
-                    }
-                    _ => return d.source.fail(statement.span(), "B119",
-                        "program 顶层表达阶段；局部控制流放在 parallel 内"),
-                }
-            }
-            _ => unsafe { std::hint::unreachable_unchecked() },
-        }}
-        collective_initialized_outputs(program,&program.stages[first_stage..],&mut facts.outputs);
-    }
-    Ok(false)
+        },
+        StageSequenceNeed::Outputs=>collective_initialized_outputs(program,&program.stages[first_stage..],&mut facts.outputs),
+        StageSequenceNeed::Complete=>return Ok(sequence.returned!=0),
+    }}
 }
+
+async fn expand_stage_expression(
+    world:&World,input:DomainInput<'_>,statement:&Stmt,expression:&Expr,env:&mut BTreeMap<String,Root>,program:&mut Program,
+    stack:&mut Vec<String>,boundary:&mut bool,facts:&mut prefix::Facts,calls:&mut Vec<DomainCall>,
+    path:&Arc<[DomainSite]>,functions:&mut native_function::Module,scopes:&mut BTreeMap<usize,RangeContext>,first_stage:&mut usize,
+)->Result<()> {
+    let instance=input.owner();let d=&instance.definition;let source=expression.source_view();let mut cursor=StageExpressionCursor{phase:0,custom:0,flags:0};let mut control=StageExpressionFacts{missing:0,unique:0};
+    let mut name="";let mut args=None;let mut types=None;let mut key=None;let mut callee=None;let mut child=None;
+    loop{let step=unsafe{stage_expression_step(cursor,expression.signature_node(),StageExpressionFacts{..control})};cursor=step.cursor;match step.need{
+        StageExpressionNeed::Resolve=>{name=source.text(step.name);args=Some(expression.list::<crate::syntax::wire::ExprNode>(step.arguments));types=match cursor.flags&1{0=>None,_=>Some(expression.list::<crate::syntax::wire::ArgumentNode>(step.types))};let resolved=world.resolve(name,&d.module,&d.imports,true);control.missing=u32::from(resolved.is_missing());key=resolved.unique();control.unique=u32::from(key.is_some());},
+        StageExpressionNeed::BeginSegment=>begin_segment(program,facts,calls),
+        StageExpressionNeed::Clear=>{let output=append::clear(program,env,args.as_ref().unwrap(),d,statement.span(),facts,input.operation_source(expression.span(),SourceSyntax::Expression,path))?;facts.outputs.push(output);},
+        StageExpressionNeed::Sort=>sort::compile(program,env,args.as_ref().unwrap(),d,statement.span(),facts,input.operation_source(expression.span(),SourceSyntax::Expression,path))?,
+        StageExpressionNeed::Compact=>compact::compile(program,env,args.as_ref().unwrap(),d,statement.span(),facts,input.operation_source(expression.span(),SourceSyntax::Expression,path))?,
+        StageExpressionNeed::Reduce=>reduce::compile(program,env,step.operation,args.as_ref().unwrap(),d,statement.span(),facts,input.operation_source(expression.span(),SourceSyntax::Expression,path))?,
+        StageExpressionNeed::SegmentedReduce=>segmented_reduce::compile(program,env,step.operation,args.as_ref().unwrap(),d,statement.span(),facts,input.operation_source(expression.span(),SourceSyntax::Expression,path))?,
+        need@(StageExpressionNeed::Scan|StageExpressionNeed::SegmentedScan)=>scan::compile(program,env,step.operation,matches!(need,StageExpressionNeed::SegmentedScan),args.as_ref().unwrap(),d,statement.span(),facts,input.operation_source(expression.span(),SourceSyntax::Expression,path))?,
+        need@(StageExpressionNeed::CustomReduce|StageExpressionNeed::CustomScan|StageExpressionNeed::CustomSegmentedScan|StageExpressionNeed::CustomSegmentedReduce)=>{
+            let kind=match need{StageExpressionNeed::CustomReduce=>custom_reduce::Kind::Reduce,StageExpressionNeed::CustomScan=>custom_reduce::Kind::Scan,StageExpressionNeed::CustomSegmentedScan=>custom_reduce::Kind::SegmentedScan,StageExpressionNeed::CustomSegmentedReduce=>custom_reduce::Kind::SegmentedReduce,_=>unsafe{std::hint::unreachable_unchecked()}};
+            unsafe{world.call(custom_reduce::compile(world,program,env,args.as_ref().unwrap(),instance,statement.span(),facts,cursor.flags&2!=0,kind,path.clone(),functions,input.operation_source(expression.span(),SourceSyntax::Expression,path))).await}?;
+        },
+        StageExpressionNeed::CallPrepare=>{let(bound,environment)=unsafe{world.call(call_execution::domain_call(world,instance,env,program,key.as_ref().unwrap(),args.take().unwrap(),types.as_ref(),statement.span(),path)).await}?;callee=Some(bound);child=Some(environment);key.take();types.take();},
+        StageExpressionNeed::CallExecute=>{unsafe{world.call(call_execution::execute_domain_call(world,instance,callee.as_ref().unwrap(),child.as_mut().unwrap(),program,stack,boundary,facts,calls,path,functions,scopes,statement.span(),expression.span())).await}?;callee.take();child.take();},
+        StageExpressionNeed::ResetBoundary=>*boundary=false,
+        StageExpressionNeed::ResetFirst=>*first_stage=program.stages.len(),
+        StageExpressionNeed::Invalid=>return d.source.fail(statement.span(),"B119","program 顶层表达阶段；局部控制流放在 parallel 内"),
+        StageExpressionNeed::Unknown=>return d.source.fail(statement.span(),"B109",format!("未知计算程序 {name}")),
+        StageExpressionNeed::Complete=>return Ok(()),
+    }}
+}
+
 async fn expand_stage_control(
     world:&World,input:DomainInput<'_>,statement:&Stmt,env:&mut BTreeMap<String,Root>,program:&mut Program,
     stack:&mut Vec<String>,boundary:&mut bool,facts:&mut prefix::Facts,calls:&mut Vec<DomainCall>,
     path:&Arc<[DomainSite]>,functions:&mut native_function::Module,scopes:&mut BTreeMap<usize,RangeContext>,start:StageControlStep,mut first_stage:usize,
-)->Result<Option<(bool,usize)>> {
+)->Result<(bool,usize)> {
     let instance=input.owner();let d=&instance.definition;let source=statement.source_view();
     let mut step=start;
     let mut control=StageControlFacts{present:0,literal:0,same_type:0,bits:0,returned:0};
@@ -869,7 +797,7 @@ async fn expand_stage_control(
     let mut first=None;let mut last=None;let mut retained=None;let mut iterations=Vec::new();
     let mut first_call=0;
     loop {let cursor=step.cursor;match step.need {
-        StageControlNeed::Unhandled=>return Ok(None),
+        StageControlNeed::Parallel|StageControlNeed::Expression=>unsafe{std::hint::unreachable_unchecked()},
         StageControlNeed::Invalid=>return d.source.fail(statement.span(),"B119","program 顶层表达阶段；局部控制流放在 parallel 内"),
         StageControlNeed::Name=>control.present=u32::from(env.contains_key(source.text(step.name))),
         StageControlNeed::BadLetName=>return d.source.fail(statement.span(),"B125",format!("重复局部变量或覆盖参数 {}",source.text(step.name))),
@@ -937,8 +865,8 @@ async fn expand_stage_control(
             })}));first_stage=program.stages.len();
         },
         StageControlNeed::Boundary=>{*boundary=true;},
-        StageControlNeed::Return=>return Ok(Some((true,first_stage))),
-        StageControlNeed::Complete=>return Ok(Some((false,first_stage))),
+        StageControlNeed::Return=>return Ok((true,first_stage)),
+        StageControlNeed::Complete=>return Ok((false,first_stage)),
     }step=unsafe{stage_control_step(cursor,statement.signature_node(),StageControlFacts{..control})};}
 }
 
@@ -2729,7 +2657,18 @@ unsafe extern "C" {
 }
 #[repr(C)]#[derive(Clone,Copy)]struct StageControlCursor {phase:u32,index:u32,last:u32}
 #[repr(C)]struct StageControlFacts {present:u32,literal:u32,same_type:u32,bits:u32,returned:u32}
-#[repr(u32)]enum StageControlNeed {Unhandled,Invalid,Name,BadLetName,Annotation,LetValue,Bind,Condition,BadCondition,BadBoolean,ConditionValue,IfBody,IfOrigin,First,FirstValue,Last,LastValue,BadCounterName,BadBound,BeginFor,Iteration,IterationOrigin,ForOrigin,Boundary,Return,Complete}
+#[repr(u32)]enum StageControlNeed {Parallel,Expression,Invalid,Name,BadLetName,Annotation,LetValue,Bind,Condition,BadCondition,BadBoolean,ConditionValue,IfBody,IfOrigin,First,FirstValue,Last,LastValue,BadCounterName,BadBound,BeginFor,Iteration,IterationOrigin,ForOrigin,Boundary,Return,Complete}
+#[repr(C)]struct StageSequenceFacts{present:u32,returned:u32}
+#[repr(u32)]enum StageSequenceNeed{Next,Begin,Dispatch,Outputs,Complete}
+#[repr(C)]struct StageSequenceStep{cursor:SourceValueCursor,need:StageSequenceNeed}
+#[repr(C)]struct StageExpressionCursor{phase:u32,custom:u32,flags:u32}
+#[repr(C)]struct StageExpressionFacts{missing:u32,unique:u32}
+#[repr(u32)]enum StageExpressionNeed{Resolve,BeginSegment,Clear,Sort,Compact,Reduce,SegmentedReduce,Scan,SegmentedScan,CustomReduce,CustomScan,CustomSegmentedScan,CustomSegmentedReduce,CallPrepare,CallExecute,ResetBoundary,ResetFirst,Invalid,Unknown,Complete}
+#[repr(C)]struct StageExpressionStep{cursor:StageExpressionCursor,need:StageExpressionNeed,name:crate::syntax::wire::Text,arguments:crate::syntax::wire::Slice,types:crate::syntax::wire::Slice,operation:CollectiveOperator}
+unsafe extern "C"{
+    #[link_name="bootstrap.function_body::stage_sequence_step"]fn stage_sequence_step(cursor:SourceValueCursor,facts:StageSequenceFacts)->StageSequenceStep;
+    #[link_name="bootstrap.function_body::stage_expression_step"]fn stage_expression_step(cursor:StageExpressionCursor,source:crate::syntax::wire::SignatureNode,facts:StageExpressionFacts)->StageExpressionStep;
+}
 #[repr(C)]struct StageControlStep {cursor:StageControlCursor,need:StageControlNeed,name:crate::syntax::wire::Text,expression:u64,body:crate::syntax::wire::Slice}
 unsafe extern "C" {#[link_name="bootstrap.function_body::stage_control_step"]fn stage_control_step(state:StageControlCursor,source:crate::syntax::wire::SignatureNode,facts:StageControlFacts)->StageControlStep;}
 #[repr(C)]struct StageRootFacts {present:u32,constant:u32}

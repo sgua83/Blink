@@ -1,6 +1,7 @@
 module bootstrap.function_body;
 import bootstrap.ast_storage;
 import bootstrap.signatures;
+import bootstrap.operator_types;
 struct Cursor {u32 phase;u32 flags;u64 index;u64 part;};
 enum BeginNeed:u32 {Void=0;Never=1;Type=2;InvalidOwned=3;Shape=4;Dataset=5;Value=6;Early=7;InvalidCooperative=8;Slot=9;Initial=10;Inputs=11;Context=12;Complete=13;Next=14;};
 struct BeginStep {Cursor cursor;BeginNeed need;};
@@ -339,7 +340,7 @@ extern "C" StageRootStep stage_root_step(LocalCursor cursor,SignatureNode source
 
 struct StageControlCursor {u32 phase;u32 index;u32 last;};
 struct StageControlFacts {u32 present;u32 literal;u32 same_type;u32 bits;u32 returned;};
-enum StageControlNeed:u32 {Unhandled=0;Invalid=1;Name=2;BadLetName=3;Annotation=4;LetValue=5;Bind=6;Condition=7;BadCondition=8;BadBoolean=9;ConditionValue=10;IfBody=11;IfOrigin=12;First=13;FirstValue=14;Last=15;LastValue=16;BadCounterName=17;BadBound=18;BeginFor=19;Iteration=20;IterationOrigin=21;ForOrigin=22;Boundary=23;Return=24;Complete=25;};
+enum StageControlNeed:u32 {Parallel=0;Expression=1;Invalid=2;Name=3;BadLetName=4;Annotation=5;LetValue=6;Bind=7;Condition=8;BadCondition=9;BadBoolean=10;ConditionValue=11;IfBody=12;IfOrigin=13;First=14;FirstValue=15;Last=16;LastValue=17;BadCounterName=18;BadBound=19;BeginFor=20;Iteration=21;IterationOrigin=22;ForOrigin=23;Boundary=24;Return=25;Complete=26;};
 struct StageControlStep {StageControlCursor cursor;StageControlNeed need;Text name;u64 expression;Slice body;};
 extern "C" StageControlStep stage_control_step(StageControlCursor state,SignatureNode source,StageControlFacts facts) on cpu;
 
@@ -394,3 +395,13 @@ struct ParallelRegionsFacts {u64 bindings;u64 regions;};
 enum ParallelRegionsNeed:u32 {Binding=0;Region=1;Emit=2;Complete=3;};
 struct ParallelRegionsStep {EnvironmentCursor cursor;ParallelRegionsNeed need;};
 extern "C" ParallelRegionsStep parallel_regions_step(EnvironmentCursor state,ParallelRegionsFacts facts) on cpu;
+
+struct StageSequenceFacts {u32 present;u32 returned;};
+enum StageSequenceNeed:u32 {Next=0;Begin=1;Dispatch=2;Outputs=3;Complete=4;};
+struct StageSequenceStep {LocalCursor cursor;StageSequenceNeed need;};
+extern "C" StageSequenceStep stage_sequence_step(LocalCursor state,StageSequenceFacts facts) on cpu;
+struct StageExpressionCursor {u32 phase;u32 custom;u32 flags;};
+struct StageExpressionFacts {u32 missing;u32 unique;};
+enum StageExpressionNeed:u32 {Resolve=0;BeginSegment=1;Clear=2;Sort=3;Compact=4;Reduce=5;SegmentedReduce=6;Scan=7;SegmentedScan=8;CustomReduce=9;CustomScan=10;CustomSegmentedScan=11;CustomSegmentedReduce=12;CallPrepare=13;CallExecute=14;ResetBoundary=15;ResetFirst=16;Invalid=17;Unknown=18;Complete=19;};
+struct StageExpressionStep {StageExpressionCursor cursor;StageExpressionNeed need;Text name;Slice arguments;Slice types;CollectiveOperator operation;};
+extern "C" StageExpressionStep stage_expression_step(StageExpressionCursor state,SignatureNode source,StageExpressionFacts facts) on cpu;

@@ -1395,8 +1395,8 @@ extern "C" StageControlStep stage_control_step(StageControlCursor state,Signatur
   }
   StmtKind::Return(value){result.need=value.present==0?StageControlNeed::Return:StageControlNeed::Invalid;}
   StmtKind::Phase(){if(state.phase==0){result.cursor.phase=40;result.need=StageControlNeed::Boundary;}}
-  StmtKind::Parallel(value){result.need=StageControlNeed::Unhandled;}
-  StmtKind::Expr(value){result.need=StageControlNeed::Unhandled;}
+  StmtKind::Parallel(value){result.need=StageControlNeed::Parallel;result.name=value.name;result.expression=value.domain.offset;result.body=value.body;}
+  StmtKind::Expr(value){result.need=StageControlNeed::Expression;result.expression=value.offset;}
   StmtKind::Declare(value){result.need=StageControlNeed::Invalid;}
   StmtKind::Assign(value){result.need=StageControlNeed::Invalid;}
   StmtKind::While(value){result.need=StageControlNeed::Invalid;}
@@ -1622,4 +1622,69 @@ extern "C" ParallelRegionsStep parallel_regions_step(EnvironmentCursor state,Par
   if(cursor.phase==3){cursor.part+=1u64;cursor.phase=2;}
   if(cursor.phase==4){cursor.index+=1u64;cursor.phase=0;}
  }
+}
+extern "C" StageSequenceStep stage_sequence_step(LocalCursor state,StageSequenceFacts facts) on cpu {
+ LocalCursor cursor=state;
+ while(true){
+  if(cursor.phase==0){cursor.phase=1;return StageSequenceStep(cursor,StageSequenceNeed::Next);}
+  if(cursor.phase==1){if(facts.present==0){return StageSequenceStep(cursor,StageSequenceNeed::Complete);}cursor.phase=2;return StageSequenceStep(cursor,StageSequenceNeed::Begin);}
+  if(cursor.phase==2){cursor.phase=3;return StageSequenceStep(cursor,StageSequenceNeed::Dispatch);}
+  if(cursor.phase==3){if(facts.returned!=0){return StageSequenceStep(cursor,StageSequenceNeed::Complete);}cursor.phase=4;return StageSequenceStep(cursor,StageSequenceNeed::Outputs);}
+  if(cursor.phase==4){cursor.phase=0;}
+ }
+}
+extern "C" StageExpressionStep stage_expression_step(StageExpressionCursor state,SignatureNode source,StageExpressionFacts facts) on cpu {
+ StageExpressionStep result=StageExpressionStep(state,StageExpressionNeed::Complete,Text(0,Span(0u64,0u64)),Slice(0u64,0u64),Slice(0u64,0u64),CollectiveOperator::Sum);
+ ExprNode expression=binding_node<ExprNode>(source.storage.nodes,source.offset);
+ match(expression.kind){
+  ExprKind::Call(value){result.name=value.name;result.arguments=value.arguments;}
+  ExprKind::Specialize(value){result.name=value.name;result.arguments=value.arguments;result.types=value.types;result.cursor.flags=result.cursor.flags|1;}
+  ExprKind::Number(unused){result.need=StageExpressionNeed::Invalid;return result;}
+  ExprKind::StaticU32(unused){result.need=StageExpressionNeed::Invalid;return result;}
+  ExprKind::Bool(unused){result.need=StageExpressionNeed::Invalid;return result;}
+  ExprKind::Name(unused){result.need=StageExpressionNeed::Invalid;return result;}
+  ExprKind::Member(unused){result.need=StageExpressionNeed::Invalid;return result;}
+  ExprKind::Index(unused){result.need=StageExpressionNeed::Invalid;return result;}
+  ExprKind::Invoke(unused){result.need=StageExpressionNeed::Invalid;return result;}
+  ExprKind::Construct(unused){result.need=StageExpressionNeed::Invalid;return result;}
+  ExprKind::FunctionRef(unused){result.need=StageExpressionNeed::Invalid;return result;}
+  ExprKind::Cooperate(unused){result.need=StageExpressionNeed::Invalid;return result;}
+  ExprKind::Target(unused){result.need=StageExpressionNeed::Invalid;return result;}
+  ExprKind::Unary(unused){result.need=StageExpressionNeed::Invalid;return result;}
+  ExprKind::Binary(unused){result.need=StageExpressionNeed::Invalid;return result;}
+  ExprKind::Select(unused){result.need=StageExpressionNeed::Invalid;return result;}
+ }
+ if(state.phase==0){result.cursor.phase=1;result.need=StageExpressionNeed::Resolve;return result;}
+ if(state.phase==1){
+  if(facts.missing!=0&&(result.cursor.flags&1)==0){
+   address bytes=binding_at(result.name.kind==0?source.storage.source:source.storage.text,result.name.range.start);u64 length=result.name.range.end-result.name.range.start;
+   if(local_spelling(bytes,length,"clear_prefix")){result.cursor.phase=2;result.need=StageExpressionNeed::BeginSegment;return result;}
+   if(local_spelling(bytes,length,"stable_sort_by_key")){result.cursor.phase=3;result.need=StageExpressionNeed::BeginSegment;return result;}
+   if(local_spelling(bytes,length,"compact")){result.cursor.phase=4;result.need=StageExpressionNeed::BeginSegment;return result;}
+   CollectiveBuiltin builtin=source_collective(bytes,usize(length));result.operation=builtin.operation;result.cursor.phase=20;
+   if(builtin.form==CollectiveForm::Reduce){result.need=StageExpressionNeed::Reduce;return result;}
+   if(builtin.form==CollectiveForm::SegmentedReduce){result.need=StageExpressionNeed::SegmentedReduce;return result;}
+   if(builtin.form==CollectiveForm::Scan){result.need=StageExpressionNeed::Scan;return result;}
+   if(builtin.form==CollectiveForm::SegmentedScan){result.need=StageExpressionNeed::SegmentedScan;return result;}
+   u32 custom=source_custom_reduce(bytes,usize(length));
+   if(custom!=0){result.cursor.custom=custom;result.cursor.phase=10;if(length>=4u64&&local_spelling(binding_at(bytes,length-4u64),4u64,"_map")){result.cursor.flags=result.cursor.flags|2;}result.need=StageExpressionNeed::BeginSegment;return result;}
+  }
+  if(facts.unique==0){result.need=StageExpressionNeed::Unknown;return result;}
+  result.cursor.phase=30;result.need=StageExpressionNeed::CallPrepare;return result;
+ }
+ if(state.phase==2){result.cursor.phase=20;result.need=StageExpressionNeed::Clear;return result;}
+ if(state.phase==3){result.cursor.phase=20;result.need=StageExpressionNeed::Sort;return result;}
+ if(state.phase==4){result.cursor.phase=20;result.need=StageExpressionNeed::Compact;return result;}
+ if(state.phase==10){
+  result.cursor.phase=20;
+  if(state.custom==1){result.need=StageExpressionNeed::CustomReduce;}
+  if(state.custom==2){result.need=StageExpressionNeed::CustomScan;}
+  if(state.custom==3){result.need=StageExpressionNeed::CustomSegmentedScan;}
+  if(state.custom==4){result.need=StageExpressionNeed::CustomSegmentedReduce;}
+  return result;
+ }
+ if(state.phase==20){result.cursor.phase=21;result.need=StageExpressionNeed::ResetBoundary;return result;}
+ if(state.phase==30){result.cursor.phase=31;result.need=StageExpressionNeed::CallExecute;return result;}
+ if(state.phase==31){result.cursor.phase=32;result.need=StageExpressionNeed::ResetFirst;return result;}
+ return result;
 }
