@@ -437,9 +437,25 @@ struct NumericFacts {
  u32 source_known;u32 source_size;u32 target_known;u32 target_size;u32 count_known;u32 count_size;
 };
 struct NumericStep {LocalCursor cursor;NumericNeed need;NumericError error;NumericOperation operation;u64 argument;};
-struct NumericComponent {u32 offset;u32 size;};
-struct NumericReads {u64 first;u64 second;u64 count;};
+struct CollectiveComponent {u32 offset;u32 size;};
+struct CollectiveReads {u64 first;u64 second;u64 third;u64 count;};
 extern "C" NumericStep numeric_step(NumericKind kind,CollectiveOperator operation,LocalCursor cursor,NumericFacts facts) on cpu;
-extern "C" void numeric_write_fields(address type,address context,u32 base,u64 count,cfn<NumericComponent,address,u64> component,cfn<void,address,u32,u32> write) on cpu requires nonzero(component) requires nonzero(write);
-extern "C" void numeric_write_count(address context,u32 word,cfn<void,address,u32,u32> write) on cpu requires nonzero(write);
-extern "C" NumericReads numeric_reads(u64 source,u32 present,u64 count) on cpu;
+extern "C" void collective_write_fields(address type,address context,u32 base,u64 count,cfn<CollectiveComponent,address,u64> component,cfn<void,address,u32,u32> write) on cpu requires nonzero(component) requires nonzero(write);
+extern "C" void collective_write_count(address context,u32 word,cfn<void,address,u32,u32> write) on cpu requires nonzero(write);
+extern "C" CollectiveReads collective_reads(u64 source,u32 second_present,u64 second,u32 third_present,u64 third) on cpu;
+
+enum RecordKind:u32 {Compact=0;Sort=1;};
+enum RecordNeed:u32 {Source=0;Predicate=1;Target=2;Count=3;Views=4;FlagInitialized=5;Types=6;CountShape=7;PredicateShape=8;Capacity=9;Key=10;RootRead=11;SourceFacts=12;Elements=13;JoinElements=14;Guarantees=15;Fields=16;CountWrite=17;GrantInput=18;GrantOutput=19;Reads=20;Publish=21;Error=22;KeyComponents=23;SameLength=24;};
+enum RecordError:u32 {CompactArity=0;SortArity=1;Descending=2;CompactViews=3;SortViews=4;CompactAccess=5;KeyAccess=6;KeyType=7;SortAccess=8;CompactType=9;SortType=10;CountShape=11;PredicateShape=12;CompactCapacity=13;SortCapacity=14;};
+struct RecordCursor {u64 index;u32 phase;};
+struct RecordFacts {
+ u64 source;u64 predicate;u64 target;u64 count;u64 prefix_count;u64 key_binding;
+ u32 has_prefix;u32 source_access;u32 predicate_access;u32 target_access;u32 count_access;
+ u32 views;u32 initialized;u32 same_type;u32 count_known;u32 count_size;
+ u32 source_known;u32 source_size;u32 predicate_known;u32 predicate_size;u32 target_known;u32 target_size;
+ u32 key_access;u32 key_same_prefix;u32 key_numeric;u32 root_read;u32 source_proof;u32 same_length;
+};
+struct RecordStep {RecordCursor cursor;RecordNeed need;RecordError error;u64 argument;u64 expression;u32 order;u32 set_source;};
+struct RecordComponent {u32 scalar;u32 offset;u32 size;};
+extern "C" RecordStep record_step(RecordKind kind,RecordCursor cursor,StorageView source,Slice arguments,RecordFacts facts) on cpu;
+extern "C" void record_sort_components(address type,address keys,u32 word,u32 order,u64 count,cfn<RecordComponent,address,u64> component,cfn<void,address,u32,u32,u32> push) on cpu requires nonzero(component) requires nonzero(push);

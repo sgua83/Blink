@@ -11,7 +11,6 @@ mod atomic;
 mod collective;
 mod bounds;
 pub(crate) use bounds::Proof;
-mod compact;
 mod callback;
 mod constant;
 mod source_call;
@@ -47,7 +46,6 @@ mod records;
 mod results;
 mod returns;
 mod selection;
-mod sort;
 mod subgroup;
 pub(crate) use application::compile_application;
 mod texture;
@@ -763,8 +761,8 @@ async fn expand_stage_expression(
         StageExpressionNeed::Resolve=>{name=source.text(step.name);args=Some(expression.list::<crate::syntax::wire::ExprNode>(step.arguments));types=match cursor.flags&1{0=>None,_=>Some(expression.list::<crate::syntax::wire::ArgumentNode>(step.types))};let resolved=world.resolve(name,&d.module,&d.imports,true);control.missing=u32::from(resolved.is_missing());key=resolved.unique();control.unique=u32::from(key.is_some());},
         StageExpressionNeed::BeginSegment=>begin_segment(program,facts,calls),
         StageExpressionNeed::Clear=>{let output=append::clear(program,env,args.as_ref().unwrap(),d,statement.span(),facts,input.operation_source(expression.span(),SourceSyntax::Expression,path))?;facts.outputs.push(output);},
-        StageExpressionNeed::Sort=>sort::compile(program,env,args.as_ref().unwrap(),d,statement.span(),facts,input.operation_source(expression.span(),SourceSyntax::Expression,path))?,
-        StageExpressionNeed::Compact=>compact::compile(program,env,args.as_ref().unwrap(),d,statement.span(),facts,input.operation_source(expression.span(),SourceSyntax::Expression,path))?,
+        StageExpressionNeed::Sort=>collective::compile_record(program,env,collective::RecordKind::Sort,args.as_ref().unwrap(),d,statement.span(),facts,input.operation_source(expression.span(),SourceSyntax::Expression,path))?,
+        StageExpressionNeed::Compact=>collective::compile_record(program,env,collective::RecordKind::Compact,args.as_ref().unwrap(),d,statement.span(),facts,input.operation_source(expression.span(),SourceSyntax::Expression,path))?,
         StageExpressionNeed::Reduce=>collective::compile(program,env,step.operation,collective::NumericKind::Reduce,args.as_ref().unwrap(),d,statement.span(),facts,input.operation_source(expression.span(),SourceSyntax::Expression,path))?,
         StageExpressionNeed::SegmentedReduce=>collective::compile(program,env,step.operation,collective::NumericKind::SegmentedReduce,args.as_ref().unwrap(),d,statement.span(),facts,input.operation_source(expression.span(),SourceSyntax::Expression,path))?,
         StageExpressionNeed::Scan=>collective::compile(program,env,step.operation,collective::NumericKind::Scan,args.as_ref().unwrap(),d,statement.span(),facts,input.operation_source(expression.span(),SourceSyntax::Expression,path))?,

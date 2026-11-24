@@ -1908,12 +1908,111 @@ extern "C" NumericStep numeric_step(NumericKind kind,CollectiveOperator operatio
  if(kind==NumericKind::SegmentedReduce){result.operation=NumericOperation::SegmentedReduce;}
  return result;
 }
-extern "C" void numeric_write_fields(address type,address context,u32 base,u64 count,cfn<NumericComponent,address,u64> component,cfn<void,address,u32,u32> write) on cpu requires nonzero(component) requires nonzero(write) {
- u64 i=0u64;while(i<count){NumericComponent field=component(type,i);u32 start=base+field.offset;write(context,start,start+field.size);i+=1u64;}
+extern "C" void collective_write_fields(address type,address context,u32 base,u64 count,cfn<CollectiveComponent,address,u64> component,cfn<void,address,u32,u32> write) on cpu requires nonzero(component) requires nonzero(write) {
+ u64 i=0u64;while(i<count){CollectiveComponent field=component(type,i);u32 start=base+field.offset;write(context,start,start+field.size);i+=1u64;}
 }
-extern "C" void numeric_write_count(address context,u32 word,cfn<void,address,u32,u32> write) on cpu requires nonzero(write) {write(context,word,word+4);}
-extern "C" NumericReads numeric_reads(u64 source,u32 present,u64 count) on cpu {
- if(present==0||source==count){return NumericReads(source,0u64,1u64);}
- if(source<count){return NumericReads(source,count,2u64);}
- return NumericReads(count,source,2u64);
+extern "C" void collective_write_count(address context,u32 word,cfn<void,address,u32,u32> write) on cpu requires nonzero(write) {write(context,word,word+4);}
+extern "C" CollectiveReads collective_reads(u64 source,u32 second_present,u64 second,u32 third_present,u64 third) on cpu {
+ CollectiveReads result=CollectiveReads(source,0u64,0u64,1u64);
+ if(second_present!=0&&second!=source){if(second<source){result.first=second;result.second=source;}else{result.second=second;}result.count=2u64;}
+ if(third_present!=0&&third!=result.first&&(result.count==1u64||third!=result.second)){
+  if(third<result.first){result.third=result.second;result.second=result.first;result.first=third;}
+  else if(result.count==1u64||third<result.second){result.third=result.second;result.second=third;}
+  else{result.third=third;}
+  result.count+=1u64;
+ }
+ return result;
+}
+
+struct RecordKey {u64 expression;u32 order;u32 valid;};
+RecordKey record_key(SignatureNode source) on cpu {
+ RecordKey result=RecordKey(source.offset,0,1);
+ ExprNode expression=binding_node<ExprNode>(source.storage.nodes,source.offset);
+ match(expression.kind){
+ ExprKind::Call(value){
+  address bytes=binding_at(value.name.kind==0?source.storage.source:source.storage.text,value.name.range.start);
+  if(local_spelling(bytes,value.name.range.end-value.name.range.start,"descending")){
+   if(value.arguments.count!=1u64){result.valid=0;return result;}
+   result.expression=binding_member(source.storage.nodes,value.arguments,0u64);result.order=1;
+  }
+ }
+ ExprKind::Number(unused){} ExprKind::StaticU32(unused){} ExprKind::Bool(unused){} ExprKind::Name(unused){} ExprKind::Member(unused){} ExprKind::Index(unused){} ExprKind::Invoke(unused){} ExprKind::Construct(unused){} ExprKind::Specialize(unused){} ExprKind::FunctionRef(unused){} ExprKind::Cooperate(unused){} ExprKind::Target(unused){} ExprKind::Unary(unused){} ExprKind::Binary(unused){} ExprKind::Select(unused){}
+ }
+ return result;
+}
+RecordStep record_compact_step(RecordCursor cursor,Slice arguments,RecordFacts facts) on cpu {
+ RecordCursor c=cursor;RecordStep result=RecordStep(c,RecordNeed::Error,RecordError::CompactArity,0u64,0u64,0,0);
+ if(c.phase==0){if(arguments.count!=4u64){return result;}result.cursor.phase=1;result.need=RecordNeed::Source;return result;}
+ if(c.phase==1){result.cursor.phase=2;result.need=RecordNeed::Predicate;result.argument=1u64;return result;}
+ if(c.phase==2){result.cursor.phase=3;result.need=RecordNeed::Target;result.argument=2u64;return result;}
+ if(c.phase==3){result.cursor.phase=4;result.need=RecordNeed::Views;return result;}
+ if(c.phase==4){if(facts.views!=0){result.error=RecordError::CompactViews;return result;}result.cursor.phase=5;result.need=RecordNeed::Count;result.argument=3u64;return result;}
+ if(c.phase==5){
+  result.error=RecordError::CompactAccess;
+  if(!numeric_readable(facts.source_access)){return result;}
+  if(facts.predicate_access==2){result.cursor.phase=6;result.need=RecordNeed::FlagInitialized;return result;}
+  if(!numeric_readable(facts.predicate_access)){return result;}
+  c.phase=6;
+ }
+ if(c.phase==6){
+  result.error=RecordError::CompactAccess;
+  if((facts.predicate_access==2&&facts.initialized==0)||!numeric_writable(facts.target_access)||!numeric_writable(facts.count_access)||facts.target==facts.count||(facts.has_prefix!=0&&(facts.prefix_count==facts.target||facts.prefix_count==facts.count))||facts.source==facts.target||facts.source==facts.count||facts.predicate==facts.target||facts.predicate==facts.count){return result;}
+  result.cursor.phase=7;result.need=RecordNeed::Types;return result;
+ }
+ if(c.phase==7){if(facts.same_type==0){result.error=RecordError::CompactType;return result;}result.cursor.phase=8;result.need=RecordNeed::CountShape;return result;}
+ if(c.phase==8){if(facts.count_known==0||facts.count_size!=1){result.error=RecordError::CountShape;return result;}result.cursor.phase=9;result.need=RecordNeed::PredicateShape;return result;}
+ if(c.phase==9){if(facts.source_known!=0&&facts.predicate_known!=0&&facts.source_size!=facts.predicate_size){result.error=RecordError::PredicateShape;return result;}result.cursor.phase=10;result.need=RecordNeed::Capacity;return result;}
+ if(c.phase==10){if(facts.source_known!=0&&facts.target_known!=0&&facts.target_size<facts.source_size){result.error=RecordError::CompactCapacity;return result;}result.cursor.phase=11;result.need=RecordNeed::Fields;return result;}
+ if(c.phase==11){result.cursor.phase=12;result.need=RecordNeed::CountWrite;return result;}
+ if(c.phase==12){result.cursor.phase=13;result.need=RecordNeed::GrantOutput;return result;}
+ if(c.phase==13){result.cursor.phase=14;result.need=RecordNeed::Reads;result.argument=1u64;return result;}
+ result.cursor.phase=15;result.need=RecordNeed::Publish;return result;
+}
+RecordStep record_sort_step(RecordCursor cursor,StorageView source,Slice arguments,RecordFacts facts) on cpu {
+ RecordCursor c=cursor;RecordStep result=RecordStep(c,RecordNeed::Error,RecordError::SortArity,c.index,0u64,0,0);
+ if(c.phase==0){if(arguments.count<2u64){return result;}c.index=0u64;c.phase=1;}
+ if(c.phase==4){c.index+=1u64;c.phase=1;}
+ if(c.phase==1){
+  if(c.index>=arguments.count-1u64){result.cursor=c;result.cursor.phase=5;result.need=RecordNeed::Target;result.argument=arguments.count-1u64;return result;}
+  RecordKey key=record_key(SignatureNode(source,binding_member(source.nodes,arguments,c.index)));
+  result.argument=c.index;
+  if(key.valid==0){result.error=RecordError::Descending;return result;}
+  result.cursor=c;result.cursor.phase=2;result.need=RecordNeed::Key;result.expression=key.expression;result.order=key.order;result.set_source=c.index==0u64?1:0;return result;
+ }
+ if(c.phase==2){
+  if(facts.key_binding!=facts.source||facts.key_same_prefix==0||!numeric_readable(facts.key_access)){result.error=RecordError::KeyAccess;return result;}
+  if(c.index==0u64){result.cursor.phase=3;result.need=RecordNeed::RootRead;return result;}
+  c.phase=3;
+ }
+ if(c.phase==3){
+  if(facts.root_read==0){result.error=RecordError::KeyAccess;return result;}
+  if(facts.key_numeric==0){result.error=RecordError::KeyType;return result;}
+  result.cursor.phase=4;result.need=RecordNeed::KeyComponents;return result;
+ }
+ if(c.phase==5){result.cursor.phase=6;result.need=RecordNeed::Views;return result;}
+ if(c.phase==6){
+  if(facts.views!=0){result.error=RecordError::SortViews;return result;}
+  if(!numeric_writable(facts.target_access)||facts.source==facts.target||(facts.has_prefix!=0&&facts.prefix_count==facts.target)){result.error=RecordError::SortAccess;return result;}
+  result.cursor.phase=7;result.need=RecordNeed::Types;return result;
+ }
+ if(c.phase==7){if(facts.same_type==0){result.error=RecordError::SortType;return result;}result.cursor.phase=8;result.need=RecordNeed::Capacity;return result;}
+ if(c.phase==8){if(facts.source_known!=0&&facts.target_known!=0&&facts.target_size<facts.source_size){result.error=RecordError::SortCapacity;return result;}result.cursor.phase=9;result.need=RecordNeed::SourceFacts;return result;}
+ if(c.phase==9){if(facts.source_proof==0){result.cursor.phase=13;result.need=RecordNeed::Fields;return result;}result.cursor.phase=10;result.need=RecordNeed::Elements;return result;}
+ if(c.phase==10){if(facts.has_prefix!=0){result.cursor.phase=11;result.need=RecordNeed::JoinElements;return result;}result.cursor.phase=17;result.need=RecordNeed::SameLength;return result;}
+ if(c.phase==17){if(facts.same_length==0){result.cursor.phase=11;result.need=RecordNeed::JoinElements;return result;}result.cursor.phase=12;result.need=RecordNeed::Guarantees;return result;}
+ if(c.phase==11){result.cursor.phase=12;result.need=RecordNeed::Guarantees;return result;}
+ if(c.phase==12){result.cursor.phase=13;result.need=RecordNeed::Fields;return result;}
+ if(c.phase==13){if(facts.has_prefix!=0){result.cursor.phase=14;result.need=RecordNeed::GrantInput;return result;}result.cursor.phase=15;result.need=RecordNeed::Reads;result.argument=0u64;return result;}
+ if(c.phase==14){result.cursor.phase=15;result.need=RecordNeed::Reads;result.argument=0u64;return result;}
+ result.cursor.phase=16;result.need=RecordNeed::Publish;return result;
+}
+extern "C" RecordStep record_step(RecordKind kind,RecordCursor cursor,StorageView source,Slice arguments,RecordFacts facts) on cpu {
+ if(kind==RecordKind::Compact){return record_compact_step(cursor,arguments,facts);}
+ return record_sort_step(cursor,source,arguments,facts);
+}
+extern "C" void record_sort_components(address type,address keys,u32 word,u32 order,u64 count,cfn<RecordComponent,address,u64> component,cfn<void,address,u32,u32,u32> push) on cpu requires nonzero(component) requires nonzero(push) {
+ u64 i=0u64;while(i<count){RecordComponent value=component(type,i);u32 offset=word+value.offset;
+  if(value.size==8){u32 high=value.scalar==6?0:(value.scalar==5?2:1);push(keys,offset+4,high,order);}
+  push(keys,offset,value.scalar,order);i+=1u64;
+ }
 }
