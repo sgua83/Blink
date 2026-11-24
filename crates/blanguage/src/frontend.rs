@@ -431,15 +431,17 @@ pub(crate) fn compile_world(
                 u32::from(definition.execution == execution::Requirement::Domain),
                 u32::from(selected.as_ref().is_some_and(|(selected, _, _, _)| selected == base)),
             ) };
-            if generics::is_open(&function.types(), &function.values()) {
-                open_generics.push(base.clone());
-                open_public_domain |= plan.public_domain != 0;
-            }
-            if plan.schedule != 0 {
+            let open = if plan.schedule == 0 {
+                generics::is_open(&function.types(), &function.values())
+            } else {
                 let start = jobs.len();
                 unsafe { world.call(generics::for_each_instance(world, base, definition, |instance| {
                     jobs.push(Job::Instance(instance, plan.route, plan.cpu_signature != 0));
-                })).await }.inspect_err(|_| jobs.truncate(start))?;
+                })).await }.inspect_err(|_| jobs.truncate(start))?
+            };
+            if open {
+                open_generics.push(base.clone());
+                open_public_domain |= plan.public_domain != 0;
             }
         }
         Ok(())

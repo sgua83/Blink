@@ -18,9 +18,10 @@ impl World {
         let Some(family) = family else { return Ok(true); };
         match family.kind() {
             FamilyKind::Named(name) => {
-                let key = self.named_family_key(name, source, span, module, imports)?;
                 let mut accepted = false;
-                unsafe { self.call(self.for_each_set_member(&key, stack, |ty| accepted |= ty.name == actual.name)).await }?;
+                self.for_each_named_family_member(name, (source, span, module, imports), stack, |ty| {
+                    accepted |= ty.name == actual.name;
+                }).await?;
                 Ok(accepted)
             }
             _ => Ok(family.contains_builtin(&actual.name)),
@@ -38,12 +39,11 @@ impl World {
     ) -> Result<Vec<TypeArgument>> {
         match family.kind() {
             FamilyKind::Named(name) => {
-                let key = self.named_family_key(name, source, span, module, imports)?;
                 let mut members = BTreeMap::new();
-                unsafe { self.call(self.for_each_set_member(&key, stack, |ty| {
+                self.for_each_named_family_member(name, (source, span, module, imports), stack, |ty| {
                     let syntax = ty.syntax();
                     members.insert(ty.name, syntax);
-                })).await }?;
+                }).await?;
                 Ok(members.into_iter().map(|(name, syntax)| TypeArgument { name, syntax }).collect())
             }
             _ => Ok(family.builtin_names().iter().map(|name| TypeArgument {
@@ -52,26 +52,26 @@ impl World {
         }
     }
 
-    fn named_family_key(
+    pub(crate) async fn for_each_named_family_member(
         &self,
         name: &str,
-        source: &Source,
-        span: Span,
-        module: &str,
-        imports: &[String],
-    ) -> Result<String> {
+        (source, span, module, imports): (&Source, Span, &str, &[String]),
+        stack: &mut BTreeSet<String>,
+        consume: impl FnMut(Ty),
+    ) -> Result<()> {
         if let Some(inputs) = &self.build_declarations {
             inputs.borrow_mut().insert(crate::build::Declaration::TypeSetName {
                 name: name.into(), module: module.into(), imports: imports.to_vec(),
             });
         }
-        self.declarations.resolve_type_set(name, module, imports)
+        let key = self.declarations.resolve_type_set(name, module, imports)
             .ok_or_else(|| Diagnostic {
                 source: source.clone(),
                 span,
                 code: "B233",
                 message: format!("未知或不明确的类型集合 {name}"),
-            })
+            })?;
+        unsafe { self.call(self.for_each_set_member(&key, stack, consume)).await }
     }
 
     pub(crate) async fn for_each_set_member(

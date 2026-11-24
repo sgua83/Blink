@@ -171,7 +171,7 @@ pub(crate) async fn for_each_instance(
     base: &str,
     definition: &std::sync::Arc<crate::Definition>,
     mut consume: impl FnMut(Instance),
-) -> Result<()> {
+) -> Result<bool> {
     let f = &definition.function;
     unsafe { world.call(for_each_combination(
         world,
@@ -206,13 +206,24 @@ pub(crate) async fn for_each_combination(
     values: &crate::syntax::List<crate::syntax::wire::ValueParameterNode>,
     (source, span, module, imports): (&Source, Span, &str, &[String]),
     mut consume: impl std::ops::AsyncFnMut(Vec<TypeArgument>, &[u32]) -> Result<()>,
-) -> Result<()> {
+) -> Result<bool> {
+    let families = types.into_iter().filter_map(|parameter| parameter.family());
+    if is_open(types, values) {
+        for family in families {
+            if let crate::syntax::FamilyKind::Named(name) = family.kind() {
+                world.for_each_named_family_member(
+                    name, (source, span, module, imports), &mut BTreeSet::new(), |_| {},
+                ).await?;
+            }
+        }
+        return Ok(true);
+    }
+
     let mut domains = Vec::with_capacity(types.len());
-    for parameter in types {
-        let members = match parameter.family() {
-            Some(family) => unsafe { world.call(world.family_arguments(&family, source, span, module, imports, &mut BTreeSet::new())).await }?,
-            None => Vec::new(),
-        };
+    for family in families {
+        let members = unsafe {
+            world.call(world.family_arguments(&family, source, span, module, imports, &mut BTreeSet::new())).await
+        }?;
         domains.push(members);
     }
     let sizes: Vec<_> = domains.iter().map(|domain| domain.len() as u64).collect();
@@ -224,5 +235,5 @@ pub(crate) async fn for_each_combination(
         consume(arguments,row).await?;
         first=false;
     }
-    Ok(())
+    Ok(false)
 }
