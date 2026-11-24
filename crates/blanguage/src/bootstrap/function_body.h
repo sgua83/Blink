@@ -423,3 +423,23 @@ extern "C" CollectiveFieldSyntax collective_field_syntax(SignatureNode source) o
 extern "C" u32 collective_project(SignatureNode source,address context,CollectiveProjectionHost host) on cpu requires nonzero(host.root) requires nonzero(host.field);
 extern "C" CollectivePrefixInput collective_prefix_input(SignatureNode source) on cpu;
 extern "C" u32 collective_read_access(u32 access,u64 components,address context,cfn<u32,address,u64> initialized) on cpu requires nonzero(initialized);
+
+
+enum NumericKind:u32 {Reduce=0;Scan=1;SegmentedScan=2;SegmentedReduce=3;};
+enum NumericNeed:u32 {Source=0;Target=1;Head=2;Count=3;Types=4;Access=5;TargetShape=6;CountShape=7;Capacity=8;Fields=9;CountWrite=10;GrantInput=11;GrantOutput=12;Reads=13;Publish=14;Error=15;};
+enum NumericError:u32 {ReduceArity=0;ScanArity=1;SegmentedArity=2;ReduceType=3;ScanType=4;SegmentedType=5;HeadAccess=6;ReduceAccess=7;ScanAccess=8;SegmentedAccess=9;ReduceShape=10;CountShape=11;ScanCapacity=12;SegmentedCapacity=13;};
+enum NumericOperation:u32 {Reduce=0;Scan=1;SegmentedReduce=2;};
+struct NumericFacts {
+ u64 arguments;u64 source;u64 target;u64 count;u64 prefix_count;u64 heads;u64 head_count;
+ u32 has_prefix;u32 has_head_prefix;u32 prefix_word;u32 head_count_word;
+ u32 source_access;u32 target_access;u32 head_access;u32 count_access;
+ u32 numeric;u32 integer;u32 same;u32 source_overlap;u32 head_overlap;
+ u32 source_known;u32 source_size;u32 target_known;u32 target_size;u32 count_known;u32 count_size;
+};
+struct NumericStep {LocalCursor cursor;NumericNeed need;NumericError error;NumericOperation operation;u64 argument;};
+struct NumericComponent {u32 offset;u32 size;};
+struct NumericReads {u64 first;u64 second;u64 count;};
+extern "C" NumericStep numeric_step(NumericKind kind,CollectiveOperator operation,LocalCursor cursor,NumericFacts facts) on cpu;
+extern "C" void numeric_write_fields(address type,address context,u32 base,u64 count,cfn<NumericComponent,address,u64> component,cfn<void,address,u32,u32> write) on cpu requires nonzero(component) requires nonzero(write);
+extern "C" void numeric_write_count(address context,u32 word,cfn<void,address,u32,u32> write) on cpu requires nonzero(write);
+extern "C" NumericReads numeric_reads(u64 source,u32 present,u64 count) on cpu;

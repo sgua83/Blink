@@ -1853,3 +1853,67 @@ extern "C" u32 collective_read_access(u32 access,u64 components,address context,
  u64 i=0u64;while(i<components){if(initialized(context,i)==0){return access;}i+=1u64;}
  return 3;
 }
+
+
+bool numeric_readable(u32 access) on cpu {return access==1||access==3;}
+bool numeric_writable(u32 access) on cpu {return access==2||access==3||access==4;}
+bool numeric_scan(NumericKind kind) on cpu {return kind==NumericKind::Scan||kind==NumericKind::SegmentedScan;}
+bool numeric_head_mismatch(NumericFacts facts) on cpu {return facts.heads!=facts.source||!numeric_readable(facts.head_access)||(facts.has_head_prefix!=0&&(facts.has_prefix==0||facts.head_count!=facts.prefix_count||facts.head_count_word!=facts.prefix_word));}
+extern "C" NumericStep numeric_step(NumericKind kind,CollectiveOperator operation,LocalCursor cursor,NumericFacts facts) on cpu {
+ NumericStep result=NumericStep(cursor,NumericNeed::Error,NumericError::ReduceArity,NumericOperation::Reduce,0u64);
+ if(cursor.phase==0){
+  u64 expected=kind==NumericKind::SegmentedReduce?4u64:(kind==NumericKind::SegmentedScan?3u64:2u64);
+  if(facts.arguments!=expected){if(numeric_scan(kind)){result.error=NumericError::ScanArity;}if(kind==NumericKind::SegmentedReduce){result.error=NumericError::SegmentedArity;}return result;}
+  result.cursor.phase=1;result.need=NumericNeed::Source;return result;
+ }
+ if(cursor.phase==1){
+  if(kind==NumericKind::SegmentedReduce){result.cursor.phase=2;result.need=NumericNeed::Head;result.argument=1u64;return result;}
+  result.cursor.phase=4;result.need=NumericNeed::Target;result.argument=kind==NumericKind::SegmentedScan?2u64:1u64;return result;
+ }
+ if(cursor.phase==2){result.cursor.phase=3;result.need=NumericNeed::Target;result.argument=2u64;return result;}
+ if(cursor.phase==3){result.cursor.phase=4;result.need=NumericNeed::Count;result.argument=3u64;return result;}
+ if(cursor.phase==4){result.cursor.phase=5;result.need=NumericNeed::Types;return result;}
+ if(cursor.phase==5){
+  if(!collective_accepts(operation,facts.numeric!=0,facts.integer!=0)||facts.same==0){result.error=NumericError::ReduceType;if(numeric_scan(kind)){result.error=NumericError::ScanType;}if(kind==NumericKind::SegmentedReduce){result.error=NumericError::SegmentedType;}return result;}
+  if(kind==NumericKind::SegmentedScan){result.cursor.phase=6;result.need=NumericNeed::Head;result.argument=1u64;return result;}
+  result.cursor.phase=8;result.need=NumericNeed::Access;return result;
+ }
+ if(cursor.phase==6){if(numeric_head_mismatch(facts)){result.error=NumericError::HeadAccess;return result;}result.cursor.phase=8;result.need=NumericNeed::Access;return result;}
+ if(cursor.phase==8){
+  bool bad=facts.source_overlap!=0||facts.head_overlap!=0||!numeric_readable(facts.source_access)||!numeric_writable(facts.target_access)||(facts.has_prefix!=0&&facts.prefix_count==facts.target);
+  if(kind==NumericKind::SegmentedReduce){bad=bad||numeric_head_mismatch(facts)||!numeric_writable(facts.count_access)||facts.source==facts.count||facts.target==facts.count||(facts.has_prefix!=0&&facts.prefix_count==facts.count);}
+  if(bad){result.error=NumericError::ReduceAccess;if(numeric_scan(kind)){result.error=NumericError::ScanAccess;}if(kind==NumericKind::SegmentedReduce){result.error=NumericError::SegmentedAccess;}return result;}
+  if(kind==NumericKind::Reduce){result.cursor.phase=9;result.need=NumericNeed::TargetShape;return result;}
+  if(kind==NumericKind::SegmentedReduce){result.cursor.phase=10;result.need=NumericNeed::CountShape;return result;}
+  result.cursor.phase=11;result.need=NumericNeed::Capacity;return result;
+ }
+ if(cursor.phase==9){if(facts.target_known==0||facts.target_size!=1){result.error=NumericError::ReduceShape;return result;}result.cursor.phase=12;result.need=NumericNeed::Fields;return result;}
+ if(cursor.phase==10){if(facts.count_known==0||facts.count_size!=1){result.error=NumericError::CountShape;return result;}result.cursor.phase=11;result.need=NumericNeed::Capacity;return result;}
+ if(cursor.phase==11){
+  if(facts.source_known!=0&&facts.target_known!=0){
+   if(kind==NumericKind::SegmentedReduce&&facts.target_size<facts.source_size){result.error=NumericError::SegmentedCapacity;return result;}
+   if(numeric_scan(kind)&&((facts.has_prefix==0&&facts.source_size!=facts.target_size)||(facts.has_prefix!=0&&facts.target_size<facts.source_size))){result.error=NumericError::ScanCapacity;return result;}
+  }
+  result.cursor.phase=12;result.need=NumericNeed::Fields;return result;
+ }
+ if(cursor.phase==12){
+  if(kind==NumericKind::SegmentedReduce){result.cursor.phase=13;result.need=NumericNeed::CountWrite;return result;}
+  if(numeric_scan(kind)&&facts.has_prefix!=0){result.cursor.phase=14;result.need=NumericNeed::GrantInput;return result;}
+  result.cursor.phase=15;result.need=NumericNeed::Reads;return result;
+ }
+ if(cursor.phase==13){result.cursor.phase=14;result.need=NumericNeed::GrantOutput;return result;}
+ if(cursor.phase==14){result.cursor.phase=15;result.need=NumericNeed::Reads;return result;}
+ result.cursor.phase=16;result.need=NumericNeed::Publish;
+ if(numeric_scan(kind)){result.operation=NumericOperation::Scan;}
+ if(kind==NumericKind::SegmentedReduce){result.operation=NumericOperation::SegmentedReduce;}
+ return result;
+}
+extern "C" void numeric_write_fields(address type,address context,u32 base,u64 count,cfn<NumericComponent,address,u64> component,cfn<void,address,u32,u32> write) on cpu requires nonzero(component) requires nonzero(write) {
+ u64 i=0u64;while(i<count){NumericComponent field=component(type,i);u32 start=base+field.offset;write(context,start,start+field.size);i+=1u64;}
+}
+extern "C" void numeric_write_count(address context,u32 word,cfn<void,address,u32,u32> write) on cpu requires nonzero(write) {write(context,word,word+4);}
+extern "C" NumericReads numeric_reads(u64 source,u32 present,u64 count) on cpu {
+ if(present==0||source==count){return NumericReads(source,0u64,1u64);}
+ if(source<count){return NumericReads(source,count,2u64);}
+ return NumericReads(count,source,2u64);
+}

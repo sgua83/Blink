@@ -44,11 +44,8 @@ mod ownership;
 pub(crate) mod outputs;
 mod prefix;
 mod records;
-mod reduce;
 mod results;
 mod returns;
-mod scan;
-mod segmented_reduce;
 mod selection;
 mod sort;
 mod subgroup;
@@ -768,9 +765,10 @@ async fn expand_stage_expression(
         StageExpressionNeed::Clear=>{let output=append::clear(program,env,args.as_ref().unwrap(),d,statement.span(),facts,input.operation_source(expression.span(),SourceSyntax::Expression,path))?;facts.outputs.push(output);},
         StageExpressionNeed::Sort=>sort::compile(program,env,args.as_ref().unwrap(),d,statement.span(),facts,input.operation_source(expression.span(),SourceSyntax::Expression,path))?,
         StageExpressionNeed::Compact=>compact::compile(program,env,args.as_ref().unwrap(),d,statement.span(),facts,input.operation_source(expression.span(),SourceSyntax::Expression,path))?,
-        StageExpressionNeed::Reduce=>reduce::compile(program,env,step.operation,args.as_ref().unwrap(),d,statement.span(),facts,input.operation_source(expression.span(),SourceSyntax::Expression,path))?,
-        StageExpressionNeed::SegmentedReduce=>segmented_reduce::compile(program,env,step.operation,args.as_ref().unwrap(),d,statement.span(),facts,input.operation_source(expression.span(),SourceSyntax::Expression,path))?,
-        need@(StageExpressionNeed::Scan|StageExpressionNeed::SegmentedScan)=>scan::compile(program,env,step.operation,matches!(need,StageExpressionNeed::SegmentedScan),args.as_ref().unwrap(),d,statement.span(),facts,input.operation_source(expression.span(),SourceSyntax::Expression,path))?,
+        StageExpressionNeed::Reduce=>collective::compile(program,env,step.operation,collective::NumericKind::Reduce,args.as_ref().unwrap(),d,statement.span(),facts,input.operation_source(expression.span(),SourceSyntax::Expression,path))?,
+        StageExpressionNeed::SegmentedReduce=>collective::compile(program,env,step.operation,collective::NumericKind::SegmentedReduce,args.as_ref().unwrap(),d,statement.span(),facts,input.operation_source(expression.span(),SourceSyntax::Expression,path))?,
+        StageExpressionNeed::Scan=>collective::compile(program,env,step.operation,collective::NumericKind::Scan,args.as_ref().unwrap(),d,statement.span(),facts,input.operation_source(expression.span(),SourceSyntax::Expression,path))?,
+        StageExpressionNeed::SegmentedScan=>collective::compile(program,env,step.operation,collective::NumericKind::SegmentedScan,args.as_ref().unwrap(),d,statement.span(),facts,input.operation_source(expression.span(),SourceSyntax::Expression,path))?,
         need@(StageExpressionNeed::CustomReduce|StageExpressionNeed::CustomScan|StageExpressionNeed::CustomSegmentedScan|StageExpressionNeed::CustomSegmentedReduce)=>{
             let kind=match need{StageExpressionNeed::CustomReduce=>custom_reduce::Kind::Reduce,StageExpressionNeed::CustomScan=>custom_reduce::Kind::Scan,StageExpressionNeed::CustomSegmentedScan=>custom_reduce::Kind::SegmentedScan,StageExpressionNeed::CustomSegmentedReduce=>custom_reduce::Kind::SegmentedReduce,_=>unsafe{std::hint::unreachable_unchecked()}};
             unsafe{world.call(custom_reduce::compile(world,program,env,args.as_ref().unwrap(),instance,statement.span(),facts,cursor.flags&2!=0,kind,path.clone(),functions,input.operation_source(expression.span(),SourceSyntax::Expression,path))).await}?;
