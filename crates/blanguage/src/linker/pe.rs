@@ -1,6 +1,6 @@
 //! B lays out the final PE and writes its headers and directories.
 //! The section writer fills the same file before shared machine relocation.
-use super::{Result, combine::{CombinePlan, CombineRelocation, CombineSection}};
+use super::{Result, combine::{CombineGroup, CombinePlan, CombineRelocation, CombineSection}};
 use crate::native::CoffRelocationStatus;
 
 #[repr(C)]
@@ -43,7 +43,7 @@ struct PeRelocationResult {
 
 unsafe extern "C" {
     #[link_name="bootstrap.pe::layout"]
-    fn pe_layout(input:PeInput, rows:*const CombineSection, row_count:usize,
+    fn pe_layout(input:PeInput, rows:*const CombineSection, groups:*const CombineGroup,
         combined:*const CombineRelocation, relocation_count:usize)->PeLayout;
     #[link_name="bootstrap.pe::encode"]
     fn pe_encode(input:PeInput,layout:PeLayout,rows:*const CombineSection,
@@ -51,21 +51,22 @@ unsafe extern "C" {
 }
 
 pub(super) fn link(
-    rows: &[CombineSection], combined: &[CombineRelocation], plan: &CombinePlan, stack_reserve: u64,
+    rows: &[CombineSection], groups: &[CombineGroup], combined: &[CombineRelocation],
+    plan: &CombinePlan, stack_reserve: u64,
 ) -> Result<Vec<u8>> {
-    let mut sections = Vec::<PeSection>::with_capacity(plan.groups);
+    let mut sections = Vec::<PeSection>::with_capacity(groups.len());
     let mut relocations = Vec::<PeRelocation>::with_capacity(combined.len());
     let mut imports = Vec::<PeImport>::with_capacity(plan.imports);
     let mut absolutes = Vec::<PeAbsolute>::with_capacity(plan.absolutes);
     let input = PeInput {
-        sections: sections.as_mut_ptr(), section_count: plan.groups as u64,
+        sections: sections.as_mut_ptr(), section_count: groups.len() as u64,
         relocations: relocations.as_mut_ptr(), imports: imports.as_mut_ptr(),
         import_count: plan.imports as u64, absolutes: absolutes.as_mut_ptr(),
         absolute_count: plan.absolutes as u64, stack_reserve,
     };
     // B initializes the physical section, relocation and import slots from the combined rows.
     let layout = unsafe {
-        pe_layout(input, rows.as_ptr(), rows.len(), combined.as_ptr(), combined.len())
+        pe_layout(input, rows.as_ptr(), groups.as_ptr(), combined.as_ptr(), combined.len())
     };
     match layout.error {
         0=>{},

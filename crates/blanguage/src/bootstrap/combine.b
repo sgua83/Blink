@@ -1,8 +1,14 @@
 module bootstrap.combine;
 
 CombineObject object_at(CombineInput input,u64 i) on cpu {return unsafe_position<CombineObject>(unsafe_address(address_bits(input.objects)+i*OBJECT_BYTES));}
-CombineSection section_at(address sections,u64 i) on cpu {return unsafe_position<CombineSection>(unsafe_address(address_bits(sections)+i*SECTION_BYTES));}
-void section_put(CombineInput input,u64 i,CombineSection value) on cpu {unsafe_position<CombineSection>(unsafe_address(address_bits(input.sections)+i*SECTION_BYTES))=value;}
+CombineSection section_at(address sections,u64 i) on cpu {return unsafe_position<CombineSection>(unsafe_address(address_bits(sections)+i*size_of<CombineSection>()));}
+void section_put(CombineInput input,u64 i,CombineSection value) on cpu {unsafe_position<CombineSection>(unsafe_address(address_bits(input.sections)+i*size_of<CombineSection>()))=value;}
+CombineGroup group_at(address groups,u64 i) on cpu {
+    return unsafe_position<CombineGroup>(unsafe_address(address_bits(groups)+i*size_of<CombineGroup>()));
+}
+void group_put(address groups,u64 i,CombineGroup value) on cpu {
+    unsafe_position<CombineGroup>(unsafe_address(address_bits(groups)+i*size_of<CombineGroup>()))=value;
+}
 CombineSymbol symbol_at(CombineInput input,u64 i) on cpu {return unsafe_position<CombineSymbol>(unsafe_address(address_bits(input.symbols)+i*SYMBOL_BYTES));}
 void symbol_put(CombineInput input,u64 i,CombineSymbol value) on cpu {unsafe_position<CombineSymbol>(unsafe_address(address_bits(input.symbols)+i*SYMBOL_BYTES))=value;}
 CombineRelocation relocation_at(CombineInput input,u64 i) on cpu {return unsafe_position<CombineRelocation>(unsafe_address(address_bits(input.relocations)+i*size_of<CombineRelocation>()));}
@@ -45,24 +51,35 @@ bool same_symbol(CombineSymbol a,CombineSymbol b) on cpu {return compare(a.name,
 CombinePlan invalid(u64 error,u64 at) on cpu {return CombinePlan(0u64,0u64,0u64,0u64,error,at);}
 extern "C" CombinePlan prepare(CombineInput input, address local, u64 local_count, bool pe) on cpu {
     CombinePlan result=invalid(0u64,0u64);u64 i=0u64;
-    while(i<input.section_count){CombineSection row=section_at(input.sections,i);row.flags=row.flags&4278185983u64;row.size=0u64;section_put(input,i,row);i+=1u64;}
+    while(i<input.section_count){CombineSection row=section_at(input.sections,i);row.flags=row.flags&4278185983u64;section_put(input,i,row);i+=1u64;}
     sort(input,input.section_count,false);i=0u64;u64 owner=0u64;
     while(i<input.section_count){
         u64 index=order_at(input,i);CombineSection row=section_at(input.sections,index);
         if(i==0u64||!same_section(section_at(input.sections,order_at(input,i-1u64)),row)){owner=index;}
-        row.owner=owner;section_put(input,index,row);i+=1u64;
+        row.group=owner;section_put(input,index,row);i+=1u64;
     }
     u64 o=0u64;
     while(o<input.object_count){
         CombineObject object=object_at(input,o);
         i=object.section_start;
         while(i<object.section_start+object.section_count){
-            CombineSection row=section_at(input.sections,i);CombineSection first=section_at(input.sections,row.owner);
-            u64 group=first.group;if(row.owner==i){group=result.groups;result.groups+=1u64;}
+            CombineSection row=section_at(input.sections,i);
+            u64 first=row.group;
+            u64 group=result.groups;
+            CombineGroup layout=CombineGroup(first,0u64,0u64);
+            if(first==i){
+                result.groups+=1u64;
+            }else{
+                group=section_at(input.sections,first).group;
+                layout=group_at(input.groups,group);
+            }
             u64 exponent=(row.flags>>20u64)&15u64;if(exponent>0u64){exponent-=1u64;}u64 alignment=1u64<<exponent;
-            u64 begin=(first.size+alignment-1u64)&(0u64-alignment);if(begin>4294967295u64){return invalid(1u64,i);}
-            row.group=group;row.begin=begin;row.padding=begin-first.size;
-            if(row.owner==i){row.size=begin+row.byte_length;}else{first.size=begin+row.byte_length;section_put(input,row.owner,first);}
+            u64 begin=(layout.size+alignment-1u64)&(0u64-alignment);if(begin>4294967295u64){return invalid(1u64,i);}
+            row.group=group;row.begin=begin;row.padding=begin-layout.size;
+            row.relocation_base=layout.relocation_count;
+            layout.size=begin+row.byte_length;
+            layout.relocation_count+=row.relocation_count;
+            group_put(input.groups,group,layout);
             section_put(input,i,row);i+=1u64;
         }
         i=object.symbol_start;
@@ -75,6 +92,7 @@ extern "C" CombinePlan prepare(CombineInput input, address local, u64 local_coun
             CombineFrame row=frame_at(input,i);
             if(row.present!=0u64){
                 CombineSection section=section_at(input.sections,object.section_start+row.section);row.section=section.group;row.start+=section.begin;
+                row.relocation_base=section.relocation_base;
                 if(row.start>4294967295u64){return invalid(3u64,i);}
                 frame_put(input,i,row);
             }
@@ -105,6 +123,7 @@ extern "C" CombinePlan prepare(CombineInput input, address local, u64 local_coun
             result.imports += (row.target_kind == 1u64) ? 1u64 : 0u64;
             result.absolutes += (row.kind == 1u64) ? 1u64 : 0u64;
         }
+        row.source=source.group;row.slot+=source.relocation_base;
         relocation_put(input,i,row);i+=1u64;
     }
     // The selected names and the root definitions are both in byte order.
