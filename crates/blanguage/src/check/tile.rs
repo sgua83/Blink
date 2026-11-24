@@ -142,9 +142,15 @@ impl Builder<'_> {
         let Some(bits) = value.constant else {
             return self.fail(expr.span(), "B199", "tile 宽度需要编译期正 u32 值");
         };
+        if value.ty != Ty::scalar(Scalar::U32) {
+            return self.fail(
+                expr.span(),
+                "B199",
+                "一个阶段的 tile 必须使用相同的非零 u32 宽度",
+            );
+        }
         let width = bits[0] as u32;
-        if value.ty != Ty::scalar(Scalar::U32)
-            || width == 0
+        if width == 0
             || self
                 .tiles
                 .first()
