@@ -31,7 +31,7 @@ bool same_dll(PeImport a,PeImport b) on cpu {return compare(a.dll,a.dll_length,b
 bool import_less(PeImport a,PeImport b) on cpu {
     i32 dll=compare(a.dll,a.dll_length,b.dll,b.dll_length);if(dll!=0){return dll<0;}
     i32 name=compare(a.name,a.name_length,b.name,b.name_length);if(name!=0){return name<0;}
-    return a.relocation<b.relocation;
+    return a.relocation_or_thunk<b.relocation_or_thunk;
 }
 void sift_import(PeInput input,u64 start,u64 end) on cpu {
     u64 root=start;
@@ -82,74 +82,60 @@ u64 plan_absolute_pages(PeInput input) on cpu {
     }
     return length;
 }
-// Assign a directory and a relative thunk offset in the sorted rows. Each
-// completed DLL table contributes its original null terminator to both arrays.
+// Compact the sorted references into the rows written to the import tables.
+// Each completed DLL contributes a terminating slot in both thunk arrays.
 void plan_imports(PeInput input, inout PeLayout result) on cpu {
     sort_imports(input);
+    address empty=unsafe_address(0u64);
+    PeImport previous=PeImport(empty,0u64,empty,0u64,0u64,0u64,0u64,0u64);
     u64 groups = 0u64;
     u64 slots = 0u64;
-    u64 slot = 0u64;
+    u64 thunk = 0u64;
+    u64 strings = 0u64;
+    u64 written = 0u64;
     u64 index = 0u64;
     while (index < input.import_count) {
         PeImport value = import_at(input, index);
-        bool first_dll = index == 0u64;
-        bool first_name = first_dll;
-        if (index != 0u64) {
-            PeImport previous = import_at(input, index - 1u64);
-            first_dll = !same_dll(previous, value);
-            first_name = first_dll || compare(previous.name, previous.name_length, value.name, value.name_length) != 0;
-            if (first_dll) { slots += 1u64; }
+        bool first_dll = index == 0u64 || !same_dll(previous, value);
+        bool first_name = first_dll || compare(previous.name, previous.name_length, value.name, value.name_length) != 0;
+        // Keep the original keys even if compaction overwrites this row.
+        previous = value;
+        u64 relocation_index = value.relocation_or_thunk;
+        if (first_dll) {
+            if (index != 0u64) { slots += 1u64; }
+            value.directory = groups * 20u64;
+            groups += 1u64;
+            value.dll_at = strings;
+            strings += value.dll_length + 1u64;
         }
-        if (first_dll) { groups += 1u64; }
         if (first_name) {
-            slot = slots;
+            thunk = slots * 8u64;
             slots += 1u64;
+            strings = align(strings, 2u64);
+            value.hint = strings;
+            strings += value.name_length + 3u64;
+            if (!first_dll) { value.dll = empty; }
+            value.relocation_or_thunk = thunk;
+            import_put(input, written, value);
+            written += 1u64;
         }
-        value.directory = (groups - 1u64) * 20u64;
-        value.lookup = slot * 8u64;
-        import_put(input, index, value);
+        CombineRelocation relocation = relocation_at(input, relocation_index);
+        relocation.value = thunk;
+        relocation_put(input, relocation_index, relocation);
         index += 1u64;
     }
     if (groups != 0u64) { slots += 1u64; }
+    result.import_count = written;
     result.import_directory_size = (groups + 1u64) * 20u64;
     u64 lookup = align(result.import_directory_size, 8u64);
     u64 iat = lookup + slots * 8u64;
     result.iat_start = result.idata + iat;
     result.iat_size = slots * 8u64;
-    u64 at = iat + result.iat_size;
-
-    u64 directory = 0u64;
-    u64 thunk = 0u64;
-    u64 dll_at = 0u64;
-    u64 hint = 0u64;
-    index = 0u64;
-    while (index < input.import_count) {
-        PeImport value = import_at(input, index);
-        if (index == 0u64 || value.directory != directory) {
-            directory = value.directory;
-            dll_at = at;
-            at += value.dll_length + 1u64;
-        }
-        if (index == 0u64 || value.lookup != thunk) {
-            thunk = value.lookup;
-            at = align(at, 2u64);
-            hint = at;
-            at += value.name_length + 3u64;
-        }
-        value.lookup = lookup + thunk;
-        value.iat = iat + thunk;
-        value.dll_at = dll_at;
-        value.hint = hint;
-        import_put(input, index, value);
-        CombineRelocation relocation = relocation_at(input, value.relocation);
-        relocation.value = result.idata + value.iat;
-        relocation_put(input, value.relocation, relocation);
-        index += 1u64;
-    }
-    result.idata_length = at;
+    // The string block follows two eight-byte-aligned thunk arrays.
+    result.idata_length = iat + result.iat_size + strings;
 }
 PeLayout invalid(u64 code) on cpu {
-    return PeLayout(0u64,0u64,0u64,0u64,0u64,0u64,0u64,0u64,0u64,0u64,0u64,0u64,0u64,5368709120u64,code);
+    return PeLayout(0u64,0u64,0u64,0u64,0u64,0u64,0u64,0u64,0u64,0u64,0u64,0u64,0u64,0u64,5368709120u64,code);
 }
 void pack_sections(PeInput input,address rows,address groups,u64 relocation_count) on cpu {
     u64 start=0u64;u64 i=0u64;
@@ -176,7 +162,7 @@ void pack_sections(PeInput input,address rows,address groups,u64 relocation_coun
         }
         if(row.target_kind==1u64){
             import_put(input,imports,PeImport(row.library,row.library_length,row.name,row.name_length,i,
-                0u64,0u64,0u64,0u64,0u64));
+                0u64,0u64,0u64));
             imports+=1u64;
         }
         i+=1u64;
@@ -212,6 +198,8 @@ extern "C" PeLayout layout(PeInput input,address rows,address groups,u64 relocat
             if(relocation.target_kind==0){
                 if(relocation.section>=input.section_count){return invalid(2u64);}
                 relocation.value+=u64(section_at(input,relocation.section).rva);
+            }else if(relocation.target_kind==1u64){
+                relocation.value+=result.iat_start;
             }
             relocation_put(input,index,relocation);
             if(relocation.kind==1){
@@ -292,20 +280,25 @@ void encode_headers(PeInput input,PeLayout layout,address output) on cpu {
     u64 ih=392u64+input.section_count*40u64;
     put(output,ih,46u64);put(output,ih+1u64,105u64);put(output,ih+2u64,100u64);put(output,ih+3u64,97u64);put(output,ih+4u64,116u64);put(output,ih+5u64,97u64);
     le32(output,ih+8u64,layout.idata_length);le32(output,ih+12u64,layout.idata);le32(output,ih+16u64,align(layout.idata_length,512u64));le32(output,ih+20u64,raw);le32(output,ih+36u64,3221225536u64);
-    u64 idata=raw;i=0u64;
-    while(i<input.import_count){
-        PeImport value=import_at(input,i);bool first=i==0u64;
-        if(i!=0u64){first=import_at(input,i-1u64).directory!=value.directory;}
-        if(first){
-            le32(output,idata+value.directory,layout.idata+value.lookup);
-            le32(output,idata+value.directory+12u64,layout.idata+value.dll_at);le32(output,idata+value.directory+16u64,layout.idata+value.iat);
-            copy(output,idata+value.dll_at,value.dll,value.dll_length);
+    u64 idata=raw;
+    u64 iat=layout.iat_start-layout.idata;
+    u64 lookup=iat-layout.iat_size;
+    u64 names=iat+layout.iat_size;
+    i=0u64;
+    while(i<layout.import_count){
+        PeImport value=import_at(input,i);
+        u64 thunk=value.relocation_or_thunk;
+        if(address_bits(value.dll)!=0u64){
+            u64 dll=names+value.dll_at;
+            le32(output,idata+value.directory,layout.idata+lookup+thunk);
+            le32(output,idata+value.directory+12u64,layout.idata+dll);
+            le32(output,idata+value.directory+16u64,layout.idata+iat+thunk);
+            copy(output,idata+dll,value.dll,value.dll_length);
         }
-        bool unique=i==0u64;if(i!=0u64){unique=import_at(input,i-1u64).lookup!=value.lookup;}
-        if(unique){
-            le64(output,idata+value.lookup,layout.idata+value.hint);le64(output,idata+value.iat,layout.idata+value.hint);
-            copy(output,idata+value.hint+2u64,value.name,value.name_length);
-        }
+        u64 hint=names+value.hint;
+        le64(output,idata+lookup+thunk,layout.idata+hint);
+        le64(output,idata+iat+thunk,layout.idata+hint);
+        copy(output,idata+hint+2u64,value.name,value.name_length);
         i+=1u64;
     }
     if(layout.reloc_length!=0u64){

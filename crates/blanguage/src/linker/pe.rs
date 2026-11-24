@@ -10,8 +10,8 @@ struct PeSection {
 }
 #[repr(C)]
 struct PeImport {
-    dll:*const u8, dll_length:u64, name:*const u8, name_length:u64, relocation:u64,
-    lookup:u64, iat:u64, hint:u64, dll_at:u64, directory:u64,
+    dll:*const u8, dll_length:u64, name:*const u8, name_length:u64, relocation_or_thunk:u64,
+    hint:u64, dll_at:u64, directory:u64,
 }
 #[repr(C)]
 struct PeAbsolute {page:u64,value:u64,order_or_page_end:u64}
@@ -26,7 +26,7 @@ struct PeInput {
 #[derive(Clone,Copy)]
 #[repr(C)]
 struct PeLayout {
-    length:u64,header:u64,idata:u64,idata_length:u64,import_directory_size:u64,
+    length:u64,header:u64,idata:u64,idata_length:u64,import_directory_size:u64,import_count:u64,
     iat_start:u64,iat_size:u64,reloc:u64,reloc_length:u64,pdata:u64,pdata_length:u64,
     section_count:u64,image_size:u64,image_base:u64,error:u64,
 }

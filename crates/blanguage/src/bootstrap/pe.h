@@ -1,14 +1,16 @@
 module bootstrap.pe;
 const u64 SECTION_BYTES=56u64;
-const u64 IMPORT_BYTES=80u64;
+const u64 IMPORT_BYTES=64u64;
 const u64 ABSOLUTE_BYTES=24u64;
 struct PeSection {
     address name;u64 name_length;u64 byte_length;
     u64 relocation_start;u64 relocation_count;u32 flags;u32 rva;u64 raw;
 };
+// Compacted rows reuse the relocation index for a relative thunk. Only a
+// DLL's first written row retains its DLL source and directory location.
 struct PeImport {
-    address dll;u64 dll_length;address name;u64 name_length;u64 relocation;
-    u64 lookup;u64 iat;u64 hint;u64 dll_at;u64 directory;
+    address dll;u64 dll_length;address name;u64 name_length;u64 relocation_or_thunk;
+    u64 hint;u64 dll_at;u64 directory;
 };
 // The original order is used only for sorting. Layout then stores the
 // exclusive end index in the first row of each page.
@@ -18,7 +20,7 @@ struct PeInput {
     address imports;u64 import_count;address absolutes;u64 absolute_count;u64 stack_reserve;
 };
 struct PeLayout {
-    u64 length;u64 header;u64 idata;u64 idata_length;u64 import_directory_size;
+    u64 length;u64 header;u64 idata;u64 idata_length;u64 import_directory_size;u64 import_count;
     u64 iat_start;u64 iat_size;u64 reloc;u64 reloc_length;u64 pdata;u64 pdata_length;
     u64 section_count;u64 image_size;u64 image_base;u64 error;
 };
