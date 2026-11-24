@@ -151,26 +151,28 @@ struct BinaryEmission {
     u32 result;
     u32 left;
     u32 right;
-    u32 mask;
-    u32 masked;
 };
-struct BinaryWords { u64 body; u64 decorations; };
+struct ScalarWords { u64 body; u64 decorations; };
+struct ScalarStreams { address body; address decorations; };
+struct ScalarHost {
+    address context;
+    cfn<u32,address,BuiltinScalar,u64> constant;
+    cfn<u32,address,BuiltinScalar> type_id;
+    cfn<u32,address,u32> ids;
+    cfn<ScalarStreams,address,usize,usize> reserve;
+};
 struct CastEmission {
     BuiltinScalar from;
     BuiltinScalar to;
     u32 result_type;
     u32 result;
     u32 value;
-    u32 zero;
-    u32 one;
 };
 
-// The original emitter owns the IDs and buffers. A masked ID is present for shifts.
-// Storage has room for ten body words and three decoration words.
-extern "C" BinaryWords scalar_binary(BinaryEmission input, address body, address decorations) on cpu;
-// Zero and one are the original constant IDs for a conversion involving bool.
-// Storage has room for six body words.
-extern "C" u64 scalar_cast(CastEmission input, address body) on cpu;
+extern "C" ScalarWords scalar_binary(BinaryEmission input, ScalarHost host) on cpu
+    requires nonzero(host.constant) requires nonzero(host.ids) requires nonzero(host.reserve);
+extern "C" ScalarWords scalar_cast(CastEmission input, ScalarHost host) on cpu
+    requires nonzero(host.constant) requires nonzero(host.reserve);
 extern "C" u64 select_words(address body, u64 at, u32 result_type, u32 result,
                             u32 condition, u32 yes, u32 no) on cpu;
 
@@ -191,22 +193,18 @@ struct CollectiveWords { u64 body; u64 decorations; u32 next; u32 value; };
 // supplies the next ID and room for nineteen body and three decoration words.
 extern "C" CollectiveWords collective_pair(CollectivePair input, address body, address decorations) on cpu;
 
-struct DivisionEmission {
-    u32 integer_type;
-    u32 magnitude_type;
+struct ScalarDivision {
+    BuiltinScalar scalar;
     u32 numerator;
     u32 denominator;
     u32 quotient;
     u32 remainder;
-    u32 sign_shift;
-    u32 next;
+    u64 immediate;
 };
-struct DivisionWords { u32 body; u32 next; };
-
-// A zero result ID denotes the unused quotient or remainder. A zero sign-shift
-// ID denotes unsigned inputs. The caller supplies the original next ID and
-// holds ten (unsigned) or eighty-one (signed) output words.
-extern "C" DivisionWords integer_division(DivisionEmission input, address body) on cpu;
+// A zero denominator ID selects the immediate. Absent quotient and remainder IDs are zero.
+extern "C" ScalarWords scalar_division(ScalarDivision input, ScalarHost host) on cpu
+    requires nonzero(host.constant) requires nonzero(host.type_id)
+    requires nonzero(host.ids) requires nonzero(host.reserve);
 
 // Operation identities follow the original IR UnaryOp and MathOp.
 enum UnaryOperation:u32 {
@@ -215,28 +213,29 @@ enum UnaryOperation:u32 {
 enum MathOperation:u32 {
     Abs=0; Floor=1; Sin=2; Cos=3; Pow=4; Exp=5; Log=6; Exp2=7; Log2=8; Sqrt=9; Min=10; Max=11; Ceil=12;
 };
-struct FloatSignOperands { u32 raw_type; u32 mask; u32 temporary; };
 struct UnaryEmission {
     UnaryOperation operation;
+    BuiltinScalar scalar;
     u32 result_type;
     u32 result;
     u32 value;
-    u32 zero;
-    FloatSignOperands sign;
 };
 struct MathEmission {
     MathOperation operation;
+    BuiltinScalar scalar;
     u32 result_type;
     u32 result;
     u32 left;
     u32 right;
     u32 extended_set;
-    FloatSignOperands sign;
 };
-// The emitter supplies consecutive temporary IDs for the sign operation and
-// thirteen output words. A zero right operand ID denotes a unary math operation.
-extern "C" u64 scalar_unary(UnaryEmission input, address body) on cpu;
-extern "C" u64 scalar_math(MathEmission input, address body) on cpu;
+extern "C" ScalarWords scalar_unary(UnaryEmission input, ScalarHost host) on cpu
+    requires nonzero(host.constant) requires nonzero(host.type_id)
+    requires nonzero(host.ids) requires nonzero(host.reserve);
+// A zero right operand denotes unary math. A zero body length reports unsupported f64 math.
+extern "C" ScalarWords scalar_math(MathEmission input, ScalarHost host) on cpu
+    requires nonzero(host.constant) requires nonzero(host.type_id)
+    requires nonzero(host.ids) requires nonzero(host.reserve);
 
 struct PageAddress {
     u32 u32_type;

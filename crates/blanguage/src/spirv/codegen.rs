@@ -365,14 +365,27 @@ struct BinaryEmission {
     result: u32,
     left: u32,
     right: u32,
-    mask: u32,
-    masked: u32,
 }
 
 #[repr(C)]
-struct BinaryWords {
+struct ScalarWords {
     body: u64,
     decorations: u64,
+}
+
+#[repr(C)]
+struct ScalarStreams {
+    body: *mut u32,
+    decorations: *mut u32,
+}
+
+#[repr(C)]
+struct ScalarHost {
+    context: *mut std::ffi::c_void,
+    constant: unsafe extern "C" fn(*mut std::ffi::c_void, ScalarCode, Bits) -> u32,
+    type_id: unsafe extern "C" fn(*mut std::ffi::c_void, ScalarCode) -> u32,
+    ids: unsafe extern "C" fn(*mut std::ffi::c_void, u32) -> u32,
+    reserve: unsafe extern "C" fn(*mut std::ffi::c_void, usize, usize) -> ScalarStreams,
 }
 
 #[repr(C)]
@@ -382,55 +395,65 @@ struct CastEmission {
     result_type: u32,
     result: u32,
     value: u32,
-    zero: u32,
-    one: u32,
 }
 
 #[repr(C)]
-struct DivisionEmission {
-    integer_type: u32,
-    magnitude_type: u32,
+struct ScalarDivision {
+    scalar: ScalarCode,
     numerator: u32,
     denominator: u32,
     quotient: u32,
     remainder: u32,
-    sign_shift: u32,
-    next: u32,
-}
-
-#[repr(C)]
-struct DivisionWords {
-    body: u32,
-    next: u32,
-}
-
-#[repr(C)]
-#[derive(Default)]
-struct FloatSignOperands {
-    raw_type: u32,
-    mask: u32,
-    temporary: u32,
+    immediate: Bits,
 }
 
 #[repr(C)]
 struct UnaryEmission {
     operation: u32,
+    scalar: ScalarCode,
     result_type: u32,
     result: u32,
     value: u32,
-    zero: u32,
-    sign: FloatSignOperands,
 }
 
 #[repr(C)]
 struct MathEmission {
     operation: u32,
+    scalar: ScalarCode,
     result_type: u32,
     result: u32,
     left: u32,
     right: u32,
     extended_set: u32,
-    sign: FloatSignOperands,
+}
+
+unsafe extern "C" fn scalar_constant(context: *mut std::ffi::c_void, scalar: ScalarCode, bits: Bits) -> u32 {
+    unsafe { &mut *context.cast::<Emitter<'_>>() }.constant_code(scalar, bits)
+}
+
+unsafe extern "C" fn scalar_type_id(context: *mut std::ffi::c_void, scalar: ScalarCode) -> u32 {
+    unsafe { &*context.cast::<Emitter<'_>>() }.types.0[scalar as usize]
+}
+
+unsafe extern "C" fn scalar_ids(context: *mut std::ffi::c_void, count: u32) -> u32 {
+    let emitter = unsafe { &mut *context.cast::<Emitter<'_>>() };
+    let first = emitter.next;
+    emitter.next += count;
+    first
+}
+
+unsafe extern "C" fn scalar_reserve(
+    context: *mut std::ffi::c_void, body: usize, decorations: usize,
+) -> ScalarStreams {
+    let emitter = unsafe { &mut *context.cast::<Emitter<'_>>() };
+    emitter.body.reserve(body);
+    emitter.decorations.reserve(decorations);
+    unsafe {
+        ScalarStreams {
+            body: emitter.body.as_mut_ptr().add(emitter.body.len()),
+            decorations: emitter.decorations.as_mut_ptr().add(emitter.decorations.len()),
+        }
+    }
 }
 
 enum PageSource {
@@ -1048,18 +1071,18 @@ unsafe extern "C" {
     fn function_storage(input: FunctionStorageInput, host: FunctionStorageHost, constants: ShaderConstants,
         locals: *mut u32, definitions: *mut u32, body: *mut u32) -> FunctionStorageWords;
     #[link_name = "bootstrap.spirv_envelope::scalar_binary"]
-    fn scalar_binary(input: BinaryEmission, body: *mut u32, decorations: *mut u32) -> BinaryWords;
+    fn scalar_binary(input: BinaryEmission, host: ScalarHost) -> ScalarWords;
     #[link_name = "bootstrap.spirv_envelope::scalar_cast"]
-    fn scalar_cast(input: CastEmission, body: *mut u32) -> u64;
+    fn scalar_cast(input: CastEmission, host: ScalarHost) -> ScalarWords;
     #[link_name = "bootstrap.spirv_envelope::select_words"]
     fn select_words(body: *mut u32, at: u64, result_type: u32, result: u32,
                     condition: u32, yes: u32, no: u32) -> u64;
-    #[link_name = "bootstrap.spirv_envelope::integer_division"]
-    fn integer_division(input: DivisionEmission, body: *mut u32) -> DivisionWords;
+    #[link_name = "bootstrap.spirv_envelope::scalar_division"]
+    fn scalar_division(input: ScalarDivision, host: ScalarHost) -> ScalarWords;
     #[link_name = "bootstrap.spirv_envelope::scalar_unary"]
-    fn scalar_unary(input: UnaryEmission, body: *mut u32) -> u64;
+    fn scalar_unary(input: UnaryEmission, host: ScalarHost) -> ScalarWords;
     #[link_name = "bootstrap.spirv_envelope::scalar_math"]
-    fn scalar_math(input: MathEmission, body: *mut u32) -> u64;
+    fn scalar_math(input: MathEmission, host: ScalarHost) -> ScalarWords;
     #[link_name = "bootstrap.spirv_envelope::page_address"]
     fn page_address(input: PageAddress, step: u32, body: *mut u32) -> PageAddressResult;
     #[link_name = "bootstrap.spirv_envelope::summary_addresses"]
@@ -1358,8 +1381,11 @@ impl Emitter<'_> {
         self.constant_bits(s, Bits::from(bits))
     }
     fn constant_bits(&mut self, scalar: Scalar, bits: Bits) -> u32 {
+        self.constant_code(scalar.into(), bits)
+    }
+    fn constant_code(&mut self, scalar: ScalarCode, bits: Bits) -> u32 {
         let input = ShaderConstant {
-            scalar: scalar.into(), type_id: self.types[&scalar], next: self.next, bits,
+            scalar, type_id: self.types.0[scalar as usize], next: self.next, bits,
         };
         let start = self.defs.len();
         let definitions = std::ptr::from_mut(&mut self.defs).cast();
@@ -1617,28 +1643,34 @@ impl Emitter<'_> {
     fn ty(&self, r: Reg) -> u32 {
         self.types[&self.stage.registers[r]]
     }
+    fn emit_scalar(&mut self, emit: impl FnOnce(ScalarHost) -> ScalarWords) -> u64 {
+        let words = emit(ScalarHost {
+            context: std::ptr::from_mut(self).cast(),
+            constant: scalar_constant,
+            type_id: scalar_type_id,
+            ids: scalar_ids,
+            reserve: scalar_reserve,
+        });
+        unsafe {
+            self.body.set_len(self.body.len() + words.body as usize);
+            self.decorations.set_len(self.decorations.len() + words.decorations as usize);
+        }
+        words.body
+    }
+
     fn integer_divide(&mut self, result: IntegerDivisionResult, src: Reg, divisor: IntegerDivisor) {
-        let scalar = self.stage.registers[src];
-        let denominator = match divisor {
-            IntegerDivisor::Constant(divisor) => self.constant_bits(scalar, divisor.get()),
-            IntegerDivisor::Value(divisor) => self.value(divisor),
+        let (denominator, immediate) = match divisor {
+            IntegerDivisor::Constant(divisor) => (0, divisor.get()),
+            IntegerDivisor::Value(divisor) => (self.value(divisor), 0),
         };
-        let sign_shift = if scalar.is_signed() { self.constant(scalar, scalar.bit_width() - 1) } else { 0 };
-        let input = DivisionEmission {
-            integer_type: self.types[&scalar],
-            magnitude_type: self.types[&Self::raw_scalar(scalar)],
+        let input = ScalarDivision {
+            scalar: self.stage.registers[src].into(),
             numerator: self.value(src), denominator,
             quotient: result.quotient().map_or(0, |r| self.value(r)),
             remainder: result.remainder().map_or(0, |r| self.value(r)),
-            sign_shift, next: self.next,
+            immediate,
         };
-        let at = self.body.len();
-        self.body.reserve(if sign_shift == 0 { 10 } else { 81 });
-        unsafe {
-            let emitted = integer_division(input, self.body.as_mut_ptr().add(at));
-            self.body.set_len(at + emitted.body as usize);
-            self.next = emitted.next;
-        }
+        self.emit_scalar(|host| unsafe { scalar_division(input, host) });
     }
     fn address_scalar(&mut self, unit: Scalar, binding: usize, index: u32, word: u32) -> u32 {
         self.page_address(unit, PageSource::Dataset(self.buffers[binding]), index, word, 0)
@@ -1947,109 +1979,51 @@ impl Emitter<'_> {
                     self.store_raw_buffer(scalar, *binding, self.value(*index), *word, raw);
                 }
                 InstKind::Unary { dst, op, a } => {
-                    let scalar = self.stage.registers[*a];
                     let input = UnaryEmission {
                         operation: *op as u32,
+                        scalar: self.stage.registers[*a].into(),
                         result_type: self.ty(*dst),
                         result: self.value(*dst),
                         value: self.value(*a),
-                        zero: if *op == UnaryOp::UnsignedNegate { self.constant(scalar, 0) } else { 0 },
-                        sign: if *op == UnaryOp::FloatNegate {
-                            self.float_sign_operands(scalar, true)
-                        } else {
-                            FloatSignOperands::default()
-                        },
                     };
-                    let at = self.body.len();
-                    self.body.reserve(13);
-                    unsafe {
-                        let words = scalar_unary(input, self.body.as_mut_ptr().add(at));
-                        self.body.set_len(at + words as usize);
-                    }
+                    self.emit_scalar(|host| unsafe { scalar_unary(input, host) });
                 }
                 InstKind::IntegerDivide { result, src, divisor } => {
                     self.integer_divide(*result, *src, *divisor);
                 }
-                InstKind::Binary {
-                    dst,
-                    op: operation,
-                    a,
-                    b,
-                } => {
-                    let scalar = self.stage.registers[*a];
-                    let (mask, masked) = if matches!(
-                        operation, BinaryOp::ShiftLeft | BinaryOp::ShiftRightLogical | BinaryOp::ShiftRightArithmetic
-                    ) {
-                        (self.constant(scalar, scalar.bit_width() - 1), self.id())
-                    } else {
-                        (0, 0)
-                    };
+                InstKind::Binary { dst, op, a, b } => {
                     let input = BinaryEmission {
-                        operation: (*operation).into(), scalar: scalar.into(),
-                        result_type: self.ty(*dst), result: self.value(*dst),
-                        left: self.value(*a), right: self.value(*b), mask, masked,
+                        operation: (*op).into(),
+                        scalar: self.stage.registers[*a].into(),
+                        result_type: self.ty(*dst),
+                        result: self.value(*dst),
+                        left: self.value(*a),
+                        right: self.value(*b),
                     };
-                    let body = self.body.len();
-                    let decorations = self.decorations.len();
-                    self.body.reserve(10);
-                    self.decorations.reserve(3);
-                    unsafe {
-                        let words = scalar_binary(input, self.body.as_mut_ptr().add(body),
-                            self.decorations.as_mut_ptr().add(decorations));
-                        self.body.set_len(body + words.body as usize);
-                        self.decorations.set_len(decorations + words.decorations as usize);
-                    }
+                    self.emit_scalar(|host| unsafe { scalar_binary(input, host) });
                 }
                 InstKind::Cast { dst, src } => {
-                    let from = self.stage.registers[*src];
-                    let to = self.stage.registers[*dst];
-                    let (zero, one) = if from == Scalar::Bool {
-                        let one = self.constant_bits(to, match to {
-                            Scalar::F32 => 1.0f32.to_bits() as Bits,
-                            Scalar::F64 => 1.0f64.to_bits(),
-                            _ => 1,
-                        });
-                        (self.constant(to, 0), one)
-                    } else if to == Scalar::Bool {
-                        (self.constant(from, 0), 0)
-                    } else {
-                        (0, 0)
-                    };
                     let input = CastEmission {
-                        from: from.into(), to: to.into(), result_type: self.ty(*dst),
-                        result: self.value(*dst), value: self.value(*src), zero, one,
+                        from: self.stage.registers[*src].into(),
+                        to: self.stage.registers[*dst].into(),
+                        result_type: self.ty(*dst),
+                        result: self.value(*dst),
+                        value: self.value(*src),
                     };
-                    let body = self.body.len();
-                    self.body.reserve(6);
-                    unsafe {
-                        let words = scalar_cast(input, self.body.as_mut_ptr().add(body));
-                        self.body.set_len(body + words as usize);
-                    }
+                    self.emit_scalar(|host| unsafe { scalar_cast(input, host) });
                 }
                 InstKind::Math { dst, op, args } => {
-                    let scalar = self.stage.registers[*dst];
-                    if scalar == Scalar::F64 && matches!(op,
-                        MathOp::Sin | MathOp::Cos | MathOp::Pow | MathOp::Exp | MathOp::Exp2 | MathOp::Log | MathOp::Log2) {
-                        return Err("GPU f64 超越函数尚未实现；GLSL.std.450 对应指令不接受64位浮点，不能隐式降低精度");
-                    }
                     let input = MathEmission {
                         operation: *op as u32,
+                        scalar: self.stage.registers[*dst].into(),
                         result_type: self.ty(*dst),
                         result: self.value(*dst),
                         left: self.value(args[0]),
                         right: args.get(1).map_or(0, |&r| self.value(r)),
                         extended_set: self.ext,
-                        sign: if *op == MathOp::Abs {
-                            self.float_sign_operands(scalar, false)
-                        } else {
-                            FloatSignOperands::default()
-                        },
                     };
-                    let at = self.body.len();
-                    self.body.reserve(13);
-                    unsafe {
-                        let words = scalar_math(input, self.body.as_mut_ptr().add(at));
-                        self.body.set_len(at + words as usize);
+                    if self.emit_scalar(|host| unsafe { scalar_math(input, host) }) == 0 {
+                        return Err("GPU f64 超越函数尚未实现；GLSL.std.450 对应指令不接受64位浮点，不能隐式降低精度");
                     }
                 }
                 InstKind::Select { dst, condition, a, b } => self.select(
@@ -2078,13 +2052,6 @@ impl Emitter<'_> {
             }
         }
         Ok(true)
-    }
-    fn float_sign_operands(&mut self, scalar: Scalar, negate: bool) -> FloatSignOperands {
-        let sign = 1u64 << (scalar.bit_width() - 1);
-        let mask = self.raw_constant(scalar, if negate { sign } else { sign - 1 });
-        let temporary = self.id();
-        self.id();
-        FloatSignOperands { raw_type: self.raw_type(scalar), mask, temporary }
     }
     fn uniform(&mut self, dst: Reg, offset: u32) {
         let scalar = self.stage.registers[dst];

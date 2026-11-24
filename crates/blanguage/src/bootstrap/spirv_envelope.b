@@ -598,20 +598,30 @@ u32 binary_opcode(BinaryOperation operation, ScalarDefinition scalar) on cpu {
     return comparison_opcode(operation, scalar);
 }
 
-extern "C" BinaryWords scalar_binary(BinaryEmission input, address body, address decorations) on cpu {
+extern "C" ScalarWords scalar_binary(BinaryEmission input, ScalarHost host) on cpu
+    requires nonzero(host.constant) requires nonzero(host.ids) requires nonzero(host.reserve) {
     ScalarDefinition scalar = scalar_definition(input.scalar);
     u32 opcode = binary_opcode(input.operation, scalar);
+    u32 mask = 0;
+    u32 masked = 0;
+    if (input.operation == BinaryOperation::ShiftLeft || input.operation == BinaryOperation::ShiftRight ||
+        input.operation == BinaryOperation::ShiftRightSigned) {
+        mask = host.constant(host.context, input.scalar, u64(scalar.width - 1));
+        masked = host.ids(host.context, 1);
+    }
+    bool decorate = scalar.opcode == 22 && u32(input.operation) <= u32(BinaryOperation::Divide);
+    ScalarStreams streams = host.reserve(host.context, masked == 0 ? 5u64 : 10u64, decorate ? 3u64 : 0u64);
     u64 at = 0u64;
     u32 right = input.right;
-    if (input.masked != 0) {
-        at = words_four(body, at, 199, input.result_type, input.masked, right, input.mask);
-        right = input.masked;
+    if (masked != 0) {
+        at = words_four(streams.body, at, 199, input.result_type, masked, right, mask);
+        right = masked;
     }
-    at = words_four(body, at, opcode, input.result_type, input.result, input.left, right);
-    if (scalar.opcode == 22 && u32(input.operation) <= u32(BinaryOperation::Divide)) {
-        return BinaryWords(at, flag_decoration(decorations, 0u64, FlagDecoration::NoContraction, input.result));
+    at = words_four(streams.body, at, opcode, input.result_type, input.result, input.left, right);
+    if (decorate) {
+        return ScalarWords(at, flag_decoration(streams.decorations, 0u64, FlagDecoration::NoContraction, input.result));
     }
-    return BinaryWords(at, 0u64);
+    return ScalarWords(at, 0u64);
 }
 
 extern "C" CollectiveWords collective_pair(CollectivePair input, address body, address decorations) on cpu {
@@ -669,20 +679,38 @@ u32 cast_opcode(BuiltinScalar from, BuiltinScalar to, ScalarDefinition source, S
     return 124;
 }
 
-extern "C" u64 scalar_cast(CastEmission input, address body) on cpu {
+extern "C" ScalarWords scalar_cast(CastEmission input, ScalarHost host) on cpu
+    requires nonzero(host.constant) requires nonzero(host.reserve) {
+    address context = host.context;
     if (input.from == BuiltinScalar::Bool) {
-        return select_words(body, 0u64, input.result_type, input.result, input.value, input.one, input.zero);
+        u64 one_bits = input.to == BuiltinScalar::F32 ? 0x3f800000u64 :
+            input.to == BuiltinScalar::F64 ? 0x3ff0000000000000u64 : 1u64;
+        u32 one = host.constant(context, input.to, one_bits);
+        u32 zero = host.constant(context, input.to, 0u64);
+        address body = host.reserve(context, 6u64, 0u64).body;
+        u64 words = select_words(body, 0u64, input.result_type, input.result, input.value, one, zero);
+        return ScalarWords(words, 0u64);
     }
     ScalarDefinition source = scalar_definition(input.from);
     if (input.to == BuiltinScalar::Bool) {
-        return words_four(body, 0u64, source.opcode == 22 ? 183 : 171,
-            input.result_type, input.result, input.value, input.zero);
+        u32 zero = host.constant(context, input.from, 0u64);
+        address body = host.reserve(context, 5u64, 0u64).body;
+        u64 words = words_four(body, 0u64, source.opcode == 22 ? 183 : 171,
+            input.result_type, input.result, input.value, zero);
+        return ScalarWords(words, 0u64);
     }
     ScalarDefinition target = scalar_definition(input.to);
-    return words_three(body, 0u64, cast_opcode(input.from, input.to, source, target),
+    address body = host.reserve(context, 4u64, 0u64).body;
+    u64 words = words_three(body, 0u64, cast_opcode(input.from, input.to, source, target),
         input.result_type, input.result, input.value);
+    return ScalarWords(words, 0u64);
 }
 
+struct DivisionEmission {
+    u32 integer_type; u32 magnitude_type; u32 numerator; u32 denominator;
+    u32 quotient; u32 remainder; u32 sign_shift; u32 next;
+};
+struct DivisionWords { u32 body; u32 next; };
 struct SignedMagnitude { u64 end; u32 value; u32 sign; u32 next; };
 
 SignedMagnitude emit_magnitude(address body, u64 at, DivisionEmission input, u32 value, u32 next) on cpu {
@@ -719,7 +747,7 @@ DivisionWords emit_signed_division_result(address body, DivisionWords cursor, Di
     return DivisionWords(u32(at), next + 1);
 }
 
-extern "C" DivisionWords integer_division(DivisionEmission input, address body) on cpu {
+DivisionWords encode_integer_division(DivisionEmission input, address body) on cpu {
     if (input.sign_shift == 0) {
         u64 at = 0u64;
         if (input.quotient != 0) {
@@ -745,25 +773,65 @@ extern "C" DivisionWords integer_division(DivisionEmission input, address body) 
     return cursor;
 }
 
-u64 float_sign(address body, u32 opcode, u32 type, u32 result, u32 value, FloatSignOperands input) on cpu {
-    u32 bits = input.temporary;
-    u32 changed = bits + 1;
-    u64 at = words_three(body, 0u64, 124, input.raw_type, bits, value);
-    at = words_four(body, at, opcode, input.raw_type, changed, bits, input.mask);
-    return words_three(body, at, 124, type, result, changed);
+BuiltinScalar unsigned_scalar(u32 width) on cpu {
+    if (width == 8) { return BuiltinScalar::U8; }
+    if (width == 16) { return BuiltinScalar::U16; }
+    return width == 64 ? BuiltinScalar::U64 : BuiltinScalar::U32;
 }
 
-extern "C" u64 scalar_unary(UnaryEmission input, address body) on cpu {
+extern "C" ScalarWords scalar_division(ScalarDivision input, ScalarHost host) on cpu
+    requires nonzero(host.constant) requires nonzero(host.type_id)
+    requires nonzero(host.ids) requires nonzero(host.reserve) {
+    address context = host.context;
+    ScalarDefinition type = scalar_definition(input.scalar);
+    u32 denominator = input.denominator;
+    if (denominator == 0) { denominator = host.constant(context, input.scalar, input.immediate); }
+    u32 sign_shift = 0;
+    if (type.signed != 0) { sign_shift = host.constant(context, input.scalar, u64(type.width - 1)); }
+    u32 integer_type = host.type_id(context, input.scalar);
+    u32 magnitude_type = host.type_id(context, unsigned_scalar(type.width));
+    u32 next = host.ids(context, 0);
+    address body = host.reserve(context, sign_shift == 0 ? 10u64 : 81u64, 0u64).body;
+    DivisionEmission lowered = DivisionEmission(integer_type, magnitude_type, input.numerator,
+        denominator, input.quotient, input.remainder, sign_shift, next);
+    DivisionWords words = encode_integer_division(lowered, body);
+    host.ids(context, words.next - next);
+    return ScalarWords(u64(words.body), 0u64);
+}
+
+ScalarWords float_sign(BuiltinScalar scalar, u32 type, u32 result, u32 value, bool negate, ScalarHost host) on cpu
+    requires nonzero(host.constant) requires nonzero(host.type_id)
+    requires nonzero(host.ids) requires nonzero(host.reserve) {
+    address context = host.context;
+    u32 width = scalar_definition(scalar).width;
+    u64 sign = 1u64 << u64(width - 1);
+    BuiltinScalar raw = unsigned_scalar(width);
+    u32 raw_type = host.type_id(context, raw);
+    u32 mask = host.constant(context, raw, negate ? sign : sign - 1u64);
+    u32 bits = host.ids(context, 2);
+    u32 changed = bits + 1;
+    address body = host.reserve(context, 13u64, 0u64).body;
+    u64 at = words_three(body, 0u64, 124, raw_type, bits, value);
+    at = words_four(body, at, negate ? 198 : 199, raw_type, changed, bits, mask);
+    return ScalarWords(words_three(body, at, 124, type, result, changed), 0u64);
+}
+
+extern "C" ScalarWords scalar_unary(UnaryEmission input, ScalarHost host) on cpu
+    requires nonzero(host.constant) requires nonzero(host.type_id)
+    requires nonzero(host.ids) requires nonzero(host.reserve) {
     if (input.operation == UnaryOperation::FloatNegate) {
-        return float_sign(body, 198, input.result_type, input.result, input.value, input.sign);
+        return float_sign(input.scalar, input.result_type, input.result, input.value, true, host);
     }
     if (input.operation == UnaryOperation::UnsignedNegate) {
-        return words_four(body, 0u64, 130, input.result_type, input.result, input.zero, input.value);
+        u32 zero = host.constant(host.context, input.scalar, 0u64);
+        address body = host.reserve(host.context, 5u64, 0u64).body;
+        return ScalarWords(words_four(body, 0u64, 130, input.result_type, input.result, zero, input.value), 0u64);
     }
     u32 opcode = input.operation == UnaryOperation::SignedNegate ? 126 :
         input.operation == UnaryOperation::LogicalNot ? 168 :
         input.operation == UnaryOperation::BitNot ? 200 : 124;
-    return words_three(body, 0u64, opcode, input.result_type, input.result, input.value);
+    address body = host.reserve(host.context, 4u64, 0u64).body;
+    return ScalarWords(words_three(body, 0u64, opcode, input.result_type, input.result, input.value), 0u64);
 }
 
 u32 math_opcode(MathOperation operation) on cpu {
@@ -780,11 +848,19 @@ u32 math_opcode(MathOperation operation) on cpu {
     if (operation == MathOperation::Min) { return 37; }
     return 40;
 }
-extern "C" u64 scalar_math(MathEmission input, address body) on cpu {
+extern "C" ScalarWords scalar_math(MathEmission input, ScalarHost host) on cpu
+    requires nonzero(host.constant) requires nonzero(host.type_id)
+    requires nonzero(host.ids) requires nonzero(host.reserve) {
+    MathOperation op = input.operation;
+    if (input.scalar == BuiltinScalar::F64 && (
+        op == MathOperation::Sin || op == MathOperation::Cos || op == MathOperation::Pow ||
+        op == MathOperation::Exp || op == MathOperation::Exp2 ||
+        op == MathOperation::Log || op == MathOperation::Log2)) { return ScalarWords(0u64, 0u64); }
     if (input.operation == MathOperation::Abs) {
-        return float_sign(body, 199, input.result_type, input.result, input.left, input.sign);
+        return float_sign(input.scalar, input.result_type, input.result, input.left, false, host);
     }
     u32 length = input.right == 0 ? 6 : 7;
+    address body = host.reserve(host.context, u64(length), 0u64).body;
     put(body, 0u64, instruction(12, length));
     put(body, 1u64, input.result_type);
     put(body, 2u64, input.result);
@@ -792,7 +868,7 @@ extern "C" u64 scalar_math(MathEmission input, address body) on cpu {
     put(body, 4u64, math_opcode(input.operation));
     put(body, 5u64, input.left);
     if (length == 7) { put(body, 6u64, input.right); }
-    return u64(length);
+    return ScalarWords(u64(length), 0u64);
 }
 
 u64 words_five(address body, u64 at, u32 opcode, u32 a, u32 b, u32 c, u32 d, u32 e) on cpu {
