@@ -18,7 +18,7 @@ struct NativeImportInput {dll:ImportBytes,name:ImportBytes,runtime:ImportBytes}
 struct NativeImportOutput {sections:*mut NativeImportSection,relocations:*mut NativeImportRelocation,slot:*mut u8,stem:*mut u8,member:*mut u8}
 #[derive(Clone,Copy)]
 #[repr(C)]
-struct NativeImportPlan {slot:u64,stem:u64,member:u64,hint:u64,relocations:u64,root:u64,error:u64}
+struct NativeImportPlan {slot:u64,stem:u64,member:u64,hint:u64,relocations:u64,sections:u64,error:u64}
 unsafe extern "C" {
     #[link_name="bootstrap.names::order_name_pairs"]
     fn order_import_keys(pairs: *mut ImportKey<'_>, count: u64) -> u64;
@@ -29,11 +29,12 @@ unsafe extern "C" {
 }
 fn member(import: ImportKey<'_>) -> Result<(LibraryMember, String)> {
     let input=NativeImportInput{dll:ImportBytes::new(import.dll()),name:ImportBytes::new(import.symbol()),runtime:ImportBytes::new(crate::application::RUNTIME_LIBRARY)};
-    let mut rows=[NativeImportSection{name:0,length:0,flags:0,owner:0,bytes:std::ptr::null_mut()};6];
+    let mut rows=[NativeImportSection{name:0,length:0,flags:0,owner:0,bytes:std::ptr::null_mut()};5];
     let mut relocations=[NativeImportRelocation{section:0,offset:0,kind:0,target:0,target_section:0,value:0};5];
     let mut output=NativeImportOutput{sections:rows.as_mut_ptr(),relocations:relocations.as_mut_ptr(),slot:std::ptr::null_mut(),stem:std::ptr::null_mut(),member:std::ptr::null_mut()};
     let plan=unsafe{plan_import(input,output)};
     match plan.error{0=>{},1=>return Err("原生导入材料超出COFF格式范围".into()),code=>return Err(format!("原生导入布局失败 {code}").into())}
+    let rows = &mut rows[..usize::try_from(plan.sections)?];
     let names=[".idata$2",".idata$3",".idata$4",".idata$5",".idata$6",".rdata"];
     let mut sections:Vec<_>=rows.iter_mut().map(|row|->Result<Section>{
         let mut bytes=Vec::with_capacity(usize::try_from(row.length)?);row.bytes=bytes.as_mut_ptr();
@@ -45,7 +46,7 @@ fn member(import: ImportKey<'_>) -> Result<(LibraryMember, String)> {
     unsafe{encode_import(input,output,plan);}
     // B initializes the actual final buffers. Inputs and all allocations remain
     // owned here until encoding and the same COFF consumer both finish.
-    for(section,row)in sections.iter_mut().zip(&rows){unsafe{section.bytes.set_len(usize::try_from(row.length)?);}}
+    for(section,row)in sections.iter_mut().zip(rows.iter()){unsafe{section.bytes.set_len(usize::try_from(row.length)?);}}
     unsafe{slot.set_len(usize::try_from(plan.slot)?);stem.set_len(usize::try_from(plan.stem)?);member.set_len(usize::try_from(plan.member)?);}
     let slot=unsafe{String::from_utf8_unchecked(slot)};let stem=unsafe{String::from_utf8_unchecked(stem)};let member=unsafe{String::from_utf8_unchecked(member)};
     for row in &relocations[..usize::try_from(plan.relocations)?]{
