@@ -143,6 +143,23 @@ extern "C" void expand_geometry(GeometryBuiltin builtin,usize width,GeometryEmit
     emitter.output(emitter.context,3,0);
 }
 
+extern "C" GeometryOutcome geometry_value(GeometryBuiltin builtin,usize count,GeometryHost host) on cpu
+    requires nonzero(host.queries.values.numeric) requires nonzero(host.queries.values.argument)
+    requires nonzero(host.queries.values.width) requires nonzero(host.queries.same) requires nonzero(host.queries.float3)
+    requires nonzero(host.emitter.emit) requires nonzero(host.emitter.output)
+    requires nonzero(host.uniform) requires nonzero(host.inputs) requires nonzero(host.cross) {
+    GeometryPlan plan=geometry_plan(builtin,count,host.queries);
+    if(plan.status!=GeometryStatus::Valid){return GeometryOutcome(plan.status,plan.side);}
+    if(builtin==GeometryBuiltin::Cross){
+        u32 uniform=1;usize index=0u64;
+        while(index<count&&uniform!=0){uniform=host.uniform(host.emitter.context,index);index+=1u64;}
+        host.cross(host.emitter.context,plan.result_width,uniform);
+    }
+    host.inputs(host.emitter.context);
+    expand_geometry(builtin,plan.width,host.emitter);
+    return GeometryOutcome(GeometryStatus::Valid,0);
+}
+
 extern "C" MatrixBuiltin source_matrix_intrinsic(address bytes,usize length) on cpu {
     if (source_spelling(bytes,length,"transpose")) { return MatrixBuiltin::Transpose; }
     if (source_spelling(bytes,length,"determinant")) { return MatrixBuiltin::Determinant; }

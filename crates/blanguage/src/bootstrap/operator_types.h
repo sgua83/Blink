@@ -65,6 +65,19 @@ struct GeometryEmitter {
 };
 extern "C" void expand_geometry(GeometryBuiltin builtin,usize width,GeometryEmitter emitter) on cpu
     requires nonzero(emitter.emit) requires nonzero(emitter.output);
+struct GeometryOutcome {GeometryStatus status;u32 side;};
+struct GeometryHost {
+    GeometryQueries queries;
+    GeometryEmitter emitter;
+    cfn<u32,address,usize> ensures memory(read) uniform;
+    cfn<void,address> inputs;
+    cfn<void,address,usize,u32> cross;
+};
+extern "C" GeometryOutcome geometry_value(GeometryBuiltin builtin,usize count,GeometryHost host) on cpu
+    requires nonzero(host.queries.values.numeric) requires nonzero(host.queries.values.argument)
+    requires nonzero(host.queries.values.width) requires nonzero(host.queries.same) requires nonzero(host.queries.float3)
+    requires nonzero(host.emitter.emit) requires nonzero(host.emitter.output)
+    requires nonzero(host.uniform) requires nonzero(host.inputs) requires nonzero(host.cross);
 
 enum FixedProjectionKind:u32 { Components=0; Vector=1; Array=2; };
 struct FixedProjection { FixedProjectionKind kind; usize first; };

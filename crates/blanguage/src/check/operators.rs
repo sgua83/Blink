@@ -5,6 +5,12 @@ use std::ffi::c_void;
 pub(super) use crate::codec::types::SourceMath as MathSignature;
 #[repr(C)]
 struct MathArgument { scalar:u32, flags:u32 }
+impl MathArgument {
+    fn of(value:&Value)->Self {
+        Self {scalar:value.ty.components[0].0 as u32,
+            flags:u32::from(!value.ty.fields.is_empty()) | (u32::from(value.ty.array.is_some())<<1)}
+    }
+}
 #[repr(C)]
 struct MathShape { status:u32, scalar:u32, width:usize }
 #[repr(C)]
@@ -20,9 +26,7 @@ unsafe extern "C" fn math_numeric(context:*const c_void,index:usize)->u32 {
     u32::from(context.values[index].ty.is_numeric())
 }
 unsafe extern "C" fn math_argument(context:*const c_void,index:usize)->MathArgument {
-    let value=&unsafe { &*context.cast::<MathContext<'_>>() }.values[index];
-    MathArgument { scalar:value.ty.components[0].0 as u32,
-        flags:u32::from(!value.ty.fields.is_empty()) | (u32::from(value.ty.array.is_some())<<1) }
+    MathArgument::of(&unsafe { &*context.cast::<MathContext<'_>>() }.values[index])
 }
 unsafe extern "C" fn math_width(context:*const c_void,index:usize)->usize {
     unsafe { &*context.cast::<MathContext<'_>>() }.values[index].regs.len()
@@ -198,7 +202,7 @@ pub(super) enum GeometryBuiltin { Unknown,Dot,Length,Normalize,Cross }
 #[repr(u32)]
 enum GeometryStatus { Valid,Arity,Same,DotType,LengthType,CrossType }
 #[repr(C)]
-struct GeometryPlan { status:GeometryStatus, side:u32, width:usize, result_width:usize }
+struct GeometryOutcome { status:GeometryStatus, side:u32 }
 #[repr(C)]
 struct GeometryQueries {
     values:MathQueries,
@@ -206,12 +210,24 @@ struct GeometryQueries {
     float3:unsafe extern "C" fn(*const c_void,usize)->u32,
 }
 unsafe extern "C" fn geometry_same(context:*const c_void)->u32 {
-    let values=unsafe { &*context.cast::<MathContext<'_>>() }.values;
+    let values=&unsafe { &*context.cast::<GeometryValues<'_,'_>>() }.args;
     u32::from(values[0].ty==values[1].ty)
 }
 unsafe extern "C" fn geometry_float3(context:*const c_void,side:usize)->u32 {
-    let values=unsafe { &*context.cast::<MathContext<'_>>() }.values;
+    let values=&unsafe { &*context.cast::<GeometryValues<'_,'_>>() }.args;
     u32::from(values[side].ty==Ty::vector(Scalar::F32,3))
+}
+unsafe extern "C" fn geometry_numeric(context:*const c_void,index:usize)->u32 {
+    u32::from(unsafe { &*context.cast::<GeometryValues<'_,'_>>() }.args[index].ty.is_numeric())
+}
+unsafe extern "C" fn geometry_argument(context:*const c_void,index:usize)->MathArgument {
+    MathArgument::of(&unsafe { &*context.cast::<GeometryValues<'_,'_>>() }.args[index])
+}
+unsafe extern "C" fn geometry_width(context:*const c_void,index:usize)->usize {
+    unsafe { &*context.cast::<GeometryValues<'_,'_>>() }.args[index].regs.len()
+}
+unsafe extern "C" fn geometry_uniform(context:*const c_void,index:usize)->u32 {
+    u32::from(unsafe { &*context.cast::<GeometryValues<'_,'_>>() }.args[index].uniform)
 }
 #[repr(u32)]
 enum GeometryAction { Copy,Add,Subtract,Multiply,Divide,Sqrt }
@@ -226,13 +242,19 @@ struct GeometryEmitter<'a,'w> {
     emit:unsafe extern "C" fn(*mut GeometryValues<'a,'w>,GeometryStep),
     output:unsafe extern "C" fn(*mut GeometryValues<'a,'w>,u32,u32),
 }
+#[repr(C)]
+struct GeometryHost<'a,'w> {
+    queries:GeometryQueries,
+    emitter:GeometryEmitter<'a,'w>,
+    uniform:unsafe extern "C" fn(*const c_void,usize)->u32,
+    inputs:unsafe extern "C" fn(*mut GeometryValues<'a,'w>),
+    cross:unsafe extern "C" fn(*mut GeometryValues<'a,'w>,usize,u32),
+}
 unsafe extern "C" {
     #[link_name="bootstrap.operator_types::source_geometry"]
     fn source_geometry(bytes:*const u8,length:usize)->GeometryBuiltin;
-    #[link_name="bootstrap.operator_types::geometry_plan"]
-    fn source_geometry_plan(builtin:GeometryBuiltin,count:usize,queries:GeometryQueries)->GeometryPlan;
-    #[link_name="bootstrap.operator_types::expand_geometry"]
-    fn expand_geometry(builtin:GeometryBuiltin,width:usize,emitter:GeometryEmitter<'_,'_>);
+    #[link_name="bootstrap.operator_types::geometry_value"]
+    fn source_geometry_value(builtin:GeometryBuiltin,count:usize,host:GeometryHost<'_,'_>)->GeometryOutcome;
 }
 impl GeometryBuiltin {
     pub(super) fn recognize(name:&str)->Self { unsafe { source_geometry(name.as_ptr(),name.len()) } }
@@ -240,7 +262,16 @@ impl GeometryBuiltin {
 // These five positions hold only the actual input, product and accumulator values.
 // B decides every read, final move and emitted component during this synchronous call.
 struct GeometryValues<'a,'w> {
-    builder:&'a mut Builder<'w>, slots:[Option<Value>;5], output:Option<Value>,
+    builder:&'a mut Builder<'w>,args:Vec<Value>,slots:[Option<Value>;5],output:Option<Value>,
+}
+unsafe extern "C" fn geometry_inputs(context:*mut GeometryValues<'_,'_>) {
+    let values=unsafe { &mut *context };
+    let mut inputs=std::mem::take(&mut values.args).into_iter();
+    values.slots[0]=inputs.next();values.slots[1]=inputs.next();
+}
+unsafe extern "C" fn geometry_cross(context:*mut GeometryValues<'_,'_>,width:usize,uniform:u32) {
+    unsafe { &mut *context }.output=Some(Value {proof:bounds::Proof::default(),literal:false,
+        ty:Ty::vector(Scalar::F32,width),regs:Vec::with_capacity(width),uniform:uniform!=0,constant:None});
 }
 impl GeometryValues<'_,'_> {
     fn binary(&mut self,token:&str,operation:BinaryOp,left:Value,right:GeometryOperand,width:usize)->Value {
@@ -281,31 +312,27 @@ unsafe extern "C" fn output_geometry(context:*mut GeometryValues<'_,'_>,slot:u32
 }
 impl Builder<'_> {
     pub(super) fn geometry_value(&mut self,builtin:GeometryBuiltin,values:Vec<Value>,span:Span)->Result<Value> {
-        let context=MathContext { values:&values };
-        let plan=unsafe { source_geometry_plan(builtin,values.len(),GeometryQueries {
-            values:context.queries(),same:geometry_same,float3:geometry_float3,
+        let count=values.len();
+        let mut context=GeometryValues {builder:self,args:values,slots:[None,None,None,None,None],output:None};
+        let pointer=std::ptr::from_mut(&mut context);
+        let outcome=unsafe { source_geometry_value(builtin,count,GeometryHost {
+            queries:GeometryQueries {values:MathQueries {context:pointer.cast(),numeric:geometry_numeric,
+                argument:geometry_argument,width:geometry_width},same:geometry_same,float3:geometry_float3},
+            emitter:GeometryEmitter {context:pointer,emit:emit_geometry,output:output_geometry},
+            uniform:geometry_uniform,inputs:geometry_inputs,cross:geometry_cross,
         }) };
-        match plan.status {
+        match outcome.status {
             GeometryStatus::Valid=>{},
-            GeometryStatus::Arity=>return self.fail(span,"B153",match builtin {
+            GeometryStatus::Arity=>return context.builder.fail(span,"B153",match builtin {
                 GeometryBuiltin::Dot=>"dot 需要两个向量",
                 GeometryBuiltin::Cross=>"cross 需要两个 float3",
                 _=>"length／normalize 需要一个向量",
             }),
-            GeometryStatus::Same=>return self.fail(span,"B124",format!("类型不匹配：需要 {}，实际为 {}",values[0].ty.name,values[1].ty.name)),
-            GeometryStatus::DotType=>return self.fail(span,"B154","dot 需要 float 向量"),
-            GeometryStatus::LengthType=>return self.fail(span,"B154","需要 float 向量"),
-            GeometryStatus::CrossType=>return self.fail(span,"B124",format!("类型不匹配：需要 {}，实际为 {}",Ty::vector(Scalar::F32,3).name,values[plan.side as usize].ty.name)),
+            GeometryStatus::Same=>return context.builder.fail(span,"B124",format!("类型不匹配：需要 {}，实际为 {}",context.args[0].ty.name,context.args[1].ty.name)),
+            GeometryStatus::DotType=>return context.builder.fail(span,"B154","dot 需要 float 向量"),
+            GeometryStatus::LengthType=>return context.builder.fail(span,"B154","需要 float 向量"),
+            GeometryStatus::CrossType=>return context.builder.fail(span,"B124",format!("类型不匹配：需要 {}，实际为 {}",Ty::vector(Scalar::F32,3).name,context.args[outcome.side as usize].ty.name)),
         }
-        let output=(builtin==GeometryBuiltin::Cross).then(||Value {
-            proof:bounds::Proof::default(),literal:false,ty:Ty::vector(Scalar::F32,plan.result_width),
-            regs:Vec::with_capacity(plan.result_width),uniform:values.iter().all(|v|v.uniform),constant:None,
-        });
-        let mut input=values.into_iter();
-        let mut context=GeometryValues { builder:self,slots:[input.next(),input.next(),None,None,None],output };
-        unsafe { expand_geometry(builtin,plan.width,GeometryEmitter {
-            context:&mut context,emit:emit_geometry,output:output_geometry,
-        }) };
         Ok(context.output.unwrap())
     }
 }
