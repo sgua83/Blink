@@ -27,35 +27,22 @@ u32 operation(address bytes,u64 length) on cpu {
     }
     return 0;
 }
-extern "C" u32 integer_math(u32 extremum,usize count,MathQueries queries) on cpu
-    requires nonzero(queries.numeric) requires nonzero(queries.argument) {
-    if (extremum==0) { return 0; }
-    usize index=0u64;
-    while (index<count) {
-        if (queries.numeric(queries.context,index)==0) { return 0; }
-        MathArgument argument=queries.argument(queries.context,index);
-        if (floating(argument.scalar) || argument.scalar==3) { return 0; }
-        index+=1u64;
-    }
-    return extremum;
-}
 extern "C" MathShape floating_math(usize count,MathQueries queries) on cpu
-    requires nonzero(queries.argument) requires nonzero(queries.width) {
-    MathShape result=MathShape(0,queries.argument(queries.context,0u64).scalar,0u64);
+    requires nonzero(queries.scalar) requires nonzero(queries.width) {
+    MathShape result=MathShape(0,0,0u64);
     usize index=0u64;
-    while (index<count) {
+    while(index<count){
+        u32 scalar=queries.scalar(queries.context,index);
+        if(index==0u64){result.scalar=scalar;}
+        if(!floating(scalar)||scalar!=result.scalar){result.status=154;return result;}
         usize width=queries.width(queries.context,index);
-        if (width>result.width) { result.width=width; }
+        if(width>result.width){result.width=width;}
         index+=1u64;
     }
     index=0u64;
-    while (index<count) {
-        MathArgument argument=queries.argument(queries.context,index);
-        if (!floating(argument.scalar) || argument.scalar!=result.scalar || argument.flags!=0) {
-            result.status=154;return result;
-        }
+    while(index<count){
         usize width=queries.width(queries.context,index);
-        if (width!=1u64 && width!=result.width) { result.status=154;return result; }
+        if(width!=1u64&&width!=result.width){result.status=154;return result;}
         index+=1u64;
     }
     return result;
@@ -70,7 +57,7 @@ extern "C" GeometryBuiltin source_geometry(address bytes,usize length) on cpu {
     return GeometryBuiltin::Unknown;
 }
 extern "C" GeometryPlan geometry_plan(GeometryBuiltin builtin,usize count,GeometryQueries queries) on cpu
-    requires nonzero(queries.values.numeric) requires nonzero(queries.values.argument)
+    requires nonzero(queries.values.numeric) requires nonzero(queries.values.scalar)
     requires nonzero(queries.values.width) requires nonzero(queries.same) requires nonzero(queries.float3) {
     GeometryPlan result=GeometryPlan(GeometryStatus::Valid,0,0u64,1u64);
     usize arity=builtin==GeometryBuiltin::Dot || builtin==GeometryBuiltin::Cross ? 2u64 : 1u64;
@@ -87,13 +74,9 @@ extern "C" GeometryPlan geometry_plan(GeometryBuiltin builtin,usize count,Geomet
     if (builtin==GeometryBuiltin::Dot && queries.same(context)==0) {
         result.status=GeometryStatus::Same;return result;
     }
-    MathArgument argument=queries.values.argument(context,0u64);
-    if (builtin==GeometryBuiltin::Dot) {
-        if (argument.scalar!=0 || queries.values.numeric(context,0u64)==0) {
-            result.status=GeometryStatus::DotType;return result;
-        }
-    } else if (argument.scalar!=0 || argument.flags!=0) {
-        result.status=GeometryStatus::LengthType;return result;
+    if(queries.values.numeric(context,0u64)==0 || queries.values.scalar(context,0u64)!=0){
+        result.status=builtin==GeometryBuiltin::Dot ? GeometryStatus::DotType : GeometryStatus::LengthType;
+        return result;
     }
     result.width=queries.values.width(context,0u64);
     if (builtin==GeometryBuiltin::Normalize) { result.result_width=result.width; }
@@ -144,7 +127,7 @@ extern "C" void expand_geometry(GeometryBuiltin builtin,usize width,GeometryEmit
 }
 
 extern "C" GeometryOutcome geometry_value(GeometryBuiltin builtin,usize count,GeometryHost host) on cpu
-    requires nonzero(host.queries.values.numeric) requires nonzero(host.queries.values.argument)
+    requires nonzero(host.queries.values.numeric) requires nonzero(host.queries.values.scalar)
     requires nonzero(host.queries.values.width) requires nonzero(host.queries.same) requires nonzero(host.queries.float3)
     requires nonzero(host.emitter.emit) requires nonzero(host.emitter.output)
     requires nonzero(host.uniform) requires nonzero(host.inputs) requires nonzero(host.cross) {
@@ -834,19 +817,25 @@ extern "C" ConversionOutcome convert_value(ConversionInput input,ConversionEmitt
 
 
 extern "C" MathPreparation prepare_math(usize arity,u32 extremum,usize count,MathQueries queries) on cpu
-    requires nonzero(queries.numeric) requires nonzero(queries.argument) {
-    if (count!=arity) { return MathPreparation(1,MathPath::Floating,0); }
-    u32 integer=integer_math(extremum,count,queries);
+    requires nonzero(queries.numeric) requires nonzero(queries.scalar) {
+    if(count!=arity){return MathPreparation(MathPreparationStatus::Arity,MathPath::Floating,0);}
+    bool integer=extremum!=0;usize index=0u64;
+    while(index<count){
+        if(queries.numeric(queries.context,index)==0){
+            return MathPreparation(MathPreparationStatus::Type,MathPath::Floating,0);
+        }
+        if(integer){u32 scalar=queries.scalar(queries.context,index);if(floating(scalar)||scalar==3){integer=false;}}
+        index+=1u64;
+    }
     MathPath path=MathPath::Floating;
-    if (integer==1) { path=MathPath::Minimum; }
-    else if (integer==2) { path=MathPath::Maximum; }
-    return MathPreparation(0,path,count==2u64 ? 1 : 0);
+    if(integer){path=extremum==1 ? MathPath::Minimum : MathPath::Maximum;}
+    return MathPreparation(MathPreparationStatus::Valid,path,count==2u64 ? 1 : 0);
 }
 extern "C" MathShape math_shape(MathPath path,usize count,MathQueries queries) on cpu
-    requires nonzero(queries.argument) requires nonzero(queries.width) {
+    requires nonzero(queries.scalar) requires nonzero(queries.width) {
     if (path==MathPath::Floating) { return floating_math(count,queries); }
     usize first=queries.width(queries.context,0u64);usize second=queries.width(queries.context,1u64);
-    return MathShape(0,queries.argument(queries.context,0u64).scalar,first>second ? first : second);
+    return MathShape(0,queries.scalar(queries.context,0u64),first>second ? first : second);
 }
 extern "C" MathOutcome expand_math(MathPath path,usize count,usize width,MathEmitter emitter) on cpu
     requires nonzero(emitter.value) requires nonzero(emitter.action) {

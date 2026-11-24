@@ -4,20 +4,12 @@ use std::ffi::c_void;
 
 pub(super) use crate::codec::types::SourceMath as MathSignature;
 #[repr(C)]
-struct MathArgument { scalar:u32, flags:u32 }
-impl MathArgument {
-    fn of(value:&Value)->Self {
-        Self {scalar:value.ty.components[0].0 as u32,
-            flags:u32::from(!value.ty.fields.is_empty()) | (u32::from(value.ty.array.is_some())<<1)}
-    }
-}
-#[repr(C)]
 struct MathShape { status:u32, scalar:u32, width:usize }
 #[repr(C)]
 struct MathQueries {
     context:*const c_void,
     numeric:unsafe extern "C" fn(*const c_void,usize)->u32,
-    argument:unsafe extern "C" fn(*const c_void,usize)->MathArgument,
+    scalar:unsafe extern "C" fn(*const c_void,usize)->u32,
     width:unsafe extern "C" fn(*const c_void,usize)->usize,
 }
 struct MathContext<'a> { values:&'a [Value] }
@@ -25,15 +17,15 @@ unsafe extern "C" fn math_numeric(context:*const c_void,index:usize)->u32 {
     let context=unsafe { &*context.cast::<MathContext<'_>>() };
     u32::from(context.values[index].ty.is_numeric())
 }
-unsafe extern "C" fn math_argument(context:*const c_void,index:usize)->MathArgument {
-    MathArgument::of(&unsafe { &*context.cast::<MathContext<'_>>() }.values[index])
+unsafe extern "C" fn math_scalar(context:*const c_void,index:usize)->u32 {
+    unsafe { &*context.cast::<MathContext<'_>>() }.values[index].ty.components[0].0 as u32
 }
 unsafe extern "C" fn math_width(context:*const c_void,index:usize)->usize {
     unsafe { &*context.cast::<MathContext<'_>>() }.values[index].regs.len()
 }
 impl MathContext<'_> {
     fn queries(&self)->MathQueries {
-        MathQueries { context:std::ptr::from_ref(self).cast(),numeric:math_numeric,argument:math_argument,width:math_width }
+        MathQueries { context:std::ptr::from_ref(self).cast(),numeric:math_numeric,scalar:math_scalar,width:math_width }
     }
 }
 
@@ -220,8 +212,8 @@ unsafe extern "C" fn geometry_float3(context:*const c_void,side:usize)->u32 {
 unsafe extern "C" fn geometry_numeric(context:*const c_void,index:usize)->u32 {
     u32::from(unsafe { &*context.cast::<GeometryValues<'_,'_>>() }.args[index].ty.is_numeric())
 }
-unsafe extern "C" fn geometry_argument(context:*const c_void,index:usize)->MathArgument {
-    MathArgument::of(&unsafe { &*context.cast::<GeometryValues<'_,'_>>() }.args[index])
+unsafe extern "C" fn geometry_scalar(context:*const c_void,index:usize)->u32 {
+    unsafe { &*context.cast::<GeometryValues<'_,'_>>() }.args[index].ty.components[0].0 as u32
 }
 unsafe extern "C" fn geometry_width(context:*const c_void,index:usize)->usize {
     unsafe { &*context.cast::<GeometryValues<'_,'_>>() }.args[index].regs.len()
@@ -317,7 +309,7 @@ impl Builder<'_> {
         let pointer=std::ptr::from_mut(&mut context);
         let outcome=unsafe { source_geometry_value(builtin,count,GeometryHost {
             queries:GeometryQueries {values:MathQueries {context:pointer.cast(),numeric:geometry_numeric,
-                argument:geometry_argument,width:geometry_width},same:geometry_same,float3:geometry_float3},
+                scalar:geometry_scalar,width:geometry_width},same:geometry_same,float3:geometry_float3},
             emitter:GeometryEmitter {context:pointer,emit:emit_geometry,output:output_geometry},
             uniform:geometry_uniform,inputs:geometry_inputs,cross:geometry_cross,
         }) };
@@ -635,8 +627,10 @@ impl Builder<'_> {
 #[repr(u32)]
 #[derive(Clone,Copy,PartialEq,Eq)]
 pub(super) enum MathPath { Floating,Minimum,Maximum }
+#[repr(u32)]
+enum MathPreparationStatus { Valid,Arity,Type }
 #[repr(C)]
-struct MathPreparation { status:u32,path:MathPath,pair:u32 }
+struct MathPreparation { status:MathPreparationStatus,path:MathPath,pair:u32 }
 #[repr(u32)]
 enum MathAction { IntegerProof,IntegerConstant,KnownOrigin,CompareMinimum,CompareMaximum,Select,FloatBegin,FloatInput,FloatEnd,FloatingProof }
 #[repr(C)]
@@ -726,7 +720,11 @@ impl Builder<'_> {
     pub(super) fn math_value(&mut self,name:&str,signature:MathSignature,mut args:Vec<Value>,span:Span)->Result<Value> {
         let context=MathContext { values:&args };
         let preparation=unsafe { prepare_math(signature.arity as usize,signature.extremum,args.len(),context.queries()) };
-        if preparation.status!=0 { return self.fail(span,"B153",format!("{name} 需要 {} 个参数",signature.arity)); }
+        match preparation.status {
+            MathPreparationStatus::Valid=>{},
+            MathPreparationStatus::Arity=>return self.fail(span,"B153",format!("{name} 需要 {} 个参数",signature.arity)),
+            MathPreparationStatus::Type=>return self.fail(span,"B154",format!("{name} 需要相同浮点类型；f32 向量须维度相容")),
+        }
         if preparation.pair!=0 {
             let b=args.pop().unwrap();let a=args.pop().unwrap();
             let (a,b)=self.numeric_operands(a,b,span)?;args.push(a);args.push(b);

@@ -26,18 +26,15 @@ extern "C" Plan unary(address bytes,u64 length,Operand value,Queries queries) on
     requires nonzero(queries.builtin)
     requires nonzero(queries.numeric);
 
-struct MathArgument { u32 scalar; u32 flags; };
 struct MathShape { u32 status; u32 scalar; usize width; };
 struct MathQueries {
     address context;
     cfn<u32,address,usize> ensures memory(read) numeric;
-    cfn<MathArgument,address,usize> ensures memory(read) argument;
+    cfn<u32,address,usize> ensures memory(read) scalar;
     cfn<usize,address,usize> ensures memory(read) width;
 };
-extern "C" u32 integer_math(u32 extremum,usize count,MathQueries queries) on cpu
-    requires nonzero(queries.numeric) requires nonzero(queries.argument);
 extern "C" MathShape floating_math(usize count,MathQueries queries) on cpu
-    requires nonzero(queries.argument) requires nonzero(queries.width);
+    requires nonzero(queries.scalar) requires nonzero(queries.width);
 
 
 enum GeometryBuiltin:u32 { Unknown=0; Dot=1; Length=2; Normalize=3; Cross=4; };
@@ -50,7 +47,7 @@ struct GeometryQueries {
 };
 extern "C" GeometryBuiltin source_geometry(address bytes,usize length) on cpu;
 extern "C" GeometryPlan geometry_plan(GeometryBuiltin builtin,usize count,GeometryQueries queries) on cpu
-    requires nonzero(queries.values.numeric) requires nonzero(queries.values.argument)
+    requires nonzero(queries.values.numeric) requires nonzero(queries.values.scalar)
     requires nonzero(queries.values.width) requires nonzero(queries.same) requires nonzero(queries.float3);
 
 enum GeometryAction:u32 { Copy=0; Add=1; Subtract=2; Multiply=3; Divide=4; Sqrt=5; };
@@ -74,7 +71,7 @@ struct GeometryHost {
     cfn<void,address,usize,u32> cross;
 };
 extern "C" GeometryOutcome geometry_value(GeometryBuiltin builtin,usize count,GeometryHost host) on cpu
-    requires nonzero(host.queries.values.numeric) requires nonzero(host.queries.values.argument)
+    requires nonzero(host.queries.values.numeric) requires nonzero(host.queries.values.scalar)
     requires nonzero(host.queries.values.width) requires nonzero(host.queries.same) requires nonzero(host.queries.float3)
     requires nonzero(host.emitter.emit) requires nonzero(host.emitter.output)
     requires nonzero(host.uniform) requires nonzero(host.inputs) requires nonzero(host.cross);
@@ -218,11 +215,12 @@ extern "C" ConversionOutcome convert_value(ConversionInput input,ConversionEmitt
 
 
 enum MathPath:u32 { Floating=0; Minimum=1; Maximum=2; };
-struct MathPreparation { u32 status; MathPath path; u32 pair; };
+enum MathPreparationStatus:u32 {Valid=0;Arity=1;Type=2;};
+struct MathPreparation { MathPreparationStatus status; MathPath path; u32 pair; };
 extern "C" MathPreparation prepare_math(usize arity,u32 extremum,usize count,MathQueries queries) on cpu
-    requires nonzero(queries.numeric) requires nonzero(queries.argument);
+    requires nonzero(queries.numeric) requires nonzero(queries.scalar);
 extern "C" MathShape math_shape(MathPath path,usize count,MathQueries queries) on cpu
-    requires nonzero(queries.argument) requires nonzero(queries.width);
+    requires nonzero(queries.scalar) requires nonzero(queries.width);
 enum MathAction:u32 {
     IntegerProof=0; IntegerConstant=1; KnownOrigin=2; CompareMinimum=3; CompareMaximum=4;
     Select=5; FloatBegin=6; FloatInput=7; FloatEnd=8; FloatingProof=9;
