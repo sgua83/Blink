@@ -737,9 +737,7 @@ pub(super) fn encode_build(o: &Object, build: Option<&[u8]>) -> Result<Vec<u8>> 
     })
 }
 
-pub(crate) fn encode_native<Name: AsRef<str>>(
-    name: &str, source: &[Section], declared: &[Definition<Name>],
-) -> Result<Vec<u8>> {
+pub(crate) fn encode_native(name: &str, source: &[Section], declared: &[Definition]) -> Result<Vec<u8>> {
     encode_sections(name, source, declared.iter(), std::iter::empty(), None)
 }
 
@@ -758,12 +756,14 @@ enum CoffPayload<'a> {
     Borrowed(&'a [u8]),
     ZeroFill(usize),
     Metadata(&'a MetadataInput, usize),
+    NativeImport(native_import::Payload<'a>),
 }
 impl CoffPayload<'_> {
     fn len(&self) -> usize {
         match self {
             Self::Borrowed(bytes) => bytes.len(),
             Self::ZeroFill(length) | Self::Metadata(_, length) => *length,
+            Self::NativeImport(payload) => payload.len(),
         }
     }
     unsafe fn write(&self, destination: *mut u8) {
@@ -771,11 +771,12 @@ impl CoffPayload<'_> {
             Self::Borrowed(bytes) => unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), destination, bytes.len()); },
             Self::ZeroFill(length) => unsafe { destination.write_bytes(0, *length); },
             Self::Metadata(input, _) => unsafe { metadata_encode(**input, destination); },
+            Self::NativeImport(payload) => unsafe { payload.write(destination); },
         }
     }
 }
-fn encode_sections<'a, Name: AsRef<str> + 'a>(
-    name: &str, source: &'a [Section], declared: impl Iterator<Item = &'a Definition<Name>>,
+fn encode_sections<'a>(
+    name: &str, source: &'a [Section], declared: impl Iterator<Item = &'a Definition>,
     extra: impl Iterator<Item = (&'a str, CoffPayload<'a>, u32, &'a [Relocation])>,
     imports: Option<&mut Vec<ImportKey<'a>>>,
 ) -> Result<Vec<u8>> {
@@ -799,7 +800,7 @@ fn encode_sections<'a, Name: AsRef<str> + 'a>(
         associated: section.associated.as_ptr(), associated_count: section.associated.len(), owner: 0, symbol: 0,
     }).collect::<Vec<_>>();
     let definitions = declared.map(|symbol| BindingDefinition {
-        name: BindingBytes::new(symbol.name.as_ref().as_bytes()), section: symbol.section as u64,
+        name: BindingBytes::new(symbol.name.as_bytes()), section: symbol.section as u64,
         value: u64::from(symbol.value), function: u64::from(symbol.function),
     }).collect::<Vec<_>>();
     encode_bound(name, sections, binding_sections, &definitions, imports)
@@ -1375,3 +1376,5 @@ fn decode_object<Bytes: super::ReadSection>(
 
 pub(super) mod facts;
 mod host;
+mod native_import;
+pub(crate) use native_import::member as native_import_member;

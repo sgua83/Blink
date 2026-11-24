@@ -8,14 +8,27 @@ bool equal(BindingBytes a,BindingBytes b) on cpu {
 }
 void copy(address output,u64 at,BindingBytes bytes) on cpu {u64 i=0u64;while(i<bytes.length){put(output,at+i,byte_at(bytes.bytes,i));i+=1u64;}}
 void literal(address output,u64 at,u64 value,u64 length) on cpu {u64 i=0u64;while(i<length){put(output,at+i,u8(value>>(i*8u64)));i+=1u64;}}
-void section_put(NativeImportOutput output,u64 index,u64 name,u64 length,u64 flags) on cpu {
-    u64 owner = index == 0u64 ? 0u64 : 1u64;
-    address row = unsafe_address(address_bits(output.sections)+index*IMPORT_SECTION_BYTES);
-    unsafe_position<NativeImportSection>(row) =
-        NativeImportSection(name,length,flags,owner,unsafe_address(0u64));
+void section_put(NativeImportOutput output,u64 index,u64 name_index,u64 length,u64 flags,
+    u64 first,u64 count,u64 associated_count) on cpu {
+    address name_row = unsafe_address(address_bits(output.names)+name_index*size_of<BindingBytes>());
+    BindingBytes name = unsafe_position<BindingBytes>(name_row);
+    address relocations = unsafe_address(address_bits(output.relocations)+first*INPUT_RELOCATION_BYTES);
+    address row = unsafe_address(address_bits(output.sections)+index*SECTION_BYTES);
+    unsafe_position<BindingSection>(row) =
+        BindingSection(name,flags,relocations,count,output.associated,associated_count,0u64,0u64);
+    unsafe_position<u64>(unsafe_address(address_bits(output.lengths)+index*8u64)) = length;
 }
-NativeImportSection section_at(NativeImportOutput output,u64 i) on cpu {return unsafe_position<NativeImportSection>(unsafe_address(address_bits(output.sections)+i*IMPORT_SECTION_BYTES));}
-void relocation_put(NativeImportOutput output,u64 i,NativeImportRelocation value) on cpu {unsafe_position<NativeImportRelocation>(unsafe_address(address_bits(output.relocations)+i*IMPORT_RELOCATION_BYTES))=value;}
+
+void relocation_put(NativeImportOutput output,u64 index,BindingRelocation relocation) on cpu {
+    address row = unsafe_address(address_bits(output.relocations)+index*INPUT_RELOCATION_BYTES);
+    unsafe_position<BindingRelocation>(row) = relocation;
+}
+
+void relative_relocation(NativeImportOutput output,u64 index,u64 offset,u64 target) on cpu {
+    BindingBytes empty = BindingBytes(unsafe_address(0u64),0u64);
+    relocation_put(output,index,BindingRelocation(offset,3u64,0u64,target,empty,empty));
+}
+
 // Physical DLL section order. The IAT slot owns the other sections.
 const u64 DLL_IAT = 0u64;
 const u64 DLL_TERMINATOR = 1u64;
@@ -31,49 +44,56 @@ extern "C" NativeImportPlan plan_import(NativeImportInput input,NativeImportOutp
     u64 hint = frame ? 0u64 : (input.dll.length+2u64)&(0u64-2u64);
     u64 names = frame ? 0u64 : hint+3u64+input.name.length;
     NativeImportPlan plan = NativeImportPlan(slot_start,slot_end,slot_end+4u64,hint,
-        frame ? 1u64 : 5u64,frame ? 1u64 : DLL_SECTIONS,0u64);
+        frame ? 1u64 : DLL_SECTIONS,0u64);
     if(names>4294967295u64 || plan.member>4294967295u64){
         plan.error=1u64;
         return plan;
     }
     if(frame){
-        section_put(output,0u64,5u64,8u64,0x40401040u64);
-        relocation_put(output,0u64,NativeImportRelocation(0u64,0u64,1u64,1u64,0u64,0u64));
+        section_put(output,0u64,5u64,8u64,0x40401040u64,0u64,1u64,0u64);
+        BindingBytes empty = BindingBytes(unsafe_address(0u64),0u64);
+        relocation_put(output,0u64,BindingRelocation(0u64,1u64,1u64,0u64,input.name,empty));
         return plan;
     }
-    section_put(output,DLL_IAT,3u64,16u64,0xc0401040u64);
-    section_put(output,DLL_TERMINATOR,1u64,20u64,0xc0301040u64);
-    section_put(output,DLL_LOOKUP,2u64,16u64,0xc0401040u64);
-    section_put(output,DLL_DESCRIPTOR,0u64,20u64,0xc0301040u64);
-    section_put(output,DLL_NAMES,4u64,names,0xc0201040u64);
-    relocation_put(output,0u64,NativeImportRelocation(DLL_DESCRIPTOR,0u64,3u64,0u64,DLL_LOOKUP,0u64));
-    relocation_put(output,1u64,NativeImportRelocation(DLL_DESCRIPTOR,12u64,3u64,0u64,DLL_NAMES,0u64));
-    relocation_put(output,2u64,NativeImportRelocation(DLL_DESCRIPTOR,16u64,3u64,0u64,DLL_IAT,0u64));
-    relocation_put(output,3u64,NativeImportRelocation(DLL_LOOKUP,0u64,3u64,0u64,DLL_NAMES,0u64));
-    relocation_put(output,4u64,NativeImportRelocation(DLL_IAT,0u64,3u64,0u64,DLL_NAMES,0u64));
-    return plan;
-}
-extern "C" void encode_import(NativeImportInput input,NativeImportOutput output,NativeImportPlan plan) on cpu {
-    // Both link directories borrow the slot within the final member name.
-    literal(output.member,0u64,7579113344870408768u64,8u64);
-    literal(output.member,8u64,18141342482788461u64,7u64);
-    import_name(input.dll,input.name,unsafe_address(address_bits(output.member)+plan.slot_start));
-    literal(output.member,plan.slot_end,1784835886u64,4u64); // ".obj"
-    u64 index=0u64;
-    while(index<plan.sections){
-        NativeImportSection section=section_at(output,index);
-        u64 offset=0u64;
-        while(offset<section.length){
-            put(section.bytes,offset,u8(0));
-            offset+=1u64;
-        }
+
+    u64 index=1u64;
+    while(index<DLL_SECTIONS){
+        address entry = unsafe_address(address_bits(output.associated)+(index-1u64)*8u64);
+        unsafe_position<u64>(entry)=index;
         index+=1u64;
     }
+    section_put(output,DLL_IAT,3u64,16u64,0xc0401040u64,0u64,1u64,DLL_SECTIONS-1u64);
+    section_put(output,DLL_TERMINATOR,1u64,20u64,0xc0301040u64,1u64,0u64,0u64);
+    section_put(output,DLL_LOOKUP,2u64,16u64,0xc0401040u64,1u64,1u64,0u64);
+    section_put(output,DLL_DESCRIPTOR,0u64,20u64,0xc0301040u64,2u64,3u64,0u64);
+    section_put(output,DLL_NAMES,4u64,names,0xc0201040u64,5u64,0u64,0u64);
+    relative_relocation(output,0u64,0u64,DLL_NAMES);
+    relative_relocation(output,1u64,0u64,DLL_NAMES);
+    relative_relocation(output,2u64,0u64,DLL_LOOKUP);
+    relative_relocation(output,3u64,12u64,DLL_NAMES);
+    relative_relocation(output,4u64,16u64,DLL_IAT);
+    return plan;
+}
+
+extern "C" void encode_member_name(NativeImportInput input,NativeImportPlan plan,address output) on cpu {
+    literal(output,0u64,7579113344870408768u64,8u64);
+    literal(output,8u64,18141342482788461u64,7u64);
+    import_name(input.dll,input.name,unsafe_address(address_bits(output)+plan.slot_start));
+    literal(output,plan.slot_end,1784835886u64,4u64); // ".obj"
+}
+
+extern "C" void encode_section(NativeImportInput input,NativeImportPlan plan,u64 section,u64 length,address output) on cpu {
+    u64 offset=0u64;
+    while(offset<length){
+        put(output,offset,u8(0));
+        offset+=1u64;
+    }
     if(plan.sections==DLL_SECTIONS){
-        address names=section_at(output,DLL_NAMES).bytes;
-        copy(names,0u64,input.dll);
-        copy(names,plan.hint+2u64,input.name);
-        literal(section_at(output,DLL_LOOKUP).bytes,0u64,plan.hint,8u64);
-        literal(section_at(output,DLL_IAT).bytes,0u64,plan.hint,8u64);
+        if(section==DLL_NAMES){
+            copy(output,0u64,input.dll);
+            copy(output,plan.hint+2u64,input.name);
+        }else if(section==DLL_LOOKUP || section==DLL_IAT){
+            literal(output,0u64,plan.hint,8u64);
+        }
     }
 }

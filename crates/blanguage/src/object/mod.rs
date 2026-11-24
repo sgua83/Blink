@@ -5,7 +5,7 @@ pub use static_library::{Input, archive};
 pub(crate) use static_library::{Member as LibraryMember, members as library_members, encode as library_bytes};
 pub(crate) use static_library::{Library, ObjectBytes};
 mod coff;
-pub(crate) use coff::{ImportKey, encode_native, encode_native_with_imports, rust_link_binding};
+pub(crate) use coff::{ImportKey, encode_native, encode_native_with_imports, native_import_member, rust_link_binding};
 pub(crate) mod stack;
 pub(crate) use coff::Reader as ObjectReader;
 mod emit;
@@ -63,8 +63,8 @@ impl ReadSection for usize {
 }
 
 #[derive(Clone)]
-pub(crate) struct Definition<Name = String> {
-    pub name: Name,
+pub(crate) struct Definition {
+    pub name: String,
     pub section: usize,
     pub value: u32,
     pub function: bool,
