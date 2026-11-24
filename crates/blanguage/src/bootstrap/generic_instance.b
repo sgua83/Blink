@@ -28,7 +28,6 @@ TypeInfo absent_type() on cpu {return TypeInfo(address(),NameBytes(address(),0u6
 SemanticInfo absent_semantic() on cpu {return SemanticInfo(address(),NameBytes(address(),0u64),0u64,0,0);}
 Need give_special(address state,SpecializeCursor cursor,Need need) on cpu {unsafe_position<SpecializeCursor>(state)=cursor;return need;}
 Need give_match(address state,MatchCursor cursor,Need need) on cpu {unsafe_position<MatchCursor>(state)=cursor;return need;}
-Need give_instance(address state,InstanceCursor cursor,Need need) on cpu {unsafe_position<InstanceCursor>(state)=cursor;return need;}
 Need child_need(MatchMode mode) on cpu {return mode==MatchMode::Type ? Need::TypeChild : Need::ValueChild;}
 
 extern "C" SpecializeCursor specialize_start(SignatureNode function,u64 actual_count,Optional<u64> explicit_count) on cpu {
@@ -322,64 +321,54 @@ extern "C" Need match_step(address state,Host host,address context) on cpu
     }
 }
 
-extern "C" InstanceCursor instance_start(SignatureNode function,u32 tracking,u64 type_count,u64 value_count) on cpu {
-    return InstanceCursor(function,0,tracking,type_count,value_count,0u64);
-}
-extern "C" Need instance_step(address state,InstanceHost host,address context) on cpu
-    requires nonzero(host.implementation) requires nonzero(host.external) requires nonzero(host.plain)
+extern "C" InstanceChecks bind_instance(SignatureNode function,u32 tracking,u64 type_count,u64 value_count,
+    InstanceHost host,address context) on cpu
+    requires nonzero(host.implementation) requires nonzero(host.external)
     requires nonzero(host.name) requires nonzero(host.type_argument) requires nonzero(host.value_argument)
-    requires nonzero(host.constant) requires nonzero(host.nonzero_error) requires nonzero(host.uses)
-    requires nonzero(host.construct) {
-    InstanceCursor cursor=unsafe_position<InstanceCursor>(state);
-    FunctionNode declaration=row<FunctionNode>(cursor.function.storage,cursor.function.offset);
-    while(true){
-        if(cursor.phase==0){
-            if(cursor.tracking!=0){
-                if(declaration.kind!=2&&declaration.body.present!=0){host.implementation(context);}
-                if(declaration.external.present!=0){host.external(context);}
-            }
-            if(declaration.types.count==0u64&&declaration.values.count==0u64){host.plain(context);return Need::Done;}
-            host.name(context);
-            cursor.index=0u64;
-            while(cursor.index<smaller(declaration.types.count,cursor.type_count)){
-                TypeParameterNode parameter=row<TypeParameterNode>(cursor.function.storage,item(cursor.function.storage,declaration.types,cursor.index));
-                host.type_argument(context,text(cursor.function.storage,parameter.name));cursor.index+=1u64;
-            }
-            cursor.index=0u64;
-            while(cursor.index<smaller(declaration.values.count,cursor.value_count)){
-                ValueParameterNode parameter=row<ValueParameterNode>(cursor.function.storage,item(cursor.function.storage,declaration.values,cursor.index));
-                host.value_argument(context,text(cursor.function.storage,parameter.name),cursor.index);cursor.index+=1u64;
-            }
-            cursor.index=0u64;
-            while(cursor.index<declaration.contracts.count){
-                ContractNode contract=row<ContractNode>(cursor.function.storage,item(cursor.function.storage,declaration.contracts,cursor.index));
-                if(contract.kind==0){
-                    PredicateNode predicate=row<PredicateNode>(cursor.function.storage,contract.predicate.offset);
-                    match(predicate){
-                        PredicateNode::Nonzero(value){
-                            NameBytes name=text(cursor.function.storage,value);Optional<u32> bound=host.constant(context,name);
-                            if(bound.present!=0&&bound.value==0){host.nonzero_error(context,cursor.index,name);return Need::Done;}
-                        }
-                        PredicateNode::Prefix(value){}
-                        PredicateNode::Nonempty(value){}
-                        PredicateNode::Index(value){}
-                        PredicateNode::Contiguous(value){}
-                        PredicateNode::Initialized(value){}
-                        PredicateNode::SameLength(value){}
-                        PredicateNode::Cleanup(value){}
-                        PredicateNode::Memory(value){}
-                        PredicateNode::Range(value){}
-                    }
-                }
-                cursor.index+=1u64;
-            }
-            if(!host.uses(context)){return Need::Done;}
-            host.construct(context);cursor.phase=1;
-            if(declaration.c_abi!=0){return give_instance(state,cursor,Need::CAbi);}
-        }
-        if(cursor.phase==1){cursor.phase=2;return give_instance(state,cursor,Need::Interface);}
-        if(cursor.phase==2){return Need::Done;}
+    requires nonzero(host.constant) requires nonzero(host.nonzero_error) requires nonzero(host.uses) {
+    FunctionNode declaration=row<FunctionNode>(function.storage,function.offset);
+    if(tracking!=0){
+        if(declaration.kind!=2&&declaration.body.present!=0){host.implementation(context);}
+        if(declaration.external.present!=0){host.external(context);}
     }
+    if(declaration.types.count==0u64&&declaration.values.count==0u64){return InstanceChecks::None;}
+
+    host.name(context);
+    u64 index=0u64;
+    while(index<smaller(declaration.types.count,type_count)){
+        TypeParameterNode parameter=row<TypeParameterNode>(function.storage,item(function.storage,declaration.types,index));
+        host.type_argument(context,text(function.storage,parameter.name));index+=1u64;
+    }
+    index=0u64;
+    while(index<smaller(declaration.values.count,value_count)){
+        ValueParameterNode parameter=row<ValueParameterNode>(function.storage,item(function.storage,declaration.values,index));
+        host.value_argument(context,text(function.storage,parameter.name),index);index+=1u64;
+    }
+    index=0u64;
+    while(index<declaration.contracts.count){
+        ContractNode contract=row<ContractNode>(function.storage,item(function.storage,declaration.contracts,index));
+        if(contract.kind==0){
+            PredicateNode predicate=row<PredicateNode>(function.storage,contract.predicate.offset);
+            match(predicate){
+                PredicateNode::Nonzero(value){
+                    NameBytes name=text(function.storage,value);Optional<u32> bound=host.constant(context,name);
+                    if(bound.present!=0&&bound.value==0){host.nonzero_error(context,index,name);return InstanceChecks::None;}
+                }
+                PredicateNode::Prefix(value){}
+                PredicateNode::Nonempty(value){}
+                PredicateNode::Index(value){}
+                PredicateNode::Contiguous(value){}
+                PredicateNode::Initialized(value){}
+                PredicateNode::SameLength(value){}
+                PredicateNode::Cleanup(value){}
+                PredicateNode::Memory(value){}
+                PredicateNode::Range(value){}
+            }
+        }
+        index+=1u64;
+    }
+    if(!host.uses(context)){return InstanceChecks::None;}
+    return declaration.c_abi!=0 ? InstanceChecks::CAbiAndInterface : InstanceChecks::Interface;
 }
 
 extern "C" bool is_open(StorageView type_storage,Slice types,StorageView value_storage,Slice values) on cpu {

@@ -27,7 +27,7 @@ enum MatchMode:u32 { Type=0; Value=1; };
 enum Need:u32 {
     Done=0; TypeChild=1; ValueChild=2; ExplicitType=3; ExplicitDataset=4;
     FamilyCurrent=5; FamilyActual=6; ExplicitValue=7; ActualType=8;
-    ChildType=9; RecordName=10; Instantiate=11; CAbi=12; Interface=13;
+    ChildType=9; RecordName=10; Instantiate=11;
 };
 // Native operations only borrow original metadata or mutate the original result
 // containers. World queries return through Need after this B call has ended.
@@ -47,17 +47,16 @@ struct Host {
     cfn<CfnSlot,address,u64> cfn_slot;
     cfn<bool,address,NameBytes> record_matches;
 };
+enum InstanceChecks:u32 { None=0; Interface=1; CAbiAndInterface=2; };
 struct InstanceHost {
     cfn<void,address> implementation;
     cfn<void,address> external;
-    cfn<void,address> plain;
     cfn<void,address> name;
     cfn<void,address,NameBytes> type_argument;
     cfn<void,address,NameBytes,u64> value_argument;
     cfn<Optional<u32>,address,NameBytes> constant;
     cfn<void,address,u64,NameBytes> nonzero_error;
     cfn<bool,address> uses;
-    cfn<void,address> construct;
 };
 struct SpecializeCursor {
     SignatureNode function; u32 phase; u64 actual_count;
@@ -72,10 +71,6 @@ struct MatchCursor {
     Optional<u32> inferred; u32 scalar; u32 unit; u32 known;
     SignatureNode next; TypeInfo next_actual; SemanticInfo semantic; u32 next_known;
 };
-struct InstanceCursor {
-    SignatureNode function; u32 phase; u32 tracking;
-    u64 type_count; u64 value_count; u64 index;
-};
 extern "C" SpecializeCursor specialize_start(SignatureNode function,u64 actual_count,Optional<u64> explicit_count) on cpu;
 extern "C" Need specialize_step(address state,Host host,address context) on cpu
     requires nonzero(host.fail) requires nonzero(host.actual) requires nonzero(host.explicit_argument)
@@ -87,10 +82,9 @@ extern "C" Need match_step(address state,Host host,address context) on cpu
     requires nonzero(host.keep_type) requires nonzero(host.child) requires nonzero(host.element)
     requires nonzero(host.view) requires nonzero(host.dataset_syntax) requires nonzero(host.cfn_slot)
     requires nonzero(host.record_matches);
-extern "C" InstanceCursor instance_start(SignatureNode function,u32 tracking,u64 type_count,u64 value_count) on cpu;
-extern "C" Need instance_step(address state,InstanceHost host,address context) on cpu
-    requires nonzero(host.implementation) requires nonzero(host.external) requires nonzero(host.plain)
+extern "C" InstanceChecks bind_instance(SignatureNode function,u32 tracking,u64 type_count,u64 value_count,
+    InstanceHost host,address context) on cpu
+    requires nonzero(host.implementation) requires nonzero(host.external)
     requires nonzero(host.name) requires nonzero(host.type_argument) requires nonzero(host.value_argument)
-    requires nonzero(host.constant) requires nonzero(host.nonzero_error) requires nonzero(host.uses)
-    requires nonzero(host.construct);
+    requires nonzero(host.constant) requires nonzero(host.nonzero_error) requires nonzero(host.uses);
 extern "C" bool is_open(StorageView type_storage,Slice types,StorageView value_storage,Slice values) on cpu;

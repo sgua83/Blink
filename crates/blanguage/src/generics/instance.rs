@@ -121,10 +121,10 @@ enum MatchNeed {
 }
 #[derive(Clone, Copy)]
 #[repr(u32)]
-enum InstanceNeed {
-    Done = 0,
-    CAbi = 12,
-    Interface = 13,
+enum InstanceChecks {
+    None,
+    Interface,
+    CAbiAndInterface,
 }
 #[derive(Clone, Copy, PartialEq, Eq)]
 #[repr(u32)]
@@ -173,15 +173,6 @@ struct MatchCursor {
     next_known: u32,
 }
 #[repr(C)]
-struct InstanceCursor {
-    function: wire::SignatureNode,
-    phase: u32,
-    tracking: u32,
-    type_count: u64,
-    value_count: u64,
-    index: u64,
-}
-#[repr(C)]
 struct Host {
     fail: unsafe extern "C" fn(*mut c_void, Problem, NameBytes, *const c_void, u32, u32),
     actual: unsafe extern "C" fn(*mut c_void, u64) -> ActualArgument,
@@ -220,27 +211,23 @@ fn host() -> Host {
 struct InstanceHost {
     implementation: unsafe extern "C" fn(*mut c_void),
     external: unsafe extern "C" fn(*mut c_void),
-    plain: unsafe extern "C" fn(*mut c_void),
     name: unsafe extern "C" fn(*mut c_void),
     type_argument: unsafe extern "C" fn(*mut c_void, NameBytes),
     value_argument: unsafe extern "C" fn(*mut c_void, NameBytes, u64),
     constant: unsafe extern "C" fn(*mut c_void, NameBytes) -> wire::Optional<u32>,
     nonzero_error: unsafe extern "C" fn(*mut c_void, u64, NameBytes),
     uses: unsafe extern "C" fn(*mut c_void) -> u32,
-    construct: unsafe extern "C" fn(*mut c_void),
 }
 fn instance_host() -> InstanceHost {
     InstanceHost {
         implementation,
         external,
-        plain,
         name,
         type_argument,
         value_argument,
         constant,
         nonzero_error,
         uses,
-        construct,
     }
 }
 unsafe extern "C" {
@@ -269,19 +256,15 @@ unsafe extern "C" {
     ) -> MatchCursor;
     #[link_name = "bootstrap.generic_instance::match_step"]
     fn match_step(state: *mut MatchCursor, host: Host, context: *mut c_void) -> MatchNeed;
-    #[link_name = "bootstrap.generic_instance::instance_start"]
-    fn instance_start(
+    #[link_name = "bootstrap.generic_instance::bind_instance"]
+    fn bind_instance(
         function: wire::SignatureNode,
         tracking: u32,
         type_count: u64,
         value_count: u64,
-    ) -> InstanceCursor;
-    #[link_name = "bootstrap.generic_instance::instance_step"]
-    fn instance_step(
-        state: *mut InstanceCursor,
         host: InstanceHost,
         context: *mut c_void,
-    ) -> InstanceNeed;
+    ) -> InstanceChecks;
     #[link_name = "bootstrap.generic_instance::is_open"]
     fn is_open_b(
         type_storage: wire::StorageView,
@@ -580,7 +563,6 @@ struct InstanceFrame<'a> {
     values: Values<'a>,
     name: Option<String>,
     bindings: Bindings,
-    result: Option<Instance>,
     error: Option<Diagnostic>,
 }
 unsafe fn instance_frame<'a>(raw: *mut c_void) -> &'a mut InstanceFrame<'a> {
@@ -603,14 +585,6 @@ unsafe extern "C" fn external(raw: *mut c_void) {
         .unwrap()
         .borrow_mut()
         .insert(crate::build::Declaration::External(f.base.into()));
-}
-unsafe extern "C" fn plain(raw: *mut c_void) {
-    let f = unsafe { instance_frame(raw) };
-    f.result = Some(Instance {
-        name: f.base.into(),
-        definition: f.definition.clone(),
-        bindings: Arc::new(Bindings::default()),
-    });
 }
 unsafe extern "C" fn name(raw: *mut c_void) {
     let f = unsafe { instance_frame(raw) };
@@ -661,15 +635,6 @@ unsafe extern "C" fn uses(raw: *mut c_void) -> u32 {
         }
     }
 }
-unsafe extern "C" fn construct(raw: *mut c_void) {
-    let f = unsafe { instance_frame(raw) };
-    f.result = Some(Instance {
-        name: f.name.take().unwrap(),
-        definition: f.definition.clone(),
-        bindings: Arc::new(mem::take(&mut f.bindings)),
-    });
-}
-
 struct Matching {
     cursor: MatchCursor,
     // Dataset and cfn-slot queries are distinct actual values. A child cannot
@@ -1006,16 +971,11 @@ impl Values<'_> {
     }
 }
 pub(super) struct Instantiation<'a> {
-    data: Box<InstanceFrame<'a>>,
-    cursor: InstanceCursor,
-}
-pub(super) enum InstantiationNeed {
-    CAbi,
-    Interface,
-}
-pub(super) enum InstantiationProgress<'a> {
-    Complete(Instance),
-    Need(Instantiation<'a>, InstantiationNeed),
+    world: &'a World,
+    base: &'a str,
+    definition: &'a Arc<Definition>,
+    arguments: Vec<TypeArgument>,
+    values: Values<'a>,
 }
 impl<'a> Instantiation<'a> {
     fn new(
@@ -1025,66 +985,53 @@ impl<'a> Instantiation<'a> {
         arguments: Vec<TypeArgument>,
         values: Values<'a>,
     ) -> Self {
-        let cursor = unsafe {
-            instance_start(
-                definition.function.signature_node(),
-                u32::from(world.build_declarations.is_some()),
-                arguments.len() as u64,
-                values.as_slice().len() as u64,
-            )
-        };
-        Self {
-            cursor,
-            data: Box::new(InstanceFrame {
-                world,
-                base,
-                definition,
-                arguments: arguments.into_iter(),
-                values,
-                name: None,
-                bindings: Bindings::default(),
-                result: None,
-                error: None,
-            }),
-        }
+        Self { world, base, definition, arguments, values }
     }
-    pub(super) fn advance(mut self) -> Result<InstantiationProgress<'a>> {
-        let need = unsafe {
-            instance_step(
-                &mut self.cursor,
+
+    fn bind(self) -> Result<(Instance, InstanceChecks)> {
+        let mut frame = InstanceFrame {
+            world: self.world,
+            base: self.base,
+            definition: self.definition,
+            arguments: self.arguments.into_iter(),
+            values: self.values,
+            name: None,
+            bindings: Bindings::default(),
+            error: None,
+        };
+        let checks = unsafe {
+            bind_instance(
+                frame.definition.function.signature_node(),
+                u32::from(frame.world.build_declarations.is_some()),
+                frame.arguments.len() as u64,
+                frame.values.as_slice().len() as u64,
                 instance_host(),
-                (&mut *self.data as *mut InstanceFrame<'_>).cast(),
+                (&mut frame as *mut InstanceFrame<'_>).cast(),
             )
         };
-        if let Some(error) = self.data.error.take() {
+        if let Some(error) = frame.error {
             return Err(error);
         }
-        Ok(match need {
-            InstanceNeed::Done => InstantiationProgress::Complete(self.data.result.take().unwrap()),
-            InstanceNeed::CAbi => InstantiationProgress::Need(self, InstantiationNeed::CAbi),
-            InstanceNeed::Interface => {
-                InstantiationProgress::Need(self, InstantiationNeed::Interface)
-            }
-        })
+        let instance = Instance {
+            name: frame.name.unwrap_or_else(|| frame.base.into()),
+            definition: frame.definition.clone(),
+            bindings: Arc::new(frame.bindings),
+        };
+        Ok((instance, checks))
     }
-    pub(super) async fn fulfill(self, need: InstantiationNeed) -> Result<Self> {
-        let f = &self.data;
-        match need {
-            InstantiationNeed::CAbi => {
-                unsafe { f.world.call(crate::check::external::check_declaration(f.world, f.result.as_ref().unwrap())).await }?
+
+    async fn drive(self) -> Result<Instance> {
+        let world = self.world;
+        let (instance, checks) = self.bind()?;
+        match checks {
+            InstanceChecks::None => return Ok(instance),
+            InstanceChecks::CAbiAndInterface => {
+                unsafe { world.call(crate::check::external::check_declaration(world, &instance)).await }?;
             }
-            InstantiationNeed::Interface => unsafe { f.world.call(f.world.check_interface_types(f.definition, &f.result.as_ref().unwrap().bindings)).await }?,
+            InstanceChecks::Interface => {}
         }
-        Ok(self)
-    }
-    async fn drive(mut self) -> Result<Instance> {
-        let world=self.data.world;
-        loop {
-            match self.advance()? {
-                InstantiationProgress::Complete(instance) => return Ok(instance),
-                InstantiationProgress::Need(pending, need) => self = unsafe { world.call(pending.fulfill(need)).await }?,
-            }
-        }
+        unsafe { world.call(world.check_interface_types(&instance.definition, &instance.bindings)).await }?;
+        Ok(instance)
     }
 }
 pub(crate) async fn instantiate(
