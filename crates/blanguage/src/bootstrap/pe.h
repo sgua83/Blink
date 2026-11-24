@@ -1,15 +1,10 @@
 module bootstrap.pe;
 const u64 SECTION_BYTES=56u64;
-const u64 RELOCATION_BYTES=48u64;
 const u64 IMPORT_BYTES=80u64;
 const u64 ABSOLUTE_BYTES=24u64;
 struct PeSection {
     address name;u64 name_length;u64 byte_length;
     u64 relocation_start;u64 relocation_count;u32 flags;u32 rva;u64 raw;
-};
-struct PeRelocation {
-    u64 offset;u32 kind;u32 target_kind;u64 section;u64 value;
-    u64 source;u64 target;
 };
 struct PeImport {
     address dll;u64 dll_length;address name;u64 name_length;u64 relocation;
@@ -29,5 +24,5 @@ struct PeLayout {
 };
 struct PeRelocationResult { u32 status; u32 kind; };
 
-extern "C" PeLayout layout(PeInput input,address rows,address groups,address combined,u64 relocation_count) on cpu;
+extern "C" PeLayout layout(PeInput input,address rows,address groups,u64 relocation_count) on cpu;
 extern "C" PeRelocationResult encode(PeInput input,PeLayout layout,address rows,u64 row_count,address output) on cpu;

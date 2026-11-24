@@ -78,8 +78,8 @@ pub(super) fn module<Payload: AsRef<[u8]>>(
 }
 
 pub(super) fn link_pe(objects: Vec<Selected>, stack_reserve: u64) -> Result<Vec<u8>> {
-    let Prepared { rows, groups, relocations, plan, .. } = prepare(&objects, &[], extent, true)?;
-    pe::link(&rows, &groups, &relocations, &plan, stack_reserve)
+    let Prepared { rows, groups, mut relocations, plan, .. } = prepare(&objects, &[], extent, true)?;
+    pe::link(&rows, &groups, &mut relocations, &plan, stack_reserve)
 }
 
 pub(super) fn report(objects: Vec<Selected<usize>>) -> Result<(Vec<Vec<Relocation>>, Vec<Frame>)> {

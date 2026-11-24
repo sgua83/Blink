@@ -9,11 +9,6 @@ struct PeSection {
     relocation_start:u64, relocation_count:u64, flags:u32, rva:u32, raw:u64,
 }
 #[repr(C)]
-struct PeRelocation {
-    offset:u64, kind:u32, target_kind:u32, section:u64, value:u64,
-    source:u64, target:u64,
-}
-#[repr(C)]
 struct PeImport {
     dll:*const u8, dll_length:u64, name:*const u8, name_length:u64, relocation:u64,
     lookup:u64, iat:u64, hint:u64, dll_at:u64, directory:u64,
@@ -24,7 +19,7 @@ struct PeAbsolute {page:u64,value:u64,order_or_page_end:u64}
 #[repr(C)]
 struct PeInput {
     sections:*mut PeSection, section_count:u64,
-    relocations:*mut PeRelocation,
+    relocations:*mut CombineRelocation,
     imports:*mut PeImport, import_count:u64,
     absolutes:*mut PeAbsolute, absolute_count:u64, stack_reserve:u64,
 }
@@ -44,18 +39,17 @@ struct PeRelocationResult {
 unsafe extern "C" {
     #[link_name="bootstrap.pe::layout"]
     fn pe_layout(input:PeInput, rows:*const CombineSection, groups:*const CombineGroup,
-        combined:*const CombineRelocation, relocation_count:usize)->PeLayout;
+        relocation_count:usize)->PeLayout;
     #[link_name="bootstrap.pe::encode"]
     fn pe_encode(input:PeInput,layout:PeLayout,rows:*const CombineSection,
         row_count:usize,output:*mut u8)->PeRelocationResult;
 }
 
 pub(super) fn link(
-    rows: &[CombineSection], groups: &[CombineGroup], combined: &[CombineRelocation],
+    rows: &[CombineSection], groups: &[CombineGroup], relocations: &mut [CombineRelocation],
     plan: &CombinePlan, stack_reserve: u64,
 ) -> Result<Vec<u8>> {
     let mut sections = Vec::<PeSection>::with_capacity(groups.len());
-    let mut relocations = Vec::<PeRelocation>::with_capacity(combined.len());
     let mut imports = Vec::<PeImport>::with_capacity(plan.imports);
     let mut absolutes = Vec::<PeAbsolute>::with_capacity(plan.absolutes);
     let input = PeInput {
@@ -64,9 +58,9 @@ pub(super) fn link(
         import_count: plan.imports as u64, absolutes: absolutes.as_mut_ptr(),
         absolute_count: plan.absolutes as u64, stack_reserve,
     };
-    // B initializes the physical section, relocation and import slots from the combined rows.
+    // B groups the combined relocations in place and initializes the physical section and import slots.
     let layout = unsafe {
-        pe_layout(input, rows.as_ptr(), groups.as_ptr(), combined.as_ptr(), combined.len())
+        pe_layout(input, rows.as_ptr(), groups.as_ptr(), relocations.len())
     };
     match layout.error {
         0=>{},
