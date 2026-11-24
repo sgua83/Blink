@@ -187,7 +187,7 @@ ScalarDefinition scalar_definition(BuiltinScalar scalar) on cpu {
     return ScalarDefinition(opcode, width, signed);
 }
 
-extern "C" u64 scalar_declaration(BuiltinScalar scalar, u32 type_id, u32 pointer_id, address words) on cpu {
+u64 scalar_declaration(BuiltinScalar scalar, u32 type_id, u32 pointer_id, address words) on cpu {
     ScalarDefinition type = scalar_definition(scalar);
     u64 at = 2u64;
     if (type.opcode != 20) { put(words, at, type.width); at += 1u64; }
@@ -197,8 +197,7 @@ extern "C" u64 scalar_declaration(BuiltinScalar scalar, u32 type_id, u32 pointer
     return words_three(words, at, 32, pointer_id, u32(StorageClass::Function), type_id);
 }
 
-extern "C" u64 constant_declaration(BuiltinScalar scalar, u32 type_id, u32 id, u64 bits, address words) on cpu {
-    ScalarDefinition type = scalar_definition(scalar);
+u64 constant_declaration(ScalarDefinition type, u32 type_id, u32 id, u64 bits, address words) on cpu {
     put(words, 1u64, type_id);
     put(words, 2u64, id);
     if (type.opcode == 20) {
@@ -334,15 +333,68 @@ u32 define_pointer(inout ResourceCursor out, StorageClass storage, u32 pointee) 
     return define_type(out, TypeShape::Pointer, u32(storage), pointee);
 }
 
-u32 define_word(inout ResourceCursor out, WordConstants constants, u32 word_type, u32 bits) on cpu
+struct ConstantEntry { ScalarDefinition type; u64 bits; u32 id; };
+
+ConstantEntry constant_entry(ShaderConstant input, ShaderConstants constants) on cpu requires nonzero(constants.intern) {
+    ScalarDefinition type = scalar_definition(input.scalar);
+    u64 bits = input.bits;
+    if (type.width == 8) { bits = bits & 255u64; }
+    if (type.width == 16) { bits = bits & 65535u64; }
+    if (type.width == 32) { bits = u64(u32(bits)); }
+    u32 id = constants.intern(constants.context, input.scalar, bits, input.next);
+    return ConstantEntry(type, bits, id);
+}
+
+extern "C" ConstantWords shader_constant(ShaderConstant input, ShaderConstants constants,
+    address definitions, cfn<address,address> reserve) on cpu requires nonzero(constants.intern) requires nonzero(reserve) {
+    ConstantEntry entry = constant_entry(input, constants);
+    if (entry.id != input.next) { return ConstantWords(0u64, entry.id, input.next); }
+    address output = reserve(definitions);
+    u64 words = constant_declaration(entry.type, input.type_id, entry.id, entry.bits, output);
+    return ConstantWords(words, entry.id, input.next + 1);
+}
+
+u32 define_word(inout ResourceCursor out, ShaderConstants constants, u32 word_type, u32 bits) on cpu
     requires nonzero(constants.intern) {
-    u32 id = constants.intern(constants.context, bits, out.next);
-    if (id == out.next) {
+    ShaderConstant input = ShaderConstant(BuiltinScalar::U32, word_type, out.next, u64(bits));
+    ConstantEntry entry = constant_entry(input, constants);
+    if (entry.id == out.next) {
         out.next += 1;
-        out.words += constant_declaration(BuiltinScalar::U32, word_type, id, u64(bits),
+        out.words += constant_declaration(entry.type, word_type, entry.id, entry.bits,
                                           word_at(out.definitions, out.words));
     }
-    return id;
+    return entry.id;
+}
+
+void define_scalar(inout ResourceCursor out, BuiltinScalar scalar, address types, address pointers) on cpu {
+    u32 type_id = definition_id(out);
+    u32 pointer_id = definition_id(out);
+    u64 slot = u64(u32(scalar));
+    put(types, slot, type_id);
+    put(pointers, slot, pointer_id);
+    out.words += scalar_declaration(scalar, type_id, pointer_id, word_at(out.definitions, out.words));
+}
+
+extern "C" ScalarDeclarations shader_scalars(u32 next, u32 float64, u32 integer8, u32 integer16,
+    address definitions, address types, address pointers) on cpu {
+    ResourceCursor out = ResourceCursor(definitions, address(), 0u64, 0u64, next);
+    u32 void_id = define_type(out, TypeShape::Void, 0, 0);
+    define_scalar(out, BuiltinScalar::F32, types, pointers);
+    define_scalar(out, BuiltinScalar::U32, types, pointers);
+    define_scalar(out, BuiltinScalar::I32, types, pointers);
+    define_scalar(out, BuiltinScalar::Bool, types, pointers);
+    define_scalar(out, BuiltinScalar::U64, types, pointers);
+    define_scalar(out, BuiltinScalar::I64, types, pointers);
+    if (float64 != 0) { define_scalar(out, BuiltinScalar::F64, types, pointers); }
+    if (integer8 != 0) {
+        define_scalar(out, BuiltinScalar::U8, types, pointers);
+        define_scalar(out, BuiltinScalar::I8, types, pointers);
+    }
+    if (integer16 != 0) {
+        define_scalar(out, BuiltinScalar::U16, types, pointers);
+        define_scalar(out, BuiltinScalar::I16, types, pointers);
+    }
+    return ScalarDeclarations(out.words, void_id, out.next);
 }
 
 u32 define_resource_block(inout ResourceCursor out, u32 element, u32 length) on cpu {
@@ -463,7 +515,7 @@ u32 function_variable(inout ResourceCursor out, address body, inout u64 words, u
 }
 
 extern "C" FunctionStorageWords function_storage(FunctionStorageInput input, FunctionStorageHost host,
-    WordConstants constants, address locals, address definitions, address body) on cpu
+    ShaderConstants constants, address locals, address definitions, address body) on cpu
     requires nonzero(host.array) requires nonzero(host.scalar_group) requires nonzero(host.width)
     requires nonzero(host.pointer) requires nonzero(host.retain_array) requires nonzero(constants.intern) {
     ResourceCursor out = ResourceCursor(definitions, address(), 0u64, 0u64, input.next);
@@ -3732,7 +3784,7 @@ u32 define_scalar_input(inout ResourceCursor out, u32 type_id, u32 builtin) on c
     return define_annotated(out, VariableAnnotation::BuiltIn, pointer, builtin);
 }
 
-SharedArray define_shared(inout ResourceCursor out, WordConstants constants, u32 word_type, u32 element, u32 words)
+SharedArray define_shared(inout ResourceCursor out, ShaderConstants constants, u32 word_type, u32 element, u32 words)
     on cpu requires nonzero(constants.intern) {
     u32 length = define_word(out, constants, word_type, words);
     u32 array = define_type(out, TypeShape::Array, element, length);
@@ -3744,7 +3796,7 @@ SharedArray define_shared(inout ResourceCursor out, WordConstants constants, u32
     return SharedArray(variable, pointer);
 }
 
-extern "C" u32 workgroup_declarations(WorkgroupDeclaration input, WordConstants constants, address definitions,
+extern "C" u32 workgroup_declarations(WorkgroupDeclaration input, ShaderConstants constants, address definitions,
     address decorations, address output) on cpu requires nonzero(constants.intern) {
     u64 tile_words = input.narrow_cells * u64(input.width);
     u64 narrow_words = tile_words + input.scratch_words;

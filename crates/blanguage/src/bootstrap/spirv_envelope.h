@@ -38,9 +38,17 @@ extern "C" u64 encode(Envelope input, address interfaces, u64 count, address wor
 
 // The compiler supplies an existing concrete scalar and already allocated IDs.
 // Storage has room for 8 type/pointer words or 5 constant words respectively.
-// Constant bits are the original Scalar-truncated cache key.
-extern "C" u64 scalar_declaration(BuiltinScalar scalar, u32 type_id, u32 pointer_id, address words) on cpu;
-extern "C" u64 constant_declaration(BuiltinScalar scalar, u32 type_id, u32 id, u64 bits, address words) on cpu;
+// The caller supplies space for the void type and scalar declarations,
+// and the original scalar-code indexed type and pointer slots.
+struct ScalarDeclarations { u64 words; u32 void_id; u32 next; };
+extern "C" ScalarDeclarations shader_scalars(u32 next, u32 float64, u32 integer8, u32 integer16,
+    address definitions, address types, address pointers) on cpu;
+
+struct ShaderConstant { BuiltinScalar scalar; u32 type_id; u32 next; u64 bits; };
+struct ConstantWords { u64 words; u32 id; u32 next; };
+struct ShaderConstants { address context; cfn<u32,address,BuiltinScalar,u64,u32> intern; };
+extern "C" ConstantWords shader_constant(ShaderConstant input, ShaderConstants constants,
+    address definitions, cfn<address,address> reserve) on cpu requires nonzero(constants.intern) requires nonzero(reserve);
 
 enum TypeShape:u32 { Void=0; Vector=1; Matrix=2; SampledImage=3; Array=4; Function=5; Acceleration=6; RayQuery=7; Image=8; Pointer=9; };
 
@@ -73,11 +81,10 @@ struct ResourceStreams {
     address accelerations;
 };
 struct TextureDeclaration { u32 dimensions; u32 arrayed; u32 length; };
-struct WordConstants { address context; cfn<u32,address,u32,u32> intern; };
 struct ShaderResourceHost {
     address textures;
     cfn<TextureDeclaration,address,usize> texture;
-    WordConstants words;
+    ShaderConstants words;
 };
 struct SampledType { u32 sampled; u32 pointer; };
 struct ShaderResourceIds {
@@ -128,7 +135,7 @@ struct FunctionStorageHost {
 };
 // The locals, definitions and body are the original emitter buffers.
 extern "C" FunctionStorageWords function_storage(FunctionStorageInput input, FunctionStorageHost host,
-    WordConstants constants, address locals, address definitions, address body) on cpu
+    ShaderConstants constants, address locals, address definitions, address body) on cpu
     requires nonzero(host.array) requires nonzero(host.scalar_group) requires nonzero(host.width)
     requires nonzero(host.pointer) requires nonzero(host.retain_array) requires nonzero(constants.intern);
 // Output has room for four definition words and eleven decoration words.
@@ -1160,7 +1167,7 @@ struct WorkgroupVariables {
     SharedArray tile_wide;
 };
 // Initialize the result and append words when the tile arrays fit SPIR-V lengths.
-extern "C" u32 workgroup_declarations(WorkgroupDeclaration input, WordConstants constants, address definitions,
+extern "C" u32 workgroup_declarations(WorkgroupDeclaration input, ShaderConstants constants, address definitions,
     address decorations, address output) on cpu requires nonzero(constants.intern);
 
 // The pass class is Main, Add, Root, Arguments, or the remaining identity-bearing pass.

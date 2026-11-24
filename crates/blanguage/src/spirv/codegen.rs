@@ -156,7 +156,7 @@ struct WorkgroupVariables {
 unsafe extern "C" {
     #[link_name = "bootstrap.spirv_envelope::workgroup_declarations"]
     fn workgroup_declarations(
-        input: WorkgroupDeclaration, constants: WordConstants, defs: *mut u32, decorations: *mut u32,
+        input: WorkgroupDeclaration, constants: ShaderConstants, defs: *mut u32, decorations: *mut u32,
         output: *mut WorkgroupVariables,
     ) -> u32;
 
@@ -204,7 +204,6 @@ struct ShaderWords {
 
 #[repr(u32)]
 enum TypeShape {
-    Void,
     Matrix = 2,
     Array = 4,
     Function,
@@ -250,20 +249,56 @@ struct TextureDeclaration {
 struct ShaderResourceHost {
     textures: *const std::ffi::c_void,
     texture: unsafe extern "C" fn(*const std::ffi::c_void, usize) -> TextureDeclaration,
-    words: WordConstants,
+    words: ShaderConstants,
+}
+
+type ConstantIds = BTreeMap<(u32, Bits), u32>;
+
+#[repr(C)]
+struct ShaderConstants {
+    context: *mut std::ffi::c_void,
+    intern: unsafe extern "C" fn(*mut std::ffi::c_void, ScalarCode, Bits, u32) -> u32,
+}
+
+impl ShaderConstants {
+    fn new(pool: &mut ConstantIds) -> Self {
+        Self { context: std::ptr::from_mut(pool).cast(), intern: intern_shader_constant }
+    }
+}
+
+#[derive(Default)]
+struct ScalarIds([u32; ScalarCode::I16 as usize + 1]);
+
+impl std::ops::Index<&Scalar> for ScalarIds {
+    type Output = u32;
+    fn index(&self, scalar: &Scalar) -> &Self::Output {
+        &self.0[ScalarCode::from(*scalar) as usize]
+    }
 }
 
 #[repr(C)]
-struct WordConstants {
-    context: *mut std::ffi::c_void,
-    intern: unsafe extern "C" fn(*mut std::ffi::c_void, u32, u32) -> u32,
+struct ScalarDeclarations {
+    words: u64,
+    void: u32,
+    next: u32,
 }
 
-impl WordConstants {
-    fn new(pool: &mut BTreeMap<(Scalar, Bits), u32>) -> Self {
-        Self { context: std::ptr::from_mut(pool).cast(), intern: intern_resource_word }
-    }
+#[repr(C)]
+struct ShaderConstant {
+    scalar: ScalarCode,
+    type_id: u32,
+    next: u32,
+    bits: Bits,
 }
+
+#[repr(C)]
+struct ConstantWords {
+    words: u64,
+    id: u32,
+    next: u32,
+}
+
+type ReserveConstant = unsafe extern "C" fn(*mut std::ffi::c_void) -> *mut u32;
 
 #[derive(Clone, Copy, Default)]
 #[repr(C)]
@@ -307,12 +342,18 @@ unsafe extern "C" fn texture_declaration(
     }
 }
 
-unsafe extern "C" fn intern_resource_word(
-    constants: *mut std::ffi::c_void, bits: u32, next: u32,
+unsafe extern "C" fn intern_shader_constant(
+    constants: *mut std::ffi::c_void, scalar: ScalarCode, bits: Bits, next: u32,
 ) -> u32 {
-    *unsafe { &mut *constants.cast::<BTreeMap<(Scalar, Bits), u32>>() }.entry((Scalar::U32, Bits::from(bits))).or_insert(next)
+    let pool = unsafe { &mut *constants.cast::<ConstantIds>() };
+    *pool.entry((scalar as u32, bits)).or_insert(next)
 }
 
+unsafe extern "C" fn reserve_constant_words(definitions: *mut std::ffi::c_void) -> *mut u32 {
+    let words = unsafe { &mut *definitions.cast::<Vec<u32>>() };
+    words.reserve(5);
+    unsafe { words.as_mut_ptr().add(words.len()) }
+}
 
 #[repr(C)]
 struct BinaryEmission {
@@ -1025,7 +1066,7 @@ unsafe extern "C" {
     #[link_name = "bootstrap.spirv_envelope::shader_resources"]
     fn shader_resources(input: ShaderResourceInput, host: ShaderResourceHost, streams: ResourceStreams) -> ShaderResourceIds;
     #[link_name = "bootstrap.spirv_envelope::function_storage"]
-    fn function_storage(input: FunctionStorageInput, host: FunctionStorageHost, constants: WordConstants,
+    fn function_storage(input: FunctionStorageInput, host: FunctionStorageHost, constants: ShaderConstants,
         locals: *mut u32, definitions: *mut u32, body: *mut u32) -> FunctionStorageWords;
     #[link_name = "bootstrap.spirv_envelope::scalar_binary"]
     fn scalar_binary(input: BinaryEmission, body: *mut u32, decorations: *mut u32) -> BinaryWords;
@@ -1083,7 +1124,7 @@ unsafe extern "C" {
     fn open_selection(merge: u32, condition: u32, yes: u32, no: u32, body: *mut u32) -> ControlWords;
     #[link_name = "bootstrap.spirv_envelope::open_index_selection"]
     fn open_index_selection(bool_type: u32, test: u32, index: u32, bound: u32,
-        less: bool, run: u32, end: u32, body: *mut u32) -> ControlWords;
+        less: u32, run: u32, end: u32, body: *mut u32) -> ControlWords;
     #[link_name = "bootstrap.spirv_envelope::open_tile_padding"]
     fn open_tile_padding(uint_type: u32, bool_type: u32, lane: u32, width: u32,
         capacity: u32, index: u32, test: u32, run: u32, end: u32, body: *mut u32) -> ControlWords;
@@ -1118,10 +1159,13 @@ unsafe extern "C" {
     fn leave_control(target: u32, body: *mut u32) -> ControlWords;
     #[link_name = "bootstrap.spirv_envelope::encode_subgroup"]
     fn encode_subgroup(input: SubgroupEmission, body: *mut u32) -> SubgroupWords;
-    #[link_name = "bootstrap.spirv_envelope::scalar_declaration"]
-    fn scalar_declaration(scalar: ScalarCode, type_id: u32, pointer_id: u32, words: *mut u32) -> u64;
-    #[link_name = "bootstrap.spirv_envelope::constant_declaration"]
-    fn constant_declaration(scalar: ScalarCode, type_id: u32, id: u32, bits: u64, words: *mut u32) -> u64;
+    #[link_name = "bootstrap.spirv_envelope::shader_scalars"]
+    fn shader_scalars(next: u32, float64: u32, integer8: u32, integer16: u32,
+        definitions: *mut u32, types: *mut u32, pointers: *mut u32) -> ScalarDeclarations;
+
+    #[link_name = "bootstrap.spirv_envelope::shader_constant"]
+    fn shader_constant(input: ShaderConstant, constants: ShaderConstants,
+        definitions: *mut std::ffi::c_void, reserve: ReserveConstant) -> ConstantWords;
 }
 
 struct PrivateArray<'a> {
@@ -1180,7 +1224,7 @@ struct FunctionStorage<'a, 'emit> {
     stage: &'a Stage,
     pending: std::collections::btree_set::IntoIter<(usize, usize)>,
     locals: std::collections::btree_map::Iter<'a, usize, Ty>,
-    pointers: &'emit BTreeMap<Scalar, u32>,
+    pointers: &'emit ScalarIds,
     arrays: &'emit mut BTreeMap<usize, PrivateArray<'a>>,
 }
 
@@ -1227,9 +1271,9 @@ unsafe extern "C" fn retain_function_array(
 
 struct Emitter<'a> {
     next: u32,
-    types: BTreeMap<Scalar, u32>,
-    pointers: BTreeMap<Scalar, u32>,
-    constants: BTreeMap<(Scalar, Bits), u32>,
+    types: ScalarIds,
+    pointers: ScalarIds,
+    constants: ConstantIds,
     defs: Vec<u32>,
     decorations: Vec<u32>,
     body: Vec<u32>,
@@ -1334,20 +1378,29 @@ impl Emitter<'_> {
     fn constant(&mut self, s: Scalar, bits: u32) -> u32 {
         self.constant_bits(s, Bits::from(bits))
     }
-    fn constant_bits(&mut self, s: Scalar, bits: Bits) -> u32 {
-        let bits = s.truncate(bits);
-        if let Some(id) = self.constants.get(&(s, bits)) {
-            return *id;
-        }
-        let id = self.id();
+    fn constant_bits(&mut self, scalar: Scalar, bits: Bits) -> u32 {
+        let input = ShaderConstant {
+            scalar: scalar.into(), type_id: self.types[&scalar], next: self.next, bits,
+        };
         let start = self.defs.len();
-        self.defs.reserve(5);
-        unsafe {
-            let used = constant_declaration(ScalarCode::from(s), self.types[&s], id, bits, self.defs.as_mut_ptr().add(start));
-            self.defs.set_len(start + used as usize);
-        }
-        self.constants.insert((s, bits), id);
-        id
+        let definitions = std::ptr::from_mut(&mut self.defs).cast();
+        let result = unsafe {
+            shader_constant(input, ShaderConstants::new(&mut self.constants), definitions, reserve_constant_words)
+        };
+        unsafe { self.defs.set_len(start + result.words as usize); }
+        self.next = result.next;
+        result.id
+    }
+    fn declare_scalars(&mut self, float64: bool, integer8: bool, integer16: bool) -> u32 {
+        let at = self.defs.len();
+        self.defs.reserve(2 + 8 * self.types.0.len());
+        let result = unsafe {
+            shader_scalars(self.next, u32::from(float64), u32::from(integer8), u32::from(integer16),
+                self.defs.as_mut_ptr().add(at), self.types.0.as_mut_ptr(), self.pointers.0.as_mut_ptr())
+        };
+        unsafe { self.defs.set_len(at + result.words as usize); }
+        self.next = result.next;
+        result.void
     }
     fn declare_type(&mut self, shape: TypeShape, first: u32, second: u32) -> u32 {
         let id = self.id();
@@ -1386,11 +1439,11 @@ impl Emitter<'_> {
             let input = FunctionStorageInput {
                 rays: rays.len(), next: self.next, ray_pointer,
                 word_type: self.types[&Scalar::U32],
-                byte_type: self.types.get(&Scalar::U8).copied().unwrap_or(0),
-                short_type: self.types.get(&Scalar::U16).copied().unwrap_or(0),
+                byte_type: self.types[&Scalar::U8],
+                short_type: self.types[&Scalar::U16],
             };
             unsafe {
-                function_storage(input, host, WordConstants::new(&mut self.constants), self.locals.as_mut_ptr(),
+                function_storage(input, host, ShaderConstants::new(&mut self.constants), self.locals.as_mut_ptr(),
                     self.defs.as_mut_ptr().add(definitions), self.body.as_mut_ptr().add(body))
             }
         };
@@ -1411,7 +1464,7 @@ impl Emitter<'_> {
         self.decorations.reserve(24);
         let mut output = std::mem::MaybeUninit::<WorkgroupVariables>::uninit();
         let success = unsafe {
-            workgroup_declarations(input, WordConstants::new(&mut self.constants),
+            workgroup_declarations(input, ShaderConstants::new(&mut self.constants),
                 self.defs.as_mut_ptr().add(definitions), self.decorations.as_mut_ptr().add(decorations),
                 output.as_mut_ptr())
         };
@@ -1455,8 +1508,8 @@ impl Emitter<'_> {
             float_type: self.types[&Scalar::F32],
             word_type: self.types[&Scalar::U32],
             wide_type: self.u64_type,
-            byte_type: self.types.get(&Scalar::U8).copied().unwrap_or(0),
-            short_type: self.types.get(&Scalar::U16).copied().unwrap_or(0),
+            byte_type: self.types[&Scalar::U8],
+            short_type: self.types[&Scalar::U16],
             uniform_bytes: program.uniform_bytes,
             publishes_summary: u32::from(publishes_summary),
             single_group: u32::from(single_group),
@@ -1481,7 +1534,7 @@ impl Emitter<'_> {
         let host = ShaderResourceHost {
             textures: program.textures.as_ptr().cast(),
             texture: texture_declaration,
-            words: WordConstants::new(&mut self.constants),
+            words: ShaderConstants::new(&mut self.constants),
         };
         let ids = unsafe { shader_resources(input, host, streams) };
         unsafe {
@@ -1762,7 +1815,7 @@ impl Emitter<'_> {
 
     fn open_index_branch(&mut self, test: u32, index: u32, bound: u32, less: bool, run: u32, end: u32) {
         let ty = self.types[&Scalar::Bool];
-        self.emit_control(14, |body| unsafe { open_index_selection(ty, test, index, bound, less, run, end, body) });
+        self.emit_control(14, |body| unsafe { open_index_selection(ty, test, index, bound, u32::from(less), run, end, body) });
     }
     fn merge_active(&mut self, merge: u32, reaches: bool) {
         self.emit_control(4, |body| unsafe { next_control_block(merge, merge, u32::from(reaches), body) });
@@ -2480,8 +2533,8 @@ fn emit_shader(
     };
     let mut e = Emitter {
         next: 1,
-        types: BTreeMap::new(),
-        pointers: BTreeMap::new(),
+        types: ScalarIds::default(),
+        pointers: ScalarIds::default(),
         constants: BTreeMap::new(),
         defs: Vec::new(),
         decorations: Vec::new(),
@@ -2569,22 +2622,7 @@ fn emit_shader(
         maximal_reconvergence: subgroups.maximal_reconvergence,
     };
     e.ext = e.id();
-    let void = e.declare_type(TypeShape::Void, 0, 0);
-    for s in [Scalar::F32, Scalar::U32, Scalar::I32, Scalar::Bool, Scalar::U64, Scalar::I64].into_iter()
-        .chain(float64.then_some(Scalar::F64))
-        .chain(integer8.then_some([Scalar::U8, Scalar::I8]).into_iter().flatten())
-        .chain(integer16.then_some([Scalar::U16, Scalar::I16]).into_iter().flatten()) {
-        let id = e.id();
-        let ptr = e.id();
-        let start = e.defs.len();
-        e.defs.reserve(8);
-        unsafe {
-            let used = scalar_declaration(ScalarCode::from(s), id, ptr, e.defs.as_mut_ptr().add(start));
-            e.defs.set_len(start + used as usize);
-        }
-        e.types.insert(s, id);
-        e.pointers.insert(s, ptr);
-    }
+    let void = e.declare_scalars(float64, integer8, integer16);
     let u = e.types[&Scalar::U32];
     e.u64_type = e.types[&Scalar::U64];
     let resources = e.declare_shader_resources(publishes_summary, single_group, argument_pass);
