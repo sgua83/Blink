@@ -228,10 +228,19 @@ impl ObjectReadError {
 #[derive(Clone, Copy)]
 struct ObjectSymbol {
     name: ReadBytes,
+    // Section value, or the DLL split/error for an undefined import.
     value: u32,
     section: i16,
     external: u8,
-    function: u8,
+    role: ObjectSymbolRole,
+}
+
+#[repr(u8)]
+#[derive(Clone, Copy)]
+enum ObjectSymbolRole { Data, Function, Import, InvalidImport }
+
+impl ObjectSymbol {
+    fn is_function(&self) -> bool { matches!(self.role, ObjectSymbolRole::Function) }
 }
 
 #[repr(C)]
@@ -1016,14 +1025,15 @@ impl<'a, Input: AsRef<[u8]> + ?Sized> Reader<'a, Input> {
         if bytes.bytes.is_null() { return Err("缺少 Blink 目标文件元数据".into()); }
         Ok(unsafe { bytes.borrowed() })
     }
-    fn symbol_rows(&self, definitions: &mut [SectionDefinition]) -> Result<(Vec<ObjectSymbol>, usize)> {
+    fn symbol_rows(&self, definitions: Option<&mut [SectionDefinition]>) -> Result<(Vec<ObjectSymbol>, usize)> {
         let input = ReadBytes::new(self.bytes.as_ref());
         let table = unsafe { read_symbols(input) };
         table.error.check()?;
         let mut symbols = Vec::with_capacity(table.count);
+        let (definitions, count) = definitions.map_or((std::ptr::null_mut(), 0), |rows| (rows.as_mut_ptr(), rows.len()));
         read_object_names(|context| unsafe {
             object_symbols(
-                input, table, symbols.as_mut_ptr(), definitions.as_mut_ptr(), definitions.len(),
+                input, table, symbols.as_mut_ptr(), definitions, count,
                 context, validate_object_name,
             )
         })?;
@@ -1048,7 +1058,7 @@ impl<'a, Input: AsRef<[u8]> + ?Sized> Reader<'a, Input> {
         status.object.check()?;
         receiver.result
     }
-    fn module_symbols(&self, definitions: &mut [SectionDefinition]) -> Result<Option<(Vec<ObjectSection>, Vec<ObjectSymbol>, usize)>> {
+    fn module_symbols(&self, definitions: Option<&mut [SectionDefinition]>) -> Result<Option<(Vec<ObjectSection>, Vec<ObjectSymbol>, usize)>> {
         let (parts, raw) = self.sections(true)?;
         let metadata = Metadata::read(self.metadata(parts.metadata)?, MetadataNames::default().sink(0))?;
         if !matches!(metadata.prefix.header.kind, ReadObjectKind::Module) { return Ok(None); }
@@ -1057,14 +1067,14 @@ impl<'a, Input: AsRef<[u8]> + ?Sized> Reader<'a, Input> {
     }
     /// B archives preserve member bytes and only produce the physical export directory.
     pub(crate) fn archive_symbols(&self) -> Result<Option<Vec<String>>> {
-        self.module_symbols(&mut [])?.map(|(raw, symbols, _)| export_names(&raw, &symbols)).transpose()
+        self.module_symbols(None)?.map(|(raw, symbols, _)| export_names(&raw, &symbols)).transpose()
     }
     /// Native archives additionally consume the actual DLL import relocations.
     pub(super) fn host_links(
         &self, imports: &mut Vec<ImportKey<'a>>,
     ) -> Result<Option<HostArchiveMember>> {
         let mut definitions = vec![SectionDefinition::default(); self.headers.len() / 40];
-        let Some((raw, symbols, offset)) = self.module_symbols(&mut definitions)? else { return Ok(None); };
+        let Some((raw, symbols, offset)) = self.module_symbols(Some(&mut definitions))? else { return Ok(None); };
         let mut groups = if host::needs_groups(&symbols) {
             host::Groups::new(&raw, &definitions)?
         } else {
@@ -1260,7 +1270,7 @@ fn decode_object<Bytes: super::ReadSection>(
 ) -> Result<Object<Bytes>> {
     let b = reader.bytes;
     let mut definitions = vec![SectionDefinition::default(); reader.headers.len() / 40];
-    let (symbols, _) = reader.symbol_rows(&mut definitions)?;
+    let (symbols, _) = reader.symbol_rows(Some(&mut definitions))?;
     let (parts, mut raw) = reader.sections(true)?;
     let (name, kind, mut bindings, stack, archive) = match native {
         Some(name) => (name.to_owned(), Kind::Module { interface: "".into(), requirements: Arc::default(), stack_bytes: 0 }, BTreeMap::new(), StackMetadata::default(), None),
@@ -1338,7 +1348,7 @@ fn decode_object<Bytes: super::ReadSection>(
                         section: object_index(&raw, symbol.section as usize - 1)
                             .ok_or("导出符号引用不可装载的节")?,
                         value: symbol.value,
-                        function: symbol.function != 0,
+                        function: symbol.is_function(),
                     },
                     contract,
                 })

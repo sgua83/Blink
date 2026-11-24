@@ -8,7 +8,9 @@ struct ObjectSection {
 };
 struct ObjectParts { ReadBytes metadata; ReadBytes runtime; };
 struct ObjectRows {address values;u64 count;};
-struct ObjectSymbol {ReadBytes name;u32 value;i16 section;u8 external;u8 function;};
+// Import rows borrow the contiguous DLL/name payload and store its split in value.
+// An invalid import keeps its read error in value until a relocation uses the row.
+struct ObjectSymbol {ReadBytes name;u32 value;i16 section;u8 external;u8 role;};
 struct ObjectSymbols {address values;u64 count;};
 struct SectionDefinition {u16 owner;u8 selection;u8 present;};
 struct ObjectAssociation {u64 present;u64 owner;u32 error;};
@@ -18,6 +20,8 @@ struct ObjectTarget {
 // parts borrows the first metadata and runtime sections of this input.
 // Rows are optional for metadata consumers. Successful symbol reading writes
 // one slot per physical symbol. The host callback checks the original names.
+// A null definitions buffer requests directory names only. Object consumers
+// supply definitions and receive decoded relocation targets in the same rows.
 extern "C" u32 object_sections(ReadBytes input, ReadBytes headers, address rows,
     inout ObjectParts parts, address context, cfn<u32,address,ReadBytes> validate) on cpu
     requires nonzero(validate);

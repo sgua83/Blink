@@ -3,6 +3,9 @@ import blink.windows.coff;
 import bootstrap.metadata_read;
 import bootstrap.bindings;
 
+const u8 SYMBOL_IMPORT = u8(2);
+const u8 SYMBOL_INVALID_IMPORT = u8(3);
+
 ReadBytes empty_bytes() on cpu {return ReadBytes(unsafe_address(0u64),0u64);}
 u32 byte_at(ReadBytes bytes,u64 index) on cpu {
     return u32(unsafe_position<u8>(unsafe_address(address_bits(bytes.bytes)+index)));
@@ -79,13 +82,16 @@ extern "C" u32 object_symbols(ReadBytes input, ReadSymbols table, address rows,
     address definitions, u64 definition_count, address context,
     cfn<u32,address,ReadBytes> validate) on cpu requires nonzero(validate) {
     u64 index = 0u64;
+    bool read_relocation_targets = address_bits(definitions) != 0u64;
     let auxiliary = ObjectSymbol(empty_bytes(), 0, i16(0), u8(0), u8(0));
     while (index < table.count) {
         let primary = object_symbol(input, table, index, definitions, definition_count);
         if (primary.error != 0) { return primary.error; }
         if (validate(context, primary.value.name) == 0) { return 0; }
         address slot = unsafe_address(address_bits(rows) + index * size_of<ObjectSymbol>());
-        unsafe_position<ObjectSymbol>(slot) = primary.value;
+        let value = read_relocation_targets && primary.value.section <= i16(0)
+            ? undefined_symbol(primary.value) : primary.value;
+        unsafe_position<ObjectSymbol>(slot) = value;
         index += 1u64;
         while (index < primary.next) {
             address next = unsafe_address(address_bits(rows) + index * size_of<ObjectSymbol>());
@@ -113,38 +119,33 @@ extern "C" ObjectAssociation association(ObjectRows rows,address definitions,u64
 ObjectTarget failure(u32 error) on cpu {
     return ObjectTarget(0u64,0u64,0u64,empty_bytes(),empty_bytes(),error);
 }
-ObjectTarget import_target(ReadBytes name,u64 prefix_length) on cpu {
-    u64 end=prefix_length;
+ObjectSymbol invalid_import(ObjectSymbol symbol, u32 error) on cpu {
+    return ObjectSymbol(symbol.name,error,symbol.section,symbol.external,SYMBOL_INVALID_IMPORT);
+}
+ObjectSymbol undefined_symbol(ObjectSymbol symbol) on cpu {
+    array<u8,15> prefix=array<u8,15>(u8(95),u8(95),u8(98),u8(108),u8(105),u8(110),u8(107),u8(95),u8(105),u8(109),u8(112),u8(111),u8(114),u8(116),u8(36));
+    ReadBytes name=symbol.name;
+    if(!matches<15>(name,prefix,false)){return symbol;}
+    u64 index=15u64;
+    u64 end=index;
     while(end<name.length && byte_at(name,end)!=36){end+=1u64;}
-    if(end==name.length){return failure(6);}
-    u64 index=prefix_length;
-    if(index==end){return failure(7);}
-    if(byte_at(name,index)==43){index+=1u64;if(index==end){return failure(8);}}
+    if(end==name.length){return invalid_import(symbol,6);}
+    if(index==end){return invalid_import(symbol,7);}
+    if(byte_at(name,index)==43){index+=1u64;if(index==end){return invalid_import(symbol,8);}}
     u64 length=0u64;
     while(index<end){
         u32 digit=byte_at(name,index);
-        if(digit<48 || digit>57){return failure(8);}
+        if(digit<48 || digit>57){return invalid_import(symbol,8);}
         u64 value=u64(digit-48);
-        if(length>(18446744073709551615u64-value)/10u64){return failure(9);}
+        if(length>(18446744073709551615u64-value)/10u64){return invalid_import(symbol,9);}
         length=length*10u64+value;index+=1u64;
     }
     u64 start=end+1u64;u64 available=name.length-start;
-    if(length>available){return failure(10);}
+    if(length>available){return invalid_import(symbol,10);}
     u64 boundary=start+length;
-    if(boundary<name.length && (byte_at(name,boundary)&192)==128){return failure(10);}
-    return ObjectTarget(1u64,0u64,0u64,part(name,start,length),part(name,boundary,available-length),0);
-}
-ObjectTarget resolve_target(ObjectRows rows,ReadBytes name,i64 section,u64 value) on cpu {
-    if(section>i64(0)){
-        u64 index=u64(section)-1u64;
-        if(index>=rows.count){return failure(5);}
-        ObjectSection row=row_at(rows,index);
-        if(row.mapped==0u64){return failure(5);}
-        return ObjectTarget(0u64,row.mapped-1u64,value,empty_bytes(),empty_bytes(),0);
-    }
-    array<u8,15> prefix=array<u8,15>(u8(95),u8(95),u8(98),u8(108),u8(105),u8(110),u8(107),u8(95),u8(105),u8(109),u8(112),u8(111),u8(114),u8(116),u8(36));
-    if(matches<15>(name,prefix,false)){return import_target(name,15u64);}
-    return ObjectTarget(2u64,0u64,0u64,empty_bytes(),name,0);
+    if(boundary<name.length && (byte_at(name,boundary)&192)==128){return invalid_import(symbol,10);}
+    // The borrowed name lies in the COFF string table with a 32-bit size.
+    return ObjectSymbol(part(name,start,available),u32(length),symbol.section,symbol.external,SYMBOL_IMPORT);
 }
 
 ObjectTarget relocation_target(ObjectRows rows, ObjectSymbols symbols, u64 index) on cpu {
@@ -152,7 +153,20 @@ ObjectTarget relocation_target(ObjectRows rows, ObjectSymbols symbols, u64 index
     address slot = unsafe_address(address_bits(symbols.values) + index * size_of<ObjectSymbol>());
     ObjectSymbol symbol = unsafe_position<ObjectSymbol>(slot);
     if (address_bits(symbol.name.bytes) == 0u64) { return failure(15); }
-    return resolve_target(rows, symbol.name, i64(symbol.section), u64(symbol.value));
+    if(symbol.section>i16(0)){
+        u64 section=u64(symbol.section)-1u64;
+        if(section>=rows.count){return failure(5);}
+        ObjectSection row=row_at(rows,section);
+        if(row.mapped==0u64){return failure(5);}
+        return ObjectTarget(0u64,row.mapped-1u64,u64(symbol.value),empty_bytes(),empty_bytes(),0);
+    }
+    if(symbol.role==SYMBOL_INVALID_IMPORT){return failure(symbol.value);}
+    if(symbol.role==SYMBOL_IMPORT){
+        u64 length=u64(symbol.value);
+        return ObjectTarget(1u64,0u64,0u64,part(symbol.name,0u64,length),
+            part(symbol.name,length,symbol.name.length-length),0);
+    }
+    return ObjectTarget(2u64,0u64,0u64,empty_bytes(),symbol.name,0);
 }
 
 extern "C" ObjectRelocationStatus object_relocations(

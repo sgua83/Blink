@@ -3,12 +3,13 @@ use super::*;
 
 pub(super) fn needs_groups(symbols: &[ObjectSymbol]) -> bool {
     symbols.iter().filter(|symbol| symbol.external != 0 && symbol.section <= 0).any(|symbol| {
-        // Only real DLL slots have definitions supplied by this archive.
-        let name = unsafe { std::str::from_utf8_unchecked(symbol.name.borrowed()) };
-        let dll = name.strip_prefix("__blink_import$")
-            .and_then(|name| name.split_once('$'))
-            .and_then(|(length, name)| name.get(..length.parse::<usize>().ok()?));
-        dll.is_none_or(|dll| dll == crate::resource::RUNTIME_LIBRARY)
+        match symbol.role {
+            ObjectSymbolRole::Import => {
+                let payload = unsafe { symbol.name.borrowed() };
+                &payload[..symbol.value as usize] == crate::resource::RUNTIME_LIBRARY.as_bytes()
+            }
+            ObjectSymbolRole::Data | ObjectSymbolRole::Function | ObjectSymbolRole::InvalidImport => true,
+        }
     })
 }
 
@@ -146,7 +147,7 @@ impl Groups {
             let name = unsafe { std::str::from_utf8_unchecked(symbol.name.borrowed()) };
             definitions[member].push(BindingDefinition {
                 name: BindingBytes::new(name.as_bytes()), section: section as u64,
-                value: u64::from(symbol.value), function: u64::from(symbol.function),
+                value: u64::from(symbol.value), function: u64::from(symbol.is_function()),
             });
             names[member].push(name.to_owned());
         }
