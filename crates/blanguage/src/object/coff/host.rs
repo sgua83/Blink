@@ -13,17 +13,11 @@ pub(super) fn needs_groups(symbols: &[ObjectSymbol]) -> bool {
     })
 }
 
-struct GroupRelocation {
-    offset: usize,
-    kind: u16,
-    target: ObjectTarget,
-}
-
 pub(super) struct Groups {
     members: Vec<Vec<usize>>,
     positions: Vec<(usize, usize)>,
     owners: Vec<Option<usize>>,
-    relocations: Vec<Vec<GroupRelocation>>,
+    relocations: Vec<Vec<BindingRelocation>>,
 }
 
 impl Groups {
@@ -63,12 +57,16 @@ impl Groups {
     }
 
     pub(super) fn relocation(&mut self, section: usize, offset: usize, kind: u16, target: ObjectTarget) {
-        self.relocations[section].push(GroupRelocation { offset, kind, target });
-    }
-
-    fn needs_anchor(&self, source: usize, target: &ObjectTarget) -> bool {
-        matches!(target.kind, ObjectTargetKind::Section)
-            && (target.value != 0 || self.positions[source].0 != self.positions[target.section].0)
+        let target_kind = match target.kind {
+            ObjectTargetKind::Section => BindingTarget::Section,
+            ObjectTargetKind::Symbol => BindingTarget::Symbol,
+            ObjectTargetKind::Import => BindingTarget::Import,
+        };
+        self.relocations[section].push(BindingRelocation {
+            offset: offset as u64, kind, target: target_kind,
+            value: target.value as u32, section: target.section as u64,
+            name: binding_bytes(target.name), dll: binding_bytes(target.dll),
+        });
     }
 
     fn combine_closed_groups(&mut self, raw: &[ObjectSection]) -> Option<usize> {
@@ -78,18 +76,17 @@ impl Groups {
         for (section, relocations) in self.relocations.iter().enumerate() {
             let member = self.positions[section].0;
             for relocation in relocations {
-                let target = &relocation.target;
-                let external = match target.kind {
-                    ObjectTargetKind::Section => {
-                        let destination = self.positions[target.section].0;
+                let external = match relocation.target {
+                    BindingTarget::Section => {
+                        let destination = self.positions[relocation.section as usize].0;
                         if destination != member {
                             dependents[destination].push(member);
                         }
                         false
                     }
-                    ObjectTargetKind::Symbol => true,
-                    ObjectTargetKind::Import => {
-                        let dll = unsafe { target.dll.borrowed() };
+                    BindingTarget::Symbol => true,
+                    BindingTarget::Import => {
+                        let dll = unsafe { std::slice::from_raw_parts(relocation.dll.bytes, relocation.dll.length) };
                         dll == crate::resource::RUNTIME_LIBRARY.as_bytes()
                     }
                 };
@@ -128,13 +125,21 @@ impl Groups {
         let combined = self.combine_closed_groups(raw);
         let identity = member_identity(bytes, raw, build);
         let mut anchors = BTreeMap::new();
-        for (section, relocations) in self.relocations.iter().enumerate() {
+        for (source, relocations) in self.relocations.iter_mut().enumerate() {
             for relocation in relocations {
-                let target = &relocation.target;
-                if self.needs_anchor(section, target) {
-                    anchors.entry((target.section, target.value)).or_insert_with(|| {
-                        format!("__blink_host_section${identity}${}${}", target.section, target.value)
-                    });
+                if !matches!(relocation.target, BindingTarget::Section) {
+                    continue;
+                }
+                let target = relocation.section as usize;
+                let (member, local) = self.positions[target];
+                if relocation.value == 0 && self.positions[source].0 == member {
+                    relocation.section = local as u64;
+                } else {
+                    let value = relocation.value;
+                    let name = anchors.entry((target, value)).or_insert_with(||
+                        format!("__blink_host_section${identity}${target}${value}")).as_str();
+                    relocation.target = BindingTarget::Symbol;
+                    relocation.name = BindingBytes::new(name.as_bytes());
                 }
             }
         }
@@ -154,7 +159,7 @@ impl Groups {
         for (&(index, value), name) in &anchors {
             let (member, section) = self.positions[index];
             definitions[member].push(BindingDefinition {
-                name: BindingBytes::new(name.as_bytes()), section: section as u64, value, function: 0,
+                name: BindingBytes::new(name.as_bytes()), section: section as u64, value: u64::from(value), function: 0,
             });
             names[member].push(name.clone());
         }
@@ -165,32 +170,15 @@ impl Groups {
                 continue;
             }
             let mut associated = vec![Vec::new(); physical.len()];
-            let mut relocations = Vec::with_capacity(physical.len());
             for (local, &index) in physical.iter().enumerate() {
                 let section = raw[index].mapped - 1;
                 if let Some(owner) = self.owners[section] {
                     associated[self.positions[owner].1].push(local);
                 }
-                relocations.push(self.relocations[section].iter().map(|relocation| {
-                    let target = &relocation.target;
-                    let empty = BindingBytes::new(&[]);
-                    let (kind, section_index, name, dll) = match target.kind {
-                        ObjectTargetKind::Section if self.needs_anchor(section, target) => {
-                            let name = &anchors[&(target.section, target.value)];
-                            (1, 0, BindingBytes::new(name.as_bytes()), empty)
-                        }
-                        ObjectTargetKind::Section => (0, self.positions[target.section].1 as u64, empty, empty),
-                        ObjectTargetKind::Symbol => (1, 0, binding_bytes(target.name), empty),
-                        ObjectTargetKind::Import => (2, 0, binding_bytes(target.name), binding_bytes(target.dll)),
-                    };
-                    BindingRelocation {
-                        offset: relocation.offset as u64, kind: u64::from(relocation.kind),
-                        target: kind, section: section_index, name, dll,
-                    }
-                }).collect::<Vec<_>>());
             }
-            let bindings = physical.iter().zip(&associated).zip(&relocations).map(|((&index, children), references)| {
+            let bindings = physical.iter().zip(&associated).map(|(&index, children)| {
                 let row = &raw[index];
+                let references = &self.relocations[row.mapped - 1];
                 BindingSection {
                     name: binding_bytes(row.name), flags: row.flags,
                     relocations: references.as_ptr(), relocation_count: references.len(),

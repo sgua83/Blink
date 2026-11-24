@@ -128,7 +128,7 @@ BindingDefinition definition_at(BindingInput input,u64 index) on cpu {
     return unsafe_position<BindingDefinition>(unsafe_address(address_bits(input.definitions)+index*DEFINITION_BYTES));
 }
 BindingRelocation relocation_at(BindingSection section,u64 index) on cpu {
-    return unsafe_position<BindingRelocation>(unsafe_address(address_bits(section.relocations)+index*INPUT_RELOCATION_BYTES));
+    return unsafe_position<BindingRelocation>(unsafe_address(address_bits(section.relocations)+index*size_of<BindingRelocation>()));
 }
 CoffSymbol symbol_at(BindingWork work,u64 index) on cpu {
     return unsafe_position<CoffSymbol>(unsafe_address(address_bits(work.symbols)+index*SYMBOL_BYTES));
@@ -186,14 +186,14 @@ extern "C" BindingPlan prepare(BindingInput input,BindingWork work) on cpu {
         while(j<section.relocation_count){
             BindingRelocation value=relocation_at(section,j);
             if(value.offset>4294967295u64){return invalid(5);}
-            if(value.target==1u64){
+            if(value.target==u16(1)){
                 BindingKey key=BindingKey(value.name,empty());
                 if(find(forest,forest.names,key)==0u64){
                     BindingInsert inserted=put(forest,forest.names,key,row);forest.names=inserted.root;
                     symbol_put(work,count,symbol(value.name,0u64,0u64,1u64,1u64,0u64,0u64,0u64,0u64));
                     count+=1u64;row+=1u64;
                 }
-            }else if(value.target==2u64){
+            }else if(value.target==u16(2)){
                 BindingKey key=BindingKey(value.dll,value.name);
                 BindingInsert inserted=put(forest,forest.imports,key,0u64);forest.imports=inserted.root;
             }
@@ -240,9 +240,9 @@ extern "C" void write_section_relocations(read CoffBindingSource binding,u64 ind
     while(i<section.relocation_count){
         BindingRelocation value=relocation_at(section,i);
         u64 target=0u64;
-        if(value.target==0u64){
+        if(value.target==u16(0)){
             target=section_at(binding.sections,value.section).symbol;
-        }else if(value.target==1u64){
+        }else if(value.target==u16(1)){
             target=node_at(forest,find(forest,forest.names,BindingKey(value.name,empty()))).value;
         }else{
             target=node_at(forest,find(forest,forest.imports,BindingKey(value.dll,value.name))).value;
@@ -250,7 +250,7 @@ extern "C" void write_section_relocations(read CoffBindingSource binding,u64 ind
         u64 at=i*COFF_RELOCATION_RECORD_BYTES;
         // The checked 32-bit offset and final symbol index are adjacent.
         literal(output,at,value.offset | (target<<32u64),8u64);
-        literal(output,at+8u64,value.kind,2u64);
+        literal(output,at+8u64,u64(value.kind),2u64);
         i+=1u64;
     }
 }

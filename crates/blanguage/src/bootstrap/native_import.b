@@ -12,7 +12,7 @@ void section_put(NativeImportOutput output,u64 index,u64 name_index,u64 length,u
     u64 first,u64 count,u64 associated_count) on cpu {
     address name_row = unsafe_address(address_bits(output.names)+name_index*size_of<BindingBytes>());
     BindingBytes name = unsafe_position<BindingBytes>(name_row);
-    address relocations = unsafe_address(address_bits(output.relocations)+first*INPUT_RELOCATION_BYTES);
+    address relocations = unsafe_address(address_bits(output.relocations)+first*size_of<BindingRelocation>());
     address row = unsafe_address(address_bits(output.sections)+index*SECTION_BYTES);
     unsafe_position<BindingSection>(row) =
         BindingSection(name,flags,relocations,count,output.associated,associated_count,0u64,0u64);
@@ -20,13 +20,13 @@ void section_put(NativeImportOutput output,u64 index,u64 name_index,u64 length,u
 }
 
 void relocation_put(NativeImportOutput output,u64 index,BindingRelocation relocation) on cpu {
-    address row = unsafe_address(address_bits(output.relocations)+index*INPUT_RELOCATION_BYTES);
+    address row = unsafe_address(address_bits(output.relocations)+index*size_of<BindingRelocation>());
     unsafe_position<BindingRelocation>(row) = relocation;
 }
 
 void relative_relocation(NativeImportOutput output,u64 index,u64 offset,u64 target) on cpu {
     BindingBytes empty = BindingBytes(unsafe_address(0u64),0u64);
-    relocation_put(output,index,BindingRelocation(offset,3u64,0u64,target,empty,empty));
+    relocation_put(output,index,BindingRelocation(offset,u16(3),u16(0),0,target,empty,empty));
 }
 
 // Physical DLL section order. The IAT slot owns the other sections.
@@ -52,7 +52,7 @@ extern "C" NativeImportPlan plan_import(NativeImportInput input,NativeImportOutp
     if(frame){
         section_put(output,0u64,5u64,8u64,0x40401040u64,0u64,1u64,0u64);
         BindingBytes empty = BindingBytes(unsafe_address(0u64),0u64);
-        relocation_put(output,0u64,BindingRelocation(0u64,1u64,1u64,0u64,input.name,empty));
+        relocation_put(output,0u64,BindingRelocation(0u64,u16(1),u16(1),0,0u64,input.name,empty));
         return plan;
     }
 

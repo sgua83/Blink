@@ -3,7 +3,6 @@ import bootstrap.coff;
 // Windows x64 C ABI and caller-owned array strides.
 const u64 SECTION_BYTES=72u64;
 const u64 DEFINITION_BYTES=40u64;
-const u64 INPUT_RELOCATION_BYTES=64u64;
 const u64 NODE_BYTES=72u64;
 struct BindingBytes {address bytes;u64 length;};
 struct BindingKey {BindingBytes first;BindingBytes second;};
@@ -13,7 +12,7 @@ struct BindingSection {
     address associated;u64 associated_count;u64 owner;u64 symbol;
 };
 struct BindingDefinition {BindingBytes name;u64 section;u64 value;u64 function;};
-struct BindingRelocation {u64 offset;u64 kind;u64 target;u64 section;BindingBytes name;BindingBytes dll;};
+struct BindingRelocation {u64 offset;u16 kind;u16 target;u32 value;u64 section;BindingBytes name;BindingBytes dll;};
 struct BindingInput {BindingBytes name;address sections;u64 section_count;address definitions;u64 definition_count;};
 struct BindingWork {
     address symbols;address nodes;
