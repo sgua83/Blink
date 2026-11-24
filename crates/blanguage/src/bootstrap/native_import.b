@@ -26,10 +26,11 @@ const u64 DLL_SECTIONS = 5u64;
 
 extern "C" NativeImportPlan plan_import(NativeImportInput input,NativeImportOutput output) on cpu {
     bool frame = equal(input.dll,input.runtime);
-    u64 slot = import_name_size(input.dll,input.name);
+    u64 slot_start = 15u64; // "@blink.imports@"
+    u64 slot_end = slot_start+import_name_size(input.dll,input.name);
     u64 hint = frame ? 0u64 : (input.dll.length+2u64)&(0u64-2u64);
     u64 names = frame ? 0u64 : hint+3u64+input.name.length;
-    NativeImportPlan plan = NativeImportPlan(slot,15u64+slot,19u64+slot,hint,
+    NativeImportPlan plan = NativeImportPlan(slot_start,slot_end,slot_end+4u64,hint,
         frame ? 1u64 : 5u64,frame ? 1u64 : DLL_SECTIONS,0u64);
     if(names>4294967295u64 || plan.member>4294967295u64){
         plan.error=1u64;
@@ -53,11 +54,11 @@ extern "C" NativeImportPlan plan_import(NativeImportInput input,NativeImportOutp
     return plan;
 }
 extern "C" void encode_import(NativeImportInput input,NativeImportOutput output,NativeImportPlan plan) on cpu {
-    import_name(input.dll,input.name,output.slot);
-    // "@blink.imports@", followed by the one existing slot name.
-    literal(output.stem,0u64,7579113344870408768u64,8u64);literal(output.stem,8u64,18141342482788461u64,7u64);
-    copy(output.stem,15u64,BindingBytes(output.slot,plan.slot));copy(output.member,0u64,BindingBytes(output.stem,plan.stem));
-    literal(output.member,plan.stem,1784835886u64,4u64); // ".obj"
+    // Both link directories borrow the slot within the final member name.
+    literal(output.member,0u64,7579113344870408768u64,8u64);
+    literal(output.member,8u64,18141342482788461u64,7u64);
+    import_name(input.dll,input.name,unsafe_address(address_bits(output.member)+plan.slot_start));
+    literal(output.member,plan.slot_end,1784835886u64,4u64); // ".obj"
     u64 index=0u64;
     while(index<plan.sections){
         NativeImportSection section=section_at(output,index);

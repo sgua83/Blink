@@ -63,8 +63,8 @@ impl ReadSection for usize {
 }
 
 #[derive(Clone)]
-pub(crate) struct Definition {
-    pub name: String,
+pub(crate) struct Definition<Name = String> {
+    pub name: Name,
     pub section: usize,
     pub value: u32,
     pub function: bool,

@@ -737,7 +737,9 @@ pub(super) fn encode_build(o: &Object, build: Option<&[u8]>) -> Result<Vec<u8>> 
     })
 }
 
-pub(crate) fn encode_native(name: &str, source: &[Section], declared: &[Definition]) -> Result<Vec<u8>> {
+pub(crate) fn encode_native<Name: AsRef<str>>(
+    name: &str, source: &[Section], declared: &[Definition<Name>],
+) -> Result<Vec<u8>> {
     encode_sections(name, source, declared.iter(), std::iter::empty(), None)
 }
 
@@ -772,8 +774,8 @@ impl CoffPayload<'_> {
         }
     }
 }
-fn encode_sections<'a>(
-    name: &str, source: &'a [Section], declared: impl Iterator<Item = &'a Definition>,
+fn encode_sections<'a, Name: AsRef<str> + 'a>(
+    name: &str, source: &'a [Section], declared: impl Iterator<Item = &'a Definition<Name>>,
     extra: impl Iterator<Item = (&'a str, CoffPayload<'a>, u32, &'a [Relocation])>,
     imports: Option<&mut Vec<ImportKey<'a>>>,
 ) -> Result<Vec<u8>> {
@@ -797,7 +799,7 @@ fn encode_sections<'a>(
         associated: section.associated.as_ptr(), associated_count: section.associated.len(), owner: 0, symbol: 0,
     }).collect::<Vec<_>>();
     let definitions = declared.map(|symbol| BindingDefinition {
-        name: BindingBytes::new(symbol.name.as_bytes()), section: symbol.section as u64,
+        name: BindingBytes::new(symbol.name.as_ref().as_bytes()), section: symbol.section as u64,
         value: u64::from(symbol.value), function: u64::from(symbol.function),
     }).collect::<Vec<_>>();
     encode_bound(name, sections, binding_sections, &definitions, imports)

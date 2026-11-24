@@ -358,7 +358,7 @@ pub fn archive(inputs: &[impl AsRef<Path>], path: &Path) -> Result<()> {
             .ok_or_else(||format!("{} 不是独立模块产物",member.name))?;
         symbols.extend(names.into_iter().map(|name| (index, name)));
     }
-    let output = encode(&members, &symbols)?;
+    let output = encode(members.iter(), symbols.iter().map(|(index, name)| (*index, name.as_str())))?;
     if let Some(parent) = path.parent() {
         crate::file_bytes::create_dir_all(parent)?;
     }
@@ -389,14 +389,17 @@ pub(crate) fn members(inputs: &[impl AsRef<Path>]) -> Result<Vec<Member>> {
     Ok(members)
 }
 
-pub(crate) fn encode(members: &[Member], symbols: &[(usize, String)]) -> Result<Vec<u8>> {
-    let mut member_views: Vec<_> = members.iter().map(|member| ArchiveMember {
+pub(crate) fn encode<'a>(
+    members: impl Iterator<Item = &'a Member> + Clone,
+    symbols: impl Iterator<Item = (usize, &'a str)>,
+) -> Result<Vec<u8>> {
+    let mut member_views: Vec<_> = members.clone().map(|member| ArchiveMember {
         name: member.name.as_ptr(), name_length: member.name.len(),
         byte_length: member.output_length(),
         offset: 0, name_offset: 0,
     }).collect();
-    let mut symbol_views: Vec<_> = symbols.iter().map(|(member, name)| ArchiveSymbol {
-        name: name.as_ptr(), name_length: name.len(), member: *member,
+    let mut symbol_views: Vec<_> = symbols.map(|(member, name)| ArchiveSymbol {
+        name: name.as_ptr(), name_length: name.len(), member,
     }).collect();
     let input = ArchiveInput {
         members: member_views.as_mut_ptr(), member_count: member_views.len(),
@@ -416,7 +419,7 @@ pub(crate) fn encode(members: &[Member], symbols: &[(usize, String)]) -> Result<
     // final span. Its owner writes the payload there before the Vec takes length.
     unsafe {
         archive_encode(input, layout, output.as_mut_ptr());
-        for (member, view) in members.iter().zip(member_views) {
+        for (member, view) in members.zip(member_views) {
             member.write(output.as_mut_ptr().add(view.offset + 60));
         }
         output.set_len(layout.length);
