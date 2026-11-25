@@ -24,7 +24,7 @@ ObjectSection row_at(ObjectRows rows,u64 index) on cpu {
 }
 ObjectSectionResult logical_section(ReadBytes input, ReadBytes headers, u64 index,
     inout u64 mapped, inout ObjectParts parts) on cpu {
-    ReadSection row=section(input,headers,index);
+    ReadSection row=resolved_section(input,headers,index);
     ObjectSection value=ObjectSection(row.name,row.bytes,row.flags,row.relocations,row.relocation_count,0u64,row.zero_fill,unsafe_address(0u64),0u64);
     if(row.error!=0){return ObjectSectionResult(value,row.error);}
     array<u8,7> meta=array<u8,7>(u8(46),u8(98),u8(108),u8(109),u8(101),u8(116),u8(97));array<u8,5> runtime=array<u8,5>(u8(46),u8(98),u8(108),u8(114),u8(116));array<u8,8> build=array<u8,8>(u8(46),u8(98),u8(108),u8(98),u8(117),u8(105),u8(108),u8(100));

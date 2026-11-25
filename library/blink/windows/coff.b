@@ -42,6 +42,16 @@ extern "C" ReadSymbols symbols(ReadBytes input) on cpu {
     ReadRange bytes=range(input,strings,little(size.bytes.bytes,0u64,4u64));
     return ReadSymbols(bytes.bytes,offset,count,bytes.error);
 }
+ReadRange string_name(ReadBytes strings,u64 begin) on cpu {
+    if(begin>strings.length){return ReadRange(empty(),4);}
+    u64 length=0u64;
+    while(begin+length<strings.length){
+        if(unsafe_position<u8>(at(strings.bytes,begin+length))==u8(0)){break;}
+        length+=1u64;
+    }
+    if(begin+length==strings.length){return ReadRange(empty(),5);}
+    return ReadRange(ReadBytes(at(strings.bytes,begin),length),0);
+}
 ReadSymbol bad_symbol(u32 error) on cpu {
     return ReadSymbol(empty(),i64(0),0u64,0u64,0u64,0u64,0u64,0u64,0u64,error);
 }
@@ -49,15 +59,9 @@ extern "C" ReadSymbol symbol(ReadBytes input,ReadSymbols table,u64 index) on cpu
     ReadRange record=range(input,table.offset+index*18u64,18u64);if(record.error!=0){return bad_symbol(record.error);}
     address bytes=record.bytes.bytes;ReadBytes name=empty();
     if(little(bytes,0u64,4u64)==0u64){
-        u64 begin=little(bytes,4u64,4u64);
-        if(begin>table.strings.length){return bad_symbol(4);}
-        u64 length=0u64;
-        while(begin+length<table.strings.length){
-            if(unsafe_position<u8>(at(table.strings.bytes,begin+length))==u8(0)){break;}
-            length+=1u64;
-        }
-        if(begin+length==table.strings.length){return bad_symbol(5);}
-        name=ReadBytes(at(table.strings.bytes,begin),length);
+        ReadRange resolved=string_name(table.strings,little(bytes,4u64,4u64));
+        if(resolved.error!=0){return bad_symbol(resolved.error);}
+        name=resolved.bytes;
     }else{name=inline_name(bytes);}
     u64 raw=little(bytes,12u64,2u64);i64 section=i64(raw);
     if(raw>=32768u64){section-=i64(65536);}
@@ -97,6 +101,28 @@ extern "C" ReadSection section(ReadBytes input,ReadBytes headers,u64 index) on c
     ReadRange body=range(input,offset,length);
     return ReadSection(inline_name(bytes),body.bytes,flags,little(bytes,24u64,4u64),
         little(bytes,32u64,2u64),zero_fill,body.error);
+}
+extern "C" ReadSection resolved_section(ReadBytes input,ReadBytes headers,u64 index) on cpu {
+    ReadSection row=section(input,headers,index);
+    ReadBytes field=row.name;
+    if(row.error!=0 || field.length==0u64 || little(field.bytes,0u64,1u64)!=47u64){return row;}
+
+    // The fixed-width field holds a slash and at most seven decimal digits.
+    u64 begin=0u64;
+    u64 i=1u64;
+    while(i<field.length){
+        u64 digit=little(field.bytes,i,1u64);
+        if(digit<48u64 || digit>57u64){row.error=4;return row;}
+        begin=begin*10u64+(digit-48u64);
+        i+=1u64;
+    }
+    if(begin<4u64){row.error=4;return row;}
+    ReadSymbols table=symbols(input);
+    if(table.error!=0){row.error=table.error;return row;}
+    ReadRange resolved=string_name(table.strings,begin);
+    row.name=resolved.bytes;
+    row.error=resolved.error;
+    return row;
 }
 extern "C" ReadRelocations relocations(ReadBytes input,u64 offset,u64 count,u64 flags) on cpu {
     if((flags&16777216u64)!=0u64){
