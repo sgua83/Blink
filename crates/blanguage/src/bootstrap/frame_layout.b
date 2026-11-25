@@ -118,6 +118,27 @@ extern "C" RangePrologue range_prologue(u32 frame, address saved, u64 count,
     return RangePrologue(cursor - start, probe, used + count, frame + 8 * RANGE_SAVE_COUNT, prolog);
 }
 
+
+struct RestoredFrame { u64 saved_end; u64 frame_end; };
+RestoredFrame restore_frame(u32 frame, address saved, u64 count, u64 start) on cpu {
+    u64 saved_end = start + preserve_registers(saved, count, 0u64, address(), unsafe_address(start));
+    u64 frame_end = saved_end;
+    if (frame != 0) { frame_end += release_frame(frame, unsafe_address(saved_end)); }
+    return RestoredFrame(saved_end, frame_end);
+}
+
+extern "C" FunctionEpilogue function_epilogue(u32 frame, u32 scratch, address saved, u64 count,
+    address image, u64 end, address exits, u64 exit_count) on cpu {
+    patch_branches(image, end, exits, exit_count);
+    u64 bytes = address_bits(image);
+    RestoredFrame restored = restore_frame(frame, saved, count, bytes + end);
+    u64 cursor = restored.frame_end;
+    if (scratch != 0) { cursor += stack_register(u8(15), true, unsafe_address(cursor)); }
+    unsafe_position<u8>(unsafe_address(cursor)) = u8(0xc3);
+    return FunctionEpilogue(restored.saved_end - bytes, restored.frame_end - bytes,
+        cursor - bytes, cursor + 1u64 - bytes);
+}
+
 extern "C" u64 range_epilogue(u32 frame, address saved, u64 count,
     address image, u64 end, address exits, u64 exit_count) on cpu {
     u64 start = address_bits(image) + end;
@@ -125,8 +146,7 @@ extern "C" u64 range_epilogue(u32 frame, address saved, u64 count,
     unsafe_position<u8>(unsafe_address(start + 1u64)) = u8(0xc0);
     u64 cursor = start + 2u64;
     patch_branches(image, end + 2u64, exits, exit_count);
-    cursor += preserve_registers(saved, count, 0u64, address(), unsafe_address(cursor));
-    if (frame != 0) { cursor += release_frame(frame, unsafe_address(cursor)); }
+    cursor = restore_frame(frame, saved, count, cursor).frame_end;
     for (index in 0..RANGE_SAVE_COUNT) {
         u8 register = RANGE_SAVES[RANGE_SAVE_COUNT - 1 - index];
         cursor += stack_register(register, true, unsafe_address(cursor));

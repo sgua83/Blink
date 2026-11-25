@@ -72,6 +72,14 @@ struct FunctionReturn {
     literal_field: usize,
 }
 
+#[repr(C)]
+struct FunctionEpilogue {
+    saved_end: usize,
+    frame_end: usize,
+    scratch_end: usize,
+    end: usize,
+}
+
 unsafe extern "C" {
     #[link_name = "bootstrap.call_layout::function_frame"]
     fn function_frame(data_end: u64, result: AbiType, flags: u32) -> FunctionFrame;
@@ -80,6 +88,9 @@ unsafe extern "C" {
     #[link_name = "bootstrap.call_layout::function_result"]
     fn function_result(frame: FunctionFrame, flags: u32, value: CallValueLoan,
         component: AbiComponent, output: *mut u8) -> FunctionReturn;
+    #[link_name = "bootstrap.frame_layout::function_epilogue"]
+    fn function_epilogue(frame: u32, scratch: u32, saved: *const allocation::SavedRegister, count: usize,
+        image: *mut u8, end: usize, exits: *const usize, exit_count: usize) -> FunctionEpilogue;
 }
 
 struct FunctionEmission<'a, 'ir> {
@@ -148,7 +159,7 @@ unsafe extern "C" fn enter_frame(context: *mut c_void, bytes: u64, scratch: u32)
     e.allocate_frame(bytes as u32);
     e.abi_range(start, AbiRangeKind::FrameAllocate { bytes: bytes as u32 });
     let start = e.code.len();
-    e.preserve_registers(false);
+    e.save_registers();
     e.abi_range(start, AbiRangeKind::NonvolatileSave);
 }
 
@@ -247,22 +258,23 @@ fn emit_value(
         e.abi_range(result_end, AbiRangeKind::FallibleSuccessStatus);
     }
 
-    e.close_exits();
-    let start = e.code.len();
-    e.preserve_registers(true);
-    e.abi_range(start, AbiRangeKind::NonvolatileRestore);
-    if plan.bytes != 0 {
-        let start = e.code.len();
-        e.release_frame(plan.bytes as u32);
-        e.abi_range(start, AbiRangeKind::FrameRelease { bytes: plan.bytes as u32 });
+    let tail_start = e.code.len();
+    let saved = &e.frame.saved;
+    let exits = e.exits.pop().unwrap();
+    e.code.reserve(10 + 9 * saved.len());
+    let tail = unsafe {
+        let tail = function_epilogue(plan.bytes as u32, u32::from(graph.needs_r15), saved.as_ptr(),
+            saved.len(), e.code.as_mut_ptr(), tail_start, exits.as_ptr(), exits.len());
+        e.code.set_len(tail.end);
+        tail
+    };
+    e.record_abi_range(tail_start..tail.saved_end, AbiRangeKind::NonvolatileRestore);
+    if tail.frame_end != tail.saved_end {
+        e.record_abi_range(tail.saved_end..tail.frame_end, AbiRangeKind::FrameRelease { bytes: plan.bytes as u32 });
     }
-    if graph.needs_r15 {
-        let start = e.code.len();
-        e.pop_register(15);
-        e.abi_range(start, AbiRangeKind::ScratchRestore);
+    if tail.scratch_end != tail.frame_end {
+        e.record_abi_range(tail.frame_end..tail.scratch_end, AbiRangeKind::ScratchRestore);
     }
-    let start = e.code.len();
-    e.bytes(&[0xc3]);
-    e.abi_range(start, AbiRangeKind::FunctionReturn);
+    e.record_abi_range(tail.scratch_end..tail.end, AbiRangeKind::FunctionReturn);
     Ok(e.finish(plan.stack as u32, true))
 }

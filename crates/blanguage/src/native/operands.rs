@@ -435,7 +435,7 @@ impl Emitter<'_> {
             self.literals.entry(literal).or_default().push(start + field);
         }
     }
-    pub(super) fn preserve_registers(&mut self, restore: bool) {
+    pub(super) fn save_registers(&mut self) {
         let saved = &self.frame.saved;
         if saved.is_empty() {
             return;
@@ -443,22 +443,17 @@ impl Emitter<'_> {
         let start = self.code.len();
         let count = saved.len();
         let unwind_start = self.unwind.len();
-        let operations = if restore {
-            std::ptr::null_mut()
-        } else {
-            self.unwind.reserve(count);
-            unsafe { self.unwind.as_mut_ptr().add(unwind_start) }
-        };
+        self.unwind.reserve(count);
         self.code.reserve(9 * count);
         unsafe {
             let bytes = encode_preserved_registers(
-                saved.as_ptr(), count, start, operations, self.code.as_mut_ptr().add(start),
+                saved.as_ptr(), count, start, self.unwind.as_mut_ptr().add(unwind_start),
+                self.code.as_mut_ptr().add(start),
             );
             self.code.set_len(start + bytes);
-            if !restore {
-                self.unwind.set_len(unwind_start + count);
-                self.prolog = (start + bytes) as u8;
-            }
+            self.unwind.set_len(unwind_start + count);
+            self.prolog = (start + bytes) as u8;
         }
     }
+
 }

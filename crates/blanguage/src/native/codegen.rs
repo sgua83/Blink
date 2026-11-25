@@ -95,8 +95,6 @@ struct CodeTail {
 unsafe extern "C" {
     #[link_name = "bootstrap.x64_instruction::allocate_frame"]
     fn encode_stack_frame(frame: u32, output: *mut u8) -> FrameEncoding;
-    #[link_name = "bootstrap.x64_instruction::release_frame"]
-    fn encode_frame_release(frame: u32, output: *mut u8) -> u64;
     #[link_name = "bootstrap.x64_instruction::stack_register"]
     fn encode_stack_register(register: u8, restore: u32, output: *mut u8) -> u64;
     #[link_name = "bootstrap.x64_instruction::tail_capacity"]
@@ -229,12 +227,6 @@ impl Emitter<'_> {
         }
         self.prolog = self.code.len() as u8;
         self.unwind.push(UnwindOperation::allocate(self.prolog, frame));
-    }
-    fn release_frame(&mut self, frame: u32) {
-        self.emit_bytes(7, |output| unsafe { encode_frame_release(frame, output) });
-    }
-    fn pop_register(&mut self, register: u8) {
-        self.emit_bytes(2, |output| unsafe { encode_stack_register(register, 1, output) });
     }
     fn enter(&mut self, frame: u32) -> u32 {
         let saved = &self.frame.saved;
