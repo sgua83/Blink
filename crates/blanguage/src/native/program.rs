@@ -12,11 +12,11 @@ fn compile_stages(
     if program.target() == crate::ast::Target::Gpu {
         return Err("GPU 专属程序不能提交给 CPU".into());
     }
-    crate::parallel::try_map(worker, (0..program.stages().len()).collect(), |_| (),
+    crate::parallel::try_map(worker, 0..program.stages().len(), |_| (),
         |_, index| compile_stage(program, index)).map_err(|error| error.to_string())
 }
 fn compile_functions(worker: &crate::compiler::Worker, program: &Program) -> Result<Vec<(String, NativeCode)>, String> {
-    crate::parallel::try_map(worker, program.functions.iter().collect(), |_| (), |_, function| {
+    crate::parallel::try_map(worker, program.functions.iter(), |_| (), |_, function| {
         super::emit_function(function).map(|code| (function.name.clone(), code))
     }).map_err(|error| error.to_string())
 }

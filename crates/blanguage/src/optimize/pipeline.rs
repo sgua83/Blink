@@ -220,19 +220,21 @@ unsafe extern "C" fn batch(context: *mut c_void, joined_only: u32) -> u32 {
     let state = unsafe { &mut *context.cast::<ProgramState<'_>>() };
     let bindings = state.program.buffers.len();
     let mut stages = state.program.stages.iter_mut();
-    let work = if joined_only == 0 {
-        stages.collect()
+    let optimize = |_: &mut (), stage: &mut Stage| {
+        run_stage(stage, bindings);
+        Ok::<_, std::convert::Infallible>(())
+    };
+    let result = if joined_only == 0 {
+        crate::parallel::try_map(state.worker, stages, |_| (), optimize)
     } else {
         let mut next = 0;
-        std::mem::take(&mut state.joined).into_iter().map(|index| {
+        let joined = std::mem::take(&mut state.joined).into_iter().map(move |index| {
             let stage = stages.nth(index - next).unwrap();
             next = index + 1;
             stage
-        }).collect()
+        });
+        crate::parallel::try_map(state.worker, joined, |_| (), optimize)
     };
-    let result = crate::parallel::try_map(state.worker, work, |_| (), |_, stage| {
-        run_stage(stage, bindings); Ok::<_, std::convert::Infallible>(())
-    });
     match result {
         Ok(_) => 1,
         Err(crate::parallel::Error::Resource(error)) => { state.error = Some(error); 0 }

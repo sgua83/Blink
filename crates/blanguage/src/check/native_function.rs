@@ -1743,7 +1743,7 @@ fn resolve_views(world: &World, module: &mut Module, root: Option<&str>) -> Resu
 }
 
 fn publish_ready_views(world: &World, module: &mut Module, ready: &mut Vec<&str>) -> Result<()> {
-    let jobs = ready.drain(..).map(|name| view_work(module, Some(name)).unwrap()).collect();
+    let jobs: Vec<_> = ready.drain(..).map(|name| view_work(module, Some(name)).unwrap()).collect();
     let results = crate::parallel::try_map(&world.worker, jobs, Clone::clone, |worker, work| work.solve(worker))
         .map_err(|error| match error {
             crate::parallel::Error::Work(diagnostic) => diagnostic,

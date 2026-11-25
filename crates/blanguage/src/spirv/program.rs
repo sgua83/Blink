@@ -20,7 +20,7 @@ fn compile_stages(worker: &crate::compiler::Worker, program: &Program) -> Result
     check_shader_pages(program)?;
     let requirements = program.requirements();
     let buffers = program.execution_buffers();
-    let compiled = crate::parallel::try_map(worker, (0..program.stages().len()).collect(), |_| (),
+    let compiled = crate::parallel::try_map(worker, 0..program.stages().len(), |_| (),
         |_, index| compile_stage(program, index, requirements, buffers)).map_err(|error| error.to_string())?;
     let (layout, stages) = compiled.into_iter().unzip();
     Ok((ExecutionPlan::from_program(program, layout, requirements, buffers), stages))

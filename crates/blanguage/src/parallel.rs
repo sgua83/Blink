@@ -32,7 +32,7 @@ impl<E: fmt::Display> fmt::Display for Error<E> {
 }
 pub(crate) fn try_map<T, C, R, E>(
     current: &Worker,
-    jobs: Vec<T>,
+    jobs: impl IntoIterator<Item = T, IntoIter: ExactSizeIterator + Send>,
     context: impl Fn(&Worker) -> C + Sync,
     compile: impl Fn(&mut C, T) -> Result<R, E> + Sync,
 ) -> Result<Vec<R>, Error<E>>
@@ -41,11 +41,12 @@ where
     R: Send,
     E: Send,
 {
+    let jobs = jobs.into_iter();
     let count = jobs.len();
     if count == 0 {
         return Ok(Vec::new());
     }
-    let queue = Mutex::new(Some(jobs.into_iter().enumerate()));
+    let queue = Mutex::new(Some(jobs.enumerate()));
     #[cfg(feature = "compiler")]
     let shared = current
         .compiler()

@@ -1896,7 +1896,7 @@ fn converge_access(
 
     // Borrow sources, stored writes and initialization are fixed before this stage.
     // Only the access requirements propagated through calls change between rounds.
-    let direct = crate::parallel::try_map(worker, functions.iter().collect(), |_| (), |_, (name, function)| {
+    let direct = crate::parallel::try_map(worker, functions, |_| (), |_, (name, function)| {
         let state = &known[name];
         let parameters = residency::input_parameters(&function.parameters, function.input_width);
         let mut access=BTreeMap::new();
@@ -1992,7 +1992,7 @@ fn converge_access(
             group.iter().any(|name| components.contains_key(name))
         }).flat_map(|group| group.iter().copied()).collect::<Vec<_>>();
         ready.extend(peers);
-        let tasks = call_accesses.iter_mut().filter(|(name, _)| ready.contains(*name)).collect();
+        let tasks: Vec<_> = call_accesses.iter_mut().filter(|(name, _)| ready.contains(*name)).collect();
         let bases = crate::parallel::try_map(worker, tasks, Clone::clone, |worker, (&name, projections)| {
             // This function reads one immutable round of call contracts.
             let _required_scope = bounds::required_scope();
@@ -2196,7 +2196,7 @@ fn stored_outputs<'p>(
     // The write guards have the same bindings in every worker and already have
     // an owner in this pass. Mutable reads and loop values stay worker-local.
     let paths = evaluation.stored_paths.paths();
-    let results = crate::parallel::try_map(worker, stored.into_iter().collect(), |_| {
+    let results = crate::parallel::try_map(worker, stored, |_| {
         (BorrowEvaluation {
             function, state, known, expand_loops: true, deferred_reads: false,
             loop_bindings: None, values: BTreeMap::new(),
@@ -2238,8 +2238,7 @@ fn converge(
 ) -> Result<()> {
     let mut ready: BTreeSet<_> = functions.keys().collect();
     while !ready.is_empty() {
-        let tasks: Vec<_> = ready.into_iter().collect();
-        let changed = crate::parallel::try_map(worker, tasks, Clone::clone, |worker, name| {
+        let changed = crate::parallel::try_map(worker, ready, Clone::clone, |worker, name| {
             let function = functions[name];
             let state = &known[name];
             let loops = relation::Graph::loops(&loop_inputs[name], function, state.name, known);
@@ -2599,7 +2598,7 @@ fn solve<'a>(
     if !unknown.is_empty(){converge(worker, functions, &mut known, &loop_inputs, &unknown)?;}
     converge_initializations(worker, functions, &mut known)?;
     converge_access(worker, functions, &mut known, &owns_input)?;
-    let results = crate::parallel::try_map(worker, functions.iter().collect(), Clone::clone,
+    let results = crate::parallel::try_map(worker, functions, Clone::clone,
         |worker, (name, function)| finish_function(worker, name, function, &known),
     ).map_err(|error| borrow_worker_error(functions, error))?;
     let mut memory = BTreeMap::new();
@@ -2654,7 +2653,7 @@ fn prepare_returned_writes(
     let mut source = evaluation();
     let parameters = std::cell::LazyCell::new(|| public_parameters(function));
     let locations = source.stored_locations(|| &parameters);
-    let writes = crate::parallel::try_map(worker, locations.iter().collect(), |_| evaluation(),
+    let writes = crate::parallel::try_map(worker, locations.iter(), |_| evaluation(),
         |evaluation, (origin, word)| {
             let position = content_position(origin, *word);
             let mut events = Vec::new();
@@ -2778,7 +2777,7 @@ fn finish_function(
     let history = prepare_returned_writes(worker, function, state, known, &paths)?;
     crate::parallel::try_map(
         worker,
-        function.uses.iter().collect(),
+        &function.uses,
         |_| {
             let evaluation = BorrowEvaluation {
                 function, state: state.loop_scope(), known, expand_loops: true, deferred_reads: false,
