@@ -630,6 +630,13 @@ struct LoopEntryDatasetHost {
 extern "C" void loop_entry_dataset(address context,usize index,u32 independent,u32 zero_valid,LoopEntryDatasetHost host) on cpu
     requires nonzero(host.independent) requires nonzero(host.root) requires nonzero(host.elements);
 
+enum LoopBackedgeKind:u32 { End=0; Other=1; Aggregate=2; Dataset=3; };
+enum LoopBackedgeOwnership:u32 { Owned=0; Moved=1; Other=2; };
+struct LoopBackedgeFacts { LoopBackedgeKind kind; LoopBackedgeOwnership entry; u32 same; };
+enum LoopBackedgeNeed:u32 { Done=0; Compare=1; AggregateOwnership=2; DatasetOwnership=3; };
+extern "C" LoopBackedgeNeed loop_backedge_next(address context,cfn<LoopBackedgeFacts,address> next) on cpu
+    requires nonzero(next);
+
 struct LoopSourceHost {
     cfn<void,address,usize> seed;
     cfn<void,address,usize,usize> add_edge;

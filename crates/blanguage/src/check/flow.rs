@@ -535,42 +535,40 @@ impl Builder<'_> {
             return Ok(());
         }
         let mut compatibility = None;
-        let names=self.env.keys().cloned().collect::<Vec<_>>();
-        for name in names {
-            let binding=self.env[&name].clone();
-            let entry=self.loop_contexts.last().unwrap().entry.env.get(&name).cloned();
-            if let Binding::OwnedValue(result) = &binding
-                && let Some(Binding::OwnedValue(before)) = entry.as_ref()
-            {
-                if result.ownership != before.ownership {
-                    return self.fail(
-                        span,
-                        "B227",
-                        "循环继续前须保有入口的结果所有权，不能在回边重复消费",
-                    );
-                }
-                if result.ownership == application::Ownership::Owned {
-                    let (path, inputs) = compatibility.get_or_insert_with(|| self.loop_compatibility_inputs(cursor.as_ref()));
+        let mut after: Option<String> = None;
+        loop {
+            use std::ops::Bound::{Excluded, Unbounded};
+            let mut scan = LoopBackedgeScan {
+                entry: &self.loop_contexts.last().unwrap().entry.env,
+                current: self.env.range::<str, _>((after.as_deref().map_or(Unbounded, Excluded), Unbounded)),
+                selected: None,
+            };
+            let need = unsafe { source_loop_backedge(ptr::from_mut(&mut scan).cast(), next_loop_backedge) };
+            let (name, pair) = match need {
+                LoopBackedgeNeed::Done => break,
+                LoopBackedgeNeed::Compare => scan.selected.unwrap(),
+                LoopBackedgeNeed::AggregateOwnership => return self.fail(
+                    span, "B227", "循环继续前须保有入口的结果所有权，不能在回边重复消费",
+                ),
+                LoopBackedgeNeed::DatasetOwnership => return self.fail(
+                    span, "B227", "循环继续前须保有入口的 dataset 所有权，不能在回边重复消费",
+                ),
+            };
+            // Only the requested pair crosses the mutable Builder call.
+            after = Some(name.to_owned());
+            let (path, inputs) = compatibility.get_or_insert_with(|| self.loop_compatibility_inputs(cursor.as_ref()));
+            match pair {
+                LoopBackedgePair::Aggregate(before, result) => {
+                    let (before, result) = (before.clone(), result.clone());
                     if !unsafe { self.world.call(before.loop_compatible(
-                        result, self, span, path, inputs,
+                        &result, self, span, path, inputs,
                     )).await }? {
                         return self.fail(span,"B266","循环回边尚未能合流结果载荷的分支与CPU／GPU存储位置；需要相同的资源生命周期");
                     }
                 }
-            }
-            let data=match &binding{Binding::ApplicationData(data)=>Some(data),Binding::DataReference(data)=>Some(&data.data),_=>None};
-            let before=match entry.as_ref(){Some(Binding::ApplicationData(data))=>Some(data),Some(Binding::DataReference(data))=>Some(&data.data),_=>None};
-            if let(Some(data),Some(before))=(data,before) {
-                if before.ownership != data.ownership {
-                    return self.fail(
-                        span,
-                        "B227",
-                        "循环继续前须保有入口的 dataset 所有权，不能在回边重复消费",
-                    );
-                }
-                if before.ownership != application::Ownership::Moved {
-                    let (path, inputs) = compatibility.get_or_insert_with(|| self.loop_compatibility_inputs(cursor.as_ref()));
-                    if !unsafe { self.world.call(before.loop_compatible(data, self, span, path, inputs)).await }? {
+                LoopBackedgePair::Dataset(before, data) => {
+                    let (before, data) = (before.clone(), data.clone());
+                    if !unsafe { self.world.call(before.loop_compatible(&data, self, span, path, inputs)).await }? {
                         return self.fail(span,"B266","循环继续前须归还入口及其拥有子资源相同的 CPU／GPU 存储位置；在循环内完成配对的显式传输");
                     }
                 }
@@ -755,6 +753,73 @@ struct LoopSource<'a> {
     entry: Cow<'a, Borrow>,
     definition: Borrow,
     direct: bool,
+}
+
+#[repr(u32)]
+enum LoopBackedgeKind { End, Other, Aggregate, Dataset }
+
+#[repr(u32)]
+enum LoopBackedgeOwnership { Owned, Moved, Other }
+
+#[repr(C)]
+struct LoopBackedgeFacts {
+    kind: LoopBackedgeKind,
+    entry: LoopBackedgeOwnership,
+    same: u32,
+}
+
+#[repr(u32)]
+#[allow(dead_code)] // B returns these discriminants.
+enum LoopBackedgeNeed { Done, Compare, AggregateOwnership, DatasetOwnership }
+
+enum LoopBackedgePair<'a> {
+    Aggregate(&'a owned_values::OwnedValue, &'a owned_values::OwnedValue),
+    Dataset(&'a application::Data, &'a application::Data),
+}
+
+struct LoopBackedgeScan<'a> {
+    entry: &'a BTreeMap<String, Binding>,
+    current: std::collections::btree_map::Range<'a, String, Binding>,
+    selected: Option<(&'a str, LoopBackedgePair<'a>)>,
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.function_body::loop_backedge_next"]
+    fn source_loop_backedge(
+        context: *mut c_void, next: unsafe extern "C" fn(*mut c_void) -> LoopBackedgeFacts,
+    ) -> LoopBackedgeNeed;
+}
+
+fn loop_backedge_dataset(binding: &Binding) -> Option<&application::Data> {
+    match binding {
+        Binding::ApplicationData(data) => Some(data),
+        Binding::DataReference(reference) => Some(&reference.data),
+        _ => None,
+    }
+}
+
+unsafe extern "C" fn next_loop_backedge(context: *mut c_void) -> LoopBackedgeFacts {
+    let scan = unsafe { &mut *context.cast::<LoopBackedgeScan<'_>>() };
+    let Some((name, current)) = scan.current.next() else {
+        return LoopBackedgeFacts { kind: LoopBackedgeKind::End, entry: LoopBackedgeOwnership::Other, same: 0 };
+    };
+    let entry = scan.entry.get(name);
+    let (kind, pair, before, after) = match (entry, current) {
+        (Some(Binding::OwnedValue(before)), Binding::OwnedValue(after)) =>
+            (LoopBackedgeKind::Aggregate, LoopBackedgePair::Aggregate(before, after), &before.ownership, &after.ownership),
+        _ => match (entry.and_then(loop_backedge_dataset), loop_backedge_dataset(current)) {
+            (Some(before), Some(after)) =>
+                (LoopBackedgeKind::Dataset, LoopBackedgePair::Dataset(before, after), &before.ownership, &after.ownership),
+            _ => return LoopBackedgeFacts { kind: LoopBackedgeKind::Other, entry: LoopBackedgeOwnership::Other, same: 0 },
+        },
+    };
+    scan.selected = Some((name, pair));
+    let entry = match before {
+        application::Ownership::Owned => LoopBackedgeOwnership::Owned,
+        application::Ownership::Moved => LoopBackedgeOwnership::Moved,
+        application::Ownership::Borrowed | application::Ownership::Conditional(_) => LoopBackedgeOwnership::Other,
+    };
+    LoopBackedgeFacts { kind, entry, same: u32::from(before == after) }
 }
 
 struct LoopEntrySlots<'a> {

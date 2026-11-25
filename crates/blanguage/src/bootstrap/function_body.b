@@ -76,6 +76,22 @@ extern "C" void loop_entry_dataset(address context,usize index,u32 independent,u
     host.elements(context);
 }
 
+extern "C" LoopBackedgeNeed loop_backedge_next(address context,cfn<LoopBackedgeFacts,address> next) on cpu
+    requires nonzero(next) {
+    LoopBackedgeFacts binding=next(context);
+    while(binding.kind!=LoopBackedgeKind::End) {
+        if(binding.kind==LoopBackedgeKind::Aggregate) {
+            if(binding.same==0){return LoopBackedgeNeed::AggregateOwnership;}
+            if(binding.entry==LoopBackedgeOwnership::Owned){return LoopBackedgeNeed::Compare;}
+        }else if(binding.kind==LoopBackedgeKind::Dataset) {
+            if(binding.same==0){return LoopBackedgeNeed::DatasetOwnership;}
+            if(binding.entry!=LoopBackedgeOwnership::Moved){return LoopBackedgeNeed::Compare;}
+        }
+        binding=next(context);
+    }
+    return LoopBackedgeNeed::Done;
+}
+
 extern "C" void close_loop_sources(address context,usize inputs,usize edges,usize exits,LoopSourceHost host) on cpu
     requires nonzero(host.seed) requires nonzero(host.add_edge) requires nonzero(host.classify)
     requires nonzero(host.seal) requires nonzero(host.publish)
