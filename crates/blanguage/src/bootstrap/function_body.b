@@ -2300,3 +2300,54 @@ extern "C" TilePlaceStep tile_place_step(LocalCursor cursor,TilePlaceFacts facts
  if(cursor.phase==2||cursor.phase==3||cursor.phase==4){return TilePlaceStep(LocalCursor(5),TilePlaceNeed::Bound);}
  return TilePlaceStep(cursor,facts.bounded!=0?TilePlaceNeed::Publish:TilePlaceNeed::Invalid);
 }
+
+enum LoopProgress:u32 { Unchanged=0; Added=1; Lost=2; };
+
+LoopProgress compare_loop_fact(u32 entry, u32 current) on cpu {
+    if (entry == current) { return LoopProgress::Unchanged; }
+    return entry == 0 ? LoopProgress::Added : LoopProgress::Lost;
+}
+
+LoopProgress initial_loop_resources(LoopResource entry, LoopResource current, address context, LoopProgressHost host) on cpu
+    requires nonzero(host.payload) {
+    LoopProgress progress = compare_loop_fact(entry.owned, current.owned);
+    if (progress == LoopProgress::Lost) { return progress; }
+
+    usize count = entry.count > current.count ? entry.count : current.count;
+    usize index = 0u64;
+    while (index < count) {
+        LoopPayload before = LoopPayload(0, LoopResource(unsafe_address(0u64), 0u64, 0, 0));
+        LoopPayload after = before;
+        if (index < entry.count) { before = host.payload(context, entry.children, index); }
+        if (index < current.count) { after = host.payload(context, current.children, index); }
+        index += 1u64;
+        LoopProgress payload = compare_loop_fact(entry.variant & before.present, current.variant & after.present);
+        if (payload == LoopProgress::Lost) { return payload; }
+        if (payload == LoopProgress::Added) { progress = payload; }
+        LoopProgress child = initial_loop_resources(before.resource, after.resource, context, host);
+        if (child == LoopProgress::Lost) { return child; }
+        if (child == LoopProgress::Added) { progress = child; }
+    }
+    return progress;
+}
+
+extern "C" u32 initial_loop_progress(address context, LoopProgressHost host) on cpu
+    requires nonzero(host.next) requires nonzero(host.boolean_at) requires nonzero(host.payload) {
+    u32 added = 0;
+    LoopProgressBinding binding = host.next(context);
+    while (binding.present != 0) {
+        usize component = 0u64;
+        while (component < binding.components) {
+            LoopFactPair value = host.boolean_at(context, component);
+            component += 1u64;
+            LoopProgress boolean = compare_loop_fact(value.entry, value.current);
+            if (boolean == LoopProgress::Lost) { return 0; }
+            if (boolean == LoopProgress::Added) { added = 1; }
+        }
+        LoopProgress resources = initial_loop_resources(binding.entry, binding.current, context, host);
+        if (resources == LoopProgress::Lost) { return 0; }
+        if (resources == LoopProgress::Added) { added = 1; }
+        binding = host.next(context);
+    }
+    return added;
+}

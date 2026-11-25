@@ -1,6 +1,133 @@
 //! 顺序块合成真实退出边；循环结束只合流条件失败与 break 的状态。
 use super::*;
 use super::view::{Borrow,InputSlot,LoopInput,data_at,data_at_mut};
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct LoopResource {
+    children: *const std::ffi::c_void,
+    count: usize,
+    variant: u32,
+    owned: u32,
+}
+
+impl LoopResource {
+    const EMPTY: Self = Self { children: std::ptr::null(), count: 0, variant: 0, owned: 0 };
+
+    fn dataset(builder: &Builder<'_>, data: &application::Data) -> Self {
+        Self { owned: u32::from(builder.resolve_ownership(&data.ownership, None) == application::Ownership::Owned), ..Self::EMPTY }
+    }
+
+    fn aggregate(builder: &Builder<'_>, value: &owned_values::OwnedValuePayload) -> Self {
+        let variant = value.value.ty.has_variants();
+        Self {
+            children: value.payloads.as_ptr().cast(),
+            count: value.payloads.len(),
+            variant: u32::from(variant),
+            owned: u32::from(variant && builder.resolve_ownership(&value.ownership, None) == application::Ownership::Owned),
+        }
+    }
+}
+
+#[repr(C)]
+struct LoopPayload { present: u32, resource: LoopResource }
+
+#[repr(C)]
+struct LoopProgressBinding { present: u32, components: usize, entry: LoopResource, current: LoopResource }
+
+#[repr(C)]
+struct LoopFactPair { entry: u32, current: u32 }
+
+#[repr(C)]
+struct LoopProgressHost {
+    next: unsafe extern "C" fn(*mut std::ffi::c_void) -> LoopProgressBinding,
+    boolean_at: unsafe extern "C" fn(*const std::ffi::c_void, usize) -> LoopFactPair,
+    payload: unsafe extern "C" fn(*const std::ffi::c_void, *const std::ffi::c_void, usize) -> LoopPayload,
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.function_body::initial_loop_progress"]
+    fn initial_loop_progress(context: *mut std::ffi::c_void, host: LoopProgressHost) -> u32;
+}
+
+#[derive(Clone, Copy)]
+enum LoopScalars<'a> {
+    Value(&'a Value),
+    Place(&'a Ty, &'a bounds::Proof),
+    None,
+}
+
+impl LoopScalars<'_> {
+    fn ty(&self) -> Option<&Ty> {
+        match self {
+            Self::Value(value) => Some(&value.ty),
+            Self::Place(ty, _) => Some(ty),
+            Self::None => None,
+        }
+    }
+
+    fn boolean(&self, component: usize) -> u32 {
+        if !self.ty().and_then(|ty| ty.components.get(component)).is_some_and(|(kind, _)| *kind == Scalar::Bool) {
+            return 0;
+        }
+        let value = match self {
+            Self::Value(value) => bounds::Proof::known_value_boolean_component(value, component),
+            Self::Place(_, proof) => proof.known_boolean_component(component),
+            Self::None => return 0,
+        };
+        value.map_or(0, |(bits, _)| 1 + bits as u32)
+    }
+}
+
+struct LoopProgressQuery<'a, 'world> {
+    builder: &'a Builder<'world>,
+    entry: std::collections::btree_map::Iter<'a, String, Binding>,
+    scalars: [LoopScalars<'a>; 2],
+}
+
+fn loop_progress_view<'a>(builder: &Builder<'_>, binding: Option<&'a Binding>) -> (LoopScalars<'a>, LoopResource) {
+    match binding {
+        Some(Binding::ApplicationData(data)) => (LoopScalars::None, LoopResource::dataset(builder, data)),
+        Some(Binding::OwnedValue(value)) => (LoopScalars::Value(&value.value), LoopResource::aggregate(builder, value)),
+        Some(Binding::Owned(value)) => (LoopScalars::Place(value.place.ty(), &value.proof), LoopResource::EMPTY),
+        Some(Binding::Value(value)) => (LoopScalars::Value(value), LoopResource::EMPTY),
+        _ => (LoopScalars::None, LoopResource::EMPTY),
+    }
+}
+
+unsafe extern "C" fn next_loop_progress(context: *mut std::ffi::c_void) -> LoopProgressBinding {
+    let query = unsafe { &mut *context.cast::<LoopProgressQuery<'_, '_>>() };
+    let Some((name, binding)) = query.entry.next() else {
+        return LoopProgressBinding { present: 0, components: 0, entry: LoopResource::EMPTY, current: LoopResource::EMPTY };
+    };
+    let (entry_scalars, entry) = loop_progress_view(query.builder, Some(binding));
+    let (current_scalars, current) = loop_progress_view(query.builder, query.builder.env.get(name));
+    query.scalars = [entry_scalars, current_scalars];
+    let components = query.scalars.iter().filter_map(LoopScalars::ty).map(|ty| ty.components.len()).max().unwrap_or(0);
+    LoopProgressBinding { present: 1, components, entry, current }
+}
+
+unsafe extern "C" fn loop_progress_boolean_at(context: *const std::ffi::c_void, component: usize) -> LoopFactPair {
+    let query = unsafe { &*context.cast::<LoopProgressQuery<'_, '_>>() };
+    let [entry, current] = query.scalars.map(|scalars| scalars.boolean(component));
+    LoopFactPair { entry, current }
+}
+
+unsafe extern "C" fn loop_progress_payload(
+    context: *const std::ffi::c_void,
+    children: *const std::ffi::c_void,
+    index: usize,
+) -> LoopPayload {
+    let query = unsafe { &*context.cast::<LoopProgressQuery<'_, '_>>() };
+    let payload = unsafe { &*children.cast::<Option<Box<returns::Returned>>>().add(index) };
+    let resource = match payload.as_deref() {
+        Some(returns::Returned::Dataset(data)) => LoopResource::dataset(query.builder, data),
+        Some(returns::Returned::OwnedValue(value)) => LoopResource::aggregate(query.builder, value),
+        _ => LoopResource::EMPTY,
+    };
+    LoopPayload { present: u32::from(payload.is_some()), resource }
+}
+
 impl Place {
     pub(super) fn join_position_range(&mut self, other: &Self) {
         match (self, other) {
@@ -462,13 +589,19 @@ impl Builder<'_> {
         if !initial {
             return Ok(false);
         }
-        #[derive(PartialEq,Eq,PartialOrd,Ord)]enum Known{Owned(Vec<usize>),Payload(Vec<usize>),Boolean(usize,bool)}
-        fn collect(model:&returns::Returned,path:&mut Vec<usize>,values:&mut BTreeSet<Known>){match model{returns::Returned::Dataset(data)=>{if data.ownership==application::Ownership::Owned{values.insert(Known::Owned(path.clone()));}},returns::Returned::OwnedValue(value)=>{if value.value.ty.has_variants()&&value.ownership==application::Ownership::Owned{values.insert(Known::Owned(path.clone()));}for(index,payload)in value.payloads.iter().enumerate(){if let Some(payload)=payload{path.push(index);if value.value.ty.has_variants(){values.insert(Known::Payload(path.clone()));}collect(payload,path,values);path.pop();}}},_=>{}}}
-        let context=self.loop_contexts.last().unwrap();let known=|environment:&BTreeMap<String,Binding>|{let mut all=BTreeSet::new();for name in context.entry.env.keys(){
-            let scalar=match environment.get(name){Some(Binding::Value(value))=>Some((&value.ty,bounds::Proof::capture(value))),Some(Binding::Owned(value))=>Some((value.place.ty(),value.proof.clone())),Some(Binding::OwnedValue(value))=>Some((&value.value.ty,bounds::Proof::capture(&value.value))),_=>None};
-            if let Some((ty,proof))=scalar{for(component,(kind,_))in ty.components.iter().enumerate(){if *kind==Scalar::Bool && let Some(value)=proof.project(&[component],ty.components.len()).known_value(&Ty::scalar(Scalar::Bool)){all.insert((name.clone(),Known::Boolean(component,value[0]!=0)));}}}
-            let model=match environment.get(name){Some(Binding::ApplicationData(data))=>Some(returns::Returned::Dataset(data.clone())),Some(Binding::OwnedValue(value))=>Some(returns::Returned::OwnedValue(value.clone())),_=>None};if let Some(mut model)=model{self.resolve_owned_model(&mut model,None);let mut values=BTreeSet::new();collect(&model,&mut Vec::new(),&mut values);all.extend(values.into_iter().map(|value|(name.clone(),value)));}}all};let before=known(&context.entry.env);let after=known(&self.env);Ok(before.is_subset(&after)&&before!=after)
+        let mut query = LoopProgressQuery {
+            builder: self,
+            entry: self.loop_contexts.last().unwrap().entry.env.iter(),
+            scalars: [LoopScalars::None; 2],
+        };
+        let host = LoopProgressHost {
+            next: next_loop_progress,
+            boolean_at: loop_progress_boolean_at,
+            payload: loop_progress_payload,
+        };
+        Ok(unsafe { initial_loop_progress(std::ptr::from_mut(&mut query).cast(), host) } != 0)
     }
+
     pub(super) fn configure_initial_loop(
         &mut self,
         initial: bool,

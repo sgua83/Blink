@@ -570,3 +570,15 @@ extern "C" void recursive_domain(address context,usize component,RecursiveDomain
  requires nonzero(host.contains_domain) requires nonzero(host.origin) requires nonzero(host.same_origin) requires nonzero(host.inherit);
 extern "C" void recursive_apply(address context,RecursiveValue value,RecursiveHost host) on cpu
  requires nonzero(host.reg) requires nonzero(host.inherited) requires nonzero(host.mark_domains);
+
+struct LoopResource {address children;usize count;u32 variant;u32 owned;};
+struct LoopPayload {u32 present;LoopResource resource;};
+struct LoopProgressBinding {u32 present;usize components;LoopResource entry;LoopResource current;};
+struct LoopFactPair {u32 entry;u32 current;};
+struct LoopProgressHost {
+    cfn<LoopProgressBinding,address> next;
+    cfn<LoopFactPair,address,usize> boolean_at;
+    cfn<LoopPayload,address,address,usize> payload;
+};
+extern "C" u32 initial_loop_progress(address context, LoopProgressHost host) on cpu
+    requires nonzero(host.next) requires nonzero(host.boolean_at) requires nonzero(host.payload);

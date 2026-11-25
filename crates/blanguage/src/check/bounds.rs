@@ -1151,8 +1151,14 @@ impl Proof {
             })
             .collect()
     }
-    fn known_boolean_component(&self, component: usize) -> Option<(Bits, [bool; 2])> {
-        let cases = self.component_condition(component)?.cases.each_ref().map(Clause::possible);
+    pub(super) fn known_boolean_component(&self, component: usize) -> Option<(Bits, [bool; 2])> {
+        Self::known_boolean(self.component_condition(component)?)
+    }
+    pub(super) fn known_value_boolean_component(value: &Value, component: usize) -> Option<(Bits, [bool; 2])> {
+        Self::known_boolean(&Condition::component(value, component))
+    }
+    fn known_boolean(condition: &Condition) -> Option<(Bits, [bool; 2])> {
+        let cases = condition.cases.each_ref().map(Clause::possible);
         let bits = match cases { [false, true] => 1, [true, false] => 0, _ => return None };
         Some((bits, cases))
     }
