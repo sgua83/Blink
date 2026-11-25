@@ -324,25 +324,19 @@ impl Builder<'_> {
             return;
         }
         let states = &self.loop_contexts.last().unwrap().continues;
-        if states.is_empty() {
-            return;
-        }
-        let positions: BTreeSet<_> = states
-            .iter()
-            .flat_map(|state| state.initialized.iter().cloned())
-            .collect();
-        for position in positions {
-            if !states.iter().all(|state| {
-                self.position_initialized_in(&position, &state.initialized, &state.env,None)
-            }) {
-                continue;
-            }
-            exit.initialized.extend(array_iteration_position(
-                &position,index,
-                (begin.minimum()==begin.maximum()&&limit.minimum()==limit.maximum()).then(||(begin.minimum(),limit.minimum())),
-                begin.maximum()<limit.minimum(),
-            ));
-        }
+        let range = (begin.minimum() == begin.maximum() && limit.minimum() == limit.maximum())
+            .then(|| (begin.minimum(), limit.minimum()));
+        Position::initialize_array_exits(
+            states,
+            |state| &state.initialized,
+            Some(&|state, position| {
+                self.position_initialized_in(position, &state.initialized, &state.env, None)
+            }),
+            &mut exit.initialized,
+            index,
+            range,
+            begin.maximum() < limit.minimum(),
+        );
     }
 
     pub(super) fn defer_iteration_exit(
@@ -1017,16 +1011,6 @@ where
 }
 
 
-fn array_iteration_position(position:&Position,index:ownership::ApplicationIndex,range:Option<(u32,u32)>,nonempty:bool)->Vec<Position> {
-    let mut result=Vec::new();
-    if nonempty&&!position.uses_index(index){result.push(position.clone());}
-    if let Some((begin,limit))=range
-        &&let Position::Indexed(choices,at)=position&&*at==index
-        &&let Some(covered)=choices.get(begin as usize..limit as usize) {
-        result.extend(covered.iter().cloned());
-    }
-    result
-}
 pub(super) fn iteration_positions(iteration:&address::Iteration,states:&[BTreeSet<Position>])->BTreeSet<Position> {
     let mut result=BTreeSet::new();
     for(scope,words)in &iteration.outputs {
@@ -1036,12 +1020,10 @@ pub(super) fn iteration_positions(iteration:&address::Iteration,states:&[BTreeSe
             }
         }
     }
-    let positions=states.iter().flat_map(|state|state.iter().cloned()).collect::<BTreeSet<_>>();
-    for position in positions {
-        if states.iter().all(|state|position.initialized_by(state)){
-            result.extend(array_iteration_position(&position,iteration.index,iteration.range,iteration.nonempty));
-        }
-    }
+    Position::initialize_array_exits(
+        states, |state| state, None, &mut result,
+        iteration.index, iteration.range, iteration.nonempty,
+    );
     result
 }
 

@@ -98,11 +98,6 @@ extern "C" u32 prefix_ready(address value,u32 length,u32 field,address known,Hos
 extern "C" u32 uses_scope(address value,u64 owner,Host host) on cpu
     requires nonzero(host.inspect)
     requires nonzero(host.child);
-extern "C" u32 depends_index(address value,PositionIndex selected,Host host) on cpu
-    requires nonzero(host.inspect)
-    requires nonzero(host.child)
-    requires nonzero(host.identity_equal)
-    requires nonzero(host.presence_uses_index);
 struct InitializationHost {
     cfn<address,address,usize> positions;
     cfn<void,address,usize,address> retain_conditional;
@@ -130,3 +125,30 @@ extern "C" address merge_initialization(address exits, usize count, usize condit
     requires nonzero(initialization.retain_conditional)
     requires nonzero(initialization.append_conditional)
     requires nonzero(initialization.drop_positions);
+
+struct ArrayRange { u32 begin; u32 limit; u32 nonempty; };
+struct ArrayState { address known; u32 ready; };
+struct ArrayExitHost {
+    cfn<PositionItem,address> next;
+    cfn<ArrayState,address,usize,address> ensures memory(read) state;
+};
+extern "C" void array_initialization(address context, address output, usize count, ArrayRange range,
+    PositionIndex selected, Host host, ArrayExitHost exits) on cpu
+    requires nonzero(host.inspect)
+    requires nonzero(host.child)
+    requires nonzero(host.equal)
+    requires nonzero(host.identity_equal)
+    requires nonzero(host.presence_kind)
+    requires nonzero(host.presence_equal)
+    requires nonzero(host.presence_uses_index)
+    requires nonzero(host.contains)
+    requires nonzero(host.contains_parameter)
+    requires nonzero(host.contains_element)
+    requires nonzero(host.contains_input)
+    requires nonzero(host.iterate)
+    requires nonzero(host.next)
+    requires nonzero(host.drop_iterator)
+    requires nonzero(exits.next)
+    requires nonzero(exits.state)
+    requires nonzero(host.insert_set);
+

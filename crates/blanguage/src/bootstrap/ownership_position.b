@@ -319,11 +319,6 @@ extern "C" u32 prefix_ready(address value,u32 length,u32 field,address known,Hos
 extern "C" u32 uses_scope(address value,u64 owner,Host host) on cpu
     requires nonzero(host.inspect)
     requires nonzero(host.child) { return scope(value,owner,host) ? 1 : 0;}
-extern "C" u32 depends_index(address value,PositionIndex selected,Host host) on cpu
-    requires nonzero(host.inspect)
-    requires nonzero(host.child)
-    requires nonzero(host.identity_equal)
-    requires nonzero(host.presence_uses_index) { return uses_index(value,selected,host) ? 1 : 0;}
 address intersect(address a, address b, Host host) on cpu
     requires nonzero(host.inspect)
     requires nonzero(host.child)
@@ -406,3 +401,50 @@ extern "C" address merge_initialization(address exits, usize count, usize condit
     }
     return common;
 }
+
+extern "C" void array_initialization(address context, address output, usize count, ArrayRange range,
+    PositionIndex selected, Host host, ArrayExitHost exits) on cpu
+    requires nonzero(host.inspect)
+    requires nonzero(host.child)
+    requires nonzero(host.equal)
+    requires nonzero(host.identity_equal)
+    requires nonzero(host.presence_kind)
+    requires nonzero(host.presence_equal)
+    requires nonzero(host.presence_uses_index)
+    requires nonzero(host.contains)
+    requires nonzero(host.contains_parameter)
+    requires nonzero(host.contains_element)
+    requires nonzero(host.contains_input)
+    requires nonzero(host.iterate)
+    requires nonzero(host.next)
+    requires nonzero(host.drop_iterator)
+    requires nonzero(exits.next)
+    requires nonzero(exits.state)
+    requires nonzero(host.insert_set) {
+    while (true) {
+        PositionItem item = exits.next(context);
+        if (item.present == 0) { break; }
+        PositionNode shape = host.inspect(item.node);
+        bool whole = range.nonempty != 0 && !uses_index(item.node, selected, host);
+        bool elements = range.begin < range.limit && shape.kind == 10
+            && u64(range.limit) <= shape.count && same_index(shape.index, selected, host);
+        if (!whole && !elements) { continue; }
+
+        usize at = 0u64;
+        while (at < count) {
+            ArrayState state = exits.state(context, at, item.node);
+            bool ready = address_bits(state.known) == 0u64 ? state.ready != 0
+                : initialized(original(item.node), state.known, host);
+            if (!ready) { break; }
+            at += 1u64;
+        }
+        if (at != count) { continue; }
+        if (whole) { host.insert_set(output, item.node); }
+        if (elements) {
+            for (index in range.begin..range.limit) {
+                host.insert_set(output, host.child(item.node, u64(index)));
+            }
+        }
+    }
+}
+

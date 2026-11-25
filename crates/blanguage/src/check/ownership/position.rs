@@ -133,7 +133,6 @@ unsafe extern "C" {
     #[link_name="bootstrap.ownership_position::word_ready"] fn source_word_ready(value:Address,at:Index,word:u32,known:Address,host:Host)->u32;
     #[link_name="bootstrap.ownership_position::prefix_ready"] fn source_prefix(value:Address,length:u32,word:u32,known:Address,host:Host)->u32;
     #[link_name="bootstrap.ownership_position::uses_scope"] fn source_scope(value:Address,owner:u64,host:Host)->u32;
-    #[link_name="bootstrap.ownership_position::depends_index"] fn source_depends(value:Address,index:Index,host:Host)->u32;
     #[link_name = "bootstrap.ownership_position::merge_initialization"]
     fn source_merge_initialization(
         exits: Address, count: usize, condition_count: usize, host: Host,
@@ -152,7 +151,6 @@ pub(super) fn word_initialized(value:&Position,at:Option<ApplicationIndex>,word:
 }
 pub(super) fn prefix(value:&Position,length:u32,word:u32,known:&BTreeSet<Position>)->bool {unsafe{source_prefix(pointer(value),length,word,pointer(known),HOST)!=0}}
 pub(super) fn scope(value:&Position,owner:usize)->bool {unsafe{source_scope(pointer(value),owner as u64,HOST)!=0}}
-pub(super) fn depends(value:&Position,at:ApplicationIndex)->bool {unsafe{source_depends(pointer(value),index(Some(&at)),HOST)!=0}}
 #[repr(C)]
 struct InitializationHost {
     positions: unsafe extern "C" fn(Address, usize) -> Address,
@@ -214,3 +212,80 @@ pub(in crate::check) fn merge_initialization<T>(
     };
     *unsafe { Box::from_raw(result.cast::<BTreeSet<Position>>()) }
 }
+
+#[repr(C)]
+struct ArrayRange { begin: u32, limit: u32, nonempty: u32 }
+
+#[repr(C)]
+struct ArrayState { known: Address, ready: u32 }
+
+#[repr(C)]
+struct ArrayExitHost {
+    next: unsafe extern "C" fn(Address) -> Item,
+    state: unsafe extern "C" fn(Address, usize, Address) -> ArrayState,
+}
+
+type LivePosition<'a, T> = dyn Fn(&T, &Position) -> bool + 'a;
+
+struct ArrayExit<'a, T> {
+    states: &'a [T],
+    positions: fn(&T) -> &BTreeSet<Position>,
+    live: Option<&'a LivePosition<'a, T>>,
+    candidates: btree_set::IntoIter<&'a Position>,
+}
+
+unsafe extern "C" fn next_array_position<T>(context: Address) -> Item {
+    let exit = unsafe { &mut *context.cast::<ArrayExit<'_, T>>() };
+    match exit.candidates.next() {
+        Some(value) => Item { node: pointer(value), present: 1 },
+        None => Item { node: std::ptr::null_mut(), present: 0 },
+    }
+}
+
+unsafe extern "C" fn array_state<T>(context: Address, at: usize, item: Address) -> ArrayState {
+    let exit = unsafe { &*context.cast::<ArrayExit<'_, T>>() };
+    let state = &exit.states[at];
+    match exit.live {
+        Some(ready) => ArrayState {
+            known: std::ptr::null_mut(),
+            ready: u32::from(ready(state, unsafe { &*item.cast::<Position>() })),
+        },
+        None => ArrayState { known: pointer((exit.positions)(state)), ready: 0 },
+    }
+}
+
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.ownership_position::array_initialization"]
+    fn source_array_initialization(
+        context: Address, output: Address, count: usize, range: ArrayRange,
+        index: Index, host: Host, exits: ArrayExitHost,
+    );
+}
+
+impl Position {
+    pub(in crate::check) fn initialize_array_exits<T>(
+        states: &[T],
+        positions: fn(&T) -> &BTreeSet<Self>,
+        live: Option<&dyn Fn(&T, &Self) -> bool>,
+        output: &mut BTreeSet<Self>,
+        at: ApplicationIndex,
+        range: Option<(u32, u32)>,
+        nonempty: bool,
+    ) {
+        // Keep the original union's order and duplicate elimination while
+        // lending the keys. Only facts published to the exit own a value.
+        let candidates: BTreeSet<_> = states.iter().flat_map(positions).collect();
+        let mut context = ArrayExit { states, positions, live, candidates: candidates.into_iter() };
+        let (begin, limit) = range.unwrap_or((0, 0));
+        let range = ArrayRange { begin, limit, nonempty: u32::from(nonempty) };
+        unsafe {
+            source_array_initialization(
+                std::ptr::from_mut(&mut context).cast(), std::ptr::from_mut(output).cast(),
+                states.len(), range, index(Some(&at)), HOST,
+                ArrayExitHost { next: next_array_position::<T>, state: array_state::<T> },
+            );
+        }
+    }
+}
+
