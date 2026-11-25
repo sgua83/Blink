@@ -70,9 +70,6 @@ unsafe extern "C" fn emit(slot:Slot,fields:fact_fields::Fields) {
     // The B projection can still be borrowing the current mapped domain.
     unsafe { (*slot.cast::<Context<'_, '_>>()).facts.insert(fact_fields::key(fields)) };
 }
-unsafe extern "C" fn emit_alias(slot: Slot, fields: fact_fields::Fields) {
-    unsafe { frame(slot).output.as_mut().unwrap_unchecked().equalities.insert(fact_fields::key(fields)) };
-}
 #[repr(C)]
 struct Host {
     origin:unsafe extern "C" fn(Slot,usize)->Borrowed,
@@ -81,14 +78,13 @@ struct Host {
     boolean_cases:unsafe extern "C" fn(Slot)->u32,
     emit:unsafe extern "C" fn(Slot,fact_fields::Fields),
     compare:unsafe extern "C" fn(Borrowed,Borrowed)->i32,
-    emit_alias: unsafe extern "C" fn(Slot, fact_fields::Fields),
 }
 unsafe extern "C" {
     #[link_name="bootstrap.condition_graph::proof_facts"]
     fn project(context:Slot,input:Input,host:Host);
 }
 const HOST: Host = Host {
-    origin, range, rewind, next, boolean_cases, emit, compare: fact_fields::compare, emit_alias,
+    origin, range, rewind, next, boolean_cases, emit, compare: fact_fields::compare,
 };
 
 fn fields(proof:&Proof,value:Option<&Value>,component:usize,scalar:&Scalar,primary:Option<&ValueIdentity>,mode:u32,numeric_only:bool) -> Input {
@@ -134,7 +130,6 @@ struct Output<'a> {
     bindings: &'a OutputBindings,
     conditions: Vec<(usize, ValueIdentity)>,
     roots: Vec<Clause>,
-    equalities: Facts,
     aliases: Clause,
 }
 
@@ -154,10 +149,7 @@ unsafe extern "C" fn output_input(slot: Slot, component: usize, primary: *mut Va
 unsafe extern "C" fn finish_values(slot: Slot) {
     let context = unsafe { frame(slot) };
     let output = unsafe { context.output.as_mut().unwrap_unchecked() };
-    output.aliases = Clause::both(
-        &Clause::facts(std::mem::take(context.facts)),
-        &Clause::facts(std::mem::take(&mut output.equalities)),
-    );
+    output.aliases = Clause::facts(std::mem::take(context.facts));
 }
 
 unsafe extern "C" fn case_identity(slot: Slot, index: usize) -> Borrowed {
@@ -199,7 +191,7 @@ pub(super) fn output_aliases(proof: &Proof, registers: &[Reg], types: &[Scalar],
     let count = conditions.len();
     let output = Output {
         registers, types, bindings, conditions, roots,
-        equalities: Facts::new(), aliases: Clause::default(),
+        aliases: Clause::default(),
     };
     let mut values = Facts::new();
     let mut primary = std::mem::MaybeUninit::uninit();

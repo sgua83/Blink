@@ -1771,7 +1771,7 @@ extern "C" void execution_condition(address root,address context,ExecutionHost h
 
 extern "C" void proof_facts(address context,ProofFactsInput input,ProofFactsHost host) on cpu
  requires nonzero(host.origin) requires nonzero(host.range) requires nonzero(host.rewind) requires nonzero(host.next)
- requires nonzero(host.boolean_cases) requires nonzero(host.emit) requires nonzero(host.compare) requires nonzero(host.emit_alias) {
+ requires nonzero(host.boolean_cases) requires nonzero(host.emit) requires nonzero(host.compare) {
  if(input.scalar.kind==2||(input.scalar.kind==3&&input.numeric_only!=0)){return;}
  usize extra=input.mode==2||input.mode==3||(input.mode==1&&input.origins==0u64) ? 1u64 : 0u64;
  if(input.origins+extra==0u64){return;}
@@ -1805,7 +1805,7 @@ extern "C" void proof_facts(address context,ProofFactsInput input,ProofFactsHost
     else{
      FactView fact=internal_key(FactKind::Equal,identity,address(),0u64);
      fact.second=input.primary;
-     host.emit_alias(context,fact_equal(fact,order));
+     host.emit(context,fact_equal(fact,order));
     }
    }
   }else{
@@ -1841,7 +1841,7 @@ extern "C" void output_aliases(address context,usize components,usize conditions
  requires nonzero(host.input) requires nonzero(host.finish_values)
  requires nonzero(host.case_identity) requires nonzero(host.join_cases)
  requires nonzero(facts.origin) requires nonzero(facts.range) requires nonzero(facts.rewind) requires nonzero(facts.next)
- requires nonzero(facts.boolean_cases) requires nonzero(facts.emit) requires nonzero(facts.compare) requires nonzero(facts.emit_alias) {
+ requires nonzero(facts.boolean_cases) requires nonzero(facts.emit) requires nonzero(facts.compare) {
  usize component=0u64;
  while(component<components){
   ProofFactsInput input=host.input(context,component,primary);
