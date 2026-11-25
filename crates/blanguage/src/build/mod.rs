@@ -253,7 +253,7 @@ fn link_entry(
     borrowed: &[&crate::object::Object], declarations: &crate::Declarations,
 ) -> std::io::Result<bool> {
     crate::native::program::link_inputs(link, inputs, borrowed, |names| {
-        crate::linker::bind_root_contracts(names, 1, |_, name| {
+        crate::linker::bind_root_contracts(names, |name| {
             declarations.compiled_function(name).map(|(_, _, contract)| contract)
         })
     }).map_err(std::io::Error::other)

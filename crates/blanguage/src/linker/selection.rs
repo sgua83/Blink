@@ -34,30 +34,29 @@ pub(crate) struct RootView<'a> {
 }
 unsafe extern "C" {
     #[link_name = "bootstrap.native_select::bind_root_contracts"]
-    fn bind_native_roots(roots: *mut RootView<'_>, count: usize, context: *const c_void, sources: usize,
-        lookup: unsafe extern "C" fn(*const c_void, usize, Bytes) -> Bytes) -> usize;
+    fn bind_native_roots(roots: *mut RootView<'_>, count: usize, context: *const c_void,
+        lookup: unsafe extern "C" fn(*const c_void, Bytes) -> Bytes) -> usize;
 }
 
-unsafe extern "C" fn lookup_contract<'a, F>(context: *const c_void, index: usize, name: Bytes) -> Bytes
+unsafe extern "C" fn lookup_contract<'a, F>(context: *const c_void, name: Bytes) -> Bytes
 where
-    F: Fn(usize, &str) -> Option<&'a [u8]>,
+    F: Fn(&str) -> Option<&'a [u8]>,
 {
     let lookup = unsafe { &*context.cast::<F>() };
-    lookup(index, text(&name)).map_or(Bytes { bytes: std::ptr::null(), length: 0 }, borrowed)
+    lookup(text(&name)).map_or(Bytes { bytes: std::ptr::null(), length: 0 }, borrowed)
 }
 
 pub(crate) fn bind_root_contracts<'a, F>(
-    names: Vec<ModuleName<'a>>, source_count: usize, lookup: F,
+    names: Vec<ModuleName<'a>>, lookup: F,
 ) -> std::result::Result<Vec<RootView<'a>>, String>
 where
-    F: Fn(usize, &str) -> Option<&'a [u8]>,
+    F: Fn(&str) -> Option<&'a [u8]>,
 {
     let mut roots: Vec<_> = names.into_iter().map(|name| RootView {
         name, contract: borrowed(&[]), owner: PhantomData,
     }).collect();
     let missing = unsafe {
-        bind_native_roots(roots.as_mut_ptr(), roots.len(), std::ptr::from_ref(&lookup).cast(),
-            source_count, lookup_contract::<F>)
+        bind_native_roots(roots.as_mut_ptr(), roots.len(), std::ptr::from_ref(&lookup).cast(), lookup_contract::<F>)
     };
     if missing == 0 {
         Ok(roots)

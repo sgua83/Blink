@@ -267,9 +267,7 @@ pub(crate) fn compile_in(
 ) -> Result<crate::object::Object> {
     let prefix = identifier(prefix)?;
     let (header, binding, entry, functions, resources) = generate(program, &prefix, worker)?;
-    let mut imports = program.imports.clone();
-    imports.extend(program.resources.iter().flat_map(|resources| &resources.programs)
-        .flat_map(|(_, program)| program.imports.clone()));
+    let imports = program.imports.clone();
     let factory_entry_count = resources.as_ref().map_or(0, |_| functions.len());
     let emitted = crate::object::module_code(functions, factory_entry_count, &imports, &prefix)?;
     let mut exports: Vec<String> = ["create", "run", "destroy"]

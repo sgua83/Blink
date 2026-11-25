@@ -59,12 +59,8 @@ impl crate::Compiler {
             let mut image = compile_in(worker, source)?;
             let link = image.module_link();
             link_inputs(link, inputs, &[], |names| {
-                let programs = source.resources.as_deref()
-                    .map_or(&[][..], |resources| resources.programs.as_slice());
-                crate::linker::bind_root_contracts(names, 1 + programs.len(), |index, name| {
-                    // Source zero is the root. The other indices follow resource order.
-                    let imports = if index == 0 { &source.imports } else { &programs[index - 1].1.imports };
-                    imports.get(name).map(Vec::as_slice)
+                crate::linker::bind_root_contracts(names, |name| {
+                    source.imports.get(name).map(Vec::as_slice)
                 })
             })?;
             Ok::<_, String>(image)

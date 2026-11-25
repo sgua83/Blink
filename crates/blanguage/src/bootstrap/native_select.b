@@ -35,19 +35,13 @@ address root_address(address roots, u64 index) on cpu {
 }
 SelectRoot root_at(SelectParams params,u64 i) on cpu {return unsafe_position<SelectRoot>(root_address(params.roots,i));}
 
-extern "C" u64 bind_root_contracts(address roots,u64 count,address context,u64 sources,
-    cfn<BindingBytes,address,u64,BindingBytes> lookup) on cpu requires nonzero(lookup) {
+extern "C" u64 bind_root_contracts(address roots,u64 count,address context,
+    cfn<BindingBytes,address,BindingBytes> lookup) on cpu requires nonzero(lookup) {
     u64 index=0u64;
     while(index<count) {
         address slot=root_address(roots,index);
         SelectRoot root=unsafe_position<SelectRoot>(slot);
-        BindingBytes contract=empty();
-        u64 source=sources;
-        while(source!=0u64) {
-            source-=1u64;
-            contract=lookup(context,source,root.name);
-            if(address_bits(contract.bytes)!=0u64){break;}
-        }
+        let contract=lookup(context,root.name);
         if(address_bits(contract.bytes)==0u64){return index+1u64;}
         root.contract=contract;
         unsafe_position<SelectRoot>(slot)=root;

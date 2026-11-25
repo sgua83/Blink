@@ -22,8 +22,8 @@ struct SelectFrame {u64 section;u64 present;u64 keep;u64 mapping;};
 struct SelectLocal {BindingBytes slot;BindingBytes name;};
 struct SelectRuntime {BindingBytes name;u64 used;};
 struct SelectRoot {BindingBytes name;BindingBytes contract;};
-extern "C" u64 bind_root_contracts(address roots,u64 count,address context,u64 sources,
-    cfn<BindingBytes,address,u64,BindingBytes> lookup) on cpu requires nonzero(lookup);
+extern "C" u64 bind_root_contracts(address roots,u64 count,address context,
+    cfn<BindingBytes,address,BindingBytes> lookup) on cpu requires nonzero(lookup);
 struct SelectView {
     address objects;u64 object_count;address sections;address relocations;
     address symbols;address imports;address exports;address code;address frames;address nodes;address pending;

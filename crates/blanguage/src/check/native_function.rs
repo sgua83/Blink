@@ -2338,8 +2338,7 @@ async fn finalize(
     let mut resources = std::mem::take(&mut module.resources);
     let mut pending_programs = std::mem::take(&mut module.programs)
         .into_iter().map(Option::unwrap).collect::<Vec<_>>();
-    // Standalone entries need per-program imports. Static objects use Finalized.imports.
-    let keep_program_imports = !programs.is_empty();
+    let standalone = !programs.is_empty();
     let mut programs = programs.iter_mut().map(|(program, scopes)| (&mut **program, &**scopes, None))
         .chain(pending_programs.iter_mut().map(|pending|
             (&mut pending.program, &pending.scopes, pending.deferred_source.as_deref())))
@@ -2353,6 +2352,10 @@ async fn finalize(
         .map(|(name, unit)| (name, unit.unwrap()))
         .collect::<BTreeMap<_, _>>();
     dependencies::complete(&units, &mut reachable, owner);
+    if standalone {
+        // Carry the external contracts of the whole emitted code closure.
+        imports.retain(|name, _| reachable.contains(name));
+    }
     let fallible=units.iter().filter_map(|(name,unit)|unit.contract.fallible.then(||name.clone())).collect::<BTreeSet<_>>();
     if let Some((body,model))=&mut root {
         lower_dataset_borrows(body,model,&|callee|&units[callee].contract);
@@ -2362,7 +2365,9 @@ async fn finalize(
         if unit.c_abi && unit.contract.frame {
             return unit.source.fail(unit.span, "B263", "C入口的实际调用闭包需要Frame；C ABI不能隐式取得执行上下文");
         }
-        if unit.function.is_none() || owner.is_some_and(|owner| unit.module != owner) {
+        if (unit.function.is_none() || owner.is_some_and(|owner| unit.module != owner))
+            && (!standalone || reachable.contains(name))
+        {
             imports.insert(name.clone(), unit.contract.bytes());
         }
     }
@@ -2378,10 +2383,6 @@ async fn finalize(
         if let Some(source) = source {
             crate::optimize::optimize(program, &world.worker)
                 .map_err(|error| crate::compiler::diagnostic(source, error))?;
-        }
-        if keep_program_imports {
-            program.imports = std::mem::take(names).into_iter().filter_map(|name|
-                imports.get(&name).map(|contract| (name, contract.clone()))).collect();
         }
     }
     drop(programs);
@@ -2456,6 +2457,7 @@ pub(super) async fn finish_program(
     let mut finalized = unsafe { world.call(finalize(world, module, BTreeSet::new(), None, None, &mut [(&mut program, &mut scopes)])).await }?;
     application::lower_sdk_resources(&mut program, &mut finalized.functions, &mut finalized.resources);
     program.functions = finalized.functions.into();
+    program.imports = finalized.imports;
     if program.native_frame.is_some() || !finalized.resources.types.is_empty() || !finalized.resources.programs.is_empty(){
         program.resources=Some(Box::new(finalized.resources));
     }
