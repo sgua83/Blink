@@ -1,5 +1,5 @@
 //! Windows encoding and caller-owned buffers for the shared B path algorithms.
-use std::{ffi::{OsStr, OsString}, io, mem::MaybeUninit, os::windows::ffi::{OsStrExt, OsStringExt}, path::{Path, PathBuf}};
+use std::{cmp::Ordering, ffi::{OsStr, OsString}, io, mem::MaybeUninit, os::windows::ffi::{OsStrExt, OsStringExt}, path::{Path, PathBuf}};
 
 #[derive(Clone, Copy)]
 #[repr(C)]
@@ -26,6 +26,8 @@ unsafe extern "C" {
     fn absolute_path(path: *const u16, units: usize) -> NativePath;
     #[link_name = "blink.windows.path_core::canonicalize_path"]
     fn canonicalize_path(path: *const u16, units: usize, scratch: *mut u16, capacity: u32) -> NativePath;
+    #[link_name = "blink.windows.path_core::canonicalize_output_directory"]
+    fn canonicalize_output_directory(path: *const u16, units: usize, scratch: *mut u16, capacity: u32, directory_mode: *mut u32) -> NativePath;
     #[link_name = "blink.windows.path_core::release_native_path"]
     fn release_native_path(path: NativePath);
     #[link_name = "blink.windows.path_core::module_tail"]
@@ -125,4 +127,66 @@ pub fn canonicalize(path: &Path) -> io::Result<PathBuf> {
         canonicalize_path(units.as_ptr(), units.len() - 1, scratch.as_mut_ptr().cast(), scratch.len() as u32)
     };
     native_path_result(resolved)
+}
+
+#[link(name = "kernel32")]
+unsafe extern "system" {
+    fn CompareStringOrdinal(left: *const u16, left_units: i32, right: *const u16, right_units: i32, ignore_case: i32) -> i32;
+}
+
+pub(crate) struct OutputDestination {
+    directory: PathBuf,
+    case_sensitive: bool,
+    name: Vec<u16>,
+}
+
+impl Ord for OutputDestination {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.directory.cmp(&other.directory)
+            .then_with(|| self.case_sensitive.cmp(&other.case_sensitive))
+            .then_with(|| {
+                if self.case_sensitive {
+                    self.name.cmp(&other.name)
+                } else {
+                    // Both names are from the Windows output namespace and fit a counted UTF-16 string.
+                    unsafe { CompareStringOrdinal(self.name.as_ptr(), self.name.len() as i32,
+                        other.name.as_ptr(), other.name.len() as i32, 1) }.cmp(&2)
+                }
+            })
+    }
+}
+impl PartialOrd for OutputDestination {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> { Some(self.cmp(other)) }
+}
+impl PartialEq for OutputDestination {
+    fn eq(&self, other: &Self) -> bool { self.cmp(other) == Ordering::Equal }
+}
+impl Eq for OutputDestination {}
+
+pub(crate) fn output_destination(path: &Path) -> io::Result<OutputDestination> {
+    let name = path.file_name().ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "产物路径缺少文件名"))?;
+    let mut directory = path.parent().unwrap();
+    let mut missing = vec![name];
+    let mut scratch = [MaybeUninit::<u16>::uninit(); 512];
+    loop {
+        let units = path_units(directory.as_os_str())?;
+        let mut mode = 0;
+        let resolved = unsafe {
+            canonicalize_output_directory(units.as_ptr(), units.len() - 1, scratch.as_mut_ptr().cast(), scratch.len() as u32, &mut mode)
+        };
+        match native_path_result(resolved) {
+            Ok(directory) => {
+                let name = missing.into_iter().rev().enumerate().flat_map(|(index, part)| {
+                    (index != 0).then_some(u16::from(b'\\')).into_iter().chain(part.encode_wide())
+                }).collect();
+                return Ok(OutputDestination { directory, name, case_sensitive: mode & 1 != 0 });
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                let Some((parent, name)) = directory.parent().zip(directory.file_name()) else { return Err(error); };
+                missing.push(name);
+                directory = parent;
+            }
+            Err(error) => return Err(error),
+        }
+    }
 }

@@ -17,7 +17,7 @@ pub struct Unit<'a> {
     pub root: &'a Path,
     pub kind: UnitKind<'a>,
     pub dependencies: &'a [Dependency<'a>],
-    /// 对象为文件路径；入口映像为原build_entry输出目录。
+    /// 对象为文件路径；入口映像为原build_entry输出目录。图内每个正式文件只属于一个单元。
     pub output: &'a Path,
 }
 pub enum Output {
@@ -36,7 +36,7 @@ impl Output {
 struct Prepared<'a> {
     path: PathBuf,
     root: PathBuf,
-    output: PathBuf,
+    artifact: PathBuf,
     kind: UnitKind<'a>,
 }
 #[repr(C)]
@@ -297,10 +297,10 @@ impl GraphExecution<'_, '_> {
         let unit = &self.prepared[index];
         self.compiler.execute(|worker| match unit.kind {
             UnitKind::Object(kind) => super::object::compile(worker, &unit.path, &unit.root,
-                providers.iter().map(Provider::object), kind, &unit.output, Some(&self.inputs[index]))
+                providers.iter().map(Provider::object), kind, &unit.artifact, Some(&self.inputs[index]))
                 .map(|value| Output::Object(Arc::new(value))),
             UnitKind::Entry { entry, target } => super::compile_in(worker, &unit.path, &unit.root,
-                entry, target, &unit.output, Vec::new(), &providers.iter().map(Provider::object).collect::<Vec<_>>(),
+                entry, target, super::EntryOutput::Artifact(&unit.artifact), Vec::new(), &providers.iter().map(Provider::object).collect::<Vec<_>>(),
                 Some(&self.inputs[index]), self.entry_checks[index].as_deref()).map(Output::Entry),
         }).map_err(|error| match error {
             crate::parallel::Error::Work(error) => error,
@@ -395,13 +395,28 @@ impl Compiler {
         if units.is_empty() { return Ok(Vec::new()); }
         let (prepared, inputs, dependency_plan) = self.execute(|_| {
         let dependency_plan = dependency_plan(units)?;
-        let prepared = units.iter().map(|unit| {
+        let mut destinations = BTreeMap::new();
+        let prepared = units.iter().enumerate().map(|(index, unit)| {
             let header = source_path::canonicalize(&source_path::with_extension(unit.path, u16::from(b'h')))?;
             let extension: Vec<_> = unit.path.extension().unwrap_or_else(|| OsStr::new("b")).encode_wide().collect();
             let path = source_path::with_extension_units(&header, &extension);
-            Ok(Prepared { path, root: source_path::canonicalize(unit.root)?, output: source_path::absolute(unit.output)?,
-                kind: unit.kind })
+            let root = source_path::canonicalize(unit.root)?;
+            let output = source_path::absolute(unit.output)?;
+            let artifact = match unit.kind {
+                UnitKind::Object(_) => output,
+                UnitKind::Entry { entry, target } => {
+                    super::entry_artifact(&path, &root, entry, super::entry_backend(target)?, &output)
+                }
+            };
+            if units.len() > 1 {
+                let destination = source_path::output_destination(&artifact)?;
+                if let Some(first) = destinations.insert(destination, index) {
+                    return Err(format!("构建图单元 {first} 与 {index} 使用同一产物路径：{}", artifact.display()).into());
+                }
+            }
+            Ok(Prepared { path, root, artifact, kind: unit.kind })
         }).collect::<Result<Vec<_>>>()?;
+        drop(destinations);
         let mut capture = Capture::default();
         let headers = prepared.iter().map(|unit| capture.header(&unit.path))
             .collect::<crate::ast::Result<Vec<_>>>()?;

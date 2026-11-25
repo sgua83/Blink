@@ -60,21 +60,42 @@ impl crate::Compiler {
         &self, path: &Path, root: &Path, entry: &str, target: Target, output: &Path,
         dependencies: Vec<crate::object::Input>,
     ) -> Result<Compilation> {
-        self.execute(|worker| compile_in(worker, path, root, entry, target, output, dependencies, &[], None, None))
+        self.execute(|worker| compile_in(worker, path, root, entry, target, EntryOutput::Directory(output), dependencies, &[], None, None))
             .map_err(|error| match error {
                 crate::parallel::Error::Work(error) => error,
                 crate::parallel::Error::Resource(error) => Box::new(error) as Box<dyn std::error::Error + Send + Sync>,
             })
     }
 }
+enum EntryOutput<'a> {
+    Directory(&'a Path),
+    Artifact(&'a Path),
+}
+
+fn entry_backend(target: Target) -> Result<&'static str> {
+    match target {
+        Target::Cpu => Ok("cpu"),
+        Target::Gpu => Ok("gpu"),
+        Target::Compute => Err("构建映像必须选择实际CPU或GPU后端".into()),
+    }
+}
+
+fn entry_artifact(path: &Path, root: &Path, entry: &str, target: &str, output: &Path) -> PathBuf {
+    let request = [
+        path.as_os_str().as_encoded_bytes().into(),
+        root.as_os_str().as_encoded_bytes().into(),
+        entry.as_bytes().into(),
+        target.as_bytes().into(),
+    ];
+    output.join(format!("{}.blbi", hash::hex(&hash::fields(&request))))
+}
+
 fn compile_in(
     worker: &crate::compiler::Worker, path: &Path, root: &Path, entry: &str,
-    target: Target, output: &Path, dependencies: Vec<crate::object::Input>, borrowed: &[&crate::object::Object], inputs: Option<&Inputs>,
+    target: Target, output: EntryOutput<'_>, dependencies: Vec<crate::object::Input>, borrowed: &[&crate::object::Object], inputs: Option<&Inputs>,
     entry_checks: Option<&crate::frontend::EntryChecks>,
 ) -> Result<Compilation> {
-    if target == Target::Compute {
-        return Err("构建映像必须选择实际CPU或GPU后端".into());
-    }
+    let target_name = entry_backend(target)?;
     let path = if inputs.is_some() { path.into() } else { crate::source_path::canonicalize(path)? };
     let root = if inputs.is_some() { root.into() } else { crate::source_path::canonicalize(root)? };
     let mut imports = crate::module::Imports::inputs(&dependencies).map_err(|e| std::io::Error::other(e.to_string()))?;
@@ -82,14 +103,10 @@ fn compile_in(
     let imported = if dependencies.is_empty() && borrowed.is_empty() { None } else { Some(&imports) };
     let (world, module, _) = crate::read_world(&path, &root, imported, &[], worker, inputs,
         Some(std::cell::RefCell::new(std::collections::BTreeSet::new())))?;
-    let target_name = if target == Target::Cpu { "cpu" } else { "gpu" };
-    let request = [
-        path.as_os_str().as_encoded_bytes().into(),
-        root.as_os_str().as_encoded_bytes().into(),
-        entry.as_bytes().into(),
-        target_name.as_bytes().into(),
-    ];
-    let artifact = output.join(format!("{}.blbi", hash::hex(&hash::fields(&request))));
+    let artifact = match output {
+        EntryOutput::Directory(output) => entry_artifact(&path, &root, entry, target_name, output),
+        EntryOutput::Artifact(path) => path.to_owned(),
+    };
     let source = identity::sources(&path, &root,
         Selection::Entry { entry: entry.into(), target: target_name.into() },
         worker.compiler().max_parameter_bytes(), &world, &module, false)?;
@@ -142,7 +159,7 @@ fn compile_in(
     }
     let identity = identity::Inputs { source, imports: imports_identity, native: None, declarations }.encode();
     let encoded = resource::compiler_output(&image);
-    crate::file_bytes::create_dir_all(output)?;
+    crate::file_bytes::create_dir_all(artifact.parent().unwrap())?;
     write_artifact(&artifact, &identity, &encoded)?;
     Ok(images(image, artifact, false))
 }

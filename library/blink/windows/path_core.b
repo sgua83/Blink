@@ -307,6 +307,10 @@ extern "C" i32 GetFileInformationByHandleEx(handle file,u32 kind,address data,
     u32 bytes) on cpu from "KERNEL32.dll";
 
 const u32 ERROR_NOT_ENOUGH_MEMORY = 8;
+const u32 ERROR_INVALID_FUNCTION = 1;
+const u32 ERROR_NOT_SUPPORTED = 50;
+const u32 ERROR_INVALID_PARAMETER = 87;
+const u32 FILE_CASE_SENSITIVE_INFO_CLASS = 23;
 const u32 ERROR_ALREADY_EXISTS = 183;
 const u32 ERROR_FILENAME_EXCED_RANGE = 206;
 
@@ -414,7 +418,8 @@ u32 close_canonical_source(handle file) on cpu {
     return CloseHandle(file) == 0 ? GetLastError() : 0;
 }
 
-extern "C" NativePath canonicalize_path(address path,usize units,address scratch,u32 capacity) on cpu {
+NativePath canonicalize_with_directory_mode(address path,usize units,address scratch,u32 capacity,
+    address directory_mode) on cpu {
     NativePath input=units == 0u64 ? NativePath(path,address(),0u64,0) : native_path(path,units,true);
     CanonicalSource source=open_canonical_source(input);
     if (source.status != 0) { return NativePath(address(),address(),0u64,source.status); }
@@ -438,11 +443,32 @@ extern "C" NativePath canonicalize_path(address path,usize units,address scratch
             break;
         }
     }
+    if (output.status == 0 && address_bits(directory_mode) != 0u64) {
+        // FileCaseSensitiveInfo returns a FILE_CASE_SENSITIVE_INFO flags word.
+        if (GetFileInformationByHandleEx(source.file,FILE_CASE_SENSITIVE_INFO_CLASS,directory_mode,4) == 0) {
+            u32 error=GetLastError();
+            if (error == ERROR_INVALID_FUNCTION || error == ERROR_NOT_SUPPORTED || error == ERROR_INVALID_PARAMETER) {
+                // Volumes without the per-directory flag use Windows' default name lookup.
+                unsafe_position<u32>(directory_mode)=0;
+            } else {
+                output.status=error;
+            }
+        }
+    }
     u32 close_status=close_canonical_source(source.file);
     if (output.status == 0 && close_status == 0) { return output; }
     u32 error=output.status != 0 ? output.status : close_status;
     release_native_path(output);
     return NativePath(address(),address(),0u64,error);
+}
+
+extern "C" NativePath canonicalize_path(address path,usize units,address scratch,u32 capacity) on cpu {
+    return canonicalize_with_directory_mode(path,units,scratch,capacity,address());
+}
+
+extern "C" NativePath canonicalize_output_directory(address path,usize units,address scratch,u32 capacity,
+    address directory_mode) on cpu {
+    return canonicalize_with_directory_mode(path,units,scratch,capacity,directory_mode);
 }
 
 result<bool,DirectoryError> directory_target(address path) on cpu {
