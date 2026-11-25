@@ -184,6 +184,7 @@ unsafe extern "C" {
 
 struct DeclarationClosure<'a> {
     world: &'a crate::frontend::World,
+    direct: std::collections::btree_set::Iter<'a, Declaration>,
     pending: Vec<std::collections::btree_set::Iter<'a, Declaration>>,
     used: BTreeSet<&'a Declaration>,
 }
@@ -201,7 +202,7 @@ unsafe extern "C" fn next_declaration(context: *mut c_void) -> *const c_void {
         }
         closure.pending.pop();
     }
-    ptr::null()
+    closure.direct.next().map_or(ptr::null(), |declaration| ptr::from_ref(declaration).cast())
 }
 
 unsafe extern "C" fn retain_declaration(context: *mut c_void, declaration: *const c_void) -> bool {
@@ -222,9 +223,9 @@ unsafe extern "C" fn expand_declaration(context: *mut c_void, declaration: *cons
 fn used_declarations<'a>(
     world: &'a crate::frontend::World, direct: &'a BTreeSet<Declaration>,
 ) -> Vec<&'a Declaration> {
-    let pending = direct.iter().filter_map(|declaration| constant_inputs(world, declaration).map(BTreeSet::iter)).collect();
-    let used = direct.iter().collect();
-    let mut closure = DeclarationClosure { world, pending, used };
+    let mut closure = DeclarationClosure {
+        world, direct: direct.iter(), pending: Vec::new(), used: BTreeSet::new(),
+    };
     unsafe {
         complete_declarations(ptr::from_mut(&mut closure).cast(), DeclarationHost {
             next: next_declaration, retain: retain_declaration, expand: expand_declaration,
