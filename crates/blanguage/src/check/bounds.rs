@@ -666,7 +666,7 @@ impl Proof {
         range_sets::project(source, range_sets::Projection::new(0, scalar.bit_mask(), excluded))
     }
 
-    fn element_hull(&self, component: usize, scalar: Scalar) -> (Bits, Bits) {
+    pub(super) fn element_hull(&self, component: usize, scalar: Scalar) -> (Bits, Bits) {
         let (source, excluded) = self.element_intervals(component, scalar);
         range_sets::restricted_hull(source, (0, scalar.bit_mask()), excluded)
     }

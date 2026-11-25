@@ -317,9 +317,14 @@ impl Facts {
             let component = program.buffers[binding].ty.components.iter().position(|(_, word)| *word == offset).unwrap();
             let proven = self.elements.get(&binding).is_some_and(|proof| match requirement {
                 ElementFact::Range(range) => proof.holds_range(component, range.scalar, &range.intervals,range.known_bits),
-                ElementFact::Index { target, .. } => proof.domains(component).iter().copied().any(|domain| matches!(domain, IndexDomain::Data(other) if program.same_length(other, *target)))
-                    || proof.element_ranges(binding, &program.buffers[binding].ty).iter().any(|range| range.offset == offset
-                        && range.intervals.iter().all(|&(_, upper)| upper < u64::from(program.buffers[*target].count.unwrap_or(0)))),
+                ElementFact::Index { target, .. } => {
+                    proof.domains(component).iter().copied().any(|domain| {
+                        matches!(domain, IndexDomain::Data(other) if program.same_length(other, *target))
+                    }) || {
+                        let (lower, upper) = proof.element_hull(component, Scalar::U32);
+                        lower > upper || upper < u64::from(program.buffers[*target].count.unwrap_or(0))
+                    }
+                },
             });
             if !proven { return source.fail(span, "B226", "整域调用前尚未证明共同字段的数值／目标索引前提"); }
         }
