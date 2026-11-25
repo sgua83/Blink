@@ -35,7 +35,9 @@ ObjectSectionResult logical_section(ReadBytes input, ReadBytes headers, u64 inde
         if (address_bits(parts.metadata.bytes) == 0u64) { parts.metadata = row.bytes; }
     } else if (matches<5>(row.name,runtime,true)) {
         if (address_bits(parts.runtime.bytes) == 0u64) { parts.runtime = row.bytes; }
-    } else if (!matches<8>(row.name,build,true)) {
+    } else if (matches<8>(row.name,build,true)) {
+        if (parts.build_section == 0u64) { parts.build_section = index + 1u64; }
+    } else {
         mapped += 1u64;
         value.mapped = mapped;
     }
@@ -398,7 +400,7 @@ extern "C" RestoreObjectStatus restore_object(RestoreSource source, RestoreObjec
         storage.definitions, section_count, sink.name_context, sink.symbol_name);
     if (scanned_symbols.complete == 0) { return RestoreObjectStatus(scanned_symbols.error, 0, 0); }
     let rows = sink.sections(sink.context, section_count);
-    ObjectParts parts = ObjectParts(empty_bytes(), empty_bytes());
+    ObjectParts parts = ObjectParts(empty_bytes(), empty_bytes(), 0u64);
     let scanned_sections = object_sections(source.input, source.headers, rows.values, address(), parts, table,
         sink.name_context, sink.section_name);
     if (scanned_sections.complete == 0) { return RestoreObjectStatus(scanned_sections.error, 0, 0); }

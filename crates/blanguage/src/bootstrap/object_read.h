@@ -8,7 +8,7 @@ struct ObjectSection {
     ReadBytes name;ReadBytes bytes;u64 flags;u64 relocations;u64 relocation_count;u64 mapped;u64 zero_fill;
     address decoded_relocations;u64 decoded_count;
 };
-struct ObjectParts { ReadBytes metadata; ReadBytes runtime; };
+struct ObjectParts { ReadBytes metadata; ReadBytes runtime; u64 build_section; };
 struct ObjectRows {address values;u64 count;};
 // Import rows borrow the contiguous DLL/name payload and store its split in value.
 // An invalid import keeps its read error in value until a relocation uses the row.

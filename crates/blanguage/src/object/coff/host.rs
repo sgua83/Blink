@@ -124,6 +124,7 @@ impl Groups {
         mut self, bytes: &[u8], raw: &[ObjectSection], symbols: &[ObjectSymbol<'a>],
         build: Option<&HostBuildSection>, name: &str, output: &mut Vec<HostMember<'a>>,
     ) -> Result<()> {
+        let build_index = build.map(|section| section.index);
         let combined = self.combine_closed_groups(raw);
         let identity = member_identity(bytes, raw, build);
         let mut anchors = BTreeMap::new();
@@ -185,7 +186,9 @@ impl Groups {
                     .with_relocations(&self.relocations[row.mapped - 1], children)
             });
             let extra_rows = if member == 0 { raw } else { &[] };
-            let extra = extra_rows.iter().filter(|row| row.mapped == 0 && row_name(row) != BUILD);
+            let extra = extra_rows.iter().enumerate()
+                .filter(|(index, row)| row.mapped == 0 && Some(*index) != build_index)
+                .map(|(_, row)| row);
             let extra_count = extra.clone().count();
             let sections = sections.chain(extra.map(|row|
                 CoffSectionView::extra(row_name(row), row_payload(row), row.flags as u32)));
@@ -255,7 +258,15 @@ fn group_roots(owners: &[Option<usize>]) -> Result<Vec<usize>> {
 fn member_identity(bytes: &[u8], raw: &[ObjectSection], build: Option<&HostBuildSection>) -> String {
     let mut identity = crate::build::hash::Digest::new();
     let data = 20 + raw.len() * 40;
-    for header in bytes[20..data].chunks_exact(40).filter(|header| &header[..8] != BUILD.as_bytes()) {
+    // The physical header contributed to the existing identity when its name used the string table.
+    let short_build = build.map(|section| section.index).filter(|&index| {
+        let start = 20 + index * 40;
+        &bytes[start..start + 8] == BUILD.as_bytes()
+    });
+    for (index, header) in bytes[20..data].chunks_exact(40).enumerate() {
+        if Some(index) == short_build {
+            continue;
+        }
         identity.field(&header[..20]);
         for pointer in header[20..32].chunks_exact(4) {
             let mut offset = u32::from_le_bytes(pointer.try_into().unwrap()) as usize;

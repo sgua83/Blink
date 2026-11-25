@@ -233,6 +233,7 @@ struct ObjectSection {
 struct ObjectParts {
     metadata: ReadBytes,
     runtime: ReadBytes,
+    build_section: usize,
 }
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -1019,7 +1020,7 @@ impl ReuseInputs<'_> {
 }
 
 pub(super) struct HostBuildSection {
-    section: usize,
+    index: usize,
     sections: usize,
     record: std::ops::Range<usize>,
     symbols: usize,
@@ -1032,8 +1033,9 @@ impl HostBuildSection {
 
     // The final archive already owns this member's output range.
     pub(super) unsafe fn write(&self, bytes: &[u8], output: *mut u8) {
-        let header = &bytes[..self.section];
-        let body = &bytes[self.section + 40..self.record.start];
+        let section = 20 + self.index * 40;
+        let header = &bytes[..section];
+        let body = &bytes[section + 40..self.record.start];
         let tail = &bytes[self.record.end..];
         unsafe {
             std::ptr::copy_nonoverlapping(header.as_ptr(), output, header.len());
@@ -1079,7 +1081,7 @@ impl<'a, Input: AsRef<[u8]> + ?Sized> Reader<'a, Input> {
             return Err("宿主模块的构建记录不在原COFF元数据区".into());
         }
         Ok(HostBuildSection {
-            section: 20 + index * 40,
+            index,
             sections: self.headers.len() / 40 - 1,
             record: start..end,
             symbols,
@@ -1153,8 +1155,8 @@ impl<'a, Input: AsRef<[u8]> + ?Sized> Reader<'a, Input> {
         status.format.check()?;
         status.object.check()
     }
-    fn is_module(&self, parts: ObjectParts) -> Result<bool> {
-        let metadata = Metadata::read(self.metadata(parts.metadata)?, MetadataNames::default().sink(0))?;
+    fn is_module(&self, section: ReadBytes) -> Result<bool> {
+        let metadata = Metadata::read(self.metadata(section)?, MetadataNames::default().sink(0))?;
         Ok(matches!(metadata.prefix.header.kind, ReadObjectKind::Module))
     }
 
@@ -1164,7 +1166,7 @@ impl<'a, Input: AsRef<[u8]> + ?Sized> Reader<'a, Input> {
         let mut loadable = Vec::with_capacity(section_count);
         let mut table = ReadSymbols::default();
         let parts = self.read_sections(std::ptr::null_mut(), loadable.as_mut_ptr(), &mut table)?;
-        if !self.is_module(parts)? { return Ok(false); }
+        if !self.is_module(parts.metadata)? { return Ok(false); }
         unsafe { loadable.set_len(section_count) };
 
         let input = ReadBytes::new(self.bytes.as_ref());
@@ -1184,7 +1186,7 @@ impl<'a, Input: AsRef<[u8]> + ?Sized> Reader<'a, Input> {
         &self, name: &'a str, imports: &mut Vec<ImportKey<'a>>, members: &mut Vec<HostMember<'a>>,
     ) -> Result<bool> {
         let (parts, raw, table) = self.sections(true)?;
-        if !self.is_module(parts)? { return Ok(false); }
+        if !self.is_module(parts.metadata)? { return Ok(false); }
         let mut definitions = vec![SectionDefinition::default(); self.headers.len() / 40];
         let (symbols, offset) = self.symbol_rows(&mut definitions, table)?;
         let needs_body = raw.iter().any(|row| {
@@ -1196,14 +1198,7 @@ impl<'a, Input: AsRef<[u8]> + ?Sized> Reader<'a, Input> {
             None
         };
         let names = if groups.is_none() { export_names(&raw, &symbols)? } else { Vec::new() };
-        let mut build = None;
-        for (index, row) in raw.iter().enumerate() {
-            if row.mapped == 0 {
-                if build.is_none() && unsafe { row.name.borrowed() } == BUILD.as_bytes() {
-                    build = Some((index, row));
-                }
-                continue;
-            }
+        for row in raw.iter().filter(|row| row.mapped != 0) {
             self.relocations(&raw, &symbols, row, |section, offset, kind, target| {
                 if matches!(target.kind, ObjectTargetKind::Import) {
                     imports.push(unsafe { target.import_key() });
@@ -1213,7 +1208,8 @@ impl<'a, Input: AsRef<[u8]> + ?Sized> Reader<'a, Input> {
                 }
             })?;
         }
-        let build = build.map(|(index, row)| self.host_build_section(index, row, offset)).transpose()?;
+        let build = parts.build_section.checked_sub(1)
+            .map(|index| self.host_build_section(index, &raw[index], offset)).transpose()?;
         match groups {
             Some(groups) => groups.encode_into(self.bytes.as_ref(), &raw, &symbols, build.as_ref(), name, members)?,
             None => members.push(HostMember {
