@@ -404,41 +404,37 @@ impl<D> DomainBindings<D> {
     where
         D: DomainStorage,
     {
-        let order: Vec<_> = groups.iter().flat_map(|g| g.iter().copied()).collect();
-        let mut parts: Vec<Self> = groups.iter().map(|_| Vec::new().into()).collect();
-        self.remap_into(&order, Vec::new(), groups.iter().map(|group| group.len()),
-            |part, relation| parts[part].domains.push(relation))?;
-        let mut data = self.datasets.into_iter();
-        for (part, group) in parts.iter_mut().zip(groups) {
-            part.datasets = data.by_ref().take(group.len()).collect();
-            part.domains.sort_unstable();
-        }
+        let mut parts: Vec<_> = groups.iter()
+            .map(|group| Self::from(Vec::with_capacity(group.len())))
+            .collect();
+        let targets = groups.iter().enumerate().flat_map(|(part, group)| {
+            group.iter().copied().enumerate().map(move |(slot, old)| (old, (part, slot)))
+        });
+        self.remap_into(targets, Vec::new(), &mut parts)?;
         Ok(parts)
     }
     pub(crate) fn remap(&mut self, order: &[usize], additional: Vec<D>) -> Result<()>
     where
         D: DomainStorage,
     {
-        let mut domains = Vec::new();
-        self.remap_into(order, additional, std::iter::once(order.len()),
-            |_, relation| domains.push(relation))?;
-        domains.sort_unstable();
-        self.domains = DomainRelations::Owned(domains);
+        let mut result = Self::from(Vec::with_capacity(order.len()));
+        let targets = order.iter().copied().enumerate().map(|(slot, old)| (old, (0, slot)));
+        self.remap_into(targets, additional, std::slice::from_mut(&mut result))?;
+        *self = result;
         Ok(())
     }
     fn remap_into(
         &mut self,
-        order: &[usize],
+        targets: impl Iterator<Item = (usize, (usize, usize))> + Clone,
         additional: Vec<D>,
-        groups: impl Iterator<Item = usize>,
-        mut emit: impl FnMut(usize, DomainRelation),
+        parts: &mut [Self],
     ) -> Result<()>
     where
         D: DomainStorage,
     {
         let total = self.datasets.len() + additional.len();
         let mut remaining = vec![0; total];
-        for &old in order {
+        for (old, _) in targets.clone() {
             let count = remaining
                 .get_mut(old)
                 .ok_or_else(|| error("域绑定重排索引越界"))?;
@@ -446,9 +442,8 @@ impl<D> DomainBindings<D> {
         }
         self.datasets.extend(additional);
         let relations = std::mem::take(&mut self.domains).into_vec();
-        if !relations.is_empty() && !order.is_empty() {
-            let targets = groups.enumerate().flat_map(|(part, len)| (0..len).map(move |slot| (part, slot)));
-            let targets = RelationTargets::new(&self.datasets, order.iter().copied().zip(targets));
+        if !relations.is_empty() && targets.clone().next().is_some() {
+            let targets = RelationTargets::new(&self.datasets, targets.clone());
             // Resolve aliases before expanding relations into the receiving groups.
             let mut relations: Vec<_> = relations.into_iter()
                 .filter_map(|relation| relation.into_mapped(|old| targets.source(old))).collect();
@@ -464,7 +459,7 @@ impl<D> DomainBindings<D> {
                             let end = counts.partition_point(|&(group, _)| group <= part);
                             for &(_, domain) in targets {
                                 for &(_, binding) in &counts[start..end] {
-                                    emit(part, DomainRelation::Prefix {
+                                    parts[part].domains.push(DomainRelation::Prefix {
                                         domain, offset, bytes, count: PrefixCount { binding, word: count.word },
                                     });
                                 }
@@ -475,9 +470,9 @@ impl<D> DomainBindings<D> {
                     DomainRelation::Element(range) => {
                         let (&(part, binding), earlier) = targets.positions[range.binding].split_last().unwrap();
                         for &(part, binding) in earlier {
-                            emit(part, DomainRelation::Element(ElementRange { binding, ..range.clone() }));
+                            parts[part].domains.push(DomainRelation::Element(ElementRange { binding, ..range.clone() }));
                         }
-                        emit(part, DomainRelation::Element(ElementRange { binding, ..range }));
+                        parts[part].domains.push(DomainRelation::Element(ElementRange { binding, ..range }));
                     },
                 }
             }
@@ -486,8 +481,7 @@ impl<D> DomainBindings<D> {
             .into_iter()
             .map(Some)
             .collect();
-        let mut datasets = Vec::with_capacity(order.len());
-        for &old in order {
+        for (old, (part, _)) in targets {
             let data = if remaining[old] == 1 {
                 slots[old].take().unwrap()
             } else {
@@ -497,10 +491,12 @@ impl<D> DomainBindings<D> {
                     .read_binding()
                     .ok_or_else(|| error("域绑定重排不能重复可写存储"))?
             };
-            datasets.push(data);
+            parts[part].datasets.push(data);
             remaining[old] -= 1;
         }
-        self.datasets = datasets;
+        for part in parts {
+            part.domains.sort_unstable();
+        }
         Ok(())
     }
     pub(crate) fn completed(&mut self, program: &ExecutionPlan) where D: DomainStorage {
