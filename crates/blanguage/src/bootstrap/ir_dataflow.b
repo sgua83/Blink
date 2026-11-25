@@ -250,6 +250,38 @@ extern "C" Word next_result(inout Results state) on cpu {
  return absent();
 }
 
+RegisterDefinition find_register_definition(Span code,usize reg,bool newest,Host host) on cpu
+ requires nonzero(host.inspect) {
+ address missing=unsafe_address(0u64);
+ usize cursor=0u64;
+ while(cursor<code.count){
+  usize index=newest ? code.count-cursor-1u64 : cursor;
+  Node node=node_at(code,index,N_INSTRUCTION);
+  View instruction=host.inspect(node);
+  u32 kind=instruction.tag;
+  if(kind==OP_BRANCH||kind==OP_LOOP_VALUE||kind==OP_SCOPE){
+   address found=find_register_definition(instruction.first,reg,false,host).instruction;
+   if(found==missing&&kind!=OP_SCOPE){
+    found=find_register_definition(instruction.second,reg,false,host).instruction;
+   }
+   if(found!=missing){return RegisterDefinition(found,index);}
+  }else{
+   Results outputs=view_results(instruction,host);
+   Word result=next_result(outputs);
+   while(result.present!=0){
+    if(result.value==reg){return RegisterDefinition(node.data,index);}
+    result=next_result(outputs);
+   }
+  }
+  cursor+=1u64;
+ }
+ return RegisterDefinition(missing,0u64);
+}
+extern "C" RegisterDefinition register_definition(Span code,usize reg,Host host) on cpu
+ requires nonzero(host.inspect) {
+ return find_register_definition(code,reg,true,host);
+}
+
 u32 visit_result_origins(address value,Host host,address context,
  cfn<u32,address,usize,usize,usize,ResultRole> visit) on cpu
  requires nonzero(host.inspect) requires nonzero(visit) {

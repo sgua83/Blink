@@ -121,6 +121,9 @@ struct Locals {
  usize position; usize end; u32 active;
 };
 Results view_results(View value,Host host) on cpu requires nonzero(host.inspect);
+struct RegisterDefinition { address instruction; usize top; };
+extern "C" RegisterDefinition register_definition(Span code,usize reg,Host host) on cpu
+ requires nonzero(host.inspect);
 u32 visit_instruction(View value,Host host,address context,cfn<u32,address,usize> visit) on cpu
  requires nonzero(host.inspect) requires nonzero(visit);
 Locals view_locals(View value,u32 writing,Host host) on cpu requires nonzero(host.inspect);

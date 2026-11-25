@@ -218,6 +218,14 @@ impl effects::StorageWrite {
 // IR owned by active loop contexts. Loop write inputs describe future backedges;
 // no loaded-value or memory-version state is retained beside IR and Proof.
 struct ApplicationLoads<'a,'w>(&'a Builder<'w>);
+
+#[repr(C)]
+struct RegisterDefinition { instruction: *const c_void, top: usize }
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.ir_dataflow::register_definition"]
+    fn source_register_definition(code: dataflow::Span, reg: Reg, host: dataflow::Host) -> RegisterDefinition;
+}
 impl ApplicationLoads<'_, '_> {
     fn code(&self)->impl DoubleEndedIterator<Item=&Inst> {
         self.0.loop_contexts.iter().flat_map(|context|context.outer.iter()).chain(self.0.code.iter())
@@ -251,18 +259,19 @@ impl ApplicationLoads<'_, '_> {
             }
         })
     }
-    fn definition(&self,reg:Reg)->Option<(usize,&Inst)> {
-        fn nested(inst:&Inst,reg:Reg)->Option<&Inst>{
-            if inst.results().any(|result|result==reg){return Some(inst);}
-            match &inst.kind{
-                InstKind::If{yes,no,..}=>yes.iter().chain(no).find_map(|inst|nested(inst,reg)),
-                InstKind::Loop{condition,body,..}=>condition.iter().chain(body).find_map(|inst|nested(inst,reg)),
-                InstKind::Scope(body)=>body.iter().find_map(|inst|nested(inst,reg)),
-                _=>None,
+    fn definition(&self, reg: Reg) -> Option<(usize, &Inst)> {
+        let mut end = self.len();
+        let blocks = std::iter::once(self.0.code.as_slice())
+            .chain(self.0.loop_contexts.iter().rev().map(|context| context.outer.as_slice()));
+        for code in blocks {
+            end -= code.len();
+            let found = unsafe { source_register_definition(dataflow::Span::slice(code), reg, dataflow::HOST) };
+            // The returned instruction borrows this block, and top is its enclosing position.
+            if let Some(inst) = unsafe { found.instruction.cast::<Inst>().as_ref() } {
+                return Some((end + found.top, inst));
             }
         }
-        let mut at=self.len();
-        self.code().rev().find_map(|inst|{at-=1;nested(inst,reg).map(|inst|(at,inst))})
+        None
     }
     fn pointer_call(call:&Call)->Option<Reg> {
         let CallTarget::External(name)=&call.target else{return None;};
