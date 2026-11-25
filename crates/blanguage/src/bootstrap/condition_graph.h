@@ -924,3 +924,15 @@ extern "C" void rename_output_graph(address context,OutputRenameHost host) on cp
  requires nonzero(host.pop) requires nonzero(host.status) requires nonzero(host.begin_facts)
  requires nonzero(host.map_fact) requires nonzero(host.same_facts)
  requires nonzero(host.build) requires nonzero(host.emit);
+
+struct AggregateProofHost {
+ cfn<void,address,usize> project;
+ cfn<void,address> relate;
+ cfn<u32,address> required;
+ cfn<void,address,usize> refine;
+ cfn<void,address> join;
+};
+extern "C" void select_aggregate_proof(address context,usize choices,usize components,u32 publish,AggregateProofHost host) on cpu
+ requires nonzero(host.project) requires nonzero(host.relate) requires nonzero(host.required)
+ requires nonzero(host.refine) requires nonzero(host.join);
+

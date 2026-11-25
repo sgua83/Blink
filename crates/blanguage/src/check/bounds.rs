@@ -1,5 +1,6 @@
 //! 范围属于实际参与比较的值；布尔值保存命题，分支只精化仍持有该值的绑定。
 mod condition_graph;
+mod selection_proof;
 mod cross_facts;
 mod fact_fields;
 mod negation;
@@ -3289,52 +3290,6 @@ impl Builder<'_> {
     pub(super) fn observe_bounds(&mut self, value: &Value) {
         self.path = Clause::observed(&self.path,proof_facts::value(value));
     }
-    fn selected_proof(
-        path: &Clause,
-        mut environment: Facts,
-        proof: &Proof,
-        source: &Ty,
-        ty: &Ty,
-        choices: &[(Vec<usize>, Clause)],
-        registers: Option<&[Reg]>,
-    ) -> (Proof, Clause) {
-        environment.extend(proof.facts(source));
-        let mut selected: Option<Proof> = None;
-        let mut related = Clause::impossible();
-        for (components, condition) in choices {
-            let mut next = proof.project(components, source.components.len());
-            if let Some(registers) = registers {
-                next.origins.resize_with(ty.components.len(), Vec::new);
-                for (origins, register) in next.origins.iter_mut().zip(registers) {
-                    let identity = ValueIdentity::Register(*register);
-                    origins.retain(|origin| *origin != identity);
-                    origins.insert(0, identity);
-                }
-            }
-            // 一次聚合读取的所有分量属于同一候选；只求解本候选的结果绑定。
-            let binding = Clause::both(condition, &Clause::facts(next.facts(ty)));
-            related = Clause::either(&related, &binding);
-            let candidate_path = Clause::both(path, &binding);
-            let Some(RequiredFacts { facts: context, roots }) = candidate_path.required_in(&environment) else {
-                continue;
-            };
-            next.extend_equalities(&roots);
-            for (component, _) in ty.components.iter().enumerate() {
-                for fact in &context {
-                    if fact.identity().is_some_and(|identity| next.origins.get(component).is_some_and(|origins| origins.contains(&identity))) {
-                        next.refine(ty, component, *fact);
-                    }
-                }
-            }
-            next.under_path(ty, &candidate_path);
-            match &mut selected {
-                Some(selected) => selected.join(&next, ty.components.len(), None),
-                None => selected = Some(next),
-            }
-        }
-        let path = if registers.is_some() { Clause::both(path, &related) } else { path.clone() };
-        (selected.unwrap_or_default(), path)
-    }
     pub(super) fn array_value_proof(
         &mut self,
         proof: &Proof,
@@ -3348,11 +3303,9 @@ impl Builder<'_> {
         if width == 0 {
             return Proof::default();
         }
-        let choices: Vec<_> = (0..count as usize)
-            .map(|i| ((i * width..(i + 1) * width).collect(), Clause::selection(index, i)))
-            .collect();
-        let (result, path) = Self::selected_proof(
-            &self.path, environment_facts(&self.env), proof, array, element, &choices, Some(registers),
+        let (result, path) = selection_proof::run(
+            &self.path, environment_facts(&self.env), proof, array, element,
+            selection_proof::Choices::Fixed { count, index }, Some(registers),
         );
         self.path = path;
         result
@@ -3434,8 +3387,9 @@ impl Builder<'_> {
                 }
             }
         }
-        let (result, path) = Self::selected_proof(
-            &self.path, environment, proof, &source, place.ty(), &choices, registers,
+        let (result, path) = selection_proof::run(
+            &self.path, environment, proof, &source, place.ty(),
+            selection_proof::Choices::Owned(&choices), registers,
         );
         self.path = path;
         Some(result)

@@ -2262,3 +2262,25 @@ extern "C" void rename_output_graph(address context,OutputRenameHost host) on cp
   host.emit(context,root);
  }
 }
+
+extern "C" void select_aggregate_proof(address context,usize choices,usize components,u32 publish,AggregateProofHost host) on cpu
+ requires nonzero(host.project) requires nonzero(host.relate) requires nonzero(host.required)
+ requires nonzero(host.refine) requires nonzero(host.join) {
+ usize choice=0u64;
+ while(choice<choices) {
+  host.project(context,choice);
+  // The result registers refer to the complete aggregate alternative, even
+  // where its clause is infeasible under the current incoming path.
+  if(publish!=0){host.relate(context);}
+  if(host.required(context)!=0) {
+   usize component=0u64;
+   while(component<components) {
+    host.refine(context,component);
+    component+=1u64;
+   }
+   host.join(context);
+  }
+  choice+=1u64;
+ }
+}
+
