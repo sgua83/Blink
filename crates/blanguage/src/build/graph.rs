@@ -302,7 +302,7 @@ impl GraphExecution<'_, '_> {
                 providers.iter().map(Provider::object), kind, artifact, Some(&self.inputs[index]))
                 .map(|value| Output::Object(Arc::new(value))),
             UnitKind::Entry { entry, target } => super::compile_in(worker, &unit.path, &unit.root,
-                entry, target, super::EntryOutput::Artifact(artifact), Vec::new(), &providers.iter().map(Provider::object).collect::<Vec<_>>(),
+                entry, target, super::EntryOutput::Artifact(artifact), Vec::new(), providers.iter().map(Provider::object),
                 Some(&self.inputs[index]), self.entry_checks[index].as_deref()).map(Output::Entry),
         }).map_err(|error| match error {
             crate::parallel::Error::Work(error) => error,

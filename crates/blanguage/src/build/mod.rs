@@ -60,7 +60,7 @@ impl crate::Compiler {
         &self, path: &Path, root: &Path, entry: &str, target: Target, output: &Path,
         dependencies: Vec<crate::object::Input>,
     ) -> Result<Compilation> {
-        self.execute(|worker| compile_in(worker, path, root, entry, target, EntryOutput::Directory(output), dependencies, &[], None, None))
+        self.execute(|worker| compile_in(worker, path, root, entry, target, EntryOutput::Directory(output), dependencies, std::iter::empty(), None, None))
             .map_err(|error| match error {
                 crate::parallel::Error::Work(error) => error,
                 crate::parallel::Error::Resource(error) => Box::new(error) as Box<dyn std::error::Error + Send + Sync>,
@@ -95,17 +95,18 @@ fn entry_artifact(path: &Path, root: &Path, entry: &str, target: &str, output: &
     output.join(format!("{}.blbi", hash::hex(&hash::fields(&request))))
 }
 
-fn compile_in(
+fn compile_in<'object>(
     worker: &crate::compiler::Worker, path: &Path, root: &Path, entry: &str,
-    target: Target, output: EntryOutput<'_>, dependencies: Vec<crate::object::Input>, borrowed: &[&crate::object::Object], inputs: Option<&Inputs>,
+    target: Target, output: EntryOutput<'_>, dependencies: Vec<crate::object::Input>,
+    borrowed: impl ExactSizeIterator<Item = &'object crate::object::Object> + Clone, inputs: Option<&Inputs>,
     entry_checks: Option<&crate::frontend::EntryChecks>,
 ) -> Result<Compilation> {
     let target_name = entry_backend(target)?;
     let path = if inputs.is_some() { path.into() } else { crate::source_path::canonicalize(path)? };
     let root = if inputs.is_some() { root.into() } else { crate::source_path::canonicalize(root)? };
     let mut imports = crate::module::Imports::inputs(&dependencies).map_err(|e| std::io::Error::other(e.to_string()))?;
-    for object in borrowed { imports.object(object).map_err(|e| std::io::Error::other(e.to_string()))?; }
-    let imported = if dependencies.is_empty() && borrowed.is_empty() { None } else { Some(&imports) };
+    for object in borrowed.clone() { imports.object(object).map_err(|e| std::io::Error::other(e.to_string()))?; }
+    let imported = if dependencies.is_empty() && borrowed.len() == 0 { None } else { Some(&imports) };
     let (world, module, _) = crate::read_world(&path, &root, imported, &[], worker, inputs,
         Some(std::cell::RefCell::new(std::collections::BTreeSet::new())))?;
     let (artifact, replace_existing) = match output {
@@ -248,9 +249,9 @@ fn references<'a>(
     identity::references(declarations, imported, symbols, used)
 }
 
-fn link_entry(
+fn link_entry<'object>(
     link: ModuleLink<'_>, inputs: Vec<crate::object::Input>,
-    borrowed: &[&crate::object::Object], declarations: &crate::Declarations,
+    borrowed: impl IntoIterator<Item = &'object crate::object::Object>, declarations: &crate::Declarations,
 ) -> std::io::Result<bool> {
     crate::native::program::link_inputs(link, inputs, borrowed, |names| {
         crate::linker::bind_root_contracts(names, |name| {

@@ -58,7 +58,7 @@ impl crate::Compiler {
         self.execute(|worker| {
             let mut image = compile_in(worker, source)?;
             let link = image.module_link();
-            link_inputs(link, inputs, &[], |names| {
+            link_inputs(link, inputs, std::iter::empty(), |names| {
                 crate::linker::bind_root_contracts(names, |name| {
                     source.imports.get(name).map(Vec::as_slice)
                 })
@@ -80,8 +80,9 @@ pub(crate) struct ModuleLink<'a> {
     pub(crate) output: &'a mut Option<crate::native::ModuleCode>,
 }
 
-pub(crate) fn link_inputs<'a>(
-    image: ModuleLink<'a>, inputs: Vec<crate::object::Input>, borrowed: &[&crate::object::Object],
+pub(crate) fn link_inputs<'a, 'object>(
+    image: ModuleLink<'a>, inputs: Vec<crate::object::Input>,
+    borrowed: impl IntoIterator<Item = &'object crate::object::Object>,
     bind_roots: impl FnOnce(Vec<ModuleName<'a>>) -> Result<Vec<crate::linker::RootView<'a>>, String>,
 ) -> Result<bool, String> {
     let linked = if image.external.is_empty() {
