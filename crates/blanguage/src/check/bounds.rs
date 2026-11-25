@@ -2136,6 +2136,32 @@ impl Drop for Clause {
         }
     }
 }
+struct ClausePostorder<'a> {
+    pending: Vec<(&'a Clause, bool)>,
+}
+
+impl<'a> ClausePostorder<'a> {
+    fn new(roots: impl IntoIterator<Item = &'a Clause>) -> Self {
+        let mut pending: Vec<_> = roots.into_iter().map(|root| (root, false)).collect();
+        pending.reverse();
+        Self { pending }
+    }
+
+    fn next(&mut self, completed: impl Fn(usize) -> bool) -> Option<&'a Clause> {
+        while let Some((clause, ready)) = self.pending.pop() {
+            if completed(clause.key()) {
+                continue;
+            }
+            if !ready && let Some((left, right, _)) = clause.query_inputs() {
+                self.pending.extend([(clause, true), (right, false), (left, false)]);
+            } else {
+                return Some(clause);
+            }
+        }
+        None
+    }
+}
+
 impl Clause {
     fn at_calls(
         roots: &[&Self],
@@ -2375,31 +2401,10 @@ impl Clause {
 
     // 按子节点在先的顺序只访问每个共享节点一次，不展开路径的笛卡尔积。
     fn ordered<'a>(roots: impl IntoIterator<Item = &'a Self>) -> Vec<&'a Self> {
-        let mut pending: Vec<_> = roots.into_iter().map(|root| (root, false)).collect();
-        pending.reverse();
+        let mut traversal = ClausePostorder::new(roots);
         let mut visited = HashSet::new();
         let mut ordered = Vec::new();
-        while let Some((clause, ready)) = pending.pop() {
-            if visited.contains(&clause.key()) {
-                continue;
-            }
-            if !ready {
-                match &**clause.0 {
-                    ClauseNode::Both(a, b) | ClauseNode::Either(a, b) => {
-                        pending.extend([(clause, true), (b, false), (a, false)]);
-                        continue;
-                    }
-                    ClauseNode::Branch(parent, condition, truth) => {
-                        pending.extend([
-                            (clause, true),
-                            (&condition.cases[usize::from(*truth)], false),
-                            (parent, false),
-                        ]);
-                        continue;
-                    }
-                    _ => {}
-                }
-            }
+        while let Some(clause) = traversal.next(|key| visited.contains(&key)) {
             visited.insert(clause.key());
             ordered.push(clause);
         }

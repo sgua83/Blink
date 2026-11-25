@@ -61,7 +61,7 @@ struct CanonicalHost {
     bind: unsafe extern "C" fn(Slot, *const c_void, usize),
 }
 struct Canonical<'a, F> {
-    ordered: std::vec::IntoIter<&'a Clause>,
+    pending: ClausePostorder<'a>,
     unique: BTreeMap<EncodedClause<&'a Facts>, usize>,
     indices: BTreeMap<usize, usize>,
     record: F,
@@ -81,7 +81,8 @@ unsafe fn borrowed_node<'a>(
 }
 unsafe extern "C" fn next<'a, F>(context: Slot) -> ClauseFields {
     let state = unsafe { &mut *context.cast::<Canonical<'a, F>>() };
-    let Some(clause) = state.ordered.next() else {
+    let indices = &state.indices;
+    let Some(clause) = state.pending.next(|key| indices.contains_key(&key)) else {
         return ClauseFields::default();
     };
     let mut result = ClauseFields {
@@ -171,7 +172,7 @@ pub(in super::super) fn node_ids<'a, F: FnMut(&'a Clause, EncodedClause<&'a Fact
     record: F,
 ) -> BTreeMap<usize, usize> {
     let mut state = Canonical {
-        ordered: Clause::ordered(roots).into_iter(),
+        pending: ClausePostorder::new(roots),
         unique: BTreeMap::new(),
         indices: BTreeMap::new(),
         record,
