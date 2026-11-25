@@ -416,18 +416,17 @@ struct ExportTypeHost {
     context: *mut c_void,
     save: unsafe extern "C" fn(*mut c_void, ExportRange),
     resume: unsafe extern "C" fn(*mut c_void) -> ExportRange,
-    load: unsafe extern "C" fn(*mut c_void, Bytes) -> u32,
+    load: unsafe extern "C" fn(*mut c_void, Bytes) -> bool,
 }
 
 unsafe extern "C" {
     #[link_name = "bootstrap.module_load::load_export_types"]
-    fn load_export_types(storage: wire::StorageView, arguments: wire::Slice, host: ExportTypeHost);
+    fn load_export_types(storage: wire::StorageView, arguments: wire::Slice, host: ExportTypeHost) -> u32;
 }
 
 struct ExportVisit<F> {
     visit: F,
     parents: Vec<ExportRange>,
-    error: Option<Diagnostic>,
 }
 
 unsafe extern "C" fn save_export_range<F>(context: *mut c_void, range: ExportRange) {
@@ -440,25 +439,23 @@ unsafe extern "C" fn resume_export_range<F>(context: *mut c_void) -> ExportRange
     })
 }
 
-unsafe extern "C" fn visit_export_owner<F: FnMut(&str) -> Result<()>>(context: *mut c_void, name: Bytes) -> u32 {
+unsafe extern "C" fn visit_export_owner<F: FnMut(&str) -> bool>(context: *mut c_void, name: Bytes) -> bool {
     let state = unsafe { &mut *context.cast::<ExportVisit<F>>() };
-    state.error = (state.visit)(unsafe { name.text() }).err();
-    u32::from(state.error.is_none())
+    (state.visit)(unsafe { name.text() })
 }
 
-pub(super) fn visit_export_types<F: FnMut(&str) -> Result<()>>(
+pub(super) fn visit_export_types<F: FnMut(&str) -> bool>(
     arguments: &syntax::List<wire::ArgumentNode>, visit: F,
-) -> Result<()> {
-    let mut state = ExportVisit { visit, parents: Vec::new(), error: None };
+) -> bool {
+    let mut state = ExportVisit { visit, parents: Vec::new() };
     unsafe {
         load_export_types(arguments.source_view().storage(), arguments.source_slice(), ExportTypeHost {
             context: std::ptr::from_mut(&mut state).cast(),
             save: save_export_range::<F>,
             resume: resume_export_range::<F>,
             load: visit_export_owner::<F>,
-        });
+        }) != 0
     }
-    state.error.map_or(Ok(()), Err)
 }
 
 fn load_export_owner(
@@ -477,7 +474,12 @@ pub(super) fn prepare_exports(
 ) -> Result<Vec<ExportRequest>> {
     requests.iter().map(|text| {
         let request = ExportRequest::parse(text)?;
-        request.visit_type_owners(|name| load_export_owner(name, root, world, imported, inputs))?;
+        let mut loaded = Ok(());
+        request.visit_type_owners(|name| {
+            loaded = load_export_owner(name, root, world, imported, inputs);
+            loaded.is_ok()
+        });
+        loaded?;
         Ok(request)
     }).collect()
 }

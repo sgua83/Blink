@@ -38,20 +38,19 @@ impl Capture {
         units.into_iter().map(|unit| Inputs { sources: sources.clone(), unit }).collect()
     }
     pub(super) fn header(&mut self, path: &Path) -> ast::Result<Arc<syntax::Module>> {
-        Ok(self.source_input(path)?.interface.clone())
+        self.source_input(path).as_ref().map(|input| input.interface.clone()).map_err(Clone::clone)
     }
 
-    fn source_input(&mut self, path: &Path) -> ast::Result<&mut SourceInput> {
+    fn source_input(&mut self, path: &Path) -> &mut ast::Result<SourceInput> {
         use std::collections::btree_map::Entry;
-        let input = match self.sources.entry(crate::source_path::with_extension(path, u16::from(b'h'))) {
+        match self.sources.entry(crate::source_path::with_extension(path, u16::from(b'h'))) {
             Entry::Occupied(entry) => entry.into_mut(),
             Entry::Vacant(entry) => {
                 let input = crate::read(entry.key()).and_then(parser::parse)
                     .map(|interface| SourceInput { interface: Arc::new(interface), body: None });
                 entry.insert(input)
             }
-        };
-        input.as_mut().map_err(|error| error.clone())
+        }
     }
 
     pub(super) fn capture(
@@ -63,7 +62,7 @@ impl Capture {
         let mut state = CaptureState {
             capture: self, path, root, providers, requests,
             visited: BTreeSet::new(), interfaces: Interfaces::new(), exports,
-            opened: None, error: None,
+            opened: None,
         };
         let context = std::ptr::from_mut(&mut state).cast();
         // Capture can stop at a failed read. The original loader consumes that
@@ -156,25 +155,24 @@ struct CaptureState<'a, 'provider> {
     interfaces: Interfaces<ast::Result<CapturedInterface>>,
     exports: Option<Vec<ast::Result<CapturedExport>>>,
     opened: Option<OpenedModule>,
-    error: Option<Diagnostic>,
 }
 
 impl CaptureState<'_, '_> {
-    fn source(&mut self, path: &Path) -> ast::Result<(CaptureName, OpenedModule)> {
-        let SourceInput { interface, body } = self.capture.source_input(path)?;
+    fn source(&mut self, path: &Path) -> Option<(CaptureName, OpenedModule)> {
+        let SourceInput { interface, body } = self.capture.source_input(path).as_mut().ok()?;
         let current = body.get_or_insert_with(|| {
             let implementation_path = crate::source_path::with_extension(path, u16::from(b'b'));
             let implementation = crate::read_implementation(&implementation_path)?;
             let imports = crate::names::module_imports(interface, implementation.as_deref());
             Ok(CapturedBody { implementation, imports })
-        }).as_ref().map_err(Clone::clone)?;
-        Ok((CaptureName::from_str(interface.name()), OpenedModule::Source(current.imports.clone())))
+        }).as_ref().ok()?;
+        Some((CaptureName::from_str(interface.name()), OpenedModule::Source(current.imports.clone())))
     }
 
-    fn open(&mut self, requested: Option<&str>) -> ast::Result<Option<(CaptureName, OpenedModule)>> {
+    fn open(&mut self, requested: Option<&str>) -> Result<Option<(CaptureName, OpenedModule)>, ()> {
         let Some(requested) = requested else {
             let path = self.path;
-            return self.source(path).map(Some);
+            return self.source(path).map(Some).ok_or(());
         };
         let module = match self.providers.get(requested) {
             Some(ProviderInterface::Unit(header)) => Arc::clone(header),
@@ -187,14 +185,14 @@ impl CaptureState<'_, '_> {
                     Ok(module) => module,
                     Err(error) => {
                         self.interfaces.entry(requested.to_owned()).or_default()
-                            .insert(interface.clone(), Err(error.clone()));
-                        return Err(error);
+                            .insert(interface.clone(), Err(error));
+                        return Err(());
                     }
                 }
             }
             None => {
                 let path = crate::source_path::module(self.root, requested, u16::from(b'b'));
-                return self.source(&path).map(Some);
+                return self.source(&path).map(Some).ok_or(());
             }
         };
         Ok(Some((CaptureName::from_str(module.name()), OpenedModule::Provider(module))))
@@ -224,10 +222,7 @@ unsafe extern "C" fn capture_open(context: *mut std::ffi::c_void, name: CaptureN
             return CaptureOpened { name, status: CaptureStatus::Opened };
         }
         Ok(None) => CaptureStatus::Ignored,
-        Err(error) => {
-            state.error = Some(error);
-            CaptureStatus::Failed
-        }
+        Err(()) => CaptureStatus::Failed,
     };
     CaptureOpened { name, status }
 }
@@ -271,15 +266,15 @@ unsafe extern "C" fn capture_export(context: *mut std::ffi::c_void, index: usize
         match unsafe { capture_export_owner(capture_host(context), CaptureName::from_str(name)) } {
             0 => {
                 owners.push(name.to_owned());
-                Err(unsafe { (*state).error.take().unwrap() })
+                false
             }
-            1 => Ok(()),
+            1 => true,
             _ => {
                 owners.push(name.to_owned());
-                Ok(())
+                true
             }
         }
-    }).is_ok();
+    });
     unsafe { (*state).exports.as_mut().unwrap().push(Ok(CapturedExport { request, owners })); }
     u32::from(complete)
 }

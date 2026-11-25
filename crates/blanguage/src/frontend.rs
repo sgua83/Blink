@@ -728,11 +728,8 @@ impl ExportRequest {
         Ok(Self { source, name, arguments })
     }
 
-    pub(crate) fn visit_type_owners(&self, visit: impl FnMut(&str) -> Result<()>) -> Result<()> {
-        if let Some(arguments) = &self.arguments {
-            loading::visit_export_types(arguments, visit)?;
-        }
-        Ok(())
+    pub(crate) fn visit_type_owners(&self, visit: impl FnMut(&str) -> bool) -> bool {
+        self.arguments.as_ref().is_none_or(|arguments| loading::visit_export_types(arguments, visit))
     }
 }
 

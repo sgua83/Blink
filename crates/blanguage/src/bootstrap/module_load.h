@@ -106,7 +106,7 @@ struct ExportTypeHost {
     cfn<ExportRange,address> resume;
     cfn<bool,address,NameBytes> load;
 };
-extern "C" void load_export_types(StorageView storage,Slice arguments,ExportTypeHost host) on cpu
+extern "C" u32 load_export_types(StorageView storage,Slice arguments,ExportTypeHost host) on cpu
     requires nonzero(host.save) requires nonzero(host.resume) requires nonzero(host.load);
 
 enum CaptureStatus:u32 { Failed=0; Ignored=1; Opened=2; };
