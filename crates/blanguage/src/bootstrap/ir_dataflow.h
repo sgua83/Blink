@@ -66,8 +66,17 @@ struct StoredWriteHost {
 extern "C" void stored_write_paths(Span code,address context,StoredWriteHost host) on cpu
  requires nonzero(host.ir.inspect) requires nonzero(host.active) requires nonzero(host.transfer)
  requires nonzero(host.branch) requires nonzero(host.scope) requires nonzero(host.write);
-extern "C" void stored_write_arms(address context,StoredTruth truth,cfn<void,address,u32,u32> arm) on cpu
+extern "C" void stored_arms(address context,StoredTruth truth,cfn<void,address,u32,u32> arm) on cpu
  requires nonzero(arm);
+
+struct InterferenceHost {
+ Host ir;
+ cfn<void,address,usize,Span,Span> branch;
+ cfn<void,address,Span,Span> nested;
+ cfn<void,address,usize> write;
+};
+extern "C" void iteration_interference(Span code,address context,InterferenceHost host) on cpu
+ requires nonzero(host.ir.inspect) requires nonzero(host.branch) requires nonzero(host.nested) requires nonzero(host.write);
 
 struct LoopPaths { address live; address exited; };
 struct LoopPathHost {

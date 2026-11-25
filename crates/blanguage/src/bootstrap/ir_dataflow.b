@@ -128,10 +128,25 @@ extern "C" void stored_write_paths(Span code,address context,StoredWriteHost hos
  }
 }
 
-extern "C" void stored_write_arms(address context,StoredTruth truth,cfn<void,address,u32,u32> arm) on cpu
+extern "C" void stored_arms(address context,StoredTruth truth,cfn<void,address,u32,u32> arm) on cpu
  requires nonzero(arm) {
  if(truth!=StoredTruth::No){arm(context,1,u32(truth==StoredTruth::Both));}
  if(truth!=StoredTruth::Yes){arm(context,0,0);}
+}
+
+extern "C" void iteration_interference(Span code,address context,InterferenceHost host) on cpu
+ requires nonzero(host.ir.inspect) requires nonzero(host.branch) requires nonzero(host.nested) requires nonzero(host.write) {
+ usize index=0u64;
+ while(index<code.count){
+  View instruction=host.ir.inspect(node_at(code,index,N_INSTRUCTION));
+  u32 kind=instruction.tag;
+  if(kind==OP_BRANCH){host.branch(context,instruction.a,instruction.first,instruction.second);}
+  else if(kind==OP_SCOPE||kind==OP_LOOP_VALUE){host.nested(context,instruction.first,instruction.second);}
+  else if(kind==OP_STORE||kind==OP_STORE_INDEXED||kind==OP_INVOKE||kind==OP_ATOMIC||kind==OP_APPEND){
+   host.write(context,index);
+  }
+  index+=1u64;
+ }
 }
 
 extern "C" void loop_path_branch(Span yes_code,Span no_code,LoopPaths parent,

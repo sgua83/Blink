@@ -607,38 +607,6 @@ impl ApplicationLoads<'_, '_> {
                 || address.offset.is_none_or(|offset|self.constant(offset)==Some(0)) && self.same_position(source,written,true)
         })
     }
-    fn iteration_interference(&self, code: &[Inst], source: &IndexedSource, word: u32, scalar: Scalar, path: &bounds::Clause, state: &flow::LoopState, controls: &BTreeMap<Reg, Value>) -> Option<bounds::Proof> {
-        let mut result: Option<bounds::Proof> = None;
-        for inst in code {
-            let proof = match &inst.kind {
-                InstKind::If { condition, yes, no } => {
-                    let raw = Value { ty: Ty::scalar(Scalar::Bool), regs: vec![*condition], proof: bounds::Proof::default(), literal: false, uniform: false, constant: None };
-                    let condition = bounds::Condition::of(controls.get(condition).unwrap_or(&raw));
-                    let truth = condition.truth_in(path);
-                    let a = (truth != Some(false)).then(||self.iteration_interference(yes,source,word,scalar,&condition.assume(path,true),state,controls)).flatten();
-                    let b = (truth != Some(true)).then(||self.iteration_interference(no,source,word,scalar,&condition.assume(path,false),state,controls)).flatten();
-                    match (a,b) { (Some(mut a),Some(b))=>{a.join_condition(&b,1,None);Some(a)}, (a,None)|(None,a)=>a }
-                },
-                InstKind::Scope(body) => self.iteration_interference(body,source,word,scalar,path,state,controls),
-                InstKind::Loop{condition,body,..}=>match(self.iteration_interference(condition,source,word,scalar,path,state,controls),self.iteration_interference(body,source,word,scalar,path,state,controls)){
-                    (Some(mut a),Some(b))=>{a.join_condition(&b,1,None);Some(a)},(a,None)|(None,a)=>a,
-                },
-                InstKind::Call(call) if self.current_reference_writes(call,source,word,scalar) => None,
-                _ if self.field_store(source,word,scalar,inst,true).is_some() => None,
-                InstKind::StoreIndexed { value, .. } if self.writes_indexed(inst,source,word,scalar) => {
-                    // An overlapping store to another index can affect an earlier iteration.
-                    // Its actual scalar value is another possible final value, regardless of order.
-                    Some(if self.field_store(source,word,scalar,inst,false).is_some() {
-                        bounds::scoped_proof(&Ty::scalar(scalar), bounds::Proof::default().with_identity(ValueIdentity::Register(*value)), path, &state.env)
-                    } else { bounds::Proof::default() })
-                },
-                _ if self.writes_indexed(inst,source,word,scalar) => Some(bounds::Proof::default()),
-                _ => None,
-            };
-            if let Some(proof) = proof { if let Some(common)=&mut result { common.join_condition(&proof,1,None); } else { result=Some(proof); } }
-        }
-        result
-    }
     fn stored_write(
         &self, inst: &Inst, current: bounds::Proof, data: &Data, source: &IndexedSource,
         word: u32, scalar: Scalar, path: &bounds::Clause, state: &flow::LoopState,
@@ -764,7 +732,8 @@ impl Builder<'_> {
             let mut current = proof.project(&[component], ty.components.len());
             for state in states.clone() {
                 if let Some(source) = loads.stored_position(&self.code, &data.data, index, offset + word, scalar, state, writes) {
-                    if let Some(other) = loads.iteration_interference(&self.code, source, offset + word, scalar, &state.path, state, controls) { current.join_condition(&other, 1, None); }
+                    let query = InterferenceQuery { builder: self, source, word: offset + word, scalar, state, controls };
+                    if let Some(other) = query.walk(&self.code, &state.path) { current.join_condition(&other, 1, None); }
                 } else { current = bounds::Proof::default(); }
             }
             proof.assign(&[component], ty.components.len(), current);
@@ -889,6 +858,24 @@ enum StoredTransfer { Continue, Exit, Break }
 #[repr(u32)]
 enum StoredTruth { Both, Yes, No }
 
+fn stored_branch(
+    controls: &BTreeMap<Reg, Value>, reg: Reg, path: &bounds::Clause,
+) -> (bounds::Condition, StoredTruth) {
+    let condition = controls.get(&reg).map_or_else(
+        || bounds::Condition::of(&Value {
+            ty: Ty::scalar(Scalar::Bool), regs: vec![reg], proof: bounds::Proof::default(),
+            literal: false, uniform: false, constant: None,
+        }),
+        bounds::Condition::of,
+    );
+    let truth = match condition.truth_in(path) {
+        None => StoredTruth::Both,
+        Some(true) => StoredTruth::Yes,
+        Some(false) => StoredTruth::No,
+    };
+    (condition, truth)
+}
+
 #[repr(C)]
 struct StoredWriteHost {
     ir: dataflow::Host,
@@ -907,8 +894,8 @@ const STORED_WRITE_HOST: StoredWriteHost = StoredWriteHost {
 unsafe extern "C" {
     #[link_name = "bootstrap.ir_dataflow::stored_write_paths"]
     fn source_stored_write_paths(code: dataflow::Span, context: *mut c_void, host: StoredWriteHost);
-    #[link_name = "bootstrap.ir_dataflow::stored_write_arms"]
-    fn source_stored_write_arms(
+    #[link_name = "bootstrap.ir_dataflow::stored_arms"]
+    fn source_stored_arms(
         context: *mut c_void, truth: StoredTruth, arm: unsafe extern "C" fn(*mut c_void, u32, u32),
     );
 }
@@ -948,23 +935,12 @@ unsafe extern "C" fn stored_write_arm(context: *mut c_void, yes: u32, copy: u32)
 
 unsafe extern "C" fn stored_write_branch(context: *mut c_void, reg: Reg, yes: dataflow::Span, no: dataflow::Span) {
     let run = unsafe { &mut *context.cast::<StoredWriteRun<'_, '_, '_>>() };
-    let condition = run.query.controls.get(&reg).map_or_else(
-        || bounds::Condition::of(&Value {
-            ty: Ty::scalar(Scalar::Bool), regs: vec![reg], proof: bounds::Proof::default(),
-            literal: false, uniform: false, constant: None,
-        }),
-        bounds::Condition::of,
-    );
-    let truth = match condition.truth_in(run.path) {
-        None => StoredTruth::Both,
-        Some(true) => StoredTruth::Yes,
-        Some(false) => StoredTruth::No,
-    };
+    let (condition, truth) = stored_branch(run.query.controls, reg, run.path);
     let mut branch = StoredWriteBranch {
         query: run.query, path: run.path, code: unsafe { [no.as_slice(), yes.as_slice()] },
         condition, input: run.paths.next.take(), arms: [StoredWritePaths::default(), StoredWritePaths::default()],
     };
-    unsafe { source_stored_write_arms(ptr::from_mut(&mut branch).cast(), truth, stored_write_arm); }
+    unsafe { source_stored_arms(ptr::from_mut(&mut branch).cast(), truth, stored_write_arm); }
     let [no, yes] = branch.arms;
     let choice = Some(&branch.condition);
     run.paths.next = join_stored(yes.next, no.next, choice);
@@ -988,6 +964,105 @@ unsafe extern "C" fn stored_write_instruction(context: *mut c_void, index: usize
         &run.code[index], run.paths.next.take().unwrap(), query.data, query.source,
         query.word, query.scalar, run.path, query.state,
     ));
+}
+
+struct InterferenceQuery<'a, 'w> {
+    builder: &'a Builder<'w>,
+    source: &'a IndexedSource,
+    word: u32,
+    scalar: Scalar,
+    state: &'a flow::LoopState,
+    controls: &'a BTreeMap<Reg, Value>,
+}
+
+struct InterferenceRun<'a, 'input, 'w> {
+    query: &'a InterferenceQuery<'input, 'w>,
+    code: &'a [Inst],
+    path: &'a bounds::Clause,
+    result: Option<bounds::Proof>,
+}
+
+impl InterferenceQuery<'_, '_> {
+    fn walk(&self, code: &[Inst], path: &bounds::Clause) -> Option<bounds::Proof> {
+        let mut run = InterferenceRun { query: self, code, path, result: None };
+        unsafe { source_iteration_interference(dataflow::Span::slice(code), ptr::from_mut(&mut run).cast(), INTERFERENCE_HOST); }
+        run.result
+    }
+
+    fn write(&self, inst: &Inst, path: &bounds::Clause) -> Option<bounds::Proof> {
+        let loads = ApplicationLoads(self.builder);
+        let (source, word, scalar) = (self.source, self.word, self.scalar);
+        if matches!(&inst.kind, InstKind::Call(call) if loads.current_reference_writes(call, source, word, scalar))
+            || loads.field_store(source, word, scalar, inst, true).is_some()
+            || !loads.writes_indexed(inst, source, word, scalar)
+        {
+            return None;
+        }
+        // An overlapping store to another index can affect an earlier iteration.
+        // Its scalar value is another possible final value, regardless of order.
+        Some(match loads.field_store(source, word, scalar, inst, false) {
+            Some(value) => bounds::scoped_proof(
+                &Ty::scalar(scalar), bounds::Proof::default().with_identity(ValueIdentity::Register(value)), path, &self.state.env,
+            ),
+            None => bounds::Proof::default(),
+        })
+    }
+}
+
+#[repr(C)]
+struct InterferenceHost {
+    ir: dataflow::Host,
+    branch: unsafe extern "C" fn(*mut c_void, Reg, dataflow::Span, dataflow::Span),
+    nested: unsafe extern "C" fn(*mut c_void, dataflow::Span, dataflow::Span),
+    write: unsafe extern "C" fn(*mut c_void, usize),
+}
+
+const INTERFERENCE_HOST: InterferenceHost = InterferenceHost {
+    ir: dataflow::HOST, branch: interference_branch, nested: interference_nested, write: interference_write,
+};
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.ir_dataflow::iteration_interference"]
+    fn source_iteration_interference(code: dataflow::Span, context: *mut c_void, host: InterferenceHost);
+}
+
+struct InterferenceBranch<'a, 'input, 'w> {
+    query: &'a InterferenceQuery<'input, 'w>,
+    path: &'a bounds::Clause,
+    code: [&'a [Inst]; 2],
+    condition: bounds::Condition,
+    result: Option<bounds::Proof>,
+}
+
+unsafe extern "C" fn interference_arm(context: *mut c_void, yes: u32, _: u32) {
+    let branch = unsafe { &mut *context.cast::<InterferenceBranch<'_, '_, '_>>() };
+    let path = branch.condition.assume(branch.path, yes != 0);
+    let result = branch.query.walk(branch.code[yes as usize], &path);
+    branch.result = join_stored(branch.result.take(), result, None);
+}
+
+unsafe extern "C" fn interference_branch(context: *mut c_void, reg: Reg, yes: dataflow::Span, no: dataflow::Span) {
+    let run = unsafe { &mut *context.cast::<InterferenceRun<'_, '_, '_>>() };
+    let (condition, truth) = stored_branch(run.query.controls, reg, run.path);
+    let mut branch = InterferenceBranch {
+        query: run.query, path: run.path, code: unsafe { [no.as_slice(), yes.as_slice()] }, condition, result: None,
+    };
+    unsafe { source_stored_arms(ptr::from_mut(&mut branch).cast(), truth, interference_arm); }
+    run.result = join_stored(run.result.take(), branch.result, None);
+}
+
+unsafe extern "C" fn interference_nested(context: *mut c_void, first: dataflow::Span, second: dataflow::Span) {
+    let run = unsafe { &mut *context.cast::<InterferenceRun<'_, '_, '_>>() };
+    let first = run.query.walk(unsafe { first.as_slice() }, run.path);
+    // A scope has only the first span. A loop contributes its condition and body as one group.
+    let second = (second.count != 0).then(|| run.query.walk(unsafe { second.as_slice() }, run.path)).flatten();
+    run.result = join_stored(run.result.take(), join_stored(first, second, None), None);
+}
+
+unsafe extern "C" fn interference_write(context: *mut c_void, index: usize) {
+    let run = unsafe { &mut *context.cast::<InterferenceRun<'_, '_, '_>>() };
+    let proof = run.query.write(&run.code[index], run.path);
+    run.result = join_stored(run.result.take(), proof, None);
 }
 
 pub(super) fn pointer_type() -> Ty {
