@@ -1,6 +1,65 @@
 use super::*;
 use std::borrow::Cow;
 
+const PLAN_REACHABLE: u64 = 1;
+const PLAN_VARIABLE: u64 = 2;
+const PLAN_READS: u64 = 4;
+
+#[derive(Clone, Copy, Default)]
+#[repr(C)]
+struct PlanNode {
+    first: usize,
+    end: usize,
+    flags: u64,
+}
+
+#[derive(Clone, Copy, Default)]
+#[repr(C)]
+struct PlanState {
+    pending: usize,
+    users_start: usize,
+    users_count: usize,
+    changes: u64,
+}
+
+#[derive(Clone, Copy)]
+#[repr(C)]
+struct PlanOrder {
+    id: usize,
+    changes: u64,
+}
+
+#[repr(C)]
+struct PlanInput {
+    rows: *const PlanNode,
+    dependencies: *const usize,
+    count: usize,
+}
+
+#[repr(C)]
+struct PlanWorkspace {
+    states: *mut PlanState,
+    users: *mut usize,
+    ready: *mut usize,
+}
+
+#[repr(C)]
+struct PlanOutput {
+    ordered: *mut PlanOrder,
+    fixed_inputs: *mut u8,
+}
+
+struct EvaluationPlan {
+    ordered: Vec<PlanOrder>,
+    fixed_inputs: Vec<u8>,
+    completed: usize,
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.relation_order::plan"]
+    fn plan_relation(input: PlanInput, work: PlanWorkspace, output: PlanOutput) -> usize;
+}
+
 #[derive(Clone)]
 pub(in crate::check) enum Epoch { Input, Local { memory:usize, snapshots:Option<Arc<[ValueSnapshot]>> } }
 impl Epoch { fn key(&self)->Option<usize>{match self{Self::Input=>None,Self::Local{memory,..}=>Some(*memory)}} }
@@ -557,51 +616,57 @@ impl Graph {
         }))
     }
 
-    fn order(
-        &self, reachable: &BTreeSet<usize>, fixed_inputs: Option<&mut BTreeSet<usize>>,
-    ) -> Vec<(usize, bool)> {
-        let mut counts = BTreeMap::new();
-        let mut users: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
-        for &id in reachable.difference(&self.variables) {
-            let edges = &self.nodes[id].edges;
-            let mut dependencies: BTreeSet<_> = self.evaluation_dependencies(id).collect();
-
-            // A read can also use the evaluation scope's current loop bindings.
-            let mut feedback = edges.iter().any(|edge| matches!(edge.op, Op::Read { .. }));
-            dependencies.retain(|dependency| {
-                let variable = self.variables.contains(dependency);
-                feedback |= variable;
-                !variable
-            });
-            counts.insert(id, (dependencies.len(), feedback));
-            for dependency in dependencies {
-                users.entry(dependency).or_default().push(id);
+    fn evaluation_plan(
+        &self,
+        reachable: impl IntoIterator<Item = usize>,
+        materialize: bool,
+    ) -> EvaluationPlan {
+        let mut rows = vec![PlanNode::default(); self.nodes.len()];
+        let mut dependencies = Vec::new();
+        let mut ordinary_nodes = 0;
+        for id in reachable {
+            let variable = self.variables.contains(&id);
+            ordinary_nodes += usize::from(!variable);
+            let first = dependencies.len();
+            if materialize || !variable {
+                let predecessors: BTreeSet<_> = self.evaluation_dependencies(id).collect();
+                dependencies.extend(predecessors);
             }
+            let mut flags = PLAN_REACHABLE;
+            if variable {
+                flags |= PLAN_VARIABLE;
+            }
+            if materialize && self.nodes[id].edges.iter().any(|edge| matches!(edge.op, Op::Read { .. })) {
+                flags |= PLAN_READS;
+            }
+            rows[id] = PlanNode { first, end: dependencies.len(), flags };
         }
 
-        let mut ready = counts.iter().filter_map(|(&id, &(count, _))| {
-            (count == 0).then_some(id)
-        }).collect::<Vec<_>>();
-        let mut order = Vec::new();
-        while let Some(id) = ready.pop() {
-            let feedback = counts[&id].1;
-            order.push((id, feedback));
-            for &user in users.get(&id).into_iter().flatten() {
-                let (count, changes) = counts.get_mut(&user).unwrap();
-                *changes |= feedback;
-                *count -= 1;
-                if *count == 0 {
-                    ready.push(user);
-                }
-            }
+        let mut states = vec![PlanState::default(); rows.len()];
+        let mut users = Vec::<usize>::with_capacity(dependencies.len());
+        let mut ready = Vec::<usize>::with_capacity(ordinary_nodes);
+        let mut ordered = Vec::new();
+        let mut fixed_inputs = Vec::new();
+        let output = if materialize {
+            ordered.reserve(ordinary_nodes);
+            fixed_inputs.resize(rows.len(), 0);
+            PlanOutput { ordered: ordered.as_mut_ptr(), fixed_inputs: fixed_inputs.as_mut_ptr() }
+        } else {
+            PlanOutput { ordered: std::ptr::null_mut(), fixed_inputs: std::ptr::null_mut() }
+        };
+        // Each dependency can have one reverse entry, and each ordinary node is
+        // queued and emitted at most once. Only the emitted order is read here.
+        let completed = unsafe {
+            plan_relation(
+                PlanInput { rows: rows.as_ptr(), dependencies: dependencies.as_ptr(), count: rows.len() },
+                PlanWorkspace { states: states.as_mut_ptr(), users: users.as_mut_ptr(), ready: ready.as_mut_ptr() },
+                output,
+            )
+        };
+        if materialize {
+            unsafe { ordered.set_len(completed) };
         }
-        if let Some(fixed) = fixed_inputs {
-            fixed.extend(self.variables.intersection(reachable).copied().filter(|&id| {
-                !self.nodes[id].edges.iter().any(|edge| matches!(edge.op, Op::Read { .. }))
-                    && self.evaluation_dependencies(id).all(|dependency| counts.get(&dependency) == Some(&(0, false)))
-            }));
-        }
-        order
+        EvaluationPlan { ordered, fixed_inputs, completed }
     }
     pub(in crate::check) fn selected(&self,root:usize)->Self{
         let (reachable, frames) = self.reachable(root);
@@ -807,9 +872,9 @@ impl Graph {
         let loop_scopes = self.inputs.iter().filter_map(|(input, &node)| {
             evaluation.function.history.get(&input.level).map(|history| (node, (input.level, history)))
         }).collect::<BTreeMap<_, _>>();
-        let mut fixed_inputs = BTreeSet::new();
+        let EvaluationPlan { ordered, fixed_inputs, .. } = self.evaluation_plan(reachable.iter().copied(), true);
         let (mut stable, feedback): (Vec<_>, Vec<_>) =
-            self.order(&reachable, Some(&mut fixed_inputs)).into_iter().partition(|&(_, changes)| !changes);
+            ordered.into_iter().partition(|entry| entry.changes == 0);
         let mut variables = self.variables.intersection(&reachable)
             .map(|&id| (id, Borrow::default())).collect::<BTreeMap<_, _>>();
         let mut values = BTreeMap::new();
@@ -834,12 +899,12 @@ impl Graph {
                 variables: &variables,
                 values,
             };
-            for (id, _) in stable.drain(..).chain(feedback.iter().copied()) {
+            for id in stable.drain(..).chain(feedback.iter().copied()).map(|entry| entry.id) {
                 let value = query.definition(id, &mut scope);
                 query.values.insert(id, value);
             }
             // A fixed input has no reads or dependencies that can change on a backedge.
-            let next = variables.keys().copied().filter(|id| initial || !fixed_inputs.contains(id))
+            let next = variables.keys().copied().filter(|&id| initial || fixed_inputs[id] == 0)
                 .map(|id| {
                     let mut value = query.definition(id, &mut scope);
                     if let Some((level, history)) = loop_scopes.get(&id) {
@@ -880,8 +945,8 @@ impl Graph {
                 return self.rebind(value, &|| residual.get_or_init(|| Arc::new(self.residual(&query))));
             }
             values = query.values;
-            for &(id, _) in &feedback {
-                values.remove(&id);
+            for entry in &feedback {
+                values.remove(&entry.id);
             }
             variables.extend(next);
             initial = false;
@@ -2043,7 +2108,7 @@ const _: () = {
                 return status;
             }
             if output.nodes.is_empty()||output.variables.iter().any(|id|*id>=output.nodes.len())||output.nodes.iter().any(|n|n.edges.iter().any(|e|e.from>=output.nodes.len()||matches!(&e.op,Op::Read{frame:Some(f),..}|Op::Initial{frame:Some(f),..}if *f>=output.frames.len())))||output.frames.iter().enumerate().any(|(i,f)|f.parent.is_some_and(|p|p>=i)||f.writes.iter().any(|w|w.target>=output.nodes.len()||w.fields.iter().flatten().any(|(_,v)|*v>=output.nodes.len()))){return unsafe{contracts::fail(context,"invalid bound read relation")};}
-            if output.order(&(0..output.nodes.len()).collect(), None).len()
+            if output.evaluation_plan(0..output.nodes.len(), false).completed
                 != output.nodes.len() - output.variables.len()
             {
                 return unsafe {

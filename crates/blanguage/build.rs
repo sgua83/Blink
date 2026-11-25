@@ -251,6 +251,7 @@ const MODULES: &[&str] = &[
     "build_schedule",
     "build_digest",
     "view_liveness",
+    "relation_order",
     "return_scope",
     "source_writes",
     "operator_types",
