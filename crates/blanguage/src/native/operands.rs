@@ -138,14 +138,14 @@ pub(super) struct ScalarValueHost {
     pub(super) scalar: unsafe extern "C" fn(*const std::ffi::c_void, Reg) -> ScalarEncoding,
 }
 
-struct ScalarLocations<'a> {
-    allocation: &'a Allocation,
-    stage: &'a Stage,
-    frame: &'a Frame,
+pub(super) struct ScalarLocations<'a> {
+    pub(super) allocation: &'a Allocation,
+    pub(super) stage: &'a Stage,
+    pub(super) frame: &'a Frame,
 }
 
 impl ScalarLocations<'_> {
-    fn indexed_host(&self) -> IndexedAddressHost {
+    pub(super) fn indexed_host(&self) -> IndexedAddressHost {
         IndexedAddressHost {
             values: self.host(), tile_stream: indexed_tile_stream,
             buffer_bytes: BUFFER_BYTES, stride_field: BUFFER_STRIDE,
@@ -177,7 +177,7 @@ struct ScalarStorageHost {
 }
 
 #[repr(C)]
-struct IndexedAddressHost {
+pub(super) struct IndexedAddressHost {
     values: ScalarValueHost,
     tile_stream: unsafe extern "C" fn(*const std::ffi::c_void, usize, u32) -> u32,
     buffer_bytes: u32,
@@ -190,7 +190,7 @@ unsafe extern "C" fn indexed_tile_stream(context: *const std::ffi::c_void, tile:
     locations.frame.tile_shared[&locations.stage.shared_word(tile, word).aligned()]
 }
 
-unsafe extern "C" fn value_local(context: *const std::ffi::c_void, local: usize) -> MoveLocation {
+pub(super) unsafe extern "C" fn value_local(context: *const std::ffi::c_void, local: usize) -> MoveLocation {
     let locations = unsafe { &*context.cast::<ScalarLocations<'_>>() };
     locations.allocation.location(PrivateSlot::Local(local)).into()
 }
@@ -409,9 +409,6 @@ impl Emitter<'_> {
     }
     pub(super) fn float(&mut self, r: Reg, xmm: u8) {
         self.copy_scalar(Location::Xmm(xmm), self.location(r), self.stage.registers[r]);
-    }
-    pub(super) fn store_float(&mut self, r: Reg) {
-        self.copy_scalar(self.location(r), Location::Xmm(0), self.stage.registers[r]);
     }
     pub(super) fn literal_width(&mut self, dst: Location, bits: Bits, wide: bool) {
         self.copy_move(dst, Location::Immediate(bits), if wide { 8 } else { 4 }, false);

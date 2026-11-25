@@ -1,6 +1,7 @@
 module bootstrap.call_layout;
 import bootstrap.x64_instruction;
 import bootstrap.ir_dataflow;
+import bootstrap.scalar_fold;
 
 u32 padded(u32 size, u32 alignment) on cpu {
     return (size + alignment - 1) & ~(alignment - 1);
@@ -74,35 +75,83 @@ extern "C" u64 outgoing_bytes(address context, u64 count, AbiType result, u32 fl
     return call_stack(context, count, result, first_slot, flags, argument, true).bytes;
 }
 
-extern "C" void emit_call(address context, u64 count, AbiType result, u32 flags, CallHost host)
-    on cpu requires nonzero(host.argument) requires nonzero(host.place) requires nonzero(host.action) {
-    ResultLocation location = result_location(result, flags);
+Node call_argument(Span arguments, u64 index) on cpu {
+    address value = unsafe_address(address_bits(arguments.data) + index * u64(arguments.stride));
+    return Node(value, N_ARGUMENT);
+}
+
+MoveLocation call_home(u64 offset) on cpu {
+    // MoveLocation kind 2 is the shared x64 memory operand, without an index.
+    return MoveLocation(offset, u8(2), u8(4), u8(255), u8(0));
+}
+
+u64 call_value_at(u64 cursor, u32 home, CallValueLoan value, AbiMemoryMode mode,
+    cfn<AbiValueComponent,address,u64> component) on cpu requires nonzero(component) {
+    u64 count = min(u64(value.components.count), u64(value.values.count));
+    return cursor + abi_value(home, count, mode, address_of(value), component, unsafe_address(cursor));
+}
+
+extern "C" SymbolEncoding emit_call(address context, CallInput input, CallHost host) on cpu
+    requires nonzero(host.addresses.values.ir.inspect)
+    requires nonzero(host.addresses.values.location) requires nonzero(host.addresses.values.scalar)
+    requires nonzero(host.addresses.tile_stream) requires nonzero(host.local)
+    requires nonzero(host.argument) requires nonzero(host.loan)
+    requires nonzero(host.component) requires nonzero(host.reserve) {
+    ScalarValueHost values = host.addresses.values;
+    View call = values.ir.inspect(input.source);
+    View target = values.ir.inspect(call.left);
+    u64 count = u64(call.first.count);
+    ResultLocation location = result_location(input.result, input.flags);
     bool hidden = location == ResultLocation::Indirect;
-    bool indirect_target = (flags & 2) != 0;
+    bool indirect_target = target.tag == 2;
     u64 first_slot = hidden ? 1u64 : 0u64;
     CallStack frame = CallStack(32u64, 0u64, 32u64);
     if (indirect_target || first_slot + count > 4u64) {
-        frame = call_stack(context, count, result, first_slot, flags, host.argument, indirect_target);
+        frame = call_stack(context, count, input.result, first_slot, input.flags, host.argument, indirect_target);
     }
-    if (indirect_target) { host.action(context, CallAction::SaveTarget, frame.target, 0); }
-    if (hidden) { host.action(context, CallAction::ResultAddress, frame.homes, 0); }
 
-    // The register kinds are used after all real argument homes have been written.
+    // A reference can use 168 address bytes plus a 24-byte move. Values
+    // need at most two 16-byte prefixes plus 24 bytes per component.
+    u64 capacity = 192u64 + 192u64 * count + 48u64 * u64(input.values.values.count);
+    u64 index = 0u64;
+    while (index < count) {
+        View arg = values.ir.inspect(call_argument(call.first, index));
+        capacity += 24u64 * u64(arg.first.count);
+        index += 1u64;
+    }
+    u64 start = address_bits(host.reserve(context, capacity));
+    u64 cursor = start;
+    MoveLocation rax = MoveLocation(0u64, u8(0), u8(0), u8(255), u8(0));
+    if (indirect_target) {
+        MoveEncoding saved = copy_scalar_move(call_home(frame.target), values.location(values.context, target.a),
+            8, false, unsafe_address(cursor));
+        cursor += saved.length;
+    }
+    if (hidden) { cursor += abi_stack_pointer(u32(frame.homes), 0, unsafe_address(cursor)); }
     array<u32,4> register_widths = array<u32,4>(0, 0, 0, 0);
     u64 slot = first_slot;
-    u64 end = frame.homes + (hidden ? u64(padded(result.size, result.alignment)) : 0u64);
-    u64 index = 0u64;
+    u64 end = frame.homes + (hidden ? u64(padded(input.result.size, input.result.alignment)) : 0u64);
+    index = 0u64;
     while (index < count) {
         AbiType value = host.argument(context, index);
         if (has_slot(value)) {
             u64 home = slot_home(0u64, slot);
-            u64 payload = home;
-            bool copied = value.value != 0 && indirect(value.size, value.alignment);
-            if (copied) {
-                payload = copy_start(end);
-                end = payload + u64(padded(value.size, value.alignment));
+            if (value.value == 0) {
+                View arg = values.ir.inspect(call_argument(call.first, index));
+                cursor += emit_reference_address(arg.left, host.addresses, host.local, unsafe_address(cursor));
+                MoveEncoding stored = copy_scalar_move(call_home(home), rax, 8, false, unsafe_address(cursor));
+                cursor += stored.length;
+            } else {
+                CallValueLoan loan = host.loan(context, index);
+                if (indirect(value.size, value.alignment)) {
+                    u64 payload = copy_start(end);
+                    end = payload + u64(padded(value.size, value.alignment));
+                    cursor = call_value_at(cursor, u32(payload), loan, AbiMemoryMode::StackStore, host.component);
+                    cursor += abi_stack_pointer(u32(payload), u32(home), unsafe_address(cursor));
+                } else {
+                    cursor = call_value_at(cursor, u32(home), loan, AbiMemoryMode::StackStore, host.component);
+                }
             }
-            host.place(context, CallPlace(index, home, payload, copied ? 1 : 0));
             if (slot < 4u64) { register_widths[u32(slot)] = value.float_size; }
             slot += 1u64;
         }
@@ -110,21 +159,42 @@ extern "C" void emit_call(address context, u64 count, AbiType result, u32 flags,
     }
     for (reg in 0..4) {
         if (u64(reg) == slot) { break; }
-        host.action(context, CallAction::LoadRegister, u64(reg), register_widths[reg]);
+        cursor += argument_register(u8(reg), register_widths[reg], false, unsafe_address(cursor));
     }
-    host.action(context, CallAction::Invoke, frame.target, 0);
 
-    bool fallible = (flags & 1) != 0;
-    u64 failed = 0u64;
-    if (fallible) { failed = host.action(context, CallAction::CaptureError, 0u64, 0); }
-    if (location == ResultLocation::Indirect) {
-        host.action(context, CallAction::ReadIndirect, frame.homes, 0);
-    } else if (location == ResultLocation::Float) {
-        host.action(context, CallAction::ReadFloat, 0u64, 0);
-    } else if (location == ResultLocation::Integer) {
-        host.action(context, CallAction::ReadInteger, 0u64, 0);
+    u64 relocation = 0u64;
+    if (indirect_target) {
+        cursor += call_slot(u32(frame.target), unsafe_address(cursor));
+    } else {
+        SymbolEncoding symbol = symbol_target(true, unsafe_address(cursor));
+        relocation = cursor - start + symbol.field;
+        cursor += symbol.length;
     }
-    if (fallible) { host.action(context, CallAction::CloseError, failed, 0); }
+
+    bool fallible = (input.flags & 1) != 0;
+    u64 failed = 0u64;
+    if (fallible) {
+        ScalarEncoding scalar = values.scalar(values.context, input.error);
+        MoveEncoding stored = copy_scalar_move(values.location(values.context, input.error), rax,
+            scalar.width / 8, scalar.kind == ScalarKind::Signed, unsafe_address(cursor));
+        cursor += stored.length;
+        cursor += encode_branch(u8(0x85), 64, unsafe_address(cursor));
+        failed = cursor - 4u64;
+    }
+    if (location == ResultLocation::Indirect) {
+        cursor = call_value_at(cursor, u32(frame.homes), input.values, AbiMemoryMode::StackLoad, host.component);
+    } else if (location == ResultLocation::Float) {
+        usize reg = unsafe_position<usize>(input.values.values.data);
+        ScalarEncoding scalar = values.scalar(values.context, reg);
+        MoveLocation xmm0 = MoveLocation(0u64, u8(1), u8(0), u8(255), u8(0));
+        MoveEncoding returned = copy_scalar_move(values.location(values.context, reg), xmm0,
+            scalar.width / 8, scalar.kind == ScalarKind::Signed, unsafe_address(cursor));
+        cursor += returned.length;
+    } else if (location == ResultLocation::Integer) {
+        cursor = call_value_at(cursor, u32(frame.homes), input.values, AbiMemoryMode::UnpackIntegerResult, host.component);
+    }
+    if (fallible) { patch_relative(unsafe_address(failed), failed - start, cursor - start); }
+    return SymbolEncoding(cursor - start, relocation);
 }
 
 u64 move_function_parameter(address context, u64 index, u64 slot, u64 home, u64 first,
