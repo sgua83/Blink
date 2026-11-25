@@ -14,9 +14,10 @@ extern "C" ColorLayout color(address graph, u64 count, address places, address o
     cfn<u64,address,u64,bool,u64> next) on cpu
     requires nonzero(node) requires nonzero(next);
 
-// The supplied places already contain the declaration's field byte offsets.
-extern "C" u64 place_private(address places, u64 count, u64 data_end, u64 bytes, u64 alignment)
-    on cpu requires nonzero(alignment);
+// The cursor borrows original declaration offsets through the final stack write.
+struct PrivateDeclaration { Span offsets; usize begin; u32 size; u32 alignment; };
+extern "C" u64 place_private(address places, u64 data_end, usize registers, address context,
+    cfn<PrivateDeclaration,address> next) on cpu requires nonzero(next);
 
 // Every definition updates its original machine place before coloring.
 extern "C" void record_definition(address place, u32 literal, u64 bits) on cpu;

@@ -164,17 +164,26 @@ extern "C" ColorLayout color(address graph, u64 count, address places, address o
     return ColorLayout(end, saved_gpr, saved_xmm);
 }
 
-extern "C" u64 place_private(address places, u64 count, u64 data_end, u64 bytes, u64 alignment)
-    on cpu requires nonzero(alignment) {
-    u64 base = ((data_end + alignment - 1u64) / alignment) * alignment;
-    u64 index = 0u64;
-    while (index < count) {
-        address at = place_at(places, index);
-        unsafe_position<ColorPlace>(at).value += base;
-        unsafe_position<ColorPlace>(at).kind = STACK;
-        index += 1u64;
+extern "C" u64 place_private(address places, u64 data_end, usize registers, address context,
+    cfn<PrivateDeclaration,address> next) on cpu requires nonzero(next) {
+    u64 end = data_end;
+    while (true) {
+        PrivateDeclaration declaration = next(context);
+        Span offsets = declaration.offsets;
+        if (address_bits(offsets.data) == 0u64) { return end; }
+        u64 alignment = declaration.alignment > 16 ? u64(declaration.alignment) : 16u64;
+        u64 base = ((end + alignment - 1u64) / alignment) * alignment;
+        usize first = registers + declaration.begin;
+        usize index = 0u64;
+        while (index < offsets.count) {
+            address offset = unsafe_address(address_bits(offsets.data) + u64(index) * u64(offsets.stride));
+            address place = place_at(places, u64(first + index));
+            unsafe_position<ColorPlace>(place).value = base + u64(unsafe_position<u32>(offset));
+            unsafe_position<ColorPlace>(place).kind = STACK;
+            index += 1u64;
+        }
+        end = base + u64(declaration.size);
     }
-    return base + bytes;
 }
 
 extern "C" void record_definition(address place, u32 literal, u64 bits) on cpu {

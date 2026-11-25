@@ -1,6 +1,7 @@
 //! 按结构化 IR 活跃性着色；调用跨越值使用 ABI 保留寄存器，溢出槽按干涉复用。
 use super::*;
-use std::{collections::BTreeSet, ffi::c_void};
+use crate::ir::dataflow::Span;
+use std::{collections::{BTreeSet, btree_set}, ffi::c_void};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) enum Location {
@@ -167,6 +168,33 @@ impl ColorPlace {
 }
 
 
+#[repr(C)]
+struct PrivateDeclaration {
+    offsets: Span,
+    begin: usize,
+    size: u32,
+    alignment: u32,
+}
+
+struct PrivateDeclarations<'a> {
+    spans: btree_set::Iter<'a, (usize, usize)>,
+    locals: &'a std::collections::BTreeMap<usize, Ty>,
+}
+
+unsafe extern "C" fn next_private_declaration(context: *mut c_void) -> PrivateDeclaration {
+    let state = unsafe { &mut *context.cast::<PrivateDeclarations<'_>>() };
+    let Some(&(begin, end)) = state.spans.next() else {
+        return PrivateDeclaration { offsets: Span::EMPTY, begin: 0, size: 0, alignment: 0 };
+    };
+    let ty = &state.locals[&end];
+    PrivateDeclaration {
+        offsets: Span::field(&ty.components, |component| &component.1),
+        begin,
+        size: ty.size,
+        alignment: ty.align,
+    }
+}
+
 unsafe extern "C" {
     #[link_name = "bootstrap.coloring::color"]
     fn color(
@@ -176,8 +204,10 @@ unsafe extern "C" {
         next: unsafe extern "C" fn(*const c_void, u64, bool, u64) -> u64,
     ) -> ColorLayout;
     #[link_name = "bootstrap.coloring::place_private"]
-    fn place_private(places: *mut ColorPlace, count: usize, data_end: u64, bytes: u64,
-        alignment: u64) -> u64;
+    fn place_private(
+        places: *mut ColorPlace, data_end: u64, registers: usize, context: *mut c_void,
+        next: unsafe extern "C" fn(*mut c_void) -> PrivateDeclaration,
+    ) -> u64;
 }
 unsafe extern "C" fn color_node(graph: *const c_void, id: u64) -> ColorNode {
     let graph = unsafe { &*graph.cast::<Graph>() };
@@ -214,20 +244,11 @@ impl Allocation {
         let mut layout = color_locations(
             graph, &mut locations, u32::from(tile_scope), graph.outgoing_bytes,
         );
-        for &(begin, end) in &graph.private {
-            let ty = &locals[&end];
-            let first = graph.registers + begin;
-            let count = (begin..end).len().min(ty.components.len());
-            let places = &mut locations[first..first + count];
-            for (place, (_, offset)) in places.iter_mut().zip(&ty.components) {
-                place.value = u64::from(*offset);
-            }
-            // B lays out only this declaration's borrowed location slice.
-            layout.end = unsafe {
-                place_private(places.as_mut_ptr(), places.len(), layout.end,
-                    u64::from(ty.size), u64::from(ty.align.max(16)))
-            };
-        }
+        let mut private = PrivateDeclarations { spans: graph.private.iter(), locals };
+        layout.end = unsafe {
+            place_private(locations.as_mut_ptr(), layout.end, graph.registers,
+                std::ptr::from_mut(&mut private).cast(), next_private_declaration)
+        };
         Self {
             locations,
             registers: graph.registers,
