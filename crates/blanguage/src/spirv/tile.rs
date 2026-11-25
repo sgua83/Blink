@@ -16,7 +16,7 @@ enum TilePhaseKind { End, Plain, Publish, Barrier, Collective }
 
 #[repr(C)]
 struct TilePhaseView {
-    code: InstructionBlock,
+    code: Span,
     step: *const c_void,
     kind: TilePhaseKind,
 }
@@ -60,7 +60,7 @@ unsafe extern "C" {
 unsafe extern "C" fn next_tile_phase(cursor: *mut c_void) -> TilePhaseView {
     let cursor = unsafe { &mut *cursor.cast::<TilePhaseCursor<'_>>() };
     let Some(phase) = cursor.phases.next() else {
-        return TilePhaseView { code: (&[] as &[Inst]).into(), step: std::ptr::null(), kind: TilePhaseKind::End };
+        return TilePhaseView { code: Span::EMPTY, step: std::ptr::null(), kind: TilePhaseKind::End };
     };
     cursor.saved = phase.saved.iter();
     let (kind, step) = match phase.step.map(|inst| &inst.kind) {
@@ -69,7 +69,7 @@ unsafe extern "C" fn next_tile_phase(cursor: *mut c_void) -> TilePhaseView {
         Some(InstKind::TileBarrier) => (TilePhaseKind::Barrier, std::ptr::null()),
         _ => (TilePhaseKind::Plain, std::ptr::null()),
     };
-    TilePhaseView { code: phase.code.into(), step, kind }
+    TilePhaseView { code: Span::slice(phase.code), step, kind }
 }
 
 unsafe extern "C" fn next_tile_value(cursor: *mut c_void, context: StructuredContext) -> TilePhaseValue {

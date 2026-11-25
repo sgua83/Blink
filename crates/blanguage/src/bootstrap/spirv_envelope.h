@@ -412,17 +412,8 @@ extern "C" ControlWords next_control_block(u32 target, u32 label, u32 reaches, a
 extern "C" u64 phi_two(address body, u64 at, u32 type, u32 result,
                         u32 first_value, u32 first_block, u32 second_value, u32 second_block) on cpu;
 // Borrowed original blocks. The host owns instruction storage and word buffers.
-enum StructuredKind:u32 { Selection=0; Loop=1; };
 enum BlockFlow:u32 { Error=0; Stop=1; Next=2; };
-struct InstructionBlock { address data; usize count; };
 struct ControlTargets { u32 end; u32 next; };
-struct StructuredControl {
-    InstructionBlock first;
-    InstructionBlock second;
-    usize test;
-    ControlTargets targets;
-    StructuredKind kind;
-};
 enum ControlConstant:u32 { Selector=0; Flag=1; };
 struct ReturnTargets { u32 function_merge; u32 loop_merge; address loop_edges; u32 label; };
 struct StructuredHost {
@@ -430,9 +421,9 @@ struct StructuredHost {
     cfn<u32,address,u32> labels;
     cfn<address,address,usize> reserve_words;
     cfn<void,address,ControlWords> finish_words;
-    cfn<BlockFlow,address,InstructionBlock,ControlTargets> block;
+    cfn<BlockFlow,address,Span,ControlTargets> block;
     cfn<u32,address,usize> value;
-    cfn<u32,address,InstructionBlock,u32> begin_return;
+    cfn<u32,address,Span,u32> begin_return;
     cfn<void,address,u32> normal_exit;
     cfn<void,address> finish_return;
     cfn<u32,address,ControlConstant,u32> constant;
@@ -441,13 +432,66 @@ struct StructuredHost {
     cfn<ReturnTargets,address> exit_targets;
     cfn<void,address,u32> record_return;
 };
-extern "C" BlockFlow lower_structured(StructuredControl input, StructuredHost host) on cpu
+enum BlockRejection:u32 { Print=0; CpuCall=1; CpuTexture=2; CpuAddress=3; CpuFunction=4; FloatMath=5; };
+struct BlockHost {
+    Host ir;
+    cfn<BlockFlow,address,BlockRejection> reject;
+    cfn<void,address,address,address,Span,usize> texture_sample;
+    cfn<void,address,address> ray;
+    cfn<BlockFlow,address,address> atomic;
+    cfn<void,address,address> append;
+    cfn<void,address,usize,SubgroupOperation,Span,Span> subgroup;
+    cfn<void,address> barrier;
+    cfn<void,address,address> publish;
+    cfn<void,address,address> collective;
+    cfn<void,address,usize> tile_length;
+    cfn<void,address,usize> tile_lane;
+    cfn<void,address,usize,usize,usize,u32,usize,u32> tile_load;
+    cfn<void,address,usize,usize,usize,u32,usize> tile_store;
+    cfn<void,address,usize,address,address,usize,u32> view_load;
+    cfn<void,address,usize,address,usize,u32> indexed_load;
+    cfn<void,address,address,usize,u32,usize> indexed_store;
+    cfn<void,address,usize,BuiltinScalar,u64> constant_bits;
+    cfn<void,address,usize,u64,u32> float_constant;
+    cfn<void,address,usize> index;
+    cfn<void,address,usize,u32> uniform;
+    cfn<void,address,usize,usize> local_load;
+    cfn<void,address,usize,usize> local_store;
+    cfn<void,address,usize,usize,usize,u32> private_load;
+    cfn<void,address,usize,usize,usize,u32> private_store;
+    cfn<void,address,usize,usize,usize,u32> load;
+    cfn<void,address,usize,usize,u32,usize> store;
+    cfn<void,address,usize,usize,u32> unary;
+    cfn<void,address,usize,usize,usize,address> binary;
+    cfn<void,address,address,usize,address> divide;
+    cfn<void,address,usize,usize> cast;
+    cfn<u64,address,usize,u32,Span> math;
+    cfn<void,address,usize,usize,usize,usize> select_value;
+};
+extern "C" BlockFlow emit_instruction_block(Span code, ControlTargets targets,
+    StructuredHost host, BlockHost emit) on cpu
+    requires nonzero(emit.ir.inspect) requires nonzero(emit.reject)
+    requires nonzero(emit.texture_sample) requires nonzero(emit.ray) requires nonzero(emit.atomic)
+    requires nonzero(emit.append) requires nonzero(emit.subgroup) requires nonzero(emit.barrier)
+    requires nonzero(emit.publish) requires nonzero(emit.collective)
+    requires nonzero(emit.tile_length) requires nonzero(emit.tile_lane)
+    requires nonzero(emit.tile_load) requires nonzero(emit.tile_store)
+    requires nonzero(emit.view_load) requires nonzero(emit.indexed_load) requires nonzero(emit.indexed_store)
+    requires nonzero(emit.constant_bits) requires nonzero(emit.float_constant)
+    requires nonzero(emit.index) requires nonzero(emit.uniform)
+    requires nonzero(emit.local_load) requires nonzero(emit.local_store)
+    requires nonzero(emit.private_load) requires nonzero(emit.private_store)
+    requires nonzero(emit.load) requires nonzero(emit.store)
+    requires nonzero(emit.unary) requires nonzero(emit.binary) requires nonzero(emit.divide)
+    requires nonzero(emit.cast) requires nonzero(emit.math) requires nonzero(emit.select_value)
     requires nonzero(host.labels) requires nonzero(host.reserve_words) requires nonzero(host.finish_words)
     requires nonzero(host.block) requires nonzero(host.value) requires nonzero(host.begin_return)
-    requires nonzero(host.normal_exit) requires nonzero(host.finish_return);
+    requires nonzero(host.normal_exit) requires nonzero(host.finish_return)
+    requires nonzero(host.constant) requires nonzero(host.open_function) requires nonzero(host.close_function)
+    requires nonzero(host.exit_targets) requires nonzero(host.record_return);
 
 enum TilePhaseKind:u32 { End=0; Plain=1; Publish=2; Barrier=3; Collective=4; };
-struct TilePhaseView { InstructionBlock code; address step; TilePhaseKind kind; };
+struct TilePhaseView { Span code; address step; TilePhaseKind kind; };
 struct TilePhaseValue { usize register; u32 value; u32 value_type; u32 module_constant; };
 struct TilePhaseHost {
     address cursor;
@@ -467,18 +511,10 @@ extern "C" void emit_tile_phases(u32 active, StructuredHost control, TilePhaseHo
     requires nonzero(host.publish) requires nonzero(host.barrier) requires nonzero(host.collective)
     requires nonzero(host.zero) requires nonzero(host.bind);
 
-extern "C" void lower_function_scope(InstructionBlock body, StructuredHost host) on cpu
-    requires nonzero(host.labels) requires nonzero(host.constant) requires nonzero(host.reserve_words)
-    requires nonzero(host.finish_words) requires nonzero(host.open_function) requires nonzero(host.block)
-    requires nonzero(host.close_function);
-extern "C" u32 lower_function_exit(StructuredHost host) on cpu
-    requires nonzero(host.exit_targets) requires nonzero(host.record_return) requires nonzero(host.reserve_words)
-    requires nonzero(host.finish_words);
 extern "C" void lower_return_loop(address edges, u32 count, u32 bool_type, StructuredHost host) on cpu
     requires nonzero(host.labels) requires nonzero(host.constant) requires nonzero(host.exit_targets)
     requires nonzero(host.record_return) requires nonzero(host.reserve_words) requires nonzero(host.finish_words);
 
-extern "C" ControlWords leave_control(u32 target, address body) on cpu;
 
 struct SubgroupEmission {
     SubgroupOperation operation;

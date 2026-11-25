@@ -263,7 +263,7 @@ impl Emitter<'_> {
         }
         self.custom_arguments(&r.ty, &kernel.left, left);
         self.custom_arguments(&r.ty, &kernel.right, right);
-        self.block(&kernel.stage.code[kernel.project_end..], None)?;
+        self.block(&kernel.stage.code[kernel.project_end..])?;
         let values: Vec<_> = kernel.result.iter().map(|reg| self.raw_bits(*reg)).collect();
         Ok(self.pack_words(r.ty.size, r.ty.components.iter().zip(&values).map(|((scalar, byte), value)| (*scalar, *byte, *value))))
     }
@@ -281,10 +281,7 @@ impl Emitter<'_> {
         let k = r.ty.size.div_ceil(4) as usize;
         let words = summary.words(k);
         let tags = words - k;
-        self.block(
-            &kernel.stage.code[kernel.invariant_end..kernel.initialize_end],
-            None,
-        )?;
+        self.block(&kernel.stage.code[kernel.invariant_end..kernel.initialize_end])?;
         let initial: Vec<_> = kernel.initial.iter().map(|reg| self.raw_bits(*reg)).collect();
         let mut identity = self.pack_words(r.ty.size, r.ty.components.iter().zip(&initial)
             .map(|((scalar, byte), value)| (*scalar, *byte, *value)));
@@ -327,7 +324,7 @@ impl Emitter<'_> {
                 let scalar = kernel.stage.registers[*reg];
                 self.from_words(*reg, &[*raw], Self::raw_scalar(scalar));
             }
-            self.block(&kernel.stage.code[kernel.initialize_end..kernel.project_end], None)?;
+            self.block(&kernel.stage.code[kernel.initialize_end..kernel.project_end])?;
             for (dst, src) in kernel.right.iter().zip(&kernel.projected) {
                 self.regs[*dst] = self.value(*src);
             }

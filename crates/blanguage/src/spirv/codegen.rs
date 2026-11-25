@@ -1,5 +1,6 @@
 //! 按 SPIR-V 1.4 标准直接编码；不调用 HLSL/GLSL 或第三方编译器。
 use crate::ir::*;
+use crate::ir::dataflow::{self, Span};
 use crate::builtin_types::{ScalarBinaryOp, ScalarCode};
 use super::{PAGE_BYTES, PREFIX_LEVELS, SCAN_WIDTH, ProgramImage, ShaderCode, StageCode};
 #[path = "append.rs"]
@@ -661,42 +662,10 @@ struct ControlWords {
 }
 
 #[repr(u32)]
-enum StructuredKind { Selection, Loop }
-
-#[repr(u32)]
-enum BlockFlow { Error, Stop, Next }
-
-#[repr(C)]
-struct InstructionBlock { data: *const std::ffi::c_void, count: usize }
-impl From<&[Inst]> for InstructionBlock {
-    fn from(code: &[Inst]) -> Self {
-        Self { data: code.as_ptr().cast(), count: code.len() }
-    }
-}
-impl InstructionBlock {
-    unsafe fn original(&self) -> &[Inst] {
-        unsafe { std::slice::from_raw_parts(self.data.cast(), self.count) }
-    }
-}
+enum BlockFlow { Error, #[allow(dead_code)] Stop, Next }
 
 #[repr(C)]
 struct ControlTargets { end: u32, next: u32 }
-impl From<Option<(u32, u32)>> for ControlTargets {
-    fn from(targets: Option<(u32, u32)>) -> Self {
-        let (end, next) = targets.unwrap_or_default();
-        Self { end, next }
-    }
-}
-
-#[repr(C)]
-struct StructuredControl {
-    first: InstructionBlock,
-    second: InstructionBlock,
-    test: Reg,
-    targets: ControlTargets,
-    kind: StructuredKind,
-}
-
 #[allow(dead_code)] // B requests these two constants.
 #[repr(u32)]
 enum ControlConstant { Selector, Flag }
@@ -715,9 +684,9 @@ struct StructuredHost {
     labels: unsafe extern "C" fn(*mut std::ffi::c_void, u32) -> u32,
     reserve_words: unsafe extern "C" fn(*mut std::ffi::c_void, usize) -> *mut u32,
     finish_words: unsafe extern "C" fn(*mut std::ffi::c_void, ControlWords),
-    block: unsafe extern "C" fn(*mut std::ffi::c_void, InstructionBlock, ControlTargets) -> BlockFlow,
+    block: unsafe extern "C" fn(*mut std::ffi::c_void, Span, ControlTargets) -> BlockFlow,
     value: unsafe extern "C" fn(*mut std::ffi::c_void, Reg) -> u32,
-    begin_return: unsafe extern "C" fn(*mut std::ffi::c_void, InstructionBlock, u32) -> u32,
+    begin_return: unsafe extern "C" fn(*mut std::ffi::c_void, Span, u32) -> u32,
     normal_exit: unsafe extern "C" fn(*mut std::ffi::c_void, u32),
     finish_return: unsafe extern "C" fn(*mut std::ffi::c_void),
     constant: unsafe extern "C" fn(StructuredContext, ControlConstant, u32) -> u32,
@@ -767,22 +736,18 @@ unsafe extern "C" fn structured_finish(context: StructuredContext, emitted: Cont
     unsafe { (&mut *context.cast::<StructuredEmission<'_, '_>>()).emitter.finish_control(emitted); }
 }
 unsafe extern "C" fn structured_block(
-    context: StructuredContext, code: InstructionBlock, targets: ControlTargets,
+    context: StructuredContext, code: Span, targets: ControlTargets,
 ) -> BlockFlow {
-    let emission = unsafe { &mut *context.cast::<StructuredEmission<'_, '_>>() };
-    let targets = (targets.end != 0).then_some((targets.end, targets.next));
-    match emission.emitter.block(unsafe { code.original() }, targets) {
-        Ok(true) => BlockFlow::Next,
-        Ok(false) => BlockFlow::Stop,
-        Err(error) => { emission.error = Some(error); BlockFlow::Error }
-    }
+    let host = unsafe { &mut *context.cast::<StructuredEmission<'_, '_>>() }.host();
+    unsafe { emit_instruction_block(code, targets, host, BLOCK_HOST) }
 }
+
 unsafe extern "C" fn structured_value(context: StructuredContext, register: Reg) -> u32 {
     unsafe { &*context.cast::<StructuredEmission<'_, '_>>() }.emitter.value(register)
 }
-unsafe extern "C" fn structured_begin_return(context: StructuredContext, body: InstructionBlock, merge: u32) -> u32 {
+unsafe extern "C" fn structured_begin_return(context: StructuredContext, body: Span, merge: u32) -> u32 {
     let emitter = &mut unsafe { &mut *context.cast::<StructuredEmission<'_, '_>>() }.emitter;
-    u32::from(emitter.begin_return_loop(unsafe { body.original() }, merge))
+    u32::from(emitter.begin_return_loop(unsafe { body.as_slice() }, merge))
 }
 unsafe extern "C" fn structured_normal_exit(context: StructuredContext, end: u32) {
     let emitter = &mut unsafe { &mut *context.cast::<StructuredEmission<'_, '_>>() }.emitter;
@@ -791,6 +756,323 @@ unsafe extern "C" fn structured_normal_exit(context: StructuredContext, end: u32
 unsafe extern "C" fn structured_finish_return(context: StructuredContext) {
     unsafe { &mut *context.cast::<StructuredEmission<'_, '_>>() }.emitter.finish_return_loop();
 }
+
+// The B block emitter selects each operation. These callbacks borrow the corresponding
+// payload or resolve its operands in the original emitter and invoke a single encoder.
+#[repr(u32)]
+#[allow(dead_code)] // Selected by the B block emitter.
+enum BlockRejection { Print, CpuCall, CpuTexture, CpuAddress, CpuFunction, FloatMath }
+
+#[repr(C)]
+struct BlockHost {
+    ir: dataflow::Host,
+    reject: unsafe extern "C" fn(StructuredContext, BlockRejection) -> BlockFlow,
+    texture_sample: unsafe extern "C" fn(StructuredContext, *const [Reg; 4], *const TextureSource, Span, Reg),
+    ray: unsafe extern "C" fn(StructuredContext, *const Inst),
+    atomic: unsafe extern "C" fn(StructuredContext, *const Inst) -> BlockFlow,
+    append: unsafe extern "C" fn(StructuredContext, *const Inst),
+    subgroup: unsafe extern "C" fn(StructuredContext, Reg, SubgroupOp, Span, Span),
+    barrier: unsafe extern "C" fn(StructuredContext),
+    publish: unsafe extern "C" fn(StructuredContext, *const Publication),
+    collective: unsafe extern "C" fn(StructuredContext, *const TileCollective),
+    tile_length: unsafe extern "C" fn(StructuredContext, Reg),
+    tile_lane: unsafe extern "C" fn(StructuredContext, Reg),
+    tile_load: unsafe extern "C" fn(StructuredContext, Reg, usize, Reg, u32, Reg, u32),
+    tile_store: unsafe extern "C" fn(StructuredContext, usize, Reg, Reg, u32, Reg),
+    view_load: unsafe extern "C" fn(StructuredContext, Reg, *const [Reg; 2], *const ElementStride, Reg, u32),
+    indexed_load: unsafe extern "C" fn(StructuredContext, Reg, *const IndexedSource, Reg, u32),
+    indexed_store: unsafe extern "C" fn(StructuredContext, *const IndexedSource, Reg, u32, Reg),
+    constant_bits: unsafe extern "C" fn(StructuredContext, Reg, ScalarCode, Bits),
+    float_constant: unsafe extern "C" fn(StructuredContext, Reg, Bits, u32),
+    index: unsafe extern "C" fn(StructuredContext, Reg),
+    uniform: unsafe extern "C" fn(StructuredContext, Reg, u32),
+    local_load: unsafe extern "C" fn(StructuredContext, Reg, usize),
+    local_store: unsafe extern "C" fn(StructuredContext, usize, Reg),
+    private_load: unsafe extern "C" fn(StructuredContext, Reg, usize, Reg, u32),
+    private_store: unsafe extern "C" fn(StructuredContext, Reg, usize, Reg, u32),
+    load: unsafe extern "C" fn(StructuredContext, Reg, usize, Reg, u32),
+    store: unsafe extern "C" fn(StructuredContext, usize, Reg, u32, Reg),
+    unary: unsafe extern "C" fn(StructuredContext, Reg, Reg, u32),
+    binary: unsafe extern "C" fn(StructuredContext, Reg, Reg, Reg, *const BinaryOp),
+    divide: unsafe extern "C" fn(StructuredContext, *const IntegerDivisionResult, Reg, *const IntegerDivisor),
+    cast: unsafe extern "C" fn(StructuredContext, Reg, Reg),
+    math: unsafe extern "C" fn(StructuredContext, Reg, u32, Span) -> u64,
+    select_value: unsafe extern "C" fn(StructuredContext, Reg, Reg, Reg, Reg),
+}
+
+const BLOCK_HOST: BlockHost = BlockHost {
+    ir: dataflow::HOST,
+    reject: block_reject,
+    texture_sample: block_texture_sample,
+    ray: block_ray,
+    atomic: block_atomic,
+    append: block_append,
+    subgroup: block_subgroup,
+    barrier: block_barrier,
+    publish: block_publish,
+    collective: block_collective,
+    tile_length: block_tile_length,
+    tile_lane: block_tile_lane,
+    tile_load: block_tile_load,
+    tile_store: block_tile_store,
+    view_load: block_view_load,
+    indexed_load: block_indexed_load,
+    indexed_store: block_indexed_store,
+    constant_bits: block_constant_bits,
+    float_constant: block_float_constant,
+    index: block_index,
+    uniform: block_uniform,
+    local_load: block_local_load,
+    local_store: block_local_store,
+    private_load: block_private_load,
+    private_store: block_private_store,
+    load: block_load,
+    store: block_store,
+    unary: block_unary,
+    binary: block_binary,
+    divide: block_divide,
+    cast: block_cast,
+    math: block_math,
+    select_value: block_select,
+};
+
+unsafe fn block_emitter<'a, 'program>(context: StructuredContext) -> &'a mut Emitter<'program> {
+    unsafe { &mut *context.cast::<StructuredEmission<'_, 'program>>() }.emitter
+}
+
+unsafe extern "C" fn block_reject(context: StructuredContext, rejection: BlockRejection) -> BlockFlow {
+    unsafe { &mut *context.cast::<StructuredEmission<'_, '_>>() }.error = Some(match rejection {
+        BlockRejection::Print => "GPU 后端不能执行 CPU 标准输出",
+        BlockRejection::CpuCall => "GPU 后端不能执行普通 CPU ABI 调用或其函数退出",
+        BlockRejection::CpuTexture => "CPU纹理降低指令不能进入SPIR-V",
+        BlockRejection::CpuAddress => "CPU原生位置地址不能在GPU内核中使用",
+        BlockRejection::CpuFunction => "CPU函数符号地址不能在GPU内核中生成",
+        BlockRejection::FloatMath => "GPU f64 超越函数尚未实现；GLSL.std.450 对应指令不接受64位浮点，不能隐式降低精度",
+    });
+    BlockFlow::Error
+}
+
+unsafe extern "C" fn block_texture_sample(context: StructuredContext, result: *const [Reg; 4],
+    texture: *const TextureSource, coordinate: Span, lod: Reg,
+) {
+    unsafe { block_emitter(context).texture_sample(*result, *texture, coordinate.as_slice(), lod) };
+}
+
+unsafe extern "C" fn block_ray(context: StructuredContext, instruction: *const Inst) {
+    let InstKind::RayQuery { scene, origin, direction, minimum, maximum, cull_back_faces, result } =
+        &unsafe { &*instruction }.kind else { unreachable!() };
+    unsafe { block_emitter(context) }.ray(*scene, origin, direction, *minimum, *maximum, *cull_back_faces, result);
+}
+
+unsafe extern "C" fn block_atomic(context: StructuredContext, instruction: *const Inst) -> BlockFlow {
+    let InstKind::Atomic(atomic) = &unsafe { &*instruction }.kind else { unreachable!() };
+    let emission = unsafe { &mut *context.cast::<StructuredEmission<'_, '_>>() };
+    match emission.emitter.atomic(atomic) {
+        Ok(()) => BlockFlow::Next,
+        Err(error) => {
+            emission.error = Some(error);
+            BlockFlow::Error
+        }
+    }
+}
+
+unsafe extern "C" fn block_append(context: StructuredContext, instruction: *const Inst) {
+    let InstKind::Append(append) = &unsafe { &*instruction }.kind else { unreachable!() };
+    unsafe { block_emitter(context) }.append(append);
+}
+
+unsafe extern "C" fn block_subgroup(context: StructuredContext, dst: Reg, op: SubgroupOp, value: Span, argument: Span) {
+    let value = unsafe { value.as_slice::<Reg>() }.first().copied();
+    let argument = unsafe { argument.as_slice::<Reg>() }.first().copied();
+    unsafe { block_emitter(context) }.subgroup(dst, op, value, argument);
+}
+
+unsafe extern "C" fn block_barrier(context: StructuredContext) {
+    unsafe { block_emitter(context) }.tile_barrier();
+}
+
+unsafe extern "C" fn block_publish(context: StructuredContext, publication: *const Publication) {
+    unsafe { block_emitter(context).publish_values(&*publication) };
+}
+
+unsafe extern "C" fn block_collective(context: StructuredContext, collective: *const TileCollective) {
+    unsafe { block_emitter(context).tile_collective(&*collective) };
+}
+
+unsafe extern "C" fn block_tile_length(context: StructuredContext, dst: Reg) {
+    let e = unsafe { block_emitter(context) };
+    e.copy_register(dst, e.tile_length);
+}
+
+unsafe extern "C" fn block_tile_lane(context: StructuredContext, dst: Reg) {
+    let e = unsafe { block_emitter(context) };
+    e.copy_register(dst, e.tile_lane);
+}
+
+unsafe extern "C" fn block_tile_load(context: StructuredContext, dst: Reg, tile: usize, index: Reg,
+    word: u32, offset: Reg, indexed: u32,
+) {
+    let e = unsafe { block_emitter(context) };
+    let offset = (indexed != 0).then(|| e.value(offset));
+    let scalar = e.stage.registers[dst];
+    let raw = e.tile_read(scalar, tile, e.value(index), word, offset);
+    e.from_words(dst, &[raw], Emitter::raw_scalar(scalar));
+}
+
+unsafe extern "C" fn block_tile_store(context: StructuredContext, tile: usize, index: Reg,
+    offset: Reg, word: u32, value: Reg,
+) {
+    let e = unsafe { block_emitter(context) };
+    let offset = e.value(offset);
+    let scalar = e.stage.registers[value];
+    let unit = Emitter::physical_unit(scalar);
+    let count = scalar.size().div_ceil(4) as usize;
+    let mut pointers = [0; 2];
+    for (part, pointer) in pointers[..count].iter_mut().enumerate() {
+        let slot = e.stage.shared_word(tile, word + part as u32 * 4);
+        *pointer = e.tile_word_address(slot, e.value(index), Some(offset)).0;
+    }
+    let raw = e.raw_bits(value);
+    e.store_raw(scalar, unit, &pointers[..count], raw, true);
+}
+
+unsafe extern "C" fn block_view_load(context: StructuredContext, dst: Reg, address: *const [Reg; 2],
+    stride: *const ElementStride, index: Reg, word: u32,
+) {
+    let e = unsafe { block_emitter(context) };
+    let source = unsafe { e.view_source(&*address, *stride) };
+    e.load_paged(dst, source, e.value(index), word, 0);
+}
+
+unsafe extern "C" fn block_indexed_load(context: StructuredContext, dst: Reg,
+    source: *const IndexedSource, offset: Reg, word: u32,
+) {
+    let e = unsafe { block_emitter(context) };
+    let offset = e.value(offset);
+    let (page, index) = unsafe { e.indexed_page(&*source) };
+    e.load_paged(dst, page, index, word, offset);
+}
+
+unsafe extern "C" fn block_indexed_store(context: StructuredContext, source: *const IndexedSource,
+    offset: Reg, word: u32, value: Reg,
+) {
+    let e = unsafe { block_emitter(context) };
+    let offset = e.value(offset);
+    let (page, index) = unsafe { e.indexed_page(&*source) };
+    e.store_paged(value, page, index, word, offset);
+}
+
+unsafe extern "C" fn block_constant_bits(context: StructuredContext, dst: Reg, scalar: ScalarCode, bits: Bits) {
+    let e = unsafe { block_emitter(context) };
+    e.regs[dst] = e.constant_code(scalar, bits);
+}
+
+unsafe extern "C" fn block_float_constant(context: StructuredContext, dst: Reg, bits: Bits, wide: u32) {
+    let e = unsafe { block_emitter(context) };
+    let mut words = [0; 2];
+    words[0] = e.constant(Scalar::U32, bits as u32);
+    if wide != 0 {
+        words[1] = e.constant(Scalar::U32, (bits >> 32) as u32);
+    }
+    e.from_words(dst, &words[..1 + wide as usize], Scalar::U32);
+}
+
+unsafe extern "C" fn block_index(context: StructuredContext, dst: Reg) {
+    let e = unsafe { block_emitter(context) };
+    e.copy_register(dst, e.index);
+}
+
+unsafe extern "C" fn block_uniform(context: StructuredContext, dst: Reg, offset: u32) {
+    unsafe { block_emitter(context) }.uniform(dst, offset);
+}
+
+unsafe extern "C" fn block_local_load(context: StructuredContext, dst: Reg, slot: usize) {
+    let e = unsafe { block_emitter(context) };
+    let pointer = e.locals[slot];
+    if pointer == 0 {
+        e.load_private(dst, slot, None, 0);
+    } else {
+        e.read_pointer(e.ty(dst), e.value(dst), pointer);
+    }
+}
+
+unsafe extern "C" fn block_local_store(context: StructuredContext, slot: usize, value: Reg) {
+    let e = unsafe { block_emitter(context) };
+    let pointer = e.locals[slot];
+    if pointer == 0 {
+        e.store_private(value, slot, None, 0);
+    } else {
+        e.store_pointer(pointer, e.value(value));
+    }
+}
+
+unsafe extern "C" fn block_private_load(context: StructuredContext, dst: Reg, slot: usize, index: Reg, word: u32) {
+    unsafe { block_emitter(context) }.load_private(dst, slot, Some(index), word);
+}
+
+unsafe extern "C" fn block_private_store(context: StructuredContext, value: Reg, slot: usize, index: Reg, word: u32) {
+    unsafe { block_emitter(context) }.store_private(value, slot, Some(index), word);
+}
+
+unsafe extern "C" fn block_load(context: StructuredContext, dst: Reg, binding: usize, index: Reg, word: u32) {
+    let e = unsafe { block_emitter(context) };
+    let source = PageSource::Dataset(e.buffers[binding]);
+    e.load_paged(dst, source, e.value(index), word, 0);
+}
+
+unsafe extern "C" fn block_store(context: StructuredContext, binding: usize, index: Reg, word: u32, value: Reg) {
+    let e = unsafe { block_emitter(context) };
+    e.store_buffer(binding, e.value(index), word, value);
+}
+
+unsafe extern "C" fn block_unary(context: StructuredContext, dst: Reg, src: Reg, operation: u32) {
+    let e = unsafe { block_emitter(context) };
+    let input = UnaryEmission {
+        operation, scalar: e.stage.registers[src].into(), result_type: e.ty(dst),
+        result: e.value(dst), value: e.value(src),
+    };
+    e.emit_scalar(|host| unsafe { scalar_unary(input, host) });
+}
+
+unsafe extern "C" fn block_binary(context: StructuredContext, dst: Reg, left: Reg, right: Reg, op: *const BinaryOp) {
+    let e = unsafe { block_emitter(context) };
+    let input = BinaryEmission {
+        operation: unsafe { (*op).into() }, scalar: e.stage.registers[left].into(),
+        result_type: e.ty(dst), result: e.value(dst), left: e.value(left), right: e.value(right),
+    };
+    e.emit_scalar(|host| unsafe { scalar_binary(input, host) });
+}
+
+unsafe extern "C" fn block_divide(context: StructuredContext, result: *const IntegerDivisionResult,
+    src: Reg, divisor: *const IntegerDivisor,
+) {
+    unsafe { block_emitter(context).integer_divide(*result, src, *divisor) };
+}
+
+unsafe extern "C" fn block_cast(context: StructuredContext, dst: Reg, src: Reg) {
+    let e = unsafe { block_emitter(context) };
+    let input = CastEmission {
+        from: e.stage.registers[src].into(), to: e.stage.registers[dst].into(),
+        result_type: e.ty(dst), result: e.value(dst), value: e.value(src),
+    };
+    e.emit_scalar(|host| unsafe { scalar_cast(input, host) });
+}
+
+unsafe extern "C" fn block_math(context: StructuredContext, dst: Reg, operation: u32, args: Span) -> u64 {
+    let e = unsafe { block_emitter(context) };
+    let args = unsafe { args.as_slice::<Reg>() };
+    let input = MathEmission {
+        operation, scalar: e.stage.registers[dst].into(), result_type: e.ty(dst), result: e.value(dst),
+        left: e.value(args[0]), right: args.get(1).map_or(0, |&reg| e.value(reg)), extended_set: e.ext,
+    };
+    e.emit_scalar(|host| unsafe { scalar_math(input, host) })
+}
+
+unsafe extern "C" fn block_select(context: StructuredContext, dst: Reg, test: Reg, yes: Reg, no: Reg) {
+    let e = unsafe { block_emitter(context) };
+    e.select(e.ty(dst), e.value(dst), e.value(test), e.value(yes), e.value(no));
+}
+
 
 #[repr(C)]
 struct SubgroupEmission {
@@ -1200,16 +1482,10 @@ unsafe extern "C" {
     fn dispatch_count_index(push: DispatchPush, word: u32, field: u32, first: u32, body: *mut u32) -> PayloadRead;
     #[link_name = "bootstrap.spirv_envelope::next_control_block"]
     fn next_control_block(target: u32, label: u32, reaches: u32, body: *mut u32) -> ControlWords;
-    #[link_name = "bootstrap.spirv_envelope::lower_structured"]
-    fn lower_structured(input: StructuredControl, host: StructuredHost) -> BlockFlow;
-    #[link_name = "bootstrap.spirv_envelope::lower_function_scope"]
-    fn lower_function_scope(body: InstructionBlock, host: StructuredHost);
-    #[link_name = "bootstrap.spirv_envelope::lower_function_exit"]
-    fn lower_function_exit(host: StructuredHost) -> u32;
+    #[link_name = "bootstrap.spirv_envelope::emit_instruction_block"]
+    fn emit_instruction_block(code: Span, targets: ControlTargets, host: StructuredHost, emit: BlockHost) -> BlockFlow;
     #[link_name = "bootstrap.spirv_envelope::lower_return_loop"]
     fn lower_return_loop(edges: *const returns::ReturnEdge, count: u32, bool_type: u32, host: StructuredHost);
-    #[link_name = "bootstrap.spirv_envelope::leave_control"]
-    fn leave_control(target: u32, body: *mut u32) -> ControlWords;
     #[link_name = "bootstrap.spirv_envelope::encode_subgroup"]
     fn encode_subgroup(input: SubgroupEmission, body: *mut u32) -> SubgroupWords;
     #[link_name = "bootstrap.spirv_envelope::shader_scalars"]
@@ -1873,13 +2149,6 @@ impl Emitter<'_> {
         unsafe { self.finish_control(emitted) }
     }
 
-    fn structured_control(&mut self, input: StructuredControl) -> Result<bool, &'static str> {
-        let mut emission = StructuredEmission { emitter: self, error: None };
-        let host = emission.host();
-        let flow = unsafe { lower_structured(input, host) };
-        emission.error.map_or(Ok(matches!(flow, BlockFlow::Next)), Err)
-    }
-
     fn open_active(&mut self, condition: u32, run: u32, merge: u32) {
         self.emit_control(9, |body| unsafe { open_selection(merge, condition, run, merge, body) });
     }
@@ -1903,211 +2172,13 @@ impl Emitter<'_> {
         }
     }
 
-    fn leave_control(&mut self, target: u32) -> bool {
-        self.emit_control(2, |body| unsafe { leave_control(target, body) })
+    fn block(&mut self, code: &[Inst]) -> Result<bool, &'static str> {
+        let mut emission = StructuredEmission { emitter: self, error: None };
+        let host = emission.host();
+        let flow = unsafe { emit_instruction_block(Span::slice(code), ControlTargets { end: 0, next: 0 }, host, BLOCK_HOST) };
+        emission.error.map_or(Ok(matches!(flow, BlockFlow::Next)), Err)
     }
 
-    fn block(
-        &mut self,
-        code: &[Inst],
-        loop_targets: Option<(u32, u32)>,
-    ) -> Result<bool, &'static str> {
-        for inst in code {
-            match &(inst).kind {
-                InstKind::Print { .. } => return Err("GPU 后端不能执行 CPU 标准输出"),
-                InstKind::Call(_) | InstKind::Raise(_) | InstKind::Cleanup { .. } => return Err("GPU 后端不能执行普通 CPU ABI 调用或其函数退出"),
-                InstKind::TextureSample {
-                    result,
-                    texture,
-                    coordinate,
-                    lod,
-                } => self.texture_sample(*result, *texture, coordinate, *lod),
-                InstKind::TextureBindingAddress { .. }
-                | InstKind::TextureAddress { .. }
-                | InstKind::TextureFormat { .. }
-                | InstKind::TextureRead { .. }
-                | InstKind::TextureLevels { .. }
-                | InstKind::TextureSize { .. }
-                | InstKind::TextureFetch { .. } => return Err("CPU纹理降低指令不能进入SPIR-V"),
-                InstKind::Scope(body) => self.function_scope(body)?,
-                InstKind::Exit => return Ok(self.function_exit()),
-                InstKind::Append(append) => self.append(append),
-                InstKind::Atomic(atomic) => self.atomic(atomic)?,
-                InstKind::TileBarrier => self.tile_barrier(),
-                InstKind::TilePublish(publication) => self.publish_values(publication),
-                InstKind::TileCollective(collective) => self.tile_collective(collective),
-                InstKind::TileLength(dst) => self.copy_register(*dst, self.tile_length),
-                InstKind::TileLane(dst) => self.copy_register(*dst, self.tile_lane),
-                InstKind::TileLoad {
-                    dst,
-                    tile,
-                    index,
-                    word,
-                } => {
-                    let scalar = self.stage.registers[*dst];
-                    let raw = self.tile_read(scalar, *tile, self.value(*index), *word, None);
-                    self.from_words(*dst, &[raw], Self::raw_scalar(scalar));
-                }
-                InstKind::Subgroup {
-                    dst,
-                    op,
-                    value,
-                    argument,
-                } => self.subgroup(*dst, *op, *value, *argument),
-                InstKind::ViewLoad { dst, address, index, stride, word } => {
-                    let source = self.view_source(address, *stride);
-                    self.load_paged(*dst, source, self.value(*index), *word, 0);
-                }
-                InstKind::RayQuery { scene, origin, direction, minimum, maximum, cull_back_faces, result } => {
-                    self.ray(*scene, origin, direction, *minimum, *maximum, *cull_back_faces, result);
-                }
-                InstKind::PositionAddress { .. }
-                | InstKind::BufferStride(..)
-                | InstKind::LoadIndexed { source: IndexedSource::Pointer { .. }, .. }
-                | InstKind::StoreIndexed { source: IndexedSource::Pointer { .. }, .. } =>
-                    return Err("CPU原生位置地址不能在GPU内核中使用"),
-                InstKind::LoadIndexed { dst, source, offset, word } => {
-                    let offset = self.value(*offset);
-                    if let IndexedSource::Tile { tile, index } = source {
-                        let scalar = self.stage.registers[*dst];
-                        let raw = self.tile_read(scalar, *tile, self.value(*index), *word, Some(offset));
-                        self.from_words(*dst, &[raw], Self::raw_scalar(scalar));
-                    } else {
-                        let (page, index) = self.indexed_page(source);
-                        self.load_paged(*dst, page, index, *word, offset);
-                    }
-                }
-                InstKind::StoreIndexed { source, offset, word, value } => {
-                    let offset = self.value(*offset);
-                    if let IndexedSource::Tile { tile, index } = source {
-                        let scalar = self.stage.registers[*value];
-                        let unit = Self::physical_unit(scalar);
-                        let count = scalar.size().div_ceil(4) as usize;
-                        let mut pointers = [0; 2];
-                        for (part, pointer) in pointers[..count].iter_mut().enumerate() {
-                            let slot = self.stage.shared_word(*tile, *word + part as u32 * 4);
-                            *pointer = self.tile_word_address(slot, self.value(*index), Some(offset)).0;
-                        }
-                        let raw = self.raw_bits(*value);
-                        self.store_raw(scalar, unit, &pointers[..count], raw, true);
-                    } else {
-                        let (page, index) = self.indexed_page(source);
-                        self.store_paged(*value, page, index, *word, offset);
-                    }
-                }
-                InstKind::FunctionAddress(..) => return Err("CPU函数符号地址不能在GPU内核中生成"),
-                InstKind::Constant(dst, s, bits) if s.is_float() => {
-                    let mut words = vec![self.constant(Scalar::U32, *bits as u32)];
-                    if s.size() == 8 { words.push(self.constant(Scalar::U32, (*bits >> 32) as u32)); }
-                    self.from_words(*dst, &words, Scalar::U32);
-                }
-                InstKind::Constant(dst, s, bits) => {
-                    self.regs[*dst] = self.constant_bits(*s, *bits);
-                }
-                InstKind::Index(dst) => self.copy_register(*dst, self.index),
-                InstKind::Uniform(dst, offset) => self.uniform(*dst, *offset),
-                InstKind::LoadLocal(dst, slot) => {
-                    let pointer = self.locals[*slot];
-                    if pointer == 0 {
-                        self.load_private(*dst, *slot, None, 0);
-                    } else {
-                        self.read_pointer(self.ty(*dst), self.value(*dst), pointer);
-                    }
-                }
-                InstKind::StoreLocal(slot, src) => {
-                    let pointer = self.locals[*slot];
-                    if pointer == 0 {
-                        self.store_private(*src, *slot, None, 0);
-                    } else {
-                        self.store_pointer(pointer, self.value(*src));
-                    }
-                }
-                InstKind::LoadLocalIndexed { dst, base, index, word, .. } =>
-                    self.load_private(*dst, *base, Some(*index), *word),
-                InstKind::StoreLocalIndexed { base, index, word, value, .. } =>
-                    self.store_private(*value, *base, Some(*index), *word),
-                InstKind::Load { dst, binding, index, word } => {
-                    let source = PageSource::Dataset(self.buffers[*binding]);
-                    self.load_paged(*dst, source, self.value(*index), *word, 0);
-                }
-                InstKind::Store { binding, index, word, value } => {
-                    self.store_buffer(*binding, self.value(*index), *word, *value);
-                }
-                InstKind::Unary { dst, op, a } => {
-                    let input = UnaryEmission {
-                        operation: *op as u32,
-                        scalar: self.stage.registers[*a].into(),
-                        result_type: self.ty(*dst),
-                        result: self.value(*dst),
-                        value: self.value(*a),
-                    };
-                    self.emit_scalar(|host| unsafe { scalar_unary(input, host) });
-                }
-                InstKind::IntegerDivide { result, src, divisor } => {
-                    self.integer_divide(*result, *src, *divisor);
-                }
-                InstKind::Binary { dst, op, a, b } => {
-                    let input = BinaryEmission {
-                        operation: (*op).into(),
-                        scalar: self.stage.registers[*a].into(),
-                        result_type: self.ty(*dst),
-                        result: self.value(*dst),
-                        left: self.value(*a),
-                        right: self.value(*b),
-                    };
-                    self.emit_scalar(|host| unsafe { scalar_binary(input, host) });
-                }
-                InstKind::Cast { dst, src } => {
-                    let input = CastEmission {
-                        from: self.stage.registers[*src].into(),
-                        to: self.stage.registers[*dst].into(),
-                        result_type: self.ty(*dst),
-                        result: self.value(*dst),
-                        value: self.value(*src),
-                    };
-                    self.emit_scalar(|host| unsafe { scalar_cast(input, host) });
-                }
-                InstKind::Math { dst, op, args } => {
-                    let input = MathEmission {
-                        operation: *op as u32,
-                        scalar: self.stage.registers[*dst].into(),
-                        result_type: self.ty(*dst),
-                        result: self.value(*dst),
-                        left: self.value(args[0]),
-                        right: args.get(1).map_or(0, |&r| self.value(r)),
-                        extended_set: self.ext,
-                    };
-                    if self.emit_scalar(|host| unsafe { scalar_math(input, host) }) == 0 {
-                        return Err("GPU f64 超越函数尚未实现；GLSL.std.450 对应指令不接受64位浮点，不能隐式降低精度");
-                    }
-                }
-                InstKind::Select { dst, condition, a, b } => self.select(
-                    self.ty(*dst), self.value(*dst), self.value(*condition), self.value(*a), self.value(*b),
-                ),
-                InstKind::If { condition, yes, no } => {
-                    if !self.structured_control(StructuredControl {
-                        first: yes.as_slice().into(), second: no.as_slice().into(),
-                        test: *condition, targets: loop_targets.into(), kind: StructuredKind::Selection,
-                    })? {
-                        return Ok(false);
-                    }
-                }
-                InstKind::Loop { condition, test, body } => {
-                    self.structured_control(StructuredControl {
-                        first: condition.as_slice().into(), second: body.as_slice().into(),
-                        test: *test, targets: loop_targets.into(), kind: StructuredKind::Loop,
-                    })?;
-                }
-                InstKind::Break => {
-                    let (end, _) = loop_targets.unwrap();
-                    self.loop_exit_edge(end, self.current_label);
-                    return Ok(self.leave_control(end));
-                }
-                InstKind::Continue => return Ok(self.leave_control(loop_targets.unwrap().1)),
-            }
-        }
-        Ok(true)
-    }
     fn uniform(&mut self, dst: Reg, offset: u32) {
         let scalar = self.stage.registers[dst];
         let zero = self.constant(Scalar::U32, 0);
@@ -2612,7 +2683,7 @@ impl ShaderBodyEmission<'_, '_> {
             }
             BodyStep::Invariants => {
                 let kernel = self.kernel.unwrap();
-                e.block(&kernel.stage.code[..kernel.invariant_end], None)?;
+                e.block(&kernel.stage.code[..kernel.invariant_end])?;
             }
             BodyStep::Local => self.local = e.load_pointer(e.types[&Scalar::U32], self.local_input),
             BodyStep::Open => e.open_active(active, execute, end),
@@ -2698,7 +2769,7 @@ impl ShaderBodyEmission<'_, '_> {
                 let at = e.address_scalar(Scalar::U32, e.program.buffers.len(), e.index, 0);
                 e.index = e.load_aligned_word(at);
             }
-            BodyStep::Map => return e.block(&e.stage.code, None),
+            BodyStep::Map => return e.block(&e.stage.code),
         }
         Ok(true)
     }

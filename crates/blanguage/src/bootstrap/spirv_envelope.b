@@ -1473,6 +1473,15 @@ ControlWords close_selection(u32 merge, u32 yes_reaches, u32 no_reaches, address
     return ControlWords(at, merge, reaches);
 }
 
+enum StructuredKind:u32 { Selection=0; Loop=1; };
+struct StructuredControl {
+    Span first;
+    Span second;
+    usize test;
+    ControlTargets targets;
+    StructuredKind kind;
+};
+
 struct LoopLabels { u32 header; u32 check; u32 run; u32 next; u32 end; };
 
 ControlWords open_loop(LoopLabels labels, address body) on cpu {
@@ -1534,7 +1543,7 @@ extern "C" void emit_tile_phases(u32 active, StructuredHost control, TilePhaseHo
     }
 }
 
-extern "C" BlockFlow lower_structured(StructuredControl input, StructuredHost host) on cpu
+BlockFlow lower_structured(StructuredControl input, StructuredHost host) on cpu
     requires nonzero(host.labels) requires nonzero(host.reserve_words) requires nonzero(host.finish_words)
     requires nonzero(host.block) requires nonzero(host.value) requires nonzero(host.begin_return)
     requires nonzero(host.normal_exit) requires nonzero(host.finish_return) {
@@ -1580,7 +1589,7 @@ ControlWords open_function_scope(u32 merge, u32 selector, u32 begin, address bod
     return ControlWords(words_one(body, at, 248, begin), begin, 1);
 }
 
-extern "C" ControlWords leave_control(u32 target, address body) on cpu {
+ControlWords leave_control(u32 target, address body) on cpu {
     return ControlWords(words_one(body, 0u64, 249, target), 0, 0);
 }
 
@@ -1610,7 +1619,7 @@ ControlWords dispatch_loop_return(LoopReturn input, address edges, address body)
     return ControlWords(words_one(body, at, 248, input.merge), input.merge, 1);
 }
 
-extern "C" void lower_function_scope(InstructionBlock body, StructuredHost host) on cpu
+BlockFlow lower_function_scope(Span body, StructuredHost host) on cpu
     requires nonzero(host.labels) requires nonzero(host.constant) requires nonzero(host.reserve_words)
     requires nonzero(host.finish_words) requires nonzero(host.open_function) requires nonzero(host.block)
     requires nonzero(host.close_function) {
@@ -1621,10 +1630,11 @@ extern "C" void lower_function_scope(InstructionBlock body, StructuredHost host)
     host.finish_words(context, open_function_scope(merge, selector, begin, host.reserve_words(context, 8u64)));
     host.open_function(context, merge);
     BlockFlow flow = host.block(context, body, ControlTargets(0, 0));
-    if (flow == BlockFlow::Error) { return; }
+    if (flow == BlockFlow::Error) { return flow; }
     host.close_function(context);
     host.finish_words(context, next_control_block(merge, merge, u32(flow == BlockFlow::Next),
         host.reserve_words(context, 4u64)));
+    return BlockFlow::Next;
 }
 
 u32 return_destination(StructuredHost host) on cpu
@@ -1637,7 +1647,7 @@ u32 return_destination(StructuredHost host) on cpu
     return targets.function_merge;
 }
 
-extern "C" u32 lower_function_exit(StructuredHost host) on cpu
+u32 lower_function_exit(StructuredHost host) on cpu
     requires nonzero(host.exit_targets) requires nonzero(host.record_return) requires nonzero(host.reserve_words)
     requires nonzero(host.finish_words) {
     u32 target = return_destination(host);
@@ -1645,6 +1655,142 @@ extern "C" u32 lower_function_exit(StructuredHost host) on cpu
     host.finish_words(host.context, emitted);
     return emitted.reaches_next;
 }
+
+extern "C" BlockFlow emit_instruction_block(Span code, ControlTargets targets,
+    StructuredHost host, BlockHost emit) on cpu
+    requires nonzero(emit.ir.inspect) requires nonzero(emit.reject)
+    requires nonzero(emit.texture_sample) requires nonzero(emit.ray) requires nonzero(emit.atomic)
+    requires nonzero(emit.append) requires nonzero(emit.subgroup) requires nonzero(emit.barrier)
+    requires nonzero(emit.publish) requires nonzero(emit.collective)
+    requires nonzero(emit.tile_length) requires nonzero(emit.tile_lane)
+    requires nonzero(emit.tile_load) requires nonzero(emit.tile_store)
+    requires nonzero(emit.view_load) requires nonzero(emit.indexed_load) requires nonzero(emit.indexed_store)
+    requires nonzero(emit.constant_bits) requires nonzero(emit.float_constant)
+    requires nonzero(emit.index) requires nonzero(emit.uniform)
+    requires nonzero(emit.local_load) requires nonzero(emit.local_store)
+    requires nonzero(emit.private_load) requires nonzero(emit.private_store)
+    requires nonzero(emit.load) requires nonzero(emit.store)
+    requires nonzero(emit.unary) requires nonzero(emit.binary) requires nonzero(emit.divide)
+    requires nonzero(emit.cast) requires nonzero(emit.math) requires nonzero(emit.select_value)
+    requires nonzero(host.labels) requires nonzero(host.reserve_words) requires nonzero(host.finish_words)
+    requires nonzero(host.block) requires nonzero(host.value) requires nonzero(host.begin_return)
+    requires nonzero(host.normal_exit) requires nonzero(host.finish_return)
+    requires nonzero(host.constant) requires nonzero(host.open_function) requires nonzero(host.close_function)
+    requires nonzero(host.exit_targets) requires nonzero(host.record_return) {
+    address context = host.context;
+    usize i = 0u64;
+    while (i < code.count) {
+        address instruction = unsafe_address(address_bits(code.data) + i * code.stride);
+        View value = emit.ir.inspect(Node(instruction, N_INSTRUCTION));
+        u32 kind = value.tag;
+        if (kind == OP_PRINT) {
+            return emit.reject(context, BlockRejection::Print);
+        } else if (kind == OP_INVOKE || kind == OP_RAISE || kind == OP_CLEANUP) {
+            return emit.reject(context, BlockRejection::CpuCall);
+        } else if (kind == OP_TEXTURE_SAMPLE) {
+            emit.texture_sample(context, value.first.data, value.left.data, value.second, value.a);
+        } else if (kind <= OP_TEXTURE_FETCH) {
+            return emit.reject(context, BlockRejection::CpuTexture);
+        } else if (kind == OP_SCOPE) {
+            if (lower_function_scope(value.first, host) == BlockFlow::Error) { return BlockFlow::Error; }
+        } else if (kind == OP_EXIT_VALUE) {
+            return lower_function_exit(host) != 0 ? BlockFlow::Next : BlockFlow::Stop;
+        } else if (kind == OP_APPEND) {
+            emit.append(context, instruction);
+        } else if (kind == OP_ATOMIC) {
+            if (emit.atomic(context, instruction) == BlockFlow::Error) { return BlockFlow::Error; }
+        } else if (kind == OP_TILE_BARRIER) {
+            emit.barrier(context);
+        } else if (kind == OP_TILE_PUBLISH) {
+            emit.publish(context, value.left.data);
+        } else if (kind == OP_TILE_COLLECTIVE) {
+            emit.collective(context, value.left.data);
+        } else if (kind == OP_TILE_LENGTH) {
+            emit.tile_length(context, value.a);
+        } else if (kind == OP_TILE_LANE) {
+            emit.tile_lane(context, value.a);
+        } else if (kind == OP_TILE_LOAD) {
+            emit.tile_load(context, value.a, value.b, value.c, u32(value.d), 0u64, 0);
+        } else if (kind == OP_SUBGROUP) {
+            emit.subgroup(context, value.a, SubgroupOperation(u32(value.c)), value.first, value.second);
+        } else if (kind == OP_VIEW_LOAD) {
+            emit.view_load(context, value.a, value.first.data, value.left.data, value.b, u32(value.c));
+        } else if (kind == OP_RAY_QUERY) {
+            emit.ray(context, instruction);
+        } else if (kind == OP_POSITION_ADDRESS || kind == OP_BUFFER_STRIDE) {
+            return emit.reject(context, BlockRejection::CpuAddress);
+        } else if (kind == OP_LOAD_INDEXED || kind == OP_STORE_INDEXED) {
+            View source = emit.ir.inspect(value.left);
+            if (source.tag == INDEXED_POINTER) {
+                return emit.reject(context, BlockRejection::CpuAddress);
+            }
+            if (kind == OP_LOAD_INDEXED) {
+                if (source.tag == INDEXED_TILE) {
+                    emit.tile_load(context, value.a, source.a, source.b, u32(value.c), value.b, 1);
+                } else {
+                    emit.indexed_load(context, value.a, value.left.data, value.b, u32(value.c));
+                }
+            } else if (source.tag == INDEXED_TILE) {
+                emit.tile_store(context, source.a, source.b, value.a, u32(value.c), value.b);
+            } else {
+                emit.indexed_store(context, value.left.data, value.a, u32(value.c), value.b);
+            }
+        } else if (kind == OP_FUNCTION_ADDRESS) {
+            return emit.reject(context, BlockRejection::CpuFunction);
+        } else if (kind == OP_CONSTANT) {
+            BuiltinScalar scalar = BuiltinScalar(u32(value.c));
+            if (scalar == BuiltinScalar::F32 || scalar == BuiltinScalar::F64) {
+                emit.float_constant(context, value.a, value.b, u32(scalar == BuiltinScalar::F64));
+            } else {
+                emit.constant_bits(context, value.a, scalar, value.b);
+            }
+        } else if (kind == OP_INDEX_VALUE) {
+            emit.index(context, value.a);
+        } else if (kind == OP_UNIFORM) {
+            emit.uniform(context, value.a, u32(value.b));
+        } else if (kind == OP_LOAD_LOCAL) {
+            emit.local_load(context, value.a, value.b);
+        } else if (kind == OP_STORE_LOCAL) {
+            emit.local_store(context, value.a, value.b);
+        } else if (kind == OP_LOAD_LOCAL_INDEXED) {
+            emit.private_load(context, value.a, value.b, value.d, read_word(value.first.data, 0));
+        } else if (kind == OP_STORE_LOCAL_INDEXED) {
+            emit.private_store(context, value.d, value.a, value.c, read_word(value.first.data, 0));
+        } else if (kind == OP_LOAD) {
+            emit.load(context, value.a, value.b, value.c, u32(value.d));
+        } else if (kind == OP_STORE) {
+            emit.store(context, value.a, value.b, u32(value.c), value.d);
+        } else if (kind == OP_UNARY) {
+            emit.unary(context, value.a, value.b, u32(value.c));
+        } else if (kind == OP_BINARY) {
+            emit.binary(context, value.a, value.b, value.c, value.right.data);
+        } else if (kind == OP_INTEGER_DIVIDE) {
+            emit.divide(context, value.right.data, value.a, value.left.data);
+        } else if (kind == OP_CAST) {
+            emit.cast(context, value.a, value.b);
+        } else if (kind == OP_MATH) {
+            if (emit.math(context, value.a, u32(value.b), value.first) == 0u64) {
+                return emit.reject(context, BlockRejection::FloatMath);
+            }
+        } else if (kind == OP_SELECT_VALUE) {
+            emit.select_value(context, value.a, value.b, value.c, value.d);
+        } else if (kind == OP_BRANCH || kind == OP_LOOP_VALUE) {
+            StructuredKind control = kind == OP_BRANCH ? StructuredKind::Selection : StructuredKind::Loop;
+            BlockFlow flow = lower_structured(StructuredControl(value.first, value.second, value.a, targets, control), host);
+            if (flow != BlockFlow::Next) { return flow; }
+        } else if (kind == OP_BREAK_VALUE) {
+            host.normal_exit(context, targets.end);
+            host.finish_words(context, leave_control(targets.end, host.reserve_words(context, 2u64)));
+            return BlockFlow::Stop;
+        } else if (kind == OP_CONTINUE_VALUE) {
+            host.finish_words(context, leave_control(targets.next, host.reserve_words(context, 2u64)));
+            return BlockFlow::Stop;
+        }
+        i += 1u64;
+    }
+    return BlockFlow::Next;
+}
+
 
 extern "C" void lower_return_loop(address edges, u32 count, u32 bool_type, StructuredHost host) on cpu
     requires nonzero(host.labels) requires nonzero(host.constant) requires nonzero(host.exit_targets)

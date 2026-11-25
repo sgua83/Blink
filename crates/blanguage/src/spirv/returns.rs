@@ -47,17 +47,6 @@ pub(super) unsafe extern "C" fn structured_record_return(edges: *mut std::ffi::c
 }
 
 impl Emitter<'_> {
-    pub(super) fn function_scope(&mut self, body: &[Inst]) -> Result<(), &'static str> {
-        let mut emission = StructuredEmission { emitter: self, error: None };
-        unsafe { lower_function_scope(body.into(), emission.host()); }
-        emission.error.map_or(Ok(()), Err)
-    }
-
-    pub(super) fn function_exit(&mut self) -> bool {
-        let mut emission = StructuredEmission { emitter: self, error: None };
-        (unsafe { lower_function_exit(emission.host()) }) != 0
-    }
-
     pub(super) fn begin_return_loop(&mut self, body: &[Inst], merge: u32) -> bool {
         let Some(scope) = self.return_scopes.last_mut() else { return false; };
         if !crate::ir::dataflow::has_function_exit(body) {
