@@ -324,8 +324,16 @@ fn decode_input_facts(bytes: &[u8]) -> Result<InputFacts> {
 /// Does not interpret build inputs, recompile, load code, or change the source artifact.
 /// Code trust and execution contracts remain with the resource decoder and runtime.
 pub fn execution_image(path: &Path) -> Result<Vec<u8>> {
+    with_execution_image(path, |image| Ok(image.to_vec()))
+}
+
+/// Borrows the decoded image through the compiler tool's synchronous write.
+#[doc(hidden)]
+pub fn with_execution_image<T>(
+    path: &Path, consume: impl FnOnce(&[u8]) -> Result<T>,
+) -> Result<T> {
     let bytes = FileBytes::read_path(path)?;
-    Ok(decode(&bytes)?.1.to_vec())
+    consume(decode(&bytes)?.1)
 }
 /// 独立执行可只装入产物，不读取B源码或调用编译器后端。
 ///

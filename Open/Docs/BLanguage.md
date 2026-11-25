@@ -5164,7 +5164,7 @@ BLBI1包络依次保存identity构建输入记录和image执行映像两段长�
 bc image target/cache/entry.blbi -o target/deployment.blri
 ```
 
-CLI在Compiler初始化之前处理，读取原映像后由OS创建新的输出文件；已有构建、缓存或部署文件保持原所有者，输出已存在、父目录不可用、真实读取／解码／写入错误均直接报告，失败不输出成功JSON。成功结果kind=execution_image_export，source_path／output_path及其原生编码字段保存本次实际路径参数，byte_length为原image的完整字节数；成功导出不等于装入、设备支持、实际执行或安装。扩展名只是示例，恢复以原BLRI编码及兼容身份为准，不按文件名猜格式，不接受把原始BLRI再当BLBI导入。
+CLI在Compiler初始化之前处理，从原BLBI文件缓冲借用映像直到新文件完整写出，由OS排他创建输出文件；已有构建、缓存或部署文件保持原所有者，输出已存在、父目录不可用、真实读取／解码／写入错误均直接报告，失败不输出成功JSON。成功结果kind=execution_image_export，source_path／output_path及其原生编码字段保存本次实际路径参数，byte_length为原image的完整字节数；成功导出不等于装入、设备支持、实际执行或安装。扩展名只是示例，恢复以原BLRI编码及兼容身份为准，不按文件名猜格式，不接受把原始BLRI再当BLBI导入。
 
 部署文件逐字节等于原image，包含原resource::Module的类型与CPU机器码／GPU SPIR-V、实际执行布局／顺序、必要重定位、原生展开和访问／前缀合同；不包含原identity的源码位置、工作目录和构建输入清单。原映像中运行所需的程序／类型名及系统库引用保持，不能把这些合同当调试材料删除。本入口不做符号裁剪、Shader改写或正式安装，可选观察材料的保存／装入仍沿C-021.7.9.5.2.2，平台符号选择沿原.63／.64。
 
