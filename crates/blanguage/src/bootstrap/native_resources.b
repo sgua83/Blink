@@ -11,11 +11,10 @@ u64 order_at(ResourceInput input,u64 i) on cpu {return unsafe_position<u64>(unsa
 void order_put(ResourceInput input,u64 i,u64 value) on cpu {unsafe_position<u64>(unsafe_address(address_bits(input.order)+i*8u64))=value;}
 u8 byte_at(address data,u64 i) on cpu {return unsafe_position<u8>(unsafe_address(address_bits(data)+i));}
 void put(address data,u64 i,u8 value) on cpu {unsafe_position<u8>(unsafe_address(address_bits(data)+i))=value;}
-i32 compare(BindingBytes a,BindingBytes b) on cpu {
-    u64 i=0u64;while(i<a.length&&i<b.length){u8 x=byte_at(a.bytes,i);u8 y=byte_at(b.bytes,i);if(x<y){return -1;}if(x>y){return i32(1);}i+=1u64;}
-    if(a.length<b.length){return -1;}if(a.length>b.length){return i32(1);}return i32(0);
+bool less(ResourceInput input,u64 a,u64 b) on cpu {
+    i32 order=bytes_compare(module_at(input,a).prefix,module_at(input,b).prefix);
+    return order<0||(order==0&&a<b);
 }
-bool less(ResourceInput input,u64 a,u64 b) on cpu {i32 result=compare(module_at(input,a).prefix,module_at(input,b).prefix);if(result!=0){return result<0;}return a<b;}
 void sift(ResourceInput input,u64 start,u64 end) on cpu {
     u64 root=start;while(root<end/2u64){u64 child=root*2u64+1u64;
         if(child+1u64<end&&less(input,order_at(input,child),order_at(input,child+1u64))){child+=1u64;}
@@ -28,20 +27,30 @@ void sort(ResourceInput input) on cpu {
     u64 root=input.module_count/2u64;while(root>0u64){root-=1u64;sift(input,root,input.module_count);}
     u64 end=input.module_count;while(end>1u64){end-=1u64;u64 a=order_at(input,0u64);u64 b=order_at(input,end);order_put(input,0u64,b);order_put(input,end,a);sift(input,0u64,end);}
 }
-u64 first(ResourceInput input,BindingBytes name) on cpu {
-    u64 begin=0u64;u64 end=input.module_count;while(begin<end){u64 middle=begin+(end-begin)/2u64;
-        if(compare(module_at(input,order_at(input,middle)).prefix,name)<0){begin=middle+1u64;}else{end=middle;}}
-    return order_at(input,begin);
-}
 ResourcePlan invalid(u64 error,u64 at) on cpu {return ResourcePlan(0u64,0u64,0u64,0u64,error,at);}
 extern "C" ResourcePlan prepare(ResourceInput input) on cpu {
     if(input.module_count==0u64){return invalid(0u64,0u64);}
-    sort(input);BindingBytes abi=input.root_abi;if(input.has_root_abi==0u64){abi=module_at(input,0u64).abi;}
-    u64 i=0u64;
-    while(i<input.module_count){ResourceModule row=module_at(input,i);
-        if(compare(row.abi,abi)!=0){return invalid(1u64,i);}if(first(input,row.prefix)!=i){return invalid(2u64,i);}i+=1u64;
+    sort(input);
+    BindingBytes abi=input.has_root_abi!=0u64 ? input.root_abi : module_at(input,0u64).abi;
+    BindingBytes previous=BindingBytes(unsafe_address(0u64),0u64);
+    u64 bad_module=input.module_count;
+    u64 error=0u64;
+    u64 position=0u64;
+    while(position<input.module_count){
+        u64 index=order_at(input,position);
+        ResourceModule row=module_at(input,index);
+        // Equal prefixes are ordered by input index. Report the first
+        // failing input, with the ABI error first on the same row.
+        if(index<bad_module){
+            if(bytes_compare(row.abi,abi)!=0){error=1u64;bad_module=index;}
+            else if(position!=0u64&&bytes_compare(previous,row.prefix)==0){error=2u64;bad_module=index;}
+        }
+        previous=row.prefix;
+        position+=1u64;
     }
-    u64 types=input.types;u64 programs=input.programs;u64 at=8u64+8u64*input.module_count;i=0u64;
+    if(error!=0u64){return invalid(error,bad_module);}
+    u64 types=input.types;u64 programs=input.programs;u64 at=8u64+8u64*input.module_count;
+    u64 i=0u64;
     while(i<input.module_count){
         ResourceModule row=module_at(input,i);if(at+4u64>4294967295u64){return invalid(5u64,i);}
         row.type_value=types;row.program_value=programs;row.factory_offset=8u64+8u64*i;row.type_offset=at;row.program_offset=at+4u64;
