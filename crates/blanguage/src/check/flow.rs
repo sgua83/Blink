@@ -262,76 +262,23 @@ impl Builder<'_> {
     }
     pub(super) fn close_view_context(&mut self,context:&mut LoopContext)->Result<()> {
         let Some(scope)=context.view_scope else{return Ok(());};
-        let mut sources=Vec::new();
-        for slot in &context.view_inputs {
-            sources.push(match slot {
-                InputSlot::Value{component,..}=>slot.value_proof(&context.entry.env).unwrap().view_borrow(*component),
-                InputSlot::Data{name,path,..}=>self.data_value_borrow(data_at(&context.entry.env[name],path).unwrap()),
-            });
-        }
-        let data_value=view::resource_borrow;
-        let mut definitions = sources.clone();
-        for state in &context.continues {
-            for (index, slot) in context.view_inputs.iter().enumerate() {
-                let value = match slot {
-                    InputSlot::Value { component, .. } => slot.value_proof(&state.env).map(|proof| proof.view_borrow(*component)).unwrap_or_default(),
-                    InputSlot::Data { name, path, .. } => state.env.get(name).and_then(|b| data_at(b, path)).map(&data_value).unwrap_or_default(),
-                };
-                definitions[index].union(&value);
-            }
-        }
-        // 直接自身边不向循环来源的最小不动点贡献新来源。
-        let mut direct=vec![false;sources.len()];
-        for (index,definition)in definitions.iter_mut().enumerate(){
-            definition.inputs.remove(&LoopInput{level:scope,index});
-            direct[index]=*definition==sources[index];
-        }
-        let resolve = |borrow: Borrow, direct: &[bool], sources: &[Borrow]| {
-            borrow.project_loop_inputs(scope, |input| direct[input].then(|| &sources[input]))
+        let entry = std::mem::take(&mut context.entry);
+        let continues = std::mem::take(&mut context.continues);
+        let edges = continues.len();
+        let inputs = &context.view_inputs;
+        let producers = (!inputs.is_empty()).then(move || {
+            std::iter::once(entry).chain(continues).collect::<Arc<[_]>>()
+        });
+        let mut close = LoopSourceClose {
+            builder: self, scope, inputs, exits: &mut context.exits, producers: producers.as_ref(),
+            control: std::mem::take(&mut context.control_source), shared_control: None,
+            sources: Vec::with_capacity(inputs.len()),
         };
-        for slot in &context.view_inputs {
-            if let InputSlot::Value{name,contents,component,identity:Some((id,_))}=slot {
-                context.control_source.inputs.insert(*id,view_contracts::ControlInput::Value{name:name.clone(),contents:contents.clone(),component:*component});
-            }
-        }
-        let control=Arc::new(std::mem::take(&mut context.control_source));
-        let mut producers=std::mem::take(&mut context.continues);
-        producers.insert(0,std::mem::take(&mut context.entry));
-        let producers:Arc<[LoopState]>=producers.into();
-        for (index,definition)in definitions.into_iter().enumerate(){
-            let input=LoopInput{level:scope,index};let definition=resolve(definition,&direct,&sources);
-            direct[index]=definition==sources[index];
-            let resource=match &context.view_inputs[index] {
-                InputSlot::Data{name,path,..}=>Some(view_contracts::LoopResource{name:name.clone(),path:path.clone()}),
-                _=>None,
-            };
-            let value=match &context.view_inputs[index]{InputSlot::Value{identity,..}=>*identity,_=>None};
-            self.view_model.loops.insert(input,view_contracts::LoopDefinition{borrow:definition,resource,value,states:producers.clone(),control:control.clone()});
-        }
-        // 来源定义未改变的槽交回原入口；实际来源及存储版本变化保留原循环关系。
-        let resolve_env=|environment:&mut BTreeMap<String,Binding>| {
-            for slot in &context.view_inputs {
-                if let InputSlot::Value{component,..}=slot && let Some(proof)=slot.value_proof_mut(environment){
-                    let borrow=resolve(proof.view_borrow(*component),&direct,&sources);
-                    proof.set_view_borrow(*component,borrow);
-                }
-            }
-            let mut resolve_data = |data: &mut application::Data| {
-                if data.ownership != application::Ownership::Moved {
-                    let borrow = resolve(data_value(data), &direct, &sources);
-                    data.root.proof.set_view_borrow(0, borrow);
-                }
-            };
-            for binding in environment.values_mut() {
-                match binding {
-                    Binding::ApplicationData(data) => resolve_data(data),
-                    Binding::OwnedValue(value) => value.resources_mut(&mut resolve_data),
-                    _ => {}
-                }
-            }
-        };
-        for state in &mut context.exits {resolve_env(&mut state.env);}
-        resolve_env(&mut self.env);
+        let exits = close.exits.len();
+        unsafe { source_close_loop(ptr::from_mut(&mut close).cast(), inputs.len(), edges, exits, LoopSourceHost {
+            seed: seed_loop_source, add_edge: add_loop_source, classify: classify_loop_source, seal: seal_loop_control,
+            publish: publish_loop_source, write_value: write_loop_value, write_resources: write_loop_resources,
+        }); }
         Ok(())
     }
     pub(super) fn finish_view_condition(&mut self)->Result<()> {
@@ -823,7 +770,130 @@ impl Builder<'_> {
 }
 use crate::ir::dataflow;
 use owned_presence::Presence;
-use std::{cell::OnceCell, ffi::c_void, ptr};
+use std::{borrow::Cow, cell::OnceCell, ffi::c_void, ptr};
+
+struct LoopSource<'a> {
+    entry: Cow<'a, Borrow>,
+    definition: Borrow,
+    direct: bool,
+}
+
+struct LoopSourceClose<'a, 'world, 'producer> {
+    builder: &'a mut Builder<'world>,
+    scope: usize,
+    inputs: &'a [InputSlot],
+    exits: &'a mut [LoopState],
+    producers: Option<&'producer Arc<[LoopState]>>,
+    control: view_contracts::LoopControl,
+    shared_control: Option<Arc<view_contracts::LoopControl>>,
+    sources: Vec<LoopSource<'producer>>,
+}
+
+#[repr(C)]
+struct LoopSourceHost {
+    seed: unsafe extern "C" fn(*mut c_void, usize),
+    add_edge: unsafe extern "C" fn(*mut c_void, usize, usize),
+    classify: unsafe extern "C" fn(*mut c_void, usize),
+    seal: unsafe extern "C" fn(*mut c_void),
+    publish: unsafe extern "C" fn(*mut c_void, usize),
+    write_value: unsafe extern "C" fn(*mut c_void, usize, usize),
+    write_resources: unsafe extern "C" fn(*mut c_void, usize),
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.function_body::close_loop_sources"]
+    fn source_close_loop(context: *mut c_void, inputs: usize, edges: usize, exits: usize, host: LoopSourceHost);
+}
+
+fn slot_borrow<'a>(slot: &InputSlot, environment: &'a BTreeMap<String, Binding>) -> Option<Cow<'a, Borrow>> {
+    match slot {
+        InputSlot::Value { component, .. } => {
+            let proof = slot.value_proof(environment)?;
+            Some(proof.view_borrow_ref(*component).map_or_else(|| Cow::Owned(Borrow::default()), Cow::Borrowed))
+        }
+        InputSlot::Data { name, path, .. } => data_at(environment.get(name)?, path).map(view::resource_borrow_ref),
+    }
+}
+
+unsafe extern "C" fn seed_loop_source(context: *mut c_void, index: usize) {
+    let state = unsafe { &mut *context.cast::<LoopSourceClose<'_, '_, '_>>() };
+    let entry = slot_borrow(&state.inputs[index], &state.producers.unwrap()[0].env).unwrap();
+    let definition = entry.as_ref().clone();
+    state.sources.push(LoopSource { entry, definition, direct: false });
+}
+
+unsafe extern "C" fn add_loop_source(context: *mut c_void, index: usize, edge: usize) {
+    let state = unsafe { &mut *context.cast::<LoopSourceClose<'_, '_, '_>>() };
+    if let Some(source) = slot_borrow(&state.inputs[index], &state.producers.unwrap()[edge + 1].env) {
+        state.sources[index].definition.union(&source);
+    }
+}
+
+unsafe extern "C" fn classify_loop_source(context: *mut c_void, index: usize) {
+    let state = unsafe { &mut *context.cast::<LoopSourceClose<'_, '_, '_>>() };
+    let source = &mut state.sources[index];
+    // A direct self edge adds no source to the loop's least fixed point.
+    source.definition.inputs.remove(&LoopInput { level: state.scope, index });
+    source.direct = source.definition == *source.entry;
+    if let InputSlot::Value { name, contents, component, identity: Some((id, _)) } = &state.inputs[index] {
+        state.control.inputs.insert(*id, view_contracts::ControlInput::Value {
+            name: name.clone(), contents: contents.clone(), component: *component,
+        });
+    }
+}
+
+unsafe extern "C" fn seal_loop_control(context: *mut c_void) {
+    let state = unsafe { &mut *context.cast::<LoopSourceClose<'_, '_, '_>>() };
+    state.shared_control = Some(Arc::new(std::mem::take(&mut state.control)));
+}
+
+fn resolve_loop_source(value: Borrow, scope: usize, sources: &[LoopSource<'_>]) -> Borrow {
+    value.project_loop_inputs(scope, |index| {
+        let source = &sources[index];
+        source.direct.then_some(source.entry.as_ref())
+    })
+}
+
+unsafe extern "C" fn publish_loop_source(context: *mut c_void, index: usize) {
+    let state = unsafe { &mut *context.cast::<LoopSourceClose<'_, '_, '_>>() };
+    let definition = std::mem::take(&mut state.sources[index].definition);
+    let borrow = resolve_loop_source(definition, state.scope, &state.sources);
+    state.sources[index].direct = borrow == *state.sources[index].entry;
+    let (resource, value) = match &state.inputs[index] {
+        InputSlot::Data { name, path, .. } => (Some(view_contracts::LoopResource { name: name.clone(), path: path.clone() }), None),
+        InputSlot::Value { identity, .. } => (None, *identity),
+    };
+    let input = LoopInput { level: state.scope, index };
+    state.builder.view_model.loops.insert(input, view_contracts::LoopDefinition {
+        borrow, resource, value, states: state.producers.unwrap().clone(),
+        control: state.shared_control.as_ref().unwrap().clone(),
+    });
+}
+
+fn loop_source_environment<'a>(builder: &'a mut Builder<'_>, exits: &'a mut [LoopState], index: usize) -> &'a mut BTreeMap<String, Binding> {
+    if index == exits.len() { &mut builder.env } else { &mut exits[index].env }
+}
+
+unsafe extern "C" fn write_loop_value(context: *mut c_void, environment: usize, index: usize) {
+    let state = unsafe { &mut *context.cast::<LoopSourceClose<'_, '_, '_>>() };
+    let slot = &state.inputs[index];
+    if let InputSlot::Value { component, .. } = slot
+        && let Some(proof) = slot.value_proof_mut(loop_source_environment(state.builder, state.exits, environment))
+    {
+        let borrow = resolve_loop_source(proof.take_view_borrow(*component), state.scope, &state.sources);
+        proof.set_view_borrow(*component, borrow);
+    }
+}
+
+unsafe extern "C" fn write_loop_resources(context: *mut c_void, environment: usize) {
+    let state = unsafe { &mut *context.cast::<LoopSourceClose<'_, '_, '_>>() };
+    for binding in loop_source_environment(state.builder, state.exits, environment).values_mut() {
+        view::visit_data_mut(binding, |data| {
+            let borrow = resolve_loop_source(view::take_resource_borrow(data), state.scope, &state.sources);
+            data.root.proof.set_view_borrow(0, borrow);
+        });
+    }
+}
 
 type Terminal = (bounds::Condition, Vec<Option<bounds::Clause>>);
 

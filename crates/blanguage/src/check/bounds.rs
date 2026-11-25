@@ -776,6 +776,9 @@ impl Proof {
     pub(super) fn view_borrow_ref(&self, component: usize) -> Option<&view::Borrow> {
         self.views.get(component)
     }
+    pub(super) fn take_view_borrow(&mut self, component: usize) -> view::Borrow {
+        self.views.get_mut(component).map(std::mem::take).unwrap_or_default()
+    }
     pub(super) fn view_borrow(&self,component:usize)->view::Borrow {self.view_borrow_ref(component).cloned().unwrap_or_default()}
     pub(super) fn borrowed_view(&self)->view::Borrow {self.views.iter().fold(view::Borrow::default(),|mut all,value|{all.union(value);all})}
     pub(super) fn borrowed_views(&self)->BTreeSet<view::Source> {self.borrowed_view().sources.entries().filter_map(|(source,when)|when.possible().then_some(source.clone())).collect()}

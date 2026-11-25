@@ -69,6 +69,34 @@ extern "C" u32 loop_exit_join(address context,usize exits,u32 natural,u32 termin
     return reachable;
 }
 
+extern "C" void close_loop_sources(address context,usize inputs,usize edges,usize exits,LoopSourceHost host) on cpu
+    requires nonzero(host.seed) requires nonzero(host.add_edge) requires nonzero(host.classify)
+    requires nonzero(host.seal) requires nonzero(host.publish)
+    requires nonzero(host.write_value) requires nonzero(host.write_resources) {
+    usize slot=0u64;
+    if(inputs!=0u64) {
+        while(slot<inputs){host.seed(context,slot);slot+=1u64;}
+        usize edge=0u64;
+        while(edge<edges) {
+            slot=0u64;
+            while(slot<inputs){host.add_edge(context,slot,edge);slot+=1u64;}
+            edge+=1u64;
+        }
+        slot=0u64;
+        while(slot<inputs){host.classify(context,slot);slot+=1u64;}
+        host.seal(context);
+        slot=0u64;
+        while(slot<inputs){host.publish(context,slot);slot+=1u64;}
+    }
+    usize environment=0u64;
+    while(environment<=exits) {
+        slot=0u64;
+        while(slot<inputs){host.write_value(context,environment,slot);slot+=1u64;}
+        host.write_resources(context,environment);
+        environment+=1u64;
+    }
+}
+
 extern "C" CheckedDispatch checked_dispatch(SignatureNode declaration) on cpu {
     FunctionNode function = binding_node<FunctionNode>(declaration.storage.nodes,declaration.offset);
     if (function.kind == 2) { return CheckedDispatch::Constant; }

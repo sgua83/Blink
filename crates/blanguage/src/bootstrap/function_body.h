@@ -621,3 +621,17 @@ struct LoopExitHost {
 extern "C" u32 loop_exit_join(address context,usize exits,u32 natural,u32 terminal,LoopExitHost host) on cpu
     requires nonzero(host.terminal_reachable) requires nonzero(host.guards) requires nonzero(host.initialize)
     requires nonzero(host.adopt) requires nonzero(host.merge) requires nonzero(host.publish);
+
+struct LoopSourceHost {
+    cfn<void,address,usize> seed;
+    cfn<void,address,usize,usize> add_edge;
+    cfn<void,address,usize> classify;
+    cfn<void,address> seal;
+    cfn<void,address,usize> publish;
+    cfn<void,address,usize,usize> write_value;
+    cfn<void,address,usize> write_resources;
+};
+extern "C" void close_loop_sources(address context,usize inputs,usize edges,usize exits,LoopSourceHost host) on cpu
+    requires nonzero(host.seed) requires nonzero(host.add_edge) requires nonzero(host.classify)
+    requires nonzero(host.seal) requires nonzero(host.publish)
+    requires nonzero(host.write_value) requires nonzero(host.write_resources);

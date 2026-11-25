@@ -733,8 +733,34 @@ pub(super) fn resource_aliases(data:&application::Data)->Borrow {
     }
     value
 }
-pub(super) fn resource_borrow(data:&application::Data)->Borrow{
-    let mut value=data.root.proof.view_borrow(0);if value.empty()||matches!(data.root.identity(),ValueIdentity::ElementComponent(_)|ValueIdentity::ElementParent(..)){value.sources.insert(Source::Data(data.root.identity()));}value
+fn implicit_resource_source(data: &application::Data) -> Option<Source> {
+    let id = data.root.identity();
+    (data.root.proof.view_borrow_ref(0).is_none_or(Borrow::empty)
+        || matches!(id, ValueIdentity::ElementComponent(_) | ValueIdentity::ElementParent(..)))
+        .then_some(Source::Data(id))
+}
+
+pub(super) fn resource_borrow_ref(data: &application::Data) -> std::borrow::Cow<'_, Borrow> {
+    use std::borrow::Cow;
+    match implicit_resource_source(data) {
+        Some(source) => {
+            let mut value = data.root.proof.view_borrow(0);
+            value.sources.insert(source);
+            Cow::Owned(value)
+        }
+        None => Cow::Borrowed(data.root.proof.view_borrow_ref(0).unwrap()),
+    }
+}
+
+pub(super) fn resource_borrow(data: &application::Data) -> Borrow {
+    resource_borrow_ref(data).into_owned()
+}
+
+pub(super) fn take_resource_borrow(data: &mut application::Data) -> Borrow {
+    let source = implicit_resource_source(data);
+    let mut value = data.root.proof.take_view_borrow(0);
+    if let Some(source) = source { value.sources.insert(source); }
+    value
 }
 pub(super) fn resource_proof(data:&application::Data)->bounds::Proof{{let mut component_proof=data.root.proof.borrow_state();component_proof.set_view_borrow(0,resource_borrow(data));component_proof}}
 
