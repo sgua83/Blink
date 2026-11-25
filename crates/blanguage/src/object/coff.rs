@@ -761,9 +761,16 @@ pub(super) fn encode_build(o: &Object, build: Option<&[u8]>) -> Result<Vec<u8>> 
         let extra = std::iter::once((META, CoffPayload::Metadata(&input, length), 0x840))
             .chain(build.map(|bytes| (BUILD, CoffPayload::Borrowed(bytes), 0x840)))
             .chain(o.archive.as_ref().map(|archive| (ARCHIVE, CoffPayload::Borrowed(archive.bytes.as_ref()), 0x840)));
-        encode_sections(&o.name, &o.sections, o.symbols.iter().map(|symbol| &symbol.definition),
-            coff_payload, extra, None, owned_output)
+        encode_object_sections(o, extra)
     })
+}
+
+fn encode_object_sections<'a>(
+    object: &'a Object,
+    extra: impl Iterator<Item = (&'a str, CoffPayload<'a>, u32)>,
+) -> Result<Vec<u8>> {
+    encode_sections(&object.name, &object.sections, object.symbols.iter().map(|symbol| &symbol.definition),
+        coff_payload, extra, None, owned_output)
 }
 
 pub(crate) fn encode_native(name: &str, source: &[Section], declared: &[Definition]) -> Result<Vec<u8>> {

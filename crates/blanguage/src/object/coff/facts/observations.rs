@@ -136,7 +136,7 @@ pub(crate) fn capture(object: &Object) -> Result<Vec<u8>> {
     if layouts.clone().any(|(_, section)| section.layout.is_none()) {
         return Err("COFF producer code ranges were not retained".into());
     }
-    let encoded = super::super::encode(object)?;
+    let encoded = super::super::encode_object_sections(object, std::iter::empty())?;
     let facts = Facts::read(&encoded)?;
     let spans = facts.ranges(|_, _, _, _| {})?;
     let mut writer = crate::codec::Writer(MAGIC.to_vec());

@@ -218,8 +218,9 @@ pub use coff::facts::{CodeSelection, code_facts, code_facts_with_observations, s
 
 impl Object {
     /// Captures original generated code ranges as independent material, without compiling code.
-    /// This explicit request uses one temporary COFF serialization; execution bytes stay unchanged.
-    /// A restored or cache-only Object without retained producer facts returns an error.
+    /// This request encodes the original physical sections and symbols into a temporary COFF buffer.
+    /// Executable object metadata and the attached runtime archive are outside this capture.
+    /// Capture returns an error if a code section lacks its original producer layout.
     pub fn code_observations(&self) -> Result<Vec<u8>> {
         coff::facts::observations::capture(self)
     }
