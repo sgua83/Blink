@@ -353,7 +353,7 @@ impl WorldChecks<'_, '_> {
                     world.build_declarations = Some(RefCell::new(BTreeSet::new()));
                 }
                 for (name, _) in std::mem::take(&mut self.pending[check as usize]) {
-                    unsafe { world.run(check::evaluate_constant(world, name, &[])) }?;
+                    unsafe { world.run(world.prepare_constant(name)) }?;
                 }
                 world.build_declarations = None;
             }

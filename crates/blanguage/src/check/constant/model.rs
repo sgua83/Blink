@@ -132,36 +132,48 @@ async fn module_body(
     Ok((value.ty,value.constant.unwrap(),origin))
 }
 
-pub(crate) async fn evaluate<'w>(world:&'w World,key:&str,calls:&[String])->Result<&'w crate::frontend::EvaluatedConstant> {
-    let definition=&world.functions[key];
-    let cached=definition.constant.get();
-    match unsafe{b_module_entry(u32::from(cached.is_some()))} {
-        ModuleEntry::Cached=>{
-            if let Some(inputs)=&world.build_declarations {
-                inputs.borrow_mut().insert(crate::build::Declaration::Constant(key.into()));
-            }
-            // The entry is selected only from this same original cache borrow.
-            return Ok(unsafe{cached.unwrap_unchecked()}.as_ref());
-        }
-        ModuleEntry::Evaluate=>{}
+pub(crate) fn evaluate<'w>(world: &'w World, key: &str, calls: &[String])
+    -> impl Future<Output = Result<&'w crate::frontend::EvaluatedConstant>>
+{
+    evaluate_value(world, key, calls, true)
+}
+
+impl World {
+    pub(crate) fn prepare_constant(&self, key: &str)
+        -> impl Future<Output = Result<&crate::frontend::EvaluatedConstant>>
+    {
+        evaluate_value(self, key, &[], false)
     }
-    unsafe{world.call(world.evaluating_constants.evaluate(key,async || {
-        let parent_inputs=world.build_declarations.as_ref().map(|inputs|inputs.take());
-        let result=module_value(world,key,calls,definition).await;
-        let mut used=BTreeSet::new();
-        if let(Some(inputs),Some(parent))=(&world.build_declarations,parent_inputs) {
-            used=inputs.replace(parent);
-        }
-        let value=result?;
-        let constant=definition.constant.get_or_init(||Arc::new(crate::frontend::EvaluatedConstant {
-            value,inputs:used,
-        }));
-        if let Some(inputs)=&world.build_declarations {
-            inputs.borrow_mut().insert(crate::build::Declaration::Constant(key.into()));
-        }
-        Ok(constant.as_ref())
-    })).await}.unwrap_or_else(||definition.source.fail(
-        definition.function.span(),"B160",format!("编译期值与类型递归依赖 {key}")))
+}
+
+async fn evaluate_value<'w>(world: &'w World, key: &str, calls: &[String], record_use: bool)
+    -> Result<&'w crate::frontend::EvaluatedConstant>
+{
+    let definition = &world.functions[key];
+    let cached = definition.constant.get();
+    let constant = match unsafe { b_module_entry(u32::from(cached.is_some())) } {
+        // The entry is selected only from this same original cache borrow.
+        ModuleEntry::Cached => unsafe { cached.unwrap_unchecked() }.as_ref(),
+        ModuleEntry::Evaluate => unsafe { world.call(world.evaluating_constants.evaluate(key, async || {
+            let parent_inputs = world.build_declarations.as_ref().map(|inputs| inputs.take());
+            let result = module_value(world, key, calls, definition).await;
+            let mut used = BTreeSet::new();
+            if let (Some(inputs), Some(parent)) = (&world.build_declarations, parent_inputs) {
+                used = inputs.replace(parent);
+            }
+            let value = result?;
+            let constant = definition.constant.get_or_init(|| Arc::new(crate::frontend::EvaluatedConstant {
+                value, inputs: used,
+            }));
+            Ok(constant.as_ref())
+        })).await }.unwrap_or_else(|| definition.source.fail(
+            definition.function.span(), "B160", format!("编译期值与类型递归依赖 {key}"),
+        ))?,
+    };
+    if record_use && let Some(inputs) = &world.build_declarations {
+        inputs.borrow_mut().insert(crate::build::Declaration::Constant(key.into()));
+    }
+    Ok(constant)
 }
 
 #[derive(Clone,Copy,PartialEq,Eq)]
