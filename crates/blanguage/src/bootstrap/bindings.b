@@ -155,23 +155,22 @@ extern "C" BindingPlan prepare(BindingInput input,BindingWork work) on cpu {
         }
         i+=1u64;
     }
-    u64 count=0u64;u64 row=0u64;i=0u64;
+    // The private COMDAT symbols follow all ordinary section symbols.
+    u64 count=input.section_count;u64 row=0u64;i=0u64;
     while(i<input.section_count){
         BindingSection section=section_at(input.sections,i);section.symbol=row;section_put(input,i,section);
-        u64 auxiliary=0u64;if((section.flags&4096u64)!=0u64){auxiliary=1u64;}
-        symbol_put(work,count,symbol(section.name,i+1u64,0u64,0u64,0u64,auxiliary,section.owner,0u64,0u64));
-        count+=1u64;row+=1u64+auxiliary;i+=1u64;
-    }
-    i=0u64;
-    while(i<input.section_count){
-        BindingSection section=section_at(input.sections,i);
-        if((section.flags&4096u64)!=0u64){
+        bool comdat=(section.flags&4096u64)!=0u64;
+        u64 auxiliary=u64(comdat);
+        symbol_put(work,i,symbol(section.name,i+1u64,0u64,0u64,0u64,auxiliary,section.owner,0u64,0u64));
+        row+=1u64+auxiliary;
+        if(comdat){
             u64 length=17u64+input.name.length+digits(i);
             symbol_put(work,count,symbol(BindingBytes(unsafe_address(0u64),length),i+1u64,0u64,0u64,0u64,0u64,0u64,1u64,i));
-            count+=1u64;row+=1u64;
+            count+=1u64;
         }
         i+=1u64;
     }
+    row+=count-input.section_count;
     i=0u64;
     while(i<input.definition_count){
         BindingDefinition value=definition_at(input,i);
