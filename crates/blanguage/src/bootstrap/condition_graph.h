@@ -1006,3 +1006,23 @@ extern "C" void join_proof_domains(address context,u32 bits,DomainJoinHost host)
  requires nonzero(host.next) requires nonzero(host.compare) requires nonzero(host.origin)
  requires nonzero(host.upper) requires nonzero(host.bits);
 
+
+struct ProofCallWidths { usize origins; usize domains; usize conditions; };
+struct ProofCallDomain { address original; u32 kind; };
+struct ProofCallHost {
+ cfn<void,address,usize,u32,u32> begin;
+ cfn<address,address> input;
+ cfn<void,address,address> merge_input;
+ cfn<ProofCallDomain,address> domain;
+ cfn<void,address,address> direct;
+ cfn<void,address,address> common;
+ cfn<void,address,address> derived;
+ cfn<address,address> false_case;
+ cfn<u32,address> possible;
+ cfn<void,address> nonzero;
+};
+extern "C" void project_call_proof(address context,ProofCallWidths widths,ProofCallHost host) on cpu
+ requires nonzero(host.begin) requires nonzero(host.input) requires nonzero(host.merge_input)
+ requires nonzero(host.domain) requires nonzero(host.direct) requires nonzero(host.common) requires nonzero(host.derived)
+ requires nonzero(host.false_case) requires nonzero(host.possible) requires nonzero(host.nonzero);
+

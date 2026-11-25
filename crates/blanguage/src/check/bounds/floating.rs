@@ -99,9 +99,14 @@ impl FloatingBound {
         let input = Proof::bound_input(bindings, &self.source)?;
         Some(Self { source: input.known_identity(0)?, ..self.restricted(input)? })
     }
-    pub(super) fn range_at_call(self, bindings: &BTreeMap<ValueIdentity,impl std::borrow::Borrow<Proof>>) -> Option<ScalarRanges> {
-        let bound = self.restricted(Proof::bound_input(bindings, &self.source)?)?;
-        (bound.form == FloatingForm::Upper).then(|| upper_range(bound.maximum()))
+    pub(super) fn project_at_call(
+        self, bindings: &BTreeMap<ValueIdentity, impl std::borrow::Borrow<Proof>>,
+    ) -> Option<(Option<Self>, Option<ScalarRanges>)> {
+        let input = Proof::bound_input(bindings, &self.source)?;
+        let bound = self.restricted(input)?;
+        let mapped = input.known_identity(0).map(|source| Self { source, ..bound });
+        let range = (bound.form == FloatingForm::Upper).then(|| upper_range(bound.maximum()));
+        Some((mapped, range))
     }
 }
 fn upper_range(upper: f64) -> ScalarRanges {

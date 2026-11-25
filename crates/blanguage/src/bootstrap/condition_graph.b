@@ -2424,3 +2424,35 @@ extern "C" u32 proof_length_relation(address context,u32 strict,LengthRelationHo
  return 0;
 }
 
+
+extern "C" void project_call_proof(address context,ProofCallWidths widths,ProofCallHost host) on cpu
+ requires nonzero(host.begin) requires nonzero(host.input) requires nonzero(host.merge_input)
+ requires nonzero(host.domain) requires nonzero(host.direct) requires nonzero(host.common) requires nonzero(host.derived)
+ requires nonzero(host.false_case) requires nonzero(host.possible) requires nonzero(host.nonzero) {
+ usize component=0u64;
+ while(component<widths.origins||component<widths.domains||component<widths.conditions) {
+  bool has_origins=component<widths.origins;
+  bool has_domains=component<widths.domains;
+  host.begin(context,component,has_origins?1:0,(has_origins||has_domains)?1:0);
+  if(has_origins) {
+   address input=host.input(context);
+   while(input!=address()) {
+    host.merge_input(context,input);
+    input=host.input(context);
+   }
+  }
+  if(has_domains) {
+   ProofCallDomain next=host.domain(context);
+   while(next.original!=address()) {
+    if(next.kind==1){host.common(context,next.original);}
+    else if(next.kind==2){host.derived(context,next.original);}
+    else{host.direct(context,next.original);}
+    next=host.domain(context);
+   }
+  }
+  address clause=host.false_case(context);
+  if(clause!=address()&&host.possible(clause)==0){host.nonzero(context);}
+  component+=1u64;
+ }
+}
+

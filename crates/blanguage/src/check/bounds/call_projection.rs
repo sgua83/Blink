@@ -170,3 +170,216 @@ impl Proof {
         c.clause
     }
 }
+
+#[repr(C)]
+struct ProofWidths { origins: usize, domains: usize, conditions: usize }
+
+#[repr(C)]
+struct ProofDomain {
+    original: Borrowed,
+    kind: u32,
+}
+
+struct ProofFrame<'a, P> {
+    source: &'a Proof,
+    bindings: &'a BTreeMap<ValueIdentity, P>,
+    components: Option<&'a [usize]>,
+    output: Proof,
+    component: usize,
+    origins: std::slice::Iter<'a, ValueIdentity>,
+    domains: btree_set::Iter<'a, IndexDomain>,
+}
+
+unsafe fn proof_frame<'a, 'b, P>(slot: Slot) -> &'a mut ProofFrame<'b, P> {
+    unsafe { &mut *slot.cast() }
+}
+
+impl<P> ProofFrame<'_, P> {
+    fn intersect(&mut self, range: &ScalarRanges) {
+        let ranges = &mut self.output.ranges;
+        ranges.resize_with(ranges.len().max(self.component + 1), ScalarRanges::default);
+        ranges[self.component] = ranges[self.component].intersection(range);
+    }
+}
+
+unsafe extern "C" fn proof_begin<P>(slot: Slot, component: usize, origins: u32, domains: u32) {
+    let state = unsafe { proof_frame::<P>(slot) };
+    let source = state.components.map_or(component, |components| components[component]);
+    state.component = component;
+    state.origins = state.source.origins.get(source).map(|origins| origins.iter()).unwrap_or_default();
+    state.domains = state.source.domains.get(source).map(|domains| domains.iter()).unwrap_or_default();
+    if origins != 0 {
+        state.output.origins.push(Vec::new());
+        state.output.ranges.resize_with(state.output.ranges.len().max(component + 1), ScalarRanges::default);
+        state.output.nonzero.resize(state.output.nonzero.len().max(component + 1), false);
+    }
+    if domains != 0 {
+        state.output.domains.push(Domains::new());
+    }
+}
+
+unsafe extern "C" fn proof_input<P: std::borrow::Borrow<Proof>>(slot: Slot) -> Borrowed {
+    let state = unsafe { proof_frame::<P>(slot) };
+    state.origins.find_map(|id| Proof::bound_input(state.bindings, id))
+        .map_or(ptr::null(), |value| ptr::from_ref(value).cast())
+}
+
+unsafe extern "C" fn proof_merge_input<P>(slot: Slot, input: Borrowed) {
+    let state = unsafe { proof_frame::<P>(slot) };
+    let value = unsafe { proof(input) };
+    let index = state.component;
+    let output = &mut state.output;
+    output.origins[index].extend(value.origins.first().into_iter().flatten().copied());
+    output.ranges[index] = range_sets::intersection(&output.ranges[index].0, value.interval_source(0));
+    output.nonzero[index] |= value.nonzero.first() == Some(&true);
+    output.domains[index].extend(value.domains.first().into_iter().flatten().copied());
+    // An incoming condition is already in the caller's identities.
+    if let Some(condition) = value.component_condition(0) {
+        output.conditions.resize_with(output.conditions.len().max(index + 1), || None);
+        let current = output.conditions[index].get_or_insert_with(|| Box::new(Condition::default()));
+        for (case, incoming) in current.cases.iter_mut().zip(&condition.cases) {
+            *case = Clause::both(case, incoming);
+        }
+    }
+}
+
+unsafe extern "C" fn proof_domain<P>(slot: Slot) -> ProofDomain {
+    let state = unsafe { proof_frame::<P>(slot) };
+    let Some(domain) = state.domains.next() else {
+        return ProofDomain { original: ptr::null(), kind: 0 };
+    };
+    let kind = match domain {
+        IndexDomain::CommonRange(..) => 1,
+        IndexDomain::Floating(..) | IndexDomain::Computed(..) => 2,
+        _ => 0,
+    };
+    ProofDomain { original: ptr::from_ref(domain).cast(), kind }
+}
+
+unsafe extern "C" fn proof_direct<P: std::borrow::Borrow<Proof>>(slot: Slot, domain: Borrowed) {
+    let state = unsafe { proof_frame::<P>(slot) };
+    if let Some(domain) = Proof::call_domain(unsafe { *domain.cast() }, state.bindings) {
+        state.output.domains[state.component].insert(domain);
+    }
+}
+
+unsafe extern "C" fn proof_common<P: std::borrow::Borrow<Proof>>(slot: Slot, domain: Borrowed) {
+    let state = unsafe { proof_frame::<P>(slot) };
+    let IndexDomain::CommonRange(source, from, low, extended, to) = (unsafe { *domain.cast() }) else {
+        unsafe { std::hint::unreachable_unchecked() };
+    };
+    let Some(incoming) = Proof::bound_input(state.bindings, &source) else { return; };
+    let scalars = [from, low, extended, to];
+    let nonzero = incoming.nonzero.first() == Some(&true);
+    let range = range_sets::cast_chain(incoming.interval_source(0), scalars, nonzero);
+    let component = state.component;
+    if let Some(bits) = Proof::call_common_bits(incoming, from, low, extended, to) {
+        state.output.mark_domain(component, bits.domain());
+    }
+    state.intersect(&range);
+    let output = &mut state.output;
+    output.nonzero.resize(output.nonzero.len().max(component + 1), false);
+    output.nonzero[component] |= if to.is_integer() { !range.contains(to.order_bias()) } else { nonzero };
+    let domains = &mut output.domains[component];
+    domains.extend(incoming.domains.first().into_iter().flatten().copied().filter_map(|domain| super::cast_domain(domain, scalars)));
+    domains.extend(incoming.origins.first().into_iter().flatten()
+        .filter(|id| !matches!(id, ValueIdentity::ElementComponent(_) | ValueIdentity::ElementParent(..) | ValueIdentity::ElementIndex(_)))
+        .map(|id| IndexDomain::CommonRange(*id, from, low, extended, to)));
+}
+
+unsafe extern "C" fn proof_derived<P: std::borrow::Borrow<Proof>>(slot: Slot, domain: Borrowed) {
+    let state = unsafe { proof_frame::<P>(slot) };
+    let result = match unsafe { *domain.cast::<IndexDomain>() } {
+        IndexDomain::Floating(bound) => bound.project_at_call(state.bindings)
+            .map(|(domain, range)| (domain.map(IndexDomain::Floating), range)),
+        IndexDomain::Computed(expression) => expression.project_at_call(state.bindings)
+            .map(|(domain, range)| (domain.map(IndexDomain::Computed), range)),
+        _ => unsafe { std::hint::unreachable_unchecked() },
+    };
+    if let Some((domain, range)) = result {
+        if let Some(domain) = domain {
+            state.output.domains[state.component].insert(domain);
+        }
+        if let Some(range) = range {
+            state.intersect(&range);
+        }
+    }
+}
+
+unsafe extern "C" fn proof_false_case<P>(slot: Slot) -> Borrowed {
+    let state = unsafe { proof_frame::<P>(slot) };
+    if state.output.nonzero.get(state.component) == Some(&true) {
+        return ptr::null();
+    }
+    state.output.component_condition(state.component)
+        .map_or(ptr::null(), |condition| ptr::from_ref(&condition.cases[0]).cast())
+}
+
+unsafe extern "C" fn proof_possible(clause: Borrowed) -> u32 {
+    u32::from(unsafe { &*clause.cast::<Clause>() }.possible())
+}
+
+unsafe extern "C" fn proof_nonzero<P>(slot: Slot) {
+    let state = unsafe { proof_frame::<P>(slot) };
+    state.output.mark_nonzero(state.component);
+}
+
+#[repr(C)]
+struct ProofHost {
+    begin: unsafe extern "C" fn(Slot, usize, u32, u32),
+    input: unsafe extern "C" fn(Slot) -> Borrowed,
+    merge_input: unsafe extern "C" fn(Slot, Borrowed),
+    domain: unsafe extern "C" fn(Slot) -> ProofDomain,
+    direct: unsafe extern "C" fn(Slot, Borrowed),
+    common: unsafe extern "C" fn(Slot, Borrowed),
+    derived: unsafe extern "C" fn(Slot, Borrowed),
+    false_case: unsafe extern "C" fn(Slot) -> Borrowed,
+    possible: unsafe extern "C" fn(Borrowed) -> u32,
+    nonzero: unsafe extern "C" fn(Slot),
+}
+unsafe extern "C" {
+    #[link_name = "bootstrap.condition_graph::project_call_proof"]
+    fn b_project_proof(context: Slot, widths: ProofWidths, host: ProofHost);
+}
+
+pub(super) fn project_proof<P: std::borrow::Borrow<Proof>>(
+    proof: &Proof, bindings: &BTreeMap<ValueIdentity, P>, components: Option<&[usize]>,
+) -> Proof {
+    let count = |width| components.map_or(width, |selected| selected.len());
+    let widths = ProofWidths {
+        origins: count(proof.origins.len()), domains: count(proof.domains.len()),
+        conditions: count(proof.conditions.len()),
+    };
+    let source = |component| components.map_or(component, |selected| selected[component]);
+    let conditions = (0..widths.conditions).map(|i| proof.component_condition(source(i)));
+    let roots: Vec<_> = conditions.clone().flatten().flat_map(|condition| condition.cases.iter()).collect();
+    let mut rewritten = if roots.is_empty() { Vec::new() } else {
+        Clause::at_calls(&roots, &Clause::ordered(roots.iter().copied()), bindings, |_| false, Clause::required)
+    }.into_iter();
+    let conditions = conditions.map(|condition| condition.map(|_| {
+        Box::new(Condition { cases: [rewritten.next().unwrap(), rewritten.next().unwrap()] })
+    })).collect();
+    let output = Proof {
+        origins: Vec::with_capacity(widths.origins),
+        domains: Vec::with_capacity(widths.origins.max(widths.domains)),
+        conditions,
+        ranges: components.map_or_else(|| proof.ranges.clone(), |selected| {
+            selected.iter().map(|&i| proof.range_set(i).into_owned()).collect()
+        }),
+        nonzero: components.map_or_else(|| proof.nonzero.clone(), |selected| {
+            selected.iter().map(|&i| proof.nonzero.get(i) == Some(&true)).collect()
+        }),
+        ..Proof::default()
+    };
+    let mut state = ProofFrame {
+        source: proof, bindings, components, output, component: 0,
+        origins: Default::default(), domains: Default::default(),
+    };
+    unsafe { b_project_proof(ptr::from_mut(&mut state).cast(), widths, ProofHost {
+        begin: proof_begin::<P>, input: proof_input::<P>, merge_input: proof_merge_input::<P>,
+        domain: proof_domain::<P>, direct: proof_direct::<P>, common: proof_common::<P>, derived: proof_derived::<P>,
+        false_case: proof_false_case::<P>, possible: proof_possible, nonzero: proof_nonzero::<P>,
+    }) };
+    state.output
+}
+

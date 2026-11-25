@@ -274,22 +274,31 @@ impl IntegerExpression {
             Self::Selection(index) => Self::selection(index.0.map(identity)?),
         })
     }
+    fn bound_operand(
+        id: ValueIdentity, scalar: Scalar,
+        bindings: &BTreeMap<ValueIdentity, impl std::borrow::Borrow<Proof>>,
+    ) -> Option<(Option<Operand>, ScalarRanges)> {
+        let input = Proof::bound_input(bindings, &id)?;
+        let range = input.range_set(0).restrict(0, scalar.bit_mask());
+        let operand = match range.0.as_slice() {
+            [(low, high)] if low == high => Some(Operand::Constant(scalar, *low ^ scalar.order_bias())),
+            _ => input.known_identity(0).map(Operand::Value),
+        };
+        Some((operand, range))
+    }
+
     pub(super) fn at_call(self, bindings: &BTreeMap<ValueIdentity, impl std::borrow::Borrow<Proof>>) -> Option<Self> {
         let Self::Binary(op, scalar, a, b) = self else {
             return self.selector()?.at_call(bindings).map(Self::selection);
         };
-        let operand = |value| Some(match value {
-            Operand::Value(id) => {
-                let proof = Proof::bound_input(bindings, &id)?;
-                match proof.range_set(0).restrict(0, scalar.bit_mask()).0.as_slice() {
-                    [(a, b)] if a == b => Operand::Constant(scalar, *a ^ scalar.order_bias()),
-                    _ => Operand::Value(proof.known_identity(0)?),
-                }
-            }
-            constant => constant,
-        });
+        let operand = |value| match value {
+            Operand::Value(id) => Self::bound_operand(id, scalar, bindings)?.0,
+            constant => Some(constant),
+        };
         Some(Self::Binary(op, scalar, operand(a)?, operand(b)?))
     }
+
+
     pub(super) fn constant(self) -> Option<(Scalar, Bits)> {
         let Self::Binary(op, scalar, Operand::Constant(_, a), Operand::Constant(_, b)) = self else {
             return match self.selector()? {
@@ -312,35 +321,45 @@ impl IntegerExpression {
         };
         constant::binary(operation, scalar, a, b).map(|bits| (scalar, bits))
     }
-    fn ranges_at_call(self, bindings: &BTreeMap<ValueIdentity, impl std::borrow::Borrow<Proof>>) -> Option<ScalarRanges> {
+    fn project_at_call(
+        self, bindings: &BTreeMap<ValueIdentity, impl std::borrow::Borrow<Proof>>,
+    ) -> Option<(Option<Self>, Option<ScalarRanges>)> {
         let Self::Binary(op, scalar, a, b) = self else {
-            let (_, bits) = self.at_call(bindings)?.constant()?;
-            return Some(ScalarRanges::interval(bits, bits));
+            let expression = self.at_call(bindings)?;
+            let range = expression.constant().map(|(_, bits)| ScalarRanges::interval(bits, bits));
+            return Some((Some(expression), range));
         };
-        let range = |operand| Some(match operand {
-            Operand::Value(id) => Proof::bound_input(bindings, &id)?.range_set(0).restrict(0, scalar.bit_mask()),
-            Operand::Constant(_, bits) => ScalarRanges::interval(bits ^ scalar.order_bias(), bits ^ scalar.order_bias()),
-        });
-        let left = range(a)?;
-        let right = range(b)?;
-        if let ([(al, ah)], [(bl, bh)]) = (left.0.as_slice(), right.0.as_slice())
+        let operand = |operand| match operand {
+            Operand::Value(id) => Self::bound_operand(id, scalar, bindings),
+            constant @ Operand::Constant(_, bits) => {
+                let value = bits ^ scalar.order_bias();
+                Some((Some(constant), ScalarRanges::interval(value, value)))
+            }
+        };
+        let (a, left) = operand(a)?;
+        let (b, right) = operand(b)?;
+        let expression = a.zip(b).map(|(a, b)| Self::Binary(op, scalar, a, b));
+        let range = if let ([(al, ah)], [(bl, bh)]) = (left.0.as_slice(), right.0.as_slice())
             && al == ah && bl == bh
         {
             let exact = Self::Binary(op, scalar,
                 Operand::Constant(scalar, *al ^ scalar.order_bias()),
                 Operand::Constant(scalar, *bl ^ scalar.order_bias()));
-            let (_, bits) = exact.constant()?;
-            let ordered = bits ^ scalar.order_bias();
-            return Some(ScalarRanges::interval(ordered, ordered));
-        }
-        let operation = match op {
-            IntegerOperation::Add => "+", IntegerOperation::Subtract => "-",
-            IntegerOperation::Multiply => "*", IntegerOperation::Divide => "/",
-            IntegerOperation::Remainder => "%", IntegerOperation::And => "&",
-            IntegerOperation::Or => "|", IntegerOperation::Xor => "^",
-            IntegerOperation::ShiftLeft => "<<", IntegerOperation::ShiftRight => ">>",
+            exact.constant().map(|(_, bits)| {
+                let value = bits ^ scalar.order_bias();
+                ScalarRanges::interval(value, value)
+            })
+        } else {
+            let operation = match op {
+                IntegerOperation::Add => "+", IntegerOperation::Subtract => "-",
+                IntegerOperation::Multiply => "*", IntegerOperation::Divide => "/",
+                IntegerOperation::Remainder => "%", IntegerOperation::And => "&",
+                IntegerOperation::Or => "|", IntegerOperation::Xor => "^",
+                IntegerOperation::ShiftLeft => "<<", IntegerOperation::ShiftRight => ">>",
+            };
+            Some(arithmetic_ranges(operation, scalar, &left, &right))
         };
-        Some(arithmetic_ranges(operation, scalar, &left, &right))
+        Some((expression, range))
     }
 }
 
@@ -1040,109 +1059,10 @@ impl Proof {
         bindings: &BTreeMap<ValueIdentity, impl std::borrow::Borrow<Proof>>,
         components: Option<&[usize]>,
     ) -> Self {
-        let count = |width| components.map_or(width, |selected| selected.len());
-        let source = |component: usize| components.map_or(component, |selected| selected[component]);
-        let mut translated = Self {
-            views: Vec::new(), addresses: Vec::new(),
-            origins: Vec::with_capacity(count(self.origins.len())),
-            domains: Vec::with_capacity(count(self.origins.len().max(self.domains.len()))),
-            conditions: Vec::new(),
-            ranges: components.map_or_else(|| self.ranges.clone(), |selected| selected.iter().map(|&i| self.range_set(i).into_owned()).collect()),
-            nonzero: components.map_or_else(|| self.nonzero.clone(), |selected| selected.iter().map(|&i| self.nonzero.get(i) == Some(&true)).collect()),
-        };
-        for i in 0..count(self.origins.len()) {
-            let origins = self.origins.get(source(i)).into_iter().flatten();
-            translated.origins.push(Vec::new());
-            translated.ranges.resize_with(translated.ranges.len().max(i + 1), ScalarRanges::default);
-            translated.nonzero.resize(translated.nonzero.len().max(i + 1), false);
-            translated.domains.push(self.domains.get(source(i)).into_iter().flatten().copied()
-                .filter_map(|domain| Self::call_domain(domain, bindings)).collect());
-            for value in origins.filter_map(|id| Proof::bound_input(bindings, id)) {
-                translated.origins[i].extend(value.origins.first().into_iter().flatten().copied());
-                translated.ranges[i] = range_sets::intersection(
-                    &translated.ranges[i].0, value.interval_source(0),
-                );
-                translated.nonzero[i] |= value.nonzero.first() == Some(&true);
-                translated.domains[i].extend(value.domains.first().into_iter().flatten().copied());
-            }
-        }
-        // A proven domain can exist without a captured origin.
-        for i in count(self.origins.len())..count(self.domains.len()) {
-            let domains = &self.domains[source(i)];
-            translated.domains.push(domains.iter().copied()
-                .filter_map(|domain| Self::call_domain(domain, bindings)).collect());
-        }
-        for component in 0..count(self.domains.len()) {
-            let domains = self.domains.get(source(component)).into_iter().flatten();
-            for domain in domains {
-                if let IndexDomain::CommonRange(source,from,low,extended,to) = domain {
-                    if let Some(incoming) = Proof::bound_input(bindings, source) {
-                        let range = range_sets::cast_chain(
-                            incoming.interval_source(0), [*from, *low, *extended, *to],
-                            incoming.nonzero.first() == Some(&true),
-                        );
-                        if let Some(bits)=Self::call_common_bits(incoming,*from,*low,*extended,*to){translated.mark_domain(component,bits.domain());}
-                        translated.ranges.resize_with(translated.ranges.len().max(component + 1), ScalarRanges::default);
-                        translated.ranges[component] = translated.ranges[component].intersection(&range);
-                        translated.nonzero.resize(translated.nonzero.len().max(component + 1), false);
-                        translated.nonzero[component] |= if to.is_integer(){!range.contains(to.order_bias())}else{incoming.nonzero.first()==Some(&true)};
-                        translated.domains.resize_with(translated.domains.len().max(component + 1), Domains::new);
-                        translated.domains[component].extend(incoming.domains.first().into_iter().flatten().copied().filter_map(|domain|cast_domain(domain,[*from,*low,*extended,*to])));
-                        translated.domains[component].extend(incoming.origins.first().into_iter().flatten()
-                            .filter(|id|!matches!(id,ValueIdentity::ElementComponent(_)|ValueIdentity::ElementParent(..)|ValueIdentity::ElementIndex(_)))
-                            .map(|id|IndexDomain::CommonRange(*id,*from,*low,*extended,*to)));
-                    }
-                }
-                if let IndexDomain::Floating(bound) = domain
-                    && let Some(range) = bound.range_at_call(bindings)
-                {
-                    translated.ranges.resize_with(translated.ranges.len().max(component + 1), ScalarRanges::default);
-                    translated.ranges[component] = translated.ranges[component].intersection(&range);
-                }
-                if let IndexDomain::Computed(expression) = domain
-                    && let Some(range) = expression.ranges_at_call(bindings)
-                {
-                    translated.ranges.resize_with(translated.ranges.len().max(component + 1), ScalarRanges::default);
-                    translated.ranges[component] = translated.ranges[component].intersection(&range);
-                }
-            }
-        }
-        let roots: Vec<_> = (0..count(self.conditions.len())).filter_map(|i| self.conditions.get(source(i)).and_then(Option::as_ref))
-            .flat_map(|condition| condition.cases.iter()).collect();
-        let mut projected = if roots.is_empty() { Vec::new() } else {
-            Clause::at_calls(&roots, &Clause::ordered(roots.iter().copied()), bindings, |_| false, Clause::required)
-        }.into_iter();
-        translated.conditions = (0..count(self.conditions.len())).map(|i| self.conditions.get(source(i)).and_then(Option::as_ref).map(|_| {
-            Box::new(Condition { cases: [projected.next().unwrap(), projected.next().unwrap()] })
-        })).collect();
-        // 输出仍是入口快照时，继续交接调用者已经持有的分量条件。
-        // 实参图属于调用者命名空间，不能再次按被调函数的身份替换。
-        for i in 0..count(self.origins.len()) {
-            let origins = self.origins.get(source(i)).into_iter().flatten();
-            for incoming in origins.filter_map(|id| Proof::bound_input(bindings, id)) {
-                if let Some(condition) = incoming.component_condition(0) {
-                    translated
-                        .conditions
-                        .resize_with(translated.conditions.len().max(i + 1), || None);
-                    let current = translated.conditions[i]
-                        .get_or_insert_with(|| Box::new(Condition::default()));
-                    for truth in 0..2 {
-                        current.cases[truth] =
-                            Clause::both(&current.cases[truth], &condition.cases[truth]);
-                    }
-                }
-            }
-        }
-        for component in 0..translated.conditions.len() {
-            if translated.nonzero.get(component) != Some(&true)
-                && translated.component_condition(component)
-                    .is_some_and(|condition| !condition.cases[0].possible())
-            {
-                translated.mark_nonzero(component);
-            }
-        }
-        translated
+        call_projection::project_proof(self, bindings, components)
     }
+
+
     pub(super) fn known_value(&self, ty: &Ty) -> Option<Vec<Bits>> {
         ty.components
             .iter()
