@@ -352,6 +352,10 @@ impl<D> DomainBindings<D> {
     }
     pub(crate) fn append(&mut self, other: Self) {
         let offset = self.datasets.len();
+        if offset == 0 {
+            *self = other;
+            return;
+        }
         self.datasets.extend(other.datasets);
         self.domains.extend(other.domains.into_vec().into_iter().map(|r| r.into_mapped(|binding| Some(binding + offset)).unwrap()));
     }
