@@ -1,6 +1,7 @@
 module bootstrap.archive;
 
 const u64 ARCHIVE_SIGNATURE = 0x0a3e686372613c21u64;
+const u64 MEMBER_HEADER_BYTES = 60u64;
 
 u32 signature_byte(u64 index) on cpu {
     return u32((ARCHIVE_SIGNATURE >> (index * 8u64)) & 255u64);
@@ -21,7 +22,7 @@ ArchiveSymbol symbol_at(address symbols,u64 at) on cpu {
 void symbol_put(address symbols,u64 at,ArchiveSymbol value) on cpu {
     unsafe_position<ArchiveSymbol>(unsafe_address(address_bits(symbols)+at*SYMBOL_BYTES))=value;
 }
-u64 member_span(u64 bytes) on cpu {return 60u64+bytes+bytes%2u64;}
+u64 member_span(u64 bytes) on cpu {return MEMBER_HEADER_BYTES+bytes+bytes%2u64;}
 ArchiveLayout invalid(u32 code) on cpu {return ArchiveLayout(0u64,0u64,0u64,0u64,code);}
 
 extern "C" ArchiveLayout layout(ArchiveInput input) on cpu {
@@ -70,13 +71,13 @@ void decimal(address out,u64 at,u64 value) on cpu {
     while(count>0u64){count-=1u64;put(out,at+count,48+u32(remaining%10u64));remaining/=10u64;}
 }
 void header(address out,u64 at,u64 size,u32 kind,u64 name) on cpu {
-    u64 i=0u64;while(i<60u64){put(out,at+i,32);i+=1u64;}
+    u64 i=0u64;while(i<MEMBER_HEADER_BYTES){put(out,at+i,32);i+=1u64;}
     put(out,at,47);
     if(kind==1){put(out,at+1u64,47);}
     else if(kind==2){decimal(out,at+1u64,name);}
     put(out,at+16u64,48);put(out,at+40u64,48);decimal(out,at+48u64,size);
     put(out,at+58u64,96);put(out,at+59u64,10);
-    if(size%2u64!=0u64){put(out,at+60u64+size,10);}
+    if(size%2u64!=0u64){put(out,at+MEMBER_HEADER_BYTES+size,10);}
 }
 i32 compare_names(ArchiveSymbol left,ArchiveSymbol right) on cpu {
     u64 count=left.name_length;if(right.name_length<count){count=right.name_length;}
@@ -120,7 +121,7 @@ extern "C" void encode(ArchiveInput input,ArchiveLayout layout,address out) on c
         put(out, u64(index), signature_byte(u64(index)));
     }
     u64 first=8u64;header(out,first,layout.first,0,0u64);
-    u64 at=first+60u64;be32(out,at,input.symbol_count);at+=4u64;
+    u64 at=first+MEMBER_HEADER_BYTES;be32(out,at,input.symbol_count);at+=4u64;
     u64 name_at=at+4u64*input.symbol_count;
     u64 i=0u64;
     while(i<input.symbol_count){
@@ -131,7 +132,7 @@ extern "C" void encode(ArchiveInput input,ArchiveLayout layout,address out) on c
     }
     sort_symbols(input.symbols,input.symbol_count,false);
     u64 second=first+member_span(layout.first);header(out,second,layout.second,0,0u64);
-    at=second+60u64;le32(out,at,input.member_count);at+=4u64;i=0u64;
+    at=second+MEMBER_HEADER_BYTES;le32(out,at,input.member_count);at+=4u64;i=0u64;
     while(i<input.member_count){ArchiveMember member=member_at(input,i);le32(out,at,member.offset);at+=4u64;i+=1u64;}
     le32(out,at,input.symbol_count);at+=4u64;i=0u64;
     name_at=at+2u64*input.symbol_count;
@@ -142,7 +143,7 @@ extern "C" void encode(ArchiveInput input,ArchiveLayout layout,address out) on c
         name_at+=symbol.name_length;put(out,name_at,0);name_at+=1u64;i+=1u64;
     }
     u64 names=second+member_span(layout.second);header(out,names,layout.names,1,0u64);
-    u64 name_start=names+60u64;at=name_start;i=0u64;
+    u64 name_start=names+MEMBER_HEADER_BYTES;at=name_start;i=0u64;
     while(i<input.member_count){
         ArchiveMember member=member_at(input,i);
         header(out,member.offset,member.byte_length,2,at-name_start);
@@ -212,13 +213,13 @@ ArchiveReadNumber read_decimal(address bytes,ArchiveRange range) on cpu {
 }
 ArchiveReadHeader read_header(address bytes,u64 length,u64 at) on cpu {
     if(at>4294967295u64){return ArchiveReadHeader(ArchiveRange(0u64,0u64),ArchiveRange(0u64,0u64),0u64,10,at);}
-    if(length-at<60u64){return ArchiveReadHeader(ArchiveRange(0u64,0u64),ArchiveRange(0u64,0u64),0u64,1,at);}
+    if(length-at<MEMBER_HEADER_BYTES){return ArchiveReadHeader(ArchiveRange(0u64,0u64),ArchiveRange(0u64,0u64),0u64,1,at);}
     if(read_byte(bytes,at+58u64)!=96||read_byte(bytes,at+59u64)!=10){
         return ArchiveReadHeader(ArchiveRange(0u64,0u64),ArchiveRange(0u64,0u64),0u64,2,at);
     }
     ArchiveReadNumber size=read_decimal(bytes,trim_header(bytes,ArchiveRange(at+48u64,10u64),true));
     if(!size.valid){return ArchiveReadHeader(ArchiveRange(0u64,0u64),ArchiveRange(0u64,0u64),0u64,3,at+48u64);}
-    u64 body=at+60u64;
+    u64 body=at+MEMBER_HEADER_BYTES;
     if(size.value>length-body){return ArchiveReadHeader(ArchiveRange(0u64,0u64),ArchiveRange(0u64,0u64),0u64,1,body);}
     u64 next=body+size.value;
     if(next%2u64!=0u64){
@@ -243,7 +244,7 @@ ArchiveReadResult read_terminated(address bytes,ArchiveRange region,u64 offset) 
 extern "C" address malloc(u64 bytes) on cpu from "ucrtbase.dll";
 extern "C" void free(address bytes) on cpu from "ucrtbase.dll";
 
-struct LibraryMember {ArchiveReadMember member;u32 offset;u32 taken;};
+struct LibraryMember {ArchiveReadMember member;u32 taken;};
 struct LibraryDirectory {u64 member_count;u64 symbol_count;u64 symbol_offset;};
 u64 directory_member_offset(u64 index) on cpu {
     return size_of<LibraryDirectory>()+index*size_of<LibraryMember>();
@@ -309,17 +310,18 @@ extern "C" ArchiveSelection library_take(address library,address name,u64 length
     ArchiveSymbol key=ArchiveSymbol(name,length,0u64);
     u64 symbol=directory_symbol_position(library,value.symbol_count,key);
     if(symbol==value.symbol_count||compare_names(directory_symbol(library,symbol),key)!=i32(0)){return ArchiveSelection(missing,0);}
-    u64 offset=directory_symbol(library,symbol).member;
+    // The COFF directory names the physical header. The row retains its body range.
+    u64 body_start=directory_symbol(library,symbol).member+MEMBER_HEADER_BYTES;
     u64 first=0u64;u64 end=value.member_count;
     while(first<end){
         u64 middle=first+(end-first)/2u64;
-        u32 candidate=unsafe_position<LibraryMember>(directory_member_address(library,middle)).offset;
-        if(u64(candidate)<offset){first=middle+1u64;}else{end=middle;}
+        u64 candidate=unsafe_position<LibraryMember>(directory_member_address(library,middle)).member.body.start;
+        if(candidate<body_start){first=middle+1u64;}else{end=middle;}
     }
     if(first==value.member_count){return ArchiveSelection(missing,2);}
     address slot=directory_member_address(library,first);
     LibraryMember selected=unsafe_position<LibraryMember>(slot);
-    if(u64(selected.offset)!=offset){return ArchiveSelection(missing,2);}
+    if(selected.member.body.start!=body_start){return ArchiveSelection(missing,2);}
     if(selected.taken!=0){return ArchiveSelection(missing,0);}
     unsafe_position<LibraryMember>(slot).taken=1;
     return ArchiveSelection(selected.member,1);
@@ -375,7 +377,7 @@ ArchiveReadResult read_entries(address bytes,u64 length,ArchiveReadLayout layout
             if(emit!=cfn<void,address,ArchiveRange,ArchiveRange>()){
                 emit(member_context,name,item.body);
             }else{
-                directory_member_put(library,member_index,LibraryMember(ArchiveReadMember(name,item.body),u32(at),0));
+                directory_member_put(library,member_index,LibraryMember(ArchiveReadMember(name,item.body),0));
                 member_index+=1u64;
             }
         }
