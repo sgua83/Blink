@@ -3,6 +3,7 @@ use super::*;
 use returns::Returned;
 use application::Ownership;
 use owned_presence::Presence;
+use std::{borrow::Cow, ffi::c_void, ptr};
 pub(super) fn positions(position:&Position,into:&mut BTreeSet<Position>){match position{Position::Indexed(choices,_)=>for choice in choices.iter(){positions(choice,into);},position=>{into.insert(position.clone());}}}
 fn storage(model:&Returned)->Option<Place>{match model{Returned::Dataset(data)=>data.place.clone(),Returned::OwnedValue(value)=>value.place(),_=>None}}
 fn at<'a>(model:&'a Returned,path:&[usize])->Option<&'a application::Data>{match model{Returned::Dataset(data)if path.is_empty()=>Some(data),Returned::OwnedValue(value)=>view::owned_data_at(value,path),_=>None}}
@@ -156,14 +157,14 @@ each_data(&mut model,&mut Vec::new(),&mut|data,path|data.initialization=Some(ini
         }
         Ok(())
     }
-    fn task_source_controls(&self,active:&[(&view::Source,bounds::Clause)])->BTreeMap<Reg,Value> {
+    fn task_source_controls<'a>(&'a self, active: &[(&view::Source, bounds::Clause)]) -> BTreeMap<Reg, Cow<'a, Value>> {
         let task_sources=active.iter().filter_map(|(_,when)|when.task_controls().map(|controls|(when,controls)))
             .collect::<Vec<_>>();
         let task_controls=task_sources.first().map(|(_,controls)|controls.keys().copied()
             .filter(|reg|task_sources.iter().all(|(_,controls)|controls.contains_key(reg)))
             .collect::<Vec<_>>()).unwrap_or_default();
         let mut decisions=self.env.values().filter_map(|binding|match binding {
-            Binding::Value(value) if value.ty==Ty::scalar(Scalar::Bool)=>Some((value.regs[0],value.clone())),
+            Binding::Value(value) if value.ty==Ty::scalar(Scalar::Bool)=>Some((value.regs[0], Cow::Borrowed(value))),
             _=>None,
         }).collect::<BTreeMap<_,_>>();
         for reg in task_controls {
@@ -174,36 +175,23 @@ each_data(&mut model,&mut Vec::new(),&mut|data,path|data.initialization=Some(ini
             }
             let [no,yes]=cases;
             let proof=bounds::Proof::condition(bounds::Condition::paths(yes,no));
-            decisions.insert(reg,Value {
+            decisions.insert(reg, Cow::Owned(Value {
                 ty:Ty::scalar(Scalar::Bool),regs:vec![reg],proof,
                 literal:false,uniform:false,constant:None,
-            });
+            }));
         }
         decisions
     }
     pub(super) fn task_source_presence(
-        &self, source:&view::Source, active:&[(&view::Source,bounds::Clause)],
-    )->Option<Presence> {
-        if active.iter().all(|(other,_)|*other!=source) {
-            return Some(Presence::None);
-        }
-        if active.iter().all(|(other,_)|*other==source) {
-            return Some(Presence::All);
-        }
-        // A nested source selector is available within the choices of its parent.
-        let (decision,yes,no)=self.task_source_controls(active).into_values().find_map(|value| {
-            let branch=bounds::Condition::of(&value);
-            let select=|truth|active.iter().filter_map(|(source,when)| {
-                let when=branch.assume(when,truth);
-                when.possible().then_some((*source,when))
-            }).collect::<Vec<_>>();
-            let (yes,no)=(select(true),select(false));
-            (yes.len()<active.len() && no.len()<active.len())
-                .then_some((Presence::input(&value),yes,no))
-        })?;
-        let yes=self.task_source_presence(source,&yes)?;
-        let no=self.task_source_presence(source,&no)?;
-        Some(decision.clone().and(yes).or(decision.not().and(no)))
+        &self, source: &view::Source, active: &[(&view::Source, bounds::Clause)],
+    ) -> Option<Presence> {
+        let mut search = TaskSourceSearch::new(self, source, active);
+        let mut result = Presence::None;
+        let selected = unsafe {
+            task_source_select(ptr::from_mut(&mut search).cast(), active.len(),
+                ptr::from_mut(&mut result).cast(), TASK_SOURCE_HOST)
+        };
+        (selected != 0).then_some(result)
     }
 
     pub(super) async fn assign_owned_place(&mut self,place:&Place,value:Returned)->Result<()>{
@@ -305,3 +293,106 @@ unsafe extern "C" {
  #[link_name="bootstrap.call_arguments::mutable_value_step"]fn mutable_value_step(cursor:MutableCursor,kind:u32)->MutableValueStep;
  #[link_name="bootstrap.call_arguments::owned_input_step"]fn owned_input_step(cursor:MutableCursor,facts:OwnedInputFacts)->OwnedInputStep;
 }
+
+type Address = *mut c_void;
+type SourceControls<'a> = std::collections::btree_map::IntoValues<Reg, Cow<'a, Value>>;
+
+struct TaskSourceSearch<'a, 'world> {
+    builder: &'a Builder<'world>,
+    source: &'a view::Source,
+    active: &'a [(&'a view::Source, bounds::Clause)],
+    controls: Option<SourceControls<'a>>,
+    current: Option<Cow<'a, Value>>,
+}
+
+impl<'a, 'world> TaskSourceSearch<'a, 'world> {
+    fn new(builder: &'a Builder<'world>, source: &'a view::Source,
+        active: &'a [(&'a view::Source, bounds::Clause)]) -> Self {
+        Self { builder, source, active, controls: None, current: None }
+    }
+}
+
+#[repr(C)]
+struct TaskSourceBranches {
+    yes: Address,
+    yes_count: usize,
+    yes_result: Address,
+    no: Address,
+    no_count: usize,
+    no_result: Address,
+}
+
+#[repr(C)]
+struct TaskSourceHost {
+    matches: unsafe extern "C" fn(Address, usize) -> u32,
+    next_control: unsafe extern "C" fn(Address) -> *const c_void,
+    partition: unsafe extern "C" fn(Address, *const c_void, Address) -> u32,
+    truth: unsafe extern "C" fn(Address, u32),
+    merge: unsafe extern "C" fn(Address, *const c_void, Address, Address),
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.ownership_presence::task_source_select"]
+    fn task_source_select(input: Address, count: usize, output: Address, host: TaskSourceHost) -> u32;
+    #[link_name = "bootstrap.ownership_presence::task_source_split"]
+    fn task_source_split(count: usize, control: *const c_void, branches: TaskSourceBranches,
+        output: Address, host: TaskSourceHost) -> u32;
+}
+
+unsafe extern "C" fn source_matches(input: Address, index: usize) -> u32 {
+    let search = unsafe { &*input.cast::<TaskSourceSearch<'_, '_>>() };
+    u32::from(search.active[index].0 == search.source)
+}
+
+unsafe extern "C" fn next_control(input: Address) -> *const c_void {
+    let search = unsafe { &mut *input.cast::<TaskSourceSearch<'_, '_>>() };
+    let controls = search.controls.get_or_insert_with(||
+        search.builder.task_source_controls(search.active).into_values());
+    search.current = controls.next();
+    search.current.as_deref().map_or(ptr::null(), |value| ptr::from_ref(value).cast())
+}
+
+// Both branch containers and the selected control live until this synchronous B call returns.
+unsafe extern "C" fn partition_sources(input: Address, control: *const c_void, output: Address) -> u32 {
+    let search = unsafe { &*input.cast::<TaskSourceSearch<'_, '_>>() };
+    let value = unsafe { &*control.cast::<Value>() };
+    let condition = bounds::Condition::of(value);
+    let select = |truth| search.active.iter().filter_map(|(source, when)| {
+        let when = condition.assume(when, truth);
+        when.possible().then_some((*source, when))
+    }).collect::<Vec<_>>();
+    let yes = select(true);
+    let no = select(false);
+    let mut yes_search = TaskSourceSearch::new(search.builder, search.source, &yes);
+    let mut no_search = TaskSourceSearch::new(search.builder, search.source, &no);
+    let mut yes_result = Presence::None;
+    let mut no_result = Presence::None;
+    let branches = TaskSourceBranches {
+        yes: ptr::from_mut(&mut yes_search).cast(),
+        yes_count: yes.len(),
+        yes_result: ptr::from_mut(&mut yes_result).cast(),
+        no: ptr::from_mut(&mut no_search).cast(),
+        no_count: no.len(),
+        no_result: ptr::from_mut(&mut no_result).cast(),
+    };
+    unsafe { task_source_split(search.active.len(), control, branches, output, TASK_SOURCE_HOST) }
+}
+
+unsafe extern "C" fn task_source_truth(output: Address, value: u32) {
+    unsafe { *output.cast::<Presence>() = if value == 0 { Presence::None } else { Presence::All }; }
+}
+
+unsafe extern "C" fn merge_task_source(output: Address, control: *const c_void, yes: Address, no: Address) {
+    let condition = Presence::input(unsafe { &*control.cast::<Value>() });
+    let yes = std::mem::replace(unsafe { &mut *yes.cast::<Presence>() }, Presence::None);
+    let no = std::mem::replace(unsafe { &mut *no.cast::<Presence>() }, Presence::None);
+    unsafe { *output.cast::<Presence>() = condition.clone().and(yes).or(condition.not().and(no)); }
+}
+
+const TASK_SOURCE_HOST: TaskSourceHost = TaskSourceHost {
+    matches: source_matches,
+    next_control,
+    partition: partition_sources,
+    truth: task_source_truth,
+    merge: merge_task_source,
+};

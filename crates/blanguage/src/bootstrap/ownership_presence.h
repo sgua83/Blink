@@ -799,3 +799,32 @@ extern "C" void emit_presence_branch(address context,EmitBranch work,address rig
     requires nonzero(host.swap_code)
     requires nonzero(host.fixed_store)
     requires nonzero(host.branch);
+
+enum TaskSplit:u32 { Unchanged=0; Unresolved=1; Selected=2; };
+struct TaskSourceBranches {
+    address yes;
+    u64 yes_count;
+    address yes_result;
+    address no;
+    u64 no_count;
+    address no_result;
+};
+struct TaskSourceHost {
+    cfn<u32,address,u64> matches;
+    cfn<address,address> next_control;
+    cfn<TaskSplit,address,address,address> partition;
+    cfn<void,address,u32> truth;
+    cfn<void,address,address,address,address> merge;
+};
+extern "C" u32 task_source_select(address input,u64 count,address output,TaskSourceHost host) on cpu
+    requires nonzero(host.matches)
+    requires nonzero(host.next_control)
+    requires nonzero(host.partition)
+    requires nonzero(host.truth);
+extern "C" TaskSplit task_source_split(u64 count,address control,TaskSourceBranches branches,address output,
+    TaskSourceHost host) on cpu
+    requires nonzero(host.matches)
+    requires nonzero(host.next_control)
+    requires nonzero(host.partition)
+    requires nonzero(host.truth)
+    requires nonzero(host.merge);

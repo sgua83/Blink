@@ -1577,3 +1577,44 @@ extern "C" void emit_presence_branch(address context,EmitBranch work,address rig
         host.branch(context,work.condition,fixed,right);
     }
 }
+
+extern "C" u32 task_source_select(address input,u64 count,address output,TaskSourceHost host) on cpu
+    requires nonzero(host.matches)
+    requires nonzero(host.next_control)
+    requires nonzero(host.partition)
+    requires nonzero(host.truth) {
+    bool matching=false;
+    bool other=false;
+    u64 index=0u64;
+    while(index<count && !(matching && other)){
+        if(host.matches(input,index)!=0){matching=true;}
+        else{other=true;}
+        index+=1u64;
+    }
+    if(!matching || !other){
+        host.truth(output,u32(matching));
+        return 1;
+    }
+    address control=host.next_control(input);
+    while(address_bits(control)!=0u64){
+        TaskSplit split=host.partition(input,control,output);
+        if(split==TaskSplit::Selected){return 1;}
+        if(split==TaskSplit::Unresolved){return 0;}
+        control=host.next_control(input);
+    }
+    return 0;
+}
+
+extern "C" TaskSplit task_source_split(u64 count,address control,TaskSourceBranches branches,address output,
+    TaskSourceHost host) on cpu
+    requires nonzero(host.matches)
+    requires nonzero(host.next_control)
+    requires nonzero(host.partition)
+    requires nonzero(host.truth)
+    requires nonzero(host.merge) {
+    if(branches.yes_count>=count || branches.no_count>=count){return TaskSplit::Unchanged;}
+    if(task_source_select(branches.yes,branches.yes_count,branches.yes_result,host)==0){return TaskSplit::Unresolved;}
+    if(task_source_select(branches.no,branches.no_count,branches.no_result,host)==0){return TaskSplit::Unresolved;}
+    host.merge(output,control,branches.yes_result,branches.no_result);
+    return TaskSplit::Selected;
+}
