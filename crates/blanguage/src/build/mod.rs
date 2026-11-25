@@ -425,8 +425,7 @@ fn images(module: resource::Module, artifact: PathBuf, reused: bool) -> Compilat
 }
 fn publish<const N: usize>(path: &Path, replace_existing: bool, parts: [&[u8]; N]) -> Result<()> {
     static NEXT: AtomicU64 = AtomicU64::new(0);
-    let name = format!("{}.{}.tmp", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed));
-    let extension: Vec<_> = name.encode_utf16().collect();
-    let temporary = crate::source_path::with_extension_units(path, &extension);
+    let name = format!(".blink-{}-{}.tmp", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed));
+    let temporary = path.with_file_name(name);
     Ok(crate::file_bytes::publish(path, &temporary, parts, replace_existing)?)
 }
