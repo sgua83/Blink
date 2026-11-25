@@ -143,12 +143,12 @@ pub(crate) fn compile(
     let libraries = if runtime { libraries.map_or_else(|| runtime_libraries(worker), Ok)? } else { Vec::new() };
     let mut symbols = Vec::new();
     super::coff::Reader::new(native.as_slice())?.for_each_definition(|symbol| {
-        symbols.push((0, symbol));
+        symbols.push(super::static_library::ArchiveSymbol::new(0, symbol));
         Ok(())
     })?;
     let members = std::iter::once(native.as_slice())
         .map(|bytes| super::static_library::MemberView::new("entry.obj", bytes));
-    let bytes = super::static_library::encode(members, symbols.into_iter())?;
+    let bytes = super::static_library::encode(members, symbols)?;
     Ok(Archive {
         bytes: super::ObjectBytes::generated(bytes),
         libraries,

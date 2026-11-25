@@ -362,7 +362,7 @@ pub(super) fn link(
         // The host archive and the MSVC inputs share one import-slot producer.
         if !imports.is_empty() {
             let path = join(&directory, format!(".blink-link-{id}-imports.lib"));
-            let bytes = super::imports::archive_with_imports(&[], &[], imports)?;
+            let bytes = super::imports::archive_with_imports(&[], imports)?;
             write_input(&mut temporary, path, &bytes)?;
         }
         if let Some(binding) = binding {

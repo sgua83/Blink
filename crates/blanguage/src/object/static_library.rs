@@ -172,9 +172,14 @@ pub(crate) struct HostMember<'a> {
     name: Cow<'a, str>,
     bytes: Cow<'a, [u8]>,
     build: Option<coff::HostBuildSection>,
+    names: Vec<Cow<'a, str>>,
 }
 
 impl HostMember<'_> {
+    pub(crate) fn symbols(&self, index: usize) -> impl Iterator<Item = ArchiveSymbol<'_>> {
+        self.names.iter().map(move |name| ArchiveSymbol::new(index, name))
+    }
+
     pub(crate) fn view(&self) -> MemberView<'_> {
         MemberView { name: &self.name, bytes: &self.bytes, build: self.build.as_ref() }
     }
@@ -187,7 +192,7 @@ impl<'a> Member<'a> {
 
     pub(crate) fn emit_host_members(
         self, imports: &mut Vec<coff::ImportKey<'a>>,
-        mut emit: impl FnMut(HostMember<'a>, Vec<Cow<'a, str>>),
+        mut emit: impl FnMut(HostMember<'a>),
     ) -> Result<()> {
         let output = coff::Reader::new(self.bytes).and_then(|reader| reader.host_links(imports))
             .map_err(|error| format!("静态库成员 {}：{error}", self.name))?
@@ -198,7 +203,8 @@ impl<'a> Member<'a> {
                     name: Cow::Borrowed(self.name),
                     bytes: Cow::Borrowed(self.bytes),
                     build,
-                }, names);
+                    names,
+                });
             }
             coff::HostArchiveMember::Groups(groups) => {
                 for (index, (bytes, names)) in groups.into_iter().enumerate() {
@@ -206,7 +212,8 @@ impl<'a> Member<'a> {
                         name: Cow::Owned(format!("{}.{}.obj", self.name, index + 1)),
                         bytes: Cow::Owned(bytes),
                         build: None,
-                    }, names);
+                        names,
+                    });
                 }
             }
         }
@@ -374,17 +381,26 @@ struct ArchiveMember {
     name_offset: usize,
 }
 #[repr(C)]
-struct ArchiveSymbol {
+pub(crate) struct ArchiveSymbol<'a> {
     name: *const u8,
     name_length: usize,
     member: usize,
+    borrowed_name: std::marker::PhantomData<&'a str>,
+}
+impl<'a> ArchiveSymbol<'a> {
+    pub(crate) fn new(member: usize, name: &'a str) -> Self {
+        Self {
+            name: name.as_ptr(), name_length: name.len(), member,
+            borrowed_name: std::marker::PhantomData,
+        }
+    }
 }
 #[repr(C)]
 #[derive(Clone, Copy)]
-struct ArchiveInput {
+struct ArchiveInput<'a> {
     members: *mut ArchiveMember,
     member_count: usize,
-    symbols: *mut ArchiveSymbol,
+    symbols: *mut ArchiveSymbol<'a>,
     symbol_count: usize,
 }
 // Discriminants and field layout are shared with bootstrap/archive.h.
@@ -402,9 +418,9 @@ struct ArchiveLayout {
 }
 unsafe extern "C" {
     #[link_name = "bootstrap.archive::layout"]
-    fn archive_layout(input: ArchiveInput) -> ArchiveLayout;
+    fn archive_layout(input: ArchiveInput<'_>) -> ArchiveLayout;
     #[link_name = "bootstrap.archive::encode"]
-    fn archive_encode(input: ArchiveInput, layout: ArchiveLayout, output: *mut u8);
+    fn archive_encode(input: ArchiveInput<'_>, layout: ArchiveLayout, output: *mut u8);
 }
 
 unsafe extern "C" fn visit_member<Emit: FnMut(ArchiveReadMember)>(
@@ -432,11 +448,11 @@ pub fn archive(inputs: &[impl AsRef<Path>], path: &Path) -> Result<()> {
         let members = sources.iter().flat_map(MemberSource::members);
         let mut symbols = Vec::new();
         for (index, member) in members.clone().enumerate() {
-            if !member.archive_symbols(|name| symbols.push((index, name)))? {
+            if !member.archive_symbols(|name| symbols.push(ArchiveSymbol::new(index, name)))? {
                 return Err(format!("{} 不是独立模块产物", member.name).into());
             }
         }
-        encode(members.map(Member::view), symbols.into_iter())?
+        encode(members.map(Member::view), symbols)?
     };
     if let Some(parent) = path.parent() {
         crate::file_bytes::create_dir_all(parent)?;
@@ -492,19 +508,16 @@ pub(crate) fn member_sources(inputs: &[impl AsRef<Path>]) -> Result<Vec<MemberSo
 
 pub(crate) fn encode<'a>(
     members: impl Iterator<Item = MemberView<'a>> + Clone,
-    symbols: impl Iterator<Item = (usize, &'a str)>,
+    mut symbols: Vec<ArchiveSymbol<'a>>,
 ) -> Result<Vec<u8>> {
     let mut member_views: Vec<_> = members.clone().map(|member| ArchiveMember {
         name: member.name.as_ptr(), name_length: member.name.len(),
         byte_length: member.output_length(),
         offset: 0, name_offset: 0,
     }).collect();
-    let mut symbol_views: Vec<_> = symbols.map(|(member, name)| ArchiveSymbol {
-        name: name.as_ptr(), name_length: name.len(), member,
-    }).collect();
     let input = ArchiveInput {
         members: member_views.as_mut_ptr(), member_count: member_views.len(),
-        symbols: symbol_views.as_mut_ptr(), symbol_count: symbol_views.len(),
+        symbols: symbols.as_mut_ptr(), symbol_count: symbols.len(),
     };
     let layout = unsafe { archive_layout(input) };
     match layout.error {
