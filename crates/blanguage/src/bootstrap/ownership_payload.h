@@ -45,9 +45,6 @@ struct Host {
     cfn<void,address> data_read;
     cfn<void,address> data_clear_residency;
     cfn<u32,address,address> data_identity;
-    cfn<u32,address,address,address,address> ownership_loop;
-    cfn<address,address,address,address> loop_path;
-    cfn<u32,address> path_possible;
     cfn<address> fresh_indices;
     cfn<void,address,u64> push_index;
     cfn<Indices,address> indices_view;
@@ -95,18 +92,25 @@ extern "C" InitialWrite initial_write(Item item,u32 shape,Host host) on cpu
 extern "C" u32 initial_root_incomplete(Item item,Host host) on cpu
     requires nonzero(host.inspect) requires nonzero(host.ownership) requires nonzero(host.child)
     requires nonzero(host.field_owned) requires nonzero(host.state) requires nonzero(host.data_ownership);
-struct LoopCursor {address before;address after;address path;u64 count;u64 index;};
+struct LoopOwnerHost {
+    cfn<u32,address,address,address,address> compatible;
+    cfn<u32,address,address,address> active_path;
+};
+struct LoopCursor {address before;address after;u64 count;u64 index;};
 struct LoopNeed {u32 kind;u32 value;address before;address after;};
 // kind=0 is the actual final value; kind=3/4 asks for the original Data/Owned child.
-extern "C" LoopNeed loop_start(address state,address before,address after,address context,address path,Host host) on cpu
+extern "C" LoopNeed loop_start(address state,address before,address after,address context,address path,Host host,LoopOwnerHost owner) on cpu
     requires nonzero(host.inspect)
     requires nonzero(host.ownership)
     requires nonzero(host.child)
-    requires nonzero(host.ownership_loop)
-    requires nonzero(host.loop_path)
-    requires nonzero(host.path_possible);
+    requires nonzero(owner.compatible)
+    requires nonzero(owner.active_path);
 extern "C" LoopNeed loop_step(address state,u32 compatible,Host host) on cpu
     requires nonzero(host.child);
+enum LoopDatasetNeed:u32 { Mismatch=0; Inactive=1; Residency=2; Elements=3; };
+extern "C" LoopDatasetNeed loop_dataset_start(address before,address after,address context,address path,u32 before_modeled,u32 after_modeled,LoopOwnerHost owner) on cpu
+    requires nonzero(owner.compatible) requires nonzero(owner.active_path);
+extern "C" LoopNeed loop_dataset_child(Item before,Item after) on cpu;
 extern "C" void invalidate(address value,Host host) on cpu
     requires nonzero(host.inspect)
     requires nonzero(host.value)

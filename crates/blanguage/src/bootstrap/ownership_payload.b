@@ -213,40 +213,59 @@ extern "C" u32 initial_root_incomplete(Item item,Host host) on cpu
     }
     return 0;
 }
+u32 loop_child_kind(Item before,Item after) on cpu {
+    return before.kind==after.kind&&(before.kind==3||before.kind==4) ? before.kind : 0;
+}
 LoopNeed loop_next(address state,LoopCursor original,Host host) on cpu
     requires nonzero(host.child) {
     LoopCursor cursor=original;
     while(cursor.index<cursor.count){
         Item a=host.child(cursor.before,cursor.index);Item b=host.child(cursor.after,cursor.index);
         cursor.index+=1u64;
-        if((a.kind==3&&b.kind==3)||(a.kind==4&&b.kind==4)){
+        u32 kind=loop_child_kind(a,b);
+        if(kind!=0){
             unsafe_position<LoopCursor>(state)=cursor;
-            return LoopNeed(a.kind,0,a.node,b.node);
+            return LoopNeed(kind,0,a.node,b.node);
         }
         if(a.kind==0&&b.kind!=0){return LoopNeed(0,0,unsafe_address(0u64),unsafe_address(0u64));}
     }
     return LoopNeed(0,1,unsafe_address(0u64),unsafe_address(0u64));
 }
-extern "C" LoopNeed loop_start(address state,address before,address after,address context,address path,Host host) on cpu
+enum LoopPresence:u32 { Mismatch=0; Inactive=1; Active=2; };
+LoopPresence loop_presence(address before,address after,address context,address path,LoopOwnerHost owner) on cpu
+    requires nonzero(owner.compatible) requires nonzero(owner.active_path) {
+    if(owner.compatible(before,after,context,path)==0){return LoopPresence::Mismatch;}
+    return owner.active_path(after,context,path)==0 ? LoopPresence::Inactive : LoopPresence::Active;
+}
+extern "C" LoopNeed loop_start(address state,address before,address after,address context,address path,Host host,LoopOwnerHost owner) on cpu
     requires nonzero(host.inspect)
     requires nonzero(host.ownership)
     requires nonzero(host.child)
-    requires nonzero(host.ownership_loop)
-    requires nonzero(host.loop_path)
-    requires nonzero(host.path_possible) {
-    if(host.ownership_loop(host.ownership(before),host.ownership(after),context,path)==0){
-        return LoopNeed(0,0,unsafe_address(0u64),unsafe_address(0u64));
+    requires nonzero(owner.compatible)
+    requires nonzero(owner.active_path) {
+    LoopPresence presence=loop_presence(host.ownership(before),host.ownership(after),context,path,owner);
+    if(presence!=LoopPresence::Active){
+        return LoopNeed(0,u32(presence==LoopPresence::Inactive),unsafe_address(0u64),unsafe_address(0u64));
     }
-    address next=host.loop_path(host.ownership(after),context,path);
-    if(host.path_possible(next)==0){return LoopNeed(0,1,unsafe_address(0u64),unsafe_address(0u64));}
     u64 count=host.inspect(before).count;u64 other=host.inspect(after).count;
     if(other<count){count=other;}
-    return loop_next(state,LoopCursor(before,after,next,count,0u64),host);
+    return loop_next(state,LoopCursor(before,after,count,0u64),host);
 }
 extern "C" LoopNeed loop_step(address state,u32 compatible,Host host) on cpu
     requires nonzero(host.child) {
     if(compatible==0){return LoopNeed(0,0,unsafe_address(0u64),unsafe_address(0u64));}
     return loop_next(state,unsafe_position<LoopCursor>(state),host);
+}
+extern "C" LoopDatasetNeed loop_dataset_start(address before,address after,address context,address path,u32 before_modeled,u32 after_modeled,LoopOwnerHost owner) on cpu
+    requires nonzero(owner.compatible) requires nonzero(owner.active_path) {
+    LoopPresence presence=loop_presence(before,after,context,path,owner);
+    if(presence==LoopPresence::Mismatch){return LoopDatasetNeed::Mismatch;}
+    if(presence==LoopPresence::Inactive){return LoopDatasetNeed::Inactive;}
+    return (before_modeled|after_modeled)!=0 ? LoopDatasetNeed::Elements : LoopDatasetNeed::Residency;
+}
+extern "C" LoopNeed loop_dataset_child(Item before,Item after) on cpu {
+    u32 kind=loop_child_kind(before,after);
+    return LoopNeed(kind,u32(kind==0),before.node,after.node);
 }
 void clear_value(address value,u32 keep_view,Host host) on cpu
     requires nonzero(host.set_uniform)

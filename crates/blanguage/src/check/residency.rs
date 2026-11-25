@@ -405,8 +405,8 @@ impl Inputs{
         if target==Target::Compute||!known(value,target,path){return false;}
         self.uses.push(Use::At{value:value.clone(),target,path:path.clone(),source:source.clone(),span});true
     }
-    pub fn same(&mut self,a:&Residency,b:&Residency,source:&Source,span:Span,path:&bounds::Clause)->bool{
-        self.uses.push(Use::Same{before:a.clone(),after:b.clone(),path:path.clone(),source:source.clone(),span});true
+    pub fn same(&mut self,a:&Residency,b:&Residency,source:&Source,span:Span,path:&bounds::Clause){
+        self.uses.push(Use::Same{before:a.clone(),after:b.clone(),path:path.clone(),source:source.clone(),span});
     }
 }
 fn known(value:&Residency,target:Target,path:&bounds::Clause)->bool{

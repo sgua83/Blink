@@ -115,23 +115,6 @@ impl DataPayload {
             && self.ty.owns_resources()
     }
 
-    pub(super) async fn loop_compatible(&self,other:&Self,builder:&mut Builder<'_>,span:Span,path:&bounds::Clause,inputs:&BTreeMap<ValueIdentity,bounds::Proof>)->Result<bool> {
-        if !self.ownership.loop_compatible(&other.ownership,inputs,path){return Ok(false);}
-        let path=other.ownership.presence().condition().assume(path,true);
-        if !path.possible(){return Ok(true);}
-        if !builder.residency.same(&self.residency,&other.residency,builder.scope.source(),span,&path){return Ok(false);}
-        // Only an existing element model introduces child resources to compare.
-        // An unknown counterpart is projected by the same finite model owner.
-        if matches!((&self.elements,&other.elements),
-            (ElementFacts::Unknown|ElementFacts::Input(_)|ElementFacts::Cleanup(_),ElementFacts::Unknown|ElementFacts::Input(_)|ElementFacts::Cleanup(_))){return Ok(true);}
-        let before=unsafe { builder.world.call(builder.element_model(&self.ty,&self.elements,(&self.residency,&[]),span)).await }?;
-        let after=unsafe { builder.world.call(builder.element_model(&other.ty,&other.elements,(&other.residency,&[]),span)).await }?;
-        match(before.as_ref(),after.as_ref()){
-            (returns::Returned::OwnedValue(a),returns::Returned::OwnedValue(b))=>unsafe { builder.world.call(a.loop_compatible(b,builder,span,&path,inputs)).await },
-            (returns::Returned::Dataset(a),returns::Returned::Dataset(b))=>unsafe { builder.world.call(a.loop_compatible(b,builder,span,&path,inputs)).await },
-            _=>Ok(true),
-        }
-    }
     pub(super) fn permits(&self, access: Access) -> bool {
         match self.access {
             Access::Atomic => access == Access::Atomic,
