@@ -23,7 +23,7 @@ extern "C" u64 initialize_ready(address ready,address waiting,u64 length) on cpu
     return count;
 }
 
-extern "C" u64 take_ready(address ready,inout u64 count) on cpu {
+u64 take_ready(address ready,inout u64 count) on cpu {
     if (count==0u64) { return 0xffffffffffffffffu64; }
     u64 unit=word(ready,0u64);
     count-=1u64;
@@ -56,7 +56,7 @@ void push_ready(address ready,inout u64 count,u64 unit) on cpu {
     put_word(ready,hole,unit);
 }
 
-extern "C" void complete_unit(address ready,inout u64 count,address waiting,address followers,u64 length) on cpu {
+void complete_unit(address ready,inout u64 count,address waiting,address followers,u64 length) on cpu {
     u64 index=0u64;
     while (index<length) {
         u64 follower=word(followers,index);
@@ -64,5 +64,32 @@ extern "C" void complete_unit(address ready,inout u64 count,address waiting,addr
         put_word(waiting,follower,pending);
         if (pending==0u64) { push_ready(ready,count,follower); }
         index+=1u64;
+    }
+}
+
+const u64 NO_UNIT=0xffffffffffffffffu64;
+
+extern "C" void run_worker(address context,WorkHost host) on cpu
+ requires nonzero(host.acquire) requires nonzero(host.wait) requires nonzero(host.execute)
+ requires nonzero(host.retire) requires nonzero(host.release) {
+    while (true) {
+        WorkQueue queue=host.acquire(context);
+        u64 index=NO_UNIT;
+        while (true) {
+            if (queue.failure!=NO_UNIT || unsafe_position<ScheduleCounts>(queue.counts).unfinished==0u64) { return; }
+            index=take_ready(queue.ready,unsafe_position<ScheduleCounts>(queue.counts).ready);
+            if (index!=NO_UNIT) { break; }
+            queue=host.wait(context);
+        }
+        WorkResult result=host.execute(context,index);
+        bool keep=result.success!=0 || index+1u64<result.failure;
+        queue=host.retire(context,keep ? 1 : 0);
+        unsafe_position<ScheduleCounts>(queue.counts).unfinished-=1u64;
+        if (result.success!=0) {
+            UnitRange following=unsafe_position<UnitRange>(offset(queue.following,index*16u64));
+            complete_unit(queue.ready,unsafe_position<ScheduleCounts>(queue.counts).ready,queue.waiting,
+                offset(queue.followers,following.start*8u64),following.count);
+        }
+        host.release(context);
     }
 }

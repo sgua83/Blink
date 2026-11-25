@@ -1,7 +1,7 @@
 //! 调用方持有的一次编译图；只调度本次真实依赖，不保留后台消费者。
 use super::{Compilation, ObjectCompilation, ObjectKind, Result, inputs::{Capture, ProviderInterface}};
 use crate::{Compiler, ast::Target, object::Object, source_path};
-use std::{collections::BTreeMap, ffi::OsStr, os::windows::ffi::OsStrExt, path::{Path, PathBuf}, sync::{Arc, Condvar, Mutex}, thread};
+use std::{collections::BTreeMap, ffi::{OsStr, c_void}, os::windows::ffi::OsStrExt, path::{Path, PathBuf}, ptr, sync::{Arc, Condvar, Mutex, MutexGuard}, thread};
 #[derive(Clone, Copy)]
 pub enum Dependency<'a> {
     Unit(usize),
@@ -99,13 +99,8 @@ unsafe extern "C" {
     fn release_dependency_plan(ids: *const usize);
     #[link_name = "bootstrap.build_schedule::initialize_ready"]
     fn initialize_ready(ready: *mut usize, waiting: *const usize, length: usize) -> usize;
-    #[link_name = "bootstrap.build_schedule::take_ready"]
-    fn take_ready(ready: *mut usize, count: &mut usize) -> usize;
-    #[link_name = "bootstrap.build_schedule::complete_unit"]
-    fn complete_unit(
-        ready: *mut usize, count: &mut usize, waiting: *mut usize,
-        followers: *const usize, length: usize,
-    );
+    #[link_name = "bootstrap.build_schedule::run_worker"]
+    fn run_worker(context: *mut c_void, host: WorkHost);
 }
 
 // The B planner transfers ownership of its process-heap allocation. Any
@@ -141,24 +136,13 @@ struct Schedule {
     followers: Vec<usize>,
     waiting: Vec<usize>,
     ready: Vec<usize>,
-    ready_count: usize,
+    counts: ScheduleCounts,
 }
 
-impl Schedule {
-    fn take(&mut self) -> Option<usize> {
-        let index = unsafe { take_ready(self.ready.as_mut_ptr(), &mut self.ready_count) };
-        (index != usize::MAX).then_some(index)
-    }
-
-    fn complete(&mut self, index: usize) {
-        let followers = self.following[index].slice(&self.followers);
-        unsafe {
-            complete_unit(
-                self.ready.as_mut_ptr(), &mut self.ready_count, self.waiting.as_mut_ptr(),
-                followers.as_ptr(), followers.len(),
-            );
-        }
-    }
+#[repr(C)]
+struct ScheduleCounts {
+    ready: usize,
+    unfinished: usize,
 }
 
 fn dependency_plan<'a>(units: &[Unit<'a>]) -> Result<DependencyPlan<'a>> {
@@ -224,7 +208,8 @@ fn dependency_plan<'a>(units: &[Unit<'a>]) -> Result<DependencyPlan<'a>> {
     }
     let ready_count = unsafe { initialize_ready(ready.as_mut_ptr(), waiting.as_ptr(), waiting.len()) };
     let schedule = Schedule {
-        following: following_rows, followers, waiting, ready, ready_count,
+        following: following_rows, followers, waiting, ready,
+        counts: ScheduleCounts { ready: ready_count, unfinished: units.len() },
     };
     Ok(DependencyPlan { plan, provider_rows, externals, schedule })
 }
@@ -250,11 +235,157 @@ impl Provider<'_> {
         match self { Self::Built(value) => &value.object, Self::Object(value) => value }
     }
 }
+
 struct State {
     schedule: Schedule,
     outputs: Vec<Option<Output>>,
-    failures: Vec<(Option<usize>, Box<dyn std::error::Error + Send + Sync>)>,
-    unfinished: usize,
+    // Zero gives a worker-start error precedence over any unit error.
+    // Unit positions use index + 1, so the original input order breaks ties
+    // between failures from work already in flight.
+    failure: Option<(usize, Box<dyn std::error::Error + Send + Sync>)>,
+}
+impl State {
+    fn failure_rank(&self) -> usize {
+        self.failure.as_ref().map_or(usize::MAX, |(rank, _)| *rank)
+    }
+}
+
+#[repr(C)]
+struct WorkQueue {
+    ready: *mut usize,
+    waiting: *mut usize,
+    following: *const GraphRange,
+    followers: *const usize,
+    counts: *mut ScheduleCounts,
+    failure: usize,
+}
+#[repr(C)]
+struct WorkResult {
+    failure: usize,
+    success: u32,
+}
+#[repr(C)]
+struct WorkHost {
+    acquire: unsafe extern "C" fn(*mut c_void) -> WorkQueue,
+    wait: unsafe extern "C" fn(*mut c_void) -> WorkQueue,
+    execute: unsafe extern "C" fn(*mut c_void, usize) -> WorkResult,
+    retire: unsafe extern "C" fn(*mut c_void, u32) -> WorkQueue,
+    release: unsafe extern "C" fn(*mut c_void),
+}
+
+struct GraphExecution<'graph, 'source> {
+    compiler: &'graph Compiler,
+    prepared: &'graph [Prepared<'source>],
+    inputs: &'graph [super::Inputs],
+    provider_rows: &'graph [GraphRange],
+    ids: &'graph [usize],
+    externals: &'graph [&'source Object],
+    entry_checks: &'graph [Option<Arc<crate::frontend::EntryChecks>>],
+    state: Mutex<State>,
+    changed: Condvar,
+}
+impl GraphExecution<'_, '_> {
+    fn run_worker(&self) {
+        let mut worker = GraphWorker { execution: self, guard: None, result: None };
+        unsafe { run_worker(ptr::from_mut(&mut worker).cast(), WorkHost {
+            acquire: acquire_graph, wait: wait_graph, execute: execute_unit,
+            retire: retire_unit, release: release_graph,
+        }); }
+    }
+
+    fn compile(&self, index: usize, providers: &[Provider<'_>]) -> Result<Output> {
+        let unit = &self.prepared[index];
+        self.compiler.execute(|worker| match unit.kind {
+            UnitKind::Object(kind) => super::object::compile(worker, &unit.path, &unit.root,
+                providers.iter().map(Provider::object), kind, &unit.output, Some(&self.inputs[index]))
+                .map(|value| Output::Object(Arc::new(value))),
+            UnitKind::Entry { entry, target } => super::compile_in(worker, &unit.path, &unit.root,
+                entry, target, &unit.output, Vec::new(), &providers.iter().map(Provider::object).collect::<Vec<_>>(),
+                Some(&self.inputs[index]), self.entry_checks[index].as_deref()).map(Output::Entry),
+        }).map_err(|error| match error {
+            crate::parallel::Error::Work(error) => error,
+            crate::parallel::Error::Resource(error) => Box::new(error) as Box<dyn std::error::Error + Send + Sync>,
+        })
+    }
+}
+
+// One synchronous B worker owns the same guard across observation and wait.
+// Queue pointers expire before the next host call; they never cross a lock
+// release or borrow of the protected state inside that call.
+struct GraphWorker<'graph, 'source> {
+    execution: &'graph GraphExecution<'graph, 'source>,
+    guard: Option<MutexGuard<'graph, State>>,
+    result: Option<(usize, Result<Output>)>,
+}
+
+impl GraphWorker<'_, '_> {
+    fn queue(&mut self) -> WorkQueue {
+        let state = self.guard.as_deref_mut().unwrap();
+        let failure = state.failure_rank();
+        let schedule = &mut state.schedule;
+        WorkQueue {
+            ready: schedule.ready.as_mut_ptr(),
+            waiting: schedule.waiting.as_mut_ptr(),
+            following: schedule.following.as_ptr(),
+            followers: schedule.followers.as_ptr(),
+            counts: &mut schedule.counts,
+            failure,
+        }
+    }
+}
+
+unsafe extern "C" fn acquire_graph(context: *mut c_void) -> WorkQueue {
+    let worker = unsafe { &mut *context.cast::<GraphWorker<'_, '_>>() };
+    worker.guard = Some(worker.execution.state.lock().unwrap());
+    worker.queue()
+}
+
+unsafe extern "C" fn wait_graph(context: *mut c_void) -> WorkQueue {
+    let worker = unsafe { &mut *context.cast::<GraphWorker<'_, '_>>() };
+    let guard = worker.guard.take().unwrap();
+    worker.guard = Some(worker.execution.changed.wait(guard).unwrap());
+    worker.queue()
+}
+
+unsafe extern "C" fn execute_unit(context: *mut c_void, index: usize) -> WorkResult {
+    let worker = unsafe { &mut *context.cast::<GraphWorker<'_, '_>>() };
+    let graph = worker.execution;
+    let state = worker.guard.take().unwrap();
+    let row = graph.provider_rows[index].slice(graph.ids);
+    let providers = dependencies(row, graph.prepared.len(), graph.externals).map(|dependency| match dependency {
+        Dependency::Unit(id) => match state.outputs[id].as_ref().unwrap() {
+            Output::Object(value) => Provider::Built(value.clone()),
+            Output::Entry(_) => unreachable!(),
+        },
+        Dependency::Object(value) => Provider::Object(value),
+    }).collect::<Vec<_>>();
+    drop(state);
+    let result = graph.compile(index, &providers);
+    let success = u32::from(result.is_ok());
+    worker.result = Some((index, result));
+    let guard = graph.state.lock().unwrap();
+    let failure = guard.failure_rank();
+    worker.guard = Some(guard);
+    WorkResult { failure, success }
+}
+
+unsafe extern "C" fn retire_unit(context: *mut c_void, keep: u32) -> WorkQueue {
+    let worker = unsafe { &mut *context.cast::<GraphWorker<'_, '_>>() };
+    let (index, result) = worker.result.take().unwrap();
+    if keep != 0 {
+        let state = worker.guard.as_deref_mut().unwrap();
+        match result {
+            Ok(output) => state.outputs[index] = Some(output),
+            Err(error) => state.failure = Some((index + 1, error)),
+        }
+    }
+    worker.queue()
+}
+
+unsafe extern "C" fn release_graph(context: *mut c_void) {
+    let worker = unsafe { &mut *context.cast::<GraphWorker<'_, '_>>() };
+    worker.execution.changed.notify_all();
+    drop(worker.guard.take());
 }
 pub fn compile_graph(units: &[Unit<'_>]) -> Result<Vec<Output>> {
     Compiler::available()?.build_graph(units)
@@ -318,66 +449,28 @@ impl Compiler {
                 entry_checks[index] = Some(Arc::clone(&shared));
             }
         }
-        let state = Mutex::new(State {
-            schedule, outputs: (0..units.len()).map(|_| None).collect(),
-            failures: Vec::new(), unfinished: units.len(),
-        });
-        let changed = Condvar::new();
-        let work = || loop {
-            let (index, providers) = {
-                let mut state = state.lock().unwrap();
-                loop {
-                    if !state.failures.is_empty() || state.unfinished == 0 { return; }
-                    if let Some(index) = state.schedule.take() {
-                        let row = provider_rows[index].slice(ids);
-                        let providers = dependencies(row, units.len(), &externals).map(|dependency| match dependency {
-                            Dependency::Unit(id) => match state.outputs[id].as_ref().unwrap() {
-                                Output::Object(value) => Provider::Built(value.clone()),
-                                Output::Entry(_) => unreachable!(),
-                            },
-                            Dependency::Object(value) => Provider::Object(value),
-                        }).collect::<Vec<_>>();
-                        break (index, providers);
-                    }
-                    state = changed.wait(state).unwrap();
-                }
-            };
-            let unit = &prepared[index];
-            let result = self.execute(|worker| match unit.kind {
-                UnitKind::Object(kind) => super::object::compile(worker, &unit.path, &unit.root,
-                    providers.iter().map(Provider::object), kind, &unit.output, Some(&inputs[index]))
-                    .map(|value| Output::Object(Arc::new(value))),
-                UnitKind::Entry { entry, target } => super::compile_in(worker, &unit.path, &unit.root,
-                    entry, target, &unit.output, Vec::new(), &providers.iter().map(Provider::object).collect::<Vec<_>>(),
-                    Some(&inputs[index]), entry_checks[index].as_deref()).map(Output::Entry),
-            }).map_err(|error| match error {
-                crate::parallel::Error::Work(error) => error,
-                crate::parallel::Error::Resource(error) => Box::new(error) as Box<dyn std::error::Error + Send + Sync>,
-            });
-            let mut state = state.lock().unwrap();
-            state.unfinished -= 1;
-            match result {
-                Ok(output) => {
-                    state.outputs[index] = Some(output);
-                    state.schedule.complete(index);
-                }
-                Err(error) => state.failures.push((Some(index), error)),
-            }
-            changed.notify_all();
+
+        let graph = GraphExecution {
+            compiler: self, prepared: &prepared, inputs: &inputs, provider_rows: &provider_rows,
+            ids, externals: &externals, entry_checks: &entry_checks,
+            state: Mutex::new(State {
+                schedule, outputs: (0..units.len()).map(|_| None).collect(), failure: None,
+            }),
+            changed: Condvar::new(),
         };
+        let work = || graph.run_worker();
         thread::scope(|scope| {
             for _ in 1..units.len().min(self.workers()) {
                 if let Err(error) = thread::Builder::new().spawn_scoped(scope, &work) {
-                    state.lock().unwrap().failures.push((None, Box::new(error)));
-                    changed.notify_all();
+                    graph.state.lock().unwrap().failure = Some((0, Box::new(error)));
+                    graph.changed.notify_all();
                     break;
                 }
             }
             work();
         });
-        let mut state = state.into_inner().unwrap();
-        state.failures.sort_by_key(|(index, _)| *index);
-        if !state.failures.is_empty() { return Err(state.failures.remove(0).1); }
+        let state = graph.state.into_inner().unwrap();
+        if let Some((_, error)) = state.failure { return Err(error); }
         Ok(state.outputs.into_iter().map(Option::unwrap).collect())
     }
 }
