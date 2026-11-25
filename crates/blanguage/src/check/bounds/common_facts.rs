@@ -244,7 +244,7 @@ pub(super) fn either<'a>(
     environment: &Facts,
     environment_roots: &BTreeMap<ValueIdentity, ValueIdentity>,
     environment_members: &[(&ValueIdentity, &ValueIdentity)],
-    shared_equalities: Option<&OnceCell<Facts>>,
+    shared_equalities: Option<&OnceCell<Arc<Facts>>>,
     a: Option<QueryFacts<'a>>,
     b: Option<QueryFacts<'a>>,
 ) -> Option<QueryFacts<'a>> {
@@ -278,9 +278,12 @@ pub(super) fn either<'a>(
                 // Empty sides leave only the original equality result to produce.
                 let shared = original.get_or_init(|| {
                     let empty = Facts::new();
-                    fold(environment, [&empty, &empty], [environment_roots.iter(), environment_roots.iter()])
+                    Arc::new(fold(environment, [&empty, &empty], [environment_roots.iter(), environment_roots.iter()]))
                 });
                 let mut facts = fold(environment, [&a, &b], Default::default());
+                if facts.is_empty() {
+                    return Some(QueryFacts::Owned(Arc::clone(shared)));
+                }
                 facts.extend(shared.iter().copied());
                 facts
             } else {

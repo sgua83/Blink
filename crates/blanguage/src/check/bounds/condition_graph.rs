@@ -1108,7 +1108,7 @@ pub(super) struct RequiredQuery<'a> {
     pending: Vec<usize>,
 }
 struct RequiredEvaluation<'a, 'b, 'c> {
-    common_equalities: Option<std::cell::OnceCell<Facts>>,
+    common_equalities: Option<std::cell::OnceCell<Arc<Facts>>>,
     query: &'a mut RequiredQuery<'b>,
     environment: &'c Facts,
     roots: &'c std::collections::BTreeMap<super::ValueIdentity, super::ValueIdentity>,
@@ -1190,7 +1190,7 @@ unsafe extern "C" fn required_common(slot: Slot, id: usize, left_last: u32, righ
     let a = take_required(&mut evaluation.query.nodes[node.left], left_last);
     let b = take_required(&mut evaluation.query.nodes[node.right], right_last);
     evaluation.query.nodes[id].valid_additions = None;
-    evaluation.query.nodes[id].value = Some(super::either_facts(
+    evaluation.query.nodes[id].value = Some(super::common_facts::either(
         evaluation.environment,
         evaluation.roots,
         evaluation.members,
