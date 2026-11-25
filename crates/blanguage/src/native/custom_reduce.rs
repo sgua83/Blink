@@ -325,8 +325,10 @@ pub(super) fn emit(
         &live,
         &std::collections::BTreeSet::new(),
     ));
-    let (mut graph, _) = allocation::Graph::with_live(&stage, live);
-    let allocation = Allocation::new(&stage, &mut graph);
+    let tile_width = stage.tile_workgroup_width();
+    let tile_scope = tile_width.is_some();
+    let (mut graph, _) = allocation::Graph::with_live(&stage, live, tile_scope);
+    let allocation = Allocation::new(&stage, &mut graph, tile_scope);
     let layout = Frame::new(&allocation, None);
     let frame = i32::try_from(layout.end.div_ceil(16) * 16)
         .map_err(|_| "原生集合栈帧超过 x64 范围函数 ABI")? as u32;
@@ -342,6 +344,7 @@ pub(super) fn emit(
         function_abi: None,
         literals: std::collections::BTreeMap::new(),
         stage: &stage,
+        workgroup: tile_width.unwrap_or(Stage::DEFAULT_WORKGROUP_WIDTH),
         buffers: &buffers,
         textures: &program.textures,
         breaks: Vec::new(),

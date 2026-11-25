@@ -78,10 +78,7 @@ impl Graph {
         // Entry values are simultaneous definitions supplied by the native caller.
         graph::inputs(self, inputs);
     }
-    pub fn new(stage: &Stage) -> (Self, Vec<TilePhase<'_>>) {
-        Self::with_live(stage, BTreeSet::new())
-    }
-    pub fn with_live(stage: &Stage, mut live: BTreeSet<PrivateSlot>) -> (Self, Vec<TilePhase<'_>>) {
+    pub fn with_live(stage: &Stage, mut live: BTreeSet<PrivateSlot>, tile_scope: bool) -> (Self, Vec<TilePhase<'_>>) {
         let registers = stage.registers.len();
         let slots = registers + stage.locals.last_key_value().map_or(0, |(end, _)| *end);
         let private = private_spans(&stage.code);
@@ -110,7 +107,7 @@ impl Graph {
         graph.needs_r15 = graph::analyze(&mut graph, &stage.code, &stage.registers, &mut live,
             &empty, &empty, &empty, 1);
         drop(live);
-        let phases = stage.tile_phases();
+        let phases = if tile_scope { stage.tile_phases() } else { Vec::new() };
         // 实际阶段入口会恢复整组私有值，出口则保存整组；它们必须同时可取。
         for phase in &phases {
             graph.together(&phase.live_in);
@@ -204,10 +201,10 @@ fn color_locations(graph: &Graph, places: &mut [ColorPlace], mode: u32, base: u6
 }
 
 impl Allocation {
-    pub fn new(stage: &Stage, graph: &mut Graph) -> Self {
+    pub fn new(stage: &Stage, graph: &mut Graph, tile_scope: bool) -> Self {
         let mut locations = std::mem::take(&mut graph.locations);
         let mut layout = color_locations(
-            graph, &mut locations, u32::from(stage.has_tile_scope()), graph.outgoing_bytes,
+            graph, &mut locations, u32::from(tile_scope), graph.outgoing_bytes,
         );
         for &(begin, end) in &graph.private {
             let ty = &stage.locals[&end];
@@ -261,7 +258,7 @@ impl PacketAllocation {
     }
 }
 impl Frame {
-    pub fn layout_tile(&mut self, stage: &Stage, phases: &[TilePhase<'_>], shared: crate::ir::dataflow::TileLayout) -> u64 {
+    pub fn layout_tile(&mut self, stage: &Stage, workgroup: u32, phases: &[TilePhase<'_>], shared: crate::ir::dataflow::TileLayout) -> u64 {
         // Each outgoing slot has a consumer in the next phase's restore.
         let private: BTreeSet<_> = phases.iter().skip(1)
             .flat_map(|phase| phase.live_in.iter().copied()).collect();
@@ -271,7 +268,7 @@ impl Frame {
         // The frame owns the final maps. B borrows the two position arrays only
         // while replacing each entry with its stack offset.
         let end = unsafe {
-            tile_frame(self.end, u64::from(stage.workgroup_width()), u32::from(!phases.is_empty()),
+            tile_frame(self.end, u64::from(workgroup), u32::from(!phases.is_empty()),
                 shared_positions.as_mut_ptr(), shared_positions.len(),
                 private_positions.as_mut_ptr(), private_positions.len())
         };

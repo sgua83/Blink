@@ -220,7 +220,9 @@ pub(super) fn sample(
 
 impl Emitter<'_> {
     pub(super) fn texture_access(&mut self, value: View) {
-        let locations = ScalarLocations { allocation: &self.allocation, stage: self.stage, frame: &self.frame };
+        let locations = ScalarLocations {
+            allocation: &self.allocation, stage: self.stage, frame: &self.frame, workgroup: self.workgroup,
+        };
         let table = TextureTable { buffers: self.buffers.len(), textures: self.textures };
         let host = TextureAccessHost {
             values: locations.host(), table: std::ptr::from_ref(&table).cast(),

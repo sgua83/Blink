@@ -100,7 +100,9 @@ pub(super) struct Plan<'a> {
     pub address_only: BTreeSet<Reg>,
 }
 impl<'a> Plan<'a> {
-    pub fn new(program: &Program, stage: &'a Stage) -> Option<Self> { control::run(program, stage) }
+    pub fn new(program: &Program, stage: &'a Stage, tile_scope: bool) -> Option<Self> {
+        control::run(program, stage, tile_scope)
+    }
 }
 
 impl From<PacketPlace> for operands::MoveLocation {

@@ -50,12 +50,12 @@ unsafe extern "C" {
     #[link_name = "bootstrap.x64_instruction::packet_plan"]
     fn packet_plan(context: *mut Context<'_>, code: Block, header: Header, host: Host) -> *mut c_void;
 }
-pub(super) fn run<'a>(program: &Program, stage: &'a Stage) -> Option<Plan<'a>> {
+pub(super) fn run<'a>(program: &Program, stage: &'a Stage, tile_scope: bool) -> Option<Plan<'a>> {
     let mut address_only = BTreeSet::new();
     let mut context = Context { program, stage, address_only: &mut address_only };
     let header = Header { registers: stage.registers.len(),
         slots: stage.registers.len() + stage.locals.last_key_value().map_or(0, |(end, _)| *end),
-        writes: stage.writes.len(), tile: u32::from(stage.has_tile_scope()), selected: u32::from(stage.selection.is_some()) };
+        writes: stage.writes.len(), tile: u32::from(tile_scope), selected: u32::from(stage.selection.is_some()) };
     let code = unsafe { packet_plan(&mut context, Block::from(&stage.code), header, HOST) };
     if code.is_null() { return None; }
     let code = unsafe { *Box::from_raw(code.cast::<Vec<Step<'a>>>()) };

@@ -183,15 +183,18 @@ fn emit_value(
         cross_access: Vec::new(),
     };
     reads::place(&mut stage.code, &mut stage.registers, &stage.writes);
+    let tile_width = stage.tile_workgroup_width();
+    let tile_scope = tile_width.is_some();
     let (mut graph, _) = allocation::Graph::with_live(
         &stage,
         body.outputs
             .iter()
             .map(|&r| PrivateSlot::Register(r))
             .collect(),
+        tile_scope,
     );
     graph.function_inputs(&body.inputs);
-    let allocation = Allocation::new(&stage, &mut graph);
+    let allocation = Allocation::new(&stage, &mut graph, tile_scope);
     let layout = Frame::new(&allocation, None);
     let flags = u32::from(fallible) | (u32::from(graph.needs_r15) << 1);
     let plan = unsafe { function_frame(layout.end, AbiType::result(result), flags) };
@@ -210,6 +213,7 @@ fn emit_value(
         }),
         literals: std::collections::BTreeMap::new(),
         stage: &stage,
+        workgroup: tile_width.unwrap_or(Stage::DEFAULT_WORKGROUP_WIDTH),
         buffers: &[],
         textures: &[],
         breaks: Vec::new(),

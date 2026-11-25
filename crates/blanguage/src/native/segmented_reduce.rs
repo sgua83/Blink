@@ -36,6 +36,7 @@ pub(super) fn emit(program: &Program, reduction: &SegmentedReduction, finish: bo
     };
     let mut e = Emitter {
         used_tile_words: &super::EMPTY_TILE_WORDS,
+        workgroup: Stage::DEFAULT_WORKGROUP_WIDTH,
         unwind: Vec::new(),
         prolog: 0,
         probe: None,

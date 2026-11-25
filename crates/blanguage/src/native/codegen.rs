@@ -142,6 +142,7 @@ struct Emitter<'a> {
     function_abi: Option<super::FunctionAbi>,
     literals: std::collections::BTreeMap<(Bits, bool), Vec<usize>>,
     stage: &'a Stage,
+    workgroup: u32,
     buffers: &'a [Buffer],
     textures: &'a [TextureBinding],
     breaks: Vec<Vec<usize>>,
@@ -565,9 +566,12 @@ fn emit_map(
     let mut lowered = program.stages[index].clone();
     reads::place(&mut lowered.code, &mut lowered.registers, &lowered.writes);
     let stage = &lowered;
-    let (mut graph, phases) = allocation::Graph::new(stage);
-    let allocation = Allocation::new(stage, &mut graph);
-    let packet = packet::Plan::new(program, stage).map(|plan| {
+    let tile_width = stage.tile_workgroup_width();
+    let tile_scope = tile_width.is_some();
+    let workgroup = tile_width.unwrap_or(Stage::DEFAULT_WORKGROUP_WIDTH);
+    let (mut graph, phases) = allocation::Graph::with_live(stage, Default::default(), tile_scope);
+    let allocation = Allocation::new(stage, &mut graph, tile_scope);
+    let packet = packet::Plan::new(program, stage, tile_scope).map(|plan| {
         let allocation = PacketAllocation::new(stage, &mut graph, &plan.address_only);
         (plan, allocation)
     });
@@ -576,9 +580,8 @@ fn emit_map(
         &allocation,
         packet.as_ref().map(|(_, allocation)| allocation),
     );
-    let tile_scope = stage.has_tile_scope();
     let data_end = if tile_scope {
-        frame_layout.layout_tile(stage, &phases, layout)
+        frame_layout.layout_tile(stage, workgroup, &phases, layout)
     } else {
         frame_layout.end
     };
@@ -597,6 +600,7 @@ fn emit_map(
         function_abi: Some(super::FunctionAbi { definition: None, instance: None, ranges: Vec::new() }),
         literals: std::collections::BTreeMap::new(),
         stage,
+        workgroup,
         buffers: &program.buffers,
         textures: &program.textures,
         breaks: Vec::new(),
@@ -614,7 +618,7 @@ fn emit_map(
         packet: packet.as_ref().map_or(std::ptr::null(), |packet| std::ptr::from_ref(packet).cast()),
         binding, word, selected, frame, slots: e.frame.end as u32,
         buffer_bytes: BUFFER_BYTES, stride_field: BUFFER_STRIDE,
-        tile_scope: u32::from(tile_scope), workgroup: stage.workgroup_width(),
+        tile_scope: u32::from(tile_scope), workgroup,
     };
     let mut range = MapRange {
         emitter: &mut e,

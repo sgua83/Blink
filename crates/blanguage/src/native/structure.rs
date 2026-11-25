@@ -245,7 +245,7 @@ pub(super) unsafe extern "C" fn emit_scalar(slot: Slot, leaf: ScalarLeaf, value:
 
 impl<'a> Emitter<'a> {
     pub(super) fn block(&mut self, code: &[Inst]) -> Result<(), &'static str> {
-        let workgroup = self.stage.workgroup_width();
+        let workgroup = self.workgroup;
         let slot = std::ptr::from_mut(self).cast();
         let mut host = ScalarHost {
             control: Host { emit: scalar_child, load: scalar_load, offset, jump, jump_to,

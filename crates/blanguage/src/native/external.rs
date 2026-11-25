@@ -242,7 +242,9 @@ impl Emitter<'_> {
         }
     }
     pub(super) fn native_call(&mut self, call: &Call) {
-        let locations = ScalarLocations { allocation: &self.allocation, stage: self.stage, frame: &self.frame };
+        let locations = ScalarLocations {
+            allocation: &self.allocation, stage: self.stage, frame: &self.frame, workgroup: self.workgroup,
+        };
         let host = CallHost {
             addresses: locations.indexed_host(), local: value_local,
             argument: emission_argument, operand: emission_operand, component: abi_component,

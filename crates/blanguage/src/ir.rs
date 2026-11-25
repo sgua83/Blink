@@ -1895,12 +1895,14 @@ impl Stage {
             output
         }
     }
+    pub(crate) const DEFAULT_WORKGROUP_WIDTH: u32 = 64;
+
+    pub(crate) fn tile_workgroup_width(&self) -> Option<u32> {
+        self.has_tile_scope().then(|| self.tiles[0].width)
+    }
+
     pub fn workgroup_width(&self) -> u32 {
-        if self.has_tile_scope() {
-            self.tiles[0].width
-        } else {
-            64
-        }
+        self.tile_workgroup_width().unwrap_or(Self::DEFAULT_WORKGROUP_WIDTH)
     }
     pub fn storage_words(&self) -> std::collections::BTreeSet<SharedWord> {
         #[cfg(feature = "compiler")]

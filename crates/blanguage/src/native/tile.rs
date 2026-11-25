@@ -104,7 +104,7 @@ impl Emitter<'_> {
         self.copy(self.location(dst), Location::Stack(self.tile_length_slot()));
     }
     pub(super) fn tile_lane(&mut self, dst: Reg) {
-        let width = self.stage.workgroup_width();
+        let width = self.workgroup;
         self.emit_bytes(16, |output| unsafe { encode_tile_lane(width, output) });
         self.store(dst);
     }
@@ -144,7 +144,7 @@ impl Emitter<'_> {
             operation: collective.op.operator(),
             exclusive: u32::from(collective.op.exclusive()),
             length_offset: self.tile_length_slot(),
-            plane_stride: self.stage.workgroup_width() * 4,
+            plane_stride: self.workgroup * 4,
         };
         let mut state = TileFields {
             emitter: self,

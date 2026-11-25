@@ -121,15 +121,16 @@ pub(super) struct ScalarLocations<'a> {
     pub(super) allocation: &'a Allocation,
     pub(super) stage: &'a Stage,
     pub(super) frame: &'a Frame,
+    pub(super) workgroup: u32,
 }
 
 impl<'a> ScalarLocations<'a> {
     fn from_emitter(emitter: &'a Emitter<'_>) -> Self {
-        Self { allocation: &emitter.allocation, stage: emitter.stage, frame: &emitter.frame }
+        Self { allocation: &emitter.allocation, stage: emitter.stage, frame: &emitter.frame, workgroup: emitter.workgroup }
     }
 
     pub(super) fn indexed_host(&self) -> IndexedAddressHost {
-        IndexedAddressHost::new(self.host(), indexed_tile_stream, self.stage.workgroup_width())
+        IndexedAddressHost::new(self.host(), indexed_tile_stream, self.workgroup)
     }
 
     pub(super) fn host(&self) -> ScalarValueHost {
