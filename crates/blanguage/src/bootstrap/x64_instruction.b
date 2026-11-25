@@ -3382,16 +3382,17 @@ u64 texture_axis_at(u64 at, u32 extent_offset, MoveLocation coordinate) on cpu {
     return register_instruction(cursor + component.length, u16(0x01), u8(0), true, u8(2), u8(0));
 }
 
-u64 texture_texel_at(u64 at, TextureAccess input, u32 texel_bytes) on cpu {
+u64 texture_texel_at(u64 at, Span coordinates, ScalarValueHost values, u32 texel_bytes) on cpu
+    requires nonzero(values.location) {
     u64 cursor = at;
-    bool volume = input.dimensions == 3;
-    MoveLocation outer = volume ? input.coordinates[2] : input.coordinates[1];
+    bool volume = coordinates.count == 3u64;
+    MoveLocation outer = values.location(values.context, indexed_pair_word(coordinates, volume ? 2u64 : 1u64));
     MoveEncoding loaded = copy_scalar_move(move_gpr(u8(0)), outer, 8, false, unsafe_address(cursor));
     cursor += loaded.length;
     if (volume) {
-        cursor = texture_axis_at(cursor, 4, input.coordinates[1]);
+        cursor = texture_axis_at(cursor, 4, values.location(values.context, indexed_pair_word(coordinates, 1u64)));
     }
-    cursor = texture_axis_at(cursor, 0, input.coordinates[0]);
+    cursor = texture_axis_at(cursor, 0, values.location(values.context, indexed_pair_word(coordinates, 0u64)));
     cursor = address_scale_at(cursor, u8(0), texel_bytes);
     MoveLocation pixels = MoveLocation(16u64, MOVE_MEMORY, u8(15), NO_INDEX, u8(0));
     cursor = load_bits(cursor, u8(15), pixels, true);
@@ -3736,51 +3737,69 @@ extern "C" void texture_sample_ir(address coordinate, u32 dimensions, u64 lod, a
     }
 }
 
-extern "C" u64 texture_access(TextureAccess input, address results, u64 count, address output) on cpu {
+extern "C" u64 emit_texture_access(Node instruction, TextureAccessHost host, address output) on cpu
+    requires nonzero(host.values.ir.inspect) requires nonzero(host.values.location)
+    requires nonzero(host.values.scalar) requires nonzero(host.offset) {
+    ScalarValueHost values = host.values;
+    address context = values.context;
+    View access = values.ir.inspect(instruction);
+    View texture = values.ir.inspect(access.left);
     u64 start = address_bits(output);
     u64 cursor = start;
-    if (input.in_table != 0) {
-        cursor = texture_table_at(cursor, input.base.value);
+    if (texture.first.count == 0u64) {
+        cursor = texture_table_at(cursor, host.offset(host.table, texture.a));
     } else {
-        MoveEncoding binding = copy_scalar_move(move_gpr(u8(15)), input.base, 8, false, output);
+        usize parameter = indexed_pair_word(texture.first, 0u64);
+        MoveEncoding binding = copy_scalar_move(move_gpr(u8(15)), values.location(context, parameter), 8, false, output);
         cursor += binding.length;
     }
-    if (input.stride != 0) {
-        ScalarEncoding scalar = input.element_scalar;
-        MoveEncoding index = copy_scalar_move(move_gpr(u8(0)), input.element, scalar.width / 8,
-            scalar.kind == ScalarKind::Signed, unsafe_address(cursor));
-        cursor += index.length;
-        cursor += offset_address(input.stride, unsafe_address(cursor));
+    if (texture.second.count != 0u64) {
+        usize index = indexed_pair_word(texture.second, 0u64);
+        ScalarEncoding scalar = values.scalar(context, index);
+        MoveEncoding moved = copy_scalar_move(move_gpr(u8(0)), values.location(context, index),
+            scalar.width / 8, scalar.kind == ScalarKind::Signed, unsafe_address(cursor));
+        cursor += moved.length;
+        cursor += offset_address(host.stride, unsafe_address(cursor));
     }
-    TextureAccessKind kind = input.kind;
-    if (kind == TextureAccessKind::Binding) {
-        MoveLocation dst = unsafe_position<MoveLocation>(results);
-        MoveEncoding binding = copy_scalar_move(dst, move_gpr(u8(15)), 8, false, unsafe_address(cursor));
+    u32 tag = access.tag;
+    if (tag == OP_TEXTURE_BINDING_ADDRESS) {
+        MoveEncoding binding = copy_scalar_move(values.location(context, access.a), move_gpr(u8(15)), 8, false,
+            unsafe_address(cursor));
         return cursor + binding.length - start;
     }
-    u32 narrow = kind == TextureAccessKind::Byte ? 1 : (kind == TextureAccessKind::Half ? 2 : 0);
-    if (narrow != 0 || kind == TextureAccessKind::Word || kind == TextureAccessKind::Rgba) {
-        u32 bytes = narrow != 0 ? narrow : (kind == TextureAccessKind::Word ? 4 : 16);
-        cursor = texture_texel_at(texture_level_at(cursor, input.level), input, bytes);
-    } else if (kind == TextureAccessKind::Size) {
-        cursor = texture_level_at(cursor, input.level);
+    bool raw = tag == OP_TEXTURE_READ;
+    bool fetch = tag == OP_TEXTURE_FETCH;
+    bool size = tag == OP_TEXTURE_SIZE;
+    if (raw || fetch) {
+        usize level = raw ? access.b : access.a;
+        Span coordinates = raw ? access.first : access.second;
+        u32 bytes = raw ? u32(access.c) : 16;
+        cursor = texture_level_at(cursor, values.location(context, level));
+        cursor = texture_texel_at(cursor, coordinates, values, bytes);
+        if (bytes < 4) {
+            MoveLocation pixel = MoveLocation(0u64, MOVE_MEMORY, u8(15), NO_INDEX, u8(0));
+            cursor = load_extended(cursor, u8(0), pixel, bytes, false);
+            MoveEncoding value = copy_scalar_move(values.location(context, access.a), move_gpr(u8(0)), 4, false,
+                unsafe_address(cursor));
+            return cursor + value.length - start;
+        }
+    } else if (size) {
+        cursor = texture_level_at(cursor, values.location(context, access.a));
     } else {
         cursor = texture_descriptor_at(cursor);
     }
-    if (narrow != 0) {
-        MoveLocation dst = unsafe_position<MoveLocation>(results);
-        MoveLocation pixel = MoveLocation(0u64, MOVE_MEMORY, u8(15), NO_INDEX, u8(0));
-        cursor = load_extended(cursor, u8(0), pixel, narrow, false);
-        MoveEncoding value = copy_scalar_move(dst, move_gpr(u8(0)), 4, false, unsafe_address(cursor));
-        return cursor + value.length - start;
-    }
-    u64 offset = kind == TextureAccessKind::Address ? 4u64 : (kind == TextureAccessKind::Format ? 16u64 : 0u64);
-    u64 i = 0u64;
-    while (i < count) {
-        MoveLocation dst = unsafe_position<MoveLocation>(unsafe_address(address_bits(results) + i * size_of<MoveLocation>()));
-        MoveLocation field = MoveLocation(offset + i * 4u64, MOVE_MEMORY, u8(15), NO_INDEX, u8(0));
-        cursor += read_scalar_move(dst, field, 4, false, false, unsafe_address(cursor));
-        i += 1u64;
+    if (size || fetch) {
+        u64 i = 0u64;
+        while (i < u64(access.first.count)) {
+            MoveLocation dst = values.location(context, indexed_pair_word(access.first, i));
+            MoveLocation field = MoveLocation(i * 4u64, MOVE_MEMORY, u8(15), NO_INDEX, u8(0));
+            cursor += read_scalar_move(dst, field, 4, false, false, unsafe_address(cursor));
+            i += 1u64;
+        }
+    } else {
+        u64 offset = tag == OP_TEXTURE_ADDRESS ? 4u64 : (tag == OP_TEXTURE_FORMAT ? 16u64 : 0u64);
+        MoveLocation field = MoveLocation(offset, MOVE_MEMORY, u8(15), NO_INDEX, u8(0));
+        cursor += read_scalar_move(values.location(context, access.a), field, 4, false, false, unsafe_address(cursor));
     }
     return cursor - start;
 }

@@ -1,41 +1,32 @@
 //! CPU 采样降低为原生标量 IR；每次取样不调用宿主纹理函数。
 use super::*;
-use allocation::Location;
-use operands::MoveLocation;
-
-#[repr(u32)]
-pub(super) enum TextureAccessKind {
-    Binding,
-    Levels,
-    Address,
-    Format,
-    Size,
-    Byte,
-    Word,
-    Rgba,
-    Half,
-}
+use super::operands::{ScalarLocations, ScalarValueHost};
+use crate::ir::dataflow::Node;
+use std::ffi::c_void;
 
 #[repr(C)]
-struct TextureAccess {
-    base: MoveLocation,
-    element: MoveLocation,
-    element_scalar: ScalarEncoding,
-    level: MoveLocation,
-    coordinates: [MoveLocation; 3],
-    in_table: u32,
+struct TextureAccessHost {
+    values: ScalarValueHost,
+    table: *const c_void,
+    offset: unsafe extern "C" fn(*const c_void, usize) -> u64,
     stride: u32,
-    kind: TextureAccessKind,
-    dimensions: u32,
+}
+
+struct TextureTable<'a> {
+    buffers: usize,
+    textures: &'a [TextureBinding],
+}
+
+unsafe extern "C" fn descriptor_offset(context: *const c_void, binding: usize) -> u64 {
+    let table = unsafe { &*context.cast::<TextureTable<'_>>() };
+    let preceding: usize = table.textures[..binding].iter().map(|binding| binding.elements() as usize).sum();
+    (table.buffers + preceding) as u64 * u64::from(BUFFER_BYTES)
 }
 
 unsafe extern "C" {
-    #[link_name = "bootstrap.x64_instruction::texture_access"]
-    fn encode_texture_access(access: TextureAccess, results: *const MoveLocation,
-        count: usize, output: *mut u8) -> u64;
+    #[link_name = "bootstrap.x64_instruction::emit_texture_access"]
+    fn emit_texture_access(instruction: Node, host: TextureAccessHost, output: *mut u8) -> u64;
 }
-
-use std::ffi::c_void;
 
 #[allow(dead_code)]
 #[derive(Clone, Copy)]
@@ -228,42 +219,18 @@ pub(super) fn sample(
 }
 
 impl Emitter<'_> {
-    pub(super) fn texture_access(
-        &mut self, texture: TextureSource, kind: TextureAccessKind,
-        level: Option<Reg>, coordinate: &[Reg], results: &[Reg],
-    ) {
-        let (base, in_table) = if let Some(parameter) = texture.parameter {
-            (self.location(parameter), 0)
-        } else {
-            let preceding: usize = self.textures[..texture.binding].iter()
-                .map(|binding| binding.elements() as usize)
-                .sum();
-            let offset = (self.buffers.len() + preceding) as u64 * u64::from(BUFFER_BYTES);
-            (Location::Immediate(offset), 1)
+    pub(super) fn texture_access(&mut self, inst: &Inst) {
+        let locations = ScalarLocations { allocation: &self.allocation, stage: self.stage, frame: &self.frame };
+        let table = TextureTable { buffers: self.buffers.len(), textures: self.textures };
+        let host = TextureAccessHost {
+            values: locations.host(), table: std::ptr::from_ref(&table).cast(),
+            offset: descriptor_offset, stride: BUFFER_BYTES,
         };
-        let immediate = Location::Immediate(0);
-        let (element, scalar, stride) = texture.element.map_or((immediate, Scalar::U32, 0),
-            |reg| (self.location(reg), self.stage.registers[reg], BUFFER_BYTES));
-        let access = TextureAccess {
-            base: base.into(),
-            element: element.into(),
-            element_scalar: scalar.into(),
-            level: level.map_or(immediate, |reg| self.location(reg)).into(),
-            coordinates: std::array::from_fn(|axis| {
-                coordinate.get(axis).map_or(immediate, |&reg| self.location(reg)).into()
-            }),
-            in_table,
-            stride,
-            kind,
-            dimensions: coordinate.len() as u32,
-        };
-        let mut locations: [MoveLocation; 4] = std::array::from_fn(|_| immediate.into());
-        for (location, &reg) in locations.iter_mut().zip(results) {
-            *location = self.location(reg).into();
+        let start = self.code.len();
+        self.code.reserve(248);
+        unsafe {
+            let length = emit_texture_access(Node::instruction(inst), host, self.code.as_mut_ptr().add(start));
+            self.code.set_len(start + length as usize);
         }
-        // Binding plus index, mip and texel address, and four scalar loads.
-        self.emit_bytes(16 + 24 + 16 + 96 + 4 * 24, |output| unsafe {
-            encode_texture_access(access, locations.as_ptr(), results.len(), output)
-        });
     }
 }

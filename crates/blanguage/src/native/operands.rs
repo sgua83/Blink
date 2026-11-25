@@ -148,7 +148,7 @@ impl ScalarLocations<'_> {
         }
     }
 
-    fn host(&self) -> ScalarValueHost {
+    pub(super) fn host(&self) -> ScalarValueHost {
         ScalarValueHost {
             ir: HOST, context: std::ptr::from_ref(self).cast(),
             location: value_location, scalar: value_scalar,

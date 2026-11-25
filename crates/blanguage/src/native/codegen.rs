@@ -39,7 +39,6 @@ mod structure;
 use structure::Flow;
 #[path="texture.rs"]
 mod texture;
-use texture::TextureAccessKind;
 pub(crate) use application::{
     emit as emit_application, emit_function,
 };
@@ -349,33 +348,11 @@ impl Emitter<'_> {
                 InstKind::Call(call) => self.native_call(call),
                 InstKind::Raise(error) => self.lower_control(Flow::Raise(*error), Self::block, Self::load)?,
                 InstKind::Print { dst, value } => self.print_call(*dst, *value),
-                InstKind::TextureBindingAddress { dst, texture } => {
-                    self.texture_access(*texture, TextureAccessKind::Binding, None, &[], &[*dst]);
-                }
                 InstKind::TextureSample { .. } | InstKind::Cleanup { .. } => return Err("原生操作尚未降低到CPU执行IR"),
-                InstKind::TextureSize { result, texture, level } => {
-                    self.texture_access(*texture, TextureAccessKind::Size, Some(*level), &[], result);
-                }
-                InstKind::TextureLevels { dst, texture } => {
-                    self.texture_access(*texture, TextureAccessKind::Levels, None, &[], &[*dst]);
-                }
-                InstKind::TextureAddress { dst, texture } => {
-                    self.texture_access(*texture, TextureAccessKind::Address, None, &[], &[*dst]);
-                }
-                InstKind::TextureFormat { dst, texture } => {
-                    self.texture_access(*texture, TextureAccessKind::Format, None, &[], &[*dst]);
-                }
-                InstKind::TextureRead { dst, texture, level, coordinate, width } => {
-                    let kind = match width {
-                        crate::ir::TextureReadWidth::Byte => TextureAccessKind::Byte,
-                        crate::ir::TextureReadWidth::Half => TextureAccessKind::Half,
-                        crate::ir::TextureReadWidth::Word => TextureAccessKind::Word,
-                    };
-                    self.texture_access(*texture, kind, Some(*level), coordinate, &[*dst]);
-                }
-                InstKind::TextureFetch { result, texture, level, coordinate } => {
-                    self.texture_access(*texture, TextureAccessKind::Rgba, Some(*level), coordinate, result);
-                }
+                InstKind::TextureBindingAddress { .. } | InstKind::TextureSize { .. }
+                | InstKind::TextureLevels { .. } | InstKind::TextureAddress { .. }
+                | InstKind::TextureFormat { .. } | InstKind::TextureRead { .. }
+                | InstKind::TextureFetch { .. } => self.texture_access(inst),
                 InstKind::Scope(body) => self.lower_control(Flow::Scope(body), Self::block, Self::load)?,
                 InstKind::Exit => self.lower_control(Flow::Exit, Self::block, Self::load)?,
                 InstKind::Append(append) => self.append(inst, append.values.len()),

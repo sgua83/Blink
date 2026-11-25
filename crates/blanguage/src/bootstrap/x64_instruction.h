@@ -473,24 +473,18 @@ extern "C" TileInputBoundaryCode tile_input_boundary(u32 width, u32 length_offse
 // The caller owns 80 bytes for the loop over the actual lanes in the tile.
 extern "C" u64 tile_input_copy(TileInputCopy input, address output) on cpu;
 
-enum TextureAccessKind:u32 {
-    Binding=0; Levels=1; Address=2; Format=3; Size=4; Byte=5; Word=6; Rgba=7; Half=8;
-};
-
-struct TextureAccess {
-    MoveLocation base;
-    MoveLocation element;
-    ScalarEncoding element_scalar;
-    MoveLocation level;
-    array<MoveLocation,3> coordinates;
-    u32 in_table;
+// The emitter owns the original descriptor table. B borrows the actual
+// lowered instruction, assigned locations and 248 writable bytes.
+struct TextureAccessHost {
+    ScalarValueHost values;
+    address table;
+    cfn<u64,address,usize> ensures memory(read) offset;
     u32 stride;
-    TextureAccessKind kind;
-    u32 dimensions;
 };
+extern "C" u64 emit_texture_access(Node instruction, TextureAccessHost host, address output) on cpu
+    requires nonzero(host.values.ir.inspect) requires nonzero(host.values.location)
+    requires nonzero(host.values.scalar) requires nonzero(host.offset);
 
-// R12 is the binding table. R15 holds the transient binding and source address.
-// The caller owns the result locations and room for the whole operation.
 enum TextureColor:u32 { Rgba8=1; Srgb=2; R8=3; Rg16=4; Rgb10A2=5; Rg11B10=6; R16=7; };
 enum SampleScalar:u32 { Word=0; Float=1; Bool=2; Index=3; };
 enum SampleOp:u32 {
@@ -523,8 +517,6 @@ struct SampleHost {
 // two or three entries, as determined by the typed texture instruction.
 extern "C" void texture_sample_ir(address coordinate, u32 dimensions, u64 lod, address result, SampleHost host) on cpu
     requires nonzero(host.instruction) requires nonzero(host.read_texture) requires nonzero(host.block);
-
-extern "C" u64 texture_access(TextureAccess input, address results, u64 count, address output) on cpu;
 
 struct TilePublishInput {
     MoveLocation location;

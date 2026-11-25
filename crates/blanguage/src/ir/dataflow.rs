@@ -227,7 +227,7 @@ unsafe extern "C" fn inspect(node: Node) -> View {
         },
         Kind::Texture => {
             let value = unsafe { &*node.data.cast::<TextureSource>() };
-            let mut view = View::tag(0); view.first = Span::slice(value.parameter.as_slice());
+            let mut view = View::tag(0); view.a = value.binding; view.first = Span::slice(value.parameter.as_slice());
             view.second = Span::slice(value.element.as_slice()); view
         }
         Kind::AtomicOp => {
@@ -412,8 +412,8 @@ fn instruction(value: &Inst) -> View {
         InstKind::TextureLevels { dst, texture } => { view.tag = 3; view.a = *dst; view.left = Node::of(texture, Kind::Texture); }
         InstKind::TextureAddress { dst, texture } => { view.tag = 4; view.a = *dst; view.left = Node::of(texture, Kind::Texture); }
         InstKind::TextureFormat { dst, texture } => { view.tag = 5; view.a = *dst; view.left = Node::of(texture, Kind::Texture); }
-        InstKind::TextureRead { dst, texture, coordinate, level, .. } => {
-            view.tag = 6; view.a = *dst; view.b = *level; view.first = Span::slice(coordinate); view.left = Node::of(texture, Kind::Texture);
+        InstKind::TextureRead { dst, texture, coordinate, level, width } => {
+            view.tag = 6; view.a = *dst; view.b = *level; view.c = *width as usize; view.first = Span::slice(coordinate); view.left = Node::of(texture, Kind::Texture);
         }
         InstKind::TextureFetch { result, texture, coordinate, level } => {
             view.tag = 7; view.first = Span::slice(result); view.second = Span::slice(coordinate);
