@@ -139,7 +139,11 @@ pub(crate) fn capture(object: &Object) -> Result<Vec<u8>> {
     layouts.clone().count().encode(&mut writer);
     for (index, section) in layouts {
         let layout = section.layout.as_ref().unwrap();
-        let _ = layout.regions(index, section.bytes.len(), &spans)?;
+        let length = match &section.bytes {
+            SectionData::Initialized(bytes) => bytes.len(),
+            SectionData::ZeroFill(length) => *length,
+        };
+        let _ = layout.regions(index, length, &spans)?;
         (index + 1).encode(&mut writer);
         identity(&facts, index, &spans).encode(&mut writer);
         layout.encode(&mut writer);

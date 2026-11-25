@@ -761,7 +761,7 @@ pub(super) fn encode_build(o: &Object, build: Option<&[u8]>) -> Result<Vec<u8>> 
             .chain(build.map(|bytes| (BUILD, CoffPayload::Borrowed(bytes), 0x840)))
             .chain(o.archive.as_ref().map(|archive| (ARCHIVE, CoffPayload::Borrowed(archive.bytes.as_ref()), 0x840)));
         encode_sections(&o.name, &o.sections, o.symbols.iter().map(|symbol| &symbol.definition),
-            |bytes| CoffPayload::Borrowed(bytes), extra, None)
+            coff_payload, extra, None)
     })
 }
 
@@ -770,13 +770,10 @@ pub(crate) fn encode_native(name: &str, source: &[Section], declared: &[Definiti
 }
 
 pub(crate) fn encode_native_with_imports<'a>(
-    name: &str, source: &'a [Section<super::LinkSectionBytes<'_>>], declared: &'a [Definition],
+    name: &str, source: &'a [Section<SectionData<LinkSectionBytes<'_>>>], declared: &'a [Definition],
     imports: &mut Vec<ImportKey<'a>>,
 ) -> Result<Vec<u8>> {
-    encode_sections(name, source, declared.iter(), |bytes| match bytes.data() {
-        super::LinkSectionData::Initialized(bytes) => CoffPayload::Borrowed(bytes),
-        super::LinkSectionData::ZeroFill(length) => CoffPayload::ZeroFill(length),
-    }, std::iter::empty(), Some(imports))
+    encode_sections(name, source, declared.iter(), coff_payload, std::iter::empty(), Some(imports))
 }
 
 unsafe extern "C" fn collect_import<'a>(context: *mut c_void, key: ImportKey<'a>) {
@@ -789,6 +786,13 @@ enum CoffPayload<'a> {
     Metadata(&'a MetadataInput, usize),
     NativeImport(native_import::Payload<'a>),
 }
+fn coff_payload<Bytes: AsRef<[u8]>>(data: &SectionData<Bytes>) -> CoffPayload<'_> {
+    match data {
+        SectionData::Initialized(bytes) => CoffPayload::Borrowed(bytes.as_ref()),
+        SectionData::ZeroFill(length) => CoffPayload::ZeroFill(*length),
+    }
+}
+
 impl CoffPayload<'_> {
     fn len(&self) -> usize {
         match self {
@@ -838,8 +842,8 @@ fn encode_sections<'a, Bytes>(
     encode_bound(name, sections, binding_sections, &definitions, imports)
 }
 
-fn zero_fill_needs_body(zero_fill: bool, relocation_count: usize) -> bool {
-    zero_fill && relocation_count != 0
+fn uninitialized_needs_body(flags: u32, relocation_count: usize) -> bool {
+    flags & IMAGE_SCN_CNT_UNINITIALIZED_DATA != 0 && relocation_count != 0
 }
 
 fn encode_bound<'a>(
@@ -858,7 +862,7 @@ fn encode_bound<'a>(
         let zero_fill = matches!(payload, CoffPayload::ZeroFill(_));
         let mut name = original_name;
         let mut flags = original_flags;
-        if let Some(binding) = binding && zero_fill_needs_body(zero_fill, relocation_count) {
+        if let Some(binding) = binding && uninitialized_needs_body(flags, relocation_count) {
             flags = (flags & !IMAGE_SCN_CNT_UNINITIALIZED_DATA) | IMAGE_SCN_CNT_INITIALIZED_DATA;
             // LINK groups conventional sections by the name before the dollar suffix.
             if let Some(suffix) = name.strip_prefix(".bss") {
@@ -1148,7 +1152,7 @@ impl<'a, Input: AsRef<[u8]> + ?Sized> Reader<'a, Input> {
         let mut definitions = vec![SectionDefinition::default(); self.headers.len() / 40];
         let (symbols, offset) = self.symbol_rows(&mut definitions)?;
         let needs_body = raw.iter().any(|row| {
-            row.mapped != 0 && zero_fill_needs_body(row.zero_fill != 0, row.relocation_count)
+            row.mapped != 0 && uninitialized_needs_body(row.flags as u32, row.relocation_count)
         });
         let mut groups = if needs_body || host::needs_groups(&symbols) {
             host::Groups::new(&raw, &definitions, needs_body)?
@@ -1370,12 +1374,16 @@ fn decode_object<Bytes: super::ReadSection>(
     let mut sections = Vec::new();
     for row in &raw {
         if row.mapped != 0 {
-            let bytes = if row.zero_fill == 0 { unsafe { row.bytes.borrowed() } } else { &[] };
+            let bytes = if row.zero_fill == 0 {
+                SectionData::Initialized(Bytes::from_coff(b, unsafe { row.bytes.borrowed() }))
+            } else {
+                SectionData::ZeroFill(row.zero_fill)
+            };
             sections.push(Section {
                 associated: Vec::new(),
                 layout: None,
                 name: unsafe { std::str::from_utf8_unchecked(row.name.borrowed()) }.to_owned(),
-                bytes: Bytes::from_coff(b, bytes, row.zero_fill),
+                bytes,
                 flags: row.flags as u32,
                 relocations: Vec::new(),
             });

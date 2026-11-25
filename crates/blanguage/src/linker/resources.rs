@@ -74,7 +74,7 @@ impl Generated {
         Object {
             name: Self::NAME.into(),
             kind: Kind::Module { interface: "".into(), requirements: Default::default(), stack_bytes: 0 },
-            sections: self.sections,
+            sections: self.sections.into_iter().map(Section::initialized).collect(),
             symbols,
             imports,
             archive: None,

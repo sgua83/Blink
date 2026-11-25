@@ -3,7 +3,7 @@
 use super::{Result, Selected, pe, resources::ImportBytes};
 use crate::{
     native::{ModuleCode, ModuleRelocation, ModuleSection, ModuleTarget},
-    object::{LinkSectionBytes, LinkSectionData, Relocation, Target, stack::{self, Call, CallTarget}},
+    object::{LinkSectionBytes, Relocation, SectionData, Target, stack::{self, Call, CallTarget}},
 };
 use std::collections::BTreeMap;
 
@@ -131,10 +131,8 @@ pub(super) fn report(
 }
 
 fn extent(bytes: &LinkSectionBytes<'_>) -> (*const u8, usize) {
-    match bytes.data() {
-        LinkSectionData::Initialized(bytes) => (bytes.as_ptr(), bytes.len()),
-        LinkSectionData::ZeroFill(length) => (std::ptr::null(), length),
-    }
+    let bytes = bytes.as_ref();
+    (bytes.as_ptr(), bytes.len())
 }
 
 struct Prepared {
@@ -171,7 +169,10 @@ fn prepare<Payload>(
                     target_kind,section:target_section,value,name:name.as_ptr(),name_length:name.len() as u64,
                     kind:u64::from(relocation.kind),library:library.as_ptr(),library_length:library.len() as u64});
             }
-            let (bytes, length) = extent(&section.bytes);
+            let (bytes, length) = match &section.bytes {
+                SectionData::Initialized(bytes) => extent(bytes),
+                SectionData::ZeroFill(length) => (std::ptr::null(), *length),
+            };
             rows.push(CombineSection{name:section.name.as_ptr(),name_length:section.name.len() as u64,
                 bytes,byte_length:length as u64,flags:u64::from(section.flags),object:object_index as u64,
                 group:0,begin:0,padding:0,relocation_start,relocation_base:0});

@@ -294,7 +294,7 @@ impl<'a, Payload> Context<'a, Payload> {
                         }).collect();
                     Some(object::Section {
                         name: section.name.clone(),
-                        bytes: borrowed(&section.bytes),
+                        bytes: section.bytes.as_ref().map(borrowed),
                         flags: section.flags,
                         associated: Vec::new(),
                         layout: None,

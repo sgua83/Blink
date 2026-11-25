@@ -1,5 +1,5 @@
 //! 应用编译产物：入口、标准输出、导入跳板和展开信息都在编译阶段生成。
-use super::{Import, Relocation, Result, Section, Target, stack::{Frame, Call}};
+use super::{Import, Relocation, Result, Section, SectionData, Target, stack::{Frame, Call}};
 use crate::native::{NativeCode, NativeSymbol, unwind_info, UnwindOperation};
 use crate::builtin_types::ScalarEncoding;
 use super::coff::facts::observations::Layout;
@@ -145,7 +145,7 @@ fn print(scalar: crate::ir::Scalar) -> Helper {
     Helper { local: encoded.local, bytes, patches, unwind }
 }
 pub(crate) struct EmittedFunctions {
-    pub(crate) sections: Vec<Section>,
+    pub(crate) sections: Vec<Section<SectionData<Vec<u8>>>>,
     pub(crate) positions: BTreeMap<String, (usize, u32)>,
     pub(crate) stack: Vec<Frame>,
     pub(crate) factory_entries: Vec<Relocation>,
@@ -277,5 +277,6 @@ fn functions(
             sections[section].relocations.push(Relocation { offset: relocation.offset, kind: 1, target });
         }
     }
+    let sections = sections.into_iter().map(Section::initialized).collect();
     Ok(EmittedFunctions { sections, positions: symbols, stack: frames, factory_entries })
 }

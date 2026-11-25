@@ -38,13 +38,13 @@ impl ResourceFactory {
         let bytes = image.len() as u64;
         let codes = entries.len() as u64;
         let image_section = object.sections.len();
-        object.sections.push(read_only(image, Vec::new()));
+        object.sections.push(read_only(image, Vec::new()).initialized());
         let ranges_section = if entries.is_empty() {
             // An empty slice still carries a valid aligned address.
             image_section
         } else {
             let section = object.sections.len();
-            object.sections.push(read_only(vec![0; entries.len() * 8], entries));
+            object.sections.push(read_only(vec![0; entries.len() * 8], entries).initialized());
             section
         };
         let mut entry = vec![0; 64];
@@ -58,7 +58,7 @@ impl ResourceFactory {
                 Relocation { offset: layout.ranges_field as usize, kind: 1, target: Target::Section(ranges_section, 0) },
             ],
             associated: Vec::new(), layout: None,
-        });
+        }.initialized());
         object.symbols.push(Symbol {
             definition: Definition { name: factory.clone(), section, value: 0, function: true },
             contract: Vec::new(),

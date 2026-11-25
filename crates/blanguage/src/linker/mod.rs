@@ -11,7 +11,7 @@ mod pe;
 mod resources;
 pub(crate) mod native;
 use crate::{
-    object::{Archive, Definition, Input, LinkSectionBytes, Object, ObjectBytes, ReadSection, Section, stack},
+    object::{Archive, Definition, Input, LinkSectionBytes, Object, ObjectBytes, ReadSection, Section, SectionData, stack},
 };
 use std::path::Path;
 pub(crate) type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
@@ -67,7 +67,7 @@ impl<Bytes> Source<'_, Bytes> {
 struct Selected<Bytes> {
     name: String,
     library: Option<LibraryBinding>,
-    sections: Vec<Section<Bytes>>,
+    sections: Vec<Section<SectionData<Bytes>>>,
     definitions: Vec<Definition>,
     archive: Option<Archive>,
     stack: Vec<stack::Frame>,

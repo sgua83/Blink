@@ -29,7 +29,32 @@ pub(crate) struct Section<Bytes = Vec<u8>> {
     pub associated: Vec<usize>,
     pub layout: Option<coff::facts::observations::Layout>,
 }
+pub(crate) enum SectionData<Bytes> {
+    Initialized(Bytes),
+    ZeroFill(usize),
+}
+
+impl<Bytes> SectionData<Bytes> {
+    pub(crate) fn as_ref(&self) -> SectionData<&Bytes> {
+        match self {
+            Self::Initialized(bytes) => SectionData::Initialized(bytes),
+            Self::ZeroFill(length) => SectionData::ZeroFill(*length),
+        }
+    }
+
+    pub(crate) fn map<Output>(self, map: impl FnOnce(Bytes) -> Output) -> SectionData<Output> {
+        match self {
+            Self::Initialized(bytes) => SectionData::Initialized(map(bytes)),
+            Self::ZeroFill(length) => SectionData::ZeroFill(length),
+        }
+    }
+}
+
 impl<Bytes> Section<Bytes> {
+    pub(crate) fn initialized(self) -> Section<SectionData<Bytes>> {
+        self.map_bytes(SectionData::Initialized)
+    }
+
     pub(crate) fn map_bytes<Output>(self, map: impl FnOnce(Bytes) -> Output) -> Section<Output> {
         let Self { name, bytes, flags, relocations, associated, layout } = self;
         Section { name, bytes: map(bytes), flags, relocations, associated, layout }
@@ -37,19 +62,19 @@ impl<Bytes> Section<Bytes> {
 }
 
 pub(crate) trait ReadSection: Sized {
-    fn from_coff(source: &ObjectBytes, bytes: &[u8], zero_fill: usize) -> Self;
+    fn from_coff(source: &ObjectBytes, bytes: &[u8]) -> Self;
     fn from_generated_bytes(bytes: Vec<u8>) -> Self;
     fn from_generated(object: Object) -> Object<Self> {
         let Object { name, kind, sections, symbols, imports, archive, stack } = object;
-        let sections = sections.into_iter().map(|section| section.map_bytes(Self::from_generated_bytes)).collect();
+        let sections = sections.into_iter()
+            .map(|section| section.map_bytes(|data| data.map(Self::from_generated_bytes)))
+            .collect();
         Object { name, kind, sections, symbols, imports, archive, stack }
     }
 }
 
 impl ReadSection for Vec<u8> {
-    fn from_coff(_: &ObjectBytes, bytes: &[u8], zero_fill: usize) -> Self {
-        if zero_fill == 0 { bytes.to_vec() } else { vec![0; zero_fill] }
-    }
+    fn from_coff(_: &ObjectBytes, bytes: &[u8]) -> Self { bytes.to_vec() }
 
     fn from_generated_bytes(bytes: Vec<u8>) -> Self { bytes }
     fn from_generated(object: Object) -> Object<Self> { object }
@@ -57,9 +82,7 @@ impl ReadSection for Vec<u8> {
 
 // The report only needs the original logical length for section layout.
 impl ReadSection for usize {
-    fn from_coff(_: &ObjectBytes, bytes: &[u8], zero_fill: usize) -> Self {
-        if zero_fill == 0 { bytes.len() } else { zero_fill }
-    }
+    fn from_coff(_: &ObjectBytes, bytes: &[u8]) -> Self { bytes.len() }
 
     fn from_generated_bytes(bytes: Vec<u8>) -> Self { bytes.len() }
 }
@@ -68,19 +91,10 @@ pub(crate) enum LinkSectionBytes<'a> {
     Captured(ObjectBytes),
     Owned(Vec<u8>),
     Borrowed(&'a [u8]),
-    ZeroFill(usize),
-}
-
-pub(crate) enum LinkSectionData<'a> {
-    Initialized(&'a [u8]),
-    ZeroFill(usize),
 }
 
 impl ReadSection for LinkSectionBytes<'_> {
-    fn from_coff(source: &ObjectBytes, bytes: &[u8], zero_fill: usize) -> Self {
-        if zero_fill != 0 {
-            return Self::ZeroFill(zero_fill);
-        }
+    fn from_coff(source: &ObjectBytes, bytes: &[u8]) -> Self {
         if bytes.is_empty() {
             return Self::Borrowed(&[]);
         }
@@ -92,13 +106,12 @@ impl ReadSection for LinkSectionBytes<'_> {
     fn from_generated_bytes(bytes: Vec<u8>) -> Self { Self::Owned(bytes) }
 }
 
-impl LinkSectionBytes<'_> {
-    pub(crate) fn data(&self) -> LinkSectionData<'_> {
+impl AsRef<[u8]> for LinkSectionBytes<'_> {
+    fn as_ref(&self) -> &[u8] {
         match self {
-            Self::Captured(bytes) => LinkSectionData::Initialized(bytes),
-            Self::Owned(bytes) => LinkSectionData::Initialized(bytes),
-            Self::Borrowed(bytes) => LinkSectionData::Initialized(bytes),
-            Self::ZeroFill(length) => LinkSectionData::ZeroFill(*length),
+            Self::Captured(bytes) => bytes,
+            Self::Owned(bytes) => bytes,
+            Self::Borrowed(bytes) => bytes,
         }
     }
 }
@@ -161,7 +174,7 @@ pub(crate) enum Kind {
 pub struct Object<Bytes = Vec<u8>> {
     pub(crate) name: String,
     pub(crate) kind: Kind,
-    pub(crate) sections: Vec<Section<Bytes>>,
+    pub(crate) sections: Vec<Section<SectionData<Bytes>>>,
     pub(crate) symbols: Vec<Symbol>,
     pub(crate) imports: std::collections::BTreeMap<String, Vec<u8>>,
     pub(crate) archive: Option<Archive>,
