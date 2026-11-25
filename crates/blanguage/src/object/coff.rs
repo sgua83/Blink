@@ -10,7 +10,7 @@ const FORMAT: u32 = 94;
 struct CoffSectionView {
     name: *const u8, name_length: usize,
     byte_length: usize, flags: u64,
-    relocation_count: usize,
+    relocation_count: usize, zero_fill: u64,
     offset: usize, relocation_offset: usize,
 }
 #[repr(C)]
@@ -873,6 +873,7 @@ fn encode_bound<'a>(
     let mut physical = sections.iter().enumerate().map(|(index, (name, payload, flags))| CoffSectionView {
         name: name.as_ptr(), name_length: name.len(),
         byte_length: payload.len(), flags: u64::from(*flags),
+        zero_fill: u64::from(matches!(payload, CoffPayload::ZeroFill(_))),
         // Metadata sections follow the bound machine sections.
         relocation_count: binding_sections.get(index).map_or(0, |section| section.relocation_count),
         offset: 0, relocation_offset: 0,
@@ -899,7 +900,9 @@ fn encode_bound<'a>(
     unsafe {
         coff_encode(input, layout, binding, output.as_mut_ptr());
         for ((_, payload, _), section) in sections.iter().zip(&physical) {
-            payload.write(output.as_mut_ptr().add(section.offset));
+            if section.offset != 0 {
+                payload.write(output.as_mut_ptr().add(section.offset));
+            }
         }
         output.set_len(layout.length);
     }

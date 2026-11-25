@@ -2,10 +2,10 @@ module bootstrap.coff;
 import bootstrap.bindings;
 
 CoffSection section_at(CoffInput input,u64 index) on cpu {
-    return unsafe_position<CoffSection>(unsafe_address(address_bits(input.sections)+index*SECTION_BYTES));
+    return unsafe_position<CoffSection>(unsafe_address(address_bits(input.sections)+index*size_of<CoffSection>()));
 }
 void section_put(CoffInput input,u64 index,CoffSection value) on cpu {
-    unsafe_position<CoffSection>(unsafe_address(address_bits(input.sections)+index*SECTION_BYTES))=value;
+    unsafe_position<CoffSection>(unsafe_address(address_bits(input.sections)+index*size_of<CoffSection>()))=value;
 }
 CoffSymbol symbol_at(CoffInput input,u64 index) on cpu {
     return unsafe_position<CoffSymbol>(unsafe_address(address_bits(input.symbols)+index*SYMBOL_BYTES));
@@ -20,9 +20,18 @@ extern "C" CoffLayout layout(CoffInput input) on cpu {
         CoffSection section=section_at(input,i);
         if(section.byte_length>4294967295u64){return invalid(2);}
         if(at>4294967295u64){return invalid(3);}
-        section.offset=at;at+=section.byte_length;
-        if(at>4294967295u64){return invalid(3);}
-        section.relocation_offset=at;
+        if(section.zero_fill!=0u64&&section.relocation_count==0u64){
+            section.offset=0u64;
+            section.relocation_offset=0u64;
+        }else{
+            if(section.zero_fill!=0u64){
+                // LINK applies source relocations to initialized section data.
+                section.flags=(section.flags&~128u64)|64u64;
+            }
+            section.offset=at;at+=section.byte_length;
+            if(at>4294967295u64){return invalid(3);}
+            section.relocation_offset=at;
+        }
         if(section.relocation_count>=4294967295u64){return invalid(4);}
         if(section.relocation_count>=65535u64){at+=COFF_RELOCATION_RECORD_BYTES;}
         at+=COFF_RELOCATION_RECORD_BYTES*section.relocation_count;
