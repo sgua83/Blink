@@ -141,7 +141,7 @@ void plan_imports(PeInput input, inout PeLayout result) on cpu {
     result.idata_length = iat + result.iat_size + strings;
 }
 PeLayout invalid(u64 code) on cpu {
-    return PeLayout(0u64,0u64,0u64,0u64,0u64,0u64,0u64,0u64,0u64,0u64,0u64,0u64,0u64,0u64,5368709120u64,code);
+    return PeLayout(0u64,0u64,0u64,0u64,0u64,0u64,0u64,0u64,0u64,0u64,0u64,0u64,0u64,0u64,5368709120u64,code,0u64,0u64);
 }
 void pack_relocations(PeInput input,u64 relocation_count) on cpu {
     u64 imports=0u64;
@@ -192,6 +192,7 @@ extern "C" PeLayout layout(PeInput input,address rows,address groups,u64 relocat
     if(result.pdata==0u64){return invalid(4u64);}
     pack_relocations(input,relocation_count);
     result.idata = rva;
+    result.idata_file = raw;
     plan_imports(input, result);
     u64 at = result.idata_length;
     if (result.idata + at > 4294967295u64) { return invalid(1u64); }
@@ -221,7 +222,8 @@ extern "C" PeLayout layout(PeInput input,address rows,address groups,u64 relocat
     }
     result.reloc_length=plan_absolute_pages(input);
     if(result.section_count>65535u64){return invalid(1u64);}
-    result.length=raw+align(result.idata_length,512u64)+align(result.reloc_length,512u64);
+    result.reloc_file=result.idata_file+align(result.idata_length,512u64);
+    result.length=result.reloc_file+align(result.reloc_length,512u64);
     if(result.reloc_length!=0u64){result.image_size=result.reloc+align(result.reloc_length,4096u64);}else{result.image_size=result.idata+align(result.idata_length,4096u64);}
     if(result.length>4294967295u64||result.image_size>4294967295u64){return invalid(1u64);}return result;
 }
@@ -246,10 +248,10 @@ PeRelocationResult relocate_sections(PeInput input,address groups,u64 image_base
     return PeRelocationResult(0,0);
 }
 
-void section_header(address output,u64 index,address name,u64 name_length,u64 rva,u64 length,u64 raw,u64 flags) on cpu {
+void section_header(address output,u64 index,address name,u64 name_length,u64 rva,u64 length,u64 raw,u64 raw_length,u64 flags) on cpu {
     u64 header=392u64+index*40u64;u64 count=name_length;if(count>8u64){count=8u64;}
     copy(output,header,name,count);le32(output,header+8u64,length);le32(output,header+12u64,rva);
-    le32(output,header+16u64,align(length,512u64));le32(output,header+20u64,raw);le32(output,header+36u64,flags);
+    le32(output,header+16u64,raw_length);le32(output,header+20u64,raw);le32(output,header+36u64,flags);
 }
 void encode_headers(PeInput input,PeLayout layout,address rows,address groups,address output) on cpu {
     zero_range(output,0u64,layout.header);
@@ -257,10 +259,7 @@ void encode_headers(PeInput input,PeLayout layout,address rows,address groups,ad
     put(output,128u64,80u64);put(output,129u64,69u64);le16(output,132u64,34404u64);
     le16(output,134u64,layout.section_count);le16(output,148u64,240u64);le16(output,150u64,34u64);
     u64 optional=152u64;le16(output,optional,523u64);
-    u64 code=align(bootstrap.combine::group_at(groups,0u64).size,512u64);
-    le32(output,optional+4u64,code);
-    u64 initialized=layout.length-layout.header-code;
-    le32(output,optional+8u64,initialized);le32(output,optional+16u64,4096u64);le32(output,optional+20u64,4096u64);
+    le32(output,optional+16u64,4096u64);le32(output,optional+20u64,4096u64);
     le64(output,optional+24u64,layout.image_base);le32(output,optional+32u64,4096u64);le32(output,optional+36u64,512u64);
     le16(output,optional+40u64,6u64);le16(output,optional+48u64,6u64);le32(output,optional+56u64,layout.image_size);le32(output,optional+60u64,layout.header);le16(output,optional+68u64,3u64);
     u64 flags=256u64;if(layout.reloc_length!=0u64){flags+=96u64;}le16(output,optional+70u64,flags);
@@ -269,23 +268,29 @@ void encode_headers(PeInput input,PeLayout layout,address rows,address groups,ad
     le32(output,optional+136u64,layout.pdata);le32(output,optional+140u64,layout.pdata_length);
     if(layout.reloc_length!=0u64){le32(output,optional+152u64,layout.reloc);}le32(output,optional+156u64,layout.reloc_length);
     le32(output,optional+208u64,layout.iat_start);le32(output,optional+212u64,layout.iat_size);
-    u64 raw=layout.header;u64 i=0u64;
+    u64 i=0u64;
     while(i<input.section_count){
         PeSection section=section_at(input,i);
         CombineGroup group=bootstrap.combine::group_at(groups,i);
         CombineSection first=bootstrap.combine::section_at(rows,group.first);
-        section_header(output,i,first.name,first.name_length,section.rva,group.size,section.raw,first.flags&4262461439u64);
-        raw=section.raw+align(group.size,512u64);
-        zero_range(output,section.raw+group.size,raw);
+        u64 end=layout.idata_file;
+        if(i+1u64<input.section_count){end=section_at(input,i+1u64).raw;}
+        u64 raw_length=end-section.raw;
+        section_header(output,i,first.name,first.name_length,section.rva,group.size,section.raw,raw_length,first.flags&4262461439u64);
+        zero_range(output,section.raw+group.size,end);
+        if(i==0u64){
+            le32(output,optional+4u64,raw_length);
+            le32(output,optional+8u64,layout.length-layout.header-raw_length);
+        }
         i+=1u64;
     }
     // The generated directories need their reserved fields, terminators and file padding.
-    zero_range(output,raw,layout.length);
+    zero_range(output,layout.idata_file,layout.length);
     // Generated section names occupy their actual fixed PE name fields.
     u64 ih=392u64+input.section_count*40u64;
     put(output,ih,46u64);put(output,ih+1u64,105u64);put(output,ih+2u64,100u64);put(output,ih+3u64,97u64);put(output,ih+4u64,116u64);put(output,ih+5u64,97u64);
-    le32(output,ih+8u64,layout.idata_length);le32(output,ih+12u64,layout.idata);le32(output,ih+16u64,align(layout.idata_length,512u64));le32(output,ih+20u64,raw);le32(output,ih+36u64,3221225536u64);
-    u64 idata=raw;
+    le32(output,ih+8u64,layout.idata_length);le32(output,ih+12u64,layout.idata);le32(output,ih+16u64,layout.reloc_file-layout.idata_file);le32(output,ih+20u64,layout.idata_file);le32(output,ih+36u64,3221225536u64);
+    u64 idata=layout.idata_file;
     u64 iat=layout.iat_start-layout.idata;
     u64 lookup=iat-layout.iat_size;
     u64 names=iat+layout.iat_size;
@@ -307,10 +312,10 @@ void encode_headers(PeInput input,PeLayout layout,address rows,address groups,ad
         i+=1u64;
     }
     if(layout.reloc_length!=0u64){
-        raw+=align(layout.idata_length,512u64);u64 rh=ih+40u64;
+        u64 rh=ih+40u64;
         put(output,rh,46u64);put(output,rh+1u64,114u64);put(output,rh+2u64,101u64);put(output,rh+3u64,108u64);put(output,rh+4u64,111u64);put(output,rh+5u64,99u64);
-        le32(output,rh+8u64,layout.reloc_length);le32(output,rh+12u64,layout.reloc);le32(output,rh+16u64,align(layout.reloc_length,512u64));le32(output,rh+20u64,raw);le32(output,rh+36u64,1107296320u64);
-        u64 cursor=raw;i=0u64;
+        le32(output,rh+8u64,layout.reloc_length);le32(output,rh+12u64,layout.reloc);le32(output,rh+16u64,layout.length-layout.reloc_file);le32(output,rh+20u64,layout.reloc_file);le32(output,rh+36u64,1107296320u64);
+        u64 cursor=layout.reloc_file;i=0u64;
         while(i<input.absolute_count){
             PeAbsolute first=absolute_at(input,i);u64 end=first.order_or_page_end;
             u64 page=absolute_page(first.location)*4096u64;
