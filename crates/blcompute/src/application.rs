@@ -430,13 +430,17 @@ impl Frame {
             ResidentData::Gpu(data) => data.layout(),
         };
         let scalar = ty.components.iter().find(|(_, at)| *at == offset).unwrap().0;
-        let mut intervals = intervals.iter().map(|range| (range.lower, range.upper)).collect::<Vec<_>>();
-        for &count in limits {
-            intervals = intervals.into_iter().filter_map(|(a, b)| {
-                let end = b.min(u64::from(count.checked_sub(1)?));
-                (a <= end).then_some((a, end))
-            }).collect();
-        }
+        let intervals = match limits.iter().copied().min() {
+            None => intervals.iter().map(|range| (range.lower, range.upper)).collect(),
+            Some(0) => Vec::new(),
+            Some(limit) => {
+                let last = u64::from(limit - 1);
+                intervals.iter().filter_map(|range| {
+                    let upper = range.upper.min(last);
+                    (range.lower <= upper).then_some((range.lower, upper))
+                }).collect()
+            }
+        };
         unsafe { self.data.produced_element(blanguage::ir::ElementRange { binding: handle as usize, offset, scalar, intervals, known_bits }) };
         self.data.domains.sort_unique();
     }
