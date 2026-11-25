@@ -8,7 +8,7 @@ use crate::{
 };
 use std::path::Path;
 mod tasks;
-pub(crate) use tasks::bind_tasks;
+pub(crate) use tasks::prepare_functions;
 pub(crate) mod factory;
 pub struct Application {
     pub(crate) compiler: crate::Compiler,
@@ -42,20 +42,15 @@ impl Application {
     }
     pub(crate) fn compile_in(&self, worker: &crate::compiler::Worker, libraries: Option<Vec<String>>) -> Result<Object, Box<dyn std::error::Error>> {
         use std::borrow::Cow;
-        let mut resources = self.resources.as_ref().map(Cow::Borrowed);
         let mut body = Cow::Borrowed(&self.body);
-        let mut ordinary = Cow::Borrowed(self.functions.as_slice());
-        let has_tasks = self.resources.as_ref().is_some_and(|resources| resources.task_starts);
-        if has_tasks {
-            bind_tasks(&self.name, Some(body.to_mut()), &self.functions, ordinary.to_mut(),
-                &self.imports, resources.as_mut().map(Cow::to_mut)).map_err(std::io::Error::other)?;
-        }
+        let (ordinary, task_types) = prepare_functions(
+            &self.name, Some(&mut body), &self.functions, &self.imports, self.resources.as_ref(),
+        ).map_err(std::io::Error::other)?;
         let code = native::emit_application(&body).map_err(std::io::Error::other)?;
         let mut stack_bytes = code.stack_bytes;
-        let mut functions = crate::parallel::try_map(worker, ordinary.iter().collect(), |_| (),
-            |_, function| native::emit_function(function).map(|code| (function.name.clone(), code)))
+        let mut functions = crate::parallel::try_map(worker, ordinary, |_| (), |_, function| function.emit())
             .map_err(|error| std::io::Error::other(error.to_string()))?;
-        let (compiled_resources, resource_code) = compile_resources(&self.name, resources.as_deref(), true, worker, has_tasks, libraries)?;
+        let (compiled_resources, resource_code) = compile_resources(&self.name, self.resources.as_ref(), &task_types, true, worker, libraries)?;
         let factory_entry_count = resource_code.len();
         let resource_names: Vec<_> = resource_code.iter().map(|(name, _)| name.clone()).collect();
         functions.extend(resource_code);
@@ -109,21 +104,21 @@ pub(crate) fn resource_prefix(name: &str) -> String {
 pub(crate) fn compile_resources(
     name: &str,
     resources: Option<&Resources>,
+    task_types: &[Ty],
     root: bool,
     worker: &crate::compiler::Worker,
-    has_tasks: bool,
     libraries: Option<Vec<String>>,
 ) -> Result<(Option<(object::Archive, factory::ResourceFactory)>, Vec<(String, native::NativeCode)>), Box<dyn std::error::Error>> {
     Ok(if let Some(resources) = resources {
         let prefix = resource_prefix(name);
         let mut code = Vec::new();
-        let image = crate::resource::compile_linked(resources, worker, |entry| {
+        let image = crate::resource::compile_linked(resources, task_types, worker, |entry| {
             let index = code.len();
             code.push((format!("__blink_range_{prefix}_{index}"), entry));
             index
         })?;
-        let types = u32::try_from(resources.types.len())?;
-        let entry = factory::wrappers(&prefix, resources, types, root, has_tasks)?;
+        let types = u32::try_from(resources.types.len() + task_types.len())?;
+        let entry = factory::wrappers(&prefix, resources, types, root, resources.task_starts)?;
         let mut exports = if root {
             [
                 "blink_destroy",
@@ -152,13 +147,13 @@ pub(crate) fn compile_resources(
         } else {
             Vec::new()
         };
-        exports.extend((0..resources.types.len()).map(|i| format!("{prefix}_allocate_{i}")));
+        exports.extend((0..types).map(|i| format!("{prefix}_allocate_{i}")));
         exports.extend((0..resources.programs.len()).map(|i| format!("{prefix}_run_{i}")));
         exports.extend((0..resources.completions.len()).map(|i| format!("{prefix}_complete_{i}")));
         if root {
             exports.extend(["blink_create".into(), "blink_application_error".into()]);
         }
-        if has_tasks { exports.push(format!("{prefix}_task_start")); }
+        if resources.task_starts { exports.push(format!("{prefix}_task_start")); }
         let factory = factory::ResourceFactory::new(
             prefix, types, u32::try_from(resources.programs.len())?, image, None,
         );

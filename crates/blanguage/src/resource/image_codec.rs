@@ -110,7 +110,7 @@ unsafe extern "C" {
     fn module_read(context: Slot, fields: ModuleFields<Slot>, host: ModuleFields<Read>) -> ReadStatus;
 }
 
-unsafe fn write_module<C>(types: &[Ty], images: &[Image<TemplateProgram, C>], output: Slot)
+unsafe fn write_module<C>(types: [&[Ty]; 2], images: &[Image<TemplateProgram, C>], output: Slot)
 where
     Image<TemplateProgram, C>: Native,
 {
@@ -119,7 +119,7 @@ where
             types: contracts::address(&types).cast_mut(),
             images: contracts::address(&images).cast_mut(),
         }, ModuleFields {
-            types: contracts::write_slice_value::<Ty>,
+            types: contracts::write_slice_pair_value::<Ty>,
             images: contracts::write_slice_value::<Image<TemplateProgram, C>>,
         })
     }
@@ -164,7 +164,7 @@ where
         Self { types: Vec::new(), images: Vec::new() }
     }
     unsafe fn write(&self, output: Slot) {
-        unsafe { write_module(&self.types, &self.images, output) }
+        unsafe { write_module([&self.types, &[]], &self.images, output) }
     }
     unsafe fn read(context: Slot, output: &mut Self) -> ReadStatus {
         unsafe {
@@ -177,7 +177,7 @@ contracts::codec!(Module<native::NativeCode>);
 contracts::codec!(Module<usize>);
 
 #[cfg(feature = "compiler")]
-pub(super) fn linked_module_bytes(types: &[Ty], images: &[Image<TemplateProgram, usize>]) -> Vec<u8> {
+pub(super) fn linked_module_bytes(types: [&[Ty]; 2], images: &[Image<TemplateProgram, usize>]) -> Vec<u8> {
     let mut output = Writer(ABI.to_vec());
     unsafe { write_module(types, images, contracts::slot(&mut output)) };
     output.0

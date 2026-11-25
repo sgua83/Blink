@@ -1,14 +1,14 @@
 module bootstrap.task_lower;
 extern "C" Cursor start() on cpu {return Cursor(0,0u64,0u64);}
-extern "C" Step<BindNeed> bind_step(Cursor state,BindFacts facts) on cpu {
- Cursor c=state;
- if(c.phase==0){if(facts.resources==0){return Step<BindNeed>(c,BindNeed::Empty);}c.phase=1;return Step<BindNeed>(c,BindNeed::Start);}
- if(c.phase==1){c.phase=2;if(facts.root!=0){return Step<BindNeed>(c,BindNeed::Root);}return Step<BindNeed>(c,BindNeed::Next);}
- if(c.phase==2){if(c.index<facts.functions){c.phase=3;return Step<BindNeed>(c,BindNeed::Function);}c.phase=4;return Step<BindNeed>(c,BindNeed::Entries);}
- if(c.phase==3){c.index+=1u64;c.phase=2;return Step<BindNeed>(c,BindNeed::Next);}
- if(c.phase==4){c.index=0u64;c.phase=5;return Step<BindNeed>(c,BindNeed::Next);}
- if(c.phase==5){if(c.index<facts.bindings){c.phase=6;return Step<BindNeed>(c,BindNeed::Entry);}if(facts.bindings==0u64){return Step<BindNeed>(c,BindNeed::Empty);}return Step<BindNeed>(c,BindNeed::Present);}
- c.index+=1u64;c.phase=5;return Step<BindNeed>(c,BindNeed::Next);
+extern "C" u32 bind(address context,u32 root,usize functions,BindHost host) on cpu
+ requires nonzero(host.root) requires nonzero(host.function) {
+ if(root!=0 && host.root(context)!=0) {return 1;}
+ usize index=0u64;
+ while(index<functions) {
+  if(host.function(context,index)!=0) {return 1;}
+  index+=1u64;
+ }
+ return 0;
 }
 extern "C" u32 rewrite_block(address block,usize count,address context,RewriteHost host) on cpu
  requires nonzero(host.inspect) requires nonzero(host.child) requires nonzero(host.start) {

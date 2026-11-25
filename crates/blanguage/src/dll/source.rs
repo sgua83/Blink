@@ -93,7 +93,7 @@ pub(super) fn compile(
         };
         let root = crate::native::program::compile_linked(worker, p, &mut entry).map_err(std::io::Error::other)?;
         let code = if let Some(directory) = &p.resources {
-            let image = crate::resource::compile_linked(directory, worker, |code| entry(None, code))
+            let image = crate::resource::compile_linked(directory, &[], worker, |code| entry(None, code))
                 .map_err(|error| std::io::Error::other(error.to_string()))?;
             let resource_prefix = crate::application::resource_prefix(p.name());
             let ranges = format!("{resource_prefix}_ranges");

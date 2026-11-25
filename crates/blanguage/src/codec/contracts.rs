@@ -141,23 +141,22 @@ unsafe extern "C" {
     #[link_name = "codec.value_format::contract_read_pair"]
     fn read_pair(context: Slot, fields: PairFields, host: PairReader) -> ReadStatus;
 }
-unsafe extern "C" fn next<'a, T: 'a>(iterator: Slot) -> Address {
-    unsafe { &mut *iterator.cast::<std::slice::Iter<'a, T>>() }
-        .next()
-        .map_or(ptr::null(), address)
+unsafe extern "C" fn next<'a, T: 'a, I: Iterator<Item = &'a T>>(iterator: Slot) -> Address {
+    unsafe { &mut *iterator.cast::<I>() }.next().map_or(ptr::null(), address)
+}
+unsafe fn write_iter<'a, T: Native + 'a, I: Iterator<Item = &'a T>>(
+    mut iterator: I, count: usize, output: Slot,
+) {
+    unsafe {
+        write_sequence(count, slot(&mut iterator), output, next::<T, I>, write_value::<T>, append)
+    }
 }
 unsafe fn write_slice<T: Native>(values: &[T], output: Slot) {
-    let mut iterator = values.iter();
-    unsafe {
-        write_sequence(
-            values.len(),
-            slot(&mut iterator),
-            output,
-            next::<T>,
-            write_value::<T>,
-            append,
-        )
-    }
+    unsafe { write_iter(values.iter(), values.len(), output) }
+}
+pub(crate) unsafe extern "C" fn write_slice_pair_value<T: Native>(value: Address, output: Slot) {
+    let [first, second] = unsafe { *value.cast::<[&[T]; 2]>() };
+    unsafe { write_iter(first.iter().chain(second), first.len() + second.len(), output) }
 }
 unsafe extern "C" fn push<T: Native, F: FnMut(T)>(context: Slot, output: Slot) -> ReadStatus {
     let mut value = T::empty();

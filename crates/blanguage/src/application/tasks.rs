@@ -9,8 +9,10 @@ mod wire{
  #[repr(C)]pub(super)struct Step<T>{pub(super)cursor:Cursor,pub(super)need:T}
  #[derive(Clone,Copy)]#[repr(u32)]pub(super)enum Kind{Other=0,Start=1,Scope=2,Pair=3}
  #[derive(Clone,Copy)]#[repr(u32)]pub(super)enum Role{Ordinary=0,Frame=1,ReturnSource=2,Completion=3}
- #[derive(Clone,Copy)]#[repr(C)]pub(super)struct BindFacts{pub(super)resources:u32,pub(super)root:u32,pub(super)functions:u64,pub(super)bindings:u64}
- #[repr(u32)]pub(super)enum BindNeed{Start=0,Root=1,Function=2,Entries=3,Entry=4,Empty=5,Present=6,Next=7}
+ #[repr(C)]pub(super)struct BindHost {
+  pub(super) root: unsafe extern "C" fn(*mut c_void) -> u32,
+  pub(super) function: unsafe extern "C" fn(*mut c_void, usize) -> u32,
+ }
  #[repr(C)]pub(super)struct Instruction {
   pub(super) kind: Kind,
   pub(super) first: *mut c_void,
@@ -30,7 +32,8 @@ mod wire{
  #[repr(u32)]pub(super)enum EntryNeed{Body=0,Zero=1,Parameter=2,MissingResult=3,ReturnSource=4,CompletionField=5,MissingCompletion=6,CompletionReference=7,Frame=8,Field=9,MissingArgument=10,ValidateAddress=11,BadAddress=12,AddressLow=13,AddressHigh=14,Reference=15,ValidateType=16,BadType=17,LoadValue=18,Value=19,Extra=20,Unused=21,ResultBase=22,ResultReg=23,ErrorReg=24,Call=25,ErrorZero=26,ErrorCompare=27,ErrorIf=28,Store=29,Selector=30,Finish=31,Next=32}
  unsafe extern "C"{
   #[link_name="bootstrap.task_lower::start"]pub(super)fn start()->Cursor;
-  #[link_name="bootstrap.task_lower::bind_step"]pub(super)fn bind_step(state:Cursor,facts:BindFacts)->Step<BindNeed>;
+  #[link_name="bootstrap.task_lower::bind"]
+  pub(super) fn bind(context: *mut c_void, root: u32, functions: usize, host: BindHost) -> u32;
   #[link_name="bootstrap.task_lower::rewrite_block"]
   pub(super) fn rewrite_block(block: *mut c_void, count: usize, context: *mut c_void, host: RewriteHost) -> u32;
   #[link_name="bootstrap.task_lower::lookup_step"]pub(super)fn lookup_step(state:Cursor,facts:LookupFacts)->Step<LookupNeed>;
@@ -46,25 +49,95 @@ fn is_start(call: &Call) -> bool {
  matches!(&call.target, CallTarget::External(name) if name.symbol == "blink_task_start")
 }
 fn parameter(ty:&CallParameter)->(&Ty,Option<Access>){match &ty.kind{CallParameterKind::Value(ty)=>(ty,None),CallParameterKind::Reference{ty,access}=>(ty,Some(*access))}}
-pub(crate)fn bind_tasks(module:&str,mut body:Option<&mut ValueCode>,definitions:&[FunctionBody],functions:&mut Vec<FunctionBody>,imports:&BTreeMap<String,Vec<u8>>,mut resources:Option<&mut Resources>)->Result<bool,&'static str>{
- let mut cursor=unsafe{w::start()};let mut facts=w::BindFacts{resources:u32::from(resources.is_some()),root:u32::from(body.is_some()),functions:functions.len()as u64,bindings:0};
- let mut symbol=String::new();let mut tasks=Vec::new();let mut entries=Vec::new().into_iter();
- loop{let next=unsafe{w::bind_step(cursor,facts)};cursor=next.cursor;match next.need{
-  w::BindNeed::Start=>{symbol=format!("{}_task_start",resource_prefix(module));}
-  w::BindNeed::Root=>{bind_task_entries(unsafe{body.take().unwrap_unchecked()},definitions,imports,unsafe{resources.as_deref_mut().unwrap_unchecked()},&mut tasks,&symbol)?;}
-  w::BindNeed::Function=>{bind_task_entries(&mut functions[cursor.index as usize].body,definitions,imports,unsafe{resources.as_deref_mut().unwrap_unchecked()},&mut tasks,&symbol)?;}
-  w::BindNeed::Entries=>{facts.bindings=tasks.len()as u64;entries=std::mem::take(&mut tasks).into_iter();}
-  w::BindNeed::Entry=>{functions.push(unsafe{entries.next().unwrap_unchecked()}.entry);}
-  w::BindNeed::Empty=>return Ok(false),w::BindNeed::Present=>return Ok(true),w::BindNeed::Next=>{},
- }}
+pub(crate) enum NativeFunction<'a> {
+ Borrowed(&'a FunctionBody),
+ Owned(Box<FunctionBody>),
 }
-fn bind_task_entries(body:&mut ValueCode,functions:&[FunctionBody],imports:&BTreeMap<String,Vec<u8>>,resources:&mut Resources,tasks:&mut Vec<TaskBinding>,symbol:&str)->Result<(),&'static str>{
- let mut needed = false;
- crate::optimize::visit(&body.code, &mut |inst| {
-  if let InstKind::Call(call) = &inst.kind { needed |= is_start(call); }
- });
- if !needed { return Ok(()); }
+impl NativeFunction<'_> {
+ pub(crate) fn emit(self) -> Result<(String, crate::native::NativeCode), &'static str> {
+  match self {
+   Self::Borrowed(function) => crate::native::emit_function(function).map(|code| (function.name.clone(), code)),
+   Self::Owned(function) => crate::native::emit_function(&function).map(|code| (function.name, code)),
+  }
+ }
+}
 
+struct TaskTypes {
+ original_count: usize,
+ added: Vec<Ty>,
+}
+
+struct TaskBindingInput<'a, 'src> {
+ root: Option<&'a mut Cow<'src, ValueCode>>,
+ definitions: &'src [FunctionBody],
+ jobs: &'a mut [NativeFunction<'src>],
+ imports: &'a BTreeMap<String, Vec<u8>>,
+ types: TaskTypes,
+ tasks: Vec<TaskBinding>,
+ symbol: String,
+ error: Option<&'static str>,
+}
+
+pub(crate) fn prepare_functions<'src>(
+ module: &str,
+ root: Option<&mut Cow<'src, ValueCode>>,
+ definitions: &'src [FunctionBody],
+ imports: &BTreeMap<String, Vec<u8>>,
+ resources: Option<&Resources>,
+) -> Result<(Vec<NativeFunction<'src>>, Vec<Ty>), &'static str> {
+ let mut jobs: Vec<_> = definitions.iter().map(NativeFunction::Borrowed).collect();
+ let Some(resources) = resources.filter(|resources| resources.task_starts) else {
+  return Ok((jobs, Vec::new()));
+ };
+
+ let count = jobs.len();
+ let has_root = u32::from(root.is_some());
+ let mut input = TaskBindingInput {
+  root, definitions, jobs: &mut jobs, imports,
+  types: TaskTypes { original_count: resources.types.len(), added: Vec::new() },
+  tasks: Vec::new(), symbol: format!("{}_task_start", resource_prefix(module)), error: None,
+ };
+ let host = w::BindHost { root: bind_root, function: bind_function };
+ unsafe { w::bind(ptr::from_mut(&mut input).cast(), has_root, count, host) };
+ if let Some(error) = input.error { return Err(error); }
+ let TaskBindingInput { types, tasks, .. } = input;
+ jobs.extend(tasks.into_iter().map(|task| NativeFunction::Owned(Box::new(task.entry))));
+ Ok((jobs, types.added))
+}
+
+fn contains_start(code: &[Inst]) -> bool {
+ code.iter().any(|inst| match &inst.kind {
+  InstKind::Call(call) => is_start(call),
+  InstKind::Scope(body) => contains_start(body),
+  InstKind::If { yes, no, .. } => contains_start(yes) || contains_start(no),
+  InstKind::Loop { condition, body, .. } => contains_start(condition) || contains_start(body),
+  _ => false,
+ })
+}
+
+unsafe extern "C" fn bind_root(context: *mut c_void) -> u32 {
+ let input = unsafe { &mut *context.cast::<TaskBindingInput<'_, '_>>() };
+ let body = input.root.as_deref_mut().unwrap();
+ if !contains_start(&body.code) { return 0; }
+ let result = bind_task_entries(body.to_mut(), input.definitions, input.imports,
+                                &mut input.types, &mut input.tasks, &input.symbol);
+ input.error = result.err();
+ u32::from(input.error.is_some())
+}
+
+unsafe extern "C" fn bind_function(context: *mut c_void, index: usize) -> u32 {
+ let input = unsafe { &mut *context.cast::<TaskBindingInput<'_, '_>>() };
+ let definition = &input.definitions[index];
+ if !contains_start(&definition.body.code) { return 0; }
+ let mut function = Box::new(definition.clone());
+ let result = bind_task_entries(&mut function.body, input.definitions, input.imports,
+                                &mut input.types, &mut input.tasks, &input.symbol);
+ input.error = result.err();
+ if input.error.is_none() { input.jobs[index] = NativeFunction::Owned(function); }
+ u32::from(input.error.is_some())
+}
+
+fn bind_task_entries(body:&mut ValueCode,functions:&[FunctionBody],imports:&BTreeMap<String,Vec<u8>>,types:&mut TaskTypes,tasks:&mut Vec<TaskBinding>,symbol:&str)->Result<(),&'static str>{
  let mut addresses = BTreeMap::new();
  crate::optimize::visit(&body.code, &mut |inst| {
   if let InstKind::FunctionAddress(reg,CallTarget::Defined(name)) = &inst.kind {
@@ -72,7 +145,7 @@ fn bind_task_entries(body:&mut ValueCode,functions:&[FunctionBody],imports:&BTre
   }
  });
  let mut rewrite = TaskRewrite {
-  registers: &mut body.registers, addresses: &addresses, functions, imports, resources, tasks, symbol,
+  registers: &mut body.registers, addresses: &addresses, functions, imports, types, tasks, symbol,
   result: Ok(false),
  };
  rewrite.block(&mut body.code);
@@ -85,7 +158,7 @@ struct TaskRewrite<'a> {
  addresses: &'a BTreeMap<usize, String>,
  functions: &'a [FunctionBody],
  imports: &'a BTreeMap<String, Vec<u8>>,
- resources: &'a mut Resources,
+ types: &'a mut TaskTypes,
  tasks: &'a mut Vec<TaskBinding>,
  symbol: &'a str,
  result: Result<bool, &'static str>,
@@ -147,7 +220,7 @@ unsafe extern "C" fn rewrite_task_start(context: *mut c_void, block: *mut c_void
  let InstKind::Call(call) = &mut block.code[index].kind else { unsafe { std::hint::unreachable_unchecked() } };
  let previous = block.prelude.len();
  match lower_start(call, rewrite.registers, rewrite.addresses, rewrite.functions, rewrite.imports,
-                   rewrite.resources, rewrite.tasks, rewrite.symbol, &mut block.prelude) {
+                   rewrite.types, rewrite.tasks, rewrite.symbol, &mut block.prelude) {
   Ok(()) => {
    block.starts.push((index, block.prelude.len() - previous));
    rewrite.result = Ok(true);
@@ -157,17 +230,17 @@ unsafe extern "C" fn rewrite_task_start(context: *mut c_void, block: *mut c_void
  }
 }
 
-fn lower_start(call:&mut Call,registers:&mut Vec<Scalar>,addresses:&BTreeMap<usize,String>,functions:&[FunctionBody],imports:&BTreeMap<String,Vec<u8>>,resources:&mut Resources,tasks:&mut Vec<TaskBinding>,symbol:&str,output:&mut Vec<Inst>)->Result<(),&'static str>{
+fn lower_start(call:&mut Call,registers:&mut Vec<Scalar>,addresses:&BTreeMap<usize,String>,functions:&[FunctionBody],imports:&BTreeMap<String,Vec<u8>>,types:&mut TaskTypes,tasks:&mut Vec<TaskBinding>,symbol:&str,output:&mut Vec<Inst>)->Result<(),&'static str>{
  let CallArgument::Reference{ty:input,..}=&call.arguments[1]else{return Err("task start needs an actual input packet")};
  let CallArgument::Value{values,..}=&call.arguments[2]else{return Err("task start needs a bound worker")};
  let worker=addresses.get(&values[0]).ok_or("missing actual task function address")?;
  let selector=call.arguments.get(4).and_then(|arg|match arg{CallArgument::Value{values,..}=>addresses.get(&values[0]).map(String::as_str),_=>None});
  let start=call.result.as_ref().ok_or("missing task start result type")?;
- let binding=binding_for(worker,input,start,selector,functions,imports,resources,tasks)?;
+ let binding=binding_for(worker,input,start,selector,functions,imports,types,tasks)?;
  rewrite_start(call,registers,&tasks[binding],symbol,output);
  Ok(())
 }
-fn binding_for(worker:&str,input:&Ty,start:&Ty,selector:Option<&str>,functions:&[FunctionBody],imports:&BTreeMap<String,Vec<u8>>,resources:&mut Resources,tasks:&mut Vec<TaskBinding>)->Result<usize,&'static str>{
+fn binding_for(worker:&str,input:&Ty,start:&Ty,selector:Option<&str>,functions:&[FunctionBody],imports:&BTreeMap<String,Vec<u8>>,types:&mut TaskTypes,tasks:&mut Vec<TaskBinding>)->Result<usize,&'static str>{
  let mut cursor=unsafe{w::start()};let mut facts=w::LookupFacts{count:tasks.len()as u64,equal:0};
  loop{let next=unsafe{w::lookup_step(cursor,facts)};cursor=next.cursor;match next.need{
   w::LookupNeed::Worker=>facts.equal=u32::from(tasks[cursor.index as usize].worker==worker),
@@ -175,7 +248,7 @@ fn binding_for(worker:&str,input:&Ty,start:&Ty,selector:Option<&str>,functions:&
   w::LookupNeed::Start=>facts.equal=u32::from(tasks[cursor.index as usize].start==*start),
   w::LookupNeed::Selector=>facts.equal=u32::from(tasks[cursor.index as usize].selector.as_deref()==selector),
   w::LookupNeed::Found=>return Ok(cursor.index as usize),
-  w::LookupNeed::Missing=>return new_binding(worker,input,start,selector,functions,imports,resources,tasks),
+  w::LookupNeed::Missing=>return new_binding(worker,input,start,selector,functions,imports,types,tasks),
   w::LookupNeed::Next=>{},
  }}
 }
@@ -188,7 +261,7 @@ fn signature<'a>(worker:&str,functions:&'a[FunctionBody],imports:&BTreeMap<Strin
   Ok((Cow::Owned(parameters),result.map(Cow::Owned),fallible))
  }
 }
-fn new_binding(worker:&str,input:&Ty,start:&Ty,selector:Option<&str>,functions:&[FunctionBody],imports:&BTreeMap<String,Vec<u8>>,resources:&mut Resources,tasks:&mut Vec<TaskBinding>)->Result<usize,&'static str>{
+fn new_binding(worker:&str,input:&Ty,start:&Ty,selector:Option<&str>,functions:&[FunctionBody],imports:&BTreeMap<String,Vec<u8>>,types:&mut TaskTypes,tasks:&mut Vec<TaskBinding>)->Result<usize,&'static str>{
  let(parameters,result,fallible)=signature(worker,functions,imports)?;
  let mut cursor=unsafe{w::start()};let mut facts=w::NewFacts{fields:input.fields.len()as u64,parameters:parameters.len()as u64,has_result:u32::from(result.is_some()),..w::NewFacts::default()};
  let mut completion=None;let mut output:Option<&Ty>=None;let mut type_index=0;let mut layout:Option<Ty>=None;let mut position_types=Vec::new();let mut name=None;let mut entry=None;let mut binding_index=0;
@@ -196,7 +269,7 @@ fn new_binding(worker:&str,input:&Ty,start:&Ty,selector:Option<&str>,functions:&
   w::NewNeed::CompletionResult=>{completion=Some(unsafe{result.as_deref().unwrap_unchecked()}.task_wait_layout().ok_or("task result layout is too large")?);}
   w::NewNeed::CompletionUnit=>{completion=Some(Ty::unit().task_wait_layout().ok_or("task result layout is too large")?);}
   w::NewNeed::Output=>{output=Some(input.arguments.last().unwrap());}
-  w::NewNeed::Index=>{type_index=resources.types.len();}
+  w::NewNeed::Index=>{type_index=types.original_count+types.added.len();}
   w::NewNeed::Layout=>{layout=Some(input.clone());}
   w::NewNeed::Parameter=>{facts.frame=u32::from(matches!(&parameters[cursor.part as usize].kind,CallParameterKind::Value(ty)if ty.name=="__blink_frame"));}
   w::NewNeed::Field=>{
@@ -220,8 +293,8 @@ fn new_binding(worker:&str,input:&Ty,start:&Ty,selector:Option<&str>,functions:&
     .chain(work_output.fields.iter().map(|(_,offset,ty)|TaskInput{ty,offset:*offset,buffer:[4,5]}));
    entry=Some(task_entry(unsafe{name.take().unwrap_unchecked()},worker,&parameters,result.as_deref(),fallible,fields,selector)?);
   }
-  w::NewNeed::Types=>{resources.types.extend([unsafe{layout.take().unwrap_unchecked()},unsafe{completion.take().unwrap_unchecked()},start.clone()]);}
-  w::NewNeed::Positions=>{resources.types.extend(std::mem::take(&mut position_types));}
+  w::NewNeed::Types=>{types.added.extend([unsafe{layout.take().unwrap_unchecked()},unsafe{completion.take().unwrap_unchecked()},start.clone()]);}
+  w::NewNeed::Positions=>{types.added.extend(std::mem::take(&mut position_types));}
   w::NewNeed::Binding=>{
    binding_index=tasks.len();tasks.push(TaskBinding{worker:worker.into(),input:input.clone(),start:start.clone(),index:type_index,entry:unsafe{entry.take().unwrap_unchecked()},selector:selector.map(str::to_owned)});
   }

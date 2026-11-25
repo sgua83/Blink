@@ -248,11 +248,12 @@ pub(crate) fn compile_image(
 #[cfg(feature = "compiler")]
 pub(crate) fn compile_linked(
     resources: &crate::application::Resources,
+    task_types: &[Ty],
     worker: &crate::compiler::Worker,
     mut entry: impl FnMut(native::NativeCode) -> usize,
 ) -> codec::Result<Vec<u8>> {
     let images = compile_images(resources, worker, |stage| stage.map_code(&mut entry))?;
-    Ok(image_codec::linked_module_bytes(&resources.types, &images))
+    Ok(image_codec::linked_module_bytes([&resources.types, task_types], &images))
 }
 
 pub(crate) fn compiler_output<T: Encode>(value: &T) -> Vec<u8> {
