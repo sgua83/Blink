@@ -146,11 +146,15 @@ impl Stage {
     }
     #[cfg(feature = "compiler")]
     pub(crate) fn private_scalar(&self, slot: PrivateSlot) -> Scalar {
+        *self.private_scalar_ref(slot)
+    }
+    #[cfg(feature = "compiler")]
+    pub(crate) fn private_scalar_ref(&self, slot: PrivateSlot) -> &Scalar {
         match slot {
-            PrivateSlot::Register(r) => self.registers[r],
+            PrivateSlot::Register(r) => &self.registers[r],
             PrivateSlot::Local(s) => {
                 let (end, ty) = self.locals.range(s + 1..).next().unwrap();
-                ty.components[s + ty.components.len() - end].0
+                &ty.components[s + ty.components.len() - end].0
             }
         }
     }

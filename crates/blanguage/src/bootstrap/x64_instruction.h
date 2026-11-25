@@ -473,26 +473,9 @@ struct ReductionCode {
     array<u64,4> literals;
 };
 
-struct TileInputBoundaryCode {
-    u64 length;
-    u64 skip_field;
-};
-
-struct TileInputCopy {
-    u32 data_offset;
-    u32 stride_offset;
-    u32 source_offset;
-    u32 storage_offset;
-    u32 length_offset;
-    u32 unit_bytes;
-};
 
 // The caller owns 16 bytes for tile_lane and 48 for tile_input_boundary.
-// The boundary's skip field is a rel32 over the complete input copy.
 extern "C" u64 tile_lane(u32 width, address output) on cpu;
-extern "C" TileInputBoundaryCode tile_input_boundary(u32 width, u32 length_offset, address output) on cpu;
-// The caller owns 80 bytes for the loop over the actual lanes in the tile.
-extern "C" u64 tile_input_copy(TileInputCopy input, address output) on cpu;
 
 // The emitter owns the original descriptor table. B borrows the actual
 // lowered instruction, assigned locations and 248 writable bytes.
@@ -562,19 +545,8 @@ extern "C" u64 tile_read_split(MoveLocation dst, MoveLocation low, MoveLocation 
 // R10 holds the lane base. Absent plane offsets are u32::MAX. The caller owns 48 bytes.
 extern "C" TilePublishCode tile_publish_value(TilePublishInput input, address output) on cpu;
 
-struct TilePrivateCopy {
-    MoveLocation location;
-    ScalarEncoding scalar;
-    u32 storage_offset;
-    u32 plane_stride;
-    bool restore;
-};
-
-// The caller owns 16 bytes for the lane pointer and 32 for the phase back edge.
-// bytes_back is the distance from output to the start of the current phase loop.
+// The caller lends 16 bytes for the lane pointer.
 extern "C" u64 tile_lane_pointer(u32 base_offset, address output) on cpu;
-// The caller owns 64 bytes. R10 points to the current lane's word in each plane.
-extern "C" u64 tile_private_copy(TilePrivateCopy input, address output) on cpu;
 
 struct TileCollectiveInput {
     u64 identity;
@@ -739,7 +711,7 @@ extern "C" ScalarValueEncoding emit_scalar_value(View value,
 enum MapRangePart:u32 {
     Enter=0; PacketBounds=1; PacketCollect=2; PacketAdvance=3; PacketBackEdge=4;
     PacketTail=5; ScalarBounds=6; ScalarSelection=7; ScalarAdvance=8; ScalarBackEdge=9; Exit=10;
-    TileBase=11; TilePhaseEnter=12; TilePhaseAdvance=13;
+    TileBase=11; TilePhaseEnter=12; TilePhaseAdvance=13; TileInputBoundary=14; TilePrivatePointer=15;
 };
 struct MapRangeInput {
     Span code;
@@ -753,11 +725,23 @@ struct MapRangeInput {
     u32 buffer_bytes;
     u32 stride_field;
     u32 tile_scope;
+    u32 workgroup;
 };
 struct MapRangeBuffer { address image; u64 end; };
 struct MapRangeEntry { u64 end; u32 stack_bytes; };
 struct MapRangeObservation { u64 start; u64 end; usize index; u32 value; MapRangePart part; };
 struct TilePhaseView { Span code; Node step; };
+// An exhausted input stream has zero unit bytes; an exhausted slot stream
+// carries no original scalar. The rows borrow their original placement.
+struct TileInputFragment { u64 binding; u32 source_offset; u32 storage_base; u32 unit_bytes; };
+struct TilePrivateSlot {
+    MoveLocation location;
+    ScalarEncoding scalar;
+    u64 index;
+    address scalar_origin;
+    u32 storage_offset;
+    u32 local;
+};
 struct MapRangeHost {
     address context;
     cfn<MapRangeEntry,address,u32> enter;
@@ -766,10 +750,12 @@ struct MapRangeHost {
     cfn<void,address,u64> commit;
     cfn<u32,address,address> packet;
     cfn<u32,address,Span> scalar;
-    cfn<void,address> tile_input;
+    cfn<TileInputFragment,address> next_input;
+    cfn<void,address,u64,u64,TileInputFragment,u32> observe_input;
     Host ir;
     cfn<TilePhaseView,address,u64> phase;
-    cfn<void,address,u64,bool> private_values;
+    cfn<TilePrivateSlot,address,bool> next_private;
+    cfn<void,address,u64,u64,u64,bool,TilePrivateSlot> observe_private;
     cfn<void,address,address,ScalarLeaf,View> tile_step;
     cfn<void,address,MapRangeObservation> observe;
 };
@@ -778,9 +764,9 @@ struct MapRangeHost {
 extern "C" u32 emit_map_range(MapRangeInput input, MapRangeHost host) on cpu
     requires nonzero(host.enter) requires nonzero(host.leave) requires nonzero(host.reserve)
     requires nonzero(host.commit) requires nonzero(host.observe)
-    requires nonzero(host.packet) requires nonzero(host.scalar) requires nonzero(host.tile_input)
+    requires nonzero(host.packet) requires nonzero(host.scalar) requires nonzero(host.next_input) requires nonzero(host.observe_input)
     requires nonzero(host.ir.inspect) requires nonzero(host.phase)
-    requires nonzero(host.private_values) requires nonzero(host.tile_step);
+    requires nonzero(host.next_private) requires nonzero(host.observe_private) requires nonzero(host.tile_step);
 
 struct ScalarStorageEncoding { u64 length; u64 literal; u64 field; };
 struct ScalarStorageHost {

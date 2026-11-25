@@ -38,6 +38,7 @@ mod sort;
 mod structure;
 use structure::{Flow, ScalarLeaf};
 use crate::ir::dataflow::{self, Node, Span, View};
+use std::collections::{btree_map, btree_set};
 #[path="texture.rs"]
 mod texture;
 pub(crate) use application::{
@@ -323,13 +324,14 @@ struct MapRangeInput {
     buffer_bytes: u32,
     stride_field: u32,
     tile_scope: u32,
+    workgroup: u32,
 }
 
 #[repr(u32)]
 enum MapRangePart {
     Enter, PacketBounds, PacketCollect, PacketAdvance, PacketBackEdge, PacketTail,
     ScalarBounds, ScalarSelection, ScalarAdvance, ScalarBackEdge, Exit,
-    TileBase, TilePhaseEnter, TilePhaseAdvance,
+    TileBase, TilePhaseEnter, TilePhaseAdvance, TileInputBoundary, TilePrivatePointer,
 }
 
 #[repr(C)]
@@ -350,6 +352,27 @@ struct MapRangeObservation {
 #[repr(C)]
 struct TilePhaseView { code: Span, step: Node }
 
+#[repr(C)]
+#[derive(Default)]
+struct TileInputFragment { binding: usize, source_offset: u32, storage_base: u32, unit_bytes: u32 }
+
+#[repr(C)]
+struct TilePrivateSlot {
+    location: operands::MoveLocation,
+    scalar: ScalarEncoding,
+    index: usize,
+    scalar_origin: *const Scalar,
+    storage_offset: u32,
+    local: u32,
+}
+
+struct TileInputCursor<'a> {
+    groups: btree_map::Iter<'a, (usize, u32), std::collections::BTreeSet<(u32, Scalar)>>,
+    fragments: btree_set::Iter<'a, (u32, Scalar)>,
+    binding: usize,
+    storage_base: u32,
+}
+
 type MapRangeSlot = *mut std::ffi::c_void;
 
 #[repr(C)]
@@ -361,10 +384,12 @@ struct MapRangeHost {
     commit: unsafe extern "C" fn(MapRangeSlot, usize),
     packet: unsafe extern "C" fn(MapRangeSlot, *const std::ffi::c_void) -> u32,
     scalar: unsafe extern "C" fn(MapRangeSlot, Span) -> u32,
-    tile_input: unsafe extern "C" fn(MapRangeSlot),
+    next_input: unsafe extern "C" fn(MapRangeSlot) -> TileInputFragment,
+    observe_input: unsafe extern "C" fn(MapRangeSlot, usize, usize, TileInputFragment, u32),
     ir: dataflow::Host,
     phase: unsafe extern "C" fn(MapRangeSlot, usize) -> TilePhaseView,
-    private_values: unsafe extern "C" fn(MapRangeSlot, usize, u32),
+    next_private: unsafe extern "C" fn(MapRangeSlot, u32) -> TilePrivateSlot,
+    observe_private: unsafe extern "C" fn(MapRangeSlot, usize, usize, usize, u32, TilePrivateSlot),
     tile_step: unsafe extern "C" fn(MapRangeSlot, *const Inst, ScalarLeaf, View),
     observe: unsafe extern "C" fn(MapRangeSlot, MapRangeObservation),
 }
@@ -372,7 +397,9 @@ struct MapRangeHost {
 struct MapRange<'a, 'b> {
     emitter: &'a mut Emitter<'b>,
     phases: &'a [TilePhase<'b>],
-    inputs: &'a crate::ir::dataflow::InputFragments,
+    input: TileInputCursor<'a>,
+    live_in: btree_set::Iter<'a, PrivateSlot>,
+    saved: btree_set::Iter<'a, PrivateSlot>,
     result: Result<(), &'static str>,
 }
 
@@ -413,22 +440,72 @@ unsafe extern "C" fn map_range_scalar(slot: MapRangeSlot, code: Span) -> u32 {
     u32::from(range.result.is_ok())
 }
 
-unsafe extern "C" fn map_range_tile_input(slot: MapRangeSlot) {
+unsafe extern "C" fn map_range_next_input(slot: MapRangeSlot) -> TileInputFragment {
     let range = unsafe { &mut *slot.cast::<MapRange<'_, '_>>() };
-    range.emitter.tile_input(range.inputs);
+    let input = &mut range.input;
+    loop {
+        if let Some(&(source_offset, unit)) = input.fragments.next() {
+            return TileInputFragment {
+                binding: input.binding, source_offset,
+                storage_base: input.storage_base, unit_bytes: unit.size(),
+            };
+        }
+        let Some((&(binding, word), fragments)) = input.groups.next() else {
+            return TileInputFragment::default();
+        };
+        input.binding = binding;
+        input.storage_base = range.emitter.shared_stream(SharedWord::Input { binding, word });
+        input.fragments = fragments.iter();
+    }
+}
+
+unsafe extern "C" fn map_range_observe_input(
+    slot: MapRangeSlot, start: usize, end: usize, item: TileInputFragment, storage_offset: u32,
+) {
+    let range = unsafe { &mut *slot.cast::<MapRange<'_, '_>>() };
+    range.emitter.parallel_abi_range(start..end, super::ParallelRangePart::TileInputCopy {
+        binding: item.binding, source_offset: item.source_offset,
+        storage_offset, unit_bytes: item.unit_bytes,
+    });
 }
 
 unsafe extern "C" fn map_range_phase(slot: MapRangeSlot, index: usize) -> TilePhaseView {
-    let range = unsafe { &*slot.cast::<MapRange<'_, '_>>() };
+    let range = unsafe { &mut *slot.cast::<MapRange<'_, '_>>() };
     let phase = &range.phases[index];
+    range.live_in = phase.live_in.iter();
+    range.saved = phase.saved.iter();
     TilePhaseView { code: Span::slice(phase.code), step: phase.step.map_or(Node::EMPTY, Node::instruction) }
 }
 
-unsafe extern "C" fn map_range_private_values(slot: MapRangeSlot, index: usize, restore: u32) {
+unsafe extern "C" fn map_range_next_private(slot: MapRangeSlot, restore: u32) -> TilePrivateSlot {
     let range = unsafe { &mut *slot.cast::<MapRange<'_, '_>>() };
-    let phase = &range.phases[index];
-    let restore = restore != 0;
-    range.emitter.tile_private(index, if restore { &phase.live_in } else { &phase.saved }, restore);
+    let slots = if restore != 0 { &mut range.live_in } else { &mut range.saved };
+    let Some(&slot) = slots.next() else {
+        return TilePrivateSlot {
+            location: allocation::Location::Immediate(0).into(), scalar: Scalar::U32.into(),
+            index: 0, scalar_origin: std::ptr::null(), storage_offset: 0, local: 0,
+        };
+    };
+    let scalar = range.emitter.stage.private_scalar_ref(slot);
+    let (local, index) = match slot {
+        PrivateSlot::Register(index) => (0, index),
+        PrivateSlot::Local(index) => (1, index),
+    };
+    TilePrivateSlot {
+        location: range.emitter.allocation.location(slot).into(), scalar: (*scalar).into(),
+        index, scalar_origin: scalar,
+        storage_offset: range.emitter.private_stream(slot), local,
+    }
+}
+
+unsafe extern "C" fn map_range_observe_private(
+    slot: MapRangeSlot, start: usize, end: usize, phase: usize, restore: u32, item: TilePrivateSlot,
+) {
+    let range = unsafe { &mut *slot.cast::<MapRange<'_, '_>>() };
+    range.emitter.parallel_abi_range(start..end, super::ParallelRangePart::TilePrivate {
+        phase, restore: restore != 0, local: item.local != 0, slot: item.index,
+        storage_offset: item.storage_offset, scalar: unsafe { *item.scalar_origin },
+    });
 }
 
 unsafe extern "C" fn map_range_tile_step(slot: MapRangeSlot, inst: *const Inst, leaf: ScalarLeaf, value: View) {
@@ -459,6 +536,8 @@ unsafe extern "C" fn map_range_observe(slot: MapRangeSlot, event: MapRangeObserv
         MapRangePart::TileBase => Part::TileBase { storage_offset: event.value },
         MapRangePart::TilePhaseEnter => Part::TilePhaseEnter { phase: event.index },
         MapRangePart::TilePhaseAdvance => Part::TilePhaseAdvance { phase: event.index },
+        MapRangePart::TileInputBoundary => Part::TileInputBoundary { width: event.value },
+        MapRangePart::TilePrivatePointer => Part::TilePrivatePointer { phase: event.index, restore: event.value != 0 },
     };
     range.emitter.parallel_abi_range(event.start..event.end, part);
 }
@@ -520,16 +599,27 @@ fn emit_map(
         packet: packet.as_ref().map_or(std::ptr::null(), |packet| std::ptr::from_ref(packet).cast()),
         binding, word, selected, frame, slots: e.frame.end as u32,
         buffer_bytes: BUFFER_BYTES, stride_field: BUFFER_STRIDE,
-        tile_scope: u32::from(tile_scope),
+        tile_scope: u32::from(tile_scope), workgroup: stage.workgroup_width(),
     };
-    let mut range = MapRange { emitter: &mut e, phases: &phases, inputs, result: Ok(()) };
+    let mut range = MapRange {
+        emitter: &mut e,
+        phases: &phases,
+        input: TileInputCursor {
+            groups: inputs.iter(), fragments: btree_set::Iter::default(), binding: 0, storage_base: 0,
+        },
+        live_in: btree_set::Iter::default(),
+        saved: btree_set::Iter::default(),
+        result: Ok(()),
+    };
     let stack_bytes = unsafe {
         emit_map_range(input, MapRangeHost {
             context: std::ptr::from_mut(&mut range).cast(),
             enter: map_range_enter, leave: map_range_leave,
             reserve: map_range_reserve, commit: map_range_commit,
-            packet: map_range_packet, scalar: map_range_scalar, tile_input: map_range_tile_input,
-            ir: dataflow::HOST, phase: map_range_phase, private_values: map_range_private_values,
+            packet: map_range_packet, scalar: map_range_scalar,
+            next_input: map_range_next_input, observe_input: map_range_observe_input,
+            ir: dataflow::HOST, phase: map_range_phase,
+            next_private: map_range_next_private, observe_private: map_range_observe_private,
             tile_step: map_range_tile_step, observe: map_range_observe,
         })
     };

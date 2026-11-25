@@ -3315,7 +3315,15 @@ u64 tile_phase_advance(u32 base_offset, u32 length_offset, u64 bytes_back, addre
     return back + 4u64 - start;
 }
 
-extern "C" u64 tile_private_copy(TilePrivateCopy input, address output) on cpu {
+struct TilePrivateCopy {
+    MoveLocation location;
+    ScalarEncoding scalar;
+    u32 storage_offset;
+    u32 plane_stride;
+    bool restore;
+};
+
+u64 tile_private_copy(TilePrivateCopy input, address output) on cpu {
     u64 start = address_bits(output);
     u32 size = input.scalar.width / 8;
     bool signed = input.scalar.kind == ScalarKind::Signed;
@@ -3980,7 +3988,21 @@ extern "C" u64 tile_lane(u32 width, address output) on cpu {
     return register_instruction(cursor, u16(0x89), u8(0), false, u8(2), u8(0)) - start;
 }
 
-extern "C" TileInputBoundaryCode tile_input_boundary(u32 width, u32 length_offset, address output) on cpu {
+struct TileInputBoundaryCode {
+    u64 length;
+    u64 skip_field;
+};
+
+struct TileInputCopy {
+    u32 data_offset;
+    u32 stride_offset;
+    u32 source_offset;
+    u32 storage_offset;
+    u32 length_offset;
+    u32 unit_bytes;
+};
+
+TileInputBoundaryCode tile_input_boundary(u32 width, u32 length_offset, address output) on cpu {
     u64 start = address_bits(output);
     u64 cursor = tile_lane_remainder(start, width);
     cursor = register_instruction(cursor, u16(0x85), u8(0), false, u8(2), u8(2));
@@ -3996,7 +4018,7 @@ extern "C" TileInputBoundaryCode tile_input_boundary(u32 width, u32 length_offse
     return TileInputBoundaryCode(cursor - start, skip - start);
 }
 
-extern "C" u64 tile_input_copy(TileInputCopy input, address output) on cpu {
+u64 tile_input_copy(TileInputCopy input, address output) on cpu {
     u64 start = address_bits(output);
     u64 cursor = buffer_field_at(start, input.data_offset, u16(0x8b), u8(10));
     cursor = register_instruction(cursor, u16(0x89), u8(0), false, u8(3), u8(0));
@@ -5136,39 +5158,88 @@ u64 move_tile_base(MapRangeHost host, u32 offset, u64 phase, bool restore) on cp
     return end;
 }
 
-void advance_tile_phase(MapRangeHost host, u64 phase, u32 base, u32 length, u64 begin) on cpu
-    requires nonzero(host.private_values) requires nonzero(host.reserve)
+void emit_map_tile_input(MapRangeInput input, MapRangeHost host) on cpu
+    requires nonzero(host.reserve) requires nonzero(host.commit) requires nonzero(host.observe)
+    requires nonzero(host.next_input) requires nonzero(host.observe_input) {
+    MapRangeBuffer buffer = host.reserve(host.context, 48u64);
+    address output = unsafe_address(address_bits(buffer.image) + buffer.end);
+    TileInputBoundaryCode boundary = tile_input_boundary(input.workgroup, input.slots, output);
+    u64 end = buffer.end + boundary.length;
+    u64 skip = buffer.end + boundary.skip_field;
+    host.commit(host.context, end);
+    host.observe(host.context, MapRangeObservation(buffer.end, end, usize(0), input.workgroup, MapRangePart::TileInputBoundary));
+    TileInputFragment item = host.next_input(host.context);
+    while (item.unit_bytes != 0) {
+        u32 data = u32(item.binding) * input.buffer_bytes;
+        u32 storage = item.storage_base + item.source_offset % 4;
+        TileInputCopy copy = TileInputCopy(data, data + input.stride_field,
+            item.source_offset, storage, input.slots, item.unit_bytes);
+        buffer = host.reserve(host.context, 80u64);
+        output = unsafe_address(address_bits(buffer.image) + buffer.end);
+        end = buffer.end + tile_input_copy(copy, output);
+        host.commit(host.context, end);
+        host.observe_input(host.context, buffer.end, end, item, storage);
+        item = host.next_input(host.context);
+    }
+    buffer = host.reserve(host.context, 0u64);
+    patch_relative(unsafe_address(address_bits(buffer.image) + skip), skip, buffer.end);
+}
+
+void emit_tile_private_values(MapRangeInput input, MapRangeHost host, u64 phase, bool restore) on cpu
+    requires nonzero(host.reserve) requires nonzero(host.commit) requires nonzero(host.observe)
+    requires nonzero(host.next_private) requires nonzero(host.observe_private) {
+    TilePrivateSlot item = host.next_private(host.context, restore);
+    if (address_bits(item.scalar_origin) == 0u64) { return; }
+    MapRangeBuffer buffer = host.reserve(host.context, 16u64);
+    address output = unsafe_address(address_bits(buffer.image) + buffer.end);
+    u64 end = buffer.end + tile_lane_pointer(input.slots + 4, output);
+    host.commit(host.context, end);
+    host.observe(host.context, MapRangeObservation(buffer.end, end, usize(phase), u32(restore), MapRangePart::TilePrivatePointer));
+    u32 stride = input.workgroup * 4;
+    while (address_bits(item.scalar_origin) != 0u64) {
+        buffer = host.reserve(host.context, 64u64);
+        output = unsafe_address(address_bits(buffer.image) + buffer.end);
+        TilePrivateCopy copy = TilePrivateCopy(item.location, item.scalar, item.storage_offset, stride, restore);
+        end = buffer.end + tile_private_copy(copy, output);
+        host.commit(host.context, end);
+        host.observe_private(host.context, buffer.end, end, phase, restore, item);
+        item = host.next_private(host.context, restore);
+    }
+}
+
+void advance_tile_phase(MapRangeInput input, MapRangeHost host, u64 phase, u32 base, u64 begin) on cpu
+    requires nonzero(host.next_private) requires nonzero(host.observe_private) requires nonzero(host.reserve)
     requires nonzero(host.commit) requires nonzero(host.observe) {
-    host.private_values(host.context, phase, false);
+    emit_tile_private_values(input, host, phase, false);
     MapRangeBuffer buffer = host.reserve(host.context, 32u64);
     address output = unsafe_address(address_bits(buffer.image) + buffer.end);
-    u64 end = buffer.end + tile_phase_advance(base, length, buffer.end - begin, output);
+    u64 end = buffer.end + tile_phase_advance(base, input.slots, buffer.end - begin, output);
     host.commit(host.context, end);
     host.observe(host.context, MapRangeObservation(buffer.end, end, usize(phase), 0, MapRangePart::TilePhaseAdvance));
 }
 
 bool emit_map_tile_phases(MapRangeInput input, MapRangeHost host) on cpu
     requires nonzero(host.reserve) requires nonzero(host.commit) requires nonzero(host.observe)
-    requires nonzero(host.scalar) requires nonzero(host.tile_input)
+    requires nonzero(host.scalar) requires nonzero(host.next_input) requires nonzero(host.observe_input)
     requires nonzero(host.ir.inspect) requires nonzero(host.phase)
-    requires nonzero(host.private_values) requires nonzero(host.tile_step) {
+    requires nonzero(host.next_private) requires nonzero(host.observe_private) requires nonzero(host.tile_step) {
     u32 base = input.slots + 4;
     move_tile_base(host, base, 0u64, false);
-    host.tile_input(host.context);
+    emit_map_tile_input(input, host);
     u64 phase = 0u64;
     while (phase < input.phase_count) {
         TilePhaseView row = host.phase(host.context, phase);
         u64 begin = move_tile_base(host, base, phase, true);
-        host.private_values(host.context, phase, true);
+        emit_tile_private_values(input, host, phase, true);
         if (host.scalar(host.context, row.code) == 0) { return false; }
         if (address_bits(row.step.data) == 0u64) {
-            advance_tile_phase(host, phase, base, input.slots, begin);
+            advance_tile_phase(input, host, phase, base, begin);
         } else {
             View value = host.ir.inspect(row.step);
             if (value.tag == OP_TILE_PUBLISH) {
                 host.tile_step(host.context, row.step.data, ScalarLeaf::Publish, value);
             }
-            advance_tile_phase(host, phase, base, input.slots, begin);
+            advance_tile_phase(input, host, phase, base, begin);
             if (value.tag == OP_TILE_COLLECTIVE) {
                 host.tile_step(host.context, row.step.data, ScalarLeaf::Collective, value);
             }
@@ -5181,9 +5252,9 @@ bool emit_map_tile_phases(MapRangeInput input, MapRangeHost host) on cpu
 extern "C" u32 emit_map_range(MapRangeInput input, MapRangeHost host) on cpu
     requires nonzero(host.enter) requires nonzero(host.leave) requires nonzero(host.reserve)
     requires nonzero(host.commit) requires nonzero(host.observe)
-    requires nonzero(host.packet) requires nonzero(host.scalar) requires nonzero(host.tile_input)
+    requires nonzero(host.packet) requires nonzero(host.scalar) requires nonzero(host.next_input) requires nonzero(host.observe_input)
     requires nonzero(host.ir.inspect) requires nonzero(host.phase)
-    requires nonzero(host.private_values) requires nonzero(host.tile_step) {
+    requires nonzero(host.next_private) requires nonzero(host.observe_private) requires nonzero(host.tile_step) {
     MapRangeEntry entry = host.enter(host.context, input.frame);
     host.observe(host.context, MapRangeObservation(0u64, entry.end, usize(0), input.frame, MapRangePart::Enter));
     u32 data = u32(input.binding) * input.buffer_bytes;
@@ -5205,7 +5276,7 @@ extern "C" u32 emit_map_range(MapRangeInput input, MapRangeHost host) on cpu
     if (input.phase_count != 0u64) {
         if (!emit_map_tile_phases(input, host)) { return entry.stack_bytes; }
     } else {
-        if (input.tile_scope != 0) { host.tile_input(host.context); }
+        if (input.tile_scope != 0) { emit_map_tile_input(input, host); }
         if (host.scalar(host.context, input.code) == 0) { return entry.stack_bytes; }
         step = u8(1);
     }

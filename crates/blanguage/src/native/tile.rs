@@ -28,31 +28,6 @@ struct TileCollectiveCode {
 }
 
 #[repr(C)]
-struct TileInputBoundaryCode {
-    length: u64,
-    skip_field: u64,
-}
-
-#[repr(C)]
-struct TileInputCopy {
-    data_offset: u32,
-    stride_offset: u32,
-    source_offset: u32,
-    storage_offset: u32,
-    length_offset: u32,
-    unit_bytes: u32,
-}
-
-#[repr(C)]
-struct TilePrivateCopy {
-    location: operands::MoveLocation,
-    scalar: ScalarEncoding,
-    storage_offset: u32,
-    plane_stride: u32,
-    restore: u32,
-}
-
-#[repr(C)]
 struct TilePublishInput {
     location: operands::MoveLocation,
     scalar: ScalarEncoding,
@@ -73,14 +48,8 @@ unsafe extern "C" {
     fn encode_tile_publish_value(input: TilePublishInput, output: *mut u8) -> TilePublishCode;
     #[link_name = "bootstrap.x64_instruction::tile_lane_pointer"]
     fn encode_tile_lane_pointer(base_offset: u32, output: *mut u8) -> u64;
-    #[link_name = "bootstrap.x64_instruction::tile_private_copy"]
-    fn encode_tile_private_copy(input: TilePrivateCopy, output: *mut u8) -> u64;
     #[link_name = "bootstrap.x64_instruction::tile_lane"]
     fn encode_tile_lane(width: u32, output: *mut u8) -> u64;
-    #[link_name = "bootstrap.x64_instruction::tile_input_boundary"]
-    fn encode_tile_input_boundary(width: u32, length_offset: u32, output: *mut u8) -> TileInputBoundaryCode;
-    #[link_name = "bootstrap.x64_instruction::tile_input_copy"]
-    fn encode_tile_input_copy(input: TileInputCopy, output: *mut u8) -> u64;
     #[link_name = "bootstrap.x64_instruction::tile_collective"]
     fn encode_tile_collective(input: TileCollectiveInput, output: *mut u8) -> TileCollectiveCode;
 }
@@ -103,77 +72,15 @@ impl Emitter<'_> {
         self.emit_bytes(16, |output| unsafe { encode_tile_lane(width, output) });
         self.store(dst);
     }
-    pub(super) fn tile_input(&mut self, inputs: &crate::ir::dataflow::InputFragments) {
-        let start = self.code.len();
-        let width = self.stage.workgroup_width();
-        let length_offset = self.tile_length_slot();
-        self.code.reserve(48);
-        let boundary = unsafe {
-            let output = self.code.as_mut_ptr().add(start);
-            let boundary = encode_tile_input_boundary(width, length_offset, output);
-            self.code.set_len(start + boundary.length as usize);
-            boundary
-        };
-        let skip = start + boundary.skip_field as usize;
-        self.parallel_abi(start, ParallelRangePart::TileInputBoundary { width });
-
-        for (&(binding, word), fragments) in inputs {
-            let data_offset = binding as u32 * BUFFER_BYTES;
-            let stride_offset = data_offset + BUFFER_STRIDE;
-            let storage = self.shared_stream(SharedWord::Input { binding, word });
-            for &(source_offset, unit) in fragments {
-                let storage_offset = storage + source_offset % 4;
-                let unit_bytes = unit.size();
-                let input = TileInputCopy {
-                    data_offset, stride_offset, source_offset, storage_offset, length_offset, unit_bytes,
-                };
-                let start = self.code.len();
-                self.emit_bytes(80, |output| unsafe { encode_tile_input_copy(input, output) });
-                self.parallel_abi(start, ParallelRangePart::TileInputCopy {
-                    binding, source_offset, storage_offset, unit_bytes,
-                });
-            }
-        }
-        self.patch(skip, self.code.len());
-    }
     fn tile_lane_pointer(&mut self) {
         let base_offset = self.tile_base_slot();
         self.emit_bytes(16, |output| unsafe { encode_tile_lane_pointer(base_offset, output) });
     }
 
-    fn private_stream(&self, slot: PrivateSlot) -> u32 {
+    pub(super) fn private_stream(&self, slot: PrivateSlot) -> u32 {
         self.frame.tile_private[&slot]
     }
 
-    pub(super) fn tile_private(&mut self, phase: usize, slots: &std::collections::BTreeSet<PrivateSlot>, restore: bool) {
-        if slots.is_empty() {
-            return;
-        }
-        let start = self.code.len();
-        self.tile_lane_pointer();
-        self.parallel_abi(start, ParallelRangePart::TilePrivatePointer { phase, restore });
-        let plane_stride = self.stage.workgroup_width() * 4;
-        for &slot in slots {
-            let storage_offset = self.private_stream(slot);
-            let scalar = self.stage.private_scalar(slot);
-            let input = TilePrivateCopy {
-                location: self.allocation.location(slot).into(),
-                scalar: scalar.into(),
-                storage_offset,
-                plane_stride,
-                restore: u32::from(restore),
-            };
-            let start = self.code.len();
-            self.emit_bytes(64, |output| unsafe { encode_tile_private_copy(input, output) });
-            let (local, slot) = match slot {
-                PrivateSlot::Register(index) => (false, index),
-                PrivateSlot::Local(index) => (true, index),
-            };
-            self.parallel_abi(start, ParallelRangePart::TilePrivate {
-                phase, restore, local, slot, storage_offset, scalar,
-            });
-        }
-    }
     pub(super) fn publish_values(&mut self, publication: &Publication) {
         let stage = self.stage;
         let used = self.used_tile_words;
