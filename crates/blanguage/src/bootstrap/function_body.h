@@ -622,6 +622,14 @@ extern "C" u32 loop_exit_join(address context,usize exits,u32 natural,u32 termin
     requires nonzero(host.terminal_reachable) requires nonzero(host.guards) requires nonzero(host.initialize)
     requires nonzero(host.adopt) requires nonzero(host.merge) requires nonzero(host.publish);
 
+struct LoopEntryDatasetHost {
+    cfn<void,address,usize> independent;
+    cfn<void,address,usize,u32> root;
+    cfn<void,address> elements;
+};
+extern "C" void loop_entry_dataset(address context,usize index,u32 independent,u32 zero_valid,LoopEntryDatasetHost host) on cpu
+    requires nonzero(host.independent) requires nonzero(host.root) requires nonzero(host.elements);
+
 struct LoopSourceHost {
     cfn<void,address,usize> seed;
     cfn<void,address,usize,usize> add_edge;

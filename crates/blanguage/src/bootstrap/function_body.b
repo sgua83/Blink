@@ -69,6 +69,13 @@ extern "C" u32 loop_exit_join(address context,usize exits,u32 natural,u32 termin
     return reachable;
 }
 
+extern "C" void loop_entry_dataset(address context,usize index,u32 independent,u32 zero_valid,LoopEntryDatasetHost host) on cpu
+    requires nonzero(host.independent) requires nonzero(host.root) requires nonzero(host.elements) {
+    if(independent!=0){host.independent(context,index);}
+    host.root(context,index,u32(zero_valid==0));
+    host.elements(context);
+}
+
 extern "C" void close_loop_sources(address context,usize inputs,usize edges,usize exits,LoopSourceHost host) on cpu
     requires nonzero(host.seed) requires nonzero(host.add_edge) requires nonzero(host.classify)
     requires nonzero(host.seal) requires nonzero(host.publish)

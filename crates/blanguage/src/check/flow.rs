@@ -211,54 +211,33 @@ impl LoopContext {
 impl Builder<'_> {
     pub(super) fn prepare_view_loop(&mut self) {
         if self.application.is_none() || self.loop_contexts.last().unwrap().initial{return;}
-        let level=self.loop_contexts.len()-1;
-        let scope=self.view_model.scope();
-        self.loop_contexts[level].view_scope=Some(scope);
-        let mut slots=Vec::new();
-        for (name,binding) in &self.loop_contexts[level].entry.env {
-            view::for_each_data_path(binding, |path, data, independent| {
-                slots.push(InputSlot::Data { name: name.clone(), path: path.to_vec(), independent });
-                if let Some(value) = data.elements.known().and_then(returns::Returned::view_value) {
-                    for component in view_contracts::components(&value.ty) {
-                        slots.push(InputSlot::Value {
-                            name: name.clone(), contents: Some(path.to_vec()), component, identity: None,
-                        });
-                    }
+        let scope = self.view_model.scope();
+        let context = self.loop_contexts.last_mut().unwrap();
+        context.view_scope = Some(scope);
+        let mut slots = LoopEntrySlots {
+            scope,
+            inputs: &mut context.view_inputs,
+            resources: &mut context.view_resources,
+            independent: &mut self.view_model.independent,
+        };
+        for (name, entry) in &context.entry.env {
+            let current = self.env.get_mut(name).unwrap();
+            view::for_each_data_path(entry, |path, data, independent| {
+                let current = data_at_mut(current, path).unwrap();
+                let index = slots.inputs.len();
+                let zero_valid = data.ty.zero_valid();
+                let mut dataset = LoopEntryDataset { slots: &mut slots, name, path, current };
+                unsafe {
+                    source_loop_entry_dataset(
+                        ptr::from_mut(&mut dataset).cast(), index,
+                        u32::from(independent), u32::from(zero_valid), LOOP_ENTRY_DATASET_HOST,
+                    );
                 }
             });
-            if let Some((ty,_))=binding.view_parts() {
-                for component in view_contracts::components(ty) {
-                    slots.push(InputSlot::Value{name:name.clone(),contents:None,component,identity:None});
-                }
+            if let Some((ty, _)) = entry.view_parts() {
+                slots.write_views(name, None, ty, current.view_proof_mut().unwrap());
             }
         }
-        for (index,slot)in slots.iter().enumerate(){if slot.independent(){self.view_model.independent.insert(LoopInput{level:scope,index});}}
-        let mut resources:BTreeMap<ValueIdentity,Borrow>=BTreeMap::new();
-        for (index,slot) in slots.iter().enumerate() {
-            if let InputSlot::Data{name,path,..}=slot {
-                let input=Borrow{inputs:view::Edges::from([LoopInput{level:scope,index}]),..Borrow::default()};
-                for environment in [&self.env,&self.loop_contexts[level].entry.env] {
-                    if let Some(data)=environment.get(name).and_then(|b|data_at(b,path)) {resources.entry(data.root.identity()).or_default().union(&input);}
-                }
-            }
-        }
-        for (index,slot) in slots.iter().enumerate() {
-            if let InputSlot::Data{name,path,..}=slot {
-                let data=data_at_mut(self.env.get_mut(name).unwrap(),path).unwrap();
-                let input=LoopInput{level:scope,index};
-                if !data.ty.zero_valid() {
-                    data.initialization=Some(Position::ApplicationInput(input,None,0));
-                }
-                data.root.proof.set_view_borrow(0,Borrow{inputs:view::Edges::from([input]),..Borrow::default()});
-            }
-        }
-        for (index,slot) in slots.iter().enumerate() {
-            if let InputSlot::Value{component,..}=slot {
-                let proof=slot.value_proof_mut(&mut self.env).unwrap();
-                proof.set_view_borrow(*component,Borrow{inputs:view::Edges::from([LoopInput{level:scope,index}]),..Borrow::default()});
-            }
-        }
-        self.loop_contexts[level].view_inputs=slots;self.loop_contexts[level].view_resources=resources;
     }
     pub(super) fn close_view_context(&mut self,context:&mut LoopContext)->Result<()> {
         let Some(scope)=context.view_scope else{return Ok(());};
@@ -776,6 +755,74 @@ struct LoopSource<'a> {
     entry: Cow<'a, Borrow>,
     definition: Borrow,
     direct: bool,
+}
+
+struct LoopEntrySlots<'a> {
+    scope: usize,
+    inputs: &'a mut Vec<InputSlot>,
+    resources: &'a mut BTreeMap<ValueIdentity, Borrow>,
+    independent: &'a mut BTreeSet<LoopInput>,
+}
+
+impl LoopEntrySlots<'_> {
+    fn write_views(&mut self, name: &str, contents: Option<&[usize]>, ty: &Ty, proof: &mut bounds::Proof) {
+        for component in view_contracts::components(ty) {
+            let input = LoopInput { level: self.scope, index: self.inputs.len() };
+            self.inputs.push(InputSlot::Value {
+                name: name.to_owned(), contents: contents.map(<[usize]>::to_vec), component, identity: None,
+            });
+            proof.set_view_borrow(component, Borrow { inputs: view::Edges::from([input]), ..Borrow::default() });
+        }
+    }
+}
+
+struct LoopEntryDataset<'a, 'path, 'output> {
+    slots: &'a mut LoopEntrySlots<'output>,
+    name: &'path str,
+    path: &'path [usize],
+    current: &'a mut application::Data,
+}
+
+#[repr(C)]
+struct LoopEntryDatasetHost {
+    independent: unsafe extern "C" fn(*mut c_void, usize),
+    root: unsafe extern "C" fn(*mut c_void, usize, u32),
+    elements: unsafe extern "C" fn(*mut c_void),
+}
+
+const LOOP_ENTRY_DATASET_HOST: LoopEntryDatasetHost = LoopEntryDatasetHost {
+    independent: mark_loop_entry_independent, root: write_loop_entry_root, elements: write_loop_entry_elements,
+};
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.function_body::loop_entry_dataset"]
+    fn source_loop_entry_dataset(
+        context: *mut c_void, index: usize, independent: u32, zero_valid: u32, host: LoopEntryDatasetHost,
+    );
+}
+
+unsafe extern "C" fn mark_loop_entry_independent(context: *mut c_void, index: usize) {
+    let entry = unsafe { &mut *context.cast::<LoopEntryDataset<'_, '_, '_>>() };
+    entry.slots.independent.insert(LoopInput { level: entry.slots.scope, index });
+}
+
+unsafe extern "C" fn write_loop_entry_root(context: *mut c_void, index: usize, initialize: u32) {
+    let entry = unsafe { &mut *context.cast::<LoopEntryDataset<'_, '_, '_>>() };
+    let input = LoopInput { level: entry.slots.scope, index };
+    entry.slots.inputs.push(InputSlot::Data { name: entry.name.to_owned(), path: entry.path.to_vec() });
+    // The current and saved entry bindings have the same root before loop writes.
+    entry.slots.resources.entry(entry.current.root.identity()).or_default().inputs.insert(input);
+    if initialize != 0 {
+        entry.current.initialization = Some(Position::ApplicationInput(input, None, 0));
+    }
+    entry.current.root.proof.set_view_borrow(0, Borrow { inputs: view::Edges::from([input]), ..Borrow::default() });
+}
+
+unsafe extern "C" fn write_loop_entry_elements(context: *mut c_void) {
+    let entry = unsafe { &mut *context.cast::<LoopEntryDataset<'_, '_, '_>>() };
+    if let Some(value) = entry.current.elements.known_mut().and_then(returns::Returned::view_value_mut) {
+        entry.slots.write_views(entry.name, Some(entry.path), &value.ty, &mut value.proof);
+    }
 }
 
 struct LoopSourceClose<'a, 'world, 'producer> {

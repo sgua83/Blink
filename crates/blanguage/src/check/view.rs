@@ -766,10 +766,9 @@ pub(super) fn resource_proof(data:&application::Data)->bounds::Proof{{let mut co
 
 pub(super) enum InputSlot {
     Value {name:String,contents:Option<Vec<usize>>,component:usize,identity:Option<(ValueIdentity,Scalar)>},
-    Data {name:String,path:Vec<usize>,independent:bool},
+    Data {name:String,path:Vec<usize>},
 }
 impl InputSlot {
-    pub fn independent(&self)->bool {matches!(self,Self::Data{independent:true,..})}
     pub fn value_proof<'a>(&self,env:&'a BTreeMap<String,Binding>)->Option<&'a bounds::Proof>{
         match self {
             Self::Value{name,contents:Some(path),..}=>data_at(env.get(name)?,path)?.elements.known()?.view_value().map(|value|&value.proof),
