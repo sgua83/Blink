@@ -2,18 +2,25 @@
 use super::{Resources,resource_prefix};
 use crate::ast::Access;
 use crate::ir::{self,BinaryOp,Call,CallArgument,CallParameter,CallParameterKind,CallReference,CallStorage,CallTarget,Comparison,FunctionBody,IndexedSource,Inst,InstKind,Scalar,Ty,ValueCode};
-use std::{borrow::Cow,collections::BTreeMap};
+use std::{borrow::Cow,collections::BTreeMap,ffi::c_void,ptr};
 mod wire{
+ use std::ffi::c_void;
  #[derive(Clone,Copy)]#[repr(C)]pub(super)struct Cursor{pub(super)phase:u32,pub(super)index:u64,pub(super)part:u64}
  #[repr(C)]pub(super)struct Step<T>{pub(super)cursor:Cursor,pub(super)need:T}
- #[derive(Clone,Copy)]#[repr(u32)]pub(super)enum Kind{Other=0,Task=1,Scope=2,If=3,Loop=4}
+ #[derive(Clone,Copy)]#[repr(u32)]pub(super)enum Kind{Other=0,Start=1,Scope=2,Pair=3}
  #[derive(Clone,Copy)]#[repr(u32)]pub(super)enum Role{Ordinary=0,Frame=1,ReturnSource=2,Completion=3}
  #[derive(Clone,Copy)]#[repr(C)]pub(super)struct BindFacts{pub(super)resources:u32,pub(super)root:u32,pub(super)functions:u64,pub(super)bindings:u64}
  #[repr(u32)]pub(super)enum BindNeed{Start=0,Root=1,Function=2,Entries=3,Entry=4,Empty=5,Present=6,Next=7}
- #[derive(Clone,Copy,Default)]#[repr(C)]pub(super)struct BodyFacts{pub(super)needed:u32,pub(super)changed:u32}
- #[repr(u32)]pub(super)enum BodyNeed{Probe=0,Addresses=1,Lower=2,Optimize=3,Complete=4,Next=5}
- #[derive(Clone,Copy)]#[repr(C)]pub(super)struct BlockFacts{pub(super)count:u64,pub(super)kind:Kind,pub(super)changed:u32}
- #[repr(u32)]pub(super)enum BlockNeed{Prepare=0,Inspect=1,Task=2,Scope=3,Yes=4,No=5,Condition=6,Body=7,Append=8,Finish=9,Same=10,Changed=11,Next=12}
+ #[repr(C)]pub(super)struct Instruction {
+  pub(super) kind: Kind,
+  pub(super) first: *mut c_void,
+  pub(super) second: *mut c_void,
+ }
+ #[repr(C)]pub(super)struct RewriteHost {
+  pub(super) inspect: unsafe extern "C" fn(*mut c_void, usize) -> Instruction,
+  pub(super) child: unsafe extern "C" fn(*mut c_void, *mut c_void) -> u32,
+  pub(super) start: unsafe extern "C" fn(*mut c_void, *mut c_void, usize) -> u32,
+ }
  #[derive(Clone,Copy)]#[repr(C)]pub(super)struct LookupFacts{pub(super)count:u64,pub(super)equal:u32}
  #[repr(u32)]pub(super)enum LookupNeed{Worker=0,Input=1,Start=2,Selector=3,Found=4,Missing=5,Next=6}
  #[derive(Clone,Copy,Default)]#[repr(C)]pub(super)struct NewFacts{pub(super)fields:u64,pub(super)parameters:u64,pub(super)frame:u32,pub(super)owned:u32,pub(super)reference:u32,pub(super)inout:u32,pub(super)has_result:u32}
@@ -24,8 +31,8 @@ mod wire{
  unsafe extern "C"{
   #[link_name="bootstrap.task_lower::start"]pub(super)fn start()->Cursor;
   #[link_name="bootstrap.task_lower::bind_step"]pub(super)fn bind_step(state:Cursor,facts:BindFacts)->Step<BindNeed>;
-  #[link_name="bootstrap.task_lower::body_step"]pub(super)fn body_step(state:Cursor,facts:BodyFacts)->Step<BodyNeed>;
-  #[link_name="bootstrap.task_lower::block_step"]pub(super)fn block_step(state:Cursor,facts:BlockFacts)->Step<BlockNeed>;
+  #[link_name="bootstrap.task_lower::rewrite_block"]
+  pub(super) fn rewrite_block(block: *mut c_void, count: usize, context: *mut c_void, host: RewriteHost) -> u32;
   #[link_name="bootstrap.task_lower::lookup_step"]pub(super)fn lookup_step(state:Cursor,facts:LookupFacts)->Step<LookupNeed>;
   #[link_name="bootstrap.task_lower::new_step"]pub(super)fn new_step(state:Cursor,facts:NewFacts)->Step<NewNeed>;
   #[link_name="bootstrap.task_lower::rewrite_step"]pub(super)fn rewrite_step(state:Cursor)->Step<RewriteNeed>;
@@ -35,10 +42,9 @@ mod wire{
 use wire as w;
 struct TaskInput<'a>{ty:&'a Ty,offset:u32,buffer:[usize;2]}
 struct TaskBinding{worker:String,input:Ty,start:Ty,index:usize,entry:FunctionBody,selector:Option<String>}
-fn kind(inst:&Inst)->w::Kind{match &inst.kind{
- InstKind::Call(call)if matches!(&call.target,CallTarget::External(name)if name.symbol=="blink_task_start")=>w::Kind::Task,
- InstKind::Scope(_)=>w::Kind::Scope,InstKind::If{..}=>w::Kind::If,InstKind::Loop{..}=>w::Kind::Loop,_=>w::Kind::Other,
-}}
+fn is_start(call: &Call) -> bool {
+ matches!(&call.target, CallTarget::External(name) if name.symbol == "blink_task_start")
+}
 fn parameter(ty:&CallParameter)->(&Ty,Option<Access>){match &ty.kind{CallParameterKind::Value(ty)=>(ty,None),CallParameterKind::Reference{ty,access}=>(ty,Some(*access))}}
 pub(crate)fn bind_tasks(module:&str,mut body:Option<&mut ValueCode>,definitions:&[FunctionBody],functions:&mut Vec<FunctionBody>,imports:&BTreeMap<String,Vec<u8>>,mut resources:Option<&mut Resources>)->Result<bool,&'static str>{
  let mut cursor=unsafe{w::start()};let mut facts=w::BindFacts{resources:u32::from(resources.is_some()),root:u32::from(body.is_some()),functions:functions.len()as u64,bindings:0};
@@ -53,49 +59,102 @@ pub(crate)fn bind_tasks(module:&str,mut body:Option<&mut ValueCode>,definitions:
  }}
 }
 fn bind_task_entries(body:&mut ValueCode,functions:&[FunctionBody],imports:&BTreeMap<String,Vec<u8>>,resources:&mut Resources,tasks:&mut Vec<TaskBinding>,symbol:&str)->Result<(),&'static str>{
- let mut cursor=unsafe{w::start()};let mut facts=w::BodyFacts::default();let mut addresses=BTreeMap::new();
- loop{let next=unsafe{w::body_step(cursor,facts)};cursor=next.cursor;match next.need{
-  w::BodyNeed::Probe=>{crate::optimize::visit(&body.code,&mut |inst|facts.needed|=u32::from(matches!(kind(inst),w::Kind::Task)));}
-  w::BodyNeed::Addresses=>{crate::optimize::visit(&body.code,&mut |inst|{if let InstKind::FunctionAddress(reg,CallTarget::Defined(name))=&inst.kind{addresses.insert(*reg,name.clone());}});}
-  w::BodyNeed::Lower=>{facts.changed=u32::from(block(&mut body.code,&mut body.registers,&addresses,functions,imports,resources,tasks,symbol)?);}
-  w::BodyNeed::Optimize=>crate::optimize::value_code(body),
-  w::BodyNeed::Complete=>return Ok(()),w::BodyNeed::Next=>{},
- }}
+ let mut needed = false;
+ crate::optimize::visit(&body.code, &mut |inst| {
+  if let InstKind::Call(call) = &inst.kind { needed |= is_start(call); }
+ });
+ if !needed { return Ok(()); }
+
+ let mut addresses = BTreeMap::new();
+ crate::optimize::visit(&body.code, &mut |inst| {
+  if let InstKind::FunctionAddress(reg,CallTarget::Defined(name)) = &inst.kind {
+   addresses.insert(*reg, name.clone());
+  }
+ });
+ let mut rewrite = TaskRewrite {
+  registers: &mut body.registers, addresses: &addresses, functions, imports, resources, tasks, symbol,
+  result: Ok(false),
+ };
+ rewrite.block(&mut body.code);
+ if rewrite.result? { crate::optimize::value_code(body); }
+ Ok(())
 }
-fn block(code:&mut Vec<Inst>,registers:&mut Vec<Scalar>,addresses:&BTreeMap<usize,String>,functions:&[FunctionBody],imports:&BTreeMap<String,Vec<u8>>,resources:&mut Resources,tasks:&mut Vec<TaskBinding>,symbol:&str)->Result<bool,&'static str>{
- let mut cursor=unsafe{w::start()};let mut facts=w::BlockFacts{count:code.len()as u64,kind:w::Kind::Other,changed:0};
- let mut source=Vec::new().into_iter();let mut current:Option<Inst>=None;let mut output=Vec::new();
- loop{let next=unsafe{w::block_step(cursor,facts)};cursor=next.cursor;match next.need{
-  w::BlockNeed::Prepare=>{output=Vec::with_capacity(code.len());source=std::mem::take(code).into_iter();}
-  w::BlockNeed::Inspect=>{current=Some(unsafe{source.next().unwrap_unchecked()});facts.kind=kind(unsafe{current.as_ref().unwrap_unchecked()});}
-  w::BlockNeed::Task=>{
-   let InstKind::Call(call)=&mut unsafe{current.as_mut().unwrap_unchecked()}.kind else{unsafe{std::hint::unreachable_unchecked()}};
-   lower_start(call,registers,addresses,functions,imports,resources,tasks,symbol,&mut output)?;facts.changed=1;
+
+struct TaskRewrite<'a> {
+ registers: &'a mut Vec<Scalar>,
+ addresses: &'a BTreeMap<usize, String>,
+ functions: &'a [FunctionBody],
+ imports: &'a BTreeMap<String, Vec<u8>>,
+ resources: &'a mut Resources,
+ tasks: &'a mut Vec<TaskBinding>,
+ symbol: &'a str,
+ result: Result<bool, &'static str>,
+}
+
+struct RewriteBlock<'a> {
+ code: &'a mut Vec<Inst>,
+ starts: Vec<(usize, usize)>,
+ prelude: Vec<Inst>,
+}
+
+impl TaskRewrite<'_> {
+ fn block(&mut self, code: &mut Vec<Inst>) -> u32 {
+  let count = code.len();
+  let mut block = RewriteBlock { code, starts: Vec::new(), prelude: Vec::new() };
+  let host = w::RewriteHost { inspect: inspect_instruction, child: rewrite_child, start: rewrite_task_start };
+  let status = unsafe { w::rewrite_block(ptr::from_mut(&mut block).cast(), count, ptr::from_mut(self).cast(), host) };
+  if status == 0 && !block.starts.is_empty() {
+   // Only this block's direct insertions change its storage. Child blocks have already been visited.
+   let mut original = std::mem::take(block.code).into_iter();
+   let mut prelude = block.prelude.into_iter();
+   let mut rewritten = Vec::with_capacity(count + prelude.len());
+   let mut previous = 0;
+   for (index, inserted) in block.starts {
+    rewritten.extend(original.by_ref().take(index - previous));
+    rewritten.extend(prelude.by_ref().take(inserted));
+    previous = index;
+   }
+   rewritten.extend(original);
+   *block.code = rewritten;
   }
-  w::BlockNeed::Scope=>{
-   let InstKind::Scope(body)=&mut unsafe{current.as_mut().unwrap_unchecked()}.kind else{unsafe{std::hint::unreachable_unchecked()}};
-   facts.changed|=u32::from(block(body,registers,addresses,functions,imports,resources,tasks,symbol)?);
+  status
+ }
+}
+
+unsafe extern "C" fn inspect_instruction(block: *mut c_void, index: usize) -> w::Instruction {
+ let block = unsafe { &mut *block.cast::<RewriteBlock<'_>>() };
+ let inst = &mut block.code[index];
+ let empty = ptr::null_mut();
+ let (kind, first, second) = match &mut inst.kind {
+  InstKind::Scope(body) => (w::Kind::Scope, ptr::from_mut(body).cast(), empty),
+  InstKind::If { yes, no, .. } => (w::Kind::Pair, ptr::from_mut(yes).cast(), ptr::from_mut(no).cast()),
+  InstKind::Loop { condition, body, .. } => (w::Kind::Pair, ptr::from_mut(condition).cast(), ptr::from_mut(body).cast()),
+  InstKind::Call(call) if is_start(call) => (w::Kind::Start, empty, empty),
+  _ => (w::Kind::Other, empty, empty),
+ };
+ w::Instruction { kind, first, second }
+}
+
+unsafe extern "C" fn rewrite_child(context: *mut c_void, code: *mut c_void) -> u32 {
+ let rewrite = unsafe { &mut *context.cast::<TaskRewrite<'_>>() };
+ rewrite.block(unsafe { &mut *code.cast::<Vec<Inst>>() })
+}
+
+unsafe extern "C" fn rewrite_task_start(context: *mut c_void, block: *mut c_void, index: usize) -> u32 {
+ let rewrite = unsafe { &mut *context.cast::<TaskRewrite<'_>>() };
+ let block = unsafe { &mut *block.cast::<RewriteBlock<'_>>() };
+ // B only requests a start at an instruction classified by inspect_instruction.
+ let InstKind::Call(call) = &mut block.code[index].kind else { unsafe { std::hint::unreachable_unchecked() } };
+ let previous = block.prelude.len();
+ match lower_start(call, rewrite.registers, rewrite.addresses, rewrite.functions, rewrite.imports,
+                   rewrite.resources, rewrite.tasks, rewrite.symbol, &mut block.prelude) {
+  Ok(()) => {
+   block.starts.push((index, block.prelude.len() - previous));
+   rewrite.result = Ok(true);
+   0
   }
-  w::BlockNeed::Yes=>{
-   let InstKind::If{yes,..}=&mut unsafe{current.as_mut().unwrap_unchecked()}.kind else{unsafe{std::hint::unreachable_unchecked()}};
-   facts.changed|=u32::from(block(yes,registers,addresses,functions,imports,resources,tasks,symbol)?);
-  }
-  w::BlockNeed::No=>{
-   let InstKind::If{no,..}=&mut unsafe{current.as_mut().unwrap_unchecked()}.kind else{unsafe{std::hint::unreachable_unchecked()}};
-   facts.changed|=u32::from(block(no,registers,addresses,functions,imports,resources,tasks,symbol)?);
-  }
-  w::BlockNeed::Condition=>{
-   let InstKind::Loop{condition,..}=&mut unsafe{current.as_mut().unwrap_unchecked()}.kind else{unsafe{std::hint::unreachable_unchecked()}};
-   facts.changed|=u32::from(block(condition,registers,addresses,functions,imports,resources,tasks,symbol)?);
-  }
-  w::BlockNeed::Body=>{
-   let InstKind::Loop{body,..}=&mut unsafe{current.as_mut().unwrap_unchecked()}.kind else{unsafe{std::hint::unreachable_unchecked()}};
-   facts.changed|=u32::from(block(body,registers,addresses,functions,imports,resources,tasks,symbol)?);
-  }
-  w::BlockNeed::Append=>output.push(unsafe{current.take().unwrap_unchecked()}),
-  w::BlockNeed::Finish=>{*code=std::mem::take(&mut output);}
-  w::BlockNeed::Same=>return Ok(false),w::BlockNeed::Changed=>return Ok(true),w::BlockNeed::Next=>{},
- }}
+  Err(error) => { rewrite.result = Err(error); 1 }
+ }
 }
 
 fn lower_start(call:&mut Call,registers:&mut Vec<Scalar>,addresses:&BTreeMap<usize,String>,functions:&[FunctionBody],imports:&BTreeMap<String,Vec<u8>>,resources:&mut Resources,tasks:&mut Vec<TaskBinding>,symbol:&str,output:&mut Vec<Inst>)->Result<(),&'static str>{

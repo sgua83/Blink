@@ -10,31 +10,24 @@ extern "C" Step<BindNeed> bind_step(Cursor state,BindFacts facts) on cpu {
  if(c.phase==5){if(c.index<facts.bindings){c.phase=6;return Step<BindNeed>(c,BindNeed::Entry);}if(facts.bindings==0u64){return Step<BindNeed>(c,BindNeed::Empty);}return Step<BindNeed>(c,BindNeed::Present);}
  c.index+=1u64;c.phase=5;return Step<BindNeed>(c,BindNeed::Next);
 }
-extern "C" Step<BodyNeed> body_step(Cursor state,BodyFacts facts) on cpu {
- Cursor c=state;
- if(c.phase==0){c.phase=1;return Step<BodyNeed>(c,BodyNeed::Probe);}
- if(c.phase==1){if(facts.needed==0){return Step<BodyNeed>(c,BodyNeed::Complete);}c.phase=2;return Step<BodyNeed>(c,BodyNeed::Addresses);}
- if(c.phase==2){c.phase=3;return Step<BodyNeed>(c,BodyNeed::Lower);}
- if(c.phase==3){c.phase=4;if(facts.changed!=0){return Step<BodyNeed>(c,BodyNeed::Optimize);}return Step<BodyNeed>(c,BodyNeed::Next);}
- return Step<BodyNeed>(c,BodyNeed::Complete);
-}
-extern "C" Step<BlockNeed> block_step(Cursor state,BlockFacts facts) on cpu {
- Cursor c=state;
- if(c.phase==0){c.phase=1;return Step<BlockNeed>(c,BlockNeed::Prepare);}
- if(c.phase==1){if(c.index<facts.count){c.phase=2;return Step<BlockNeed>(c,BlockNeed::Inspect);}c.phase=20;return Step<BlockNeed>(c,BlockNeed::Finish);}
- if(c.phase==2){
-  c.phase=3;
-  if(facts.kind==Kind::Task){return Step<BlockNeed>(c,BlockNeed::Task);}
-  if(facts.kind==Kind::Scope){return Step<BlockNeed>(c,BlockNeed::Scope);}
-  if(facts.kind==Kind::If){c.phase=4;return Step<BlockNeed>(c,BlockNeed::Yes);}
-  if(facts.kind==Kind::Loop){c.phase=5;return Step<BlockNeed>(c,BlockNeed::Condition);}
-  return Step<BlockNeed>(c,BlockNeed::Next);
+extern "C" u32 rewrite_block(address block,usize count,address context,RewriteHost host) on cpu
+ requires nonzero(host.inspect) requires nonzero(host.child) requires nonzero(host.start) {
+ usize index=0u64;
+ while(index<count) {
+  Instruction inst=host.inspect(block,index);
+  if(inst.kind==Kind::Start) {
+   if(host.start(context,block,index)!=0) {return 1;}
+  } else {
+   if(inst.kind==Kind::Scope || inst.kind==Kind::Pair) {
+    if(host.child(context,inst.first)!=0) {return 1;}
+    if(inst.kind==Kind::Pair) {
+     if(host.child(context,inst.second)!=0) {return 1;}
+    }
+   }
+  }
+  index+=1u64;
  }
- if(c.phase==4){c.phase=3;return Step<BlockNeed>(c,BlockNeed::No);}
- if(c.phase==5){c.phase=3;return Step<BlockNeed>(c,BlockNeed::Body);}
- if(c.phase==3){c.phase=6;return Step<BlockNeed>(c,BlockNeed::Append);}
- if(c.phase==6){c.index+=1u64;c.phase=1;return Step<BlockNeed>(c,BlockNeed::Next);}
- if(facts.changed!=0){return Step<BlockNeed>(c,BlockNeed::Changed);}return Step<BlockNeed>(c,BlockNeed::Same);
+ return 0;
 }
 extern "C" Step<LookupNeed> lookup_step(Cursor state,LookupFacts facts) on cpu {
  Cursor c=state;

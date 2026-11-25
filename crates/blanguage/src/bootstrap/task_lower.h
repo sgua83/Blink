@@ -1,14 +1,16 @@
 module bootstrap.task_lower;
 struct Cursor {u32 phase;u64 index;u64 part;};
 struct Step<T> {Cursor cursor;T need;};
-enum Kind:u32 {Other=0;Task=1;Scope=2;If=3;Loop=4;};
+enum Kind:u32 {Other=0;Start=1;Scope=2;Pair=3;};
 enum Role:u32 {Ordinary=0;Frame=1;ReturnSource=2;Completion=3;};
 struct BindFacts {u32 resources;u32 root;u64 functions;u64 bindings;};
 enum BindNeed:u32 {Start=0;Root=1;Function=2;Entries=3;Entry=4;Empty=5;Present=6;Next=7;};
-struct BodyFacts {u32 needed;u32 changed;};
-enum BodyNeed:u32 {Probe=0;Addresses=1;Lower=2;Optimize=3;Complete=4;Next=5;};
-struct BlockFacts {u64 count;Kind kind;u32 changed;};
-enum BlockNeed:u32 {Prepare=0;Inspect=1;Task=2;Scope=3;Yes=4;No=5;Condition=6;Body=7;Append=8;Finish=9;Same=10;Changed=11;Next=12;};
+struct Instruction {Kind kind;address first;address second;};
+struct RewriteHost {
+ cfn<Instruction,address,usize> inspect;
+ cfn<u32,address,address> child;
+ cfn<u32,address,address,usize> start;
+};
 struct LookupFacts {u64 count;u32 equal;};
 enum LookupNeed:u32 {Worker=0;Input=1;Start=2;Selector=3;Found=4;Missing=5;Next=6;};
 struct NewFacts {u64 fields;u64 parameters;u32 frame;u32 owned;u32 reference;u32 inout;u32 has_result;};
@@ -18,8 +20,8 @@ struct EntryFacts {u64 parameters;u64 components;u64 result_components;Role role
 enum EntryNeed:u32 {Body=0;Zero=1;Parameter=2;MissingResult=3;ReturnSource=4;CompletionField=5;MissingCompletion=6;CompletionReference=7;Frame=8;Field=9;MissingArgument=10;ValidateAddress=11;BadAddress=12;AddressLow=13;AddressHigh=14;Reference=15;ValidateType=16;BadType=17;LoadValue=18;Value=19;Extra=20;Unused=21;ResultBase=22;ResultReg=23;ErrorReg=24;Call=25;ErrorZero=26;ErrorCompare=27;ErrorIf=28;Store=29;Selector=30;Finish=31;Next=32;};
 extern "C" Cursor start() on cpu;
 extern "C" Step<BindNeed> bind_step(Cursor state,BindFacts facts) on cpu;
-extern "C" Step<BodyNeed> body_step(Cursor state,BodyFacts facts) on cpu;
-extern "C" Step<BlockNeed> block_step(Cursor state,BlockFacts facts) on cpu;
+extern "C" u32 rewrite_block(address block,usize count,address context,RewriteHost host) on cpu
+ requires nonzero(host.inspect) requires nonzero(host.child) requires nonzero(host.start);
 extern "C" Step<LookupNeed> lookup_step(Cursor state,LookupFacts facts) on cpu;
 extern "C" Step<NewNeed> new_step(Cursor state,NewFacts facts) on cpu;
 extern "C" Step<RewriteNeed> rewrite_step(Cursor state) on cpu;
