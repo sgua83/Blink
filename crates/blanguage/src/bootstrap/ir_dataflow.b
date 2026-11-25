@@ -1,4 +1,5 @@
 module bootstrap.ir_dataflow;
+import bootstrap.type_families;
 
 // These tags describe the existing borrowed Rust IR fields at this one
 // private native handoff. They do not name a public IR format or registry.
@@ -2533,3 +2534,294 @@ extern "C" CpuRangeBody cpu_range_body(CpuRangeInput input,CpuRangePlan plan,add
   u32(history),u32(reset_on_head),u32(apply && has_head));
 }
 
+
+
+struct SdkResourceEmission { address state; address block; };
+
+u8 sdk_symbol_byte(Span text, usize index) on cpu {
+    return unsafe_position<u8>(unsafe_address(address_bits(text.data) + index));
+}
+
+bool sdk_prefix<const N:u32>(Span text, read array<u8,N> prefix) on cpu {
+    if (text.count < u64(N)) { return false; }
+    for (index in 0..N) {
+        if (sdk_symbol_byte(text, u64(index)) != prefix[index]) { return false; }
+    }
+    return true;
+}
+
+// Only the compiler-produced decimal resource names enter this pass.
+Word sdk_index<const N:u32>(Span text, read array<u8,N> prefix) on cpu {
+    if (text.count <= u64(N) || !sdk_prefix(text, prefix)) { return absent(); }
+    usize index = u64(N);
+    usize value = 0u64;
+    while (index < text.count) {
+        u8 digit = sdk_symbol_byte(text, index);
+        if (digit < u8(48) || digit > u8(57)) { return absent(); }
+        value = value * 10u64 + u64(digit - u8(48));
+        index += 1u64;
+    }
+    return found(value);
+}
+
+// Numbered call producers pass one scalar per argument after the Frame.
+// The source Frame argument itself remains in its original two-word form.
+usize sdk_operand(Span arguments, usize index, Host ir) on cpu requires nonzero(ir.inspect) {
+    return word_at(ir.inspect(node_at(arguments, index, N_ARGUMENT)).first, 0u64);
+}
+
+usize sdk_emit(SdkResourceEmission out, SdkResourceHost host, SdkResourceOp op,
+    u32 scalar, u64 a, usize b, usize c) on cpu requires nonzero(host.emit) {
+    usize dst = unsafe_position<SdkResourceState>(out.state).slots.register;
+    unsafe_position<SdkResourceState>(out.state).slots.register = dst + 1u64;
+    host.emit(out.state, out.block, op, scalar, dst, a, b, c);
+    return dst;
+}
+
+usize sdk_constant(SdkResourceEmission out, SdkResourceHost host, u32 scalar, u64 bits) on cpu
+    requires nonzero(host.emit) {
+    return sdk_emit(out, host, SdkResourceOp::Constant, scalar, bits, 0u64, 0u64);
+}
+
+usize sdk_binary(SdkResourceEmission out, SdkResourceHost host, SdkResourceOp op,
+    u32 scalar, usize left, usize right) on cpu requires nonzero(host.emit) {
+    return sdk_emit(out, host, op, scalar, left, right, 0u64);
+}
+
+SdkArgument sdk_packet(SdkResourceEmission out, SdkArgumentKind kind, usize count, usize words) on cpu {
+    usize base = unsafe_position<SdkResourceState>(out.state).slots.local;
+    unsafe_position<SdkResourceState>(out.state).slots.local = base + count * words;
+    return SdkArgument(kind, base, count);
+}
+
+void sdk_store(SdkResourceEmission out, SdkResourceHost host, usize slot, usize reg) on cpu
+    requires nonzero(host.emit) {
+    host.emit(out.state, out.block, SdkResourceOp::Store, 0, slot, reg, 0u64, 0u64);
+}
+
+usize sdk_bits(SdkResourceEmission out, SdkResourceHost host, u32 scalar, usize value) on cpu
+    requires nonzero(host.emit) {
+    u32 bits_type = scalar;
+    usize bits = value;
+    if (scalar == u32(BuiltinScalar::F32) || scalar == u32(BuiltinScalar::F64)) {
+        bits_type = scalar == u32(BuiltinScalar::F32) ? u32(BuiltinScalar::U32) : u32(BuiltinScalar::U64);
+        bits = sdk_emit(out, host, SdkResourceOp::Bitcast, bits_type, bits, 0u64, 0u64);
+    }
+    if (bits_type != u32(BuiltinScalar::U64)) {
+        bits = sdk_emit(out, host, SdkResourceOp::Cast, u32(BuiltinScalar::U64), bits, 0u64, 0u64);
+    }
+    return bits;
+}
+
+void sdk_allocate(SdkResourceEmission out, SdkResourceHost host, usize index) on cpu
+    requires nonzero(host.emit) requires nonzero(host.call) {
+    usize value = sdk_constant(out, host, u32(BuiltinScalar::U32), index);
+    let arguments = array<SdkArgument,3>(
+        SdkArgument(SdkArgumentKind::Original, 0u64, 0u64),
+        SdkArgument(SdkArgumentKind::U32, value, 0u64),
+        SdkArgument(SdkArgumentKind::Original, 1u64, 0u64));
+    host.call(out.state, out.block, SdkResourceCall::Allocate, address_of(arguments[0]), 3u64);
+}
+
+void sdk_run(SdkResourceEmission out, SdkResourceHost host, SdkResourceLayout layout,
+    Span source, usize index) on cpu
+    requires nonzero(host.ir.inspect) requires nonzero(host.emit) requires nonzero(host.call) {
+    usize at = 1u64;
+    SdkArgument data = sdk_packet(out, SdkArgumentKind::Datasets, layout.datasets, 2u64);
+    usize dataset_slot = 0u64;
+    while (dataset_slot < layout.datasets * 2u64) {
+        sdk_store(out, host, data.value + dataset_slot, sdk_operand(source, at, host.ir));
+        at += 1u64;
+        dataset_slot += 1u64;
+    }
+
+    // The producer's scalar argument order is the original uniform layout order.
+    usize words_base = unsafe_position<SdkResourceState>(out.state).slots.local;
+    usize words = 0u64;
+    usize uniform = 0u64;
+    while (uniform < layout.uniforms.count) {
+        Span components = host.ir.inspect(node_at(layout.uniforms, uniform, N_UNIFORM)).first;
+        usize field = 0u64;
+        while (field < components.count) {
+            u32 scalar = u32(host.ir.inspect(node_at(components, field, N_COMPONENT)).c);
+            usize kind = sdk_constant(out, host, u32(BuiltinScalar::U32), u64(scalar));
+            usize bits = sdk_bits(out, host, scalar, sdk_operand(source, at, host.ir));
+            at += 1u64;
+            sdk_store(out, host, words_base + words, kind);
+            sdk_store(out, host, words_base + words + 1u64, bits);
+            words += 2u64;
+            field += 1u64;
+        }
+        uniform += 1u64;
+    }
+    SdkArgument values = sdk_packet(out, SdkArgumentKind::Uniforms, words / 2u64, 2u64);
+    SdkArgument textures = sdk_packet(out, SdkArgumentKind::Textures, layout.textures, 1u64);
+    usize texture_slot = 0u64;
+    while (texture_slot < layout.textures) {
+        sdk_store(out, host, textures.value + texture_slot, sdk_operand(source, at, host.ir));
+        at += 1u64;
+        texture_slot += 1u64;
+    }
+
+    usize program_id = sdk_constant(out, host, u32(BuiltinScalar::U32), index);
+    let arguments = array<SdkArgument,5>(
+        SdkArgument(SdkArgumentKind::Original, 0u64, 0u64),
+        SdkArgument(SdkArgumentKind::U32, program_id, 0u64), data, values, textures);
+    host.call(out.state, out.block, SdkResourceCall::Run, address_of(arguments[0]), 5u64);
+}
+
+struct SdkLimit { usize value; usize count; };
+
+SdkLimit sdk_limit(SdkResourceEmission out, SdkResourceHost host, usize source,
+    u32 distance, usize one) on cpu requires nonzero(host.emit) {
+    if (distance == 0) {
+        // A strict upper bound of UINT32_MAX + 1 carries no new fact.
+        usize maximum = sdk_constant(out, host, u32(BuiltinScalar::U32), 4294967295u64);
+        usize valid = sdk_binary(out, host, SdkResourceOp::NotEqual, u32(BuiltinScalar::Bool), source, maximum);
+        usize count = sdk_emit(out, host, SdkResourceOp::Cast, u32(BuiltinScalar::U32), valid, 0u64, 0u64);
+        usize value = sdk_binary(out, host, SdkResourceOp::Add, u32(BuiltinScalar::U32), source, one);
+        return SdkLimit(value, count);
+    }
+    if (distance == 1) { return SdkLimit(source, one); }
+    usize removed = sdk_constant(out, host, u32(BuiltinScalar::U32), u64(distance - 1));
+    usize small = sdk_binary(out, host, SdkResourceOp::Less, u32(BuiltinScalar::Bool), source, removed);
+    usize clipped = sdk_emit(out, host, SdkResourceOp::Select, u32(BuiltinScalar::U32), small, source, removed);
+    return SdkLimit(sdk_binary(out, host, SdkResourceOp::Subtract, u32(BuiltinScalar::U32), source, clipped), one);
+}
+
+void sdk_complete_field(SdkResourceEmission out, SdkResourceHost host, SdkCompletion field,
+    Span source) on cpu
+    requires nonzero(host.ir.inspect) requires nonzero(host.emit) requires nonzero(host.call) {
+    SdkArgument ranges = sdk_packet(out, SdkArgumentKind::Intervals, field.lower.count, 2u64);
+    usize range_row = 0u64;
+    while (range_row < field.lower.count) {
+        usize lower = sdk_constant(out, host, u32(BuiltinScalar::U64), word_at(field.lower, range_row));
+        usize upper = sdk_constant(out, host, u32(BuiltinScalar::U64), word_at(field.upper, range_row));
+        sdk_store(out, host, ranges.value + range_row * 2u64, lower);
+        sdk_store(out, host, ranges.value + range_row * 2u64 + 1u64, upper);
+        range_row += 1u64;
+    }
+    SdkArgument bounds = sdk_packet(out, SdkArgumentKind::Limits, field.parameters.count, 1u64);
+    usize count = sdk_constant(out, host, u32(BuiltinScalar::U32), 0u64);
+    usize one = sdk_constant(out, host, u32(BuiltinScalar::U32), 1u64);
+    usize stride = sdk_constant(out, host, u32(BuiltinScalar::U32), size_of<u32>());
+    usize limit_row = 0u64;
+    while (limit_row < field.parameters.count) {
+        usize source_value = sdk_operand(source, 3u64 + word_at(field.parameters, limit_row), host.ir);
+        address at = node_at(field.distances, limit_row, N_INSTRUCTION).data;
+        SdkLimit limit = sdk_limit(out, host, source_value, unsafe_position<u32>(at), one);
+        usize offset = sdk_binary(out, host, SdkResourceOp::Multiply, u32(BuiltinScalar::U32), count, stride);
+        host.emit(out.state, out.block, SdkResourceOp::StoreIndexed, 0,
+            bounds.value, bounds.count, offset, limit.value);
+        count = sdk_binary(out, host, SdkResourceOp::Add, u32(BuiltinScalar::U32), count, limit.count);
+        limit_row += 1u64;
+    }
+
+    usize field_offset = sdk_constant(out, host, u32(BuiltinScalar::U32), u64(field.offset));
+    usize offset = sdk_binary(out, host, SdkResourceOp::Add, u32(BuiltinScalar::U32),
+        sdk_operand(source, 2u64, host.ir), field_offset);
+    usize mask = sdk_constant(out, host, u32(BuiltinScalar::U64), field.mask);
+    usize bits = sdk_constant(out, host, u32(BuiltinScalar::U64), field.bits);
+    usize range_count = sdk_constant(out, host, u32(BuiltinScalar::U64), field.lower.count);
+    usize limit_count = sdk_emit(out, host, SdkResourceOp::Cast, u32(BuiltinScalar::U64), count, 0u64, 0u64);
+    let arguments = array<SdkArgument,9>(
+        SdkArgument(SdkArgumentKind::Original, 0u64, 0u64),
+        SdkArgument(SdkArgumentKind::Original, 1u64, 0u64),
+        SdkArgument(SdkArgumentKind::U32, offset, 0u64), ranges,
+        SdkArgument(SdkArgumentKind::U64, range_count, 0u64), bounds,
+        SdkArgument(SdkArgumentKind::U64, limit_count, 0u64),
+        SdkArgument(SdkArgumentKind::U64, mask, 0u64),
+        SdkArgument(SdkArgumentKind::U64, bits, 0u64));
+    host.call(out.state, out.block, SdkResourceCall::Complete, address_of(arguments[0]), 9u64);
+}
+
+bool sdk_resource_call(SdkResourceEmission out, read SdkResourceInput input,
+    SdkResourceHost host, Node call) on cpu
+    requires nonzero(host.ir.inspect) requires nonzero(host.emit) requires nonzero(host.call)
+    requires nonzero(host.layout) requires nonzero(host.completions) requires nonzero(host.completion) {
+    View invocation = host.ir.inspect(call);
+    View target = host.ir.inspect(invocation.left);
+    if (target.tag != 0 || target.first.count != 19u64 || !sdk_prefix(target.first, "@blink.application@")) {
+        return false;
+    }
+    Word index = sdk_index(target.second, "blink_allocate_");
+    if (index.present != 0) { sdk_allocate(out, host, index.value); return true; }
+    index = sdk_index(target.second, "blink_run_");
+    if (index.present != 0) {
+        sdk_run(out, host, host.layout(input.programs, index.value), invocation.first, index.value);
+        return true;
+    }
+    index = sdk_index(target.second, "blink_complete_");
+    if (index.present == 0) { return false; }
+    Span fields = host.completions(input.completions, index.value);
+    usize row = 0u64;
+    while (row < fields.count) {
+        SdkCompletion field = host.completion(node_at(fields, row, N_INSTRUCTION).data);
+        sdk_complete_field(out, host, field, invocation.first);
+        row += 1u64;
+    }
+    return true;
+}
+
+extern "C" void sdk_resource_block(address state, read SdkResourceInput input,
+    SdkResourceHost host, address block) on cpu
+    requires nonzero(host.ir.inspect) requires nonzero(host.next) requires nonzero(host.child)
+    requires nonzero(host.block) requires nonzero(host.keep) requires nonzero(host.emit)
+    requires nonzero(host.call) requires nonzero(host.layout)
+    requires nonzero(host.completions) requires nonzero(host.completion) {
+    SdkResourceEmission out = SdkResourceEmission(state, block);
+    Node current = host.next(block);
+    while (address_bits(current.data) != 0u64) {
+        View instruction = host.ir.inspect(current);
+        u32 kind = instruction.tag;
+        if (kind == OP_SCOPE || kind == OP_BRANCH || kind == OP_LOOP_VALUE) {
+            host.block(host.child(block, 0), state, address_of(input), host);
+            if (kind != OP_SCOPE) {
+                host.block(host.child(block, 1), state, address_of(input), host);
+            }
+        }
+        if (kind != OP_INVOKE || !sdk_resource_call(out, input, host, instruction.left)) {
+            host.keep(block);
+        }
+        current = host.next(block);
+    }
+}
+
+void sdk_resource_body(SdkResourceBody body, read SdkResourceInput input, SdkResourceHost host) on cpu
+    requires nonzero(host.slots) requires nonzero(host.block) {
+    SdkResourceState state = SdkResourceState(body.registers, body.locals,
+        host.slots(body.registers, body.locals));
+    host.block(body.code, address_of(state), address_of(input), host);
+}
+
+void sdk_resource_stages(Span stages, read SdkResourceInput input, SdkResourceHost host) on cpu
+    requires nonzero(host.stage) requires nonzero(host.slots) requires nonzero(host.block) {
+    usize index = 0u64;
+    while (index < stages.count) {
+        SdkResourceStage stage = host.stage(node_at(stages, index, N_STAGE).data);
+        sdk_resource_body(stage.main, input, host);
+        if (address_bits(stage.project.code) != 0u64) { sdk_resource_body(stage.project, input, host); }
+        if (address_bits(stage.identity.code) != 0u64) {
+            sdk_resource_body(stage.identity, input, host);
+            sdk_resource_body(stage.combine, input, host);
+        }
+        index += 1u64;
+    }
+}
+
+extern "C" void lower_sdk_resources(read SdkResourceInput input, SdkResourceHost host) on cpu
+    requires nonzero(host.function) requires nonzero(host.stages) requires nonzero(host.stage)
+    requires nonzero(host.slots) requires nonzero(host.block) {
+    usize function_index = 0u64;
+    while (function_index < input.functions.count) {
+        SdkResourceBody body = host.function(node_at(input.functions, function_index, N_INSTRUCTION).data);
+        sdk_resource_body(body, input, host);
+        function_index += 1u64;
+    }
+    sdk_resource_stages(input.root, input, host);
+    usize program_index = 0u64;
+    while (program_index < input.program_count) {
+        sdk_resource_stages(host.stages(input.programs, program_index), input, host);
+        program_index += 1u64;
+    }
+}

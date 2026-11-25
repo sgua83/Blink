@@ -624,3 +624,54 @@ extern "C" CpuRangeBody cpu_range_body(CpuRangeInput input,CpuRangePlan plan,add
  requires nonzero(host.reg) requires nonzero(host.local) requires nonzero(host.offset) requires nonzero(host.put)
  requires nonzero(host.move_block) requires nonzero(host.branch) requires nonzero(host.size);
 
+
+
+// SDK resource calls borrow the checked IR and its original resource directory.
+// Rust holds the code and type containers until each synchronous lowering returns.
+struct SdkResourceInput {
+    Span functions; Span root; address programs; usize program_count; address completions;
+};
+struct SdkResourceBody { address registers; address locals; address code; };
+struct SdkResourceStage {
+    SdkResourceBody main; SdkResourceBody project; SdkResourceBody identity; SdkResourceBody combine;
+};
+struct SdkResourceLayout { Span uniforms; usize datasets; usize textures; };
+struct SdkCompletion {
+    u32 offset; u64 mask; u64 bits; Span lower; Span upper; Span parameters; Span distances;
+};
+struct SdkResourceSlots { usize register; usize local; };
+struct SdkResourceState { address registers; address locals; SdkResourceSlots slots; };
+enum SdkResourceOp:u32 {
+    Constant=0; Bitcast=1; Cast=2; NotEqual=3; Less=4; Add=5; Subtract=6;
+    Multiply=7; Select=8; Store=9; StoreIndexed=10;
+};
+enum SdkArgumentKind:u32 {
+    Original=0; U32=1; U64=2; Datasets=3; Uniforms=4; Textures=5; Intervals=6; Limits=7;
+};
+struct SdkArgument { SdkArgumentKind kind; usize value; usize count; };
+enum SdkResourceCall:u32 { Allocate=0; Run=1; Complete=2; };
+struct SdkResourceHost {
+    Host ir;
+    cfn<SdkResourceBody,address> function;
+    cfn<Span,address,usize> stages;
+    cfn<SdkResourceStage,address> stage;
+    cfn<SdkResourceLayout,address,usize> layout;
+    cfn<Span,address,usize> completions;
+    cfn<SdkCompletion,address> completion;
+    cfn<SdkResourceSlots,address,address> slots;
+    cfn<void,address,address,address,SdkResourceHost> block;
+    cfn<Node,address> next;
+    cfn<address,address,u32> child;
+    cfn<void,address> keep;
+    cfn<void,address,address,SdkResourceOp,u32,usize,u64,usize,usize> emit;
+    cfn<void,address,address,SdkResourceCall,address,usize> call;
+};
+extern "C" void lower_sdk_resources(read SdkResourceInput input,SdkResourceHost host) on cpu
+    requires nonzero(host.function) requires nonzero(host.stages) requires nonzero(host.stage)
+    requires nonzero(host.slots) requires nonzero(host.block);
+extern "C" void sdk_resource_block(address state,read SdkResourceInput input,
+    SdkResourceHost host,address block) on cpu
+    requires nonzero(host.ir.inspect) requires nonzero(host.next) requires nonzero(host.child)
+    requires nonzero(host.block) requires nonzero(host.keep) requires nonzero(host.emit)
+    requires nonzero(host.call) requires nonzero(host.layout)
+    requires nonzero(host.completions) requires nonzero(host.completion);

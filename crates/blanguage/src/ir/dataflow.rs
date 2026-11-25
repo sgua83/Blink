@@ -26,8 +26,20 @@ impl Node {
 #[repr(C)]
 pub(crate) struct Span { data: *const c_void, pub(crate) count: usize, stride: usize }
 impl Span {
-    const EMPTY: Self = Self { data: ptr::null(), count: 0, stride: 0 };
+    pub(crate) const EMPTY: Self = Self { data: ptr::null(), count: 0, stride: 0 };
     pub(crate) fn slice<T>(values: &[T]) -> Self { Self { data: values.as_ptr().cast(), count: values.len(), stride: size_of::<T>() } }
+    pub(crate) fn mutable<T>(values: &mut [T]) -> Self {
+        Self { data: values.as_mut_ptr().cast(), count: values.len(), stride: size_of::<T>() }
+    }
+    pub(crate) fn field<T, U>(values: &[T], field: fn(&T) -> &U) -> Self {
+        let offset = values.first().map_or(0, |value| {
+            ptr::from_ref(field(value)).addr() - ptr::from_ref(value).addr()
+        });
+        Self {
+            data: values.as_ptr().cast::<u8>().wrapping_add(offset).cast(),
+            count: values.len(), stride: size_of::<T>(),
+        }
+    }
     // The caller must pass a span borrowed from a slice of T.
     pub(crate) unsafe fn as_slice<'a, T>(self) -> &'a [T] {
         unsafe { std::slice::from_raw_parts(self.data.cast(), self.count) }
@@ -188,7 +200,12 @@ unsafe extern "C" fn inspect(node: Node) -> View {
             view.left = Node::of(&call.target, Kind::Target); view
         }
         Kind::Target => match unsafe { &*node.data.cast::<CallTarget>() } {
-            CallTarget::External(_) => View::tag(0),
+            CallTarget::External(name) => {
+                let mut view = View::tag(0);
+                view.first = Span::slice(name.library.as_bytes());
+                view.second = Span::slice(name.symbol.as_bytes());
+                view
+            }
             CallTarget::Defined(_) => View::tag(1),
             CallTarget::Indirect(reg) => { let mut view = View::tag(2); view.a = *reg; view }
         },
