@@ -598,7 +598,7 @@ u32 binary_opcode(BinaryOperation operation, ScalarDefinition scalar) on cpu {
     return comparison_opcode(operation, scalar);
 }
 
-extern "C" ScalarWords scalar_binary(BinaryEmission input, ScalarHost host) on cpu
+ScalarWords scalar_binary(BinaryEmission input, ScalarHost host) on cpu
     requires nonzero(host.constant) requires nonzero(host.ids) requires nonzero(host.reserve) {
     ScalarDefinition scalar = scalar_definition(input.scalar);
     u32 opcode = binary_opcode(input.operation, scalar);
@@ -679,7 +679,7 @@ u32 cast_opcode(BuiltinScalar from, BuiltinScalar to, ScalarDefinition source, S
     return 124;
 }
 
-extern "C" ScalarWords scalar_cast(CastEmission input, ScalarHost host) on cpu
+ScalarWords scalar_cast(CastEmission input, ScalarHost host) on cpu
     requires nonzero(host.constant) requires nonzero(host.reserve) {
     address context = host.context;
     if (input.from == BuiltinScalar::Bool) {
@@ -779,7 +779,8 @@ BuiltinScalar unsigned_scalar(u32 width) on cpu {
     return width == 64 ? BuiltinScalar::U64 : BuiltinScalar::U32;
 }
 
-extern "C" ScalarWords scalar_division(ScalarDivision input, ScalarHost host) on cpu
+// Zero operand ID selects an immediate divisor or an absent output.
+ScalarWords scalar_division(ScalarDivision input, ScalarHost host) on cpu
     requires nonzero(host.constant) requires nonzero(host.type_id)
     requires nonzero(host.ids) requires nonzero(host.reserve) {
     address context = host.context;
@@ -816,7 +817,7 @@ ScalarWords float_sign(BuiltinScalar scalar, u32 type, u32 result, u32 value, bo
     return ScalarWords(words_three(body, at, 124, type, result, changed), 0u64);
 }
 
-extern "C" ScalarWords scalar_unary(UnaryEmission input, ScalarHost host) on cpu
+ScalarWords scalar_unary(UnaryEmission input, ScalarHost host) on cpu
     requires nonzero(host.constant) requires nonzero(host.type_id)
     requires nonzero(host.ids) requires nonzero(host.reserve) {
     if (input.operation == UnaryOperation::FloatNegate) {
@@ -848,7 +849,8 @@ u32 math_opcode(MathOperation operation) on cpu {
     if (operation == MathOperation::Min) { return 37; }
     return 40;
 }
-extern "C" ScalarWords scalar_math(MathEmission input, ScalarHost host) on cpu
+// A zero right operand denotes unary math. Zero body words report unsupported f64 math.
+ScalarWords scalar_math(MathEmission input, ScalarHost host) on cpu
     requires nonzero(host.constant) requires nonzero(host.type_id)
     requires nonzero(host.ids) requires nonzero(host.reserve) {
     MathOperation op = input.operation;
@@ -1170,7 +1172,7 @@ u32 uniform_word(inout StageCursor out, UniformRead input, u32 word) on cpu {
     return value;
 }
 
-extern "C" PayloadWrite read_uniform(UniformRead input, address body) on cpu {
+PayloadWrite read_uniform(UniformRead input, address body) on cpu {
     StageCursor out = StageCursor(body, 0u64, input.next);
     u32 low = uniform_word(out, input, input.low_word);
     u32 high = 0;
@@ -1656,6 +1658,114 @@ u32 lower_function_exit(StructuredHost host) on cpu
     return emitted.reaches_next;
 }
 
+u32 block_register(address registers, usize reg) on cpu {
+    return unsafe_position<u32>(unsafe_address(address_bits(registers) + u64(reg) * 4u64));
+}
+
+void block_float_constant(View instruction, BlockValues values) on cpu
+    requires nonzero(values.scalars.constant) requires nonzero(values.scalars.type_id)
+    requires nonzero(values.scalars.ids) requires nonzero(values.scalars.reserve)
+    requires nonzero(values.finish) requires nonzero(values.scalar) {
+    ScalarHost host = values.scalars;
+    address context = host.context;
+    BuiltinScalar scalar = values.scalar(context, instruction.a);
+    u32 count = BuiltinScalar(u32(instruction.c)) == BuiltinScalar::F64 ? 2 : 1;
+    array<u32,2> words = array<u32,2>(host.constant(context, BuiltinScalar::U32, u64(u32(instruction.b))), 0);
+    if (count == 2) { words[1] = host.constant(context, BuiltinScalar::U32, u64(instruction.b) >> 32u64); }
+    u32 shift = count == 2 ? host.constant(context, BuiltinScalar::U32, 32u64) : 0;
+    array<u32,2> shifts = array<u32,2>(0, shift);
+    u32 uint_type = host.type_id(context, BuiltinScalar::U32);
+    BuiltinScalar raw = unsigned_scalar(scalar_definition(scalar).width);
+    u32 next = host.ids(context, 0);
+    PayloadEmission input = PayloadEmission(PayloadAccess::Words, host.type_id(context, raw), uint_type, 4, count, next);
+    u32 zero = scalar == BuiltinScalar::Bool ? host.constant(context, BuiltinScalar::U32, 0u64) : 0;
+    PayloadResult result = PayloadResult(host.type_id(context, scalar), block_register(values.registers, instruction.a), zero);
+    address body = host.reserve(context, 20u64 * u64(count) + 5u64, 0u64).body;
+    PayloadWrite emitted = typed_payload_read(input, result, address_of(words[0]), address_of(shifts[0]), body);
+    values.finish(context, ScalarWords(emitted.words, 0u64));
+    host.ids(context, emitted.next - next);
+}
+
+void block_uniform(View instruction, BlockValues values) on cpu
+    requires nonzero(values.scalar) requires nonzero(values.finish)
+    requires nonzero(values.scalars.constant) requires nonzero(values.scalars.type_id)
+    requires nonzero(values.scalars.ids) requires nonzero(values.scalars.reserve) {
+    ScalarHost host = values.scalars;
+    address context = host.context;
+    BuiltinScalar scalar = values.scalar(context, instruction.a);
+    u32 width = scalar_definition(scalar).width;
+    u32 offset = u32(instruction.b);
+    u32 zero = host.constant(context, BuiltinScalar::U32, 0u64);
+    u32 word = offset / 4;
+    u32 low_word = host.constant(context, BuiltinScalar::U32, u64(word));
+    u32 shift = offset % 4 * 8;
+    u32 byte_shift = shift == 0 ? 0 : host.constant(context, BuiltinScalar::U32, u64(shift));
+    u32 high_word = 0;
+    u32 high_shift = 0;
+    if (width == 64) {
+        high_word = host.constant(context, BuiltinScalar::U32, u64(word + 1));
+        high_shift = host.constant(context, BuiltinScalar::U32, 32u64);
+    }
+    u32 next = host.ids(context, 0);
+    PayloadResult result = PayloadResult(host.type_id(context, scalar), block_register(values.registers, instruction.a),
+        scalar == BuiltinScalar::Bool ? zero : 0);
+    UniformRead input = UniformRead(next, values.push_pointer, values.push_block,
+        host.type_id(context, BuiltinScalar::U32), host.type_id(context, unsigned_scalar(width)),
+        result, zero, low_word, high_word, byte_shift, high_shift);
+    PayloadWrite emitted = read_uniform(input, host.reserve(context, 57u64, 0u64).body);
+    values.finish(context, ScalarWords(emitted.words, 0u64));
+    host.ids(context, emitted.next - next);
+}
+
+ScalarWords block_calculation(View instruction, BlockValues values, Host ir) on cpu
+    requires nonzero(ir.inspect) requires nonzero(values.scalar) requires nonzero(values.binary)
+    requires nonzero(values.scalars.constant) requires nonzero(values.scalars.type_id)
+    requires nonzero(values.scalars.ids) requires nonzero(values.scalars.reserve) {
+    ScalarHost host = values.scalars;
+    address context = host.context;
+    address registers = values.registers;
+    if (instruction.tag == OP_INTEGER_DIVIDE) {
+        View result = ir.inspect(instruction.right);
+        View divisor = ir.inspect(instruction.left);
+        u32 quotient = result.tag == 1 ? 0 : block_register(registers, result.a);
+        u32 remainder = result.tag == 0 ? 0 : block_register(registers, result.tag == 1 ? result.a : result.b);
+        u32 denominator = divisor.tag == 0 ? 0 : block_register(registers, divisor.a);
+        u64 immediate = divisor.tag == 0 ? u64(divisor.a) : 0u64;
+        ScalarDivision input = ScalarDivision(values.scalar(context, instruction.a), block_register(registers, instruction.a),
+            denominator, quotient, remainder, immediate);
+        return scalar_division(input, host);
+    }
+    BuiltinScalar dest = values.scalar(context, instruction.a);
+    u32 type_id = host.type_id(context, dest);
+    u32 result = block_register(registers, instruction.a);
+    if (instruction.tag == OP_MATH) {
+        usize first = unsafe_position<usize>(instruction.first.data);
+        u32 left = block_register(registers, first);
+        u32 right = 0;
+        if (instruction.first.count > 1u64) {
+            usize second = unsafe_position<usize>(unsafe_address(address_bits(instruction.first.data) + instruction.first.stride));
+            right = block_register(registers, second);
+        }
+        return scalar_math(MathEmission(MathOperation(u32(instruction.b)), dest, type_id, result,
+            left, right, values.extended_set), host);
+    }
+    u32 source = block_register(registers, instruction.b);
+    if (instruction.tag == OP_SELECT_VALUE) {
+        address body = host.reserve(context, 6u64, 0u64).body;
+        return ScalarWords(select_words(body, 0u64, type_id, result, source,
+            block_register(registers, instruction.c), block_register(registers, instruction.d)), 0u64);
+    }
+    BuiltinScalar scalar = values.scalar(context, instruction.b);
+    if (instruction.tag == OP_UNARY) {
+        return scalar_unary(UnaryEmission(UnaryOperation(u32(instruction.c)), scalar, type_id, result, source), host);
+    }
+    if (instruction.tag == OP_CAST) {
+        return scalar_cast(CastEmission(scalar, dest, type_id, result, source), host);
+    }
+    return scalar_binary(BinaryEmission(values.binary(instruction.right.data), scalar, type_id, result,
+        source, block_register(registers, instruction.c)), host);
+}
+
 extern "C" BlockFlow emit_instruction_block(Span code, ControlTargets targets,
     StructuredHost host, BlockHost emit) on cpu
     requires nonzero(emit.ir.inspect) requires nonzero(emit.reject)
@@ -1665,13 +1775,12 @@ extern "C" BlockFlow emit_instruction_block(Span code, ControlTargets targets,
     requires nonzero(emit.tile_length) requires nonzero(emit.tile_lane)
     requires nonzero(emit.tile_load) requires nonzero(emit.tile_store)
     requires nonzero(emit.view_load) requires nonzero(emit.indexed_load) requires nonzero(emit.indexed_store)
-    requires nonzero(emit.constant_bits) requires nonzero(emit.float_constant)
-    requires nonzero(emit.index) requires nonzero(emit.uniform)
+    requires nonzero(emit.values.scalar) requires nonzero(emit.values.binary) requires nonzero(emit.values.finish)
+    requires nonzero(emit.values.scalars.constant) requires nonzero(emit.values.scalars.type_id)
+    requires nonzero(emit.values.scalars.ids) requires nonzero(emit.values.scalars.reserve)
     requires nonzero(emit.local_load) requires nonzero(emit.local_store)
     requires nonzero(emit.private_load) requires nonzero(emit.private_store)
     requires nonzero(emit.load) requires nonzero(emit.store)
-    requires nonzero(emit.unary) requires nonzero(emit.binary) requires nonzero(emit.divide)
-    requires nonzero(emit.cast) requires nonzero(emit.math) requires nonzero(emit.select_value)
     requires nonzero(host.labels) requires nonzero(host.reserve_words) requires nonzero(host.finish_words)
     requires nonzero(host.block) requires nonzero(host.value) requires nonzero(host.begin_return)
     requires nonzero(host.normal_exit) requires nonzero(host.finish_return)
@@ -1740,14 +1849,20 @@ extern "C" BlockFlow emit_instruction_block(Span code, ControlTargets targets,
         } else if (kind == OP_CONSTANT) {
             BuiltinScalar scalar = BuiltinScalar(u32(value.c));
             if (scalar == BuiltinScalar::F32 || scalar == BuiltinScalar::F64) {
-                emit.float_constant(context, value.a, value.b, u32(scalar == BuiltinScalar::F64));
+                block_float_constant(value, emit.values);
             } else {
-                emit.constant_bits(context, value.a, scalar, value.b);
+                ScalarHost stream = emit.values.scalars;
+                put(emit.values.registers, u64(value.a), stream.constant(stream.context, scalar, u64(value.b)));
             }
         } else if (kind == OP_INDEX_VALUE) {
-            emit.index(context, value.a);
+            ScalarHost stream = emit.values.scalars;
+            u32 type_id = stream.type_id(stream.context, emit.values.scalar(stream.context, value.a));
+            u32 result = block_register(emit.values.registers, value.a);
+            address body = stream.reserve(stream.context, 4u64, 0u64).body;
+            u64 length = copy_shader_value(body, 0u64, type_id, result, emit.values.index);
+            emit.values.finish(stream.context, ScalarWords(length, 0u64));
         } else if (kind == OP_UNIFORM) {
-            emit.uniform(context, value.a, u32(value.b));
+            block_uniform(value, emit.values);
         } else if (kind == OP_LOAD_LOCAL) {
             emit.local_load(context, value.a, value.b);
         } else if (kind == OP_STORE_LOCAL) {
@@ -1760,20 +1875,12 @@ extern "C" BlockFlow emit_instruction_block(Span code, ControlTargets targets,
             emit.load(context, value.a, value.b, value.c, u32(value.d));
         } else if (kind == OP_STORE) {
             emit.store(context, value.a, value.b, u32(value.c), value.d);
-        } else if (kind == OP_UNARY) {
-            emit.unary(context, value.a, value.b, u32(value.c));
-        } else if (kind == OP_BINARY) {
-            emit.binary(context, value.a, value.b, value.c, value.right.data);
-        } else if (kind == OP_INTEGER_DIVIDE) {
-            emit.divide(context, value.right.data, value.a, value.left.data);
-        } else if (kind == OP_CAST) {
-            emit.cast(context, value.a, value.b);
-        } else if (kind == OP_MATH) {
-            if (emit.math(context, value.a, u32(value.b), value.first) == 0u64) {
+        } else if (kind >= OP_UNARY && kind <= OP_SELECT_VALUE) {
+            ScalarWords written = block_calculation(value, emit.values, emit.ir);
+            if (kind == OP_MATH && written.body == 0u64) {
                 return emit.reject(context, BlockRejection::FloatMath);
             }
-        } else if (kind == OP_SELECT_VALUE) {
-            emit.select_value(context, value.a, value.b, value.c, value.d);
+            emit.values.finish(emit.values.scalars.context, written);
         } else if (kind == OP_BRANCH || kind == OP_LOOP_VALUE) {
             StructuredKind control = kind == OP_BRANCH ? StructuredKind::Selection : StructuredKind::Loop;
             BlockFlow flow = lower_structured(StructuredControl(value.first, value.second, value.a, targets, control), host);

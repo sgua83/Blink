@@ -169,10 +169,6 @@ struct CastEmission {
     u32 value;
 };
 
-extern "C" ScalarWords scalar_binary(BinaryEmission input, ScalarHost host) on cpu
-    requires nonzero(host.constant) requires nonzero(host.ids) requires nonzero(host.reserve);
-extern "C" ScalarWords scalar_cast(CastEmission input, ScalarHost host) on cpu
-    requires nonzero(host.constant) requires nonzero(host.reserve);
 extern "C" u64 select_words(address body, u64 at, u32 result_type, u32 result,
                             u32 condition, u32 yes, u32 no) on cpu;
 
@@ -201,10 +197,6 @@ struct ScalarDivision {
     u32 remainder;
     u64 immediate;
 };
-// A zero denominator ID selects the immediate. Absent quotient and remainder IDs are zero.
-extern "C" ScalarWords scalar_division(ScalarDivision input, ScalarHost host) on cpu
-    requires nonzero(host.constant) requires nonzero(host.type_id)
-    requires nonzero(host.ids) requires nonzero(host.reserve);
 
 // Operation identities follow the original IR UnaryOp and MathOp.
 enum UnaryOperation:u32 {
@@ -229,13 +221,6 @@ struct MathEmission {
     u32 right;
     u32 extended_set;
 };
-extern "C" ScalarWords scalar_unary(UnaryEmission input, ScalarHost host) on cpu
-    requires nonzero(host.constant) requires nonzero(host.type_id)
-    requires nonzero(host.ids) requires nonzero(host.reserve);
-// A zero right operand denotes unary math. A zero body length reports unsupported f64 math.
-extern "C" ScalarWords scalar_math(MathEmission input, ScalarHost host) on cpu
-    requires nonzero(host.constant) requires nonzero(host.type_id)
-    requires nonzero(host.ids) requires nonzero(host.reserve);
 
 struct PageAddress {
     u32 u32_type;
@@ -338,7 +323,6 @@ struct UniformRead {
 };
 // The emitter supplies the declared IDs and room for both word loads,
 // the original payload join and the final scalar definition.
-extern "C" PayloadWrite read_uniform(UniformRead input, address body) on cpu;
 struct PackedField { u32 value; u32 offset; u32 raw_type; u32 bytes; };
 struct PackingConstant { u32 id; u32 next; };
 struct PackingHost {
@@ -433,8 +417,20 @@ struct StructuredHost {
     cfn<void,address,u32> record_return;
 };
 enum BlockRejection:u32 { Print=0; CpuCall=1; CpuTexture=2; CpuAddress=3; CpuFunction=4; FloatMath=5; };
+struct BlockValues {
+    address registers;
+    ScalarHost scalars;
+    cfn<BuiltinScalar,address,usize> scalar;
+    cfn<BinaryOperation,address> binary;
+    cfn<void,address,ScalarWords> finish;
+    u32 index;
+    u32 push_pointer;
+    u32 push_block;
+    u32 extended_set;
+};
 struct BlockHost {
     Host ir;
+    BlockValues values;
     cfn<BlockFlow,address,BlockRejection> reject;
     cfn<void,address,address,address,Span,usize> texture_sample;
     cfn<void,address,address> ray;
@@ -451,22 +447,12 @@ struct BlockHost {
     cfn<void,address,usize,address,address,usize,u32> view_load;
     cfn<void,address,usize,address,usize,u32> indexed_load;
     cfn<void,address,address,usize,u32,usize> indexed_store;
-    cfn<void,address,usize,BuiltinScalar,u64> constant_bits;
-    cfn<void,address,usize,u64,u32> float_constant;
-    cfn<void,address,usize> index;
-    cfn<void,address,usize,u32> uniform;
     cfn<void,address,usize,usize> local_load;
     cfn<void,address,usize,usize> local_store;
     cfn<void,address,usize,usize,usize,u32> private_load;
     cfn<void,address,usize,usize,usize,u32> private_store;
     cfn<void,address,usize,usize,usize,u32> load;
     cfn<void,address,usize,usize,u32,usize> store;
-    cfn<void,address,usize,usize,u32> unary;
-    cfn<void,address,usize,usize,usize,address> binary;
-    cfn<void,address,address,usize,address> divide;
-    cfn<void,address,usize,usize> cast;
-    cfn<u64,address,usize,u32,Span> math;
-    cfn<void,address,usize,usize,usize,usize> select_value;
 };
 extern "C" BlockFlow emit_instruction_block(Span code, ControlTargets targets,
     StructuredHost host, BlockHost emit) on cpu
@@ -477,13 +463,12 @@ extern "C" BlockFlow emit_instruction_block(Span code, ControlTargets targets,
     requires nonzero(emit.tile_length) requires nonzero(emit.tile_lane)
     requires nonzero(emit.tile_load) requires nonzero(emit.tile_store)
     requires nonzero(emit.view_load) requires nonzero(emit.indexed_load) requires nonzero(emit.indexed_store)
-    requires nonzero(emit.constant_bits) requires nonzero(emit.float_constant)
-    requires nonzero(emit.index) requires nonzero(emit.uniform)
+    requires nonzero(emit.values.scalar) requires nonzero(emit.values.binary) requires nonzero(emit.values.finish)
+    requires nonzero(emit.values.scalars.constant) requires nonzero(emit.values.scalars.type_id)
+    requires nonzero(emit.values.scalars.ids) requires nonzero(emit.values.scalars.reserve)
     requires nonzero(emit.local_load) requires nonzero(emit.local_store)
     requires nonzero(emit.private_load) requires nonzero(emit.private_store)
     requires nonzero(emit.load) requires nonzero(emit.store)
-    requires nonzero(emit.unary) requires nonzero(emit.binary) requires nonzero(emit.divide)
-    requires nonzero(emit.cast) requires nonzero(emit.math) requires nonzero(emit.select_value)
     requires nonzero(host.labels) requires nonzero(host.reserve_words) requires nonzero(host.finish_words)
     requires nonzero(host.block) requires nonzero(host.value) requires nonzero(host.begin_return)
     requires nonzero(host.normal_exit) requires nonzero(host.finish_return)

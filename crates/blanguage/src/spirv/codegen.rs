@@ -365,16 +365,6 @@ unsafe extern "C" fn reserve_constant_words(definitions: *mut std::ffi::c_void) 
 }
 
 #[repr(C)]
-struct BinaryEmission {
-    operation: ScalarBinaryOp,
-    scalar: ScalarCode,
-    result_type: u32,
-    result: u32,
-    left: u32,
-    right: u32,
-}
-
-#[repr(C)]
 struct ScalarWords {
     body: u64,
     decorations: u64,
@@ -393,45 +383,6 @@ struct ScalarHost {
     type_id: unsafe extern "C" fn(*mut std::ffi::c_void, ScalarCode) -> u32,
     ids: unsafe extern "C" fn(*mut std::ffi::c_void, u32) -> u32,
     reserve: unsafe extern "C" fn(*mut std::ffi::c_void, usize, usize) -> ScalarStreams,
-}
-
-#[repr(C)]
-struct CastEmission {
-    from: ScalarCode,
-    to: ScalarCode,
-    result_type: u32,
-    result: u32,
-    value: u32,
-}
-
-#[repr(C)]
-struct ScalarDivision {
-    scalar: ScalarCode,
-    numerator: u32,
-    denominator: u32,
-    quotient: u32,
-    remainder: u32,
-    immediate: Bits,
-}
-
-#[repr(C)]
-struct UnaryEmission {
-    operation: u32,
-    scalar: ScalarCode,
-    result_type: u32,
-    result: u32,
-    value: u32,
-}
-
-#[repr(C)]
-struct MathEmission {
-    operation: u32,
-    scalar: ScalarCode,
-    result_type: u32,
-    result: u32,
-    left: u32,
-    right: u32,
-    extended_set: u32,
 }
 
 unsafe extern "C" fn scalar_constant(context: *mut std::ffi::c_void, scalar: ScalarCode, bits: Bits) -> u32 {
@@ -640,21 +591,6 @@ struct PayloadResult {
 }
 
 #[repr(C)]
-struct UniformRead {
-    next: u32,
-    push_pointer: u32,
-    push_block: u32,
-    uint_type: u32,
-    raw_type: u32,
-    result: PayloadResult,
-    zero: u32,
-    low_word: u32,
-    high_word: u32,
-    byte_shift: u32,
-    high_shift: u32,
-}
-
-#[repr(C)]
 struct ControlWords {
     words: u64,
     label: u32,
@@ -738,8 +674,10 @@ unsafe extern "C" fn structured_finish(context: StructuredContext, emitted: Cont
 unsafe extern "C" fn structured_block(
     context: StructuredContext, code: Span, targets: ControlTargets,
 ) -> BlockFlow {
-    let host = unsafe { &mut *context.cast::<StructuredEmission<'_, '_>>() }.host();
-    unsafe { emit_instruction_block(code, targets, host, BLOCK_HOST) }
+    let emission = unsafe { &mut *context.cast::<StructuredEmission<'_, '_>>() };
+    let host = emission.host();
+    let block = block_host(emission.emitter);
+    unsafe { emit_instruction_block(code, targets, host, block) }
 }
 
 unsafe extern "C" fn structured_value(context: StructuredContext, register: Reg) -> u32 {
@@ -764,8 +702,38 @@ unsafe extern "C" fn structured_finish_return(context: StructuredContext) {
 enum BlockRejection { Print, CpuCall, CpuTexture, CpuAddress, CpuFunction, FloatMath }
 
 #[repr(C)]
+struct BlockValues {
+    registers: *mut u32,
+    scalars: ScalarHost,
+    scalar: unsafe extern "C" fn(*mut std::ffi::c_void, Reg) -> ScalarCode,
+    binary: unsafe extern "C" fn(*const BinaryOp) -> ScalarBinaryOp,
+    finish: unsafe extern "C" fn(*mut std::ffi::c_void, ScalarWords),
+    index: u32,
+    push_pointer: u32,
+    push_block: u32,
+    extended_set: u32,
+}
+
+unsafe extern "C" fn value_scalar(context: *mut std::ffi::c_void, register: Reg) -> ScalarCode {
+    unsafe { &*context.cast::<Emitter<'_>>() }.stage.registers[register].into()
+}
+
+unsafe extern "C" fn value_binary(op: *const BinaryOp) -> ScalarBinaryOp {
+    unsafe { (*op).into() }
+}
+
+unsafe extern "C" fn finish_value(context: *mut std::ffi::c_void, words: ScalarWords) {
+    let emitter = unsafe { &mut *context.cast::<Emitter<'_>>() };
+    unsafe {
+        emitter.body.set_len(emitter.body.len() + words.body as usize);
+        emitter.decorations.set_len(emitter.decorations.len() + words.decorations as usize);
+    }
+}
+
+#[repr(C)]
 struct BlockHost {
     ir: dataflow::Host,
+    values: BlockValues,
     reject: unsafe extern "C" fn(StructuredContext, BlockRejection) -> BlockFlow,
     texture_sample: unsafe extern "C" fn(StructuredContext, *const [Reg; 4], *const TextureSource, Span, Reg),
     ray: unsafe extern "C" fn(StructuredContext, *const Inst),
@@ -782,59 +750,52 @@ struct BlockHost {
     view_load: unsafe extern "C" fn(StructuredContext, Reg, *const [Reg; 2], *const ElementStride, Reg, u32),
     indexed_load: unsafe extern "C" fn(StructuredContext, Reg, *const IndexedSource, Reg, u32),
     indexed_store: unsafe extern "C" fn(StructuredContext, *const IndexedSource, Reg, u32, Reg),
-    constant_bits: unsafe extern "C" fn(StructuredContext, Reg, ScalarCode, Bits),
-    float_constant: unsafe extern "C" fn(StructuredContext, Reg, Bits, u32),
-    index: unsafe extern "C" fn(StructuredContext, Reg),
-    uniform: unsafe extern "C" fn(StructuredContext, Reg, u32),
     local_load: unsafe extern "C" fn(StructuredContext, Reg, usize),
     local_store: unsafe extern "C" fn(StructuredContext, usize, Reg),
     private_load: unsafe extern "C" fn(StructuredContext, Reg, usize, Reg, u32),
     private_store: unsafe extern "C" fn(StructuredContext, Reg, usize, Reg, u32),
     load: unsafe extern "C" fn(StructuredContext, Reg, usize, Reg, u32),
     store: unsafe extern "C" fn(StructuredContext, usize, Reg, u32, Reg),
-    unary: unsafe extern "C" fn(StructuredContext, Reg, Reg, u32),
-    binary: unsafe extern "C" fn(StructuredContext, Reg, Reg, Reg, *const BinaryOp),
-    divide: unsafe extern "C" fn(StructuredContext, *const IntegerDivisionResult, Reg, *const IntegerDivisor),
-    cast: unsafe extern "C" fn(StructuredContext, Reg, Reg),
-    math: unsafe extern "C" fn(StructuredContext, Reg, u32, Span) -> u64,
-    select_value: unsafe extern "C" fn(StructuredContext, Reg, Reg, Reg, Reg),
 }
 
-const BLOCK_HOST: BlockHost = BlockHost {
-    ir: dataflow::HOST,
-    reject: block_reject,
-    texture_sample: block_texture_sample,
-    ray: block_ray,
-    atomic: block_atomic,
-    append: block_append,
-    subgroup: block_subgroup,
-    barrier: block_barrier,
-    publish: block_publish,
-    collective: block_collective,
-    tile_length: block_tile_length,
-    tile_lane: block_tile_lane,
-    tile_load: block_tile_load,
-    tile_store: block_tile_store,
-    view_load: block_view_load,
-    indexed_load: block_indexed_load,
-    indexed_store: block_indexed_store,
-    constant_bits: block_constant_bits,
-    float_constant: block_float_constant,
-    index: block_index,
-    uniform: block_uniform,
-    local_load: block_local_load,
-    local_store: block_local_store,
-    private_load: block_private_load,
-    private_store: block_private_store,
-    load: block_load,
-    store: block_store,
-    unary: block_unary,
-    binary: block_binary,
-    divide: block_divide,
-    cast: block_cast,
-    math: block_math,
-    select_value: block_select,
-};
+fn block_host(emitter: &mut Emitter<'_>) -> BlockHost {
+    BlockHost {
+        ir: dataflow::HOST,
+        values: BlockValues {
+            registers: emitter.regs.as_mut_ptr(),
+            scalars: emitter.scalar_host(),
+            scalar: value_scalar,
+            binary: value_binary,
+            finish: finish_value,
+            index: emitter.index,
+            push_pointer: emitter.ptr_push_u32,
+            push_block: emitter.push,
+            extended_set: emitter.ext,
+        },
+        reject: block_reject,
+        texture_sample: block_texture_sample,
+        ray: block_ray,
+        atomic: block_atomic,
+        append: block_append,
+        subgroup: block_subgroup,
+        barrier: block_barrier,
+        publish: block_publish,
+        collective: block_collective,
+        tile_length: block_tile_length,
+        tile_lane: block_tile_lane,
+        tile_load: block_tile_load,
+        tile_store: block_tile_store,
+        view_load: block_view_load,
+        indexed_load: block_indexed_load,
+        indexed_store: block_indexed_store,
+        local_load: block_local_load,
+        local_store: block_local_store,
+        private_load: block_private_load,
+        private_store: block_private_store,
+        load: block_load,
+        store: block_store,
+    }
+}
 
 unsafe fn block_emitter<'a, 'program>(context: StructuredContext) -> &'a mut Emitter<'program> {
     unsafe { &mut *context.cast::<StructuredEmission<'_, 'program>>() }.emitter
@@ -962,30 +923,6 @@ unsafe extern "C" fn block_indexed_store(context: StructuredContext, source: *co
     e.store_paged(value, page, index, word, offset);
 }
 
-unsafe extern "C" fn block_constant_bits(context: StructuredContext, dst: Reg, scalar: ScalarCode, bits: Bits) {
-    let e = unsafe { block_emitter(context) };
-    e.regs[dst] = e.constant_code(scalar, bits);
-}
-
-unsafe extern "C" fn block_float_constant(context: StructuredContext, dst: Reg, bits: Bits, wide: u32) {
-    let e = unsafe { block_emitter(context) };
-    let mut words = [0; 2];
-    words[0] = e.constant(Scalar::U32, bits as u32);
-    if wide != 0 {
-        words[1] = e.constant(Scalar::U32, (bits >> 32) as u32);
-    }
-    e.from_words(dst, &words[..1 + wide as usize], Scalar::U32);
-}
-
-unsafe extern "C" fn block_index(context: StructuredContext, dst: Reg) {
-    let e = unsafe { block_emitter(context) };
-    e.copy_register(dst, e.index);
-}
-
-unsafe extern "C" fn block_uniform(context: StructuredContext, dst: Reg, offset: u32) {
-    unsafe { block_emitter(context) }.uniform(dst, offset);
-}
-
 unsafe extern "C" fn block_local_load(context: StructuredContext, dst: Reg, slot: usize) {
     let e = unsafe { block_emitter(context) };
     let pointer = e.locals[slot];
@@ -1024,55 +961,6 @@ unsafe extern "C" fn block_store(context: StructuredContext, binding: usize, ind
     let e = unsafe { block_emitter(context) };
     e.store_buffer(binding, e.value(index), word, value);
 }
-
-unsafe extern "C" fn block_unary(context: StructuredContext, dst: Reg, src: Reg, operation: u32) {
-    let e = unsafe { block_emitter(context) };
-    let input = UnaryEmission {
-        operation, scalar: e.stage.registers[src].into(), result_type: e.ty(dst),
-        result: e.value(dst), value: e.value(src),
-    };
-    e.emit_scalar(|host| unsafe { scalar_unary(input, host) });
-}
-
-unsafe extern "C" fn block_binary(context: StructuredContext, dst: Reg, left: Reg, right: Reg, op: *const BinaryOp) {
-    let e = unsafe { block_emitter(context) };
-    let input = BinaryEmission {
-        operation: unsafe { (*op).into() }, scalar: e.stage.registers[left].into(),
-        result_type: e.ty(dst), result: e.value(dst), left: e.value(left), right: e.value(right),
-    };
-    e.emit_scalar(|host| unsafe { scalar_binary(input, host) });
-}
-
-unsafe extern "C" fn block_divide(context: StructuredContext, result: *const IntegerDivisionResult,
-    src: Reg, divisor: *const IntegerDivisor,
-) {
-    unsafe { block_emitter(context).integer_divide(*result, src, *divisor) };
-}
-
-unsafe extern "C" fn block_cast(context: StructuredContext, dst: Reg, src: Reg) {
-    let e = unsafe { block_emitter(context) };
-    let input = CastEmission {
-        from: e.stage.registers[src].into(), to: e.stage.registers[dst].into(),
-        result_type: e.ty(dst), result: e.value(dst), value: e.value(src),
-    };
-    e.emit_scalar(|host| unsafe { scalar_cast(input, host) });
-}
-
-unsafe extern "C" fn block_math(context: StructuredContext, dst: Reg, operation: u32, args: Span) -> u64 {
-    let e = unsafe { block_emitter(context) };
-    let args = unsafe { args.as_slice::<Reg>() };
-    let input = MathEmission {
-        operation, scalar: e.stage.registers[dst].into(), result_type: e.ty(dst), result: e.value(dst),
-        left: e.value(args[0]), right: args.get(1).map_or(0, |&reg| e.value(reg)), extended_set: e.ext,
-    };
-    e.emit_scalar(|host| unsafe { scalar_math(input, host) })
-}
-
-unsafe extern "C" fn block_select(context: StructuredContext, dst: Reg, test: Reg, yes: Reg, no: Reg) {
-    let e = unsafe { block_emitter(context) };
-    e.select(e.ty(dst), e.value(dst), e.value(test), e.value(yes), e.value(no));
-}
-
 
 #[repr(C)]
 struct SubgroupEmission {
@@ -1366,19 +1254,9 @@ unsafe extern "C" {
     #[link_name = "bootstrap.spirv_envelope::function_storage"]
     fn function_storage(input: FunctionStorageInput, host: FunctionStorageHost, constants: ShaderConstants,
         locals: *mut u32, definitions: *mut u32, body: *mut u32) -> FunctionStorageWords;
-    #[link_name = "bootstrap.spirv_envelope::scalar_binary"]
-    fn scalar_binary(input: BinaryEmission, host: ScalarHost) -> ScalarWords;
-    #[link_name = "bootstrap.spirv_envelope::scalar_cast"]
-    fn scalar_cast(input: CastEmission, host: ScalarHost) -> ScalarWords;
     #[link_name = "bootstrap.spirv_envelope::select_words"]
     fn select_words(body: *mut u32, at: u64, result_type: u32, result: u32,
                     condition: u32, yes: u32, no: u32) -> u64;
-    #[link_name = "bootstrap.spirv_envelope::scalar_division"]
-    fn scalar_division(input: ScalarDivision, host: ScalarHost) -> ScalarWords;
-    #[link_name = "bootstrap.spirv_envelope::scalar_unary"]
-    fn scalar_unary(input: UnaryEmission, host: ScalarHost) -> ScalarWords;
-    #[link_name = "bootstrap.spirv_envelope::scalar_math"]
-    fn scalar_math(input: MathEmission, host: ScalarHost) -> ScalarWords;
     #[link_name = "bootstrap.spirv_envelope::prepare_page"]
     fn prepare_page(input: PageInputs, result_pointer: u32, host: ScalarHost) -> PageAddress;
     #[link_name = "bootstrap.spirv_envelope::physical_scalar_read"]
@@ -1396,8 +1274,6 @@ unsafe extern "C" {
     fn read_summary_words(body: *mut u32, type_id: u32, first: u32, pointers: *const u32, count: u32) -> u64;
     #[link_name = "bootstrap.spirv_envelope::write_summary_words"]
     fn write_summary_words(body: *mut u32, pointers: *const u32, values: *const u32, count: u32) -> u64;
-    #[link_name = "bootstrap.spirv_envelope::read_uniform"]
-    fn read_uniform(input: UniformRead, body: *mut u32) -> PayloadWrite;
     #[link_name = "bootstrap.spirv_envelope::payload_read"]
     fn payload_read(input: PayloadEmission, operands: *const u32, shifts: *const u32, body: *mut u32) -> PayloadRead;
     #[link_name = "bootstrap.spirv_envelope::typed_payload_read"]
@@ -1957,29 +1833,6 @@ impl Emitter<'_> {
         }
     }
 
-    fn emit_scalar(&mut self, emit: impl FnOnce(ScalarHost) -> ScalarWords) -> u64 {
-        let words = emit(self.scalar_host());
-        unsafe {
-            self.body.set_len(self.body.len() + words.body as usize);
-            self.decorations.set_len(self.decorations.len() + words.decorations as usize);
-        }
-        words.body
-    }
-
-    fn integer_divide(&mut self, result: IntegerDivisionResult, src: Reg, divisor: IntegerDivisor) {
-        let (denominator, immediate) = match divisor {
-            IntegerDivisor::Constant(divisor) => (0, divisor.get()),
-            IntegerDivisor::Value(divisor) => (self.value(divisor), 0),
-        };
-        let input = ScalarDivision {
-            scalar: self.stage.registers[src].into(),
-            numerator: self.value(src), denominator,
-            quotient: result.quotient().map_or(0, |r| self.value(r)),
-            remainder: result.remainder().map_or(0, |r| self.value(r)),
-            immediate,
-        };
-        self.emit_scalar(|host| unsafe { scalar_division(input, host) });
-    }
     fn address_scalar(&mut self, unit: Scalar, binding: usize, index: u32, word: u32) -> u32 {
         self.page_address(unit, PageSource::Dataset(self.buffers[binding]), index, word, 0)
     }
@@ -2136,49 +1989,11 @@ impl Emitter<'_> {
 
     fn block(&mut self, code: &[Inst]) -> Result<bool, &'static str> {
         let mut emission = StructuredEmission { emitter: self, error: None };
-        let host = emission.host();
-        let flow = unsafe { emit_instruction_block(Span::slice(code), ControlTargets { end: 0, next: 0 }, host, BLOCK_HOST) };
+        let context = std::ptr::from_mut(&mut emission).cast();
+        let flow = unsafe { structured_block(context, Span::slice(code), ControlTargets { end: 0, next: 0 }) };
         emission.error.map_or(Ok(matches!(flow, BlockFlow::Next)), Err)
     }
 
-    fn uniform(&mut self, dst: Reg, offset: u32) {
-        let scalar = self.stage.registers[dst];
-        let zero = self.constant(Scalar::U32, 0);
-        let word = offset / 4;
-        let low_word = self.constant(Scalar::U32, word);
-        let shift = offset % 4 * 8;
-        let byte_shift = if shift == 0 { 0 } else { self.constant(Scalar::U32, shift) };
-        let (high_word, high_shift) = if scalar.size() == 8 {
-            (self.constant(Scalar::U32, word + 1), self.constant(Scalar::U32, 32))
-        } else {
-            (0, 0)
-        };
-        let input = UniformRead {
-            next: self.next,
-            push_pointer: self.ptr_push_u32,
-            push_block: self.push,
-            uint_type: self.types[&Scalar::U32],
-            raw_type: self.raw_type(scalar),
-            result: PayloadResult {
-                type_id: self.ty(dst),
-                id: self.value(dst),
-                compare_zero: if scalar == Scalar::Bool { zero } else { 0 },
-            },
-            zero,
-            low_word,
-            high_word,
-            byte_shift,
-            high_shift,
-        };
-        let at = self.body.len();
-        // Up to two access/load/shift groups, a 64-bit join and one result.
-        self.body.reserve(57);
-        unsafe {
-            let emitted = read_uniform(input, self.body.as_mut_ptr().add(at));
-            self.body.set_len(at + emitted.words as usize);
-            self.next = emitted.next;
-        }
-    }
     fn from_words(&mut self, dst: Reg, words: &[u32], unit: Scalar) {
         let scalar = self.stage.registers[dst];
         let (mut input, shifts) = self.payload_input(scalar, unit, words.len(), PayloadAccess::Words);
