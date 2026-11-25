@@ -342,8 +342,31 @@ extern "C" u32 emit_control(address context,address emitter,ControlInstruction i
     return 0;
 }
 
+void body_scalar_value(address emitter, View value, ScalarBodyHost host) on cpu
+    requires nonzero(host.addresses.values.ir.inspect) requires nonzero(host.addresses.values.location)
+    requires nonzero(host.addresses.values.scalar) requires nonzero(host.reserve)
+    requires nonzero(host.commit) requires nonzero(host.literal) requires nonzero(host.math_symbol) {
+    NativeCodeBuffer buffer = host.reserve(emitter, 128u64);
+    address output = unsafe_address(address_bits(buffer.image) + buffer.end);
+    ScalarValueEncoding encoded = emit_scalar_value(value, host.addresses.values, output);
+    host.commit(emitter, buffer.end + encoded.length);
+    if (encoded.math.length != 0) {
+        host.math_symbol(emitter, buffer.end, encoded.math);
+    }
+    if (encoded.first.field != 0u64) {
+        host.literal(emitter, buffer.end + encoded.first.field, encoded.first.bits, encoded.first.wide != 0);
+    }
+    if (encoded.second.field != 0u64) {
+        host.literal(emitter, buffer.end + encoded.second.field, encoded.second.bits, encoded.second.wide != 0);
+    }
+}
+
 extern "C" u32 emit_scalar_body(address context, address emitter, Span code, ScalarBodyHost host) on cpu
-    requires nonzero(host.ir.inspect) requires nonzero(host.mark) requires nonzero(host.publish) requires nonzero(host.emit)
+    requires nonzero(host.addresses.values.ir.inspect) requires nonzero(host.addresses.values.location)
+    requires nonzero(host.addresses.values.scalar) requires nonzero(host.addresses.tile_stream)
+    requires nonzero(host.local) requires nonzero(host.reserve) requires nonzero(host.commit)
+    requires nonzero(host.literal) requires nonzero(host.math_symbol)
+    requires nonzero(host.mark) requires nonzero(host.publish) requires nonzero(host.emit)
     requires nonzero(host.control.emit) requires nonzero(host.control.load) requires nonzero(host.control.offset)
     requires nonzero(host.control.jump) requires nonzero(host.control.jump_to) requires nonzero(host.control.patch_here)
     requires nonzero(host.control.open) requires nonzero(host.control.close) requires nonzero(host.control.defer)
@@ -351,7 +374,7 @@ extern "C" u32 emit_scalar_body(address context, address emitter, Span code, Sca
     u64 index = 0u64;
     while (index < code.count) {
         address instruction = unsafe_address(address_bits(code.data) + index * u64(code.stride));
-        View value = host.ir.inspect(Node(instruction, N_INSTRUCTION));
+        View value = host.addresses.values.ir.inspect(Node(instruction, N_INSTRUCTION));
         ScalarCursor cursor = host.mark(emitter);
         u32 kind = value.tag;
         if (kind == OP_INVOKE) {
@@ -363,9 +386,13 @@ extern "C" u32 emit_scalar_body(address context, address emitter, Span code, Sca
         } else if (kind <= OP_TEXTURE_FETCH) {
             host.emit(emitter, ScalarLeaf::Texture, value);
         } else if (kind == OP_APPEND) {
-            host.emit(emitter, ScalarLeaf::Append, value);
+            NativeCodeBuffer buffer = host.reserve(emitter, 148u64 + u64(value.first.count) * 24u64);
+            address output = unsafe_address(address_bits(buffer.image) + buffer.end);
+            host.commit(emitter, buffer.end + emit_append(value, host.addresses.values, host.addresses.buffer_bytes, host.addresses.stride_field, output));
         } else if (kind == OP_ATOMIC) {
-            host.emit(emitter, ScalarLeaf::Atomic, value);
+            NativeCodeBuffer buffer = host.reserve(emitter, 312u64);
+            address output = unsafe_address(address_bits(buffer.image) + buffer.end);
+            host.commit(emitter, buffer.end + emit_atomic(value, host.addresses, output));
         } else if (kind == OP_TILE_PUBLISH) {
             host.emit(emitter, ScalarLeaf::Publish, value);
         } else if (kind == OP_TILE_COLLECTIVE) {
@@ -379,16 +406,28 @@ extern "C" u32 emit_scalar_body(address context, address emitter, Span code, Sca
         } else if (kind == OP_RAY_QUERY) {
             return u32(ScalarBodyStatus::RayQuery);
         } else if (kind == OP_VIEW_LOAD) {
-            host.emit(emitter, ScalarLeaf::ViewLoad, value);
+            NativeCodeBuffer buffer = host.reserve(emitter, 112u64);
+            address output = unsafe_address(address_bits(buffer.image) + buffer.end);
+            host.commit(emitter, buffer.end + emit_view_load(value, host.addresses.values, output));
         } else if (kind == OP_LOAD_INDEXED || kind == OP_STORE_INDEXED ||
             kind == OP_TILE_LOAD || kind == OP_POSITION_ADDRESS) {
-            host.emit(emitter, ScalarLeaf::Indexed, value);
+            NativeCodeBuffer buffer = host.reserve(emitter, 208u64);
+            address output = unsafe_address(address_bits(buffer.image) + buffer.end);
+            host.commit(emitter, buffer.end + emit_indexed_storage(value, host.addresses, host.local, output));
         } else if (kind == OP_FUNCTION_ADDRESS) {
             host.emit(emitter, ScalarLeaf::FunctionAddress, value);
         } else if (kind == OP_CONSTANT || (kind >= OP_BUFFER_STRIDE && kind <= OP_STORE)) {
-            host.emit(emitter, ScalarLeaf::Storage, value);
+            NativeCodeBuffer buffer = host.reserve(emitter, 68u64);
+            address output = unsafe_address(address_bits(buffer.image) + buffer.end);
+            ScalarStorageHost storage = ScalarStorageHost(host.addresses.values, host.local,
+                host.addresses.buffer_bytes, host.addresses.stride_field);
+            ScalarStorageEncoding encoded = emit_scalar_storage(value, storage, output);
+            host.commit(emitter, buffer.end + encoded.length);
+            if (encoded.field != 0u64) {
+                host.literal(emitter, buffer.end + encoded.field, encoded.literal, false);
+            }
         } else if (kind >= OP_UNARY && kind <= OP_SELECT_VALUE) {
-            host.emit(emitter, ScalarLeaf::Value, value);
+            body_scalar_value(emitter, value, host);
         } else if (kind >= OP_BRANCH && kind <= OP_RAISE) {
             ControlKind control = ControlKind::If;
             if (kind == OP_LOOP_VALUE) { control = ControlKind::Loop; }
@@ -1550,7 +1589,7 @@ ScalarValueEncoding crt_math(CrtMath operation, MoveLocation dst, MoveLocation l
     u32 wide = u32(size == 8);
     return ScalarValueEncoding(cursor + result.length - start,
         ScalarLiteral(right.value, right_literal, wide), ScalarLiteral(left.value, left_literal, wide),
-        call_field, name.length + u32(size == 4), name.bytes);
+        ScalarMathReference(call_field, name.length + u32(size == 4), name.bytes));
 }
 
 ScalarValueEncoding scalar_math(ScalarMathOperation operation, MoveLocation dst,
@@ -5023,7 +5062,7 @@ extern "C" RangeProduct emit_ranges(RangeEntry entry, usize words_or_keys, u32 c
 ScalarValueEncoding value_encoding(BinaryEncoding body, u64 left, bool left_wide,
     u64 right, bool right_wide) on cpu {
     return ScalarValueEncoding(body.length, ScalarLiteral(left, body.left_literal, u32(left_wide)),
-        ScalarLiteral(right, body.right_literal, u32(right_wide)), 0u64, 0, array<u8,6>(u8(0)));
+        ScalarLiteral(right, body.right_literal, u32(right_wide)), ScalarMathReference(0u64, 0, array<u8,6>(u8(0))));
 }
 
 BinaryOperation value_binary_operation(u32 operation) on cpu {
@@ -5086,7 +5125,7 @@ u64 emit_integer_division(View value, ScalarValueHost host, bool packet, address
     if (packet) { return packet_divide_value(outputs, numerator, right, signed, output); }
     return divide_value(outputs, numerator, right, scalar, host.scalar(host.context, divisor.a), output);
 }
-extern "C" ScalarValueEncoding emit_scalar_value(View value,
+ScalarValueEncoding emit_scalar_value(View value,
     ScalarValueHost host, address output) on cpu
     requires nonzero(host.ir.inspect) requires nonzero(host.location) requires nonzero(host.scalar) {
     if (value.tag == OP_INTEGER_DIVIDE) {
@@ -5337,7 +5376,7 @@ ScalarStorageEncoding scalar_storage_copy(MoveLocation dst, MoveLocation src, Sc
     return ScalarStorageEncoding(move.length, src.value, move.literal_field);
 }
 
-extern "C" ScalarStorageEncoding emit_scalar_storage(View value, ScalarStorageHost host,
+ScalarStorageEncoding emit_scalar_storage(View value, ScalarStorageHost host,
     address output) on cpu
     requires nonzero(host.values.location)
     requires nonzero(host.values.scalar) requires nonzero(host.local) {
@@ -5546,7 +5585,7 @@ u64 indexed_tile_read(View inst, View source, bool dynamic, IndexedAddressHost h
     return prefix + scalar_storage_read(dst, low, scalar, cursor);
 }
 
-extern "C" u64 emit_indexed_storage(View inst, IndexedAddressHost host,
+u64 emit_indexed_storage(View inst, IndexedAddressHost host,
     cfn<MoveLocation,address,usize> ensures memory(read) local, address output) on cpu
     requires nonzero(host.values.ir.inspect) requires nonzero(host.values.location)
     requires nonzero(host.values.scalar) requires nonzero(host.tile_stream) requires nonzero(local) {
@@ -5577,7 +5616,7 @@ extern "C" u64 emit_indexed_storage(View inst, IndexedAddressHost host,
     return memory.length + length;
 }
 
-extern "C" u64 emit_view_load(View load, ScalarValueHost host, address output) on cpu
+u64 emit_view_load(View load, ScalarValueHost host, address output) on cpu
     requires nonzero(host.ir.inspect) requires nonzero(host.location) requires nonzero(host.scalar) {
     ViewElement view = indexed_view_element(load.first, load.b, host.ir.inspect(load.left), host);
     AddressEncoding memory = view_element_memory(view, u32(load.c), output);
@@ -5587,7 +5626,7 @@ extern "C" u64 emit_view_load(View load, ScalarValueHost host, address output) o
         host.scalar(host.context, load.a), cursor);
 }
 
-extern "C" u64 emit_atomic(View value, IndexedAddressHost host, address output) on cpu
+u64 emit_atomic(View value, IndexedAddressHost host, address output) on cpu
     requires nonzero(host.values.ir.inspect) requires nonzero(host.values.location)
     requires nonzero(host.values.scalar) requires nonzero(host.tile_stream) {
     ScalarValueHost values = host.values;
@@ -5643,7 +5682,7 @@ extern "C" u64 emit_atomic(View value, IndexedAddressHost host, address output) 
     return cursor - start;
 }
 
-extern "C" u64 emit_append(View value, ScalarValueHost host, u32 buffer_bytes,
+u64 emit_append(View value, ScalarValueHost host, u32 buffer_bytes,
     u32 stride_field, address output) on cpu
     requires nonzero(host.location) requires nonzero(host.scalar) {
     u32 target = u32(value.c) * buffer_bytes;

@@ -156,8 +156,7 @@ unsafe extern "C" fn continuation(slot: Slot) -> usize {
 #[repr(u32)]
 #[allow(dead_code)]
 pub(super) enum ScalarLeaf {
-    Call, Print, Texture, Append, Atomic, Publish, Collective, TileLength, TileLane, ViewLoad,
-    Indexed, FunctionAddress, Storage, Value,
+    Call, Print, Texture, Publish, Collective, TileLength, TileLane, FunctionAddress,
 }
 
 #[repr(u32)]
@@ -170,11 +169,39 @@ struct ScalarCursor { start: usize, ranges: usize }
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct ScalarHost {
-    ir: dataflow::Host,
     control: Host,
     mark: unsafe extern "C" fn(Slot) -> ScalarCursor,
     publish: unsafe extern "C" fn(Slot, *const Inst, ScalarCursor),
     emit: unsafe extern "C" fn(Slot, ScalarLeaf, View),
+    addresses: operands::IndexedAddressHost,
+    local: unsafe extern "C" fn(*const c_void, usize) -> MoveLocation,
+    reserve: unsafe extern "C" fn(Slot, usize) -> NativeCodeBuffer,
+    commit: unsafe extern "C" fn(Slot, usize),
+    literal: unsafe extern "C" fn(Slot, usize, Bits, u32),
+    math_symbol: unsafe extern "C" fn(Slot, usize, ScalarMathReference),
+}
+
+#[repr(C)]
+struct ScalarMathReference { field: u64, length: u32, name: [u8; 6] }
+
+unsafe extern "C" fn reserve_scalar(slot: Slot, count: usize) -> NativeCodeBuffer {
+    unsafe { emitter(slot) }.reserve_native_code(count)
+}
+
+unsafe extern "C" fn commit_scalar(slot: Slot, end: usize) {
+    unsafe { emitter(slot).commit_native_code(end) };
+}
+
+unsafe extern "C" fn scalar_literal(slot: Slot, at: usize, bits: Bits, wide: u32) {
+    unsafe { emitter(slot) }.record_literal_at(at, (bits, wide != 0));
+}
+
+unsafe extern "C" fn scalar_math_symbol(slot: Slot, start: usize, reference: ScalarMathReference) {
+    let symbol = unsafe { std::str::from_utf8_unchecked(&reference.name[..reference.length as usize]) };
+    let target = NativeSymbol::External(crate::ast::ExternalName {
+        library: "ucrtbase.dll".into(), symbol: symbol.into(),
+    });
+    unsafe { emitter(slot) }.record_symbol_target(start + reference.field as usize, target, true);
 }
 
 unsafe extern "C" fn scalar_child(context: Slot, slot: Slot, code: Span) -> u32 {
@@ -201,14 +228,10 @@ pub(super) unsafe extern "C" fn emit_scalar(slot: Slot, leaf: ScalarLeaf, value:
         ScalarLeaf::Call => e.native_call(unsafe { value.left_as() }),
         ScalarLeaf::Print => e.print_call(value.a, value.b),
         ScalarLeaf::Texture => e.texture_access(value),
-        ScalarLeaf::Append => e.append(value),
-        ScalarLeaf::Atomic => e.atomic(value),
         ScalarLeaf::Publish => e.publish_values(unsafe { value.left_as() }),
         ScalarLeaf::Collective => e.tile_collective(unsafe { value.left_as() }),
         ScalarLeaf::TileLength => e.tile_length(value.a),
         ScalarLeaf::TileLane => e.tile_lane(value.a),
-        ScalarLeaf::ViewLoad => e.view_load(value),
-        ScalarLeaf::Indexed => e.indexed_storage(value),
         ScalarLeaf::FunctionAddress => {
             match unsafe { value.left_as() } {
                 CallTarget::Defined(name) => e.emit_symbol_target(NativeSymbol::Function(name.clone()), false),
@@ -217,24 +240,28 @@ pub(super) unsafe extern "C" fn emit_scalar(slot: Slot, leaf: ScalarLeaf, value:
             }
             e.store(value.a);
         }
-        ScalarLeaf::Storage => e.scalar_storage(value),
-        ScalarLeaf::Value => e.scalar_value(value),
     }
 }
 
 impl<'a> Emitter<'a> {
     pub(super) fn block(&mut self, code: &[Inst]) -> Result<(), &'static str> {
+        let workgroup = self.stage.workgroup_width();
+        let slot = std::ptr::from_mut(self).cast();
         let mut host = ScalarHost {
-            ir: dataflow::HOST,
             control: Host { emit: scalar_child, load: scalar_load, offset, jump, jump_to,
                 patch_here, open, close, defer, continuation },
             mark: mark_scalar,
             publish: publish_scalar,
             emit: emit_scalar,
+            addresses: operands::scalar_body_addresses(slot, workgroup),
+            local: operands::scalar_body_local,
+            reserve: reserve_scalar,
+            commit: commit_scalar,
+            literal: scalar_literal,
+            math_symbol: scalar_math_symbol,
         };
         let result = unsafe {
-            emit_scalar_body(std::ptr::from_mut(&mut host).cast(), std::ptr::from_mut(self).cast(),
-                Span::slice(code), host)
+            emit_scalar_body(std::ptr::from_mut(&mut host).cast(), slot, Span::slice(code), host)
         };
         match result {
             ScalarBodyStatus::Done => Ok(()),

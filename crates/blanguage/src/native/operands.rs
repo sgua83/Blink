@@ -109,23 +109,7 @@ pub(super) struct AddressEncoding {
 }
 
 #[repr(C)]
-struct ScalarLiteral {
-    bits: u64,
-    field: u64,
-    wide: u32,
-}
-
-#[repr(C)]
-struct ScalarValueEncoding {
-    length: u64,
-    first: ScalarLiteral,
-    second: ScalarLiteral,
-    call_field: u64,
-    symbol_length: u32,
-    symbol: [u8; 6],
-}
-
-#[repr(C)]
+#[derive(Clone, Copy)]
 pub(super) struct ScalarValueHost {
     pub(super) ir: Host,
     pub(super) context: *const std::ffi::c_void,
@@ -139,13 +123,13 @@ pub(super) struct ScalarLocations<'a> {
     pub(super) frame: &'a Frame,
 }
 
-impl ScalarLocations<'_> {
+impl<'a> ScalarLocations<'a> {
+    fn from_emitter(emitter: &'a Emitter<'_>) -> Self {
+        Self { allocation: &emitter.allocation, stage: emitter.stage, frame: &emitter.frame }
+    }
+
     pub(super) fn indexed_host(&self) -> IndexedAddressHost {
-        IndexedAddressHost {
-            values: self.host(), tile_stream: indexed_tile_stream,
-            buffer_bytes: BUFFER_BYTES, stride_field: BUFFER_STRIDE,
-            workgroup: self.stage.workgroup_width(),
-        }
+        IndexedAddressHost::new(self.host(), indexed_tile_stream, self.stage.workgroup_width())
     }
 
     pub(super) fn host(&self) -> ScalarValueHost {
@@ -154,24 +138,26 @@ impl ScalarLocations<'_> {
             location: value_location, scalar: value_scalar,
         }
     }
+
+    fn location(&self, slot: PrivateSlot) -> MoveLocation {
+        self.allocation.location(slot).into()
+    }
+
+    fn scalar(&self, reg: Reg) -> ScalarEncoding {
+        self.stage.registers[reg].into()
+    }
+
+    fn tile_stream(&self, tile: usize, word: u32) -> IndexedTileWord {
+        let source = self.stage.shared_word(tile, word);
+        let byte_offset = match source {
+            SharedWord::Input { word, .. } | SharedWord::Published { word, .. } => word % 4,
+        };
+        IndexedTileWord { offset: self.frame.tile_shared[&source.aligned()], byte_offset }
+    }
 }
 
 #[repr(C)]
-struct ScalarStorageEncoding {
-    length: u64,
-    literal: Bits,
-    field: u64,
-}
-
-#[repr(C)]
-struct ScalarStorageHost {
-    values: ScalarValueHost,
-    local: unsafe extern "C" fn(*const std::ffi::c_void, usize) -> MoveLocation,
-    buffer_bytes: u32,
-    stride_field: u32,
-}
-
-#[repr(C)]
+#[derive(Clone, Copy)]
 pub(super) struct IndexedAddressHost {
     values: ScalarValueHost,
     tile_stream: unsafe extern "C" fn(*const std::ffi::c_void, usize, u32) -> IndexedTileWord,
@@ -183,28 +169,54 @@ pub(super) struct IndexedAddressHost {
 #[repr(C)]
 struct IndexedTileWord { offset: u32, byte_offset: u32 }
 
+impl IndexedAddressHost {
+    fn new(
+        values: ScalarValueHost,
+        tile_stream: unsafe extern "C" fn(*const std::ffi::c_void, usize, u32) -> IndexedTileWord,
+        workgroup: u32,
+    ) -> Self {
+        Self { values, tile_stream, buffer_bytes: BUFFER_BYTES, stride_field: BUFFER_STRIDE, workgroup }
+    }
+}
+
 unsafe extern "C" fn indexed_tile_stream(context: *const std::ffi::c_void, tile: usize, word: u32) -> IndexedTileWord {
-    let locations = unsafe { &*context.cast::<ScalarLocations<'_>>() };
-    let source = locations.stage.shared_word(tile, word);
-    let byte_offset = match source {
-        SharedWord::Input { word, .. } | SharedWord::Published { word, .. } => word % 4,
-    };
-    IndexedTileWord { offset: locations.frame.tile_shared[&source.aligned()], byte_offset }
+    unsafe { &*context.cast::<ScalarLocations<'_>>() }.tile_stream(tile, word)
 }
 
 pub(super) unsafe extern "C" fn value_local(context: *const std::ffi::c_void, local: usize) -> MoveLocation {
-    let locations = unsafe { &*context.cast::<ScalarLocations<'_>>() };
-    locations.allocation.location(PrivateSlot::Local(local)).into()
+    unsafe { &*context.cast::<ScalarLocations<'_>>() }.location(PrivateSlot::Local(local))
 }
 
 unsafe extern "C" fn value_location(context: *const std::ffi::c_void, reg: Reg) -> MoveLocation {
-    let locations = unsafe { &*context.cast::<ScalarLocations<'_>>() };
-    locations.allocation.location(PrivateSlot::Register(reg)).into()
+    unsafe { &*context.cast::<ScalarLocations<'_>>() }.location(PrivateSlot::Register(reg))
 }
 
 unsafe extern "C" fn value_scalar(context: *const std::ffi::c_void, reg: Reg) -> ScalarEncoding {
-    let locations = unsafe { &*context.cast::<ScalarLocations<'_>>() };
-    locations.stage.registers[reg].into()
+    unsafe { &*context.cast::<ScalarLocations<'_>>() }.scalar(reg)
+}
+
+pub(super) fn scalar_body_addresses(context: *const std::ffi::c_void, workgroup: u32) -> IndexedAddressHost {
+    IndexedAddressHost::new(
+        ScalarValueHost { ir: HOST, context, location: body_value_location, scalar: body_value_scalar },
+        body_tile_stream,
+        workgroup,
+    )
+}
+
+pub(super) unsafe extern "C" fn scalar_body_local(context: *const std::ffi::c_void, local: usize) -> MoveLocation {
+    ScalarLocations::from_emitter(unsafe { &*context.cast::<Emitter<'_>>() }).location(PrivateSlot::Local(local))
+}
+
+unsafe extern "C" fn body_value_location(context: *const std::ffi::c_void, reg: Reg) -> MoveLocation {
+    ScalarLocations::from_emitter(unsafe { &*context.cast::<Emitter<'_>>() }).location(PrivateSlot::Register(reg))
+}
+
+unsafe extern "C" fn body_value_scalar(context: *const std::ffi::c_void, reg: Reg) -> ScalarEncoding {
+    ScalarLocations::from_emitter(unsafe { &*context.cast::<Emitter<'_>>() }).scalar(reg)
+}
+
+unsafe extern "C" fn body_tile_stream(context: *const std::ffi::c_void, tile: usize, word: u32) -> IndexedTileWord {
+    ScalarLocations::from_emitter(unsafe { &*context.cast::<Emitter<'_>>() }).tile_stream(tile, word)
 }
 
 unsafe extern "C" {
@@ -212,20 +224,6 @@ unsafe extern "C" {
     fn encode_scaled_memory(base: u8, index: u8, stride: u32, offset: u32, output: *mut u8) -> AddressEncoding;
     #[link_name = "bootstrap.x64_instruction::bit_copy"]
     fn scalar_bit_copy(from: ScalarEncoding, into: ScalarEncoding) -> u32;
-    #[link_name = "bootstrap.x64_instruction::emit_indexed_storage"]
-    fn emit_indexed_storage(instruction: View, host: IndexedAddressHost,
-        local: unsafe extern "C" fn(*const std::ffi::c_void, usize) -> MoveLocation, output: *mut u8) -> u64;
-    #[link_name = "bootstrap.x64_instruction::emit_append"]
-    fn emit_append(instruction: View, host: ScalarValueHost, buffer_bytes: u32,
-        stride_field: u32, output: *mut u8) -> u64;
-    #[link_name = "bootstrap.x64_instruction::emit_atomic"]
-    fn emit_atomic(instruction: View, host: IndexedAddressHost, output: *mut u8) -> u64;
-    #[link_name = "bootstrap.x64_instruction::emit_view_load"]
-    fn emit_view_load(instruction: View, host: ScalarValueHost, output: *mut u8) -> u64;
-    #[link_name = "bootstrap.x64_instruction::emit_scalar_storage"]
-    fn emit_scalar_storage(instruction: View, host: ScalarStorageHost, output: *mut u8) -> ScalarStorageEncoding;
-    #[link_name = "bootstrap.x64_instruction::emit_scalar_value"]
-    fn emit_scalar_value(value: View, host: ScalarValueHost, output: *mut u8) -> ScalarValueEncoding;
     #[link_name = "bootstrap.x64_instruction::scalar_math_outgoing"]
     pub(super) fn scalar_math_outgoing(operation: u32) -> u64;
     #[link_name = "bootstrap.x64_instruction::encode"]
@@ -256,52 +254,6 @@ impl Emitter<'_> {
             Memory::indexed(result.base, result.index, result.shift, result.offset)
         }
     }
-    pub(super) fn view_load(&mut self, value: View) {
-        let locations = ScalarLocations { allocation: &self.allocation, stage: self.stage, frame: &self.frame };
-        let host = locations.host();
-        let start = self.code.len();
-        self.code.reserve(112);
-        unsafe {
-            let length = emit_view_load(value, host, self.code.as_mut_ptr().add(start));
-            self.code.set_len(start + length as usize);
-        }
-    }
-
-    pub(super) fn indexed_storage(&mut self, value: View) {
-        let locations = ScalarLocations { allocation: &self.allocation, stage: self.stage, frame: &self.frame };
-        let host = locations.indexed_host();
-        let start = self.code.len();
-        self.code.reserve(208);
-        unsafe {
-            let length = emit_indexed_storage(value, host, value_local,
-                self.code.as_mut_ptr().add(start));
-            self.code.set_len(start + length as usize);
-        }
-    }
-
-    pub(super) fn append(&mut self, value: View) {
-        let locations = ScalarLocations { allocation: &self.allocation, stage: self.stage, frame: &self.frame };
-        let host = locations.host();
-        let start = self.code.len();
-        self.code.reserve(148 + value.first.count * 24);
-        unsafe {
-            let length = emit_append(value, host, BUFFER_BYTES, BUFFER_STRIDE,
-                self.code.as_mut_ptr().add(start));
-            self.code.set_len(start + length as usize);
-        }
-    }
-
-    pub(super) fn atomic(&mut self, value: View) {
-        let locations = ScalarLocations { allocation: &self.allocation, stage: self.stage, frame: &self.frame };
-        let host = locations.indexed_host();
-        let start = self.code.len();
-        self.code.reserve(312);
-        unsafe {
-            let length = emit_atomic(value, host, self.code.as_mut_ptr().add(start));
-            self.code.set_len(start + length as usize);
-        }
-    }
-
     pub(super) fn scaled_memory(&mut self, base: u8, index: u8, stride: u32, offset: u32) -> Memory {
         self.emit_address(16, |output| unsafe { encode_scaled_memory(base, index, stride, offset, output) })
     }
@@ -337,7 +289,7 @@ impl Emitter<'_> {
         });
         if let Operand::Literal(bits, wide) = operand {
             let at = self.code.len() - 4;
-            self.literals.entry((bits, wide)).or_default().push(at);
+            self.record_literal_at(at, (bits, wide));
         }
     }
     pub(super) fn location(&self, r: Reg) -> Location {
@@ -388,46 +340,13 @@ impl Emitter<'_> {
     pub(super) fn write_value_address(&mut self, src: Location, memory: Memory, size: u32) {
         self.emit_bytes(24, |output| unsafe { write_scalar_move(memory.into(), src.into(), size, output) });
     }
-    pub(super) fn scalar_storage(&mut self, value: View) {
-        let locations = ScalarLocations { allocation: &self.allocation, stage: self.stage, frame: &self.frame };
-        let host = ScalarStorageHost {
-            values: locations.host(), local: value_local,
-            buffer_bytes: BUFFER_BYTES, stride_field: BUFFER_STRIDE,
-        };
-        let start = self.code.len();
-        self.code.reserve(68);
-        let encoding = unsafe {
-            let encoding = emit_scalar_storage(value, host, self.code.as_mut_ptr().add(start));
-            self.code.set_len(start + encoding.length as usize);
-            encoding
-        };
-        self.record_literal(start, (encoding.literal, false), encoding.field as usize);
+    pub(super) fn record_literal_at(&mut self, at: usize, literal: (Bits, bool)) {
+        self.literals.entry(literal).or_default().push(at);
     }
-    pub(super) fn scalar_value(&mut self, value: View) {
-        let locations = ScalarLocations { allocation: &self.allocation, stage: self.stage, frame: &self.frame };
-        let host = locations.host();
-        let start = self.code.len();
-        self.code.reserve(128);
-        let encoded = unsafe {
-            let encoded = emit_scalar_value(value, host, self.code.as_mut_ptr().add(start));
-            self.code.set_len(start + encoded.length as usize);
-            encoded
-        };
-        if encoded.symbol_length != 0 {
-            // The B encoder produces the actual ASCII CRT symbol.
-            let name = unsafe { std::str::from_utf8_unchecked(&encoded.symbol[..encoded.symbol_length as usize]) };
-            let target = NativeSymbol::External(crate::ast::ExternalName {
-                library: "ucrtbase.dll".into(), symbol: name.into(),
-            });
-            self.record_symbol_target(start + encoded.call_field as usize, target, true);
-        }
-        for literal in [encoded.first, encoded.second] {
-            self.record_literal(start, (literal.bits, literal.wide != 0), literal.field as usize);
-        }
-    }
+
     pub(super) fn record_literal(&mut self, start: usize, literal: (Bits, bool), field: usize) {
         if field != 0 {
-            self.literals.entry(literal).or_default().push(start + field);
+            self.record_literal_at(start + field, literal);
         }
     }
 
