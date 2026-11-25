@@ -38,8 +38,33 @@ fn result<R>(
     })
 }
 
-pub(super) fn possible(root: &Clause, environment: &Facts) -> Option<bool> {
-    result(root, environment, Option::is_some)
+fn remember(
+    root: &Clause,
+    environment: &Facts,
+    value: impl FnOnce() -> Option<RequiredFacts>,
+) {
+    RESULTS.with_borrow_mut(|active| {
+        if let Some(results) = active {
+            results.entry(root.key()).or_insert_with(|| Root {
+                _source: Arc::downgrade(&root.0),
+                environments: BTreeMap::new(),
+            }).environments.insert(environment.clone(), value());
+        }
+    });
+}
+
+pub(super) fn possible(
+    root: &Clause,
+    environment: &Facts,
+    evaluate: impl FnOnce() -> Option<RequiredFacts>,
+) -> bool {
+    if let Some(known) = result(root, environment, Option::is_some) {
+        return known;
+    }
+    let value = evaluate();
+    let possible = value.is_some();
+    remember(root, environment, || value);
+    possible
 }
 
 pub(super) fn required(
@@ -51,13 +76,6 @@ pub(super) fn required(
         return known;
     }
     let value = evaluate();
-    RESULTS.with_borrow_mut(|active| {
-        if let Some(results) = active {
-            results.entry(root.key()).or_insert_with(|| Root {
-                _source: Arc::downgrade(&root.0),
-                environments: BTreeMap::new(),
-            }).environments.insert(environment.clone(), value.clone());
-        }
-    });
+    remember(root, environment, || value.clone());
     value
 }

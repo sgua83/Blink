@@ -164,7 +164,7 @@ impl Selector {
     pub(super) fn overlaps(self, other: Self, path: &Clause) -> bool {
         let Some(required) = path.required_in(&Facts::new()) else { return false; };
         if let (Some(a), Some(b)) = (self.operand(), other.operand()) {
-            return Condition::index_equal(a, b).assume(path, true).required_in(&required.facts).is_some();
+            return Condition::index_equal(a, b).assume(path, true).possible_in(&required.facts);
         }
         self.affine_equality(other, &required) != Some(false)
     }
@@ -2347,6 +2347,9 @@ impl Clause {
     fn required_in(&self, environment: &Facts) -> Option<RequiredFacts> {
         required_roots::required(self, environment, || self.calculate_required(environment))
     }
+    fn possible_in(&self, environment: &Facts) -> bool {
+        required_roots::possible(self, environment, || self.calculate_required(environment))
+    }
     fn calculate_required<'a>(&'a self, environment: &'a Facts) -> Option<RequiredFacts> {
         let mut environment_roots = equality_roots(environment);
         if contradictory_with_roots(environment, &environment_roots) {
@@ -2406,9 +2409,7 @@ impl Clause {
             ClauseNode::Impossible => false,
             ClauseNode::Facts(_) => true,
             ClauseNode::Both(..) | ClauseNode::Either(..) | ClauseNode::Branch(..) => {
-                let environment = Facts::new();
-                required_roots::possible(self, &environment)
-                    .unwrap_or_else(|| self.required_in(&environment).is_some())
+                self.possible_in(&Facts::new())
             }
         }
     }
@@ -3444,7 +3445,13 @@ impl Builder<'_> {
     pub(super) fn residency_path(&self)->Clause{residency_scope(&self.path,&self.env)}
     pub(super) fn condition_truth(&self,condition:&Condition,assuming:Option<&Condition>)->Option<bool>{
         let environment=environment_facts(&self.env);let mut path=self.path.clone();if let Some(assuming)=assuming{path=Clause::both(&path,&assuming.cases[1]);}
-        if Clause::both(&path,&condition.cases[0]).required_in(&environment).is_none(){Some(true)}else if Clause::both(&path,&condition.cases[1]).required_in(&environment).is_none(){Some(false)}else{None}
+        if !Clause::both(&path, &condition.cases[0]).possible_in(&environment) {
+            Some(true)
+        } else if !Clause::both(&path, &condition.cases[1]).possible_in(&environment) {
+            Some(false)
+        } else {
+            None
+        }
     }
     pub(super) fn refine_bounds(&mut self, condition: &Arc<Condition>, truth: bool) {
         self.path = Clause::branch(&self.path, condition, truth);
