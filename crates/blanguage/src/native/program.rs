@@ -88,11 +88,15 @@ pub(crate) fn link_inputs<'a>(
     image: ModuleLink<'a>, inputs: Vec<crate::object::Input>, borrowed: &[&crate::object::Object],
     bind_roots: impl FnOnce(Vec<&'a str>) -> Result<Vec<crate::linker::RootView<'a>>, String>,
 ) -> Result<bool, String> {
-    let roots = if image.external.is_empty() { Vec::new() } else { bind_roots(image.external)? };
-    let types = u32::try_from(image.types).map_err(|error| error.to_string())?;
-    let programs = u32::try_from(image.programs).map_err(|error| error.to_string())?;
-    let linked = crate::linker::native::modules(inputs, borrowed, &roots, &image.local, types, programs)
-        .map_err(|error| error.to_string())?;
+    let linked = if image.external.is_empty() {
+        None
+    } else {
+        let roots = bind_roots(image.external)?;
+        let types = u32::try_from(image.types).map_err(|error| error.to_string())?;
+        let programs = u32::try_from(image.programs).map_err(|error| error.to_string())?;
+        crate::linker::native::modules(inputs, borrowed, &roots, &image.local, types, programs)
+            .map_err(|error| error.to_string())?
+    };
     if *image.output == linked {
         return Ok(false);
     }
