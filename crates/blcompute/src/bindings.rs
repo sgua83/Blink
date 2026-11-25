@@ -88,18 +88,85 @@ impl DomainRelation {
             Self::Element(range) => (range.binding, range.offset, range.scalar.size(), record_stride, records),
         };
         if owner != binding || count == 0 || rows == 0 || bytes == 0 { return false; }
-        let field = u128::from(field);
-        let offset = u128::from(offset);
-        let field_end = field + u128::from(rows - 1) * u128::from(step) + u128::from(width);
-        let write_end = offset + u128::from(count - 1) * u128::from(stride) + u128::from(bytes);
-        if field >= write_end || offset >= field_end { return false; }
-        let (mut a, mut b) = (u128::from(step), u128::from(stride));
-        while b != 0 { (a, b) = (b, a % b); }
-        if a == 0 { return true; }
-        let delta = (field % a + a - offset % a) % a;
-        delta < u128::from(bytes) || a - delta < u128::from(width)
+        ByteSpans::new(u64::from(field), width, u64::from(step), rows)
+            .intersects(ByteSpans::new(offset, bytes, stride, count))
     }
 }
+
+#[derive(Clone, Copy)]
+struct ByteSpans {
+    start: i128,
+    width: i128,
+    stride: i128,
+    count: i128,
+}
+
+impl ByteSpans {
+    fn new(start: u64, width: u32, stride: u64, count: u32) -> Self {
+        Self {
+            start: i128::from(start),
+            width: i128::from(width),
+            stride: if count == 1 { 0 } else { i128::from(stride) },
+            count: i128::from(count),
+        }
+    }
+
+    fn end(self) -> i128 {
+        self.start + (self.count - 1) * self.stride + self.width
+    }
+
+    fn intersects(self, other: Self) -> bool {
+        if self.start >= other.end() || other.start >= self.end() {
+            return false;
+        }
+        let (left, right) = if other.stride == 0 { (other, self) } else { (self, other) };
+        if right.stride == 0 {
+            return true;
+        }
+        // Starts with a difference in [1 - right.width, left.width - 1] overlap.
+        left.pairs_at_most(right, left.width - 1) > left.pairs_at_most(right, -right.width)
+    }
+
+    // Count pairs of starts with right - left <= limit, respecting both finite counts.
+    fn pairs_at_most(self, right: Self, limit: i128) -> i128 {
+        let start = self.start - right.start + limit;
+        let first_at_least = |threshold| {
+            if start >= threshold {
+                0
+            } else if self.stride == 0 {
+                self.count
+            } else {
+                ((threshold - start + self.stride - 1) / self.stride).min(self.count)
+            }
+        };
+        let first = first_at_least(0);
+        let full = first_at_least((right.count - 1) * right.stride);
+        let mut pairs = (self.count - full) * right.count;
+        if full > first {
+            let count = full - first;
+            pairs += count + sum_quotients(count, right.stride, self.stride, start + first * self.stride);
+        }
+        pairs
+    }
+}
+
+// Sum floor((start + i * stride) / divisor) by Euclidean reduction.
+fn sum_quotients(mut count: i128, mut divisor: i128, mut stride: i128, mut start: i128) -> i128 {
+    let mut total = 0;
+    loop {
+        total += (count * (count - 1) / 2) * (stride / divisor) + count * (start / divisor);
+        stride %= divisor;
+        start %= divisor;
+        let limit = stride * count + start;
+        if limit < divisor {
+            return total;
+        }
+        count = limit / divisor;
+        start = limit % divisor;
+        std::mem::swap(&mut stride, &mut divisor);
+    }
+}
+
 pub struct DomainBindings<D> {
     pub(crate) datasets: Vec<D>,
     pub(crate) domains: DomainRelations,
