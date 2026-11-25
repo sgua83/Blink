@@ -306,61 +306,6 @@ impl Emitter<'_> {
             start, end: self.code.len(), includes_nested_operations, origin: OperationOrigin::from_instruction(inst),
         });
     }
-    fn block(&mut self, code: &[Inst]) -> Result<(), &'static str> {
-        for inst in code {
-            let start = self.code.len();
-            let first = self.operation_ranges.len();
-            match &(inst).kind {
-                InstKind::Call(call) => self.native_call(call),
-                InstKind::Raise(error) => self.lower_control(Flow::Raise(*error), Self::block, Self::load)?,
-                InstKind::Print { dst, value } => self.print_call(*dst, *value),
-                InstKind::TextureSample { .. } | InstKind::Cleanup { .. } => return Err("原生操作尚未降低到CPU执行IR"),
-                InstKind::TextureBindingAddress { .. } | InstKind::TextureSize { .. }
-                | InstKind::TextureLevels { .. } | InstKind::TextureAddress { .. }
-                | InstKind::TextureFormat { .. } | InstKind::TextureRead { .. }
-                | InstKind::TextureFetch { .. } => self.texture_access(inst),
-                InstKind::Scope(body) => self.lower_control(Flow::Scope(body), Self::block, Self::load)?,
-                InstKind::Exit => self.lower_control(Flow::Exit, Self::block, Self::load)?,
-                InstKind::Append(append) => self.append(inst, append.values.len()),
-                InstKind::Atomic(..) => self.atomic(inst),
-                // tile_phases 先完成全部有效 lane，再进入下一块内阶段。
-                InstKind::TileBarrier => {}
-                InstKind::TilePublish(publication) => self.publish_values(publication),
-                InstKind::TileCollective(collective) => self.tile_collective(collective),
-                InstKind::TileLength(dst) => self.tile_length(*dst),
-                InstKind::TileLane(dst) => self.tile_lane(*dst),
-                InstKind::Subgroup { .. } => return Err("CPU 后端不能执行 GPU subgroup 协作"),
-                InstKind::RayQuery { .. } => return Err("CPU 后端不能执行硬件光线查询"),
-                InstKind::ViewLoad { .. } => self.view_load(inst),
-                InstKind::LoadIndexed { .. } | InstKind::StoreIndexed { .. }
-                | InstKind::TileLoad { .. } | InstKind::PositionAddress { .. } => self.indexed_storage(inst),
-                InstKind::FunctionAddress(dst, target) => {
-                    match target {
-                        CallTarget::Defined(name) => self.emit_symbol_target(NativeSymbol::Function(name.clone()), false),
-                        CallTarget::External(name) => self.emit_symbol_target(NativeSymbol::External(name.clone()), false),
-                        CallTarget::Indirect(reg) => self.load(*reg),
-                    }
-                    self.store(*dst);
-                }
-                InstKind::Constant(..) | InstKind::Index(..) | InstKind::Uniform(..)
-                | InstKind::BufferStride(..) | InstKind::LoadLocal(..) | InstKind::StoreLocal(..)
-                | InstKind::LoadLocalIndexed { .. } | InstKind::StoreLocalIndexed { .. }
-                | InstKind::Load { .. } | InstKind::Store { .. } => self.scalar_storage(inst),
-                InstKind::Unary { .. } | InstKind::Binary { .. } | InstKind::Cast { .. }
-                | InstKind::Math { .. } | InstKind::Select { .. } | InstKind::IntegerDivide { .. } => self.scalar_value(inst),
-                InstKind::If { condition, yes, no } => {
-                    self.lower_control(Flow::If(*condition, yes, no), Self::block, Self::load)?;
-                }
-                InstKind::Loop { condition, test, body } => {
-                    self.lower_control(Flow::Loop(condition, *test, body), Self::block, Self::load)?;
-                }
-                InstKind::Break => self.lower_control(Flow::Break, Self::block, Self::load)?,
-                InstKind::Continue => self.lower_control(Flow::Continue, Self::block, Self::load)?,
-            }
-            self.operation_range(inst, start, first);
-        }
-        Ok(())
-    }
 }
 /// 所有范围共用RangeEntry：buffers、uniforms、end、begin、output，返回执行状态。
 /// 算法输出（包括计数）只写第五参数，map及无摘要续阶段不读取该指针。

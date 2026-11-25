@@ -92,10 +92,9 @@ enum ControlKind:u32 { If=0; Loop=1; Scope=2; Exit=3; Break=4; Continue=5; Raise
 enum ControlJump:u32 { Always=0; Zero=1; Nonzero=2; };
 enum ControlScope:u32 { Block=0; Loop=1; };
 enum ControlTarget:u32 { Block=0; Loop=1; Function=2; };
-struct ControlBlock { address start; u64 count; };
-struct ControlInstruction { ControlBlock first; ControlBlock second; u64 register; ControlKind kind; };
+struct ControlInstruction { Span first; Span second; u64 register; ControlKind kind; };
 struct ControlHost {
-    cfn<u32,address,address,ControlBlock> emit;
+    cfn<u32,address,address,Span> emit;
     cfn<void,address,address,u64> load;
     cfn<u64,address> offset;
     cfn<u64,address,ControlJump> jump;
@@ -106,11 +105,33 @@ struct ControlHost {
     cfn<void,address,ControlTarget,u64> defer;
     cfn<u64,address> continuation;
 };
-extern "C" void emit_control(address context,address emitter,ControlInstruction instruction,ControlHost host) on cpu
+extern "C" u32 emit_control(address context,address emitter,ControlInstruction instruction,ControlHost host) on cpu
     requires nonzero(host.emit) requires nonzero(host.load) requires nonzero(host.offset)
     requires nonzero(host.jump) requires nonzero(host.jump_to) requires nonzero(host.patch_here)
     requires nonzero(host.open) requires nonzero(host.close) requires nonzero(host.defer)
     requires nonzero(host.continuation);
+
+// The original emitter owns code, fixups, scopes and observations. Both the
+// scalar loop and its nested blocks borrow the same lowered instruction span.
+enum ScalarLeaf:u32 {
+    Call=0; Print=1; Texture=2; Append=3; Atomic=4; Publish=5; Collective=6;
+    TileLength=7; TileLane=8; ViewLoad=9; Indexed=10; FunctionAddress=11; Storage=12; Value=13;
+};
+struct ScalarCursor { u64 start; u64 ranges; };
+enum ScalarBodyStatus:u32 { Done=0; Unlowered=1; Subgroup=2; RayQuery=3; };
+struct ScalarBodyHost {
+    Host ir;
+    ControlHost control;
+    cfn<ScalarCursor,address> mark;
+    cfn<void,address,address,ScalarCursor> publish;
+    cfn<void,address,ScalarLeaf,View> emit;
+};
+extern "C" u32 emit_scalar_body(address context, address emitter, Span code, ScalarBodyHost host) on cpu
+    requires nonzero(host.ir.inspect) requires nonzero(host.mark) requires nonzero(host.publish) requires nonzero(host.emit)
+    requires nonzero(host.control.emit) requires nonzero(host.control.load) requires nonzero(host.control.offset)
+    requires nonzero(host.control.jump) requires nonzero(host.control.jump_to) requires nonzero(host.control.patch_here)
+    requires nonzero(host.control.open) requires nonzero(host.control.close) requires nonzero(host.control.defer)
+    requires nonzero(host.control.continuation);
 
 extern "C" u64 encode_branch(u8 condition, u32 test_bits, address output) on cpu;
 
@@ -481,7 +502,7 @@ struct TextureAccessHost {
     cfn<u64,address,usize> ensures memory(read) offset;
     u32 stride;
 };
-extern "C" u64 emit_texture_access(Node instruction, TextureAccessHost host, address output) on cpu
+extern "C" u64 emit_texture_access(View access, TextureAccessHost host, address output) on cpu
     requires nonzero(host.values.ir.inspect) requires nonzero(host.values.location)
     requires nonzero(host.values.scalar) requires nonzero(host.offset);
 
@@ -711,7 +732,7 @@ struct ScalarValueEncoding {
     array<u8,6> symbol;
 };
 // Borrows the original scalar value or integer division instruction and 128 writable bytes.
-extern "C" ScalarValueEncoding emit_scalar_value(Node source,
+extern "C" ScalarValueEncoding emit_scalar_value(View value,
     ScalarValueHost host, address output) on cpu
     requires nonzero(host.ir.inspect) requires nonzero(host.location) requires nonzero(host.scalar);
 
@@ -759,9 +780,9 @@ struct ScalarStorageHost {
     u32 stride_field;
 };
 // The original scalar storage instruction borrows 68 output bytes.
-extern "C" ScalarStorageEncoding emit_scalar_storage(Node instruction, ScalarStorageHost host,
+extern "C" ScalarStorageEncoding emit_scalar_storage(View value, ScalarStorageHost host,
     address output) on cpu
-    requires nonzero(host.values.ir.inspect) requires nonzero(host.values.location)
+    requires nonzero(host.values.location)
     requires nonzero(host.values.scalar) requires nonzero(host.local);
 
 struct IndexedTileWord { u32 offset; u32 byte_offset; };
@@ -779,21 +800,21 @@ extern "C" u64 emit_reference_address(Node reference, IndexedAddressHost host,
     requires nonzero(host.values.scalar) requires nonzero(host.tile_stream) requires nonzero(local);
 
 // An original indexed read, write or position address borrows 208 writable bytes.
-extern "C" u64 emit_indexed_storage(Node instruction, IndexedAddressHost host,
+extern "C" u64 emit_indexed_storage(View inst, IndexedAddressHost host,
     cfn<MoveLocation,address,usize> ensures memory(read) local, address output) on cpu
     requires nonzero(host.values.ir.inspect) requires nonzero(host.values.location)
     requires nonzero(host.values.scalar) requires nonzero(host.tile_stream) requires nonzero(local);
 
 // Borrows the original view load and 112 writable bytes.
-extern "C" u64 emit_view_load(Node instruction, ScalarValueHost host, address output) on cpu
+extern "C" u64 emit_view_load(View load, ScalarValueHost host, address output) on cpu
     requires nonzero(host.ir.inspect) requires nonzero(host.location) requires nonzero(host.scalar);
 
 // An original atomic instruction borrows 312 writable bytes.
-extern "C" u64 emit_atomic(Node instruction, IndexedAddressHost host, address output) on cpu
+extern "C" u64 emit_atomic(View value, IndexedAddressHost host, address output) on cpu
     requires nonzero(host.values.ir.inspect) requires nonzero(host.values.location)
     requires nonzero(host.values.scalar) requires nonzero(host.tile_stream);
 
 // Reserves, writes and delivers the accepted flag of the original append.
-extern "C" u64 emit_append(Node instruction, ScalarValueHost host, u32 buffer_bytes,
+extern "C" u64 emit_append(View value, ScalarValueHost host, u32 buffer_bytes,
     u32 stride_field, address output) on cpu
-    requires nonzero(host.ir.inspect) requires nonzero(host.location) requires nonzero(host.scalar);
+    requires nonzero(host.location) requires nonzero(host.scalar);

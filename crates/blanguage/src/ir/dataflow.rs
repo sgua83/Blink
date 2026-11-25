@@ -11,6 +11,7 @@ enum Kind {
     Indexed, Stride, Texture, AtomicOp, Alias, Effect, Division, Divisor, Words3,
     Component, Stage, RayRange, Operation, Buffer, Uniform, ValueCode, CustomReduction, Scalar, Tile, Registers,
     FirstComponentScalar, PageBuffer, PageType, PageVariant, PageField, Comparison, BinaryOperation,
+    TilePublication, TileCollective,
 }
 #[derive(Clone, Copy)]
 #[repr(C)]
@@ -23,7 +24,7 @@ impl Node {
 }
 #[derive(Clone, Copy)]
 #[repr(C)]
-pub(crate) struct Span { data: *const c_void, count: usize, stride: usize }
+pub(crate) struct Span { data: *const c_void, pub(crate) count: usize, stride: usize }
 impl Span {
     const EMPTY: Self = Self { data: ptr::null(), count: 0, stride: 0 };
     pub(crate) fn slice<T>(values: &[T]) -> Self { Self { data: values.as_ptr().cast(), count: values.len(), stride: size_of::<T>() } }
@@ -40,11 +41,15 @@ impl Span {
 }
 #[derive(Clone, Copy)]
 #[repr(C)]
-struct View {
-    tag: u32, a: usize, b: usize, c: usize, d: usize,
-    first: Span, second: Span, left: Node, right: Node,
+pub(crate) struct View {
+    tag: u32, pub(crate) a: usize, pub(crate) b: usize, c: usize, d: usize,
+    pub(crate) first: Span, second: Span, left: Node, right: Node,
 }
 impl View {
+    // The selected instruction role fixes T and the lifetime of the original loan.
+    pub(crate) unsafe fn left_as<'a, T>(self) -> &'a T {
+        unsafe { &*self.left.data.cast() }
+    }
     fn tag(tag: u32) -> Self {
         Self { tag, a: 0, b: 0, c: 0, d: 0, first: Span::EMPTY, second: Span::EMPTY,
             left: Node::EMPTY, right: Node::EMPTY }
@@ -174,6 +179,8 @@ pub(super) fn stride_operands(value: &ElementStride, f: &mut impl FnMut(Reg) -> 
 unsafe extern "C" fn inspect(node: Node) -> View {
     match node.kind {
         Kind::Instruction => instruction(unsafe { &*node.data.cast::<Inst>() }),
+        Kind::TilePublication => tile_publication(unsafe { &*node.data.cast() }),
+        Kind::TileCollective => tile_collective(unsafe { &*node.data.cast() }),
         Kind::Call => {
             let call = unsafe { &*node.data.cast::<Call>() };
             let mut view = View::tag(0);
@@ -394,6 +401,21 @@ fn binary_code(op: BinaryOp) -> u32 {
     }
 }
 
+fn tile_publication(value: &Publication) -> View {
+    let mut view = View::tag(13);
+    view.a = value.tile;
+    view.first = Span::pairs(&value.values);
+    view.left = Node::of(value, Kind::TilePublication);
+    view
+}
+fn tile_collective(value: &TileCollective) -> View {
+    let mut view = View::tag(14);
+    view.a = value.tile;
+    view.first = Span::pairs(&value.results);
+    view.second = Span::slice(&value.results);
+    view.left = Node::of(value, Kind::TileCollective);
+    view
+}
 fn instruction(value: &Inst) -> View {
     // Numeric tags follow the declaration order in the paired B model. Each
     // arm below only projects the named original fields into that handoff.
@@ -441,11 +463,8 @@ fn instruction(value: &Inst) -> View {
             };
         }
         InstKind::TileBarrier => view.tag = 12,
-        InstKind::TilePublish(value) => { view.tag = 13; view.a = value.tile; view.first = Span::pairs(&value.values); }
-        InstKind::TileCollective(value) => {
-            view.tag = 14; view.a = value.tile; view.first = Span::pairs(&value.results);
-            view.second = Span::slice(&value.results);
-        }
+        InstKind::TilePublish(value) => return tile_publication(value),
+        InstKind::TileCollective(value) => return tile_collective(value),
         InstKind::TileLength(dst) => { view.tag = 15; view.a = *dst; }
         InstKind::TileLane(dst) => { view.tag = 16; view.a = *dst; }
         InstKind::TileLoad { dst, tile, index, word } => { view.tag = 17; view.a = *dst; view.b = *tile; view.c = *index; view.d = *word as usize; }

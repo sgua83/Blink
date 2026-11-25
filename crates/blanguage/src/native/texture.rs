@@ -1,7 +1,7 @@
 //! CPU 采样降低为原生标量 IR；每次取样不调用宿主纹理函数。
 use super::*;
 use super::operands::{ScalarLocations, ScalarValueHost};
-use crate::ir::dataflow::Node;
+use crate::ir::dataflow::View;
 use std::ffi::c_void;
 
 #[repr(C)]
@@ -25,7 +25,7 @@ unsafe extern "C" fn descriptor_offset(context: *const c_void, binding: usize) -
 
 unsafe extern "C" {
     #[link_name = "bootstrap.x64_instruction::emit_texture_access"]
-    fn emit_texture_access(instruction: Node, host: TextureAccessHost, output: *mut u8) -> u64;
+    fn emit_texture_access(instruction: View, host: TextureAccessHost, output: *mut u8) -> u64;
 }
 
 #[allow(dead_code)]
@@ -219,7 +219,7 @@ pub(super) fn sample(
 }
 
 impl Emitter<'_> {
-    pub(super) fn texture_access(&mut self, inst: &Inst) {
+    pub(super) fn texture_access(&mut self, value: View) {
         let locations = ScalarLocations { allocation: &self.allocation, stage: self.stage, frame: &self.frame };
         let table = TextureTable { buffers: self.buffers.len(), textures: self.textures };
         let host = TextureAccessHost {
@@ -229,7 +229,7 @@ impl Emitter<'_> {
         let start = self.code.len();
         self.code.reserve(248);
         unsafe {
-            let length = emit_texture_access(Node::instruction(inst), host, self.code.as_mut_ptr().add(start));
+            let length = emit_texture_access(value, host, self.code.as_mut_ptr().add(start));
             self.code.set_len(start + length as usize);
         }
     }

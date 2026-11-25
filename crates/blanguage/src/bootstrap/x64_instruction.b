@@ -282,7 +282,7 @@ extern "C" void patch_branches(address image, u64 target, address fields, u64 co
     }
 }
 
-extern "C" void emit_control(address context,address emitter,ControlInstruction instruction,ControlHost host) on cpu
+extern "C" u32 emit_control(address context,address emitter,ControlInstruction instruction,ControlHost host) on cpu
     requires nonzero(host.emit) requires nonzero(host.load) requires nonzero(host.offset)
     requires nonzero(host.jump) requires nonzero(host.jump_to) requires nonzero(host.patch_here)
     requires nonzero(host.open) requires nonzero(host.close) requires nonzero(host.defer)
@@ -290,8 +290,8 @@ extern "C" void emit_control(address context,address emitter,ControlInstruction 
     ControlKind kind=instruction.kind;
     if(kind==ControlKind::If){
         host.load(context,emitter,instruction.register);
-        ControlBlock first=instruction.first;
-        ControlBlock other=instruction.second;
+        Span first=instruction.first;
+        Span other=instruction.second;
         ControlJump branch=ControlJump::Zero;
         if(first.count==0u64){
             first=instruction.second;
@@ -299,28 +299,33 @@ extern "C" void emit_control(address context,address emitter,ControlInstruction 
             branch=ControlJump::Nonzero;
         }
         u64 alternate=host.jump(emitter,branch);
-        if(host.emit(context,emitter,first)==0){return;}
+        u32 first_status=host.emit(context,emitter,first);
+        if(first_status!=0){return first_status;}
         if(other.count!=0u64){
             u64 end=host.jump(emitter,ControlJump::Always);
             host.patch_here(emitter,alternate);
-            if(host.emit(context,emitter,other)==0){return;}
+            u32 other_status=host.emit(context,emitter,other);
+            if(other_status!=0){return other_status;}
             host.patch_here(emitter,end);
         } else {
             host.patch_here(emitter,alternate);
         }
     } else if(kind==ControlKind::Loop){
         u64 begin=host.offset(emitter);
-        if(host.emit(context,emitter,instruction.first)==0){return;}
+        u32 test_status=host.emit(context,emitter,instruction.first);
+        if(test_status!=0){return test_status;}
         host.load(context,emitter,instruction.register);
         u64 end=host.jump(emitter,ControlJump::Zero);
         host.open(emitter,ControlScope::Loop,begin);
-        if(host.emit(context,emitter,instruction.second)==0){return;}
+        u32 body_status=host.emit(context,emitter,instruction.second);
+        if(body_status!=0){return body_status;}
         host.jump_to(emitter,begin);
         host.patch_here(emitter,end);
         host.close(emitter,ControlScope::Loop);
     } else if(kind==ControlKind::Scope){
         host.open(emitter,ControlScope::Block,0u64);
-        if(host.emit(context,emitter,instruction.first)==0){return;}
+        u32 body_status=host.emit(context,emitter,instruction.first);
+        if(body_status!=0){return body_status;}
         host.close(emitter,ControlScope::Block);
     } else if(kind==ControlKind::Continue){
         host.jump_to(emitter,host.continuation(emitter));
@@ -334,6 +339,74 @@ extern "C" void emit_control(address context,address emitter,ControlInstruction 
         u64 field=host.jump(emitter,ControlJump::Always);
         host.defer(emitter,target,field);
     }
+    return 0;
+}
+
+extern "C" u32 emit_scalar_body(address context, address emitter, Span code, ScalarBodyHost host) on cpu
+    requires nonzero(host.ir.inspect) requires nonzero(host.mark) requires nonzero(host.publish) requires nonzero(host.emit)
+    requires nonzero(host.control.emit) requires nonzero(host.control.load) requires nonzero(host.control.offset)
+    requires nonzero(host.control.jump) requires nonzero(host.control.jump_to) requires nonzero(host.control.patch_here)
+    requires nonzero(host.control.open) requires nonzero(host.control.close) requires nonzero(host.control.defer)
+    requires nonzero(host.control.continuation) {
+    u64 index = 0u64;
+    while (index < code.count) {
+        address instruction = unsafe_address(address_bits(code.data) + index * u64(code.stride));
+        View value = host.ir.inspect(Node(instruction, N_INSTRUCTION));
+        ScalarCursor cursor = host.mark(emitter);
+        u32 kind = value.tag;
+        if (kind == OP_INVOKE) {
+            host.emit(emitter, ScalarLeaf::Call, value);
+        } else if (kind == OP_PRINT) {
+            host.emit(emitter, ScalarLeaf::Print, value);
+        } else if (kind == OP_TEXTURE_SAMPLE || kind == OP_CLEANUP) {
+            return u32(ScalarBodyStatus::Unlowered);
+        } else if (kind <= OP_TEXTURE_FETCH) {
+            host.emit(emitter, ScalarLeaf::Texture, value);
+        } else if (kind == OP_APPEND) {
+            host.emit(emitter, ScalarLeaf::Append, value);
+        } else if (kind == OP_ATOMIC) {
+            host.emit(emitter, ScalarLeaf::Atomic, value);
+        } else if (kind == OP_TILE_PUBLISH) {
+            host.emit(emitter, ScalarLeaf::Publish, value);
+        } else if (kind == OP_TILE_COLLECTIVE) {
+            host.emit(emitter, ScalarLeaf::Collective, value);
+        } else if (kind == OP_TILE_LENGTH) {
+            host.emit(emitter, ScalarLeaf::TileLength, value);
+        } else if (kind == OP_TILE_LANE) {
+            host.emit(emitter, ScalarLeaf::TileLane, value);
+        } else if (kind == OP_SUBGROUP) {
+            return u32(ScalarBodyStatus::Subgroup);
+        } else if (kind == OP_RAY_QUERY) {
+            return u32(ScalarBodyStatus::RayQuery);
+        } else if (kind == OP_VIEW_LOAD) {
+            host.emit(emitter, ScalarLeaf::ViewLoad, value);
+        } else if (kind == OP_LOAD_INDEXED || kind == OP_STORE_INDEXED ||
+            kind == OP_TILE_LOAD || kind == OP_POSITION_ADDRESS) {
+            host.emit(emitter, ScalarLeaf::Indexed, value);
+        } else if (kind == OP_FUNCTION_ADDRESS) {
+            host.emit(emitter, ScalarLeaf::FunctionAddress, value);
+        } else if (kind == OP_CONSTANT || (kind >= OP_BUFFER_STRIDE && kind <= OP_STORE)) {
+            host.emit(emitter, ScalarLeaf::Storage, value);
+        } else if (kind >= OP_UNARY && kind <= OP_SELECT_VALUE) {
+            host.emit(emitter, ScalarLeaf::Value, value);
+        } else if (kind >= OP_BRANCH && kind <= OP_RAISE) {
+            ControlKind control = ControlKind::If;
+            if (kind == OP_LOOP_VALUE) { control = ControlKind::Loop; }
+            if (kind == OP_SCOPE) { control = ControlKind::Scope; }
+            if (kind == OP_EXIT_VALUE) { control = ControlKind::Exit; }
+            if (kind == OP_BREAK_VALUE) { control = ControlKind::Break; }
+            if (kind == OP_CONTINUE_VALUE) { control = ControlKind::Continue; }
+            if (kind == OP_RAISE) { control = ControlKind::Raise; }
+            u32 status = emit_control(context, emitter, ControlInstruction(value.first, value.second, u64(value.a), control), host.control);
+            if (status != 0) { return status; }
+        } else if (kind != OP_TILE_BARRIER) {
+            return u32(ScalarBodyStatus::Unlowered);
+        }
+        // Tile barriers are split into phases before this block is emitted.
+        host.publish(emitter, instruction, cursor);
+        index += 1u64;
+    }
+    return u32(ScalarBodyStatus::Done);
 }
 
 extern "C" u64 encode_branch(u8 condition, u32 test_bits, address output) on cpu {
@@ -3737,12 +3810,11 @@ extern "C" void texture_sample_ir(address coordinate, u32 dimensions, u64 lod, a
     }
 }
 
-extern "C" u64 emit_texture_access(Node instruction, TextureAccessHost host, address output) on cpu
+extern "C" u64 emit_texture_access(View access, TextureAccessHost host, address output) on cpu
     requires nonzero(host.values.ir.inspect) requires nonzero(host.values.location)
     requires nonzero(host.values.scalar) requires nonzero(host.offset) {
     ScalarValueHost values = host.values;
     address context = values.context;
-    View access = values.ir.inspect(instruction);
     View texture = values.ir.inspect(access.left);
     u64 start = address_bits(output);
     u64 cursor = start;
@@ -4953,10 +5025,9 @@ u64 emit_integer_division(View value, ScalarValueHost host, bool packet, address
     if (packet) { return packet_divide_value(outputs, numerator, right, signed, output); }
     return divide_value(outputs, numerator, right, scalar, host.scalar(host.context, divisor.a), output);
 }
-extern "C" ScalarValueEncoding emit_scalar_value(Node source,
+extern "C" ScalarValueEncoding emit_scalar_value(View value,
     ScalarValueHost host, address output) on cpu
     requires nonzero(host.ir.inspect) requires nonzero(host.location) requires nonzero(host.scalar) {
-    View value = host.ir.inspect(source);
     if (value.tag == OP_INTEGER_DIVIDE) {
         u64 length = emit_integer_division(value, host, false, output);
         return value_encoding(BinaryEncoding(length, 0u64, 0u64), 0u64, false, 0u64, false);
@@ -5097,11 +5168,10 @@ ScalarStorageEncoding scalar_storage_copy(MoveLocation dst, MoveLocation src, Sc
     return ScalarStorageEncoding(move.length, src.value, move.literal_field);
 }
 
-extern "C" ScalarStorageEncoding emit_scalar_storage(Node instruction, ScalarStorageHost host,
+extern "C" ScalarStorageEncoding emit_scalar_storage(View value, ScalarStorageHost host,
     address output) on cpu
-    requires nonzero(host.values.ir.inspect) requires nonzero(host.values.location)
+    requires nonzero(host.values.location)
     requires nonzero(host.values.scalar) requires nonzero(host.local) {
-    View value = host.values.ir.inspect(instruction);
     ScalarValueHost values = host.values;
     address context = values.context;
     u32 kind = value.tag;
@@ -5307,13 +5377,12 @@ u64 indexed_tile_read(View inst, View source, bool dynamic, IndexedAddressHost h
     return prefix + scalar_storage_read(dst, low, scalar, cursor);
 }
 
-extern "C" u64 emit_indexed_storage(Node instruction, IndexedAddressHost host,
+extern "C" u64 emit_indexed_storage(View inst, IndexedAddressHost host,
     cfn<MoveLocation,address,usize> ensures memory(read) local, address output) on cpu
     requires nonzero(host.values.ir.inspect) requires nonzero(host.values.location)
     requires nonzero(host.values.scalar) requires nonzero(host.tile_stream) requires nonzero(local) {
     ScalarValueHost values = host.values;
     address context = values.context;
-    View inst = values.ir.inspect(instruction);
     if (inst.tag == OP_POSITION_ADDRESS) {
         u64 prefix = emit_reference_address(inst.left, host, local, output);
         ScalarEncoding scalar = values.scalar(context, inst.a);
@@ -5339,9 +5408,8 @@ extern "C" u64 emit_indexed_storage(Node instruction, IndexedAddressHost host,
     return memory.length + length;
 }
 
-extern "C" u64 emit_view_load(Node instruction, ScalarValueHost host, address output) on cpu
+extern "C" u64 emit_view_load(View load, ScalarValueHost host, address output) on cpu
     requires nonzero(host.ir.inspect) requires nonzero(host.location) requires nonzero(host.scalar) {
-    View load = host.ir.inspect(instruction);
     ViewElement view = indexed_view_element(load.first, load.b, host.ir.inspect(load.left), host);
     AddressEncoding memory = view_element_memory(view, u32(load.c), output);
     MoveLocation operand = MoveLocation(u64(memory.offset), MOVE_MEMORY, memory.base, memory.index, memory.shift);
@@ -5350,12 +5418,11 @@ extern "C" u64 emit_view_load(Node instruction, ScalarValueHost host, address ou
         host.scalar(host.context, load.a), cursor);
 }
 
-extern "C" u64 emit_atomic(Node instruction, IndexedAddressHost host, address output) on cpu
+extern "C" u64 emit_atomic(View value, IndexedAddressHost host, address output) on cpu
     requires nonzero(host.values.ir.inspect) requires nonzero(host.values.location)
     requires nonzero(host.values.scalar) requires nonzero(host.tile_stream) {
     ScalarValueHost values = host.values;
     address context = values.context;
-    View value = values.ir.inspect(instruction);
     View target = values.ir.inspect(value.left);
     View op = values.ir.inspect(value.right);
     AtomicOperation operation = AtomicOperation(op.tag);
@@ -5407,10 +5474,9 @@ extern "C" u64 emit_atomic(Node instruction, IndexedAddressHost host, address ou
     return cursor - start;
 }
 
-extern "C" u64 emit_append(Node instruction, ScalarValueHost host, u32 buffer_bytes,
+extern "C" u64 emit_append(View value, ScalarValueHost host, u32 buffer_bytes,
     u32 stride_field, address output) on cpu
-    requires nonzero(host.ir.inspect) requires nonzero(host.location) requires nonzero(host.scalar) {
-    View value = host.ir.inspect(instruction);
+    requires nonzero(host.location) requires nonzero(host.scalar) {
     u32 target = u32(value.c) * buffer_bytes;
     // R13 contains the runtime's two header words, then one length per binding.
     u32 capacity = (2 + u32(value.c)) * 4;

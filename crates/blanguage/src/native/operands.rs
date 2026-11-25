@@ -2,7 +2,7 @@
 use super::*;
 use allocation::Location;
 use crate::builtin_types::ScalarEncoding;
-use crate::ir::dataflow::{HOST, Host, Node};
+use crate::ir::dataflow::{HOST, Host, View};
 
 pub(super) fn bit_copy(from: Scalar, into: Scalar) -> bool {
     unsafe { scalar_bit_copy(from.into(), into.into()) != 0 }
@@ -213,19 +213,19 @@ unsafe extern "C" {
     #[link_name = "bootstrap.x64_instruction::bit_copy"]
     fn scalar_bit_copy(from: ScalarEncoding, into: ScalarEncoding) -> u32;
     #[link_name = "bootstrap.x64_instruction::emit_indexed_storage"]
-    fn emit_indexed_storage(instruction: Node, host: IndexedAddressHost,
+    fn emit_indexed_storage(instruction: View, host: IndexedAddressHost,
         local: unsafe extern "C" fn(*const std::ffi::c_void, usize) -> MoveLocation, output: *mut u8) -> u64;
     #[link_name = "bootstrap.x64_instruction::emit_append"]
-    fn emit_append(instruction: Node, host: ScalarValueHost, buffer_bytes: u32,
+    fn emit_append(instruction: View, host: ScalarValueHost, buffer_bytes: u32,
         stride_field: u32, output: *mut u8) -> u64;
     #[link_name = "bootstrap.x64_instruction::emit_atomic"]
-    fn emit_atomic(instruction: Node, host: IndexedAddressHost, output: *mut u8) -> u64;
+    fn emit_atomic(instruction: View, host: IndexedAddressHost, output: *mut u8) -> u64;
     #[link_name = "bootstrap.x64_instruction::emit_view_load"]
-    fn emit_view_load(instruction: Node, host: ScalarValueHost, output: *mut u8) -> u64;
+    fn emit_view_load(instruction: View, host: ScalarValueHost, output: *mut u8) -> u64;
     #[link_name = "bootstrap.x64_instruction::emit_scalar_storage"]
-    fn emit_scalar_storage(instruction: Node, host: ScalarStorageHost, output: *mut u8) -> ScalarStorageEncoding;
+    fn emit_scalar_storage(instruction: View, host: ScalarStorageHost, output: *mut u8) -> ScalarStorageEncoding;
     #[link_name = "bootstrap.x64_instruction::emit_scalar_value"]
-    fn emit_scalar_value(value: Node, host: ScalarValueHost, output: *mut u8) -> ScalarValueEncoding;
+    fn emit_scalar_value(value: View, host: ScalarValueHost, output: *mut u8) -> ScalarValueEncoding;
     #[link_name = "bootstrap.x64_instruction::scalar_math_outgoing"]
     pub(super) fn scalar_math_outgoing(operation: u32) -> u64;
     #[link_name = "bootstrap.x64_instruction::encode"]
@@ -256,48 +256,48 @@ impl Emitter<'_> {
             Memory::indexed(result.base, result.index, result.shift, result.offset)
         }
     }
-    pub(super) fn view_load(&mut self, inst: &Inst) {
+    pub(super) fn view_load(&mut self, value: View) {
         let locations = ScalarLocations { allocation: &self.allocation, stage: self.stage, frame: &self.frame };
         let host = locations.host();
         let start = self.code.len();
         self.code.reserve(112);
         unsafe {
-            let length = emit_view_load(Node::instruction(inst), host, self.code.as_mut_ptr().add(start));
+            let length = emit_view_load(value, host, self.code.as_mut_ptr().add(start));
             self.code.set_len(start + length as usize);
         }
     }
 
-    pub(super) fn indexed_storage(&mut self, inst: &Inst) {
+    pub(super) fn indexed_storage(&mut self, value: View) {
         let locations = ScalarLocations { allocation: &self.allocation, stage: self.stage, frame: &self.frame };
         let host = locations.indexed_host();
         let start = self.code.len();
         self.code.reserve(208);
         unsafe {
-            let length = emit_indexed_storage(Node::instruction(inst), host, value_local,
+            let length = emit_indexed_storage(value, host, value_local,
                 self.code.as_mut_ptr().add(start));
             self.code.set_len(start + length as usize);
         }
     }
 
-    pub(super) fn append(&mut self, inst: &Inst, field_count: usize) {
+    pub(super) fn append(&mut self, value: View) {
         let locations = ScalarLocations { allocation: &self.allocation, stage: self.stage, frame: &self.frame };
         let host = locations.host();
         let start = self.code.len();
-        self.code.reserve(148 + field_count * 24);
+        self.code.reserve(148 + value.first.count * 24);
         unsafe {
-            let length = emit_append(Node::instruction(inst), host, BUFFER_BYTES, BUFFER_STRIDE,
+            let length = emit_append(value, host, BUFFER_BYTES, BUFFER_STRIDE,
                 self.code.as_mut_ptr().add(start));
             self.code.set_len(start + length as usize);
         }
     }
 
-    pub(super) fn atomic(&mut self, inst: &Inst) {
+    pub(super) fn atomic(&mut self, value: View) {
         let locations = ScalarLocations { allocation: &self.allocation, stage: self.stage, frame: &self.frame };
         let host = locations.indexed_host();
         let start = self.code.len();
         self.code.reserve(312);
         unsafe {
-            let length = emit_atomic(Node::instruction(inst), host, self.code.as_mut_ptr().add(start));
+            let length = emit_atomic(value, host, self.code.as_mut_ptr().add(start));
             self.code.set_len(start + length as usize);
         }
     }
@@ -388,7 +388,7 @@ impl Emitter<'_> {
     pub(super) fn write_value_address(&mut self, src: Location, memory: Memory, size: u32) {
         self.emit_bytes(24, |output| unsafe { write_scalar_move(memory.into(), src.into(), size, output) });
     }
-    pub(super) fn scalar_storage(&mut self, inst: &Inst) {
+    pub(super) fn scalar_storage(&mut self, value: View) {
         let locations = ScalarLocations { allocation: &self.allocation, stage: self.stage, frame: &self.frame };
         let host = ScalarStorageHost {
             values: locations.host(), local: value_local,
@@ -397,19 +397,19 @@ impl Emitter<'_> {
         let start = self.code.len();
         self.code.reserve(68);
         let encoding = unsafe {
-            let encoding = emit_scalar_storage(Node::instruction(inst), host, self.code.as_mut_ptr().add(start));
+            let encoding = emit_scalar_storage(value, host, self.code.as_mut_ptr().add(start));
             self.code.set_len(start + encoding.length as usize);
             encoding
         };
         self.record_literal(start, (encoding.literal, false), encoding.field as usize);
     }
-    pub(super) fn scalar_value(&mut self, inst: &Inst) {
+    pub(super) fn scalar_value(&mut self, value: View) {
         let locations = ScalarLocations { allocation: &self.allocation, stage: self.stage, frame: &self.frame };
         let host = locations.host();
         let start = self.code.len();
         self.code.reserve(128);
         let encoded = unsafe {
-            let encoded = emit_scalar_value(Node::instruction(inst), host, self.code.as_mut_ptr().add(start));
+            let encoded = emit_scalar_value(value, host, self.code.as_mut_ptr().add(start));
             self.code.set_len(start + encoded.length as usize);
             encoded
         };

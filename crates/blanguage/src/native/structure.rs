@@ -1,7 +1,7 @@
 //! Synchronous access to the original x64 emitter and its scalar or packet blocks.
 use super::*;
 use std::ffi::c_void;
-use std::ptr::NonNull;
+use crate::ir::dataflow::{self, Span, View};
 
 type Slot = *mut c_void;
 
@@ -15,28 +15,13 @@ pub(super) enum Flow<'a, I> {
     Raise(Reg),
 }
 
-#[repr(C)]
-#[derive(Clone, Copy)]
-struct Block {
-    start: *const c_void,
-    count: usize,
-}
-
-impl Block {
-    const EMPTY: Self = Self { start: NonNull::<usize>::dangling().as_ptr().cast(), count: 0 };
-
-    fn from_slice<I>(code: &[I]) -> Self {
-        Self { start: code.as_ptr().cast(), count: code.len() }
-    }
-}
-
 #[repr(u32)]
 enum Kind { If, Loop, Scope, Exit, Break, Continue, Raise }
 
 #[repr(C)]
 struct Control {
-    first: Block,
-    second: Block,
+    first: Span,
+    second: Span,
     register: Reg,
     kind: Kind,
 }
@@ -44,13 +29,13 @@ struct Control {
 impl<I> From<Flow<'_, I>> for Control {
     fn from(flow: Flow<'_, I>) -> Self {
         let (kind, register, first, second) = match flow {
-            Flow::If(reg, yes, no) => (Kind::If, reg, Block::from_slice(yes), Block::from_slice(no)),
-            Flow::Loop(condition, reg, body) => (Kind::Loop, reg, Block::from_slice(condition), Block::from_slice(body)),
-            Flow::Scope(body) => (Kind::Scope, 0, Block::from_slice(body), Block::EMPTY),
-            Flow::Exit => (Kind::Exit, 0, Block::EMPTY, Block::EMPTY),
-            Flow::Break => (Kind::Break, 0, Block::EMPTY, Block::EMPTY),
-            Flow::Continue => (Kind::Continue, 0, Block::EMPTY, Block::EMPTY),
-            Flow::Raise(reg) => (Kind::Raise, reg, Block::EMPTY, Block::EMPTY),
+            Flow::If(reg, yes, no) => (Kind::If, reg, Span::slice(yes), Span::slice(no)),
+            Flow::Loop(condition, reg, body) => (Kind::Loop, reg, Span::slice(condition), Span::slice(body)),
+            Flow::Scope(body) => (Kind::Scope, 0, Span::slice(body), Span::slice::<I>(&[])),
+            Flow::Exit => (Kind::Exit, 0, Span::slice::<I>(&[]), Span::slice::<I>(&[])),
+            Flow::Break => (Kind::Break, 0, Span::slice::<I>(&[]), Span::slice::<I>(&[])),
+            Flow::Continue => (Kind::Continue, 0, Span::slice::<I>(&[]), Span::slice::<I>(&[])),
+            Flow::Raise(reg) => (Kind::Raise, reg, Span::slice::<I>(&[]), Span::slice::<I>(&[])),
         };
         Self { first, second, register, kind }
     }
@@ -66,8 +51,9 @@ enum Scope { Block, Loop }
 enum Target { Block, Loop, Function }
 
 #[repr(C)]
+#[derive(Clone, Copy)]
 struct Host {
-    emit: unsafe extern "C" fn(Slot, Slot, Block) -> u32,
+    emit: unsafe extern "C" fn(Slot, Slot, Span) -> u32,
     load: unsafe extern "C" fn(Slot, Slot, Reg),
     offset: unsafe extern "C" fn(Slot) -> usize,
     jump: unsafe extern "C" fn(Slot, Jump) -> usize,
@@ -81,7 +67,9 @@ struct Host {
 
 unsafe extern "C" {
     #[link_name = "bootstrap.x64_instruction::emit_control"]
-    fn emit_control(context: Slot, emitter: Slot, control: Control, host: Host);
+    fn emit_control(context: Slot, emitter: Slot, control: Control, host: Host) -> u32;
+    #[link_name = "bootstrap.x64_instruction::emit_scalar_body"]
+    fn emit_scalar_body(context: Slot, emitter: Slot, code: Span, host: ScalarHost) -> ScalarBodyStatus;
 }
 
 struct Context<F, L> {
@@ -94,14 +82,14 @@ unsafe fn emitter<'a, 'b>(slot: Slot) -> &'a mut Emitter<'b> {
     unsafe { &mut *slot.cast() }
 }
 
-unsafe extern "C" fn child<'a, I, F, L>(context: Slot, slot: Slot, block: Block) -> u32
+unsafe extern "C" fn child<'a, I, F, L>(context: Slot, slot: Slot, block: Span) -> u32
 where
     F: Fn(&mut Emitter<'a>, &[I]) -> Result<(), &'static str>,
 {
     let context = unsafe { &mut *context.cast::<Context<F, L>>() };
-    let code = unsafe { std::slice::from_raw_parts(block.start.cast(), block.count) };
+    let code = unsafe { block.as_slice() };
     context.result = (context.emit)(unsafe { emitter(slot) }, code);
-    u32::from(context.result.is_ok())
+    u32::from(context.result.is_err())
 }
 
 unsafe extern "C" fn test<'a, F, L>(context: Slot, slot: Slot, register: Reg)
@@ -165,7 +153,97 @@ unsafe extern "C" fn continuation(slot: Slot) -> usize {
     *unsafe { emitter(slot) }.continues.last().unwrap()
 }
 
+#[repr(u32)]
+#[allow(dead_code)]
+enum ScalarLeaf {
+    Call, Print, Texture, Append, Atomic, Publish, Collective, TileLength, TileLane, ViewLoad,
+    Indexed, FunctionAddress, Storage, Value,
+}
+
+#[repr(u32)]
+#[allow(dead_code)]
+enum ScalarBodyStatus { Done, Unlowered, Subgroup, RayQuery }
+
+#[repr(C)]
+struct ScalarCursor { start: usize, ranges: usize }
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct ScalarHost {
+    ir: dataflow::Host,
+    control: Host,
+    mark: unsafe extern "C" fn(Slot) -> ScalarCursor,
+    publish: unsafe extern "C" fn(Slot, *const Inst, ScalarCursor),
+    emit: unsafe extern "C" fn(Slot, ScalarLeaf, View),
+}
+
+unsafe extern "C" fn scalar_child(context: Slot, slot: Slot, code: Span) -> u32 {
+    let host = unsafe { *context.cast::<ScalarHost>() };
+    unsafe { emit_scalar_body(context, slot, code, host) as u32 }
+}
+
+unsafe extern "C" fn scalar_load(_: Slot, slot: Slot, register: Reg) {
+    unsafe { emitter(slot) }.load(register);
+}
+
+unsafe extern "C" fn mark_scalar(slot: Slot) -> ScalarCursor {
+    let e = unsafe { emitter(slot) };
+    ScalarCursor { start: e.code.len(), ranges: e.operation_ranges.len() }
+}
+
+unsafe extern "C" fn publish_scalar(slot: Slot, inst: *const Inst, cursor: ScalarCursor) {
+    unsafe { emitter(slot) }.operation_range(unsafe { &*inst }, cursor.start, cursor.ranges);
+}
+
+unsafe extern "C" fn emit_scalar(slot: Slot, leaf: ScalarLeaf, value: View) {
+    let e = unsafe { emitter(slot) };
+    match leaf {
+        ScalarLeaf::Call => e.native_call(unsafe { value.left_as() }),
+        ScalarLeaf::Print => e.print_call(value.a, value.b),
+        ScalarLeaf::Texture => e.texture_access(value),
+        ScalarLeaf::Append => e.append(value),
+        ScalarLeaf::Atomic => e.atomic(value),
+        ScalarLeaf::Publish => e.publish_values(unsafe { value.left_as() }),
+        ScalarLeaf::Collective => e.tile_collective(unsafe { value.left_as() }),
+        ScalarLeaf::TileLength => e.tile_length(value.a),
+        ScalarLeaf::TileLane => e.tile_lane(value.a),
+        ScalarLeaf::ViewLoad => e.view_load(value),
+        ScalarLeaf::Indexed => e.indexed_storage(value),
+        ScalarLeaf::FunctionAddress => {
+            match unsafe { value.left_as() } {
+                CallTarget::Defined(name) => e.emit_symbol_target(NativeSymbol::Function(name.clone()), false),
+                CallTarget::External(name) => e.emit_symbol_target(NativeSymbol::External(name.clone()), false),
+                CallTarget::Indirect(reg) => e.load(*reg),
+            }
+            e.store(value.a);
+        }
+        ScalarLeaf::Storage => e.scalar_storage(value),
+        ScalarLeaf::Value => e.scalar_value(value),
+    }
+}
+
 impl<'a> Emitter<'a> {
+    pub(super) fn block(&mut self, code: &[Inst]) -> Result<(), &'static str> {
+        let mut host = ScalarHost {
+            ir: dataflow::HOST,
+            control: Host { emit: scalar_child, load: scalar_load, offset, jump, jump_to,
+                patch_here, open, close, defer, continuation },
+            mark: mark_scalar,
+            publish: publish_scalar,
+            emit: emit_scalar,
+        };
+        let result = unsafe {
+            emit_scalar_body(std::ptr::from_mut(&mut host).cast(), std::ptr::from_mut(self).cast(),
+                Span::slice(code), host)
+        };
+        match result {
+            ScalarBodyStatus::Done => Ok(()),
+            ScalarBodyStatus::Unlowered => Err("原生操作尚未降低到CPU执行IR"),
+            ScalarBodyStatus::Subgroup => Err("CPU 后端不能执行 GPU subgroup 协作"),
+            ScalarBodyStatus::RayQuery => Err("CPU 后端不能执行硬件光线查询"),
+        }
+    }
+
     pub(super) fn lower_control<I, F, L>(&mut self, flow: Flow<'_, I>, emit: F, load: L)
         -> Result<(), &'static str>
     where
