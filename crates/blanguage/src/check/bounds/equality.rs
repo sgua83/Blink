@@ -247,9 +247,11 @@ unsafe extern "C" {
     #[link_name = "bootstrap.condition_graph::computed_equalities"]
     fn b_computed(context: Slot, host: ComputedHost);
 }
-pub(super) fn computed<'a, I: IntoIterator<Item = &'a Fact>>(roots: &mut Roots, facts: I) {
-    let expressions: Vec<_> = facts
+pub(super) fn computed<'a>(roots: &mut Roots, fact_sets: impl IntoIterator<Item = &'a Facts>) {
+    // The ordered facts put Equal and Index before the remaining variants.
+    let expressions: Vec<_> = fact_sets
         .into_iter()
+        .flat_map(|facts| facts.iter().take_while(|fact| matches!(fact, Fact::Equal(..) | Fact::Index(..))))
         .filter_map(|fact| match fact {
             Fact::Index(result, IndexDomain::Computed(expression)) => Some((result, expression)),
             _ => None,
@@ -286,14 +288,10 @@ pub(super) fn computed<'a, I: IntoIterator<Item = &'a Fact>>(roots: &mut Roots, 
         )
     };
 }
-pub(super) fn roots<'a, I: IntoIterator<Item = &'a Fact>>(facts: I) -> Roots
-where
-    I::IntoIter: Clone,
-{
-    let facts = facts.into_iter();
+pub(super) fn roots(facts: &Facts) -> Roots {
     let mut roots = Roots::new();
-    extend(&mut roots, facts.clone());
-    computed(&mut roots, facts);
+    extend(&mut roots, facts);
+    computed(&mut roots, [facts]);
     roots
 }
 struct Additional<'a> {
@@ -331,7 +329,7 @@ unsafe extern "C" fn additional_computed(slot: Slot) {
     let context = unsafe { additional_context(slot) };
     computed(
         context.result.to_mut(),
-        context.environment.iter().chain(context.additions),
+        [context.environment, context.additions],
     );
 }
 unsafe extern "C" fn unchanged(slot: Slot) -> u32 {

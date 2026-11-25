@@ -1776,11 +1776,7 @@ impl Fact {
         }
     }
 }
-fn equality_roots<'a, I>(facts: I) -> BTreeMap<ValueIdentity, ValueIdentity>
-where I: IntoIterator<Item = &'a Fact>, I::IntoIter: Clone { equality::roots(facts) }
-fn extend_computed_roots<'a>(roots: &mut BTreeMap<ValueIdentity, ValueIdentity>, facts: impl IntoIterator<Item = &'a Fact>) {
-    equality::computed(roots, facts)
-}
+fn equality_roots(facts: &Facts) -> BTreeMap<ValueIdentity, ValueIdentity> { equality::roots(facts) }
 fn extend_equality_roots<'a>(roots: &mut BTreeMap<ValueIdentity, ValueIdentity>, facts: impl IntoIterator<Item = &'a Fact>) -> bool {
     equality::extend(roots, facts)
 }
@@ -2504,7 +2500,7 @@ impl Clause {
                 }
             }
             if computed_roots_changed {
-                extend_computed_roots(&mut environment_roots, environment.iter());
+                equality::computed(&mut environment_roots, [environment.as_ref()]);
             }
             let numeric = integer_relation_facts(&environment, &environment_roots)?;
             if unchanged && numeric.is_empty() {
