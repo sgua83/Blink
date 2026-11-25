@@ -602,8 +602,8 @@ unsafe extern "C" {
     fn b_storage_tiles(code: Span, host: Host, context: *mut c_void,
         emit: unsafe extern "C" fn(*mut c_void, usize));
 }
-pub(super) fn tile_scope(stage: &Stage) -> bool {
-    unsafe { b_has_tile_scope(Span::slice(&stage.code), u32::from(!stage.tiles.is_empty()), HOST) != 0 }
+pub(super) fn tile_scope(code: &[Inst], has_tiles: bool) -> bool {
+    unsafe { b_has_tile_scope(Span::slice(code), u32::from(has_tiles), HOST) != 0 }
 }
 pub(super) fn storage_tiles(stage: &Stage) -> BTreeSet<usize> {
     let mut output = BTreeSet::new();

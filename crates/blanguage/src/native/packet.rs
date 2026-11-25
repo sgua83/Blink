@@ -100,8 +100,11 @@ pub(super) struct Plan<'a> {
     pub address_only: BTreeSet<Reg>,
 }
 impl<'a> Plan<'a> {
-    pub fn new(program: &Program, stage: &'a Stage, tile_scope: bool) -> Option<Self> {
-        control::run(program, stage, tile_scope)
+    pub fn new(
+        program: &Program, stage: &Stage, code: &'a [Inst], registers: &'a [Scalar],
+        tile_scope: bool,
+    ) -> Option<Self> {
+        control::run(program, stage, code, registers, tile_scope)
     }
 }
 

@@ -127,6 +127,28 @@ pub(crate) struct TilePhase<'a> {
     pub live_in: BTreeSet<PrivateSlot>,
     pub saved: BTreeSet<PrivateSlot>,
 }
+#[cfg(feature = "compiler")]
+impl<'a> TilePhase<'a> {
+    pub(crate) fn from_code(code: &'a [Inst]) -> Vec<Self> {
+        private_live::tile_phases(code)
+    }
+}
+
+#[cfg(feature = "compiler")]
+impl PrivateSlot {
+    pub(crate) fn scalar<'a>(
+        self, registers: &'a [Scalar], locals: &'a BTreeMap<usize, Ty>,
+    ) -> &'a Scalar {
+        match self {
+            Self::Register(reg) => &registers[reg],
+            Self::Local(slot) => {
+                let (end, ty) = locals.range(slot + 1..).next().unwrap();
+                &ty.components[slot + ty.components.len() - end].0
+            }
+        }
+    }
+}
+
 impl Tile {
     pub(crate) fn shared_word(&self, tile: usize, word: u32) -> SharedWord {
         match self.source {
@@ -147,21 +169,7 @@ impl Stage {
     }
     #[cfg(feature = "compiler")]
     pub(crate) fn tile_phases(&self) -> Vec<TilePhase<'_>> {
-        private_live::tile_phases(&self.code)
-    }
-    #[cfg(feature = "compiler")]
-    pub(crate) fn private_scalar(&self, slot: PrivateSlot) -> Scalar {
-        *self.private_scalar_ref(slot)
-    }
-    #[cfg(feature = "compiler")]
-    pub(crate) fn private_scalar_ref(&self, slot: PrivateSlot) -> &Scalar {
-        match slot {
-            PrivateSlot::Register(r) => &self.registers[r],
-            PrivateSlot::Local(s) => {
-                let (end, ty) = self.locals.range(s + 1..).next().unwrap();
-                &ty.components[s + ty.components.len() - end].0
-            }
-        }
+        TilePhase::from_code(&self.code)
     }
     // (实际单元类型，所属类型平面的槽，单元内字节)；CPU继续使用原u32字流。
     #[cfg(feature = "compiler")]

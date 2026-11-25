@@ -1850,8 +1850,12 @@ impl Stage {
         }
     }
     pub fn has_tile_scope(&self) -> bool {
+        self.has_tile_scope_for(&self.code)
+    }
+
+    fn has_tile_scope_for(&self, code: &[Inst]) -> bool {
         #[cfg(feature = "compiler")]
-        { dataflow::tile_scope(self) }
+        { dataflow::tile_scope(code, !self.tiles.is_empty()) }
         #[cfg(not(feature = "compiler"))]
         {
             fn uses(code: &[Inst], has_tiles: bool) -> bool {
@@ -1867,7 +1871,7 @@ impl Stage {
                     _ => false,
                 })
             }
-            uses(&self.code, !self.tiles.is_empty())
+            uses(code, !self.tiles.is_empty())
         }
     }
     pub fn storage_tiles(&self) -> std::collections::BTreeSet<usize> {
@@ -1899,7 +1903,11 @@ impl Stage {
     pub(crate) const DEFAULT_WORKGROUP_WIDTH: u32 = 64;
 
     pub(crate) fn tile_workgroup_width(&self) -> Option<u32> {
-        self.has_tile_scope().then(|| self.tiles[0].width)
+        self.tile_workgroup_width_for(&self.code)
+    }
+
+    pub(crate) fn tile_workgroup_width_for(&self, code: &[Inst]) -> Option<u32> {
+        self.has_tile_scope_for(code).then(|| self.tiles[0].width)
     }
 
     pub fn workgroup_width(&self) -> u32 {

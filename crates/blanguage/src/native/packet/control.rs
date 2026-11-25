@@ -43,20 +43,27 @@ struct Host {
     append: unsafe extern "C" fn(*mut c_void, Node, Decision, *mut c_void, *mut c_void),
     address_only: unsafe extern "C" fn(*mut Context<'_>, Reg),
 }
-struct Context<'a> { program: &'a Program, stage: &'a Stage, address_only: &'a mut BTreeSet<Reg> }
-// The erased vectors keep the exact Stage borrow supplied by run; they never leave Plan<'a>.
+struct Context<'a> {
+    program: &'a Program,
+    stage: &'a Stage,
+    registers: &'a [Scalar],
+    address_only: &'a mut BTreeSet<Reg>,
+}
+// The erased vectors borrow the placed instructions and registers until Plan<'a> is consumed.
 type Steps = Vec<Step<'static>>;
 unsafe extern "C" {
     #[link_name = "bootstrap.x64_instruction::packet_plan"]
     fn packet_plan(context: *mut Context<'_>, code: Block, header: Header, host: Host) -> *mut c_void;
 }
-pub(super) fn run<'a>(program: &Program, stage: &'a Stage, tile_scope: bool) -> Option<Plan<'a>> {
+pub(super) fn run<'a>(
+    program: &Program, stage: &Stage, code: &'a [Inst], registers: &'a [Scalar], tile_scope: bool,
+) -> Option<Plan<'a>> {
     let mut address_only = BTreeSet::new();
-    let mut context = Context { program, stage, address_only: &mut address_only };
-    let header = Header { registers: stage.registers.len(),
-        slots: stage.registers.len() + stage.locals.last_key_value().map_or(0, |(end, _)| *end),
+    let mut context = Context { program, stage, registers, address_only: &mut address_only };
+    let header = Header { registers: registers.len(),
+        slots: registers.len() + stage.locals.last_key_value().map_or(0, |(end, _)| *end),
         writes: stage.writes.len(), tile: u32::from(tile_scope), selected: u32::from(stage.selection.is_some()) };
-    let code = unsafe { packet_plan(&mut context, Block::from(&stage.code), header, HOST) };
+    let code = unsafe { packet_plan(&mut context, Block::from(code), header, HOST) };
     if code.is_null() { return None; }
     let code = unsafe { *Box::from_raw(code.cast::<Vec<Step<'a>>>()) };
     Some(Plan { code, address_only })
@@ -80,7 +87,7 @@ unsafe extern "C" fn read(context: *const Context<'_>, code: Block, index: usize
         InstKind::Unary { dst, op, a } => { node.kind = Kind::Unary; node.dst = *dst; node.a = *a; node.payload = (op as *const UnaryOp).cast(); }
         InstKind::Binary { dst, op, a, b } => { node.kind = Kind::Binary; node.dst = *dst; node.a = *a; node.b = *b; node.payload = (op as *const BinaryOp).cast(); }
         InstKind::IntegerDivide { .. } => node.kind = Kind::Divide,
-        InstKind::Cast { dst, src } => { node.kind = Kind::Cast; node.dst = *dst; node.a = *src; let from = &context.stage.registers[*src]; let into = &context.stage.registers[*dst]; node.from = (*from).into(); node.into = (*into).into(); node.payload = (from as *const Scalar).cast(); node.other = (into as *const Scalar).cast(); }
+        InstKind::Cast { dst, src } => { node.kind = Kind::Cast; node.dst = *dst; node.a = *src; let from = &context.registers[*src]; let into = &context.registers[*dst]; node.from = (*from).into(); node.into = (*into).into(); node.payload = (from as *const Scalar).cast(); node.other = (into as *const Scalar).cast(); }
         InstKind::Math { dst, op, args } => { node.kind = Kind::Math; node.dst = *dst; node.math = *op as u32; node.arguments = args.as_ptr(); node.argument_count = args.len(); }
         InstKind::Select { dst, condition, a, b } => { node.kind = Kind::Select; node.dst = *dst; node.a = *condition; node.b = *a; node.c = *b; }
         InstKind::If { condition, yes, no } => { node.kind = Kind::If; node.a = *condition; node.first = Block::from(yes); node.second = Block::from(no); }
@@ -99,8 +106,8 @@ unsafe extern "C" fn visit(context: *const Context<'_>, source: *const c_void, k
         Visit::Operands => unsafe { &*source.cast::<Inst>() }.all_operands(&mut apply),
         Visit::Results => unsafe { &*source.cast::<Inst>() }.results().all(&mut apply),
         Visit::Stride => unsafe { &*source.cast::<ElementStride>() }.all_operands(&mut apply),
-        Visit::Widths => { let stage = unsafe { &*context }.stage; stage.registers.iter()
-            .chain(stage.locals.values().flat_map(|ty| ty.components.iter().map(|(scalar, _)| scalar)))
+        Visit::Widths => { let context = unsafe { &*context }; context.registers.iter()
+            .chain(context.stage.locals.values().flat_map(|ty| ty.components.iter().map(|(scalar, _)| scalar)))
             .all(|scalar| apply(scalar.size() as usize)) }
     })
 }

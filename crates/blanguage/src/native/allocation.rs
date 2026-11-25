@@ -242,7 +242,7 @@ impl Allocation {
     }
 }
 impl PacketAllocation {
-    pub fn new(stage: &Stage, graph: &mut Graph, address_only: &BTreeSet<Reg>) -> Self {
+    pub fn new(registers: usize, graph: &mut Graph, address_only: &BTreeSet<Reg>) -> Self {
         // 原生范围游标已承担这些寻址，不生产没有值消费者的索引向量。
         for r in address_only {
             for n in std::mem::take(&mut graph.edges[*r]) {
@@ -254,7 +254,7 @@ impl PacketAllocation {
         let layout = color_locations(graph, &mut locations, 2, 0);
         Self {
             locations,
-            registers: stage.registers.len(),
+            registers,
             layout,
         }
     }
@@ -266,13 +266,16 @@ impl PacketAllocation {
     }
 }
 impl Frame {
-    pub fn layout_tile(&mut self, stage: &Stage, workgroup: u32, phases: &[TilePhase<'_>], shared: crate::ir::dataflow::TileLayout) -> u64 {
+    pub fn layout_tile(
+        &mut self, registers: &[Scalar], locals: &std::collections::BTreeMap<usize, Ty>,
+        workgroup: u32, phases: &[TilePhase<'_>], shared: crate::ir::dataflow::TileLayout,
+    ) -> u64 {
         // Each outgoing slot has a consumer in the next phase's restore.
         let private: BTreeSet<_> = phases.iter().skip(1)
             .flat_map(|phase| phase.live_in.iter().copied()).collect();
         let mut shared_positions: Vec<_> = shared.values().map(|&(_, slot, _)| slot as u64).collect();
         let mut private_positions: Vec<_> = private.iter()
-            .map(|&slot| u64::from(stage.private_scalar(slot).size())).collect();
+            .map(|&slot| u64::from(slot.scalar(registers, locals).size())).collect();
         // The frame owns the final maps. B borrows the two position arrays only
         // while replacing each entry with its stack offset.
         let end = unsafe {

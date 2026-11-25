@@ -500,7 +500,7 @@ unsafe extern "C" fn map_range_next_private(slot: MapRangeSlot, restore: u32) ->
             index: 0, scalar_origin: std::ptr::null(), storage_offset: 0, local: 0,
         };
     };
-    let scalar = range.stage.private_scalar_ref(slot);
+    let scalar = slot.scalar(range.emitter.registers, &range.stage.locals);
     let (local, index) = match slot {
         PrivateSlot::Register(index) => (0, index),
         PrivateSlot::Local(index) => (1, index),
@@ -561,20 +561,21 @@ fn emit_map(
     program: &Program, index: usize, inputs: &crate::ir::dataflow::InputFragments,
     used: &std::collections::BTreeSet<SharedWord>, layout: crate::ir::dataflow::TileLayout,
 ) -> Result<NativeCode, &'static str> {
-    let mut lowered = program.stages[index].clone();
-    reads::place(&mut lowered.code, &mut lowered.registers, &lowered.writes);
-    let stage = &lowered;
-    let tile_width = stage.tile_workgroup_width();
+    let stage = &program.stages[index];
+    let mut code = stage.code.clone();
+    let mut registers = stage.registers.clone();
+    reads::place(&mut code, &mut registers, &stage.writes);
+    let tile_width = stage.tile_workgroup_width_for(&code);
     let tile_scope = tile_width.is_some();
     let workgroup = tile_width.unwrap_or(Stage::DEFAULT_WORKGROUP_WIDTH);
     let mut graph = allocation::Graph::with_live(
-        &stage.code, &stage.registers, &stage.locals, Default::default(),
+        &code, &registers, &stage.locals, Default::default(),
     );
-    let phases = if tile_scope { stage.tile_phases() } else { Vec::new() };
+    let phases = if tile_scope { TilePhase::from_code(&code) } else { Vec::new() };
     graph.tile_interference(&phases);
     let allocation = Allocation::new(&stage.locals, &mut graph, tile_scope);
-    let packet = packet::Plan::new(program, stage, tile_scope).map(|plan| {
-        let allocation = PacketAllocation::new(stage, &mut graph, &plan.address_only);
+    let packet = packet::Plan::new(program, stage, &code, &registers, tile_scope).map(|plan| {
+        let allocation = PacketAllocation::new(registers.len(), &mut graph, &plan.address_only);
         (plan, allocation)
     });
     drop(graph);
@@ -583,7 +584,7 @@ fn emit_map(
         packet.as_ref().map(|(_, allocation)| allocation),
     );
     let data_end = if tile_scope {
-        frame_layout.layout_tile(stage, workgroup, &phases, layout)
+        frame_layout.layout_tile(&registers, &stage.locals, workgroup, &phases, layout)
     } else {
         frame_layout.end
     };
@@ -601,7 +602,7 @@ fn emit_map(
         operation_ranges: Vec::new(),
         function_abi: Some(super::FunctionAbi { definition: None, instance: None, ranges: Vec::new() }),
         literals: std::collections::BTreeMap::new(),
-        registers: &stage.registers,
+        registers: &registers,
         tiles: &stage.tiles,
         range_origin: OperationOrigin {
             source_site: stage.operation_source.clone(),
@@ -620,7 +621,7 @@ fn emit_map(
         (selection.binding, selection.word, 1)
     });
     let input = MapRangeInput {
-        code: Span::slice(&stage.code),
+        code: Span::slice(&code),
         phase_count: phases.len(),
         packet: packet.as_ref().map_or(std::ptr::null(), |packet| std::ptr::from_ref(packet).cast()),
         binding, word, selected, frame, slots: e.frame.end as u32,
