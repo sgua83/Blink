@@ -842,17 +842,28 @@ pub(super) fn overlap(left: &Clause, right: &Clause, truth: bool) -> bool {
     }
 }
 
-// The numbered topology already gives identical atoms a shared identity.
-fn conjuncts(sources: &[EncodedClause<&Facts>], root: usize) -> BTreeSet<usize> {
+#[derive(PartialEq, Eq, PartialOrd, Ord)]
+enum Conjunct<'a> {
+    Fact(&'a Fact),
+    Node(usize),
+}
+
+fn conjuncts<'a>(sources: &[EncodedClause<&'a Facts>], root: usize) -> BTreeSet<Conjunct<'a>> {
+    let mut terms = BTreeSet::new();
     let mut seen = BTreeSet::new();
     let mut pending = vec![root];
     while let Some(id) = pending.pop() {
-        if seen.insert(id) && let EncodedClause::Both(left, right) = sources[id] {
-            pending.extend([left, right]);
+        if seen.insert(id) {
+            match sources[id] {
+                EncodedClause::Both(left, right) => pending.extend([left, right]),
+                EncodedClause::Facts(facts) => terms.extend(facts.iter().map(Conjunct::Fact)),
+                _ => {
+                    terms.insert(Conjunct::Node(id));
+                }
+            }
         }
     }
-    seen.retain(|&id| !matches!(sources[id], EncodedClause::Both(..)));
-    seen
+    terms
 }
 
 fn equivalent_sources<'a>(
