@@ -15,11 +15,11 @@ ArchiveMember member_at(ArchiveInput input,u64 at) on cpu {
 void member_put(ArchiveInput input,u64 at,ArchiveMember value) on cpu {
     unsafe_position<ArchiveMember>(unsafe_address(address_bits(input.members)+at*MEMBER_BYTES))=value;
 }
-ArchiveSymbol symbol_at(ArchiveInput input,u64 at) on cpu {
-    return unsafe_position<ArchiveSymbol>(unsafe_address(address_bits(input.symbols)+at*SYMBOL_BYTES));
+ArchiveSymbol symbol_at(address symbols,u64 at) on cpu {
+    return unsafe_position<ArchiveSymbol>(unsafe_address(address_bits(symbols)+at*SYMBOL_BYTES));
 }
-void symbol_put(ArchiveInput input,u64 at,ArchiveSymbol value) on cpu {
-    unsafe_position<ArchiveSymbol>(unsafe_address(address_bits(input.symbols)+at*SYMBOL_BYTES))=value;
+void symbol_put(address symbols,u64 at,ArchiveSymbol value) on cpu {
+    unsafe_position<ArchiveSymbol>(unsafe_address(address_bits(symbols)+at*SYMBOL_BYTES))=value;
 }
 u64 member_span(u64 bytes) on cpu {return 60u64+bytes+bytes%2u64;}
 ArchiveLayout invalid(u32 code) on cpu {return ArchiveLayout(0u64,0u64,0u64,0u64,code);}
@@ -30,7 +30,7 @@ extern "C" ArchiveLayout layout(ArchiveInput input) on cpu {
     u64 strings=0u64;
     u64 i=0u64;
     while(i<input.symbol_count){
-        ArchiveSymbol symbol=symbol_at(input,i);
+        ArchiveSymbol symbol=symbol_at(input.symbols,i);
         if(symbol.member>=65535u64){return invalid(5);}
         strings+=symbol.name_length+1u64;i+=1u64;
     }
@@ -89,27 +89,32 @@ i32 compare_names(ArchiveSymbol left,ArchiveSymbol right) on cpu {
     if(left.name_length<right.name_length){return i32(-1);}if(left.name_length>right.name_length){return i32(1);}
     return i32(0);
 }
-bool later(ArchiveSymbol left,ArchiveSymbol right) on cpu {
-    i32 order=compare_names(left,right);return order>i32(0)||(order==i32(0)&&left.member>right.member);
+bool later(ArchiveSymbol left,ArchiveSymbol right,bool input_order) on cpu {
+    i32 order=compare_names(left,right);
+    if(order!=i32(0)){return order>i32(0);}
+    // Directory names borrow one immutable string table. Their addresses
+    // retain the original directory order when identical names are sorted.
+    if(input_order){return address_bits(left.name)>address_bits(right.name);}
+    return left.member>right.member;
 }
-void exchange(ArchiveInput input,u64 left,u64 right) on cpu {
-    ArchiveSymbol a=symbol_at(input,left);ArchiveSymbol b=symbol_at(input,right);
-    symbol_put(input,left,b);symbol_put(input,right,a);
+void exchange(address symbols,u64 left,u64 right) on cpu {
+    ArchiveSymbol a=symbol_at(symbols,left);ArchiveSymbol b=symbol_at(symbols,right);
+    symbol_put(symbols,left,b);symbol_put(symbols,right,a);
 }
-void sift(ArchiveInput input,u64 root,u64 end) on cpu {
+void sift(address symbols,u64 root,u64 end,bool input_order) on cpu {
     u64 parent=root;
     u64 child=parent*2u64+1u64;
     while(child<end){
-        if(child+1u64<end && later(symbol_at(input,child+1u64),symbol_at(input,child))){child+=1u64;}
-        if(!later(symbol_at(input,child),symbol_at(input,parent))){return;}
-        exchange(input,parent,child);parent=child;child=parent*2u64+1u64;
+        if(child+1u64<end && later(symbol_at(symbols,child+1u64),symbol_at(symbols,child),input_order)){child+=1u64;}
+        if(!later(symbol_at(symbols,child),symbol_at(symbols,parent),input_order)){return;}
+        exchange(symbols,parent,child);parent=child;child=parent*2u64+1u64;
     }
 }
-void sort_symbols(ArchiveInput input) on cpu {
-    u64 at=input.symbol_count/2u64;
-    while(at>0u64){at-=1u64;sift(input,at,input.symbol_count);}
-    u64 end=input.symbol_count;
-    while(end>1u64){end-=1u64;exchange(input,0u64,end);sift(input,0u64,end);}
+void sort_symbols(address symbols,u64 count,bool input_order) on cpu {
+    u64 at=count/2u64;
+    while(at>0u64){at-=1u64;sift(symbols,at,count,input_order);}
+    u64 end=count;
+    while(end>1u64){end-=1u64;exchange(symbols,0u64,end);sift(symbols,0u64,end,input_order);}
 }
 extern "C" void encode(ArchiveInput input,ArchiveLayout layout,address out) on cpu {
     for (index in 0..8) {
@@ -119,26 +124,26 @@ extern "C" void encode(ArchiveInput input,ArchiveLayout layout,address out) on c
     u64 at=first+60u64;be32(out,at,input.symbol_count);at+=4u64;
     u64 i=0u64;
     while(i<input.symbol_count){
-        ArchiveSymbol symbol=symbol_at(input,i);ArchiveMember member=member_at(input,symbol.member);
+        ArchiveSymbol symbol=symbol_at(input.symbols,i);ArchiveMember member=member_at(input,symbol.member);
         be32(out,at,member.offset);at+=4u64;i+=1u64;
     }
     i=0u64;
     while(i<input.symbol_count){
-        ArchiveSymbol symbol=symbol_at(input,i);copy(out,at,symbol.name,symbol.name_length);
+        ArchiveSymbol symbol=symbol_at(input.symbols,i);copy(out,at,symbol.name,symbol.name_length);
         at+=symbol.name_length;put(out,at,0);at+=1u64;i+=1u64;
     }
-    sort_symbols(input);
+    sort_symbols(input.symbols,input.symbol_count,false);
     u64 second=first+member_span(layout.first);header(out,second,layout.second,0,0u64);
     at=second+60u64;le32(out,at,input.member_count);at+=4u64;i=0u64;
     while(i<input.member_count){ArchiveMember member=member_at(input,i);le32(out,at,member.offset);at+=4u64;i+=1u64;}
     le32(out,at,input.symbol_count);at+=4u64;i=0u64;
     while(i<input.symbol_count){
-        ArchiveSymbol symbol=symbol_at(input,i);u64 index=symbol.member+1u64;
+        ArchiveSymbol symbol=symbol_at(input.symbols,i);u64 index=symbol.member+1u64;
         put(out,at,u32(index)&255);put(out,at+1u64,u32(index>>8u64)&255);at+=2u64;i+=1u64;
     }
     i=0u64;
     while(i<input.symbol_count){
-        ArchiveSymbol symbol=symbol_at(input,i);copy(out,at,symbol.name,symbol.name_length);
+        ArchiveSymbol symbol=symbol_at(input.symbols,i);copy(out,at,symbol.name,symbol.name_length);
         at+=symbol.name_length;put(out,at,0);at+=1u64;i+=1u64;
     }
     u64 names=second+member_span(layout.second);header(out,names,layout.names,1,0u64);
@@ -254,14 +259,11 @@ address directory_member_address(address library,u64 index) on cpu {
 void directory_member_put(address library,u64 index,LibraryMember member) on cpu {
     unsafe_position<LibraryMember>(directory_member_address(library,index))=member;
 }
-u64 directory_symbol_offset(address library,u64 index) on cpu {
-    return unsafe_position<LibraryDirectory>(library).symbol_offset+index*size_of<ArchiveSymbol>();
+address directory_symbols(address library) on cpu {
+    return unsafe_address(address_bits(library)+unsafe_position<LibraryDirectory>(library).symbol_offset);
 }
 ArchiveSymbol directory_symbol(address library,u64 index) on cpu {
-    return unsafe_position<ArchiveSymbol>(unsafe_address(address_bits(library)+directory_symbol_offset(library,index)));
-}
-void directory_symbol_put(address library,u64 index,ArchiveSymbol symbol) on cpu {
-    unsafe_position<ArchiveSymbol>(unsafe_address(address_bits(library)+directory_symbol_offset(library,index)))=symbol;
+    return symbol_at(directory_symbols(library),index);
 }
 u64 directory_symbol_position(address library,u64 count,ArchiveSymbol name) on cpu {
     u64 first=0u64;u64 end=count;
@@ -271,14 +273,33 @@ u64 directory_symbol_position(address library,u64 count,ArchiveSymbol name) on c
     }
     return first;
 }
-void directory_add_symbol(address library,ArchiveSymbol name) on cpu {
-    u64 count=unsafe_position<LibraryDirectory>(library).symbol_count;
-    u64 slot=directory_symbol_position(library,count,name);
-    if(slot<count&&compare_names(directory_symbol(library,slot),name)==i32(0)){return;}
-    u64 at=count;
-    while(at>slot){at-=1u64;directory_symbol_put(library,at+1u64,directory_symbol(library,at));}
-    directory_symbol_put(library,slot,name);
-    unsafe_position<LibraryDirectory>(library).symbol_count=count+1u64;
+struct SymbolOrder { u64 count; bool unordered; };
+
+SymbolOrder compact_directory_symbols(address symbols,u64 count) on cpu {
+    if(count==0u64){return SymbolOrder(0u64,false);}
+    ArchiveSymbol previous=symbol_at(symbols,0u64);
+    u64 written=1u64;
+    bool unordered=false;
+    u64 index=1u64;
+    while(index<count){
+        ArchiveSymbol current=symbol_at(symbols,index);
+        i32 order=compare_names(previous,current);
+        if(order!=i32(0)){
+            if(order>i32(0)){unordered=true;}
+            if(written!=index){symbol_put(symbols,written,current);}
+            written+=1u64;
+            previous=current;
+        }
+        index+=1u64;
+    }
+    return SymbolOrder(written,unordered);
+}
+
+u64 order_directory_symbols(address symbols,u64 count) on cpu {
+    SymbolOrder order=compact_directory_symbols(symbols,count);
+    if(!order.unordered){return order.count;}
+    sort_symbols(symbols,order.count,true);
+    return compact_directory_symbols(symbols,order.count).count;
 }
 extern "C" u64 library_member_count(address library) on cpu {return unsafe_position<LibraryDirectory>(library).member_count;}
 extern "C" ArchiveMemberState library_member(address library,u64 index) on cpu {
@@ -321,6 +342,7 @@ struct ArchiveReadLayout {
 ArchiveReadResult read_entries(address bytes,u64 length,ArchiveReadLayout layout,address library,
     address name_context,cfn<u32,address,ArchiveRange> validate,
     address member_context,cfn<void,address,ArchiveRange,ArchiveRange> emit) on cpu requires nonzero(validate) {
+    address symbols=address_bits(library)==0u64 ? library : directory_symbols(library);
     u64 at=layout.indices+u64(layout.symbol_entries)*2u64;
     for(i in 0..layout.symbol_entries){
         u64 index_at=layout.indices+u64(i)*2u64;
@@ -331,9 +353,9 @@ ArchiveReadResult read_entries(address bytes,u64 length,ArchiveReadLayout layout
         if(name_end.error!=0){return name_end;}
         ArchiveRange name=ArchiveRange(at,name_end.at-at);
         if(validate(name_context,name)==0){return ArchiveReadResult(11,at);}
-        if(address_bits(library)!=0u64){
+        if(address_bits(symbols)!=0u64){
             u32 offset=read_word(bytes,layout.offsets+u64(index-1)*4u64);
-            directory_add_symbol(library,ArchiveSymbol(unsafe_address(address_bits(bytes)+at),name.length,u64(offset)));
+            symbol_put(symbols,u64(i),ArchiveSymbol(unsafe_address(address_bits(bytes)+at),name.length,u64(offset)));
         }
         at=name_end.at+1u64;
     }
@@ -424,5 +446,6 @@ extern "C" ArchiveLoad load(address bytes,u64 length,address context,
         library_destroy(library);
         return ArchiveLoad(empty,result);
     }
+    unsafe_position<LibraryDirectory>(library).symbol_count=order_directory_symbols(directory_symbols(library),u64(layout.symbol_entries));
     return ArchiveLoad(library,result);
 }
