@@ -48,9 +48,12 @@ CanonicalSource normalized_canonical_source(address path,usize units) on cpu;
 CanonicalName canonical_name(handle file,address output,u32 capacity) on cpu;
 u32 close_canonical_source(handle file) on cpu;
 extern "C" NativePath canonicalize_path(address path,usize units,address scratch,u32 capacity) on cpu;
-extern "C" NativePath canonicalize_output_directory(address path,usize units,address scratch,u32 capacity,
-    address directory_mode) on cpu;
-extern "C" NativePath canonicalize_output_file(address path,usize units,address scratch,u32 capacity) on cpu;
+// The writable absolute input and both scratch buffers remain borrowed through
+// result consumption. Nonempty NativePath allocations are released by the caller.
+struct OutputDestination { NativePath directory; NativePath name; u32 case_sensitive; u32 exists; };
+extern "C" OutputDestination output_destination(address path,usize units,address file_scratch,
+    address directory_scratch,u32 capacity) on cpu;
+extern "C" i32 output_name_order(UnitSpan left,UnitSpan right,u32 case_sensitive) on cpu;
 result<void,DirectoryError> directory_tree(address path,usize units,bool prefer_verbatim) on cpu;
 extern "C" u32 create_output_directories(address path,usize units) on cpu;
 

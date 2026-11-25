@@ -308,6 +308,11 @@ extern "C" i32 GetFileInformationByHandleEx(handle file,u32 kind,address data,
 
 const u32 ERROR_NOT_ENOUGH_MEMORY = 8;
 const u32 ERROR_INVALID_FUNCTION = 1;
+const u32 ERROR_FILE_NOT_FOUND = 2;
+const u32 ERROR_PATH_NOT_FOUND = 3;
+const u32 ERROR_INVALID_DRIVE = 15;
+const u32 ERROR_BAD_NETPATH = 53;
+const u32 ERROR_BAD_NET_NAME = 67;
 const u32 ERROR_NOT_SUPPORTED = 50;
 const u32 ERROR_INVALID_PARAMETER = 87;
 const u32 FILE_CASE_SENSITIVE_INFO_CLASS = 23;
@@ -467,14 +472,106 @@ extern "C" NativePath canonicalize_path(address path,usize units,address scratch
     return canonicalize_with_directory_mode(path,units,scratch,capacity,address(),false);
 }
 
-extern "C" NativePath canonicalize_output_directory(address path,usize units,address scratch,u32 capacity,
-    address directory_mode) on cpu {
-    return canonicalize_with_directory_mode(path,units,scratch,capacity,directory_mode,false);
+struct DestinationLeaf { u64 parent; u64 first; u64 last; };
+DestinationLeaf destination_leaf(UnitSpan path,u64 root,bool literal) on cpu {
+    u64 end=path.length;
+    while (end>root && lexical_separator(unit(path,end-1u64),literal)) { end-=1u64; }
+    u64 first=end;
+    while (first>root && !lexical_separator(unit(path,first-1u64),literal)) { first-=1u64; }
+    if (first==end || (end-first==1u64 && unit(path,first)==u16(46)) ||
+        (end-first==2u64 && unit(path,first)==u16(46) && unit(path,first+1u64)==u16(46))) {
+        return DestinationLeaf(0u64,0u64,0u64);
+    }
+    u64 parent=first;
+    while (parent>root && lexical_separator(unit(path,parent-1u64),literal)) { parent-=1u64; }
+    return DestinationLeaf(parent,first,end);
 }
 
-extern "C" NativePath canonicalize_output_file(address path,usize units,address scratch,u32 capacity) on cpu {
-    // Publication renames the directory entry itself, including a reparse point.
-    return canonicalize_with_directory_mode(path,units,scratch,capacity,address(),true);
+OutputDestination destination_failure(u32 status) on cpu {
+    NativePath empty=NativePath(address(),address(),0u64,0);
+    return OutputDestination(NativePath(address(),address(),0u64,status),empty,0,0);
+}
+bool missing_destination(u32 status) on cpu {
+    return status==ERROR_FILE_NOT_FOUND || status==ERROR_PATH_NOT_FOUND || status==ERROR_INVALID_DRIVE ||
+        status==ERROR_BAD_NETPATH || status==ERROR_BAD_NET_NAME;
+}
+
+NativePath destination_name(NativePath spelling,u64 first,u64 end,bool literal) on cpu {
+    // Collapse runs into single separators in the same UTF-16 buffer. The
+    // write cursor never passes the read cursor, even for a literal spelling.
+    UnitSpan path=UnitSpan(spelling.name,end);
+    u64 write=first;
+    bool separating=false;
+    u64 read=first;
+    while (read<end) {
+        u16 value=unit(path,read);
+        bool separator=lexical_separator(value,literal);
+        if (!separator || !separating) {
+            put(spelling.name,write,separator ? u16(92) : value);
+            write+=1u64;
+        }
+        separating=separator;
+        read+=1u64;
+    }
+    address name=unsafe_address(address_bits(spelling.name)+first*2u64);
+    return NativePath(name,spelling.allocation,write-first,0);
+}
+
+extern "C" OutputDestination output_destination(address path,usize units,address file_scratch,
+    address directory_scratch,u32 capacity) on cpu {
+    // Publication renames the terminal directory entry, including a reparse point.
+    NativePath spelling=canonicalize_with_directory_mode(path,units,file_scratch,capacity,address(),true);
+    u32 exists=1;
+    if (spelling.status!=0) {
+        if (!missing_destination(spelling.status)) { return destination_failure(spelling.status); }
+        exists=0;
+        spelling=NativePath(path,address(),units,0);
+    }
+    UnitSpan selected=UnitSpan(spelling.name,spelling.units);
+    LexicalPrefix prefix=lexical_prefix(selected,false);
+    u64 root=prefix.end;
+    if (root<selected.length && lexical_separator(unit(selected,root),false)) { root+=1u64; }
+    DestinationLeaf leaf=destination_leaf(selected,root,prefix.literal);
+    if (leaf.last==0u64) {
+        release_native_path(spelling);
+        return destination_failure(0);
+    }
+    u64 end=leaf.last;
+    while (true) {
+        u32 mode=0;
+        u16 first_separator=unit(selected,leaf.parent);
+        put(spelling.name,leaf.parent,u16(0));
+        NativePath directory=canonicalize_with_directory_mode(spelling.name,leaf.parent,
+            directory_scratch,capacity,address_of(mode),false);
+        put(spelling.name,leaf.parent,first_separator);
+        if (directory.status==0) {
+            NativePath name=destination_name(spelling,leaf.first,end,prefix.literal);
+            return OutputDestination(directory,name,mode&1,exists);
+        }
+        if (missing_destination(directory.status)) {
+            leaf=destination_leaf(UnitSpan(spelling.name,leaf.parent),root,prefix.literal);
+            if (leaf.last!=0u64) { continue; }
+        }
+        release_native_path(spelling);
+        return destination_failure(directory.status);
+    }
+}
+
+extern "C" i32 CompareStringOrdinal(address left,i32 left_units,address right,i32 right_units,
+    i32 ignore_case) on cpu from "KERNEL32.dll";
+extern "C" i32 output_name_order(UnitSpan left,UnitSpan right,u32 case_sensitive) on cpu {
+    if (case_sensitive==0) {
+        return CompareStringOrdinal(left.data,i32(left.length),right.data,i32(right.length),i32(1))-i32(2);
+    }
+    u64 index=0u64;
+    while (index<left.length && index<right.length) {
+        u16 a=unit(left,index);
+        u16 b=unit(right,index);
+        if (a!=b) { return a<b ? i32(-1) : i32(1); }
+        index+=1u64;
+    }
+    if (left.length==right.length) { return i32(0); }
+    return left.length<right.length ? i32(-1) : i32(1);
 }
 
 result<bool,DirectoryError> directory_target(address path) on cpu {
