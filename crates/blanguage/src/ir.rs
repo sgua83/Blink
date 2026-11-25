@@ -14,7 +14,8 @@ mod properties;
 #[cfg(feature = "compiler")]
 pub(crate) use properties::{ReferenceNeed, ReferenceWalk, SourceMember, StorageMode, StorageNeed, StorageWalk, source_member, dataset_count, dataset_path, dataset_paths};
 pub use layout::interface_layout_json;
-pub(crate) use layout::TypeJson;
+#[cfg(feature = "compiler")]
+pub(crate) use layout::ExpandedLayout;
 mod external;
 pub(crate) use external::DatasetBorrow;
 #[cfg(feature = "compiler")]

@@ -74,6 +74,7 @@ fn native_modules() -> Result<(), Box<dyn std::error::Error>> {
     let coff_source = "library/blink/windows/coff";
     for extension in ["b", "h"] {
         println!("cargo:rerun-if-changed=src/codec/value_format.{extension}");
+        println!("cargo:rerun-if-changed=src/codec/layout.{extension}");
         println!("cargo:rerun-if-changed=../../{coff_source}.{extension}");
     }
     let mut jobs = vec![
@@ -88,6 +89,12 @@ fn native_modules() -> Result<(), Box<dyn std::error::Error>> {
             &format!("../../{coff_source}.b"),
             "../../library",
             object("coff_read"),
+        ),
+        compile(
+            "layout",
+            "src/codec/layout.b",
+            "src",
+            object("layout"),
         ),
     ];
     let compiler_start = jobs.len();

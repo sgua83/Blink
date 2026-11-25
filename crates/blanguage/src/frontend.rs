@@ -285,8 +285,9 @@ impl Compiler {
                 value.field(field).ok_or_else(|| Diagnostic { source: source.clone(), span, code: "B141",
                     message: format!("类型 {} 没有可定位的静态字段路径 {field}", value.name) })?
             } else { (0, &value) };
-            let mut json = String::new();
-            unsafe { world.run(world.write_type_layout_json(&mut json, selected, &source, span, &module, imports, &mut BTreeSet::new())) }?;
+            let json = unsafe {
+                world.run(world.type_layout_text(selected, &source, span, &module, imports))
+            }?;
             Ok((value.name, offset, json))
         })
     }
@@ -869,26 +870,18 @@ impl World {
         let builtin=crate::builtin_types::Builtin::recognize(&name.name);
         unsafe{self.call(type_reference::bind(self,name,source,span,module,imports,builtin)).await}.map(|bound|bound.name)
     }
-    async fn write_type_layout_json(&self, out: &mut String, value: &ir::Ty, source: &Source, span: Span,
-        module: &str, imports: &[String], active: &mut BTreeSet<String>) -> Result<()> {
-        active.insert(value.name.clone());
-        let result = unsafe { self.call(async {
-            let mut layout = ir::TypeJson::new(value);
-            while let Some(reference) = layout.next(out) {
-                let element = unsafe { self.call(self.ty_inner(reference, source, span, module, imports, &mut BTreeSet::new())).await }?;
-                write!(out, ",\"element_stride_bytes\":{},\"element\":", ir::align_up(element.size, element.align)).unwrap();
-                if active.contains(&element.name) {
-                    out.push_str("{\"kind\":\"type_reference\",\"name\":");
-                    crate::json::string(out, &element.name); out.push('}');
-                } else {
-                    unsafe { self.call(self.write_type_layout_json(out, &element, source, span, module, imports, active)).await }?;
-                }
-            }
-            Ok(())
-        }).await };
-        active.remove(&value.name);
-        result
+    async fn type_layout_text(&self, value: &ir::Ty, source: &Source, span: Span,
+        module: &str, imports: &[String]) -> Result<String> {
+        let mut layout = ir::ExpandedLayout::new(value);
+        while let Some(reference) = layout.next() {
+            let element = unsafe {
+                self.call(self.ty_inner(reference, source, span, module, imports, &mut BTreeSet::new())).await
+            }?;
+            layout.expand(element);
+        }
+        Ok(layout.finish())
     }
+
     pub(crate) async fn stored_borrows(
         &self, ty: &ir::Ty, source: &Source, span: Span, module: &str, imports: &[String],
         cleanup: bool,
