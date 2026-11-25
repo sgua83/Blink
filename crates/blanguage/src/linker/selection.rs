@@ -213,14 +213,17 @@ impl<'a, Payload> Context<'a, Payload> {
             }
         }
     }
-    fn remap_relocations<Bytes>(&self,section:&mut object::Section<Bytes>,row:SectionView) {
-        for(relocation,view)in section.relocations.iter_mut().zip(&self.relocations[row.relocation_start as usize..(row.relocation_start+row.relocation_count) as usize]){
-            if let Target::Section(index,_)=&mut relocation.target{*index=view.section as usize;}
-            if view.rewrite != 0 {
-                let work = self.native.as_ref().unwrap();
-                relocation.target = Target::Symbol(work.slots[view.rewrite as usize - 1].clone());
-            }
+    fn selected_relocations(&self, row: SectionView) -> &[RelocationView] {
+        let start = row.relocation_start as usize;
+        &self.relocations[start..start + row.relocation_count as usize]
+    }
+
+    fn slot_target(&self, view: &RelocationView) -> Option<Target> {
+        if view.rewrite == 0 {
+            return None;
         }
+        let work = self.native.as_ref().unwrap();
+        Some(Target::Symbol(work.slots[view.rewrite as usize - 1].clone()))
     }
     fn materialize(
         &self, source: Source<'a, Payload>, row: ObjectView,
@@ -241,7 +244,13 @@ impl<'a, Payload> Context<'a, Payload> {
                     } else {
                         section.associated = Vec::new();
                     }
-                    self.remap_relocations(&mut section, row);
+                    for (relocation, view) in section.relocations.iter_mut().zip(self.selected_relocations(row)) {
+                        if let Some(target) = self.slot_target(view) {
+                            relocation.target = target;
+                        } else if let Target::Section(index, _) = &mut relocation.target {
+                            *index = view.section as usize;
+                        }
+                    }
                     Some(section)
                 }).collect();
                 let definitions = declared.into_iter().zip(symbols).filter_map(|(symbol, row)| {
@@ -272,13 +281,25 @@ impl<'a, Payload> Context<'a, Payload> {
             }
             Source::Borrowed(object)=>Selected{
                 name:object.name.clone(),library:None,
-                sections:object.sections.iter().zip(sections).filter_map(|(section,&row)|{
-                    if row.live==0{return None;}
-                    let mut section=object::Section{name:section.name.clone(),bytes:borrowed(&section.bytes),flags:section.flags,associated:Vec::new(),layout:None,
-                        relocations:section.relocations.iter().map(|relocation|object::Relocation{offset:relocation.offset,kind:relocation.kind,target:match &relocation.target{
-                            Target::Section(index,value)=>Target::Section(*index,*value),Target::Symbol(name)=>Target::Symbol(name.clone()),Target::Import(import)=>Target::Import(import.clone()),
-                        }}).collect()};
-                    self.remap_relocations(&mut section,row);Some(section)
+                sections: object.sections.iter().zip(sections).filter_map(|(section, &row)| {
+                    if row.live == 0 { return None; }
+                    let relocations = section.relocations.iter().zip(self.selected_relocations(row))
+                        .map(|(relocation, view)| {
+                            let target = self.slot_target(view).unwrap_or_else(|| match &relocation.target {
+                                Target::Section(_, value) => Target::Section(view.section as usize, *value),
+                                Target::Symbol(name) => Target::Symbol(name.clone()),
+                                Target::Import(import) => Target::Import(import.clone()),
+                            });
+                            object::Relocation { offset: relocation.offset, kind: relocation.kind, target }
+                        }).collect();
+                    Some(object::Section {
+                        name: section.name.clone(),
+                        bytes: borrowed(&section.bytes),
+                        flags: section.flags,
+                        associated: Vec::new(),
+                        layout: None,
+                        relocations,
+                    })
                 }).collect(),
                 definitions: object.symbols.iter().zip(symbols).filter(|(_, row)| row.keep != 0)
                     .map(|(symbol, row)| {
