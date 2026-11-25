@@ -73,8 +73,6 @@ unsafe extern "C" {
     fn encode_tile_publish_value(input: TilePublishInput, output: *mut u8) -> TilePublishCode;
     #[link_name = "bootstrap.x64_instruction::tile_lane_pointer"]
     fn encode_tile_lane_pointer(base_offset: u32, output: *mut u8) -> u64;
-    #[link_name = "bootstrap.x64_instruction::tile_phase_advance"]
-    fn encode_tile_phase_advance(base_offset: u32, length_offset: u32, bytes_back: u64, output: *mut u8) -> u64;
     #[link_name = "bootstrap.x64_instruction::tile_private_copy"]
     fn encode_tile_private_copy(input: TilePrivateCopy, output: *mut u8) -> u64;
     #[link_name = "bootstrap.x64_instruction::tile_lane"]
@@ -147,7 +145,7 @@ impl Emitter<'_> {
         self.frame.tile_private[&slot]
     }
 
-    fn tile_private(&mut self, phase: usize, slots: &std::collections::BTreeSet<PrivateSlot>, restore: bool) {
+    pub(super) fn tile_private(&mut self, phase: usize, slots: &std::collections::BTreeSet<PrivateSlot>, restore: bool) {
         if slots.is_empty() {
             return;
         }
@@ -232,44 +230,6 @@ impl Emitter<'_> {
                 });
             }
         }
-    }
-    pub(super) fn tile_phases(
-        &mut self, phases: &[TilePhase<'_>], inputs: &crate::ir::dataflow::InputFragments,
-    ) -> Result<(), &'static str> {
-        let start = self.code.len();
-        let storage_offset = self.tile_base_slot();
-        self.copy(Location::Stack(storage_offset), Location::Gpr(3));
-        self.parallel_abi(start, ParallelRangePart::TileBase { storage_offset });
-        self.tile_input(inputs);
-        for (phase_index, phase) in phases.iter().enumerate() {
-            let start = self.code.len();
-            self.copy(Location::Gpr(3), Location::Stack(storage_offset));
-            self.parallel_abi(start, ParallelRangePart::TilePhaseEnter { phase: phase_index });
-            let begin = self.code.len();
-            self.tile_private(phase_index, &phase.live_in, true);
-            self.block(phase.code)?;
-            if let Some(inst @ Inst { kind: InstKind::TilePublish(publication), .. }) = phase.step {
-                let start = self.code.len();
-                let first = self.operation_ranges.len();
-                self.publish_values(publication);
-                self.operation_range(inst, start, first);
-            }
-            self.tile_private(phase_index, &phase.saved, false);
-            let start = self.code.len();
-            let length_offset = self.tile_length_slot();
-            let bytes_back = (start - begin) as u64;
-            self.emit_bytes(32, |output| unsafe {
-                encode_tile_phase_advance(storage_offset, length_offset, bytes_back, output)
-            });
-            self.parallel_abi(start, ParallelRangePart::TilePhaseAdvance { phase: phase_index });
-            if let Some(inst @ Inst { kind: InstKind::TileCollective(collective), .. }) = phase.step {
-                let start = self.code.len();
-                let first = self.operation_ranges.len();
-                self.tile_collective(collective);
-                self.operation_range(inst, start, first);
-            }
-        }
-        Ok(())
     }
     pub(super) fn tile_collective(&mut self, collective: &TileCollective) {
         for &(word, result) in &collective.results {

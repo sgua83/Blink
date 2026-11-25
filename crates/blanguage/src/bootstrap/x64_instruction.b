@@ -3304,7 +3304,7 @@ extern "C" u64 tile_lane_pointer(u32 base_offset, address output) on cpu {
     return encode_operand_instruction(cursor, u16(0x8d), u8(0), true, u8(10), lane) - start;
 }
 
-extern "C" u64 tile_phase_advance(u32 base_offset, u32 length_offset, u64 bytes_back, address output) on cpu {
+u64 tile_phase_advance(u32 base_offset, u32 length_offset, u64 bytes_back, address output) on cpu {
     u64 start = address_bits(output);
     u64 cursor = range_step_at(start, u8(3), u8(1));
     cursor = tile_lane_index(cursor, base_offset);
@@ -5091,7 +5091,7 @@ u64 close_map_loop(MapRangeHost host, u64 begin, u64 exit_field, u64 skip_field,
 
 bool emit_map_packet(MapRangeInput input, MapRangeHost host, u32 data, u32 stride) on cpu
     requires nonzero(host.reserve) requires nonzero(host.commit)
-    requires nonzero(host.body) requires nonzero(host.observe) {
+    requires nonzero(host.packet) requires nonzero(host.observe) {
     bool sparse = input.selected != 0;
     MapRangeBuffer buffer = host.reserve(host.context, sparse ? 96u64 : 16u64);
     u64 begin = buffer.end;
@@ -5109,7 +5109,7 @@ bool emit_map_packet(MapRangeInput input, MapRangeHost host, u32 data, u32 strid
         map_range_part(host, MapRangePart::PacketBounds, begin, end);
         tail = end - 4u64;
     }
-    if (host.body(host.context, MapRangeBody::Packet, input.packet) == 0) { return false; }
+    if (host.packet(host.context, input.packet) == 0) { return false; }
     close_map_loop(host, begin, tail, 0u64, sparse ? u8(0) : u8(4),
         MapRangePart::PacketAdvance, MapRangePart::PacketBackEdge);
     if (sparse) {
@@ -5122,9 +5122,68 @@ bool emit_map_packet(MapRangeInput input, MapRangeHost host, u32 data, u32 strid
     return true;
 }
 
+u64 move_tile_base(MapRangeHost host, u32 offset, u64 phase, bool restore) on cpu
+    requires nonzero(host.reserve) requires nonzero(host.commit) requires nonzero(host.observe) {
+    MapRangeBuffer buffer = host.reserve(host.context, 24u64);
+    MoveLocation memory = MoveLocation(u64(offset), MOVE_MEMORY, u8(4), NO_INDEX, u8(0));
+    MoveLocation index = move_gpr(u8(3));
+    address output = unsafe_address(address_bits(buffer.image) + buffer.end);
+    MoveEncoding move = copy_scalar_move(restore ? index : memory, restore ? memory : index, 4, false, output);
+    u64 end = buffer.end + move.length;
+    host.commit(host.context, end);
+    MapRangePart part = restore ? MapRangePart::TilePhaseEnter : MapRangePart::TileBase;
+    host.observe(host.context, MapRangeObservation(buffer.end, end, usize(phase), offset, part));
+    return end;
+}
+
+void advance_tile_phase(MapRangeHost host, u64 phase, u32 base, u32 length, u64 begin) on cpu
+    requires nonzero(host.private_values) requires nonzero(host.reserve)
+    requires nonzero(host.commit) requires nonzero(host.observe) {
+    host.private_values(host.context, phase, false);
+    MapRangeBuffer buffer = host.reserve(host.context, 32u64);
+    address output = unsafe_address(address_bits(buffer.image) + buffer.end);
+    u64 end = buffer.end + tile_phase_advance(base, length, buffer.end - begin, output);
+    host.commit(host.context, end);
+    host.observe(host.context, MapRangeObservation(buffer.end, end, usize(phase), 0, MapRangePart::TilePhaseAdvance));
+}
+
+bool emit_map_tile_phases(MapRangeInput input, MapRangeHost host) on cpu
+    requires nonzero(host.reserve) requires nonzero(host.commit) requires nonzero(host.observe)
+    requires nonzero(host.scalar) requires nonzero(host.tile_input)
+    requires nonzero(host.ir.inspect) requires nonzero(host.phase)
+    requires nonzero(host.private_values) requires nonzero(host.tile_step) {
+    u32 base = input.slots + 4;
+    move_tile_base(host, base, 0u64, false);
+    host.tile_input(host.context);
+    u64 phase = 0u64;
+    while (phase < input.phase_count) {
+        TilePhaseView row = host.phase(host.context, phase);
+        u64 begin = move_tile_base(host, base, phase, true);
+        host.private_values(host.context, phase, true);
+        if (host.scalar(host.context, row.code) == 0) { return false; }
+        if (address_bits(row.step.data) == 0u64) {
+            advance_tile_phase(host, phase, base, input.slots, begin);
+        } else {
+            View value = host.ir.inspect(row.step);
+            if (value.tag == OP_TILE_PUBLISH) {
+                host.tile_step(host.context, row.step.data, ScalarLeaf::Publish, value);
+            }
+            advance_tile_phase(host, phase, base, input.slots, begin);
+            if (value.tag == OP_TILE_COLLECTIVE) {
+                host.tile_step(host.context, row.step.data, ScalarLeaf::Collective, value);
+            }
+        }
+        phase += 1u64;
+    }
+    return true;
+}
+
 extern "C" u32 emit_map_range(MapRangeInput input, MapRangeHost host) on cpu
     requires nonzero(host.enter) requires nonzero(host.leave) requires nonzero(host.reserve)
-    requires nonzero(host.commit) requires nonzero(host.body) requires nonzero(host.observe) {
+    requires nonzero(host.commit) requires nonzero(host.observe)
+    requires nonzero(host.packet) requires nonzero(host.scalar) requires nonzero(host.tile_input)
+    requires nonzero(host.ir.inspect) requires nonzero(host.phase)
+    requires nonzero(host.private_values) requires nonzero(host.tile_step) {
     MapRangeEntry entry = host.enter(host.context, input.frame);
     host.observe(host.context, MapRangeObservation(0u64, entry.end, usize(0), input.frame, MapRangePart::Enter));
     u32 data = u32(input.binding) * input.buffer_bytes;
@@ -5143,11 +5202,11 @@ extern "C" u32 emit_map_range(MapRangeInput input, MapRangeHost host) on cpu
             MapRangePart::ScalarSelection));
     }
     u8 step = u8(0);
-    if (input.has_phases != 0) {
-        if (host.body(host.context, MapRangeBody::TilePhases, address()) == 0) { return entry.stack_bytes; }
+    if (input.phase_count != 0u64) {
+        if (!emit_map_tile_phases(input, host)) { return entry.stack_bytes; }
     } else {
-        if (input.tile_scope != 0) { host.body(host.context, MapRangeBody::TileInput, address()); }
-        if (host.body(host.context, MapRangeBody::Scalar, address()) == 0) { return entry.stack_bytes; }
+        if (input.tile_scope != 0) { host.tile_input(host.context); }
+        if (host.scalar(host.context, input.code) == 0) { return entry.stack_bytes; }
         step = u8(1);
     }
     u64 exit = close_map_loop(host, buffer.end, prefix.exit_field, prefix.skip_field, step,

@@ -36,7 +36,8 @@ mod segmented_reduce;
 mod sort;
 #[path="structure.rs"]
 mod structure;
-use structure::Flow;
+use structure::{Flow, ScalarLeaf};
+use crate::ir::dataflow::{self, Node, Span, View};
 #[path="texture.rs"]
 mod texture;
 pub(crate) use application::{
@@ -311,7 +312,9 @@ impl Emitter<'_> {
 /// 算法输出（包括计数）只写第五参数，map及无摘要续阶段不读取该指针。
 #[repr(C)]
 struct MapRangeInput {
+    code: Span,
     packet: *const std::ffi::c_void,
+    phase_count: usize,
     binding: usize,
     word: u32,
     selected: u32,
@@ -320,17 +323,14 @@ struct MapRangeInput {
     buffer_bytes: u32,
     stride_field: u32,
     tile_scope: u32,
-    has_phases: u32,
 }
 
 #[repr(u32)]
 enum MapRangePart {
     Enter, PacketBounds, PacketCollect, PacketAdvance, PacketBackEdge, PacketTail,
     ScalarBounds, ScalarSelection, ScalarAdvance, ScalarBackEdge, Exit,
+    TileBase, TilePhaseEnter, TilePhaseAdvance,
 }
-
-#[repr(u32)]
-enum MapRangeBody { Packet, Scalar, TileInput, TilePhases }
 
 #[repr(C)]
 struct MapRangeBuffer { image: *mut u8, end: usize }
@@ -342,10 +342,13 @@ struct MapRangeEntry { end: usize, stack_bytes: u32 }
 struct MapRangeObservation {
     start: usize,
     end: usize,
-    binding: usize,
+    index: usize,
     value: u32,
     part: MapRangePart,
 }
+
+#[repr(C)]
+struct TilePhaseView { code: Span, step: Node }
 
 type MapRangeSlot = *mut std::ffi::c_void;
 
@@ -356,7 +359,13 @@ struct MapRangeHost {
     leave: unsafe extern "C" fn(MapRangeSlot, u32) -> usize,
     reserve: unsafe extern "C" fn(MapRangeSlot, usize) -> MapRangeBuffer,
     commit: unsafe extern "C" fn(MapRangeSlot, usize),
-    body: unsafe extern "C" fn(MapRangeSlot, MapRangeBody, *const std::ffi::c_void) -> u32,
+    packet: unsafe extern "C" fn(MapRangeSlot, *const std::ffi::c_void) -> u32,
+    scalar: unsafe extern "C" fn(MapRangeSlot, Span) -> u32,
+    tile_input: unsafe extern "C" fn(MapRangeSlot),
+    ir: dataflow::Host,
+    phase: unsafe extern "C" fn(MapRangeSlot, usize) -> TilePhaseView,
+    private_values: unsafe extern "C" fn(MapRangeSlot, usize, u32),
+    tile_step: unsafe extern "C" fn(MapRangeSlot, *const Inst, ScalarLeaf, View),
     observe: unsafe extern "C" fn(MapRangeSlot, MapRangeObservation),
 }
 
@@ -391,24 +400,45 @@ unsafe extern "C" fn map_range_commit(slot: MapRangeSlot, end: usize) {
     unsafe { range.emitter.code.set_len(end) };
 }
 
-unsafe extern "C" fn map_range_body(slot: MapRangeSlot, body: MapRangeBody, packet: *const std::ffi::c_void) -> u32 {
+unsafe extern "C" fn map_range_packet(slot: MapRangeSlot, packet: *const std::ffi::c_void) -> u32 {
     let range = unsafe { &mut *slot.cast::<MapRange<'_, '_>>() };
-    range.result = match body {
-        MapRangeBody::Packet => {
-            let (plan, allocation) = unsafe { &*packet.cast::<(packet::Plan<'_>, PacketAllocation)>() };
-            range.emitter.emit_packet_plan(plan, allocation)
-        }
-        MapRangeBody::Scalar => {
-            let stage = range.emitter.stage;
-            range.emitter.block(&stage.code)
-        },
-        MapRangeBody::TileInput => {
-            range.emitter.tile_input(range.inputs);
-            Ok(())
-        }
-        MapRangeBody::TilePhases => range.emitter.tile_phases(range.phases, range.inputs),
-    };
+    let (plan, allocation) = unsafe { &*packet.cast::<(packet::Plan<'_>, PacketAllocation)>() };
+    range.result = range.emitter.emit_packet_plan(plan, allocation);
     u32::from(range.result.is_ok())
+}
+
+unsafe extern "C" fn map_range_scalar(slot: MapRangeSlot, code: Span) -> u32 {
+    let range = unsafe { &mut *slot.cast::<MapRange<'_, '_>>() };
+    range.result = range.emitter.block(unsafe { code.as_slice() });
+    u32::from(range.result.is_ok())
+}
+
+unsafe extern "C" fn map_range_tile_input(slot: MapRangeSlot) {
+    let range = unsafe { &mut *slot.cast::<MapRange<'_, '_>>() };
+    range.emitter.tile_input(range.inputs);
+}
+
+unsafe extern "C" fn map_range_phase(slot: MapRangeSlot, index: usize) -> TilePhaseView {
+    let range = unsafe { &*slot.cast::<MapRange<'_, '_>>() };
+    let phase = &range.phases[index];
+    TilePhaseView { code: Span::slice(phase.code), step: phase.step.map_or(Node::EMPTY, Node::instruction) }
+}
+
+unsafe extern "C" fn map_range_private_values(slot: MapRangeSlot, index: usize, restore: u32) {
+    let range = unsafe { &mut *slot.cast::<MapRange<'_, '_>>() };
+    let phase = &range.phases[index];
+    let restore = restore != 0;
+    range.emitter.tile_private(index, if restore { &phase.live_in } else { &phase.saved }, restore);
+}
+
+unsafe extern "C" fn map_range_tile_step(slot: MapRangeSlot, inst: *const Inst, leaf: ScalarLeaf, value: View) {
+    let range = unsafe { &mut *slot.cast::<MapRange<'_, '_>>() };
+    let emitter = &mut *range.emitter;
+    let start = emitter.code.len();
+    let first = emitter.operation_ranges.len();
+    // The current phase lends its original step to the same leaf emitter as scalar code.
+    unsafe { structure::emit_scalar(std::ptr::from_mut(emitter).cast(), leaf, value) };
+    emitter.operation_range(unsafe { &*inst }, start, first);
 }
 
 unsafe extern "C" fn map_range_observe(slot: MapRangeSlot, event: MapRangeObservation) {
@@ -418,14 +448,17 @@ unsafe extern "C" fn map_range_observe(slot: MapRangeSlot, event: MapRangeObserv
         MapRangePart::Enter => Part::Enter { frame_bytes: event.value },
         MapRangePart::Exit => Part::Exit { frame_bytes: event.value },
         MapRangePart::PacketBounds => Part::PacketBounds,
-        MapRangePart::PacketCollect => Part::PacketCollect { binding: event.binding, offset: event.value },
+        MapRangePart::PacketCollect => Part::PacketCollect { binding: event.index, offset: event.value },
         MapRangePart::PacketAdvance => Part::PacketAdvance,
         MapRangePart::PacketBackEdge => Part::PacketBackEdge,
         MapRangePart::PacketTail => Part::PacketTail,
         MapRangePart::ScalarBounds => Part::ScalarBounds,
-        MapRangePart::ScalarSelection => Part::ScalarSelection { binding: event.binding, offset: event.value },
+        MapRangePart::ScalarSelection => Part::ScalarSelection { binding: event.index, offset: event.value },
         MapRangePart::ScalarAdvance => Part::ScalarAdvance,
         MapRangePart::ScalarBackEdge => Part::ScalarBackEdge,
+        MapRangePart::TileBase => Part::TileBase { storage_offset: event.value },
+        MapRangePart::TilePhaseEnter => Part::TilePhaseEnter { phase: event.index },
+        MapRangePart::TilePhaseAdvance => Part::TilePhaseAdvance { phase: event.index },
     };
     range.emitter.parallel_abi_range(event.start..event.end, part);
 }
@@ -482,10 +515,12 @@ fn emit_map(
         (selection.binding, selection.word, 1)
     });
     let input = MapRangeInput {
+        code: Span::slice(&stage.code),
+        phase_count: phases.len(),
         packet: packet.as_ref().map_or(std::ptr::null(), |packet| std::ptr::from_ref(packet).cast()),
         binding, word, selected, frame, slots: e.frame.end as u32,
         buffer_bytes: BUFFER_BYTES, stride_field: BUFFER_STRIDE,
-        tile_scope: u32::from(tile_scope), has_phases: u32::from(!phases.is_empty()),
+        tile_scope: u32::from(tile_scope),
     };
     let mut range = MapRange { emitter: &mut e, phases: &phases, inputs, result: Ok(()) };
     let stack_bytes = unsafe {
@@ -493,7 +528,9 @@ fn emit_map(
             context: std::ptr::from_mut(&mut range).cast(),
             enter: map_range_enter, leave: map_range_leave,
             reserve: map_range_reserve, commit: map_range_commit,
-            body: map_range_body, observe: map_range_observe,
+            packet: map_range_packet, scalar: map_range_scalar, tile_input: map_range_tile_input,
+            ir: dataflow::HOST, phase: map_range_phase, private_values: map_range_private_values,
+            tile_step: map_range_tile_step, observe: map_range_observe,
         })
     };
     range.result?;

@@ -155,7 +155,7 @@ unsafe extern "C" fn continuation(slot: Slot) -> usize {
 
 #[repr(u32)]
 #[allow(dead_code)]
-enum ScalarLeaf {
+pub(super) enum ScalarLeaf {
     Call, Print, Texture, Append, Atomic, Publish, Collective, TileLength, TileLane, ViewLoad,
     Indexed, FunctionAddress, Storage, Value,
 }
@@ -195,7 +195,7 @@ unsafe extern "C" fn publish_scalar(slot: Slot, inst: *const Inst, cursor: Scala
     unsafe { emitter(slot) }.operation_range(unsafe { &*inst }, cursor.start, cursor.ranges);
 }
 
-unsafe extern "C" fn emit_scalar(slot: Slot, leaf: ScalarLeaf, value: View) {
+pub(super) unsafe extern "C" fn emit_scalar(slot: Slot, leaf: ScalarLeaf, value: View) {
     let e = unsafe { emitter(slot) };
     match leaf {
         ScalarLeaf::Call => e.native_call(unsafe { value.left_as() }),

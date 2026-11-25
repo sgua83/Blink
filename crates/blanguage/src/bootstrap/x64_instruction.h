@@ -573,7 +573,6 @@ struct TilePrivateCopy {
 // The caller owns 16 bytes for the lane pointer and 32 for the phase back edge.
 // bytes_back is the distance from output to the start of the current phase loop.
 extern "C" u64 tile_lane_pointer(u32 base_offset, address output) on cpu;
-extern "C" u64 tile_phase_advance(u32 base_offset, u32 length_offset, u64 bytes_back, address output) on cpu;
 // The caller owns 64 bytes. R10 points to the current lane's word in each plane.
 extern "C" u64 tile_private_copy(TilePrivateCopy input, address output) on cpu;
 
@@ -740,10 +739,12 @@ extern "C" ScalarValueEncoding emit_scalar_value(View value,
 enum MapRangePart:u32 {
     Enter=0; PacketBounds=1; PacketCollect=2; PacketAdvance=3; PacketBackEdge=4;
     PacketTail=5; ScalarBounds=6; ScalarSelection=7; ScalarAdvance=8; ScalarBackEdge=9; Exit=10;
+    TileBase=11; TilePhaseEnter=12; TilePhaseAdvance=13;
 };
-enum MapRangeBody:u32 { Packet=0; Scalar=1; TileInput=2; TilePhases=3; };
 struct MapRangeInput {
+    Span code;
     address packet;
+    u64 phase_count;
     usize binding;
     u32 word;
     u32 selected;
@@ -752,25 +753,34 @@ struct MapRangeInput {
     u32 buffer_bytes;
     u32 stride_field;
     u32 tile_scope;
-    u32 has_phases;
 };
 struct MapRangeBuffer { address image; u64 end; };
 struct MapRangeEntry { u64 end; u32 stack_bytes; };
-struct MapRangeObservation { u64 start; u64 end; usize binding; u32 value; MapRangePart part; };
+struct MapRangeObservation { u64 start; u64 end; usize index; u32 value; MapRangePart part; };
+struct TilePhaseView { Span code; Node step; };
 struct MapRangeHost {
     address context;
     cfn<MapRangeEntry,address,u32> enter;
     cfn<u64,address,u32> leave;
     cfn<MapRangeBuffer,address,u64> reserve;
     cfn<void,address,u64> commit;
-    cfn<u32,address,MapRangeBody,address> body;
+    cfn<u32,address,address> packet;
+    cfn<u32,address,Span> scalar;
+    cfn<void,address> tile_input;
+    Host ir;
+    cfn<TilePhaseView,address,u64> phase;
+    cfn<void,address,u64,bool> private_values;
+    cfn<void,address,address,ScalarLeaf,View> tile_step;
     cfn<void,address,MapRangeObservation> observe;
 };
 // The emitter starts with an empty code buffer. A reserved image is lent only
-// until the bytes are committed. The host keeps any diagnostic from body.
+// until the bytes are committed. The original IR and phase slots remain borrowed.
 extern "C" u32 emit_map_range(MapRangeInput input, MapRangeHost host) on cpu
     requires nonzero(host.enter) requires nonzero(host.leave) requires nonzero(host.reserve)
-    requires nonzero(host.commit) requires nonzero(host.body) requires nonzero(host.observe);
+    requires nonzero(host.commit) requires nonzero(host.observe)
+    requires nonzero(host.packet) requires nonzero(host.scalar) requires nonzero(host.tile_input)
+    requires nonzero(host.ir.inspect) requires nonzero(host.phase)
+    requires nonzero(host.private_values) requires nonzero(host.tile_step);
 
 struct ScalarStorageEncoding { u64 length; u64 literal; u64 field; };
 struct ScalarStorageHost {
