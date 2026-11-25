@@ -19,19 +19,21 @@ struct Lookup {
     present: u32,
     root: Borrowed,
 }
-#[repr(C)]
-struct IdentityHost {
-    compare: unsafe extern "C" fn(Borrowed, Borrowed) -> i32,
-    assign: unsafe extern "C" fn(Slot, Borrowed),
+fn representative(roots: &Roots, mut identity: ValueIdentity) -> ValueIdentity {
+    while let Some(&parent) = roots.get(&identity) {
+        if parent == identity {
+            break;
+        }
+        identity = parent;
+    }
+    identity
 }
-unsafe extern "C" fn assign(output: Slot, value: Borrowed) {
-    let value = unsafe { *value.cast::<ValueIdentity>() };
-    unsafe { output.cast::<ValueIdentity>().write(value) };
-}
+
 struct EqualContext<'a, I> {
     roots: &'a mut Roots,
     input: I,
     groups: [*mut ValueIdentity; 2],
+    merged: bool,
 }
 unsafe fn equal_context<'a, 'b, I>(slot: Slot) -> &'a mut EqualContext<'b, I> {
     unsafe { &mut *slot.cast() }
@@ -50,7 +52,13 @@ unsafe extern "C" fn equal_lookup<I>(slot: Slot, side: u32, identity: Borrowed) 
     let context = unsafe { equal_context::<I>(slot) };
     let group = context.roots.get(&id).copied();
     let snapshot = context.groups[side as usize];
-    unsafe { snapshot.write(group.unwrap_or(id)) };
+    let parent = group.unwrap_or(id);
+    let root = if context.merged && parent != id {
+        representative(context.roots, parent)
+    } else {
+        parent
+    };
+    unsafe { snapshot.write(root) };
     Lookup {
         present: u32::from(group.is_some()),
         root: snapshot.cast(),
@@ -58,29 +66,11 @@ unsafe extern "C" fn equal_lookup<I>(slot: Slot, side: u32, identity: Borrowed) 
 }
 unsafe extern "C" fn merge<I>(slot: Slot, merged: Borrowed, root: Borrowed) {
     let (merged, root) = unsafe {
-        (
-            *merged.cast::<ValueIdentity>(),
-            *root.cast::<ValueIdentity>(),
-        )
+        (*merged.cast::<ValueIdentity>(), *root.cast::<ValueIdentity>())
     };
-    // The native range iterator borrows the original mutable map only here.
-    // B decides whether each actual member is assigned to the selected root.
-    for (_, current) in unsafe { equal_context::<I>(slot) }
-        .roots
-        .range_mut(merged..)
-    {
-        unsafe {
-            b_merge(
-                (current as *mut ValueIdentity).cast(),
-                borrowed(&merged),
-                borrowed(&root),
-                IdentityHost {
-                    compare: fact_fields::compare,
-                    assign,
-                },
-            )
-        };
-    }
+    let context = unsafe { equal_context::<I>(slot) };
+    context.roots.insert(merged, root);
+    context.merged = true;
 }
 unsafe extern "C" fn insert<I>(slot: Slot, identity: Borrowed, root: Borrowed) {
     let (identity, root) = unsafe {
@@ -102,11 +92,22 @@ struct EqualHost {
     insert: unsafe extern "C" fn(Slot, Borrowed, Borrowed),
 }
 unsafe extern "C" {
-    #[link_name = "bootstrap.condition_graph::equality_merge_value"]
-    fn b_merge(current: Slot, merged: Borrowed, root: Borrowed, host: IdentityHost);
     #[link_name = "bootstrap.condition_graph::equality_extend"]
     fn b_extend(context: Slot, host: EqualHost) -> u32;
 }
+fn normalize(roots: &mut Roots) {
+    let affected: Vec<_> = roots.iter().filter_map(|(&identity, parent)| {
+        roots.get(parent).is_some_and(|root| root != parent).then_some(identity)
+    }).collect();
+    // A parent is the smaller representative, so its entry is final when its
+    // dependent members are visited in map order.
+    for identity in affected {
+        let parent = roots[&identity];
+        let root = roots[&parent];
+        roots.insert(identity, root);
+    }
+}
+
 pub(super) fn extend<'a, I: IntoIterator<Item = &'a Fact>>(roots: &mut Roots, facts: I) -> bool {
     let mut left = MaybeUninit::<ValueIdentity>::uninit();
     let mut right = MaybeUninit::<ValueIdentity>::uninit();
@@ -114,8 +115,9 @@ pub(super) fn extend<'a, I: IntoIterator<Item = &'a Fact>>(roots: &mut Roots, fa
         roots,
         input: facts.into_iter(),
         groups: [left.as_mut_ptr(), right.as_mut_ptr()],
+        merged: false,
     };
-    unsafe {
+    let changed = unsafe {
         b_extend(
             (&mut context as *mut EqualContext<'_, I::IntoIter>).cast(),
             EqualHost {
@@ -126,7 +128,11 @@ pub(super) fn extend<'a, I: IntoIterator<Item = &'a Fact>>(roots: &mut Roots, fa
                 insert: insert::<I::IntoIter>,
             },
         ) != 0
+    };
+    if context.merged {
+        normalize(context.roots);
     }
+    changed
 }
 struct ComputedContext<'a> {
     roots: &'a mut Roots,

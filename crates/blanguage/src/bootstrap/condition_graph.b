@@ -955,10 +955,6 @@ extern "C" void clause_branch(address parent,address condition,u32 truth,address
  host.make(output,parent,condition,truth);
 }
 
-extern "C" void equality_merge_value(address current,address merged,address root,EqualityIdentityHost host) on cpu
- requires nonzero(host.compare) requires nonzero(host.assign) {
- if(host.compare(current,merged)==0){host.assign(current,root);}
-}
 extern "C" u32 equality_extend(address context,EqualityHost host) on cpu
  requires nonzero(host.next) requires nonzero(host.lookup) requires nonzero(host.compare)
  requires nonzero(host.merge) requires nonzero(host.insert) {

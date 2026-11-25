@@ -291,10 +291,6 @@ extern "C" void clause_branch(address parent,address condition,u32 truth,address
  requires nonzero(host.inspect) requires nonzero(host.case) requires nonzero(host.impossible) requires nonzero(host.make);
 
 struct EqualityLookup { u32 present; address root; };
-struct EqualityIdentityHost {
- cfn<i32,address,address> ensures memory(read) compare;
- cfn<void,address,address> assign;
-};
 struct EqualityHost {
  cfn<FactView,address> next;
  cfn<EqualityLookup,address,u32,address> lookup;
@@ -302,8 +298,6 @@ struct EqualityHost {
  cfn<void,address,address,address> merge;
  cfn<void,address,address,address> insert;
 };
-extern "C" void equality_merge_value(address current,address merged,address root,EqualityIdentityHost host) on cpu
- requires nonzero(host.compare) requires nonzero(host.assign);
 extern "C" u32 equality_extend(address context,EqualityHost host) on cpu
  requires nonzero(host.next) requires nonzero(host.lookup) requires nonzero(host.compare)
  requires nonzero(host.merge) requires nonzero(host.insert);
