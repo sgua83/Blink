@@ -286,35 +286,3 @@ extern "C" FunctionReturn function_result(FunctionFrame frame, u32 flags, CallVa
     }
     return FunctionReturn(cursor - start, value_length, literal, field);
 }
-
-extern "C" u64 emit_reference_address(Node reference, IndexedAddressHost host,
-    cfn<MoveLocation,address,usize> ensures memory(read) local, address output) on cpu
-    requires nonzero(host.values.ir.inspect) requires nonzero(host.values.location)
-    requires nonzero(host.values.scalar) requires nonzero(host.tile_stream) requires nonzero(local) {
-    ScalarValueHost values = host.values;
-    View address_view = values.ir.inspect(reference);
-    View storage = values.ir.inspect(address_view.left);
-    bool indexed = address_view.first.count != 0u64;
-    usize index = 0u64;
-    if (indexed) { index = unsafe_position<usize>(address_view.first.data); }
-    u32 word = u32(address_view.a);
-    AddressEncoding place;
-    if (storage.tag == 0) {
-        // Addressable locals were assigned their real stack position during layout.
-        if (storage.b != 0u64) { word += u32(local(values.context, storage.a).value); }
-        if (indexed) {
-            place = value_memory(u8(4), values.location(values.context, index), 1, word, output);
-        } else {
-            place = AddressEncoding(0u64, word, u8(4), u8(255), u8(0));
-        }
-    } else if (indexed) {
-        place = emit_indexed_operand(storage.left, index, word, true, host, output);
-    } else {
-        place = emit_indexed_operand(storage.left, 0u64, 0, false, host, output);
-        place.offset = word;
-    }
-    // MoveLocation kind 2 is the memory operand of the shared x64 ABI.
-    MoveLocation memory = MoveLocation(u64(place.offset), u8(2), place.base, place.index, place.shift);
-    address cursor = unsafe_address(address_bits(output) + place.length);
-    return place.length + effective_address(u8(0), memory, cursor);
-}

@@ -69,13 +69,6 @@ struct TilePublishCode {
 }
 
 unsafe extern "C" {
-    #[link_name = "bootstrap.x64_instruction::tile_index_base"]
-    fn encode_tile_index_base(index: MoveLocation, scalar: ScalarEncoding, storage_offset: u32, output: *mut u8) -> u64;
-    #[link_name = "bootstrap.x64_instruction::tile_field_address"]
-    fn encode_tile_field_address(width: u32, byte_offset: u32, output: *mut u8) -> u64;
-    #[link_name = "bootstrap.x64_instruction::tile_read_split"]
-    fn encode_tile_read_split(dst: operands::MoveLocation, low: operands::MoveLocation,
-        high: operands::MoveLocation, output: *mut u8) -> u64;
     #[link_name = "bootstrap.x64_instruction::tile_publish_value"]
     fn encode_tile_publish_value(input: TilePublishInput, output: *mut u8) -> TilePublishCode;
     #[link_name = "bootstrap.x64_instruction::tile_lane_pointer"]
@@ -111,46 +104,6 @@ impl Emitter<'_> {
         let width = self.stage.workgroup_width();
         self.emit_bytes(16, |output| unsafe { encode_tile_lane(width, output) });
         self.store(dst);
-    }
-    pub(super) fn tile_index_base(&mut self, index: Reg, storage_offset: u32) {
-        let location = self.location(index).into();
-        let scalar = self.stage.registers[index].into();
-        self.emit_bytes(36, |output| unsafe {
-            encode_tile_index_base(location, scalar, storage_offset, output)
-        });
-    }
-
-    pub(super) fn tile_load(&mut self, dst: Reg, tile: usize, index: Reg, word: u32, offset: Option<Reg>) {
-        let scalar = self.stage.registers[dst];
-        let (memory, high) = if let Some(offset) = offset {
-            let source = IndexedSource::Tile { tile, index };
-            if scalar.size() < 4 {
-                self.indexed_base(&source);
-                let width = self.stage.workgroup_width();
-                self.load(offset);
-                let bias = match self.stage.tiles[tile].source {
-                    TileSource::Input { word, .. } => word % 4,
-                    TileSource::Published => 0,
-                };
-                self.emit_bytes(40, |output| unsafe { encode_tile_field_address(width, word + bias, output) });
-                (Memory::new(15, 0), Memory::new(15, 0))
-            } else {
-                let memory = self.indexed_memory(&source, offset, word);
-                (memory, memory.offset(self.stage.workgroup_width()*4))
-            }
-        } else {
-            self.tile_index_base(index, 0);
-            let bias = match self.stage.shared_word(tile, word) { SharedWord::Input { word, .. } | SharedWord::Published { word, .. } => word % 4 };
-            let low = Memory::new(15, self.shared_stream(self.stage.shared_word(tile, word)) + bias);
-            let high = if scalar.size() == 8 { Memory::new(15, self.shared_stream(self.stage.shared_word(tile, word + 4))) } else { low };
-            (low, high)
-        };
-        if scalar.size() == 8 {
-            let dst = self.location(dst).into();
-            self.emit_bytes(48, |output| unsafe {
-                encode_tile_read_split(dst, memory.into(), high.into(), output)
-            });
-        } else { self.read_scalar_address(dst, memory); }
     }
     pub(super) fn tile_input(&mut self, inputs: &crate::ir::dataflow::InputFragments) {
         let start = self.code.len();

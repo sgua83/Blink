@@ -25,11 +25,6 @@ impl Memory {
     pub(super) fn indexed(base: u8, index: u8, shift: u8, offset: u32) -> Self {
         Self { base, index: Some((index, shift)), offset }
     }
-    pub(super) fn offset(mut self, offset: u32) -> Self {
-        self.offset += offset;
-        self
-    }
-
 }
 #[derive(Clone, Copy)]
 pub(super) enum Operand {
@@ -179,15 +174,22 @@ struct ScalarStorageHost {
 #[repr(C)]
 pub(super) struct IndexedAddressHost {
     values: ScalarValueHost,
-    tile_stream: unsafe extern "C" fn(*const std::ffi::c_void, usize, u32) -> u32,
+    tile_stream: unsafe extern "C" fn(*const std::ffi::c_void, usize, u32) -> IndexedTileWord,
     buffer_bytes: u32,
     stride_field: u32,
     workgroup: u32,
 }
 
-unsafe extern "C" fn indexed_tile_stream(context: *const std::ffi::c_void, tile: usize, word: u32) -> u32 {
+#[repr(C)]
+struct IndexedTileWord { offset: u32, byte_offset: u32 }
+
+unsafe extern "C" fn indexed_tile_stream(context: *const std::ffi::c_void, tile: usize, word: u32) -> IndexedTileWord {
     let locations = unsafe { &*context.cast::<ScalarLocations<'_>>() };
-    locations.frame.tile_shared[&locations.stage.shared_word(tile, word).aligned()]
+    let source = locations.stage.shared_word(tile, word);
+    let byte_offset = match source {
+        SharedWord::Input { word, .. } | SharedWord::Published { word, .. } => word % 4,
+    };
+    IndexedTileWord { offset: locations.frame.tile_shared[&source.aligned()], byte_offset }
 }
 
 pub(super) unsafe extern "C" fn value_local(context: *const std::ffi::c_void, local: usize) -> MoveLocation {
@@ -215,11 +217,8 @@ unsafe extern "C" {
     fn encode_scaled_memory(base: u8, index: u8, stride: u32, offset: u32, output: *mut u8) -> AddressEncoding;
     #[link_name = "bootstrap.x64_instruction::bit_copy"]
     fn scalar_bit_copy(from: ScalarEncoding, into: ScalarEncoding) -> u32;
-    #[link_name = "bootstrap.x64_instruction::emit_indexed_operand"]
-    fn emit_indexed_operand(source: Node, offset: Reg, word: u32, memory: u32,
-        host: IndexedAddressHost, output: *mut u8) -> AddressEncoding;
-    #[link_name = "bootstrap.call_layout::emit_reference_address"]
-    fn emit_reference_address(reference: Node, host: IndexedAddressHost,
+    #[link_name = "bootstrap.x64_instruction::emit_indexed_storage"]
+    fn emit_indexed_storage(instruction: Node, host: IndexedAddressHost,
         local: unsafe extern "C" fn(*const std::ffi::c_void, usize) -> MoveLocation, output: *mut u8) -> u64;
     #[link_name = "bootstrap.x64_instruction::emit_append"]
     fn emit_append(instruction: Node, host: ScalarValueHost, buffer_bytes: u32,
@@ -238,8 +237,6 @@ unsafe extern "C" {
     fn encode_instruction(input: InstructionEncoding, opcode: *const u8, length: u64, output: *mut u8) -> u64;
     #[link_name = "bootstrap.x64_instruction::copy_scalar_move"]
     fn copy_scalar_move(dst: MoveLocation, src: MoveLocation, size: u32, signed: u32, output: *mut u8) -> MoveEncoding;
-    #[link_name = "bootstrap.x64_instruction::read_scalar_move"]
-    fn read_scalar_move(dst: MoveLocation, memory: MoveLocation, size: u32, signed: u32, boolean: u32, output: *mut u8) -> u64;
     #[link_name = "bootstrap.x64_instruction::write_scalar_move"]
     fn write_scalar_move(memory: MoveLocation, src: MoveLocation, size: u32, output: *mut u8) -> u64;
 }
@@ -275,30 +272,13 @@ impl Emitter<'_> {
         }
     }
 
-    fn indexed_operand(&mut self, source: &IndexedSource, offset: Reg, word: u32, memory: bool) -> Memory {
-        let locations = ScalarLocations {
-            allocation: &self.allocation,
-            stage: self.stage,
-            frame: &self.frame,
-        };
-        let host = locations.indexed_host();
-        let start = self.code.len();
-        self.code.reserve(160);
-        unsafe {
-            let encoded = emit_indexed_operand(Node::indexed_source(source), offset, word, u32::from(memory), host,
-                self.code.as_mut_ptr().add(start));
-            self.code.set_len(start + encoded.length as usize);
-            Memory::indexed(encoded.base, encoded.index, encoded.shift, encoded.offset)
-        }
-    }
-
-    pub(super) fn reference_address(&mut self, address: &CallReference) {
+    pub(super) fn indexed_storage(&mut self, inst: &Inst) {
         let locations = ScalarLocations { allocation: &self.allocation, stage: self.stage, frame: &self.frame };
         let host = locations.indexed_host();
         let start = self.code.len();
-        self.code.reserve(168);
+        self.code.reserve(208);
         unsafe {
-            let length = emit_reference_address(Node::reference(address), host, value_local,
+            let length = emit_indexed_storage(Node::instruction(inst), host, value_local,
                 self.code.as_mut_ptr().add(start));
             self.code.set_len(start + length as usize);
         }
@@ -327,12 +307,6 @@ impl Emitter<'_> {
         }
     }
 
-    pub(super) fn indexed_base(&mut self, source: &IndexedSource) {
-        self.indexed_operand(source, 0, 0, false);
-    }
-    pub(super) fn indexed_memory(&mut self, source: &IndexedSource, offset: Reg, word: u32) -> Memory {
-        self.indexed_operand(source, offset, word, true)
-    }
     pub(super) fn scaled_memory(&mut self, base: u8, index: u8, stride: u32, offset: u32) -> Memory {
         self.emit_address(16, |output| unsafe { encode_scaled_memory(base, index, stride, offset, output) })
     }
@@ -410,21 +384,11 @@ impl Emitter<'_> {
     pub(super) fn literal_width(&mut self, dst: Location, bits: Bits, wide: bool) {
         self.copy_move(dst, Location::Immediate(bits), if wide { 8 } else { 4 }, false);
     }
-    pub(super) fn read_scalar_address(&mut self, dst: Reg, memory: Memory) {
-        let scalar = self.stage.registers[dst];
-        let dst = self.location(dst);
-        self.emit_bytes(24, |output| unsafe {
-            read_scalar_move(dst.into(), memory.into(), scalar.size(), u32::from(scalar.is_signed()), u32::from(scalar == Scalar::Bool), output)
-        });
-    }
     pub(super) fn write_memory(&mut self, src: Location, base: u8, offset: u32) {
         self.write_address(src, Memory::new(base, offset));
     }
     pub(super) fn write_address(&mut self, src: Location, memory: Memory) {
         self.write_value_address(src, memory, 4);
-    }
-    pub(super) fn write_scalar_address(&mut self, src: Reg, memory: Memory) {
-        self.write_value_address(self.location(src), memory, self.stage.registers[src].size());
     }
     pub(super) fn write_value_address(&mut self, src: Location, memory: Memory, size: u32) {
         self.emit_bytes(24, |output| unsafe { write_scalar_move(memory.into(), src.into(), size, output) });

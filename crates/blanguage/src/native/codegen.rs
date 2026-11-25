@@ -386,38 +386,11 @@ impl Emitter<'_> {
                 InstKind::TileCollective(collective) => self.tile_collective(collective),
                 InstKind::TileLength(dst) => self.tile_length(*dst),
                 InstKind::TileLane(dst) => self.tile_lane(*dst),
-                InstKind::TileLoad {
-                    dst,
-                    tile,
-                    index,
-                    word,
-                } => self.tile_load(*dst, *tile, *index, *word, None),
                 InstKind::Subgroup { .. } => return Err("CPU 后端不能执行 GPU subgroup 协作"),
                 InstKind::RayQuery { .. } => return Err("CPU 后端不能执行硬件光线查询"),
                 InstKind::ViewLoad { .. } => self.view_load(inst),
-                InstKind::LoadIndexed {
-                    dst,
-                    source,
-                    offset,
-                    word,
-                } => {
-                    if let IndexedSource::Tile { tile, index } = source {
-                        self.tile_load(*dst, *tile, *index, *word, Some(*offset));
-                    } else {
-                        let memory = self.indexed_memory(source, *offset, *word);
-                        self.read_scalar_address(*dst, memory);
-                    }
-                }
-                InstKind::StoreIndexed {
-                    source,
-                    offset,
-                    word,
-                    value,
-                } => {
-                    let memory = self.indexed_memory(source, *offset, *word);
-                    self.write_scalar_address(*value, memory);
-                }
-                InstKind::PositionAddress { dst, address } => { self.reference_address(address); self.store(*dst); }
+                InstKind::LoadIndexed { .. } | InstKind::StoreIndexed { .. }
+                | InstKind::TileLoad { .. } | InstKind::PositionAddress { .. } => self.indexed_storage(inst),
                 InstKind::FunctionAddress(dst, target) => {
                     match target {
                         CallTarget::Defined(name) => self.emit_symbol_target(NativeSymbol::Function(name.clone()), false),

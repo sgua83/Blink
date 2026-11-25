@@ -772,18 +772,26 @@ extern "C" ScalarStorageEncoding emit_scalar_storage(Node instruction, ScalarSto
     requires nonzero(host.values.ir.inspect) requires nonzero(host.values.location)
     requires nonzero(host.values.scalar) requires nonzero(host.local);
 
+struct IndexedTileWord { u32 offset; u32 byte_offset; };
 struct IndexedAddressHost {
     ScalarValueHost values;
-    cfn<u32,address,usize,u32> ensures memory(read) tile_stream;
+    cfn<IndexedTileWord,address,usize,u32> ensures memory(read) tile_stream;
     u32 buffer_bytes;
     u32 stride_field;
     u32 workgroup;
 };
-// Borrows the original indexed source and 160 writable bytes.
-extern "C" AddressEncoding emit_indexed_operand(Node source, usize offset, u32 word,
-    bool memory, IndexedAddressHost host, address output) on cpu
+// The original reference borrows its actual locations and 168 writable bytes.
+extern "C" u64 emit_reference_address(Node reference, IndexedAddressHost host,
+    cfn<MoveLocation,address,usize> ensures memory(read) local, address output) on cpu
     requires nonzero(host.values.ir.inspect) requires nonzero(host.values.location)
-    requires nonzero(host.values.scalar) requires nonzero(host.tile_stream);
+    requires nonzero(host.values.scalar) requires nonzero(host.tile_stream) requires nonzero(local);
+
+// An original indexed read, write or position address borrows 208 writable bytes.
+extern "C" u64 emit_indexed_storage(Node instruction, IndexedAddressHost host,
+    cfn<MoveLocation,address,usize> ensures memory(read) local, address output) on cpu
+    requires nonzero(host.values.ir.inspect) requires nonzero(host.values.location)
+    requires nonzero(host.values.scalar) requires nonzero(host.tile_stream) requires nonzero(local);
+
 // Borrows the original view load and 112 writable bytes.
 extern "C" u64 emit_view_load(Node instruction, ScalarValueHost host, address output) on cpu
     requires nonzero(host.ir.inspect) requires nonzero(host.location) requires nonzero(host.scalar);

@@ -35,12 +35,6 @@ extern "C" FunctionReturn function_result(FunctionFrame frame, u32 flags, CallVa
     cfn<AbiValueComponent,address,u64> component, address output)
     on cpu requires nonzero(component);
 
-// The original reference borrows its actual locations and 168 writable bytes.
-extern "C" u64 emit_reference_address(Node reference, IndexedAddressHost host,
-    cfn<MoveLocation,address,usize> ensures memory(read) local, address output) on cpu
-    requires nonzero(host.values.ir.inspect) requires nonzero(host.values.location)
-    requires nonzero(host.values.scalar) requires nonzero(host.tile_stream) requires nonzero(local);
-
 struct CallInput {
     Node source;
     AbiType result;
