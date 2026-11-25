@@ -226,8 +226,15 @@ impl Frame {
     }
 
     unsafe fn linked_frame(factories: &[blanguage::resource::ModuleFactory]) -> Result<Self> {
+        let mut workers = None;
         let definitions = unsafe {
-            Definitions::linked(factories, |image, code| CpuTemplate::from_linked_indices(image, code))
+            Definitions::linked(factories, |image, code| {
+                let workers = match workers {
+                    Some(workers) => workers,
+                    None => *workers.insert(std::thread::available_parallelism()?.get()),
+                };
+                Ok(CpuTemplate::from_linked_indices(image, code, workers))
+            })
         }?;
         Ok(unsafe { Self::from_definitions(Arc::new(definitions), &[], None) })
     }

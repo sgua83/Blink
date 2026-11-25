@@ -750,7 +750,9 @@ impl CpuProgram {
         let stages = CpuCode::load_linked_stages(image.stages(), entry);
         let (program, _, _, _) = image.into_parts();
         let definitions = unsafe {
-            crate::application::Definitions::linked(factories, |image, code| CpuTemplate::from_linked_indices(image, code))
+            crate::application::Definitions::linked(factories, |image, code| {
+                Ok(CpuTemplate::from_linked_indices(image, code, workers))
+            })
         }?;
         Ok(Self { code: CpuCode {
             program, stages, workers, definitions: Some(Arc::new(definitions)), allocation: None,
@@ -804,9 +806,9 @@ impl CpuTemplate {
     pub(crate) unsafe fn from_linked_indices(
         image: blanguage::native::ProgramImage<TemplateProgram, usize>,
         entries: &[*const u8],
-    ) -> Result<Self> {
-        let workers = std::thread::available_parallelism()?.get();
-        Ok(Self { code: CpuCode::bind_indices(image, workers, entries, None) })
+        workers: usize,
+    ) -> Self {
+        Self { code: CpuCode::bind_indices(image, workers, entries, None) }
     }
     /// 装入失败交回原错误和同一未改映像；本调用没有执行数据。
     pub fn from_image(image: blanguage::native::ProgramImage<TemplateProgram>) -> std::result::Result<Self, (Box<dyn std::error::Error + Send + Sync>, blanguage::native::ProgramImage<TemplateProgram>)> {
