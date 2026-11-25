@@ -1061,7 +1061,7 @@ compiler Rust接口的NativeCode.sources统一表示三种互斥状态：Emitted
 
 BLCR7由8字节`BLCR\x07\0\0\0`、u64条目数量及逐条记录组成；整数均为小端。每条记录依次为32字节SHA-256、u64尾部分区数量及各分区的u64排他末端／u32类别（0探栈辅助、1对齐、2字面量），再是可选尾部引用、可选FunctionAbi及可选OperationRange序列。可选值以一字节bool标明是否存在，序列以u64数量开头；每个TailReference含u64 target及u64数量的rel32字段位置序列。ABI、操作、定义／声明／语法及变换记录与下文BLCF10共用同一native/facts/material字段编码；只读SavedSources不含Source或源码文本，原未知与已采集空列表分别保持。BLCR1至4不再受支持。摘要消费同一NativeCode的原执行字段编码，覆盖原字节、重定位、帧、调用、主末端和展开，不含观察材料、源码、SDK版本或工具链身份；材料不复制机器码、执行图或主末端。它配对同一执行编码，不能证明材料来源、指令安全、硬件支持或真实执行，调用者应保留原生产材料。
 
-`restore_code_observations(material)`按原容器顺序消费全部CPU代码：Compilation先programs后templates；Module按原prefix合同将无前置条件映像置前、条件模板置后，各组保持原顺序，与构建结果一致。每个CPU映像沿原阶段，Element先main再实际延续入口，Sort先全部initialize再histogram／scatter／gather，再交接原functions命名callee及同一资源目录的CPU子映像阶段／callee；GPU不占CPU条目。恢复先核对数量、全部执行字段摘要、主末端、尾部分区的范围／顺序／完整覆盖、实际rel32字段与目标、ABI及操作范围；全通过才将tail_regions、tail_references及CodeSources::Restored移动回同一NativeCode；错误不部分改写。原字节、执行／资源合同、GPU内容和最后消费者保持；纯GPU集合明确不支持CPU观察。
+`restore_code_observations(material)`按原容器顺序消费全部CPU代码：Compilation先programs后templates；Module按原执行计划的前缀及元素要求将无前置条件映像置前、条件模板置后，各组保持原顺序，与构建结果一致。每个CPU映像沿原阶段，Element先main再实际延续入口，Sort先全部initialize再histogram／scatter／gather，再交接原functions命名callee及同一资源目录的CPU子映像阶段／callee；GPU不占CPU条目。恢复先核对数量、全部执行字段摘要、主末端、尾部分区的范围／顺序／完整覆盖、实际rel32字段与目标、ABI及操作范围；全通过才将tail_regions、tail_references及CodeSources::Restored移动回同一NativeCode；错误不部分改写。原字节、执行／资源合同、GPU内容和最后消费者保持；纯GPU集合明确不支持CPU观察。
 
 ```text
 bc code target/cache/entry.blbi --observations target/entry.blcr

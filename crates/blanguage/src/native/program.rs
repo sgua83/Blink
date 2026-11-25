@@ -64,12 +64,9 @@ impl crate::Compiler {
                 })
             })?;
             Ok::<_, String>(image)
-        }).map_err(|error| error.to_string()).map(|mut image| {
-            let modules = image.module_code.take();
-            let (plan, stages, functions, resources) = image.into_parts();
-            let mut image = unsafe { ProgramImage::from_compiler_output(plan, stages, functions, resources) };
-            image.module_code = modules;
-            image
+        }).map_err(|error| error.to_string()).map(|image| {
+            // The worker compiled the original program borrowed from P.
+            unsafe { image.with_entry_type() }
         })
     }
 }

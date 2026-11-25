@@ -149,6 +149,14 @@ pub struct ProgramImage<P> {
     stages: Vec<StageCode>,
 }
 impl<P> ProgramImage<P> {
+    /// # Safety
+    /// The original image must satisfy the entry requirements of `Q`.
+    #[cfg(feature = "compiler")]
+    pub(crate) unsafe fn with_entry_type<Q>(self) -> ProgramImage<Q> {
+        let Self { program, marker: _, stages } = self;
+        ProgramImage { program, marker: std::marker::PhantomData, stages }
+    }
+
     /// 恢复本版本编译器输出的 SPIR-V 与执行布局。
     ///
     /// # Safety

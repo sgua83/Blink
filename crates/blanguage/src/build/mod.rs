@@ -398,23 +398,11 @@ fn images(module: resource::Module, artifact: PathBuf, reused: bool) -> Compilat
         if crate::ir::ProgramInterface::requires_bindings(&image) {
             templates.push(image);
         } else {
-            // 同一编译映像的空前置合同；不构造IR或重新生成机器码。
-            programs.push(match image {
-                resource::Image::Cpu(image) => {
-                    let mut image = image;
-                    let module_code = image.module_code.take();
-                    let (plan, code, functions,resources) = image.into_parts();
-                    let mut image = unsafe { crate::native::ProgramImage::from_compiler_output(plan, code, functions,resources) };
-                    image.module_code = module_code;
-                    resource::Image::Cpu(image)
-                }
-                resource::Image::Gpu(image) => {
-                    let (plan, code) = image.into_parts();
-                    resource::Image::Gpu(unsafe {
-                        crate::spirv::ProgramImage::from_compiler_output(plan, code)
-                    })
-                }
-            });
+            // These images have no binding requirements.
+            programs.push(unsafe { match image {
+                resource::Image::Cpu(image) => resource::Image::Cpu(image.with_entry_type()),
+                resource::Image::Gpu(image) => resource::Image::Gpu(image.with_entry_type()),
+            } });
         }
     }
     Compilation {

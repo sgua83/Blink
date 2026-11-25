@@ -232,6 +232,14 @@ impl<C> StageCode<C> {
 }
 
 impl<P, C> ProgramImage<P, C> {
+    /// # Safety
+    /// The original image must satisfy the entry requirements of `Q`.
+    #[cfg(feature = "compiler")]
+    pub(crate) unsafe fn with_entry_type<Q>(self) -> ProgramImage<Q, C> {
+        let Self { program, marker: _, stages, functions, resources, module_code } = self;
+        ProgramImage { program, marker: std::marker::PhantomData, stages, functions, resources, module_code }
+    }
+
     /// 恢复本版本编译器输出的原生代码与执行布局。
     ///
     /// # Safety
