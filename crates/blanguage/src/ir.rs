@@ -287,13 +287,17 @@ impl Ty {
     }
     #[cfg(feature = "compiler")]
     pub(crate) fn append_field_layout(&mut self, field: &Self) -> Option<u32> {
+        let offset = self.place_field_layout(field)?;
+        self.components.extend(field.components.iter().map(|&(scalar, word)| (scalar, offset + word)));
+        Some(offset)
+    }
+    #[cfg(feature = "compiler")]
+    pub(crate) fn place_field_layout(&mut self, field: &Self) -> Option<u32> {
         // Bound field types carry nonzero alignment.
         let placement = unsafe { place_field(self.size, self.align, field.size, field.align) };
         self.size = u32::try_from(placement.end).ok()?;
         self.align = placement.alignment;
-        let offset = placement.offset as u32;
-        self.components.extend(field.components.iter().map(|&(scalar, word)| (scalar, offset + word)));
-        Some(offset)
+        Some(placement.offset as u32)
     }
     #[cfg(feature = "compiler")]
     pub(crate) fn finish_record_layout(&mut self) -> Option<()> {
@@ -303,9 +307,16 @@ impl Ty {
     }
     #[cfg(feature = "compiler")]
     pub(crate) fn task_start_error(input: Self) -> Option<Self> {
+        let mut ty = Self::task_start_error_layout(input)?;
+        ty.fill_components();
+        Some(ty)
+    }
+    #[cfg(feature = "compiler")]
+    pub(crate) fn task_start_error_layout(input: Self) -> Option<Self> {
         let mut ty = Self::scalar(Scalar::U32);
         ty.name = format!("task_start_error<{}>", input.name);
-        let offset = ty.append_field_layout(&input)?;
+        let offset = ty.place_field_layout(&input)?;
+        ty.components.clear();
         ty.finish_record_layout()?;
         ty.fields = vec![
             ("code".into(), 0, Box::new(Self::scalar(Scalar::U32))),
@@ -422,16 +433,28 @@ impl Ty {
     }
     #[cfg(feature = "compiler")]
     pub fn result(ok: Self, error: Self) -> Option<Self> {
+        let mut ty = Self::result_layout(ok, error)?;
+        ty.fill_components();
+        Some(ty)
+    }
+    #[cfg(feature = "compiler")]
+    pub(crate) fn result_layout(ok: Self, error: Self) -> Option<Self> {
         let name = format!("result<{},{}>", ok.name, error.name);
         let arguments = vec![ok.clone(), error.clone()];
         let variants = vec![
             Variant { name: "Ok".into(), discriminant: 0, ty: Box::new(ok) },
             Variant { name: "Err".into(), discriminant: 1, ty: Box::new(error) },
         ];
-        Self::variant(name, arguments, Vec::new(), Scalar::Bool, variants).map(|mut ty| { ty.result = true; ty })
+        Self::variant_layout(name, arguments, Vec::new(), Scalar::Bool, variants).map(|mut ty| { ty.result = true; ty })
     }
     #[cfg(feature = "compiler")]
     pub fn variant(name: String, arguments: Vec<Self>, values: Vec<u32>, tag: Scalar, variants: Vec<Variant>) -> Option<Self> {
+        let mut ty = Self::variant_layout(name, arguments, values, tag, variants)?;
+        ty.fill_components();
+        Some(ty)
+    }
+    #[cfg(feature = "compiler")]
+    pub(crate) fn variant_layout(name: String, arguments: Vec<Self>, values: Vec<u32>, tag: Scalar, variants: Vec<Variant>) -> Option<Self> {
         let (payload_size, payload_alignment) = variants.iter().fold((0, 0), |(size, align), variant| {
             (size.max(variant.ty.size), align.max(variant.ty.align))
         });
@@ -440,10 +463,85 @@ impl Ty {
         let align = layout.alignment;
         Some(Self {
             name, arguments, values, size, align,
-            components: std::iter::once((tag, 0)).chain((align..size).step_by(4).map(|at| (Scalar::U32, at))).collect(),
+            components: vec![(tag, 0)],
             fields: Vec::new(), view: None, array: None, enumeration: false, result: false,
             variants, dataset: None, cleanup: None, function: None,
         })
+    }
+    /// Materialize the scalar value slots along inline storage. A view already
+    /// has its own slots, and its referenced storage stays in layout form.
+    #[doc(hidden)]
+    pub fn complete_value_layout(&mut self) {
+        for argument in &mut self.arguments {
+            argument.complete_value_layout();
+        }
+        for (_, _, field) in &mut self.fields {
+            field.complete_value_layout();
+        }
+        for variant in &mut self.variants {
+            variant.ty.complete_value_layout();
+        }
+        if let Some(element) = &mut self.array {
+            element.complete_value_layout();
+        }
+        self.fill_components();
+    }
+
+    pub(crate) fn fill_components(&mut self) {
+        if let Some(element) = &self.array {
+            let stride = align_up(element.size, element.align);
+            self.components.clear();
+            if !element.components.is_empty() {
+                self.components.reserve(self.values[0] as usize * element.components.len());
+                for index in 0..self.values[0] {
+                    let base = index * stride;
+                    self.components.extend(element.components.iter().map(|&(scalar, offset)| (scalar, base + offset)));
+                }
+            }
+        } else if self.has_variants() {
+            self.components.truncate(1);
+            self.components.extend((self.align..self.size).step_by(4).map(|offset| (Scalar::U32, offset)));
+        } else if !self.fields.is_empty() {
+            self.components.clear();
+            for (_, base, field) in &self.fields {
+                self.components.extend(field.components.iter().map(|&(scalar, offset)| (scalar, base + offset)));
+            }
+        }
+    }
+
+    /// Compare the referenced storage with actual storage, whose derived
+    /// array, record and variant slots may already have been materialized.
+    pub fn same_layout(&self, other: &Self) -> bool {
+        let same_optional = |a: &Option<Box<Self>>, b: &Option<Box<Self>>| match (a, b) {
+            (Some(a), Some(b)) => a.same_layout(b),
+            (None, None) => true,
+            _ => false,
+        };
+        self.name == other.name
+            && self.values == other.values
+            && self.size == other.size
+            && self.align == other.align
+            && self.enumeration == other.enumeration
+            && self.result == other.result
+            && self.dataset == other.dataset
+            && self.cleanup == other.cleanup
+            && self.function == other.function
+            && self.arguments.len() == other.arguments.len()
+            && self.arguments.iter().zip(&other.arguments).all(|(a, b)| a.same_layout(b))
+            && self.fields.len() == other.fields.len()
+            && self.fields.iter().zip(&other.fields).all(|((a, at, x), (b, bt, y))| a == b && at == bt && x.same_layout(y))
+            && self.variants.len() == other.variants.len()
+            && self.variants.iter().zip(&other.variants).all(|(a, b)| a.name == b.name && a.discriminant == b.discriminant && a.ty.same_layout(&b.ty))
+            && same_optional(&self.array, &other.array)
+            && same_optional(&self.view, &other.view)
+            && (self.components == other.components
+                || if self.has_variants() {
+                    (self.components.len() == 1 || other.components.len() == 1)
+                        && self.components.first() == other.components.first()
+                } else {
+                    (self.array.is_some() || !self.fields.is_empty())
+                        && (self.components.is_empty() || other.components.is_empty())
+                })
     }
     pub fn has_variants(&self) -> bool { !self.variants.is_empty() }
     pub(crate) fn variant_tag(&self, bits: u32) -> u32 {

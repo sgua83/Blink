@@ -72,7 +72,13 @@ impl<'a> TypeJson<'a> {
                         write!(out, ",\"offset_bytes\":{offset},\"size_bytes\":{},\"bit_width\":{},\"first_resource_word\":{},\"byte_in_word\":{},\"resource_word_count\":{}}}",
                             scalar.size(), scalar.bit_width(), offset / 4, offset % 4, (offset % 4 + scalar.size()).div_ceil(4)).unwrap();
                     }
-                    out.push_str("],\"fields\":[");
+                    out.push(']');
+                    if (value.components.is_empty() && (value.array.is_some() || !value.fields.is_empty()))
+                        || (value.has_variants() && value.components.len() == 1 && value.size > value.align)
+                    {
+                        out.push_str(",\"component_layout\":\"structural\"");
+                    }
+                    out.push_str(",\"fields\":[");
                     self.parts.push(Part::Fields(value, 0));
                 }
                 Part::Fields(value, index) => {

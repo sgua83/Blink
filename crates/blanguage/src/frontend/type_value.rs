@@ -92,11 +92,6 @@ struct Count {
     value: u32,
 }
 #[repr(C)]
-struct Extent {
-    size: u64,
-    stride: u64,
-}
-#[repr(C)]
 struct RecordInfo {
     ready: u32,
     types: u64,
@@ -231,6 +226,7 @@ struct Frame<'a> {
     context: Context<'a>,
     input: TypeInput<'a>,
     builtin: Builtin,
+    referenced: bool,
     stack: *mut BTreeSet<String>,
     current: Option<Ty>,
     record: Option<RecordState<'a>>,
@@ -243,15 +239,20 @@ struct Frame<'a> {
     reference: Option<TypeName>,
     error: Option<Diagnostic>,
 }
+impl Frame<'_> {
+    fn referenced_layout(&self) -> bool {
+        self.referenced || self.input.view
+    }
+}
 // Only this active native call borrows data mutably. Moving the active-frame Vec
 // cannot move the source tree or a shared bound input referenced by a cursor.
 struct ActiveFrame<'a> {cursor:Cursor,data:Frame<'a>}
 impl<'a> ActiveFrame<'a> {
-    fn new(context:Context<'a>,input:TypeInput<'a>,stack:*mut BTreeSet<String>)->Self {
+    fn new(context:Context<'a>,input:TypeInput<'a>,stack:*mut BTreeSet<String>,referenced:bool)->Self {
         let descriptor=TypeInfo::of(&input);
         let builtin=Builtin::recognize(&input.name);
         let cursor=unsafe{type_start(descriptor,builtin.kind)};
-        Self{cursor,data:Frame{context,input,builtin,stack,current:None,record:None,release:None,
+        Self{cursor,data:Frame{context,input,builtin,referenced,stack,current:None,record:None,release:None,
             payloads:Vec::new(),bound:None,field_count:None,reference:None,error:None}}
     }
 }
@@ -528,8 +529,13 @@ unsafe extern "C" fn cleanup(raw: *mut c_void, value: TypeInfo) -> CleanupInfo {
 }
 unsafe extern "C" fn owner(raw: *mut c_void) {
     let f = unsafe { frame(raw) };
+    let referenced = f.referenced_layout();
     let r = f.release.as_mut().unwrap();
-    r.owner = Some(Ty::owned(f.current.take().unwrap(), r.name.clone()));
+    let mut ty = Ty::owned(f.current.take().unwrap(), r.name.clone());
+    if referenced {
+        ty.components.clear();
+    }
+    r.owner = Some(ty);
 }
 unsafe extern "C" fn enter_cleanup(raw: *mut c_void) -> u32 {
     let f = unsafe { frame(raw) };
@@ -596,7 +602,7 @@ unsafe extern "C" fn owner_matches(raw: *mut c_void) -> u32 {
     u32::from(if let (Some(expected), Some(actual)) = (&expected.dataset, &payload.dataset) {
         expected == actual
     } else {
-        expected == payload
+        expected.same_layout(payload)
     })
 }
 unsafe extern "C" fn use_owner(raw: *mut c_void) {
@@ -611,7 +617,7 @@ unsafe extern "C" fn result(raw: *mut c_void) -> u32 {
     let f = unsafe { frame(raw) };
     let error = f.payloads.pop().unwrap();
     let ok = f.payloads.pop().unwrap();
-    f.current = Ty::result(ok, error);
+    f.current = if f.referenced_layout() { Ty::result_layout(ok, error) } else { Ty::result(ok, error) };
     u32::from(f.current.is_some())
 }
 async fn shape_argument(f:&mut Frame<'_>,index:u64)->Result<u32> {
@@ -619,19 +625,15 @@ async fn shape_argument(f:&mut Frame<'_>,index:u64)->Result<u32> {
     Ok(unsafe { c.world.call(c.world.shape(&Some(shape),c.source,c.span,c.module,c.imports)).await }?.unwrap())
 }
 
-unsafe extern "C" fn array_layout(raw: *mut c_void, count: u32) -> Extent {
+unsafe extern "C" fn array_size(raw: *mut c_void, count: u32) -> u64 {
     let f = unsafe { frame(raw) };
     let element = f.current.as_ref().unwrap();
-    let layout = unsafe { ir::fixed_array_layout(element.size, element.align, count) };
-    Extent {
-        size: layout.size,
-        stride: layout.stride,
-    }
+    unsafe { ir::fixed_array_layout(element.size, element.align, count) }.size
 }
 unsafe extern "C" fn array(raw: *mut c_void, count: u32, size: u32) {
     let f = unsafe { frame(raw) };
     let element = f.current.take().unwrap();
-    f.current = Some(Ty {
+    let mut ty = Ty {
         name: format!("array<{},{}>", element.name, count),
         arguments: Vec::new(),
         values: vec![count],
@@ -647,30 +649,16 @@ unsafe extern "C" fn array(raw: *mut c_void, count: u32, size: u32) {
         dataset: None,
         cleanup: None,
         function: None,
-    });
+    };
+    if !f.referenced_layout() {
+        ty.fill_components();
+    }
+    f.current = Some(ty);
 }
-unsafe extern "C" fn component_offset(raw: *mut c_void, index: u64) -> u32 {
-    unsafe { frame(raw) }
-        .current
-        .as_ref()
-        .unwrap()
-        .array
-        .as_ref()
-        .unwrap()
-        .components[index as usize]
-        .1
-}
-unsafe extern "C" fn array_component(raw: *mut c_void, index: u64, offset: u32) {
-    let f = unsafe { frame(raw) };
-    let ty = f.current.as_mut().unwrap();
-    let scalar = ty.array.as_ref().unwrap().components[index as usize].0;
-    ty.components.push((scalar, offset));
-}
-
 #[repr(C)]
 struct Cursor {
     value:TypeInfo,kind:Kind,stage:u32,wrap:u32,index:u64,
-    temporary:TypeInfo,record:RecordInfo,components:u64,scalar:u32,count:Count,
+    temporary:TypeInfo,record:RecordInfo,scalar:u32,count:Count,
 }
 #[repr(u32)]
 enum Query {Complete,Function,Child,Dataset,SpecializeCleanup,Bind,ShapeArgument,Family,VariantTag,Reference,FieldCount,RecordStride}
@@ -692,10 +680,8 @@ struct Host {
     use_owner: unsafe extern "C" fn(*mut c_void) -> (),
     save_payload: unsafe extern "C" fn(*mut c_void) -> (),
     result: unsafe extern "C" fn(*mut c_void) -> u32,
-    array_layout: unsafe extern "C" fn(*mut c_void, u32) -> Extent,
+    array_size: unsafe extern "C" fn(*mut c_void, u32) -> u64,
     array: unsafe extern "C" fn(*mut c_void, u32, u32) -> (),
-    component_offset: unsafe extern "C" fn(*mut c_void, u64) -> u32,
-    array_component: unsafe extern "C" fn(*mut c_void, u64, u32) -> (),
     record: unsafe extern "C" fn(*mut c_void) -> RecordInfo,
     type_argument: unsafe extern "C" fn(*mut c_void, u64) -> (),
     const_domain: unsafe extern "C" fn(*mut c_void, u64, u32) -> u32,
@@ -743,10 +729,8 @@ fn host() -> Host {
         use_owner,
         save_payload,
         result,
-        array_layout,
+        array_size,
         array,
-        component_offset,
-        array_component,
         record,
         type_argument,
         const_domain,
@@ -935,9 +919,11 @@ unsafe extern "C" fn variant(raw: *mut c_void, index: u64, tag: u32) {
     });
 }
 unsafe extern "C" fn variants_done(raw: *mut c_void) -> u32 {
-    let r = unsafe { frame(raw) }.record.as_mut().unwrap();
+    let f = unsafe { frame(raw) };
+    let make = if f.referenced_layout() { Ty::variant_layout } else { Ty::variant };
+    let r = f.record.as_mut().unwrap();
     let tag = r.representation.as_ref().unwrap().components[0].0;
-    r.ty = Ty::variant(
+    r.ty = make(
         r.key.clone(),
         mem::take(&mut r.arguments),
         mem::take(&mut r.values),
@@ -1000,9 +986,11 @@ unsafe extern "C" fn reference_dataset(raw: *mut c_void, count: Count) {
 unsafe extern "C" fn field(raw: *mut c_void, index: u64) -> u32 {
     let f = unsafe { frame(raw) };
     let field = f.current.take().unwrap();
+    let referenced = f.referenced_layout();
     let r = f.record.as_mut().unwrap();
     let ty = r.ty.as_mut().unwrap();
-    match ty.append_field_layout(&field) {
+    let offset = if referenced { ty.place_field_layout(&field) } else { ty.append_field_layout(&field) };
+    match offset {
         Some(offset) => {
             ty.fields.push((
                 r.source.fields().at(index as usize).name().to_owned(),
@@ -1069,7 +1057,7 @@ unsafe extern "C" fn task(raw: *mut c_void, error: u32) -> u32 {
     let f = unsafe { frame(raw) };
     let payload = f.current.take().unwrap();
     f.current = if error != 0 {
-        Ty::task_start_error(payload)
+        if f.referenced_layout() { Ty::task_start_error_layout(payload) } else { Ty::task_start_error(payload) }
     } else {
         Some(Ty::task(payload))
     };
@@ -1081,7 +1069,7 @@ pub(super) async fn resolve(
     stack:&mut BTreeSet<String>,
 )->Result<Ty> {
     let context=Context{world,source,span,module,imports};
-    let mut frames=vec![ActiveFrame::new(context,TypeInput::borrowed(value),stack)];
+    let mut frames=vec![ActiveFrame::new(context,TypeInput::borrowed(value),stack,false)];
     loop {
         let active=frames.last_mut().unwrap();
         let request=unsafe{type_step(&mut active.cursor,host(),(&mut active.data as *mut Frame<'_>).cast())};
@@ -1098,7 +1086,7 @@ pub(super) async fn resolve(
                     Site::Root=>active.data.input.child(active.cursor.temporary),
                     _=>TypeInput::shared(active.data.bound.as_ref().unwrap()),
                 };
-                let child=ActiveFrame::new(context,input,active.data.stack);
+                let child=ActiveFrame::new(context,input,active.data.stack,active.data.referenced_layout());
                 frames.push(child);
             }
             Query::Function=>unsafe { world.call(function(&mut active.data)).await }?,

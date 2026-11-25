@@ -15,7 +15,7 @@ bool is_shape(Type value) on cpu {
 }
 
 extern "C" Cursor type_start(Type value,BuiltinKind kind) on cpu {
-    return Cursor(value,kind,Stage::Start,0,0u64,value,Record(0,0u64,0u64,0u64,0u64,0,0),0u64,0,Count(0,0));
+    return Cursor(value,kind,Stage::Start,0,0u64,value,Record(0,0u64,0u64,0u64,0u64,0,0),0,Count(0,0));
 }
 Request request(address state,Cursor cursor,Query kind,Site site,Binding binding,u64 index) on cpu {
     unsafe_position<Cursor>(state)=cursor;
@@ -30,8 +30,8 @@ extern "C" Request type_step(address state,Host host,address context) on cpu
     requires nonzero(host.failure) requires nonzero(host.builtin)
     requires nonzero(host.unit) requires nonzero(host.view) requires nonzero(host.argument) requires nonzero(host.cleanup)
     requires nonzero(host.owner) requires nonzero(host.enter_cleanup) requires nonzero(host.leave_cleanup) requires nonzero(host.owner_matches)
-    requires nonzero(host.use_owner) requires nonzero(host.save_payload) requires nonzero(host.result) requires nonzero(host.array_layout) requires nonzero(host.array)
-    requires nonzero(host.component_offset) requires nonzero(host.array_component) requires nonzero(host.record) requires nonzero(host.type_argument) requires nonzero(host.const_domain)
+    requires nonzero(host.use_owner) requires nonzero(host.save_payload) requires nonzero(host.result) requires nonzero(host.array_size) requires nonzero(host.array)
+    requires nonzero(host.record) requires nonzero(host.type_argument) requires nonzero(host.const_domain)
     requires nonzero(host.const_argument) requires nonzero(host.arguments_done) requires nonzero(host.enter_record)
     requires nonzero(host.leave_record) requires nonzero(host.simple_enum) requires nonzero(host.begin_variants)
     requires nonzero(host.unique_variant_name) requires nonzero(host.unique_variant_tag)
@@ -187,25 +187,13 @@ extern "C" Request type_step(address state,Host host,address context) on cpu
             }
         }
         if(cursor.stage==Stage::ArrayCount){
-            Facts actual=host.facts(context);cursor.components=actual.components;
             Type length=host.argument(cursor.value.value,1u64);
             if(!is_shape(length)){host.failure(context,Site::Root,0u64,Problem::ArrayLength,0u64);return complete(cursor,host,context,false);}
             cursor.stage=Stage::ArrayBuild;return request(state,cursor,Query::ShapeArgument,Site::Root,Binding::Representation,1u64);
         }
-        Extent extent=host.array_layout(context,cursor.scalar);
-        if(extent.size>4294967295u64){host.failure(context,Site::Root,0u64,Problem::ArrayOverflow,0u64);return complete(cursor,host,context,false);}
-        host.array(context,cursor.scalar,u32(extent.size));
-        if(cursor.components!=0u64){
-            u32 item=0;
-            while(item<cursor.scalar){
-                u64 component=0u64;
-                while(component<cursor.components){
-                    u32 offset=item*u32(extent.stride)+host.component_offset(context,component);
-                    host.array_component(context,component,offset);component+=1u64;
-                }
-                item+=1;
-            }
-        }
+        u64 size=host.array_size(context,cursor.scalar);
+        if(size>4294967295u64){host.failure(context,Site::Root,0u64,Problem::ArrayOverflow,0u64);return complete(cursor,host,context,false);}
+        host.array(context,cursor.scalar,u32(size));
         return complete(cursor,host,context,true);
     }
 

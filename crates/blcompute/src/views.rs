@@ -133,7 +133,7 @@ impl Dataset {
             let begin=view.record as usize*stride;
             let (offset,ty)=self.ty.field_at(view.field,&self.words[begin..begin+stride]).ok_or_else(||error(format!("view字段{}不属于该记录的实际活动载荷",view.field)))?;
             let (element, identity) = source(&view.source)?;
-            if ty.view.as_deref() != Some(element) {
+            if !ty.view.as_deref().is_some_and(|reference| reference.same_layout(element)) {
                 return Err(error("view 的元素类型与绑定存储不一致"));
             }
             let index=references.bindings.binary_search_by_key(&(begin+offset as usize/4),|(word,_)|*word).unwrap();

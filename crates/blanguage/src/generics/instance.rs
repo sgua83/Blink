@@ -475,7 +475,7 @@ unsafe extern "C" fn same_type(raw: *mut c_void, value: *const c_void) -> u32 {
             .current
             .as_ref()
             .unwrap()
-            == unsafe { ty(value) },
+            .same_layout(unsafe { ty(value) }),
     )
 }
 unsafe extern "C" fn keep_type(raw: *mut c_void, value: *const c_void) {

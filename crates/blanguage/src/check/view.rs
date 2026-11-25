@@ -1201,7 +1201,11 @@ impl Builder<'_> {
         if !data.permits(Access::Read) {
             return self.fail(span, "B214", "原子dataset不能转换为普通只读view");
         }
-        self.require_same(ty.view.as_deref().unwrap(), data.element_layout().1, span)?;
+        let element = ty.view.as_deref().unwrap();
+        let actual = data.element_layout().1;
+        if !element.same_layout(actual) {
+            return self.fail(span, "B124", format!("类型不匹配：需要 {}，实际为 {}", element.name, actual.name));
+        }
         self.require_application_reference_initialized(&data, span)?;
         let(stride,_)=self.application_reference_layout(&data);
         let stride_parts=self.application_stride_parts(&stride);
@@ -1289,7 +1293,8 @@ impl Builder<'_> {
         }
     }
     pub(super) fn view_element(view: &Value, index: Reg) -> Place {
-        let ty = view.ty.view.as_deref().unwrap().clone();
+        let mut ty = view.ty.view.as_deref().unwrap().clone();
+        ty.complete_value_layout();
         let stride = ElementStride::Value([view.regs[3],view.regs[4]]);
         let words = ty.components.iter().map(|(_, offset)| *offset).collect();
         let element_layout=address::Layout::of(&ty);

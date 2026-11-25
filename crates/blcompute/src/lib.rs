@@ -164,11 +164,13 @@ impl Dataset {
         let (_, view) =
             b.ty.field(field)
                 .ok_or_else(|| error(format!("未知 view 字段 {field}")))?;
-        let ty = view
+        let mut ty = view
             .view
             .as_deref()
-            .ok_or_else(|| error(format!("{field} 不是 view")))?;
-        Self::with_type(ty.clone(), count)
+            .ok_or_else(|| error(format!("{field} 不是 view")))?
+            .clone();
+        ty.complete_value_layout();
+        Self::with_type(ty, count)
     }
     pub(crate) fn with_type(ty: Ty, count: u32) -> Result<Self> {
         let stride = blanguage::ir::align_up(ty.size, ty.align);

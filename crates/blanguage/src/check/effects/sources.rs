@@ -54,8 +54,14 @@ impl<'b, 'w> Scope<'b, 'w> {
         if let Some(reference)=ty.dataset {
             return unsafe { self.world.call(self.world.ty(&reference,self.lexical.source(),span,self.lexical.module(),self.lexical.imports())).await }.map(Some);
         }
-        Ok(if let Some(inner)=ty.view.or(ty.array){Some(*inner)}
-            else{ty.components.first().map(|(scalar,_)|Ty::scalar(*scalar))})
+        if let Some(mut element) = ty.view {
+            element.complete_value_layout();
+            Ok(Some(*element))
+        } else if let Some(element) = ty.array {
+            Ok(Some(*element))
+        } else {
+            Ok(ty.components.first().map(|(scalar, _)| Ty::scalar(*scalar)))
+        }
     }
     async fn name(&self, name: &str, span: Span, limit: usize) -> Result<Option<ExpressionType>> {
         if self.lexical.bindings().values.contains_key(name) {

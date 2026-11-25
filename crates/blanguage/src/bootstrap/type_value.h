@@ -7,7 +7,6 @@ struct Text { address bytes; u64 length; };
 struct Type { address value; Text name; u64 arguments; u32 flags; u32 canonical; };
 struct Facts { u32 numeric; u32 integer; u64 components; Text name; };
 struct Count { u32 present; u32 value; };
-struct Extent { u64 size; u64 stride; };
 struct Record { u32 ready; u64 types; u64 values; u64 fields; u64 variants; u32 enumeration; u32 stride; };
 struct Cleanup { u32 ready; u32 ordinary; u32 cpu; u64 parameters; u32 value_parameter; };
 enum Site:u32 { Root=0; Record=1; Field=2; Variant=3; CleanupParameter=4; };
@@ -43,7 +42,7 @@ enum Stage:u32 {
 // native containers remain in its original Frame; descriptors only borrow them.
 struct Cursor {
     Type value; BuiltinKind kind; Stage stage; u32 wrap; u64 index;
-    Type temporary; Record record; u64 components; u32 scalar; Count count;
+    Type temporary; Record record; u32 scalar; Count count;
 };
 struct Request { Query kind; Site site; Binding binding; u64 index; };
 
@@ -61,10 +60,8 @@ struct Host {
     cfn<void,address> use_owner;
     cfn<void,address> save_payload;
     cfn<bool,address> result;
-    cfn<Extent,address,u32> array_layout;
+    cfn<u64,address,u32> array_size;
     cfn<void,address,u32,u32> array;
-    cfn<u32,address,u64> component_offset;
-    cfn<void,address,u64,u32> array_component;
     cfn<Record,address> record;
     cfn<void,address,u64> type_argument;
     cfn<bool,address,u64,u32> const_domain;
@@ -98,8 +95,8 @@ extern "C" Request type_step(address state,Host host,address context) on cpu
     requires nonzero(host.failure) requires nonzero(host.builtin)
     requires nonzero(host.unit) requires nonzero(host.view) requires nonzero(host.argument) requires nonzero(host.cleanup)
     requires nonzero(host.owner) requires nonzero(host.enter_cleanup) requires nonzero(host.leave_cleanup) requires nonzero(host.owner_matches)
-    requires nonzero(host.use_owner) requires nonzero(host.save_payload) requires nonzero(host.result) requires nonzero(host.array_layout) requires nonzero(host.array)
-    requires nonzero(host.component_offset) requires nonzero(host.array_component) requires nonzero(host.record) requires nonzero(host.type_argument) requires nonzero(host.const_domain)
+    requires nonzero(host.use_owner) requires nonzero(host.save_payload) requires nonzero(host.result) requires nonzero(host.array_size) requires nonzero(host.array)
+    requires nonzero(host.record) requires nonzero(host.type_argument) requires nonzero(host.const_domain)
     requires nonzero(host.const_argument) requires nonzero(host.arguments_done) requires nonzero(host.enter_record)
     requires nonzero(host.leave_record) requires nonzero(host.simple_enum) requires nonzero(host.begin_variants)
     requires nonzero(host.unique_variant_name) requires nonzero(host.unique_variant_tag)
