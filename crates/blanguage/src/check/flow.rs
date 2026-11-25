@@ -345,7 +345,7 @@ impl Builder<'_> {
     ) {
         if initial||bounds::seeks(body){return;}
         let states=&self.loop_contexts.last().unwrap().continues;
-        if !states.iter().any(|state|address::initialization_effects(&state.initialized,&bounds::Clause::default()).iter().any(address::InitializationEffect::pending)){return;}
+        if !states.iter().any(|state| address::has_pending_initialization(&state.initialized)) { return; }
         let iteration=address::Iteration{
             states:states.iter().map(|state|address::InitializationState{initialized:state.initialized.clone(),path:bounds::Condition::execution(&state.path)}).collect(),
             index,

@@ -448,3 +448,48 @@ extern "C" void array_initialization(address context, address output, usize coun
     }
 }
 
+
+bool visit_effect(address position, address context, Host host, InitializationEffectsHost sink) on cpu
+    requires nonzero(host.inspect)
+    requires nonzero(host.child)
+    requires nonzero(sink.enter)
+    requires nonzero(sink.leave)
+    requires nonzero(sink.effect) {
+    PositionNode shape = host.inspect(position);
+    if (shape.kind == 2 || shape.kind == 3) { return sink.effect(context, position) != 0; }
+    if (shape.kind == 10 || shape.kind == 11 || shape.kind == 12) {
+        bool branches = shape.kind != 12;
+        u64 at = 0u64;
+        while (at < shape.count) {
+            if (branches) { sink.enter(context, shape, at); }
+            bool done = visit_effect(host.child(position, at), context, host, sink);
+            if (branches) { sink.leave(context); }
+            if (done) { return true; }
+            at += 1u64;
+        }
+    }
+    return false;
+}
+
+extern "C" u32 visit_initialization_effects(address initialized, address context,
+    Host host, InitializationEffectsHost sink) on cpu
+    requires nonzero(host.inspect)
+    requires nonzero(host.child)
+    requires nonzero(host.iterate)
+    requires nonzero(host.next)
+    requires nonzero(host.drop_iterator)
+    requires nonzero(sink.enter)
+    requires nonzero(sink.leave)
+    requires nonzero(sink.effect) {
+    address iterator = host.iterate(initialized, unsafe_address(0u64));
+    bool done = false;
+    while (true) {
+        PositionItem item = host.next(iterator);
+        if (item.present == 0) { break; }
+        done = visit_effect(item.node, context, host, sink);
+        if (done) { break; }
+    }
+    host.drop_iterator(iterator);
+    return done ? 1 : 0;
+}
+

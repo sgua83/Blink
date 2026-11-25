@@ -452,7 +452,20 @@ impl Borrow{
     }
 
     pub fn joined(mut self,other:Self)->Self{self.union(&other);self}
-    pub fn pending(&self)->bool{!self.inputs.is_empty()||!self.calls.is_empty()||!self.reads.is_empty()||self.sources.iter().any(|source|match source{Source::Position(origin)|Source::Contents{origin,..}=>origin.pending(),Source::Element{parent,..}|Source::Projection{parent,..}=>parent.pending(),Source::Relation(graph,root)=>graph.pending(*root),Source::Task{captures,outputs,initialized,..}=>captures.pending()||initialized.pending()||outputs.iter().any(Self::pending),Source::TaskOutput{task,projection}=>!matches!(projection,TaskProjection::Returned(..))||task.pending(),_=>false})}
+    pub fn pending(&self) -> bool {
+        !self.inputs.is_empty() || !self.calls.is_empty() || !self.reads.is_empty()
+            || self.sources.iter().any(Source::pending)
+    }
+
+    pub(in crate::check) fn pending_in_path(&self, path: &bounds::Clause) -> bool {
+        fn present<K: Ord>(edges: &Edges<K>, path: &bounds::Clause) -> bool {
+            edges.0.values().any(|when| bounds::Clause::both(path, when).possible())
+        }
+        present(&self.inputs, path) || present(&self.calls, path) || present(&self.reads, path)
+            || self.sources.0.iter().any(|(source, when)| {
+                bounds::Clause::both(path, when).possible() && source.pending()
+            })
+    }
     pub fn active(&self)->bool{self.sources.entries().any(|(_,when)|when.possible())||self.inputs.entries().any(|(_,when)|when.possible())||self.calls.entries().any(|(_,when)|when.possible())||self.reads.entries().any(|(_,when)|when.possible())}
     pub(in crate::check) fn restricted_by(mut self, condition: &bounds::Clause) -> Self {
         self.sources.restrict(condition);
@@ -933,6 +946,21 @@ fn identity_proof(id:ValueIdentity)->bounds::Proof {
 }
 
 impl Source {
+    fn pending(&self) -> bool {
+        match self {
+            Self::Position(origin) | Self::Contents { origin, .. } => origin.pending(),
+            Self::Element { parent, .. } | Self::Projection { parent, .. } => parent.pending(),
+            Self::Relation(graph, root) => graph.pending(*root),
+            Self::Task { captures, outputs, initialized, .. } => {
+                captures.pending() || initialized.pending() || outputs.iter().any(Borrow::pending)
+            }
+            Self::TaskOutput { task, projection } => {
+                !matches!(projection, TaskProjection::Returned(..)) || task.pending()
+            }
+            _ => false,
+        }
+    }
+
     pub(in crate::check) fn index_substitute(index:Option<bounds::Selector>,values:&BTreeMap<ValueIdentity,bounds::Proof>)->Option<bounds::Selector>{
         index.and_then(|index| {
             if index.identity().is_some_and(|id| values.contains_key(&id)) { index.at_call(values) }

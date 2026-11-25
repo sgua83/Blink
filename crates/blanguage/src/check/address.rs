@@ -753,7 +753,7 @@ impl InitializationEffect {
     pub fn pending(&self)->bool {match self {
         Self::Call{..}=>true,
         Self::Position(fact)=>fact.source.pending(),
-        Self::Iteration{iteration,..}=>iteration.states.iter().any(|state|initialization_effects(&state.initialized,&bounds::Clause::default()).iter().any(Self::pending)),
+        Self::Iteration{iteration,..}=>iteration.states.iter().any(|state| has_pending_initialization(&state.initialized)),
     }}
     pub fn output_bound(&self,bindings:&BTreeMap<ValueIdentity,ValueIdentity>)->Self {
         match self {
@@ -764,13 +764,17 @@ impl InitializationEffect {
     }
     fn under(&self,condition:bounds::Condition)->Self {
         match self {
-            Self::Position(fact)=>Self::Position(Initialization{source:fact.source.clone(),when:fact.when.clone().logical(condition,false)}),
+            Self::Position(fact)=>Self::Position(fact.under(condition)),
             Self::Call{call,when}=>Self::Call{call:*call,when:when.clone().logical(condition,false)},
             Self::Iteration{iteration,when}=>Self::Iteration{iteration:iteration.clone(),when:when.clone().logical(condition,false)},
         }
     }
 }
 impl Initialization {
+    fn under(&self, condition: bounds::Condition) -> Self {
+        Self { source: self.source.clone(), when: self.when.clone().logical(condition, false) }
+    }
+
     pub(super) fn substitute_values(&self,values:&BTreeMap<ValueIdentity,bounds::Proof>)->Self {
         let source=match &self.source {
             InitializationSource::Position(origin)=>InitializationSource::Position(origin.substitute_values(values)),
@@ -871,39 +875,75 @@ pub(super) fn borrow_in_path(borrow:&view::Borrow,path:&bounds::Clause)->view::B
     }
     view::Borrow{sources:edges(&borrow.sources,path),inputs:edges(&borrow.inputs,path),calls:edges(&borrow.calls,path),reads:edges(&borrow.reads,path)}
 }
-pub(super) fn initialization_effects(initialized:&BTreeSet<Position>,path:&bounds::Clause)->Vec<InitializationEffect> {
-    fn visit(position:&Position,when:bounds::Condition,result:&mut Vec<InitializationEffect>) {
+fn initialization_borrow(borrow: &view::Borrow, when: &bounds::Condition) -> view::Borrow {
+    borrow_in_path(borrow, &when.assume(&bounds::Clause::default(), true))
+}
+
+fn borrowed_initialization(
+    borrow: &view::Borrow, layout: &Layout, word: u32, when: &bounds::Condition,
+) -> Initialization {
+    let (scalar, _) = layout.parts.iter().find(|(_, offset)| *offset == word).unwrap();
+    let part = Layout { size: scalar.size(), align: scalar.size(), parts: Arc::from([(*scalar, 0)]) };
+    let origin = Origin {
+        root: Root::Derived(initialization_borrow(borrow, when)),
+        layout: part,
+        base: layout.clone(),
+        words: Arc::from([word]),
+        positions: Arc::from([]),
+        writable: true,
+        initialized: Arc::from([true]),
+    };
+    Initialization { source: InitializationSource::Position(origin), when: when.clone() }
+}
+
+pub(super) fn initialization_effects(
+    initialized: &BTreeSet<Position>, path: &bounds::Clause,
+) -> Vec<InitializationEffect> {
+    let mut result = Vec::new();
+    Position::visit_initialization_effects(initialized, path, |position, when| {
         match position {
-            Position::Borrowed(borrow,layout,word)=>{
-                let(scalar,_)=layout.parts.iter().find(|(_,offset)|offset==word).unwrap();
-                let borrow=borrow_in_path(borrow,&when.assume(&bounds::Clause::default(),true));
-                let part=Layout{size:scalar.size(),align:scalar.size(),parts:Arc::from([(*scalar,0)])};
-                let origin=Origin{root:Root::Derived(borrow),layout:part,base:layout.clone(),words:Arc::from([*word]),positions:Arc::from([]),writable:true,initialized:Arc::from([true])};
-                result.push(InitializationEffect::Position(Initialization{source:InitializationSource::Position(origin),when}));
-            }
-            Position::Initialization(effect)=>result.push(effect.under(when)),
-            Position::Conditional(choice,a,b)=>{
-                visit(a,when.clone().logical(choice.condition(),false),result);
-                visit(b,when.logical(choice.condition().negate(),false),result);
-            }
-            Position::Both(a,b)=>{visit(a,when.clone(),result);visit(b,when,result);}
-            Position::Indexed(choices,index)=>for(i,choice)in choices.iter().enumerate(){
-                visit(choice,when.clone().logical(bounds::Condition::selected(*index,i),false),result);
-            },
-            _=>{},
+            Position::Borrowed(borrow, layout, word) => result.push(InitializationEffect::Position(
+                borrowed_initialization(borrow, layout, *word, when),
+            )),
+            Position::Initialization(effect) => result.push(effect.under(when.clone())),
+            _ => {}
         }
-    }
-    let mut result=Vec::new();
-    let condition=bounds::Condition::execution(path);
-    for position in initialized {visit(position,condition.clone(),&mut result);}
+        false
+    });
     result
 }
-pub(super) fn initialized_by_effects(position:&Position,initialized:&BTreeSet<Position>,path:&bounds::Clause)->bool {
-    let effects=initialization_effects(initialized,&bounds::Clause::default());
-    let facts=merge_initializations(effects.into_iter().filter_map(|effect|match effect{
-        InitializationEffect::Position(fact)=>Some(fact),InitializationEffect::Call{..}|InitializationEffect::Iteration{..}=>None,
-    }));
-    let known=facts.iter().filter(|fact|fact.when.truth_in(path)==Some(true)).flat_map(|fact|fact.positions(path)).collect();
+
+pub(super) fn has_pending_initialization(initialized: &BTreeSet<Position>) -> bool {
+    Position::visit_initialization_effects(initialized, &bounds::Clause::default(), |position, when| {
+        match position {
+            Position::Borrowed(borrow, ..) => {
+                borrow.pending_in_path(&when.assume(&bounds::Clause::default(), true))
+            }
+            Position::Initialization(effect) => effect.pending(),
+            _ => false,
+        }
+    })
+}
+
+pub(super) fn initialized_by_effects(
+    position: &Position, initialized: &BTreeSet<Position>, path: &bounds::Clause,
+) -> bool {
+    let mut facts = Vec::new();
+    Position::visit_initialization_effects(initialized, &bounds::Clause::default(), |position, when| {
+        match position {
+            Position::Borrowed(borrow, layout, word) => facts.push(borrowed_initialization(borrow, layout, *word, when)),
+            Position::Initialization(effect) => {
+                if let InitializationEffect::Position(fact) = effect.as_ref() {
+                    facts.push(fact.under(when.clone()));
+                }
+            }
+            _ => {}
+        }
+        false
+    });
+    let facts = merge_initializations(facts);
+    let known = facts.iter().filter(|fact| fact.when.truth_in(path) == Some(true))
+        .flat_map(|fact| fact.positions(path)).collect();
     position.initialized_by(&known)
 }
 

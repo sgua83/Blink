@@ -225,9 +225,10 @@ impl Builder<'_> {
             positions:positions.iter().map(|position|self.resolve_owned_initialization(position,None)).collect(),
             initialized:self.initialized.iter().map(|position|self.resolve_owned_initialization(position,None)).collect(),
         };
-        let effects=address::initialization_effects(&read.initialized,&bounds::Clause::default());
-        if !effects.iter().any(address::InitializationEffect::pending) && read.borrow().inputs.is_empty(){return Ok(false);}
-        let borrow=read.borrow();
+        let borrow = read.borrow();
+        if borrow.inputs.is_empty() && !address::has_pending_initialization(&read.initialized) {
+            return Ok(false);
+        }
         self.check_view_requirement(view::Requirement::Initialized{borrow,read,code,span})?;
         Ok(true)
     }

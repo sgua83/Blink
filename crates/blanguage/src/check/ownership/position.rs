@@ -289,3 +289,67 @@ impl Position {
     }
 }
 
+
+#[repr(C)]
+struct InitializationEffectsHost {
+    enter: unsafe extern "C" fn(Address, Node, u64),
+    leave: unsafe extern "C" fn(Address),
+    effect: unsafe extern "C" fn(Address, Address) -> u32,
+}
+
+struct InitializationEffects<F> {
+    root: bounds::Condition,
+    branches: Vec<bounds::Condition>,
+    effect: F,
+}
+
+unsafe extern "C" fn enter_effect<F>(context: Address, shape: Node, at: u64) {
+    let state = unsafe { &mut *context.cast::<InitializationEffects<F>>() };
+    let condition = if shape.kind == 11 {
+        let when = unsafe { &*shape.condition.cast::<owned_presence::Presence>() }.condition();
+        if at == 0 { when } else { when.negate() }
+    } else {
+        bounds::Condition::selected(unsafe { required_index(shape.index) }, at as usize)
+    };
+    let outer = state.branches.last().unwrap_or(&state.root);
+    state.branches.push(outer.clone().logical(condition, false));
+}
+
+unsafe extern "C" fn leave_effect<F>(context: Address) {
+    let state = unsafe { &mut *context.cast::<InitializationEffects<F>>() };
+    state.branches.pop();
+}
+
+unsafe extern "C" fn initialization_effect<F>(context: Address, value: Address) -> u32
+where F: FnMut(&Position, &bounds::Condition) -> bool {
+    let state = unsafe { &mut *context.cast::<InitializationEffects<F>>() };
+    let position = unsafe { &*value.cast::<Position>() };
+    let when = state.branches.last().unwrap_or(&state.root);
+    u32::from((state.effect)(position, when))
+}
+
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.ownership_position::visit_initialization_effects"]
+    fn source_initialization_effects(
+        initialized: Address, context: Address, host: Host, sink: InitializationEffectsHost,
+    ) -> u32;
+}
+
+impl Position {
+    pub(in crate::check) fn visit_initialization_effects<F>(
+        initialized: &BTreeSet<Self>, path: &bounds::Clause, effect: F,
+    ) -> bool
+    where F: FnMut(&Self, &bounds::Condition) -> bool {
+        let mut context = InitializationEffects {
+            root: bounds::Condition::execution(path), branches: Vec::new(), effect,
+        };
+        let sink = InitializationEffectsHost {
+            enter: enter_effect::<F>, leave: leave_effect::<F>, effect: initialization_effect::<F>,
+        };
+        unsafe {
+            source_initialization_effects(pointer(initialized), std::ptr::from_mut(&mut context).cast(), HOST, sink) != 0
+        }
+    }
+}
+

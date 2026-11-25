@@ -152,3 +152,21 @@ extern "C" void array_initialization(address context, address output, usize coun
     requires nonzero(exits.state)
     requires nonzero(host.insert_set);
 
+
+struct InitializationEffectsHost {
+    cfn<void,address,PositionNode,u64> enter;
+    cfn<void,address> leave;
+    cfn<u32,address,address> effect;
+};
+
+extern "C" u32 visit_initialization_effects(address initialized, address context,
+    Host host, InitializationEffectsHost sink) on cpu
+    requires nonzero(host.inspect)
+    requires nonzero(host.child)
+    requires nonzero(host.iterate)
+    requires nonzero(host.next)
+    requires nonzero(host.drop_iterator)
+    requires nonzero(sink.enter)
+    requires nonzero(sink.leave)
+    requires nonzero(sink.effect);
+
