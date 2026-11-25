@@ -1,7 +1,7 @@
 //! 调用方持有的一次编译图；只调度本次真实依赖，不保留后台消费者。
 use super::{ByteField, Compilation, ObjectCompilation, ObjectKind, Result, inputs::{Capture, ProviderInterface}};
 use crate::{Compiler, ast::Target, object::Object, source_path};
-use std::{collections::BTreeMap, ffi::{OsStr, c_void}, os::windows::ffi::OsStrExt, path::{Path, PathBuf}, ptr, sync::{Arc, Condvar, Mutex, MutexGuard}, thread};
+use std::{collections::BTreeMap, ffi::{OsStr, c_void}, marker::PhantomData, os::windows::ffi::OsStrExt, path::{Path, PathBuf}, ptr, sync::{Arc, Condvar, Mutex, MutexGuard}, thread};
 #[derive(Clone, Copy)]
 pub enum Dependency<'a> {
     Unit(usize),
@@ -64,8 +64,9 @@ enum CaptureKind { #[default] Unique, Shared, Borrowed }
 struct CaptureSlot { index: usize, kind: CaptureKind }
 
 #[repr(C)]
-struct GraphUnit {
-    dependencies: GraphRange,
+struct GraphRow {
+    dependencies: *const c_void,
+    count: usize,
     object: usize,
 }
 
@@ -76,11 +77,29 @@ struct GraphEdge {
 }
 
 #[repr(C)]
-struct GraphInput {
-    units: *const GraphUnit,
-    edges: *mut GraphEdge,
+struct GraphSource<'object> {
+    units: *const c_void,
     count: usize,
-    external_count: usize,
+    edge_count: usize,
+    row: unsafe extern "C" fn(*const c_void, usize) -> GraphRow,
+    edge: unsafe extern "C" fn(*const c_void, usize) -> GraphEdge,
+    objects: PhantomData<&'object Object>,
+}
+
+unsafe extern "C" fn graph_row(units: *const c_void, index: usize) -> GraphRow {
+    let unit = unsafe { &*units.cast::<Unit<'_>>().add(index) };
+    GraphRow {
+        dependencies: unit.dependencies.as_ptr().cast(),
+        count: unit.dependencies.len(),
+        object: usize::from(matches!(unit.kind, UnitKind::Object(_))),
+    }
+}
+
+unsafe extern "C" fn graph_edge(dependencies: *const c_void, index: usize) -> GraphEdge {
+    match unsafe { *dependencies.cast::<Dependency<'_>>().add(index) } {
+        Dependency::Unit(index) => GraphEdge { index, external: 0 },
+        Dependency::Object(object) => GraphEdge { index: ptr::from_ref(object).expose_provenance(), external: 1 },
+    }
 }
 
 #[repr(C)]
@@ -96,16 +115,17 @@ const DEPENDENCY_CYCLE: u64 = 2;
 const ENTRY_PROVIDER: u64 = 3;
 
 #[repr(C)]
-struct GraphPlan {
+struct GraphPlan<'object> {
     ids: *const usize,
     count: usize,
     status: u64,
     unit: usize,
+    objects: PhantomData<&'object Object>,
 }
 
 unsafe extern "C" {
     #[link_name = "bootstrap.build_graph::plan"]
-    fn build_dependency_plan(input: GraphInput, output: GraphOutput) -> GraphPlan;
+    fn build_dependency_plan<'object>(source: GraphSource<'object>, output: GraphOutput) -> GraphPlan<'object>;
     #[link_name = "bootstrap.build_graph::release_plan"]
     fn release_dependency_plan(ids: *const usize);
     #[link_name = "bootstrap.build_graph::capture_slots"]
@@ -117,11 +137,12 @@ unsafe extern "C" {
     fn run_worker(context: *mut c_void, host: WorkHost);
 }
 
-// The B planner transfers ownership of its process-heap allocation. Any
-// thread can free it. Workers only share the immutable slice borrowed from it.
-unsafe impl Send for GraphPlan {}
+// The planner transfers an immutable allocation and retains no input borrow
+// except the original Object references. The process heap is shared by workers.
+unsafe impl Send for GraphPlan<'_> {}
+unsafe impl Sync for GraphPlan<'_> {}
 
-impl GraphPlan {
+impl<'object> GraphPlan<'object> {
     fn ids(&self) -> &[usize] {
         if self.count == 0 {
             &[]
@@ -130,18 +151,30 @@ impl GraphPlan {
             unsafe { std::slice::from_raw_parts(self.ids, self.count) }
         }
     }
+
+    fn dependencies(&self, row: GraphRange, unit_count: usize) -> impl Iterator<Item = Dependency<'object>> + '_ {
+        let ids = self.ids();
+        row.slice(ids).iter().copied().map(move |id| {
+            if id < unit_count {
+                Dependency::Unit(id)
+            } else {
+                let object = ptr::with_exposed_provenance::<Object>(ids[id - unit_count]);
+                // Each identity in the prefix came from a borrowed Dependency::Object.
+                Dependency::Object(unsafe { &*object })
+            }
+        })
+    }
 }
 
-impl Drop for GraphPlan {
+impl Drop for GraphPlan<'_> {
     fn drop(&mut self) {
         unsafe { release_dependency_plan(self.ids); }
     }
 }
 
 struct DependencyPlan<'a> {
-    plan: GraphPlan,
+    plan: GraphPlan<'a>,
     provider_rows: Vec<GraphRange>,
-    externals: Vec<&'a Object>,
     schedule: Schedule,
 }
 
@@ -160,43 +193,21 @@ struct ScheduleCounts {
 }
 
 fn dependency_plan<'a>(units: &[Unit<'a>]) -> Result<DependencyPlan<'a>> {
-    let mut edges = Vec::new();
-    let mut externals = Vec::new();
-    let mut external_indices = BTreeMap::new();
-    let input_units: Vec<_> = units.iter().map(|unit| {
-        let start = edges.len();
-        for dependency in unit.dependencies {
-            let edge = match dependency {
-                Dependency::Unit(index) => GraphEdge { index: *index, external: 0 },
-                Dependency::Object(object) => {
-                    let index = *external_indices.entry(*object as *const Object).or_insert_with(|| {
-                        let index = externals.len();
-                        externals.push(*object);
-                        index
-                    });
-                    GraphEdge { index, external: 1 }
-                }
-            };
-            edges.push(edge);
-        }
-        GraphUnit {
-            dependencies: GraphRange { start, count: edges.len() - start },
-            object: usize::from(matches!(unit.kind, UnitKind::Object(_))),
-        }
-    }).collect();
-
+    let edge_count = units.iter().map(|unit| unit.dependencies.len()).sum();
     let mut provider_rows = vec![GraphRange::default(); units.len()];
     let mut following_rows = vec![GraphRange::default(); units.len()];
     let mut waiting = vec![0; units.len()];
-    let mut followers = vec![0; edges.len()];
+    let mut followers = vec![0; edge_count];
     let mut ready = vec![0; units.len()];
     let plan = unsafe {
         build_dependency_plan(
-            GraphInput {
-                units: input_units.as_ptr(),
-                edges: edges.as_mut_ptr(),
+            GraphSource {
+                units: units.as_ptr().cast(),
                 count: units.len(),
-                external_count: externals.len(),
+                edge_count,
+                row: graph_row,
+                edge: graph_edge,
+                objects: PhantomData::<&'a Object>,
             },
             GraphOutput {
                 providers: provider_rows.as_mut_ptr(),
@@ -225,19 +236,7 @@ fn dependency_plan<'a>(units: &[Unit<'a>]) -> Result<DependencyPlan<'a>> {
         following: following_rows, followers, waiting, ready,
         counts: ScheduleCounts { ready: ready_count, unfinished: units.len() },
     };
-    Ok(DependencyPlan { plan, provider_rows, externals, schedule })
-}
-
-fn dependencies<'row, 'object>(
-    ids: &'row [usize], unit_count: usize, externals: &'row [&'object Object],
-) -> impl Iterator<Item = Dependency<'object>> + 'row {
-    ids.iter().copied().map(move |id| {
-        if id < unit_count {
-            Dependency::Unit(id)
-        } else {
-            Dependency::Object(externals[id - unit_count])
-        }
-    })
+    Ok(DependencyPlan { plan, provider_rows, schedule })
 }
 
 enum Provider<'a> {
@@ -292,8 +291,7 @@ struct GraphExecution<'graph, 'source> {
     prepared: &'graph [Prepared<'source>],
     inputs: &'graph [super::Inputs],
     provider_rows: &'graph [GraphRange],
-    ids: &'graph [usize],
-    externals: &'graph [&'source Object],
+    plan: &'graph GraphPlan<'source>,
     state: Mutex<State>,
     changed: Condvar,
 }
@@ -366,8 +364,7 @@ unsafe extern "C" fn execute_unit(context: *mut c_void, index: usize) -> WorkRes
     let worker = unsafe { &mut *context.cast::<GraphWorker<'_, '_>>() };
     let graph = worker.execution;
     let state = worker.guard.take().unwrap();
-    let row = graph.provider_rows[index].slice(graph.ids);
-    let providers = dependencies(row, graph.prepared.len(), graph.externals).map(|dependency| match dependency {
+    let providers = graph.plan.dependencies(graph.provider_rows[index], graph.prepared.len()).map(|dependency| match dependency {
         Dependency::Unit(id) => match state.outputs[id].as_ref().unwrap() {
             Output::Object(value) => Provider::Built(value.clone()),
             Output::Entry(_) => unreachable!(),
@@ -458,7 +455,7 @@ impl Compiler {
             unit.capture = slot.index;
             if slot.kind == CaptureKind::Borrowed { continue; }
             let mut providers = BTreeMap::new();
-            for dependency in dependencies(row.slice(ids), units.len(), &dependency_plan.externals) {
+            for dependency in dependency_plan.plan.dependencies(*row, units.len()) {
                 let (name, interface) = match dependency {
                     Dependency::Unit(id) => {
                         let header = &headers[id];
@@ -481,11 +478,10 @@ impl Compiler {
             crate::parallel::Error::Work(error) => error,
             crate::parallel::Error::Resource(error) => Box::new(error) as Box<dyn std::error::Error + Send + Sync>,
         })?;
-        let DependencyPlan { plan, provider_rows, externals, schedule } = dependency_plan;
-        let ids = plan.ids();
+        let DependencyPlan { plan, provider_rows, schedule } = dependency_plan;
         let graph = GraphExecution {
             compiler: self, prepared: &prepared, inputs: &inputs, provider_rows: &provider_rows,
-            ids, externals: &externals,
+            plan: &plan,
             state: Mutex::new(State {
                 schedule, outputs: (0..units.len()).map(|_| None).collect(), failure: None,
             }),

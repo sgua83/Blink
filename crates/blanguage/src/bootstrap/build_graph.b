@@ -11,6 +11,8 @@ const u64 DEPENDENCY_CYCLE = 2u64;
 const u64 ENTRY_PROVIDER = 3u64;
 const u64 ERROR_NOT_ENOUGH_MEMORY = 8u64;
 
+struct GraphUnit { GraphRange dependencies; u64 object; };
+struct GraphInput { address units; address edges; u64 count; };
 struct Visit { u64 unit; u64 next; };
 struct Scratch { address states; address order; address visits; address seen; };
 struct Providers { address ids; u64 count; u64 capacity; };
@@ -29,6 +31,9 @@ GraphUnit unit_at(GraphInput input,u64 index) on cpu {
 }
 GraphEdge edge_at(GraphInput input,u64 index) on cpu {
     return unsafe_position<GraphEdge>(offset(input.edges,index*size_of<GraphEdge>()));
+}
+void put_edge(GraphInput input,u64 index,GraphEdge edge) on cpu {
+    unsafe_position<GraphEdge>(offset(input.edges,index*size_of<GraphEdge>()))=edge;
 }
 GraphRange range_at(address rows,u64 index) on cpu {
     return unsafe_position<GraphRange>(offset(rows,index*size_of<GraphRange>()));
@@ -110,6 +115,31 @@ GraphPlan failure(u64 status,u64 unit) on cpu {
     return GraphPlan(address(),0u64,status,unit);
 }
 
+u64 read_dependencies(GraphSource source,GraphInput input,address external_order) on cpu
+    requires nonzero(source.row) requires nonzero(source.edge) {
+    u64 unit=0u64;
+    u64 at=0u64;
+    u64 external_count=0u64;
+    while (unit<source.count) {
+        GraphRow row=source.row(source.units,unit);
+        unsafe_position<GraphUnit>(offset(input.units,unit*size_of<GraphUnit>()))=
+            GraphUnit(GraphRange(at,row.count),row.object);
+        u64 index=0u64;
+        while (index<row.count) {
+            GraphEdge edge=source.edge(row.dependencies,index);
+            put_edge(input,at,edge);
+            if (edge.external!=0u64) {
+                put_word(external_order,external_count,at);
+                external_count+=1u64;
+            }
+            at+=1u64;
+            index+=1u64;
+        }
+        unit+=1u64;
+    }
+    return external_count;
+}
+
 GraphPlan dependency_order(GraphInput input,Scratch work) on cpu {
     u64 ordered=0u64;
     u64 root=0u64;
@@ -149,8 +179,7 @@ GraphPlan dependency_order(GraphInput input,Scratch work) on cpu {
     return GraphPlan(address(),0u64,0u64,0u64);
 }
 
-bool append_provider(inout Providers providers,handle heap,address seen,u64 stamp,u64 id) on cpu {
-    if (word(seen,id)==stamp) { return true; }
+bool append_id(inout Providers providers,handle heap,u64 id) on cpu {
     if (providers.count==providers.capacity) {
         u64 capacity=providers.capacity==0u64 ? 16u64 : providers.capacity*2u64;
         address data=providers.capacity==0u64 ? HeapAlloc(heap,0,capacity*8u64) :
@@ -159,9 +188,40 @@ bool append_provider(inout Providers providers,handle heap,address seen,u64 stam
         providers.ids=data;
         providers.capacity=capacity;
     }
-    put_word(seen,id,stamp);
     put_word(providers.ids,providers.count,id);
     providers.count+=1u64;
+    return true;
+}
+
+extern "C" bool external_before(address left,address right,address context) on cpu {
+    GraphInput input=unsafe_position<GraphInput>(context);
+    return edge_at(input,word(left,0u64)).index<edge_at(input,word(right,0u64)).index;
+}
+
+bool index_externals(GraphInput input,address order,u64 count,handle heap,inout Providers providers) on cpu {
+    sort_rows<u64>(order,count,address_of(input),c_function(external_before));
+    u64 first=0u64;
+    while (first<count) {
+        u64 index=word(order,first);
+        u64 identity=edge_at(input,index).index;
+        u64 id=providers.count;
+        if (!append_id(providers,heap,identity)) { return false; }
+        put_edge(input,index,GraphEdge(id,1u64));
+        first+=1u64;
+        while (first<count) {
+            index=word(order,first);
+            if (edge_at(input,index).index!=identity) { break; }
+            put_edge(input,index,GraphEdge(id,1u64));
+            first+=1u64;
+        }
+    }
+    return true;
+}
+
+bool append_provider(inout Providers providers,handle heap,address seen,u64 stamp,u64 id) on cpu {
+    if (word(seen,id)==stamp) { return true; }
+    if (!append_id(providers,heap,id)) { return false; }
+    put_word(seen,id,stamp);
     return true;
 }
 
@@ -211,7 +271,7 @@ void compact_direct_dependencies(GraphInput input, GraphOutput output, Scratch w
             if (edge.external == 0u64 && word(work.seen, edge.index) != stamp) {
                 put_word(work.seen, edge.index, stamp);
                 put_word(work.states, edge.index, word(work.states, edge.index) + 1u64);
-                unsafe_position<GraphEdge>(offset(input.edges, (direct.start + count) * size_of<GraphEdge>())) = edge;
+                put_edge(input,direct.start+count,edge);
                 count += 1u64;
             }
             at += 1u64;
@@ -221,12 +281,19 @@ void compact_direct_dependencies(GraphInput input, GraphOutput output, Scratch w
     }
 }
 
-extern "C" GraphPlan plan(GraphInput input,GraphOutput output) on cpu {
+extern "C" GraphPlan plan(GraphSource source,GraphOutput output) on cpu
+    requires nonzero(source.row) requires nonzero(source.edge) {
     handle heap=GetProcessHeap();
-    u64 stride=input.count*8u64;
-    address memory=HeapAlloc(heap,8,stride*5u64+input.external_count*8u64);
+    u64 stride=source.count*8u64;
+    u64 unit_bytes=source.count*size_of<GraphUnit>();
+    u64 edge_bytes=source.edge_count*size_of<GraphEdge>();
+    address memory=HeapAlloc(heap,8,stride*4u64+unit_bytes+edge_bytes);
     if (address_bits(memory)==0u64) { return failure(ERROR_NOT_ENOUGH_MEMORY,0u64); }
-    Scratch work=Scratch(memory,offset(memory,stride),offset(memory,stride*2u64),offset(memory,stride*4u64));
+    GraphInput input=GraphInput(offset(memory,stride*4u64),offset(memory,stride*4u64+unit_bytes),source.count);
+    // Only the final follower write needs this output buffer. Before then it
+    // provides the ordering workspace for the actual external edges.
+    u64 external_edges=read_dependencies(source,input,output.followers);
+    Scratch work=Scratch(memory,offset(memory,stride),offset(memory,stride*2u64),address());
     GraphPlan order=dependency_order(input,work);
     if (order.status!=0u64) {
         HeapFree(heap,0,memory);
@@ -234,7 +301,15 @@ extern "C" GraphPlan plan(GraphInput input,GraphOutput output) on cpu {
     }
 
     Providers providers=Providers(address(),0u64,0u64);
-    if (!expand_providers(input,output,work,heap,providers)) {
+    if (!index_externals(input,output.followers,external_edges,heap,providers)) {
+        HeapFree(heap,0,memory);
+        release_plan(providers.ids);
+        return failure(ERROR_NOT_ENOUGH_MEMORY,0u64);
+    }
+    work.seen=HeapAlloc(heap,8,stride+providers.count*8u64);
+    bool expanded=address_bits(work.seen)!=0u64 && expand_providers(input,output,work,heap,providers);
+    if (!expanded) {
+        release_plan(work.seen);
         HeapFree(heap,0,memory);
         release_plan(providers.ids);
         return failure(ERROR_NOT_ENOUGH_MEMORY,0u64);
@@ -267,6 +342,7 @@ extern "C" GraphPlan plan(GraphInput input,GraphOutput output) on cpu {
         }
         index += 1u64;
     }
+    HeapFree(heap,0,work.seen);
     HeapFree(heap,0,memory);
     return GraphPlan(providers.ids,providers.count,0u64,0u64);
 }

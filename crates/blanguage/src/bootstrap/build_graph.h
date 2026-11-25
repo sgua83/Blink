@@ -2,16 +2,24 @@ module bootstrap.build_graph;
 import bootstrap.names;
 
 struct GraphRange { u64 start; u64 count; };
-struct GraphUnit { GraphRange dependencies; u64 object; };
+struct GraphRow { address dependencies; u64 count; u64 object; };
+// An external edge's input index is the identity of its borrowed Object.
 struct GraphEdge { u64 index; u64 external; };
 
-// After provider expansion, plan compacts direct unit edges in the caller's edge buffer.
-struct GraphInput { address units; address edges; u64 count; u64 external_count; };
+struct GraphSource {
+    address units;
+    u64 count;
+    u64 edge_count;
+    cfn<GraphRow,address,u64> row;
+    cfn<GraphEdge,address,u64> edge;
+};
 struct GraphOutput { address providers; address following; address waiting; address followers; };
 
-// Providers are dense unit indices followed by the input's borrowed external object indices.
+// The allocation starts with borrowed external identities. Provider IDs below
+// the unit count name units, and the remaining IDs index that prefix.
 struct GraphPlan { address ids; u64 count; u64 status; u64 unit; };
-extern "C" GraphPlan plan(GraphInput input,GraphOutput output) on cpu;
+extern "C" GraphPlan plan(GraphSource source,GraphOutput output) on cpu
+    requires nonzero(source.row) requires nonzero(source.edge);
 extern "C" void release_plan(address ids) on cpu;
 
 // Entry keys borrow canonical paths and the planner's existing provider rows.
