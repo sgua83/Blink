@@ -10,7 +10,7 @@ struct CombineSection {
     address name;u64 name_length;address bytes;u64 byte_length;u64 flags;u64 object;
     u64 group;u64 begin;u64 padding;u64 relocation_start;u64 relocation_base;
 };
-struct CombineGroup {u64 first;u64 size;u64 relocation_count;};
+struct CombineGroup {u64 first;u64 size;u64 relocation_count;u64 file_required;};
 struct CombineSymbol {address name;u64 name_length;u64 section;u64 value;};
 struct CombineName {address name;u64 length;};
 struct CombineRelocation {

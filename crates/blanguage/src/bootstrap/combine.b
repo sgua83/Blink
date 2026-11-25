@@ -65,7 +65,7 @@ extern "C" CombinePlan prepare(CombineInput input, address local, u64 local_coun
             CombineSection row=section_at(input.sections,i);
             u64 first=row.group;
             u64 group=result.groups;
-            CombineGroup layout=CombineGroup(first,0u64,0u64);
+            CombineGroup layout=CombineGroup(first,0u64,0u64,0u64);
             if(first==i){
                 result.groups+=1u64;
             }else{
@@ -79,7 +79,12 @@ extern "C" CombinePlan prepare(CombineInput input, address local, u64 local_coun
             layout.size=begin+row.byte_length;
             u64 relocation_end=input.relocation_count;
             if(i+1u64<input.section_count){relocation_end=section_at(input.sections,i+1u64).relocation_start;}
-            layout.relocation_count+=relocation_end-row.relocation_start;
+            u64 relocation_count=relocation_end-row.relocation_start;
+            layout.relocation_count+=relocation_count;
+            // PE stores the section when its input, NOP padding or relocations supply bytes.
+            if(pe&&(relocation_count!=0u64||(row.byte_length!=0u64&&address_bits(row.bytes)!=0u64)||(row.padding!=0u64&&is_text(row)))){
+                layout.file_required=1u64;
+            }
             group_put(input.groups,group,layout);
             section_put(input,i,row);i+=1u64;
         }

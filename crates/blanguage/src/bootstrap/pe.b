@@ -141,7 +141,7 @@ void plan_imports(PeInput input, inout PeLayout result) on cpu {
     result.idata_length = iat + result.iat_size + strings;
 }
 PeLayout invalid(u64 code) on cpu {
-    return PeLayout(0u64,0u64,0u64,0u64,0u64,0u64,0u64,0u64,0u64,0u64,0u64,0u64,0u64,0u64,5368709120u64,code,0u64,0u64);
+    return PeLayout(0u64,0u64,0u64,0u64,0u64,0u64,0u64,0u64,0u64,0u64,0u64,0u64,0u64,0u64,5368709120u64,code,0u64,0u64,0u64);
 }
 void pack_relocations(PeInput input,u64 relocation_count) on cpu {
     u64 imports=0u64;
@@ -188,7 +188,11 @@ extern "C" PeLayout layout(PeInput input,address rows,address groups,u64 relocat
         }
         rva+=align(group.size,4096u64);
         if(rva>4294967295u64){return invalid(1u64);}
-        data_offset+=align(group.size,512u64);
+        if(group.file_required!=0u64){
+            data_offset+=align(group.size,512u64);
+        }else{
+            result.uninitialized+=group.size;
+        }
         start+=group.relocation_count;
         i+=1u64;
     }
@@ -263,7 +267,7 @@ void encode_headers(PeInput input,PeLayout layout,address rows,address groups,ad
     put(output,128u64,80u64);put(output,129u64,69u64);le16(output,132u64,34404u64);
     le16(output,134u64,layout.section_count);le16(output,148u64,240u64);le16(output,150u64,34u64);
     u64 optional=152u64;le16(output,optional,523u64);
-    le32(output,optional+16u64,4096u64);le32(output,optional+20u64,4096u64);
+    le32(output,optional+12u64,layout.uninitialized);le32(output,optional+16u64,4096u64);le32(output,optional+20u64,4096u64);
     le64(output,optional+24u64,layout.image_base);le32(output,optional+32u64,4096u64);le32(output,optional+36u64,512u64);
     le16(output,optional+40u64,6u64);le16(output,optional+48u64,6u64);le32(output,optional+56u64,layout.image_size);le32(output,optional+60u64,layout.header);le16(output,optional+68u64,3u64);
     u64 flags=256u64;if(layout.reloc_length!=0u64){flags+=96u64;}le16(output,optional+70u64,flags);
@@ -284,8 +288,12 @@ void encode_headers(PeInput input,PeLayout layout,address rows,address groups,ad
         u64 end=layout.idata_file;
         if(i<input.group_count){end=layout.header+section_at(input,i).data_offset;}
         u64 raw_length=end-raw;
-        section_header(output,written,first.name,first.name_length,section.rva,group.size,raw,raw_length,first.flags&4262461439u64);
-        zero_range(output,raw+group.size,end);
+        u64 file=0u64;
+        if(raw_length!=0u64){
+            file=raw;
+            zero_range(output,raw+group.size,end);
+        }
+        section_header(output,written,first.name,first.name_length,section.rva,group.size,file,raw_length,first.flags&4262461439u64);
         if(written==0u64){
             le32(output,optional+4u64,raw_length);
             le32(output,optional+8u64,layout.length-layout.header-raw_length);
@@ -345,8 +353,10 @@ extern "C" PeRelocationResult encode(PeInput input,PeLayout layout,address rows,
     u64 i=0u64;
     while(i<row_count){
         CombineSection row=bootstrap.combine::section_at(rows,i);
-        PeSection group=section_at(input,row.group);
-        encode_section(row,unsafe_address(address_bits(payload)+group.data_offset));
+        if(bootstrap.combine::group_at(groups,row.group).file_required!=0u64){
+            PeSection group=section_at(input,row.group);
+            encode_section(row,unsafe_address(address_bits(payload)+group.data_offset));
+        }
         i+=1u64;
     }
     return relocate_sections(input,groups,layout.image_base,payload);

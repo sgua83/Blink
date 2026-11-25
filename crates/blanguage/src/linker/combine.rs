@@ -15,7 +15,7 @@ pub(super) struct CombineSection {
     group:u64,begin:u64,padding:u64,relocation_start:u64,relocation_base:u64,
 }
 #[repr(C)]
-pub(super) struct CombineGroup { first:usize, size:usize, relocation_count:usize }
+pub(super) struct CombineGroup { first:usize, size:usize, relocation_count:usize, file_required:u64 }
 #[repr(C)]
 struct CombineSymbol {name:*const u8,name_length:u64,section:u64,value:u64}
 #[repr(C)]

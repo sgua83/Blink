@@ -20,7 +20,7 @@ struct PeLayout {
     u64 length;u64 header;u64 idata;u64 idata_length;u64 import_directory_size;u64 import_count;
     u64 iat_start;u64 iat_size;u64 reloc;u64 reloc_length;u64 pdata;u64 pdata_length;
     u64 section_count;u64 image_size;u64 image_base;u64 error;
-    u64 idata_file;u64 reloc_file;
+    u64 idata_file;u64 reloc_file;u64 uninitialized;
 };
 struct PeRelocationResult { u32 status; u32 kind; };
 
