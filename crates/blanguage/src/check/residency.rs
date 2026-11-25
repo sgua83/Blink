@@ -492,7 +492,7 @@ fn query_value(value:&Residency,wanted:Option<&Input>,outputs:&Outputs,w:&mut cr
                 let mut w=crate::module::codec::Writer(Vec::new());
                 match origin{
                     Origin::Input(input)=>{2u8.encode(&mut w);wanted.filter(|wanted|wanted.parameter==input.parameter&&wanted.fields.starts_with(&input.fields)).map(|_|input.clone()).encode(&mut w);},
-                    Origin::Output(output)=>Origin::Output(canonical_output(output,outputs)).encode(&mut w),
+                    Origin::Output(output)=>return canonical_output_key(output,outputs),
                     other=>other.encode(&mut w),
                 }
                 w.0
@@ -504,13 +504,24 @@ fn query_value(value:&Residency,wanted:Option<&Input>,outputs:&Outputs,w:&mut cr
     out.len().encode(w);
     for(origins,path)in out{origins.encode(w);bounds::Condition::guard(path).encode(w);}
 }
+fn query_bindings(bindings: &BTreeMap<ValueIdentity, bounds::Proof>, w: &mut crate::module::codec::Writer) {
+    use crate::module::codec::Encode;
+
+    bindings.len().encode(w);
+    for (id, proof) in bindings {
+        id.encode(w);
+        let identity = proof.known_identity(0).filter(|_| proof.origins.len() == 1);
+        identity.encode(w);
+        if identity.is_none() {
+            proof.encode(w);
+        }
+    }
+}
+
 fn query_key(call:&Call,wanted:Option<&Input>,outputs:&Outputs)->Vec<u8>{
     use crate::module::codec::Encode;
-    let mut w=crate::module::codec::Writer(Vec::new());call.function.encode(&mut w);call.bindings.len().encode(&mut w);
-    for(id,proof)in &call.bindings {
-        id.encode(&mut w);let identity=proof.known_identity(0).filter(|_|proof.origins.len()==1);identity.encode(&mut w);
-        if identity.is_none(){proof.encode(&mut w);}
-    }
+    let mut w=crate::module::codec::Writer(Vec::new());call.function.encode(&mut w);
+    query_bindings(&call.bindings, &mut w);
     call.arguments.len().encode(&mut w);
     for(input,value)in &call.arguments{input.encode(&mut w);query_value(value,wanted,outputs,&mut w);}
     w.0
@@ -594,7 +605,7 @@ struct ArgumentBinding<'a, 'iter> {
 impl ArgumentBinding<'_, '_> {
     fn resolve(&self, value: &Residency) -> Residency {
         let Some(bound) = value.bind(self.actual) else { return Residency::Absent; };
-        if present(&bound, self.outputs, &bounds::Clause::default(), &mut BTreeSet::new()) {
+        if present(&bound, self.outputs) {
             bound
         } else {
             Residency::Absent
@@ -1204,65 +1215,202 @@ fn output_source(output:&Output,outputs:&Outputs)->Option<Residency>{
         prefix.1.pop()?;
     }
 }
-// A pure source-to-source equation names the same resource. Keep the terminal
-// output reference, including its descendant relation, instead of its CPU/GPU value.
-fn canonical_output(output:&Output,outputs:&Outputs)->Output{
-    let mut output=output.clone();let mut visited=BTreeSet::new();
-    while visited.insert(output.clone()){
-        match output_source(&output,outputs){
-            Some(Residency::Origins(origins)) if origins.len()==1=>match origins.into_iter().next().unwrap(){
-                Origin::Output(next)=>output=next,
-                _=>break,
-            },
-            _=>break,
-        }
-    }
-    output
+// An active output refers to the actual bound resource and value snapshots.
+fn output_source_key(output: &Output) -> Vec<u8> {
+    use crate::module::codec::{Encode, Writer};
+
+    let mut w = Writer(vec![3]);
+    output.function.encode(&mut w);
+    output.kind.encode(&mut w);
+    output.fields.encode(&mut w);
+    output.arguments.encode(&mut w);
+    query_bindings(&output.bindings, &mut w);
+    w.0
 }
-// Model presence needs one reachable producer, not every possible storage location.
-fn present(value:&Residency,outputs:&Outputs,path:&bounds::Clause,active:&mut BTreeSet<Output>)->bool{
-    if !path.possible(){return false;}
-    match value{
-        Residency::Absent=>false,
-        Residency::Selected(when,a,b)=>present(a,outputs,&when.assume(path,true),active)
-            ||present(b,outputs,&when.assume(path,false),active),
-        Residency::Origins(origins)=>origins.is_empty()||origins.iter().any(|origin|match origin{
-            Origin::Output(output)=>{
-                if !active.insert(output.clone()){return false;}
-                let found=output_source(output,outputs).is_some_and(|value|present(&value,outputs,path,active));
-                active.remove(output);
-                found
-            },
-            _=>true,
-        }),
+
+// Follow a single output source without replacing its identity with its storage.
+fn canonical_output_key(output: &Output, outputs: &Outputs) -> Vec<u8> {
+    let mut output = Cow::Borrowed(output);
+    let mut visited = BTreeSet::new();
+    loop {
+        let key = output_source_key(&output);
+        if !visited.insert(key.clone()) {
+            return key;
+        }
+        let Some(Residency::Origins(origins)) = output_source(&output, outputs) else { return key; };
+        let mut origins = origins.into_iter();
+        let Some(Origin::Output(next)) = origins.next() else { return key; };
+        if origins.next().is_some() {
+            return key;
+        }
+        output = Cow::Owned(next);
     }
 }
 
-fn evaluate(value:&Residency,outputs:&Outputs,path:&bounds::Clause)->Residency{
-    fn resolve(value:&Residency,outputs:&Outputs,path:&bounds::Clause,active:&mut BTreeSet<Output>)->Residency{
-        if !path.possible(){return Residency::Absent;}
-        match value{
-            Residency::Selected(when,a,b)=>match when.truth_in(path){
-                Some(true)=>resolve(a,outputs,path,active),
-                Some(false)=>resolve(b,outputs,path,active),
-                None=>Residency::conditional(when.as_ref().clone(),resolve(a,outputs,&when.assume(path,true),active),resolve(b,outputs,&when.assume(path,false),active)),
-            },
-            Residency::Absent=>Residency::Absent,
-            Residency::Origins(origins)=>{
-                if origins.is_empty(){return Residency::default();}
-                let mut result=Residency::Absent;
-                for origin in origins{match origin{
-                    Origin::Output(output)=>{
-                        if !active.insert(output.clone()){continue;}
-                        if let Some(value)=output_source(output,outputs){result.join(&resolve(&value,outputs,path,active));}
-                        active.remove(output);
-                    },
-                    origin=>result.join(&Residency::Origins(BTreeSet::from([origin.clone()]))),
-                }}result
-            },
+struct SourceResolution<'a> {
+    outputs: &'a Outputs,
+    active: BTreeSet<Vec<u8>>,
+}
+
+#[repr(C)]
+struct SourceVisit {
+    value: Borrowed,
+    path: Borrowed,
+    result: *mut Residency,
+}
+
+impl SourceVisit {
+    fn new(value: &Residency, path: &bounds::Clause, result: *mut Residency) -> Self {
+        Self { value: ptr::from_ref(value).cast(), path: ptr::from_ref(path).cast(), result }
+    }
+}
+
+#[repr(C)]
+struct ResidencySourceHost {
+    possible: unsafe extern "C" fn(Borrowed) -> u32,
+    selected: unsafe extern "C" fn(Borrowed) -> ResidencyBranch,
+    truth: unsafe extern "C" fn(Borrowed, Borrowed) -> u32,
+    under: unsafe extern "C" fn(Context, SourceVisit, Borrowed, u32) -> u32,
+    both: unsafe extern "C" fn(Context, SourceVisit, ResidencyBranch),
+    origins: unsafe extern "C" fn(Context, SourceVisit) -> u32,
+}
+
+#[repr(u32)]
+enum ResourceOriginKind { End, Concrete, Output }
+
+#[repr(C)]
+struct ResourceOrigin {
+    kind: ResourceOriginKind,
+    value: Borrowed,
+}
+
+#[repr(C)]
+struct ResourceOriginHost {
+    next: unsafe extern "C" fn(Context) -> ResourceOrigin,
+    append: unsafe extern "C" fn(Context, Borrowed),
+    output: unsafe extern "C" fn(Context, Borrowed) -> u32,
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.ownership_path::resolve_residency_source"]
+    fn resolve_residency_source(context: Context, visit: SourceVisit, host: ResidencySourceHost) -> u32;
+    #[link_name = "bootstrap.ownership_path::resolve_viable_source"]
+    fn resolve_viable_source(context: Context, visit: SourceVisit, host: ResidencySourceHost) -> u32;
+    #[link_name = "bootstrap.ownership_path::resolve_resource_origins"]
+    fn resolve_resource_origins(context: Context, collect: u32, host: ResourceOriginHost) -> u32;
+}
+
+const SOURCE_HOST: ResidencySourceHost = ResidencySourceHost {
+    possible: compare_possible,
+    selected: compare_selected,
+    truth: source_truth,
+    under: source_under,
+    both: source_choice,
+    origins: source_origins,
+};
+
+unsafe extern "C" fn source_truth(condition: Borrowed, path: Borrowed) -> u32 {
+    unsafe { &*condition.cast::<bounds::Condition>() }
+        .truth_in(unsafe { &*path.cast::<bounds::Clause>() }).map_or(2, u32::from)
+}
+
+unsafe extern "C" fn source_under(context: Context, mut visit: SourceVisit, condition: Borrowed, truth: u32) -> u32 {
+    let condition = unsafe { &*condition.cast::<bounds::Condition>() };
+    let path = condition.assume(unsafe { &*visit.path.cast::<bounds::Clause>() }, truth != 0);
+    visit.path = ptr::from_ref(&path).cast();
+    unsafe { resolve_residency_source(context, visit, SOURCE_HOST) }
+}
+
+unsafe extern "C" fn source_choice(context: Context, visit: SourceVisit, branch: ResidencyBranch) {
+    let mut yes = Residency::Absent;
+    let mut no = Residency::Absent;
+    unsafe {
+        source_under(context, SourceVisit { value: branch.yes, path: visit.path, result: &mut yes }, branch.condition, 1);
+        source_under(context, SourceVisit { value: branch.no, path: visit.path, result: &mut no }, branch.condition, 0);
+        let condition = &*branch.condition.cast::<bounds::Condition>();
+        *visit.result = Residency::conditional(condition.clone(), yes, no);
+    }
+}
+
+struct SourceOrigins<'a> {
+    resolution: Context,
+    iter: std::collections::btree_set::Iter<'a, Origin>,
+    path: Borrowed,
+    result: *mut Residency,
+}
+
+unsafe extern "C" fn source_origins(context: Context, visit: SourceVisit) -> u32 {
+    let value = unsafe { &*visit.value.cast::<Residency>() };
+    let Residency::Origins(origins) = value else { return 0; };
+    if origins.is_empty() {
+        if let Some(result) = unsafe { visit.result.as_mut() } {
+            *result = Residency::default();
+        }
+        return 1;
+    }
+    if let Some(result) = unsafe { visit.result.as_mut() }
+        && !origins.iter().any(|origin| matches!(origin, Origin::Output(_)))
+    {
+        *result = value.clone();
+        return 1;
+    }
+    let mut cursor = SourceOrigins { resolution: context, iter: origins.iter(), path: visit.path, result: visit.result };
+    let host = ResourceOriginHost { next: next_source_origin, append: append_source_origin, output: resolve_output_origin };
+    unsafe { resolve_resource_origins(ptr::from_mut(&mut cursor).cast(), u32::from(!visit.result.is_null()), host) }
+}
+
+unsafe extern "C" fn next_source_origin(context: Context) -> ResourceOrigin {
+    let cursor = unsafe { &mut *context.cast::<SourceOrigins<'_>>() };
+    match cursor.iter.next() {
+        None => ResourceOrigin { kind: ResourceOriginKind::End, value: ptr::null() },
+        Some(Origin::Output(output)) => ResourceOrigin { kind: ResourceOriginKind::Output, value: ptr::from_ref(output).cast() },
+        Some(origin) => ResourceOrigin { kind: ResourceOriginKind::Concrete, value: ptr::from_ref(origin).cast() },
+    }
+}
+
+unsafe extern "C" fn append_source_origin(context: Context, origin: Borrowed) {
+    let cursor = unsafe { &mut *context.cast::<SourceOrigins<'_>>() };
+    let origin = unsafe { &*origin.cast::<Origin>() };
+    unsafe { &mut *cursor.result }.join(&Residency::Origins(BTreeSet::from([origin.clone()])));
+}
+
+unsafe extern "C" fn resolve_output_origin(context: Context, output: Borrowed) -> u32 {
+    let cursor = unsafe { &mut *context.cast::<SourceOrigins<'_>>() };
+    let output = unsafe { &*output.cast::<Output>() };
+    let resolution = unsafe { &mut *cursor.resolution.cast::<SourceResolution<'_>>() };
+    let key = output_source_key(output);
+    if !resolution.active.insert(key.clone()) {
+        return 0;
+    }
+    let value = output_source(output, resolution.outputs);
+    let mut found = 0;
+    if let Some(value) = value {
+        let mut projected = Residency::Absent;
+        let result = if cursor.result.is_null() { ptr::null_mut() } else { ptr::from_mut(&mut projected) };
+        let visit = SourceVisit { value: ptr::from_ref(&value).cast(), path: cursor.path, result };
+        found = unsafe { resolve_viable_source(cursor.resolution, visit, SOURCE_HOST) };
+        if let Some(result) = unsafe { cursor.result.as_mut() } {
+            result.join(&projected);
         }
     }
-    resolve(value,outputs,path,&mut BTreeSet::new())
+    unsafe { &mut *cursor.resolution.cast::<SourceResolution<'_>>() }.active.remove(&key);
+    found
+}
+
+fn present(value: &Residency, outputs: &Outputs) -> bool {
+    let mut resolution = SourceResolution { outputs, active: BTreeSet::new() };
+    let path = bounds::Clause::default();
+    let visit = SourceVisit::new(value, &path, ptr::null_mut());
+    // The empty path is viable; borrowed nodes, branches and active outputs live for this call.
+    unsafe { resolve_viable_source(ptr::from_mut(&mut resolution).cast(), visit, SOURCE_HOST) != 0 }
+}
+
+fn evaluate(value: &Residency, outputs: &Outputs, path: &bounds::Clause) -> Residency {
+    let mut resolution = SourceResolution { outputs, active: BTreeSet::new() };
+    let mut result = Residency::Absent;
+    let visit = SourceVisit::new(value, path, &mut result);
+    unsafe { resolve_residency_source(ptr::from_mut(&mut resolution).cast(), visit, SOURCE_HOST); }
+    result
 }
 
 pub(super) fn output(value: &mut Returned, function: &str,kind:OutputKind, arguments: &Arguments,bindings:&BTreeMap<ValueIdentity,bounds::Proof>) {
@@ -1327,7 +1475,7 @@ pub(super) fn resolve_returned(value: &mut Returned, outputs: &Outputs) -> bool 
     fn resolve(value: &mut Returned, outputs: &Outputs) -> bool {
         match value {
             Returned::Dataset(data) => {
-                let present=present(&data.residency,outputs,&bounds::Clause::default(),&mut BTreeSet::new());
+                let present=present(&data.residency,outputs);
                 if present && data.length.maximum()!=0 && let Some(elements)=data.elements.known_mut(){resolve(elements,outputs);}
                 present
             }

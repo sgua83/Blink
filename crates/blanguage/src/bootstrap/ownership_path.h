@@ -67,3 +67,38 @@ struct ResidencyQueryHost {
 extern "C" void traverse_residency_query(address context,ResidencyQueryHost host) on cpu
     requires nonzero(host.consume)
     requires nonzero(host.advance);
+
+struct SourceVisit { address value; address path; address result; };
+struct ResidencySourceHost {
+    cfn<u32,address> possible;
+    cfn<ResidencyBranch,address> selected;
+    cfn<u32,address,address> truth;
+    cfn<u32,address,SourceVisit,address,u32> under;
+    cfn<void,address,SourceVisit,ResidencyBranch> both;
+    cfn<u32,address,SourceVisit> origins;
+};
+extern "C" u32 resolve_residency_source(address context,SourceVisit visit,ResidencySourceHost host) on cpu
+    requires nonzero(host.possible)
+    requires nonzero(host.selected)
+    requires nonzero(host.truth)
+    requires nonzero(host.under)
+    requires nonzero(host.both)
+    requires nonzero(host.origins);
+extern "C" u32 resolve_viable_source(address context,SourceVisit visit,ResidencySourceHost host) on cpu
+    requires nonzero(host.selected)
+    requires nonzero(host.truth)
+    requires nonzero(host.under)
+    requires nonzero(host.both)
+    requires nonzero(host.origins);
+
+enum ResourceOriginKind:u32 { End=0; Concrete=1; Output=2; };
+struct ResourceOrigin { ResourceOriginKind kind; address value; };
+struct ResourceOriginHost {
+    cfn<ResourceOrigin,address> next;
+    cfn<void,address,address> append;
+    cfn<u32,address,address> output;
+};
+extern "C" u32 resolve_resource_origins(address cursor,u32 collect,ResourceOriginHost host) on cpu
+    requires nonzero(host.next)
+    requires nonzero(host.append)
+    requires nonzero(host.output);

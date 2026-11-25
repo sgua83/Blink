@@ -212,3 +212,53 @@ extern "C" void traverse_residency_query(address context,ResidencyQueryHost host
         step=host.advance(context);
     }
 }
+
+extern "C" u32 resolve_residency_source(address context,SourceVisit visit,ResidencySourceHost host) on cpu
+    requires nonzero(host.possible)
+    requires nonzero(host.selected)
+    requires nonzero(host.truth)
+    requires nonzero(host.under)
+    requires nonzero(host.both)
+    requires nonzero(host.origins) {
+    if(host.possible(visit.path)==0){return 0;}
+    return resolve_viable_source(context,visit,host);
+}
+
+extern "C" u32 resolve_viable_source(address context,SourceVisit visit,ResidencySourceHost host) on cpu
+    requires nonzero(host.selected)
+    requires nonzero(host.truth)
+    requires nonzero(host.under)
+    requires nonzero(host.both)
+    requires nonzero(host.origins) {
+    ResidencyBranch branch=host.selected(visit.value);
+    if(address_bits(branch.condition)==0u64){
+        return host.origins(context,visit);
+    }
+    if(address_bits(visit.result)!=0u64){
+        u32 truth=host.truth(branch.condition,visit.path);
+        if(truth!=2){
+            address child=truth==1 ? branch.yes : branch.no;
+            return resolve_viable_source(context,SourceVisit(child,visit.path,visit.result),host);
+        }
+        host.both(context,visit,branch);
+        return 0;
+    }
+    SourceVisit positive=SourceVisit(branch.yes,visit.path,visit.result);
+    if(host.under(context,positive,branch.condition,1)!=0){return 1;}
+    return host.under(context,SourceVisit(branch.no,visit.path,visit.result),branch.condition,0);
+}
+
+extern "C" u32 resolve_resource_origins(address cursor,u32 collect,ResourceOriginHost host) on cpu
+    requires nonzero(host.next)
+    requires nonzero(host.append)
+    requires nonzero(host.output) {
+    ResourceOrigin origin=host.next(cursor);
+    while(origin.kind!=ResourceOriginKind::End){
+        if(origin.kind==ResourceOriginKind::Concrete){
+            if(collect==0){return 1;}
+            host.append(cursor,origin.value);
+        }else if(host.output(cursor,origin.value)!=0 && collect==0){return 1;}
+        origin=host.next(cursor);
+    }
+    return 0;
+}
