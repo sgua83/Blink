@@ -371,7 +371,7 @@ impl Allocation {
         }
         if count == 0 && module.is_none() { return Ok((None, None)); }
         let mut sections = Vec::new();
-        let mut imports = std::collections::BTreeMap::new();
+        let mut import_slots = BTreeMap::new();
         if let Some(module) = module {
             for section in &module.sections {
                 let alignment = (1usize << ((section.flags >> 20) & 15).saturating_sub(1)).max(4096);
@@ -380,13 +380,13 @@ impl Allocation {
                 size += section.bytes.len();
                 for relocation in &section.relocations {
                     if let blanguage::native::ModuleTarget::Import(name) = &relocation.target {
-                        imports.entry(name).or_insert(0usize);
+                        import_slots.entry(name).or_insert(0usize);
                     }
                 }
             }
             size = size.div_ceil(4096) * 4096;
         }
-        for offset in imports.values_mut() { *offset = size; size += 8; }
+        for offset in import_slots.values_mut() { *offset = size; size += 8; }
         let table_offset = size.div_ceil(4) * 4;
         let count = u32::try_from(count)?;
         size = table_offset + count as usize * std::mem::size_of::<RuntimeFunction>();
@@ -423,7 +423,7 @@ impl Allocation {
             }
         };
         let mut libraries = std::collections::BTreeMap::new();
-        for (&name, &offset) in &imports {
+        for (&name, &offset) in &import_slots {
             let symbol = external_symbol(&mut libraries, name)?;
             unsafe { std::ptr::write_unaligned(address.cast::<u8>().add(offset).cast::<u64>(), symbol as u64); }
         }
@@ -435,7 +435,7 @@ impl Allocation {
                 for relocation in &section.relocations {
                     let target = match &relocation.target {
                         blanguage::native::ModuleTarget::Section { section, value } => sections[*section] + *value as usize,
-                        blanguage::native::ModuleTarget::Import(name) => imports[name],
+                        blanguage::native::ModuleTarget::Import(name) => import_slots[name],
                     };
                     blanguage::native::coff_relocate(bytes, relocation.offset, relocation.kind,
                         address as u64, (begin + relocation.offset) as u64, target as u64)
@@ -454,7 +454,17 @@ impl Allocation {
                 let ptr = match &relocation.target {
                     NativeSymbol::Function(name) => function_address(name)
                         .ok_or_else(|| error(format!("范围映像缺少所属模块函数 {name}")))? as *const (),
-                    NativeSymbol::External(name) => external_symbol(&mut libraries, name)?,
+                    NativeSymbol::External(name) => match import_slots.entry(name) {
+                        Entry::Occupied(slot) => unsafe {
+                            address.cast::<u8>().add(*slot.get()).cast::<u64>().read_unaligned() as *const ()
+                        },
+                        Entry::Vacant(slot) => {
+                            let symbol = external_symbol(&mut libraries, name)?;
+                            // The common relocation write initializes this field before the next lookup.
+                            slot.insert(row.begin as usize + relocation.offset);
+                            symbol
+                        }
+                    },
                     NativeSymbol::Print(scalar) => match scalar {
                         Scalar::U8 | Scalar::U16 | Scalar::U32 => print_u32 as *const (),
                         Scalar::I8 | Scalar::I16 | Scalar::I32 => print_i32 as *const (),
