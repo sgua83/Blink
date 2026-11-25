@@ -1,6 +1,8 @@
 //! 应用入口是一次普通 CPU 值函数调用，不伪造 dataset 或 parallel 域。
 use super::cooperative::Argument;
 use super::*;
+use crate::ir::dataflow;
+use std::{ffi::c_void, ptr};
 mod drops;
 mod sdk_resources;
 pub(super) use sdk_resources::lower_sdk_resources;
@@ -647,58 +649,44 @@ impl ApplicationLoads<'_, '_> {
         }
         result
     }
-    fn stored_paths(&self, code: &[Inst], mut next: Option<bounds::Proof>, data: &Data, source: &IndexedSource, word: u32, scalar: Scalar, path: &bounds::Clause, state: &flow::LoopState, controls: &BTreeMap<Reg, Value>) -> (Option<bounds::Proof>, Option<bounds::Proof>, Option<bounds::Proof>, Option<bounds::Proof>) {
-        fn join(a: Option<bounds::Proof>, b: Option<bounds::Proof>,choice:Option<&bounds::Condition>) -> Option<bounds::Proof> {
-            match (a, b) { (Some(mut a), Some(b)) => { a.join_condition(&b, 1, choice); Some(a) }, (a, None) | (None, a) => a }
-        }
-        let mut continues = None;
-        let mut exits = None;
-        let mut breaks = None;
-        for inst in code {
-            let Some(current) = next.take() else { break; };
-            match &inst.kind {
-                InstKind::Continue => continues = join(continues, Some(current),None),
-                InstKind::Break => breaks = join(breaks, Some(current),None),
-                InstKind::Exit => exits = join(exits, Some(current),None),
-                InstKind::If { condition, yes, no } => {
-                    let raw = Value { ty: Ty::scalar(Scalar::Bool), regs: vec![*condition], proof: bounds::Proof::default(), literal: false, uniform: false, constant: None };
-                    let condition = bounds::Condition::of(controls.get(condition).unwrap_or(&raw));
-                    let truth = condition.truth_in(path);
-                    let a = if truth == Some(false) { (None, None, None, None) } else { self.stored_paths(yes, Some(current.clone()), data, source, word, scalar, &condition.assume(path, true), state, controls) };
-                    let b = if truth == Some(true) { (None, None, None, None) } else { self.stored_paths(no, Some(current), data, source, word, scalar, &condition.assume(path, false), state, controls) };
-                    next = join(a.0,b.0,Some(&condition)); continues = join(continues,join(a.1,b.1,Some(&condition)),None); exits = join(exits,join(a.2,b.2,Some(&condition)),None); breaks = join(breaks,join(a.3,b.3,Some(&condition)),None);
-                },
-                InstKind::Scope(body) => {
-                    let (normal, continued, exited, broken) = self.stored_paths(body, Some(current), data, source, word, scalar, path, state, controls);
-                    next = join(normal,exited,None); continues = join(continues,continued,None); breaks = join(breaks,broken,None);
-                },
-                InstKind::Call(call @ Call{target:CallTarget::Defined(name),..}) if self.current_reference_writes(call,source,word,scalar) && self.writes_indexed(inst,source,word,scalar) => {
-                    let contract=&self.0.functions.units[name].as_ref().unwrap().contract;
-                    let mut common:Option<bounds::Proof>=None;
-                    if let Some(invocation)=self.0.view_model.calls.iter().find(|entry|Some(entry.memory)==call.memory_use){
-                        for (identity,storage) in &invocation.arguments {
-                            let ValueIdentity::ParameterStorage(index)=identity else{continue};
-                            for source in &storage.view_borrow(0).sources {
-                                let view::Source::Position(origin)=source else{continue};
-                                if !matches!(&origin.root,address::Root::Resource{borrow:root,..}if self.0.application_element_scopes(&[],root,data,(path,&state.env)).into_iter().any(|(scope,complete,_)|scope.is_empty()&&complete)){continue;}
-                                for (component,_) in origin.words.iter().enumerate().filter(|(component,at)|**at==word&&origin.layout.parts[*component].0==scalar){
-                                    let proof=contract.written.get(*index).and_then(Option::as_ref).map(|written|{
-                                        let value=self.0.returned_storage(written);
-                                        bounds::Proof::capture(&value).project(&[component],value.regs.len()).at_call(&invocation.arguments)
-                                    }).unwrap_or_default();
-                                    if let Some(common)=&mut common{common.join_condition(&proof,1,None);}else{common=Some(proof);}
-                                }
-                            }
+    fn stored_write(
+        &self, inst: &Inst, current: bounds::Proof, data: &Data, source: &IndexedSource,
+        word: u32, scalar: Scalar, path: &bounds::Clause, state: &flow::LoopState,
+    ) -> bounds::Proof {
+        if let InstKind::Call(call @ Call{target:CallTarget::Defined(name),..}) = &inst.kind
+            && self.current_reference_writes(call, source, word, scalar)
+            && self.writes_indexed(inst, source, word, scalar)
+        {
+            let contract=&self.0.functions.units[name].as_ref().unwrap().contract;
+            let mut common:Option<bounds::Proof>=None;
+            if let Some(invocation)=self.0.view_model.calls.iter().find(|entry|Some(entry.memory)==call.memory_use){
+                for (identity,storage) in &invocation.arguments {
+                    let ValueIdentity::ParameterStorage(index)=identity else{continue};
+                    for source in &storage.view_borrow(0).sources {
+                        let view::Source::Position(origin)=source else{continue};
+                        if !matches!(&origin.root,address::Root::Resource{borrow:root,..}if self.0.application_element_scopes(&[],root,data,(path,&state.env)).into_iter().any(|(scope,complete,_)|scope.is_empty()&&complete)){continue;}
+                        for (component,_) in origin.words.iter().enumerate().filter(|(component,at)|**at==word&&origin.layout.parts[*component].0==scalar){
+                            let proof=contract.written.get(*index).and_then(Option::as_ref).map(|written|{
+                                let value=self.0.returned_storage(written);
+                                bounds::Proof::capture(&value).project(&[component],value.regs.len()).at_call(&invocation.arguments)
+                            }).unwrap_or_default();
+                            if let Some(common)=&mut common{common.join_condition(&proof,1,None);}else{common=Some(proof);}
                         }
                     }
-                    next=Some(common.unwrap_or_default());
-                },
-                _ => next = Some(if let Some(value) = self.field_store(source, word, scalar, inst, true) {
-                    bounds::Proof::capture(&Value{ty:Ty::scalar(scalar),regs:vec![value],proof:bounds::scoped_proof(&Ty::scalar(scalar),bounds::Proof::default().with_identity(ValueIdentity::Register(value)),path,&state.env),literal:false,uniform:false,constant:self.constant(value).map(|bits|vec![bits])})
-                } else if self.writes_indexed(inst, source, word, scalar) { bounds::Proof::default() } else { current }),
+                }
             }
+            common.unwrap_or_default()
+        } else if let Some(value) = self.field_store(source, word, scalar, inst, true) {
+            bounds::Proof::capture(&Value {
+                ty: Ty::scalar(scalar), regs: vec![value],
+                proof: bounds::scoped_proof(&Ty::scalar(scalar), bounds::Proof::default().with_identity(ValueIdentity::Register(value)), path, &state.env),
+                literal: false, uniform: false, constant: self.constant(value).map(|bits| vec![bits]),
+            })
+        } else if self.writes_indexed(inst, source, word, scalar) {
+            bounds::Proof::default()
+        } else {
+            current
         }
-        (next, continues, exits, breaks)
     }
 
     fn block_contains_snapshot_candidate(&self, code: &[Inst], load: &Inst) -> bool {
@@ -800,8 +788,9 @@ impl Builder<'_> {
             let mut common: [Option<bounds::Proof>;2] = [None,None];
             for state in states.clone() {
                 let paths=if let Some(source) = loads.stored_position(&self.code, data, index, word, scalar, state, writes) {
-                    let (normal, continued, _, broken) = loads.stored_paths(&self.code, Some(initial.project(&[component],data.ty.components.len())), data, source, word, scalar, &state.path, state, controls);
-                    [[normal,continued].into_iter().flatten().reduce(|mut a,b|{a.join_condition(&b,1,None);a}),broken]
+                    let query = StoredWriteQuery { builder: self, data, source, word, scalar, state, controls };
+                    let paths = query.walk(&self.code, initial.project(&[component], data.ty.components.len()), &state.path);
+                    [join_stored(paths.next, paths.continued, None), paths.broken]
                 }else{[Some(bounds::Proof::default()),Some(bounds::Proof::default())]};
                 for (part,proof) in paths.into_iter().enumerate(){if let Some(proof)=proof{
                     if let Some(value)=&mut common[part]{value.join_condition(&proof,1,None);}else{common[part]=Some(proof);}
@@ -816,6 +805,161 @@ impl Builder<'_> {
         let mut branches = BTreeMap::new();
         move |reg| loads.snapshot(reg, &mut branches)
     }
+}
+
+#[derive(Default)]
+struct StoredWritePaths {
+    next: Option<bounds::Proof>,
+    continued: Option<bounds::Proof>,
+    exited: Option<bounds::Proof>,
+    broken: Option<bounds::Proof>,
+}
+
+fn join_stored(
+    a: Option<bounds::Proof>, b: Option<bounds::Proof>, choice: Option<&bounds::Condition>,
+) -> Option<bounds::Proof> {
+    match (a, b) {
+        (Some(mut a), Some(b)) => {
+            a.join_condition(&b, 1, choice);
+            Some(a)
+        }
+        (a, None) | (None, a) => a,
+    }
+}
+
+struct StoredWriteQuery<'a, 'w> {
+    builder: &'a Builder<'w>,
+    data: &'a Data,
+    source: &'a IndexedSource,
+    word: u32,
+    scalar: Scalar,
+    state: &'a flow::LoopState,
+    controls: &'a BTreeMap<Reg, Value>,
+}
+
+struct StoredWriteRun<'a, 'input, 'w> {
+    query: &'a StoredWriteQuery<'input, 'w>,
+    code: &'a [Inst],
+    path: &'a bounds::Clause,
+    paths: StoredWritePaths,
+}
+
+impl StoredWriteQuery<'_, '_> {
+    fn walk(&self, code: &[Inst], initial: bounds::Proof, path: &bounds::Clause) -> StoredWritePaths {
+        let mut run = StoredWriteRun { query: self, code, path, paths: StoredWritePaths {
+            next: Some(initial), ..StoredWritePaths::default()
+        }};
+        unsafe { source_stored_write_paths(dataflow::Span::slice(code), ptr::from_mut(&mut run).cast(), STORED_WRITE_HOST); }
+        run.paths
+    }
+}
+
+#[repr(u32)]
+#[allow(dead_code)] // These instruction routes are supplied by B.
+enum StoredTransfer { Continue, Exit, Break }
+
+#[repr(u32)]
+enum StoredTruth { Both, Yes, No }
+
+#[repr(C)]
+struct StoredWriteHost {
+    ir: dataflow::Host,
+    active: unsafe extern "C" fn(*mut c_void) -> u32,
+    transfer: unsafe extern "C" fn(*mut c_void, StoredTransfer),
+    branch: unsafe extern "C" fn(*mut c_void, Reg, dataflow::Span, dataflow::Span),
+    scope: unsafe extern "C" fn(*mut c_void, dataflow::Span),
+    write: unsafe extern "C" fn(*mut c_void, usize),
+}
+
+const STORED_WRITE_HOST: StoredWriteHost = StoredWriteHost {
+    ir: dataflow::HOST, active: stored_write_active, transfer: stored_write_transfer,
+    branch: stored_write_branch, scope: stored_write_scope, write: stored_write_instruction,
+};
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.ir_dataflow::stored_write_paths"]
+    fn source_stored_write_paths(code: dataflow::Span, context: *mut c_void, host: StoredWriteHost);
+    #[link_name = "bootstrap.ir_dataflow::stored_write_arms"]
+    fn source_stored_write_arms(
+        context: *mut c_void, truth: StoredTruth, arm: unsafe extern "C" fn(*mut c_void, u32, u32),
+    );
+}
+
+unsafe extern "C" fn stored_write_active(context: *mut c_void) -> u32 {
+    let run = unsafe { &*context.cast::<StoredWriteRun<'_, '_, '_>>() };
+    u32::from(run.paths.next.is_some())
+}
+
+unsafe extern "C" fn stored_write_transfer(context: *mut c_void, transfer: StoredTransfer) {
+    let run = unsafe { &mut *context.cast::<StoredWriteRun<'_, '_, '_>>() };
+    let next = run.paths.next.take();
+    let target = match transfer {
+        StoredTransfer::Continue => &mut run.paths.continued,
+        StoredTransfer::Exit => &mut run.paths.exited,
+        StoredTransfer::Break => &mut run.paths.broken,
+    };
+    *target = join_stored(target.take(), next, None);
+}
+
+struct StoredWriteBranch<'a, 'input, 'w> {
+    query: &'a StoredWriteQuery<'input, 'w>,
+    path: &'a bounds::Clause,
+    code: [&'a [Inst]; 2],
+    condition: bounds::Condition,
+    input: Option<bounds::Proof>,
+    arms: [StoredWritePaths; 2],
+}
+
+unsafe extern "C" fn stored_write_arm(context: *mut c_void, yes: u32, copy: u32) {
+    let branch = unsafe { &mut *context.cast::<StoredWriteBranch<'_, '_, '_>>() };
+    let input = if copy != 0 { branch.input.as_ref().unwrap().clone() } else { branch.input.take().unwrap() };
+    let arm = yes as usize;
+    let path = branch.condition.assume(branch.path, yes != 0);
+    branch.arms[arm] = branch.query.walk(branch.code[arm], input, &path);
+}
+
+unsafe extern "C" fn stored_write_branch(context: *mut c_void, reg: Reg, yes: dataflow::Span, no: dataflow::Span) {
+    let run = unsafe { &mut *context.cast::<StoredWriteRun<'_, '_, '_>>() };
+    let condition = run.query.controls.get(&reg).map_or_else(
+        || bounds::Condition::of(&Value {
+            ty: Ty::scalar(Scalar::Bool), regs: vec![reg], proof: bounds::Proof::default(),
+            literal: false, uniform: false, constant: None,
+        }),
+        bounds::Condition::of,
+    );
+    let truth = match condition.truth_in(run.path) {
+        None => StoredTruth::Both,
+        Some(true) => StoredTruth::Yes,
+        Some(false) => StoredTruth::No,
+    };
+    let mut branch = StoredWriteBranch {
+        query: run.query, path: run.path, code: unsafe { [no.as_slice(), yes.as_slice()] },
+        condition, input: run.paths.next.take(), arms: [StoredWritePaths::default(), StoredWritePaths::default()],
+    };
+    unsafe { source_stored_write_arms(ptr::from_mut(&mut branch).cast(), truth, stored_write_arm); }
+    let [no, yes] = branch.arms;
+    let choice = Some(&branch.condition);
+    run.paths.next = join_stored(yes.next, no.next, choice);
+    run.paths.continued = join_stored(run.paths.continued.take(), join_stored(yes.continued, no.continued, choice), None);
+    run.paths.exited = join_stored(run.paths.exited.take(), join_stored(yes.exited, no.exited, choice), None);
+    run.paths.broken = join_stored(run.paths.broken.take(), join_stored(yes.broken, no.broken, choice), None);
+}
+
+unsafe extern "C" fn stored_write_scope(context: *mut c_void, body: dataflow::Span) {
+    let run = unsafe { &mut *context.cast::<StoredWriteRun<'_, '_, '_>>() };
+    let child = run.query.walk(unsafe { body.as_slice() }, run.paths.next.take().unwrap(), run.path);
+    run.paths.next = join_stored(child.next, child.exited, None);
+    run.paths.continued = join_stored(run.paths.continued.take(), child.continued, None);
+    run.paths.broken = join_stored(run.paths.broken.take(), child.broken, None);
+}
+
+unsafe extern "C" fn stored_write_instruction(context: *mut c_void, index: usize) {
+    let run = unsafe { &mut *context.cast::<StoredWriteRun<'_, '_, '_>>() };
+    let query = run.query;
+    run.paths.next = Some(ApplicationLoads(query.builder).stored_write(
+        &run.code[index], run.paths.next.take().unwrap(), query.data, query.source,
+        query.word, query.scalar, run.path, query.state,
+    ));
 }
 
 pub(super) fn pointer_type() -> Ty {

@@ -57,6 +57,29 @@ extern "C" u32 has_function_exit(Span code,Host host) on cpu requires nonzero(ho
  return u32(block_transfers(code,TransferSearch::FunctionExit,host));
 }
 
+extern "C" void stored_write_paths(Span code,address context,StoredWriteHost host) on cpu
+ requires nonzero(host.ir.inspect) requires nonzero(host.active) requires nonzero(host.transfer)
+ requires nonzero(host.branch) requires nonzero(host.scope) requires nonzero(host.write) {
+ usize index=0u64;
+ while(index<code.count&&host.active(context)!=0){
+  View instruction=host.ir.inspect(node_at(code,index,N_INSTRUCTION));
+  u32 kind=instruction.tag;
+  if(kind==OP_CONTINUE_VALUE){host.transfer(context,StoredTransfer::Continue);return;}
+  if(kind==OP_EXIT_VALUE){host.transfer(context,StoredTransfer::Exit);return;}
+  if(kind==OP_BREAK_VALUE){host.transfer(context,StoredTransfer::Break);return;}
+  if(kind==OP_BRANCH){host.branch(context,instruction.a,instruction.first,instruction.second);}
+  else if(kind==OP_SCOPE){host.scope(context,instruction.first);}
+  else{host.write(context,index);}
+  index+=1u64;
+ }
+}
+
+extern "C" void stored_write_arms(address context,StoredTruth truth,cfn<void,address,u32,u32> arm) on cpu
+ requires nonzero(arm) {
+ if(truth!=StoredTruth::No){arm(context,1,u32(truth==StoredTruth::Both));}
+ if(truth!=StoredTruth::Yes){arm(context,0,0);}
+}
+
 extern "C" void loop_path_branch(Span yes_code,Span no_code,LoopPaths parent,
  LoopPaths yes,LoopPaths no,LoopPathHost host) on cpu
  requires nonzero(host.ir.inspect) requires nonzero(host.record_break) requires nonzero(host.clear)

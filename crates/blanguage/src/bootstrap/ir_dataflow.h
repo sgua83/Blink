@@ -44,6 +44,22 @@ struct View {
 };
 struct Host { cfn<View,Node> ensures memory(read) inspect; };
 
+enum StoredTransfer:u32 { Continue=0; Exit=1; Break=2; };
+enum StoredTruth:u32 { Both=0; Yes=1; No=2; };
+struct StoredWriteHost {
+ Host ir;
+ cfn<u32,address> active;
+ cfn<void,address,StoredTransfer> transfer;
+ cfn<void,address,usize,Span,Span> branch;
+ cfn<void,address,Span> scope;
+ cfn<void,address,usize> write;
+};
+extern "C" void stored_write_paths(Span code,address context,StoredWriteHost host) on cpu
+ requires nonzero(host.ir.inspect) requires nonzero(host.active) requires nonzero(host.transfer)
+ requires nonzero(host.branch) requires nonzero(host.scope) requires nonzero(host.write);
+extern "C" void stored_write_arms(address context,StoredTruth truth,cfn<void,address,u32,u32> arm) on cpu
+ requires nonzero(arm);
+
 struct LoopPaths { address live; address exited; };
 struct LoopPathHost {
  Host ir;
