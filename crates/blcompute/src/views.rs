@@ -6,6 +6,10 @@ use std::{collections::BTreeMap, sync::Arc};
 #[derive(Clone)]
 pub struct ReadDataset(Arc<Dataset>);
 impl ReadDataset {
+    /// Takes a dataset whose actual view graph has already been established.
+    pub(crate) fn from_closed_graph(data: Dataset) -> Self {
+        Self(Arc::new(data))
+    }
     pub(crate) fn identity(&self) -> usize {
         Arc::as_ptr(&self.0) as usize
     }
@@ -95,7 +99,7 @@ impl Dataset {
     /// 交还不可变共享所有权；子资源随真实引用持续存活。
     pub fn freeze(self) -> Result<ReadDataset> {
         self.require_views()?;
-        Ok(ReadDataset(Arc::new(self)))
+        Ok(ReadDataset::from_closed_graph(self))
     }
 
     /// 在原记录中编码主机引用，并持有去重的真实子资源；不复制子记录。

@@ -311,7 +311,7 @@ impl GpuReadback {
         let Self { sources, roots, domains, .. } = self;
         let mut ready = Vec::with_capacity(sources.len());
         for source in sources {
-            ready.push(source.finish(&ready)?.freeze()?);
+            ready.push(crate::ReadDataset::from_closed_graph(source.finish(&ready)?));
         }
         let datasets = roots
             .into_iter()
@@ -534,7 +534,7 @@ impl<'a> Readback<'a> {
             self.finish_source(previous)?;
             return Ok(target.clone());
         }
-        let target = self.download_graph(source)?.freeze()?;
+        let target = crate::ReadDataset::from_closed_graph(self.download_graph(source)?);
         self.sources.insert(key, target.clone());
         Ok(target)
     }
