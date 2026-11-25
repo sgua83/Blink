@@ -194,6 +194,17 @@ struct PipelineStage {
  usize domain; PipelineField prefix; PipelineField selection;
  u32 operation; u32 boundary;
 };
+// Exclusive, synchronous projections of the same original IR storage.
+struct RewriteNode { address data; u32 kind; };
+struct RewriteSpan { address data; usize count; usize stride; };
+struct RewriteView {
+ u32 tag; address a; address b; address c; address d;
+ RewriteSpan first; RewriteSpan second; RewriteSpan third;
+ RewriteNode left; RewriteNode right; usize length;
+};
+struct RewriteHost { cfn<RewriteView,RewriteNode> ensures memory(read) inspect; };
+struct FusionOffsets { usize registers; usize locals; };
+struct FusionLayout { RewriteSpan code; FusionOffsets offsets; };
 struct PipelineFusion {
  Host ir; address context;
  cfn<void,address> begin;
@@ -201,7 +212,11 @@ struct PipelineFusion {
  cfn<address,address> previous;
  cfn<PipelineStage,address> ensures memory(read) stage;
  cfn<void,address> append;
- cfn<void,address> merge;
+ RewriteHost rewrite;
+ cfn<FusionLayout,address,address> layout;
+ cfn<void,address,address> origin;
+ cfn<void,address,address> retain;
+ cfn<void,address,usize> commit;
 };
 struct PipelineProgram {
  PipelineFusion fusion;
@@ -246,7 +261,9 @@ struct PipelineAccessCounts { usize reads; usize writes; usize cross; };
 extern "C" void optimize_program(PipelineProgram host) on cpu
  requires nonzero(host.fusion.ir.inspect) requires nonzero(host.fusion.begin)
  requires nonzero(host.fusion.next) requires nonzero(host.fusion.previous)
- requires nonzero(host.fusion.stage) requires nonzero(host.fusion.append) requires nonzero(host.fusion.merge)
+ requires nonzero(host.fusion.stage) requires nonzero(host.fusion.append)
+ requires nonzero(host.fusion.rewrite.inspect) requires nonzero(host.fusion.layout)
+ requires nonzero(host.fusion.origin) requires nonzero(host.fusion.retain) requires nonzero(host.fusion.commit)
  requires nonzero(host.batch) requires nonzero(host.remove) requires nonzero(host.origin) requires nonzero(host.finish);
 extern "C" PipelineEmpty optimize_empty(PipelineStage stage,u32 carry) on cpu;
 extern "C" void optimize_stage(PipelineStageHost host,u32 has_tiles) on cpu
@@ -261,23 +278,14 @@ extern "C" PipelineAccessCounts optimize_bindings(PipelineMap input,Host ir,Pipe
  requires nonzero(ir.inspect) requires nonzero(host.contains);
 
 
-// Exclusive, synchronous projections of the same original IR storage.
-struct RewriteNode { address data; u32 kind; };
-struct RewriteSpan { address data; usize count; usize stride; };
-struct RewriteView {
- u32 tag; address a; address b; address c; address d;
- RewriteSpan first; RewriteSpan second; RewriteSpan third;
- RewriteNode left; RewriteNode right; usize length;
-};
-struct RewriteHost { cfn<RewriteView,RewriteNode> ensures memory(read) inspect; };
 extern "C" PipelineRootEdit optimize_root(address instruction,u32 preserve_scope,PipelineRead host,RewriteHost rewrite) on cpu
  requires nonzero(host.contains) requires nonzero(host.scalar_bytes) requires nonzero(rewrite.inspect);
 struct RewriteMap {
  address context;
- cfn<usize,address,usize> ensures memory(read) reg;
- cfn<usize,address,usize> ensures memory(read) slot;
+ cfn<usize,address,usize> reg;
+ cfn<usize,address,usize> slot;
 };
-struct RewriteInputMap { address context; cfn<usize,address,usize> ensures memory(read) reg; };
+struct RewriteInputMap { address context; cfn<usize,address,usize> reg; };
 extern "C" void rewrite_code(RewriteSpan code,RewriteHost host,RewriteMap mapping) on cpu
  requires nonzero(host.inspect) requires nonzero(mapping.reg) requires nonzero(mapping.slot);
 extern "C" void rewrite_operands(RewriteNode source,RewriteHost host,RewriteInputMap mapping) on cpu

@@ -853,21 +853,36 @@ bool pipeline_fusible(PipelineStage left,PipelineStage right,Host host) on cpu r
   &&pipeline_same_field(left.prefix,right.prefix)&&pipeline_same_field(left.selection,right.selection)
   &&!pipeline_cross(left,right)&&!pipeline_ordered(left.code,host)&&!pipeline_ordered(right.code,host);
 }
+extern "C" usize fusion_register(address offsets,usize value) on cpu {
+ return value+unsafe_position<FusionOffsets>(offsets).registers;
+}
+extern "C" usize fusion_local(address offsets,usize value) on cpu {
+ return value+unsafe_position<FusionOffsets>(offsets).locals;
+}
 void pipeline_fuse(PipelineFusion host) on cpu
- requires nonzero(host.ir.inspect) requires nonzero(host.begin) requires nonzero(host.next)
- requires nonzero(host.previous) requires nonzero(host.stage) requires nonzero(host.append) requires nonzero(host.merge) {
+ requires nonzero(host.ir.inspect) requires nonzero(host.next)
+ requires nonzero(host.previous) requires nonzero(host.stage) requires nonzero(host.append)
+ requires nonzero(host.rewrite.inspect) requires nonzero(host.layout)
+ requires nonzero(host.origin) requires nonzero(host.retain) requires nonzero(host.commit) {
  while(true){
   address current=host.next(host.context);if(address_bits(current)==0u64){return;}
   address previous=host.previous(host.context);
   if(address_bits(previous)!=0u64&&pipeline_fusible(host.stage(previous),host.stage(current),host.ir)){
-   host.merge(host.context);
+   host.origin(previous,current);
+   FusionLayout layout=host.layout(previous,current);
+   FusionOffsets offsets=layout.offsets;
+   rewrite_code(layout.code,host.rewrite,RewriteMap(address_of(offsets),c_function(fusion_register),c_function(fusion_local)));
+   host.retain(previous,current);
+   host.commit(host.context,offsets.locals);
   }else{host.append(host.context);}
  }
 }
 extern "C" void optimize_program(PipelineProgram host) on cpu
  requires nonzero(host.fusion.ir.inspect) requires nonzero(host.fusion.begin)
  requires nonzero(host.fusion.next) requires nonzero(host.fusion.previous)
- requires nonzero(host.fusion.stage) requires nonzero(host.fusion.append) requires nonzero(host.fusion.merge)
+ requires nonzero(host.fusion.stage) requires nonzero(host.fusion.append)
+ requires nonzero(host.fusion.rewrite.inspect) requires nonzero(host.fusion.layout)
+ requires nonzero(host.fusion.origin) requires nonzero(host.fusion.retain) requires nonzero(host.fusion.commit)
  requires nonzero(host.batch) requires nonzero(host.remove) requires nonzero(host.origin) requires nonzero(host.finish) {
  pipeline_fuse(host.fusion);
  if(host.batch(host.fusion.context)==0){return;}
@@ -1055,13 +1070,13 @@ RewriteNode rewrite_node_at(RewriteSpan span,usize index,u32 kind) on cpu {
 address rewrite_word_at(RewriteSpan span,usize index) on cpu {
  return unsafe_address(address_bits(span.data)+u64(index)*u64(span.stride));
 }
-void rewrite_word(address field,address context,cfn<usize,address,usize> ensures memory(read) map) on cpu requires nonzero(map) {
+void rewrite_word(address field,address context,cfn<usize,address,usize> map) on cpu requires nonzero(map) {
  unsafe_position<usize>(field)=map(context,unsafe_position<usize>(field));
 }
-void rewrite_optional(address field,address context,cfn<usize,address,usize> ensures memory(read) map) on cpu requires nonzero(map) {
+void rewrite_optional(address field,address context,cfn<usize,address,usize> map) on cpu requires nonzero(map) {
  if(address_bits(field)!=0u64){rewrite_word(field,context,map);}
 }
-void rewrite_words(RewriteSpan words,address context,cfn<usize,address,usize> ensures memory(read) map) on cpu requires nonzero(map) {
+void rewrite_words(RewriteSpan words,address context,cfn<usize,address,usize> map) on cpu requires nonzero(map) {
  usize index=0u64;
  while(index<words.count){rewrite_word(rewrite_word_at(words,index),context,map);index+=1u64;}
 }
@@ -1136,7 +1151,7 @@ void rewrite_call_outputs(RewriteNode source,RewriteHost host,RewriteMap mapping
   rewrite_alias(effect.left,host,mapping);index+=1u64;
  }
 }
-void rewrite_result(RewriteNode source,RewriteHost host,address context,cfn<usize,address,usize> ensures memory(read) map) on cpu
+void rewrite_result(RewriteNode source,RewriteHost host,address context,cfn<usize,address,usize> map) on cpu
  requires nonzero(host.inspect) requires nonzero(map) {
  RewriteView value=host.inspect(source);
  if(source.kind==N_RAY_RESULT){rewrite_words(value.first,context,map);}

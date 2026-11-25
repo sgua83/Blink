@@ -3,6 +3,7 @@
 //! original typed containers, source anchors, scoped Worker and actual errors.
 use super::*;
 use std::{ffi::c_void, mem::size_of, ptr};
+use crate::ir::rewrite;
 
 #[derive(Clone, Copy)]
 #[repr(C)]
@@ -49,8 +50,16 @@ struct FusionHost {
     previous: unsafe extern "C" fn(*mut c_void) -> *mut c_void,
     stage: unsafe extern "C" fn(*const c_void) -> StageView,
     append: unsafe extern "C" fn(*mut c_void),
-    merge: unsafe extern "C" fn(*mut c_void),
+    rewrite: rewrite::Host,
+    layout: unsafe extern "C" fn(*const c_void, *mut c_void) -> FusionLayout,
+    origin: unsafe extern "C" fn(*mut c_void, *mut c_void),
+    retain: unsafe extern "C" fn(*mut c_void, *const c_void),
+    commit: unsafe extern "C" fn(*mut c_void, usize),
 }
+#[repr(C)]
+struct FusionOffsets { registers: usize, locals: usize }
+#[repr(C)]
+struct FusionLayout { code: rewrite::Span, offsets: FusionOffsets }
 #[repr(C)]
 struct ProgramHost {
     fusion: FusionHost,
@@ -145,7 +154,9 @@ pub(super) fn run(program: &mut Program, worker: &crate::compiler::Worker) -> st
     let host = ProgramHost {
         fusion: FusionHost {
             ir: crate::ir::dataflow::HOST, context: ptr::from_mut(&mut state).cast(),
-            begin, next, previous, stage: stage_view, append, merge,
+            begin, next, previous, stage: stage_view, append,
+            rewrite: rewrite::HOST, layout: fusion_layout, origin: fusion_origin,
+            retain: fusion_retain, commit: fusion_commit,
         }, batch, remove, origin, finish,
     };
     unsafe { b_program(host); }
@@ -164,17 +175,27 @@ unsafe extern "C" fn next(context: *mut c_void) -> *mut c_void {
     state.current.as_mut().map_or(ptr::null_mut(), |(stage, _)| ptr::from_mut(stage).cast())
 }
 unsafe extern "C" fn previous(context: *mut c_void) -> *mut c_void {
-    let state = unsafe { &mut *context.cast::<ProgramState<'_>>() };
-    state.stages.last_mut().map_or(ptr::null_mut(), |(stage, _)| ptr::from_mut(stage).cast())
+    let stages = unsafe { &mut (*context.cast::<ProgramState<'_>>()).stages };
+    stages.last_mut().map_or(ptr::null_mut(), |(stage, _)| ptr::from_mut(stage).cast())
 }
 unsafe extern "C" fn append(context: *mut c_void) {
     let state = unsafe { &mut *context.cast::<ProgramState<'_>>() };
     state.stages.push(state.current.take().unwrap());
 }
-unsafe extern "C" fn merge(context: *mut c_void) {
-    let state = unsafe { &mut *context.cast::<ProgramState<'_>>() };
-    let (mut stage, _) = state.current.take().unwrap();
-    let (previous, changed) = state.stages.last_mut().unwrap();
+unsafe extern "C" fn fusion_layout(previous: *const c_void, current: *mut c_void) -> FusionLayout {
+    let previous = unsafe { &*previous.cast::<Stage>() };
+    let current = unsafe { &mut *current.cast::<Stage>() };
+    FusionLayout {
+        code: rewrite::Span::slice(&mut current.code),
+        offsets: FusionOffsets {
+            registers: previous.registers.len(),
+            locals: previous.locals.last_key_value().map_or(0, |(&end, _)| end),
+        },
+    }
+}
+unsafe extern "C" fn fusion_origin(previous: *mut c_void, current: *mut c_void) {
+    let previous = unsafe { &mut *previous.cast::<Stage>() };
+    let stage = unsafe { &mut *current.cast::<Stage>() };
     let following = OperationOrigin {
         source_site: stage.operation_source.clone(), generated_origin: stage.generated_origin.take(),
     };
@@ -191,15 +212,21 @@ unsafe extern "C" fn merge(context: *mut c_void) {
             trigger: Some(GenerationAnchor::StageFusion { stages: vec![retained, following] }),
         }));
     }
-    let base = previous.registers.len();
-    let local = previous.locals.last_key_value().map_or(0, |(end, _)| *end);
-    map(&mut stage.code, crate::ir::rewrite::Remap::Offset { registers: base, locals: local });
+}
+unsafe extern "C" fn fusion_retain(previous: *mut c_void, current: *const c_void) {
+    let previous = unsafe { &mut *previous.cast::<Stage>() };
+    let stage = unsafe { &*current.cast::<Stage>() };
+    retain_stage_guarantees(previous, &stage.write_regions);
+}
+unsafe extern "C" fn fusion_commit(context: *mut c_void, local: usize) {
+    let state = unsafe { &mut *context.cast::<ProgramState<'_>>() };
+    let (stage, _) = state.current.take().unwrap();
+    let (previous, changed) = state.stages.last_mut().unwrap();
     previous.registers.extend(stage.registers);
     previous.locals.extend(stage.locals.into_iter().map(|(end, ty)| (end + local, ty)));
     previous.code.extend(stage.code);
     union_bindings(&mut previous.reads, stage.reads);
     union_bindings(&mut previous.writes, stage.writes);
-    retain_stage_guarantees(previous, &stage.write_regions);
     previous.prefix_guarantees.extend(stage.prefix_guarantees);
     previous.element_guarantees.extend(stage.element_guarantees);
     for (binding, written) in stage.write_regions {
