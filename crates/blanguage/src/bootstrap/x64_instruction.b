@@ -282,7 +282,7 @@ extern "C" void patch_branches(address image, u64 target, address fields, u64 co
     }
 }
 
-extern "C" u32 emit_control(address context,address emitter,ControlInstruction instruction,ControlHost host) on cpu
+u32 emit_control(address context,address emitter,ControlInstruction instruction,ControlHost host) on cpu
     requires nonzero(host.emit) requires nonzero(host.load) requires nonzero(host.offset)
     requires nonzero(host.jump) requires nonzero(host.jump_to) requires nonzero(host.patch_here)
     requires nonzero(host.open) requires nonzero(host.close) requires nonzero(host.defer)
@@ -2320,42 +2320,91 @@ extern "C" u64 packet_select(MoveLocation dst, MoveLocation condition, MoveLocat
     return packet_store_at(cursor, dst, target) - start;
 }
 
-extern "C" void emit_packet_body(address context, u64 count, bool sparse, u32 slots, PacketBodyHost host) on cpu
-    requires nonzero(host.step) requires nonzero(host.span) requires nonzero(host.range)
-    requires nonzero(host.reserve) requires nonzero(host.finish)
-    requires nonzero(host.values.ir.inspect) requires nonzero(host.values.location) requires nonzero(host.values.scalar) {
+struct PacketMemory {
+    MoveLocation index;
+    u32 data_offset; u32 stride_offset; u32 frame_offset; u32 offset;
+    PacketAddress mode;
+};
+struct PacketView {
+    MoveLocation index; MoveLocation base_low; MoveLocation base_high;
+    MoveLocation stride_low; MoveLocation stride_high;
+    u64 stride; u32 offset; bool dynamic_stride; PacketViewAddress mode;
+};
+
+u64 emit_packet_step(read PacketBodyOp op, PacketLayout layout, ScalarValueHost values, address output) on cpu
+    requires nonzero(values.ir.inspect) requires nonzero(values.location) requires nonzero(values.scalar) {
+    MoveLocation target = op.locations[0];
+    if (op.kind == PacketBodyKind::Constant) {
+        return packet_constant(target, op.literal, output);
+    }
+    if (op.kind == PacketBodyKind::Index) {
+        return packet_index(target, layout.sparse != 0, layout.slots, output);
+    }
+    if (op.kind == PacketBodyKind::Uniform) {
+        return packet_uniform(target, op.literal, op.flag != 0, output);
+    }
+    if (op.kind == PacketBodyKind::Copy) {
+        return packet_copy(target, op.locations[1], output);
+    }
+    if (op.kind == PacketBodyKind::Unary) {
+        return packet_unary(target, op.locations[1], op.unary, output);
+    }
+    if (op.kind == PacketBodyKind::Binary) {
+        return packet_binary(target, op.locations[1], op.locations[2], op.source, op.binary, op.flag != 0, output);
+    }
+    if (op.kind == PacketBodyKind::Cast) {
+        return packet_cast(target, op.locations[1], op.source, op.target, output);
+    }
+    if (op.kind == PacketBodyKind::Math) {
+        return packet_math(target, op.locations[1], op.locations[2], op.math, output);
+    }
+    if (op.kind == PacketBodyKind::IntegerDivide) {
+        View value = values.ir.inspect(Node(op.instruction, N_INSTRUCTION));
+        return emit_integer_division(value, values, true, output);
+    }
+    if (op.kind == PacketBodyKind::Select) {
+        return packet_select(target, op.locations[1], op.locations[2], op.locations[3], output);
+    }
+    if (op.kind == PacketBodyKind::View) {
+        PacketView input = PacketView(op.locations[1], op.locations[2], op.locations[3], op.locations[4],
+            op.locations[5], op.stride, op.literal, op.dynamic_stride != 0, op.view);
+        return packet_view(target, input, op.flag != 0, output);
+    }
+    MoveLocation index = MoveLocation(0u64, MOVE_IMMEDIATE, u8(0), NO_INDEX, u8(0));
+    if (op.dataset == PacketAddress::Uniform || op.dataset == PacketAddress::Gather) {
+        index = values.location(values.context, op.index);
+    }
+    u32 data = u32(op.binding) * layout.buffer_bytes;
+    PacketMemory memory = PacketMemory(index, data, data + layout.stride_field, layout.slots, op.literal, op.dataset);
+    if (op.kind == PacketBodyKind::Load) { return packet_read(target, memory, op.flag != 0, output); }
+    return packet_write(target, memory, output);
+}
+
+extern "C" void emit_packet_body(address context, address emitter, Span code, PacketLayout layout, PacketBodyHost host) on cpu
+    requires nonzero(host.step) requires nonzero(host.mark) requires nonzero(host.publish)
+    requires nonzero(host.reserve) requires nonzero(host.commit)
+    requires nonzero(host.values.ir.inspect) requires nonzero(host.values.location) requires nonzero(host.values.scalar)
+    requires nonzero(host.control.emit) requires nonzero(host.control.load) requires nonzero(host.control.offset)
+    requires nonzero(host.control.jump) requires nonzero(host.control.jump_to) requires nonzero(host.control.patch_here)
+    requires nonzero(host.control.open) requires nonzero(host.control.close) requires nonzero(host.control.defer)
+    requires nonzero(host.control.continuation) {
     u64 index = 0u64;
-    while (index < count) {
-        PacketBodySpan span = host.span(context);
-        PacketBodyOp op = host.step(context, index);
-        if (op.kind == PacketBodyKind::Failed) { return; }
-        if (op.kind == PacketBodyKind::Constant) {
-            host.finish(context, packet_constant(op.locations[0], op.literal, host.reserve(context, 24u64)));
-        } else if (op.kind == PacketBodyKind::Index) {
-            host.finish(context, packet_index(op.locations[0], sparse, slots, host.reserve(context, 48u64)));
-        } else if (op.kind == PacketBodyKind::Uniform) {
-            host.finish(context, packet_uniform(op.locations[0], op.literal, op.flag != 0, host.reserve(context, 64u64)));
-        } else if (op.kind == PacketBodyKind::Copy) {
-            host.finish(context, packet_copy(op.locations[0], op.locations[1], host.reserve(context, 32u64)));
-        } else if (op.kind == PacketBodyKind::Unary) {
-            host.finish(context, packet_unary(op.locations[0], op.locations[1], op.unary, host.reserve(context, 256u64)));
-        } else if (op.kind == PacketBodyKind::Binary) {
-            host.finish(context, packet_binary(op.locations[0], op.locations[1], op.locations[2],
-                op.source, op.binary, op.flag != 0, host.reserve(context, 256u64)));
-        } else if (op.kind == PacketBodyKind::Cast) {
-            host.finish(context, packet_cast(op.locations[0], op.locations[1], op.source, op.target,
-                host.reserve(context, 256u64)));
-        } else if (op.kind == PacketBodyKind::Math) {
-            host.finish(context, packet_math(op.locations[0], op.locations[1], op.locations[2],
-                op.math, host.reserve(context, 256u64)));
-        } else if (op.kind == PacketBodyKind::IntegerDivide) {
-            View value = host.values.ir.inspect(Node(op.instruction, N_INSTRUCTION));
-            host.finish(context, emit_integer_division(value, host.values, true, host.reserve(context, 256u64)));
-        } else if (op.kind == PacketBodyKind::Select) {
-            host.finish(context, packet_select(op.locations[0], op.locations[1], op.locations[2],
-                op.locations[3], host.reserve(context, 256u64)));
+    while (index < code.count) {
+        address step = unsafe_address(address_bits(code.data) + index * u64(code.stride));
+        ScalarCursor cursor = host.mark(emitter);
+        PacketBodyOp op = host.step(context, step);
+        if (op.kind == PacketBodyKind::Control) {
+            emit_control(context, emitter, op.control, host.control);
+        } else {
+            u64 capacity = 256u64;
+            if (op.kind == PacketBodyKind::View) { capacity = 1024u64; }
+            if (op.kind == PacketBodyKind::Load || op.kind == PacketBodyKind::Store) { capacity = 512u64; }
+            NativeCodeBuffer buffer = host.reserve(emitter, capacity);
+            address output = unsafe_address(address_bits(buffer.image) + buffer.end);
+            u64 count = emit_packet_step(op, layout, host.values, output);
+            host.commit(emitter, buffer.end + count);
         }
-        host.range(context, index, span);
+        host.publish(emitter, op.instruction, cursor);
         index += 1u64;
     }
 }
@@ -2751,7 +2800,7 @@ u64 packet_dataset_gather_at(u64 at, MoveLocation dst, PacketMemory memory, bool
     return packet_store_at(cursor, dst, u8(0));
 }
 
-extern "C" u64 packet_read(MoveLocation dst, PacketMemory memory, bool boolean, address output) on cpu {
+u64 packet_read(MoveLocation dst, PacketMemory memory, bool boolean, address output) on cpu {
     u64 start = address_bits(output); u64 cursor = start; u64 done = 0u64;
     if (memory.mode == PacketAddress::Gather) {
         return packet_dataset_gather_at(start, dst, memory, boolean) - start;
@@ -2779,7 +2828,7 @@ extern "C" u64 packet_read(MoveLocation dst, PacketMemory memory, bool boolean, 
     return packet_store_at(cursor, dst, target) - start;
 }
 
-extern "C" u64 packet_write(MoveLocation src, PacketMemory memory, address output) on cpu {
+u64 packet_write(MoveLocation src, PacketMemory memory, address output) on cpu {
     u64 start = address_bits(output); u64 cursor = start; u64 done = 0u64;
     u8 source = u8(1);
     if (src.kind == MOVE_XMM) { source = src.base; }
@@ -2805,7 +2854,7 @@ extern "C" u64 packet_write(MoveLocation src, PacketMemory memory, address outpu
     return cursor - start;
 }
 
-extern "C" u64 packet_view(MoveLocation dst, PacketView input, bool boolean, address output) on cpu {
+u64 packet_view(MoveLocation dst, PacketView input, bool boolean, address output) on cpu {
     u64 start = address_bits(output);
     u64 cursor = start;
     bool shared = input.mode != PacketViewAddress::Varying;
@@ -5189,7 +5238,7 @@ u64 close_map_loop(MapRangeHost host, u64 begin, u64 exit_field, u64 skip_field,
     return range.end;
 }
 
-bool emit_map_packet(MapRangeInput input, MapRangeHost host, u32 data, u32 stride) on cpu
+void emit_map_packet(MapRangeInput input, MapRangeHost host, u32 data, u32 stride) on cpu
     requires nonzero(host.reserve) requires nonzero(host.commit)
     requires nonzero(host.packet) requires nonzero(host.observe) {
     bool sparse = input.selected != 0;
@@ -5209,7 +5258,7 @@ bool emit_map_packet(MapRangeInput input, MapRangeHost host, u32 data, u32 strid
         map_range_part(host, MapRangePart::PacketBounds, begin, end);
         tail = end - 4u64;
     }
-    if (host.packet(host.context, input.packet) == 0) { return false; }
+    host.packet(host.context, input.packet);
     close_map_loop(host, begin, tail, 0u64, sparse ? u8(0) : u8(4),
         MapRangePart::PacketAdvance, MapRangePart::PacketBackEdge);
     if (sparse) {
@@ -5219,7 +5268,6 @@ bool emit_map_packet(MapRangeInput input, MapRangeHost host, u32 data, u32 strid
         host.commit(host.context, end);
         map_range_part(host, MapRangePart::PacketTail, tail_buffer.end, end);
     }
-    return true;
 }
 
 u64 move_tile_base(MapRangeHost host, u32 offset, u64 phase, bool restore) on cpu
@@ -5337,9 +5385,7 @@ extern "C" u32 emit_map_range(MapRangeInput input, MapRangeHost host) on cpu
     host.observe(host.context, MapRangeObservation(0u64, entry.end, usize(0), input.frame, MapRangePart::Enter));
     u32 data = u32(input.binding) * input.buffer_bytes;
     u32 stride = data + input.stride_field;
-    if (address_bits(input.packet) != 0u64 && !emit_map_packet(input, host, data, stride)) {
-        return entry.stack_bytes;
-    }
+    if (address_bits(input.packet) != 0u64) { emit_map_packet(input, host, data, stride); }
 
     NativeCodeBuffer buffer = host.reserve(host.context, 64u64);
     ScalarRangePrefix prefix = scalar_range_prefix(buffer.image, buffer.end, input.selected, data, stride, input.word);

@@ -36,7 +36,7 @@ mod segmented_reduce;
 mod sort;
 #[path="structure.rs"]
 mod structure;
-use structure::{Flow, ScalarLeaf};
+use structure::ScalarLeaf;
 use crate::ir::dataflow::{self, Node, Span, View};
 use std::collections::{btree_map, btree_set};
 #[path="texture.rs"]
@@ -387,7 +387,7 @@ struct MapRangeHost {
     leave: unsafe extern "C" fn(MapRangeSlot, u32) -> usize,
     reserve: unsafe extern "C" fn(MapRangeSlot, usize) -> NativeCodeBuffer,
     commit: unsafe extern "C" fn(MapRangeSlot, usize),
-    packet: unsafe extern "C" fn(MapRangeSlot, *const std::ffi::c_void) -> u32,
+    packet: unsafe extern "C" fn(MapRangeSlot, *const std::ffi::c_void),
     scalar: unsafe extern "C" fn(MapRangeSlot, Span) -> u32,
     next_input: unsafe extern "C" fn(MapRangeSlot) -> TileInputFragment,
     observe_input: unsafe extern "C" fn(MapRangeSlot, usize, usize, TileInputFragment, u32),
@@ -441,11 +441,10 @@ unsafe extern "C" fn map_range_commit(slot: MapRangeSlot, end: usize) {
     unsafe { range.emitter.commit_native_code(end) };
 }
 
-unsafe extern "C" fn map_range_packet(slot: MapRangeSlot, packet: *const std::ffi::c_void) -> u32 {
+unsafe extern "C" fn map_range_packet(slot: MapRangeSlot, packet: *const std::ffi::c_void) {
     let range = unsafe { &mut *slot.cast::<MapRange<'_, '_>>() };
     let (plan, allocation) = unsafe { &*packet.cast::<(packet::Plan<'_>, PacketAllocation)>() };
-    range.result = range.emitter.emit_packet_plan(plan, allocation, u32::from(range.stage.selection.is_some()));
-    u32::from(range.result.is_ok())
+    range.emitter.emit_packet_plan(plan, allocation, u32::from(range.stage.selection.is_some()));
 }
 
 unsafe extern "C" fn map_range_scalar(slot: MapRangeSlot, code: Span) -> u32 {

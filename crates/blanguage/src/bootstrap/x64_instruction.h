@@ -105,12 +105,6 @@ struct ControlHost {
     cfn<void,address,ControlTarget,u64> defer;
     cfn<u64,address> continuation;
 };
-extern "C" u32 emit_control(address context,address emitter,ControlInstruction instruction,ControlHost host) on cpu
-    requires nonzero(host.emit) requires nonzero(host.load) requires nonzero(host.offset)
-    requires nonzero(host.jump) requires nonzero(host.jump_to) requires nonzero(host.patch_here)
-    requires nonzero(host.open) requires nonzero(host.close) requires nonzero(host.defer)
-    requires nonzero(host.continuation);
-
 // The original emitter owns code, fixups, scopes and observations. Both the
 // scalar loop and its nested blocks borrow the same lowered instruction span.
 enum ScalarLeaf:u32 {
@@ -326,11 +320,17 @@ struct ScalarValueHost {
 };
 
 enum PacketBodyKind:u32 {
-    Done=0; Failed=1; Constant=2; Index=3; Uniform=4; Copy=5; Unary=6;
-    Binary=7; Cast=8; Math=9; Select=10; IntegerDivide=11;
+    Constant=0; Index=1; Uniform=2; Copy=3; Unary=4;
+    Binary=5; Cast=6; Math=7; Select=8; IntegerDivide=9;
+    Load=10; Store=11; View=12; Control=13;
 };
 struct PacketBodyOp {
-    array<MoveLocation,4> locations;
+    array<MoveLocation,6> locations;
+    ControlInstruction control;
+    address instruction;
+    usize binding;
+    usize index;
+    u64 stride;
     ScalarEncoding source;
     ScalarEncoding target;
     PacketBodyKind kind;
@@ -339,21 +339,28 @@ struct PacketBodyOp {
     ValueUnaryOperation unary;
     BinaryOperation binary;
     PacketMathOperation math;
-    address instruction;
+    PacketAddress dataset;
+    PacketViewAddress view;
+    u32 dynamic_stride;
 };
-struct PacketBodySpan { u64 start; u64 first; };
+struct PacketLayout { u32 sparse; u32 slots; u32 buffer_bytes; u32 stride_field; };
 struct PacketBodyHost {
-    cfn<PacketBodyOp,address,u64> step;
-    cfn<PacketBodySpan,address> span;
-    cfn<void,address,u64,PacketBodySpan> range;
-    cfn<address,address,u64> reserve;
-    cfn<void,address,u64> finish;
+    ControlHost control;
+    cfn<PacketBodyOp,address,address> step;
+    cfn<ScalarCursor,address> mark;
+    cfn<void,address,address,ScalarCursor> publish;
+    cfn<NativeCodeBuffer,address,u64> reserve;
+    cfn<void,address,u64> commit;
     ScalarValueHost values;
 };
-extern "C" void emit_packet_body(address context, u64 count, bool sparse, u32 slots, PacketBodyHost host) on cpu
-    requires nonzero(host.step) requires nonzero(host.span) requires nonzero(host.range)
-    requires nonzero(host.reserve) requires nonzero(host.finish)
-    requires nonzero(host.values.ir.inspect) requires nonzero(host.values.location) requires nonzero(host.values.scalar);
+extern "C" void emit_packet_body(address context, address emitter, Span code, PacketLayout layout, PacketBodyHost host) on cpu
+    requires nonzero(host.step) requires nonzero(host.mark) requires nonzero(host.publish)
+    requires nonzero(host.reserve) requires nonzero(host.commit)
+    requires nonzero(host.values.ir.inspect) requires nonzero(host.values.location) requires nonzero(host.values.scalar)
+    requires nonzero(host.control.emit) requires nonzero(host.control.load) requires nonzero(host.control.offset)
+    requires nonzero(host.control.jump) requires nonzero(host.control.jump_to) requires nonzero(host.control.patch_here)
+    requires nonzero(host.control.open) requires nonzero(host.control.close) requires nonzero(host.control.defer)
+    requires nonzero(host.control.continuation);
 
 // The caller owns the output and consumes the returned native memory operand.
 // B retains no address after return; the emitter owns the code and memory operand.
@@ -396,21 +403,6 @@ extern "C" PacketAddress packet_dataset_address(u32 stride, u32 word, bool selec
 extern "C" PacketViewAddress packet_view_address(u32 word, bool uniform_base,
     bool uniform_index, bool uniform_stride) on cpu;
 
-// The caller supplies 512 bytes for a dataset operation and 1024 for a view read.
-struct PacketMemory {
-    MoveLocation index;
-    u32 data_offset; u32 stride_offset; u32 frame_offset; u32 offset;
-    PacketAddress mode;
-};
-struct PacketView {
-    MoveLocation index; MoveLocation base_low; MoveLocation base_high;
-    MoveLocation stride_low; MoveLocation stride_high;
-    u64 stride;
-    u32 offset; bool dynamic_stride; PacketViewAddress mode;
-};
-extern "C" u64 packet_read(MoveLocation dst, PacketMemory memory, bool boolean, address output) on cpu;
-extern "C" u64 packet_write(MoveLocation src, PacketMemory memory, address output) on cpu;
-extern "C" u64 packet_view(MoveLocation dst, PacketView input, bool boolean, address output) on cpu;
 
 struct CompactScatter {
     u32 source; u32 target; u32 flags; u32 prefix;
@@ -761,7 +753,7 @@ struct MapRangeHost {
     cfn<u64,address,u32> leave;
     cfn<NativeCodeBuffer,address,u64> reserve;
     cfn<void,address,u64> commit;
-    cfn<u32,address,address> packet;
+    cfn<void,address,address> packet;
     cfn<u32,address,Span> scalar;
     cfn<TileInputFragment,address> next_input;
     cfn<void,address,u64,u64,TileInputFragment,u32> observe_input;

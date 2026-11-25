@@ -5,40 +5,16 @@ use crate::ir::dataflow::{self, Span, View};
 
 type Slot = *mut c_void;
 
-pub(super) enum Flow<'a, I> {
-    If(Reg, &'a [I], &'a [I]),
-    Loop(&'a [I], Reg, &'a [I]),
-    Scope(&'a [I]),
-    Exit,
-    Break,
-    Continue,
-    Raise(Reg),
-}
-
 #[repr(u32)]
-enum Kind { If, Loop, Scope, Exit, Break, Continue, Raise }
+#[allow(dead_code)]
+pub(super) enum ControlKind { If, Loop, Scope, Exit, Break, Continue, Raise }
 
 #[repr(C)]
-struct Control {
-    first: Span,
-    second: Span,
-    register: Reg,
-    kind: Kind,
-}
-
-impl<I> From<Flow<'_, I>> for Control {
-    fn from(flow: Flow<'_, I>) -> Self {
-        let (kind, register, first, second) = match flow {
-            Flow::If(reg, yes, no) => (Kind::If, reg, Span::slice(yes), Span::slice(no)),
-            Flow::Loop(condition, reg, body) => (Kind::Loop, reg, Span::slice(condition), Span::slice(body)),
-            Flow::Scope(body) => (Kind::Scope, 0, Span::slice(body), Span::slice::<I>(&[])),
-            Flow::Exit => (Kind::Exit, 0, Span::slice::<I>(&[]), Span::slice::<I>(&[])),
-            Flow::Break => (Kind::Break, 0, Span::slice::<I>(&[]), Span::slice::<I>(&[])),
-            Flow::Continue => (Kind::Continue, 0, Span::slice::<I>(&[]), Span::slice::<I>(&[])),
-            Flow::Raise(reg) => (Kind::Raise, reg, Span::slice::<I>(&[]), Span::slice::<I>(&[])),
-        };
-        Self { first, second, register, kind }
-    }
+pub(super) struct Control {
+    pub(super) first: Span,
+    pub(super) second: Span,
+    pub(super) register: Reg,
+    pub(super) kind: ControlKind,
 }
 
 #[repr(u32)]
@@ -52,7 +28,7 @@ enum Target { Block, Loop, Function }
 
 #[repr(C)]
 #[derive(Clone, Copy)]
-struct Host {
+pub(super) struct Host {
     emit: unsafe extern "C" fn(Slot, Slot, Span) -> u32,
     load: unsafe extern "C" fn(Slot, Slot, Reg),
     offset: unsafe extern "C" fn(Slot) -> usize,
@@ -66,38 +42,19 @@ struct Host {
 }
 
 unsafe extern "C" {
-    #[link_name = "bootstrap.x64_instruction::emit_control"]
-    fn emit_control(context: Slot, emitter: Slot, control: Control, host: Host) -> u32;
     #[link_name = "bootstrap.x64_instruction::emit_scalar_body"]
     fn emit_scalar_body(context: Slot, emitter: Slot, code: Span, host: ScalarHost) -> ScalarBodyStatus;
-}
-
-struct Context<F, L> {
-    emit: F,
-    load: L,
-    result: Result<(), &'static str>,
 }
 
 unsafe fn emitter<'a, 'b>(slot: Slot) -> &'a mut Emitter<'b> {
     unsafe { &mut *slot.cast() }
 }
 
-unsafe extern "C" fn child<'a, I, F, L>(context: Slot, slot: Slot, block: Span) -> u32
-where
-    F: Fn(&mut Emitter<'a>, &[I]) -> Result<(), &'static str>,
-{
-    let context = unsafe { &mut *context.cast::<Context<F, L>>() };
-    let code = unsafe { block.as_slice() };
-    context.result = (context.emit)(unsafe { emitter(slot) }, code);
-    u32::from(context.result.is_err())
-}
-
-unsafe extern "C" fn test<'a, F, L>(context: Slot, slot: Slot, register: Reg)
-where
-    L: Fn(&mut Emitter<'a>, Reg),
-{
-    let context = unsafe { &*context.cast::<Context<F, L>>() };
-    (context.load)(unsafe { emitter(slot) }, register);
+pub(super) fn control_host(
+    emit: unsafe extern "C" fn(Slot, Slot, Span) -> u32,
+    load: unsafe extern "C" fn(Slot, Slot, Reg),
+) -> Host {
+    Host { emit, load, offset, jump, jump_to, patch_here, open, close, defer, continuation }
 }
 
 unsafe extern "C" fn offset(slot: Slot) -> usize { unsafe { emitter(slot) }.code.len() }
@@ -164,7 +121,7 @@ pub(super) enum ScalarLeaf {
 enum ScalarBodyStatus { Done, Unlowered, Subgroup, RayQuery }
 
 #[repr(C)]
-struct ScalarCursor { start: usize, ranges: usize }
+pub(super) struct ScalarCursor { start: usize, ranges: usize }
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -184,11 +141,11 @@ struct ScalarHost {
 #[repr(C)]
 struct ScalarMathReference { field: u64, length: u32, name: [u8; 6] }
 
-unsafe extern "C" fn reserve_scalar(slot: Slot, count: usize) -> NativeCodeBuffer {
+pub(super) unsafe extern "C" fn reserve_scalar(slot: Slot, count: usize) -> NativeCodeBuffer {
     unsafe { emitter(slot) }.reserve_native_code(count)
 }
 
-unsafe extern "C" fn commit_scalar(slot: Slot, end: usize) {
+pub(super) unsafe extern "C" fn commit_scalar(slot: Slot, end: usize) {
     unsafe { emitter(slot).commit_native_code(end) };
 }
 
@@ -213,12 +170,12 @@ unsafe extern "C" fn scalar_load(_: Slot, slot: Slot, register: Reg) {
     unsafe { emitter(slot) }.load(register);
 }
 
-unsafe extern "C" fn mark_scalar(slot: Slot) -> ScalarCursor {
+pub(super) unsafe extern "C" fn mark_scalar(slot: Slot) -> ScalarCursor {
     let e = unsafe { emitter(slot) };
     ScalarCursor { start: e.code.len(), ranges: e.operation_ranges.len() }
 }
 
-unsafe extern "C" fn publish_scalar(slot: Slot, inst: *const Inst, cursor: ScalarCursor) {
+pub(super) unsafe extern "C" fn publish_scalar(slot: Slot, inst: *const Inst, cursor: ScalarCursor) {
     unsafe { emitter(slot) }.operation_range(unsafe { &*inst }, cursor.start, cursor.ranges);
 }
 
@@ -248,8 +205,7 @@ impl<'a> Emitter<'a> {
         let workgroup = self.workgroup;
         let slot = std::ptr::from_mut(self).cast();
         let mut host = ScalarHost {
-            control: Host { emit: scalar_child, load: scalar_load, offset, jump, jump_to,
-                patch_here, open, close, defer, continuation },
+            control: control_host(scalar_child, scalar_load),
             mark: mark_scalar,
             publish: publish_scalar,
             emit: emit_scalar,
@@ -271,18 +227,4 @@ impl<'a> Emitter<'a> {
         }
     }
 
-    pub(super) fn lower_control<I, F, L>(&mut self, flow: Flow<'_, I>, emit: F, load: L)
-        -> Result<(), &'static str>
-    where
-        F: Fn(&mut Self, &[I]) -> Result<(), &'static str>,
-        L: Fn(&mut Self, Reg),
-    {
-        let mut ctx = Context { emit, load, result: Ok(()) };
-        let host = Host {
-            emit: child::<I, F, L>, load: test::<F, L>,
-            offset, jump, jump_to, patch_here, open, close, defer, continuation,
-        };
-        unsafe { emit_control(std::ptr::from_mut(&mut ctx).cast(), std::ptr::from_mut(self).cast(), flow.into(), host) };
-        ctx.result
-    }
 }
