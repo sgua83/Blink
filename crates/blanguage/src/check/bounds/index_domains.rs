@@ -131,6 +131,95 @@ pub(super) unsafe fn materialize(kind: Output, v: Fields) -> IndexDomain {
         }
     }
 }
+struct LengthRelation<'a> {
+    origins: [&'a [ValueIdentity]; 2],
+    inputs: [btree_set::Iter<'a, IndexDomain>; 2],
+    index: &'a Domains,
+    length: &'a Domains,
+}
+
+#[repr(C)]
+struct LengthRelationHost {
+    next: unsafe extern "C" fn(Slot, u32) -> Fields,
+    origin: unsafe extern "C" fn(Borrowed, u32, Borrowed) -> u32,
+    resource: unsafe extern "C" fn(Borrowed, Fields) -> u32,
+    range: unsafe extern "C" fn(Borrowed, Output, Fields, u32, u32) -> u32,
+    sum: unsafe extern "C" fn(Borrowed, Borrowed, Borrowed) -> u32,
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.condition_graph::proof_length_relation"]
+    fn b_length_relation(context: Slot, strict: u32, host: LengthRelationHost) -> u32;
+}
+
+unsafe extern "C" fn length_relation_next(context: Slot, side: u32) -> Fields {
+    unsafe { frame::<LengthRelation<'_>>(context) }.inputs[side as usize]
+        .next()
+        .map(fields)
+        .unwrap_or_default()
+}
+
+unsafe extern "C" fn length_relation_origin(context: Borrowed, side: u32, origin: Borrowed) -> u32 {
+    let state = unsafe { &*context.cast::<LengthRelation<'_>>() };
+    let identity = unsafe { &*origin.cast::<ValueIdentity>() };
+    u32::from(state.origins[side as usize].contains(identity))
+}
+
+unsafe extern "C" fn length_relation_resource(context: Borrowed, resource: Fields) -> u32 {
+    let state = unsafe { &*context.cast::<LengthRelation<'_>>() };
+    let domain = unsafe { &*resource.original.cast::<IndexDomain>() };
+    let identity = match *domain {
+        IndexDomain::Data(binding) => ValueIdentity::DataLength(binding),
+        IndexDomain::Tile => ValueIdentity::TileLength,
+        IndexDomain::View(parts) => parts[2],
+        _ => return 0,
+    };
+    u32::from(state.origins[1].contains(&identity))
+}
+
+unsafe extern "C" fn length_relation_range(
+    context: Borrowed, kind: Output, row: Fields, min: u32, max: u32,
+) -> u32 {
+    let state = unsafe { &*context.cast::<LengthRelation<'_>>() };
+    let start = unsafe { materialize(kind, Fields { distance: u64::from(min), ..row }) };
+    let end = unsafe { materialize(kind, Fields { distance: u64::from(max), ..row }) };
+    u32::from(state.index.range(start..=end).next().is_some())
+}
+
+unsafe extern "C" fn length_relation_sum(context: Borrowed, left: Borrowed, right: Borrowed) -> u32 {
+    let state = unsafe { &*context.cast::<LengthRelation<'_>>() };
+    let left = unsafe { *left.cast::<ValueIdentity>() };
+    let right = unsafe { *right.cast::<ValueIdentity>() };
+    u32::from(state.length.contains(&IndexDomain::Sum(left, right)))
+}
+
+pub(super) fn length_relation(
+    (origins, index): (&[ValueIdentity], &Domains),
+    (length_origins, length): (&[ValueIdentity], &Domains),
+    strict: bool,
+) -> bool {
+    let mut relation = LengthRelation {
+        origins: [origins, length_origins],
+        inputs: [index.iter(), length.iter()],
+        index,
+        length,
+    };
+    unsafe {
+        b_length_relation(
+            ptr::from_mut(&mut relation).cast(),
+            u32::from(strict),
+            LengthRelationHost {
+                next: length_relation_next,
+                origin: length_relation_origin,
+                resource: length_relation_resource,
+                range: length_relation_range,
+                sum: length_relation_sum,
+            },
+        ) != 0
+    }
+}
+
+
 struct Below<'a> {
     input: btree_set::Iter<'a, IndexDomain>,
     output: Domains,

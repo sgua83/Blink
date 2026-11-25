@@ -703,6 +703,18 @@ extern "C" u32 relation_source_below(address context,address left,address right,
 struct IndexFields {u32 present;u32 kind;address original;address payload;address first;address second;u64 distance;};
 enum IndexOutput:u32 {Original=0;Data=1;Tile=2;View=3;ApplicationData=4;Upper=5;Shifted=6;Sum=7;Offset=8;Room=9;};
 struct IndexBelowHost {cfn<IndexFields,address> next;cfn<void,address,IndexOutput,IndexFields> emit;};
+struct LengthRelationHost {
+ cfn<IndexFields,address,u32> next;
+ cfn<u32,address,u32,address> ensures memory(read) origin;
+ cfn<u32,address,IndexFields> ensures memory(read) resource;
+ cfn<u32,address,IndexOutput,IndexFields,u32,u32> ensures memory(read) range;
+ cfn<u32,address,address,address> ensures memory(read) sum;
+};
+extern "C" u32 proof_length_relation(address context,u32 strict,LengthRelationHost host) on cpu
+ requires nonzero(host.next) requires nonzero(host.origin) requires nonzero(host.resource)
+ requires nonzero(host.range) requires nonzero(host.sum);
+
+
 struct IndexBounds {u64 lower;u64 upper;};
 struct IndexConstant {u32 present;u64 bits;};
 struct ArithmeticIndexHost {

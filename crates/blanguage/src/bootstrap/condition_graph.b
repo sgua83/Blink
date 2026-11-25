@@ -2397,3 +2397,30 @@ extern "C" void join_proof_domains(address context,u32 bits,DomainJoinHost host)
  if(bits!=0){host.bits(context);}
 }
 
+
+extern "C" u32 proof_length_relation(address context,u32 strict,LengthRelationHost host) on cpu
+ requires nonzero(host.next) requires nonzero(host.origin) requires nonzero(host.resource)
+ requires nonzero(host.range) requires nonzero(host.sum) {
+ u64 margin=u64(strict);
+ IndexFields index=host.next(context,0);
+ while(index.present!=0) {
+  if((index.kind==1||index.kind==2||index.kind==3)&&host.resource(context,index)!=0){return 1;}
+  if(index.distance>=margin) {
+   if(index.kind==9&&host.origin(context,1,index.first)!=0){return 1;}
+   if(index.kind==11&&(host.sum(context,index.first,index.second)!=0||host.sum(context,index.second,index.first)!=0)){return 1;}
+  }
+  index=host.next(context,0);
+ }
+ IndexFields length=host.next(context,1);
+ while(length.present!=0) {
+  if(length.kind==12) {
+   if(length.distance>=margin&&(host.origin(context,0,length.first)!=0
+    ||host.range(context,IndexOutput::Offset,length,0,u32(length.distance-margin))!=0)){return 1;}
+   u32 minimum=length.distance>=margin?0:1;
+   if(host.range(context,IndexOutput::Upper,length,minimum,4294967295)!=0){return 1;}
+  }
+  length=host.next(context,1);
+ }
+ return 0;
+}
+

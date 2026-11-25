@@ -1394,29 +1394,7 @@ impl Proof {
         self
     }
     pub(super) fn below_length(index: (&[ValueIdentity], &Domains), length: (&[ValueIdentity], &Domains), strict: bool) -> bool {
-        let (identities, bounds) = index;
-        let (origins, domains) = length;
-        if bounds.iter().any(|bound|match *bound{
-            IndexDomain::Data(binding)=>origins.contains(&ValueIdentity::DataLength(binding)),
-            IndexDomain::Tile=>origins.contains(&ValueIdentity::TileLength),
-            IndexDomain::View(value)=>origins.contains(&value[2]),
-            _=>false,
-        }){return true;}
-        if domains.iter().any(|domain| {
-            let IndexDomain::Offset(base, amount) = *domain else { return false; };
-            amount >= u32::from(strict) && identities.contains(&base) || bounds.iter().any(|bound| match *bound {
-                IndexDomain::Offset(source, offset) => source == base && if strict { offset < amount } else { offset <= amount },
-                IndexDomain::Upper(limit, distance) => limit == base && (!strict || amount != 0 || distance != 0),
-                _ => false,
-            })
-        }) { return true; }
-        bounds.iter().any(|bound| match *bound {
-            IndexDomain::Upper(limit, distance) => distance >= u32::from(strict) && origins.contains(&limit),
-            IndexDomain::Shifted(base, limit, distance) if distance >= u32::from(strict) => domains.iter().any(|sum| {
-                matches!(*sum, IndexDomain::Sum(left, right) if (left == base && right == limit) || (left == limit && right == base))
-            }),
-            _ => false,
-        })
+        index_domains::length_relation(index, length, strict)
     }
     pub(super) fn with_component_identity(mut self,component:usize,identity:ValueIdentity)->Self {
         self.origins.resize_with(self.origins.len().max(component+1),Vec::new);
