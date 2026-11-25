@@ -30,12 +30,6 @@ struct Assignment { u32 present; usize node; u32 truth; };
 struct Checkpoint { usize nodes; usize facts; usize negative; usize choice; };
 struct Alternative { u32 kind; usize node; u32 truth; Checkpoint checkpoint; };
 struct Host {
- cfn<usize,address,address> index;
- cfn<usize,address> ensures memory(read) node_count;
- cfn<SourceNode,address,usize> ensures memory(read) inspect;
- cfn<void,address,usize,u32,usize,usize> define;
- cfn<void,address,usize,usize> parent_push;
- cfn<Graph,address> prepare;
  cfn<void,address,usize,u32> pending_push;
  cfn<Assignment,address> pending_pop;
  cfn<void,address> pending_clear;
@@ -57,9 +51,7 @@ struct Host {
  cfn<void,address,address,Checkpoint> push_fact;
  cfn<Alternative,address> pop_alternative;
 };
-extern "C" u32 overlap(address left,address right,u32 right_truth,address context,Host host) on cpu
- requires nonzero(host.index) requires nonzero(host.node_count) requires nonzero(host.inspect)
- requires nonzero(host.define) requires nonzero(host.parent_push) requires nonzero(host.prepare)
+extern "C" u32 overlap(usize first,usize second,u32 right_truth,address context,Graph graph,Host host) on cpu
  requires nonzero(host.pending_push) requires nonzero(host.pending_pop) requires nonzero(host.pending_clear)
  requires nonzero(host.trail_push) requires nonzero(host.trail_pop) requires nonzero(host.trail)
  requires nonzero(host.additions) requires nonzero(host.undo_addition) requires nonzero(host.add_leaf)
@@ -67,9 +59,7 @@ extern "C" u32 overlap(address left,address right,u32 right_truth,address contex
  requires nonzero(host.next_fact) requires nonzero(host.inspect_fact) requires nonzero(host.set_next_fact)
  requires nonzero(host.facts.compare) requires nonzero(host.remaining)
  requires nonzero(host.push_clause) requires nonzero(host.push_fact) requires nonzero(host.pop_alternative);
-extern "C" u32 equivalent(address left,address right,address context,Host host,cfn<void,address> reset) on cpu
- requires nonzero(host.index) requires nonzero(host.node_count) requires nonzero(host.inspect)
- requires nonzero(host.define) requires nonzero(host.parent_push) requires nonzero(host.prepare)
+extern "C" u32 equivalent(usize first,usize second,address context,Graph graph,Host host,cfn<void,address> reset) on cpu
  requires nonzero(host.pending_push) requires nonzero(host.pending_pop) requires nonzero(host.pending_clear)
  requires nonzero(host.trail_push) requires nonzero(host.trail_pop) requires nonzero(host.trail)
  requires nonzero(host.additions) requires nonzero(host.undo_addition) requires nonzero(host.add_leaf)

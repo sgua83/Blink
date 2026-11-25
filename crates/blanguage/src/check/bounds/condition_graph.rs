@@ -1,7 +1,7 @@
 //! B owns the complete shared-Clause overlap search. The original query owns
 //! its physical containers and borrows immutable Clause/Fact fields until return.
 use super::{
-    Clause, ClauseNode, Condition, Fact, Facts, IndexDomain, OutputBindings, Proof, ValueIdentity,
+    Clause, ClauseNode, Condition, EncodedClause, Fact, Facts, IndexDomain, OutputBindings, Proof, ValueIdentity,
     internal_conflicts, output_identity,
 };
 use std::{
@@ -182,7 +182,7 @@ struct AlternativeView {
 }
 
 struct Node<'a> {
-    clause: &'a Clause,
+    facts: Option<&'a Facts>,
     view: Gate,
     parents: Vec<usize>,
 }
@@ -191,7 +191,6 @@ enum Alternative<'a> {
     Fact(&'a Fact, btree_set::Iter<'a, Fact>),
 }
 struct Context<'a> {
-    indices: BTreeMap<usize, usize>,
     nodes: Vec<Node<'a>>,
     pending: Vec<(usize, bool)>,
     values: Vec<u8>,
@@ -204,22 +203,39 @@ struct Context<'a> {
     next_fact: Option<(Fact, Option<btree_set::Iter<'a, Fact>>)>,
 }
 impl<'a> Context<'a> {
-    fn new(indices: BTreeMap<usize, usize>, representatives: Vec<&'a Clause>) -> Self {
-        let nodes = representatives.into_iter().map(|clause| Node {
-            clause,
-            view: Gate {
-                left: 0,
-                right: 0,
-                kind: 0,
-                parents: Span { data: std::ptr::null(), count: 0 },
-            },
-            parents: Vec::new(),
-        }).collect();
-        Self {
-            indices,
+    fn new(sources: Vec<EncodedClause<&'a Facts>>) -> Self {
+        let mut nodes = Vec::<Node<'a>>::with_capacity(sources.len());
+        for source in sources {
+            let (kind, facts, left, right) = match source {
+                EncodedClause::Impossible => (0, None, 0, 0),
+                EncodedClause::Facts(facts) => (1, Some(facts), 0, 0),
+                EncodedClause::Both(left, right) => (2, None, left, right),
+                EncodedClause::Either(left, right) => (3, None, left, right),
+            };
+            if kind >= 2 {
+                let parent = nodes.len();
+                nodes[left].parents.push(parent);
+                nodes[right].parents.push(parent);
+            }
+            nodes.push(Node {
+                facts,
+                view: Gate {
+                    left,
+                    right,
+                    kind,
+                    parents: Span { data: std::ptr::null(), count: 0 },
+                },
+                parents: Vec::new(),
+            });
+        }
+        for node in &mut nodes {
+            node.view.parents = Span { data: node.parents.as_ptr(), count: node.parents.len() };
+        }
+        let values = vec![0; nodes.len()];
+        let mut context = Self {
             nodes,
             pending: Vec::new(),
-            values: Vec::new(),
+            values,
             trail: Vec::new(),
             alternatives: Vec::new(),
             facts: Facts::new(),
@@ -227,8 +243,29 @@ impl<'a> Context<'a> {
             conflict_input: None,
             required: None,
             next_fact: None,
+        };
+        context.seed_constants();
+        context
+    }
+
+    fn seed_constants(&mut self) {
+        for (id, node) in self.nodes.iter().enumerate() {
+            if node.view.kind == 0 {
+                self.pending.push((id, false));
+            } else if node.facts.is_some_and(Facts::is_empty) {
+                self.pending.push((id, true));
+            }
         }
     }
+
+    fn graph(&mut self) -> Graph {
+        Graph {
+            nodes: std::ptr::addr_of!(self.nodes[0].view),
+            stride: std::mem::size_of::<Node<'_>>(),
+            values: self.values.as_mut_ptr(),
+        }
+    }
+
     fn add(&mut self, fact: Fact) {
         if self.facts.insert(fact) {
             self.additions.push(fact);
@@ -249,17 +286,6 @@ unsafe fn context<'a, 'b>(slot: Slot) -> &'a mut Context<'b> {
     unsafe { &mut *slot.cast::<Context<'b>>() }
 }
 
-unsafe extern "C" fn index(slot: Slot, clause: Borrowed) -> usize {
-    let context = unsafe { context(slot) };
-    let clause = unsafe { &*clause.cast::<Clause>() };
-    context.indices[&clause.key()]
-}
-unsafe extern "C" fn node_count(slot: Slot) -> usize {
-    unsafe { context(slot) }.nodes.len()
-}
-unsafe extern "C" fn inspect(slot: Slot, id: usize) -> SourceNode {
-    source_node(unsafe { context(slot) }.nodes[id].clause)
-}
 pub(super) fn source_node(clause: &Clause) -> SourceNode {
     let mut out = SourceNode::default();
     match &**clause.0 {
@@ -617,32 +643,6 @@ pub(super) fn missing_call_bounds(root: &Clause, candidates: &Facts) -> Facts {
     }).collect()
 }
 
-unsafe extern "C" fn define(slot: Slot, id: usize, kind: u32, left: usize, right: usize) {
-    let context = unsafe { context(slot) };
-    let view = &mut context.nodes[id].view;
-    view.kind = kind;
-    view.left = left;
-    view.right = right;
-}
-unsafe extern "C" fn parent_push(slot: Slot, child: usize, parent: usize) {
-    unsafe { context(slot) }.nodes[child].parents.push(parent);
-}
-unsafe extern "C" fn prepare(slot: Slot) -> Graph {
-    let context = unsafe { context(slot) };
-    drop(std::mem::take(&mut context.indices));
-    for node in &mut context.nodes {
-        node.view.parents = Span {
-            data: node.parents.as_ptr(),
-            count: node.parents.len(),
-        };
-    }
-    context.values = vec![0; context.nodes.len()];
-    Graph {
-        nodes: std::ptr::addr_of!(context.nodes[0].view),
-        stride: std::mem::size_of::<Node<'_>>(),
-        values: context.values.as_mut_ptr(),
-    }
-}
 unsafe extern "C" fn pending_push(slot: Slot, id: usize, truth: u32) {
     unsafe { context(slot) }.pending.push((id, truth != 0));
 }
@@ -673,6 +673,7 @@ unsafe extern "C" fn reset_search(slot: Slot) {
     context.conflict_input = None;
     context.required = None;
     context.next_fact = None;
+    context.seed_constants();
 }
 unsafe extern "C" fn trail_push(slot: Slot, id: usize) {
     unsafe { context(slot) }.trail.push(id);
@@ -700,9 +701,8 @@ unsafe extern "C" fn undo_addition(slot: Slot) {
 }
 unsafe extern "C" fn add_leaf(slot: Slot, id: usize) {
     let context = unsafe { context(slot) };
-    let clause = context.nodes[id].clause;
-    if let ClauseNode::Facts(required) = &**clause.0 {
-        required.iter().copied().for_each(|fact| context.add(fact));
+    if let Some(facts) = context.nodes[id].facts {
+        facts.iter().copied().for_each(|fact| context.add(fact));
     }
 }
 unsafe extern "C" fn conflict(slot: Slot) -> u32 {
@@ -721,8 +721,8 @@ unsafe extern "C" fn add_next(slot: Slot) -> u32 {
 }
 unsafe extern "C" fn begin_facts(slot: Slot, id: usize) {
     let context = unsafe { context(slot) };
-    if let ClauseNode::Facts(required) = &**context.nodes[id].clause.0 {
-        context.required = Some(required.iter());
+    if let Some(facts) = context.nodes[id].facts {
+        context.required = Some(facts.iter());
     }
 }
 unsafe extern "C" fn next_fact(slot: Slot) -> Borrowed {
@@ -790,12 +790,6 @@ unsafe extern "C" fn pop_alternative(slot: Slot) -> AlternativeView {
 
 #[repr(C)]
 struct Host {
-    index: unsafe extern "C" fn(Slot, Borrowed) -> usize,
-    node_count: unsafe extern "C" fn(Slot) -> usize,
-    inspect: unsafe extern "C" fn(Slot, usize) -> SourceNode,
-    define: unsafe extern "C" fn(Slot, usize, u32, usize, usize),
-    parent_push: unsafe extern "C" fn(Slot, usize, usize),
-    prepare: unsafe extern "C" fn(Slot) -> Graph,
     pending_push: unsafe extern "C" fn(Slot, usize, u32),
     pending_pop: unsafe extern "C" fn(Slot) -> Assignment,
     pending_clear: unsafe extern "C" fn(Slot),
@@ -819,64 +813,53 @@ struct Host {
 }
 unsafe extern "C" {
     #[link_name = "bootstrap.condition_graph::overlap"]
-    fn query(left: Borrowed, right: Borrowed, truth: u32, context: Slot, host: Host) -> u32;
+    fn query(first: usize, second: usize, truth: u32, context: Slot, graph: Graph, host: Host) -> u32;
     #[link_name = "bootstrap.condition_graph::equivalent"]
     fn query_equivalent(
-        left: Borrowed,
-        right: Borrowed,
+        first: usize,
+        second: usize,
         context: Slot,
+        graph: Graph,
         host: Host,
         reset: unsafe extern "C" fn(Slot),
     ) -> u32;
 }
-fn query_sources<'a>(left: &'a Clause, right: &'a Clause) -> (BTreeMap<usize, usize>, Vec<&'a Clause>) {
-    let mut representatives = Vec::new();
-    let indices = super::condition_node_ids([left, right], |source, _| representatives.push(source));
-    (indices, representatives)
+
+fn query_sources<'a>(left: &'a Clause, right: &'a Clause) -> (usize, usize, Vec<EncodedClause<&'a Facts>>) {
+    let mut sources = Vec::new();
+    let indices = super::condition_node_ids([left, right], |_, source| sources.push(source));
+    (indices[&left.key()], indices[&right.key()], sources)
 }
 
 pub(super) fn overlap(left: &Clause, right: &Clause, truth: bool) -> bool {
     let unsigned32 = super::Scalar::U32;
-    let (indices, representatives) = query_sources(left, right);
-    let mut context = Context::new(indices, representatives);
+    let (first, second, sources) = query_sources(left, right);
+    let mut context = Context::new(sources);
+    let graph = context.graph();
     unsafe {
-        query(
-            std::ptr::from_ref(left).cast(),
-            std::ptr::from_ref(right).cast(),
-            u32::from(truth),
-            (&mut context as *mut Context<'_>).cast(),
-            host(&unsigned32),
-        ) != 0
+        query(first, second, u32::from(truth), (&mut context as *mut Context<'_>).cast(),
+            graph, host(&unsigned32)) != 0
     }
 }
+
 pub(super) fn equivalent(left: &Clause, right: &Clause) -> bool {
     if left.key() == right.key() {
         return true;
     }
-    let (indices, representatives) = query_sources(left, right);
-    if indices[&left.key()] == indices[&right.key()] {
+    let (first, second, sources) = query_sources(left, right);
+    if first == second {
         return true;
     }
     let unsigned32 = super::Scalar::U32;
-    let mut context = Context::new(indices, representatives);
+    let mut context = Context::new(sources);
+    let graph = context.graph();
     unsafe {
-        query_equivalent(
-            std::ptr::from_ref(left).cast(),
-            std::ptr::from_ref(right).cast(),
-            (&mut context as *mut Context<'_>).cast(),
-            host(&unsigned32),
-            reset_search,
-        ) != 0
+        query_equivalent(first, second, (&mut context as *mut Context<'_>).cast(),
+            graph, host(&unsigned32), reset_search) != 0
     }
 }
 fn host(unsigned32: &super::Scalar) -> Host {
     Host {
-        index,
-        node_count,
-        inspect,
-        define,
-        parent_push,
-        prepare,
         pending_push,
         pending_pop,
         pending_clear,
