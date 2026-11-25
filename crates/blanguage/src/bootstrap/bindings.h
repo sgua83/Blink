@@ -26,11 +26,12 @@ extern "C" u64 import_name_size(BindingBytes dll,BindingBytes name) on cpu;
 extern "C" void import_name(BindingBytes dll,BindingBytes name,address output) on cpu;
 
 struct BindingForest {address nodes;u64 count;u64 names;u64 imports;};
-struct BindingInsert {u64 root;u64 node;};
+struct BindingInsert {u64 root;bool inserted;};
 BindingNode node_at(BindingForest forest,u64 index) on cpu;
 i32 bytes_compare(BindingBytes left,BindingBytes right) on cpu;
 u64 find(BindingForest forest,u64 root,BindingKey key) on cpu;
-BindingInsert put(inout BindingForest forest,u64 root,BindingKey key,u64 value) on cpu;
+// A matching key keeps its node and only replaces the value when requested.
+BindingInsert insert_binding(inout BindingForest forest,u64 root,BindingKey key,u64 value,bool replace) on cpu;
 u64 first(BindingForest forest,u64 root) on cpu;
 u64 next(BindingForest forest,u64 index) on cpu;
 

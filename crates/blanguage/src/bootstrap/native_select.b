@@ -79,8 +79,9 @@ void refresh(inout SelectState state,SelectView view) on cpu {state.view=view;st
 SelectResult define(inout SelectState state,u64 object_index) on cpu {
     SelectObject object=object_at(state.view,object_index);u64 i=object.symbol_start;
     while(i<object.symbol_start+object.symbol_count){SelectSymbol symbol=symbol_at(state.view,i);BindingKey key=BindingKey(symbol.name,empty());
-        if(find(state.forest,state.forest.names,key)!=0u64){return result(2u64,symbol.name,empty(),state.entry);}
-        BindingInsert inserted=put(state.forest,state.forest.names,key,i+1u64);state.forest.names=inserted.root;i+=1u64;}
+        BindingInsert insertion=insert_binding(state.forest,state.forest.names,key,i+1u64,false);
+        if(!insertion.inserted){return result(2u64,symbol.name,empty(),state.entry);}
+        state.forest.names=insertion.root;i+=1u64;}
     return success(state.entry);
 }
 void enqueue(inout SelectState state,u64 section_index) on cpu {
@@ -132,7 +133,7 @@ EntryPlan finish(inout SelectState state,SelectParams params) on cpu {
                 state.forest.count=0u64;state.forest.names=0u64;state.forest.imports=0u64;i=object.section_start;
                 while(i<object.section_start+object.section_count){SelectSection section=section_at(state.view,i);if(section.live!=0u64){
                     u64 r=section.relocation_start;while(r<section.relocation_start+section.relocation_count){SelectRelocation relocation=relocation_at(state.view,r);
-                        if(relocation.kind==2u64&&equal(relocation.dll,params.runtime_library)){BindingInsert item=put(state.forest,state.forest.names,BindingKey(relocation.name,empty()),0u64);state.forest.names=item.root;}r+=1u64;}}i+=1u64;}
+                        if(relocation.kind==2u64&&equal(relocation.dll,params.runtime_library)){BindingInsert item=insert_binding(state.forest,state.forest.names,BindingKey(relocation.name,empty()),0u64,false);state.forest.names=item.root;}r+=1u64;}}i+=1u64;}
                 bool used=false;i=object.export_start;while(i<object.export_start+object.export_count){SelectExport row=export_at(state.view,i);row.keep=0u64;
                     if(find(state.forest,state.forest.names,BindingKey(row.name,empty()))!=0u64){row.keep=1u64;used=true;}
                     if(object.has_resources!=0u64&&suffixed(row.name,object.prefix,7165919078637728351u64,29541u64,10u64)){row.keep=1u64;}export_put(state.view,i,row);i+=1u64;}
@@ -198,7 +199,7 @@ extern "C" SelectResult choose(SelectView input,SelectParams params,address cont
                         // All local slots use the same runtime DLL prefix, so name and slot order agree.
                         u64 local=state.forest.imports;u64 found=0u64;
                         while(local!=0u64){BindingNode node=node_at(state.forest,local);SelectLocal row=local_at(state.view,node.value-1u64);i32 order=bytes_compare(relocation.name,row.name);if(order==0){found=local;break;}if(order<0){local=node.left;}else{local=node.right;}}
-                        u64 index=0u64;if(found==0u64){BindingBytes name=slot(context,relocation.name);index=state.local_count;state.local_count+=1u64;local_put(state.view,index,SelectLocal(name,relocation.name));BindingInsert item=put(state.forest,state.forest.imports,BindingKey(name,empty()),index+1u64);state.forest.imports=item.root;}
+                        u64 index=0u64;if(found==0u64){BindingBytes name=slot(context,relocation.name);index=state.local_count;state.local_count+=1u64;local_put(state.view,index,SelectLocal(name,relocation.name));BindingInsert item=insert_binding(state.forest,state.forest.imports,BindingKey(name,empty()),index+1u64,false);state.forest.imports=item.root;}
                         else{index=node_at(state.forest,found).value-1u64;}
                         relocation.rewrite=index+1u64;relocation_put(state.view,r,relocation);
                     }

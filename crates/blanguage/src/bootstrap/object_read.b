@@ -240,10 +240,9 @@ extern "C" u32 recover_stack(ObjectRows rows,address frames,u64 count,address ca
             if(frame.start>=section.bytes.length+section.zero_fill){return 12;}
             // The immutable section/start pair is the key until remapping.
             BindingBytes location=BindingBytes(unsafe_address(address_bits(row)+24u64),16u64);
-            u64 before=positions.count;
-            BindingInsert inserted=put(positions,root,BindingKey(location,empty),0u64);
-            if(positions.count==before){return 12;}
-            root=inserted.root;
+            BindingInsert insertion=insert_binding(positions,root,BindingKey(location,empty),0u64,false);
+            if(!insertion.inserted){return 12;}
+            root=insertion.root;
         }
         u64 remaining=frame.calls;
         while(remaining!=0u64){

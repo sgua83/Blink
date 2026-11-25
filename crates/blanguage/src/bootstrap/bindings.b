@@ -91,11 +91,14 @@ u64 balance(BindingForest forest,u64 root,u64 inserted) on cpu {
     }
     paint(forest,result,0u64);return result;
 }
-BindingInsert put(inout BindingForest forest,u64 root,BindingKey key,u64 value) on cpu {
+BindingInsert insert_binding(inout BindingForest forest,u64 root,BindingKey key,u64 value,bool replace) on cpu {
     u64 parent=0u64;u64 at=root;i32 order=i32(0);
     while(at!=0u64){
         parent=at;BindingNode node=node_at(forest,at);order=key_compare(key,node.key);
-        if(order==0){node.value=value;node_put(forest,at,node);return BindingInsert(root,at);}
+        if(order==0){
+            if(replace){node.value=value;node_put(forest,at,node);}
+            return BindingInsert(root,false);
+        }
         if(order<0){at=node.left;}else{at=node.right;}
     }
     forest.count+=1u64;u64 index=forest.count;
@@ -105,7 +108,7 @@ BindingInsert put(inout BindingForest forest,u64 root,BindingKey key,u64 value) 
     else{
         BindingNode node=node_at(forest,parent);if(order<0){node.left=index;}else{node.right=index;}node_put(forest,parent,node);
     }
-    next_root=balance(forest,next_root,index);return BindingInsert(next_root,index);
+    next_root=balance(forest,next_root,index);return BindingInsert(next_root,true);
 }
 u64 first(BindingForest forest,u64 root) on cpu {
     u64 at=root;
@@ -175,7 +178,7 @@ extern "C" BindingPlan prepare(BindingInput input,BindingWork work) on cpu {
     while(i<input.definition_count){
         BindingDefinition value=definition_at(input,i);
         if(value.section>=32767u64){return invalid(2);}
-        BindingInsert inserted=put(forest,forest.names,BindingKey(value.name,empty()),row);forest.names=inserted.root;
+        forest.names=insert_binding(forest,forest.names,BindingKey(value.name,empty()),row,true).root;
         symbol_put(work,count,symbol(value.name,value.section+1u64,value.value,value.function,1u64,0u64,0u64,0u64,0u64));
         count+=1u64;row+=1u64;i+=1u64;
     }
@@ -187,14 +190,15 @@ extern "C" BindingPlan prepare(BindingInput input,BindingWork work) on cpu {
             if(value.offset>4294967295u64){return invalid(5);}
             if(value.target==u16(1)){
                 BindingKey key=BindingKey(value.name,empty());
-                if(find(forest,forest.names,key)==0u64){
-                    BindingInsert inserted=put(forest,forest.names,key,row);forest.names=inserted.root;
+                BindingInsert insertion=insert_binding(forest,forest.names,key,row,false);
+                forest.names=insertion.root;
+                if(insertion.inserted){
                     symbol_put(work,count,symbol(value.name,0u64,0u64,1u64,1u64,0u64,0u64,0u64,0u64));
                     count+=1u64;row+=1u64;
                 }
             }else if(value.target==u16(2)){
                 BindingKey key=BindingKey(value.dll,value.name);
-                BindingInsert inserted=put(forest,forest.imports,key,0u64);forest.imports=inserted.root;
+                BindingInsert inserted=insert_binding(forest,forest.imports,key,0u64,false);forest.imports=inserted.root;
             }
             j+=1u64;
         }
@@ -281,7 +285,7 @@ MsvcOrder order_msvc_names(address rows, u64 count, BindingBytes sdk_prefix, add
     u64 index = 0u64;
     while (index < count) {
         BindingBytes name = unsafe_position<MsvcName>(msvc_name_at(rows, index)).name;
-        root = put(forest, root, BindingKey(name, empty()), 0u64).root;
+        root = insert_binding(forest, root, BindingKey(name, empty()), 0u64, false).root;
         index += 1u64;
     }
     u64 written = 0u64;
