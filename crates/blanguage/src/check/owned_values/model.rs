@@ -110,10 +110,10 @@ unsafe extern "C" fn install_source(value:Address){
     let v=unsafe{&mut *value.cast::<Value>()};let identity=v.identity();
     v.proof.set_view_borrow(0,view::Borrow::source(view::Source::Data(identity)));
 }
-unsafe extern "C" fn join_child(a:Address,b:Address,at:u64,stored:u32,when:Address,presence:Address){
+unsafe extern "C" fn join_child(a:Address,b:Address,at:u64,stored:u32,when:Address,presence:Address,merge_metadata:u32){
     let a=unsafe{&mut *a.cast::<OwnedValuePayload>()};let b=unsafe{&mut *b.cast::<OwnedValuePayload>()};
     let other=b.payloads[at as usize].take().unwrap();
-    a.payloads[at as usize].as_mut().unwrap().join_with_presence(*other,stored!=0,unsafe{choice(when)},unsafe{presence.cast::<owned_presence::Presence>().as_ref()});
+    a.payloads[at as usize].as_mut().unwrap().join_returned(*other,stored!=0,unsafe{choice(when)},unsafe{presence.cast::<owned_presence::Presence>().as_ref()},merge_metadata);
 }
 unsafe extern "C" fn move_child(a:Address,b:Address,at:u64){
     let a=unsafe{&mut *a.cast::<OwnedValuePayload>()};let b=unsafe{&mut *b.cast::<OwnedValuePayload>()};
@@ -183,7 +183,7 @@ struct Host{
     length_constant:unsafe extern "C" fn(Address,u32),
     view_empty:unsafe extern "C" fn(Address)->u32,
     install_source:unsafe extern "C" fn(Address),
-    join_child:unsafe extern "C" fn(Address,Address,u64,u32,Address,Address),
+    join_child:unsafe extern "C" fn(Address,Address,u64,u32,Address,Address,u32),
     join_ownership:unsafe extern "C" fn(Address,Address,Address),
     move_child:unsafe extern "C" fn(Address,Address,u64),
     data_root:unsafe extern "C" fn(Address)->Address,
@@ -353,10 +353,22 @@ impl Returned {
 
 #[repr(C)]
 #[derive(Clone, Copy)]
-struct Alternative { when: Address, item: Item }
+struct Alternative { owner: Address, choice: Address }
 
-struct Selection<'a> {
-    choices: &'a [Alternative],
+#[derive(Clone, Copy)]
+struct SelectionInput<'a, 'w> {
+    when: &'a owned_presence::Presence,
+    item: Item,
+    path: Option<(&'a Builder<'w>, &'a bounds::Condition)>,
+}
+
+struct SelectionChoice<'a, 'w> {
+    input: SelectionInput<'a, 'w>,
+    owner: std::borrow::Cow<'a, Ownership>,
+}
+
+struct Selection<'a, 'w> {
+    choices: &'a [SelectionChoice<'a, 'w>],
     proofs: Vec<(bounds::Condition, bounds::Proof)>,
     combined: owned_presence::Presence,
 }
@@ -364,10 +376,9 @@ struct Selection<'a> {
 #[repr(C)]
 struct SelectionHost {
     alternative: unsafe extern "C" fn(Address, usize) -> Alternative,
-    owner: unsafe extern "C" fn(Item) -> Address,
     mode: unsafe extern "C" fn(Address) -> u32,
     equal: unsafe extern "C" fn(Address, Address) -> u32,
-    accumulate: unsafe extern "C" fn(Address, Alternative, Address),
+    accumulate: unsafe extern "C" fn(Address, Alternative),
     commit: unsafe extern "C" fn(Item, Address, Address, u32),
     reset_residency: unsafe extern "C" fn(Item),
     join_residency: unsafe extern "C" fn(Item, Alternative),
@@ -384,7 +395,7 @@ unsafe extern "C" {
 }
 
 const SELECT: SelectionHost = SelectionHost {
-    alternative, owner: selection_owner, mode: selection_mode, equal: state_equal,
+    alternative, mode: selection_mode, equal: state_equal,
     accumulate: accumulate_presence, commit: commit_presence, reset_residency: reset_selection_residency,
     join_residency: join_selection_residency, push_proof: selection_proof, finish_proofs: install_selected_proofs,
     inspect, mutable_child: child_mut, select_child,
@@ -395,31 +406,51 @@ impl Returned {
         &mut self,
         candidates: impl IntoIterator<Item = (&'a owned_presence::Presence, &'a Returned)>,
     ) {
-        let target = mutable_item(Some(self));
-        let choices = candidates.into_iter().map(|(when, value)| Alternative {
-            when: pointer(when), item: returned_item(Some(value)),
-        }).collect::<Vec<_>>();
-        select_model(target, &choices);
+        select_model(mutable_item(Some(self)), candidates.into_iter().map(|(when, value)| SelectionInput {
+            when, item: returned_item(Some(value)), path: None,
+        }));
+    }
+
+    pub(in crate::check) fn select_place_presence<'a, 'w>(
+        &mut self,
+        builder: &'a Builder<'w>,
+        candidates: impl IntoIterator<Item = (&'a owned_presence::Presence, &'a bounds::Condition, &'a Returned)>,
+    ) {
+        select_model(mutable_item(Some(self)), candidates.into_iter().map(|(when, condition, value)| SelectionInput {
+            when, item: returned_item(Some(value)), path: Some((builder, condition)),
+        }));
     }
 }
 
-fn select_model(target: Item, choices: &[Alternative]) {
+fn select_model<'a, 'w: 'a>(target: Item, inputs: impl IntoIterator<Item = SelectionInput<'a, 'w>>) {
+    if !matches!(target.kind, 3 | 4) {
+        return;
+    }
+    let choices: Vec<_> = inputs.into_iter().filter(|input| input.item.kind == target.kind).map(|input| {
+        // The sources are borrowed through the synchronous selection, including its child calls.
+        let owner = if target.kind == 3 {
+            &unsafe { &*input.item.node.cast::<Data>() }.ownership
+        } else {
+            &unsafe { &*input.item.node.cast::<OwnedValuePayload>() }.ownership
+        };
+        let owner = match input.path {
+            Some((builder, condition)) => std::borrow::Cow::Owned(
+                owned_presence::path::ownership_in(builder, owner, Some(condition)),
+            ),
+            None => std::borrow::Cow::Borrowed(owner),
+        };
+        SelectionChoice { input, owner }
+    }).collect();
     let mut selection = Selection {
-        choices, proofs: Vec::new(), combined: owned_presence::Presence::None,
+        choices: &choices, proofs: Vec::new(), combined: owned_presence::Presence::None,
     };
     unsafe { source_select_presence(target, pointer_mut(&mut selection), choices.len(), SELECT); }
 }
 
 unsafe extern "C" fn alternative(selection: Address, index: usize) -> Alternative {
-    unsafe { &*selection.cast::<Selection<'_>>() }.choices[index]
-}
-
-unsafe extern "C" fn selection_owner(item: Item) -> Address {
-    if item.kind == 3 {
-        unsafe { data_ownership(item.node) }
-    } else {
-        unsafe { ownership(item.node) }
-    }
+    let selection = unsafe { &*selection.cast::<Selection<'_, '_>>() };
+    let choice = &selection.choices[index];
+    Alternative { owner: pointer(choice.owner.as_ref()), choice: pointer(choice) }
 }
 
 unsafe extern "C" fn selection_mode(owner: Address) -> u32 {
@@ -431,12 +462,11 @@ unsafe extern "C" fn selection_mode(owner: Address) -> u32 {
     }
 }
 
-unsafe extern "C" fn accumulate_presence(selection: Address, candidate: Alternative, owner: Address) {
-    let selection = unsafe { &mut *selection.cast::<Selection<'_>>() };
-    let when = unsafe { &*candidate.when.cast::<owned_presence::Presence>() };
-    let owner = unsafe { &*owner.cast::<Ownership>() };
+unsafe extern "C" fn accumulate_presence(selection: Address, candidate: Alternative) {
+    let selection = unsafe { &mut *selection.cast::<Selection<'_, '_>>() };
+    let choice = unsafe { &*candidate.choice.cast::<SelectionChoice<'_, '_>>() };
     let current = std::mem::replace(&mut selection.combined, owned_presence::Presence::None);
-    selection.combined = current.or(when.clone().and(owner.presence()));
+    selection.combined = current.or(choice.input.when.clone().and(choice.owner.presence()));
 }
 
 unsafe extern "C" fn commit_presence(output: Item, first: Address, selection: Address, mode: u32) {
@@ -444,7 +474,7 @@ unsafe extern "C" fn commit_presence(output: Item, first: Address, selection: Ad
         0 => unsafe { &*first.cast::<Ownership>() }.clone(),
         1 => Ownership::Moved,
         _ => {
-            let selection = unsafe { &mut *selection.cast::<Selection<'_>>() };
+            let selection = unsafe { &mut *selection.cast::<Selection<'_, '_>>() };
             Ownership::from_presence(std::mem::replace(&mut selection.combined, owned_presence::Presence::None))
         }
     };
@@ -462,27 +492,34 @@ unsafe extern "C" fn reset_selection_residency(target: Item) {
 
 unsafe extern "C" fn join_selection_residency(target: Item, candidate: Alternative) {
     let target = unsafe { &mut *target.node.cast::<Data>() };
-    let data = unsafe { &*candidate.item.node.cast::<Data>() };
-    let when = unsafe { &*candidate.when.cast::<owned_presence::Presence>() };
-    let residency = residency::Residency::selected(when.clone(), data.residency.clone(), residency::Residency::Absent);
-    target.residency.join(&residency);
+    let input = unsafe { &*candidate.choice.cast::<SelectionChoice<'_, '_>>() }.input;
+    let data = unsafe { &*input.item.node.cast::<Data>() };
+    let residency = match input.path {
+        Some((builder, condition)) => owned_presence::path::residency_in(builder, &data.residency, Some(condition)),
+        None => data.residency.clone(),
+    };
+    target.residency.join(&residency::Residency::selected(
+        input.when.clone(), residency, residency::Residency::Absent,
+    ));
 }
 
 unsafe extern "C" fn selection_proof(selection: Address, candidate: Alternative) {
-    let selection = unsafe { &mut *selection.cast::<Selection<'_>>() };
-    let when = unsafe { &*candidate.when.cast::<owned_presence::Presence>() };
-    let proof = if candidate.item.kind == 3 {
-        let data = unsafe { &*candidate.item.node.cast::<Data>() };
-        (when.clone().and(data.ownership.presence()).condition(), view::resource_proof(data))
+    let selection = unsafe { &mut *selection.cast::<Selection<'_, '_>>() };
+    let choice = unsafe { &*candidate.choice.cast::<SelectionChoice<'_, '_>>() };
+    let input = choice.input;
+    let proof = if input.item.kind == 3 {
+        let data = unsafe { &*input.item.node.cast::<Data>() };
+        (input.when.clone().and(choice.owner.presence()).condition(), view::resource_proof(data))
     } else {
-        let value = unsafe { &*candidate.item.node.cast::<OwnedValuePayload>() };
-        (when.condition(), value.value.proof.borrow_state())
+        let value = unsafe { &*input.item.node.cast::<OwnedValuePayload>() };
+        let condition = input.path.map_or_else(|| input.when.condition(), |(_, condition)| condition.clone());
+        (condition, value.value.proof.borrow_state())
     };
     selection.proofs.push(proof);
 }
 
 unsafe extern "C" fn install_selected_proofs(target: Item, selection: Address) {
-    let selection = unsafe { &mut *selection.cast::<Selection<'_>>() };
+    let selection = unsafe { &mut *selection.cast::<Selection<'_, '_>>() };
     let value = if target.kind == 3 {
         &mut unsafe { &mut *target.node.cast::<Data>() }.root
     } else {
@@ -493,17 +530,14 @@ unsafe extern "C" fn install_selected_proofs(target: Item, selection: Address) {
 }
 
 unsafe extern "C" fn select_child(target: Item, selection: Address, index: usize) {
-    let selection = unsafe { &*selection.cast::<Selection<'_>>() };
-    let choices = selection.choices.iter().filter_map(|candidate| {
-        if candidate.item.kind != 4 {
-            return None;
-        }
-        let item = unsafe { child(candidate.item.node, index as u64) };
-        (item.kind == target.kind).then_some(Alternative { when: candidate.when, item })
-    }).collect::<Vec<_>>();
-    select_model(target, &choices);
+    let selection = unsafe { &*selection.cast::<Selection<'_, '_>>() };
+    let inputs = selection.choices.iter().map(|choice| {
+        let mut input = choice.input;
+        input.item = unsafe { child(input.item.node, index as u64) };
+        input
+    });
+    select_model(target, inputs);
 }
-
 
 #[repr(C)]
 struct LookupNode { item: Item, place: Address, payload: Address, ty: Address, projected: u32 }
@@ -718,14 +752,23 @@ unsafe extern "C" fn merge_prefixes(a:Address,b:Address,when:Address) {
 }
 unsafe extern "C" {
     #[link_name="bootstrap.ownership_payload::join_returned"]
-    fn source_join_returned(left:Item,right:Item,stored:u32,choice:Address,presence:Address,host:ReturnedHost);
+    fn source_join_returned(left:Item,right:Item,stored:u32,choice:Address,presence:Address,merge_metadata:u32,host:ReturnedHost);
 }
 impl Returned {
-    pub(in crate::check) fn join_with_presence(&mut self,mut other:Self,stored:bool,
-        choice:Option<&bounds::Condition>,presence:Option<&owned_presence::Presence>) {
+    pub(in crate::check) fn join_with_presence(&mut self, other: Self, stored: bool,
+        choice: Option<&bounds::Condition>, presence: Option<&owned_presence::Presence>) {
+        self.join_returned(other, stored, choice, presence, 1);
+    }
+
+    pub(in crate::check) fn join_place_payload(&mut self, other: Self) {
+        self.join_returned(other, false, None, None, 0);
+    }
+
+    fn join_returned(&mut self, mut other: Self, stored: bool, choice: Option<&bounds::Condition>,
+        presence: Option<&owned_presence::Presence>, merge_metadata: u32) {
         let mut context=ReturnedJoin {borrows:None};
         unsafe { source_join_returned(mutable_item(Some(self)),mutable_item(Some(&mut other)),u32::from(stored),
-            choice.map_or(std::ptr::null_mut(),pointer),presence.map_or(std::ptr::null_mut(),pointer),ReturnedHost {
+            choice.map_or(std::ptr::null_mut(),pointer),presence.map_or(std::ptr::null_mut(),pointer),merge_metadata,ReturnedHost {
                 context:pointer_mut(&mut context),values:MUT_HOST,data:DATA_PRESENCE,
                 save:save_root_borrows,restore:restore_root_borrows,maximum:data_maximum,
                 elements:merge_elements,prefixes:merge_prefixes,

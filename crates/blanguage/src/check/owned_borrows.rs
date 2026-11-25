@@ -5,23 +5,103 @@ use application::Ownership;
 use owned_presence::Presence;
 use std::{borrow::Cow, ffi::c_void, ptr};
 pub(super) fn positions(position:&Position,into:&mut BTreeSet<Position>){match position{Position::Indexed(choices,_)=>for choice in choices.iter(){positions(choice,into);},position=>{into.insert(position.clone());}}}
-fn storage(model:&Returned)->Option<Place>{match model{Returned::Dataset(data)=>data.place.clone(),Returned::OwnedValue(value)=>value.place(),_=>None}}
+fn storage_ref(model: &Returned) -> Option<&Place> {
+    match model {
+        Returned::Dataset(data) => data.place.as_ref(),
+        Returned::OwnedValue(value) => value.place.as_ref(),
+        _ => None,
+    }
+}
+fn storage(model: &Returned) -> Option<Place> { storage_ref(model).cloned() }
 fn at<'a>(model:&'a Returned,path:&[usize])->Option<&'a application::Data>{match model{Returned::Dataset(data)if path.is_empty()=>Some(data),Returned::OwnedValue(value)=>view::owned_data_at(value,path),_=>None}}
 pub(super) fn each_data(model:&mut Returned,path:&mut Vec<usize>,apply:&mut impl FnMut(&mut application::Data,&[usize])){match model{Returned::Dataset(data)=>apply(data,path),Returned::OwnedValue(value)=>for(index,payload)in value.payloads.iter_mut().enumerate(){if let Some(payload)=payload{path.push(index);each_data(payload,path,apply);path.pop();}},_=>{}}}
 pub(super) fn set_storage(model:&mut Returned,place:Place){match model{Returned::Dataset(data)=>data.place=Some(place),Returned::OwnedValue(value)=>value.place=Some(place),_=>unreachable!()}}
+struct PlaceSource<'a> {
+    position: Position,
+    value: &'a Returned,
+    selected: Option<(Presence, bounds::Condition)>,
+}
+
+struct PlaceJoin<'a, 'w> {
+    builder: &'a Builder<'w>,
+    root: &'a Position,
+    sources: Vec<PlaceSource<'a>>,
+    result: Option<Returned>,
+}
+
+#[repr(C)]
+struct PlaceChoiceHost {
+    condition: unsafe extern "C" fn(*mut c_void, u64) -> u32,
+    merge: unsafe extern "C" fn(*mut c_void, u64, u32),
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.ownership_payload::join_place_candidates"]
+    fn source_join_place_candidates(context: *mut c_void, count: u64, host: PlaceChoiceHost);
+}
+
+unsafe extern "C" fn place_condition(context: *mut c_void, at: u64) -> u32 {
+    let context = unsafe { &mut *context.cast::<PlaceJoin<'_, '_>>() };
+    let source = &mut context.sources[at as usize];
+    let when = Presence::selected(context.root, &source.position);
+    let condition = when.condition();
+    let possible = context.builder.condition_truth(&condition, None) != Some(false);
+    source.selected = possible.then_some((when, condition));
+    u32::from(possible)
+}
+
+unsafe extern "C" fn merge_place_payload(context: *mut c_void, at: u64, have: u32) {
+    let context = unsafe { &mut *context.cast::<PlaceJoin<'_, '_>>() };
+    let source = context.sources[at as usize].value.clone();
+    if have == 0 {
+        context.result = Some(source);
+    } else {
+        context.result.as_mut().unwrap().join_place_payload(source);
+    }
+}
+
 impl Builder<'_>{
     pub(super) fn owned_place_model(&self, place: &Place) -> Returned {
         self.join_owned_place_candidates(place, &self.owned_place_candidates(place))
     }
 
     pub(super) fn join_owned_place_candidates(&self, place: &Place, candidates: &[(String, Vec<usize>, Returned)]) -> Returned {
-        fn initialization(position:&Position,path:&[usize],candidates:&[(String,Vec<usize>,Returned)])->Position{match position{
-            Position::Indexed(choices,index)=>Position::Indexed(choices.iter().map(|choice|initialization(choice,path,candidates)).collect(),*index),
-            position=>{let model=&candidates.iter().find(|(_,_,model)|storage(model).unwrap().owned_positions().unwrap()[0]==*position).unwrap().2;at(model,path).and_then(|data|data.initialization.clone()).unwrap_or(Position::Initialized)}
-        }}
-        let root=place.owned_positions().unwrap()[0].clone();
-        let selected=candidates.iter().map(|(_,_,value)|{let when=Presence::selected(&root,&storage(value).unwrap().owned_positions().unwrap()[0]);let mut value=value.clone();self.resolve_owned_model(&mut value,Some(&when));(when,value)}).filter(|(when,_)|self.owned_possible(when)).collect::<Vec<_>>();let mut values=selected.iter().map(|(_,value)|value.clone());let mut model=values.next().unwrap();for other in values{model.join(other,false,None);}model.select_presence(selected.iter().map(|(when, value)| (when, value)));self.resolve_owned_model(&mut model,None);
-each_data(&mut model,&mut Vec::new(),&mut|data,path|data.initialization=Some(initialization(&root,path,candidates)));set_storage(&mut model,place.clone());self.resolve_owned_model(&mut model,None);model
+        fn initialization(position: &Position, path: &[usize], sources: &[PlaceSource<'_>]) -> Position {
+            match position {
+                Position::Indexed(choices, index) => Position::Indexed(
+                    choices.iter().map(|choice| initialization(choice, path, sources)).collect(), *index,
+                ),
+                position => {
+                    let source = sources.iter().find(|source| source.position == *position).unwrap();
+                    at(source.value, path).and_then(|data| data.initialization.clone()).unwrap_or(Position::Initialized)
+                }
+            }
+        }
+
+        let root = place.owned_positions().unwrap().into_iter().next().unwrap();
+        let mut join = PlaceJoin {
+            builder: self,
+            root: &root,
+            result: None,
+            sources: candidates.iter().map(|(_, _, value)| PlaceSource {
+                position: storage_ref(value).unwrap().owned_positions().unwrap().into_iter().next().unwrap(),
+                value,
+                selected: None,
+            }).collect(),
+        };
+        let count = join.sources.len() as u64;
+        let host = PlaceChoiceHost { condition: place_condition, merge: merge_place_payload };
+        unsafe { source_join_place_candidates((&mut join as *mut PlaceJoin<'_, '_>).cast(), count, host) };
+        let mut model = join.result.take().unwrap();
+        model.select_place_presence(self, join.sources.iter().filter_map(|source| {
+            source.selected.as_ref().map(|(when, condition)| (when, condition, source.value))
+        }));
+        each_data(&mut model, &mut Vec::new(), &mut |data, path| {
+            data.initialization = Some(initialization(&root, path, &join.sources));
+        });
+        set_storage(&mut model, place.clone());
+        self.resolve_owned_model(&mut model, None);
+        model
     }
     pub(super) async fn mutable_argument(&mut self,expr:&Expr,access:Access)->Result<Option<cooperative::Argument>> {
         let mut cursor=MutableCursor {phase:0};let mut facts=MutableInputFacts::default();

@@ -31,27 +31,26 @@ fn truth(value:Option<bool>)->u32{match value{Some(false)=>0,Some(true)=>1,None=
 struct Assumption<'a>{value:Option<&'a Presence>,condition:Option<bounds::Condition>}
 impl<'a> Assumption<'a>{
  fn new(value:Option<&'a Presence>)->Self{Self{value,condition:value.map(Presence::condition)}}
- fn answer(&self,builder:&Builder<'_>,when:&bounds::Condition)->Option<bool>{builder.condition_truth(when,self.condition.as_ref())}
 }
-pub(in crate::check) fn ownership(builder:&Builder<'_>,value:&Ownership,assuming:Option<&Presence>)->Ownership{owner(builder,value,&Assumption::new(assuming))}
-fn owner(builder:&Builder<'_>,value:&Ownership,assuming:&Assumption<'_>)->Ownership{
- let(kind,known)=match value{Ownership::Moved=>(0,2),Ownership::Owned=>(1,2),Ownership::Borrowed=>(2,2),Ownership::Conditional(when)=>(3,truth(assuming.answer(builder,&when.condition())))};
+pub(in crate::check) fn ownership(builder:&Builder<'_>,value:&Ownership,assuming:Option<&Presence>)->Ownership{ownership_in(builder,value,assuming.map(Presence::condition).as_ref())}
+pub(in crate::check) fn ownership_in(builder:&Builder<'_>,value:&Ownership,assuming:Option<&bounds::Condition>)->Ownership{
+ let(kind,known)=match value{Ownership::Moved=>(0,2),Ownership::Owned=>(1,2),Ownership::Borrowed=>(2,2),Ownership::Conditional(when)=>(3,truth(builder.condition_truth(&when.condition(),assuming)))};
  match unsafe{b_ownership(kind,known)}{0=>Ownership::Moved,1=>Ownership::Owned,2=>Ownership::Borrowed,_=>value.clone()}
 }
 pub(in crate::check) fn possible(builder:&Builder<'_>,value:&Presence)->bool{unsafe{b_possible(truth(builder.condition_truth(&value.condition(),None)))!=0}}
 pub(in crate::check) fn initialization(builder:&Builder<'_>,value:&Position,assuming:Option<&Presence>)->Position{ownership::resolve_initialization(builder,value,assuming,assuming.map(Presence::condition).as_ref())}
-fn residency(value:&residency::Residency,assuming:Option<&Presence>,query:&impl Fn(&bounds::Condition,Option<&Presence>)->Option<bool>)->residency::Residency{
+fn residency(value:&residency::Residency,query:&impl Fn(&bounds::Condition)->Option<bool>)->residency::Residency{
  let mut cursor=unsafe{b_start()};let mut facts=ResidencyFacts::default();let mut result=None;let mut left=None;let mut right=None;
  loop{
   let step=unsafe{b_residency_step(cursor,facts)};cursor=step.cursor;
   match step.need{
    ResidencyNeed::Inspect=>facts.selected=u32::from(matches!(value,residency::Residency::Selected(..))),
-   ResidencyNeed::Query=>{let residency::Residency::Selected(when,..)=value else{unsafe{std::hint::unreachable_unchecked()}};facts.truth=truth(query(when,assuming));}
-   ResidencyNeed::Yes=>{let residency::Residency::Selected(_,a,_)=value else{unsafe{std::hint::unreachable_unchecked()}};result=Some(residency(a,assuming,query));}
-   ResidencyNeed::No=>{let residency::Residency::Selected(_,_,b)=value else{unsafe{std::hint::unreachable_unchecked()}};result=Some(residency(b,assuming,query));}
+   ResidencyNeed::Query=>{let residency::Residency::Selected(when,..)=value else{unsafe{std::hint::unreachable_unchecked()}};facts.truth=truth(query(when));}
+   ResidencyNeed::Yes=>{let residency::Residency::Selected(_,a,_)=value else{unsafe{std::hint::unreachable_unchecked()}};result=Some(residency(a,query));}
+   ResidencyNeed::No=>{let residency::Residency::Selected(_,_,b)=value else{unsafe{std::hint::unreachable_unchecked()}};result=Some(residency(b,query));}
    // Residency preserves its original unknown-branch assumptions.
-   ResidencyNeed::Left=>{let residency::Residency::Selected(_,a,_)=value else{unsafe{std::hint::unreachable_unchecked()}};left=Some(residency(a,assuming,query));}
-   ResidencyNeed::Right=>{let residency::Residency::Selected(_,_,b)=value else{unsafe{std::hint::unreachable_unchecked()}};right=Some(residency(b,assuming,query));}
+   ResidencyNeed::Left=>{let residency::Residency::Selected(_,a,_)=value else{unsafe{std::hint::unreachable_unchecked()}};left=Some(residency(a,query));}
+   ResidencyNeed::Right=>{let residency::Residency::Selected(_,_,b)=value else{unsafe{std::hint::unreachable_unchecked()}};right=Some(residency(b,query));}
    ResidencyNeed::Conditional=>{let residency::Residency::Selected(when,..)=value else{unsafe{std::hint::unreachable_unchecked()}};result=Some(residency::Residency::conditional(when.as_ref().clone(),left.take().unwrap(),right.take().unwrap()));}
    ResidencyNeed::Copy=>{result=Some(value.clone());}
    ResidencyNeed::Complete=>return result.take().unwrap(),
@@ -61,7 +60,10 @@ fn residency(value:&residency::Residency,assuming:Option<&Presence>,query:&impl 
 }
 
 pub(in crate::check) fn resolve_residency(builder:&Builder<'_>,value:&residency::Residency,assuming:Option<&Presence>)->residency::Residency{
- let assuming=Assumption::new(assuming);residency(value,assuming.value,&|when,_|assuming.answer(builder,when))
+ residency_in(builder,value,assuming.map(Presence::condition).as_ref())
+}
+pub(in crate::check) fn residency_in(builder:&Builder<'_>,value:&residency::Residency,assuming:Option<&bounds::Condition>)->residency::Residency{
+ residency(value,&|when|builder.condition_truth(when,assuming))
 }
 pub(in crate::check) fn resolve_model(builder:&Builder<'_>,value:&mut Returned,assuming:Option<&Presence>){model(builder,value,&Assumption::new(assuming));}
 fn model(builder:&Builder<'_>,value:&mut Returned,assuming:&Assumption<'_>){
@@ -73,8 +75,8 @@ fn model(builder:&Builder<'_>,value:&mut Returned,assuming:&Assumption<'_>){
     facts.kind=value.kind();
     match value{Returned::Dataset(data)=>facts.initialization=u32::from(data.initialization.is_some()),Returned::OwnedValue(value)=>facts.count=value.payloads.len()as u64,_=>{}}
    }
-   ModelNeed::Ownership=>match value{Returned::Dataset(data)=>data.ownership=owner(builder,&data.ownership,assuming),Returned::OwnedValue(value)=>value.ownership=owner(builder,&value.ownership,assuming),_=>unsafe{std::hint::unreachable_unchecked()}},
-   ModelNeed::Residency=>{let Returned::Dataset(data)=value else{unsafe{std::hint::unreachable_unchecked()}};data.residency=residency(&data.residency,assuming.value,&|when,_|assuming.answer(builder,when));}
+   ModelNeed::Ownership=>match value{Returned::Dataset(data)=>data.ownership=ownership_in(builder,&data.ownership,assuming.condition.as_ref()),Returned::OwnedValue(value)=>value.ownership=ownership_in(builder,&value.ownership,assuming.condition.as_ref()),_=>unsafe{std::hint::unreachable_unchecked()}},
+   ModelNeed::Residency=>{let Returned::Dataset(data)=value else{unsafe{std::hint::unreachable_unchecked()}};data.residency=residency_in(builder,&data.residency,assuming.condition.as_ref());}
    ModelNeed::Initialization=>{let Returned::Dataset(data)=value else{unsafe{std::hint::unreachable_unchecked()}};data.initialization=Some(ownership::resolve_initialization(builder,data.initialization.as_ref().unwrap(),assuming.value,assuming.condition.as_ref()));}
    ModelNeed::Child=>{let Returned::OwnedValue(value)=value else{unsafe{std::hint::unreachable_unchecked()}};facts.present=u32::from(value.payloads[cursor.index as usize].is_some());}
    ModelNeed::Recurse=>{let Returned::OwnedValue(value)=value else{unsafe{std::hint::unreachable_unchecked()}};model(builder,value.payloads[cursor.index as usize].as_deref_mut().unwrap(),assuming);}

@@ -13,7 +13,7 @@ extern "C" void visit_values(Item item,address context,cfn<void,address,address>
 }
 // Info flags: variants=1, own-presence=2. Item tags: absent=0, Unit=1,
 // ordinary Value=2, Dataset=3, OwnedValuePayload=4. All storage is original.
-void join(address left,address right,u32 stored,address choice,address presence,Host host) on cpu
+void join(address left,address right,u32 stored,address choice,address presence,u32 merge_metadata,Host host) on cpu
     requires nonzero(host.inspect)
     requires nonzero(host.value)
     requires nonzero(host.ownership)
@@ -29,9 +29,11 @@ void join(address left,address right,u32 stored,address choice,address presence,
     requires nonzero(host.join_child)
     requires nonzero(host.join_ownership)
     requires nonzero(host.move_child) { 
-    address a=host.ownership(left);address b=host.ownership(right);
-    if(address_bits(presence)!=0u64){host.join_ownership(a,b,presence);}
-    else if(host.state_equal(a,b)==0){host.state_set_moved(a);}
+    if(merge_metadata!=0){
+        address a=host.ownership(left);address b=host.ownership(right);
+        if(address_bits(presence)!=0u64){host.join_ownership(a,b,presence);}
+        else if(host.state_equal(a,b)==0){host.state_set_moved(a);}
+    }
     address av=host.value(left);address bv=host.value(right);
     if(stored!=0){host.proof_join_stored(av,bv,choice);}else{host.proof_join_common(av,bv,choice);}
     host.set_uniform(av,host.uniform(av)&host.uniform(bv));
@@ -40,7 +42,7 @@ void join(address left,address right,u32 stored,address choice,address presence,
     if(other<count){count=other;}u64 i=0u64;
     while(i<count){
         Item source=host.child(right,i);
-        if(source.kind!=0){if(host.child(left,i).kind==0){host.move_child(left,right,i);}else{host.join_child(left,right,i,stored,choice,presence);}}
+        if(source.kind!=0){if(host.child(left,i).kind==0){host.move_child(left,right,i);}else{host.join_child(left,right,i,stored,choice,presence,merge_metadata);}}
         i+=1u64;
     }
 }
@@ -69,7 +71,7 @@ void dataset_presence(address left,address right,address presence,u32 take_right
         if(address_bits(choice)!=0u64){host.residency(left,right,DataJoin::Selected,choice,take_right);}
     }
 }
-extern "C" void join_returned(Item left,Item right,u32 stored,address choice,address presence,ReturnedHost host) on cpu
+extern "C" void join_returned(Item left,Item right,u32 stored,address choice,address presence,u32 merge_metadata,ReturnedHost host) on cpu
     requires nonzero(host.values.inspect) requires nonzero(host.values.value)
     requires nonzero(host.values.ownership) requires nonzero(host.values.child)
     requires nonzero(host.values.state_equal) requires nonzero(host.values.state_set_moved)
@@ -83,18 +85,20 @@ extern "C" void join_returned(Item left,Item right,u32 stored,address choice,add
     requires nonzero(host.save) requires nonzero(host.restore) requires nonzero(host.maximum)
     requires nonzero(host.elements) requires nonzero(host.prefixes) {
     if(left.kind==1){return;}
-    if(left.kind==4){join(left.node,right.node,stored,choice,presence,host.values);return;}
+    if(left.kind==4){join(left.node,right.node,stored,choice,presence,merge_metadata,host.values);return;}
     if(left.kind==2){
         address value=right.node;
         if(right.kind==3){value=host.values.data_length(right.node);}
         join_value(left.node,value,stored,choice,host.values);return;
     }
     if(address_bits(choice)!=0u64){host.save(host.context,left.node,right.node);}
-    if(address_bits(presence)!=0u64){dataset_presence(left.node,right.node,presence,0,choice,host.data);}
-    else{
-        address first=host.values.data_ownership(left.node);address second=host.values.data_ownership(right.node);
-        if(host.values.state_equal(first,second)==0){host.values.state_set_moved(first);}
-        host.data.residency(left.node,right.node,address_bits(choice)!=0u64?DataJoin::Selected:DataJoin::Common,choice,0);
+    if(merge_metadata!=0){
+        if(address_bits(presence)!=0u64){dataset_presence(left.node,right.node,presence,0,choice,host.data);}
+        else{
+            address first=host.values.data_ownership(left.node);address second=host.values.data_ownership(right.node);
+            if(host.values.state_equal(first,second)==0){host.values.state_set_moved(first);}
+            host.data.residency(left.node,right.node,address_bits(choice)!=0u64?DataJoin::Selected:DataJoin::Common,choice,0);
+        }
     }
     address first=host.values.data_root(left.node);address second=host.values.data_root(right.node);
     if(stored!=0){host.values.proof_join_stored(first,second,address());}
@@ -409,7 +413,6 @@ extern "C" u32 live_paths(address value, u32 independent, address context, LiveP
 
 extern "C" void select_presence(Item target,address inputs,u64 count,SelectionHost host) on cpu
     requires nonzero(host.alternative)
-    requires nonzero(host.owner)
     requires nonzero(host.mode)
     requires nonzero(host.equal)
     requires nonzero(host.accumulate)
@@ -421,24 +424,14 @@ extern "C" void select_presence(Item target,address inputs,u64 count,SelectionHo
     requires nonzero(host.inspect)
     requires nonzero(host.mutable_child)
     requires nonzero(host.select_child) {
-    if(target.kind!=3&&target.kind!=4){return;}
-    u64 start=0u64;
-    Alternative selected=host.alternative(inputs,start);
-    while(selected.item.kind!=target.kind){
-        start+=1u64;
-        selected=host.alternative(inputs,start);
-    }
-    address first=host.owner(selected.item);
+    address first=host.alternative(inputs,0u64).owner;
     u32 same=1;
     u32 borrowed=host.mode(first)==2 ? 1 : 0;
-    u64 at=start+1u64;
+    u64 at=1u64;
     while(at<count){
-        Alternative candidate=host.alternative(inputs,at);
-        if(candidate.item.kind==target.kind){
-            address owner=host.owner(candidate.item);
-            if(same!=0){same=host.equal(first,owner);}
-            if(host.mode(owner)==2){borrowed=1;}
-        }
+        address owner=host.alternative(inputs,at).owner;
+        if(same!=0){same=host.equal(first,owner);}
+        if(host.mode(owner)==2){borrowed=1;}
         at+=1u64;
     }
     if(same!=0){
@@ -446,26 +439,21 @@ extern "C" void select_presence(Item target,address inputs,u64 count,SelectionHo
     }else if(borrowed!=0){
         host.commit(target,first,inputs,1);
     }else{
-        at=start;
+        at=0u64;
         while(at<count){
-            Alternative candidate=host.alternative(inputs,at);
-            if(candidate.item.kind==target.kind){
-                host.accumulate(inputs,candidate,host.owner(candidate.item));
-            }
+            host.accumulate(inputs,host.alternative(inputs,at));
             at+=1u64;
         }
         host.commit(target,first,inputs,2);
     }
 
     if(target.kind==3){host.reset_residency(target);}
-    at=start;
+    at=0u64;
     while(at<count){
         Alternative candidate=host.alternative(inputs,at);
-        if(candidate.item.kind==target.kind){
-            host.push_proof(inputs,candidate);
-            if(target.kind==3&&host.mode(host.owner(candidate.item))!=0){
-                host.join_residency(target,candidate);
-            }
+        host.push_proof(inputs,candidate);
+        if(target.kind==3&&host.mode(candidate.owner)!=0){
+            host.join_residency(target,candidate);
         }
         at+=1u64;
     }
@@ -524,5 +512,19 @@ extern "C" void retain_presence(PayloadPair pair,address presence,u32 take_right
             retain_presence(child,presence,take_right,host);
             i+=1u64;
         }
+    }
+}
+
+extern "C" void join_place_candidates(address context,u64 count,PlaceChoiceHost host) on cpu
+    requires nonzero(host.condition)
+    requires nonzero(host.merge) {
+    u32 have=0;
+    u64 at=0u64;
+    while(at<count){
+        if(host.condition(context,at)!=0){
+            host.merge(context,at,have);
+            have=1;
+        }
+        at+=1u64;
     }
 }

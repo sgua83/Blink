@@ -35,7 +35,7 @@ struct Host {
     cfn<void,address,u32> length_constant;
     cfn<u32,address> view_empty;
     cfn<void,address> install_source;
-    cfn<void,address,address,u64,u32,address,address> join_child;
+    cfn<void,address,address,u64,u32,address,address,u32> join_child;
     cfn<void,address,address,address> join_ownership;
     cfn<void,address,address,u64> move_child;
     cfn<address,address> data_root;
@@ -168,13 +168,12 @@ extern "C" void resources(address value,address context,cfn<void,address,address
     requires nonzero(host.state_moved)
     requires nonzero(visit);
 
-struct Alternative { address when; Item item; };
+struct Alternative { address owner; address choice; };
 struct SelectionHost {
     cfn<Alternative,address,u64> alternative;
-    cfn<address,Item> owner;
     cfn<u32,address> mode;
     cfn<u32,address,address> equal;
-    cfn<void,address,Alternative,address> accumulate;
+    cfn<void,address,Alternative> accumulate;
     cfn<void,Item,address,address,u32> commit;
     cfn<void,Item> reset_residency;
     cfn<void,Item,Alternative> join_residency;
@@ -204,7 +203,6 @@ extern "C" u32 live_paths(address value, u32 independent, address context, LiveP
 
 extern "C" void select_presence(Item target,address inputs,u64 count,SelectionHost host) on cpu
     requires nonzero(host.alternative)
-    requires nonzero(host.owner)
     requires nonzero(host.mode)
     requires nonzero(host.equal)
     requires nonzero(host.accumulate)
@@ -250,7 +248,7 @@ struct ReturnedHost {
     cfn<void,address,address,DataJoin,address,address> elements;
     cfn<void,address,address,address> prefixes;
 };
-extern "C" void join_returned(Item left,Item right,u32 stored,address choice,address presence,ReturnedHost host) on cpu
+extern "C" void join_returned(Item left,Item right,u32 stored,address choice,address presence,u32 merge_metadata,ReturnedHost host) on cpu
     requires nonzero(host.values.inspect) requires nonzero(host.values.value)
     requires nonzero(host.values.ownership) requires nonzero(host.values.child)
     requires nonzero(host.values.state_equal) requires nonzero(host.values.state_set_moved)
@@ -278,3 +276,11 @@ extern "C" void retain_presence(PayloadPair pair,address presence,u32 take_right
     requires nonzero(host.dataset)
     requires nonzero(host.data.moved) requires nonzero(host.data.ownership)
     requires nonzero(host.data.initialization) requires nonzero(host.data.residency);
+
+struct PlaceChoiceHost {
+    cfn<u32,address,u64> condition;
+    cfn<void,address,u64,u32> merge;
+};
+extern "C" void join_place_candidates(address context,u64 count,PlaceChoiceHost host) on cpu
+    requires nonzero(host.condition)
+    requires nonzero(host.merge);
