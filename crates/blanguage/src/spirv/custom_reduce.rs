@@ -34,54 +34,54 @@ struct CustomCollectiveJoin {
 }
 
 #[repr(C)]
-struct CustomTreeInput {
-    uint_type: u32,
-    bool_type: u32,
+struct CustomTree {
     lane: u32,
     shared: u32,
     pointer: u32,
-    mask: u32,
-    stride: u32,
     remaining: u32,
-    one: u32,
-    down: u32,
-    next: u32,
-}
-
-#[repr(C)]
-struct CustomTreeOpen {
-    words: u64,
-    next: u32,
-    run: u32,
-    absent: u32,
-    merged: u32,
-    end: u32,
-}
-
-#[repr(C)]
-struct CustomTreeClose {
-    uint_type: u32,
-    from: u32,
-    absent: u32,
-    merged: u32,
-    end: u32,
-    scope: u32,
-    semantics: u32,
-    down: u32,
-    next: u32,
-}
-
-#[repr(C)]
-struct CustomSegmentJoin {
-    uint_type: u32,
-    bool_type: u32,
-    zero: u32,
-    skipped: u32,
-    combined: u32,
-    end: u32,
     value_words: u32,
-    counted: u32,
-    next: u32,
+    tag_words: u32,
+    down: u32,
+}
+
+#[repr(C)]
+struct CustomMerge {
+    value_words: u32,
+    tag_words: u32,
+    label: u32,
+}
+
+#[repr(C)]
+struct CustomCombine {
+    context: *mut std::ffi::c_void,
+    emit: unsafe extern "C" fn(*mut std::ffi::c_void, *const u32, *const u32, *mut u32, u32, u32) -> u32,
+}
+
+struct CombineContext<'a, 'stage> {
+    emitter: *mut Emitter<'stage>,
+    reduction: &'a CustomReduction,
+    kernel: &'a ReductionKernel,
+    error: Option<&'static str>,
+}
+
+unsafe extern "C" fn emit_checked_combine(
+    context: *mut std::ffi::c_void, left: *const u32, right: *const u32,
+    output: *mut u32, count: u32, label: u32,
+) -> u32 {
+    let context = unsafe { &mut *context.cast::<CombineContext<'_, '_>>() };
+    let emitter = unsafe { &mut *context.emitter };
+    let count = count as usize;
+    let left = unsafe { std::slice::from_raw_parts(left, count) };
+    let right = unsafe { std::slice::from_raw_parts(right, count) };
+    let output = unsafe { std::slice::from_raw_parts_mut(output, count) };
+    emitter.current_label = label;
+    match emitter.custom_pair(context.reduction, context.kernel, left, right, output) {
+        Ok(()) => emitter.current_label,
+        Err(error) => {
+            context.error = Some(error);
+            0
+        }
+    }
 }
 
 #[repr(C)]
@@ -193,18 +193,12 @@ unsafe extern "C" {
     #[link_name = "bootstrap.spirv_envelope::close_custom_segment_finish"]
     fn close_custom_segment_finish(input: CustomSegmentOutput, fields: *const CollectiveField,
         field_count: u32, total: *const u32, segments: u32, body: *mut u32) -> StageWords;
-    #[link_name = "bootstrap.spirv_envelope::open_custom_segment"]
-    fn open_custom_segment(bool_type: u32, right_head: u32, zero: u32, next: u32,
-        body: *mut u32) -> CollectiveBranch;
-    #[link_name = "bootstrap.spirv_envelope::close_custom_segment"]
-    fn close_custom_segment(input: CustomSegmentJoin, left: *const u32, right: *const u32,
-        values: *mut u32, body: *mut u32) -> StageWords;
-    #[link_name = "bootstrap.spirv_envelope::open_custom_tree"]
-    fn emit_open_custom_tree(input: CustomTreeInput, offsets: *const u32, own: *const u32,
-        count: u32, workspace: *mut u32, body: *mut u32) -> CustomTreeOpen;
-    #[link_name = "bootstrap.spirv_envelope::close_custom_tree"]
-    fn emit_close_custom_tree(input: CustomTreeClose, own: *const u32, left: *const u32,
-        values: *mut u32, count: u32, body: *mut u32) -> StageWords;
+    #[link_name = "bootstrap.spirv_envelope::emit_custom_merge"]
+    fn emit_custom_merge(input: CustomMerge, left: *const u32, right: *const u32,
+        result: *mut u32, memory: MemoryHost, combine: CustomCombine) -> u32;
+    #[link_name = "bootstrap.spirv_envelope::emit_custom_tree"]
+    fn emit_custom_tree(input: CustomTree, own: *const u32, workspace: *mut u32,
+        memory: MemoryHost, combine: CustomCombine) -> u32;
     #[link_name = "bootstrap.spirv_envelope::custom_collective_read"]
     fn emit_custom_collective_read(input: CustomCollectiveSource, fields: *const PhysicalField,
         count: u32, values: *mut u32, body: *mut u32) -> CollectiveBranch;
@@ -254,7 +248,8 @@ impl Emitter<'_> {
         kernel: &ReductionKernel,
         left: &[u32],
         right: &[u32],
-    ) -> Result<Vec<u32>, &'static str> {
+        output: &mut [u32],
+    ) -> Result<(), &'static str> {
         for reg in
             kernel.stage.registers.len() - r.combine.registers.len()..kernel.stage.registers.len()
         {
@@ -266,7 +261,11 @@ impl Emitter<'_> {
         self.custom_arguments(&r.ty, &kernel.right, right);
         self.block(&kernel.stage.code[kernel.project_end..])?;
         let values: Vec<_> = kernel.result.iter().map(|reg| self.raw_bits(*reg)).collect();
-        Ok(self.pack_words(r.ty.size, r.ty.components.iter().zip(&values).map(|((scalar, byte), value)| (*scalar, *byte, *value))))
+        let zero = self.constant(Scalar::U32, 0);
+        output.fill(zero);
+        self.pack_word_fields(output, zero, r.ty.components.iter().zip(&values)
+            .map(|((scalar, byte), value)| (*scalar, *byte, *value)));
+        Ok(())
     }
     fn custom_input(
         &mut self,
@@ -355,6 +354,28 @@ impl Emitter<'_> {
     }
 
 
+    fn with_custom_combine(
+        &mut self,
+        reduction: &CustomReduction,
+        kernel: &ReductionKernel,
+        emit: impl FnOnce(MemoryHost, CustomCombine) -> u32,
+    ) -> Result<(), &'static str> {
+        let memory = self.memory_host();
+        let mut context = CombineContext {
+            emitter: memory.scalars.context.cast(), reduction, kernel, error: None,
+        };
+        let combine = CustomCombine {
+            context: std::ptr::from_mut(&mut context).cast(),
+            emit: emit_checked_combine,
+        };
+        let label = emit(memory, combine);
+        if let Some(error) = context.error {
+            return Err(error);
+        }
+        self.current_label = label;
+        Ok(())
+    }
+
     fn custom_merge(
         &mut self,
         r: &CustomReduction,
@@ -363,42 +384,16 @@ impl Emitter<'_> {
         right: &[u32],
         summary: Summary,
     ) -> Result<Vec<u32>, &'static str> {
-        if matches!(summary, Summary::Plain) {
-            return self.custom_pair(r, kernel, left, right);
-        }
-        let k = r.ty.size.div_ceil(4) as usize;
-        let uint_type = self.types[&Scalar::U32];
-        let bool_type = self.types[&Scalar::Bool];
-        let zero = self.constant(Scalar::U32, 0);
-        let skipped = self.current_label;
-        let body = self.body.len();
-        self.body.reserve(14);
-        let open = unsafe {
-            let open = open_custom_segment(bool_type, right[k], zero, self.next,
-                self.body.as_mut_ptr().add(body));
-            self.body.set_len(body + open.words as usize);
-            open
-        };
-        self.next = open.next;
-        self.current_label = open.run;
-        let mut values = self.custom_pair(r, kernel, &left[..k], &right[..k])?;
-        values.resize(summary.words(k), 0);
-        let join = CustomSegmentJoin {
-            uint_type, bool_type, zero, skipped, combined: self.current_label, end: open.end,
-            value_words: k as u32, counted: u32::from(matches!(summary, Summary::Counted(_))),
-            next: self.next,
-        };
-        let body = self.body.len();
-        self.body.reserve(15 + 7 * k);
-        unsafe {
-            let emitted = close_custom_segment(join, left.as_ptr(), right.as_ptr(),
-                values.as_mut_ptr(), self.body.as_mut_ptr().add(body));
-            self.body.set_len(body + emitted.words as usize);
-            self.next = emitted.next;
-            self.current_label = emitted.label;
-        }
+        let value_words = r.ty.size.div_ceil(4);
+        let tag_words = summary.words(0) as u32;
+        let mut values = vec![0; (value_words + tag_words) as usize];
+        let input = CustomMerge { value_words, tag_words, label: self.current_label };
+        self.with_custom_combine(r, kernel, |memory, combine| unsafe {
+            emit_custom_merge(input, left.as_ptr(), right.as_ptr(), values.as_mut_ptr(), memory, combine)
+        })?;
         Ok(values)
     }
+
     fn custom_tree(
         &mut self,
         r: &CustomReduction,
@@ -411,57 +406,14 @@ impl Emitter<'_> {
         down: bool,
         summary: Summary,
     ) -> Result<(), &'static str> {
-        let words = own.len();
-        let uint_type = self.types[&Scalar::U32];
-        let bool_type = self.types[&Scalar::Bool];
-        let one = self.constant(Scalar::U32, 1);
-        let scope = self.constant(Scalar::U32, 2);
-        let semantics = self.constant(Scalar::U32, 0x108);
-        let mut offsets = vec![0; words];
-        for (part, offset) in offsets.iter_mut().enumerate().skip(1) {
-            *offset = self.constant(Scalar::U32, part as u32 * 64);
-        }
-        let mut workspace = vec![0; 3 * words];
-        for depth in 0..6 {
-            let width = if down { 32 >> depth } else { 1 << depth };
-            let mask = self.constant(Scalar::U32, 2 * width - 1);
-            let stride = self.constant(Scalar::U32, width);
-            let input = CustomTreeInput {
-                uint_type, bool_type, lane: local, shared, pointer, mask, stride,
-                remaining, one, down: u32::from(down), next: self.next,
-            };
-            let body = self.body.len();
-            self.body.reserve(48 + 25 * words);
-            let open = unsafe {
-                let open = emit_open_custom_tree(input, offsets.as_ptr(), own.as_ptr(),
-                    words as u32, workspace.as_mut_ptr(), self.body.as_mut_ptr().add(body));
-                self.body.set_len(body + open.words as usize);
-                open
-            };
-            self.next = open.next;
-            self.current_label = open.run;
-            let (left, right) = workspace[words..].split_at(words);
-            let (before, after) = if down { (right, left) } else { (left, right) };
-            let mut values = self.custom_merge(r, kernel, before, after, summary)?;
-
-
-            let close = CustomTreeClose {
-                uint_type, from: self.current_label, absent: open.absent, merged: open.merged,
-                end: open.end, scope, semantics, down: u32::from(down), next: self.next,
-            };
-            let body = self.body.len();
-            self.body.reserve(12 + 12 * words);
-            unsafe {
-                let emitted = emit_close_custom_tree(close, own.as_ptr(), left.as_ptr(),
-                    values.as_mut_ptr(), words as u32, self.body.as_mut_ptr().add(body));
-                self.body.set_len(body + emitted.words as usize);
-                self.next = emitted.next;
-                self.current_label = emitted.label;
-            }
-        }
-        Ok(())
+        let value_words = r.ty.size.div_ceil(4);
+        let tag_words = summary.words(0) as u32;
+        let input = CustomTree { lane: local, shared, pointer, remaining, value_words, tag_words, down: u32::from(down) };
+        let mut workspace = vec![0; 5 * own.len()];
+        self.with_custom_combine(r, kernel, |memory, combine| unsafe {
+            emit_custom_tree(input, own.as_ptr(), workspace.as_mut_ptr(), memory, combine)
+        })
     }
-
 
     pub(super) fn custom_reduce(
         &mut self,

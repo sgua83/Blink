@@ -3465,7 +3465,19 @@ void write_segment_tags(inout StageCursor out, u32 uint_type, u32 k, u32 counted
     }
 }
 
-extern "C" CollectiveBranch open_custom_segment(u32 bool_type, u32 right_head, u32 zero,
+struct CustomSegmentJoin {
+    u32 uint_type;
+    u32 bool_type;
+    u32 zero;
+    u32 skipped;
+    u32 combined;
+    u32 end;
+    u32 value_words;
+    u32 counted;
+    u32 next;
+};
+
+CollectiveBranch open_custom_segment(u32 bool_type, u32 right_head, u32 zero,
     u32 next, address body) on cpu {
     StageCursor out = StageCursor(body, 0u64, next);
     u32 starts = stage_op(out, 171, bool_type, right_head, zero);
@@ -3473,7 +3485,7 @@ extern "C" CollectiveBranch open_custom_segment(u32 bool_type, u32 right_head, u
     return CollectiveBranch(out.words, out.next, branch.run, branch.end);
 }
 
-extern "C" StageWords close_custom_segment(CustomSegmentJoin input, address left, address right,
+StageWords close_custom_segment(CustomSegmentJoin input, address left, address right,
     address values, address body) on cpu {
     StageCursor out = StageCursor(body, 0u64, input.next);
     stage_close(out, input.end);
@@ -3491,6 +3503,37 @@ extern "C" StageWords close_custom_segment(CustomSegmentJoin input, address left
         put(values, u64(k), stage_select(out, input.uint_type, has_head, first, read_word(right, k)));
     }
     return StageWords(out.words, out.next, input.end);
+}
+
+extern "C" u32 emit_custom_merge(CustomMerge input, address left, address right, address result,
+    MemoryHost memory, CustomCombine combine) on cpu
+    requires nonzero(memory.scalars.constant) requires nonzero(memory.scalars.type_id)
+    requires nonzero(memory.scalars.ids) requires nonzero(memory.scalars.reserve)
+    requires nonzero(memory.finish_body) requires nonzero(combine.emit) {
+    u32 count = input.value_words;
+    if (input.tag_words == 0) {
+        return combine.emit(combine.context, left, right, result, count, input.label);
+    }
+    address context = memory.scalars.context;
+    u32 uint_type = memory.scalars.type_id(context, BuiltinScalar::U32);
+    u32 bool_type = memory.scalars.type_id(context, BuiltinScalar::Bool);
+    u32 zero = memory.scalars.constant(context, BuiltinScalar::U32, 0u64);
+    u32 next = memory.scalars.ids(context, 0);
+    address body = memory.scalars.reserve(context, 14u64, 0u64).body;
+    CollectiveBranch opened = open_custom_segment(bool_type, read_word(right, count), zero, next, body);
+    memory.finish_body(context, opened.words);
+    memory.scalars.ids(context, opened.next - next);
+    u32 combined = combine.emit(combine.context, left, right, result, count, opened.run);
+    if (combined == 0) { return 0; }
+
+    next = memory.scalars.ids(context, 0);
+    body = memory.scalars.reserve(context, 15u64 + 7u64 * u64(count), 0u64).body;
+    CustomSegmentJoin join = CustomSegmentJoin(uint_type, bool_type, zero, input.label,
+        combined, opened.end, count, u32(input.tag_words == 2), next);
+    StageWords emitted = close_custom_segment(join, left, right, result, body);
+    memory.finish_body(context, emitted.words);
+    memory.scalars.ids(context, emitted.next - next);
+    return emitted.label;
 }
 
 u64 merge_segment(inout StageCursor out, SegmentMerge input, address fields, u32 count,
@@ -3541,7 +3584,34 @@ void read_segment_values(inout StageCursor out, u32 type_id, u32 words, address 
     out.next += words;
 }
 
-extern "C" CustomTreeOpen open_custom_tree(CustomTreeInput input, address offsets, address own,
+struct CustomTreeInput {
+    u32 uint_type;
+    u32 bool_type;
+    u32 lane;
+    u32 shared;
+    u32 pointer;
+    u32 mask;
+    u32 stride;
+    u32 remaining;
+    u32 one;
+    u32 down;
+    u32 next;
+};
+
+struct CustomTreeOpen { u64 words; u32 next; u32 run; u32 absent; u32 merged; u32 end; };
+struct CustomTreeClose {
+    u32 uint_type;
+    u32 from;
+    u32 absent;
+    u32 merged;
+    u32 end;
+    u32 scope;
+    u32 semantics;
+    u32 down;
+    u32 next;
+};
+
+CustomTreeOpen open_custom_tree(CustomTreeInput input, address offsets, address own,
     u32 count, address workspace, address body) on cpu {
     StageCursor out = StageCursor(body, 0u64, input.next);
     u32 u = input.uint_type;
@@ -3566,7 +3636,7 @@ extern "C" CustomTreeOpen open_custom_tree(CustomTreeInput input, address offset
 }
 
 
-extern "C" StageWords close_custom_tree(CustomTreeClose input, address own, address left,
+StageWords close_custom_tree(CustomTreeClose input, address own, address left,
     address values, u32 count, address body) on cpu {
     StageCursor out = StageCursor(body, 0u64, input.next);
     if (input.down != 0) {
@@ -3584,6 +3654,58 @@ extern "C" StageWords close_custom_tree(CustomTreeClose input, address own, addr
     stage_close(out, input.end);
     stage_barrier(out, input.scope, input.semantics);
     return StageWords(out.words, out.next, input.end);
+}
+
+extern "C" u32 emit_custom_tree(CustomTree tree, address own, address workspace,
+    MemoryHost memory, CustomCombine combine) on cpu
+    requires nonzero(memory.scalars.constant) requires nonzero(memory.scalars.type_id)
+    requires nonzero(memory.scalars.ids) requires nonzero(memory.scalars.reserve)
+    requires nonzero(memory.finish_body) requires nonzero(combine.emit) {
+    address context = memory.scalars.context;
+    u32 uint_type = memory.scalars.type_id(context, BuiltinScalar::U32);
+    u32 bool_type = memory.scalars.type_id(context, BuiltinScalar::Bool);
+    u32 one = memory.scalars.constant(context, BuiltinScalar::U32, 1u64);
+    u32 scope = memory.scalars.constant(context, BuiltinScalar::U32, 2u64);
+    u32 semantics = memory.scalars.constant(context, BuiltinScalar::U32, 0x108u64);
+    u32 count = tree.value_words + tree.tag_words;
+    u64 span = u64(count);
+    address neighbors = word_at(workspace, span);
+    address left = word_at(neighbors, span);
+    address right = word_at(left, span);
+    address result = word_at(right, span);
+    for (part in 1..count) {
+        put(workspace, u64(part), memory.scalars.constant(context, BuiltinScalar::U32, 64u64 * u64(part)));
+    }
+
+    bool down = tree.down != 0;
+    address before = down ? right : left;
+    address after = down ? left : right;
+    u32 label = 0;
+    for (depth in 0..6) {
+        u32 width = down ? 32 >> depth : 1 << depth;
+        u32 mask = memory.scalars.constant(context, BuiltinScalar::U32, u64(2 * width - 1));
+        u32 stride = memory.scalars.constant(context, BuiltinScalar::U32, u64(width));
+        u32 next = memory.scalars.ids(context, 0);
+        address body = memory.scalars.reserve(context, 48u64 + 25u64 * span, 0u64).body;
+        CustomTreeInput input = CustomTreeInput(uint_type, bool_type, tree.lane, tree.shared, tree.pointer,
+            mask, stride, tree.remaining, one, tree.down, next);
+        CustomTreeOpen opened = open_custom_tree(input, workspace, own, count, neighbors, body);
+        memory.finish_body(context, opened.words);
+        memory.scalars.ids(context, opened.next - next);
+
+        u32 combined = emit_custom_merge(CustomMerge(tree.value_words, tree.tag_words, opened.run),
+            before, after, result, memory, combine);
+        if (combined == 0) { return 0; }
+        next = memory.scalars.ids(context, 0);
+        body = memory.scalars.reserve(context, 12u64 + 12u64 * span, 0u64).body;
+        CustomTreeClose close = CustomTreeClose(uint_type, combined, opened.absent, opened.merged,
+            opened.end, scope, semantics, tree.down, next);
+        StageWords emitted = close_custom_tree(close, own, left, result, count, body);
+        memory.finish_body(context, emitted.words);
+        memory.scalars.ids(context, emitted.next - next);
+        label = emitted.label;
+    }
+    return label;
 }
 
 

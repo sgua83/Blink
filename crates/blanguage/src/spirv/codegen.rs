@@ -2205,6 +2205,15 @@ impl Emitter<'_> {
     {
         let zero = self.constant(Scalar::U32, 0);
         let mut values = vec![zero; size.div_ceil(4) as usize];
+        self.pack_word_fields(&mut values, zero, components);
+        values
+    }
+
+    fn pack_word_fields<I>(&mut self, values: &mut [u32], zero: u32, components: I)
+    where
+        I: IntoIterator<Item = (Scalar, u32, u32)>,
+        I::IntoIter: ExactSizeIterator,
+    {
         let components = components.into_iter();
         let at = self.body.len();
         // A field can emit one split shift, two conversions and two shift/merge pairs.
@@ -2221,7 +2230,6 @@ impl Emitter<'_> {
         let result = unsafe { pack_record(host, word_type, zero, next, values.as_mut_ptr(), body) };
         unsafe { self.body.set_len(at + result.words as usize); }
         self.next = result.next;
-        values
     }
     fn raw_scalar(scalar: Scalar) -> Scalar {
         match scalar.size() { 1 => Scalar::U8, 2 => Scalar::U16, 4 => Scalar::U32, _ => Scalar::U64 }

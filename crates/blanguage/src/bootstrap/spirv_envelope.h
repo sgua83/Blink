@@ -640,46 +640,40 @@ struct TileRangeWords { u64 words; u32 next; u32 lane; u32 length; };
 // The same tile range feeds shared storage and the visible lane and length.
 extern "C" TileRangeWords tile_range(address body, u32 uint_type, u32 bool_type, u32 index, u32 count, u32 width, u32 first) on cpu;
 
-struct CustomTreeInput {
-    u32 uint_type;
-    u32 bool_type;
+struct CustomTree {
     u32 lane;
     u32 shared;
     u32 pointer;
-    u32 mask;
-    u32 stride;
     u32 remaining;
-    u32 one;
+    u32 value_words;
+    u32 tag_words;
     u32 down;
-    u32 next;
 };
 
-struct CustomTreeOpen {
-    u64 words;
-    u32 next;
-    u32 run;
-    u32 absent;
-    u32 merged;
-    u32 end;
+struct CustomMerge {
+    u32 value_words;
+    u32 tag_words;
+    u32 label;
 };
 
-struct CustomTreeClose {
-    u32 uint_type;
-    u32 from;
-    u32 absent;
-    u32 merged;
-    u32 end;
-    u32 scope;
-    u32 semantics;
-    u32 down;
-    u32 next;
+struct CustomCombine {
+    address context;
+    // The checked emitter returns its final block label, or zero with its diagnostic.
+    cfn<u32,address,address,address,address,u32,u32> emit;
 };
 
-// Workspace holds a word span each for neighbor pointers, left and right.
-extern "C" CustomTreeOpen open_custom_tree(CustomTreeInput input, address offsets, address own,
-    u32 count, address workspace, address body) on cpu;
-extern "C" StageWords close_custom_tree(CustomTreeClose input, address own, address left,
-    address values, u32 count, address body) on cpu;
+// Each workspace span has value_words + tag_words entries. Spans are offsets,
+// neighbor pointers, left, right and the reusable result.
+extern "C" u32 emit_custom_tree(CustomTree tree, address own, address workspace,
+    MemoryHost memory, CustomCombine combine) on cpu
+    requires nonzero(memory.scalars.constant) requires nonzero(memory.scalars.type_id)
+    requires nonzero(memory.scalars.ids) requires nonzero(memory.scalars.reserve)
+    requires nonzero(memory.finish_body) requires nonzero(combine.emit);
+extern "C" u32 emit_custom_merge(CustomMerge input, address left, address right, address result,
+    MemoryHost memory, CustomCombine combine) on cpu
+    requires nonzero(memory.scalars.constant) requires nonzero(memory.scalars.type_id)
+    requires nonzero(memory.scalars.ids) requires nonzero(memory.scalars.reserve)
+    requires nonzero(memory.finish_body) requires nonzero(combine.emit);
 
 struct TreeLayer {
     u32 uint_type;
@@ -819,23 +813,6 @@ extern "C" CollectiveBranch custom_collective_read(CustomCollectiveSource input,
     address fields, u32 count, address values, address body) on cpu;
 extern "C" StageWords custom_collective_join(CustomCollectiveJoin input, address values,
     address identity, address shared, u32 count, address body) on cpu;
-
-struct CustomSegmentJoin {
-    u32 uint_type;
-    u32 bool_type;
-    u32 zero;
-    u32 skipped;
-    u32 combined;
-    u32 end;
-    u32 value_words;
-    u32 counted;
-    u32 next;
-};
-
-extern "C" CollectiveBranch open_custom_segment(u32 bool_type, u32 right_head, u32 zero,
-    u32 next, address body) on cpu;
-extern "C" StageWords close_custom_segment(CustomSegmentJoin input, address left, address right,
-    address values, address body) on cpu;
 
 struct CustomSegmentPrefix {
     PageAddress parent;
