@@ -169,8 +169,9 @@ unsafe extern "C" fn condition_substitute(value: Address, inputs: Address, a: In
     let a = omitted(a); let b = omitted(b);
     let slot = unsafe { &mut *value.cast::<ConditionSlot>() };
     let condition = slot.as_ref().unwrap();
-    let bindings = condition.value_bindings(|id| if Some(id) == a || Some(id) == b { None } else { inputs.get(&id) });
-    *slot = Some(condition.at_call(&bindings));
+    *slot = Some(condition.substitute_values_with(|id| {
+        if Some(id) == a || Some(id) == b { None } else { inputs.get(&id) }
+    }));
 }
 unsafe extern "C" fn input_offset(inputs: Address, index: Index) -> u32 {
     let inputs = unsafe { &*inputs.cast::<BTreeMap<ValueIdentity, bounds::Proof>>() };

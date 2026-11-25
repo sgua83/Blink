@@ -213,11 +213,11 @@ unsafe extern "C" fn call_range(input: Borrowed, at: u64) -> Bounds {
 }
 
 pub(super) fn call_below(
-    ids: [ValueIdentity; 2], [left, right]: [&Proof; 2], strict: bool, scalar: Scalar,
+    ids: [ValueIdentity; 2], [left, right]: [CallInput<'_>; 2], strict: bool, scalar: Scalar,
 ) -> Clause {
-    let same = left.origins[0].iter().any(|id| right.origins[0].contains(id));
-    let left_ranges = left.interval_source(0);
-    let right_ranges = right.interval_source(0);
+    let same = left.origins().iter().any(|id| right.origins().contains(id));
+    let left_ranges = left.intervals();
+    let right_ranges = right.intervals();
     let ranges = CallComparisonRanges {
         left: ptr::from_ref(&left_ranges).cast(),
         left_count: left_ranges.len() as u64,
@@ -226,12 +226,11 @@ pub(super) fn call_below(
         get: call_range,
     };
     let mut facts = Facts::new();
-    let empty = Domains::new();
     let mut c = Constraint {
         facts: &mut facts,
         ids,
         scalar,
-        input: right.domains.get(0).unwrap_or(&empty).iter(),
+        input: right.domains(),
     };
     let possible = unsafe {
         b_call_below(

@@ -898,7 +898,7 @@ struct CallFactHost {
  cfn<void,address,address> begin;
  cfn<ComparisonDomain,address> next;
  cfn<address,address,address,CallFactCommon> cast_domain;
- cfn<CallFactOrigin,address,usize> ensures memory(read) origin;
+ cfn<CallFactOrigin,CallFactInput,usize> ensures memory(read) origin;
  cfn<void,address,address,address,CallFactCommon> emit_common;
  cfn<address,address,address> predicate;
  cfn<address,address,address,address,address,u32> comparison;
@@ -1019,8 +1019,9 @@ struct ProofCallWidths { usize origins; usize domains; usize conditions; };
 struct ProofCallDomain { address original; u32 kind; };
 struct ProofCallHost {
  cfn<void,address,usize,u32,u32> begin;
- cfn<address,address> input;
+ cfn<CallFactInput,address> input;
  cfn<void,address,address> merge_input;
+ cfn<void,address,address> keep_origin;
  cfn<ProofCallDomain,address> domain;
  cfn<void,address,address> direct;
  cfn<void,address,address> common;
@@ -1030,7 +1031,7 @@ struct ProofCallHost {
  cfn<void,address> nonzero;
 };
 extern "C" void project_call_proof(address context,ProofCallWidths widths,ProofCallHost host) on cpu
- requires nonzero(host.begin) requires nonzero(host.input) requires nonzero(host.merge_input)
+ requires nonzero(host.begin) requires nonzero(host.input) requires nonzero(host.merge_input) requires nonzero(host.keep_origin)
  requires nonzero(host.domain) requires nonzero(host.direct) requires nonzero(host.common) requires nonzero(host.derived)
  requires nonzero(host.false_case) requires nonzero(host.possible) requires nonzero(host.nonzero);
 

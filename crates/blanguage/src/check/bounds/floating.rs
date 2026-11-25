@@ -90,21 +90,21 @@ impl FloatingBound {
             add_up(add_up(multiply_up(a,d),b),if c == 0.0 { 0.0 } else { divide_up(c,d) }))
             .fold(f64::NEG_INFINITY,f64::max)
     }
-    fn restricted(self, input: &Proof) -> Option<Self> {
-        let (lower,upper) = input.range_set(0).restrict(0,self.scalar.bit_mask()).hull();
+    fn restricted(self, input: CallInput<'_>) -> Option<Self> {
+        let (lower,upper) = range_sets::restrict(input.intervals(), 0, self.scalar.bit_mask()).hull();
         let bound = Self { lower: self.lower.max(lower), upper: self.upper.min(upper), ..self };
         (bound.lower <= bound.upper).then_some(bound)
     }
-    pub(super) fn at_call(self, bindings: &BTreeMap<ValueIdentity,impl std::borrow::Borrow<Proof>>) -> Option<Self> {
-        let input = Proof::bound_input(bindings, &self.source)?;
-        Some(Self { source: input.known_identity(0)?, ..self.restricted(input)? })
+    pub(super) fn at_call(self, bindings: &impl CallBindings) -> Option<Self> {
+        let input = bindings.input(self.source)?;
+        Some(Self { source: input.identity()?, ..self.restricted(input)? })
     }
     pub(super) fn project_at_call(
-        self, bindings: &BTreeMap<ValueIdentity, impl std::borrow::Borrow<Proof>>,
+        self, bindings: &impl CallBindings,
     ) -> Option<(Option<Self>, Option<ScalarRanges>)> {
-        let input = Proof::bound_input(bindings, &self.source)?;
+        let input = bindings.input(self.source)?;
         let bound = self.restricted(input)?;
-        let mapped = input.known_identity(0).map(|source| Self { source, ..bound });
+        let mapped = input.identity().map(|source| Self { source, ..bound });
         let range = (bound.form == FloatingForm::Upper).then(|| upper_range(bound.maximum()));
         Some((mapped, range))
     }

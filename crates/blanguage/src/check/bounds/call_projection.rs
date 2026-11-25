@@ -21,7 +21,7 @@ struct Converted { lower: u64, upper: u64, contains_zero: u32, known: u32, value
 #[repr(C)]
 struct Origin { original: Borrowed, element: u32 }
 struct Frame<'a, P> {
-    bindings: &'a BTreeMap<ValueIdentity, P>,
+    bindings: &'a P,
     domains: btree_set::Iter<'a, IndexDomain>,
     domain: Option<IndexDomain>, predicate: Option<ScalarPredicate>,
     facts: Facts, clause: Option<Clause>,
@@ -31,24 +31,50 @@ unsafe fn proof<'a>(value: Borrowed) -> &'a Proof { unsafe { &*value.cast() } }
 unsafe fn common_scalars(value: Common) -> [Scalar; 4] {
     [value.from, value.low, value.extended, value.to].map(|value| unsafe { *value.cast() })
 }
-unsafe extern "C" fn input<P: std::borrow::Borrow<Proof>>(slot: Slot, id: Borrowed) -> Input {
+fn describe(value: CallInput<'_>, id: &ValueIdentity) -> Input {
+    match value {
+        CallInput::Proof(proof) => Input {
+            original: ptr::from_ref(proof).cast(),
+            identity: proof.origins.first().and_then(|v| v.first()).map_or(ptr::null(), |v| ptr::from_ref(v).cast()),
+            nonzero: u32::from(value.nonzero()),
+        },
+        CallInput::Original(_) => Input { identity: ptr::from_ref(id).cast(), ..Input::default() },
+    }
+}
+
+unsafe fn optional_proof<'a>(value: Borrowed) -> Option<&'a Proof> {
+    unsafe { value.cast::<Proof>().as_ref() }
+}
+
+unsafe fn comparison_input<'a>(input: Input) -> CallInput<'a> {
+    match unsafe { optional_proof(input.original) } {
+        Some(proof) => CallInput::Proof(proof),
+        None => CallInput::Original(unsafe { *input.identity.cast::<ValueIdentity>() }),
+    }
+}
+
+unsafe extern "C" fn input<P: CallBindings>(slot: Slot, id: Borrowed) -> Input {
     let c = unsafe { frame::<P>(slot) };
-    Proof::bound_input(c.bindings, unsafe { &*id.cast() }).map(|value| Input {
-        original: ptr::from_ref(value).cast(),
-        identity: value.origins.first().and_then(|v| v.first()).map_or(ptr::null(), |v| ptr::from_ref(v).cast()),
-        nonzero: u32::from(value.nonzero.first() == Some(&true)),
-    }).unwrap_or_default()
+    let id = unsafe { &*id.cast::<ValueIdentity>() };
+    c.bindings.input(*id).map_or_else(Input::default, |input| describe(input, id))
 }
 unsafe extern "C" fn range(value: Borrowed, mask: u64, restricted: u32) -> Range {
-    let value = unsafe { proof(value) };
-    let (lower, upper) = if restricted != 0 { value.range_set(0).restrict(0, mask).hull() } else { value.range(0) };
+    let values = unsafe { optional_proof(value) }.map_or(FULL_INTERVALS, |proof| proof.interval_source(0));
+    let (lower, upper) = if restricted != 0 {
+        range_sets::restrict(values, 0, mask).hull()
+    } else {
+        range_sets::hull(values)
+    };
     Range { lower, upper }
 }
+
 unsafe extern "C" fn boolean(value: Borrowed) -> u32 {
-    unsafe { proof(value) }.component_condition(0).and_then(Condition::boolean_constant).map_or(2, u32::from)
+    unsafe { optional_proof(value) }.and_then(|proof| proof.component_condition(0))
+        .and_then(Condition::boolean_constant).map_or(2, u32::from)
 }
+
 unsafe extern "C" fn case(value: Borrowed, truth: u32) -> Case {
-    unsafe { proof(value) }.component_condition(0).map(|value| {
+    unsafe { optional_proof(value) }.and_then(|proof| proof.component_condition(0)).map(|value| {
         let value = &value.cases[truth as usize];
         Case { original: ptr::from_ref(value).cast(), empty: u32::from(matches!(&**value.0, ClauseNode::Facts(facts) if facts.is_empty())) }
     }).unwrap_or(Case { original: ptr::null(), empty: 1 })
@@ -58,7 +84,7 @@ unsafe extern "C" fn include<P>(slot: Slot, value: Borrowed) {
     c.clause = Some(match c.clause.take() { Some(old) => Clause::both(&old, value), None => value.clone() });
 }
 unsafe extern "C" fn include_cases<P>(slot: Slot, value: Borrowed) {
-    if let Some(value) = unsafe { proof(value) }.component_condition(0) {
+    if let Some(value) = unsafe { optional_proof(value) }.and_then(|proof| proof.component_condition(0)) {
         let value = Clause::either(&value.cases[0], &value.cases[1]);
         unsafe { include::<P>(slot, ptr::from_ref(&value).cast()) };
     }
@@ -73,11 +99,11 @@ unsafe extern "C" fn count<P>(slot: Slot) -> usize { unsafe { frame::<P>(slot) }
 unsafe extern "C" fn below<P>(slot: Slot, a: Input, b: Input, strict: u32, scalar: Borrowed) {
     let value = comparison_conditions::call_below(
         [unsafe { *a.identity.cast() }, unsafe { *b.identity.cast() }],
-        [unsafe { proof(a.original) }, unsafe { proof(b.original) }], strict != 0, unsafe { *scalar.cast() },
+        [unsafe { comparison_input(a) }, unsafe { comparison_input(b) }], strict != 0, unsafe { *scalar.cast() },
     );
     unsafe { frame::<P>(slot) }.clause = Some(value);
 }
-unsafe extern "C" fn mapped_domain<P: std::borrow::Borrow<Proof>>(slot: Slot, value: Borrowed) -> Borrowed {
+unsafe extern "C" fn mapped_domain<P: CallBindings>(slot: Slot, value: Borrowed) -> Borrowed {
     let c = unsafe { frame::<P>(slot) };
     c.domain = Proof::call_domain(unsafe { *value.cast() }, c.bindings);
     c.domain.as_ref().map_or(ptr::null(), |v| ptr::from_ref(v).cast())
@@ -91,9 +117,11 @@ unsafe extern "C" fn common(value: Borrowed) -> Common {
     }
 }
 unsafe extern "C" fn converted(value: Borrowed, common: Common) -> Converted {
-    let input = unsafe { proof(value) }; let [from, low, extended, to] = unsafe { common_scalars(common) };
-    let ((lower, upper), contains_zero) =
-        range_sets::cast_summary(input.interval_source(0), [from, low, extended, to], input.nonzero.first() == Some(&true));
+    let input = unsafe { optional_proof(value) };
+    let [from, low, extended, to] = unsafe { common_scalars(common) };
+    let ranges = input.map_or(FULL_INTERVALS, |proof| proof.interval_source(0));
+    let nonzero = input.is_some_and(|proof| proof.nonzero.first() == Some(&true));
+    let ((lower, upper), contains_zero) = range_sets::cast_summary(ranges, [from, low, extended, to], nonzero);
     let bits = Proof::call_common_bits(input, from, low, extended, to);
     Converted { lower, upper, contains_zero, known: u32::from(bits.is_some()), value: bits.map_or(0, |v| v.value) }
 }
@@ -107,8 +135,13 @@ unsafe extern "C" fn cast_domain<P>(slot: Slot, value: Borrowed, common: Common)
     let c = unsafe { frame::<P>(slot) }; c.domain = super::cast_domain(unsafe { *value.cast() }, unsafe { common_scalars(common) });
     c.domain.as_ref().map_or(ptr::null(), |v| ptr::from_ref(v).cast())
 }
-unsafe extern "C" fn origin(value: Borrowed, index: usize) -> Origin {
-    unsafe { proof(value) }.origins.first().and_then(|v| v.get(index)).map(|value| Origin {
+unsafe extern "C" fn origin(value: Input, index: usize) -> Origin {
+    let identity = match unsafe { optional_proof(value.original) } {
+        Some(proof) => proof.origins.first().and_then(|origins| origins.get(index)),
+        None if index == 0 => unsafe { value.identity.cast::<ValueIdentity>().as_ref() },
+        None => None,
+    };
+    identity.map(|value| Origin {
         original: ptr::from_ref(value).cast(),
         element: u32::from(matches!(value, ValueIdentity::ElementComponent(_) | ValueIdentity::ElementParent(..) | ValueIdentity::ElementIndex(_))),
     }).unwrap_or_default()
@@ -117,11 +150,11 @@ unsafe extern "C" fn emit_common<P>(slot: Slot, target: Borrowed, source: Borrow
     let [from, low, extended, to] = unsafe { common_scalars(common) };
     unsafe { frame::<P>(slot) }.facts.insert(Fact::Index(unsafe { *target.cast() }, IndexDomain::CommonRange(unsafe { *source.cast() }, from, low, extended, to)));
 }
-unsafe extern "C" fn predicate<P: std::borrow::Borrow<Proof>>(slot: Slot, value: Borrowed) -> Borrowed {
+unsafe extern "C" fn predicate<P: CallBindings>(slot: Slot, value: Borrowed) -> Borrowed {
     let c = unsafe { frame::<P>(slot) }; c.predicate = unsafe { *value.cast::<ScalarPredicate>() }.at_call(c.bindings);
     c.predicate.as_ref().map_or(ptr::null(), |v| ptr::from_ref(v).cast())
 }
-unsafe extern "C" fn comparison<P: std::borrow::Borrow<Proof>>(slot: Slot, scalar: Borrowed, a: Borrowed, b: Borrowed, strict: u32) -> Borrowed {
+unsafe extern "C" fn comparison<P: CallBindings>(slot: Slot, scalar: Borrowed, a: Borrowed, b: Borrowed, strict: u32) -> Borrowed {
     let c = unsafe { frame::<P>(slot) };
     let op = if strict != 0 { Comparison::Less } else { Comparison::LessEqual };
     c.predicate = ScalarPredicate::new(op, unsafe { *scalar.cast() }, Operand::Value(unsafe { *a.cast() }), Operand::Value(unsafe { *b.cast() })).at_call(c.bindings);
@@ -145,7 +178,7 @@ struct Host {
     begin: unsafe extern "C" fn(Slot, Borrowed),
     next: unsafe extern "C" fn(Slot) -> fact_fields::ConditionDomain,
     cast_domain: unsafe extern "C" fn(Slot, Borrowed, Common) -> Borrowed,
-    origin: unsafe extern "C" fn(Borrowed, usize) -> Origin,
+    origin: unsafe extern "C" fn(Input, usize) -> Origin,
     emit_common: unsafe extern "C" fn(Slot, Borrowed, Borrowed, Common),
     predicate: unsafe extern "C" fn(Slot, Borrowed) -> Borrowed,
     comparison: unsafe extern "C" fn(Slot, Borrowed, Borrowed, Borrowed, u32) -> Borrowed,
@@ -158,7 +191,7 @@ unsafe extern "C" {
     fn project(context: Slot, fact: fact_fields::Fields, host: Host);
 }
 impl Proof {
-    pub(super) fn call_fact<P: std::borrow::Borrow<Proof>>(value: Fact, bindings: &BTreeMap<ValueIdentity, P>) -> Option<Clause> {
+    pub(super) fn call_fact<P: CallBindings>(value: Fact, bindings: &P) -> Option<Clause> {
         let mut c = Frame { bindings, domains: btree_set::Iter::default(), domain: None, predicate: None, facts: Facts::new(), clause: None };
         unsafe { project(ptr::from_mut(&mut c).cast(), fact_fields::Fields::from(&value), Host {
             input: input::<P>, range, boolean, select_case: case, include: include::<P>, include_cases: include_cases::<P>,
@@ -182,7 +215,7 @@ struct ProofDomain {
 
 struct ProofFrame<'a, P> {
     source: &'a Proof,
-    bindings: &'a BTreeMap<ValueIdentity, P>,
+    bindings: &'a P,
     components: Option<&'a [usize]>,
     output: Proof,
     component: usize,
@@ -218,12 +251,15 @@ unsafe extern "C" fn proof_begin<P>(slot: Slot, component: usize, origins: u32, 
     }
 }
 
-unsafe extern "C" fn proof_input<P: std::borrow::Borrow<Proof>>(slot: Slot) -> Borrowed {
+unsafe extern "C" fn proof_input<P: CallBindings>(slot: Slot) -> Input {
     let state = unsafe { proof_frame::<P>(slot) };
-    state.origins.find_map(|id| Proof::bound_input(state.bindings, id))
-        .map_or(ptr::null(), |value| ptr::from_ref(value).cast())
+    state.origins.find_map(|id| state.bindings.input(*id).map(|input| describe(input, id))).unwrap_or_default()
 }
 
+unsafe extern "C" fn proof_keep_origin<P>(slot: Slot, id: Borrowed) {
+    let state = unsafe { proof_frame::<P>(slot) };
+    state.output.origins[state.component].push(unsafe { *id.cast::<ValueIdentity>() });
+}
 unsafe extern "C" fn proof_merge_input<P>(slot: Slot, input: Borrowed) {
     let state = unsafe { proof_frame::<P>(slot) };
     let value = unsafe { proof(input) };
@@ -256,24 +292,24 @@ unsafe extern "C" fn proof_domain<P>(slot: Slot) -> ProofDomain {
     ProofDomain { original: ptr::from_ref(domain).cast(), kind }
 }
 
-unsafe extern "C" fn proof_direct<P: std::borrow::Borrow<Proof>>(slot: Slot, domain: Borrowed) {
+unsafe extern "C" fn proof_direct<P: CallBindings>(slot: Slot, domain: Borrowed) {
     let state = unsafe { proof_frame::<P>(slot) };
     if let Some(domain) = Proof::call_domain(unsafe { *domain.cast() }, state.bindings) {
         state.output.domains[state.component].insert(domain);
     }
 }
 
-unsafe extern "C" fn proof_common<P: std::borrow::Borrow<Proof>>(slot: Slot, domain: Borrowed) {
+unsafe extern "C" fn proof_common<P: CallBindings>(slot: Slot, domain: Borrowed) {
     let state = unsafe { proof_frame::<P>(slot) };
     let IndexDomain::CommonRange(source, from, low, extended, to) = (unsafe { *domain.cast() }) else {
         unsafe { std::hint::unreachable_unchecked() };
     };
-    let Some(incoming) = Proof::bound_input(state.bindings, &source) else { return; };
+    let Some(incoming) = state.bindings.input(source) else { return; };
     let scalars = [from, low, extended, to];
-    let nonzero = incoming.nonzero.first() == Some(&true);
-    let range = range_sets::cast_chain(incoming.interval_source(0), scalars, nonzero);
+    let nonzero = incoming.nonzero();
+    let range = range_sets::cast_chain(incoming.intervals(), scalars, nonzero);
     let component = state.component;
-    if let Some(bits) = Proof::call_common_bits(incoming, from, low, extended, to) {
+    if let Some(bits) = Proof::call_common_bits(incoming.proof(), from, low, extended, to) {
         state.output.mark_domain(component, bits.domain());
     }
     state.intersect(&range);
@@ -281,13 +317,13 @@ unsafe extern "C" fn proof_common<P: std::borrow::Borrow<Proof>>(slot: Slot, dom
     output.nonzero.resize(output.nonzero.len().max(component + 1), false);
     output.nonzero[component] |= if to.is_integer() { !range.contains(to.order_bias()) } else { nonzero };
     let domains = &mut output.domains[component];
-    domains.extend(incoming.domains.first().into_iter().flatten().copied().filter_map(|domain| super::cast_domain(domain, scalars)));
-    domains.extend(incoming.origins.first().into_iter().flatten()
+    domains.extend(incoming.domains().copied().filter_map(|domain| super::cast_domain(domain, scalars)));
+    domains.extend(incoming.origins().iter()
         .filter(|id| !matches!(id, ValueIdentity::ElementComponent(_) | ValueIdentity::ElementParent(..) | ValueIdentity::ElementIndex(_)))
         .map(|id| IndexDomain::CommonRange(*id, from, low, extended, to)));
 }
 
-unsafe extern "C" fn proof_derived<P: std::borrow::Borrow<Proof>>(slot: Slot, domain: Borrowed) {
+unsafe extern "C" fn proof_derived<P: CallBindings>(slot: Slot, domain: Borrowed) {
     let state = unsafe { proof_frame::<P>(slot) };
     let result = match unsafe { *domain.cast::<IndexDomain>() } {
         IndexDomain::Floating(bound) => bound.project_at_call(state.bindings)
@@ -327,8 +363,9 @@ unsafe extern "C" fn proof_nonzero<P>(slot: Slot) {
 #[repr(C)]
 struct ProofHost {
     begin: unsafe extern "C" fn(Slot, usize, u32, u32),
-    input: unsafe extern "C" fn(Slot) -> Borrowed,
+    input: unsafe extern "C" fn(Slot) -> Input,
     merge_input: unsafe extern "C" fn(Slot, Borrowed),
+    keep_origin: unsafe extern "C" fn(Slot, Borrowed),
     domain: unsafe extern "C" fn(Slot) -> ProofDomain,
     direct: unsafe extern "C" fn(Slot, Borrowed),
     common: unsafe extern "C" fn(Slot, Borrowed),
@@ -342,8 +379,8 @@ unsafe extern "C" {
     fn b_project_proof(context: Slot, widths: ProofWidths, host: ProofHost);
 }
 
-pub(super) fn project_proof<P: std::borrow::Borrow<Proof>>(
-    proof: &Proof, bindings: &BTreeMap<ValueIdentity, P>, components: Option<&[usize]>,
+pub(super) fn project_proof<P: CallBindings>(
+    proof: &Proof, bindings: &P, components: Option<&[usize]>,
 ) -> Proof {
     let count = |width| components.map_or(width, |selected| selected.len());
     let widths = ProofWidths {
@@ -376,7 +413,7 @@ pub(super) fn project_proof<P: std::borrow::Borrow<Proof>>(
         origins: Default::default(), domains: Default::default(),
     };
     unsafe { b_project_proof(ptr::from_mut(&mut state).cast(), widths, ProofHost {
-        begin: proof_begin::<P>, input: proof_input::<P>, merge_input: proof_merge_input::<P>,
+        begin: proof_begin::<P>, input: proof_input::<P>, merge_input: proof_merge_input::<P>, keep_origin: proof_keep_origin::<P>,
         domain: proof_domain::<P>, direct: proof_direct::<P>, common: proof_common::<P>, derived: proof_derived::<P>,
         false_case: proof_false_case::<P>, possible: proof_possible, nonzero: proof_nonzero::<P>,
     }) };

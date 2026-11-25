@@ -2107,8 +2107,13 @@ extern "C" void output_aliases(address context,usize components,usize conditions
  }
 }
 
+bool has_call_input(CallFactInput input) on cpu {
+ return input.original!=address()||input.identity!=address();
+}
+
 void call_fact_domains(address context,CallFactHost host,CallFactInput input,address target,FactView key,u32 mode,CallFactCommon common) on cpu
  requires nonzero(host.begin) requires nonzero(host.next) requires nonzero(host.cast_domain) requires nonzero(host.emit) {
+ if(input.original==address()){return;}
  host.begin(context,input.original);ComparisonDomain domain=host.next(context);
  while(domain.present!=0){
   if(mode!=2||domain.common!=0){
@@ -2129,7 +2134,7 @@ extern "C" void call_fact(address context,FactView fact,CallFactHost host) on cp
  requires nonzero(host.inspect_predicate) requires nonzero(host.scalar) requires nonzero(host.compare) {
  if(fact.kind==FactKind::Boolean||fact.kind==FactKind::Zero||fact.kind==FactKind::NonZero){
   u32 truth=0;if(fact.kind==FactKind::Boolean){truth=fact.flag;}if(fact.kind==FactKind::NonZero){truth=1;}
-  CallFactInput input=host.input(context,fact.first);if(address_bits(input.original)==0){return;}
+  CallFactInput input=host.input(context,fact.first);if(!has_call_input(input)){return;}
   if(truth==0&&input.nonzero!=0){host.impossible(context);return;}
   CallFactCase selected=host.select_case(input.original,truth);
   if(address_bits(selected.original)!=0&&selected.empty==0){host.include(context,selected.original);}
@@ -2138,7 +2143,7 @@ extern "C" void call_fact(address context,FactView fact,CallFactHost host) on cp
  }
  if(fact.kind==FactKind::Below){
   CallFactInput left=host.input(context,fact.first);CallFactInput right=host.input(context,fact.second);
-  if(address_bits(left.original)==0||address_bits(right.original)==0){return;}
+  if(!has_call_input(left)||!has_call_input(right)){return;}
   if(address_bits(left.identity)!=0&&address_bits(right.identity)!=0){host.below(context,left,right,fact.flag,fact.scalar);return;}
   address mapped=host.comparison(context,fact.scalar,fact.first,fact.second,fact.flag);
   if(address_bits(mapped)!=0){FactView output=fact;output.kind=FactKind::Predicate;output.payload=mapped;output.flag=1;host.emit(context,output);host.commit(context);}
@@ -2147,7 +2152,7 @@ extern "C" void call_fact(address context,FactView fact,CallFactHost host) on cp
  if(fact.kind==FactKind::Equal||fact.kind==FactKind::NotEqual){
   CallFactInput left=host.input(context,fact.first);CallFactInput right=host.input(context,fact.second);
   if(fact.kind==FactKind::Equal){
-   if(address_bits(left.original)==0||address_bits(right.original)==0){return;}
+   if(!has_call_input(left)||!has_call_input(right)){return;}
    CallFactRange a=host.range(left.original,18446744073709551615u64,0);CallFactRange b=host.range(right.original,18446744073709551615u64,0);
    if(a.upper<b.lower||b.upper<a.lower){host.impossible(context);return;}
    if(address_bits(left.identity)==0||address_bits(right.identity)==0){return;}
@@ -2158,7 +2163,7 @@ extern "C" void call_fact(address context,FactView fact,CallFactHost host) on cp
    call_fact_domains(context,host,right,left.identity,fact,0,CallFactCommon(address(),address(),address(),address(),address()));
    host.commit(context);host.include_cases(context,left.original);host.include_cases(context,right.original);return;
   }
-  if(address_bits(left.original)!=0&&address_bits(right.original)!=0){
+  if(has_call_input(left)&&has_call_input(right)){
    u32 same=0;if(address_bits(left.identity)!=0&&address_bits(right.identity)!=0&&host.compare(left.identity,right.identity)==0){same=1;}
    u32 a_truth=host.boolean(left.original);u32 b_truth=host.boolean(right.original);
    CallFactRange a=host.range(left.original,18446744073709551615u64,0);CallFactRange b=host.range(right.original,18446744073709551615u64,0);
@@ -2178,7 +2183,7 @@ extern "C" void call_fact(address context,FactView fact,CallFactHost host) on cp
   if(fact.kind==FactKind::Index){
    CallFactCommon common=host.common(fact.payload);
    if(address_bits(common.source)!=0){
-    CallFactInput input=host.input(context,common.source);if(address_bits(input.original)==0){return;}
+    CallFactInput input=host.input(context,common.source);if(!has_call_input(input)){return;}
     CallFactConverted value=host.converted(input.original,common);InternalScalar scalar=host.scalar(common.to);
     if(scalar.kind==3){u32 truth=host.boolean(input.original);if(truth<2){FactView output=fact;output.kind=FactKind::Boolean;output.first=target.identity;output.flag=truth;host.emit(context,output);}}
     u32 nonzero=input.nonzero;
@@ -2190,8 +2195,8 @@ extern "C" void call_fact(address context,FactView fact,CallFactHost host) on cp
      if(value.upper!=scalar.mask){output.kind=FactKind::Maximum;output.value=value.upper;host.emit(context,output);}
     }
     call_fact_domains(context,host,input,target.identity,fact,1,common);
-    usize at=0u64;CallFactOrigin source=host.origin(input.original,at);
-    while(address_bits(source.original)!=0){if(source.element==0){host.emit_common(context,target.identity,source.original,common);}at+=1u64;source=host.origin(input.original,at);}
+    usize at=0u64;CallFactOrigin source=host.origin(input,at);
+    while(address_bits(source.original)!=0){if(source.element==0){host.emit_common(context,target.identity,source.original,common);}at+=1u64;source=host.origin(input,at);}
     if(host.count(context)!=0u64){host.commit(context);}return;
    }
   }
@@ -2200,7 +2205,7 @@ extern "C" void call_fact(address context,FactView fact,CallFactHost host) on cp
  }
  if(fact.kind==FactKind::Minimum||fact.kind==FactKind::Maximum){
   CallFactInput input=host.input(context,fact.first);
-  if(address_bits(input.original)!=0){
+  if(has_call_input(input)){
    CallFactRange value=host.range(input.original,fact.mask,1);
    if(fact.kind==FactKind::Minimum){if(value.lower>=fact.value){return;}if(value.upper<fact.value){host.impossible(context);return;}}
    else{if(value.upper<=fact.value){return;}if(value.lower>fact.value){host.impossible(context);return;}}
@@ -2438,7 +2443,7 @@ extern "C" u32 proof_length_relation(address context,u32 strict,LengthRelationHo
 
 
 extern "C" void project_call_proof(address context,ProofCallWidths widths,ProofCallHost host) on cpu
- requires nonzero(host.begin) requires nonzero(host.input) requires nonzero(host.merge_input)
+ requires nonzero(host.begin) requires nonzero(host.input) requires nonzero(host.merge_input) requires nonzero(host.keep_origin)
  requires nonzero(host.domain) requires nonzero(host.direct) requires nonzero(host.common) requires nonzero(host.derived)
  requires nonzero(host.false_case) requires nonzero(host.possible) requires nonzero(host.nonzero) {
  usize component=0u64;
@@ -2447,9 +2452,10 @@ extern "C" void project_call_proof(address context,ProofCallWidths widths,ProofC
   bool has_domains=component<widths.domains;
   host.begin(context,component,has_origins?1:0,(has_origins||has_domains)?1:0);
   if(has_origins) {
-   address input=host.input(context);
-   while(input!=address()) {
-    host.merge_input(context,input);
+   CallFactInput input=host.input(context);
+   while(has_call_input(input)) {
+    if(input.original!=address()){host.merge_input(context,input.original);}
+    else{host.keep_origin(context,input.identity);}
     input=host.input(context);
    }
   }

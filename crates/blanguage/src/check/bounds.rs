@@ -101,18 +101,18 @@ impl Selector {
         }
     }
 
-    pub(super) fn at_call(self, bindings: &BTreeMap<ValueIdentity, impl std::borrow::Borrow<Proof>>) -> Option<Self> {
+    pub(super) fn at_call(self, bindings: &impl CallBindings) -> Option<Self> {
         let (base, scale, offset) = match self {
             Self::Direct(index) => return index.at_call(bindings).map(Self::Direct),
             Self::Prefix(length) => return length.at_call(bindings).map(Self::Prefix),
             Self::Affine { base, scale, offset } => (base, scale, offset),
         };
-        let proof = Proof::bound_input(bindings, &base)?;
-        if let [(lower, upper)] = proof.range_set(0).0.as_slice() && lower == upper {
+        let input = bindings.input(base)?;
+        if let [(lower, upper)] = input.intervals() && lower == upper {
             let value = i128::from(*lower).checked_mul(scale)?.checked_add(offset)?;
             return Some(Self::Direct(Operand::Constant(Scalar::U32, u32::try_from(value).ok()?.into())));
         }
-        Some(Self::Affine { base: proof.known_identity(0)?, scale, offset })
+        Some(Self::Affine { base: input.identity()?, scale, offset })
     }
 
     fn affine(self, query: &mut IntegerQuery<'_>) -> Option<IntegerAffine> {
@@ -183,11 +183,11 @@ impl Operand {
             constant => constant,
         })
     }
-    pub(super) fn at_call(self, bindings: &BTreeMap<ValueIdentity, impl std::borrow::Borrow<Proof>>) -> Option<Self> {
+    pub(super) fn at_call(self, bindings: &impl CallBindings) -> Option<Self> {
         Some(match self {
             Self::Value(id) => {
-                let proof = Proof::bound_input(bindings, &id)?;
-                match (proof.known_identity(0), proof.range_set(0).0.as_slice()) {
+                let input = bindings.input(id)?;
+                match (input.identity(), input.intervals()) {
                     (Some(id), _) => Self::Value(id),
                     (None, [(a, b)]) if a == b => Self::Constant(Scalar::U32, *a),
                     _ => return None,
@@ -219,16 +219,15 @@ impl ScalarPredicate {
     fn map(self, identity: impl Fn(ValueIdentity) -> Option<ValueIdentity>) -> Option<Self> {
         Some(Self::new(self.op, self.scalar, self.a.map(&identity)?, self.b.map(&identity)?))
     }
-    fn at_call(self, bindings: &BTreeMap<ValueIdentity, impl std::borrow::Borrow<Proof>>) -> Option<Self> {
+    fn at_call(self, bindings: &impl CallBindings) -> Option<Self> {
         let operand = |operand| Some(match operand {
             Operand::Value(id) => {
-                let proof = Proof::bound_input(bindings, &id)?;
+                let input = bindings.input(id)?;
                 // Capture already preserves a constant's exact storage bits.
                 // This is identity substitution, never floating range inference.
-                let bits = proof.range_set(0);
-                match bits.0.as_slice() {
+                match input.intervals() {
                     [(a, b)] if a == b => Operand::Constant(self.scalar, if self.scalar.is_float(){floating::bits(self.scalar,*a)}else{*a^self.scalar.order_bias()}),
-                    _ => Operand::Value(proof.known_identity(0)?),
+                    _ => Operand::Value(input.identity()?),
                 }
             }
             constant => constant,
@@ -276,18 +275,18 @@ impl IntegerExpression {
     }
     fn bound_operand(
         id: ValueIdentity, scalar: Scalar,
-        bindings: &BTreeMap<ValueIdentity, impl std::borrow::Borrow<Proof>>,
+        bindings: &impl CallBindings,
     ) -> Option<(Option<Operand>, ScalarRanges)> {
-        let input = Proof::bound_input(bindings, &id)?;
-        let range = input.range_set(0).restrict(0, scalar.bit_mask());
+        let input = bindings.input(id)?;
+        let range = range_sets::restrict(input.intervals(), 0, scalar.bit_mask());
         let operand = match range.0.as_slice() {
             [(low, high)] if low == high => Some(Operand::Constant(scalar, *low ^ scalar.order_bias())),
-            _ => input.known_identity(0).map(Operand::Value),
+            _ => input.identity().map(Operand::Value),
         };
         Some((operand, range))
     }
 
-    pub(super) fn at_call(self, bindings: &BTreeMap<ValueIdentity, impl std::borrow::Borrow<Proof>>) -> Option<Self> {
+    pub(super) fn at_call(self, bindings: &impl CallBindings) -> Option<Self> {
         let Self::Binary(op, scalar, a, b) = self else {
             return self.selector()?.at_call(bindings).map(Self::selection);
         };
@@ -322,7 +321,7 @@ impl IntegerExpression {
         constant::binary(operation, scalar, a, b).map(|bits| (scalar, bits))
     }
     fn project_at_call(
-        self, bindings: &BTreeMap<ValueIdentity, impl std::borrow::Borrow<Proof>>,
+        self, bindings: &impl CallBindings,
     ) -> Option<(Option<Self>, Option<ScalarRanges>)> {
         let Self::Binary(op, scalar, a, b) = self else {
             let expression = self.at_call(bindings)?;
@@ -413,6 +412,67 @@ impl QueryFacts<'_> {
         }
     }
 }
+const FULL_INTERVALS: &[(Bits, Bits)] = &[(0, Bits::MAX)];
+
+#[derive(Clone, Copy)]
+pub(super) enum CallInput<'a> {
+    Proof(&'a Proof),
+    Original(ValueIdentity),
+}
+
+impl<'a> CallInput<'a> {
+    fn proof(self) -> Option<&'a Proof> {
+        match self {
+            Self::Proof(proof) => Some(proof),
+            Self::Original(_) => None,
+        }
+    }
+
+    fn identity(self) -> Option<ValueIdentity> {
+        match self {
+            Self::Proof(proof) => proof.known_identity(0),
+            Self::Original(id) => Some(id),
+        }
+    }
+
+    fn origins(&self) -> &[ValueIdentity] {
+        match self {
+            Self::Proof(proof) => proof.origins.first().map(Vec::as_slice).unwrap_or_default(),
+            Self::Original(id) => std::slice::from_ref(id),
+        }
+    }
+
+    fn intervals(self) -> &'a [(Bits, Bits)] {
+        self.proof().map_or(FULL_INTERVALS, |proof| proof.interval_source(0))
+    }
+
+    fn domains(self) -> std::collections::btree_set::Iter<'a, IndexDomain> {
+        self.proof().and_then(|proof| proof.domains.first()).map(Domains::iter).unwrap_or_default()
+    }
+
+    fn nonzero(self) -> bool {
+        self.proof().is_some_and(|proof| proof.nonzero.first() == Some(&true))
+    }
+}
+
+pub(super) trait CallBindings {
+    fn input(&self, id: ValueIdentity) -> Option<CallInput<'_>>;
+}
+
+impl<P: std::borrow::Borrow<Proof>> CallBindings for BTreeMap<ValueIdentity, P> {
+    fn input(&self, id: ValueIdentity) -> Option<CallInput<'_>> {
+        self.get(&id).map(|proof| CallInput::Proof(proof.borrow()))
+    }
+}
+
+struct Substitution<'lookup, 'proof: 'lookup>(&'lookup dyn Fn(ValueIdentity) -> Option<&'proof Proof>);
+
+impl CallBindings for Substitution<'_, '_> {
+    fn input(&self, id: ValueIdentity) -> Option<CallInput<'_>> {
+        Some((self.0)(id).map_or(CallInput::Original(id), CallInput::Proof))
+    }
+}
+
 type OutputBindings = BTreeMap<ValueIdentity, ValueIdentity>;
 fn output_identity(identity: ValueIdentity, bindings: &OutputBindings) -> ValueIdentity {
     bindings.get(&identity).copied().unwrap_or(identity)
@@ -672,7 +732,7 @@ impl Proof {
     }
     fn interval_source(&self, component: usize) -> &[(Bits, Bits)] {
         self.ranges.get(component)
-            .map_or(&[(0, Bits::MAX)][..], |ranges| ranges.0.as_slice())
+            .map_or(FULL_INTERVALS, |ranges| ranges.0.as_slice())
     }
 
     fn element_intervals(&self, component: usize, scalar: Scalar) -> (&[(Bits, Bits)], Option<Bits>) {
@@ -915,27 +975,9 @@ impl Proof {
             _=>false,
         })
     }
-    fn bound_input<'a>(
-        bindings: &'a BTreeMap<ValueIdentity, impl std::borrow::Borrow<Proof>>,
-        id: &ValueIdentity,
-    ) -> Option<&'a Proof> {
-        bindings.get(id).map(std::borrow::Borrow::borrow)
-    }
-    fn value_bindings<'a>(
-        identities: impl IntoIterator<Item = ValueIdentity>,
-        mut values: impl FnMut(ValueIdentity) -> Option<&'a Proof>,
-        unchanged: impl Fn(ValueIdentity) -> Proof,
-    ) -> BTreeMap<ValueIdentity, Cow<'a, Proof>> {
-        identities.into_iter().map(|id| {
-            let proof = match values(id) { Some(proof) => Cow::Borrowed(proof), None => Cow::Owned(unchanged(id)) };
-            (id, proof)
-        }).collect()
-    }
-
     pub(super) fn substitute_values(&self, values: &BTreeMap<ValueIdentity, Proof>) -> Self {
-        let bindings = Self::value_bindings(self.scalar_identities(), |id| values.get(&id), |id| {
-            Proof::default().with_identity(id)
-        });
+        let lookup = |id| values.get(&id);
+        let bindings = Substitution(&lookup);
         let mut proof = self.project_call(&bindings, None);
         proof.views = self.views.iter().map(|borrow| borrow.substitute_values(values)).collect();
         proof.addresses = self.call_addresses(&bindings, |component, incoming| {
@@ -946,13 +988,13 @@ impl Proof {
     }
     fn call_identity(
         id: ValueIdentity,
-        bindings: &BTreeMap<ValueIdentity, impl std::borrow::Borrow<Proof>>,
+        bindings: &impl CallBindings,
     ) -> Option<ValueIdentity> {
-        Proof::bound_input(bindings, &id)?.known_identity(0)
+        bindings.input(id)?.identity()
     }
     fn call_domain(
         value: IndexDomain,
-        bindings: &BTreeMap<ValueIdentity, impl std::borrow::Borrow<Proof>>,
+        bindings: &impl CallBindings,
     ) -> Option<IndexDomain> {
         Some(match value {
             IndexDomain::Fixed(n) => IndexDomain::Fixed(n),
@@ -984,9 +1026,12 @@ impl Proof {
             _ => return None,
         })
     }
-    fn call_common_bits(input:&Proof,from:Scalar,low:Scalar,extended:Scalar,to:Scalar)->Option<KnownBits> {
-        if ![from,low,extended,to].into_iter().all(Scalar::is_integer){return None;}
-        let bits = input.known_bits(0, from)?;
+    fn call_common_bits(input: Option<&Proof>, from: Scalar, low: Scalar, extended: Scalar, to: Scalar) -> Option<KnownBits> {
+        if ![from, low, extended, to].into_iter().all(Scalar::is_integer) { return None; }
+        let bits = match input {
+            Some(proof) => proof.known_bits(0, from),
+            None => known_bits::from_proof(from, FULL_INTERVALS, Default::default()),
+        }?;
         let targets = [low, extended, to];
         known_bits::cast_path(bits, targets, targets.len())
     }
@@ -1013,13 +1058,13 @@ impl Proof {
 
     fn call_addresses(
         &self,
-        bindings: &BTreeMap<ValueIdentity, impl std::borrow::Borrow<Proof>>,
+        bindings: &impl CallBindings,
         mut address: impl FnMut(usize, Option<&address::Identity>) -> Option<address::Identity>,
     ) -> Vec<Option<address::Identity>> {
         let mut addresses = Vec::with_capacity(self.addresses.len());
         for component in 0..self.addresses.len().max(self.origins.len()) {
             let incoming = self.origins.get(component).into_iter().flatten()
-                .filter_map(|id| Proof::bound_input(bindings, id)
+                .filter_map(|id| bindings.input(*id).and_then(CallInput::proof)
                     .and_then(|proof| proof.addresses.first()).and_then(Option::as_ref)).last();
             let value = address(component, incoming);
             if component < self.addresses.len() || value.is_some() {
@@ -1032,7 +1077,7 @@ impl Proof {
 
     fn project_call(
         &self,
-        bindings: &BTreeMap<ValueIdentity, impl std::borrow::Borrow<Proof>>,
+        bindings: &impl CallBindings,
         components: Option<&[usize]>,
     ) -> Self {
         call_projection::project_proof(self, bindings, components)
@@ -1323,9 +1368,6 @@ impl Proof {
         } else {
             value.proof.component_condition(component).cloned()
         }
-    }
-    fn range(&self, component: usize) -> (Bits, Bits) {
-        self.range_set(component).hull()
     }
     fn range_set(&self, component: usize) -> Cow<'_, ScalarRanges> {
         self.ranges.get(component).map_or_else(|| Cow::Owned(ScalarRanges::default()), Cow::Borrowed)
@@ -2022,7 +2064,7 @@ impl Clause {
     fn at_calls(
         roots: &[&Self],
         ordered: &[&Self],
-        bindings: &BTreeMap<ValueIdentity, impl std::borrow::Borrow<Proof>>,
+        bindings: &impl CallBindings,
         numeric_context: impl FnOnce(&[&Self]) -> bool,
         mut required: impl FnMut(&Self) -> Option<Facts>,
     ) -> Vec<Self> {
@@ -2050,7 +2092,7 @@ impl Clause {
 
     fn supplement_call_bounds(
         mapped: &mut Self,
-        bindings: &BTreeMap<ValueIdentity, impl std::borrow::Borrow<Proof>>,
+        bindings: &impl CallBindings,
         required: Option<Facts>,
     ) {
         let numeric = match required {
@@ -2073,7 +2115,7 @@ impl Clause {
         };
         *mapped = Self::both(mapped, &numeric);
     }
-    fn private_numeric(fact: &Fact, bindings: &BTreeMap<ValueIdentity, impl std::borrow::Borrow<Proof>>) -> bool {
+    fn private_numeric(fact: &Fact, bindings: &impl CallBindings) -> bool {
         match fact {
             Fact::Below(a, b, _, _) => Proof::call_identity(*a, bindings)
                 .zip(Proof::call_identity(*b, bindings)).is_none(),
@@ -2083,7 +2125,7 @@ impl Clause {
         }
     }
 
-    fn has_private_numeric(&self, bindings: &BTreeMap<ValueIdentity, impl std::borrow::Borrow<Proof>>) -> bool {
+    fn has_private_numeric(&self, bindings: &impl CallBindings) -> bool {
         Self::any_fact([self],&|fact|Self::private_numeric(fact,bindings))
     }
 
@@ -2092,14 +2134,14 @@ impl Clause {
     }
 
     fn project_guard_in(
-        &self, ordered: &[&Self], bindings: &BTreeMap<ValueIdentity, impl std::borrow::Borrow<Proof>>,
+        &self, ordered: &[&Self], bindings: &impl CallBindings,
         required: impl FnMut(&Self) -> Option<Facts>,
     ) -> Self {
         Self::at_calls(&[self], ordered, bindings, |_| self.guard_needs_numeric(bindings), required)
             .pop().unwrap()
     }
 
-    fn guard_needs_numeric(&self, bindings: &BTreeMap<ValueIdentity, impl std::borrow::Borrow<Proof>>) -> bool {
+    fn guard_needs_numeric(&self, bindings: &impl CallBindings) -> bool {
         // Only a negated computed exclusion can introduce a new numeric trigger.
         Self::any_fact([self], &|fact| {
             matches!(*fact, Fact::Outside(id, domain @ IndexDomain::Computed(_))
@@ -2125,12 +2167,12 @@ impl Clause {
         roots.iter().map(|root| clauses[&root.key()].0.clone()).collect()
     }
 
-    fn call_facts(facts: impl IntoIterator<Item = Fact>, bindings: &BTreeMap<ValueIdentity, impl std::borrow::Borrow<Proof>>) -> Self {
+    fn call_facts(facts: impl IntoIterator<Item = Fact>, bindings: &impl CallBindings) -> Self {
         Self::fold_call_facts(facts.into_iter().filter_map(|fact| Proof::call_fact(fact, bindings)))
     }
 
     fn project_call_leaf(
-        facts: &Facts, bindings: &BTreeMap<ValueIdentity, impl std::borrow::Borrow<Proof>>,
+        facts: &Facts, bindings: &impl CallBindings,
     ) -> (Self, bool) {
         let mut source = facts.iter().copied();
         let mut private = false;
@@ -2174,15 +2216,9 @@ impl Clause {
         Self::facts(facts)
     }
     pub(super) fn substitute_values(&self, values: &BTreeMap<ValueIdentity, Proof>) -> Self {
-        // A synthesized complement uses only identities already in this path.
-        let ordered = Self::ordered([self]);
-        let identities = std::cell::RefCell::new(BTreeSet::new());
-        Self::visit_identities(&ordered, &|id| {
-            identities.borrow_mut().insert(id);
-            id
-        });
-        let bindings = Proof::value_bindings(identities.into_inner(), |id| values.get(&id), |id| Proof::default().with_identity(id));
-        self.project_guard_in(&ordered, &bindings, Self::required)
+        self.project_guard_in(
+            &Self::ordered([self]), &Substitution(&|id| values.get(&id)), Self::required,
+        )
     }
 
     fn visit_identities(
@@ -2514,12 +2550,12 @@ impl Condition {
     pub(super) fn scalar_identities(&self)->BTreeSet<ValueIdentity> {
         Clause::scalar_identities(&self.cases)
     }
-    pub(super) fn value_bindings<'a>(&self, values: impl FnMut(ValueIdentity) -> Option<&'a Proof>) -> BTreeMap<ValueIdentity, Cow<'a, Proof>> {
-        Proof::value_bindings(self.scalar_identities(), values, |id| Proof::default().with_identity(id))
+    pub(super) fn substitute_values_with<'a>(&self, lookup: impl Fn(ValueIdentity) -> Option<&'a Proof>) -> Self {
+        self.at_call(&Substitution(&lookup))
     }
 
     pub(super) fn substitute_values(&self, values: &BTreeMap<ValueIdentity, Proof>) -> Self {
-        self.at_call(&self.value_bindings(|id| values.get(&id)))
+        self.substitute_values_with(|id| values.get(&id))
     }
 
     pub(super) fn return_selector(&self, id: ValueIdentity, source: &Clause) -> Option<Selector> {
@@ -2556,10 +2592,11 @@ impl Condition {
     }
 
     pub(super) fn substitute_index_values(&self, indices: &BTreeMap<ValueIdentity, Proof>) -> Self {
-        let bindings = self.value_bindings(|id| indices.get(&id));
-        self.at_call(&bindings).with_index_computations(bindings.values().filter_map(|proof| {
+        let computed = self.scalar_identities().into_iter().filter_map(|id| {
+            let proof = indices.get(&id)?;
             proof.known_identity(0).zip(proof.index_expression())
-        }))
+        });
+        self.substitute_values(indices).with_index_computations(computed)
     }
 
     pub(super) fn element_index(depth:usize,index:Operand)->Self {
@@ -2604,7 +2641,7 @@ impl Condition {
     pub(super) fn paths(yes:Clause,no:Clause)->Self{Self{cases:[no,yes]}}
     pub(super) fn unconstrained(&self)->bool{self.cases.iter().all(|case|matches!(&**case.0,ClauseNode::Facts(facts)if facts.is_empty()))}
     pub(super) fn exclusive(&self)->bool{!Clause::both(&self.cases[0],&self.cases[1]).possible()}
-    pub(super) fn at_call(&self,bindings:&BTreeMap<ValueIdentity,impl std::borrow::Borrow<Proof>>)->Self{
+    pub(super) fn at_call(&self,bindings:&impl CallBindings)->Self{
         let mut cases=Clause::at_calls(&self.cases.each_ref(), &Clause::ordered(&self.cases), bindings, |_| false, Clause::required).into_iter();
         Self{cases:[cases.next().unwrap(),cases.next().unwrap()]}
     }

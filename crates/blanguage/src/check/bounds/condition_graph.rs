@@ -1,11 +1,10 @@
 //! B owns shared-Clause overlap and equivalence, including equivalence planning. The original query owns
 //! its physical containers and borrows immutable Clause/Fact fields until return.
 use super::{
-    Clause, ClauseNode, Condition, EncodedClause, Fact, Facts, IndexDomain, OutputBindings, Proof, Value, ValueIdentity,
+    CallBindings, Clause, ClauseNode, Condition, EncodedClause, Fact, Facts, IndexDomain, OutputBindings, Proof, Value, ValueIdentity,
     internal_conflicts, map_domain, output_identity,
 };
 use std::{
-    borrow::Borrow,
     collections::{BTreeMap, BTreeSet, HashMap, HashSet, btree_set},
     ffi::c_void,
     ptr,
@@ -650,7 +649,7 @@ struct CallProjectionNode {
 
 struct CallProjection<'a, P> {
     ordered: std::slice::Iter<'a, &'a Clause>,
-    bindings: &'a BTreeMap<ValueIdentity, P>,
+    bindings: &'a P,
     results: BTreeMap<usize, (Clause, bool)>,
 }
 
@@ -671,7 +670,7 @@ unsafe extern "C" fn call_impossible<P>(slot: Slot, source: Borrowed) {
     ctx.results.insert(unsafe { call_key(source) }, (Clause::impossible(), false));
 }
 
-unsafe extern "C" fn call_leaf<P: Borrow<Proof>>(slot: Slot, source: Borrowed, facts: Borrowed) {
+unsafe extern "C" fn call_leaf<P: CallBindings>(slot: Slot, source: Borrowed, facts: Borrowed) {
     let ctx = unsafe { &mut *slot.cast::<CallProjection<'_, P>>() };
     let facts = unsafe { &*facts.cast::<Facts>() };
     ctx.results.insert(unsafe { call_key(source) }, Clause::project_call_leaf(facts, ctx.bindings));
@@ -699,8 +698,8 @@ unsafe extern "C" {
     fn project_call_graph(slot: Slot, host: CallProjectionHost);
 }
 
-pub(super) fn project_call<P: Borrow<Proof>>(
-    ordered: &[&Clause], bindings: &BTreeMap<ValueIdentity, P>,
+pub(super) fn project_call<P: CallBindings>(
+    ordered: &[&Clause], bindings: &P,
 ) -> BTreeMap<usize, (Clause, bool)> {
     let mut ctx = CallProjection { ordered: ordered.iter(), bindings, results: BTreeMap::new() };
     unsafe {
