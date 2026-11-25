@@ -472,8 +472,12 @@ impl<D> DomainBindings<D> {
                             counts = &counts[end..];
                         }
                     },
-                    DomainRelation::Element(range) => for &(part, binding) in &targets.positions[range.binding] {
-                        emit(part, DomainRelation::Element(ElementRange { binding, ..range.clone() }));
+                    DomainRelation::Element(range) => {
+                        let (&(part, binding), earlier) = targets.positions[range.binding].split_last().unwrap();
+                        for &(part, binding) in earlier {
+                            emit(part, DomainRelation::Element(ElementRange { binding, ..range.clone() }));
+                        }
+                        emit(part, DomainRelation::Element(ElementRange { binding, ..range }));
                     },
                 }
             }
