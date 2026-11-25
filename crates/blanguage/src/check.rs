@@ -767,7 +767,7 @@ async fn expand_stage_expression(
             unsafe{world.call(collective::compile_custom(world,program,env,args.as_ref().unwrap(),instance,statement.span(),facts,cursor.flags&2!=0,kind,path.clone(),functions,input.operation_source(expression.span(),SourceSyntax::Expression,path))).await}?;
         },
         StageExpressionNeed::CallPrepare=>{let(bound,environment)=unsafe{world.call(call_execution::domain_call(world,instance,env,program,key.as_ref().unwrap(),args.take().unwrap(),types.as_ref(),statement.span(),path)).await}?;callee=Some(bound);child=Some(environment);key.take();types.take();},
-        StageExpressionNeed::CallExecute=>{unsafe{world.call(call_execution::execute_domain_call(world,instance,callee.as_ref().unwrap(),child.as_mut().unwrap(),program,stack,boundary,facts,calls,path,functions,scopes,statement.span(),expression.span())).await}?;callee.take();child.take();},
+        StageExpressionNeed::CallExecute=>{unsafe{world.call(call_execution::execute_domain_call(world,instance,callee.as_ref().unwrap(),child.take().unwrap(),program,stack,boundary,facts,calls,path,functions,scopes,statement.span(),expression.span())).await}?;callee.take();},
         StageExpressionNeed::ResetBoundary=>*boundary=false,
         StageExpressionNeed::ResetFirst=>*first_stage=program.stages.len(),
         StageExpressionNeed::Invalid=>return d.source.fail(statement.span(),"B119","program 顶层表达阶段；局部控制流放在 parallel 内"),

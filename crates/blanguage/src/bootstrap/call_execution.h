@@ -54,7 +54,7 @@ extern "C" void domain_actuals(u64 count,address context,cfn<void,address,u64> a
 
 struct DomainExecutionCursor {u64 index;u32 phase;};
 struct DomainExecutionFacts {u64 items;u32 compiled;u32 present;u32 valid;u64 stage;u64 segment_start;u64 domain;u64 count;};
-enum DomainExecutionNeed:u32 {Contracts=0;Lengths=1;LengthPair=2;InvalidLength=3;Requirements=4;Elements=5;ProveElements=6;Prefix=7;Source=8;Compiled=9;Binding=10;AppendBinding=11;Segment=12;SegmentFacts=13;Writes=14;Write=15;Outputs=16;Output=17;OutputDomain=18;AppendOutput=19;Arguments=20;Argument=21;Publish=22;Guarantees=23;Guarantee=24;InvalidPrefix=25;Enter=26;Expand=27;Proved=28;Leave=29;Grants=30;Grant=31;Complete=32;};
+enum DomainExecutionNeed:u32 {Contracts=0;Lengths=1;LengthPair=2;InvalidLength=3;Requirements=4;Elements=5;ProveElements=6;Prefix=7;Source=8;Compiled=9;Argument=10;Segment=11;SegmentFacts=12;Writes=13;Write=14;Outputs=15;Output=16;OutputDomain=17;AppendOutput=18;Publish=19;Guarantees=20;Guarantee=21;InvalidPrefix=22;Enter=23;Expand=24;Proved=25;Leave=26;Grants=27;Grant=28;Complete=29;};
 struct DomainExecutionStep {DomainExecutionCursor cursor;DomainExecutionNeed need;};
 extern "C" DomainExecutionStep domain_execution_step(DomainExecutionCursor state,DomainExecutionFacts facts) on cpu;
 struct DomainWriteFacts {u64 regions;u32 output;};

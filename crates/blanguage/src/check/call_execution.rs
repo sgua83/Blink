@@ -437,7 +437,7 @@ pub(super) async fn domain_call(
 #[derive(Clone,Copy)]
 #[repr(C)]struct DomainExecutionCursor{index:u64,phase:u32}
 #[repr(C)]struct DomainExecutionFacts{items:u64,compiled:u32,present:u32,valid:u32,stage:u64,segment_start:u64,domain:u64,count:u64}
-#[repr(u32)]enum DomainExecutionNeed{Contracts,Lengths,LengthPair,InvalidLength,Requirements,Elements,ProveElements,Prefix,Source,Compiled,Binding,AppendBinding,Segment,SegmentFacts,Writes,Write,Outputs,Output,OutputDomain,AppendOutput,Arguments,Argument,Publish,Guarantees,Guarantee,InvalidPrefix,Enter,Expand,Proved,Leave,Grants,Grant,Complete}
+#[repr(u32)]enum DomainExecutionNeed{Contracts,Lengths,LengthPair,InvalidLength,Requirements,Elements,ProveElements,Prefix,Source,Compiled,Argument,Segment,SegmentFacts,Writes,Write,Outputs,Output,OutputDomain,AppendOutput,Publish,Guarantees,Guarantee,InvalidPrefix,Enter,Expand,Proved,Leave,Grants,Grant,Complete}
 #[repr(C)]struct DomainExecutionStep{cursor:DomainExecutionCursor,need:DomainExecutionNeed}
 #[repr(C)]struct DomainWriteFacts{regions:u64,output:u32}
 #[repr(u32)]enum DomainWriteNeed{Proof,Region,Complete}
@@ -458,7 +458,7 @@ fn domain_write(
  }}
 }
 pub(super) async fn execute_domain_call(
- world:&World,caller:&crate::generics::Instance,instance:&crate::generics::Instance,child:&mut BTreeMap<String,Root>,
+ world:&World,caller:&crate::generics::Instance,instance:&crate::generics::Instance,mut child:BTreeMap<String,Root>,
  program:&mut Program,stack:&mut Vec<String>,boundary:&mut bool,facts:&mut prefix::Facts,calls:&mut Vec<DomainCall>,
  path:&Arc<[DomainSite]>,functions:&mut native_function::Module,scopes:&mut BTreeMap<usize,RangeContext>,span:Span,call_span:Span,
 )->Result<()>{
@@ -467,17 +467,17 @@ pub(super) async fn execute_domain_call(
  let mut control=DomainExecutionFacts{items:0,compiled:u32::from(callee.compiled.is_some()),present:0,valid:0,stage:0,segment_start:0,domain:0,count:0};
  let mut contracts=None;let mut lengths=None;let mut required=None;let mut elements=None;
  let mut context=None;let mut child_path=None;let mut contract:Option<crate::module::domain::Interface>=None;
- let mut parameters=None;let mut binding=None;let mut bindings=Vec::new();
+ let mut parameters=None;let mut bindings=Vec::new();
  let mut stage=0;let mut segment_start=0;let mut prefix_guarantees=Vec::new();let mut element_guarantees=Vec::new();
  let mut writes=None;let mut write_regions=BTreeMap::new();let mut outputs=None;let mut output:Option<crate::module::domain::Output>=None;
  let mut arguments=Vec::new();let mut guarantees:Option<Vec<PrefixRelation>>=None;let mut grants=None;
  loop{let step=unsafe{domain_execution_step(cursor,DomainExecutionFacts{..control})};cursor=step.cursor;match step.need{
   DomainExecutionNeed::Contracts=>contracts=Some(instance.contracts().collect::<Vec<_>>()),
-  DomainExecutionNeed::Lengths=>{let values=contracts::root_lengths(child,callee,contracts.as_ref().unwrap())?;control.items=values.len()as u64;lengths=Some(values.into_iter());},
+  DomainExecutionNeed::Lengths=>{let values=contracts::root_lengths(&child,callee,contracts.as_ref().unwrap())?;control.items=values.len()as u64;lengths=Some(values.into_iter());},
   DomainExecutionNeed::LengthPair=>{let(left,right)=lengths.as_mut().unwrap().next().unwrap();control.valid=u32::from(program.same_length(left,right));},
   DomainExecutionNeed::InvalidLength=>return d.source.fail(span,"B226","整域调用前未证明same_length数据集长度关系"),
-  DomainExecutionNeed::Requirements=>{lengths.take();let values=prefix::requirements(program,child,callee,contracts.as_ref().unwrap())?;control.items=values.len()as u64;required=Some(values);},
-  DomainExecutionNeed::Elements=>elements=Some(unsafe{world.call(prefix::element_requirements(world,&program.buffers,child,instance,contracts.as_ref().unwrap())).await}?),
+  DomainExecutionNeed::Requirements=>{lengths.take();let values=prefix::requirements(program,&child,callee,contracts.as_ref().unwrap())?;control.items=values.len()as u64;required=Some(values);},
+  DomainExecutionNeed::Elements=>elements=Some(unsafe{world.call(prefix::element_requirements(world,&program.buffers,&child,instance,contracts.as_ref().unwrap())).await}?),
   DomainExecutionNeed::ProveElements=>{facts.prove_elements(program,elements.as_ref().unwrap(),&d.source,span)?;elements.take();},
   DomainExecutionNeed::Prefix=>{let relation=&required.as_ref().unwrap()[cursor.index as usize];prefix::prove(facts,program,relation.domain,relation.count,&d.source,span)?;},
   DomainExecutionNeed::Source=>{
@@ -491,10 +491,19 @@ pub(super) async fn execute_domain_call(
    let target=if callee.function.target()==Target::Gpu{Target::Gpu}else{Target::Cpu};let symbol=crate::module::domain::symbol(&instance.name,target);
    let bytes=callee.compiled.as_ref().unwrap().get(&symbol).ok_or_else(||Diagnostic{source:d.source.clone(),span,code:"B270",message:format!("缺少已编译整域入口合同 {symbol}")})?;
    contract=Some(native_function::Contract::from_bytes(bytes).map_err(|error|Diagnostic{source:d.source.clone(),span,code:"B270",message:error.to_string()})?.domain.ok_or_else(||Diagnostic{source:d.source.clone(),span,code:"B270",message:format!("入口 {symbol} 不是整域合同")})?);
-   let declared=callee.function.params();control.items=declared.len()as u64;parameters=Some(declared.into_iter());
+   let declared=callee.function.params();
+   control.items=declared.len()as u64;
+   arguments=Vec::with_capacity(declared.len());
+   parameters=Some(declared.into_iter());
   },
-  DomainExecutionNeed::Binding=>{let parameter=parameters.as_mut().unwrap().next().unwrap();binding=match child[parameter.name()]{Root::Data(index,_)=>Some(index),_=>None};control.present=u32::from(binding.is_some());},
-  DomainExecutionNeed::AppendBinding=>bindings.push(binding.take().unwrap()),
+  DomainExecutionNeed::Argument=>{
+   let parameter=parameters.as_mut().unwrap().next().unwrap();
+   let argument=child.remove(parameter.name()).unwrap();
+   if let Root::Data(index,_) = &argument {
+    bindings.push(*index);
+   }
+   arguments.push(argument);
+  },
   DomainExecutionNeed::Segment=>{parameters.take();stage=program.stages.len();segment_start=calls.last().map_or(0,|call|call.stage);control.stage=stage as u64;control.segment_start=segment_start as u64;},
   DomainExecutionNeed::SegmentFacts=>{
    write_regions=Program::stage_write_regions(&program.stages[segment_start..stage]);
@@ -510,10 +519,8 @@ pub(super) async fn execute_domain_call(
   DomainExecutionNeed::Output=>{let mut value=outputs.as_mut().unwrap().next().unwrap();value.binding=bindings[value.binding];control.present=u32::from(value.domain.is_some());output=Some(value);},
   DomainExecutionNeed::OutputDomain=>{let value=output.as_mut().unwrap();value.domain=Some(bindings[value.domain.unwrap()]);},
   DomainExecutionNeed::AppendOutput=>facts.outputs.push(output.take().unwrap()),
-  DomainExecutionNeed::Arguments=>{outputs.take();let declared=callee.function.params();control.items=declared.len()as u64;arguments=Vec::with_capacity(declared.len());parameters=Some(declared.into_iter());},
-  DomainExecutionNeed::Argument=>{let parameter=parameters.as_mut().unwrap().next().unwrap();arguments.push(child[parameter.name()].clone());},
   DomainExecutionNeed::Publish=>{
-   parameters.take();
+   outputs.take();
    let(origin,source_context)=context.take().unwrap();let child_path=child_path.take().unwrap();
    calls.push(DomainCall{stage,instance:instance.clone(),arguments:std::mem::take(&mut arguments),write_regions:std::mem::take(&mut write_regions),element_guarantees:std::mem::take(&mut element_guarantees),element_requirements:Vec::new(),prefix_guarantees:std::mem::take(&mut prefix_guarantees),prefix_requirements:Vec::new(),source:origin.map(|origin|Arc::new(SourceSite{origin,context:Arc::new(SourceContext{domain_path:child_path,..(*source_context).clone()}),span:call_span,syntax:SourceSyntax::Expression}))});
    *boundary=true;
@@ -522,8 +529,8 @@ pub(super) async fn execute_domain_call(
   DomainExecutionNeed::Guarantee=>{let relation=&mut guarantees.as_mut().unwrap()[cursor.index as usize];relation.domain=bindings[relation.domain];relation.count.binding=bindings[relation.count.binding];control.domain=relation.domain as u64;control.count=relation.count.binding as u64;},
   DomainExecutionNeed::InvalidPrefix=>return d.source.fail(call_span,"B192","前缀域约束需要独立形状 1 资源中的 u32 计数字段"),
   DomainExecutionNeed::Enter=>{let requirements=required.take().unwrap();facts.enter(&requirements);context.take();},
-  DomainExecutionNeed::Expand=>{unsafe{world.call(expand_program(world,instance,child,program,stack,boundary,facts,calls,child_path.take().unwrap(),functions,scopes)).await}?;},
-  DomainExecutionNeed::Proved=>{guarantees=Some(prefix::proved_guarantees(program,callee,facts,prefix::bindings(program,child,callee,contracts.as_ref().unwrap(),ContractKind::Ensures))?);contracts.take();},
+  DomainExecutionNeed::Expand=>{unsafe{world.call(expand_program(world,instance,&mut child,program,stack,boundary,facts,calls,child_path.take().unwrap(),functions,scopes)).await}?;},
+  DomainExecutionNeed::Proved=>{guarantees=Some(prefix::proved_guarantees(program,callee,facts,prefix::bindings(program,&child,callee,contracts.as_ref().unwrap(),ContractKind::Ensures))?);contracts.take();},
   DomainExecutionNeed::Leave=>facts.leave(),
   DomainExecutionNeed::Grants=>{let values=guarantees.take().unwrap();control.items=values.len()as u64;grants=Some(values.into_iter());},
   DomainExecutionNeed::Grant=>facts.grant(grants.as_mut().unwrap().next().unwrap()),
