@@ -96,9 +96,10 @@ pub(crate) fn link_inputs<'a>(
     Ok(true)
 }
 
+#[allow(dead_code)] // Additional entries are sent by the B range emitter.
 #[derive(Clone, Copy)]
 #[repr(u32)]
-enum RangeOperation {
+enum RangeEntry {
     Map,
     Reduce,
     CustomReduce,
@@ -108,175 +109,213 @@ enum RangeOperation {
     Scan,
     Compact,
     Sort,
-}
-
-#[repr(u32)]
-enum RangeFollow {
-    None,
     ReduceTail,
-    CustomScan,
-    CustomSegmentedReduce,
+    ScanPrefix,
+    ScanApply,
+    SegmentPrefix,
+    SegmentApply,
     SegmentedFinish,
     ScanAdd,
     CompactScatter,
-    Sort,
+    SortKey,
+    SortHistogram,
+    SortScatter,
+    SortGather,
+}
+
+#[allow(dead_code)]
+#[derive(Clone, Copy)]
+#[repr(u32)]
+enum RangeDestination { Main, Tail, Apply, Histogram, Scatter, Gather, Initializers }
+
+#[allow(dead_code)]
+#[repr(u32)]
+enum RangeShape { Element, ReduceTail, CustomScan, SegmentedFinish, ScanAdd, CompactScatter, Sort }
+
+#[repr(C)]
+struct RangeProduct {
+    shape: RangeShape,
+    has_values: u32,
+    words: usize,
 }
 
 #[repr(C)]
-struct RangeEntries {
-    follow: RangeFollow,
-    values: u32,
-    words: usize,
-    first_key: usize,
+struct RangeSink {
+    context: *mut std::ffi::c_void,
+    emit: unsafe extern "C" fn(*mut std::ffi::c_void, RangeEntry, RangeDestination, usize) -> u32,
 }
 
 unsafe extern "C" {
-    #[link_name = "bootstrap.x64_instruction::range_entries"]
-    fn range_entries(operation: RangeOperation, words_or_keys: usize, complete: u32) -> RangeEntries;
+    #[link_name = "bootstrap.x64_instruction::emit_ranges"]
+    fn emit_ranges(entry: RangeEntry, words_or_keys: usize, complete: u32, sink: RangeSink) -> RangeProduct;
 }
 
-// The payload borrows the exact operation kept in the original stage.
-struct RangeStage<'a> {
+// The discriminant and payload come from the same original operation.
+struct RangeInput<'a> {
     program: &'a Program,
     index: usize,
-    operation: RangeOperation,
+    entry: RangeEntry,
     payload: *const std::ffi::c_void,
     words_or_keys: usize,
+    head: Option<u32>,
+    count: Option<PrefixCount>,
 }
 
-impl<'a> RangeStage<'a> {
+impl<'a> RangeInput<'a> {
     fn new(program: &'a Program, index: usize) -> Self {
-        use RangeOperation as Kind;
-        fn payload<T>(value: &T) -> *const std::ffi::c_void {
+        use RangeEntry as Entry;
+        fn borrow<T>(value: &T) -> *const std::ffi::c_void {
             std::ptr::from_ref(value).cast()
         }
-        let (operation, payload, words_or_keys) = match &program.stages()[index].operation {
-            Operation::Map => (Kind::Map, std::ptr::null(), 0),
+        let (entry, payload, words_or_keys, head, count) = match &program.stages()[index].operation {
+            Operation::Map => (Entry::Map, std::ptr::null(), 0, None, None),
             Operation::Reduce(value) =>
-                (Kind::Reduce, payload(value), value.ty.size.div_ceil(4) as usize),
+                (Entry::Reduce, borrow(value), value.ty.size.div_ceil(4) as usize, None, None),
             Operation::CustomReduce(value) =>
-                (Kind::CustomReduce, payload(value), value.ty.size.div_ceil(4) as usize),
+                (Entry::CustomReduce, borrow(value), value.ty.size.div_ceil(4) as usize, None, None),
             Operation::CustomScan(value) =>
-                (Kind::CustomScan, payload(value), value.summary_words()),
+                (Entry::CustomScan, borrow(&value.values), value.summary_words(), value.head_word, None),
             Operation::CustomSegmentedReduce(value) =>
-                (Kind::CustomSegmentedReduce, payload(value), value.summary_words()),
+                (Entry::CustomSegmentedReduce, borrow(&value.values), value.summary_words(),
+                 Some(value.head_word), Some(value.count)),
             Operation::SegmentedReduce(value) =>
-                (Kind::SegmentedReduce, payload(value), value.summary_words()),
-            Operation::ScanExclusive(value) => (Kind::Scan, payload(value), value.summary_words()),
-            Operation::Compact(value) => (Kind::Compact, payload(value), 1),
-            Operation::StableSort(value) => (Kind::Sort, payload(value), value.keys.len()),
+                (Entry::SegmentedReduce, borrow(value), value.summary_words(), None, None),
+            Operation::ScanExclusive(value) =>
+                (Entry::Scan, borrow(value), value.summary_words(), None, None),
+            Operation::Compact(value) => (Entry::Compact, borrow(value), 1, None, None),
+            Operation::StableSort(value) => (Entry::Sort, borrow(value), value.keys.len(), None, None),
         };
-        Self { program, index, operation, payload, words_or_keys }
+        Self { program, index, entry, payload, words_or_keys, head, count }
     }
 
-    fn entries(&self, complete: bool) -> RangeEntries {
-        unsafe { range_entries(self.operation, self.words_or_keys, u32::from(complete)) }
-    }
-
-    // The original operation discriminant fixes the borrowed payload type.
     unsafe fn value<T>(&self) -> &T {
         unsafe { &*self.payload.cast() }
     }
 
-    fn custom(&self, value: &CustomReduction, pass: custom_reduce::Pass,
-              head: Option<u32>, count: Option<PrefixCount>) -> Result<NativeCode, &'static str> {
-        custom_reduce::emit(self.program, self.index, value, pass, head, count)
+    fn custom(&self, pass: custom_reduce::Pass) -> Result<NativeCode, &'static str> {
+        let reduction: &CustomReduction = unsafe { self.value() };
+        custom_reduce::emit(self.program, self.index, reduction, pass, self.head, self.count)
+    }
+}
+
+struct RangeEmission<'a> {
+    input: RangeInput<'a>,
+    inputs: crate::ir::dataflow::InputFragments,
+    used: std::collections::BTreeSet<SharedWord>,
+    tile_layout: crate::ir::dataflow::TileLayout,
+    code: [Option<NativeCode>; 6],
+    initializers: Vec<NativeCode>,
+    error: Option<&'static str>,
+}
+
+impl<'a> RangeEmission<'a> {
+    fn new(program: &'a Program, index: usize) -> Self {
+        let stage = &program.stages()[index];
+        let mut used = std::collections::BTreeSet::new();
+        let layout = stage.tile_layout(false, Some(&mut used));
+        let inputs = crate::ir::dataflow::input_fragments(stage, &used);
+        Self {
+            input: RangeInput::new(program, index), inputs, used, tile_layout: layout.words,
+            code: Default::default(), initializers: Vec::new(), error: None,
+        }
     }
 
-    fn first(
-        &self, entries: &RangeEntries, inputs: &crate::ir::dataflow::InputFragments,
-        used: &std::collections::BTreeSet<SharedWord>, layout: crate::ir::dataflow::TileLayout,
-    ) -> Result<NativeCode, &'static str> {
+    fn emit(&mut self, entry: RangeEntry, key: usize) -> Result<NativeCode, &'static str> {
         use custom_reduce::Pass;
-        match self.operation {
-            RangeOperation::Map => emit_map(self.program, self.index, inputs, used, layout),
-            RangeOperation::Reduce => Ok(reduce::emit(self.program, unsafe { self.value() })),
-            RangeOperation::CustomReduce => self.custom(unsafe { self.value() }, Pass::Reduce, None, None),
-            RangeOperation::CustomScan => {
-                let scan: &CustomScan = unsafe { self.value() };
-                self.custom(&scan.values, Pass::Scan, scan.head_word, None)
+        use RangeEntry as Entry;
+        let input = &self.input;
+        let program = input.program;
+        let code = match entry {
+            Entry::Map => return emit_map(program, input.index, &self.inputs, &self.used, std::mem::take(&mut self.tile_layout)),
+            Entry::Reduce => reduce::emit(program, unsafe { input.value() }),
+            Entry::CustomReduce => return input.custom(Pass::Reduce),
+            Entry::CustomScan => return input.custom(Pass::Scan),
+            Entry::CustomSegmentedReduce => return input.custom(Pass::SegmentReduce),
+            Entry::SegmentedReduce => segmented_reduce::emit(program, unsafe { input.value() }, false),
+            Entry::Scan => scan::emit_scan(program, unsafe { input.value() }, false),
+            Entry::Compact => compact::emit_count(program, unsafe { input.value() }),
+            Entry::Sort => sort::initialize(program, unsafe { input.value() }, key, true),
+            Entry::ReduceTail => return input.custom(Pass::ReduceTail),
+            Entry::ScanPrefix => return input.custom(Pass::ScanPrefix),
+            Entry::ScanApply => return input.custom(Pass::ScanAdd),
+            Entry::SegmentPrefix => return input.custom(Pass::SegmentPrefix),
+            Entry::SegmentApply => return input.custom(Pass::SegmentFinish),
+            Entry::SegmentedFinish => emit_segmented_reduce_finish(program, unsafe { input.value() }),
+            Entry::ScanAdd => emit_scan_add(program, unsafe { input.value() }),
+            Entry::CompactScatter => emit_compact_scatter(program, unsafe { input.value() }),
+            Entry::SortKey => emit_sort_key(program, unsafe { input.value() }, key),
+            Entry::SortHistogram => emit_sort_histogram(program),
+            Entry::SortScatter => emit_sort_scatter(program),
+            Entry::SortGather => emit_sort_gather(program, unsafe { input.value() }),
+        };
+        Ok(code)
+    }
+
+    fn generate(&mut self, complete: u32) -> Result<RangeProduct, &'static str> {
+        let (entry, words) = (self.input.entry, self.input.words_or_keys);
+        let sink = RangeSink { context: std::ptr::from_mut(self).cast(), emit: emit_range_entry };
+        let product = unsafe { emit_ranges(entry, words, complete, sink) };
+        self.error.map_or(Ok(product), Err)
+    }
+
+    fn finish(self, product: RangeProduct) -> (ExecutionStage, StageCode) {
+        let [main, tail, apply, histogram, scatter, gather] = self.code;
+        let stage = &self.input.program.stages()[self.input.index];
+        let layout = ExecutionStage::from_stage(stage, self.inputs.into_keys().collect());
+        let continuation = match product.shape {
+            RangeShape::Element => None,
+            RangeShape::ReduceTail => Some(ContinuationCode::ReductionTail(tail.unwrap())),
+            RangeShape::CustomScan => {
+                let reduction: &CustomReduction = unsafe { self.input.value() };
+                Some(ContinuationCode::Scan {
+                    prefix: tail.unwrap(), apply: apply.unwrap(),
+                    source: reduction.fields.source, target: reduction.fields.target,
+                })
             }
-            RangeOperation::CustomSegmentedReduce => {
-                let reduction: &CustomSegmentedReduction = unsafe { self.value() };
-                self.custom(&reduction.values, Pass::SegmentReduce, Some(reduction.head_word), Some(reduction.count))
+            RangeShape::SegmentedFinish => Some(ContinuationCode::SegmentedFinish(tail.unwrap())),
+            RangeShape::ScanAdd => Some(ContinuationCode::ScanAdd(tail.unwrap())),
+            RangeShape::CompactScatter => Some(ContinuationCode::CompactScatter(tail.unwrap())),
+            RangeShape::Sort => {
+                let sort: &Sorting = unsafe { self.input.value() };
+                return (layout, StageCode::Sort(SortCode {
+                    source: sort.source, target: sort.target, initialize: self.initializers,
+                    histogram: histogram.unwrap(), scatter: scatter.unwrap(), gather: gather.unwrap(),
+                }));
             }
-            RangeOperation::SegmentedReduce =>
-                Ok(segmented_reduce::emit(self.program, unsafe { self.value() }, false)),
-            RangeOperation::Scan => Ok(scan::emit_scan(self.program, unsafe { self.value() }, false)),
-            RangeOperation::Compact => Ok(compact::emit_count(self.program, unsafe { self.value() })),
-            RangeOperation::Sort =>
-                Ok(sort::initialize(self.program, unsafe { self.value() }, entries.first_key, true)),
+        };
+        let result = if product.has_values == 0 { RangeResult::None } else { RangeResult::Values(product.words) };
+        (layout, StageCode::Element { main: main.unwrap(), continuation, result })
+    }
+}
+
+unsafe extern "C" fn emit_range_entry(
+    context: *mut std::ffi::c_void, entry: RangeEntry, destination: RangeDestination, key: usize,
+) -> u32 {
+    let emission = unsafe { &mut *context.cast::<RangeEmission<'_>>() };
+    match emission.emit(entry, key) {
+        Ok(code) => {
+            if matches!(destination, RangeDestination::Initializers) {
+                emission.initializers.push(code);
+            } else {
+                emission.code[destination as usize] = Some(code);
+            }
+            1
+        }
+        Err(error) => {
+            emission.error = Some(error);
+            0
         }
     }
 }
 
 pub fn emit(program: &Program, index: usize) -> Result<NativeCode, &'static str> {
-    let stage = RangeStage::new(program, index);
-    let ir = &program.stages()[index];
-    let mut used = std::collections::BTreeSet::new();
-    let layout = ir.tile_layout(false, Some(&mut used));
-    let inputs = crate::ir::dataflow::input_fragments(ir, &used);
-    stage.first(&stage.entries(false), &inputs, &used, layout.words)
+    let mut emission = RangeEmission::new(program, index);
+    emission.generate(0)?;
+    Ok(emission.code[RangeDestination::Main as usize].take().unwrap())
 }
 
 pub(crate) fn compile_stage(program: &Program, index: usize) -> Result<(ExecutionStage, StageCode), &'static str> {
-    use custom_reduce::Pass;
-    let ir = &program.stages()[index];
-    let mut used = std::collections::BTreeSet::new();
-    let layout = ir.tile_layout(false, Some(&mut used));
-    let inputs = crate::ir::dataflow::input_fragments(ir, &used);
-    let stage = RangeStage::new(program, index);
-    let entries = stage.entries(true);
-    let main = stage.first(&entries, &inputs, &used, layout.words)?;
-    let layout = ExecutionStage::from_stage(ir, inputs.into_keys().collect());
-    let continuation = match entries.follow {
-        RangeFollow::None => None,
-        RangeFollow::ReduceTail => Some(ContinuationCode::ReductionTail(
-            stage.custom(unsafe { stage.value() }, Pass::ReduceTail, None, None)?,
-        )),
-        RangeFollow::CustomScan => {
-            let scan: &CustomScan = unsafe { stage.value() };
-            Some(ContinuationCode::Scan {
-                prefix: stage.custom(&scan.values, Pass::ScanPrefix, scan.head_word, None)?,
-                apply: stage.custom(&scan.values, Pass::ScanAdd, scan.head_word, None)?,
-                source: scan.values.fields.source,
-                target: scan.values.fields.target,
-            })
-        }
-        RangeFollow::CustomSegmentedReduce => {
-            let reduction: &CustomSegmentedReduction = unsafe { stage.value() };
-            let head = Some(reduction.head_word);
-            let count = Some(reduction.count);
-            Some(ContinuationCode::Scan {
-                prefix: stage.custom(&reduction.values, Pass::SegmentPrefix, head, count)?,
-                apply: stage.custom(&reduction.values, Pass::SegmentFinish, head, count)?,
-                source: reduction.values.fields.source,
-                target: reduction.values.fields.target,
-            })
-        }
-        RangeFollow::SegmentedFinish => Some(ContinuationCode::SegmentedFinish(
-            emit_segmented_reduce_finish(program, unsafe { stage.value() }),
-        )),
-        RangeFollow::ScanAdd =>
-            Some(ContinuationCode::ScanAdd(emit_scan_add(program, unsafe { stage.value() }))),
-        RangeFollow::CompactScatter => Some(ContinuationCode::CompactScatter(
-            emit_compact_scatter(program, unsafe { stage.value() }),
-        )),
-        RangeFollow::Sort => {
-            let sort: &Sorting = unsafe { stage.value() };
-            let initialize = std::iter::once(main)
-                .chain((0..entries.first_key).rev().map(|key| emit_sort_key(program, sort, key)))
-                .collect();
-            return Ok((layout, StageCode::Sort(SortCode {
-                source: sort.source,
-                target: sort.target,
-                initialize,
-                histogram: emit_sort_histogram(program),
-                scatter: emit_sort_scatter(program),
-                gather: emit_sort_gather(program, sort),
-            })));
-        }
-    };
-    let result = if entries.values == 0 { RangeResult::None } else { RangeResult::Values(entries.words) };
-    Ok((layout, StageCode::Element { main, continuation, result }))
+    let mut emission = RangeEmission::new(program, index);
+    let product = emission.generate(1)?;
+    Ok(emission.finish(product))
 }

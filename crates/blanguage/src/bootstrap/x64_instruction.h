@@ -681,21 +681,29 @@ extern "C" u32 packet_plan_mark_operand(address bytes,u64 reg) on cpu;
 extern "C" u32 packet_plan_definition(address context,u64 reg) on cpu;
 extern "C" u32 packet_plan_width(address context,u64 bytes) on cpu;
 
-enum RangeOperation:u32 {
+enum RangeEntry:u32 {
     Map=0; Reduce=1; CustomReduce=2; CustomScan=3; CustomSegmentedReduce=4;
-    SegmentedReduce=5; Scan=6; Compact=7; Sort=8;
+    SegmentedReduce=5; Scan=6; Compact=7; Sort=8; ReduceTail=9; ScanPrefix=10; ScanApply=11;
+    SegmentPrefix=12; SegmentApply=13; SegmentedFinish=14; ScanAdd=15; CompactScatter=16;
+    SortKey=17; SortHistogram=18; SortScatter=19; SortGather=20;
 };
-enum RangeFollow:u32 {
-    None=0; ReduceTail=1; CustomScan=2; CustomSegmentedReduce=3;
-    SegmentedFinish=4; ScanAdd=5; CompactScatter=6; Sort=7;
+enum RangeDestination:u32 {
+    Main=0; Tail=1; Apply=2; Histogram=3; Scatter=4; Gather=5; Initializers=6;
 };
-struct RangeEntries {
-    RangeFollow follow;
-    u32 values;
+enum RangeShape:u32 {
+    Element=0; ReduceTail=1; CustomScan=2; SegmentedFinish=3; ScanAdd=4; CompactScatter=5; Sort=6;
+};
+struct RangeProduct {
+    RangeShape shape;
+    u32 has_values;
     usize words;
-    usize first_key;
 };
-extern "C" RangeEntries range_entries(RangeOperation operation, usize words_or_keys, u32 complete) on cpu;
+struct RangeSink {
+    address context;
+    cfn<u32,address,RangeEntry,RangeDestination,usize> emit;
+};
+extern "C" RangeProduct emit_ranges(RangeEntry entry, usize words_or_keys, u32 complete, RangeSink sink)
+    on cpu requires nonzero(sink.emit);
 
 struct ScalarLiteral {
     u64 bits;

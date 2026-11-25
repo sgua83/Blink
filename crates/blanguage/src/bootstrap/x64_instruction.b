@@ -4819,29 +4819,53 @@ extern "C" address packet_plan(address context,PacketPlanBlock code,PacketPlanHe
     host.state_drop(definitions);host.state_drop(uses);return plan;
 }
 
-extern "C" RangeEntries range_entries(RangeOperation operation, usize words_or_keys, u32 complete) on cpu {
-    if (operation == RangeOperation::Sort) {
-        RangeFollow follow = complete != 0 ? RangeFollow::Sort : RangeFollow::None;
-        return RangeEntries(follow, 0, 0u64, words_or_keys - 1u64);
+extern "C" RangeProduct emit_ranges(RangeEntry entry, usize words_or_keys, u32 complete, RangeSink sink)
+    on cpu requires nonzero(sink.emit) {
+    RangeProduct single = RangeProduct(RangeShape::Element, 0, 0u64);
+    if (entry == RangeEntry::Sort) {
+        usize key = words_or_keys - 1u64;
+        RangeDestination first = complete == 0 ? RangeDestination::Main : RangeDestination::Initializers;
+        sink.emit(sink.context, RangeEntry::Sort, first, key);
+        if (complete == 0) { return single; }
+        while (key != 0u64) {
+            key -= 1u64;
+            sink.emit(sink.context, RangeEntry::SortKey, RangeDestination::Initializers, key);
+        }
+        sink.emit(sink.context, RangeEntry::SortHistogram, RangeDestination::Histogram, 0u64);
+        sink.emit(sink.context, RangeEntry::SortScatter, RangeDestination::Scatter, 0u64);
+        sink.emit(sink.context, RangeEntry::SortGather, RangeDestination::Gather, 0u64);
+        return RangeProduct(RangeShape::Sort, 0, 0u64);
     }
-    if (operation == RangeOperation::Map || complete == 0) {
-        return RangeEntries(RangeFollow::None, 0, 0u64, 0u64);
+    if (sink.emit(sink.context, entry, RangeDestination::Main, 0u64) == 0
+        || complete == 0 || entry == RangeEntry::Map) {
+        return single;
     }
-    RangeFollow follow = RangeFollow::None;
-    if (operation == RangeOperation::CustomReduce) {
-        follow = RangeFollow::ReduceTail;
-    } else if (operation == RangeOperation::CustomScan) {
-        follow = RangeFollow::CustomScan;
-    } else if (operation == RangeOperation::CustomSegmentedReduce) {
-        follow = RangeFollow::CustomSegmentedReduce;
-    } else if (operation == RangeOperation::SegmentedReduce) {
-        follow = RangeFollow::SegmentedFinish;
-    } else if (operation == RangeOperation::Scan) {
-        follow = RangeFollow::ScanAdd;
-    } else if (operation == RangeOperation::Compact) {
-        follow = RangeFollow::CompactScatter;
+
+    RangeShape shape = RangeShape::Element;
+    if (entry == RangeEntry::CustomReduce) {
+        sink.emit(sink.context, RangeEntry::ReduceTail, RangeDestination::Tail, 0u64);
+        shape = RangeShape::ReduceTail;
+    } else if (entry == RangeEntry::CustomScan) {
+        if (sink.emit(sink.context, RangeEntry::ScanPrefix, RangeDestination::Tail, 0u64) != 0) {
+            sink.emit(sink.context, RangeEntry::ScanApply, RangeDestination::Apply, 0u64);
+        }
+        shape = RangeShape::CustomScan;
+    } else if (entry == RangeEntry::CustomSegmentedReduce) {
+        if (sink.emit(sink.context, RangeEntry::SegmentPrefix, RangeDestination::Tail, 0u64) != 0) {
+            sink.emit(sink.context, RangeEntry::SegmentApply, RangeDestination::Apply, 0u64);
+        }
+        shape = RangeShape::CustomScan;
+    } else if (entry == RangeEntry::SegmentedReduce) {
+        sink.emit(sink.context, RangeEntry::SegmentedFinish, RangeDestination::Tail, 0u64);
+        shape = RangeShape::SegmentedFinish;
+    } else if (entry == RangeEntry::Scan) {
+        sink.emit(sink.context, RangeEntry::ScanAdd, RangeDestination::Tail, 0u64);
+        shape = RangeShape::ScanAdd;
+    } else if (entry == RangeEntry::Compact) {
+        sink.emit(sink.context, RangeEntry::CompactScatter, RangeDestination::Tail, 0u64);
+        shape = RangeShape::CompactScatter;
     }
-    return RangeEntries(follow, 1, words_or_keys, 0u64);
+    return RangeProduct(shape, 1, words_or_keys);
 }
 
 ScalarValueEncoding value_encoding(BinaryEncoding body, u64 left, bool left_wide,
