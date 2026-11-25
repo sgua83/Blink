@@ -564,16 +564,22 @@ extern "C" void emit_tile_publish(address context, u32 base_offset, TilePublishH
     requires nonzero(host.reserve) requires nonzero(host.commit)
     requires nonzero(host.next) requires nonzero(host.observe);
 
-struct TileCollectiveInput {
-    u64 identity;
-    ScalarEncoding scalar;
+struct TileCollectiveLayout {
     ReductionOperator operation;
     bool exclusive;
-    u32 input_offset;
-    u32 output_offset;
     u32 length_offset;
     u32 plane_stride;
+};
+
+struct TileCollectiveField {
+    u64 identity;
+    ScalarEncoding scalar;
+    u32 input_offset;
+    u32 output_offset;
     u32 input_high_delta;
+    u32 word;
+    usize result;
+    address scalar_origin;
 };
 
 struct TileCollectiveCode {
@@ -585,8 +591,16 @@ struct TileCollectiveCode {
     u64 fill_loop_start;
 };
 
-// The caller owns 128 output bytes. Positions are relative to the first byte.
-extern "C" TileCollectiveCode tile_collective(TileCollectiveInput input, address output) on cpu;
+struct TileCollectiveHost {
+    cfn<NativeCodeBuffer,address,u64> reserve;
+    cfn<void,address,u64> commit;
+    cfn<TileCollectiveField,address,ReductionOperator> next;
+    cfn<void,address,u64,TileCollectiveLayout,TileCollectiveCode,TileCollectiveField> observe;
+};
+
+extern "C" void emit_tile_collective(address context, TileCollectiveLayout layout, TileCollectiveHost host) on cpu
+    requires nonzero(host.reserve) requires nonzero(host.commit)
+    requires nonzero(host.next) requires nonzero(host.observe);
 
 // R12 has already been saved. The caller owns 256 output bytes and the literal pool.
 extern "C" ReductionCode reduce_range(ReductionRange input, address output) on cpu;

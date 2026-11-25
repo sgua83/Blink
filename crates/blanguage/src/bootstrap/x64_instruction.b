@@ -4065,36 +4065,36 @@ u64 tile_input_copy(TileInputCopy input, address output) on cpu {
     return tile_counted_back_edge(cursor, begin) - start;
 }
 
-extern "C" TileCollectiveCode tile_collective(TileCollectiveInput input, address output) on cpu {
+TileCollectiveCode tile_collective(TileCollectiveLayout layout, TileCollectiveField field, address output) on cpu {
     u64 start = address_bits(output);
-    MoveLocation source = MoveLocation(u64(input.input_offset), MOVE_MEMORY, u8(4), NO_INDEX, u8(0));
-    MoveLocation target = MoveLocation(u64(input.output_offset), MOVE_MEMORY, u8(4), NO_INDEX, u8(0));
-    MoveLocation length = MoveLocation(u64(input.length_offset), MOVE_MEMORY, u8(4), NO_INDEX, u8(0));
+    MoveLocation source = MoveLocation(u64(field.input_offset), MOVE_MEMORY, u8(4), NO_INDEX, u8(0));
+    MoveLocation target = MoveLocation(u64(field.output_offset), MOVE_MEMORY, u8(4), NO_INDEX, u8(0));
+    MoveLocation length = MoveLocation(u64(layout.length_offset), MOVE_MEMORY, u8(4), NO_INDEX, u8(0));
     u64 cursor = encode_operand_instruction(start, u16(0x8d), u8(0), true, u8(10), source);
     cursor = encode_operand_instruction(cursor, u16(0x8d), u8(0), true, u8(11), target);
     u64 identity = load_bits(cursor, u8(1), length, false);
 
-    bool wide = input.scalar.width == 64;
-    bool floating = input.scalar.kind == ScalarKind::Float;
-    if (input.identity == 0u64) {
+    bool wide = field.scalar.width == 64;
+    bool floating = field.scalar.kind == ScalarKind::Float;
+    if (field.identity == 0u64) {
         u16 opcode = floating ? u16(0x570f) : u16(0x31);
         cursor = register_instruction(identity, opcode, u8(0), false, u8(0), u8(0));
     } else {
-        cursor = move_immediate(identity, u8(0), input.identity, wide);
+        cursor = move_immediate(identity, u8(0), field.identity, wide);
         if (floating) {
             cursor = register_instruction(cursor, u16(0x6e0f), u8(0x66), wide, u8(0), u8(0));
         }
     }
 
     u64 begin = cursor;
-    if (input.exclusive) {
-        cursor = tile_collective_store(cursor, input.scalar, input.plane_stride);
+    if (layout.exclusive) {
+        cursor = tile_collective_store(cursor, field.scalar, layout.plane_stride);
         cursor = tile_stream_advance(cursor, u8(11));
     }
     u64 accumulate = cursor;
     MoveLocation operand = MoveLocation(0u64, MOVE_MEMORY, u8(10), NO_INDEX, u8(0));
     if (wide) {
-        MoveLocation high = MoveLocation(u64(input.input_high_delta), MOVE_MEMORY, u8(10), NO_INDEX, u8(0));
+        MoveLocation high = MoveLocation(u64(field.input_high_delta), MOVE_MEMORY, u8(10), NO_INDEX, u8(0));
         cursor = load_bits(cursor, u8(2), operand, false);
         cursor = load_bits(cursor, u8(8), high, false);
         cursor = register_instruction(cursor, u16(0xc1), u8(0), true, u8(4), u8(8));
@@ -4106,19 +4106,33 @@ extern "C" TileCollectiveCode tile_collective(TileCollectiveInput input, address
             operand = packet_register(u8(1));
         }
     }
-    cursor = collective_accumulate(cursor, input.operation, input.scalar, u8(0), operand);
+    cursor = collective_accumulate(cursor, layout.operation, field.scalar, u8(0), operand);
     cursor = tile_stream_advance(cursor, u8(10));
     u64 fill = tile_counted_back_edge(cursor, begin);
     u64 fill_loop = fill;
     cursor = fill;
-    if (!input.exclusive) {
+    if (!layout.exclusive) {
         fill_loop = load_bits(cursor, u8(1), length, false);
-        cursor = tile_collective_store(fill_loop, input.scalar, input.plane_stride);
+        cursor = tile_collective_store(fill_loop, field.scalar, layout.plane_stride);
         cursor = tile_stream_advance(cursor, u8(11));
         cursor = tile_counted_back_edge(cursor, fill_loop);
     }
     return TileCollectiveCode(cursor - start, identity - start, begin - start,
         accumulate - start, fill - start, fill_loop - start);
+}
+
+extern "C" void emit_tile_collective(address context, TileCollectiveLayout layout, TileCollectiveHost host) on cpu
+    requires nonzero(host.reserve) requires nonzero(host.commit)
+    requires nonzero(host.next) requires nonzero(host.observe) {
+    TileCollectiveField field = host.next(context, layout.operation);
+    while (address_bits(field.scalar_origin) != 0u64) {
+        NativeCodeBuffer buffer = host.reserve(context, 128u64);
+        address output = unsafe_address(address_bits(buffer.image) + buffer.end);
+        TileCollectiveCode encoding = tile_collective(layout, field, output);
+        host.commit(context, buffer.end + encoding.length);
+        host.observe(context, buffer.end, layout, encoding, field);
+        field = host.next(context, layout.operation);
+    }
 }
 
 extern "C" ReductionCode reduce_range(ReductionRange input, address output) on cpu {
