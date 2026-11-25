@@ -53,6 +53,7 @@ impl<'a> SourceView<'a> {
     pub(crate) fn storage(self)->wire::StorageView {self.owner.view()}
     pub(crate) fn text(self,value:wire::Text)->&'a str {self.owner.text(value)}
     pub(crate) fn node<T>(self,offset:u64)->Node<T> {Node{owner:self.owner.clone(),offset,marker:PhantomData}}
+    pub(crate) fn list<T>(self,value:wire::Slice)->List<T> {List{owner:self.owner.clone(),value,marker:PhantomData}}
 }
 pub(crate) struct Builder {owner:Owner}
 impl Builder {
