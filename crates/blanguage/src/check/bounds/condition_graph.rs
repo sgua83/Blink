@@ -848,27 +848,121 @@ enum Conjunct<'a> {
     Node(usize),
 }
 
-fn conjuncts<'a>(sources: &[EncodedClause<&'a Facts>], root: usize) -> BTreeSet<Conjunct<'a>> {
-    let mut terms = BTreeSet::new();
+fn operands(source: EncodedClause<&Facts>, either: bool) -> Option<(usize, usize)> {
+    match (source, either) {
+        (EncodedClause::Both(left, right), false) | (EncodedClause::Either(left, right), true) => Some((left, right)),
+        _ => None,
+    }
+}
+
+fn term_ids(sources: &[EncodedClause<&Facts>], root: usize, either: bool) -> BTreeSet<usize> {
     let mut seen = BTreeSet::new();
     let mut pending = vec![root];
     while let Some(id) = pending.pop() {
-        if seen.insert(id) {
-            match sources[id] {
-                EncodedClause::Both(left, right) => pending.extend([left, right]),
-                EncodedClause::Facts(facts) => terms.extend(facts.iter().map(Conjunct::Fact)),
-                _ => {
-                    terms.insert(Conjunct::Node(id));
-                }
+        if seen.insert(id) && let Some((left, right)) = operands(sources[id], either) {
+            pending.extend([left, right]);
+        }
+    }
+    seen.retain(|&id| operands(sources[id], either).is_none());
+    seen
+}
+
+fn conjuncts<'a>(sources: &[EncodedClause<&'a Facts>], root: usize) -> BTreeSet<Conjunct<'a>> {
+    let mut terms = BTreeSet::new();
+    for id in term_ids(sources, root, false) {
+        match sources[id] {
+            EncodedClause::Facts(facts) => terms.extend(facts.iter().map(Conjunct::Fact)),
+            _ => {
+                terms.insert(Conjunct::Node(id));
             }
         }
     }
     terms
 }
 
+fn join_terms<'a>(
+    sources: &mut Vec<EncodedClause<&'a Facts>>,
+    gates: &mut HashMap<(bool, usize, usize), usize>,
+    terms: impl IntoIterator<Item = usize>,
+    either: bool,
+) -> Option<usize> {
+    terms.into_iter().reduce(|left, right| {
+        if left == right {
+            return left;
+        }
+        *gates.entry((either, left.min(right), left.max(right))).or_insert_with(|| {
+            let id = sources.len();
+            let source = if either { EncodedClause::Either(left, right) } else { EncodedClause::Both(left, right) };
+            sources.push(source);
+            id
+        })
+    })
+}
+
+fn comparison_roots(
+    sources: &mut Vec<EncodedClause<&Facts>>,
+    first: usize,
+    second: usize,
+) -> Option<(usize, usize, bool)> {
+    let left = term_ids(sources, first, true);
+    let right = term_ids(sources, second, true);
+    let (narrower, old, new) = if left.is_subset(&right) {
+        (first, left, right)
+    } else if right.is_subset(&left) {
+        (second, right, left)
+    } else {
+        return Some((first, second, true));
+    };
+
+    // In this direction the old root is false. Its disjuncts, and any terms
+    // that require one of them, cannot contribute a counterexample.
+    let paths: Vec<_> = old.iter().map(|&term| term_ids(sources, term, false)).collect();
+    let difference: Vec<_> = new.difference(&old).copied().filter(|&term| {
+        let requirements = term_ids(sources, term, false);
+        !requirements.contains(&narrower) && !paths.iter().any(|old| old.is_subset(&requirements))
+    }).collect();
+    if difference.is_empty() {
+        return None;
+    }
+
+    let mut gates: HashMap<_, _> = sources.iter().enumerate().filter_map(|(id, &source)| {
+        let (either, left, right) = match source {
+            EncodedClause::Both(left, right) => (false, left, right),
+            EncodedClause::Either(left, right) => (true, left, right),
+            _ => return None,
+        };
+        Some(((either, left.min(right), left.max(right)), id))
+    }).collect();
+    let delta = join_terms(sources, &mut gates, difference, true)?;
+    if paths.len() == 1 {
+        return Some((delta, narrower, false));
+    }
+
+    let mut common = paths[0].clone();
+    for path in &paths[1..] {
+        common.retain(|term| path.contains(term));
+    }
+    let Some(prefix) = join_terms(sources, &mut gates, common.iter().copied(), false) else {
+        return Some((delta, narrower, false));
+    };
+
+    // Falsifying a shared requirement settles every old disjunct at once.
+    let mut residuals = Vec::with_capacity(paths.len());
+    for path in &paths {
+        let terms = path.difference(&common).copied();
+        let Some(residual) = join_terms(sources, &mut gates, terms, false) else {
+            return Some((delta, prefix, false));
+        };
+        residuals.push(residual);
+    }
+    let suffix = join_terms(sources, &mut gates, residuals, true)?;
+    let factored = join_terms(sources, &mut gates, [prefix, suffix], false)?;
+    Some((delta, factored, false))
+}
+
 fn equivalent_sources<'a>(
     first: usize, second: usize, mut sources: Vec<EncodedClause<&'a Facts>>,
-) -> Option<(usize, usize, Vec<EncodedClause<&'a Facts>>)> {
+) -> Option<(usize, usize, bool, Vec<EncodedClause<&'a Facts>>)> {
     if first == second {
         return None;
     }
@@ -914,6 +1008,8 @@ fn equivalent_sources<'a>(
         return None;
     }
 
+    let (first, second, reverse) = comparison_roots(&mut sources, first, second)?;
+    indices.resize(sources.len(), 0);
     let mut live = vec![false; sources.len()];
     live[first] = true;
     live[second] = true;
@@ -936,7 +1032,7 @@ fn equivalent_sources<'a>(
         }
         required
     });
-    Some((indices[first], indices[second], sources))
+    Some((indices[first], indices[second], reverse, sources))
 }
 
 pub(super) fn equivalent(left: &Clause, right: &Clause) -> bool {
@@ -944,15 +1040,20 @@ pub(super) fn equivalent(left: &Clause, right: &Clause) -> bool {
         return true;
     }
     let (first, second, sources) = query_sources(left, right);
-    let Some((first, second, sources)) = equivalent_sources(first, second, sources) else {
+    let Some((first, second, reverse, sources)) = equivalent_sources(first, second, sources) else {
         return true;
     };
     let unsigned32 = super::Scalar::U32;
     let mut context = Context::new(sources);
     let graph = context.graph();
+    let slot = (&mut context as *mut Context<'_>).cast();
+    let host = host(&unsigned32);
     unsafe {
-        query_equivalent(first, second, (&mut context as *mut Context<'_>).cast(),
-            graph, host(&unsigned32), reset_search) != 0
+        if reverse {
+            query_equivalent(first, second, slot, graph, host, reset_search) != 0
+        } else {
+            query(first, second, 0, slot, graph, host) == 0
+        }
     }
 }
 fn host(unsigned32: &super::Scalar) -> Host {
