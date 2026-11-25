@@ -227,8 +227,9 @@ fn digest_reference(
     unsafe { sha256_reference(digest, row, name_field) };
 }
 
-pub(super) fn references<'a>(declarations: &crate::Declarations, imported: Option<&crate::module::Imports>,
-    symbols: impl IntoIterator<Item = &'a str>, used: &[Declaration],
+pub(super) fn references<'symbol, 'declaration>(
+    declarations: &crate::Declarations, imported: Option<&crate::module::Imports>,
+    symbols: impl IntoIterator<Item = &'symbol str>, used: impl ExactSizeIterator<Item = &'declaration Declaration>,
 ) -> [u8; 32] {
     let mut digest = hash::Digest::new();
     for symbol in symbols {
@@ -636,7 +637,7 @@ struct ManifestHost {
 
 struct ManifestRows<'a> {
     source: &'a SourceInputs,
-    declarations: &'a [Declaration],
+    declarations: &'a [&'a Declaration],
 }
 
 unsafe extern "C" fn manifest_source(context: *const c_void, index: usize) -> ManifestSource {
@@ -704,30 +705,29 @@ impl ManifestSelection {
     }
 }
 
-impl Inputs {
-    pub(super) fn encode(&self) -> Vec<u8> {
-        let source = &self.source;
-        let identity = ManifestIdentity::borrow(source);
-        let rows = ManifestRows { source, declarations: &self.declarations };
-        let input = BuildManifest {
-            path: identity.path, root: identity.root, working_directory: identity.working_directory,
-            module_name: identity.module_name, compiler: identity.compiler,
-            max_parameter_bytes: identity.max_parameter_bytes,
-            selection: ManifestSelection::borrow(&source.selection),
-            context: ptr::from_ref(&rows).cast(),
-            source_count: source.sources.len(), requirement_count: source.requirements.len(),
-            imports_digest: self.imports.as_ptr(),
-            native_digest: self.native.as_ref().map_or(ptr::null(), |digest| digest.as_ptr()),
-            declaration_count: self.declarations.len(),
-        };
-        let magic = u64::from_le_bytes(*MAGIC);
-        // The same borrowed fields stay live through measurement and the final write.
-        unsafe {
-            let length = build_manifest_length(&input, MANIFEST_HOST);
-            let mut output = Vec::with_capacity(length);
-            let written = encode_build_manifest(magic, &input, MANIFEST_HOST, output.as_mut_ptr());
-            output.set_len(written);
-            output
-        }
+pub(super) fn encode(
+    source: &SourceInputs, imports: &[u8; 32], native: Option<&[u8; 32]>, declarations: &[&Declaration],
+) -> Vec<u8> {
+    let identity = ManifestIdentity::borrow(source);
+    let rows = ManifestRows { source, declarations };
+    let input = BuildManifest {
+        path: identity.path, root: identity.root, working_directory: identity.working_directory,
+        module_name: identity.module_name, compiler: identity.compiler,
+        max_parameter_bytes: identity.max_parameter_bytes,
+        selection: ManifestSelection::borrow(&source.selection),
+        context: ptr::from_ref(&rows).cast(),
+        source_count: source.sources.len(), requirement_count: source.requirements.len(),
+        imports_digest: imports.as_ptr(),
+        native_digest: native.map_or(ptr::null(), |digest| digest.as_ptr()),
+        declaration_count: declarations.len(),
+    };
+    let magic = u64::from_le_bytes(*MAGIC);
+    // The same borrowed fields stay live through measurement and the final write.
+    unsafe {
+        let length = build_manifest_length(&input, MANIFEST_HOST);
+        let mut output = Vec::with_capacity(length);
+        let written = encode_build_manifest(magic, &input, MANIFEST_HOST, output.as_mut_ptr());
+        output.set_len(written);
+        output
     }
 }

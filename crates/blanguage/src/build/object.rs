@@ -105,7 +105,7 @@ fn compile_importing(
             if let Some(bytes) = reader.build_inputs().map_err(error)? {
                 if let Some(stored) = identity::match_source(bytes, &source)? {
                     let inputs = reader.reuse_inputs().map_err(error)?;
-                    if stored.imports == identity::references(definitions, imported, inputs.imports.iter().copied(), &stored.declarations) {
+                    if stored.imports == identity::references(definitions, imported, inputs.imports.iter().copied(), stored.declarations.iter()) {
                         if stored.native.is_some() {
                             libraries = Some(crate::object::runtime_libraries(worker).map_err(error)?);
                         }
@@ -139,9 +139,10 @@ fn compile_importing(
     };
     let native = object.archive.as_ref().filter(|_| runtime)
         .map(|archive| crate::object::runtime_fingerprint(&archive.libraries));
-    let declarations = super::used_declarations(&world);
-    let imports = identity::references(definitions, imported, object.imports.keys().map(String::as_str), &declarations);
-    let stored = identity::Inputs { source, imports, native, declarations }.encode();
+    let direct = world.build_declarations.as_ref().unwrap().borrow();
+    let declarations = super::used_declarations(&world, &direct);
+    let imports = identity::references(definitions, imported, object.imports.keys().map(String::as_str), declarations.iter().copied());
+    let stored = identity::encode(&source, &imports, native.as_ref(), &declarations);
     let bytes = object.build_bytes(&stored).map_err(error)?;
     crate::file_bytes::create_dir_all(artifact.parent().unwrap())?;
     publish(&artifact, output.replace_existing, [&bytes])?;

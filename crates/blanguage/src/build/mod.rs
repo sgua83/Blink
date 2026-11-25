@@ -122,7 +122,7 @@ fn compile_in(
                 let mut image = unsafe { resource::from_compiler_output(stored_image) }
                     .map_err(|e| std::io::Error::other(e.to_string()))?;
                 let link = entry_link(&mut image);
-                if inputs.imports == references(&world.declarations, imported, link.as_ref(), &inputs.declarations) {
+                if inputs.imports == references(&world.declarations, imported, link.as_ref(), inputs.declarations.iter()) {
                     if imported.is_some() && let Some(link) = link
                         && link_entry(link, dependencies, borrowed, &world.declarations)?
                     {
@@ -156,13 +156,14 @@ fn compile_in(
         types: Vec::new(),
         images: compiled_images,
     };
-    let declarations = used_declarations(&world);
+    let direct = world.build_declarations.as_ref().unwrap().borrow();
+    let declarations = used_declarations(&world, &direct);
     let link = entry_link(&mut image);
-    let imports_identity = references(&world.declarations, imported, link.as_ref(), &declarations);
+    let imports_identity = references(&world.declarations, imported, link.as_ref(), declarations.iter().copied());
     if imported.is_some() && let Some(link) = link {
         link_entry(link, dependencies, borrowed, &world.declarations)?;
     }
-    let identity = identity::Inputs { source, imports: imports_identity, native: None, declarations }.encode();
+    let identity = identity::encode(&source, &imports_identity, None, &declarations);
     let encoded = resource::compiler_output(&image);
     crate::file_bytes::create_dir_all(artifact.parent().unwrap())?;
     write_artifact(&artifact, replace_existing, &identity, &encoded)?;
@@ -183,7 +184,7 @@ unsafe extern "C" {
 struct DeclarationClosure<'a> {
     world: &'a crate::frontend::World,
     pending: Vec<std::collections::btree_set::Iter<'a, Declaration>>,
-    used: BTreeSet<Declaration>,
+    used: BTreeSet<&'a Declaration>,
 }
 
 fn constant_inputs<'a>(world: &'a crate::frontend::World, declaration: &Declaration) -> Option<&'a BTreeSet<Declaration>> {
@@ -204,11 +205,9 @@ unsafe extern "C" fn next_declaration(context: *mut c_void) -> *const c_void {
 
 unsafe extern "C" fn retain_declaration(context: *mut c_void, declaration: *const c_void) -> bool {
     let closure = unsafe { &mut *context.cast::<DeclarationClosure<'_>>() };
-    // The declaration is borrowed from an original constant's cached inputs.
+    // The cached inputs remain owned by the world for this closure.
     let declaration = unsafe { &*declaration.cast::<Declaration>() };
-    if closure.used.contains(declaration) { return false; }
-    closure.used.insert(declaration.clone());
-    true
+    closure.used.insert(declaration)
 }
 
 unsafe extern "C" fn expand_declaration(context: *mut c_void, declaration: *const c_void) {
@@ -219,9 +218,11 @@ unsafe extern "C" fn expand_declaration(context: *mut c_void, declaration: *cons
     }
 }
 
-fn used_declarations(world: &crate::frontend::World) -> Vec<Declaration> {
-    let used = world.build_declarations.as_ref().unwrap().take();
-    let pending = used.iter().filter_map(|declaration| constant_inputs(world, declaration).map(BTreeSet::iter)).collect();
+fn used_declarations<'a>(
+    world: &'a crate::frontend::World, direct: &'a BTreeSet<Declaration>,
+) -> Vec<&'a Declaration> {
+    let pending = direct.iter().filter_map(|declaration| constant_inputs(world, declaration).map(BTreeSet::iter)).collect();
+    let used = direct.iter().collect();
     let mut closure = DeclarationClosure { world, pending, used };
     unsafe {
         complete_declarations(ptr::from_mut(&mut closure).cast(), DeclarationHost {
@@ -239,9 +240,9 @@ fn entry_link(image: &mut resource::Module) -> Option<ModuleLink<'_>> {
     })
 }
 
-fn references(
+fn references<'a>(
     declarations: &crate::Declarations, imported: Option<&crate::module::Imports>,
-    link: Option<&ModuleLink<'_>>, used: &[Declaration],
+    link: Option<&ModuleLink<'_>>, used: impl ExactSizeIterator<Item = &'a Declaration>,
 ) -> [u8; 32] {
     let symbols = link.into_iter().flat_map(|link| link.external.iter().copied());
     identity::references(declarations, imported, symbols, used)
