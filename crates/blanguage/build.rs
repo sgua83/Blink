@@ -29,17 +29,11 @@ fn compile(name: &'static str, source: &str, include: &str, output: PathBuf) -> 
     }
 }
 
-fn archive(name: &'static str, jobs: &[Job], members: Range<usize>, output: &Path) -> Job {
-    let mut arguments: Vec<OsString> = vec!["--host-archive".into()];
-    arguments.extend(
-        jobs[members.clone()]
-            .iter()
-            .map(|job| job.output.as_os_str().into()),
-    );
+fn archive(name: &'static str, members: Range<usize>, output: &Path) -> Job {
     Job {
         name,
         compiler: false,
-        arguments,
+        arguments: Vec::new(),
         inputs: members.collect(),
         output: output.to_owned(),
     }
@@ -142,8 +136,6 @@ fn native_modules() -> Result<(), Box<dyn std::error::Error>> {
                         io::Error::other(format!("B引导模块{name}缺少对象生产者{input}"))
                     })?;
                 job.inputs.push(index);
-                job.arguments
-                    .extend(["--import".into(), jobs[index].output.as_os_str().into()]);
             }
             if name == "names" {
                 job.arguments.extend(
@@ -183,14 +175,12 @@ fn native_modules() -> Result<(), Box<dyn std::error::Error>> {
     let compiler_end = jobs.len();
     jobs.push(archive(
         "blink_value_format.lib",
-        &jobs,
         0..compiler_start,
         &value_archive,
     ));
     if compiler {
         jobs.push(archive(
             "blink_compiler_bootstrap.lib",
-            &jobs,
             compiler_start..compiler_end,
             &compiler_archive,
         ));

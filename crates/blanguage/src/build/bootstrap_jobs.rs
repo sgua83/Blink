@@ -41,6 +41,7 @@ impl Job {
     fn start(
         &self,
         seed: &Path,
+        jobs: &[Job],
         workers: usize,
         shared: Option<&jobserver::Client>,
     ) -> io::Result<Child> {
@@ -55,10 +56,18 @@ impl Job {
             }
             command
         } else {
-            Command::new(seed.join("bin/blink.exe"))
+            let mut command = Command::new(seed.join("bin/blink.exe"));
+            command.arg("--host-archive");
+            command
         };
+        process.args(&self.arguments);
+        for &input in &self.inputs {
+            if self.compiler {
+                process.arg("--import");
+            }
+            process.arg(&jobs[input].output);
+        }
         process
-            .args(&self.arguments)
             .arg("-o")
             .arg(&self.output)
             .spawn()
@@ -174,7 +183,7 @@ pub fn run(seed: &Path, jobs: &[Job], cargo: jobserver::Client, limit: usize) ->
                     implicit_free = false;
                     let owned =
                         permits.split_off(permits.len() - (workers - usize::from(implicit)));
-                    let child = job.start(seed, workers, shared)?;
+                    let child = job.start(seed, jobs, workers, shared)?;
                     let wait_handle = child.as_handle().try_clone_to_owned();
                     let process = Running {
                         child: Some(child),
