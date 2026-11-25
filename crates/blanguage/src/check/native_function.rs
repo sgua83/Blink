@@ -2864,7 +2864,7 @@ async fn build_domain(
     let mut interface = crate::module::domain::Interface {
         instance: signature.name.clone(), target,
         buffers: signature.buffers.clone(), textures: signature.textures.clone(), uniforms: signature.uniforms.clone(),
-        write_regions: expanded.write_regions,
+        write_regions: expanded.tail_writes,
         length_requirements: signature.length_requirements.clone(),
         element_requirements: element_requirements.clone(),
         prefix_guarantees: guaranteed.clone(),
@@ -2875,8 +2875,8 @@ async fn build_domain(
     let split = !expanded.calls.is_empty();
     let mut part = 0;
     for call in expanded.calls {
-        for (&binding, written) in &call.write_regions {
-            interface.write_regions.entry(binding).or_default().extend(written.iter().copied());
+        for (binding, written) in call.write_regions {
+            interface.write_regions.entry(binding).or_default().extend(written);
         }
         emit_domain_part(
             &world.worker,

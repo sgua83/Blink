@@ -496,7 +496,11 @@ pub(super) async fn execute_domain_call(
   DomainExecutionNeed::Binding=>{let parameter=parameters.as_mut().unwrap().next().unwrap();binding=match child[parameter.name()]{Root::Data(index,_)=>Some(index),_=>None};control.present=u32::from(binding.is_some());},
   DomainExecutionNeed::AppendBinding=>bindings.push(binding.take().unwrap()),
   DomainExecutionNeed::Segment=>{parameters.take();stage=program.stages.len();segment_start=calls.last().map_or(0,|call|call.stage);control.stage=stage as u64;control.segment_start=segment_start as u64;},
-  DomainExecutionNeed::SegmentFacts=>{let writes=Program::stage_write_regions(&program.stages[segment_start..]);prefix_guarantees=facts.relations();element_guarantees=facts.element_facts(program,Some(&writes));},
+  DomainExecutionNeed::SegmentFacts=>{
+   write_regions=Program::stage_write_regions(&program.stages[segment_start..stage]);
+   prefix_guarantees=facts.relations();
+   element_guarantees=facts.element_facts(program,Some(&write_regions));
+  },
   DomainExecutionNeed::Writes=>{let values=std::mem::take(&mut contract.as_mut().unwrap().write_regions);control.items=values.len()as u64;writes=Some(values.into_iter());},
   DomainExecutionNeed::Write=>{
    let(logical,written)=writes.as_mut().unwrap().next().unwrap();let binding=domain_write(program,facts,&bindings,&contract.as_ref().unwrap().elements,logical,&written);

@@ -374,7 +374,7 @@ struct RangeContext {
 
 struct ExpandedDomain {
     program: Program,
-    write_regions: BTreeMap<usize, BTreeSet<(u32, u32)>>,
+    tail_writes: BTreeMap<usize, BTreeSet<(u32, u32)>>,
     scopes: BTreeMap<usize, RangeContext>,
     calls: Vec<DomainCall>,
     outputs: Vec<crate::module::domain::Output>,
@@ -615,16 +615,10 @@ async fn expand_domain(
     program.prefix_guarantees = prefix::canonical_relations(prefix::proved_guarantees(
         &program, d, &facts, guarantees.into_iter().map(Ok),
     )?);
-    let write_regions = program.write_regions();
-    let last_writes;
-    let output_writes = if let Some(call) = calls.last() {
-        last_writes = Program::stage_write_regions(&program.stages[call.stage..]);
-        &last_writes
-    } else {
-        &write_regions
-    };
-    program.element_guarantees = facts.element_facts(&program, Some(output_writes));
-    Ok((ExpandedDomain { program, write_regions, scopes, calls, outputs: facts.outputs, elements: facts.elements }, bound_contracts))
+    let tail_start = calls.last().map_or(0, |call| call.stage);
+    let tail_writes = Program::stage_write_regions(&program.stages[tail_start..]);
+    program.element_guarantees = facts.element_facts(&program, Some(&tail_writes));
+    Ok((ExpandedDomain { program, tail_writes, scopes, calls, outputs: facts.outputs, elements: facts.elements }, bound_contracts))
 }
 async fn expand_program(
     world: &World,
