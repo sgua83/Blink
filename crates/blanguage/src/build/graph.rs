@@ -37,6 +37,7 @@ struct Prepared<'a> {
     path: PathBuf,
     root: PathBuf,
     artifact: PathBuf,
+    replace_existing: bool,
     kind: UnitKind<'a>,
 }
 #[repr(C)]
@@ -295,12 +296,13 @@ impl GraphExecution<'_, '_> {
 
     fn compile(&self, index: usize, providers: &[Provider<'_>]) -> Result<Output> {
         let unit = &self.prepared[index];
+        let artifact = super::Artifact { path: &unit.artifact, replace_existing: unit.replace_existing };
         self.compiler.execute(|worker| match unit.kind {
             UnitKind::Object(kind) => super::object::compile(worker, &unit.path, &unit.root,
-                providers.iter().map(Provider::object), kind, &unit.artifact, Some(&self.inputs[index]))
+                providers.iter().map(Provider::object), kind, artifact, Some(&self.inputs[index]))
                 .map(|value| Output::Object(Arc::new(value))),
             UnitKind::Entry { entry, target } => super::compile_in(worker, &unit.path, &unit.root,
-                entry, target, super::EntryOutput::Artifact(&unit.artifact), Vec::new(), &providers.iter().map(Provider::object).collect::<Vec<_>>(),
+                entry, target, super::EntryOutput::Artifact(artifact), Vec::new(), &providers.iter().map(Provider::object).collect::<Vec<_>>(),
                 Some(&self.inputs[index]), self.entry_checks[index].as_deref()).map(Output::Entry),
         }).map_err(|error| match error {
             crate::parallel::Error::Work(error) => error,
@@ -408,13 +410,16 @@ impl Compiler {
                     super::entry_artifact(&path, &root, entry, super::entry_backend(target)?, &output)
                 }
             };
-            if units.len() > 1 {
-                let destination = source_path::output_destination(&artifact)?;
+            let replace_existing = if units.len() > 1 {
+                let (destination, exists) = source_path::output_destination(&artifact)?;
                 if let Some(first) = destinations.insert(destination, index) {
                     return Err(format!("构建图单元 {first} 与 {index} 使用同一产物路径：{}", artifact.display()).into());
                 }
-            }
-            Ok(Prepared { path, root, artifact, kind: unit.kind })
+                exists
+            } else {
+                true
+            };
+            Ok(Prepared { path, root, artifact, replace_existing, kind: unit.kind })
         }).collect::<Result<Vec<_>>>()?;
         drop(destinations);
         let mut capture = Capture::default();

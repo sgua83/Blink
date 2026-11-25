@@ -387,9 +387,10 @@ extern "C" void release_native_path(NativePath path) on cpu {
 extern "C" u32 GetFinalPathNameByHandleW(handle file,address output,u32 capacity,
     u32 flags) on cpu from "KERNEL32.dll";
 
-CanonicalSource open_canonical_source(NativePath name) on cpu {
+CanonicalSource open_canonical_source(NativePath name,bool open_reparse) on cpu {
     if (name.status != 0) { return CanonicalSource(handle(),name.status,true); }
-    handle file=CreateFileW(name.name,0,7,address(),3,33554432,handle());
+    u32 flags=open_reparse ? 35651584 : 33554432;
+    handle file=CreateFileW(name.name,0,7,address(),3,flags,handle());
     u32 status=file == INVALID_HANDLE_VALUE ? GetLastError() : 0;
     release_native_path(name);
     return CanonicalSource(file,status,false);
@@ -406,7 +407,7 @@ CanonicalSource normalized_canonical_source(address path,usize units) on cpu {
             name.units=extended.length;
         }
     }
-    return open_canonical_source(name);
+    return open_canonical_source(name,false);
 }
 
 CanonicalName canonical_name(handle file,address output,u32 capacity) on cpu {
@@ -419,9 +420,9 @@ u32 close_canonical_source(handle file) on cpu {
 }
 
 NativePath canonicalize_with_directory_mode(address path,usize units,address scratch,u32 capacity,
-    address directory_mode) on cpu {
+    address directory_mode,bool open_reparse) on cpu {
     NativePath input=units == 0u64 ? NativePath(path,address(),0u64,0) : native_path(path,units,true);
-    CanonicalSource source=open_canonical_source(input);
+    CanonicalSource source=open_canonical_source(input,open_reparse);
     if (source.status != 0) { return NativePath(address(),address(),0u64,source.status); }
 
     NativePath output=NativePath(scratch,address(),0u64,0);
@@ -463,12 +464,17 @@ NativePath canonicalize_with_directory_mode(address path,usize units,address scr
 }
 
 extern "C" NativePath canonicalize_path(address path,usize units,address scratch,u32 capacity) on cpu {
-    return canonicalize_with_directory_mode(path,units,scratch,capacity,address());
+    return canonicalize_with_directory_mode(path,units,scratch,capacity,address(),false);
 }
 
 extern "C" NativePath canonicalize_output_directory(address path,usize units,address scratch,u32 capacity,
     address directory_mode) on cpu {
-    return canonicalize_with_directory_mode(path,units,scratch,capacity,directory_mode);
+    return canonicalize_with_directory_mode(path,units,scratch,capacity,directory_mode,false);
+}
+
+extern "C" NativePath canonicalize_output_file(address path,usize units,address scratch,u32 capacity) on cpu {
+    // Publication renames the directory entry itself, including a reparse point.
+    return canonicalize_with_directory_mode(path,units,scratch,capacity,address(),true);
 }
 
 result<bool,DirectoryError> directory_target(address path) on cpu {
@@ -600,7 +606,7 @@ result<void,FileChangeError> change_file(address path,i32 information_class,
 }
 
 
-result<void,RenameError> rename_path(address source,UnitSpan target) on cpu {
+result<void,RenameError> rename_path(address source,UnitSpan target,bool replace_existing) on cpu {
     // FILE_RENAME_INFO has a 20-byte name offset on Windows x64.
     u64 name_bytes=target.length*2u64;
     u64 bytes=(name_bytes+29u64)&(0u64-8u64);
@@ -611,8 +617,8 @@ result<void,RenameError> rename_path(address source,UnitSpan target) on cpu {
     if (address_bits(information)==0u64) {
         return Err(RenameError::Change(FileChangeError::Apply(ERROR_NOT_ENOUGH_MEMORY)));
     }
-    // Replace the destination with POSIX rename semantics.
-    unsafe_position<u32>(information)=3;
+    // An existing output can use POSIX replacement of its directory entry.
+    unsafe_position<u32>(information)=replace_existing ? 3 : 0;
     unsafe_position<u32>(unsafe_address(address_bits(information)+16u64))=u32(name_bytes);
     address name=unsafe_address(address_bits(information)+20u64);
     u64 index=0u64;

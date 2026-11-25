@@ -50,7 +50,8 @@ impl crate::Compiler {
         &self, path: &Path, root: &Path, kind: ObjectKind<'_>, output: &Path,
         load: impl FnOnce() -> crate::codec::Result<Imports> + Send,
     ) -> Result<ObjectCompilation> {
-        self.execute(|worker| compile_importing(worker, path, root, kind, output, None, load))
+        self.execute(|worker| compile_importing(worker, path, root, kind,
+            super::Artifact { path: output, replace_existing: true }, None, load))
             .map_err(|value| match value {
                 crate::parallel::Error::Work(error) => error,
                 crate::parallel::Error::Resource(value) => Box::new(value) as Box<dyn std::error::Error + Send + Sync>,
@@ -60,22 +61,22 @@ impl crate::Compiler {
 pub(super) fn compile<'a>(
     worker: &crate::compiler::Worker, path: &Path, root: &Path,
     dependencies: impl IntoIterator<Item = &'a Object>,
-    kind: ObjectKind<'_>, output: &Path, inputs: Option<&super::Inputs>,
+    kind: ObjectKind<'_>, output: super::Artifact<'_>, inputs: Option<&super::Inputs>,
 ) -> Result<ObjectCompilation> {
     compile_importing(worker, path, root, kind, output, inputs, || Imports::new(dependencies))
 }
 
 fn compile_importing(
     worker: &crate::compiler::Worker, path: &Path, root: &Path,
-    kind: ObjectKind<'_>, output: &Path, inputs: Option<&super::Inputs>,
+    kind: ObjectKind<'_>, output: super::Artifact<'_>, inputs: Option<&super::Inputs>,
     load: impl FnOnce() -> crate::codec::Result<Imports>,
 ) -> Result<ObjectCompilation> {
     // .h是模块来源；纯类型模块不依赖伪造的.b。
     let header = source_path::with_extension(path, u16::from(b'h'));
     let (source_path, path, root, artifact) = if inputs.is_some() {
-        (path.to_path_buf(), header, root.to_path_buf(), output.to_path_buf())
+        (path.to_path_buf(), header, root.to_path_buf(), output.path.to_path_buf())
     } else {
-        (source_path::absolute(path)?, source_path::canonicalize(&header)?, source_path::canonicalize(root)?, source_path::absolute(output)?)
+        (source_path::absolute(path)?, source_path::canonicalize(&header)?, source_path::canonicalize(root)?, source_path::absolute(output.path)?)
     };
     let imports = load().map_err(|value| crate::ast::Diagnostic {
             source: crate::ast::Source { path: source_path.clone(), text: "".into() },
@@ -97,8 +98,8 @@ fn compile_importing(
         worker.compiler().max_parameter_bytes(), &world, &module, matches!(kind, ObjectKind::Module(_)))?;
     let runtime = !matches!(kind, ObjectKind::Module(_));
     let mut libraries = None;
-    match fs::File::open(&artifact) {
-        Ok(file) => {
+    match output.replace_existing.then(|| fs::File::open(&artifact)) {
+        Some(Ok(file)) => {
             let bytes = crate::object::ObjectBytes::capture(&file).map_err(error)?;
             let reader = crate::object::ObjectReader::new(&bytes).map_err(error)?;
             if let Some(bytes) = reader.build_inputs().map_err(error)? {
@@ -119,8 +120,8 @@ fn compile_importing(
                 }
             }
         }
-        Err(value) if value.kind() == ErrorKind::NotFound => {}
-        Err(value) => return Err(value.into()),
+        Some(Err(value)) if value.kind() != ErrorKind::NotFound => return Err(value.into()),
+        _ => {}
     }
     let object = match kind {
         ObjectKind::Module(_) => {
@@ -143,6 +144,6 @@ fn compile_importing(
     let stored = identity::Inputs { source, imports, native, declarations }.encode();
     let bytes = object.build_bytes(&stored).map_err(error)?;
     crate::file_bytes::create_dir_all(artifact.parent().unwrap())?;
-    publish(&artifact, [&bytes])?;
+    publish(&artifact, output.replace_existing, [&bytes])?;
     Ok(ObjectCompilation { object, artifact, reused: false })
 }

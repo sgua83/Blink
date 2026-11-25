@@ -67,9 +67,14 @@ impl crate::Compiler {
             })
     }
 }
+struct Artifact<'a> {
+    path: &'a Path,
+    replace_existing: bool,
+}
+
 enum EntryOutput<'a> {
     Directory(&'a Path),
-    Artifact(&'a Path),
+    Artifact(Artifact<'a>),
 }
 
 fn entry_backend(target: Target) -> Result<&'static str> {
@@ -103,15 +108,15 @@ fn compile_in(
     let imported = if dependencies.is_empty() && borrowed.is_empty() { None } else { Some(&imports) };
     let (world, module, _) = crate::read_world(&path, &root, imported, &[], worker, inputs,
         Some(std::cell::RefCell::new(std::collections::BTreeSet::new())))?;
-    let artifact = match output {
-        EntryOutput::Directory(output) => entry_artifact(&path, &root, entry, target_name, output),
-        EntryOutput::Artifact(path) => path.to_owned(),
+    let (artifact, replace_existing) = match output {
+        EntryOutput::Directory(output) => (entry_artifact(&path, &root, entry, target_name, output), true),
+        EntryOutput::Artifact(output) => (output.path.to_owned(), output.replace_existing),
     };
     let source = identity::sources(&path, &root,
         Selection::Entry { entry: entry.into(), target: target_name.into() },
         worker.compiler().max_parameter_bytes(), &world, &module, false)?;
-    match FileBytes::read_path(&artifact) {
-        Ok(bytes) => {
+    match replace_existing.then(|| FileBytes::read_path(&artifact)) {
+        Some(Ok(bytes)) => {
             let (identity, stored_image) = decode(&bytes)?;
             if let Some(inputs) = identity::match_source(identity, &source)? {
                 let mut image = unsafe { resource::from_compiler_output(stored_image) }
@@ -122,14 +127,14 @@ fn compile_in(
                         && link_entry(link, dependencies, borrowed, &world.declarations)?
                     {
                         let encoded = resource::compiler_output(&image);
-                        write_artifact(&artifact, identity, &encoded)?;
+                        write_artifact(&artifact, replace_existing, identity, &encoded)?;
                     }
                     return Ok(images(image, artifact, true));
                 }
             }
         }
-        Err(error) if error.kind() == ErrorKind::NotFound => {}
-        Err(error) => return Err(error.into()),
+        Some(Err(error)) if error.kind() != ErrorKind::NotFound => return Err(error.into()),
+        _ => {}
     }
     let compilation =
         crate::compile_world(&world, module, true, Some((crate::EntryKind::Domain, entry)), entry_checks)?;
@@ -160,7 +165,7 @@ fn compile_in(
     let identity = identity::Inputs { source, imports: imports_identity, native: None, declarations }.encode();
     let encoded = resource::compiler_output(&image);
     crate::file_bytes::create_dir_all(artifact.parent().unwrap())?;
-    write_artifact(&artifact, &identity, &encoded)?;
+    write_artifact(&artifact, replace_existing, &identity, &encoded)?;
     Ok(images(image, artifact, false))
 }
 #[repr(C)]
@@ -288,12 +293,12 @@ unsafe extern "C" {
     fn read_build_image(input: ByteField, magic: u64) -> BuildImage;
 }
 
-fn write_artifact(path: &Path, identity: &[u8], image: &[u8]) -> Result<()> {
+fn write_artifact(path: &Path, replace_existing: bool, identity: &[u8], image: &[u8]) -> Result<()> {
     let mut header = [0u8; 3 * size_of::<u64>()];
     unsafe {
         build_image_header(BUILD_IMAGE_MAGIC, identity.len() as u64, image.len() as u64, header.as_mut_ptr());
     }
-    publish(path, [&header[..16], identity, &header[16..], image])
+    publish(path, replace_existing, [&header[..16], identity, &header[16..], image])
 }
 
 fn read_envelope(bytes: &[u8]) -> Result<Option<(&[u8], &[u8])>> {
@@ -418,10 +423,10 @@ fn images(module: resource::Module, artifact: PathBuf, reused: bool) -> Compilat
         reused,
     }
 }
-fn publish<const N: usize>(path: &Path, parts: [&[u8]; N]) -> Result<()> {
+fn publish<const N: usize>(path: &Path, replace_existing: bool, parts: [&[u8]; N]) -> Result<()> {
     static NEXT: AtomicU64 = AtomicU64::new(0);
     let name = format!("{}.{}.tmp", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed));
     let extension: Vec<_> = name.encode_utf16().collect();
     let temporary = crate::source_path::with_extension_units(path, &extension);
-    Ok(crate::file_bytes::publish(path, &temporary, parts)?)
+    Ok(crate::file_bytes::publish(path, &temporary, parts, replace_existing)?)
 }

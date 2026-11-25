@@ -74,6 +74,7 @@ unsafe extern "C" {
         temporary_units: usize,
         parts: *const HostFilePart,
         count: usize,
+        replace_existing: bool,
     ) -> HostPublishResult;
     #[link_name = "blink.windows.path_core::create_output_directories"]
     fn create_output_directories(path: *const u16, units: usize) -> u32;
@@ -179,19 +180,23 @@ pub(crate) fn create_dir_all(path: &Path) -> io::Result<()> {
     }
 }
 
-pub(crate) fn publish<const N: usize>(path: &Path, temporary: &Path, parts: [&[u8]; N]) -> io::Result<()> {
+pub(crate) fn publish<const N: usize>(path: &Path, temporary: &Path, parts: [&[u8]; N], replace_existing: bool) -> io::Result<()> {
     let parts = parts.map(|bytes| HostFilePart { data: bytes.as_ptr(), bytes: bytes.len() });
     let temporary = host_path(temporary)?;
-    let path = host_path(path)?;
+    let target = host_path(path)?;
     let published = unsafe {
         publish_host_file(
-            path.as_ptr(), path.len() - 1, temporary.as_ptr(), temporary.len() - 1,
-            parts.as_ptr(), parts.len(),
+            target.as_ptr(), target.len() - 1, temporary.as_ptr(), temporary.len() - 1,
+            parts.as_ptr(), parts.len(), replace_existing,
         )
     };
     let result = published.written.into_result().and_then(|()| {
-        if published.replacement == 0 { Ok(()) }
-        else { Err(io::Error::from_raw_os_error(published.replacement as i32)) }
+        if published.replacement == 0 { return Ok(()); }
+        let error = io::Error::from_raw_os_error(published.replacement as i32);
+        if !replace_existing && error.kind() == io::ErrorKind::AlreadyExists {
+            return Err(io::Error::new(error.kind(), format!("产物路径已被占用：{}", path.display())));
+        }
+        Err(error)
     });
     result.map_err(|error| {
         if published.cleanup == 0 { error }

@@ -28,6 +28,8 @@ unsafe extern "C" {
     fn canonicalize_path(path: *const u16, units: usize, scratch: *mut u16, capacity: u32) -> NativePath;
     #[link_name = "blink.windows.path_core::canonicalize_output_directory"]
     fn canonicalize_output_directory(path: *const u16, units: usize, scratch: *mut u16, capacity: u32, directory_mode: *mut u32) -> NativePath;
+    #[link_name = "blink.windows.path_core::canonicalize_output_file"]
+    fn canonicalize_output_file(path: *const u16, units: usize, scratch: *mut u16, capacity: u32) -> NativePath;
     #[link_name = "blink.windows.path_core::release_native_path"]
     fn release_native_path(path: NativePath);
     #[link_name = "blink.windows.path_core::module_tail"]
@@ -163,11 +165,21 @@ impl PartialEq for OutputDestination {
 }
 impl Eq for OutputDestination {}
 
-pub(crate) fn output_destination(path: &Path) -> io::Result<OutputDestination> {
+pub(crate) fn output_destination(path: &Path) -> io::Result<(OutputDestination, bool)> {
+    let mut scratch = [MaybeUninit::<u16>::uninit(); 512];
+    let units = path_units(path.as_os_str())?;
+    let resolved = unsafe {
+        canonicalize_output_file(units.as_ptr(), units.len() - 1, scratch.as_mut_ptr().cast(), scratch.len() as u32)
+    };
+    let existing = match native_path_result(resolved) {
+        Ok(path) => Some(path),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+        Err(error) => return Err(error),
+    };
+    let path = existing.as_deref().unwrap_or(path);
     let name = path.file_name().ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "产物路径缺少文件名"))?;
     let mut directory = path.parent().unwrap();
     let mut missing = vec![name];
-    let mut scratch = [MaybeUninit::<u16>::uninit(); 512];
     loop {
         let units = path_units(directory.as_os_str())?;
         let mut mode = 0;
@@ -179,7 +191,7 @@ pub(crate) fn output_destination(path: &Path) -> io::Result<OutputDestination> {
                 let name = missing.into_iter().rev().enumerate().flat_map(|(index, part)| {
                     (index != 0).then_some(u16::from(b'\\')).into_iter().chain(part.encode_wide())
                 }).collect();
-                return Ok(OutputDestination { directory, name, case_sensitive: mode & 1 != 0 });
+                return Ok((OutputDestination { directory, name, case_sensitive: mode & 1 != 0 }, existing.is_some()));
             }
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
                 let Some((parent, name)) = directory.parent().zip(directory.file_name()) else { return Err(error); };

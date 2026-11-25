@@ -50,9 +50,10 @@ u32 close_canonical_source(handle file) on cpu;
 extern "C" NativePath canonicalize_path(address path,usize units,address scratch,u32 capacity) on cpu;
 extern "C" NativePath canonicalize_output_directory(address path,usize units,address scratch,u32 capacity,
     address directory_mode) on cpu;
+extern "C" NativePath canonicalize_output_file(address path,usize units,address scratch,u32 capacity) on cpu;
 result<void,DirectoryError> directory_tree(address path,usize units,bool prefer_verbatim) on cpu;
 extern "C" u32 create_output_directories(address path,usize units) on cpu;
 
 result<void,FileChangeError> change_file(address path,i32 information_class,
     address information,u32 bytes,u32 flags) on cpu;
-result<void,RenameError> rename_path(address source,UnitSpan target) on cpu;
+result<void,RenameError> rename_path(address source,UnitSpan target,bool replace_existing) on cpu;

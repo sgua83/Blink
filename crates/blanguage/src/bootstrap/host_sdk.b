@@ -405,8 +405,8 @@ const u32 ERROR_SHARING_VIOLATION = 32;
 
 struct HostReplacement { u32 status; bool moved; };
 
-HostReplacement replace_host_file(address source,usize source_units,
-    address target,usize target_units) on cpu {
+HostReplacement rename_host_file(address source,usize source_units,
+    address target,usize target_units,bool replace_existing) on cpu {
     NativePath from = native_path(source,source_units,true);
     if (from.status!=0) { return HostReplacement(from.status,false); }
     NativePath to = native_path(target,target_units,true);
@@ -414,7 +414,7 @@ HostReplacement replace_host_file(address source,usize source_units,
         release_native_path(from);
         return HostReplacement(to.status,false);
     }
-    result<void,RenameError> outcome = rename_path(from.name,UnitSpan(to.name,to.units));
+    result<void,RenameError> outcome = rename_path(from.name,UnitSpan(to.name,to.units),replace_existing);
     release_native_path(to);
     release_native_path(from);
     match (outcome) {
@@ -440,7 +440,7 @@ HostReplacement replace_host_file(address source,usize source_units,
 }
 
 extern "C" HostPublishResult publish_host_file(address target,usize target_units,
-    address temporary,usize temporary_units,address parts,usize count) on cpu {
+    address temporary,usize temporary_units,address parts,usize count,bool replace_existing) on cpu {
     HostFileOpen opened = open_host_file(temporary, temporary_units, GENERIC_READ_WRITE, SHARE_ALL, CREATE_NEW, FILE_FLAG_OPEN_REPARSE_POINT);
     if (opened.file==INVALID_HANDLE_VALUE) {
         return HostPublishResult(HostWriteResult(HostWriteKind::OpenError,opened.status),0,0);
@@ -457,7 +457,7 @@ extern "C" HostPublishResult publish_host_file(address target,usize target_units
 
     u32 replacement = 0;
     if (written.kind==HostWriteKind::Written) {
-        HostReplacement result = replace_host_file(temporary,temporary_units,target,target_units);
+        HostReplacement result = rename_host_file(temporary,temporary_units,target,target_units,replace_existing);
         replacement=result.status;
         if (result.moved) { return HostPublishResult(written,replacement,0); }
     }

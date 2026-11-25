@@ -94,7 +94,7 @@ fn development_runtime(
     let shared = cache.join(format!("blink-runtime-{hash}.lib"));
     if !shared.try_exists()? {
         std::fs::create_dir_all(cache)?;
-        if let Err(error) = crate::file_bytes::publish(&shared, &work.join("runtime.lib"), [&product])
+        if let Err(error) = crate::file_bytes::publish(&shared, &work.join("runtime.lib"), [&product], true)
             && !shared.try_exists()?
         {
             return Err(error.into());

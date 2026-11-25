@@ -103,7 +103,7 @@ result<u32,OutputError> create_new_binary(address path,read dataset<u8> data) on
 result<void,RenameError> rename(address source,read dataset<u16> target) on cpu {
     address data=address();
     if (target.length!=0) { data=address_of(target[0]); }
-    return rename_path(source,UnitSpan(data,u64(target.length)));
+    return rename_path(source,UnitSpan(data,u64(target.length)),true);
 }
 
 struct DispositionInfo { u32 flags; };
