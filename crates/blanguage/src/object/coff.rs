@@ -963,7 +963,8 @@ fn owned_output(plan: CoffOutput<'_>) -> Result<Vec<u8>> {
 }
 
 pub(super) fn decode<Bytes: super::ReadSection>(b: &super::ObjectBytes, stack_output: bool) -> Result<Object<Bytes>> {
-    Reader::new(b)?.restore(None, None, stack_output)
+    let reader = Reader::new(b)?;
+    reader.restore(None, None, reader.symbol_table()?, stack_output)
 }
 struct Metadata<'a> {
     input: &'a [u8],
@@ -992,6 +993,7 @@ pub(crate) struct ReuseInputs<'a> {
     pub(crate) imports: BTreeSet<&'a str>,
     reader: Reader<'a, super::ObjectBytes>,
     metadata: Metadata<'a>,
+    table: ReadSymbols,
     has_archive: bool,
 }
 
@@ -1007,7 +1009,7 @@ impl ReuseInputs<'_> {
                 return Ok(None);
             }
         }
-        self.reader.restore(None, Some((self.metadata, names.libraries)), true).map(Some)
+        self.reader.restore(None, Some((self.metadata, names.libraries)), self.table, true).map(Some)
     }
 }
 
@@ -1105,10 +1107,14 @@ impl<'a, Input: AsRef<[u8]> + ?Sized> Reader<'a, Input> {
         if bytes.bytes.is_null() { return Err("缺少 Blink 目标文件元数据".into()); }
         Ok(unsafe { bytes.borrowed() })
     }
+    fn symbol_table(&self) -> Result<ReadSymbols> {
+        let table = unsafe { read_symbols(ReadBytes::new(self.bytes.as_ref())) };
+        table.error.check()?;
+        Ok(table)
+    }
     fn symbol_rows(&self, definitions: &mut [SectionDefinition]) -> Result<(Vec<ObjectSymbol<'a>>, usize)> {
         let input = ReadBytes::new(self.bytes.as_ref());
-        let table = unsafe { read_symbols(input) };
-        table.error.check()?;
+        let table = self.symbol_table()?;
         let mut symbols = Vec::with_capacity(table.count);
         read_object_names(|context| unsafe {
             object_symbols(
@@ -1149,8 +1155,7 @@ impl<'a, Input: AsRef<[u8]> + ?Sized> Reader<'a, Input> {
         unsafe { loadable.set_len(section_count) };
 
         let input = ReadBytes::new(self.bytes.as_ref());
-        let table = unsafe { read_symbols(input) };
-        table.error.check()?;
+        let table = self.symbol_table()?;
         let mut exports = ArchiveExports { loadable: &loadable, emit, invalid_name: None, invalid_section: false };
         let error = unsafe {
             object_symbols(input, table, std::ptr::null_mut(), std::ptr::null_mut(), 0,
@@ -1238,8 +1243,7 @@ impl<'a, Input: AsRef<[u8]> + ?Sized> Reader<'a, Input> {
 
     pub(super) fn for_each_definition(&self, mut consume: impl FnMut(&'a str) -> Result<()>) -> Result<()> {
         let input = ReadBytes::new(self.bytes.as_ref());
-        let table = unsafe { read_symbols(input) };
-        table.error.check()?;
+        let table = self.symbol_table()?;
         let mut index = 0;
         loop {
             let row = unsafe { next_export(input, table, &mut index) };
@@ -1262,8 +1266,7 @@ impl<'a> Reader<'a, super::ObjectBytes> {
             names.insert(std::str::from_utf8(unsafe { value.name.borrowed() })?);
         }
         let input = ReadBytes::new(self.bytes.as_ref());
-        let table = unsafe { read_symbols(input) };
-        table.error.check()?;
+        let table = self.symbol_table()?;
         let mut index = 0;
         loop {
             let row = unsafe { next_export(input, table, &mut index) };
@@ -1275,12 +1278,13 @@ impl<'a> Reader<'a, super::ObjectBytes> {
             imports: names,
             reader: self,
             metadata,
+            table,
             has_archive: !parts.runtime.bytes.is_null(),
         })
     }
     /// 非根资源侧库来自原编译产物；其C符号沿真实ABI恢复，不消费B公开合同。
     pub(crate) fn native<Bytes: super::ReadSection>(&self, name: &str) -> Result<Object<Bytes>> {
-        self.restore(Some(name), None, false)
+        self.restore(Some(name), None, self.symbol_table()?, false)
     }
 }
 #[repr(C)]
@@ -1418,6 +1422,7 @@ struct RestoreStack {
 struct RestoreSource {
     input: ReadBytes,
     headers: ReadBytes,
+    table: ReadSymbols,
     native_name: ReadBytes,
     reused_prefix: *const MetadataReadPrefix,
     reused_cursor: MetadataReadCursor,
@@ -1613,7 +1618,7 @@ impl<'input, Bytes: super::ReadSection> ObjectOwner<'_, 'input, Bytes> {
 
 impl Reader<'_, super::ObjectBytes> {
     fn restore<Bytes: super::ReadSection>(&self, native: Option<&str>,
-        reuse: Option<(Metadata<'_>, Vec<String>)>, stack_output: bool,
+        reuse: Option<(Metadata<'_>, Vec<String>)>, table: ReadSymbols, stack_output: bool,
     ) -> Result<Object<Bytes>> {
         let (reused, libraries) = match reuse {
             Some((reused, libraries)) => (Some(reused), libraries),
@@ -1629,6 +1634,7 @@ impl Reader<'_, super::ObjectBytes> {
         let source = RestoreSource {
             input: ReadBytes::new(self.bytes.as_ref()),
             headers: ReadBytes::new(self.headers),
+            table,
             native_name: native.map_or_else(ReadBytes::default, |name| ReadBytes::new(name.as_bytes())),
             reused_prefix: reused.as_ref().map_or(std::ptr::null(), |meta| &raw const meta.prefix),
             reused_cursor: reused.as_ref().map_or_else(|| MetadataReadCursor::new(&[]), Metadata::bindings_cursor),

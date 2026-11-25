@@ -392,8 +392,7 @@ extern "C" RestoreObjectStatus restore_object(RestoreSource source, RestoreObjec
     requires nonzero(metadata.resource) requires nonzero(metadata.code) requires nonzero(metadata.frame)
     requires nonzero(metadata.call) {
     u64 section_count = source.headers.length / 40u64;
-    let table = symbols(source.input);
-    if (table.error != 0) { return RestoreObjectStatus(table.error, 0, 0); }
+    let table = source.table;
     let storage = sink.symbols(sink.context, table.count, section_count);
     let scanned_symbols = object_symbols(source.input, table, storage.rows.values,
         storage.definitions, section_count, sink.name_context, sink.symbol_name);

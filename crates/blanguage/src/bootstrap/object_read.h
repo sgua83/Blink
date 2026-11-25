@@ -48,6 +48,7 @@ struct RestoreStack { address frames; u64 count; address calls; address nodes; }
 struct RestoreSource {
     ReadBytes input;
     ReadBytes headers;
+    ReadSymbols table;
     ReadBytes native_name;
     address reused_prefix;
     MetaCursor reused_cursor;
