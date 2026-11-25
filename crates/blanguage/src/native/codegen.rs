@@ -346,7 +346,7 @@ impl Emitter<'_> {
             let start = self.code.len();
             let first = self.operation_ranges.len();
             match &(inst).kind {
-                InstKind::Call(call) => self.native_call(call)?,
+                InstKind::Call(call) => self.native_call(call),
                 InstKind::Raise(error) => self.lower_control(Flow::Raise(*error), Self::block, Self::load)?,
                 InstKind::Print { dst, value } => self.print_call(*dst, *value),
                 InstKind::TextureBindingAddress { dst, texture } => {
@@ -417,7 +417,7 @@ impl Emitter<'_> {
                     let memory = self.indexed_memory(source, *offset, *word);
                     self.write_scalar_address(*value, memory);
                 }
-                InstKind::PositionAddress { dst, address } => { self.reference_address(address)?; self.store(*dst); }
+                InstKind::PositionAddress { dst, address } => { self.reference_address(address); self.store(*dst); }
                 InstKind::FunctionAddress(dst, target) => {
                     match target {
                         CallTarget::Defined(name) => self.emit_symbol_target(NativeSymbol::Function(name.clone()), false),

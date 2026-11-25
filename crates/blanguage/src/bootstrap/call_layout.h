@@ -1,4 +1,6 @@
 module bootstrap.call_layout;
+import bootstrap.x64_instruction;
+import bootstrap.ir_dataflow;
 
 // float_size is the width in bytes of an intrinsic scalar float, or zero.
 struct AbiType { u32 size; u32 alignment; u32 float_size; u32 value; };
@@ -10,7 +12,7 @@ enum CallAction:u32 {
 };
 struct CallHost {
     cfn<AbiType,address,u64> argument;
-    cfn<bool,address,CallPlace> place;
+    cfn<void,address,CallPlace> place;
     cfn<u64,address,CallAction,u64,u32> action;
 };
 // flags: an error result, or an indirect target. The reader borrows the original Call.
@@ -45,3 +47,9 @@ extern "C" void function_prologue(address context, u64 count, FunctionFrame fram
     on cpu requires nonzero(host.parameter) requires nonzero(host.move_parameter) requires nonzero(host.action);
 extern "C" u64 function_epilogue(address context, FunctionFrame frame, u32 flags,
     cfn<void,address,FunctionAction,u64,u64> action) on cpu requires nonzero(action);
+
+// The original reference borrows its actual locations and 168 writable bytes.
+extern "C" u64 emit_reference_address(Node reference, IndexedAddressHost host,
+    cfn<MoveLocation,address,usize> ensures memory(read) local, address output) on cpu
+    requires nonzero(host.values.ir.inspect) requires nonzero(host.values.location)
+    requires nonzero(host.values.scalar) requires nonzero(host.tile_stream) requires nonzero(local);

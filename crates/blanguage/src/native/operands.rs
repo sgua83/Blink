@@ -211,17 +211,16 @@ unsafe extern "C" {
         saved: *const allocation::SavedRegister, count: usize, offset: usize,
         operations: *mut UnwindOperation, output: *mut u8,
     ) -> usize;
-    #[link_name = "bootstrap.x64_instruction::value_memory"]
-    fn encode_value_memory(base: u8, index: MoveLocation, stride: u32, offset: u32, output: *mut u8) -> AddressEncoding;
     #[link_name = "bootstrap.x64_instruction::scaled_memory"]
     fn encode_scaled_memory(base: u8, index: u8, stride: u32, offset: u32, output: *mut u8) -> AddressEncoding;
-    #[link_name = "bootstrap.x64_instruction::effective_address"]
-    fn encode_effective_address(target: u8, memory: MoveLocation, output: *mut u8) -> u64;
     #[link_name = "bootstrap.x64_instruction::bit_copy"]
     fn scalar_bit_copy(from: ScalarEncoding, into: ScalarEncoding) -> u32;
     #[link_name = "bootstrap.x64_instruction::emit_indexed_operand"]
     fn emit_indexed_operand(source: Node, offset: Reg, word: u32, memory: u32,
         host: IndexedAddressHost, output: *mut u8) -> AddressEncoding;
+    #[link_name = "bootstrap.call_layout::emit_reference_address"]
+    fn emit_reference_address(reference: Node, host: IndexedAddressHost,
+        local: unsafe extern "C" fn(*const std::ffi::c_void, usize) -> MoveLocation, output: *mut u8) -> u64;
     #[link_name = "bootstrap.x64_instruction::emit_append"]
     fn emit_append(instruction: Node, host: ScalarValueHost, buffer_bytes: u32,
         stride_field: u32, output: *mut u8) -> u64;
@@ -265,10 +264,6 @@ impl Emitter<'_> {
             Memory::indexed(result.base, result.index, result.shift, result.offset)
         }
     }
-    pub(super) fn value_memory(&mut self, base: u8, index: Location, stride: u32, offset: u32) -> Memory {
-        let index = index.into();
-        self.emit_address(32, |output| unsafe { encode_value_memory(base, index, stride, offset, output) })
-    }
     pub(super) fn view_load(&mut self, inst: &Inst) {
         let locations = ScalarLocations { allocation: &self.allocation, stage: self.stage, frame: &self.frame };
         let host = locations.host();
@@ -294,6 +289,18 @@ impl Emitter<'_> {
                 self.code.as_mut_ptr().add(start));
             self.code.set_len(start + encoded.length as usize);
             Memory::indexed(encoded.base, encoded.index, encoded.shift, encoded.offset)
+        }
+    }
+
+    pub(super) fn reference_address(&mut self, address: &CallReference) {
+        let locations = ScalarLocations { allocation: &self.allocation, stage: self.stage, frame: &self.frame };
+        let host = locations.indexed_host();
+        let start = self.code.len();
+        self.code.reserve(168);
+        unsafe {
+            let length = emit_reference_address(Node::reference(address), host, value_local,
+                self.code.as_mut_ptr().add(start));
+            self.code.set_len(start + length as usize);
         }
     }
 
@@ -328,11 +335,6 @@ impl Emitter<'_> {
     }
     pub(super) fn scaled_memory(&mut self, base: u8, index: u8, stride: u32, offset: u32) -> Memory {
         self.emit_address(16, |output| unsafe { encode_scaled_memory(base, index, stride, offset, output) })
-    }
-    pub(super) fn effective_address(&mut self, target: u8, memory: Memory) {
-        self.emit_bytes(8, |output| unsafe {
-            encode_effective_address(target, memory.into(), output)
-        });
     }
     fn emit_instruction(&mut self, opcode: &[u8], input: InstructionEncoding) {
         // One legacy prefix, REX, ModR/M, SIB and at most four displacement bytes.

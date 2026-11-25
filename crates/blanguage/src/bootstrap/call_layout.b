@@ -1,4 +1,6 @@
 module bootstrap.call_layout;
+import bootstrap.x64_instruction;
+import bootstrap.ir_dataflow;
 
 u32 padded(u32 size, u32 alignment) on cpu {
     return (size + alignment - 1) & ~(alignment - 1);
@@ -100,7 +102,7 @@ extern "C" void emit_call(address context, u64 count, AbiType result, u32 flags,
                 payload = copy_start(end);
                 end = payload + u64(padded(value.size, value.alignment));
             }
-            if (!host.place(context, CallPlace(index, home, payload, copied ? 1 : 0))) { return; }
+            host.place(context, CallPlace(index, home, payload, copied ? 1 : 0));
             if (slot < 4u64) { register_widths[u32(slot)] = value.float_size; }
             slot += 1u64;
         }
@@ -192,4 +194,36 @@ extern "C" u64 function_epilogue(address context, FunctionFrame frame, u32 flags
     if (scratch) { action(context, FunctionAction::ScratchRestore, 15u64, 0u64); }
     action(context, FunctionAction::Return, 0xc3u64, 1u64);
     return frame.bytes + (scratch ? 8u64 : 0u64);
+}
+
+extern "C" u64 emit_reference_address(Node reference, IndexedAddressHost host,
+    cfn<MoveLocation,address,usize> ensures memory(read) local, address output) on cpu
+    requires nonzero(host.values.ir.inspect) requires nonzero(host.values.location)
+    requires nonzero(host.values.scalar) requires nonzero(host.tile_stream) requires nonzero(local) {
+    ScalarValueHost values = host.values;
+    View address_view = values.ir.inspect(reference);
+    View storage = values.ir.inspect(address_view.left);
+    bool indexed = address_view.first.count != 0u64;
+    usize index = 0u64;
+    if (indexed) { index = unsafe_position<usize>(address_view.first.data); }
+    u32 word = u32(address_view.a);
+    AddressEncoding place;
+    if (storage.tag == 0) {
+        // Addressable locals were assigned their real stack position during layout.
+        if (storage.b != 0u64) { word += u32(local(values.context, storage.a).value); }
+        if (indexed) {
+            place = value_memory(u8(4), values.location(values.context, index), 1, word, output);
+        } else {
+            place = AddressEncoding(0u64, word, u8(4), u8(255), u8(0));
+        }
+    } else if (indexed) {
+        place = emit_indexed_operand(storage.left, index, word, true, host, output);
+    } else {
+        place = emit_indexed_operand(storage.left, 0u64, 0, false, host, output);
+        place.offset = word;
+    }
+    // MoveLocation kind 2 is the memory operand of the shared x64 ABI.
+    MoveLocation memory = MoveLocation(u64(place.offset), u8(2), place.base, place.index, place.shift);
+    address cursor = unsafe_address(address_bits(output) + place.length);
+    return place.length + effective_address(u8(0), memory, cursor);
 }

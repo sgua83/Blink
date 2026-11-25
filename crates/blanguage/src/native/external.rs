@@ -43,7 +43,7 @@ type ArgumentType = unsafe extern "C" fn(*const c_void, usize) -> AbiType;
 #[repr(C)]
 struct CallHost {
     argument: ArgumentType,
-    place: unsafe extern "C" fn(*mut c_void, CallPlace) -> bool,
+    place: unsafe extern "C" fn(*mut c_void, CallPlace),
     action: unsafe extern "C" fn(*mut c_void, CallAction, u64, u32) -> u64,
 }
 
@@ -175,7 +175,6 @@ struct CallEmission<'a, 'ir> {
     call: &'a Call,
     result: *const Ty,
     indirect_target: Reg,
-    failure: Option<&'static str>,
 }
 
 unsafe extern "C" fn emission_argument(context: *const c_void, index: usize) -> AbiType {
@@ -183,16 +182,13 @@ unsafe extern "C" fn emission_argument(context: *const c_void, index: usize) -> 
     argument_abi(state.call, index)
 }
 
-unsafe extern "C" fn place_argument(context: *mut c_void, place: CallPlace) -> bool {
+unsafe extern "C" fn place_argument(context: *mut c_void, place: CallPlace) {
     let state = unsafe { &mut *context.cast::<CallEmission<'_, '_>>() };
     let e = &mut *state.emitter;
     let home = place.home as u32;
     match &state.call.arguments[place.index] {
         CallArgument::Reference { address, .. } => {
-            if let Err(reason) = e.reference_address(address) {
-                state.failure = Some(reason);
-                return false;
-            }
+            e.reference_address(address);
             e.copy_scalar(Location::Stack(home), Location::Gpr(0), Scalar::U64);
         }
         CallArgument::Value { ty, values, .. } => {
@@ -203,7 +199,6 @@ unsafe extern "C" fn place_argument(context: *mut c_void, place: CallPlace) -> b
             }
         }
     }
-    true
 }
 
 unsafe extern "C" fn call_action(context: *mut c_void, action: CallAction, value: u64, width: u32) -> u64 {
@@ -282,34 +277,6 @@ impl Emitter<'_> {
             encode_argument_register(slot as u8, float_size, u32::from(to_home), output)
         });
     }
-    pub(super) fn reference_address(&mut self, address: &CallReference) -> Result<(), &'static str> {
-        let memory = match &address.storage {
-            CallStorage::Local { base, len } => {
-                let offset = if *len == 0 { 0 } else {
-                    let Location::Stack(offset) = self.allocation.location(PrivateSlot::Local(*base))
-                    else { return Err("C ABI 局部借用没有实际栈地址"); };
-                    offset
-                };
-                let word = offset + address.word;
-                match address.offset {
-                    Some(index) => self.value_memory(4, self.location(index), 1, word),
-                    None => Memory::new(4, word),
-                }
-            }
-            CallStorage::Indexed(source) => match address.offset {
-                Some(offset) => self.indexed_memory(source, offset, address.word),
-                None => {
-                    if matches!(source, IndexedSource::Tile { .. }) {
-                        return Err("C ABI 不接受块内分量存储");
-                    }
-                    self.indexed_base(source);
-                    Memory::new(15, address.word)
-                }
-            },
-        };
-        self.effective_address(0, memory);
-        Ok(())
-    }
     pub(super) fn print_call(&mut self, dst: Reg, value: Reg) {
         let scalar = self.stage.registers[value];
         let target = self.location(dst).into();
@@ -341,14 +308,13 @@ impl Emitter<'_> {
             self.calls.push(Some(offset));
         }
     }
-    pub(super) fn native_call(&mut self, call: &Call) -> Result<(), &'static str> {
+    pub(super) fn native_call(&mut self, call: &Call) {
         let indirect_target = match call.target { CallTarget::Indirect(reg) => reg, _ => 0 };
         let mut state = CallEmission {
             emitter: self, call, result: call.result.as_ref().map_or(std::ptr::null(), std::ptr::from_ref),
-            indirect_target, failure: None,
+            indirect_target,
         };
         unsafe { emit_call(std::ptr::from_mut(&mut state).cast(), call.arguments.len(),
             AbiType::result(call.result.as_ref()), call_flags(call), CALL_HOST); }
-        state.failure.map_or(Ok(()), Err)
     }
 }

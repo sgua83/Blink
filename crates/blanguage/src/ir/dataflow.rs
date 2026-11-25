@@ -19,6 +19,7 @@ impl Node {
     pub(crate) fn instruction(value: &Inst) -> Self { Self::of(value, Kind::Instruction) }
     pub(crate) fn indexed_source(value: &IndexedSource) -> Self { Self::of(value, Kind::Indexed) }
     fn of<T>(value: &T, kind: Kind) -> Self { Self { data: ptr::from_ref(value).cast(), kind } }
+    pub(crate) fn reference(value: &CallReference) -> Self { Self::of(value, Kind::Reference) }
     pub(crate) const EMPTY: Self = Self { data: ptr::null(), kind: Kind::Instruction };
 }
 #[derive(Clone, Copy)]
@@ -202,7 +203,7 @@ unsafe extern "C" fn inspect(node: Node) -> View {
         }
         Kind::Reference => {
             let value = unsafe { &*node.data.cast::<CallReference>() };
-            let mut view = View::tag(0); view.first = Span::slice(value.offset.as_slice());
+            let mut view = View::tag(0); view.a = value.word as usize; view.first = Span::slice(value.offset.as_slice());
             view.left = Node::of(&value.storage, Kind::Storage); view
         }
         Kind::Storage => match unsafe { &*node.data.cast::<CallStorage>() } {
