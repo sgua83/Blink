@@ -593,14 +593,24 @@ void msvc_flag<const N:u32 in {4,6,7,8,9,12,18}>(inout MsvcWriter writer, read a
     msvc_unit(writer, u16(0));
 }
 
-void msvc_text(inout MsvcWriter writer, address text, MsvcText span) on cpu {
+void msvc_wide(inout MsvcWriter writer, MsvcWide span) on cpu {
     u64 index = 0u64;
     while (index < span.units) {
-        address unit = unsafe_address(address_bits(text) + (span.start + index) * 2u64);
+        address unit = unsafe_address(address_bits(span.data) + index * 2u64);
         msvc_unit(writer, unsafe_position<u16>(unit));
         index += 1u64;
     }
     msvc_unit(writer, u16(0));
+}
+
+void msvc_text(inout MsvcWriter writer, address text, MsvcText span) on cpu {
+    address first = unsafe_address(address_bits(text) + span.start * 2u64);
+    msvc_wide(writer, MsvcWide(first, span.units));
+}
+
+MsvcWide msvc_path(MsvcGroup group, u64 index) on cpu {
+    return unsafe_position<MsvcWide>(
+        unsafe_address(address_bits(group.spans) + index * size_of<MsvcWide>()));
 }
 
 MsvcText msvc_span(MsvcGroup group, u64 index) on cpu {
@@ -630,10 +640,10 @@ extern "C" u64 write_msvc_arguments(MsvcArguments input, address output) on cpu 
     msvc_flag(writer, "/OPT:ICF");
     msvc_flag(writer, "/NOEXP");
     msvc_ascii(writer, "/OUT:");
-    msvc_text(writer, input.text, input.output);
+    msvc_wide(writer, input.output);
     u64 index = 0u64;
     while (index < input.inputs.count) {
-        msvc_text(writer, input.text, msvc_span(input.inputs, index));
+        msvc_wide(writer, msvc_path(input.inputs, index));
         index += 1u64;
     }
     if (input.stack_reserve == 0u64) {
@@ -647,12 +657,12 @@ extern "C" u64 write_msvc_arguments(MsvcArguments input, address output) on cpu 
         msvc_flag(writer, "/NOIMPLIB");
     } else {
         msvc_ascii(writer, "/IMPLIB:");
-        msvc_text(writer, input.text, input.import_library);
+        msvc_wide(writer, input.import_library);
     }
     index = 0u64;
     while (index < input.search_paths.count) {
         msvc_ascii(writer, "/LIBPATH:");
-        msvc_text(writer, input.text, msvc_span(input.search_paths, index));
+        msvc_wide(writer, msvc_path(input.search_paths, index));
         index += 1u64;
     }
     index = 0u64;

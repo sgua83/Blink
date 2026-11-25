@@ -78,7 +78,11 @@ pub(crate) fn with_extension(path: &Path, suffix: u16) -> PathBuf {
 
 pub(crate) fn with_extension_units(path: &Path, tail: &[u16]) -> PathBuf {
     let units: Vec<u16> = path.as_os_str().encode_wide().collect();
-    let input = UnitSpan::of(&units);
+    PathBuf::from(OsString::from_wide(&with_extension_wide(&units, tail)))
+}
+
+pub(crate) fn with_extension_wide(path: &[u16], tail: &[u16]) -> Vec<u16> {
+    let input = UnitSpan::of(path);
     let plan = unsafe { extension_prepare(input, tail.len() as u64) };
     let length = plan.length as usize;
     let mut output = Vec::<u16>::with_capacity(length);
@@ -86,7 +90,7 @@ pub(crate) fn with_extension_units(path: &Path, tail: &[u16]) -> PathBuf {
         extension_encode(input, UnitSpan::of(tail), plan, output.as_mut_ptr());
         output.set_len(length);
     }
-    PathBuf::from(OsString::from_wide(&output))
+    output
 }
 
 fn path_units(path: &OsStr) -> io::Result<Vec<u16>> {

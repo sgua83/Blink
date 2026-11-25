@@ -147,19 +147,20 @@ extern "C" LayoutCommandLine parse_layout_arguments(address arguments, u64 count
 extern "C" X64CommandLine parse_x64_arguments(address arguments, u64 count) on cpu;
 
 struct MsvcText { u64 start; u64 units; };
+struct MsvcWide { address data; u64 units; };
 struct MsvcGroup { address spans; u64 count; };
 struct MsvcArguments {
     address text;
-    MsvcText output;
+    MsvcWide output;
     MsvcGroup inputs;
-    MsvcText import_library;
+    MsvcWide import_library;
     MsvcGroup search_paths;
     MsvcGroup libraries;
     MsvcGroup exports;
     u64 stack_reserve;
 };
-// The caller owns all spans and a buffer sized for the input units, argument
-// terminators, path/export prefixes and 128 units of fixed options.
+// Paths borrow MsvcWide rows. Libraries and exports use MsvcText ranges into
+// the caller's encoded names. The caller owns those inputs and the output.
 extern "C" u64 write_msvc_arguments(MsvcArguments input, address output) on cpu;
 
 enum NumberError:u32 { None=0; Empty=1; Invalid=2; Overflow=3; };

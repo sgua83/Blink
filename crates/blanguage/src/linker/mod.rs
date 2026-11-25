@@ -190,6 +190,7 @@ mod windows_output {
     struct Link<'a> {
         objects: Vec<Selected<LinkSectionBytes<'a>>>,
         output: &'a Path,
+        output_units: &'a [u16],
         pe: Vec<u8>,
         error: Result<()>,
     }
@@ -219,7 +220,7 @@ mod windows_output {
 
     unsafe extern "C" fn link_msvc(context: *mut (), reserve: u64, dll: u32) -> u32 {
         let link = unsafe { &mut *context.cast::<Link<'_>>() };
-        link.error = msvc::link(&link.objects, link.output, reserve, dll != 0);
+        link.error = msvc::link(&link.objects, link.output, link.output_units, reserve, dll != 0);
         u32::from(link.error.is_ok())
     }
 
@@ -228,7 +229,10 @@ mod windows_output {
         let output = source_path::absolute(path)?;
         let path = host_path(&output)?;
         let parent = host_path(output.parent().unwrap())?;
-        let mut link = Link { objects, output: &output, pe: Vec::new(), error: Ok(()) };
+        let mut link = Link {
+            objects, output: &output, output_units: &path[..path.len() - 1],
+            pe: Vec::new(), error: Ok(()),
+        };
         let context = std::ptr::from_mut(&mut link).cast();
         let (header, rust, prefix) = link.objects[0].library.as_ref()
             .map_or(("", "", ""), |binding| (binding.header.as_str(), binding.binding.as_str(), binding.prefix.as_str()));

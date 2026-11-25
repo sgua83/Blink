@@ -51,20 +51,19 @@ struct HostProcessOutput {
 }
 
 #[repr(C)]
-#[derive(Default)]
 struct MsvcText {
     start: u64,
     units: u64,
 }
 
 #[repr(C)]
-struct MsvcGroup {
-    spans: *const MsvcText,
+struct MsvcGroup<T> {
+    spans: *const T,
     count: u64,
 }
 
-impl From<&[MsvcText]> for MsvcGroup {
-    fn from(spans: &[MsvcText]) -> Self {
+impl<T> From<&[T]> for MsvcGroup<T> {
+    fn from(spans: &[T]) -> Self {
         Self { spans: spans.as_ptr(), count: spans.len() as u64 }
     }
 }
@@ -104,12 +103,12 @@ struct MsvcNames<'a> {
 #[repr(C)]
 struct MsvcArguments {
     text: *const u16,
-    output: MsvcText,
-    inputs: MsvcGroup,
-    import_library: MsvcText,
-    search_paths: MsvcGroup,
-    libraries: MsvcGroup,
-    exports: MsvcGroup,
+    output: ToolPath,
+    inputs: MsvcGroup<ToolPath>,
+    import_library: ToolPath,
+    search_paths: MsvcGroup<ToolPath>,
+    libraries: MsvcGroup<MsvcText>,
+    exports: MsvcGroup<MsvcText>,
     stack_reserve: u64,
 }
 
@@ -268,34 +267,22 @@ impl<'a> MsvcNames<'a> {
 }
 
 fn link_arguments(
-    tools: &MsvcTools, output: &Path, inputs: &[ToolPath],
+    tools: &MsvcTools, output: &[u16], inputs: &[ToolPath],
     names: &MsvcNames<'_>, sdk: Option<&Path>, stack_reserve: u64, import_library: bool,
 ) -> Result<Vec<u16>> {
     if tools.paths[0].units().contains(&0) {
         return Err(invalid_tool_name().into());
     }
-    let mut text = Vec::new();
-    let output_path = append_wide(&mut text, output.as_os_str())?;
-    let inputs: Vec<_> = inputs.iter().map(|path| {
-        let start = text.len() as u64;
-        text.extend_from_slice(path.units());
-        MsvcText { start, units: path.length as u64 }
-    }).collect();
     let import_path = if import_library {
-        let path = crate::source_path::with_extension_units(output, &[b'l' as u16, b'i' as u16, b'b' as u16]);
-        append_wide(&mut text, path.as_os_str())?
+        crate::source_path::with_extension_wide(output, &[b'l' as u16, b'i' as u16, b'b' as u16])
     } else {
-        MsvcText::default()
+        Vec::new()
     };
-    let search_paths = tools.paths[1..].iter().map(|path| {
-        let argument = path.units();
-        if argument.contains(&0) {
-            return Err(io::Error::new(io::ErrorKind::InvalidInput, "nul byte found in provided data"));
-        }
-        let start = text.len() as u64;
-        text.extend_from_slice(argument);
-        Ok(MsvcText { start, units: argument.len() as u64 })
-    }).collect::<io::Result<Vec<_>>>()?;
+    let search_paths = &tools.paths[1..];
+    if search_paths.iter().any(|path| path.units().contains(&0)) {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "nul byte found in provided data").into());
+    }
+    let mut text = Vec::new();
     let libraries: Vec<_> = names.libraries.iter().map(|name| {
         if let Some(sdk) = sdk.filter(|_| name.sdk_relative != 0) {
             append_wide(&mut text, sdk.join(name.text()).as_os_str())
@@ -307,12 +294,14 @@ fn link_arguments(
         .map(|name| append_wide(&mut text, OsStr::new(name.text())))
         .collect::<io::Result<_>>()?;
     let request = MsvcArguments {
-        text: text.as_ptr(), output: output_path, inputs: inputs.as_slice().into(),
-        import_library: import_path, search_paths: search_paths.as_slice().into(),
+        text: text.as_ptr(), output: ToolPath::of(output), inputs: inputs.into(),
+        import_library: ToolPath::of(&import_path), search_paths: search_paths.into(),
         libraries: libraries.as_slice().into(), exports: exports.as_slice().into(), stack_reserve,
     };
     // B writes the fixed options, one terminator per argument and the path/export prefixes.
-    let capacity = 128 + text.len() + inputs.len() + search_paths.len() * 10
+    let native_units = output.len() + import_path.len()
+        + inputs.iter().chain(search_paths).map(|path| path.length).sum::<usize>();
+    let capacity = 128 + text.len() + native_units + inputs.len() + search_paths.len() * 10
         + libraries.len() + exports.len() * 9;
     let mut arguments = Vec::with_capacity(capacity);
     unsafe {
@@ -356,7 +345,7 @@ struct LinkHost<'a, 'code> {
     objects: &'a [Selected<LinkSectionBytes<'code>>],
     binding: Option<Generated>,
     tools: &'a MsvcTools,
-    path: &'a Path,
+    output: &'a [u16],
     names: &'a MsvcNames<'a>,
     sdk: Option<&'a Path>,
     stack_reserve: u64,
@@ -435,7 +424,7 @@ unsafe extern "C" fn prepare_link_arguments(
     let host = unsafe { &mut *context.cast::<LinkHost<'_, '_>>() };
     host.bytes = Vec::new();
     let paths = unsafe { std::slice::from_raw_parts(paths, count) };
-    match link_arguments(host.tools, host.path, paths, host.names, host.sdk, host.stack_reserve, host.import_library) {
+    match link_arguments(host.tools, host.output, paths, host.names, host.sdk, host.stack_reserve, host.import_library) {
         Ok(arguments) => {
             host.arguments = arguments;
             ToolPath::of(&host.arguments)
@@ -448,7 +437,7 @@ unsafe extern "C" fn prepare_link_arguments(
 }
 
 pub(super) fn link(
-    objects: &[Selected<LinkSectionBytes<'_>>], path: &Path, stack_reserve: u64, import_library: bool,
+    objects: &[Selected<LinkSectionBytes<'_>>], path: &Path, output: &[u16], stack_reserve: u64, import_library: bool,
 ) -> Result<()> {
     let archives = objects.iter().filter_map(|object| object.archive.as_ref());
     let binding = super::resources::resources(archives.clone(), 0, 0, std::iter::empty(), std::iter::empty(), None)?;
@@ -469,7 +458,7 @@ pub(super) fn link(
     let directory: Vec<_> = std::env::temp_dir().as_os_str().encode_wide().collect();
     let mut paths = Vec::<ToolPath>::with_capacity(archive_count + objects.len() + 2);
     let mut host = LinkHost {
-        archive_objects: objects.iter(), objects, binding, tools: &tools, path, names: &names,
+        archive_objects: objects.iter(), objects, binding, tools: &tools, output, names: &names,
         sdk: sdk.as_ref().map(|sdk| sdk.root.as_path()), stack_reserve, import_library,
         id, filename: Vec::new(), imports: Vec::new(), bytes: Vec::new(),
         arguments: Vec::new(), error: Ok(()),
