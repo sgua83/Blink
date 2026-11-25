@@ -93,3 +93,36 @@ extern "C" void run_worker(address context,WorkHost host) on cpu
         host.release(context);
     }
 }
+
+extern "C" void compile_resource_images(u64 count,address context,ResourceHost host) on cpu
+ requires nonzero(host.describe) requires nonzero(host.cpu_jobs) requires nonzero(host.compile_cpu)
+ requires nonzero(host.gpu_pages) requires nonzero(host.gpu_jobs) requires nonzero(host.compile_gpu)
+ requires nonzero(host.emit_cpu) requires nonzero(host.emit_gpu) {
+    u64 index=0u64;
+    while (index<count) {
+        ResourceProgram current=host.describe(context,index);
+        if (current.cpu!=0) { host.cpu_jobs(context,index,current.stages); }
+        index+=1u64;
+    }
+    if (host.compile_cpu(context)==0) { return; }
+    index=0u64;
+    while (index<count) {
+        ResourceProgram current=host.describe(context,index);
+        if (current.cpu==0 && host.gpu_pages(context,index)!=0) {
+            host.gpu_jobs(context,index,current.stages);
+        }
+        index+=1u64;
+    }
+    if (host.compile_gpu(context)==0) { return; }
+    u64 gpu=0u64;
+    index=0u64;
+    while (index<count) {
+        ResourceProgram current=host.describe(context,index);
+        if (current.cpu!=0) { host.emit_cpu(context,index,current.stages); }
+        else {
+            host.emit_gpu(context,gpu,current.stages);
+            gpu+=1u64;
+        }
+        index+=1u64;
+    }
+}

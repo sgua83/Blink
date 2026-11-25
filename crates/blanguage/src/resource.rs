@@ -88,56 +88,153 @@ pub struct Module<C = native::NativeCode> {
     pub images: Vec<Image<TemplateProgram, C>>,
 }
 #[cfg(feature = "compiler")]
-fn compile_images<C>(
-    resources: &crate::application::Resources,
-    worker: &crate::compiler::Worker,
-    mut cpu_stage: impl FnMut(native::StageCode) -> native::StageCode<C>,
-) -> codec::Result<Vec<Image<TemplateProgram, C>>> {
-    let facts: Vec<_> = resources.programs.iter()
-        .map(|(_, program)| (program.requirements(), program.execution_buffers()))
-        .collect();
-    let cpu_jobs = resources.programs.iter().enumerate()
-        .filter(|(_, (target, _))| *target == Target::Cpu)
-        .flat_map(|(program, (_, code))| (0..code.stages().len()).map(move |stage| (program, stage)))
-        .collect();
-    let cpu = crate::parallel::try_map(worker, cpu_jobs, |_| (), |_, (program, stage)| {
-        native::program::compile_stage(&resources.programs[program].1, stage)
-    }).map_err(|error| std::io::Error::other(error.to_string()))?;
-    let mut gpu_jobs = Vec::new();
-    for (program, (target, code)) in resources.programs.iter().enumerate() {
-        if *target != Target::Cpu {
-            // Keep a layout error at the original position of that program's first shader.
-            match spirv::program::check_shader_pages(code) {
-                Ok(()) => gpu_jobs.extend((0..code.stages().len()).map(|stage| Ok((program, stage)))),
-                Err(error) => gpu_jobs.push(Err(error)),
+mod compilation {
+    use super::*;
+    use std::{ffi::c_void, mem, ptr};
+
+    type CpuStage = (ExecutionStage, native::StageCode);
+    type GpuStage = (ExecutionStage, spirv::StageCode);
+    type GpuJob = Result<(usize, usize), &'static str>;
+
+    struct GpuProgram {
+        index: usize,
+        requirements: DeviceRequirements,
+        buffers: ExecutionBuffers,
+    }
+
+    #[repr(C)]
+    struct ResourceProgram { stages: usize, cpu: u32 }
+    #[repr(C)]
+    struct ResourceHost {
+        describe: unsafe extern "C" fn(*const c_void, usize) -> ResourceProgram,
+        cpu_jobs: unsafe extern "C" fn(*mut c_void, usize, usize),
+        compile_cpu: unsafe extern "C" fn(*mut c_void) -> u32,
+        gpu_pages: unsafe extern "C" fn(*mut c_void, usize) -> u32,
+        gpu_jobs: unsafe extern "C" fn(*mut c_void, usize, usize),
+        compile_gpu: unsafe extern "C" fn(*mut c_void) -> u32,
+        emit_cpu: unsafe extern "C" fn(*mut c_void, usize, usize),
+        emit_gpu: unsafe extern "C" fn(*mut c_void, usize, usize),
+    }
+    unsafe extern "C" {
+        #[link_name = "bootstrap.build_schedule::compile_resource_images"]
+        fn run_images(count: usize, context: *mut c_void, host: ResourceHost);
+    }
+
+    struct ResourceCompiler<'a, F, C> {
+        resources: &'a crate::application::Resources,
+        worker: &'a crate::compiler::Worker,
+        cpu_stage: F,
+        cpu_jobs: Vec<(usize, usize)>,
+        gpu_jobs: Vec<GpuJob>,
+        gpu_programs: Vec<GpuProgram>,
+        cpu: std::vec::IntoIter<CpuStage>,
+        gpu: std::vec::IntoIter<GpuStage>,
+        images: Vec<Image<TemplateProgram, C>>,
+        error: Option<std::io::Error>,
+    }
+    impl<F, C> ResourceCompiler<'_, F, C>
+    where F: FnMut(native::StageCode) -> native::StageCode<C> {
+        unsafe extern "C" fn program(context: *const c_void, index: usize) -> ResourceProgram {
+            let state = unsafe { &*context.cast::<Self>() };
+            let (target, program) = &state.resources.programs[index];
+            ResourceProgram { stages: program.stages().len(), cpu: u32::from(*target == Target::Cpu) }
+        }
+
+        unsafe extern "C" fn cpu_jobs(context: *mut c_void, index: usize, count: usize) {
+            let state = unsafe { &mut *context.cast::<Self>() };
+            state.cpu_jobs.extend((0..count).map(|stage| (index, stage)));
+        }
+
+        unsafe extern "C" fn compile_cpu(context: *mut c_void) -> u32 {
+            let state = unsafe { &mut *context.cast::<Self>() };
+            let resources = &state.resources;
+            match crate::parallel::try_map(state.worker, mem::take(&mut state.cpu_jobs), |_| (), |_, (index, stage)| {
+                native::program::compile_stage(&resources.programs[index].1, stage)
+            }) {
+                Ok(stages) => { state.cpu = stages.into_iter(); 1 }
+                Err(error) => { state.error = Some(std::io::Error::other(error.to_string())); 0 }
             }
         }
-    }
-    let gpu = crate::parallel::try_map(worker, gpu_jobs, |_| (), |_, job| {
-        let (program, stage) = job?;
-        let (requirements, buffers) = facts[program];
-        spirv::program::compile_stage(&resources.programs[program].1, stage, requirements, buffers)
-    }).map_err(|error| std::io::Error::other(error.to_string()))?;
-    let mut cpu = cpu.into_iter();
-    let mut gpu = gpu.into_iter();
-    let images = resources.programs.iter().zip(facts).map(|((target, program), (requirements, buffers))| {
-        let count = program.stages().len();
-        if *target == Target::Cpu {
-            let (layout, stages) = (0..count).map(|_| {
-                let (layout, stage) = cpu.next().unwrap();
-                (layout, cpu_stage(stage))
-            }).unzip();
-            let plan = ExecutionPlan::from_program(program, layout, requirements, buffers);
-            let image = unsafe { native::ProgramImage::from_compiler_output(plan, stages, Vec::new(), None) };
-            Image::Cpu(image)
-        } else {
-            let (layout, stages) = (0..count).map(|_| gpu.next().unwrap()).unzip();
-            let plan = ExecutionPlan::from_program(program, layout, requirements, buffers);
-            Image::Gpu(unsafe { spirv::ProgramImage::from_compiler_output(plan, stages) })
+
+        unsafe extern "C" fn gpu_pages(context: *mut c_void, index: usize) -> u32 {
+            let state = unsafe { &mut *context.cast::<Self>() };
+            match spirv::program::check_shader_pages(&state.resources.programs[index].1) {
+                Ok(()) => 1,
+                Err(error) => { state.gpu_jobs.push(Err(error)); 0 }
+            }
         }
-    }).collect();
-    Ok(images)
+
+        unsafe extern "C" fn gpu_jobs(context: *mut c_void, index: usize, count: usize) {
+            let state = unsafe { &mut *context.cast::<Self>() };
+            let program = &state.resources.programs[index].1;
+            let slot = state.gpu_programs.len();
+            state.gpu_programs.push(GpuProgram {
+                index, requirements: program.requirements(), buffers: program.execution_buffers(),
+            });
+            state.gpu_jobs.extend((0..count).map(|stage| Ok((slot, stage))));
+        }
+
+        unsafe extern "C" fn compile_gpu(context: *mut c_void) -> u32 {
+            let state = unsafe { &mut *context.cast::<Self>() };
+            let resources = &state.resources;
+            let programs = &state.gpu_programs;
+            match crate::parallel::try_map(state.worker, mem::take(&mut state.gpu_jobs), |_| (), |_, job| {
+                let (slot, stage) = job?;
+                let actual = &programs[slot];
+                spirv::program::compile_stage(&resources.programs[actual.index].1, stage, actual.requirements, actual.buffers)
+            }) {
+                Ok(stages) => { state.gpu = stages.into_iter(); 1 }
+                Err(error) => { state.error = Some(std::io::Error::other(error.to_string())); 0 }
+            }
+        }
+
+        unsafe extern "C" fn emit_cpu(context: *mut c_void, index: usize, count: usize) {
+            let state = unsafe { &mut *context.cast::<Self>() };
+            let program = &state.resources.programs[index].1;
+            let (layout, stages) = state.cpu.by_ref().take(count)
+                .map(|(layout, stage)| (layout, (state.cpu_stage)(stage))).unzip();
+            let plan = ExecutionPlan::from_program(program, layout, program.requirements(), program.execution_buffers());
+            let image = unsafe { native::ProgramImage::from_compiler_output(plan, stages, Vec::new(), None) };
+            state.images.push(Image::Cpu(image));
+        }
+
+        unsafe extern "C" fn emit_gpu(context: *mut c_void, slot: usize, count: usize) {
+            let state = unsafe { &mut *context.cast::<Self>() };
+            let actual = &state.gpu_programs[slot];
+            let program = &state.resources.programs[actual.index].1;
+            let (layout, stages) = state.gpu.by_ref().take(count).unzip();
+            let plan = ExecutionPlan::from_program(program, layout, actual.requirements, actual.buffers);
+            let image = unsafe { spirv::ProgramImage::from_compiler_output(plan, stages) };
+            state.images.push(Image::Gpu(image));
+        }
+
+        const HOST: ResourceHost = ResourceHost {
+            describe: Self::program, cpu_jobs: Self::cpu_jobs, compile_cpu: Self::compile_cpu,
+            gpu_pages: Self::gpu_pages, gpu_jobs: Self::gpu_jobs, compile_gpu: Self::compile_gpu,
+            emit_cpu: Self::emit_cpu, emit_gpu: Self::emit_gpu,
+        };
+    }
+
+    pub(super) fn compile_images<C, F>(
+        resources: &crate::application::Resources,
+        worker: &crate::compiler::Worker,
+        cpu_stage: F,
+    ) -> codec::Result<Vec<Image<TemplateProgram, C>>>
+    where F: FnMut(native::StageCode) -> native::StageCode<C> {
+        let count = resources.programs.len();
+        let mut state = ResourceCompiler {
+            resources, worker, cpu_stage, cpu_jobs: Vec::new(), gpu_jobs: Vec::new(),
+            gpu_programs: Vec::new(), cpu: Vec::new().into_iter(), gpu: Vec::new().into_iter(),
+            images: Vec::with_capacity(count), error: None,
+        };
+        unsafe { run_images(count, ptr::from_mut(&mut state).cast(), ResourceCompiler::<F, C>::HOST); }
+        if let Some(error) = state.error { return Err(error.into()); }
+        Ok(state.images)
+    }
 }
+
+#[cfg(feature = "compiler")]
+use compilation::compile_images;
 
 #[cfg(feature = "compiler")]
 pub(crate) fn compile_image(
