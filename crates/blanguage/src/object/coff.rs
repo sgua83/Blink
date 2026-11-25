@@ -1356,7 +1356,8 @@ fn decode_object<Bytes: super::ReadSection>(
         value.error.check()?;
         if value.present != 0 { sections[value.owner].associated.push(row.mapped - 1); }
     }
-    for row in &raw {
+    for index in 0..raw.len() {
+        let row = &raw[index];
         if row.mapped == 0 { continue; }
         let relocations = &mut sections[row.mapped - 1].relocations;
         reader.relocations(&raw, &symbols, row, |offset, kind, value| {
@@ -1377,6 +1378,10 @@ fn decode_object<Bytes: super::ReadSection>(
             relocations.push(Relocation { offset, kind, target });
             Ok(())
         })?;
+        // The section now owns its complete relocation buffer for stack recovery.
+        let row = &mut raw[index];
+        row.decoded_relocations = relocations.as_ptr().cast();
+        row.decoded_count = relocations.len();
     }
     let symbols = symbols
             .into_iter()
@@ -1400,12 +1405,6 @@ fn decode_object<Bytes: super::ReadSection>(
                 })
             })
             .collect::<Result<_>>()?;
-    // Relocation decoding is complete and the owning buffers are stable.
-    for row in raw.iter_mut().filter(|row| row.mapped != 0) {
-        let relocations = &sections[row.mapped - 1].relocations;
-        row.decoded_relocations = relocations.as_ptr().cast();
-        row.decoded_count = relocations.len();
-    }
     Ok(Object {
         stack: stack.restore(ObjectRows::new(&raw), stack_output)?,
         name,
