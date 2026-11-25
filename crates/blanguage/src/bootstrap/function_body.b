@@ -1,5 +1,81 @@
 module bootstrap.function_body;
 
+extern "C" CheckedDispatch checked_dispatch(SignatureNode declaration) on cpu {
+    FunctionNode function = binding_node<FunctionNode>(declaration.storage.nodes,declaration.offset);
+    if (function.kind == 2) { return CheckedDispatch::Constant; }
+    if (function.kind == 0 && function.target == 1) { return CheckedDispatch::Native; }
+    return CheckedDispatch::Body;
+}
+
+extern "C" CheckedProgramStep checked_program_step(u32 phase) on cpu {
+    if (phase == 0) { return CheckedProgramStep(1,CheckedProgramNeed::Program); }
+    if (phase == 1) { return CheckedProgramStep(2,CheckedProgramNeed::Prefixes); }
+    return CheckedProgramStep(phase,CheckedProgramNeed::Builder);
+}
+
+extern "C" void checked_prefixes(SignatureNode declaration,address context,
+    cfn<u32,address,PrefixPredicate,Span> bind) on cpu requires nonzero(bind) {
+    address nodes = declaration.storage.nodes;
+    Slice contracts = binding_node<FunctionNode>(nodes,declaration.offset).contracts;
+    u64 index = 0u64;
+    while (index < contracts.count) {
+        ContractNode contract = binding_node<ContractNode>(nodes,binding_member(nodes,contracts,index));
+        index += 1u64;
+        if (contract.kind == 0) {
+            match (binding_node<PredicateNode>(nodes,contract.predicate.offset)) {
+                PredicateNode::Prefix(prefix) {
+                    if (bind(context,prefix,contract.span) == 0) { return; }
+                }
+                PredicateNode::Nonzero(unused) {}
+                PredicateNode::Nonempty(unused) {}
+                PredicateNode::Index(unused) {}
+                PredicateNode::Contiguous(unused) {}
+                PredicateNode::Initialized(unused) {}
+                PredicateNode::SameLength(unused) {}
+                PredicateNode::Cleanup(unused) {}
+                PredicateNode::Memory(unused) {}
+                PredicateNode::Range(unused) {}
+            }
+        }
+    }
+}
+
+bool checked_void_name(address name,u64 length) on cpu {
+    return length == 4u64
+        && u32(binding_node<u8>(name,0u64)) == 118 && u32(binding_node<u8>(name,1u64)) == 111
+        && u32(binding_node<u8>(name,2u64)) == 105 && u32(binding_node<u8>(name,3u64)) == 100;
+}
+
+extern "C" CheckedBodyStep checked_body_step(u32 phase,CheckedBodyFacts facts) on cpu {
+    if (phase == 0) { return CheckedBodyStep(1,CheckedBodyNeed::Context); }
+    if (phase == 1 && facts.application != 0) { return CheckedBodyStep(2,CheckedBodyNeed::Views); }
+    if (phase == 1 || phase == 2) { return CheckedBodyStep(3,CheckedBodyNeed::Parameters); }
+    if (phase == 3) { return CheckedBodyStep(4,CheckedBodyNeed::Result); }
+    if (phase == 4 && !checked_void_name(facts.result_name,facts.result_length) && facts.never == 0) {
+        return CheckedBodyStep(5,CheckedBodyNeed::Layout);
+    }
+    if (phase == 4 || phase == 5) { return CheckedBodyStep(6,CheckedBodyNeed::ReturnInputs); }
+    if (phase == 6) { return CheckedBodyStep(7,CheckedBodyNeed::Body); }
+    return CheckedBodyStep(phase,CheckedBodyNeed::Finish);
+}
+
+extern "C" CheckedFinishStep checked_finish_step(u32 phase,usize index,u32 returned,
+    usize written,u32 present) on cpu {
+    if (phase == 0 && returned != 0) {
+        return CheckedFinishStep(1,CheckedFinishNeed::NormalizeReturn,index);
+    }
+    if (phase == 2 && present != 0) {
+        return CheckedFinishStep(3,CheckedFinishNeed::NormalizeWritten,index);
+    }
+    if (phase < 4) {
+        usize next = phase >= 2 ? index+1u64 : index;
+        if (next < written) { return CheckedFinishStep(2,CheckedFinishNeed::InspectWritten,next); }
+        if (returned != 0) { return CheckedFinishStep(4,CheckedFinishNeed::Outputs,next); }
+    }
+    if (phase <= 4) { return CheckedFinishStep(5,CheckedFinishNeed::Canonical,index); }
+    return CheckedFinishStep(phase,CheckedFinishNeed::Publish,index);
+}
+
 extern "C" void recursive_ranges(address context,SeekName function,usize models,usize exits,RecursiveHost host) on cpu
  requires nonzero(host.model) requires nonzero(host.remember_argument) requires nonzero(host.calls)
  requires nonzero(host.exit) requires nonzero(host.reg) requires nonzero(host.forwarded)

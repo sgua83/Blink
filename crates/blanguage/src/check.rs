@@ -1212,15 +1212,16 @@ pub(crate) fn validate_signature(d: &Definition) -> Result<()> {
 }
 
 pub(crate) async fn check_function(world: &World, instance: &crate::generics::Instance) -> Result<()> {
-    let name = &instance.name;
-    let d = &instance.definition;
-    if d.function.kind() == FunctionKind::Constant {
-        return unsafe { world.call(evaluate_constant(world, name, &[])).await }.map(|_| ());
+    let function = &instance.definition.function;
+    match unsafe { checked_dispatch(function.signature_node()) } {
+        CheckedDispatch::Constant => {
+            unsafe { world.call(evaluate_constant(world, &instance.name, &[])).await }.map(|_| ())
+        }
+        CheckedDispatch::Native => unsafe { world.call(native_function::check(world, instance)).await },
+        CheckedDispatch::Body => unsafe {
+            world.call(checked_function(world, instance, function.target(), None, native_function::Module::default())).await
+        }.map(|_| ()),
     }
-    if d.function.kind() == FunctionKind::Value && d.function.target() == Target::Cpu {
-        return unsafe { world.call(native_function::check(world, instance)).await };
-    }
-    unsafe { world.call(checked_function(world, instance, d.function.target(), None, native_function::Module::default())).await }.map(|_| ())
 }
 struct CheckedContext {
     program: Arc<Program>,
@@ -1242,39 +1243,163 @@ struct CheckedFunction {
 mod function_inputs;
 use function_inputs::{function_parameters, function_program};
 
+#[allow(dead_code)]
+#[repr(u32)]
+enum CheckedDispatch { Constant, Native, Body }
+#[allow(dead_code)]
+#[repr(u32)]
+enum CheckedProgramNeed { Program, Prefixes, Builder }
+#[repr(C)]
+struct CheckedProgramStep { phase: u32, need: CheckedProgramNeed }
+#[allow(dead_code)]
+#[repr(u32)]
+enum CheckedBodyNeed { Context, Views, Parameters, Result, Layout, ReturnInputs, Body, Finish }
+#[repr(C)]
+struct CheckedBodyStep { phase: u32, need: CheckedBodyNeed }
+#[repr(C)]
+struct CheckedBodyFacts { application: u32, never: u32, result_name: *const u8, result_length: u64 }
+#[allow(dead_code)]
+#[repr(u32)]
+enum CheckedFinishNeed { NormalizeReturn, InspectWritten, NormalizeWritten, Outputs, Canonical, Publish }
+#[repr(C)]
+struct CheckedFinishStep { phase: u32, need: CheckedFinishNeed, index: usize }
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.function_body::checked_dispatch"]
+    fn checked_dispatch(declaration: crate::syntax::wire::SignatureNode) -> CheckedDispatch;
+    #[link_name = "bootstrap.function_body::checked_program_step"]
+    fn checked_program_step(phase: u32) -> CheckedProgramStep;
+    #[link_name = "bootstrap.function_body::checked_prefixes"]
+    fn checked_prefixes(declaration: crate::syntax::wire::SignatureNode, context: *mut std::ffi::c_void,
+        bind: unsafe extern "C" fn(*mut std::ffi::c_void, crate::syntax::wire::PrefixPredicate, crate::syntax::wire::Span) -> u32);
+    #[link_name = "bootstrap.function_body::checked_body_step"]
+    fn checked_body_step(phase: u32, facts: CheckedBodyFacts) -> CheckedBodyStep;
+    #[link_name = "bootstrap.function_body::checked_finish_step"]
+    fn checked_finish_step(phase: u32, index: usize, returned: u32, written: usize, present: u32) -> CheckedFinishStep;
+}
+
+struct CheckedPrefixes<'a> {
+    definition: &'a Definition,
+    program: &'a Program,
+    relations: Vec<PrefixRelation>,
+    result: Result<()>,
+}
+
+unsafe extern "C" fn bind_checked_prefix(
+    context: *mut std::ffi::c_void,
+    predicate: crate::syntax::wire::PrefixPredicate,
+    span: crate::syntax::wire::Span,
+) -> u32 {
+    let context = unsafe { &mut *context.cast::<CheckedPrefixes<'_>>() };
+    let source = context.definition.function.source_view();
+    let span = Span { start: span.start as usize, end: span.end as usize };
+    match prefix::required_relation(context.program, context.definition,
+        source.text(predicate.data), source.text(predicate.count), source.text(predicate.field), span)
+    {
+        Ok(relation) => {
+            context.relations.push(relation);
+            1
+        }
+        Err(error) => {
+            context.result = Err(error);
+            0
+        }
+    }
+}
+
 async fn checked_function(
     world: &World,
     instance: &crate::generics::Instance,
     target: Target,
-    application: Option<application::Context>,
+    mut application: Option<application::Context>,
     functions: native_function::Module,
 ) -> Result<Box<CheckedFunction>> {
     let _required_scope = bounds::required_scope();
     let name = &instance.name;
     let d = &instance.definition;
+    let span = d.function.span();
+    let source: (&Source, &str, &[String]) = (&d.source, &d.module, &d.imports);
     let mut bound_parameters = Vec::new();
-    let mut program=unsafe { world.call(function_program(world,name,instance.parameters(world),
-        (&d.source,&d.module,&d.imports,d.function.kind()),target,d.source_origin(), |parameter| bound_parameters.push(parameter))).await }?;
-    let roots=program.buffers.iter().enumerate().map(|(index,b)|(b.name.clone(),Root::Data(index,b.access))).collect();
-    program.prefix_requirements=instance.contracts().filter(|c|c.kind==ContractKind::Requires&&matches!(c.predicate,ContractPredicate::Prefix{..}))
-        .map(|c|prefix::relation(&program,&roots,d,&c)).collect::<Result<_>>()?;
-    let program=Arc::new(program);
-    let mut b = Box::new(unsafe { world.call(Builder::new(world, instance, &program, 0, Some(&instance.name))).await }?);
-    b.in_function = true;
-    b.application = application;
-    b.functions = functions;
-    if b.application.is_some() { b.view_uses = view_liveness::State::new(world, instance); }
-    let (mut parameters, mut inputs, output_contracts) = unsafe { world.call(function_parameters(&mut b, instance, name, bound_parameters)).await }?;
-    let result_name=unsafe { world.call(instance.bindings.type_name(world,&d.function.result(),(&d.source,&d.module,&d.imports),d.function.span())).await }?;
-    let layout = if result_name.name == "void" || result_name.is_never() {
-        None
-    } else {
-        Some(unsafe { world.call(b.storage_layout(&result_name, d.function.span())).await }?)
+    let mut program = None;
+    let mut phase = 0;
+    let program = loop {
+        let step = unsafe { checked_program_step(phase) };
+        phase = step.phase;
+        match step.need {
+            CheckedProgramNeed::Program => {
+                program = Some(unsafe { world.call(function_program(
+                    world, name, instance.parameters(world), (source.0, source.1, source.2, d.function.kind()),
+                    target, d.source_origin(), |parameter| bound_parameters.push(parameter),
+                )).await }?);
+            }
+            CheckedProgramNeed::Prefixes => {
+                let program = program.as_mut().unwrap();
+                let mut context = CheckedPrefixes { definition: d, program, relations: Vec::new(), result: Ok(()) };
+                unsafe { checked_prefixes(d.function.signature_node(), std::ptr::from_mut(&mut context).cast(), bind_checked_prefix) };
+                context.result?;
+                program.prefix_requirements = context.relations;
+            }
+            CheckedProgramNeed::Builder => break Arc::new(program.unwrap()),
+        }
     };
-    let result = layout.as_ref().map(|layout| layout.storage().into_owned());
-    function_inputs::return_inputs(&mut b, d.function.c_abi(), result.as_ref(), &mut parameters, &mut inputs);
-    let (returned,written) = unsafe { world.call(b.function_body(instance, &result_name, layout, d.function.body().as_ref().unwrap())).await }?;
-    unsafe { world.call(finish_checked_function(b,program.clone(),name,d.function.span(),d.source_origin(),result,parameters,inputs,output_contracts,returned,written)).await }
+
+    let mut b = Box::new(unsafe { world.call(Builder::new(world, instance, &program, 0, Some(name))).await }?);
+    let has_application = u32::from(application.is_some());
+    let mut functions = Some(functions);
+    let mut abi = None;
+    let mut result_name: Option<TypeName> = None;
+    let mut never = 0;
+    let mut layout = None;
+    let mut result = None;
+    let mut body_models = None;
+    let mut phase = 0;
+    loop {
+        let bytes = result_name.as_ref().map_or(&[][..], |name| name.name.as_bytes());
+        let control = CheckedBodyFacts {
+            application: has_application, never, result_name: bytes.as_ptr(), result_length: bytes.len() as u64,
+        };
+        let step = unsafe { checked_body_step(phase, control) };
+        phase = step.phase;
+        match step.need {
+            CheckedBodyNeed::Context => {
+                b.in_function = true;
+                b.application = application.take();
+                b.functions = functions.take().unwrap();
+            }
+            CheckedBodyNeed::Views => b.view_uses = view_liveness::State::new(world, instance),
+            CheckedBodyNeed::Parameters => {
+                abi = Some(unsafe { world.call(function_parameters(
+                    &mut b, instance, name, std::mem::take(&mut bound_parameters),
+                )).await }?);
+            }
+            CheckedBodyNeed::Result => {
+                let ty = unsafe { world.call(instance.bindings.type_name(world, &d.function.result(), source, span)).await }?;
+                never = u32::from(ty.is_never());
+                result_name = Some(ty);
+            }
+            CheckedBodyNeed::Layout => {
+                layout = Some(unsafe { world.call(b.storage_layout(result_name.as_ref().unwrap(), span)).await }?);
+            }
+            CheckedBodyNeed::ReturnInputs => {
+                result = layout.as_ref().map(|layout| layout.storage().into_owned());
+                let (parameters, inputs, _) = abi.as_mut().unwrap();
+                function_inputs::return_inputs(&mut b, d.function.c_abi(), result.as_ref(), parameters, inputs);
+            }
+            CheckedBodyNeed::Body => {
+                body_models = Some(unsafe { world.call(b.function_body(
+                    instance, result_name.as_ref().unwrap(), layout.take(), d.function.body().as_ref().unwrap(),
+                )).await }?);
+            }
+            CheckedBodyNeed::Finish => {
+                let (parameters, inputs, output_contracts) = abi.unwrap();
+                let (returned, written) = body_models.unwrap();
+                return unsafe { world.call(finish_checked_function(
+                    b, program.clone(), name, span, d.source_origin(), result, parameters, inputs,
+                    output_contracts, returned, written,
+                )).await };
+            }
+        }
+    }
 }
 
 #[inline(never)]
@@ -1291,10 +1416,32 @@ async fn finish_checked_function(
     mut returned: Option<returns::Returned>,
     mut written: Vec<Option<returns::Returned>>,
 ) -> Result<Box<CheckedFunction>> {
-    for value in returned.iter_mut().chain(written.iter_mut().flatten()){unsafe { b.world.call(b.normalize_element_facts(value,span)).await }?;}
-    let outputs = returned.as_ref().map(returns::Returned::registers).unwrap_or_default();
-    let (returned, semantic_inputs, written, initialization) =
-        unsafe { b.world.call(native_function::canonical(&mut b, returned, &inputs, &parameters, written)).await }?;
+    let mut outputs = Vec::new();
+    let mut canonical = None;
+    let mut phase = 0;
+    let mut index = 0;
+    let mut present = 0;
+    let (returned, semantic_inputs, written, initialization) = loop {
+        let step = unsafe { checked_finish_step(phase, index, u32::from(returned.is_some()), written.len(), present) };
+        phase = step.phase;
+        index = step.index;
+        match step.need {
+            CheckedFinishNeed::NormalizeReturn => {
+                unsafe { b.world.call(b.normalize_element_facts(returned.as_mut().unwrap(), span)).await }?;
+            }
+            CheckedFinishNeed::InspectWritten => present = u32::from(written[index].is_some()),
+            CheckedFinishNeed::NormalizeWritten => {
+                unsafe { b.world.call(b.normalize_element_facts(written[index].as_mut().unwrap(), span)).await }?;
+            }
+            CheckedFinishNeed::Outputs => outputs = returned.as_ref().unwrap().registers(),
+            CheckedFinishNeed::Canonical => {
+                canonical = Some(unsafe { b.world.call(native_function::canonical(
+                    &mut b, returned.take(), &inputs, &parameters, std::mem::take(&mut written),
+                )).await }?);
+            }
+            CheckedFinishNeed::Publish => break canonical.unwrap(),
+        }
+    };
     let body = FunctionBody {
         fallible: false,
         name: name.to_string(),

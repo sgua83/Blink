@@ -2,6 +2,30 @@ module bootstrap.function_body;
 import bootstrap.ast_storage;
 import bootstrap.signatures;
 import bootstrap.operator_types;
+
+enum CheckedDispatch:u32 { Constant=0; Native=1; Body=2; };
+extern "C" CheckedDispatch checked_dispatch(SignatureNode declaration) on cpu;
+
+enum CheckedProgramNeed:u32 { Program=0; Prefixes=1; Builder=2; };
+struct CheckedProgramStep { u32 phase; CheckedProgramNeed need; };
+extern "C" CheckedProgramStep checked_program_step(u32 phase) on cpu;
+extern "C" void checked_prefixes(SignatureNode declaration,address context,
+    cfn<u32,address,PrefixPredicate,Span> bind) on cpu requires nonzero(bind);
+
+enum CheckedBodyNeed:u32 {
+    Context=0; Views=1; Parameters=2; Result=3; Layout=4; ReturnInputs=5; Body=6; Finish=7;
+};
+struct CheckedBodyStep { u32 phase; CheckedBodyNeed need; };
+struct CheckedBodyFacts { u32 application; u32 never; address result_name; u64 result_length; };
+extern "C" CheckedBodyStep checked_body_step(u32 phase,CheckedBodyFacts facts) on cpu;
+
+enum CheckedFinishNeed:u32 {
+    NormalizeReturn=0; InspectWritten=1; NormalizeWritten=2; Outputs=3; Canonical=4; Publish=5;
+};
+struct CheckedFinishStep { u32 phase; CheckedFinishNeed need; usize index; };
+extern "C" CheckedFinishStep checked_finish_step(u32 phase,usize index,u32 returned,
+    usize written,u32 present) on cpu;
+
 struct Cursor {u32 phase;u32 flags;u64 index;u64 part;};
 enum BeginNeed:u32 {Void=0;Never=1;Type=2;InvalidOwned=3;Shape=4;Dataset=5;Value=6;Early=7;InvalidCooperative=8;Slot=9;Initial=10;Inputs=11;Context=12;Complete=13;Next=14;};
 struct BeginStep {Cursor cursor;BeginNeed need;};

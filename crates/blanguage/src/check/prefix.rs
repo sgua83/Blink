@@ -115,52 +115,73 @@ pub(super) fn prove(
         "prefix 计数缺少当前类型作用域中的生产证明或接口能力，或已被其他阶段改写",
     )
 }
-pub(super) fn relation(
+pub(super) fn required_relation(
     program: &Program,
-    env: &BTreeMap<String, Root>,
     d: &Definition,
-    contract: &FunctionContract,
+    data: &str,
+    count: &str,
+    field: &str,
+    span: Span,
 ) -> Result<PrefixRelation> {
-    let ContractPredicate::Prefix { data, count, field } = &contract.predicate else {
-        return d.source.fail(
-            contract.span,
-            "B225",
-            "整域接口接受prefix域约束及same_length长度前提；值约束用于普通／cooperative函数",
-        );
+    // Resolve in reverse to preserve the last binding for a spelling.
+    bind_relation(program, d, data, count, field, span, ContractKind::Requires, |name| {
+        let index = program.buffers.iter().rposition(|buffer| buffer.name == name)?;
+        Some((index, program.buffers[index].access))
+    })
+}
+fn bind_relation(
+    program: &Program,
+    d: &Definition,
+    data: &str,
+    count: &str,
+    field: &str,
+    span: Span,
+    kind: ContractKind,
+    buffer: impl Fn(&str) -> Option<(usize, Access)>,
+) -> Result<PrefixRelation> {
+    let mut selected = data.split('.');
+    let name = selected.next().unwrap();
+    let Some((domain, _)) = buffer(name) else {
+        return d.source.fail(span, "B192", "前缀域约束需要命名 dataset 参数");
     };
-    let mut selected=data.split('.');let name=selected.next().unwrap();
-    let Some(Root::Data(domain, _)) = env.get(name) else {
-        return d
-            .source
-            .fail(contract.span, "B192", "前缀域约束需要命名 dataset 参数");
+    let mut domain_ty = &program.buffers[domain].ty;
+    let mut offset = 0;
+    let mut projected = false;
+    for field in selected {
+        let Some((_, at, ty)) = domain_ty.fields.iter().find(|(name, ..)| name == field) else {
+            return d.source.fail(span, "B192", "prefix需要实际dataset字段投影");
+        };
+        offset += *at;
+        domain_ty = ty;
+        projected = true;
+    }
+    let Some((binding, access)) = buffer(count) else {
+        return d.source.fail(span, "B173", "未知集合运算数据集");
     };
-    let mut domain_ty=&program.buffers[*domain].ty;let mut offset=0;let mut projected=false;
-    for field in selected {let Some((_,at,ty))=domain_ty.fields.iter().find(|(name,..)|name==field)else{return d.source.fail(contract.span,"B192","prefix需要实际dataset字段投影");};offset+=*at;domain_ty=ty;projected=true;}
-    let (binding, access, count_ty) = collective_root(program, env, count, d, contract.span)?;
-    let Some((word, ty)) = count_ty.field(field) else {
-        return d.source.fail(contract.span, "B174", "未知集合运算字段");
+    let count = &program.buffers[binding];
+    let Some((word, ty)) = count.ty.field(field) else {
+        return d.source.fail(span, "B174", "未知集合运算字段");
     };
     if ty != &Ty::scalar(Scalar::U32) {
-        return d.source.fail(contract.span, "B175", format!("集合运算字段需要 {:?}", Scalar::U32));
+        return d.source.fail(span, "B175", format!("集合运算字段需要 {:?}", Scalar::U32));
     }
-    if *domain == binding
-        || program.buffers[binding].count != Some(1)
-    {
+    if domain == binding || count.count != Some(1) {
         return d.source.fail(
-            contract.span,
+            span,
             "B192",
             "前缀域约束需要独立形状 1 资源中的 u32 计数字段",
         );
     }
-    if contract.kind == ContractKind::Requires && !access.reads() {
+    if kind == ContractKind::Requires && !access.reads() {
         return d.source.fail(
-            contract.span,
+            span,
             "B192",
             "requires prefix 的计数参数需要 read 或 inout 能力",
         );
     }
-    Ok(PrefixRelation { domain_region: projected.then_some((offset,domain_ty.size)),
-        domain: *domain,
+    Ok(PrefixRelation {
+        domain_region: projected.then_some((offset, domain_ty.size)),
+        domain,
         count: PrefixCount { binding, word },
     })
 }
@@ -173,7 +194,19 @@ pub(super) fn bindings<'a>(
 ) -> impl Iterator<Item = Result<(PrefixRelation, Span)>> + 'a {
     contracts.iter()
         .filter(move |c| c.kind == kind && !matches!(c.predicate, ContractPredicate::SameLength { .. } | ContractPredicate::Index { .. } | ContractPredicate::Range { .. } | ContractPredicate::Nonzero(_)))
-        .map(move |c| Ok((relation(program, env, d, c)?, c.span)))
+        .map(move |c| {
+            let ContractPredicate::Prefix { data, count, field } = &c.predicate else {
+                return d.source.fail(c.span, "B225",
+                    "整域接口接受prefix域约束及same_length长度前提；值约束用于普通／cooperative函数");
+            };
+            let relation = bind_relation(program, d, data, count, field, c.span, kind, |name| {
+                match env.get(name) {
+                    Some(Root::Data(index, access)) => Some((*index, *access)),
+                    _ => None,
+                }
+            })?;
+            Ok((relation, c.span))
+        })
 }
 
 pub(super) fn requirements(
