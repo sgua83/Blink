@@ -712,12 +712,10 @@ extern "C" u32 internal_conflict(address context,CrossScalars integers,InternalH
   }else if(fact.kind==FactKind::Zero||fact.kind==FactKind::NonZero){
    key.kind=fact.kind==FactKind::Zero ? FactKind::NonZero : FactKind::Zero;
    if(host.contains(context,key)!=0){return 1;}
-  }else if(fact.kind==FactKind::Index||fact.kind==FactKind::Outside){
-   if(fact.kind==FactKind::Outside){
-    InternalUpper upper=host.upper(fact.payload);
-    if(upper.present!=0&&upper.distance==0&&host.compare(fact.first,upper.identity)==i32(0)){return 1;}
-   }
-   key.kind=fact.kind==FactKind::Index ? FactKind::Outside : FactKind::Index;
+  }else if(fact.kind==FactKind::Outside){
+   InternalUpper upper=host.upper(fact.payload);
+   if(upper.present!=0&&upper.distance==0&&host.compare(fact.first,upper.identity)==i32(0)){return 1;}
+   key.kind=FactKind::Index;
    if(host.contains(context,key)!=0){return 1;}
   }else if(fact.kind==FactKind::Minimum||fact.kind==FactKind::Maximum){
    FactView first=fact;
