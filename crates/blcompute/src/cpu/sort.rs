@@ -3,16 +3,16 @@ use super::*;
 pub(super) struct Code {
     source: usize,
     target: usize,
-    initialize: Vec<Executable>,
-    histogram: Executable,
-    scatter: Executable,
-    gather: Executable,
+    initialize: Vec<*mut c_void>,
+    histogram: *mut c_void,
+    scatter: *mut c_void,
+    gather: *mut c_void,
 }
 impl Code {
-    pub(super) fn executables(&self) -> impl Iterator<Item = &Executable> {
-        self.initialize.iter().chain([&self.histogram, &self.scatter, &self.gather])
+    pub(super) fn entries(&self) -> impl Iterator<Item = *mut c_void> + '_ {
+        self.initialize.iter().copied().chain([self.histogram, self.scatter, self.gather])
     }
-    pub fn load<C>(code: &blanguage::native::SortCode<C>, load: &mut impl FnMut(&C) -> Executable) -> Self {
+    pub fn load<C>(code: &blanguage::native::SortCode<C>, load: &mut impl FnMut(&C) -> *mut c_void) -> Self {
         Self {
             source: code.source,
             target: code.target,
@@ -55,7 +55,7 @@ pub(super) fn run(
     ];
     let mut work = RangeWork {
         frame: None,
-        entry: code.initialize[0].address,
+        entry: code.initialize[0],
         buffers: buffers.as_ptr(),
         range_parameter_slot: buffers.len(),
         uniforms: std::ptr::null(),
@@ -74,7 +74,7 @@ pub(super) fn run(
         buffers[2].address = a.as_mut_ptr();
         buffers[3].address = a.as_mut_ptr();
         work.buffers = buffers.as_ptr();
-        work.entry = key.address;
+        work.entry = *key;
         work.range_parameters = std::ptr::null();
         work.next = AtomicUsize::new(0);
         host.execute(&mut work, errors, timings)?;
@@ -86,7 +86,7 @@ pub(super) fn run(
             buffers[2].address = a.as_mut_ptr();
             buffers[3].address = b.as_mut_ptr();
             work.buffers = buffers.as_ptr();
-            work.entry = code.histogram.address;
+            work.entry = code.histogram;
             work.range_parameters = rows.as_mut_ptr();
             work.next = AtomicUsize::new(0);
             host.execute(&mut work, errors, timings)?;
@@ -99,7 +99,7 @@ pub(super) fn run(
                 }
             }
             work.range_parameters = rows.as_mut_ptr();
-            work.entry = code.scatter.address;
+            work.entry = code.scatter;
             work.next = AtomicUsize::new(0);
             host.execute(&mut work, errors, timings)?;
             std::mem::swap(&mut a, &mut b);
@@ -107,7 +107,7 @@ pub(super) fn run(
     }
     buffers[2].address = a.as_mut_ptr();
     work.buffers = buffers.as_ptr();
-    work.entry = code.gather.address;
+    work.entry = code.gather;
     work.range_parameters = std::ptr::null();
     work.next = AtomicUsize::new(0);
     host.execute(&mut work, errors, timings)

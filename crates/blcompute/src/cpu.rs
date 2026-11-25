@@ -208,7 +208,7 @@ pub struct CpuCodeMemory {
     /// 同一ExecutionPlan中的阶段索引；一个阶段可以包含多个原生代码入口。
     pub stage: usize,
     pub entry_address: usize,
-    /// 原Executable是否持有Allocation；外部已链接模块的代码为false。
+    /// 所属执行程序是否持有代码分配。外部已链接模块的代码为false。
     pub runtime_owned: bool,
     pub allocation_address: usize,
     pub region_address: usize,
@@ -219,10 +219,6 @@ pub struct CpuCodeMemory {
     pub protection: u32,
     pub state: u32,
     pub kind: u32,
-}
-struct Executable {
-    address: *mut c_void,
-    _allocation: Option<std::sync::Arc<Allocation>>,
 }
 struct Allocation {
     address: *mut c_void,
@@ -322,17 +318,17 @@ extern "C" fn print_float(bits: u64, width: u32) -> u32 {
     }
     write_stdout(&text[..count as usize])
 }
-impl Executable {
-    fn memory(&self, stage: usize) -> Result<CpuCodeMemory> {
+impl CpuCodeMemory {
+    fn query(stage: usize, address: *mut c_void, runtime_owned: bool) -> Result<Self> {
         let mut information = std::mem::MaybeUninit::<MemoryBasicInformation>::zeroed();
-        if unsafe { VirtualQuery(self.address, information.as_mut_ptr(), std::mem::size_of::<MemoryBasicInformation>()) } == 0 {
+        if unsafe { VirtualQuery(address, information.as_mut_ptr(), std::mem::size_of::<MemoryBasicInformation>()) } == 0 {
             return Err(std::io::Error::last_os_error().into());
         }
         let information = unsafe { information.assume_init() };
-        Ok(CpuCodeMemory {
+        Ok(Self {
             stage,
-            entry_address: self.address as usize,
-            runtime_owned: self._allocation.is_some(),
+            entry_address: address as usize,
+            runtime_owned,
             allocation_address: information.allocation_base as usize,
             region_address: information.base_address as usize,
             region_bytes: information.region_size,
@@ -577,17 +573,17 @@ fn collective_pair(scalar: Scalar, operator: CollectiveOperator, a: Bits, b: Bit
 }
 
 enum Continuation {
-    Apply(Executable),
+    Apply(*mut c_void),
     Scan {
-        prefix: Executable,
-        apply: Executable,
+        prefix: *mut c_void,
+        apply: *mut c_void,
         source: usize,
         target: usize,
     },
 }
 enum StageCode {
     Element {
-        main: Executable,
+        main: *mut c_void,
         continuation: Option<Continuation>,
         result: RangeResult,
     },
@@ -604,6 +600,8 @@ struct CpuCode {
     definitions: Option<std::sync::Arc<crate::application::Definitions>>,
     stages: Vec<StageCode>,
     workers: usize,
+    // All addresses in this program borrow the same loaded code.
+    allocation: Option<Arc<Allocation>>,
 }
 pub struct Bindings<D = Vec<Dataset>> {
     pub datasets: D,
@@ -723,13 +721,13 @@ impl CpuProgram {
         factories: &[blanguage::resource::ModuleFactory],
     ) -> Result<Self> {
         let workers = std::thread::available_parallelism()?.get();
-        let stages = CpuCode::load_linked_stages(image.stages(), entry, None);
+        let stages = CpuCode::load_linked_stages(image.stages(), entry);
         let (program, _, _, _) = image.into_parts();
         let definitions = unsafe {
             crate::application::Definitions::linked(factories, |image, code| CpuTemplate::from_linked_indices(image, code))
         }?;
         Ok(Self { code: CpuCode {
-            program, stages, workers, definitions: Some(Arc::new(definitions)),
+            program, stages, workers, definitions: Some(Arc::new(definitions)), allocation: None,
         } })
     }
     pub fn run(&self, datasets: &mut [Dataset], values: &[Value]) -> Result<()> {
@@ -879,26 +877,27 @@ impl CpuStorage for &mut ResidentData {
 impl CpuCode {
     fn code_memory(&self) -> Result<Vec<CpuCodeMemory>> {
         let mut result = Vec::new();
-        let mut add = |stage, code: &Executable| -> Result<()> {
-            result.push(code.memory(stage)?);
+        let runtime_owned = self.allocation.is_some();
+        let mut add = |stage, address| -> Result<()> {
+            result.push(CpuCodeMemory::query(stage, address, runtime_owned)?);
             Ok(())
         };
         for (stage, code) in self.stages.iter().enumerate() {
             match code {
                 StageCode::Element { main, continuation, .. } => {
-                    add(stage, main)?;
+                    add(stage, *main)?;
                     match continuation {
-                        Some(Continuation::Apply(code)) => add(stage, code)?,
+                        Some(Continuation::Apply(code)) => add(stage, *code)?,
                         Some(Continuation::Scan { prefix, apply, .. }) => {
-                            add(stage, prefix)?;
-                            add(stage, apply)?;
+                            add(stage, *prefix)?;
+                            add(stage, *apply)?;
                         }
                         None => {}
                     }
                 }
                 StageCode::Sort(code) => {
-                    for code in code.executables() {
-                        add(stage, code)?;
+                    for address in code.entries() {
+                        add(stage, address)?;
                     }
                 }
             }
@@ -912,37 +911,37 @@ impl CpuCode {
             Err(error) => return Err((error, image)),
         };
         let mut remaining = loaded.as_ref().map_or(&[][..], LoadedCode::entries);
+        let allocation = loaded.as_ref().map(|loaded| &loaded.allocation);
         Ok(Self::from_image(image, workers, &mut |stages, functions| {
             let stages = Self::load_stages(stages, &mut |_| {
                 let (row, rest) = remaining.split_first().unwrap();
                 remaining = rest;
-                let allocation = &loaded.as_ref().unwrap().allocation;
-                let address = unsafe { allocation.address.cast::<u8>().add(row.begin as usize) }.cast::<c_void>();
-                Executable { address, _allocation: Some(allocation.clone()) }
+                unsafe { allocation.unwrap().address.cast::<u8>().add(row.begin as usize) }.cast()
             });
             // These entries were already placed and resolved by Allocation::load.
             remaining = &remaining[functions..];
             stages
-        }, definitions))
+        }, definitions, allocation))
     }
     fn linked<P>(image: blanguage::native::ProgramImage<P, *const u8>) -> std::result::Result<Self, (Box<dyn std::error::Error + Send + Sync>, blanguage::native::ProgramImage<P, *const u8>)> {
         let workers=match std::thread::available_parallelism(){Ok(workers)=>workers.get(),Err(error)=>return Err((error.into(),image))};
         Ok(Self::from_image(image, workers, &mut |stages, _| {
-            Self::load_linked_stages(stages, |address| *address, None)
-        }, None))
+            Self::load_linked_stages(stages, |address| *address)
+        }, None, None))
     }
     fn bind_indices<P>(
         image: blanguage::native::ProgramImage<P, usize>, workers: usize,
         entries: &[*const u8], allocation: Option<&Arc<Allocation>>,
     ) -> Self {
         Self::from_image(image, workers, &mut |stages, _| {
-            Self::load_linked_stages(stages, |index| entries[*index], allocation)
-        }, None)
+            Self::load_linked_stages(stages, |index| entries[*index])
+        }, None, allocation)
     }
     fn from_image<P, C>(
         image: blanguage::native::ProgramImage<P, C>, workers: usize,
         load: &mut impl FnMut(&[blanguage::native::StageCode<C>], usize) -> Vec<StageCode>,
         linked: Option<crate::application::Definitions>,
+        allocation: Option<&Arc<Allocation>>,
     ) -> Self {
         use blanguage::resource::Image;
         use crate::application::{Definitions, ProgramSlot};
@@ -953,7 +952,7 @@ impl CpuCode {
             Some(module) => {
                 let programs = module.images.into_iter().map(|image| match image {
                     Image::Cpu(image) => ProgramSlot::Cpu(CpuTemplate {
-                        code: Self::from_image(image, workers, load, None),
+                        code: Self::from_image(image, workers, load, None, allocation),
                     }),
                     Image::Gpu(image) => ProgramSlot::Gpu(std::sync::Arc::new(image)),
                 });
@@ -969,18 +968,16 @@ impl CpuCode {
             }
             None => linked,
         }.map(std::sync::Arc::new);
-        Self { program, stages, workers, definitions }
+        let allocation = allocation.filter(|_| !stages.is_empty()).cloned();
+        Self { program, stages, workers, definitions, allocation }
     }
     fn load_linked_stages<C>(
         stages: &[blanguage::native::StageCode<C>],
         mut entry: impl FnMut(&C) -> *const u8,
-        allocation: Option<&Arc<Allocation>>,
     ) -> Vec<StageCode> {
-        Self::load_stages(stages, &mut |code| Executable {
-            address: entry(code).cast_mut().cast(), _allocation: allocation.cloned(),
-        })
+        Self::load_stages(stages, &mut |code| entry(code).cast_mut().cast())
     }
-    fn load_stages<C>(stages: &[blanguage::native::StageCode<C>], load: &mut impl FnMut(&C) -> Executable) -> Vec<StageCode> {
+    fn load_stages<C>(stages: &[blanguage::native::StageCode<C>], load: &mut impl FnMut(&C) -> *mut c_void) -> Vec<StageCode> {
         use blanguage::native::{ContinuationCode,StageCode as ImageStage};
         stages.iter().map(|image|match image{
             ImageStage::Sort(code)=>StageCode::Sort(sort::Code::load(code,load)),
@@ -1135,7 +1132,7 @@ impl CpuCode {
             };
             match code {
                 StageCode::Sort(code) => sort::run(self, code, &pointers, count, stage_index, &mut errors, &mut timings)?,
-                StageCode::Element { main: executable, continuation, result } => {
+                StageCode::Element { main, continuation, result } => {
                     let result = *result;
                     uniforms[0] = count;
                     let grain = (count as usize).div_ceil(self.workers * 4).max(1);
@@ -1151,7 +1148,7 @@ impl CpuCode {
                     let partials = &mut storage.spare_capacity_mut()[..partial_words];
                     let mut ranges = RangeWork {
                         frame: frame.map(|(definitions, offset, words, inputs)| (definitions, offset, words, inputs, input_domains.share())),
-                        entry: executable.address,
+                        entry: *main,
                         buffers: pointers.as_ptr(),
                         range_parameter_slot: self.program.buffers().len(),
                         uniforms: uniforms.as_ptr(),
@@ -1194,7 +1191,7 @@ impl CpuCode {
                                 let summary = BufferAddress { address: partials.as_mut_ptr().cast(), stride: result.words() * 4 };
                                 let failure = unsafe {
                                     ranges.invoke_serial(
-                                        prefix.address,
+                                        *prefix,
                                         &mut pointers,
                                         &mut [(*source, summary), (*target, summary)],
                                         &mut uniforms,
@@ -1218,7 +1215,7 @@ impl CpuCode {
                                             .add(r.fields.target_word as usize)
                                             .cast::<u32>();
                                         ranges.invoke_serial(
-                                            next.address,
+                                            *next,
                                             &mut pointers,
                                             &mut [(r.fields.source, summary)],
                                             &mut uniforms,
@@ -1301,7 +1298,7 @@ impl CpuCode {
                             }
                         };
                         if let Some(next) = next {
-                            ranges.entry = next.address;
+                            ranges.entry = *next;
                             ranges.buffers = pointers.as_ptr();
                             ranges.uniforms = uniforms.as_ptr();
                             ranges.result = RangeResult::None;
