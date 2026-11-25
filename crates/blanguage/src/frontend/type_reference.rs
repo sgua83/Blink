@@ -50,7 +50,7 @@ unsafe extern "C" {
     #[link_name="bootstrap.type_reference::step"]
     fn step(state:*mut Cursor,context:*mut c_void,host:Host)->Need;
     #[link_name="bootstrap.type_reference::contract_projection"]
-    fn contract_projection(kind:Kind,wrappers:u32,field:Name,tail:bool)->Projection;
+    fn contract_projection(kind:Kind,wrappers:u32,field:Name,tail:u32)->Projection;
 }
 struct Frame<'a> {
     world:&'a World,input:&'a TypeName,source:&'a Source,span:Span,module:&'a str,imports:&'a [String],
@@ -187,7 +187,7 @@ impl World {
             self.resolve(&name.name, module, imports, false).unique().map(|key| self.record(&key))
         });
         if let Some((field, rest)) = fields.split_first() {
-            match unsafe { contract_projection(builtin.kind, flags, Name::new(field), !rest.is_empty()) } {
+            match unsafe { contract_projection(builtin.kind, flags, Name::new(field), u32::from(!rest.is_empty())) } {
                 Projection::Length => return Ok(ir::Ty::scalar(ir::Scalar::U32)),
                 Projection::LengthTail => return source.fail(span, "B225", "长度值没有后续字段"),
                 Projection::Variant => return variant_condition(rest, source, span),

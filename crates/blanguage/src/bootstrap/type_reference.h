@@ -29,4 +29,4 @@ extern "C" Need step(address state,address context,Host host) on cpu
     requires nonzero(host.fail) requires nonzero(host.finish);
 
 enum Projection:u32 { Member=0; Length=1; LengthTail=2; Variant=3; };
-extern "C" Projection contract_projection(BuiltinKind kind,u32 wrappers,Name field,bool tail) on cpu;
+extern "C" Projection contract_projection(BuiltinKind kind,u32 wrappers,Name field,u32 tail) on cpu;

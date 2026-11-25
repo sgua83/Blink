@@ -80,9 +80,9 @@ bool member_is<const N:u32 in {2,3,6}>(Name name,read array<u8,N> expected) on c
     }
     return true;
 }
-extern "C" Projection contract_projection(BuiltinKind kind,u32 wrappers,Name field,bool tail) on cpu {
+extern "C" Projection contract_projection(BuiltinKind kind,u32 wrappers,Name field,u32 tail) on cpu {
     if (((wrappers&1)!=0||kind==BuiltinKind::Array)&&member_is(field,"length")) {
-        return tail ? Projection::LengthTail : Projection::Length;
+        return tail!=0 ? Projection::LengthTail : Projection::Length;
     }
     if (kind==BuiltinKind::Result&&(member_is(field,"Ok")||member_is(field,"Err"))) {
         return Projection::Variant;
