@@ -1197,15 +1197,15 @@ impl<'a, Input: AsRef<[u8]> + ?Sized> Reader<'a, Input> {
         };
         recovery.error.check()?;
         output.check()?;
-        let mut bindings = output.bindings;
-        let mut definitions = BTreeMap::new();
+        let bindings = output.bindings;
+        let mut exports = BTreeSet::new();
         self.for_each_definition(|symbol| {
-            let (name, contract) = bindings.remove_entry(symbol).ok_or("导出符号缺少模块接口合同")?;
-            definitions.insert(name, contract);
+            if !bindings.contains_key(symbol) || !exports.insert(symbol) {
+                return Err("导出符号缺少模块接口合同".into());
+            }
             Ok(())
         })?;
-        definitions.extend(bindings);
-        Ok((name, kind, definitions))
+        Ok((name, kind, bindings))
     }
 
     pub(super) fn for_each_definition(&self, mut consume: impl FnMut(&'a str) -> Result<()>) -> Result<()> {
