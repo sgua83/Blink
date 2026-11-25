@@ -2825,9 +2825,17 @@ impl GpuProgram {
                     "vkCreateDescriptorPool",
                 )?;
                 let bytes = u64::from(blanguage::spirv::BINDING_BYTES);
-                let mut infos: Vec<_> = data.iter().map(|d| VkDescriptorBufferInfo {
-                    buffer: d.allocation.buffer, offset: 0, range: bytes,
-                }).collect();
+                let mut infos = Vec::<VkDescriptorBufferInfo>::with_capacity(data.len());
+                let info_slots = &mut infos.spare_capacity_mut()[..data.len()];
+                for (i, slot) in info_slots.iter_mut().enumerate() {
+                    let (owner, offset) = location(i);
+                    if offset == 0 {
+                        let d: &GpuDataset = data.owners[owner].borrow();
+                        slot.write(VkDescriptorBufferInfo {
+                            buffer: d.allocation.buffer, offset: 0, range: bytes,
+                        });
+                    }
+                }
                 if let StorageSlots::Frame(arguments) = slots {
                     let fields = arguments.projected_fields();
                     let field_count = fields.clone().count();
@@ -2837,20 +2845,21 @@ impl GpuProgram {
                         let parameters = Allocation::new(c.inner.clone(), step * field_count as u64, 0x20, 6, 8)?;
                         let mapped = parameters.mapping()?;
                         for (index, group) in fields.enumerate() {
-                            let first = group[0];
-                            let offset = location(first).1;
-                            let d = &data[first];
+                            let (owner, offset) = location(group[0]);
+                            let d: &GpuDataset = data.owners[owner].borrow();
                             let at = step * index as u64;
                             mapped.add(at as usize).cast::<[u32; 4]>()
                                 .write(binding_header(d.page_array_address(), d.stride, offset));
                             let info = VkDescriptorBufferInfo { buffer: parameters.buffer, offset: at, range: bytes };
                             for &i in group {
-                                infos[i] = info;
+                                info_slots[i].write(info);
                             }
                         }
                         binding_parameters = Some(parameters);
                     }
                 }
+                // Zero offsets and the Frame's nonzero field groups cover disjoint logical slots.
+                infos.set_len(data.len());
                 infos
             } else {
                 Vec::new()
