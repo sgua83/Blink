@@ -136,14 +136,14 @@ pub(crate) fn runtime_fingerprint(libraries: &[String]) -> [u8; 32] {
 pub(crate) fn encode_entry(
     name: &str, sections: &[super::Section], definitions: &[super::Definition],
 ) -> Result<super::ObjectBytes> {
-    let native = super::encode_native(name, sections, definitions)?;
-    // COFF binding writes the declared external definitions in this same order.
-    let symbols = definitions.iter()
-        .map(|definition| super::static_library::ArchiveSymbol::new(0, &definition.name))
-        .collect();
-    let members = std::iter::once(native.as_slice())
-        .map(|bytes| super::static_library::MemberView::new("entry.obj", bytes));
-    super::static_library::encode(members, symbols).map(super::ObjectBytes::generated)
+    super::coff::with_native(name, sections, definitions, |output| {
+        // COFF binding writes the declared external definitions in this same order.
+        let symbols = definitions.iter()
+            .map(|definition| super::static_library::ArchiveSymbol::new(0, &definition.name))
+            .collect();
+        let members = std::iter::once(super::static_library::MemberView::generated("entry.obj", &output));
+        super::static_library::encode(members, symbols)
+    }).map(super::ObjectBytes::generated)
 }
 
 pub(crate) fn compile(

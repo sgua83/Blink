@@ -202,7 +202,7 @@ impl Groups {
             } else {
                 format!("{identity}${member}")
             };
-            let code = encode_bound(&group_name, payloads, bindings, &definitions[member], None)?;
+            let code = encode_bound(&group_name, payloads, bindings, &definitions[member], None, owned_output)?;
             let number = output.len() - first + 1;
             // Later groups can still borrow the anchor names from these members.
             output.push(HostMember {

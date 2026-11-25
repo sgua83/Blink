@@ -33,6 +33,7 @@ enum CoffError { None, SectionCount, SectionSize, Offset, RelocationCount, Symbo
 #[derive(Clone, Copy)]
 struct CoffLayout { length: usize, symbols: usize, strings: usize, symbol_count: usize, error: CoffError }
 #[repr(C)]
+#[derive(Clone, Copy)]
 struct CoffBindingSource {
     module: BindingBytes, sections: *const BindingSection, nodes: *const [u64; 9],
     names_root: u64, imports_root: u64,
@@ -761,19 +762,26 @@ pub(super) fn encode_build(o: &Object, build: Option<&[u8]>) -> Result<Vec<u8>> 
             .chain(build.map(|bytes| (BUILD, CoffPayload::Borrowed(bytes), 0x840)))
             .chain(o.archive.as_ref().map(|archive| (ARCHIVE, CoffPayload::Borrowed(archive.bytes.as_ref()), 0x840)));
         encode_sections(&o.name, &o.sections, o.symbols.iter().map(|symbol| &symbol.definition),
-            coff_payload, extra, None)
+            coff_payload, extra, None, owned_output)
     })
 }
 
 pub(crate) fn encode_native(name: &str, source: &[Section], declared: &[Definition]) -> Result<Vec<u8>> {
-    encode_sections(name, source, declared.iter(), |bytes| CoffPayload::Borrowed(bytes), std::iter::empty(), None)
+    with_native(name, source, declared, owned_output)
+}
+
+pub(super) fn with_native(
+    name: &str, source: &[Section], declared: &[Definition],
+    finish: impl FnOnce(CoffOutput<'_>) -> Result<Vec<u8>>,
+) -> Result<Vec<u8>> {
+    encode_sections(name, source, declared.iter(), |bytes| CoffPayload::Borrowed(bytes), std::iter::empty(), None, finish)
 }
 
 pub(crate) fn encode_native_with_imports<'a>(
     name: &str, source: &'a [Section<SectionData<LinkSectionBytes<'_>>>], declared: &'a [Definition],
     imports: &mut Vec<ImportKey<'a>>,
 ) -> Result<Vec<u8>> {
-    encode_sections(name, source, declared.iter(), coff_payload, std::iter::empty(), Some(imports))
+    encode_sections(name, source, declared.iter(), coff_payload, std::iter::empty(), Some(imports), owned_output)
 }
 
 unsafe extern "C" fn collect_import<'a>(context: *mut c_void, key: ImportKey<'a>) {
@@ -815,6 +823,7 @@ fn encode_sections<'a, Bytes>(
     payload: impl Fn(&'a Bytes) -> CoffPayload<'a>,
     extra: impl Iterator<Item = (&'a str, CoffPayload<'a>, u32)>,
     imports: Option<&mut Vec<ImportKey<'a>>>,
+    finish: impl FnOnce(CoffOutput<'_>) -> Result<Vec<u8>>,
 ) -> Result<Vec<u8>> {
     let sections = source.iter().map(|section|
         (section.name.as_str(), payload(&section.bytes), section.flags)
@@ -839,7 +848,7 @@ fn encode_sections<'a, Bytes>(
         name: BindingBytes::new(symbol.name.as_bytes()), section: symbol.section as u64,
         value: u64::from(symbol.value), function: u64::from(symbol.function),
     }).collect::<Vec<_>>();
-    encode_bound(name, sections, binding_sections, &definitions, imports)
+    encode_bound(name, sections, binding_sections, &definitions, imports, finish)
 }
 
 fn uninitialized_needs_body(flags: u32, relocation_count: usize) -> bool {
@@ -852,6 +861,7 @@ fn encode_bound<'a>(
     mut binding_sections: Vec<BindingSection>,
     definitions: &[BindingDefinition],
     imports: Option<&mut Vec<ImportKey<'a>>>,
+    finish: impl FnOnce(CoffOutput<'_>) -> Result<Vec<u8>>,
 ) -> Result<Vec<u8>> {
     // Renamed sections lend the same name to the binding plan and the physical writer.
     let mut renamed = Vec::new();
@@ -928,18 +938,43 @@ fn encode_bound<'a>(
         module: binding_input.name, sections: binding_sections.as_ptr(), nodes: nodes.as_ptr(),
         names_root: plan.names_root, imports_root: plan.imports_root,
     };
-    let mut output = Vec::with_capacity(layout.length);
-    unsafe {
-        coff_encode(input, layout, binding, output.as_mut_ptr());
-        for ((_, payload, _), section) in sections.iter().zip(&physical) {
-            if section.offset != 0 {
-                payload.write(output.as_mut_ptr().add(section.offset));
+    // The synchronous destination consumes this plan while the binding and
+    // payload owners are still live.
+    finish(CoffOutput { input, physical: &physical, sections: &sections, layout, binding: &binding })
+}
+
+pub(super) struct CoffOutput<'a> {
+    input: CoffInput,
+    physical: &'a [CoffSectionView],
+    sections: &'a [(&'a str, CoffPayload<'a>, u32)],
+    layout: CoffLayout,
+    binding: &'a CoffBindingSource,
+}
+
+impl CoffOutput<'_> {
+    pub(super) fn len(&self) -> usize { self.layout.length }
+
+    /// The caller owns this exclusive, non-overlapping range of len() bytes.
+    pub(super) unsafe fn write(&self, output: *mut u8) {
+        unsafe {
+            coff_encode(self.input, self.layout, *self.binding, output);
+            for ((_, payload, _), section) in self.sections.iter().zip(self.physical) {
+                if section.offset != 0 {
+                    payload.write(output.add(section.offset));
+                }
             }
         }
-        output.set_len(layout.length);
+    }
+
+}
+
+fn owned_output(plan: CoffOutput<'_>) -> Result<Vec<u8>> {
+    let mut output = Vec::with_capacity(plan.len());
+    unsafe {
+        plan.write(output.as_mut_ptr());
+        output.set_len(plan.len());
     }
     Ok(output)
-
 }
 
 pub(super) fn decode<Bytes: super::ReadSection>(b: &super::ObjectBytes, stack_output: bool) -> Result<Object<Bytes>> {

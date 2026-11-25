@@ -112,6 +112,6 @@ pub(crate) fn member(import: ImportKey<'_>) -> Result<NativeImportMember> {
     let definition = BindingDefinition {
         name: BindingBytes::new(member[slot.clone()].as_bytes()), section: 0, value: 0, function: 0,
     };
-    let bytes = encode_bound(&member[..slot.end], sections, bindings, &[definition], None)?;
+    let bytes = encode_bound(&member[..slot.end], sections, bindings, &[definition], None, owned_output)?;
     Ok(NativeImportMember { name: member, bytes, slot })
 }

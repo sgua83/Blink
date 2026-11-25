@@ -142,27 +142,42 @@ pub(crate) struct Member<'a> {
     bytes: &'a [u8],
 }
 
+#[derive(Clone, Copy)]
 pub(crate) struct MemberView<'a> {
     name: &'a str,
-    bytes: &'a [u8],
-    build: Option<&'a coff::HostBuildSection>,
+    body: MemberBody<'a>,
+}
+
+#[derive(Clone, Copy)]
+enum MemberBody<'a> {
+    Existing { bytes: &'a [u8], build: Option<&'a coff::HostBuildSection> },
+    Generated(&'a coff::CoffOutput<'a>),
 }
 
 impl<'a> MemberView<'a> {
     pub(crate) fn new(name: &'a str, bytes: &'a [u8]) -> Self {
-        Self { name, bytes, build: None }
+        Self { name, body: MemberBody::Existing { bytes, build: None } }
+    }
+
+    pub(super) fn generated(name: &'a str, body: &'a coff::CoffOutput<'a>) -> Self {
+        Self { name, body: MemberBody::Generated(body) }
     }
 
     fn output_length(&self) -> usize {
-        self.build.map_or(self.bytes.len(), |build| build.length(self.bytes))
+        match self.body {
+            MemberBody::Existing { bytes, build } => build.map_or(bytes.len(), |build| build.length(bytes)),
+            MemberBody::Generated(plan) => plan.len(),
+        }
     }
 
     unsafe fn write(&self, output: *mut u8) {
         unsafe {
-            if let Some(build) = self.build {
-                build.write(self.bytes, output);
-            } else {
-                std::ptr::copy_nonoverlapping(self.bytes.as_ptr(), output, self.bytes.len());
+            match self.body {
+                MemberBody::Existing { bytes, build: Some(build) } => build.write(bytes, output),
+                MemberBody::Existing { bytes, build: None } => {
+                    std::ptr::copy_nonoverlapping(bytes.as_ptr(), output, bytes.len());
+                }
+                MemberBody::Generated(plan) => plan.write(output),
             }
         }
     }
@@ -181,7 +196,7 @@ impl HostMember<'_> {
     }
 
     pub(crate) fn view(&self) -> MemberView<'_> {
-        MemberView { name: &self.name, bytes: &self.bytes, build: self.build.as_ref() }
+        MemberView { name: &self.name, body: MemberBody::Existing { bytes: &self.bytes, build: self.build.as_ref() } }
     }
 }
 
