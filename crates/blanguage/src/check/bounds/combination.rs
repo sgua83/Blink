@@ -362,7 +362,7 @@ struct DomainJoinHost {
     compare: unsafe extern "C" fn(Borrowed, Borrowed) -> i32,
     origin: unsafe extern "C" fn(Borrowed, u32, Borrowed) -> u32,
     upper: unsafe extern "C" fn(Slot, Borrowed, u32),
-    bits: unsafe extern "C" fn(Slot),
+    bits: unsafe extern "C" fn(Slot) -> u32,
 }
 
 struct DomainJoin<'a> {
@@ -377,7 +377,7 @@ unsafe extern "C" {
     #[link_name = "bootstrap.condition_graph::join_proof_conditions"]
     fn b_join_proof_conditions(context: Slot, width: usize, selected: u32, host: ConditionJoinHost);
     #[link_name = "bootstrap.condition_graph::join_proof_domains"]
-    fn b_join_proof_domains(context: Slot, bits: u32, host: DomainJoinHost);
+    fn b_join_proof_domains(context: Slot, bits: u32, host: DomainJoinHost) -> u32;
 }
 
 unsafe extern "C" fn condition_at_join(context: Borrowed, component: usize) -> u32 {
@@ -448,17 +448,20 @@ unsafe extern "C" fn insert_joined_upper(context: Slot, identity: Borrowed, dist
     state.result.insert(IndexDomain::Upper(unsafe { *identity.cast::<ValueIdentity>() }, distance));
 }
 
-unsafe extern "C" fn join_known_bits(context: Slot) {
+unsafe extern "C" fn join_known_bits(context: Slot) -> u32 {
     let state = unsafe { &mut *context.cast::<DomainJoin<'_>>() };
     let scalar = state.scalar.unwrap();
-    state.result.retain(|domain| !matches!(domain, IndexDomain::KnownBits(..)));
-    let [left, right] = state.proofs.map(|proof| proof.known_bits(state.component, scalar));
-    if let Some(bits) = left.zip(right).and_then(|(a, b)| a.common(b)) {
+    let [left, right] = state.proofs;
+    if let Some(bits) = left.known_bits(state.component, scalar)
+        .and_then(|left| left.common(right.known_bits(state.component, scalar)?))
+    {
         state.result.insert(bits.domain());
+        return u32::from(bits.value != 0);
     }
+    0
 }
 
-pub(super) fn join_domains(left: &Proof, right: &Proof, component: usize) -> Domains {
+fn join_domains(left: &Proof, right: &Proof, component: usize) -> (Domains, u32) {
     let a = left.domains(component);
     let b = right.domains(component);
     let scalar = a.union(&b).find_map(|domain| match domain {
@@ -467,15 +470,72 @@ pub(super) fn join_domains(left: &Proof, right: &Proof, component: usize) -> Dom
     });
     let mut state = DomainJoin {
         proofs: [left, right], iterators: [a.iter(), b.iter()], component, scalar,
-        result: a.intersection(&b).copied().collect(),
+        result: a.intersection(&b).filter(|domain| !matches!(domain, IndexDomain::KnownBits(..))).copied().collect(),
     };
-    unsafe {
+    let nonzero = unsafe {
         b_join_proof_domains(
             ptr::from_mut(&mut state).cast(), u32::from(scalar.is_some()),
             DomainJoinHost { next: next_upper_row, compare: fact_fields::compare, origin: upper_origin,
                 upper: insert_joined_upper, bits: join_known_bits },
-        );
-    }
-    state.result
+        )
+    };
+    (state.result, nonzero)
 }
 
+#[repr(C)]
+struct NumericJoinFacts {
+    left_nonzero: u32,
+    right_nonzero: u32,
+    bits_nonzero: u32,
+}
+
+#[repr(C)]
+struct NumericJoinHost {
+    domains: unsafe extern "C" fn(Slot, usize) -> NumericJoinFacts,
+    store: unsafe extern "C" fn(Slot, usize, u32),
+}
+
+struct NumericJoin<'a> {
+    left: &'a mut Proof,
+    right: &'a Proof,
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.condition_graph::join_proof_numeric"]
+    fn b_join_proof_numeric(context: Slot, width: usize, host: NumericJoinHost);
+}
+
+unsafe extern "C" fn joined_domains(context: Slot, component: usize) -> NumericJoinFacts {
+    let state = unsafe { &mut *context.cast::<NumericJoin<'_>>() };
+    let (domains, bits) = join_domains(state.left, state.right, component);
+    state.left.domains[component] = domains;
+    NumericJoinFacts {
+        left_nonzero: u32::from(state.left.nonzero[component]),
+        right_nonzero: u32::from(state.right.nonzero.get(component) == Some(&true)),
+        bits_nonzero: bits,
+    }
+}
+
+unsafe extern "C" fn store_joined_numeric(context: Slot, component: usize, nonzero: u32) {
+    let state = unsafe { &mut *context.cast::<NumericJoin<'_>>() };
+    let other = state.right.origins.get(component).map(Vec::as_slice).unwrap_or_default();
+    state.left.origins[component].retain(|identity| other.contains(identity));
+    state.left.ranges[component] = state.left.ranges[component].union(&state.right.range_set(component));
+    state.left.nonzero[component] = nonzero != 0;
+}
+
+pub(super) fn join_numeric(left: &mut Proof, right: &Proof, width: usize) {
+    left.origins.resize_with(width, Vec::new);
+    left.domains.resize_with(width, Domains::new);
+    left.ranges.resize_with(width, super::ScalarRanges::default);
+    left.nonzero.resize(width, false);
+
+    let mut state = NumericJoin { left, right };
+    unsafe {
+        b_join_proof_numeric(
+            ptr::from_mut(&mut state).cast(),
+            width,
+            NumericJoinHost { domains: joined_domains, store: store_joined_numeric },
+        )
+    }
+}

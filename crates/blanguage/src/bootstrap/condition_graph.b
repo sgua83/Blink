@@ -2367,7 +2367,7 @@ UpperGroup upper_group(address context,u32 side,UpperRow first,DomainJoinHost ho
  return UpperGroup(UpperRow(first.identity,strongest),following);
 }
 
-extern "C" void join_proof_domains(address context,u32 bits,DomainJoinHost host) on cpu
+extern "C" u32 join_proof_domains(address context,u32 bits,DomainJoinHost host) on cpu
  requires nonzero(host.next) requires nonzero(host.compare) requires nonzero(host.origin)
  requires nonzero(host.upper) requires nonzero(host.bits) {
  UpperRow left=host.next(context,0);
@@ -2394,9 +2394,21 @@ extern "C" void join_proof_domains(address context,u32 bits,DomainJoinHost host)
    right=b.following;
   }
  }
- if(bits!=0){host.bits(context);}
+ return bits!=0?host.bits(context):u32(0);
 }
 
+
+extern "C" void join_proof_numeric(address context,usize width,NumericJoinHost host) on cpu
+ requires nonzero(host.domains) requires nonzero(host.store) {
+ usize component=0u64;
+ while(component<width){
+  NumericJoinFacts facts=host.domains(context,component);
+  u32 nonzero=facts.bits_nonzero;
+  if(facts.left_nonzero!=0&&facts.right_nonzero!=0){nonzero=1;}
+  host.store(context,component,nonzero);
+  component+=1u64;
+ }
+}
 
 extern "C" u32 proof_length_relation(address context,u32 strict,LengthRelationHost host) on cpu
  requires nonzero(host.next) requires nonzero(host.origin) requires nonzero(host.resource)

@@ -1248,20 +1248,7 @@ impl Proof {
             let empty=view::Borrow::default();let other=other.views.get(i).unwrap_or(&empty);
             if let Some(choice)=branch{*value=std::mem::take(value).selected(choice,other);}else{value.union(other);}
         }
-        self.domains = (0..width)
-            .map(|component| combination::join_domains(self, other, component))
-            .collect();
-        self.origins.resize_with(width,Vec::new);
-        for(i,origins)in self.origins.iter_mut().enumerate(){
-            let other=other.origins.get(i).map(Vec::as_slice).unwrap_or_default();
-            origins.retain(|identity|other.contains(identity));
-        }
-        self.nonzero = (0..width)
-            .map(|i| self.nonzero.get(i) == Some(&true) && other.nonzero.get(i) == Some(&true) || self.domains(i).iter().any(|domain|matches!(domain,IndexDomain::KnownBits(_,_,value)if *value!=0)))
-            .collect();
-        self.ranges = (0..width)
-            .map(|i| self.range_set(i).union(&other.range_set(i)))
-            .collect();
+        combination::join_numeric(self, other, width);
     }
     pub(super) fn project(&self, components: &[usize], width: usize) -> Self {
         if components.iter().copied().eq(0..width) {

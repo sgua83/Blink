@@ -1000,12 +1000,20 @@ struct DomainJoinHost {
  cfn<i32,address,address> compare;
  cfn<u32,address,u32,address> origin;
  cfn<void,address,address,u32> upper;
- cfn<void,address> bits;
+ cfn<u32,address> bits;
 };
-extern "C" void join_proof_domains(address context,u32 bits,DomainJoinHost host) on cpu
+extern "C" u32 join_proof_domains(address context,u32 bits,DomainJoinHost host) on cpu
  requires nonzero(host.next) requires nonzero(host.compare) requires nonzero(host.origin)
  requires nonzero(host.upper) requires nonzero(host.bits);
 
+
+struct NumericJoinFacts { u32 left_nonzero; u32 right_nonzero; u32 bits_nonzero; };
+struct NumericJoinHost {
+ cfn<NumericJoinFacts,address,usize> domains;
+ cfn<void,address,usize,u32> store;
+};
+extern "C" void join_proof_numeric(address context,usize width,NumericJoinHost host) on cpu
+ requires nonzero(host.domains) requires nonzero(host.store);
 
 struct ProofCallWidths { usize origins; usize domains; usize conditions; };
 struct ProofCallDomain { address original; u32 kind; };
