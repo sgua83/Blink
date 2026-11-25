@@ -408,11 +408,20 @@ impl Allocation {
         }
         let root_table = NonNull::slice_from_raw_parts(table, count as usize);
         let entries = unsafe { root_table.as_ref() };
-        let mut functions = image.functions().iter().zip(&entries[image.stage_code_count()..])
+        let local_functions = image.functions().iter().zip(&entries[image.stage_code_count()..])
             .map(|((name, _), row)| {
                 let entry = unsafe { address.cast::<u8>().add(row.begin as usize) }.cast::<c_void>();
                 (name.as_str(), entry)
             }).collect::<BTreeMap<_, _>>();
+        let function_address = |name: &str| {
+            match module.and_then(|module| module.symbols.get(name)) {
+                Some(&(section, value)) => {
+                    let offset = sections[section] + value as usize;
+                    Some(unsafe { address.cast::<u8>().add(offset) }.cast())
+                }
+                None => local_functions.get(name).copied(),
+            }
+        };
         let mut libraries = std::collections::BTreeMap::new();
         for (&name, &offset) in &imports {
             let symbol = external_symbol(&mut libraries, name)?;
@@ -438,16 +447,12 @@ impl Allocation {
                     unsafe { std::slice::from_raw_parts_mut(table, count as usize) }.sort_unstable_by_key(|entry| entry.begin);
                 }
             }
-            for (name, &(section, value)) in &module.symbols {
-                let entry = unsafe { address.cast::<u8>().add(sections[section] + value as usize) }.cast();
-                functions.insert(name.as_str(), entry);
-            }
         }
         for (code, row) in image.code().zip(entries) {
             let entry = unsafe { address.cast::<u8>().add(row.begin as usize) };
             for relocation in &code.relocations {
                 let ptr = match &relocation.target {
-                    NativeSymbol::Function(name) => *functions.get(name.as_str())
+                    NativeSymbol::Function(name) => function_address(name)
                         .ok_or_else(|| error(format!("范围映像缺少所属模块函数 {name}")))? as *const (),
                     NativeSymbol::External(name) => external_symbol(&mut libraries, name)?,
                     NativeSymbol::Print(scalar) => match scalar {
@@ -504,10 +509,10 @@ impl Allocation {
         let allocation = Arc::new(allocation);
         // The compiler-produced table is already relocated in this allocation.
         // Definitions consumes it synchronously while the code owner is live.
-        let factories = match functions.get("__blink_module_count") {
-            Some(&count) => unsafe {
+        let factories = match function_address("__blink_module_count") {
+            Some(count) => unsafe {
                 let count = *count.cast::<usize>();
-                let table = functions["__blink_module_factories"].cast::<blanguage::resource::ModuleFactory>();
+                let table = function_address("__blink_module_factories").unwrap().cast::<blanguage::resource::ModuleFactory>();
                 std::slice::from_raw_parts(table, count)
             },
             None => &[],
