@@ -7,10 +7,16 @@ pub(super) enum Parameter { Acceleration, Texture, Dataset, Tile, Ordinary }
 
 #[allow(dead_code)]
 #[repr(u32)]
-pub(super) enum DomainParameter {
+pub(super) enum DomainLayout {
     Accept,
     Reject,
     PlainLayout,
+}
+
+#[repr(C)]
+pub(super) struct DomainParameter {
+    pub form: Parameter,
+    pub layout: DomainLayout,
 }
 
 #[allow(dead_code)]
@@ -25,7 +31,6 @@ enum DomainAccessError {
 
 #[repr(C)]
 pub(super) struct DomainBinding {
-    pub form: Parameter,
     access_error: DomainAccessError,
     pub view_check: u32,
 }
@@ -103,7 +108,7 @@ unsafe extern "C" {
     #[link_name = "bootstrap.function_inputs::domain_parameter"]
     fn native_domain_parameter(facts: Facts, access: Access) -> DomainParameter;
     #[link_name = "bootstrap.function_inputs::domain_binding"]
-    fn native_domain_binding(facts: Facts, access: Access, gpu: u32, qualified: u32) -> DomainBinding;
+    fn native_domain_binding(form: Parameter, access: Access, gpu: u32, qualified: u32) -> DomainBinding;
     #[link_name = "bootstrap.function_inputs::dataset_step"]
     fn dataset_step(cursor:InputCursor,facts:DatasetFacts)->DatasetStep;
     #[link_name = "bootstrap.function_inputs::ordinary_step"]
@@ -160,10 +165,8 @@ pub(super) fn domain_parameter(param: &Param) -> DomainParameter {
     unsafe { native_domain_parameter(facts(param), param.access) }
 }
 
-pub(super) fn domain_binding(param: &Param, texture: bool, gpu: bool, qualified: bool) -> DomainBinding {
-    unsafe {
-        native_domain_binding(facts_with_texture(param, texture), param.access, u32::from(gpu), u32::from(qualified))
-    }
+pub(super) fn domain_binding(form: Parameter, access: Access, gpu: bool, qualified: bool) -> DomainBinding {
+    unsafe { native_domain_binding(form, access, u32::from(gpu), u32::from(qualified)) }
 }
 
 fn facts(p: &Param) -> Facts {

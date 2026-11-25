@@ -3297,8 +3297,12 @@ impl Builder<'_> {
         let mut data = Vec::new();
         let mut held = Vec::new();
         let mut arguments = Vec::with_capacity(prepared.len());
-        for (parameter, value) in bound_parameters.iter().zip(prepared) {
-            let argument = match function_inputs::parameter_form(parameter) {
+        for (index, (parameter, value)) in bound_parameters.iter().zip(prepared).enumerate() {
+            let form = match input {
+                DomainInput::Declaration { signature: Some(signature), .. } => signature.bindings[index].form,
+                _ => function_inputs::parameter_form(parameter),
+            };
+            let argument = match form {
                 Parameter::Dataset => {
                     let value = match value {
                         Argument::ApplicationData(data) => DataReference::direct(data),

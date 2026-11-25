@@ -386,15 +386,14 @@ pub(crate) async fn compile_program(
     signature: Option<KernelSignature>,
 ) -> Result<Program> {
     let input = DomainInput::Declaration { instance, signature: None };
-    let KernelSignature { parameters, uniform_types } = match signature {
+    let KernelSignature { parameters, bindings } = match signature {
         Some(signature) => signature,
         None => unsafe { world.call(kernel_signature(world, instance)).await }?
             .ok_or_else(|| invalid_kernel_interface(input))?,
     };
-    let mut uniform_types = uniform_types.into_iter();
     let mut functions = native_function::Module::default();
     let (expanded, _) = unsafe {
-        world.call(expand_domain(world, input, &parameters, Some(&mut uniform_types), &mut functions, None)).await
+        world.call(expand_domain(world, input, &parameters, DomainBindings::Owned(bindings.into_iter()), &mut functions, None)).await
     }?;
     if !expanded.calls.is_empty() {
         return instance.definition.source.fail(
@@ -479,7 +478,7 @@ async fn expand_domain(
     world: &World,
     input: DomainInput<'_>,
     parameters: &[Param],
-    mut uniform_types: Option<&mut dyn Iterator<Item = Ty>>,
+    bindings: DomainBindings<'_>,
     functions: &mut native_function::Module,
     mut entry: Option<&mut native_function::DomainEntry>,
 ) -> Result<(ExpandedDomain, Vec<FunctionContract>)> {
@@ -491,28 +490,31 @@ async fn expand_domain(
     let mut uniforms = Vec::new();
     let mut env = BTreeMap::new();
     let gpu = input.target() == Target::Gpu;
-    let qualified = uniform_types.is_some();
-    for p in parameters {
-        let texture = p.ty.texture_type();
-        let parameter = function_inputs::domain_binding(p, texture.is_some(), gpu, qualified);
-        if parameter.form == function_inputs::Parameter::Texture {
+    let qualified = !matches!(bindings, DomainBindings::Unqualified);
+    for (p, binding) in parameters.iter().zip(bindings) {
+        let (form, layout) = match binding {
+            Some(binding) => (binding.form, binding.layout),
+            None => (function_inputs::parameter_form(p), None),
+        };
+        let parameter = function_inputs::domain_binding(form, p.access, gpu, qualified);
+        if form == function_inputs::Parameter::Texture {
             parameter.check_access(&d.source, p.span)?;
             env.insert(p.name.to_owned(), Root::Texture(textures.len()));
             textures.push(unsafe {
-                world.call(texture::binding(world, p, texture.unwrap(), (&d.source, &d.module, &d.imports))).await
+                world.call(texture::binding(world, p, p.ty.texture_type().unwrap(), (&d.source, &d.module, &d.imports))).await
             }?);
             if let Some(entry) = entry.as_deref_mut() { entry.texture(); }
             continue;
         }
-        if parameter.form == function_inputs::Parameter::Acceleration {
+        if form == function_inputs::Parameter::Acceleration {
             parameter.check_access(&d.source, p.span)?;
             env.insert(p.name.to_owned(), Root::Acceleration(accelerations.len()));
             accelerations.push(p.name.to_owned());
             continue;
         }
-        let dataset = parameter.form == function_inputs::Parameter::Dataset;
-        let ty = if !dataset && let Some(types) = uniform_types.as_deref_mut() {
-            types.next().unwrap()
+        let dataset = form == function_inputs::Parameter::Dataset;
+        let ty = if let Some(ty) = layout {
+            ty
         } else {
             let ty = unsafe { world.call(world.ty(&p.ty, &d.source, p.span, &d.module, &d.imports)).await }?;
             if ty.owns_resources() {
@@ -2403,7 +2405,31 @@ pub(crate) fn stage_intrinsic(name: &str) -> bool {
 
 pub(crate) struct KernelSignature {
     parameters: Vec<Param>,
-    uniform_types: Vec<Ty>,
+    bindings: Vec<KernelBinding>,
+}
+
+#[derive(Clone)]
+struct KernelBinding {
+    form: function_inputs::Parameter,
+    layout: Option<Ty>,
+}
+
+enum DomainBindings<'a> {
+    Owned(std::vec::IntoIter<KernelBinding>),
+    Shared(std::slice::Iter<'a, KernelBinding>),
+    Unqualified,
+}
+
+impl Iterator for DomainBindings<'_> {
+    type Item = Option<KernelBinding>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self {
+            Self::Owned(bindings) => bindings.next().map(Some),
+            Self::Shared(bindings) => bindings.next().cloned().map(Some),
+            Self::Unqualified => Some(None),
+        }
+    }
 }
 
 pub(crate) fn kernel_interface<'a>(
@@ -2417,11 +2443,11 @@ pub(crate) async fn kernel_signature(
     world: &World,
     instance: &crate::generics::Instance,
 ) -> Result<Option<KernelSignature>> {
-    let mut signature = KernelSignature { parameters: Vec::new(), uniform_types: Vec::new() };
+    let mut signature = KernelSignature { parameters: Vec::new(), bindings: Vec::new() };
     let eligible = unsafe {
-        world.call(kernel_parameters(world, instance, declared_kernel_parameters(instance), |param, layout| {
+        world.call(kernel_parameters(world, instance, declared_kernel_parameters(instance), |param, binding| {
             signature.parameters.push(param.into_owned());
-            signature.uniform_types.extend(layout);
+            signature.bindings.push(binding);
         })).await
     }?;
     Ok(eligible.then_some(signature))
@@ -2435,7 +2461,7 @@ async fn kernel_parameters<'a>(
     world: &World,
     instance: &crate::generics::Instance,
     parameters: impl Iterator<Item = ScopeParameter<'a>>,
-    mut retain: impl FnMut(Cow<'a, Param>, Option<Ty>),
+    mut retain: impl FnMut(Cow<'a, Param>, KernelBinding),
 ) -> Result<bool> {
     let d=&instance.definition;
     let result=unsafe { world.call(instance.bindings.type_name(world,&d.function.result(),
@@ -2449,10 +2475,11 @@ async fn kernel_parameters<'a>(
                 Cow::Owned(unsafe { world.call(instance.parameter(world, parameter)).await }?),
             ScopeParameter::Bound(parameter) => Cow::Borrowed(parameter),
         };
-        let layout = match function_inputs::domain_parameter(&param) {
-            function_inputs::DomainParameter::Accept => None,
-            function_inputs::DomainParameter::Reject => return Ok(false),
-            function_inputs::DomainParameter::PlainLayout => {
+        let parameter = function_inputs::domain_parameter(&param);
+        let layout = match parameter.layout {
+            function_inputs::DomainLayout::Accept => None,
+            function_inputs::DomainLayout::Reject => return Ok(false),
+            function_inputs::DomainLayout::PlainLayout => {
                 let ty = unsafe { world.call(world
                     .ty(&param.ty, &d.source, param.span, &d.module, &d.imports)).await }?;
                 if ty.owns_resources() {
@@ -2461,7 +2488,7 @@ async fn kernel_parameters<'a>(
                 Some(ty)
             }
         };
-        retain(param, layout);
+        retain(param, KernelBinding { form: parameter.form, layout });
     }
     Ok(true)
 }

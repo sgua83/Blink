@@ -2722,8 +2722,8 @@ pub(crate) async fn check_domain(
         None => {
             let input = DomainInput::Declaration { instance, signature: None };
             let parameters = unsafe { world.call(input.parameters(world)).await }?.into_owned();
-            let uniform_types = unsafe { world.call(check_bound_kernel(world, instance, &parameters)).await }?;
-            checked = KernelSignature { parameters, uniform_types };
+            let bindings = unsafe { world.call(check_bound_kernel(world, instance, &parameters)).await }?;
+            checked = KernelSignature { parameters, bindings };
             &checked
         }
     };
@@ -2731,17 +2731,17 @@ pub(crate) async fn check_domain(
     Ok(())
 }
 
-async fn check_bound_kernel(world: &World, instance: &crate::generics::Instance, parameters: &[Param]) -> Result<Vec<Ty>> {
-    let mut uniform_types = Vec::new();
+async fn check_bound_kernel(world: &World, instance: &crate::generics::Instance, parameters: &[Param]) -> Result<Vec<KernelBinding>> {
+    let mut bindings = Vec::new();
     let eligible = unsafe {
-        world.call(kernel_parameters(world, instance, parameters.iter().map(ScopeParameter::Bound), |_, layout| {
-            uniform_types.extend(layout);
+        world.call(kernel_parameters(world, instance, parameters.iter().map(ScopeParameter::Bound), |_, binding| {
+            bindings.push(binding);
         })).await
     }?;
     if !eligible {
         return Err(invalid_kernel_interface(DomainInput::Declaration { instance, signature: None }));
     }
-    Ok(uniform_types)
+    Ok(bindings)
 }
 
 async fn domain_declaration(
@@ -2820,22 +2820,19 @@ async fn build_domain(
         Some(parameters) => Cow::Borrowed(parameters),
         None => unsafe { world.call(input.parameters(world)).await }?,
     };
-    let mut local_types;
-    let mut shared_types;
-    let uniform_types: Option<&mut dyn Iterator<Item = Ty>> = match input {
+    let bindings = match input {
         DomainInput::Declaration { signature: Some(signature), .. } => {
-            shared_types = signature.uniform_types.iter().cloned();
-            Some(&mut shared_types)
+            DomainBindings::Shared(signature.bindings.iter())
         }
         DomainInput::Declaration { instance, signature: None } => {
-            local_types = unsafe { world.call(check_bound_kernel(world, instance, &bound_parameters)).await }?.into_iter();
-            Some(&mut local_types)
+            let bindings = unsafe { world.call(check_bound_kernel(world, instance, &bound_parameters)).await }?;
+            DomainBindings::Owned(bindings.into_iter())
         }
-        DomainInput::Parallel { .. } => None,
+        DomainInput::Parallel { .. } => DomainBindings::Unqualified,
     };
     let mut entry = DomainEntry::new();
     let (expanded, bound_contracts) = unsafe {
-        world.call(expand_domain(world, input, &bound_parameters, uniform_types, functions, Some(&mut entry))).await
+        world.call(expand_domain(world, input, &bound_parameters, bindings, functions, Some(&mut entry))).await
     }?;
     let mut signature = expanded.program;
     let mut scopes = expanded.scopes;
