@@ -787,7 +787,48 @@ unsafe extern "C" {
     #[link_name="bootstrap.ownership_payload::join_returned"]
     fn source_join_returned(left:Item,right:Item,stored:u32,choice:Address,presence:Address,merge_metadata:u32,host:ReturnedHost);
 }
+
+fn join_items(left: Item, right: Item, stored: bool, choice: Option<&bounds::Condition>,
+    presence: Option<&owned_presence::Presence>, merge_metadata: u32)
+{
+    let mut context = ReturnedJoin { borrows: None };
+    unsafe { source_join_returned(left, right, u32::from(stored),
+        choice.map_or(std::ptr::null_mut(),pointer), presence.map_or(std::ptr::null_mut(),pointer), merge_metadata, ReturnedHost {
+            context:pointer_mut(&mut context),values:MUT_HOST,data:DATA_PRESENCE,
+            save:save_root_borrows,restore:restore_root_borrows,maximum:data_maximum,
+            elements:merge_elements,prefixes:merge_prefixes,
+        }); }
+}
+
+fn join_selected_model<T>(left: &mut T, mut right: T, when: &owned_presence::Presence,
+    condition: Option<&bounds::Condition>, item: fn(&mut T) -> Item)
+{
+    match when {
+        owned_presence::Presence::All => return,
+        owned_presence::Presence::None => { *left = right; return; }
+        _ => {}
+    }
+    let projected;
+    let condition = match condition {
+        Some(condition) => condition,
+        None => { projected = when.condition(); &projected }
+    };
+    join_items(item(left), item(&mut right), false, Some(condition), Some(when), 1);
+}
+
+pub(in crate::check) fn select_dataset(left: &mut Data, right: Data, when: &owned_presence::Presence, condition: &bounds::Condition) {
+    join_selected_model(left, right, when, Some(condition), |data| Item { node: pointer_mut(data), kind: 3 });
+}
+
+pub(in crate::check) fn select_aggregate(left: &mut OwnedValue, right: OwnedValue, when: &owned_presence::Presence, condition: &bounds::Condition) {
+    join_selected_model(left, right, when, Some(condition), |value| Item { node: pointer_mut(value.as_mut()), kind: 4 });
+}
+
 impl Returned {
+    pub(in crate::check) fn join_presence(&mut self, other: Self, when: &owned_presence::Presence, condition: Option<&bounds::Condition>) {
+        join_selected_model(self, other, when, condition, |value| mutable_item(Some(value)));
+    }
+
     pub(in crate::check) fn join_with_presence(&mut self, other: Self, stored: bool,
         choice: Option<&bounds::Condition>, presence: Option<&owned_presence::Presence>) {
         self.join_returned(other, stored, choice, presence, 1);
@@ -799,13 +840,7 @@ impl Returned {
 
     fn join_returned(&mut self, mut other: Self, stored: bool, choice: Option<&bounds::Condition>,
         presence: Option<&owned_presence::Presence>, merge_metadata: u32) {
-        let mut context=ReturnedJoin {borrows:None};
-        unsafe { source_join_returned(mutable_item(Some(self)),mutable_item(Some(&mut other)),u32::from(stored),
-            choice.map_or(std::ptr::null_mut(),pointer),presence.map_or(std::ptr::null_mut(),pointer),merge_metadata,ReturnedHost {
-                context:pointer_mut(&mut context),values:MUT_HOST,data:DATA_PRESENCE,
-                save:save_root_borrows,restore:restore_root_borrows,maximum:data_maximum,
-                elements:merge_elements,prefixes:merge_prefixes,
-            }); }
+        join_items(mutable_item(Some(self)), mutable_item(Some(&mut other)), stored, choice, presence, merge_metadata);
     }
 }
 

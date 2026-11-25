@@ -3799,7 +3799,7 @@ impl Builder<'_> {
     }
     pub(super) fn join_environment_selected(
         &mut self,
-        other: &mut BTreeMap<String, Binding>,
+        mut other: BTreeMap<String, Binding>,
         when:&owned_presence::Presence,
         choice:&Condition,
     ) {
@@ -3824,7 +3824,7 @@ impl Builder<'_> {
                 for(&component,&reg)in components.iter().zip(&regs){proof.origins[component].push(ValueIdentity::Register(reg));}
             }
         }
-        for((environment,names),alias)in [&mut self.env,&mut *other].into_iter().zip(&names).zip(&mut aliases){
+        for((environment,names),alias)in [&mut self.env,&mut other].into_iter().zip(&names).zip(&mut aliases){
             let cases=environment.values_mut().filter_map(|binding|match binding{
                 Binding::Value(value)=>Some(&mut value.proof),
                 binding=>binding.proof_storage().map(|(proof,_,_)|proof),
@@ -3840,7 +3840,7 @@ impl Builder<'_> {
             self.path=bounds::Clause::both(&self.path,&bounds::Clause::either(&choice.assume(&aliases[0],true),&choice.assume(&aliases[1],false)));
         }
         for (name, binding) in &mut self.env {
-            match (binding, &other[name]) {
+            match (binding, other.remove(name).unwrap()) {
                 (Binding::Value(a), Binding::Value(b)) => {
                     a.proof.join_condition(&b.proof,a.regs.len(),Some(choice));
                     a.uniform &= b.uniform;
@@ -3853,12 +3853,8 @@ impl Builder<'_> {
                     a.uniform &= b.uniform;
                 }
                 (Binding::Data(a), Binding::Data(b)) => a.length.join(&b.length, 1, None),
-                (Binding::OwnedValue(a), Binding::OwnedValue(b)) => {
-                    let mut value=returns::Returned::OwnedValue(a.clone());value.join_presence(returns::Returned::OwnedValue(b.clone()),when,Some(choice));let returns::Returned::OwnedValue(value)=value else{unreachable!()};*a=value;
-                }
-                (Binding::ApplicationData(a), Binding::ApplicationData(b)) => {
-                    let mut value=returns::Returned::Dataset(a.clone());value.join_presence(returns::Returned::Dataset(b.clone()),when,Some(choice));let returns::Returned::Dataset(value)=value else{unreachable!()};*a=value;
-                }
+                (Binding::OwnedValue(a), Binding::OwnedValue(b)) => owned_values::select_aggregate(a, b, when, choice),
+                (Binding::ApplicationData(a), Binding::ApplicationData(b)) => owned_values::select_dataset(a, b, when, choice),
                 (Binding::Tile(a), Binding::Tile(b)) => a.length.join(&b.length, 1, None),
                 _ => {}
             }

@@ -33,22 +33,6 @@ impl Ownership {
 }
 impl Returned{
     pub(super) fn restrict_owned(&mut self,when:&Presence){match self{Self::Dataset(data)=>data.ownership=data.ownership.restricted(when),Self::OwnedValue(value)=>value.restrict_owned(when),_=>{}}}
-    pub(super) fn join_presence(&mut self,other:Self,choice:&Presence,condition:Option<&bounds::Condition>){
-        match choice {
-            Presence::All => return,
-            Presence::None => { *self=other; return; }
-            _ => {}
-        }
-        let projected;
-        let condition = match condition {
-            Some(condition) => condition,
-            None => {
-                projected = choice.condition();
-                &projected
-            }
-        };
-        self.join_with_presence(other, false, Some(condition), Some(choice));
-    }
 }
 impl Builder<'_>{
     pub(super) fn resolve_owned_initialization(&self,value:&Position,assuming:Option<&Presence>)->Position{path::initialization(self,value,assuming)}
@@ -72,13 +56,13 @@ impl Builder<'_>{
             Some(true)=>body(self).await,
             None=>{
                 let condition=self.presence_register(value,condition_origin.as_ref());let outer=std::mem::take(&mut self.code);let initialized=self.initialized.clone();let path=self.path.clone();
-                let mut unselected=self.env.clone();
+                let unselected=self.env.clone();
                 self.path=projected.assume(&path,true);
                 body(self).await?;
                 self.path=path;
                 let selected=self.take_application_initialization_state();
                 self.join_initialization(value,selected,initialized);
-                self.join_environment_selected(&mut unselected,value,&projected);
+                self.join_environment_selected(unselected,value,&projected);
                 let yes=std::mem::replace(&mut self.code,outer);let kind=InstKind::If{condition,yes,no:Vec::new()};
                 if let Some(origin)=branch_origin{self.code.push(Inst::generated(kind,origin));}else{self.emit(kind);}
                 Ok(())

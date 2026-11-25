@@ -42,6 +42,33 @@ extern "C" void loop_natural_scalar(address context,usize components,usize edges
     }
 }
 
+extern "C" u32 loop_exit_join(address context,usize exits,u32 natural,u32 terminal,LoopExitHost host) on cpu
+    requires nonzero(host.terminal_reachable) requires nonzero(host.guards) requires nonzero(host.initialize)
+    requires nonzero(host.adopt) requires nonzero(host.merge) requires nonzero(host.publish) {
+    if(exits>1u64) {
+        LoopExitGuard source=LoopExitGuard::Body;
+        if(exits==2u64&&natural!=0&&terminal!=0&&host.terminal_reachable(context)==0) {
+            source=LoopExitGuard::Terminal;
+        }
+        usize guard=host.guards(context,source,natural);
+        host.initialize(context);
+        host.adopt(context,0);
+        usize remaining=exits-1u64;
+        // The last exit supplies the seed. Earlier edges use their own guards.
+        guard-=1u64;
+        while(remaining!=0u64) {
+            guard-=1u64;
+            host.merge(context,guard);
+            remaining-=1u64;
+        }
+    }else if(exits==1u64) {
+        host.adopt(context,1);
+    }
+    u32 reachable=u32(exits!=0u64);
+    host.publish(context,reachable);
+    return reachable;
+}
+
 extern "C" CheckedDispatch checked_dispatch(SignatureNode declaration) on cpu {
     FunctionNode function = binding_node<FunctionNode>(declaration.storage.nodes,declaration.offset);
     if (function.kind == 2) { return CheckedDispatch::Constant; }

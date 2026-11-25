@@ -205,14 +205,14 @@ impl Builder<'_> {
                     let environment=self.env.clone();let path=self.path.clone();no_exit=Some(BranchExit {code,initialized,environment,path,flow});
                 },
                 need @ (BranchNeed::OnlyYes|BranchNeed::OnlyNo|BranchNeed::Both|BranchNeed::Neither)=>{
-                    let yes=yes_exit.take().unwrap();let mut no=no_exit.take().unwrap();
+                    let yes=yes_exit.take().unwrap();let no=no_exit.take().unwrap();
                     match need {
                         BranchNeed::OnlyYes=>{self.path=yes.path;self.env=yes.environment;self.initialized=yes.initialized;},
                         BranchNeed::OnlyNo=>{self.path=no.path;self.env=no.environment;self.initialized=no.initialized;},
                         BranchNeed::Both=>{
                             self.path=bounds::Clause::either(&yes.path,&no.path);self.view_uses.after(span);self.env=yes.environment;
                             let when=owned_presence::Presence::input(&c);self.join_initialization(&when,yes.initialized,no.initialized);
-                            self.join_environment_selected(&mut no.environment,&when,&when.condition());
+                            self.join_environment_selected(no.environment,&when,&when.condition());
                         },
                         _=>{self.path=bounds::Clause::impossible();self.env=original.take().unwrap();self.join_initialization(&owned_presence::Presence::input(&c),yes.initialized,no.initialized);},
                     }
@@ -374,7 +374,7 @@ unsafe extern "C" fn merge_action(context:*mut SelectionMerge<'_,'_>,action:Sele
   SelectionMergeAction::UnionFlow=>v.builder.flow=v.yes_flow.union(v.no_flow),
   SelectionMergeAction::RestoreInit=>v.builder.initialized=v.selected_init.take().unwrap(),
   SelectionMergeAction::NoEnvironment=>v.builder.env=v.no_env.take().unwrap(),
-  SelectionMergeAction::JoinEnvironment=>{let when=owned_presence::Presence::input(v.condition);v.builder.join_environment_selected(v.no_env.as_mut().unwrap(),&when,&when.condition());},
+  SelectionMergeAction::JoinEnvironment=>{let when=owned_presence::Presence::input(v.condition);v.builder.join_environment_selected(v.no_env.take().unwrap(),&when,&when.condition());},
   SelectionMergeAction::Control=>v.builder.control_uniform=side!=0,
   SelectionMergeAction::PrepareOwners=>v.presences=[Some(owned_presence::Presence::input(v.condition)),Some(owned_presence::Presence::input(v.condition).not())],
   SelectionMergeAction::BeginOwners=>{v.owner_entries=Some(v.owners[side as usize].take().unwrap().into_iter());v.present=v.presences[side as usize].take();},

@@ -608,3 +608,16 @@ struct NaturalScalarHost {
 extern "C" void loop_natural_scalar(address context,usize components,usize edges,NaturalScalarHost host) on cpu
     requires nonzero(host.header_identity) requires nonzero(host.header_write)
     requires nonzero(host.repeated) requires nonzero(host.publish);
+
+enum LoopExitGuard:u32 { Body=0; Terminal=1; };
+struct LoopExitHost {
+    cfn<u32,address> terminal_reachable;
+    cfn<usize,address,LoopExitGuard,u32> guards;
+    cfn<void,address> initialize;
+    cfn<void,address,u32> adopt;
+    cfn<void,address,usize> merge;
+    cfn<void,address,u32> publish;
+};
+extern "C" u32 loop_exit_join(address context,usize exits,u32 natural,u32 terminal,LoopExitHost host) on cpu
+    requires nonzero(host.terminal_reachable) requires nonzero(host.guards) requires nonzero(host.initialize)
+    requires nonzero(host.adopt) requires nonzero(host.merge) requires nonzero(host.publish);

@@ -808,34 +808,17 @@ impl Builder<'_> {
         let has_natural = natural.is_some();
         context.exits.extend(natural);
         self.close_view_context(&mut context)?;
-        let guards = if context.exits.len() == 2 && has_natural
-            && let Some((entered, paths)) = terminal
-            && paths.iter().all(Option::is_none)
-        {
-            let mut test = test.clone();
-            test.proof = bounds::Proof::condition(entered);
-            let test = owned_presence::Presence::input(&test);
-            vec![test.clone(), test.not()]
-        } else if context.exits.len() > 1 {
-            let test = owned_presence::Presence::input(test);
-            let mut guards = loop_exit_paths(body, &context.controls, &test);
-            if has_natural {
-                guards.push(test.not());
-            }
-            guards
-        } else {
-            Vec::new()
+        let mut merge = LoopExitMerge {
+            builder: self, exits: context.exits, names: &context.names, controls: &context.controls,
+            terminal, test, body, span, guards: Vec::new(), initialized: BTreeSet::new(),
         };
-        let initialized = (context.exits.len() > 1).then(|| {
-            ownership::merge_initialization(&mut context.exits, &guards, |state| &mut state.initialized)
-        });
-        let mut guards=guards.into_iter().rev().skip(1);let mut exits=context.exits.into_iter().rev();let Some(first)=exits.next()else{self.env.retain(|name,_|context.names.contains(name));self.path=bounds::Clause::impossible();return Ok((false,context.writes))};
-        self.env=first.env;self.path=first.path;
-        for exit in exits{let when=guards.next().unwrap();let mut previous=std::mem::replace(&mut self.env,exit.env);self.path=bounds::Clause::either(&self.path,&exit.path);self.join_environment_selected(&mut previous,&when,&when.condition());}
-        self.env.retain(|name,_|context.names.contains(name));
-        self.initialized = initialized.unwrap_or(first.initialized);
-        self.view_uses.after(span);
-        Ok((true,context.writes))
+        let count = merge.exits.len();
+        let terminal = u32::from(merge.terminal.is_some());
+        let reachable = unsafe { source_loop_exit_join(ptr::from_mut(&mut merge).cast(), count, u32::from(has_natural), terminal, LoopExitHost {
+            terminal_reachable, guards: collect_exit_guards, initialize: merge_exit_initialization,
+            adopt: adopt_loop_exit, merge: merge_loop_exit, publish: publish_loop_exit,
+        }) };
+        Ok((reachable != 0, context.writes))
     }
 }
 use crate::ir::dataflow;
@@ -879,6 +862,96 @@ fn terminal_paths(begin: &Value, limit: &Value, edges: &[LoopState]) -> Terminal
         bounded: bounded_terminal, project: project_terminal,
     }); }
     (entered, state.paths)
+}
+
+struct LoopExitMerge<'a, 'world> {
+    builder: &'a mut Builder<'world>,
+    exits: Vec<LoopState>,
+    names: &'a BTreeSet<String>,
+    controls: &'a BTreeMap<Reg, Value>,
+    terminal: Option<Terminal>,
+    test: &'a Value,
+    body: &'a [Inst],
+    span: Span,
+    guards: Vec<Presence>,
+    initialized: BTreeSet<Position>,
+}
+
+#[repr(u32)]
+#[allow(dead_code)] // Produced by the native loop exit control.
+enum LoopExitGuard { Body, Terminal }
+
+#[repr(C)]
+struct LoopExitHost {
+    terminal_reachable: unsafe extern "C" fn(*const c_void) -> u32,
+    guards: unsafe extern "C" fn(*mut c_void, LoopExitGuard, u32) -> usize,
+    initialize: unsafe extern "C" fn(*mut c_void),
+    adopt: unsafe extern "C" fn(*mut c_void, u32),
+    merge: unsafe extern "C" fn(*mut c_void, usize),
+    publish: unsafe extern "C" fn(*mut c_void, u32),
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.function_body::loop_exit_join"]
+    fn source_loop_exit_join(context: *mut c_void, exits: usize, natural: u32, terminal: u32, host: LoopExitHost) -> u32;
+}
+
+unsafe extern "C" fn terminal_reachable(context: *const c_void) -> u32 {
+    let state = unsafe { &*context.cast::<LoopExitMerge<'_, '_>>() };
+    u32::from(state.terminal.as_ref().unwrap().1.iter().any(Option::is_some))
+}
+
+unsafe extern "C" fn collect_exit_guards(context: *mut c_void, source: LoopExitGuard, natural: u32) -> usize {
+    let state = unsafe { &mut *context.cast::<LoopExitMerge<'_, '_>>() };
+    state.guards = match source {
+        LoopExitGuard::Terminal => {
+            let (entered, _) = state.terminal.take().unwrap();
+            let mut test = state.test.clone();
+            test.proof = bounds::Proof::condition(entered);
+            let test = Presence::input(&test);
+            vec![test.clone(), test.not()]
+        }
+        LoopExitGuard::Body => {
+            let test = Presence::input(state.test);
+            let mut guards = loop_exit_paths(state.body, state.controls, &test);
+            if natural != 0 { guards.push(test.not()); }
+            guards
+        }
+    };
+    state.guards.len()
+}
+
+unsafe extern "C" fn merge_exit_initialization(context: *mut c_void) {
+    let state = unsafe { &mut *context.cast::<LoopExitMerge<'_, '_>>() };
+    state.initialized = ownership::merge_initialization(&mut state.exits, &state.guards, |exit| &mut exit.initialized);
+}
+
+unsafe extern "C" fn adopt_loop_exit(context: *mut c_void, sole: u32) {
+    let state = unsafe { &mut *context.cast::<LoopExitMerge<'_, '_>>() };
+    let exit = state.exits.pop().unwrap();
+    state.builder.env = exit.env;
+    state.builder.path = exit.path;
+    if sole != 0 { state.initialized = exit.initialized; }
+}
+
+unsafe extern "C" fn merge_loop_exit(context: *mut c_void, guard: usize) {
+    let state = unsafe { &mut *context.cast::<LoopExitMerge<'_, '_>>() };
+    let exit = state.exits.pop().unwrap();
+    let when = &state.guards[guard];
+    let previous = std::mem::replace(&mut state.builder.env, exit.env);
+    state.builder.path = bounds::Clause::either(&state.builder.path, &exit.path);
+    state.builder.join_environment_selected(previous, when, &when.condition());
+}
+
+unsafe extern "C" fn publish_loop_exit(context: *mut c_void, reachable: u32) {
+    let state = unsafe { &mut *context.cast::<LoopExitMerge<'_, '_>>() };
+    state.builder.env.retain(|name, _| state.names.contains(name));
+    if reachable != 0 {
+        state.builder.initialized = std::mem::take(&mut state.initialized);
+        state.builder.view_uses.after(state.span);
+    } else {
+        state.builder.path = bounds::Clause::impossible();
+    }
 }
 
 #[repr(C)]
