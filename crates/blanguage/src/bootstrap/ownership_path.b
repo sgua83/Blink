@@ -183,3 +183,22 @@ extern "C" u32 compare_projected_residency(address context,ResidencyPair pair,Re
     }
     return host.leaf(context,pair);
 }
+
+extern "C" void bind_argument(address context,u64 prefix,ArgumentBindingHost host) on cpu
+    requires nonzero(host.bind_root)
+    requires nonzero(host.next_descendant)
+    requires nonzero(host.declared_at)
+    requires nonzero(host.bind_child) {
+    host.bind_root(context);
+    ArgumentDescendant next=host.next_descendant(context);
+    while(next.fields!=0u64){
+        if(next.bound==0){
+            u64 fields=next.fields;
+            while(fields>prefix && host.declared_at(context,fields)==0){
+                fields-=1u64;
+            }
+            if(fields==prefix){host.bind_child(context);}
+        }
+        next=host.next_descendant(context);
+    }
+}

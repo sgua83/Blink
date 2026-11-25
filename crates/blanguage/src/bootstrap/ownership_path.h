@@ -45,3 +45,16 @@ extern "C" u32 compare_projected_residency(address context,ResidencyPair pair,Re
     requires nonzero(host.selected)
     requires nonzero(host.branch)
     requires nonzero(host.leaf);
+
+struct ArgumentDescendant { u64 fields; u32 bound; };
+struct ArgumentBindingHost {
+    cfn<void,address> bind_root;
+    cfn<ArgumentDescendant,address> next_descendant;
+    cfn<u32,address,u64> declared_at;
+    cfn<void,address> bind_child;
+};
+extern "C" void bind_argument(address context,u64 prefix,ArgumentBindingHost host) on cpu
+    requires nonzero(host.bind_root)
+    requires nonzero(host.next_descendant)
+    requires nonzero(host.declared_at)
+    requires nonzero(host.bind_child);

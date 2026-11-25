@@ -535,47 +535,161 @@ fn query_consume(required:&mut Requirements,deferred:&mut bool,wanted:Option<&In
     }
 }
 // 声明中的Input映射还引用实参已有的后代模型，不把父位置当作完整子树。
-pub(super) fn inputs(value:&Residency,out:&mut BTreeSet<Input>){match value{
-        Residency::Selected(_,a,b)=>{inputs(a,out);inputs(b,out);},
-        Residency::Origins(origins)=>out.extend(origins.iter().filter_map(|origin|match origin{Origin::Input(input)=>Some(input.clone()),_=>None})),
-        Residency::Absent=>{},
-    }}
-fn bind_arguments(declared:&Arguments,actual:&Arguments,bindings:&BTreeMap<ValueIdentity,bounds::Proof>,outputs:&Outputs)->Arguments{
-    fn family(value:&Residency,depth:usize)->Residency{match value{
-        Residency::Selected(when,a,b)=>Residency::conditional(when.as_ref().clone(),family(a,depth),family(b,depth)),
-        Residency::Origins(origins)=>Residency::Origins(origins.iter().map(|origin|match origin{
-            Origin::Input(input)=>{
-                let mut left=input.fields.iter().filter(|part|matches!(part,Part::Elements)).count();
-                let fields=input.fields.iter().map(|part|match part{Part::Elements=>{left-=1;Part::Selected(Some(bounds::Selector::Direct(bounds::Operand::Value(ValueIdentity::ElementIndex(depth+left)))))},other=>other.clone()}).collect();
-                Origin::Input(Input{parameter:input.parameter,fields})
-            },
-            other=>other.clone(),
-        }).collect()),
-        Residency::Absent=>Residency::Absent,
-    }}
-    fn bind(value:&Residency,actual:&Arguments,outputs:&Outputs)->Residency{
-        let value=match value.bind(actual){Some(value)=>value,None=>Residency::Absent};
-        if present(&value,outputs,&bounds::Clause::default(),&mut BTreeSet::new()){value}else{Residency::Absent}
-    }
-    let sources=declared.iter().map(|(input,value)|(input.clone(),value.at_call(&scoped_indices(bindings,input.depth())))).collect::<Arguments>();
-    let mut result=sources.iter().map(|(input,value)|(input.clone(),bind(value,actual,outputs))).collect::<Arguments>();
-    for(prefix,value)in &sources{
-        let mut origins=BTreeSet::new();inputs(value,&mut origins);let mut children=BTreeSet::new();
-        for source in origins{
-            let source=source.family();
-            for input in actual.keys(){
-                if input.parameter==source.parameter&&input.fields.starts_with(&source.fields)&&input.fields.len()>source.fields.len(){
-                    let mut child=prefix.clone();child.fields.extend_from_slice(&input.fields[source.fields.len()..]);
-                    if !sources.keys().any(|other|other.parameter==child.parameter&&other.fields.len()>prefix.fields.len()&&child.fields.starts_with(&other.fields)){children.insert(child);}
+fn visit_inputs(value: &Residency, visit: &mut impl FnMut(&Input)) {
+    match value {
+        Residency::Selected(_, yes, no) => {
+            visit_inputs(yes, visit);
+            visit_inputs(no, visit);
+        }
+        Residency::Origins(origins) => {
+            for origin in origins {
+                if let Origin::Input(input) = origin {
+                    visit(input);
                 }
             }
         }
-        for child in children{
-            let depth=child.depth()-prefix.depth();
-            let shift=(0..prefix.depth()).map(|index|(ValueIdentity::ElementIndex(index),bounds::Proof::default().with_identity(ValueIdentity::ElementIndex(index+depth)))).collect();
-            let value=family(&value.element_indices(&shift),depth).project(&child.model().fields[prefix.fields.len()..],&child.model().selection());
-            result.insert(child,bind(&value,actual,outputs));
+        Residency::Absent => {}
+    }
+}
+
+pub(super) fn inputs(value: &Residency, out: &mut BTreeSet<Input>) {
+    visit_inputs(value, &mut |input| { out.insert(input.clone()); });
+}
+
+fn model_families(value: &Residency, depth: usize) -> Residency {
+    match value {
+        Residency::Selected(when, yes, no) => Residency::conditional(
+            when.as_ref().clone(), model_families(yes, depth), model_families(no, depth),
+        ),
+        Residency::Origins(origins) => Residency::Origins(origins.iter().map(|origin| {
+            let Origin::Input(input) = origin else { return origin.clone(); };
+            let mut left = input.fields.iter().filter(|part| matches!(part, Part::Elements)).count();
+            let fields = input.fields.iter().map(|part| match part {
+                Part::Elements => {
+                    left -= 1;
+                    Part::Selected(Some(bounds::Selector::Direct(bounds::Operand::Value(
+                        ValueIdentity::ElementIndex(depth + left),
+                    ))))
+                }
+                other => other.clone(),
+            }).collect();
+            Origin::Input(Input { parameter: input.parameter, fields })
+        }).collect()),
+        Residency::Absent => Residency::Absent,
+    }
+}
+
+struct ArgumentBinding<'a, 'iter> {
+    prefix: &'a Input,
+    value: &'a Residency,
+    declared: &'a Arguments,
+    actual: &'a Arguments,
+    outputs: &'a Outputs,
+    result: &'a mut Arguments,
+    descendants: &'iter mut dyn Iterator<Item = &'a [Part]>,
+    child: Input,
+    suffix: &'a [Part],
+}
+
+impl ArgumentBinding<'_, '_> {
+    fn resolve(&self, value: &Residency) -> Residency {
+        let Some(bound) = value.bind(self.actual) else { return Residency::Absent; };
+        if present(&bound, self.outputs, &bounds::Clause::default(), &mut BTreeSet::new()) {
+            bound
+        } else {
+            Residency::Absent
         }
+    }
+
+    fn child_from_suffix(&mut self) {
+        self.child.fields.truncate(self.prefix.fields.len());
+        self.child.fields.extend_from_slice(self.suffix);
+    }
+}
+
+#[repr(C)]
+struct ArgumentDescendant {
+    fields: u64,
+    bound: u32,
+}
+
+#[repr(C)]
+struct ArgumentBindingHost {
+    bind_root: unsafe extern "C" fn(Context),
+    next_descendant: unsafe extern "C" fn(Context) -> ArgumentDescendant,
+    declared_at: unsafe extern "C" fn(Context, u64) -> u32,
+    bind_child: unsafe extern "C" fn(Context),
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.ownership_path::bind_argument"]
+    fn bind_argument(context: Context, prefix: u64, host: ArgumentBindingHost);
+}
+
+unsafe extern "C" fn bind_root(context: Context) {
+    let binding = unsafe { &mut *context.cast::<ArgumentBinding<'_, '_>>() };
+    let value = binding.resolve(binding.value);
+    binding.result.insert(binding.prefix.clone(), value);
+}
+
+unsafe extern "C" fn next_descendant(context: Context) -> ArgumentDescendant {
+    let binding = unsafe { &mut *context.cast::<ArgumentBinding<'_, '_>>() };
+    let Some(suffix) = binding.descendants.next() else {
+        return ArgumentDescendant { fields: 0, bound: 0 };
+    };
+    binding.suffix = suffix;
+    binding.child_from_suffix();
+    ArgumentDescendant {
+        fields: binding.child.fields.len() as u64,
+        bound: u32::from(binding.result.contains_key(&binding.child)),
+    }
+}
+
+unsafe extern "C" fn declared_at(context: Context, fields: u64) -> u32 {
+    let binding = unsafe { &mut *context.cast::<ArgumentBinding<'_, '_>>() };
+    binding.child.fields.truncate(fields as usize);
+    u32::from(binding.declared.contains_key(&binding.child))
+}
+
+unsafe extern "C" fn bind_child(context: Context) {
+    let binding = unsafe { &mut *context.cast::<ArgumentBinding<'_, '_>>() };
+    binding.child_from_suffix();
+    let prefix_depth = binding.prefix.depth();
+    let model = binding.child.model();
+    let depth = model.depth() - prefix_depth;
+    let shift = (0..prefix_depth).map(|index| (
+        ValueIdentity::ElementIndex(index),
+        bounds::Proof::default().with_identity(ValueIdentity::ElementIndex(index + depth)),
+    )).collect();
+    let value = model_families(&binding.value.element_indices(&shift), depth).project(
+        &model.fields[binding.prefix.fields.len()..], &model.selection(),
+    );
+    let value = binding.resolve(&value);
+    binding.result.insert(binding.child.clone(), value);
+}
+
+fn bind_arguments(declared: &Arguments, actual: &Arguments, bindings: &BTreeMap<ValueIdentity, bounds::Proof>, outputs: &Outputs) -> Arguments {
+    use std::ops::Bound::{Excluded, Unbounded};
+    let mut result = Arguments::new();
+    for (prefix, source) in declared {
+        let value = source.at_call(&scoped_indices(bindings, prefix.depth()));
+        let mut families = BTreeSet::new();
+        visit_inputs(&value, &mut |input| { families.insert(input.family()); });
+        let mut descendants = families.into_iter().flat_map(|family| {
+            actual.range((Excluded(&family), Unbounded)).map_while(move |(input, _)| {
+                if input.parameter != family.parameter {
+                    return None;
+                }
+                input.fields.strip_prefix(family.fields.as_slice())
+            })
+        });
+        let mut binding = ArgumentBinding {
+            prefix, value: &value, declared, actual, outputs, result: &mut result,
+            descendants: &mut descendants, child: prefix.clone(), suffix: &[],
+        };
+        let host = ArgumentBindingHost { bind_root, next_descendant, declared_at, bind_child };
+        // The host borrows the original maps and current projected source for this synchronous call.
+        unsafe { bind_argument(ptr::from_mut(&mut binding).cast(), prefix.fields.len() as u64, host); }
     }
     result
 }
