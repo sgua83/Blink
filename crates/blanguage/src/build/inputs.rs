@@ -21,6 +21,7 @@ type CapturedInterface = (Arc<syntax::Module>, Option<Arc<[String]>>);
 pub(super) struct CapturedUnit {
     interfaces: Interfaces<ast::Result<CapturedInterface>>,
     exports: Option<Vec<ast::Result<CapturedExport>>>,
+    checks: Option<crate::frontend::EntryChecks>,
 }
 pub(crate) struct Inputs {
     sources: Arc<Sources>,
@@ -55,7 +56,7 @@ impl Capture {
 
     pub(super) fn capture(
         &mut self, path: &Path, root: &Path, providers: &BTreeMap<&str, ProviderInterface<'_>>,
-        requests: &[String],
+        requests: &[String], share_checks: bool,
     ) -> CapturedUnit {
         let exports = (!providers.is_empty() && !requests.is_empty()).then(Vec::new);
         let count = if exports.is_some() { requests.len() } else { 0 };
@@ -68,7 +69,10 @@ impl Capture {
         // Capture can stop at a failed read. The original loader consumes that
         // result from the snapshot when it reaches this path or provider.
         unsafe { capture_build_inputs(capture_host(context), count); }
-        CapturedUnit { interfaces: state.interfaces, exports: state.exports }
+        CapturedUnit {
+            interfaces: state.interfaces, exports: state.exports,
+            checks: share_checks.then(crate::frontend::EntryChecks::default),
+        }
     }
 
     fn capture_interface(
@@ -281,6 +285,10 @@ unsafe extern "C" fn capture_export(context: *mut std::ffi::c_void, index: usize
 }
 
 impl Inputs {
+    pub(super) fn entry_checks(&self) -> Option<&crate::frontend::EntryChecks> {
+        self.unit.checks.as_ref()
+    }
+
     pub(crate) fn exports(&self) -> Option<&[ast::Result<CapturedExport>]> {
         self.unit.exports.as_deref()
     }

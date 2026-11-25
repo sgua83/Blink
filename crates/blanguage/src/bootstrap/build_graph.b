@@ -1,4 +1,5 @@
 module bootstrap.build_graph;
+import bootstrap.names;
 
 extern "C" handle GetProcessHeap() on cpu from "KERNEL32.dll";
 extern "C" address HeapAlloc(handle heap,u32 flags,usize bytes) on cpu from "KERNEL32.dll";
@@ -34,6 +35,69 @@ GraphRange range_at(address rows,u64 index) on cpu {
 }
 void put_range(address rows,u64 index,GraphRange range) on cpu {
     unsafe_position<GraphRange>(offset(rows,index*size_of<GraphRange>()))=range;
+}
+address capture_slot(address slots,u64 unit) on cpu {
+    return offset(slots,unit*size_of<CaptureSlot>());
+}
+EntryKey entry_key(address entries,u64 index) on cpu {
+    return unsafe_position<EntryKey>(offset(entries,index*size_of<EntryKey>()));
+}
+i32 compare_entries(EntryKey first,EntryKey second,address ids) on cpu {
+    i32 path=compare_name(first.path,second.path);
+    if (path!=i32(0)) { return path; }
+    i32 root=compare_name(first.root,second.root);
+    if (root!=i32(0)) { return root; }
+    if (first.providers.count!=second.providers.count) {
+        return first.providers.count<second.providers.count ? i32(-1) : i32(1);
+    }
+    u64 index=0u64;
+    while (index<first.providers.count) {
+        u64 left=word(ids,first.providers.start+index);
+        u64 right=word(ids,second.providers.start+index);
+        if (left!=right) { return left<right ? i32(-1) : i32(1); }
+        index+=1u64;
+    }
+    return i32(0);
+}
+struct EntryOrder { address entries; address ids; };
+extern "C" bool entry_before(address left,address right,address context) on cpu {
+    EntryOrder input=unsafe_position<EntryOrder>(context);
+    EntryKey first=entry_key(input.entries,word(left,0u64));
+    EntryKey second=entry_key(input.entries,word(right,0u64));
+    i32 order=compare_entries(first,second,input.ids);
+    return order==i32(0) ? first.unit<second.unit : order<i32(0);
+}
+extern "C" u64 capture_slots(address entries,address order,u64 entry_count,address ids,address slots,u64 unit_count) on cpu {
+    EntryOrder input=EntryOrder(entries,ids);
+    sort_rows<u64>(order,entry_count,address_of(input),c_function(entry_before));
+    u64 first=0u64;
+    while (first<entry_count) {
+        EntryKey owner=entry_key(entries,word(order,first));
+        first+=1u64;
+        while (first<entry_count) {
+            EntryKey member=entry_key(entries,word(order,first));
+            if (compare_entries(owner,member,ids)!=i32(0)) { break; }
+            unsafe_position<CaptureSlot>(capture_slot(slots,owner.unit)).kind=CaptureKind::Shared;
+            unsafe_position<CaptureSlot>(capture_slot(slots,member.unit))=CaptureSlot(owner.unit,CaptureKind::Borrowed);
+            first+=1u64;
+        }
+    }
+    // The earliest original consumer owns the snapshot. Number captures in
+    // original unit order to preserve the actual source read order.
+    u64 count=0u64;
+    u64 unit=0u64;
+    while (unit<unit_count) {
+        address slot=capture_slot(slots,unit);
+        if (unsafe_position<CaptureSlot>(slot).kind==CaptureKind::Borrowed) {
+            u64 owner=unsafe_position<CaptureSlot>(slot).index;
+            unsafe_position<CaptureSlot>(slot).index=unsafe_position<CaptureSlot>(capture_slot(slots,owner)).index;
+        } else {
+            unsafe_position<CaptureSlot>(slot).index=count;
+            count+=1u64;
+        }
+        unit+=1u64;
+    }
+    return count;
 }
 Visit visit_at(address visits,u64 index) on cpu {
     return unsafe_position<Visit>(offset(visits,index*size_of<Visit>()));

@@ -1,5 +1,5 @@
 //! 调用方持有的一次编译图；只调度本次真实依赖，不保留后台消费者。
-use super::{Compilation, ObjectCompilation, ObjectKind, Result, inputs::{Capture, ProviderInterface}};
+use super::{ByteField, Compilation, ObjectCompilation, ObjectKind, Result, inputs::{Capture, ProviderInterface}};
 use crate::{Compiler, ast::Target, object::Object, source_path};
 use std::{collections::BTreeMap, ffi::{OsStr, c_void}, os::windows::ffi::OsStrExt, path::{Path, PathBuf}, ptr, sync::{Arc, Condvar, Mutex, MutexGuard}, thread};
 #[derive(Clone, Copy)]
@@ -39,6 +39,7 @@ struct Prepared<'a> {
     artifact: PathBuf,
     replace_existing: bool,
     kind: UnitKind<'a>,
+    capture: usize,
 }
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
@@ -52,6 +53,15 @@ impl GraphRange {
         &values[self.start..self.start + self.count]
     }
 }
+
+#[repr(C)]
+struct EntryKey { path: ByteField, root: ByteField, providers: GraphRange, unit: usize }
+#[repr(u64)]
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+enum CaptureKind { #[default] Unique, Shared, Borrowed }
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+struct CaptureSlot { index: usize, kind: CaptureKind }
 
 #[repr(C)]
 struct GraphUnit {
@@ -98,6 +108,9 @@ unsafe extern "C" {
     fn build_dependency_plan(input: GraphInput, output: GraphOutput) -> GraphPlan;
     #[link_name = "bootstrap.build_graph::release_plan"]
     fn release_dependency_plan(ids: *const usize);
+    #[link_name = "bootstrap.build_graph::capture_slots"]
+    fn capture_slots(entries: *const EntryKey, order: *mut usize, entry_count: usize, ids: *const usize,
+        slots: *mut CaptureSlot, unit_count: usize) -> usize;
     #[link_name = "bootstrap.build_schedule::initialize_ready"]
     fn initialize_ready(ready: *mut usize, waiting: *const usize, length: usize) -> usize;
     #[link_name = "bootstrap.build_schedule::run_worker"]
@@ -281,7 +294,6 @@ struct GraphExecution<'graph, 'source> {
     provider_rows: &'graph [GraphRange],
     ids: &'graph [usize],
     externals: &'graph [&'source Object],
-    entry_checks: &'graph [Option<Arc<crate::frontend::EntryChecks>>],
     state: Mutex<State>,
     changed: Condvar,
 }
@@ -296,14 +308,15 @@ impl GraphExecution<'_, '_> {
 
     fn compile(&self, index: usize, providers: &[Provider<'_>]) -> Result<Output> {
         let unit = &self.prepared[index];
+        let inputs = &self.inputs[unit.capture];
         let artifact = super::Artifact { path: &unit.artifact, replace_existing: unit.replace_existing };
         self.compiler.execute(|worker| match unit.kind {
             UnitKind::Object(kind) => super::object::compile(worker, &unit.path, &unit.root,
-                providers.iter().map(Provider::object), kind, artifact, Some(&self.inputs[index]))
+                providers.iter().map(Provider::object), kind, artifact, Some(inputs))
                 .map(|value| Output::Object(Arc::new(value))),
             UnitKind::Entry { entry, target } => super::compile_in(worker, &unit.path, &unit.root,
                 entry, target, super::EntryOutput::Artifact(artifact), Vec::new(), providers.iter().map(Provider::object),
-                Some(&self.inputs[index]), self.entry_checks[index].as_deref()).map(Output::Entry),
+                Some(inputs), inputs.entry_checks()).map(Output::Entry),
         }).map_err(|error| match error {
             crate::parallel::Error::Work(error) => error,
             crate::parallel::Error::Resource(error) => Box::new(error) as Box<dyn std::error::Error + Send + Sync>,
@@ -398,7 +411,7 @@ impl Compiler {
         let (prepared, inputs, dependency_plan) = self.execute(|_| {
         let dependency_plan = dependency_plan(units)?;
         let mut destinations = BTreeMap::new();
-        let prepared = units.iter().enumerate().map(|(index, unit)| {
+        let mut prepared = units.iter().enumerate().map(|(index, unit)| {
             let header = source_path::canonicalize(&source_path::with_extension(unit.path, u16::from(b'h')))?;
             let extension: Vec<_> = unit.path.extension().unwrap_or_else(|| OsStr::new("b")).encode_wide().collect();
             let path = source_path::with_extension_units(&header, &extension);
@@ -419,15 +432,31 @@ impl Compiler {
             } else {
                 true
             };
-            Ok(Prepared { path, root, artifact, replace_existing, kind: unit.kind })
+            Ok(Prepared { path, root, artifact, replace_existing, kind: unit.kind, capture: 0 })
         }).collect::<Result<Vec<_>>>()?;
         drop(destinations);
         let mut capture = Capture::default();
         let headers = prepared.iter().map(|unit| capture.header(&unit.path))
             .collect::<crate::ast::Result<Vec<_>>>()?;
-        let mut captured = Vec::with_capacity(prepared.len());
         let ids = dependency_plan.plan.ids();
-        for (unit, row) in prepared.iter().zip(&dependency_plan.provider_rows) {
+        let entries: Vec<_> = prepared.iter().enumerate()
+            .filter(|(_, unit)| matches!(unit.kind, UnitKind::Entry { .. }))
+            .map(|(index, unit)| EntryKey { path: unit.path.as_os_str().as_encoded_bytes().into(),
+                root: unit.root.as_os_str().as_encoded_bytes().into(),
+                providers: dependency_plan.provider_rows[index], unit: index })
+            .collect();
+        let mut order: Vec<_> = (0..entries.len()).collect();
+        let mut slots = vec![CaptureSlot::default(); prepared.len()];
+        // The synchronous planner only borrows Windows canonical paths and
+        // the same ordered provider rows that the original workers consume.
+        let count = unsafe { capture_slots(entries.as_ptr(), order.as_mut_ptr(), entries.len(), ids.as_ptr(),
+            slots.as_mut_ptr(), slots.len()) };
+        drop(order);
+        drop(entries);
+        let mut captured = Vec::with_capacity(count);
+        for ((unit, slot), row) in prepared.iter_mut().zip(slots).zip(&dependency_plan.provider_rows) {
+            unit.capture = slot.index;
+            if slot.kind == CaptureKind::Borrowed { continue; }
             let mut providers = BTreeMap::new();
             for dependency in dependencies(row.slice(ids), units.len(), &dependency_plan.externals) {
                 let (name, interface) = match dependency {
@@ -443,7 +472,8 @@ impl Compiler {
                 UnitKind::Object(ObjectKind::Module(requests)) => requests,
                 _ => &[],
             };
-            captured.push(capture.capture(&unit.path, &unit.root, &providers, requests));
+            captured.push(capture.capture(&unit.path, &unit.root, &providers, requests,
+                slot.kind == CaptureKind::Shared));
         }
         let inputs = capture.finish(captured);
         Ok::<_, Box<dyn std::error::Error + Send + Sync>>((prepared, inputs, dependency_plan))
@@ -453,26 +483,9 @@ impl Compiler {
         })?;
         let DependencyPlan { plan, provider_rows, externals, schedule } = dependency_plan;
         let ids = plan.ids();
-        // These entries borrow the same captured source and the same completed
-        // provider objects. Output paths and selected entries remain independent.
-        let mut entry_groups = BTreeMap::<_, Vec<usize>>::new();
-        for (index, unit) in prepared.iter().enumerate() {
-            if matches!(unit.kind, UnitKind::Entry { .. }) {
-                let identity = (&unit.path, &unit.root, provider_rows[index].slice(ids));
-                entry_groups.entry(identity).or_default().push(index);
-            }
-        }
-        let mut entry_checks = vec![None; units.len()];
-        for group in entry_groups.into_values().filter(|group| group.len() > 1) {
-            let shared = Arc::new(crate::frontend::EntryChecks::default());
-            for index in group {
-                entry_checks[index] = Some(Arc::clone(&shared));
-            }
-        }
-
         let graph = GraphExecution {
             compiler: self, prepared: &prepared, inputs: &inputs, provider_rows: &provider_rows,
-            ids, externals: &externals, entry_checks: &entry_checks,
+            ids, externals: &externals,
             state: Mutex::new(State {
                 schedule, outputs: (0..units.len()).map(|_| None).collect(), failure: None,
             }),
