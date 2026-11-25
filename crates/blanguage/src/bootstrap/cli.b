@@ -178,7 +178,6 @@ extern "C" LinkCommandLine parse_link_arguments(address arguments, u64 count, ad
 }
 
 enum ResourceOption:u32 { None=0; Jobs=1; Cpus=2; ParameterLimit=3; };
-struct ParsedCpus { u64 count; CompileError error; };
 
 CompileError compile_number_error(NumberError error) on cpu {
     if (error == NumberError::Empty) { return CompileError::EmptyNumber; }
@@ -194,8 +193,8 @@ ResourceOption resource_option(CliArgument argument) on cpu {
     return ResourceOption::None;
 }
 
-ParsedCpus parse_cpus(CliArgument argument, address cpus) on cpu {
-    u64 count = 0u64;
+CompileError parse_cpus(CliArgument argument, OperandSink operands) on cpu
+    requires nonzero(operands.processor) {
     u64 begin = 0u64;
     while (begin <= argument.length) {
         u64 end = begin;
@@ -206,17 +205,15 @@ ParsedCpus parse_cpus(CliArgument argument, address cpus) on cpu {
             if (byte == 58 && colon == argument.length) { colon = end; }
             end += 1u64;
         }
-        if (colon == argument.length) { return ParsedCpus(0u64, CompileError::CpuSyntax); }
+        if (colon == argument.length) { return CompileError::CpuSyntax; }
         ParsedNumber group = unsigned_number<10>(argument, begin, colon, 65535u64);
-        if (group.error != NumberError::None) { return ParsedCpus(0u64, compile_number_error(group.error)); }
+        if (group.error != NumberError::None) { return compile_number_error(group.error); }
         ParsedNumber number = unsigned_number<10>(argument, colon + 1u64, end, 255u64);
-        if (number.error != NumberError::None) { return ParsedCpus(0u64, compile_number_error(number.error)); }
-        unsafe_position<u32>(unsafe_address(address_bits(cpus) + count * size_of<u32>())) =
-            u32(group.value * 256u64 + number.value);
-        count += 1u64;
+        if (number.error != NumberError::None) { return compile_number_error(number.error); }
+        operands.processor(operands.context, u16(group.value), u8(number.value));
         begin = end + 1u64;
     }
-    return ParsedCpus(count, CompileError::None);
+    return CompileError::None;
 }
 
 CompileCommand early_command(CliArgument argument) on cpu {
@@ -289,11 +286,11 @@ CompileCommandLine parse_object_options(address arguments, u64 count, OperandSin
     return result;
 }
 
-extern "C" CompileCommandLine parse_compile_arguments(address arguments, u64 count, OperandSink operands, address cpus) on cpu
-    requires nonzero(operands.import_path) requires nonzero(operands.instance_name) {
+extern "C" CompileCommandLine parse_compile_arguments(address arguments, u64 count, OperandSink operands) on cpu
+    requires nonzero(operands.import_path) requires nonzero(operands.instance_name) requires nonzero(operands.processor) {
     CompileCommandLine result = CompileCommandLine(
         CompileCommand::Unknown, CompileError::None, CompileError::None, 0,
-        0u64, count, count, count, count, count, count, 0u64, 0u64, EntryMode::Application, 0u64, 0u64, 0u64);
+        0u64, count, count, count, count, count, count, 0u64, 0u64, EntryMode::Application, 0u64, 0u64);
     if (count == 0u64) { result.command = CompileCommand::Help; return result; }
     CliArgument first = argument_at(arguments, 0u64);
     if (count == 1u64 && is_token(first, "--version")) { result.command = CompileCommand::Version; return result; }
@@ -315,6 +312,7 @@ extern "C" CompileCommandLine parse_compile_arguments(address arguments, u64 cou
         return result;
     }
 
+    bool has_cpus = false;
     u64 index = 0u64;
     while (index < count) {
         ResourceOption option = resource_option(argument_at(arguments, index));
@@ -331,10 +329,10 @@ extern "C" CompileCommandLine parse_compile_arguments(address arguments, u64 cou
             if (jobs.value == 0u64) { result.prefix_error = CompileError::ZeroJobs; return result; }
             result.jobs = jobs.value;
         } else if (option == ResourceOption::Cpus) {
-            if (result.cpu_count != 0u64) { result.prefix_error = CompileError::DuplicateCpus; return result; }
-            ParsedCpus selected = parse_cpus(argument, cpus);
-            if (selected.error != CompileError::None) { result.prefix_error = selected.error; return result; }
-            result.cpu_count = selected.count;
+            if (has_cpus) { result.prefix_error = CompileError::DuplicateCpus; return result; }
+            result.prefix_error = parse_cpus(argument, operands);
+            if (result.prefix_error != CompileError::None) { return result; }
+            has_cpus = true;
         } else {
             if (result.has_parameter_limit != 0u64) { result.prefix_error = CompileError::DuplicateParameterLimit; return result; }
             ParsedNumber maximum = unsigned_number<10>(argument, 0u64, argument.length, 4294967295u64);
@@ -344,7 +342,7 @@ extern "C" CompileCommandLine parse_compile_arguments(address arguments, u64 cou
         }
         index += 2u64;
     }
-    if (result.jobs != 0u64 && result.cpu_count != 0u64) { result.prefix_error = CompileError::ResourceConflict; return result; }
+    if (result.jobs != 0u64 && has_cpus) { result.prefix_error = CompileError::ResourceConflict; return result; }
     result.command_index = index;
     if (index == count) { result.command = CompileCommand::Help; return result; }
     CliArgument command = argument_at(arguments, index);

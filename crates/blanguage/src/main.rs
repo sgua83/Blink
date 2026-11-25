@@ -24,12 +24,14 @@ struct OperandSink {
     context: *mut c_void,
     import_path: unsafe extern "C" fn(*mut c_void, usize),
     instance_name: unsafe extern "C" fn(*mut c_void, usize),
+    processor: unsafe extern "C" fn(*mut c_void, u16, u8),
 }
 
 #[derive(Default)]
 struct Operands {
     imports: Vec<usize>,
     instances: Vec<usize>,
+    processors: Vec<blanguage::Processor>,
 }
 
 impl Operands {
@@ -38,6 +40,7 @@ impl Operands {
             context: std::ptr::from_mut(self).cast(),
             import_path: collect_import,
             instance_name: collect_instance,
+            processor: collect_processor,
         }
     }
 
@@ -55,6 +58,10 @@ unsafe extern "C" fn collect_import(context: *mut c_void, index: usize) {
 
 unsafe extern "C" fn collect_instance(context: *mut c_void, index: usize) {
     unsafe { &mut *context.cast::<Operands>() }.instances.push(index);
+}
+
+unsafe extern "C" fn collect_processor(context: *mut c_void, group: u16, number: u8) {
+    unsafe { &mut *context.cast::<Operands>() }.processors.push(blanguage::Processor { group, number });
 }
 
 /// The index must name an operand whose original OsString was marked as UTF-8 by B's caller.
@@ -106,7 +113,6 @@ struct CompileCommandLine {
     has_budget: u64,
     mode: EntryMode,
     jobs: usize,
-    cpu_count: usize,
     has_parameter_limit: u64,
 }
 
@@ -116,7 +122,6 @@ unsafe extern "C" {
         arguments: *const Argument,
         count: usize,
         operands: OperandSink,
-        cpus: *mut u32,
     ) -> CompileCommandLine;
     #[link_name = "bootstrap.cli::write_export_stem"]
     fn write_export_stem(name: *const u8, length: usize, ordinal: usize, output: *mut u8) -> usize;
@@ -174,14 +179,10 @@ impl CompileError {
 }
 
 impl CompileCommandLine {
-    fn compiler(&self, cpus: &[u32]) -> std::io::Result<blanguage::Compiler> {
+    fn compiler(&self, processors: Vec<blanguage::Processor>) -> std::io::Result<blanguage::Compiler> {
         let compiler = if std::env::var_os(worker_protocol::BOOTSTRAP_JOBSERVER).as_deref() == Some(std::ffi::OsStr::new("1")) {
             blanguage::Compiler::bootstrap_worker()?
-        } else if self.cpu_count != 0 {
-            let processors = cpus[..self.cpu_count].iter().map(|&cpu| blanguage::Processor {
-                group: (cpu >> 8) as u16,
-                number: cpu as u8,
-            }).collect();
+        } else if !processors.is_empty() {
             blanguage::Compiler::on_processors(processors)?
         } else if let Some(jobs) = NonZeroUsize::new(self.jobs) {
             blanguage::Compiler::with_workers(jobs)
@@ -212,13 +213,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         let bytes = arg.as_encoded_bytes();
         Argument { bytes: bytes.as_ptr(), length: bytes.len() as u64, text: u64::from(arg.to_str().is_some()) }
     }).collect();
-    let longest = arguments.iter().map(|arg| arg.length as usize).max().unwrap_or(0);
-    // The smallest processor spelling is g:n, with one comma between entries.
-    let mut cpus = vec![0; (longest + 1) / 4];
     let mut operands = Operands::default();
     // The original argument bytes and operand receiver stay live through parsing.
     let line = unsafe {
-        parse_compile_arguments(arguments.as_ptr(), args.len(), operands.sink(), cpus.as_mut_ptr())
+        parse_compile_arguments(arguments.as_ptr(), args.len(), operands.sink())
     };
     line.prefix_error.result(&args, line.error_index)?;
     match line.command {
@@ -250,7 +248,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         _ => {}
     }
 
-    let compiler = line.compiler(&cpus)?;
+    let compiler = line.compiler(std::mem::take(&mut operands.processors))?;
     match line.command {
         CompileCommand::Layout => return layout_facts::print(
             &compiler, &args[line.command_index..], &arguments[line.command_index..],

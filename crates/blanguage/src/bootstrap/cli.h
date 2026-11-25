@@ -64,6 +64,7 @@ struct OperandSink {
     address context;
     cfn<void,address,u64> import_path;
     cfn<void,address,u64> instance_name;
+    cfn<void,address,u16,u8> processor;
 };
 
 struct CompileCommandLine {
@@ -82,16 +83,15 @@ struct CompileCommandLine {
     u64 has_budget;
     EntryMode mode;
     u64 jobs;
-    u64 cpu_count;
     u64 has_parameter_limit;
 };
 
 // The output has room for length + 30 bytes. The result is its written length.
 extern "C" u64 write_export_stem(address name, u64 length, u64 ordinal, address output) on cpu;
 
-// The caller's operand sink is synchronous, and it owns the CPU selection slots.
-extern "C" CompileCommandLine parse_compile_arguments(address arguments, u64 count, OperandSink operands, address cpus) on cpu
-    requires nonzero(operands.import_path) requires nonzero(operands.instance_name);
+// The caller owns the operands received synchronously during parsing.
+extern "C" CompileCommandLine parse_compile_arguments(address arguments, u64 count, OperandSink operands) on cpu
+    requires nonzero(operands.import_path) requires nonzero(operands.instance_name) requires nonzero(operands.processor);
 
 enum CodeInput:u32 { Entry=0; Image=1; Object=2; };
 
