@@ -83,7 +83,7 @@ struct SelectionResult {error:u64,name:Bytes,owner:Bytes,entry:u64,plan:EntryPla
 type Extract = unsafe extern "C" fn(*mut c_void, *mut View, u64, Bytes) -> AppendStatus;
 type NativeArchive = unsafe extern "C" fn(*mut c_void, u64) -> u64;
 type ResourceBinding = unsafe extern "C" fn(*mut c_void, *mut View, ResourceRequest) -> AppendStatus;
-type Slot=unsafe extern "C" fn(*mut c_void,Bytes)->Bytes;
+type Slot=unsafe extern "C" fn(*mut c_void,*mut View,Bytes)->Bytes;
 unsafe extern "C" {
     #[link_name="bootstrap.native_select::choose"]
     fn choose(input:View,params:Params<'_>,context:*mut c_void,extract:Extract,native_archive:NativeArchive,resources:ResourceBinding,slot:Slot)->SelectionResult;
@@ -146,12 +146,7 @@ impl<'a, Payload> Context<'a, Payload> {
                 let(kind,section,name,dll)=match &relocation.target{
                     Target::Section(section,_)=>(0,*section as u64,empty,empty),
                     Target::Symbol(name)=>(1,0,Bytes::new(name),empty),
-                    Target::Import(import)=>{
-                        if let Some(work) = &mut self.native {
-                            work.locals.push(MaybeUninit::uninit());
-                        }
-                        (2,0,Bytes::new(&import.name),Bytes::new(&import.dll))
-                    },
+                    Target::Import(import)=>(2,0,Bytes::new(&import.name),Bytes::new(&import.dll)),
                 };
                 self.relocations.push(RelocationView{kind,section,name,dll,rewrite:0});
             }
@@ -177,7 +172,7 @@ impl<'a, Payload> Context<'a, Payload> {
         self.objects.push(row);
     }
     fn grow(&mut self) {
-        // A local slot and its tree node can only come from an import relocation.
+        // Previously selected local slots share the tree with new object definitions.
         let local_slots = self.native.as_ref().map_or(0, |work| work.locals.len());
         let nodes = self.symbols.len() + local_slots;
         // B initializes each node or queue entry before making it reachable.
@@ -336,11 +331,18 @@ unsafe extern "C" fn native_archive<Payload>(context: *mut c_void, index: u64) -
         }
     }
 }
-unsafe extern "C" fn slot<Payload>(context:*mut c_void,name:Bytes)->Bytes {
+unsafe extern "C" fn slot<Payload>(context:*mut c_void,view:*mut View,name:Bytes)->Bytes {
     let context=unsafe{&mut *context.cast::<Context<'_, Payload>>()};
-    let slots = &mut context.native.as_mut().unwrap().slots;
-    slots.push(resources::import_symbol(crate::application::RUNTIME_LIBRARY, text(&name)));
-    Bytes::new(slots.last().unwrap())
+    let work = context.native.as_mut().unwrap();
+    work.slots.push(resources::import_symbol(crate::application::RUNTIME_LIBRARY, text(&name)));
+    work.locals.push(MaybeUninit::uninit());
+    context.nodes.push(MaybeUninit::uninit());
+    // B initializes the slot and its tree node through these refreshed pointers.
+    unsafe {
+        (*view).locals = work.locals.as_mut_ptr().cast();
+        (*view).nodes = context.nodes.as_mut_ptr().cast();
+    }
+    Bytes::new(work.slots.last().unwrap())
 }
 unsafe extern "C" fn binding<Payload: ReadSection>(
     context: *mut c_void, view: *mut View, request: ResourceRequest,

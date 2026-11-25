@@ -37,5 +37,5 @@ struct EntryPlan {EntryProduct product;u32 uses_runtime;u64 stack_reserve;};
 struct SelectResult {u64 error;BindingBytes name;BindingBytes owner;u64 entry;EntryPlan plan;};
 extern "C" SelectResult choose(SelectView input,SelectParams params,address context,
     cfn<SelectAppend,address,address,u64,BindingBytes> extract,cfn<u64,address,u64> native_archive,
-    cfn<SelectAppend,address,address,SelectResource> resources,cfn<BindingBytes,address,BindingBytes> slot) on cpu
+    cfn<SelectAppend,address,address,SelectResource> resources,cfn<BindingBytes,address,address,BindingBytes> slot) on cpu
     requires nonzero(extract) requires nonzero(native_archive) requires nonzero(resources) requires nonzero(slot);

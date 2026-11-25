@@ -231,7 +231,7 @@ EntryPlan finish(SelectView view,bool native_mode,u64 entry,bool runtime_import)
 }
 extern "C" SelectResult choose(SelectView input,SelectParams params,address context,
     cfn<SelectAppend,address,address,u64,BindingBytes> extract,cfn<u64,address,u64> native_archive,
-    cfn<SelectAppend,address,address,SelectResource> resources,cfn<BindingBytes,address,BindingBytes> slot) on cpu
+    cfn<SelectAppend,address,address,SelectResource> resources,cfn<BindingBytes,address,address,BindingBytes> slot) on cpu
     requires nonzero(extract) requires nonzero(native_archive) requires nonzero(resources) requires nonzero(slot) {
     SelectState state=SelectState(input,BindingForest(input.nodes,0u64,0u64,0u64),0u64,0u64,0u64,0u64,false);
     if(params.native_mode==0u64){u64 count=0u64;u64 i=0u64;while(i<input.object_count){if(object_at(input,i).kind!=0u64){state.entry=i;count+=1u64;}i+=1u64;}
@@ -282,8 +282,16 @@ extern "C" SelectResult choose(SelectView input,SelectParams params,address cont
                         // All local slots use the same runtime DLL prefix, so name and slot order agree.
                         u64 local=state.forest.imports;u64 found=0u64;
                         while(local!=0u64){BindingNode node=node_at(state.forest,local);SelectLocal row=local_at(state.view,node.value-1u64);i32 order=bytes_compare(relocation.name,row.name);if(order==0){found=local;break;}if(order<0){local=node.left;}else{local=node.right;}}
-                        u64 index=0u64;if(found==0u64){BindingBytes name=slot(context,relocation.name);index=state.local_count;state.local_count+=1u64;local_put(state.view,index,SelectLocal(name,relocation.name));BindingInsert item=insert_binding(state.forest,state.forest.imports,BindingKey(name,empty()),index+1u64,false);state.forest.imports=item.root;}
-                        else{index=node_at(state.forest,found).value-1u64;}
+                        u64 index=0u64;
+                        if(found==0u64){
+                            BindingBytes name=slot(context,address_of(state.view),relocation.name);
+                            state.forest.nodes=state.view.nodes;
+                            index=state.local_count;
+                            state.local_count+=1u64;
+                            local_put(state.view,index,SelectLocal(name,relocation.name));
+                            BindingInsert item=insert_binding(state.forest,state.forest.imports,BindingKey(name,empty()),index+1u64,false);
+                            state.forest.imports=item.root;
+                        }else{index=node_at(state.forest,found).value-1u64;}
                         relocation.rewrite=index+1u64;relocation_put(state.view,r,relocation);
                     }
                 }
