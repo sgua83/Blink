@@ -24,6 +24,11 @@ struct SectionFacts {
     row: ReadSection,
     relocations: Vec<ReadRelocation>,
 }
+impl SectionFacts {
+    fn selected(&self, index: usize, only: Option<usize>) -> bool {
+        only.map_or(self.row.flags & 0x20 != 0, |section| index == section)
+    }
+}
 struct Facts<'a> {
     reader: Reader<'a>,
     table: ReadSymbols,
@@ -33,6 +38,11 @@ struct Facts<'a> {
 struct Span {
     section: usize, start: usize, end: usize,
     pdata_section: usize, record_offset: usize,
+}
+fn section_spans(spans: &[Span], section: usize) -> &[Span] {
+    let first = spans.partition_point(|span| span.section < section);
+    let end = spans.partition_point(|span| span.section <= section);
+    &spans[first..end]
 }
 struct AddressFacts<'a> {
     resolved: Option<(usize, usize)>,
@@ -158,15 +168,16 @@ impl<'a> Facts<'a> {
                 record(index, at, &addresses, status);
             }
         }
+        // Keep the encounter order of original .pdata records within each target section.
+        spans.sort_by_key(|span| span.section);
         Ok(spans)
     }
-    fn selected(&self, selection: CodeSelection<'_>) -> Result<(Vec<usize>, String)> {
+    fn selected(&self, selection: CodeSelection<'_>) -> Result<(Option<usize>, String)> {
         Ok(match selection {
-            CodeSelection::CodeSections => (self.sections.iter().enumerate().filter_map(|(i, s)| (s.row.flags & 0x20 != 0).then_some(i)).collect(),
-                object(&[("kind", text("code_sections"))])),
+            CodeSelection::CodeSections => (None, object(&[("kind", text("code_sections"))])),
             CodeSelection::Section(number) => {
                 let index = number.checked_sub(1).filter(|&i| i < self.sections.len()).ok_or("COFF section number is outside the section table")?;
-                (vec![index], object(&[("kind", text("section")), ("section_number", number.to_string())]))
+                (Some(index), object(&[("kind", text("section")), ("section_number", number.to_string())]))
             }
             CodeSelection::Function(name) => {
                 let mut found = self.symbols.iter().enumerate().filter_map(|(i, row)| row.as_ref().map(|r| (i, r)))
@@ -175,7 +186,7 @@ impl<'a> Facts<'a> {
                 if found.next().is_some() { return Err("COFF function symbol is ambiguous; select its physical section".into()); }
                 let section = usize::try_from(row.section).ok().and_then(|s| s.checked_sub(1)).filter(|&s| s < self.sections.len())
                     .ok_or("COFF function symbol has no defined section")?;
-                (vec![section], object(&[("kind", text("function")), ("name", text(name)),
+                (Some(section), object(&[("kind", text("function")), ("name", text(name)),
                     ("symbol_index", index.to_string()), ("section_number", (section + 1).to_string()), ("value", row.value.to_string())]))
             }
         })
@@ -196,7 +207,7 @@ impl<'a> Facts<'a> {
             let bytes = unsafe { row.bytes.borrowed() };
             let layout = material.and_then(|material| material.layout(index));
             let regions = if let Some(layout) = layout {
-                let (_, ranges) = layout.regions(index, bytes.len(), spans)?;
+                let (_, ranges) = layout.regions(bytes.len(), section_spans(spans, index))?;
                 ranges.map(|(kind, start, end)| {
                     let instructions = if matches!(kind, "literal" | "alignment") { "null".into() }
                     else {
@@ -210,7 +221,7 @@ impl<'a> Facts<'a> {
                         ("length_bytes", (end - start).to_string()), ("bytes", hex(&bytes[start..end])), ("instructions", instructions)]))
                 }).collect::<Result<Vec<_>>>()?
             } else {
-            let mut regions = Vec::new(); let mut code = spans.iter().filter(|s| s.section == index).collect::<Vec<_>>();
+            let mut regions = Vec::new(); let mut code = section_spans(spans, index).iter().collect::<Vec<_>>();
             code.sort_by_key(|s| (s.start, s.end));
             let mut end = 0;
             for span in code {
@@ -277,7 +288,7 @@ fn query(bytes: &[u8], selection: CodeSelection<'_>, material: Option<&[u8]>) ->
         ("selection", selection_json), ("symbol_record_count", facts.table.count.to_string()),
         ("symbols", array(facts.symbols.iter().enumerate().filter_map(|(i, s)| s.as_ref().map(|s| facts.symbol(i, s))).collect::<Result<Vec<_>>>()?)),
         ("function_tables", tables),
-        ("sections", array(facts.sections.iter().enumerate().map(|(i, _)| facts.section_json(i, selected.contains(&i), &spans, material.as_ref())).collect::<Result<Vec<_>>>()?))];
+        ("sections", array(facts.sections.iter().enumerate().map(|(i, section)| facts.section_json(i, section.selected(i, selected), &spans, material.as_ref())).collect::<Result<Vec<_>>>()?))];
     if material.is_some() { values.push(("code_observations", text("matched"))); }
     Ok(object(&values))
 }
@@ -290,23 +301,25 @@ pub fn source_facts(bytes: &[u8], selection: CodeSelection<'_>, range: std::ops:
     let (selected, selection_json) = facts.selected(selection)?;
     let spans = facts.ranges(|_, _, _, _| {})?;
     let material = material.map(|bytes| observations::Material::read(&facts, &spans, bytes)).transpose()?;
-    let sections = selected.into_iter().map(|index| {
-        let row = facts.sections[index].row;
-        let layout = material.as_ref().and_then(|material| material.layout(index));
-        let regions = layout.map(|layout| -> Result<String> {
-            let (_, regions) = layout.regions(index, row.bytes.length, &spans)?;
-            Ok(array(regions
-                .filter(|(_, start, end)| (*start).max(range.start) < (*end).min(range.end))
-                .map(|(kind, start, end)| object(&[("kind", text(kind)),
-                    ("start_byte", start.to_string()), ("end_byte", end.to_string()),
-                    ("byte_length", (end - start).to_string())]))))
-        }).transpose()?.unwrap_or_else(|| "null".into());
-        Ok(object(&[("section_number", (index + 1).to_string()), ("name", text(&read_text(row.name)?)),
-            ("byte_length", row.bytes.length.to_string()), ("regions", regions),
-            ("generation", layout.map_or_else(|| "null".into(), |layout| layout.generation())),
-            ("function_abi", layout.map_or_else(|| "null".into(), |layout| layout.function_abi(Some(&range)))),
-            ("operation_ranges", layout.map_or_else(|| "null".into(), |layout| layout.operation_ranges(Some(&range))))]))
-    }).collect::<Result<Vec<_>>>()?;
+    let sections = facts.sections.iter().enumerate()
+        .filter(|(index, section)| section.selected(*index, selected))
+        .map(|(index, section)| {
+            let row = section.row;
+            let layout = material.as_ref().and_then(|material| material.layout(index));
+            let regions = layout.map(|layout| -> Result<String> {
+                let (_, regions) = layout.regions(row.bytes.length, section_spans(&spans, index))?;
+                Ok(array(regions
+                    .filter(|(_, start, end)| (*start).max(range.start) < (*end).min(range.end))
+                    .map(|(kind, start, end)| object(&[("kind", text(kind)),
+                        ("start_byte", start.to_string()), ("end_byte", end.to_string()),
+                        ("byte_length", (end - start).to_string())]))))
+            }).transpose()?.unwrap_or_else(|| "null".into());
+            Ok(object(&[("section_number", (index + 1).to_string()), ("name", text(&read_text(row.name)?)),
+                ("byte_length", row.bytes.length.to_string()), ("regions", regions),
+                ("generation", layout.map_or_else(|| "null".into(), |layout| layout.generation())),
+                ("function_abi", layout.map_or_else(|| "null".into(), |layout| layout.function_abi(Some(&range)))),
+                ("operation_ranges", layout.map_or_else(|| "null".into(), |layout| layout.operation_ranges(Some(&range))))]))
+        }).collect::<Result<Vec<_>>>()?;
     Ok(object(&[("kind", text("coff_source_ranges")), ("artifact_sha256", hex(&hash::digest(bytes))),
         ("address_basis", text("section_relative")),
         ("range_unit", text("byte")), ("range_kind", text("half_open")),

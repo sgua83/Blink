@@ -37,22 +37,21 @@ fn identity(facts: &Facts<'_>, index: usize, spans: &[Span]) -> [u8; 32] {
         digest.field(&symbol.section.to_le_bytes());
         digest.field(&symbol.value.to_le_bytes());
     }
-    let ranges = spans.iter().filter(|span| span.section == index);
-    digest.field(&(ranges.clone().count() as u64).to_le_bytes());
-    for range in ranges {
+    digest.field(&(spans.len() as u64).to_le_bytes());
+    for range in spans {
         digest.field(&(range.start as u64).to_le_bytes());
         digest.field(&(range.end as u64).to_le_bytes());
     }
     digest.finish()
 }
 impl<S> Layout<S> {
-    pub(super) fn regions(&self, index: usize, length: usize, spans: &[Span])
+    pub(super) fn regions(&self, length: usize, spans: &[Span])
         -> Result<(usize, impl Iterator<Item = (&'static str, usize, usize)> + '_)>
     {
         let (kind, end, tails) = match self {
             Self::Startup | Self::Print(_) | Self::ImportThunk => ("generated_code", length, &[][..]),
             Self::Function { tails, .. } => {
-                let mut main = spans.iter().filter(|s| s.section == index && s.start == 0);
+                let mut main = spans.iter().filter(|span| span.start == 0);
                 let end = main.next().ok_or("COFF generated function material has no matching original .pdata range")?.end;
                 if main.any(|s| s.end != end) { return Err("COFF original main range is ambiguous".into()); }
                 let mut start = end;
@@ -107,13 +106,14 @@ impl Material {
     pub(super) fn read(facts: &Facts<'_>, spans: &[Span], bytes: &[u8]) -> Result<Self> {
         let bytes = bytes.strip_prefix(MAGIC).ok_or("unsupported COFF code observation material")?;
         let value = Self::from_bytes(bytes)?;
-        let code = facts.sections.iter().enumerate().filter(|(_, s)| s.row.flags & 0x20 != 0).collect::<Vec<_>>();
-        if value.sections.len() != code.len() { return Err("COFF observation code section count does not match".into()); }
+        let code = facts.sections.iter().enumerate().filter(|(_, s)| s.row.flags & 0x20 != 0);
+        if value.sections.len() != code.clone().count() { return Err("COFF observation code section count does not match".into()); }
         for (saved, (index, section)) in value.sections.iter().zip(code) {
-            if saved.section != index + 1 || saved.identity != identity(facts, index, spans) {
+            let ranges = section_spans(spans, index);
+            if saved.section != index + 1 || saved.identity != identity(facts, index, ranges) {
                 return Err("COFF observation material does not match the original code section and relocations".into());
             }
-            let (end, _) = saved.layout.regions(index, section.row.bytes.length, spans)?;
+            let (end, _) = saved.layout.regions(section.row.bytes.length, ranges)?;
             if let Layout::Function { sources, references, .. } = &saved.layout {
                 sources.validate(end)?;
                 if let Some(references) = references {
@@ -124,7 +124,9 @@ impl Material {
         Ok(value)
     }
     pub(super) fn layout(&self, index: usize) -> Option<&Layout<crate::native::SavedSources>> {
-        self.sections.iter().find(|section| section.section == index + 1).map(|section| &section.layout)
+        // Reading material verified this order against the original physical code sections.
+        self.sections.binary_search_by_key(&(index + 1), |section| section.section)
+            .ok().map(|position| &self.sections[position].layout)
     }
 }
 pub(crate) fn capture(object: &Object) -> Result<Vec<u8>> {
@@ -143,9 +145,10 @@ pub(crate) fn capture(object: &Object) -> Result<Vec<u8>> {
             SectionData::Initialized(bytes) => bytes.len(),
             SectionData::ZeroFill(length) => *length,
         };
-        let _ = layout.regions(index, length, &spans)?;
+        let ranges = section_spans(&spans, index);
+        let _ = layout.regions(length, ranges)?;
         (index + 1).encode(&mut writer);
-        identity(&facts, index, &spans).encode(&mut writer);
+        identity(&facts, index, ranges).encode(&mut writer);
         layout.encode(&mut writer);
     }
     Ok(writer.0)
