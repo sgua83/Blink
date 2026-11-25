@@ -4,56 +4,6 @@ extern "C" u32 ownership(u32 kind,u32 truth) on cpu {
  if(kind==3&&truth!=2){return truth!=0 ? 1 : 0;}return kind;
 }
 extern "C" u32 possible(u32 truth) on cpu {return truth!=0 ? 1 : 0;}
-extern "C" PositionStep position_step(Cursor state,PositionFacts f) on cpu {
- Cursor c=state;
- if(c.phase==0){c.phase=1;return PositionStep(c,PositionNeed::Inspect);}
- if(c.phase==1){
-  if(f.kind==1){c.phase=2;return PositionStep(c,PositionNeed::Query);}
-  if(f.kind==2){c.phase=10;return PositionStep(c,PositionNeed::Left);}
-  if(f.kind==3){c.phase=20;c.index=0u64;return PositionStep(c,PositionNeed::Next);}
-  c.phase=8;return PositionStep(c,PositionNeed::Copy);
- }
- if(c.phase==2){
-  if(f.truth==1){c.phase=8;return PositionStep(c,PositionNeed::Yes);}
-  if(f.truth==0){c.phase=8;return PositionStep(c,PositionNeed::No);}
-  c.phase=4;return PositionStep(c,PositionNeed::AssumeYes);
- }
- if(c.phase==4){c.phase=5;return PositionStep(c,PositionNeed::YesUnder);}
- if(c.phase==5){c.phase=6;return PositionStep(c,PositionNeed::AssumeNo);}
- if(c.phase==6){c.phase=7;return PositionStep(c,PositionNeed::NoUnder);}
- if(c.phase==7){c.phase=8;return PositionStep(c,PositionNeed::Conditional);}
- if(c.phase==10){c.phase=11;return PositionStep(c,PositionNeed::Right);}
- if(c.phase==11){c.phase=8;return PositionStep(c,PositionNeed::Both);}
- if(c.phase==20){
-  if(c.index<f.count){c.phase=21;return PositionStep(c,PositionNeed::QueryChoice);}
-  c.phase=23;c.index=0u64;return PositionStep(c,PositionNeed::Next);
- }
- if(c.phase==21){
-  if(f.truth==1){c.phase=8;return PositionStep(c,PositionNeed::Chosen);}
-  c.phase=22;return PositionStep(c,f.truth==0 ? PositionNeed::RecordAbsent : PositionNeed::RecordPossible);
- }
- if(c.phase==22){c.index+=1u64;c.phase=20;return PositionStep(c,PositionNeed::Next);}
- if(c.phase==23){
-  if(c.index<f.count){c.phase=24;return PositionStep(c,PositionNeed::ReadChoice);}
-  c.phase=30;c.index=1u64;return PositionStep(c,PositionNeed::Next);
- }
- if(c.phase==24){
-  if(f.truth==0){c.phase=25;return PositionStep(c,PositionNeed::Absent);}
-  c.phase=26;return PositionStep(c,PositionNeed::AssumeChoice);
- }
- if(c.phase==26){c.phase=25;return PositionStep(c,PositionNeed::ChoiceUnder);}
- if(c.phase==25){c.index+=1u64;c.phase=23;return PositionStep(c,PositionNeed::Next);}
- if(c.phase==30){
-  if(c.index>=f.count){c.phase=8;return PositionStep(c,PositionNeed::First);}
-  c.phase=31;return PositionStep(c,PositionNeed::Compare);
- }
- if(c.phase==31){
-  if(f.equal==0){c.phase=8;return PositionStep(c,PositionNeed::Indexed);}
-  c.index+=1u64;c.phase=30;return PositionStep(c,PositionNeed::Next);
- }
- if(c.phase==8){return PositionStep(c,PositionNeed::Complete);}
- return PositionStep(c,PositionNeed::Next);
-}
 extern "C" ResidencyStep residency_step(Cursor state,ResidencyFacts f) on cpu {
  Cursor c=state;
  if(c.phase==0){c.phase=1;return ResidencyStep(c,ResidencyNeed::Inspect);}

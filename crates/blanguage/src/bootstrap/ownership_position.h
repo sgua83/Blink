@@ -29,12 +29,12 @@ struct Host {
     cfn<void,address,address> insert_set;
 };
 
-extern "C" u32 select(address when,address a,address b,Host host) on cpu
-    requires nonzero(host.equal)
-    requires nonzero(host.presence_kind);
-extern "C" u32 both(address a,address b,Host host) on cpu
-    requires nonzero(host.inspect)
-    requires nonzero(host.equal);
+extern "C" u32 select(address when,address a,address b,cfn<u32,address,address> equal,cfn<u32,address> presence_kind) on cpu
+    requires nonzero(equal)
+    requires nonzero(presence_kind);
+extern "C" u32 both(address a,address b,cfn<u32,address,address> equal,cfn<PositionNode,address> inspect) on cpu
+    requires nonzero(equal)
+    requires nonzero(inspect);
 extern "C" address index(address values,PositionIndex selected,u64 width,Host host) on cpu
     requires nonzero(host.fresh_vector)
     requires nonzero(host.push_vector)
@@ -170,3 +170,47 @@ extern "C" u32 visit_initialization_effects(address initialized, address context
     requires nonzero(sink.leave)
     requires nonzero(sink.effect);
 
+
+struct ResolutionBase {
+    u64 choices;
+    u64 results;
+};
+struct ResolutionPair {
+    address left;
+    address right;
+};
+struct ResolutionHost {
+    cfn<PositionNode,address> inspect;
+    cfn<address,address,u64> child;
+    cfn<u32,address,address> equal;
+    cfn<u32,address> presence_kind;
+    cfn<u32,address,address> truth;
+    cfn<void,address,address,u32> assume;
+    cfn<void,address> leave;
+    cfn<ResolutionBase,address> mark;
+    cfn<u32,address,PositionIndex,u64> query_choice;
+    cfn<u32,address,u64> assume_choice;
+    cfn<void,address,u64> release_choices;
+    cfn<void,address,address> emit;
+    cfn<ResolutionPair,address> pair;
+    cfn<void,address,address,u32> finish_pair;
+    cfn<address,address,u64> result;
+    cfn<void,address,PositionIndex,u64,u32> finish_indexed;
+};
+extern "C" void resolve_position(address value,address context,ResolutionHost resolver) on cpu
+    requires nonzero(resolver.inspect)
+    requires nonzero(resolver.child)
+    requires nonzero(resolver.equal)
+    requires nonzero(resolver.presence_kind)
+    requires nonzero(resolver.truth)
+    requires nonzero(resolver.assume)
+    requires nonzero(resolver.leave)
+    requires nonzero(resolver.mark)
+    requires nonzero(resolver.query_choice)
+    requires nonzero(resolver.assume_choice)
+    requires nonzero(resolver.release_choices)
+    requires nonzero(resolver.emit)
+    requires nonzero(resolver.pair)
+    requires nonzero(resolver.finish_pair)
+    requires nonzero(resolver.result)
+    requires nonzero(resolver.finish_indexed);

@@ -2,10 +2,6 @@
 use super::*;
 #[derive(Clone,Copy)]
 #[repr(C)]struct Cursor{phase:u32,index:u64}
-#[repr(u32)]enum PositionNeed{Inspect,Query,Yes,No,AssumeYes,YesUnder,AssumeNo,NoUnder,Conditional,Left,Right,Both,QueryChoice,RecordAbsent,RecordPossible,Chosen,ReadChoice,Absent,AssumeChoice,ChoiceUnder,Compare,First,Indexed,Copy,Complete,Next}
-#[derive(Clone,Copy,Default)]
-#[repr(C)]struct PositionFacts{kind:u32,truth:u32,equal:u32,count:u64}
-#[repr(C)]struct PositionStep{cursor:Cursor,need:PositionNeed}
 #[repr(u32)]enum ResidencyNeed{Inspect,Query,Yes,No,Left,Right,Conditional,Copy,Complete,Next}
 #[derive(Clone,Copy,Default)]
 #[repr(C)]struct ResidencyFacts{selected:u32,truth:u32}
@@ -26,7 +22,6 @@ unsafe extern "C"{
  #[link_name="bootstrap.ownership_path::start"]fn b_start()->Cursor;
  #[link_name="bootstrap.ownership_path::ownership"]fn b_ownership(kind:u32,truth:u32)->u32;
  #[link_name="bootstrap.ownership_path::possible"]fn b_possible(truth:u32)->u32;
- #[link_name="bootstrap.ownership_path::position_step"]fn b_position_step(state:Cursor,f:PositionFacts)->PositionStep;
  #[link_name="bootstrap.ownership_path::residency_step"]fn b_residency_step(state:Cursor,f:ResidencyFacts)->ResidencyStep;
  #[link_name="bootstrap.ownership_path::model_step"]fn b_model_step(state:Cursor,f:ModelFacts)->ModelStep;
  #[link_name="bootstrap.ownership_path::metadata_step"]fn b_metadata_step(state:Cursor,f:MetadataFacts)->MetadataStep;
@@ -44,48 +39,7 @@ fn owner(builder:&Builder<'_>,value:&Ownership,assuming:&Assumption<'_>)->Owners
  match unsafe{b_ownership(kind,known)}{0=>Ownership::Moved,1=>Ownership::Owned,2=>Ownership::Borrowed,_=>value.clone()}
 }
 pub(in crate::check) fn possible(builder:&Builder<'_>,value:&Presence)->bool{unsafe{b_possible(truth(builder.condition_truth(&value.condition(),None)))!=0}}
-pub(in crate::check) fn initialization(builder:&Builder<'_>,value:&Position,assuming:Option<&Presence>)->Position{position(builder,value,&Assumption::new(assuming))}
-fn position(builder:&Builder<'_>,value:&Position,assuming:&Assumption<'_>)->Position{
- let mut cursor=unsafe{b_start()};let mut facts=PositionFacts::default();
- let mut result=None;let mut left=None;let mut right=None;let mut branch=None;let mut selected=None;
- // Only this query's still-possible conditions survive to its original output consumer.
- let mut branches:Vec<Option<Presence>>=Vec::new();let mut positions:Vec<Position>=Vec::new();
- loop{
-  let step=unsafe{b_position_step(cursor,facts)};cursor=step.cursor;
-  match step.need{
-   PositionNeed::Inspect=>{facts.kind=match value{Position::Conditional(..)=>1,Position::Both(..)=>2,Position::Indexed(choices,_)=>{facts.count=choices.len()as u64;3},_=>0};}
-   PositionNeed::Query=>{let Position::Conditional(when,..)=value else{unsafe{std::hint::unreachable_unchecked()}};facts.truth=truth(assuming.answer(builder,&when.condition()));}
-   PositionNeed::Yes=>{let Position::Conditional(_,yes,_)=value else{unsafe{std::hint::unreachable_unchecked()}};result=Some(position(builder,yes,assuming));}
-   PositionNeed::No=>{let Position::Conditional(_,_,no)=value else{unsafe{std::hint::unreachable_unchecked()}};result=Some(position(builder,no,assuming));}
-   PositionNeed::AssumeYes=>{let Position::Conditional(when,..)=value else{unsafe{std::hint::unreachable_unchecked()}};branch=Some(assuming.value.cloned().unwrap_or(Presence::All).and(when.as_ref().clone()));}
-   PositionNeed::YesUnder=>{let Position::Conditional(_,yes,_)=value else{unsafe{std::hint::unreachable_unchecked()}};left=Some(position(builder,yes,&Assumption::new(branch.as_ref())));}
-   PositionNeed::AssumeNo=>{let Position::Conditional(when,..)=value else{unsafe{std::hint::unreachable_unchecked()}};branch=Some(assuming.value.cloned().unwrap_or(Presence::All).and(when.as_ref().clone().not()));}
-   PositionNeed::NoUnder=>{let Position::Conditional(_,_,no)=value else{unsafe{std::hint::unreachable_unchecked()}};right=Some(position(builder,no,&Assumption::new(branch.as_ref())));}
-   PositionNeed::Conditional=>{let Position::Conditional(when,..)=value else{unsafe{std::hint::unreachable_unchecked()}};result=Some(Position::selected(when.as_ref().clone(),left.take().unwrap(),right.take().unwrap()));}
-   PositionNeed::Left=>{let Position::Both(a,_)=value else{unsafe{std::hint::unreachable_unchecked()}};left=Some(position(builder,a,assuming));}
-   PositionNeed::Right=>{let Position::Both(_,b)=value else{unsafe{std::hint::unreachable_unchecked()}};right=Some(position(builder,b,assuming));}
-   PositionNeed::Both=>{result=Some(Position::both(left.take().unwrap(),right.take().unwrap()));}
-   PositionNeed::QueryChoice=>{
-    let Position::Indexed(_,index)=value else{unsafe{std::hint::unreachable_unchecked()}};
-    let when=Presence::indices(Comparison::Equal,*index,ownership::ApplicationIndex::Constant(cursor.index as u32));
-    facts.truth=truth(assuming.answer(builder,&when.condition()));selected=Some(when);
-   }
-   PositionNeed::RecordAbsent=>{branches.push(None);selected=None;}
-   PositionNeed::RecordPossible=>branches.push(selected.take()),
-   PositionNeed::Chosen=>{let Position::Indexed(choices,_)=value else{unsafe{std::hint::unreachable_unchecked()}};result=Some(position(builder,&choices[cursor.index as usize],assuming));}
-   PositionNeed::ReadChoice=>facts.truth=if branches[cursor.index as usize].is_some(){2}else{0},
-   PositionNeed::Absent=>positions.push(Position::Initialized),
-   PositionNeed::AssumeChoice=>{branch=Some(assuming.value.cloned().unwrap_or(Presence::All).and(branches[cursor.index as usize].take().unwrap()));}
-   PositionNeed::ChoiceUnder=>{let Position::Indexed(choices,_)=value else{unsafe{std::hint::unreachable_unchecked()}};positions.push(position(builder,&choices[cursor.index as usize],&Assumption::new(branch.as_ref())));}
-   PositionNeed::Compare=>facts.equal=u32::from(positions[cursor.index as usize]==positions[0]),
-   PositionNeed::First=>{result=Some(std::mem::take(&mut positions).into_iter().next().unwrap());}
-   PositionNeed::Indexed=>{let Position::Indexed(_,index)=value else{unsafe{std::hint::unreachable_unchecked()}};result=Some(Position::Indexed(std::mem::take(&mut positions).into(),*index));}
-   PositionNeed::Copy=>{result=Some(value.clone());}
-   PositionNeed::Complete=>return result.take().unwrap(),
-   PositionNeed::Next=>{}
-  }
- }
-}
+pub(in crate::check) fn initialization(builder:&Builder<'_>,value:&Position,assuming:Option<&Presence>)->Position{ownership::resolve_initialization(builder,value,assuming,assuming.map(Presence::condition).as_ref())}
 fn residency(value:&residency::Residency,assuming:Option<&Presence>,query:&impl Fn(&bounds::Condition,Option<&Presence>)->Option<bool>)->residency::Residency{
  let mut cursor=unsafe{b_start()};let mut facts=ResidencyFacts::default();let mut result=None;let mut left=None;let mut right=None;
  loop{
@@ -121,7 +75,7 @@ fn model(builder:&Builder<'_>,value:&mut Returned,assuming:&Assumption<'_>){
    }
    ModelNeed::Ownership=>match value{Returned::Dataset(data)=>data.ownership=owner(builder,&data.ownership,assuming),Returned::OwnedValue(value)=>value.ownership=owner(builder,&value.ownership,assuming),_=>unsafe{std::hint::unreachable_unchecked()}},
    ModelNeed::Residency=>{let Returned::Dataset(data)=value else{unsafe{std::hint::unreachable_unchecked()}};data.residency=residency(&data.residency,assuming.value,&|when,_|assuming.answer(builder,when));}
-   ModelNeed::Initialization=>{let Returned::Dataset(data)=value else{unsafe{std::hint::unreachable_unchecked()}};data.initialization=Some(position(builder,data.initialization.as_ref().unwrap(),assuming));}
+   ModelNeed::Initialization=>{let Returned::Dataset(data)=value else{unsafe{std::hint::unreachable_unchecked()}};data.initialization=Some(ownership::resolve_initialization(builder,data.initialization.as_ref().unwrap(),assuming.value,assuming.condition.as_ref()));}
    ModelNeed::Child=>{let Returned::OwnedValue(value)=value else{unsafe{std::hint::unreachable_unchecked()}};facts.present=u32::from(value.payloads[cursor.index as usize].is_some());}
    ModelNeed::Recurse=>{let Returned::OwnedValue(value)=value else{unsafe{std::hint::unreachable_unchecked()}};model(builder,value.payloads[cursor.index as usize].as_deref_mut().unwrap(),assuming);}
    ModelNeed::Complete=>return,

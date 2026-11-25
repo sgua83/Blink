@@ -233,15 +233,20 @@ bool uses_index(address value,PositionIndex index,Host host) on cpu
     if(shape.kind==10||shape.kind==11||shape.kind==12){u64 i=0u64;while(i<shape.count){if(uses_index(host.child(value,i),index,host)){return true;}i+=1u64;}}
     return false;
 }
-extern "C" u32 select(address when,address a,address b,Host host) on cpu
-    requires nonzero(host.equal)
-    requires nonzero(host.presence_kind) { 
-    if(host.equal(a,b)!=0){return 0;}u32 kind=host.presence_kind(when);return kind==1 ? 0 : (kind==0 ? 1 : 2);
+extern "C" u32 select(address when,address a,address b,cfn<u32,address,address> equal,cfn<u32,address> presence_kind) on cpu
+    requires nonzero(equal)
+    requires nonzero(presence_kind) {
+    if(equal(a,b)!=0){return 0;}
+    u32 kind=presence_kind(when);
+    return kind==1 ? 0 : (kind==0 ? 1 : 2);
 }
-extern "C" u32 both(address a,address b,Host host) on cpu
-    requires nonzero(host.inspect)
-    requires nonzero(host.equal) { 
-    if(host.equal(a,b)!=0){return 0;}if(host.inspect(a).kind==0){return 1;}if(host.inspect(b).kind==0){return 0;}return 2;
+extern "C" u32 both(address a,address b,cfn<u32,address,address> equal,cfn<PositionNode,address> inspect) on cpu
+    requires nonzero(equal)
+    requires nonzero(inspect) {
+    if(equal(a,b)!=0){return 0;}
+    if(inspect(a).kind==0){return 1;}
+    if(inspect(b).kind==0){return 0;}
+    return 2;
 }
 extern "C" address index(address values,PositionIndex selected,u64 width,Host host) on cpu
     requires nonzero(host.fresh_vector)
@@ -493,3 +498,83 @@ extern "C" u32 visit_initialization_effects(address initialized, address context
     return done ? 1 : 0;
 }
 
+
+extern "C" void resolve_position(address value,address context,ResolutionHost resolver) on cpu
+    requires nonzero(resolver.inspect)
+    requires nonzero(resolver.child)
+    requires nonzero(resolver.equal)
+    requires nonzero(resolver.presence_kind)
+    requires nonzero(resolver.truth)
+    requires nonzero(resolver.assume)
+    requires nonzero(resolver.leave)
+    requires nonzero(resolver.mark)
+    requires nonzero(resolver.query_choice)
+    requires nonzero(resolver.assume_choice)
+    requires nonzero(resolver.release_choices)
+    requires nonzero(resolver.emit)
+    requires nonzero(resolver.pair)
+    requires nonzero(resolver.finish_pair)
+    requires nonzero(resolver.result)
+    requires nonzero(resolver.finish_indexed) {
+    PositionNode shape=resolver.inspect(value);
+    if(shape.kind==11){
+        u32 truth=resolver.truth(context,shape.condition);
+        if(truth!=2){
+            resolve_position(resolver.child(value,truth==1 ? 0u64 : 1u64),context,resolver);
+            return;
+        }
+        resolver.assume(context,shape.condition,0);
+        resolve_position(resolver.child(value,0u64),context,resolver);
+        resolver.leave(context);
+        resolver.assume(context,shape.condition,1);
+        resolve_position(resolver.child(value,1u64),context,resolver);
+        resolver.leave(context);
+        ResolutionPair pair=resolver.pair(context);
+        resolver.finish_pair(context,value,select(shape.condition,pair.left,pair.right,resolver.equal,resolver.presence_kind));
+        return;
+    }
+    if(shape.kind==12){
+        resolve_position(resolver.child(value,0u64),context,resolver);
+        resolve_position(resolver.child(value,1u64),context,resolver);
+        ResolutionPair pair=resolver.pair(context);
+        resolver.finish_pair(context,value,both(pair.left,pair.right,resolver.equal,resolver.inspect));
+        return;
+    }
+    if(shape.kind!=10){
+        resolver.emit(context,value);
+        return;
+    }
+
+    // A proven index supersedes every unresolved candidate in this same selection.
+    ResolutionBase base=resolver.mark(context);
+    u64 at=0u64;
+    while(at<shape.count){
+        if(resolver.query_choice(context,shape.index,at)==1){
+            resolver.release_choices(context,base.choices);
+            resolve_position(resolver.child(value,at),context,resolver);
+            return;
+        }
+        at+=1u64;
+    }
+    at=0u64;
+    while(at<shape.count){
+        if(resolver.assume_choice(context,base.choices+at)!=0){
+            resolve_position(resolver.child(value,at),context,resolver);
+            resolver.leave(context);
+        }else{
+            resolver.emit(context,unsafe_address(0u64));
+        }
+        at+=1u64;
+    }
+    resolver.release_choices(context,base.choices);
+    address first=resolver.result(context,base.results);
+    at=1u64;
+    while(at<shape.count){
+        if(resolver.equal(first,resolver.result(context,base.results+at))==0){
+            resolver.finish_indexed(context,shape.index,base.results,0);
+            return;
+        }
+        at+=1u64;
+    }
+    resolver.finish_indexed(context,shape.index,base.results,1);
+}

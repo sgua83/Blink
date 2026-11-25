@@ -1,7 +1,11 @@
 //! The original Position, Arc, set and vector containers remain native owners.
 use super::*;
+use owned_presence::Presence;
 use std::{ffi::c_void, collections::btree_set};
 type Address = *mut c_void;
+type EqualPosition = unsafe extern "C" fn(Address, Address) -> u32;
+type PresenceKind = unsafe extern "C" fn(Address) -> u32;
+type InspectPosition = unsafe extern "C" fn(Address) -> Node;
 #[repr(C)]
 #[derive(Clone,Copy)]
 struct Index { kind:u32, value:u32, identity:Address, reg:u64 }
@@ -125,8 +129,8 @@ struct Host {
 }
 const HOST:Host=Host{inspect,child,equal,identity_equal,presence_kind,presence_equal,presence_uses_index,contains,contains_parameter,contains_element,contains_input,iterate,next,drop_iterator,fresh_vector,push_vector,vector_count,vector_at,make_position,clone_position,fresh_set,insert_set};
 unsafe extern "C" {
-    #[link_name="bootstrap.ownership_position::select"] fn source_select(when:Address,a:Address,b:Address,host:Host)->u32;
-    #[link_name="bootstrap.ownership_position::both"] fn source_both(a:Address,b:Address,host:Host)->u32;
+    #[link_name="bootstrap.ownership_position::select"] fn source_select(when:Address,a:Address,b:Address,equal:EqualPosition,presence_kind:PresenceKind)->u32;
+    #[link_name="bootstrap.ownership_position::both"] fn source_both(a:Address,b:Address,equal:EqualPosition,inspect:InspectPosition)->u32;
     #[link_name="bootstrap.ownership_position::index"] fn source_index(values:Address,index:Index,width:u64,host:Host)->Address;
     #[link_name="bootstrap.ownership_position::word"] fn source_word(value:Address,index:Index,word:u32,host:Host)->Address;
     #[link_name="bootstrap.ownership_position::ready"] fn source_ready(value:Address,known:Address,host:Host)->u32;
@@ -140,9 +144,9 @@ unsafe extern "C" {
     ) -> Address;
 }
 pub(super) fn selected(when:owned_presence::Presence,a:Position,b:Position)->Position {
-    match unsafe{source_select(pointer(&when),pointer(&a),pointer(&b),HOST)} {0=>a,1=>b,_=>Position::Conditional(Arc::new(when),Arc::new(a),Arc::new(b))}
+    match unsafe{source_select(pointer(&when),pointer(&a),pointer(&b),equal,presence_kind)} {0=>a,1=>b,_=>Position::Conditional(Arc::new(when),Arc::new(a),Arc::new(b))}
 }
-pub(super) fn both(a:Position,b:Position)->Position {match unsafe{source_both(pointer(&a),pointer(&b),HOST)} {0=>a,1=>b,_=>Position::Both(Arc::new(a),Arc::new(b))}}
+pub(super) fn both(a:Position,b:Position)->Position {match unsafe{source_both(pointer(&a),pointer(&b),equal,inspect)} {0=>a,1=>b,_=>Position::Both(Arc::new(a),Arc::new(b))}}
 pub(super) fn indexed(values:Vec<Position>,at:ApplicationIndex,width:usize)->Vec<Position> {*unsafe{Box::from_raw(source_index(pointer(&values),index(Some(&at)),width as u64,HOST).cast::<Vec<Position>>())}}
 pub(super) fn word(value:&Position,at:Option<ApplicationIndex>,word:u32)->Position {*unsafe{Box::from_raw(source_word(pointer(value),index(at.as_ref()),word,HOST).cast::<Position>())}}
 pub(super) fn initialized(value:&Position,known:&BTreeSet<Position>)->bool {unsafe{source_ready(pointer(value),pointer(known),HOST)!=0}}
@@ -353,3 +357,177 @@ impl Position {
     }
 }
 
+
+struct Resolution<'a,'w> {
+    builder: &'a Builder<'w>,
+    initial: Option<&'a Presence>,
+    initial_condition: Option<&'a bounds::Condition>,
+    assumptions: Vec<(Presence,bounds::Condition)>,
+    choices: Vec<Option<Presence>>,
+    results: Vec<Position>,
+}
+
+impl Resolution<'_,'_> {
+    fn truth(&self, when: &Presence) -> u32 {
+        let assuming = self.assumptions.last().map(|(_, condition)| condition).or(self.initial_condition);
+        match self.builder.condition_truth(&when.condition(),assuming) {
+            Some(false) => 0,
+            Some(true) => 1,
+            None => 2,
+        }
+    }
+
+    fn assume(&mut self, when: Presence) {
+        let prior = self.assumptions.last().map(|(presence, _)| presence).or(self.initial);
+        let presence = prior.cloned().unwrap_or(Presence::All).and(when);
+        let condition = presence.condition();
+        self.assumptions.push((presence,condition));
+    }
+}
+
+#[repr(C)]
+struct ResolutionBase { choices: u64, results: u64 }
+#[repr(C)]
+struct ResolutionPair { left: Address, right: Address }
+
+unsafe fn resolution<'a,'w>(context: Address) -> &'a mut Resolution<'a,'w> {
+    unsafe { &mut *context.cast() }
+}
+
+unsafe extern "C" fn resolution_truth(context: Address, when: Address) -> u32 {
+    let state = unsafe { &*context.cast::<Resolution<'_,'_>>() };
+    state.truth(unsafe { &*when.cast::<Presence>() })
+}
+
+unsafe extern "C" fn resolution_assume(context: Address, when: Address, negate: u32) {
+    let when = unsafe { &*when.cast::<Presence>() }.clone();
+    unsafe { resolution(context) }.assume(if negate == 0 { when } else { when.not() });
+}
+
+unsafe extern "C" fn resolution_leave(context: Address) {
+    unsafe { resolution(context) }.assumptions.pop();
+}
+
+unsafe extern "C" fn resolution_mark(context: Address) -> ResolutionBase {
+    let state = unsafe { &*context.cast::<Resolution<'_,'_>>() };
+    ResolutionBase { choices: state.choices.len() as u64, results: state.results.len() as u64 }
+}
+
+unsafe extern "C" fn resolution_query_choice(context: Address, index: Index, at: u64) -> u32 {
+    let state = unsafe { resolution(context) };
+    let when = Presence::indices(
+        Comparison::Equal, unsafe { required_index(index) }, ApplicationIndex::Constant(at as u32),
+    );
+    let truth = state.truth(&when);
+    if truth != 1 {
+        state.choices.push((truth == 2).then_some(when));
+    }
+    truth
+}
+
+unsafe extern "C" fn resolution_assume_choice(context: Address, at: u64) -> u32 {
+    let state = unsafe { resolution(context) };
+    match state.choices[at as usize].take() {
+        Some(when) => { state.assume(when); 1 }
+        None => 0,
+    }
+}
+
+unsafe extern "C" fn resolution_release_choices(context: Address, base: u64) {
+    unsafe { resolution(context) }.choices.truncate(base as usize);
+}
+
+unsafe extern "C" fn resolution_emit(context: Address, value: Address) {
+    let position = if value.is_null() {
+        Position::Initialized
+    } else {
+        unsafe { &*value.cast::<Position>() }.clone()
+    };
+    unsafe { resolution(context) }.results.push(position);
+}
+
+unsafe extern "C" fn resolution_pair(context: Address) -> ResolutionPair {
+    let state = unsafe { &*context.cast::<Resolution<'_,'_>>() };
+    let count = state.results.len();
+    ResolutionPair { left: pointer(&state.results[count-2]), right: pointer(&state.results[count-1]) }
+}
+
+unsafe extern "C" fn resolution_finish_pair(context: Address, source: Address, selected: u32) {
+    let results = &mut unsafe { resolution(context) }.results;
+    let right = results.pop().unwrap();
+    let left = results.pop().unwrap();
+    let selected = match selected {
+        0 => left,
+        1 => right,
+        _ => match unsafe { &*source.cast::<Position>() } {
+            Position::Conditional(when, ..) =>
+                Position::Conditional(Arc::clone(when),Arc::new(left),Arc::new(right)),
+            Position::Both(..) => Position::Both(Arc::new(left),Arc::new(right)),
+            _ => unsafe { std::hint::unreachable_unchecked() },
+        },
+    };
+    results.push(selected);
+}
+
+unsafe extern "C" fn resolution_result(context: Address, at: u64) -> Address {
+    let state = unsafe { &*context.cast::<Resolution<'_,'_>>() };
+    pointer(&state.results[at as usize])
+}
+
+unsafe extern "C" fn resolution_finish_indexed(context: Address, index: Index, base: u64, uniform: u32) {
+    let results = &mut unsafe { resolution(context) }.results;
+    let mut choices = results.drain(base as usize..);
+    let position = if uniform != 0 {
+        choices.next().unwrap()
+    } else {
+        Position::Indexed(choices.by_ref().collect(),unsafe { required_index(index) })
+    };
+    drop(choices);
+    results.push(position);
+}
+
+#[repr(C)]
+struct ResolutionHost {
+    inspect: InspectPosition,
+    child: unsafe extern "C" fn(Address, u64) -> Address,
+    equal: EqualPosition,
+    presence_kind: PresenceKind,
+    truth: unsafe extern "C" fn(Address,Address) -> u32,
+    assume: unsafe extern "C" fn(Address,Address,u32),
+    leave: unsafe extern "C" fn(Address),
+    mark: unsafe extern "C" fn(Address) -> ResolutionBase,
+    query_choice: unsafe extern "C" fn(Address,Index,u64) -> u32,
+    assume_choice: unsafe extern "C" fn(Address,u64) -> u32,
+    release_choices: unsafe extern "C" fn(Address,u64),
+    emit: unsafe extern "C" fn(Address,Address),
+    pair: unsafe extern "C" fn(Address) -> ResolutionPair,
+    finish_pair: unsafe extern "C" fn(Address,Address,u32),
+    result: unsafe extern "C" fn(Address,u64) -> Address,
+    finish_indexed: unsafe extern "C" fn(Address,Index,u64,u32),
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.ownership_position::resolve_position"]
+    fn source_resolve_position(value: Address, context: Address, resolver: ResolutionHost);
+}
+
+pub(in crate::check) fn resolve_initialization(
+    builder: &Builder<'_>,
+    value: &Position,
+    initial: Option<&Presence>,
+    initial_condition: Option<&bounds::Condition>,
+) -> Position {
+    let mut state = Resolution {
+        builder, initial, initial_condition,
+        assumptions: Vec::new(), choices: Vec::new(), results: Vec::new(),
+    };
+    let resolver = ResolutionHost {
+        inspect, child, equal, presence_kind,
+        truth: resolution_truth, assume: resolution_assume, leave: resolution_leave,
+        mark: resolution_mark, query_choice: resolution_query_choice, assume_choice: resolution_assume_choice,
+        release_choices: resolution_release_choices, emit: resolution_emit, pair: resolution_pair,
+        finish_pair: resolution_finish_pair, result: resolution_result, finish_indexed: resolution_finish_indexed,
+    };
+    unsafe { source_resolve_position(pointer(value),(&mut state as *mut Resolution<'_,'_>).cast(),resolver) };
+    state.results.pop().unwrap()
+}

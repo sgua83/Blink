@@ -51,7 +51,7 @@ impl Position {
     pub(super) fn application_prefix_initialized(&self,length:u32,word:u32,initialized:&BTreeSet<Position>)->bool{position::prefix(self,length,word,initialized)}
     pub(super) fn uses_scope(&self,scope:usize)->bool{position::scope(self,scope)}
 }
-pub(super) use position::merge_initialization;
+pub(super) use position::{merge_initialization,resolve_initialization};
 impl Place {
     pub(super) fn data_positions(&self)->Vec<Position>{place::data(self)}
     pub(super) fn owned_positions(&self)->Option<Vec<Position>>{place::owned(self)}
