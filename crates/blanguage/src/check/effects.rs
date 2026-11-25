@@ -3,6 +3,7 @@ use super::*;
 use crate::syntax::wire::{ExprRef, Optional, SignatureNode, Slice, StmtRef, StorageView, Text, TypeRef};
 use std::ops::ControlFlow;
 mod collection;
+mod loop_projection;
 mod sources;
 use sources::{Local, Scope};
 
@@ -178,14 +179,12 @@ impl Builder<'_> {
                 };
                 let constant = known_index(&index)?;
                 let width = element.components.len();
-                let elements: Vec<_> = (0..ty.values[0] as usize)
-                    .filter(|i| constant.is_none_or(|value| *i == value as usize))
-                    .collect();
+                let elements = loop_projection::array_elements(ty.values[0], constant);
                 let selected = (0..width)
                     .map(|component| {
                         elements
-                            .iter()
-                            .flat_map(|i| components[*i * width + component].iter().copied())
+                            .clone()
+                            .flat_map(|i| components[i * width + component].iter().copied())
                             .collect()
                     })
                     .collect();
@@ -297,180 +296,6 @@ impl Builder<'_> {
             .collect();
         Some((ty.clone(), components))
     }
-    async fn invalidate_writes(
-        &mut self,
-        writes: &[Write],
-        borrowed_data: Option<ValueIdentity>,
-        effect: &LoopWrites,
-        condition: Option<&Expr>,
-        cursor: Option<&str>,
-    ) -> Result<()> {
-        for write in writes {
-            if let Write::Memory { borrow, .. } = write
-                && let Some(effect) = write.memory_effect()
-            {
-                unsafe { self.world.call(self.update_address_elements(borrow, effect)).await }?;
-                continue;
-            }
-            let changed=match write {
-                Write::Move{..}=>continue,
-                Write::External{..}|Write::Generator(_)|Write::Memory{..}=>{
-                    let contents=self.env.values().flat_map(Binding::application_resources).map(|data|(
-                        data.root.identity(),view::resource_borrow(data),data.ty.components.iter().map(|(_,word)|*word).collect::<Vec<_>>()
-                    )).collect::<Vec<_>>();
-                    for(source,resource,words)in contents{unsafe { self.world.call(self.update_application_elements(&[source],&resource,&words,application::ElementUpdate::Unknown)).await }?;}
-                    continue;
-                },
-                Write::Position{place,contents:true,when,..}=>self.written_application_data(place).map(|(data,offset,ty)|(
-                    vec![data.root.identity()],view::resource_borrow(data),ty.components.iter().map(|(_,word)|offset+word).collect::<Vec<_>>(),None,when.as_ref()
-                )),
-                Write::Position{place,contents:false,when,..}=>unsafe { self.world.call(self.loop_write_projection(place,&async |index,_|self.loop_index_operand(index,writes).map(|index|(index,None)))).await }?.map(|(projection,_,_)|(
-                    projection.data.map(|data|data.root.identity()).into_iter().collect::<Vec<_>>(),projection.resource,
-                    projection.value.1.into_iter().flatten().map(|i|projection.base.components[i].1).collect::<Vec<_>>(),
-                    projection.index.map(|index|{let range=match index{bounds::Operand::Constant(_,value)=>(value as u32,value as u32),_ =>(0,u32::MAX)};(index,range)}),when.as_ref()
-                )),
-            };
-            if let Some((sources,resource,words,index,when))=changed{unsafe { self.world.call(self.update_application_elements(&sources,&resource,&words,application::ElementUpdate::Element{proof:&bounds::Proof::default(),index,when})).await }?;}
-        }
-        let mut resources = Vec::new();
-        for (name,binding) in &self.env {
-            let Binding::ApplicationData(data) = binding else { continue; };
-            if borrowed_data == Some(data.root.identity()) { continue; }
-            if let Some(id) = data.root.proof.known_identity(0) && unsafe { self.world.call(self.application_borrowed(id)).await }? { continue; }
-            if writes.iter().any(|write| matches!(write,
-                Write::Position{contents:false,place,..} if matches!(place.kind(), ExprKind::Name(target) if target == name))) {
-                resources.push(name.clone());
-            }
-        }
-        for name in resources {
-            if let Some(Binding::ApplicationData(data)) = self.env.get_mut(&name) {
-                data.root.proof.forget_value(&[0],data.root.ty.components.len());
-                data.length.proof = data
-                    .count
-                    .map(|count| bounds::Proof::unsigned(count, count))
-                    .unwrap_or_default();
-                data.length.constant = None;
-                data.length.uniform = false;
-            }
-        }
-        let mut modified: BTreeMap<String, BTreeSet<usize>> = BTreeMap::new();
-        for (name, binding) in &self.env {
-            if let Some(owner) = binding.stored_place() {
-                if condition.is_some() && matches!(binding, Binding::Owned(_))
-                    && owner.ty() == &Ty::scalar(Scalar::U32)
-                    && matches!(owner.storage(), Place::Local(..) | Place::Reference { .. }) { continue; }
-                for write in writes {
-                    if cursor==Some(name.as_str())
-                        &&let Place::ApplicationElement{identity,index_value,element_layout,..}=owner.storage()
-                        &&let Write::Position{place,contents:false,..}=write
-                        &&let Some((written,_,_))=unsafe { self.world.call(self.loop_write_projection(place,&async |index,_|self.loop_index_operand(index,writes).map(|index|(index,None)))).await }?
-                        &&written.data.is_some_and(|data|data.root.identity()==*identity)
-                        &&address::Layout::of(&written.base)==*element_layout
-                        &&written.index.is_some_and(|index|bounds::Condition::index_equal(index,*index_value).truth_in(&self.path)==Some(true)){continue;}
-                    let components = match write {
-                        Write::Move{..}=>Vec::new(),
-                        Write::External{..}|Write::Generator(_)=>vec![(0..owner.ty().components.len()).collect()],
-                        Write::Memory{..}=>{
-                            let outside_element = cursor == Some(name.as_str())
-                                && matches!(owner.storage(), Place::ApplicationElement{..});
-                            vec![self.memory_effect_components(write.memory_effect(), &owner, outside_element)]
-                        },
-                        Write::Position{place,contents,iterator,..}=>{
-                            let projection=if *contents {self.application_write_projection(place,&owner)}
-                                else {unsafe { self.world.call(self.written_projection(&place,&name,&owner,iterator.as_ref().map(|(name,index)|(name.as_str(),index)),writes)).await }?};
-                            projection.map(|(_,components)|components).unwrap_or_default()
-                        },
-                    };
-                    for component in components.into_iter().flatten() {
-                        modified.entry(name.clone()).or_default().insert(component);
-                    }
-                }
-            }
-        }
-        let raw=writes.iter().any(|write|match write {
-            Write::External{..}|Write::Generator(_)|Write::Memory{..}=>true,
-            Write::Position{contents:false,place,..}=>address_write(place),
-            _=>false,
-        });
-        let deferred=writes.iter().any(|write|matches!(write,Write::Memory{..})&&write.memory_effect().is_none());
-        for (name, binding) in &mut self.env {
-            let context=self.loop_contexts.last_mut().unwrap();
-            if deferred && context.view_scope.is_some() {
-                let mut paths = Vec::new();
-                if let Some(entry) = context.entry.env.get(name) {
-                    view::for_each_data_path(entry, |path, data, _| {
-                        let Some(value) = data.elements.known().and_then(returns::Returned::view_value) else {
-                            return;
-                        };
-                        let metadata = view::resource_paths(&value.ty).into_iter()
-                            .filter(|fields| application::model_data(data.elements.known(), fields).is_some())
-                            .map(|fields| {
-                                let (mut offset, mut ty) = (0, &value.ty);
-                                for field in fields {
-                                    let (at, next) = if ty.has_variants() {
-                                        (ty.variant_payload_offset(), ty.variants[field].ty.as_ref())
-                                    } else {
-                                        ty.aggregate_part(field)
-                                    };
-                                    offset += at;
-                                    ty = next;
-                                }
-                                offset..offset + ty.size
-                            }).collect::<Vec<_>>();
-                        let components = value.ty.components.iter().enumerate()
-                            .filter_map(|(component, (scalar, word))| {
-                                (!metadata.iter().any(|range| range.contains(word))).then_some((component, *scalar))
-                            }).collect::<Vec<_>>();
-                        paths.push((path.to_vec(), components));
-                    });
-                }
-                for(path,components)in paths {
-                    let Some(value)=view::data_at_mut(binding,&path).and_then(|data|data.elements.known_mut()).and_then(returns::Returned::view_value_mut)else{continue;};
-                    for(component,scalar)in components {
-                        value.proof.forget_value(&[component],value.ty.components.len());
-                        let id=context.value_input(name,Some(path.clone()),component,scalar);
-                        value.proof=std::mem::take(&mut value.proof).with_component_identity(component,id);
-                    }
-                    value.constant=None;value.uniform=false;
-                }
-            }
-            if let Some(components) = modified.get(name) {
-                let components: Vec<_> = components.iter().copied().collect();
-                // Registered loop inputs receive actual memory writes through their original backedges.
-                if raw && context.view_scope.is_none() && let Some((proof,_,storage))=binding.proof_storage() {
-                    for(offset,field)in storage.ty().borrow_fields() {
-                        if field.is_address() {
-                            let component=storage.ty().components.iter().position(|(_,at)|*at==offset).unwrap();
-                            if components.contains(&component){
-                                proof.mark_external_borrow(component);
-                            }
-                        }
-                    }
-                }
-                match binding {
-                    Binding::Owned(owner) => {
-                        owner.uniform = false;
-                        owner.proof.forget_value(&components,owner.place.ty().components.len());
-                        // Direct writes retain their numeric analysis; indirect changes use this loop's original inputs.
-                        let context=self.loop_contexts.last_mut().unwrap();
-                        if context.view_scope.is_some() && context.entry.env.contains_key(name)
-                            && let Place::Local(_,slots,..)=owner.place.storage() {
-                            for component in components.into_iter().filter(|component|!effect.locals.contains(&slots[*component])) {
-                                let scalar=owner.place.ty().components[component].0;
-                                let id=context.value_input(name,None,component,scalar);
-                                owner.proof=std::mem::take(&mut owner.proof).with_component_identity(component,id);
-                            }
-                        }
-                    }
-                    Binding::OwnedValue(owner) => {
-                        owner.invalidate_components(&components, borrowed_data)
-                    }
-                    _ => {}
-                }
-            }
-        }
-        Ok(())
-    }
     async fn loop_write_projection<'a,'e>(
         &'a self,expr:&Expr,known_index:&impl std::ops::AsyncFn(&Expr,bool)->Result<(Option<bounds::Operand>,Option<bounds::Condition>)>,
     )->Result<Option<(DataProjection<'a>,&'a application::Data,Option<bounds::Condition>)>> {
@@ -487,7 +312,7 @@ impl Builder<'_> {
             },
             ExprKind::Index(base,index)=>{
                 if let Some((data,offset,ty))=self.written_application_data(&base) {
-                    let components=ty.components.iter().map(|(scalar,word)|vec![data.ty.components.iter().position(|part|part==&(*scalar,offset+word)).unwrap()]).collect();
+                    let components=ty.components.iter().map(|part|vec![data.ty.components.iter().position(|base|loop_projection::part_matches(*base,*part,offset)).unwrap()]).collect();
                     let(index,when)=known_index(&index,true).await?;
                     return Ok(Some((DataProjection{data:Some(data),resource:view::resource_borrow(data),base:data.ty.clone(),access:data.access,index,value:(ty.clone(),components)},data,when)));
                 }
@@ -498,7 +323,7 @@ impl Builder<'_> {
                     for fields in view::resource_paths(&projection.base) {
                         let (mut offset,mut field)=(0,&projection.base);
                         for at in &fields{let(word,next)=field.aggregate_part(*at);offset+=word;field=next;}
-                        if field.components.iter().zip(&components).all(|((scalar,word),parts)|parts.iter().any(|i|projection.base.components[*i]==(*scalar,offset+word))) {
+                        if field.components.iter().zip(&components).all(|(part,parts)|parts.iter().any(|i|loop_projection::part_matches(projection.base.components[*i],*part,offset))) {
                             resource.union(&view::Borrow::element(projection.resource.clone(),fields,projection.index));
                         }
                     }
@@ -511,8 +336,8 @@ impl Builder<'_> {
                 } else {
                     let Some(element)=&ty.array else{return Ok(None);};
                     let constant=match known_index(&index,false).await?.0{Some(bounds::Operand::Constant(Scalar::U32,value))=>Some(value as u32),_=>None};let width=element.components.len();
-                    let elements=(0..ty.values[0] as usize).filter(|i|constant.is_none_or(|value|*i==value as usize)).collect::<Vec<_>>();
-                    let selected=(0..width).map(|component|elements.iter().flat_map(|i|components[*i*width+component].iter().copied()).collect()).collect();
+                    let elements=loop_projection::array_elements(ty.values[0],constant);
+                    let selected=(0..width).map(|component|elements.clone().flat_map(|i|components[i*width+component].iter().copied()).collect()).collect();
                     projection.value=((**element).clone(),selected);
                 }
                 Ok(Some((projection,input,when)))
@@ -591,105 +416,6 @@ impl Builder<'_> {
             normalized.push(write);
         }
         Ok(normalized)
-    }
-    async fn project_loop_storage(&self,input:&application::Data,resource:&view::Borrow,index:Option<bounds::Operand>,parts:&[(Scalar,u32)])->Result<Option<Vec<StorageWrite>>> {
-        let Some(locations)=unsafe { self.world.call(self.application_resource_storage(input,resource)).await }?else{return Ok(None);};
-        let mut writes=Vec::new();
-        for(location,ty,layout)in locations {
-            match location {
-                StorageWrite::Descendants{root}=>writes.push(StorageWrite::Descendants{root}),
-                StorageWrite::Frame{root,..}=>{
-                    if let(Some(bounds::Operand::Constant(Scalar::U32,index)),application::DataLayout::Declared)=(index,&layout){
-                        let base=u128::from(index as u32)*u128::from(ir::align_up(ty.size,ty.align));
-                        for(scalar,word)in parts{let start=base+u128::from(*word);writes.push(StorageWrite::Frame{root,range:Some(start..start+u128::from(scalar.size()))});}
-                    }else{writes.push(StorageWrite::Frame{root,range:None});}
-                },
-            }
-        }
-        Ok(Some(writes))
-    }
-    async fn project_loop_writes(&self,writes:&[Write])->Result<LoopWrites>{
-        let mut effect=LoopWrites::default();
-        for write in writes {
-            match write {
-                Write::Move{..}=>{},
-                Write::External{..}|Write::Generator(_)=>{effect.unknown_storage=true;effect.external=true;},
-                Write::Memory{borrow,..}=>{
-                    let mut positions = Vec::new();
-                    let mut origins = Vec::new();
-                    if Self::visit_address_writes(borrow, |origin, when| {
-                        if origin.writable {
-                            let regions = origin.memory_regions(&when)?;
-                            origins.push(origin.clone());
-                            positions.extend(regions.into_iter().map(|region| region.position));
-                        }
-                        Some(())
-                    }).is_none() {
-                        effect.unknown_storage = true;
-                        effect.external = true;
-                        continue;
-                    }
-                    for origin in origins {
-                        match &origin.root {
-                            address::Root::Resource{borrow,index}|address::Root::Dataset{borrow,index}=>{
-                                let parts=origin.layout.parts.iter().zip(origin.words.iter()).map(|((scalar,_),word)|(*scalar,*word)).collect::<Vec<_>>();
-                                let mut located=false;
-                                for input in self.env.values().flat_map(Binding::application_resources){
-                                    if let Some(storage)=unsafe { self.world.call(self.project_loop_storage(input,borrow,*index,&parts)).await }?{
-                                        located=true;effect.storage.extend(storage);
-                                    }
-                                }
-                                if !located{effect.unknown_storage=true;}
-                            },
-                            _=>if origin.resources().active(){effect.unknown_storage=true;},
-                        }
-                    }
-                    for binding in self.env.values(){
-                        let Some(owner)=binding.stored_place()else{continue;};
-                        let components=self.address_write_components(&positions,&owner);
-                        if components.is_empty(){continue;}
-                        match owner.storage(){
-                            Place::Local(_,slots,..)=>effect.locals.extend(components.into_iter().map(|component|slots[component])),
-                            Place::Reference{..}=>{effect.unknown_storage=true;effect.external=true;},
-                            _=>effect.unknown_storage=true,
-                        }
-                    }
-                },
-                Write::Position{place,contents,iterator,..}=>{
-                    if address_write(place) {effect.unknown_storage=true;effect.external=true;continue;}
-                    if iterator.is_some() {effect.unknown_storage=true;continue;}
-                    if *contents {
-                        if let Some((data,_,ty))=self.written_application_data(place) && !ty.owns_resources() {
-                            effect.storage.push(StorageWrite::Frame{root:data.root.regs[0],range:None});
-                        }else{effect.unknown_storage=true;}
-                        continue;
-                    }
-                    if let Some((projection,input,_))=unsafe { self.world.call(self.loop_write_projection(place,&async |index,_|self.loop_index_operand(index,writes).map(|index|(index,None)))).await }? {
-                        let parts=projection.value.1.iter().flatten().map(|component|projection.base.components[*component]).collect::<Vec<_>>();
-                        match unsafe { self.world.call(self.project_loop_storage(input,&projection.resource,projection.index,&parts)).await }?{
-                            Some(storage)=>effect.storage.extend(storage),
-                            None=>effect.unknown_storage=true,
-                        }
-                        continue;
-                    }
-                    let Some(name)=assigned_root(&place) else {effect.unknown_storage=true;continue;};
-                    let Some(binding)=self.env.get(&name) else {
-                        if !matches!(place.kind(),ExprKind::Name(_)){effect.unknown_storage=true;}
-                        continue;
-                    };
-                    let owner=match binding {Binding::ApplicationData(data)=>data.place.clone(),_=>binding.stored_place()};
-                    if let Some(owner)=owner
-                        && let Place::Local(_,slots,..)=&owner
-                        && let Some((_,components))=unsafe { self.world.call(self.written_projection(&place,&name,&owner,None,writes)).await }? {
-                        effect.locals.extend(components.into_iter().flatten().map(|component|slots[component]));
-                    }else{
-                        effect.unknown_storage=true;
-                        if matches!(binding.stored_place(),Some(Place::Reference{..})){effect.external=true;}
-                    }
-                },
-            }
-        }
-        Ok(effect)
     }
     pub(super) async fn loop_writes(
         &mut self,

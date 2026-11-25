@@ -1,5 +1,121 @@
 module bootstrap.source_writes;
 
+extern "C" LoopProjection loop_projection(LoopWriteKind kind, u32 address_write, u32 iterator) on cpu {
+    if (kind == LoopWriteKind::Move) { return LoopProjection::Ignore; }
+    if (kind == LoopWriteKind::External || address_write != 0) { return LoopProjection::External; }
+    if (kind == LoopWriteKind::Memory) { return LoopProjection::Memory; }
+    if (iterator != 0) { return LoopProjection::Unknown; }
+    if (kind == LoopWriteKind::Contents) { return LoopProjection::Contents; }
+    return LoopProjection::Position;
+}
+
+extern "C" LoopStorage loop_storage(u32 descendants, u32 declared_layout, u32 constant_index) on cpu {
+    if (descendants != 0) { return LoopStorage::Descendants; }
+    if (declared_layout != 0 && constant_index != 0) { return LoopStorage::Bytes; }
+    return LoopStorage::Frame;
+}
+
+extern "C" LoopBytes loop_bytes(u32 index, u32 stride, u32 word, u32 width) on cpu {
+    // All four inputs are u32. The product has enough room for both additions.
+    let begin = u64(index) * u64(stride) + u64(word);
+    return LoopBytes(begin, begin + u64(width));
+}
+
+extern "C" LoopBytes loop_array_elements(u64 length, u32 exact, u32 index) on cpu {
+    if (exact == 0) { return LoopBytes(0u64, length); }
+    let element = u64(index);
+    if (element < length) { return LoopBytes(element, element + 1u64); }
+    return LoopBytes(0u64, 0u64);
+}
+
+extern "C" u32 loop_part_matches(u32 source_scalar, u32 source_word, u32 target_scalar, u32 target_word, u32 offset) on cpu {
+    return u32(source_scalar == target_scalar && source_word == target_word + offset);
+}
+
+extern "C" u32 loop_contents_frame(u32 found, u32 owns_resources) on cpu {
+    return u32(found != 0 && owns_resources == 0);
+}
+
+extern "C" LoopUncertainty loop_position_uncertainty(LoopPosition position, u32 written, u32 has_binding, u32 direct) on cpu {
+    if (has_binding == 0) { return LoopUncertainty(u32(direct == 0), 0); }
+    if (position == LoopPosition::Local && written != 0) { return LoopUncertainty(0, 0); }
+    return LoopUncertainty(1, u32(position == LoopPosition::Reference));
+}
+
+extern "C" LoopUncertainty loop_memory_uncertainty(LoopPosition position, u32 written) on cpu {
+    if (written == 0 || position == LoopPosition::Local) { return LoopUncertainty(0, 0); }
+    return LoopUncertainty(1, u32(position == LoopPosition::Reference));
+}
+
+extern "C" LoopInvalidation loop_invalidation_next(LoopInvalidation phase) on cpu {
+    if (phase == LoopInvalidation::Elements) { return LoopInvalidation::Rebind; }
+    if (phase == LoopInvalidation::Rebind) { return LoopInvalidation::Select; }
+    if (phase == LoopInvalidation::Select) { return LoopInvalidation::Apply; }
+    return LoopInvalidation::Done;
+}
+
+extern "C" LoopElementEffect loop_element_effect(LoopWriteKind kind, u32 address_write, u32 resolved) on cpu {
+    if (kind == LoopWriteKind::Move) { return LoopElementEffect(LoopElementWrite::None, 0, 0); }
+    if (kind == LoopWriteKind::Memory) {
+        if (resolved != 0) { return LoopElementEffect(LoopElementWrite::Bytes, 1, 0); }
+        return LoopElementEffect(LoopElementWrite::Unknown, 1, 1);
+    }
+    if (kind == LoopWriteKind::External) { return LoopElementEffect(LoopElementWrite::Unknown, 1, 0); }
+    if (kind == LoopWriteKind::Contents) { return LoopElementEffect(LoopElementWrite::Contents, 0, 0); }
+    return LoopElementEffect(LoopElementWrite::Position, address_write, 0);
+}
+
+extern "C" LoopIndexRange loop_index_range(u32 constant, u32 index) on cpu {
+    if (constant != 0) { return LoopIndexRange(index, index); }
+    return LoopIndexRange(0, 0xffffffff);
+}
+
+extern "C" LoopRebind loop_rebind(u32 held, u32 identity, u32 borrowed, u32 checked, u32 written) on cpu {
+    if (held != 0 || borrowed != 0) { return LoopRebind::Keep; }
+    if (identity != 0 && checked == 0) { return LoopRebind::CheckBorrow; }
+    if (checked < 2) { return LoopRebind::Scan; }
+    if (written != 0) { return LoopRebind::Forget; }
+    return LoopRebind::Keep;
+}
+
+extern "C" u32 loop_scalar_header(u32 conditional, u32 owned, u32 unsigned_scalar, LoopPosition position) on cpu {
+    return u32(conditional != 0 && owned != 0 && unsigned_scalar != 0
+        && (position == LoopPosition::Local || position == LoopPosition::Reference));
+}
+
+extern "C" u32 loop_cursor_query(LoopWriteKind kind, u32 cursor, u32 application_element) on cpu {
+    return u32(kind == LoopWriteKind::Position && cursor != 0 && application_element != 0);
+}
+
+extern "C" LoopComponentWrite loop_component_write(LoopWriteKind kind, u32 cursor, u32 same_resource, u32 same_layout, u32 same_index) on cpu {
+    if (kind == LoopWriteKind::Move || (cursor != 0 && same_resource != 0 && same_layout != 0 && same_index != 0)) {
+        return LoopComponentWrite::None;
+    }
+    if (kind == LoopWriteKind::External) { return LoopComponentWrite::All; }
+    if (kind == LoopWriteKind::Memory) {
+        if (cursor != 0) { return LoopComponentWrite::OutsideElement; }
+        return LoopComponentWrite::Memory;
+    }
+    if (kind == LoopWriteKind::Contents) { return LoopComponentWrite::Contents; }
+    return LoopComponentWrite::Position;
+}
+
+extern "C" u32 loop_deferred_input(u32 deferred, u32 view_scope) on cpu {
+    return u32(deferred != 0 && view_scope != 0);
+}
+
+extern "C" u32 loop_metadata_contains(u32 begin, u32 end, u32 word) on cpu {
+    return u32(begin <= word && word < end);
+}
+
+extern "C" u32 loop_external_proof(u32 raw, u32 view_scope) on cpu {
+    return u32(raw != 0 && view_scope == 0);
+}
+
+extern "C" u32 loop_local_input(u32 view_scope, u32 entry, u32 direct) on cpu {
+    return u32(view_scope != 0 && entry != 0 && direct == 0);
+}
+
 address at(address base, u64 offset) on cpu {
     return unsafe_address(address_bits(base) + offset);
 }

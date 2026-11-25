@@ -1017,7 +1017,7 @@ impl ReferenceAddress {
         })
     }
 }
-fn resource_metadata(ty:&Ty,resources:Vec<Vec<usize>>)->Vec<std::ops::Range<u32>> {
+pub(super) fn resource_metadata(ty:&Ty,resources:Vec<Vec<usize>>)->Vec<std::ops::Range<u32>> {
     resources.into_iter().map(|fields|{
         let(mut offset,mut ty)=(0,ty);
         for field in fields{let(at,next)=if ty.has_variants(){(ty.variant_payload_offset(),ty.variants[field].ty.as_ref())}else{ty.aggregate_part(field)};offset+=at;ty=next;}
@@ -1036,9 +1036,9 @@ impl Builder<'_> {
         Some(positions)
     }
 
-    pub(super) fn visit_address_writes(
-        borrow: &view::Borrow,
-        mut visit: impl FnMut(&Arc<Origin>, bounds::Clause) -> Option<()>,
+    pub(super) fn visit_address_writes<'a>(
+        borrow: &'a view::Borrow,
+        mut visit: impl FnMut(&'a Arc<Origin>, bounds::Clause) -> Option<()>,
     ) -> Option<()> {
         if !borrow.inputs.is_empty() || !borrow.calls.is_empty() || !borrow.reads.is_empty() {
             return None;

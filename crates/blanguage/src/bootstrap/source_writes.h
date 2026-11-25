@@ -107,6 +107,40 @@ extern "C" NumericIterations numeric_iterations(NumericTransfer effect, NumericR
 extern "C" NumericRanges numeric_ranges(NumericTransfer effect, NumericRange input, NumericIterations iterations) on cpu;
 extern "C" NumericRetention numeric_retention(NumericTransfer effect, NumericRange input, NumericRange guard, u32 bounded) on cpu;
 
+enum LoopWriteKind:u32 { Move=0; Position=1; Contents=2; Memory=3; External=4; };
+enum LoopProjection:u32 { Ignore=0; External=1; Unknown=2; Contents=3; Memory=4; Position=5; };
+extern "C" LoopProjection loop_projection(LoopWriteKind kind, u32 address_write, u32 iterator) on cpu;
+enum LoopStorage:u32 { Descendants=0; Frame=1; Bytes=2; };
+extern "C" LoopStorage loop_storage(u32 descendants, u32 declared_layout, u32 constant_index) on cpu;
+struct LoopBytes { u64 begin; u64 end; };
+extern "C" LoopBytes loop_bytes(u32 index, u32 stride, u32 word, u32 width) on cpu;
+extern "C" LoopBytes loop_array_elements(u64 length, u32 exact, u32 index) on cpu;
+extern "C" u32 loop_part_matches(u32 source_scalar, u32 source_word, u32 target_scalar, u32 target_word, u32 offset) on cpu;
+extern "C" u32 loop_contents_frame(u32 found, u32 owns_resources) on cpu;
+
+enum LoopPosition:u32 { Missing=0; Local=1; Reference=2; Other=3; };
+struct LoopUncertainty { u32 storage; u32 external; };
+extern "C" LoopUncertainty loop_position_uncertainty(LoopPosition position, u32 written, u32 has_binding, u32 direct) on cpu;
+extern "C" LoopUncertainty loop_memory_uncertainty(LoopPosition position, u32 written) on cpu;
+enum LoopInvalidation:u32 { Elements=0; Rebind=1; Select=2; Apply=3; Done=4; };
+extern "C" LoopInvalidation loop_invalidation_next(LoopInvalidation phase) on cpu;
+enum LoopElementWrite:u32 { None=0; Bytes=1; Unknown=2; Contents=3; Position=4; };
+struct LoopElementEffect { LoopElementWrite action; u32 raw; u32 deferred; };
+extern "C" LoopElementEffect loop_element_effect(LoopWriteKind kind, u32 address_write, u32 resolved) on cpu;
+struct LoopIndexRange { u32 low; u32 high; };
+extern "C" LoopIndexRange loop_index_range(u32 constant, u32 index) on cpu;
+
+enum LoopRebind:u32 { Keep=0; CheckBorrow=1; Scan=2; Forget=3; };
+extern "C" LoopRebind loop_rebind(u32 held, u32 identity, u32 borrowed, u32 checked, u32 written) on cpu;
+enum LoopComponentWrite:u32 { None=0; All=1; Memory=2; OutsideElement=3; Contents=4; Position=5; };
+extern "C" u32 loop_scalar_header(u32 conditional, u32 owned, u32 unsigned_scalar, LoopPosition position) on cpu;
+extern "C" u32 loop_cursor_query(LoopWriteKind kind, u32 cursor, u32 application_element) on cpu;
+extern "C" LoopComponentWrite loop_component_write(LoopWriteKind kind, u32 cursor, u32 same_resource, u32 same_layout, u32 same_index) on cpu;
+extern "C" u32 loop_deferred_input(u32 deferred, u32 view_scope) on cpu;
+extern "C" u32 loop_metadata_contains(u32 begin, u32 end, u32 word) on cpu;
+extern "C" u32 loop_external_proof(u32 raw, u32 view_scope) on cpu;
+extern "C" u32 loop_local_input(u32 view_scope, u32 entry, u32 direct) on cpu;
+
 extern "C" bool numeric_contains_expression(SignatureNode root, SignatureNode selected) on cpu;
 extern "C" bool numeric_contains_statement(SignatureNode root, SignatureNode selected) on cpu;
 extern "C" bool numeric_loop_control(StorageView storage, Slice body, u32 seek) on cpu;
