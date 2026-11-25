@@ -581,18 +581,16 @@ extern "C" FactView negated_fact(FactView value,FactHost host) on cpu
 }
 
 
-extern "C" u32 project_call_graph(address context,CallProjectionHost host) on cpu
+extern "C" void project_call_graph(address context,CallProjectionHost host) on cpu
  requires nonzero(host.next) requires nonzero(host.impossible) requires nonzero(host.facts)
  requires nonzero(host.both) requires nonzero(host.either) {
- u32 private_numeric=0;
  while(true){
   CallProjectionNode next=host.next(context);
-  if(address_bits(next.original)==0u64){return private_numeric;}
+  if(address_bits(next.original)==0u64){return;}
   SourceNode source=next.node;
   if(source.kind==0){host.impossible(context,next.original);}
   else if(source.kind==1){
-   u32 need_private=private_numeric==0 ? 1 : 0;
-   private_numeric=private_numeric | host.facts(context,next.original,source.left,need_private);
+   host.facts(context,next.original,source.left);
   }else if(source.kind==3){
    host.either(context,next.original,source.left,source.right);
   }else{

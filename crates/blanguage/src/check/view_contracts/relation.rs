@@ -845,8 +845,7 @@ impl Graph {
                     if let Some((level, history)) = loop_scopes.get(&id) {
                         // A carried source can come from any earlier iteration.
                         // Its local predicates do not describe the current test.
-                        let paths = value.sources.entries().map(|(_, when)| when).collect::<Vec<_>>();
-                        let bindings = bounds::Clause::scalar_identities(paths.iter()).into_iter()
+                        let bindings = bounds::Clause::scalar_identities(value.sources.paths()).into_iter()
                             .filter(|identity| !match identity {
                                 ValueIdentity::Register(reg) | ValueIdentity::TaskControl(reg)
                                 | ValueIdentity::TaskCompletion(reg, _) => history.registers.contains(reg),

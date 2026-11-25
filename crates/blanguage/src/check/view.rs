@@ -76,6 +76,7 @@ impl<K:Ord+Clone> Edges<K>{
     pub fn contains(&self, key: &K) -> bool { self.0.get(key).is_some_and(bounds::Clause::possible) }
     pub fn is_empty(&self) -> bool { self.0.is_empty() }
     pub fn iter(&self) -> std::collections::btree_map::Keys<'_, K, bounds::Clause> { self.0.keys() }
+    pub(super) fn paths(&self) -> impl Iterator<Item = &bounds::Clause> { self.0.values() }
     pub fn entries(&self) -> impl DoubleEndedIterator<Item = (&K, bounds::Clause)> {
         self.0.iter().map(|(key, when)| (key, when.clone()))
     }
@@ -506,17 +507,22 @@ impl Borrow{
         })
     }
 
-    pub fn guards_at_call(&self, bindings: &BTreeMap<ValueIdentity, bounds::Proof>) -> Self {
-        Self {
-            sources: self.sources.guards_at_call(bindings),
-            ..self.pending_guards_at_call(bindings)
+    pub fn guards_at_call(mut self, bindings: &BTreeMap<ValueIdentity, bounds::Proof>) -> Self {
+        let paths = self.guard_paths_mut().collect::<Vec<_>>();
+        let projected = bounds::Clause::project_guard_paths(paths.iter().map(|path| &**path), bindings);
+        for (path, result) in paths.into_iter().zip(projected) {
+            *path = result;
         }
+        self
+    }
+
+    fn guard_paths_mut(&mut self) -> impl Iterator<Item = &mut bounds::Clause> {
+        self.sources.0.values_mut().chain(self.inputs.0.values_mut())
+            .chain(self.calls.0.values_mut()).chain(self.reads.0.values_mut())
     }
 
     pub(super) fn project_guards(mut self, guards: &bounds::PublicGuards<'_>) -> Self {
-        for condition in self.sources.0.values_mut().chain(self.inputs.0.values_mut())
-            .chain(self.calls.0.values_mut()).chain(self.reads.0.values_mut())
-        {
+        for condition in self.guard_paths_mut() {
             *condition = guards.project(condition);
         }
         self

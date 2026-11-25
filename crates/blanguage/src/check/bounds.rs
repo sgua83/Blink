@@ -2170,10 +2170,14 @@ impl Clause {
         numeric_context: impl FnOnce(&[&Self]) -> bool,
         mut required: impl FnMut(&Self) -> Option<Facts>,
     ) -> Vec<Self> {
-        let (mut clauses, private_numeric) = condition_graph::project_call(ordered, bindings);
+        let mut clauses = condition_graph::project_call(ordered, bindings);
+        let private_numeric = roots.iter().any(|root| clauses[&root.key()].1);
         // An impossible result has no consumer for supplementary bounds.
         let mut outputs = roots.iter().copied()
-            .filter(|root| !matches!(&**clauses[&root.key()].0, ClauseNode::Impossible))
+            .filter(|root| {
+                let (mapped, _) = &clauses[&root.key()];
+                !matches!(&**mapped.0, ClauseNode::Impossible)
+            })
             .peekable();
         // The other case can trigger numeric projection without itself being projected.
         if outputs.peek().is_some() && (private_numeric || numeric_context(ordered)) {
@@ -2181,30 +2185,37 @@ impl Clause {
             // Consume the original numeric condition before private snapshots leave scope.
             roots.sort_by_key(|root| root.key());
             roots.dedup_by_key(|root| root.key());
-            for root in &roots {
-                let numeric = match required(root) {
-                    Some(facts) => Clause::call_facts(
-                        facts.into_iter().filter(|value| matches!(value, Fact::Minimum(..) | Fact::Maximum(..))),
-                        bindings,
-                    ),
-                    None => Clause::impossible(),
-                };
-                let mapped = clauses.get_mut(&root.key()).unwrap();
-                let numeric = match &**numeric.0 {
-                    ClauseNode::Facts(bounds) if !bounds.is_empty() => {
-                        let missing = condition_graph::missing_call_bounds(mapped, bounds);
-                        if missing.is_empty() {
-                            continue;
-                        }
-                        // These are the remaining members of the already checked numeric clause.
-                        Clause::node(ClauseNode::Facts(missing))
-                    }
-                    _ => numeric,
-                };
-                *mapped = Clause::both(mapped, &numeric);
+            for root in roots {
+                Self::supplement_call_bounds(&mut clauses.get_mut(&root.key()).unwrap().0, bindings, required(root));
             }
         }
-        roots.iter().map(|root|clauses[&root.key()].clone()).collect()
+        roots.iter().map(|root| clauses[&root.key()].0.clone()).collect()
+    }
+
+    fn supplement_call_bounds(
+        mapped: &mut Self,
+        bindings: &BTreeMap<ValueIdentity, impl std::borrow::Borrow<Proof>>,
+        required: Option<Facts>,
+    ) {
+        let numeric = match required {
+            Some(facts) => Self::call_facts(
+                facts.into_iter().filter(|value| matches!(value, Fact::Minimum(..) | Fact::Maximum(..))),
+                bindings,
+            ),
+            None => Self::impossible(),
+        };
+        let numeric = match &**numeric.0 {
+            ClauseNode::Facts(bounds) if !bounds.is_empty() => {
+                let missing = condition_graph::missing_call_bounds(mapped, bounds);
+                if missing.is_empty() {
+                    return;
+                }
+                // These are the remaining members of the already checked numeric clause.
+                Self::node(ClauseNode::Facts(missing))
+            }
+            _ => numeric,
+        };
+        *mapped = Self::both(mapped, &numeric);
     }
     fn private_numeric(fact: &Fact, bindings: &BTreeMap<ValueIdentity, impl std::borrow::Borrow<Proof>>) -> bool {
         match fact {
@@ -2228,16 +2239,34 @@ impl Clause {
         &self, ordered: &[&Self], bindings: &BTreeMap<ValueIdentity, impl std::borrow::Borrow<Proof>>,
         required: impl FnMut(&Self) -> Option<Facts>,
     ) -> Self {
-        Self::at_calls(&[self], ordered, bindings, |ordered| {
-            // A reversed Below uses the same identities. Only a negated computed
-            // exclusion can introduce a numeric trigger absent from the original path.
-            ordered.iter().any(|clause| {
-                matches!(&**clause.0, ClauseNode::Facts(facts) if facts.iter().any(|fact| {
-                    matches!(*fact, Fact::Outside(id, domain @ IndexDomain::Computed(_))
-                        if Self::private_numeric(&Fact::Index(id, domain), bindings))
-                }))
-            }) && self.negate().has_private_numeric(bindings)
-        }, required).pop().unwrap()
+        Self::at_calls(&[self], ordered, bindings, |_| self.guard_needs_numeric(bindings), required)
+            .pop().unwrap()
+    }
+
+    fn guard_needs_numeric(&self, bindings: &BTreeMap<ValueIdentity, impl std::borrow::Borrow<Proof>>) -> bool {
+        // Only a negated computed exclusion can introduce a new numeric trigger.
+        Self::any_fact([self], &|fact| {
+            matches!(*fact, Fact::Outside(id, domain @ IndexDomain::Computed(_))
+                if Self::private_numeric(&Fact::Index(id, domain), bindings))
+        }) && self.negate().has_private_numeric(bindings)
+    }
+
+    pub(super) fn project_guard_paths<'a>(
+        roots: impl IntoIterator<Item = &'a Self>,
+        bindings: &BTreeMap<ValueIdentity, Proof>,
+    ) -> Vec<Self> {
+        let roots = roots.into_iter().collect::<Vec<_>>();
+        let mut clauses = condition_graph::project_call(&Self::ordered(roots.iter().copied()), bindings);
+        let mut distinct = roots.clone();
+        distinct.sort_unstable_by_key(|root| root.key());
+        distinct.dedup_by_key(|root| root.key());
+        for root in distinct {
+            let (mapped, private) = clauses.get_mut(&root.key()).unwrap();
+            if !matches!(&**mapped.0, ClauseNode::Impossible) && (*private || root.guard_needs_numeric(bindings)) {
+                Self::supplement_call_bounds(mapped, bindings, root.required());
+            }
+        }
+        roots.iter().map(|root| clauses[&root.key()].0.clone()).collect()
     }
 
     fn call_facts(facts: impl IntoIterator<Item = Fact>, bindings: &BTreeMap<ValueIdentity, impl std::borrow::Borrow<Proof>>) -> Self {
@@ -2246,11 +2275,7 @@ impl Clause {
 
     fn project_call_leaf(
         facts: &Facts, bindings: &BTreeMap<ValueIdentity, impl std::borrow::Borrow<Proof>>,
-        need_private: bool,
     ) -> (Self, bool) {
-        if !need_private {
-            return (Self::call_facts(facts.iter().copied(), bindings), false);
-        }
         let mut source = facts.iter().copied();
         let mut private = false;
         let projected = Self::fold_call_facts(source.by_ref().filter_map(|fact| {

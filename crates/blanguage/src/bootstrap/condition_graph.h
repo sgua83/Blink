@@ -17,11 +17,11 @@ struct CallProjectionNode { address original; SourceNode node; };
 struct CallProjectionHost {
  cfn<CallProjectionNode,address> next;
  cfn<void,address,address> impossible;
- cfn<u32,address,address,address,u32> facts;
+ cfn<void,address,address,address> facts;
  cfn<void,address,address,address,address> both;
  cfn<void,address,address,address,address> either;
 };
-extern "C" u32 project_call_graph(address context,CallProjectionHost host) on cpu
+extern "C" void project_call_graph(address context,CallProjectionHost host) on cpu
  requires nonzero(host.next) requires nonzero(host.impossible) requires nonzero(host.facts)
  requires nonzero(host.both) requires nonzero(host.either);
 struct Gate { usize left; usize right; u32 kind; Span parents; };

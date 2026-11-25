@@ -507,7 +507,7 @@ struct CallProjectionNode {
 struct CallProjection<'a, P> {
     ordered: std::slice::Iter<'a, &'a Clause>,
     bindings: &'a BTreeMap<ValueIdentity, P>,
-    results: BTreeMap<usize, Clause>,
+    results: BTreeMap<usize, (Clause, bool)>,
 }
 
 unsafe extern "C" fn call_next<P>(slot: Slot) -> CallProjectionNode {
@@ -524,44 +524,42 @@ unsafe fn call_key(source: Borrowed) -> usize {
 
 unsafe extern "C" fn call_impossible<P>(slot: Slot, source: Borrowed) {
     let ctx = unsafe { &mut *slot.cast::<CallProjection<'_, P>>() };
-    ctx.results.insert(unsafe { call_key(source) }, Clause::impossible());
+    ctx.results.insert(unsafe { call_key(source) }, (Clause::impossible(), false));
 }
 
-unsafe extern "C" fn call_leaf<P: Borrow<Proof>>(slot: Slot, source: Borrowed, facts: Borrowed, need_private: u32) -> u32 {
+unsafe extern "C" fn call_leaf<P: Borrow<Proof>>(slot: Slot, source: Borrowed, facts: Borrowed) {
     let ctx = unsafe { &mut *slot.cast::<CallProjection<'_, P>>() };
     let facts = unsafe { &*facts.cast::<Facts>() };
-    let (mapped, private) = Clause::project_call_leaf(facts, ctx.bindings, need_private != 0);
-    ctx.results.insert(unsafe { call_key(source) }, mapped);
-    u32::from(private)
+    ctx.results.insert(unsafe { call_key(source) }, Clause::project_call_leaf(facts, ctx.bindings));
 }
 
 unsafe extern "C" fn call_pair<P, const EITHER: bool>(slot: Slot, source: Borrowed, left: Borrowed, right: Borrowed) {
     let ctx = unsafe { &mut *slot.cast::<CallProjection<'_, P>>() };
-    let left = &ctx.results[&unsafe { call_key(left) }];
-    let right = &ctx.results[&unsafe { call_key(right) }];
+    let (left, left_private) = &ctx.results[&unsafe { call_key(left) }];
+    let (right, right_private) = &ctx.results[&unsafe { call_key(right) }];
     let mapped = if EITHER { Clause::either(left, right) } else { Clause::both(left, right) };
-    ctx.results.insert(unsafe { call_key(source) }, mapped);
+    ctx.results.insert(unsafe { call_key(source) }, (mapped, *left_private || *right_private));
 }
 
 #[repr(C)]
 struct CallProjectionHost {
     next: unsafe extern "C" fn(Slot) -> CallProjectionNode,
     impossible: unsafe extern "C" fn(Slot, Borrowed),
-    facts: unsafe extern "C" fn(Slot, Borrowed, Borrowed, u32) -> u32,
+    facts: unsafe extern "C" fn(Slot, Borrowed, Borrowed),
     both: unsafe extern "C" fn(Slot, Borrowed, Borrowed, Borrowed),
     either: unsafe extern "C" fn(Slot, Borrowed, Borrowed, Borrowed),
 }
 
 unsafe extern "C" {
     #[link_name = "bootstrap.condition_graph::project_call_graph"]
-    fn project_call_graph(slot: Slot, host: CallProjectionHost) -> u32;
+    fn project_call_graph(slot: Slot, host: CallProjectionHost);
 }
 
 pub(super) fn project_call<P: Borrow<Proof>>(
     ordered: &[&Clause], bindings: &BTreeMap<ValueIdentity, P>,
-) -> (BTreeMap<usize, Clause>, bool) {
+) -> BTreeMap<usize, (Clause, bool)> {
     let mut ctx = CallProjection { ordered: ordered.iter(), bindings, results: BTreeMap::new() };
-    let private = unsafe {
+    unsafe {
         project_call_graph(std::ptr::from_mut(&mut ctx).cast(), CallProjectionHost {
             next: call_next::<P>,
             impossible: call_impossible::<P>,
@@ -570,7 +568,7 @@ pub(super) fn project_call<P: Borrow<Proof>>(
             either: call_pair::<P, true>,
         })
     };
-    (ctx.results, private != 0)
+    ctx.results
 }
 
 struct CallBounds<'a> {
@@ -597,7 +595,7 @@ unsafe extern "C" fn bound_impossible(slot: Slot, source: Borrowed) {
     let at = ctx.offset(unsafe { call_key(source) });
     ctx.covered[at..at + ctx.words].fill(u64::MAX);
 }
-unsafe extern "C" fn bound_leaf(slot: Slot, source: Borrowed, facts: Borrowed, _: u32) -> u32 {
+unsafe extern "C" fn bound_leaf(slot: Slot, source: Borrowed, facts: Borrowed) {
     let ctx = unsafe { &mut *slot.cast::<CallBounds<'_>>() };
     let at = ctx.offset(unsafe { call_key(source) });
     let present = unsafe { &*facts.cast::<Facts>() };
@@ -606,7 +604,6 @@ unsafe extern "C" fn bound_leaf(slot: Slot, source: Borrowed, facts: Borrowed, _
             ctx.covered[at + index / 64] |= 1 << (index % 64);
         }
     }
-    0
 }
 unsafe extern "C" fn bound_pair<const EITHER: bool>(slot: Slot, source: Borrowed, left: Borrowed, right: Borrowed) {
     let ctx = unsafe { &mut *slot.cast::<CallBounds<'_>>() };
