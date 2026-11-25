@@ -27,12 +27,6 @@ impl<'a> ModuleName<'a> {
 }
 
 #[repr(C)]
-struct ModuleNameCounts {
-    local: usize,
-    external: usize,
-}
-
-#[repr(C)]
 struct FunctionName {
     name: Bytes,
     ordinal: u64,
@@ -43,11 +37,12 @@ struct Hit { name:Bytes, public:u64, present:u64 }
 struct Resolution { name:Bytes, count:u64 }
 pub(crate) struct Declaration<'a> { pub name:&'a str, pub public:bool }
 unsafe extern "C" {
-    #[link_name = "bootstrap.names::classify_module_names"]
-    fn classify_module_names(
-        local: *mut ModuleName<'_>, local_count: usize,
-        references: *mut ModuleName<'_>, reference_count: usize,
-    ) -> ModuleNameCounts;
+    #[link_name = "bootstrap.names::collect_external_module_names"]
+    fn collect_external_module_names(
+        local: *const ModuleName<'_>, local_count: usize,
+        references: *mut c_void, next: unsafe extern "C" fn(*mut c_void) -> Bytes,
+        external: *mut c_void, push: unsafe extern "C" fn(*mut c_void, Bytes),
+    );
     #[link_name = "bootstrap.names::dependency_active"]
     fn dependency_active(path: *const Bytes, count: u64, key: Bytes) -> bool;
     #[link_name = "bootstrap.names::order_imports"]
@@ -175,16 +170,32 @@ pub(crate) fn function_pairs(
     Some(pairs)
 }
 
-pub(crate) fn module_names<'a>(
-    local: impl IntoIterator<Item = &'a str>, references: impl IntoIterator<Item = &'a str>,
+unsafe extern "C" fn next_module_reference<'a, I: Iterator<Item = &'a str>>(source: *mut c_void) -> Bytes {
+    let references = unsafe { &mut *source.cast::<I>() };
+    references.next().map_or(Bytes { bytes: std::ptr::null(), length: 0 }, Bytes::new)
+}
+
+unsafe extern "C" fn push_module_reference(output: *mut c_void, name: Bytes) {
+    let external = unsafe { &mut *output.cast::<Vec<ModuleName<'_>>>() };
+    external.push(ModuleName(name, PhantomData));
+}
+
+pub(crate) fn module_names<'a, R: IntoIterator<Item = &'a str>>(
+    local: impl IntoIterator<Item = &'a str>, references: R,
 ) -> (Vec<ModuleName<'a>>, Vec<ModuleName<'a>>) {
     let mut local: Vec<_> = local.into_iter().map(ModuleName::new).collect();
-    let mut references: Vec<_> = references.into_iter().map(ModuleName::new).collect();
-    // These synchronous operations only rearrange the original borrowed names.
-    let counts = unsafe {
-        classify_module_names(local.as_mut_ptr(), local.len(), references.as_mut_ptr(), references.len())
-    };
-    local.truncate(counts.local);
-    references.truncate(counts.external);
-    (local, references)
+    let defined = unsafe { order_imports(local.as_mut_ptr().cast(), local.len() as u64) };
+    local.truncate(defined as usize);
+
+    let mut references = references.into_iter();
+    let mut external: Vec<ModuleName<'a>> = Vec::new();
+    // B borrows source names for this call; the original image outlives both outputs.
+    unsafe {
+        collect_external_module_names(local.as_ptr(), local.len(),
+            std::ptr::from_mut(&mut references).cast(), next_module_reference::<R::IntoIter>,
+            std::ptr::from_mut(&mut external).cast(), push_module_reference);
+    }
+    let used = unsafe { order_imports(external.as_mut_ptr().cast(), external.len() as u64) };
+    external.truncate(used as usize);
+    (local, external)
 }

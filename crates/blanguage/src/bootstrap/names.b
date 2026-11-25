@@ -197,23 +197,25 @@ extern "C" void pair_functions(address names, u64 declarations, u64 implementati
     }
 }
 
-extern "C" ModuleNameCounts classify_module_names(address local,u64 local_count,
-    address references,u64 reference_count) on cpu {
-    u64 defined = order_imports(local,local_count);
-    u64 used = order_imports(references,reference_count);
-    u64 next = 0u64;
-    u64 external = 0u64;
-    u64 index = 0u64;
-    while (index < used) {
-        NameBytes name = import_at(references,index);
-        while (next < defined && compare_name(import_at(local,next),name) < 0) {
-            next += 1u64;
-        }
-        if (next == defined || !equal(import_at(local,next),name)) {
-            unsafe_position<NameBytes>(row_at<NameBytes>(references,external)) = name;
-            external += 1u64;
-        }
-        index += 1u64;
+bool local_module_name(address local, u64 count, NameBytes name) on cpu {
+    u64 first = 0u64;
+    u64 last = count;
+    while (first < last) {
+        u64 middle = first + (last - first) / 2u64;
+        i32 order = compare_name(import_at(local, middle), name);
+        if (order == 0) { return true; }
+        if (order < 0) { first = middle + 1u64; }
+        else { last = middle; }
     }
-    return ModuleNameCounts(defined,external);
+    return false;
+}
+
+extern "C" void collect_external_module_names(address local, u64 local_count,
+    address references, cfn<NameBytes,address> next, address external,
+    cfn<void,address,NameBytes> push) on cpu requires nonzero(next) requires nonzero(push) {
+    NameBytes name = next(references);
+    while (address_bits(name.bytes) != 0u64) {
+        if (!local_module_name(local, local_count, name)) { push(external, name); }
+        name = next(references);
+    }
 }
