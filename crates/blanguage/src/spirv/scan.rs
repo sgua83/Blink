@@ -177,12 +177,6 @@ impl Emitter<'_> {
         };
     }
 
-    pub(super) fn shared_planes(&mut self, shared: u32, pointer: u32, node: u32, count: usize) -> Vec<u32> {
-        let mut offsets = (0..count as u32).map(|word| word * 64).collect::<Vec<_>>();
-        self.shared_addresses(shared, pointer, node, 1, &mut offsets);
-        offsets
-    }
-
     pub(super) fn group_remaining(&mut self, lane: u32, count: u32) -> u32 {
         let at = self.body.len();
         let first = self.next;

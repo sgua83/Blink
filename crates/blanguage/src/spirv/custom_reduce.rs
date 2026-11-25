@@ -1,17 +1,27 @@
 //! 用户值函数共用有序共享树；归约、扫描及摘要传播不引入另一套函数执行器。
 use super::{reduce::CollectiveField, scan::PhysicalField, *};
+use crate::ir::dataflow::Span;
 
 #[repr(C)]
-struct CustomCollectiveSource {
-    source: PageAddress,
+struct CustomInput {
+    source: PageInputs,
+    summary_descriptor: u32,
     active: u32,
     lane: u32,
-    bool_type: u32,
+    shared: u32,
+    pointer: u32,
     value_words: u32,
     tag_words: u32,
-    head_offset: u32,
-    step: u32,
+    head_word: u32,
     tail: u32,
+}
+
+#[repr(C)]
+struct CustomInputHost {
+    context: *mut std::ffi::c_void,
+    identity: unsafe extern "C" fn(*mut std::ffi::c_void, *mut u32, u32) -> u32,
+    fields: unsafe extern "C" fn(*mut std::ffi::c_void) -> Span,
+    project: unsafe extern "C" fn(*mut std::ffi::c_void, *mut u32, u32, u32, u32) -> u32,
 }
 
 #[repr(C)]
@@ -20,17 +30,6 @@ struct CollectiveBranch {
     next: u32,
     run: u32,
     end: u32,
-}
-
-#[repr(C)]
-struct CustomCollectiveJoin {
-    uint_type: u32,
-    from: u32,
-    inactive: u32,
-    end: u32,
-    next: u32,
-    scope: u32,
-    semantics: u32,
 }
 
 #[repr(C)]
@@ -57,18 +56,70 @@ struct CustomCombine {
     emit: unsafe extern "C" fn(*mut std::ffi::c_void, *const u32, *const u32, *mut u32, u32, u32) -> u32,
 }
 
-struct CombineContext<'a, 'stage> {
+struct CheckedCollective<'a, 'stage> {
     emitter: *mut Emitter<'stage>,
     reduction: &'a CustomReduction,
     kernel: &'a ReductionKernel,
     error: Option<&'static str>,
 }
 
+struct InputContext<'a, 'stage> {
+    checked: CheckedCollective<'a, 'stage>,
+    fields: Vec<PhysicalField>,
+}
+
+unsafe extern "C" fn emit_checked_identity(
+    context: *mut std::ffi::c_void, output: *mut u32, count: u32,
+) -> u32 {
+    let context = unsafe { &mut *context.cast::<InputContext<'_, '_>>() };
+    let emitter = unsafe { &mut *context.checked.emitter };
+    let kernel = context.checked.kernel;
+    if let Err(error) = emitter.block(&kernel.stage.code[kernel.invariant_end..kernel.initialize_end]) {
+        context.checked.error = Some(error);
+        return 0;
+    }
+    let output = unsafe { std::slice::from_raw_parts_mut(output, count as usize) };
+    emitter.pack_custom_values(&context.checked.reduction.ty, &kernel.initial, output);
+    emitter.current_label
+}
+
+unsafe extern "C" fn prepare_input_fields(context: *mut std::ffi::c_void) -> Span {
+    let context = unsafe { &mut *context.cast::<InputContext<'_, '_>>() };
+    let emitter = unsafe { &mut *context.checked.emitter };
+    let reduction = context.checked.reduction;
+    context.fields = emitter.physical_fields(&reduction.source_ty, reduction.fields.source_word);
+    Span::slice(&context.fields)
+}
+
+unsafe extern "C" fn emit_checked_projection(
+    context: *mut std::ffi::c_void, values: *mut u32, fields: u32, count: u32, label: u32,
+) -> u32 {
+    let context = unsafe { &mut *context.cast::<InputContext<'_, '_>>() };
+    let emitter = unsafe { &mut *context.checked.emitter };
+    let kernel = context.checked.kernel;
+    let (fields, count) = (fields as usize, count as usize);
+    let values = unsafe { std::slice::from_raw_parts_mut(values, fields.max(count)) };
+    emitter.current_label = label;
+    for (reg, raw) in kernel.source.iter().zip(&values[..fields]) {
+        let scalar = kernel.stage.registers[*reg];
+        emitter.from_words(*reg, &[*raw], Emitter::raw_scalar(scalar));
+    }
+    if let Err(error) = emitter.block(&kernel.stage.code[kernel.initialize_end..kernel.project_end]) {
+        context.checked.error = Some(error);
+        return 0;
+    }
+    for (dst, src) in kernel.right.iter().zip(&kernel.projected) {
+        emitter.regs[*dst] = emitter.value(*src);
+    }
+    emitter.pack_custom_values(&context.checked.reduction.ty, &kernel.right, &mut values[..count]);
+    emitter.current_label
+}
+
 unsafe extern "C" fn emit_checked_combine(
     context: *mut std::ffi::c_void, left: *const u32, right: *const u32,
     output: *mut u32, count: u32, label: u32,
 ) -> u32 {
-    let context = unsafe { &mut *context.cast::<CombineContext<'_, '_>>() };
+    let context = unsafe { &mut *context.cast::<CheckedCollective<'_, '_>>() };
     let emitter = unsafe { &mut *context.emitter };
     let count = count as usize;
     let left = unsafe { std::slice::from_raw_parts(left, count) };
@@ -199,12 +250,9 @@ unsafe extern "C" {
     #[link_name = "bootstrap.spirv_envelope::emit_custom_tree"]
     fn emit_custom_tree(input: CustomTree, own: *const u32, workspace: *mut u32,
         memory: MemoryHost, combine: CustomCombine) -> u32;
-    #[link_name = "bootstrap.spirv_envelope::custom_collective_read"]
-    fn emit_custom_collective_read(input: CustomCollectiveSource, fields: *const PhysicalField,
-        count: u32, values: *mut u32, body: *mut u32) -> CollectiveBranch;
-    #[link_name = "bootstrap.spirv_envelope::custom_collective_join"]
-    fn emit_custom_collective_join(input: CustomCollectiveJoin, values: *mut u32,
-        identity: *const u32, shared: *const u32, count: u32, body: *mut u32) -> StageWords;
+    #[link_name = "bootstrap.spirv_envelope::emit_custom_input"]
+    fn emit_custom_input(input: CustomInput, own: *mut u32, identity: *mut u32,
+        values: *mut u32, memory: MemoryHost, host: CustomInputHost) -> u32;
 }
 #[derive(Clone, Copy)]
 enum Summary {
@@ -260,12 +308,16 @@ impl Emitter<'_> {
         self.custom_arguments(&r.ty, &kernel.left, left);
         self.custom_arguments(&r.ty, &kernel.right, right);
         self.block(&kernel.stage.code[kernel.project_end..])?;
-        let values: Vec<_> = kernel.result.iter().map(|reg| self.raw_bits(*reg)).collect();
+        self.pack_custom_values(&r.ty, &kernel.result, output);
+        Ok(())
+    }
+
+    fn pack_custom_values(&mut self, ty: &Ty, registers: &[Reg], output: &mut [u32]) {
+        let values: Vec<_> = registers.iter().map(|reg| self.raw_bits(*reg)).collect();
         let zero = self.constant(Scalar::U32, 0);
         output.fill(zero);
-        self.pack_word_fields(output, zero, r.ty.components.iter().zip(&values)
+        self.pack_word_fields(output, zero, ty.components.iter().zip(&values)
             .map(|((scalar, byte), value)| (*scalar, *byte, *value)));
-        Ok(())
     }
     fn custom_input(
         &mut self,
@@ -278,81 +330,51 @@ impl Emitter<'_> {
         active: u32,
         summary: Summary,
     ) -> Result<(Vec<u32>, Vec<u32>, Vec<u32>), &'static str> {
-        let k = r.ty.size.div_ceil(4) as usize;
-        let words = summary.words(k);
-        let tags = words - k;
-        self.block(&kernel.stage.code[kernel.invariant_end..kernel.initialize_end])?;
-        let initial: Vec<_> = kernel.initial.iter().map(|reg| self.raw_bits(*reg)).collect();
-        let mut identity = self.pack_words(r.ty.size, r.ty.components.iter().zip(&initial)
-            .map(|((scalar, byte), value)| (*scalar, *byte, *value)));
-        identity.resize(words, self.constant(Scalar::U32, 0));
-        let own = self.shared_planes(shared, pointer, local, words);
-
-        let (binding, fields) = if tail {
-            (self.scan_input_binding(&r.fields), Vec::new())
+        let value_words = r.ty.size.div_ceil(4) as usize;
+        let words = summary.words(value_words);
+        let (summary_descriptor, fields) = if tail {
+            (self.buffers[self.scan_input_binding(&r.fields)], 0)
         } else {
-            (r.fields.source, self.physical_fields(&r.source_ty, r.fields.source_word))
+            (0, r.source_ty.components.len())
         };
-        let head = summary.head().unwrap_or(0);
-        let head_offset = if !tail && head != 0 { self.constant(Scalar::U64, head) } else { 0 };
-        let step = if tail && words > 1 { self.constant(Scalar::U64, 4) } else { 0 };
-        let source = self.page_input(Scalar::U32, PageSource::Dataset(self.buffers[binding]),
-            self.index, None, 0);
-        let input = CustomCollectiveSource {
-            source, active, lane: local, bool_type: self.types[&Scalar::Bool],
-            value_words: k as u32, tag_words: tags as u32, head_offset, step,
+        let mut own = vec![0; words];
+        let mut identity = vec![0; words];
+        let mut values = vec![0; summary.words(value_words.max(fields))];
+        let input = CustomInput {
+            source: self.page_inputs(PageSource::Dataset(self.buffers[r.fields.source]), self.index, None, 0),
+            summary_descriptor,
+            active,
+            lane: local,
+            shared,
+            pointer,
+            value_words: value_words as u32,
+            tag_words: (words - value_words) as u32,
+            head_word: summary.head().unwrap_or(0),
             tail: u32::from(tail),
         };
-        let mut incoming = vec![0; if tail { words } else { fields.len() + tags }];
-        let inactive = self.current_label;
-        let body = self.body.len();
-        self.body.reserve(155 + 74 * fields.len() + 14 * words);
-        let read = unsafe {
-            let read = emit_custom_collective_read(input, fields.as_ptr(), fields.len() as u32,
-                incoming.as_mut_ptr(), self.body.as_mut_ptr().add(body));
-            self.body.set_len(body + read.words as usize);
-            read
+        let memory = self.memory_host();
+        let mut context = InputContext {
+            checked: CheckedCollective {
+                emitter: memory.scalars.context.cast(), reduction: r, kernel, error: None,
+            },
+            fields: Vec::new(),
         };
-        self.next = read.next;
-        self.current_label = read.run;
-
-
-        let mut values = if tail {
-            incoming
-        } else {
-            for (reg, raw) in kernel.source.iter().zip(&incoming) {
-                let scalar = kernel.stage.registers[*reg];
-                self.from_words(*reg, &[*raw], Self::raw_scalar(scalar));
-            }
-            self.block(&kernel.stage.code[kernel.initialize_end..kernel.project_end])?;
-            for (dst, src) in kernel.right.iter().zip(&kernel.projected) {
-                self.regs[*dst] = self.value(*src);
-            }
-            let projected: Vec<_> = kernel.right.iter().map(|reg| self.raw_bits(*reg)).collect();
-            let mut packed = self.pack_words(r.ty.size, r.ty.components.iter().zip(&projected)
-                .map(|((scalar, byte), value)| (*scalar, *byte, *value)));
-            packed.extend_from_slice(&incoming[fields.len()..]);
-            packed
+        let host = CustomInputHost {
+            context: std::ptr::from_mut(&mut context).cast(),
+            identity: emit_checked_identity,
+            fields: prepare_input_fields,
+            project: emit_checked_projection,
         };
-
-        let scope = self.constant(Scalar::U32, 2);
-        let semantics = self.constant(Scalar::U32, 0x108);
-        let join = CustomCollectiveJoin {
-            uint_type: self.types[&Scalar::U32], from: self.current_label, inactive,
-            end: read.end, next: self.next, scope, semantics,
+        let label = unsafe {
+            emit_custom_input(input, own.as_mut_ptr(), identity.as_mut_ptr(), values.as_mut_ptr(), memory, host)
         };
-        let body = self.body.len();
-        self.body.reserve(8 + 12 * words);
-        unsafe {
-            let joined = emit_custom_collective_join(join, values.as_mut_ptr(), identity.as_ptr(),
-                own.as_ptr(), words as u32, self.body.as_mut_ptr().add(body));
-            self.body.set_len(body + joined.words as usize);
-            self.next = joined.next;
-            self.current_label = joined.label;
+        if let Some(error) = context.checked.error {
+            return Err(error);
         }
+        self.current_label = label;
+        values.truncate(words);
         Ok((own, identity, values))
     }
-
 
     fn with_custom_combine(
         &mut self,
@@ -361,7 +383,7 @@ impl Emitter<'_> {
         emit: impl FnOnce(MemoryHost, CustomCombine) -> u32,
     ) -> Result<(), &'static str> {
         let memory = self.memory_host();
-        let mut context = CombineContext {
+        let mut context = CheckedCollective {
             emitter: memory.scalars.context.cast(), reduction, kernel, error: None,
         };
         let combine = CustomCombine {

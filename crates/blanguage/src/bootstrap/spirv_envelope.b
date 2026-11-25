@@ -3871,7 +3871,19 @@ u32 segment_indicator(inout StageCursor out, PageAddress source, u32 bool_type, 
     return stage_select(out, source.u32_type, flag, source.one, source.zero);
 }
 
-extern "C" CollectiveBranch custom_collective_read(CustomCollectiveSource input,
+struct CustomCollectiveSource {
+    PageAddress source;
+    u32 active;
+    u32 lane;
+    u32 bool_type;
+    u32 value_words;
+    u32 tag_words;
+    u32 head_offset;
+    u32 step;
+    u32 tail;
+};
+
+CollectiveBranch custom_collective_read(CustomCollectiveSource input,
     address fields, u32 count, address values, address body) on cpu {
     PageAddress source = input.source;
     StageCursor out = StageCursor(body, 0u64, source.next);
@@ -3895,17 +3907,18 @@ extern "C" CollectiveBranch custom_collective_read(CustomCollectiveSource input,
             put(values, u64(index), value);
         }
         if (input.tag_words != 0) {
+            u32 tag_at = count > input.value_words ? count : input.value_words;
             array<u32,2> pointer = stage_field_pointers(out, record, input.head_offset, source.result_pointer,
                 source.u64_type, 0);
             u32 head = stage_aligned_load(out, source.u32_type, pointer[0], 4);
             if (input.tag_words == 2) {
                 u32 tag = segment_indicator(out, source, input.bool_type, head, true);
-                put(values, u64(count), tag);
-                put(values, u64(count + 1), tag);
+                put(values, u64(tag_at), tag);
+                put(values, u64(tag_at + 1), tag);
             } else {
                 u32 starts = stage_op(out, 171, input.bool_type, head, source.zero);
                 u32 position = stage_op(out, 128, source.u32_type, input.lane, source.one);
-                put(values, u64(count), stage_select(out, source.u32_type, starts, position, source.zero));
+                put(values, u64(tag_at), stage_select(out, source.u32_type, starts, position, source.zero));
             }
         }
     }
@@ -3913,7 +3926,17 @@ extern "C" CollectiveBranch custom_collective_read(CustomCollectiveSource input,
 }
 
 
-extern "C" StageWords custom_collective_join(CustomCollectiveJoin input, address values,
+struct CustomCollectiveJoin {
+    u32 uint_type;
+    u32 from;
+    u32 inactive;
+    u32 end;
+    u32 next;
+    u32 scope;
+    u32 semantics;
+};
+
+StageWords custom_collective_join(CustomCollectiveJoin input, address values,
     address identity, address shared, u32 count, address body) on cpu {
     StageCursor out = StageCursor(body, 0u64, input.next);
     out.words = words_one(body, out.words, 249, input.end);
@@ -3926,6 +3949,66 @@ extern "C" StageWords custom_collective_join(CustomCollectiveJoin input, address
     out.words += write_summary_words(word_at(body, out.words), shared, values, count);
     stage_barrier(out, input.scope, input.semantics);
     return StageWords(out.words, out.next, input.end);
+}
+
+extern "C" u32 emit_custom_input(CustomInput input, address own, address identity,
+    address values, MemoryHost memory, CustomInputHost host) on cpu
+    requires nonzero(memory.scalars.constant) requires nonzero(memory.scalars.type_id)
+    requires nonzero(memory.scalars.ids) requires nonzero(memory.scalars.reserve)
+    requires nonzero(memory.pointer_type) requires nonzero(memory.finish_body)
+    requires nonzero(host.identity) requires nonzero(host.fields) requires nonzero(host.project) {
+    u32 inactive = host.identity(host.context, identity, input.value_words);
+    if (inactive == 0) { return 0; }
+    address context = memory.scalars.context;
+    u32 zero = memory.scalars.constant(context, BuiltinScalar::U32, 0u64);
+    u32 words = input.value_words + input.tag_words;
+    for (part in input.value_words..words) { put(identity, u64(part), zero); }
+    for (part in 1..words) {
+        put(own, u64(part), memory.scalars.constant(context, BuiltinScalar::U32, 64u64 * u64(part)));
+    }
+    u32 uint_type = memory.scalars.type_id(context, BuiltinScalar::U32);
+    u32 next = memory.scalars.ids(context, 0);
+    address body = memory.scalars.reserve(context, 5u64 + 10u64 * u64(words), 0u64).body;
+    SharedAddress shared = SharedAddress(uint_type, input.pointer, input.shared, input.lane, 0, words, next);
+    SharedAddressWords located = shared_addresses(shared, own, body);
+    memory.finish_body(context, located.words);
+    memory.scalars.ids(context, located.next - next);
+
+    bool tail = input.tail != 0;
+    Span fields = tail ? Span(address(), 0u64, 0u64) : host.fields(host.context);
+    u32 head_offset = !tail && input.head_word != 0
+        ? memory.scalars.constant(context, BuiltinScalar::U64, u64(input.head_word)) : 0;
+    u32 step = tail && words > 1 ? memory.scalars.constant(context, BuiltinScalar::U64, 4u64) : 0;
+    PageInputs raw = input.source;
+    if (tail) { raw.descriptor = input.summary_descriptor; }
+    PageAddress source = prepare_page(raw, memory.pointer_type(context, BuiltinScalar::U32), memory.scalars);
+    u32 bool_type = memory.scalars.type_id(context, BuiltinScalar::Bool);
+    CustomCollectiveSource read = CustomCollectiveSource(source, input.active, input.lane, bool_type,
+        input.value_words, input.tag_words, head_offset, step, input.tail);
+    body = memory.scalars.reserve(context, 155u64 + 74u64 * fields.count + 14u64 * u64(words), 0u64).body;
+    CollectiveBranch opened = custom_collective_read(read, fields.data, u32(fields.count), values, body);
+    memory.finish_body(context, opened.words);
+    memory.scalars.ids(context, opened.next - source.next);
+    u32 from = opened.run;
+    if (!tail) {
+        from = host.project(host.context, values, u32(fields.count), input.value_words, from);
+        if (from == 0) { return 0; }
+        if (fields.count > u64(input.value_words)) {
+            for (part in 0..input.tag_words) {
+                put(values, u64(input.value_words + part), read_word(values, u32(fields.count) + part));
+            }
+        }
+    }
+
+    u32 scope = memory.scalars.constant(context, BuiltinScalar::U32, 2u64);
+    u32 semantics = memory.scalars.constant(context, BuiltinScalar::U32, 0x108u64);
+    next = memory.scalars.ids(context, 0);
+    body = memory.scalars.reserve(context, 8u64 + 12u64 * u64(words), 0u64).body;
+    CustomCollectiveJoin join = CustomCollectiveJoin(uint_type, from, inactive, opened.end, next, scope, semantics);
+    StageWords emitted = custom_collective_join(join, values, identity, own, words, body);
+    memory.finish_body(context, emitted.words);
+    memory.scalars.ids(context, emitted.next - next);
+    return emitted.label;
 }
 
 

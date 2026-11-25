@@ -779,17 +779,34 @@ struct PhysicalField {
 extern "C" TreeWords add_scan_prefix(ScanPrefix input, address fields, u32 count,
     address body, address decorations) on cpu;
 
-struct CustomCollectiveSource {
-    PageAddress source;
+struct CustomInput {
+    PageInputs source;
+    u32 summary_descriptor;
     u32 active;
     u32 lane;
-    u32 bool_type;
+    u32 shared;
+    u32 pointer;
     u32 value_words;
     u32 tag_words;
-    u32 head_offset;
-    u32 step;
+    u32 head_word;
     u32 tail;
 };
+
+struct CustomInputHost {
+    address context;
+    // The checked emitter returns its final block label, or zero with its diagnostic.
+    cfn<u32,address,address,u32> identity;
+    cfn<Span,address> fields;
+    cfn<u32,address,address,u32,u32,u32> project;
+};
+
+// Values holds max(source fields, value_words) + tag_words entries.
+extern "C" u32 emit_custom_input(CustomInput input, address own, address identity,
+    address values, MemoryHost memory, CustomInputHost host) on cpu
+    requires nonzero(memory.scalars.constant) requires nonzero(memory.scalars.type_id)
+    requires nonzero(memory.scalars.ids) requires nonzero(memory.scalars.reserve)
+    requires nonzero(memory.pointer_type) requires nonzero(memory.finish_body)
+    requires nonzero(host.identity) requires nonzero(host.fields) requires nonzero(host.project);
 
 struct CollectiveBranch {
     u64 words;
@@ -797,22 +814,6 @@ struct CollectiveBranch {
     u32 run;
     u32 end;
 };
-
-struct CustomCollectiveJoin {
-    u32 uint_type;
-    u32 from;
-    u32 inactive;
-    u32 end;
-    u32 next;
-    u32 scope;
-    u32 semantics;
-};
-
-// The caller applies the original projection in run for a typed source.
-extern "C" CollectiveBranch custom_collective_read(CustomCollectiveSource input,
-    address fields, u32 count, address values, address body) on cpu;
-extern "C" StageWords custom_collective_join(CustomCollectiveJoin input, address values,
-    address identity, address shared, u32 count, address body) on cpu;
 
 struct CustomSegmentPrefix {
     PageAddress parent;
