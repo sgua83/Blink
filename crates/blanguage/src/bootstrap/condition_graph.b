@@ -2484,3 +2484,17 @@ extern "C" void capture_selected_proof(address context,address indices,usize cou
   index+=1u64;
  }
 }
+
+extern "C" void bind_output_proof(address context,ProofOutputShape shape,ProofOutputHost host) on cpu
+ requires nonzero(host.bind_address) requires nonzero(host.bind_view)
+ requires nonzero(host.origins) requires nonzero(host.domains) requires nonzero(host.conditions) {
+ usize index=0u64;
+ while(index<shape.addresses){host.bind_address(context,index);index+=1u64;}
+ index=0u64;
+ while(index<shape.views){host.bind_view(context,index);index+=1u64;}
+ index=0u64;
+ while(index<shape.origins){host.origins(context,index);index+=1u64;}
+ index=0u64;
+ while(index<shape.domains){host.domains(context,index);index+=1u64;}
+ host.conditions(context);
+}

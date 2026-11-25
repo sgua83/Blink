@@ -1,8 +1,8 @@
 //! B owns shared-Clause overlap and equivalence, including equivalence planning. The original query owns
 //! its physical containers and borrows immutable Clause/Fact fields until return.
 use super::{
-    Clause, ClauseNode, Condition, EncodedClause, Fact, Facts, IndexDomain, OutputBindings, Proof, ValueIdentity,
-    internal_conflicts, output_identity,
+    Clause, ClauseNode, Condition, EncodedClause, Fact, Facts, IndexDomain, OutputBindings, Proof, Value, ValueIdentity,
+    internal_conflicts, map_domain, output_identity,
 };
 use std::{
     borrow::Borrow,
@@ -323,15 +323,16 @@ pub(super) fn source_node(clause: &Clause) -> SourceNode {
 }
 
 // Source roots keep the borrowed addresses valid until the synchronous walk returns.
-struct OutputRename<'a> {
+struct OutputRename<'a, 'out> {
     bindings: &'a OutputBindings,
-    roots: std::slice::Iter<'a, Clause>,
+    roots: &'out mut dyn Iterator<Item = (usize, &'a Clause)>,
+    emit: &'out mut dyn FnMut(usize, Clause),
+    output_index: usize,
     pending: Vec<(&'a Clause, bool)>,
     clauses: BTreeMap<usize, Clause>,
     conditions: BTreeMap<usize, Arc<Condition>>,
     facts: btree_set::Iter<'a, Fact>,
     renamed: Facts,
-    outputs: Vec<Clause>,
 }
 
 #[derive(Default)]
@@ -361,8 +362,8 @@ enum OutputBuild {
     MappedBranch,
 }
 
-unsafe fn output_rename<'a, 'b>(slot: Slot) -> &'a mut OutputRename<'b> {
-    unsafe { &mut *slot.cast::<OutputRename<'b>>() }
+unsafe fn output_rename<'a, 'b, 'out>(slot: Slot) -> &'a mut OutputRename<'b, 'out> {
+    unsafe { &mut *slot.cast::<OutputRename<'b, 'out>>() }
 }
 
 unsafe fn source_clause<'a>(source: Borrowed) -> &'a Clause {
@@ -370,8 +371,10 @@ unsafe fn source_clause<'a>(source: Borrowed) -> &'a Clause {
 }
 
 unsafe extern "C" fn output_root(slot: Slot) -> Borrowed {
-    unsafe { output_rename(slot) }.roots.next()
-        .map_or(ptr::null(), |root| ptr::from_ref(root).cast())
+    let ctx = unsafe { output_rename(slot) };
+    let Some((index, root)) = ctx.roots.next() else { return ptr::null(); };
+    ctx.output_index = index;
+    ptr::from_ref(root).cast()
 }
 
 unsafe extern "C" fn output_inspect(source: Borrowed) -> SourceNode {
@@ -389,7 +392,7 @@ unsafe extern "C" fn output_pop(slot: Slot) -> OutputPending {
 }
 
 unsafe extern "C" fn output_status(slot: Slot, source: Borrowed) -> OutputStatus {
-    let ctx = unsafe { &*slot.cast::<OutputRename<'_>>() };
+    let ctx = unsafe { &*slot.cast::<OutputRename<'_, '_>>() };
     let source = unsafe { source_clause(source) };
     match ctx.clauses.get(&source.key()) {
         None => OutputStatus::Pending,
@@ -412,7 +415,7 @@ unsafe extern "C" fn output_map_fact(slot: Slot) -> u32 {
 }
 
 unsafe extern "C" fn output_same_facts(slot: Slot, facts: Borrowed) -> u32 {
-    let ctx = unsafe { &*slot.cast::<OutputRename<'_>>() };
+    let ctx = unsafe { &*slot.cast::<OutputRename<'_, '_>>() };
     u32::from(ctx.renamed == *unsafe { &*facts.cast::<Facts>() })
 }
 
@@ -451,7 +454,7 @@ unsafe extern "C" fn output_build(slot: Slot, source: Borrowed, node: SourceNode
 
 unsafe extern "C" fn output_emit(slot: Slot, source: Borrowed) {
     let ctx = unsafe { output_rename(slot) };
-    ctx.outputs.push(ctx.clauses[&unsafe { source_clause(source) }.key()].clone());
+    (ctx.emit)(ctx.output_index, ctx.clauses[&unsafe { source_clause(source) }.key()].clone());
 }
 
 #[repr(C)]
@@ -474,15 +477,26 @@ unsafe extern "C" {
 }
 
 pub(super) fn rename_outputs(roots: &[Clause], bindings: &OutputBindings) -> Vec<Clause> {
+    let mut outputs = Vec::with_capacity(roots.len());
+    rename_output_roots(roots.iter().enumerate(), bindings, |_, result| outputs.push(result));
+    outputs
+}
+
+fn rename_output_roots<'a>(
+    mut roots: impl Iterator<Item = (usize, &'a Clause)>,
+    bindings: &'a OutputBindings,
+    mut emit: impl FnMut(usize, Clause),
+) {
     let mut ctx = OutputRename {
         bindings,
-        roots: roots.iter(),
+        roots: &mut roots,
+        emit: &mut emit,
+        output_index: 0,
         pending: Vec::new(),
         clauses: BTreeMap::new(),
         conditions: BTreeMap::new(),
         facts: btree_set::Iter::default(),
         renamed: Facts::new(),
-        outputs: Vec::with_capacity(roots.len()),
     };
     unsafe {
         rename_output_graph(ptr::from_mut(&mut ctx).cast(), OutputRenameHost {
@@ -498,7 +512,133 @@ pub(super) fn rename_outputs(roots: &[Clause], bindings: &OutputBindings) -> Vec
             emit: output_emit,
         });
     }
-    ctx.outputs
+}
+
+#[repr(C)]
+struct ProofOutputShape {
+    addresses: usize,
+    views: usize,
+    origins: usize,
+    domains: usize,
+}
+
+#[repr(C)]
+struct ProofOutputHost {
+    address: unsafe extern "C" fn(Slot, usize),
+    view: unsafe extern "C" fn(Slot, usize),
+    origins: unsafe extern "C" fn(Slot, usize),
+    domains: unsafe extern "C" fn(Slot, usize),
+    conditions: unsafe extern "C" fn(Slot),
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.condition_graph::bind_output_proof"]
+    fn source_bind_output_proof(slot: Slot, shape: ProofOutputShape, host: ProofOutputHost);
+}
+
+struct ProofOutput<'a> {
+    source: &'a Proof,
+    capture: Option<&'a Value>,
+    bindings: &'a OutputBindings,
+    result: Proof,
+}
+
+unsafe extern "C" fn bind_output_address(slot: Slot, component: usize) {
+    let ctx = unsafe { &mut *slot.cast::<ProofOutput<'_>>() };
+    ctx.result.addresses.push(ctx.source.addresses[component].as_ref().map(|value| value.output_bound(ctx.bindings)));
+}
+
+unsafe extern "C" fn bind_output_view(slot: Slot, component: usize) {
+    let ctx = unsafe { &mut *slot.cast::<ProofOutput<'_>>() };
+    ctx.result.views.push(ctx.source.views[component].output_bound(ctx.bindings));
+}
+
+unsafe extern "C" fn bind_output_origins(slot: Slot, component: usize) {
+    let ctx = unsafe { &mut *slot.cast::<ProofOutput<'_>>() };
+    let source = ctx.source.origins.get(component).map(Vec::as_slice).unwrap_or_default();
+    let mut origins: Vec<_> = source.iter().map(|&id| output_identity(id, ctx.bindings)).collect();
+    if let Some(value) = ctx.capture {
+        if origins.is_empty() {
+            origins.push(output_identity(ValueIdentity::Register(value.regs[component]), ctx.bindings));
+        }
+        let (range, nonzero) = value.component_numeric_facts(component);
+        ctx.result.ranges.push(range);
+        ctx.result.nonzero.push(nonzero);
+    }
+    ctx.result.origins.push(origins);
+}
+
+unsafe extern "C" fn bind_output_domains(slot: Slot, component: usize) {
+    let ctx = unsafe { &mut *slot.cast::<ProofOutput<'_>>() };
+    ctx.result.domains.push(ctx.source.domains[component].iter().map(|&domain| {
+        map_domain(domain, &|id| output_identity(id, ctx.bindings))
+    }).collect());
+}
+
+unsafe extern "C" fn bind_output_conditions(slot: Slot) {
+    let ctx = unsafe { &mut *slot.cast::<ProofOutput<'_>>() };
+    if let Some(value) = ctx.capture {
+        let source: Vec<_> = (0..value.regs.len())
+            .map(|component| Proof::captured_condition(value, component)).collect();
+        bind_output_condition_slots(source.iter().map(Option::as_ref), ctx.bindings, &mut ctx.result.conditions);
+    } else {
+        bind_output_condition_slots(ctx.source.conditions.iter().map(Option::as_deref),
+            ctx.bindings, &mut ctx.result.conditions);
+    }
+}
+
+fn bind_output_condition_slots<'a>(
+    source: impl ExactSizeIterator<Item = Option<&'a Condition>>,
+    bindings: &'a OutputBindings,
+    output: &mut Vec<Option<Box<Condition>>>,
+) {
+    let width = source.len();
+    let roots = source.enumerate()
+        .filter_map(|(index, condition)| condition.map(|condition| (index, &condition.cases)))
+        .flat_map(|(index, cases)| cases.iter().map(move |case| (index, case)));
+    let mut first = None;
+    rename_output_roots(roots, bindings, |index, case| {
+        if let Some(first) = first.take() {
+            output.resize_with(index, || None);
+            output.push(Some(Box::new(Condition { cases: [first, case] })));
+        } else {
+            first = Some(case);
+        }
+    });
+    output.resize_with(width, || None);
+}
+
+pub(super) fn bind_output_proof(source: &Proof, capture: Option<&Value>, bindings: &OutputBindings) -> Proof {
+    let shape = ProofOutputShape {
+        addresses: source.addresses.len(),
+        views: source.views.len(),
+        origins: capture.map_or(source.origins.len(), |value| value.regs.len()),
+        domains: source.domains.len(),
+    };
+    let (ranges, nonzero) = match capture {
+        Some(value) => (Vec::with_capacity(value.regs.len()), Vec::with_capacity(value.regs.len())),
+        None => (source.ranges.clone(), source.nonzero.clone()),
+    };
+    let result = Proof {
+        ranges,
+        nonzero,
+        addresses: Vec::with_capacity(shape.addresses),
+        views: Vec::with_capacity(shape.views),
+        origins: Vec::with_capacity(shape.origins),
+        domains: Vec::with_capacity(shape.domains),
+        conditions: Vec::with_capacity(capture.map_or(source.conditions.len(), |value| value.regs.len())),
+    };
+    let mut ctx = ProofOutput { source, capture, bindings, result };
+    unsafe {
+        source_bind_output_proof(ptr::from_mut(&mut ctx).cast(), shape, ProofOutputHost {
+            address: bind_output_address,
+            view: bind_output_view,
+            origins: bind_output_origins,
+            domains: bind_output_domains,
+            conditions: bind_output_conditions,
+        })
+    };
+    ctx.result
 }
 
 #[derive(Default)]

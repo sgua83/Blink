@@ -864,56 +864,32 @@ impl Proof {
     ) -> Clause {
         proof_facts::output_aliases(self, registers, types, bindings)
     }
-    pub(super) fn output_bound(&self,bindings:&OutputBindings)->Self{
-        let mut proof = Self {
-            origins: self.origins.clone(),
-            conditions: self.conditions.clone(),
-            ranges: self.ranges.clone(),
-            nonzero: self.nonzero.clone(),
-            domains: self.domains.clone(),
-            views: self.views.clone(),
-            addresses: self.addresses.iter().map(|value| value.as_ref().map(|value| value.output_bound(bindings))).collect(),
-        };
-        for sources in &mut proof.views {
-            *sources=sources.output_bound(bindings);
-        }
-        for origins in &mut proof.origins {
-            for identity in origins {
-                *identity = output_identity(*identity, bindings);
-            }
-        }
-        for domains in &mut proof.domains {
-            *domains = domains
-                .iter()
-                .map(|d| map_domain(*d,&|id|output_identity(id,bindings)))
-                .collect();
-        }
-        let cases = proof.conditions.iter_mut().flatten()
-            .flat_map(|condition| condition.cases.iter_mut()).collect::<Vec<_>>();
-        let roots = cases.iter().map(|case| (**case).clone()).collect::<Vec<_>>();
-        for (case, bound) in cases.into_iter().zip(Clause::output_bounds(&roots, bindings)) {
-            *case = bound;
-        }
-        proof
+    pub(super) fn output_bound(&self, bindings: &OutputBindings) -> Self {
+        condition_graph::bind_output_proof(self, None, bindings)
     }
-    pub(super) fn bind_outputs(
-        &mut self,
-        ty: &Ty,
+
+    pub(super) fn capture_output(value: &Value, bindings: &OutputBindings) -> Self {
+        condition_graph::bind_output_proof(&value.proof, Some(value), bindings)
+    }
+
+    pub(super) fn bound_return(
+        value: &Value,
         registers: Option<&[Reg]>,
         bindings: &OutputBindings,
         aliases: &Clause,
-    ) {
-        *self=self.output_bound(bindings);
+    ) -> Self {
+        let mut proof = Self::capture_output(value, bindings);
         if let Some(registers) = registers {
-            self.origins.resize_with(registers.len(), Vec::new);
-            for (origins, reg) in self.origins.iter_mut().zip(registers) {
+            proof.origins.resize_with(registers.len(), Vec::new);
+            for (origins, reg) in proof.origins.iter_mut().zip(registers) {
                 let identity = ValueIdentity::Register(*reg);
                 if !origins.contains(&identity) {
                     origins.push(identity);
                 }
             }
         }
-        self.under_path(ty, aliases);
+        proof.under_path(&value.ty, aliases);
+        proof
     }
     // 函数体的寄存器身份只在该编译单元内有效；调用边界只翻译实际参数关系。
     pub(super) fn scalar_identities(&self)->BTreeSet<ValueIdentity> {
@@ -1337,10 +1313,15 @@ impl Proof {
         self.conditions.get(component)?.as_deref()
     }
     fn value_condition(value: &Value, component: usize) -> Option<Box<Condition>> {
-        if value.ty.components[component].0 == Scalar::Bool || value.ty.components[component].0.is_integer() {
-            Some(Box::new(Condition::component(value, component)))
+        Self::captured_condition(value, component).map(Box::new)
+    }
+
+    fn captured_condition(value: &Value, component: usize) -> Option<Condition> {
+        let scalar = value.ty.components[component].0;
+        if scalar == Scalar::Bool || scalar.is_integer() {
+            Some(Condition::component(value, component))
         } else {
-            value.proof.conditions.get(component).cloned().flatten()
+            value.proof.component_condition(component).cloned()
         }
     }
     fn range(&self, component: usize) -> (Bits, Bits) {

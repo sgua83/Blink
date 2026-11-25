@@ -2864,8 +2864,8 @@ impl Builder<'_> {
         });
         fn bind_indices(returned:&mut returns::Returned,ordinal:ValueIdentity,depth:usize){
             let bindings=BTreeMap::from([(ordinal,ValueIdentity::ElementIndex(depth))]);
-            let value=match returned{returns::Returned::Value(value)=>Some(value.as_mut()),returns::Returned::OwnedValue(value)=>Some(&mut value.value),returns::Returned::Dataset(data)=>{data.length.proof=bounds::Proof::capture(&data.length).output_bound(&bindings);Some(&mut data.root)},returns::Returned::Unit=>None};
-            if let Some(value)=value{value.proof=bounds::Proof::capture(value).output_bound(&bindings);}
+            let value=match returned{returns::Returned::Value(value)=>Some(value.as_mut()),returns::Returned::OwnedValue(value)=>Some(&mut value.value),returns::Returned::Dataset(data)=>{data.length.proof=bounds::Proof::capture_output(&data.length,&bindings);Some(&mut data.root)},returns::Returned::Unit=>None};
+            if let Some(value)=value{value.proof=bounds::Proof::capture_output(value,&bindings);}
             match returned{
                 returns::Returned::OwnedValue(value)=>for child in value.payloads.iter_mut().flatten(){bind_indices(child,ordinal,depth);},
                 returns::Returned::Dataset(data)=>if let Some(elements)=data.elements.known_mut(){bind_indices(elements,ordinal,depth+1);},

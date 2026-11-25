@@ -1041,3 +1041,15 @@ struct CaptureProofHost {
 extern "C" void capture_selected_proof(address context,address indices,usize count,
  usize width,usize registers,CaptureProofHost host) on cpu
  requires nonzero(host.all) requires nonzero(host.component);
+
+struct ProofOutputShape { usize addresses; usize views; usize origins; usize domains; };
+struct ProofOutputHost {
+ cfn<void,address,usize> bind_address;
+ cfn<void,address,usize> bind_view;
+ cfn<void,address,usize> origins;
+ cfn<void,address,usize> domains;
+ cfn<void,address> conditions;
+};
+extern "C" void bind_output_proof(address context,ProofOutputShape shape,ProofOutputHost host) on cpu
+ requires nonzero(host.bind_address) requires nonzero(host.bind_view)
+ requires nonzero(host.origins) requires nonzero(host.domains) requires nonzero(host.conditions);

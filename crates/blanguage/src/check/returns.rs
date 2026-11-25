@@ -42,10 +42,7 @@ impl Returned {
             bindings: &BTreeMap<ValueIdentity, ValueIdentity>,
             aliases: &bounds::Clause,
         ) {
-            value.proof = bounds::Proof::capture(value);
-            value
-                .proof
-                .bind_outputs(&value.ty, registers, bindings, aliases);
+            value.proof = bounds::Proof::bound_return(value, registers, bindings, aliases);
         }
         match self {
             Self::Unit => {}
