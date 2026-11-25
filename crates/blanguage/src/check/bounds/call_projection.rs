@@ -92,10 +92,10 @@ unsafe extern "C" fn common(value: Borrowed) -> Common {
 }
 unsafe extern "C" fn converted(value: Borrowed, common: Common) -> Converted {
     let input = unsafe { proof(value) }; let [from, low, extended, to] = unsafe { common_scalars(common) };
-    let range = range_sets::cast_chain(input.interval_source(0), [from, low, extended, to], input.nonzero.first() == Some(&true));
+    let ((lower, upper), contains_zero) =
+        range_sets::cast_summary(input.interval_source(0), [from, low, extended, to], input.nonzero.first() == Some(&true));
     let bits = Proof::call_common_bits(input, from, low, extended, to);
-    let (lower, upper) = range.hull();
-    Converted { lower, upper, contains_zero: u32::from(range.contains(to.order_bias())), known: u32::from(bits.is_some()), value: bits.map_or(0, |v| v.value) }
+    Converted { lower, upper, contains_zero, known: u32::from(bits.is_some()), value: bits.map_or(0, |v| v.value) }
 }
 unsafe extern "C" fn begin<P>(slot: Slot, value: Borrowed) {
     unsafe { frame::<P>(slot) }.domains = unsafe { proof(value) }.domains.first().map(|v| v.iter()).unwrap_or_default();

@@ -1110,11 +1110,10 @@ extern "C" void range_set_without(address input,u64 count,cfn<BitRange,address,u
         index+=1u64;
     }
 }
-u64 range_set_parts(address output,RangeSetOutput host,IntegerRangePieces pieces) on cpu requires nonzero(host.push) {
-    u64 count=0u64;
-    if(pieces.count!=0){host.push(output,pieces.first);count+=1u64;}
-    if(pieces.count>1){host.push(output,pieces.second);count+=1u64;}
-    return count;
+u64 range_set_parts(address output,cfn<void,address,BitRange> push,IntegerRangePieces pieces) on cpu requires nonzero(push) {
+    if(pieces.count!=0){push(output,pieces.first);}
+    if(pieces.count>1){push(output,pieces.second);}
+    return u64(pieces.count);
 }
 RangeSetCastStep range_set_cast_step(RangeSetCastInfo query) on cpu {
     return RangeSetCastStep(query.source_width,query.source_signed,query.target_width,query.same,query.target_bias);
@@ -1136,8 +1135,9 @@ BitRange range_set_cast_part(IntegerRangePieces pieces,u32 part) on cpu {
     return part==0 ? pieces.first : pieces.second;
 }
 
-extern "C" u64 range_set_cast(address input,u64 count,cfn<BitRange,address,u32,u64> get,address output,RangeSetOutput host,RangeSetCastInfo query) on cpu
-    requires nonzero(get) requires nonzero(host.get) requires nonzero(host.set) requires nonzero(host.push) {
+u64 range_set_cast_emit(address input,u64 count,cfn<BitRange,address,u32,u64> get,
+    address output,cfn<void,address,BitRange> push,RangeSetCastInfo query) on cpu
+    requires nonzero(get) requires nonzero(push) {
     RangeSetCastStep step=range_set_cast_step(query);
     u64 result=0u64;
     u64 index=0u64;
@@ -1145,17 +1145,23 @@ extern "C" u64 range_set_cast(address input,u64 count,cfn<BitRange,address,u32,u
         IntegerRangePieces source=range_set_cast_input(query,get(input,0,index));
         u32 part=0;
         while(part<source.count){
-            result+=range_set_parts(output,host,range_set_cast_value(step,range_set_cast_part(source,part)));
+            result+=range_set_parts(output,push,range_set_cast_value(step,range_set_cast_part(source,part)));
             part+=1;
         }
         index+=1u64;
     }
+    return result;
+}
+
+extern "C" u64 range_set_cast(address input,u64 count,cfn<BitRange,address,u32,u64> get,address output,RangeSetOutput host,RangeSetCastInfo query) on cpu
+    requires nonzero(get) requires nonzero(host.get) requires nonzero(host.set) requires nonzero(host.push) {
+    u64 result=range_set_cast_emit(input,count,get,output,host.push,query);
     if(query.same!=0){return result;}
     return range_set_normalize(output,result,host);
 }
 
-u64 range_set_cast_tail(address output,RangeSetOutput host,RangeSetCastStep second,
-    RangeSetCastStep last,IntegerRangePieces first) on cpu requires nonzero(host.push) {
+u64 range_set_cast_tail(address output,cfn<void,address,BitRange> push,RangeSetCastStep second,
+    RangeSetCastStep last,IntegerRangePieces first) on cpu requires nonzero(push) {
     // Each step receives intervals already bounded by the preceding target encoding.
     u64 result=0u64;
     u32 first_part=0;
@@ -1163,7 +1169,7 @@ u64 range_set_cast_tail(address output,RangeSetOutput host,RangeSetCastStep seco
         IntegerRangePieces middle=range_set_cast_value(second,range_set_cast_part(first,first_part));
         u32 middle_part=0;
         while(middle_part<middle.count){
-            result+=range_set_parts(output,host,range_set_cast_value(last,range_set_cast_part(middle,middle_part)));
+            result+=range_set_parts(output,push,range_set_cast_value(last,range_set_cast_part(middle,middle_part)));
             middle_part+=1;
         }
         first_part+=1;
@@ -1171,10 +1177,10 @@ u64 range_set_cast_tail(address output,RangeSetOutput host,RangeSetCastStep seco
     return result;
 }
 
-extern "C" u64 range_set_cast_chain(address input,u64 count,cfn<BitRange,address,u32,u64> get,
-    address output,RangeSetOutput host,RangeSetCastInfo first,RangeSetCastStep second,RangeSetCastStep last) on cpu
-    requires nonzero(get) requires nonzero(host.get) requires nonzero(host.set) requires nonzero(host.push) {
-    if(second.same!=0 && last.same!=0){return range_set_cast(input,count,get,output,host,first);}
+u64 range_set_cast_chain_emit(address input,u64 count,cfn<BitRange,address,u32,u64> get,
+    address output,cfn<void,address,BitRange> push,RangeSetCastInfo first,RangeSetCastStep second,RangeSetCastStep last) on cpu
+    requires nonzero(get) requires nonzero(push) {
+    if(second.same!=0 && last.same!=0){return range_set_cast_emit(input,count,get,output,push,first);}
     RangeSetCastStep step=range_set_cast_step(first);
     u64 result=0u64;
     u64 index=0u64;
@@ -1183,18 +1189,45 @@ extern "C" u64 range_set_cast_chain(address input,u64 count,cfn<BitRange,address
         u32 part=0;
         while(part<source.count){
             IntegerRangePieces first_value=range_set_cast_value(step,range_set_cast_part(source,part));
-            result+=range_set_cast_tail(output,host,second,last,first_value);
+            result+=range_set_cast_tail(output,push,second,last,first_value);
             part+=1;
         }
         index+=1u64;
     }
+    return result;
+}
+
+extern "C" u64 range_set_cast_chain(address input,u64 count,cfn<BitRange,address,u32,u64> get,
+    address output,RangeSetOutput host,RangeSetCastInfo first,RangeSetCastStep second,RangeSetCastStep last) on cpu
+    requires nonzero(get) requires nonzero(host.get) requires nonzero(host.set) requires nonzero(host.push) {
+    u64 result=range_set_cast_chain_emit(input,count,get,output,host.push,first,second,last);
+    if(first.same!=0 && second.same!=0 && last.same!=0){return result;}
     return range_set_normalize(output,result,host);
+}
+
+struct RangeSetCastObservation { u64 point; RangeSetCastSummary summary; };
+
+extern "C" void observe_cast_range(address output,BitRange piece) on cpu {
+    RangeSetCastObservation observation=unsafe_position<RangeSetCastObservation>(output);
+    observation.summary.hull.lower=min(observation.summary.hull.lower,piece.lower);
+    observation.summary.hull.upper=max(observation.summary.hull.upper,piece.upper);
+    if(piece.lower<=observation.point && observation.point<=piece.upper){observation.summary.contains=1;}
+    unsafe_position<RangeSetCastObservation>(output)=observation;
+}
+
+extern "C" RangeSetCastSummary range_set_cast_summary(address input,u64 count,cfn<BitRange,address,u32,u64> get,
+    RangeSetCastInfo first,RangeSetCastStep second,RangeSetCastStep last) on cpu requires nonzero(get) {
+    RangeSetCastObservation observation=RangeSetCastObservation(last.target_bias,
+        RangeSetCastSummary(BitRange(18446744073709551615u64,0u64),0));
+    u64 produced=range_set_cast_chain_emit(input,count,get,address_of(observation),c_function(observe_cast_range),first,second,last);
+    if(produced==0u64){observation.summary.hull=BitRange(1u64,0u64);}
+    return observation.summary;
 }
 
 extern "C" u64 range_set_counts(address input,u64 count,cfn<BitRange,address,u32,u64> get,address output,RangeSetOutput host,u32 width,u64 bias) on cpu
     requires nonzero(get) requires nonzero(host.get) requires nonzero(host.set) requires nonzero(host.push) {
     u64 result=0u64;
-    u64 range_index_6=0u64;while(range_index_6<count){result+=range_set_parts(output,host,integer_range_counts(width,bias,get(input,0,range_index_6)));range_index_6+=1u64;}
+    u64 range_index_6=0u64;while(range_index_6<count){result+=range_set_parts(output,host.push,integer_range_counts(width,bias,get(input,0,range_index_6)));range_index_6+=1u64;}
     return range_set_normalize(output,result,host);
 }
 extern "C" u64 range_set_apply(address input,u64 left,u64 right,cfn<BitRange,address,u32,u64> get,address operation,cfn<u64,address,BitRange,BitRange,address> invoke,address output,RangeSetOutput host,u32 combine) on cpu

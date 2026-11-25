@@ -186,6 +186,9 @@ struct RangeSetCastStep {
 extern "C" u64 range_set_cast_chain(address input,u64 count,cfn<BitRange,address,u32,u64> get,
     address output,RangeSetOutput host,RangeSetCastInfo first,RangeSetCastStep second,RangeSetCastStep last) on cpu
     requires nonzero(get) requires nonzero(host.get) requires nonzero(host.set) requires nonzero(host.push);
+struct RangeSetCastSummary { BitRange hull; u32 contains; };
+extern "C" RangeSetCastSummary range_set_cast_summary(address input,u64 count,cfn<BitRange,address,u32,u64> get,
+    RangeSetCastInfo first,RangeSetCastStep second,RangeSetCastStep last) on cpu requires nonzero(get);
 extern "C" u64 range_set_counts(address input,u64 count,cfn<BitRange,address,u32,u64> get,address output,RangeSetOutput host,u32 width,u64 bias) on cpu
     requires nonzero(get) requires nonzero(host.get) requires nonzero(host.set) requires nonzero(host.push);
 extern "C" u64 range_set_apply(address input,u64 left,u64 right,cfn<BitRange,address,u32,u64> get,address operation,cfn<u64,address,BitRange,BitRange,address> invoke,address output,RangeSetOutput host,u32 combine) on cpu

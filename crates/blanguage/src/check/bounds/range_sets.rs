@@ -11,6 +11,8 @@ impl From<Pair> for Range {fn from((lower,upper):Pair)->Self {Self{lower,upper}}
 impl From<Range> for Pair {fn from(v:Range)->Self {(v.lower,v.upper)}}
 #[repr(C)]
 struct Next {value:Range,present:u32}
+#[repr(C)]
+struct CastSummary { hull: Range, contains: u32 }
 struct Sources<'a>{left:&'a [Pair],right:&'a [Pair]}
 type Read=unsafe extern "C" fn(Borrowed,u32,usize)->Range;
 type Push=unsafe extern "C" fn(Slot,Range);
@@ -158,6 +160,9 @@ unsafe extern "C" {
     #[link_name="bootstrap.scalar_fold::range_set_cast_chain"]
     fn converted_chain(input: Borrowed, count: usize, read: Read, output: Slot, host: Output,
         first: Cast, second: CastStep, last: CastStep) -> usize;
+    #[link_name="bootstrap.scalar_fold::range_set_cast_summary"]
+    fn converted_summary(input: Borrowed, count: usize, read: Read,
+        first: Cast, second: CastStep, last: CastStep) -> CastSummary;
     #[link_name="bootstrap.scalar_fold::range_set_counts"]
     fn counts(input:Borrowed,count:usize,read:Read,output:Slot,host:Output,width:u32,bias:u64)->usize;
     #[link_name="bootstrap.scalar_fold::range_set_apply"]
@@ -228,6 +233,15 @@ pub(super) fn cast_chain(values: &[Pair], [from, low, extended, to]: [Scalar; 4]
             converted_chain(source, count, read, out, host, first, second, last)
         })
     })
+}
+pub(super) fn cast_summary(values: &[Pair], [from, low, extended, to]: [Scalar; 4], nonzero: bool) -> (Pair, u32) {
+    let first = Cast::new(from, low, nonzero);
+    let second = CastStep::new(low, extended);
+    let last = CastStep::new(extended, to);
+    let summary = inputs(values, &[], |source, count, _| unsafe {
+        converted_summary(source, count, read, first, second, last)
+    });
+    (summary.hull.into(), summary.contains)
 }
 pub(super) fn shift_counts(values:&[Pair],scalar:Scalar)->ScalarRanges {inputs(values,&[],|s,n,_|normalized_output(|o,h|unsafe{counts(s,n,read,o,h,scalar.bit_width(),scalar.order_bias())}))}
 fn apply<F:FnMut(Pair,Pair)->ScalarRanges>(left:&[Pair],right:&[Pair],combine:bool,mut operation:F)->ScalarRanges {
