@@ -312,18 +312,19 @@ extern "C" void dependency_digest(u64 declaration_count, u32 imported, Reference
     sha256_finish(state, output);
 }
 
-extern "C" void record_source_declaration(inout u64 preamble_end, u64 start) on cpu {
-    if (start < preamble_end) { preamble_end = start; }
+SourceScope source_scope(SourceFile file) on cpu {
+    if (file.implementation != 0) { return SourceScope::Signatures; }
+    if (file.root == 0) { return SourceScope::Preamble; }
+    return SourceScope::Full;
 }
 
-extern "C" void sha256_source(DigestField prefix, address signatures,
-    u64 count, address output) on cpu {
+void sha256_source(DigestField prefix, SignatureSpan input, address output) on cpu {
     DigestState state = sha256_start();
     digest_field(state, prefix);
     u64 index = 0u64;
-    while (index < count) {
+    while (index < input.count) {
         SourceSignature row = unsafe_position<SourceSignature>(
-            at(signatures, index * size_of<SourceSignature>()));
+            at(input.signatures, index * size_of<SourceSignature>()));
         digest_field(state, row.name);
         digest_field(state, row.signature);
         index += 1u64;
@@ -331,7 +332,77 @@ extern "C" void sha256_source(DigestField prefix, address signatures,
     sha256_finish(state, output);
 }
 
-// Only newly retained declarations can contribute another original input set.
+extern "C" void capture_sources(SourceHost host, u32 exports) on cpu
+    requires nonzero(host.next_file) requires nonzero(host.rewind_files)
+    requires nonzero(host.next_definition) requires nonzero(host.next_requirement)
+    requires nonzero(host.register_region) requires nonzero(host.region) requires nonzero(host.signature)
+    requires nonzero(host.prefix) requires nonzero(host.signatures) requires nonzero(host.emit_source)
+    requires nonzero(host.emit_requirement) {
+    SourceFile file = host.next_file(host.files);
+    while (address_bits(file.source) != 0u64) {
+        SourceScope scope = source_scope(file);
+        if (file.shares_interface == 0 && scope != SourceScope::Full) {
+            address region = host.register_region(host.output, file.source);
+            if (scope == SourceScope::Signatures) {
+                SourceExtent extent = unsafe_position<SourceExtent>(region);
+                extent.include_signatures = 1;
+                unsafe_position<SourceExtent>(region) = extent;
+            }
+        }
+        file = host.next_file(host.files);
+    }
+
+    SourceDefinition definition = host.next_definition(host.declarations);
+    while (address_bits(definition.source) != 0u64) {
+        address region = host.region(host.output, definition.source);
+        if (address_bits(region) != 0u64) {
+            SourceExtent extent = unsafe_position<SourceExtent>(region);
+            if (definition.start < extent.preamble_end) {
+                extent.preamble_end = definition.start;
+                unsafe_position<SourceExtent>(region) = extent;
+            }
+            if (extent.include_signatures != 0 && address_bits(definition.function) != 0u64
+                && definition.constant == 0 && definition.external == 0) {
+                host.signature(region, definition);
+            }
+        }
+        definition = host.next_definition(host.declarations);
+    }
+
+    host.rewind_files(host.files);
+    file = host.next_file(host.files);
+    while (address_bits(file.source) != 0u64) {
+        if (file.shares_interface == 0) {
+            SourceScope scope = source_scope(file);
+            DigestField prefix = file.text;
+            SignatureSpan signatures = SignatureSpan(unsafe_address(0u64), 0u64);
+            if (scope != SourceScope::Full) {
+                address region = host.region(host.output, file.source);
+                SourceExtent extent = unsafe_position<SourceExtent>(region);
+                u64 end = extent.preamble_end;
+                if (end == 0xffffffffffffffffu64) { end = file.text.length; }
+                prefix = host.prefix(file.source, end);
+                if (scope == SourceScope::Signatures) { signatures = host.signatures(region); }
+            }
+            array<u64,4> fingerprint = array<u64,4>(0u64, 0u64, 0u64, 0u64);
+            address output = address_of(fingerprint[0]);
+            sha256_source(prefix, signatures, output);
+            host.emit_source(host.output, file, scope, output);
+        }
+        file = host.next_file(host.files);
+    }
+
+    if (exports != 0) {
+        SourceRequirement row = host.next_requirement(host.requirements);
+        while (address_bits(row.name.bytes) != 0u64) {
+            if (row.root != 0 && row.public != 0) {
+                host.emit_requirement(host.output, row.name, row.execution);
+            }
+            row = host.next_requirement(host.requirements);
+        }
+    }
+}
+
 extern "C" void complete_declarations(address context, DeclarationHost host) on cpu
     requires nonzero(host.next) requires nonzero(host.retain) requires nonzero(host.expand) {
     address declaration = host.next(context);

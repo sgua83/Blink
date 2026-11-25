@@ -277,9 +277,16 @@ where
     digest
 }
 
-struct SourceRegion {
+#[repr(C)]
+struct SourceExtent {
     preamble_end: usize,
-    include_signatures: bool,
+    include_signatures: u32,
+}
+
+// Only the extent prefix is shared with B. The host owns the borrowed signature list.
+#[repr(C)]
+struct SourceRegion {
+    extent: SourceExtent,
     signatures: Vec<SourceSignature>,
 }
 
@@ -289,94 +296,240 @@ struct SourceSignature {
     signature: ByteField,
 }
 
+#[repr(C)]
+struct SignatureSpan {
+    signatures: *const SourceSignature,
+    count: usize,
+}
+
+#[repr(C)]
+struct SourceFile {
+    source: *const c_void,
+    name: ByteField,
+    text: ByteField,
+    root: u32,
+    implementation: u32,
+    shares_interface: u32,
+}
+
+#[repr(C)]
+struct SourceDefinition {
+    source: *const c_void,
+    function: *const c_void,
+    name: ByteField,
+    start: usize,
+    constant: u32,
+    external: u32,
+}
+
+impl SourceDefinition {
+    fn declaration(source: &crate::ast::Source, start: usize) -> Self {
+        Self { source: ptr::from_ref(source).cast(), function: ptr::null(), name: ABSENT,
+            start, constant: 0, external: 0 }
+    }
+}
+
+#[repr(C)]
+struct SourceRequirement {
+    name: ByteField,
+    public: u32,
+    root: u32,
+    execution: u32,
+}
+
+#[repr(u32)]
+#[allow(dead_code)] // The B source capture selects the projected range.
+enum SourceScope { Full, Preamble, Signatures }
+
+#[repr(C)]
+struct SourceHost {
+    output: *mut c_void,
+    files: *mut c_void,
+    declarations: *mut c_void,
+    requirements: *mut c_void,
+    next_file: unsafe extern "C" fn(*mut c_void) -> SourceFile,
+    rewind_files: unsafe extern "C" fn(*mut c_void),
+    next_definition: unsafe extern "C" fn(*mut c_void) -> SourceDefinition,
+    next_requirement: unsafe extern "C" fn(*mut c_void) -> SourceRequirement,
+    register_region: unsafe extern "C" fn(*mut c_void, *const c_void) -> *mut c_void,
+    region: unsafe extern "C" fn(*mut c_void, *const c_void) -> *mut c_void,
+    signature: unsafe extern "C" fn(*mut c_void, SourceDefinition),
+    prefix: unsafe extern "C" fn(*const c_void, usize) -> ByteField,
+    signatures: unsafe extern "C" fn(*const c_void) -> SignatureSpan,
+    emit_source: unsafe extern "C" fn(*mut c_void, SourceFile, SourceScope, *const [u8; 32]),
+    emit_requirement: unsafe extern "C" fn(*mut c_void, ByteField, u32),
+}
+
 unsafe extern "C" {
-    #[link_name = "bootstrap.build_digest::record_source_declaration"]
-    fn record_source_declaration(preamble_end: &mut usize, start: usize);
-    #[link_name = "bootstrap.build_digest::sha256_source"]
-    fn sha256_source(
-        prefix: ByteField, signatures: *const SourceSignature, count: usize, output: &mut [u8; 32],
-    );
+    #[link_name = "bootstrap.build_digest::capture_sources"]
+    fn capture_sources(host: SourceHost, exports: u32);
+}
+
+struct SourceFiles<'a> {
+    world: &'a crate::World,
+    module: &'a str,
+    interfaces: std::collections::btree_map::Iter<'a, String, std::sync::Arc<crate::syntax::Module>>,
+    implementations: std::collections::btree_map::Iter<'a, String, crate::ast::Source>,
+}
+
+impl<'a> SourceFiles<'a> {
+    fn new(world: &'a crate::World, module: &'a str) -> Self {
+        Self { world, module, interfaces: world.interfaces.iter(), implementations: world.sources.iter() }
+    }
+}
+
+fn source_file(name: &str, source: &crate::ast::Source, root: bool, implementation: bool, shares_interface: bool) -> SourceFile {
+    SourceFile {
+        source: ptr::from_ref(source).cast(), name: name.as_bytes().into(), text: source.text.as_bytes().into(),
+        root: u32::from(root), implementation: u32::from(implementation), shares_interface: u32::from(shares_interface),
+    }
+}
+
+unsafe extern "C" fn next_source_file(context: *mut c_void) -> SourceFile {
+    let stream = unsafe { &mut *context.cast::<SourceFiles<'_>>() };
+    if let Some((name, interface)) = stream.interfaces.next() {
+        return source_file(name, &interface.source, name == stream.module, false, false);
+    }
+    if let Some((name, source)) = stream.implementations.next() {
+        let same_path = source.path == stream.world.interfaces[name].source.path;
+        return source_file(name, source, name == stream.module, true, same_path);
+    }
+    SourceFile { source: ptr::null(), name: ABSENT, text: ABSENT, root: 0, implementation: 0, shares_interface: 0 }
+}
+
+unsafe extern "C" fn rewind_source_files(context: *mut c_void) {
+    let rows = unsafe { &mut *context.cast::<SourceFiles<'_>>() };
+    rows.interfaces = rows.world.interfaces.iter();
+    rows.implementations = rows.world.sources.iter();
+}
+
+unsafe extern "C" fn next_source_definition<I: Iterator<Item = SourceDefinition>>(context: *mut c_void) -> SourceDefinition {
+    unsafe { &mut *context.cast::<I>() }.next().unwrap_or(SourceDefinition {
+        source: ptr::null(), function: ptr::null(), name: ABSENT, start: 0, constant: 0, external: 0,
+    })
+}
+
+unsafe extern "C" fn next_source_requirement<I: Iterator<Item = SourceRequirement>>(context: *mut c_void) -> SourceRequirement {
+    unsafe { &mut *context.cast::<I>() }.next().unwrap_or(SourceRequirement { name: ABSENT, public: 0, root: 0, execution: 0 })
+}
+
+#[derive(Default)]
+struct CapturedSources<'a> {
+    regions: BTreeMap<&'a std::path::Path, SourceRegion>,
+    sources: Vec<SourceInput>,
+    requirements: Vec<(String, String)>,
+}
+
+unsafe extern "C" fn register_source_region(context: *mut c_void, source: *const c_void) -> *mut c_void {
+    let output = unsafe { &mut *context.cast::<CapturedSources<'_>>() };
+    let path = unsafe { &*source.cast::<crate::ast::Source>() }.path.as_path();
+    let region = output.regions.entry(path).or_insert_with(|| SourceRegion {
+        extent: SourceExtent { preamble_end: usize::MAX, include_signatures: 0 },
+        signatures: Vec::new(),
+    });
+    ptr::from_mut(region).cast()
+}
+
+unsafe extern "C" fn find_source_region(context: *mut c_void, source: *const c_void) -> *mut c_void {
+    let output = unsafe { &mut *context.cast::<CapturedSources<'_>>() };
+    let path = unsafe { &*source.cast::<crate::ast::Source>() }.path.as_path();
+    output.regions.get_mut(path).map_or(ptr::null_mut(), |region| ptr::from_mut(region).cast())
+}
+
+unsafe extern "C" fn keep_source_signature(region: *mut c_void, declaration: SourceDefinition) {
+    let region = unsafe { &mut *region.cast::<SourceRegion>() };
+    let source = unsafe { &*declaration.source.cast::<crate::ast::Source>() };
+    let function = unsafe { &*declaration.function.cast::<crate::syntax::Function>() };
+    let signature = source.text[declaration.start..function.signature_end()].trim_end().as_bytes().into();
+    region.signatures.push(SourceSignature { name: declaration.name, signature });
+}
+
+unsafe extern "C" fn source_prefix(source: *const c_void, end: usize) -> ByteField {
+    let source = unsafe { &*source.cast::<crate::ast::Source>() };
+    source.text[..end].trim_end().as_bytes().into()
+}
+
+unsafe extern "C" fn source_signatures(region: *const c_void) -> SignatureSpan {
+    let region = unsafe { &*region.cast::<SourceRegion>() };
+    SignatureSpan { signatures: region.signatures.as_ptr(), count: region.signatures.len() }
+}
+
+unsafe extern "C" fn emit_source(context: *mut c_void, file: SourceFile, scope: SourceScope, fingerprint: *const [u8; 32]) {
+    let out = unsafe { &mut *context.cast::<CapturedSources<'_>>() };
+    let source = unsafe { &*file.source.cast::<crate::ast::Source>() };
+    let scope = match scope {
+        SourceScope::Full => "full_source",
+        SourceScope::Preamble => "preamble",
+        SourceScope::Signatures => "preamble_and_function_signatures",
+    };
+    out.sources.push(SourceInput {
+        module: unsafe { reference_text(&file.name) }.into(),
+        path: source.path.as_os_str().as_encoded_bytes().to_vec(),
+        scope: scope.into(),
+        fingerprint: unsafe { *fingerprint },
+    });
+}
+
+unsafe extern "C" fn emit_source_requirement(context: *mut c_void, name: ByteField, execution: u32) {
+    let out = unsafe { &mut *context.cast::<CapturedSources<'_>>() };
+    let name = unsafe { reference_text(&name) };
+    let label = ["invocation", "domain", "host"][execution as usize];
+    out.requirements.push((name.into(), label.into()));
+}
+
+fn capture<'a, I, R>(world: &'a crate::World, module: &str, mut declarations: I, mut requirements: R, exports: bool) -> CapturedSources<'a>
+where
+    I: Iterator<Item = SourceDefinition>,
+    R: Iterator<Item = SourceRequirement>,
+{
+    let mut files = SourceFiles::new(world, module);
+    let mut output = CapturedSources::default();
+    let host = SourceHost {
+        output: ptr::from_mut(&mut output).cast(),
+        files: ptr::from_mut(&mut files).cast(),
+        declarations: ptr::from_mut(&mut declarations).cast(),
+        requirements: ptr::from_mut(&mut requirements).cast(),
+        next_file: next_source_file,
+        rewind_files: rewind_source_files,
+        next_definition: next_source_definition::<I>,
+        next_requirement: next_source_requirement::<R>,
+        register_region: register_source_region,
+        region: find_source_region,
+        signature: keep_source_signature,
+        prefix: source_prefix,
+        signatures: source_signatures,
+        emit_source,
+        emit_requirement: emit_source_requirement,
+    };
+    unsafe { capture_sources(host, u32::from(exports)) };
+    output
 }
 
 pub(super) fn sources(path: &std::path::Path, root: &std::path::Path,
     selection: Selection, max_parameter_bytes: u32, world: &crate::World,
     module: &str, exports: bool,
 ) -> Result<SourceInputs> {
-    let source_rows = || world.interfaces.iter().map(|(name, module)| (name, &module.source, false))
-        .chain(world.sources.iter().filter(|(name, source)| source.path != world.interfaces[*name].source.path)
-            .map(|(name, source)| (name, source, true)));
-    let mut paths = BTreeMap::new();
-    let mut regions = Vec::new();
-    for (name, source, implementation) in source_rows() {
-        if name == module && !implementation { continue; }
-        let index = *paths.entry(source.path.as_path()).or_insert_with(|| {
-            let index = regions.len();
-            regions.push(SourceRegion {
-                preamble_end: usize::MAX, include_signatures: false, signatures: Vec::new(),
-            });
-            index
-        });
-        regions[index].include_signatures |= implementation;
-    }
-
-    let mut record = |source: &crate::ast::Source, start, signature: Option<(&str, &crate::syntax::Function)>| {
-        if let Some(&index) = paths.get(source.path.as_path()) {
-            let region = &mut regions[index];
-            unsafe { record_source_declaration(&mut region.preamble_end, start) };
-            if region.include_signatures && let Some((name, function)) = signature {
-                let end = function.signature_end();
-                region.signatures.push(SourceSignature {
-                    name: name.as_bytes().into(),
-                    signature: source.text[start..end].trim_end().as_bytes().into(),
-                });
-            }
+    let declarations = world.declarations.functions.iter().map(|(name, definition)| {
+        let function = &definition.function;
+        SourceDefinition {
+            source: ptr::from_ref(&definition.source).cast(),
+            function: ptr::from_ref(function).cast(),
+            name: name.as_bytes().into(),
+            start: function.span().start,
+            constant: u32::from(function.kind() == crate::ast::FunctionKind::Constant),
+            external: u32::from(function.external().is_some()),
         }
-    };
-    for (name, definition) in &world.declarations.functions {
-        let ordinary = definition.function.kind() != crate::ast::FunctionKind::Constant
-            && definition.function.external().is_none();
-        record(&definition.source, definition.function.span().start,
-            ordinary.then_some((name.as_str(), &definition.function)));
-    }
-    for (record_type, source, ..) in world.declarations.records.values() {
-        record(source, record_type.span().start, None);
-    }
-    for (set, source, ..) in world.declarations.type_sets.values() {
-        record(source, set.span().start, None);
-    }
-
-    let mut sources = Vec::new();
-    for (name, source, implementation) in source_rows() {
-        let partial = name != module || implementation;
-        let (scope, prefix, signatures) = if partial {
-            let region = &regions[paths[source.path.as_path()]];
-            let end = if region.preamble_end == usize::MAX { source.text.len() } else { region.preamble_end };
-            let scope = if implementation { "preamble_and_function_signatures" } else { "preamble" };
-            let signatures = if implementation { region.signatures.as_slice() } else { &[] };
-            (scope, source.text[..end].trim_end(), signatures)
-        } else {
-            ("full_source", &*source.text, &[][..])
-        };
-        // Source text and declaration names remain owned by the world for this call.
-        let mut fingerprint = [0; 32];
-        unsafe {
-            sha256_source(prefix.as_bytes().into(), signatures.as_ptr(), signatures.len(), &mut fingerprint);
-        }
-        sources.push(SourceInput {
-            module: name.clone(), path: source.path.as_os_str().as_encoded_bytes().to_vec(),
-            scope: scope.into(), fingerprint,
-        });
-    }
-    let requirements = if exports {
-        // A module owns the inferred participation contract of every public declaration,
-        // including open templates whose concrete machine code is not exported here.
-        world.functions.iter().filter(|(_, definition)| definition.module == module && definition.public)
-            .map(|(name, definition)| (name.clone(), match definition.execution {
-                crate::execution::Requirement::Invocation => "invocation",
-                crate::execution::Requirement::Domain => "domain",
-                crate::execution::Requirement::Host => "host",
-            }.into())).collect()
-    } else { Vec::new() };
+    }).chain(world.declarations.records.values().map(|(record, source, ..)| {
+        SourceDefinition::declaration(source, record.span().start)
+    })).chain(world.declarations.type_sets.values().map(|(set, source, ..)| {
+        SourceDefinition::declaration(source, set.span().start)
+    }));
+    let requirements = world.functions.iter().map(|(name, definition)| SourceRequirement {
+        name: name.as_bytes().into(),
+        public: u32::from(definition.public), root: u32::from(definition.module == module),
+        execution: definition.execution as u32,
+    });
+    let CapturedSources { sources, requirements, .. } = capture(world, module, declarations, requirements, exports);
     Ok(SourceInputs {
         path: path.as_os_str().as_encoded_bytes().to_vec(),
         root: root.as_os_str().as_encoded_bytes().to_vec(),

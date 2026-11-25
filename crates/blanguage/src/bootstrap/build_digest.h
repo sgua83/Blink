@@ -69,17 +69,46 @@ extern "C" void dependency_digest(u64 declaration_count, u32 imported, Reference
     requires nonzero(host.record) requires nonzero(host.type_set) requires nonzero(host.contract)
     requires nonzero(host.query);
 
-struct SourceSignature {
-    DigestField name;
-    DigestField signature;
+struct SourceExtent { u64 preamble_end; u32 include_signatures; };
+struct SourceSignature { DigestField name; DigestField signature; };
+struct SignatureSpan { address signatures; u64 count; };
+
+struct SourceFile {
+    address source; DigestField name; DigestField text;
+    u32 root; u32 implementation; u32 shares_interface;
 };
 
-// Each original declaration contributes its start.
-extern "C" void record_source_declaration(inout u64 preamble_end, u64 start) on cpu;
+struct SourceDefinition {
+    address source; address function; DigestField name; u64 start; u32 constant; u32 external;
+};
 
-// Signatures are borrowed from the original source in declaration order.
-extern "C" void sha256_source(DigestField prefix, address signatures,
-    u64 count, address output) on cpu;
+struct SourceRequirement { DigestField name; u32 public; u32 root; u32 execution; };
+enum SourceScope : u32 { Full = 0; Preamble = 1; Signatures = 2; };
+
+struct SourceHost {
+    address output;
+    address files;
+    address declarations;
+    address requirements;
+    cfn<SourceFile,address> next_file;
+    cfn<void,address> rewind_files;
+    cfn<SourceDefinition,address> next_definition;
+    cfn<SourceRequirement,address> next_requirement;
+    cfn<address,address,address> register_region;
+    cfn<address,address,address> region;
+    cfn<void,address,SourceDefinition> signature;
+    cfn<DigestField,address,u64> ensures memory(read) prefix;
+    cfn<SignatureSpan,address> ensures memory(read) signatures;
+    cfn<void,address,SourceFile,SourceScope,address> emit_source;
+    cfn<void,address,DigestField,u32> emit_requirement;
+};
+
+extern "C" void capture_sources(SourceHost host, u32 exports) on cpu
+    requires nonzero(host.next_file) requires nonzero(host.rewind_files)
+    requires nonzero(host.next_definition) requires nonzero(host.next_requirement)
+    requires nonzero(host.register_region) requires nonzero(host.region) requires nonzero(host.signature)
+    requires nonzero(host.prefix) requires nonzero(host.signatures) requires nonzero(host.emit_source)
+    requires nonzero(host.emit_requirement);
 
 // The receiver borrows original cached input entries for one build.
 struct DeclarationHost {
