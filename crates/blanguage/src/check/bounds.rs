@@ -1989,24 +1989,97 @@ pub(super) struct PublicGuards<'a> {
     relation: Option<std::cell::OnceCell<RelationGuards>>,
 }
 
+// A source edge owns its established path. Reads may also supply an independent
+// exclusion path from their execution or write history.
+#[derive(Clone)]
+pub(super) enum RelationPath {
+    Guard(Clause),
+    Cases(Condition),
+}
+
+impl RelationPath {
+    pub(super) fn path(&self) -> &Clause {
+        match self {
+            Self::Guard(path) => path,
+            Self::Cases(value) => &value.cases[1],
+        }
+    }
+
+    pub(super) fn condition(&self) -> Cow<'_, Condition> {
+        match self {
+            Self::Guard(path) => Cow::Owned(Condition::guard(path.clone())),
+            Self::Cases(value) => Cow::Borrowed(value),
+        }
+    }
+
+    pub(super) fn project(&self, bindings: &BTreeMap<ValueIdentity, Proof>) -> Clause {
+        match self {
+            Self::Guard(path) => path.project_guard(bindings),
+            Self::Cases(value) => value.projected_case(true, bindings),
+        }
+    }
+
+    pub(super) fn normalize(&mut self, normal: &mut Normalizer) {
+        let normalized = normal.condition(&self.condition());
+        *self = Self::Cases(normalized);
+    }
+
+    fn exclusion(&self) -> Cow<'_, Clause> {
+        match self {
+            Self::Guard(path) => Cow::Owned(path.negate()),
+            Self::Cases(value) => Cow::Borrowed(&value.cases[0]),
+        }
+    }
+}
+
+impl PartialEq for RelationPath {
+    fn eq(&self, other: &Self) -> bool {
+        self.path() == other.path()
+            && (matches!((self, other), (Self::Guard(_), Self::Guard(_)))
+                || self.exclusion() == other.exclusion())
+    }
+}
+impl Eq for RelationPath {}
+impl PartialOrd for RelationPath {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+impl Ord for RelationPath {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        let paths = self.path().cmp(other.path());
+        if matches!((self, other), (Self::Guard(_), Self::Guard(_))) {
+            return paths;
+        }
+        paths.then_with(|| self.exclusion().cmp(&other.exclusion()))
+    }
+}
+
 pub(super) struct RelationGuards {
     pub(super) bindings: BTreeMap<ValueIdentity, Proof>,
-    projected: std::cell::RefCell<std::collections::HashMap<[usize; 2], ProjectedEdge>>,
+    projected: std::cell::RefCell<std::collections::HashMap<(usize, Option<usize>), ProjectedEdge>>,
 }
 
 struct ProjectedEdge {
-    // Both cases contribute to the input projection and retain stable root identities.
-    _roots: [std::sync::Weak<ClauseNode>; 2],
-    value: Condition,
+    // Keep the identities of the actual projection inputs stable for this pass.
+    _path: std::sync::Weak<ClauseNode>,
+    _exclusion: Option<std::sync::Weak<ClauseNode>>,
+    value: Clause,
 }
 
 impl RelationGuards {
-    pub(super) fn edge(&self, source: &Condition) -> Condition {
-        let key = source.cases.each_ref().map(Clause::key);
+    pub(super) fn edge(&self, source: &RelationPath) -> Clause {
+        let path = source.path();
+        let exclusion = match source {
+            RelationPath::Guard(_) => None,
+            RelationPath::Cases(value) => Some(&value.cases[0]),
+        };
+        let key = (path.key(), exclusion.map(Clause::key));
         let mut projected = self.projected.borrow_mut();
         projected.entry(key).or_insert_with(|| ProjectedEdge {
-            _roots: source.cases.each_ref().map(|case| Arc::downgrade(&case.0)),
-            value: source.guard_at_call(&self.bindings),
+            _path: Arc::downgrade(&path.0),
+            _exclusion: exclusion.map(|case| Arc::downgrade(&case.0)),
+            value: source.project(&self.bindings),
         }).value.clone()
     }
 }

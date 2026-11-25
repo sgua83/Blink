@@ -1,4 +1,5 @@
 use super::*;
+use bounds::RelationPath;
 use std::borrow::Cow;
 
 const PLAN_REACHABLE: u64 = 1;
@@ -73,7 +74,7 @@ impl Ord for Epoch{fn cmp(&self,b:&Self)->std::cmp::Ordering{self.key().cmp(&b.k
 enum Op { Identity, Position(address::Origin), Initial{origin:address::Origin,frame:Option<usize>}, Read{word:u32,epoch:Epoch,frame:Option<usize>}, Element{fields:Vec<usize>,index:Option<bounds::Selector>}, Projection(Vec<usize>), Resources, Owners, Select(Vec<Option<bounds::Selector>>) }
 
 #[derive(Clone,PartialEq,Eq,PartialOrd,Ord)]
-struct Edge { from:usize, op:Op, when:bounds::Condition }
+struct Edge { from:usize, op:Op, when:RelationPath }
 
 #[derive(Clone,Default,PartialEq,Eq,PartialOrd,Ord)]
 struct Node { seeds:Borrow, edges:Vec<Edge> }
@@ -93,9 +94,15 @@ enum Key { Loop(LoopInput), Read(ContentRead), Call(CallResult) }
 struct Builder<'a> { function:&'a Function,state:LoopScope<'a>,known:&'a States<'a>,keys:BTreeMap<Key,usize>,prefix:Vec<Option<usize>>,graph:Graph,parameters:BTreeMap<ValueIdentity,usize> }
 impl Builder<'_> {
     fn empty(&mut self)->usize{let id=self.graph.nodes.len();self.graph.nodes.push(Node::default());id}
-    fn edge(&mut self,to:usize,from:usize,op:Op,when:bounds::Clause){self.graph.nodes[to].edges.push(Edge{from,op,when:bounds::Condition::guard(when)})}
+    fn edge(&mut self,to:usize,from:usize,op:Op,when:bounds::Clause){self.graph.nodes[to].edges.push(Edge{from,op,when:RelationPath::Guard(when)})}
     fn borrow(&mut self,value:&Borrow,epoch:&Epoch)->usize{let id=self.empty();self.fill(id,value,epoch);id}
-    fn read(&mut self,to:usize,from:usize,word:u32,epoch:Epoch){let frame=match &epoch{Epoch::Input=>None,Epoch::Local{memory,..}=>self.read_frame(*memory)};self.edge(to,from,Op::Read{word,epoch,frame},bounds::Clause::default());}
+    fn read(&mut self, to: usize, from: usize, word: u32, epoch: Epoch, when: RelationPath) {
+        let frame = match &epoch {
+            Epoch::Input => None,
+            Epoch::Local { memory, .. } => self.read_frame(*memory),
+        };
+        self.graph.nodes[to].edges.push(Edge { from, op: Op::Read { word, epoch, frame }, when });
+    }
     fn fill(&mut self,id:usize,value:&Borrow,epoch:&Epoch){
         self.fill_with_seeds(id, value, epoch, |seeds, source, when| {
             seeds.sources.insert_when(source.clone(), when);
@@ -109,7 +116,7 @@ impl Builder<'_> {
             let target=match source {
                 Origin::Parameter(input,indices)if self.parameters.contains_key(input)=>{let from=self.parameters[input];let n=self.empty();self.edge(n,from,Op::Select(indices.clone()),bounds::Clause::default());Some(n)},
                 Origin::Position(origin)=>Some(self.position(origin,epoch)),
-                Origin::Contents{origin,word}=>{let from=self.position(origin,epoch);let n=self.empty();self.read(n,from,*word,epoch.clone());Some(n)},
+                Origin::Contents{origin,word}=>{let from=self.position(origin,epoch);let n=self.empty();self.read(n,from,*word,epoch.clone(),RelationPath::Guard(bounds::Clause::default()));Some(n)},
                 Origin::Element{parent,fields,index}=>{let from=self.borrow(parent,epoch);let n=self.empty();self.edge(n,from,Op::Element{fields:fields.clone(),index:*index},bounds::Clause::default());Some(n)},
                 Origin::Projection{parent,fields}=>{let from=self.borrow(parent,epoch);let n=self.empty();self.edge(n,from,Op::Projection(fields.clone()),bounds::Clause::default());Some(n)},
                 Origin::Relation(graph,root)=>Some(self.import(graph,*root,None,&Epoch::Input)),
@@ -257,8 +264,16 @@ impl Builder<'_> {
                 let from = self.import(&graph, root, prefix, &Epoch::Local { memory, snapshots });
                 self.edge(id, from, Op::Identity, bounds::Clause::default());
             },
-            Key::Read(ContentRead::Value{memory,word,borrow,snapshots})=>{let from=self.borrow(&borrow,&Epoch::Input);self.read(id,from,word,Epoch::Local{memory,snapshots:Some(snapshots)});self.graph.nodes[id].edges.last_mut().unwrap().when=bounds::Condition::execution(&self.function.uses[memory].path);},
-            Key::Read(ContentRead::Call{memory,origin,word,snapshots})=>{let from=self.position(&origin,&Epoch::Input);self.read(id,from,word,Epoch::Local{memory,snapshots});self.graph.nodes[id].edges.last_mut().unwrap().when=bounds::Condition::execution(&self.function.uses[memory].path);},
+            Key::Read(ContentRead::Value { memory, word, borrow, snapshots }) => {
+                let from = self.borrow(&borrow, &Epoch::Input);
+                let when = RelationPath::Cases(bounds::Condition::execution(&self.function.uses[memory].path));
+                self.read(id, from, word, Epoch::Local { memory, snapshots: Some(snapshots) }, when);
+            },
+            Key::Read(ContentRead::Call { memory, origin, word, snapshots }) => {
+                let from = self.position(&origin, &Epoch::Input);
+                let when = RelationPath::Cases(bounds::Condition::execution(&self.function.uses[memory].path));
+                self.read(id, from, word, Epoch::Local { memory, snapshots }, when);
+            },
             Key::Read(ContentRead::Snapshot{memory,position:Position::Local(slot),initial,..})=>{
                 let from=self.borrow(&initial.view_borrow(0),&Epoch::Input);
                 let writes = self.writes(memory, &BTreeMap::new());
@@ -275,7 +290,7 @@ impl Builder<'_> {
                 self.graph.nodes[id].edges.push(Edge {
                     from,
                     op: Op::Initial { origin, frame },
-                    when: bounds::Condition::paths(path, bounds::Clause::impossible()),
+                    when: RelationPath::Cases(bounds::Condition::paths(path, bounds::Clause::impossible())),
                 });
             },
             Key::Read(read)=>{
@@ -717,14 +732,14 @@ impl Graph {
             && node.seeds.empty()
             && node.edges.len() == 1
             && node.edges[0].op == op
-            && node.edges[0].when.boolean_constant() == Some(true)
+            && node.edges[0].when.condition().boolean_constant() == Some(true)
         {
             return Borrow::source(Origin::Relation(Arc::clone(self), root));
         }
 
         let selected = Node {
             seeds: Borrow::default(),
-            edges: vec![Edge { from: root, op, when: bounds::Condition::constant(true) }],
+            edges: vec![Edge { from: root, op, when: RelationPath::Guard(bounds::Clause::default()) }],
         };
         if let Some(id) = self.nodes.iter().position(|node| *node == selected) {
             return Borrow::source(Origin::Relation(Arc::clone(self), id));
@@ -748,10 +763,10 @@ impl Graph {
         let (reachable, _) = self.reachable(root);
         reachable.into_iter().map(|id| &self.nodes[id].seeds).collect()
     }
-    pub(in crate::check) fn at_call(&self,values:&BTreeMap<ValueIdentity,bounds::Proof>)->Self{let mut v=self.clone();for n in &mut v.nodes{n.seeds=n.seeds.at_call(values);for e in &mut n.edges{e.when=e.when.guard_at_call(values);match &mut e.op{Op::Position(p)=>*p=p.bound_at_call(values),Op::Element{index,..}=>*index=Origin::index_at_call(*index,values),Op::Select(indices)=>indices.iter_mut().for_each(|index|*index=Origin::index_at_call(*index,values)),_=>{}}}}for f in &mut v.frames{for w in &mut f.writes{w.when=w.when.at_call(values);}}v}
-    pub(in crate::check) fn substitute_values(&self,values:&BTreeMap<ValueIdentity,bounds::Proof>)->Self{let mut v=self.clone();for n in &mut v.nodes{n.seeds=n.seeds.substitute_values(values);for e in &mut n.edges{e.when=e.when.substitute_values(values);match &mut e.op{Op::Position(p)=>*p=p.substitute_values(values),Op::Element{index,..}=>*index=Origin::index_substitute(*index,values),Op::Select(indices)=>indices.iter_mut().for_each(|index|*index=Origin::index_substitute(*index,values)),_=>{}}}}for f in &mut v.frames{for w in &mut f.writes{w.when=w.when.substitute_values(values);}}v}
-    pub(in crate::check) fn output_bound(&self,values:&BTreeMap<ValueIdentity,ValueIdentity>)->Self{let mut v=self.clone();for n in &mut v.nodes{n.seeds=n.seeds.output_bound(values);for e in &mut n.edges{e.when=bounds::Condition::guard(e.when.assume(&bounds::Clause::default(),true).output_bound(values));if let Op::Position(p)=&mut e.op{*p=p.bind_outputs(values);}}}for f in &mut v.frames{for w in &mut f.writes{w.when=w.when.output_bound(values);}}v}
-    pub(in crate::check) fn normalize(&mut self,normal:&mut bounds::Normalizer){for n in &mut self.nodes{n.seeds.normalize_contract(normal);for e in &mut n.edges{e.when=normal.condition(&e.when);if let Op::Position(p)=&mut e.op{normal.origin(p);}}}for f in &mut self.frames{for w in &mut f.writes{w.when=normal.condition(&w.when);}}}
+    pub(in crate::check) fn at_call(&self,values:&BTreeMap<ValueIdentity,bounds::Proof>)->Self{let mut v=self.clone();for n in &mut v.nodes{n.seeds=n.seeds.at_call(values);for e in &mut n.edges{e.when=RelationPath::Guard(e.when.project(values));match &mut e.op{Op::Position(p)=>*p=p.bound_at_call(values),Op::Element{index,..}=>*index=Origin::index_at_call(*index,values),Op::Select(indices)=>indices.iter_mut().for_each(|index|*index=Origin::index_at_call(*index,values)),_=>{}}}}for f in &mut v.frames{for w in &mut f.writes{w.when=w.when.at_call(values);}}v}
+    pub(in crate::check) fn substitute_values(&self,values:&BTreeMap<ValueIdentity,bounds::Proof>)->Self{let mut v=self.clone();for n in &mut v.nodes{n.seeds=n.seeds.substitute_values(values);for e in &mut n.edges{e.when=RelationPath::Cases(e.when.condition().substitute_values(values));match &mut e.op{Op::Position(p)=>*p=p.substitute_values(values),Op::Element{index,..}=>*index=Origin::index_substitute(*index,values),Op::Select(indices)=>indices.iter_mut().for_each(|index|*index=Origin::index_substitute(*index,values)),_=>{}}}}for f in &mut v.frames{for w in &mut f.writes{w.when=w.when.substitute_values(values);}}v}
+    pub(in crate::check) fn output_bound(&self,values:&BTreeMap<ValueIdentity,ValueIdentity>)->Self{let mut v=self.clone();for n in &mut v.nodes{n.seeds=n.seeds.output_bound(values);for e in &mut n.edges{e.when=RelationPath::Guard(e.when.path().output_bound(values));if let Op::Position(p)=&mut e.op{*p=p.bind_outputs(values);}}}for f in &mut v.frames{for w in &mut f.writes{w.when=w.when.output_bound(values);}}v}
+    pub(in crate::check) fn normalize(&mut self,normal:&mut bounds::Normalizer){for n in &mut self.nodes{n.seeds.normalize_contract(normal);for e in &mut n.edges{e.when.normalize(normal);if let Op::Position(p)=&mut e.op{normal.origin(p);}}}for f in &mut self.frames{for w in &mut f.writes{w.when=normal.condition(&w.when);}}}
     pub(super) fn canonical(
         &self, function: &Function, exposed: &BTreeMap<Origin, Borrow>,
         guards: &bounds::PublicGuards<'_>,
@@ -763,9 +778,9 @@ impl Graph {
         let nodes = self.nodes.iter().map(|node| {
             let seeds = canonical_with_guards(node.seeds.clone(), function, None, exposed, guards, BorrowProjection::Input);
             let edges = node.edges.iter().map(|edge| {
-                let when = relation.map_or_else(
-                    || edge.when.guard_at_call(input_parameters), |scope| scope.edge(&edge.when),
-                );
+                let when = RelationPath::Guard(relation.map_or_else(
+                    || edge.when.project(input_parameters), |scope| scope.edge(&edge.when),
+                ));
                 let op = match &edge.op {
                     Op::Read { word, frame, .. } => Op::Read {
                         word: *word,
@@ -973,8 +988,7 @@ impl<'g> Query<'g> {
         for edge in &definition.edges {
             let from = self.node(edge.from);
             let incoming = self.apply(id, edge.from, &edge.op, from, evaluation);
-            let path = edge.when.assume(&bounds::Clause::default(), true);
-            sources.union_restricted(&incoming.sources, &path);
+            sources.union_restricted(&incoming.sources, edge.when.path());
         }
         Borrow { sources, ..Borrow::default() }
     }
@@ -1010,14 +1024,15 @@ impl<'g> Query<'g> {
         let mut result = Node { seeds: node.seeds.clone(), edges: Vec::with_capacity(node.edges.len()) };
         for edge in &node.edges {
             let Op::Initial{origin,frame}=&edge.op else{result.edges.push(edge.clone());continue;};
-            let path = edge.when.assume(&bounds::Clause::default(), true);
+            let path = edge.when.path();
+            let execution = edge.when.condition();
             let position=content_position(origin,0);let mut earlier=bounds::Condition::constant(true);let mut at=*frame;
             while let Some(fi)=at{
                 let f=&self.graph.frames[fi];at=f.parent;
                 for write in f.writes.iter().rev() {
                     let targets = self.node(write.target);
                     let targets = targets.sources.entries().filter_map(|(target, selected)| {
-                        let yes = write.when.assume(&bounds::Clause::both(&path, &selected), true);
+                        let yes = write.when.assume(&bounds::Clause::both(path, &selected), true);
                         yes.possible().then_some((target, yes))
                     });
                     let Some(fields) = &write.fields else {
@@ -1059,13 +1074,13 @@ impl<'g> Query<'g> {
                                             let visible = earlier.clone()
                                                 .logical(bounds::Condition::guard(yes.clone()), false);
                                             // The selected write already includes the read path.
-                                            bounds::Condition::paths(
+                                            RelationPath::Cases(bounds::Condition::paths(
                                                 visible.assume(&bounds::Clause::default(), true),
                                                 bounds::Clause::either(
                                                     &visible.assume(&bounds::Clause::default(), false),
-                                                    &edge.when.assume(&bounds::Clause::default(), false),
+                                                    &execution.assume(&bounds::Clause::default(), false),
                                                 ),
-                                            )
+                                            ))
                                         },
                                     });
                                     hit = bounds::Clause::either(&hit, &yes);
@@ -1079,11 +1094,11 @@ impl<'g> Query<'g> {
                             miss = bounds::Clause::either(&miss, &yes);
                         }
                     }
-                    let no = bounds::Clause::either(&write.when.assume(&path, false), &miss);
+                    let no = bounds::Clause::either(&write.when.assume(path, false), &miss);
                     earlier = earlier.logical(bounds::Condition::paths(hit, no).negate(), false);
                 }
             }
-            result.edges.push(Edge{from:edge.from,op:Op::Identity,when:earlier.logical(edge.when.clone(),false)});
+            result.edges.push(Edge { from: edge.from, op: Op::Identity, when: RelationPath::Cases(earlier.logical(execution.into_owned(), false)) });
         }
         Cow::Owned(result)
     }
@@ -1763,17 +1778,18 @@ const _: () = {
             Self {
                 from: <usize as Native>::empty(),
                 op: <Op as Native>::empty(),
-                when: <bounds::Condition as Native>::empty(),
+                when: RelationPath::Cases(<bounds::Condition as Native>::empty()),
             }
         }
         unsafe fn write(&self, output: Slot) {
+            let when = self.when.condition();
             unsafe {
                 write(
                     output,
                     Fields {
                         from: contracts::address(&self.from).cast_mut(),
                         op: contracts::address(&self.op).cast_mut(),
-                        when: contracts::address(&self.when).cast_mut(),
+                        when: contracts::address(when.as_ref()).cast_mut(),
                     },
                     Writer {
                         from: contracts::write_value::<usize>,
@@ -1784,13 +1800,14 @@ const _: () = {
             }
         }
         unsafe fn read(context: Slot, output: &mut Self) -> ReadStatus {
+            let mut when = <bounds::Condition as Native>::empty();
             let status = unsafe {
                 read(
                     context,
                     Fields {
                         from: contracts::slot(&mut output.from),
                         op: contracts::slot(&mut output.op),
-                        when: contracts::slot(&mut output.when),
+                        when: contracts::slot(&mut when),
                     },
                     Reader {
                         from: contracts::read_value::<usize>,
@@ -1802,6 +1819,7 @@ const _: () = {
             if status != ReadStatus::Success {
                 return status;
             }
+            output.when = RelationPath::Cases(when);
             ReadStatus::Success
         }
     }
