@@ -1764,16 +1764,6 @@ extern "C" ParallelRelationsStep parallel_relations_step(EnvironmentCursor state
   if(cursor.phase==3){cursor.index+=1u64;cursor.phase=2;}
  }
 }
-extern "C" ParallelRegionsStep parallel_regions_step(EnvironmentCursor state,ParallelRegionsFacts facts) on cpu {
- EnvironmentCursor cursor=state;
- while(true){
-  if(cursor.phase==0){if(cursor.index<facts.bindings){cursor.phase=1;return ParallelRegionsStep(cursor,ParallelRegionsNeed::Binding);}return ParallelRegionsStep(cursor,ParallelRegionsNeed::Complete);}
-  if(cursor.phase==1){if(facts.regions!=0){cursor.part=0u64;cursor.phase=2;}else{cursor.index+=1u64;cursor.phase=0;}}
-  if(cursor.phase==2){if(cursor.part<facts.regions){cursor.phase=3;return ParallelRegionsStep(cursor,ParallelRegionsNeed::Region);}cursor.phase=4;return ParallelRegionsStep(cursor,ParallelRegionsNeed::Emit);}
-  if(cursor.phase==3){cursor.part+=1u64;cursor.phase=2;}
-  if(cursor.phase==4){cursor.index+=1u64;cursor.phase=0;}
- }
-}
 extern "C" StageSequenceStep stage_sequence_step(LocalCursor state,StageSequenceFacts facts) on cpu {
  LocalCursor cursor=state;
  while(true){

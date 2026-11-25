@@ -961,14 +961,12 @@ fn parallel_relations(appends:&BTreeMap<usize,PrefixCount>,facts:&prefix::Facts,
         ParallelRelationsNeed::Complete=>return Ok(relations),
     }}
 }
-fn parallel_write_regions(memory:&StageMemoryRegions)->BTreeMap<usize,BTreeSet<(u32,u32)>> {
-    let mut cursor=EnvironmentCursor{index:0,part:0,phase:0};let mut facts=ParallelRegionsFacts{bindings:memory.len()as u64,regions:0};let mut entries=memory.iter();let mut binding=0;let mut regions=None;let mut words=BTreeSet::new();let mut output=BTreeMap::new();
-    loop{let step=unsafe{parallel_regions_step(cursor,ParallelRegionsFacts{..facts})};cursor=step.cursor;match step.need{
-        ParallelRegionsNeed::Binding=>{let(&current,(_,written))=entries.next().unwrap();binding=current;facts.regions=written.len()as u64;regions=Some(written.keys());},
-        ParallelRegionsNeed::Region=>{words.insert(*regions.as_mut().unwrap().next().unwrap());},
-        ParallelRegionsNeed::Emit=>{output.insert(binding,std::mem::take(&mut words));},
-        ParallelRegionsNeed::Complete=>return output,
-    }}
+fn parallel_write_regions(memory: &StageMemoryRegions) -> BTreeMap<usize, BTreeSet<(u32, u32)>> {
+    memory
+        .iter()
+        .filter(|(_, (_, writes))| !writes.is_empty())
+        .map(|(&binding, (_, writes))| (binding, writes.keys().copied().collect()))
+        .collect()
 }
 
 fn parallel_output(
@@ -2830,13 +2828,9 @@ unsafe extern "C"{
 #[repr(C)]struct ParallelBuildStep{cursor:SourceValueCursor,need:ParallelBuildNeed,offset:u32}
 #[repr(u32)]enum ParallelRelationsNeed{Relation,Prove,Complete}
 #[repr(C)]struct ParallelRelationsStep{cursor:EnvironmentCursor,need:ParallelRelationsNeed}
-#[repr(C)]struct ParallelRegionsFacts{bindings:u64,regions:u64}
-#[repr(u32)]enum ParallelRegionsNeed{Binding,Region,Emit,Complete}
-#[repr(C)]struct ParallelRegionsStep{cursor:EnvironmentCursor,need:ParallelRegionsNeed}
 unsafe extern "C"{
     #[link_name="bootstrap.function_body::parallel_build_step"]fn parallel_build_step(cursor:SourceValueCursor,facts:ParallelBuildFacts)->ParallelBuildStep;
     #[link_name="bootstrap.function_body::parallel_relations_step"]fn parallel_relations_step(cursor:EnvironmentCursor,relations:u64)->ParallelRelationsStep;
-    #[link_name="bootstrap.function_body::parallel_regions_step"]fn parallel_regions_step(cursor:EnvironmentCursor,facts:ParallelRegionsFacts)->ParallelRegionsStep;
 }
 #[repr(u32)]enum PromoteStageNeed{Root,Component,Promote,Complete}
 #[repr(C)]struct PromoteStageStep{cursor:EnvironmentCursor,need:PromoteStageNeed}

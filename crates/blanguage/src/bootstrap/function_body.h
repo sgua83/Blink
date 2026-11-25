@@ -415,10 +415,6 @@ extern "C" ParallelBuildStep parallel_build_step(LocalCursor state,ParallelBuild
 enum ParallelRelationsNeed:u32 {Relation=0;Prove=1;Complete=2;};
 struct ParallelRelationsStep {EnvironmentCursor cursor;ParallelRelationsNeed need;};
 extern "C" ParallelRelationsStep parallel_relations_step(EnvironmentCursor state,u64 relations) on cpu;
-struct ParallelRegionsFacts {u64 bindings;u64 regions;};
-enum ParallelRegionsNeed:u32 {Binding=0;Region=1;Emit=2;Complete=3;};
-struct ParallelRegionsStep {EnvironmentCursor cursor;ParallelRegionsNeed need;};
-extern "C" ParallelRegionsStep parallel_regions_step(EnvironmentCursor state,ParallelRegionsFacts facts) on cpu;
 
 struct StageSequenceFacts {u32 present;u32 returned;};
 enum StageSequenceNeed:u32 {Next=0;Begin=1;Dispatch=2;Outputs=3;Complete=4;};
