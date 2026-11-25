@@ -118,10 +118,10 @@ impl Groups {
         Some(first)
     }
 
-    pub(super) fn encode<'a>(
+    pub(super) fn encode_into<'a>(
         mut self, bytes: &[u8], raw: &[ObjectSection], symbols: &[ObjectSymbol<'a>],
-        build: Option<&HostBuildSection>,
-    ) -> Result<Vec<(Vec<u8>, Vec<Cow<'a, str>>)>> {
+        build: Option<&HostBuildSection>, name: &str, output: &mut Vec<HostMember<'a>>,
+    ) -> Result<()> {
         let combined = self.combine_closed_groups(raw);
         let identity = member_identity(bytes, raw, build);
         let mut anchors = BTreeMap::new();
@@ -165,7 +165,7 @@ impl Groups {
             names[member].push(Cow::Owned(name));
         }
 
-        let mut output = Vec::with_capacity(self.members.len());
+        let first = output.len();
         for (member, physical) in self.members.iter().enumerate() {
             if physical.is_empty() {
                 continue;
@@ -201,9 +201,16 @@ impl Groups {
                 format!("{identity}${member}")
             };
             let code = encode_bound(&group_name, payloads, bindings, &definitions[member], None)?;
-            output.push((code, std::mem::take(&mut names[member])));
+            let number = output.len() - first + 1;
+            // Later groups can still borrow the anchor names from these members.
+            output.push(HostMember {
+                name: Cow::Owned(format!("{name}.{number}.obj")),
+                bytes: Cow::Owned(code),
+                build: None,
+                names: std::mem::take(&mut names[member]),
+            });
         }
-        Ok(output)
+        Ok(())
     }
 }
 

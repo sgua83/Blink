@@ -169,10 +169,10 @@ impl<'a> MemberView<'a> {
 }
 
 pub(crate) struct HostMember<'a> {
-    name: Cow<'a, str>,
-    bytes: Cow<'a, [u8]>,
-    build: Option<coff::HostBuildSection>,
-    names: Vec<Cow<'a, str>>,
+    pub(super) name: Cow<'a, str>,
+    pub(super) bytes: Cow<'a, [u8]>,
+    pub(super) build: Option<coff::HostBuildSection>,
+    pub(super) names: Vec<Cow<'a, str>>,
 }
 
 impl HostMember<'_> {
@@ -190,33 +190,13 @@ impl<'a> Member<'a> {
         MemberView::new(self.name, self.bytes)
     }
 
-    pub(crate) fn emit_host_members(
-        self, imports: &mut Vec<coff::ImportKey<'a>>,
-        mut emit: impl FnMut(HostMember<'a>),
+    pub(crate) fn append_host_members(
+        self, imports: &mut Vec<coff::ImportKey<'a>>, members: &mut Vec<HostMember<'a>>,
     ) -> Result<()> {
-        let output = coff::Reader::new(self.bytes).and_then(|reader| reader.host_links(imports))
-            .map_err(|error| format!("静态库成员 {}：{error}", self.name))?
-            .ok_or_else(|| format!("{} 不是独立模块产物", self.name))?;
-        match output {
-            coff::HostArchiveMember::Original(names, build) => {
-                emit(HostMember {
-                    name: Cow::Borrowed(self.name),
-                    bytes: Cow::Borrowed(self.bytes),
-                    build,
-                    names,
-                });
-            }
-            coff::HostArchiveMember::Groups(groups) => {
-                for (index, (bytes, names)) in groups.into_iter().enumerate() {
-                    emit(HostMember {
-                        name: Cow::Owned(format!("{}.{}.obj", self.name, index + 1)),
-                        bytes: Cow::Owned(bytes),
-                        build: None,
-                        names,
-                    });
-                }
-            }
-        }
+        let module = coff::Reader::new(self.bytes)
+            .and_then(|reader| reader.append_host_members(self.name, imports, members))
+            .map_err(|error| format!("静态库成员 {}：{error}", self.name))?;
+        if !module { return Err(format!("{} 不是独立模块产物", self.name).into()); }
         Ok(())
     }
     fn archive_symbols(self, emit: impl FnMut(&'a str)) -> Result<bool> {

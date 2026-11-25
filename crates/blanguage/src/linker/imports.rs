@@ -30,7 +30,7 @@ pub fn host_archive(inputs: &[impl AsRef<Path>], path: &Path) -> Result<()> {
         let mut members = Vec::new();
         let mut imports = Vec::new();
         for original in sources.iter().flat_map(|source| source.members()) {
-            original.emit_host_members(&mut imports, |member| members.push(member))?;
+            original.append_host_members(&mut imports, &mut members)?;
         }
         archive_with_imports(&members, imports)?
     };

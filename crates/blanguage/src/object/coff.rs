@@ -963,11 +963,6 @@ pub(super) struct HostBuildSection {
     symbols: usize,
 }
 
-pub(super) enum HostArchiveMember<'a> {
-    Original(Vec<Cow<'a, str>>, Option<HostBuildSection>),
-    Groups(Vec<(Vec<u8>, Vec<Cow<'a, str>>)>),
-}
-
 impl HostBuildSection {
     pub(super) fn length(&self, bytes: &[u8]) -> usize {
         bytes.len() - 40 - self.record.len()
@@ -1114,11 +1109,11 @@ impl<'a, Input: AsRef<[u8]> + ?Sized> Reader<'a, Input> {
         Ok(true)
     }
     /// Native archives additionally consume the actual DLL import relocations.
-    pub(super) fn host_links(
-        &self, imports: &mut Vec<ImportKey<'a>>,
-    ) -> Result<Option<HostArchiveMember<'a>>> {
+    pub(super) fn append_host_members(
+        &self, name: &'a str, imports: &mut Vec<ImportKey<'a>>, members: &mut Vec<HostMember<'a>>,
+    ) -> Result<bool> {
         let (parts, raw) = self.sections(true)?;
-        if !self.is_module(parts)? { return Ok(None); }
+        if !self.is_module(parts)? { return Ok(false); }
         let mut definitions = vec![SectionDefinition::default(); self.headers.len() / 40];
         let (symbols, offset) = self.symbol_rows(&mut definitions)?;
         let mut groups = if host::needs_groups(&symbols) {
@@ -1146,13 +1141,16 @@ impl<'a, Input: AsRef<[u8]> + ?Sized> Reader<'a, Input> {
             })?;
         }
         let build = build.map(|(index, row)| self.host_build_section(index, row, offset)).transpose()?;
-        let member = match groups {
-            Some(groups) => HostArchiveMember::Groups(
-                groups.encode(self.bytes.as_ref(), &raw, &symbols, build.as_ref())?,
-            ),
-            None => HostArchiveMember::Original(names, build),
-        };
-        Ok(Some(member))
+        match groups {
+            Some(groups) => groups.encode_into(self.bytes.as_ref(), &raw, &symbols, build.as_ref(), name, members)?,
+            None => members.push(HostMember {
+                name: Cow::Borrowed(name),
+                bytes: Cow::Borrowed(self.bytes.as_ref()),
+                build,
+                names,
+            }),
+        }
+        Ok(true)
     }
 
     /// 从库成员借用公开接口与合同。完整对象负责代码、重定位和诊断材料。
