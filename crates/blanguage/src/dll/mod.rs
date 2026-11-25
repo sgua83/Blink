@@ -153,7 +153,7 @@ fn layout(name: &str, ty: &Ty, c: &mut String, r: &mut String) -> Result<()> {
     Ok(())
 }
 
-fn generate(p: &ExecutableProgram, prefix: &str, worker: &crate::compiler::Worker) -> Result<(String, String, Vec<u8>, Vec<(String, crate::native::NativeCode)>, Option<crate::application::factory::ResourceFactory>)> {
+fn generate(p: &ExecutableProgram, prefix: &str, worker: &crate::compiler::Worker) -> Result<(String, String, crate::object::ObjectBytes, Vec<(String, crate::native::NativeCode)>, Option<crate::application::factory::ResourceFactory>)> {
     if !p.accelerations().is_empty()
         || !p.textures().is_empty()
         || p.buffers().iter().any(|b| !plain(&b.ty))
@@ -226,7 +226,7 @@ fn generate(p: &ExecutableProgram, prefix: &str, worker: &crate::compiler::Worke
     let c_run = cp.join(", ");
     let r_run = rp.join(", ");
     let comma = if cp.is_empty() { "" } else { ", " };
-    let (native, functions, resources) = source::compile(p, prefix, &dataset_addresses, uniforms.try_into()?, worker)?;
+    let (entry, functions, resources) = source::compile(p, prefix, &dataset_addresses, uniforms.try_into()?, worker)?;
     let replacements = [
         ("@PREFIX@", prefix.to_owned()),
         ("@COMMA@", comma.to_owned()),
@@ -246,7 +246,7 @@ fn generate(p: &ExecutableProgram, prefix: &str, worker: &crate::compiler::Worke
     };
     c.push_str(&render(include_str!("header.h.in")));
     let r = render(include_str!("binding.rs.in"));
-    Ok((c, r, native, functions, resources))
+    Ok((c, r, entry, functions, resources))
 }
 
 /// 编译算法DLL的CPU代码节、GPU映像、执行框架静态库及C/Rust接口。
@@ -266,7 +266,7 @@ pub(crate) fn compile_in(
     libraries: Option<Vec<String>>,
 ) -> Result<crate::object::Object> {
     let prefix = identifier(prefix)?;
-    let (header, binding, native, functions, resources) = generate(program, &prefix, worker)?;
+    let (header, binding, entry, functions, resources) = generate(program, &prefix, worker)?;
     let mut imports = program.imports.clone();
     imports.extend(program.resources.iter().flat_map(|resources| &resources.programs)
         .flat_map(|(_, program)| program.imports.clone()));
@@ -279,7 +279,7 @@ pub(crate) fn compile_in(
     if let Some(resource) = &resources {
         exports.push(resource.symbol().to_owned());
     }
-    let archive = crate::object::compile_archive(native, exports, true, worker, libraries)?;
+    let archive = crate::object::compile_archive(entry, exports, true, worker, libraries)?;
     let mut object = crate::object::Object {
         name: program.name().into(),
         kind: crate::object::Kind::Library {

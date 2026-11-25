@@ -216,7 +216,7 @@ pub(super) fn wrappers(
     types: u32,
     root: bool,
     tasks: bool,
-) -> crate::object::Result<Vec<u8>> {
+) -> crate::object::Result<crate::object::ObjectBytes> {
     let mut sections = Vec::new();
     let mut symbols = Vec::new();
     let mut code = [0u8; 32];
@@ -321,5 +321,5 @@ pub(super) fn wrappers(
         wrapper(&mut sections, &mut symbols, format!("{prefix}_complete_{index}"), code,
             relocations, Some((row.function_end, call_unwind(row.prolog, frame))));
     }
-    crate::object::encode_native(prefix, &sections, &symbols)
+    crate::object::encode_entry_archive(prefix, &sections, &symbols)
 }

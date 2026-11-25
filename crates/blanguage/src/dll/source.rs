@@ -77,7 +77,7 @@ fn image(
 
 pub(super) fn compile(
     p: &ExecutableProgram, prefix: &str, dataset_addresses: &[u8], uniforms: u32, worker: &crate::compiler::Worker,
-) -> crate::object::Result<(Vec<u8>, Vec<(String, crate::native::NativeCode)>, Option<ResourceFactory>)> {
+) -> crate::object::Result<(crate::object::ObjectBytes, Vec<(String, crate::native::NativeCode)>, Option<ResourceFactory>)> {
     let mut sections = Vec::new();
     let mut symbols = Vec::new();
     let mut functions = Vec::new();
@@ -158,5 +158,5 @@ pub(super) fn compile(
     wrapper(&mut sections, &mut symbols, format!("{prefix}_destroy"),
         code[..row.length as usize].to_vec(), vec![external(row.field, "blink_library_destroy")], None);
 
-    Ok((crate::object::encode_native(prefix, &sections, &symbols)?, functions, resources))
+    Ok((crate::object::encode_entry_archive(prefix, &sections, &symbols)?, functions, resources))
 }

@@ -133,26 +133,26 @@ pub(crate) fn runtime_fingerprint(libraries: &[String]) -> [u8; 32] {
     digest.finish()
 }
 
+pub(crate) fn encode_entry(
+    name: &str, sections: &[super::Section], definitions: &[super::Definition],
+) -> Result<super::ObjectBytes> {
+    let native = super::encode_native(name, sections, definitions)?;
+    // COFF binding writes the declared external definitions in this same order.
+    let symbols = definitions.iter()
+        .map(|definition| super::static_library::ArchiveSymbol::new(0, &definition.name))
+        .collect();
+    let members = std::iter::once(native.as_slice())
+        .map(|bytes| super::static_library::MemberView::new("entry.obj", bytes));
+    super::static_library::encode(members, symbols).map(super::ObjectBytes::generated)
+}
+
 pub(crate) fn compile(
-    native: Vec<u8>,
+    bytes: super::ObjectBytes,
     exports: Vec<String>,
     runtime: bool,
     worker: &crate::compiler::Worker,
     libraries: Option<Vec<String>>,
 ) -> Result<Archive> {
     let libraries = if runtime { libraries.map_or_else(|| runtime_libraries(worker), Ok)? } else { Vec::new() };
-    let mut symbols = Vec::new();
-    super::coff::Reader::new(native.as_slice())?.for_each_definition(|symbol| {
-        symbols.push(super::static_library::ArchiveSymbol::new(0, symbol));
-        Ok(())
-    })?;
-    let members = std::iter::once(native.as_slice())
-        .map(|bytes| super::static_library::MemberView::new("entry.obj", bytes));
-    let bytes = super::static_library::encode(members, symbols)?;
-    Ok(Archive {
-        bytes: super::ObjectBytes::generated(bytes),
-        libraries,
-        exports,
-        resources: None,
-    })
+    Ok(Archive { bytes, libraries, exports, resources: None })
 }

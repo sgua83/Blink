@@ -121,7 +121,7 @@ pub(crate) fn compile_resources(
         let code: Vec<_> = code.into_iter().enumerate()
             .map(|(index, code)| (format!("__blink_range_{prefix}_{index}"), code)).collect();
         let types = u32::try_from(resources.types.len())?;
-        let native = factory::wrappers(&prefix, resources, types, root, has_tasks)?;
+        let entry = factory::wrappers(&prefix, resources, types, root, has_tasks)?;
         let mut exports = if root {
             [
                 "blink_destroy",
@@ -161,7 +161,7 @@ pub(crate) fn compile_resources(
             prefix, types, u32::try_from(resources.programs.len())?, image, None,
         );
         exports.push(factory.symbol().to_owned());
-        let archive = object::compile_archive(native, exports, root, worker, libraries)?;
+        let archive = object::compile_archive(entry, exports, root, worker, libraries)?;
         (Some((archive, factory)), code, imports)
     } else {
         (None, Vec::new(), std::collections::BTreeMap::new())
