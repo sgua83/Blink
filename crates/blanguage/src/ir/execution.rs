@@ -14,8 +14,22 @@ pub struct ElementRange {
     pub known_bits: (Bits, Bits),
 }
 impl ElementRange {
-    pub fn within(&self,required:&Self)->bool {
-        self.intervals.iter().all(|&range|self.scalar.covers_range(range,self.known_bits,&required.intervals,required.known_bits))
+    pub fn within(&self, required: &Self) -> bool {
+        let allowed = required.intervals.as_slice();
+        let mut remaining = allowed;
+        let mut lower = 0;
+        self.intervals.iter().all(|&range| {
+            if range.0 < lower {
+                remaining = allowed;
+            }
+            lower = range.0;
+            while let Some((&(start, end), rest)) = remaining.split_first()
+                && end.max(start) < lower
+            {
+                remaining = rest;
+            }
+            self.scalar.covers_range(range, self.known_bits, remaining, required.known_bits)
+        })
     }
     /// Intersect the two interval unions and fixed bits, keeping ordered, disjoint intervals.
     pub fn intersect(&mut self, other: &Self) {
