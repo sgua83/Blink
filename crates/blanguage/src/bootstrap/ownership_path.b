@@ -202,3 +202,13 @@ extern "C" void bind_argument(address context,u64 prefix,ArgumentBindingHost hos
         next=host.next_descendant(context);
     }
 }
+
+extern "C" void traverse_residency_query(address context,ResidencyQueryHost host) on cpu
+    requires nonzero(host.consume)
+    requires nonzero(host.advance) {
+    ResidencyQueryStep step=ResidencyQueryStep::Entered;
+    while(step!=ResidencyQueryStep::Complete){
+        if(step==ResidencyQueryStep::Entered && host.consume(context)==0){return;}
+        step=host.advance(context);
+    }
+}

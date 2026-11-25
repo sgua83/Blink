@@ -58,3 +58,12 @@ extern "C" void bind_argument(address context,u64 prefix,ArgumentBindingHost hos
     requires nonzero(host.next_descendant)
     requires nonzero(host.declared_at)
     requires nonzero(host.bind_child);
+
+enum ResidencyQueryStep:u32 { Complete=0; Next=1; Entered=2; };
+struct ResidencyQueryHost {
+    cfn<u32,address> consume;
+    cfn<ResidencyQueryStep,address> advance;
+};
+extern "C" void traverse_residency_query(address context,ResidencyQueryHost host) on cpu
+    requires nonzero(host.consume)
+    requires nonzero(host.advance);

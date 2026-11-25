@@ -1,7 +1,7 @@
 //! 资源位置属于函数的静态访问合同；逻辑输入路径不成为运行期状态。
 use super::*;
 use returns::Returned;
-use std::{borrow::Cow, ffi::c_void, ptr};
+use std::{borrow::Cow, ffi::c_void, ptr, rc::Rc};
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) enum Part {
@@ -693,35 +693,134 @@ fn bind_arguments(declared: &Arguments, actual: &Arguments, bindings: &BTreeMap<
     }
     result
 }
-fn query(call:Call,known:&BTreeMap<String,Contract>,outputs:&Outputs,wanted:Option<&Input>,source:&Source,span:Span,mut deferred:bool)->Result<(Requirements,bool)>{
-    enum Work{Enter(Call),Leave(Vec<u8>)}
-    let mut work=vec![Work::Enter(call)];let mut active=BTreeSet::new();let mut required=Requirements::new();
-    while let Some(next)=work.pop(){
-        let call=match next{Work::Enter(call)=>call,Work::Leave(key)=>{active.remove(&key);continue}};
-        if !call.path.possible(){continue;}
-        let key=query_key(&call,wanted,outputs);
-        if !active.insert(key.clone()){continue;}
-        work.push(Work::Leave(key));
-        let contract=&known[&call.function];
-        for((input,target),guards)in &contract.required{let bindings=scoped_indices(&call.bindings,input.depth());for guard in guards{
-            let path=bounds::Clause::both(&call.path, &guard.projected_case(true, &bindings));
-            let selection=input.selection().into_iter().map(|(index,proof)|(index,proof.at_call(&bindings))).collect();
-            let Some(value)=argument_value(&call.arguments,input,&selection)else{continue};let value=evaluate(&value,outputs,&path);
-            if !query_consume(&mut required,&mut deferred,wanted,&value,*target,&path){return source.fail(span,"B266",format!("函数 {} 的第 {} 个资源参数（资源路径 {:?}）不满足实际生效条件下的{}存储要求",call.function,input.parameter+1,input.fields,if *target==Target::Cpu{"CPU"}else{"GPU"}));}
-        }}
-        for next in contract.calls.iter().rev(){
-            let path=bounds::Clause::both(&call.path, &bounds::Condition::guard(next.path.clone()).projected_case(true, &call.bindings));
-            let arguments=bind_arguments(&next.arguments,&call.arguments,&call.bindings,outputs);
-            let bindings=next.bindings.iter().map(|(id,proof)|(*id,proof.at_call(&call.bindings))).collect();
-            work.push(Work::Enter(Call{function:next.function.clone(),arguments,bindings,path,source:None,span:Span::default()}));
-        }
+struct QueryFrame<'a> {
+    call: Cow<'a, Call>,
+    key: Rc<Vec<u8>>,
+    required: &'a Requirements,
+    children: std::slice::Iter<'a, Call>,
+}
+
+impl<'a> QueryFrame<'a> {
+    fn new(call: Cow<'a, Call>, key: Rc<Vec<u8>>, known: &'a BTreeMap<String, Contract>) -> Self {
+        let contract = &known[&call.function];
+        Self { call, key, required: &contract.required, children: contract.calls.iter() }
     }
-    Ok((required,deferred))
+}
+
+struct ResidencyQuery<'a> {
+    known: &'a BTreeMap<String, Contract>,
+    outputs: &'a Outputs,
+    wanted: Option<&'a Input>,
+    source: &'a Source,
+    span: Span,
+    current: QueryFrame<'a>,
+    parents: Vec<QueryFrame<'a>>,
+    active: BTreeSet<Rc<Vec<u8>>>,
+    required: Requirements,
+    deferred: bool,
+    error: Option<Diagnostic>,
+}
+
+impl<'a> ResidencyQuery<'a> {
+    fn consume(&mut self) -> Result<()> {
+        let call = &self.current.call;
+        for ((input, target), guards) in self.current.required {
+            let bindings = scoped_indices(&call.bindings, input.depth());
+            for guard in guards {
+                let path = bounds::Clause::both(&call.path, &guard.projected_case(true, &bindings));
+                let selection = input.selection().into_iter().map(|(index, proof)| {
+                    (index, proof.at_call(&bindings))
+                }).collect();
+                let Some(value) = argument_value(&call.arguments, input, &selection) else { continue; };
+                let value = evaluate(&value, self.outputs, &path);
+                if !query_consume(&mut self.required, &mut self.deferred, self.wanted, &value, *target, &path) {
+                    let place = if *target == Target::Cpu { "CPU" } else { "GPU" };
+                    return self.source.fail(self.span, "B266", format!(
+                        "函数 {} 的第 {} 个资源参数（资源路径 {:?}）不满足实际生效条件下的{}存储要求",
+                        call.function, input.parameter + 1, input.fields, place,
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn advance(&mut self) -> ResidencyQueryStep {
+        let Some(child) = self.current.children.next() else {
+            self.active.remove(&self.current.key);
+            let Some(parent) = self.parents.pop() else { return ResidencyQueryStep::Complete; };
+            self.current = parent;
+            return ResidencyQueryStep::Next;
+        };
+        let call = &self.current.call;
+        let guard = bounds::Condition::guard(child.path.clone());
+        let path = bounds::Clause::both(&call.path, &guard.projected_case(true, &call.bindings));
+        if !path.possible() {
+            return ResidencyQueryStep::Next;
+        }
+        let arguments = bind_arguments(&child.arguments, &call.arguments, &call.bindings, self.outputs);
+        let bindings = child.bindings.iter().map(|(id, proof)| (*id, proof.at_call(&call.bindings))).collect();
+        let child = Call {
+            function: child.function.clone(), arguments, bindings, path, source: None, span: Span::default(),
+        };
+        let key = Rc::new(query_key(&child, self.wanted, self.outputs));
+        if !self.active.insert(Rc::clone(&key)) {
+            return ResidencyQueryStep::Next;
+        }
+        let frame = QueryFrame::new(Cow::Owned(child), key, self.known);
+        self.parents.push(std::mem::replace(&mut self.current, frame));
+        ResidencyQueryStep::Entered
+    }
+}
+
+#[repr(u32)]
+enum ResidencyQueryStep { Complete, Next, Entered }
+
+#[repr(C)]
+struct ResidencyQueryHost {
+    consume: unsafe extern "C" fn(Context) -> u32,
+    advance: unsafe extern "C" fn(Context) -> ResidencyQueryStep,
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.ownership_path::traverse_residency_query"]
+    fn traverse_residency_query(context: Context, host: ResidencyQueryHost);
+}
+
+unsafe extern "C" fn consume_query_frame(context: Context) -> u32 {
+    let query = unsafe { &mut *context.cast::<ResidencyQuery<'_>>() };
+    query.error = query.consume().err();
+    u32::from(query.error.is_none())
+}
+
+unsafe extern "C" fn advance_query_frame(context: Context) -> ResidencyQueryStep {
+    unsafe { &mut *context.cast::<ResidencyQuery<'_>>() }.advance()
+}
+
+fn query(call: &Call, known: &BTreeMap<String, Contract>, outputs: &Outputs, wanted: Option<&Input>,
+    source: &Source, span: Span, deferred: bool) -> Result<(Requirements, bool)> {
+    let required = Requirements::new();
+    if !call.path.possible() {
+        return Ok((required, deferred));
+    }
+    let key = Rc::new(query_key(call, wanted, outputs));
+    let current = QueryFrame::new(Cow::Borrowed(call), Rc::clone(&key), known);
+    let mut query = ResidencyQuery {
+        known, outputs, wanted, source, span, current, parents: Vec::new(),
+        active: BTreeSet::from([key]), required, deferred, error: None,
+    };
+    let host = ResidencyQueryHost { consume: consume_query_frame, advance: advance_query_frame };
+    // All frames and the original contract borrows stay with this synchronous traversal.
+    unsafe { traverse_residency_query(ptr::from_mut(&mut query).cast(), host); }
+    match query.error {
+        Some(error) => Err(error),
+        None => Ok((query.required, query.deferred)),
+    }
 }
 pub(super) fn check_calls<'a>(calls:impl Iterator<Item=&'a Call>,known:&BTreeMap<String,Contract>,outputs:&Outputs)->Result<bool>{
     let mut deferred=false;
     for call in calls{
-        deferred=query(call.clone(),known,outputs,None,call.source.as_ref().unwrap(),call.span,deferred)?.1;
+        deferred=query(call,known,outputs,None,call.source.as_ref().unwrap(),call.span,deferred)?.1;
     }
     Ok(deferred)
 }
@@ -869,13 +968,17 @@ where
 }
 pub(super) fn check_loops(name:&str,inputs:&Inputs,contract:&Contract,parameters:&BTreeMap<ValueIdentity,bounds::Proof>,outputs:&Outputs,known:&BTreeMap<String,Contract>,parameter_count:usize)->Result<()>{
     let mut required=contract.required.clone();
-    let arguments=(0..parameter_count).map(|parameter|(Input::new(parameter),Residency::parameter(parameter))).collect::<Arguments>();
-    let bindings=parameters.values().filter_map(|proof|proof.known_identity(0)).map(|id|(id,bounds::Proof::default().with_identity(id))).collect::<BTreeMap<_,_>>();
+    let mut root=None;
     for usage in &inputs.uses{if let Use::Same{before,after,source,span,..}=usage{
         let mut wanted=BTreeSet::new();self::inputs(&evaluate(before,outputs,&bounds::Clause::default()),&mut wanted);self::inputs(&evaluate(after,outputs,&bounds::Clause::default()),&mut wanted);
         for input in wanted{
             let input=input.at_call(parameters);
-            let call=Call{function:name.into(),arguments:arguments.clone(),bindings:bindings.clone(),path:bounds::Clause::default(),source:None,span:Span::default()};
+            let call=root.get_or_insert_with(||Call {
+                function: name.into(),
+                arguments: (0..parameter_count).map(|parameter|(Input::new(parameter),Residency::parameter(parameter))).collect(),
+                bindings: parameters.values().filter_map(|proof|proof.known_identity(0)).map(|id|(id,bounds::Proof::default().with_identity(id))).collect(),
+                path: bounds::Clause::default(), source: None, span: Span::default(),
+            });
             for(key,guards)in query(call,known,outputs,Some(&input),source,*span,false)?.0{required.entry(key).or_default().extend(guards);}
         }
     }}
