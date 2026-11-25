@@ -43,16 +43,18 @@ impl Input {
 impl CompiledInterface {
     /// Reads source-facing interfaces in the original COFF input order.
     pub fn read(path: &Path) -> Result<Vec<Self>> {
-        let bytes = ObjectBytes::read(path)?;
+        let bytes = FileBytes::read_path(path)?;
         if !has_signature(&bytes) {
             return Ok(vec![read_interface(&bytes)?]);
         }
         let mut interfaces = Vec::new();
         let mut member_result = Ok(());
-        visit_archive(&bytes, |name, body| {
+        visit_archive(&bytes, |member| {
             // The whole archive must pass format checks before a member error wins.
             if member_result.is_ok() {
-                member_result = read_member_interface(name, body.bytes(&bytes))
+                member_result = read_member_interface(
+                    member.name.validated_name(&bytes), member.body.bytes(&bytes),
+                )
                     .map(|interface| interfaces.push(interface));
             }
         })?;
@@ -134,9 +136,10 @@ impl AsRef<[u8]> for ObjectBytes {
     fn as_ref(&self) -> &[u8] { self }
 }
 
-pub(crate) struct Member {
-    pub(crate) name: String,
-    bytes: ObjectBytes,
+#[derive(Clone, Copy)]
+pub(crate) struct Member<'a> {
+    name: &'a str,
+    bytes: &'a [u8],
 }
 
 pub(crate) struct MemberView<'a> {
@@ -177,23 +180,23 @@ impl HostMember<'_> {
     }
 }
 
-impl Member {
-    pub(crate) fn view(&self) -> MemberView<'_> {
-        MemberView::new(&self.name, &self.bytes)
+impl<'a> Member<'a> {
+    fn view(self) -> MemberView<'a> {
+        MemberView::new(self.name, self.bytes)
     }
 
-    pub(crate) fn emit_host_members<'a>(
-        &'a self, imports: &mut Vec<coff::ImportKey<'a>>,
+    pub(crate) fn emit_host_members(
+        self, imports: &mut Vec<coff::ImportKey<'a>>,
         mut emit: impl FnMut(HostMember<'a>, Vec<Cow<'a, str>>),
     ) -> Result<()> {
-        let output = coff::Reader::new(&self.bytes).and_then(|reader| reader.host_links(imports))
+        let output = coff::Reader::new(self.bytes).and_then(|reader| reader.host_links(imports))
             .map_err(|error| format!("静态库成员 {}：{error}", self.name))?
             .ok_or_else(|| format!("{} 不是独立模块产物", self.name))?;
         match output {
             coff::HostArchiveMember::Original(names, build) => {
                 emit(HostMember {
-                    name: Cow::Borrowed(&self.name),
-                    bytes: Cow::Borrowed(&self.bytes),
+                    name: Cow::Borrowed(self.name),
+                    bytes: Cow::Borrowed(self.bytes),
                     build,
                 }, names);
             }
@@ -209,8 +212,8 @@ impl Member {
         }
         Ok(())
     }
-    fn archive_symbols<'a>(&'a self, emit: impl FnMut(&'a str)) -> Result<bool> {
-        coff::Reader::new(&self.bytes).and_then(|reader| reader.archive_symbols(emit))
+    fn archive_symbols(self, emit: impl FnMut(&'a str)) -> Result<bool> {
+        coff::Reader::new(self.bytes).and_then(|reader| reader.archive_symbols(emit))
             .map_err(|error|format!("静态库成员 {}：{error}",self.name).into())
     }
 }
@@ -404,25 +407,19 @@ unsafe extern "C" {
     fn archive_encode(input: ArchiveInput, layout: ArchiveLayout, output: *mut u8);
 }
 
-struct ArchiveVisitor<'a, Emit> {
-    source: &'a [u8],
-    emit: Emit,
-}
-
-unsafe extern "C" fn visit_member<Emit: FnMut(&str, ArchiveRange)>(
+unsafe extern "C" fn visit_member<Emit: FnMut(ArchiveReadMember)>(
     context: *mut std::ffi::c_void, name: ArchiveRange, body: ArchiveRange,
 ) {
-    let visitor = unsafe { &mut *context.cast::<ArchiveVisitor<'_, Emit>>() };
-    (visitor.emit)(name.validated_name(visitor.source), body);
+    let emit = unsafe { &mut *context.cast::<Emit>() };
+    emit(ArchiveReadMember { name, body });
 }
 
-fn visit_archive<Emit: FnMut(&str, ArchiveRange)>(source: &[u8], emit: Emit) -> Result<()> {
+fn visit_archive<Emit: FnMut(ArchiveReadMember)>(source: &[u8], mut emit: Emit) -> Result<()> {
     let mut names = ArchiveNames { bytes: source, error: None };
-    let mut visitor = ArchiveVisitor { source, emit };
     let result = unsafe {
         archive_visit_members(source.as_ptr(), source.len(),
             (&mut names as *mut ArchiveNames<'_>).cast(), validate_name,
-            (&mut visitor as *mut ArchiveVisitor<'_, Emit>).cast(), visit_member::<Emit>)
+            std::ptr::from_mut(&mut emit).cast(), visit_member::<Emit>)
     };
     if let Some(error) = names.error { return Err(error.into()); }
     archive_read_result(result)
@@ -430,14 +427,17 @@ fn visit_archive<Emit: FnMut(&str, ArchiveRange)>(source: &[u8], emit: Emit) -> 
 
 /// 将已编译模块保存为标准 COFF 静态库；原对象字节保持，不调用编译器。
 pub fn archive(inputs: &[impl AsRef<Path>], path: &Path) -> Result<()> {
-    let members = members(inputs)?;
-    let mut symbols = Vec::new();
-    for (index, member) in members.iter().enumerate() {
-        if !member.archive_symbols(|name| symbols.push((index, name)))? {
-            return Err(format!("{} 不是独立模块产物", member.name).into());
+    let output = {
+        let sources = member_sources(inputs)?;
+        let members = sources.iter().flat_map(MemberSource::members);
+        let mut symbols = Vec::new();
+        for (index, member) in members.clone().enumerate() {
+            if !member.archive_symbols(|name| symbols.push((index, name)))? {
+                return Err(format!("{} 不是独立模块产物", member.name).into());
+            }
         }
-    }
-    let output = encode(members.iter().map(Member::view), symbols.into_iter())?;
+        encode(members.map(Member::view), symbols.into_iter())?
+    };
     if let Some(parent) = path.parent() {
         crate::file_bytes::create_dir_all(parent)?;
     }
@@ -445,24 +445,49 @@ pub fn archive(inputs: &[impl AsRef<Path>], path: &Path) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn members(inputs: &[impl AsRef<Path>]) -> Result<Vec<Member>> {
-    let mut members = Vec::new();
+pub(crate) struct MemberSource<'a> {
+    bytes: FileBytes,
+    members: MemberRanges<'a>,
+}
+
+enum MemberRanges<'a> {
+    Object(&'a str),
+    Archive(Vec<ArchiveReadMember>),
+}
+
+impl MemberSource<'_> {
+    pub(crate) fn members(&self) -> impl Iterator<Item = Member<'_>> + Clone {
+        let bytes = &*self.bytes;
+        let (object, archive) = match &self.members {
+            MemberRanges::Object(name) => (Some(Member { name, bytes }), &[][..]),
+            MemberRanges::Archive(members) => (None, members.as_slice()),
+        };
+        object.into_iter().chain(archive.iter().map(move |member| Member {
+            name: member.name.validated_name(bytes),
+            bytes: member.body.bytes(bytes),
+        }))
+    }
+}
+
+pub(crate) fn member_sources(inputs: &[impl AsRef<Path>]) -> Result<Vec<MemberSource<'_>>> {
+    let mut sources = Vec::new();
     for input in inputs {
         let input = input.as_ref();
-        let bytes = ObjectBytes::read(input)?;
-        if has_signature(&bytes) {
-            visit_archive(&bytes, |name, body| {
-                members.push(Member { name: name.into(), bytes: bytes.slice(body.range()) });
-            })?;
+        let bytes = FileBytes::read_path(input)?;
+        let members = if has_signature(&bytes) {
+            let mut ranges = Vec::new();
+            visit_archive(&bytes, |member| ranges.push(member))?;
+            if ranges.is_empty() { continue; }
+            MemberRanges::Archive(ranges)
         } else {
             let name = input.file_name()
                 .and_then(|name| name.to_str())
-                .ok_or("静态库输入名不是 UTF-8")?
-                .into();
-            members.push(Member { name, bytes });
-        }
+                .ok_or("静态库输入名不是 UTF-8")?;
+            MemberRanges::Object(name)
+        };
+        sources.push(MemberSource { bytes, members });
     }
-    Ok(members)
+    Ok(sources)
 }
 
 pub(crate) fn encode<'a>(
