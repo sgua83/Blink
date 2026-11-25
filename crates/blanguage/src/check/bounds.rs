@@ -1286,7 +1286,15 @@ impl Proof {
     }
     pub(super) fn join(&mut self,other:&Self,width:usize,branch:Option<&Value>){let choice=branch.map(Condition::of);self.join_condition(other,width,choice.as_ref());}
     pub(super) fn join_condition(&mut self, other: &Self, width: usize, branch: Option<&Condition>) {
-        let conditions = combination::join_conditions(self, other, width, branch);
+        self.join_proof(other, width, branch, None);
+    }
+
+    pub(super) fn join_model(&mut self, other: &Self, width: usize, ty: &Ty, branch: Option<&Condition>) {
+        self.join_proof(other, width, branch, Some(ty));
+    }
+
+    fn join_proof(&mut self, other: &Self, width: usize, branch: Option<&Condition>, model: Option<&Ty>) {
+        let conditions = combination::join_conditions(self, other, width, branch, model);
         self.join_fields(other, width, branch);
         self.conditions = conditions;
     }

@@ -116,7 +116,7 @@ unsafe extern "C" fn state_set_borrowed(value:Address){unsafe{*value.cast::<Owne
 unsafe extern "C" fn state_set_moved(value:Address){unsafe{*value.cast::<Ownership>()=Ownership::Moved};}
 unsafe extern "C" fn proof_join_stored(a:Address,b:Address,when:Address){
     let a=unsafe{&mut *a.cast::<Value>()};let b=unsafe{&*b.cast::<Value>()};
-    a.proof.join_condition(&b.proof,a.regs.len(),unsafe{choice(when)});
+    a.proof.join_model(&b.proof, a.regs.len(), &a.ty, unsafe { choice(when) });
 }
 unsafe extern "C" fn proof_join_common(a:Address,b:Address,when:Address){
     let a=unsafe{&mut *a.cast::<Value>()};let b=unsafe{&*b.cast::<Value>()};

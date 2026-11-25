@@ -274,7 +274,7 @@ impl Builder<'_> {
         Ok(())
     }
     pub(super) async fn load_owned_value(&mut self,result:&mut OwnedValue,span:Span)->Result<()> {
-        if let Some(place)=result.place(){let value=unsafe { self.world.call(self.read_storage_value(&place,span, None)).await }?;result.value.regs=value.regs;result.value.proof=bounds::Proof::capture(&result.value);}
+        if let Some(place)=result.place(){let value=unsafe { self.world.call(self.read_storage_value(&place,span, None)).await }?;result.value.regs=value.regs;result.value.proof=value.proof;}
         Ok(())
     }
     #[inline(never)]

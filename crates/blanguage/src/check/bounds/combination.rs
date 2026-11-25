@@ -282,10 +282,15 @@ unsafe extern "C" fn bind_path_integer(context: Slot, index: usize, origin: Borr
 }
 
 pub(super) fn bind_proof_path(proof: &mut Proof, ty: &Ty, path: &Clause) {
-    proof.conditions.resize_with(proof.conditions.len().max(ty.components.len()), || None);
-    let mut binding = PathBinding {
-        scalars: &ty.components, origins: &proof.origins, conditions: &mut proof.conditions, path,
-    };
+    bind_path_conditions(&proof.origins, &mut proof.conditions, ty, path);
+}
+
+fn bind_path_conditions(
+    origins: &[Vec<ValueIdentity>], conditions: &mut Vec<Option<Box<Condition>>>,
+    ty: &Ty, path: &Clause,
+) {
+    conditions.resize_with(conditions.len().max(ty.components.len()), || None);
+    let mut binding = PathBinding { scalars: &ty.components, origins, conditions, path };
     unsafe {
         b_bind_proof_path(
             ptr::from_mut(&mut binding).cast(), ty.components.len(),
@@ -304,13 +309,45 @@ struct ConditionJoinHost {
     selected: unsafe extern "C" fn(Slot, usize),
 }
 
+struct ConditionOperand<'a> {
+    proof: &'a Proof,
+    bound: Option<Vec<Option<Box<Condition>>>>,
+}
+
+impl<'a> ConditionOperand<'a> {
+    fn new(proof: &'a Proof, model: Option<&Ty>) -> Self {
+        let bound = model.and_then(|ty| {
+            let facts = proof.facts(ty);
+            if facts.is_empty() {
+                return None;
+            }
+            let mut conditions = proof.conditions.clone();
+            bind_path_conditions(&proof.origins, &mut conditions, ty, &Clause::facts(facts));
+            Some(conditions)
+        });
+        Self { proof, bound }
+    }
+
+    fn has_condition(&self, component: usize) -> bool {
+        self.bound.as_deref().unwrap_or(&self.proof.conditions)
+            .get(component).is_some_and(Option::is_some)
+    }
+
+    fn take_condition(&mut self, component: usize) -> Condition {
+        self.bound.as_mut()
+            .and_then(|conditions| conditions.get_mut(component))
+            .and_then(Option::take)
+            .map_or_else(|| self.proof.condition_for_join(component), |condition| *condition)
+    }
+}
+
 struct ConditionJoin<'a> {
-    left: &'a Proof,
-    right: &'a Proof,
+    operands: [ConditionOperand<'a>; 2],
     branch: Option<&'a Condition>,
     shared: Option<Arc<Condition>>,
     result: Vec<Option<Box<Condition>>>,
 }
+
 
 #[derive(Clone, Copy)]
 #[repr(C)]
@@ -345,8 +382,7 @@ unsafe extern "C" {
 
 unsafe extern "C" fn condition_at_join(context: Borrowed, component: usize) -> u32 {
     let state = unsafe { &*context.cast::<ConditionJoin<'_>>() };
-    u32::from(state.left.component_condition(component).is_some()
-        || state.right.component_condition(component).is_some())
+    u32::from(state.operands.iter().any(|operand| operand.has_condition(component)))
 }
 
 unsafe extern "C" fn empty_joined_condition(context: Slot) {
@@ -356,15 +392,17 @@ unsafe extern "C" fn empty_joined_condition(context: Slot) {
 
 unsafe extern "C" fn common_joined_condition(context: Slot, component: usize) {
     let state = unsafe { &mut *context.cast::<ConditionJoin<'_>>() };
-    let left = state.left.condition_for_join(component);
-    let right = state.right.condition_for_join(component);
+    let [left, right] = &mut state.operands;
+    let left = left.take_condition(component);
+    let right = right.take_condition(component);
     state.result.push(Some(Box::new(Condition::common(left, right))));
 }
 
 unsafe extern "C" fn selected_joined_condition(context: Slot, component: usize) {
     let state = unsafe { &mut *context.cast::<ConditionJoin<'_>>() };
-    let left = state.left.condition_for_join(component);
-    let right = state.right.condition_for_join(component);
+    let [left, right] = &mut state.operands;
+    let left = left.take_condition(component);
+    let right = right.take_condition(component);
     let branch = state.branch.unwrap();
     let shared = state.shared.get_or_insert_with(|| Arc::new(branch.clone()));
     state.result.push(Some(Box::new(Condition::branch_on(shared, left, right))));
@@ -372,9 +410,11 @@ unsafe extern "C" fn selected_joined_condition(context: Slot, component: usize) 
 
 pub(super) fn join_conditions(
     left: &Proof, right: &Proof, width: usize, branch: Option<&Condition>,
+    model: Option<&Ty>,
 ) -> Vec<Option<Box<Condition>>> {
     let mut state = ConditionJoin {
-        left, right, branch, shared: None, result: Vec::with_capacity(width),
+        operands: [ConditionOperand::new(left, model), ConditionOperand::new(right, model)],
+        branch, shared: None, result: Vec::with_capacity(width),
     };
     unsafe {
         b_join_proof_conditions(
