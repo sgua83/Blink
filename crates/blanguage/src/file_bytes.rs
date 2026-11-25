@@ -74,7 +74,7 @@ unsafe extern "C" {
         temporary_units: usize,
         parts: *const HostFilePart,
         count: usize,
-        replace_existing: bool,
+        replace_existing: u32,
     ) -> HostPublishResult;
     #[link_name = "blink.windows.path_core::create_output_directories"]
     fn create_output_directories(path: *const u16, units: usize) -> u32;
@@ -187,7 +187,7 @@ pub(crate) fn publish<const N: usize>(path: &Path, temporary: &Path, parts: [&[u
     let published = unsafe {
         publish_host_file(
             target.as_ptr(), target.len() - 1, temporary.as_ptr(), temporary.len() - 1,
-            parts.as_ptr(), parts.len(), replace_existing,
+            parts.as_ptr(), parts.len(), u32::from(replace_existing),
         )
     };
     let result = published.written.into_result().and_then(|()| {

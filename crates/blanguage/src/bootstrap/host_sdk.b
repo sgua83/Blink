@@ -440,7 +440,7 @@ HostReplacement rename_host_file(address source,usize source_units,
 }
 
 extern "C" HostPublishResult publish_host_file(address target,usize target_units,
-    address temporary,usize temporary_units,address parts,usize count,bool replace_existing) on cpu {
+    address temporary,usize temporary_units,address parts,usize count,u32 replace_existing) on cpu {
     HostFileOpen opened = open_host_file(temporary, temporary_units, GENERIC_READ_WRITE, SHARE_ALL, CREATE_NEW, FILE_FLAG_OPEN_REPARSE_POINT);
     if (opened.file==INVALID_HANDLE_VALUE) {
         return HostPublishResult(HostWriteResult(HostWriteKind::OpenError,opened.status),0,0);
@@ -457,7 +457,7 @@ extern "C" HostPublishResult publish_host_file(address target,usize target_units
 
     u32 replacement = 0;
     if (written.kind==HostWriteKind::Written) {
-        HostReplacement result = rename_host_file(temporary,temporary_units,target,target_units,replace_existing);
+        HostReplacement result = rename_host_file(temporary,temporary_units,target,target_units,replace_existing!=0);
         replacement=result.status;
         if (result.moved) { return HostPublishResult(written,replacement,0); }
     }

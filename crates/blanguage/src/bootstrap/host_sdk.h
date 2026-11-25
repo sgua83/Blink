@@ -81,7 +81,7 @@ extern "C" MsvcLinkResult link_msvc_inputs(MsvcLinkRequest request,
 
 struct HostPublishResult { HostWriteResult written; u32 replacement; u32 cleanup; };
 extern "C" HostPublishResult publish_host_file(address target,usize target_units,
-    address temporary,usize temporary_units,address parts,usize count,bool replace_existing) on cpu;
+    address temporary,usize temporary_units,address parts,usize count,u32 replace_existing) on cpu;
 
 struct HostProcessExit { u32 exit_code; u32 status; };
 // Arguments are consecutive NUL-terminated UTF-16 spans. stdio borrows three handles.
