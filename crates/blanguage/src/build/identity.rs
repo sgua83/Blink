@@ -67,49 +67,60 @@ pub struct Inputs {
     pub declarations: Vec<Declaration>,
 }
 #[repr(C)]
-struct BuildSymbol {
+struct CompiledSymbol {
     name: ByteField,
+    provider: ByteField,
     contract: ByteField,
     declaration: ByteField,
-    bound: u32,
-    requirement: u32,
-}
-
-#[repr(u32)]
-enum BuildReferenceKind {
-    Missing,
-    Source,
-    Query,
-    Implementation,
-}
-
-#[repr(u32)]
-enum NameQuery {
-    Missing,
-    Unique,
-    Ambiguous,
 }
 
 #[repr(C)]
-struct BuildReference {
+struct ReferenceKey {
     name: ByteField,
     module_name: ByteField,
-    value: ByteField,
     imports: *const c_void,
     import_count: usize,
     tag: u32,
-    kind: BuildReferenceKind,
+}
+
+#[repr(C)]
+struct FunctionReference {
+    declaration: ByteField,
+    constant: u32,
+    external: u32,
+    implementation: u32,
     execution: u32,
-    resolution: NameQuery,
+}
+
+#[repr(u32)]
+#[allow(dead_code)] // The B identity producer chooses the actual namespace.
+enum ReferenceQuery { Value, Record, TypeSet }
+
+#[repr(u32)]
+enum NameQuery { Missing, Unique, Ambiguous }
+
+#[repr(C)]
+struct ReferenceHost {
+    symbol_stream: *mut c_void,
+    declaration_stream: *mut c_void,
+    context: *const c_void,
+    next_symbol: unsafe extern "C" fn(*mut c_void) -> ByteField,
+    next_declaration: unsafe extern "C" fn(*mut c_void) -> ReferenceKey,
+    name: NameField,
+    symbol: unsafe extern "C" fn(*const c_void, ByteField) -> CompiledSymbol,
+    requirement: unsafe extern "C" fn(*const c_void, ByteField, ByteField) -> u32,
+    function: unsafe extern "C" fn(*const c_void, ByteField) -> FunctionReference,
+    record: unsafe extern "C" fn(*const c_void, ByteField) -> ByteField,
+    type_set: unsafe extern "C" fn(*const c_void, ByteField) -> ByteField,
+    contract: unsafe extern "C" fn(*const c_void, ByteField, ByteField) -> ByteField,
+    query: unsafe extern "C" fn(*const c_void, *mut hash::Digest, ReferenceKey, ReferenceQuery),
 }
 
 unsafe extern "C" {
-    #[link_name = "bootstrap.build_digest::sha256_reference_symbol"]
-    fn sha256_reference_symbol(digest: &mut hash::Digest, symbol: BuildSymbol);
-    #[link_name = "bootstrap.build_digest::sha256_reference_count"]
-    fn sha256_reference_count(digest: &mut hash::Digest, count: usize);
-    #[link_name = "bootstrap.build_digest::sha256_reference"]
-    fn sha256_reference(digest: &mut hash::Digest, row: BuildReference, name: NameField);
+    #[link_name = "bootstrap.build_digest::dependency_digest"]
+    fn dependency_digest(declaration_count: usize, imported: u32, host: ReferenceHost, output: &mut [u8; 32]);
+    #[link_name = "bootstrap.build_digest::digest_name_resolution"]
+    fn digest_name_resolution(state: *mut hash::Digest, resolution: NameQuery, name: ByteField);
 }
 
 type NameField = unsafe extern "C" fn(*const c_void, usize) -> ByteField;
@@ -119,128 +130,151 @@ unsafe extern "C" fn name_field(names: *const c_void, index: usize) -> ByteField
     name.as_bytes().into()
 }
 
-fn build_symbol(declarations: &crate::Declarations, imported: Option<&crate::module::Imports>, symbol: &str)
-    -> BuildSymbol
-{
-    let empty = &[][..];
-    let mut result = BuildSymbol {
-        name: symbol.as_bytes().into(), contract: empty.into(), declaration: empty.into(),
-        bound: 0, requirement: 0,
-    };
-    if let Some(imported) = imported
-        && let Some((name, declaration, contract)) = declarations.compiled_function(symbol)
-    {
-        let span = declaration.function.span();
-        result.contract = contract.into();
-        result.declaration = declaration.source.text[span.start..span.end].as_bytes().into();
-        result.bound = 1;
-        let requirement = imported.modules.get(&declaration.module)
-            .and_then(|provider| provider.requirements.get(name));
-        result.requirement = match requirement {
-            None => 0,
-            Some(crate::execution::Requirement::Invocation) => 1,
-            Some(crate::execution::Requirement::Domain) => 2,
-            Some(crate::execution::Requirement::Host) => 3,
-        };
-    }
-    result
+struct ReferenceSources<'a> {
+    declarations: &'a crate::Declarations,
+    imported: Option<&'a crate::module::Imports>,
 }
 
-fn digest_reference(
-    digest: &mut hash::Digest, declarations: &crate::Declarations,
-    imported: Option<&crate::module::Imports>, entry: &Declaration,
-) {
-    use crate::frontend::NameResolution;
-    let (tag, name, query) = entry.fields();
-    let mut row = BuildReference {
-        name: name.as_bytes().into(),
-        module_name: (&[][..]).into(),
-        value: (&[][..]).into(),
-        imports: std::ptr::null(),
-        import_count: 0,
-        tag,
-        kind: BuildReferenceKind::Missing,
-        execution: 0,
-        resolution: NameQuery::Missing,
-    };
-    if let Declaration::CompiledContract { provider, .. } = entry {
-        row.module_name = provider.as_bytes().into();
-        if let Some(bytes) = imported.and_then(|imports| imports.modules.get(provider))
-            .and_then(|module| module.definitions.get(name))
-        {
-            row.kind = BuildReferenceKind::Source;
-            row.value = bytes.as_slice().into();
+const ABSENT: ByteField = ByteField { bytes: ptr::null(), length: 0 };
+
+unsafe fn reference_text(field: &ByteField) -> &str {
+    unsafe { std::str::from_utf8_unchecked(std::slice::from_raw_parts(field.bytes, field.length)) }
+}
+
+unsafe extern "C" fn next_symbol<'a, I: Iterator<Item = &'a str>>(stream: *mut c_void) -> ByteField {
+    unsafe { &mut *stream.cast::<I>() }.next().map_or(ABSENT, |name| name.as_bytes().into())
+}
+
+unsafe extern "C" fn next_declaration<'a, I: Iterator<Item = &'a Declaration>>(stream: *mut c_void) -> ReferenceKey {
+    match unsafe { &mut *stream.cast::<I>() }.next() {
+        Some(entry) => {
+            let (tag, name, scope) = entry.fields();
+            let (module_name, imports, import_count) = scope.map_or((ABSENT, ptr::null(), 0), |(module, imports)| {
+                (module.as_bytes().into(), imports.as_ptr().cast(), imports.len())
+            });
+            ReferenceKey { name: name.as_bytes().into(), module_name, imports, import_count, tag }
         }
-        unsafe { sha256_reference(digest, row, name_field) };
-        return;
+        None => ReferenceKey { name: ABSENT, module_name: ABSENT, imports: ptr::null(), import_count: 0, tag: 0 },
     }
-    if let Some((module, imports)) = query {
-        row.kind = BuildReferenceKind::Query;
-        row.module_name = module.as_bytes().into();
-        row.imports = imports.as_ptr().cast();
-        row.import_count = imports.len();
-        let resolved = if matches!(entry, Declaration::TypeSetName { .. }) {
-            declarations.resolve_type_set(name, module, imports)
-                .map_or(NameResolution::Missing, NameResolution::Unique)
-        } else {
-            declarations.resolve(name, module, imports, matches!(entry, Declaration::ValueName { .. }))
-        };
-        row.resolution = match &resolved {
-            NameResolution::Missing => NameQuery::Missing,
-            NameResolution::Unique(name) => {
-                row.value = name.as_bytes().into();
-                NameQuery::Unique
-            }
-            NameResolution::Ambiguous => NameQuery::Ambiguous,
-        };
-        unsafe { sha256_reference(digest, row, name_field) };
-        return;
-    }
-    let input = match entry {
-        Declaration::Constant(key) => declarations.functions.get(key)
-            .filter(|definition| definition.function.kind() == crate::ast::FunctionKind::Constant)
-            .map(|definition| (&definition.source, definition.function.span())),
-        Declaration::Record(key) => declarations.records.get(key)
-            .map(|(record, source, ..)| (source, record.span())),
-        Declaration::TypeSet(key) => declarations.type_sets.get(key)
-            .map(|(set, source, ..)| (source, set.span())),
-        Declaration::External(key) => declarations.functions.get(key)
-            .filter(|definition| definition.function.external().is_some())
-            .map(|definition| (&definition.source, definition.function.span())),
-        Declaration::Implementation(key) => declarations.functions.get(key)
-            .filter(|definition| definition.function.body().is_some())
-            .map(|definition| {
-                row.execution = definition.execution as u32;
-                (&definition.source, definition.function.span())
-            }),
-        Declaration::ValueName { .. } | Declaration::RecordName { .. } | Declaration::TypeSetName { .. }
-        | Declaration::CompiledContract { .. } => unreachable!(),
-    };
-    if let Some((source, span)) = input {
-        row.value = source.text[span.start..span.end].as_bytes().into();
-        row.kind = if matches!(entry, Declaration::Implementation(_)) {
-            BuildReferenceKind::Implementation
-        } else {
-            BuildReferenceKind::Source
-        };
-    }
-    unsafe { sha256_reference(digest, row, name_field) };
 }
 
-pub(super) fn references<'symbol, 'declaration>(
-    declarations: &crate::Declarations, imported: Option<&crate::module::Imports>,
-    symbols: impl IntoIterator<Item = &'symbol str>, used: impl ExactSizeIterator<Item = &'declaration Declaration>,
-) -> [u8; 32] {
-    let mut digest = hash::Digest::new();
-    for symbol in symbols {
-        let row = build_symbol(declarations, imported, symbol);
-        unsafe { sha256_reference_symbol(&mut digest, row) };
+unsafe extern "C" fn reference_symbol(context: *const c_void, symbol: ByteField) -> CompiledSymbol {
+    let source = unsafe { &*context.cast::<ReferenceSources<'_>>() };
+    let symbol = unsafe { reference_text(&symbol) };
+    match source.declarations.compiled_function(symbol) {
+        Some((name, definition, contract)) => {
+            let span = definition.function.span();
+            CompiledSymbol {
+                name: name.as_bytes().into(),
+                provider: definition.module.as_bytes().into(),
+                contract: contract.into(),
+                declaration: definition.source.text[span.start..span.end].as_bytes().into(),
+            }
+        }
+        None => CompiledSymbol { name: ABSENT, provider: ABSENT, contract: ABSENT, declaration: ABSENT },
     }
-    unsafe { sha256_reference_count(&mut digest, used.len()) };
-    for entry in used {
-        digest_reference(&mut digest, declarations, imported, entry);
+}
+
+unsafe extern "C" fn reference_requirement(context: *const c_void, provider: ByteField, name: ByteField) -> u32 {
+    let source = unsafe { &*context.cast::<ReferenceSources<'_>>() };
+    let (provider, name) = unsafe { (reference_text(&provider), reference_text(&name)) };
+    source.imported.and_then(|imports| imports.modules.get(provider))
+        .and_then(|module| module.requirements.get(name))
+        .map_or(0, |requirement| *requirement as u32 + 1)
+}
+
+unsafe extern "C" fn reference_function(context: *const c_void, name: ByteField) -> FunctionReference {
+    let source = unsafe { &*context.cast::<ReferenceSources<'_>>() };
+    let name = unsafe { reference_text(&name) };
+    match source.declarations.functions.get(name) {
+        Some(definition) => {
+            let function = &definition.function;
+            let span = function.span();
+            FunctionReference {
+                declaration: definition.source.text[span.start..span.end].as_bytes().into(),
+                constant: u32::from(function.kind() == crate::ast::FunctionKind::Constant),
+                external: u32::from(function.external().is_some()),
+                implementation: u32::from(function.body().is_some()),
+                execution: definition.execution as u32,
+            }
+        }
+        None => FunctionReference { declaration: ABSENT, constant: 0, external: 0, implementation: 0, execution: 0 },
     }
-    digest.finish()
+}
+
+unsafe extern "C" fn reference_record(context: *const c_void, name: ByteField) -> ByteField {
+    let source = unsafe { &*context.cast::<ReferenceSources<'_>>() };
+    let name = unsafe { reference_text(&name) };
+    source.declarations.records.get(name).map_or(ABSENT, |(record, source, ..)| {
+        let span = record.span();
+        source.text[span.start..span.end].as_bytes().into()
+    })
+}
+
+unsafe extern "C" fn reference_type_set(context: *const c_void, name: ByteField) -> ByteField {
+    let source = unsafe { &*context.cast::<ReferenceSources<'_>>() };
+    let name = unsafe { reference_text(&name) };
+    source.declarations.type_sets.get(name).map_or(ABSENT, |(set, source, ..)| {
+        let span = set.span();
+        source.text[span.start..span.end].as_bytes().into()
+    })
+}
+
+unsafe extern "C" fn reference_contract(context: *const c_void, provider: ByteField, name: ByteField) -> ByteField {
+    let source = unsafe { &*context.cast::<ReferenceSources<'_>>() };
+    let (provider, name) = unsafe { (reference_text(&provider), reference_text(&name)) };
+    source.imported.and_then(|imports| imports.modules.get(provider))
+        .and_then(|module| module.definitions.get(name))
+        .map_or(ABSENT, |bytes| bytes.as_slice().into())
+}
+
+unsafe extern "C" fn reference_query(context: *const c_void, digest: *mut hash::Digest, key: ReferenceKey, query: ReferenceQuery) {
+    use crate::frontend::NameResolution;
+    let source = unsafe { &*context.cast::<ReferenceSources<'_>>() };
+    let (name, module) = unsafe { (reference_text(&key.name), reference_text(&key.module_name)) };
+    let imports = unsafe { std::slice::from_raw_parts(key.imports.cast::<String>(), key.import_count) };
+    let declarations = source.declarations;
+    let result = match query {
+        ReferenceQuery::Value => declarations.resolve(name, module, imports, true),
+        ReferenceQuery::Record => declarations.resolve(name, module, imports, false),
+        ReferenceQuery::TypeSet => declarations.resolve_type_set(name, module, imports)
+            .map_or(NameResolution::Missing, NameResolution::Unique),
+    };
+    let (resolution, name) = match &result {
+        NameResolution::Missing => (NameQuery::Missing, ABSENT),
+        NameResolution::Unique(name) => (NameQuery::Unique, name.as_bytes().into()),
+        NameResolution::Ambiguous => (NameQuery::Ambiguous, ABSENT),
+    };
+    unsafe { digest_name_resolution(digest, resolution, name) }
+}
+
+pub(super) fn references<'symbol, 'declaration, S, D>(
+    declarations: &crate::Declarations, imported: Option<&crate::module::Imports>, symbols: S, mut used: D,
+) -> [u8; 32]
+where
+    S: IntoIterator<Item = &'symbol str>,
+    D: ExactSizeIterator<Item = &'declaration Declaration>,
+{
+    let sources = ReferenceSources { declarations, imported };
+    let mut symbols = symbols.into_iter();
+    let host = ReferenceHost {
+        symbol_stream: ptr::from_mut(&mut symbols).cast(),
+        declaration_stream: ptr::from_mut(&mut used).cast(),
+        context: ptr::from_ref(&sources).cast(),
+        next_symbol: next_symbol::<S::IntoIter>,
+        next_declaration: next_declaration::<D>,
+        name: name_field,
+        symbol: reference_symbol,
+        requirement: reference_requirement,
+        function: reference_function,
+        record: reference_record,
+        type_set: reference_type_set,
+        contract: reference_contract,
+        query: reference_query,
+    };
+    let mut digest = [0; 32];
+    unsafe { dependency_digest(used.len(), u32::from(imported.is_some()), host, &mut digest) };
+    digest
 }
 
 struct SourceRegion {

@@ -182,25 +182,27 @@ extern "C" void sha256_fields(address fields,u64 count,address output) on cpu {
     sha256_finish(state,output);
 }
 
-extern "C" void sha256_reference_symbol(inout DigestState state, BuildSymbol symbol) on cpu {
-    u8 bound = u8(symbol.bound);
-    digest_field(state, symbol.name);
+DigestField missing_reference() on cpu { return DigestField(unsafe_address(0u64), 0u64); }
+
+void digest_symbol(inout DigestState state, DigestField name, u32 imported, ReferenceHost host) on cpu
+    requires nonzero(host.symbol) requires nonzero(host.requirement) {
+    digest_field(state, name);
+    CompiledSymbol symbol = CompiledSymbol(missing_reference(), missing_reference(), missing_reference(), missing_reference());
+    if (imported != 0) { symbol = host.symbol(host.context, name); }
+    u8 bound = u8(address_bits(symbol.contract.bytes) != 0u64);
     digest_field(state, DigestField(address_of(bound), 1u64));
     if (bound == u8(0)) { return; }
 
     digest_field(state, symbol.contract);
     digest_field(state, symbol.declaration);
+    u32 selected = host.requirement(host.context, symbol.provider, symbol.name);
     u16 requirement = u16(0);
-    u64 requirement_length = 1u64;
-    if (symbol.requirement != 0) {
-        requirement = u16(1) | u16((symbol.requirement - 1) << 8);
-        requirement_length = 2u64;
+    u64 length = 1u64;
+    if (selected != 0) {
+        requirement = u16(1) | u16((selected - 1) << 8);
+        length = 2u64;
     }
-    digest_field(state, DigestField(address_of(requirement), requirement_length));
-}
-
-extern "C" void sha256_reference_count(inout DigestState state, u64 count) on cpu {
-    digest_field(state, DigestField(address_of(count), 8u64));
+    digest_field(state, DigestField(address_of(requirement), length));
 }
 
 void digest_length(inout DigestState state, u64 length) on cpu {
@@ -213,51 +215,101 @@ void digest_reference_name(inout DigestState state, u64 key_length, u32 tag, Dig
     digest_field(state, name);
 }
 
-extern "C" void sha256_reference(inout DigestState state, BuildReference row,
-    cfn<DigestField,address,u64> ensures memory(read) name) on cpu requires nonzero(name) {
-    // Match the existing Declaration variant and length-prefixed UTF-8 fields.
-    u64 key_length = 12u64 + row.name.length;
-    if (row.kind == ReferenceKind::Query) {
-        key_length += 16u64 + row.module_name.length;
-        u64 index = 0u64;
-        while (index < row.import_count) {
-            key_length += 8u64 + name(row.imports, index).length;
-            index += 1u64;
-        }
-        digest_reference_name(state, key_length, row.tag, row.name);
-        digest_field(state, row.module_name);
-        digest_length(state, row.import_count);
-        index = 0u64;
-        while (index < row.import_count) {
-            digest_field(state, name(row.imports, index));
-            index += 1u64;
-        }
+extern "C" void digest_name_resolution(inout DigestState state, u32 resolution, DigestField name) on cpu {
+    u8 status = u8(resolution);
+    if (status == u8(1)) {
+        digest_length(state, 9u64 + name.length);
+        sha256_update(state, address_of(status), 1u64);
+        digest_field(state, name);
+    } else {
+        digest_field(state, DigestField(address_of(status), 1u64));
+    }
+}
 
-        // A unique name follows its one-byte status with a length-prefixed string.
-        u8 resolution = u8(row.resolution);
-        if (resolution == u8(1)) {
-            digest_length(state, 9u64 + row.value.length);
-            sha256_update(state, address_of(resolution), 1u64);
-            digest_field(state, row.value);
-        } else {
-            digest_field(state, DigestField(address_of(resolution), 1u64));
+// These tags are the serialized Declaration discriminants.
+const u32 DECL_CONSTANT = 0;
+const u32 DECL_RECORD = 1;
+const u32 DECL_TYPE_SET = 2;
+const u32 DECL_EXTERNAL = 3;
+const u32 DECL_VALUE_NAME = 4;
+const u32 DECL_RECORD_NAME = 5;
+const u32 DECL_TYPE_SET_NAME = 6;
+const u32 DECL_IMPLEMENTATION = 7;
+const u32 DECL_COMPILED_CONTRACT = 8;
+
+void digest_reference(inout DigestState state, ReferenceKey key, u32 imported, ReferenceHost host) on cpu
+    requires nonzero(host.name) requires nonzero(host.function) requires nonzero(host.record)
+    requires nonzero(host.type_set) requires nonzero(host.contract) requires nonzero(host.query) {
+    u64 key_length = 12u64 + key.name.length;
+    if (key.tag >= DECL_VALUE_NAME && key.tag <= DECL_TYPE_SET_NAME) {
+        key_length += 16u64 + key.module_name.length;
+        u64 index = 0u64;
+        while (index < key.import_count) {
+            key_length += 8u64 + host.name(key.imports, index).length;
+            index += 1u64;
         }
+        digest_reference_name(state, key_length, key.tag, key.name);
+        digest_field(state, key.module_name);
+        digest_length(state, key.import_count);
+        index = 0u64;
+        while (index < key.import_count) {
+            digest_field(state, host.name(key.imports, index));
+            index += 1u64;
+        }
+        ReferenceQuery query = ReferenceQuery::Value;
+        if (key.tag == DECL_RECORD_NAME) { query = ReferenceQuery::Record; }
+        if (key.tag == DECL_TYPE_SET_NAME) { query = ReferenceQuery::TypeSet; }
+        host.query(host.context, address_of(state), key, query);
         return;
     }
 
-    if (row.tag == 8) {
-        digest_reference_name(state, key_length + 8u64 + row.module_name.length, row.tag, row.name);
-        digest_field(state, row.module_name);
+    DigestField value = missing_reference();
+    if (key.tag == DECL_COMPILED_CONTRACT) {
+        digest_reference_name(state, key_length + 8u64 + key.module_name.length, key.tag, key.name);
+        digest_field(state, key.module_name);
+        if (imported != 0) { value = host.contract(host.context, key.module_name, key.name); }
     } else {
-        digest_reference_name(state, key_length, row.tag, row.name);
+        digest_reference_name(state, key_length, key.tag, key.name);
+        if (key.tag == DECL_RECORD) {
+            value = host.record(host.context, key.name);
+        } else if (key.tag == DECL_TYPE_SET) {
+            value = host.type_set(host.context, key.name);
+        } else {
+            FunctionReference function = host.function(host.context, key.name);
+            if ((key.tag == DECL_CONSTANT && function.constant != 0)
+                || (key.tag == DECL_EXTERNAL && function.external != 0)
+                || (key.tag == DECL_IMPLEMENTATION && function.implementation != 0)) {
+                value = function.declaration;
+                if (key.tag == DECL_IMPLEMENTATION) {
+                    u8 execution = u8(function.execution);
+                    digest_field(state, DigestField(address_of(execution), 1u64));
+                }
+            }
+        }
     }
-    if (row.kind == ReferenceKind::Implementation) {
-        u8 execution = u8(row.execution);
-        digest_field(state, DigestField(address_of(execution), 1u64));
-    }
-    u8 present = u8(row.kind != ReferenceKind::Missing);
+    u8 present = u8(address_bits(value.bytes) != 0u64);
     digest_field(state, DigestField(address_of(present), 1u64));
-    if (present != u8(0)) { digest_field(state, row.value); }
+    if (present != u8(0)) { digest_field(state, value); }
+}
+
+extern "C" void dependency_digest(u64 declaration_count, u32 imported, ReferenceHost host, address output) on cpu
+    requires nonzero(host.next_symbol) requires nonzero(host.next_declaration) requires nonzero(host.name)
+    requires nonzero(host.symbol) requires nonzero(host.requirement) requires nonzero(host.function)
+    requires nonzero(host.record) requires nonzero(host.type_set) requires nonzero(host.contract)
+    requires nonzero(host.query) {
+    DigestState state = sha256_start();
+    DigestField symbol = host.next_symbol(host.symbol_stream);
+    while (address_bits(symbol.bytes) != 0u64) {
+        digest_symbol(state, symbol, imported, host);
+        symbol = host.next_symbol(host.symbol_stream);
+    }
+    digest_field(state, DigestField(address_of(declaration_count), 8u64));
+    ReferenceKey key = host.next_declaration(host.declaration_stream);
+    while (address_bits(key.name.bytes) != 0u64) {
+        digest_reference(state, key, imported, host);
+        key = host.next_declaration(host.declaration_stream);
+    }
+    sha256_finish(state, output);
 }
 
 extern "C" void record_source_declaration(inout u64 preamble_end, u64 start) on cpu {

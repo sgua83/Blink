@@ -18,22 +18,56 @@ extern "C" DigestState sha256_start() on cpu;
 extern "C" void sha256_update(inout DigestState state,address input,u64 length) on cpu;
 extern "C" void sha256_finish(inout DigestState state,address output) on cpu;
 
-struct BuildSymbol {
-    DigestField name; DigestField contract; DigestField declaration;
-    u32 bound; u32 requirement;
-};
-enum ReferenceKind : u32 { Missing = 0; Source = 1; Query = 2; Implementation = 3; };
-struct BuildReference {
-    DigestField name; DigestField module_name; DigestField value;
-    address imports; u64 import_count;
-    u32 tag; ReferenceKind kind; u32 execution; u32 resolution;
+struct CompiledSymbol {
+    DigestField name;
+    DigestField provider;
+    DigestField contract;
+    DigestField declaration;
 };
 
-// The caller borrows each original field only for the synchronous digest update.
-extern "C" void sha256_reference_symbol(inout DigestState state, BuildSymbol symbol) on cpu;
-extern "C" void sha256_reference_count(inout DigestState state, u64 count) on cpu;
-extern "C" void sha256_reference(inout DigestState state, BuildReference row,
-    cfn<DigestField,address,u64> ensures memory(read) name) on cpu requires nonzero(name);
+struct ReferenceKey {
+    DigestField name;
+    DigestField module_name;
+    address imports;
+    u64 import_count;
+    u32 tag;
+};
+
+struct FunctionReference {
+    DigestField declaration;
+    u32 constant;
+    u32 external;
+    u32 implementation;
+    u32 execution;
+};
+
+enum ReferenceQuery : u32 { Value = 0; Record = 1; TypeSet = 2; };
+
+struct ReferenceHost {
+    address symbol_stream;
+    address declaration_stream;
+    address context;
+    cfn<DigestField,address> next_symbol;
+    cfn<ReferenceKey,address> next_declaration;
+    cfn<DigestField,address,u64> ensures memory(read) name;
+    cfn<CompiledSymbol,address,DigestField> ensures memory(read) symbol;
+    cfn<u32,address,DigestField,DigestField> ensures memory(read) requirement;
+    cfn<FunctionReference,address,DigestField> ensures memory(read) function;
+    cfn<DigestField,address,DigestField> ensures memory(read) record;
+    cfn<DigestField,address,DigestField> ensures memory(read) type_set;
+    cfn<DigestField,address,DigestField,DigestField> ensures memory(read) contract;
+    cfn<void,address,address,ReferenceKey,ReferenceQuery> query;
+};
+
+// The source owner resolves the requested namespace. A returned name is borrowed
+// only until it has been added to the current digest.
+extern "C" void digest_name_resolution(inout DigestState state, u32 resolution, DigestField name) on cpu;
+
+extern "C" void dependency_digest(u64 declaration_count, u32 imported, ReferenceHost host, address output) on cpu
+    requires nonzero(host.next_symbol) requires nonzero(host.next_declaration) requires nonzero(host.name)
+    requires nonzero(host.symbol) requires nonzero(host.requirement) requires nonzero(host.function)
+    requires nonzero(host.record) requires nonzero(host.type_set) requires nonzero(host.contract)
+    requires nonzero(host.query);
 
 struct SourceSignature {
     DigestField name;
