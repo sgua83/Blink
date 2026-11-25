@@ -125,7 +125,7 @@ pub struct FrameCpuDataMemory {
 pub(crate) struct FrameArguments<'a> {
     bindings: &'a [DatasetBinding],
     by_handle: Vec<usize>,
-    slots: Vec<usize>,
+    slots: Option<Vec<usize>>,
     owner_count: usize,
 }
 
@@ -136,8 +136,12 @@ impl<'a> FrameArguments<'a> {
         let mut by_handle: Vec<_> = (0..bindings.len()).collect();
         // 同一起点的零宽字段先处理，保留原字节边界比较。
         by_handle.sort_unstable_by_key(|&i| (bindings[i].handle, bindings[i].offset, parameters[i].ty.size));
-        let mut slots = vec![0; bindings.len()];
+        let mut slots = None;
         for group in by_handle.chunk_by(|&a, &b| bindings[a].handle == bindings[b].handle) {
+            if group.len() == 1 {
+                continue;
+            }
+            let slots = slots.get_or_insert_with(|| (0..bindings.len()).collect::<Vec<_>>());
             let first = *group.iter().min().unwrap();
             let (mut read_end, mut atomic_end, mut write_end) = (0u64, 0u64, 0u64);
             for &i in group {
@@ -156,24 +160,33 @@ impl<'a> FrameArguments<'a> {
         }
 
         // 保留本次已排序的实参索引，供按原句柄查找及归并同一字段。
-        // 紧凑槽按实参首次出现编号。
-        let mut next = 0;
-        for i in 0..slots.len() {
-            let first = slots[i];
-            if first == i {
-                slots[i] = next;
-                next += 1;
-            } else {
-                slots[i] = slots[first];
+        // 只有同根重复时才重编号，紧凑槽按实参首次出现顺序分配。
+        let owner_count = if let Some(slots) = &mut slots {
+            let mut next = 0;
+            for i in 0..slots.len() {
+                let first = slots[i];
+                if first == i {
+                    slots[i] = next;
+                    next += 1;
+                } else {
+                    slots[i] = slots[first];
+                }
             }
-        }
-        Ok(Self { bindings, by_handle, slots, owner_count: next })
+            next
+        } else {
+            bindings.len()
+        };
+        Ok(Self { bindings, by_handle, slots, owner_count })
+    }
+
+    fn slot(&self, binding: usize) -> usize {
+        self.slots.as_ref().map_or(binding, |slots| slots[binding])
     }
 
     fn selected_handles(&self) -> impl Iterator<Item = usize> + '_ {
         let mut next = 0;
-        self.bindings.iter().zip(&self.slots).filter_map(move |(binding, &slot)| {
-            (slot == next).then(|| {
+        self.bindings.iter().enumerate().filter_map(move |(i, binding)| {
+            (self.slot(i) == next).then(|| {
                 next += 1;
                 binding.handle as usize
             })
@@ -182,7 +195,7 @@ impl<'a> FrameArguments<'a> {
 
     pub(crate) fn selected(&self, original: usize) -> Option<usize> {
         self.by_handle.binary_search_by_key(&original, |&i| self.bindings[i].handle as usize)
-            .ok().map(|i| self.slots[self.by_handle[i]])
+            .ok().map(|i| self.slot(self.by_handle[i]))
     }
 
     pub(crate) fn for_handle(&self, handle: usize) -> impl Iterator<Item = (usize, u32)> + '_ {
@@ -193,7 +206,7 @@ impl<'a> FrameArguments<'a> {
     }
 
     pub(crate) fn location(&self, i: usize) -> (usize, u32) {
-        (self.slots[i], self.bindings[i].offset)
+        (self.slot(i), self.bindings[i].offset)
     }
 
     pub(crate) fn projected_fields(&self) -> impl Iterator<Item = &[usize]> + Clone {
