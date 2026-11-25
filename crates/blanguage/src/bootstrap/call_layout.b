@@ -3,6 +3,11 @@ import bootstrap.x64_instruction;
 import bootstrap.ir_dataflow;
 import bootstrap.scalar_fold;
 
+enum ResultLocation:u32 { None=0; Integer=1; Float=2; Indirect=3; };
+// Offsets are relative to RSP after the prologue. Indirect results use the saved address slot.
+struct FunctionFrame { u64 bytes; u64 home; u64 result; u64 stack; ResultLocation result_location; };
+struct FunctionReturn { u64 length; u64 value_length; u64 literal; u64 literal_field; };
+
 u32 padded(u32 size, u32 alignment) on cpu {
     return (size + alignment - 1) & ~(alignment - 1);
 }
@@ -26,7 +31,7 @@ ResultLocation result_location(AbiType result, u32 flags) on cpu {
     return result.float_size != 0 ? ResultLocation::Float : ResultLocation::Integer;
 }
 
-extern "C" FunctionFrame function_frame(u64 data_end, AbiType result, u32 flags) on cpu {
+FunctionFrame function_frame(u64 data_end, AbiType result, u32 flags) on cpu {
     ResultLocation location = result_location(result, flags);
     bool hidden = location == ResultLocation::Indirect;
     bool scratch = (flags & 2) != 0;
@@ -216,7 +221,7 @@ u64 move_function_parameter(address context, u64 index, u64 slot, u64 home, inou
     return cursor;
 }
 
-extern "C" FunctionPrologue function_prologue(address context, u64 count, FunctionFrame frame,
+FunctionPrologue function_prologue(address context, u64 count, FunctionFrame frame,
     u32 flags, FrameOutput output, FunctionHost host) on cpu
     requires nonzero(host.parameter) requires nonzero(host.loan)
     requires nonzero(host.component) requires nonzero(host.publish) {
@@ -275,7 +280,7 @@ extern "C" FunctionPrologue function_prologue(address context, u64 count, Functi
     return FunctionPrologue(cursor, saved.probe_field, saved.operations, prolog);
 }
 
-extern "C" FunctionReturn function_result(FunctionFrame frame, u32 flags, CallValueLoan value,
+FunctionReturn function_result(FunctionFrame frame, u32 flags, CallValueLoan value,
     cfn<AbiValueComponent,address,u64> component, address output)
     on cpu requires nonzero(component) {
     u64 start = address_bits(output);
@@ -303,4 +308,53 @@ extern "C" FunctionReturn function_result(FunctionFrame frame, u32 flags, CallVa
         cursor += 2u64;
     }
     return FunctionReturn(cursor - start, value_length, literal, field);
+}
+
+extern "C" FunctionCode emit_function_code(address context, FunctionCodeInput input, FunctionCodeHost host) on cpu
+    requires nonzero(host.abi.parameter) requires nonzero(host.abi.loan)
+    requires nonzero(host.abi.component) requires nonzero(host.abi.publish)
+    requires nonzero(host.entry) requires nonzero(host.body) requires nonzero(host.reserve)
+    requires nonzero(host.result) requires nonzero(host.commit) requires nonzero(host.literal)
+    requires nonzero(host.exit_buffer) requires nonzero(host.complete) {
+    FunctionFrame frame = function_frame(input.data_end, input.result, input.flags);
+    if (frame.bytes > 2147483647u64) { return FunctionCode(0u64, 1); }
+
+    u64 entry_bytes = 2u64 + 17u64 + 9u64 * input.saved + 4u64 * 9u64 + 24u64
+        + 16u64 * input.parameters + 24u64 * input.inputs;
+    FrameOutput entry = host.entry(context, entry_bytes, 2u64 + input.saved);
+    FunctionPrologue prologue = function_prologue(context, input.parameters, frame, input.flags, entry, host.abi);
+    if (host.body(context, prologue) == 0) { return FunctionCode(0u64, 0); }
+
+    u64 result_fields = input.result_fields < input.outputs ? input.result_fields : input.outputs;
+    NativeCodeBuffer buffer = host.reserve(context, 26u64 + 48u64 * result_fields);
+    FunctionReturn result = function_result(frame, input.flags, host.result(context), host.abi.component,
+        unsafe_address(address_bits(buffer.image) + buffer.end));
+    u64 value_end = buffer.end + result.value_length;
+    u64 result_end = buffer.end + result.length;
+    host.commit(context, result_end);
+    if (frame.result_location == ResultLocation::Integer) {
+        host.abi.publish(context, FunctionRange(buffer.end, value_end, 0u64, 0u64, FunctionRangeKind::IntegerResult));
+    } else if (frame.result_location == ResultLocation::Float) {
+        host.abi.publish(context, FunctionRange(buffer.end, value_end, 0u64, 0u64, FunctionRangeKind::FloatResult));
+    } else if (frame.result_location == ResultLocation::Indirect) {
+        host.abi.publish(context, FunctionRange(buffer.end, value_end, 0u64, frame.result, FunctionRangeKind::IndirectResult));
+    }
+    host.literal(context, buffer.end, result.literal, result.literal_field);
+    if ((input.flags & 1) != 0) {
+        host.abi.publish(context, FunctionRange(value_end, result_end, 0u64, 0u64, FunctionRangeKind::SuccessStatus));
+    }
+
+    FunctionExitBuffer exiting = host.exit_buffer(context, 10u64 + 9u64 * input.saved);
+    FunctionEpilogue tail = function_epilogue(u32(frame.bytes), (input.flags & 2) >> 1,
+        exiting.saved, exiting.saved_count, exiting.code.image, exiting.code.end, exiting.exits, exiting.exit_count);
+    host.complete(context, tail.end);
+    host.abi.publish(context, FunctionRange(exiting.code.end, tail.saved_end, 0u64, 0u64, FunctionRangeKind::NonvolatileRestore));
+    if (tail.frame_end != tail.saved_end) {
+        host.abi.publish(context, FunctionRange(tail.saved_end, tail.frame_end, 0u64, frame.bytes, FunctionRangeKind::FrameRelease));
+    }
+    if (tail.scratch_end != tail.frame_end) {
+        host.abi.publish(context, FunctionRange(tail.frame_end, tail.scratch_end, 0u64, 0u64, FunctionRangeKind::ScratchRestore));
+    }
+    host.abi.publish(context, FunctionRange(tail.scratch_end, tail.end, 0u64, 0u64, FunctionRangeKind::FunctionReturn));
+    return FunctionCode(frame.stack, 0);
 }

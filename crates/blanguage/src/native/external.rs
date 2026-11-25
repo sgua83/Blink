@@ -24,11 +24,6 @@ impl AbiType {
         ty.map_or_else(Self::reference, Self::value)
     }
 }
-#[derive(Clone, Copy, PartialEq, Eq)]
-#[repr(u32)]
-#[allow(dead_code)]
-pub(super) enum ResultLocation { None, Integer, Float, Indirect }
-
 type ArgumentType = unsafe extern "C" fn(*const c_void, usize) -> AbiType;
 
 #[repr(C)]

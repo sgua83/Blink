@@ -14,18 +14,8 @@ pub(crate) fn emit_function(function: &FunctionBody) -> Result<NativeCode, &'sta
         Some(&function.name),
     )
 }
-use super::external::{abi_component, AbiComponent, AbiType, CallValueLoan, ResultLocation};
+use super::external::{abi_component, AbiComponent, AbiType, CallValueLoan};
 use std::ffi::c_void;
-
-#[derive(Clone, Copy)]
-#[repr(C)]
-struct FunctionFrame {
-    bytes: u64,
-    home: u64,
-    result: u64,
-    stack: u64,
-    result_location: ResultLocation,
-}
 
 #[repr(C)]
 struct FunctionParameter {
@@ -35,7 +25,11 @@ struct FunctionParameter {
 
 #[repr(u32)]
 #[allow(dead_code)]
-enum FunctionRangeKind { HiddenHome, Home, Input, ResultAddress, ScratchSave, FrameAllocate, NonvolatileSave }
+enum FunctionRangeKind {
+    HiddenHome, Home, Input, ResultAddress, ScratchSave, FrameAllocate, NonvolatileSave,
+    IntegerResult, FloatResult, IndirectResult, SuccessStatus, NonvolatileRestore,
+    FrameRelease, ScratchRestore, FunctionReturn,
+}
 
 #[repr(C)]
 struct FunctionRange {
@@ -78,39 +72,55 @@ struct FunctionPrologue {
 }
 
 #[repr(C)]
-struct FunctionReturn {
-    length: usize,
-    value_length: usize,
-    literal: u64,
-    literal_field: usize,
+struct FunctionCodeInput {
+    data_end: u64,
+    result: AbiType,
+    flags: u32,
+    parameters: usize,
+    inputs: usize,
+    result_fields: usize,
+    outputs: usize,
+    saved: usize,
 }
 
 #[repr(C)]
-struct FunctionEpilogue {
-    saved_end: usize,
-    frame_end: usize,
-    scratch_end: usize,
-    end: usize,
+struct FunctionExitBuffer {
+    code: NativeCodeBuffer,
+    saved: *const allocation::SavedRegister,
+    saved_count: usize,
+    exits: *const usize,
+    exit_count: usize,
 }
 
+#[repr(C)]
+struct FunctionCodeHost {
+    abi: FunctionHost,
+    entry: unsafe extern "C" fn(*mut c_void, usize, usize) -> FrameOutput,
+    body: unsafe extern "C" fn(*mut c_void, FunctionPrologue) -> u32,
+    reserve: unsafe extern "C" fn(*mut c_void, usize) -> NativeCodeBuffer,
+    result: unsafe extern "C" fn(*const c_void) -> CallValueLoan,
+    commit: unsafe extern "C" fn(*mut c_void, usize),
+    literal: unsafe extern "C" fn(*mut c_void, usize, Bits, usize),
+    exit_buffer: unsafe extern "C" fn(*mut c_void, usize) -> FunctionExitBuffer,
+    complete: unsafe extern "C" fn(*mut c_void, usize),
+}
+
+#[repr(C)]
+struct FunctionCode { stack: u64, oversized: u32 }
+
 unsafe extern "C" {
-    #[link_name = "bootstrap.call_layout::function_frame"]
-    fn function_frame(data_end: u64, result: AbiType, flags: u32) -> FunctionFrame;
-    #[link_name = "bootstrap.call_layout::function_prologue"]
-    fn function_prologue(context: *mut c_void, count: usize, frame: FunctionFrame, flags: u32,
-        output: FrameOutput, host: FunctionHost) -> FunctionPrologue;
-    #[link_name = "bootstrap.call_layout::function_result"]
-    fn function_result(frame: FunctionFrame, flags: u32, value: CallValueLoan,
-        component: AbiComponent, output: *mut u8) -> FunctionReturn;
-    #[link_name = "bootstrap.frame_layout::function_epilogue"]
-    fn function_epilogue(frame: u32, scratch: u32, saved: *const allocation::SavedRegister, count: usize,
-        image: *mut u8, end: usize, exits: *const usize, exit_count: usize) -> FunctionEpilogue;
+    #[link_name = "bootstrap.call_layout::emit_function_code"]
+    fn emit_function_code(context: *mut c_void, input: FunctionCodeInput, host: FunctionCodeHost) -> FunctionCode;
 }
 
 struct FunctionEmission<'a, 'ir> {
     emitter: &'a mut Emitter<'ir>,
     parameters: &'a [CallParameter],
     inputs: &'a [Reg],
+    code: &'a [Inst],
+    outputs: &'a [Reg],
+    fields: &'a [(Scalar, u32)],
+    body_result: Result<(), &'static str>,
 }
 
 // A native reference parameter carries the two original pointer words.
@@ -151,9 +161,93 @@ unsafe extern "C" fn publish_function(context: *mut c_void, range: FunctionRange
         FunctionRangeKind::ScratchSave => AbiRangeKind::ScratchSave,
         FunctionRangeKind::FrameAllocate => AbiRangeKind::FrameAllocate { bytes: slot as u32 },
         FunctionRangeKind::NonvolatileSave => AbiRangeKind::NonvolatileSave,
+        FunctionRangeKind::IntegerResult => AbiRangeKind::IntegerResult,
+        FunctionRangeKind::FloatResult => AbiRangeKind::FloatResult,
+        FunctionRangeKind::IndirectResult => AbiRangeKind::IndirectResult { stack_offset: slot as u32 },
+        FunctionRangeKind::SuccessStatus => AbiRangeKind::FallibleSuccessStatus,
+        FunctionRangeKind::NonvolatileRestore => AbiRangeKind::NonvolatileRestore,
+        FunctionRangeKind::FrameRelease => AbiRangeKind::FrameRelease { bytes: slot as u32 },
+        FunctionRangeKind::ScratchRestore => AbiRangeKind::ScratchRestore,
+        FunctionRangeKind::FunctionReturn => AbiRangeKind::FunctionReturn,
     };
     e.record_abi_range(range.start..range.end, kind);
 }
+
+unsafe extern "C" fn entry_buffer(context: *mut c_void, code_bytes: usize, operations: usize) -> FrameOutput {
+    let state = unsafe { &mut *context.cast::<FunctionEmission<'_, '_>>() };
+    let e = &mut *state.emitter;
+    e.code.reserve(code_bytes);
+    e.unwind.reserve(operations);
+    FrameOutput {
+        code: e.code.as_mut_ptr(), operations: e.unwind.as_mut_ptr(),
+        saved: e.frame.saved.as_ptr(), count: e.frame.saved.len(),
+    }
+}
+
+unsafe extern "C" fn emit_body(context: *mut c_void, entry: FunctionPrologue) -> u32 {
+    let state = unsafe { &mut *context.cast::<FunctionEmission<'_, '_>>() };
+    let e = &mut *state.emitter;
+    unsafe {
+        e.code.set_len(entry.length);
+        e.unwind.set_len(entry.operations);
+    }
+    e.probe = (entry.probe_field != 0).then_some(entry.probe_field);
+    e.prolog = entry.prolog;
+    e.exits.push(Vec::new());
+    state.body_result = e.block(state.code);
+    u32::from(state.body_result.is_ok())
+}
+
+unsafe extern "C" fn reserve_code(context: *mut c_void, count: usize) -> NativeCodeBuffer {
+    let state = unsafe { &mut *context.cast::<FunctionEmission<'_, '_>>() };
+    NativeCodeBuffer::reserve(&mut state.emitter.code, count)
+}
+
+unsafe extern "C" fn result_value(context: *const c_void) -> CallValueLoan {
+    let state = unsafe { &*context.cast::<FunctionEmission<'_, '_>>() };
+    let e = &*state.emitter;
+    CallValueLoan::new(state.fields, state.outputs, &e.allocation, &e.registers)
+}
+
+unsafe extern "C" fn commit_code(context: *mut c_void, end: usize) {
+    let state = unsafe { &mut *context.cast::<FunctionEmission<'_, '_>>() };
+    unsafe { state.emitter.code.set_len(end) };
+}
+
+unsafe extern "C" fn record_literal(context: *mut c_void, start: usize, bits: Bits, field: usize) {
+    let state = unsafe { &mut *context.cast::<FunctionEmission<'_, '_>>() };
+    state.emitter.record_literal(start, (bits, false), field);
+}
+
+unsafe extern "C" fn exit_buffer(context: *mut c_void, count: usize) -> FunctionExitBuffer {
+    let state = unsafe { &mut *context.cast::<FunctionEmission<'_, '_>>() };
+    let e = &mut *state.emitter;
+    let code = NativeCodeBuffer::reserve(&mut e.code, count);
+    let exits = e.exits.last().unwrap();
+    let saved = &e.frame.saved;
+    FunctionExitBuffer {
+        code, saved: saved.as_ptr(), saved_count: saved.len(),
+        exits: exits.as_ptr(), exit_count: exits.len(),
+    }
+}
+
+unsafe extern "C" fn complete_code(context: *mut c_void, end: usize) {
+    let state = unsafe { &mut *context.cast::<FunctionEmission<'_, '_>>() };
+    unsafe { state.emitter.code.set_len(end) };
+    state.emitter.exits.pop();
+}
+
+const FUNCTION_CODE_HOST: FunctionCodeHost = FunctionCodeHost {
+    abi: FUNCTION_HOST,
+    entry: entry_buffer,
+    body: emit_body,
+    reserve: reserve_code,
+    result: result_value,
+    commit: commit_code,
+    literal: record_literal,
+    exit_buffer,
+    complete: complete_code,
+};
 
 fn emit_value(
     body: &ValueCode,
@@ -181,8 +275,6 @@ fn emit_value(
     drop(graph);
     let layout = Frame::new(&allocation, None);
     let flags = u32::from(fallible) | (needs_r15 << 1);
-    let plan = unsafe { function_frame(layout.end, AbiType::result(result), flags) };
-    i32::try_from(plan.bytes).map_err(|_| "应用栈帧超出x64地址编码")?;
     let mut e = Emitter {
         used_tile_words: &super::EMPTY_TILE_WORDS,
         unwind: Vec::new(),
@@ -208,70 +300,28 @@ fn emit_value(
         allocation,
         frame: layout,
     };
-    let saved = &e.frame.saved;
-    // Fixed saves/allocation, four register homes, a hidden result address,
-    // and the existing per-parameter and per-component encoding bounds.
-    e.code.reserve(2 + 17 + 9 * saved.len() + 4 * 9 + 24
-        + 16 * parameters.len() + 24 * body.inputs.len());
-    e.unwind.reserve(2 + saved.len());
-    let output = FrameOutput { code: e.code.as_mut_ptr(), operations: e.unwind.as_mut_ptr(),
-        saved: saved.as_ptr(), count: saved.len() };
-    let mut emission = FunctionEmission { emitter: &mut e, parameters, inputs: &body.inputs };
-    let entry = unsafe {
-        function_prologue(std::ptr::from_mut(&mut emission).cast(),
-            parameters.len(), plan, flags, output, FUNCTION_HOST)
-    };
-    unsafe {
-        e.code.set_len(entry.length);
-        e.unwind.set_len(entry.operations);
-    }
-    e.probe = (entry.probe_field != 0).then_some(entry.probe_field);
-    e.prolog = entry.prolog;
-    // The function owns this exit scope. Nested scopes still own their own exits.
-    e.exits.push(Vec::new());
-    e.block(&code)?;
 
     let fields = result.map_or(&[][..], |ty| ty.components.as_slice());
-    let value = CallValueLoan::new(fields, &body.outputs, &e.allocation, &e.registers);
-    let start = e.code.len();
-    e.code.reserve(26 + 48 * fields.len().min(body.outputs.len()));
-    let output = unsafe {
-        let output = function_result(plan, flags, value, abi_component, e.code.as_mut_ptr().add(start));
-        e.code.set_len(start + output.length);
-        output
+    let input = FunctionCodeInput {
+        data_end: e.frame.end,
+        result: AbiType::result(result),
+        flags,
+        parameters: parameters.len(),
+        inputs: body.inputs.len(),
+        result_fields: fields.len(),
+        outputs: body.outputs.len(),
+        saved: e.frame.saved.len(),
     };
-    let result_end = start + output.value_length;
-    let result_kind = match plan.result_location {
-        ResultLocation::None => None,
-        ResultLocation::Integer => Some(AbiRangeKind::IntegerResult),
-        ResultLocation::Float => Some(AbiRangeKind::FloatResult),
-        ResultLocation::Indirect => Some(AbiRangeKind::IndirectResult { stack_offset: plan.result as u32 }),
+    let mut emission = FunctionEmission {
+        emitter: &mut e, parameters, inputs: &body.inputs,
+        code: &code, outputs: &body.outputs, fields, body_result: Ok(()),
     };
-    if let Some(kind) = result_kind {
-        e.record_abi_range(start..result_end, kind);
-    }
-    e.record_literal(start, (output.literal, false), output.literal_field);
-    if fallible {
-        e.abi_range(result_end, AbiRangeKind::FallibleSuccessStatus);
-    }
-
-    let tail_start = e.code.len();
-    let saved = &e.frame.saved;
-    let exits = e.exits.pop().unwrap();
-    e.code.reserve(10 + 9 * saved.len());
-    let tail = unsafe {
-        let tail = function_epilogue(plan.bytes as u32, needs_r15, saved.as_ptr(),
-            saved.len(), e.code.as_mut_ptr(), tail_start, exits.as_ptr(), exits.len());
-        e.code.set_len(tail.end);
-        tail
+    let compiled = unsafe {
+        emit_function_code(std::ptr::from_mut(&mut emission).cast(), input, FUNCTION_CODE_HOST)
     };
-    e.record_abi_range(tail_start..tail.saved_end, AbiRangeKind::NonvolatileRestore);
-    if tail.frame_end != tail.saved_end {
-        e.record_abi_range(tail.saved_end..tail.frame_end, AbiRangeKind::FrameRelease { bytes: plan.bytes as u32 });
+    if compiled.oversized != 0 {
+        return Err("应用栈帧超出x64地址编码");
     }
-    if tail.scratch_end != tail.frame_end {
-        e.record_abi_range(tail.frame_end..tail.scratch_end, AbiRangeKind::ScratchRestore);
-    }
-    e.record_abi_range(tail.scratch_end..tail.end, AbiRangeKind::FunctionReturn);
-    Ok(e.finish(plan.stack as u32, true))
+    emission.body_result?;
+    Ok(e.finish(compiled.stack as u32, true))
 }
