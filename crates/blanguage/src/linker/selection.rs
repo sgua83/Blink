@@ -255,10 +255,11 @@ impl<'a, Payload> Context<'a, Payload> {
                     stack.retain_mut(|frame| {
                         let view = frames[index];
                         index += 1;
-                        if let Some((_, start)) = frame.coff {
-                            frame.coff = Some((view.mapping as usize, start));
+                        if view.keep == 0 { return false; }
+                        if let Some((section, _)) = &mut frame.coff {
+                            *section = view.mapping as usize;
                         }
-                        view.keep != 0
+                        true
                     });
                 } else {
                     stack = Vec::new();

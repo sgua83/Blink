@@ -8,18 +8,23 @@ SelectResult result(u64 error,BindingBytes name,BindingBytes owner,u64 entry) on
 SelectResult success(u64 entry) on cpu {return result(0u64,empty(),empty(),entry);}
 SelectObject object_at(SelectView view,u64 i) on cpu {return unsafe_position<SelectObject>(unsafe_address(address_bits(view.objects)+i*OBJECT_BYTES));}
 void object_put(SelectView view,u64 i,SelectObject row) on cpu {unsafe_position<SelectObject>(unsafe_address(address_bits(view.objects)+i*OBJECT_BYTES))=row;}
-SelectSection section_at(SelectView view,u64 i) on cpu {return unsafe_position<SelectSection>(unsafe_address(address_bits(view.sections)+i*SECTION_BYTES));}
-void section_put(SelectView view,u64 i,SelectSection row) on cpu {unsafe_position<SelectSection>(unsafe_address(address_bits(view.sections)+i*SECTION_BYTES))=row;}
+address section_address(SelectView view,u64 index) on cpu {
+    return unsafe_address(address_bits(view.sections)+index*SECTION_BYTES);
+}
+SelectSection section_at(SelectView view,u64 i) on cpu {return unsafe_position<SelectSection>(section_address(view,i));}
 SelectRelocation relocation_at(SelectView view,u64 i) on cpu {return unsafe_position<SelectRelocation>(unsafe_address(address_bits(view.relocations)+i*RELOCATION_BYTES));}
 void relocation_put(SelectView view,u64 i,SelectRelocation row) on cpu {unsafe_position<SelectRelocation>(unsafe_address(address_bits(view.relocations)+i*RELOCATION_BYTES))=row;}
-SelectSymbol symbol_at(SelectView view,u64 i) on cpu {return unsafe_position<SelectSymbol>(unsafe_address(address_bits(view.symbols)+i*SYMBOL_BYTES));}
-void symbol_put(SelectView view,u64 i,SelectSymbol row) on cpu {unsafe_position<SelectSymbol>(unsafe_address(address_bits(view.symbols)+i*SYMBOL_BYTES))=row;}
+address symbol_address(SelectView view,u64 index) on cpu {
+    return unsafe_address(address_bits(view.symbols)+index*SYMBOL_BYTES);
+}
+SelectSymbol symbol_at(SelectView view,u64 i) on cpu {return unsafe_position<SelectSymbol>(symbol_address(view,i));}
 SelectImport import_row(SelectView view,u64 i) on cpu {return unsafe_position<SelectImport>(unsafe_address(address_bits(view.imports)+i*IMPORT_BYTES));}
 address export_address(SelectView view,u64 index) on cpu {
     return unsafe_address(address_bits(view.exports)+index*EXPORT_BYTES);
 }
-SelectFrame frame_at(SelectView view,u64 i) on cpu {return unsafe_position<SelectFrame>(unsafe_address(address_bits(view.frames)+i*FRAME_BYTES));}
-void frame_put(SelectView view,u64 i,SelectFrame row) on cpu {unsafe_position<SelectFrame>(unsafe_address(address_bits(view.frames)+i*FRAME_BYTES))=row;}
+address frame_address(SelectView view,u64 index) on cpu {
+    return unsafe_address(address_bits(view.frames)+index*FRAME_BYTES);
+}
 SelectLocal local_at(SelectView view,u64 i) on cpu {return unsafe_position<SelectLocal>(unsafe_address(address_bits(view.locals)+i*LOCAL_BYTES));}
 void local_put(SelectView view,u64 i,SelectLocal row) on cpu {unsafe_position<SelectLocal>(unsafe_address(address_bits(view.locals)+i*LOCAL_BYTES))=row;}
 u64 index_at(address data,u64 i) on cpu {return unsafe_position<u64>(unsafe_address(address_bits(data)+i*8u64));}
@@ -97,7 +102,12 @@ SelectResult define(inout SelectState state,u64 object_index) on cpu {
     return success(state.entry);
 }
 void enqueue(inout SelectState state,u64 section_index) on cpu {
-    SelectSection row=section_at(state.view,section_index);if(row.live==0u64){row.live=1u64;section_put(state.view,section_index,row);index_put(state.view.pending,state.tail,section_index);state.tail+=1u64;}
+    address at=section_address(state.view,section_index);
+    if(unsafe_position<SelectSection>(at).live==0u64){
+        unsafe_position<SelectSection>(at).live=1u64;
+        index_put(state.view.pending,state.tail,section_index);
+        state.tail+=1u64;
+    }
 }
 void include(inout SelectState state,u64 object_index,u64 section) on cpu {
     SelectObject object=object_at(state.view,object_index);
@@ -139,20 +149,27 @@ SelectImport required_import(SelectView view,SelectObject object,BindingBytes na
         SelectImport row=import_row(view,middle);i32 order=bytes_compare(row.name,name);if(order==0){return row;}if(order<0){begin=middle+1u64;}else{end=middle;}}
     return SelectImport(empty(),empty());
 }
-EntryPlan finish(inout SelectState state,SelectParams params) on cpu {
+EntryPlan finish(SelectView view,bool native_mode,u64 entry,bool runtime_import) on cpu {
     bool retained_archive=false;
-    bool uses_runtime=state.runtime_import;
+    bool uses_runtime=runtime_import;
     u64 stack_bytes=0u64;
-    u64 o=0u64;while(o<state.view.object_count){SelectObject object=object_at(state.view,o);
+    u64 o=0u64;while(o<view.object_count){SelectObject object=object_at(view,o);
         if(object.selected!=0u64){
             u64 mapping=0u64;u64 i=object.section_start;
-            while(i<object.section_start+object.section_count){SelectSection section=section_at(state.view,i);section.mapping=mapping;if(section.live!=0u64){mapping+=1u64;}section_put(state.view,i,section);i+=1u64;}
-            object.keep_archive=object.archive;if(params.native_mode!=0u64||object.borrowed!=0u64){object.keep_archive=0u64;}
+            while(i<object.section_start+object.section_count){
+                address at=section_address(view,i);
+                if(unsafe_position<SelectSection>(at).live!=0u64){
+                    unsafe_position<SelectSection>(at).mapping=mapping;
+                    mapping+=1u64;
+                }
+                i+=1u64;
+            }
+            object.keep_archive=object.archive;if(native_mode||object.borrowed!=0u64){object.keep_archive=0u64;}
             if(object.kind==0u64&&object.keep_archive!=0u64){
                 bool used=false;
                 i=object.export_start;
                 while(i<object.export_start+object.export_count){
-                    address at=export_address(state.view,i);
+                    address at=export_address(view,i);
                     SelectExport row=unsafe_position<SelectExport>(at);
                     if(row.keep!=0u64){used=true;}
                     else if(object.has_resources!=0u64&&suffixed(row.name,object.prefix,7165919078637728351u64,29541u64,10u64)){
@@ -165,20 +182,44 @@ EntryPlan finish(inout SelectState state,SelectParams params) on cpu {
             retained_archive=retained_archive||object.keep_archive!=0u64;
             uses_runtime=uses_runtime||(object.keep_archive!=0u64&&object.has_resources!=0u64);
             if(object.kind!=2u64&&object.stack_bytes>stack_bytes){stack_bytes=object.stack_bytes;}
-            i=object.section_start;while(i<object.section_start+object.section_count){SelectSection section=section_at(state.view,i);if(section.live!=0u64){
-                u64 r=section.relocation_start;while(r<section.relocation_start+section.relocation_count){SelectRelocation row=relocation_at(state.view,r);
-                    if(row.kind==0u64){row.section=section_at(state.view,object.section_start+row.section).mapping;relocation_put(state.view,r,row);}r+=1u64;}}
+            i=object.section_start;while(i<object.section_start+object.section_count){SelectSection section=section_at(view,i);if(section.live!=0u64){
+                u64 r=section.relocation_start;while(r<section.relocation_start+section.relocation_count){SelectRelocation row=relocation_at(view,r);
+                    if(row.kind==0u64){row.section=section_at(view,object.section_start+row.section).mapping;relocation_put(view,r,row);}r+=1u64;}}
                 i+=1u64;
             }
-            i=object.symbol_start;while(i<object.symbol_start+object.symbol_count){SelectSymbol symbol=symbol_at(state.view,i);SelectSection section=section_at(state.view,object.section_start+symbol.section);symbol.keep=section.live;symbol.section=section.mapping;symbol_put(state.view,i,symbol);i+=1u64;}
-            i=object.frame_start;while(i<object.frame_start+object.frame_count){SelectFrame frame=frame_at(state.view,i);frame.keep=0u64;
-                if(object.borrowed==0u64){if(frame.present==0u64){frame.keep=object.keep_archive;}else{SelectSection section=section_at(state.view,object.section_start+frame.section);frame.keep=section.live;frame.mapping=section.mapping;}}
-                frame_put(state.view,i,frame);i+=1u64;}
-            object_put(state.view,o,object);
+            i=object.symbol_start;
+            while(i<object.symbol_start+object.symbol_count){
+                address at=symbol_address(view,i);
+                u64 input_section=unsafe_position<SelectSymbol>(at).section;
+                SelectSection section=section_at(view,object.section_start+input_section);
+                if(section.live!=0u64){
+                    unsafe_position<SelectSymbol>(at).section=section.mapping;
+                    unsafe_position<SelectSymbol>(at).keep=1u64;
+                }
+                i+=1u64;
+            }
+            if(object.borrowed==0u64){
+                i=object.frame_start;
+                while(i<object.frame_start+object.frame_count){
+                    address at=frame_address(view,i);
+                    SelectFrame frame=unsafe_position<SelectFrame>(at);
+                    if(frame.present==0u64){
+                        if(object.keep_archive!=0u64){unsafe_position<SelectFrame>(at).keep=1u64;}
+                    }else{
+                        SelectSection section=section_at(view,object.section_start+frame.section);
+                        if(section.live!=0u64){
+                            unsafe_position<SelectFrame>(at).mapping=section.mapping;
+                            unsafe_position<SelectFrame>(at).keep=1u64;
+                        }
+                    }
+                    i+=1u64;
+                }
+            }
+            object_put(view,o,object);
         }o+=1u64;
     }
-    if(params.native_mode!=0u64){return EntryPlan(EntryProduct::None,0,0u64);}
-    if(object_at(state.view,state.entry).kind==2u64){
+    if(native_mode){return EntryPlan(EntryProduct::None,0,0u64);}
+    if(object_at(view,entry).kind==2u64){
         if(retained_archive){return EntryPlan(EntryProduct::Dll,1,0u64);}
         return EntryPlan(EntryProduct::DllWithoutArchive,1,0u64);
     }
@@ -277,6 +318,6 @@ extern "C" SelectResult choose(SelectView input,SelectParams params,address cont
             while(s<object.section_start+object.section_count){enqueue(state,s);s+=1u64;}
         }
     }
-    EntryPlan plan=finish(state,params);
+    EntryPlan plan=finish(state.view,params.native_mode!=0u64,state.entry,state.runtime_import);
     return SelectResult(0u64,empty(),empty(),state.entry,plan);
 }
