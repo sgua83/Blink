@@ -20,9 +20,6 @@ enum SetAction { Copy, Union, DrainUnion, Swap, Clear }
 struct Event { anchor: usize, skip: usize, kind: u32, skip_present: u32 }
 #[repr(C)]
 #[derive(Clone, Copy)]
-struct Definition { weight: u64, transfer_dst: usize, transfer_src: usize, bits: u64, transfer: u32, literal: u32, pass: u32 }
-#[repr(C)]
-#[derive(Clone, Copy)]
 struct Core {
     relation: unsafe extern "C" fn(*mut Graph, Relation, usize, usize),
     weight: unsafe extern "C" fn(*const Graph, usize) -> u64,
@@ -45,8 +42,7 @@ struct Host {
     drop_set: unsafe extern "C" fn(*mut Slots),
     change: unsafe extern "C" fn(SetAction, *mut Slots, *mut Slots),
     loop_live: unsafe extern "C" fn(Span, Reg, Span, *const Slots, *const Slots, *const Slots, *const Slots) -> *mut Slots,
-    definitions: unsafe extern "C" fn(*const Inst, *mut Graph, *mut Slots, Definition),
-    reads: unsafe extern "C" fn(*const Inst, *mut Graph, *mut Slots, u64),
+    register_reads: unsafe extern "C" fn(*const Inst, *mut Graph, *mut Slots, u64),
 }
 unsafe extern "C" {
     #[link_name = "bootstrap.coloring::graph_block"]
@@ -59,8 +55,6 @@ unsafe extern "C" {
     #[link_name = "bootstrap.coloring::graph_live_event"]
     fn graph_live_event(graph: *mut Graph, live: *const Slots, space: Space, index: usize,
         ordinal: usize, event: Event, core: Core);
-    #[link_name = "bootstrap.coloring::graph_definition"]
-    fn graph_definition(graph: *mut Graph, live: *mut Slots, space: Space, index: usize, definition: Definition, core: Core);
     #[link_name = "bootstrap.coloring::graph_read"]
     fn graph_read(graph: *mut Graph, live: *mut Slots, space: Space, index: usize, weight: u64, core: Core);
 }
@@ -119,18 +113,13 @@ unsafe extern "C" fn header(condition: Span, test: Reg, body: Span, after: *cons
     Box::into_raw(Box::new(loop_live(unsafe { condition.as_slice() }, test, unsafe { body.as_slice() },
         unsafe { &*after }, unsafe { &*break_live }, unsafe { &*continue_live }, unsafe { &*exit_live })))
 }
-unsafe extern "C" fn definitions(instruction: *const Inst, graph: *mut Graph, live: *mut Slots, definition: Definition) {
-    let inst = unsafe { &*instruction };
-    for reg in inst.results() { unsafe { graph_definition(graph, live, Space::Register, reg, definition, CORE); } }
-}
-unsafe extern "C" fn reads(instruction: *const Inst, graph: *mut Graph, live: *mut Slots, weight: u64) {
+unsafe extern "C" fn register_reads(instruction: *const Inst, graph: *mut Graph, live: *mut Slots, weight: u64) {
     let inst = unsafe { &*instruction };
     inst.all_operands(&mut |reg| { unsafe { graph_read(graph, live, Space::Register, reg, weight, CORE) }; true });
-    for index in inst.local_reads() { unsafe { graph_read(graph, live, Space::Local, index, weight, CORE); } }
 }
 const CORE: Core = Core { relation, weight, set_weight, across, counter, set_outgoing, location, visit_set, slot };
 const HOST: Host = Host {
     core: CORE, values: REGISTER_HOST, cast_bits, call_outgoing,
     math_outgoing: operands::scalar_math_outgoing,
-    clone_set, drop_set, change, loop_live: header, definitions, reads,
+    clone_set, drop_set, change, loop_live: header, register_reads,
 };

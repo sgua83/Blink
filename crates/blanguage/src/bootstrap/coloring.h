@@ -27,7 +27,6 @@ enum GraphCounter:u32 { Registers=0; Outgoing=1; };
 enum GraphSlotAction:u32 { Insert=0; Remove=1; };
 enum GraphSetAction:u32 { Copy=0; Union=1; DrainUnion=2; Swap=3; Clear=4; };
 struct GraphEvent { u64 anchor; u64 skip; u32 kind; u32 skip_present; };
-struct GraphDefinition { u64 weight; u64 transfer_dst; u64 transfer_src; u64 bits; u32 transfer; u32 literal; u32 pass; };
 struct GraphCore {
     cfn<void,address,GraphRelation,u64,u64> relation;
     cfn<u64,address,u64> weight;
@@ -49,8 +48,7 @@ struct GraphHost {
     cfn<void,address> drop_set;
     cfn<void,GraphSetAction,address,address> change;
     cfn<address,Span,usize,Span,address,address,address,address> loop_live;
-    cfn<void,address,address,address,GraphDefinition> definitions;
-    cfn<void,address,address,address,u64> reads;
+    cfn<void,address,address,address,u64> register_reads;
 };
 // All sets, graph arrays and IR blocks are this synchronous caller's real containers.
 extern "C" u32 graph_block(address graph,Span code,Span registers,address live,
@@ -60,8 +58,8 @@ extern "C" u32 graph_block(address graph,Span code,Span registers,address live,
     requires nonzero(host.core.visit_set) requires nonzero(host.core.slot)
     requires nonzero(host.values.ir.inspect) requires nonzero(host.values.scalar)
     requires nonzero(host.cast_bits) requires nonzero(host.call_outgoing) requires nonzero(host.math_outgoing) requires nonzero(host.clone_set)
-    requires nonzero(host.drop_set) requires nonzero(host.change) requires nonzero(host.loop_live) requires nonzero(host.definitions)
-    requires nonzero(host.reads);
+    requires nonzero(host.drop_set) requires nonzero(host.change) requires nonzero(host.loop_live)
+    requires nonzero(host.register_reads);
 extern "C" void graph_together(address graph,address live,GraphCore core) on cpu 
     requires nonzero(core.relation) requires nonzero(core.weight) requires nonzero(core.set_weight)
     requires nonzero(core.across) requires nonzero(core.counter) requires nonzero(core.set_outgoing) requires nonzero(core.location)
@@ -74,11 +72,7 @@ extern "C" void graph_live_event(address graph,address live,GraphSpace space,u64
     requires nonzero(core.relation) requires nonzero(core.weight) requires nonzero(core.set_weight)
     requires nonzero(core.across) requires nonzero(core.counter) requires nonzero(core.set_outgoing) requires nonzero(core.location)
     requires nonzero(core.visit_set) requires nonzero(core.slot);
-extern "C" void graph_definition(address graph,address live,GraphSpace space,u64 index,GraphDefinition definition,GraphCore core) on cpu 
-    requires nonzero(core.relation) requires nonzero(core.weight) requires nonzero(core.set_weight)
-    requires nonzero(core.across) requires nonzero(core.counter) requires nonzero(core.set_outgoing) requires nonzero(core.location)
-    requires nonzero(core.visit_set) requires nonzero(core.slot);
-extern "C" void graph_read(address graph,address live,GraphSpace space,u64 index,u64 weight,GraphCore core) on cpu 
+extern "C" void graph_read(address graph,address live,GraphSpace space,u64 index,u64 weight,GraphCore core) on cpu
     requires nonzero(core.relation) requires nonzero(core.weight) requires nonzero(core.set_weight)
     requires nonzero(core.across) requires nonzero(core.counter) requires nonzero(core.set_outgoing) requires nonzero(core.location)
     requires nonzero(core.visit_set) requires nonzero(core.slot);

@@ -254,7 +254,8 @@ extern "C" void graph_inputs(address graph,address inputs,u64 count,GraphCore co
         index+=1u64;
     }
 }
-extern "C" void graph_definition(address graph,address live,GraphSpace space,u64 index,GraphDefinition definition,GraphCore core) on cpu 
+struct GraphDefinition { u64 weight; u64 transfer_dst; u64 transfer_src; u64 bits; u32 transfer; u32 literal; u32 pass; };
+void graph_definition(address graph,address live,GraphSpace space,u64 index,GraphDefinition definition,GraphCore core) on cpu
     requires nonzero(core.relation) requires nonzero(core.weight) requires nonzero(core.set_weight)
     requires nonzero(core.across) requires nonzero(core.counter) requires nonzero(core.set_outgoing) requires nonzero(core.location)
     requires nonzero(core.visit_set) requires nonzero(core.slot) {
@@ -268,7 +269,7 @@ extern "C" void graph_definition(address graph,address live,GraphSpace space,u64
     }
     graph_weight(graph,id,definition.weight,core);
 }
-extern "C" void graph_read(address graph,address live,GraphSpace space,u64 index,u64 weight,GraphCore core) on cpu 
+extern "C" void graph_read(address graph,address live,GraphSpace space,u64 index,u64 weight,GraphCore core) on cpu
     requires nonzero(core.relation) requires nonzero(core.weight) requires nonzero(core.set_weight)
     requires nonzero(core.across) requires nonzero(core.counter) requires nonzero(core.set_outgoing) requires nonzero(core.location)
     requires nonzero(core.visit_set) requires nonzero(core.slot) {
@@ -299,8 +300,8 @@ extern "C" u32 graph_block(address graph,Span code,Span registers,address live,
     requires nonzero(host.core.visit_set) requires nonzero(host.core.slot)
     requires nonzero(host.values.ir.inspect) requires nonzero(host.values.scalar)
     requires nonzero(host.cast_bits) requires nonzero(host.call_outgoing) requires nonzero(host.math_outgoing) requires nonzero(host.clone_set)
-    requires nonzero(host.drop_set) requires nonzero(host.change) requires nonzero(host.loop_live) requires nonzero(host.definitions)
-    requires nonzero(host.reads) {
+    requires nonzero(host.drop_set) requires nonzero(host.change) requires nonzero(host.loop_live)
+    requires nonzero(host.register_reads) {
     address none=unsafe_address(0u64);
     u32 uses_r15=0;
     u64 remaining=code.count;
@@ -386,16 +387,33 @@ extern "C" u32 graph_block(address graph,Span code,Span registers,address live,
                 host.core.relation(graph,GraphRelation::Affinity,preferred_source,preferred_destination);
             }
             u32 literal=node.tag==OP_CONSTANT ? 1 : 0;
-            for(pass in 0..2){
-                GraphDefinition definition=GraphDefinition(weight,destination,source,u64(node.b),transfer,literal,u32(pass));
-                if(node.tag==OP_STORE_LOCAL){graph_definition(graph,live,GraphSpace::Local,node.a,definition,host.core);}
-                else {host.definitions(instruction.data,graph,live,definition);}
+            GraphDefinition definition=GraphDefinition(weight,destination,source,u64(node.b),transfer,literal,0);
+            if(node.tag==OP_STORE_LOCAL){
+                graph_definition(graph,live,GraphSpace::Local,node.a,definition,host.core);
+                host.core.slot(live,GraphSlotAction::Remove,GraphSpace::Local,node.a);
+            }else{
+                Results results=view_results(node,host.values.ir);
+                for(pass in 0..2){
+                    definition.pass=u32(pass);
+                    Results cursor=results;
+                    Word next=next_result(cursor);
+                    while(next.present!=0){
+                        graph_definition(graph,live,GraphSpace::Register,next.value,definition,host.core);
+                        next=next_result(cursor);
+                    }
+                }
             }
             if(node.tag==OP_INVOKE || outgoing!=0u64){
                 if(outgoing>host.core.counter(graph,GraphCounter::Outgoing)){host.core.set_outgoing(graph,outgoing);}
                 host.core.visit_set(live,18446744073709551615u64,graph,GraphEvent(0u64,0u64,2,0));
             }
-            host.reads(instruction.data,graph,live,weight);
+            host.register_reads(instruction.data,graph,live,weight);
+            Locals local_reads=view_locals(node,0,host.values.ir);
+            Word next=next_local(local_reads,host.values.ir);
+            while(next.present!=0){
+                graph_read(graph,live,GraphSpace::Local,next.value,weight,host.core);
+                next=next_local(local_reads,host.values.ir);
+            }
         }
     }
     return uses_r15;
