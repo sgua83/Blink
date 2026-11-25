@@ -81,7 +81,7 @@ enum BindingTarget { Section, Symbol, Import }
 #[repr(C)]
 struct BindingRelocation {
     offset: u64, kind: u16, target: BindingTarget,
-    // The host group planner uses the original section symbol value to choose an anchor.
+    // A section target carries its original symbol value through binding.
     value: u32,
     section: u64, name: BindingBytes, dll: BindingBytes,
 }
@@ -818,12 +818,12 @@ fn encode_sections<'a, Bytes>(
     let input_relocations = source.iter().map(|section| {
         section.relocations.iter().map(|relocation| {
             let empty = BindingBytes::new(&[]);
-            let (target, section, name, dll) = match &relocation.target {
-                Target::Section(section, _) => (BindingTarget::Section, *section as u64, empty, empty),
-                Target::Symbol(name) => (BindingTarget::Symbol, 0, BindingBytes::new(name.as_bytes()), empty),
-                Target::Import(import) => (BindingTarget::Import, 0, BindingBytes::new(import.name.as_bytes()), BindingBytes::new(import.dll.as_bytes())),
+            let (target, section, value, name, dll) = match &relocation.target {
+                Target::Section(section, value) => (BindingTarget::Section, *section as u64, *value, empty, empty),
+                Target::Symbol(name) => (BindingTarget::Symbol, 0, 0, BindingBytes::new(name.as_bytes()), empty),
+                Target::Import(import) => (BindingTarget::Import, 0, 0, BindingBytes::new(import.name.as_bytes()), BindingBytes::new(import.dll.as_bytes())),
             };
-            BindingRelocation { offset: relocation.offset as u64, kind: relocation.kind, target, value: 0, section, name, dll }
+            BindingRelocation { offset: relocation.offset as u64, kind: relocation.kind, target, value, section, name, dll }
         }).collect::<Vec<_>>()
     }).collect::<Vec<_>>();
     let binding_sections = source.iter().zip(&input_relocations).map(|(section, relocations)| BindingSection {

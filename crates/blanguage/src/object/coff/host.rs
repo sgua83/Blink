@@ -134,7 +134,7 @@ impl Groups {
                 }
                 let target = relocation.section as usize;
                 let (member, local) = self.positions[target];
-                if relocation.value == 0 && self.positions[source].0 == member {
+                if self.positions[source].0 == member {
                     relocation.section = local as u64;
                 } else {
                     let value = relocation.value;
