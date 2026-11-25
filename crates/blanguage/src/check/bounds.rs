@@ -1286,20 +1286,7 @@ impl Proof {
     }
     pub(super) fn join(&mut self,other:&Self,width:usize,branch:Option<&Value>){let choice=branch.map(Condition::of);self.join_condition(other,width,choice.as_ref());}
     pub(super) fn join_condition(&mut self, other: &Self, width: usize, branch: Option<&Condition>) {
-        let conditions = (0..width)
-            .map(|i| {
-                if self.component_condition(i).is_none() && other.component_condition(i).is_none() {
-                    return None;
-                }
-                let a = self.condition_for_join(i);
-                let b = other.condition_for_join(i);
-                Some(Box::new(if let Some(c) = branch {
-                    Condition::branch(c.clone(), a, b)
-                } else {
-                    Condition::common(a, b)
-                }))
-            })
-            .collect();
+        let conditions = combination::join_conditions(self, other, width, branch);
         self.join_fields(other, width, branch);
         self.conditions = conditions;
     }
@@ -1333,27 +1320,9 @@ impl Proof {
             let empty=view::Borrow::default();let other=other.views.get(i).unwrap_or(&empty);
             if let Some(choice)=branch{*value=std::mem::take(value).selected(choice,other);}else{value.union(other);}
         }
-        self.domains = (0..width).map(|i| {
-            let a=self.domains(i);let b=other.domains(i);
-            let mut common=a.intersection(&b).copied().collect::<Domains>();
-            let mut previous_limit=None;
-            for domain in a.union(&b) {
-                let IndexDomain::Upper(limit,_) = domain else {continue;};
-                if previous_limit==Some(*limit){continue;}previous_limit=Some(*limit);
-                let distances=[(&a,self.origins.get(i)),(&b,other.origins.get(i))].map(|(domains,origins)| {
-                    domains.iter().filter_map(|domain|match domain {
-                        IndexDomain::Upper(other,distance) if other==limit=>Some(*distance),
-                        _=>None,
-                    }).max().or_else(||origins.is_some_and(|items|items.contains(limit)).then_some(0))
-                });
-                if let [Some(a),Some(b)]=distances {common.insert(IndexDomain::Upper(*limit,a.min(b)));}
-            }
-            if let Some(scalar)=a.union(&b).find_map(|domain|match domain{IndexDomain::KnownBits(scalar,..)=>Some(*scalar),_=>None}){
-                common.retain(|domain|!matches!(domain,IndexDomain::KnownBits(..)));
-                if let Some(bits)=self.known_bits(i,scalar).zip(other.known_bits(i,scalar)).and_then(|(a,b)|a.common(b)){common.insert(bits.domain());}
-            }
-            common
-        }).collect();
+        self.domains = (0..width)
+            .map(|component| combination::join_domains(self, other, component))
+            .collect();
         self.origins.resize_with(width,Vec::new);
         for(i,origins)in self.origins.iter_mut().enumerate(){
             let other=other.origins.get(i).map(Vec::as_slice).unwrap_or_default();
@@ -2843,12 +2812,15 @@ impl Condition {
         self
     }
     pub(super) fn branch(c: Self, a: Self, b: Self) -> Self {
-        let condition=Arc::new(c);
+        Self::branch_on(&Arc::new(c), a, b)
+    }
+
+    fn branch_on(condition: &Arc<Self>, a: Self, b: Self) -> Self {
         Self {
             cases: std::array::from_fn(|truth| {
                 Clause::either(
-                    &Clause::branch(&a.cases[truth], &condition, true),
-                    &Clause::branch(&b.cases[truth], &condition, false),
+                    &Clause::branch(&a.cases[truth], condition, true),
+                    &Clause::branch(&b.cases[truth], condition, false),
                 )
             }),
         }

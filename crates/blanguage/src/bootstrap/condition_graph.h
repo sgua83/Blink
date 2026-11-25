@@ -972,3 +972,25 @@ extern "C" void refine_proof_fact(address context,ScalarEncoding scalar,u64 zero
  requires nonzero(host.domains.bounded) requires nonzero(host.domains.retain)
  requires nonzero(host.scalar) requires nonzero(host.deny) requires nonzero(host.range);
 
+
+struct ConditionJoinHost {
+ cfn<u32,address,usize> present;
+ cfn<void,address> empty;
+ cfn<void,address,usize> common;
+ cfn<void,address,usize> selected;
+};
+extern "C" void join_proof_conditions(address context,usize width,u32 selected,ConditionJoinHost host) on cpu
+ requires nonzero(host.present) requires nonzero(host.empty) requires nonzero(host.common) requires nonzero(host.selected);
+
+struct UpperRow { address identity; u32 distance; };
+struct DomainJoinHost {
+ cfn<UpperRow,address,u32> next;
+ cfn<i32,address,address> compare;
+ cfn<u32,address,u32,address> origin;
+ cfn<void,address,address,u32> upper;
+ cfn<void,address> bits;
+};
+extern "C" void join_proof_domains(address context,u32 bits,DomainJoinHost host) on cpu
+ requires nonzero(host.next) requires nonzero(host.compare) requires nonzero(host.origin)
+ requires nonzero(host.upper) requires nonzero(host.bits);
+

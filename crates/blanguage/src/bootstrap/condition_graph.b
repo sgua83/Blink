@@ -2341,3 +2341,59 @@ extern "C" void refine_proof_fact(address context,ScalarEncoding scalar,u64 zero
  }
 }
 
+
+extern "C" void join_proof_conditions(address context,usize width,u32 selected,ConditionJoinHost host) on cpu
+ requires nonzero(host.present) requires nonzero(host.empty) requires nonzero(host.common) requires nonzero(host.selected) {
+ usize index=0u64;
+ while(index<width) {
+  if(host.present(context,index)==0){host.empty(context);}
+  else if(selected!=0){host.selected(context,index);}
+  else{host.common(context,index);}
+  index+=1u64;
+ }
+}
+
+struct UpperGroup { UpperRow limit; UpperRow following; };
+
+UpperGroup upper_group(address context,u32 side,UpperRow first,DomainJoinHost host) on cpu
+ requires nonzero(host.next) requires nonzero(host.compare) {
+ u32 strongest=first.distance;
+ UpperRow following=host.next(context,side);
+ while(following.identity!=address()&&host.compare(first.identity,following.identity)==0) {
+  // Each typed set orders equal-identity rows by ascending distance.
+  strongest=following.distance;
+  following=host.next(context,side);
+ }
+ return UpperGroup(UpperRow(first.identity,strongest),following);
+}
+
+extern "C" void join_proof_domains(address context,u32 bits,DomainJoinHost host) on cpu
+ requires nonzero(host.next) requires nonzero(host.compare) requires nonzero(host.origin)
+ requires nonzero(host.upper) requires nonzero(host.bits) {
+ UpperRow left=host.next(context,0);
+ UpperRow right=host.next(context,1);
+ while(left.identity!=address()||right.identity!=address()) {
+  i32 order=i32(0);
+  if(left.identity==address()){order=i32(1);}
+  else if(right.identity==address()){order=-i32(1);}
+  else{order=host.compare(left.identity,right.identity);}
+  if(order<0) {
+   UpperGroup a=upper_group(context,0,left,host);
+   if(host.origin(context,1,a.limit.identity)!=0){host.upper(context,a.limit.identity,0);}
+   left=a.following;
+  }else if(order>0) {
+   UpperGroup b=upper_group(context,1,right,host);
+   if(host.origin(context,0,b.limit.identity)!=0){host.upper(context,b.limit.identity,0);}
+   right=b.following;
+  }else{
+   UpperGroup a=upper_group(context,0,left,host);
+   UpperGroup b=upper_group(context,1,right,host);
+   u32 common=a.limit.distance<b.limit.distance?a.limit.distance:b.limit.distance;
+   host.upper(context,a.limit.identity,common);
+   left=a.following;
+   right=b.following;
+  }
+ }
+ if(bits!=0){host.bits(context);}
+}
+
