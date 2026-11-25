@@ -1,6 +1,6 @@
 //! B chooses the complete Clause composition. Rust owns the original typed
 //! output and necessary intermediate slots; borrowed inputs remain pinned.
-use super::{Clause, ClauseNode, Condition, Facts, condition_graph, contradictory};
+use super::{Clause, ClauseNode, Condition, Fact, Facts, Proof, Scalar, Ty, ValueIdentity, condition_graph, contradictory};
 use std::{ffi::c_void, mem::MaybeUninit, ptr, sync::Arc};
 type Slot = *mut c_void;
 type Borrowed = *const c_void;
@@ -205,3 +205,93 @@ pub(super) fn branch(parent: &Clause, condition: &Arc<Condition>, truth: bool) -
         output.assume_init()
     }
 }
+
+#[repr(C)]
+struct PathComponent {
+    existing: u32,
+    boolean: u32,
+    integer: u32,
+}
+
+#[repr(C)]
+struct PathHost {
+    component: unsafe extern "C" fn(Borrowed, usize) -> PathComponent,
+    identity: unsafe extern "C" fn(Borrowed, usize) -> Borrowed,
+    merge: unsafe extern "C" fn(Slot, usize),
+    share: unsafe extern "C" fn(Slot, usize),
+    boolean: unsafe extern "C" fn(Slot, usize, Borrowed),
+    integer: unsafe extern "C" fn(Slot, usize, Borrowed),
+}
+
+struct PathBinding<'a> {
+    scalars: &'a [(Scalar, u32)],
+    origins: &'a [Vec<ValueIdentity>],
+    conditions: &'a mut [Option<Box<Condition>>],
+    path: &'a Clause,
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.condition_graph::bind_proof_path"]
+    fn b_bind_proof_path(context: Slot, count: usize, host: PathHost);
+}
+
+unsafe extern "C" fn path_component(context: Borrowed, index: usize) -> PathComponent {
+    let binding = unsafe { &*context.cast::<PathBinding<'_>>() };
+    let scalar = binding.scalars[index].0;
+    PathComponent {
+        existing: u32::from(binding.conditions[index].is_some()),
+        boolean: u32::from(scalar == Scalar::Bool),
+        integer: u32::from(scalar.is_integer()),
+    }
+}
+
+unsafe extern "C" fn path_identity(context: Borrowed, index: usize) -> Borrowed {
+    let binding = unsafe { &*context.cast::<PathBinding<'_>>() };
+    binding.origins.get(index).and_then(|origins| origins.first()).map_or(ptr::null(), borrowed)
+}
+
+unsafe extern "C" fn merge_path(context: Slot, index: usize) {
+    let binding = unsafe { &mut *context.cast::<PathBinding<'_>>() };
+    let condition = binding.conditions[index].as_mut().unwrap();
+    for case in &mut condition.cases {
+        *case = Clause::both(case, binding.path);
+    }
+}
+
+unsafe extern "C" fn share_path(context: Slot, index: usize) {
+    let binding = unsafe { &mut *context.cast::<PathBinding<'_>>() };
+    let path = binding.path.clone();
+    binding.conditions[index] = Some(Box::new(Condition::paths(path.clone(), path)));
+}
+
+fn bind_path_facts(binding: &mut PathBinding<'_>, index: usize, facts: [Fact; 2]) {
+    let cases = facts.map(|fact| Clause::both(&Clause::facts([fact].into()), binding.path));
+    binding.conditions[index] = Some(Box::new(Condition { cases }));
+}
+
+unsafe extern "C" fn bind_path_boolean(context: Slot, index: usize, origin: Borrowed) {
+    let binding = unsafe { &mut *context.cast::<PathBinding<'_>>() };
+    let origin = unsafe { *origin.cast::<ValueIdentity>() };
+    bind_path_facts(binding, index, [Fact::Boolean(origin, false), Fact::Boolean(origin, true)]);
+}
+
+unsafe extern "C" fn bind_path_integer(context: Slot, index: usize, origin: Borrowed) {
+    let binding = unsafe { &mut *context.cast::<PathBinding<'_>>() };
+    let origin = unsafe { *origin.cast::<ValueIdentity>() };
+    bind_path_facts(binding, index, [Fact::Zero(origin), Fact::NonZero(origin)]);
+}
+
+pub(super) fn bind_proof_path(proof: &mut Proof, ty: &Ty, path: &Clause) {
+    proof.conditions.resize_with(proof.conditions.len().max(ty.components.len()), || None);
+    let mut binding = PathBinding {
+        scalars: &ty.components, origins: &proof.origins, conditions: &mut proof.conditions, path,
+    };
+    unsafe {
+        b_bind_proof_path(
+            ptr::from_mut(&mut binding).cast(), ty.components.len(),
+            PathHost { component: path_component, identity: path_identity, merge: merge_path,
+                share: share_path, boolean: bind_path_boolean, integer: bind_path_integer },
+        );
+    }
+}
+

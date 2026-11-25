@@ -2284,3 +2284,21 @@ extern "C" void select_aggregate_proof(address context,usize choices,usize compo
  }
 }
 
+
+extern "C" void bind_proof_path(address context,usize count,PathProofHost host) on cpu
+ requires nonzero(host.component) requires nonzero(host.identity) requires nonzero(host.merge)
+ requires nonzero(host.share) requires nonzero(host.boolean) requires nonzero(host.integer) {
+ usize index=0u64;
+ while(index<count) {
+  PathProofComponent component=host.component(context,index);
+  if(component.existing!=0){host.merge(context,index);}
+  else if(component.boolean!=0||component.integer!=0) {
+   address identity=host.identity(context,index);
+   if(identity==address()){host.share(context,index);}
+   else if(component.boolean!=0){host.boolean(context,index,identity);}
+   else{host.integer(context,index,identity);}
+  }
+  index+=1u64;
+ }
+}
+

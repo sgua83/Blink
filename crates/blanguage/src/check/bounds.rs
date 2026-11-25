@@ -1608,25 +1608,7 @@ impl Proof {
         proof
     }
     pub(super) fn under_path(&mut self, ty: &Ty, path: &Clause) {
-        self.conditions
-            .resize_with(self.conditions.len().max(ty.components.len()), || None);
-        for (component, (scalar, _)) in ty.components.iter().enumerate() {
-            if (*scalar == Scalar::Bool || scalar.is_integer()) && self.conditions[component].is_none() {
-                let mut condition = Condition::default();
-                if let Some(identity) = self.known_identity(component) {
-                    for (truth, case) in condition.cases.iter_mut().enumerate() {
-                        let fact=if *scalar==Scalar::Bool{Fact::Boolean(identity,truth!=0)}else if truth!=0{Fact::NonZero(identity)}else{Fact::Zero(identity)};
-                        *case = Clause::facts([fact].into());
-                    }
-                }
-                self.conditions[component] = Some(Box::new(condition));
-            }
-            if let Some(condition) = &mut self.conditions[component] {
-                for case in &mut condition.cases {
-                    *case = Clause::both(case, path);
-                }
-            }
-        }
+        combination::bind_proof_path(self, ty, path);
     }
     pub(super) fn append(&mut self, value: &Value) {
         if !self.addresses.is_empty()||!value.proof.addresses.is_empty(){self.addresses.resize_with(self.origins.len(),||None);self.addresses.extend((0..value.regs.len()).map(|i|value.proof.addresses.get(i).cloned().flatten()));}

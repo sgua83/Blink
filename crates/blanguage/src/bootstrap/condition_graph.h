@@ -936,3 +936,17 @@ extern "C" void select_aggregate_proof(address context,usize choices,usize compo
  requires nonzero(host.project) requires nonzero(host.relate) requires nonzero(host.required)
  requires nonzero(host.refine) requires nonzero(host.join);
 
+
+struct PathProofComponent { u32 existing; u32 boolean; u32 integer; };
+struct PathProofHost {
+ cfn<PathProofComponent,address,usize> component;
+ cfn<address,address,usize> identity;
+ cfn<void,address,usize> merge;
+ cfn<void,address,usize> share;
+ cfn<void,address,usize,address> boolean;
+ cfn<void,address,usize,address> integer;
+};
+extern "C" void bind_proof_path(address context,usize count,PathProofHost host) on cpu
+ requires nonzero(host.component) requires nonzero(host.identity) requires nonzero(host.merge)
+ requires nonzero(host.share) requires nonzero(host.boolean) requires nonzero(host.integer);
+
