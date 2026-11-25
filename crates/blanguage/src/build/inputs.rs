@@ -8,18 +8,18 @@ pub(super) enum ProviderInterface<'a> {
 
 struct SourceInput {
     interface: Arc<syntax::Module>,
-    body: Option<CapturedBody>,
+    body: Option<ast::Result<CapturedBody>>,
 }
 struct CapturedBody {
     implementation: Option<Arc<syntax::Module>>,
     imports: Arc<[String]>,
 }
-type Sources = BTreeMap<std::path::PathBuf, SourceInput>;
+type Sources = BTreeMap<std::path::PathBuf, ast::Result<SourceInput>>;
 type Interfaces<T> = BTreeMap<String, BTreeMap<Arc<str>, T>>;
 type CapturedInterface = (Arc<syntax::Module>, Option<Arc<[String]>>);
 
 pub(super) struct CapturedUnit {
-    interfaces: Interfaces<CapturedInterface>,
+    interfaces: Interfaces<ast::Result<CapturedInterface>>,
     exports: Option<Vec<ast::Result<CapturedExport>>>,
 }
 pub(crate) struct Inputs {
@@ -29,7 +29,7 @@ pub(crate) struct Inputs {
 #[derive(Default)]
 pub(super) struct Capture {
     sources: Sources,
-    interfaces: Interfaces<Arc<syntax::Module>>,
+    interfaces: Interfaces<ast::Result<Arc<syntax::Module>>>,
 }
 impl Capture {
     pub(super) fn finish(self, units: Vec<CapturedUnit>) -> Vec<Inputs> {
@@ -42,19 +42,21 @@ impl Capture {
 
     fn source_input(&mut self, path: &Path) -> ast::Result<&mut SourceInput> {
         use std::collections::btree_map::Entry;
-        Ok(match self.sources.entry(crate::source_path::with_extension(path, u16::from(b'h'))) {
+        let input = match self.sources.entry(crate::source_path::with_extension(path, u16::from(b'h'))) {
             Entry::Occupied(entry) => entry.into_mut(),
             Entry::Vacant(entry) => {
-                let interface = Arc::new(parser::parse(crate::read(entry.key())?)?);
-                entry.insert(SourceInput { interface, body: None })
+                let input = crate::read(entry.key()).and_then(parser::parse)
+                    .map(|interface| SourceInput { interface: Arc::new(interface), body: None });
+                entry.insert(input)
             }
-        })
+        };
+        input.as_mut().map_err(|error| error.clone())
     }
 
     pub(super) fn capture(
         &mut self, path: &Path, root: &Path, providers: &BTreeMap<&str, ProviderInterface<'_>>,
         requests: &[String],
-    ) -> ast::Result<CapturedUnit> {
+    ) -> CapturedUnit {
         let exports = (!providers.is_empty() && !requests.is_empty()).then(Vec::new);
         let count = if exports.is_some() { requests.len() } else { 0 };
         let mut state = CaptureState {
@@ -63,22 +65,22 @@ impl Capture {
             opened: None, error: None,
         };
         let context = std::ptr::from_mut(&mut state).cast();
-        if unsafe { capture_build_inputs(capture_host(context), count) } == 0 {
-            return Err(state.error.unwrap());
-        }
-        Ok(CapturedUnit { interfaces: state.interfaces, exports: state.exports })
+        // Capture can stop at a failed read. The original loader consumes that
+        // result from the snapshot when it reaches this path or provider.
+        unsafe { capture_build_inputs(capture_host(context), count); }
+        CapturedUnit { interfaces: state.interfaces, exports: state.exports }
     }
 
     fn capture_interface(
         &mut self, name: &str, text: &Arc<str>,
     ) -> ast::Result<Arc<syntax::Module>> {
         let interfaces = self.interfaces.entry(name.into()).or_default();
-        if let Some(module) = interfaces.get(text) { return Ok(module.clone()); }
-        let module = Arc::new(parser::parse(Source {
+        if let Some(module) = interfaces.get(text) { return module.clone(); }
+        let module = parser::parse(Source {
             path: format!("<{name}>.h").into(), text: text.clone(),
-        })?);
-        interfaces.insert(module.source.text.clone(), module.clone());
-        Ok(module)
+        }).map(Arc::new);
+        interfaces.insert(text.clone(), module.clone());
+        module
     }
 }
 #[repr(C)]
@@ -130,7 +132,7 @@ struct CaptureHost {
 
 unsafe extern "C" {
     #[link_name = "bootstrap.module_load::capture_build_inputs"]
-    fn capture_build_inputs(host: CaptureHost, requests: usize) -> u32;
+    fn capture_build_inputs(host: CaptureHost, requests: usize);
     #[link_name = "bootstrap.module_load::capture_export_owner"]
     fn capture_export_owner(host: CaptureHost, name: CaptureName) -> u32;
 }
@@ -147,7 +149,7 @@ struct CaptureState<'a, 'provider> {
     providers: &'a BTreeMap<&'provider str, ProviderInterface<'provider>>,
     requests: &'a [String],
     visited: BTreeSet<String>,
-    interfaces: Interfaces<CapturedInterface>,
+    interfaces: Interfaces<ast::Result<CapturedInterface>>,
     exports: Option<Vec<ast::Result<CapturedExport>>>,
     opened: Option<OpenedModule>,
     error: Option<Diagnostic>,
@@ -156,15 +158,12 @@ struct CaptureState<'a, 'provider> {
 impl CaptureState<'_, '_> {
     fn source(&mut self, path: &Path) -> ast::Result<(CaptureName, OpenedModule)> {
         let SourceInput { interface, body } = self.capture.source_input(path)?;
-        let current = match body {
-            Some(body) => body,
-            None => {
-                let implementation_path = crate::source_path::with_extension(path, u16::from(b'b'));
-                let implementation = crate::read_implementation(&implementation_path)?;
-                let imports = crate::names::module_imports(interface, implementation.as_deref());
-                body.insert(CapturedBody { implementation, imports })
-            }
-        };
+        let current = body.get_or_insert_with(|| {
+            let implementation_path = crate::source_path::with_extension(path, u16::from(b'b'));
+            let implementation = crate::read_implementation(&implementation_path)?;
+            let imports = crate::names::module_imports(interface, implementation.as_deref());
+            Ok(CapturedBody { implementation, imports })
+        }).as_ref().map_err(Clone::clone)?;
         Ok((CaptureName::from_str(interface.name()), OpenedModule::Source(current.imports.clone())))
     }
 
@@ -180,7 +179,14 @@ impl CaptureState<'_, '_> {
                     // The actual module input builder diagnoses invalid explicit providers.
                     return Ok(None);
                 };
-                self.capture.capture_interface(requested, interface)?
+                match self.capture.capture_interface(requested, interface) {
+                    Ok(module) => module,
+                    Err(error) => {
+                        self.interfaces.entry(requested.to_owned()).or_default()
+                            .insert(interface.clone(), Err(error.clone()));
+                        return Err(error);
+                    }
+                }
             }
             None => {
                 let path = crate::source_path::module(self.root, requested, u16::from(b'b'));
@@ -228,7 +234,7 @@ unsafe extern "C" fn capture_bind(context: *mut std::ffi::c_void, name: CaptureN
         OpenedModule::Provider(interface) => {
             let imports = (expand != 0).then(|| crate::names::module_imports(&interface, None));
             state.interfaces.entry(unsafe { name.text() }.to_owned()).or_default()
-                .insert(interface.source.text.clone(), (interface, imports.clone()));
+                .insert(interface.source.text.clone(), Ok((interface, imports.clone())));
             imports
         }
     };
@@ -257,19 +263,21 @@ unsafe extern "C" fn capture_export(context: *mut std::ffi::c_void, index: usize
     };
     let mut owners = Vec::new();
     // The type-owner walk calls the same B capture routine. Do not borrow state across that call.
-    let error = request.visit_type_owners(|name| {
+    let complete = request.visit_type_owners(|name| {
         match unsafe { capture_export_owner(capture_host(context), CaptureName::from_str(name)) } {
-            0 => Err(unsafe { (*state).error.take().unwrap() }),
+            0 => {
+                owners.push(name.to_owned());
+                Err(unsafe { (*state).error.take().unwrap() })
+            }
             1 => Ok(()),
             _ => {
                 owners.push(name.to_owned());
                 Ok(())
             }
         }
-    }).err();
-    let success = u32::from(error.is_none());
-    unsafe { (*state).exports.as_mut().unwrap().push(Ok(CapturedExport { request, owners, error })); }
-    success
+    }).is_ok();
+    unsafe { (*state).exports.as_mut().unwrap().push(Ok(CapturedExport { request, owners })); }
+    u32::from(complete)
 }
 
 impl Inputs {
@@ -279,11 +287,11 @@ impl Inputs {
 
     pub(crate) fn interface(&self, name: &str, text: &str) -> ast::Result<CapturedInterface> {
         self.unit.interfaces.get(name).and_then(|interfaces| interfaces.get(text)).cloned()
-            .ok_or_else(|| Diagnostic {
+            .unwrap_or_else(|| Err(Diagnostic {
                 source: Source { path: format!("<{name}>.h").into(), text: "".into() },
                 span: Span::default(), code: "B020",
                 message: "接口不在本次已捕获的构建输入中".into(),
-            })
+            }))
     }
     pub(crate) fn source(
         &self, path: &Path,
@@ -293,8 +301,11 @@ impl Inputs {
             span: Span::default(), code: "B020",
             message: "模块不在本次已捕获的构建输入中".into(),
         };
-        let input = self.sources.get(&crate::source_path::with_extension(path, u16::from(b'h'))).ok_or_else(|| missing(crate::source_path::with_extension(path, u16::from(b'h'))))?;
-        let body = input.body.as_ref().ok_or_else(|| missing(crate::source_path::with_extension(path, u16::from(b'b'))))?;
+        let header = crate::source_path::with_extension(path, u16::from(b'h'));
+        let input = self.sources.get(&header).ok_or_else(|| missing(header))?
+            .as_ref().map_err(Clone::clone)?;
+        let body = input.body.as_ref().ok_or_else(|| missing(crate::source_path::with_extension(path, u16::from(b'b'))))?
+            .as_ref().map_err(Clone::clone)?;
         Ok((input.interface.clone(), body.implementation.clone(), body.imports.clone()))
     }
 }

@@ -617,7 +617,6 @@ impl ExportRequest {
 pub(crate) struct CapturedExport {
     pub(crate) request: ExportRequest,
     pub(crate) owners: Vec<String>,
-    pub(crate) error: Option<Diagnostic>,
 }
 
 pub(crate) enum ExportRequests<'a> {

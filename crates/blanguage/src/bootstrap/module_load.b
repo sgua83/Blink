@@ -346,17 +346,16 @@ bool capture_branch(CaptureHost host, NameBytes name) on cpu
     return complete;
 }
 
-extern "C" u32 capture_build_inputs(CaptureHost host, usize requests) on cpu
+extern "C" void capture_build_inputs(CaptureHost host, usize requests) on cpu
     requires nonzero(host.known) requires nonzero(host.enter)
     requires nonzero(host.open) requires nonzero(host.bind)
     requires nonzero(host.name) requires nonzero(host.close) requires nonzero(host.export) {
-    if (!capture_branch(host, NameBytes(unsafe_address(0u64), 0u64))) { return 0; }
+    if (!capture_branch(host, NameBytes(unsafe_address(0u64), 0u64))) { return; }
     usize index = 0u64;
     while (index < requests) {
         if (host.export(host.context, index) == 0) { break; }
         index += 1u64;
     }
-    return 1;
 }
 
 extern "C" u32 capture_export_owner(CaptureHost host, NameBytes name) on cpu

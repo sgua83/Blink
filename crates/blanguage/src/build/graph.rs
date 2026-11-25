@@ -423,7 +423,7 @@ impl Compiler {
                 UnitKind::Object(ObjectKind::Module(requests)) => requests,
                 _ => &[],
             };
-            captured.push(capture.capture(&unit.path, &unit.root, &providers, requests)?);
+            captured.push(capture.capture(&unit.path, &unit.root, &providers, requests));
         }
         let inputs = capture.finish(captured);
         Ok::<_, Box<dyn std::error::Error + Send + Sync>>((prepared, inputs, dependency_plan))

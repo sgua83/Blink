@@ -491,7 +491,6 @@ pub(super) fn load_captured_exports(
         for name in &request.owners {
             load_export_owner(name, root, world, imported, inputs)?;
         }
-        if let Some(error) = &request.error { return Err(error.clone()); }
     }
     Ok(())
 }

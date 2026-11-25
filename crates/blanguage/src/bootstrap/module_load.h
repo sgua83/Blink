@@ -89,7 +89,7 @@ struct CaptureHost {
     cfn<u32,address,NameBytes> provider;
     cfn<u32,address,usize> export;
 };
-extern "C" u32 capture_build_inputs(CaptureHost host, usize requests) on cpu
+extern "C" void capture_build_inputs(CaptureHost host, usize requests) on cpu
     requires nonzero(host.known) requires nonzero(host.enter)
     requires nonzero(host.open) requires nonzero(host.bind)
     requires nonzero(host.name) requires nonzero(host.close) requires nonzero(host.export);
