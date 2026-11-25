@@ -295,7 +295,7 @@ impl Builder<'_> {
             },
             Key::Read(read)=>{
                 let epoch=match &read{ContentRead::Snapshot{memory,..}|ContentRead::Returned{memory}=>Epoch::Local{memory:*memory,snapshots:None},_=>Epoch::Input};
-                let mut evaluation=BorrowEvaluation{function:self.function,state:self.state,known:self.known,expand_loops:false,deferred_reads:true,loop_bindings:Vec::new(),values:BTreeMap::new(),stored: None, exit_writes: None,stored_paths:Default::default()};let value=evaluation.content_read(&read,LoopSources::Deferred);self.fill(id,&value,&epoch);
+                let mut evaluation=BorrowEvaluation{function:self.function,state:self.state,known:self.known,expand_loops:false,deferred_reads:true,loop_bindings:None,values:BTreeMap::new(),stored: None, exit_writes: None,stored_paths:Default::default()};let value=evaluation.content_read(&read,LoopSources::Deferred);self.fill(id,&value,&epoch);
             },
             Key::Call(result)=>{let call=&self.function.calls[result.call];let value=self.known[&call.function].interface.outputs.get(&result.output).map(|output|call_content_sources(output,call,&call.arguments).at_call(&call.arguments)).unwrap_or_else(||Borrow::source(Origin::Unresolved));self.fill(id,&value,&Epoch::Local{memory:call.memory,snapshots:call.snapshots.clone()});},
         }id
@@ -359,7 +359,7 @@ impl Graph {
         for (id, source, when) in pending_seeds {
             b.graph.nodes[id].seeds.sources.insert_when(source, when);
         }
-        let graph=Arc::new(b.graph);let mut evaluation=BorrowEvaluation{function,state,known,expand_loops:true,deferred_reads:false,loop_bindings:Vec::new(),values:BTreeMap::new(),stored: None, exit_writes: None,stored_paths:Default::default()};
+        let graph=Arc::new(b.graph);let mut evaluation=BorrowEvaluation{function,state,known,expand_loops:true,deferred_reads:false,loop_bindings:None,values:BTreeMap::new(),stored: None, exit_writes: None,stored_paths:Default::default()};
         let parameters=residency::input_parameters(&function.parameters,function.input_width);
         Some(roots.into_iter().map(|(input,root)|{let value=graph.solve(root,&mut evaluation);(input,function.address_borrows(&parameters,value).unwrap_or_default())}).collect())
     }
@@ -441,7 +441,7 @@ impl Graph {
             let local = Arc::new(local.graph);
             let mut evaluation = BorrowEvaluation {
                 function, state, known, expand_loops: true, deferred_reads: false,
-                loop_bindings: Vec::new(), values: BTreeMap::new(), stored: None, exit_writes: None,
+                loop_bindings: None, values: BTreeMap::new(), stored: None, exit_writes: None,
                 stored_paths: Default::default(),
             };
             let identities = scalars.into_iter().map(|(input, mut proof)| {
@@ -460,7 +460,7 @@ impl Graph {
         let graph = Arc::new(builder.graph);
         let mut evaluation = BorrowEvaluation {
             function, state, known, expand_loops: true, deferred_reads: false,
-            loop_bindings: Vec::new(), values: BTreeMap::new(), stored: None, exit_writes: None,
+            loop_bindings: None, values: BTreeMap::new(), stored: None, exit_writes: None,
             stored_paths: Default::default(),
         };
         ports.into_iter().map(|(name, scalars, nodes)| {
@@ -895,19 +895,20 @@ impl Graph {
         let mut values = BTreeMap::new();
         let mut initial = true;
         loop {
+            let bindings = LoopBindings {
+                outer: evaluation.loop_bindings,
+                inputs: &self.inputs,
+                values: &variables,
+            };
             let mut scope = BorrowEvaluation {
                 function: evaluation.function,
                 state: evaluation.state,
                 known: evaluation.known,
                 expand_loops: evaluation.expand_loops,
                 deferred_reads: evaluation.deferred_reads,
-                loop_bindings: evaluation.loop_bindings.clone(),
+                loop_bindings: Some(&bindings),
                 values: BTreeMap::new(), stored: None, exit_writes: None, stored_paths: super::StoredPaths::Borrowed(evaluation.stored_paths.paths()),
             };
-            scope.loop_bindings.push(self.inputs.iter().filter_map(|(input, id)| {
-                variables.get(id).map(|value| (*input, value.clone()))
-            }).collect());
-
             let mut query = Query {
                 graph: self,
                 relation: Arc::clone(self),
