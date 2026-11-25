@@ -9,11 +9,11 @@ u32 signature_byte(u64 index) on cpu {
 void put(address bytes,u64 at,u32 value) on cpu {
     unsafe_position<u8>(unsafe_address(address_bits(bytes)+at))=u8(value);
 }
-ArchiveMember member_at(ArchiveInput input,u64 at) on cpu {
-    return unsafe_position<ArchiveMember>(unsafe_address(address_bits(input.members)+at*MEMBER_BYTES));
+address member_address(ArchiveInput input,u64 at) on cpu {
+    return unsafe_address(address_bits(input.members)+at*MEMBER_BYTES);
 }
-void member_put(ArchiveInput input,u64 at,ArchiveMember value) on cpu {
-    unsafe_position<ArchiveMember>(unsafe_address(address_bits(input.members)+at*MEMBER_BYTES))=value;
+ArchiveMember member_at(ArchiveInput input,u64 at) on cpu {
+    return unsafe_position<ArchiveMember>(member_address(input,at));
 }
 ArchiveSymbol symbol_at(address symbols,u64 at) on cpu {
     return unsafe_position<ArchiveSymbol>(unsafe_address(address_bits(symbols)+at*SYMBOL_BYTES));
@@ -36,9 +36,7 @@ extern "C" ArchiveLayout layout(ArchiveInput input) on cpu {
     }
     u64 names=0u64;i=0u64;
     while(i<input.member_count){
-        ArchiveMember member=member_at(input,i);
-        member.name_offset=names;member_put(input,i,member);
-        names+=member.name_length+1u64;i+=1u64;
+        names+=member_at(input,i).name_length+1u64;i+=1u64;
     }
     u64 first=4u64+4u64*input.symbol_count+strings;
     u64 second=8u64+4u64*input.member_count+2u64*input.symbol_count+strings;
@@ -46,11 +44,12 @@ extern "C" ArchiveLayout layout(ArchiveInput input) on cpu {
     u64 at=8u64+member_span(first)+member_span(second)+member_span(names);
     i=0u64;
     while(i<input.member_count){
-        ArchiveMember member=member_at(input,i);
+        address row=member_address(input,i);
+        u64 length=unsafe_position<ArchiveMember>(row).byte_length;
         if(at>4294967295u64){return invalid(2);}
-        if(member.byte_length>9999999999u64){return invalid(1);}
-        member.offset=at;member_put(input,i,member);
-        at+=member_span(member.byte_length);i+=1u64;
+        if(length>9999999999u64){return invalid(1);}
+        unsafe_position<ArchiveMember>(row).offset=at;
+        at+=member_span(length);i+=1u64;
     }
     return ArchiveLayout(at,first,second,names,0);
 }
@@ -143,12 +142,12 @@ extern "C" void encode(ArchiveInput input,ArchiveLayout layout,address out) on c
         name_at+=symbol.name_length;put(out,name_at,0);name_at+=1u64;i+=1u64;
     }
     u64 names=second+member_span(layout.second);header(out,names,layout.names,1,0u64);
-    at=names+60u64;i=0u64;
+    u64 name_start=names+60u64;at=name_start;i=0u64;
     while(i<input.member_count){
-        ArchiveMember member=member_at(input,i);copy(out,at,member.name,member.name_length);
-        at+=member.name_length;put(out,at,0);at+=1u64;
-        header(out,member.offset,member.byte_length,2,member.name_offset);
-        i+=1u64;
+        ArchiveMember member=member_at(input,i);
+        header(out,member.offset,member.byte_length,2,at-name_start);
+        copy(out,at,member.name,member.name_length);
+        at+=member.name_length;put(out,at,0);at+=1u64;i+=1u64;
     }
 }
 

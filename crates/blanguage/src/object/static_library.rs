@@ -358,7 +358,6 @@ struct ArchiveMember {
     name_length: usize,
     byte_length: usize,
     offset: usize,
-    name_offset: usize,
 }
 #[repr(C)]
 pub(crate) struct ArchiveSymbol<'a> {
@@ -493,7 +492,7 @@ pub(crate) fn encode<'a>(
     let mut member_views: Vec<_> = members.clone().map(|member| ArchiveMember {
         name: member.name.as_ptr(), name_length: member.name.len(),
         byte_length: member.output_length(),
-        offset: 0, name_offset: 0,
+        offset: 0,
     }).collect();
     let input = ArchiveInput {
         members: member_views.as_mut_ptr(), member_count: member_views.len(),

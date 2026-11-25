@@ -1,11 +1,11 @@
 module bootstrap.archive;
-// Windows x64 C ABI: five and three 8-byte fields, respectively.
-const u64 MEMBER_BYTES=40u64;
+// Windows x64 C ABI: four and three 8-byte fields, respectively.
+const u64 MEMBER_BYTES=32u64;
 const u64 SYMBOL_BYTES=24u64;
 struct ArchiveMember {
     address name;u64 name_length;
     u64 byte_length;
-    u64 offset;u64 name_offset;
+    u64 offset;
 };
 struct ArchiveSymbol {address name;u64 name_length;u64 member;};
 struct ArchiveInput {address members;u64 member_count;address symbols;u64 symbol_count;};
