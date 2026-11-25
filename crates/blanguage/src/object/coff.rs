@@ -186,6 +186,11 @@ struct ReadBuild { bytes: ReadBytes, present: u64, error: ReadError }
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct ReadSymbols { strings: ReadBytes, offset: usize, count: usize, error: ReadError }
+impl Default for ReadSymbols {
+    fn default() -> Self {
+        Self { strings: ReadBytes::default(), offset: 0, count: 0, error: ReadError::None }
+    }
+}
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct ReadSymbol {
@@ -336,7 +341,7 @@ struct ObjectScanStatus { error: ReadError, complete: u32 }
 unsafe extern "C" {
     #[link_name = "bootstrap.object_read::object_sections"]
     fn object_sections(input: ReadBytes, headers: ReadBytes, rows: *mut ObjectSection, loadable: *mut u8,
-        parts: &mut ObjectParts, context: *mut c_void, validate: ValidateObjectName) -> ObjectScanStatus;
+        parts: &mut ObjectParts, table: &mut ReadSymbols, context: *mut c_void, validate: ValidateObjectName) -> ObjectScanStatus;
     #[link_name = "bootstrap.object_read::object_symbols"]
     fn object_symbols<'a>(input: ReadBytes, table: ReadSymbols, rows: *mut ObjectSymbol<'a>,
         definitions: *mut SectionDefinition, definition_count: usize, context: *mut c_void,
@@ -964,7 +969,7 @@ fn owned_output(plan: CoffOutput<'_>) -> Result<Vec<u8>> {
 
 pub(super) fn decode<Bytes: super::ReadSection>(b: &super::ObjectBytes, stack_output: bool) -> Result<Object<Bytes>> {
     let reader = Reader::new(b)?;
-    reader.restore(None, None, reader.symbol_table()?, stack_output)
+    reader.restore(None, None, reader.symbol_table(ReadSymbols::default())?, stack_output)
 }
 struct Metadata<'a> {
     input: &'a [u8],
@@ -1081,40 +1086,47 @@ impl<'a, Input: AsRef<[u8]> + ?Sized> Reader<'a, Input> {
         })
     }
 
-    fn read_sections(&self, rows: *mut ObjectSection, loadable: *mut u8) -> Result<ObjectParts> {
+    fn read_sections(
+        &self, rows: *mut ObjectSection, loadable: *mut u8, table: &mut ReadSymbols,
+    ) -> Result<ObjectParts> {
         let mut parts = ObjectParts::default();
         read_object_names(|context| unsafe {
             object_sections(
                 ReadBytes::new(self.bytes.as_ref()), ReadBytes::new(self.headers), rows, loadable,
-                &mut parts, context, validate_object_name,
+                &mut parts, table, context, validate_object_name,
             )
         })?;
         Ok(parts)
     }
 
-    fn sections(&self, materialize: bool) -> Result<(ObjectParts, Vec<ObjectSection>)> {
+    fn sections(&self, materialize: bool) -> Result<(ObjectParts, Vec<ObjectSection>, ReadSymbols)> {
         let count = self.headers.len() / 40;
         let mut rows = Vec::with_capacity(if materialize { count } else { 0 });
         let output = if materialize { rows.as_mut_ptr() } else { std::ptr::null_mut() };
-        let parts = self.read_sections(output, std::ptr::null_mut())?;
+        let mut table = ReadSymbols::default();
+        let parts = self.read_sections(output, std::ptr::null_mut(), &mut table)?;
         if materialize {
             unsafe { rows.set_len(count) };
         }
-        Ok((parts, rows))
+        Ok((parts, rows, table))
     }
     fn metadata(&self, bytes: ReadBytes) -> Result<&'a [u8]> {
         // B borrows this range from the same validated section rows.
         if bytes.bytes.is_null() { return Err("缺少 Blink 目标文件元数据".into()); }
         Ok(unsafe { bytes.borrowed() })
     }
-    fn symbol_table(&self) -> Result<ReadSymbols> {
-        let table = unsafe { read_symbols(ReadBytes::new(self.bytes.as_ref())) };
+    fn symbol_table(&self, table: ReadSymbols) -> Result<ReadSymbols> {
+        let table = if table.strings.bytes.is_null() {
+            unsafe { read_symbols(ReadBytes::new(self.bytes.as_ref())) }
+        } else {
+            table
+        };
         table.error.check()?;
         Ok(table)
     }
-    fn symbol_rows(&self, definitions: &mut [SectionDefinition]) -> Result<(Vec<ObjectSymbol<'a>>, usize)> {
+    fn symbol_rows(&self, definitions: &mut [SectionDefinition], table: ReadSymbols) -> Result<(Vec<ObjectSymbol<'a>>, usize)> {
         let input = ReadBytes::new(self.bytes.as_ref());
-        let table = self.symbol_table()?;
+        let table = self.symbol_table(table)?;
         let mut symbols = Vec::with_capacity(table.count);
         read_object_names(|context| unsafe {
             object_symbols(
@@ -1150,12 +1162,13 @@ impl<'a, Input: AsRef<[u8]> + ?Sized> Reader<'a, Input> {
     pub(crate) fn archive_symbols<F: FnMut(&'a str)>(&self, emit: F) -> Result<bool> {
         let section_count = self.headers.len() / 40;
         let mut loadable = Vec::with_capacity(section_count);
-        let parts = self.read_sections(std::ptr::null_mut(), loadable.as_mut_ptr())?;
+        let mut table = ReadSymbols::default();
+        let parts = self.read_sections(std::ptr::null_mut(), loadable.as_mut_ptr(), &mut table)?;
         if !self.is_module(parts)? { return Ok(false); }
         unsafe { loadable.set_len(section_count) };
 
         let input = ReadBytes::new(self.bytes.as_ref());
-        let table = self.symbol_table()?;
+        let table = self.symbol_table(table)?;
         let mut exports = ArchiveExports { loadable: &loadable, emit, invalid_name: None, invalid_section: false };
         let error = unsafe {
             object_symbols(input, table, std::ptr::null_mut(), std::ptr::null_mut(), 0,
@@ -1170,10 +1183,10 @@ impl<'a, Input: AsRef<[u8]> + ?Sized> Reader<'a, Input> {
     pub(super) fn append_host_members(
         &self, name: &'a str, imports: &mut Vec<ImportKey<'a>>, members: &mut Vec<HostMember<'a>>,
     ) -> Result<bool> {
-        let (parts, raw) = self.sections(true)?;
+        let (parts, raw, table) = self.sections(true)?;
         if !self.is_module(parts)? { return Ok(false); }
         let mut definitions = vec![SectionDefinition::default(); self.headers.len() / 40];
-        let (symbols, offset) = self.symbol_rows(&mut definitions)?;
+        let (symbols, offset) = self.symbol_rows(&mut definitions, table)?;
         let needs_body = raw.iter().any(|row| {
             row.mapped != 0 && unsafe { coff_needs_body(row.flags, row.relocation_count) != 0 }
         });
@@ -1215,7 +1228,7 @@ impl<'a, Input: AsRef<[u8]> + ?Sized> Reader<'a, Input> {
 
     /// 从库成员借用公开接口与合同。完整对象负责代码、重定位和诊断材料。
     pub(crate) fn interface(&self) -> Result<(String, Kind, BTreeMap<String, Vec<u8>>)> {
-        let (parts, _) = self.sections(false)?;
+        let (parts, _, table) = self.sections(false)?;
         let mut names = MetadataNames::default();
         let metadata = Metadata::read(self.metadata(parts.metadata)?, names.sink(REQUIREMENTS))?;
         let mut output = MetadataOutput { names, ..Default::default() };
@@ -1232,7 +1245,7 @@ impl<'a, Input: AsRef<[u8]> + ?Sized> Reader<'a, Input> {
         output.check()?;
         let bindings = output.bindings;
         let mut exports = BTreeSet::new();
-        self.for_each_definition(|symbol| {
+        self.for_each_definition(table, |symbol| {
             if !bindings.contains_key(symbol) || !exports.insert(symbol) {
                 return Err("导出符号缺少模块接口合同".into());
             }
@@ -1241,9 +1254,9 @@ impl<'a, Input: AsRef<[u8]> + ?Sized> Reader<'a, Input> {
         Ok((name, kind, bindings))
     }
 
-    pub(super) fn for_each_definition(&self, mut consume: impl FnMut(&'a str) -> Result<()>) -> Result<()> {
+    fn for_each_definition(&self, table: ReadSymbols, mut consume: impl FnMut(&'a str) -> Result<()>) -> Result<()> {
         let input = ReadBytes::new(self.bytes.as_ref());
-        let table = self.symbol_table()?;
+        let table = self.symbol_table(table)?;
         let mut index = 0;
         loop {
             let row = unsafe { next_export(input, table, &mut index) };
@@ -1256,7 +1269,7 @@ impl<'a, Input: AsRef<[u8]> + ?Sized> Reader<'a, Input> {
 impl<'a> Reader<'a, super::ObjectBytes> {
     /// 借用判等所需的名称，等采用后再恢复完整对象。
     pub(crate) fn reuse_inputs(self) -> Result<ReuseInputs<'a>> {
-        let (parts, _) = self.sections(false)?;
+        let (parts, _, table) = self.sections(false)?;
         let metadata = Metadata::read(self.metadata(parts.metadata)?, MetadataNames::default().sink(0))?;
         let mut cursor = metadata.bindings_cursor();
         let mut names = BTreeSet::new();
@@ -1266,7 +1279,7 @@ impl<'a> Reader<'a, super::ObjectBytes> {
             names.insert(std::str::from_utf8(unsafe { value.name.borrowed() })?);
         }
         let input = ReadBytes::new(self.bytes.as_ref());
-        let table = self.symbol_table()?;
+        let table = self.symbol_table(table)?;
         let mut index = 0;
         loop {
             let row = unsafe { next_export(input, table, &mut index) };
@@ -1284,7 +1297,7 @@ impl<'a> Reader<'a, super::ObjectBytes> {
     }
     /// 非根资源侧库来自原编译产物；其C符号沿真实ABI恢复，不消费B公开合同。
     pub(crate) fn native<Bytes: super::ReadSection>(&self, name: &str) -> Result<Object<Bytes>> {
-        self.restore(Some(name), None, self.symbol_table()?, false)
+        self.restore(Some(name), None, self.symbol_table(ReadSymbols::default())?, false)
     }
 }
 #[repr(C)]

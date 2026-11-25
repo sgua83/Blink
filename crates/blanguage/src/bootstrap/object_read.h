@@ -22,8 +22,9 @@ struct ObjectTarget {
 struct ObjectScanStatus { u32 error; u32 complete; };
 // Parts borrows the first metadata and runtime sections. Consumers can ask
 // for full rows, one loadable byte per physical section, or only the parts.
+// Table borrows from this input when already read or first used by a long name.
 extern "C" ObjectScanStatus object_sections(ReadBytes input, ReadBytes headers, address rows, address loadable,
-    inout ObjectParts parts, address context, cfn<u32,address,ReadBytes> validate) on cpu
+    inout ObjectParts parts, inout ReadSymbols table, address context, cfn<u32,address,ReadBytes> validate) on cpu
     requires nonzero(validate);
 // The callback receives every primary name and the one-based section of a
 // defined external symbol. Full object consumers also request physical rows

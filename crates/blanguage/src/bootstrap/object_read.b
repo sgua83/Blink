@@ -26,8 +26,8 @@ ObjectSection row_at(ObjectRows rows,u64 index) on cpu {
     return unsafe_position<ObjectSection>(row_address(rows,index));
 }
 ObjectSectionResult logical_section(ReadBytes input, ReadBytes headers, u64 index,
-    inout u64 mapped, inout ObjectParts parts) on cpu {
-    ReadSection row=resolved_section(input,headers,index);
+    inout u64 mapped, inout ObjectParts parts, inout ReadSymbols table) on cpu {
+    ReadSection row=resolved_section_with_symbols(input,headers,index,table);
     ObjectSection value=ObjectSection(row.name,row.bytes,row.flags,row.relocations,row.relocation_count,0u64,row.zero_fill,unsafe_address(0u64),0u64);
     if(row.error!=0){return ObjectSectionResult(value,row.error);}
     array<u8,7> meta=array<u8,7>(u8(46),u8(98),u8(108),u8(109),u8(101),u8(116),u8(97));array<u8,5> runtime=array<u8,5>(u8(46),u8(98),u8(108),u8(114),u8(116));array<u8,8> build=array<u8,8>(u8(46),u8(98),u8(108),u8(98),u8(117),u8(105),u8(108),u8(100));
@@ -62,7 +62,7 @@ struct ObjectSectionResult {ObjectSection value;u32 error;};
 struct ObjectSymbolResult {ObjectSymbol value;u64 next;u32 error;};
 
 extern "C" ObjectScanStatus object_sections(ReadBytes input, ReadBytes headers, address rows, address loadable,
-    inout ObjectParts parts, address context, cfn<u32,address,ReadBytes> validate) on cpu
+    inout ObjectParts parts, inout ReadSymbols table, address context, cfn<u32,address,ReadBytes> validate) on cpu
     requires nonzero(validate) {
     u64 mapped = 0u64;
     u64 count = headers.length / 40u64;
@@ -70,7 +70,7 @@ extern "C" ObjectScanStatus object_sections(ReadBytes input, ReadBytes headers, 
     bool keep_loadable = address_bits(loadable) != 0u64;
     u64 index = 0u64;
     while (index < count) {
-        let section = logical_section(input, headers, index, mapped, parts);
+        let section = logical_section(input, headers, index, mapped, parts, table);
         if (section.error != 0) { return ObjectScanStatus(section.error, 0); }
         if (validate(context, section.value.name) == 0) { return ObjectScanStatus(0, 0); }
         if (keep_rows) {
@@ -392,14 +392,14 @@ extern "C" RestoreObjectStatus restore_object(RestoreSource source, RestoreObjec
     requires nonzero(metadata.resource) requires nonzero(metadata.code) requires nonzero(metadata.frame)
     requires nonzero(metadata.call) {
     u64 section_count = source.headers.length / 40u64;
-    let table = source.table;
+    ReadSymbols table = source.table;
     let storage = sink.symbols(sink.context, table.count, section_count);
     let scanned_symbols = object_symbols(source.input, table, storage.rows.values,
         storage.definitions, section_count, sink.name_context, sink.symbol_name);
     if (scanned_symbols.complete == 0) { return RestoreObjectStatus(scanned_symbols.error, 0, 0); }
     let rows = sink.sections(sink.context, section_count);
     ObjectParts parts = ObjectParts(empty_bytes(), empty_bytes());
-    let scanned_sections = object_sections(source.input, source.headers, rows.values, address(), parts,
+    let scanned_sections = object_sections(source.input, source.headers, rows.values, address(), parts, table,
         sink.name_context, sink.section_name);
     if (scanned_sections.complete == 0) { return RestoreObjectStatus(scanned_sections.error, 0, 0); }
     bool native = address_bits(source.native_name.bytes) != 0u64;

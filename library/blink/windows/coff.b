@@ -102,7 +102,7 @@ extern "C" ReadSection section(ReadBytes input,ReadBytes headers,u64 index) on c
     return ReadSection(inline_name(bytes),body.bytes,flags,little(bytes,24u64,4u64),
         little(bytes,32u64,2u64),zero_fill,body.error);
 }
-extern "C" ReadSection resolved_section(ReadBytes input,ReadBytes headers,u64 index) on cpu {
+extern "C" ReadSection resolved_section_with_symbols(ReadBytes input,ReadBytes headers,u64 index,inout ReadSymbols table) on cpu {
     ReadSection row=section(input,headers,index);
     ReadBytes field=row.name;
     if(row.error!=0 || field.length==0u64 || little(field.bytes,0u64,1u64)!=47u64){return row;}
@@ -117,12 +117,16 @@ extern "C" ReadSection resolved_section(ReadBytes input,ReadBytes headers,u64 in
         i+=1u64;
     }
     if(begin<4u64){row.error=4;return row;}
-    ReadSymbols table=symbols(input);
+    if(address_bits(table.strings.bytes)==0u64){table=symbols(input);}
     if(table.error!=0){row.error=table.error;return row;}
     ReadRange resolved=string_name(table.strings,begin);
     row.name=resolved.bytes;
     row.error=resolved.error;
     return row;
+}
+extern "C" ReadSection resolved_section(ReadBytes input,ReadBytes headers,u64 index) on cpu {
+    ReadSymbols table=ReadSymbols(empty(),0u64,0u64,0);
+    return resolved_section_with_symbols(input,headers,index,table);
 }
 extern "C" ReadRelocations relocations(ReadBytes input,u64 offset,u64 count,u64 flags) on cpu {
     if((flags&16777216u64)!=0u64){
