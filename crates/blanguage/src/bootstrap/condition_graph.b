@@ -2042,13 +2042,14 @@ extern "C" void proof_facts(address context,ProofFactsInput input,ProofFactsHost
  }
  address previous=address();usize at=0u64;bool have_target=false;
  while(at<input.origins+extra){
+  usize index=at;at+=1u64;
   address identity=address();
   if(input.mode==3){
-   if(at==input.origins){
+   if(index==input.origins){
     if(have_target){break;}
     identity=input.primary;
    }else{
-    identity=host.origin(context,at);
+    identity=host.origin(context,index);
     i32 order=host.compare(identity,input.primary);
     if(order==i32(0)){have_target=true;}
     else{
@@ -2058,13 +2059,15 @@ extern "C" void proof_facts(address context,ProofFactsInput input,ProofFactsHost
     }
    }
   }else{
-   identity=extra!=0u64&&at==0u64 ? input.primary : host.origin(context,at-extra);
+   identity=extra!=0u64&&index==0u64 ? input.primary : host.origin(context,index-extra);
+   if(input.mode==2&&index!=0u64&&host.compare(identity,input.primary)==i32(0)){continue;}
+   if(input.numeric_only==0&&address_bits(previous)!=0u64){
+    FactView fact=internal_key(FactKind::Equal,previous,address(),0u64);
+    fact.second=identity;
+    host.emit(context,fact_equal(fact,host.compare(previous,identity)));
+   }
+   previous=identity;
   }
-  at+=1u64;
-  if(input.mode==2&&at>1u64&&host.compare(identity,input.primary)==i32(0)){continue;}
-  if(input.numeric_only==0&&address_bits(previous)!=0u64){
-   FactView fact=internal_key(FactKind::Equal,previous,address(),0u64);fact.second=identity;host.emit(context,fact_equal(fact,host.compare(previous,identity)));
-  }previous=identity;
   if(input.scalar.kind==3){
    u32 truth=0;while(truth<2){if((impossible&(1<<(1-truth)))!=0){FactView fact=internal_key(FactKind::Boolean,identity,address(),0u64);fact.flag=truth;host.emit(context,fact);}truth+=1;}
    continue;
