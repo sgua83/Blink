@@ -266,53 +266,51 @@ impl Builder<'_> {
 
     pub(super) async fn application_iteration_elements(&mut self, exit: &mut LoopState, source: Option<&application::DataReference>, index: &Value, limit: &Value)->Result<()> {
         let context = self.loop_contexts.last().unwrap();
-        let resources = if let Some(data) = source { vec![data.clone()] } else {
+        let resources: Vec<_> = if source.is_none() {
             context.entry.env.values().flat_map(Binding::application_resources).filter(|data|
                 data.root.ty == Ty::scalar(Scalar::U32)
                     && bounds::Condition::comparison(Comparison::Equal, &data.length, limit).truth_in(&context.entry.path) == Some(true)
             ).map(|data| application::DataReference::direct(data.clone())).collect()
-        };
-        for data in resources {
+        } else { Vec::new() };
+        for data in source.into_iter().chain(&resources) {
             let model=unsafe { self.world.call(self.element_model(&data.ty,&data.elements,(&data.residency,&[]),self.scope.span())).await }?;
             let initial=self.returned_storage(&model);
             let context = self.loop_contexts.last().unwrap();
             let cursor = if source.is_some() { context.control_source.cursor.as_ref().unwrap() } else { index };
-            let ty = data.element_layout().1;
             let components=data.words().iter().map(|word|data.ty.components.iter().position(|(_,at)|at==word).unwrap()).collect::<Vec<_>>();
             let complete=context.entry.cursor.as_ref().is_some_and(|begin|begin.minimum()==0&&begin.maximum()==0);
             let (normal,broken)=self.application_indexed_proof(&data.data,cursor,&initial,context.continues.iter().chain(context.exits.iter()),&context.controls,&context.writes);
             let normal=normal.project(&components,data.ty.components.len());
-            let partial=(!complete||!context.exits.is_empty()).then(||{
-                let mut proof=bounds::Proof::capture(&initial).project(&components,data.ty.components.len());
-                if !context.continues.is_empty(){proof.join_condition(&normal,ty.components.len(),None);}
-                if !context.exits.is_empty(){proof.join_condition(&broken.project(&components,data.ty.components.len()),ty.components.len(),None);}
-                self.application_iteration_interference(&data,cursor,&mut proof,context.continues.iter().chain(context.exits.iter()),&context.controls,&context.writes);
-                proof
-            });
-            let natural=if complete{
-                let common=if source.is_some(){
-                    let (name, _) = context.iterator.as_ref().unwrap();
-                    let mut common: Option<bounds::Proof> = None;
-                    for state in &context.continues {
-                        let Some(Binding::Owned(owner)) = state.env.get(name) else { return Ok(()); };
-                        let incoming=bounds::scoped_proof(ty,owner.proof.clone(),&state.path,&state.env);
-                        if let Some(proof) = &mut common { proof.join_condition(&incoming, ty.components.len(), None); }
-                        else { common = Some(incoming); }
-                    }
-                    common.map(|mut proof|{proof.constrain_common_ranges(&normal,ty.components.len());proof})
-                }else{Some(normal)};
-                common.map(|mut proof|{
-                    self.application_iteration_interference(&data,cursor,&mut proof,context.continues.iter(),&context.controls,&context.writes);proof
-                })
-            }else{partial.clone()};
-            let mut breaks=std::mem::take(&mut self.loop_contexts.last_mut().unwrap().exits);
-            if let Some(proof)=partial{for state in &mut breaks{unsafe { self.world.call(self.publish_iteration_elements(state,&data,proof.clone())).await }?;}}
-            self.loop_contexts.last_mut().unwrap().exits=breaks;
-            if let Some(proof)=natural{unsafe { self.world.call(self.publish_iteration_elements(exit,&data,proof)).await }?;}
+            let mut proofs = LoopElementProofs {
+                builder: self, context, data, cursor, initial: &initial, components: &components,
+                normal: Some(normal), broken, partial: None, natural: None,
+            };
+            let route = unsafe {
+                source_loop_elements(
+                    ptr::from_mut(&mut proofs).cast(), context.continues.len(), context.exits.len(),
+                    u32::from(complete), u32::from(source.is_some()), LOOP_ELEMENT_HOST,
+                )
+            };
+            let LoopElementProofs { partial, natural, .. } = proofs;
+            let natural = match route {
+                LoopElementExit::Skip => return Ok(()),
+                LoopElementExit::Partial => partial.as_ref(),
+                LoopElementExit::Natural => natural.as_ref(),
+            };
+            if let Some(proof) = &partial {
+                let mut breaks = std::mem::take(&mut self.loop_contexts.last_mut().unwrap().exits);
+                for state in &mut breaks {
+                    unsafe { self.world.call(self.publish_iteration_elements(state, data, proof)).await }?;
+                }
+                self.loop_contexts.last_mut().unwrap().exits = breaks;
+            }
+            if let Some(proof) = natural {
+                unsafe { self.world.call(self.publish_iteration_elements(exit, data, proof)).await }?;
+            }
         }
         Ok(())
     }
-    async fn publish_iteration_elements(&mut self, exit: &mut LoopState, data: &application::DataReference, proof: bounds::Proof)->Result<()> {
+    async fn publish_iteration_elements(&mut self, exit: &mut LoopState, data: &application::DataReference, proof: &bounds::Proof)->Result<()> {
         let ty = data.element_layout().1;
         std::mem::swap(&mut self.env, &mut exit.env);
         std::mem::swap(&mut self.path, &mut exit.path);
@@ -1134,6 +1132,106 @@ unsafe extern "C" fn publish_loop_exit(context: *mut c_void, reachable: u32) {
     } else {
         state.builder.path = bounds::Clause::impossible();
     }
+}
+
+#[repr(u32)]
+#[allow(dead_code)] // B supplies the edge for each join.
+enum LoopElementEdge { Repeated, Broken }
+
+#[repr(u32)]
+#[allow(dead_code)] // B returns the active publication route.
+enum LoopElementExit { Skip, Partial, Natural }
+
+struct LoopElementProofs<'a, 'world> {
+    builder: &'a Builder<'world>,
+    context: &'a LoopContext,
+    data: &'a application::DataReference,
+    cursor: &'a Value,
+    initial: &'a Value,
+    components: &'a [usize],
+    normal: Option<bounds::Proof>,
+    broken: bounds::Proof,
+    partial: Option<bounds::Proof>,
+    natural: Option<bounds::Proof>,
+}
+
+#[repr(C)]
+struct LoopElementHost {
+    seed_partial: unsafe extern "C" fn(*mut c_void),
+    join_partial: unsafe extern "C" fn(*mut c_void, LoopElementEdge),
+    finish_partial: unsafe extern "C" fn(*mut c_void),
+    add_natural: unsafe extern "C" fn(*mut c_void, usize) -> u32,
+    finish_natural: unsafe extern "C" fn(*mut c_void, u32),
+}
+
+const LOOP_ELEMENT_HOST: LoopElementHost = LoopElementHost {
+    seed_partial: seed_partial_elements,
+    join_partial: join_partial_elements,
+    finish_partial: finish_partial_elements,
+    add_natural: add_natural_elements,
+    finish_natural: finish_natural_elements,
+};
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.function_body::loop_elements"]
+    fn source_loop_elements(
+        context: *mut c_void, repeated: usize, broken: usize, complete: u32, direct: u32, host: LoopElementHost,
+    ) -> LoopElementExit;
+}
+
+unsafe extern "C" fn seed_partial_elements(context: *mut c_void) {
+    let state = unsafe { &mut *context.cast::<LoopElementProofs<'_, '_>>() };
+    state.partial = Some(bounds::Proof::capture(state.initial).project(state.components, state.data.ty.components.len()));
+}
+
+unsafe extern "C" fn join_partial_elements(context: *mut c_void, edge: LoopElementEdge) {
+    let state = unsafe { &mut *context.cast::<LoopElementProofs<'_, '_>>() };
+    let width = state.data.element_layout().1.components.len();
+    let partial = state.partial.as_mut().unwrap();
+    match edge {
+        LoopElementEdge::Repeated => partial.join_condition(state.normal.as_ref().unwrap(), width, None),
+        LoopElementEdge::Broken => partial.join_condition(
+            &state.broken.project(state.components, state.data.ty.components.len()), width, None,
+        ),
+    }
+}
+
+unsafe extern "C" fn finish_partial_elements(context: *mut c_void) {
+    let state = unsafe { &mut *context.cast::<LoopElementProofs<'_, '_>>() };
+    let edges = state.context.continues.iter().chain(&state.context.exits);
+    state.builder.application_iteration_interference(
+        state.data, state.cursor, state.partial.as_mut().unwrap(), edges, &state.context.controls, &state.context.writes,
+    );
+}
+
+unsafe extern "C" fn add_natural_elements(context: *mut c_void, index: usize) -> u32 {
+    let state = unsafe { &mut *context.cast::<LoopElementProofs<'_, '_>>() };
+    let (name, _) = state.context.iterator.as_ref().unwrap();
+    let edge = &state.context.continues[index];
+    let Some(Binding::Owned(owner)) = edge.env.get(name) else { return 0; };
+    let ty = state.data.element_layout().1;
+    let incoming = bounds::scoped_proof(ty, owner.proof.clone(), &edge.path, &edge.env);
+    if let Some(proof) = &mut state.natural {
+        proof.join_condition(&incoming, ty.components.len(), None);
+    } else {
+        state.natural = Some(incoming);
+    }
+    1
+}
+
+unsafe extern "C" fn finish_natural_elements(context: *mut c_void, direct: u32) {
+    let state = unsafe { &mut *context.cast::<LoopElementProofs<'_, '_>>() };
+    let normal = state.normal.take().unwrap();
+    if direct != 0 {
+        let width = state.data.element_layout().1.components.len();
+        state.natural.as_mut().unwrap().constrain_common_ranges(&normal, width);
+    } else {
+        state.natural = Some(normal);
+    }
+    state.builder.application_iteration_interference(
+        state.data, state.cursor, state.natural.as_mut().unwrap(), state.context.continues.iter(),
+        &state.context.controls, &state.context.writes,
+    );
 }
 
 #[repr(C)]

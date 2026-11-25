@@ -9,6 +9,29 @@ extern "C" void loop_terminal_paths(address context,usize edges,LoopTerminalHost
     }
 }
 
+extern "C" LoopElementExit loop_elements(address context,usize repeated,usize broken,u32 complete,u32 direct,LoopElementHost host) on cpu
+    requires nonzero(host.seed_partial) requires nonzero(host.join_partial) requires nonzero(host.finish_partial)
+    requires nonzero(host.add_natural) requires nonzero(host.finish_natural) {
+    if(complete==0||broken!=0u64) {
+        host.seed_partial(context);
+        if(repeated!=0u64){host.join_partial(context,LoopElementEdge::Repeated);}
+        if(broken!=0u64){host.join_partial(context,LoopElementEdge::Broken);}
+        host.finish_partial(context);
+    }
+    if(complete==0){return LoopElementExit::Partial;}
+
+    if(direct!=0) {
+        usize edge=0u64;
+        while(edge<repeated) {
+            if(host.add_natural(context,edge)==0){return LoopElementExit::Skip;}
+            edge+=1u64;
+        }
+        if(repeated==0u64){return LoopElementExit::Natural;}
+    }
+    host.finish_natural(context,direct);
+    return LoopElementExit::Natural;
+}
+
 extern "C" void loop_natural_dataset(address context,usize edges,u32 written,u32 terminal,NaturalDatasetHost host) on cpu
     requires nonzero(host.terminal) requires nonzero(host.repeated)
     requires nonzero(host.publish_terminal) requires nonzero(host.publish_repeated) {

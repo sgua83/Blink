@@ -590,6 +590,19 @@ struct LoopTerminalHost {
 extern "C" void loop_terminal_paths(address context,usize edges,LoopTerminalHost host) on cpu
     requires nonzero(host.bounded) requires nonzero(host.project);
 
+enum LoopElementEdge:u32 { Repeated=0; Broken=1; };
+enum LoopElementExit:u32 { Skip=0; Partial=1; Natural=2; };
+struct LoopElementHost {
+    cfn<void,address> seed_partial;
+    cfn<void,address,LoopElementEdge> join_partial;
+    cfn<void,address> finish_partial;
+    cfn<u32,address,usize> add_natural;
+    cfn<void,address,u32> finish_natural;
+};
+extern "C" LoopElementExit loop_elements(address context,usize repeated,usize broken,u32 complete,u32 direct,LoopElementHost host) on cpu
+    requires nonzero(host.seed_partial) requires nonzero(host.join_partial) requires nonzero(host.finish_partial)
+    requires nonzero(host.add_natural) requires nonzero(host.finish_natural);
+
 struct NaturalDatasetHost {
     cfn<void,address,usize> terminal;
     cfn<void,address,usize> repeated;
