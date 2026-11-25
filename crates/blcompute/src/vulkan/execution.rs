@@ -545,11 +545,12 @@ impl Execution {
         }
     }
     fn release_known(&self) {
-        let Some(dependencies) = self.dependencies.take() else {
-            return;
-        };
-        Self::release_dependencies(dependencies, self.point.terminal_result());
-        self.release_resources();
+        if let Some(result) = self.point.terminal_result()
+            && let Some(dependencies) = self.dependencies.take()
+        {
+            Self::release_dependencies(dependencies, result);
+            self.release_resources();
+        }
     }
     pub fn borrow_synchronous(source: Option<&Rc<Self>>) -> Result<Option<&Self>> {
         let Some(source) = source else {
@@ -570,13 +571,13 @@ impl Execution {
         }
         result
     }
-    fn take_completed_dependencies(&self, result: Option<i32>) -> Option<Dependencies> {
+    fn take_completed_dependencies(&self, result: i32) -> Option<Dependencies> {
         let dependencies = self.dependencies.take()?;
         // 保留真实原生终态；同队列成功覆盖生产依赖，设备丢失仍是错误。
-        self.point.result.set(self.point.result.get().or(result));
+        self.point.result.set(Some(self.point.result.get().unwrap_or(result)));
         Some(dependencies)
     }
-    fn release_dependencies(dependencies: Dependencies, result: Option<i32>) {
+    fn release_dependencies(dependencies: Dependencies, result: i32) {
         let (mut completed, mut index) = match dependencies {
             Dependencies::Empty => return,
             Dependencies::Single(previous) => {
@@ -615,16 +616,12 @@ impl Execution {
     }
     pub fn is_complete(&self) -> Result<bool> {
         let result = self.point.is_complete();
-        if self.point.terminal_result().is_some() {
-            self.release_known();
-        }
+        self.release_known();
         result
     }
     pub fn wait(&self) -> Result<()> {
         let result = self.point.wait();
-        if self.point.terminal_result().is_some() {
-            self.release_known();
-        }
+        self.release_known();
         result
     }
 }
