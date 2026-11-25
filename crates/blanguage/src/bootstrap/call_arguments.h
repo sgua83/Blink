@@ -41,8 +41,8 @@ extern "C" RetainNeed retain_step(inout Cursor cursor,u64 count,RetainFacts fact
 extern "C" CheckCursor checks_start() on cpu;
 extern "C" CheckNeed checks_step(inout CheckCursor cursor,u64 count,CheckFacts facts) on cpu;
 
-struct ReadInputFacts {u32 present;u32 bound;u32 place;u32 temporary;u32 owns;u32 value;u32 storage;u32 writable;u32 kind;u32 owner;u32 application;};
-enum ReadInputNeed:u32 {Reference=0;BorrowedData=1;Root=2;IsPlace=3;Temporary=4;Type=5;Binding=6;Materialize=7;Place=8;Storage=9;Writable=10;Initialize=11;Borrow=12;Aggregate=13;Application=14;OwnedReference=15;Scoped=16;Resource=17;Empty=18;};
+struct ReadInputFacts {u32 present;u32 bound;u32 place;u32 temporary;u32 owns;u32 storage;u32 writable;u32 kind;u32 owner;u32 application;};
+enum ReadInputNeed:u32 {Reference=0;BorrowedData=1;Root=2;IsPlace=3;Temporary=4;Type=5;Place=6;Storage=7;Writable=8;Initialize=9;Borrow=10;Aggregate=11;Application=12;OwnedReference=13;Scoped=14;Resource=15;Empty=16;};
 struct ReadInputStep {Phase cursor;ReadInputNeed need;};
 extern "C" Optional<Text> read_input_root(SignatureNode source) on cpu;
 extern "C" ReadInputStep read_input_step(Phase cursor,ReadInputFacts facts) on cpu;
@@ -88,8 +88,8 @@ enum FunctionValueNeed:u32 {BadTarget=0;Lower=1;Empty=2;Kind=3;BadKind=4;Nonzero
 struct FunctionValueStep {Phase cursor;FunctionValueNeed need;};
 extern "C" FunctionValueStep function_value_step(Phase cursor,FunctionValueFacts facts) on cpu;
 
-struct TakeAddressFacts {u32 cpu;u64 arguments;u32 value;u32 present;u32 owns;u32 views;u32 empty;u32 writable;u32 storage;};
-enum TakeAddressNeed:u32 {BadTarget=0;BadCount=1;Root=2;Materialize=3;Place=4;Empty=5;Layout=6;BadLayout=7;Origin=8;Reference=9;Register=10;Storage=11;LocalOrigin=12;ReferenceIdentity=13;CopyOrigin=14;Tail=15;StorageIdentity=16;Emit=17;Complete=18;};
+struct TakeAddressFacts {u32 cpu;u64 arguments;u32 present;u32 owns;u32 views;u32 empty;u32 writable;u32 storage;};
+enum TakeAddressNeed:u32 {BadTarget=0;BadCount=1;Place=2;Empty=3;Layout=4;BadLayout=5;Origin=6;Reference=7;Register=8;Storage=9;LocalOrigin=10;ReferenceIdentity=11;CopyOrigin=12;Tail=13;StorageIdentity=14;Emit=15;Complete=16;};
 struct TakeAddressStep {Phase cursor;TakeAddressNeed need;CallAccess access;};
 extern "C" TakeAddressStep take_address_step(Phase cursor,TakeAddressFacts facts) on cpu;
 struct AddressTailHost {cfn<u32,address,u64> offset;cfn<void,address,u64,u32> append;};

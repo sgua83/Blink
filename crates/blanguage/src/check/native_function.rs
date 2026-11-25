@@ -2058,7 +2058,7 @@ async fn failure_scope(
     locals:&mut BTreeMap<usize,Ty>,context:&mut FailureContext<'_>,module:&mut Module,existing:Option<usize>,
 )->Result<Vec<Inst>> {
     let mut b=Builder::from_checked(world,&scope.scope,context.program,scope.domain,
-        scope.source_definition,scope.source_context,scope.mutable_names);
+        scope.source_definition,scope.source_context,scope.binding_uses);
     b.application=Some(application::Context { frame: scope.frame, range: context.range });
     if let Some(completions)=context.task_completions {b.task_completions=completions.clone();}
     b.env=scope.env;b.path=scope.path;b.initialized=scope.initialized;

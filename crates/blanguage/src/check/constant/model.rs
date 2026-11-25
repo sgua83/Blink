@@ -108,10 +108,7 @@ async fn module_body(
     instance:crate::generics::Instance,result_name:&TypeName,
 )->Result<ConstantValue> {
     let context=constant_context(key);
-    let scope=LexicalScope::Function(instance.clone());
-    let(source_definition,source_context)=definition.syntax_context(Some(key));
-    let mut builder=Builder::from_checked(world,&scope,&context,0,
-        source_definition,source_context,BTreeSet::new());
+    let mut builder = unsafe { world.call(Builder::new(world, &instance, &context, 0, Some(key))).await }?;
     builder.in_function=true;
     builder.calls.extend_from_slice(calls);
     builder.calls.push(key.into());

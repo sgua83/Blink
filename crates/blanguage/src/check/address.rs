@@ -1416,13 +1416,11 @@ impl Builder<'_> {
     }
     pub(super) async fn position_address(&mut self,args:&Expressions,span:Span)->Result<Option<Value>>{
         let mut cursor=AddressPhase{phase:0};let mut facts=TakeAddressFacts{cpu:u32::from(self.program.target==Target::Cpu),arguments:args.len()as u64,..TakeAddressFacts::default()};
-        let mut argument=None;let mut root=None;let mut place:Option<Place>=None;let mut origin:Option<Origin>=None;let mut address=None;let mut dst=None;let mut ty=None;let mut numeric=None;let mut identity=None;let mut proof=None;
+        let mut place:Option<Place>=None;let mut origin:Option<Origin>=None;let mut address=None;let mut dst=None;let mut ty=None;let mut numeric=None;let mut identity=None;let mut proof=None;
         loop{let step=unsafe{take_address_step(cursor,TakeAddressFacts{..facts})};cursor=step.cursor;match step.need{
             TakeAddressNeed::BadTarget=>return self.fail(span,"B265","address_of只取得本进程CPU位置"),
             TakeAddressNeed::BadCount=>return self.fail(span,"B153","address_of需要一个实际位置"),
-            TakeAddressNeed::Root=>{argument=Some(args.at(0));let name=unsafe{address_root(argument.as_ref().unwrap().signature_node())};root=(name.present!=0).then(||args.source_view().text(name.value));facts.value=u32::from(root.is_some_and(|name|matches!(self.env.get(name),Some(Binding::Value(_)))));},
-            TakeAddressNeed::Materialize=>{let(name,Binding::Value(value))=self.env.remove_entry(root.unwrap()).unwrap()else{unsafe{std::hint::unreachable_unchecked()}};let mut owner=self.materialize_array(value,None);owner.place=owner.place.read_only();self.env.insert(name,Binding::Owned(owner));},
-            TakeAddressNeed::Place=>{place=unsafe{self.world.call(self.place(argument.as_ref().unwrap())).await}?;facts.present=u32::from(place.is_some());},
+            TakeAddressNeed::Place=>{place=unsafe{self.world.call(self.place(&args.at(0))).await}?;facts.present=u32::from(place.is_some());},
             TakeAddressNeed::Empty=>return Ok(None),
             TakeAddressNeed::Layout=>{let ty=place.as_ref().unwrap().ty();facts.owns=u32::from(ty.owns_resources());facts.views=u32::from(ty.contains_views());facts.empty=u32::from(ty.components.is_empty());},
             TakeAddressNeed::BadLayout=>return self.fail(span,"B263","address_of需要非空普通值位置，资源通过原拥有者或借用接口交接"),
@@ -1478,15 +1476,14 @@ impl Builder<'_> {
 
 
 #[repr(C)]#[derive(Clone,Copy)]struct AddressPhase{phase:u32}
-#[repr(C)]#[derive(Default)]struct TakeAddressFacts{cpu:u32,arguments:u64,value:u32,present:u32,owns:u32,views:u32,empty:u32,writable:u32,storage:u32}
-#[repr(u32)]enum TakeAddressNeed{BadTarget,BadCount,Root,Materialize,Place,Empty,Layout,BadLayout,Origin,Reference,Register,Storage,LocalOrigin,ReferenceIdentity,CopyOrigin,Tail,StorageIdentity,Emit,Complete}
+#[repr(C)]#[derive(Default)]struct TakeAddressFacts{cpu:u32,arguments:u64,present:u32,owns:u32,views:u32,empty:u32,writable:u32,storage:u32}
+#[repr(u32)]enum TakeAddressNeed{BadTarget,BadCount,Place,Empty,Layout,BadLayout,Origin,Reference,Register,Storage,LocalOrigin,ReferenceIdentity,CopyOrigin,Tail,StorageIdentity,Emit,Complete}
 #[repr(C)]struct TakeAddressStep{cursor:AddressPhase,need:TakeAddressNeed,access:Access}
 #[repr(C)]struct AddressTailHost{offset:unsafe extern "C" fn(*mut std::ffi::c_void,u64)->u32,append:unsafe extern "C" fn(*mut std::ffi::c_void,u64,u32)}
 #[repr(C)]#[derive(Default)]struct ExternalPositionFacts{cpu:u32,explicit_type:u32,arguments:u64,owns:u32,views:u32,empty:u32,present:u32,external:u32,identity:u32,constant:u32}
 #[repr(u32)]enum ExternalPositionNeed{BadTarget,BadArguments,Type,Owned,BadLayout,Argument,Empty,RequireAddress,Borrow,Requirement,BorrowKind,Identity,KnownBits,ConstantIdentity,DynamicIdentity,Reword,Low,High,ReadyExternal,ReadyBorrowed}
 #[repr(C)]struct ExternalPositionStep{cursor:AddressPhase,need:ExternalPositionNeed}
 unsafe extern "C"{
- #[link_name="bootstrap.call_arguments::read_input_root"]fn address_root(source:crate::syntax::wire::SignatureNode)->crate::syntax::wire::Optional<crate::syntax::wire::Text>;
  #[link_name="bootstrap.call_arguments::take_address_step"]fn take_address_step(cursor:AddressPhase,facts:TakeAddressFacts)->TakeAddressStep;
  #[link_name="bootstrap.call_arguments::address_tail"]fn address_tail(context:*mut std::ffi::c_void,count:u64,size:u32,first:u32,host:AddressTailHost)->u32;
  #[link_name="bootstrap.call_arguments::external_position_step"]fn external_position_step(cursor:AddressPhase,facts:ExternalPositionFacts)->ExternalPositionStep;

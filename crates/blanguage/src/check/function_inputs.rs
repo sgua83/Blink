@@ -664,7 +664,7 @@ pub(super) async fn function_parameters(
                 let env=std::mem::take(&mut b.env);let resolved=unsafe{world.call(contracts::resolve(b,instance.into(),&LexicalScope::Function(instance.clone()),&env,&resources)).await};b.env=env;requirements=Some(resolved?);
             },
             BindingNeed::Assume=>{let mut env=std::mem::take(&mut b.env);unsafe{world.call(contracts::assume(b,instance.into(),&mut env,&requirements.take().unwrap())).await}?;b.env=env;},
-            BindingNeed::Arrays=>b.materialize_array_bindings(),
+            BindingNeed::Arrays=>b.materialize_input_bindings(),
             BindingNeed::Outputs=>{output_contracts=unsafe{world.call(outputs::contract_predicates(b,instance)).await}?;},
             BindingNeed::Completions=>completion_inputs(b,d.function.span(),&mut parameters,&mut inputs)?,
             BindingNeed::Finish=>return Ok((parameters,inputs,output_contracts)),

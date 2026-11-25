@@ -133,7 +133,7 @@ impl<'a> Builder<'a>{
   facts.unit=u32::from(result_name.name=="void");facts.never=u32::from(result_name.is_never());
   let mut parameters=Some(instance.parameters(world).zip(args));let mut param:Option<Param>=None;let mut argument=None;let mut ty=None;
   let mut env=BTreeMap::new();let mut borrowed=Vec::new();let mut held=Vec::new();let mut requirements=None;
-  let mut old_env=None;let mut old_mutable_names=None;let mut callee_scope=None;let mut old_context=None;
+  let mut old_env=None;let mut old_binding_uses=None;let mut callee_scope=None;let mut old_context=None;
   let mut caller_initialization=None;let mut result_layout=None;let mut output_inputs=None;let mut caller_path=None;
   let mut result:Option<Returned>=None;let mut returned=None;let mut updates=Vec::new();let mut proofs=None;let mut fresh_scopes=BTreeSet::new();
   loop{
@@ -235,11 +235,11 @@ impl<'a> Builder<'a>{
     InlineNeed::Prove=>{unsafe{world.call(contracts::prove(self,requirements.as_ref().unwrap_unchecked(),span)).await}?;}
     InlineNeed::Assume=>{unsafe{world.call(contracts::assume(self,(&instance).into(),&mut env,requirements.as_ref().unwrap_unchecked())).await}?;requirements.take();}
     InlineNeed::EnterEnvironment=>{
-     old_env=Some(std::mem::replace(&mut self.env,std::mem::take(&mut env)));old_mutable_names=Some(std::mem::take(&mut self.mutable_names));
+     old_env=Some(std::mem::replace(&mut self.env,std::mem::take(&mut env)));old_binding_uses=Some(std::mem::take(&mut self.binding_uses));
      callee_scope=Some(LexicalScope::Function(instance.clone()));
     }
     InlineNeed::AssignedNames=>{
-     unsafe{world.call(assigned_names(world,callee_scope.as_ref().unwrap_unchecked(),callee.function.body().as_ref().unwrap_unchecked(),&mut self.mutable_names)).await}?;
+     self.binding_uses=unsafe{world.call(collect_binding_uses(world,callee_scope.as_ref().unwrap_unchecked(),callee.function.body().as_ref().unwrap_unchecked())).await}?;
     }
     need@(InlineNeed::EnterContext|InlineNeed::EnterCooperativeContext)=>{
      let old_scope=self.scope.clone();let old_in_function=self.in_function;let old_cooperative=self.cooperative_root;let old_block=self.block_depth;let old_loop=self.loop_depth;let old_iterators=std::mem::take(&mut self.iterators);
@@ -265,7 +265,7 @@ impl<'a> Builder<'a>{
      facts.result_facts=u32::from(bounds::Proof::fact_components(&storage).next().is_some());
     }
     InlineNeed::IsolateInitialization=>{caller_initialization=Some(std::mem::take(&mut self.initialized));}
-    InlineNeed::Materialize=>{self.materialize_array_bindings();}
+    InlineNeed::Materialize=>{self.materialize_input_bindings();}
     InlineNeed::OutputInputs=>{output_inputs=Some(unsafe{world.call(outputs::current_inputs(self,&instance)).await}?);}
     InlineNeed::BoundsInputs=>{facts.input_plain=plain_environment(&self.env,true);}
     InlineNeed::EnterPath=>{caller_path=Some(std::mem::take(&mut self.path));}
@@ -305,7 +305,7 @@ impl<'a> Builder<'a>{
      unsafe{world.call(self.assign_owned_proof(&owner.place,owner.proof,owner.uniform)).await}?;
     }
     InlineNeed::RestoreContext=>{
-     self.mutable_names=unsafe{old_mutable_names.take().unwrap_unchecked()};
+     self.binding_uses=unsafe{old_binding_uses.take().unwrap_unchecked()};
      let(scope,in_function,cooperative,block,loop_depth,iterators,source_context,source_definition,source_site)=unsafe{old_context.take().unwrap_unchecked()};
      self.scope=scope;self.source_definition=source_definition;self.source_context=source_context;self.source_site=source_site;self.in_function=in_function;self.cooperative_root=cooperative;self.block_depth=block;self.loop_depth=loop_depth;self.iterators=iterators;
     }

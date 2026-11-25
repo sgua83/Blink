@@ -749,7 +749,7 @@ pub(super) async fn range_constants(
 ) -> Result<Vec<(OutputConstant, OutputConstant)>> {
     let context=constant::constant_context(lexical.module());
     let(source_definition,source_context)=lexical.syntax_context(None);
-    let mut builder=Builder::from_checked(world,lexical,&context,0,source_definition,source_context,BTreeSet::new());
+    let mut builder=Builder::from_checked(world,lexical,&context,0,source_definition,source_context,BindingUses::default());
     builder.in_function = true;
     let mut endpoint = async |value: &OutputCondition| -> Result<OutputConstant> {
         let value = unsafe { world.call(bind_constants(world, definition.condition_scope(), value, span)).await }?;

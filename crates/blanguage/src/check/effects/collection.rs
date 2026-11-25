@@ -88,7 +88,7 @@ enum CallResolution { Missing, Unique, Ambiguous }
 enum CallAction {
     Finish, BoundType, Local, Target, Function, BadSignature, Declared, Instance, MemoryContract,
     ReadOnly, Parameter, Contents, Position, External, Visit, Worker, LengthNumber, LengthName,
-    Factory, FactoryEffects, Generator, Advance, BuiltinType, RecordType,
+    Factory, FactoryEffects, Generator, Advance, BuiltinType, RecordType, ReadPlace,
 }
 
 #[derive(Clone, Copy)]
@@ -258,7 +258,7 @@ impl Scope<'_, '_> {
                 }
                 ExpressionAction::Bool => truth = Some(bounds::Condition::constant(step.child.offset != 0)),
                 ExpressionAction::NameEligible => {
-                    fact = u32::from(!self.builder.unwrap().mutable_names.contains(view.text(step.name)));
+                    fact = u32::from(!self.builder.unwrap().binding_uses.mutable(view.text(step.name)));
                 }
                 ExpressionAction::Name | ExpressionAction::Comparison => {
                     if let Some((ty, proof, _)) = unsafe { world.call(self.input_snapshot(
@@ -483,6 +483,11 @@ impl Scope<'_, '_> {
                     let local = step.local != 0 && unsafe { world.call(self.local_value_write(&place)).await }? == Some(true);
                     writes.accept(world, position(place, Some(expr.clone()), step.contents != 0, local)).await?;
                 }
+                CallAction::ReadPlace => {
+                    if let Some(name) = assigned_root(&view.node(step.value.offset)) {
+                        self.binding_uses.unwrap().borrow_mut().read_place(name);
+                    }
+                },
                 CallAction::External => {
                     let arguments = match &instance {
                         Some(instance) => unsafe { world.call(self.call_inputs(instance, &args)).await }?,
@@ -506,7 +511,7 @@ impl Scope<'_, '_> {
                     let binding = self.bindings.iter().rev().find(|(bound, _)| *bound == name);
                     match binding {
                         Some((_, Local::Initialized(None, value, _))) if self.builder
-                            .is_some_and(|builder| !builder.mutable_names.contains(name)) =>
+                            .is_some_and(|builder| !builder.binding_uses.mutable(name)) =>
                         {
                             bound_length = Some(value);
                             facts.initialized_length = 1;

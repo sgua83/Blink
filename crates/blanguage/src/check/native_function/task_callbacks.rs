@@ -31,7 +31,7 @@ impl Builder<'_>{
   loop{let next=unsafe{callback_step(cursor,u32::from(frame))};cursor=next.cursor;match next.need{
    CallbackNeed::Builder=>{
     let(definition,context)=lexical.syntax_context(Some(&name));
-    let mut builder=Box::new(Builder::from_checked(self.world,&lexical,&program,0,definition,context,BTreeSet::new()));
+    let mut builder=Box::new(Builder::from_checked(self.world,&lexical,&program,0,definition,context,BindingUses::default()));
     builder.in_function=true;b=Some(builder);
    }
    CallbackNeed::Frame=>{let builder=unsafe{b.as_mut().unwrap_unchecked()};builder.application=Some(application::Context::default());frame_value=Some(builder.application_frame(span)?);}

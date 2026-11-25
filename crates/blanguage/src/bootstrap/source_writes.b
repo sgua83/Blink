@@ -480,6 +480,9 @@ extern "C" CallStep call_step(SignatureNode source, CallSyntax call, CallCursor 
                 step.action = CallAction::Position; step.value = ExprRef(member(storage, args, index));
                 step.local = facts.current; return step;
             }
+            if (facts.current == 0 && facts.parameter_access == Access::Read) {
+                step.action = CallAction::ReadPlace; step.value = ExprRef(member(storage, args, index)); return step;
+            }
         } else {
             if (step.cursor.index >= args.count || step.cursor.index >= parameters.count) {
                 step.cursor.index = 0u64; step.cursor.phase = 18;
@@ -499,7 +502,11 @@ extern "C" CallStep call_step(SignatureNode source, CallSyntax call, CallCursor 
                         step.contents = 1; step.local = facts.current; return step;
                     }
                 } else {
+                    u64 index = step.cursor.index;
                     step.cursor.index += 1u64; step.cursor.phase = 11;
+                    if (facts.current == 0 && declared_access(param) == Access::Read && ty.tile == 0) {
+                        step.action = CallAction::ReadPlace; step.value = ExprRef(member(storage, args, index)); return step;
+                    }
                 }
             }
         }

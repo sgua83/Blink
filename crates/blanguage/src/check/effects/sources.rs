@@ -28,15 +28,16 @@ pub(super) struct Scope<'b, 'w> {
     pub(super) world: &'b World,
     pub(super) lexical: &'b LexicalScope,
     pub(super) builder: Option<&'b Builder<'w>>,
+    pub(super) binding_uses: Option<&'b std::cell::RefCell<BindingUses>>,
     pub bindings: Vec<(String, Local)>,
     pub(super) writes: Option<&'b LoopWrites>,
 }
 impl<'b, 'w> Scope<'b, 'w> {
-    pub fn declared(world: &'b World, lexical: &'b LexicalScope) -> Self {
-        Self { world, lexical, builder: None, bindings: Vec::new(), writes: None }
+    pub fn declared(world: &'b World, lexical: &'b LexicalScope, uses: &'b std::cell::RefCell<BindingUses>) -> Self {
+        Self { world, lexical, builder: None, binding_uses: Some(uses), bindings: Vec::new(), writes: None }
     }
     pub fn current(builder: &'b Builder<'w>) -> Self {
-        Self { world: builder.world, lexical: &builder.scope, builder: Some(builder), bindings: Vec::new(), writes: None }
+        Self { world: builder.world, lexical: &builder.scope, builder: Some(builder), binding_uses: None, bindings: Vec::new(), writes: None }
     }
     async fn declared_type(&self, syntax: &TypeName, context: (&Source,&str,&[String]), span: Span) -> Result<Ty> {
         let (source,module,imports)=context;

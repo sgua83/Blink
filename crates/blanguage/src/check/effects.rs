@@ -483,7 +483,7 @@ impl<'b, 'w> Scope<'b, 'w> {
         if let ExprKind::Name(name)=expr.kind()
             &&let Some(i)=self.bindings[..limit].iter().rposition(|(bound,_)|*bound==name)
             &&let Local::Initialized(None,value,_)=&self.bindings[i].1
-            &&!builder.mutable_names.contains(name) {return unsafe { self.world.call(self.input_snapshot(&value,i,access,element,ordinal)).await };}
+            &&!builder.binding_uses.mutable(name) {return unsafe { self.world.call(self.input_snapshot(&value,i,access,element,ordinal)).await };}
         match expr.kind() {
             ExprKind::Member(base,field)if field=="length"=>{
                 if let Some((ty,proof,_))=unsafe { self.world.call(self.input_snapshot(&base,limit,Access::Value,element,ordinal)).await }? && ty.dataset.is_some() {
@@ -722,24 +722,63 @@ pub(super) async fn expression_assignments(builder: &Builder<'_>, expr: &Expr, n
         Ok(())
     })).await }
 }
-pub(super) async fn assigned_names(world: &World, lexical: &LexicalScope, code: &Block, names: &mut BTreeSet<String>) -> Result<()> {
-    unsafe { world.call(Scope::declared(world, lexical).writes_statements(code, code, &mut async |write: Write| {
-        if let Write::Position{contents:false,place,..}=write
-            && let Some(root)=assigned_root(&place) {names.insert(root);}
-        Ok(())
-    })).await }
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum BindingUse { ReadPlace, WritePlace }
+
+#[derive(Clone, Default)]
+pub(super) struct BindingUses(BTreeMap<String, BindingUse>);
+impl BindingUses {
+    pub(super) fn mutable(&self, name: &str) -> bool {
+        self.0.get(name) == Some(&BindingUse::WritePlace)
+    }
+
+    pub(super) fn needs_place(&self, name: &str) -> bool {
+        self.0.contains_key(name)
+    }
+
+    fn read_place(&mut self, name: String) {
+        self.0.entry(name).or_insert(BindingUse::ReadPlace);
+    }
+
+    fn record(&mut self, usage: Write) {
+        match usage {
+            Write::Position { contents: false, place, .. } => {
+                if let Some(name) = assigned_root(&place) {
+                    self.0.insert(name, BindingUse::WritePlace);
+                }
+            },
+            _ => {},
+        }
+    }
 }
-pub(super) async fn assigned_parallel(world:&World,lexical:&LexicalScope,name:&str,domain:&ParallelDomain,body:&Block,names:&mut BTreeSet<String>)->Result<()> {
-    let mut scope=Scope::declared(world,lexical);
-    let mut assigned=async |write: Write|{
-        if let Write::Position{contents:false,place,..}=write
-            && let Some(root)=assigned_root(&place){names.insert(root);}
+
+pub(super) async fn collect_binding_uses(world: &World, lexical: &LexicalScope, code: &Block) -> Result<BindingUses> {
+    let uses = std::cell::RefCell::new(BindingUses::default());
+    unsafe { world.call(Scope::declared(world, lexical, &uses).writes_statements(code, code, &mut async |usage: Write| {
+        uses.borrow_mut().record(usage);
+        Ok(())
+    })).await }?;
+    Ok(uses.into_inner())
+}
+
+pub(super) async fn collect_parallel_binding_uses(
+    world: &World, lexical: &LexicalScope, name: &str, domain: &ParallelDomain, body: &Block,
+) -> Result<BindingUses> {
+    let uses = std::cell::RefCell::new(BindingUses::default());
+    let mut scope = Scope::declared(world, lexical, &uses);
+    let mut collect = async |usage: Write| {
+        uses.borrow_mut().record(usage);
         Ok(())
     };
-    if let Some(count)=domain.count(){unsafe { world.call(scope.writes_expression(&count,&mut assigned,None,Access::Value)).await }?;}
-    if let Some(selection)=domain.selection(){unsafe { world.call(scope.writes_expression(&selection,&mut assigned,None,Access::Value)).await }?;}
-    scope.bindings.push((name.into(),Local::NamedElement(domain.dataset().into())));
-    unsafe { world.call(scope.writes_statements(body,body,&mut assigned)).await }
+    if let Some(count) = domain.count() {
+        unsafe { world.call(scope.writes_expression(&count, &mut collect, None, Access::Value)).await }?;
+    }
+    if let Some(selection) = domain.selection() {
+        unsafe { world.call(scope.writes_expression(&selection, &mut collect, None, Access::Value)).await }?;
+    }
+    scope.bindings.push((name.into(), Local::NamedElement(domain.dataset().into())));
+    unsafe { world.call(scope.writes_statements(body, body, &mut collect)).await }?;
+    Ok(uses.into_inner())
 }
 
 fn contains_expression(root: &Expr, selected: &Expr) -> bool {

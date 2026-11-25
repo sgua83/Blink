@@ -47,7 +47,7 @@ enum CallAction:u32 {
     Finish=0; BoundType=1; Local=2; Target=3; Function=4; BadSignature=5; Declared=6; Instance=7;
     MemoryContract=8; ReadOnly=9; Parameter=10; Contents=11; Position=12; External=13; Visit=14;
     Worker=15; LengthNumber=16; LengthName=17; Factory=18; FactoryEffects=19; Generator=20; Advance=21;
-    BuiltinType=22; RecordType=23;
+    BuiltinType=22; RecordType=23; ReadPlace=24;
 };
 struct CallCursor { u64 index; u64 parameter; u32 phase; u32 signature; Access default_access; };
 struct CallFacts {

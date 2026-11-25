@@ -1913,8 +1913,8 @@ impl Builder<'_> {
 #[repr(u32)]enum DeclareNeed {Collision,Dataset,Type,Owned,Plain}
 #[repr(C)]struct DeclareStep {cursor:LocalCursor,need:DeclareNeed}
 #[repr(C)]#[derive(Clone,Copy)]struct ValueCursor {phase:u32,index:usize}
-#[repr(C)]#[derive(Clone,Copy)]struct ValueFacts {collision:u32,mutable:u32,arrays:u32,uniform:u32,control:u32,slots:usize,regs:usize}
-#[repr(u32)]enum ValueNeed {View,Collision,Mutability,Arrays,Array,ArrayFinish,Immutable,Slots,Store,Finish}
+#[repr(C)]#[derive(Clone,Copy)]struct ValueFacts {collision:u32,mutable:u32,readonly:u32,uniform:u32,control:u32,slots:usize,regs:usize}
+#[repr(u32)]enum ValueNeed {View,Collision,Mutability,ReadOnly,MaterializeReadOnly,BindReadOnly,Immutable,Slots,Store,Finish}
 #[repr(C)]struct ValueStep {cursor:ValueCursor,need:ValueNeed,uniform:u32,index:usize}
 unsafe extern "C" {
  #[link_name="bootstrap.function_body::local_publish"]fn local_publish(bytes:*const u8,length:usize)->u32;
@@ -1961,15 +1961,15 @@ impl Builder<'_> {
   }}
  }
  pub(super) fn bind_local_value(&mut self,name:&str,value:Value,span:Span)->Result<()> {
-  let mut cursor=ValueCursor {phase:0,index:0};let mut facts=ValueFacts {collision:0,mutable:0,arrays:0,uniform:u32::from(value.uniform),control:u32::from(self.control_uniform),slots:0,regs:value.regs.len()};
+  let mut cursor=ValueCursor {phase:0,index:0};let mut facts=ValueFacts {collision:0,mutable:0,readonly:0,uniform:u32::from(value.uniform),control:u32::from(self.control_uniform),slots:0,regs:value.regs.len()};
   let mut value=Some(value);let mut owner=None;let mut slots=Vec::new();let mut storage=0..0;
   loop {let step=unsafe {value_step(cursor,facts)};cursor=step.cursor;match step.need {
    ValueNeed::View=>{self.require_view_available(value.as_ref().unwrap(),&[],span)?;facts.collision=u32::from(self.env.contains_key(name));},
    ValueNeed::Collision=>return self.fail(span,"B125",format!("重复局部变量或覆盖参数 {name}")),
-   ValueNeed::Mutability=>facts.mutable=u32::from(self.mutable_names.contains(name)),
-   ValueNeed::Arrays=>facts.arrays=u32::from(value.as_ref().unwrap().ty.contains_arrays()),
-   ValueNeed::Array=>{let materialized=self.materialize_array(value.take().unwrap(),None);facts.uniform=u32::from(materialized.uniform);owner=Some(materialized);},
-   ValueNeed::ArrayFinish=>{let mut owner=owner.take().unwrap();owner.place=owner.place.read_only();owner.uniform=step.uniform!=0;self.env.insert(name.to_string(),Binding::Owned(owner));return Ok(());},
+   ValueNeed::Mutability=>facts.mutable=u32::from(self.binding_uses.mutable(name)),
+   ValueNeed::ReadOnly=>facts.readonly=u32::from(value.as_ref().unwrap().ty.contains_arrays()||self.binding_uses.needs_place(name)),
+   ValueNeed::MaterializeReadOnly=>{let materialized=self.materialize_array(value.take().unwrap(),None);facts.uniform=u32::from(materialized.uniform);owner=Some(materialized);},
+   ValueNeed::BindReadOnly=>{let mut owner=owner.take().unwrap();owner.place=owner.place.read_only();owner.uniform=step.uniform!=0;self.env.insert(name.to_string(),Binding::Owned(owner));return Ok(());},
    ValueNeed::Immutable=>{let mut value=value.take().unwrap();value.literal=false;value.uniform=step.uniform!=0;self.env.insert(name.to_string(),Binding::Value(value));return Ok(());},
    ValueNeed::Slots=>{(slots,storage)=self.local_slots(&value.as_ref().unwrap().ty);facts.slots=slots.len();},
    ValueNeed::Store=>self.emit(InstKind::StoreLocal(slots[step.index],value.as_ref().unwrap().regs[step.index])),

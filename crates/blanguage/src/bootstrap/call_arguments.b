@@ -254,9 +254,7 @@ extern "C" ReadInputStep read_input_step(Phase cursor,ReadInputFacts facts) on c
  if(c.phase==2){if(facts.bound!=0){c.phase=5;return ReadInputStep(c,ReadInputNeed::Type);}c.phase=3;return ReadInputStep(c,ReadInputNeed::IsPlace);}
  if(c.phase==3){if(facts.place!=0){c.phase=4;return ReadInputStep(c,ReadInputNeed::Temporary);}c.phase=9;return ReadInputStep(c,ReadInputNeed::Aggregate);}
  if(c.phase==4){if(facts.temporary!=0){c.phase=9;return ReadInputStep(c,ReadInputNeed::Aggregate);}c.phase=5;return ReadInputStep(c,ReadInputNeed::Type);}
- if(c.phase==5){if(facts.owns!=0){c.phase=9;return ReadInputStep(c,ReadInputNeed::Aggregate);}c.phase=6;return ReadInputStep(c,ReadInputNeed::Binding);}
- if(c.phase==6){if(facts.value!=0){c.phase=7;return ReadInputStep(c,ReadInputNeed::Materialize);}c.phase=8;return ReadInputStep(c,ReadInputNeed::Place);}
- if(c.phase==7){c.phase=8;return ReadInputStep(c,ReadInputNeed::Place);}
+ if(c.phase==5){if(facts.owns!=0){c.phase=9;return ReadInputStep(c,ReadInputNeed::Aggregate);}c.phase=8;return ReadInputStep(c,ReadInputNeed::Place);}
  if(c.phase==8){if(facts.present==0){return ReadInputStep(c,ReadInputNeed::Empty);}c.phase=10;return ReadInputStep(c,ReadInputNeed::Storage);}
  if(c.phase==10){if(facts.storage==1){c.phase=12;return ReadInputStep(c,ReadInputNeed::Initialize);}if(facts.storage==2){c.phase=11;return ReadInputStep(c,ReadInputNeed::Writable);}return ReadInputStep(c,ReadInputNeed::Borrow);}
  if(c.phase==11){if(facts.writable!=0){c.phase=12;return ReadInputStep(c,ReadInputNeed::Initialize);}return ReadInputStep(c,ReadInputNeed::Borrow);}
@@ -376,9 +374,7 @@ extern "C" FunctionValueStep function_value_step(Phase cursor,FunctionValueFacts
 
 extern "C" TakeAddressStep take_address_step(Phase cursor,TakeAddressFacts facts) on cpu {
  Phase c=cursor;CallAccess access=CallAccess::Read;
- if(c.phase==0){if(facts.cpu==0){return TakeAddressStep(c,TakeAddressNeed::BadTarget,access);}if(facts.arguments!=1u64){return TakeAddressStep(c,TakeAddressNeed::BadCount,access);}c.phase=1;return TakeAddressStep(c,TakeAddressNeed::Root,access);}
- if(c.phase==1){if(facts.value!=0){c.phase=2;return TakeAddressStep(c,TakeAddressNeed::Materialize,access);}c.phase=3;return TakeAddressStep(c,TakeAddressNeed::Place,access);}
- if(c.phase==2){c.phase=3;return TakeAddressStep(c,TakeAddressNeed::Place,access);}
+ if(c.phase==0){if(facts.cpu==0){return TakeAddressStep(c,TakeAddressNeed::BadTarget,access);}if(facts.arguments!=1u64){return TakeAddressStep(c,TakeAddressNeed::BadCount,access);}c.phase=3;return TakeAddressStep(c,TakeAddressNeed::Place,access);}
  if(c.phase==3){if(facts.present==0){return TakeAddressStep(c,TakeAddressNeed::Empty,access);}c.phase=4;return TakeAddressStep(c,TakeAddressNeed::Layout,access);}
  if(c.phase==4){if(facts.owns!=0||facts.views!=0||facts.empty!=0){return TakeAddressStep(c,TakeAddressNeed::BadLayout,access);}c.phase=5;return TakeAddressStep(c,TakeAddressNeed::Origin,access);}
  if(c.phase==5){c.phase=6;return TakeAddressStep(c,TakeAddressNeed::Reference,facts.writable!=0?CallAccess::InOut:CallAccess::Read);}

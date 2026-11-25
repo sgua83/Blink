@@ -266,13 +266,13 @@ impl Builder<'_> {
         if end != base { self.locals.insert(end, ty.clone()); }
         ((base..end).collect(), base..end)
     }
-    pub(super) fn materialize_array_bindings(&mut self) {
+    pub(super) fn materialize_input_bindings(&mut self) {
         let values: Vec<_> = self
             .env
             .iter()
             .filter_map(|(name, binding)| {
                 if let Binding::Value(value) = binding
-                    && value.ty.contains_arrays()
+                    && (value.ty.contains_arrays() || self.binding_uses.needs_place(name))
                 {
                     Some((name.clone(), value.clone()))
                 } else {
@@ -281,18 +281,26 @@ impl Builder<'_> {
             })
             .collect();
         for (name, value) in values {
-            let trigger = match &self.scope {
-                LexicalScope::Parallel{site,..} => site.clone().map(GenerationAnchor::Syntax),
+            let site = match &self.scope {
+                LexicalScope::Parallel{site,..} => site.clone(),
                 _ => match self.scope.function().map(|instance| &instance.definition.syntax_origin) {
                 Some(crate::frontend::DefinitionSyntax::Source) => self.scope.parameters()
                     .find(|parameter| parameter.name() == name)
-                    .and_then(|parameter| self.source_at(parameter.span(), SourceSyntax::Parameter))
-                    .map(GenerationAnchor::Syntax),
+                    .and_then(|parameter| self.source_at(parameter.span(), SourceSyntax::Parameter)),
                 Some(crate::frontend::DefinitionSyntax::CompiledInterface) | None => None,
                 },
             };
-            let origin = Arc::new(GeneratedOrigin { reason: GenerationReason::ArrayParameterStore, trigger });
-            let mut owner = self.materialize_array(value, Some(origin));
+            let first = self.code.len();
+            let mut owner = if value.ty.contains_arrays() {
+                let origin = Arc::new(GeneratedOrigin { reason: GenerationReason::ArrayParameterStore, trigger: site.map(GenerationAnchor::Syntax) });
+                self.materialize_array(value, Some(origin))
+            } else {
+                let owner = self.materialize_array(value, None);
+                for instruction in &mut self.code[first..] {
+                    instruction.source_site = site.clone();
+                }
+                owner
+            };
             owner.place = owner.place.read_only();
             self.env.insert(name, Binding::Owned(owner));
         }

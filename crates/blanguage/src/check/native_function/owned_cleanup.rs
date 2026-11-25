@@ -57,7 +57,7 @@ async fn element_drop_declaration(world:&World,name:&str,ty:&Ty,lexical:&Lexical
  loop{let next=unsafe{d::body_step(cursor,facts)};cursor=next.cursor;match next.need{
   d::BodyNeed::Builder=>{
    let(source_definition,source_context)=lexical.syntax_context(Some(name));
-   let mut builder=Box::new(Builder::from_checked(world,lexical,&program,0,source_definition,source_context,BTreeSet::new()));
+   let mut builder=Box::new(Builder::from_checked(world,lexical,&program,0,source_definition,source_context,BindingUses::default()));
    builder.in_function=true;builder.application=Some(application::Context::default());builder.functions=unsafe{functions.take().unwrap_unchecked()};b=Some(builder);
   }
   d::BodyNeed::Frame=>{
@@ -93,7 +93,7 @@ async fn element_drop_declaration(world:&World,name:&str,ty:&Ty,lexical:&Lexical
   d::BodyNeed::Resolve=>{let builder=unsafe{b.as_mut().unwrap_unchecked()};requirements=Some(unsafe{builder.world.call(contracts::resolve(builder,contract,lexical,&environment,&resources)).await}?);}
   d::BodyNeed::Assume=>{let builder=unsafe{b.as_mut().unwrap_unchecked()};unsafe{builder.world.call(contracts::assume(builder,contract,&mut environment,requirements.as_ref().unwrap_unchecked())).await}?;}
   d::BodyNeed::PutContractEnv=>{unsafe{b.as_mut().unwrap_unchecked()}.env=std::mem::take(&mut environment);}
-  d::BodyNeed::Arrays=>{unsafe{b.as_mut().unwrap_unchecked()}.materialize_array_bindings();}
+  d::BodyNeed::Arrays=>{unsafe{b.as_mut().unwrap_unchecked()}.materialize_input_bindings();}
   d::BodyNeed::Release=>{let builder=unsafe{b.as_mut().unwrap_unchecked()};unsafe{builder.world.call(builder.release_application_data(None,view::Borrow::default())).await}?;}
   d::BodyNeed::Initialization=>{let builder=unsafe{b.as_mut().unwrap_unchecked()};builder.view_model.initialization=address::initialization_effects(&builder.initialized,&builder.path);}
   d::BodyNeed::Returns=>{let builder=unsafe{b.as_mut().unwrap_unchecked()};builder.view_model.normal_returns=Some(bounds::Condition::execution(&builder.path));}

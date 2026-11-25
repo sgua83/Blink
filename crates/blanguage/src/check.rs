@@ -1530,7 +1530,7 @@ pub struct FailureScope {
     source_definition: Option<Arc<SourceOrigin>>,
     source_context: Arc<SourceContext>,
     source_site: Option<Arc<SourceSite>>,
-    mutable_names: BTreeSet<String>,
+    binding_uses: BindingUses,
     frame: Option<Vec<Reg>>,
     domain: usize,
     control_uniform: bool,
@@ -1668,7 +1668,7 @@ struct Builder<'a> {
     cooperative_root: Option<usize>,
     calls: Vec<String>,
     iterators: Vec<Option<(String, usize, Value)>>,
-    mutable_names: BTreeSet<String>,
+    binding_uses: BindingUses,
     view_uses: view_liveness::State,
     tiles: Vec<CheckedTile>,
     appends: BTreeMap<usize, PrefixCount>,
@@ -1730,25 +1730,22 @@ impl<'a> Builder<'a> {
     ) -> Result<Self> {
         let scope = LexicalScope::Function(instance.clone());
         let definition = &instance.definition;
-        let mut mutable_names = BTreeSet::new();
-        unsafe { world.call(assigned_names(
-            world,
-            &scope,
-            definition.function.body().as_ref().unwrap(),
-            &mut mutable_names,
+        let binding_uses = unsafe { world.call(collect_binding_uses(
+            world, &scope, definition.function.body().as_ref().unwrap(),
         )).await }?;
         let (source_definition, source_context) = definition.syntax_context(source_instance);
-        Ok(Self::from_checked(world,&scope,program,domain,source_definition,source_context,mutable_names))
+        Ok(Self::from_checked(world,&scope,program,domain,source_definition,source_context,binding_uses))
     }
     async fn domain(world:&'a World,input:DomainInput<'_>,program:&'a Program,domain_index:usize)->Result<Self> {
         match input {
             DomainInput::Declaration { instance, .. }=>unsafe { world.call(Self::new(world,instance,program,domain_index,Some(&instance.name))).await },
             DomainInput::Parallel{owner,parameters,statement,element,domain,body,site,..}=>{
                 let scope=LexicalScope::Parallel{owner:owner.clone(),parameters:(*parameters).clone(),statement:statement.clone(),site:(*site).clone()};
-                let mut mutable_names=BTreeSet::new();
-                unsafe { world.call(effects::assigned_parallel(world,&scope,element,domain,body,&mut mutable_names)).await }?;
+                let binding_uses = unsafe { world.call(effects::collect_parallel_binding_uses(
+                    world, &scope, element, domain, body,
+                )).await }?;
                 let(origin,context)=input.syntax_context();
-                Ok(Self::from_checked(world,&scope,program,domain_index,origin,context,mutable_names))
+                Ok(Self::from_checked(world,&scope,program,domain_index,origin,context,binding_uses))
             }
         }
     }
@@ -1762,7 +1759,7 @@ impl<'a> Builder<'a> {
             source_context:Arc::new(SourceContext{instance:None,inlined_at:Box::default(),domain_path:Arc::from([])}),
         };
         let (source_definition, source_context) = scope.syntax_context(None);
-        Self::from_checked(world, &scope, program, 0, source_definition, source_context, BTreeSet::new())
+        Self::from_checked(world, &scope, program, 0, source_definition, source_context, BindingUses::default())
     }
     fn from_checked(
         world: &'a World,
@@ -1771,7 +1768,7 @@ impl<'a> Builder<'a> {
         domain: usize,
         source_definition: Option<Arc<SourceOrigin>>,
         source_context: Arc<SourceContext>,
-        mutable_names: BTreeSet<String>,
+        binding_uses: BindingUses,
     )->Self {
         Self {
             residency: residency::Inputs::default(),
@@ -1816,7 +1813,7 @@ impl<'a> Builder<'a> {
             cooperative_root: None,
             calls: Vec::new(),
             iterators: Vec::new(),
-            mutable_names,
+            binding_uses,
             view_uses: view_liveness::State::default(),
             tiles: Vec::new(),
             appends: BTreeMap::new(),
@@ -1840,7 +1837,7 @@ impl<'a> Builder<'a> {
             env:self.env.clone(),path:self.path.clone(),initialized:self.initialized.clone(),
             scope:self.scope.clone(),source_definition:self.source_definition.clone(),
             source_context:self.source_context.clone(),source_site:self.source_site.clone(),
-            mutable_names:self.mutable_names.clone(),frame:self.application.as_ref().unwrap().frame.clone(),
+            binding_uses:self.binding_uses.clone(),frame:self.application.as_ref().unwrap().frame.clone(),
             domain:self.domain,control_uniform:self.control_uniform,calls:self.calls.clone(),consumed,
             task_outputs:Vec::new(),
         }))
@@ -2576,7 +2573,7 @@ impl<'a> Builder<'a> {
     }
 
 }
-use effects::{assigned_names, expression_assignments};
+use effects::{BindingUses, collect_binding_uses, expression_assignments};
 
 pub(crate) fn stage_intrinsic(name: &str) -> bool {
     matches!(name, "clear_prefix" | "stable_sort_by_key" | "compact")

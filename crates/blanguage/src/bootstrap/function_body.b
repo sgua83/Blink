@@ -723,9 +723,9 @@ extern "C" ValueStep value_step(ValueCursor cursor,ValueFacts facts) on cpu {
  ValueCursor c=cursor;u32 uniform=facts.uniform!=0&&facts.control!=0 ? 1 : 0;
  if(c.phase==0){c.phase=1;return ValueStep(c,ValueNeed::View,0,0u64);}
  if(c.phase==1){if(facts.collision!=0){return ValueStep(c,ValueNeed::Collision,0,0u64);}c.phase=2;return ValueStep(c,ValueNeed::Mutability,0,0u64);}
- if(c.phase==2){if(facts.mutable!=0){c.phase=6;return ValueStep(c,ValueNeed::Slots,0,0u64);}c.phase=3;return ValueStep(c,ValueNeed::Arrays,0,0u64);}
- if(c.phase==3){if(facts.arrays==0){return ValueStep(c,ValueNeed::Immutable,uniform,0u64);}c.phase=4;return ValueStep(c,ValueNeed::Array,0,0u64);}
- if(c.phase==4){return ValueStep(c,ValueNeed::ArrayFinish,uniform,0u64);}
+ if(c.phase==2){if(facts.mutable!=0){c.phase=6;return ValueStep(c,ValueNeed::Slots,0,0u64);}c.phase=3;return ValueStep(c,ValueNeed::ReadOnly,0,0u64);}
+ if(c.phase==3){if(facts.readonly==0){return ValueStep(c,ValueNeed::Immutable,uniform,0u64);}c.phase=4;return ValueStep(c,ValueNeed::MaterializeReadOnly,0,0u64);}
+ if(c.phase==4){return ValueStep(c,ValueNeed::BindReadOnly,uniform,0u64);}
  if(c.index<facts.slots&&c.index<facts.regs){u64 at=c.index;c.index+=1u64;return ValueStep(c,ValueNeed::Store,0,at);}return ValueStep(c,ValueNeed::Finish,uniform,0u64);
 }
 extern "C" OwnedStep owned_step(LocalCursor cursor,OwnedFacts facts) on cpu {
