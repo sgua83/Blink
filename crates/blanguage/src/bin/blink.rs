@@ -1,6 +1,6 @@
 #[path = "../process_arguments.rs"]
 mod process_arguments;
-use std::{path::PathBuf, process::ExitCode};
+use std::{ffi::{OsString, c_void}, path::Path, process::ExitCode};
 
 #[repr(C)]
 struct LinkArgument {
@@ -38,9 +38,19 @@ struct LinkCommandLine {
     command: LinkCommand,
     error: LinkArgumentError,
     output_index: usize,
-    input_count: usize,
     budget: u64,
     has_budget: u64,
+}
+
+struct InputPaths<'a> {
+    args: &'a [OsString],
+    paths: Vec<&'a Path>,
+}
+
+unsafe extern "C" fn append_input(context: *mut c_void, index: usize) {
+    // The parser reports an index into the same argument slice during this call.
+    let inputs = unsafe { &mut *context.cast::<InputPaths<'_>>() };
+    inputs.paths.push(Path::new(&inputs.args[index]));
 }
 
 unsafe extern "C" {
@@ -48,7 +58,8 @@ unsafe extern "C" {
     fn parse_arguments(
         arguments: *const LinkArgument,
         count: usize,
-        input_indices: *mut usize,
+        context: *mut c_void,
+        append: unsafe extern "C" fn(*mut c_void, usize),
     ) -> LinkCommandLine;
 }
 
@@ -67,9 +78,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         let bytes = arg.as_encoded_bytes();
         LinkArgument { bytes: bytes.as_ptr(), length: bytes.len(), text: u64::from(arg.to_str().is_some()) }
     }).collect::<Vec<_>>();
-    let mut input_indices = vec![0; arguments.len()];
-    // The original OsStrings and the index buffer stay live through parsing.
-    let parsed = unsafe { parse_arguments(arguments.as_ptr(), arguments.len(), input_indices.as_mut_ptr()) };
+    let mut inputs = InputPaths { args: &args, paths: Vec::new() };
+    let context = std::ptr::from_mut(&mut inputs).cast();
+    let parsed = unsafe { parse_arguments(arguments.as_ptr(), arguments.len(), context, append_input) };
     let error = match parsed.error {
         LinkArgumentError::None => None,
         LinkArgumentError::ProductConflict => Some("blink只能选择一种产物命令"),
@@ -100,21 +111,20 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
         _ => {}
     }
-    let inputs = input_indices[..parsed.input_count].iter()
-        .map(|&index| PathBuf::from(&args[index])).collect::<Vec<_>>();
-    let output = PathBuf::from(&args[parsed.output_index]);
+    let inputs = &inputs.paths;
+    let output = Path::new(&args[parsed.output_index]);
     let stack_budget = (parsed.has_budget != 0).then_some(parsed.budget);
     if matches!(parsed.command, LinkCommand::StackReport) {
-        blanguage::linker::write_stack_report(&inputs, &output, stack_budget)?;
+        blanguage::linker::write_stack_report(inputs, output, stack_budget)?;
         println!("stack report {} input(s) -> {}", inputs.len(), output.display());
     } else if matches!(parsed.command, LinkCommand::Archive) {
-        blanguage::object::archive(&inputs, &output)?;
+        blanguage::object::archive(inputs, output)?;
         println!("archived {} input(s) -> {}", inputs.len(), output.display());
     } else if matches!(parsed.command, LinkCommand::HostArchive) {
-        blanguage::linker::host_archive(&inputs, &output)?;
+        blanguage::linker::host_archive(inputs, output)?;
         println!("host archived {} input(s) -> {}", inputs.len(), output.display());
     } else {
-        blanguage::linker::link_inputs(&inputs, &output)?;
+        blanguage::linker::link_inputs(inputs, output)?;
         println!("linked {} input(s) -> {}", inputs.len(), output.display());
     }
     Ok(())

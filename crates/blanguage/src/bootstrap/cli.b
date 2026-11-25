@@ -117,8 +117,9 @@ LinkBudget parse_budget(CliArgument argument) on cpu {
     return LinkBudget(number.value, LinkArgumentError::None);
 }
 
-extern "C" LinkCommandLine parse_link_arguments(address arguments, u64 count, address input_indices) on cpu {
-    LinkCommandLine result = LinkCommandLine(LinkCommand::Link, LinkArgumentError::None, count, 0u64, 0u64, 0u64);
+extern "C" LinkCommandLine parse_link_arguments(address arguments, u64 count, address context, cfn<void,address,u64> append_input) on cpu
+    requires nonzero(append_input) {
+    LinkCommandLine result = LinkCommandLine(LinkCommand::Link, LinkArgumentError::None, count, 0u64, 0u64);
     if (count == 0u64) {
         result.command = LinkCommand::Help;
         return result;
@@ -164,8 +165,7 @@ extern "C" LinkCommandLine parse_link_arguments(address arguments, u64 count, ad
             }
             result.output_index = index;
         } else {
-            unsafe_position<u64>(unsafe_address(address_bits(input_indices) + result.input_count * size_of<u64>())) = index;
-            result.input_count += 1u64;
+            append_input(context, index);
         }
         index += 1u64;
     }

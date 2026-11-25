@@ -33,13 +33,13 @@ struct LinkCommandLine {
     LinkCommand command;
     LinkArgumentError error;
     u64 output_index;
-    u64 input_count;
     u64 budget;
     u64 has_budget;
 };
 
-// input_indices has room for count u64 indices.
-extern "C" LinkCommandLine parse_link_arguments(address arguments, u64 count, address input_indices) on cpu;
+// Reports the original argument index synchronously for each input.
+extern "C" LinkCommandLine parse_link_arguments(address arguments, u64 count, address context, cfn<void,address,u64> append_input) on cpu
+    requires nonzero(append_input);
 
 enum CompileCommand:u32 {
     Unknown=0; Version=1; Help=2; Inputs=3; X64=4; Image=5; Code=6; Spirv=7;
