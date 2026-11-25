@@ -1066,7 +1066,7 @@ impl CpuCode {
             }
         }
         let input_domains = if self.program.native_frame().is_some() {
-            bindings::projected_relations(datasets, domains, &self.program, slots)
+            bindings::initial_frame_relations(datasets, domains, &self.program, slots)
         } else {
             Vec::new()
         };
@@ -1149,7 +1149,8 @@ impl CpuCode {
             self.stages.iter().rposition(|code| matches!(code, StageCode::Element { .. }))
         }).map(|last_stage| (last_stage, DomainRelations::Owned(input_domains)));
         for (stage_index, (stage, code)) in self.program.stages().iter().zip(&self.stages).enumerate() {
-            if let Some((_, domains)) = &mut input_domains {
+            // Input projection has already applied the first stage's writes.
+            if stage_index != 0 && let Some((_, domains)) = &mut input_domains {
                 bindings::invalidate(domains, &stage.write_regions, StorageSlots::Direct);
             }
             let count = if let Some(prefix) = &stage.prefix {

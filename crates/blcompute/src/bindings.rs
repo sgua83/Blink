@@ -522,8 +522,8 @@ impl<D> DomainBindings<D> {
     }
 }
 
-/// Borrow only facts contained in the actual logical argument fields.
-pub(crate) fn projected_relations<D: DomainStorage>(
+/// Project initial private-frame facts that survive the first stage's writes.
+pub(crate) fn initial_frame_relations<D: DomainStorage>(
     datasets: &[D],
     domains: &[DomainRelation],
     program: &ExecutionPlan,
@@ -532,6 +532,10 @@ pub(crate) fn projected_relations<D: DomainStorage>(
     if domains.is_empty() {
         return Vec::new();
     }
+    let Some(first_stage) = program.stages().first() else { return Vec::new(); };
+    let survives = |binding, offset, width| {
+        !overlaps_written(first_stage.write_regions.get(&binding), 0, offset, width)
+    };
     let fields = program.buffers().iter().enumerate().map(|(binding, buffer)| {
         let (source, start) = slots.location(binding);
         (source, ArgumentField { binding, start, end: u64::from(start) + u64::from(buffer.ty.size) })
@@ -554,7 +558,8 @@ pub(crate) fn projected_relations<D: DomainStorage>(
                     .filter_map(|field| field.project(*offset, *bytes));
                 let Some(first_domain) = domains.next() else { continue; };
                 let mut count_fields = targets.positions[count_source].iter()
-                    .filter_map(|field| field.project(count.word, 4));
+                    .filter_map(|field| field.project(count.word, 4))
+                    .filter(|&(binding, word)| survives(binding, word, 4));
                 let Some(first_count) = count_fields.next() else { continue; };
                 let pair = |(domain, offset), (binding, word)| DomainRelation::Prefix {
                     domain, offset, bytes: *bytes, count: PrefixCount { binding, word },
@@ -580,8 +585,10 @@ pub(crate) fn projected_relations<D: DomainStorage>(
                 if !elements.insert(key) {
                     continue;
                 }
+                let width = range.scalar.size();
                 let fields = targets.positions[domain_source].iter()
-                    .filter_map(|field| field.project(range.offset, range.scalar.size()));
+                    .filter_map(|field| field.project(range.offset, width))
+                    .filter(|&(binding, offset)| survives(binding, offset, width));
                 for (binding, offset) in fields {
                     result.push(DomainRelation::Element(ElementRange { binding, offset, ..range.clone() }));
                 }
@@ -703,6 +710,20 @@ pub(crate) fn require<'a, D: DomainStorage + 'a>(
     }
     Ok(())
 }
+fn overlaps_written(
+    written: Option<&BTreeSet<(u32, u32)>>,
+    binding_offset: u32,
+    start: u32,
+    width: u32,
+) -> bool {
+    let offset = u64::from(binding_offset);
+    let start = u64::from(start);
+    let end = start + u64::from(width);
+    written.is_some_and(|written| {
+        written.iter().any(|&(from, to)| start < offset + u64::from(to) && offset + u64::from(from) < end)
+    })
+}
+
 pub(crate) fn invalidate(
     domains: &mut DomainRelations,
     write_regions: &BTreeMap<usize, BTreeSet<(u32,u32)>>,
@@ -713,14 +734,7 @@ pub(crate) fn invalidate(
     }
     domains.retain(|relation| {
         let (owner, start, width) = relation.write_dependency();
-        let start = u64::from(start);
-        let end = start + u64::from(width);
-        let overlaps = |logical, offset: u32| {
-            let offset = u64::from(offset);
-            write_regions.get(&logical).is_some_and(|written| {
-                written.iter().any(|&(from, to)| start < offset + u64::from(to) && offset + u64::from(from) < end)
-            })
-        };
+        let overlaps = |logical, offset| overlaps_written(write_regions.get(&logical), offset, start, width);
         !match slots {
             StorageSlots::Direct => overlaps(owner, 0),
             StorageSlots::Frame(arguments) => arguments.for_handle(owner).any(|(logical, offset)| overlaps(logical, offset)),
