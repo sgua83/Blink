@@ -44,18 +44,21 @@ struct CallInput {
     usize error;
     u32 flags;
 };
+struct CallOperand { AbiType abi; CallValueLoan value; };
+
 struct CallHost {
     IndexedAddressHost addresses;
     cfn<MoveLocation,address,usize> ensures memory(read) local;
     cfn<AbiType,address,u64> argument;
-    cfn<CallValueLoan,address,u64> loan;
+    cfn<CallOperand,address,u64> operand;
     cfn<AbiValueComponent,address,u64> component;
-    cfn<address,address,u64> reserve;
+    cfn<NativeCodeBuffer,address,u64> reserve;
+    cfn<void,address,u64> commit;
 };
-// The output buffer belongs to the original emitter. Calls retain no input borrow.
-extern "C" SymbolEncoding emit_call(address context, CallInput input, CallHost host) on cpu
+// Returns the absolute position of the emitted symbolic target field.
+extern "C" u64 emit_call(address context, CallInput input, CallHost host) on cpu
     requires nonzero(host.addresses.values.ir.inspect)
     requires nonzero(host.addresses.values.location) requires nonzero(host.addresses.values.scalar)
     requires nonzero(host.addresses.tile_stream) requires nonzero(host.local)
-    requires nonzero(host.argument) requires nonzero(host.loan)
-    requires nonzero(host.component) requires nonzero(host.reserve);
+    requires nonzero(host.argument) requires nonzero(host.operand)
+    requires nonzero(host.component) requires nonzero(host.reserve) requires nonzero(host.commit);

@@ -60,13 +60,17 @@ struct CallInput {
 }
 
 #[repr(C)]
+struct CallOperand { abi: AbiType, value: CallValueLoan }
+
+#[repr(C)]
 struct CallHost {
     addresses: IndexedAddressHost,
     local: unsafe extern "C" fn(*const c_void, usize) -> MoveLocation,
     argument: ArgumentType,
-    loan: unsafe extern "C" fn(*const c_void, usize) -> CallValueLoan,
+    operand: unsafe extern "C" fn(*const c_void, usize) -> CallOperand,
     component: AbiComponent,
-    reserve: unsafe extern "C" fn(*mut c_void, usize) -> *mut u8,
+    reserve: unsafe extern "C" fn(*mut c_void, usize) -> NativeCodeBuffer,
+    commit: unsafe extern "C" fn(*mut c_void, usize),
 }
 
 #[repr(C)]
@@ -117,7 +121,7 @@ unsafe extern "C" {
     fn call_stack_size(context: *const c_void, count: usize, result: AbiType, flags: u32,
         argument: ArgumentType) -> u64;
     #[link_name = "bootstrap.call_layout::emit_call"]
-    fn emit_call(context: *mut c_void, input: CallInput, host: CallHost) -> SymbolEncoding;
+    fn emit_call(context: *mut c_void, input: CallInput, host: CallHost) -> usize;
 }
 
 fn argument_abi(call: &Call, index: usize) -> AbiType {
@@ -152,11 +156,15 @@ unsafe extern "C" fn emission_argument(context: *const c_void, index: usize) -> 
     argument_abi(state.call, index)
 }
 
-unsafe extern "C" fn call_loan(context: *const c_void, index: usize) -> CallValueLoan {
+unsafe extern "C" fn emission_operand(context: *const c_void, index: usize) -> CallOperand {
     let state = unsafe { &*context.cast::<CallEmission<'_, '_>>() };
-    match &state.call.arguments[index] {
-        CallArgument::Value { ty, values, .. } => CallValueLoan::new(&ty.components, values, state.locations.allocation, state.locations.stage),
-        CallArgument::Reference { .. } => CallValueLoan::new(&[], &[], state.locations.allocation, state.locations.stage),
+    let (abi, fields, values) = match &state.call.arguments[index] {
+        CallArgument::Value { ty, values, .. } => (AbiType::value(ty), ty.components.as_slice(), values.as_slice()),
+        CallArgument::Reference { .. } => (AbiType::reference(), &[][..], &[][..]),
+    };
+    CallOperand {
+        abi,
+        value: CallValueLoan::new(fields, values, state.locations.allocation, state.locations.stage),
     }
 }
 
@@ -174,11 +182,14 @@ pub(super) unsafe extern "C" fn abi_component(context: *const c_void, index: u64
     }
 }
 
-unsafe extern "C" fn reserve_call(context: *mut c_void, capacity: usize) -> *mut u8 {
+unsafe extern "C" fn reserve_call(context: *mut c_void, capacity: usize) -> NativeCodeBuffer {
     let state = unsafe { &mut *context.cast::<CallEmission<'_, '_>>() };
-    let code = &mut *state.code;
-    code.reserve(capacity);
-    unsafe { code.as_mut_ptr().add(code.len()) }
+    NativeCodeBuffer::reserve(state.code, capacity)
+}
+
+unsafe extern "C" fn commit_call(context: *mut c_void, end: usize) {
+    let state = unsafe { &mut *context.cast::<CallEmission<'_, '_>>() };
+    unsafe { state.code.set_len(end) };
 }
 
 impl Emitter<'_> {
@@ -234,7 +245,8 @@ impl Emitter<'_> {
         let locations = ScalarLocations { allocation: &self.allocation, stage: self.stage, frame: &self.frame };
         let host = CallHost {
             addresses: locations.indexed_host(), local: value_local,
-            argument: emission_argument, loan: call_loan, component: abi_component, reserve: reserve_call,
+            argument: emission_argument, operand: emission_operand, component: abi_component,
+            reserve: reserve_call, commit: commit_call,
         };
         let input = CallInput {
             source: Node::call(call), result: AbiType::result(call.result.as_ref()),
@@ -242,13 +254,11 @@ impl Emitter<'_> {
                 &call.values, &self.allocation, self.stage),
             error: call.error.unwrap_or_default(), flags: call_flags(call),
         };
-        let start = self.code.len();
         let mut context = CallEmission { call, locations: &locations, code: &mut self.code };
-        let encoded = unsafe { emit_call(std::ptr::from_mut(&mut context).cast(), input, host) };
-        unsafe { self.code.set_len(start + encoded.length as usize) };
+        let field = unsafe { emit_call(std::ptr::from_mut(&mut context).cast(), input, host) };
         match &call.target {
-            CallTarget::External(name) => self.record_symbol_target(start + encoded.field as usize, NativeSymbol::External(name.clone()), true),
-            CallTarget::Defined(name) => self.record_symbol_target(start + encoded.field as usize, NativeSymbol::Function(name.clone()), true),
+            CallTarget::External(name) => self.record_symbol_target(field, NativeSymbol::External(name.clone()), true),
+            CallTarget::Defined(name) => self.record_symbol_target(field, NativeSymbol::Function(name.clone()), true),
             CallTarget::Indirect(_) => self.calls.push(None),
         }
     }

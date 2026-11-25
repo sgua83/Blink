@@ -337,6 +337,13 @@ enum MapRangePart {
 #[repr(C)]
 pub(super) struct NativeCodeBuffer { image: *mut u8, end: usize }
 
+impl NativeCodeBuffer {
+    fn reserve(code: &mut Vec<u8>, count: usize) -> Self {
+        code.reserve(count);
+        Self { image: code.as_mut_ptr(), end: code.len() }
+    }
+}
+
 #[repr(C)]
 struct MapRangeEntry { end: usize, stack_bytes: u32 }
 
@@ -417,8 +424,7 @@ unsafe extern "C" fn map_range_leave(slot: MapRangeSlot, frame: u32) -> usize {
 
 impl Emitter<'_> {
     pub(super) fn reserve_native_code(&mut self, count: usize) -> NativeCodeBuffer {
-        self.code.reserve(count);
-        NativeCodeBuffer { image: self.code.as_mut_ptr(), end: self.code.len() }
+        NativeCodeBuffer::reserve(&mut self.code, count)
     }
 
     pub(super) unsafe fn commit_native_code(&mut self, end: usize) {
