@@ -3078,8 +3078,9 @@ fn emit_domain_part(
     program.prefix_guarantees = guaranteed;
     program.element_requirements = element_required.into_owned();
     program.element_guarantees = element_guaranteed;
-    let scopes = (start..start + stage_count)
-        .filter_map(|index| scopes.remove(&index).map(|scope| (index - start, scope)))
+    let scopes = scopes
+        .extract_if(start..start + stage_count, |_, _| true)
+        .map(|(index, scope)| (index - start, scope))
         .collect::<BTreeMap<_, _>>();
     let deferred_source = if !scopes.is_empty() {
         Some(source.to_path_buf())
