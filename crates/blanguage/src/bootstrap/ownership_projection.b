@@ -3,6 +3,31 @@ module bootstrap.ownership_projection;
 address at(address base,u64 offset) on cpu {return unsafe_address(address_bits(base)+offset);}
 ExprNode expression(Source source,ExprRef reference) on cpu {return unsafe_position<ExprNode>(at(source.nodes,reference.offset));}
 Bytes text(Source source,Text name) on cpu {return Bytes(at(name.kind==0 ? source.source : source.stored,name.range.start),name.range.end-name.range.start);}
+extern "C" Bytes root_name(Source source) on cpu {
+    ExprRef current=source.expression;
+    while(true){
+        ExprNode node=expression(source,current);
+        match(node.kind){
+            ExprKind::Name(name){return text(source,name);}
+            ExprKind::Member(value){current=value.base;}
+            ExprKind::Index(value){current=value.base;}
+            ExprKind::Number(unused){break;}
+            ExprKind::StaticU32(unused){break;}
+            ExprKind::Bool(unused){break;}
+            ExprKind::FunctionRef(unused){break;}
+            ExprKind::Call(unused){break;}
+            ExprKind::Invoke(unused){break;}
+            ExprKind::Specialize(unused){break;}
+            ExprKind::Cooperate(unused){break;}
+            ExprKind::Construct(unused){break;}
+            ExprKind::Target(unused){break;}
+            ExprKind::Unary(unused){break;}
+            ExprKind::Binary(unused){break;}
+            ExprKind::Select(unused){break;}
+        }
+    }
+    return Bytes(address(),0u64);
+}
 u8 byte(Bytes value,u64 index) on cpu {return unsafe_position<u8>(at(value.data,index));}
 bool same(Bytes left,Bytes right) on cpu {
     if(left.count!=right.count){return false;}

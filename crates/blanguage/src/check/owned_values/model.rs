@@ -1,5 +1,6 @@
 //! B traverses the original owned payloads; native leaves retain their containers.
 use super::*;
+use crate::check::owned_presence::path::{ownership_code, resolved_ownership_code};
 use std::ffi::c_void;
 use std::ops::ControlFlow;
 type Address=*mut c_void;
@@ -11,6 +12,24 @@ struct Info{count:u64,flags:u32}
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct Item{node:Address,kind:u32}
+#[allow(dead_code)] // These discriminants are produced by the B payload reader.
+#[repr(u32)]
+pub(in crate::check) enum InitialWrite { Ready, IncompleteShape, Unavailable }
+
+pub(in crate::check) enum LoopTarget<'a> {
+    Dataset(&'a Data),
+    Aggregate(&'a OwnedValuePayload),
+    Projected(&'a Returned),
+}
+impl LoopTarget<'_> {
+    fn item(self) -> Item {
+        match self {
+            Self::Dataset(value) => Item { node: pointer(value), kind: 3 },
+            Self::Aggregate(value) => Item { node: pointer(value), kind: 4 },
+            Self::Projected(value) => returned_item(Some(value)),
+        }
+    }
+}
 #[repr(C)]
 #[derive(Clone,Copy)]
 struct Field{ty:Address,offset:u32,owns:u32}
@@ -69,7 +88,7 @@ unsafe extern "C" fn path_moved(item: Item) -> u32 {
     let state = unsafe {
         if item.kind == 3 { data_ownership(item.node) } else { ownership(item.node) }
     };
-    unsafe { state_moved(state) }
+    u32::from(unsafe { &*state.cast::<Ownership>() } == &Ownership::Moved)
 }
 
 unsafe extern "C" fn field(owner:Address,at:u64)->Field{
@@ -82,9 +101,13 @@ unsafe extern "C" fn component_count(ty:Address)->u64{unsafe{&*ty.cast::<Ty>()}.
 unsafe extern "C" fn component_word(ty:Address,at:u64)->u32{unsafe{&*ty.cast::<Ty>()}.components[at as usize].1}
 unsafe extern "C" fn component_index(value:Address,word:u32)->u64{unsafe{&*value.cast::<Value>()}.ty.components.iter().position(|(_,at)|*at==word).unwrap() as u64}
 unsafe extern "C" fn index_at(values:Indices,at:u64)->u64{(unsafe{slice(values)})[at as usize] as u64}
-unsafe extern "C" fn state_available(value:Address)->u32{u32::from(unsafe{&*value.cast::<Ownership>()}.available())}
-unsafe extern "C" fn state_owned(value:Address)->u32{u32::from(unsafe{&*value.cast::<Ownership>()}==&Ownership::Owned)}
-unsafe extern "C" fn state_moved(value:Address)->u32{u32::from(unsafe{&*value.cast::<Ownership>()}==&Ownership::Moved)}
+unsafe extern "C" fn stored_state(_: *const c_void, value: Address) -> u32 {
+    ownership_code(unsafe { &*value.cast::<Ownership>() })
+}
+unsafe extern "C" fn resolved_state(context: *const c_void, value: Address) -> u32 {
+    let builder = unsafe { &*context.cast::<Builder<'_>>() };
+    resolved_ownership_code(builder, unsafe { &*value.cast::<Ownership>() }, None)
+}
 unsafe extern "C" fn state_equal(a:Address,b:Address)->u32{u32::from(unsafe{&*a.cast::<Ownership>()==&*b.cast::<Ownership>()})}
 unsafe extern "C" fn state_set_owned(value:Address){unsafe{*value.cast::<Ownership>()=Ownership::Owned};}
 unsafe extern "C" fn state_set_borrowed(value:Address){unsafe{*value.cast::<Ownership>()=Ownership::Borrowed};}
@@ -164,9 +187,8 @@ struct Host{
     component_word:unsafe extern "C" fn(Address,u64)->u32,
     component_index:unsafe extern "C" fn(Address,u32)->u64,
     index_at:unsafe extern "C" fn(Indices,u64)->u64,
-    state_available:unsafe extern "C" fn(Address)->u32,
-    state_owned:unsafe extern "C" fn(Address)->u32,
-    state_moved:unsafe extern "C" fn(Address)->u32,
+    state_context: *const c_void,
+    state: unsafe extern "C" fn(*const c_void, Address) -> u32,
     state_equal:unsafe extern "C" fn(Address,Address)->u32,
     state_set_owned:unsafe extern "C" fn(Address),
     state_set_borrowed:unsafe extern "C" fn(Address),
@@ -201,7 +223,7 @@ struct Host{
     indices_view:unsafe extern "C" fn(Address)->Indices,
     drop_indices:unsafe extern "C" fn(Address),
 }
-const HOST:Host=Host{inspect,value,ownership,child,field,field_owned,aggregate_count,component_count,component_word,component_index,index_at,state_available,state_owned,state_moved,state_equal,state_set_owned,state_set_borrowed,state_set_moved,proof_join_stored,proof_join_common,uniform,set_uniform,constant_equal,clear_constant,proof_borrow,proof_clear,proof_assign,length_constant,view_empty,install_source,join_child,join_ownership,move_child,data_root,data_length,data_ownership,data_count,data_read,data_clear_residency,data_identity,ownership_loop,loop_path,path_possible,fresh_indices,push_index,indices_view,drop_indices};
+const HOST:Host=Host{inspect,value,ownership,child,field,field_owned,aggregate_count,component_count,component_word,component_index,index_at,state_context:std::ptr::null(),state:stored_state,state_equal,state_set_owned,state_set_borrowed,state_set_moved,proof_join_stored,proof_join_common,uniform,set_uniform,constant_equal,clear_constant,proof_borrow,proof_clear,proof_assign,length_constant,view_empty,install_source,join_child,join_ownership,move_child,data_root,data_length,data_ownership,data_count,data_read,data_clear_residency,data_identity,ownership_loop,loop_path,path_possible,fresh_indices,push_index,indices_view,drop_indices};
 const MUT_HOST:Host=Host{value:value_mut,ownership:ownership_mut,child:child_mut,data_root:data_root_mut,data_length:data_length_mut,data_ownership:data_ownership_mut,..HOST};
 
 #[repr(C)]
@@ -222,6 +244,10 @@ struct LivePathHost {
 }
 
 unsafe extern "C" {
+    #[link_name="bootstrap.ownership_payload::initial_write"]
+    fn source_initial_write(value: Item, shape: u32, host: Host) -> InitialWrite;
+    #[link_name="bootstrap.ownership_payload::initial_root_incomplete"]
+    fn source_initial_root_incomplete(value: Item, host: Host) -> u32;
     #[link_name="bootstrap.ownership_payload::available"] fn source_available(value:Address,host:Host)->u32;
     #[link_name="bootstrap.ownership_payload::all_available"] fn source_all_available(value:Address,host:Host)->u32;
     #[link_name="bootstrap.ownership_payload::borrow"] fn source_borrow(value:Address,host:Host);
@@ -309,6 +335,13 @@ unsafe extern "C" fn join_ownership(left: Address, right: Address, presence: Add
     *a = Ownership::either(a, b, Some(condition));
 }
 pub(super) fn available(value:&OwnedValuePayload)->bool{unsafe{source_available(pointer(value),HOST)!=0}}
+pub(in crate::check) fn initial_write(builder: &Builder<'_>, target: LoopTarget<'_>, shape: bool) -> InitialWrite {
+    let host = Host { state_context: (builder as *const Builder<'_>).cast(), state: resolved_state, ..HOST };
+    unsafe { source_initial_write(target.item(), u32::from(shape), host) }
+}
+pub(in crate::check) fn initial_root_incomplete(target: LoopTarget<'_>) -> bool {
+    unsafe { source_initial_root_incomplete(target.item(), HOST) != 0 }
+}
 pub(super) fn all_available(value:&OwnedValuePayload)->bool{unsafe{source_all_available(pointer(value),HOST)!=0}}
 pub(super) fn borrow(value:&mut OwnedValuePayload){unsafe{source_borrow(pointer_mut(value),MUT_HOST)};}
 pub(super) fn incomplete(value:&OwnedValuePayload)->bool{unsafe{source_incomplete(pointer(value),HOST)!=0}}

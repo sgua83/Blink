@@ -4,6 +4,7 @@ struct Item {address node;u32 kind;};
 struct Field {address ty;u32 offset;u32 owns;};
 struct Indices {address values;u64 count;};
 struct Count {u32 known;u32 value;};
+enum PayloadState:u32 { Moved=0; Owned=1; Borrowed=2; Conditional=3; };
 struct Host {
     cfn<Info,address> inspect;
     cfn<address,address> value;
@@ -16,9 +17,8 @@ struct Host {
     cfn<u32,address,u64> component_word;
     cfn<u64,address,u32> component_index;
     cfn<u64,Indices,u64> index_at;
-    cfn<u32,address> state_available;
-    cfn<u32,address> state_owned;
-    cfn<u32,address> state_moved;
+    address state_context;
+    cfn<PayloadState,address,address> state;
     cfn<u32,address,address> state_equal;
     cfn<void,address> state_set_owned;
     cfn<void,address> state_set_borrowed;
@@ -63,15 +63,14 @@ extern "C" u32 available(address value,Host host) on cpu
     requires nonzero(host.ownership)
     requires nonzero(host.child)
     requires nonzero(host.field_owned)
-    requires nonzero(host.state_available)
+    requires nonzero(host.state)
     requires nonzero(host.data_ownership);
 extern "C" u32 all_available(address value,Host host) on cpu
     requires nonzero(host.inspect)
     requires nonzero(host.ownership)
     requires nonzero(host.child)
     requires nonzero(host.field_owned)
-    requires nonzero(host.state_available)
-    requires nonzero(host.state_owned)
+    requires nonzero(host.state)
     requires nonzero(host.data_ownership);
 extern "C" void borrow(address value,Host host) on cpu
     requires nonzero(host.inspect)
@@ -87,8 +86,15 @@ extern "C" u32 incomplete(address value,Host host) on cpu
     requires nonzero(host.inspect)
     requires nonzero(host.child)
     requires nonzero(host.field_owned)
-    requires nonzero(host.state_moved)
+    requires nonzero(host.state)
     requires nonzero(host.data_ownership);
+enum InitialWrite:u32 { Ready=0; IncompleteShape=1; Unavailable=2; };
+extern "C" InitialWrite initial_write(Item item,u32 shape,Host host) on cpu
+    requires nonzero(host.inspect) requires nonzero(host.ownership) requires nonzero(host.child)
+    requires nonzero(host.field_owned) requires nonzero(host.state) requires nonzero(host.data_ownership);
+extern "C" u32 initial_root_incomplete(Item item,Host host) on cpu
+    requires nonzero(host.inspect) requires nonzero(host.ownership) requires nonzero(host.child)
+    requires nonzero(host.field_owned) requires nonzero(host.state) requires nonzero(host.data_ownership);
 struct LoopCursor {address before;address after;address path;u64 count;u64 index;};
 struct LoopNeed {u32 kind;u32 value;address before;address after;};
 // kind=0 is the actual final value; kind=3/4 asks for the original Data/Owned child.
@@ -149,7 +155,7 @@ extern "C" void handles(address value,address context,cfn<void,address,address> 
     requires nonzero(host.inspect)
     requires nonzero(host.ownership)
     requires nonzero(host.child)
-    requires nonzero(host.state_moved)
+    requires nonzero(host.state)
     requires nonzero(visit);
 struct DataPathHost {
     cfn<u64,Indices,u64> index_at;
@@ -165,7 +171,7 @@ extern "C" void resources(address value,address context,cfn<void,address,address
     requires nonzero(host.inspect)
     requires nonzero(host.ownership)
     requires nonzero(host.child)
-    requires nonzero(host.state_moved)
+    requires nonzero(host.state)
     requires nonzero(visit);
 
 struct Alternative { address owner; address choice; };

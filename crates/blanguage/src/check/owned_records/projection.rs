@@ -33,6 +33,8 @@ unsafe extern "C"{
  fn b_owned(source:SyntaxSource,env:Address,path:*mut c_void,host:Host)->Projection;
  #[link_name="bootstrap.ownership_projection::owned_type"]
  fn b_type(source:SyntaxSource,env:Address,host:Host)->Address;
+ #[link_name="bootstrap.ownership_projection::root_name"]
+ fn b_root_name(source: SyntaxSource) -> Bytes;
  #[link_name="bootstrap.ownership_projection::components"]
  fn b_components(root:Address,selected:Address,offset:u32,output:*mut c_void,host:Host);
  #[link_name="bootstrap.ownership_projection::temporary"]
@@ -86,6 +88,11 @@ pub(super) fn owned<'a>(builder:&'a Builder<'_>,expr:&Expr)->Option<(OwnedProjec
 }
 pub(super) fn ty<'a>(builder:&'a Builder<'_>,expr:&Expr)->Option<&'a Ty>{
  unsafe{b_type(source(expr),address(&builder.env),HOST).cast::<Ty>().as_ref()}
+}
+pub(in crate::check) fn root_name(expr: &Expr) -> Option<&str> {
+    let name = unsafe { b_root_name(source(expr)) };
+    // The span borrows the sealed syntax held by expr.
+    (!name.data.is_null()).then(|| unsafe { name.text() })
 }
 pub(super) fn components(root:&Ty,selected:&Ty,offset:u32)->Vec<usize>{
  let mut output=Vec::new();unsafe{b_components(address(root),address(selected),offset,ptr::from_mut(&mut output).cast(),HOST)};output

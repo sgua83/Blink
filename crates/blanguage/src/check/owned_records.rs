@@ -4,6 +4,7 @@ use application::Ownership;
 use owned_values::{OwnedValue,ReadName as MemberName,read_field as member_field,read_field_name as member_field_name};
 use returns::Returned;
 mod projection;
+pub(super) use projection::root_name;
 
 #[derive(Clone)]
 pub(super) struct OwnedProjection {

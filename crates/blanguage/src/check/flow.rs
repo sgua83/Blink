@@ -1,5 +1,6 @@
 //! 顺序块合成真实退出边；循环结束只合流条件失败与 break 的状态。
 use super::*;
+use super::owned_values::{InitialWrite, LoopTarget};
 use super::view::{Borrow,InputSlot,LoopInput,data_at,data_at_mut};
 
 #[repr(C)]
@@ -207,12 +208,6 @@ impl LoopContext {
         identity
     }
 }
-enum InitialWrite {
-    Ready,
-    IncompleteShape,
-    Unavailable,
-}
-
 impl Builder<'_> {
     pub(super) fn prepare_view_loop(&mut self) {
         if self.application.is_none() || self.loop_contexts.last().unwrap().initial{return;}
@@ -486,17 +481,12 @@ impl Builder<'_> {
     }
 
     fn initial_target(&self, expr: &Expr, shape: bool) -> InitialWrite {
-        use application::Ownership;
         use returns::Returned;
 
         if let ExprKind::Name(name) = expr.kind()
             && let Some(Binding::ApplicationData(data)) = self.env.get(name)
         {
-            return if self.resolve_ownership(&data.ownership, None).available() {
-                InitialWrite::Ready
-            } else {
-                InitialWrite::Unavailable
-            };
+            return owned_values::initial_write(self, LoopTarget::Dataset(data), shape);
         }
         let projection = match self.owned_element_type(expr) {
             Some(ty) if !ty.owns_resources() => return InitialWrite::Ready,
@@ -511,51 +501,27 @@ impl Builder<'_> {
             };
         };
         let Binding::OwnedValue(root) = &self.env[&projection.root] else { unreachable!() };
-        let mut model = match projection.path.as_slice() {
-            [] => Returned::OwnedValue(root.clone()),
+        let target = match projection.path.as_slice() {
+            [] => LoopTarget::Aggregate(root),
             [first, tail @ ..] => {
                 let mut selected = root.payloads[*first].as_deref().unwrap();
                 for &index in tail {
                     let Returned::OwnedValue(value) = selected else { unreachable!() };
                     selected = value.payloads[index].as_deref().unwrap();
                 }
-                selected.clone()
+                LoopTarget::Projected(selected)
             }
         };
-        self.resolve_owned_model(&mut model, None);
-        match model {
-            Returned::Dataset(data) if !data.ownership.available() => InitialWrite::Unavailable,
-            Returned::OwnedValue(value) if value.value.ty.has_variants() => {
-                if matches!(value.ownership, Ownership::Moved | Ownership::Conditional(_)) {
-                    InitialWrite::Unavailable
-                } else if shape && value.incomplete() {
-                    InitialWrite::IncompleteShape
-                } else {
-                    InitialWrite::Ready
-                }
-            }
-            Returned::OwnedValue(value) if !value.available() => InitialWrite::Unavailable,
-            _ => InitialWrite::Ready,
-        }
+        owned_values::initial_write(self, target, shape)
     }
 
     fn incomplete_loop_root(&self, expr: &Expr) -> bool {
-        let mut target = expr.clone();
-        loop {
-            match target.kind() {
-                ExprKind::Name(name) => {
-                    return match self.env.get(name) {
-                        Some(Binding::OwnedValue(value)) => {
-                            value.ownership == application::Ownership::Moved || value.incomplete()
-                        }
-                        Some(Binding::ApplicationData(data)) => data.ownership == application::Ownership::Moved,
-                        _ => false,
-                    };
-                }
-                ExprKind::Member(base, _) | ExprKind::Index(base, _) => target = base,
-                _ => return false,
-            }
-        }
+        let target = match owned_records::root_name(expr).and_then(|name| self.env.get(name)) {
+            Some(Binding::OwnedValue(value)) => LoopTarget::Aggregate(value),
+            Some(Binding::ApplicationData(data)) => LoopTarget::Dataset(data),
+            _ => return false,
+        };
+        owned_values::initial_root_incomplete(target)
     }
 
     fn loop_has_resource_exit(&self, body: &Block) -> bool {

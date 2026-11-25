@@ -33,9 +33,18 @@ impl<'a> Assumption<'a>{
  fn new(value:Option<&'a Presence>)->Self{Self{value,condition:value.map(Presence::condition)}}
 }
 pub(in crate::check) fn ownership(builder:&Builder<'_>,value:&Ownership,assuming:Option<&Presence>)->Ownership{ownership_in(builder,value,assuming.map(Presence::condition).as_ref())}
+pub(in crate::check) fn ownership_code(value: &Ownership) -> u32 {
+    match value { Ownership::Moved => 0, Ownership::Owned => 1, Ownership::Borrowed => 2, Ownership::Conditional(_) => 3 }
+}
+pub(in crate::check) fn resolved_ownership_code(builder: &Builder<'_>, value: &Ownership, assuming: Option<&bounds::Condition>) -> u32 {
+    let known = match value {
+        Ownership::Conditional(when) => truth(builder.condition_truth(&when.condition(), assuming)),
+        _ => 2,
+    };
+    unsafe { b_ownership(ownership_code(value), known) }
+}
 pub(in crate::check) fn ownership_in(builder:&Builder<'_>,value:&Ownership,assuming:Option<&bounds::Condition>)->Ownership{
- let(kind,known)=match value{Ownership::Moved=>(0,2),Ownership::Owned=>(1,2),Ownership::Borrowed=>(2,2),Ownership::Conditional(when)=>(3,truth(builder.condition_truth(&when.condition(),assuming)))};
- match unsafe{b_ownership(kind,known)}{0=>Ownership::Moved,1=>Ownership::Owned,2=>Ownership::Borrowed,_=>value.clone()}
+ match resolved_ownership_code(builder,value,assuming){0=>Ownership::Moved,1=>Ownership::Owned,2=>Ownership::Borrowed,_=>value.clone()}
 }
 pub(in crate::check) fn possible(builder:&Builder<'_>,value:&Presence)->bool{unsafe{b_possible(truth(builder.condition_truth(&value.condition(),None)))!=0}}
 pub(in crate::check) fn initialization(builder:&Builder<'_>,value:&Position,assuming:Option<&Presence>)->Position{ownership::resolve_initialization(builder,value,assuming,assuming.map(Presence::condition).as_ref())}

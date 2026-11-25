@@ -113,34 +113,43 @@ extern "C" void join_returned(Item left,Item right,u32 stored,address choice,add
     join_value(host.values.data_length(left.node),host.values.data_length(right.node),stored,choice,host.values);
 }
 
-extern "C" u32 available(address value,Host host) on cpu
+bool usable(PayloadState state) on cpu {
+    return state==PayloadState::Owned || state==PayloadState::Borrowed;
+}
+
+u32 available_children(address value,Info shape,Host host) on cpu
     requires nonzero(host.inspect)
     requires nonzero(host.ownership)
     requires nonzero(host.child)
     requires nonzero(host.field_owned)
-    requires nonzero(host.state_available)
+    requires nonzero(host.state)
     requires nonzero(host.data_ownership) { 
-    if(host.state_available(host.ownership(value))==0){return 0;}
-    Info shape=host.inspect(value);u64 i=0u64;
+    u64 i=0u64;
     while(i<shape.count){
         if((shape.flags&1)==0&&host.field_owned(value,i)==0){i+=1u64;continue;}
         Item item=host.child(value,i);
         if(item.kind==0){if((shape.flags&1)==0){return 0;}}
-        else if(item.kind==3){if(host.state_available(host.data_ownership(item.node))==0){return 0;}}
+        else if(item.kind==3){if(!usable(host.state(host.state_context,host.data_ownership(item.node)))){return 0;}}
         else if(item.kind==4){if(available(item.node,host)==0){return 0;}}
         i+=1u64;
     }
     return 1;
+}
+extern "C" u32 available(address value,Host host) on cpu
+    requires nonzero(host.inspect) requires nonzero(host.ownership) requires nonzero(host.child)
+    requires nonzero(host.field_owned) requires nonzero(host.state) requires nonzero(host.data_ownership) {
+    if(!usable(host.state(host.state_context,host.ownership(value)))){return 0;}
+    return available_children(value,host.inspect(value),host);
 }
 extern "C" u32 all_available(address value,Host host) on cpu
     requires nonzero(host.inspect)
     requires nonzero(host.ownership)
     requires nonzero(host.child)
     requires nonzero(host.field_owned)
-    requires nonzero(host.state_available)
-    requires nonzero(host.state_owned)
+    requires nonzero(host.state)
     requires nonzero(host.data_ownership) { 
-    if(host.state_owned(host.ownership(value))==0){return 0;}return available(value,host);
+    if(host.state(host.state_context,host.ownership(value))!=PayloadState::Owned){return 0;}
+    return available_children(value,host.inspect(value),host);
 }
 extern "C" void borrow(address value,Host host) on cpu
     requires nonzero(host.inspect)
@@ -166,7 +175,7 @@ extern "C" u32 incomplete(address value,Host host) on cpu
     requires nonzero(host.inspect)
     requires nonzero(host.child)
     requires nonzero(host.field_owned)
-    requires nonzero(host.state_moved)
+    requires nonzero(host.state)
     requires nonzero(host.data_ownership) { 
     Info shape=host.inspect(value);u64 i=0u64;
     while(i<shape.count){
@@ -174,8 +183,33 @@ extern "C" u32 incomplete(address value,Host host) on cpu
         Item item=host.child(value,i);
         if(item.kind==0){return 1;}
         if(item.kind==4&&incomplete(item.node,host)!=0){return 1;}
-        if(item.kind==3&&host.state_moved(host.data_ownership(item.node))!=0){return 1;}
+        if(item.kind==3&&host.state(host.state_context,host.data_ownership(item.node))==PayloadState::Moved){return 1;}
         i+=1u64;
+    }
+    return 0;
+}
+extern "C" InitialWrite initial_write(Item item,u32 shape,Host host) on cpu
+    requires nonzero(host.inspect) requires nonzero(host.ownership) requires nonzero(host.child)
+    requires nonzero(host.field_owned) requires nonzero(host.state) requires nonzero(host.data_ownership) {
+    if(item.kind==3){
+        return usable(host.state(host.state_context,host.data_ownership(item.node)))
+            ? InitialWrite::Ready : InitialWrite::Unavailable;
+    }
+    if(item.kind==4){
+        if(!usable(host.state(host.state_context,host.ownership(item.node)))){return InitialWrite::Unavailable;}
+        Info layout=host.inspect(item.node);
+        if((layout.flags&1)!=0){
+            if(shape!=0&&incomplete(item.node,host)!=0){return InitialWrite::IncompleteShape;}
+        }else if(available_children(item.node,layout,host)==0){return InitialWrite::Unavailable;}
+    }
+    return InitialWrite::Ready;
+}
+extern "C" u32 initial_root_incomplete(Item item,Host host) on cpu
+    requires nonzero(host.inspect) requires nonzero(host.ownership) requires nonzero(host.child)
+    requires nonzero(host.field_owned) requires nonzero(host.state) requires nonzero(host.data_ownership) {
+    if(item.kind==3){return host.state(host.state_context,host.data_ownership(item.node))==PayloadState::Moved ? 1 : 0;}
+    if(item.kind==4){
+        return (host.state(host.state_context,host.ownership(item.node))==PayloadState::Moved || incomplete(item.node,host)!=0) ? 1 : 0;
     }
     return 0;
 }
@@ -366,9 +400,9 @@ void walk(address value,u32 retain_moved,address context,cfn<void,address,addres
     requires nonzero(host.inspect)
     requires nonzero(host.ownership)
     requires nonzero(host.child)
-    requires nonzero(host.state_moved)
+    requires nonzero(host.state)
     requires nonzero(visit) { 
-    if(retain_moved==0&&host.state_moved(host.ownership(value))!=0){return;}
+    if(retain_moved==0&&host.state(host.state_context,host.ownership(value))==PayloadState::Moved){return;}
     u64 count=host.inspect(value).count;u64 i=0u64;
     while(i<count){Item item=host.child(value,i);if(item.kind==3){visit(item.node,context);}else if(item.kind==4){walk(item.node,retain_moved,context,visit,host);}i+=1u64;}
 }
@@ -376,13 +410,13 @@ extern "C" void handles(address value,address context,cfn<void,address,address> 
     requires nonzero(host.inspect)
     requires nonzero(host.ownership)
     requires nonzero(host.child)
-    requires nonzero(host.state_moved)
+    requires nonzero(host.state)
     requires nonzero(visit) { walk(value,1,context,visit,host);}
 extern "C" void resources(address value,address context,cfn<void,address,address> visit,Host host) on cpu
     requires nonzero(host.inspect)
     requires nonzero(host.ownership)
     requires nonzero(host.child)
-    requires nonzero(host.state_moved)
+    requires nonzero(host.state)
     requires nonzero(visit) { walk(value,0,context,visit,host);}
 
 extern "C" u32 live_paths(address value, u32 independent, address context, LivePathHost host) on cpu

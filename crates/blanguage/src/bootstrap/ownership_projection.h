@@ -22,6 +22,7 @@ extern "C" Projection owned(Source source,address env,address path,Host host) on
     requires nonzero(host.field) requires nonzero(host.element) requires nonzero(host.push);
 extern "C" address owned_type(Source source,address env,Host host) on cpu
     requires nonzero(host.root) requires nonzero(host.ty) requires nonzero(host.selected_field);
+extern "C" Bytes root_name(Source source) on cpu;
 extern "C" void components(address root,address selected,u32 offset,address output,Host host) on cpu
     requires nonzero(host.ty) requires nonzero(host.word) requires nonzero(host.push);
 extern "C" bool temporary(Source source) on cpu;
