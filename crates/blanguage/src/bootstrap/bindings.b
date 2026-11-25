@@ -251,6 +251,23 @@ extern "C" void import_name(BindingBytes dll,BindingBytes name,address output) o
     decimal(output,15u64,dll.length);u64 begin=15u64+digits(dll.length);
     literal(output,begin,36u64,1u64);copy(output,begin+1u64,dll);copy(output,begin+1u64+dll.length,name);
 }
+u64 bound_symbol(BindingForest forest,address sections,address record,BindingRelocation value) on cpu {
+    if(value.target==u16(0) && value.value==0){
+        return section_at(sections,value.section).symbol;
+    }
+    if(value.target==u16(2)){
+        return node_at(forest,find(forest,forest.imports,BindingKey(value.dll,value.name))).value;
+    }
+    return node_at(forest,find(forest,forest.names,reference_key(record,value))).value;
+}
+
+extern "C" u64 relocation_symbol(read CoffBindingSource binding,u64 index,u64 relocation) on cpu {
+    BindingForest forest=BindingForest(binding.nodes,0u64,binding.names_root,binding.imports_root);
+    BindingSection section=section_at(binding.sections,index);
+    address record=relocation_address(section,relocation);
+    return bound_symbol(forest,binding.sections,record,unsafe_position<BindingRelocation>(record));
+}
+
 extern "C" void write_section_relocations(read CoffBindingSource binding,u64 index,address output) on cpu {
     BindingForest forest=BindingForest(binding.nodes,0u64,binding.names_root,binding.imports_root);
     BindingSection section=section_at(binding.sections,index);
@@ -258,14 +275,7 @@ extern "C" void write_section_relocations(read CoffBindingSource binding,u64 ind
     while(i<section.relocation_count){
         address record=relocation_address(section,i);
         BindingRelocation value=unsafe_position<BindingRelocation>(record);
-        u64 target=0u64;
-        if(value.target==u16(0) && value.value==0){
-            target=section_at(binding.sections,value.section).symbol;
-        }else if(value.target==u16(2)){
-            target=node_at(forest,find(forest,forest.imports,BindingKey(value.dll,value.name))).value;
-        }else{
-            target=node_at(forest,find(forest,forest.names,reference_key(record,value))).value;
-        }
+        u64 target=bound_symbol(forest,binding.sections,record,value);
         u64 at=i*COFF_RELOCATION_RECORD_BYTES;
         // The checked 32-bit offset and final symbol index are adjacent.
         literal(output,at,value.offset | (target<<32u64),8u64);

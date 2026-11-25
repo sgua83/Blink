@@ -24,14 +24,13 @@ record!(SectionLayout { section, identity, layout });
 record!(Material { sections });
 const MAGIC: &[u8; 8] = b"BLCF\x0a\0\0\0";
 
-fn identity(facts: &Facts<'_>, index: usize, spans: &[Span]) -> [u8; 32] {
-    let section = &facts.sections[index];
+fn identity(section: &SectionFacts, symbol: impl Fn(usize) -> SymbolPosition, spans: &[Span]) -> [u8; 32] {
     let mut digest = hash::Digest::new();
     digest.field(unsafe { section.row.bytes.borrowed() });
     digest.field(&section.row.flags.to_le_bytes());
     digest.field(&(section.relocations.len() as u64).to_le_bytes());
     for relocation in &section.relocations {
-        let symbol = facts.symbols[relocation.symbol].as_ref().unwrap();
+        let symbol = symbol(relocation.symbol);
         digest.field(&(relocation.offset as u64).to_le_bytes());
         digest.field(&relocation.kind.to_le_bytes());
         digest.field(unsafe { symbol.name.borrowed() });
@@ -112,7 +111,7 @@ impl Material {
         if value.sections.len() != code.clone().count() { return Err("COFF observation code section count does not match".into()); }
         for (saved, (index, section)) in value.sections.iter().zip(code) {
             let ranges = section_spans(spans, index);
-            if saved.section != index + 1 || saved.identity != identity(facts, index, ranges) {
+            if saved.section != index + 1 || saved.identity != identity(section, |index| facts.symbol_position(index), ranges) {
                 return Err("COFF observation material does not match the original code section and relocations".into());
             }
             let (end, _) = saved.layout.regions(section.row.bytes.length, ranges)?;
@@ -136,22 +135,91 @@ pub(crate) fn capture(object: &Object) -> Result<Vec<u8>> {
     if layouts.clone().any(|(_, section)| section.layout.is_none()) {
         return Err("COFF producer code ranges were not retained".into());
     }
-    let encoded = super::super::encode_object_sections(object, std::iter::empty())?;
-    let facts = Facts::read(&encoded)?;
-    let spans = facts.ranges(|_, _, _, _| {})?;
+    let count = layouts.clone().count();
     let mut writer = crate::codec::Writer(MAGIC.to_vec());
-    layouts.clone().count().encode(&mut writer);
-    for (index, section) in layouts {
-        let layout = section.layout.as_ref().unwrap();
-        let length = match &section.bytes {
-            SectionData::Initialized(bytes) => bytes.len(),
-            SectionData::ZeroFill(length) => *length,
-        };
-        let ranges = section_spans(&spans, index);
-        let _ = layout.regions(length, ranges)?;
-        (index + 1).encode(&mut writer);
-        identity(&facts, index, ranges).encode(&mut writer);
-        layout.encode(&mut writer);
+    count.encode(&mut writer);
+    if count == 0 {
+        return Ok(writer.0);
     }
-    Ok(writer.0)
+    with_object_sections(object, std::iter::empty(), |plan| {
+        let mut zero_sections = Vec::new();
+        let sections = planned_sections(&plan, &mut zero_sections);
+        let mut generated_names = Vec::new();
+        let symbols = planned_symbols(&plan, &sections, &mut generated_names);
+        let symbol = |index: usize| symbols[index].unwrap();
+        let spans = ranges(&sections, symbol, |_, _, _, _| {})?;
+        for (index, section) in layouts {
+            let layout = section.layout.as_ref().unwrap();
+            let physical = &sections[index];
+            let ranges = section_spans(&spans, index);
+            let _ = layout.regions(physical.byte_length, ranges)?;
+            (index + 1).encode(&mut writer);
+            identity(physical, symbol, ranges).encode(&mut writer);
+            layout.encode(&mut writer);
+        }
+        Ok(writer.0)
+    })
+}
+
+// Only the physical COFF fields consumed by material and unwind range queries
+// are projected. Ordinary names and payloads stay with the binding and Object.
+fn planned_symbols(
+    plan: &CoffOutput<'_>, sections: &[SectionFacts], generated: &mut Vec<Vec<u8>>,
+) -> Vec<Option<SymbolPosition>> {
+    let mut used = vec![false; plan.layout.symbol_count];
+    for relocation in sections.iter().flat_map(|section| &section.relocations) {
+        used[relocation.symbol] = true;
+    }
+    let mut symbols = Vec::with_capacity(plan.layout.symbol_count);
+    for symbol in plan.symbols {
+        let next = symbols.len() + 1 + symbol.auxiliary as usize;
+        if used[symbols.len()] {
+            let name = if symbol.generated == 0 {
+                ReadBytes { bytes: symbol.name, length: symbol.name_length }
+            } else {
+                let mut name = vec![0; symbol.name_length];
+                unsafe { write_generated_name(plan.binding, symbol.generated, symbol.source, name.as_mut_ptr()); }
+                let view = ReadBytes::new(&name);
+                generated.push(name);
+                view
+            };
+            symbols.push(Some(SymbolPosition { name, section: symbol.section as i64, value: symbol.value }));
+        }
+        symbols.resize(next, None);
+    }
+    symbols
+}
+
+fn planned_sections(plan: &CoffOutput<'_>, zero_sections: &mut Vec<Vec<u8>>) -> Vec<SectionFacts> {
+    plan.physical.iter().zip(plan.sections).zip(plan.bindings).enumerate()
+        .map(|(index, ((physical, (_, payload, _)), binding))| {
+            let name = ReadBytes { bytes: physical.name, length: physical.name_length };
+            let consumed = physical.flags & 0x20 != 0 || unsafe { name.borrowed() } == b".pdata";
+            let byte_length = if physical.offset == 0 { 0 } else { physical.byte_length };
+            let bytes = match payload {
+                CoffPayload::Borrowed(bytes) => ReadBytes::new(bytes),
+                CoffPayload::ZeroFill(_) if consumed && byte_length != 0 => {
+                    let bytes = vec![0; byte_length];
+                    let view = ReadBytes::new(&bytes);
+                    zero_sections.push(bytes);
+                    view
+                }
+                _ => ReadBytes::new(&[]),
+            };
+            let relocations = if consumed && binding.relocation_count != 0 {
+                // The plan borrows these original relocation rows until this call returns.
+                let rows = unsafe { std::slice::from_raw_parts(binding.relocations, binding.relocation_count) };
+                rows.iter().enumerate().map(|(at, row)| ReadRelocation {
+                    offset: row.offset as usize, kind: u64::from(row.kind),
+                    symbol: unsafe { relocation_symbol(plan.binding, index, at) }, error: ReadError::None,
+                }).collect()
+            } else { Vec::new() };
+            let row = ReadSection {
+                name, bytes, flags: physical.flags,
+                relocations: physical.relocation_offset, relocation_count: binding.relocation_count,
+                zero_fill: if physical.offset == 0 { physical.byte_length } else { 0 },
+                error: ReadError::None,
+            };
+            SectionFacts { row, byte_length, relocations }
+        }).collect()
 }

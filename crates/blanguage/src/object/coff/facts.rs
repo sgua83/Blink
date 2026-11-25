@@ -2,6 +2,72 @@
 use super::*;
 use crate::build::hash;
 
+#[derive(Clone, Copy)]
+struct SymbolPosition {
+    name: ReadBytes,
+    section: i64,
+    value: u64,
+}
+
+fn address<'r>(
+    sections: &[SectionFacts], symbol: &'r impl Fn(usize) -> SymbolPosition, section: &'r SectionFacts, at: usize,
+) -> Result<AddressFacts<'r>> {
+    let bytes = unsafe { section.row.bytes.borrowed() };
+    let addend = u32::from_le_bytes(bytes[at..at + 4].try_into()?);
+    let mut relocations = section.relocations.iter().filter(|row| row.offset == at);
+    let relocation = relocations.next();
+    if relocations.next().is_some() { return Err("COFF .pdata field has multiple relocations".into()); }
+    let target = relocation.map(|row| (row, symbol(row.symbol)));
+    let (resolved, status) = match target {
+        None => (None, "no_relocation"),
+        Some((row, _)) if row.kind != 3 => (None, "relocation_type_not_supported"),
+        Some((_, symbol)) => {
+            if symbol.section <= 0 { (None, "symbol_not_section_relative") }
+            else {
+                let index = usize::try_from(symbol.section - 1)?;
+                let target = sections.get(index).ok_or("COFF .pdata target section is outside the section table")?;
+                let offset = (symbol.value as u32).wrapping_add(addend) as usize;
+                if offset > target.byte_length { return Err("COFF .pdata address is outside its target section".into()); }
+                (Some((index, offset)), "resolved")
+            }
+        }
+    };
+    let symbol_name = target.map(|(_, symbol)| {
+        std::str::from_utf8(unsafe { symbol.name.borrowed() })
+    }).transpose()?.unwrap_or("");
+    Ok(AddressFacts { resolved, addend, relocation, symbol_name, status })
+}
+fn ranges(
+    sections: &[SectionFacts], symbol: impl Fn(usize) -> SymbolPosition,
+    mut record: impl FnMut(usize, usize, &[AddressFacts<'_>; 3], &'static str),
+) -> Result<Vec<Span>> {
+    let mut spans = Vec::new();
+    for (index, section) in sections.iter().enumerate() {
+        if unsafe { section.row.name.borrowed() } != b".pdata" { continue; }
+        let bytes = unsafe { section.row.bytes.borrowed() };
+        if bytes.len() % 12 != 0 { return Err("COFF x64 .pdata contains an incomplete function record".into()); }
+        for at in (0..bytes.len()).step_by(12) {
+            let addresses = [
+                address(sections, &symbol, section, at)?,
+                address(sections, &symbol, section, at + 4)?,
+                address(sections, &symbol, section, at + 8)?,
+            ];
+            let status = match (addresses[0].resolved, addresses[1].resolved) {
+                (Some((s, _)), Some((t, _))) if s != t => "cross_section_range",
+                (Some((s, start)), Some((_, end))) => {
+                    if start > end { return Err("COFF .pdata function range is reversed".into()); }
+                    spans.push(Span { section: s, start, end, pdata_section: index, record_offset: at }); "resolved"
+                }
+                _ => "unresolved",
+            };
+            record(index, at, &addresses, status);
+        }
+    }
+    // Keep the encounter order of original .pdata records within each target section.
+    spans.sort_by_key(|span| span.section);
+    Ok(spans)
+}
+
 #[derive(Clone, Copy, Debug)]
 pub enum CodeSelection<'a> {
     CodeSections,
@@ -22,6 +88,7 @@ unsafe extern "C" {
 }
 struct SectionFacts {
     row: ReadSection,
+    byte_length: usize,
     relocations: Vec<ReadRelocation>,
 }
 impl SectionFacts {
@@ -98,7 +165,7 @@ impl<'a> Facts<'a> {
                 }
                 relocations.push(relocation);
             }
-            sections.push(SectionFacts { row, relocations });
+            sections.push(SectionFacts { row, byte_length: row.bytes.length, relocations });
         }
         Ok(Self { reader, table, symbols, sections })
     }
@@ -122,55 +189,12 @@ impl<'a> Facts<'a> {
             ("symbol_index", row.symbol.to_string()), ("symbol_name", text(name)),
             ("symbol_section_number", symbol.section.to_string()), ("symbol_value", symbol.value.to_string())])
     }
-    fn address<'r>(&'r self, section: &'r SectionFacts, at: usize) -> Result<AddressFacts<'r>> {
-        let bytes = unsafe { section.row.bytes.borrowed() };
-        let addend = u32::from_le_bytes(bytes[at..at + 4].try_into()?);
-        let mut relocations = section.relocations.iter().filter(|row| row.offset == at);
-        let relocation = relocations.next();
-        if relocations.next().is_some() { return Err("COFF .pdata field has multiple relocations".into()); }
-        let (resolved, status) = match relocation {
-            None => (None, "no_relocation"),
-            Some(row) if row.kind != 3 => (None, "relocation_type_not_supported"),
-            Some(row) => {
-                let symbol = self.symbols[row.symbol].as_ref().unwrap();
-                if symbol.section <= 0 { (None, "symbol_not_section_relative") }
-                else {
-                    let index = usize::try_from(symbol.section - 1)?;
-                    let target = self.sections.get(index).ok_or("COFF .pdata target section is outside the section table")?;
-                    let offset = (symbol.value as u32).wrapping_add(addend) as usize;
-                    if offset > target.row.bytes.length { return Err("COFF .pdata address is outside its target section".into()); }
-                    (Some((index, offset)), "resolved")
-                }
-            }
-        };
-        let symbol_name = relocation.map(|row| {
-            let symbol = self.symbols[row.symbol].as_ref().unwrap();
-            std::str::from_utf8(unsafe { symbol.name.borrowed() })
-        }).transpose()?.unwrap_or("");
-        Ok(AddressFacts { resolved, addend, relocation, symbol_name, status })
+    fn ranges(&self, record: impl FnMut(usize, usize, &[AddressFacts<'_>; 3], &'static str)) -> Result<Vec<Span>> {
+        ranges(&self.sections, |index| self.symbol_position(index), record)
     }
-    fn ranges(&self, mut record: impl FnMut(usize, usize, &[AddressFacts<'_>; 3], &'static str)) -> Result<Vec<Span>> {
-        let mut spans = Vec::new();
-        for (index, section) in self.sections.iter().enumerate() {
-            if unsafe { section.row.name.borrowed() } != b".pdata" { continue; }
-            let bytes = unsafe { section.row.bytes.borrowed() };
-            if bytes.len() % 12 != 0 { return Err("COFF x64 .pdata contains an incomplete function record".into()); }
-            for at in (0..bytes.len()).step_by(12) {
-                let addresses = [self.address(section, at)?, self.address(section, at + 4)?, self.address(section, at + 8)?];
-                let status = match (addresses[0].resolved, addresses[1].resolved) {
-                    (Some((s, _)), Some((t, _))) if s != t => "cross_section_range",
-                    (Some((s, start)), Some((_, end))) => {
-                        if start > end { return Err("COFF .pdata function range is reversed".into()); }
-                        spans.push(Span { section: s, start, end, pdata_section: index, record_offset: at }); "resolved"
-                    }
-                    _ => "unresolved",
-                };
-                record(index, at, &addresses, status);
-            }
-        }
-        // Keep the encounter order of original .pdata records within each target section.
-        spans.sort_by_key(|span| span.section);
-        Ok(spans)
+    fn symbol_position(&self, index: usize) -> SymbolPosition {
+        let symbol = self.symbols[index].as_ref().unwrap();
+        SymbolPosition { name: symbol.name, section: symbol.section, value: symbol.value }
     }
     fn selected(&self, selection: CodeSelection<'_>) -> Result<(Option<usize>, String)> {
         Ok(match selection {

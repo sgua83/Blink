@@ -43,6 +43,10 @@ unsafe extern "C" {
     fn coff_layout(input: CoffInput) -> CoffLayout;
     #[link_name = "bootstrap.coff::encode"]
     fn coff_encode(input: CoffInput, layout: CoffLayout, binding: CoffBindingSource, output: *mut u8);
+    #[link_name = "bootstrap.bindings::relocation_symbol"]
+    fn relocation_symbol(binding: &CoffBindingSource, section: usize, relocation: usize) -> usize;
+    #[link_name = "bootstrap.bindings::write_generated_name"]
+    fn write_generated_name(binding: &CoffBindingSource, kind: u64, source: u64, output: *mut u8);
 }
 
 // Synchronous borrowed fields; Object and caller-owned storage outlive both B phases.
@@ -761,16 +765,17 @@ pub(super) fn encode_build(o: &Object, build: Option<&[u8]>) -> Result<Vec<u8>> 
         let extra = std::iter::once((META, CoffPayload::Metadata(&input, length), 0x840))
             .chain(build.map(|bytes| (BUILD, CoffPayload::Borrowed(bytes), 0x840)))
             .chain(o.archive.as_ref().map(|archive| (ARCHIVE, CoffPayload::Borrowed(archive.bytes.as_ref()), 0x840)));
-        encode_object_sections(o, extra)
+        with_object_sections(o, extra, owned_output)
     })
 }
 
-fn encode_object_sections<'a>(
+fn with_object_sections<'a>(
     object: &'a Object,
     extra: impl Iterator<Item = (&'a str, CoffPayload<'a>, u32)>,
+    finish: impl FnOnce(CoffOutput<'_>) -> Result<Vec<u8>>,
 ) -> Result<Vec<u8>> {
     encode_sections(&object.name, &object.sections, object.symbols.iter().map(|symbol| &symbol.definition),
-        coff_payload, extra, None, owned_output)
+        coff_payload, extra, None, finish)
 }
 
 pub(crate) fn encode_native(name: &str, source: &[Section], declared: &[Definition]) -> Result<Vec<u8>> {
@@ -947,7 +952,10 @@ fn encode_bound<'a>(
     };
     // The synchronous destination consumes this plan while the binding and
     // payload owners are still live.
-    finish(CoffOutput { input, physical: &physical, sections: &sections, layout, binding: &binding })
+    finish(CoffOutput {
+        input, physical: &physical, sections: &sections, layout, binding: &binding,
+        symbols: &symbols, bindings: &binding_sections,
+    })
 }
 
 pub(super) struct CoffOutput<'a> {
@@ -956,6 +964,8 @@ pub(super) struct CoffOutput<'a> {
     sections: &'a [(&'a str, CoffPayload<'a>, u32)],
     layout: CoffLayout,
     binding: &'a CoffBindingSource,
+    symbols: &'a [CoffSymbolView],
+    bindings: &'a [BindingSection],
 }
 
 impl CoffOutput<'_> {

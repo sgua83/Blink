@@ -20,6 +20,7 @@ struct BindingWork {
 };
 struct BindingPlan {u64 symbols;u64 names_root;u64 imports_root;u32 error;};
 extern "C" BindingPlan prepare(BindingInput input,BindingWork work) on cpu;
+extern "C" u64 relocation_symbol(read CoffBindingSource binding,u64 index,u64 relocation) on cpu;
 extern "C" void write_generated_name(read CoffBindingSource binding,u64 kind,u64 source,address output) on cpu;
 extern "C" void write_section_relocations(read CoffBindingSource binding,u64 index,address output) on cpu;
 extern "C" u64 import_name_size(BindingBytes dll,BindingBytes name) on cpu;

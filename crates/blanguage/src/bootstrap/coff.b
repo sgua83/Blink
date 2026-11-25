@@ -36,7 +36,10 @@ extern "C" CoffLayout layout(CoffInput input) on cpu {
             section.relocation_offset=at;
         }
         if(section.relocation_count>=4294967295u64){return invalid(4);}
-        if(section.relocation_count>=65535u64){at+=COFF_RELOCATION_RECORD_BYTES;}
+        if(section.relocation_count>=65535u64){
+            section.flags=section.flags|16777216u64;
+            at+=COFF_RELOCATION_RECORD_BYTES;
+        }
         at+=COFF_RELOCATION_RECORD_BYTES*section.relocation_count;
         section_put(input,i,section);i+=1u64;
     }
@@ -105,13 +108,13 @@ extern "C" void encode(CoffInput input,CoffLayout layout,CoffBindingSource bindi
         }
         le32(output,h+16u64,section.byte_length);le32(output,h+20u64,section.offset);
         le32(output,h+24u64,section.relocation_offset);
-        u64 count=section.relocation_count;u64 flags=section.flags;
+        u64 count=section.relocation_count;
         u64 at=section.relocation_offset;
         if(count>=65535u64){
-            count=65535u64;flags=flags|16777216u64;
+            count=65535u64;
             le32(output,at,section.relocation_count+1u64);zero(output,at+4u64,6u64);at+=COFF_RELOCATION_RECORD_BYTES;
         }
-        le16(output,h+32u64,count);le32(output,h+36u64,flags);
+        le16(output,h+32u64,count);le32(output,h+36u64,section.flags);
         if(section.relocation_count!=0u64){
             address destination=unsafe_address(address_bits(output)+at);
             write_section_relocations(binding,i,destination);
