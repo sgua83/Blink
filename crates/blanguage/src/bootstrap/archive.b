@@ -122,29 +122,25 @@ extern "C" void encode(ArchiveInput input,ArchiveLayout layout,address out) on c
     }
     u64 first=8u64;header(out,first,layout.first,0,0u64);
     u64 at=first+60u64;be32(out,at,input.symbol_count);at+=4u64;
+    u64 name_at=at+4u64*input.symbol_count;
     u64 i=0u64;
     while(i<input.symbol_count){
         ArchiveSymbol symbol=symbol_at(input.symbols,i);ArchiveMember member=member_at(input,symbol.member);
-        be32(out,at,member.offset);at+=4u64;i+=1u64;
-    }
-    i=0u64;
-    while(i<input.symbol_count){
-        ArchiveSymbol symbol=symbol_at(input.symbols,i);copy(out,at,symbol.name,symbol.name_length);
-        at+=symbol.name_length;put(out,at,0);at+=1u64;i+=1u64;
+        be32(out,at,member.offset);at+=4u64;
+        copy(out,name_at,symbol.name,symbol.name_length);
+        name_at+=symbol.name_length;put(out,name_at,0);name_at+=1u64;i+=1u64;
     }
     sort_symbols(input.symbols,input.symbol_count,false);
     u64 second=first+member_span(layout.first);header(out,second,layout.second,0,0u64);
     at=second+60u64;le32(out,at,input.member_count);at+=4u64;i=0u64;
     while(i<input.member_count){ArchiveMember member=member_at(input,i);le32(out,at,member.offset);at+=4u64;i+=1u64;}
     le32(out,at,input.symbol_count);at+=4u64;i=0u64;
+    name_at=at+2u64*input.symbol_count;
     while(i<input.symbol_count){
         ArchiveSymbol symbol=symbol_at(input.symbols,i);u64 index=symbol.member+1u64;
-        put(out,at,u32(index)&255);put(out,at+1u64,u32(index>>8u64)&255);at+=2u64;i+=1u64;
-    }
-    i=0u64;
-    while(i<input.symbol_count){
-        ArchiveSymbol symbol=symbol_at(input.symbols,i);copy(out,at,symbol.name,symbol.name_length);
-        at+=symbol.name_length;put(out,at,0);at+=1u64;i+=1u64;
+        put(out,at,u32(index)&255);put(out,at+1u64,u32(index>>8u64)&255);at+=2u64;
+        copy(out,name_at,symbol.name,symbol.name_length);
+        name_at+=symbol.name_length;put(out,name_at,0);name_at+=1u64;i+=1u64;
     }
     u64 names=second+member_span(layout.second);header(out,names,layout.names,1,0u64);
     at=names+60u64;i=0u64;
