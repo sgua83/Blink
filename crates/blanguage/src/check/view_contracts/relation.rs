@@ -551,12 +551,6 @@ impl Graph {
         }
     }
 
-    fn frames_at(&self, id: usize) -> BTreeSet<usize> {
-        let mut frames = BTreeSet::new();
-        self.visit_frames(&self.nodes[id], &mut frames, |_| {});
-        frames
-    }
-
     fn read_feedback(&self, root: usize) -> bool {
         let mut todo = vec![(root, false)];
         let mut seen = BTreeSet::new();
@@ -623,12 +617,15 @@ impl Graph {
         self.walk_reachable(root, &mut BTreeSet::new(), &mut BTreeSet::new(), accepts)
     }
 
-    fn evaluation_dependencies(&self, id: usize) -> impl Iterator<Item = usize> + '_ {
-        let sources = self.nodes[id].edges.iter().map(|edge| edge.from);
-        let writes = self.frames_at(id).into_iter().flat_map(|frame| self.frames[frame].writes.iter());
-        sources.chain(writes.flat_map(|write| {
-            std::iter::once(write.target).chain(write.fields.iter().flatten().map(|(_, value)| *value))
-        }))
+    fn evaluation_dependencies(&self, id: usize) -> BTreeSet<usize> {
+        let node = &self.nodes[id];
+        let mut dependencies: BTreeSet<_> = node.edges.iter().map(|edge| edge.from).collect();
+        self.visit_frames(node, &mut BTreeSet::new(), |frame| {
+            dependencies.extend(frame.writes.iter().flat_map(|write| {
+                std::iter::once(write.target).chain(write.fields.iter().flatten().map(|(_, value)| *value))
+            }));
+        });
+        dependencies
     }
 
     fn evaluation_plan(
@@ -644,8 +641,7 @@ impl Graph {
             ordinary_nodes += usize::from(!variable);
             let first = dependencies.len();
             if materialize || !variable {
-                let predecessors: BTreeSet<_> = self.evaluation_dependencies(id).collect();
-                dependencies.extend(predecessors);
+                dependencies.extend(self.evaluation_dependencies(id));
             }
             let mut flags = PLAN_REACHABLE;
             if variable {
@@ -848,8 +844,11 @@ impl Graph {
                 }
             }
         }
-        let frames=query.values.keys().chain(query.variables.keys()).flat_map(|id|self.frames_at(*id)).collect::<BTreeSet<_>>();
-        for id in frames{
+        let mut frames = BTreeSet::new();
+        for &id in query.values.keys().chain(query.variables.keys()) {
+            self.visit_frames(&self.nodes[id], &mut frames, |_| {});
+        }
+        for id in frames {
             let frame=&mut residual.frames[id];
             frame.writes.retain(|write|query.node(write.target).sources.entries().any(|(source,when)|when.possible()&&!self.private(source)));
             for write in &frame.writes{for(_,id)in write.fields.iter().flatten(){for(source,when)in query.node(*id).sources.entries(){
