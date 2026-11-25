@@ -83,17 +83,25 @@ extern "C" void encode_member_name(NativeImportInput input,NativeImportPlan plan
 }
 
 extern "C" void encode_section(NativeImportInput input,NativeImportPlan plan,u64 section,u64 length,address output) on cpu {
-    u64 offset=0u64;
-    while(offset<length){
-        put(output,offset,u8(0));
-        offset+=1u64;
-    }
+    u64 begin=0u64;
+    u64 end=length;
     if(plan.sections==DLL_SECTIONS){
         if(section==DLL_NAMES){
+            u64 symbol=plan.hint+2u64;
             copy(output,0u64,input.dll);
-            copy(output,plan.hint+2u64,input.name);
+            copy(output,symbol,input.name);
+            put(output,symbol+input.name.length,u8(0));
+            // DLL terminator, alignment and the two-byte hint.
+            begin=input.dll.length;
+            end=symbol;
         }else if(section==DLL_LOOKUP || section==DLL_IAT){
             literal(output,0u64,plan.hint,8u64);
+            begin=8u64;
         }
+    }
+
+    while(begin<end){
+        put(output,begin,u8(0));
+        begin+=1u64;
     }
 }
