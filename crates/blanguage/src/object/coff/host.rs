@@ -21,7 +21,9 @@ pub(super) struct Groups {
 }
 
 impl Groups {
-    pub(super) fn new(raw: &[ObjectSection], definitions: &[SectionDefinition]) -> Result<Option<Self>> {
+    pub(super) fn new(
+        raw: &[ObjectSection], definitions: &[SectionDefinition], needs_body: bool,
+    ) -> Result<Option<Self>> {
         let mut owners = Vec::new();
         let mut physical = Vec::new();
         let rows = ObjectRows::new(raw);
@@ -49,7 +51,7 @@ impl Groups {
             positions.push((*member, members[*member].len()));
             members[*member].push(physical[index]);
         }
-        if members.len() < 2 {
+        if members.len() < 2 && !needs_body {
             return Ok(None);
         }
         let relocations = (0..physical.len()).map(|_| Vec::new()).collect();

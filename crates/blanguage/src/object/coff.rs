@@ -812,23 +812,9 @@ fn encode_sections<'a, Bytes>(
     extra: impl Iterator<Item = (&'a str, CoffPayload<'a>, u32)>,
     imports: Option<&mut Vec<ImportKey<'a>>>,
 ) -> Result<Vec<u8>> {
-    let sections = source.iter().map(|section| {
-        let payload = payload(&section.bytes);
-        let name = section.name.as_str();
-        let mut flags = section.flags;
-        let name = if matches!(payload, CoffPayload::ZeroFill(_)) && !section.relocations.is_empty() {
-            flags = (flags & !IMAGE_SCN_CNT_UNINITIALIZED_DATA) | IMAGE_SCN_CNT_INITIALIZED_DATA;
-            // LINK groups conventional sections by the name before the dollar suffix.
-            match name.strip_prefix(".bss") {
-                Some("") => Cow::Borrowed(".data"),
-                Some(suffix) if suffix.starts_with('$') => Cow::Owned(format!(".data{suffix}")),
-                _ => Cow::Borrowed(name),
-            }
-        } else {
-            Cow::Borrowed(name)
-        };
-        (name, payload, flags)
-    }).chain(extra.map(|(name, payload, flags)| (Cow::Borrowed(name), payload, flags))).collect::<Vec<_>>();
+    let sections = source.iter().map(|section|
+        (section.name.as_str(), payload(&section.bytes), section.flags)
+    ).chain(extra).collect::<Vec<_>>();
     let input_relocations = source.iter().map(|section| {
         section.relocations.iter().map(|relocation| {
             let empty = BindingBytes::new(&[]);
@@ -840,8 +826,8 @@ fn encode_sections<'a, Bytes>(
             BindingRelocation { offset: relocation.offset as u64, kind: relocation.kind, target, value: 0, section, name, dll }
         }).collect::<Vec<_>>()
     }).collect::<Vec<_>>();
-    let binding_sections = source.iter().zip(&input_relocations).zip(&sections).map(|((section, relocations), (name, _, flags))| BindingSection {
-        name: BindingBytes::new(name.as_bytes()), flags: u64::from(*flags),
+    let binding_sections = source.iter().zip(&input_relocations).map(|(section, relocations)| BindingSection {
+        name: BindingBytes::new(section.name.as_bytes()), flags: u64::from(section.flags),
         relocations: relocations.as_ptr(), relocation_count: relocations.len(),
         associated: section.associated.as_ptr(), associated_count: section.associated.len(), owner: 0, symbol: 0,
     }).collect::<Vec<_>>();
@@ -852,13 +838,47 @@ fn encode_sections<'a, Bytes>(
     encode_bound(name, sections, binding_sections, &definitions, imports)
 }
 
+fn zero_fill_needs_body(zero_fill: bool, relocation_count: usize) -> bool {
+    zero_fill && relocation_count != 0
+}
+
 fn encode_bound<'a>(
     name: &str,
-    sections: Vec<(impl AsRef<str>, CoffPayload<'_>, u32)>,
+    sections: Vec<(&str, CoffPayload<'_>, u32)>,
     mut binding_sections: Vec<BindingSection>,
     definitions: &[BindingDefinition],
     imports: Option<&mut Vec<ImportKey<'a>>>,
 ) -> Result<Vec<u8>> {
+    // Renamed sections lend the same name to the binding plan and the physical writer.
+    let mut renamed = Vec::new();
+    let mut physical = sections.iter().enumerate().map(|(index, &(original_name, ref payload, original_flags))| {
+        // Metadata sections follow the bound machine sections.
+        let binding = binding_sections.get_mut(index);
+        let relocation_count = binding.as_ref().map_or(0, |section| section.relocation_count);
+        let zero_fill = matches!(payload, CoffPayload::ZeroFill(_));
+        let mut name = original_name;
+        let mut flags = original_flags;
+        if let Some(binding) = binding && zero_fill_needs_body(zero_fill, relocation_count) {
+            flags = (flags & !IMAGE_SCN_CNT_UNINITIALIZED_DATA) | IMAGE_SCN_CNT_INITIALIZED_DATA;
+            // LINK groups conventional sections by the name before the dollar suffix.
+            if let Some(suffix) = name.strip_prefix(".bss") {
+                if suffix.is_empty() {
+                    name = ".data";
+                } else if suffix.starts_with('$') {
+                    renamed.push(format!(".data{suffix}"));
+                    name = renamed.last().unwrap().as_str();
+                }
+            }
+            binding.name = BindingBytes::new(name.as_bytes());
+            binding.flags = u64::from(flags);
+        }
+        CoffSectionView {
+            name: name.as_ptr(), name_length: name.len(),
+            byte_length: payload.len(), flags: u64::from(flags),
+            uninitialized: u64::from(zero_fill && flags & IMAGE_SCN_CNT_UNINITIALIZED_DATA != 0),
+            relocation_count, offset: 0, relocation_offset: 0,
+        }
+    }).collect::<Vec<_>>();
     let relocation_count: usize = binding_sections.iter().map(|section| section.relocation_count).sum();
     // At most two symbols per section and one per definition/reference.
     // Each definition/reference contributes at most one shared tree node.
@@ -886,17 +906,6 @@ fn encode_bound<'a>(
         BindingError::RelocationOffset => return Err("COFF重定位偏移超过32位字段".into()),
     }
     unsafe { symbols.set_len(plan.symbols) };
-    let mut physical = sections.iter().enumerate().map(|(index, (name, payload, flags))| {
-        let name = name.as_ref();
-        CoffSectionView {
-            name: name.as_ptr(), name_length: name.len(),
-            byte_length: payload.len(), flags: u64::from(*flags),
-            uninitialized: u64::from(matches!(payload, CoffPayload::ZeroFill(_)) && flags & IMAGE_SCN_CNT_UNINITIALIZED_DATA != 0),
-            // Metadata sections follow the bound machine sections.
-            relocation_count: binding_sections.get(index).map_or(0, |section| section.relocation_count),
-            offset: 0, relocation_offset: 0,
-        }
-    }).collect::<Vec<_>>();
     let input = CoffInput {
         sections: physical.as_mut_ptr(), section_count: physical.len(),
         symbols: symbols.as_ptr(), symbol_count: symbols.len(),
@@ -1138,8 +1147,11 @@ impl<'a, Input: AsRef<[u8]> + ?Sized> Reader<'a, Input> {
         if !self.is_module(parts)? { return Ok(false); }
         let mut definitions = vec![SectionDefinition::default(); self.headers.len() / 40];
         let (symbols, offset) = self.symbol_rows(&mut definitions)?;
-        let mut groups = if host::needs_groups(&symbols) {
-            host::Groups::new(&raw, &definitions)?
+        let needs_body = raw.iter().any(|row| {
+            row.mapped != 0 && zero_fill_needs_body(row.zero_fill != 0, row.relocation_count)
+        });
+        let mut groups = if needs_body || host::needs_groups(&symbols) {
+            host::Groups::new(&raw, &definitions, needs_body)?
         } else {
             None
         };
