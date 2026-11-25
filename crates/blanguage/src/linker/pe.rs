@@ -5,7 +5,7 @@ use crate::native::CoffRelocationStatus;
 
 #[repr(C)]
 struct PeSection {
-    rva:u64, raw:u64, relocation_start:u64,
+    rva:u64, data_offset:u64, relocation_start:u64,
 }
 #[repr(C)]
 struct PeImport {
@@ -17,7 +17,7 @@ struct PeAbsolute {location:u64,order_or_page_end:u64}
 #[derive(Clone,Copy)]
 #[repr(C)]
 struct PeInput {
-    sections:*mut PeSection, section_count:u64,
+    sections:*mut PeSection, group_count:u64,
     relocations:*mut CombineRelocation,
     imports:*mut PeImport, import_count:u64,
     absolutes:*mut PeAbsolute, absolute_count:u64, stack_reserve:u64,
@@ -53,7 +53,7 @@ pub(super) fn link(
     let mut imports = Vec::<PeImport>::with_capacity(plan.imports);
     let mut absolutes = Vec::<PeAbsolute>::with_capacity(plan.absolutes);
     let input = PeInput {
-        sections: sections.as_mut_ptr(), section_count: groups.len() as u64,
+        sections: sections.as_mut_ptr(), group_count: groups.len() as u64,
         relocations: relocations.as_mut_ptr(), imports: imports.as_mut_ptr(),
         import_count: plan.imports as u64, absolutes: absolutes.as_mut_ptr(),
         absolute_count: plan.absolutes as u64, stack_reserve,

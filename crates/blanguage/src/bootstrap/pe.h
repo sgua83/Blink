@@ -1,7 +1,7 @@
 module bootstrap.pe;
 const u64 IMPORT_BYTES=64u64;
 struct PeSection {
-    u64 rva;u64 raw;u64 relocation_start;
+    u64 rva;u64 data_offset;u64 relocation_start;
 };
 // Compacted rows reuse the relocation index for a relative thunk. Only a
 // DLL's first written row retains its DLL source and directory location.
@@ -13,7 +13,7 @@ struct PeImport {
 // exclusive end index in the first row of each page.
 struct PeAbsolute {u64 location;u64 order_or_page_end;};
 struct PeInput {
-    address sections;u64 section_count;address relocations;
+    address sections;u64 group_count;address relocations;
     address imports;u64 import_count;address absolutes;u64 absolute_count;u64 stack_reserve;
 };
 struct PeLayout {
