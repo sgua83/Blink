@@ -36,6 +36,7 @@ struct Span { address data; usize count; usize stride; };
 // a/b/c/d retain the register and local-range fields of their respective instruction.
 // ViewLoad.c is the original byte offset. Indexed pointer.b and constant stride.a are byte strides.
 // Atomic.a/b/c are byte offset, width in bytes, and signedness.
+// Reference argument.second borrows the type's original scalar components.
 // Reference.a is the byte offset, first is the optional offset register, and left is the actual storage.
 // Append.first and second borrow the registers and u32 field offsets of the same records; d is the counter byte offset.
 struct View {
@@ -43,6 +44,14 @@ struct View {
  Span first; Span second; Node left; Node right;
 };
 struct Host { cfn<View,Node> ensures memory(read) inspect; };
+
+struct StoredPositionHost {
+ Host ir;
+ cfn<u32,address,usize> zero_offset;
+ cfn<u32,address,address> matches_position;
+};
+extern "C" address stored_position(Span code,Span registers,u32 word,u32 scalar,address context,StoredPositionHost host) on cpu
+ requires nonzero(host.ir.inspect) requires nonzero(host.zero_offset) requires nonzero(host.matches_position);
 
 enum StoredTransfer:u32 { Continue=0; Exit=1; Break=2; };
 enum StoredTruth:u32 { Both=0; Yes=1; No=2; };

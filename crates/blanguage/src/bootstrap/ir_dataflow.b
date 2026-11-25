@@ -57,6 +57,60 @@ extern "C" u32 has_function_exit(Span code,Host host) on cpu requires nonzero(ho
  return u32(block_transfers(code,TransferSearch::FunctionExit,host));
 }
 
+address stored_call_position(Span arguments,u32 word,u32 scalar,address context,StoredPositionHost host) on cpu
+ requires nonzero(host.ir.inspect) requires nonzero(host.zero_offset) requires nonzero(host.matches_position) {
+ usize index=0u64;
+ while(index<arguments.count){
+  View argument=host.ir.inspect(node_at(arguments,index,N_ARGUMENT));
+  index+=1u64;
+  if(argument.tag!=ARGUMENT_REFERENCE||!accessed(argument.a,1)){continue;}
+  View reference=host.ir.inspect(argument.left);
+  if(reference.first.count!=0u64&&host.zero_offset(context,word_at(reference.first,0u64))==0){continue;}
+  View storage=host.ir.inspect(reference.left);
+  if(storage.tag!=STORAGE_INDEXED){continue;}
+  usize part=0u64;
+  while(part<argument.second.count){
+   View field=host.ir.inspect(node_at(argument.second,part,N_COMPONENT));
+   part+=1u64;
+   if(field.c==u64(scalar)&&u32(reference.a)+u32(field.a)==word){
+    if(host.matches_position(context,storage.left.data)!=0){return storage.left.data;}
+    break;
+   }
+  }
+ }
+ return unsafe_address(0u64);
+}
+
+extern "C" address stored_position(Span code,Span registers,u32 word,u32 scalar,address context,StoredPositionHost host) on cpu
+ requires nonzero(host.ir.inspect) requires nonzero(host.zero_offset) requires nonzero(host.matches_position) {
+ usize index=0u64;
+ while(index<code.count){
+  View instruction=host.ir.inspect(node_at(code,index,N_INSTRUCTION));
+  index+=1u64;
+  u32 kind=instruction.tag;
+  if(kind==OP_STORE_INDEXED){
+   if(instruction.c==u64(word)
+      &&host.ir.inspect(node_at(registers,instruction.b,N_SCALAR)).tag==scalar
+      &&host.zero_offset(context,instruction.a)!=0
+      &&host.matches_position(context,instruction.left.data)!=0){
+    return instruction.left.data;
+   }
+  }else if(kind==OP_INVOKE){
+   View call=host.ir.inspect(instruction.left);
+   address found=stored_call_position(call.first,word,scalar,context,host);
+   if(found!=unsafe_address(0u64)){return found;}
+  }else if(kind==OP_BRANCH||kind==OP_LOOP_VALUE||kind==OP_SCOPE){
+   address found=stored_position(instruction.first,registers,word,scalar,context,host);
+   if(found!=unsafe_address(0u64)){return found;}
+   if(kind!=OP_SCOPE){
+    found=stored_position(instruction.second,registers,word,scalar,context,host);
+    if(found!=unsafe_address(0u64)){return found;}
+   }
+  }
+ }
+ return unsafe_address(0u64);
+}
+
 extern "C" void stored_write_paths(Span code,address context,StoredWriteHost host) on cpu
  requires nonzero(host.ir.inspect) requires nonzero(host.active) requires nonzero(host.transfer)
  requires nonzero(host.branch) requires nonzero(host.scope) requires nonzero(host.write) {

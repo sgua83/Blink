@@ -214,8 +214,9 @@ unsafe extern "C" fn inspect(node: Node) -> View {
                 let mut view = View::tag(0); view.first = Span::slice(values);
                 view.left = dataset_borrow.as_deref().map_or(Node::EMPTY, |value| Node::of(value, Kind::DatasetBorrow)); view
             }
-            CallArgument::Reference { address, access, .. } => {
+            CallArgument::Reference { address, access, ty, .. } => {
                 let mut view = View::tag(1); view.a = *access as usize;
+                view.second = Span::slice(&ty.components);
                 view.left = Node::of(address, Kind::Reference); view
             }
         },

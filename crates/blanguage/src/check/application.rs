@@ -583,25 +583,15 @@ impl ApplicationLoads<'_, '_> {
         false
     }
     fn stored_position<'a>(&self, code: &'a [Inst], data: &Data, index: &Value, word: u32, scalar: Scalar, state: &flow::LoopState, writes: &effects::LoopWrites) -> Option<&'a IndexedSource> {
-        for inst in code {
-            match &inst.kind {
-                InstKind::StoreIndexed { source, offset, word: at_word, value }
-                    if *at_word == word && self.0.registers[*value] == scalar && self.constant(*offset) == Some(0)
-                        && self.dataset_position(source, data, index, state, writes) => return Some(source),
-                InstKind::Call(call) => for argument in &call.arguments {
-                    if let CallArgument::Reference { ty, access, address, .. } = argument
-                        && access.writes() && address.offset.is_none_or(|offset| self.constant(offset)==Some(0))
-                        && ty.components.iter().any(|(part,at)|*part==scalar && address.word+at==word)
-                        && let ir::CallStorage::Indexed(source)=&address.storage
-                        && self.dataset_position(source,data,index,state,writes) { return Some(source); }
-                },
-                InstKind::If { yes, no, .. } => if let Some(source) = self.stored_position(yes, data, index, word, scalar, state, writes).or_else(|| self.stored_position(no, data, index, word, scalar, state, writes)) { return Some(source); },
-                InstKind::Scope(body) => if let Some(source) = self.stored_position(body, data, index, word, scalar, state, writes) { return Some(source); },
-                InstKind::Loop{condition,body,..}=>if let Some(source)=self.stored_position(condition,data,index,word,scalar,state,writes).or_else(||self.stored_position(body,data,index,word,scalar,state,writes)){return Some(source);},
-                _ => {},
-            }
+        let query = StoredPositionQuery { builder: self.0, data, index, state, writes };
+        let scalar = crate::builtin_types::ScalarCode::from(scalar) as u32;
+        // B returns a source borrowed from the original store or call reference in code.
+        unsafe {
+            source_stored_position(
+                dataflow::Span::slice(code), dataflow::Span::slice(&self.0.registers), word, scalar,
+                ptr::from_ref(&query).cast(), STORED_POSITION_HOST,
+            ).as_ref()
         }
-        None
     }
     fn field_store(&self, source: &IndexedSource, word: u32, scalar: Scalar, inst: &Inst, exact_index: bool) -> Option<Reg> {
         let InstKind::StoreIndexed { source: written, offset, word: at_word, value } = &inst.kind else { return None; };
@@ -805,6 +795,44 @@ impl Builder<'_> {
         let mut branches = BTreeMap::new();
         move |reg| loads.snapshot(reg, &mut branches)
     }
+}
+
+struct StoredPositionQuery<'a, 'w> {
+    builder: &'a Builder<'w>,
+    data: &'a Data,
+    index: &'a Value,
+    state: &'a flow::LoopState,
+    writes: &'a effects::LoopWrites,
+}
+
+#[repr(C)]
+struct StoredPositionHost {
+    ir: dataflow::Host,
+    zero_offset: unsafe extern "C" fn(*const c_void, Reg) -> u32,
+    matches_position: unsafe extern "C" fn(*const c_void, *const IndexedSource) -> u32,
+}
+
+const STORED_POSITION_HOST: StoredPositionHost = StoredPositionHost {
+    ir: dataflow::HOST, zero_offset: stored_zero_offset, matches_position: stored_matches_position,
+};
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.ir_dataflow::stored_position"]
+    fn source_stored_position(
+        code: dataflow::Span, registers: dataflow::Span, word: u32, scalar: u32,
+        context: *const c_void, host: StoredPositionHost,
+    ) -> *const IndexedSource;
+}
+
+unsafe extern "C" fn stored_zero_offset(context: *const c_void, reg: Reg) -> u32 {
+    let query = unsafe { &*context.cast::<StoredPositionQuery<'_, '_>>() };
+    u32::from(ApplicationLoads(query.builder).constant(reg) == Some(0))
+}
+
+unsafe extern "C" fn stored_matches_position(context: *const c_void, source: *const IndexedSource) -> u32 {
+    let query = unsafe { &*context.cast::<StoredPositionQuery<'_, '_>>() };
+    let source = unsafe { &*source };
+    u32::from(ApplicationLoads(query.builder).dataset_position(source, query.data, query.index, query.state, query.writes))
 }
 
 #[derive(Default)]
