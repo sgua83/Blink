@@ -108,20 +108,7 @@ u32 query_search(usize first,usize second,u32 right_truth,address context,Graph 
    u32 remaining=host.add_next(context);consumed=trail.count;
    if(host.additions(context)==before||host.contradictory(context)==0){
     u32 chosen=0;
-    // Assignments already scanned remain fixed until a rollback.
-    at=choice;
-    while(at<trail.count){
-     usize id=word_at(trail,at);Gate node=node_at(graph,id);u32 either=node.kind==3 ? 1 : 0;
-     if(node.kind>=2&&value_at(values,id)==either+1
-        &&value_at(values,node.left)==0&&value_at(values,node.right)==0){
-      Checkpoint checkpoint=Checkpoint(trail.count,host.additions(context),negative,at);
-      host.push_clause(context,node.left,1-either,checkpoint);
-      host.pending_push(context,node.left,either);chosen=1;break;
-     }
-     at+=1u64;
-    }
-    choice=at+u64(chosen);
-    if(chosen!=0){continue;}
+    // A false leaf already constrains this path before any further gate choice.
     u32 found=remaining;
     if(found==0){
      at=negative;
@@ -133,20 +120,37 @@ u32 query_search(usize first,usize second,u32 right_truth,address context,Graph 
       at+=1u64;
      }
     }
-    if(found==0){return 1;}
-    while(true){
-     address fact=host.next_fact(context);
-     if(address_bits(fact)==0u64){break;}
-     FactView negated=negated_fact(host.inspect_fact(fact),host.facts);
-     if(negated.present!=0){
-      host.set_next_fact(context,negated);
-      if(host.remaining(context)!=0u64){
-       host.push_fact(context,fact,Checkpoint(trail.count,host.additions(context),negative,choice));
+    if(found!=0){
+     while(true){
+      address fact=host.next_fact(context);
+      if(address_bits(fact)==0u64){break;}
+      FactView negated=negated_fact(host.inspect_fact(fact),host.facts);
+      if(negated.present!=0){
+       host.set_next_fact(context,negated);
+       if(host.remaining(context)!=0u64){
+        host.push_fact(context,fact,Checkpoint(trail.count,host.additions(context),negative,choice));
+       }
+       chosen=1;break;
       }
-      chosen=1;break;
      }
+     if(chosen!=0){continue;}
+    }else{
+     // Assignments already scanned remain fixed until a rollback.
+     at=choice;
+     while(at<trail.count){
+      usize id=word_at(trail,at);Gate node=node_at(graph,id);u32 either=node.kind==3 ? 1 : 0;
+      if(node.kind>=2&&value_at(values,id)==either+1
+         &&value_at(values,node.left)==0&&value_at(values,node.right)==0){
+       Checkpoint checkpoint=Checkpoint(trail.count,host.additions(context),negative,at);
+       host.push_clause(context,node.left,1-either,checkpoint);
+       host.pending_push(context,node.left,either);chosen=1;break;
+      }
+      at+=1u64;
+     }
+     choice=at+u64(chosen);
+     if(chosen==0){return 1;}
+     continue;
     }
-    if(chosen!=0){continue;}
    }
   }
   Alternative alternative=host.pop_alternative(context);
