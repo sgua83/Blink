@@ -3,7 +3,7 @@ use super::{Import, Relocation, Result, Section, SectionData, Target, stack::{Fr
 use crate::native::{NativeCode, NativeSymbol, unwind_info, UnwindOperation};
 use crate::builtin_types::ScalarEncoding;
 use super::coff::facts::observations::Layout;
-use std::collections::{BTreeMap, BTreeSet};
+use std::{collections::{btree_map, BTreeMap}, ffi::c_void, ptr};
 #[repr(C)]
 struct SymbolEncoding {
     length: u64,
@@ -111,15 +111,10 @@ pub(crate) fn function_sections(
 }
 struct Helper {
     local: u32,
+    end: u32,
     bytes: Vec<u8>,
     patches: Vec<(usize, Import)>,
     unwind: Vec<u8>,
-}
-fn transfer(v: &mut Vec<u8>, patches: &mut Vec<(usize, Import)>, import: Import, tail: bool) {
-    let mut bytes = [0; 6];
-    let encoded = unsafe { import_transfer(u32::from(tail), bytes.as_mut_ptr()) };
-    patches.push((v.len() + encoded.field as usize, import));
-    v.extend_from_slice(&bytes[..encoded.length as usize]);
 }
 fn print(scalar: crate::ir::Scalar) -> Helper {
     let mut bytes = Vec::with_capacity(224);
@@ -142,7 +137,7 @@ fn print(scalar: crate::ir::Scalar) -> Helper {
         (encoded.stdout_handle as usize, kernel("GetStdHandle")),
         (encoded.write as usize, kernel("WriteFile")),
     ]);
-    Helper { local: encoded.local, bytes, patches, unwind }
+    Helper { local: encoded.local, end: encoded.length, bytes, patches, unwind }
 }
 pub(crate) struct EmittedFunctions {
     pub(crate) sections: Vec<Section<SectionData<Vec<u8>>>>,
@@ -181,6 +176,216 @@ fn native_calls(calls: Vec<Option<usize>>, relocations: &[crate::native::Relocat
     }).collect()
 }
 
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct NativeObjectPlace { section: usize, present: u32 }
+
+impl NativeObjectPlace {
+    const UNRESOLVED: Self = Self { section: 0, present: 0 };
+
+    fn section(section: usize) -> Self {
+        Self { section, present: 1 }
+    }
+}
+
+#[repr(u32)]
+enum NativeObjectTargetKind { Done, Function, External, Print }
+
+#[repr(C)]
+struct NativeObjectTarget {
+    symbol: *const c_void,
+    payload: *const c_void,
+    output: *mut NativeObjectPlace,
+    defined: NativeObjectPlace,
+    kind: NativeObjectTargetKind,
+}
+
+#[repr(C)]
+struct NativeObjectTargetHost {
+    next: unsafe extern "C" fn(*mut c_void) -> NativeObjectTarget,
+    imported: unsafe extern "C" fn(*const c_void, *const c_void) -> u32,
+    external: unsafe extern "C" fn(*mut c_void, *const c_void, *const c_void) -> usize,
+    print: unsafe extern "C" fn(*mut c_void, *const c_void, *const c_void) -> usize,
+}
+
+type TargetTable<'a> = BTreeMap<&'a NativeSymbol, NativeObjectPlace>;
+
+struct TargetSelection<'a, 'source> {
+    targets: btree_map::IterMut<'a, &'source NativeSymbol, NativeObjectPlace>,
+    definitions: &'a BTreeMap<String, (usize, u32)>,
+    imports: &'a BTreeMap<String, Vec<u8>>,
+    sections: &'a mut Vec<Section>,
+    frames: &'a mut Vec<Frame>,
+    prefix: &'a str,
+}
+
+unsafe extern "C" fn next_native_target(context: *mut c_void) -> NativeObjectTarget {
+    let selection = unsafe { &mut *context.cast::<TargetSelection<'_, '_>>() };
+    let Some((&symbol, output)) = selection.targets.next() else {
+        return NativeObjectTarget {
+            symbol: ptr::null(), payload: ptr::null(), output: ptr::null_mut(),
+            defined: NativeObjectPlace::UNRESOLVED, kind: NativeObjectTargetKind::Done,
+        };
+    };
+    let (kind, payload, defined) = match symbol {
+        NativeSymbol::Function(name) => (
+            NativeObjectTargetKind::Function, ptr::from_ref(name).cast(),
+            selection.definitions.get(name).map_or(NativeObjectPlace::UNRESOLVED,
+                |&(section, _)| NativeObjectPlace::section(section)),
+        ),
+        NativeSymbol::External(name) => (
+            NativeObjectTargetKind::External, ptr::from_ref(name).cast(), NativeObjectPlace::UNRESOLVED,
+        ),
+        NativeSymbol::Print(scalar) => (
+            NativeObjectTargetKind::Print, ptr::from_ref(scalar).cast(), NativeObjectPlace::UNRESOLVED,
+        ),
+    };
+    NativeObjectTarget { symbol: ptr::from_ref(symbol).cast(), payload, output, defined, kind }
+}
+
+unsafe extern "C" fn imported_native_target(context: *const c_void, name: *const c_void) -> u32 {
+    let selection = unsafe { &*context.cast::<TargetSelection<'_, '_>>() };
+    u32::from(selection.imports.contains_key(unsafe { &*name.cast::<String>() }))
+}
+
+unsafe extern "C" fn write_native_thunk(
+    context: *mut c_void, symbol: *const c_void, name: *const c_void,
+) -> usize {
+    let selection = unsafe { &mut *context.cast::<TargetSelection<'_, '_>>() };
+    let name = unsafe { &*name.cast::<crate::ast::ExternalName>() };
+    let symbol = unsafe { &*symbol.cast::<NativeSymbol>() };
+    let name = Import {
+        dll: name.library.clone(),
+        name: if name.library == crate::application::RUNTIME_LIBRARY
+            && ["blink_allocate_", "blink_run_", "blink_complete_"].iter().any(|prefix|
+                name.symbol.strip_prefix(prefix).is_some_and(|index| index.parse::<usize>().is_ok())) {
+            format!("{}_{}", selection.prefix, name.symbol.strip_prefix("blink_").unwrap())
+        } else {
+            name.symbol.clone()
+        },
+    };
+    let mut bytes = vec![0; 6];
+    let encoded = unsafe { import_transfer(1, bytes.as_mut_ptr()) };
+    bytes.truncate(encoded.length as usize);
+    let calls = vec![Call::Reference { relocation: 0, tail: true }];
+    let text = function(selection.sections, selection.frames, format!("{symbol:?}"), 0, calls,
+        bytes, None, Some(Layout::ImportThunk));
+    selection.sections[text].relocations.push(Relocation {
+        offset: encoded.field as usize, kind: 4, target: Target::Import(name),
+    });
+    text
+}
+
+unsafe extern "C" fn write_native_print(
+    context: *mut c_void, symbol: *const c_void, scalar: *const c_void,
+) -> usize {
+    let selection = unsafe { &mut *context.cast::<TargetSelection<'_, '_>>() };
+    let scalar = unsafe { *scalar.cast::<crate::ir::Scalar>() };
+    let symbol = unsafe { &*symbol.cast::<NativeSymbol>() };
+    let helper = print(scalar);
+    let calls = (0..helper.patches.len())
+        .map(|relocation| Call::Reference { relocation, tail: false }).collect();
+    let text = function(selection.sections, selection.frames, format!("{symbol:?}"), helper.local,
+        calls, helper.bytes, Some((helper.end, helper.unwind)), Some(Layout::Print(scalar)));
+    selection.sections[text].relocations.extend(helper.patches.into_iter()
+        .map(|(offset, import)| Relocation { offset, kind: 4, target: Target::Import(import) }));
+    text
+}
+
+const TARGET_HOST: NativeObjectTargetHost = NativeObjectTargetHost {
+    next: next_native_target,
+    imported: imported_native_target,
+    external: write_native_thunk,
+    print: write_native_print,
+};
+
+#[repr(C)]
+struct NativeObjectImage { section: usize, fields: usize }
+
+#[repr(C)]
+struct NativeObjectFixup { offset: usize, name: *const c_void, place: NativeObjectPlace }
+
+#[repr(C)]
+struct NativeObjectFixupHost {
+    image: unsafe extern "C" fn(*const c_void, usize) -> NativeObjectImage,
+    field: unsafe extern "C" fn(*const c_void, usize, usize) -> NativeObjectFixup,
+    section: unsafe extern "C" fn(*mut c_void, usize, usize, usize),
+    symbol: unsafe extern "C" fn(*mut c_void, usize, usize, *const c_void),
+}
+
+struct NativeObjectFixups<'a, 'source> {
+    images: &'source [(usize, Vec<crate::native::Relocation>)],
+    targets: &'a TargetTable<'source>,
+    sections: &'a mut [Section],
+}
+
+unsafe extern "C" fn native_image(context: *const c_void, index: usize) -> NativeObjectImage {
+    let fixups = unsafe { &*context.cast::<NativeObjectFixups<'_, '_>>() };
+    let (section, fields) = &fixups.images[index];
+    NativeObjectImage { section: *section, fields: fields.len() }
+}
+
+unsafe extern "C" fn native_field(context: *const c_void, image: usize, index: usize) -> NativeObjectFixup {
+    let fixups = unsafe { &*context.cast::<NativeObjectFixups<'_, '_>>() };
+    let field = &fixups.images[image].1[index];
+    let name = match &field.target {
+        NativeSymbol::Function(name) => ptr::from_ref(name).cast(),
+        _ => ptr::null(),
+    };
+    NativeObjectFixup { offset: field.offset, name, place: fixups.targets[&field.target] }
+}
+
+unsafe extern "C" fn fixup_section(context: *mut c_void, section: usize, offset: usize, target: usize) {
+    let fixups = unsafe { &mut *context.cast::<NativeObjectFixups<'_, '_>>() };
+    let output = &mut fixups.sections[section];
+    put64(&mut output.bytes, offset, 0);
+    output.relocations.push(Relocation { offset, kind: 1, target: Target::Section(target, 0) });
+}
+
+unsafe extern "C" fn fixup_symbol(context: *mut c_void, section: usize, offset: usize, name: *const c_void) {
+    let fixups = unsafe { &mut *context.cast::<NativeObjectFixups<'_, '_>>() };
+    let target = Target::Symbol(unsafe { &*name.cast::<String>() }.clone());
+    fixups.sections[section].relocations.push(Relocation { offset, kind: 1, target });
+}
+
+const FIXUP_HOST: NativeObjectFixupHost = NativeObjectFixupHost {
+    image: native_image,
+    field: native_field,
+    section: fixup_section,
+    symbol: fixup_symbol,
+};
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.coff::resolve_native_object_targets"]
+    fn resolve_native_object_targets(context: *mut c_void, host: NativeObjectTargetHost) -> *const c_void;
+    #[link_name = "bootstrap.coff::bind_native_object_fixups"]
+    fn bind_native_object_fixups(context: *mut c_void, images: usize, host: NativeObjectFixupHost);
+}
+
+fn bind_object_targets(
+    sections: &mut Vec<Section>,
+    frames: &mut Vec<Frame>,
+    images: &[(usize, Vec<crate::native::Relocation>)],
+    definitions: &BTreeMap<String, (usize, u32)>,
+    imports: &BTreeMap<String, Vec<u8>>,
+    prefix: &str,
+) -> Result<()> {
+    let mut targets: TargetTable<'_> = images.iter().flat_map(|(_, fields)| fields)
+        .map(|field| (&field.target, NativeObjectPlace::UNRESOLVED)).collect();
+    let missing = {
+        let mut selection = TargetSelection {
+            targets: targets.iter_mut(), definitions, imports, sections, frames, prefix,
+        };
+        unsafe { resolve_native_object_targets(ptr::from_mut(&mut selection).cast(), TARGET_HOST) }
+    };
+    if let Some(name) = unsafe { missing.cast::<String>().as_ref() } {
+        return Err(format!("缺少模块函数接口 {name}").into());
+    }
+    let mut fixups = NativeObjectFixups { images, targets: &targets, sections };
+    unsafe { bind_native_object_fixups(ptr::from_mut(&mut fixups).cast(), images.len(), FIXUP_HOST) };
+    Ok(())
+}
+
 fn functions(
     native: Option<(String, NativeCode)>,
     defined: Vec<(String, NativeCode)>,
@@ -192,7 +397,7 @@ fn functions(
     let mut frames = Vec::new();
     let mut images = Vec::new();
     let mut symbols = BTreeMap::new();
-    if let Some((name, native)) = native {
+    let main = if let Some((name, native)) = native {
         let mut bytes = vec![0; 17];
         let layout = unsafe { application_entry(bytes.as_mut_ptr()) };
         bytes.truncate(layout.length as usize);
@@ -205,14 +410,15 @@ fn functions(
             Some((layout.length, unwind)), Some(Layout::Startup));
         let calls = native_calls(native.calls, &native.relocations);
         let main = function(&mut sections, &mut frames, format!("entry {name}"), native.stack_bytes, calls, native.bytes, Some((native.function_end.try_into()?, native.unwind)), native.tail_regions.map(|tails| Layout::Function { tails, references: native.tail_references, sources: native.sources }));
-        symbols.insert("main".into(), (main, 0));
         sections[entry].relocations.extend([
             Relocation { offset: layout.main_field as usize, kind: 4, target: Target::Section(main, 0) },
             Relocation { offset: layout.exit_field as usize, kind: 4, target: Target::Import(kernel("ExitProcess")) },
         ]);
         images.push((main, native.relocations));
-    }
-    let mut targets = BTreeMap::new();
+        Some(main)
+    } else {
+        None
+    };
     // Callers append factory entries in the same order used by the encoded indices.
     let first_factory_entry = defined.len() - factory_entry_count;
     let mut factory_entries = Vec::with_capacity(factory_entry_count);
@@ -224,58 +430,12 @@ fn functions(
                 offset: entry * 8, kind: 1, target: Target::Section(text, 0),
             });
         }
-        symbols.insert(name.clone(), (text, 0));
-        targets.insert(NativeSymbol::Function(name), text);
+        symbols.insert(name, (text, 0));
         images.push((text, code.relocations));
     }
-    let operations: BTreeSet<_> = images.iter().flat_map(|(_, relocations)| relocations)
-        .map(|r| r.target.clone()).collect();
-    for op in operations {
-        if let NativeSymbol::Function(name) = &op {
-            if !targets.contains_key(&op) && !imports.contains_key(name) {
-                return Err(format!("缺少模块函数接口 {name}").into());
-            }
-            continue;
-        }
-        let mut patches = Vec::new();
-        let text = match &op {
-            NativeSymbol::Function(_) => unreachable!(),
-            NativeSymbol::External(name) => {
-                let mut bytes = Vec::new();
-                transfer(&mut bytes, &mut patches, Import {
-                    dll: name.library.clone(),
-                    name: if name.library == crate::application::RUNTIME_LIBRARY
-                        && ["blink_allocate_","blink_run_","blink_complete_"].iter().any(|prefix|
-                            name.symbol.strip_prefix(prefix).is_some_and(|index|index.parse::<usize>().is_ok())) {
-                        format!("{prefix}_{}", name.symbol.strip_prefix("blink_").unwrap())
-                    } else { name.symbol.clone() },
-                }, true);
-                let calls = (0..patches.len()).map(|relocation| Call::Reference { relocation, tail: true }).collect();
-                function(&mut sections, &mut frames, format!("{op:?}"), 0, calls, bytes, None, Some(Layout::ImportThunk))
-            }
-            NativeSymbol::Print(scalar) => {
-                let helper = print(*scalar);
-                patches = helper.patches;
-                let end = u32::try_from(helper.bytes.len())?;
-                let calls = (0..patches.len()).map(|relocation| Call::Reference { relocation, tail: false }).collect();
-                function(&mut sections, &mut frames, format!("{op:?}"), helper.local, calls, helper.bytes, Some((end, helper.unwind)), Some(Layout::Print(*scalar)))
-            }
-        };
-        targets.insert(op, text);
-        sections[text].relocations.extend(patches.into_iter()
-            .map(|(offset, import)| Relocation { offset, kind: 4, target: Target::Import(import) }));
-    }
-    for (section, relocations) in images {
-        for relocation in relocations {
-            let target = if let NativeSymbol::Function(name) = &relocation.target
-                && !targets.contains_key(&relocation.target) {
-                Target::Symbol(name.clone())
-            } else {
-                put64(&mut sections[section].bytes, relocation.offset, 0);
-                Target::Section(targets[&relocation.target], 0)
-            };
-            sections[section].relocations.push(Relocation { offset: relocation.offset, kind: 1, target });
-        }
+    bind_object_targets(&mut sections, &mut frames, &images, &symbols, imports, prefix)?;
+    if let Some(main) = main {
+        symbols.entry("main".into()).or_insert((main, 0));
     }
     let sections = sections.into_iter().map(Section::initialized).collect();
     Ok(EmittedFunctions { sections, positions: symbols, stack: frames, factory_entries })
