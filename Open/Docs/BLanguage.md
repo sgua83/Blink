@@ -1226,7 +1226,7 @@ bc code --image target/gpu-deployment.blri
 
 保存映像的SDK沿原`build::code_facts(path, None)`／`build::image_code_facts(bytes, None)`查询纯GPU。若映像包含CPU代码，提供Some匹配CPU范围材料和原CLI --observations；未提供或错配均明确失败，不伪造CPU分类或空材料。原程序／模板及映像索引、前缀合同、执行代码和资源完成保持，查询不创建驱动或执行资源；结构查询不是不可信映像的执行授权。
 
-`bc build`的每份原`.spv`都由同一shader_file写同名`.spv.json`，JSON就是该份原words的module_json。原program的main、tail、add、dispatch、selection、finish／scatter／root-add及sort全部histogram／scatter／scan／tail／add／gather／key遍历与原文件名保持；本功能不另造模块目录、编译／调度路径或代码权威。先完整解码本模块，再写其.spv及.spv.json；真实I/O失败直接返回，前面已写的文件保持真实状态，逐文件导出没有目录事务、自动回滚或重放。结构输出可由AI独立保存，正式执行不要求携带它；来源映射及驱动最终ISA仍分别沿原.8和.26。
+B 命令模块沿已编译程序的目标和阶段顺序导出，双目标先 GPU 后 CPU。每份原 SPIR-V 模块先完整解码，再依次写同名 `.spv` 及 `.spv.json`，结构内容来自该模块的 `module_json`。实际主模块、辅助模块、排序和独立终层入口沿原映像选择。CPU 各入口先写 `.x64`，再写同名 `.x64.json`，相应入口随后写 `.reloc`。同一程序的 `.layout` 与 `.layout.json` 在阶段产物之后依次写出。真实 I/O 或结构生成错误立即返回，前面已写的文件保留。输出目录接受原生路径，结构文件由调用者保存，正式执行无需携带。来源映射及驱动最终 ISA 分别沿对应查询职责。
 
 ## 显式编号枚举
 枚举为普通名义值，必须显式声明已有整数标量 `u8`、`i8`、`u16`、`i16`、`u32`、`i32`、`u64` 或 `i64` 表示及每个成员的编译期编号；声明放在模块接口 `.h`，也可为 `.b` 私有类型：

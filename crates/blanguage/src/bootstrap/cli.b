@@ -13,50 +13,237 @@ u8 argument_byte(CliArgument argument, u64 index) on cpu {
     return unsafe_position<u8>(unsafe_address(address_bits(argument.bytes) + index));
 }
 
-void write_stem_byte(address output, u64 index, u8 value) on cpu {
-    unsafe_position<u8>(unsafe_address(address_bits(output) + index)) = value;
+void export_byte(inout ExportSpan output, u8 value) on cpu {
+    unsafe_position<u8>(unsafe_address(address_bits(output.data) + output.length)) = value;
+    output.length += 1u64;
 }
 
-extern "C" u64 write_export_stem(address name, u64 length, u64 ordinal, address output) on cpu {
-    CliArgument input = CliArgument(name, length, 1u64);
+void export_ascii<const N:u32 in {4,5,6,7,8,9,10,13,14}>(inout ExportSpan output, read array<u8,N> text) on cpu {
+    for (index in 0..N) { export_byte(output, text[index]); }
+}
+
+void export_text(inout ExportSpan output, ExportSpan text) on cpu {
+    u64 index = 0u64;
+    while (index < text.length) {
+        export_byte(output, unsafe_position<u8>(unsafe_address(address_bits(text.data) + index)));
+        index += 1u64;
+    }
+}
+
+void export_number(inout ExportSpan output, u64 number) on cpu {
+    u64 digits = 1u64;
+    u64 remaining = number / 10u64;
+    while (remaining != 0u64) {
+        digits += 1u64;
+        remaining /= 10u64;
+    }
+    u64 end = output.length + digits;
+    u64 next = end;
+    remaining = number;
+    while (next > output.length) {
+        next -= 1u64;
+        unsafe_position<u8>(unsafe_address(address_bits(output.data) + next)) = u8(48u64 + remaining % 10u64);
+        remaining /= 10u64;
+    }
+    output.length = end;
+}
+
+void export_stem(inout ExportSpan output, ExportSpan name, u64 ordinal) on cpu {
+    CliArgument input = CliArgument(name.data, name.length, 1u64);
     u64 source = 0u64;
-    u64 written = 0u64;
-    while (source < length) {
+    while (source < name.length) {
         u8 byte = argument_byte(input, source);
         if (byte == 60) { break; }
         source += 1u64;
-        if (byte == 58 && source < length && argument_byte(input, source) == 58) {
+        if (byte == 58 && source < name.length && argument_byte(input, source) == 58) {
             source += 1u64;
             byte = u8(95);
         } else if (byte == 46) {
             byte = u8(95);
         }
-        write_stem_byte(output, written, byte);
-        written += 1u64;
+        export_byte(output, byte);
     }
-    if (source == length) { return written; }
-
-    array<u8,10> suffix = ".instance-";
-    for (index in 0..10) {
-        write_stem_byte(output, written, suffix[index]);
-        written += 1u64;
+    if (source != name.length) {
+        export_ascii(output, ".instance-");
+        export_number(output, ordinal);
     }
+}
 
-    u64 digits = 1u64;
-    u64 remaining = ordinal / 10u64;
+ExportSpan export_stage_name(ExportSpan stem, u64 stage) on cpu {
+    ExportSpan name = stem;
+    export_byte(name, u8(46));
+    export_number(name, stage);
+    return name;
+}
+
+ExportSpan export_key_name(ExportSpan stem, u64 key) on cpu {
+    ExportSpan name = stem;
+    export_ascii(name, ".key-");
+    export_number(name, key);
+    return name;
+}
+
+bool export_shader(ExportHost host, ExportSpan stem, ExportSpan words) on cpu
+    requires nonzero(host.prepare_spirv) requires nonzero(host.write) {
+    if (!host.prepare_spirv(host.context, words)) { return false; }
+    ExportSpan name = stem;
+    export_ascii(name, ".spv");
+    if (!host.write(host.context, name, ExportContent::Spirv, words)) { return false; }
+    export_ascii(name, ".json");
+    return host.write(host.context, name, ExportContent::SpirvJson, words);
+}
+
+bool export_named_shader<const N:u32 in {4,5,7,8,9,10,13,14}>(ExportHost host, ExportSpan stem, read array<u8,N> suffix, ExportSpan words) on cpu
+    requires nonzero(host.prepare_spirv) requires nonzero(host.write) {
+    ExportSpan name = stem;
+    export_ascii(name, suffix);
+    return export_shader(host, name, words);
+}
+
+bool export_optional_shader<const N:u32 in {4,5,9,10,13,14}>(ExportHost host, ExportSpan stem, read array<u8,N> suffix, ExportSpan words) on cpu
+    requires nonzero(host.prepare_spirv) requires nonzero(host.write) {
+    return address_bits(words.data) == 0u64 || export_named_shader(host, stem, suffix, words);
+}
+
+bool export_gpu_sort(ExportHost host, ExportSpan name, ExportSpan sort) on cpu
+    requires nonzero(host.gpu_sort_shader) requires nonzero(host.prepare_spirv) requires nonzero(host.write) {
+    if (sort.length == 0u64) { return true; }
+    if (!export_named_shader(host, name, ".scan", host.gpu_sort_shader(sort, 16u64))) { return false; }
+    if (!export_named_shader(host, name, ".tail", host.gpu_sort_shader(sort, 17u64))) { return false; }
+    if (!export_named_shader(host, name, ".add", host.gpu_sort_shader(sort, 18u64))) { return false; }
+    if (!export_named_shader(host, name, ".gather", host.gpu_sort_shader(sort, 19u64))) { return false; }
+    u64 index = 20u64;
+    while (index < sort.length) {
+        if (!export_shader(host, export_key_name(name, index - 20u64), host.gpu_sort_shader(sort, index))) { return false; }
+        index += 1u64;
+    }
+    u64 pass = 0u64;
+    while (pass < 8u64) {
+        ExportSpan shift = export_stage_name(name, pass * 4u64);
+        if (!export_named_shader(host, shift, ".histogram", host.gpu_sort_shader(sort, pass))) { return false; }
+        if (!export_named_shader(host, shift, ".scatter", host.gpu_sort_shader(sort, 8u64 + pass))) { return false; }
+        pass += 1u64;
+    }
+    return true;
+}
+
+extern "C" bool export_gpu_image(ExportHost host, ExportSpan stem, address image, u64 count) on cpu
+    requires nonzero(host.gpu_stage) requires nonzero(host.gpu_additional) requires nonzero(host.gpu_sort_shader)
+    requires nonzero(host.prepare_spirv) requires nonzero(host.write) {
+    u64 index = 0u64;
+    while (index < count) {
+        ExportGpuStage stage = host.gpu_stage(host.context, image, index);
+        ExportSpan name = export_stage_name(stem, index);
+        if (!export_shader(host, name, stage.main)) { return false; }
+        if (!export_optional_shader(host, name, ".tail", stage.tail)) { return false; }
+        if (!export_optional_shader(host, name, ".add", stage.scan_add)) { return false; }
+        if (!export_optional_shader(host, name, ".dispatch", stage.dispatch)) { return false; }
+        if (!export_optional_shader(host, name, ".selection", stage.selector)) { return false; }
+        if (address_bits(stage.finish.data) != 0u64) {
+            ExportSpan finish = name;
+            export_byte(finish, u8(46));
+            export_text(finish, stage.finish_name);
+            if (!export_shader(host, finish, stage.finish)) { return false; }
+        }
+
+        ExportGpuAdditional extra = host.gpu_additional(image, index);
+        if (!export_gpu_sort(host, name, extra.sort)) { return false; }
+        if (!export_optional_shader(host, name, ".single-group", extra.segmented_single_group)) { return false; }
+        if (!export_optional_shader(host, name, ".terminal-root", extra.terminal_root)) { return false; }
+        if (!export_optional_shader(host, name, ".terminal-tail", extra.terminal_tail)) { return false; }
+        index += 1u64;
+    }
+    return true;
+}
+
+bool export_native(ExportHost host, ExportSpan stem, address code, bool relocations) on cpu
+    requires nonzero(host.write) {
+    ExportSpan data = ExportSpan(code, 0u64);
+    ExportSpan name = stem;
+    export_ascii(name, ".x64");
+    if (!host.write(host.context, name, ExportContent::Native, data)) { return false; }
+    export_ascii(name, ".json");
+    if (!host.write(host.context, name, ExportContent::NativeJson, data)) { return false; }
+    if (!relocations) { return true; }
+    name.length = stem.length;
+    export_ascii(name, ".reloc");
+    return host.write(host.context, name, ExportContent::Relocations, data);
+}
+
+bool export_named_native<const N:u32 in {4,5,7,8,10}>(ExportHost host, ExportSpan stem, read array<u8,N> suffix,
+    address code, bool relocations) on cpu requires nonzero(host.write) {
+    ExportSpan name = stem;
+    export_ascii(name, suffix);
+    return export_native(host, name, code, relocations);
+}
+
+bool export_cpu_sort(ExportHost host, ExportSpan name, ExportCpuStage stage) on cpu
+    requires nonzero(host.cpu_initializer) requires nonzero(host.write) {
+    if (!export_native(host, name, host.cpu_initializer(stage.initialize, 0u64), true)) { return false; }
+    u64 remaining = stage.initialize.length - 1u64;
+    u64 key = 0u64;
     while (remaining != 0u64) {
-        digits += 1u64;
-        remaining /= 10u64;
+        if (!export_native(host, export_key_name(name, key), host.cpu_initializer(stage.initialize, remaining), false)) { return false; }
+        remaining -= 1u64;
+        key += 1u64;
     }
-    u64 end = written + digits;
-    u64 next = end;
-    remaining = ordinal;
-    while (next > written) {
-        next -= 1u64;
-        write_stem_byte(output, next, u8(48u64 + remaining % 10u64));
-        remaining /= 10u64;
+    return export_named_native(host, name, ".histogram", stage.histogram, false)
+        && export_named_native(host, name, ".scatter", stage.scatter, false)
+        && export_named_native(host, name, ".gather", stage.gather, false);
+}
+
+bool export_cpu_element(ExportHost host, ExportSpan name, ExportCpuStage stage) on cpu
+    requires nonzero(host.write) {
+    if (!export_native(host, name, stage.main, true)) { return false; }
+    if (stage.continuation == ExportContinuation::ReductionTail) {
+        return export_named_native(host, name, ".tail", stage.first, true);
     }
-    return end;
+    if (stage.continuation == ExportContinuation::ScanAdd) {
+        return export_named_native(host, name, ".add", stage.first, false);
+    }
+    if (stage.continuation == ExportContinuation::CompactScatter) {
+        return export_named_native(host, name, ".scatter", stage.first, false);
+    }
+    if (stage.continuation == ExportContinuation::SegmentedFinish) {
+        return export_named_native(host, name, ".finish", stage.first, false);
+    }
+    if (stage.continuation == ExportContinuation::Scan) {
+        if (!export_named_native(host, name, ".prefix", stage.first, true)) { return false; }
+        if (stage.custom_scan) { return export_named_native(host, name, ".add", stage.second, true); }
+        return export_named_native(host, name, ".finish", stage.second, true);
+    }
+    return true;
+}
+
+extern "C" bool export_cpu_image(ExportHost host, ExportSpan stem, address image, u64 count) on cpu
+    requires nonzero(host.cpu_stage) requires nonzero(host.cpu_initializer) requires nonzero(host.write) {
+    u64 index = 0u64;
+    while (index < count) {
+        ExportCpuStage stage = host.cpu_stage(image, index);
+        ExportSpan name = export_stage_name(stem, index);
+        if (address_bits(stage.initialize.data) != 0u64) {
+            if (!export_cpu_sort(host, name, stage)) { return false; }
+        } else if (!export_cpu_element(host, name, stage)) {
+            return false;
+        }
+        index += 1u64;
+    }
+    return true;
+}
+
+extern "C" void export_program(ExportTarget target, ExportSpan name, u64 ordinal, address output, ExportHost host) on cpu
+    requires nonzero(host.gpu) requires nonzero(host.cpu) requires nonzero(host.write) {
+    ExportSpan stem = ExportSpan(output, 0u64);
+    export_stem(stem, name, ordinal);
+    if (target != ExportTarget::Cpu && !host.gpu(host.context, stem)) { return; }
+    if (target != ExportTarget::Gpu && !host.cpu(host.context, stem)) { return; }
+    ExportSpan file = stem;
+    ExportSpan empty = ExportSpan(unsafe_address(0u64), 0u64);
+    export_ascii(file, ".layout");
+    if (host.write(host.context, file, ExportContent::Layout, empty)) {
+        export_ascii(file, ".json");
+        host.write(host.context, file, ExportContent::LayoutJson, empty);
+    }
 }
 
 bool is_token<const N:u32 in {2,3,4,5,6,7,8,9,10,14,21}>(CliArgument argument, read array<u8,N> token) on cpu {

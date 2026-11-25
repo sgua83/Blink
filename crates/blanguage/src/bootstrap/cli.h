@@ -86,8 +86,67 @@ struct CompileCommandLine {
     u64 has_parameter_limit;
 };
 
-// The output has room for length + 30 bytes. The result is its written length.
-extern "C" u64 write_export_stem(address name, u64 length, u64 ordinal, address output) on cpu;
+// Slices borrow original values during the image callback. The shader
+// and initializer accessors interpret the original Rust element layout.
+struct ExportSpan { address data; u64 length; };
+enum ExportTarget:u32 { Compute=0; Cpu=1; Gpu=2; };
+enum ExportContent:u32 {
+    Spirv=0; SpirvJson=1; Native=2; NativeJson=3; Relocations=4; Layout=5; LayoutJson=6;
+};
+
+struct ExportGpuStage {
+    ExportSpan main;
+    ExportSpan tail;
+    ExportSpan scan_add;
+    ExportSpan dispatch;
+    ExportSpan selector;
+    ExportSpan finish_name;
+    ExportSpan finish;
+};
+
+struct ExportGpuAdditional {
+    ExportSpan sort;
+    ExportSpan segmented_single_group;
+    ExportSpan terminal_root;
+    ExportSpan terminal_tail;
+};
+
+enum ExportContinuation:u32 { None=0; ReductionTail=1; ScanAdd=2; CompactScatter=3; SegmentedFinish=4; Scan=5; };
+
+struct ExportCpuStage {
+    address main;
+    ExportContinuation continuation;
+    address first;
+    address second;
+    bool custom_scan;
+    ExportSpan initialize;
+    address histogram;
+    address scatter;
+    address gather;
+};
+
+struct ExportHost {
+    address context;
+    cfn<bool,address,ExportSpan> gpu;
+    cfn<bool,address,ExportSpan> cpu;
+    cfn<ExportGpuStage,address,address,u64> gpu_stage;
+    cfn<ExportGpuAdditional,address,u64> gpu_additional;
+    cfn<ExportSpan,ExportSpan,u64> gpu_sort_shader;
+    cfn<ExportCpuStage,address,u64> cpu_stage;
+    cfn<address,ExportSpan,u64> cpu_initializer;
+    cfn<bool,address,ExportSpan> prepare_spirv;
+    cfn<bool,address,ExportSpan,ExportContent,ExportSpan> write;
+};
+
+extern "C" void export_program(ExportTarget target, ExportSpan name, u64 ordinal, address output, ExportHost host) on cpu
+    requires nonzero(host.gpu) requires nonzero(host.cpu) requires nonzero(host.write);
+
+extern "C" bool export_gpu_image(ExportHost host, ExportSpan stem, address image, u64 count) on cpu
+    requires nonzero(host.gpu_stage) requires nonzero(host.gpu_additional) requires nonzero(host.gpu_sort_shader)
+    requires nonzero(host.prepare_spirv) requires nonzero(host.write);
+
+extern "C" bool export_cpu_image(ExportHost host, ExportSpan stem, address image, u64 count) on cpu
+    requires nonzero(host.cpu_stage) requires nonzero(host.cpu_initializer) requires nonzero(host.write);
 
 // The caller owns the operands received synchronously during parsing.
 extern "C" CompileCommandLine parse_compile_arguments(address arguments, u64 count, OperandSink operands) on cpu
