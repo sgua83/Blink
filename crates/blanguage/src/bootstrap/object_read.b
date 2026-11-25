@@ -19,8 +19,11 @@ bool matches<const N: u32>(ReadBytes value,read array<u8,N> pattern,bool whole) 
     for(index in 0..N){if(byte_at(value,u64(index))!=u32(pattern[index])){return false;}}
     return true;
 }
+address row_address(ObjectRows rows,u64 index) on cpu {
+    return unsafe_address(address_bits(rows.values)+index*size_of<ObjectSection>());
+}
 ObjectSection row_at(ObjectRows rows,u64 index) on cpu {
-    return unsafe_position<ObjectSection>(unsafe_address(address_bits(rows.values)+index*size_of<ObjectSection>()));
+    return unsafe_position<ObjectSection>(row_address(rows,index));
 }
 ObjectSectionResult logical_section(ReadBytes input, ReadBytes headers, u64 index,
     inout u64 mapped, inout ObjectParts parts) on cpu {
@@ -58,7 +61,7 @@ ObjectSymbolResult object_symbol(
 struct ObjectSectionResult {ObjectSection value;u32 error;};
 struct ObjectSymbolResult {ObjectSymbol value;u64 next;u32 error;};
 
-extern "C" u32 object_sections(ReadBytes input, ReadBytes headers, address rows, address loadable,
+extern "C" ObjectScanStatus object_sections(ReadBytes input, ReadBytes headers, address rows, address loadable,
     inout ObjectParts parts, address context, cfn<u32,address,ReadBytes> validate) on cpu
     requires nonzero(validate) {
     u64 mapped = 0u64;
@@ -68,8 +71,8 @@ extern "C" u32 object_sections(ReadBytes input, ReadBytes headers, address rows,
     u64 index = 0u64;
     while (index < count) {
         let section = logical_section(input, headers, index, mapped, parts);
-        if (section.error != 0) { return section.error; }
-        if (validate(context, section.value.name) == 0) { return 0; }
+        if (section.error != 0) { return ObjectScanStatus(section.error, 0); }
+        if (validate(context, section.value.name) == 0) { return ObjectScanStatus(0, 0); }
         if (keep_rows) {
             address slot = unsafe_address(address_bits(rows) + index * size_of<ObjectSection>());
             unsafe_position<ObjectSection>(slot) = section.value;
@@ -79,10 +82,10 @@ extern "C" u32 object_sections(ReadBytes input, ReadBytes headers, address rows,
         }
         index += 1u64;
     }
-    return 0;
+    return ObjectScanStatus(0, 1);
 }
 
-extern "C" u32 object_symbols(ReadBytes input, ReadSymbols table, address rows,
+extern "C" ObjectScanStatus object_symbols(ReadBytes input, ReadSymbols table, address rows,
     address definitions, u64 definition_count, address context,
     cfn<u32,address,ReadBytes,u64> consume) on cpu requires nonzero(consume) {
     u64 index = 0u64;
@@ -90,10 +93,10 @@ extern "C" u32 object_symbols(ReadBytes input, ReadSymbols table, address rows,
     let auxiliary = ObjectSymbol(empty_bytes(), 0, i16(0), u8(0), u8(0));
     while (index < table.count) {
         let primary = object_symbol(input, table, index, definitions, definition_count);
-        if (primary.error != 0) { return primary.error; }
+        if (primary.error != 0) { return ObjectScanStatus(primary.error, 0); }
         let value = primary.value;
         u64 export_section = value.external != u8(0) && value.section > i16(0) ? u64(value.section) : 0u64;
-        if (consume(context, value.name, export_section) == 0) { return 0; }
+        if (consume(context, value.name, export_section) == 0) { return ObjectScanStatus(0, 0); }
         if (keep_rows) {
             address slot = unsafe_address(address_bits(rows) + index * size_of<ObjectSymbol>());
             unsafe_position<ObjectSymbol>(slot) = value.section <= i16(0) ? undefined_symbol(value) : value;
@@ -106,7 +109,7 @@ extern "C" u32 object_symbols(ReadBytes input, ReadSymbols table, address rows,
         }
         index = primary.next;
     }
-    return 0;
+    return ObjectScanStatus(0, 1);
 }
 
 extern "C" ObjectAssociation association(ObjectRows rows,address definitions,u64 index) on cpu {
@@ -176,9 +179,10 @@ ObjectTarget relocation_target(ObjectRows rows, ObjectSymbols symbols, u64 index
     return ObjectTarget(2u64,0u64,0u64,empty_bytes(),symbol.name,0);
 }
 
-extern "C" ObjectRelocationStatus object_relocations(
+ObjectRelocationStatus read_object_relocations(
     ReadBytes input, ObjectRows rows, ObjectSymbols symbols, read ObjectSection row,
-    address context, cfn<u32,address,u64,u32,ObjectTarget> consume
+    address context, cfn<void,address,u64,u64,u32,ObjectTarget> consume,
+    cfn<u32,address,ReadBytes,u32> binding, u32 native
 ) on cpu requires nonzero(consume) {
     ReadRelocations table = relocations(input, row.relocations, row.relocation_count, row.flags);
     if (table.error != 0) { return ObjectRelocationStatus(table.error, 0); }
@@ -196,10 +200,21 @@ extern "C" ObjectRelocationStatus object_relocations(
 
         ObjectTarget target = relocation_target(rows, symbols, record.symbol);
         if (target.error != 0) { return ObjectRelocationStatus(0, target.error); }
-        if (consume(context, record.offset, kind, target) == 0) { break; }
+        if (target.kind == 2u64 && binding != cfn<u32,address,ReadBytes,u32>()) {
+            if (binding(context, target.name, native) == 0) { return ObjectRelocationStatus(0, 21); }
+        }
+        consume(context, row.mapped - 1u64, record.offset, kind, target);
         index += 1u64;
     }
     return ObjectRelocationStatus(0, 0);
+}
+
+extern "C" ObjectRelocationStatus object_relocations(
+    ReadBytes input, ObjectRows rows, ObjectSymbols symbols, read ObjectSection row,
+    address context, cfn<void,address,u64,u64,u32,ObjectTarget> consume
+) on cpu requires nonzero(consume) {
+    return read_object_relocations(input, rows, symbols, row, context, consume,
+        cfn<u32,address,ReadBytes,u32>(), 0);
 }
 
 address stack_frame_address(address frames,u64 index) on cpu {
@@ -275,4 +290,153 @@ extern "C" u32 recover_stack(ObjectRows rows,address frames,u64 count,address ca
         i+=1u64;
     }
     return 0;
+}
+
+MetaRecovery restore_blink_metadata(RestoreSource source, ObjectParts parts, MetaNameSink names,
+    MetaReceiver metadata) on cpu
+    requires nonzero(names.emit)
+    requires nonzero(metadata.kind) requires nonzero(metadata.valid_text) requires nonzero(metadata.binding)
+    requires nonzero(metadata.resource) requires nonzero(metadata.code) requires nonzero(metadata.frame)
+    requires nonzero(metadata.call) {
+    u32 archive = address_bits(parts.runtime.bytes) == 0u64 ? 0 : 1;
+    u32 groups = u32(MetaNameGroup::Requirement) | u32(MetaNameGroup::Export);
+    if (address_bits(source.reused_prefix) != 0u64) {
+        MetaCursor cursor = source.reused_cursor;
+        let fields = unsafe_position<MetaPrefix>(source.reused_prefix);
+        u32 error = project_names(fields, MetaNameSink(names.context, names.emit, groups));
+        if (error != 0) { return MetaRecovery(error, 0); }
+        return restore_metadata(cursor, fields, archive, 1, metadata);
+    }
+    MetaCursor cursor = MetaCursor(parts.metadata, 0u64);
+    let fields = prefix(cursor, source.format, MetaNameSink(names.context, names.emit, groups | u32(MetaNameGroup::Library)));
+    if (fields.header.error != 0) { return MetaRecovery(fields.header.error, 0); }
+    return restore_metadata(cursor, fields, archive, 0, metadata);
+}
+
+u32 emit_sections(ObjectRows rows, address definitions, RestoreObjectSink sink) on cpu
+    requires nonzero(sink.section) requires nonzero(sink.associate) {
+    u64 index = 0u64;
+    while (index < rows.count) {
+        let row = row_at(rows, index);
+        if (row.mapped != 0u64) {
+            sink.section(sink.context, row.name, row.bytes, row.flags, row.zero_fill);
+        }
+        index += 1u64;
+    }
+    index = 0u64;
+    while (index < rows.count) {
+        let row = row_at(rows, index);
+        if (row.mapped != 0u64 && (row.flags & 4096u64) != 0u64) {
+            let associated = association(rows, definitions, index);
+            if (associated.error != 0) { return associated.error; }
+            if (associated.present != 0u64) {
+                sink.associate(sink.context, associated.owner, row.mapped - 1u64);
+            }
+        }
+        index += 1u64;
+    }
+    return 0;
+}
+
+u32 emit_definitions(ObjectRows rows, ObjectSymbols symbols, bool native, RestoreObjectSink sink) on cpu
+    requires nonzero(sink.take_contract) requires nonzero(sink.definition) {
+    u64 index = 0u64;
+    while (index < symbols.count) {
+        let symbol = unsafe_position<ObjectSymbol>(
+            unsafe_address(address_bits(symbols.values) + index * size_of<ObjectSymbol>()));
+        if (symbol.external != u8(0) && symbol.section > i16(0)) {
+            if (!native && sink.take_contract(sink.context, symbol.name) == 0) { return 19; }
+            u64 physical = u64(symbol.section) - 1u64;
+            if (physical >= rows.count) { return 20; }
+            let row = row_at(rows, physical);
+            if (row.mapped == 0u64) { return 20; }
+            sink.definition(sink.context, symbol, row.mapped - 1u64, native ? 1 : 0);
+        }
+        index += 1u64;
+    }
+    return 0;
+}
+
+u32 emit_stack(ObjectRows rows, RestoreSource source, RestoreObjectSink sink) on cpu
+    requires nonzero(sink.stack) requires nonzero(sink.frame) requires nonzero(sink.call) {
+    let buffers = sink.stack(sink.context);
+    u32 error = recover_stack(rows, buffers.frames, buffers.count, buffers.calls,
+        buffers.nodes, source.relocation_stride, source.stack_output);
+    if (error != 0 || source.stack_output == 0) { return error; }
+    u64 frame_index = 0u64;
+    u64 call_index = 0u64;
+    while (frame_index < buffers.count) {
+        let frame = unsafe_position<MetaFrame>(stack_frame_address(buffers.frames, frame_index));
+        sink.frame(sink.context, frame);
+        u64 calls = frame.calls;
+        while (calls != 0u64) {
+            let call = unsafe_position<MetaCall>(stack_call_address(buffers.calls, call_index));
+            sink.call(sink.context, call);
+            call_index += 1u64;
+            calls -= 1u64;
+        }
+        frame_index += 1u64;
+    }
+    return 0;
+}
+
+extern "C" RestoreObjectStatus restore_object(RestoreSource source, RestoreObjectSink sink,
+    MetaNameSink names, MetaReceiver metadata) on cpu
+    requires nonzero(sink.symbol_name) requires nonzero(sink.section_name)
+    requires nonzero(sink.symbols) requires nonzero(sink.sections) requires nonzero(sink.archive)
+    requires nonzero(sink.section) requires nonzero(sink.associate) requires nonzero(sink.relocation)
+    requires nonzero(sink.relocated) requires nonzero(sink.bind_import) requires nonzero(sink.take_contract) requires nonzero(sink.definition)
+    requires nonzero(sink.stack) requires nonzero(sink.frame) requires nonzero(sink.call)
+    requires nonzero(names.emit)
+    requires nonzero(metadata.kind) requires nonzero(metadata.valid_text) requires nonzero(metadata.binding)
+    requires nonzero(metadata.resource) requires nonzero(metadata.code) requires nonzero(metadata.frame)
+    requires nonzero(metadata.call) {
+    u64 section_count = source.headers.length / 40u64;
+    let table = symbols(source.input);
+    if (table.error != 0) { return RestoreObjectStatus(table.error, 0, 0); }
+    let storage = sink.symbols(sink.context, table.count, section_count);
+    let scanned_symbols = object_symbols(source.input, table, storage.rows.values,
+        storage.definitions, section_count, sink.name_context, sink.symbol_name);
+    if (scanned_symbols.complete == 0) { return RestoreObjectStatus(scanned_symbols.error, 0, 0); }
+    let rows = sink.sections(sink.context, section_count);
+    ObjectParts parts = ObjectParts(empty_bytes(), empty_bytes());
+    let scanned_sections = object_sections(source.input, source.headers, rows.values, address(), parts,
+        sink.name_context, sink.section_name);
+    if (scanned_sections.complete == 0) { return RestoreObjectStatus(scanned_sections.error, 0, 0); }
+    bool native = address_bits(source.native_name.bytes) != 0u64;
+    if (native) {
+        let no_interface = ReadBytes(source.native_name.bytes, 0u64);
+        let header = MetaHeader(source.native_name,2u64,no_interface,empty_bytes(),empty_bytes(),
+            empty_bytes(),0u64,0u64,0);
+        if (metadata.kind(metadata.context, header) == 0) { return RestoreObjectStatus(0, 0, 0); }
+    } else {
+        if (address_bits(parts.runtime.bytes) != 0u64) { sink.archive(sink.context, parts.runtime); }
+        if (address_bits(source.reused_prefix) == 0u64 && address_bits(parts.metadata.bytes) == 0u64) {
+            return RestoreObjectStatus(0, 18, 0);
+        }
+        let recovered = restore_blink_metadata(source, parts, names, metadata);
+        if (recovered.complete == 0) { return RestoreObjectStatus(0, 0, recovered.error); }
+    }
+    u32 error = emit_sections(rows, storage.definitions, sink);
+    if (error != 0) { return RestoreObjectStatus(0, error, 0); }
+    u64 index = 0u64;
+    while (index < rows.count) {
+        let slot = row_address(rows, index);
+        ObjectSection row = unsafe_position<ObjectSection>(slot);
+        if (row.mapped != 0u64) {
+            let status = read_object_relocations(source.input, rows, storage.rows, row, sink.context,
+                sink.relocation, sink.bind_import, native ? 1 : 0);
+            if (status.format != 0 || status.object != 0) {
+                return RestoreObjectStatus(status.format, status.object, 0);
+            }
+            let owned = sink.relocated(sink.context, row.mapped - 1u64);
+            row.decoded_relocations = owned.values;
+            row.decoded_count = owned.count;
+            unsafe_position<ObjectSection>(slot) = row;
+        }
+        index += 1u64;
+    }
+    error = emit_definitions(rows, storage.rows, native, sink);
+    if (error != 0) { return RestoreObjectStatus(0, error, 0); }
+    return RestoreObjectStatus(0, emit_stack(rows, source, sink), 0);
 }

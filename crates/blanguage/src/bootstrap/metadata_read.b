@@ -204,6 +204,85 @@ extern "C" MetaCall call(inout MetaCursor cursor) on cpu {
     return MetaCall(kind.value,offset,reason,0);
 }
 
+extern "C" u32 restore_kind(MetaHeader header, MetaReceiver sink) on cpu
+    requires nonzero(sink.kind) requires nonzero(sink.valid_text) {
+    if (sink.valid_text(sink.context, header.name) == 0) { return 0; }
+    if (header.kind == 2u64) {
+        if (sink.valid_text(sink.context, header.interface) == 0) { return 0; }
+    } else if (header.kind == 1u64) {
+        if (sink.valid_text(sink.context, header.prefix) == 0) { return 0; }
+        if (sink.valid_text(sink.context, header.header) == 0) { return 0; }
+        if (sink.valid_text(sink.context, header.binding) == 0) { return 0; }
+    }
+    return sink.kind(sink.context, header);
+}
+
+extern "C" MetaRecovery restore_bindings(inout MetaCursor cursor, u64 count, u32 same_producer,
+    address context, cfn<u32,address,MetaBinding,u32> consume) on cpu requires nonzero(consume) {
+    u64 left = count;
+    while (left != 0u64) {
+        let item = binding(cursor);
+        if (item.error != 0) { return MetaRecovery(item.error, 0); }
+        if (consume(context, item, same_producer) == 0) { return MetaRecovery(0, 0); }
+        left -= 1u64;
+    }
+    return MetaRecovery(0, 1);
+}
+
+MetaRecovery restore_resource(ReadBytes input, u32 archive, MetaReceiver sink) on cpu
+    requires nonzero(sink.valid_text) requires nonzero(sink.resource) requires nonzero(sink.code) {
+    MetaCursor cursor = MetaCursor(input, 0u64);
+    let head = resource_head(cursor);
+    if (head.error != 0) { return MetaRecovery(head.error, 0); }
+    if (head.present == 0u64) { return MetaRecovery(0, 1); }
+    if (sink.valid_text(sink.context, head.prefix) == 0) { return MetaRecovery(0, 0); }
+    let body = resource_body(cursor);
+    if (body.error != 0) { return MetaRecovery(body.error, 0); }
+    if (archive != 0) { sink.resource(sink.context, head.prefix, body); }
+    u64 left = body.code_count;
+    while (left != 0u64) {
+        let name = resource_text(cursor);
+        if (name.error != 0) { return MetaRecovery(name.error, 0); }
+        if (sink.valid_text(sink.context, name.value) == 0) { return MetaRecovery(0, 0); }
+        if (archive != 0) { sink.code(sink.context, name.value); }
+        left -= 1u64;
+    }
+    return MetaRecovery(0, 1);
+}
+
+extern "C" MetaRecovery restore_metadata(inout MetaCursor cursor, MetaPrefix fields, u32 archive,
+    u32 same_producer, MetaReceiver sink) on cpu
+    requires nonzero(sink.kind) requires nonzero(sink.valid_text) requires nonzero(sink.binding)
+    requires nonzero(sink.resource) requires nonzero(sink.code) requires nonzero(sink.frame)
+    requires nonzero(sink.call) {
+    if (restore_kind(fields.header, sink) == 0) { return MetaRecovery(0, 0); }
+    let resource = restore_resource(fields.resource, archive, sink);
+    if (resource.complete == 0) { return resource; }
+    let bindings = restore_bindings(cursor, fields.binding_count, same_producer, sink.context, sink.binding);
+    if (bindings.complete == 0) { return bindings; }
+    let count = word(cursor);
+    if (count.error != 0) { return MetaRecovery(count.error, 0); }
+    u64 frames = count.value;
+    while (frames != 0u64) {
+        let entry = frame(cursor);
+        if (entry.error != 0) { return MetaRecovery(entry.error, 0); }
+        if (sink.valid_text(sink.context, entry.name) == 0) { return MetaRecovery(0, 0); }
+        u64 calls = entry.calls;
+        while (calls != 0u64) {
+            let site = call(cursor);
+            if (site.error != 0) { return MetaRecovery(site.error, 0); }
+            if (site.kind == 3u64 && sink.valid_text(sink.context, site.reason) == 0) {
+                return MetaRecovery(0, 0);
+            }
+            sink.call(sink.context, site);
+            calls -= 1u64;
+        }
+        sink.frame(sink.context, entry);
+        frames -= 1u64;
+    }
+    return MetaRecovery(0, 1);
+}
+
 extern "C" BuildImage read_build_image(ReadBytes input,u64 magic) on cpu {
     MetaCursor cursor=MetaCursor(input,0u64);
     MetaWord signature=number(cursor,8u64,1);

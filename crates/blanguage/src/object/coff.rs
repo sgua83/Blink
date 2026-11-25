@@ -205,7 +205,7 @@ enum ObjectReadError {
     None, OwnerNumber, OwnerUnavailable, OwnerNotComdat, Selection, SectionUnavailable,
     DllLengthMissing, DllLengthEmpty, DllLengthDigit, DllLengthOverflow, DllLength,
     StackSection, StackPosition, StackNoLocation, StackRelocation, RelocationSymbol,
-    MissingSectionDefinition, RelocationBounds,
+    MissingSectionDefinition, RelocationBounds, MetadataMissing, ExportContract, ExportSection, ImportContract,
 }
 impl ObjectReadError {
     fn check(self) -> Result<()> {
@@ -228,6 +228,10 @@ impl ObjectReadError {
             Self::RelocationSymbol => Err("COFF 重定位符号越界".into()),
             Self::MissingSectionDefinition => Err("COFF COMDAT节缺少定义辅助记录".into()),
             Self::RelocationBounds => Err("COFF 重定位位置越界".into()),
+            Self::MetadataMissing => Err("缺少 Blink 目标文件元数据".into()),
+            Self::ExportContract => Err("导出符号缺少模块接口合同".into()),
+            Self::ExportSection => Err("导出符号引用不可装载的节".into()),
+            Self::ImportContract => Err("未定义符号缺少模块接口合同".into()),
         }
     }
 }
@@ -290,41 +294,38 @@ impl<'a> ObjectTarget<'a> {
 }
 #[repr(C)]
 struct ObjectRelocationStatus { format: ReadError, object: ObjectReadError }
+#[repr(C)]
+struct ObjectScanStatus { error: ReadError, complete: u32 }
 
 unsafe extern "C" {
     #[link_name = "bootstrap.object_read::object_sections"]
     fn object_sections(input: ReadBytes, headers: ReadBytes, rows: *mut ObjectSection, loadable: *mut u8,
-        parts: &mut ObjectParts, context: *mut c_void, validate: ValidateObjectName) -> ReadError;
+        parts: &mut ObjectParts, context: *mut c_void, validate: ValidateObjectName) -> ObjectScanStatus;
     #[link_name = "bootstrap.object_read::object_symbols"]
     fn object_symbols<'a>(input: ReadBytes, table: ReadSymbols, rows: *mut ObjectSymbol<'a>,
         definitions: *mut SectionDefinition, definition_count: usize, context: *mut c_void,
-        consume: unsafe extern "C" fn(*mut c_void, ReadBytes, usize) -> u32) -> ReadError;
+        consume: ValidateSymbolName) -> ObjectScanStatus;
     #[link_name = "bootstrap.object_read::association"]
     fn object_association(rows: ObjectRows, definitions: *const SectionDefinition,
         index: usize) -> ObjectAssociation;
     #[link_name = "bootstrap.object_read::object_relocations"]
     fn object_relocations<'a>(input: ReadBytes, rows: ObjectRows, symbols: ObjectSymbols<'a>,
         section: &ObjectSection, context: *mut c_void,
-        consume: unsafe extern "C" fn(*mut c_void, usize, u32, ObjectTarget<'a>) -> u32,
+        consume: unsafe extern "C" fn(*mut c_void, usize, usize, u32, ObjectTarget<'a>),
     ) -> ObjectRelocationStatus;
 }
-struct RelocationConsumer<F> {
-    consume: F,
-    result: Result<()>,
-}
-
 unsafe extern "C" fn consume_relocation<'a, F>(
-    context: *mut c_void, offset: usize, kind: u32, target: ObjectTarget<'a>,
-) -> u32
+    context: *mut c_void, section: usize, offset: usize, kind: u32, target: ObjectTarget<'a>,
+)
 where
-    F: FnMut(usize, u16, ObjectTarget<'a>) -> Result<()>,
+    F: FnMut(usize, usize, u16, ObjectTarget<'a>),
 {
-    let receiver = unsafe { &mut *context.cast::<RelocationConsumer<F>>() };
-    receiver.result = (receiver.consume)(offset, kind as u16, target);
-    u32::from(receiver.result.is_ok())
+    let consume = unsafe { &mut *context.cast::<F>() };
+    consume(section, offset, kind as u16, target);
 }
 
 type ValidateObjectName = unsafe extern "C" fn(*mut c_void, ReadBytes) -> u32;
+type ValidateSymbolName = unsafe extern "C" fn(*mut c_void, ReadBytes, usize) -> u32;
 
 unsafe extern "C" fn validate_object_name(context: *mut c_void, bytes: ReadBytes) -> u32 {
     match std::str::from_utf8(unsafe { bytes.borrowed() }) {
@@ -369,9 +370,9 @@ unsafe extern "C" fn collect_archive_export<'a, F: FnMut(&'a str)>(
     1
 }
 
-fn read_object_names(read: impl FnOnce(*mut c_void) -> ReadError) -> Result<()> {
+fn read_object_names(read: impl FnOnce(*mut c_void) -> ObjectScanStatus) -> Result<()> {
     let mut invalid = None::<std::str::Utf8Error>;
-    read(std::ptr::from_mut(&mut invalid).cast()).check()?;
+    read(std::ptr::from_mut(&mut invalid).cast()).error.check()?;
     invalid.map_or(Ok(()), |error| Err(error.into()))
 }
 
@@ -423,10 +424,6 @@ enum ReadRequirementKind { Invocation, Domain, Host }
 #[derive(Clone, Copy)]
 enum ReadCallKind { Reference, Tail, Indirect, Unreported }
 #[repr(C)]
-struct MetadataReadWord { value: u64, error: MetadataReadError }
-#[repr(C)]
-struct MetadataReadField { value: ReadBytes, error: MetadataReadError }
-#[repr(C)]
 #[derive(Clone, Copy)]
 struct MetadataReadHeader {
     name: ReadBytes, kind: ReadObjectKind, interface: ReadBytes, prefix: ReadBytes, header: ReadBytes, binding: ReadBytes,
@@ -445,8 +442,6 @@ struct MetadataReadFrame { name: ReadBytes, has_coff: u64, section: u64, start: 
 #[repr(C)]
 struct MetadataReadCall { kind: ReadCallKind, offset: u64, reason: ReadBytes, error: MetadataReadError }
 #[repr(C)]
-struct MetadataReadResourceHead { present: u64, prefix: ReadBytes, error: MetadataReadError }
-#[repr(C)]
 struct MetadataReadResourceBody {
     types: u64,
     programs: u64,
@@ -455,14 +450,6 @@ struct MetadataReadResourceBody {
     error: MetadataReadError,
 }
 unsafe extern "C" {
-    #[link_name = "bootstrap.metadata_read::resource_head"]
-    fn metadata_read_resource_head(cursor: *mut MetadataReadCursor) -> MetadataReadResourceHead;
-    #[link_name = "bootstrap.metadata_read::resource_body"]
-    fn metadata_read_resource_body(cursor: *mut MetadataReadCursor) -> MetadataReadResourceBody;
-    #[link_name = "bootstrap.metadata_read::resource_text"]
-    fn metadata_read_resource_text(cursor: *mut MetadataReadCursor) -> MetadataReadField;
-    #[link_name = "bootstrap.metadata_read::word"]
-    fn metadata_read_word(cursor: *mut MetadataReadCursor) -> MetadataReadWord;
     #[link_name = "bootstrap.metadata_read::prefix"]
     fn metadata_read_prefix(
         cursor: *mut MetadataReadCursor, format: u64, sink: MetadataNameSink,
@@ -471,15 +458,12 @@ unsafe extern "C" {
     fn metadata_project_names(prefix: MetadataReadPrefix, sink: MetadataNameSink) -> MetadataReadError;
     #[link_name = "bootstrap.metadata_read::binding"]
     fn metadata_read_binding(cursor: *mut MetadataReadCursor) -> MetadataReadBinding;
-    #[link_name = "bootstrap.metadata_read::frame"]
-    fn metadata_read_frame(cursor: *mut MetadataReadCursor) -> MetadataReadFrame;
-    #[link_name = "bootstrap.metadata_read::call"]
-    fn metadata_read_call(cursor: *mut MetadataReadCursor) -> MetadataReadCall;
-    #[link_name = "bootstrap.object_read::recover_stack"]
-    fn object_recover_stack(
-        rows: ObjectRows, frames: *mut MetadataReadFrame, count: usize,
-        calls: *mut MetadataReadCall, nodes: *mut [u64; 9], stride: usize, stack_output: u32,
-    ) -> ObjectReadError;
+    #[link_name = "bootstrap.metadata_read::restore_kind"]
+    fn metadata_restore_kind(header: MetadataReadHeader, output: MetadataReceiver) -> u32;
+    #[link_name = "bootstrap.metadata_read::restore_bindings"]
+    fn metadata_restore_bindings(cursor: &mut MetadataReadCursor, count: u64, same_producer: u32,
+        context: *mut c_void, consume: unsafe extern "C" fn(*mut c_void, MetadataReadBinding, u32) -> u32,
+    ) -> MetadataRecovery;
 }
 
 #[derive(Default)]
@@ -488,40 +472,8 @@ struct StackMetadata {
     calls: Vec<MetadataReadCall>,
 }
 
-impl StackMetadata {
-    fn restore(mut self, rows: ObjectRows, stack_output: bool) -> Result<Vec<stack::Frame>> {
-        let mut nodes = vec![[0; 9]; self.frames.len()];
-        unsafe {
-            object_recover_stack(rows, self.frames.as_mut_ptr(), self.frames.len(),
-                self.calls.as_mut_ptr(), nodes.as_mut_ptr(), size_of::<Relocation>(), u32::from(stack_output))
-        }.check()?;
-        if !stack_output { return Ok(Vec::new()); }
-        // The reader checked UTF-8. Recovery replaced each direct call offset with its relocation index.
-        let text = |field: ReadBytes| unsafe { std::str::from_utf8_unchecked(field.borrowed()) }.to_owned();
-        let mut calls = self.calls.into_iter();
-        Ok(self.frames.into_iter().map(|frame| {
-            let calls = calls.by_ref().take(frame.calls as usize).map(|call| match call.kind {
-                ReadCallKind::Reference => stack::Call::Reference { relocation: call.offset as usize, tail: false },
-                ReadCallKind::Tail => stack::Call::Reference { relocation: call.offset as usize, tail: true },
-                ReadCallKind::Indirect => stack::Call::Indirect,
-                ReadCallKind::Unreported => stack::Call::Unreported(text(call.reason)),
-            }).collect();
-            stack::Frame {
-                name: text(frame.name),
-                coff: (frame.has_coff != 0).then_some((frame.section as usize, frame.start as u32)),
-                local: frame.local as u32,
-                calls,
-            }
-        }).collect())
-    }
-}
 impl MetadataReadCursor {
     fn new(input: &[u8]) -> Self { Self { input: ReadBytes::new(input), position: 0 } }
-    fn word(&mut self) -> Result<u32> {
-        let value = unsafe { metadata_read_word(self) };
-        value.error.check()?;
-        Ok(value.value as u32)
-    }
 }
 
 #[repr(u32)]
@@ -558,7 +510,6 @@ impl MetadataNames {
 
 const REQUIREMENTS: u32 = MetadataNameGroup::Requirement as u32;
 const LIBRARIES: u32 = MetadataNameGroup::Library as u32;
-const EXPORTS: u32 = MetadataNameGroup::Export as u32;
 
 unsafe extern "C" fn consume_metadata_name(
     context: *mut c_void, group: MetadataNameGroup, name: ReadBytes, requirement: ReadRequirementKind,
@@ -583,17 +534,6 @@ unsafe extern "C" fn consume_metadata_name(
         MetadataNameGroup::Export if names.archive => names.exports.push(name.to_owned()),
         _ => {}
     }
-}
-
-fn read_strings<'a>(
-    count: usize, keep: bool, mut read: impl FnMut() -> Result<&'a str>,
-) -> Result<Vec<String>> {
-    let mut strings = Vec::new();
-    for _ in 0..count {
-        let text = read()?;
-        if keep { strings.push(text.to_owned()); }
-    }
-    Ok(strings)
 }
 
 // Synchronous borrowed metadata views; the original Object owns every field.
@@ -995,7 +935,7 @@ fn owned_output(plan: CoffOutput<'_>) -> Result<Vec<u8>> {
 }
 
 pub(super) fn decode<Bytes: super::ReadSection>(b: &super::ObjectBytes, stack_output: bool) -> Result<Object<Bytes>> {
-    decode_object(&Reader::new(b)?, None, None, stack_output)
+    Reader::new(b)?.restore(None, None, stack_output)
 }
 struct Metadata<'a> {
     input: &'a [u8],
@@ -1039,7 +979,7 @@ impl ReuseInputs<'_> {
                 return Ok(None);
             }
         }
-        decode_object(&self.reader, None, Some((self.metadata, names.libraries)), true).map(Some)
+        self.reader.restore(None, Some((self.metadata, names.libraries)), true).map(Some)
     }
 }
 
@@ -1152,22 +1092,20 @@ impl<'a, Input: AsRef<[u8]> + ?Sized> Reader<'a, Input> {
         Ok((symbols, table.offset))
     }
     fn relocations<F>(&self, raw: &[ObjectSection], symbols: &[ObjectSymbol<'a>],
-        row: &ObjectSection, consume: F,
+        row: &ObjectSection, mut consume: F,
     ) -> Result<()>
     where
-        F: FnMut(usize, u16, ObjectTarget<'a>) -> Result<()>,
+        F: FnMut(usize, usize, u16, ObjectTarget<'a>),
     {
         let input = ReadBytes::new(self.bytes.as_ref());
         let rows = ObjectRows::new(raw);
         let symbols = ObjectSymbols { values: symbols.as_ptr(), count: symbols.len() };
-        let mut receiver = RelocationConsumer { consume, result: Ok(()) };
         let status = unsafe {
             object_relocations(input, rows, symbols, row,
-                std::ptr::from_mut(&mut receiver).cast(), consume_relocation::<F>)
+                std::ptr::from_mut(&mut consume).cast(), consume_relocation::<F>)
         };
         status.format.check()?;
-        status.object.check()?;
-        receiver.result
+        status.object.check()
     }
     fn is_module(&self, parts: ObjectParts) -> Result<bool> {
         let metadata = Metadata::read(self.metadata(parts.metadata)?, MetadataNames::default().sink(0))?;
@@ -1190,7 +1128,7 @@ impl<'a, Input: AsRef<[u8]> + ?Sized> Reader<'a, Input> {
             object_symbols(input, table, std::ptr::null_mut(), std::ptr::null_mut(), 0,
                 std::ptr::from_mut(&mut exports).cast(), collect_archive_export::<F>)
         };
-        error.check()?;
+        error.error.check()?;
         if let Some(error) = exports.invalid_name { return Err(error.into()); }
         if exports.invalid_section { return Err("导出符号引用不可装载的节".into()); }
         Ok(true)
@@ -1220,14 +1158,13 @@ impl<'a, Input: AsRef<[u8]> + ?Sized> Reader<'a, Input> {
                 }
                 continue;
             }
-            self.relocations(&raw, &symbols, row, |offset, kind, target| {
+            self.relocations(&raw, &symbols, row, |section, offset, kind, target| {
                 if matches!(target.kind, ObjectTargetKind::Import) {
                     imports.push(unsafe { target.import_key() });
                 }
                 if let Some(groups) = &mut groups {
-                    groups.relocation(row.mapped - 1, offset, kind, target);
+                    groups.relocation(section, offset, kind, target);
                 }
-                Ok(())
             })?;
         }
         let build = build.map(|(index, row)| self.host_build_section(index, row, offset)).transpose()?;
@@ -1248,10 +1185,19 @@ impl<'a, Input: AsRef<[u8]> + ?Sized> Reader<'a, Input> {
         let (parts, _) = self.sections(false)?;
         let mut names = MetadataNames::default();
         let metadata = Metadata::read(self.metadata(parts.metadata)?, names.sink(REQUIREMENTS))?;
-        let (name, kind) = read_metadata_kind(&metadata.prefix.header, &mut names)?;
-        let mut bindings = read_metadata_bindings(
-            &mut metadata.bindings_cursor(), metadata.prefix.binding_count, false,
-        )?;
+        let mut output = MetadataOutput { names, ..Default::default() };
+        let context = std::ptr::from_mut(&mut output).cast();
+        unsafe { metadata_restore_kind(metadata.prefix.header, MetadataOutput::receiver(context)) };
+        output.check()?;
+        let (name, kind) = output.identity.take().unwrap();
+        let recovery = unsafe {
+            metadata_restore_bindings(
+                &mut metadata.bindings_cursor(), metadata.prefix.binding_count, 0, context, MetadataOutput::binding,
+            )
+        };
+        recovery.error.check()?;
+        output.check()?;
+        let mut bindings = output.bindings;
         let mut definitions = BTreeMap::new();
         self.for_each_definition(|symbol| {
             let (name, contract) = bindings.remove_entry(symbol).ok_or("导出符号缺少模块接口合同")?;
@@ -1306,206 +1252,380 @@ impl<'a> Reader<'a, super::ObjectBytes> {
     }
     /// 非根资源侧库来自原编译产物；其C符号沿真实ABI恢复，不消费B公开合同。
     pub(crate) fn native<Bytes: super::ReadSection>(&self, name: &str) -> Result<Object<Bytes>> {
-        decode_object(self, Some(name), None, false)
+        self.restore(Some(name), None, false)
     }
 }
-fn read_metadata_kind(header: &MetadataReadHeader, names: &mut MetadataNames) -> Result<(String, Kind)> {
-    let name = read_text(header.name)?;
-    let kind = match header.kind {
-        ReadObjectKind::Module => {
-            let interface: Arc<str> = std::str::from_utf8(unsafe { header.interface.borrowed() })?.into();
-            Kind::Module {
-                interface,
-                requirements: Arc::new(std::mem::take(&mut names.requirements)),
-                stack_bytes: header.stack as u32,
-            }
+#[repr(C)]
+struct MetadataRecovery { error: MetadataReadError, complete: u32 }
+
+#[repr(C)]
+struct MetadataReceiver {
+    context: *mut c_void,
+    kind: unsafe extern "C" fn(*mut c_void, MetadataReadHeader) -> u32,
+    valid_text: ValidateObjectName,
+    binding: unsafe extern "C" fn(*mut c_void, MetadataReadBinding, u32) -> u32,
+    resource: unsafe extern "C" fn(*mut c_void, ReadBytes, MetadataReadResourceBody),
+    code: unsafe extern "C" fn(*mut c_void, ReadBytes),
+    frame: unsafe extern "C" fn(*mut c_void, MetadataReadFrame),
+    call: unsafe extern "C" fn(*mut c_void, MetadataReadCall),
+}
+
+#[derive(Default)]
+struct MetadataOutput {
+    names: MetadataNames,
+    identity: Option<(String, Kind)>,
+    bindings: BTreeMap<String, Vec<u8>>,
+    resources: Option<ResourceBinding>,
+    stack: StackMetadata,
+    error: Option<Box<dyn std::error::Error>>,
+}
+
+impl MetadataOutput {
+    fn receiver(context: *mut c_void) -> MetadataReceiver {
+        MetadataReceiver {
+            context, kind: Self::kind, valid_text: Self::validate_text, binding: Self::binding,
+            resource: Self::resource, code: Self::code, frame: Self::frame, call: Self::call,
         }
-        ReadObjectKind::Application => Kind::Application { stack_bytes: header.stack as u32 },
-        ReadObjectKind::Library => Kind::Library {
-            prefix: read_text(header.prefix)?, header: read_text(header.header)?, binding: read_text(header.binding)?,
-        },
-    };
-    // Preserve format and header errors ahead of the first name error.
-    names.check()?;
-    Ok((name, kind))
-}
-
-fn read_metadata_bindings(
-    cursor: &mut MetadataReadCursor, count: u64, same_producer: bool,
-) -> Result<BTreeMap<String, Vec<u8>>> {
-    let mut bindings = BTreeMap::new();
-    for _ in 0..count {
-        let value = unsafe { metadata_read_binding(cursor) };
-        value.error.check()?;
-        bindings.insert(read_text(value.name)?, crate::check::read_function_contract(unsafe { value.value.borrowed() }, same_producer)?);
     }
-    Ok(bindings)
-}
 
-fn read_metadata(
-    meta: Metadata<'_>, archive: Option<super::ObjectBytes>, mut names: MetadataNames, same_producer: bool,
-) -> Result<(String, Kind, BTreeMap<String, Vec<u8>>, StackMetadata, Option<Archive>)> {
-    let (name, kind) = read_metadata_kind(&meta.prefix.header, &mut names)?;
-    let mut c = meta.bindings_cursor();
-    let prefix = meta.prefix;
-    let keep_archive = archive.is_some();
-    let mut resource = MetadataReadCursor::new(unsafe { prefix.resource.borrowed() });
-    let head = unsafe { metadata_read_resource_head(&mut resource) };
-    head.error.check()?;
-    let resources = if head.present != 0 {
-        let prefix = std::str::from_utf8(unsafe { head.prefix.borrowed() })?;
-        let body = unsafe { metadata_read_resource_body(&mut resource) };
-        body.error.check()?;
-        let code = read_strings(body.code_count, keep_archive, || {
-            let value = unsafe { metadata_read_resource_text(&mut resource) };
-            value.error.check()?;
-            Ok(std::str::from_utf8(unsafe { value.value.borrowed() })?)
-        })?;
-        keep_archive.then(|| ResourceBinding {
-            prefix: prefix.to_owned(),
+    fn name_sink(context: *mut c_void) -> MetadataNameSink {
+        MetadataNameSink { context, emit: Self::name, groups: 0 }
+    }
+
+    unsafe extern "C" fn name(
+        context: *mut c_void, group: MetadataNameGroup, text: ReadBytes, requirement: ReadRequirementKind,
+    ) {
+        let output = unsafe { &mut *context.cast::<Self>() };
+        unsafe { consume_metadata_name(std::ptr::from_mut(&mut output.names).cast(), group, text, requirement) };
+    }
+
+    fn check(&mut self) -> Result<()> {
+        self.error.take().map_or(Ok(()), Err)
+    }
+
+    unsafe extern "C" fn kind(context: *mut c_void, header: MetadataReadHeader) -> u32 {
+        let output = unsafe { &mut *context.cast::<Self>() };
+        let text = |value| unsafe { validated_text(value) };
+        let kind = match header.kind {
+            ReadObjectKind::Application => Kind::Application { stack_bytes: header.stack as u32 },
+            ReadObjectKind::Library => Kind::Library {
+                prefix: text(header.prefix).to_owned(),
+                header: text(header.header).to_owned(),
+                binding: text(header.binding).to_owned(),
+            },
+            ReadObjectKind::Module => Kind::Module {
+                interface: text(header.interface).into(),
+                requirements: Arc::new(std::mem::take(&mut output.names.requirements)),
+                stack_bytes: header.stack as u32,
+            },
+        };
+        match output.names.check() {
+            Ok(()) => {
+                output.identity = Some((text(header.name).to_owned(), kind));
+                1
+            }
+            Err(error) => { output.error = Some(error); 0 }
+        }
+    }
+
+    unsafe extern "C" fn validate_text(context: *mut c_void, text: ReadBytes) -> u32 {
+        let output = unsafe { &mut *context.cast::<Self>() };
+        match std::str::from_utf8(unsafe { text.borrowed() }) {
+            Ok(_) => 1,
+            Err(error) => { output.error = Some(error.into()); 0 }
+        }
+    }
+
+    unsafe extern "C" fn binding(context: *mut c_void, item: MetadataReadBinding, same_producer: u32) -> u32 {
+        let output = unsafe { &mut *context.cast::<Self>() };
+        match read_text(item.name).and_then(|name| {
+            let bytes = crate::check::read_function_contract(unsafe { item.value.borrowed() }, same_producer != 0)?;
+            Ok((name, bytes))
+        }) {
+            Ok((name, bytes)) => { output.bindings.insert(name, bytes); 1 }
+            Err(error) => { output.error = Some(error); 0 }
+        }
+    }
+
+    unsafe extern "C" fn resource(context: *mut c_void, prefix: ReadBytes, body: MetadataReadResourceBody) {
+        let output = unsafe { &mut *context.cast::<Self>() };
+        output.resources = Some(ResourceBinding {
+            prefix: unsafe { validated_text(prefix) }.to_owned(),
             types: body.types as u32,
             programs: body.programs as u32,
             abi: unsafe { body.abi.borrowed() }.to_vec(),
-            code,
-        })
-    } else {
-        None
-    };
-    let bindings = read_metadata_bindings(&mut c, prefix.binding_count, same_producer)?;
-    let mut stack = StackMetadata::default();
-    for _ in 0..c.word()? {
-        let frame = unsafe { metadata_read_frame(&mut c) };
-        frame.error.check()?;
-        std::str::from_utf8(unsafe { frame.name.borrowed() })?;
-        for _ in 0..frame.calls {
-            let call = unsafe { metadata_read_call(&mut c) };
-            call.error.check()?;
-            if matches!(call.kind, ReadCallKind::Unreported) {
-                std::str::from_utf8(unsafe { call.reason.borrowed() })?;
-            }
-            stack.calls.push(call);
-        }
-        stack.frames.push(frame);
+            code: Vec::new(),
+        });
     }
-    let archive = archive.map(|bytes| Archive {
-        bytes,
-        libraries: names.libraries,
-        exports: names.exports,
-        resources,
-    });
-    Ok((name, kind, bindings, stack, archive))
+
+    unsafe extern "C" fn code(context: *mut c_void, text: ReadBytes) {
+        let output = unsafe { &mut *context.cast::<Self>() };
+        output.resources.as_mut().unwrap().code.push(unsafe { validated_text(text) }.to_owned());
+    }
+
+    unsafe extern "C" fn frame(context: *mut c_void, frame: MetadataReadFrame) {
+        unsafe { &mut *context.cast::<Self>() }.stack.frames.push(frame);
+    }
+
+    unsafe extern "C" fn call(context: *mut c_void, call: MetadataReadCall) {
+        unsafe { &mut *context.cast::<Self>() }.stack.calls.push(call);
+    }
 }
-fn decode_object<Bytes: super::ReadSection>(
-    reader: &Reader<'_, super::ObjectBytes>, native: Option<&str>, reuse: Option<(Metadata<'_>, Vec<String>)>,
-    stack_output: bool,
-) -> Result<Object<Bytes>> {
-    let b = reader.bytes;
-    let mut definitions = vec![SectionDefinition::default(); reader.headers.len() / 40];
-    let (symbols, _) = reader.symbol_rows(&mut definitions)?;
-    let (parts, mut raw) = reader.sections(true)?;
-    let (name, kind, mut bindings, stack, archive) = match native {
-        Some(name) => (name.to_owned(), Kind::Module { interface: "".into(), requirements: Arc::default(), stack_bytes: 0 }, BTreeMap::new(), StackMetadata::default(), None),
-        None => {
-            let archive = (!parts.runtime.bytes.is_null()).then(|| {
-                let start = parts.runtime.bytes.addr() - b.as_ptr().addr();
-                b.slice(start..start + parts.runtime.length)
-            });
-            let mut names = MetadataNames { archive: archive.is_some(), ..Default::default() };
-            let same_producer = reuse.is_some();
-            let metadata = match reuse {
-                Some((metadata, libraries)) => {
-                    names.libraries = libraries;
-                    metadata.project_names(names.sink(REQUIREMENTS | EXPORTS))?;
-                    metadata
-                }
-                None => Metadata::read(reader.metadata(parts.metadata)?, names.sink(REQUIREMENTS | LIBRARIES | EXPORTS))?,
-            };
-            read_metadata(metadata, archive, names, same_producer)?
+
+// All callers borrow the reader input for the synchronous restore and only
+// use this after the same name passed its UTF-8 consumer.
+unsafe fn validated_text<'a>(bytes: ReadBytes) -> &'a str {
+    unsafe { std::str::from_utf8_unchecked(bytes.borrowed()) }
+}
+
+#[repr(C)]
+struct RestoreSymbols<'a> { rows: ObjectSymbols<'a>, definitions: *mut SectionDefinition }
+#[repr(C)]
+struct RestoreRelocations { values: *const Relocation, count: usize }
+#[repr(C)]
+struct RestoreStack {
+    frames: *mut MetadataReadFrame, count: usize, calls: *mut MetadataReadCall, nodes: *mut [u64; 9],
+}
+#[repr(C)]
+struct RestoreSource {
+    input: ReadBytes,
+    headers: ReadBytes,
+    native_name: ReadBytes,
+    reused_prefix: *const MetadataReadPrefix,
+    reused_cursor: MetadataReadCursor,
+    format: u64,
+    relocation_stride: usize,
+    stack_output: u32,
+}
+#[repr(C)]
+struct RestoreObjectSink<'a> {
+    context: *mut c_void,
+    name_context: *mut c_void,
+    symbol_name: ValidateSymbolName,
+    section_name: ValidateObjectName,
+    symbols: unsafe extern "C" fn(*mut c_void, usize, usize) -> RestoreSymbols<'a>,
+    sections: unsafe extern "C" fn(*mut c_void, usize) -> ObjectRows,
+    archive: unsafe extern "C" fn(*mut c_void, ReadBytes),
+    section: unsafe extern "C" fn(*mut c_void, ReadBytes, ReadBytes, u64, usize),
+    associate: unsafe extern "C" fn(*mut c_void, usize, usize),
+    relocation: unsafe extern "C" fn(*mut c_void, usize, usize, u32, ObjectTarget<'a>),
+    relocated: unsafe extern "C" fn(*mut c_void, usize) -> RestoreRelocations,
+    bind_import: unsafe extern "C" fn(*mut c_void, ReadBytes, u32) -> u32,
+    take_contract: unsafe extern "C" fn(*mut c_void, ReadBytes) -> u32,
+    definition: unsafe extern "C" fn(*mut c_void, ObjectSymbol<'a>, usize, u32),
+    stack: unsafe extern "C" fn(*mut c_void) -> RestoreStack,
+    frame: unsafe extern "C" fn(*mut c_void, MetadataReadFrame),
+    call: unsafe extern "C" fn(*mut c_void, MetadataReadCall),
+}
+#[repr(C)]
+struct RestoreObjectStatus { format: ReadError, object: ObjectReadError, metadata: MetadataReadError }
+unsafe extern "C" {
+    #[link_name = "bootstrap.object_read::restore_object"]
+    fn restore_object(source: RestoreSource, sink: RestoreObjectSink<'_>,
+        names: MetadataNameSink, metadata: MetadataReceiver,
+    ) -> RestoreObjectStatus;
+}
+
+struct ObjectOwner<'reader, 'input, Bytes> {
+    reader: &'reader Reader<'input, super::ObjectBytes>,
+    metadata: *mut MetadataOutput,
+    raw: Vec<ObjectSection>,
+    primary: Vec<ObjectSymbol<'input>>,
+    definitions: Vec<SectionDefinition>,
+    sections: Vec<Section<SectionData<Bytes>>>,
+    symbols: Vec<Symbol>,
+    archive: Option<super::ObjectBytes>,
+    contract: Option<(String, Vec<u8>)>,
+    stack: Vec<stack::Frame>,
+    positions: Vec<[u64; 9]>,
+}
+
+impl<'input, Bytes: super::ReadSection> ObjectOwner<'_, 'input, Bytes> {
+    fn sink(&mut self, invalid: &mut Option<std::str::Utf8Error>) -> RestoreObjectSink<'input> {
+        RestoreObjectSink {
+            context: std::ptr::from_mut(self).cast(),
+            name_context: std::ptr::from_mut(invalid).cast(),
+            symbol_name: validate_symbol_name, section_name: validate_object_name,
+            symbols: Self::symbols, sections: Self::sections,
+            archive: Self::archive, section: Self::section, associate: Self::associate,
+            relocation: Self::relocation, relocated: Self::relocated,
+            bind_import: Self::bind_import, take_contract: Self::take_contract,
+            definition: Self::definition, stack: Self::stack, frame: Self::frame, call: Self::call,
         }
-    };
-    let mut sections = Vec::new();
-    for row in &raw {
-        if row.mapped != 0 {
-            let bytes = if row.zero_fill == 0 {
-                SectionData::Initialized(Bytes::from_coff(b, unsafe { row.bytes.borrowed() }))
-            } else {
-                SectionData::ZeroFill(row.zero_fill)
-            };
-            sections.push(Section {
-                associated: Vec::new(),
-                layout: None,
-                name: unsafe { std::str::from_utf8_unchecked(row.name.borrowed()) }.to_owned(),
-                bytes,
-                flags: row.flags as u32,
-                relocations: Vec::new(),
-            });
+    }
+
+    // B initializes and borrows these Copy rows within the same call. The
+    // owner keeps the allocations and does not read elements or drop them.
+    unsafe extern "C" fn symbols(context: *mut c_void, count: usize, sections: usize) -> RestoreSymbols<'input> {
+        let owner = unsafe { &mut *context.cast::<Self>() };
+        owner.primary = Vec::with_capacity(count);
+        owner.definitions = vec![SectionDefinition::default(); sections];
+        RestoreSymbols {
+            rows: ObjectSymbols { values: owner.primary.as_mut_ptr(), count },
+            definitions: owner.definitions.as_mut_ptr(),
         }
     }
-    let rows = ObjectRows::new(&raw);
-    for (old, row) in raw.iter().enumerate() {
-        if row.mapped == 0 || row.flags & 0x1000 == 0 { continue; }
-        let value = unsafe { object_association(rows, definitions.as_ptr(), old) };
-        value.error.check()?;
-        if value.present != 0 { sections[value.owner].associated.push(row.mapped - 1); }
+
+    unsafe extern "C" fn sections(context: *mut c_void, count: usize) -> ObjectRows {
+        let owner = unsafe { &mut *context.cast::<Self>() };
+        owner.raw = Vec::with_capacity(count);
+        ObjectRows { values: owner.raw.as_mut_ptr(), count }
     }
-    for index in 0..raw.len() {
-        let row = &raw[index];
-        if row.mapped == 0 { continue; }
-        let relocations = &mut sections[row.mapped - 1].relocations;
-        reader.relocations(&raw, &symbols, row, |offset, kind, value| {
-            let target = match value.kind {
-                ObjectTargetKind::Section => Target::Section(value.section, value.value as u32),
-                ObjectTargetKind::Import => {
-                    let key = unsafe { value.import_key() };
-                    Target::Import(Import { dll: key.dll().to_owned(), name: key.symbol().to_owned() })
-                }
-                ObjectTargetKind::Symbol => {
-                    // The primary symbol's borrowed name was checked before target resolution.
-                    let name = unsafe { std::str::from_utf8_unchecked(value.name.borrowed()) };
-                    if native.is_some() { bindings.entry(name.to_owned()).or_default(); }
-                    else { bindings.get(name).ok_or("未定义符号缺少模块接口合同")?; }
-                    Target::Symbol(name.to_owned())
-                }
-            };
-            relocations.push(Relocation { offset, kind, target });
-            Ok(())
-        })?;
-        // The section now owns its complete relocation buffer for stack recovery.
-        let row = &mut raw[index];
-        row.decoded_relocations = relocations.as_ptr().cast();
-        row.decoded_count = relocations.len();
+
+    unsafe extern "C" fn archive(context: *mut c_void, range: ReadBytes) {
+        let owner = unsafe { &mut *context.cast::<Self>() };
+        let bytes = owner.reader.bytes;
+        let start = range.bytes.addr() - bytes.as_ptr().addr();
+        owner.archive = Some(bytes.slice(start..start + range.length));
+        unsafe { &mut *owner.metadata }.names.archive = true;
     }
-    let symbols = symbols
-            .into_iter()
-            .filter(|symbol| symbol.external != 0 && symbol.section > 0)
-            .map(|symbol| {
-                let name = unsafe { symbol.validated_name() };
-                let (name, contract) = if native.is_some() {
-                    (name.to_owned(), Vec::new())
-                } else {
-                    bindings.remove_entry(name).ok_or("导出符号缺少模块接口合同")?
-                };
-                Ok(Symbol {
-                    definition: Definition {
-                        name,
-                        section: object_index(&raw, symbol.section as usize - 1)
-                            .ok_or("导出符号引用不可装载的节")?,
-                        value: symbol.value,
-                        function: symbol.is_function(),
-                    },
-                    contract,
-                })
-            })
-            .collect::<Result<_>>()?;
-    Ok(Object {
-        stack: stack.restore(ObjectRows::new(&raw), stack_output)?,
-        name,
-        symbols,
-        imports: bindings,
-        sections,
-        archive,
-        kind,
-    })
+
+    unsafe extern "C" fn section(context: *mut c_void, name: ReadBytes, body: ReadBytes, flags: u64, zero_fill: usize) {
+        let owner = unsafe { &mut *context.cast::<Self>() };
+        let bytes = if zero_fill == 0 {
+            SectionData::Initialized(Bytes::from_coff(owner.reader.bytes, unsafe { body.borrowed() }))
+        } else {
+            SectionData::ZeroFill(zero_fill)
+        };
+        owner.sections.push(Section {
+            associated: Vec::new(), layout: None, name: unsafe { validated_text(name) }.to_owned(),
+            bytes, flags: flags as u32, relocations: Vec::new(),
+        });
+    }
+
+    unsafe extern "C" fn associate(context: *mut c_void, parent: usize, child: usize) {
+        let owner = unsafe { &mut *context.cast::<Self>() };
+        owner.sections[parent].associated.push(child);
+    }
+
+    unsafe extern "C" fn relocation(
+        context: *mut c_void, section: usize, offset: usize, kind: u32, value: ObjectTarget<'input>,
+    ) {
+        let owner = unsafe { &mut *context.cast::<Self>() };
+        let target = match value.kind {
+            ObjectTargetKind::Section => Target::Section(value.section, value.value as u32),
+            ObjectTargetKind::Import => {
+                let key = unsafe { value.import_key() };
+                Target::Import(Import { dll: key.dll().to_owned(), name: key.symbol().to_owned() })
+            }
+            ObjectTargetKind::Symbol => Target::Symbol(unsafe { validated_text(value.name) }.to_owned()),
+        };
+        owner.sections[section].relocations.push(Relocation { offset, kind: kind as u16, target });
+    }
+
+    unsafe extern "C" fn relocated(context: *mut c_void, section: usize) -> RestoreRelocations {
+        let owner = unsafe { &*context.cast::<Self>() };
+        let records = &owner.sections[section].relocations;
+        RestoreRelocations { values: records.as_ptr(), count: records.len() }
+    }
+
+    unsafe extern "C" fn bind_import(context: *mut c_void, name: ReadBytes, native: u32) -> u32 {
+        let owner = unsafe { &*context.cast::<Self>() };
+        let bindings = &mut unsafe { &mut *owner.metadata }.bindings;
+        let name = unsafe { validated_text(name) };
+        if native != 0 {
+            bindings.entry(name.to_owned()).or_default();
+            1
+        } else {
+            u32::from(bindings.contains_key(name))
+        }
+    }
+
+    unsafe extern "C" fn take_contract(context: *mut c_void, name: ReadBytes) -> u32 {
+        let owner = unsafe { &mut *context.cast::<Self>() };
+        let metadata = unsafe { &mut *owner.metadata };
+        owner.contract = metadata.bindings.remove_entry(unsafe { validated_text(name) });
+        u32::from(owner.contract.is_some())
+    }
+
+    unsafe extern "C" fn definition(context: *mut c_void, symbol: ObjectSymbol<'input>, section: usize, native: u32) {
+        let owner = unsafe { &mut *context.cast::<Self>() };
+        let (name, contract) = if native != 0 {
+            (unsafe { symbol.validated_name() }.to_owned(), Vec::new())
+        } else {
+            owner.contract.take().unwrap()
+        };
+        owner.symbols.push(Symbol {
+            definition: Definition { name, section, value: symbol.value, function: symbol.is_function() },
+            contract,
+        });
+    }
+
+    unsafe extern "C" fn stack(context: *mut c_void) -> RestoreStack {
+        let owner = unsafe { &mut *context.cast::<Self>() };
+        let stack = &mut unsafe { &mut *owner.metadata }.stack;
+        owner.positions = vec![[0; 9]; stack.frames.len()];
+        RestoreStack {
+            frames: stack.frames.as_mut_ptr(), count: stack.frames.len(),
+            calls: stack.calls.as_mut_ptr(), nodes: owner.positions.as_mut_ptr(),
+        }
+    }
+
+    unsafe extern "C" fn frame(context: *mut c_void, frame: MetadataReadFrame) {
+        let owner = unsafe { &mut *context.cast::<Self>() };
+        owner.stack.push(stack::Frame {
+            name: unsafe { validated_text(frame.name) }.to_owned(),
+            coff: (frame.has_coff != 0).then_some((frame.section as usize, frame.start as u32)),
+            local: frame.local as u32,
+            calls: Vec::with_capacity(frame.calls as usize),
+        });
+    }
+
+    unsafe extern "C" fn call(context: *mut c_void, call: MetadataReadCall) {
+        let owner = unsafe { &mut *context.cast::<Self>() };
+        let call = match call.kind {
+            ReadCallKind::Reference => stack::Call::Reference { relocation: call.offset as usize, tail: false },
+            ReadCallKind::Tail => stack::Call::Reference { relocation: call.offset as usize, tail: true },
+            ReadCallKind::Indirect => stack::Call::Indirect,
+            ReadCallKind::Unreported => stack::Call::Unreported(unsafe { validated_text(call.reason) }.to_owned()),
+        };
+        owner.stack.last_mut().unwrap().calls.push(call);
+    }
+}
+
+impl Reader<'_, super::ObjectBytes> {
+    fn restore<Bytes: super::ReadSection>(&self, native: Option<&str>,
+        reuse: Option<(Metadata<'_>, Vec<String>)>, stack_output: bool,
+    ) -> Result<Object<Bytes>> {
+        let (reused, libraries) = match reuse {
+            Some((reused, libraries)) => (Some(reused), libraries),
+            None => (None, Vec::new()),
+        };
+        let mut output = MetadataOutput { names: MetadataNames { libraries, ..Default::default() }, ..Default::default() };
+        let metadata: *mut c_void = std::ptr::from_mut(&mut output).cast();
+        let mut owner = ObjectOwner {
+            reader: self, metadata: metadata.cast(), raw: Vec::new(), primary: Vec::new(),
+            definitions: Vec::new(), sections: Vec::new(), symbols: Vec::new(), archive: None,
+            contract: None, stack: Vec::new(), positions: Vec::new(),
+        };
+        let source = RestoreSource {
+            input: ReadBytes::new(self.bytes.as_ref()),
+            headers: ReadBytes::new(self.headers),
+            native_name: native.map_or_else(ReadBytes::default, |name| ReadBytes::new(name.as_bytes())),
+            reused_prefix: reused.as_ref().map_or(std::ptr::null(), |meta| &raw const meta.prefix),
+            reused_cursor: reused.as_ref().map_or_else(|| MetadataReadCursor::new(&[]), Metadata::bindings_cursor),
+            format: u64::from(FORMAT), relocation_stride: size_of::<Relocation>(), stack_output: u32::from(stack_output),
+        };
+        let mut invalid = None;
+        let status = unsafe {
+            restore_object(source, owner.sink(&mut invalid),
+                MetadataOutput::name_sink(metadata), MetadataOutput::receiver(metadata))
+        };
+        status.format.check()?;
+        status.object.check()?;
+        status.metadata.check()?;
+        if let Some(error) = invalid { return Err(error.into()); }
+        output.check()?;
+
+        let (name, kind) = output.identity.unwrap();
+        let archive = owner.archive.map(|bytes| Archive {
+            bytes, libraries: output.names.libraries, exports: output.names.exports, resources: output.resources,
+        });
+        Ok(Object {
+            name, kind, archive, symbols: owner.symbols, imports: output.bindings,
+            sections: owner.sections, stack: owner.stack,
+        })
+    }
 }
 
 pub(super) mod facts;

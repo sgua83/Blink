@@ -31,6 +31,29 @@ extern "C" MetaBinding binding(inout MetaCursor cursor) on cpu;
 extern "C" MetaFrame frame(inout MetaCursor cursor) on cpu;
 extern "C" MetaCall call(inout MetaCursor cursor) on cpu;
 
+// Recovery consumes the original cursor and writes through the owning value operations.
+struct MetaRecovery { u32 error; u32 complete; };
+struct MetaReceiver {
+    address context;
+    cfn<u32,address,MetaHeader> kind;
+    cfn<u32,address,ReadBytes> valid_text;
+    cfn<u32,address,MetaBinding,u32> binding;
+    cfn<void,address,ReadBytes,MetaResourceBody> resource;
+    cfn<void,address,ReadBytes> code;
+    cfn<void,address,MetaFrame> frame;
+    cfn<void,address,MetaCall> call;
+};
+extern "C" u32 restore_kind(MetaHeader header, MetaReceiver sink) on cpu
+    requires nonzero(sink.kind) requires nonzero(sink.valid_text);
+
+extern "C" MetaRecovery restore_bindings(inout MetaCursor cursor, u64 count, u32 same_producer,
+    address context, cfn<u32,address,MetaBinding,u32> consume) on cpu requires nonzero(consume);
+extern "C" MetaRecovery restore_metadata(inout MetaCursor cursor, MetaPrefix fields, u32 archive,
+    u32 same_producer, MetaReceiver sink) on cpu
+    requires nonzero(sink.kind) requires nonzero(sink.valid_text) requires nonzero(sink.binding)
+    requires nonzero(sink.resource) requires nonzero(sink.code) requires nonzero(sink.frame)
+    requires nonzero(sink.call);
+
 struct BuildImage {ReadBytes identity;ReadBytes image;u32 status;};
 extern "C" BuildImage read_build_image(ReadBytes input,u64 magic) on cpu;
 
