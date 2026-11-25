@@ -258,16 +258,16 @@ void directory_member_put(address library,u64 index,LibraryMember member) on cpu
 address directory_symbols(address library) on cpu {
     return unsafe_address(address_bits(library)+unsafe_position<LibraryDirectory>(library).symbol_offset);
 }
-ArchiveSymbol directory_symbol(address library,u64 index) on cpu {
-    return symbol_at(directory_symbols(library),index);
-}
-u64 directory_symbol_position(address library,u64 count,ArchiveSymbol name) on cpu {
+u64 directory_body_start(address symbols,u64 count,ArchiveSymbol name) on cpu {
     u64 first=0u64;u64 end=count;
     while(first<end){
         u64 middle=first+(end-first)/2u64;
-        if(compare_names(directory_symbol(library,middle),name)<i32(0)){first=middle+1u64;}else{end=middle;}
+        ArchiveSymbol candidate=symbol_at(symbols,middle);
+        i32 order=compare_names(candidate,name);
+        if(order==i32(0)){return candidate.member+MEMBER_HEADER_BYTES;}
+        if(order<i32(0)){first=middle+1u64;}else{end=middle;}
     }
-    return first;
+    return 0u64;
 }
 struct SymbolOrder { u64 count; bool unordered; };
 
@@ -308,23 +308,21 @@ extern "C" ArchiveSelection library_take(address library,address name,u64 length
     ArchiveRange empty=ArchiveRange(0u64,0u64);
     ArchiveReadMember missing=ArchiveReadMember(empty,empty);
     ArchiveSymbol key=ArchiveSymbol(name,length,0u64);
-    u64 symbol=directory_symbol_position(library,value.symbol_count,key);
-    if(symbol==value.symbol_count||compare_names(directory_symbol(library,symbol),key)!=i32(0)){return ArchiveSelection(missing,0);}
-    // The COFF directory names the physical header. The row retains its body range.
-    u64 body_start=directory_symbol(library,symbol).member+MEMBER_HEADER_BYTES;
+    u64 body_start=directory_body_start(directory_symbols(library),value.symbol_count,key);
+    if(body_start==0u64){return ArchiveSelection(missing,0);}
     u64 first=0u64;u64 end=value.member_count;
     while(first<end){
         u64 middle=first+(end-first)/2u64;
-        u64 candidate=unsafe_position<LibraryMember>(directory_member_address(library,middle)).member.body.start;
+        address slot=directory_member_address(library,middle);
+        u64 candidate=unsafe_position<LibraryMember>(slot).member.body.start;
+        if(candidate==body_start){
+            if(unsafe_position<LibraryMember>(slot).taken!=0){return ArchiveSelection(missing,0);}
+            unsafe_position<LibraryMember>(slot).taken=1;
+            return ArchiveSelection(unsafe_position<LibraryMember>(slot).member,1);
+        }
         if(candidate<body_start){first=middle+1u64;}else{end=middle;}
     }
-    if(first==value.member_count){return ArchiveSelection(missing,2);}
-    address slot=directory_member_address(library,first);
-    LibraryMember selected=unsafe_position<LibraryMember>(slot);
-    if(selected.member.body.start!=body_start){return ArchiveSelection(missing,2);}
-    if(selected.taken!=0){return ArchiveSelection(missing,0);}
-    unsafe_position<LibraryMember>(slot).taken=1;
-    return ArchiveSelection(selected.member,1);
+    return ArchiveSelection(missing,2);
 }
 
 extern "C" void library_destroy(address library) on cpu {free(library);}
