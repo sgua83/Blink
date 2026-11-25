@@ -20,15 +20,16 @@ struct SelectImport {BindingBytes name;BindingBytes contract;};
 struct SelectExport {BindingBytes name;u64 keep;};
 struct SelectFrame {u64 section;u64 present;u64 keep;u64 mapping;};
 struct SelectLocal {BindingBytes slot;BindingBytes name;};
+struct SelectRuntime {BindingBytes name;u64 used;};
 struct SelectRoot {BindingBytes name;BindingBytes contract;};
 extern "C" u64 bind_root_contracts(address roots,u64 count,address context,u64 sources,
     cfn<BindingBytes,address,u64,BindingBytes> lookup) on cpu requires nonzero(lookup);
 struct SelectView {
     address objects;u64 object_count;address sections;u64 section_count;address relocations;
     address symbols;address imports;address exports;address code;address frames;address nodes;address pending;
-    address locals;address runtime;address archives;u64 library_count;
+    address locals;address runtime;u64 runtime_count;address archives;u64 library_count;
 };
-struct SelectParams {u64 native_mode;address roots;u64 root_count;u64 types;u64 programs;BindingBytes runtime_library;address runtime_symbols;u64 runtime_symbol_count;};
+struct SelectParams {u64 native_mode;address roots;u64 root_count;u64 types;u64 programs;BindingBytes runtime_library;};
 struct SelectReply {SelectView view;u64 object;u64 error;};
 struct SelectResource {address archives;u64 archive_count;address runtime;u64 runtime_count;address locals;u64 local_count;u64 types;u64 programs;};
 enum EntryProduct:u32 { None=0; Pe=1; HostApplication=2; Dll=3; DllWithoutArchive=4; };

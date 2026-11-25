@@ -8,7 +8,14 @@ use crate::ast::Target;
 pub const ABI: &[u8; 8] = b"BLRI\x34\0\0\0";
 pub const RUNTIME_LIBRARY: &str = "@blink.application@";
 // 非根资源静态包装声明的原C ABI，模块专属索引符号仍由原链接器绑定。
-pub(crate) const MODULE_RUNTIME_SYMBOLS: &[&str] = &["blink_allocate", "blink_run", "blink_complete_field", "blink_task_start", "blink_task_wait"];
+// Native linking emits the used symbols in byte order.
+pub(crate) const MODULE_RUNTIME_SYMBOLS: &[&str] = &[
+    "blink_allocate",
+    "blink_complete_field",
+    "blink_run",
+    "blink_task_start",
+    "blink_task_wait",
+];
 mod device_requirements;
 mod program_layout;
 mod execution_plan;

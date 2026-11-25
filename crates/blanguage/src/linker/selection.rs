@@ -24,6 +24,8 @@ struct ExportView {name:Bytes,keep:u64}
 struct FrameView {section:u64,present:u64,keep:u64,mapping:u64}
 #[derive(Clone,Copy)]#[repr(C)]
 struct LocalView {slot:Bytes,name:Bytes}
+#[repr(C)]
+struct RuntimeView {name:Bytes,used:u64}
 #[derive(Clone,Copy)]#[repr(C)]
 pub(crate) struct RootView<'a> {
     name: Bytes,
@@ -69,14 +71,14 @@ struct View {
     objects:*mut ObjectView,object_count:u64,sections:*mut SectionView,section_count:u64,
     relocations:*mut RelocationView,symbols:*mut SymbolView,imports:*mut ImportView,
     exports:*mut ExportView,code:*mut Bytes,frames:*mut FrameView,nodes:*mut [u64;9],pending:*mut u64,
-    locals:*mut LocalView,runtime:*mut Bytes,archives:*mut u64,library_count:u64,
+    locals:*mut LocalView,runtime:*mut RuntimeView,runtime_count:u64,archives:*mut u64,library_count:u64,
 }
 #[derive(Clone,Copy)]#[repr(C)]
-struct Params<'a> {native_mode:u64,roots:*const RootView<'a>,root_count:u64,types:u64,programs:u64,runtime_library:Bytes,runtime_symbols:*const Bytes,runtime_symbol_count:u64}
+struct Params<'a> {native_mode:u64,roots:*const RootView<'a>,root_count:u64,types:u64,programs:u64,runtime_library:Bytes}
 #[derive(Clone,Copy)]#[repr(C)]
 struct Reply {view:View,object:u64,error:u64}
 #[derive(Clone,Copy)]#[repr(C)]
-struct ResourceRequest {archives:*const u64,archive_count:u64,runtime:*const Bytes,runtime_count:u64,locals:*const LocalView,local_count:u64,types:u64,programs:u64}
+struct ResourceRequest {archives:*const u64,archive_count:u64,runtime:*const RuntimeView,runtime_count:u64,locals:*const LocalView,local_count:u64,types:u64,programs:u64}
 #[derive(Clone,Copy)]#[repr(C)]
 struct SelectionResult {error:u64,name:Bytes,owner:Bytes,entry:u64,plan:EntryPlan}
 type Extract=unsafe extern "C" fn(*mut c_void,u64,Bytes)->Reply;
@@ -90,19 +92,16 @@ unsafe extern "C" {
 fn borrowed(bytes:&[u8])->Bytes {Bytes{bytes:bytes.as_ptr(),length:bytes.len() as u64}}
 fn text(bytes:&Bytes)->&str {unsafe{std::str::from_utf8_unchecked(std::slice::from_raw_parts(bytes.bytes,bytes.length as usize))}}
 struct NativeWork {
-    runtime_symbols: Vec<Bytes>,
     locals: Vec<MaybeUninit<LocalView>>,
-    runtime: Vec<MaybeUninit<Bytes>>,
+    runtime: Vec<RuntimeView>,
     archives: Vec<MaybeUninit<u64>>,
     slots: Vec<String>,
 }
 impl NativeWork {
     fn new() -> Self {
-        let runtime_symbols: Vec<_> = crate::resource::MODULE_RUNTIME_SYMBOLS.iter()
-            .map(|name| Bytes::new(name)).collect();
-        // The selector emits each supported runtime symbol at most once.
-        let runtime = vec![MaybeUninit::uninit(); runtime_symbols.len()];
-        Self { runtime_symbols, locals: Vec::new(), runtime, archives: Vec::new(), slots: Vec::new() }
+        let runtime = crate::resource::MODULE_RUNTIME_SYMBOLS.iter()
+            .map(|name| RuntimeView { name: Bytes::new(name), used: 0 }).collect();
+        Self { locals: Vec::new(), runtime, archives: Vec::new(), slots: Vec::new() }
     }
 }
 struct Context<'a, Payload> {
@@ -149,7 +148,12 @@ impl<'a, Payload> Context<'a, Payload> {
                 let(kind,section,name,dll)=match &relocation.target{
                     Target::Section(section,_)=>(0,*section as u64,empty,empty),
                     Target::Symbol(name)=>(1,0,Bytes::new(name),empty),
-                    Target::Import(import)=>(2,0,Bytes::new(&import.name),Bytes::new(&import.dll)),
+                    Target::Import(import)=>{
+                        if let Some(work) = &mut self.native {
+                            work.locals.push(MaybeUninit::uninit());
+                        }
+                        (2,0,Bytes::new(&import.name),Bytes::new(&import.dll))
+                    },
                 };
                 self.relocations.push(RelocationView{kind,section,name,dll,rewrite:0});
             }
@@ -176,11 +180,9 @@ impl<'a, Payload> Context<'a, Payload> {
         let definitions = self.symbols.len();
         let relocations = self.relocations.len();
         let nodes = if let Some(work) = &mut self.native {
-            // Keep written prefixes across extraction. B supplies the initialized ranges to the resource consumer.
-            work.locals.resize_with(relocations, MaybeUninit::uninit);
             work.archives.resize_with(self.objects.len(), MaybeUninit::uninit);
-            // Local slots come from imports and runtime names from symbol relocations.
-            definitions + relocations
+            // A local slot and its tree node can only come from an import relocation.
+            definitions + work.locals.len()
         } else {
             // Export filtering reuses the definition tree after selection.
             definitions.max(relocations)
@@ -190,14 +192,14 @@ impl<'a, Payload> Context<'a, Payload> {
         self.pending.resize_with(self.sections.len(), MaybeUninit::uninit);
     }
     fn view(&mut self)->View {
-        let (locals, runtime, archives) = self.native.as_mut().map_or(
-            (std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut()),
-            |work| (work.locals.as_mut_ptr().cast(), work.runtime.as_mut_ptr().cast(), work.archives.as_mut_ptr().cast()),
+        let (locals, runtime, runtime_count, archives) = self.native.as_mut().map_or(
+            (std::ptr::null_mut(), std::ptr::null_mut(), 0, std::ptr::null_mut()),
+            |work| (work.locals.as_mut_ptr().cast(), work.runtime.as_mut_ptr(), work.runtime.len() as u64, work.archives.as_mut_ptr().cast()),
         );
         View{objects:self.objects.as_mut_ptr(),object_count:self.objects.len() as u64,sections:self.sections.as_mut_ptr(),section_count:self.sections.len() as u64,
             relocations:self.relocations.as_mut_ptr(),symbols:self.symbols.as_mut_ptr(),imports:self.imports.as_mut_ptr(),
             exports:self.exports.as_mut_ptr(),code:self.code.as_mut_ptr(),frames:self.frames.as_mut().map_or(std::ptr::null_mut(), Vec::as_mut_ptr),nodes:self.nodes.as_mut_ptr().cast(),pending:self.pending.as_mut_ptr().cast(),
-            locals,runtime,archives,library_count:self.libraries.len() as u64}
+            locals,runtime,runtime_count,archives,library_count:self.libraries.len() as u64}
     }
     fn append(&mut self, object: Object<Payload>) -> u64 {
         let index = self.sources.len();
@@ -314,7 +316,7 @@ unsafe extern "C" fn binding<Payload: ReadSection>(context:*mut c_void,request:R
     let runtime=unsafe{std::slice::from_raw_parts(request.runtime,request.runtime_count as usize)};
     let locals=unsafe{std::slice::from_raw_parts(request.locals,request.local_count as usize)};
     let archives=archives.iter().map(|&index|context.sources[index as usize].archive().unwrap()).collect::<Vec<_>>();
-    let result=resources::resources(&archives,request.types as u32,request.programs as u32,runtime.iter().map(text),locals.iter().map(|row|(text(&row.slot),text(&row.name))),Some(crate::resource::ABI));
+    let result=resources::resources(&archives,request.types as u32,request.programs as u32,runtime.iter().filter(|row| row.used != 0).map(|row| text(&row.name)),locals.iter().map(|row|(text(&row.slot),text(&row.name))),Some(crate::resource::ABI));
     // The B selector requests generated bindings only for a native image.
     let result = result.map(|code| code.map(|code| Payload::from_generated(code.into_object())));
     context.reply(result)
@@ -333,8 +335,7 @@ pub(super) fn select<'a, Payload: ReadSection>(
         Roots::Symbols(roots,types,programs)=>(1,u64::from(types),u64::from(programs),roots,false),
     };
     let mut context=Context::new(inputs, stack_output, native_mode != 0);
-    let runtime = context.native.as_ref().map_or(&[][..], |work| work.runtime_symbols.as_slice());
-    let params=Params{native_mode,types,programs,roots:roots.as_ptr(),root_count:roots.len() as u64,runtime_library:Bytes::new(crate::application::RUNTIME_LIBRARY),runtime_symbols:runtime.as_ptr(),runtime_symbol_count:runtime.len() as u64};
+    let params=Params{native_mode,types,programs,roots:roots.as_ptr(),root_count:roots.len() as u64,runtime_library:Bytes::new(crate::application::RUNTIME_LIBRARY)};
     let input=context.view();
     let result=unsafe{choose(input,params,std::ptr::from_mut(&mut context).cast(), extract::<Payload>, native_archive::<Payload>, binding::<Payload>, slot::<Payload>)};
     match result.error{
