@@ -489,10 +489,6 @@ extern "C" void tile_input_words(Span tiles,Host host,address used,
  requires nonzero(host.inspect) requires nonzero(contains) requires nonzero(emit);
 
 // The bits select the stored low word and, for a wide value, the stored high word.
-extern "C" u32 tile_publish_parts(address used,usize tile,u32 word,u32 bytes,
- cfn<u32,address,usize,u32> ensures memory(read) contains) on cpu
- requires nonzero(contains);
-
 struct SubgroupFlags {
  u32 basic; u32 vote; u32 arithmetic; u32 ballot;
  u32 shuffle; u32 shuffle_relative; u32 extended_types;

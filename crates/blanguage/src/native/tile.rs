@@ -2,6 +2,7 @@
 use super::*;
 use crate::native::{ParallelRangePart, TileCollectivePart};
 use super::allocation::Location;
+use std::ffi::c_void;
 use crate::builtin_types::ScalarEncoding;
 
 #[repr(C)]
@@ -43,11 +44,33 @@ struct TilePublishCode {
     high_store: u64,
 }
 
+#[repr(C)]
+struct TilePublishField {
+    input: TilePublishInput,
+    word: u32,
+    value: Reg,
+    scalar_origin: *const Scalar,
+}
+
+type PublishSlot = *mut c_void;
+
+#[repr(C)]
+struct TilePublishHost {
+    reserve: unsafe extern "C" fn(PublishSlot, usize) -> NativeCodeBuffer,
+    commit: unsafe extern "C" fn(PublishSlot, usize),
+    next: unsafe extern "C" fn(PublishSlot) -> TilePublishField,
+    observe: unsafe extern "C" fn(PublishSlot, usize, usize, TilePublishCode, TilePublishField),
+}
+
+struct TilePublish<'a, 'stage> {
+    emitter: &'a mut Emitter<'stage>,
+    values: std::slice::Iter<'a, (u32, Reg)>,
+    tile: usize,
+}
+
 unsafe extern "C" {
-    #[link_name = "bootstrap.x64_instruction::tile_publish_value"]
-    fn encode_tile_publish_value(input: TilePublishInput, output: *mut u8) -> TilePublishCode;
-    #[link_name = "bootstrap.x64_instruction::tile_lane_pointer"]
-    fn encode_tile_lane_pointer(base_offset: u32, output: *mut u8) -> u64;
+    #[link_name = "bootstrap.x64_instruction::emit_tile_publish"]
+    fn emit_tile_publish(context: PublishSlot, base_offset: u32, host: TilePublishHost);
     #[link_name = "bootstrap.x64_instruction::tile_lane"]
     fn encode_tile_lane(width: u32, output: *mut u8) -> u64;
     #[link_name = "bootstrap.x64_instruction::tile_collective"]
@@ -57,9 +80,6 @@ unsafe extern "C" {
 impl Emitter<'_> {
     fn tile_length_slot(&self) -> u32 {
         self.frame.end as u32
-    }
-    fn tile_base_slot(&self) -> u32 {
-        self.tile_length_slot() + 4
     }
     pub(super) fn shared_stream(&self, word: SharedWord) -> u32 {
         self.frame.tile_shared[&word.aligned()]
@@ -72,72 +92,36 @@ impl Emitter<'_> {
         self.emit_bytes(16, |output| unsafe { encode_tile_lane(width, output) });
         self.store(dst);
     }
-    fn tile_lane_pointer(&mut self) {
-        let base_offset = self.tile_base_slot();
-        self.emit_bytes(16, |output| unsafe { encode_tile_lane_pointer(base_offset, output) });
-    }
-
     pub(super) fn private_stream(&self, slot: PrivateSlot) -> u32 {
         self.frame.tile_private[&slot]
     }
 
     pub(super) fn publish_values(&mut self, publication: &Publication) {
-        let stage = self.stage;
-        let used = self.used_tile_words;
-        let tile = publication.tile;
-        let mut values = publication.values.iter().filter_map(|&(word, value)| {
-            let scalar = stage.registers[value];
-            let parts = crate::ir::dataflow::publish_parts(used, tile, word, scalar.size());
-            (parts != 0).then(|| {
-                let low = (parts & 1 != 0).then_some(SharedWord::Published { tile, word });
-                let high = (parts & 2 != 0).then(|| SharedWord::Published { tile, word: word + 4 });
-                (word, value, scalar, low, high)
-            })
-        }).peekable();
-        if values.peek().is_none() {
-            return;
-        }
-        let start = self.code.len();
-        self.tile_lane_pointer();
-        self.parallel_abi(start, ParallelRangePart::TilePublishPointer { tile });
-        for (word, value, scalar, low, high) in values {
-            let low = low.map(|field| self.shared_stream(field) + word % 4);
-            let high = high.map(|field| self.shared_stream(field) + word % 4);
-            let input = TilePublishInput {
-                location: self.location(value).into(),
-                scalar: scalar.into(),
-                low_offset: low.unwrap_or(u32::MAX),
-                high_offset: high.unwrap_or(u32::MAX),
-            };
-            let start = self.code.len();
-            self.code.reserve(48);
-            let encoding = unsafe {
-                let output = self.code.as_mut_ptr().add(start);
-                let encoding = encode_tile_publish_value(input, output);
-                self.code.set_len(start + encoding.length as usize);
-                encoding
-            };
-            let value_end = start + encoding.value_end as usize;
-            let high_start = start + encoding.high_start as usize;
-            let high_store = start + encoding.high_store as usize;
-            self.parallel_abi_range(start..value_end, ParallelRangePart::TilePublishLoad {
-                tile, word, value, scalar,
+        let base_offset = self.tile_length_slot() + 4;
+        let mut state = TilePublish {
+            emitter: self,
+            values: publication.values.iter(),
+            tile: publication.tile,
+        };
+        unsafe {
+            emit_tile_publish(std::ptr::from_mut(&mut state).cast(), base_offset, TilePublishHost {
+                reserve: reserve_publish,
+                commit: commit_publish,
+                next: next_publish,
+                observe: observe_publish,
             });
-            if let Some(storage_offset) = low {
-                self.parallel_abi_range(value_end..high_start, ParallelRangePart::TilePublishStore {
-                    tile, word, value, scalar, part: 0, storage_offset, unit_bytes: scalar.size().min(4),
-                });
-            }
-            if let Some(storage_offset) = high {
-                self.parallel_abi_range(high_start..high_store, ParallelRangePart::TilePublishShift {
-                    tile, word, value, scalar, part: 1,
-                });
-                self.parallel_abi(high_store, ParallelRangePart::TilePublishStore {
-                    tile, word, value, scalar, part: 1, storage_offset, unit_bytes: 4,
-                });
-            }
         }
     }
+
+    fn publication_offset(&self, tile: usize, word: u32) -> u32 {
+        let field = SharedWord::Published { tile, word };
+        if self.used_tile_words.contains(&field) {
+            self.shared_stream(field) + word % 4
+        } else {
+            u32::MAX
+        }
+    }
+
     pub(super) fn tile_collective(&mut self, collective: &TileCollective) {
         for &(word, result) in &collective.results {
             let source = self.stage.shared_word(collective.tile, word);
@@ -199,5 +183,86 @@ impl Emitter<'_> {
                 self.parallel_abi(fill_start, range_part(TileCollectivePart::Fill { length_offset, loop_start }));
             }
         }
+    }
+}
+
+unsafe extern "C" fn reserve_publish(slot: PublishSlot, count: usize) -> NativeCodeBuffer {
+    let state = unsafe { &mut *slot.cast::<TilePublish<'_, '_>>() };
+    state.emitter.reserve_native_code(count)
+}
+
+unsafe extern "C" fn commit_publish(slot: PublishSlot, end: usize) {
+    let state = unsafe { &mut *slot.cast::<TilePublish<'_, '_>>() };
+    unsafe { state.emitter.commit_native_code(end) };
+}
+
+unsafe extern "C" fn next_publish(slot: PublishSlot) -> TilePublishField {
+    let state = unsafe { &mut *slot.cast::<TilePublish<'_, '_>>() };
+    let emitter = &*state.emitter;
+    for &(word, value) in state.values.by_ref() {
+        let scalar = &emitter.stage.registers[value];
+        let low_offset = emitter.publication_offset(state.tile, word);
+        let high_offset = if scalar.size() == 8 {
+            emitter.publication_offset(state.tile, word + 4)
+        } else {
+            u32::MAX
+        };
+        if low_offset != u32::MAX || high_offset != u32::MAX {
+            return TilePublishField {
+                input: TilePublishInput {
+                    location: emitter.location(value).into(),
+                    scalar: (*scalar).into(),
+                    low_offset,
+                    high_offset,
+                },
+                word,
+                value,
+                scalar_origin: scalar,
+            };
+        }
+    }
+    TilePublishField {
+        input: TilePublishInput {
+            location: Location::Immediate(0).into(),
+            scalar: Scalar::U32.into(),
+            low_offset: u32::MAX,
+            high_offset: u32::MAX,
+        },
+        word: 0,
+        value: 0,
+        scalar_origin: std::ptr::null(),
+    }
+}
+
+unsafe extern "C" fn observe_publish(
+    slot: PublishSlot, start: usize, value_start: usize, code: TilePublishCode, field: TilePublishField,
+) {
+    let state = unsafe { &mut *slot.cast::<TilePublish<'_, '_>>() };
+    let emitter = &mut *state.emitter;
+    let tile = state.tile;
+    let TilePublishField { input, word, value, scalar_origin } = field;
+    let scalar = unsafe { *scalar_origin };
+    if start != value_start {
+        emitter.parallel_abi_range(start..value_start, ParallelRangePart::TilePublishPointer { tile });
+    }
+    let value_end = value_start + code.value_end as usize;
+    let high_start = value_start + code.high_start as usize;
+    let high_store = value_start + code.high_store as usize;
+    emitter.parallel_abi_range(value_start..value_end, ParallelRangePart::TilePublishLoad {
+        tile, word, value, scalar,
+    });
+    let end = value_start + code.length as usize;
+    if value_end != high_start {
+        emitter.parallel_abi_range(value_end..high_start, ParallelRangePart::TilePublishStore {
+            tile, word, value, scalar, part: 0, storage_offset: input.low_offset, unit_bytes: scalar.size().min(4),
+        });
+    }
+    if high_store != end {
+        emitter.parallel_abi_range(high_start..high_store, ParallelRangePart::TilePublishShift {
+            tile, word, value, scalar, part: 1,
+        });
+        emitter.parallel_abi_range(high_store..end, ParallelRangePart::TilePublishStore {
+            tile, word, value, scalar, part: 1, storage_offset: input.high_offset, unit_bytes: 4,
+        });
     }
 }

@@ -522,6 +522,8 @@ struct SampleHost {
 extern "C" void texture_sample_ir(address coordinate, u32 dimensions, u64 lod, address result, SampleHost host) on cpu
     requires nonzero(host.instruction) requires nonzero(host.read_texture) requires nonzero(host.block);
 
+struct NativeCodeBuffer { address image; u64 end; };
+
 struct TilePublishInput {
     MoveLocation location;
     ScalarEncoding scalar;
@@ -543,10 +545,24 @@ extern "C" u64 tile_field_address(u32 width, u32 byte_offset, address output) on
 // The caller owns 48 bytes for reading the two shared words into the original value location.
 extern "C" u64 tile_read_split(MoveLocation dst, MoveLocation low, MoveLocation high, address output) on cpu;
 // R10 holds the lane base. Absent plane offsets are u32::MAX. The caller owns 48 bytes.
-extern "C" TilePublishCode tile_publish_value(TilePublishInput input, address output) on cpu;
+struct TilePublishField {
+    TilePublishInput input;
+    u32 word;
+    usize value;
+    address scalar_origin;
+};
 
-// The caller lends 16 bytes for the lane pointer.
-extern "C" u64 tile_lane_pointer(u32 base_offset, address output) on cpu;
+struct TilePublishHost {
+    cfn<NativeCodeBuffer,address,u64> reserve;
+    cfn<void,address,u64> commit;
+    cfn<TilePublishField,address> next;
+    cfn<void,address,u64,u64,TilePublishCode,TilePublishField> observe;
+};
+
+// Borrows the actual placed publication fields from the stack layout and emits in order.
+extern "C" void emit_tile_publish(address context, u32 base_offset, TilePublishHost host) on cpu
+    requires nonzero(host.reserve) requires nonzero(host.commit)
+    requires nonzero(host.next) requires nonzero(host.observe);
 
 struct TileCollectiveInput {
     u64 identity;
@@ -727,7 +743,6 @@ struct MapRangeInput {
     u32 tile_scope;
     u32 workgroup;
 };
-struct MapRangeBuffer { address image; u64 end; };
 struct MapRangeEntry { u64 end; u32 stack_bytes; };
 struct MapRangeObservation { u64 start; u64 end; usize index; u32 value; MapRangePart part; };
 struct TilePhaseView { Span code; Node step; };
@@ -746,7 +761,7 @@ struct MapRangeHost {
     address context;
     cfn<MapRangeEntry,address,u32> enter;
     cfn<u64,address,u32> leave;
-    cfn<MapRangeBuffer,address,u64> reserve;
+    cfn<NativeCodeBuffer,address,u64> reserve;
     cfn<void,address,u64> commit;
     cfn<u32,address,address> packet;
     cfn<u32,address,Span> scalar;

@@ -3297,7 +3297,7 @@ u64 tile_lane_index(u64 at, u32 base_offset) on cpu {
     return encode_operand_instruction(cursor, u16(0x2b), u8(0), false, u8(0), base);
 }
 
-extern "C" u64 tile_lane_pointer(u32 base_offset, address output) on cpu {
+u64 tile_lane_pointer(u32 base_offset, address output) on cpu {
     u64 start = address_bits(output);
     u64 cursor = tile_lane_index(start, base_offset);
     MoveLocation lane = MoveLocation(0u64, MOVE_MEMORY, u8(4), u8(0), u8(2));
@@ -3917,7 +3917,7 @@ extern "C" u64 tile_read_split(MoveLocation dst, MoveLocation low, MoveLocation 
     return cursor + copied.length - start;
 }
 
-extern "C" TilePublishCode tile_publish_value(TilePublishInput input, address output) on cpu {
+TilePublishCode tile_publish_value(TilePublishInput input, address output) on cpu {
     u64 start = address_bits(output);
     u32 size = input.scalar.width / 8;
     MoveEncoding loaded = copy_scalar_move(move_gpr(u8(0)), input.location, size,
@@ -3936,6 +3936,31 @@ extern "C" TilePublishCode tile_publish_value(TilePublishInput input, address ou
         cursor = store_bits(high_store, high, u8(0), 4);
     }
     return TilePublishCode(cursor - start, value_end - start, high_start - start, high_store - start);
+}
+
+extern "C" void emit_tile_publish(address context, u32 base_offset, TilePublishHost host) on cpu
+    requires nonzero(host.reserve) requires nonzero(host.commit)
+    requires nonzero(host.next) requires nonzero(host.observe) {
+    TilePublishField field = host.next(context);
+    if (address_bits(field.scalar_origin) == 0u64) { return; }
+
+    NativeCodeBuffer buffer = host.reserve(context, 64u64);
+    u64 start = buffer.end;
+    address output = unsafe_address(address_bits(buffer.image) + start);
+    u64 value_start = start + tile_lane_pointer(base_offset, output);
+
+    while (true) {
+        output = unsafe_address(address_bits(buffer.image) + value_start);
+        TilePublishCode encoding = tile_publish_value(field.input, output);
+        host.commit(context, value_start + encoding.length);
+        host.observe(context, start, value_start, encoding, field);
+        field = host.next(context);
+        if (address_bits(field.scalar_origin) == 0u64) { return; }
+
+        buffer = host.reserve(context, 48u64);
+        start = buffer.end;
+        value_start = start;
+    }
 }
 
 u64 tile_collective_store(u64 at, ScalarEncoding scalar, u32 plane_stride) on cpu {
@@ -5101,7 +5126,7 @@ void map_range_part(MapRangeHost host, MapRangePart part, u64 start, u64 end) on
 u64 close_map_loop(MapRangeHost host, u64 begin, u64 exit_field, u64 skip_field, u8 step,
     MapRangePart advance, MapRangePart back_edge) on cpu
     requires nonzero(host.reserve) requires nonzero(host.commit) requires nonzero(host.observe) {
-    MapRangeBuffer buffer = host.reserve(host.context, 8u64);
+    NativeCodeBuffer buffer = host.reserve(host.context, 8u64);
     RangeEnd range = finish_range(buffer.image, buffer.end, begin, exit_field, skip_field, step);
     host.commit(host.context, range.end);
     if (range.back_edge != buffer.end) {
@@ -5115,7 +5140,7 @@ bool emit_map_packet(MapRangeInput input, MapRangeHost host, u32 data, u32 strid
     requires nonzero(host.reserve) requires nonzero(host.commit)
     requires nonzero(host.packet) requires nonzero(host.observe) {
     bool sparse = input.selected != 0;
-    MapRangeBuffer buffer = host.reserve(host.context, sparse ? 96u64 : 16u64);
+    NativeCodeBuffer buffer = host.reserve(host.context, sparse ? 96u64 : 16u64);
     u64 begin = buffer.end;
     address output = unsafe_address(address_bits(buffer.image) + begin);
     u64 tail = 0u64;
@@ -5135,7 +5160,7 @@ bool emit_map_packet(MapRangeInput input, MapRangeHost host, u32 data, u32 strid
     close_map_loop(host, begin, tail, 0u64, sparse ? u8(0) : u8(4),
         MapRangePart::PacketAdvance, MapRangePart::PacketBackEdge);
     if (sparse) {
-        MapRangeBuffer tail_buffer = host.reserve(host.context, 16u64);
+        NativeCodeBuffer tail_buffer = host.reserve(host.context, 16u64);
         address tail_output = unsafe_address(address_bits(tail_buffer.image) + tail_buffer.end);
         u64 end = tail_buffer.end + sparse_tail(input.slots, tail_output);
         host.commit(host.context, end);
@@ -5146,7 +5171,7 @@ bool emit_map_packet(MapRangeInput input, MapRangeHost host, u32 data, u32 strid
 
 u64 move_tile_base(MapRangeHost host, u32 offset, u64 phase, bool restore) on cpu
     requires nonzero(host.reserve) requires nonzero(host.commit) requires nonzero(host.observe) {
-    MapRangeBuffer buffer = host.reserve(host.context, 24u64);
+    NativeCodeBuffer buffer = host.reserve(host.context, 24u64);
     MoveLocation memory = MoveLocation(u64(offset), MOVE_MEMORY, u8(4), NO_INDEX, u8(0));
     MoveLocation index = move_gpr(u8(3));
     address output = unsafe_address(address_bits(buffer.image) + buffer.end);
@@ -5161,7 +5186,7 @@ u64 move_tile_base(MapRangeHost host, u32 offset, u64 phase, bool restore) on cp
 void emit_map_tile_input(MapRangeInput input, MapRangeHost host) on cpu
     requires nonzero(host.reserve) requires nonzero(host.commit) requires nonzero(host.observe)
     requires nonzero(host.next_input) requires nonzero(host.observe_input) {
-    MapRangeBuffer buffer = host.reserve(host.context, 48u64);
+    NativeCodeBuffer buffer = host.reserve(host.context, 48u64);
     address output = unsafe_address(address_bits(buffer.image) + buffer.end);
     TileInputBoundaryCode boundary = tile_input_boundary(input.workgroup, input.slots, output);
     u64 end = buffer.end + boundary.length;
@@ -5190,7 +5215,7 @@ void emit_tile_private_values(MapRangeInput input, MapRangeHost host, u64 phase,
     requires nonzero(host.next_private) requires nonzero(host.observe_private) {
     TilePrivateSlot item = host.next_private(host.context, restore);
     if (address_bits(item.scalar_origin) == 0u64) { return; }
-    MapRangeBuffer buffer = host.reserve(host.context, 16u64);
+    NativeCodeBuffer buffer = host.reserve(host.context, 16u64);
     address output = unsafe_address(address_bits(buffer.image) + buffer.end);
     u64 end = buffer.end + tile_lane_pointer(input.slots + 4, output);
     host.commit(host.context, end);
@@ -5211,7 +5236,7 @@ void advance_tile_phase(MapRangeInput input, MapRangeHost host, u64 phase, u32 b
     requires nonzero(host.next_private) requires nonzero(host.observe_private) requires nonzero(host.reserve)
     requires nonzero(host.commit) requires nonzero(host.observe) {
     emit_tile_private_values(input, host, phase, false);
-    MapRangeBuffer buffer = host.reserve(host.context, 32u64);
+    NativeCodeBuffer buffer = host.reserve(host.context, 32u64);
     address output = unsafe_address(address_bits(buffer.image) + buffer.end);
     u64 end = buffer.end + tile_phase_advance(base, input.slots, buffer.end - begin, output);
     host.commit(host.context, end);
@@ -5263,7 +5288,7 @@ extern "C" u32 emit_map_range(MapRangeInput input, MapRangeHost host) on cpu
         return entry.stack_bytes;
     }
 
-    MapRangeBuffer buffer = host.reserve(host.context, 64u64);
+    NativeCodeBuffer buffer = host.reserve(host.context, 64u64);
     ScalarRangePrefix prefix = scalar_range_prefix(buffer.image, buffer.end, input.selected, data, stride, input.word);
     host.commit(host.context, prefix.end);
     u64 bounds_end = prefix.exit_field + 4u64;

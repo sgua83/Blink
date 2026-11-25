@@ -335,7 +335,7 @@ enum MapRangePart {
 }
 
 #[repr(C)]
-struct MapRangeBuffer { image: *mut u8, end: usize }
+pub(super) struct NativeCodeBuffer { image: *mut u8, end: usize }
 
 #[repr(C)]
 struct MapRangeEntry { end: usize, stack_bytes: u32 }
@@ -380,7 +380,7 @@ struct MapRangeHost {
     context: MapRangeSlot,
     enter: unsafe extern "C" fn(MapRangeSlot, u32) -> MapRangeEntry,
     leave: unsafe extern "C" fn(MapRangeSlot, u32) -> usize,
-    reserve: unsafe extern "C" fn(MapRangeSlot, usize) -> MapRangeBuffer,
+    reserve: unsafe extern "C" fn(MapRangeSlot, usize) -> NativeCodeBuffer,
     commit: unsafe extern "C" fn(MapRangeSlot, usize),
     packet: unsafe extern "C" fn(MapRangeSlot, *const std::ffi::c_void) -> u32,
     scalar: unsafe extern "C" fn(MapRangeSlot, Span) -> u32,
@@ -415,16 +415,25 @@ unsafe extern "C" fn map_range_leave(slot: MapRangeSlot, frame: u32) -> usize {
     range.emitter.code.len()
 }
 
-unsafe extern "C" fn map_range_reserve(slot: MapRangeSlot, count: usize) -> MapRangeBuffer {
+impl Emitter<'_> {
+    pub(super) fn reserve_native_code(&mut self, count: usize) -> NativeCodeBuffer {
+        self.code.reserve(count);
+        NativeCodeBuffer { image: self.code.as_mut_ptr(), end: self.code.len() }
+    }
+
+    pub(super) unsafe fn commit_native_code(&mut self, end: usize) {
+        unsafe { self.code.set_len(end) };
+    }
+}
+
+unsafe extern "C" fn map_range_reserve(slot: MapRangeSlot, count: usize) -> NativeCodeBuffer {
     let range = unsafe { &mut *slot.cast::<MapRange<'_, '_>>() };
-    let code = &mut range.emitter.code;
-    code.reserve(count);
-    MapRangeBuffer { image: code.as_mut_ptr(), end: code.len() }
+    range.emitter.reserve_native_code(count)
 }
 
 unsafe extern "C" fn map_range_commit(slot: MapRangeSlot, end: usize) {
     let range = unsafe { &mut *slot.cast::<MapRange<'_, '_>>() };
-    unsafe { range.emitter.code.set_len(end) };
+    unsafe { range.emitter.commit_native_code(end) };
 }
 
 unsafe extern "C" fn map_range_packet(slot: MapRangeSlot, packet: *const std::ffi::c_void) -> u32 {

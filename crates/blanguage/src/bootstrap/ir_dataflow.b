@@ -1837,14 +1837,6 @@ extern "C" void tile_input_words(Span tiles,Host host,address used,
  }
 }
 
-extern "C" u32 tile_publish_parts(address used,usize tile,u32 word,u32 bytes,
- cfn<u32,address,usize,u32> ensures memory(read) contains) on cpu
- requires nonzero(contains) {
- u32 parts=contains(used,tile,word)!=0 ? 1 : 0;
- if(bytes==8 && contains(used,tile,word+4)!=0){parts|=2;}
- return parts;
-}
-
 u32 collective_presence(Span code,Host host,bool include_subgroups) on cpu requires nonzero(host.inspect) {
  usize index=0u64;
  while(index<code.count) {

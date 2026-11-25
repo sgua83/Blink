@@ -771,23 +771,6 @@ unsafe extern "C" fn emit_input_fragment(
     output.entry((binding, word)).or_default().insert((byte, unit));
 }
 
-unsafe extern "C" {
-    #[link_name = "bootstrap.ir_dataflow::tile_publish_parts"]
-    fn b_tile_publish_parts(
-        used: *const c_void, tile: usize, word: u32, bytes: u32,
-        contains: unsafe extern "C" fn(*const c_void, usize, u32) -> u32,
-    ) -> u32;
-}
-
-pub(crate) fn publish_parts(used: &BTreeSet<SharedWord>, tile: usize, word: u32, bytes: u32) -> u32 {
-    unsafe { b_tile_publish_parts(ptr::from_ref(used).cast(), tile, word, bytes, contains_publish_word) }
-}
-
-unsafe extern "C" fn contains_publish_word(used: *const c_void, tile: usize, word: u32) -> u32 {
-    let used = unsafe { &*used.cast::<BTreeSet<SharedWord>>() };
-    u32::from(used.contains(&SharedWord::Published { tile, word }))
-}
-
 #[derive(Clone, Copy, Default)]
 #[repr(C)]
 struct SubgroupFlags {
