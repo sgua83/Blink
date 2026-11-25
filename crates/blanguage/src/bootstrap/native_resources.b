@@ -33,7 +33,7 @@ void sort(ResourceInput input) on cpu {
 }
 ResourcePlan invalid(u64 error,u64 at) on cpu {return ResourcePlan(0u64,0u64,0u64,0u64,error,at,0u64,0u64,0u64);}
 extern "C" ResourcePlan prepare(ResourceInput input) on cpu {
-    if(input.module_count==0u64){return invalid(0u64,0u64);}
+    // The caller invokes layout only for a nonempty module set.
     sort(input);
     BindingBytes abi=input.has_root_abi!=0u64 ? input.root_abi : module_at(input,0u64).abi;
     BindingBytes previous=BindingBytes(unsafe_address(0u64),0u64);

@@ -252,6 +252,7 @@ extern "C" SelectResult choose(SelectView input,SelectParams params,address cont
         }
     }
     bool bind=params.native_mode!=0u64;
+    bool has_active_resources=false;
     while(true){
         while(state.head<state.tail){u64 section_index=index_at(state.view.pending,state.head);state.head+=1u64;SelectSection section=section_at(state.view,section_index);u64 object_index=section.owner;SelectObject object=object_at(state.view,object_index);
             u64 a=0u64;
@@ -276,6 +277,7 @@ extern "C" SelectResult choose(SelectView input,SelectParams params,address cont
                             state.view.library_count=library_count;
                             object.active_archive=1u64;
                             object_put(state.view,object_index,object);
+                            has_active_resources=has_active_resources||object.has_resources!=0u64;
                         }
                         u64 definition=find(state.forest,state.forest.names,BindingKey(relocation.name,empty()));
                         SelectTarget target=resolve(state,definition,relocation.name,empty(),context,extract);if(target.result.error!=0u64){return target.result;}include(state,target.object,target.section);
@@ -310,7 +312,7 @@ extern "C" SelectResult choose(SelectView input,SelectParams params,address cont
                 r+=1u64;
             }
         }
-        if(!bind){break;}bind=false;
+        if(!bind||!has_active_resources){break;}bind=false;
         SelectResource request=SelectResource(state.view.runtime,state.view.runtime_count,state.view.locals,state.local_count,params.types,params.programs);
         SelectAppend appended=resources(context,address_of(state.view),request);
         if(appended==SelectAppend::Failed){return result(7u64,empty(),empty(),state.entry);}

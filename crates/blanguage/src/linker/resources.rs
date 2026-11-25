@@ -96,6 +96,7 @@ pub(super) fn resources<'archive, 'name>(
         prefix:ImportBytes::new(&row.prefix),abi:borrowed(&row.abi),types:row.types.into(),programs:row.programs.into(),
         type_value:0,program_value:0,factory_offset:0,type_offset:0,program_offset:0,
     }).collect::<Vec<_>>();
+    if modules.is_empty(){return Ok(None);}
     let mut locals=local_imports.into_iter().map(|(slot,name)|ResourceLocal{slot:ImportBytes::new(slot),name:ImportBytes::new(name),value:0}).collect::<Vec<_>>();
     let mut runtime=runtime.into_iter().map(|name|ResourceRuntime{name:ImportBytes::new(name),value:0,relocation:0}).collect::<Vec<_>>();
     let mut order=vec![0;modules.len()];
@@ -112,7 +113,6 @@ pub(super) fn resources<'archive, 'name>(
         3=>return Err("模块类型索引超出原生 ABI".into()),4=>return Err("模块程序索引超出原生 ABI".into()),
         5=>return Err("模块资源字段位置超出COFF格式".into()),code=>return Err(format!("模块资源绑定失败 {code}").into()),
     }
-    if plan.data==0{return Ok(None);}
     let data_length=usize::try_from(plan.data)?;let text_length=usize::try_from(plan.text)?;
     let mut data=Vec::with_capacity(data_length);let mut code=Vec::with_capacity(text_length);
     unsafe{resource_encode(input,ResourceOutput{data:data.as_mut_ptr(),text:code.as_mut_ptr()},plan);data.set_len(data_length);code.set_len(text_length);}
