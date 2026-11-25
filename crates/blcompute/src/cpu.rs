@@ -1144,10 +1144,14 @@ impl CpuCode {
         // 后续失败可能已有写入，不将未完成调用发布为完整保证。
         writing();
         let mut errors = Vec::new();
-        // Actual input facts move into this scope; declarations never create facts.
-        let mut input_domains = DomainRelations::Owned(input_domains);
+        // Only element entries can open a private frame. Keep its facts through the last such stage.
+        let mut input_domains = frame.and_then(|_| {
+            self.stages.iter().rposition(|code| matches!(code, StageCode::Element { .. }))
+        }).map(|last_stage| (last_stage, DomainRelations::Owned(input_domains)));
         for (stage_index, (stage, code)) in self.program.stages().iter().zip(&self.stages).enumerate() {
-            bindings::invalidate(&mut input_domains, &stage.write_regions, StorageSlots::Direct);
+            if let Some((_, domains)) = &mut input_domains {
+                bindings::invalidate(domains, &stage.write_regions, StorageSlots::Direct);
+            }
             let count = if let Some(prefix) = &stage.prefix {
                 unsafe {
                     buffers[prefix.binding]
@@ -1175,7 +1179,10 @@ impl CpuCode {
                     storage.try_reserve_exact(partial_words)?;
                     let partials = &mut storage.spare_capacity_mut()[..partial_words];
                     let mut ranges = RangeWork {
-                        frame: frame.map(|(definitions, offset, words, inputs)| (definitions, offset, words, inputs, input_domains.share())),
+                        frame: frame.map(|(definitions, offset, words, inputs)| {
+                            let facts = input_domains.as_mut().and_then(|(_, domains)| domains.share());
+                            (definitions, offset, words, inputs, facts)
+                        }),
                         entry: *main,
                         buffers: pointers.as_ptr(),
                         range_parameter_slot: self.program.buffers().len(),
@@ -1337,13 +1344,17 @@ impl CpuCode {
                     }
                 }
             }
-            if frame.is_some() {
-                input_domains.extend(stage.prefix_guarantees.iter().map(|relation|
+            if let Some((last_stage, domains)) = &mut input_domains {
+                if stage_index == *last_stage {
+                    input_domains = None;
+                    continue;
+                }
+                domains.extend(stage.prefix_guarantees.iter().map(|relation|
                     crate::DomainRelation::Prefix { domain:relation.domain,offset:relation.domain_region.unwrap_or((0,buffers[relation.domain].ty.size)).0,
                         bytes:relation.domain_region.unwrap_or((0,buffers[relation.domain].ty.size)).1,count:relation.count }));
                 for range in crate::bindings::produced_ranges(&stage.element_guarantees,
                     |binding| (binding, 0), |target| buffers[target].count) {
-                    crate::bindings::produced_element(&mut input_domains, range);
+                    crate::bindings::produced_element(domains, range);
                 }
             }
         }
