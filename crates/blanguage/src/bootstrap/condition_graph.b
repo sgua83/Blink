@@ -684,8 +684,9 @@ u32 internal_not_equal(address context,FactView fact,CrossScalars integers,Inter
  for(i in 0..4){
   address scalar=integers.values[i];InternalScalar info=host.scalar(scalar);
   BitRange left=left_zero!=0 ? BitRange(info.bias,info.bias) : internal_bounds(context,fact.first,scalar,info,host);
+  if(left.lower!=left.upper){continue;}
   BitRange right=right_zero!=0 ? BitRange(info.bias,info.bias) : internal_bounds(context,fact.second,scalar,info,host);
-  if(left.lower==left.upper&&right.lower==right.upper&&left.lower==right.lower){return 1;}
+  if(right.lower==right.upper&&left.lower==right.lower){return 1;}
  }
  return 0;
 }
