@@ -116,6 +116,17 @@ unsafe extern "C" fn name_field(names: *const c_void, index: usize) -> ByteField
     name.as_bytes().into()
 }
 
+pub(super) fn imported_function<'a, 'name>(
+    declarations: &'a crate::Declarations, symbol: &'name str,
+) -> Option<(&'name str, &'a crate::frontend::Definition, &'a [u8])> {
+    // Instances and domain entry points keep their full symbol within the declaring module.
+    let end = symbol.find(['<', '#']).unwrap_or(symbol.len());
+    let name = &symbol[..end];
+    let declaration = declarations.functions.get(name)?;
+    let contract = declaration.compiled.as_ref()?.get(symbol)?;
+    Some((name, declaration, contract))
+}
+
 fn build_symbol(declarations: &crate::Declarations, imported: Option<&crate::module::Imports>, symbol: &str)
     -> BuildSymbol
 {
@@ -124,19 +135,16 @@ fn build_symbol(declarations: &crate::Declarations, imported: Option<&crate::mod
         name: symbol.as_bytes().into(), contract: empty.into(), declaration: empty.into(),
         bound: 0, requirement: 0,
     };
-    // Instances and domain entry points use the original declaration name.
-    let end = symbol.find(['<', '#']).unwrap_or(symbol.len());
-    let name = &symbol[..end];
-    let declaration = declarations.functions.get(name);
-    let input = imported.and_then(|imports| imports.modules.values().find_map(|input| {
-        input.definitions.get(symbol).map(|contract| (input, contract))
-    }));
-    if let (Some(declaration), Some((input, contract))) = (declaration, input) {
+    if let Some(imported) = imported
+        && let Some((name, declaration, contract)) = imported_function(declarations, symbol)
+    {
         let span = declaration.function.span();
-        result.contract = contract.as_slice().into();
+        result.contract = contract.into();
         result.declaration = declaration.source.text[span.start..span.end].as_bytes().into();
         result.bound = 1;
-        result.requirement = match input.requirements.get(name) {
+        let requirement = imported.modules.get(&declaration.module)
+            .and_then(|provider| provider.requirements.get(name));
+        result.requirement = match requirement {
             None => 0,
             Some(crate::execution::Requirement::Invocation) => 1,
             Some(crate::execution::Requirement::Domain) => 2,

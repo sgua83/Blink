@@ -3,7 +3,7 @@
 use super::{EntryPlan, EntryProduct, Inputs, LibraryBinding, Result, Roots, Selected, Selection, Source, resources};
 use crate::object::{self, Object, Kind, Target, Library, ReadSection};
 use resources::ImportBytes as Bytes;
-use std::{collections::BTreeMap, ffi::c_void, marker::PhantomData, mem::MaybeUninit};
+use std::{ffi::c_void, marker::PhantomData, mem::MaybeUninit};
 #[derive(Clone,Copy)]#[repr(C)]
 struct ObjectView {
     kind:u64,name:Bytes,section_start:u64,section_count:u64,symbol_start:u64,symbol_count:u64,
@@ -38,27 +38,26 @@ unsafe extern "C" {
         lookup: unsafe extern "C" fn(*const c_void, usize, Bytes) -> Bytes) -> usize;
 }
 
-unsafe extern "C" fn lookup_contract(context: *const c_void, index: usize, name: Bytes) -> Bytes {
-    let contracts = unsafe { *context.cast::<&BTreeMap<String, Vec<u8>>>().add(index) };
-    contracts.get(text(&name)).map_or(
-        Bytes { bytes: std::ptr::null(), length: 0 },
-        |contract| borrowed(contract),
-    )
+unsafe extern "C" fn lookup_contract<'a, F>(context: *const c_void, index: usize, name: Bytes) -> Bytes
+where
+    F: Fn(usize, &str) -> Option<&'a [u8]>,
+{
+    let lookup = unsafe { &*context.cast::<F>() };
+    lookup(index, text(&name)).map_or(Bytes { bytes: std::ptr::null(), length: 0 }, borrowed)
 }
 
-pub(crate) fn bind_root_contracts<'a>(
-    names: Vec<&'a str>, sources: impl IntoIterator<Item = &'a BTreeMap<String, Vec<u8>>>,
-) -> std::result::Result<Vec<RootView<'a>>, String> {
+pub(crate) fn bind_root_contracts<'a, F>(
+    names: Vec<&'a str>, source_count: usize, lookup: F,
+) -> std::result::Result<Vec<RootView<'a>>, String>
+where
+    F: Fn(usize, &str) -> Option<&'a [u8]>,
+{
     let mut roots: Vec<_> = names.into_iter().map(|name| RootView {
         name: Bytes::new(name), contract: borrowed(&[]), owner: PhantomData,
     }).collect();
-    if roots.is_empty() {
-        return Ok(roots);
-    }
-    let sources: Vec<_> = sources.into_iter().collect();
     let missing = unsafe {
-        bind_native_roots(roots.as_mut_ptr(), roots.len(), sources.as_ptr().cast(), sources.len(),
-            lookup_contract)
+        bind_native_roots(roots.as_mut_ptr(), roots.len(), std::ptr::from_ref(&lookup).cast(),
+            source_count, lookup_contract::<F>)
     };
     if missing == 0 {
         Ok(roots)

@@ -102,7 +102,7 @@ fn compile_in(
                 let link = entry_link(&mut image);
                 if inputs.imports == references(&world.declarations, imported, link.as_ref(), &inputs.declarations) {
                     if imported.is_some() && let Some(link) = link
-                        && link_entry(link, dependencies, borrowed, &imports)?
+                        && link_entry(link, dependencies, borrowed, &world.declarations)?
                     {
                         let encoded = resource::compiler_output(&image);
                         write_artifact(&artifact, identity, &encoded)?;
@@ -138,7 +138,7 @@ fn compile_in(
     let link = entry_link(&mut image);
     let imports_identity = references(&world.declarations, imported, link.as_ref(), &declarations);
     if imported.is_some() && let Some(link) = link {
-        link_entry(link, dependencies, borrowed, &imports)?;
+        link_entry(link, dependencies, borrowed, &world.declarations)?;
     }
     let identity = identity::Inputs { source, imports: imports_identity, native: None, declarations }.encode();
     let encoded = resource::compiler_output(&image);
@@ -227,11 +227,13 @@ fn references(
 
 fn link_entry(
     link: ModuleLink<'_>, inputs: Vec<crate::object::Input>,
-    borrowed: &[&crate::object::Object], imports: &crate::module::Imports,
+    borrowed: &[&crate::object::Object], declarations: &crate::Declarations,
 ) -> std::io::Result<bool> {
-    let sources = imports.modules.values().map(|module| module.definitions.as_ref());
-    crate::native::program::link_inputs(link, inputs, borrowed, sources)
-        .map_err(std::io::Error::other)
+    crate::native::program::link_inputs(link, inputs, borrowed, |names| {
+        crate::linker::bind_root_contracts(names, 1, |_, name| {
+            identity::imported_function(declarations, name).map(|(_, _, contract)| contract)
+        })
+    }).map_err(std::io::Error::other)
 }
 
 #[repr(C)]

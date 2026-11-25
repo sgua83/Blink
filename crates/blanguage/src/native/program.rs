@@ -1,6 +1,6 @@
 //! 完整程序的机器码编译由编译器拥有；执行器只装载已生成的范围与集合入口。
 use super::*;
-use std::{collections::BTreeMap, ops::Deref};
+use std::ops::Deref;
 
 pub fn compile_program<P: Deref<Target = Program>>(program: P) -> Result<ProgramImage<P>, String> {
     crate::Compiler::available().map_err(|error| error.to_string())?.native(program)
@@ -57,9 +57,13 @@ impl crate::Compiler {
         self.execute(|worker| {
             let mut image = compile_in(worker, source)?;
             let link = image.module_link();
-            let imports = std::iter::once(&source.imports).chain(source.resources.iter()
-                .flat_map(|resources| &resources.programs).map(|(_, program)| &program.imports));
-            link_inputs(link, inputs, &[], imports)?;
+            link_inputs(link, inputs, &[], |names| {
+                let imports: Vec<_> = std::iter::once(&source.imports).chain(source.resources.iter()
+                    .flat_map(|resources| &resources.programs).map(|(_, program)| &program.imports)).collect();
+                crate::linker::bind_root_contracts(names, imports.len(), |index, name| {
+                    imports[index].get(name).map(Vec::as_slice)
+                })
+            })?;
             Ok::<_, String>(image)
         }).map_err(|error| error.to_string()).map(|mut image| {
             let modules = image.module_code.take();
@@ -82,9 +86,9 @@ pub(crate) struct ModuleLink<'a> {
 
 pub(crate) fn link_inputs<'a>(
     image: ModuleLink<'a>, inputs: Vec<crate::object::Input>, borrowed: &[&crate::object::Object],
-    sources: impl IntoIterator<Item = &'a BTreeMap<String, Vec<u8>>>,
+    bind_roots: impl FnOnce(Vec<&'a str>) -> Result<Vec<crate::linker::RootView<'a>>, String>,
 ) -> Result<bool, String> {
-    let roots = crate::linker::bind_root_contracts(image.external, sources)?;
+    let roots = if image.external.is_empty() { Vec::new() } else { bind_roots(image.external)? };
     let types = u32::try_from(image.types).map_err(|error| error.to_string())?;
     let programs = u32::try_from(image.programs).map_err(|error| error.to_string())?;
     let linked = crate::linker::native::modules(inputs, borrowed, &roots, &image.local, types, programs)
