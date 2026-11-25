@@ -400,6 +400,8 @@ void manifest_declarations<const Emit: u32>(inout ManifestWriter writer, BuildMa
         if (declaration.tag >= 4 && declaration.tag <= 6) {
             manifest_field<Emit>(writer, declaration.module_name);
             manifest_fields<Emit>(writer, declaration.imports, declaration.import_count, host.name);
+        } else if (declaration.tag == 8) {
+            manifest_field<Emit>(writer, declaration.module_name);
         }
         index += 1u64;
     }

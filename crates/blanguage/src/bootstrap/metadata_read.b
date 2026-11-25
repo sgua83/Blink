@@ -223,7 +223,7 @@ const u32 MANIFEST_DECLARATION = 13;
 const u32 MANIFEST_TRAILING = 14;
 
 // The first format error ends the cursor and prevents another record from reaching the receiver.
-struct ManifestScan { MetaCursor cursor; u32 status; address expected; bool same_source; };
+struct ManifestScan { MetaCursor cursor; u32 status; address expected; bool same_source; u32 version; };
 
 bool comparing_manifest(ManifestScan scan) on cpu {
     return scan.same_source && address_bits(scan.expected) != 0u64;
@@ -339,12 +339,14 @@ void manifest_declaration(inout ManifestScan scan, ManifestReceiver receiver) on
     requires nonzero(receiver.valid_text) requires nonzero(receiver.name)
     requires nonzero(receiver.declaration) requires nonzero(receiver.current_name) {
     u32 tag = u32(manifest_number(scan,4u64));
-    if (tag > 7) { scan.status = MANIFEST_DECLARATION; return; }
+    if (tag > 8 || (tag == 8 && scan.version < 13)) { scan.status = MANIFEST_DECLARATION; return; }
     ReadBytes name = manifest_text(scan,receiver);
     ReadBytes module_name = empty();
     if (tag >= 4 && tag <= 6) {
         module_name = manifest_text(scan,receiver);
         manifest_names(scan,receiver,false);
+    } else if (tag == 8) {
+        module_name = manifest_text(scan,receiver);
     }
     if (scan.status == 0 && scan.same_source) { receiver.declaration(receiver.context,ManifestVariant(name,module_name,tag)); }
 }
@@ -448,6 +450,6 @@ extern "C" ManifestReadResult read_manifest(ReadBytes input, u64 magic, Manifest
         return ManifestReadResult(identity,absent,absent,0,MANIFEST_ABSENT);
     }
     ReadBytes payload = ReadBytes(at(input.bytes,cursor.position),input.length-cursor.position);
-    ManifestScan scan = ManifestScan(MetaCursor(payload,0u64),0,expected,true);
+    ManifestScan scan = ManifestScan(MetaCursor(payload,0u64),0,expected,true,u32(magic>>32u64));
     return manifest_records(scan,receiver);
 }

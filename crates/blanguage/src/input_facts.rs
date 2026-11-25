@@ -75,12 +75,16 @@ fn encode(input: &InputFacts, artifact_sha256: &str) -> String {
             Declaration::TypeSet(name) => ("type_set", name, None),
             Declaration::External(name) => ("external", name, None),
             Declaration::Implementation(name) => ("implementation", name, None),
+            Declaration::CompiledContract { name, .. } => ("compiled_contract", name, None),
             Declaration::ValueName { name, module, imports } => ("value_name", name, Some((module, imports))),
             Declaration::RecordName { name, module, imports } => ("record_name", name, Some((module, imports))),
             Declaration::TypeSetName { name, module, imports } => ("type_set_name", name, Some((module, imports))),
         };
         out.push_str("{\"kind\":"); string(&mut out, kind);
         out.push_str(",\"name\":"); string(&mut out, name);
+        if let Declaration::CompiledContract { provider, .. } = declaration {
+            out.push_str(",\"provider\":"); string(&mut out, provider);
+        }
         if let Some((module, imports)) = context {
             out.push_str(",\"module\":"); string(&mut out, module);
             out.push_str(",\"imports\":[");

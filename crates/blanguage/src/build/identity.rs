@@ -11,6 +11,7 @@ pub enum Declaration {
     ValueName { name: String, module: String, imports: Vec<String> },
     RecordName { name: String, module: String, imports: Vec<String> },
     TypeSetName { name: String, module: String, imports: Vec<String> },
+    CompiledContract { name: String, provider: String },
 }
 impl Declaration {
     fn fields(&self) -> (u32, &str, Option<(&str, &[String])>) {
@@ -23,11 +24,13 @@ impl Declaration {
             Self::RecordName { name, module, imports } => (5, name, Some((module, imports))),
             Self::TypeSetName { name, module, imports } => (6, name, Some((module, imports))),
             Self::Implementation(name) => (7, name, None),
+            Self::CompiledContract { name, provider } => (8, name, Some((provider, &[]))),
         }
     }
 }
 
-const MAGIC: &[u8; 8] = b"BLBO\x0c\0\0\0";
+const MAGIC: &[u8; 8] = b"BLBO\x0d\0\0\0";
+const PREVIOUS_MAGIC: &[u8; 8] = b"BLBO\x0c\0\0\0";
 /// The original build request, not a target inferred from a file extension.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Selection {
@@ -144,7 +147,8 @@ fn build_symbol(declarations: &crate::Declarations, imported: Option<&crate::mod
 }
 
 fn digest_reference(
-    digest: &mut hash::Digest, declarations: &crate::Declarations, entry: &Declaration,
+    digest: &mut hash::Digest, declarations: &crate::Declarations,
+    imported: Option<&crate::module::Imports>, entry: &Declaration,
 ) {
     use crate::frontend::NameResolution;
     let (tag, name, query) = entry.fields();
@@ -159,6 +163,17 @@ fn digest_reference(
         execution: 0,
         resolution: NameQuery::Missing,
     };
+    if let Declaration::CompiledContract { provider, .. } = entry {
+        row.module_name = provider.as_bytes().into();
+        if let Some(bytes) = imported.and_then(|imports| imports.modules.get(provider))
+            .and_then(|module| module.definitions.get(name))
+        {
+            row.kind = BuildReferenceKind::Source;
+            row.value = bytes.as_slice().into();
+        }
+        unsafe { sha256_reference(digest, row, name_field) };
+        return;
+    }
     if let Some((module, imports)) = query {
         row.kind = BuildReferenceKind::Query;
         row.module_name = module.as_bytes().into();
@@ -198,7 +213,8 @@ fn digest_reference(
                 row.execution = definition.execution as u32;
                 (&definition.source, definition.function.span())
             }),
-        Declaration::ValueName { .. } | Declaration::RecordName { .. } | Declaration::TypeSetName { .. } => unreachable!(),
+        Declaration::ValueName { .. } | Declaration::RecordName { .. } | Declaration::TypeSetName { .. }
+        | Declaration::CompiledContract { .. } => unreachable!(),
     };
     if let Some((source, span)) = input {
         row.value = source.text[span.start..span.end].as_bytes().into();
@@ -221,7 +237,7 @@ pub(super) fn references<'a>(declarations: &crate::Declarations, imported: Optio
     }
     unsafe { sha256_reference_count(&mut digest, used.len()) };
     for entry in used {
-        digest_reference(&mut digest, declarations, entry);
+        digest_reference(&mut digest, declarations, imported, entry);
     }
     digest.finish()
 }
@@ -470,6 +486,7 @@ unsafe extern "C" fn collect_manifest_declaration(context: *mut c_void, variant:
         2 => Declaration::TypeSet(name),
         3 => Declaration::External(name),
         7 => Declaration::Implementation(name),
+        8 => Declaration::CompiledContract { name, provider: unsafe { own_manifest_text(variant.second) } },
         tag => {
             let module = unsafe { own_manifest_text(variant.second) };
             let imports = std::mem::take(&mut output.names);
@@ -499,8 +516,9 @@ fn read_manifest_fields(
         current_requirement: manifest_requirement,
     };
     // All incoming fields borrow the original bytes and live through this B call.
+    let magic = if expected.is_none() && bytes.starts_with(PREVIOUS_MAGIC) { PREVIOUS_MAGIC } else { MAGIC };
     let expected = expected.map_or(ptr::null(), ptr::from_ref);
-    let manifest = unsafe { read_manifest(bytes.into(), u64::from_le_bytes(*MAGIC), receiver, expected) };
+    let manifest = unsafe { read_manifest(bytes.into(), u64::from_le_bytes(*magic), receiver, expected) };
     match manifest.status {
         0 => {}
         1 => return Ok(None),

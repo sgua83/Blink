@@ -245,7 +245,12 @@ extern "C" void sha256_reference(inout DigestState state, BuildReference row,
         return;
     }
 
-    digest_reference_name(state, key_length, row.tag, row.name);
+    if (row.tag == 8) {
+        digest_reference_name(state, key_length + 8u64 + row.module_name.length, row.tag, row.name);
+        digest_field(state, row.module_name);
+    } else {
+        digest_reference_name(state, key_length, row.tag, row.name);
+    }
     if (row.kind == ReferenceKind::Implementation) {
         u8 execution = u8(row.execution);
         digest_field(state, DigestField(address_of(execution), 1u64));

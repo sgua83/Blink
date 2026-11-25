@@ -1876,6 +1876,12 @@ fn residency_contracts(
             let (definition, bytes) = supplied
                 .ok_or_else(||Diagnostic{source:module.units.values().find_map(|unit|unit.as_ref()).unwrap().source.clone(),span:Span::default(),code:"B270",message:format!("已编译模块没有位置合同定义 {callee}")})?;
             let contract=Contract::from_bytes(bytes).map_err(|error|Diagnostic{source:definition.source.clone(),span:definition.function.span(),code:"B270",message:format!("模块函数接口错误：{error}")})?;
+            if let Some(inputs) = &world.build_declarations {
+                inputs.borrow_mut().insert(crate::build::Declaration::CompiledContract {
+                    name: callee.clone(),
+                    provider: definition.module.clone(),
+                });
+            }
             if let Some(imports) = imports.as_deref_mut() {
                 imports.insert(callee.clone(), bytes.to_vec());
             }
