@@ -606,7 +606,9 @@ result<void,FileChangeError> change_file(address path,i32 information_class,
 }
 
 
-result<void,RenameError> rename_path(address source,UnitSpan target,bool replace_existing) on cpu {
+struct RenameInformation { address data; u32 bytes; };
+
+result<RenameInformation,RenameError> rename_information(UnitSpan target,bool replace_existing) on cpu {
     // FILE_RENAME_INFO has a 20-byte name offset on Windows x64.
     u64 name_bytes=target.length*2u64;
     u64 bytes=(name_bytes+29u64)&(0u64-8u64);
@@ -631,8 +633,22 @@ result<void,RenameError> rename_path(address source,UnitSpan target,bool replace
         put(name,index,current);
         index+=1u64;
     }
-    result<void,FileChangeError> outcome=change_file(source,i32(22),information,u32(bytes),35651584);
-    HeapFree(heap,0,information);
+    return Ok(RenameInformation(information,u32(bytes)));
+}
+
+result<void,RenameError> rename_open_file(handle file,UnitSpan target,bool replace_existing) on cpu {
+    let information=try(rename_information(target,replace_existing));
+    i32 applied=SetFileInformationByHandle(file,i32(22),information.data,information.bytes);
+    u32 status=applied==i32(0) ? GetLastError() : 0;
+    HeapFree(GetProcessHeap(),0,information.data);
+    if (applied==i32(0)) { return Err(RenameError::Change(FileChangeError::Apply(status))); }
+    return Ok();
+}
+
+result<void,RenameError> rename_path(address source,UnitSpan target,bool replace_existing) on cpu {
+    let information=try(rename_information(target,replace_existing));
+    result<void,FileChangeError> outcome=change_file(source,i32(22),information.data,information.bytes,35651584);
+    HeapFree(GetProcessHeap(),0,information.data);
     match (outcome) {
         Ok() { return Ok(); }
         Err(error) { return Err(RenameError::Change(error)); }

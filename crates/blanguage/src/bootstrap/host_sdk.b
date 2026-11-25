@@ -387,52 +387,45 @@ extern "C" LinkOutputResult deliver_link_output(UnitSpan path, UnitSpan parent, 
         ? LinkOutputFailure::MissingArchive : LinkOutputFailure::NoProduct);
 }
 
+u32 remove_open_file(handle file) on cpu {
+    // FILE_DISPOSITION_INFO_EX: delete the file, using POSIX semantics and ignoring its read-only attribute.
+    u32 disposition = 19;
+    i32 removed = SetFileInformationByHandle(file, i32(21), address_of(disposition), u32(size_of<u32>()));
+    return removed == i32(0) ? GetLastError() : 0;
+}
+
 extern "C" u32 remove_host_input(address path, usize units) on cpu {
     HostFileOpen opened = open_host_file(path, units, DELETE_ACCESS, SHARE_ALL, OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT);
     if (opened.file == INVALID_HANDLE_VALUE) { return opened.status; }
-
-    // FILE_DISPOSITION_INFO_EX: delete the file, using POSIX semantics and ignoring its read-only attribute.
-    u32 disposition = 19;
-    i32 removed = SetFileInformationByHandle(opened.file, i32(21), address_of(disposition), u32(size_of<u32>()));
-    u32 status = removed == i32(0) ? GetLastError() : 0;
+    u32 status = remove_open_file(opened.file);
     CloseHandle(opened.file);
     return status;
 }
 
-
 const u32 ERROR_ACCESS_DENIED = 5;
 const u32 ERROR_SHARING_VIOLATION = 32;
 
-struct HostReplacement { u32 status; bool moved; };
-
-HostReplacement rename_host_file(address source,usize source_units,
-    address target,usize target_units,bool replace_existing) on cpu {
-    NativePath from = native_path(source,source_units,true);
-    if (from.status!=0) { return HostReplacement(from.status,false); }
+u32 rename_host_file(handle file,address target,usize target_units,bool replace_existing) on cpu {
     NativePath to = native_path(target,target_units,true);
-    if (to.status!=0) {
-        release_native_path(from);
-        return HostReplacement(to.status,false);
-    }
-    result<void,RenameError> outcome = rename_path(from.name,UnitSpan(to.name,to.units),replace_existing);
+    if (to.status!=0) { return to.status; }
+    result<void,RenameError> outcome = rename_open_file(file,UnitSpan(to.name,to.units),replace_existing);
     release_native_path(to);
-    release_native_path(from);
     match (outcome) {
-        Ok() { return HostReplacement(0,true); }
+        Ok() { return 0; }
         Err(error) {
             match (error) {
-                LengthOverflow() { return HostReplacement(206,false); }
-                Nul(index) { return HostReplacement(123,false); }
+                LengthOverflow() { return 206; }
+                Nul(index) { return 123; }
                 Change(change) {
                     u32 status = 0;
                     match (change) {
-                        Open(code) { return HostReplacement(code,false); }
+                        Open(code) { return code; }
                         Apply(code) { status=code; }
-                        Close(cause) { return HostReplacement(cause.code,true); }
+                        Close(cause) { return cause.code; }
                         ApplyAndClose(cause) { status=cause.code; }
                     }
                     // The build interface reports a denied destination replacement as access denied.
-                    return HostReplacement(status==ERROR_SHARING_VIOLATION ? ERROR_ACCESS_DENIED : status,false);
+                    return status==ERROR_SHARING_VIOLATION ? ERROR_ACCESS_DENIED : status;
                 }
             }
         }
@@ -441,7 +434,8 @@ HostReplacement rename_host_file(address source,usize source_units,
 
 extern "C" HostPublishResult publish_host_file(address target,usize target_units,
     address temporary,usize temporary_units,address parts,usize count,u32 replace_existing) on cpu {
-    HostFileOpen opened = open_host_file(temporary, temporary_units, GENERIC_READ_WRITE, SHARE_ALL, CREATE_NEW, FILE_FLAG_OPEN_REPARSE_POINT);
+    HostFileOpen opened = open_host_file(temporary, temporary_units, GENERIC_WRITE | DELETE_ACCESS,
+        SHARE_ALL, CREATE_NEW, FILE_FLAG_OPEN_REPARSE_POINT);
     if (opened.file==INVALID_HANDLE_VALUE) {
         return HostPublishResult(HostWriteResult(HostWriteKind::OpenError,opened.status),0,0);
     }
@@ -453,15 +447,19 @@ extern "C" HostPublishResult publish_host_file(address target,usize target_units
         if (written.kind!=HostWriteKind::Written) { break; }
         index+=1u64;
     }
-    CloseHandle(opened.file);
 
     u32 replacement = 0;
     if (written.kind==HostWriteKind::Written) {
-        HostReplacement result = rename_host_file(temporary,temporary_units,target,target_units,replace_existing!=0);
-        replacement=result.status;
-        if (result.moved) { return HostPublishResult(written,replacement,0); }
+        replacement = rename_host_file(opened.file,target,target_units,replace_existing!=0);
     }
-    return HostPublishResult(written,replacement,remove_host_input(temporary,temporary_units));
+    bool published = written.kind==HostWriteKind::Written && replacement==0;
+    u32 cleanup = published ? 0 : remove_open_file(opened.file);
+    if (CloseHandle(opened.file)==i32(0)) {
+        u32 status=GetLastError();
+        if (published) { written=HostWriteResult(HostWriteKind::CloseError,status); }
+        else if (cleanup==0) { cleanup=status; }
+    }
+    return HostPublishResult(written,replacement,cleanup);
 }
 
 extern "C" i32 CreatePipe(inout handle read_end, inout handle write_end,

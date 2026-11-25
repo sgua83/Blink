@@ -57,3 +57,4 @@ extern "C" u32 create_output_directories(address path,usize units) on cpu;
 result<void,FileChangeError> change_file(address path,i32 information_class,
     address information,u32 bytes,u32 flags) on cpu;
 result<void,RenameError> rename_path(address source,UnitSpan target,bool replace_existing) on cpu;
+result<void,RenameError> rename_open_file(handle file,UnitSpan target,bool replace_existing) on cpu;
