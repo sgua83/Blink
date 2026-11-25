@@ -111,13 +111,12 @@ u32 query_search(usize first,usize second,u32 right_truth,address context,Graph 
     // A false leaf already constrains this path before any further gate choice.
     u32 found=remaining;
     if(found==0){
-     at=negative;
-     while(at<trail.count){
-      usize id=word_at(trail,at);Gate node=node_at(graph,id);
+     while(negative<trail.count){
+      usize id=word_at(trail,negative);negative+=1u64;
+      Gate node=node_at(graph,id);
       if(node.kind==1&&value_at(values,id)==1){
-       negative=at+1u64;host.begin_facts(context,id);found=1;break;
+       host.begin_facts(context,id);found=1;break;
       }
-      at+=1u64;
      }
     }
     if(found!=0){
