@@ -915,14 +915,29 @@ impl<'g> Query<'g> {
         Borrow { sources, ..Borrow::default() }
     }
     fn deferred(&self,id:usize)->Borrow{Borrow::source(Origin::Relation(self.relation.clone(),id))}
-    fn apply(
-        &self, id: usize, from_id: usize, op: &Op, from: &Borrow, evaluation: &mut BorrowEvaluation<'_>,
-    ) -> Borrow {
-        if let Op::Read { word, epoch, frame } = op {
-            return self.read(id, from_id, from, *word, epoch, *frame, evaluation);
-        }
-        from.map_sources(|source|match op{Op::Identity=>Borrow::source(source),Op::Resources=>Borrow::source(source).resources(),Op::Owners=>Borrow::source(source).owners(),Op::Select(indices)=>Borrow::source(source).select_elements(indices),Op::Element{fields,index}=>Borrow::selected_element(Borrow::source(source),fields.clone(),*index),Op::Projection(fields)=>Borrow::projection(Borrow::source(source),fields.clone()),Op::Position(p)=>p.map_borrows(|_|Borrow::source(source)).normalize(),Op::Read{..}|Op::Initial{..}=>Borrow::default()})
+    fn apply<'a>(
+        &self, id: usize, from_id: usize, op: &Op, from: &'a Borrow, evaluation: &mut BorrowEvaluation<'_>,
+    ) -> Cow<'a, Borrow> {
+        let value = match op {
+            Op::Identity => return Cow::Borrowed(from),
+            Op::Read { word, epoch, frame } => self.read(id, from_id, from, *word, epoch, *frame, evaluation),
+            Op::Resources => from.map_sources(|source| Borrow::source(source).resources()),
+            Op::Owners => from.map_sources(|source| Borrow::source(source).owners()),
+            Op::Select(indices) => from.map_sources(|source| Borrow::source(source).select_elements(indices)),
+            Op::Element { fields, index } => from.map_sources(|source| {
+                Borrow::selected_element(Borrow::source(source), fields.clone(), *index)
+            }),
+            Op::Projection(fields) => from.map_sources(|source| {
+                Borrow::projection(Borrow::source(source), fields.clone())
+            }),
+            Op::Position(position) => from.map_sources(|source| {
+                position.map_borrows(|_| Borrow::source(source)).normalize()
+            }),
+            Op::Initial { .. } => from.map_sources(|_| Borrow::default()),
+        };
+        Cow::Owned(value)
     }
+
     fn local_definition(&self, id: usize) -> Cow<'g, Node> {
         let node = &self.graph.nodes[id];
         if !node.edges.iter().any(|edge| matches!(edge.op, Op::Initial { .. })) {
