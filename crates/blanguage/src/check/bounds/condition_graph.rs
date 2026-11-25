@@ -268,19 +268,23 @@ impl<'a> Context<'a> {
     }
 
     fn add(&mut self, fact: Fact) {
+        let affects_aliases = Self::affects_aliases(fact);
+        if !affects_aliases
+            && self.conflict_input.as_mut().is_some_and(|input| !input.insert(fact))
+        {
+            // The older support and its alias roots survive every checkpoint that could keep this addition.
+            return;
+        }
         if self.facts.insert(fact) {
             self.additions.push(fact);
-            if let Some(input) = self.conflict_input_after(&fact) {
-                input.insert(fact);
+            if affects_aliases {
+                self.conflict_input = None;
             }
         }
     }
 
-    fn conflict_input_after(&mut self, fact: &Fact) -> Option<&mut internal_conflicts::Prepared> {
-        if matches!(fact, Fact::Equal(..) | Fact::Index(_, IndexDomain::Computed(_))) {
-            self.conflict_input = None;
-        }
-        self.conflict_input.as_mut()
+    fn affects_aliases(fact: Fact) -> bool {
+        matches!(fact, Fact::Equal(..) | Fact::Index(_, IndexDomain::Computed(_)))
     }
 }
 unsafe fn context<'a, 'b>(slot: Slot) -> &'a mut Context<'b> {
@@ -693,7 +697,9 @@ unsafe extern "C" fn undo_addition(slot: Slot) {
     let context = unsafe { context(slot) };
     let fact = context.additions.pop().unwrap();
     context.facts.remove(&fact);
-    if let Some(input) = context.conflict_input_after(&fact) {
+    if Context::affects_aliases(fact) {
+        context.conflict_input = None;
+    } else if let Some(input) = &mut context.conflict_input {
         input.remove(fact);
     }
 }

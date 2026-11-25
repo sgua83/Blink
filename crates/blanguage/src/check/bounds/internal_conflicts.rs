@@ -59,12 +59,15 @@ impl Prepared {
         Self { aliases }
     }
 
-    pub(super) fn insert(&mut self, fact: Fact) {
-        if let Some(aliases) = &mut self.aliases
-            && let Some(key) = canonical(fact, &aliases.roots)
+    pub(super) fn insert(&mut self, fact: Fact) -> bool {
+        let Some(aliases) = &mut self.aliases else { return true; };
+        if let Some(key) = canonical(fact, &aliases.roots)
+            && let btree_map::Entry::Vacant(entry) = aliases.facts.entry(key)
         {
-            *aliases.facts.entry(key).or_default() += 1;
+            entry.insert(1);
+            return true;
         }
+        false
     }
 
     pub(super) fn remove(&mut self, fact: Fact) {
