@@ -185,6 +185,13 @@ impl<'a> FrameArguments<'a> {
             .ok().map(|i| self.slots[self.by_handle[i]])
     }
 
+    pub(crate) fn for_handle(&self, handle: usize) -> impl Iterator<Item = (usize, u32)> + '_ {
+        let first = self.by_handle.partition_point(|&i| (self.bindings[i].handle as usize) < handle);
+        self.by_handle[first..].iter().map(|&i| (i, &self.bindings[i]))
+            .take_while(move |(_, binding)| binding.handle as usize == handle)
+            .map(|(i, binding)| (i, binding.offset))
+    }
+
     pub(crate) fn location(&self, i: usize) -> (usize, u32) {
         (self.slots[i], self.bindings[i].offset)
     }
@@ -533,7 +540,7 @@ impl Frame {
                     let result = completion.wait_bound(datasets.iter_mut().map(|data| &mut **data))
                         .map(|_| ());
                     let original = |i| arguments.original(i);
-                    bindings::invalidate(&mut self.data.domains, &layout.write_regions, original);
+                    bindings::invalidate(&mut self.data.domains, &layout.write_regions, storage_slots);
                     if result.is_ok() {
                         bindings::produce(&mut self.data.domains, layout, original,
                             |i| datasets[arguments.location(i).0].count());

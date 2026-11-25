@@ -75,12 +75,11 @@ impl DomainRelation {
             Self::Element(range) => Self::Element(ElementRange { binding: binding(range.binding)?, ..range }),
         })
     }
-    pub(crate) fn written(&self, binding: usize, start: u64, end: u64) -> bool {
-        let (owner, offset, bytes) = match self {
+    fn write_dependency(&self) -> (usize, u32, u32) {
+        match self {
             Self::Prefix { count, .. } => (count.binding, count.word, 4),
             Self::Element(range) => (range.binding, range.offset, range.scalar.size()),
-        };
-        owner == binding && u64::from(offset) < end && start < u64::from(offset) + u64::from(bytes)
+        }
     }
     pub(crate) fn address_written(&self, binding: usize, offset: u64, bytes: u32, stride: u64, count: u32, record_stride: u32, records: u32) -> bool {
         let (owner, field, width, step, rows) = match self {
@@ -500,21 +499,10 @@ impl<D> DomainBindings<D> {
         self.datasets = datasets;
         Ok(())
     }
-    pub(crate) fn completed(
-        &mut self,
-        program: &ExecutionPlan,
-        binding: impl Fn(usize) -> (usize, u32),
-    ) where D: DomainStorage {
-        invalidate(&mut self.domains, &program.write_regions, &binding);
-        self.produced(program, binding);
-    }
-    pub(crate) fn produced(
-        &mut self,
-        program: &dyn ProgramInterface,
-        binding: impl Fn(usize) -> (usize, u32),
-    ) where D: DomainStorage {
-        produce(&mut self.domains, program, &binding,
-            |target| self.datasets[binding(target).0].element_count());
+    pub(crate) fn completed(&mut self, program: &ExecutionPlan) where D: DomainStorage {
+        invalidate(&mut self.domains, &program.write_regions, StorageSlots::Direct);
+        produce(&mut self.domains, program, |index| (index, 0),
+            |target| self.datasets[target].element_count());
     }
     /// 将真实生产者的共同字段保证并入本组原关系，不读取或修改载荷。
     ///
@@ -714,10 +702,24 @@ pub(crate) fn require<'a, D: DomainStorage + 'a>(
 pub(crate) fn invalidate(
     domains: &mut DomainRelations,
     write_regions: &BTreeMap<usize, BTreeSet<(u32,u32)>>,
-    binding: impl Fn(usize) -> (usize, u32),
+    slots: StorageSlots<'_>,
 ) {
-    domains.retain(|r| !write_regions.iter().any(|(&logical, written)| {
-        let (physical, offset) = binding(logical);
-        written.iter().any(|&(start, end)| r.written(physical, u64::from(offset) + u64::from(start), u64::from(offset) + u64::from(end)))
-    }));
+    if write_regions.is_empty() {
+        return;
+    }
+    domains.retain(|relation| {
+        let (owner, start, width) = relation.write_dependency();
+        let start = u64::from(start);
+        let end = start + u64::from(width);
+        let overlaps = |logical, offset: u32| {
+            let offset = u64::from(offset);
+            write_regions.get(&logical).is_some_and(|written| {
+                written.iter().any(|&(from, to)| start < offset + u64::from(to) && offset + u64::from(from) < end)
+            })
+        };
+        !match slots {
+            StorageSlots::Direct => overlaps(owner, 0),
+            StorageSlots::Frame(arguments) => arguments.for_handle(owner).any(|(logical, offset)| overlaps(logical, offset)),
+        }
+    });
 }

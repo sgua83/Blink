@@ -2488,10 +2488,9 @@ impl GpuProgram {
             .map(|data| (&data.ty, data.count, Some(0))), values)?;
         let slots = StorageSlots::Direct;
         bindings::require(|slot| bindings.datasets.get(slot), &bindings.domains, program, slots)?;
-        let location = |i| slots.location(i);
         let completion = self.submit_mapped(&mut bindings.datasets, dependencies, &accelerations,
             textures, uniforms, steps, slots)?;
-        bindings.completed(program, location);
+        bindings.completed(program);
         Ok(Submission { completion, bindings, accelerations })
     }
 

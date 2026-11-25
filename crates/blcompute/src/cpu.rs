@@ -1096,7 +1096,7 @@ impl CpuCode {
         }
         let original = |i| slots.original(i);
         self.run_buffers(&buffers, textures, uniforms, || {
-            bindings::invalidate(domains, &self.program.write_regions, original);
+            bindings::invalidate(domains, &self.program.write_regions, slots);
         }, definitions, input_domains, timings)?;
         bindings::produce(domains, &self.program, original, |i| datasets[physical(i).0].element_count());
         Ok(())
@@ -1147,7 +1147,7 @@ impl CpuCode {
         // Actual input facts move into this scope; declarations never create facts.
         let mut input_domains = DomainRelations::Owned(input_domains);
         for (stage_index, (stage, code)) in self.program.stages().iter().zip(&self.stages).enumerate() {
-            crate::bindings::invalidate(&mut input_domains,&stage.write_regions,|binding|(binding,0));
+            bindings::invalidate(&mut input_domains, &stage.write_regions, StorageSlots::Direct);
             let count = if let Some(prefix) = &stage.prefix {
                 unsafe {
                     buffers[prefix.binding]
