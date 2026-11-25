@@ -260,10 +260,8 @@ extern "C" void sha256_reference(inout DigestState state, BuildReference row,
     if (present != u8(0)) { digest_field(state, row.value); }
 }
 
-extern "C" bool record_source_declaration(inout u64 preamble_end, u64 start,
-    bool implementation, bool ordinary) on cpu {
+extern "C" void record_source_declaration(inout u64 preamble_end, u64 start) on cpu {
     if (start < preamble_end) { preamble_end = start; }
-    return implementation && ordinary;
 }
 
 extern "C" void sha256_source(DigestField prefix, address signatures,

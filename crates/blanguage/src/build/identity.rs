@@ -256,9 +256,7 @@ struct SourceSignature {
 
 unsafe extern "C" {
     #[link_name = "bootstrap.build_digest::record_source_declaration"]
-    fn record_source_declaration(
-        preamble_end: &mut usize, start: usize, implementation: bool, ordinary: bool,
-    ) -> bool;
+    fn record_source_declaration(preamble_end: &mut usize, start: usize);
     #[link_name = "bootstrap.build_digest::sha256_source"]
     fn sha256_source(
         prefix: ByteField, signatures: *const SourceSignature, count: usize, output: &mut [u8; 32],
@@ -289,10 +287,8 @@ pub(super) fn sources(path: &std::path::Path, root: &std::path::Path,
     let mut record = |source: &crate::ast::Source, start, signature: Option<(&str, &crate::syntax::Function)>| {
         if let Some(&index) = paths.get(source.path.as_path()) {
             let region = &mut regions[index];
-            let keep = unsafe {
-                record_source_declaration(&mut region.preamble_end, start, region.include_signatures, signature.is_some())
-            };
-            if let Some((name, function)) = signature.filter(|_| keep) {
+            unsafe { record_source_declaration(&mut region.preamble_end, start) };
+            if region.include_signatures && let Some((name, function)) = signature {
                 let end = function.signature_end();
                 region.signatures.push(SourceSignature {
                     name: name.as_bytes().into(),

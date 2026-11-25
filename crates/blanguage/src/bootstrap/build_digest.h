@@ -40,10 +40,8 @@ struct SourceSignature {
     DigestField signature;
 };
 
-// Each original declaration contributes its start. Ordinary signatures are
-// kept only for regions used as implementation inputs.
-extern "C" bool record_source_declaration(inout u64 preamble_end, u64 start,
-    bool implementation, bool ordinary) on cpu;
+// Each original declaration contributes its start.
+extern "C" void record_source_declaration(inout u64 preamble_end, u64 start) on cpu;
 
 // Signatures are borrowed from the original source in declaration order.
 extern "C" void sha256_source(DigestField prefix, address signatures,
