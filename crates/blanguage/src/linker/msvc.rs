@@ -491,12 +491,18 @@ pub(super) fn link(
         }
         return Ok(());
     }
-    let stdout = result.process.stdout;
-    let stderr = result.process.stderr;
-    let mut diagnostics = Vec::with_capacity(stdout.len() + stderr.len());
-    diagnostics.extend_from_slice(&stdout);
-    diagnostics.extend_from_slice(&stderr);
-    let details = match host_text(&diagnostics, HostText::LinkOutput, String::from_utf16)
+    let stdout = &result.process.stdout[..];
+    let stderr = &result.process.stderr[..];
+    let joined;
+    let diagnostics = match (stdout, stderr) {
+        ([], bytes) | (bytes, []) => bytes,
+        _ => {
+            // The decoder consumes one contiguous byte range in stdout, stderr order.
+            joined = [stdout, stderr].concat();
+            &joined
+        }
+    };
+    let details = match host_text(diagnostics, HostText::LinkOutput, String::from_utf16)
         .and_then(|text| Ok(text?)) {
         Ok(text) => text,
         Err(error) => format!("链接工具诊断解码失败：{error}"),
