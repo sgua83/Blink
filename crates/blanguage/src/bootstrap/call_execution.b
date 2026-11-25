@@ -215,7 +215,10 @@ bool domain_writes(CallAccess access) on cpu {return access==CallAccess::Write||
 extern "C" DomainParameterStep domain_parameter_step(DomainParameterCursor state,DomainParameterFacts facts) on cpu {
  DomainParameterCursor cursor=state;
  while(true){
-  if(cursor.phase==0){if(cursor.index<facts.parameters){cursor.phase=1;return DomainParameterStep(cursor,DomainParameterNeed::Parameter);}cursor.index=0u64;cursor.phase=20;}
+  if(cursor.phase==0){
+   if(cursor.index<facts.parameters){cursor.phase=1;return DomainParameterStep(cursor,DomainParameterNeed::Parameter);}
+   return DomainParameterStep(cursor,cursor.alias_conflict!=0 ? DomainParameterNeed::InvalidAlias : DomainParameterNeed::Complete);
+  }
   if(cursor.phase==1){
    if(facts.argument==ArgumentKind::Texture){if(facts.access!=CallAccess::Read){return DomainParameterStep(cursor,DomainParameterNeed::InvalidTexture);}cursor.phase=2;return DomainParameterStep(cursor,DomainParameterNeed::Texture);}
    if(facts.argument==ArgumentKind::Acceleration){if(facts.acceleration==0||facts.dataset!=0||facts.access!=CallAccess::Read){return DomainParameterStep(cursor,DomainParameterNeed::InvalidAcceleration);}cursor.phase=98;return DomainParameterStep(cursor,DomainParameterNeed::BindRoot);}
@@ -225,12 +228,16 @@ extern "C" DomainParameterStep domain_parameter_step(DomainParameterCursor state
   if(cursor.phase==2){if(facts.present==0){return DomainParameterStep(cursor,DomainParameterNeed::InvalidTexture);}cursor.phase=98;return DomainParameterStep(cursor,DomainParameterNeed::BindRoot);}
   if(cursor.phase==3){if(facts.dataset==0||facts.same==0){return DomainParameterStep(cursor,DomainParameterNeed::InvalidDataset);}if(facts.counted!=0){cursor.phase=4;return DomainParameterStep(cursor,DomainParameterNeed::Shape);}cursor.phase=5;}
   if(cursor.phase==4){if(facts.expected_count.present!=facts.actual_count.present||(facts.expected_count.present!=0&&facts.expected_count.value!=facts.actual_count.value)){return DomainParameterStep(cursor,DomainParameterNeed::InvalidShape);}cursor.phase=5;}
-  if(cursor.phase==5){if((domain_reads(facts.access)&&!domain_reads(facts.actual_access))||(domain_writes(facts.access)&&!domain_writes(facts.actual_access))){return DomainParameterStep(cursor,DomainParameterNeed::InvalidAccess);}cursor.phase=98;return DomainParameterStep(cursor,DomainParameterNeed::BindData);}
+  if(cursor.phase==5){if((domain_reads(facts.access)&&!domain_reads(facts.actual_access))||(domain_writes(facts.access)&&!domain_writes(facts.actual_access))){return DomainParameterStep(cursor,DomainParameterNeed::InvalidAccess);}cursor.phase=7;return DomainParameterStep(cursor,DomainParameterNeed::BindData);}
   if(cursor.phase==6){if(facts.dataset!=0||facts.same==0){return DomainParameterStep(cursor,DomainParameterNeed::InvalidValue);}cursor.phase=98;return DomainParameterStep(cursor,DomainParameterNeed::BindRoot);}
+  if(cursor.phase==7){
+   if(facts.present!=0&&(domain_writes(facts.previous)||domain_writes(facts.access))
+      &&!(facts.previous==CallAccess::Atomic&&facts.access==CallAccess::Atomic)){
+    cursor.alias_conflict=1;
+   }
+   cursor.phase=98;
+  }
   if(cursor.phase==98){cursor.index+=1u64;cursor.phase=0;}
-  if(cursor.phase==20){if(cursor.index<facts.parameters){cursor.phase=21;return DomainParameterStep(cursor,DomainParameterNeed::AliasParameter);}return DomainParameterStep(cursor,DomainParameterNeed::Complete);}
-  if(cursor.phase==21){if(facts.present!=0){cursor.phase=22;return DomainParameterStep(cursor,DomainParameterNeed::Previous);}cursor.index+=1u64;cursor.phase=20;}
-  if(cursor.phase==22){if(facts.present!=0&&(domain_writes(facts.previous)||domain_writes(facts.access))&&!(facts.previous==CallAccess::Atomic&&facts.access==CallAccess::Atomic)){return DomainParameterStep(cursor,DomainParameterNeed::InvalidAlias);}cursor.index+=1u64;cursor.phase=20;}
  }
 }
 
