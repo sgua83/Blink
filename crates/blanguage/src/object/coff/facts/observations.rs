@@ -9,6 +9,7 @@ pub(crate) enum Layout<S = crate::native::CodeSources> {
     Startup,
     Print(crate::ir::Scalar),
     ImportThunk,
+    ResourceFactory,
 }
 struct SectionLayout {
     section: usize,
@@ -18,7 +19,7 @@ struct SectionLayout {
 pub(super) struct Material {
     sections: Vec<SectionLayout>,
 }
-variants!(@<S> Layout<S> { 0=>Function{tails,references,sources}, 1=>Startup, 2=>Print(scalar), 3=>ImportThunk });
+variants!(@<S> Layout<S> { 0=>Function{tails,references,sources}, 1=>Startup, 2=>Print(scalar), 3=>ImportThunk, 4=>ResourceFactory });
 record!(SectionLayout { section, identity, layout });
 record!(Material { sections });
 const MAGIC: &[u8; 8] = b"BLCF\x0a\0\0\0";
@@ -49,7 +50,7 @@ impl<S> Layout<S> {
         -> Result<(usize, impl Iterator<Item = (&'static str, usize, usize)> + '_)>
     {
         let (kind, end, tails) = match self {
-            Self::Startup | Self::Print(_) | Self::ImportThunk => ("generated_code", length, &[][..]),
+            Self::Startup | Self::Print(_) | Self::ImportThunk | Self::ResourceFactory => ("generated_code", length, &[][..]),
             Self::Function { tails, .. } => {
                 let mut main = spans.iter().filter(|span| span.start == 0);
                 let end = main.next().ok_or("COFF generated function material has no matching original .pdata range")?.end;
@@ -74,7 +75,7 @@ impl<S> Layout<S> {
     pub(super) fn references(&self) -> Option<&[TailReference]> {
         match self {
             Self::Function { references, .. } => references.as_deref(),
-            Self::Startup | Self::Print(_) | Self::ImportThunk => None,
+            Self::Startup | Self::Print(_) | Self::ImportThunk | Self::ResourceFactory => None,
         }
     }
     pub(super) fn generation(&self) -> String {
@@ -83,6 +84,7 @@ impl<S> Layout<S> {
             Self::Startup => object(&[("reason", text("application_startup"))]),
             Self::Print(scalar) => object(&[("reason", text("scalar_output")), ("scalar", text(scalar.name()))]),
             Self::ImportThunk => object(&[("reason", text("import_thunk"))]),
+            Self::ResourceFactory => object(&[("reason", text("resource_factory"))]),
         }
     }
 
@@ -91,13 +93,13 @@ impl Layout<crate::native::SavedSources> {
     pub(super) fn operation_ranges(&self, selected: Option<&std::ops::Range<usize>>) -> String {
         match self {
             Self::Function { sources, .. } => sources.operation_ranges_json(selected),
-            Self::Startup | Self::Print(_) | Self::ImportThunk => "null".into(),
+            Self::Startup | Self::Print(_) | Self::ImportThunk | Self::ResourceFactory => "null".into(),
         }
     }
     pub(super) fn function_abi(&self, selected: Option<&std::ops::Range<usize>>) -> String {
         match self {
             Self::Function { sources, .. } => sources.function_abi_json(selected),
-            Self::Startup | Self::Print(_) | Self::ImportThunk => "null".into(),
+            Self::Startup | Self::Print(_) | Self::ImportThunk | Self::ResourceFactory => "null".into(),
         }
     }
 }

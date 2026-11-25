@@ -1,5 +1,5 @@
 //! 资源工厂在原编译COFF持有已编码映像和代码地址表。
-use crate::object::{Definition, Object, Relocation, ResourceBinding, Section, Symbol, Target, stack::Frame};
+use crate::object::{CodeLayout, Definition, Object, Relocation, ResourceBinding, Section, Symbol, Target, stack::Frame};
 pub(crate) struct ResourceFactory {
     prefix: String,
     factory: String,
@@ -57,7 +57,7 @@ impl ResourceFactory {
                 Relocation { offset: layout.image_field as usize, kind: 1, target: Target::Section(image_section, 0) },
                 Relocation { offset: layout.ranges_field as usize, kind: 1, target: Target::Section(ranges_section, 0) },
             ],
-            associated: Vec::new(), layout: None,
+            associated: Vec::new(), layout: Some(CodeLayout::ResourceFactory),
         }.initialized());
         object.symbols.push(Symbol {
             definition: Definition { name: factory.clone(), section, value: 0, function: true },

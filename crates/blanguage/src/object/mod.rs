@@ -8,6 +8,7 @@ mod coff;
 pub(crate) use coff::{ImportKey, encode_native, encode_native_with_imports, native_import_member};
 pub(crate) mod stack;
 pub(crate) use coff::Reader as ObjectReader;
+pub(crate) use coff::facts::observations::Layout as CodeLayout;
 mod emit;
 pub(crate) use archive::{compile as compile_archive, encode_entry as encode_entry_archive, runtime_fingerprint, runtime_libraries};
 #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
