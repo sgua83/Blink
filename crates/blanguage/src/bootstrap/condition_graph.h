@@ -950,3 +950,25 @@ extern "C" void bind_proof_path(address context,usize count,PathProofHost host) 
  requires nonzero(host.component) requires nonzero(host.identity) requires nonzero(host.merge)
  requires nonzero(host.share) requires nonzero(host.boolean) requires nonzero(host.integer);
 
+
+enum ProofDomainKind:u32 { Other=0; FixedLength=1; ResourceLength=2; KnownBits=3; Numeric=4; };
+struct ProofDomainView { ProofDomainKind kind; u64 value; };
+struct ProofDomainHost {
+ cfn<ProofDomainView,address> describe;
+ cfn<void,address> nonzero;
+ cfn<void,address,u64> bounded;
+ cfn<void,address,address> retain;
+};
+struct ProofRefinementHost {
+ ProofDomainHost domains;
+ cfn<ScalarEncoding,address> scalar;
+ cfn<void,address,u32> deny;
+ cfn<void,address,u64,u64> range;
+};
+extern "C" void bind_proof_domain(address context,address domain,ProofDomainHost host) on cpu
+ requires nonzero(host.describe) requires nonzero(host.nonzero) requires nonzero(host.bounded) requires nonzero(host.retain);
+extern "C" void refine_proof_fact(address context,ScalarEncoding scalar,u64 zero,FactView fact,ProofRefinementHost host) on cpu
+ requires nonzero(host.domains.describe) requires nonzero(host.domains.nonzero)
+ requires nonzero(host.domains.bounded) requires nonzero(host.domains.retain)
+ requires nonzero(host.scalar) requires nonzero(host.deny) requires nonzero(host.range);
+

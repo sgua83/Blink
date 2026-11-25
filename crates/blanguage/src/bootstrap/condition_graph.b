@@ -2302,3 +2302,42 @@ extern "C" void bind_proof_path(address context,usize count,PathProofHost host) 
  }
 }
 
+
+void apply_proof_domain(address context,address domain,ProofDomainView value,ProofDomainHost host) on cpu
+ requires nonzero(host.nonzero) requires nonzero(host.bounded) requires nonzero(host.retain) {
+ if(value.kind==ProofDomainKind::KnownBits&&value.value!=0u64){host.nonzero(context);}
+ if(value.kind==ProofDomainKind::FixedLength){host.bounded(context,value.value);}
+ else if(value.kind==ProofDomainKind::ResourceLength){host.bounded(context,4294967295u64);}
+ host.retain(context,domain);
+}
+
+extern "C" void bind_proof_domain(address context,address domain,ProofDomainHost host) on cpu
+ requires nonzero(host.describe) requires nonzero(host.nonzero) requires nonzero(host.bounded) requires nonzero(host.retain) {
+ apply_proof_domain(context,domain,host.describe(domain),host);
+}
+
+extern "C" void refine_proof_fact(address context,ScalarEncoding scalar,u64 zero,FactView fact,ProofRefinementHost host) on cpu
+ requires nonzero(host.domains.describe) requires nonzero(host.domains.nonzero)
+ requires nonzero(host.domains.bounded) requires nonzero(host.domains.retain)
+ requires nonzero(host.scalar) requires nonzero(host.deny) requires nonzero(host.range) {
+ if(fact.kind==FactKind::Boolean&&scalar.kind==ScalarKind::Boolean) {
+  host.deny(context,fact.flag==0?1:0);
+ }else if(fact.kind==FactKind::Index&&scalar.kind==ScalarKind::Unsigned) {
+  ProofDomainView value=host.domains.describe(fact.payload);
+  if(scalar.width==32||value.kind==ProofDomainKind::Numeric||value.kind==ProofDomainKind::KnownBits) {
+   apply_proof_domain(context,fact.payload,value,host.domains);
+  }
+ }else if(fact.kind==FactKind::Minimum||fact.kind==FactKind::Maximum) {
+  ScalarEncoding expected=host.scalar(fact.scalar);
+  if(scalar.kind==expected.kind&&scalar.width==expected.width) {
+   if(fact.kind==FactKind::Minimum) {
+    host.range(context,fact.value,fact.mask);
+    if(scalar.kind!=ScalarKind::Signed&&fact.value!=0u64){host.domains.nonzero(context);}
+   }else{host.range(context,0u64,fact.value);}
+  }
+ }else if(scalar.kind==ScalarKind::Unsigned||scalar.kind==ScalarKind::Signed) {
+  if(fact.kind==FactKind::Zero){host.range(context,zero,zero);}
+  else if(fact.kind==FactKind::NonZero){host.domains.nonzero(context);}
+ }
+}
+

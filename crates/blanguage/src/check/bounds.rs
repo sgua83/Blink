@@ -1642,21 +1642,7 @@ impl Proof {
         self.nonzero[component] = true;
     }
     pub(super) fn mark_domain(&mut self, component: usize, domain: IndexDomain) {
-        if matches!(domain,IndexDomain::KnownBits(_,_,value)if value!=0){self.nonzero.resize(self.nonzero.len().max(component+1),false);self.nonzero[component]=true;}
-        let count = match domain {
-            IndexDomain::Fixed(count) => Some(count),
-            // 这些动态资源的当前长度ABI为u32，索引严格小于长度。
-            IndexDomain::Data(_) | IndexDomain::Tile | IndexDomain::View(_) | IndexDomain::ApplicationData(_) => Some(u32::MAX),
-            _ => None,
-        };
-        if let Some(count) = count {
-            self.ranges
-                .resize_with(self.ranges.len().max(component + 1), ScalarRanges::default);
-            self.ranges[component] = self.ranges[component].restrict(0, Bits::from(count)).without(Bits::from(count));
-        }
-        self.domains
-            .resize(self.domains.len().max(component + 1), Domains::new());
-        self.domains[component].insert(domain);
+        fact_fields::bind_domain(self, component, &domain);
     }
     pub(super) fn unsigned_maximum(&self, component: usize) -> u32 { self.range_set(component).restrict(0, Bits::from(u32::MAX)).hull().1 as u32 }
     pub(super) fn unsigned_minimum(&self, component: usize) -> u32 {
@@ -1664,45 +1650,7 @@ impl Proof {
             .max(Bits::from(self.nonzero.get(component) == Some(&true))) as u32
     }
     fn refine(&mut self, ty: &Ty, component: usize, fact: Fact) {
-        let component_scalar = ty.components[component].0;
-        match fact {
-            Fact::Boolean(_, truth) if component_scalar == Scalar::Bool => {
-                self.conditions
-                    .resize_with(self.conditions.len().max(component + 1), || None);
-                let condition = self.conditions[component]
-                    .get_or_insert_with(|| Box::new(Condition::default()));
-                condition.cases[usize::from(!truth)] = Clause::impossible();
-            }
-            Fact::Index(_, domain) if component_scalar == Scalar::U32 || component_scalar.is_integer() && !component_scalar.is_signed() && numeric_domain(&domain) => {
-                self.mark_domain(component, domain);
-            }
-            Fact::Minimum(_, scalar, lower)
-                if ty.components[component].0 == scalar =>
-            {
-                self.ranges
-                    .resize_with(self.ranges.len().max(component + 1), ScalarRanges::default);
-                self.ranges[component] = self.ranges[component].restrict(lower, scalar.bit_mask());
-                if !scalar.is_signed() && lower != 0 {
-                    self.mark_nonzero(component);
-                }
-            }
-            Fact::Maximum(_, scalar, upper)
-                if ty.components[component].0 == scalar =>
-            {
-                self.ranges
-                    .resize_with(self.ranges.len().max(component + 1), ScalarRanges::default);
-                self.ranges[component] = self.ranges[component].restrict(0, upper);
-            }
-            Fact::Zero(_) if ty.components[component].0.is_integer()=>{
-                let zero=ty.components[component].0.order_bias();
-                self.ranges.resize_with(self.ranges.len().max(component+1),ScalarRanges::default);
-                self.ranges[component]=self.ranges[component].restrict(zero,zero);
-            },
-            Fact::NonZero(_) if ty.components[component].0.is_integer() => {
-                self.mark_nonzero(component);
-            }
-            _ => {}
-        }
+        fact_fields::refine(self, component, ty.components[component].0, &fact);
     }
 }
 fn environment_facts(environment:&BTreeMap<String,Binding>)->Facts {

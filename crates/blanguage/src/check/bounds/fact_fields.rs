@@ -1,7 +1,9 @@
 //! Physical projections borrow original Fact fields until the synchronous consumer returns.
-use super::{Comparison, Fact, IndexDomain, Operand, Scalar, ScalarPredicate, ValueIdentity};
+use super::{Clause, Comparison, Condition, Domains, Fact, IndexDomain, Operand, Proof, Scalar, ScalarPredicate, ScalarRanges, ValueIdentity, numeric_domain};
+use crate::builtin_types::ScalarEncoding;
 use std::{ffi::c_void, ptr};
 type Borrowed = *const c_void;
+type Slot = *mut c_void;
 
 #[derive(Clone, Copy, Default)]
 #[repr(u32)]
@@ -389,3 +391,131 @@ impl From<&IndexDomain> for ConditionDomain {
         Self{present:1,common:u32::from(matches!(domain,IndexDomain::CommonRange(..))),original:ptr::from_ref(domain).cast()}
     }
 }
+
+#[derive(Clone, Copy)]
+#[repr(u32)]
+enum ProofDomainKind {
+    Other,
+    FixedLength,
+    ResourceLength,
+    KnownBits,
+    Numeric,
+}
+
+#[repr(C)]
+struct ProofDomainView {
+    kind: ProofDomainKind,
+    value: u64,
+}
+
+#[derive(Clone, Copy)]
+#[repr(C)]
+struct ProofDomainHost {
+    describe: unsafe extern "C" fn(Borrowed) -> ProofDomainView,
+    nonzero: unsafe extern "C" fn(Slot),
+    bounded: unsafe extern "C" fn(Slot, u64),
+    retain: unsafe extern "C" fn(Slot, Borrowed),
+}
+
+#[repr(C)]
+struct ProofRefinementHost {
+    domains: ProofDomainHost,
+    scalar: unsafe extern "C" fn(Borrowed) -> ScalarEncoding,
+    deny: unsafe extern "C" fn(Slot, u32),
+    range: unsafe extern "C" fn(Slot, u64, u64),
+}
+
+struct Refinement<'a> {
+    proof: &'a mut Proof,
+    component: usize,
+}
+
+impl Refinement<'_> {
+    fn range(&mut self) -> &mut ScalarRanges {
+        let ranges = &mut self.proof.ranges;
+        ranges.resize_with(ranges.len().max(self.component + 1), ScalarRanges::default);
+        &mut ranges[self.component]
+    }
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.condition_graph::bind_proof_domain"]
+    fn b_bind_proof_domain(context: Slot, domain: Borrowed, host: ProofDomainHost);
+    #[link_name = "bootstrap.condition_graph::refine_proof_fact"]
+    fn b_refine_proof_fact(
+        context: Slot, scalar: ScalarEncoding, zero: u64, fact: Fields, host: ProofRefinementHost,
+    );
+}
+
+unsafe extern "C" fn describe_domain(value: Borrowed) -> ProofDomainView {
+    let value = unsafe { &*value.cast::<IndexDomain>() };
+    let (kind, value) = match value {
+        IndexDomain::Fixed(count) => (ProofDomainKind::FixedLength, u64::from(*count)),
+        IndexDomain::Data(_) | IndexDomain::Tile | IndexDomain::View(_)
+        | IndexDomain::ApplicationData(_) => (ProofDomainKind::ResourceLength, 0),
+        IndexDomain::KnownBits(_, _, bits) => (ProofDomainKind::KnownBits, *bits),
+        domain if numeric_domain(domain) => (ProofDomainKind::Numeric, 0),
+        _ => (ProofDomainKind::Other, 0),
+    };
+    ProofDomainView { kind, value }
+}
+
+unsafe extern "C" fn mark_nonzero(context: Slot) {
+    let state = unsafe { &mut *context.cast::<Refinement<'_>>() };
+    state.proof.mark_nonzero(state.component);
+}
+
+unsafe extern "C" fn bounded_domain(context: Slot, limit: u64) {
+    let state = unsafe { &mut *context.cast::<Refinement<'_>>() };
+    let range = state.range();
+    *range = range.restrict(0, limit).without(limit);
+}
+
+unsafe extern "C" fn retain_domain(context: Slot, domain: Borrowed) {
+    let state = unsafe { &mut *context.cast::<Refinement<'_>>() };
+    let domains = &mut state.proof.domains;
+    domains.resize_with(domains.len().max(state.component + 1), Domains::new);
+    domains[state.component].insert(unsafe { *domain.cast::<IndexDomain>() });
+}
+
+unsafe extern "C" fn refinement_scalar(scalar: Borrowed) -> ScalarEncoding {
+    unsafe { (*scalar.cast::<Scalar>()).into() }
+}
+
+unsafe extern "C" fn deny_condition(context: Slot, branch: u32) {
+    let state = unsafe { &mut *context.cast::<Refinement<'_>>() };
+    let conditions = &mut state.proof.conditions;
+    conditions.resize_with(conditions.len().max(state.component + 1), || None);
+    let condition = conditions[state.component].get_or_insert_with(|| Box::new(Condition::default()));
+    condition.cases[branch as usize] = Clause::impossible();
+}
+
+unsafe extern "C" fn restrict_range(context: Slot, lower: u64, upper: u64) {
+    let state = unsafe { &mut *context.cast::<Refinement<'_>>() };
+    let range = state.range();
+    *range = range.restrict(lower, upper);
+}
+
+const PROOF_DOMAINS: ProofDomainHost = ProofDomainHost {
+    describe: describe_domain,
+    nonzero: mark_nonzero,
+    bounded: bounded_domain,
+    retain: retain_domain,
+};
+
+pub(super) fn bind_domain(proof: &mut Proof, component: usize, domain: &IndexDomain) {
+    let mut state = Refinement { proof, component };
+    unsafe { b_bind_proof_domain(ptr::from_mut(&mut state).cast(), ptr::from_ref(domain).cast(), PROOF_DOMAINS) };
+}
+
+pub(super) fn refine(proof: &mut Proof, component: usize, scalar: Scalar, fact: &Fact) {
+    let mut state = Refinement { proof, component };
+    unsafe {
+        b_refine_proof_fact(
+            ptr::from_mut(&mut state).cast(), scalar.into(), scalar.order_bias(), Fields::from(fact),
+            ProofRefinementHost { domains: PROOF_DOMAINS, scalar: refinement_scalar,
+                deny: deny_condition, range: restrict_range },
+        );
+    }
+}
+
