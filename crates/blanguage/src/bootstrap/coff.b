@@ -15,19 +15,22 @@ CoffLayout invalid(u32 code) on cpu {return CoffLayout(0u64,0u64,0u64,0u64,code)
 extern "C" CoffLayout layout(CoffInput input) on cpu {
     if(input.section_count>65535u64){return invalid(1);}
     u64 at=20u64+40u64*input.section_count;
+    u64 strings=4u64;
     u64 i=0u64;
     while(i<input.section_count){
         CoffSection section=section_at(input,i);
         if(section.byte_length>4294967295u64){return invalid(2);}
         if(at>4294967295u64){return invalid(3);}
-        if(section.zero_fill!=0u64&&section.relocation_count==0u64){
+        if(section.name_length>8u64){
+            // A section's slash-prefixed offset occupies at most seven decimal digits.
+            if(strings>=10000000u64||section.name_length>=4294967295u64){return invalid(6);}
+            strings+=section.name_length+1u64;
+            if(strings>4294967295u64){return invalid(6);}
+        }
+        if(section.uninitialized!=0u64){
             section.offset=0u64;
             section.relocation_offset=0u64;
         }else{
-            if(section.zero_fill!=0u64){
-                // LINK applies source relocations to initialized section data.
-                section.flags=(section.flags&~128u64)|64u64;
-            }
             section.offset=at;at+=section.byte_length;
             if(at>4294967295u64){return invalid(3);}
             section.relocation_offset=at;
@@ -38,7 +41,7 @@ extern "C" CoffLayout layout(CoffInput input) on cpu {
         section_put(input,i,section);i+=1u64;
     }
     if(at>4294967295u64){return invalid(3);}
-    u64 count=0u64;u64 strings=4u64;i=0u64;
+    u64 count=0u64;i=0u64;
     while(i<input.symbol_count){
         CoffSymbol symbol=symbol_at(input,i);
         count+=1u64+symbol.auxiliary;
@@ -78,11 +81,28 @@ extern "C" void encode(CoffInput input,CoffLayout layout,CoffBindingSource bindi
     zero(output,0u64,20u64+40u64*input.section_count);
     le16(output,0u64,34404u64);le16(output,2u64,input.section_count);
     le32(output,8u64,layout.symbols);le32(output,12u64,layout.symbol_count);
+    u64 strings=4u64;
     u64 i=0u64;
     while(i<input.section_count){
         CoffSection section=section_at(input,i);
         u64 h=20u64+40u64*i;
-        copy(output,h,section.name,section.name_length);
+        if(section.name_length<=8u64){
+            copy(output,h,section.name,section.name_length);
+        }else{
+            put(output,h,47);
+            u64 digit=h+1u64;
+            u64 remaining=strings;
+            while(remaining>=10u64){digit+=1u64;remaining/=10u64;}
+            remaining=strings;
+            while(digit>h){
+                put(output,digit,u32(remaining%10u64)+48);
+                digit-=1u64;remaining/=10u64;
+            }
+            copy(output,layout.strings+strings,section.name,section.name_length);
+            strings+=section.name_length;
+            put(output,layout.strings+strings,0);
+            strings+=1u64;
+        }
         le32(output,h+16u64,section.byte_length);le32(output,h+20u64,section.offset);
         le32(output,h+24u64,section.relocation_offset);
         u64 count=section.relocation_count;u64 flags=section.flags;
@@ -98,7 +118,7 @@ extern "C" void encode(CoffInput input,CoffLayout layout,CoffBindingSource bindi
         }
         i+=1u64;
     }
-    u64 at=layout.symbols;u64 strings=4u64;i=0u64;
+    u64 at=layout.symbols;i=0u64;
     le32(output,layout.strings,layout.length-layout.strings);
     while(i<input.symbol_count){
         CoffSymbol symbol=symbol_at(input,i);

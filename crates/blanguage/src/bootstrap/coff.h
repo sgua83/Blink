@@ -4,7 +4,7 @@ const u64 SYMBOL_BYTES=80u64;
 const u64 COFF_RELOCATION_RECORD_BYTES=10u64;
 struct CoffSection {
     address name;u64 name_length;u64 byte_length;u64 flags;
-    u64 relocation_count;u64 zero_fill;u64 offset;u64 relocation_offset;
+    u64 relocation_count;u64 uninitialized;u64 offset;u64 relocation_offset;
 };
 struct CoffSymbol {
     address name;u64 name_length;u64 section;u64 value;

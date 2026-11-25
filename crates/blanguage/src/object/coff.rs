@@ -5,12 +5,14 @@ const META: &str = ".blmeta";
 const ARCHIVE: &str = ".blrt";
 const BUILD: &str = ".blbuild";
 const FORMAT: u32 = 94;
+const IMAGE_SCN_CNT_INITIALIZED_DATA: u32 = 0x40;
+const IMAGE_SCN_CNT_UNINITIALIZED_DATA: u32 = 0x80;
 // Caller-owned views; original names and bodies stay in Object until encoding ends.
 #[repr(C)]
 struct CoffSectionView {
     name: *const u8, name_length: usize,
     byte_length: usize, flags: u64,
-    relocation_count: usize, zero_fill: u64,
+    relocation_count: usize, uninitialized: u64,
     offset: usize, relocation_offset: usize,
 }
 #[repr(C)]
@@ -810,9 +812,23 @@ fn encode_sections<'a, Bytes>(
     extra: impl Iterator<Item = (&'a str, CoffPayload<'a>, u32)>,
     imports: Option<&mut Vec<ImportKey<'a>>>,
 ) -> Result<Vec<u8>> {
-    let sections = source.iter().map(|section|
-        (section.name.as_str(), payload(&section.bytes), section.flags)
-    ).chain(extra).collect::<Vec<_>>();
+    let sections = source.iter().map(|section| {
+        let payload = payload(&section.bytes);
+        let name = section.name.as_str();
+        let mut flags = section.flags;
+        let name = if matches!(payload, CoffPayload::ZeroFill(_)) && !section.relocations.is_empty() {
+            flags = (flags & !IMAGE_SCN_CNT_UNINITIALIZED_DATA) | IMAGE_SCN_CNT_INITIALIZED_DATA;
+            // LINK groups conventional sections by the name before the dollar suffix.
+            match name.strip_prefix(".bss") {
+                Some("") => Cow::Borrowed(".data"),
+                Some(suffix) if suffix.starts_with('$') => Cow::Owned(format!(".data{suffix}")),
+                _ => Cow::Borrowed(name),
+            }
+        } else {
+            Cow::Borrowed(name)
+        };
+        (name, payload, flags)
+    }).chain(extra.map(|(name, payload, flags)| (Cow::Borrowed(name), payload, flags))).collect::<Vec<_>>();
     let input_relocations = source.iter().map(|section| {
         section.relocations.iter().map(|relocation| {
             let empty = BindingBytes::new(&[]);
@@ -824,8 +840,8 @@ fn encode_sections<'a, Bytes>(
             BindingRelocation { offset: relocation.offset as u64, kind: relocation.kind, target, value: 0, section, name, dll }
         }).collect::<Vec<_>>()
     }).collect::<Vec<_>>();
-    let binding_sections = source.iter().zip(&input_relocations).map(|(section, relocations)| BindingSection {
-        name: BindingBytes::new(section.name.as_bytes()), flags: u64::from(section.flags),
+    let binding_sections = source.iter().zip(&input_relocations).zip(&sections).map(|((section, relocations), (name, _, flags))| BindingSection {
+        name: BindingBytes::new(name.as_bytes()), flags: u64::from(*flags),
         relocations: relocations.as_ptr(), relocation_count: relocations.len(),
         associated: section.associated.as_ptr(), associated_count: section.associated.len(), owner: 0, symbol: 0,
     }).collect::<Vec<_>>();
@@ -838,7 +854,7 @@ fn encode_sections<'a, Bytes>(
 
 fn encode_bound<'a>(
     name: &str,
-    sections: Vec<(&str, CoffPayload<'_>, u32)>,
+    sections: Vec<(impl AsRef<str>, CoffPayload<'_>, u32)>,
     mut binding_sections: Vec<BindingSection>,
     definitions: &[BindingDefinition],
     imports: Option<&mut Vec<ImportKey<'a>>>,
@@ -870,13 +886,16 @@ fn encode_bound<'a>(
         BindingError::RelocationOffset => return Err("COFF重定位偏移超过32位字段".into()),
     }
     unsafe { symbols.set_len(plan.symbols) };
-    let mut physical = sections.iter().enumerate().map(|(index, (name, payload, flags))| CoffSectionView {
-        name: name.as_ptr(), name_length: name.len(),
-        byte_length: payload.len(), flags: u64::from(*flags),
-        zero_fill: u64::from(matches!(payload, CoffPayload::ZeroFill(_))),
-        // Metadata sections follow the bound machine sections.
-        relocation_count: binding_sections.get(index).map_or(0, |section| section.relocation_count),
-        offset: 0, relocation_offset: 0,
+    let mut physical = sections.iter().enumerate().map(|(index, (name, payload, flags))| {
+        let name = name.as_ref();
+        CoffSectionView {
+            name: name.as_ptr(), name_length: name.len(),
+            byte_length: payload.len(), flags: u64::from(*flags),
+            uninitialized: u64::from(matches!(payload, CoffPayload::ZeroFill(_)) && flags & IMAGE_SCN_CNT_UNINITIALIZED_DATA != 0),
+            // Metadata sections follow the bound machine sections.
+            relocation_count: binding_sections.get(index).map_or(0, |section| section.relocation_count),
+            offset: 0, relocation_offset: 0,
+        }
     }).collect::<Vec<_>>();
     let input = CoffInput {
         sections: physical.as_mut_ptr(), section_count: physical.len(),
