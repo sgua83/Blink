@@ -860,44 +860,81 @@ extern "C" usize fusion_register(address offsets,usize value) on cpu {
 extern "C" usize fusion_local(address offsets,usize value) on cpu {
  return value+unsafe_position<FusionOffsets>(offsets).locals;
 }
-void pipeline_fuse(PipelineFusion host) on cpu
- requires nonzero(host.ir.inspect) requires nonzero(host.next)
- requires nonzero(host.previous) requires nonzero(host.stage) requires nonzero(host.append)
- requires nonzero(host.rewrite.inspect) requires nonzero(host.layout)
- requires nonzero(host.origin) requires nonzero(host.retain) requires nonzero(host.commit) {
- while(true){
-  address current=host.next(host.context);if(address_bits(current)==0u64){return;}
-  address previous=host.previous(host.context);
-  if(address_bits(previous)!=0u64&&pipeline_fusible(host.stage(previous),host.stage(current),host.ir)){
-   host.origin(previous,current);
-   FusionLayout layout=host.layout(previous,current);
-   FusionOffsets offsets=layout.offsets;
-   rewrite_code(layout.code,host.rewrite,RewriteMap(address_of(offsets),c_function(fusion_register),c_function(fusion_local)));
-   host.retain(previous,current);
-   host.commit(host.context,offsets.locals);
-  }else{host.append(host.context);}
+usize pipeline_fuse(usize count,u32 record,PipelineFusion host) on cpu
+ requires nonzero(host.ir.inspect) requires nonzero(host.at) requires nonzero(host.stage)
+ requires nonzero(host.swap) requires nonzero(host.truncate) requires nonzero(host.rewrite.inspect)
+ requires nonzero(host.layout) requires nonzero(host.origin) requires nonzero(host.retain)
+ requires nonzero(host.commit) requires nonzero(host.joined) {
+ usize index=0u64;
+ usize kept=0u64;
+ usize last_join=0u64;
+ while(index<count){
+  bool merged=false;
+  if(kept!=0u64){
+   usize target=kept-1u64;
+   address previous=host.at(host.context,target);
+   address current=host.at(host.context,index);
+   if(pipeline_fusible(host.stage(previous),host.stage(current),host.ir)){
+    host.origin(previous,current);
+    FusionLayout layout=host.layout(previous,current);
+    FusionOffsets offsets=layout.offsets;
+    rewrite_code(layout.code,host.rewrite,RewriteMap(address_of(offsets),c_function(fusion_register),c_function(fusion_local)));
+    host.retain(previous,current);
+    host.commit(host.context,target,index,offsets.locals);
+    if(record!=0&&last_join!=kept){
+     host.joined(host.context,target);
+     last_join=kept;
+    }
+    merged=true;
+   }
+  }
+  if(!merged){
+   if(index!=kept){host.swap(host.context,kept,index);}
+   kept+=1u64;
+  }
+  index+=1u64;
  }
+ host.truncate(host.context,kept);
+ return kept;
 }
-extern "C" void optimize_program(PipelineProgram host) on cpu
- requires nonzero(host.fusion.ir.inspect) requires nonzero(host.fusion.begin)
- requires nonzero(host.fusion.next) requires nonzero(host.fusion.previous)
- requires nonzero(host.fusion.stage) requires nonzero(host.fusion.append)
+usize pipeline_remove_empty(usize count,PipelineProgram host) on cpu
+ requires nonzero(host.fusion.at) requires nonzero(host.fusion.stage) requires nonzero(host.fusion.swap)
+ requires nonzero(host.fusion.truncate) requires nonzero(host.removed) requires nonzero(host.boundary) {
+ PipelineFusion fusion=host.fusion;
+ usize index=0u64;
+ usize kept=0u64;
+ u32 carry=0;
+ while(index<count){
+  PipelineStage stage=fusion.stage(fusion.at(fusion.context,index));
+  if(stage.operation==0&&stage.code.count==0u64){
+   carry=carry|stage.boundary;
+   host.removed(fusion.context,index);
+  }else{
+   if(carry!=0&&stage.boundary==0){host.boundary(fusion.context,index);}
+   carry=0;
+   if(index!=kept){fusion.swap(fusion.context,kept,index);}
+   kept+=1u64;
+  }
+  index+=1u64;
+ }
+ fusion.truncate(fusion.context,kept);
+ return kept;
+}
+extern "C" void optimize_program(usize count,PipelineProgram host) on cpu
+ requires nonzero(host.fusion.ir.inspect) requires nonzero(host.fusion.at)
+ requires nonzero(host.fusion.stage) requires nonzero(host.fusion.swap) requires nonzero(host.fusion.truncate)
  requires nonzero(host.fusion.rewrite.inspect) requires nonzero(host.fusion.layout)
  requires nonzero(host.fusion.origin) requires nonzero(host.fusion.retain) requires nonzero(host.fusion.commit)
- requires nonzero(host.batch) requires nonzero(host.remove) requires nonzero(host.origin) requires nonzero(host.finish) {
- pipeline_fuse(host.fusion);
- if(host.batch(host.fusion.context)==0){return;}
- if(host.remove(host.fusion.context)!=0u64){
+ requires nonzero(host.fusion.joined) requires nonzero(host.batch) requires nonzero(host.removed)
+ requires nonzero(host.boundary) requires nonzero(host.origin) {
+ usize fused=pipeline_fuse(count,0,host.fusion);
+ if(host.batch(host.fusion.context,0)==0){return;}
+ usize retained=pipeline_remove_empty(fused,host);
+ if(retained!=fused){
   host.origin(host.fusion.context);
-  host.fusion.begin(host.fusion.context);
-  pipeline_fuse(host.fusion);
-  if(host.batch(host.fusion.context)==0){return;}
+  pipeline_fuse(retained,1,host.fusion);
+  host.batch(host.fusion.context,1);
  }
- host.finish(host.fusion.context);
-}
-extern "C" PipelineEmpty optimize_empty(PipelineStage stage,u32 carry) on cpu {
- if(stage.operation==0&&stage.code.count==0u64){return PipelineEmpty(0,stage.boundary,carry|stage.boundary);}
- return PipelineEmpty(1,stage.boundary|carry,0);
 }
 extern "C" void optimize_value(address value,PipelineValue host) on cpu
  requires nonzero(host.flow) requires nonzero(host.eliminate) requires nonzero(host.compact) {

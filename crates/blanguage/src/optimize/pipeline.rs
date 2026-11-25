@@ -45,16 +45,16 @@ unsafe extern "C" fn stage_view(owner: *const c_void) -> StageView {
 #[repr(C)]
 struct FusionHost {
     ir: crate::ir::dataflow::Host, context: *mut c_void,
-    begin: unsafe extern "C" fn(*mut c_void),
-    next: unsafe extern "C" fn(*mut c_void) -> *mut c_void,
-    previous: unsafe extern "C" fn(*mut c_void) -> *mut c_void,
+    at: unsafe extern "C" fn(*mut c_void, usize) -> *mut c_void,
     stage: unsafe extern "C" fn(*const c_void) -> StageView,
-    append: unsafe extern "C" fn(*mut c_void),
+    swap: unsafe extern "C" fn(*mut c_void, usize, usize),
+    truncate: unsafe extern "C" fn(*mut c_void, usize),
     rewrite: rewrite::Host,
     layout: unsafe extern "C" fn(*const c_void, *mut c_void) -> FusionLayout,
     origin: unsafe extern "C" fn(*mut c_void, *mut c_void),
     retain: unsafe extern "C" fn(*mut c_void, *const c_void),
-    commit: unsafe extern "C" fn(*mut c_void, usize),
+    commit: unsafe extern "C" fn(*mut c_void, usize, usize, usize),
+    joined: unsafe extern "C" fn(*mut c_void, usize),
 }
 #[repr(C)]
 struct FusionOffsets { registers: usize, locals: usize }
@@ -63,13 +63,11 @@ struct FusionLayout { code: rewrite::Span, offsets: FusionOffsets }
 #[repr(C)]
 struct ProgramHost {
     fusion: FusionHost,
-    batch: unsafe extern "C" fn(*mut c_void) -> u32,
-    remove: unsafe extern "C" fn(*mut c_void) -> usize,
+    batch: unsafe extern "C" fn(*mut c_void, u32) -> u32,
+    removed: unsafe extern "C" fn(*mut c_void, usize),
+    boundary: unsafe extern "C" fn(*mut c_void, usize),
     origin: unsafe extern "C" fn(*mut c_void),
-    finish: unsafe extern "C" fn(*mut c_void),
 }
-#[repr(C)]
-struct EmptyResult { keep: u32, boundary: u32, carry: u32 }
 #[repr(C)]
 struct Values { project: *mut c_void, identity: *mut c_void, combine: *mut c_void }
 #[derive(Clone, Copy)]
@@ -115,8 +113,7 @@ struct MapInput {
 #[repr(C)]
 struct AccessCounts { reads: usize, writes: usize, cross: usize }
 unsafe extern "C" {
-    #[link_name = "bootstrap.ir_dataflow::optimize_program"] fn b_program(host: ProgramHost);
-    #[link_name = "bootstrap.ir_dataflow::optimize_empty"] fn b_empty(stage: StageView, carry: u32) -> EmptyResult;
+    #[link_name = "bootstrap.ir_dataflow::optimize_program"] fn b_program(count: usize, host: ProgramHost);
     #[link_name = "bootstrap.ir_dataflow::optimize_stage"] fn b_stage(host: StageHost, has_tiles: u32);
     #[link_name = "bootstrap.ir_dataflow::optimize_value"] fn b_value(value: *mut c_void, host: ValueHost);
     #[link_name = "bootstrap.ir_dataflow::optimize_root"]
@@ -125,62 +122,42 @@ unsafe extern "C" {
     fn b_bindings(input: MapInput, ir: crate::ir::dataflow::Host, host: ReadHost) -> AccessCounts;
 }
 
-enum StageInput {
-    Empty,
-    Initial(std::vec::IntoIter<Stage>),
-    Fused(std::vec::IntoIter<(Stage, bool)>),
-}
-impl StageInput {
-    fn next(&mut self) -> Option<(Stage, bool)> {
-        match self {
-            Self::Empty => None,
-            Self::Initial(input) => input.next().map(|stage| (stage, true)),
-            Self::Fused(input) => input.next(),
-        }
-    }
-}
 struct ProgramState<'a> {
-    program: &'a mut Program, worker: &'a crate::compiler::Worker, bindings: usize,
-    stages: Vec<(Stage, bool)>, input: StageInput,
-    current: Option<(Stage, bool)>, removed: Vec<OperationOrigin>, error: Option<std::io::Error>,
+    program: &'a mut Program,
+    worker: &'a crate::compiler::Worker,
+    joined: Vec<usize>,
+    removed: Vec<OperationOrigin>,
+    error: Option<std::io::Error>,
 }
 pub(super) fn run(program: &mut Program, worker: &crate::compiler::Worker) -> std::io::Result<()> {
-    let bindings = program.buffers.len();
-    let input = StageInput::Initial(std::mem::take(&mut program.stages).into_iter());
+    let count = program.stages.len();
     let mut state = ProgramState {
-        program, worker, bindings, stages: Vec::new(), input,
-        current: None, removed: Vec::new(), error: None,
+        program, worker, joined: Vec::new(), removed: Vec::new(), error: None,
     };
     let host = ProgramHost {
         fusion: FusionHost {
             ir: crate::ir::dataflow::HOST, context: ptr::from_mut(&mut state).cast(),
-            begin, next, previous, stage: stage_view, append,
+            at: stage_at, stage: stage_view, swap: swap_stages, truncate: truncate_stages,
             rewrite: rewrite::HOST, layout: fusion_layout, origin: fusion_origin,
-            retain: fusion_retain, commit: fusion_commit,
-        }, batch, remove, origin, finish,
+            retain: fusion_retain, commit: fusion_commit, joined,
+        },
+        batch, removed: removed_stage, boundary: carry_boundary, origin,
     };
-    unsafe { b_program(host); }
+    unsafe { b_program(count, host); }
     state.error.map_or(Ok(()), Err)
 }
-unsafe extern "C" fn begin(context: *mut c_void) {
+unsafe extern "C" fn stage_at(context: *mut c_void, index: usize) -> *mut c_void {
     let state = unsafe { &mut *context.cast::<ProgramState<'_>>() };
-    state.input = StageInput::Fused(std::mem::take(&mut state.stages).into_iter());
+    // A synchronous B step uses the slot until movement or truncation of the table.
+    unsafe { state.program.stages.as_mut_ptr().add(index).cast() }
 }
-unsafe extern "C" fn next(context: *mut c_void) -> *mut c_void {
+unsafe extern "C" fn swap_stages(context: *mut c_void, first: usize, second: usize) {
     let state = unsafe { &mut *context.cast::<ProgramState<'_>>() };
-    state.current = match state.input.next() {
-        Some(current) => Some(current),
-        None => { state.input = StageInput::Empty; None }
-    };
-    state.current.as_mut().map_or(ptr::null_mut(), |(stage, _)| ptr::from_mut(stage).cast())
+    state.program.stages.swap(first, second);
 }
-unsafe extern "C" fn previous(context: *mut c_void) -> *mut c_void {
-    let stages = unsafe { &mut (*context.cast::<ProgramState<'_>>()).stages };
-    stages.last_mut().map_or(ptr::null_mut(), |(stage, _)| ptr::from_mut(stage).cast())
-}
-unsafe extern "C" fn append(context: *mut c_void) {
+unsafe extern "C" fn truncate_stages(context: *mut c_void, count: usize) {
     let state = unsafe { &mut *context.cast::<ProgramState<'_>>() };
-    state.stages.push(state.current.take().unwrap());
+    state.program.stages.truncate(count);
 }
 unsafe extern "C" fn fusion_layout(previous: *const c_void, current: *mut c_void) -> FusionLayout {
     let previous = unsafe { &*previous.cast::<Stage>() };
@@ -197,7 +174,7 @@ unsafe extern "C" fn fusion_origin(previous: *mut c_void, current: *mut c_void) 
     let previous = unsafe { &mut *previous.cast::<Stage>() };
     let stage = unsafe { &mut *current.cast::<Stage>() };
     let following = OperationOrigin {
-        source_site: stage.operation_source.clone(), generated_origin: stage.generated_origin.take(),
+        source_site: stage.operation_source.take(), generated_origin: stage.generated_origin.take(),
     };
     if let Some(GenerationAnchor::StageFusion { stages }) = previous.generated_origin.as_mut()
         .and_then(std::sync::Arc::get_mut).and_then(|origin| origin.trigger.as_mut())
@@ -218,53 +195,60 @@ unsafe extern "C" fn fusion_retain(previous: *mut c_void, current: *const c_void
     let stage = unsafe { &*current.cast::<Stage>() };
     retain_stage_guarantees(previous, &stage.write_regions);
 }
-unsafe extern "C" fn fusion_commit(context: *mut c_void, local: usize) {
+unsafe extern "C" fn fusion_commit(context: *mut c_void, target: usize, source: usize, local: usize) {
     let state = unsafe { &mut *context.cast::<ProgramState<'_>>() };
-    let (stage, _) = state.current.take().unwrap();
-    let (previous, changed) = state.stages.last_mut().unwrap();
-    previous.registers.extend(stage.registers);
-    previous.locals.extend(stage.locals.into_iter().map(|(end, ty)| (end + local, ty)));
-    previous.code.extend(stage.code);
-    union_bindings(&mut previous.reads, stage.reads);
-    union_bindings(&mut previous.writes, stage.writes);
-    previous.prefix_guarantees.extend(stage.prefix_guarantees);
-    previous.element_guarantees.extend(stage.element_guarantees);
-    for (binding, written) in stage.write_regions {
+    let (retained, following) = state.program.stages.split_at_mut(source);
+    let previous = &mut retained[target];
+    let stage = &mut following[0];
+    previous.registers.extend(std::mem::take(&mut stage.registers));
+    previous.locals.extend(std::mem::take(&mut stage.locals).into_iter().map(|(end, ty)| (end + local, ty)));
+    previous.code.extend(std::mem::take(&mut stage.code));
+    union_bindings(&mut previous.reads, std::mem::take(&mut stage.reads));
+    union_bindings(&mut previous.writes, std::mem::take(&mut stage.writes));
+    previous.prefix_guarantees.extend(std::mem::take(&mut stage.prefix_guarantees));
+    previous.element_guarantees.extend(std::mem::take(&mut stage.element_guarantees));
+    for (binding, written) in std::mem::take(&mut stage.write_regions) {
         previous.write_regions.entry(binding).or_default().extend(written);
     }
-    union_bindings(&mut previous.cross_access, stage.cross_access);
-    *changed = true;
+    union_bindings(&mut previous.cross_access, std::mem::take(&mut stage.cross_access));
 }
-unsafe extern "C" fn batch(context: *mut c_void) -> u32 {
+unsafe extern "C" fn joined(context: *mut c_void, index: usize) {
     let state = unsafe { &mut *context.cast::<ProgramState<'_>>() };
-    // Only B-marked actual work borrows Stage. The original scoped runtime
-    // joins every consumer before these references or this Vec can be moved.
-    let work = state.stages.iter_mut().filter_map(|(stage, changed)| changed.then_some(stage)).collect::<Vec<_>>();
-    let bindings = state.bindings;
+    state.joined.push(index);
+}
+unsafe extern "C" fn batch(context: *mut c_void, joined_only: u32) -> u32 {
+    let state = unsafe { &mut *context.cast::<ProgramState<'_>>() };
+    let bindings = state.program.buffers.len();
+    let mut stages = state.program.stages.iter_mut();
+    let work = if joined_only == 0 {
+        stages.collect()
+    } else {
+        let mut next = 0;
+        std::mem::take(&mut state.joined).into_iter().map(|index| {
+            let stage = stages.nth(index - next).unwrap();
+            next = index + 1;
+            stage
+        }).collect()
+    };
     let result = crate::parallel::try_map(state.worker, work, |_| (), |_, stage| {
         run_stage(stage, bindings); Ok::<_, std::convert::Infallible>(())
     });
     match result {
-        Ok(_) => { for (_, changed) in &mut state.stages { *changed = false; } 1 }
+        Ok(_) => 1,
         Err(crate::parallel::Error::Resource(error)) => { state.error = Some(error); 0 }
         Err(crate::parallel::Error::Work(error)) => match error {},
     }
 }
-unsafe extern "C" fn remove(context: *mut c_void) -> usize {
+unsafe extern "C" fn removed_stage(context: *mut c_void, index: usize) {
     let state = unsafe { &mut *context.cast::<ProgramState<'_>>() };
-    let mut carry = 0;
-    state.stages.retain_mut(|(stage, _)| {
-        let result = unsafe { b_empty(stage_view(ptr::from_ref(stage).cast()), carry) };
-        carry = result.carry;
-        stage.boundary_before = result.boundary != 0;
-        if result.keep == 0 {
-            state.removed.push(OperationOrigin {
-                source_site: stage.operation_source.clone(), generated_origin: stage.generated_origin.clone(),
-            });
-        }
-        result.keep != 0
+    let stage = &mut state.program.stages[index];
+    state.removed.push(OperationOrigin {
+        source_site: stage.operation_source.take(), generated_origin: stage.generated_origin.take(),
     });
-    state.removed.len()
+}
+unsafe extern "C" fn carry_boundary(context: *mut c_void, index: usize) {
+    let state = unsafe { &mut *context.cast::<ProgramState<'_>>() };
+    state.program.stages[index].boundary_before = true;
 }
 unsafe extern "C" fn origin(context: *mut c_void) {
     let state = unsafe { &mut *context.cast::<ProgramState<'_>>() };
@@ -274,11 +258,6 @@ unsafe extern "C" fn origin(context: *mut c_void) {
         trigger: Some(GenerationAnchor::EmptyMapRemoval { retained, stages: std::mem::take(&mut state.removed) }),
     }));
 }
-unsafe extern "C" fn finish(context: *mut c_void) {
-    let state = unsafe { &mut *context.cast::<ProgramState<'_>>() };
-    state.program.stages = std::mem::take(&mut state.stages).into_iter().map(|(stage, _)| stage).collect();
-}
-
 struct StageState<'a> { stage: &'a mut Stage, bindings: usize, words: BTreeSet<SharedWord> }
 fn run_stage(stage: &mut Stage, bindings: usize) {
     let has_tiles = u32::from(!stage.tiles.is_empty());

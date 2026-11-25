@@ -207,25 +207,24 @@ struct FusionOffsets { usize registers; usize locals; };
 struct FusionLayout { RewriteSpan code; FusionOffsets offsets; };
 struct PipelineFusion {
  Host ir; address context;
- cfn<void,address> begin;
- cfn<address,address> next;
- cfn<address,address> previous;
+ cfn<address,address,usize> at;
  cfn<PipelineStage,address> ensures memory(read) stage;
- cfn<void,address> append;
+ cfn<void,address,usize,usize> swap;
+ cfn<void,address,usize> truncate;
  RewriteHost rewrite;
  cfn<FusionLayout,address,address> layout;
  cfn<void,address,address> origin;
  cfn<void,address,address> retain;
- cfn<void,address,usize> commit;
+ cfn<void,address,usize,usize,usize> commit;
+ cfn<void,address,usize> joined;
 };
 struct PipelineProgram {
  PipelineFusion fusion;
- cfn<u32,address> batch;
- cfn<usize,address> remove;
+ cfn<u32,address,u32> batch;
+ cfn<void,address,usize> removed;
+ cfn<void,address,usize> boundary;
  cfn<void,address> origin;
- cfn<void,address> finish;
 };
-struct PipelineEmpty { u32 keep; u32 boundary; u32 carry; };
 struct PipelineValues { address project; address identity; address combine; };
 struct PipelineValue {
  cfn<void,address> flow;
@@ -258,14 +257,13 @@ struct PipelineMap {
  address reads; address writes; address cross; usize cross_count;
 };
 struct PipelineAccessCounts { usize reads; usize writes; usize cross; };
-extern "C" void optimize_program(PipelineProgram host) on cpu
- requires nonzero(host.fusion.ir.inspect) requires nonzero(host.fusion.begin)
- requires nonzero(host.fusion.next) requires nonzero(host.fusion.previous)
- requires nonzero(host.fusion.stage) requires nonzero(host.fusion.append)
+extern "C" void optimize_program(usize count,PipelineProgram host) on cpu
+ requires nonzero(host.fusion.ir.inspect) requires nonzero(host.fusion.at)
+ requires nonzero(host.fusion.stage) requires nonzero(host.fusion.swap) requires nonzero(host.fusion.truncate)
  requires nonzero(host.fusion.rewrite.inspect) requires nonzero(host.fusion.layout)
  requires nonzero(host.fusion.origin) requires nonzero(host.fusion.retain) requires nonzero(host.fusion.commit)
- requires nonzero(host.batch) requires nonzero(host.remove) requires nonzero(host.origin) requires nonzero(host.finish);
-extern "C" PipelineEmpty optimize_empty(PipelineStage stage,u32 carry) on cpu;
+ requires nonzero(host.fusion.joined) requires nonzero(host.batch) requires nonzero(host.removed)
+ requires nonzero(host.boundary) requires nonzero(host.origin);
 extern "C" void optimize_stage(PipelineStageHost host,u32 has_tiles) on cpu
  requires nonzero(host.ir.inspect) requires nonzero(host.stage) requires nonzero(host.custom)
  requires nonzero(host.values.flow) requires nonzero(host.values.eliminate) requires nonzero(host.values.compact)
