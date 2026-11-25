@@ -2,23 +2,31 @@
 use super::*;
 use crate::spirv::{DISPATCH_CONTINUATION_SPEC_ID, DISPATCH_RECORD_BYTES, SCAN_WIDTH, sort_histogram_count};
 
-#[repr(u32)]
-#[allow(dead_code)] // Returned by bootstrap.spirv_envelope.
-enum DispatchCapacity { None, Fixed, EntryCount, ReadDomain }
+#[repr(C)]
+struct DispatchArgumentInput {
+    layout: DispatchLayout,
+    prefix: PageInputs,
+    push: DispatchPush,
+    invocation: u32,
+    operation: EntryOperation,
+    selected: u32,
+    fixed: u32,
+    has_fixed: u32,
+    scan_count: u32,
+    scan_width: u32,
+    count_word: u32,
+    histogram_byte: u32,
+}
 
 #[repr(C)]
-struct DispatchArgumentPlan {
-    capacity: DispatchCapacity,
+struct DispatchArgumentResult {
+    label: u32,
     collective: u32,
-    sorting: u32,
 }
 
 unsafe extern "C" {
-    #[link_name = "bootstrap.spirv_envelope::plan_dispatch_arguments"]
-    fn plan_dispatch_arguments(
-        operation: EntryOperation, selected: u32, prefix: u32,
-        fixed: u32, scan_count: u32, scan_width: u32,
-    ) -> DispatchArgumentPlan;
+    #[link_name = "bootstrap.spirv_envelope::emit_dispatch_arguments"]
+    fn emit_dispatch_arguments(input: DispatchArgumentInput, host: MemoryHost) -> DispatchArgumentResult;
 }
 
 impl Emitter<'_> {
@@ -29,21 +37,6 @@ impl Emitter<'_> {
             block: self.push,
             zero,
         }
-    }
-
-    fn prefix_push(&mut self, word: u32) -> u32 {
-        let zero = self.constant(Scalar::U32, 0);
-        let word = self.constant(Scalar::U32, word);
-        let push = self.dispatch_push(zero);
-        let at = self.body.len();
-        self.body.reserve(10);
-        let emitted = unsafe {
-            let emitted = read_dispatch_word(push, word, self.next, self.body.as_mut_ptr().add(at));
-            self.body.set_len(at + emitted.words as usize);
-            emitted
-        };
-        self.next = emitted.next;
-        emitted.value
     }
 
     pub(super) fn linear_index(&mut self, local: u32) -> (u32, u32, [u32; 2]) {
@@ -76,52 +69,26 @@ impl Emitter<'_> {
         let domain = self.stage.domain;
         let operation = EntryOperation::from(&self.stage.operation);
         let capacity = self.program.buffers[domain].count;
-        let fixed = capacity.unwrap_or(0);
-        let scan_count = match (&operation, capacity) {
-            (EntryOperation::Sort, Some(count)) => sort_histogram_count(count),
-            _ => fixed,
+        let (scan_count, histogram_byte) = match operation {
+            EntryOperation::Sort => (capacity.map_or(0, sort_histogram_count), self.continuation_byte()),
+            _ => (capacity.unwrap_or(0), 0),
         };
-        let plan = unsafe {
-            plan_dispatch_arguments(
-                operation, u32::from(self.stage.selection.is_some()), u32::from(prefix.is_some()),
-                u32::from(capacity.is_some()), scan_count, SCAN_WIDTH,
-            )
-        };
-        let count_word = 2 + domain as u32;
         let zero = self.constant(Scalar::U32, 0);
-        let first = self.id();
-        let run = self.id();
-        let end = self.id();
-        self.open_index_branch(first, invocation, zero, false, run, end);
-        let count = match prefix {
-            Some(prefix) => {
-                let source = self.address_scalar(Scalar::U32, prefix.binding, zero, prefix.word);
-                self.load_aligned_word(source)
-            }
-            None => self.prefix_push(count_word),
+        let (descriptor, word) = prefix.map_or((0, None), |count| {
+            (self.buffers[count.binding], Some(count.word))
+        });
+        let input = DispatchArgumentInput {
+            layout: self.dispatch_layout(),
+            prefix: self.page_inputs(PageSource::Dataset(descriptor), zero, word, 0),
+            push: self.dispatch_push(zero),
+            invocation, operation,
+            selected: u32::from(self.stage.selection.is_some()),
+            fixed: capacity.unwrap_or(0), has_fixed: u32::from(capacity.is_some()),
+            scan_count, scan_width: SCAN_WIDTH, count_word: 2 + domain as u32, histogram_byte,
         };
-        let max_x = self.prefix_push(0);
-        let max_y = self.prefix_push(1);
-        let capacity = match plan.capacity {
-            DispatchCapacity::None => 0,
-            DispatchCapacity::Fixed => self.constant(Scalar::U32, fixed),
-            DispatchCapacity::EntryCount => count,
-            DispatchCapacity::ReadDomain => self.prefix_push(count_word),
-        };
-        let collective = plan.collective != 0;
-        let input = self.dispatch_grid_input(
-            count, [max_x, max_y], capacity, collective, plan.sorting != 0, 0,
-        );
-        let at = self.body.len();
-        self.body.reserve(input.word_capacity());
-        let emitted = unsafe {
-            let emitted = encode_dispatch_grid(input, self.body.as_mut_ptr().add(at));
-            self.body.set_len(at + emitted.words as usize);
-            emitted
-        };
-        self.next = emitted.next;
-        self.merge_active(end, true);
-        collective
+        let emitted = unsafe { emit_dispatch_arguments(input, self.memory_host()) };
+        self.current_label = emitted.label;
+        emitted.collective != 0
     }
 
     pub(super) fn continuation_byte(&mut self) -> u32 {
@@ -140,35 +107,15 @@ impl Emitter<'_> {
         id
     }
 
-    pub(super) fn dispatch_grid_input(
-        &mut self,
-        count: u32,
-        limits: [u32; 2],
-        capacity: u32,
-        collective: bool,
-        sorting: bool,
-        first_byte: u32,
-    ) -> DispatchGrid {
-        DispatchGrid {
-            scalars: self.dispatch_scalars(),
-            wide_type: self.u64_type,
+    pub(super) fn dispatch_layout(&self) -> DispatchLayout {
+        DispatchLayout {
             table_pointer: self.ptr_table_u64,
             page_pointer: self.physical_pointers[&Scalar::U64],
             word_pointer: self.physical_pointers[&Scalar::U32],
             descriptor: self.buffers[self.execution_buffers.indirect],
-            count,
-            width: self.constant(Scalar::U32, self.workgroup_width),
-            max_x: limits[0],
-            max_y: limits[1],
-            capacity,
-            collective: u32::from(collective),
-            bins: if sorting { self.constant(Scalar::U32, 16) } else { 0 },
-            first_byte,
-            histogram_byte: if sorting { self.continuation_byte() } else { 0 },
-            width_shift: self.constant(Scalar::U32, SCAN_WIDTH.trailing_zeros()),
-            record_bytes: self.constant(Scalar::U64, DISPATCH_RECORD_BYTES as u32),
-            field_bytes: [4, 8, 12].map(|byte| self.constant(Scalar::U64, byte)),
-            next: self.next,
+            width: self.workgroup_width,
+            width_shift: SCAN_WIDTH.trailing_zeros(),
+            record_bytes: DISPATCH_RECORD_BYTES as u32,
         }
     }
 

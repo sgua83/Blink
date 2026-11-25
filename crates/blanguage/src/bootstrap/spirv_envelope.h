@@ -1086,18 +1086,15 @@ struct TileExtract {
 // fixed shift ID, or zero for the low bits. The body has room for 19 words.
 extern "C" PayloadRead tile_extract(TileExtract input, address body) on cpu;
 
-enum DispatchCapacity:u32 {
-    None=0; Fixed=1; EntryCount=2; ReadDomain=3;
+struct DispatchLayout {
+    u32 table_pointer;
+    u32 page_pointer;
+    u32 word_pointer;
+    u32 descriptor;
+    u32 width;
+    u32 width_shift;
+    u32 record_bytes;
 };
-struct DispatchArgumentPlan {
-    DispatchCapacity capacity;
-    u32 collective;
-    u32 sorting;
-};
-
-extern "C" DispatchArgumentPlan plan_dispatch_arguments(
-    u32 operation, u32 selected, u32 prefix, u32 fixed, u32 scan_count, u32 scan_width
-) on cpu;
 
 struct DispatchScalars {
     u32 uint_type;
@@ -1105,36 +1102,6 @@ struct DispatchScalars {
     u32 zero;
     u32 one;
 };
-
-struct DispatchValue {
-    u64 words;
-    u32 next;
-    u32 value;
-};
-
-struct DispatchGrid {
-    DispatchScalars scalars;
-    u32 wide_type;
-    u32 table_pointer;
-    u32 page_pointer;
-    u32 word_pointer;
-    u32 descriptor;
-    u32 count;
-    u32 width;
-    u32 max_x;
-    u32 max_y;
-    u32 capacity;
-    u32 collective;
-    u32 bins;
-    u32 first_byte;
-    u32 histogram_byte;
-    u32 width_shift;
-    u32 record_bytes;
-    array<u32,3> field_bytes;
-    u32 next;
-};
-
-extern "C" DispatchValue encode_dispatch_grid(DispatchGrid input, address body) on cpu;
 
 struct ScatterInput {
     PageAddress flag;
@@ -1148,8 +1115,11 @@ struct ScatterInput {
 // the shader body and return its next ID and final active-merge label.
 extern "C" StageWords encode_record_scatter(ScatterInput input, address record_copy,
     u32 count_descriptor, u32 count_word, address body) on cpu;
-extern "C" StageWords encode_index_scatter(ScatterInput input, u32 target_descriptor,
-    DispatchGrid grid, address body) on cpu;
+extern "C" u32 encode_index_scatter(ScatterInput input, u32 target_descriptor,
+    DispatchLayout layout, u32 max_x, u32 max_y, u32 first_byte, usize scatter_words, MemoryHost host) on cpu
+    requires nonzero(host.scalars.constant) requires nonzero(host.scalars.type_id)
+    requires nonzero(host.scalars.ids) requires nonzero(host.scalars.reserve)
+    requires nonzero(host.finish_body);
 
 struct SortRankEmission {
     PageAddress source;
@@ -1226,10 +1196,28 @@ struct PrefixIndexWords {
 };
 
 struct DispatchPush { u32 uint_type; u32 pointer_type; u32 block; u32 zero; };
+struct DispatchArgumentInput {
+    DispatchLayout layout;
+    PageInputs prefix;
+    DispatchPush push;
+    u32 invocation;
+    u32 operation;
+    u32 selected;
+    u32 fixed;
+    u32 has_fixed;
+    u32 scan_count;
+    u32 scan_width;
+    u32 count_word;
+    u32 histogram_byte;
+};
+struct DispatchArgumentResult { u32 label; u32 collective; };
+extern "C" DispatchArgumentResult emit_dispatch_arguments(DispatchArgumentInput input, MemoryHost host) on cpu
+    requires nonzero(host.scalars.constant) requires nonzero(host.scalars.type_id)
+    requires nonzero(host.scalars.ids) requires nonzero(host.scalars.reserve)
+    requires nonzero(host.pointer_type) requires nonzero(host.finish_body);
 extern "C" void declare_dispatch_continuation(u32 type_id, u32 result, u32 spec_id, u32 bytes,
     address definitions, address decorations) on cpu;
 extern "C" PayloadRead dispatch_count_index(DispatchPush push, u32 word, u32 field, u32 first, address body) on cpu;
-extern "C" PayloadRead read_dispatch_word(DispatchPush push, u32 word, u32 first, address body) on cpu;
 extern "C" PrefixIndexWords encode_linear_index(DispatchPush push, u32 wide_type, u32 bool_type,
     u32 local, u32 one, u32 first, address body) on cpu;
 extern "C" PrefixIndexWords encode_prefix_index(PrefixIndexEmission input, address body) on cpu;

@@ -2297,6 +2297,51 @@ DispatchValue dispatch_min(address body, DispatchValue cursor, DispatchScalars t
     return DispatchValue(at, result + 1, result);
 }
 
+struct DispatchValue { u64 words; u32 next; u32 value; };
+struct DispatchGrid {
+    DispatchScalars scalars;
+    u32 wide_type;
+    u32 table_pointer;
+    u32 page_pointer;
+    u32 word_pointer;
+    u32 descriptor;
+    u32 width;
+    u32 max_x;
+    u32 max_y;
+    u32 capacity;
+    u32 collective;
+    u32 bins;
+    u32 first_byte;
+    u32 histogram_byte;
+    u32 width_shift;
+    u32 record_bytes;
+    array<u32,3> field_bytes;
+};
+
+DispatchGrid prepare_dispatch_grid(DispatchLayout layout, u32 max_x, u32 max_y,
+    u32 capacity, bool collective, u32 first_byte, u32 histogram_byte, ScalarHost host) on cpu
+    requires nonzero(host.constant) requires nonzero(host.type_id) {
+    address context = host.context;
+    DispatchScalars types = DispatchScalars(host.type_id(context, BuiltinScalar::U32),
+        host.type_id(context, BuiltinScalar::Bool), host.constant(context, BuiltinScalar::U32, 0u64),
+        host.constant(context, BuiltinScalar::U32, 1u64));
+    u32 width = host.constant(context, BuiltinScalar::U32, u64(layout.width));
+    u32 bins = histogram_byte == 0 ? 0 : host.constant(context, BuiltinScalar::U32, 16u64);
+    u32 shift = host.constant(context, BuiltinScalar::U32, u64(layout.width_shift));
+    u32 stride = host.constant(context, BuiltinScalar::U64, u64(layout.record_bytes));
+    array<u32,3> fields = array<u32,3>(host.constant(context, BuiltinScalar::U64, 4u64),
+        host.constant(context, BuiltinScalar::U64, 8u64), host.constant(context, BuiltinScalar::U64, 12u64));
+    return DispatchGrid(types, host.type_id(context, BuiltinScalar::U64),
+        layout.table_pointer, layout.page_pointer, layout.word_pointer, layout.descriptor,
+        width, max_x, max_y, capacity, u32(collective), bins, first_byte, histogram_byte, shift, stride, fields);
+}
+
+u64 dispatch_grid_capacity(read DispatchGrid input) on cpu {
+    // First record, optional histogram setup and one loop body for the hierarchy.
+    return 25u64 + 167u64 + (input.bins != 0 ? 56u64 + 167u64 : 0u64)
+        + (input.capacity != 0 ? 96u64 + 167u64 : 0u64);
+}
+
 DispatchValue dispatch_pointer(address body, DispatchValue cursor, DispatchGrid input,
                                u32 base, u32 offset) on cpu {
     u32 physical = base;
@@ -2384,24 +2429,9 @@ DispatchValue dispatch_levels(address body, DispatchValue cursor, DispatchGrid i
     return DispatchValue(out.words, out.next, first.value);
 }
 
-extern "C" DispatchArgumentPlan plan_dispatch_arguments(
-    u32 operation, u32 selected, u32 prefix, u32 fixed, u32 scan_count, u32 scan_width
-) on cpu {
-    bool collective = operation != ENTRY_MAP || selected != 0;
-    DispatchCapacity capacity = DispatchCapacity::None;
-    if (collective && (fixed == 0 || scan_count > scan_width)) {
-        if (fixed != 0) {
-            capacity = DispatchCapacity::Fixed;
-        } else {
-            capacity = prefix == 0 ? DispatchCapacity::EntryCount : DispatchCapacity::ReadDomain;
-        }
-    }
-    return DispatchArgumentPlan(capacity, u32(collective), u32(operation == ENTRY_SORT));
-}
-
-extern "C" DispatchValue encode_dispatch_grid(DispatchGrid input, address body) on cpu {
+DispatchValue encode_dispatch_grid(DispatchGrid input, u32 count, u32 next, address body) on cpu {
     // The command and the shader consume the same first page of indirect records.
-    u32 header = input.next;
+    u32 header = next;
     u32 table = header + 1;
     u32 page = table + 1;
     u32 base = page + 1;
@@ -2414,10 +2444,10 @@ extern "C" DispatchValue encode_dispatch_grid(DispatchGrid input, address body) 
     u32 first = input.first_byte == 0 ? base : stage_op(out, 128, input.wide_type, base, input.first_byte);
     DispatchValue cursor = DispatchValue(out.words, out.next, 0);
     if (input.bins == 0) {
-        return dispatch_levels(body, cursor, input, first, input.count, input.capacity);
+        return dispatch_levels(body, cursor, input, first, count, input.capacity);
     }
 
-    DispatchValue root = dispatch_record(body, cursor, input, first, input.count);
+    DispatchValue root = dispatch_record(body, cursor, input, first, count);
     out.words = root.words;
     out.next = root.next;
     u32 histogram = stage_op(out, 132, input.scalars.uint_type, root.value, input.bins);
@@ -2505,10 +2535,7 @@ void scatter_count(inout StageCursor out, PageAddress flag, read ScatterTarget t
             out.words = words_four(out.body, out.words, 62, at.pointer, count, 2, 4);
         }
         ScatterTarget::Indices(indices) {
-            DispatchGrid grid = indices.grid;
-            grid.count = count;
-            grid.next = out.next;
-            DispatchValue written = encode_dispatch_grid(grid, word_at(out.body, out.words));
+            DispatchValue written = encode_dispatch_grid(indices.grid, count, out.next, word_at(out.body, out.words));
             out.words += written.words;
             out.next = written.next;
         }
@@ -2530,9 +2557,9 @@ void scatter_selected(inout StageCursor out, PageAddress flag, read ScatterTarge
     }
 }
 
-StageWords emit_scatter(ScatterInput input, read ScatterTarget target, address body) on cpu {
+StageWords emit_scatter(ScatterInput input, read ScatterTarget target, u32 next, address body) on cpu {
     PageAddress flag = input.flag;
-    StageCursor out = StageCursor(body, 0u64, flag.next);
+    StageCursor out = StageCursor(body, 0u64, next);
     u32 first = stage_op(out, 170, input.bool_type, flag.index, flag.zero);
     StageBranch first_branch = stage_open(out, first);
     u32 empty = stage_op(out, 170, input.bool_type, input.count, flag.zero);
@@ -2571,13 +2598,23 @@ StageWords emit_scatter(ScatterInput input, read ScatterTarget target, address b
 extern "C" StageWords encode_record_scatter(ScatterInput input, address record_copy,
     u32 count_descriptor, u32 count_word, address body) on cpu {
     let target = ScatterTarget::Records(ScatterRecords(record_copy, count_descriptor, count_word));
-    return emit_scatter(input, target, body);
+    return emit_scatter(input, target, input.flag.next, body);
 }
 
-extern "C" StageWords encode_index_scatter(ScatterInput input, u32 target_descriptor,
-    DispatchGrid grid, address body) on cpu {
+extern "C" u32 encode_index_scatter(ScatterInput input, u32 target_descriptor,
+    DispatchLayout layout, u32 max_x, u32 max_y, u32 first_byte, usize scatter_words, MemoryHost host) on cpu
+    requires nonzero(host.scalars.constant) requires nonzero(host.scalars.type_id)
+    requires nonzero(host.scalars.ids) requires nonzero(host.scalars.reserve)
+    requires nonzero(host.finish_body) {
+    address context = host.scalars.context;
+    DispatchGrid grid = prepare_dispatch_grid(layout, max_x, max_y, 0, false, first_byte, 0, host.scalars);
+    u32 next = host.scalars.ids(context, 0);
+    address body = host.scalars.reserve(context, scatter_words + 2u64 * dispatch_grid_capacity(grid), 0u64).body;
     let target = ScatterTarget::Indices(ScatterIndices(target_descriptor, grid));
-    return emit_scatter(input, target, body);
+    StageWords emitted = emit_scatter(input, target, next, body);
+    host.finish_body(context, emitted.words);
+    host.scalars.ids(context, emitted.next - next);
+    return emitted.label;
 }
 
 u64 widen_component(address body, u64 at, PrefixIndexEmission input,
@@ -2607,10 +2644,52 @@ extern "C" PayloadRead dispatch_count_index(DispatchPush push, u32 word, u32 fie
     return PayloadRead(out.words, out.next, index);
 }
 
-extern "C" PayloadRead read_dispatch_word(DispatchPush push, u32 word, u32 first, address body) on cpu {
-    StageCursor out = StageCursor(body, 0u64, first);
-    u32 value = dispatch_push_word(out, push, word);
-    return PayloadRead(out.words, out.next, value);
+extern "C" DispatchArgumentResult emit_dispatch_arguments(DispatchArgumentInput input, MemoryHost host) on cpu
+    requires nonzero(host.scalars.constant) requires nonzero(host.scalars.type_id)
+    requires nonzero(host.scalars.ids) requires nonzero(host.scalars.reserve)
+    requires nonzero(host.pointer_type) requires nonzero(host.finish_body) {
+    address context = host.scalars.context;
+    bool prefixed = input.prefix.descriptor != 0;
+    bool collective = input.operation != ENTRY_MAP || input.selected != 0;
+    bool levels = collective && (input.has_fixed == 0 || input.scan_count > input.scan_width);
+    bool read_domain = levels && input.has_fixed == 0 && prefixed;
+    u32 zero = input.push.zero;
+    u32 bool_type = host.scalars.type_id(context, BuiltinScalar::Bool);
+    u32 first = host.scalars.ids(context, 3);
+    u32 end = first + 2;
+    address head = host.scalars.reserve(context, 14u64, 0u64).body;
+    ControlWords opened = open_index_selection(bool_type, first, input.invocation, zero, false, first + 1, end, head);
+    host.finish_body(context, opened.words);
+
+    u32 count = prefixed ? physical_scalar_read(PhysicalAccess(input.prefix, BuiltinScalar::U32, 0, 0), host) : 0;
+    u32 count_word = !prefixed || read_domain
+        ? host.scalars.constant(context, BuiltinScalar::U32, u64(input.count_word)) : 0;
+    u32 one = host.scalars.constant(context, BuiltinScalar::U32, 1u64);
+    u32 next = host.scalars.ids(context, 0);
+    u64 read_words = prefixed && !read_domain ? 20u64 : 30u64;
+    address reads = host.scalars.reserve(context, read_words, 0u64).body;
+    StageCursor out = StageCursor(reads, 0u64, next);
+    if (!prefixed) { count = dispatch_push_word(out, input.push, count_word); }
+    u32 max_x = dispatch_push_word(out, input.push, zero);
+    u32 max_y = dispatch_push_word(out, input.push, one);
+    u32 capacity = read_domain ? dispatch_push_word(out, input.push, count_word)
+        : levels && input.has_fixed == 0 ? count : 0;
+    host.finish_body(context, out.words);
+    host.scalars.ids(context, out.next - next);
+    if (levels && input.has_fixed != 0) {
+        capacity = host.scalars.constant(context, BuiltinScalar::U32, u64(input.fixed));
+    }
+
+    DispatchGrid grid = prepare_dispatch_grid(input.layout, max_x, max_y, capacity, collective,
+        0, input.histogram_byte, host.scalars);
+    next = host.scalars.ids(context, 0);
+    address body = host.scalars.reserve(context, dispatch_grid_capacity(grid) + 4u64, 0u64).body;
+    DispatchValue emitted = encode_dispatch_grid(grid, count, next, body);
+    out = StageCursor(body, emitted.words, emitted.next);
+    stage_close(out, end);
+    host.finish_body(context, out.words);
+    host.scalars.ids(context, out.next - next);
+    return DispatchArgumentResult(end, u32(collective));
 }
 
 extern "C" PrefixIndexWords encode_linear_index(DispatchPush push, u32 wide_type, u32 bool_type,

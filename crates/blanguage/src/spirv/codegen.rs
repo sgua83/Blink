@@ -1163,41 +1163,14 @@ struct SortRankEmission {
 struct StageWords { words: u64, next: u32, label: u32 }
 
 #[repr(C)]
-struct DispatchValue {
-    words: u64,
-    next: u32,
-    value: u32,
-}
-
-#[repr(C)]
-struct DispatchGrid {
-    scalars: DispatchScalars,
-    wide_type: u32,
+struct DispatchLayout {
     table_pointer: u32,
     page_pointer: u32,
     word_pointer: u32,
     descriptor: u32,
-    count: u32,
     width: u32,
-    max_x: u32,
-    max_y: u32,
-    capacity: u32,
-    collective: u32,
-    bins: u32,
-    first_byte: u32,
-    histogram_byte: u32,
     width_shift: u32,
     record_bytes: u32,
-    field_bytes: [u32; 3],
-    next: u32,
-}
-
-impl DispatchGrid {
-    fn word_capacity(&self) -> usize {
-        // First record, optional histogram setup and one loop body for the hierarchy.
-        25 + 167 + (56 + 167) * usize::from(self.bins != 0)
-            + (96 + 167) * usize::from(self.capacity != 0)
-    }
 }
 
 #[repr(C)]
@@ -1365,10 +1338,6 @@ unsafe extern "C" {
     fn encode_workgroup_barrier(body: *mut u32, at: u64, scope: u32, semantics: u32) -> u64;
     #[link_name = "bootstrap.spirv_envelope::encode_sort_rank"]
     fn encode_sort_rank(input: SortRankEmission, body: *mut u32) -> StageWords;
-    #[link_name = "bootstrap.spirv_envelope::encode_dispatch_grid"]
-    fn encode_dispatch_grid(input: DispatchGrid, body: *mut u32) -> DispatchValue;
-    #[link_name = "bootstrap.spirv_envelope::read_dispatch_word"]
-    fn read_dispatch_word(push: DispatchPush, word: u32, first: u32, body: *mut u32) -> PayloadRead;
     #[link_name = "bootstrap.spirv_envelope::encode_linear_index"]
     fn encode_linear_index(
         push: DispatchPush, wide_type: u32, bool_type: u32, local: u32, one: u32, first: u32,
