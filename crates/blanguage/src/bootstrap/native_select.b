@@ -93,8 +93,8 @@ void include(inout SelectState state,u64 object_index,u64 section) on cpu {
         while(i<object.section_start+object.section_count){if((section_at(state.view,i).flags&4096u64)==0u64){enqueue(state,i);}i+=1u64;}}
     enqueue(state,object.section_start+section);
 }
-SelectTarget resolve(inout SelectState state,BindingBytes name,BindingBytes contract,address context,cfn<SelectReply,address,u64,BindingBytes> extract) on cpu requires nonzero(extract) {
-    u64 at=find(state.forest,state.forest.names,BindingKey(name,empty()));
+SelectTarget resolve(inout SelectState state,u64 definition,BindingBytes name,BindingBytes contract,address context,cfn<SelectReply,address,u64,BindingBytes> extract) on cpu requires nonzero(extract) {
+    u64 at=definition;
     if(at==0u64){
         u64 library=0u64;u64 object_index=0u64;bool found=false;
         while(library<state.view.library_count){SelectReply reply=extract(context,library,name);refresh(state,reply.view);
@@ -109,8 +109,7 @@ SelectTarget resolve(inout SelectState state,BindingBytes name,BindingBytes cont
     if(!equal(symbol.contract,contract)){return SelectTarget(0u64,0u64,result(4u64,name,empty(),state.entry));}
     return SelectTarget(symbol.owner,symbol.section,success(state.entry));
 }
-bool deferred(SelectState state,BindingBytes name,bool runtime) on cpu {
-    if(find(state.forest,state.forest.names,BindingKey(name,empty()))!=0u64){return false;}
+bool defer_unbound(SelectState state,BindingBytes name,bool runtime) on cpu {
     if(find(state.forest,state.forest.imports,BindingKey(name,empty()))!=0u64||runtime){return true;}
     u64 i=0u64;while(i<state.view.object_count){SelectObject object=object_at(state.view,i);
         if(object.has_resources!=0u64&&(suffixed(name,object.prefix,7017276058679997535u64,25971u64,10u64)||suffixed(name,object.prefix,7881706611452047455u64,435727458911u64,13u64))){return true;}i+=1u64;}return false;
@@ -176,7 +175,17 @@ extern "C" SelectResult choose(SelectView input,SelectParams params,address cont
     if(params.native_mode==0u64){SelectObject entry=object_at(state.view,state.entry);
         if(entry.kind==2u64){entry.selected=1u64;object_put(state.view,state.entry,entry);u64 i=entry.section_start;while(i<entry.section_start+entry.section_count){enqueue(state,i);i+=1u64;}}
         else{include(state,state.entry,0u64);}
-    }else{u64 i=0u64;while(i<params.root_count){SelectRoot root=root_at(params,i);SelectTarget target=resolve(state,root.name,root.contract,context,extract);if(target.result.error!=0u64){return target.result;}include(state,target.object,target.section);i+=1u64;}}
+    }else{
+        u64 i=0u64;
+        while(i<params.root_count){
+            SelectRoot root=root_at(params,i);
+            u64 definition=find(state.forest,state.forest.names,BindingKey(root.name,empty()));
+            SelectTarget target=resolve(state,definition,root.name,root.contract,context,extract);
+            if(target.result.error!=0u64){return target.result;}
+            include(state,target.object,target.section);
+            i+=1u64;
+        }
+    }
     bool bind=params.native_mode!=0u64;
     while(true){
         while(state.head<state.tail){u64 section_index=index_at(state.view.pending,state.head);state.head+=1u64;SelectSection section=section_at(state.view,section_index);u64 object_index=section.owner;SelectObject object=object_at(state.view,object_index);
@@ -195,7 +204,8 @@ extern "C" SelectResult choose(SelectView input,SelectParams params,address cont
                         if(at==0u64){return result(6u64,name,empty(),state.entry);}SelectSymbol symbol=symbol_at(state.view,node_at(state.forest,at).value-1u64);
                         if(symbol.owner!=object_index){return result(6u64,name,empty(),state.entry);}include(state,object_index,symbol.section);c+=1u64;}
                     if(params.native_mode!=0u64){object=object_at(state.view,object_index);if(object.active_archive==0u64){SelectReply reply=native_archive(context,object_index);refresh(state,reply.view);if(reply.error!=0u64){return result(7u64,empty(),empty(),state.entry);}object.active_archive=1u64;object_put(state.view,object_index,object);}
-                        SelectTarget target=resolve(state,relocation.name,empty(),context,extract);if(target.result.error!=0u64){return target.result;}include(state,target.object,target.section);
+                        u64 definition=find(state.forest,state.forest.names,BindingKey(relocation.name,empty()));
+                        SelectTarget target=resolve(state,definition,relocation.name,empty(),context,extract);if(target.result.error!=0u64){return target.result;}include(state,target.object,target.section);
                         // All local slots use the same runtime DLL prefix, so name and slot order agree.
                         u64 local=state.forest.imports;u64 found=0u64;
                         while(local!=0u64){BindingNode node=node_at(state.forest,local);SelectLocal row=local_at(state.view,node.value-1u64);i32 order=bytes_compare(relocation.name,row.name);if(order==0){found=local;break;}if(order<0){local=node.left;}else{local=node.right;}}
@@ -207,10 +217,11 @@ extern "C" SelectResult choose(SelectView input,SelectParams params,address cont
                 if(relocation.kind==0u64){include(state,object_index,relocation.section);}
                 else if(relocation.kind==1u64){
                     bool runtime=params.native_mode!=0u64&&select_runtime(state.view,relocation.name,bind);
-                    if(params.native_mode==0u64||!deferred(state,relocation.name,runtime)){
+                    u64 definition=find(state.forest,state.forest.names,BindingKey(relocation.name,empty()));
+                    if(definition!=0u64||params.native_mode==0u64||!defer_unbound(state,relocation.name,runtime)){
                         SelectImport imported=required_import(state.view,object,relocation.name);
                         if(imported.name.length==0u64){return result(8u64,relocation.name,object.name,state.entry);}
-                        SelectTarget target=resolve(state,relocation.name,imported.contract,context,extract);
+                        SelectTarget target=resolve(state,definition,relocation.name,imported.contract,context,extract);
                         if(target.result.error!=0u64){return target.result;}
                         include(state,target.object,target.section);
                     }
