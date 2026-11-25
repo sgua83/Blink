@@ -8,7 +8,7 @@ use std::{collections::BTreeMap, ffi::c_void, marker::PhantomData, mem::MaybeUni
 struct ObjectView {
     kind:u64,name:Bytes,section_start:u64,section_count:u64,symbol_start:u64,symbol_count:u64,
     import_start:u64,import_count:u64,export_start:u64,export_count:u64,code_start:u64,code_count:u64,
-    frame_start:u64,frame_count:u64,prefix:Bytes,archive:u64,has_resources:u64,selected:u64,resources:u64,keep_archive:u64,borrowed:u64,stack_bytes:u64,
+    frame_start:u64,frame_count:u64,prefix:Bytes,archive:u64,has_resources:u64,selected:u64,active_archive:u64,keep_archive:u64,borrowed:u64,stack_bytes:u64,
 }
 #[derive(Clone,Copy)]#[repr(C)]
 struct SectionView {owner:u64,flags:u64,associated:*const usize,associated_count:u64,relocation_start:u64,relocation_count:u64,live:u64,mapping:u64}
@@ -71,14 +71,14 @@ struct View {
     objects:*mut ObjectView,object_count:u64,sections:*mut SectionView,section_count:u64,
     relocations:*mut RelocationView,symbols:*mut SymbolView,imports:*mut ImportView,
     exports:*mut ExportView,code:*mut Bytes,frames:*mut FrameView,nodes:*mut [u64;9],pending:*mut u64,
-    locals:*mut LocalView,runtime:*mut RuntimeView,runtime_count:u64,archives:*mut u64,library_count:u64,
+    locals:*mut LocalView,runtime:*mut RuntimeView,runtime_count:u64,library_count:u64,
 }
 #[derive(Clone,Copy)]#[repr(C)]
 struct Params<'a> {native_mode:u64,roots:*const RootView<'a>,root_count:u64,types:u64,programs:u64,runtime_library:Bytes}
 #[derive(Clone,Copy)]#[repr(C)]
 struct Reply {view:View,object:u64,error:u64}
 #[derive(Clone,Copy)]#[repr(C)]
-struct ResourceRequest {archives:*const u64,archive_count:u64,runtime:*const RuntimeView,runtime_count:u64,locals:*const LocalView,local_count:u64,types:u64,programs:u64}
+struct ResourceRequest {runtime:*const RuntimeView,runtime_count:u64,locals:*const LocalView,local_count:u64,types:u64,programs:u64}
 #[derive(Clone,Copy)]#[repr(C)]
 struct SelectionResult {error:u64,name:Bytes,owner:Bytes,entry:u64,plan:EntryPlan}
 type Extract=unsafe extern "C" fn(*mut c_void,u64,Bytes)->Reply;
@@ -94,14 +94,13 @@ fn text(bytes:&Bytes)->&str {unsafe{std::str::from_utf8_unchecked(std::slice::fr
 struct NativeWork {
     locals: Vec<MaybeUninit<LocalView>>,
     runtime: Vec<RuntimeView>,
-    archives: Vec<MaybeUninit<u64>>,
     slots: Vec<String>,
 }
 impl NativeWork {
     fn new() -> Self {
         let runtime = crate::resource::MODULE_RUNTIME_SYMBOLS.iter()
             .map(|name| RuntimeView { name: Bytes::new(name), used: 0 }).collect();
-        Self { locals: Vec::new(), runtime, archives: Vec::new(), slots: Vec::new() }
+        Self { locals: Vec::new(), runtime, slots: Vec::new() }
     }
 }
 struct Context<'a, Payload> {
@@ -138,7 +137,7 @@ impl<'a, Payload> Context<'a, Payload> {
             section_start:self.sections.len() as u64,section_count:object.sections.len() as u64,symbol_start:self.symbols.len() as u64,symbol_count:object.symbols.len() as u64,
             import_start:self.imports.len() as u64,import_count:object.imports.len() as u64,export_start:self.exports.len() as u64,export_count:0,
             code_start:self.code.len() as u64,code_count:0,frame_start:self.frames.as_ref().map_or(0, Vec::len) as u64,frame_count:0,prefix:empty,
-            archive:object.archive.is_some() as u64,has_resources:0,selected:0,resources:0,keep_archive:0,borrowed:borrowed_source as u64,stack_bytes:u64::from(stack_bytes),
+            archive:object.archive.is_some() as u64,has_resources:0,selected:0,active_archive:0,keep_archive:0,borrowed:borrowed_source as u64,stack_bytes:u64::from(stack_bytes),
         };
         for section in &object.sections {
             // The original object owns its association lists through the synchronous selection.
@@ -180,7 +179,6 @@ impl<'a, Payload> Context<'a, Payload> {
         let definitions = self.symbols.len();
         let relocations = self.relocations.len();
         let nodes = if let Some(work) = &mut self.native {
-            work.archives.resize_with(self.objects.len(), MaybeUninit::uninit);
             // A local slot and its tree node can only come from an import relocation.
             definitions + work.locals.len()
         } else {
@@ -192,14 +190,14 @@ impl<'a, Payload> Context<'a, Payload> {
         self.pending.resize_with(self.sections.len(), MaybeUninit::uninit);
     }
     fn view(&mut self)->View {
-        let (locals, runtime, runtime_count, archives) = self.native.as_mut().map_or(
-            (std::ptr::null_mut(), std::ptr::null_mut(), 0, std::ptr::null_mut()),
-            |work| (work.locals.as_mut_ptr().cast(), work.runtime.as_mut_ptr(), work.runtime.len() as u64, work.archives.as_mut_ptr().cast()),
+        let (locals, runtime, runtime_count) = self.native.as_mut().map_or(
+            (std::ptr::null_mut(), std::ptr::null_mut(), 0),
+            |work| (work.locals.as_mut_ptr().cast(), work.runtime.as_mut_ptr(), work.runtime.len() as u64),
         );
         View{objects:self.objects.as_mut_ptr(),object_count:self.objects.len() as u64,sections:self.sections.as_mut_ptr(),section_count:self.sections.len() as u64,
             relocations:self.relocations.as_mut_ptr(),symbols:self.symbols.as_mut_ptr(),imports:self.imports.as_mut_ptr(),
             exports:self.exports.as_mut_ptr(),code:self.code.as_mut_ptr(),frames:self.frames.as_mut().map_or(std::ptr::null_mut(), Vec::as_mut_ptr),nodes:self.nodes.as_mut_ptr().cast(),pending:self.pending.as_mut_ptr().cast(),
-            locals,runtime,runtime_count,archives,library_count:self.libraries.len() as u64}
+            locals,runtime,runtime_count,library_count:self.libraries.len() as u64}
     }
     fn append(&mut self, object: Object<Payload>) -> u64 {
         let index = self.sources.len();
@@ -312,11 +310,18 @@ unsafe extern "C" fn slot<Payload>(context:*mut c_void,name:Bytes)->Bytes {
 }
 unsafe extern "C" fn binding<Payload: ReadSection>(context:*mut c_void,request:ResourceRequest)->Reply {
     let context=unsafe{&mut *context.cast::<Context<'_, Payload>>()};
-    let archives=unsafe{std::slice::from_raw_parts(request.archives,request.archive_count as usize)};
     let runtime=unsafe{std::slice::from_raw_parts(request.runtime,request.runtime_count as usize)};
     let locals=unsafe{std::slice::from_raw_parts(request.locals,request.local_count as usize)};
-    let archives=archives.iter().map(|&index|context.sources[index as usize].archive().unwrap()).collect::<Vec<_>>();
-    let result=resources::resources(&archives,request.types as u32,request.programs as u32,runtime.iter().filter(|row| row.used != 0).map(|row| text(&row.name)),locals.iter().map(|row|(text(&row.slot),text(&row.name))),Some(crate::resource::ABI));
+    // B activates archives from live sections. Borrow those sources in their original order.
+    let archives = context.objects.iter().zip(&context.sources)
+        .filter(|(object, _)| object.active_archive != 0)
+        .map(|(_, source)| source.archive().unwrap());
+    let result = resources::resources(
+        archives, request.types as u32, request.programs as u32,
+        runtime.iter().filter(|row| row.used != 0).map(|row| text(&row.name)),
+        locals.iter().map(|row| (text(&row.slot), text(&row.name))),
+        Some(crate::resource::ABI),
+    );
     // The B selector requests generated bindings only for a native image.
     let result = result.map(|code| code.map(|code| Payload::from_generated(code.into_object())));
     context.reply(result)

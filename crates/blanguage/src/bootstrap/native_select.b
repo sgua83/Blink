@@ -193,7 +193,7 @@ extern "C" SelectResult choose(SelectView input,SelectParams params,address cont
                     u64 c=object.code_start;while(c<object.code_start+object.code_count){BindingBytes name=name_at(state.view.code,c);u64 at=find(state.forest,state.forest.names,BindingKey(name,empty()));
                         if(at==0u64){return result(6u64,name,empty(),state.entry);}SelectSymbol symbol=symbol_at(state.view,node_at(state.forest,at).value-1u64);
                         if(symbol.owner!=object_index){return result(6u64,name,empty(),state.entry);}include(state,object_index,symbol.section);c+=1u64;}
-                    if(params.native_mode!=0u64){object=object_at(state.view,object_index);if(object.resources==0u64){SelectReply reply=native_archive(context,object_index);refresh(state,reply.view);if(reply.error!=0u64){return result(7u64,empty(),empty(),state.entry);}object.resources=1u64;object_put(state.view,object_index,object);}
+                    if(params.native_mode!=0u64){object=object_at(state.view,object_index);if(object.active_archive==0u64){SelectReply reply=native_archive(context,object_index);refresh(state,reply.view);if(reply.error!=0u64){return result(7u64,empty(),empty(),state.entry);}object.active_archive=1u64;object_put(state.view,object_index,object);}
                         SelectTarget target=resolve(state,relocation.name,empty(),context,extract);if(target.result.error!=0u64){return target.result;}include(state,target.object,target.section);
                         // All local slots use the same runtime DLL prefix, so name and slot order agree.
                         u64 local=state.forest.imports;u64 found=0u64;
@@ -217,12 +217,8 @@ extern "C" SelectResult choose(SelectView input,SelectParams params,address cont
                 r+=1u64;
             }
         }
-        if(!bind){break;}bind=false;u64 archive_count=0u64;o=0u64;
-        while(o<state.view.object_count){u64 index=ordered(o,state.entry);SelectObject object=object_at(state.view,index);
-            if(object.selected!=0u64&&object.resources!=0u64){index_put(state.view.archives,archive_count,index);archive_count+=1u64;}
-            o+=1u64;
-        }
-        SelectReply reply=resources(context,SelectResource(state.view.archives,archive_count,state.view.runtime,state.view.runtime_count,state.view.locals,state.local_count,params.types,params.programs));refresh(state,reply.view);
+        if(!bind){break;}bind=false;
+        SelectReply reply=resources(context,SelectResource(state.view.runtime,state.view.runtime_count,state.view.locals,state.local_count,params.types,params.programs));refresh(state,reply.view);
         if(reply.error!=0u64){return result(7u64,empty(),empty(),state.entry);}
         if(reply.object!=0u64){u64 index=reply.object-1u64;SelectResult defined=define(state,index);if(defined.error!=0u64){return defined;}SelectObject object=object_at(state.view,index);object.selected=1u64;object_put(state.view,index,object);u64 s=object.section_start;while(s<object.section_start+object.section_count){enqueue(state,s);s+=1u64;}}
     }
