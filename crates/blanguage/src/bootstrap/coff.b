@@ -1,24 +1,26 @@
 module bootstrap.coff;
 import bootstrap.bindings;
+import bootstrap.metadata;
+import bootstrap.native_import;
 
-CoffSection section_at(CoffInput input,u64 index) on cpu {
-    return unsafe_position<CoffSection>(unsafe_address(address_bits(input.sections)+index*size_of<CoffSection>()));
+CoffSection section_at(address sections,u64 index) on cpu {
+    return unsafe_position<CoffSection>(unsafe_address(address_bits(sections)+index*size_of<CoffSection>()));
 }
-void section_put(CoffInput input,u64 index,CoffSection value) on cpu {
-    unsafe_position<CoffSection>(unsafe_address(address_bits(input.sections)+index*size_of<CoffSection>()))=value;
+void section_put(address sections,u64 index,CoffSection value) on cpu {
+    unsafe_position<CoffSection>(unsafe_address(address_bits(sections)+index*size_of<CoffSection>()))=value;
 }
 CoffSymbol symbol_at(CoffInput input,u64 index) on cpu {
     return unsafe_position<CoffSymbol>(unsafe_address(address_bits(input.symbols)+index*SYMBOL_BYTES));
 }
 CoffLayout invalid(u32 code) on cpu {return CoffLayout(0u64,0u64,0u64,0u64,code);}
 
-extern "C" CoffLayout layout(CoffInput input) on cpu {
+CoffLayout layout(CoffInput input) on cpu {
     if(input.section_count>65535u64){return invalid(1);}
     u64 at=20u64+40u64*input.section_count;
     u64 strings=4u64;
     u64 i=0u64;
     while(i<input.section_count){
-        CoffSection section=section_at(input,i);
+        CoffSection section=section_at(input.sections,i);
         if(section.byte_length>4294967295u64){return invalid(2);}
         if(at>4294967295u64){return invalid(3);}
         if(section.name_length>8u64){
@@ -41,7 +43,7 @@ extern "C" CoffLayout layout(CoffInput input) on cpu {
             at+=COFF_RELOCATION_RECORD_BYTES;
         }
         at+=COFF_RELOCATION_RECORD_BYTES*section.relocation_count;
-        section_put(input,i,section);i+=1u64;
+        section_put(input.sections,i,section);i+=1u64;
     }
     if(at>4294967295u64){return invalid(3);}
     u64 count=0u64;i=0u64;
@@ -80,14 +82,75 @@ void copy(address output,u64 at,address bytes,u64 length) on cpu {
         i+=1u64;
     }
 }
-extern "C" void encode(CoffInput input,CoffLayout layout,CoffBindingSource binding,address output) on cpu {
+u8 name_byte(address name,u64 index) on cpu {
+    return unsafe_position<u8>(unsafe_address(address_bits(name)+index));
+}
+extern "C" u32 needs_body(u64 flags,u64 relocation_count) on cpu {
+    return u32((flags&128u64)!=0u64 && relocation_count!=0u64);
+}
+CoffSection physical_section(CoffSection original,CoffWork work) on cpu requires nonzero(work.name) {
+    CoffSection section=original;
+    if(needs_body(section.flags,section.relocation_count)!=0){
+        section.flags=(section.flags&~128u64)|64u64;
+        // LINK groups conventional sections by the name before the dollar suffix.
+        if(section.name_length>=4u64 && name_byte(section.name,0u64)==u8(46) &&
+            name_byte(section.name,1u64)==u8(98) && name_byte(section.name,2u64)==u8(115) &&
+            name_byte(section.name,3u64)==u8(115) &&
+            (section.name_length==4u64 || name_byte(section.name,4u64)==u8(36))){
+            address name=work.data_name;
+            if(section.name_length!=4u64){
+                name=work.name(work.context,section.name_length+1u64);
+                copy(name,0u64,work.data_name,5u64);
+                copy(name,5u64,unsafe_address(address_bits(section.name)+4u64),section.name_length-4u64);
+            }
+            section.name=name;section.name_length+=1u64;
+        }
+    }
+    section.uninitialized=u64(section.uninitialized!=0u64 && (section.flags&128u64)!=0u64);
+    return section;
+}
+
+extern "C" u32 with_output(CoffSource source,CoffWork work) on cpu
+    requires nonzero(source.next_definition) requires nonzero(work.reserve)
+    requires nonzero(work.name) requires nonzero(work.consume) {
+    CoffInput input=CoffInput(source.sections,source.section_count,unsafe_address(0u64),0u64);
+    u64 references=source.definition_count;
+    u64 i=0u64;
+    while(i<source.section_count){
+        CoffSection section;
+        if(source.next_section!=cfn<CoffSection,address>()){
+            section=source.next_section(work.context);
+        }else{
+            section=section_at(input.sections,i);
+        }
+        section=physical_section(section,work);
+        section_put(input.sections,i,section);
+        references+=section.relocation_count;
+        i+=1u64;
+    }
+    BindingStorage storage=work.reserve(work.context,2u64*source.bound_count+references,references);
+    BindingPlan bindings=prepare(source,work,storage);
+    if(bindings.error!=0){return bindings.error;}
+    input.symbols=storage.symbols;input.symbol_count=bindings.symbols;
+    CoffLayout shape=layout(input);
+    if(shape.error!=0){return shape.error;}
+    CoffBindingSource binding=CoffBindingSource(source.name.bytes,source.name.length,source.sections,
+        storage.nodes,bindings.names_root,bindings.imports_root,source.read_relocation);
+    work.consume(work.context,CoffPlan(input,shape,binding));
+    return 0;
+}
+
+extern "C" void write(read CoffPlan plan,address output) on cpu {
+    CoffInput input=plan.input;
+    CoffLayout layout=plan.layout;
+    CoffBindingSource binding=plan.binding;
     zero(output,0u64,20u64+40u64*input.section_count);
     le16(output,0u64,34404u64);le16(output,2u64,input.section_count);
     le32(output,8u64,layout.symbols);le32(output,12u64,layout.symbol_count);
     u64 strings=4u64;
     u64 i=0u64;
     while(i<input.section_count){
-        CoffSection section=section_at(input,i);
+        CoffSection section=section_at(input.sections,i);
         u64 h=20u64+40u64*i;
         if(section.name_length<=8u64){
             copy(output,h,section.name,section.name_length);
@@ -145,12 +208,31 @@ extern "C" void encode(CoffInput input,CoffLayout layout,CoffBindingSource bindi
         u32 storage=3;if(symbol.external!=0u64){storage=2;}put(output,at+16u64,storage);
         put(output,at+17u64,u32(symbol.auxiliary));at+=18u64;
         if(symbol.auxiliary!=0u64){
-            CoffSection section=section_at(input,symbol.section-1u64);
+            CoffSection section=section_at(input.sections,symbol.section-1u64);
             zero(output,at,18u64);le32(output,at,section.byte_length);
             u64 count=section.relocation_count;if(count>65535u64){count=65535u64;}
             le16(output,at+4u64,count);le16(output,at+12u64,symbol.owner);
             u32 selection=1;if(symbol.owner!=0u64){selection=5;}put(output,at+14u64,selection);
             at+=18u64;
+        }
+        i+=1u64;
+    }
+    // The original owners write generated payloads into their final ranges.
+    i=0u64;
+    while(i<input.section_count){
+        CoffSection section=section_at(input.sections,i);
+        if(section.offset!=0u64){
+            address destination=unsafe_address(address_bits(output)+section.offset);
+            if(section.body_kind==1u64){
+                bootstrap.metadata::encode(unsafe_position<MetadataInput>(section.body),destination);
+            }else if(section.body_kind==2u64){
+                NativeImportBody body=unsafe_position<NativeImportBody>(section.body);
+                encode_section(body.input,body.plan,i,section.byte_length,destination);
+            }else if(address_bits(section.body)==0u64){
+                zero(output,section.offset,section.byte_length);
+            }else{
+                copy(output,section.offset,section.body,section.byte_length);
+            }
         }
         i+=1u64;
     }

@@ -1,5 +1,6 @@
 module bootstrap.native_import;
 import bootstrap.bindings;
+import bootstrap.coff;
 
 u8 byte_at(address bytes,u64 i) on cpu {return unsafe_position<u8>(unsafe_address(address_bits(bytes)+i));}
 void put(address bytes,u64 i,u8 value) on cpu {unsafe_position<u8>(unsafe_address(address_bits(bytes)+i))=value;}
@@ -13,10 +14,10 @@ void section_put(NativeImportOutput output,u64 index,u64 name_index,u64 length,u
     address name_row = unsafe_address(address_bits(output.names)+name_index*size_of<BindingBytes>());
     BindingBytes name = unsafe_position<BindingBytes>(name_row);
     address relocations = unsafe_address(address_bits(output.relocations)+first*size_of<BindingRelocation>());
-    address row = unsafe_address(address_bits(output.sections)+index*SECTION_BYTES);
-    unsafe_position<BindingSection>(row) =
-        BindingSection(name,flags,relocations,count,output.associated,associated_count,0u64,0u64);
-    unsafe_position<u64>(unsafe_address(address_bits(output.lengths)+index*8u64)) = length;
+    address row = unsafe_address(address_bits(output.sections)+index*size_of<CoffSection>());
+    unsafe_position<CoffSection>(row) = CoffSection(name.bytes,name.length,length,flags,
+        count,0u64,0u64,0u64,relocations,output.associated,associated_count,0u64,0u64,
+        unsafe_address(0u64),0u64);
 }
 
 void relocation_put(NativeImportOutput output,u64 index,BindingRelocation relocation) on cpu {

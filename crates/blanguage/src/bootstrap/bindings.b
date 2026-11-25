@@ -121,32 +121,24 @@ u64 next(BindingForest forest,u64 index) on cpu {
     return 0u64;
 }
 
-BindingSection section_at(address sections,u64 index) on cpu {
-    return unsafe_position<BindingSection>(unsafe_address(address_bits(sections)+index*SECTION_BYTES));
-}
-void section_put(BindingInput input,u64 index,BindingSection value) on cpu {
-    unsafe_position<BindingSection>(unsafe_address(address_bits(input.sections)+index*SECTION_BYTES))=value;
-}
-BindingDefinition definition_at(BindingInput input,u64 index) on cpu {
-    return unsafe_position<BindingDefinition>(unsafe_address(address_bits(input.definitions)+index*DEFINITION_BYTES));
-}
-address relocation_address(BindingSection section,u64 index) on cpu {
-    return unsafe_address(address_bits(section.relocations)+index*size_of<BindingRelocation>());
-}
-BindingKey reference_key(address record,BindingRelocation value) on cpu {
-    if(value.target==u16(0)){
-        // Named symbols use an empty second component. These two fields stay in the original relocation.
-        address section=address_of(unsafe_position<BindingRelocation>(record).section);
-        address offset=address_of(unsafe_position<BindingRelocation>(record).value);
-        return BindingKey(BindingBytes(section,size_of<u64>()),BindingBytes(offset,size_of<u32>()));
+BindingRelocation relocation_at(cfn<BindingRelocation,address,u64> read_relocation,address relocations,u64 index) on cpu {
+    if(read_relocation!=cfn<BindingRelocation,address,u64>()){
+        return read_relocation(relocations,index);
     }
+    address record=unsafe_address(address_bits(relocations)+index*size_of<BindingRelocation>());
+    BindingRelocation value=unsafe_position<BindingRelocation>(record);
+    if(value.target==u16(0)){
+        value.name=BindingBytes(address_of(unsafe_position<BindingRelocation>(record).section),size_of<u64>());
+        value.dll=BindingBytes(address_of(unsafe_position<BindingRelocation>(record).value),size_of<u32>());
+    }
+    return value;
+}
+BindingKey reference_key(BindingRelocation value) on cpu {
+    if(value.target==u16(0)){return BindingKey(value.name,value.dll);}
     return BindingKey(value.name,empty());
 }
-CoffSymbol symbol_at(BindingWork work,u64 index) on cpu {
-    return unsafe_position<CoffSymbol>(unsafe_address(address_bits(work.symbols)+index*SYMBOL_BYTES));
-}
-void symbol_put(BindingWork work,u64 index,CoffSymbol value) on cpu {
-    unsafe_position<CoffSymbol>(unsafe_address(address_bits(work.symbols)+index*SYMBOL_BYTES))=value;
+void symbol_put(BindingStorage storage,u64 index,CoffSymbol value) on cpu {
+    unsafe_position<CoffSymbol>(unsafe_address(address_bits(storage.symbols)+index*SYMBOL_BYTES))=value;
 }
 CoffSymbol symbol(BindingBytes name,u64 section,u64 value,u64 function,u64 external,u64 auxiliary,u64 owner,u64 generated,u64 source) on cpu {
     return CoffSymbol(name.bytes,name.length,section,value,function,external,auxiliary,owner,generated,source);
@@ -155,62 +147,62 @@ u64 digits(u64 value) on cpu {
     u64 remaining=value;u64 count=1u64;while(remaining>=10u64){remaining/=10u64;count+=1u64;}return count;
 }
 BindingPlan invalid(u32 error) on cpu {return BindingPlan(0u64,0u64,0u64,error);}
-extern "C" BindingPlan prepare(BindingInput input,BindingWork work) on cpu {
-    if(input.section_count>32767u64){return invalid(2);}
-    BindingForest forest=BindingForest(work.nodes,0u64,0u64,0u64);
+BindingPlan prepare(CoffSource source,CoffWork work,BindingStorage storage) on cpu
+    requires nonzero(source.next_definition) {
+    if(source.bound_count>32767u64){return invalid(7);}
+    BindingForest forest=BindingForest(storage.nodes,0u64,0u64,0u64);
     u64 i=0u64;
-    while(i<input.section_count){
-        BindingSection section=section_at(input.sections,i);u64 j=0u64;
+    while(i<source.bound_count){
+        CoffSection section=section_at(source.sections,i);u64 j=0u64;
         while(j<section.associated_count){
             u64 child=unsafe_position<u64>(unsafe_address(address_bits(section.associated)+j*8u64));
-            BindingSection value=section_at(input.sections,child);value.owner=i+1u64;section_put(input,child,value);j+=1u64;
+            CoffSection value=section_at(source.sections,child);value.owner=i+1u64;section_put(source.sections,child,value);j+=1u64;
         }
         i+=1u64;
     }
     // The private COMDAT symbols follow all ordinary section symbols.
-    u64 count=input.section_count;u64 row=0u64;i=0u64;
-    while(i<input.section_count){
-        BindingSection section=section_at(input.sections,i);section.symbol=row;section_put(input,i,section);
+    u64 count=source.bound_count;u64 row=0u64;i=0u64;
+    while(i<source.bound_count){
+        CoffSection section=section_at(source.sections,i);section.symbol=row;section_put(source.sections,i,section);
         bool comdat=(section.flags&4096u64)!=0u64;
         u64 auxiliary=u64(comdat);
-        symbol_put(work,i,symbol(section.name,i+1u64,0u64,0u64,0u64,auxiliary,section.owner,0u64,0u64));
+        symbol_put(storage,i,symbol(BindingBytes(section.name,section.name_length),i+1u64,0u64,0u64,0u64,auxiliary,section.owner,0u64,0u64));
         row+=1u64+auxiliary;
         if(comdat){
-            u64 length=17u64+input.name.length+digits(i);
-            symbol_put(work,count,symbol(BindingBytes(unsafe_address(0u64),length),i+1u64,0u64,0u64,0u64,0u64,0u64,1u64,i));
+            u64 length=17u64+source.name.length+digits(i);
+            symbol_put(storage,count,symbol(BindingBytes(unsafe_address(0u64),length),i+1u64,0u64,0u64,0u64,0u64,0u64,1u64,i));
             count+=1u64;
         }
         i+=1u64;
     }
-    row+=count-input.section_count;
+    row+=count-source.bound_count;
     i=0u64;
-    while(i<input.definition_count){
-        BindingDefinition value=definition_at(input,i);
-        if(value.section>=32767u64){return invalid(2);}
+    while(i<source.definition_count){
+        BindingDefinition value=source.next_definition(work.context);
+        if(value.section>=32767u64){return invalid(7);}
         forest.names=insert_binding(forest,forest.names,BindingKey(value.name,empty()),row,true).root;
-        symbol_put(work,count,symbol(value.name,value.section+1u64,value.value,value.function,1u64,0u64,0u64,0u64,0u64));
+        symbol_put(storage,count,symbol(value.name,value.section+1u64,value.value,value.function,1u64,0u64,0u64,0u64,0u64));
         count+=1u64;row+=1u64;i+=1u64;
     }
     i=0u64;
-    while(i<input.section_count){
-        BindingSection section=section_at(input.sections,i);u64 j=0u64;
+    while(i<source.bound_count){
+        CoffSection section=section_at(source.sections,i);u64 j=0u64;
         while(j<section.relocation_count){
-            address record=relocation_address(section,j);
-            BindingRelocation value=unsafe_position<BindingRelocation>(record);
-            if(value.offset>4294967295u64){return invalid(5);}
+            BindingRelocation value=relocation_at(source.read_relocation,section.relocations,j);
+            if(value.offset>4294967295u64){return invalid(8);}
             if(value.target==u16(2)){
                 BindingKey key=BindingKey(value.dll,value.name);
                 BindingInsert inserted=insert_binding(forest,forest.imports,key,0u64,false);forest.imports=inserted.root;
             }else if(value.target==u16(1) || value.value!=0){
-                BindingKey key=reference_key(record,value);
+                BindingKey key=reference_key(value);
                 BindingInsert insertion=insert_binding(forest,forest.names,key,row,false);
                 forest.names=insertion.root;
                 if(insertion.inserted){
                     if(value.target==u16(0)){
-                        BindingSection target=section_at(input.sections,value.section);
-                        symbol_put(work,count,symbol(target.name,value.section+1u64,u64(value.value),0u64,0u64,0u64,0u64,0u64,0u64));
+                        CoffSection target=section_at(source.sections,value.section);
+                        symbol_put(storage,count,symbol(BindingBytes(target.name,target.name_length),value.section+1u64,u64(value.value),0u64,0u64,0u64,0u64,0u64,0u64));
                     }else{
-                        symbol_put(work,count,symbol(value.name,0u64,0u64,1u64,1u64,0u64,0u64,0u64,0u64));
+                        symbol_put(storage,count,symbol(value.name,0u64,0u64,1u64,1u64,0u64,0u64,0u64,0u64));
                     }
                     count+=1u64;row+=1u64;
                 }
@@ -223,7 +215,7 @@ extern "C" BindingPlan prepare(BindingInput input,BindingWork work) on cpu {
     while(at!=0u64){
         BindingNode node=node_at(forest,at);
         u64 length=import_name_size(node.key.first,node.key.second);
-        symbol_put(work,count,symbol(BindingBytes(unsafe_address(0u64),length),0u64,0u64,1u64,1u64,0u64,0u64,3u64,at));
+        symbol_put(storage,count,symbol(BindingBytes(unsafe_address(0u64),length),0u64,0u64,1u64,1u64,0u64,0u64,3u64,at));
         if (work.emit_import != cfn<void,address,BindingKey>()) {
             work.emit_import(work.import_context, node.key);
         }
@@ -251,31 +243,29 @@ extern "C" void import_name(BindingBytes dll,BindingBytes name,address output) o
     decimal(output,15u64,dll.length);u64 begin=15u64+digits(dll.length);
     literal(output,begin,36u64,1u64);copy(output,begin+1u64,dll);copy(output,begin+1u64+dll.length,name);
 }
-u64 bound_symbol(BindingForest forest,address sections,address record,BindingRelocation value) on cpu {
+u64 bound_symbol(BindingForest forest,address sections,BindingRelocation value) on cpu {
     if(value.target==u16(0) && value.value==0){
         return section_at(sections,value.section).symbol;
     }
     if(value.target==u16(2)){
         return node_at(forest,find(forest,forest.imports,BindingKey(value.dll,value.name))).value;
     }
-    return node_at(forest,find(forest,forest.names,reference_key(record,value))).value;
+    return node_at(forest,find(forest,forest.names,reference_key(value))).value;
 }
 
 extern "C" u64 relocation_symbol(read CoffBindingSource binding,u64 index,u64 relocation) on cpu {
     BindingForest forest=BindingForest(binding.nodes,0u64,binding.names_root,binding.imports_root);
-    BindingSection section=section_at(binding.sections,index);
-    address record=relocation_address(section,relocation);
-    return bound_symbol(forest,binding.sections,record,unsafe_position<BindingRelocation>(record));
+    CoffSection section=section_at(binding.sections,index);
+    return bound_symbol(forest,binding.sections,relocation_at(binding.read_relocation,section.relocations,relocation));
 }
 
 extern "C" void write_section_relocations(read CoffBindingSource binding,u64 index,address output) on cpu {
     BindingForest forest=BindingForest(binding.nodes,0u64,binding.names_root,binding.imports_root);
-    BindingSection section=section_at(binding.sections,index);
+    CoffSection section=section_at(binding.sections,index);
     u64 i=0u64;
     while(i<section.relocation_count){
-        address record=relocation_address(section,i);
-        BindingRelocation value=unsafe_position<BindingRelocation>(record);
-        u64 target=bound_symbol(forest,binding.sections,record,value);
+        BindingRelocation value=relocation_at(binding.read_relocation,section.relocations,i);
+        u64 target=bound_symbol(forest,binding.sections,value);
         u64 at=i*COFF_RELOCATION_RECORD_BYTES;
         // The checked 32-bit offset and final symbol index are adjacent.
         literal(output,at,value.offset | (target<<32u64),8u64);

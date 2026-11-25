@@ -141,9 +141,9 @@ pub(crate) fn capture(object: &Object) -> Result<Vec<u8>> {
     if count == 0 {
         return Ok(writer.0);
     }
-    with_object_sections(object, std::iter::empty(), |plan| {
+    with_object_sections(object, std::iter::empty(), 0, |plan| {
         let mut zero_sections = Vec::new();
-        let sections = planned_sections(&plan, &mut zero_sections);
+        let sections = planned_sections(object, &plan, &mut zero_sections);
         let mut generated_names = Vec::new();
         let symbols = planned_symbols(&plan, &sections, &mut generated_names);
         let symbol = |index: usize| symbols[index].unwrap();
@@ -171,14 +171,15 @@ fn planned_symbols(
         used[relocation.symbol] = true;
     }
     let mut symbols = Vec::with_capacity(plan.layout.symbol_count);
-    for symbol in plan.symbols {
+    let rows = unsafe { std::slice::from_raw_parts(plan.input.symbols, plan.input.symbol_count) };
+    for symbol in rows {
         let next = symbols.len() + 1 + symbol.auxiliary as usize;
         if used[symbols.len()] {
             let name = if symbol.generated == 0 {
                 ReadBytes { bytes: symbol.name, length: symbol.name_length }
             } else {
                 let mut name = vec![0; symbol.name_length];
-                unsafe { write_generated_name(plan.binding, symbol.generated, symbol.source, name.as_mut_ptr()); }
+                unsafe { write_generated_name(&plan.binding, symbol.generated, symbol.source, name.as_mut_ptr()); }
                 let view = ReadBytes::new(&name);
                 generated.push(name);
                 view
@@ -190,36 +191,34 @@ fn planned_symbols(
     symbols
 }
 
-fn planned_sections(plan: &CoffOutput<'_>, zero_sections: &mut Vec<Vec<u8>>) -> Vec<SectionFacts> {
-    plan.physical.iter().zip(plan.sections).zip(plan.bindings).enumerate()
-        .map(|(index, ((physical, (_, payload, _)), binding))| {
-            let name = ReadBytes { bytes: physical.name, length: physical.name_length };
-            let consumed = physical.flags & 0x20 != 0 || unsafe { name.borrowed() } == b".pdata";
-            let byte_length = if physical.offset == 0 { 0 } else { physical.byte_length };
-            let bytes = match payload {
-                CoffPayload::Borrowed(bytes) => ReadBytes::new(bytes),
-                CoffPayload::ZeroFill(_) if consumed && byte_length != 0 => {
-                    let bytes = vec![0; byte_length];
-                    let view = ReadBytes::new(&bytes);
-                    zero_sections.push(bytes);
-                    view
-                }
-                _ => ReadBytes::new(&[]),
-            };
-            let relocations = if consumed && binding.relocation_count != 0 {
-                // The plan borrows these original relocation rows until this call returns.
-                let rows = unsafe { std::slice::from_raw_parts(binding.relocations, binding.relocation_count) };
-                rows.iter().enumerate().map(|(at, row)| ReadRelocation {
-                    offset: row.offset as usize, kind: u64::from(row.kind),
-                    symbol: unsafe { relocation_symbol(plan.binding, index, at) }, error: ReadError::None,
-                }).collect()
-            } else { Vec::new() };
-            let row = ReadSection {
-                name, bytes, flags: physical.flags,
-                relocations: physical.relocation_offset, relocation_count: binding.relocation_count,
-                zero_fill: if physical.offset == 0 { physical.byte_length } else { 0 },
-                error: ReadError::None,
-            };
-            SectionFacts { row, byte_length, relocations }
-        }).collect()
+fn planned_sections(object: &Object, plan: &CoffOutput<'_>, zero_sections: &mut Vec<Vec<u8>>) -> Vec<SectionFacts> {
+    let physical = unsafe { std::slice::from_raw_parts(plan.input.sections, plan.input.section_count) };
+    physical.iter().zip(&object.sections).enumerate().map(|(index, (physical, source))| {
+        let name = ReadBytes { bytes: physical.name, length: physical.name_length };
+        let consumed = physical.flags & 0x20 != 0 || unsafe { name.borrowed() } == b".pdata";
+        let byte_length = if physical.offset == 0 { 0 } else { physical.byte_length };
+        let bytes = match &source.bytes {
+            SectionData::Initialized(bytes) => ReadBytes::new(bytes.as_ref()),
+            SectionData::ZeroFill(_) if consumed && byte_length != 0 => {
+                let bytes = vec![0; byte_length];
+                let view = ReadBytes::new(&bytes);
+                zero_sections.push(bytes);
+                view
+            }
+            SectionData::ZeroFill(_) => ReadBytes::new(&[]),
+        };
+        let relocations = if consumed {
+            source.relocations.iter().enumerate().map(|(at, row)| ReadRelocation {
+                offset: row.offset, kind: u64::from(row.kind),
+                symbol: unsafe { relocation_symbol(&plan.binding, index, at) }, error: ReadError::None,
+            }).collect()
+        } else { Vec::new() };
+        let row = ReadSection {
+            name, bytes, flags: physical.flags,
+            relocations: physical.relocation_offset, relocation_count: physical.relocation_count,
+            zero_fill: if physical.offset == 0 { physical.byte_length } else { 0 },
+            error: ReadError::None,
+        };
+        SectionFacts { row, byte_length, relocations }
+    }).collect()
 }

@@ -179,30 +179,27 @@ impl Groups {
                     associated[self.positions[owner].1].push(local);
                 }
             }
-            let bindings = physical.iter().zip(&associated).map(|(&index, children)| {
+            let sections = physical.iter().zip(&associated).map(|(&index, children)| {
                 let row = &raw[index];
-                let references = &self.relocations[row.mapped - 1];
-                BindingSection {
-                    name: row.name.as_binding(), flags: row.flags,
-                    relocations: references.as_ptr(), relocation_count: references.len(),
-                    associated: children.as_ptr(), associated_count: children.len(), owner: 0, symbol: 0,
-                }
-            }).collect();
-            let mut payloads: Vec<_> = physical.iter().map(|&index| {
-                let row = &raw[index];
-                (row_name(row), row_payload(row), row.flags as u32)
-            }).collect();
-            if member == 0 {
-                payloads.extend(raw.iter().filter(|row| row.mapped == 0 && row_name(row) != BUILD)
-                    .map(|row| (row_name(row), row_payload(row), row.flags as u32)));
-            }
+                CoffSectionView::extra(row_name(row), row_payload(row), row.flags as u32)
+                    .with_relocations(&self.relocations[row.mapped - 1], children)
+            });
+            let extra_rows = if member == 0 { raw } else { &[] };
+            let extra = extra_rows.iter().filter(|row| row.mapped == 0 && row_name(row) != BUILD);
+            let extra_count = extra.clone().count();
+            let sections = sections.chain(extra.map(|row|
+                CoffSectionView::extra(row_name(row), row_payload(row), row.flags as u32)));
             // Retain the original COMDAT namespace of each independent member.
             let group_name = if combined == Some(member) {
                 format!("{identity}$closed${member}")
             } else {
                 format!("{identity}${member}")
             };
-            let code = encode_bound(&group_name, payloads, bindings, &definitions[member], None, owned_output)?;
+            let declarations = &definitions[member];
+            let code = with_sections(
+                &group_name, physical.len(), extra_count, sections, declarations.len(),
+                declarations.iter().copied(), None, None, owned_output,
+            )?;
             let number = output.len() - first + 1;
             // Later groups can still borrow the anchor names from these members.
             output.push(HostMember {
