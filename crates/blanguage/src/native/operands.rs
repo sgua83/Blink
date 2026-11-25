@@ -208,11 +208,6 @@ unsafe extern "C" fn value_scalar(context: *const std::ffi::c_void, reg: Reg) ->
 }
 
 unsafe extern "C" {
-    #[link_name = "bootstrap.frame_layout::preserve_registers"]
-    fn encode_preserved_registers(
-        saved: *const allocation::SavedRegister, count: usize, offset: usize,
-        operations: *mut UnwindOperation, output: *mut u8,
-    ) -> usize;
     #[link_name = "bootstrap.x64_instruction::scaled_memory"]
     fn encode_scaled_memory(base: u8, index: u8, stride: u32, offset: u32, output: *mut u8) -> AddressEncoding;
     #[link_name = "bootstrap.x64_instruction::bit_copy"]
@@ -433,26 +428,6 @@ impl Emitter<'_> {
     pub(super) fn record_literal(&mut self, start: usize, literal: (Bits, bool), field: usize) {
         if field != 0 {
             self.literals.entry(literal).or_default().push(start + field);
-        }
-    }
-    pub(super) fn save_registers(&mut self) {
-        let saved = &self.frame.saved;
-        if saved.is_empty() {
-            return;
-        }
-        let start = self.code.len();
-        let count = saved.len();
-        let unwind_start = self.unwind.len();
-        self.unwind.reserve(count);
-        self.code.reserve(9 * count);
-        unsafe {
-            let bytes = encode_preserved_registers(
-                saved.as_ptr(), count, start, self.unwind.as_mut_ptr().add(unwind_start),
-                self.code.as_mut_ptr().add(start),
-            );
-            self.code.set_len(start + bytes);
-            self.unwind.set_len(unwind_start + count);
-            self.prolog = (start + bytes) as u8;
         }
     }
 

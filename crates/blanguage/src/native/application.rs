@@ -35,11 +35,12 @@ struct FunctionParameter {
 
 #[repr(u32)]
 #[allow(dead_code)]
-enum FunctionRangeKind { HiddenHome, Home, Input, ResultAddress }
+enum FunctionRangeKind { HiddenHome, Home, Input, ResultAddress, ScratchSave, FrameAllocate, NonvolatileSave }
 
 #[repr(C)]
 struct FunctionRange {
-    length: usize,
+    start: usize,
+    end: usize,
     index: usize,
     position: usize,
     kind: FunctionRangeKind,
@@ -50,19 +51,31 @@ struct FunctionHost {
     parameter: unsafe extern "C" fn(*const c_void, usize) -> FunctionParameter,
     loan: unsafe extern "C" fn(*const c_void, usize, usize, usize) -> CallValueLoan,
     component: AbiComponent,
-    reserve: unsafe extern "C" fn(*mut c_void, usize) -> *mut u8,
     publish: unsafe extern "C" fn(*mut c_void, FunctionRange),
-    enter_frame: unsafe extern "C" fn(*mut c_void, u64, u32),
 }
 
 const FUNCTION_HOST: FunctionHost = FunctionHost {
     parameter: function_parameter,
     loan: function_loan,
     component: abi_component,
-    reserve: reserve_function,
     publish: publish_function,
-    enter_frame,
 };
+
+#[repr(C)]
+struct FrameOutput {
+    code: *mut u8,
+    operations: *mut UnwindOperation,
+    saved: *const allocation::SavedRegister,
+    count: usize,
+}
+
+#[repr(C)]
+struct FunctionPrologue {
+    length: usize,
+    probe_field: usize,
+    operations: usize,
+    prolog: u8,
+}
 
 #[repr(C)]
 struct FunctionReturn {
@@ -84,7 +97,8 @@ unsafe extern "C" {
     #[link_name = "bootstrap.call_layout::function_frame"]
     fn function_frame(data_end: u64, result: AbiType, flags: u32) -> FunctionFrame;
     #[link_name = "bootstrap.call_layout::function_prologue"]
-    fn function_prologue(context: *mut c_void, count: usize, frame: FunctionFrame, flags: u32, host: FunctionHost);
+    fn function_prologue(context: *mut c_void, count: usize, frame: FunctionFrame, flags: u32,
+        output: FrameOutput, host: FunctionHost) -> FunctionPrologue;
     #[link_name = "bootstrap.call_layout::function_result"]
     fn function_result(frame: FunctionFrame, flags: u32, value: CallValueLoan,
         component: AbiComponent, output: *mut u8) -> FunctionReturn;
@@ -120,18 +134,9 @@ unsafe extern "C" fn function_loan(context: *const c_void, index: usize, first: 
     CallValueLoan::new(fields, &state.inputs[first..first + count], &e.allocation, e.stage)
 }
 
-unsafe extern "C" fn reserve_function(context: *mut c_void, capacity: usize) -> *mut u8 {
-    let state = unsafe { &mut *context.cast::<FunctionEmission<'_, '_>>() };
-    let code = &mut state.emitter.code;
-    code.reserve(capacity);
-    unsafe { code.as_mut_ptr().add(code.len()) }
-}
-
 unsafe extern "C" fn publish_function(context: *mut c_void, range: FunctionRange) {
     let state = unsafe { &mut *context.cast::<FunctionEmission<'_, '_>>() };
     let e = &mut *state.emitter;
-    let start = e.code.len();
-    unsafe { e.code.set_len(start + range.length) };
     let slot = range.position;
     let parameter_index = range.index;
     let kind = match range.kind {
@@ -143,24 +148,11 @@ unsafe extern "C" fn publish_function(context: *mut c_void, range: FunctionRange
             slot, parameter_index, origin: state.parameters[parameter_index].origin.clone(),
         },
         FunctionRangeKind::ResultAddress => AbiRangeKind::ResultAddressSave { stack_offset: slot as u32 },
+        FunctionRangeKind::ScratchSave => AbiRangeKind::ScratchSave,
+        FunctionRangeKind::FrameAllocate => AbiRangeKind::FrameAllocate { bytes: slot as u32 },
+        FunctionRangeKind::NonvolatileSave => AbiRangeKind::NonvolatileSave,
     };
-    e.abi_range(start, kind);
-}
-
-unsafe extern "C" fn enter_frame(context: *mut c_void, bytes: u64, scratch: u32) {
-    let state = unsafe { &mut *context.cast::<FunctionEmission<'_, '_>>() };
-    let e = &mut *state.emitter;
-    if scratch != 0 {
-        let start = e.code.len();
-        e.push_registers(&[15]);
-        e.abi_range(start, AbiRangeKind::ScratchSave);
-    }
-    let start = e.code.len();
-    e.allocate_frame(bytes as u32);
-    e.abi_range(start, AbiRangeKind::FrameAllocate { bytes: bytes as u32 });
-    let start = e.code.len();
-    e.save_registers();
-    e.abi_range(start, AbiRangeKind::NonvolatileSave);
+    e.record_abi_range(range.start..range.end, kind);
 }
 
 fn emit_value(
@@ -226,10 +218,25 @@ fn emit_value(
         allocation,
         frame: layout,
     };
+    let saved = &e.frame.saved;
+    // Fixed saves/allocation, four register homes, a hidden result address,
+    // and the existing per-parameter and per-component encoding bounds.
+    e.code.reserve(2 + 17 + 9 * saved.len() + 4 * 9 + 24
+        + 16 * parameters.len() + 24 * body.inputs.len());
+    e.unwind.reserve(2 + saved.len());
+    let output = FrameOutput { code: e.code.as_mut_ptr(), operations: e.unwind.as_mut_ptr(),
+        saved: saved.as_ptr(), count: saved.len() };
     let mut emission = FunctionEmission { emitter: &mut e, parameters, inputs: &body.inputs };
+    let entry = unsafe {
+        function_prologue(std::ptr::from_mut(&mut emission).cast(),
+            parameters.len(), plan, flags, output, FUNCTION_HOST)
+    };
     unsafe {
-        function_prologue(std::ptr::from_mut(&mut emission).cast(), parameters.len(), plan, flags, FUNCTION_HOST);
+        e.code.set_len(entry.length);
+        e.unwind.set_len(entry.operations);
     }
+    e.probe = (entry.probe_field != 0).then_some(entry.probe_field);
+    e.prolog = entry.prolog;
     // The function owns this exit scope. Nested scopes still own their own exits.
     e.exits.push(Vec::new());
     e.block(&stage.code)?;

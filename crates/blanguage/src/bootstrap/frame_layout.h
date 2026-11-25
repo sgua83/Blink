@@ -14,10 +14,11 @@ extern "C" u64 saved_registers(u64 data_end, u32 gpr_mask, u32 xmm_mask, address
 extern "C" u64 tile_frame(u64 data_end, u64 width, bool steps,
     address shared, u64 shared_count, address private_slots, u64 private_count) on cpu;
 
-// The caller owns nine output bytes per saved register and one unwind record
-// per save. An empty operations address denotes restoration.
-extern "C" u64 preserve_registers(address saved, u64 count, u64 offset,
-    address operations, address output) on cpu;
+// Code and unwind rows both belong to the original emitter. Offsets use
+// the image start, including the ordinary function's register-home writes.
+struct FrameOutput { address code; address operations; address saved; u64 count; };
+struct FramePrologue { u64 push_end; u64 allocate_end; u64 end; u64 probe_field; u64 operations; };
+extern "C" FramePrologue function_frame_prologue(u32 frame, bool scratch, u64 start, FrameOutput output) on cpu;
 
 // Range entry starts at image offset zero. Lend 39 + 9 * count bytes and
 // 6 + count unwind rows. stack_bytes includes the five fixed pushes.

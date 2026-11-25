@@ -2,7 +2,7 @@ module bootstrap.frame_layout;
 import bootstrap.x64_instruction;
 import bootstrap.unwind;
 
-extern "C" u64 preserve_registers(address saved, u64 count, u64 offset,
+u64 preserve_registers(address saved, u64 count, u64 offset,
     address operations, address output) on cpu {
     u64 start = address_bits(output);
     u64 cursor = start;
@@ -90,34 +90,49 @@ const u32 RANGE_SAVE_COUNT = 5;
 const array<u8,RANGE_SAVE_COUNT> RANGE_SAVES =
     array<u8,RANGE_SAVE_COUNT>(u8(12), u8(13), u8(14), u8(15), u8(3));
 
-extern "C" RangePrologue range_prologue(u32 frame, address saved, u64 count,
-    address operations, address output) on cpu {
-    u64 start = address_bits(output);
-    u64 rows = address_bits(operations);
-    u64 cursor = start;
-    for (index in 0..RANGE_SAVE_COUNT) {
-        u8 register = RANGE_SAVES[index];
-        cursor += stack_register(register, false, unsafe_address(cursor));
-        address row = unsafe_address(rows + u64(index) * size_of<Operation>());
-        unsafe_position<Operation>(row) = Operation(u8(cursor - start), register, u16(0), 0);
-    }
-    u64 used = u64(RANGE_SAVE_COUNT);
+u64 save_stack_register(u8 register, u64 cursor, u64 index, FrameOutput output) on cpu {
+    address code = unsafe_address(address_bits(output.code) + cursor);
+    u64 end = cursor + stack_register(register, false, code);
+    address row = unsafe_address(address_bits(output.operations) + index * size_of<Operation>());
+    unsafe_position<Operation>(row) = Operation(u8(end), register, u16(0), 0);
+    return end;
+}
+
+FramePrologue save_frame(u32 frame, u64 push_end, u64 pushed, FrameOutput output) on cpu {
+    u64 used = pushed;
+    u64 cursor = push_end;
+    u64 code = address_bits(output.code);
+    u64 rows = address_bits(output.operations);
     u64 probe = 0u64;
     if (frame != 0) {
-        FrameEncoding encoded = allocate_frame(frame, unsafe_address(cursor));
-        if (encoded.probe_field != 0u64) { probe = cursor - start + encoded.probe_field; }
+        FrameEncoding encoded = allocate_frame(frame, unsafe_address(code + cursor));
+        if (encoded.probe_field != 0u64) { probe = cursor + encoded.probe_field; }
         cursor += encoded.length;
         address row = unsafe_address(rows + used * size_of<Operation>());
-        unsafe_position<Operation>(row) = Operation(u8(cursor - start), u8(0), u16(1), frame);
+        unsafe_position<Operation>(row) = Operation(u8(cursor), u8(0), u16(1), frame);
         used += 1u64;
     }
     address remaining = unsafe_address(rows + used * size_of<Operation>());
-    cursor += preserve_registers(saved, count, cursor - start, remaining, unsafe_address(cursor));
-    u8 prolog = u8(cursor - start);
-    cursor += range_arguments(unsafe_address(cursor));
-    return RangePrologue(cursor - start, probe, used + count, frame + 8 * RANGE_SAVE_COUNT, prolog);
+    u64 saved = preserve_registers(output.saved, output.count, cursor, remaining, unsafe_address(code + cursor));
+    return FramePrologue(push_end, cursor, cursor + saved, probe, used + output.count);
 }
 
+extern "C" FramePrologue function_frame_prologue(u32 frame, bool scratch, u64 start, FrameOutput output) on cpu {
+    u64 end = scratch ? save_stack_register(u8(15), start, 0u64, output) : start;
+    return save_frame(frame, end, u64(scratch), output);
+}
+
+extern "C" RangePrologue range_prologue(u32 frame, address saved, u64 count,
+    address operations, address output) on cpu {
+    FrameOutput buffers = FrameOutput(output, operations, saved, count);
+    u64 cursor = 0u64;
+    for (index in 0..RANGE_SAVE_COUNT) {
+        cursor = save_stack_register(RANGE_SAVES[index], cursor, u64(index), buffers);
+    }
+    FramePrologue entry = save_frame(frame, cursor, u64(RANGE_SAVE_COUNT), buffers);
+    u64 args = range_arguments(unsafe_address(address_bits(output) + entry.end));
+    return RangePrologue(entry.end + args, entry.probe_field, entry.operations, frame + 8 * RANGE_SAVE_COUNT, u8(entry.end));
+}
 
 struct RestoredFrame { u64 saved_end; u64 frame_end; };
 RestoredFrame restore_frame(u32 frame, address saved, u64 count, u64 start) on cpu {

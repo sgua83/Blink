@@ -1,6 +1,7 @@
 module bootstrap.call_layout;
 import bootstrap.x64_instruction;
 import bootstrap.ir_dataflow;
+import bootstrap.frame_layout;
 
 // float_size is the width in bytes of an intrinsic scalar float, or zero.
 struct AbiType { u32 size; u32 alignment; u32 float_size; u32 value; };
@@ -16,19 +17,20 @@ struct CallValueLoan { Span components; Span values; address allocation; address
 // The register prefix survives frame setup as part of this one prologue.
 struct FunctionParameter { AbiType abi; u64 values; };
 struct HomeParameter { u64 index; FunctionParameter parameter; };
-enum FunctionRangeKind:u32 { HiddenHome=0; Home=1; Input=2; ResultAddress=3; };
-struct FunctionRange { u64 length; u64 index; u64 position; FunctionRangeKind kind; };
+enum FunctionRangeKind:u32 { HiddenHome=0; Home=1; Input=2; ResultAddress=3;
+    ScratchSave=4; FrameAllocate=5; NonvolatileSave=6; };
+struct FunctionRange { u64 start; u64 end; u64 index; u64 position; FunctionRangeKind kind; };
 struct FunctionHost {
     cfn<FunctionParameter,address,u64> ensures memory(read) parameter;
     cfn<CallValueLoan,address,u64,u64,u64> ensures memory(read) loan;
     cfn<AbiValueComponent,address,u64> component;
-    cfn<address,address,u64> reserve;
     cfn<void,address,FunctionRange> publish;
-    cfn<void,address,u64,bool> enter_frame;
 };
-extern "C" void function_prologue(address context, u64 count, FunctionFrame frame, u32 flags, FunctionHost host)
-    on cpu requires nonzero(host.parameter) requires nonzero(host.loan) requires nonzero(host.component)
-    requires nonzero(host.reserve) requires nonzero(host.publish) requires nonzero(host.enter_frame);
+struct FunctionPrologue { u64 length; u64 probe_field; u64 operations; u8 prolog; };
+extern "C" FunctionPrologue function_prologue(address context, u64 count, FunctionFrame frame,
+    u32 flags, FrameOutput output, FunctionHost host) on cpu
+    requires nonzero(host.parameter) requires nonzero(host.loan)
+    requires nonzero(host.component) requires nonzero(host.publish);
 
 struct FunctionReturn { u64 length; u64 value_length; u64 literal; u64 literal_field; };
 extern "C" FunctionReturn function_result(FunctionFrame frame, u32 flags, CallValueLoan value,

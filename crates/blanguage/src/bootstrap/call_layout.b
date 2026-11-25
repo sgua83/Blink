@@ -197,27 +197,29 @@ extern "C" SymbolEncoding emit_call(address context, CallInput input, CallHost h
     return SymbolEncoding(cursor - start, relocation);
 }
 
-u64 move_function_parameter(address context, u64 index, u64 slot, u64 home, u64 first,
-    FunctionParameter parameter, FunctionHost host) on cpu requires nonzero(host.loan)
-    requires nonzero(host.component) requires nonzero(host.reserve) requires nonzero(host.publish) {
+u64 move_function_parameter(address context, u64 index, u64 slot, u64 home, inout u64 first,
+    FunctionParameter parameter, FunctionHost host, u64 image, u64 start) on cpu
+    requires nonzero(host.loan) requires nonzero(host.component) requires nonzero(host.publish) {
     AbiType abi = parameter.abi;
     AbiMemoryMode mode = abi.value != 0 && indirect(abi.size, abi.alignment)
         ? AbiMemoryMode::IndirectParameter : AbiMemoryMode::StackLoad;
-    address output = host.reserve(context, 16u64 + 24u64 * parameter.values);
     CallValueLoan value = host.loan(context, index, first, parameter.values);
-    u64 cursor = call_value_at(address_bits(output), u32(home + slot_home(0u64, slot)), value, mode, host.component);
-    host.publish(context, FunctionRange(cursor - address_bits(output), index, slot, FunctionRangeKind::Input));
-    return first + parameter.values;
+    u64 cursor = call_value_at(image + start, u32(home + slot_home(0u64, slot)), value, mode, host.component) - image;
+    host.publish(context, FunctionRange(start, cursor, index, slot, FunctionRangeKind::Input));
+    first += parameter.values;
+    return cursor;
 }
 
-extern "C" void function_prologue(address context, u64 count, FunctionFrame frame, u32 flags, FunctionHost host)
-    on cpu requires nonzero(host.parameter) requires nonzero(host.loan) requires nonzero(host.component)
-    requires nonzero(host.reserve) requires nonzero(host.publish) requires nonzero(host.enter_frame) {
+extern "C" FunctionPrologue function_prologue(address context, u64 count, FunctionFrame frame,
+    u32 flags, FrameOutput output, FunctionHost host) on cpu
+    requires nonzero(host.parameter) requires nonzero(host.loan)
+    requires nonzero(host.component) requires nonzero(host.publish) {
+    u64 image = address_bits(output.code);
+    u64 cursor = 0u64;
     bool hidden = frame.result_location == ResultLocation::Indirect;
     if (hidden) {
-        address output = host.reserve(context, 9u64);
-        u64 length = argument_register(u8(0), 0, true, output);
-        host.publish(context, FunctionRange(length, 0u64, 0u64, FunctionRangeKind::HiddenHome));
+        cursor = argument_register(u8(0), 0, true, output.code);
+        host.publish(context, FunctionRange(0u64, cursor, 0u64, 0u64, FunctionRangeKind::HiddenHome));
     }
     u64 first_slot = hidden ? 1u64 : 0u64;
     HomeParameter empty = HomeParameter(0u64, FunctionParameter(AbiType(0,1,0,0),0u64));
@@ -228,33 +230,43 @@ extern "C" void function_prologue(address context, u64 count, FunctionFrame fram
         FunctionParameter parameter = host.parameter(context,index);
         if (has_slot(parameter.abi)) {
             homes[u32(slot)] = HomeParameter(index,parameter);
-            address output = host.reserve(context, 9u64);
-            u64 length = argument_register(u8(slot), parameter.abi.float_size, true, output);
-            host.publish(context, FunctionRange(length, index, slot, FunctionRangeKind::Home));
+            u64 end = cursor + argument_register(u8(slot), parameter.abi.float_size, true, unsafe_address(image + cursor));
+            host.publish(context, FunctionRange(cursor, end, index, slot, FunctionRangeKind::Home));
+            cursor = end;
             slot += 1u64;
         }
         index += 1u64;
     }
-    host.enter_frame(context, frame.bytes, (flags & 2) != 0);
+    FramePrologue saved = function_frame_prologue(u32(frame.bytes), (flags & 2) != 0, cursor, output);
+    if (saved.push_end != cursor) {
+        host.publish(context, FunctionRange(cursor, saved.push_end, 0u64, 0u64, FunctionRangeKind::ScratchSave));
+    }
+    host.publish(context, FunctionRange(saved.push_end, saved.allocate_end, 0u64, frame.bytes, FunctionRangeKind::FrameAllocate));
+    host.publish(context, FunctionRange(saved.allocate_end, saved.end, 0u64, 0u64, FunctionRangeKind::NonvolatileSave));
+    cursor = saved.end;
     if (hidden) {
-        address output = host.reserve(context, 24u64);
-        MoveEncoding saved = copy_scalar_move(call_home(frame.result), call_home(frame.home), 8, false, output);
-        host.publish(context, FunctionRange(saved.length, 0u64, frame.result, FunctionRangeKind::ResultAddress));
+        MoveEncoding address_save = copy_scalar_move(call_home(frame.result), call_home(frame.home),
+            8, false, unsafe_address(image + cursor));
+        u64 end = cursor + address_save.length;
+        host.publish(context, FunctionRange(cursor, end, 0u64, frame.result, FunctionRangeKind::ResultAddress));
+        cursor = end;
     }
     u64 value = 0u64;
     for (home_slot in u32(first_slot)..4) {
         if (u64(home_slot) == slot) { break; }
         HomeParameter row = homes[home_slot];
-        value = move_function_parameter(context,row.index,u64(home_slot),frame.home,value,row.parameter,host);
+        cursor = move_function_parameter(context,row.index,u64(home_slot),frame.home,value,row.parameter,host,image,cursor);
     }
     while (index < count) {
         FunctionParameter parameter = host.parameter(context,index);
         if (has_slot(parameter.abi)) {
-            value = move_function_parameter(context,index,slot,frame.home,value,parameter,host);
+            cursor = move_function_parameter(context,index,slot,frame.home,value,parameter,host,image,cursor);
             slot += 1u64;
         }
         index += 1u64;
     }
+    u8 prolog = saved.operations != 0u64 ? u8(saved.end) : u8(0);
+    return FunctionPrologue(cursor, saved.probe_field, saved.operations, prolog);
 }
 
 extern "C" FunctionReturn function_result(FunctionFrame frame, u32 flags, CallValueLoan value,

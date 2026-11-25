@@ -63,12 +63,6 @@ struct RangeEnd {
 }
 
 #[repr(C)]
-struct FrameEncoding {
-    length: u64,
-    probe_field: u64,
-}
-
-#[repr(C)]
 struct RangePrologue {
     length: u64,
     probe_field: u64,
@@ -93,8 +87,6 @@ struct CodeTail {
 }
 
 unsafe extern "C" {
-    #[link_name = "bootstrap.x64_instruction::allocate_frame"]
-    fn encode_stack_frame(frame: u32, output: *mut u8) -> FrameEncoding;
     #[link_name = "bootstrap.x64_instruction::stack_register"]
     fn encode_stack_register(register: u8, restore: u32, output: *mut u8) -> u64;
     #[link_name = "bootstrap.x64_instruction::tail_capacity"]
@@ -209,24 +201,6 @@ impl Emitter<'_> {
             self.unwind.push(UnwindOperation::push(at, register));
         }
         self.prolog = self.code.len() as u8;
-    }
-    fn allocate_frame(&mut self, frame: u32) {
-        if frame == 0 {
-            return;
-        }
-        // Optional mov/call (10 bytes) followed by sub rsp, imm32 (7 bytes).
-        self.code.reserve(17);
-        let start = self.code.len();
-        let encoding = unsafe {
-            let encoding = encode_stack_frame(frame, self.code.as_mut_ptr().add(start));
-            self.code.set_len(start + encoding.length as usize);
-            encoding
-        };
-        if encoding.probe_field != 0 {
-            self.probe = Some(start + encoding.probe_field as usize);
-        }
-        self.prolog = self.code.len() as u8;
-        self.unwind.push(UnwindOperation::allocate(self.prolog, frame));
     }
     fn enter(&mut self, frame: u32) -> u32 {
         let saved = &self.frame.saved;
