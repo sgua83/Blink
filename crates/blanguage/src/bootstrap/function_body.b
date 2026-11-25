@@ -1,5 +1,47 @@
 module bootstrap.function_body;
 
+extern "C" void loop_terminal_paths(address context,usize edges,LoopTerminalHost host) on cpu
+    requires nonzero(host.bounded) requires nonzero(host.project) {
+    usize edge=0u64;
+    while(edge<edges) {
+        host.project(context,edge,host.bounded(context,edge));
+        edge+=1u64;
+    }
+}
+
+extern "C" void loop_natural_dataset(address context,usize edges,u32 written,u32 terminal,NaturalDatasetHost host) on cpu
+    requires nonzero(host.terminal) requires nonzero(host.repeated)
+    requires nonzero(host.publish_terminal) requires nonzero(host.publish_repeated) {
+    if(written!=0||terminal!=0) {
+        usize edge=0u64;
+        while(edge<edges) {
+            if(terminal!=0){host.terminal(context,edge);}
+            if(written!=0){host.repeated(context,edge);}
+            edge+=1u64;
+        }
+        if(terminal!=0){host.publish_terminal(context);}
+        if(written!=0&&edges!=0u64){host.publish_repeated(context,terminal);}
+    }
+}
+
+extern "C" void loop_natural_scalar(address context,usize components,usize edges,NaturalScalarHost host) on cpu
+    requires nonzero(host.header_identity) requires nonzero(host.header_write)
+    requires nonzero(host.repeated) requires nonzero(host.publish) {
+    usize component=0u64;
+    while(component<components) {
+        if(host.header_identity(context,component)==0&&host.header_write(context,component)==0) {
+            u32 repeated=0;
+            usize edge=0u64;
+            while(edge<edges) {
+                repeated|=host.repeated(context,component,edge);
+                edge+=1u64;
+            }
+            if(repeated!=0){host.publish(context,component);}
+        }
+        component+=1u64;
+    }
+}
+
 extern "C" CheckedDispatch checked_dispatch(SignatureNode declaration) on cpu {
     FunctionNode function = binding_node<FunctionNode>(declaration.storage.nodes,declaration.offset);
     if (function.kind == 2) { return CheckedDispatch::Constant; }

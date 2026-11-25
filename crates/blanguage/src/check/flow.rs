@@ -792,21 +792,7 @@ impl Builder<'_> {
         let mut context=self.loop_contexts.pop().unwrap();
         let terminal = range.filter(|_| !context.initial && natural.is_some()
             && context.entry.env.values().any(|b| matches!(b, Binding::ApplicationData(_))))
-            .map(|(begin, limit)| {
-                let entered = bounds::Condition::comparison(Comparison::Less, begin, limit);
-                let edges = context.continues.iter().map(|edge| {
-                    let path = bounds::residency_scope(&edge.path, &edge.env);
-                    let next = edge.cursor.as_ref().unwrap();
-                    // A bounded successor can fail the next test only at the limit.
-                    let path = if next.proof.domains(0).contains(&IndexDomain::Upper(limit.identity(), 0)) {
-                        bounds::Condition::comparison(Comparison::Equal, next, limit).assume(&path, true)
-                    } else {
-                        bounds::Condition::comparison(Comparison::Less, next, limit).assume(&path, false)
-                    };
-                    path.possible().then_some(path)
-                }).collect::<Vec<_>>();
-                (entered, edges)
-            });
+            .map(|(begin, limit)| terminal_paths(begin, limit, &context.continues));
         if let Some(scope) = context.view_scope {
             let backedge = context.continues.iter().map(|edge| edge.path.clone())
                 .reduce(|left, right| bounds::Clause::either(&left, &right));
@@ -816,88 +802,8 @@ impl Builder<'_> {
                 backedge,
             });
         }
-        if !context.initial && let Some(exit)=natural.as_mut() {
-            let empty=context.control_source.test.as_ref().unwrap().at_call(&context.control_source.bindings(&context.entry)).negate();
-            let scalar_empty=std::cell::LazyCell::new(||if nonempty{bounds::Condition::constant(false)}else{match empty.truth_in(&context.entry.path){Some(truth)=>bounds::Condition::constant(truth),None=>empty.clone()}});
-            let continue_scopes=context.continues.iter().map(|_|std::cell::OnceCell::new()).collect::<Vec<_>>();
-            for(name,binding)in &mut exit.env {
-                if let Binding::ApplicationData(data) = binding {
-                    let written = matches!(&data.place, Some(Place::Local(_, slots, ..))
-                        if slots.iter().any(|slot| context.writes.locals.contains(slot)));
-                    if !written && terminal.is_none() {
-                        continue;
-                    }
-                    let mut repeated: Option<returns::Returned> = None;
-                    let mut location = residency::Residency::Absent;
-                    for (index, edge) in context.continues.iter().enumerate() {
-                        let binding = &edge.env[name];
-                        if let Some((_, paths)) = &terminal
-                            && let Some(path) = &paths[index]
-                            && let Binding::ApplicationData(next) = binding
-                        {
-                            location.join(&next.residency.under(path));
-                        }
-                        if written {
-                            let next = returns::Returned::Dataset(data_at(binding, &[]).unwrap().clone());
-                            if let Some(common) = repeated.as_mut() {
-                                common.join(next, true, None);
-                            } else {
-                                repeated = Some(next);
-                            }
-                        }
-                    }
-                    if let Some((entered, _)) = &terminal && !matches!(location, residency::Residency::Absent) {
-                        data.residency = residency::Residency::conditional(
-                            entered.clone(), location, std::mem::take(&mut data.residency),
-                        );
-                    }
-                    if let Some(returns::Returned::Dataset(repeated)) = repeated {
-                        if data.ownership != repeated.ownership {
-                            data.ownership = application::Ownership::Moved;
-                        }
-                        if terminal.is_none() {
-                            data.residency = residency::Residency::conditional(
-                                empty.clone(), std::mem::take(&mut data.residency), repeated.residency,
-                            );
-                        }
-                        data.elements = std::mem::take(&mut data.elements).selected(repeated.elements, &empty);
-                        data.prefixes = prefix::join_fields(&data.prefixes, &repeated.prefixes, Some(&empty));
-                    }
-                    continue;
-                }
-                let Some((proof,uniform,place))=binding.proof_storage() else{continue;};
-                let Some((entry,_,_))=context.entry.env.get_mut(name).and_then(Binding::proof_storage) else{continue;};
-                let width=place.ty().components.len();
-                for component in 0..width {
-                    // A new header read is the final iteration's value. Other
-                    // components take backedge facts only if the header leaves them unchanged.
-                    if proof.known_identity(component).is_some_and(|id|entry.known_identity(component)!=Some(id)) || self.application_condition_writes(condition,&place,component){continue;}
-                    let mut repeated:Option<(bounds::Proof,bounds::Clause,Reg)>=None;
-                    for(edge,scope)in context.continues.iter_mut().zip(&continue_scopes) {
-                        if let Some((next,next_uniform,_))=edge.env.get_mut(name).and_then(Binding::proof_storage) {
-                            let next=next.project(&[component],width);*uniform &= *next_uniform;
-                            let scope=scope.get_or_init(||bounds::proof_scope(&edge.path,&edge.env));
-                            let next=scope(&Ty::scalar(place.ty().components[component].0),next);
-                            if let Some((common,aliases,reg))=repeated.as_mut(){
-                                *aliases=bounds::Clause::either(aliases,&next.output_aliases(&[*reg],&self.registers,&BTreeMap::new()));
-                                common.join(&next,1,None);
-                            }else{
-                                let reg=self.reg(place.ty().components[component].0);
-                                let aliases=next.output_aliases(&[reg],&self.registers,&BTreeMap::new());
-                                repeated=Some((next,aliases,reg));
-                            }
-                        }
-                    }
-                    if let Some((repeated,alias,reg))=repeated {
-                        let empty=&*scalar_empty;
-                        let mut common=proof.project(&[component],width);
-                        let aliases=[common.output_aliases(&[reg],&self.registers,&BTreeMap::new()),alias];
-                        exit.path=bounds::Clause::both(&exit.path,&bounds::Clause::either(&empty.assume(&aliases[0],true),&empty.assume(&aliases[1],false)));
-                        common.join_condition(&repeated,1,Some(empty));common={let mut component_proof=common.with_identity(ValueIdentity::Register(reg));component_proof.set_view_borrow(0,proof.view_borrow(component));component_proof};
-                        proof.assign(&[component],width,common);
-                    }
-                }
-            }
+        if !context.initial && let Some(exit) = natural.as_mut() {
+            reconcile_natural(self, &context, exit, terminal.as_ref(), condition, nonempty, bounds::proof_scope);
         }
         let has_natural = natural.is_some();
         context.exits.extend(natural);
@@ -934,7 +840,249 @@ impl Builder<'_> {
 }
 use crate::ir::dataflow;
 use owned_presence::Presence;
-use std::ffi::c_void;
+use std::{cell::OnceCell, ffi::c_void, ptr};
+
+type Terminal = (bounds::Condition, Vec<Option<bounds::Clause>>);
+
+struct TerminalPaths<'a> {
+    limit: &'a Value,
+    edges: &'a [LoopState],
+    paths: Vec<Option<bounds::Clause>>,
+}
+
+#[repr(C)]
+struct TerminalHost {
+    bounded: unsafe extern "C" fn(*const c_void, usize) -> u32,
+    project: unsafe extern "C" fn(*mut c_void, usize, u32),
+}
+
+unsafe extern "C" fn bounded_terminal(context: *const c_void, index: usize) -> u32 {
+    let state = unsafe { &*context.cast::<TerminalPaths<'_>>() };
+    let next = state.edges[index].cursor.as_ref().unwrap();
+    u32::from(next.proof.domains(0).contains(&IndexDomain::Upper(state.limit.identity(), 0)))
+}
+
+unsafe extern "C" fn project_terminal(context: *mut c_void, index: usize, equal: u32) {
+    let state = unsafe { &mut *context.cast::<TerminalPaths<'_>>() };
+    let edge = &state.edges[index];
+    let path = bounds::residency_scope(&edge.path, &edge.env);
+    let next = edge.cursor.as_ref().unwrap();
+    let (comparison, truth) = if equal != 0 { (Comparison::Equal, true) } else { (Comparison::Less, false) };
+    let path = bounds::Condition::comparison(comparison, next, state.limit).assume(&path, truth);
+    state.paths.push(path.possible().then_some(path));
+}
+
+fn terminal_paths(begin: &Value, limit: &Value, edges: &[LoopState]) -> Terminal {
+    let entered = bounds::Condition::comparison(Comparison::Less, begin, limit);
+    let mut state = TerminalPaths { limit, edges, paths: Vec::with_capacity(edges.len()) };
+    unsafe { natural_terminal_paths(ptr::from_mut(&mut state).cast(), edges.len(), TerminalHost {
+        bounded: bounded_terminal, project: project_terminal,
+    }); }
+    (entered, state.paths)
+}
+
+#[repr(C)]
+struct NaturalDatasetHost {
+    terminal: unsafe extern "C" fn(*mut c_void, usize),
+    repeated: unsafe extern "C" fn(*mut c_void, usize),
+    publish_terminal: unsafe extern "C" fn(*mut c_void),
+    publish_repeated: unsafe extern "C" fn(*mut c_void, u32),
+}
+
+#[repr(C)]
+struct NaturalScalarHost {
+    header_identity: unsafe extern "C" fn(*const c_void, usize) -> u32,
+    header_write: unsafe extern "C" fn(*const c_void, usize) -> u32,
+    repeated: unsafe extern "C" fn(*mut c_void, usize, usize) -> u32,
+    publish: unsafe extern "C" fn(*mut c_void, usize),
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.function_body::loop_terminal_paths"]
+    fn natural_terminal_paths(context: *mut c_void, edges: usize, host: TerminalHost);
+    #[link_name = "bootstrap.function_body::loop_natural_dataset"]
+    fn natural_loop_dataset(context: *mut c_void, edges: usize, written: u32, terminal: u32, host: NaturalDatasetHost);
+    #[link_name = "bootstrap.function_body::loop_natural_scalar"]
+    fn natural_loop_scalar(context: *mut c_void, components: usize, edges: usize, host: NaturalScalarHost);
+}
+
+struct NaturalDataset<'a> {
+    data: &'a mut application::Data,
+    name: &'a str,
+    context: &'a LoopContext,
+    terminal: Option<&'a Terminal>,
+    empty: &'a mut Option<bounds::Condition>,
+    location: residency::Residency,
+    repeated: Option<returns::Returned>,
+}
+
+struct NaturalScalar<'a, 'world, Scope> {
+    builder: &'a mut Builder<'world>,
+    context: &'a LoopContext,
+    condition: &'a [Inst],
+    name: &'a str,
+    path: &'a mut bounds::Clause,
+    proof: &'a mut bounds::Proof,
+    uniform: &'a mut bool,
+    place: Place,
+    entry: &'a bounds::Proof,
+    repeated: Option<(bounds::Proof, bounds::Clause, Reg)>,
+    empty: &'a mut Option<bounds::Condition>,
+    scalar_empty: &'a mut Option<bounds::Condition>,
+    nonempty: bool,
+    scopes: &'a [OnceCell<Scope>],
+    scope: fn(&bounds::Clause, &BTreeMap<String, Binding>) -> Scope,
+}
+
+fn empty_loop(context: &LoopContext) -> bounds::Condition {
+    context.control_source.test.as_ref().unwrap()
+        .at_call(&context.control_source.bindings(&context.entry)).negate()
+}
+
+fn loop_storage(binding: &Binding) -> Option<(&bounds::Proof, bool)> {
+    match binding {
+        Binding::Owned(owner) | Binding::ViewElement { element: owner, .. } => Some((&owner.proof, owner.uniform)),
+        Binding::OwnedValue(owner) if owner.place.is_some() => Some((&owner.value.proof, owner.value.uniform)),
+        _ => None,
+    }
+}
+
+unsafe extern "C" fn merge_terminal_dataset(context: *mut c_void, index: usize) {
+    let state = unsafe { &mut *context.cast::<NaturalDataset<'_>>() };
+    if let Some(path) = &state.terminal.unwrap().1[index]
+        && let Binding::ApplicationData(next) = &state.context.continues[index].env[state.name]
+    {
+        state.location.join(&next.residency.under(path));
+    }
+}
+
+unsafe extern "C" fn merge_repeated_dataset(context: *mut c_void, index: usize) {
+    let state = unsafe { &mut *context.cast::<NaturalDataset<'_>>() };
+    let next = returns::Returned::Dataset(data_at(&state.context.continues[index].env[state.name], &[]).unwrap().clone());
+    if let Some(common) = state.repeated.as_mut() { common.join(next, true, None); }
+    else { state.repeated = Some(next); }
+}
+
+unsafe extern "C" fn publish_terminal_dataset(context: *mut c_void) {
+    let state = unsafe { &mut *context.cast::<NaturalDataset<'_>>() };
+    if !matches!(state.location, residency::Residency::Absent) {
+        state.data.residency = residency::Residency::conditional(
+            state.terminal.unwrap().0.clone(), std::mem::take(&mut state.location),
+            std::mem::take(&mut state.data.residency),
+        );
+    }
+}
+
+unsafe extern "C" fn publish_repeated_dataset(context: *mut c_void, terminal: u32) {
+    let state = unsafe { &mut *context.cast::<NaturalDataset<'_>>() };
+    if let Some(returns::Returned::Dataset(repeated)) = state.repeated.take() {
+        let data = &mut state.data;
+        let empty = state.empty.get_or_insert_with(|| empty_loop(state.context));
+        if data.ownership != repeated.ownership { data.ownership = application::Ownership::Moved; }
+        if terminal == 0 {
+            data.residency = residency::Residency::conditional(
+                empty.clone(), std::mem::take(&mut data.residency), repeated.residency,
+            );
+        }
+        data.elements = std::mem::take(&mut data.elements).selected(repeated.elements, empty);
+        data.prefixes = prefix::join_fields(&data.prefixes, &repeated.prefixes, Some(empty));
+    }
+}
+
+unsafe extern "C" fn current_header_identity<Scope>(context: *const c_void, component: usize) -> u32 {
+    let state = unsafe { &*context.cast::<NaturalScalar<'_, '_, Scope>>() };
+    u32::from(state.proof.known_identity(component).is_some_and(|id| state.entry.known_identity(component) != Some(id)))
+}
+
+unsafe extern "C" fn current_header_write<Scope>(context: *const c_void, component: usize) -> u32 {
+    let state = unsafe { &*context.cast::<NaturalScalar<'_, '_, Scope>>() };
+    u32::from(state.builder.application_condition_writes(state.condition, &state.place, component))
+}
+
+unsafe extern "C" fn merge_repeated_scalar<Scope>(context: *mut c_void, component: usize, index: usize) -> u32
+where Scope: Fn(&Ty, bounds::Proof) -> bounds::Proof,
+{
+    let state = unsafe { &mut *context.cast::<NaturalScalar<'_, '_, Scope>>() };
+    let edge = &state.context.continues[index];
+    let Some((next, next_uniform)) = edge.env.get(state.name).and_then(loop_storage) else { return 0; };
+    let (scalar, _) = state.place.ty().components[component];
+    let next = next.project(&[component], state.place.ty().components.len());
+    *state.uniform &= next_uniform;
+    let scope = state.scopes[index].get_or_init(|| (state.scope)(&edge.path, &edge.env));
+    let next = scope(&Ty::scalar(scalar), next);
+    if let Some((common, aliases, reg)) = state.repeated.as_mut() {
+        *aliases = bounds::Clause::either(aliases, &next.output_aliases(&[*reg], &state.builder.registers, &BTreeMap::new()));
+        common.join(&next, 1, None);
+    } else {
+        let reg = state.builder.reg(scalar);
+        let aliases = next.output_aliases(&[reg], &state.builder.registers, &BTreeMap::new());
+        state.repeated = Some((next, aliases, reg));
+    }
+    1
+}
+
+unsafe extern "C" fn publish_repeated_scalar<Scope>(context: *mut c_void, component: usize) {
+    let state = unsafe { &mut *context.cast::<NaturalScalar<'_, '_, Scope>>() };
+    if let Some((repeated, alias, reg)) = state.repeated.take() {
+        let empty = state.scalar_empty.get_or_insert_with(|| {
+            if state.nonempty { return bounds::Condition::constant(false); }
+            let condition = state.empty.get_or_insert_with(|| empty_loop(state.context));
+            match condition.truth_in(&state.context.entry.path) {
+                Some(truth) => bounds::Condition::constant(truth),
+                None => condition.clone(),
+            }
+        });
+        let width = state.place.ty().components.len();
+        let proof = &mut state.proof;
+        let mut common = proof.project(&[component], width);
+        let entry = common.output_aliases(&[reg], &state.builder.registers, &BTreeMap::new());
+        *state.path = bounds::Clause::both(state.path, &bounds::Clause::either(&empty.assume(&entry, true), &empty.assume(&alias, false)));
+        common.join_condition(&repeated, 1, Some(empty));
+        let mut common = common.with_identity(ValueIdentity::Register(reg));
+        common.set_view_borrow(0, proof.view_borrow(component));
+        proof.assign(&[component], width, common);
+    }
+}
+
+fn reconcile_natural<Scope>(
+    builder: &mut Builder<'_>, context: &LoopContext, exit: &mut LoopState,
+    terminal: Option<&Terminal>, condition: &[Inst], nonempty: bool,
+    scope: fn(&bounds::Clause, &BTreeMap<String, Binding>) -> Scope,
+) where Scope: Fn(&Ty, bounds::Proof) -> bounds::Proof,
+{
+    let mut empty = None;
+    let mut scalar_empty = None;
+    let edges = context.continues.len();
+    let scopes = context.continues.iter().map(|_| OnceCell::new()).collect::<Vec<_>>();
+    for (name, binding) in &mut exit.env {
+        if let Binding::ApplicationData(data) = binding {
+            let written = matches!(&data.place, Some(Place::Local(_, slots, ..))
+                if slots.iter().any(|slot| context.writes.locals.contains(slot)));
+            let mut state = NaturalDataset {
+                data, name, context, terminal, empty: &mut empty,
+                location: residency::Residency::Absent, repeated: None,
+            };
+            unsafe { natural_loop_dataset(ptr::from_mut(&mut state).cast(), edges, u32::from(written),
+                u32::from(terminal.is_some()), NaturalDatasetHost {
+                    terminal: merge_terminal_dataset, repeated: merge_repeated_dataset,
+                    publish_terminal: publish_terminal_dataset, publish_repeated: publish_repeated_dataset,
+                },
+            ); }
+        } else if let Some((proof, uniform, place)) = binding.proof_storage()
+            && let Some((entry, _)) = context.entry.env.get(name).and_then(loop_storage)
+        {
+            let components = place.ty().components.len();
+            let mut state = NaturalScalar {
+                builder, context, condition, name, path: &mut exit.path, proof, uniform, place, entry,
+                repeated: None, empty: &mut empty, scalar_empty: &mut scalar_empty, nonempty, scopes: &scopes, scope,
+            };
+            unsafe { natural_loop_scalar(ptr::from_mut(&mut state).cast(), components, edges, NaturalScalarHost {
+                header_identity: current_header_identity::<Scope>, header_write: current_header_write::<Scope>,
+                repeated: merge_repeated_scalar::<Scope>, publish: publish_repeated_scalar::<Scope>,
+            }); }
+        }
+    }
+}
 
 #[derive(Clone, Copy)]
 #[repr(C)]

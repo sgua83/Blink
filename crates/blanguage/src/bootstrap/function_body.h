@@ -582,3 +582,29 @@ struct LoopProgressHost {
 };
 extern "C" u32 initial_loop_progress(address context, LoopProgressHost host) on cpu
     requires nonzero(host.next) requires nonzero(host.boolean_at) requires nonzero(host.payload);
+
+struct LoopTerminalHost {
+    cfn<u32,address,usize> bounded;
+    cfn<void,address,usize,u32> project;
+};
+extern "C" void loop_terminal_paths(address context,usize edges,LoopTerminalHost host) on cpu
+    requires nonzero(host.bounded) requires nonzero(host.project);
+
+struct NaturalDatasetHost {
+    cfn<void,address,usize> terminal;
+    cfn<void,address,usize> repeated;
+    cfn<void,address> publish_terminal;
+    cfn<void,address,u32> publish_repeated;
+};
+extern "C" void loop_natural_dataset(address context,usize edges,u32 written,u32 terminal,NaturalDatasetHost host) on cpu
+    requires nonzero(host.terminal) requires nonzero(host.repeated)
+    requires nonzero(host.publish_terminal) requires nonzero(host.publish_repeated);
+struct NaturalScalarHost {
+    cfn<u32,address,usize> header_identity;
+    cfn<u32,address,usize> header_write;
+    cfn<u32,address,usize,usize> repeated;
+    cfn<void,address,usize> publish;
+};
+extern "C" void loop_natural_scalar(address context,usize components,usize edges,NaturalScalarHost host) on cpu
+    requires nonzero(host.header_identity) requires nonzero(host.header_write)
+    requires nonzero(host.repeated) requires nonzero(host.publish);
