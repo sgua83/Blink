@@ -641,7 +641,7 @@ impl Scope<'_, '_> {
             let ordinal=bounds::Operand::Value(ValueIdentity::ElementIndex(0));
             let proof=bounds::Proof::default().with_identity(ValueIdentity::ElementIndex(0));
             for(expr,lower)in [(start,true),(end,false)] {
-                if lower&&bounds::seeks(&body){continue;}
+                if lower && super::super::flow::loop_seeks(body) { continue; }
                 let Some((ty,bound,_))=unsafe { self.world.call(self.input_snapshot(&expr,self.bindings.len(),Access::Value,None,None)).await }?else{continue;};
                 if ty!=Ty::scalar(Scalar::U32){continue;}
                 let operand=bound.known_value(&ty).map(|bits|bounds::Operand::Constant(Scalar::U32,bits[0])).or_else(||bound.known_identity(0).map(bounds::Operand::Value));

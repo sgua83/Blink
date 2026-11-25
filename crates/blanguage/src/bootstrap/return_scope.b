@@ -77,7 +77,7 @@ bool propagating_body(address nodes,address source,address stored,Slice body) on
     }
     return false;
 }
-enum ExitScope:u32 { FunctionBody=0; Nested=1; LoopBody=2; };
+enum ExitScope:u32 { FunctionBody=0; Nested=1; LoopBody=2; LoopSeek=3; };
 
 bool arm_exits(address nodes,Slice arms,ExitScope scope) on cpu {
     u64 i=0u64;
@@ -90,17 +90,17 @@ bool arm_exits(address nodes,Slice arms,ExitScope scope) on cpu {
 }
 
 bool explicit_exit(address nodes,Slice body,ExitScope scope) on cpu {
-    ExitScope branch=scope==ExitScope::LoopBody ? ExitScope::LoopBody : ExitScope::Nested;
+    ExitScope branch=scope==ExitScope::FunctionBody ? ExitScope::Nested : scope;
     u64 i=0u64;
     while(i<body.count){
         StmtNode statement=node<StmtNode>(nodes,member(nodes,body,i));
         match(statement.kind){
-            StmtKind::Return(unused){if(scope!=ExitScope::FunctionBody || i+1u64!=body.count){return true;}}
+            StmtKind::Return(unused){if(scope!=ExitScope::LoopSeek && (scope!=ExitScope::FunctionBody || i+1u64!=body.count)){return true;}}
             StmtKind::Break(){if(scope==ExitScope::LoopBody){return true;}}
             StmtKind::If(value){if(explicit_exit(nodes,value.yes,branch)||explicit_exit(nodes,value.no,branch)){return true;}}
             StmtKind::Match(value){if(arm_exits(nodes,value.arms,branch)){return true;}}
-            StmtKind::While(value){if(explicit_exit(nodes,value.body,ExitScope::Nested)){return true;}}
-            StmtKind::For(value){if(explicit_exit(nodes,value.body,ExitScope::Nested)){return true;}}
+            StmtKind::While(value){if(scope!=ExitScope::LoopSeek && explicit_exit(nodes,value.body,ExitScope::Nested)){return true;}}
+            StmtKind::For(value){if(scope!=ExitScope::LoopSeek && explicit_exit(nodes,value.body,ExitScope::Nested)){return true;}}
             StmtKind::Declare(unused){}
             StmtKind::Let(unused){}
             StmtKind::Assign(unused){}
@@ -108,7 +108,7 @@ bool explicit_exit(address nodes,Slice body,ExitScope scope) on cpu {
             StmtKind::Parallel(unused){}
             StmtKind::Continue(){}
             StmtKind::Phase(){}
-            StmtKind::Seek(unused){if(scope==ExitScope::LoopBody){return true;}}
+            StmtKind::Seek(unused){if(scope==ExitScope::LoopBody || scope==ExitScope::LoopSeek){return true;}}
         }
         i+=1u64;
     }
@@ -119,6 +119,6 @@ extern "C" bool early_returns(address nodes,address source,address stored,Slice 
     return propagating_body(nodes,source,stored,body)||explicit_exit(nodes,body,ExitScope::FunctionBody);
 }
 
-extern "C" bool loop_exit(address nodes,Slice body) on cpu {
-    return explicit_exit(nodes,body,ExitScope::LoopBody);
+extern "C" bool loop_exit(address nodes,Slice body,bool seek_only) on cpu {
+    return explicit_exit(nodes,body,seek_only ? ExitScope::LoopSeek : ExitScope::LoopBody);
 }

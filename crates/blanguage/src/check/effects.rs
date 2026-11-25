@@ -422,6 +422,7 @@ impl Builder<'_> {
         condition: Option<&Expr>,
         body: &Block,
         borrowed_data: Option<ValueIdentity>,
+        cursor: Option<&str>,
         initial: bool,
     ) -> Result<LoopWrites> {
         let mut writes = Vec::new();
@@ -447,8 +448,7 @@ impl Builder<'_> {
         }else{writes};
         effect.body_bounds=body_bounds;
         if !initial {
-            let cursor=if condition.is_none()&&!bounds::seeks(body){self.loop_contexts.last().and_then(|context|context.iterator.as_ref()).map(|(name,_)|name.clone())}else{None};
-            unsafe { self.world.call(self.invalidate_writes(&writes,borrowed_data,&effect,condition,cursor.as_deref())).await }?;
+            unsafe { self.world.call(self.invalidate_writes(&writes,borrowed_data,&effect,condition,cursor)).await }?;
         }
         Ok(effect)
     }

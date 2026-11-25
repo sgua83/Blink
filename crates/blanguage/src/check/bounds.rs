@@ -36,15 +36,6 @@ pub(super) fn required_scope() -> impl Drop {
     required_roots::scope()
 }
 
-pub(super) fn seeks(body: &Block) -> bool {
-    body.iter().any(|statement| match statement.kind() {
-        StmtKind::Seek(..) => true,
-        StmtKind::If(_, yes, no) => seeks(&yes) || seeks(&no),
-        StmtKind::Match(_, arms) => arms.iter().any(|arm|seeks(&arm.body())),
-        // Nested loops own their reentry; their seek cannot replace this cursor.
-        _ => false,
-    })
-}
 pub(super) fn for_cursor(begin: &Value, limit: &Value, seeks: bool) -> Proof {
     let minimum = if seeks { 0 } else { begin.minimum() };
     Proof::unsigned(minimum, limit.maximum().saturating_sub(1))

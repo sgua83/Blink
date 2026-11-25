@@ -357,18 +357,13 @@ impl Builder<'_> {
             }
         }
     }
-    pub(super) fn initialize_array_iteration_exit(
+    fn initialize_array_iteration_exit(
         &self,
         exit: &mut LoopState,
         begin: &Value,
         limit: &Value,
         index: ownership::ApplicationIndex,
-        initial: bool,
-        body: &Block,
     ) {
-        if initial || bounds::seeks(body) {
-            return;
-        }
         let states = &self.loop_contexts.last().unwrap().continues;
         let range = (begin.minimum() == begin.maximum() && limit.minimum() == limit.maximum())
             .then(|| (begin.minimum(), limit.minimum()));
@@ -385,11 +380,10 @@ impl Builder<'_> {
         );
     }
 
-    pub(super) fn defer_iteration_exit(
+    fn defer_iteration_exit(
         &self,exit:&mut LoopState,begin:&Value,limit:&Value,outputs:&[(application::Data,Vec<u32>)],
-        index:ownership::ApplicationIndex,initial:bool,body:&Block,
+        index:ownership::ApplicationIndex,
     ) {
-        if initial||bounds::seeks(body){return;}
         let states=&self.loop_contexts.last().unwrap().continues;
         if !states.iter().any(|state| address::has_pending_initialization(&state.initialized)) { return; }
         let iteration=address::Iteration{
@@ -454,8 +448,7 @@ impl Builder<'_> {
         {
             return false;
         }
-        let storage = body.source_view().storage();
-        unsafe { source_loop_exit(storage.nodes.cast_const(), body.source_slice()) }
+        source_exit(body, false)
     }
 
     pub(super) async fn application_initial_loop(&self, body: &Block) -> Result<bool> {
@@ -1519,7 +1512,16 @@ unsafe extern "C" fn with_loop_scope(code: dataflow::Span, parent: LoopPaths, ho
 
 unsafe extern "C" {
     #[link_name = "bootstrap.return_scope::loop_exit"]
-    fn source_loop_exit(nodes: *const std::ffi::c_void, body: crate::syntax::wire::Slice) -> bool;
+    fn source_loop_exit(nodes: *const std::ffi::c_void, body: crate::syntax::wire::Slice, seek_only: bool) -> bool;
+}
+
+fn source_exit(body: &Block, seek_only: bool) -> bool {
+    let storage = body.source_view().storage();
+    unsafe { source_loop_exit(storage.nodes.cast_const(), body.source_slice(), seek_only) }
+}
+
+pub(super) fn loop_seeks(body: &Block) -> bool {
+    source_exit(body, true)
 }
 
 fn loop_exit_paths(code: &[Inst], controls: &BTreeMap<Reg, Value>, test: &Presence) -> Vec<Presence> {
@@ -1653,7 +1655,7 @@ impl Builder<'_> {
     WhileNeed::Enter=>{
      self.flow=Flow::NEXT;let saved=self.env.clone();self.enter_loop(&saved);self.configure_initial_loop(initial,None,None);self.prepare_view_loop();environment=Some(saved);
     },
-    WhileNeed::Writes=>{let writes=unsafe {self.world.call(self.loop_writes(Some(condition),body,None,initial)).await}?;self.loop_contexts.last_mut().unwrap().writes=writes;},
+    WhileNeed::Writes=>{let writes=unsafe {self.world.call(self.loop_writes(Some(condition),body,None,None,initial)).await}?;self.loop_contexts.last_mut().unwrap().writes=writes;},
     WhileNeed::Condition=>{
      self.loop_contexts.last_mut().unwrap().outer=std::mem::take(&mut self.code);
      c=unsafe {self.world.call(self.temporary_scope(condition.span(),async |builder|Ok((unsafe {builder.world.call(builder.expr(condition)).await}?,view::Borrow::default())))).await}?;
@@ -1742,7 +1744,7 @@ impl Builder<'_> {
     ForNeed::EmptyNext=>{empty_item=empty.as_mut().unwrap().next();facts.present=u32::from(empty_item.is_some());},
     ForNeed::EmptyInitialize=>{let(data,words)=empty_item.take().unwrap();self.initialize_application_words(&data,&words);},
     ForNeed::EmptyDone=>return Ok(effects::LoopWrites::default()),
-    ForNeed::Seeks=>facts.seeks=u32::from(bounds::seeks(body)),
+    ForNeed::Seeks=>facts.seeks=u32::from(loop_seeks(body)),
     ForNeed::ClearInitialization=>initialization.clear(),
     ForNeed::Enter=>{
      let saved=self.env.clone();self.enter_loop(&saved);self.configure_initial_loop(initial,Some(name.clone()),Some(begin.clone()));self.prepare_view_loop();
@@ -1774,7 +1776,12 @@ impl Builder<'_> {
     ForNeed::FinishView=>binding=Some(Binding::ViewElement {element:OwnedBinding {place:place.take().unwrap(),proof:std::mem::take(&mut input),uniform:false,initialization:None},view:view.take().unwrap()}),
     ForNeed::IndexBinding=>binding=Some(Binding::Value(body_cursor.as_ref().unwrap().clone())),
     ForNeed::Install=>{self.env.insert(name.clone(),binding.take().unwrap());},
-    ForNeed::Writes=>{let mut writes=unsafe {self.world.call(self.loop_writes(None,body,borrowed,initial)).await}?;writes.locals.insert(slot);self.loop_contexts.last_mut().unwrap().writes=writes;},
+    ForNeed::Writes=>{
+     let cursor = (facts.seeks == 0).then_some(name.as_str());
+     let mut writes = unsafe { self.world.call(self.loop_writes(None, body, borrowed, cursor, initial)).await }?;
+     writes.locals.insert(slot);
+     self.loop_contexts.last_mut().unwrap().writes = writes;
+    },
     ForNeed::Capture=>{
      self.loop_contexts.last_mut().unwrap().control_source=view_contracts::LoopControl::capture(test.as_ref().unwrap(),&self.env,Some(body_cursor.as_ref().unwrap().clone()));
      self.loop_contexts.last_mut().unwrap().iterator.as_mut().unwrap().1=body_cursor.take().unwrap();
@@ -1796,7 +1803,11 @@ impl Builder<'_> {
     },
     ForNeed::ExitInitialization=>{
      code=Some(std::mem::take(&mut self.code));let natural=natural.as_mut().unwrap();let iteration=iteration.unwrap();let limit=limit.as_ref().unwrap();
-     self.initialize_iteration_exit(natural,&initialization,iteration,initial);self.initialize_array_iteration_exit(natural,&begin,limit,iteration,initial,body);self.defer_iteration_exit(natural,&begin,limit,&initialization,iteration,initial,body);
+     self.initialize_iteration_exit(natural, &initialization, iteration, initial);
+     if !initial && facts.seeks == 0 {
+      self.initialize_array_iteration_exit(natural, &begin, limit, iteration);
+      self.defer_iteration_exit(natural, &begin, limit, &initialization, iteration);
+     }
     },
     ForNeed::TestEntry=>{test.as_mut().unwrap().proof=bounds::Proof::condition(bounds::Condition::comparison(Comparison::Less,&begin,limit.as_ref().unwrap()));},
     ForNeed::DropNatural=>natural=None,
