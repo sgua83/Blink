@@ -22,39 +22,34 @@ u64 qualification_separator(NameBytes name) on cpu {
     }
     return name.length;
 }
-bool directly_imported(NameBytes owner,address imports,u64 count) on cpu {
+bool directly_imported(NameBytes owner, u64 count, address context,
+    cfn<NameBytes,address,u64> import_name) on cpu requires nonzero(import_name) {
     u64 index=0u64;
     while(index<count){
-        if(equal(import_at(imports,index),owner)){return true;}
+        if(equal(import_name(context,index),owner)){return true;}
         index+=1u64;
     }
     return false;
 }
-NameBytes qualify(NameBytes module,NameBytes name,address candidate) on cpu {
-    u64 at=0u64;while(at<module.length){unsafe_position<u8>(unsafe_address(address_bits(candidate)+at))=byte_at(module,at);at+=1u64;}
-    unsafe_position<u8>(unsafe_address(address_bits(candidate)+module.length))=u8(58);
-    unsafe_position<u8>(unsafe_address(address_bits(candidate)+module.length+1u64))=u8(58);
-    at=0u64;while(at<name.length){unsafe_position<u8>(unsafe_address(address_bits(candidate)+module.length+2u64+at))=byte_at(name,at);at+=1u64;}
-    return NameBytes(candidate,module.length+2u64+name.length);
-}
-extern "C" NameResult resolve(NameBytes name,NameBytes module,address imports,u64 count,
-    address candidate,address context,cfn<NameHit,address,NameBytes> lookup) on cpu requires nonzero(lookup) {
+extern "C" NameResult resolve(NameBytes name, NameBytes module, u64 count, address context,
+    cfn<NameBytes,address,u64> import_name, cfn<NameHit,address,NameBytes,NameBytes> lookup) on cpu
+    requires nonzero(import_name) requires nonzero(lookup) {
     u64 separator=qualification_separator(name);
     if(separator<name.length){
-        NameHit hit=lookup(context,name);
+        NameHit hit=lookup(context,empty(),name);
         NameBytes owner=NameBytes(name.bytes,separator);
-        if(hit.present!=0u64&&(equal(owner,module)||(hit.public!=0u64&&directly_imported(owner,imports,count)))){
+        if(hit.present!=0u64&&(equal(owner,module)||(hit.public!=0u64&&directly_imported(owner,count,context,import_name)))){
             return NameResult(hit.name,1u64);
         }
     }
-    NameHit local=lookup(context,qualify(module,name,candidate));
+    NameHit local=lookup(context,module,name);
     if(local.present!=0u64){return NameResult(local.name,1u64);}
 
     NameBytes first=empty();
     u64 found=0u64;
     u64 index=0u64;
     while(index<count){
-        NameHit hit=lookup(context,qualify(import_at(imports,index),name,candidate));
+        NameHit hit=lookup(context,import_name(context,index),name);
         if(hit.public!=0u64){
             if(found==0u64){
                 first=hit.name;

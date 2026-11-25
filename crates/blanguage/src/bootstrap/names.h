@@ -4,9 +4,10 @@ struct NameHit {NameBytes name;u64 public;u64 present;};
 struct NameResult {NameBytes name;u64 count;};
 i32 compare_name(NameBytes left, NameBytes right) on cpu;
 u64 qualification_separator(NameBytes name) on cpu;
-// All views and the candidate buffer belong to the synchronous caller.
-extern "C" NameResult resolve(NameBytes name,NameBytes module,address imports,u64 count,
-    address candidate,address context,cfn<NameHit,address,NameBytes> lookup) on cpu requires nonzero(lookup);
+// Lookup borrows either the exact name or a selected prefix and a name.
+extern "C" NameResult resolve(NameBytes name, NameBytes module, u64 count, address context,
+    cfn<NameBytes,address,u64> import_name, cfn<NameHit,address,NameBytes,NameBytes> lookup) on cpu
+    requires nonzero(import_name) requires nonzero(lookup);
 
 extern "C" u64 order_imports(address names, u64 count) on cpu;
 // Each row borrows two UTF-8 name spans. The unique rows occupy the prefix.

@@ -38,8 +38,11 @@ unsafe extern "C" {
     #[link_name = "bootstrap.names::pair_functions"]
     fn pair_functions(names: *mut FunctionName, declarations: u64, implementations: u64, output: *mut u64);
     #[link_name="bootstrap.names::resolve"]
-    fn choose(name:Bytes,module:Bytes,imports:*const Bytes,count:u64,candidate:*mut u8,context:*const c_void,
-        lookup:unsafe extern "C" fn(*const c_void,Bytes)->Hit)->Resolution;
+    fn choose(
+        name: Bytes, module: Bytes, count: u64, context: *mut c_void,
+        import_name: unsafe extern "C" fn(*const c_void, u64) -> Bytes,
+        lookup: unsafe extern "C" fn(*mut c_void, Bytes, Bytes) -> Hit,
+    ) -> Resolution;
 }
 
 #[derive(Default)]
@@ -70,20 +73,48 @@ impl ActiveDependencies {
         Some(evaluate().await)
     }
 }
-unsafe extern "C" fn lookup<'a,F:Fn(&str)->Option<Declaration<'a>>>(context:*const c_void,name:Bytes)->Hit {
-    let lookup=unsafe{&*context.cast::<F>()};
-    match lookup(unsafe{name.text()}) {
-        Some(declaration)=>Hit{name:Bytes::new(declaration.name),public:u64::from(declaration.public),present:1},
-        None=>Hit{name:Bytes::new(""),public:0,present:0},
+struct Resolver<'a, F> {
+    imports: &'a [String],
+    declarations: F,
+    candidate: String,
+}
+
+unsafe extern "C" fn import_name<F>(context: *const c_void, index: u64) -> Bytes {
+    let resolver = unsafe { &*context.cast::<Resolver<'_, F>>() };
+    Bytes::new(&resolver.imports[index as usize])
+}
+
+unsafe extern "C" fn lookup<'a, F: Fn(&str) -> Option<Declaration<'a>>>(
+    context: *mut c_void, prefix: Bytes, name: Bytes,
+) -> Hit {
+    let resolver = unsafe { &mut *context.cast::<Resolver<'_, F>>() };
+    let name = unsafe { name.text() };
+    let key = if prefix.bytes.is_null() {
+        name
+    } else {
+        let prefix = unsafe { prefix.text() };
+        let key = &mut resolver.candidate;
+        key.clear();
+        key.reserve(prefix.len() + 2 + name.len());
+        key.push_str(prefix);
+        key.push_str("::");
+        key.push_str(name);
+        key.as_str()
+    };
+    match (resolver.declarations)(key) {
+        Some(declaration) => Hit { name: Bytes::new(declaration.name), public: u64::from(declaration.public), present: 1 },
+        None => Hit { name: Bytes::new(""), public: 0, present: 0 },
     }
 }
-pub(crate) fn resolve<'a,F:Fn(&str)->Option<Declaration<'a>>>(name:&str,module:&str,imports:&[String],declarations:F)->NameResolution {
-    let longest=imports.iter().map(String::len).chain(std::iter::once(module.len())).max().unwrap();
-    // B initializes only the candidate bytes it reads. u8 storage has no drop work.
-    let mut candidate=Vec::<u8>::with_capacity(longest+2+name.len());
-    let imports=imports.iter().map(|name|Bytes::new(name)).collect::<Vec<_>>();
-    let result=unsafe{choose(Bytes::new(name),Bytes::new(module),imports.as_ptr(),imports.len()as u64,
-        candidate.as_mut_ptr(),&declarations as *const F as *const c_void,lookup::<F>)};
+
+pub(crate) fn resolve<'a, F: Fn(&str) -> Option<Declaration<'a>>>(
+    name: &str, module: &str, imports: &[String], declarations: F,
+) -> NameResolution {
+    let mut resolver = Resolver { imports, declarations, candidate: String::new() };
+    let result = unsafe {
+        choose(Bytes::new(name), Bytes::new(module), imports.len() as u64,
+            std::ptr::from_mut(&mut resolver).cast(), import_name::<F>, lookup::<F>)
+    };
     match result.count {
         0=>NameResolution::Missing,
         1=>NameResolution::Unique(unsafe{result.name.text()}.to_owned()),
