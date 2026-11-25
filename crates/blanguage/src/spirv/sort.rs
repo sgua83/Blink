@@ -8,24 +8,18 @@ unsafe extern "C" {
 }
 
 #[repr(C)]
-struct SortKeyWrite {
-    type_id: u32,
-    key: u32,
-    sign: u32,
-    zero: u32,
-    shift: u32,
-    bias: u32,
-    inverted: u32,
-    key_pointer: u32,
-    index_pointer: u32,
-    original: u32,
-    next: u32,
-    label: u32,
+struct SortKeyInput {
+    target: PageInputs,
+    source: PageInputs,
+    scalar: ScalarCode,
+    descending: u32,
+    first: u32,
+    active: u32,
 }
 
 unsafe extern "C" {
-    #[link_name = "bootstrap.spirv_envelope::write_sort_key"]
-    fn write_sort_key(input: SortKeyWrite, body: *mut u32) -> StageWords;
+    #[link_name = "bootstrap.spirv_envelope::sort_initialize"]
+    fn initialize_sort_key(input: SortKeyInput, host: MemoryHost) -> u32;
 }
 
 impl Emitter<'_> {
@@ -36,53 +30,19 @@ impl Emitter<'_> {
         first: bool,
         active: u32,
     ) {
-        let run = self.id();
-        let end = self.id();
-        self.open_active(active, run, end);
-
-        // Both work fields belong to the same eight-byte record.
-        let [key_pointer, index_pointer] = self.paged_pointers(
-            Scalar::U32, PageSource::Dataset(self.buffers[s.target]), self.index, 0, 0, true,
-        );
-        let original = if first {
-            self.index
-        } else {
-            self.load_raw(Scalar::U32, Scalar::U32, &[index_pointer], true)
-        };
         let (word, scalar, order) = s.keys[key_index];
-        let unit = Self::physical_unit(scalar);
-        let [low, high] = self.paged_pointers(
-            unit, PageSource::Dataset(self.buffers[s.source]), original, word, 0, scalar == Scalar::F64,
+        let target = self.page_inputs(
+            PageSource::Dataset(self.buffers[s.target]), self.index, Some(0), 0,
         );
-        let key = self.load_raw(Scalar::U32, unit, &[low], true);
-        let sign = if scalar == Scalar::F64 {
-            self.load_raw(Scalar::U32, Scalar::U32, &[high], true)
-        } else {
-            key
+        let source = self.page_inputs(
+            PageSource::Dataset(self.buffers[s.source]), self.index, Some(word), 0,
+        );
+        let input = SortKeyInput {
+            target, source, scalar: scalar.into(),
+            descending: u32::from(order == SortOrder::Descending),
+            first: u32::from(first), active,
         };
-        let (zero, shift) = if scalar.is_float() {
-            (self.constant(Scalar::U32, 0), self.constant(Scalar::U32, 31))
-        } else {
-            (0, 0)
-        };
-        let bias_bits = match scalar {
-            Scalar::F32 => 0x8000_0000,
-            Scalar::F64 => 0,
-            _ => scalar.order_bias() as u32,
-        };
-        let bias = if bias_bits != 0 { self.constant(Scalar::U32, bias_bits) } else { 0 };
-        let inverted = if order == SortOrder::Descending {
-            self.constant(Scalar::U32, u32::MAX)
-        } else {
-            0
-        };
-        let input = SortKeyWrite {
-            type_id: self.types[&Scalar::U32], key, sign, zero, shift, bias, inverted,
-            key_pointer, index_pointer, original, next: self.next, label: run,
-        };
-        // At most five binary instructions followed by two aligned stores.
-        self.emit_stage(35, |body| unsafe { write_sort_key(input, body) });
-        self.merge_active(end, true);
+        self.current_label = unsafe { initialize_sort_key(input, self.memory_host()) };
     }
 
     pub(super) fn sort_gather(&mut self, s: &Sorting, active: u32) {

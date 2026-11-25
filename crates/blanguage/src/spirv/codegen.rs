@@ -1688,7 +1688,7 @@ impl Emitter<'_> {
     fn load_private(&mut self, dst: Reg, base: usize, index: Option<Reg>, word: u32) {
         let scalar = self.stage.registers[dst];
         let (unit, pointers, count) = self.private_address(base, index, word, scalar);
-        let raw = self.load_raw(scalar, unit, &pointers[..count], false);
+        let raw = self.load_raw(scalar, unit, &pointers[..count]);
         self.from_words(dst, &[raw], Self::raw_scalar(scalar));
     }
 
@@ -2035,21 +2035,14 @@ impl Emitter<'_> {
     }
 
     fn page_address(&mut self, unit: Scalar, source: PageSource, index: u32, word: u32, extra: u32) -> u32 {
-        self.paged_pointers(unit, source, index, word, extra, false)[0]
-    }
-
-    fn paged_pointers(
-        &mut self, unit: Scalar, source: PageSource, index: u32, word: u32, extra: u32, pair: bool,
-    ) -> [u32; 2] {
-        let step = if pair { self.constant(Scalar::U64, unit.size()) } else { 0 };
         let input = self.page_input(unit, source, index, Some(word), extra);
         let at = self.body.len();
-        self.body.reserve(if pair { 118 } else { 109 });
+        self.body.reserve(109);
         unsafe {
-            let address = page_address(input, step, self.body.as_mut_ptr().add(at));
+            let address = page_address(input, 0, self.body.as_mut_ptr().add(at));
             self.body.set_len(at + address.words as usize);
             self.next = address.next;
-            [address.pointer, address.second]
+            address.pointer
         }
     }
 
@@ -2331,9 +2324,8 @@ impl Emitter<'_> {
         words
     }
 
-    fn load_raw(&mut self, scalar: Scalar, unit: Scalar, pointers: &[u32], physical: bool) -> u32 {
-        let access = if physical { PayloadAccess::Physical } else { PayloadAccess::Local };
-        self.read_payload(scalar, unit, pointers, access)
+    fn load_raw(&mut self, scalar: Scalar, unit: Scalar, pointers: &[u32]) -> u32 {
+        self.read_payload(scalar, unit, pointers, PayloadAccess::Local)
     }
 
     fn store_raw(&mut self, scalar: Scalar, unit: Scalar, pointers: &[u32], value: u32, physical: bool) {

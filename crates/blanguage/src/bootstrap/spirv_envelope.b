@@ -2433,25 +2433,52 @@ extern "C" DispatchValue encode_dispatch_grid(DispatchGrid input, address body) 
     return dispatch_levels(body, DispatchValue(out.words, out.next, 0), input, histogram_base, histogram, slots);
 }
 
-extern "C" StageWords write_sort_key(SortKeyWrite input, address body) on cpu {
-    StageCursor out = StageCursor(body, 0u64, input.next);
-    u32 key = input.key;
-    if (input.shift != 0) {
-        u32 negative = stage_op(out, 194, input.type_id, input.sign, input.shift);
-        u32 mask = stage_op(out, 130, input.type_id, input.zero, negative);
-        if (input.bias != 0) {
-            mask = stage_op(out, 197, input.type_id, mask, input.bias);
-        }
-        key = stage_op(out, 198, input.type_id, key, mask);
-    } else if (input.bias != 0) {
-        key = stage_op(out, 198, input.type_id, key, input.bias);
+extern "C" u32 sort_initialize(SortKeyInput input, MemoryHost host) on cpu
+    requires nonzero(host.scalars.constant) requires nonzero(host.scalars.type_id)
+    requires nonzero(host.scalars.ids) requires nonzero(host.scalars.reserve)
+    requires nonzero(host.pointer_type) requires nonzero(host.finish_body) {
+    address context = host.scalars.context;
+    ScalarDefinition definition = scalar_definition(input.scalar);
+    PhysicalShape shape = physical_shape(input.scalar);
+    bool wide_float = input.scalar == BuiltinScalar::F64;
+    bool floating = input.scalar == BuiltinScalar::F32 || wide_float;
+    u32 step = host.scalars.constant(context, BuiltinScalar::U64, 4u64);
+    PageAddress target = prepare_page(input.target, host.pointer_type(context, BuiltinScalar::U32), host.scalars);
+    PageAddress source = prepare_page(input.source, host.pointer_type(context, shape.unit), host.scalars);
+    u32 unit_type = host.scalars.type_id(context, shape.unit);
+    u32 shift = floating ? host.scalars.constant(context, BuiltinScalar::U32, 31u64) : 0;
+    u32 bias_bits = input.scalar == BuiltinScalar::F32 ? 0x80000000
+        : definition.signed == 0 ? 0 : u32(1u64 << u64(definition.width - 1));
+    u32 bias = bias_bits == 0 ? 0 : host.scalars.constant(context, BuiltinScalar::U32, u64(bias_bits));
+    u32 inverted = input.descending == 0 ? 0 : host.scalars.constant(context, BuiltinScalar::U32, 4294967295u64);
+
+    // One active branch, at most two paired page addresses, key loads and stores.
+    u32 next = host.scalars.ids(context, 0);
+    address body = host.scalars.reserve(context, 306u64, 0u64).body;
+    StageCursor out = StageCursor(body, 0u64, next);
+    StageBranch run = stage_open(out, input.active);
+    u32 word_type = target.u32_type;
+    PageAddressResult work = stage_address(out, target, target.index, step);
+    u32 original = input.first != 0 ? target.index : stage_load(out, word_type, work.second, true);
+    PageAddressResult field = stage_address(out, source, original, wide_float ? step : 0);
+    u32 key = stage_aligned_load(out, unit_type, field.pointer, shape.bytes);
+    if (unit_type != word_type) { key = stage_unary(out, 113, word_type, key); }
+    if (floating) {
+        u32 sign = wide_float ? stage_load(out, word_type, field.second, true) : key;
+        u32 negative = stage_op(out, 194, word_type, sign, shift);
+        u32 mask = stage_op(out, 130, word_type, target.zero, negative);
+        if (bias != 0) { mask = stage_op(out, 197, word_type, mask, bias); }
+        key = stage_op(out, 198, word_type, key, mask);
+    } else if (bias != 0) {
+        key = stage_op(out, 198, word_type, key, bias);
     }
-    if (input.inverted != 0) {
-        key = stage_op(out, 198, input.type_id, key, input.inverted);
-    }
-    out.words = words_four(body, out.words, 62, input.key_pointer, key, 2, 4);
-    out.words = words_four(body, out.words, 62, input.index_pointer, input.original, 2, 4);
-    return StageWords(out.words, out.next, input.label);
+    if (inverted != 0) { key = stage_op(out, 198, word_type, key, inverted); }
+    out.words = aligned_store(body, out.words, work.pointer, key, 4);
+    out.words = aligned_store(body, out.words, work.second, original, 4);
+    stage_close(out, run.end);
+    host.finish_body(context, out.words);
+    host.scalars.ids(context, out.next - next);
+    return run.end;
 }
 
 extern "C" StageWords encode_sort_gather(PageAddress indices, address layout, u32 active, address body) on cpu {

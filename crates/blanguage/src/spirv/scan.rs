@@ -272,7 +272,7 @@ impl Emitter<'_> {
 
     pub(super) fn tree_load(&mut self, tree: SharedTree, node: u32) -> u32 {
         let pointers = self.tree_parts(tree, node);
-        self.load_raw(tree.scalar, Scalar::U32, pointers.as_ref(), false)
+        self.load_raw(tree.scalar, Scalar::U32, pointers.as_ref())
     }
 
     pub(super) fn tree_store(&mut self, tree: SharedTree, node: u32, value: u32) {

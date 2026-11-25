@@ -1181,22 +1181,19 @@ struct StageWords { u64 words; u32 next; u32 label; };
 extern "C" StageWords encode_sort_rank(SortRankEmission input, address body) on cpu;
 extern "C" u64 workgroup_barrier(address body, u64 at, u32 scope, u32 semantics) on cpu;
 
-struct SortKeyWrite {
-    u32 type_id;
-    u32 key;
-    u32 sign;
-    u32 zero;
-    u32 shift;
-    u32 bias;
-    u32 inverted;
-    u32 key_pointer;
-    u32 index_pointer;
-    u32 original;
-    u32 next;
-    u32 label;
+struct SortKeyInput {
+    PageInputs target;
+    PageInputs source;
+    BuiltinScalar scalar;
+    u32 descending;
+    u32 first;
+    u32 active;
 };
 
-extern "C" StageWords write_sort_key(SortKeyWrite input, address body) on cpu;
+extern "C" u32 sort_initialize(SortKeyInput input, MemoryHost host) on cpu
+    requires nonzero(host.scalars.constant) requires nonzero(host.scalars.type_id)
+    requires nonzero(host.scalars.ids) requires nonzero(host.scalars.reserve)
+    requires nonzero(host.pointer_type) requires nonzero(host.finish_body);
 
 extern "C" StageWords encode_sort_gather(PageAddress indices, address layout, u32 active, address body) on cpu;
 

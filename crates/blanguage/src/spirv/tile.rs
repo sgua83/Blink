@@ -256,9 +256,9 @@ impl Emitter<'_> {
         }
         if scalar.size() > unit.size() {
             let high = self.tile_word_address(self.stage.shared_word(tile, word + 4), index, offset).0;
-            return self.load_raw(scalar, unit, &[pointer, high], false);
+            return self.load_raw(scalar, unit, &[pointer, high]);
         }
-        self.load_raw(scalar, unit, &[pointer], false)
+        self.load_raw(scalar, unit, &[pointer])
     }
     pub(super) fn tile_barrier(&mut self) {
         self.workgroup_barrier(0x148);
