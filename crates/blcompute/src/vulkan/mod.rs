@@ -2541,6 +2541,8 @@ impl GpuProgram {
             dependencies.insert(acceleration.produced());
         }
         let mut resources: Vec<&ReadDataset> = Vec::new();
+        let mut seen_sources = BTreeSet::new();
+        let mut first_source = |source: &&ReadDataset| seen_sources.insert(Rc::as_ptr(&source.0) as usize);
         for d in data.owners.iter() {
             let d = d.borrow();
             if !Rc::ptr_eq(&c.inner, &d.allocation.inner) {
@@ -2551,16 +2553,12 @@ impl GpuProgram {
                 dependencies.insert(used);
             }
             if !d.views.sources.is_empty() && !previous.is_some_and(|used| used.uploads_dataset_graph()) {
-                resources.extend(&d.views.sources);
+                resources.extend(d.views.sources.iter().filter(&mut first_source));
             }
         }
         let mut resource_stage = 0;
         let mut resource_access = 0;
-        let mut visited = BTreeSet::new();
         while let Some(source) = resources.pop() {
-            if !visited.insert(Rc::as_ptr(&source.0) as usize) {
-                continue;
-            }
             let previous = source.0.dependency();
             if let Some(used) = previous {
                 dependencies.insert(used);
@@ -2569,7 +2567,7 @@ impl GpuProgram {
                 resource_access |= source.0.producer.access();
             }
             if !source.0.views.sources.is_empty() && !previous.is_some_and(|used| used.uploads_dataset_graph()) {
-                resources.extend(&source.0.views.sources);
+                resources.extend(source.0.views.sources.iter().filter(&mut first_source));
             }
         }
         let pending_inputs = dependencies.is_empty();
