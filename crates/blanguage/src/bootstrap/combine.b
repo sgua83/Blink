@@ -47,8 +47,7 @@ void sort(CombineInput input,u64 count,bool symbols) on cpu {
     u64 end=count;while(end>1u64){end-=1u64;u64 a=order_at(input,0u64);u64 b=order_at(input,end);order_put(input,0u64,b);order_put(input,end,a);sift(input,0u64,end,symbols);}
 }
 bool same_section(CombineSection a,CombineSection b) on cpu {return a.flags==b.flags&&compare(a.name,a.name_length,b.name,b.name_length)==0;}
-bool same_symbol(CombineSymbol a,CombineSymbol b) on cpu {return compare(a.name,a.name_length,b.name,b.name_length)==0;}
-CombinePlan invalid(u64 error,u64 at) on cpu {return CombinePlan(0u64,0u64,0u64,0u64,error,at);}
+CombinePlan invalid(u64 error,u64 at) on cpu {return CombinePlan(0u64,0u64,0u64,error,at);}
 extern "C" CombinePlan prepare(CombineInput input, address local, u64 local_count, bool pe) on cpu {
     CombinePlan result=invalid(0u64,0u64);u64 i=0u64;
     while(i<input.section_count){CombineSection row=section_at(input.sections,i);row.flags=row.flags&4278185983u64;section_put(input,i,row);i+=1u64;}
@@ -100,12 +99,8 @@ extern "C" CombinePlan prepare(CombineInput input, address local, u64 local_coun
         }
         o+=1u64;
     }
-    sort(input,input.symbol_count,true);i=0u64;
-    while(i<input.symbol_count){
-        u64 end=i+1u64;CombineSymbol first=symbol_at(input,order_at(input,i));
-        while(end<input.symbol_count&&same_symbol(first,symbol_at(input,order_at(input,end)))){end+=1u64;}
-        order_put(input,result.symbols,order_at(input,end-1u64));result.symbols+=1u64;i=end;
-    }
+    // Link selection has already registered these definitions by unique name.
+    sort(input,input.symbol_count,true);
     i=0u64;
     while(i<input.relocation_count){
         CombineRelocation row=relocation_at(input,i);CombineSection source=section_at(input.sections,row.source);row.offset+=source.begin;
@@ -113,11 +108,19 @@ extern "C" CombinePlan prepare(CombineInput input, address local, u64 local_coun
             CombineObject object=object_at(input,source.object);CombineSection target=section_at(input.sections,object.section_start+row.section);
             row.section=target.group;row.value+=target.begin;if(row.value>4294967295u64){return invalid(4u64,i);}
         }else if(row.target_kind==2u64){
-            u64 lo=0u64;u64 hi=result.symbols;
-            while(lo<hi){u64 mid=lo+(hi-lo)/2u64;CombineSymbol symbol=symbol_at(input,order_at(input,mid));if(compare(symbol.name,symbol.name_length,row.name,row.name_length)<0){lo=mid+1u64;}else{hi=mid;}}
-            if(lo==result.symbols){return invalid(5u64,i);}CombineSymbol symbol=symbol_at(input,order_at(input,lo));
-            if(compare(symbol.name,symbol.name_length,row.name,row.name_length)!=0){return invalid(5u64,i);}
-            row.target_kind=0u64;row.section=symbol.section;row.value=symbol.value;
+            u64 lo=0u64;
+            u64 hi=input.symbol_count;
+            while(lo<hi){
+                u64 mid=lo+(hi-lo)/2u64;
+                CombineSymbol symbol=symbol_at(input,order_at(input,mid));
+                i32 relation=compare(symbol.name,symbol.name_length,row.name,row.name_length);
+                if(relation==0){
+                    row.target_kind=0u64;row.section=symbol.section;row.value=symbol.value;
+                    break;
+                }
+                if(relation<0){lo=mid+1u64;}else{hi=mid;}
+            }
+            if(row.target_kind==2u64){return invalid(5u64,i);}
         }
         if (pe) {
             result.imports += (row.target_kind == 1u64) ? 1u64 : 0u64;
@@ -129,7 +132,7 @@ extern "C" CombinePlan prepare(CombineInput input, address local, u64 local_coun
     // The selected names and the root definitions are both in byte order.
     u64 selected = 0u64;
     u64 root = 0u64;
-    while (selected < result.symbols && root < local_count) {
+    while (selected < input.symbol_count && root < local_count) {
         u64 index = order_at(input, selected);
         CombineSymbol symbol = symbol_at(input, index);
         CombineName name = unsafe_position<CombineName>(

@@ -35,7 +35,6 @@ struct CombineInput {
 #[repr(C)]
 pub(super) struct CombinePlan {
     pub(super) groups: usize,
-    symbols: u64,
     pub(super) imports: usize,
     pub(super) absolutes: usize,
     error: u64,
@@ -102,7 +101,6 @@ struct Prepared {
     symbols: Vec<CombineSymbol>,
     relocations: Vec<CombineRelocation>,
     frames: Vec<CombineFrame>,
-    order: Vec<u64>,
     plan: CombinePlan,
 }
 
@@ -146,8 +144,8 @@ fn prepare<Payload>(
         inputs.push(CombineObject{section_start:section_start as u64,section_count:object.sections.len() as u64,
             symbol_start:symbol_start as u64,symbol_count:object.definitions.len() as u64,frame_start:frame_start as u64,frame_count:object.stack.len() as u64});
     }
-    // The same temporary permutation serves grouping, then final symbol lookup.
-    let mut order=vec![0u64;rows.len().max(symbols.len())];
+    // B initializes the temporary permutation for each sort.
+    let mut order = Vec::with_capacity(rows.len().max(symbols.len()));
     let mut groups = Vec::with_capacity(rows.len());
     let input=CombineInput{objects:inputs.as_ptr(),object_count:inputs.len() as u64,
         sections:rows.as_mut_ptr(),section_count:rows.len() as u64,symbols:symbols.as_mut_ptr(),symbol_count:symbols.len() as u64,
@@ -176,7 +174,7 @@ fn prepare<Payload>(
     }
     // B wrote one group record for each first section.
     unsafe { groups.set_len(plan.groups); }
-    Ok(Prepared { rows, groups, symbols, relocations, frames, order, plan })
+    Ok(Prepared { rows, groups, symbols, relocations, frames, plan })
 }
 
 fn combine<Payload, Group, Output, Reference: From<Relocation>>(
@@ -187,13 +185,15 @@ fn combine<Payload, Group, Output, Reference: From<Relocation>>(
     finish: impl FnOnce(&[CombineSection], &[CombineGroup], Vec<Group>, Vec<Frame>) -> Result<Output>,
 ) -> Result<Output> {
     let local = module.as_ref().map_or(&[][..], |(names, _)| *names);
-    let Prepared { rows, groups, symbols, relocations, frames, order, plan } = prepare(&objects, local, extent, false)?;
+    let Prepared { rows, groups, symbols, relocations, frames, .. } = prepare(&objects, local, extent, false)?;
     let mut sections = make_groups(&rows, &groups);
-    if let Some((_, defined))=module{for &index in &order[..usize::try_from(plan.symbols)?]{
-        let symbol=&symbols[usize::try_from(index)?];
-        let name=unsafe{std::str::from_utf8_unchecked(std::slice::from_raw_parts(symbol.name,symbol.name_length as usize))};
-        defined.insert(name.to_owned(),(usize::try_from(symbol.section)?,u32::try_from(symbol.value)?));
-    }}
+    if let Some((_, defined)) = module {
+        // B rebased the unique definitions in their original rows.
+        let definitions = objects.iter_mut().flat_map(|object| std::mem::take(&mut object.definitions));
+        for (definition, symbol) in definitions.zip(symbols) {
+            defined.insert(definition.name, (usize::try_from(symbol.section)?, u32::try_from(symbol.value)?));
+        }
+    }
     let mut stack = Vec::with_capacity(frames.len());
     let mut section_index = 0;
     let mut relocation_index = 0;
