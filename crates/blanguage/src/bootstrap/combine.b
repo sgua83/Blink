@@ -77,7 +77,9 @@ extern "C" CombinePlan prepare(CombineInput input, address local, u64 local_coun
             row.group=group;row.begin=begin;row.padding=begin-layout.size;
             row.relocation_base=layout.relocation_count;
             layout.size=begin+row.byte_length;
-            layout.relocation_count+=row.relocation_count;
+            u64 relocation_end=input.relocation_count;
+            if(i+1u64<input.section_count){relocation_end=section_at(input.sections,i+1u64).relocation_start;}
+            layout.relocation_count+=relocation_end-row.relocation_start;
             group_put(input.groups,group,layout);
             section_put(input,i,row);i+=1u64;
         }
@@ -91,7 +93,7 @@ extern "C" CombinePlan prepare(CombineInput input, address local, u64 local_coun
             CombineFrame row=frame_at(input,i);
             if(row.present!=0u64){
                 CombineSection section=section_at(input.sections,object.section_start+row.section);row.section=section.group;row.start+=section.begin;
-                row.relocation_base=section.relocation_base;
+                row.relocation_start=section.relocation_start;
                 if(row.start>4294967295u64){return invalid(3u64,i);}
                 frame_put(input,i,row);
             }

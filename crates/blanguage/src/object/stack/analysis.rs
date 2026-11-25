@@ -1,5 +1,5 @@
 //! Synchronous access to the original native code and the query's native containers.
-use super::{Call, Code, Target};
+use super::{Call, CallTarget, Code};
 use std::{
     cmp::Ordering,
     collections::{BTreeMap, BTreeSet},
@@ -112,12 +112,14 @@ unsafe extern "C" fn read_call(slot:*mut c_void,index:u64,ordinal:u64)->CallInfo
         Call::Indirect=>{},
         Call::Reference { relocation, tail } => {
             value.kind=if *tail{CallKind::Tail}else{CallKind::Reference};
-            let relocations = (context.code.relocations)(frame.coff.unwrap().0);
-            let target = &relocations[*relocation].target;
-            match target {
-                Target::Section(section,start)=>{value.section=*section as u64;value.start=*start;}
-                Target::Symbol(name)=>{value.target=TargetKind::Symbol;value.name=Name::new(name);}
-                Target::Import(import)=>{value.target=TargetKind::Import;value.name=Name::new(&import.name);value.dll=Name::new(&import.dll);}
+            match (context.code.target)(frame.coff.unwrap().0, *relocation) {
+                CallTarget::Section(section, start) => { value.section = section as u64; value.start = start; }
+                CallTarget::Symbol(name) => { value.target = TargetKind::Symbol; value.name = Name::new(name); }
+                CallTarget::Import { dll, name } => {
+                    value.target = TargetKind::Import;
+                    value.name = Name::new(name);
+                    value.dll = Name::new(dll);
+                }
             }
         }
     }

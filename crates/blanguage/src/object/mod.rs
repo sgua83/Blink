@@ -170,7 +170,7 @@ pub struct Object<Bytes = Vec<u8>> {
 impl Object {
     pub fn stack_report(&self, budget: Option<u64>) -> String {
         let code = stack::Code {
-            relocations: &|section| self.sections[section].relocations.as_slice(),
+            target: &|section, slot| (&self.sections[section].relocations[slot].target).into(),
             frames: &self.stack,
             definitions: stack::Definitions::Compiled(&self.symbols),
         };

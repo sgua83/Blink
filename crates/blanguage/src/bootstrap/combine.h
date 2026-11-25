@@ -8,7 +8,7 @@ struct CombineObject {
 struct CombineSection {
     // A null source with nonzero byte_length denotes zero fill when writing.
     address name;u64 name_length;address bytes;u64 byte_length;u64 flags;u64 object;
-    u64 group;u64 begin;u64 padding;u64 relocation_count;u64 relocation_base;
+    u64 group;u64 begin;u64 padding;u64 relocation_start;u64 relocation_base;
 };
 struct CombineGroup {u64 first;u64 size;u64 relocation_count;};
 struct CombineSymbol {address name;u64 name_length;u64 section;u64 value;};
@@ -17,7 +17,7 @@ struct CombineRelocation {
     u64 source;u64 slot;u64 offset;u64 target_kind;u64 section;u64 value;address name;u64 name_length;
     u64 kind;address library;u64 library_length;
 };
-struct CombineFrame {u64 section;u64 start;u64 present;u64 relocation_base;};
+struct CombineFrame {u64 section;u64 start;u64 present;u64 relocation_start;};
 struct CombineInput {
     address objects;u64 object_count;address sections;u64 section_count;
     address symbols;u64 symbol_count;address relocations;u64 relocation_count;

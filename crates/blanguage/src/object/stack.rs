@@ -1,5 +1,5 @@
 //! Stack information follows the same sections and relocations as native code.
-use super::{Archive, Definition, Relocation, Section, Symbol, Target};
+use super::{Archive, Definition, Section, Symbol, Target};
 mod analysis;
 use analysis::{Budget, Label};
 use std::fmt::Write;
@@ -45,8 +45,24 @@ impl<'a> Definitions<'a> {
     }
 }
 
+pub(crate) enum CallTarget<'a> {
+    Section(usize, u32),
+    Symbol(&'a str),
+    Import { dll: &'a str, name: &'a str },
+}
+
+impl<'a> From<&'a Target> for CallTarget<'a> {
+    fn from(target: &'a Target) -> Self {
+        match target {
+            Target::Section(section, start) => Self::Section(*section, *start),
+            Target::Symbol(name) => Self::Symbol(name),
+            Target::Import(import) => Self::Import { dll: &import.dll, name: &import.name },
+        }
+    }
+}
+
 pub(crate) struct Code<'a> {
-    pub relocations: &'a dyn Fn(usize) -> &'a [Relocation],
+    pub target: &'a dyn Fn(usize, usize) -> CallTarget<'a>,
     pub frames: &'a [Frame],
     pub definitions: Definitions<'a>,
 }

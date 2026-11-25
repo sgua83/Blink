@@ -129,30 +129,22 @@ pub fn write_stack_report(inputs: &[impl AsRef<Path>], output: &Path, budget: Op
 }
 
 fn stack_report(inputs: Inputs<'_, usize>, budget: Option<u64>) -> Result<String> {
-    let Selection { mut objects, plan } = entry(inputs, true, Vec::len)?;
+    let Selection { objects, plan } = entry(inputs, true, Vec::len)?;
     let runtime = plan.uses_runtime != 0;
     let reserve = match plan.product {
         EntryProduct::Pe | EntryProduct::HostApplication => Some(plan.stack_reserve),
         _ => None,
     };
-    let report = if let [object] = objects.as_slice() {
+    if let [object] = objects.as_slice() {
         let code = stack::Code {
-            relocations: &|section| object.sections[section].relocations.as_slice(),
+            target: &|section, slot| (&object.sections[section].relocations[slot].target).into(),
             frames: &object.stack,
             definitions: stack::Definitions::Linked(&object.definitions),
         };
-        stack::report(&object.name, code, budget, reserve, runtime)
+        Ok(stack::report(&object.name, code, budget, reserve, runtime))
     } else {
-        let name = std::mem::take(&mut objects[0].name);
-        let (relocations, frames) = combine::report(objects)?;
-        let code = stack::Code {
-            relocations: &|section| relocations[section].as_slice(),
-            frames: &frames,
-            definitions: stack::Definitions::Linked(&[]),
-        };
-        stack::report(&name, code, budget, reserve, runtime)
-    };
-    Ok(report)
+        combine::report(objects, budget, reserve, runtime)
+    }
 }
 #[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
 fn link_objects<'a>(inputs: Inputs<'a, LinkSectionBytes<'a>>, _: &Path) -> Result<()> {
