@@ -36,7 +36,7 @@ extern "C" FunctionFrame function_frame(u64 data_end, AbiType result, u32 flags)
     u64 bytes = (data_bytes + 15u64) & ~15u64;
     if (!scratch && bytes != 0u64) { bytes += 8u64; }
     u64 home = bytes + (scratch ? 16u64 : 8u64);
-    return FunctionFrame(bytes, home, result_at, location);
+    return FunctionFrame(bytes, home, result_at, bytes + (scratch ? 8u64 : 0u64), location);
 }
 
 struct CallStack { u64 homes; u64 target; u64 bytes; };
@@ -198,19 +198,27 @@ extern "C" SymbolEncoding emit_call(address context, CallInput input, CallHost h
 }
 
 u64 move_function_parameter(address context, u64 index, u64 slot, u64 home, u64 first,
-    FunctionParameter parameter, FunctionHost host) on cpu requires nonzero(host.move_parameter) {
+    FunctionParameter parameter, FunctionHost host) on cpu requires nonzero(host.loan)
+    requires nonzero(host.component) requires nonzero(host.reserve) requires nonzero(host.publish) {
     AbiType abi = parameter.abi;
-    ParameterMoveKind kind = abi.value != 0 && indirect(abi.size, abi.alignment)
-        ? ParameterMoveKind::Indirect : ParameterMoveKind::Direct;
-    host.move_parameter(context, ParameterMove(
-        index, slot, home + slot_home(0u64, slot), first, parameter.values, 0, kind));
+    AbiMemoryMode mode = abi.value != 0 && indirect(abi.size, abi.alignment)
+        ? AbiMemoryMode::IndirectParameter : AbiMemoryMode::StackLoad;
+    address output = host.reserve(context, 16u64 + 24u64 * parameter.values);
+    CallValueLoan value = host.loan(context, index, first, parameter.values);
+    u64 cursor = call_value_at(address_bits(output), u32(home + slot_home(0u64, slot)), value, mode, host.component);
+    host.publish(context, FunctionRange(cursor - address_bits(output), index, slot, FunctionRangeKind::Input));
     return first + parameter.values;
 }
 
 extern "C" void function_prologue(address context, u64 count, FunctionFrame frame, u32 flags, FunctionHost host)
-    on cpu requires nonzero(host.parameter) requires nonzero(host.move_parameter) requires nonzero(host.action) {
+    on cpu requires nonzero(host.parameter) requires nonzero(host.loan) requires nonzero(host.component)
+    requires nonzero(host.reserve) requires nonzero(host.publish) requires nonzero(host.enter_frame) {
     bool hidden = frame.result_location == ResultLocation::Indirect;
-    if (hidden) { host.action(context, FunctionAction::HiddenResultHome, 0u64, 0u64); }
+    if (hidden) {
+        address output = host.reserve(context, 9u64);
+        u64 length = argument_register(u8(0), 0, true, output);
+        host.publish(context, FunctionRange(length, 0u64, 0u64, FunctionRangeKind::HiddenHome));
+    }
     u64 first_slot = hidden ? 1u64 : 0u64;
     HomeParameter empty = HomeParameter(0u64, FunctionParameter(AbiType(0,1,0,0),0u64));
     array<HomeParameter,4> homes = array<HomeParameter,4>(empty,empty,empty,empty);
@@ -220,16 +228,19 @@ extern "C" void function_prologue(address context, u64 count, FunctionFrame fram
         FunctionParameter parameter = host.parameter(context,index);
         if (has_slot(parameter.abi)) {
             homes[u32(slot)] = HomeParameter(index,parameter);
-            host.move_parameter(context, ParameterMove(
-                index, slot, 0u64, 0u64, 0u64, parameter.abi.float_size, ParameterMoveKind::Home));
+            address output = host.reserve(context, 9u64);
+            u64 length = argument_register(u8(slot), parameter.abi.float_size, true, output);
+            host.publish(context, FunctionRange(length, index, slot, FunctionRangeKind::Home));
             slot += 1u64;
         }
         index += 1u64;
     }
-    if ((flags & 2) != 0) { host.action(context, FunctionAction::ScratchSave, 15u64, 0u64); }
-    host.action(context, FunctionAction::FrameAllocate, frame.bytes, 0u64);
-    host.action(context, FunctionAction::NonvolatileSave, 0u64, 0u64);
-    if (hidden) { host.action(context, FunctionAction::ResultAddressSave, frame.result, frame.home); }
+    host.enter_frame(context, frame.bytes, (flags & 2) != 0);
+    if (hidden) {
+        address output = host.reserve(context, 24u64);
+        MoveEncoding saved = copy_scalar_move(call_home(frame.result), call_home(frame.home), 8, false, output);
+        host.publish(context, FunctionRange(saved.length, 0u64, frame.result, FunctionRangeKind::ResultAddress));
+    }
     u64 value = 0u64;
     for (home_slot in u32(first_slot)..4) {
         if (u64(home_slot) == slot) { break; }
@@ -246,24 +257,34 @@ extern "C" void function_prologue(address context, u64 count, FunctionFrame fram
     }
 }
 
-extern "C" u64 function_epilogue(address context, FunctionFrame frame, u32 flags,
-    cfn<void,address,FunctionAction,u64,u64> action) on cpu requires nonzero(action) {
+extern "C" FunctionReturn function_result(FunctionFrame frame, u32 flags, CallValueLoan value,
+    cfn<AbiValueComponent,address,u64> component, address output)
+    on cpu requires nonzero(component) {
+    u64 start = address_bits(output);
+    u64 cursor = start;
+    u64 literal = 0u64;
+    u64 field = 0u64;
     bool fallible = (flags & 1) != 0;
     if (frame.result_location == ResultLocation::Indirect) {
-        action(context, fallible ? FunctionAction::FallibleResult : FunctionAction::IndirectResult, frame.result, 0u64);
+        AbiMemoryMode mode = fallible ? AbiMemoryMode::FallibleResult : AbiMemoryMode::IndirectResult;
+        cursor = call_value_at(start, u32(frame.result), value, mode, component);
     } else if (frame.result_location == ResultLocation::Float) {
-        action(context, FunctionAction::FloatResult, 0u64, 0u64);
+        AbiValueComponent scalar = component(address_of(value), 0u64);
+        MoveLocation xmm0 = MoveLocation(0u64, u8(1), u8(0), u8(255), u8(0));
+        MoveEncoding copy = copy_scalar_move(xmm0, scalar.location, scalar.scalar.width / 8, false, output);
+        cursor += copy.length;
+        literal = scalar.location.value;
+        field = copy.literal_field;
     } else if (frame.result_location == ResultLocation::Integer) {
-        action(context, FunctionAction::IntegerResult, 0u64, 0u64);
+        cursor = call_value_at(start, 0, value, AbiMemoryMode::PackIntegerResult, component);
     }
-    if (fallible) { action(context, FunctionAction::FallibleSuccess, 0xc031u64, 2u64); }
-    action(context, FunctionAction::CloseExits, 0u64, 0u64);
-    action(context, FunctionAction::NonvolatileRestore, 0u64, 0u64);
-    if (frame.bytes != 0u64) { action(context, FunctionAction::FrameRelease, frame.bytes, 0u64); }
-    bool scratch = (flags & 2) != 0;
-    if (scratch) { action(context, FunctionAction::ScratchRestore, 15u64, 0u64); }
-    action(context, FunctionAction::Return, 0xc3u64, 1u64);
-    return frame.bytes + (scratch ? 8u64 : 0u64);
+    u64 value_length = cursor - start;
+    if (fallible) {
+        unsafe_position<u8>(unsafe_address(cursor)) = u8(0x31);
+        unsafe_position<u8>(unsafe_address(cursor + 1u64)) = u8(0xc0);
+        cursor += 2u64;
+    }
+    return FunctionReturn(cursor - start, value_length, literal, field);
 }
 
 extern "C" u64 emit_reference_address(Node reference, IndexedAddressHost host,

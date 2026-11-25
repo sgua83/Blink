@@ -9,31 +9,31 @@ enum ResultLocation:u32 { None=0; Integer=1; Float=2; Indirect=3; };
 extern "C" u64 outgoing_bytes(address context, u64 count, AbiType result, u32 flags,
     cfn<AbiType,address,u64> argument) on cpu requires nonzero(argument);
 // Offsets are relative to RSP after the prologue. Indirect results use the saved address slot.
-struct FunctionFrame { u64 bytes; u64 home; u64 result; ResultLocation result_location; };
+struct FunctionFrame { u64 bytes; u64 home; u64 result; u64 stack; ResultLocation result_location; };
 extern "C" FunctionFrame function_frame(u64 data_end, AbiType result, u32 flags) on cpu;
 
-// Only the physical register prefix survives the frame setup.
+struct CallValueLoan { Span components; Span values; address allocation; address stage; };
+// The register prefix survives frame setup as part of this one prologue.
 struct FunctionParameter { AbiType abi; u64 values; };
 struct HomeParameter { u64 index; FunctionParameter parameter; };
-enum ParameterMoveKind:u32 { Home=0; Direct=1; Indirect=2; };
-struct ParameterMove {
-    u64 index; u64 slot; u64 offset; u64 first; u64 count;
-    u32 float_size; ParameterMoveKind kind;
-};
-enum FunctionAction:u32 {
-    HiddenResultHome=0; ScratchSave=1; FrameAllocate=2; NonvolatileSave=3; ResultAddressSave=4;
-    IndirectResult=5; FallibleResult=6; FloatResult=7; IntegerResult=8; FallibleSuccess=9;
-    CloseExits=10; NonvolatileRestore=11; FrameRelease=12; ScratchRestore=13; Return=14;
-};
+enum FunctionRangeKind:u32 { HiddenHome=0; Home=1; Input=2; ResultAddress=3; };
+struct FunctionRange { u64 length; u64 index; u64 position; FunctionRangeKind kind; };
 struct FunctionHost {
     cfn<FunctionParameter,address,u64> ensures memory(read) parameter;
-    cfn<void,address,ParameterMove> move_parameter;
-    cfn<void,address,FunctionAction,u64,u64> action;
+    cfn<CallValueLoan,address,u64,u64,u64> ensures memory(read) loan;
+    cfn<AbiValueComponent,address,u64> component;
+    cfn<address,address,u64> reserve;
+    cfn<void,address,FunctionRange> publish;
+    cfn<void,address,u64,bool> enter_frame;
 };
 extern "C" void function_prologue(address context, u64 count, FunctionFrame frame, u32 flags, FunctionHost host)
-    on cpu requires nonzero(host.parameter) requires nonzero(host.move_parameter) requires nonzero(host.action);
-extern "C" u64 function_epilogue(address context, FunctionFrame frame, u32 flags,
-    cfn<void,address,FunctionAction,u64,u64> action) on cpu requires nonzero(action);
+    on cpu requires nonzero(host.parameter) requires nonzero(host.loan) requires nonzero(host.component)
+    requires nonzero(host.reserve) requires nonzero(host.publish) requires nonzero(host.enter_frame);
+
+struct FunctionReturn { u64 length; u64 value_length; u64 literal; u64 literal_field; };
+extern "C" FunctionReturn function_result(FunctionFrame frame, u32 flags, CallValueLoan value,
+    cfn<AbiValueComponent,address,u64> component, address output)
+    on cpu requires nonzero(component);
 
 // The original reference borrows its actual locations and 168 writable bytes.
 extern "C" u64 emit_reference_address(Node reference, IndexedAddressHost host,
@@ -41,7 +41,6 @@ extern "C" u64 emit_reference_address(Node reference, IndexedAddressHost host,
     requires nonzero(host.values.ir.inspect) requires nonzero(host.values.location)
     requires nonzero(host.values.scalar) requires nonzero(host.tile_stream) requires nonzero(local);
 
-struct CallValueLoan { Span components; Span values; address locations; };
 struct CallInput {
     Node source;
     AbiType result;

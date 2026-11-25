@@ -407,14 +407,8 @@ impl Emitter<'_> {
     pub(super) fn store(&mut self, r: Reg) {
         self.copy_scalar(self.location(r), Location::Gpr(0), self.stage.registers[r]);
     }
-    pub(super) fn float(&mut self, r: Reg, xmm: u8) {
-        self.copy_scalar(Location::Xmm(xmm), self.location(r), self.stage.registers[r]);
-    }
     pub(super) fn literal_width(&mut self, dst: Location, bits: Bits, wide: bool) {
         self.copy_move(dst, Location::Immediate(bits), if wide { 8 } else { 4 }, false);
-    }
-    pub(super) fn read_scalar(&mut self, dst: Reg, base: u8, offset: u32) {
-        self.read_scalar_address(dst, Memory::new(base, offset));
     }
     pub(super) fn read_scalar_address(&mut self, dst: Reg, memory: Memory) {
         let scalar = self.stage.registers[dst];
@@ -472,7 +466,7 @@ impl Emitter<'_> {
             self.record_literal(start, (literal.bits, literal.wide != 0), literal.field as usize);
         }
     }
-    fn record_literal(&mut self, start: usize, literal: (Bits, bool), field: usize) {
+    pub(super) fn record_literal(&mut self, start: usize, literal: (Bits, bool), field: usize) {
         if field != 0 {
             self.literals.entry(literal).or_default().push(start + field);
         }

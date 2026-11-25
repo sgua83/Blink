@@ -32,18 +32,20 @@ pub(super) enum ResultLocation { None, Integer, Float, Indirect }
 type ArgumentType = unsafe extern "C" fn(*const c_void, usize) -> AbiType;
 
 #[repr(C)]
-struct CallValueLoan {
+pub(super) struct CallValueLoan {
     components: Span,
     values: Span,
-    locations: *const c_void,
+    allocation: *const Allocation,
+    stage: *const Stage,
 }
 
 impl CallValueLoan {
-    fn new(ty: Option<&Ty>, values: &[Reg], locations: &ScalarLocations<'_>) -> Self {
+    pub(super) fn new(fields: &[(Scalar, u32)], values: &[Reg], allocation: &Allocation, stage: &Stage) -> Self {
         Self {
-            components: Span::slice(ty.map_or(&[], |ty| ty.components.as_slice())),
+            components: Span::slice(fields),
             values: Span::slice(values),
-            locations: std::ptr::from_ref(locations).cast(),
+            allocation: std::ptr::from_ref(allocation),
+            stage: std::ptr::from_ref(stage),
         }
     }
 }
@@ -70,19 +72,10 @@ struct CallHost {
 #[repr(C)]
 struct SymbolEncoding { length: u64, field: u64 }
 #[repr(u32)]
-pub(super) enum AbiMemoryMode {
-    StackLoad,
-    StackStore,
-    IndirectParameter,
-    IndirectResult,
-    FallibleResult,
-    PackIntegerResult,
-    UnpackIntegerResult,
-    RangeSummary,
-}
+enum AbiMemoryMode { RangeSummary = 7 }
 
 #[repr(C)]
-struct AbiValueComponent {
+pub(super) struct AbiValueComponent {
     location: MoveLocation,
     scalar: ScalarEncoding,
     field_scalar: ScalarEncoding,
@@ -109,31 +102,12 @@ unsafe extern "C" fn summary_component(context: *const c_void, index: u64) -> Ab
     }
 }
 
-type AbiComponent = unsafe extern "C" fn(*const c_void, u64) -> AbiValueComponent;
-
-fn append_abi_value(
-    code: &mut Vec<u8>, slot: u32, count: usize, mode: AbiMemoryMode,
-    context: *const c_void, component: AbiComponent,
-) {
-    let per_component = match mode {
-        AbiMemoryMode::PackIntegerResult | AbiMemoryMode::UnpackIntegerResult => 48,
-        _ => 24,
-    };
-    code.reserve(16 + per_component * count);
-    let start = code.len();
-    unsafe {
-        let length = encode_abi_value(slot, count as u64, mode, context, component,
-            code.as_mut_ptr().add(start));
-        code.set_len(start + length as usize);
-    }
-}
+pub(super) type AbiComponent = unsafe extern "C" fn(*const c_void, u64) -> AbiValueComponent;
 
 unsafe extern "C" {
     #[link_name = "bootstrap.x64_instruction::abi_value"]
     fn encode_abi_value(slot: u32, count: u64, mode: AbiMemoryMode, context: *const c_void,
         component: AbiComponent, output: *mut u8) -> u64;
-    #[link_name = "bootstrap.x64_instruction::argument_register"]
-    fn encode_argument_register(slot: u8, float_size: u32, to_home: u32, output: *mut u8) -> u64;
     #[link_name = "bootstrap.x64_instruction::print_call"]
     fn emit_print_call(dst: MoveLocation, src: MoveLocation, value: ScalarEncoding,
         result: ScalarEncoding, output: *mut u8) -> SymbolEncoding;
@@ -181,19 +155,20 @@ unsafe extern "C" fn emission_argument(context: *const c_void, index: usize) -> 
 unsafe extern "C" fn call_loan(context: *const c_void, index: usize) -> CallValueLoan {
     let state = unsafe { &*context.cast::<CallEmission<'_, '_>>() };
     match &state.call.arguments[index] {
-        CallArgument::Value { ty, values, .. } => CallValueLoan::new(Some(ty), values, state.locations),
-        CallArgument::Reference { .. } => CallValueLoan::new(None, &[], state.locations),
+        CallArgument::Value { ty, values, .. } => CallValueLoan::new(&ty.components, values, state.locations.allocation, state.locations.stage),
+        CallArgument::Reference { .. } => CallValueLoan::new(&[], &[], state.locations.allocation, state.locations.stage),
     }
 }
 
-unsafe extern "C" fn abi_component(context: *const c_void, index: u64) -> AbiValueComponent {
+pub(super) unsafe extern "C" fn abi_component(context: *const c_void, index: u64) -> AbiValueComponent {
     let loan = unsafe { &*context.cast::<CallValueLoan>() };
-    let locations = unsafe { &*loan.locations.cast::<ScalarLocations<'_>>() };
+    let allocation = unsafe { &*loan.allocation };
+    let stage = unsafe { &*loan.stage };
     let reg = unsafe { loan.values.as_slice::<Reg>() }[index as usize];
     let (scalar, offset) = unsafe { loan.components.as_slice::<(Scalar, u32)>() }[index as usize];
     AbiValueComponent {
-        location: locations.allocation.location(PrivateSlot::Register(reg)).into(),
-        scalar: locations.stage.registers[reg].into(),
+        location: allocation.location(PrivateSlot::Register(reg)).into(),
+        scalar: stage.registers[reg].into(),
         field_scalar: scalar.into(),
         offset,
     }
@@ -207,16 +182,6 @@ unsafe extern "C" fn reserve_call(context: *mut c_void, capacity: usize) -> *mut
 }
 
 impl Emitter<'_> {
-    pub(super) fn abi_value(
-        &mut self, slot: u32, ty: &Ty, values: &[Reg], mode: AbiMemoryMode,
-    ) {
-        let count = ty.components.len().min(values.len());
-        let locations = ScalarLocations { allocation: &self.allocation, stage: self.stage, frame: &self.frame };
-        let input = CallValueLoan::new(Some(ty), values, &locations);
-        append_abi_value(&mut self.code, slot, count, mode, std::ptr::from_ref(&input).cast(),
-            abi_component);
-    }
-
     pub(super) fn write_range_summary(
         &mut self, stack_bytes: u32, first_slot: usize, ty: &Ty, payload_words: usize,
         summary_words: usize,
@@ -225,15 +190,15 @@ impl Emitter<'_> {
             allocation: &self.allocation, first_slot, fields: &ty.components, payload_words,
         };
         let count = ty.components.len() + (summary_words - payload_words);
-        append_abi_value(&mut self.code, stack_bytes, count, AbiMemoryMode::RangeSummary,
-            std::ptr::from_ref(&input).cast(), summary_component);
+        self.code.reserve(16 + 24 * count);
+        let start = self.code.len();
+        unsafe {
+            let length = encode_abi_value(stack_bytes, count as u64, AbiMemoryMode::RangeSummary,
+                std::ptr::from_ref(&input).cast(), summary_component, self.code.as_mut_ptr().add(start));
+            self.code.set_len(start + length as usize);
+        }
     }
 
-    pub(super) fn argument_register(&mut self, slot: usize, float_size: u32, to_home: bool) {
-        self.emit_bytes(9, |output| unsafe {
-            encode_argument_register(slot as u8, float_size, u32::from(to_home), output)
-        });
-    }
     pub(super) fn print_call(&mut self, dst: Reg, value: Reg) {
         let scalar = self.stage.registers[value];
         let target = self.location(dst).into();
@@ -273,7 +238,8 @@ impl Emitter<'_> {
         };
         let input = CallInput {
             source: Node::call(call), result: AbiType::result(call.result.as_ref()),
-            values: CallValueLoan::new(call.result.as_ref(), &call.values, &locations),
+            values: CallValueLoan::new(call.result.as_ref().map_or(&[][..], |ty| ty.components.as_slice()),
+                &call.values, &self.allocation, self.stage),
             error: call.error.unwrap_or_default(), flags: call_flags(call),
         };
         let start = self.code.len();
