@@ -2338,6 +2338,8 @@ async fn finalize(
     let mut resources = std::mem::take(&mut module.resources);
     let mut pending_programs = std::mem::take(&mut module.programs)
         .into_iter().map(Option::unwrap).collect::<Vec<_>>();
+    // Standalone entries need per-program imports. Static objects use Finalized.imports.
+    let keep_program_imports = !programs.is_empty();
     let mut programs = programs.iter_mut().map(|(program, scopes)| (&mut **program, &**scopes, None))
         .chain(pending_programs.iter_mut().map(|pending|
             (&mut pending.program, &pending.scopes, pending.deferred_source.as_deref())))
@@ -2377,8 +2379,10 @@ async fn finalize(
             crate::optimize::optimize(program, &world.worker)
                 .map_err(|error| crate::compiler::diagnostic(source, error))?;
         }
-        program.imports = std::mem::take(names).into_iter().filter_map(|name|
-            imports.get(&name).map(|contract| (name, contract.clone()))).collect();
+        if keep_program_imports {
+            program.imports = std::mem::take(names).into_iter().filter_map(|name|
+                imports.get(&name).map(|contract| (name, contract.clone()))).collect();
+        }
     }
     drop(programs);
     resources.programs = pending_programs.into_iter().map(|pending| (pending.target, pending.program)).collect();

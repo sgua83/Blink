@@ -255,19 +255,6 @@ pub(crate) fn compile_linked(
     Ok(image_codec::linked_module_bytes(&resources.types, &images))
 }
 
-#[cfg(feature = "compiler")]
-pub(crate) fn compile(resources: &crate::application::Resources,worker:&crate::compiler::Worker)
-    -> codec::Result<(Vec<u8>, Vec<native::NativeCode>, std::collections::BTreeMap<String, Vec<u8>>)> {
-    let mut code = Vec::new();
-    let bytes = compile_linked(resources, worker, |entry| {
-        let index = code.len();
-        code.push(entry);
-        index
-    })?;
-    let imports=resources.programs.iter().flat_map(|(_,program)|program.imports.clone()).collect();
-    Ok((bytes,code,imports))
-}
-
 pub(crate) fn compiler_output<T: Encode>(value: &T) -> Vec<u8> {
     let mut writer = Writer(ABI.to_vec());
     value.encode(&mut writer);

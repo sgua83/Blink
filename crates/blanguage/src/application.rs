@@ -55,12 +55,11 @@ impl Application {
         let mut functions = crate::parallel::try_map(worker, ordinary.iter().collect(), |_| (),
             |_, function| native::emit_function(function).map(|code| (function.name.clone(), code)))
             .map_err(|error| std::io::Error::other(error.to_string()))?;
-        let (compiled_resources, resource_code, resource_imports) = compile_resources(&self.name, resources.as_deref(), true, worker, has_tasks, libraries)?;
+        let (compiled_resources, resource_code) = compile_resources(&self.name, resources.as_deref(), true, worker, has_tasks, libraries)?;
         let factory_entry_count = resource_code.len();
         let resource_names: Vec<_> = resource_code.iter().map(|(name, _)| name.clone()).collect();
         functions.extend(resource_code);
-        let mut imports = self.imports.clone();
-        imports.extend(resource_imports);
+        let imports = self.imports.clone();
         for (_, function) in &functions {
             stack_bytes = stack_bytes.max(function.stack_bytes);
         }
@@ -114,12 +113,15 @@ pub(crate) fn compile_resources(
     worker: &crate::compiler::Worker,
     has_tasks: bool,
     libraries: Option<Vec<String>>,
-) -> Result<(Option<(object::Archive, factory::ResourceFactory)>, Vec<(String, native::NativeCode)>, std::collections::BTreeMap<String, Vec<u8>>), Box<dyn std::error::Error>> {
+) -> Result<(Option<(object::Archive, factory::ResourceFactory)>, Vec<(String, native::NativeCode)>), Box<dyn std::error::Error>> {
     Ok(if let Some(resources) = resources {
         let prefix = resource_prefix(name);
-        let (image, code, imports) = crate::resource::compile(resources, worker)?;
-        let code: Vec<_> = code.into_iter().enumerate()
-            .map(|(index, code)| (format!("__blink_range_{prefix}_{index}"), code)).collect();
+        let mut code = Vec::new();
+        let image = crate::resource::compile_linked(resources, worker, |entry| {
+            let index = code.len();
+            code.push((format!("__blink_range_{prefix}_{index}"), entry));
+            index
+        })?;
         let types = u32::try_from(resources.types.len())?;
         let entry = factory::wrappers(&prefix, resources, types, root, has_tasks)?;
         let mut exports = if root {
@@ -162,8 +164,8 @@ pub(crate) fn compile_resources(
         );
         exports.push(factory.symbol().to_owned());
         let archive = object::compile_archive(entry, exports, root, worker, libraries)?;
-        (Some((archive, factory)), code, imports)
+        (Some((archive, factory)), code)
     } else {
-        (None, Vec::new(), std::collections::BTreeMap::new())
+        (None, Vec::new())
     })
 }
