@@ -360,6 +360,7 @@ impl Allocation {
     fn load<P>(
         image: &blanguage::native::ProgramImage<P>, workers: usize,
     ) -> Result<(Option<LoadedCode>, Option<crate::application::Definitions>)> {
+        const PAGE_BYTES: usize = 4096;
         let module = image.module_code();
         let mut size = 0usize;
         let mut count = 0usize;
@@ -370,11 +371,12 @@ impl Allocation {
             count += 1;
         }
         if count == 0 && module.is_none() { return Ok((None, None)); }
+        let root_bytes = size;
         let mut sections = Vec::new();
         let mut import_slots = BTreeMap::new();
         if let Some(module) = module {
             for section in &module.sections {
-                let alignment = (1usize << ((section.flags >> 20) & 15).saturating_sub(1)).max(4096);
+                let alignment = (1usize << ((section.flags >> 20) & 15).saturating_sub(1)).max(PAGE_BYTES);
                 size = size.div_ceil(alignment) * alignment;
                 sections.push(size);
                 size += section.bytes.len();
@@ -384,7 +386,7 @@ impl Allocation {
                     }
                 }
             }
-            size = size.div_ceil(4096) * 4096;
+            size = size.div_ceil(PAGE_BYTES) * PAGE_BYTES;
         }
         for offset in import_slots.values_mut() { *offset = size; size += 8; }
         let table_offset = size.div_ceil(4) * 4;
@@ -480,30 +482,39 @@ impl Allocation {
             }
         }
         allocation._libraries = libraries.into_values().collect();
-        unsafe {
-            let mut old = 0;
-            if VirtualProtect(address, size, 0x20, &mut old) == 0 {
+        let mut old = 0;
+        let mut protect_pages = |begin: usize, bytes, protection| -> Result<()> {
+            if bytes != 0 && unsafe {
+                VirtualProtect(address.cast::<u8>().add(begin).cast(), bytes, protection, &mut old)
+            } == 0 {
                 return Err(std::io::Error::last_os_error().into());
             }
-            if let Some(module) = module {
-                for (section, &begin) in module.sections.iter().zip(&sections) {
-                    if section.bytes.is_empty() { continue; }
-                    let protect = match section.flags & 0xe0000000 {
-                        0xe0000000 | 0xa0000000 => 0x40,
-                        0x60000000 => 0x20,
-                        0x20000000 => 0x10,
-                        0xc0000000 | 0x80000000 => 0x04,
-                        0x40000000 => 0x02,
-                        _ => 0x01,
-                    };
-                    if VirtualProtect(address.cast::<u8>().add(begin).cast(), section.bytes.len(), protect, &mut old) == 0 {
-                        return Err(std::io::Error::last_os_error().into());
-                    }
-                }
+            Ok(())
+        };
+        protect_pages(0, root_bytes, 0x20)?;
+        // Windows also protects the last partially used page of each range.
+        let mut protected_end = root_bytes.div_ceil(PAGE_BYTES) * PAGE_BYTES;
+        if let Some(module) = module {
+            for (section, &begin) in module.sections.iter().zip(&sections) {
+                if section.bytes.is_empty() { continue; }
+                protect_pages(protected_end, begin - protected_end, 0x02)?;
+                let protection = match section.flags & 0xe0000000 {
+                    0xe0000000 | 0xa0000000 => 0x40,
+                    0x60000000 => 0x20,
+                    0x20000000 => 0x10,
+                    0xc0000000 | 0x80000000 => 0x04,
+                    0x40000000 => 0x02,
+                    _ => 0x01,
+                };
+                protect_pages(begin, section.bytes.len(), protection)?;
+                protected_end = (begin + section.bytes.len()).div_ceil(PAGE_BYTES) * PAGE_BYTES;
             }
-            if FlushInstructionCache(GetCurrentProcess(), address, size) == 0 {
-                return Err(std::io::Error::last_os_error().into());
-            }
+        }
+        if protected_end < size {
+            protect_pages(protected_end, size - protected_end, 0x02)?;
+        }
+        if unsafe { FlushInstructionCache(GetCurrentProcess(), address, size) } == 0 {
+            return Err(std::io::Error::last_os_error().into());
         }
         allocation.register_functions(table, count)?;
         if let Some(module) = module {
