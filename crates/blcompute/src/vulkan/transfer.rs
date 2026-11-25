@@ -94,10 +94,8 @@ impl Device {
             Some(commands) => commands,
             slot @ None => slot.insert(Commands::new(self.inner.clone())?),
         };
-        let bytes_per_page = target.page_records() as usize * target.stride as usize;
-        for (index, page) in target.pages.iter().enumerate() {
-            let start = index * bytes_per_page;
-            let range = start..(start + bytes_per_page).min(target.bytes() as usize);
+        for (page, range) in target.logical_pages() {
+            let range = range.start as usize..range.end as usize;
             self.stage_page(page, range.len() as u64, |source| write(source, range), commands, staging)?;
         }
         Ok(())
@@ -443,15 +441,12 @@ impl<'a> PendingReadback<'a> {
                 slot @ None => slot.insert(Commands::new(self.device.inner.clone())?),
             };
             commands.barrier(data.producer.stage(), 0x1000, data.producer.access(), 0x800);
-            let page_bytes = u64::from(data.page_records()) * u64::from(data.stride);
-            let mut remaining = data.bytes();
-            for source in &data.pages {
-                let bytes = remaining.min(page_bytes);
+            for (source, range) in data.logical_pages() {
+                let bytes = range.end - range.start;
                 let staging = Allocation::new(self.device.inner.clone(), bytes, 2, 6, 4)?;
                 record_readback_page(commands, source, &staging, bytes);
                 self.source_pages.push(source.clone());
                 pages.push((staging, bytes as usize));
-                remaining -= bytes;
             }
         }
         Ok(PendingPayload { stride: data.stride, count: data.count, instance_input: data.instances.is_some(), sources, pages })
@@ -595,14 +590,12 @@ impl<'a> Readback<'a> {
                     self.staging = Some(Allocation::new(self.device.inner.clone(), first.size, 2, 6, 4)?);
                 }
                 let staging = self.staging.as_ref().unwrap();
-                let page_bytes = data.page_records() as usize * data.stride as usize;
-                let mut written = 0;
                 let commands = match &mut self.commands {
                     Some(commands) => commands,
                     slot @ None => slot.insert(Commands::with_pool_flags(self.device.inner.clone(), 3)?),
                 };
-                for page in &data.pages {
-                    let bytes = (byte_count - written).min(page_bytes);
+                for (page, range) in data.logical_pages() {
+                    let bytes = (range.end - range.start) as usize;
                     if self.completion.is_some() {
                         commands.begin()?;
                     }
@@ -618,9 +611,8 @@ impl<'a> Readback<'a> {
                     };
                     Execution::wait_synchronous(point, previous.take())?;
                     staging.read_with(|pointer| {
-                        std::ptr::copy_nonoverlapping(pointer, output.add(written), bytes);
+                        std::ptr::copy_nonoverlapping(pointer, output.add(range.start as usize), bytes);
                     })?;
-                    written += bytes;
                 }
                 Ok(())
             })

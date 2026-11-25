@@ -1404,13 +1404,11 @@ impl GpuDataset {
     /// 读取原buffer／分页／绑定区间；不等待GPU、读回载荷或改变拥有关系。
     pub fn memory(&self) -> GpuDatasetMemory {
         let mut buffers = vec![self.allocation.memory_info(GpuBufferRole::BindingTable)];
-        for (index, page) in self.pages.iter().enumerate() {
-            let page_bytes = u64::from(self.page_records()) * u64::from(self.stride);
-            let logical_offset = index as u64 * page_bytes;
+        for (index, (page, range)) in self.logical_pages().enumerate() {
             buffers.push(page.memory_info(GpuBufferRole::DataPage {
                 index,
-                logical_offset,
-                logical_bytes: (self.bytes() - logical_offset).min(page_bytes),
+                logical_offset: range.start,
+                logical_bytes: range.end - range.start,
             }));
         }
         if let Some(pointers) = self.instances.as_ref().and_then(|input| input.pointers.as_ref()) {
@@ -1464,6 +1462,18 @@ impl GpuDataset {
     }
     fn page_records(&self) -> u32 {
         blanguage::spirv::PAGE_BYTES / self.stride
+    }
+    fn logical_pages(&self) -> impl Iterator<Item = (&Rc<Allocation>, std::ops::Range<u64>)> {
+        let bytes = self.bytes();
+        let page_bytes = if self.pages.len() > 1 {
+            u64::from(self.page_records()) * u64::from(self.stride)
+        } else {
+            bytes
+        };
+        self.pages.iter().enumerate().map(move |(index, page)| {
+            let start = index as u64 * page_bytes;
+            (page, start..(start + page_bytes).min(bytes))
+        })
     }
     fn new(inner: Rc<Inner>, ty: Ty, stride: u32, count: u32) -> Result<Self> {
         let (usage, alignment) = if inner.ray.is_some() {
