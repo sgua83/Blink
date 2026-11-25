@@ -28,7 +28,7 @@ u32 align_uniform(u32 bytes, u32 alignment) on cpu {
     return (bytes + alignment - 1) & ~(alignment - 1);
 }
 
-extern "C" u32 layout_uniforms(u32 buffers, usize count, address context,
+extern "C" DomainBytes layout_uniforms(u32 buffers, usize count, u32 limit, address context,
     cfn<UniformField,address,usize> ensures memory(read) field,
     cfn<void,address,usize,u32> place) on cpu
     requires nonzero(field) requires nonzero(place) {
@@ -41,7 +41,8 @@ extern "C" u32 layout_uniforms(u32 buffers, usize count, address context,
         bytes = offset + value.size;
         index += 1u64;
     }
-    return align_uniform(bytes, 4);
+    bytes = align_uniform(bytes, 4);
+    return DomainBytes(bytes, bytes > limit);
 }
 
 extern "C" Parameter parameter_form(Facts facts) on cpu {
@@ -67,7 +68,7 @@ extern "C" DomainParameter domain_parameter(Facts facts, CallAccess access) on c
     return DomainParameter(form, access == CallAccess::Value ? DomainLayout::PlainLayout : DomainLayout::Reject);
 }
 
-extern "C" DomainBinding domain_binding(Parameter form, CallAccess access, u32 gpu, u32 qualified) on cpu {
+DomainBinding domain_binding(Parameter form, CallAccess access, u32 gpu, u32 qualified) on cpu {
     if (form == Parameter::Texture) {
         return DomainBinding(access == CallAccess::Read ? DomainAccessError::None : DomainAccessError::Texture, 0);
     }
@@ -83,6 +84,91 @@ extern "C" DomainBinding domain_binding(Parameter form, CallAccess access, u32 g
     }
     if (qualified == 0 && access != CallAccess::Value) { error = DomainAccessError::Uniform; }
     return DomainBinding(error, 1);
+}
+
+DomainWorkKind domain_access_error(DomainAccessError error) on cpu {
+    if (error == DomainAccessError::Texture) { return DomainWorkKind::TextureAccess; }
+    if (error == DomainAccessError::Acceleration) { return DomainWorkKind::AccelerationAccess; }
+    if (error == DomainAccessError::Dataset) { return DomainWorkKind::DatasetAccess; }
+    return DomainWorkKind::UniformAccess;
+}
+
+DomainWorkKind domain_storage_error(DomainWork work, DomainParameterHost host, u32 resolved) on cpu
+    requires nonzero(host.query) {
+    if (resolved != 0 && host.query(host.context, DomainQuery::Owns) != 0) { return DomainWorkKind::Owned; }
+    if (work.binding.view_check != 0 && host.query(host.context, DomainQuery::Views) != 0) { return DomainWorkKind::Views; }
+    if (work.binding.access_error != DomainAccessError::None) { return domain_access_error(work.binding.access_error); }
+    return DomainWorkKind::Done;
+}
+
+extern "C" DomainWork domain_parameters(DomainWork previous, usize count, u32 gpu, DomainParameterHost host) on cpu
+    requires nonzero(host.inspect) requires nonzero(host.query) requires nonzero(host.place) {
+    DomainWork work = previous;
+    usize index = work.index;
+    u32 resolved = work.kind == DomainWorkKind::Resolve ? 1 : 0;
+    if (work.kind == DomainWorkKind::Texture || work.kind == DomainWorkKind::Dataset) { index += 1u64; }
+    while (index < count) {
+        if (resolved == 0) {
+            DomainInputFields input = host.inspect(host.context, index);
+            Parameter form = input.bound != 0 ? input.form : parameter_form(input.shape);
+            DomainBinding binding = domain_binding(form, input.access, gpu, input.bound);
+            work = DomainWork(index, DomainWorkKind::Resolve, binding, form, 0);
+            if (form == Parameter::Texture || form == Parameter::Acceleration) {
+                if (binding.access_error != DomainAccessError::None) {
+                    work.kind = domain_access_error(binding.access_error);
+                    return work;
+                }
+                if (form == Parameter::Texture) {
+                    host.place(host.context, index, DomainPlace::Texture);
+                    work.kind = DomainWorkKind::Texture;
+                    return work;
+                }
+                host.place(host.context, index, DomainPlace::Acceleration);
+                index += 1u64;
+                continue;
+            }
+            if (input.layout == 0) { return work; }
+        }
+        DomainWorkKind error = domain_storage_error(work, host, resolved);
+        if (error != DomainWorkKind::Done) {
+            work.kind = error;
+            return work;
+        }
+        if (work.form == Parameter::Dataset) {
+            work.kind = DomainWorkKind::Dataset;
+            u32 size = host.query(host.context, DomainQuery::Size);
+            work.stride = align_uniform(size, host.query(host.context, DomainQuery::Alignment));
+            return work;
+        }
+        host.place(host.context, index, DomainPlace::Uniform);
+        resolved = 0;
+        index += 1u64;
+    }
+    work.kind = DomainWorkKind::Done;
+    return work;
+}
+
+extern "C" DomainStage domain_contracts(u32 parallel, address context,
+    cfn<void,address> declaration, cfn<void,address> inherit) on cpu
+    requires nonzero(declaration) requires nonzero(inherit) {
+    if (parallel != 0) {
+        inherit(context);
+        return DomainStage::Parallel;
+    }
+    declaration(context);
+    return DomainStage::Declaration;
+}
+
+extern "C" DomainFinish domain_finish(usize stages, usize calls, u32 standalone, address context,
+    cfn<bool,address,usize> guarantees,
+    cfn<usize,address,usize> ensures memory(read) call_stage,
+    cfn<void,address,usize> tail) on cpu
+    requires nonzero(guarantees) requires nonzero(call_stage) requires nonzero(tail) {
+    if (!guarantees(context, stages)) { return DomainFinish::Error; }
+    usize start = calls == 0u64 ? 0u64 : call_stage(context, calls - 1u64);
+    tail(context, start);
+    if (standalone != 0 && calls != 0u64) { return DomainFinish::RequiresModule; }
+    return DomainFinish::Complete;
 }
 
 extern "C" Dataset dataset_form(u32 ordinary_cpu,u32 by_value) on cpu {

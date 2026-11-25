@@ -395,13 +395,6 @@ pub(crate) async fn compile_program(
     let (expanded, _) = unsafe {
         world.call(expand_domain(world, input, &parameters, DomainBindings::Owned(bindings.into_iter()), &mut functions, None)).await
     }?;
-    if !expanded.calls.is_empty() {
-        return instance.definition.source.fail(
-            instance.definition.function.span(),
-            "B270",
-            "跨对象域使用原生模块或应用入口编译；单个内核映像不包含其他模块的实现",
-        );
-    }
     unsafe { world.call(native_function::finish_program(world, functions, expanded.program, expanded.scopes)).await }
 }
 #[derive(Clone, Copy)]
@@ -474,152 +467,201 @@ fn invalid_kernel_interface(input: DomainInput<'_>) -> Diagnostic {
     }
 }
 
+#[allow(dead_code)]
+#[repr(u32)]
+enum DomainStage { Declaration, Parallel }
+
+#[allow(dead_code)]
+#[repr(u32)]
+enum DomainFinish { Complete, Error, RequiresModule }
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.function_inputs::domain_contracts"]
+    fn native_domain_contracts(
+        parallel: u32,
+        context: *mut std::ffi::c_void,
+        declaration: unsafe extern "C" fn(*mut std::ffi::c_void),
+        inherit: unsafe extern "C" fn(*mut std::ffi::c_void),
+    ) -> DomainStage;
+    #[link_name = "bootstrap.function_inputs::domain_finish"]
+    fn native_domain_finish(
+        stages: usize,
+        calls: usize,
+        standalone: u32,
+        context: *mut std::ffi::c_void,
+        guarantees: unsafe extern "C" fn(*mut std::ffi::c_void, usize) -> bool,
+        call_stage: unsafe extern "C" fn(*const std::ffi::c_void, usize) -> usize,
+        tail: unsafe extern "C" fn(*mut std::ffi::c_void, usize),
+    ) -> DomainFinish;
+}
+
+struct DomainContracts<'a, 'b> {
+    input: DomainInput<'a>,
+    program: &'b mut Program,
+    roots: &'b BTreeMap<String, Root>,
+    bound: Vec<FunctionContract>,
+    guarantees: Result<Vec<(PrefixRelation, Span)>>,
+}
+
+unsafe extern "C" fn declare_domain_contracts(context: *mut std::ffi::c_void) {
+    let c = unsafe { &mut *context.cast::<DomainContracts<'_, '_>>() };
+    let instance = c.input.owner();
+    let d = &instance.definition;
+    c.bound = instance.contracts().collect();
+    c.guarantees = (|| {
+        c.program.length_requirements = contracts::root_lengths(c.roots, d, &c.bound)?;
+        c.program.prefix_requirements = prefix::requirements(c.program, c.roots, d, &c.bound)?;
+        prefix::bindings(c.program, c.roots, d, &c.bound, ContractKind::Ensures).collect()
+    })();
+}
+
+unsafe extern "C" fn inherit_domain_contracts(context: *mut std::ffi::c_void) {
+    let c = unsafe { &mut *context.cast::<DomainContracts<'_, '_>>() };
+    let DomainInput::Parallel { length_requirements, prefix_requirements, element_requirements, .. } = c.input else {
+        unsafe { std::hint::unreachable_unchecked() };
+    };
+    c.program.length_requirements.extend_from_slice(length_requirements);
+    c.program.prefix_requirements.extend_from_slice(prefix_requirements);
+    c.program.element_requirements.extend_from_slice(element_requirements);
+}
+
+struct DomainCompletion<'a> {
+    definition: &'a Definition,
+    program: &'a mut Program,
+    facts: &'a prefix::Facts,
+    guarantees: Vec<(PrefixRelation, Span)>,
+    calls: &'a [DomainCall],
+    tail_writes: BTreeMap<usize, BTreeSet<(u32, u32)>>,
+    error: Option<Diagnostic>,
+}
+
+unsafe extern "C" fn publish_domain_guarantees(context: *mut std::ffi::c_void, stages: usize) -> bool {
+    let c = unsafe { &mut *context.cast::<DomainCompletion<'_>>() };
+    c.program.source_stages = stages;
+    match prefix::proved_guarantees(
+        c.program, c.definition, c.facts, std::mem::take(&mut c.guarantees).into_iter().map(Ok),
+    ) {
+        Ok(guarantees) => {
+            c.program.prefix_guarantees = prefix::canonical_relations(guarantees);
+            true
+        }
+        Err(error) => {
+            c.error = Some(error);
+            false
+        }
+    }
+}
+
+unsafe extern "C" fn domain_call_stage(context: *const std::ffi::c_void, index: usize) -> usize {
+    let c = unsafe { &*context.cast::<DomainCompletion<'_>>() };
+    c.calls[index].stage
+}
+
+unsafe extern "C" fn complete_domain_tail(context: *mut std::ffi::c_void, start: usize) {
+    let c = unsafe { &mut *context.cast::<DomainCompletion<'_>>() };
+    c.tail_writes = Program::stage_write_regions(&c.program.stages[start..]);
+    c.program.element_guarantees = c.facts.element_facts(c.program, Some(&c.tail_writes));
+}
+
 async fn expand_domain(
     world: &World,
     input: DomainInput<'_>,
     parameters: &[Param],
     bindings: DomainBindings<'_>,
     functions: &mut native_function::Module,
-    mut entry: Option<&mut native_function::DomainEntry>,
+    entry: Option<&mut native_function::DomainEntry>,
 ) -> Result<(ExpandedDomain, Vec<FunctionContract>)> {
-    let name = input.name();
     let d = &input.owner().definition;
-    let mut buffers = Vec::new();
-    let mut accelerations = Vec::new();
-    let mut textures = Vec::new();
-    let mut uniforms = Vec::new();
+    let standalone = u32::from(entry.is_none());
     let mut env = BTreeMap::new();
-    let gpu = input.target() == Target::Gpu;
-    let qualified = !matches!(bindings, DomainBindings::Unqualified);
-    for (p, binding) in parameters.iter().zip(bindings) {
-        let (form, layout) = match binding {
-            Some(binding) => (binding.form, binding.layout),
-            None => (function_inputs::parameter_form(p), None),
-        };
-        let parameter = function_inputs::domain_binding(form, p.access, gpu, qualified);
-        if form == function_inputs::Parameter::Texture {
-            parameter.check_access(&d.source, p.span)?;
-            env.insert(p.name.to_owned(), Root::Texture(textures.len()));
-            textures.push(unsafe {
-                world.call(texture::binding(world, p, p.ty.texture_type().unwrap(), (&d.source, &d.module, &d.imports))).await
-            }?);
-            if let Some(entry) = entry.as_deref_mut() { entry.texture(); }
-            continue;
-        }
-        if form == function_inputs::Parameter::Acceleration {
-            parameter.check_access(&d.source, p.span)?;
-            env.insert(p.name.to_owned(), Root::Acceleration(accelerations.len()));
-            accelerations.push(p.name.to_owned());
-            continue;
-        }
-        let dataset = form == function_inputs::Parameter::Dataset;
-        let ty = if let Some(ty) = layout {
-            ty
-        } else {
-            let ty = unsafe { world.call(world.ty(&p.ty, &d.source, p.span, &d.module, &d.imports)).await }?;
-            if ty.owns_resources() {
-                return d.source.fail(
-                    p.span,
-                    "B224",
-                    "拥有结果属于CPU资源组织，不能成为program的普通存储或uniform",
-                );
-            }
-            ty
-        };
-        if parameter.view_check != 0 && ty.contains_views() {
-            return d.source.fail(
-                p.span,
-                "B185",
-                "含view的整域根需要read／inout dataset；write／atomic或uniform不能构造引用图",
-            );
-        }
-        parameter.check_access(&d.source, p.span)?;
-        if dataset {
-            let binding = buffers.len();
-            let stride = ir::align_up(ty.size, ty.align);
-            buffers.push(Buffer {
-                name: p.name.to_owned(),
-                access: p.access,
-                ty,
-                stride,
-                count: unsafe { world.call(world.shape(&p.ty.count, &d.source, p.span, &d.module, &d.imports)).await }?,
-            });
-            env.insert(p.name.to_owned(), Root::Data(binding, p.access));
-            if let Some(entry) = entry.as_deref_mut() { entry.dataset(); }
-        } else {
-            if let Some(entry) = entry.as_deref_mut() { entry.uniform(&ty); }
-            uniforms.push(Uniform {
-                name: p.name.to_owned(),
-                ty,
-                offset: 0,
-            });
-        }
-    }
-    let offset = function_inputs::layout_uniforms(buffers.len() as u32, &mut uniforms, &mut env);
-    if offset > world.worker.compiler().max_parameter_bytes() {
-        return d.source.fail(
-            input.span(),
-            "B103",
-            format!("程序参数占 {offset} 字节，超过本次编译配置的 {} 字节参数上限；此处未查询实际设备能力", world.worker.compiler().max_parameter_bytes()),
-        );
-    }
     let mut program = Program {
-        name: name.to_owned(),
+        name: input.name().to_owned(),
         source_origin: input.source_origin(),
         generated_origin: None,
         target: input.target(),
-        buffers,
-        accelerations,
-        textures,
-        uniforms,
-        uniform_bytes: offset,
+        buffers: Vec::new(),
+        accelerations: Vec::new(),
+        textures: Vec::new(),
+        uniforms: Vec::new(),
+        uniform_bytes: 0,
         native_frame: None,
         resources: None,
         source_stages: 0,
         stages: Vec::new(),
         functions: Arc::from([]),
         prefix_requirements: Vec::new(),
-        prefix_guarantees: Vec::new(), element_requirements: Vec::new(), element_guarantees: Vec::new(), length_requirements: Vec::new(), imports: BTreeMap::new(),
+        prefix_guarantees: Vec::new(),
+        element_requirements: Vec::new(),
+        element_guarantees: Vec::new(),
+        length_requirements: Vec::new(),
+        imports: BTreeMap::new(),
     };
-    let (bound_contracts, guarantees) = match input {
-        DomainInput::Parallel { length_requirements, prefix_requirements, element_requirements, .. } => {
-            program.length_requirements.extend_from_slice(length_requirements);
-            program.prefix_requirements.extend_from_slice(prefix_requirements);
-            program.element_requirements.extend_from_slice(element_requirements);
-            (Vec::new(), Vec::new())
-        }
-        DomainInput::Declaration { instance, .. } => {
-            let contracts: Vec<_> = instance.contracts().collect();
-            program.length_requirements = contracts::root_lengths(&env, d, &contracts)?;
-            program.prefix_requirements = prefix::requirements(&program, &env, d, &contracts)?;
-            let guarantees = prefix::bindings(&program, &env, d, &contracts, ContractKind::Ensures)
-                .collect::<Result<Vec<_>>>()?;
-            program.element_requirements = unsafe { world.call(prefix::element_requirements(world, &program.buffers, &env, instance, &contracts)).await }?;
-            (contracts, guarantees)
-        }
+    unsafe {
+        world.call(function_inputs::domain_parameters(world, d, parameters, bindings, &mut program, &mut env, entry)).await
+    }?;
+    let limit = world.worker.compiler().max_parameter_bytes();
+    let bytes = function_inputs::layout_uniforms(program.buffers.len() as u32, &mut program.uniforms, &mut env, limit);
+    if bytes.exceeded {
+        return d.source.fail(input.span(), "B103", format!(
+            "程序参数占 {} 字节，超过本次编译配置的 {} 字节参数上限；此处未查询实际设备能力", bytes.bytes, limit,
+        ));
+    }
+    program.uniform_bytes = bytes.bytes;
+
+    let mut contract = DomainContracts { input, program: &mut program, roots: &env, bound: Vec::new(), guarantees: Ok(Vec::new()) };
+    let stage = unsafe {
+        native_domain_contracts(
+            u32::from(matches!(input, DomainInput::Parallel { .. })), std::ptr::from_mut(&mut contract).cast(),
+            declare_domain_contracts, inherit_domain_contracts,
+        )
     };
+    let DomainContracts { bound: bound_contracts, guarantees, .. } = contract;
+    let guarantees = guarantees?;
+    if let DomainStage::Declaration = stage {
+        program.element_requirements = unsafe {
+            world.call(prefix::element_requirements(world, &program.buffers, &env, input.owner(), &bound_contracts)).await
+        }?;
+    }
     let mut facts = prefix::Facts::new(&program.prefix_requirements);
     facts.assume_elements(&program);
     let mut calls = Vec::new();
-    let path=input.syntax_context().1.domain_path.clone();
+    let path = input.syntax_context().1.domain_path.clone();
     let mut scopes = BTreeMap::new();
-    match input {
-        DomainInput::Declaration { instance, .. }=>unsafe { world.call(expand_program(
-            world,instance,&mut env,&mut program,&mut Vec::new(),&mut false,&mut facts,&mut calls,path,functions,&mut scopes)).await }?,
-        DomainInput::Parallel{statement,..}=>{
-            unsafe { world.call(expand_stages(world,input,std::iter::once(statement.clone()),&mut env,&mut program,
-                &mut Vec::new(),&mut false,&mut facts,&mut calls,&path,functions,&mut scopes)).await }?;
+    match stage {
+        DomainStage::Declaration => unsafe {
+            world.call(expand_program(world, input.owner(), &mut env, &mut program, &mut Vec::new(), &mut false,
+                &mut facts, &mut calls, path, functions, &mut scopes)).await?;
+        },
+        DomainStage::Parallel => {
+            let DomainInput::Parallel { statement, .. } = input else { unsafe { std::hint::unreachable_unchecked() } };
+            unsafe {
+                world.call(expand_stages(world, input, std::iter::once(statement.clone()), &mut env, &mut program,
+                    &mut Vec::new(), &mut false, &mut facts, &mut calls, &path, functions, &mut scopes)).await?;
+            }
         }
     }
-    program.source_stages = program.stages.len();
-    program.prefix_guarantees = prefix::canonical_relations(prefix::proved_guarantees(
-        &program, d, &facts, guarantees.into_iter().map(Ok),
-    )?);
-    let tail_start = calls.last().map_or(0, |call| call.stage);
-    let tail_writes = Program::stage_write_regions(&program.stages[tail_start..]);
-    program.element_guarantees = facts.element_facts(&program, Some(&tail_writes));
-    Ok((ExpandedDomain { program, tail_writes, scopes, calls, outputs: facts.outputs, elements: facts.elements }, bound_contracts))
+    let stages = program.stages.len();
+    let mut completion = DomainCompletion {
+        definition: d, program: &mut program, facts: &facts, guarantees, calls: &calls,
+        tail_writes: BTreeMap::new(), error: None,
+    };
+    let finish = unsafe {
+        native_domain_finish(stages, calls.len(), standalone, std::ptr::from_mut(&mut completion).cast(),
+            publish_domain_guarantees, domain_call_stage, complete_domain_tail)
+    };
+    match finish {
+        DomainFinish::Complete => (),
+        DomainFinish::Error => return Err(completion.error.unwrap()),
+        DomainFinish::RequiresModule => return d.source.fail(
+            input.span(), "B270", "跨对象域使用原生模块或应用入口编译；单个内核映像不包含其他模块的实现",
+        ),
+    }
+    let DomainCompletion { tail_writes, .. } = completion;
+    Ok((ExpandedDomain {
+        program, tail_writes, scopes, calls, outputs: facts.outputs, elements: facts.elements,
+    }, bound_contracts))
 }
+
 async fn expand_program(
     world: &World,
     instance: &crate::generics::Instance,

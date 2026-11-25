@@ -19,7 +19,8 @@ extern "C" ResourceStep resource_step(u32 stage,Facts facts) on cpu;
 extern "C" u32 uniform_bytes(u32 buffers) on cpu;
 
 struct UniformField { u32 size; u32 alignment; };
-extern "C" u32 layout_uniforms(u32 buffers, usize count, address context,
+struct DomainBytes { u32 bytes; bool exceeded; };
+extern "C" DomainBytes layout_uniforms(u32 buffers, usize count, u32 limit, address context,
     cfn<UniformField,address,usize> ensures memory(read) field,
     cfn<void,address,usize,u32> place) on cpu
     requires nonzero(field) requires nonzero(place);
@@ -27,7 +28,35 @@ extern "C" u32 layout_uniforms(u32 buffers, usize count, address context,
 extern "C" Parameter parameter_form(Facts facts) on cpu;
 extern "C" bool domain_result(u32 unit, usize arguments, u32 dataset, u32 tile, u32 view) on cpu;
 extern "C" DomainParameter domain_parameter(Facts facts, CallAccess access) on cpu;
-extern "C" DomainBinding domain_binding(Parameter form, CallAccess access, u32 gpu, u32 qualified) on cpu;
+
+struct DomainInputFields { Facts shape; Parameter form; CallAccess access; u32 bound; u32 layout; };
+enum DomainPlace:u32 { Texture=0; Acceleration=1; Uniform=2; };
+enum DomainQuery:u32 { Owns=0; Views=1; Size=2; Alignment=3; };
+enum DomainWorkKind:u32 {
+    Start=0; Resolve=1; Texture=2; Dataset=3; Done=4;
+    Owned=5; Views=6; TextureAccess=7; AccelerationAccess=8; DatasetAccess=9; UniformAccess=10;
+};
+struct DomainWork { usize index; DomainWorkKind kind; DomainBinding binding; Parameter form; u32 stride; };
+struct DomainParameterHost {
+    address context;
+    cfn<DomainInputFields,address,usize> inspect;
+    cfn<u32,address,DomainQuery> ensures memory(read) query;
+    cfn<void,address,usize,DomainPlace> place;
+};
+extern "C" DomainWork domain_parameters(DomainWork previous, usize count, u32 gpu, DomainParameterHost host) on cpu
+    requires nonzero(host.inspect) requires nonzero(host.query) requires nonzero(host.place);
+
+enum DomainStage:u32 { Declaration=0; Parallel=1; };
+extern "C" DomainStage domain_contracts(u32 parallel, address context,
+    cfn<void,address> declaration, cfn<void,address> inherit) on cpu
+    requires nonzero(declaration) requires nonzero(inherit);
+
+enum DomainFinish:u32 { Complete=0; Error=1; RequiresModule=2; };
+extern "C" DomainFinish domain_finish(usize stages, usize calls, u32 standalone, address context,
+    cfn<bool,address,usize> guarantees,
+    cfn<usize,address,usize> ensures memory(read) call_stage,
+    cfn<void,address,usize> tail) on cpu
+    requires nonzero(guarantees) requires nonzero(call_stage) requires nonzero(tail);
 extern "C" Dataset dataset_form(u32 ordinary_cpu,u32 by_value) on cpu;
 extern "C" ValueForm value_form(Mode mode,u32 read,u32 atomic,u32 by_value,u32 owned) on cpu;
 extern "C" PlaceForm place_form(Mode mode,u32 read) on cpu;

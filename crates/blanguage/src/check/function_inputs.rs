@@ -35,19 +35,6 @@ pub(super) struct DomainBinding {
     pub view_check: u32,
 }
 
-impl DomainBinding {
-    pub(super) fn check_access(&self, source: &Source, span: Span) -> Result<()> {
-        let (code, message) = match self.access_error {
-            DomainAccessError::None => return Ok(()),
-            DomainAccessError::Texture => ("B239", "texture2d／texture3d 必须声明 read 资源权限"),
-            DomainAccessError::Acceleration => ("B182", "acceleration 必须是 GPU program 的 read 资源"),
-            DomainAccessError::Dataset => ("B101", "dataset 必须声明 read、write、inout 或 atomic"),
-            DomainAccessError::Uniform => ("B102", "标量参数按值传递；访问权限只用于 dataset"),
-        };
-        source.fail(span, code, message)
-    }
-}
-
 #[derive(Clone, Copy, Default)]
 #[repr(C)]
 struct Facts { dataset: u32, acceleration: u32, texture: u32, tile: u32 }
@@ -85,6 +72,63 @@ struct UniformField {
     alignment: u32,
 }
 
+#[repr(C)]
+pub(super) struct DomainBytes {
+    pub bytes: u32,
+    pub exceeded: bool,
+}
+
+#[repr(C)]
+struct DomainInputFields {
+    shape: Facts,
+    form: Parameter,
+    access: Access,
+    bound: u32,
+    layout: u32,
+}
+
+#[allow(dead_code)]
+#[repr(u32)]
+enum DomainPlace { Texture, Acceleration, Uniform }
+
+#[allow(dead_code)]
+#[repr(u32)]
+enum DomainQuery { Owns, Views, Size, Alignment }
+
+#[allow(dead_code)]
+#[derive(PartialEq, Eq)]
+#[repr(u32)]
+enum DomainWorkKind {
+    Start, Resolve, Texture, Dataset, Done, Owned, Views,
+    TextureAccess, AccelerationAccess, DatasetAccess, UniformAccess,
+}
+
+#[repr(C)]
+struct DomainWork {
+    index: usize,
+    kind: DomainWorkKind,
+    binding: DomainBinding,
+    form: Parameter,
+    stride: u32,
+}
+
+#[repr(C)]
+struct DomainParameterHost {
+    context: *mut std::ffi::c_void,
+    inspect: unsafe extern "C" fn(*mut std::ffi::c_void, usize) -> DomainInputFields,
+    query: unsafe extern "C" fn(*const std::ffi::c_void, DomainQuery) -> u32,
+    place: unsafe extern "C" fn(*mut std::ffi::c_void, usize, DomainPlace),
+}
+
+struct DomainParameters<'a, 'b> {
+    parameters: &'a [Param],
+    bindings: DomainBindings<'a>,
+    layout: Option<Ty>,
+    program: &'b mut Program,
+    roots: &'b mut BTreeMap<String, Root>,
+    entry: Option<&'b mut native_function::DomainEntry>,
+}
+
 struct UniformLayout<'a> {
     uniforms: &'a mut [Uniform],
     roots: &'a mut BTreeMap<String, Root>,
@@ -97,18 +141,19 @@ unsafe extern "C" {
     fn native_layout_uniforms(
         buffers: u32,
         count: usize,
+        limit: u32,
         context: *mut std::ffi::c_void,
         field: unsafe extern "C" fn(*const std::ffi::c_void, usize) -> UniformField,
         place: unsafe extern "C" fn(*mut std::ffi::c_void, usize, u32),
-    ) -> u32;
+    ) -> DomainBytes;
+    #[link_name = "bootstrap.function_inputs::domain_parameters"]
+    fn native_domain_parameters(work: DomainWork, count: usize, gpu: u32, host: DomainParameterHost) -> DomainWork;
     #[link_name = "bootstrap.function_inputs::parameter_form"]
     fn native_parameter_form(facts: Facts) -> Parameter;
     #[link_name = "bootstrap.function_inputs::domain_result"]
     fn native_domain_result(unit: u32, arguments: usize, dataset: u32, tile: u32, view: u32) -> bool;
     #[link_name = "bootstrap.function_inputs::domain_parameter"]
     fn native_domain_parameter(facts: Facts, access: Access) -> DomainParameter;
-    #[link_name = "bootstrap.function_inputs::domain_binding"]
-    fn native_domain_binding(form: Parameter, access: Access, gpu: u32, qualified: u32) -> DomainBinding;
     #[link_name = "bootstrap.function_inputs::dataset_step"]
     fn dataset_step(cursor:InputCursor,facts:DatasetFacts)->DatasetStep;
     #[link_name = "bootstrap.function_inputs::ordinary_step"]
@@ -140,11 +185,12 @@ pub(super) fn layout_uniforms(
     buffers: u32,
     uniforms: &mut [Uniform],
     roots: &mut BTreeMap<String, Root>,
-) -> u32 {
+    limit: u32,
+) -> DomainBytes {
     let count = uniforms.len();
     let mut layout = UniformLayout { uniforms, roots };
     unsafe {
-        native_layout_uniforms(buffers, count, std::ptr::from_mut(&mut layout).cast(), uniform_field, place_uniform)
+        native_layout_uniforms(buffers, count, limit, std::ptr::from_mut(&mut layout).cast(), uniform_field, place_uniform)
     }
 }
 
@@ -165,8 +211,121 @@ pub(super) fn domain_parameter(param: &Param) -> DomainParameter {
     unsafe { native_domain_parameter(facts(param), param.access) }
 }
 
-pub(super) fn domain_binding(form: Parameter, access: Access, gpu: bool, qualified: bool) -> DomainBinding {
-    unsafe { native_domain_binding(form, access, u32::from(gpu), u32::from(qualified)) }
+unsafe extern "C" fn inspect_domain_parameter(context: *mut std::ffi::c_void, index: usize) -> DomainInputFields {
+    let inputs = unsafe { &mut *context.cast::<DomainParameters<'_, '_>>() };
+    let parameter = &inputs.parameters[index];
+    match inputs.bindings.next().flatten() {
+        Some(binding) => {
+            inputs.layout = binding.layout;
+            DomainInputFields {
+                shape: Facts::default(), form: binding.form, access: parameter.access,
+                bound: 1, layout: u32::from(inputs.layout.is_some()),
+            }
+        }
+        None => DomainInputFields {
+            shape: facts(parameter), form: Parameter::Ordinary, access: parameter.access,
+            bound: 0, layout: 0,
+        },
+    }
+}
+
+unsafe extern "C" fn query_domain_layout(context: *const std::ffi::c_void, query: DomainQuery) -> u32 {
+    let inputs = unsafe { &*context.cast::<DomainParameters<'_, '_>>() };
+    let ty = inputs.layout.as_ref().unwrap();
+    match query {
+        DomainQuery::Owns => u32::from(ty.owns_resources()),
+        DomainQuery::Views => u32::from(ty.contains_views()),
+        DomainQuery::Size => ty.size,
+        DomainQuery::Alignment => ty.align,
+    }
+}
+
+unsafe extern "C" fn place_domain_parameter(context: *mut std::ffi::c_void, index: usize, place: DomainPlace) {
+    let inputs = unsafe { &mut *context.cast::<DomainParameters<'_, '_>>() };
+    let parameter = &inputs.parameters[index];
+    match place {
+        DomainPlace::Texture => {
+            inputs.roots.insert(parameter.name.clone(), Root::Texture(inputs.program.textures.len()));
+        }
+        DomainPlace::Acceleration => {
+            inputs.roots.insert(parameter.name.clone(), Root::Acceleration(inputs.program.accelerations.len()));
+            inputs.program.accelerations.push(parameter.name.clone());
+        }
+        DomainPlace::Uniform => {
+            let ty = inputs.layout.take().unwrap();
+            if let Some(entry) = inputs.entry.as_deref_mut() { entry.uniform(&ty); }
+            inputs.program.uniforms.push(Uniform { name: parameter.name.clone(), ty, offset: 0 });
+        }
+    }
+}
+
+#[inline(never)]
+pub(super) async fn domain_parameters(
+    world: &World,
+    definition: &Definition,
+    parameters: &[Param],
+    bindings: DomainBindings<'_>,
+    program: &mut Program,
+    roots: &mut BTreeMap<String, Root>,
+    entry: Option<&mut native_function::DomainEntry>,
+) -> Result<()> {
+    let count = match &bindings {
+        DomainBindings::Owned(bindings) => parameters.len().min(bindings.len()),
+        DomainBindings::Shared(bindings) => parameters.len().min(bindings.len()),
+        DomainBindings::Unqualified => parameters.len(),
+    };
+    let gpu = u32::from(program.target == Target::Gpu);
+    let mut inputs = DomainParameters { parameters, bindings, layout: None, program, roots, entry };
+    let mut work = DomainWork {
+        index: 0, kind: DomainWorkKind::Start, form: Parameter::Ordinary, stride: 0,
+        binding: DomainBinding { access_error: DomainAccessError::None, view_check: 0 },
+    };
+    let (source, module, imports) = (&definition.source, &definition.module, &definition.imports);
+    loop {
+        let host = DomainParameterHost {
+            context: std::ptr::from_mut(&mut inputs).cast(),
+            inspect: inspect_domain_parameter, query: query_domain_layout, place: place_domain_parameter,
+        };
+        work = unsafe { native_domain_parameters(work, count, gpu, host) };
+        let (code, message) = match work.kind {
+            DomainWorkKind::Resolve => {
+                let parameter = &parameters[work.index];
+                inputs.layout = Some(unsafe {
+                    world.call(world.ty(&parameter.ty, source, parameter.span, module, imports)).await
+                }?);
+                continue;
+            }
+            DomainWorkKind::Texture => {
+                let parameter = &parameters[work.index];
+                inputs.program.textures.push(unsafe {
+                    world.call(texture::binding(world, parameter, parameter.ty.texture_type().unwrap(), (source, module, imports))).await
+                }?);
+                if let Some(entry) = inputs.entry.as_deref_mut() { entry.texture(); }
+                continue;
+            }
+            DomainWorkKind::Dataset => {
+                let parameter = &parameters[work.index];
+                let binding = inputs.program.buffers.len();
+                let ty = inputs.layout.take().unwrap();
+                let count = unsafe { world.call(world.shape(&parameter.ty.count, source, parameter.span, module, imports)).await }?;
+                inputs.program.buffers.push(Buffer {
+                    name: parameter.name.clone(), access: parameter.access, ty, stride: work.stride, count,
+                });
+                inputs.roots.insert(parameter.name.clone(), Root::Data(binding, parameter.access));
+                if let Some(entry) = inputs.entry.as_deref_mut() { entry.dataset(); }
+                continue;
+            }
+            DomainWorkKind::Owned => ("B224", "拥有结果属于CPU资源组织，不能成为program的普通存储或uniform"),
+            DomainWorkKind::Views => ("B185", "含view的整域根需要read／inout dataset；write／atomic或uniform不能构造引用图"),
+            DomainWorkKind::TextureAccess => ("B239", "texture2d／texture3d 必须声明 read 资源权限"),
+            DomainWorkKind::AccelerationAccess => ("B182", "acceleration 必须是 GPU program 的 read 资源"),
+            DomainWorkKind::DatasetAccess => ("B101", "dataset 必须声明 read、write、inout 或 atomic"),
+            DomainWorkKind::UniformAccess => ("B102", "标量参数按值传递；访问权限只用于 dataset"),
+            DomainWorkKind::Done => return Ok(()),
+            DomainWorkKind::Start => unsafe { std::hint::unreachable_unchecked() },
+        };
+        return source.fail(parameters[work.index].span, code, message);
+    }
 }
 
 fn facts(p: &Param) -> Facts {
