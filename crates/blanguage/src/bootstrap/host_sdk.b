@@ -643,6 +643,67 @@ UnitSpan join_tool_path(UnitSpan base,UnitSpan tail) on cpu {
     return UnitSpan(output,plan.length);
 }
 
+extern "C" MsvcLinkResult link_msvc_inputs(MsvcLinkRequest request,
+    cfn<MsvcLinkInput,address,MsvcInputKind,usize> input,
+    cfn<UnitSpan,address,address,usize> arguments) on cpu
+    requires nonzero(input) requires nonzero(arguments) {
+    SourceBytes empty = SourceBytes(address(), 0u64, StorageError(0, 0));
+    MsvcLinkResult result = MsvcLinkResult(HostWriteResult(HostWriteKind::Written, 0),
+        HostProcessOutput(empty, empty, 0, 0), 0);
+    usize code_end = request.archives + request.objects;
+    usize count = code_end + 2u64;
+    usize index = 0u64;
+    usize created = 0u64;
+    while (index < count) {
+        MsvcInputKind kind = MsvcInputKind::Archive;
+        usize item = index;
+        if (index >= code_end) {
+            kind = index == code_end ? MsvcInputKind::Imports : MsvcInputKind::Resources;
+            item = 0u64;
+        } else if (index >= request.archives) {
+            kind = MsvcInputKind::Code;
+            item -= request.archives;
+        }
+        MsvcLinkInput next = input(request.context, kind, item);
+        if (next.failed != 0) { break; }
+        index += 1u64;
+        if (next.filename.length == 0u64) { continue; }
+
+        UnitSpan path = join_tool_path(request.directory, next.filename);
+        if (address_bits(path.data) == 0u64) {
+            result.written = HostWriteResult(HostWriteKind::OpenError, u32(ERROR_NOT_ENOUGH_MEMORY));
+            break;
+        }
+        result.written = write_host_input(path.data, path.length, next.bytes.data, next.bytes.bytes);
+        if (result.written.kind == HostWriteKind::OpenError) {
+            release_tool_path(path);
+            break;
+        }
+        unsafe_position<UnitSpan>(unsafe_address(address_bits(request.paths) + created * size_of<UnitSpan>())) = path;
+        created += 1u64;
+        if (result.written.kind != HostWriteKind::Written) { break; }
+    }
+
+    bool linked = false;
+    if (index == count && result.written.kind == HostWriteKind::Written) {
+        UnitSpan packed = arguments(request.context, request.paths, created);
+        if (address_bits(packed.data) != 0u64) {
+            result.process = run_host_process(request.executable.data, request.executable.length, packed.data, packed.length);
+            linked = result.process.status == 0 && result.process.exit_code == 0 &&
+                result.process.stdout.error.kind == 0 && result.process.stderr.error.kind == 0;
+        }
+    }
+    usize at = 0u64;
+    while (at < created) {
+        UnitSpan path = unsafe_position<UnitSpan>(unsafe_address(address_bits(request.paths) + at * size_of<UnitSpan>()));
+        u32 removed = remove_host_input(path.data, path.length);
+        release_tool_path(path);
+        if (linked && result.cleanup == 0) { result.cleanup = removed; }
+        at += 1u64;
+    }
+    return result;
+}
+
 UnitSpan join_tool_literal<const N:u32>(UnitSpan base,read array<u8,N> tail) on cpu {
     array<u16,N> units=array<u16,N>(u16(0));
     for(index in 0..N){units[index]=u16(tail[index]);}

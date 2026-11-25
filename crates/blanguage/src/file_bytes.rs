@@ -38,10 +38,6 @@ pub(crate) struct HostWriteResult {
 }
 
 impl HostWriteResult {
-    pub(crate) fn created(&self) -> bool {
-        !matches!(self.kind, HostWriteKind::OpenError)
-    }
-
     pub(crate) fn into_result(self) -> io::Result<()> {
         match self.kind {
             HostWriteKind::Written => Ok(()),
@@ -80,8 +76,6 @@ unsafe extern "C" {
     ) -> HostPublishResult;
     #[link_name = "blink.windows.path_core::create_output_directories"]
     fn create_output_directories(path: *const u16, units: usize) -> u32;
-    #[link_name = "bootstrap.host_sdk::write_host_input"]
-    fn write_host_input(path: *const u16, units: usize, data: *const u8, bytes: usize) -> HostWriteResult;
     #[link_name = "bootstrap.host_sdk::write_host_output"]
     fn write_host_output(path: *const u16, units: usize, data: *const u8, bytes: usize) -> HostWriteResult;
     #[link_name = "bootstrap.ast_storage::read_source"]
@@ -157,11 +151,6 @@ pub(crate) fn open_shared_read(path: &Path) -> io::Result<File> {
     }
     // B transfers one handle from CreateFileW to this File owner.
     Ok(unsafe { File::from_raw_handle(opened.file) })
-}
-
-pub(crate) fn write_new(path: &Path, bytes: &[u8]) -> io::Result<HostWriteResult> {
-    let path = host_path(path)?;
-    Ok(unsafe { write_host_input(path.as_ptr(), path.len() - 1, bytes.as_ptr(), bytes.len()) })
 }
 
 pub(crate) fn write(path: &Path, bytes: &[u8]) -> io::Result<()> {

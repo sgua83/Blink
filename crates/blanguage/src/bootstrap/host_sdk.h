@@ -46,6 +46,25 @@ extern "C" HostProcessOutput run_host_process(address executable, usize units,
     address arguments, usize argument_units) on cpu;
 
 struct HostFilePart { address data; usize bytes; };
+enum MsvcInputKind:u32 { Archive=0; Code=1; Imports=2; Resources=3; };
+struct MsvcLinkInput { UnitSpan filename; HostFilePart bytes; u32 failed; };
+struct MsvcLinkRequest {
+    UnitSpan directory;
+    UnitSpan executable;
+    usize archives;
+    usize objects;
+    address paths;
+    address context;
+};
+struct MsvcLinkResult { HostWriteResult written; HostProcessOutput process; u32 cleanup; };
+
+// One path array holds the created prefix and feeds argument encoding.
+// Input bytes are borrowed through their write. Argument bytes live through the process.
+extern "C" MsvcLinkResult link_msvc_inputs(MsvcLinkRequest request,
+    cfn<MsvcLinkInput,address,MsvcInputKind,usize> input,
+    cfn<UnitSpan,address,address,usize> arguments) on cpu
+    requires nonzero(input) requires nonzero(arguments);
+
 struct HostPublishResult { HostWriteResult written; u32 replacement; u32 cleanup; };
 extern "C" HostPublishResult publish_host_file(address target,usize target_units,
     address temporary,usize temporary_units,address parts,usize count) on cpu;

@@ -1,14 +1,17 @@
 //! Rust 执行框架的静态目标库使用既有 Windows 本机链接工具；不执行源码编译。
-use super::Result;
-use crate::{file_bytes::{self, FileBytes, host_path}, object::{Archive, encode_native, encode_native_with_imports}, source_path::join};
+use super::{Result, Selected, resources::Generated};
+use crate::{
+    file_bytes::{FileBytes, HostWriteResult, host_path},
+    object::{Archive, ImportKey, LinkSectionBytes, encode_native, encode_native_with_imports},
+};
 use std::{
-    ffi::OsStr,
+    ffi::{OsStr, c_void},
     io,
     os::windows::{
         ffi::OsStrExt,
         process::ExitStatusExt,
     },
-    path::{Path, PathBuf},
+    path::Path,
     process::ExitStatus,
 };
 #[repr(C)]
@@ -117,15 +120,12 @@ unsafe extern "C" {
         prefix: *const u8, prefix_length: usize, nodes: *mut [u64; 9]) -> MsvcNamePlan;
     #[link_name = "bootstrap.cli::write_msvc_arguments"]
     fn write_msvc_arguments(input: MsvcArguments, output: *mut u16) -> u64;
-    #[link_name = "bootstrap.host_sdk::run_host_process"]
-    fn run_host_process(
-        executable: *const u16,
-        units: usize,
-        arguments: *const u16,
-        argument_units: usize,
-    ) -> HostProcessOutput;
-    #[link_name = "bootstrap.host_sdk::remove_host_input"]
-    fn remove_host_input(path: *const u16, units: usize) -> u32;
+    #[link_name = "bootstrap.host_sdk::link_msvc_inputs"]
+    fn link_msvc_inputs(
+        request: MsvcLinkRequest,
+        input: unsafe extern "C" fn(*mut c_void, MsvcInputKind, usize) -> MsvcLinkInput,
+        arguments: unsafe extern "C" fn(*mut c_void, *const ToolPath, usize) -> ToolPath,
+    ) -> MsvcLinkResult;
     #[link_name = "bootstrap.host_sdk::discover_msvc_tools"]
     fn discover_msvc_tools(program_files: ToolPath) -> MsvcTools;
     #[link_name = "bootstrap.host_sdk::decode_host_text"]
@@ -165,20 +165,17 @@ impl HostProcessOutput {
     }
 }
 
-fn run_host_units(executable: &[u16], units: &[u16]) -> Result<(ExitStatus, FileBytes, FileBytes)> {
-    let result = unsafe {
-        run_host_process(executable.as_ptr(), executable.len(), units.as_ptr(), units.len())
-    };
-    let status = result.checked_status()?;
-    Ok((status, result.stdout, result.stderr))
-}
-
 #[repr(C)]
+#[derive(Clone, Copy)]
 struct ToolPath { data: *const u16, length: usize }
 
 impl ToolPath {
+    fn of(units: &[u16]) -> Self {
+        Self { data: units.as_ptr(), length: units.len() }
+    }
+
     fn units(&self) -> &[u16] {
-        // Discovery owns initialized, NUL-terminated paths through the link call.
+        // The B owner keeps each initialized UTF-16 path through this borrow.
         unsafe { std::slice::from_raw_parts(self.data, self.length) }
     }
 }
@@ -266,18 +263,20 @@ impl<'a> MsvcNames<'a> {
     }
 }
 
-fn link_process(
-    tools: &MsvcTools, output: &Path, inputs: &[PathBuf],
+fn link_arguments(
+    tools: &MsvcTools, output: &Path, inputs: &[ToolPath],
     names: &MsvcNames<'_>, sdk: Option<&Path>, stack_reserve: u64, import_library: bool,
-) -> Result<(ExitStatus, FileBytes, FileBytes)> {
-    let executable = tools.paths[0].units();
-    if executable.contains(&0) {
+) -> Result<Vec<u16>> {
+    if tools.paths[0].units().contains(&0) {
         return Err(invalid_tool_name().into());
     }
     let mut text = Vec::new();
     let output_path = append_wide(&mut text, output.as_os_str())?;
-    let inputs: Vec<_> = inputs.iter().map(|path| append_wide(&mut text, path.as_os_str()))
-        .collect::<io::Result<_>>()?;
+    let inputs: Vec<_> = inputs.iter().map(|path| {
+        let start = text.len() as u64;
+        text.extend_from_slice(path.units());
+        MsvcText { start, units: path.length as u64 }
+    }).collect();
     let import_path = if import_library {
         let path = crate::source_path::with_extension_units(output, &[b'l' as u16, b'i' as u16, b'b' as u16]);
         append_wide(&mut text, path.as_os_str())?
@@ -316,19 +315,134 @@ fn link_process(
         let used = write_msvc_arguments(request, arguments.as_mut_ptr());
         arguments.set_len(used as usize);
     }
-    run_host_units(executable, &arguments)
+    Ok(arguments)
 }
 
-fn write_input(temporary: &mut Vec<PathBuf>, path: PathBuf, bytes: &[u8]) -> io::Result<()> {
-    let written = file_bytes::write_new(&path, bytes)?;
-    if written.created() {
-        temporary.push(path);
+#[repr(u32)]
+#[allow(dead_code)]
+enum MsvcInputKind { Archive, Code, Imports, Resources }
+
+#[repr(C)]
+struct MsvcLinkInput {
+    filename: ToolPath,
+    data: *const u8,
+    bytes: usize,
+    failed: u32,
+}
+
+#[repr(C)]
+struct MsvcLinkRequest {
+    directory: ToolPath,
+    executable: ToolPath,
+    archives: usize,
+    objects: usize,
+    paths: *mut ToolPath,
+    context: *mut c_void,
+}
+
+#[repr(C)]
+struct MsvcLinkResult {
+    written: HostWriteResult,
+    process: HostProcessOutput,
+    cleanup: u32,
+}
+
+struct LinkHost<'a, 'code> {
+    archives: &'a [&'a Archive],
+    objects: &'a [Selected<LinkSectionBytes<'code>>],
+    binding: Option<Generated>,
+    tools: &'a MsvcTools,
+    path: &'a Path,
+    names: &'a MsvcNames<'a>,
+    sdk: Option<&'a Path>,
+    stack_reserve: u64,
+    import_library: bool,
+    id: String,
+    filename: Vec<u16>,
+    imports: Vec<ImportKey<'a>>,
+    bytes: Vec<u8>,
+    arguments: Vec<u16>,
+    error: Result<()>,
+}
+
+impl LinkHost<'_, '_> {
+    fn input(&mut self, kind: MsvcInputKind, index: usize) -> Result<Option<MsvcLinkInput>> {
+        self.bytes = Vec::new();
+        let suffix = match kind {
+            MsvcInputKind::Archive => format!("{index}.lib"),
+            MsvcInputKind::Code => {
+                let object = &self.objects[index];
+                self.bytes = encode_native_with_imports(
+                    &object.name, &object.sections, &object.definitions, &mut self.imports,
+                )?;
+                format!("code-{index}.obj")
+            }
+            MsvcInputKind::Imports => {
+                if self.imports.is_empty() {
+                    return Ok(None);
+                }
+                // The host archive and the MSVC inputs share one import-slot producer.
+                self.bytes = super::imports::archive_with_imports(&[], std::mem::take(&mut self.imports))?;
+                "imports.lib".into()
+            }
+            MsvcInputKind::Resources => {
+                let Some(binding) = self.binding.take() else { return Ok(None) };
+                self.bytes = encode_native(Generated::NAME, &binding.sections, &binding.definitions)?;
+                "resources.obj".into()
+            }
+        };
+        self.filename.clear();
+        self.filename.extend(format!(".blink-link-{}-{suffix}", self.id).encode_utf16());
+        let bytes = match kind {
+            MsvcInputKind::Archive => self.archives[index].bytes.as_ref(),
+            _ => self.bytes.as_slice(),
+        };
+        Ok(Some(MsvcLinkInput {
+            filename: ToolPath::of(&self.filename),
+            data: bytes.as_ptr(),
+            bytes: bytes.len(),
+            failed: 0,
+        }))
     }
-    written.into_result()
+}
+
+unsafe extern "C" fn prepare_link_input(
+    context: *mut c_void, kind: MsvcInputKind, index: usize,
+) -> MsvcLinkInput {
+    // The synchronous writer consumes these bytes before advancing to another input.
+    let host = unsafe { &mut *context.cast::<LinkHost<'_, '_>>() };
+    let failed = match host.input(kind, index) {
+        Ok(Some(input)) => return input,
+        Ok(None) => 0,
+        Err(error) => {
+            host.error = Err(error);
+            1
+        }
+    };
+    MsvcLinkInput { filename: ToolPath::of(&[]), data: std::ptr::null(), bytes: 0, failed }
+}
+
+unsafe extern "C" fn prepare_link_arguments(
+    context: *mut c_void, paths: *const ToolPath, count: usize,
+) -> ToolPath {
+    // B has finished all writes and owns this initialized prefix until the process ends.
+    let host = unsafe { &mut *context.cast::<LinkHost<'_, '_>>() };
+    host.bytes = Vec::new();
+    let paths = unsafe { std::slice::from_raw_parts(paths, count) };
+    match link_arguments(host.tools, host.path, paths, host.names, host.sdk, host.stack_reserve, host.import_library) {
+        Ok(arguments) => {
+            host.arguments = arguments;
+            ToolPath::of(&host.arguments)
+        }
+        Err(error) => {
+            host.error = Err(error);
+            ToolPath { data: std::ptr::null(), length: 0 }
+        }
+    }
 }
 
 pub(super) fn link(
-    objects: &[super::Selected<crate::object::LinkSectionBytes<'_>>], path: &Path, stack_reserve: u64, import_library: bool,
+    objects: &[Selected<LinkSectionBytes<'_>>], path: &Path, stack_reserve: u64, import_library: bool,
 ) -> Result<()> {
     let archives = objects.iter().filter_map(|object| object.archive.as_ref()).collect::<Vec<_>>();
     let binding = super::resources::resources(&archives, 0, 0, std::iter::empty(), std::iter::empty(), None)?;
@@ -346,54 +460,40 @@ pub(super) fn link(
             .duration_since(std::time::UNIX_EPOCH)?
             .as_nanos()
     );
-    let directory = std::env::temp_dir();
-    let mut temporary = Vec::new();
-    let mut result = (|| {
-        for (index, archive) in archives.iter().enumerate() {
-            let path = join(&directory, format!(".blink-link-{id}-{index}.lib"));
-            write_input(&mut temporary, path, &archive.bytes)?;
+    let directory: Vec<_> = std::env::temp_dir().as_os_str().encode_wide().collect();
+    let mut paths = Vec::<ToolPath>::with_capacity(archives.len() + objects.len() + 2);
+    let mut host = LinkHost {
+        archives: &archives, objects, binding, tools: &tools, path, names: &names,
+        sdk: sdk.as_ref().map(|sdk| sdk.root.as_path()), stack_reserve, import_library,
+        id, filename: Vec::new(), imports: Vec::new(), bytes: Vec::new(),
+        arguments: Vec::new(), error: Ok(()),
+    };
+    let request = MsvcLinkRequest {
+        directory: ToolPath::of(&directory), executable: tools.paths[0],
+        archives: archives.len(), objects: objects.len(), paths: paths.as_mut_ptr(),
+        context: (&mut host as *mut LinkHost<'_, '_>).cast(),
+    };
+    // B initializes and uses the path prefix in the reserved storage. It releases every
+    // owned path before returning. Rust retains the original bytes and process output owners.
+    let result = unsafe { link_msvc_inputs(request, prepare_link_input, prepare_link_arguments) };
+    host.error?;
+    result.written.into_result()?;
+    let status = result.process.checked_status()?;
+    if status.success() {
+        if result.cleanup != 0 {
+            return Err(io::Error::from_raw_os_error(result.cleanup as i32).into());
         }
-        let mut imports = Vec::new();
-        for (index, object) in objects.iter().enumerate() {
-            let path = join(&directory, format!(".blink-link-{id}-code-{index}.obj"));
-            let code = encode_native_with_imports(&object.name, &object.sections, &object.definitions, &mut imports)?;
-            write_input(&mut temporary, path, &code)?;
-        }
-        // The host archive and the MSVC inputs share one import-slot producer.
-        if !imports.is_empty() {
-            let path = join(&directory, format!(".blink-link-{id}-imports.lib"));
-            let bytes = super::imports::archive_with_imports(&[], imports)?;
-            write_input(&mut temporary, path, &bytes)?;
-        }
-        if let Some(binding) = binding {
-            let path = join(&directory, format!(".blink-link-{id}-resources.obj"));
-            write_input(&mut temporary, path, &encode_native(super::resources::Generated::NAME, &binding.sections, &binding.definitions)?)?;
-        }
-        let (status, stdout, stderr) = link_process(
-            &tools, path, &temporary, &names,
-            sdk.as_ref().map(|sdk| sdk.root.as_path()), stack_reserve, import_library)?;
-        if status.success() {
-            return Ok(());
-        }
-        let mut diagnostics = Vec::with_capacity(stdout.len() + stderr.len());
-        diagnostics.extend_from_slice(&stdout);
-        diagnostics.extend_from_slice(&stderr);
-        let details = match host_text(&diagnostics, HostText::LinkOutput, String::from_utf16)
-            .and_then(|text| Ok(text?)) {
-            Ok(text) => text,
-            Err(error) => format!("链接工具诊断解码失败：{error}"),
-        };
-        Err(format!(
-            "本机链接工具失败（{}）：{path:?}\n{details}",
-            status
-        ).into())
-    })();
-    for path in temporary {
-        let removed = host_path(&path).and_then(|name| {
-            let status = unsafe { remove_host_input(name.as_ptr(), name.len() - 1) };
-            if status == 0 { Ok(()) } else { Err(io::Error::from_raw_os_error(status as i32)) }
-        });
-        result = result.and(removed.map_err(Into::into));
+        return Ok(());
     }
-    result
+    let stdout = result.process.stdout;
+    let stderr = result.process.stderr;
+    let mut diagnostics = Vec::with_capacity(stdout.len() + stderr.len());
+    diagnostics.extend_from_slice(&stdout);
+    diagnostics.extend_from_slice(&stderr);
+    let details = match host_text(&diagnostics, HostText::LinkOutput, String::from_utf16)
+        .and_then(|text| Ok(text?)) {
+        Ok(text) => text,
+        Err(error) => format!("链接工具诊断解码失败：{error}"),
+    };
+    Err(format!("本机链接工具失败（{}）：{path:?}\n{details}", status).into())
 }
