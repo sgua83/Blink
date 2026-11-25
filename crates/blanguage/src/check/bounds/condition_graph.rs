@@ -6,7 +6,7 @@ use super::{
 };
 use std::{
     borrow::Borrow,
-    collections::{BTreeMap, HashMap, btree_set},
+    collections::{BTreeMap, BTreeSet, HashMap, btree_set},
     ffi::c_void,
     ptr,
     sync::Arc,
@@ -842,14 +842,100 @@ pub(super) fn overlap(left: &Clause, right: &Clause, truth: bool) -> bool {
     }
 }
 
+// The numbered topology already gives identical atoms a shared identity.
+fn conjuncts(sources: &[EncodedClause<&Facts>], root: usize) -> BTreeSet<usize> {
+    let mut seen = BTreeSet::new();
+    let mut pending = vec![root];
+    while let Some(id) = pending.pop() {
+        if seen.insert(id) && let EncodedClause::Both(left, right) = sources[id] {
+            pending.extend([left, right]);
+        }
+    }
+    seen.retain(|&id| !matches!(sources[id], EncodedClause::Both(..)));
+    seen
+}
+
+fn equivalent_sources<'a>(
+    first: usize, second: usize, mut sources: Vec<EncodedClause<&'a Facts>>,
+) -> Option<(usize, usize, Vec<EncodedClause<&'a Facts>>)> {
+    if first == second {
+        return None;
+    }
+
+    let mut indices = Vec::with_capacity(sources.len());
+    for id in 0..sources.len() {
+        let (left, right, either) = match sources[id] {
+            EncodedClause::Both(left, right) => (indices[left], indices[right], false),
+            EncodedClause::Either(left, right) => (indices[left], indices[right], true),
+            _ => {
+                indices.push(id);
+                continue;
+            }
+        };
+        if left == right {
+            indices.push(left);
+            continue;
+        }
+        if either {
+            if matches!(sources[left], EncodedClause::Both(..))
+                || matches!(sources[right], EncodedClause::Both(..))
+            {
+                let left_atoms = conjuncts(&sources, left);
+                let right_atoms = conjuncts(&sources, right);
+                if left_atoms.is_subset(&right_atoms) {
+                    indices.push(left);
+                    continue;
+                }
+                if right_atoms.is_subset(&left_atoms) {
+                    indices.push(right);
+                    continue;
+                }
+            }
+            sources[id] = EncodedClause::Either(left, right);
+        } else {
+            sources[id] = EncodedClause::Both(left, right);
+        }
+        indices.push(id);
+    }
+    let first = indices[first];
+    let second = indices[second];
+    if first == second {
+        return None;
+    }
+
+    let mut live = vec![false; sources.len()];
+    live[first] = true;
+    live[second] = true;
+    for (id, &source) in sources.iter().enumerate().rev() {
+        if live[id] && let EncodedClause::Both(left, right) | EncodedClause::Either(left, right) = source {
+            live[left] = true;
+            live[right] = true;
+        }
+    }
+    for (index, id) in live.iter().enumerate().filter_map(|(id, &live)| live.then_some(id)).enumerate() {
+        indices[id] = index;
+    }
+    let mut id = 0;
+    sources.retain_mut(|source| {
+        let required = live[id];
+        id += 1;
+        if required && let EncodedClause::Both(left, right) | EncodedClause::Either(left, right) = source {
+            *left = indices[*left];
+            *right = indices[*right];
+        }
+        required
+    });
+    Some((indices[first], indices[second], sources))
+}
+
 pub(super) fn equivalent(left: &Clause, right: &Clause) -> bool {
     if left.key() == right.key() {
         return true;
     }
     let (first, second, sources) = query_sources(left, right);
-    if first == second {
+    let Some((first, second, sources)) = equivalent_sources(first, second, sources) else {
         return true;
-    }
+    };
     let unsigned32 = super::Scalar::U32;
     let mut context = Context::new(sources);
     let graph = context.graph();
