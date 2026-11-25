@@ -1807,9 +1807,9 @@ extern "C" void execution_condition(address root,address context,ExecutionHost h
 
 extern "C" void proof_facts(address context,ProofFactsInput input,ProofFactsHost host) on cpu
  requires nonzero(host.origin) requires nonzero(host.range) requires nonzero(host.rewind) requires nonzero(host.next)
- requires nonzero(host.boolean_cases) requires nonzero(host.emit) requires nonzero(host.compare) {
+ requires nonzero(host.boolean_cases) requires nonzero(host.emit) requires nonzero(host.compare) requires nonzero(host.emit_alias) {
  if(input.scalar.kind==2||(input.scalar.kind==3&&input.numeric_only!=0)){return;}
- usize extra=input.mode==2||(input.mode==1&&input.origins==0u64) ? 1u64 : 0u64;
+ usize extra=input.mode==2||input.mode==3||(input.mode==1&&input.origins==0u64) ? 1u64 : 0u64;
  if(input.origins+extra==0u64){return;}
  u64 lower=1u64;u64 upper=0u64;u32 have=0;u32 contains_zero=0;u32 nonzero=input.nonzero;u32 impossible=0;
  if(input.scalar.kind==3){impossible=host.boolean_cases(context);
@@ -1827,9 +1827,27 @@ extern "C" void proof_facts(address context,ProofFactsInput input,ProofFactsHost
   }
   if(input.mode==1){nonzero=nonzero!=0||contains_zero==0||(input.constant!=0&&input.bits!=0u64) ? 1 : 0;}
  }
- address previous=address();usize at=0u64;
+ address previous=address();usize at=0u64;bool have_target=false;
  while(at<input.origins+extra){
-  address identity=extra!=0u64&&at==0u64 ? input.primary : host.origin(context,at-extra);at+=1u64;
+  address identity=address();
+  if(input.mode==3){
+   if(at==input.origins){
+    if(have_target){break;}
+    identity=input.primary;
+   }else{
+    identity=host.origin(context,at);
+    i32 order=host.compare(identity,input.primary);
+    if(order==i32(0)){have_target=true;}
+    else{
+     FactView fact=internal_key(FactKind::Equal,identity,address(),0u64);
+     fact.second=input.primary;
+     host.emit_alias(context,fact_equal(fact,order));
+    }
+   }
+  }else{
+   identity=extra!=0u64&&at==0u64 ? input.primary : host.origin(context,at-extra);
+  }
+  at+=1u64;
   if(input.mode==2&&at>1u64&&host.compare(identity,input.primary)==i32(0)){continue;}
   if(input.numeric_only==0&&address_bits(previous)!=0u64){
    FactView fact=internal_key(FactKind::Equal,previous,address(),0u64);fact.second=identity;host.emit(context,fact_equal(fact,host.compare(previous,identity)));
@@ -1852,6 +1870,27 @@ extern "C" void proof_facts(address context,ProofFactsInput input,ProofFactsHost
     }
    }
   }
+ }
+}
+
+extern "C" void output_aliases(address context,usize components,usize conditions,address primary,OutputAliasHost host,ProofFactsHost facts) on cpu
+ requires nonzero(host.input) requires nonzero(host.finish_values)
+ requires nonzero(host.case_identity) requires nonzero(host.join_cases)
+ requires nonzero(facts.origin) requires nonzero(facts.range) requires nonzero(facts.rewind) requires nonzero(facts.next)
+ requires nonzero(facts.boolean_cases) requires nonzero(facts.emit) requires nonzero(facts.compare) requires nonzero(facts.emit_alias) {
+ usize component=0u64;
+ while(component<components){
+  ProofFactsInput input=host.input(context,component,primary);
+  proof_facts(context,input,facts);
+  component+=1u64;
+ }
+ host.finish_values(context);
+ usize index=0u64;
+ while(index<conditions){
+  FactView no=internal_key(FactKind::Boolean,host.case_identity(context,index),address(),0u64);
+  FactView yes=no;yes.flag=1;
+  host.join_cases(context,index,no,yes);
+  index+=1u64;
  }
 }
 

@@ -839,30 +839,7 @@ impl Proof {
         types: &[Scalar],
         bindings: &OutputBindings,
     ) -> Clause {
-        let mut outputs=self.output_bound(bindings);
-        outputs.origins.resize_with(registers.len(),Vec::new);
-        for(origins,reg)in outputs.origins.iter_mut().zip(registers){let id=ValueIdentity::Register(*reg);if !origins.contains(&id){origins.push(id);}}
-        let mut values=Facts::new();
-        for (component,reg) in registers.iter().enumerate(){proof_facts::append_component(&mut values,&outputs,component,types[*reg]);}
-        let mut aliases=Clause::both(&Clause::facts(values),&Clause::facts(
-            self.origins
-                .iter()
-                .zip(registers)
-                .filter(|(_, reg)| types[**reg] == Scalar::Bool || types[**reg].is_integer())
-                .flat_map(|(origins, reg)| {
-                    let target = ValueIdentity::Register(*reg);
-                    origins
-                        .iter()
-                        .map(|id| output_identity(*id, bindings))
-                        .filter(move |id| *id != target)
-                        .map(move |id| Fact::equal(id, target))
-                })
-                .collect(),
-        ));
-        for(component,reg)in registers.iter().enumerate(){if types[*reg]==Scalar::Bool && let Some(condition)=outputs.component_condition(component){
-            let cases=std::array::from_fn::<_,2,_>(|truth|Clause::both(&condition.cases[truth],&Clause::facts([Fact::Boolean(ValueIdentity::Register(*reg),truth!=0)].into())));
-            aliases=Clause::both(&aliases,&Clause::either(&cases[0],&cases[1]));
-        }}aliases
+        proof_facts::output_aliases(self, registers, types, bindings)
     }
     pub(super) fn output_bound(&self,bindings:&OutputBindings)->Self{
         let mut proof = Self {

@@ -154,26 +154,21 @@ impl Builder<'_> {
         written: &BTreeMap<String, Vec<Reg>>,
         entry: usize,
     ) {
-        let returned = value.as_ref().map(|v| self.returned_storage(v));
-        let proof = returned.as_ref().map(bounds::Proof::capture);
+        let outputs = value.iter().map(|value| (value, registers)).chain(
+            borrowed.iter().map(|(name, owner)| (owner, written[name].as_slice())),
+        );
+        let proofs = outputs.map(|(owner, registers)| {
+            (bounds::Proof::capture(&self.returned_storage(owner)), registers)
+        }).collect::<Vec<_>>();
         let mut bindings = BTreeMap::new();
-        if let Some(proof) = &proof {
+        for (proof, registers) in &proofs {
             proof.output_bindings(registers, entry, &mut bindings);
         }
-        for (name, owner) in borrowed.iter() {
-            bounds::Proof::capture(&self.returned_storage(owner)).output_bindings(&written[name],entry,&mut bindings);
-        }
         let mut aliases = bounds::Clause::default();
-        if let Some(proof) = &proof {
+        for (proof, registers) in proofs {
             aliases = bounds::Clause::both(
                 &aliases,
                 &proof.output_aliases(registers, &self.registers, &bindings),
-            );
-        }
-        for (name, owner) in borrowed.iter() {
-            aliases = bounds::Clause::both(
-                &aliases,
-                &bounds::Proof::capture(&self.returned_storage(owner)).output_aliases(&written[name],&self.registers,&bindings),
             );
         }
         for effect in initialized {*effect=effect.output_bound(&bindings);}

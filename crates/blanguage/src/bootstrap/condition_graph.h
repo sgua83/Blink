@@ -830,10 +830,23 @@ struct ProofFactsHost {
  cfn<u32,address> boolean_cases;
  cfn<void,address,FactView> emit;
  cfn<i32,address,address> ensures memory(read) compare;
+ cfn<void,address,FactView> emit_alias;
 };
 extern "C" void proof_facts(address context,ProofFactsInput input,ProofFactsHost host) on cpu
  requires nonzero(host.origin) requires nonzero(host.range) requires nonzero(host.rewind) requires nonzero(host.next)
- requires nonzero(host.boolean_cases) requires nonzero(host.emit) requires nonzero(host.compare);
+ requires nonzero(host.boolean_cases) requires nonzero(host.emit) requires nonzero(host.compare) requires nonzero(host.emit_alias);
+
+struct OutputAliasHost {
+ cfn<ProofFactsInput,address,usize,address> input;
+ cfn<void,address> finish_values;
+ cfn<address,address,usize> ensures memory(read) case_identity;
+ cfn<void,address,usize,FactView,FactView> join_cases;
+};
+extern "C" void output_aliases(address context,usize components,usize conditions,address primary,OutputAliasHost host,ProofFactsHost facts) on cpu
+ requires nonzero(host.input) requires nonzero(host.finish_values)
+ requires nonzero(host.case_identity) requires nonzero(host.join_cases)
+ requires nonzero(facts.origin) requires nonzero(facts.range) requires nonzero(facts.rewind) requires nonzero(facts.next)
+ requires nonzero(facts.boolean_cases) requires nonzero(facts.emit) requires nonzero(facts.compare) requires nonzero(facts.emit_alias);
 
 // The original fact and input proofs stay borrowed for this synchronous call.
 struct CallFactInput {address original;address identity;u32 nonzero;};
