@@ -78,12 +78,17 @@ impl Graph {
         // Entry values are simultaneous definitions supplied by the native caller.
         graph::inputs(self, inputs);
     }
-    pub fn with_live(stage: &Stage, mut live: BTreeSet<PrivateSlot>, tile_scope: bool) -> (Self, Vec<TilePhase<'_>>) {
-        let registers = stage.registers.len();
-        let slots = registers + stage.locals.last_key_value().map_or(0, |(end, _)| *end);
-        let private = private_spans(&stage.code);
-        let mut locations: Vec<_> = stage.registers.iter()
-            .chain(stage.locals.values().flat_map(|ty| ty.components.iter().map(|(scalar, _)| scalar)))
+    pub fn with_live(
+        code: &[Inst],
+        scalars: &[Scalar],
+        locals: &std::collections::BTreeMap<usize, Ty>,
+        mut live: BTreeSet<PrivateSlot>,
+    ) -> Self {
+        let registers = scalars.len();
+        let slots = registers + locals.last_key_value().map_or(0, |(end, _)| *end);
+        let private = private_spans(code);
+        let mut locations: Vec<_> = scalars.iter()
+            .chain(locals.values().flat_map(|ty| ty.components.iter().map(|(scalar, _)| scalar)))
             .map(|scalar| ColorPlace::new(scalar.size() as u8, scalar.is_float()))
             .collect();
         for &(begin, end) in &private {
@@ -104,16 +109,17 @@ impl Graph {
         };
         let empty = BTreeSet::new();
         graph.together(&live);
-        graph.needs_r15 = graph::analyze(&mut graph, &stage.code, &stage.registers, &mut live,
+        graph.needs_r15 = graph::analyze(&mut graph, code, scalars, &mut live,
             &empty, &empty, &empty, 1);
-        drop(live);
-        let phases = if tile_scope { stage.tile_phases() } else { Vec::new() };
+        graph
+    }
+
+    pub(super) fn tile_interference(&mut self, phases: &[TilePhase<'_>]) {
         // 实际阶段入口会恢复整组私有值，出口则保存整组；它们必须同时可取。
-        for phase in &phases {
-            graph.together(&phase.live_in);
-            graph.together(&phase.saved);
+        for phase in phases {
+            self.together(&phase.live_in);
+            self.together(&phase.saved);
         }
-        (graph, phases)
     }
 
 }
@@ -201,14 +207,16 @@ fn color_locations(graph: &Graph, places: &mut [ColorPlace], mode: u32, base: u6
 }
 
 impl Allocation {
-    pub fn new(stage: &Stage, graph: &mut Graph, tile_scope: bool) -> Self {
+    pub fn new(
+        locals: &std::collections::BTreeMap<usize, Ty>, graph: &mut Graph, tile_scope: bool,
+    ) -> Self {
         let mut locations = std::mem::take(&mut graph.locations);
         let mut layout = color_locations(
             graph, &mut locations, u32::from(tile_scope), graph.outgoing_bytes,
         );
         for &(begin, end) in &graph.private {
-            let ty = &stage.locals[&end];
-            let first = stage.registers.len() + begin;
+            let ty = &locals[&end];
+            let first = graph.registers + begin;
             let count = (begin..end).len().min(ty.components.len());
             let places = &mut locations[first..first + count];
             for (place, (_, offset)) in places.iter_mut().zip(&ty.components) {
@@ -222,7 +230,7 @@ impl Allocation {
         }
         Self {
             locations,
-            registers: stage.registers.len(),
+            registers: graph.registers,
             layout,
         }
     }

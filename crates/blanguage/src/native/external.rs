@@ -36,16 +36,16 @@ pub(super) struct CallValueLoan {
     components: Span,
     values: Span,
     allocation: *const Allocation,
-    stage: *const Stage,
+    registers: *const c_void,
 }
 
 impl CallValueLoan {
-    pub(super) fn new(fields: &[(Scalar, u32)], values: &[Reg], allocation: &Allocation, stage: &Stage) -> Self {
+    pub(super) fn new(fields: &[(Scalar, u32)], values: &[Reg], allocation: &Allocation, registers: &&[Scalar]) -> Self {
         Self {
             components: Span::slice(fields),
             values: Span::slice(values),
             allocation: std::ptr::from_ref(allocation),
-            stage: std::ptr::from_ref(stage),
+            registers: std::ptr::from_ref(registers).cast(),
         }
     }
 }
@@ -164,19 +164,18 @@ unsafe extern "C" fn emission_operand(context: *const c_void, index: usize) -> C
     };
     CallOperand {
         abi,
-        value: CallValueLoan::new(fields, values, state.locations.allocation, state.locations.stage),
+        value: CallValueLoan::new(fields, values, state.locations.allocation, &state.locations.registers),
     }
 }
 
 pub(super) unsafe extern "C" fn abi_component(context: *const c_void, index: u64) -> AbiValueComponent {
     let loan = unsafe { &*context.cast::<CallValueLoan>() };
     let allocation = unsafe { &*loan.allocation };
-    let stage = unsafe { &*loan.stage };
     let reg = unsafe { loan.values.as_slice::<Reg>() }[index as usize];
     let (scalar, offset) = unsafe { loan.components.as_slice::<(Scalar, u32)>() }[index as usize];
     AbiValueComponent {
         location: allocation.location(PrivateSlot::Register(reg)).into(),
-        scalar: stage.registers[reg].into(),
+        scalar: unsafe { *loan.registers.cast::<&[Scalar]>() }[reg].into(),
         field_scalar: scalar.into(),
         offset,
     }
@@ -211,14 +210,14 @@ impl Emitter<'_> {
     }
 
     pub(super) fn print_call(&mut self, dst: Reg, value: Reg) {
-        let scalar = self.stage.registers[value];
+        let scalar = self.registers[value];
         let target = self.location(dst).into();
         let source = self.location(value).into();
         let start = self.code.len();
         self.code.reserve(84);
         let field = unsafe {
             let emission = emit_print_call(target, source, scalar.into(),
-                self.stage.registers[dst].into(), self.code.as_mut_ptr().add(start));
+                self.registers[dst].into(), self.code.as_mut_ptr().add(start));
             self.code.set_len(start + emission.length as usize);
             emission.field as usize
         };
@@ -243,7 +242,8 @@ impl Emitter<'_> {
     }
     pub(super) fn native_call(&mut self, call: &Call) {
         let locations = ScalarLocations {
-            allocation: &self.allocation, stage: self.stage, frame: &self.frame, workgroup: self.workgroup,
+            allocation: &self.allocation, registers: self.registers, tiles: self.tiles,
+            frame: &self.frame, workgroup: self.workgroup,
         };
         let host = CallHost {
             addresses: locations.indexed_host(), local: value_local,
@@ -253,7 +253,7 @@ impl Emitter<'_> {
         let input = CallInput {
             source: Node::call(call), result: AbiType::result(call.result.as_ref()),
             values: CallValueLoan::new(call.result.as_ref().map_or(&[][..], |ty| ty.components.as_slice()),
-                &call.values, &self.allocation, self.stage),
+                &call.values, &self.allocation, &self.registers),
             error: call.error.unwrap_or_default(), flags: call_flags(call),
         };
         let mut context = CallEmission { call, locations: &locations, code: &mut self.code };

@@ -221,7 +221,8 @@ pub(super) fn sample(
 impl Emitter<'_> {
     pub(super) fn texture_access(&mut self, value: View) {
         let locations = ScalarLocations {
-            allocation: &self.allocation, stage: self.stage, frame: &self.frame, workgroup: self.workgroup,
+            allocation: &self.allocation, registers: self.registers, tiles: self.tiles,
+            frame: &self.frame, workgroup: self.workgroup,
         };
         let table = TextureTable { buffers: self.buffers.len(), textures: self.textures };
         let host = TextureAccessHost {

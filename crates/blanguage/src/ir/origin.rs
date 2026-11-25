@@ -351,7 +351,7 @@ impl GenerationReason {
     }
 }
 /// Only the immutable origin facts of a consumed operation, never its IR or values.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct OperationOrigin {
     pub(crate) source_site: Option<std::sync::Arc<SourceSite>>,
     pub(crate) generated_origin: Option<std::sync::Arc<GeneratedOrigin>>,

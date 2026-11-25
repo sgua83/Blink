@@ -131,7 +131,7 @@ unsafe extern "C" fn function_loan(context: *const c_void, index: usize, first: 
         CallParameterKind::Reference { .. } => &REFERENCE_FIELDS,
     };
     let e = &*state.emitter;
-    CallValueLoan::new(fields, &state.inputs[first..first + count], &e.allocation, e.stage)
+    CallValueLoan::new(fields, &state.inputs[first..first + count], &e.allocation, &e.registers)
 }
 
 unsafe extern "C" fn publish_function(context: *mut c_void, range: FunctionRange) {
@@ -163,40 +163,24 @@ fn emit_value(
     definition: Option<&SourceOrigin>,
     instance: Option<&str>,
 ) -> Result<NativeCode, &'static str> {
-    let mut stage = Stage {
-        operation_source: None,
-        generated_origin: None,
-        tiles: Vec::new(),
-        domain: 0,
-        prefix: None,
-        selection: None,
-        operation: Operation::Map,
-        boundary_before: false,
-        registers: body.registers.clone(),
-        locals: body.locals.clone(),
-        code: body.code.clone(),
-        reads: Vec::new(),
-        writes: Vec::new(),
-        write_regions: Default::default(),
-        prefix_guarantees: Vec::new(),
-        element_guarantees: Vec::new(),
-        cross_access: Vec::new(),
-    };
-    reads::place(&mut stage.code, &mut stage.registers, &stage.writes);
-    let tile_width = stage.tile_workgroup_width();
-    let tile_scope = tile_width.is_some();
-    let (mut graph, _) = allocation::Graph::with_live(
-        &stage,
+    let mut code = body.code.clone();
+    let mut registers = body.registers.clone();
+    reads::place(&mut code, &mut registers, &[]);
+    let mut graph = allocation::Graph::with_live(
+        &code,
+        &registers,
+        &body.locals,
         body.outputs
             .iter()
             .map(|&r| PrivateSlot::Register(r))
             .collect(),
-        tile_scope,
     );
     graph.function_inputs(&body.inputs);
-    let allocation = Allocation::new(&stage, &mut graph, tile_scope);
+    let allocation = Allocation::new(&body.locals, &mut graph, false);
+    let needs_r15 = u32::from(graph.needs_r15);
+    drop(graph);
     let layout = Frame::new(&allocation, None);
-    let flags = u32::from(fallible) | (u32::from(graph.needs_r15) << 1);
+    let flags = u32::from(fallible) | (needs_r15 << 1);
     let plan = unsafe { function_frame(layout.end, AbiType::result(result), flags) };
     i32::try_from(plan.bytes).map_err(|_| "应用栈帧超出x64地址编码")?;
     let mut e = Emitter {
@@ -212,8 +196,10 @@ fn emit_value(
             definition: definition.cloned(), instance: instance.map(str::to_owned), ranges: Vec::new(),
         }),
         literals: std::collections::BTreeMap::new(),
-        stage: &stage,
-        workgroup: tile_width.unwrap_or(Stage::DEFAULT_WORKGROUP_WIDTH),
+        registers: &registers,
+        tiles: &[],
+        range_origin: OperationOrigin::default(),
+        workgroup: Stage::DEFAULT_WORKGROUP_WIDTH,
         buffers: &[],
         textures: &[],
         breaks: Vec::new(),
@@ -243,10 +229,10 @@ fn emit_value(
     e.prolog = entry.prolog;
     // The function owns this exit scope. Nested scopes still own their own exits.
     e.exits.push(Vec::new());
-    e.block(&stage.code)?;
+    e.block(&code)?;
 
     let fields = result.map_or(&[][..], |ty| ty.components.as_slice());
-    let value = CallValueLoan::new(fields, &body.outputs, &e.allocation, e.stage);
+    let value = CallValueLoan::new(fields, &body.outputs, &e.allocation, &e.registers);
     let start = e.code.len();
     e.code.reserve(26 + 48 * fields.len().min(body.outputs.len()));
     let output = unsafe {
@@ -274,7 +260,7 @@ fn emit_value(
     let exits = e.exits.pop().unwrap();
     e.code.reserve(10 + 9 * saved.len());
     let tail = unsafe {
-        let tail = function_epilogue(plan.bytes as u32, u32::from(graph.needs_r15), saved.as_ptr(),
+        let tail = function_epilogue(plan.bytes as u32, needs_r15, saved.as_ptr(),
             saved.len(), e.code.as_mut_ptr(), tail_start, exits.as_ptr(), exits.len());
         e.code.set_len(tail.end);
         tail

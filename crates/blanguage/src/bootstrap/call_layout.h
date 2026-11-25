@@ -13,7 +13,7 @@ extern "C" u64 outgoing_bytes(address context, u64 count, AbiType result, u32 fl
 struct FunctionFrame { u64 bytes; u64 home; u64 result; u64 stack; ResultLocation result_location; };
 extern "C" FunctionFrame function_frame(u64 data_end, AbiType result, u32 flags) on cpu;
 
-struct CallValueLoan { Span components; Span values; address allocation; address stage; };
+struct CallValueLoan { Span components; Span values; address allocation; address registers; };
 // The register prefix survives frame setup as part of this one prologue.
 struct FunctionParameter { AbiType abi; u64 values; };
 struct HomeParameter { u64 index; FunctionParameter parameter; };

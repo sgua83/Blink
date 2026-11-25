@@ -177,7 +177,7 @@ unsafe extern "C" fn next_publish(slot: TileSlot) -> TilePublishField {
     let state = unsafe { &mut *slot.cast::<TileFields<'_, '_, ()>>() };
     let emitter = &*state.emitter;
     for &(word, value) in state.values.by_ref() {
-        let scalar = &emitter.stage.registers[value];
+        let scalar = &emitter.registers[value];
         let low_offset = emitter.publication_offset(state.tile, word);
         let high_offset = if scalar.size() == 8 {
             emitter.publication_offset(state.tile, word + 4)
@@ -259,14 +259,14 @@ unsafe extern "C" fn next_collective(slot: TileSlot, operator: CollectiveOperato
         };
     };
     let emitter = &*state.emitter;
-    let source = emitter.stage.shared_word(state.tile, word);
+    let source = emitter.tiles[state.tile].shared_word(state.tile, word);
     let byte = match source {
         SharedWord::Input { word, .. } | SharedWord::Published { word, .. } => word % 4,
     };
     let input_base = emitter.shared_stream(source);
-    let scalar = &emitter.stage.registers[result];
+    let scalar = &emitter.registers[result];
     let input_high_delta = if scalar.size() == 8 {
-        let high = emitter.stage.shared_word(state.tile, word + 4);
+        let high = emitter.tiles[state.tile].shared_word(state.tile, word + 4);
         emitter.shared_stream(high).wrapping_sub(input_base)
     } else {
         0

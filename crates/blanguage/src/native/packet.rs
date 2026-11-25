@@ -187,6 +187,7 @@ struct PacketBody<'a, 'b, 'c> {
     emitter: &'a mut Emitter<'b>,
     allocation: &'a PacketAllocation,
     code: &'a [Step<'c>],
+    sparse: u32,
     result: Result<(), &'static str>,
 }
 
@@ -227,7 +228,7 @@ unsafe extern "C" fn division_location(slot: *const std::ffi::c_void, reg: Reg) 
 
 unsafe extern "C" fn division_scalar(slot: *const std::ffi::c_void, reg: Reg) -> ScalarEncoding {
     let body = unsafe { &*slot.cast::<PacketBody<'_, '_, '_>>() };
-    body.emitter.stage.registers[reg].into()
+    body.emitter.registers[reg].into()
 }
 
 unsafe extern "C" fn packet_body_step(slot: PacketBodySlot, index: usize) -> PacketBodyOp {
@@ -238,7 +239,8 @@ unsafe extern "C" fn packet_body_step(slot: PacketBodySlot, index: usize) -> Pac
     let emitter = &mut context.emitter;
     let place = |value| allocation.location(value).into();
     let register = |value| place(Register(value));
-    let emit = |e: &mut Emitter<'_>, block: &[Step<'_>]| e.packet_block(block, allocation);
+    let sparse = context.sparse;
+    let emit = |e: &mut Emitter<'_>, block: &[Step<'_>]| e.packet_block(block, allocation, sparse);
     let load = |e: &mut Emitter<'_>, reg| e.packet_lane(allocation, reg, 0, 0);
     let step = &context.code[index];
     let flow = match &step.kind {
@@ -280,7 +282,7 @@ unsafe extern "C" fn packet_body_step(slot: PacketBodySlot, index: usize) -> Pac
             let mut op = PacketBodyOp::new(Kind::Uniform);
             op.places[0] = register(*dst);
             op.literal = *offset;
-            op.flag = u32::from(emitter.stage.registers[*dst] == Scalar::Bool);
+            op.flag = u32::from(emitter.registers[*dst] == Scalar::Bool);
             return op;
         }
         StepKind::Copy(dst, src) => {
@@ -301,7 +303,7 @@ unsafe extern "C" fn packet_body_step(slot: PacketBodySlot, index: usize) -> Pac
             op.places[0] = register(*dst);
             op.places[1] = register(*a);
             op.places[2] = register(*b);
-            op.from = emitter.stage.registers[*a].into();
+            op.from = emitter.registers[*a].into();
             op.binary = (*source).into();
             op.flag = u32::from(*uniform_count);
             return op;
@@ -333,14 +335,17 @@ unsafe extern "C" fn packet_body_step(slot: PacketBodySlot, index: usize) -> Pac
 }
 
 impl Emitter<'_> {
-    pub(super) fn emit_packet_plan(&mut self, plan: &Plan<'_>, allocation: &PacketAllocation) -> Result<(), &'static str> {
-        self.packet_block(&plan.code, allocation)
+    pub(super) fn emit_packet_plan(
+        &mut self, plan: &Plan<'_>, allocation: &PacketAllocation, sparse: u32,
+    ) -> Result<(), &'static str> {
+        self.packet_block(&plan.code, allocation, sparse)
     }
 
-    fn packet_block(&mut self, code: &[Step<'_>], allocation: &PacketAllocation) -> Result<(), &'static str> {
-        let sparse = u32::from(self.stage.selection.is_some());
+    fn packet_block(
+        &mut self, code: &[Step<'_>], allocation: &PacketAllocation, sparse: u32,
+    ) -> Result<(), &'static str> {
         let slots = self.frame.end as u32;
-        let mut context = PacketBody { emitter: self, allocation, code, result: Ok(()) };
+        let mut context = PacketBody { emitter: self, allocation, code, sparse, result: Ok(()) };
         let context_slot: PacketBodySlot = std::ptr::from_mut(&mut context).cast();
         unsafe {
             emit_packet_body(

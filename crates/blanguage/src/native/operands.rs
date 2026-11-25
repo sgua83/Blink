@@ -119,14 +119,16 @@ pub(super) struct ScalarValueHost {
 
 pub(super) struct ScalarLocations<'a> {
     pub(super) allocation: &'a Allocation,
-    pub(super) stage: &'a Stage,
+    pub(super) registers: &'a [Scalar],
+    pub(super) tiles: &'a [Tile],
     pub(super) frame: &'a Frame,
     pub(super) workgroup: u32,
 }
 
 impl<'a> ScalarLocations<'a> {
     fn from_emitter(emitter: &'a Emitter<'_>) -> Self {
-        Self { allocation: &emitter.allocation, stage: emitter.stage, frame: &emitter.frame, workgroup: emitter.workgroup }
+        Self { allocation: &emitter.allocation, registers: emitter.registers, tiles: emitter.tiles,
+            frame: &emitter.frame, workgroup: emitter.workgroup }
     }
 
     pub(super) fn indexed_host(&self) -> IndexedAddressHost {
@@ -145,11 +147,11 @@ impl<'a> ScalarLocations<'a> {
     }
 
     fn scalar(&self, reg: Reg) -> ScalarEncoding {
-        self.stage.registers[reg].into()
+        self.registers[reg].into()
     }
 
     fn tile_stream(&self, tile: usize, word: u32) -> IndexedTileWord {
-        let source = self.stage.shared_word(tile, word);
+        let source = self.tiles[tile].shared_word(tile, word);
         let byte_offset = match source {
             SharedWord::Input { word, .. } | SharedWord::Published { word, .. } => word % 4,
         };
@@ -324,10 +326,10 @@ impl Emitter<'_> {
         self.record_literal(start, literal, encoded.literal_field as usize);
     }
     pub(super) fn load(&mut self, r: Reg) {
-        self.copy_scalar(Location::Gpr(0), self.location(r), self.stage.registers[r]);
+        self.copy_scalar(Location::Gpr(0), self.location(r), self.registers[r]);
     }
     pub(super) fn store(&mut self, r: Reg) {
-        self.copy_scalar(self.location(r), Location::Gpr(0), self.stage.registers[r]);
+        self.copy_scalar(self.location(r), Location::Gpr(0), self.registers[r]);
     }
     pub(super) fn literal_width(&mut self, dst: Location, bits: Bits, wide: bool) {
         self.copy_move(dst, Location::Immediate(bits), if wide { 8 } else { 4 }, false);

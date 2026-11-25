@@ -110,7 +110,7 @@ impl Emitter<'_> {
             allocation::Location::Immediate(0).into()
         };
         let memory = self.packet_memory_input(binding, index, offset, mode);
-        let boolean = u32::from(self.stage.registers[dst] == Scalar::Bool);
+        let boolean = u32::from(self.registers[dst] == Scalar::Bool);
         let dst = allocation.location(PrivateSlot::Register(dst)).into();
         self.emit_bytes(512, |output| unsafe {
             encode_packet_read(dst, memory, boolean, output)
@@ -164,7 +164,7 @@ impl Emitter<'_> {
             dynamic_stride,
             mode,
         };
-        let boolean = u32::from(self.stage.registers[dst] == Scalar::Bool);
+        let boolean = u32::from(self.registers[dst] == Scalar::Bool);
         self.emit_bytes(1024, |output| unsafe {
             encode_packet_view(location(dst), input, boolean, output)
         });

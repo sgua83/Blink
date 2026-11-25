@@ -141,7 +141,9 @@ struct Emitter<'a> {
     operation_ranges: Vec<super::OperationRange>,
     function_abi: Option<super::FunctionAbi>,
     literals: std::collections::BTreeMap<(Bits, bool), Vec<usize>>,
-    stage: &'a Stage,
+    registers: &'a [Scalar],
+    tiles: &'a [Tile],
+    range_origin: OperationOrigin,
     workgroup: u32,
     buffers: &'a [Buffer],
     textures: &'a [TextureBinding],
@@ -295,13 +297,8 @@ impl Emitter<'_> {
             abi.ranges.push(super::AbiRange { start: range.start, end: range.end, kind });
         }
     }
-    fn parallel_abi(&mut self, start: usize, part: super::ParallelRangePart) {
-        self.parallel_abi_range(start..self.code.len(), part);
-    }
     fn parallel_abi_range(&mut self, range: std::ops::Range<usize>, part: super::ParallelRangePart) {
-        self.record_abi_range(range, super::AbiRangeKind::ParallelRange { part, origin: OperationOrigin {
-            source_site: self.stage.operation_source.clone(), generated_origin: self.stage.generated_origin.clone(),
-        } });
+        self.record_abi_range(range, super::AbiRangeKind::ParallelRange { part, origin: self.range_origin.clone() });
     }
     fn operation_range(&mut self, inst: &Inst, start: usize, first: usize) {
         let includes_nested_operations = self.operation_ranges.len() != first;
@@ -404,6 +401,7 @@ struct MapRangeHost {
 
 struct MapRange<'a, 'b> {
     emitter: &'a mut Emitter<'b>,
+    stage: &'b Stage,
     phases: &'a [TilePhase<'b>],
     input: TileInputCursor<'a>,
     live_in: btree_set::Iter<'a, PrivateSlot>,
@@ -446,7 +444,7 @@ unsafe extern "C" fn map_range_commit(slot: MapRangeSlot, end: usize) {
 unsafe extern "C" fn map_range_packet(slot: MapRangeSlot, packet: *const std::ffi::c_void) -> u32 {
     let range = unsafe { &mut *slot.cast::<MapRange<'_, '_>>() };
     let (plan, allocation) = unsafe { &*packet.cast::<(packet::Plan<'_>, PacketAllocation)>() };
-    range.result = range.emitter.emit_packet_plan(plan, allocation);
+    range.result = range.emitter.emit_packet_plan(plan, allocation, u32::from(range.stage.selection.is_some()));
     u32::from(range.result.is_ok())
 }
 
@@ -502,7 +500,7 @@ unsafe extern "C" fn map_range_next_private(slot: MapRangeSlot, restore: u32) ->
             index: 0, scalar_origin: std::ptr::null(), storage_offset: 0, local: 0,
         };
     };
-    let scalar = range.emitter.stage.private_scalar_ref(slot);
+    let scalar = range.stage.private_scalar_ref(slot);
     let (local, index) = match slot {
         PrivateSlot::Register(index) => (0, index),
         PrivateSlot::Local(index) => (1, index),
@@ -569,8 +567,12 @@ fn emit_map(
     let tile_width = stage.tile_workgroup_width();
     let tile_scope = tile_width.is_some();
     let workgroup = tile_width.unwrap_or(Stage::DEFAULT_WORKGROUP_WIDTH);
-    let (mut graph, phases) = allocation::Graph::with_live(stage, Default::default(), tile_scope);
-    let allocation = Allocation::new(stage, &mut graph, tile_scope);
+    let mut graph = allocation::Graph::with_live(
+        &stage.code, &stage.registers, &stage.locals, Default::default(),
+    );
+    let phases = if tile_scope { stage.tile_phases() } else { Vec::new() };
+    graph.tile_interference(&phases);
+    let allocation = Allocation::new(&stage.locals, &mut graph, tile_scope);
     let packet = packet::Plan::new(program, stage, tile_scope).map(|plan| {
         let allocation = PacketAllocation::new(stage, &mut graph, &plan.address_only);
         (plan, allocation)
@@ -599,7 +601,12 @@ fn emit_map(
         operation_ranges: Vec::new(),
         function_abi: Some(super::FunctionAbi { definition: None, instance: None, ranges: Vec::new() }),
         literals: std::collections::BTreeMap::new(),
-        stage,
+        registers: &stage.registers,
+        tiles: &stage.tiles,
+        range_origin: OperationOrigin {
+            source_site: stage.operation_source.clone(),
+            generated_origin: stage.generated_origin.clone(),
+        },
         workgroup,
         buffers: &program.buffers,
         textures: &program.textures,
@@ -622,6 +629,7 @@ fn emit_map(
     };
     let mut range = MapRange {
         emitter: &mut e,
+        stage,
         phases: &phases,
         input: TileInputCursor {
             groups: inputs.iter(), fragments: btree_set::Iter::default(), binding: 0, storage_base: 0,

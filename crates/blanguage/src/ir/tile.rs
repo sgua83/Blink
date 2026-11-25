@@ -127,9 +127,9 @@ pub(crate) struct TilePhase<'a> {
     pub live_in: BTreeSet<PrivateSlot>,
     pub saved: BTreeSet<PrivateSlot>,
 }
-impl Stage {
-    pub fn shared_word(&self, tile: usize, word: u32) -> SharedWord {
-        match self.tiles[tile].source {
+impl Tile {
+    pub(crate) fn shared_word(&self, tile: usize, word: u32) -> SharedWord {
+        match self.source {
             TileSource::Input {
                 binding,
                 word: base,
@@ -139,6 +139,11 @@ impl Stage {
             },
             TileSource::Published => SharedWord::Published { tile, word },
         }
+    }
+}
+impl Stage {
+    pub fn shared_word(&self, tile: usize, word: u32) -> SharedWord {
+        self.tiles[tile].shared_word(tile, word)
     }
     #[cfg(feature = "compiler")]
     pub(crate) fn tile_phases(&self) -> Vec<TilePhase<'_>> {
