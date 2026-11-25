@@ -252,29 +252,66 @@ extern "C" ModulePlan native_module_plan(SignatureNode source,u32 compiled,u32 l
     return ModulePlan(ModuleEntry::Check,0,0,1);
 }
 
-extern "C" SourcePlan source_module_entry(SignatureNode source,SourceMode mode,u32 local,u32 exported) on cpu {
+extern "C" u32 source_module_entry(SignatureNode source,u32 local,u32 exported) on cpu {
     FunctionNode definition = unsafe_position<FunctionNode>(at(source.storage.nodes,source.offset));
-    u32 schedule = local != 0 && exported != 0 && definition.kind == 0 ? 1 : 0;
-    SourceRoute route = mode == SourceMode::Application ? SourceRoute::Application : SourceRoute::Program;
-    return SourcePlan(route,schedule,0,0);
+    return local != 0 && exported != 0 && definition.kind == 0 ? 1 : 0;
 }
 
-extern "C" SourcePlan source_module_plan(SignatureNode source,SourceMode mode,u32 compiled,
-    u32 local,u32 exported,u32 domain,u32 selected) on cpu {
-    bool public_root = local != 0 && exported != 0;
-    u32 public_domain = public_root && domain != 0 ? 1 : 0;
-    if (compiled != 0 || selected != 0) {
-        return SourcePlan(SourceRoute::Function,0,0,public_domain);
+SourcePlan source_plan(SourceCandidate candidate,SourceMode mode,bool public_root) on cpu {
+    if (candidate.compiled != 0 || candidate.selected != 0) {
+        return SourcePlan(SourceRoute::Function,0,0);
     }
-    FunctionNode definition = unsafe_position<FunctionNode>(at(source.storage.nodes,source.offset));
-    if (!source_definition(definition)) {
-        return SourcePlan(SourceRoute::Function,0,0,public_domain);
-    }
-    if (domain == 0) { return SourcePlan(SourceRoute::Function,1,0,public_domain); }
+    FunctionNode definition = unsafe_position<FunctionNode>(at(candidate.source.storage.nodes,candidate.source.offset));
+    if (!source_definition(definition)) { return SourcePlan(SourceRoute::Function,0,0); }
+    if (candidate.domain == 0) { return SourcePlan(SourceRoute::Function,1,0); }
     SourceRoute route = SourceRoute::ValidateProgram;
     if (mode == SourceMode::Application) { route = SourceRoute::CheckDomain; }
     else if (mode == SourceMode::Automatic && public_root) { route = SourceRoute::Program; }
-    return SourcePlan(route,1,definition.target == 1 ? 1 : 0,public_domain);
+    return SourcePlan(route,1,definition.target == 1 ? 1 : 0);
+}
+
+extern "C" u32 plan_source_module(SourceMode mode,SourcePlanningHost host) on cpu
+    requires nonzero(host.next) requires nonzero(host.is_open) requires nonzero(host.schedule)
+    requires nonzero(host.record_open) requires nonzero(host.selected) {
+    u32 open_public_domain = 0;
+    while (true) {
+        SourceCandidate candidate = host.next(host.context);
+        if (address_bits(candidate.key) == 0u64) { break; }
+        bool public_root = candidate.local != 0 && candidate.exported != 0;
+        SourcePlan plan = source_plan(candidate,mode,public_root);
+        bool open = false;
+        if (plan.schedule != 0) {
+            SourceExpansion expansion = host.schedule(host.context,candidate.key,candidate.definition,plan.route,plan.cpu_signature);
+            if (expansion == SourceExpansion::Failed) { return open_public_domain; }
+            open = expansion == SourceExpansion::Open;
+        } else {
+            open = host.is_open(host.context,candidate.definition) != 0;
+        }
+        if (open) {
+            host.record_open(host.context,candidate.key);
+            if (public_root && candidate.domain != 0) { open_public_domain = 1; }
+        }
+    }
+    if (mode == SourceMode::SelectedProgram) { host.selected(host.context,SourceRoute::Program); }
+    else if (mode == SourceMode::Application) { host.selected(host.context,SourceRoute::Application); }
+    return open_public_domain;
+}
+
+extern "C" void compile_source_instance(SourceRoute route,u32 cpu_signature,SourceInstanceHost host) on cpu
+    requires nonzero(host.signature) requires nonzero(host.function) requires nonzero(host.domain)
+    requires nonzero(host.build_program) requires nonzero(host.application) {
+    if (cpu_signature != 0) {
+        SourceSignature signature = host.signature(host.context);
+        if (signature == SourceSignature::Failed) { return; }
+        if (signature == SourceSignature::Absent) {
+            host.function(host.context);
+            return;
+        }
+    }
+    if (route == SourceRoute::Function) { host.function(host.context); }
+    else if (route == SourceRoute::CheckDomain) { host.domain(host.context); }
+    else if (route == SourceRoute::Application) { host.application(host.context); }
+    else { host.build_program(host.context,route == SourceRoute::Program ? 1 : 0); }
 }
 
 extern "C" void prepare_world(WorldPreparation host) on cpu

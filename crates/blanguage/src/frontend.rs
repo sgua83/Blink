@@ -352,24 +352,196 @@ enum SourceRoute {
     Application,
 }
 
+type SourceArguments = Option<crate::syntax::List<crate::syntax::wire::ArgumentNode>>;
+type SelectedSource = (String, SourceArguments, Source);
+
+enum Job<'a> {
+    Instance(generics::Instance, SourceRoute, bool),
+    Selected(&'a str, &'a SourceArguments, SourceRoute, &'a Source),
+    Failed(Diagnostic),
+}
+
+enum Output {
+    Checked,
+    Program(ir::Program),
+    Application(application::Application),
+}
+
 #[repr(C)]
-struct SourcePlan {
-    route: SourceRoute,
-    schedule: u32,
-    cpu_signature: u32,
-    public_domain: u32,
+struct SourceCandidate {
+    key: *const String,
+    definition: *const Arc<Definition>,
+    source: crate::syntax::wire::SignatureNode,
+    compiled: u32,
+    local: u32,
+    exported: u32,
+    domain: u32,
+    selected: u32,
+}
+
+#[allow(dead_code)]
+#[repr(u32)]
+enum SourceExpansion { Closed, Open, Failed }
+
+struct SourcePlanner<'a> {
+    world: &'a World,
+    entry: &'a str,
+    selected: Option<&'a SelectedSource>,
+    definitions: std::collections::btree_map::Iter<'a, String, Arc<Definition>>,
+    jobs: Vec<Job<'a>>,
+    open_generics: Vec<String>,
+}
+
+#[repr(C)]
+struct SourcePlanningHost<'a> {
+    context: *mut SourcePlanner<'a>,
+    next: unsafe extern "C" fn(*mut SourcePlanner<'a>) -> SourceCandidate,
+    is_open: unsafe extern "C" fn(*mut SourcePlanner<'a>, *const Arc<Definition>) -> u32,
+    schedule: unsafe extern "C" fn(
+        *mut SourcePlanner<'a>, *const String, *const Arc<Definition>, SourceRoute, u32,
+    ) -> SourceExpansion,
+    record_open: unsafe extern "C" fn(*mut SourcePlanner<'a>, *const String),
+    selected: unsafe extern "C" fn(*mut SourcePlanner<'a>, SourceRoute),
+}
+
+unsafe extern "C" fn next_source_candidate(context: *mut SourcePlanner<'_>) -> SourceCandidate {
+    let planner = unsafe { &mut *context };
+    let Some((key, definition)) = planner.definitions.next() else {
+        return SourceCandidate {
+            key: std::ptr::null(), definition: std::ptr::null(),
+            source: crate::syntax::wire::SignatureNode {
+                storage: crate::syntax::wire::StorageView {
+                    nodes: std::ptr::null_mut(), node_bytes: 0, text: std::ptr::null_mut(), text_bytes: 0,
+                    source: std::ptr::null_mut(), source_bytes: 0,
+                },
+                offset: 0,
+            },
+            compiled: 0, local: 0, exported: 0, domain: 0, selected: 0,
+        };
+    };
+    SourceCandidate {
+        key, definition, source: definition.function.signature_node(),
+        compiled: u32::from(definition.compiled.is_some()),
+        local: u32::from(definition.module == planner.entry),
+        exported: u32::from(definition.public),
+        domain: u32::from(definition.execution == execution::Requirement::Domain),
+        selected: u32::from(planner.selected.is_some_and(|(selected, ..)| selected == key)),
+    }
+}
+
+unsafe extern "C" fn source_is_open(_: *mut SourcePlanner<'_>, definition: *const Arc<Definition>) -> u32 {
+    let function = &unsafe { &*definition }.function;
+    u32::from(generics::is_open(&function.types(), &function.values()))
+}
+
+unsafe extern "C" fn schedule_source_instances(
+    context: *mut SourcePlanner<'_>, key: *const String, definition: *const Arc<Definition>,
+    route: SourceRoute, cpu_signature: u32,
+) -> SourceExpansion {
+    let planner = unsafe { &mut *context };
+    let start = planner.jobs.len();
+    // B enumerates at the synchronous SDK entry. Each expansion owns its World invocation.
+    let expanded = unsafe {
+        planner.world.run(generics::for_each_instance(planner.world, &*key, &*definition, |instance| {
+            planner.jobs.push(Job::Instance(instance, route, cpu_signature != 0));
+        }))
+    };
+    match expanded {
+        Ok(false) => SourceExpansion::Closed,
+        Ok(true) => SourceExpansion::Open,
+        Err(error) => {
+            planner.jobs.truncate(start);
+            planner.jobs.push(Job::Failed(error));
+            SourceExpansion::Failed
+        }
+    }
+}
+
+unsafe extern "C" fn record_open_source(context: *mut SourcePlanner<'_>, key: *const String) {
+    unsafe { &mut *context }.open_generics.push(unsafe { &*key }.clone());
+}
+
+unsafe extern "C" fn schedule_selected_source<'a>(context: *mut SourcePlanner<'a>, route: SourceRoute) {
+    let planner = unsafe { &mut *context };
+    planner.jobs.extend(planner.selected.map(|(key, arguments, source)| {
+        Job::Selected(key, arguments, route, source)
+    }));
+}
+
+#[repr(u32)]
+enum SourceSignature { Absent, Present, Failed }
+
+struct SourceInstance<'a> {
+    world: &'a World,
+    instance: &'a generics::Instance,
+    signature: Option<check::KernelSignature>,
+    output: std::mem::MaybeUninit<Result<Output>>,
+}
+
+#[repr(C)]
+struct SourceInstanceHost<'a> {
+    context: *mut SourceInstance<'a>,
+    signature: unsafe extern "C" fn(*mut SourceInstance<'a>) -> SourceSignature,
+    function: unsafe extern "C" fn(*mut SourceInstance<'a>),
+    domain: unsafe extern "C" fn(*mut SourceInstance<'a>),
+    program: unsafe extern "C" fn(*mut SourceInstance<'a>, u32),
+    application: unsafe extern "C" fn(*mut SourceInstance<'a>),
 }
 
 unsafe extern "C" {
     #[link_name = "bootstrap.module_load::source_module_entry"]
-    fn source_module_entry(
-        source: crate::syntax::wire::SignatureNode, mode: SourceMode, local: u32, public: u32,
-    ) -> SourcePlan;
-    #[link_name = "bootstrap.module_load::source_module_plan"]
-    fn source_module_plan(
-        source: crate::syntax::wire::SignatureNode, mode: SourceMode, compiled: u32,
-        local: u32, public: u32, domain: u32, selected: u32,
-    ) -> SourcePlan;
+    fn source_module_entry(source: crate::syntax::wire::SignatureNode, local: u32, public: u32) -> u32;
+    #[link_name = "bootstrap.module_load::plan_source_module"]
+    fn plan_source_module(mode: SourceMode, host: SourcePlanningHost<'_>) -> u32;
+    #[link_name = "bootstrap.module_load::compile_source_instance"]
+    fn compile_source_instance(route: SourceRoute, cpu_signature: u32, host: SourceInstanceHost<'_>);
+}
+
+unsafe extern "C" fn source_signature(context: *mut SourceInstance<'_>) -> SourceSignature {
+    let work = unsafe { &mut *context };
+    match unsafe { work.world.run(check::kernel_signature(work.world, work.instance)) } {
+        Ok(Some(signature)) => {
+            work.signature = Some(signature);
+            SourceSignature::Present
+        }
+        Ok(None) => SourceSignature::Absent,
+        Err(error) => {
+            work.output.write(Err(error));
+            SourceSignature::Failed
+        }
+    }
+}
+
+unsafe extern "C" fn check_source_function(context: *mut SourceInstance<'_>) {
+    let work = unsafe { &mut *context };
+    let result = unsafe { work.world.run(check::check_function(work.world, work.instance)) };
+    work.output.write(result.map(|_| Output::Checked).map_err(|error| instance_error(error, &work.instance.name)));
+}
+
+unsafe extern "C" fn check_source_domain(context: *mut SourceInstance<'_>) {
+    let work = unsafe { &mut *context };
+    let result = unsafe { work.world.run(check::check_domain(work.world, work.instance, work.signature.as_ref())) };
+    work.output.write(result.map(|_| Output::Checked).map_err(|error| instance_error(error, &work.instance.name)));
+}
+
+unsafe extern "C" fn build_source_program(context: *mut SourceInstance<'_>, publish: u32) {
+    let work = unsafe { &mut *context };
+    let signature = work.signature.take();
+    let result = unsafe { work.world.run(check::compile_program(work.world, work.instance, signature)) }
+        .map_err(|error| instance_error(error, &work.instance.name))
+        .and_then(|mut program| {
+            if publish == 0 { return Ok(Output::Checked); }
+            optimize::optimize(&mut program, &work.world.worker)
+                .map_err(|error| crate::compiler::diagnostic(&work.instance.definition.source.path, error))?;
+            Ok(Output::Program(program))
+        });
+    work.output.write(result);
+}
+
+unsafe extern "C" fn build_source_application(context: *mut SourceInstance<'_>) {
+    let work = unsafe { &mut *context };
+    let result = unsafe { work.world.run(check::compile_application(work.world, work.instance)) };
+    work.output.write(result.map(Output::Application));
 }
 
 pub(crate) fn compile_world(
@@ -399,73 +571,45 @@ pub(crate) fn compile_world(
                 message: format!("没有公开入口 {name}"),
             })?;
         let definition = &world.functions[&key];
-        let plan = unsafe { source_module_entry(
-            definition.function.signature_node(), mode, u32::from(definition.module == entry),
-            u32::from(definition.public),
+        let eligible = unsafe { source_module_entry(
+            definition.function.signature_node(), u32::from(definition.module == entry), u32::from(definition.public),
         ) };
-        if plan.schedule == 0 {
+        if eligible == 0 {
             return source.fail(
                 Span::default(),
                 "B240",
                 "入口选择需要本模块对应种类的公开函数",
             );
         }
-        Some((key, arguments, plan.route, source))
+        Some((key, arguments, source))
     } else {
         None
     };
-    enum Job<'a> {
-        Instance(generics::Instance, SourceRoute, bool),
-        Selected(&'a str, &'a Option<crate::syntax::List<crate::syntax::wire::ArgumentNode>>, SourceRoute, &'a Source),
-        Failed(Diagnostic),
-    }
-    enum Output {
-        Checked,
-        Program(ir::Program),
-        Application(application::Application),
-    }
-    let mut jobs = Vec::new();
-    let mut open_generics: Vec<_> = world.records.iter()
-        .filter(|(_, (record, ..))| generics::is_open(&record.types(), &record.values()))
-        .map(|(name, _)| name.clone()).collect();
-    let mut open_public_domain = false;
-    let planned = unsafe { world.run(async {
-        for (base, definition) in &world.functions {
-            let function = &definition.function;
-            let plan = unsafe { source_module_plan(
-                function.signature_node(), mode, u32::from(definition.compiled.is_some()),
-                u32::from(definition.module == entry), u32::from(definition.public),
-                u32::from(definition.execution == execution::Requirement::Domain),
-                u32::from(selected.as_ref().is_some_and(|(selected, _, _, _)| selected == base)),
-            ) };
-            let open = if plan.schedule == 0 {
-                generics::is_open(&function.types(), &function.values())
-            } else {
-                let start = jobs.len();
-                unsafe { world.call(generics::for_each_instance(world, base, definition, |instance| {
-                    jobs.push(Job::Instance(instance, plan.route, plan.cpu_signature != 0));
-                })).await }.inspect_err(|_| jobs.truncate(start))?
-            };
-            if open {
-                open_generics.push(base.clone());
-                open_public_domain |= plan.public_domain != 0;
-            }
-        }
-        Ok(())
-    }) };
-    if let Err(error) = planned {
-        jobs.push(Job::Failed(error));
-    } else if let Some((key, arguments, route, source)) = &selected {
-        jobs.push(Job::Selected(key, arguments, *route, source));
-    }
+    let mut planner = SourcePlanner {
+        world, entry: &entry, selected: selected.as_ref(), definitions: world.functions.iter(), jobs: Vec::new(),
+        open_generics: world.records.iter()
+            .filter(|(_, (record, ..))| generics::is_open(&record.types(), &record.values()))
+            .map(|(name, _)| name.clone()).collect(),
+    };
+    let open_public_domain = unsafe {
+        plan_source_module(mode, SourcePlanningHost {
+            context: &mut planner,
+            next: next_source_candidate,
+            is_open: source_is_open,
+            schedule: schedule_source_instances,
+            record_open: record_open_source,
+            selected: schedule_selected_source,
+        }) != 0
+    };
+    let SourcePlanner { jobs, open_generics, .. } = planner;
     let declarations = &world.declarations;
     let collect_declarations = world.build_declarations.is_some();
     let compile = |world: &mut World, job: Job<'_>| -> Result<_> {
-        let output = unsafe { world.run(async {
-            let (instance, route, cpu_signature) = match job {
-                Job::Failed(error) => return Err(error),
-                Job::Instance(instance, route, cpu_signature) => (instance, route, cpu_signature),
-                Job::Selected(key, arguments, route, source) => {
+        let (instance, route, cpu_signature) = match job {
+            Job::Failed(error) => return Err(error),
+            Job::Instance(instance, route, cpu_signature) => (instance, route, cpu_signature),
+            Job::Selected(key, arguments, route, source) => {
+                let instance = unsafe { world.run(async {
                     let definition = &world.functions[key];
                     let span = Span { start: 0, end: source.text.len() };
                     let bindings = Arc::new(generics::Bindings::default());
@@ -474,50 +618,27 @@ pub(crate) fn compile_world(
                             (source, &definition.module, &definition.imports), span)).await }?),
                         None => None,
                     };
-                    let instance = unsafe { world.call(check::generics::specialize(world, key, &[], arguments.as_deref(),
-                        (source, &definition.module, &definition.imports), span)).await }?;
-                    (instance, route, false)
-                }
-            };
-            let signature = if cpu_signature {
-                unsafe { world.call(check::kernel_signature(world, &instance)).await }?
-            } else {
-                None
-            };
-            let route = if cpu_signature && signature.is_none() {
-                SourceRoute::Function
-            } else {
-                route
-            };
-            let name = &instance.name;
-            let output = match route {
-                SourceRoute::Function => {
-                    unsafe { world.call(check::check_function(world, &instance)).await }
-                        .map_err(|error| instance_error(error, name))?;
-                    Output::Checked
-                }
-                SourceRoute::CheckDomain => {
-                    unsafe { world.call(check::check_domain(world, &instance, signature.as_ref())).await }
-                        .map_err(|error| instance_error(error, name))?;
-                    Output::Checked
-                }
-                SourceRoute::ValidateProgram | SourceRoute::Program => {
-                    let mut program = unsafe { world.call(check::compile_program(world, &instance, signature)).await }
-                        .map_err(|error| instance_error(error, name))?;
-                    if matches!(route, SourceRoute::Program) {
-                        optimize::optimize(&mut program, &world.worker)
-                            .map_err(|error| crate::compiler::diagnostic(&instance.definition.source.path, error))?;
-                        Output::Program(program)
-                    } else {
-                        Output::Checked
-                    }
-                }
-                SourceRoute::Application => Output::Application(
-                    unsafe { world.call(check::compile_application(world, &instance)).await }?,
-                ),
-            };
-            Ok(output)
-        }) }?;
+                    unsafe { world.call(check::generics::specialize(world, key, &[], arguments.as_deref(),
+                        (source, &definition.module, &definition.imports), span)).await }
+                }) }?;
+                (instance, route, false)
+            }
+        };
+        let mut work = SourceInstance {
+            world, instance: &instance, signature: None, output: std::mem::MaybeUninit::uninit(),
+        };
+        let output = unsafe {
+            compile_source_instance(route, u32::from(cpu_signature), SourceInstanceHost {
+                context: &mut work,
+                signature: source_signature,
+                function: check_source_function,
+                domain: check_source_domain,
+                program: build_source_program,
+                application: build_source_application,
+            });
+            // B either receives a signature failure or calls exactly one terminal action.
+            work.output.assume_init()
+        }?;
         let used = world.build_declarations.as_ref()
             .map(|inputs| std::mem::take(&mut *inputs.borrow_mut())).unwrap_or_default();
         Ok((output, used))

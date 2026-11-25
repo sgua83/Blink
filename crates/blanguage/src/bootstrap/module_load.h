@@ -47,10 +47,44 @@ extern "C" ModulePlan native_module_plan(SignatureNode source,u32 compiled,u32 l
 
 enum SourceMode:u32 { Automatic=0; SelectedProgram=1; Application=2; };
 enum SourceRoute:u32 { Function=0; CheckDomain=1; ValidateProgram=2; Program=3; Application=4; };
-struct SourcePlan { SourceRoute route; u32 schedule; u32 cpu_signature; u32 public_domain; };
-extern "C" SourcePlan source_module_entry(SignatureNode source,SourceMode mode,u32 local,u32 exported) on cpu;
-extern "C" SourcePlan source_module_plan(SignatureNode source,SourceMode mode,u32 compiled,
-    u32 local,u32 exported,u32 domain,u32 selected) on cpu;
+extern "C" u32 source_module_entry(SignatureNode source,u32 local,u32 exported) on cpu;
+
+struct SourcePlan { SourceRoute route; u32 schedule; u32 cpu_signature; };
+struct SourceCandidate {
+    address key;
+    address definition;
+    SignatureNode source;
+    u32 compiled;
+    u32 local;
+    u32 exported;
+    u32 domain;
+    u32 selected;
+};
+enum SourceExpansion:u32 { Closed=0; Open=1; Failed=2; };
+struct SourcePlanningHost {
+    address context;
+    cfn<SourceCandidate,address> next;
+    cfn<u32,address,address> is_open;
+    cfn<SourceExpansion,address,address,address,SourceRoute,u32> schedule;
+    cfn<void,address,address> record_open;
+    cfn<void,address,SourceRoute> selected;
+};
+extern "C" u32 plan_source_module(SourceMode mode,SourcePlanningHost host) on cpu
+    requires nonzero(host.next) requires nonzero(host.is_open) requires nonzero(host.schedule)
+    requires nonzero(host.record_open) requires nonzero(host.selected);
+
+enum SourceSignature:u32 { Absent=0; Present=1; Failed=2; };
+struct SourceInstanceHost {
+    address context;
+    cfn<SourceSignature,address> signature;
+    cfn<void,address> function;
+    cfn<void,address> domain;
+    cfn<void,address,u32> build_program;
+    cfn<void,address> application;
+};
+extern "C" void compile_source_instance(SourceRoute route,u32 cpu_signature,SourceInstanceHost host) on cpu
+    requires nonzero(host.signature) requires nonzero(host.function) requires nonzero(host.domain)
+    requires nonzero(host.build_program) requires nonzero(host.application);
 
 enum WorldCheck:u32 { Constant=0; Interface=1; External=2; Types=3; };
 struct WorldDeclaration { SignatureNode source; u32 present; u32 paired; };
