@@ -1,7 +1,7 @@
 //! B owns this link's definition tree, section queue, resource closure and remapping.
 //! Rust keeps the original objects/libraries and only hands their current borrowed views across the synchronous call.
 use super::{EntryPlan, EntryProduct, Inputs, LibraryBinding, Result, Roots, Selected, Selection, Source, resources};
-use crate::object::{self, Object, Kind, Target, Library, ReadSection};
+use crate::{names::ModuleName, object::{self, Object, Kind, Target, Library, ReadSection}};
 use resources::ImportBytes as Bytes;
 use std::{ffi::c_void, marker::PhantomData, mem::MaybeUninit};
 #[derive(Clone,Copy)]#[repr(C)]
@@ -28,7 +28,7 @@ struct LocalView {slot:Bytes,name:Bytes}
 struct RuntimeView {name:Bytes,used:u64}
 #[derive(Clone,Copy)]#[repr(C)]
 pub(crate) struct RootView<'a> {
-    name: Bytes,
+    name: ModuleName<'a>,
     contract: Bytes,
     owner: PhantomData<&'a [u8]>,
 }
@@ -47,13 +47,13 @@ where
 }
 
 pub(crate) fn bind_root_contracts<'a, F>(
-    names: Vec<&'a str>, source_count: usize, lookup: F,
+    names: Vec<ModuleName<'a>>, source_count: usize, lookup: F,
 ) -> std::result::Result<Vec<RootView<'a>>, String>
 where
     F: Fn(usize, &str) -> Option<&'a [u8]>,
 {
     let mut roots: Vec<_> = names.into_iter().map(|name| RootView {
-        name: Bytes::new(name), contract: borrowed(&[]), owner: PhantomData,
+        name, contract: borrowed(&[]), owner: PhantomData,
     }).collect();
     let missing = unsafe {
         bind_native_roots(roots.as_mut_ptr(), roots.len(), std::ptr::from_ref(&lookup).cast(),
@@ -62,7 +62,7 @@ where
     if missing == 0 {
         Ok(roots)
     } else {
-        Err(format!("缺少模块函数接口 {}", text(&roots[missing - 1].name)))
+        Err(format!("缺少模块函数接口 {}", roots[missing - 1].name.as_str()))
     }
 }
 #[repr(C)]

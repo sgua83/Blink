@@ -1,5 +1,6 @@
 //! 完整程序的机器码编译由编译器拥有；执行器只装载已生成的范围与集合入口。
 use super::*;
+use crate::names::ModuleName;
 use std::ops::Deref;
 
 pub fn compile_program<P: Deref<Target = Program>>(program: P) -> Result<ProgramImage<P>, String> {
@@ -77,8 +78,8 @@ impl crate::Compiler {
 
 /// Names borrow the original root code. Only the linked output can change.
 pub(crate) struct ModuleLink<'a> {
-    pub(crate) local: Vec<&'a str>,
-    pub(crate) external: Vec<&'a str>,
+    pub(crate) local: Vec<ModuleName<'a>>,
+    pub(crate) external: Vec<ModuleName<'a>>,
     pub(crate) types: usize,
     pub(crate) programs: usize,
     pub(crate) output: &'a mut Option<crate::native::ModuleCode>,
@@ -86,7 +87,7 @@ pub(crate) struct ModuleLink<'a> {
 
 pub(crate) fn link_inputs<'a>(
     image: ModuleLink<'a>, inputs: Vec<crate::object::Input>, borrowed: &[&crate::object::Object],
-    bind_roots: impl FnOnce(Vec<&'a str>) -> Result<Vec<crate::linker::RootView<'a>>, String>,
+    bind_roots: impl FnOnce(Vec<ModuleName<'a>>) -> Result<Vec<crate::linker::RootView<'a>>, String>,
 ) -> Result<bool, String> {
     let linked = if image.external.is_empty() {
         None

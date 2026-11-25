@@ -1,7 +1,8 @@
 //! B owns layout and rebasing for both reports and native outputs.
 //! Native output writes the selected COFF bytes directly into its own sections.
-use super::{Result, Selected, pe, resources::ImportBytes};
+use super::{Result, Selected, pe};
 use crate::{
+    names::ModuleName,
     native::{ModuleCode, ModuleRelocation, ModuleSection, ModuleTarget},
     object::{LinkSectionBytes, Relocation, SectionData, Target, stack::{self, Call, CallTarget}},
 };
@@ -42,13 +43,13 @@ pub(super) struct CombinePlan {
 }
 unsafe extern "C" {
     #[link_name="bootstrap.combine::prepare"]
-    fn combine_prepare(input: CombineInput, local: *const ImportBytes, local_count: usize, pe: u32) -> CombinePlan;
+    fn combine_prepare(input: CombineInput, local: *const ModuleName<'_>, local_count: usize, pe: u32) -> CombinePlan;
     #[link_name="bootstrap.combine::encode"]
     fn combine_encode(sections: *const CombineSection, count: usize, outputs: *const *mut u8);
 }
 
 pub(super) fn module(
-    mut objects: Vec<Selected<LinkSectionBytes<'_>>>, local: &[&str],
+    mut objects: Vec<Selected<LinkSectionBytes<'_>>>, local: &[ModuleName<'_>],
 ) -> Result<ModuleCode> {
     let Prepared { rows, groups, symbols, relocations, .. } = prepare(&objects, local, extent, false)?;
     let mut sections: Vec<_> = groups.iter().map(|group| {
@@ -146,7 +147,7 @@ struct Prepared {
 
 // The selected objects own the bytes and names through the final consumer.
 fn prepare<Payload>(
-    objects: &[Selected<Payload>], local: &[&str],
+    objects: &[Selected<Payload>], local: &[ModuleName<'_>],
     extent: impl Fn(&Payload) -> (*const u8, usize),
     pe: bool,
 ) -> Result<Prepared> {
@@ -195,7 +196,6 @@ fn prepare<Payload>(
         sections:rows.as_mut_ptr(),section_count:rows.len() as u64,symbols:symbols.as_mut_ptr(),symbol_count:symbols.len() as u64,
         relocations:relocations.as_mut_ptr(),relocation_count:relocations.len() as u64,frames:frames.as_mut_ptr(),
         order:order.as_mut_ptr(),groups:groups.as_mut_ptr()};
-    let local: Vec<_> = local.iter().map(|name| ImportBytes::new(name)).collect();
     let plan = unsafe { combine_prepare(input, local.as_ptr(), local.len(), u32::from(pe)) };
     match plan.error {
         0=>{},1=>return Err("合并节偏移超出32位范围".into()),

@@ -1,6 +1,6 @@
 //! B chooses names and visibility; the original declaration maps keep their storage.
 use crate::{frontend::NameResolution, syntax::{List, wire::FunctionNode}};
-use std::{cell::RefCell, ffi::c_void};
+use std::{cell::RefCell, ffi::c_void, marker::PhantomData};
 #[derive(Clone,Copy)]
 #[repr(C)]
 struct Bytes { bytes:*const u8, length:u64 }
@@ -10,6 +10,22 @@ impl Bytes {
         unsafe{std::str::from_utf8_unchecked(std::slice::from_raw_parts(self.bytes,self.length as usize))}
     }
 }
+
+#[derive(Clone, Copy)]
+#[repr(transparent)]
+pub(crate) struct ModuleName<'a>(Bytes, PhantomData<&'a str>);
+
+impl<'a> ModuleName<'a> {
+    fn new(value: &'a str) -> Self {
+        Self(Bytes::new(value), PhantomData)
+    }
+
+    pub(crate) fn as_str(&self) -> &'a str {
+        // The original image owns the UTF-8, and B only reorders these views.
+        unsafe { self.0.text() }
+    }
+}
+
 #[repr(C)]
 struct ModuleNameCounts {
     local: usize,
@@ -29,7 +45,8 @@ pub(crate) struct Declaration<'a> { pub name:&'a str, pub public:bool }
 unsafe extern "C" {
     #[link_name = "bootstrap.names::classify_module_names"]
     fn classify_module_names(
-        local: *mut Bytes, local_count: usize, references: *mut Bytes, reference_count: usize,
+        local: *mut ModuleName<'_>, local_count: usize,
+        references: *mut ModuleName<'_>, reference_count: usize,
     ) -> ModuleNameCounts;
     #[link_name = "bootstrap.names::dependency_active"]
     fn dependency_active(path: *const Bytes, count: u64, key: Bytes) -> bool;
@@ -160,17 +177,14 @@ pub(crate) fn function_pairs(
 
 pub(crate) fn module_names<'a>(
     local: impl IntoIterator<Item = &'a str>, references: impl IntoIterator<Item = &'a str>,
-) -> (Vec<&'a str>, Vec<&'a str>) {
-    let mut local: Vec<_> = local.into_iter().map(Bytes::new).collect();
-    let mut references: Vec<_> = references.into_iter().map(Bytes::new).collect();
+) -> (Vec<ModuleName<'a>>, Vec<ModuleName<'a>>) {
+    let mut local: Vec<_> = local.into_iter().map(ModuleName::new).collect();
+    let mut references: Vec<_> = references.into_iter().map(ModuleName::new).collect();
     // These synchronous operations only rearrange the original borrowed names.
     let counts = unsafe {
         classify_module_names(local.as_mut_ptr(), local.len(), references.as_mut_ptr(), references.len())
     };
     local.truncate(counts.local);
     references.truncate(counts.external);
-    (
-        local.into_iter().map(|name| unsafe { name.text() }).collect(),
-        references.into_iter().map(|name| unsafe { name.text() }).collect(),
-    )
+    (local, references)
 }

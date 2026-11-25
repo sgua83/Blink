@@ -244,7 +244,7 @@ fn references<'a>(
     declarations: &crate::Declarations, imported: Option<&crate::module::Imports>,
     link: Option<&ModuleLink<'_>>, used: impl ExactSizeIterator<Item = &'a Declaration>,
 ) -> [u8; 32] {
-    let symbols = link.into_iter().flat_map(|link| link.external.iter().copied());
+    let symbols = link.into_iter().flat_map(|link| link.external.iter().map(crate::names::ModuleName::as_str));
     identity::references(declarations, imported, symbols, used)
 }
 
