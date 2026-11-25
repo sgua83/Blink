@@ -1,8 +1,12 @@
 module bootstrap.native_resources;
 import bootstrap.bindings;
 
-ResourceModule module_at(ResourceInput input,u64 i) on cpu {return unsafe_position<ResourceModule>(unsafe_address(address_bits(input.modules)+i*MODULE_BYTES));}
-void module_put(ResourceInput input,u64 i,ResourceModule row) on cpu {unsafe_position<ResourceModule>(unsafe_address(address_bits(input.modules)+i*MODULE_BYTES))=row;}
+const u64 FACTORY_SUFFIX_BYTES=10u64;
+const u64 TYPE_SUFFIX_BYTES=10u64;
+const u64 PROGRAM_SUFFIX_BYTES=13u64;
+
+ResourceModule module_at(ResourceInput input,u64 i) on cpu {return unsafe_position<ResourceModule>(unsafe_address(address_bits(input.modules)+i*size_of<ResourceModule>()));}
+void module_put(ResourceInput input,u64 i,ResourceModule row) on cpu {unsafe_position<ResourceModule>(unsafe_address(address_bits(input.modules)+i*size_of<ResourceModule>()))=row;}
 ResourceLocal local_at(ResourceInput input,u64 i) on cpu {return unsafe_position<ResourceLocal>(unsafe_address(address_bits(input.locals)+i*LOCAL_BYTES));}
 void local_put(ResourceInput input,u64 i,ResourceLocal row) on cpu {unsafe_position<ResourceLocal>(unsafe_address(address_bits(input.locals)+i*LOCAL_BYTES))=row;}
 ResourceRuntime runtime_at(ResourceInput input,u64 i) on cpu {return unsafe_position<ResourceRuntime>(unsafe_address(address_bits(input.runtime)+i*RUNTIME_BYTES));}
@@ -27,7 +31,7 @@ void sort(ResourceInput input) on cpu {
     u64 root=input.module_count/2u64;while(root>0u64){root-=1u64;sift(input,root,input.module_count);}
     u64 end=input.module_count;while(end>1u64){end-=1u64;u64 a=order_at(input,0u64);u64 b=order_at(input,end);order_put(input,0u64,b);order_put(input,end,a);sift(input,0u64,end);}
 }
-ResourcePlan invalid(u64 error,u64 at) on cpu {return ResourcePlan(0u64,0u64,0u64,0u64,error,at);}
+ResourcePlan invalid(u64 error,u64 at) on cpu {return ResourcePlan(0u64,0u64,0u64,0u64,error,at,0u64,0u64,0u64);}
 extern "C" ResourcePlan prepare(ResourceInput input) on cpu {
     if(input.module_count==0u64){return invalid(0u64,0u64);}
     sort(input);
@@ -54,27 +58,32 @@ extern "C" ResourcePlan prepare(ResourceInput input) on cpu {
     while(i<input.module_count){
         ResourceModule row=module_at(input,i);if(at+4u64>4294967295u64){return invalid(5u64,i);}
         row.type_value=types;row.program_value=programs;row.factory_offset=8u64+8u64*i;row.type_offset=at;row.program_offset=at+4u64;
-        row.factory=BindingBytes(unsafe_address(0u64),row.prefix.length+10u64);row.type_name=BindingBytes(unsafe_address(0u64),row.prefix.length+10u64);row.program_name=BindingBytes(unsafe_address(0u64),row.prefix.length+13u64);
         types+=row.types;if(types>4294967295u64){return invalid(3u64,i);}programs+=row.programs;if(programs>4294967295u64){return invalid(4u64,i);}
         module_put(input,i,row);at+=8u64;i+=1u64;
     }
     i=0u64;while(i<input.local_count){ResourceLocal row=local_at(input,i);if(at>4294967295u64){return invalid(5u64,input.module_count+i);}row.value=at;local_put(input,i,row);at+=8u64;i+=1u64;}
     u64 text=0u64;i=0u64;while(i<input.runtime_count){ResourceRuntime row=runtime_at(input,i);if(text>4294967295u64){return invalid(5u64,input.module_count+input.local_count+i);}row.value=text;row.relocation=text+2u64;runtime_put(input,i,row);text+=6u64;i+=1u64;}
-    return ResourcePlan(at,text,1077936192u64,1615855648u64,0u64,0u64);
+    return ResourcePlan(at,text,1077936192u64,1615855648u64,0u64,0u64,
+        FACTORY_SUFFIX_BYTES,TYPE_SUFFIX_BYTES,PROGRAM_SUFFIX_BYTES);
 }
 void literal(address output,u64 at,u64 value,u64 length) on cpu {u64 i=0u64;while(i<length){put(output,at+i,u8(value>>(i*8u64)));i+=1u64;}}
 void copy(address output,BindingBytes source) on cpu {u64 i=0u64;while(i<source.length){put(output,i,byte_at(source.bytes,i));i+=1u64;}}
 extern "C" void encode(ResourceInput input,ResourceOutput output,ResourcePlan plan) on cpu {
     u64 i=0u64;while(i<plan.data){put(output.data,i,u8(0));i+=1u64;}i=0u64;while(i<plan.text){put(output.text,i,u8(0));i+=1u64;}
     literal(output.data,0u64,input.module_count,8u64);i=0u64;
-    while(i<input.module_count){
-        ResourceModule row=module_at(input,i);literal(output.data,row.type_offset,row.type_value,4u64);literal(output.data,row.program_offset,row.program_value,4u64);
-        copy(row.factory.bytes,row.prefix);literal(row.factory.bytes,row.prefix.length,7165919078637728351u64,8u64);literal(row.factory.bytes,row.prefix.length+8u64,29541u64,2u64);
-        copy(row.type_name.bytes,row.prefix);literal(row.type_name.bytes,row.prefix.length,7017276058679997535u64,8u64);literal(row.type_name.bytes,row.prefix.length+8u64,25971u64,2u64);
-        copy(row.program_name.bytes,row.prefix);literal(row.program_name.bytes,row.prefix.length,7881706611452047455u64,8u64);literal(row.program_name.bytes,row.prefix.length+8u64,435727458911u64,5u64);
-        i+=1u64;
-    }
-    i=0u64;while(i<input.runtime_count){ResourceRuntime row=runtime_at(input,i);put(output.text,row.value,u8(255));put(output.text,row.value+1u64,u8(37));i+=1u64;}
+    while(i<input.runtime_count){ResourceRuntime row=runtime_at(input,i);put(output.text,row.value,u8(255));put(output.text,row.value+1u64,u8(37));i+=1u64;}
+}
+
+extern "C" void encode_module(ResourceModule row,address data,address factory,address type_name,address program_name) on cpu {
+    literal(data,row.type_offset,row.type_value,4u64);
+    literal(data,row.program_offset,row.program_value,4u64);
+    u64 length=row.prefix.length;
+    copy(factory,row.prefix);literal(factory,length,7165919078637728351u64,8u64);
+    literal(factory,length+8u64,29541u64,FACTORY_SUFFIX_BYTES-8u64);
+    copy(type_name,row.prefix);literal(type_name,length,7017276058679997535u64,8u64);
+    literal(type_name,length+8u64,25971u64,TYPE_SUFFIX_BYTES-8u64);
+    copy(program_name,row.prefix);literal(program_name,length,7881706611452047455u64,8u64);
+    literal(program_name,length+8u64,435727458911u64,PROGRAM_SUFFIX_BYTES-8u64);
 }
 
 u8 hex_digit(u8 value) on cpu {

@@ -22,7 +22,7 @@ pub(super) fn import_symbol(dll:&str,name:&str)->String {
 #[repr(C)]
 struct ResourceModule {
     prefix:ImportBytes,abi:ImportBytes,types:u64,programs:u64,type_value:u64,program_value:u64,
-    factory_offset:u64,type_offset:u64,program_offset:u64,factory:ImportBytes,type_name:ImportBytes,program_name:ImportBytes,
+    factory_offset:u64,type_offset:u64,program_offset:u64,
 }
 #[derive(Clone,Copy)]
 #[repr(C)]
@@ -42,12 +42,17 @@ struct ResourceInput {
 struct ResourceOutput {data:*mut u8,text:*mut u8}
 #[derive(Clone,Copy)]
 #[repr(C)]
-struct ResourcePlan {data:u64,text:u64,data_flags:u64,text_flags:u64,error:u64,at:u64}
+struct ResourcePlan {
+    data:u64,text:u64,data_flags:u64,text_flags:u64,error:u64,at:u64,
+    factory_suffix:u64,type_suffix:u64,program_suffix:u64,
+}
 unsafe extern "C" {
     #[link_name="bootstrap.native_resources::prepare"]
     fn resource_prepare(input:ResourceInput)->ResourcePlan;
     #[link_name="bootstrap.native_resources::encode"]
     fn resource_encode(input:ResourceInput,output:ResourceOutput,plan:ResourcePlan);
+    #[link_name="bootstrap.native_resources::encode_module"]
+    fn resource_encode_module(row:ResourceModule,data:*mut u8,factory:*mut u8,type_name:*mut u8,program_name:*mut u8);
 }
 pub(super) struct Generated {
     pub sections: Vec<Section>,
@@ -90,7 +95,7 @@ pub(super) fn resources<'archive, 'name>(
     let empty=ImportBytes{bytes:std::ptr::null(),length:0};
     let mut modules=archives.into_iter().filter_map(|archive| (*archive.borrow()).resources.as_ref()).map(|row|ResourceModule{
         prefix:ImportBytes::new(&row.prefix),abi:borrowed(&row.abi),types:row.types.into(),programs:row.programs.into(),
-        type_value:0,program_value:0,factory_offset:0,type_offset:0,program_offset:0,factory:empty,type_name:empty,program_name:empty,
+        type_value:0,program_value:0,factory_offset:0,type_offset:0,program_offset:0,
     }).collect::<Vec<_>>();
     let mut locals=local_imports.into_iter().map(|(slot,name)|ResourceLocal{slot:ImportBytes::new(slot),name:ImportBytes::new(name),value:0}).collect::<Vec<_>>();
     let mut runtime=runtime.into_iter().map(|name|ResourceRuntime{name:ImportBytes::new(name),value:0,relocation:0}).collect::<Vec<_>>();
@@ -109,27 +114,28 @@ pub(super) fn resources<'archive, 'name>(
         5=>return Err("模块资源字段位置超出COFF格式".into()),code=>return Err(format!("模块资源绑定失败 {code}").into()),
     }
     if plan.data==0{return Ok(None);}
-    let names=modules.iter_mut().map(|row|->Result<[Vec<u8>;3]>{
-        let mut buffers=[Vec::new(),Vec::new(),Vec::new()];
-        for(name,buffer)in [&mut row.factory,&mut row.type_name,&mut row.program_name].into_iter().zip(&mut buffers){
-            *buffer=Vec::with_capacity(usize::try_from(name.length)?);name.bytes=buffer.as_mut_ptr();
-        }
-        Ok(buffers)
-    }).collect::<Result<Vec<_>>>()?;
     let data_length=usize::try_from(plan.data)?;let text_length=usize::try_from(plan.text)?;
     let mut data=Vec::with_capacity(data_length);let mut code=Vec::with_capacity(text_length);
     unsafe{resource_encode(input,ResourceOutput{data:data.as_mut_ptr(),text:code.as_mut_ptr()},plan);data.set_len(data_length);code.set_len(text_length);}
-    let finish=|mut bytes:Vec<u8>,length:u64|{unsafe{bytes.set_len(length as usize);String::from_utf8_unchecked(bytes)}};
+    let finish=|mut bytes:Vec<u8>,length:usize|{unsafe{bytes.set_len(length);String::from_utf8_unchecked(bytes)}};
     let mut definitions=vec![
         Definition{name:"__blink_module_count".into(),section:0,value:0,function:false},
         Definition{name:"__blink_module_factories".into(),section:0,value:8,function:false},
     ];
     let mut relocations=Vec::new();
-    for(row,[factory,type_name,program_name])in modules.into_iter().zip(names){
-        let factory=finish(factory,row.factory.length);
-        relocations.push(Relocation{offset:usize::try_from(row.factory_offset)?,kind:1,target:Target::Symbol(factory)});
-        definitions.push(Definition{name:finish(type_name,row.type_name.length),section:0,value:u32::try_from(row.type_offset)?,function:false});
-        definitions.push(Definition{name:finish(program_name,row.program_name.length),section:0,value:u32::try_from(row.program_offset)?,function:false});
+    for row in modules {
+        let factory_length = usize::try_from(row.prefix.length + plan.factory_suffix)?;
+        let type_length = usize::try_from(row.prefix.length + plan.type_suffix)?;
+        let program_length = usize::try_from(row.prefix.length + plan.program_suffix)?;
+        let mut factory = Vec::with_capacity(factory_length);
+        let mut type_name = Vec::with_capacity(type_length);
+        let mut program_name = Vec::with_capacity(program_length);
+        unsafe {
+            resource_encode_module(row, data.as_mut_ptr(), factory.as_mut_ptr(), type_name.as_mut_ptr(), program_name.as_mut_ptr());
+        }
+        relocations.push(Relocation{offset:usize::try_from(row.factory_offset)?,kind:1,target:Target::Symbol(finish(factory,factory_length))});
+        definitions.push(Definition{name:finish(type_name,type_length),section:0,value:u32::try_from(row.type_offset)?,function:false});
+        definitions.push(Definition{name:finish(program_name,program_length),section:0,value:u32::try_from(row.program_offset)?,function:false});
     }
     for row in locals{
         let name=text(row.name);
