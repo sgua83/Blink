@@ -539,3 +539,521 @@ extern "C" CallStep call_step(SignatureNode source, CallSyntax call, CallCursor 
     }
     return step;
 }
+
+IntegerWide wide(u64 value) on cpu { return IntegerWide(value, 0u64); }
+
+NumericTransfer numeric_kind(NumericKind kind, u32 flags) on cpu {
+    IntegerWide zero = wide(0u64);
+    return NumericTransfer(kind, flags, zero, zero, zero, zero);
+}
+
+extern "C" NumericTransfer numeric_shift(u32 amount, u32 subtract) on cpu {
+    IntegerWide zero = wide(0u64);
+    IntegerWide step = wide(u64(amount));
+    if (subtract != 0) {
+        step = range_negate(step);
+        return NumericTransfer(NumericKind::Shift, 0, step, step, step, zero);
+    }
+    return NumericTransfer(NumericKind::Shift, 0, step, step, zero, step);
+}
+
+bool is_zero(IntegerWide value) on cpu {
+    return value.low == 0u64 && value.high == 0u64;
+}
+
+extern "C" bool numeric_zero_delta(NumericTransfer effect) on cpu {
+    return effect.kind == NumericKind::Shift && is_zero(effect.low) && is_zero(effect.high);
+}
+
+extern "C" bool numeric_identity(NumericTransfer effect) on cpu {
+    return numeric_zero_delta(effect)
+        && is_zero(effect.least) && is_zero(effect.most);
+}
+
+NumericTransfer numeric_ordered(u32 flags) on cpu {
+    return numeric_kind(flags == 0 ? NumericKind::Unknown : NumericKind::Ordered, flags);
+}
+
+extern "C" NumericCombination numeric_then(NumericTransfer left, NumericTransfer right) on cpu {
+    NumericTransfer unknown = numeric_kind(NumericKind::Unknown, 0);
+    if (right.kind == NumericKind::Assign) { return NumericCombination(right, NumericProofAction::Right); }
+    if ((left.kind == NumericKind::Assign || left.kind == NumericKind::Reflect || left.kind == NumericKind::Ordered)
+        && numeric_identity(right)) { return NumericCombination(left, NumericProofAction::Left); }
+    if (numeric_identity(left) && (right.kind == NumericKind::Ordered || right.kind == NumericKind::Reflect)) {
+        return NumericCombination(right, NumericProofAction::Right);
+    }
+    if (left.kind == NumericKind::Assign && right.kind == NumericKind::Ordered) {
+        return NumericCombination(left, NumericProofAction::Retain);
+    }
+    if (left.kind == NumericKind::Ordered && right.kind == NumericKind::Ordered) {
+        return NumericCombination(numeric_ordered(left.flags & right.flags), NumericProofAction::None);
+    }
+    if (left.kind == NumericKind::Assign && right.kind == NumericKind::Shift) {
+        return NumericCombination(left, NumericProofAction::Shift);
+    }
+    if (left.kind == NumericKind::Reflect && right.kind == NumericKind::Reflect && left.flags == right.flags) {
+        return NumericCombination(left, NumericProofAction::None);
+    }
+    if (left.kind != NumericKind::Shift || right.kind != NumericKind::Shift) {
+        return NumericCombination(unknown, NumericProofAction::None);
+    }
+    IntegerWideChecked low = integer_wide_checked_add(left.low, right.low);
+    IntegerWideChecked high = integer_wide_checked_add(left.high, right.high);
+    IntegerWideChecked least = integer_wide_checked_add(left.low, right.least);
+    IntegerWideChecked most = integer_wide_checked_add(left.high, right.most);
+    if (low.present == 0 || high.present == 0 || least.present == 0 || most.present == 0) {
+        return NumericCombination(unknown, NumericProofAction::None);
+    }
+    return NumericCombination(NumericTransfer(NumericKind::Shift, 0, low.value, high.value,
+        range_min(left.least, least.value), range_max(left.most, most.value)), NumericProofAction::None);
+}
+
+bool numeric_join_identity(NumericTransfer effect) on cpu {
+    return effect.kind == NumericKind::Assign || effect.kind == NumericKind::Ordered || effect.kind == NumericKind::Reflect;
+}
+
+extern "C" NumericCombination numeric_join(NumericTransfer left, NumericTransfer right) on cpu {
+    if (left.kind == NumericKind::Missing) { return NumericCombination(right, NumericProofAction::Right); }
+    if (right.kind == NumericKind::Missing) { return NumericCombination(left, NumericProofAction::Left); }
+    if (left.kind == NumericKind::Assign && right.kind == NumericKind::Assign) {
+        return NumericCombination(left, NumericProofAction::Join);
+    }
+    if (left.kind == NumericKind::Ordered && right.kind == NumericKind::Ordered) {
+        return NumericCombination(numeric_ordered(left.flags & right.flags), NumericProofAction::None);
+    }
+    if (left.kind == NumericKind::Reflect && right.kind == NumericKind::Reflect && left.flags == right.flags) {
+        return NumericCombination(left, NumericProofAction::None);
+    }
+    if (numeric_identity(right) && numeric_join_identity(left)) { return NumericCombination(left, NumericProofAction::Left); }
+    if (numeric_identity(left) && numeric_join_identity(right)) { return NumericCombination(right, NumericProofAction::Right); }
+    if (left.kind == NumericKind::Shift && right.kind == NumericKind::Shift) {
+        return NumericCombination(NumericTransfer(NumericKind::Shift, 0, range_min(left.low, right.low),
+            range_max(left.high, right.high), range_min(left.least, right.least), range_max(left.most, right.most)),
+            NumericProofAction::None);
+    }
+    return NumericCombination(numeric_kind(NumericKind::Unknown, 0), NumericProofAction::None);
+}
+
+bool numeric_no_wrap(NumericTransfer effect, IntegerWide lower, IntegerWide upper) on cpu {
+    IntegerWideChecked least = integer_wide_checked_add(lower, effect.least);
+    IntegerWideChecked most = integer_wide_checked_add(upper, effect.most);
+    return least.present != 0 && most.present != 0 && !range_less(least.value, wide(0u64))
+        && !range_less(wide(4294967295u64), most.value);
+}
+
+u32 numeric_order(bool lower, bool upper) on cpu {
+    return (lower ? 1 : 0) | (upper ? 2 : 0);
+}
+
+u32 numeric_shift_order(NumericTransfer effect) on cpu {
+    return numeric_order(!range_less(effect.low, wide(0u64)), !range_less(wide(0u64), effect.high));
+}
+
+extern "C" NumericTransfer numeric_nested_order(NumericTransfer effect, NumericRange guard, NumericRange assigned) on cpu {
+    if (effect.kind == NumericKind::Missing) { return numeric_ordered(3); }
+    if (effect.kind == NumericKind::Ordered) { return effect; }
+    if (effect.kind == NumericKind::Assign) {
+        return numeric_ordered(numeric_order(assigned.lower >= guard.upper, assigned.upper <= guard.lower));
+    }
+    if (effect.kind == NumericKind::Shift && numeric_no_wrap(effect, wide(u64(guard.lower)), wide(u64(guard.upper)))) {
+        return numeric_ordered(numeric_shift_order(effect));
+    }
+    return numeric_kind(NumericKind::Unknown, 0);
+}
+
+extern "C" NumericIterations numeric_iterations(NumericTransfer effect, NumericRange input, NumericRange guard) on cpu {
+    if (effect.kind != NumericKind::Shift) { return NumericIterations(0, 0u64); }
+    if (input.upper < guard.lower || input.lower > guard.upper) { return NumericIterations(1, 0u64); }
+    if (!numeric_no_wrap(effect, wide(u64(guard.lower)), wide(u64(guard.upper)))) {
+        return NumericIterations(0, 0u64);
+    }
+    IntegerWide divisor;
+    u32 distance;
+    if (range_less(effect.high, wide(0u64))) {
+        divisor = range_negate(effect.high);
+        if (range_less(divisor, wide(0u64))) { return NumericIterations(0, 0u64); }
+        distance = input.upper - guard.lower;
+    } else if (range_less(wide(0u64), effect.low)) {
+        divisor = effect.low;
+        distance = guard.upper - input.lower;
+    } else {
+        return NumericIterations(0, 0u64);
+    }
+    return NumericIterations(1, integer_wide_unsigned_divide(wide(u64(distance)), divisor).quotient.low + 1u64);
+}
+
+IntegerWideChecked numeric_endpoint(u32 input, u64 iterations, IntegerWide shift, bool lower) on cpu {
+    IntegerWideChecked delta = integer_wide_checked_multiply(wide(iterations), shift);
+    if (delta.present == 0) { return delta; }
+    IntegerWide extreme = lower ? range_min(delta.value, wide(0u64)) : range_max(delta.value, wide(0u64));
+    return integer_wide_checked_add(wide(u64(input)), extreme);
+}
+
+extern "C" NumericRanges numeric_ranges(NumericTransfer effect, NumericRange input, NumericIterations iterations) on cpu {
+    NumericRange empty = NumericRange(0, 0);
+    NumericRanges missing = NumericRanges(0, empty, empty);
+    if (iterations.present == 0 || effect.kind != NumericKind::Shift) { return missing; }
+    // The entry remains a sound range for a body that never executes.
+    u64 before = iterations.count == 0u64 ? 0u64 : iterations.count - 1u64;
+    IntegerWideChecked body_low = numeric_endpoint(input.lower, before, effect.low, true);
+    IntegerWideChecked body_high = numeric_endpoint(input.upper, before, effect.high, false);
+    if (body_low.present == 0 || body_high.present == 0 || !numeric_no_wrap(effect, body_low.value, body_high.value)) {
+        return missing;
+    }
+    IntegerWideChecked header_low = numeric_endpoint(input.lower, iterations.count, effect.low, true);
+    IntegerWideChecked header_high = numeric_endpoint(input.upper, iterations.count, effect.high, false);
+    if (header_low.present == 0 || header_high.present == 0) { return missing; }
+    return NumericRanges(1, NumericRange(u32(body_low.value.low), u32(body_high.value.low)),
+        NumericRange(u32(header_low.value.low), u32(header_high.value.low)));
+}
+
+extern "C" NumericRetention numeric_retention(NumericTransfer effect, NumericRange input, NumericRange guard, u32 bounded) on cpu {
+    if (effect.kind == NumericKind::Missing) { return NumericRetention(3, NumericProofAction::None); }
+    if (effect.kind == NumericKind::Ordered) { return NumericRetention(effect.flags, NumericProofAction::None); }
+    if (effect.kind == NumericKind::Assign) { return NumericRetention(3, NumericProofAction::Join); }
+    if (effect.kind == NumericKind::Reflect) { return NumericRetention(3, NumericProofAction::Reflect); }
+    if (effect.kind == NumericKind::Shift) {
+        u32 flags = numeric_shift_order(effect);
+        u32 lower = max(guard.lower, (flags & 1) != 0 ? input.lower : 0);
+        u32 upper = min(guard.upper, (flags & 2) != 0 ? input.upper : u32(4294967295u64));
+        if (bounded != 0 || numeric_no_wrap(effect, wide(u64(lower)), wide(u64(upper)))) {
+            return NumericRetention(flags, NumericProofAction::None);
+        }
+    }
+    return NumericRetention(0, NumericProofAction::None);
+}
+
+bool numeric_arguments_contain(StorageView storage, Slice arguments, ExprRef selected) on cpu {
+    u64 i = 0u64; while (i < arguments.count) {
+        if (numeric_expression_contains(storage, ExprRef(member(storage, arguments, i)), selected)) { return true; }
+        i += 1u64;
+    }
+    return false;
+}
+
+bool numeric_expression_contains(StorageView storage, ExprRef root, ExprRef selected) on cpu {
+    if (root.offset == selected.offset) { return true; }
+    match (node<ExprNode>(storage, root.offset).kind) {
+        ExprKind::Member(value) { return numeric_expression_contains(storage, value.base, selected); }
+        ExprKind::Index(value) { return numeric_expression_contains(storage, value.base, selected)
+            || numeric_expression_contains(storage, value.index, selected); }
+        ExprKind::Call(value) { return numeric_arguments_contain(storage, value.arguments, selected); }
+        ExprKind::Invoke(value) { return numeric_expression_contains(storage, value.callee, selected)
+            || numeric_arguments_contain(storage, value.arguments, selected); }
+        ExprKind::Construct(value) { return numeric_arguments_contain(storage, value.arguments, selected); }
+        ExprKind::Specialize(value) { return numeric_arguments_contain(storage, value.arguments, selected); }
+        ExprKind::Cooperate(value) { return numeric_arguments_contain(storage, value.arguments, selected); }
+        ExprKind::Target(value) { return numeric_expression_contains(storage, value.value, selected); }
+        ExprKind::Unary(value) { return numeric_expression_contains(storage, value.value, selected); }
+        ExprKind::Binary(value) { return numeric_expression_contains(storage, value.left, selected)
+            || numeric_expression_contains(storage, value.right, selected); }
+        ExprKind::Select(value) { return numeric_expression_contains(storage, value.condition, selected)
+            || numeric_expression_contains(storage, value.yes, selected)
+            || numeric_expression_contains(storage, value.no, selected); }
+        ExprKind::Number(value) {}
+        ExprKind::StaticU32(value) {}
+        ExprKind::Bool(value) {}
+        ExprKind::Name(value) {}
+        ExprKind::FunctionRef(value) {}
+    }
+    return false;
+}
+
+extern "C" bool numeric_contains_expression(SignatureNode root, SignatureNode selected) on cpu {
+    return address_bits(root.storage.nodes) == address_bits(selected.storage.nodes)
+        && numeric_expression_contains(root.storage, ExprRef(root.offset), ExprRef(selected.offset));
+}
+
+bool numeric_block_contains(StorageView storage, Slice body, ExprRef selected) on cpu {
+    u64 i = 0u64; while (i < body.count) {
+        if (numeric_statement_contains(storage, StmtRef(member(storage, body, i)), selected)) { return true; }
+        i += 1u64;
+    }
+    return false;
+}
+
+bool numeric_statement_contains(StorageView storage, StmtRef root, ExprRef selected) on cpu {
+    match (node<StmtNode>(storage, root.offset).kind) {
+        StmtKind::Let(value) { return numeric_expression_contains(storage, value.value, selected); }
+        StmtKind::Expr(value) { return numeric_expression_contains(storage, value, selected); }
+        StmtKind::Return(value) { return value.present != 0 && numeric_expression_contains(storage, value.value, selected); }
+        StmtKind::Seek(value) { return numeric_expression_contains(storage, value.value, selected); }
+        StmtKind::Assign(value) { return numeric_expression_contains(storage, value.target, selected)
+            || numeric_expression_contains(storage, value.value, selected); }
+        StmtKind::If(value) { return numeric_expression_contains(storage, value.condition, selected)
+            || numeric_block_contains(storage, value.yes, selected) || numeric_block_contains(storage, value.no, selected); }
+        StmtKind::Match(value) {
+            if (numeric_expression_contains(storage, value.value, selected)) { return true; }
+            u64 i = 0u64; while (i < value.arms.count) {
+                if (numeric_block_contains(storage, node<ArmNode>(storage, member(storage, value.arms, i)).body, selected)) { return true; }
+                i += 1u64;
+            }
+        }
+        StmtKind::While(value) { return numeric_expression_contains(storage, value.condition, selected)
+            || numeric_block_contains(storage, value.body, selected); }
+        StmtKind::For(value) { return numeric_expression_contains(storage, value.start, selected)
+            || (value.end.present != 0 && numeric_expression_contains(storage, value.end.value, selected))
+            || numeric_block_contains(storage, value.body, selected); }
+        StmtKind::Parallel(value) {
+            ParallelNode domain = node<ParallelNode>(storage, value.domain.offset);
+            return (domain.count.present != 0 && numeric_expression_contains(storage, domain.count.value, selected))
+                || (domain.selection.present != 0 && numeric_expression_contains(storage, domain.selection.value, selected))
+                || numeric_block_contains(storage, value.body, selected);
+        }
+        StmtKind::Declare(value) {}
+        StmtKind::Break() {}
+        StmtKind::Continue() {}
+        StmtKind::Phase() {}
+    }
+    return false;
+}
+
+extern "C" bool numeric_contains_statement(SignatureNode root, SignatureNode selected) on cpu {
+    return address_bits(root.storage.nodes) == address_bits(selected.storage.nodes)
+        && numeric_statement_contains(root.storage, StmtRef(root.offset), ExprRef(selected.offset));
+}
+
+extern "C" bool numeric_loop_control(StorageView storage, Slice body, u32 seek) on cpu {
+    u64 i = 0u64; while (i < body.count) {
+        match (node<StmtNode>(storage, member(storage, body, i)).kind) {
+            StmtKind::Break() { if (seek == 0) { return true; } }
+            StmtKind::Seek(value) { if (seek != 0) { return true; } }
+            StmtKind::If(value) {
+                if (numeric_loop_control(storage, value.yes, seek) || numeric_loop_control(storage, value.no, seek)) { return true; }
+            }
+            StmtKind::Match(value) {
+                u64 arm = 0u64; while (arm < value.arms.count) {
+                    if (numeric_loop_control(storage, node<ArmNode>(storage, member(storage, value.arms, arm)).body, seek)) { return true; }
+                    arm += 1u64;
+                }
+            }
+            StmtKind::Declare(value) {}
+            StmtKind::Let(value) {}
+            StmtKind::Assign(value) {}
+            StmtKind::Expr(value) {}
+            StmtKind::While(value) {}
+            StmtKind::For(value) {}
+            StmtKind::Parallel(value) {}
+            StmtKind::Return(value) {}
+            StmtKind::Continue() {}
+            StmtKind::Phase() {}
+        }
+        i += 1u64;
+    }
+    return false;
+}
+
+NumericPathStep numeric_value(NumericPathStep step, NumericPathAction action, ExprRef value, u32 observe) on cpu {
+    NumericPathStep updated = step;
+    updated.action = action;
+    updated.value = value;
+    updated.local = observe;
+    return updated;
+}
+
+extern "C" NumericPathStep numeric_path_step(StorageView storage, Slice block, NumericPathCursor cursor,
+    Truth truth, u32 reaches, Optional<SignatureNode> point) on cpu {
+    bootstrap.ast_storage::Text empty = bootstrap.ast_storage::Text(0, Span(0u64, 0u64));
+    NumericPathStep step = NumericPathStep(cursor, NumericPathAction::Next, StmtRef(0u64), ExprRef(0u64), Slice(0u64, 0u64),
+        Optional<bootstrap.ast_storage::Text>(0, empty), empty, Optional<TypeRef>(0, TypeRef(0u64)), 0);
+    if (reaches == 0 || cursor.index >= block.count) { step.action = NumericPathAction::Finish; return step; }
+    step.cursor.phase += 1;
+    step.statement = StmtRef(member(storage, block, cursor.index));
+    SignatureNode source = SignatureNode(storage, step.statement.offset);
+    u32 phase = cursor.phase;
+    match (node<StmtNode>(storage, source.offset).kind) {
+        StmtKind::Declare(value) {
+            if (phase == 0) {
+                step.action = NumericPathAction::Declare;
+                step.binding = Optional<bootstrap.ast_storage::Text>(1, value.name);
+                step.annotation = Optional<TypeRef>(1, value.ty);
+            }
+        }
+        StmtKind::Let(value) {
+            if (phase == 0) { return numeric_value(step, NumericPathAction::Expression, value.value, 1); }
+            if (phase == 1) {
+                step.action = NumericPathAction::Let;
+                step.binding = Optional<bootstrap.ast_storage::Text>(1, value.name);
+                step.annotation = value.annotation;
+                step.value = value.value;
+            }
+        }
+        StmtKind::Assign(value) {
+            if (phase == 0) { return numeric_value(step, NumericPathAction::Target, value.target, 0); }
+            if (phase == 1) { return numeric_value(step, NumericPathAction::Expression, value.value, 1); }
+            if (phase == 2) { step.action = NumericPathAction::Assignment; }
+        }
+        StmtKind::Expr(value) {
+            if (phase == 0) { return numeric_value(step, NumericPathAction::Expression, value, 1); }
+        }
+        StmtKind::If(value) {
+            if (phase == 0) { return numeric_value(step, NumericPathAction::Expression, value.condition, 1); }
+            if (phase == 1) { return numeric_value(step, NumericPathAction::Condition, value.condition, 0); }
+            if (phase == 2 && truth != Truth::False) {
+                step.action = NumericPathAction::Yes;
+                step.body = value.yes;
+                return step;
+            }
+            if (phase <= 3 && truth != Truth::True) {
+                step.action = NumericPathAction::No;
+                step.cursor.phase = 4;
+                step.body = value.no;
+            }
+        }
+        StmtKind::Match(value) {
+            if (phase == 0) { return numeric_value(step, NumericPathAction::Expression, value.value, 2); }
+            if (cursor.arm < value.arms.count) {
+                ArmNode arm = node<ArmNode>(storage, member(storage, value.arms, cursor.arm));
+                step.action = NumericPathAction::Arm;
+                step.cursor.arm += 1u64;
+                step.body = arm.body;
+                step.binding = arm.binding;
+                step.variant = arm.variant;
+                step.value = value.value;
+            }
+        }
+        StmtKind::Seek(value) {
+            if (phase == 0) { return numeric_value(step, NumericPathAction::Expression, value.value, 0); }
+            step.action = NumericPathAction::Reenter;
+        }
+        StmtKind::Continue() { step.action = NumericPathAction::Reenter; }
+        StmtKind::Break() { step.action = NumericPathAction::Stop; }
+        StmtKind::Return(value) { step.action = NumericPathAction::Stop; }
+        StmtKind::While(value) {
+            if (phase == 0) {
+                if (point.present != 0 && address_bits(storage.nodes) == address_bits(point.value.storage.nodes)
+                    && value.condition.offset == point.value.offset) {
+                    step.action = NumericPathAction::ObserveLoop;
+                    return step;
+                }
+                step.action = NumericPathAction::Nested;
+                step.value = value.condition;
+                step.body = value.body;
+                step.local = 1;
+            } else if (phase == 1 && point.present != 0 && numeric_contains_statement(source, point.value)) {
+                step.action = NumericPathAction::NestedPoint;
+                step.body = value.body;
+            }
+        }
+        StmtKind::For(value) {
+            if (phase == 0) { step.action = NumericPathAction::Nested; }
+            if (phase == 1 && point.present != 0 && numeric_contains_statement(source, point.value)) {
+                step.action = NumericPathAction::NestedPoint;
+                step.body = value.body;
+                step.binding = Optional<bootstrap.ast_storage::Text>(1, value.name);
+                step.value = value.start;
+                step.local = value.end.present != 0 ? 1 : 2;
+            }
+        }
+        StmtKind::Parallel(value) {
+            if (phase == 0) { step.action = NumericPathAction::Nested; }
+            if (phase == 1 && point.present != 0 && numeric_contains_statement(source, point.value)) {
+                step.action = NumericPathAction::NestedPoint;
+                step.body = value.body;
+                step.binding = Optional<bootstrap.ast_storage::Text>(1, value.name);
+                step.variant = node<ParallelNode>(storage, value.domain.offset).dataset;
+                step.local = 3;
+            }
+        }
+        StmtKind::Phase() {}
+    }
+    if (step.action == NumericPathAction::Next) {
+        step.cursor = NumericPathCursor(cursor.index + 1u64, 0u64, 0);
+    }
+    return step;
+}
+
+extern "C" NumericRhsStep numeric_rhs_step(SignatureNode source, u32 phase, u32 accepted,
+    u32 length, u32 same_name) on cpu {
+    StorageView storage = source.storage;
+    match (node<StmtNode>(storage, source.offset).kind) {
+        StmtKind::Assign(assign) {
+            bool equal = spelling(storage, assign.operation, "=");
+            if (length != 0) {
+                if (!equal) { return NumericRhsStep(0, NumericRhsAction::Unknown, assign.value); }
+                match (node<ExprNode>(storage, assign.value.offset).kind) {
+                    ExprKind::Call(value) {
+                        if (spelling(storage, value.name, "resize") && value.arguments.count == 3u64) {
+                            if (phase == 0) { return NumericRhsStep(1, NumericRhsAction::Resize, assign.value); }
+                            if (accepted != 0) { return NumericRhsStep(0, NumericRhsAction::Length,
+                                ExprRef(member(storage, value.arguments, 1u64))); }
+                        }
+                    }
+                    ExprKind::Specialize(value) {
+                        if (spelling(storage, value.name, "dataset") && value.arguments.count != 0u64) {
+                            return NumericRhsStep(0, NumericRhsAction::Length, ExprRef(member(storage, value.arguments, 0u64)));
+                        }
+                    }
+                    ExprKind::Name(value) {
+                        if (same_name != 0) { return NumericRhsStep(0, NumericRhsAction::Preserve, assign.value); }
+                    }
+                    ExprKind::Number(unused) {}
+                    ExprKind::StaticU32(unused) {}
+                    ExprKind::Bool(unused) {}
+                    ExprKind::Member(unused) {}
+                    ExprKind::Index(unused) {}
+                    ExprKind::Invoke(unused) {}
+                    ExprKind::Construct(unused) {}
+                    ExprKind::FunctionRef(unused) {}
+                    ExprKind::Cooperate(unused) {}
+                    ExprKind::Target(unused) {}
+                    ExprKind::Unary(unused) {}
+                    ExprKind::Binary(unused) {}
+                    ExprKind::Select(unused) {}
+                }
+                return NumericRhsStep(0, NumericRhsAction::Unknown, assign.value);
+            }
+            if (spelling(storage, assign.operation, "+=")) { return NumericRhsStep(0, NumericRhsAction::Shift, assign.value); }
+            if (spelling(storage, assign.operation, "-=")) { return NumericRhsStep(0, NumericRhsAction::Subtract, assign.value); }
+            if (equal) {
+                match (node<ExprNode>(storage, assign.value.offset).kind) {
+                    ExprKind::Binary(value) {
+                        bool plus = spelling(storage, value.operation, "+");
+                        bool minus = spelling(storage, value.operation, "-");
+                        if (plus || minus) {
+                            if (phase == 0) { return NumericRhsStep(1, NumericRhsAction::Relative, value.left); }
+                            if (phase == 1 && accepted != 0) {
+                                return NumericRhsStep(0, plus ? NumericRhsAction::Shift : NumericRhsAction::Subtract, value.right);
+                            }
+                            if (phase == 1) { return NumericRhsStep(2, NumericRhsAction::Relative, value.right); }
+                            if (phase == 2 && accepted != 0) {
+                                return NumericRhsStep(0, plus ? NumericRhsAction::Shift : NumericRhsAction::Reflect, value.left);
+                            }
+                        }
+                    }
+                    ExprKind::Number(unused) {}
+                    ExprKind::StaticU32(unused) {}
+                    ExprKind::Bool(unused) {}
+                    ExprKind::Name(unused) {}
+                    ExprKind::Member(unused) {}
+                    ExprKind::Index(unused) {}
+                    ExprKind::Call(unused) {}
+                    ExprKind::Invoke(unused) {}
+                    ExprKind::Construct(unused) {}
+                    ExprKind::Specialize(unused) {}
+                    ExprKind::FunctionRef(unused) {}
+                    ExprKind::Cooperate(unused) {}
+                    ExprKind::Target(unused) {}
+                    ExprKind::Unary(unused) {}
+                    ExprKind::Select(unused) {}
+                }
+                if (phase < 3) { return NumericRhsStep(3, NumericRhsAction::Relative, assign.value); }
+                return NumericRhsStep(0, accepted != 0 ? NumericRhsAction::Preserve : NumericRhsAction::Value, assign.value);
+            }
+        }
+        StmtKind::Declare(unused) {}
+        StmtKind::Let(unused) {}
+        StmtKind::Expr(unused) {}
+        StmtKind::If(unused) {}
+        StmtKind::Match(unused) {}
+        StmtKind::While(unused) {}
+        StmtKind::For(unused) {}
+        StmtKind::Parallel(unused) {}
+        StmtKind::Return(unused) {}
+        StmtKind::Break() {}
+        StmtKind::Continue() {}
+        StmtKind::Phase() {}
+        StmtKind::Seek(unused) {}
+    }
+    return NumericRhsStep(0, NumericRhsAction::Unknown, ExprRef(0u64));
+}

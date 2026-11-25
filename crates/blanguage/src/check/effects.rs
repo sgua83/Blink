@@ -1,5 +1,6 @@
 //! 从已声明的 write／inout 参数追踪调用方位置写入，覆盖表达式与各控制流入口。
 use super::*;
+use crate::syntax::wire::{ExprRef, Optional, SignatureNode, Slice, StmtRef, StorageView, Text, TypeRef};
 use std::ops::ControlFlow;
 mod collection;
 mod sources;
@@ -1016,30 +1017,11 @@ pub(super) async fn assigned_parallel(world:&World,lexical:&LexicalScope,name:&s
 }
 
 fn contains_expression(root: &Expr, selected: &Expr) -> bool {
-    if root.same_node(selected) { return true; }
-    match root.kind() {
-        ExprKind::Invoke(callee, args) => contains_expression(&callee, selected) || args.iter().any(|arg| contains_expression(&arg, selected)),
-        ExprKind::Call(_, args) | ExprKind::Specialize(_, _, args) | ExprKind::Cooperate(_, _, args) | ExprKind::Construct(_, args) =>
-            args.iter().any(|arg| contains_expression(&arg, selected)),
-        ExprKind::Target(_, base) | ExprKind::Member(base, _) | ExprKind::Unary(_, base) => contains_expression(&base, selected),
-        ExprKind::Index(a, b) | ExprKind::Binary(_, a, b) => contains_expression(&a, selected) || contains_expression(&b, selected),
-        ExprKind::Select(a, b, c) => contains_expression(&a, selected) || contains_expression(&b, selected) || contains_expression(&c, selected),
-        _ => false,
-    }
+    unsafe { numeric_contains_expression(root.signature_node(), selected.signature_node()) }
 }
+
 fn contains_statement(statement: &Stmt, selected: &Expr) -> bool {
-    let expression = |expr: &Expr| contains_expression(expr, selected);
-    let block = |body: &Block| body.iter().any(|statement| contains_statement(&statement, selected));
-    match statement.kind() {
-        StmtKind::Let(_, _, expr) | StmtKind::Expr(expr) | StmtKind::Return(Some(expr)) | StmtKind::Seek(_, expr) => expression(&expr),
-        StmtKind::Assign(a, _, b) => expression(&a) || expression(&b),
-        StmtKind::If(expr, yes, no) => expression(&expr) || block(&yes) || block(&no),
-        StmtKind::Match(expr, arms) => expression(&expr) || arms.iter().any(|arm| block(&arm.body())),
-        StmtKind::While(expr, body) => expression(&expr) || block(&body),
-        StmtKind::For(_, start, end, body) => expression(&start) || end.as_ref().is_some_and(expression) || block(&body),
-        StmtKind::Parallel(_, domain, body) => domain.count().as_ref().is_some_and(expression) || domain.selection().as_ref().is_some_and(expression) || block(&body),
-        _ => false,
-    }
+    unsafe { numeric_contains_statement(statement.signature_node(), selected.signature_node()) }
 }
 pub(super) fn modified_owners(
     env: &BTreeMap<String, Binding>,
@@ -1076,16 +1058,132 @@ pub(super) fn modified_owners(
 }
 
 
-fn loop_breaks(body:&Block)->bool {
-    body.iter().any(|statement|match statement.kind() {
-        StmtKind::Break=>true,
-        StmtKind::If(_,yes,no)=>loop_breaks(&yes)||loop_breaks(&no),
-        StmtKind::Match(_,arms)=>arms.iter().any(|arm|loop_breaks(&arm.body())),
-        _=>false,
-    })
+fn has_numeric_loop_control(body: &Block, seek: bool) -> bool {
+    unsafe { numeric_loop_control(body.source_view().storage(), body.source_slice(), u32::from(seek)) }
 }
-// 同一位置的变换及已证明不回绕的输入／输出顺序，仍由原数值效果交接。
+
 enum LoopPlace { Stored(Place, usize), Local, Length, Element(DataProjection<'static>, usize) }
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+#[repr(u32)]
+enum NumericKind { Missing, Unknown, Ordered, Assign, Reflect, Shift }
+
+#[derive(Clone, Copy, Default)]
+#[repr(C)]
+struct NumericWide { low: u64, high: u64 }
+
+impl NumericWide {
+    fn signed(self) -> i128 { ((self.high as i128) << 64) | self.low as i128 }
+    fn from_signed(value: i128) -> Self { Self { low: value as u64, high: (value >> 64) as u64 } }
+}
+
+#[derive(Clone, Copy)]
+#[repr(C)]
+struct NumericTransfer {
+    kind: NumericKind, flags: u32, low: NumericWide, high: NumericWide, least: NumericWide, most: NumericWide,
+}
+
+impl NumericTransfer {
+    fn kind(kind: NumericKind, flags: u32) -> Self {
+        Self { kind, flags, low: NumericWide::default(), high: NumericWide::default(),
+            least: NumericWide::default(), most: NumericWide::default() }
+    }
+}
+
+#[allow(dead_code)]
+#[repr(u32)]
+enum NumericProofAction { None, Left, Right, Join, Retain, Shift, Reflect }
+
+#[repr(C)]
+struct NumericCombination { effect: NumericTransfer, proof: NumericProofAction }
+
+#[derive(Default)]
+#[repr(C)]
+struct NumericRange { lower: u32, upper: u32 }
+
+impl From<&bounds::Proof> for NumericRange {
+    fn from(proof: &bounds::Proof) -> Self {
+        Self { lower: proof.unsigned_minimum(0), upper: proof.unsigned_maximum(0) }
+    }
+}
+
+#[repr(C)]
+struct NumericIterations { present: u32, count: u64 }
+
+#[repr(C)]
+struct NumericRanges { present: u32, body: NumericRange, header: NumericRange }
+
+#[repr(C)]
+struct NumericRetention { flags: u32, proof: NumericProofAction }
+
+#[derive(Clone, Copy)]
+#[allow(dead_code)]
+#[repr(u32)]
+enum NumericTruth { Absent, Conditional, False, True }
+
+#[derive(Default)]
+#[repr(C)]
+struct NumericPathCursor { index: u64, arm: u64, phase: u32 }
+
+#[allow(dead_code)]
+#[repr(u32)]
+enum NumericPathAction {
+    Next, Stop, Expression, Target, Assignment, Declare, Let, Condition,
+    Yes, No, Arm, Reenter, Nested, NestedPoint, ObserveLoop, Finish,
+}
+
+#[repr(C)]
+struct NumericPathStep {
+    cursor: NumericPathCursor,
+    action: NumericPathAction,
+    statement: StmtRef,
+    value: ExprRef,
+    body: Slice,
+    binding: Optional<Text>,
+    variant: Text,
+    annotation: Optional<TypeRef>,
+    local: u32,
+}
+
+#[allow(dead_code)]
+#[repr(u32)]
+enum NumericRhsAction { Unknown, Preserve, Relative, Shift, Subtract, Reflect, Value, Resize, Length }
+
+#[repr(C)]
+struct NumericRhsStep { phase: u32, action: NumericRhsAction, value: ExprRef }
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.source_writes::numeric_shift"]
+    fn numeric_shift(amount: u32, subtract: u32) -> NumericTransfer;
+    #[link_name = "bootstrap.source_writes::numeric_identity"]
+    fn numeric_identity(effect: NumericTransfer) -> bool;
+    #[link_name = "bootstrap.source_writes::numeric_zero_delta"]
+    fn numeric_zero_delta(effect: NumericTransfer) -> bool;
+    #[link_name = "bootstrap.source_writes::numeric_then"]
+    fn numeric_then(left: NumericTransfer, right: NumericTransfer) -> NumericCombination;
+    #[link_name = "bootstrap.source_writes::numeric_join"]
+    fn numeric_join(left: NumericTransfer, right: NumericTransfer) -> NumericCombination;
+    #[link_name = "bootstrap.source_writes::numeric_nested_order"]
+    fn numeric_nested_order(effect: NumericTransfer, guard: NumericRange, assigned: NumericRange) -> NumericTransfer;
+    #[link_name = "bootstrap.source_writes::numeric_iterations"]
+    fn numeric_iterations(effect: NumericTransfer, input: NumericRange, guard: NumericRange) -> NumericIterations;
+    #[link_name = "bootstrap.source_writes::numeric_ranges"]
+    fn numeric_ranges(effect: NumericTransfer, input: NumericRange, iterations: NumericIterations) -> NumericRanges;
+    #[link_name = "bootstrap.source_writes::numeric_retention"]
+    fn numeric_retention(effect: NumericTransfer, input: NumericRange, guard: NumericRange, bounded: u32) -> NumericRetention;
+    #[link_name = "bootstrap.source_writes::numeric_contains_expression"]
+    fn numeric_contains_expression(root: SignatureNode, selected: SignatureNode) -> bool;
+    #[link_name = "bootstrap.source_writes::numeric_contains_statement"]
+    fn numeric_contains_statement(root: SignatureNode, selected: SignatureNode) -> bool;
+    #[link_name = "bootstrap.source_writes::numeric_loop_control"]
+    fn numeric_loop_control(storage: StorageView, body: Slice, seek: u32) -> bool;
+    #[link_name = "bootstrap.source_writes::numeric_path_step"]
+    fn numeric_path_step(storage: StorageView, block: Slice, cursor: NumericPathCursor, truth: NumericTruth,
+        reaches: u32, point: Optional<SignatureNode>) -> NumericPathStep;
+    #[link_name = "bootstrap.source_writes::numeric_rhs_step"]
+    fn numeric_rhs_step(source: SignatureNode, phase: u32, accepted: u32, length: u32, same_name: u32) -> NumericRhsStep;
+}
+
 
 #[derive(Clone)]
 enum NumericEffect {
@@ -1095,82 +1193,115 @@ enum NumericEffect {
     Reflect(u32),
     Shift { low: i128, high: i128, least: i128, most: i128 },
 }
+
 impl NumericEffect {
-
-    fn iteration_bound(&self,input:&bounds::Proof,guard:&bounds::Proof)->Option<i128> {
-        let Self::Shift{low,high,least,most}=self else{return None;};
-        let(first,last)=(i128::from(input.unsigned_minimum(0)),i128::from(input.unsigned_maximum(0)));
-        let(lower,upper)=(i128::from(guard.unsigned_minimum(0)),i128::from(guard.unsigned_maximum(0)));
-        if last<lower||first>upper{return Some(0);}
-        if lower.checked_add(*least)?<0||upper.checked_add(*most)?>i128::from(u32::MAX){return None;}
-        if *high<0{Some((last-lower)/high.checked_neg()?+1)}
-        else if *low>0{Some((upper-first)/low+1)}else{None}
-    }
-    fn bounded_ranges(&self,input:&bounds::Proof,iterations:i128)->Option<((u32,u32),(u32,u32))> {
-        let Self::Shift{low,high,least,most}=self else{return None;};
-        let(first,last)=(i128::from(input.unsigned_minimum(0)),i128::from(input.unsigned_maximum(0)));
-        // A zero-iteration body has no reachable values; entry is also its sound overapproximation.
-        let before=if iterations==0{0}else{iterations-1};
-        let body_low=first.checked_add(before.checked_mul(*low)?.min(0))?;
-        let body_high=last.checked_add(before.checked_mul(*high)?.max(0))?;
-        if body_low.checked_add(*least)?<0||body_high.checked_add(*most)?>i128::from(u32::MAX){return None;}
-        let header_low=first.checked_add(iterations.checked_mul(*low)?.min(0))?;
-        let header_high=last.checked_add(iterations.checked_mul(*high)?.max(0))?;
-        Some(((body_low as u32,body_high as u32),(header_low as u32,header_high as u32)))
+    fn transfer(&self) -> NumericTransfer {
+        match *self {
+            Self::Unknown => NumericTransfer::kind(NumericKind::Unknown, 0),
+            Self::Ordered { lower, upper } =>
+                NumericTransfer::kind(NumericKind::Ordered, u32::from(lower) | (u32::from(upper) << 1)),
+            Self::Assign(_) => NumericTransfer::kind(NumericKind::Assign, 0),
+            Self::Reflect(amount) => NumericTransfer::kind(NumericKind::Reflect, amount),
+            Self::Shift { low, high, least, most } => NumericTransfer {
+                kind: NumericKind::Shift, flags: 0,
+                low: NumericWide::from_signed(low), high: NumericWide::from_signed(high),
+                least: NumericWide::from_signed(least), most: NumericWide::from_signed(most),
+            },
+        }
     }
 
-    fn retained(&self,proof:&mut bounds::Proof,guard:&bounds::Proof,bounded:bool)->(bool,bool) {
-        match self {
-            Self::Shift{low,high,least,most}=>{
-                let(lower,upper)=(*low>=0,*high<=0);
-                let low=guard.unsigned_minimum(0).max(if lower{proof.unsigned_minimum(0)}else{0});
-                let high=guard.unsigned_maximum(0).min(if upper{proof.unsigned_maximum(0)}else{u32::MAX});
-                if bounded||i128::from(low)+least>=0&&i128::from(high)+most<=i128::from(u32::MAX){(lower,upper)}else{(false,false)}
-            },
-            Self::Reflect(amount)=>{let reflected=proof.unsigned_reflected(*amount);proof.join(&reflected,1,None);(true,true)},
-            Self::Assign(repeated)=>{proof.join(repeated,1,None);(true,true)},
-            Self::Ordered{lower,upper}=>(*lower,*upper),
-            Self::Unknown=>(false,false),
-        }
+    fn from_transfer(transfer: NumericTransfer, proof: Option<bounds::Proof>) -> Option<Self> {
+        Some(match transfer.kind {
+            NumericKind::Missing => return None,
+            NumericKind::Unknown => Self::Unknown,
+            NumericKind::Ordered => Self::Ordered { lower: transfer.flags & 1 != 0, upper: transfer.flags & 2 != 0 },
+            NumericKind::Assign => Self::Assign(proof.unwrap()),
+            NumericKind::Reflect => Self::Reflect(transfer.flags),
+            NumericKind::Shift => Self::Shift { low: transfer.low.signed(), high: transfer.high.signed(),
+                least: transfer.least.signed(), most: transfer.most.signed() },
+        })
     }
-    fn shift(amount: i128) -> Self { Self::Shift { low: amount, high: amount, least: amount.min(0), most: amount.max(0) } }
-    fn then(self, next: Self) -> Self {
-        match (&self,&next) {
-            (_,Self::Assign(_))=>return next,
-            (Self::Assign(_)|Self::Reflect(_)|Self::Ordered{..},Self::Shift{low:0,high:0,least:0,most:0})=>return self,
-            (Self::Shift{low:0,high:0,least:0,most:0},Self::Ordered{..})=>return next,
-            (Self::Assign(value),Self::Ordered{lower,upper})=>{
-                let mut proof=bounds::Proof::default();proof.retain_loop_bounds(value,0,*lower,*upper);return Self::Assign(proof);
-            },
-            (Self::Ordered{lower:a,upper:b},Self::Ordered{lower:c,upper:d})=>return if (*a&&*c)||(*b&&*d){Self::Ordered{lower:*a&&*c,upper:*b&&*d}}else{Self::Unknown},
-            (Self::Assign(value),Self::Shift{low,high,..})=>return Self::Assign(value.unsigned_shifted(*low,*high)),
-            (Self::Shift{low:0,high:0,least:0,most:0},Self::Reflect(_))=>return next,
-            (Self::Reflect(a),Self::Reflect(b)) if a==b=>return self,
-            _=>{},
-        }
-        let (Self::Shift {low:a,high:b,least:c,most:d}, Self::Shift {low:e,high:f,least:g,most:h}) = (self,next) else { return Self::Unknown; };
-        let (Some(low),Some(high),Some(least),Some(most)) = (a.checked_add(e),b.checked_add(f),a.checked_add(g),b.checked_add(h)) else { return Self::Unknown; };
-        Self::Shift {low,high,least:c.min(least),most:d.max(most)}
+
+    fn into_proof(self) -> Option<bounds::Proof> {
+        match self { Self::Assign(proof) => Some(proof), _ => None }
     }
-    fn join(self, other: Self) -> Self {
-        match (self,other) {
-            (Self::Assign(mut a),Self::Assign(b))=>{a.join(&b,1,None);Self::Assign(a)},
-            (Self::Ordered{lower:a,upper:b},Self::Ordered{lower:c,upper:d})=>if (a&&c)||(b&&d){Self::Ordered{lower:a&&c,upper:b&&d}}else{Self::Unknown},
-            (a@Self::Ordered{..},Self::Shift{low:0,high:0,least:0,most:0})
-            |(Self::Shift{low:0,high:0,least:0,most:0},a@Self::Ordered{..})=>a,
-            (Self::Reflect(a),Self::Reflect(b)) if a==b=>Self::Reflect(a),
-            (a@Self::Reflect(_),Self::Shift{low:0,high:0,least:0,most:0})
-            |(Self::Shift{low:0,high:0,least:0,most:0},a@Self::Reflect(_))=>a,
-            (a@Self::Assign(_),Self::Shift{low:0,high:0,least:0,most:0})
-            |(Self::Shift{low:0,high:0,least:0,most:0},a@Self::Assign(_))=>a,
-            (Self::Shift{low:a,high:b,least:c,most:d},Self::Shift{low:e,high:f,least:g,most:h})=>
-                Self::Shift{low:a.min(e),high:b.max(f),least:c.min(g),most:d.max(h)},
-            _=>Self::Unknown,
+
+    fn shift(amount: u32, subtract: bool) -> Self {
+        Self::from_transfer(unsafe { numeric_shift(amount, u32::from(subtract)) }, None).unwrap()
+    }
+
+    fn preserve() -> Self { Self::shift(0, false) }
+    fn is_identity(&self) -> bool { unsafe { numeric_identity(self.transfer()) } }
+    fn zero_delta(&self) -> bool { unsafe { numeric_zero_delta(self.transfer()) } }
+
+    fn combine(left: Option<Self>, right: Option<Self>, combined: NumericCombination) -> Option<Self> {
+        let proof = match combined.proof {
+            NumericProofAction::None => None,
+            NumericProofAction::Left => left.and_then(Self::into_proof),
+            NumericProofAction::Right => right.and_then(Self::into_proof),
+            NumericProofAction::Join => {
+                let mut proof = left.unwrap().into_proof().unwrap();
+                proof.join(&right.unwrap().into_proof().unwrap(), 1, None);
+                Some(proof)
+            }
+            NumericProofAction::Retain => {
+                let mut proof = bounds::Proof::default();
+                let flags = right.unwrap().transfer().flags;
+                proof.retain_loop_bounds(&left.unwrap().into_proof().unwrap(), 0, flags & 1 != 0, flags & 2 != 0);
+                Some(proof)
+            }
+            NumericProofAction::Shift => {
+                let shift = right.unwrap().transfer();
+                Some(left.unwrap().into_proof().unwrap().unsigned_shifted(shift.low.signed(), shift.high.signed()))
+            }
+            NumericProofAction::Reflect => unreachable!(),
+        };
+        Self::from_transfer(combined.effect, proof)
+    }
+
+    fn then(self, other: Self) -> Self {
+        let combined = unsafe { numeric_then(self.transfer(), other.transfer()) };
+        Self::combine(Some(self), Some(other), combined).unwrap()
+    }
+
+    fn nested_order(effect: Option<&Self>, guard: &bounds::Proof) -> Self {
+        let transfer = transfer_path(effect);
+        let assigned = match effect { Some(Self::Assign(proof)) => proof.into(), _ => NumericRange::default() };
+        Self::from_transfer(unsafe { numeric_nested_order(transfer, guard.into(), assigned) }, None).unwrap()
+    }
+
+    fn iteration_bound(&self, input: &bounds::Proof, guard: &bounds::Proof) -> Option<u64> {
+        let result = unsafe { numeric_iterations(self.transfer(), input.into(), guard.into()) };
+        (result.present != 0).then_some(result.count)
+    }
+
+    fn bounded_ranges(&self, input: &bounds::Proof, iterations: u64) -> Option<((u32, u32), (u32, u32))> {
+        let result = unsafe { numeric_ranges(self.transfer(), input.into(), NumericIterations { present: 1, count: iterations }) };
+        (result.present != 0).then_some(((result.body.lower, result.body.upper), (result.header.lower, result.header.upper)))
+    }
+
+    fn retained(&self, proof: &mut bounds::Proof, guard: &bounds::Proof, bounded: bool) -> (bool, bool) {
+        let transfer = self.transfer();
+        let result = unsafe { numeric_retention(transfer, (&*proof).into(), guard.into(), u32::from(bounded)) };
+        match result.proof {
+            NumericProofAction::Join => proof.join(match self {
+                Self::Assign(assigned) => assigned,
+                _ => unreachable!(),
+            }, 1, None),
+            NumericProofAction::Reflect => proof.join(&proof.unsigned_reflected(transfer.flags), 1, None),
+            _ => {}
         }
+        (result.flags & 1 != 0, result.flags & 2 != 0)
     }
 }
-fn join_numeric_paths(a: Option<NumericEffect>, b: Option<NumericEffect>) -> Option<NumericEffect> {
-    match (a,b) { (Some(a),Some(b))=>Some(a.join(b)), (a,None)|(None,a)=>a }
+
+fn transfer_path(effect: Option<&NumericEffect>) -> NumericTransfer {
+    effect.map_or_else(|| NumericTransfer::kind(NumericKind::Missing, 0), NumericEffect::transfer)
+}
+
+fn join_numeric_paths(left: Option<NumericEffect>, right: Option<NumericEffect>) -> Option<NumericEffect> {
+    let joined = unsafe { numeric_join(transfer_path(left.as_ref()), transfer_path(right.as_ref())) };
+    NumericEffect::combine(left, right, joined)
 }
 impl Builder<'_> {
     fn loop_index_operand(&self,index:&Expr,writes:&[Write])->Result<Option<bounds::Operand>> {
@@ -1366,179 +1497,297 @@ impl Builder<'_> {
         }) {
             if unsafe { self.world.call(self.numeric_write(write,name,target,writes)).await }? { return Ok(NumericEffect::Unknown); }
         }
-        Ok(NumericEffect::shift(0))
+        Ok(NumericEffect::preserve())
     }
-    async fn numeric_assigned_value(&self,rhs:&Expr,writes:&[Write],absolute:bool)->Result<NumericEffect> {
-        let value=if let Some(value)=self.constant_index(rhs,writes)? {bounds::Proof::unsigned(value,value)}
-        else if absolute && let ExprKind::Name(source)=rhs.kind() {
+
+    async fn numeric_assigned_value(&self, rhs: &Expr, writes: &[Write], absolute: bool) -> Result<NumericEffect> {
+        let value = if let Some(value) = self.constant_index(rhs, writes)? {
+            bounds::Proof::unsigned(value, value)
+        } else if absolute && let ExprKind::Name(source) = rhs.kind() {
             match self.env.get(source) {
-                Some(Binding::Value(value)) if value.ty==Ty::scalar(Scalar::U32)=>bounds::Proof::capture(value),
-                Some(Binding::Owned(value)) if value.place.ty()==&Ty::scalar(Scalar::U32)=>{
-                    for write in writes {if unsafe { self.world.call(self.numeric_write(write,source,&LoopPlace::Stored(value.place.clone(),0),writes)).await }? {return Ok(NumericEffect::Unknown);}}
+                Some(Binding::Value(value)) if value.ty == Ty::scalar(Scalar::U32) => bounds::Proof::capture(value),
+                Some(Binding::Owned(value)) if value.place.ty() == &Ty::scalar(Scalar::U32) => {
+                    let place = LoopPlace::Stored(value.place.clone(), 0);
+                    for write in writes {
+                        if unsafe { self.world.call(self.numeric_write(write, source, &place, writes)).await }? {
+                            return Ok(NumericEffect::Unknown);
+                        }
+                    }
                     value.proof.clone()
-                },
-                _=>return Ok(NumericEffect::Unknown),
+                }
+                _ => return Ok(NumericEffect::Unknown),
             }
-        } else {return Ok(NumericEffect::Unknown);};
+        } else {
+            return Ok(NumericEffect::Unknown);
+        };
         Ok(NumericEffect::Assign(value))
     }
-    async fn numeric_assignment_effect(&self, lhs: &Expr, op: &str, rhs: &Expr, name: &str, target: &LoopPlace, writes: &[Write], absolute: bool, scope:&Scope<'_, '_>) -> Result<NumericEffect> {
-        if matches!(target,LoopPlace::Element(..))&&let Some(local)=unsafe { self.world.call(scope.local_value_write(lhs)).await }? {
-            return Ok(if local{NumericEffect::shift(0)}else{NumericEffect::Unknown});
+
+    async fn numeric_assignment_effect(
+        &self, statement: &Stmt, name: &str, target: &LoopPlace, writes: &[Write], absolute: bool,
+        scope: &Scope<'_, '_>,
+    ) -> Result<NumericEffect> {
+        let StmtKind::Assign(lhs, _, rhs) = statement.kind() else { unreachable!() };
+        if matches!(target, LoopPlace::Element(..))
+            && let Some(local) = unsafe { self.world.call(scope.local_value_write(&lhs)).await }? {
+            return Ok(if local { NumericEffect::preserve() } else { NumericEffect::Unknown });
         }
-        if matches!(target,LoopPlace::Length) {
-            if !matches!(lhs.kind(),ExprKind::Name(bound)if bound==name) || scope.bindings.iter().any(|(bound,_)|*bound==name) {return Ok(NumericEffect::shift(0));}
-            if op!="=" {return Ok(NumericEffect::Unknown);}
-            let length=match rhs.kind() {
-                ExprKind::Call(function,args) if function=="resize" && args.len()==3 && unsafe { self.world.call(scope.named(function,rhs.span())).await }?.is_none()
-                    && scope.world.resolve(function,scope.lexical.module(),scope.lexical.imports(),true).is_missing()=>&args.at(1),
-                ExprKind::Specialize(function,_,args) if function=="dataset" && !args.is_empty()=>&args.at(0),
-                ExprKind::Name(source) if source==name=>return Ok(NumericEffect::shift(0)),
-                _=>return Ok(NumericEffect::Unknown),
-            };
-            if matches!(&length.kind(),ExprKind::Name(source)if scope.bindings.iter().any(|(bound,_)|bound==source)) {return Ok(NumericEffect::Unknown);}
-            return unsafe { self.world.call(self.numeric_assigned_value(length,writes,absolute)).await };
-        };
-        let (ty,parts,component)=match target {
-            LoopPlace::Local=>{
-                if address_write(lhs){return Ok(NumericEffect::Unknown);}
-                if assigned_root(&lhs).as_deref()!=Some(name){return Ok(NumericEffect::shift(0));}
-                if !matches!(lhs.kind(),ExprKind::Name(bound)if bound==name)||unsafe { self.world.call(scope.named(name,lhs.span())).await }?!=Some(Ty::scalar(Scalar::U32)){return Ok(NumericEffect::Unknown);}
-                (Ty::scalar(Scalar::U32),vec![vec![0]],0)
-            },
-            LoopPlace::Stored(owner,component)=>{
-                let Some((ty,parts))=unsafe { self.world.call(self.written_projection(lhs,name,owner,None,writes)).await }?else{return Ok(NumericEffect::shift(0));};(ty,parts,*component)
-            },
-            LoopPlace::Element(expected,component)=>{
-                let written=Write::Position{place:lhs.clone(),call:None,contents:false,iterator:None,when:None,local_value:false};
-                if !unsafe { self.world.call(self.numeric_write(&written,name,target,writes)).await }?{return Ok(NumericEffect::shift(0));}
-                let Some((actual,_,_))=unsafe { self.world.call(self.loop_write_projection(lhs,&async |index,_|self.loop_index_operand(index,writes).map(|index|(index,None)))).await }?else{return Ok(NumericEffect::Unknown);};
-                if expected.base!=actual.base||expected.resource.restricted(&self.path)!=actual.resource.restricted(&self.path)||!expected.index.zip(actual.index).is_some_and(|(a,b)|bounds::Condition::index_equal(a,b).truth_in(&self.path)==Some(true)){return Ok(NumericEffect::Unknown);}
-                (actual.value.0,actual.value.1,*component)
-            },
-            LoopPlace::Length=>return Ok(NumericEffect::Unknown),
-        };
-        if !parts.iter().any(|part|part.contains(&component)) { return Ok(NumericEffect::shift(0)); }
-        // 未知地址可能写此分量；单个候选分量不表示该次写必然选中了它。
-        if address_write(lhs){return Ok(NumericEffect::Unknown);}
-        // 动态候选位置不被当作同一实际分量。
-        if parts.iter().any(|part|part.contains(&component)&&part.len()!=1) { return Ok(NumericEffect::Unknown); }
-        let relative=async |base:&Expr|->Result<bool>{Ok(match target{
-            LoopPlace::Local=>matches!(base.kind(),ExprKind::Name(bound)if bound==name),
-            LoopPlace::Stored(owner,_)=>unsafe { self.world.call(self.written_projection(base,name,owner,None,writes)).await }?.is_some_and(|(source,selected)|source==ty&&selected==parts),
-            LoopPlace::Element(expected,_)=>unsafe { self.world.call(self.loop_write_projection(base,&async |index,_|self.loop_index_operand(index,writes).map(|index|(index,None)))).await }?.is_some_and(|(actual,_,_)|actual.base==expected.base&&actual.resource.restricted(&self.path)==expected.resource.restricted(&self.path)&&actual.index.zip(expected.index).is_some_and(|(a,b)|bounds::Condition::index_equal(a,b).truth_in(&self.path)==Some(true))&&actual.value.0==ty&&actual.value.1==parts),
-            LoopPlace::Length=>false,
-        })};
-        let (sign,amount)=match op {
-            "+=" => (1,self.constant_index(rhs,writes)?),
-            "-=" => (-1,self.constant_index(rhs,writes)?),
-            "=" => match rhs.kind() {
-                ExprKind::Binary(operation,base,amount) if matches!(operation,"+"|"-")&&relative(&base).await? => (if operation=="+"{1}else{-1},self.constant_index(&amount,writes)?),
-                ExprKind::Binary(operation,amount,base) if operation=="+"&&relative(&base).await? => (1,self.constant_index(&amount,writes)?),
-                ExprKind::Binary(operation,amount,base) if operation=="-"&&relative(&base).await? =>
-                    return Ok(self.constant_index(&amount,writes)?.map(NumericEffect::Reflect).unwrap_or(NumericEffect::Unknown)),
-                _ if relative(rhs).await? => (1,Some(0)),
-                _ => {
-                    return unsafe { self.world.call(self.numeric_assigned_value(rhs,writes,absolute)).await };
-                },
-            },
-            _ => return Ok(NumericEffect::Unknown),
-        };
-        Ok(amount.map(|amount|NumericEffect::shift(i128::from(amount)*sign)).unwrap_or(NumericEffect::Unknown))
-    }
-    async fn numeric_loop_paths(&self, body:&Block, mut next:Option<NumericEffect>, continues:&mut Option<NumericEffect>, name:&str, target:&LoopPlace, writes:&[Write], absolute:bool, scope:&mut Scope<'_, '_>, path:&bounds::Clause,point:Option<&Expr>,observed:&mut Option<NumericEffect>)->Result<Option<NumericEffect>> {
-        let outer = scope.bindings.len();
-        for (statement_at,statement) in body.iter().enumerate() {
-            let Some(before)=next.take() else { break; };
-            if let(Some(point),StmtKind::While(condition,_))=(point,statement.kind()) && point.same_node(&condition) {
-                *observed=join_numeric_paths(observed.take(),Some(before));
-                break;
+        let length = matches!(target, LoopPlace::Length);
+        let projection = match target {
+            LoopPlace::Length => {
+                if !matches!(lhs.kind(), ExprKind::Name(bound) if bound == name)
+                    || scope.bindings.iter().any(|(bound, _)| bound == name) {
+                    return Ok(NumericEffect::preserve());
+                }
+                None
             }
-            next=match statement.kind() {
-                StmtKind::Assign(lhs,op,rhs)=>{
-                    let before=before.then(unsafe { self.world.call(self.numeric_expression_effect(&lhs,name,target,writes)).await }?);
-                    if point.is_some_and(|point|lhs.same_node(point)){*observed=join_numeric_paths(observed.take(),Some(before.clone()));}
-                    let rhs_effect=unsafe { self.world.call(self.numeric_expression_effect(&rhs,name,target,writes)).await }?;
-                    if point.is_some_and(|point|contains_expression(&rhs,point))&&matches!(rhs_effect,NumericEffect::Shift{low:0,high:0,..}){*observed=join_numeric_paths(observed.take(),Some(before.clone()));}
-                    Some(before.then(rhs_effect)
-                        .then(unsafe { self.world.call(self.numeric_assignment_effect(&lhs,op,&rhs,name,target,writes,absolute,scope)).await }?))
-                },
-                StmtKind::Let(ty,local,expr)=>{
-                    let effect=unsafe { self.world.call(self.numeric_expression_effect(&expr,name,target,writes)).await }?;
-                    if point.is_some_and(|point|contains_expression(&expr,point))&&matches!(effect,NumericEffect::Shift{low:0,high:0,..}){*observed=join_numeric_paths(observed.take(),Some(before.clone()));}
-                    let next=before.then(effect);
-                    scope.bindings.push((local.to_string(),Local::Initialized(ty,expr,body.slice(statement_at+1..))));
-                    Some(next)
-                },
-                StmtKind::Declare(ty,local)=>{scope.bindings.push((local.to_string(),Local::Typed(ty)));Some(before)},
-                StmtKind::Expr(expr)=>{
-                    let effect=unsafe { self.world.call(self.numeric_expression_effect(&expr,name,target,writes)).await }?;
-                    if point.is_some_and(|point|contains_expression(&expr,point))&&matches!(effect,NumericEffect::Shift{low:0,high:0,..}){*observed=join_numeric_paths(observed.take(),Some(before.clone()));}
-                    Some(before.then(effect))
-                },
-                StmtKind::If(condition,yes,no)=>{
-                    let effect=unsafe { self.world.call(self.numeric_expression_effect(&condition,name,target,writes)).await }?;
-                    if point.is_some_and(|point|contains_expression(&condition,point))&&matches!(effect,NumericEffect::Shift{low:0,high:0,..}){*observed=join_numeric_paths(observed.take(),Some(before.clone()));}
-                    let before=before.then(effect);
-                    let condition=unsafe { self.world.call(scope.writes_expression(&condition,&mut async |_: Write|Ok(()),match target{LoopPlace::Element(target,_)=>Some((target,path)),_=>None},Access::Value)).await }?.unwrap_or_default();
-                    let truth=condition.truth_in(path);
-                    let yes=if truth==Some(false){None}else{unsafe { self.world.call(self.numeric_loop_paths(&yes,Some(before.clone()),continues,name,target,writes,absolute,scope,&condition.assume(path,true),point,observed)).await }?};
-                    let no=if truth==Some(true){None}else{unsafe { self.world.call(self.numeric_loop_paths(&no,Some(before),continues,name,target,writes,absolute,scope,&condition.assume(path,false),point,observed)).await }?};
-                    join_numeric_paths(yes,no)
-                },
-                StmtKind::Match(value,arms)=>{
-                    let before=before.then(unsafe { self.world.call(self.numeric_expression_effect(&value,name,target,writes)).await }?);let mut next=None;
-                    for arm in arms {
-                        if let Some(local)=arm.binding(){scope.bindings.push((local.to_owned(),Local::Payload(value.clone(),arm.variant().to_owned())));}
-                        next=join_numeric_paths(next,unsafe { self.world.call(self.numeric_loop_paths(&arm.body(),Some(before.clone()),continues,name,target,writes,absolute,scope,path,point,observed)).await }?);
-                        if arm.binding().is_some(){scope.bindings.pop();}
-                    }next
-                },
-                StmtKind::Seek(_,expr)=>{
-                    let before=before.then(unsafe { self.world.call(self.numeric_expression_effect(&expr,name,target,writes)).await }?);
-                    *continues=join_numeric_paths(continues.take(),Some(before));None
-                },
-                StmtKind::Continue=>{*continues=join_numeric_paths(continues.take(),Some(before));None},
-                StmtKind::Break|StmtKind::Return(_)=>None,
-                StmtKind::While(_,body)|StmtKind::For(_,_,_,body)|StmtKind::Parallel(_,_,body)=>{
-                    let mut changed=false;
-                    for write in writes.iter().filter(|write|contains_statement(&statement,match write {
-                        Write::External{call,..}|Write::Memory{call,..}|Write::Generator(call)=>call,
-                        Write::Position{call,place,..}=>call.as_ref().unwrap_or(place),
-                        Write::Move{place,..}=>place,
+            LoopPlace::Local => {
+                if address_write(&lhs) { return Ok(NumericEffect::Unknown); }
+                if assigned_root(&lhs).as_deref() != Some(name) { return Ok(NumericEffect::preserve()); }
+                if !matches!(lhs.kind(), ExprKind::Name(bound) if bound == name)
+                    || unsafe { self.world.call(scope.named(name, lhs.span())).await }? != Some(Ty::scalar(Scalar::U32)) {
+                    return Ok(NumericEffect::Unknown);
+                }
+                Some((Ty::scalar(Scalar::U32), vec![vec![0]], 0))
+            }
+            LoopPlace::Stored(owner, component) => {
+                let Some((ty, parts)) = unsafe { self.world.call(self.written_projection(&lhs, name, owner, None, writes)).await }?
+                    else { return Ok(NumericEffect::preserve()); };
+                Some((ty, parts, *component))
+            }
+            LoopPlace::Element(expected, component) => {
+                let written = Write::Position { place: lhs.clone(), call: None, contents: false,
+                    iterator: None, when: None, local_value: false };
+                if !unsafe { self.world.call(self.numeric_write(&written, name, target, writes)).await }? {
+                    return Ok(NumericEffect::preserve());
+                }
+                let Some((actual, _, _)) = unsafe { self.world.call(self.loop_write_projection(&lhs,
+                    &async |index, _| self.loop_index_operand(index, writes).map(|index| (index, None)))).await }?
+                    else { return Ok(NumericEffect::Unknown); };
+                if expected.base != actual.base || expected.resource.restricted(&self.path) != actual.resource.restricted(&self.path)
+                    || !expected.index.zip(actual.index).is_some_and(|(a, b)|
+                        bounds::Condition::index_equal(a, b).truth_in(&self.path) == Some(true)) {
+                    return Ok(NumericEffect::Unknown);
+                }
+                Some((actual.value.0, actual.value.1, *component))
+            }
+        };
+        if let Some((_, parts, component)) = &projection {
+            if !parts.iter().any(|part| part.contains(component)) { return Ok(NumericEffect::preserve()); }
+            // A possible location is not necessarily the position selected by this write.
+            if address_write(&lhs) || parts.iter().any(|part| part.contains(component) && part.len() != 1) {
+                return Ok(NumericEffect::Unknown);
+            }
+        }
+        let source = statement.signature_node();
+        let same_name = u32::from(matches!(rhs.kind(), ExprKind::Name(source) if source == name));
+        let mut phase = 0;
+        let mut accepted = false;
+        loop {
+            let step = unsafe { numeric_rhs_step(source, phase, u32::from(accepted), u32::from(length), same_name) };
+            phase = step.phase;
+            let value: Expr = statement.child(step.value.offset);
+            match step.action {
+                NumericRhsAction::Unknown => return Ok(NumericEffect::Unknown),
+                NumericRhsAction::Preserve => return Ok(NumericEffect::preserve()),
+                NumericRhsAction::Relative => {
+                    let (ty, parts, _) = projection.as_ref().unwrap();
+                    accepted = match target {
+                        LoopPlace::Local => matches!(value.kind(), ExprKind::Name(bound) if bound == name),
+                        LoopPlace::Stored(owner, _) => unsafe {
+                            self.world.call(self.written_projection(&value, name, owner, None, writes)).await
+                        }?.is_some_and(|(source, selected)| source == *ty && selected == *parts),
+                        LoopPlace::Element(expected, _) => unsafe {
+                            self.world.call(self.loop_write_projection(&value,
+                                &async |index, _| self.loop_index_operand(index, writes).map(|index| (index, None)))).await
+                        }?.is_some_and(|(actual, _, _)| actual.base == expected.base
+                            && actual.resource.restricted(&self.path) == expected.resource.restricted(&self.path)
+                            && actual.index.zip(expected.index).is_some_and(|(a, b)|
+                                bounds::Condition::index_equal(a, b).truth_in(&self.path) == Some(true))
+                            && actual.value.0 == *ty && actual.value.1 == *parts),
+                        LoopPlace::Length => unreachable!(),
+                    };
+                }
+                NumericRhsAction::Shift | NumericRhsAction::Subtract | NumericRhsAction::Reflect => {
+                    let Some(amount) = self.constant_index(&value, writes)? else { return Ok(NumericEffect::Unknown); };
+                    return Ok(match step.action {
+                        NumericRhsAction::Reflect => NumericEffect::Reflect(amount),
+                        NumericRhsAction::Subtract => NumericEffect::shift(amount, true),
+                        _ => NumericEffect::shift(amount, false),
+                    });
+                }
+                NumericRhsAction::Resize => {
+                    accepted = unsafe { self.world.call(scope.named("resize", value.span())).await }?.is_none()
+                        && scope.world.resolve("resize", scope.lexical.module(), scope.lexical.imports(), true).is_missing();
+                }
+                NumericRhsAction::Length => {
+                    if matches!(value.kind(), ExprKind::Name(source) if scope.bindings.iter().any(|(bound, _)| bound == source)) {
+                        return Ok(NumericEffect::Unknown);
+                    }
+                    return unsafe { self.world.call(self.numeric_assigned_value(&value, writes, absolute)).await };
+                }
+                NumericRhsAction::Value => {
+                    return unsafe { self.world.call(self.numeric_assigned_value(&value, writes, absolute)).await };
+                }
+            }
+        }
+    }
+
+    async fn numeric_loop_paths(
+        &self, body: &Block, mut next: Option<NumericEffect>, continues: &mut Option<NumericEffect>, name: &str,
+        target: &LoopPlace, writes: &[Write], absolute: bool, scope: &mut Scope<'_, '_>,
+        path: &bounds::Clause, point: Option<&Expr>, observed: &mut Option<NumericEffect>,
+    ) -> Result<Option<NumericEffect>> {
+        let outer = scope.bindings.len();
+        let view = body.source_view();
+        let storage = view.storage();
+        let selected = Optional { present: u32::from(point.is_some()),
+            value: point.map_or(SignatureNode { storage, offset: 0 }, Expr::signature_node) };
+        let mut cursor = NumericPathCursor::default();
+        let mut truth = NumericTruth::Absent;
+        let mut condition = bounds::Condition::default();
+        let mut branches = None;
+        let mut nested = None;
+        loop {
+            let step = unsafe { numeric_path_step(storage, body.source_slice(), cursor, truth,
+                u32::from(next.is_some()), selected) };
+            cursor = step.cursor;
+            let statement = || -> Stmt { view.node(step.statement.offset) };
+            let child = || view.node(step.value.offset);
+            let block = || view.list(step.body);
+            let text = |value| view.text(value).to_owned();
+            match step.action {
+                NumericPathAction::Next => {
+                    if let Some(joined) = branches.take() {
+                        next = joined;
+                        condition = bounds::Condition::default();
+                    }
+                    if let Some(nested) = nested.take() { next = next.map(|next| next.then(nested)); }
+                    truth = NumericTruth::Absent;
+                }
+                NumericPathAction::Finish => break,
+                NumericPathAction::Stop => {
+                    next = None;
+                    break;
+                }
+                NumericPathAction::ObserveLoop => {
+                    *observed = join_numeric_paths(observed.take(), next.take());
+                    break;
+                }
+                NumericPathAction::Expression | NumericPathAction::Target => {
+                    let expr = child();
+                    let effect = unsafe { self.world.call(self.numeric_expression_effect(&expr, name, target, writes)).await }?;
+                    if matches!(step.action, NumericPathAction::Target) {
+                        next = next.map(|next| next.then(effect));
+                        if point.is_some_and(|point|expr.same_node(point)) {
+                            *observed = join_numeric_paths(observed.take(), next.clone());
+                        }
+                    } else {
+                        if step.local == 1 && effect.zero_delta()
+                            && point.is_some_and(|point|contains_expression(&expr, point)) {
+                            *observed = join_numeric_paths(observed.take(), next.clone());
+                        }
+                        next = next.map(|next| next.then(effect));
+                        if step.local == 2 { branches = Some(None); }
+                    }
+                }
+                NumericPathAction::Assignment => {
+                    let effect = unsafe { self.world.call(self.numeric_assignment_effect(&statement(), name, target, writes, absolute, scope)).await }?;
+                    next = next.map(|next| next.then(effect));
+                }
+                NumericPathAction::Declare => scope.bindings.push((text(step.binding.value),
+                    Local::Typed(view.node(step.annotation.value.offset)))),
+                NumericPathAction::Let => scope.bindings.push((text(step.binding.value), Local::Initialized(
+                    (step.annotation.present != 0).then(|| view.node(step.annotation.value.offset)),
+                    child(), body.slice(cursor.index as usize + 1..)))),
+                NumericPathAction::Condition => {
+                    condition = unsafe { self.world.call(scope.writes_expression(&child(),
+                        &mut async |_: Write| Ok(()), match target {
+                            LoopPlace::Element(target, _) => Some((target, path)), _ => None,
+                        }, Access::Value)).await }?.unwrap_or_default();
+                    truth = match condition.truth_in(path) {
+                        Some(false) => NumericTruth::False,
+                        Some(true) => NumericTruth::True,
+                        None => NumericTruth::Conditional,
+                    };
+                    branches = Some(None);
+                }
+                NumericPathAction::Yes | NumericPathAction::No | NumericPathAction::Arm => {
+                    if step.binding.present != 0 {
+                        scope.bindings.push((text(step.binding.value), Local::Payload(child(), text(step.variant))));
+                    }
+                    let branch_path;
+                    let path = match step.action {
+                        NumericPathAction::Yes | NumericPathAction::No => {
+                            branch_path = condition.assume(path, matches!(step.action, NumericPathAction::Yes));
+                            &branch_path
+                        }
+                        _ => path,
+                    };
+                    let branch = unsafe { self.world.call(self.numeric_loop_paths(&block(), next.clone(),
+                        continues, name, target, writes, absolute, scope, path, point, observed)).await }?;
+                    if step.binding.present != 0 { scope.bindings.pop(); }
+                    branches = Some(join_numeric_paths(branches.take().unwrap(), branch));
+                }
+                NumericPathAction::Reenter => {
+                    *continues = join_numeric_paths(continues.take(), next.take());
+                    break;
+                }
+                NumericPathAction::Nested => {
+                    let statement = statement();
+                    let mut changed = false;
+                    for write in writes.iter().filter(|write| contains_statement(&statement, match write {
+                        Write::External { call, .. } | Write::Memory { call, .. } | Write::Generator(call) => call,
+                        Write::Position { call, place, .. } => call.as_ref().unwrap_or(place),
+                        Write::Move { place, .. } => place,
                     })) {
-                        if unsafe { self.world.call(self.numeric_write(write,name,target,writes)).await }? {changed=true;break;}
+                        if unsafe { self.world.call(self.numeric_write(write, name, target, writes)).await }? {
+                            changed = true;
+                            break;
+                        }
                     }
-                    let effect=if !changed {NumericEffect::shift(0)}else if let StmtKind::While(condition,nested)=statement.kind()
-                        &&unsafe { self.world.call(scope.named(name,condition.span())).await }?==Some(Ty::scalar(Scalar::U32))
-                        &&!loop_breaks(&nested)&&!bounds::seeks(&nested)
-                        &&matches!(unsafe { self.world.call(self.numeric_expression_effect(&condition,name,target,writes)).await }?,NumericEffect::Shift{low:0,high:0,least:0,most:0}) {
-                        let guard=unsafe { self.world.call(scope.input_snapshot(&condition,scope.bindings.len(),Access::Value,None,Some(name))).await }?
-                            .and_then(|(_,proof,_)|proof.component_condition(0).cloned())
-                            .map(|condition|bounds::scoped_proof(&Ty::scalar(Scalar::U32),bounds::Proof::default().with_identity(ValueIdentity::ElementIndex(0)),&condition.assume(&bounds::Clause::default(),true),&BTreeMap::new())).unwrap_or_default();
-                        let mut nested_scope=Scope{bindings:scope.bindings.clone(),writes:scope.writes,..Scope::current(self)};
-                        let mut nested_continues=None;
-                        let nested_next=unsafe { self.world.call(self.numeric_loop_paths(&nested,Some(NumericEffect::shift(0)),&mut nested_continues,name,target,writes,absolute,&mut nested_scope,path,None,&mut None)).await }?;
-                        let relation=match join_numeric_paths(nested_next,nested_continues) {
-                            None=>Some((true,true)),
-                            Some(NumericEffect::Ordered{lower,upper})=>Some((lower,upper)),
-                            Some(NumericEffect::Shift{low,high,least,most})
-                                if i128::from(guard.unsigned_minimum(0))+least>=0&&i128::from(guard.unsigned_maximum(0))+most<=i128::from(u32::MAX)=>Some((low>=0,high<=0)),
-                            Some(NumericEffect::Assign(value))=>Some((value.unsigned_minimum(0)>=guard.unsigned_maximum(0),value.unsigned_maximum(0)<=guard.unsigned_minimum(0))),
-                            _=>None,
+                    if !changed {
+                        nested = Some(NumericEffect::preserve());
+                    } else if step.local != 0 {
+                        let condition = child();
+                        let body = block();
+                        nested = Some(NumericEffect::Unknown);
+                        if unsafe { self.world.call(scope.named(name, condition.span())).await }? == Some(Ty::scalar(Scalar::U32))
+                            && !has_numeric_loop_control(&body, false) && !has_numeric_loop_control(&body, true)
+                            && unsafe { self.world.call(self.numeric_expression_effect(&condition, name, target, writes)).await }?.is_identity() {
+                            let guard = unsafe { self.world.call(scope.input_snapshot(&condition, scope.bindings.len(),
+                                Access::Value, None, Some(name))).await }?
+                                .and_then(|(_, proof, _)| proof.component_condition(0).cloned())
+                                .map(|condition| bounds::scoped_proof(&Ty::scalar(Scalar::U32),
+                                    bounds::Proof::default().with_identity(ValueIdentity::ElementIndex(0)),
+                                    &condition.assume(&bounds::Clause::default(), true), &BTreeMap::new())).unwrap_or_default();
+                            let mut nested_scope = Scope { bindings: scope.bindings.clone(), writes: scope.writes, ..Scope::current(self) };
+                            let mut reentries = None;
+                            let effect = unsafe { self.world.call(self.numeric_loop_paths(&body, Some(NumericEffect::preserve()),
+                                &mut reentries, name, target, writes, absolute, &mut nested_scope, path, None,
+                                &mut None)).await }?;
+                            let joined = join_numeric_paths(effect, reentries);
+                            nested = Some(NumericEffect::nested_order(joined.as_ref(), &guard));
+                        }
+                    } else {
+                        nested = Some(NumericEffect::Unknown);
+                    }
+                }
+                NumericPathAction::NestedPoint => {
+                    if step.binding.present != 0 {
+                        let local = match step.local {
+                            1 => Local::Range,
+                            2 => Local::Element(child()),
+                            3 => Local::NamedElement(text(step.variant)),
+                            _ => unreachable!(),
                         };
-                        match relation{Some((lower,upper))if lower||upper=>NumericEffect::Ordered{lower,upper},_=>NumericEffect::Unknown}
-                    }else{NumericEffect::Unknown};
-                    if point.is_some_and(|point|contains_statement(&statement,point)) {
-                        if let StmtKind::For(local,start,end,_)=statement.kind(){scope.bindings.push((local.to_string(),if end.is_some(){Local::Range}else{Local::Element(start)}));}
-                        if let StmtKind::Parallel(local,domain,_)=statement.kind(){scope.bindings.push((local.to_string(),Local::NamedElement(domain.dataset().to_owned())));}
-                        unsafe { self.world.call(self.numeric_loop_paths(&body,Some(before.clone().then(effect.clone())),&mut None,name,target,writes,absolute,scope,path,point,observed)).await }?;
-                        if !matches!(statement.kind(),StmtKind::While(..)){scope.bindings.pop();}
+                        scope.bindings.push((text(step.binding.value), local));
                     }
-                    Some(before.then(effect))
-                },
-                _=>Some(before),
-            };
+                    unsafe { self.world.call(self.numeric_loop_paths(&block(), next.clone().map(|next| next.then(nested.clone().unwrap())),
+                        &mut None, name, target, writes, absolute, scope, path, point, observed)).await }?;
+                    if step.binding.present != 0 { scope.bindings.pop(); }
+                }
+            }
         }
         scope.bindings.truncate(outer);
         Ok(next)
@@ -1555,19 +1804,19 @@ impl Builder<'_> {
             for write in writes{if unsafe { self.world.call(self.numeric_write(write,&name,&target,writes)).await }?{changed=true;break;}}
             if !changed{continue;}
             let mut scope=Scope::current(self);scope.writes=Some(effect);
-            let pure=matches!(unsafe { self.world.call(self.numeric_expression_effect(condition,&name,&target,writes)).await }?,NumericEffect::Shift{low:0,high:0,least:0,most:0});
+            let pure=unsafe { self.world.call(self.numeric_expression_effect(condition,&name,&target,writes)).await }?.is_identity();
             let guard=if pure {unsafe { self.world.call(scope.input_snapshot(condition,0,Access::Value,None,Some(&name))).await }?
                 .and_then(|(_,proof,_)|proof.component_condition(0).cloned())
                 .map(|condition|bounds::scoped_proof(&Ty::scalar(Scalar::U32),bounds::Proof::default().with_identity(ValueIdentity::ElementIndex(0)),&condition.assume(&bounds::Clause::default(),true),&BTreeMap::new())).unwrap_or_default()}else{bounds::Proof::default()};
             let mut continues=None;
-            let next=if pure{unsafe { self.world.call(self.numeric_loop_paths(body,Some(NumericEffect::shift(0)),&mut continues,&name,&target,writes,!bounds::seeks(body),&mut scope,&bounds::Clause::default(),None,&mut None)).await }?}else{Some(NumericEffect::Unknown)};
+            let next=if pure{unsafe { self.world.call(self.numeric_loop_paths(body,Some(NumericEffect::preserve()),&mut continues,&name,&target,writes,!has_numeric_loop_control(body,true),&mut scope,&bounds::Clause::default(),None,&mut None)).await }?}else{Some(NumericEffect::Unknown)};
             retained.push((name,input,guard,join_numeric_paths(next,continues)));
         }
         let iterations=retained.iter().filter_map(|(_,input,guard,effect)|effect.as_ref().and_then(|effect|effect.iteration_bound(input,guard))).min();
         let mut body_bounds=Vec::new();
         for(name,mut input,guard,transfer)in retained {
             let bounded=iterations.and_then(|iterations|transfer.as_ref()?.bounded_ranges(&input,iterations));
-            let identity=matches!(transfer,None|Some(NumericEffect::Shift{low:0,high:0,least:0,most:0}));
+            let identity=transfer.as_ref().is_none_or(NumericEffect::is_identity);
             let(lower,upper)=transfer.as_ref().map_or((true,true),|transfer|transfer.retained(&mut input,&guard,bounded.is_some()));
             if let Some(Binding::Owned(owner))=self.env.get_mut(&name) {
             owner.uniform=false;
@@ -1640,7 +1889,7 @@ impl Builder<'_> {
             let Some(guard)=guard else{continue;};
             if let Some(identity)=input.known_identity(0){let mut domains=input.domains(0).into_owned();domains.insert(IndexDomain::Upper(identity,0));input=input.with_domains(domains);}
             let mut scope=Scope::current(self);scope.writes=Some(&self.loop_contexts.last().unwrap().writes);
-            let mut continues=None;let next=unsafe { self.world.call(self.numeric_loop_paths(body,Some(NumericEffect::shift(0)),&mut continues,&name,&target,&writes,!bounds::seeks(body),&mut scope,&bounds::Clause::default(),None,&mut None)).await }?;
+            let mut continues=None;let next=unsafe { self.world.call(self.numeric_loop_paths(body,Some(NumericEffect::preserve()),&mut continues,&name,&target,&writes,!has_numeric_loop_control(body,true),&mut scope,&bounds::Clause::default(),None,&mut None)).await }?;
             retained.push((name,target,input,guard,join_numeric_paths(next,continues)));
         }
         let iterations=retained.iter().filter_map(|(_,_,input,guard,effect)|effect.as_ref().and_then(|effect|effect.iteration_bound(input,guard))).min();
@@ -1699,13 +1948,13 @@ impl Builder<'_> {
                 };
             let target=if context.control_source.cursor.is_some(){LoopPlace::Local}else{match self.env.get(name){Some(Binding::Owned(value))=>LoopPlace::Stored(value.place.clone(),*component),_=>continue}};
             if let Some(condition)=condition{
-                if !matches!(unsafe { self.world.call(self.numeric_expression_effect(condition,name,&target,writes)).await }?,NumericEffect::Shift{low:0,high:0,..}){continue;}
+                if !unsafe { self.world.call(self.numeric_expression_effect(condition,name,&target,writes)).await }?.zero_delta(){continue;}
             }
             let point=point.take();let point=point.as_ref().unwrap_or(place);
             let mut scope=Scope::current(self);scope.writes=Some(&context.writes);let mut observed=None;
             let point_writes=if context.control_source.cursor.is_some(){&[][..]}else{writes};
-            unsafe { self.world.call(self.numeric_loop_paths(body,Some(NumericEffect::shift(0)),&mut None,name,&target,point_writes,false,&mut scope,&bounds::Clause::default(),Some(point),&mut observed)).await }?;
-            if !matches!(observed,Some(NumericEffect::Shift{low:0,high:0,least:0,most:0})){continue;}
+            unsafe { self.world.call(self.numeric_loop_paths(body,Some(NumericEffect::preserve()),&mut None,name,&target,point_writes,false,&mut scope,&bounds::Clause::default(),Some(point),&mut observed)).await }?;
+            if !observed.as_ref().is_some_and(NumericEffect::is_identity){continue;}
             if data.place.as_ref().is_some_and(|place|matches!(place.storage(),Place::Local(_,slots,..)if slots.iter().any(|slot|context.writes.locals.contains(slot)))){continue;}
             let mut components=projection.value.1.iter().flatten().copied().collect::<BTreeSet<_>>();
             for write in writes{if let Write::Position{place,..}=write{
