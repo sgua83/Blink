@@ -189,31 +189,27 @@ impl NativeObjectPlace {
 }
 
 #[repr(u32)]
-enum NativeObjectTargetKind { Done, Function, External, Print }
+enum NativeObjectTargetKind { Done, External, Print }
 
 #[repr(C)]
 struct NativeObjectTarget {
     symbol: *const c_void,
     payload: *const c_void,
-    output: *mut NativeObjectPlace,
-    defined: NativeObjectPlace,
+    output: *mut usize,
     kind: NativeObjectTargetKind,
 }
 
 #[repr(C)]
 struct NativeObjectTargetHost {
     next: unsafe extern "C" fn(*mut c_void) -> NativeObjectTarget,
-    imported: unsafe extern "C" fn(*const c_void, *const c_void) -> u32,
     external: unsafe extern "C" fn(*mut c_void, *const c_void, *const c_void) -> usize,
     print: unsafe extern "C" fn(*mut c_void, *const c_void, *const c_void) -> usize,
 }
 
-type TargetTable<'a> = BTreeMap<&'a NativeSymbol, NativeObjectPlace>;
+type HelperSections<'a> = BTreeMap<&'a NativeSymbol, usize>;
 
 struct TargetSelection<'a, 'source> {
-    targets: btree_map::IterMut<'a, &'source NativeSymbol, NativeObjectPlace>,
-    definitions: &'a BTreeMap<String, (usize, u32)>,
-    imports: &'a BTreeMap<String, Vec<u8>>,
+    targets: btree_map::IterMut<'a, &'source NativeSymbol, usize>,
     sections: &'a mut Vec<Section>,
     frames: &'a mut Vec<Frame>,
     prefix: &'a str,
@@ -224,28 +220,15 @@ unsafe extern "C" fn next_native_target(context: *mut c_void) -> NativeObjectTar
     let Some((&symbol, output)) = selection.targets.next() else {
         return NativeObjectTarget {
             symbol: ptr::null(), payload: ptr::null(), output: ptr::null_mut(),
-            defined: NativeObjectPlace::UNRESOLVED, kind: NativeObjectTargetKind::Done,
+            kind: NativeObjectTargetKind::Done,
         };
     };
-    let (kind, payload, defined) = match symbol {
-        NativeSymbol::Function(name) => (
-            NativeObjectTargetKind::Function, ptr::from_ref(name).cast(),
-            selection.definitions.get(name).map_or(NativeObjectPlace::UNRESOLVED,
-                |&(section, _)| NativeObjectPlace::section(section)),
-        ),
-        NativeSymbol::External(name) => (
-            NativeObjectTargetKind::External, ptr::from_ref(name).cast(), NativeObjectPlace::UNRESOLVED,
-        ),
-        NativeSymbol::Print(scalar) => (
-            NativeObjectTargetKind::Print, ptr::from_ref(scalar).cast(), NativeObjectPlace::UNRESOLVED,
-        ),
+    let (kind, payload) = match symbol {
+        NativeSymbol::External(name) => (NativeObjectTargetKind::External, ptr::from_ref(name).cast()),
+        NativeSymbol::Print(scalar) => (NativeObjectTargetKind::Print, ptr::from_ref(scalar).cast()),
+        NativeSymbol::Function(_) => unreachable!(),
     };
-    NativeObjectTarget { symbol: ptr::from_ref(symbol).cast(), payload, output, defined, kind }
-}
-
-unsafe extern "C" fn imported_native_target(context: *const c_void, name: *const c_void) -> u32 {
-    let selection = unsafe { &*context.cast::<TargetSelection<'_, '_>>() };
-    u32::from(selection.imports.contains_key(unsafe { &*name.cast::<String>() }))
+    NativeObjectTarget { symbol: ptr::from_ref(symbol).cast(), payload, output, kind }
 }
 
 unsafe extern "C" fn write_native_thunk(
@@ -294,7 +277,6 @@ unsafe extern "C" fn write_native_print(
 
 const TARGET_HOST: NativeObjectTargetHost = NativeObjectTargetHost {
     next: next_native_target,
-    imported: imported_native_target,
     external: write_native_thunk,
     print: write_native_print,
 };
@@ -303,7 +285,12 @@ const TARGET_HOST: NativeObjectTargetHost = NativeObjectTargetHost {
 struct NativeObjectImage { section: usize, fields: usize }
 
 #[repr(C)]
-struct NativeObjectFixup { offset: usize, name: *const c_void, place: NativeObjectPlace }
+struct NativeObjectFixup {
+    offset: usize,
+    name: *const c_void,
+    place: NativeObjectPlace,
+    imported: u32,
+}
 
 #[repr(C)]
 struct NativeObjectFixupHost {
@@ -311,12 +298,16 @@ struct NativeObjectFixupHost {
     field: unsafe extern "C" fn(*const c_void, usize, usize) -> NativeObjectFixup,
     section: unsafe extern "C" fn(*mut c_void, usize, usize, usize),
     symbol: unsafe extern "C" fn(*mut c_void, usize, usize, *const c_void),
+    missing: unsafe extern "C" fn(*mut c_void, *const c_void),
 }
 
 struct NativeObjectFixups<'a, 'source> {
     images: &'source [(usize, Vec<crate::native::Relocation>)],
-    targets: &'a TargetTable<'source>,
+    helpers: &'a HelperSections<'source>,
+    definitions: &'a BTreeMap<String, (usize, u32)>,
+    imports: &'a BTreeMap<String, Vec<u8>>,
     sections: &'a mut [Section],
+    missing: Option<&'source String>,
 }
 
 unsafe extern "C" fn native_image(context: *const c_void, index: usize) -> NativeObjectImage {
@@ -328,11 +319,16 @@ unsafe extern "C" fn native_image(context: *const c_void, index: usize) -> Nativ
 unsafe extern "C" fn native_field(context: *const c_void, image: usize, index: usize) -> NativeObjectFixup {
     let fixups = unsafe { &*context.cast::<NativeObjectFixups<'_, '_>>() };
     let field = &fixups.images[image].1[index];
-    let name = match &field.target {
-        NativeSymbol::Function(name) => ptr::from_ref(name).cast(),
-        _ => ptr::null(),
+    let (name, place, imported) = match &field.target {
+        NativeSymbol::Function(name) => {
+            let place = fixups.definitions.get(name).map_or(NativeObjectPlace::UNRESOLVED,
+                |&(section, _)| NativeObjectPlace::section(section));
+            let imported = place.present == 0 && fixups.imports.contains_key(name);
+            (ptr::from_ref(name).cast(), place, u32::from(imported))
+        }
+        target => (ptr::null(), NativeObjectPlace::section(fixups.helpers[target]), 0),
     };
-    NativeObjectFixup { offset: field.offset, name, place: fixups.targets[&field.target] }
+    NativeObjectFixup { offset: field.offset, name, place, imported }
 }
 
 unsafe extern "C" fn fixup_section(context: *mut c_void, section: usize, offset: usize, target: usize) {
@@ -348,16 +344,26 @@ unsafe extern "C" fn fixup_symbol(context: *mut c_void, section: usize, offset: 
     fixups.sections[section].relocations.push(Relocation { offset, kind: 1, target });
 }
 
+unsafe extern "C" fn missing_native_target(context: *mut c_void, name: *const c_void) {
+    let fixups = unsafe { &mut *context.cast::<NativeObjectFixups<'_, '_>>() };
+    let name = unsafe { &*name.cast::<String>() };
+    // Retain the same first diagnostic as the original name-ordered table.
+    if fixups.missing.is_none_or(|first| name < first) {
+        fixups.missing = Some(name);
+    }
+}
+
 const FIXUP_HOST: NativeObjectFixupHost = NativeObjectFixupHost {
     image: native_image,
     field: native_field,
     section: fixup_section,
     symbol: fixup_symbol,
+    missing: missing_native_target,
 };
 
 unsafe extern "C" {
     #[link_name = "bootstrap.coff::resolve_native_object_targets"]
-    fn resolve_native_object_targets(context: *mut c_void, host: NativeObjectTargetHost) -> *const c_void;
+    fn resolve_native_object_targets(context: *mut c_void, host: NativeObjectTargetHost);
     #[link_name = "bootstrap.coff::bind_native_object_fixups"]
     fn bind_native_object_fixups(context: *mut c_void, images: usize, host: NativeObjectFixupHost);
 }
@@ -370,19 +376,20 @@ fn bind_object_targets(
     imports: &BTreeMap<String, Vec<u8>>,
     prefix: &str,
 ) -> Result<()> {
-    let mut targets: TargetTable<'_> = images.iter().flat_map(|(_, fields)| fields)
-        .map(|field| (&field.target, NativeObjectPlace::UNRESOLVED)).collect();
-    let missing = {
-        let mut selection = TargetSelection {
-            targets: targets.iter_mut(), definitions, imports, sections, frames, prefix,
-        };
-        unsafe { resolve_native_object_targets(ptr::from_mut(&mut selection).cast(), TARGET_HOST) }
-    };
-    if let Some(name) = unsafe { missing.cast::<String>().as_ref() } {
+    let mut helpers = HelperSections::new();
+    for field in images.iter().flat_map(|(_, fields)| fields) {
+        if !matches!(field.target, NativeSymbol::Function(_)) {
+            helpers.entry(&field.target).or_insert(0);
+        }
+    }
+    let mut selection = TargetSelection { targets: helpers.iter_mut(), sections, frames, prefix };
+    unsafe { resolve_native_object_targets(ptr::from_mut(&mut selection).cast(), TARGET_HOST) }
+
+    let mut fixups = NativeObjectFixups { images, helpers: &helpers, definitions, imports, sections, missing: None };
+    unsafe { bind_native_object_fixups(ptr::from_mut(&mut fixups).cast(), images.len(), FIXUP_HOST) };
+    if let Some(name) = fixups.missing {
         return Err(format!("缺少模块函数接口 {name}").into());
     }
-    let mut fixups = NativeObjectFixups { images, targets: &targets, sections };
-    unsafe { bind_native_object_fixups(ptr::from_mut(&mut fixups).cast(), images.len(), FIXUP_HOST) };
     Ok(())
 }
 

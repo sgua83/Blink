@@ -263,30 +263,21 @@ extern "C" void host_headers(address output, u64 sections, u64 symbols, u64 cach
     }
 }
 
-extern "C" address resolve_native_object_targets(address context, NativeObjectTargetHost host) on cpu
-    requires nonzero(host.next) requires nonzero(host.imported)
-    requires nonzero(host.external) requires nonzero(host.print) {
+extern "C" void resolve_native_object_targets(address context, NativeObjectTargetHost host) on cpu
+    requires nonzero(host.next) requires nonzero(host.external) requires nonzero(host.print) {
     NativeObjectTarget target = host.next(context);
     while (target.kind != NativeObjectTargetKind::Done) {
-        NativeObjectPlace place = target.defined;
-        if (target.kind == NativeObjectTargetKind::Function) {
-            if (place.present == 0 && host.imported(context, target.payload) == 0) {
-                return target.payload;
-            }
-        } else if (target.kind == NativeObjectTargetKind::External) {
-            place = NativeObjectPlace(host.external(context, target.symbol, target.payload), 1);
-        } else {
-            place = NativeObjectPlace(host.print(context, target.symbol, target.payload), 1);
-        }
-        unsafe_position<NativeObjectPlace>(target.output) = place;
+        usize section = target.kind == NativeObjectTargetKind::External
+            ? host.external(context, target.symbol, target.payload)
+            : host.print(context, target.symbol, target.payload);
+        unsafe_position<usize>(target.output) = section;
         target = host.next(context);
     }
-    return unsafe_address(0u64);
 }
 
 extern "C" void bind_native_object_fixups(address context, usize images, NativeObjectFixupHost host) on cpu
     requires nonzero(host.image) requires nonzero(host.field)
-    requires nonzero(host.section) requires nonzero(host.symbol) {
+    requires nonzero(host.section) requires nonzero(host.symbol) requires nonzero(host.missing) {
     usize next = 0u64;
     while (next < images) {
         NativeObjectImage image = host.image(context, next);
@@ -295,8 +286,10 @@ extern "C" void bind_native_object_fixups(address context, usize images, NativeO
             NativeObjectFixup field = host.field(context, next, index);
             if (field.place.present != 0) {
                 host.section(context, image.section, field.offset, field.place.section);
-            } else {
+            } else if (field.imported != 0) {
                 host.symbol(context, image.section, field.offset, field.name);
+            } else {
+                host.missing(context, field.name);
             }
             index += 1u64;
         }
