@@ -7,6 +7,7 @@ import blink.windows.path_core;
 import blink.windows.process;
 import blink.windows.process_extended;
 import blink.windows.thread;
+import bootstrap.metadata;
 
 const handle INVALID_SEARCH = unsafe_handle(0xffffffffffffffffu64);
 const u32 ERROR_FILE_NOT_FOUND = 2;
@@ -24,6 +25,12 @@ extern "C" address HeapAlloc(handle heap, u32 flags, usize bytes) on cpu from "K
 extern "C" i32 HeapFree(handle heap, u32 flags, address data) on cpu from "KERNEL32.dll";
 extern "C" i32 MultiByteToWideChar(u32 page, u32 flags, address input, i32 bytes,
     address output, i32 capacity) on cpu from "KERNEL32.dll";
+
+extern "C" i32 WideCharToMultiByte(u32 page, u32 flags, address input, i32 units,
+    address output, i32 capacity, address default_character, address used_default) on cpu from "KERNEL32.dll";
+
+const u32 UTF8 = 65001;
+const u32 REJECT_INVALID_UTF16 = 128;
 
 const handle HKEY_LOCAL_MACHINE = unsafe_handle(0xffffffff80000002u64);
 const u32 READ_64BIT_STRING = 0x10010002;
@@ -277,6 +284,95 @@ extern "C" HostWriteResult write_host_output(address path, usize units, address 
     HostWriteResult written = write_host_bytes(opened.file, data, bytes);
     CloseHandle(opened.file);
     return written;
+}
+
+LinkOutputResult link_output_result(LinkOutputFailure failure) on cpu {
+    return LinkOutputResult(HostWriteResult(HostWriteKind::Written, 0), failure);
+}
+
+LinkOutputResult link_output_io(u32 status) on cpu {
+    return LinkOutputResult(HostWriteResult(HostWriteKind::OpenError, status), LinkOutputFailure::None);
+}
+
+HostWriteResult write_link_companion(UnitSpan target, UnitSpan extension, MetadataBytes content) on cpu {
+    ExtensionPlan plan = extension_prepare(target, extension.length);
+    handle heap = GetProcessHeap();
+    address path = HeapAlloc(heap, 0, (plan.length + 1u64) * 2u64);
+    if (address_bits(path) == 0u64) {
+        return HostWriteResult(HostWriteKind::OpenError, u32(ERROR_NOT_ENOUGH_MEMORY));
+    }
+    extension_encode(target, extension, plan, path);
+    unsafe_position<u16>(unsafe_address(address_bits(path) + plan.length * 2u64)) = u16(0);
+    HostWriteResult written = write_host_output(path, plan.length, content.bytes, content.length);
+    HeapFree(heap, 0, path);
+    return written;
+}
+
+HostWriteResult write_link_bindings(UnitSpan path, LinkBindings bindings, MetadataBytes library) on cpu {
+    let header = array<u16,5>(u16(97), u16(98), u16(105), u16(46), u16(104));
+    HostWriteResult written = write_link_companion(path, UnitSpan(address_of(header[0]), 5u64), bindings.header);
+    if (written.kind != HostWriteKind::Written) { return written; }
+
+    MetadataBytes binding = bindings.rust;
+    usize size = rust_link_binding(binding, bindings.prefix, library, address());
+    address rendered = address();
+    handle heap = GetProcessHeap();
+    if (size != 0u64) {
+        rendered = HeapAlloc(heap, 0, size);
+        if (address_bits(rendered) == 0u64) {
+            return HostWriteResult(HostWriteKind::OpenError, u32(ERROR_NOT_ENOUGH_MEMORY));
+        }
+        usize bytes = rust_link_binding(binding, bindings.prefix, library, rendered);
+        binding = MetadataBytes(rendered, bytes);
+    }
+    let rust = array<u16,2>(u16(114), u16(115));
+    written = write_link_companion(path, UnitSpan(address_of(rust[0]), 2u64), binding);
+    if (address_bits(rendered) != 0u64) { HeapFree(heap, 0, rendered); }
+    return written;
+}
+
+LinkOutputResult link_dll(UnitSpan path, LinkBindings bindings, address context,
+    cfn<u32,address,u64,u32> msvc) on cpu requires nonzero(msvc) {
+    UnitSpan stem = file_stem(path);
+    if (stem.length == 0u64) { return link_output_result(LinkOutputFailure::LibraryName); }
+    i32 size = WideCharToMultiByte(UTF8, REJECT_INVALID_UTF16, stem.data, i32(stem.length),
+        address(), i32(0), address(), address());
+    if (size == i32(0)) { return link_output_result(LinkOutputFailure::LibraryName); }
+    handle heap = GetProcessHeap();
+    address bytes = HeapAlloc(heap, 0, usize(size));
+    if (address_bits(bytes) == 0u64) { return link_output_io(u32(ERROR_NOT_ENOUGH_MEMORY)); }
+    i32 written = WideCharToMultiByte(UTF8, REJECT_INVALID_UTF16, stem.data, i32(stem.length),
+        bytes, size, address(), address());
+    LinkOutputResult result = link_output_result(LinkOutputFailure::None);
+    if (written == i32(0)) {
+        result.failure = LinkOutputFailure::LibraryName;
+    } else if (msvc(context, 0u64, 1) != 0) {
+        result.written = write_link_bindings(path, bindings, MetadataBytes(bytes, usize(written)));
+    } else {
+        result.failure = LinkOutputFailure::Native;
+    }
+    HeapFree(heap, 0, bytes);
+    return result;
+}
+
+extern "C" LinkOutputResult deliver_link_output(UnitSpan path, UnitSpan parent, EntryPlan plan, LinkBindings bindings, address context,
+    cfn<HostFilePart,address,u64> pe, cfn<u32,address,u64,u32> msvc) on cpu
+    requires nonzero(pe) requires nonzero(msvc) {
+    u32 directory = create_output_directories(parent.data, parent.length);
+    if (directory != 0) { return link_output_io(directory); }
+    if (plan.product == EntryProduct::Pe) {
+        HostFilePart image = pe(context, plan.stack_reserve);
+        if (address_bits(image.data) == 0u64) { return link_output_result(LinkOutputFailure::Native); }
+        return LinkOutputResult(write_host_output(path.data, path.length, image.data, image.bytes),
+            LinkOutputFailure::None);
+    }
+    if (plan.product == EntryProduct::HostApplication) {
+        return link_output_result(msvc(context, plan.stack_reserve, 0) != 0
+            ? LinkOutputFailure::None : LinkOutputFailure::Native);
+    }
+    if (plan.product == EntryProduct::Dll) { return link_dll(path, bindings, context, msvc); }
+    return link_output_result(plan.product == EntryProduct::DllWithoutArchive
+        ? LinkOutputFailure::MissingArchive : LinkOutputFailure::NoProduct);
 }
 
 extern "C" u32 remove_host_input(address path, usize units) on cpu {

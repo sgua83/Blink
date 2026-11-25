@@ -1,5 +1,7 @@
 module bootstrap.host_sdk;
 import bootstrap.ast_storage;
+import bootstrap.metadata;
+import bootstrap.native_select;
 import blink.windows.path_core;
 
 // The original process-heap allocation owns the selected UTF-16 span.
@@ -46,6 +48,17 @@ extern "C" HostProcessOutput run_host_process(address executable, usize units,
     address arguments, usize argument_units) on cpu;
 
 struct HostFilePart { address data; usize bytes; };
+
+struct LinkBindings { MetadataBytes header; MetadataBytes rust; MetadataBytes prefix; };
+enum LinkOutputFailure:u32 { None=0; Native=1; MissingArchive=2; LibraryName=3; NoProduct=4; };
+struct LinkOutputResult { HostWriteResult written; LinkOutputFailure failure; };
+
+// Paths are NUL-terminated borrows from the same resolved output.
+// The selected bindings and callback data remain live for this operation.
+extern "C" LinkOutputResult deliver_link_output(UnitSpan path, UnitSpan parent, EntryPlan plan, LinkBindings bindings, address context,
+    cfn<HostFilePart,address,u64> pe, cfn<u32,address,u64,u32> msvc) on cpu
+    requires nonzero(pe) requires nonzero(msvc);
+
 enum MsvcInputKind:u32 { Archive=0; Code=1; Imports=2; Resources=3; };
 struct MsvcLinkInput { UnitSpan filename; HostFilePart bytes; u32 failed; };
 struct MsvcLinkRequest {

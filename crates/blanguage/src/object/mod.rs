@@ -5,7 +5,7 @@ pub use static_library::{Input, archive};
 pub(crate) use static_library::{ArchiveSymbol, HostMember, member_sources as library_member_sources, encode as library_bytes};
 pub(crate) use static_library::{Library, ObjectBytes};
 mod coff;
-pub(crate) use coff::{ImportKey, encode_native, encode_native_with_imports, native_import_member, rust_link_binding};
+pub(crate) use coff::{ImportKey, encode_native, encode_native_with_imports, native_import_member};
 pub(crate) mod stack;
 pub(crate) use coff::Reader as ObjectReader;
 mod emit;

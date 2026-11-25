@@ -28,8 +28,6 @@ unsafe extern "C" {
     fn canonicalize_path(path: *const u16, units: usize, scratch: *mut u16, capacity: u32) -> NativePath;
     #[link_name = "blink.windows.path_core::release_native_path"]
     fn release_native_path(path: NativePath);
-    #[link_name = "blink.windows.path_core::file_stem"]
-    fn file_stem_units(path: UnitSpan) -> UnitSpan;
     #[link_name = "blink.windows.path_core::module_tail"]
     fn module_tail(name: *mut u16, length: u64, suffix: u16);
     #[link_name = "blink.windows.path_core::join_scratch"]
@@ -123,14 +121,4 @@ pub fn canonicalize(path: &Path) -> io::Result<PathBuf> {
         canonicalize_path(units.as_ptr(), units.len() - 1, scratch.as_mut_ptr().cast(), scratch.len() as u32)
     };
     native_path_result(resolved)
-}
-
-pub(crate) fn file_stem(path: &Path) -> Option<String> {
-    let units: Vec<u16> = path.as_os_str().encode_wide().collect();
-    let stem = unsafe { file_stem_units(UnitSpan::of(&units)) };
-    if stem.length == 0 {
-        return None;
-    }
-    let units = unsafe { std::slice::from_raw_parts(stem.data, stem.length as usize) };
-    String::from_utf16(units).ok()
 }

@@ -120,7 +120,7 @@ fn native_modules() -> Result<(), Box<dyn std::error::Error>> {
                 "contract_codec" => &["value_format"],
                 "host_sdk" => {
                     job.arguments.extend(["-I".into(), "../../library".into()]);
-                    &["path_core", "ast_storage"]
+                    &["path_core", "ast_storage", "coff", "bindings", "names", "metadata", "native_select"]
                 }
                 "metadata_read" | "object_read" => &["coff_read"],
                 "pe" => &["coff_read", "combine"],

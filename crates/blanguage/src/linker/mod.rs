@@ -161,33 +161,100 @@ fn link_objects<'a>(inputs: Inputs<'a, LinkSectionBytes<'a>>, _: &Path) -> Resul
 }
 
 #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
-fn link_objects<'a>(inputs: Inputs<'a, LinkSectionBytes<'a>>, path: &Path) -> Result<()> {
-    use crate::{file_bytes, source_path};
+use windows_output::link_objects;
 
-    let Selection { objects, plan } = entry(inputs, false, |bytes| LinkSectionBytes::Borrowed(bytes))?;
-    let output = source_path::absolute(path)?;
-    file_bytes::create_dir_all(output.parent().unwrap())?;
-    match plan.product {
-        EntryProduct::None => unreachable!(),
-        EntryProduct::Pe => {
-            file_bytes::write(&output, &combine::link_pe(objects, plan.stack_reserve)?)?;
-        }
-        EntryProduct::HostApplication => {
-            msvc::link(&objects, &output, plan.stack_reserve, false)?;
-        }
-        EntryProduct::DllWithoutArchive => return Err("DLL 目标文件没有静态目标库".into()),
-        EntryProduct::Dll => {
-            let LibraryBinding { header, binding, prefix } = objects[0].library.as_ref().unwrap();
-            let library = source_path::file_stem(&output).ok_or("DLL 文件名不是 UTF-8")?;
-            msvc::link(&objects, &output, 0, true)?;
-            let header_path = source_path::with_extension_units(
-                &output, &[b'a' as u16, b'b' as u16, b'i' as u16, b'.' as u16, b'h' as u16],
-            );
-            file_bytes::write(&header_path, header.as_bytes())?;
-            let binding = crate::object::rust_link_binding(binding, prefix, &library);
-            let binding_path = source_path::with_extension_units(&output, &[b'r' as u16, b's' as u16]);
-            file_bytes::write(&binding_path, &binding)?;
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+mod windows_output {
+    use super::*;
+    use crate::{file_bytes::{HostWriteResult, host_path}, source_path};
+
+    #[repr(C)]
+    struct PathUnits { data: *const u16, length: usize }
+
+    impl PathUnits {
+        fn terminated(units: &[u16]) -> Self {
+            Self { data: units.as_ptr(), length: units.len() - 1 }
         }
     }
-    Ok(())
+
+    #[repr(C)]
+    struct Bytes { data: *const u8, length: usize }
+
+    impl Bytes {
+        fn of(bytes: &[u8]) -> Self {
+            Self { data: bytes.as_ptr(), length: bytes.len() }
+        }
+    }
+
+    #[repr(C)]
+    struct Bindings { header: Bytes, rust: Bytes, prefix: Bytes }
+
+    #[repr(u32)]
+    enum Failure { None, Native, MissingArchive, LibraryName, NoProduct }
+
+    #[repr(C)]
+    struct OutputResult { written: HostWriteResult, failure: Failure }
+
+    struct Link<'a> {
+        objects: Vec<Selected<LinkSectionBytes<'a>>>,
+        output: &'a Path,
+        pe: Vec<u8>,
+        error: Result<()>,
+    }
+
+    unsafe extern "C" {
+        #[link_name = "bootstrap.host_sdk::deliver_link_output"]
+        fn deliver_link_output(
+            path: PathUnits, parent: PathUnits, plan: EntryPlan, bindings: Bindings, context: *mut (),
+            pe: unsafe extern "C" fn(*mut (), u64) -> Bytes,
+            msvc: unsafe extern "C" fn(*mut (), u64, u32) -> u32,
+        ) -> OutputResult;
+    }
+
+    unsafe extern "C" fn link_pe(context: *mut (), reserve: u64) -> Bytes {
+        let link = unsafe { &mut *context.cast::<Link<'_>>() };
+        match combine::link_pe(std::mem::take(&mut link.objects), reserve) {
+            Ok(pe) => {
+                link.pe = pe;
+                Bytes::of(&link.pe)
+            }
+            Err(error) => {
+                link.error = Err(error);
+                Bytes { data: std::ptr::null(), length: 0 }
+            }
+        }
+    }
+
+    unsafe extern "C" fn link_msvc(context: *mut (), reserve: u64, dll: u32) -> u32 {
+        let link = unsafe { &mut *context.cast::<Link<'_>>() };
+        link.error = msvc::link(&link.objects, link.output, reserve, dll != 0);
+        u32::from(link.error.is_ok())
+    }
+
+    pub(super) fn link_objects<'a>(inputs: Inputs<'a, LinkSectionBytes<'a>>, path: &Path) -> Result<()> {
+        let Selection { objects, plan } = entry(inputs, false, |bytes| LinkSectionBytes::Borrowed(bytes))?;
+        let output = source_path::absolute(path)?;
+        let path = host_path(&output)?;
+        let parent = host_path(output.parent().unwrap())?;
+        let mut link = Link { objects, output: &output, pe: Vec::new(), error: Ok(()) };
+        let context = std::ptr::from_mut(&mut link).cast();
+        let (header, rust, prefix) = link.objects[0].library.as_ref()
+            .map_or(("", "", ""), |binding| (binding.header.as_str(), binding.binding.as_str(), binding.prefix.as_str()));
+        let bindings = Bindings {
+            header: Bytes::of(header.as_bytes()), rust: Bytes::of(rust.as_bytes()), prefix: Bytes::of(prefix.as_bytes()),
+        };
+        // The DLL branch borrows the original strings through the native link and writes.
+        // The PE branch alone consumes the selected objects and exposes the produced image.
+        let result = unsafe {
+            deliver_link_output(PathUnits::terminated(&path), PathUnits::terminated(&parent),
+                plan, bindings, context, link_pe, link_msvc)
+        };
+        match result.failure {
+            Failure::None => Ok(result.written.into_result()?),
+            Failure::Native => link.error,
+            Failure::MissingArchive => Err("DLL 目标文件没有静态目标库".into()),
+            Failure::LibraryName => Err("DLL 文件名不是 UTF-8".into()),
+            Failure::NoProduct => unreachable!(),
+        }
+    }
 }
