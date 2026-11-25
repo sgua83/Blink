@@ -3861,7 +3861,7 @@ extern "C" SummaryRootWords custom_summary_root(CustomSummaryRoot input, address
     StageCursor out = StageCursor(body, 0u64, input.target.next);
     u32 u = input.target.u32_type;
     array<u32,2> writers = stage_collective_writer(out, input.bool_type, input.lane,
-        input.active, input.length, input.target.zero);
+        input.active, input.length, input.zero);
     u32 group = input.target.descriptor != 0 ? stage_op(out, 134, u, input.target.index, input.width) : 0;
     StageBranch save = stage_open(out, writers[0]);
     SharedAddress root = SharedAddress(u, input.pointer, input.shared, input.last, 0, words, out.next);

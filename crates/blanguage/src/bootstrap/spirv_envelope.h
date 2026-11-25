@@ -868,6 +868,7 @@ struct CustomSummaryRoot {
     PageAddress target;
     SummaryRootMode mode;
     u32 bool_type;
+    u32 zero;
     u32 lane;
     u32 active;
     u32 length;

@@ -117,6 +117,7 @@ struct CustomSummaryRoot {
     target: PageAddress,
     mode: SummaryRootMode,
     bool_type: u32,
+    zero: u32,
     lane: u32,
     active: u32,
     length: u32,
@@ -510,10 +511,11 @@ impl Emitter<'_> {
         let step = self.constant(Scalar::U64, 4);
         let scope = self.constant(Scalar::U32, 2);
         let semantics = self.constant(Scalar::U32, 0x108);
+        let zero = self.constant(Scalar::U32, 0);
         let target = self.page_input(Scalar::U32, PageSource::Dataset(self.buffers[binding]),
             self.index, Some(word), 0);
         let input = CustomSummaryRoot {
-            target, mode, bool_type: self.types[&Scalar::Bool], lane, active, length,
+            target, mode, bool_type: self.types[&Scalar::Bool], zero, lane, active, length,
             width, last, shared, pointer, step, scope, semantics,
         };
         let body = self.body.len();
