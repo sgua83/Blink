@@ -286,6 +286,18 @@ extern "C" HostWriteResult write_host_output(address path, usize units, address 
     return written;
 }
 
+extern "C" HostWriteResult create_host_output(address path, usize units, address data, usize bytes) on cpu {
+    HostFileOpen opened = open_host_file(path, units, GENERIC_WRITE, SHARE_ALL, CREATE_NEW, FILE_FLAG_OPEN_REPARSE_POINT);
+    if (opened.file == INVALID_HANDLE_VALUE) {
+        return HostWriteResult(HostWriteKind::OpenError, opened.status);
+    }
+    HostWriteResult written = write_host_bytes(opened.file, data, bytes);
+    if (CloseHandle(opened.file) == i32(0) && written.kind == HostWriteKind::Written) {
+        return HostWriteResult(HostWriteKind::CloseError, GetLastError());
+    }
+    return written;
+}
+
 LinkOutputResult link_output_result(LinkOutputFailure failure) on cpu {
     return LinkOutputResult(HostWriteResult(HostWriteKind::Written, 0), failure);
 }

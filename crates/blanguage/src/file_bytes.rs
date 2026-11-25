@@ -29,6 +29,7 @@ enum HostWriteKind {
     OpenError,
     WriteError,
     NoProgress,
+    CloseError,
 }
 
 #[repr(C)]
@@ -41,7 +42,7 @@ impl HostWriteResult {
     pub(crate) fn into_result(self) -> io::Result<()> {
         match self.kind {
             HostWriteKind::Written => Ok(()),
-            HostWriteKind::OpenError | HostWriteKind::WriteError => {
+            HostWriteKind::OpenError | HostWriteKind::WriteError | HostWriteKind::CloseError => {
                 Err(io::Error::from_raw_os_error(self.status as i32))
             }
             HostWriteKind::NoProgress => Err(io::Error::new(io::ErrorKind::WriteZero, "failed to write whole buffer")),
@@ -78,6 +79,8 @@ unsafe extern "C" {
     fn create_output_directories(path: *const u16, units: usize) -> u32;
     #[link_name = "bootstrap.host_sdk::write_host_output"]
     fn write_host_output(path: *const u16, units: usize, data: *const u8, bytes: usize) -> HostWriteResult;
+    #[link_name = "bootstrap.host_sdk::create_host_output"]
+    fn create_host_output(path: *const u16, units: usize, data: *const u8, bytes: usize) -> HostWriteResult;
     #[link_name = "bootstrap.ast_storage::read_source"]
     fn read_source(file: RawHandle) -> FileBytes;
     #[link_name = "bootstrap.ast_storage::release_source"]
@@ -156,6 +159,11 @@ pub(crate) fn open_shared_read(path: &Path) -> io::Result<File> {
 pub(crate) fn write(path: &Path, bytes: &[u8]) -> io::Result<()> {
     let path = host_path(path)?;
     unsafe { write_host_output(path.as_ptr(), path.len() - 1, bytes.as_ptr(), bytes.len()) }.into_result()
+}
+
+pub(crate) fn create_new(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    let path = host_path(path)?;
+    unsafe { create_host_output(path.as_ptr(), path.len() - 1, bytes.as_ptr(), bytes.len()) }.into_result()
 }
 
 pub(crate) fn create_dir_all(path: &Path) -> io::Result<()> {

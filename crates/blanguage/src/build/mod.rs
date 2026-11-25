@@ -330,11 +330,16 @@ pub fn execution_image(path: &Path) -> Result<Vec<u8>> {
     with_execution_image(path, |image| Ok(image.to_vec()))
 }
 
-/// Borrows the decoded image through the compiler tool's synchronous write.
+/// Delivers the compiler tool's decoded image to its new output file.
 #[doc(hidden)]
-pub fn with_execution_image<T>(
-    path: &Path, consume: impl FnOnce(&[u8]) -> Result<T>,
-) -> Result<T> {
+pub fn write_execution_image(path: &Path, output: &Path) -> Result<usize> {
+    with_execution_image(path, |image| {
+        crate::file_bytes::create_new(output, image)?;
+        Ok(image.len())
+    })
+}
+
+fn with_execution_image<T>(path: &Path, consume: impl FnOnce(&[u8]) -> Result<T>) -> Result<T> {
     let bytes = FileBytes::read_path(path)?;
     consume(decode(&bytes)?.1)
 }

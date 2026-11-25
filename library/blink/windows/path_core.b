@@ -361,7 +361,8 @@ NativePath native_path(address path,usize units,bool prefer_verbatim) on cpu {
     LexicalPrefix prefix = lexical_prefix(input,nt_namespace(input));
     bool absolute = prefix.end > 2u64 || (prefix.end == 2u64 && units > 2u64 &&
         lexical_separator(unit(input,2u64),false));
-    if (prefix.literal || (prefer_verbatim && absolute && units < 247u64)) {
+    // An empty file name belongs to the originating Win32 file operation.
+    if (prefix.literal || (prefer_verbatim && (units == 0u64 || (absolute && units < 247u64)))) {
         return NativePath(path,address(),units,0);
     }
 
