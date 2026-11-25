@@ -1,6 +1,5 @@
 //! 链接期资源基址和工厂地址；只有静态数据与标准重定位，没有运行期注册表。
 use super::Result;
-use std::borrow::Borrow;
 use crate::object::{Archive, Definition, Kind, Object, Relocation, Section, Symbol, Target};
 #[derive(Clone,Copy)]
 #[repr(C)]
@@ -84,7 +83,7 @@ impl Generated {
 }
 
 pub(super) fn resources<'archive, 'name>(
-    archives: impl IntoIterator<Item = impl Borrow<&'archive Archive>>,
+    archives: impl IntoIterator<Item = &'archive Archive>,
     types: u32,
     programs: u32,
     runtime: impl IntoIterator<Item = &'name str>,
@@ -93,7 +92,7 @@ pub(super) fn resources<'archive, 'name>(
 ) -> Result<Option<Generated>> {
     let borrowed=|bytes:&[u8]|ImportBytes{bytes:bytes.as_ptr(),length:bytes.len() as u64};
     let empty=ImportBytes{bytes:std::ptr::null(),length:0};
-    let mut modules=archives.into_iter().filter_map(|archive| (*archive.borrow()).resources.as_ref()).map(|row|ResourceModule{
+    let mut modules=archives.into_iter().filter_map(|archive| archive.resources.as_ref()).map(|row|ResourceModule{
         prefix:ImportBytes::new(&row.prefix),abi:borrowed(&row.abi),types:row.types.into(),programs:row.programs.into(),
         type_value:0,program_value:0,factory_offset:0,type_offset:0,program_offset:0,
     }).collect::<Vec<_>>();

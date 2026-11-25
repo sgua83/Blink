@@ -244,11 +244,15 @@ fn tools() -> Result<MsvcTools> {
 }
 
 impl<'a> MsvcNames<'a> {
-    fn from_archives(archives: &[&'a Archive]) -> Self {
-        let mut libraries: Vec<_> = archives.iter().flat_map(|archive| &archive.libraries)
-            .map(|name| MsvcName::new(name)).collect();
-        let mut exports: Vec<_> = archives.iter().flat_map(|archive| &archive.exports)
-            .map(|name| MsvcName::new(name)).collect();
+    fn from_archives(archives: impl Iterator<Item = &'a Archive>) -> (Self, usize) {
+        let mut libraries = Vec::new();
+        let mut exports = Vec::new();
+        let mut archive_count = 0;
+        for archive in archives {
+            archive_count += 1;
+            libraries.extend(archive.libraries.iter().map(|name| MsvcName::new(name)));
+            exports.extend(archive.exports.iter().map(|name| MsvcName::new(name)));
+        }
         let mut nodes = Vec::with_capacity(libraries.len().max(exports.len()));
         let prefix = crate::object::SDK_RUNTIME.as_bytes();
         let plan = unsafe {
@@ -259,7 +263,7 @@ impl<'a> MsvcNames<'a> {
         };
         libraries.truncate(plan.libraries);
         exports.truncate(plan.exports);
-        Self { libraries, exports, needs_sdk: plan.needs_sdk != 0 }
+        (Self { libraries, exports, needs_sdk: plan.needs_sdk != 0 }, archive_count)
     }
 }
 
@@ -348,7 +352,7 @@ struct MsvcLinkResult {
 }
 
 struct LinkHost<'a, 'code> {
-    archives: &'a [&'a Archive],
+    archive_objects: std::slice::Iter<'a, Selected<LinkSectionBytes<'code>>>,
     objects: &'a [Selected<LinkSectionBytes<'code>>],
     binding: Option<Generated>,
     tools: &'a MsvcTools,
@@ -394,7 +398,9 @@ impl LinkHost<'_, '_> {
         self.filename.clear();
         self.filename.extend(format!(".blink-link-{}-{suffix}", self.id).encode_utf16());
         let bytes = match kind {
-            MsvcInputKind::Archive => self.archives[index].bytes.as_ref(),
+            // B requests each archive once in selection order before the code inputs.
+            MsvcInputKind::Archive => self.archive_objects
+                .find_map(|object| object.archive.as_ref()).unwrap().bytes.as_ref(),
             _ => self.bytes.as_slice(),
         };
         Ok(Some(MsvcLinkInput {
@@ -444,10 +450,10 @@ unsafe extern "C" fn prepare_link_arguments(
 pub(super) fn link(
     objects: &[Selected<LinkSectionBytes<'_>>], path: &Path, stack_reserve: u64, import_library: bool,
 ) -> Result<()> {
-    let archives = objects.iter().filter_map(|object| object.archive.as_ref()).collect::<Vec<_>>();
-    let binding = super::resources::resources(&archives, 0, 0, std::iter::empty(), std::iter::empty(), None)?;
+    let archives = objects.iter().filter_map(|object| object.archive.as_ref());
+    let binding = super::resources::resources(archives.clone(), 0, 0, std::iter::empty(), std::iter::empty(), None)?;
     let tools = tools()?;
-    let names = MsvcNames::from_archives(&archives);
+    let (names, archive_count) = MsvcNames::from_archives(archives);
     let sdk = if names.needs_sdk {
         Some(crate::object::InstalledSdk::open()?)
     } else {
@@ -461,16 +467,16 @@ pub(super) fn link(
             .as_nanos()
     );
     let directory: Vec<_> = std::env::temp_dir().as_os_str().encode_wide().collect();
-    let mut paths = Vec::<ToolPath>::with_capacity(archives.len() + objects.len() + 2);
+    let mut paths = Vec::<ToolPath>::with_capacity(archive_count + objects.len() + 2);
     let mut host = LinkHost {
-        archives: &archives, objects, binding, tools: &tools, path, names: &names,
+        archive_objects: objects.iter(), objects, binding, tools: &tools, path, names: &names,
         sdk: sdk.as_ref().map(|sdk| sdk.root.as_path()), stack_reserve, import_library,
         id, filename: Vec::new(), imports: Vec::new(), bytes: Vec::new(),
         arguments: Vec::new(), error: Ok(()),
     };
     let request = MsvcLinkRequest {
         directory: ToolPath::of(&directory), executable: tools.paths[0],
-        archives: archives.len(), objects: objects.len(), paths: paths.as_mut_ptr(),
+        archives: archive_count, objects: objects.len(), paths: paths.as_mut_ptr(),
         context: (&mut host as *mut LinkHost<'_, '_>).cast(),
     };
     // B initializes and uses the path prefix in the reserved storage. It releases every
