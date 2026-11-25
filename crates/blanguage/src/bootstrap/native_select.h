@@ -25,17 +25,17 @@ struct SelectRoot {BindingBytes name;BindingBytes contract;};
 extern "C" u64 bind_root_contracts(address roots,u64 count,address context,u64 sources,
     cfn<BindingBytes,address,u64,BindingBytes> lookup) on cpu requires nonzero(lookup);
 struct SelectView {
-    address objects;u64 object_count;address sections;u64 section_count;address relocations;
+    address objects;u64 object_count;address sections;address relocations;
     address symbols;address imports;address exports;address code;address frames;address nodes;address pending;
     address locals;address runtime;u64 runtime_count;u64 library_count;
 };
 struct SelectParams {u64 native_mode;address roots;u64 root_count;u64 types;u64 programs;BindingBytes runtime_library;};
-struct SelectReply {SelectView view;u64 object;u64 error;};
+enum SelectAppend:u32 { Unchanged=0; Appended=1; Failed=2; };
 struct SelectResource {address runtime;u64 runtime_count;address locals;u64 local_count;u64 types;u64 programs;};
 enum EntryProduct:u32 { None=0; Pe=1; HostApplication=2; Dll=3; DllWithoutArchive=4; };
 struct EntryPlan {EntryProduct product;u32 uses_runtime;u64 stack_reserve;};
 struct SelectResult {u64 error;BindingBytes name;BindingBytes owner;u64 entry;EntryPlan plan;};
 extern "C" SelectResult choose(SelectView input,SelectParams params,address context,
-    cfn<SelectReply,address,u64,BindingBytes> extract,cfn<SelectReply,address,u64> native_archive,
-    cfn<SelectReply,address,SelectResource> resources,cfn<BindingBytes,address,BindingBytes> slot) on cpu
+    cfn<SelectAppend,address,address,u64,BindingBytes> extract,cfn<u64,address,u64> native_archive,
+    cfn<SelectAppend,address,address,SelectResource> resources,cfn<BindingBytes,address,BindingBytes> slot) on cpu
     requires nonzero(extract) requires nonzero(native_archive) requires nonzero(resources) requires nonzero(slot);

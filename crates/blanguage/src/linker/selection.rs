@@ -66,24 +66,24 @@ pub(crate) fn bind_root_contracts<'a>(
         Err(format!("缺少模块函数接口 {}", text(&roots[missing - 1].name)))
     }
 }
-#[derive(Clone,Copy)]#[repr(C)]
+#[repr(C)]
 struct View {
-    objects:*mut ObjectView,object_count:u64,sections:*mut SectionView,section_count:u64,
+    objects:*mut ObjectView,object_count:u64,sections:*mut SectionView,
     relocations:*mut RelocationView,symbols:*mut SymbolView,imports:*mut ImportView,
     exports:*mut ExportView,code:*mut Bytes,frames:*mut FrameView,nodes:*mut [u64;9],pending:*mut u64,
     locals:*mut LocalView,runtime:*mut RuntimeView,runtime_count:u64,library_count:u64,
 }
 #[derive(Clone,Copy)]#[repr(C)]
 struct Params<'a> {native_mode:u64,roots:*const RootView<'a>,root_count:u64,types:u64,programs:u64,runtime_library:Bytes}
-#[derive(Clone,Copy)]#[repr(C)]
-struct Reply {view:View,object:u64,error:u64}
+#[repr(u32)]
+enum AppendStatus { Unchanged, Appended, Failed }
 #[derive(Clone,Copy)]#[repr(C)]
 struct ResourceRequest {runtime:*const RuntimeView,runtime_count:u64,locals:*const LocalView,local_count:u64,types:u64,programs:u64}
 #[derive(Clone,Copy)]#[repr(C)]
 struct SelectionResult {error:u64,name:Bytes,owner:Bytes,entry:u64,plan:EntryPlan}
-type Extract=unsafe extern "C" fn(*mut c_void,u64,Bytes)->Reply;
-type NativeArchive=unsafe extern "C" fn(*mut c_void,u64)->Reply;
-type ResourceBinding=unsafe extern "C" fn(*mut c_void,ResourceRequest)->Reply;
+type Extract = unsafe extern "C" fn(*mut c_void, *mut View, u64, Bytes) -> AppendStatus;
+type NativeArchive = unsafe extern "C" fn(*mut c_void, u64) -> u64;
+type ResourceBinding = unsafe extern "C" fn(*mut c_void, *mut View, ResourceRequest) -> AppendStatus;
 type Slot=unsafe extern "C" fn(*mut c_void,Bytes)->Bytes;
 unsafe extern "C" {
     #[link_name="bootstrap.native_select::choose"]
@@ -194,22 +194,27 @@ impl<'a, Payload> Context<'a, Payload> {
             (std::ptr::null_mut(), std::ptr::null_mut(), 0),
             |work| (work.locals.as_mut_ptr().cast(), work.runtime.as_mut_ptr(), work.runtime.len() as u64),
         );
-        View{objects:self.objects.as_mut_ptr(),object_count:self.objects.len() as u64,sections:self.sections.as_mut_ptr(),section_count:self.sections.len() as u64,
+        View{objects:self.objects.as_mut_ptr(),object_count:self.objects.len() as u64,sections:self.sections.as_mut_ptr(),
             relocations:self.relocations.as_mut_ptr(),symbols:self.symbols.as_mut_ptr(),imports:self.imports.as_mut_ptr(),
             exports:self.exports.as_mut_ptr(),code:self.code.as_mut_ptr(),frames:self.frames.as_mut().map_or(std::ptr::null_mut(), Vec::as_mut_ptr),nodes:self.nodes.as_mut_ptr().cast(),pending:self.pending.as_mut_ptr().cast(),
             locals,runtime,runtime_count,library_count:self.libraries.len() as u64}
     }
-    fn append(&mut self, object: Object<Payload>) -> u64 {
-        let index = self.sources.len();
-        self.describe(index, &object, false);
-        self.sources.push(Source::Owned(object));
-        self.grow();
-        index as u64 + 1
-    }
-    fn reply(&mut self, result: Result<Option<Object<Payload>>>) -> Reply {
-        match result{
-            Ok(object)=>{let object=object.map_or(0,|object|self.append(object));Reply{view:self.view(),object,error:0}},
-            Err(error)=>{self.error=Some(error);Reply{view:self.view(),object:0,error:1}},
+    fn append_result(&mut self, view: &mut View, result: Result<Option<Object<Payload>>>) -> AppendStatus {
+        match result {
+            Ok(Some(object)) => {
+                let index = self.sources.len();
+                self.describe(index, &object, false);
+                self.sources.push(Source::Owned(object));
+                self.grow();
+                // Appending can move the buffers borrowed by the B selector.
+                *view = self.view();
+                AppendStatus::Appended
+            }
+            Ok(None) => AppendStatus::Unchanged,
+            Err(error) => {
+                self.error = Some(error);
+                AppendStatus::Failed
+            }
         }
     }
     fn remap_relocations<Bytes>(&self,section:&mut object::Section<Bytes>,row:SectionView) {
@@ -293,14 +298,26 @@ impl<'a, Payload> Context<'a, Payload> {
         object
     }
 }
-unsafe extern "C" fn extract<Payload: ReadSection>(context:*mut c_void,library:u64,name:Bytes)->Reply {
-    let context=unsafe{&mut *context.cast::<Context<'_, Payload>>()};
-    let result=context.libraries[library as usize].extract(text(&name), context.frames.is_some());context.reply(result)
+unsafe extern "C" fn extract<Payload: ReadSection>(
+    context: *mut c_void, view: *mut View, library: u64, name: Bytes,
+) -> AppendStatus {
+    let context = unsafe { &mut *context.cast::<Context<'_, Payload>>() };
+    let result = context.libraries[library as usize].extract(text(&name), context.frames.is_some());
+    context.append_result(unsafe { &mut *view }, result)
 }
-unsafe extern "C" fn native_archive<Payload>(context:*mut c_void,index:u64)->Reply {
-    let context=unsafe{&mut *context.cast::<Context<'_, Payload>>()};
-    let result=Library::native(context.sources[index as usize].archive().unwrap().bytes.clone());
-    match result {Ok(library)=>{context.libraries.push(library);context.reply(Ok(None))},Err(error)=>context.reply(Err(error))}
+unsafe extern "C" fn native_archive<Payload>(context: *mut c_void, index: u64) -> u64 {
+    let context = unsafe { &mut *context.cast::<Context<'_, Payload>>() };
+    let result = Library::native(context.sources[index as usize].archive().unwrap().bytes.clone());
+    match result {
+        Ok(library) => {
+            context.libraries.push(library);
+            context.libraries.len() as u64
+        }
+        Err(error) => {
+            context.error = Some(error);
+            0
+        }
+    }
 }
 unsafe extern "C" fn slot<Payload>(context:*mut c_void,name:Bytes)->Bytes {
     let context=unsafe{&mut *context.cast::<Context<'_, Payload>>()};
@@ -308,7 +325,9 @@ unsafe extern "C" fn slot<Payload>(context:*mut c_void,name:Bytes)->Bytes {
     slots.push(resources::import_symbol(crate::application::RUNTIME_LIBRARY, text(&name)));
     Bytes::new(slots.last().unwrap())
 }
-unsafe extern "C" fn binding<Payload: ReadSection>(context:*mut c_void,request:ResourceRequest)->Reply {
+unsafe extern "C" fn binding<Payload: ReadSection>(
+    context: *mut c_void, view: *mut View, request: ResourceRequest,
+) -> AppendStatus {
     let context=unsafe{&mut *context.cast::<Context<'_, Payload>>()};
     let runtime=unsafe{std::slice::from_raw_parts(request.runtime,request.runtime_count as usize)};
     let locals=unsafe{std::slice::from_raw_parts(request.locals,request.local_count as usize)};
@@ -324,7 +343,7 @@ unsafe extern "C" fn binding<Payload: ReadSection>(context:*mut c_void,request:R
     );
     // The B selector requests generated bindings only for a native image.
     let result = result.map(|code| code.map(|code| Payload::from_generated(code.into_object())));
-    context.reply(result)
+    context.append_result(unsafe { &mut *view }, result)
 }
 pub(super) fn entry<'a, Payload: ReadSection>(
     inputs: Inputs<'a, Payload>, stack_output: bool, borrowed: impl Fn(&'a Vec<u8>) -> Payload,
