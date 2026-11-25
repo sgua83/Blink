@@ -734,10 +734,11 @@ extern "C" u32 internal_conflict(address context,CrossScalars integers,InternalH
     FactView lo=internal_limit(context,internal_key(FactKind::Minimum,first.first,first.scalar,info.mask),1,host);
     if(lo.present!=0){continue;}
    }
-   BitRange bounds=internal_clip(context,first.first,first.scalar,info,BitRange(lower,upper),host);
-   if(bounds.lower>bounds.upper){return 1;}
-   if(bounds.lower==bounds.upper&&bounds.lower==info.bias){
-    if(host.contains(context,internal_key(FactKind::NonZero,first.first,first.scalar,0u64))!=0){return 1;}
+   if(lower>upper){return 1;}
+   if(info.bias<lower||info.bias>upper){
+    if(host.contains(context,internal_key(FactKind::Zero,first.first,first.scalar,0u64))!=0){return 1;}
+   }else if(lower==upper&&host.contains(context,internal_key(FactKind::NonZero,first.first,first.scalar,0u64))!=0){
+    return 1;
    }
    continue;
   }else if(fact.kind==FactKind::NotEqual){
