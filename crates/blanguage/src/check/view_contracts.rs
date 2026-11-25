@@ -185,7 +185,7 @@ impl ControlInput {
                 .and_then(|binding| view::data_at(binding, path))
                 .and_then(|data| data.elements.known())
                 .and_then(returns::Returned::view_value)
-                .map(|value| bounds::Proof::capture(value).project(&[*component], value.ty.components.len())),
+                .map(|value| bounds::Proof::capture_selected(value, &[*component], value.ty.components.len())),
             Self::Length { name, path } => lookup(name)
                 .and_then(|binding| view::data_at(binding, path))
                 .map(|data| bounds::Proof::capture(&data.length)),
@@ -198,14 +198,37 @@ pub(super) struct LoopControl {
     pub test:Option<bounds::Condition>,
     pub inputs:BTreeMap<ValueIdentity,ControlInput>,
 }
-fn binding_value(binding:&Binding)->Option<(&Ty,bounds::Proof)> {
-    match binding {
-        Binding::Value(value)=>Some((&value.ty,bounds::Proof::capture(value))),
-        Binding::Owned(value)|Binding::ViewElement{element:value,..}=>Some((value.place.ty(),value.proof.clone())),
-        Binding::OwnedValue(value)=>Some((&value.value.ty,bounds::Proof::capture(&value.value))),
-        _=>None,
+enum ControlValue<'a> {
+    Value(&'a Value),
+    Stored(&'a bounds::Proof),
+}
+
+impl ControlValue<'_> {
+    fn known_identity(&self, component: usize) -> Option<ValueIdentity> {
+        match self {
+            Self::Value(value) => value.regs.get(component).map(|_| value.component_identity(component)),
+            Self::Stored(proof) => proof.known_identity(component),
+        }
+    }
+
+    fn project(&self, components: &[usize], width: usize) -> bounds::Proof {
+        match self {
+            Self::Value(value) => bounds::Proof::capture_selected(value, components, width),
+            Self::Stored(proof) => proof.project(components, width),
+        }
     }
 }
+
+fn binding_value(binding: &Binding) -> Option<(&Ty, ControlValue<'_>)> {
+    match binding {
+        Binding::Value(value) => Some((&value.ty, ControlValue::Value(value))),
+        Binding::Owned(value) | Binding::ViewElement { element: value, .. } =>
+            Some((value.place.ty(), ControlValue::Stored(&value.proof))),
+        Binding::OwnedValue(value) => Some((&value.value.ty, ControlValue::Value(&value.value))),
+        _ => None,
+    }
+}
+
 impl LoopControl {
     pub fn capture(test:&Value,environment:&BTreeMap<String,Binding>,cursor:Option<Value>)->Self {
         let condition = bounds::Condition::of(test);

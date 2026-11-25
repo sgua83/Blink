@@ -1181,7 +1181,7 @@ unsafe extern "C" {
 
 unsafe extern "C" fn seed_partial_elements(context: *mut c_void) {
     let state = unsafe { &mut *context.cast::<LoopElementProofs<'_, '_>>() };
-    state.partial = Some(bounds::Proof::capture(state.initial).project(state.components, state.data.ty.components.len()));
+    state.partial = Some(bounds::Proof::capture_selected(state.initial, state.components, state.data.ty.components.len()));
 }
 
 unsafe extern "C" fn join_partial_elements(context: *mut c_void, edge: LoopElementEdge) {

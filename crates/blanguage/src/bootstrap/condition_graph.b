@@ -2468,3 +2468,19 @@ extern "C" void project_call_proof(address context,ProofCallWidths widths,ProofC
  }
 }
 
+extern "C" void capture_selected_proof(address context,address indices,usize count,
+ usize width,usize registers,CaptureProofHost host) on cpu
+ requires nonzero(host.all) requires nonzero(host.component) {
+ Span selected=Span(indices,count);
+ if(count==width) {
+  usize index=0u64;
+  while(index<count&&word_at(selected,index)==index) { index+=1u64; }
+  if(index==count) { host.all(context); return; }
+ }
+ usize index=0u64;
+ while(index<count) {
+  usize component=word_at(selected,index);
+  host.component(context,component,component<registers?1:0);
+  index+=1u64;
+ }
+}

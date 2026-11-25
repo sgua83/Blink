@@ -1034,3 +1034,10 @@ extern "C" void project_call_proof(address context,ProofCallWidths widths,ProofC
  requires nonzero(host.domain) requires nonzero(host.direct) requires nonzero(host.common) requires nonzero(host.derived)
  requires nonzero(host.false_case) requires nonzero(host.possible) requires nonzero(host.nonzero);
 
+struct CaptureProofHost {
+ cfn<void,address> all;
+ cfn<void,address,usize,u32> component;
+};
+extern "C" void capture_selected_proof(address context,address indices,usize count,
+ usize width,usize registers,CaptureProofHost host) on cpu
+ requires nonzero(host.all) requires nonzero(host.component);

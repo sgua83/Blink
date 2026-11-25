@@ -139,3 +139,60 @@ pub(super) fn run(
     (state.selected.unwrap_or_default(), path)
 }
 
+struct CaptureSelection<'a> {
+    value: &'a Value,
+    result: Proof,
+}
+
+#[repr(C)]
+struct CaptureHost {
+    all: unsafe extern "C" fn(*mut c_void),
+    component: unsafe extern "C" fn(*mut c_void, usize, u32),
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.condition_graph::capture_selected_proof"]
+    fn capture_selected_proof(
+        context: *mut c_void, indices: *const usize, count: usize,
+        width: usize, registers: usize, host: CaptureHost,
+    );
+}
+
+unsafe extern "C" fn capture_all(context: *mut c_void) {
+    let state = unsafe { &mut *context.cast::<CaptureSelection<'_>>() };
+    state.result = Proof::capture(state.value);
+}
+
+unsafe extern "C" fn capture_component(context: *mut c_void, component: usize, registered: u32) {
+    let state = unsafe { &mut *context.cast::<CaptureSelection<'_>>() };
+    let value = state.value;
+    let (range, nonzero, origins, condition) = if registered != 0 {
+        let (range, nonzero) = value.component_numeric_facts(component);
+        (range, nonzero, value.component_origins(component), Proof::value_condition(value, component))
+    } else {
+        (ScalarRanges::default(), false, Vec::new(), None)
+    };
+
+    let proof = &value.proof;
+    let result = &mut state.result;
+    result.ranges.push(range);
+    result.nonzero.push(nonzero);
+    result.origins.push(origins);
+    result.conditions.push(condition);
+    result.domains.push(proof.domains(component).into_owned());
+    result.views.push(proof.view_borrow(component));
+    if !proof.addresses.is_empty() {
+        result.addresses.push(proof.addresses.get(component).cloned().flatten());
+    }
+}
+
+pub(super) fn capture(value: &Value, components: &[usize], width: usize) -> Proof {
+    let mut state = CaptureSelection { value, result: Proof::default() };
+    unsafe {
+        capture_selected_proof(
+            ptr::from_mut(&mut state).cast(), components.as_ptr(), components.len(),
+            width, value.regs.len(), CaptureHost { all: capture_all, component: capture_component },
+        );
+    }
+    state.result
+}

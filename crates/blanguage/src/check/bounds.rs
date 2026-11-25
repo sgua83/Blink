@@ -1379,6 +1379,10 @@ impl Proof {
         }
         proof
     }
+    pub(super) fn capture_selected(value: &Value, components: &[usize], width: usize) -> Self {
+        selection_proof::capture(value, components, width)
+    }
+
     pub(super) fn capture(value: &Value) -> Self {
         let (ranges, nonzero) = (0..value.regs.len()).map(|i| value.component_numeric_facts(i)).unzip();
         Self {
@@ -1722,7 +1726,7 @@ impl Value {
     pub(super) fn identity(&self) -> ValueIdentity {
         self.component_identity(0)
     }
-    fn component_identity(&self, index: usize) -> ValueIdentity {
+    pub(super) fn component_identity(&self, index: usize) -> ValueIdentity {
         self.proof
             .origins
             .get(index)

@@ -635,7 +635,7 @@ impl ApplicationLoads<'_, '_> {
                         for (component,_) in origin.words.iter().enumerate().filter(|(component,at)|**at==word&&origin.layout.parts[*component].0==scalar){
                             let proof=contract.written.get(*index).and_then(Option::as_ref).map(|written|{
                                 let value=self.0.returned_storage(written);
-                                bounds::Proof::capture(&value).project(&[component],value.regs.len()).at_call(&invocation.arguments)
+                                bounds::Proof::capture_selected(&value, &[component], value.regs.len()).at_call(&invocation.arguments)
                             }).unwrap_or_default();
                             if let Some(common)=&mut common{common.join_condition(&proof,1,None);}else{common=Some(proof);}
                         }
