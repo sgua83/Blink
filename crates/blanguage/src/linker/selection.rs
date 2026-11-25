@@ -163,7 +163,9 @@ impl<'a, Payload> Context<'a, Payload> {
         }));
         self.imports.extend(object.imports.iter().map(|(name,contract)|ImportView{name:Bytes::new(name),contract:borrowed(contract)}));
         if let Some(archive)=&object.archive{
-            row.export_count=archive.exports.len() as u64;self.exports.extend(archive.exports.iter().map(|name|ExportView{name:Bytes::new(name),keep:1}));
+            row.export_count = archive.exports.len() as u64;
+            let keep = u64::from(kind != 0);
+            self.exports.extend(archive.exports.iter().map(|name| ExportView { name: Bytes::new(name), keep }));
             if let Some(resource)=&archive.resources{
                 row.has_resources=1;row.prefix=Bytes::new(&resource.prefix);row.code_count=resource.code.len() as u64;
                 self.code.extend(resource.code.iter().map(|name|Bytes::new(name)));
@@ -176,15 +178,9 @@ impl<'a, Payload> Context<'a, Payload> {
         self.objects.push(row);
     }
     fn grow(&mut self) {
-        let definitions = self.symbols.len();
-        let relocations = self.relocations.len();
-        let nodes = if let Some(work) = &mut self.native {
-            // A local slot and its tree node can only come from an import relocation.
-            definitions + work.locals.len()
-        } else {
-            // Export filtering reuses the definition tree after selection.
-            definitions.max(relocations)
-        };
+        // A local slot and its tree node can only come from an import relocation.
+        let local_slots = self.native.as_ref().map_or(0, |work| work.locals.len());
+        let nodes = self.symbols.len() + local_slots;
         // B initializes each node or queue entry before making it reachable.
         self.nodes.resize_with(nodes, MaybeUninit::uninit);
         self.pending.resize_with(self.sections.len(), MaybeUninit::uninit);

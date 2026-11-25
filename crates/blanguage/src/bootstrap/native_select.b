@@ -15,8 +15,9 @@ void relocation_put(SelectView view,u64 i,SelectRelocation row) on cpu {unsafe_p
 SelectSymbol symbol_at(SelectView view,u64 i) on cpu {return unsafe_position<SelectSymbol>(unsafe_address(address_bits(view.symbols)+i*SYMBOL_BYTES));}
 void symbol_put(SelectView view,u64 i,SelectSymbol row) on cpu {unsafe_position<SelectSymbol>(unsafe_address(address_bits(view.symbols)+i*SYMBOL_BYTES))=row;}
 SelectImport import_row(SelectView view,u64 i) on cpu {return unsafe_position<SelectImport>(unsafe_address(address_bits(view.imports)+i*IMPORT_BYTES));}
-SelectExport export_at(SelectView view,u64 i) on cpu {return unsafe_position<SelectExport>(unsafe_address(address_bits(view.exports)+i*EXPORT_BYTES));}
-void export_put(SelectView view,u64 i,SelectExport row) on cpu {unsafe_position<SelectExport>(unsafe_address(address_bits(view.exports)+i*EXPORT_BYTES))=row;}
+address export_address(SelectView view,u64 index) on cpu {
+    return unsafe_address(address_bits(view.exports)+index*EXPORT_BYTES);
+}
 SelectFrame frame_at(SelectView view,u64 i) on cpu {return unsafe_position<SelectFrame>(unsafe_address(address_bits(view.frames)+i*FRAME_BYTES));}
 void frame_put(SelectView view,u64 i,SelectFrame row) on cpu {unsafe_position<SelectFrame>(unsafe_address(address_bits(view.frames)+i*FRAME_BYTES))=row;}
 SelectLocal local_at(SelectView view,u64 i) on cpu {return unsafe_position<SelectLocal>(unsafe_address(address_bits(view.locals)+i*LOCAL_BYTES));}
@@ -74,7 +75,19 @@ bool select_runtime(SelectView view,BindingBytes name,bool collect) on cpu {
     }
     return false;
 }
-bool exported(SelectView view,SelectObject object,BindingBytes name) on cpu {u64 i=object.export_start;while(i<object.export_start+object.export_count){if(equal(export_at(view,i).name,name)){return true;}i+=1u64;}return false;}
+bool match_export(SelectView view,SelectObject object,BindingBytes name,bool retain) on cpu {
+    u64 index=object.export_start;
+    while(index<object.export_start+object.export_count){
+        address at=export_address(view,index);
+        SelectExport row=unsafe_position<SelectExport>(at);
+        if(equal(row.name,name)){
+            if(retain&&row.keep==0u64){unsafe_position<SelectExport>(at).keep=1u64;}
+            return true;
+        }
+        index+=1u64;
+    }
+    return false;
+}
 SelectResult define(inout SelectState state,u64 object_index) on cpu {
     SelectObject object=object_at(state.view,object_index);u64 i=object.symbol_start;
     while(i<object.symbol_start+object.symbol_count){SelectSymbol symbol=symbol_at(state.view,i);BindingKey key=BindingKey(symbol.name,empty());
@@ -136,13 +149,17 @@ EntryPlan finish(inout SelectState state,SelectParams params) on cpu {
             while(i<object.section_start+object.section_count){SelectSection section=section_at(state.view,i);section.mapping=mapping;if(section.live!=0u64){mapping+=1u64;}section_put(state.view,i,section);i+=1u64;}
             object.keep_archive=object.archive;if(params.native_mode!=0u64||object.borrowed!=0u64){object.keep_archive=0u64;}
             if(object.kind==0u64&&object.keep_archive!=0u64){
-                state.forest.count=0u64;state.forest.names=0u64;state.forest.imports=0u64;i=object.section_start;
-                while(i<object.section_start+object.section_count){SelectSection section=section_at(state.view,i);if(section.live!=0u64){
-                    u64 r=section.relocation_start;while(r<section.relocation_start+section.relocation_count){SelectRelocation relocation=relocation_at(state.view,r);
-                        if(relocation.kind==2u64&&equal(relocation.dll,params.runtime_library)){BindingInsert item=insert_binding(state.forest,state.forest.names,BindingKey(relocation.name,empty()),0u64,false);state.forest.names=item.root;}r+=1u64;}}i+=1u64;}
-                bool used=false;i=object.export_start;while(i<object.export_start+object.export_count){SelectExport row=export_at(state.view,i);row.keep=0u64;
-                    if(find(state.forest,state.forest.names,BindingKey(row.name,empty()))!=0u64){row.keep=1u64;used=true;}
-                    if(object.has_resources!=0u64&&suffixed(row.name,object.prefix,7165919078637728351u64,29541u64,10u64)){row.keep=1u64;}export_put(state.view,i,row);i+=1u64;}
+                bool used=false;
+                i=object.export_start;
+                while(i<object.export_start+object.export_count){
+                    address at=export_address(state.view,i);
+                    SelectExport row=unsafe_position<SelectExport>(at);
+                    if(row.keep!=0u64){used=true;}
+                    else if(object.has_resources!=0u64&&suffixed(row.name,object.prefix,7165919078637728351u64,29541u64,10u64)){
+                        unsafe_position<SelectExport>(at).keep=1u64;
+                    }
+                    i+=1u64;
+                }
                 if(!used){object.keep_archive=0u64;}
             }
             retained_archive=retained_archive||object.keep_archive!=0u64;
@@ -201,12 +218,13 @@ extern "C" SelectResult choose(SelectView input,SelectParams params,address cont
                 include(state,object_index,index_at(section.associated,a));
                 a+=1u64;
             }
+            bool retain_exports=params.native_mode==0u64&&object.kind==0u64&&object.borrowed==0u64;
             u64 r=section.relocation_start;
             while(r<section.relocation_start+section.relocation_count){
                 SelectRelocation relocation=relocation_at(state.view,r);
                 bool runtime_import=relocation.kind==2u64&&equal(relocation.dll,params.runtime_library);
                 state.runtime_import=state.runtime_import||runtime_import;
-                if(runtime_import&&object.archive!=0u64&&exported(state.view,object,relocation.name)){
+                if(runtime_import&&object.archive!=0u64&&match_export(state.view,object,relocation.name,retain_exports)){
                     u64 c=object.code_start;while(c<object.code_start+object.code_count){BindingBytes name=name_at(state.view.code,c);u64 at=find(state.forest,state.forest.names,BindingKey(name,empty()));
                         if(at==0u64){return result(6u64,name,empty(),state.entry);}SelectSymbol symbol=symbol_at(state.view,node_at(state.forest,at).value-1u64);
                         if(symbol.owner!=object_index){return result(6u64,name,empty(),state.entry);}include(state,object_index,symbol.section);c+=1u64;}
