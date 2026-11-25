@@ -309,6 +309,13 @@ impl Compiler {
     ) -> Result<Compilation> {
         compile_module_on(self, path, root, true, Some((EntryKind::Domain, entry)), dependencies)
     }
+    #[doc(hidden)]
+    pub fn compile_entry_with_interfaces(
+        &self, path: &Path, root: &Path, entry: &str, interfaces: Vec<module::CompiledInterface>,
+    ) -> Result<Compilation> {
+        compile_module_importing(self, path, root, true, Some((EntryKind::Domain, entry)),
+            || module::Imports::interfaces(interfaces))
+    }
     pub fn compile_application(&self, path: &Path, root: &Path, entry: &str) -> Result<application::Application> {
         Ok(compile_module_on(self, path, root, false, Some((EntryKind::Application, entry)), &[])?.applications.remove(0))
     }

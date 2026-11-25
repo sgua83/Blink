@@ -77,8 +77,8 @@ enum CompileError {
     UnknownCommand, MissingOptionOperand, OptionText, UnknownOption, BudgetText,
     EntryText, InstanceText, BudgetWithoutReport, MissingOutput, CodeUsage, ObjectCodeUsage,
     IrUsage, IrModeRepeated, IrFunctionRepeated, IrStageRepeated, IrOption, IrFunctionMode,
-    IrStageMode, IrInstanceMode, IrImportMode,
-    LayoutUsage, LayoutOption, X64Usage, X64Option, X64Repeated, ImageUsage, SpirvUsage,
+    IrStageMode, IrInstanceMode,
+    LayoutUsage = 35, LayoutOption, X64Usage, X64Option, X64Repeated, ImageUsage, SpirvUsage,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -161,7 +161,6 @@ impl CompileError {
             Self::IrFunctionMode => "--function用于普通应用／模块，--stage用于--program",
             Self::IrStageMode => "--stage需要--program",
             Self::IrInstanceMode => "--instance用于模块；入口实例直接写在--entry／--program值中",
-            Self::IrImportMode => "此并行入口编译API不接受已编译导入；可用--module查询模块的函数和资源程序",
             Self::LayoutUsage => layout_facts::USAGE,
             Self::LayoutOption => return Err(format!("未知布局选项 {}；{}", args[index].to_string_lossy(), layout_facts::USAGE).into()),
             Self::X64Usage => x64_facts::USAGE,

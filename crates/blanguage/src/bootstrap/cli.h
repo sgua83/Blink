@@ -54,7 +54,7 @@ enum CompileError:u32 {
     EntryText=20; InstanceText=21; BudgetWithoutReport=22; MissingOutput=23;
     CodeUsage=24; ObjectCodeUsage=25; IrUsage=26; IrModeRepeated=27; IrFunctionRepeated=28;
     IrStageRepeated=29; IrOption=30; IrFunctionMode=31; IrStageMode=32; IrInstanceMode=33;
-    IrImportMode=34; LayoutUsage=35; LayoutOption=36; X64Usage=37; X64Option=38;
+    LayoutUsage=35; LayoutOption=36; X64Usage=37; X64Option=38;
     X64Repeated=39; ImageUsage=40; SpirvUsage=41;
 };
 

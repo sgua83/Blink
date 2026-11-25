@@ -444,7 +444,6 @@ extern "C" IrCommandLine parse_ir_arguments(address arguments, u64 count, Operan
     IrCommandLine line = IrCommandLine(
         EntryMode::Module, CompileError::None, count, count, count, count, 0u64, 0u64);
     bool explicit_mode = false;
-    bool has_imports = false;
     bool has_instances = false;
     u64 index = 2u64;
     while (index < count) {
@@ -483,7 +482,6 @@ extern "C" IrCommandLine parse_ir_arguments(address arguments, u64 count, Operan
             line.has_stage = 1u64;
         } else if (is_token(option, "--import")) {
             operands.import_path(operands.context,operand);
-            has_imports = true;
         } else if (is_token(option, "--instance")) {
             if (value.text == 0u64) { line.error = CompileError::IrUsage; return line; }
             operands.instance_name(operands.context,operand);
@@ -501,8 +499,6 @@ extern "C" IrCommandLine parse_ir_arguments(address arguments, u64 count, Operan
         line.error = CompileError::IrStageMode;
     } else if (has_instances && line.mode != EntryMode::Module) {
         line.error = CompileError::IrInstanceMode;
-    } else if (has_imports && line.mode == EntryMode::Program) {
-        line.error = CompileError::IrImportMode;
     }
     return line;
 }

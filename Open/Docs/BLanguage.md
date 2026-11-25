@@ -228,7 +228,7 @@ Rust API `Compiler::type_layout(path, root, request)`返回原Ty；`Compiler::ty
 
 ## 实际IR的按需结构查询
 
-`bc ir <module.b> [-I root] [--module | --program name | --entry name] [--function qualified-name | --stage index] [--import object|archive] [--instance name]`通过原Compiler编译本次明确源码请求，随后只读查询同一返回结果。默认--module；--program选择具体并行入口，--entry选择普通CPU应用入口。三种模式互斥，入口的泛型／const实参直接写在名字中；模块开放实例用--instance，可重复请求不同实例。--import沿原已编译模块／归档装入，只用于模块或应用；直接并行入口的原API当前不接受已编译导入，可在模块查询中查看实际资源程序。
+`bc ir <module.b> [-I root] [--module | --program name | --entry name] [--function qualified-name | --stage index] [--import object|archive] [--instance name]`通过原Compiler编译本次明确源码请求，随后只读查询同一返回结果。默认--module；--program选择具体并行入口，--entry选择普通CPU应用入口。三种模式互斥，入口的泛型／const实参直接写在名字中；模块开放实例用--instance，可重复请求不同实例。--import为本次模块、普通应用或具体并行入口的编译装入已编译模块对象／归档接口，可重复指定。被导入模块的实现可只由已编译产物提供；查询返回本次选定编译结果中实际存在的IR。
 
 ```powershell
 bc ir sample/lessons/map.b -I sample --program demo --stage 0

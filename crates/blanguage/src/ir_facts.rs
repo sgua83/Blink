@@ -57,7 +57,7 @@ pub(super) fn print(
             ("application", "finalized_application_ir", value)
         }
         EntryMode::Program => {
-            let compilation = compiler.compile_entry(&path, root, entry)?;
+            let compilation = compiler.compile_entry_with_interfaces(&path, root, entry, imports)?;
             let program = compilation.programs.iter().map(|p| &**p)
                 .chain(compilation.templates.iter().map(|p| &**p)).next().ok_or("本次入口没有并行IR")?;
             let value = if let Some(stage) = stage {
