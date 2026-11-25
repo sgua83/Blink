@@ -1,6 +1,7 @@
 //! 资源位置属于函数的静态访问合同；逻辑输入路径不成为运行期状态。
 use super::*;
 use returns::Returned;
+use std::{borrow::Cow, ffi::c_void, ptr};
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) enum Part {
@@ -633,15 +634,124 @@ fn physical_target(value: &Residency) -> Option<Target> {
     let first = origins.first().and_then(location)?;
     origins.iter().all(|origin| location(origin) == Some(first)).then_some(first)
 }
-fn equal_under(a:&Residency,b:&Residency,path:&bounds::Clause,leaf:&mut impl FnMut(&Residency,&Residency,&bounds::Clause)->bool)->bool{
-    if !path.possible() { return true; }
-    let (a, b) = (a.under(path), b.under(path));
-    if a == b || physical_target(&a).is_some_and(|target| physical_target(&b) == Some(target)) {
-        return true;
+type Borrowed = *const c_void;
+type Context = *mut c_void;
+
+#[derive(Clone, Copy)]
+#[repr(C)]
+struct ResidencyPair {
+    left: Borrowed,
+    right: Borrowed,
+    path: Borrowed,
+}
+
+#[repr(C)]
+struct ResidencyBranch {
+    condition: Borrowed,
+    yes: Borrowed,
+    no: Borrowed,
+}
+
+#[repr(C)]
+struct ResidencyCompareHost {
+    possible: unsafe extern "C" fn(Borrowed) -> u32,
+    equivalent: unsafe extern "C" fn(Borrowed, Borrowed) -> u32,
+    selected: unsafe extern "C" fn(Borrowed) -> ResidencyBranch,
+    project: unsafe extern "C" fn(Context, ResidencyPair) -> u32,
+    branch: unsafe extern "C" fn(Context, ResidencyPair, Borrowed, u32) -> u32,
+    leaf: unsafe extern "C" fn(Context, ResidencyPair) -> u32,
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.ownership_path::compare_residency"]
+    fn compare_residency(context: Context, pair: ResidencyPair, host: ResidencyCompareHost) -> u32;
+    #[link_name = "bootstrap.ownership_path::compare_projected_residency"]
+    fn compare_projected_residency(context: Context, pair: ResidencyPair, host: ResidencyCompareHost) -> u32;
+}
+
+unsafe extern "C" fn compare_possible(path: Borrowed) -> u32 {
+    u32::from(unsafe { &*path.cast::<bounds::Clause>() }.possible())
+}
+
+unsafe extern "C" fn compare_equivalent(left: Borrowed, right: Borrowed) -> u32 {
+    let left = unsafe { &*left.cast::<Residency>() };
+    let right = unsafe { &*right.cast::<Residency>() };
+    u32::from(left == right || physical_target(left).is_some_and(|target| physical_target(right) == Some(target)))
+}
+
+unsafe extern "C" fn compare_selected(value: Borrowed) -> ResidencyBranch {
+    match unsafe { &*value.cast::<Residency>() } {
+        Residency::Selected(condition, yes, no) => ResidencyBranch {
+            condition: ptr::from_ref(condition.as_ref()).cast(),
+            yes: ptr::from_ref(yes.as_ref()).cast(),
+            no: ptr::from_ref(no.as_ref()).cast(),
+        },
+        _ => ResidencyBranch { condition: ptr::null(), yes: ptr::null(), no: ptr::null() },
     }
-    if let Residency::Selected(when,yes,no)=a{return equal_under(&yes,&b,&when.assume(path,true),leaf)&&equal_under(&no,&b,&when.assume(path,false),leaf);}
-    if let Residency::Selected(when,yes,no)=b{return equal_under(&a,&yes,&when.assume(path,true),leaf)&&equal_under(&a,&no,&when.assume(path,false),leaf);}
-    leaf(&a,&b,path)
+}
+
+unsafe extern "C" fn compare_project<F>(context: Context, pair: ResidencyPair) -> u32
+where
+    F: FnMut(&Residency, &Residency, &bounds::Clause) -> bool,
+{
+    fn under<'a>(value: &'a Residency, path: &bounds::Clause) -> Cow<'a, Residency> {
+        match value {
+            Residency::Selected(..) => Cow::Owned(value.under(path)),
+            _ => Cow::Borrowed(value),
+        }
+    }
+    let left = under(unsafe { &*pair.left.cast::<Residency>() }, unsafe { &*pair.path.cast() });
+    let right = under(unsafe { &*pair.right.cast::<Residency>() }, unsafe { &*pair.path.cast() });
+    let projected = ResidencyPair {
+        left: ptr::from_ref(left.as_ref()).cast(),
+        right: ptr::from_ref(right.as_ref()).cast(),
+        path: pair.path,
+    };
+    unsafe { compare_projected_residency(context, projected, compare_host::<F>()) }
+}
+
+unsafe extern "C" fn compare_branch<F>(context: Context, mut pair: ResidencyPair, condition: Borrowed, truth: u32) -> u32
+where
+    F: FnMut(&Residency, &Residency, &bounds::Clause) -> bool,
+{
+    let condition = unsafe { &*condition.cast::<bounds::Condition>() };
+    let path = condition.assume(unsafe { &*pair.path.cast() }, truth != 0);
+    pair.path = ptr::from_ref(&path).cast();
+    unsafe { compare_residency(context, pair, compare_host::<F>()) }
+}
+
+unsafe extern "C" fn compare_leaf<F>(context: Context, pair: ResidencyPair) -> u32
+where
+    F: FnMut(&Residency, &Residency, &bounds::Clause) -> bool,
+{
+    let leaf = unsafe { &mut *context.cast::<F>() };
+    u32::from(leaf(unsafe { &*pair.left.cast() }, unsafe { &*pair.right.cast() }, unsafe { &*pair.path.cast() }))
+}
+
+fn compare_host<F>() -> ResidencyCompareHost
+where
+    F: FnMut(&Residency, &Residency, &bounds::Clause) -> bool,
+{
+    ResidencyCompareHost {
+        possible: compare_possible,
+        equivalent: compare_equivalent,
+        selected: compare_selected,
+        project: compare_project::<F>,
+        branch: compare_branch::<F>,
+        leaf: compare_leaf::<F>,
+    }
+}
+
+fn equal_under<F>(left: &Residency, right: &Residency, path: &bounds::Clause, leaf: &mut F) -> bool
+where
+    F: FnMut(&Residency, &Residency, &bounds::Clause) -> bool,
+{
+    let pair = ResidencyPair {
+        left: ptr::from_ref(left).cast(),
+        right: ptr::from_ref(right).cast(),
+        path: ptr::from_ref(path).cast(),
+    };
+    unsafe { compare_residency(ptr::from_mut(leaf).cast(), pair, compare_host::<F>()) != 0 }
 }
 pub(super) fn check_loops(name:&str,inputs:&Inputs,contract:&Contract,parameters:&BTreeMap<ValueIdentity,bounds::Proof>,outputs:&Outputs,known:&BTreeMap<String,Contract>,parameter_count:usize)->Result<()>{
     let mut required=contract.required.clone();

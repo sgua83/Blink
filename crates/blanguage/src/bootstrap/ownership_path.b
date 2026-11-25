@@ -149,3 +149,37 @@ extern "C" IntersectStep intersect_step(Cursor state,IntersectFacts f) on cpu {
  }
  return IntersectStep(c,IntersectNeed::Next);
 }
+
+extern "C" u32 compare_residency(address context,ResidencyPair pair,ResidencyCompareHost host) on cpu
+    requires nonzero(host.possible)
+    requires nonzero(host.equivalent)
+    requires nonzero(host.selected)
+    requires nonzero(host.project)
+    requires nonzero(host.leaf) {
+    if(host.possible(pair.path)==0 || address_bits(pair.left)==address_bits(pair.right)){return 1;}
+    if(address_bits(host.selected(pair.left).condition)!=0u64 ||
+       address_bits(host.selected(pair.right).condition)!=0u64){
+        return host.project(context,pair);
+    }
+    if(host.equivalent(pair.left,pair.right)!=0){return 1;}
+    return host.leaf(context,pair);
+}
+
+extern "C" u32 compare_projected_residency(address context,ResidencyPair pair,ResidencyCompareHost host) on cpu
+    requires nonzero(host.equivalent)
+    requires nonzero(host.selected)
+    requires nonzero(host.branch)
+    requires nonzero(host.leaf) {
+    if(host.equivalent(pair.left,pair.right)!=0){return 1;}
+    ResidencyBranch left=host.selected(pair.left);
+    if(address_bits(left.condition)!=0u64){
+        if(host.branch(context,ResidencyPair(left.yes,pair.right,pair.path),left.condition,1)==0){return 0;}
+        return host.branch(context,ResidencyPair(left.no,pair.right,pair.path),left.condition,0);
+    }
+    ResidencyBranch right=host.selected(pair.right);
+    if(address_bits(right.condition)!=0u64){
+        if(host.branch(context,ResidencyPair(pair.left,right.yes,pair.path),right.condition,1)==0){return 0;}
+        return host.branch(context,ResidencyPair(pair.left,right.no,pair.path),right.condition,0);
+    }
+    return host.leaf(context,pair);
+}

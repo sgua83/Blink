@@ -23,3 +23,25 @@ extern "C" ResidencyStep residency_step(Cursor state,ResidencyFacts f) on cpu;
 extern "C" ModelStep model_step(Cursor state,ModelFacts f) on cpu;
 extern "C" MetadataStep metadata_step(Cursor state,MetadataFacts f) on cpu;
 extern "C" IntersectStep intersect_step(Cursor state,IntersectFacts f) on cpu;
+
+struct ResidencyPair { address left; address right; address path; };
+struct ResidencyBranch { address condition; address yes; address no; };
+struct ResidencyCompareHost {
+    cfn<u32,address> possible;
+    cfn<u32,address,address> equivalent;
+    cfn<ResidencyBranch,address> selected;
+    cfn<u32,address,ResidencyPair> project;
+    cfn<u32,address,ResidencyPair,address,u32> branch;
+    cfn<u32,address,ResidencyPair> leaf;
+};
+extern "C" u32 compare_residency(address context,ResidencyPair pair,ResidencyCompareHost host) on cpu
+    requires nonzero(host.possible)
+    requires nonzero(host.equivalent)
+    requires nonzero(host.selected)
+    requires nonzero(host.project)
+    requires nonzero(host.leaf);
+extern "C" u32 compare_projected_residency(address context,ResidencyPair pair,ResidencyCompareHost host) on cpu
+    requires nonzero(host.equivalent)
+    requires nonzero(host.selected)
+    requires nonzero(host.branch)
+    requires nonzero(host.leaf);
