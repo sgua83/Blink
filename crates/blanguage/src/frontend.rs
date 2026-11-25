@@ -712,6 +712,18 @@ pub(crate) fn instance_error(mut error: Diagnostic, name: &str) -> Diagnostic {
 }
 
 impl Declarations {
+    pub(crate) fn compiled_function<'a, 'name>(
+        &'a self, symbol: &'name str,
+    ) -> Option<(&'name str, &'a Definition, &'a [u8])> {
+        // Instances and domain entry points keep their full symbol within the declaring module.
+        let end = symbol.find(['<', '#']).unwrap_or(symbol.len());
+        let name = &symbol[..end];
+        let declaration = self.functions.get(name)?;
+        let contract = declaration.compiled.as_ref()?.get(symbol)?;
+        Some((name, declaration, contract))
+    }
+
+
     pub(crate) fn resolve(
         &self,
         name: &str,

@@ -231,7 +231,7 @@ fn link_entry(
 ) -> std::io::Result<bool> {
     crate::native::program::link_inputs(link, inputs, borrowed, |names| {
         crate::linker::bind_root_contracts(names, 1, |_, name| {
-            identity::imported_function(declarations, name).map(|(_, _, contract)| contract)
+            declarations.compiled_function(name).map(|(_, _, contract)| contract)
         })
     }).map_err(std::io::Error::other)
 }

@@ -1856,19 +1856,31 @@ fn residency_contracts(
     use crate::module::codec::Decode;
     use std::borrow::Cow;
     let mut contracts=module.units.iter().filter_map(|(name,unit)|unit.as_ref().map(|unit|(name.clone(),Cow::Borrowed(&unit.contract)))).collect::<BTreeMap<_,_>>();
-    let mut pending = contracts.keys().cloned().collect::<Vec<_>>();
-    while let Some(name)=pending.pop(){
-        let contract=&contracts[&name];
-        for callee in contract.residency_dependencies(){
-            if contracts.contains_key(&callee){continue;}
-            let (definition,bytes)=world.functions.values().find_map(|definition|definition.compiled.as_ref().and_then(|definitions|definitions.get(&callee)).map(|bytes|(definition,bytes)))
+    let mut pending = contracts.keys().map(|name| {
+        let owner = world.declarations.compiled_function(name).map(|(_, declaration, _)| declaration);
+        (name.clone(), owner)
+    }).collect::<Vec<_>>();
+    while let Some((name, owner)) = pending.pop() {
+        for callee in contracts[&name].residency_dependencies() {
+            if contracts.contains_key(&callee) {
+                continue;
+            }
+            // Private dependencies are read from the compiled call's own contract table.
+            let supplied = match owner {
+                Some(definition) => definition.compiled.as_ref()
+                    .and_then(|contracts| contracts.get(&callee))
+                    .map(|bytes| (definition, bytes.as_slice())),
+                None => world.declarations.compiled_function(&callee)
+                    .map(|(_, definition, bytes)| (definition, bytes)),
+            };
+            let (definition, bytes) = supplied
                 .ok_or_else(||Diagnostic{source:module.units.values().find_map(|unit|unit.as_ref()).unwrap().source.clone(),span:Span::default(),code:"B270",message:format!("已编译模块没有位置合同定义 {callee}")})?;
             let contract=Contract::from_bytes(bytes).map_err(|error|Diagnostic{source:definition.source.clone(),span:definition.function.span(),code:"B270",message:format!("模块函数接口错误：{error}")})?;
             if let Some(imports) = imports.as_deref_mut() {
-                imports.insert(callee.clone(), bytes.clone());
+                imports.insert(callee.clone(), bytes.to_vec());
             }
             contracts.insert(callee.clone(), Cow::Owned(contract));
-            pending.push(callee);
+            pending.push((callee, Some(definition)));
         }
     }
     let outputs=residency::output_sources(contracts.iter().map(|(name,contract)|(name.as_str(),contract.returned.as_ref(),contract.written.as_slice())));
