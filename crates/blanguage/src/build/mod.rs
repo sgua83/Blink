@@ -99,9 +99,11 @@ fn compile_in(
             if let Some(inputs) = identity::match_source(identity, &source)? {
                 let mut image = unsafe { resource::from_compiler_output(stored_image) }
                     .map_err(|e| std::io::Error::other(e.to_string()))?;
-                let links = entry_links(&mut image);
-                if inputs.imports == references(&world.declarations, imported, &links, &inputs.declarations) {
-                    if imported.is_some() && link_inputs(links, dependencies, borrowed, &imports)? {
+                let link = entry_link(&mut image);
+                if inputs.imports == references(&world.declarations, imported, link.as_ref(), &inputs.declarations) {
+                    if imported.is_some() && let Some(link) = link
+                        && link_entry(link, dependencies, borrowed, &imports)?
+                    {
                         let encoded = resource::compiler_output(&image);
                         write_artifact(&artifact, identity, &encoded)?;
                     }
@@ -133,9 +135,11 @@ fn compile_in(
         images: compiled_images,
     };
     let declarations = used_declarations(&world);
-    let links = entry_links(&mut image);
-    let imports_identity = references(&world.declarations, imported, &links, &declarations);
-    if imported.is_some() { link_inputs(links, dependencies, borrowed, &imports)?; }
+    let link = entry_link(&mut image);
+    let imports_identity = references(&world.declarations, imported, link.as_ref(), &declarations);
+    if imported.is_some() && let Some(link) = link {
+        link_entry(link, dependencies, borrowed, &imports)?;
+    }
     let identity = identity::Inputs { source, imports: imports_identity, native: None, declarations }.encode();
     let encoded = resource::compiler_output(&image);
     crate::file_bytes::create_dir_all(output)?;
@@ -205,32 +209,29 @@ fn used_declarations(world: &crate::frontend::World) -> Vec<Declaration> {
     closure.used.into_iter().collect()
 }
 
-fn entry_links(image: &mut resource::Module) -> Vec<ModuleLink<'_>> {
-    image.images.iter_mut().filter_map(|image| match image {
+fn entry_link(image: &mut resource::Module) -> Option<ModuleLink<'_>> {
+    // The selected entry produces one root; module_link visits its nested CPU resources.
+    image.images.iter_mut().find_map(|image| match image {
         resource::Image::Cpu(image) => Some(image.module_link()),
         resource::Image::Gpu(_) => None,
-    }).collect()
+    })
 }
 
 fn references(
     declarations: &crate::Declarations, imported: Option<&crate::module::Imports>,
-    links: &[ModuleLink<'_>], used: &[Declaration],
+    link: Option<&ModuleLink<'_>>, used: &[Declaration],
 ) -> [u8; 32] {
-    let symbols = links.iter().flat_map(|link| link.external.iter().copied());
+    let symbols = link.into_iter().flat_map(|link| link.external.iter().copied());
     identity::references(declarations, imported, symbols, used)
 }
 
-fn link_inputs(
-    links: Vec<ModuleLink<'_>>, mut inputs: Vec<crate::object::Input>,
+fn link_entry(
+    link: ModuleLink<'_>, inputs: Vec<crate::object::Input>,
     borrowed: &[&crate::object::Object], imports: &crate::module::Imports,
-) -> Result<bool> {
-    let mut changed = false;
-    for image in links {
-        let sources = imports.modules.values().map(|module| module.definitions.as_ref());
-        changed |= crate::native::program::link_inputs(image, std::mem::take(&mut inputs), borrowed, sources)
-            .map_err(std::io::Error::other)?;
-    }
-    Ok(changed)
+) -> std::io::Result<bool> {
+    let sources = imports.modules.values().map(|module| module.definitions.as_ref());
+    crate::native::program::link_inputs(link, inputs, borrowed, sources)
+        .map_err(std::io::Error::other)
 }
 
 #[repr(C)]
