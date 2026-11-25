@@ -111,61 +111,24 @@ extern "C" TileExtents place_tile(address rows, u64 count, address members, addr
     return TileExtents(narrow_used, wide_used);
 }
 
-address stage_write_at(address writes, u64 index) on cpu {
-    return unsafe_address(address_bits(writes) + index * size_of<StageWrite>());
-}
-
-u64 coalesce_stage_writes(address writes, u64 count) on cpu {
-    u64 used = 0u64;
-    u64 index = 0u64;
-    while (index < count) {
-        StageWrite next = unsafe_position<StageWrite>(stage_write_at(writes, index));
-        bool merged = false;
-        if (used != 0u64) {
-            address tail = stage_write_at(writes, used - 1u64);
-            StageWrite prior = unsafe_position<StageWrite>(tail);
-            if (prior.binding == next.binding && next.start <= prior.end) {
-                prior.end = max(prior.end, next.end);
-                unsafe_position<StageWrite>(tail) = prior;
-                merged = true;
-            }
-        }
-        if (!merged) {
-            unsafe_position<StageWrite>(stage_write_at(writes, used)) = next;
-            used += 1u64;
-        }
-        index += 1u64;
+bool overwrites_stage_guarantee(address writes, StageGuarantee guarantee, GuaranteeHost host) on cpu
+    requires nonzero(host.seek) requires nonzero(host.next) {
+    WriteEnd write = host.seek(writes, guarantee.binding, guarantee.end);
+    while (write.present != 0) {
+        if (u64(write.end) > guarantee.start) { return true; }
+        write = host.next(writes);
     }
-    return used;
+    return false;
 }
 
-bool overwrites_stage_guarantee(address writes, u64 count, StageGuarantee guarantee) on cpu {
-    u64 begin = 0u64;
-    u64 end = count;
-    while (begin < end) {
-        u64 middle = begin + (end - begin) / 2u64;
-        StageWrite write = unsafe_position<StageWrite>(stage_write_at(writes, middle));
-        if (write.binding < guarantee.binding
-            || (write.binding == guarantee.binding && u64(write.end) <= guarantee.start)) {
-            begin = middle + 1u64;
-        } else {
-            end = middle;
-        }
-    }
-    if (begin == count) { return false; }
-    StageWrite write = unsafe_position<StageWrite>(stage_write_at(writes, begin));
-    return write.binding == guarantee.binding && u64(write.start) < guarantee.end;
-}
-
-u64 retain_guarantee_kind(address writes, u64 write_count, GuaranteeKind kind,
-    u64 count, GuaranteeHost host) on cpu
-    requires nonzero(host.field) requires nonzero(host.swap_slots) {
+u64 retain_guarantee_kind(address writes, GuaranteeKind kind, u64 count, GuaranteeHost host) on cpu
+    requires nonzero(host.field) requires nonzero(host.swap_slots)
+    requires nonzero(host.seek) requires nonzero(host.next) {
     u64 retained = 0u64;
     u64 index = 0u64;
-
     while (index < count) {
         let guarantee = host.field(host.context, kind, index);
-        if (!overwrites_stage_guarantee(writes, write_count, guarantee)) {
+        if (!overwrites_stage_guarantee(writes, guarantee, host)) {
             if (index != retained) { host.swap_slots(host.context, kind, index, retained); }
             retained += 1u64;
         }
@@ -174,12 +137,11 @@ u64 retain_guarantee_kind(address writes, u64 write_count, GuaranteeKind kind,
     return retained;
 }
 
-extern "C" GuaranteeCounts retain_stage_guarantees(address writes, u64 write_count,
-    GuaranteeCounts counts, GuaranteeHost host) on cpu
-    requires nonzero(host.field) requires nonzero(host.swap_slots) {
-    let count = coalesce_stage_writes(writes, write_count);
-    let prefix = retain_guarantee_kind(writes, count, GuaranteeKind::Prefix, counts.prefix, host);
-    let element = retain_guarantee_kind(writes, count, GuaranteeKind::Element, counts.element, host);
+extern "C" GuaranteeCounts retain_stage_guarantees(address writes, GuaranteeCounts counts, GuaranteeHost host) on cpu
+    requires nonzero(host.field) requires nonzero(host.swap_slots)
+    requires nonzero(host.seek) requires nonzero(host.next) {
+    let prefix = retain_guarantee_kind(writes, GuaranteeKind::Prefix, counts.prefix, host);
+    let element = retain_guarantee_kind(writes, GuaranteeKind::Element, counts.element, host);
     return GuaranteeCounts(prefix, element);
 }
 

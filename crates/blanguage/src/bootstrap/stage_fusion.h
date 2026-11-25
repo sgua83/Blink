@@ -26,11 +26,7 @@ struct TileExtents { u64 narrow; u64 wide; };
 extern "C" TileExtents place_tile(address rows, u64 count, address members, address context,
     cfn<TilePlanes,address,u64,u64> reserve) on cpu requires nonzero(reserve);
 
-struct StageWrite {
-    u64 binding;
-    u32 start;
-    u32 end;
-};
+struct WriteEnd { u32 end; u32 present; };
 struct StageGuarantee {
     u64 binding;
     u64 start;
@@ -42,13 +38,15 @@ struct GuaranteeHost {
     address context;
     cfn<StageGuarantee,address,GuaranteeKind,u64> field;
     cfn<void,address,GuaranteeKind,u64,u64> swap_slots;
+    cfn<WriteEnd,address,u64,u64> seek;
+    cfn<WriteEnd,address> next;
 };
 
-// Writes arrive ordered by binding, start and end. Surviving guarantees move
-// to the front of each original list in their original order.
-extern "C" GuaranteeCounts retain_stage_guarantees(address writes, u64 write_count,
-    GuaranteeCounts counts, GuaranteeHost host) on cpu
-    requires nonzero(host.field) requires nonzero(host.swap_slots);
+// Seek to the original writes of one binding whose starts precede the field end.
+// Retain original guarantee order when compacting both lists.
+extern "C" GuaranteeCounts retain_stage_guarantees(address writes, GuaranteeCounts counts, GuaranteeHost host) on cpu
+    requires nonzero(host.field) requires nonzero(host.swap_slots)
+    requires nonzero(host.seek) requires nonzero(host.next);
 
 struct LocalValue { u64 slot; u64 value; };
 

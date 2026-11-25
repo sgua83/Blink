@@ -92,10 +92,31 @@ fn union_bindings(left: &mut Vec<usize>, right: Vec<usize>) {
 }
 
 #[repr(C)]
-struct StageWrite {
-    binding: usize,
-    start: u32,
+struct WriteEnd {
     end: u32,
+    present: u32,
+}
+
+struct WriteCursor<'a> {
+    regions: &'a BTreeMap<usize, BTreeSet<(u32, u32)>>,
+    current: Option<std::collections::btree_set::Range<'a, (u32, u32)>>,
+}
+
+unsafe extern "C" fn seek_writes(context: *mut c_void, binding: usize, end: u64) -> WriteEnd {
+    let cursor = unsafe { &mut *context.cast::<WriteCursor<'_>>() };
+    cursor.current = cursor.regions.get(&binding).map(|regions| match u32::try_from(end) {
+        Ok(end) => regions.range(..(end, 0)),
+        Err(_) => regions.range(..),
+    });
+    unsafe { next_write(context) }
+}
+
+unsafe extern "C" fn next_write(context: *mut c_void) -> WriteEnd {
+    let cursor = unsafe { &mut *context.cast::<WriteCursor<'_>>() };
+    match cursor.current.as_mut().and_then(|regions| regions.next_back()) {
+        Some(&(_, end)) => WriteEnd { end, present: 1 },
+        None => WriteEnd { end: 0, present: 0 },
+    }
 }
 
 #[repr(C)]
@@ -125,12 +146,14 @@ struct GuaranteeHost {
 
     field: unsafe extern "C" fn(*const c_void, GuaranteeKind, usize) -> StageGuarantee,
     swap_slots: unsafe extern "C" fn(*mut c_void, GuaranteeKind, usize, usize),
+    seek: unsafe extern "C" fn(*mut c_void, usize, u64) -> WriteEnd,
+    next: unsafe extern "C" fn(*mut c_void) -> WriteEnd,
 }
 
 unsafe extern "C" {
     #[link_name = "bootstrap.stage_fusion::retain_stage_guarantees"]
     fn compact_stage_guarantees(
-        writes: *mut StageWrite, write_count: usize, counts: GuaranteeCounts, host: GuaranteeHost,
+        writes: *mut c_void, counts: GuaranteeCounts, host: GuaranteeHost,
     ) -> GuaranteeCounts;
 }
 
@@ -161,17 +184,15 @@ fn retain_stage_guarantees(previous: &mut Stage, write_regions: &BTreeMap<usize,
         || (previous.prefix_guarantees.is_empty() && previous.element_guarantees.is_empty()) {
         return;
     }
-    let mut writes = write_regions.iter().flat_map(|(&binding, ranges)| {
-        ranges.iter().map(move |&(start, end)| StageWrite { binding, start, end })
-    }).collect::<Vec<_>>();
+    let mut writes = WriteCursor { regions: write_regions, current: None };
     let counts = GuaranteeCounts {
-
         prefix: previous.prefix_guarantees.len(), element: previous.element_guarantees.len(),
     };
     let host = GuaranteeHost {
         context: ptr::from_mut(previous).cast(), field: guarantee_field, swap_slots: swap_guarantees,
+        seek: seek_writes, next: next_write,
     };
-    let retained = unsafe { compact_stage_guarantees(writes.as_mut_ptr(), writes.len(), counts, host) };
+    let retained = unsafe { compact_stage_guarantees(ptr::from_mut(&mut writes).cast(), counts, host) };
     previous.prefix_guarantees.truncate(retained.prefix);
     previous.element_guarantees.truncate(retained.element);
 }
