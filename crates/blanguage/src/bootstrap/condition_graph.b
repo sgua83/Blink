@@ -174,7 +174,243 @@ extern "C" u32 overlap(usize first,usize second,u32 right_truth,address context,
  return query_search(first,second,right_truth,context,graph,host);
 }
 
-extern "C" u32 equivalent(usize first,usize second,address context,Graph graph,Host host,cfn<void,address> reset) on cpu
+const usize NO_QUERY_NODE=0xffffffffffffffffu64;
+const usize LEFT_TERMS=0u64;
+const usize RIGHT_TERMS=1u64;
+const usize REQUIREMENTS=2u64;
+const usize DELTA=3u64;
+const usize COMMON=4u64;
+const usize SUFFIX=5u64;
+const usize PATHS=6u64;
+
+void set_word(Span span,usize index,usize value) on cpu {
+ unsafe_position<usize>(unsafe_address(address_bits(span.data)+u64(index)*8u64))=value;
+}
+
+void query_terms(address plan,EquivalenceHost host,usize root,u32 kind,usize list) on cpu
+ requires nonzero(host.node) requires nonzero(host.list_clear) requires nonzero(host.seen_clear)
+ requires nonzero(host.visit) requires nonzero(host.push) requires nonzero(host.pop)
+ requires nonzero(host.list_push) requires nonzero(host.list_sort) {
+ host.list_clear(plan,list);host.seen_clear(plan);host.push(plan,root);
+ while(true){
+  usize id=host.pop(plan);
+  if(id==NO_QUERY_NODE){break;}
+  if(host.visit(plan,id)==0){continue;}
+  QueryNode node=host.node(plan,id);
+  if(node.kind==kind){
+   host.push(plan,node.left);host.push(plan,node.right);
+  }else{
+   host.list_push(plan,list,id);
+  }
+ }
+ host.list_sort(plan,list);
+}
+
+void query_atoms(address plan,EquivalenceHost host,usize root,usize side) on cpu
+ requires nonzero(host.node) requires nonzero(host.list_clear) requires nonzero(host.seen_clear)
+ requires nonzero(host.visit) requires nonzero(host.push) requires nonzero(host.pop)
+ requires nonzero(host.list_push) requires nonzero(host.list_sort) requires nonzero(host.list)
+ requires nonzero(host.atoms_clear) requires nonzero(host.atom_insert) {
+ query_terms(plan,host,root,2,side);
+ host.atoms_clear(plan,side);
+ Span terms=host.list(plan,side);
+ usize term_at=0u64;
+ while(term_at<terms.count){
+  usize i=term_at;term_at+=1u64;host.atom_insert(plan,side,word_at(terms,i));}
+}
+
+u32 query_contains(Span terms,usize id) on cpu {
+ usize first=0u64;usize end=terms.count;
+ while(first<end){
+  usize middle=first+(end-first)/2u64;
+  usize current=word_at(terms,middle);
+  if(current==id){return 1;}
+  if(current<id){first=middle+1u64;}else{end=middle;}
+ }
+ return 0;
+}
+
+u32 query_subset(Span left,Span right) on cpu {
+ if(left.count>right.count){return 0;}
+ usize term_at=0u64;
+ while(term_at<left.count){
+  usize i=term_at;term_at+=1u64;
+  if(query_contains(right,word_at(left,i))==0){return 0;}
+ }
+ return 1;
+}
+
+QueryNode query_gate_key(QueryNode node) on cpu {
+ if(node.left>node.right){return QueryNode(node.right,node.left,node.kind);}
+ return node;
+}
+
+usize query_join(address plan,EquivalenceHost host,u32 kind,usize left,usize right) on cpu
+ requires nonzero(host.append) requires nonzero(host.gate_get) requires nonzero(host.gate_put) {
+ if(left==right){return left;}
+ QueryNode node=QueryNode(left,right,kind);QueryNode key=query_gate_key(node);
+ usize id=host.gate_get(plan,key);
+ if(id==NO_QUERY_NODE){id=host.append(plan,node);host.gate_put(plan,key,id);}
+ return id;
+}
+
+usize query_join_terms(address plan,EquivalenceHost host,u32 kind,Span terms) on cpu
+ requires nonzero(host.append) requires nonzero(host.gate_get) requires nonzero(host.gate_put) {
+ if(terms.count==0u64){return NO_QUERY_NODE;}
+ usize root=word_at(terms,0u64);
+ usize term_at=1u64;
+ while(term_at<terms.count){
+  usize i=term_at;term_at+=1u64;
+  root=query_join(plan,host,kind,root,word_at(terms,i));
+ }
+ return root;
+}
+
+struct QueryRoots {usize first;usize second;u32 directions;};
+
+QueryRoots query_comparison(address plan,EquivalenceHost host,usize first,usize second,usize count) on cpu
+ requires nonzero(host.node) requires nonzero(host.list_clear) requires nonzero(host.seen_clear)
+ requires nonzero(host.visit) requires nonzero(host.push) requires nonzero(host.pop)
+ requires nonzero(host.list_push) requires nonzero(host.list_sort) requires nonzero(host.list)
+ requires nonzero(host.lists) requires nonzero(host.append)
+ requires nonzero(host.gate_get) requires nonzero(host.gate_put) {
+ query_terms(plan,host,first,3,LEFT_TERMS);
+ query_terms(plan,host,second,3,RIGHT_TERMS);
+ Span older=host.list(plan,LEFT_TERMS);Span newer=host.list(plan,RIGHT_TERMS);
+ usize narrower=first;
+ if(query_subset(older,newer)==0){
+  if(query_subset(newer,older)==0){return QueryRoots(first,second,2);}
+  Span swap=older;older=newer;newer=swap;narrower=second;
+ }
+ // All old disjuncts must be false in the only remaining direction.
+ host.lists(plan,PATHS+older.count);
+ usize old_at=0u64;
+ while(old_at<older.count){
+  usize i=old_at;old_at+=1u64;
+  query_terms(plan,host,word_at(older,i),2,PATHS+i);
+ }
+ usize new_at=0u64;
+ while(new_at<newer.count){
+  usize i=new_at;new_at+=1u64;
+  usize id=word_at(newer,i);
+  if(query_contains(older,id)!=0){continue;}
+  query_terms(plan,host,id,2,REQUIREMENTS);
+  Span requirements=host.list(plan,REQUIREMENTS);
+  if(query_contains(requirements,narrower)!=0){continue;}
+  u32 covered=0;
+  usize path_at=0u64;
+  while(path_at<older.count){
+   usize p=path_at;path_at+=1u64;
+   if(query_subset(host.list(plan,PATHS+p),requirements)!=0){covered=1;break;}
+  }
+  if(covered==0){host.list_push(plan,DELTA,id);}
+ }
+ Span difference=host.list(plan,DELTA);
+ if(difference.count==0u64){return QueryRoots(0u64,0u64,0);}
+ usize gate_at=0u64;
+ while(gate_at<count){
+  usize i=gate_at;gate_at+=1u64;
+  QueryNode node=host.node(plan,i);
+  if(node.kind>=2){host.gate_put(plan,query_gate_key(node),i);}
+ }
+ usize delta=query_join_terms(plan,host,3,difference);
+ if(older.count==1u64){return QueryRoots(delta,narrower,1);}
+
+ Span first_path=host.list(plan,PATHS);
+ usize first_at=0u64;
+ while(first_at<first_path.count){
+  usize i=first_at;first_at+=1u64;
+  usize id=word_at(first_path,i);u32 common=1;
+  usize path_at=1u64;
+  while(path_at<older.count){
+   usize p=path_at;path_at+=1u64;
+   if(query_contains(host.list(plan,PATHS+p),id)==0){common=0;break;}
+  }
+  if(common!=0){host.list_push(plan,COMMON,id);}
+ }
+ Span common=host.list(plan,COMMON);
+ if(common.count==0u64){return QueryRoots(delta,narrower,1);}
+ // A false shared prefix rules out every old disjunct.
+ usize prefix=query_join_terms(plan,host,2,common);
+ usize suffix_at=0u64;
+ while(suffix_at<older.count){
+  usize p=suffix_at;suffix_at+=1u64;
+  Span path=host.list(plan,PATHS+p);
+  usize residual=NO_QUERY_NODE;usize at=0u64;
+  while(at<path.count){
+   usize id=word_at(path,at);at+=1u64;
+   if(query_contains(common,id)!=0){continue;}
+   residual=residual==NO_QUERY_NODE ? id : query_join(plan,host,2,residual,id);
+  }
+  if(residual==NO_QUERY_NODE){return QueryRoots(delta,prefix,1);}
+  host.list_push(plan,SUFFIX,residual);
+ }
+ usize suffix=query_join_terms(plan,host,3,host.list(plan,SUFFIX));
+ return QueryRoots(delta,query_join(plan,host,2,prefix,suffix),1);
+}
+
+QueryRoots query_normalize(address plan,EquivalenceHost host,usize first,usize second,usize count) on cpu
+ requires nonzero(host.node) requires nonzero(host.write) requires nonzero(host.indices)
+ requires nonzero(host.list_clear) requires nonzero(host.seen_clear) requires nonzero(host.visit)
+ requires nonzero(host.push) requires nonzero(host.pop) requires nonzero(host.list_push)
+ requires nonzero(host.list_sort) requires nonzero(host.list) requires nonzero(host.lists)
+ requires nonzero(host.atoms_clear) requires nonzero(host.atom_insert) requires nonzero(host.atoms_subset)
+ requires nonzero(host.append) requires nonzero(host.gate_get) requires nonzero(host.gate_put) {
+ Span indices=host.indices(plan,count);
+ host.lists(plan,PATHS);
+ usize source_at=0u64;
+ while(source_at<count){
+  usize i=source_at;source_at+=1u64;
+  QueryNode node=host.node(plan,i);
+  if(node.kind>=2){
+   node.left=word_at(indices,node.left);node.right=word_at(indices,node.right);
+   if(node.left==node.right){set_word(indices,i,node.left);continue;}
+   if(node.kind==3){
+    if(host.node(plan,node.left).kind==2||host.node(plan,node.right).kind==2){
+     query_atoms(plan,host,node.left,LEFT_TERMS);
+     query_atoms(plan,host,node.right,RIGHT_TERMS);
+     if(host.atoms_subset(plan,LEFT_TERMS,RIGHT_TERMS)!=0){set_word(indices,i,node.left);continue;}
+     if(host.atoms_subset(plan,RIGHT_TERMS,LEFT_TERMS)!=0){set_word(indices,i,node.right);continue;}
+    }
+   }
+   host.write(plan,i,i,node);
+  }
+  set_word(indices,i,i);
+ }
+ usize left=word_at(indices,first);usize right=word_at(indices,second);
+ if(left==right){return QueryRoots(0u64,0u64,0);}
+ return query_comparison(plan,host,left,right,count);
+}
+
+struct PackedQuery {usize first;usize second;usize count;};
+
+PackedQuery query_pack(address plan,EquivalenceHost host,QueryRoots roots) on cpu
+ requires nonzero(host.node) requires nonzero(host.write)
+ requires nonzero(host.size) requires nonzero(host.indices) {
+ usize count=host.size(plan);Span indices=host.indices(plan,count);
+ set_word(indices,roots.first,1u64);set_word(indices,roots.second,1u64);
+ usize remaining=count;
+ while(remaining!=0u64){
+  remaining-=1u64;
+  if(word_at(indices,remaining)==0u64){continue;}
+  QueryNode node=host.node(plan,remaining);
+  if(node.kind>=2){set_word(indices,node.left,1u64);set_word(indices,node.right,1u64);}
+ }
+ // Parents have larger indices than their children, so the same slots can hold the final remap.
+ usize destination=0u64;
+ usize source_at=0u64;
+ while(source_at<count){
+  usize i=source_at;source_at+=1u64;
+  if(word_at(indices,i)==0u64){continue;}
+  QueryNode node=host.node(plan,i);
+  if(node.kind>=2){node.left=word_at(indices,node.left);node.right=word_at(indices,node.right);}
+  host.write(plan,i,destination,node);
+  set_word(indices,i,destination);destination+=1u64;
+ }
+ return PackedQuery(word_at(indices,roots.first),word_at(indices,roots.second),destination);
+}
+
+extern "C" u32 equivalent(usize first,usize second,address plan,address context,usize count,EquivalenceHost preparation,Host host,cfn<void,address> reset) on cpu
  requires nonzero(host.pending_push) requires nonzero(host.pending_pop) requires nonzero(host.pending_clear)
  requires nonzero(host.trail_push) requires nonzero(host.trail_pop) requires nonzero(host.trail)
  requires nonzero(host.additions) requires nonzero(host.undo_addition) requires nonzero(host.add_leaf)
@@ -182,12 +418,25 @@ extern "C" u32 equivalent(usize first,usize second,address context,Graph graph,H
  requires nonzero(host.next_fact) requires nonzero(host.inspect_fact) requires nonzero(host.set_next_fact)
  requires nonzero(host.facts.compare) requires nonzero(host.remaining)
  requires nonzero(host.push_clause) requires nonzero(host.push_fact) requires nonzero(host.pop_alternative)
- requires nonzero(reset) {
- if(query_search(first,second,0,context,graph,host)!=0){return 0;}
+ requires nonzero(reset)
+ requires nonzero(preparation.node) requires nonzero(preparation.write) requires nonzero(preparation.indices)
+ requires nonzero(preparation.list_clear) requires nonzero(preparation.seen_clear) requires nonzero(preparation.visit)
+ requires nonzero(preparation.push) requires nonzero(preparation.pop) requires nonzero(preparation.list_push)
+ requires nonzero(preparation.list_sort) requires nonzero(preparation.list) requires nonzero(preparation.lists)
+ requires nonzero(preparation.atoms_clear) requires nonzero(preparation.atom_insert) requires nonzero(preparation.atoms_subset)
+ requires nonzero(preparation.append) requires nonzero(preparation.gate_get) requires nonzero(preparation.gate_put)
+ requires nonzero(preparation.size) requires nonzero(preparation.build) {
+ if(first==second){return 1;}
+ QueryRoots roots=query_normalize(plan,preparation,first,second,count);
+ if(roots.directions==0){return 1;}
+ PackedQuery packed=query_pack(plan,preparation,roots);
+ Graph graph=preparation.build(plan,context,packed.count);
+ if(query_search(packed.first,packed.second,0,context,graph,host)!=0){return 0;}
+ if(roots.directions==1){return 1;}
  Span assigned=host.trail(context);usize at=assigned.count;
  while(at>0u64){at-=1u64;set_value(graph.values,word_at(assigned,at),0);}
  reset(context);
- return query_search(second,first,0,context,graph,host)==0 ? 1 : 0;
+ return query_search(packed.second,packed.first,0,context,graph,host)==0 ? 1 : 0;
 }
 
 RequiredNode required_node(RequiredGraph graph,usize index) on compute {

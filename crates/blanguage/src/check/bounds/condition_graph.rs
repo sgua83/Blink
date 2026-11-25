@@ -1,4 +1,4 @@
-//! B owns the complete shared-Clause overlap search. The original query owns
+//! B owns shared-Clause overlap and equivalence, including equivalence planning. The original query owns
 //! its physical containers and borrows immutable Clause/Fact fields until return.
 use super::{
     Clause, ClauseNode, Condition, EncodedClause, Fact, Facts, IndexDomain, OutputBindings, Proof, ValueIdentity,
@@ -6,7 +6,7 @@ use super::{
 };
 use std::{
     borrow::Borrow,
-    collections::{BTreeMap, BTreeSet, HashMap, btree_set},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet, btree_set},
     ffi::c_void,
     ptr,
     sync::Arc,
@@ -190,6 +190,7 @@ enum Alternative<'a> {
     Clause(usize, bool),
     Fact(&'a Fact, btree_set::Iter<'a, Fact>),
 }
+#[derive(Default)]
 struct Context<'a> {
     nodes: Vec<Node<'a>>,
     pending: Vec<(usize, bool)>,
@@ -818,8 +819,10 @@ unsafe extern "C" {
     fn query_equivalent(
         first: usize,
         second: usize,
-        context: Slot,
-        graph: Graph,
+        plan: Slot,
+        search: Slot,
+        count: usize,
+        preparation: EquivalenceHost,
         host: Host,
         reset: unsafe extern "C" fn(Slot),
     ) -> u32;
@@ -848,191 +851,163 @@ enum Conjunct<'a> {
     Node(usize),
 }
 
-fn operands(source: EncodedClause<&Facts>, either: bool) -> Option<(usize, usize)> {
-    match (source, either) {
-        (EncodedClause::Both(left, right), false) | (EncodedClause::Either(left, right), true) => Some((left, right)),
-        _ => None,
-    }
+#[derive(Clone, Copy)]
+#[repr(C)]
+struct QueryNode {
+    left: usize,
+    right: usize,
+    kind: u32,
 }
 
-fn term_ids(sources: &[EncodedClause<&Facts>], root: usize, either: bool) -> BTreeSet<usize> {
-    let mut seen = BTreeSet::new();
-    let mut pending = vec![root];
-    while let Some(id) = pending.pop() {
-        if seen.insert(id) && let Some((left, right)) = operands(sources[id], either) {
-            pending.extend([left, right]);
-        }
-    }
-    seen.retain(|&id| operands(sources[id], either).is_none());
-    seen
+#[derive(Default)]
+struct Equivalence<'a> {
+    sources: Vec<EncodedClause<&'a Facts>>,
+    indices: Vec<usize>,
+    seen: HashSet<usize>,
+    pending: Vec<usize>,
+    lists: Vec<Vec<usize>>,
+    atoms: [BTreeSet<Conjunct<'a>>; 2],
+    gates: HashMap<(u32, usize, usize), usize>,
 }
 
-fn conjuncts<'a>(sources: &[EncodedClause<&'a Facts>], root: usize) -> BTreeSet<Conjunct<'a>> {
-    let mut terms = BTreeSet::new();
-    for id in term_ids(sources, root, false) {
-        match sources[id] {
-            EncodedClause::Facts(facts) => terms.extend(facts.iter().map(Conjunct::Fact)),
-            _ => {
-                terms.insert(Conjunct::Node(id));
-            }
-        }
-    }
-    terms
+unsafe fn equivalence<'a, 'b>(slot: Slot) -> &'a mut Equivalence<'b> {
+    unsafe { &mut *slot.cast() }
 }
 
-fn join_terms<'a>(
-    sources: &mut Vec<EncodedClause<&'a Facts>>,
-    gates: &mut HashMap<(bool, usize, usize), usize>,
-    terms: impl IntoIterator<Item = usize>,
-    either: bool,
-) -> Option<usize> {
-    terms.into_iter().reduce(|left, right| {
-        if left == right {
-            return left;
-        }
-        *gates.entry((either, left.min(right), left.max(right))).or_insert_with(|| {
-            let id = sources.len();
-            let source = if either { EncodedClause::Either(left, right) } else { EncodedClause::Both(left, right) };
-            sources.push(source);
-            id
-        })
-    })
+unsafe extern "C" fn plan_node(slot: Slot, id: usize) -> QueryNode {
+    let (kind, left, right) = match unsafe { equivalence(slot) }.sources[id] {
+        EncodedClause::Impossible => (0, 0, 0),
+        EncodedClause::Facts(_) => (1, 0, 0),
+        EncodedClause::Both(left, right) => (2, left, right),
+        EncodedClause::Either(left, right) => (3, left, right),
+    };
+    QueryNode { left, right, kind }
 }
 
-fn comparison_roots(
-    sources: &mut Vec<EncodedClause<&Facts>>,
-    first: usize,
-    second: usize,
-) -> Option<(usize, usize, bool)> {
-    let left = term_ids(sources, first, true);
-    let right = term_ids(sources, second, true);
-    let (narrower, old, new) = if left.is_subset(&right) {
-        (first, left, right)
-    } else if right.is_subset(&left) {
-        (second, right, left)
+fn plan_gate(node: QueryNode) -> EncodedClause<&'static Facts> {
+    if node.kind == 2 {
+        EncodedClause::Both(node.left, node.right)
     } else {
-        return Some((first, second, true));
-    };
-
-    // In this direction the old root is false. Its disjuncts, and any terms
-    // that require one of them, cannot contribute a counterexample.
-    let paths: Vec<_> = old.iter().map(|&term| term_ids(sources, term, false)).collect();
-    let difference: Vec<_> = new.difference(&old).copied().filter(|&term| {
-        let requirements = term_ids(sources, term, false);
-        !requirements.contains(&narrower) && !paths.iter().any(|old| old.is_subset(&requirements))
-    }).collect();
-    if difference.is_empty() {
-        return None;
+        EncodedClause::Either(node.left, node.right)
     }
-
-    let mut gates: HashMap<_, _> = sources.iter().enumerate().filter_map(|(id, &source)| {
-        let (either, left, right) = match source {
-            EncodedClause::Both(left, right) => (false, left, right),
-            EncodedClause::Either(left, right) => (true, left, right),
-            _ => return None,
-        };
-        Some(((either, left.min(right), left.max(right)), id))
-    }).collect();
-    let delta = join_terms(sources, &mut gates, difference, true)?;
-    if paths.len() == 1 {
-        return Some((delta, narrower, false));
-    }
-
-    let mut common = paths[0].clone();
-    for path in &paths[1..] {
-        common.retain(|term| path.contains(term));
-    }
-    let Some(prefix) = join_terms(sources, &mut gates, common.iter().copied(), false) else {
-        return Some((delta, narrower, false));
-    };
-
-    // Falsifying a shared requirement settles every old disjunct at once.
-    let mut residuals = Vec::with_capacity(paths.len());
-    for path in &paths {
-        let terms = path.difference(&common).copied();
-        let Some(residual) = join_terms(sources, &mut gates, terms, false) else {
-            return Some((delta, prefix, false));
-        };
-        residuals.push(residual);
-    }
-    let suffix = join_terms(sources, &mut gates, residuals, true)?;
-    let factored = join_terms(sources, &mut gates, [prefix, suffix], false)?;
-    Some((delta, factored, false))
 }
 
-fn equivalent_sources<'a>(
-    first: usize, second: usize, mut sources: Vec<EncodedClause<&'a Facts>>,
-) -> Option<(usize, usize, bool, Vec<EncodedClause<&'a Facts>>)> {
-    if first == second {
-        return None;
-    }
+unsafe extern "C" fn plan_write(slot: Slot, from: usize, to: usize, node: QueryNode) {
+    let plan = unsafe { equivalence(slot) };
+    plan.sources[to] = if node.kind >= 2 { plan_gate(node) } else { plan.sources[from] };
+}
 
-    let mut indices = Vec::with_capacity(sources.len());
-    for id in 0..sources.len() {
-        let (left, right, either) = match sources[id] {
-            EncodedClause::Both(left, right) => (indices[left], indices[right], false),
-            EncodedClause::Either(left, right) => (indices[left], indices[right], true),
-            _ => {
-                indices.push(id);
-                continue;
-            }
-        };
-        if left == right {
-            indices.push(left);
-            continue;
-        }
-        if either {
-            if matches!(sources[left], EncodedClause::Both(..))
-                || matches!(sources[right], EncodedClause::Both(..))
-            {
-                let left_atoms = conjuncts(&sources, left);
-                let right_atoms = conjuncts(&sources, right);
-                if left_atoms.is_subset(&right_atoms) {
-                    indices.push(left);
-                    continue;
-                }
-                if right_atoms.is_subset(&left_atoms) {
-                    indices.push(right);
-                    continue;
-                }
-            }
-            sources[id] = EncodedClause::Either(left, right);
-        } else {
-            sources[id] = EncodedClause::Both(left, right);
-        }
-        indices.push(id);
-    }
-    let first = indices[first];
-    let second = indices[second];
-    if first == second {
-        return None;
-    }
+unsafe extern "C" fn plan_append(slot: Slot, node: QueryNode) -> usize {
+    let plan = unsafe { equivalence(slot) };
+    let id = plan.sources.len();
+    plan.sources.push(plan_gate(node));
+    id
+}
 
-    let (first, second, reverse) = comparison_roots(&mut sources, first, second)?;
-    indices.resize(sources.len(), 0);
-    let mut live = vec![false; sources.len()];
-    live[first] = true;
-    live[second] = true;
-    for (id, &source) in sources.iter().enumerate().rev() {
-        if live[id] && let EncodedClause::Both(left, right) | EncodedClause::Either(left, right) = source {
-            live[left] = true;
-            live[right] = true;
-        }
+unsafe extern "C" fn plan_gate_get(slot: Slot, key: QueryNode) -> usize {
+    unsafe { equivalence(slot) }.gates.get(&(key.kind, key.left, key.right)).copied().unwrap_or(usize::MAX)
+}
+
+unsafe extern "C" fn plan_gate_put(slot: Slot, key: QueryNode, id: usize) {
+    unsafe { equivalence(slot) }.gates.insert((key.kind, key.left, key.right), id);
+}
+
+unsafe extern "C" fn plan_size(slot: Slot) -> usize {
+    unsafe { equivalence(slot) }.sources.len()
+}
+
+unsafe extern "C" fn plan_indices(slot: Slot, count: usize) -> Span {
+    let indices = &mut unsafe { equivalence(slot) }.indices;
+    indices.clear();
+    indices.resize(count, 0);
+    Span { data: indices.as_mut_ptr(), count }
+}
+
+unsafe extern "C" fn plan_lists(slot: Slot, count: usize) {
+    unsafe { equivalence(slot) }.lists.resize_with(count, Vec::new);
+}
+
+unsafe extern "C" fn plan_list(slot: Slot, list: usize) -> Span {
+    let items = &unsafe { equivalence(slot) }.lists[list];
+    Span { data: items.as_ptr(), count: items.len() }
+}
+
+unsafe extern "C" fn plan_list_push(slot: Slot, list: usize, id: usize) {
+    unsafe { equivalence(slot) }.lists[list].push(id);
+}
+
+unsafe extern "C" fn plan_list_clear(slot: Slot, list: usize) {
+    unsafe { equivalence(slot) }.lists[list].clear();
+}
+
+unsafe extern "C" fn plan_list_sort(slot: Slot, list: usize) {
+    unsafe { equivalence(slot) }.lists[list].sort_unstable();
+}
+
+unsafe extern "C" fn plan_seen_clear(slot: Slot) {
+    unsafe { equivalence(slot) }.seen.clear();
+}
+
+unsafe extern "C" fn plan_visit(slot: Slot, id: usize) -> u32 {
+    u32::from(unsafe { equivalence(slot) }.seen.insert(id))
+}
+
+unsafe extern "C" fn plan_push(slot: Slot, id: usize) {
+    unsafe { equivalence(slot) }.pending.push(id);
+}
+
+unsafe extern "C" fn plan_pop(slot: Slot) -> usize {
+    unsafe { equivalence(slot) }.pending.pop().unwrap_or(usize::MAX)
+}
+
+unsafe extern "C" fn plan_atoms_clear(slot: Slot, side: usize) {
+    unsafe { equivalence(slot) }.atoms[side].clear();
+}
+
+unsafe extern "C" fn plan_atom_insert(slot: Slot, side: usize, id: usize) {
+    let plan = unsafe { equivalence(slot) };
+    let atoms = &mut plan.atoms[side];
+    match plan.sources[id] {
+        EncodedClause::Facts(facts) => atoms.extend(facts.iter().map(Conjunct::Fact)),
+        _ => { atoms.insert(Conjunct::Node(id)); }
     }
-    for (index, id) in live.iter().enumerate().filter_map(|(id, &live)| live.then_some(id)).enumerate() {
-        indices[id] = index;
-    }
-    let mut id = 0;
-    sources.retain_mut(|source| {
-        let required = live[id];
-        id += 1;
-        if required && let EncodedClause::Both(left, right) | EncodedClause::Either(left, right) = source {
-            *left = indices[*left];
-            *right = indices[*right];
-        }
-        required
-    });
-    Some((indices[first], indices[second], reverse, sources))
+}
+
+unsafe extern "C" fn plan_atoms_subset(slot: Slot, left: usize, right: usize) -> u32 {
+    let atoms = &unsafe { equivalence(slot) }.atoms;
+    u32::from(atoms[left].is_subset(&atoms[right]))
+}
+
+unsafe extern "C" fn plan_build(slot: Slot, search: Slot, count: usize) -> Graph {
+    let Equivalence { mut sources, .. } = std::mem::take(unsafe { equivalence(slot) });
+    sources.truncate(count);
+    let search = unsafe { context(search) };
+    *search = Context::new(sources);
+    search.graph()
+}
+
+#[repr(C)]
+struct EquivalenceHost {
+    node: unsafe extern "C" fn(Slot, usize) -> QueryNode,
+    write: unsafe extern "C" fn(Slot, usize, usize, QueryNode),
+    append: unsafe extern "C" fn(Slot, QueryNode) -> usize,
+    gate_get: unsafe extern "C" fn(Slot, QueryNode) -> usize,
+    gate_put: unsafe extern "C" fn(Slot, QueryNode, usize),
+    size: unsafe extern "C" fn(Slot) -> usize,
+    indices: unsafe extern "C" fn(Slot, usize) -> Span,
+    lists: unsafe extern "C" fn(Slot, usize),
+    list: unsafe extern "C" fn(Slot, usize) -> Span,
+    list_push: unsafe extern "C" fn(Slot, usize, usize),
+    list_clear: unsafe extern "C" fn(Slot, usize),
+    list_sort: unsafe extern "C" fn(Slot, usize),
+    seen_clear: unsafe extern "C" fn(Slot),
+    visit: unsafe extern "C" fn(Slot, usize) -> u32,
+    push: unsafe extern "C" fn(Slot, usize),
+    pop: unsafe extern "C" fn(Slot) -> usize,
+    atoms_clear: unsafe extern "C" fn(Slot, usize),
+    atom_insert: unsafe extern "C" fn(Slot, usize, usize),
+    atoms_subset: unsafe extern "C" fn(Slot, usize, usize) -> u32,
+    build: unsafe extern "C" fn(Slot, Slot, usize) -> Graph,
 }
 
 pub(super) fn equivalent(left: &Clause, right: &Clause) -> bool {
@@ -1040,20 +1015,35 @@ pub(super) fn equivalent(left: &Clause, right: &Clause) -> bool {
         return true;
     }
     let (first, second, sources) = query_sources(left, right);
-    let Some((first, second, reverse, sources)) = equivalent_sources(first, second, sources) else {
-        return true;
-    };
+    let count = sources.len();
+    let mut plan = Equivalence { sources, ..Equivalence::default() };
+    let mut search = Context::default();
     let unsigned32 = super::Scalar::U32;
-    let mut context = Context::new(sources);
-    let graph = context.graph();
-    let slot = (&mut context as *mut Context<'_>).cast();
-    let host = host(&unsigned32);
+    let preparation = EquivalenceHost {
+        node: plan_node,
+        write: plan_write,
+        append: plan_append,
+        gate_get: plan_gate_get,
+        gate_put: plan_gate_put,
+        size: plan_size,
+        indices: plan_indices,
+        lists: plan_lists,
+        list: plan_list,
+        list_push: plan_list_push,
+        list_clear: plan_list_clear,
+        list_sort: plan_list_sort,
+        seen_clear: plan_seen_clear,
+        visit: plan_visit,
+        push: plan_push,
+        pop: plan_pop,
+        atoms_clear: plan_atoms_clear,
+        atom_insert: plan_atom_insert,
+        atoms_subset: plan_atoms_subset,
+        build: plan_build,
+    };
     unsafe {
-        if reverse {
-            query_equivalent(first, second, slot, graph, host, reset_search) != 0
-        } else {
-            query(first, second, 0, slot, graph, host) == 0
-        }
+        query_equivalent(first, second, (&mut plan as *mut Equivalence<'_>).cast(),
+            (&mut search as *mut Context<'_>).cast(), count, preparation, host(&unsigned32), reset_search) != 0
     }
 }
 fn host(unsigned32: &super::Scalar) -> Host {

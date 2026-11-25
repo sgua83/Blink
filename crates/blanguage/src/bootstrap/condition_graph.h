@@ -59,7 +59,31 @@ extern "C" u32 overlap(usize first,usize second,u32 right_truth,address context,
  requires nonzero(host.next_fact) requires nonzero(host.inspect_fact) requires nonzero(host.set_next_fact)
  requires nonzero(host.facts.compare) requires nonzero(host.remaining)
  requires nonzero(host.push_clause) requires nonzero(host.push_fact) requires nonzero(host.pop_alternative);
-extern "C" u32 equivalent(usize first,usize second,address context,Graph graph,Host host,cfn<void,address> reset) on cpu
+// The preparation frame borrows the original facts and owns only query-local containers.
+struct QueryNode { usize left; usize right; u32 kind; };
+struct EquivalenceHost {
+ cfn<QueryNode,address,usize> ensures memory(read) node;
+ cfn<void,address,usize,usize,QueryNode> write;
+ cfn<usize,address,QueryNode> append;
+ cfn<usize,address,QueryNode> ensures memory(read) gate_get;
+ cfn<void,address,QueryNode,usize> gate_put;
+ cfn<usize,address> ensures memory(read) size;
+ cfn<Span,address,usize> indices;
+ cfn<void,address,usize> lists;
+ cfn<Span,address,usize> ensures memory(read) list;
+ cfn<void,address,usize,usize> list_push;
+ cfn<void,address,usize> list_clear;
+ cfn<void,address,usize> list_sort;
+ cfn<void,address> seen_clear;
+ cfn<u32,address,usize> visit;
+ cfn<void,address,usize> push;
+ cfn<usize,address> pop;
+ cfn<void,address,usize> atoms_clear;
+ cfn<void,address,usize,usize> atom_insert;
+ cfn<u32,address,usize,usize> ensures memory(read) atoms_subset;
+ cfn<Graph,address,address,usize> build;
+};
+extern "C" u32 equivalent(usize first,usize second,address plan,address context,usize count,EquivalenceHost preparation,Host host,cfn<void,address> reset) on cpu
  requires nonzero(host.pending_push) requires nonzero(host.pending_pop) requires nonzero(host.pending_clear)
  requires nonzero(host.trail_push) requires nonzero(host.trail_pop) requires nonzero(host.trail)
  requires nonzero(host.additions) requires nonzero(host.undo_addition) requires nonzero(host.add_leaf)
@@ -67,7 +91,14 @@ extern "C" u32 equivalent(usize first,usize second,address context,Graph graph,H
  requires nonzero(host.next_fact) requires nonzero(host.inspect_fact) requires nonzero(host.set_next_fact)
  requires nonzero(host.facts.compare) requires nonzero(host.remaining)
  requires nonzero(host.push_clause) requires nonzero(host.push_fact) requires nonzero(host.pop_alternative)
- requires nonzero(reset);
+ requires nonzero(reset)
+ requires nonzero(preparation.node) requires nonzero(preparation.write) requires nonzero(preparation.indices)
+ requires nonzero(preparation.list_clear) requires nonzero(preparation.seen_clear) requires nonzero(preparation.visit)
+ requires nonzero(preparation.push) requires nonzero(preparation.pop) requires nonzero(preparation.list_push)
+ requires nonzero(preparation.list_sort) requires nonzero(preparation.list) requires nonzero(preparation.lists)
+ requires nonzero(preparation.atoms_clear) requires nonzero(preparation.atom_insert) requires nonzero(preparation.atoms_subset)
+ requires nonzero(preparation.append) requires nonzero(preparation.gate_get) requires nonzero(preparation.gate_put)
+ requires nonzero(preparation.size) requires nonzero(preparation.build);
 
 // Original required-facts query nodes; the result stays in its owning container.
 struct RequiredNode { usize left; usize right; u32 kind; usize users; usize remaining; };
