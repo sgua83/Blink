@@ -174,10 +174,9 @@ impl Graph {
     }
 
     pub(super) fn tile_interference(&mut self, phases: &[TilePhase<'_>]) {
-        // 实际阶段入口会恢复整组私有值，出口则保存整组；它们必须同时可取。
+        // 前一阶段的出站保存槽属于后一阶段的入口活跃集合。
         for phase in phases {
             self.together(&phase.live_in);
-            self.together(&phase.saved);
         }
     }
 
