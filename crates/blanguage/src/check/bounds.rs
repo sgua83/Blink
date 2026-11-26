@@ -1277,21 +1277,33 @@ impl Proof {
         let mut proof = Self::capture(value);
         for (i, &(source, _)) in value.ty.components.iter().enumerate() {
             if source == target { continue; }
-            if !(source.is_integer()&&target.is_integer()&&source.size()==8&&target.size()==8)&&let Some(address)=proof.addresses.get_mut(i){*address=None;}
-            let integers = source.is_integer() && target.is_integer();
-            let same_value = integers && !source.is_signed() && !target.is_signed() && target.size() > source.size();
             let source_domains = proof.domains.get_mut(i).map(std::mem::take).unwrap_or_default();
-            proof.ranges[i] = if integers {
-                proof.ranges[i].cast(source,target,proof.nonzero[i])
-            } else if source == Scalar::Bool && target.is_integer() {
-                ScalarRanges::interval(target.order_bias(), target.order_bias() + 1)
-            } else { floating::cast(value, i, target, &mut proof) };
-            proof.nonzero[i] = integers && !proof.ranges[i].contains(target.order_bias());
-            let domains=source_domains.into_iter().filter_map(|domain|cast_domain(domain,[source,target]))
-                .chain(proof.origins[i].iter().copied().filter(|_|integers&&!same_value).filter_map(|id|cast_domain(IndexDomain::CommonRange(id,source,source,source,source),[source,target]))).collect::<Domains>();
-            for domain in domains{proof.mark_domain(i,domain);}
-            if !same_value{proof.origins[i].clear();}
-            if !integers || target.size() < source.size() { proof.conditions[i] = None; }
+            let (ranges, effect) = floating::cast(value, i, target, &mut proof);
+            proof.ranges[i] = ranges;
+            proof.nonzero[i] = effect.nonzero != 0;
+            if effect.address == 0 && let Some(address) = proof.addresses.get_mut(i) {
+                *address = None;
+            }
+            if effect.condition == 0 {
+                proof.conditions[i] = None;
+            }
+
+            let path = [source, target];
+            for domain in source_domains.into_iter().filter_map(|domain| cast_domain(domain, path)) {
+                proof.mark_domain(i, domain);
+            }
+            match effect.origin {
+                floating::CastOrigin::Preserve => {}
+                floating::CastOrigin::Discard => proof.origins[i].clear(),
+                floating::CastOrigin::Relate => {
+                    for id in std::mem::take(&mut proof.origins[i]) {
+                        let range = IndexDomain::CommonRange(id, source, source, source, source);
+                        if let Some(domain) = cast_domain(range, path) {
+                            proof.mark_domain(i, domain);
+                        }
+                    }
+                }
+            }
         }
         proof
     }

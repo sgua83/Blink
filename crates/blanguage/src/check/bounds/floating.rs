@@ -3,7 +3,7 @@ use super::*;
 use crate::ir::scalar_ranges::RangeInput;
 #[path="floating/scalar.rs"]
 mod scalar;
-pub(super) use scalar::{order,bits,comparison_possible,interval,bitcast,cast,math,sum,negate};
+pub(super) use scalar::{CastOrigin,order,bits,comparison_possible,interval,bitcast,cast,math,sum,negate};
 
 unsafe extern "C" {
     #[link_name = "bootstrap.scalar_fold::float_bound_at_call"]

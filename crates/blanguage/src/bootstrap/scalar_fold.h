@@ -55,8 +55,11 @@ extern "C" FloatPieces float_bitcast(u32 width,BitRange range,u32 source_float) 
 enum FloatCastRelationKind : u32 { End = 0; Upper = 1; Remainder = 2; };
 struct FloatCastRelation { FloatCastRelationKind kind; ScalarEncoding encoding; address origin; u32 distance; };
 struct FloatCastFact { address origin; BitRange range; f64 scale; f64 offset; u32 upper; };
-extern "C" FloatRange float_cast_range(ScalarEncoding source, ScalarEncoding target, BitRange range,
-    address origin, address context, cfn<FloatCastRelation,address> next, cfn<void,address,FloatCastFact> emit) on cpu
+enum CastOrigin : u32 { Discard = 0; Preserve = 1; Relate = 2; };
+struct CastEffect { CastOrigin origin; u32 address_preserved; u32 condition_preserved; u32 nonzero; };
+extern "C" CastEffect proof_cast_component(ScalarEncoding source, ScalarEncoding target,
+    address input, address output, u32 nonzero, address origin, address context,
+    cfn<FloatCastRelation,address> next, cfn<void,address,FloatCastFact> emit) on cpu
     requires nonzero(next) requires nonzero(emit);
 // math: 1 min, 2 max, 3 abs, 4 floor, 5 log, 6 log2, 7 ceil; other operations remain unknown.
 extern "C" FloatRange float_math(u32 operation,u32 width,BitRange left,BitRange right) on cpu;

@@ -591,7 +591,7 @@ f64 fp_integer_endpoint(ScalarEncoding source,u32 width,u64 ordered,u32 lower) o
     if(lower==0&&relation<0){return fp_next_scalar(width,result,1);}
     return result;
 }
-extern "C" FloatRange float_cast_range(ScalarEncoding source, ScalarEncoding target, BitRange range,
+FloatRange float_cast_range(ScalarEncoding source, ScalarEncoding target, BitRange range,
     address origin, address context, cfn<FloatCastRelation,address> next, cfn<void,address,FloatCastFact> emit) on cpu
     requires nonzero(next) requires nonzero(emit) {
     bool integer = source.kind == ScalarKind::Unsigned || source.kind == ScalarKind::Signed;
@@ -1453,6 +1453,59 @@ extern "C" u64 range_set_cast(address input,u64 count,cfn<BitRange,address,u32,u
     u64 result=range_set_cast_emit(input,count,get,output,host.push,query);
     if(query.same!=0){return result;}
     return range_set_normalize(output,result,host);
+}
+
+struct CastProofRanges { address output; u64 zero; u32 nonzero; };
+
+extern "C" void push_cast_proof_range(address context, BitRange range) on cpu {
+    CastProofRanges result = unsafe_position<CastProofRanges>(context);
+    proof_range_push(result.output, range);
+    if (result.nonzero != 0 && range.lower <= result.zero && result.zero <= range.upper) {
+        result.nonzero = 0;
+        unsafe_position<CastProofRanges>(context) = result;
+    }
+}
+
+extern "C" CastEffect proof_cast_component(ScalarEncoding source, ScalarEncoding target,
+    address input, address output, u32 nonzero, address origin, address context,
+    cfn<FloatCastRelation,address> next, cfn<void,address,FloatCastFact> emit) on cpu
+    requires nonzero(next) requires nonzero(emit) {
+    bool source_integer = source.kind == ScalarKind::Unsigned || source.kind == ScalarKind::Signed;
+    bool target_integer = target.kind == ScalarKind::Unsigned || target.kind == ScalarKind::Signed;
+    u64 bias = target.kind == ScalarKind::Signed ? fp_sign(target.width) : 0u64;
+    if (source_integer && target_integer) {
+        bool widen_unsigned = source.kind == ScalarKind::Unsigned && target.kind == ScalarKind::Unsigned
+            && target.width > source.width;
+        u64 source_bias = source.kind == ScalarKind::Signed ? fp_sign(source.width) : 0u64;
+        RangeSetCastInfo query = RangeSetCastInfo(source.width, u32(source.kind == ScalarKind::Signed),
+            target.width, 1, 0, nonzero, truncate(18446744073709551615u64, source.width), source_bias, bias);
+        address records = proof_range_records(input);
+        CastProofRanges result = CastProofRanges(output, bias, 1);
+        u64 count = range_set_cast_emit(address_of(records), unsafe_position<u64>(input),
+            c_function(proof_range_side), address_of(result), c_function(push_cast_proof_range), query);
+        RangeSetOutput storage = RangeSetOutput(c_function(proof_range_get), c_function(proof_range_set),
+            c_function(proof_range_push));
+        proof_range_truncate(output, range_set_normalize(output, count, storage));
+        CastOrigin identity = widen_unsigned ? CastOrigin::Preserve : CastOrigin::Relate;
+        return CastEffect(identity, u32(source.width == 64 && target.width == 64),
+            u32(target.width >= source.width), result.nonzero);
+    }
+    if (source.kind == ScalarKind::Boolean && target_integer) {
+        proof_range_push(output, BitRange(bias, bias + 1u64));
+    } else {
+        u64 count = unsafe_position<u64>(input);
+        BitRange hull = BitRange(1u64, 0u64);
+        if (count != 0u64) {
+            hull = BitRange(proof_range_get(input, 0u64).lower, proof_range_get(input, count - 1u64).upper);
+        }
+        FloatRange range = float_cast_range(source, target, hull, origin, context, next, emit);
+        if (range.state == 1) {
+            proof_range_push(output, BitRange(range.lower, range.upper));
+        } else if (range.state == 0) {
+            proof_range_push(output, BitRange(0u64, 18446744073709551615u64));
+        }
+    }
+    return CastEffect(CastOrigin::Discard, 0, 0, 0);
 }
 
 u64 range_set_cast_tail(address output,cfn<void,address,BitRange> push,RangeSetCastStep second,
