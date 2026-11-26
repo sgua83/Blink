@@ -136,3 +136,34 @@ extern "C" BuiltinType recognize(address name, u64 length) on cpu {
     if (same(name, length, "cfn")) { return BuiltinType(BuiltinKind::CFunction, BuiltinScalar::F32, 0, 0); }
     return BuiltinType(BuiltinKind::Missing, BuiltinScalar::F32, 0, 0);
 }
+
+extern "C" NamedSetStep named_set_next(address cursor, u32 entered) on cpu {
+    NamedSetCursor set=unsafe_position<NamedSetCursor>(cursor);
+    TypeRef none=TypeRef(0u64);
+    if (set.phase==0) {
+        if (set.members.count==0u64) { return NamedSetStep(NamedSetNeed::Empty,0,none); }
+        unsafe_position<NamedSetCursor>(cursor).phase=1;
+        return NamedSetStep(NamedSetNeed::Enter,0,none);
+    }
+    if (entered==0) { return NamedSetStep(NamedSetNeed::Recursive,0,none); }
+    if (set.next==set.members.count) {
+        return NamedSetStep(NamedSetNeed::Done,set.matched,none);
+    }
+    u64 nodes=address_bits(set.storage.nodes);
+    u64 member=unsafe_position<u64>(unsafe_address(nodes+set.members.offset+set.next*size_of<u64>()));
+    TypeNode value=unsafe_position<TypeNode>(unsafe_address(nodes+member));
+    if (value.dataset!=0 || value.view!=0 || value.tile!=0) {
+        return NamedSetStep(NamedSetNeed::Wrapped,0,none);
+    }
+    unsafe_position<NamedSetCursor>(cursor).next=set.next+1u64;
+    return NamedSetStep(NamedSetNeed::Bind,0,TypeRef(member));
+}
+
+extern "C" u32 named_set_member(address cursor, NameBytes expected, NameBytes actual) on cpu {
+    NamedSetCursor set=unsafe_position<NamedSetCursor>(cursor);
+    if (set.use==NamedSetUse::Enumerate) { return 1; }
+    if (set.use==NamedSetUse::Match && set.matched==0 && compare_name(expected,actual)==i32(0)) {
+        unsafe_position<NamedSetCursor>(cursor).matched=1;
+    }
+    return 0;
+}

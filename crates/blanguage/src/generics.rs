@@ -211,8 +211,8 @@ pub(crate) async fn for_each_combination(
     if is_open(types, values) {
         for family in families {
             if let crate::syntax::FamilyKind::Named(name) = family.kind() {
-                world.for_each_named_family_member(
-                    name, (source, span, module, imports), &mut BTreeSet::new(), |_| {},
+                world.validate_named_family(
+                    name, (source, span, module, imports), &mut BTreeSet::new(),
                 ).await?;
             }
         }

@@ -800,7 +800,7 @@ pub(crate) fn read_world<'a>(
 }
 pub(crate) async fn validate_types(world: &World) -> Result<()> {
     for name in world.type_sets.keys() {
-        unsafe { world.call(world.for_each_set_member(name, &mut BTreeSet::new(), |_| {})).await }?;
+        unsafe { world.call(world.validate_type_set(name, &mut BTreeSet::new())).await }?;
     }
     for (name, (record, source, module, imports)) in &world.records {
         generics::validate_record_parameters(record, source)?;
