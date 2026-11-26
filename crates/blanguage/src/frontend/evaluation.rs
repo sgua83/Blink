@@ -1,55 +1,122 @@
-//! The original World call stack. Each child finishes before its parent is
-//! polled again; the actual function future keeps its own values and borrows.
+//! B owns the active evaluation stack. Rust supplies each pinned future and its typed output.
 use std::{
-    cell::RefCell,
+    cell::UnsafeCell,
+    ffi::c_void,
     future::Future,
-    marker::PhantomPinned,
+    marker::{PhantomData, PhantomPinned},
     mem,
-    pin::{Pin, pin},
-    ptr,
+    pin::Pin,
+    ptr::{self, NonNull},
     task::{Context, Poll, Waker},
 };
 
-trait Frame {
-    unsafe fn set_output(self: Pin<&mut Self>, output: *mut ());
-    fn poll(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<()>;
+#[repr(C)]
+struct Frame {
+    // B links the first field. The remaining fields are private to this adapter.
+    parent: *mut Frame,
+    output: *mut (),
+    poll: unsafe fn(*mut Frame, &mut Context<'_>) -> Poll<()>,
+    release: unsafe fn(*mut Frame),
 }
 
-struct Invocation<F: Future> {
+#[repr(C)]
+struct Invocation<F> {
+    frame: Frame,
     future: F,
-    output: *mut Option<F::Output>,
 }
 
-impl<F: Future> Frame for Invocation<F> {
-    unsafe fn set_output(self: Pin<&mut Self>, output: *mut ()) {
-        // Only call constructs this pairing: the destination is Option<F::Output>.
-        unsafe { self.get_unchecked_mut() }.output = output.cast();
-    }
-    fn poll(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<()> {
-        // Invocation is allocated once. Neither the frame nor its future moves
-        // until the original child is finished and the frame is dropped.
-        let this = unsafe { self.get_unchecked_mut() };
-        match unsafe { Pin::new_unchecked(&mut this.future) }.poll(context) {
-            Poll::Ready(output) => {
-                // The destination is in the pinned parent Call. LIFO execution
-                // and LIFO destruction keep that parent alive through this child.
-                unsafe { this.output.write(Some(output)) };
-                Poll::Ready(())
-            }
-            Poll::Pending => Poll::Pending,
+unsafe fn poll<F: Future>(frame: *mut Frame, context: &mut Context<'_>) -> Poll<()> {
+    let invocation = unsafe { &mut *frame.cast::<Invocation<F>>() };
+    match unsafe { Pin::new_unchecked(&mut invocation.future) }.poll(context) {
+        Poll::Ready(value) => {
+            // The parent is pinned through this call, or run owns the root slot.
+            unsafe { invocation.frame.output.cast::<Option<F::Output>>().write(Some(value)) };
+            Poll::Ready(())
         }
+        Poll::Pending => Poll::Pending,
+    }
+}
+
+unsafe fn release<F>(frame: *mut Frame) {
+    drop(unsafe { Box::from_raw(frame.cast::<Invocation<F>>()) });
+}
+
+unsafe extern "C-unwind" fn poll_frame(frame: *mut c_void, context: *mut c_void) -> u32 {
+    let frame = frame.cast::<Frame>();
+    u32::from(unsafe { ((*frame).poll)(frame, &mut *context.cast::<Context<'_>>()) }.is_ready())
+}
+
+unsafe extern "C-unwind" fn release_frame(frame: *mut c_void) {
+    let frame = frame.cast::<Frame>();
+    unsafe { ((*frame).release)(frame); }
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.world_evaluation::enter"]
+    fn enter(top: *mut *mut c_void, frame: *mut c_void);
+}
+
+unsafe extern "C-unwind" {
+    #[link_name = "bootstrap.world_evaluation::drive"]
+    fn drive(
+        top: *mut *mut c_void,
+        context: *mut c_void,
+        poll: unsafe extern "C-unwind" fn(*mut c_void, *mut c_void) -> u32,
+        release: unsafe extern "C-unwind" fn(*mut c_void),
+    );
+
+    #[link_name = "bootstrap.world_evaluation::drain"]
+    fn drain(top: *mut *mut c_void, release: unsafe extern "C-unwind" fn(*mut c_void));
+}
+
+struct Pending<'a, T> {
+    frame: NonNull<Frame>,
+    _borrow: PhantomData<&'a mut T>,
+}
+
+impl<'a, T> Pending<'a, T> {
+    fn new<F: Future<Output = T> + 'a>(future: F) -> Self {
+        let invocation = Box::new(Invocation {
+            frame: Frame {
+                parent: ptr::null_mut(),
+                output: ptr::null_mut(),
+                poll: poll::<F>,
+                release: release::<F>,
+            },
+            future,
+        });
+        Self {
+            frame: NonNull::from(Box::leak(invocation)).cast(),
+            _borrow: PhantomData,
+        }
+    }
+
+    // The destination must stay at this address through completion or draining.
+    unsafe fn enter(self, calls: &Calls, output: &mut Option<T>) {
+        let frame = self.frame.as_ptr();
+        unsafe {
+            (*frame).output = ptr::from_mut(output).cast();
+            enter(calls.top.get(), frame.cast());
+        }
+        mem::forget(self);
+    }
+}
+
+impl<T> Drop for Pending<'_, T> {
+    fn drop(&mut self) {
+        unsafe { release_frame(self.frame.as_ptr().cast()); }
     }
 }
 
 #[derive(Default)]
 pub(super) struct Calls {
-    frames: RefCell<Vec<Pin<Box<dyn Frame>>>>,
+    top: UnsafeCell<*mut c_void>,
 }
 
 /// The actual child and its one typed return destination in its parent.
 pub(crate) struct Call<'a, T> {
     calls: &'a Calls,
-    child: Option<Pin<Box<dyn Frame + 'a>>>,
+    child: Option<Pending<'a, T>>,
     output: Option<T>,
     _pinned: PhantomPinned,
 }
@@ -58,15 +125,13 @@ impl<T> Future for Call<'_, T> {
     type Output = T;
 
     fn poll(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Self::Output> {
-        // After the first poll the child holds the address of this output slot.
-        // Call is !Unpin and no field holding a live future is moved.
+        // When the child enters the stack, Call keeps its output pinned.
         let this = unsafe { self.get_unchecked_mut() };
         if let Some(output) = this.output.take() {
             return Poll::Ready(output);
         }
-        if let Some(mut child) = this.child.take() {
-            unsafe { child.as_mut().set_output((&mut this.output as *mut Option<T>).cast()) };
-            this.calls.push(child);
+        if let Some(child) = this.child.take() {
+            unsafe { child.enter(this.calls, &mut this.output); }
         }
         Poll::Pending
     }
@@ -78,53 +143,26 @@ impl Calls {
     pub(super) unsafe fn call<'a, F: Future + 'a>(&'a self, future: F) -> Call<'a, F::Output> {
         Call {
             calls: self,
-            child: Some(Box::pin(Invocation {
-                future,
-                output: ptr::null_mut(),
-            })),
+            child: Some(Pending::new(future)),
             output: None,
             _pinned: PhantomPinned,
         }
     }
 
-    fn push<'a>(&self, frame: Pin<Box<dyn Frame + 'a>>) {
-        // Only run polls these frames. A child borrows its pinned parent; run
-        // completes or drops all children before any parent or root can end.
-        // Erasing the borrow permits that one scoped stack, not escaped work.
-        let frame =
-            unsafe { mem::transmute::<Pin<Box<dyn Frame + 'a>>, Pin<Box<dyn Frame>>>(frame) };
-        self.frames.borrow_mut().push(frame);
-    }
-
     /// Run only original functions that yield through awaited calls on this
     /// stack. No nested run, external future, manual child polling, or select.
     pub(super) unsafe fn run<F: Future>(&self, future: F) -> F::Output {
-        let mut root = pin!(unsafe { self.call(future) });
-        // Declared after root: children are dropped first on every scope exit.
-        let _scope = Scope(self);
+        let mut output = None;
         let mut context = Context::from_waker(Waker::noop());
-        loop {
-            if let Poll::Ready(output) = root.as_mut().poll(&mut context) {
-                return output;
-            }
-            loop {
-                let frame = {
-                    let mut frames = self.frames.borrow_mut();
-                    frames.last_mut().map(|frame| {
-                        // Box addresses stay fixed when the stack grows. Release
-                        // the Vec borrow before the child can append its own call.
-                        unsafe { Pin::get_unchecked_mut(frame.as_mut()) as *mut dyn Frame }
-                    })
-                };
-                let Some(frame) = frame else { break };
-                match unsafe { Pin::new_unchecked(&mut *frame) }.poll(&mut context) {
-                    Poll::Ready(()) => {
-                        self.frames.borrow_mut().pop();
-                    }
-                    Poll::Pending => {}
-                }
-            }
+        let scope = Scope(self);
+        unsafe {
+            Pending::new(future).enter(self, &mut output);
+            drive(self.top.get(), ptr::from_mut(&mut context).cast(), poll_frame, release_frame);
         }
+        // B has drained the stack. During unwinding Scope instead drains it
+        // before the root output slot goes out of scope.
+        mem::forget(scope);
+        output.unwrap()
     }
 }
 
@@ -132,12 +170,6 @@ struct Scope<'a>(&'a Calls);
 
 impl Drop for Scope<'_> {
     fn drop(&mut self) {
-        // A suspended child can borrow any live parent. End them in the same
-        // actual call order as normal completion, before the root is released.
-        loop {
-            let frame = { self.0.frames.borrow_mut().pop() };
-            let Some(frame) = frame else { break };
-            drop(frame);
-        }
+        unsafe { drain(self.0.top.get(), release_frame); }
     }
 }

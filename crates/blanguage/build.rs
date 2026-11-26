@@ -229,6 +229,7 @@ const MODULES: &[&str] = &[
     "instance_domain",
     "unwind",
     "frame_layout",
+    "world_evaluation",
     "x64_instruction",
     "coloring",
     "call_layout",
