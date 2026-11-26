@@ -86,12 +86,12 @@ pub(super) fn run(code: &mut Vec<Inst>, registers: &[Scalar]) {
     run_code(code, registers, &mut []);
 }
 pub(super) fn run_reduction(
-    parts: &mut [Vec<Inst>; 3], kernel: &mut PreparedReductionKernel,
+    kernel: &mut ReductionParts,
     inputs: Option<&mut Vec<ReductionInputReadForward>>,
 ) {
     let mut origins = Origins::default();
     let mut reads = Vec::new();
-    host::run_reduction(parts, kernel, &mut origins, &mut reads, inputs);
+    host::run_reduction(kernel, &mut origins, &mut reads, inputs);
 }
 
 unsafe extern "C" fn finish_reduction_input(

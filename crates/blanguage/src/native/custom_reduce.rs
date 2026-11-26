@@ -314,16 +314,13 @@ pub(super) fn emit(
     let has_head = u32::from(head_word.is_some());
     let plan = unsafe { cpu_range_plan(pass, k, has_head, u32::from(counted)) };
     let stage = &program.stages[index];
-    let mut kernel = crate::optimize::reduction_kernel(r, plan.project != 0, plan.identity != 0, None);
+    let mut kernel = crate::optimize::reduction_parts(r, plan.project != 0, plan.identity != 0, None);
     let mut lowered = kernel.stage;
+    let [identity, project, mut combine] = kernel.parts;
+    lowered.code.extend(identity);
     let private = program.buffers.len();
     let buffer_count = private + usize::from(plan.apply != 0 || plan.finish != 0);
 
-    let mut combine = lowered.code.split_off(kernel.project_end);
-    let project = lowered.code.split_off(kernel.initialize_end);
-    if plan.apply != 0 {
-        lowered.code.truncate(kernel.invariant_end);
-    }
     crate::ir::rewrite::bind_reduction_arguments(
         &mut combine, &mut kernel.result, &kernel.right, &kernel.projected, lowered.registers.len(),
     );

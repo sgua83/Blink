@@ -1687,7 +1687,7 @@ fn prepare_reduction(stage: &Stage, pass: ShaderPass) -> Option<PreparedReductio
         KernelPreparation::Identity => (false, true),
         KernelPreparation::Combine => (false, false),
     };
-    let kernel = crate::optimize::reduction_kernel(reduction, project, identity, None);
+    let kernel = crate::optimize::reduction_parts(reduction, project, identity, None).flatten();
     let facts = ShaderStageFacts::new(
         &stage.operation, &kernel.stage.code, &kernel.stage.registers, pass.numeric != 0, pass.kind == EntryPass::Main,
     );

@@ -17,7 +17,6 @@ struct Host {
     clone: unsafe extern "C" fn(*mut c_void, usize, Node, usize) -> crate::ir::rewrite::Span,
     rewrite: crate::ir::rewrite::Host,
     push_root: unsafe extern "C" fn(*mut c_void, usize, Reg),
-    part_len: unsafe extern "C" fn(*const c_void, usize) -> usize,
     alloc_uniform: extern "C" fn(usize) -> *mut u8,
     release_uniform: unsafe extern "C" fn(*mut u8, usize),
     open_part: unsafe extern "C" fn(*mut c_void, usize) -> BlockSpan,
@@ -25,33 +24,26 @@ struct Host {
     move_instruction: unsafe extern "C" fn(*mut Inst, *mut Inst),
     close_part: unsafe extern "C" fn(*mut c_void, usize, usize),
     value_flow: unsafe extern "C" fn(*mut c_void),
-    boundaries: unsafe extern "C" fn(*mut c_void, usize, usize, usize),
-    append: unsafe extern "C" fn(*mut c_void, usize),
 }
 unsafe extern "C" {
     #[link_name = "bootstrap.ir_dataflow::reduction_kernel"] fn b_kernel(input: Input, host: Host);
 }
 struct State<'a> {
-    kernel: PreparedReductionKernel,
-    parts: [Vec<Inst>; 3],
+    kernel: ReductionParts,
     input_origins: Option<&'a mut Vec<ReductionInputReadForward>>,
 }
 impl State<'_> {
     fn host(&mut self) -> Host {
         Host { ir: crate::ir::dataflow::HOST, context: ptr::from_mut(self).cast(),
-            header, clone, rewrite: crate::ir::rewrite::HOST, push_root, part_len, alloc_uniform, release_uniform,
-            open_part, hoist, move_instruction, close_part, value_flow,
-            boundaries, append }
+            header, clone, rewrite: crate::ir::rewrite::HOST, push_root, alloc_uniform, release_uniform,
+            open_part, hoist, move_instruction, close_part, value_flow }
     }
 }
-pub(crate) fn kernel(
+pub(crate) fn prepare(
     reduction: &CustomReduction, project: bool, identity: bool,
     input_origins: Option<&mut Vec<ReductionInputReadForward>>,
-) -> PreparedReductionKernel {
-    let kernel = PreparedReductionKernel { stage: ReductionBody::default(), invariant_end: 0,
-        initialize_end: 0, project_end: 0, source: Vec::new(), projected: Vec::new(),
-        initial: Vec::new(), left: Vec::new(), right: Vec::new(), result: Vec::new() };
-    let mut state = State { kernel, parts: Default::default(), input_origins };
+) -> ReductionParts {
+    let mut state = State { kernel: ReductionParts::default(), input_origins };
     let input = Input { source: Node { data: ptr::from_ref(reduction).cast(), kind: 23 },
         project: u32::from(project), identity: u32::from(identity) };
     let host = state.host();
@@ -65,12 +57,12 @@ unsafe extern "C" fn header(context: *mut c_void) -> Header {
 unsafe extern "C" fn clone(context: *mut c_void, part: usize, source: Node, local: usize) -> crate::ir::rewrite::Span {
     let state = unsafe { &mut *context.cast::<State<'_>>() };
     let value = unsafe { &*source.data.cast::<ValueCode>() };
-    state.parts[part - 1] = value.code.clone();
+    state.kernel.parts[part - 1] = value.code.clone();
     state.kernel.stage.registers.extend(&value.registers);
     state.kernel.stage.locals.extend(value.locals.iter().map(|(end, ty)| (end + local, ty.clone())));
-    crate::ir::rewrite::Span::slice(&mut state.parts[part - 1])
+    crate::ir::rewrite::Span::slice(&mut state.kernel.parts[part - 1])
 }
-fn root_values(kernel: &mut PreparedReductionKernel, root: usize) -> &mut Vec<Reg> {
+fn root_values(kernel: &mut ReductionParts, root: usize) -> &mut Vec<Reg> {
     match root {
         0 => &mut kernel.source, 1 => &mut kernel.projected, 2 => &mut kernel.initial,
         3 => &mut kernel.left, 4 => &mut kernel.right, _ => &mut kernel.result,
@@ -78,10 +70,6 @@ fn root_values(kernel: &mut PreparedReductionKernel, root: usize) -> &mut Vec<Re
 }
 unsafe extern "C" fn push_root(context: *mut c_void, root: usize, reg: Reg) {
     root_values(unsafe { &mut (*context.cast::<State<'_>>()).kernel }, root).push(reg);
-}
-unsafe extern "C" fn part_len(context: *const c_void, part: usize) -> usize {
-    let state = unsafe { &*context.cast::<State<'_>>() };
-    if part == 0 { state.kernel.stage.code.len() } else { state.parts[part - 1].len() }
 }
 extern "C" fn alloc_uniform(count: usize) -> *mut u8 {
     Box::into_raw(vec![0u8; count].into_boxed_slice()).cast()
@@ -92,7 +80,7 @@ unsafe extern "C" fn release_uniform(buffer: *mut u8, count: usize) {
 }
 
 unsafe extern "C" fn open_part(context: *mut c_void, part: usize) -> BlockSpan {
-    let code = unsafe { &mut (*context.cast::<State<'_>>()).parts[part - 1] };
+    let code = unsafe { &mut (*context.cast::<State<'_>>()).kernel.parts[part - 1] };
     let span = unsafe { instruction_span(code) };
     // B takes the live slots and returns only the initialized retained prefix.
     unsafe { code.set_len(0); }
@@ -123,17 +111,9 @@ unsafe extern "C" fn move_instruction(target: *mut Inst, source: *mut Inst) {
 }
 
 unsafe extern "C" fn close_part(context: *mut c_void, part: usize, kept: usize) {
-    unsafe { (*context.cast::<State<'_>>()).parts[part - 1].set_len(kept); }
+    unsafe { (*context.cast::<State<'_>>()).kernel.parts[part - 1].set_len(kept); }
 }
 unsafe extern "C" fn value_flow(context: *mut c_void) {
     let state = unsafe { &mut *context.cast::<State<'_>>() };
-    value_flow::run_reduction(&mut state.parts, &mut state.kernel, state.input_origins.take());
-}
-unsafe extern "C" fn boundaries(context: *mut c_void, invariant: usize, initialize: usize, project: usize) {
-    let kernel = unsafe { &mut (*context.cast::<State<'_>>()).kernel };
-    kernel.invariant_end = invariant; kernel.initialize_end = initialize; kernel.project_end = project;
-}
-unsafe extern "C" fn append(context: *mut c_void, part: usize) {
-    let state = unsafe { &mut *context.cast::<State<'_>>() };
-    state.kernel.stage.code.append(&mut state.parts[part - 1]);
+    value_flow::run_reduction(&mut state.kernel, state.input_origins.take());
 }

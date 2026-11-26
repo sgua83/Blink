@@ -7,7 +7,7 @@ mod value_flow;
 mod eliminate;
 mod compaction;
 mod pipeline;
-pub(crate) use invariant::kernel as reduction_kernel;
+pub(crate) use invariant::prepare as reduction_parts;
 
 #[repr(C)]
 struct BlockSpan { data: *mut c_void, count: usize, stride: usize }

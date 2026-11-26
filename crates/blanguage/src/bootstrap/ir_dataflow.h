@@ -178,7 +178,7 @@ extern "C" usize compact_slots(CompactInput input,CompactHost host) on cpu
  requires nonzero(host.whole) requires nonzero(host.scalar) requires nonzero(host.rewrite.inspect);
 
 
-// One fresh ReductionKernel, built directly from the three real value bodies.
+// One prepared reduction retains its entry and the three separate value bodies.
 // Rust owns the original instruction and source types; B controls preparation.
 // An open partition is held by B until its compacted prefix is returned.
 struct ReductionInput { Node source; u32 project; u32 identity; };
@@ -189,7 +189,6 @@ struct ReductionHost {
  cfn<RewriteSpan,address,usize,Node,usize> clone;
  RewriteHost rewrite;
  cfn<void,address,usize,usize> push_root;
- cfn<usize,address,usize> part_len;
  cfn<address,usize> alloc_uniform;
  cfn<void,address,usize> release_uniform;
  cfn<Span,address,usize> open_part;
@@ -197,13 +196,11 @@ struct ReductionHost {
  cfn<void,address,address> move_instruction;
  cfn<void,address,usize,usize> close_part;
  cfn<void,address> value_flow;
- cfn<void,address,usize,usize,usize> boundaries;
- cfn<void,address,usize> append;
 };
 
 extern "C" void reduction_prefix_definitions(Span code,Host ir,address definitions) on cpu
  requires nonzero(ir.inspect);
-extern "C" void reduction_kernel(ReductionInput input,ReductionHost host) on cpu requires nonzero(host.ir.inspect) requires nonzero(host.header) requires nonzero(host.clone) requires nonzero(host.rewrite.inspect) requires nonzero(host.push_root) requires nonzero(host.part_len) requires nonzero(host.alloc_uniform) requires nonzero(host.release_uniform) requires nonzero(host.open_part) requires nonzero(host.hoist) requires nonzero(host.move_instruction) requires nonzero(host.close_part) requires nonzero(host.value_flow) requires nonzero(host.boundaries) requires nonzero(host.append);
+extern "C" void reduction_kernel(ReductionInput input,ReductionHost host) on cpu requires nonzero(host.ir.inspect) requires nonzero(host.header) requires nonzero(host.clone) requires nonzero(host.rewrite.inspect) requires nonzero(host.push_root) requires nonzero(host.alloc_uniform) requires nonzero(host.release_uniform) requires nonzero(host.open_part) requires nonzero(host.hoist) requires nonzero(host.move_instruction) requires nonzero(host.close_part) requires nonzero(host.value_flow);
 
 // Complete Select control borrows one original Stage. Scratch is overwritten
 // before every plan; output rows live only until that branch is emitted.

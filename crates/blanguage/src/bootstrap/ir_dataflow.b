@@ -754,7 +754,7 @@ extern "C" void reduction_prefix_definitions(Span code,Host ir,address definitio
  }
 }
 
-extern "C" void reduction_kernel(ReductionInput input,ReductionHost host) on cpu requires nonzero(host.ir.inspect) requires nonzero(host.header) requires nonzero(host.clone) requires nonzero(host.rewrite.inspect) requires nonzero(host.push_root) requires nonzero(host.part_len) requires nonzero(host.alloc_uniform) requires nonzero(host.release_uniform) requires nonzero(host.open_part) requires nonzero(host.hoist) requires nonzero(host.move_instruction) requires nonzero(host.close_part) requires nonzero(host.value_flow) requires nonzero(host.boundaries) requires nonzero(host.append) {
+extern "C" void reduction_kernel(ReductionInput input,ReductionHost host) on cpu requires nonzero(host.ir.inspect) requires nonzero(host.header) requires nonzero(host.clone) requires nonzero(host.rewrite.inspect) requires nonzero(host.push_root) requires nonzero(host.alloc_uniform) requires nonzero(host.release_uniform) requires nonzero(host.open_part) requires nonzero(host.hoist) requires nonzero(host.move_instruction) requires nonzero(host.close_part) requires nonzero(host.value_flow) {
  View source=host.ir.inspect(input.source);
  if(input.identity!=0){
   host.clone(host.context,1u64,source.left,0u64);
@@ -791,11 +791,6 @@ extern "C" void reduction_kernel(ReductionInput input,ReductionHost host) on cpu
  while(partition<4u64){reduction_extract_part(partition,uniform,host);partition+=1u64;}
  host.release_uniform(uniform,register_count);
  host.value_flow(host.context);
- usize invariant_end=host.part_len(host.context,0u64);
- usize initialize_end=invariant_end+host.part_len(host.context,1u64);
- usize project_end=initialize_end+host.part_len(host.context,2u64);
- host.boundaries(host.context,invariant_end,initialize_end,project_end);
- partition=1u64;while(partition<4u64){host.append(host.context,partition);partition+=1u64;}
 }
 
 

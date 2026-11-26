@@ -87,6 +87,35 @@ pub(crate) struct ReductionBody {
 }
 
 #[cfg(feature = "compiler")]
+#[derive(Default)]
+pub(crate) struct ReductionParts {
+    pub(crate) stage: ReductionBody,
+    pub(crate) parts: [Vec<Inst>; 3], // identity, project, combine
+    pub(crate) source: Vec<Reg>,
+    pub(crate) projected: Vec<Reg>,
+    pub(crate) initial: Vec<Reg>,
+    pub(crate) left: Vec<Reg>,
+    pub(crate) right: Vec<Reg>,
+    pub(crate) result: Vec<Reg>,
+}
+
+#[cfg(feature = "compiler")]
+impl ReductionParts {
+    pub(crate) fn flatten(self) -> PreparedReductionKernel {
+        let Self { mut stage, parts: [identity, project, combine], source, projected,
+            initial, left, right, result } = self;
+        let invariant_end = stage.code.len();
+        stage.code.extend(identity);
+        let initialize_end = stage.code.len();
+        stage.code.extend(project);
+        let project_end = stage.code.len();
+        stage.code.extend(combine);
+        Kernel { stage, invariant_end, initialize_end, project_end, source, projected,
+            initial, left, right, result }
+    }
+}
+
+#[cfg(feature = "compiler")]
 unsafe extern "C" {
     #[link_name = "bootstrap.ir_dataflow::reduction_prefix_definitions"]
     fn reduction_prefix_definitions(code: super::dataflow::Span, ir: super::dataflow::Host, definitions: *mut u8);
@@ -123,7 +152,7 @@ impl CustomReduction {
         let PreparedReductionKernel {
             stage: body, invariant_end, initialize_end, project_end, source, projected,
             initial, left, right, result,
-        } = crate::optimize::reduction_kernel(self, project, identity, Some(&mut inputs));
+        } = crate::optimize::reduction_parts(self, project, identity, Some(&mut inputs)).flatten();
         let generated_origin = if inputs.is_empty() {
             stage.generated_origin.clone()
         } else {
