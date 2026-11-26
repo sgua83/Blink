@@ -1,7 +1,7 @@
 module bootstrap.source_bind;
 import bootstrap.ast_storage;
 import bootstrap.signatures;
-import bootstrap.cli;
+import codec.number_text;
 import bootstrap.generic_bindings;
 
 // The original source-binding query owns this cursor and its partial native values.

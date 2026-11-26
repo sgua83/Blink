@@ -1,5 +1,5 @@
 module bootstrap.type_reference;
-import bootstrap.type_families;
+import codec.builtin_type;
 import bootstrap.ast_storage;
 
 // Descriptors borrow the original semantic input until its real query ends.

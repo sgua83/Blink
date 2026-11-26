@@ -1,46 +1,6 @@
 module bootstrap.type_layout;
-import bootstrap.cli;
+import codec.type_layout;
 
-struct VectorLayout {
-    u64 size;
-    u32 alignment;
-};
-
-extern "C" VectorLayout vector(u32 scalar_size, u32 scalar_alignment, u64 count) on cpu;
-
-struct FieldPlacement {
-    u64 offset;
-    u64 end;
-    u32 alignment;
-};
-
-extern "C" FieldPlacement place(u32 size, u32 alignment, u32 field_size, u32 field_alignment)
-    on cpu requires nonzero(field_alignment);
-extern "C" u64 natural_size(u32 size, u32 alignment) on cpu requires nonzero(alignment);
-extern "C" bool accepts_stride(u32 size, u32 alignment, u32 stride)
-    on cpu requires nonzero(alignment);
-
-struct ArrayLayout {
-    u64 size;
-    u64 stride;
-};
-
-extern "C" ArrayLayout fixed_array(u32 element_size, u32 alignment, u32 count)
-    on cpu requires nonzero(alignment);
-
-struct VariantLayout {
-    u64 size;
-    u32 alignment;
-};
-
-extern "C" VariantLayout tagged_variant(u32 payload_size, u32 payload_alignment) on cpu;
-
-enum Property:u32 { Dataset=0; Resources=1; Cleanup=2; Arrays=3; Views=4; Borrows=5; };
-enum Child:u32 { Variant=0; Array=1; Field=2; };
-struct TypeNode {
-    u32 task; u32 cleanup; u32 dataset; u32 view; u32 array; u32 address;
-    usize variants; usize fields; u32 count; u32 alignment;
-};
 enum StorageMode:u32 { Borrow=0; CleanupBorrow=1; CleanupRequirement=2; };
 enum StorageNeed:u32 {
     Absent=0; Present=1; Enter=2; Contract=3; Field=4; Variant=5; Array=6; Dataset=7;
@@ -62,26 +22,6 @@ struct ReferenceShape {
 struct ReferenceStep { usize index; ReferenceNeed need; };
 extern "C" ReferenceStep reference_step(inout ReferenceCursor cursor, read ReferenceShape shape) on cpu;
 
-struct TypeHost {
-    cfn<TypeNode,address> ensures memory(read) inspect;
-    cfn<address,address,Child,usize> ensures memory(read) child;
-};
-extern "C" u32 contains(address value, Property property, TypeHost host) on cpu
-    requires nonzero(host.inspect) requires nonzero(host.child);
-
-struct NumericNode {
-    address name;usize length;u32 function;u32 enumeration;usize variants;
-    u32 view;u32 array;usize fields;usize components;
-};
-struct NumericHost {
-    TypeHost types;
-    cfn<NumericNode,address> ensures memory(read) inspect;
-    cfn<u32,address,usize> ensures memory(read) scalar;
-};
-extern "C" u32 numeric(address value,NumericHost host) on cpu
-    requires nonzero(host.types.inspect) requires nonzero(host.types.child)
-    requires nonzero(host.inspect) requires nonzero(host.scalar);
-
 extern "C" usize dataset_count(address value, TypeHost host) on cpu
     requires nonzero(host.inspect) requires nonzero(host.child);
 extern "C" u32 dataset_path(address value, usize ordinal, TypeHost host, address context,
@@ -98,17 +38,7 @@ extern "C" void dataset_paths(address value, address context, DatasetPathsHost h
     requires nonzero(host.types.inspect) requires nonzero(host.types.child)
     requires nonzero(host.push) requires nonzero(host.pop) requires nonzero(host.emit);
 
-struct TypePart { address value; u32 offset; };
-struct FieldHost {
-    TypeHost types;
-    cfn<TypePart,address,usize> ensures memory(read) part;
-};
 extern "C" void borrow_fields(address value, u32 base, FieldHost host, address context,
-    cfn<void,address,u32,address> emit) on cpu
-    requires nonzero(host.types.inspect) requires nonzero(host.types.child)
-    requires nonzero(host.part) requires nonzero(emit);
-
-extern "C" void task_output_owners(address value, u32 base, FieldHost host, address context,
     cfn<void,address,u32,address> emit) on cpu
     requires nonzero(host.types.inspect) requires nonzero(host.types.child)
     requires nonzero(host.part) requires nonzero(emit);
@@ -116,18 +46,6 @@ extern "C" void task_output_owners(address value, u32 base, FieldHost host, addr
 extern "C" u32 zero_valid(address value, TypeHost host,
     cfn<u32,address,usize> ensures memory(read) discriminant) on cpu
     requires nonzero(host.inspect) requires nonzero(host.child) requires nonzero(discriminant);
-
-struct Text { address bytes; usize length; };
-struct PathEntry { Text name; TypePart part; u32 discriminant; };
-struct PathHost {
-    FieldHost fields;
-    cfn<PathEntry,address,Child,usize> ensures memory(read) entry;
-    cfn<u32,address,u32> ensures memory(read) tag;
-};
-extern "C" TypePart field(address value, Text path, address words, usize word_count,
-    u32 active, PathHost host) on cpu
-    requires nonzero(host.fields.types.inspect) requires nonzero(host.fields.part)
-    requires nonzero(host.entry) requires nonzero(host.tag);
 
 enum MemberKind:u32 {
     Missing=0;

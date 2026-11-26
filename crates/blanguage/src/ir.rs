@@ -9,7 +9,6 @@ pub use origin::{SourceOrigin, SourceDeclaration, DeclarationRepresentation, Sou
 #[cfg(feature = "compiler")]
 pub(crate) use origin::SourceContext;
 mod layout;
-#[cfg(feature = "compiler")]
 mod properties;
 #[cfg(feature = "compiler")]
 pub(crate) use properties::{ReferenceNeed, ReferenceWalk, SourceMember, StorageMode, StorageNeed, StorageWalk, source_member, dataset_count, dataset_path, dataset_paths};
@@ -164,14 +163,12 @@ struct VariantLayout {
     alignment: u32,
 }
 
-#[cfg(feature = "compiler")]
 #[repr(C)]
 struct VectorLayout {
     size: u64,
     alignment: u32,
 }
 
-#[cfg(feature = "compiler")]
 #[repr(C)]
 pub(crate) struct ArrayLayout {
     pub(crate) size: u64,
@@ -186,17 +183,19 @@ struct FieldPlacement {
     alignment: u32,
 }
 
-#[cfg(feature = "compiler")]
 unsafe extern "C" {
-    #[link_name = "bootstrap.type_layout::place"]
+    #[cfg(feature = "compiler")]
+    #[link_name = "codec.type_layout::place"]
     fn place_field(size: u32, alignment: u32, field_size: u32, field_alignment: u32) -> FieldPlacement;
-    #[link_name = "bootstrap.type_layout::natural_size"]
+    #[cfg(feature = "compiler")]
+    #[link_name = "codec.type_layout::natural_size"]
     fn natural_record_size(size: u32, alignment: u32) -> u64;
-    #[link_name = "bootstrap.type_layout::vector"]
+    #[link_name = "codec.type_layout::vector"]
     fn vector_layout(scalar_size: u32, scalar_alignment: u32, count: u64) -> VectorLayout;
-    #[link_name = "bootstrap.type_layout::fixed_array"]
+    #[link_name = "codec.type_layout::fixed_array"]
     pub(crate) fn fixed_array_layout(element_size: u32, alignment: u32, count: u32) -> ArrayLayout;
-    #[link_name = "bootstrap.type_layout::tagged_variant"]
+    #[cfg(feature = "compiler")]
+    #[link_name = "codec.type_layout::tagged_variant"]
     fn tagged_variant_layout(payload_size: u32, payload_alignment: u32) -> VariantLayout;
 }
 
@@ -327,6 +326,7 @@ impl Ty {
         Some(ty)
     }
     // A variant, a user-owned value and a task have presence on the value itself.
+    #[cfg(feature = "compiler")]
     pub(crate) fn has_owned_presence(&self) -> bool {
         self.has_variants() || self.cleanup.is_some() || self.task_result().is_some()
     }
@@ -336,61 +336,18 @@ impl Ty {
     pub const TASK_OWNED_REFERENCE_PREFIX: &'static str = "owned-reference:";
 
     pub fn contains_dataset(&self) -> bool {
-        #[cfg(feature = "compiler")]
-        { properties::contains(self, properties::Query::Dataset) }
-        #[cfg(not(feature = "compiler"))]
-        {
-            self.dataset.is_some()
-            || self.variants.iter().any(|v| v.ty.contains_dataset())
-            || self.array.as_deref().is_some_and(|ty| self.values[0] != 0 && ty.contains_dataset())
-            || self.fields.iter().any(|(_, _, ty)| ty.contains_dataset())
-        }
+        properties::contains(self, properties::Query::Dataset)
     }
 
     /// Independently present owners within a task's actual output position.
     pub fn task_output_owners(&self) -> Vec<(u32, &Self)> {
-        #[cfg(feature = "compiler")]
-        { properties::task_output_owners(self) }
-        #[cfg(not(feature = "compiler"))]
-        {
-        fn collect<'a>(ty: &'a Ty, offset: u32, owners: &mut Vec<(u32, &'a Ty)>) {
-            if !ty.owns_resources() {
-                return;
-            }
-            if ty.dataset.is_some() || ty.has_owned_presence() {
-                owners.push((offset, ty));
-                return;
-            }
-            for index in 0..ty.aggregate_len() {
-                let (at, field) = ty.aggregate_part(index);
-                collect(field, offset + at, owners);
-            }
-        }
-        let mut owners = Vec::new();
-        collect(self, 0, &mut owners);
-        owners
-        }
+        properties::task_output_owners(self)
     }
 
     pub fn owns_resources(&self) -> bool {
-        #[cfg(feature = "compiler")]
-        { properties::contains(self, properties::Query::Resources) }
-        #[cfg(not(feature = "compiler"))]
-        {
-            self.task_result().is_some() || self.cleanup.is_some() || self.dataset.is_some()
-            || self.variants.iter().any(|v| v.ty.owns_resources())
-            || self.array.as_deref().is_some_and(|ty| self.values[0] != 0 && ty.owns_resources())
-            || self.fields.iter().any(|(_, _, ty)| ty.owns_resources())
-        }
+        properties::contains(self, properties::Query::Resources)
     }
-    pub(crate) fn contains_cleanup(&self)->bool {
-        #[cfg(feature = "compiler")]
-        { properties::contains(self, properties::Query::Cleanup) }
-        #[cfg(not(feature = "compiler"))]
-        {
-            self.task_result().is_some()||self.cleanup.is_some()||self.array.as_deref().is_some_and(|ty| self.values[0] != 0 && ty.contains_cleanup())||self.fields.iter().any(|(_,_,ty)|ty.contains_cleanup())||self.variants.iter().any(|variant|variant.ty.contains_cleanup())
-        }
-    }
+    #[cfg(feature = "compiler")]
     pub(crate) fn aggregate_len(&self) -> usize {
         if self.array.is_some() {
             self.values[0] as usize
@@ -534,13 +491,7 @@ impl Ty {
         if n == 1 {
             return Self::scalar(s);
         }
-        #[cfg(feature = "compiler")]
-        let (size, align) = {
-            let layout = unsafe { vector_layout(s.size(), s.align(), n as u64) };
-            (layout.size as u32, layout.alignment)
-        };
-        #[cfg(not(feature = "compiler"))]
-        let (size, align) = (n as u32 * s.size(), s.align() * if n == 2 { 2 } else { 4 });
+        let layout = unsafe { vector_layout(s.size(), s.align(), n as u64) };
         Self {
             name: match s {
                 Scalar::F32 => format!("float{n}"),
@@ -551,9 +502,9 @@ impl Ty {
             },
             arguments: Vec::new(),
             values: Vec::new(),
-            size,
-            align,
-            components: (0..n).map(|i| (s, i as u32 * s.size())).collect(),
+            size: layout.size as u32,
+            align: layout.alignment,
+            components: properties::vector_slots(s, n),
             fields: Vec::new(),
             view: None,
             array: None,
@@ -565,216 +516,67 @@ impl Ty {
     }
     pub fn matrix(rows: usize, columns: usize) -> Self {
         let row = Self::vector(Scalar::F32, columns);
-        #[cfg(feature = "compiler")]
-        let (size, stride) = {
-            let layout = unsafe { fixed_array_layout(row.size, row.align, rows as u32) };
-            (layout.size as u32, layout.stride as u32)
-        };
-        #[cfg(not(feature = "compiler"))]
-        let (size, stride) = {
-            let stride = align_up(row.size, row.align);
-            (stride * rows as u32, stride)
-        };
-        Self {
-            name: format!("float{rows}x{columns}"),
-            arguments: Vec::new(),
-            values: Vec::new(),
-            size,
-            align: row.align,
-            components: (0..rows)
-                .flat_map(|r| {
-                    row.components
-                        .iter()
-                        .map(move |(s, o)| (*s, r as u32 * stride + o))
-                })
-                .collect(),
-            fields: (0..rows)
-                .map(|r| (format!("r{r}"), r as u32 * stride, Box::new(row.clone())))
-                .collect(),
-            view: None,
-            array: None,
-            enumeration: false,
-            result: false,
-            variants: Vec::new(),
-            dataset: None, cleanup: None, function: None,
-        }
+        let layout = unsafe { fixed_array_layout(row.size, row.align, rows as u32) };
+        let mut ty = Self::unit();
+        ty.name = format!("float{rows}x{columns}");
+        ty.size = layout.size as u32;
+        ty.align = row.align;
+        ty.fields = properties::matrix_fields(&row, rows, layout.stride as u32);
+        layout::fill_value_slots(&mut ty, false);
+        ty
     }
     pub fn matrix_shape(&self) -> Option<(usize, usize)> {
-        #[cfg(feature = "compiler")]
-        {
-            let name=crate::builtin_types::Builtin::recognize(&self.name);
-            (name.kind==crate::builtin_types::Kind::Numeric && name.rows>1)
-                .then_some((name.rows as usize,name.columns as usize))
-        }
-        #[cfg(not(feature = "compiler"))]
-        { matrix_shape(&self.name) }
+        let name = crate::builtin_types::Builtin::recognize(&self.name);
+        (name.kind == crate::builtin_types::Kind::Numeric && name.rows > 1)
+            .then_some((name.rows as usize, name.columns as usize))
     }
-    #[cfg(feature = "compiler")]
-    pub fn builtin(s: &str) -> Option<Self> {
-        Self::from_builtin(crate::builtin_types::Builtin::recognize(s))
+    pub fn builtin(name: &str) -> Option<Self> {
+        Self::from_builtin(crate::builtin_types::Builtin::recognize(name))
     }
-
-    #[cfg(feature = "compiler")]
     pub(crate) fn from_builtin(builtin: crate::builtin_types::Builtin) -> Option<Self> {
         use crate::builtin_types::Kind;
         match builtin.kind {
             Kind::Numeric => Some(if builtin.rows > 1 {
                 Self::matrix(builtin.rows as usize, builtin.columns as usize)
-            } else { Self::vector(builtin.scalar(), builtin.columns as usize) }),
-            Kind::Address => { let mut ty = Self::scalar(Scalar::U64); ty.name = "address".into(); Some(ty) },
-            Kind::Handle => { let mut ty = Self::vector(Scalar::U32, 2); ty.name = "handle".into(); Some(ty) },
+            } else {
+                Self::vector(builtin.scalar(), builtin.columns as usize)
+            }),
+            Kind::Address => {
+                let mut ty = Self::scalar(Scalar::U64);
+                ty.name = "address".into();
+                Some(ty)
+            }
+            Kind::Handle => {
+                let mut ty = Self::vector(Scalar::U32, 2);
+                ty.name = "handle".into();
+                Some(ty)
+            }
             Kind::RayHit => Some(Self::ray_hit()),
             _ => None,
         }
     }
-    #[cfg(not(feature = "compiler"))]
-    pub fn builtin(s: &str) -> Option<Self> {
-        if let Some((rows, columns)) = matrix_shape(s) {
-            return Some(Self::matrix(rows, columns));
-        }
-        Some(match s {
-            "f32" | "float" => Self::scalar(Scalar::F32),
-            "f64" => Self::scalar(Scalar::F64),
-            "u32" | "uint" => Self::scalar(Scalar::U32),
-            "i32" | "int" => Self::scalar(Scalar::I32),
-            "bool" => Self::scalar(Scalar::Bool),
-            "u64" | "usize" => Self::scalar(Scalar::U64),
-            "i64" | "isize" => Self::scalar(Scalar::I64),
-            "address" => {
-                let mut ty = Self::scalar(Scalar::U64);
-                ty.name = "address".into();
-                ty
-            },
-            "u8" => Self::scalar(Scalar::U8),
-            "i8" => Self::scalar(Scalar::I8),
-            "u16" => Self::scalar(Scalar::U16),
-            "i16" => Self::scalar(Scalar::I16),
-            "handle" => {
-                let mut ty = Self::vector(Scalar::U32, 2);
-                ty.name = s.into();
-                ty
-            }
-            "float2" => Self::vector(Scalar::F32, 2),
-            "float3" => Self::vector(Scalar::F32, 3),
-            "float4" => Self::vector(Scalar::F32, 4),
-            "uint2" => Self::vector(Scalar::U32, 2),
-            "uint3" => Self::vector(Scalar::U32, 3),
-            "uint4" => Self::vector(Scalar::U32, 4),
-            "int2" => Self::vector(Scalar::I32, 2),
-            "int3" => Self::vector(Scalar::I32, 3),
-            "int4" => Self::vector(Scalar::I32, 4),
-            "RayHit" => Self::ray_hit(),
-            _ => return None,
-        })
-    }
     fn ray_hit() -> Self {
-        Self {
-                name: "RayHit".into(),
-                arguments: Vec::new(),
-                values: Vec::new(),
-                size: 176,
-                align: 16,
-                view: None,
-                array: None,
-                enumeration: false,
-                result: false,
-                variants: Vec::new(),
-                dataset: None, cleanup: None, function: None,
-                components: vec![
-                    (Scalar::Bool, 0),
-                    (Scalar::F32, 4),
-                    (Scalar::F32, 8),
-                    (Scalar::F32, 12),
-                    (Scalar::U32, 16),
-                    (Scalar::U32, 20),
-                ]
-                .into_iter()
-                .chain((0..3).flat_map(|v| (0..3).map(move |c| (Scalar::F32, 32 + v * 16 + c * 4))))
-                .chain((0..24).map(|c| (Scalar::F32, 80 + c * 4)))
-                .collect(),
-                fields: vec![
-                    ("exists".into(), 0, Box::new(Self::scalar(Scalar::Bool))),
-                    ("distance".into(), 4, Box::new(Self::scalar(Scalar::F32))),
-                    (
-                        "barycentric".into(),
-                        8,
-                        Box::new(Self::vector(Scalar::F32, 2)),
-                    ),
-                    ("instance".into(), 16, Box::new(Self::scalar(Scalar::U32))),
-                    ("primitive".into(), 20, Box::new(Self::scalar(Scalar::U32))),
-                    ("vertex0".into(), 32, Box::new(Self::vector(Scalar::F32, 3))),
-                    ("vertex1".into(), 48, Box::new(Self::vector(Scalar::F32, 3))),
-                    ("vertex2".into(), 64, Box::new(Self::vector(Scalar::F32, 3))),
-                    ("object_to_world".into(), 80, Box::new(Self::matrix(3, 4))),
-                    ("world_to_object".into(), 128, Box::new(Self::matrix(3, 4))),
-                ],
-            }
+        let mut ty = Self::unit();
+        ty.name = "RayHit".into();
+        let shape = properties::ray_hit_fields(&mut ty);
+        ty.size = shape.size as u32;
+        ty.align = shape.alignment;
+        layout::fill_value_slots(&mut ty, false);
+        ty
     }
     pub fn is_address(&self) -> bool {
-        #[cfg(feature = "compiler")]
-        { crate::builtin_types::Builtin::recognize(&self.name).kind==crate::builtin_types::Kind::Address }
-        #[cfg(not(feature = "compiler"))]
-        { self.name == "address" }
+        crate::builtin_types::Builtin::recognize(&self.name).kind == crate::builtin_types::Kind::Address
     }
     pub fn is_handle(&self) -> bool {
-        #[cfg(feature = "compiler")]
-        { crate::builtin_types::Builtin::recognize(&self.name).kind==crate::builtin_types::Kind::Handle }
-        #[cfg(not(feature = "compiler"))]
-        { self.name == "handle" }
+        crate::builtin_types::Builtin::recognize(&self.name).kind == crate::builtin_types::Kind::Handle
     }
     pub fn is_c_function(&self) -> bool {
         self.function.is_some()
     }
-    pub fn is_numeric(&self) -> bool {
-        #[cfg(feature = "compiler")]
-        { properties::numeric(self) }
-        #[cfg(not(feature = "compiler"))]
-        {
-        !self.is_c_function()
-            && !self.is_handle()
-            && !self.is_address()
-            && !self.enumeration
-            && !self.has_variants()
-            && self.view.is_none()
-            && self.array.is_none()
-            && self.fields.is_empty()
-            && !self.components.is_empty() && self.components.iter().all(|x| x.0 != Scalar::Bool)
-            && !self.owns_resources()
-        }
-    }
-    pub fn contains_arrays(&self) -> bool {
-        #[cfg(feature = "compiler")]
-        { properties::contains(self, properties::Query::Arrays) }
-        #[cfg(not(feature = "compiler"))]
-        {
-            self.variants.iter().any(|v| v.ty.contains_arrays())
-            || self.array.is_some()
-            || self.fields.iter().any(|(_, _, t)| t.contains_arrays())
-        }
-    }
-    pub fn contains_views(&self) -> bool {
-        #[cfg(feature = "compiler")]
-        { properties::contains(self, properties::Query::Views) }
-        #[cfg(not(feature = "compiler"))]
-        {
-            self.variants.iter().any(|v| v.ty.contains_views())
-            || self.view.is_some()
-            || self.array.as_ref().is_some_and(|t| self.values[0] != 0 && t.contains_views())
-            || self.fields.iter().any(|(_, _, t)| t.contains_views())
-        }
-    }
-    pub fn contains_borrows(&self) -> bool {
-        #[cfg(feature = "compiler")]
-        { properties::contains(self, properties::Query::Borrows) }
-        #[cfg(not(feature = "compiler"))]
-        {
-            self.task_result().is_some() || self.is_address()
-            || self.view.is_some()
-            || self.variants.iter().any(|v| v.ty.contains_borrows())
-            || self.array.as_ref().is_some_and(|t| self.values[0] != 0 && t.contains_borrows())
-            || self.fields.iter().any(|(_, _, t)| t.contains_borrows())
-        }
-    }
+    pub fn is_numeric(&self) -> bool { properties::numeric(self) }
+    pub fn contains_arrays(&self) -> bool { properties::contains(self, properties::Query::Arrays) }
+    pub fn contains_views(&self) -> bool { properties::contains(self, properties::Query::Views) }
+    pub fn contains_borrows(&self) -> bool { properties::contains(self, properties::Query::Borrows) }
     /// Borrow-bearing values in this layout, without following their pointees.
     #[cfg(feature = "compiler")]
     pub(crate) fn borrow_fields(&self) -> Vec<(u32, &Ty)> { properties::borrows(self) }
@@ -790,67 +592,13 @@ impl Ty {
     }
     /// 已编译逻辑参数按真实字节位置借用同一声明字段；不改写物理根类型。
     pub fn field_layout_at(&self, offset: u32, expected: &Ty) -> Option<&Ty> {
-        if offset == 0 && self == expected { return Some(self); }
-        self.fields.iter().find_map(|(_, byte, field)| {
-            offset.checked_sub(*byte).and_then(|offset| field.field_layout_at(offset, expected))
-        })
+        properties::field_layout_at(self, offset, expected)
     }
     pub fn field(&self, path: &str) -> Option<(u32, &Ty)> {self.field_in(path,None)}
     /// 与field共用声明路径，在绑定原生引用时同时选择实际活动分支。
     pub fn field_at(&self,path:&str,words:&[u32])->Option<(u32,&Ty)> {self.field_in(path,Some(words))}
-    fn field_in(&self, path:&str, words:Option<&[u32]>)->Option<(u32,&Ty)> {
-        #[cfg(feature = "compiler")]
-        { properties::field(self, path, words) }
-        #[cfg(not(feature = "compiler"))]
-        {
-        let mut ty = self;
-        let mut offset = 0;
-        for part in path.split('.') {
-            let split = part.find('[').unwrap_or(part.len());
-            let (name, mut indices) = part.split_at(split);
-            if !name.is_empty() {
-                if ty.has_variants(){
-                    let variant=ty.variants.iter().find(|variant|variant.name==name)?;
-                    if let Some(words)=words && words.get(offset as usize/4).map(|&tag|ty.variant_tag(tag))!=Some(variant.discriminant){return None;}
-                    offset+=ty.variant_payload_offset();ty=&variant.ty;
-                }else{
-                    let (_, at, field) = ty.fields.iter().find(|(n, _, _)| n == name)?;
-                    offset += at;
-                    ty = field.as_ref();
-                }
-            } else if indices.is_empty() {
-                return None;
-            }
-            while !indices.is_empty() {
-                let end = indices.find(']')?;
-                let index: u32 = indices.strip_prefix('[')?[..end - 1].parse().ok()?;
-                let element = ty.array.as_deref()?;
-                if index >= ty.values[0] {
-                    return None;
-                }
-                offset += index * align_up(element.size, element.align);
-                ty = element;
-                indices = &indices[end + 1..];
-            }
-        }
-        Some((offset, ty))
-        }
-    }
-}
-#[cfg(not(feature = "compiler"))]
-fn matrix_shape(name: &str) -> Option<(usize, usize)> {
-    match name.as_bytes() {
-        [
-            b'f',
-            b'l',
-            b'o',
-            b'a',
-            b't',
-            r @ b'2'..=b'4',
-            b'x',
-            c @ b'2'..=b'4',
-        ] => Some(((r - b'0') as usize, (c - b'0') as usize)),
-        _ => None,
+    fn field_in(&self, path: &str, words: Option<&[u32]>) -> Option<(u32, &Ty)> {
+        properties::field(self, path, words)
     }
 }
 #[derive(Clone, Debug)]

@@ -91,6 +91,16 @@ fn native_modules() -> Result<(), Box<dyn std::error::Error>> {
             object("layout"),
         ),
     ];
+    for (name, module) in [
+        ("builtin_type", "builtin_type"),
+        ("number_text", "number_text"),
+        ("shared_type_layout", "type_layout"),
+    ] {
+        for extension in ["b", "h"] {
+            println!("cargo:rerun-if-changed=src/codec/{module}.{extension}");
+        }
+        jobs.push(compile(name, &format!("src/codec/{module}.b"), "src", object(name)));
+    }
     let compiler_start = jobs.len();
     let compiler = env::var_os("CARGO_FEATURE_COMPILER").is_some();
     if compiler {

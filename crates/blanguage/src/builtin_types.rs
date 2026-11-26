@@ -1,4 +1,6 @@
-use crate::ir::{BinaryOp, Comparison, Scalar};
+use crate::ir::Scalar;
+#[cfg(feature = "compiler")]
+use crate::ir::{BinaryOp, Comparison};
 
 // These discriminants are produced by the B implementation of the static C ABI.
 #[allow(dead_code)]
@@ -45,15 +47,17 @@ pub(crate) struct Builtin {
     pub columns: u32,
 }
 unsafe extern "C" {
-    #[link_name = "bootstrap.type_families::recognize"]
+    #[link_name = "codec.builtin_type::recognize"]
     fn recognize(name: *const u8, length: u64) -> Builtin;
 }
 impl Builtin {
     pub fn recognize(name: &str) -> Self { unsafe { recognize(name.as_ptr(), name.len() as u64) } }
     // This query covers the intrinsic values with a fixed layout.
+    #[cfg(feature = "compiler")]
     pub fn is_present(self) -> bool {
         matches!(self.kind, Kind::Numeric | Kind::Address | Kind::Handle | Kind::RayHit)
     }
+    #[cfg(feature = "compiler")]
     pub fn is_scalar(self) -> bool {
         self.kind == Kind::Address || (self.kind == Kind::Numeric && self.rows == 1 && self.columns == 1)
     }
@@ -72,6 +76,7 @@ impl Builtin {
             ScalarCode::I16 => Scalar::I16,
         }
     }
+    #[cfg(feature = "compiler")]
     pub fn canonical(self, name: &str) -> Option<&str> {
         if !self.is_present() { None }
         else if self.kind == Kind::Numeric && self.rows == 1 && self.columns == 1 { Some(self.scalar().name()) }
@@ -80,6 +85,7 @@ impl Builtin {
 }
 
 // Shared bootstrap.scalar_fold::BinaryOperation ABI used by folding and SPIR-V.
+#[cfg(feature = "compiler")]
 #[repr(u32)]
 pub(crate) enum ScalarBinaryOp {
     Add,
@@ -100,6 +106,7 @@ pub(crate) enum ScalarBinaryOp {
     GreaterEqual,
 }
 
+#[cfg(feature = "compiler")]
 impl From<BinaryOp> for ScalarBinaryOp {
     fn from(op: BinaryOp) -> Self {
         match op {
@@ -126,6 +133,7 @@ impl From<BinaryOp> for ScalarBinaryOp {
 }
 
 // Shared bootstrap.scalar_fold::ScalarEncoding ABI for folding and native emission.
+#[cfg(feature = "compiler")]
 #[repr(u32)]
 enum ScalarKind {
     Unsigned,
@@ -134,12 +142,14 @@ enum ScalarKind {
     Boolean,
 }
 
+#[cfg(feature = "compiler")]
 #[repr(C)]
 pub(crate) struct ScalarEncoding {
     kind: ScalarKind,
     width: u32,
 }
 
+#[cfg(feature = "compiler")]
 impl From<Scalar> for ScalarEncoding {
     fn from(scalar: Scalar) -> Self {
         let kind = match scalar {

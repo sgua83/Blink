@@ -21,7 +21,7 @@ use std::{
 };
 
 unsafe extern "C" {
-    #[link_name = "bootstrap.type_layout::accepts_stride"]
+    #[link_name = "codec.type_layout::accepts_stride"]
     fn accepts_record_stride(size: u32, alignment: u32, stride: u32) -> bool;
 }
 

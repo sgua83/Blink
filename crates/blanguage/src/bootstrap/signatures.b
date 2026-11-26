@@ -1,7 +1,7 @@
 module bootstrap.signatures;
 import bootstrap.ast_storage;
 import bootstrap.names;
-import bootstrap.type_families;
+import codec.builtin_type;
 
 T read_node<T>(StorageView store, u64 offset) on cpu {
     return unsafe_position<T>(unsafe_address(address_bits(store.nodes) + offset));

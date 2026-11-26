@@ -1,5 +1,5 @@
 module bootstrap.ir_dataflow;
-import bootstrap.type_families;
+import codec.builtin_type;
 
 // These tags describe the existing borrowed Rust IR fields at this one
 // private native handoff. They do not name a public IR format or registry.

@@ -1,5 +1,5 @@
 module bootstrap.type_value;
-import bootstrap.type_families;
+import codec.builtin_type;
 
 // Descriptors borrow the actual semantic input. Host owns the original maps,
 // sets, bound temporaries and final Ty containers for this synchronous call.

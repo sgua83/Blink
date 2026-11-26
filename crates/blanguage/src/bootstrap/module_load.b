@@ -2,7 +2,7 @@ module bootstrap.module_load;
 import bootstrap.ast_storage;
 import bootstrap.signatures;
 import bootstrap.names;
-import bootstrap.type_families;
+import codec.builtin_type;
 
 address at(address base,u64 offset) on cpu {return unsafe_address(address_bits(base)+offset);}
 T node<T>(ModuleView module,u64 offset) on cpu {

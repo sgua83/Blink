@@ -291,40 +291,9 @@ LinkCommand product(CliArgument argument) on cpu {
 }
 
 
-ParsedNumber unsigned_number<const Radix:u32 in {10,16}>(CliArgument argument, u64 begin, u64 end, u64 maximum) on cpu {
-    if (begin == end) { return ParsedNumber(0u64, NumberError::Empty); }
-    u64 index = begin;
-    if (argument_byte(argument, index) == 43) { index += 1u64; }
-    if (index == end) { return ParsedNumber(0u64, NumberError::Invalid); }
-    u64 value = 0u64;
-    while (index < end) {
-        u8 byte = argument_byte(argument, index);
-        u64 digit;
-        if (byte >= 48 && byte <= 57) {
-            digit = u64(byte) - 48u64;
-        } else {
-            u8 lower = byte | u8(32);
-            if (Radix != 16 || lower < 97 || lower > 102) { return ParsedNumber(0u64, NumberError::Invalid); }
-            digit = u64(lower) - 87u64;
-        }
-        if (value > (maximum - digit) / u64(Radix)) { return ParsedNumber(0u64, NumberError::Overflow); }
-        value = value * u64(Radix) + digit;
-        index += 1u64;
-    }
-    return ParsedNumber(value, NumberError::None);
-}
-
-extern "C" ParsedNumber decimal_number(address bytes, u64 length, u64 maximum) on cpu {
-    return unsigned_number<10>(CliArgument(bytes, length, 1u64), 0u64, length, maximum);
-}
-
-extern "C" ParsedNumber hexadecimal_number(address bytes, u64 length, u64 maximum) on cpu {
-    return unsigned_number<16>(CliArgument(bytes, length, 1u64), 0u64, length, maximum);
-}
-
 LinkBudget parse_budget(CliArgument argument) on cpu {
     if (argument.text == 0u64) { return LinkBudget(0u64, LinkArgumentError::BudgetText); }
-    ParsedNumber number = unsigned_number<10>(argument, 0u64, argument.length, 18446744073709551615u64);
+    ParsedNumber number = unsigned_number<10>(argument.bytes, 0u64, argument.length, 18446744073709551615u64);
     if (number.error == NumberError::Empty) { return LinkBudget(0u64, LinkArgumentError::EmptyBudget); }
     if (number.error == NumberError::Invalid) { return LinkBudget(0u64, LinkArgumentError::InvalidBudget); }
     if (number.error == NumberError::Overflow) { return LinkBudget(0u64, LinkArgumentError::BudgetOverflow); }
@@ -420,9 +389,9 @@ CompileError parse_cpus(CliArgument argument, OperandSink operands) on cpu
             end += 1u64;
         }
         if (colon == argument.length) { return CompileError::CpuSyntax; }
-        ParsedNumber group = unsigned_number<10>(argument, begin, colon, 65535u64);
+        ParsedNumber group = unsigned_number<10>(argument.bytes, begin, colon, 65535u64);
         if (group.error != NumberError::None) { return compile_number_error(group.error); }
-        ParsedNumber number = unsigned_number<10>(argument, colon + 1u64, end, 255u64);
+        ParsedNumber number = unsigned_number<10>(argument.bytes, colon + 1u64, end, 255u64);
         if (number.error != NumberError::None) { return compile_number_error(number.error); }
         operands.processor(operands.context, u16(group.value), u8(number.value));
         begin = end + 1u64;
@@ -470,7 +439,7 @@ CompileCommandLine parse_object_options(address arguments, u64 count, OperandSin
         else if (is_token(option, "--stack-report")) { result.report_index = operand; }
         else if (is_token(option, "--stack-budget")) {
             if (argument.text == 0u64) { result.error = CompileError::BudgetText; return result; }
-            ParsedNumber budget = unsigned_number<10>(argument, 0u64, argument.length, 18446744073709551615u64);
+            ParsedNumber budget = unsigned_number<10>(argument.bytes, 0u64, argument.length, 18446744073709551615u64);
             if (budget.error != NumberError::None) { result.error = compile_number_error(budget.error); return result; }
             result.budget = budget.value;
             result.has_budget = 1u64;
@@ -538,7 +507,7 @@ extern "C" CompileCommandLine parse_compile_arguments(address arguments, u64 cou
         if (argument.text == 0u64) { result.prefix_error = CompileError::ResourceText; return result; }
         if (option == ResourceOption::Jobs) {
             if (result.jobs != 0u64) { result.prefix_error = CompileError::DuplicateJobs; return result; }
-            ParsedNumber jobs = unsigned_number<10>(argument, 0u64, argument.length, 18446744073709551615u64);
+            ParsedNumber jobs = unsigned_number<10>(argument.bytes, 0u64, argument.length, 18446744073709551615u64);
             if (jobs.error != NumberError::None) { result.prefix_error = compile_number_error(jobs.error); return result; }
             if (jobs.value == 0u64) { result.prefix_error = CompileError::ZeroJobs; return result; }
             result.jobs = jobs.value;
@@ -549,7 +518,7 @@ extern "C" CompileCommandLine parse_compile_arguments(address arguments, u64 cou
             has_cpus = true;
         } else {
             if (result.has_parameter_limit != 0u64) { result.prefix_error = CompileError::DuplicateParameterLimit; return result; }
-            ParsedNumber maximum = unsigned_number<10>(argument, 0u64, argument.length, 4294967295u64);
+            ParsedNumber maximum = unsigned_number<10>(argument.bytes, 0u64, argument.length, 4294967295u64);
             if (maximum.error != NumberError::None) { result.prefix_error = compile_number_error(maximum.error); return result; }
             result.max_parameter_bytes = u32(maximum.value);
             result.has_parameter_limit = 1u64;
@@ -614,12 +583,12 @@ extern "C" CodeCommandLine parse_code_arguments(address arguments, u64 count) on
                 colon += 1u64;
             }
             if (colon == value.length) { return line; }
-            ParsedNumber start = unsigned_number<10>(value, 0u64, colon, 18446744073709551615u64);
+            ParsedNumber start = unsigned_number<10>(value.bytes, 0u64, colon, 18446744073709551615u64);
             if (start.error != NumberError::None) {
                 line.error = compile_number_error(start.error);
                 return line;
             }
-            ParsedNumber end = unsigned_number<10>(value, colon + 1u64, value.length, 18446744073709551615u64);
+            ParsedNumber end = unsigned_number<10>(value.bytes, colon + 1u64, value.length, 18446744073709551615u64);
             if (end.error != NumberError::None) {
                 line.error = compile_number_error(end.error);
                 return line;
@@ -630,7 +599,7 @@ extern "C" CodeCommandLine parse_code_arguments(address arguments, u64 count) on
         } else if (line.input == CodeInput::Object && !line.has_section && line.function_index == count) {
             if (value.text == 0u64) { return line; }
             if (is_token(option, "--section")) {
-                ParsedNumber section = unsigned_number<10>(value, 0u64, value.length, 18446744073709551615u64);
+                ParsedNumber section = unsigned_number<10>(value.bytes, 0u64, value.length, 18446744073709551615u64);
                 if (section.error != NumberError::None) {
                     line.error = compile_number_error(section.error);
                     return line;
@@ -684,7 +653,7 @@ extern "C" IrCommandLine parse_ir_arguments(address arguments, u64 count, Operan
             line.function_index = operand;
         } else if (is_token(option, "--stage")) {
             if (value.text == 0u64) { line.error = CompileError::IrUsage; return line; }
-            ParsedNumber stage = unsigned_number<10>(value, 0u64, value.length, 18446744073709551615u64);
+            ParsedNumber stage = unsigned_number<10>(value.bytes, 0u64, value.length, 18446744073709551615u64);
             if (stage.error != NumberError::None) {
                 line.error = compile_number_error(stage.error);
                 return line;
@@ -761,8 +730,8 @@ extern "C" X64CommandLine parse_x64_arguments(address arguments, u64 count) on c
         CliArgument value = argument_at(arguments, operand);
         if (value.text == 0u64) { return line; }
         bool hex = value.length >= 2u64 && argument_byte(value, 0u64) == 48 && argument_byte(value, 1u64) == 120;
-        ParsedNumber number = hex ? unsigned_number<16>(value, 2u64, value.length, 18446744073709551615u64) :
-            unsigned_number<10>(value, 0u64, value.length, 18446744073709551615u64);
+        ParsedNumber number = hex ? unsigned_number<16>(value.bytes, 2u64, value.length, 18446744073709551615u64) :
+            unsigned_number<10>(value.bytes, 0u64, value.length, 18446744073709551615u64);
         if (number.error != NumberError::None) {
             line.error = compile_number_error(number.error);
             return line;

@@ -1,6 +1,6 @@
 module bootstrap.spirv_envelope;
 import bootstrap.ir_dataflow;
-import bootstrap.type_families;
+import codec.builtin_type;
 import bootstrap.scalar_fold;
 
 struct Features {

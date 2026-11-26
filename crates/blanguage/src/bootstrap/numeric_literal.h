@@ -1,5 +1,5 @@
 module bootstrap.numeric_literal;
-import bootstrap.cli;
+import codec.number_text;
 
 enum LiteralKind:u32 { F32=0; F64=1; U32=2; U64=3; I32=4; I64=5; };
 enum LiteralError:u32 { None=0; Integer=1; Float=2; NonFinite=3; NegativeRange=4; };
