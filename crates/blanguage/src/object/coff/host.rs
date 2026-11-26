@@ -27,7 +27,60 @@ struct HostGroupResult {
     error: ObjectReadError,
 }
 
+#[repr(C)]
+struct HostGroupSpan { rows: *const std::ffi::c_void, count: usize }
+
+impl HostGroupSpan {
+    fn borrowed<T>(rows: &[T]) -> Self { Self { rows: rows.as_ptr().cast(), count: rows.len() } }
+}
+
+#[derive(Clone, Copy, Default)]
+#[repr(C)]
+struct HostGroupState { start: usize, end: usize, seen: usize, required: usize }
+
+#[repr(C)]
+struct HostGroupLinks {
+    sections: ObjectRows,
+    positions: *const HostSection,
+    states: *mut HostGroupState,
+    count: usize,
+    runtime: BindingBytes,
+}
+
+struct HostGroupStorage<'a> {
+    members: &'a [Vec<usize>],
+    relocations: &'a [Vec<BindingRelocation>],
+    edges: Vec<usize>,
+}
+
+#[repr(C)]
+struct HostGroupSources {
+    context: *mut std::ffi::c_void,
+    members: unsafe extern "C" fn(*const std::ffi::c_void, usize) -> HostGroupSpan,
+    relocations: unsafe extern "C" fn(*const std::ffi::c_void, usize) -> HostGroupSpan,
+    reserve: unsafe extern "C" fn(*mut std::ffi::c_void, usize) -> *mut usize,
+}
+
+unsafe extern "C" fn host_member_sections(storage: *const std::ffi::c_void, group: usize) -> HostGroupSpan {
+    let storage = unsafe { &*storage.cast::<HostGroupStorage<'_>>() };
+    HostGroupSpan::borrowed(&storage.members[group])
+}
+
+unsafe extern "C" fn host_section_relocations(storage: *const std::ffi::c_void, section: usize) -> HostGroupSpan {
+    let storage = unsafe { &*storage.cast::<HostGroupStorage<'_>>() };
+    HostGroupSpan::borrowed(&storage.relocations[section])
+}
+
+unsafe extern "C" fn reserve_host_group_edges(storage: *mut std::ffi::c_void, count: usize) -> *mut usize {
+    let storage = unsafe { &mut *storage.cast::<HostGroupStorage<'_>>() };
+    let edges = &mut storage.edges;
+    edges.reserve_exact(count);
+    edges.as_mut_ptr()
+}
+
 unsafe extern "C" {
+    #[link_name = "bootstrap.object_read::host_group_resolution"]
+    fn host_group_resolution(input: HostGroupLinks, source: HostGroupSources) -> usize;
     #[link_name = "bootstrap.object_read::host_groups"]
     fn host_groups(rows: ObjectRows, definitions: *const SectionDefinition,
         output: *mut HostSection, count: usize) -> HostGroupResult;
@@ -77,46 +130,31 @@ impl Groups {
     }
 
     fn combine_closed_groups(&mut self, raw: &[ObjectSection]) -> Option<usize> {
-        let mut needs_resolution = vec![false; self.members.len()];
-        let mut dependents = vec![Vec::new(); self.members.len()];
-        let mut pending = Vec::new();
-        for (section, relocations) in self.relocations.iter().enumerate() {
-            let member = self.positions[section].member;
-            for relocation in relocations {
-                let external = match relocation.target {
-                    BindingTarget::Section => {
-                        let destination = self.positions[relocation.section as usize].member;
-                        if destination != member {
-                            dependents[destination].push(member);
-                        }
-                        false
-                    }
-                    BindingTarget::Symbol => true,
-                    BindingTarget::Import => {
-                        let dll = unsafe { std::slice::from_raw_parts(relocation.dll.bytes, relocation.dll.length) };
-                        dll == crate::resource::RUNTIME_LIBRARY.as_bytes()
-                    }
-                };
-                if external && !std::mem::replace(&mut needs_resolution[member], true) {
-                    pending.push(member);
-                }
-            }
+        let count = self.members.len();
+        let mut states = vec![HostGroupState::default(); count];
+        let first = {
+            let mut storage = HostGroupStorage {
+                members: &self.members, relocations: &self.relocations, edges: Vec::new(),
+            };
+            let input = HostGroupLinks {
+                sections: ObjectRows::new(raw), positions: self.positions.as_ptr(), states: states.as_mut_ptr(),
+                count, runtime: BindingBytes::new(crate::resource::RUNTIME_LIBRARY.as_bytes()),
+            };
+            let source = HostGroupSources {
+                context: std::ptr::from_mut(&mut storage).cast(),
+                members: host_member_sections, relocations: host_section_relocations,
+                reserve: reserve_host_group_edges,
+            };
+            unsafe { host_group_resolution(input, source) }
+        };
+        if first == count {
+            return None;
         }
-        // A member needs independent extraction if any referenced group does.
-        while let Some(member) = pending.pop() {
-            for &dependent in &dependents[member] {
-                if !std::mem::replace(&mut needs_resolution[dependent], true) {
-                    pending.push(dependent);
-                }
+        for (member, state) in states.iter().enumerate().skip(first + 1) {
+            if state.required == 0 {
+                let group = std::mem::take(&mut self.members[member]);
+                self.members[first].extend(group);
             }
-        }
-        let mut closed = needs_resolution.iter().enumerate()
-            .filter_map(|(member, needs_resolution)| (!needs_resolution).then_some(member));
-        let first = closed.next()?;
-        let second = closed.next()?;
-        for member in std::iter::once(second).chain(closed) {
-            let group = std::mem::take(&mut self.members[member]);
-            self.members[first].extend(group);
         }
         self.members[first].sort_unstable();
         for (index, &section) in self.members[first].iter().enumerate() {

@@ -227,6 +227,103 @@ extern "C" HostGroupResult host_groups(ObjectRows rows,address definitions,addre
     return HostGroupResult(groups,0);
 }
 
+address host_group_state(address states,u64 group) on cpu {
+    return unsafe_address(address_bits(states)+group*size_of<HostGroupState>());
+}
+address host_group_word(address words,u64 index) on cpu {
+    return unsafe_address(address_bits(words)+index*size_of<u64>());
+}
+void reverse_host_links(HostGroupLinks input,HostGroupSources source,address edges,bool fill) on cpu
+    requires nonzero(source.members) requires nonzero(source.relocations) {
+    u64 member=0u64;
+    while(member<input.count){
+        HostGroupSpan sections=source.members(source.context,member);
+        u64 section=0u64;
+        while(section<sections.count){
+            u64 physical=unsafe_position<u64>(host_group_word(sections.rows,section));
+            u64 logical=row_at(input.sections,physical).mapped-1u64;
+            HostGroupSpan relocations=source.relocations(source.context,logical);
+            u64 i=0u64;
+            while(i<relocations.count){
+                address pos=unsafe_address(address_bits(relocations.rows)+i*size_of<BindingRelocation>());
+                BindingRelocation relocation=unsafe_position<BindingRelocation>(pos);
+                if(relocation.target==u16(0)){
+                    u64 destination=unsafe_position<HostSection>(host_section(input.positions,relocation.section)).member;
+                    address at=host_group_state(input.states,destination);
+                    if(destination!=member && unsafe_position<HostGroupState>(at).seen!=member+1u64){
+                        unsafe_position<HostGroupState>(at).seen=member+1u64;
+                        u64 next=unsafe_position<HostGroupState>(at).end;
+                        if(fill){unsafe_position<u64>(host_group_word(edges,next))=member;}
+                        unsafe_position<HostGroupState>(at).end=next+1u64;
+                    }
+                }else if(!fill && (relocation.target==u16(1) || bytes_compare(relocation.dll,input.runtime)==0)){
+                    unsafe_position<HostGroupState>(host_group_state(input.states,member)).required=1u64;
+                }
+                i+=1u64;
+            }
+            section+=1u64;
+        }
+        member+=1u64;
+    }
+}
+
+extern "C" u64 host_group_resolution(HostGroupLinks input,HostGroupSources source) on cpu
+    requires nonzero(source.members) requires nonzero(source.relocations) requires nonzero(source.reserve) {
+    reverse_host_links(input,source,address(),false);
+    u64 edges_count=0u64;
+    u64 member=0u64;
+    while(member<input.count){
+        address at=host_group_state(input.states,member);
+        u64 start=edges_count;
+        edges_count+=unsafe_position<HostGroupState>(at).end;
+        unsafe_position<HostGroupState>(at).start=start;
+        unsafe_position<HostGroupState>(at).end=start;
+        unsafe_position<HostGroupState>(at).seen=0u64;
+        member+=1u64;
+    }
+    address edges=source.reserve(source.context,edges_count);
+    reverse_host_links(input,source,edges,true);
+
+    // Counting and filling use the stamp. Once filled, the same word
+    // links groups that still need to propagate their external dependency.
+    u64 pending=0u64;
+    member=0u64;
+    while(member<input.count){
+        address at=host_group_state(input.states,member);
+        if(unsafe_position<HostGroupState>(at).required!=0u64){
+            unsafe_position<HostGroupState>(at).seen=pending;
+            pending=member+1u64;
+        }
+        member+=1u64;
+    }
+    while(pending!=0u64){
+        HostGroupState group=unsafe_position<HostGroupState>(host_group_state(input.states,pending-1u64));
+        pending=group.seen;
+        u64 i=group.start;
+        while(i<group.end){
+            u64 dependent=unsafe_position<u64>(host_group_word(edges,i));
+            address at=host_group_state(input.states,dependent);
+            if(unsafe_position<HostGroupState>(at).required==0u64){
+                unsafe_position<HostGroupState>(at).required=1u64;
+                unsafe_position<HostGroupState>(at).seen=pending;
+                pending=dependent+1u64;
+            }
+            i+=1u64;
+        }
+    }
+
+    u64 first=input.count;
+    member=0u64;
+    while(member<input.count){
+        if(unsafe_position<HostGroupState>(host_group_state(input.states,member)).required==0u64){
+            if(first!=input.count){return first;}
+            first=member;
+        }
+        member+=1u64;
+    }
+    return input.count;
+}
+
 ObjectTarget failure(u32 error) on cpu {
     return ObjectTarget(0u64,0u64,0u64,empty_bytes(),empty_bytes(),error);
 }

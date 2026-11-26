@@ -2,6 +2,7 @@ module bootstrap.object_read;
 import blink.windows.coff;
 
 import bootstrap.metadata_read;
+import bootstrap.bindings;
 
 // Borrowed rows replace the original physical-to-loaded section map.
 struct ObjectSection {
@@ -38,6 +39,25 @@ extern "C" ObjectScanStatus object_symbols(ReadBytes input, ReadSymbols table, a
     cfn<u32,address,ReadBytes,u64> consume) on cpu requires nonzero(consume);
 // One output row per mapped section, in its original logical order.
 extern "C" HostGroupResult host_groups(ObjectRows rows,address definitions,address output,u64 count) on cpu;
+
+struct HostGroupSpan {address rows;u64 count;};
+struct HostGroupState {u64 start;u64 end;u64 seen;u64 required;};
+struct HostGroupLinks {
+    ObjectRows sections;
+    address positions;
+    address states;
+    u64 count;
+    BindingBytes runtime;
+};
+struct HostGroupSources {
+    address context;
+    cfn<HostGroupSpan,address,u64> members;
+    cfn<HostGroupSpan,address,u64> relocations;
+    cfn<address,address,u64> reserve;
+};
+// Return the first of multiple closed groups, or count if no merge is needed.
+extern "C" u64 host_group_resolution(HostGroupLinks input,HostGroupSources source) on cpu
+    requires nonzero(source.members) requires nonzero(source.relocations) requires nonzero(source.reserve);
 struct ObjectRelocationStatus { u32 format; u32 object; };
 // The accepted record borrows the original bytes only through the synchronous consumer.
 extern "C" ObjectRelocationStatus object_relocations(
