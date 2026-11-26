@@ -292,6 +292,9 @@ impl ReferenceAddress {
         }
     }
 }
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum LocalRead { Value, Borrow }
+
 #[derive(Clone, PartialEq, Eq)]
 enum Place {
     Reference {
@@ -337,7 +340,7 @@ enum Place {
         words: Vec<u32>,
     },
     Local(Ty, Vec<usize>, std::ops::Range<usize>),
-    ReadOnlyLocal(Ty, Vec<usize>, std::ops::Range<usize>),
+    ReadOnlyLocal(Ty, Vec<usize>, std::ops::Range<usize>, LocalRead),
     Indexed {
         ty: Ty,
         initialization: Vec<Position>,
@@ -2066,7 +2069,7 @@ impl<'a> Builder<'a> {
                 Place::ViewElement {words,..}=>{facts.kind=3;facts.words=words.len()as u64;},
                 Place::TileElement {tile,words,..}=>{facts.kind=4;facts.access=self.tiles[*tile].access as u32;facts.input=u32::from(matches!(self.tiles[*tile].source,TileOrigin::Input {..}));facts.words=words.len()as u64;},
                 Place::Local(_,slots,_)=>{facts.kind=5;facts.words=slots.len()as u64;},
-                Place::ReadOnlyLocal(_,slots,_)=>{facts.kind=6;facts.words=slots.len()as u64;},
+                Place::ReadOnlyLocal(_,slots,..)=>{facts.kind=6;facts.words=slots.len()as u64;},
                 Place::Element {binding,index,words,..}=>{facts.kind=7;facts.access=self.view_access[binding] as u32;facts.current=u32::from(*index==self.global_index);facts.words=words.len()as u64;},
                 Place::AtomicParameter(_)=>facts.kind=8,
             }},
@@ -2084,7 +2087,7 @@ impl<'a> Builder<'a> {
             ReadPlaceNeed::LoadReference=>{let Place::Reference {ty,address,words,..}=p else{unsafe {std::hint::unreachable_unchecked()}};let i=cursor.index as usize;let(source,word)=address.source_at(words[i],zero.unwrap());let dst=self.reg(ty.components[i].0);self.emit(InstKind::LoadIndexed {dst,source,offset:zero.unwrap(),word});regs.push(dst);},
             ReadPlaceNeed::LoadView=>{let Place::ViewElement {ty,address,index,stride,words,..}=p else{unsafe {std::hint::unreachable_unchecked()}};let i=cursor.index as usize;let dst=self.reg(ty.components[i].0);self.emit(InstKind::ViewLoad {dst,address:*address,index:*index,stride:*stride,word:words[i]});regs.push(dst);},
             ReadPlaceNeed::LoadTile=>{let Place::TileElement {ty,tile,index,words}=p else{unsafe {std::hint::unreachable_unchecked()}};let i=cursor.index as usize;let dst=self.reg(ty.components[i].0);self.emit(InstKind::TileLoad {dst,tile:*tile,index:*index,word:words[i]});regs.push(dst);},
-            ReadPlaceNeed::LoadLocal=>{let(Place::Local(ty,slots,_)|Place::ReadOnlyLocal(ty,slots,_))=p else{unsafe {std::hint::unreachable_unchecked()}};let i=cursor.index as usize;let dst=self.reg(ty.components[i].0);self.emit(InstKind::LoadLocal(dst,slots[i]));regs.push(dst);},
+            ReadPlaceNeed::LoadLocal=>{let(Place::Local(ty,slots,_)|Place::ReadOnlyLocal(ty,slots,..))=p else{unsafe {std::hint::unreachable_unchecked()}};let i=cursor.index as usize;let dst=self.reg(ty.components[i].0);self.emit(InstKind::LoadLocal(dst,slots[i]));regs.push(dst);},
             ReadPlaceNeed::LoadData=>{let Place::Element {ty,binding,index,words,..}=p else{unsafe {std::hint::unreachable_unchecked()}};let i=cursor.index as usize;let dst=self.reg(ty.components[i].0);self.emit(InstKind::Load {dst,binding:*binding,index:*index,word:words[i]});regs.push(dst);},
             ReadPlaceNeed::Proof=>{let(actual,is_uniform,known)=unsafe {self.world.call(self.read_owned_proof(p,&regs,&[])).await}?;proof=Some(actual);uniform=is_uniform;facts.known=u32::from(known);},
             ReadPlaceNeed::Snapshot=>{let(memory,borrow)=content_read.take().unwrap();let captured:Arc<[view_contracts::ValueSnapshot]>=self.capture_address_values(memory,address::Capture::Read).into();if let view::Requirement::Memory {snapshots,..}=&mut self.view_model.uses[memory].requirement{*snapshots=Some(captured.clone());}snapshots=Some((memory,borrow,captured));},
@@ -2416,7 +2419,7 @@ impl<'a> Builder<'a> {
             NamePositionNeed::ExistingOwned=>return Ok(place.take().unwrap()),
             NamePositionNeed::MaterializeOwned=>{let(key,Binding::OwnedValue(owner))=self.env.remove_entry(name).unwrap()else{unsafe {std::hint::unreachable_unchecked()}};let owner=self.owned_value_binding(owner,true);let place=owner.place().unwrap();self.env.insert(key,Binding::OwnedValue(owner));return Ok(place);},
             NamePositionNeed::ArrayType=>{let Some(Binding::Value(value))=self.env.get(name)else{unsafe {std::hint::unreachable_unchecked()}};facts.arrays=u32::from(value.ty.contains_arrays());},
-            NamePositionNeed::MaterializeArray=>{let(key,Binding::Value(value))=self.env.remove_entry(name).unwrap()else{unsafe {std::hint::unreachable_unchecked()}};let mut owner=self.materialize_array(value,None);owner.place=owner.place.read_only();let place=owner.place.clone();self.env.insert(key,Binding::Owned(owner));return Ok(place);},
+            NamePositionNeed::MaterializeArray=>{let(key,Binding::Value(value))=self.env.remove_entry(name).unwrap()else{unsafe {std::hint::unreachable_unchecked()}};let mut owner=self.materialize_array(value,None);owner.place=owner.place.read_only(LocalRead::Value);let place=owner.place.clone();self.env.insert(key,Binding::Owned(owner));return Ok(place);},
             NamePositionNeed::Bad=>return self.fail(span,"B134",format!("{name} 不是可赋值的元素或局部变量")),
         }}
     }

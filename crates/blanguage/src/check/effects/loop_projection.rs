@@ -371,6 +371,9 @@ impl Builder<'_> {
         let mut modified: BTreeMap<String, BTreeSet<usize>> = BTreeMap::new();
         for (name, binding) in &self.env {
             let Some(owner) = binding.stored_place() else { continue; };
+            if owner.immutable_local() {
+                continue;
+            }
             let storage = owner.storage();
             if unsafe { loop_scalar_header(conditional.into(), matches!(binding, Binding::Owned(_)).into(),
                 (owner.ty() == &Ty::scalar(Scalar::U32)).into(), position(Some(storage))) } != 0

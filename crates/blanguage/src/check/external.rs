@@ -46,12 +46,12 @@ impl Builder<'_> {
             CallReferenceNeed::Write=>{self.writes.insert(element.unwrap().0);},
             CallReferenceNeed::Cross=>{self.cross_access.insert(element.unwrap().0);},
             CallReferenceNeed::Reference=>{let Place::Reference{address,words,..}=place else{unsafe{std::hint::unreachable_unchecked()}};let zero=self.constant(Scalar::U32,0).regs[0];let(source,word)=address.source_at(words[0],zero);result=Some(CallReference{storage:CallStorage::Indexed(source),offset:None,word});},
-            CallReferenceNeed::Local=>{let(Place::Local(_,_,storage)|Place::ReadOnlyLocal(_,_,storage))=place else{unsafe{std::hint::unreachable_unchecked()}};result=Some(CallReference{storage:CallStorage::Local{base:storage.start,len:storage.len()},offset:None,word:first_reference_word(place,&self.locals)});},
+            CallReferenceNeed::Local=>{let(Place::Local(_,_,storage)|Place::ReadOnlyLocal(_,_,storage,_))=place else{unsafe{std::hint::unreachable_unchecked()}};result=Some(CallReference{storage:CallStorage::Local{base:storage.start,len:storage.len()},offset:None,word:first_reference_word(place,&self.locals)});},
             CallReferenceNeed::Element=>{let Place::Element{words,..}=place else{unsafe{std::hint::unreachable_unchecked()}};let(binding,index)=element.unwrap();result=Some(CallReference{storage:CallStorage::Indexed(IndexedSource::Data{binding,index}),offset:None,word:words[0]});},
             CallReferenceNeed::Application=>{let Place::ApplicationElement{handle,identity,index,stride,words,..}=place else{unsafe{std::hint::unreachable_unchecked()}};let components=place.ty().components.iter().zip(words).map(|(&(scalar,_),&word)|(scalar,word));let(address,index,stride)=self.application_memory(*handle,*identity,*index,*stride,expose_writes,None,components,span)?;result=Some(CallReference{storage:CallStorage::Indexed(IndexedSource::View{address,index,stride:ElementStride::Constant(u64::from(stride))}),offset:None,word:words[0]});},
             CallReferenceNeed::View=>{let Place::ViewElement{address,index,stride,words,..}=place else{unsafe{std::hint::unreachable_unchecked()}};result=Some(CallReference{storage:CallStorage::Indexed(IndexedSource::View{address:*address,index:*index,stride:*stride}),offset:None,word:words[0]});},
             CallReferenceNeed::IndexedReference=>{let Place::Indexed{base,offset,words,..}=place else{unsafe{std::hint::unreachable_unchecked()}};let scalar=place.ty().components[0].0;let(source,offset,word)=self.array_memory(base,*offset,words[0],scalar,expose_writes,span)?;result=Some(CallReference{storage:CallStorage::Indexed(source),offset:Some(offset),word});},
-            CallReferenceNeed::IndexedLocal=>{let Place::Indexed{base,offset,..}=place else{unsafe{std::hint::unreachable_unchecked()}};let(Place::Local(_,_,storage)|Place::ReadOnlyLocal(_,_,storage))=&**base else{unsafe{std::hint::unreachable_unchecked()}};result=Some(CallReference{storage:CallStorage::Local{base:storage.start,len:storage.len()},offset:Some(*offset),word:first_reference_word(place,&self.locals)});},
+            CallReferenceNeed::IndexedLocal=>{let Place::Indexed{base,offset,..}=place else{unsafe{std::hint::unreachable_unchecked()}};let(Place::Local(_,_,storage)|Place::ReadOnlyLocal(_,_,storage,_))=&**base else{unsafe{std::hint::unreachable_unchecked()}};result=Some(CallReference{storage:CallStorage::Local{base:storage.start,len:storage.len()},offset:Some(*offset),word:first_reference_word(place,&self.locals)});},
             CallReferenceNeed::IndexedElement=>{let Place::Indexed{offset,..}=place else{unsafe{std::hint::unreachable_unchecked()}};let(binding,index)=element.unwrap();result=Some(CallReference{storage:CallStorage::Indexed(IndexedSource::Data{binding,index}),offset:Some(*offset),word:first_reference_word(place,&self.locals)});},
             CallReferenceNeed::IndexedApplication=>{let Place::Indexed{base,offset,words,..}=place else{unsafe{std::hint::unreachable_unchecked()}};let Place::ApplicationElement{handle,identity,index,stride,..}=&**base else{unsafe{std::hint::unreachable_unchecked()}};let components=place.ty().components.iter().zip(words).map(|(&(scalar,_),&word)|(scalar,word));let(address,index,stride)=self.application_memory(*handle,*identity,*index,*stride,expose_writes,Some(*offset),components,span)?;result=Some(CallReference{storage:CallStorage::Indexed(IndexedSource::View{address,index,stride:ElementStride::Constant(u64::from(stride))}),offset:Some(*offset),word:first_reference_word(place,&self.locals)});},
             CallReferenceNeed::IndexedView=>{let Place::Indexed{base,offset,..}=place else{unsafe{std::hint::unreachable_unchecked()}};let Place::ViewElement{address,index,stride,..}=&**base else{unsafe{std::hint::unreachable_unchecked()}};result=Some(CallReference{storage:CallStorage::Indexed(IndexedSource::View{address:*address,index:*index,stride:*stride}),offset:Some(*offset),word:first_reference_word(place,&self.locals)});},
@@ -189,12 +189,12 @@ fn reference_word_source<'a>(place: &'a Place, locals: &'a BTreeMap<usize, Ty>) 
         | Place::Element { words, .. }
         | Place::ApplicationElement { words, .. }
         | Place::ViewElement { words, .. } => ReferenceWords::Physical(words, 0),
-        Place::Local(_, slots, storage) | Place::ReadOnlyLocal(_, slots, storage) => {
+        Place::Local(_, slots, storage) | Place::ReadOnlyLocal(_, slots, storage, _) => {
             ReferenceWords::Local(slots, storage, locals)
         }
         Place::Indexed { base, words, .. } => {
             let first = match &**base {
-                Place::Local(_, slots, storage) | Place::ReadOnlyLocal(_, slots, storage) => {
+                Place::Local(_, slots, storage) | Place::ReadOnlyLocal(_, slots, storage, _) => {
                     locals[&storage.end].components[slots[0] - storage.start].1
                 }
                 _ => 0,

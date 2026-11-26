@@ -498,7 +498,7 @@ async fn ordinary_parameter(
             OrdinaryNeed::PlainValue=>{b.env.insert(p.name,Binding::Value(value.take().unwrap()));return Ok(());},
             OrdinaryNeed::AtomicParameter=>{b.env.insert(p.name,Binding::AtomicBorrow(Place::AtomicParameter(ty.take().unwrap())));return Ok(());},
             OrdinaryNeed::Origin=>{parameter_origin=origin(b,definition,name,index,&p);},
-            OrdinaryNeed::LocalRead=>{let ty=ty.take().unwrap();let (slots,storage)=b.local_slots(&ty);place=Some(Place::ReadOnlyLocal(ty,slots,storage));},
+            OrdinaryNeed::LocalRead=>{let ty=ty.take().unwrap();let (slots,storage)=b.local_slots(&ty);place=Some(Place::ReadOnlyLocal(ty,slots,storage,LocalRead::Borrow));},
             OrdinaryNeed::LocalWrite=>{let ty=ty.take().unwrap();let (slots,storage)=b.local_slots(&ty);place=Some(Place::Local(ty,slots,storage));},
             OrdinaryNeed::ReferenceFacts=>{
                 let ty=ty.as_ref().unwrap();facts.components=ty.components.len() as u64;

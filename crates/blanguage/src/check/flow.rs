@@ -1980,7 +1980,7 @@ impl Builder<'_> {
    ValueNeed::Mutability=>facts.mutable=u32::from(self.binding_uses.mutable(name)),
    ValueNeed::ReadOnly=>facts.readonly=u32::from(value.as_ref().unwrap().ty.contains_arrays()||self.binding_uses.needs_place(name)),
    ValueNeed::MaterializeReadOnly=>{let materialized=self.materialize_array(value.take().unwrap(),None);facts.uniform=u32::from(materialized.uniform);owner=Some(materialized);},
-   ValueNeed::BindReadOnly=>{let mut owner=owner.take().unwrap();owner.place=owner.place.read_only();owner.uniform=step.uniform!=0;self.env.insert(name.to_string(),Binding::Owned(owner));return Ok(());},
+   ValueNeed::BindReadOnly=>{let mut owner=owner.take().unwrap();owner.place=owner.place.read_only(LocalRead::Value);owner.uniform=step.uniform!=0;self.env.insert(name.to_string(),Binding::Owned(owner));return Ok(());},
    ValueNeed::Immutable=>{let mut value=value.take().unwrap();value.literal=false;value.uniform=step.uniform!=0;self.env.insert(name.to_string(),Binding::Value(value));return Ok(());},
    ValueNeed::Slots=>{(slots,storage)=self.local_slots(&value.as_ref().unwrap().ty);facts.slots=slots.len();},
    ValueNeed::Store=>self.emit(InstKind::StoreLocal(slots[step.index],value.as_ref().unwrap().regs[step.index])),

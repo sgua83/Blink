@@ -2,11 +2,11 @@
 use super::*;
 use std::{borrow::Cow, ffi::c_void};
 impl Place {
-    pub(super) fn read_only(self) -> Self {
+    pub(super) fn read_only(self, local: LocalRead) -> Self {
         match self {
-            Self::Local(ty, slots, storage) => Self::ReadOnlyLocal(ty, slots, storage),
+            Self::Local(ty, slots, storage) => Self::ReadOnlyLocal(ty, slots, storage, local),
             Self::Indexed { ty, initialization, locations, base, offset, words } => Self::Indexed {
-                ty, initialization, locations, base: Box::new((*base).read_only()), offset, words,
+                ty, initialization, locations, base: Box::new((*base).read_only(local)), offset, words,
             },
             mut place => {
                 match &mut place {
@@ -20,6 +20,10 @@ impl Place {
             }
         }
     }
+    pub(super) fn immutable_local(&self) -> bool {
+        matches!(self.storage(), Self::ReadOnlyLocal(.., LocalRead::Value))
+    }
+
     pub(super) fn project(self, ty: Ty, components: &[usize]) -> Self {
         match self {
             Self::Reference {
@@ -72,8 +76,8 @@ impl Place {
             Self::Local(_, slots, storage) => {
                 Self::Local(ty, components.iter().map(|i| slots[*i]).collect(), storage)
             }
-            Self::ReadOnlyLocal(_, slots, storage) => {
-                Self::ReadOnlyLocal(ty, components.iter().map(|i| slots[*i]).collect(), storage)
+            Self::ReadOnlyLocal(_, slots, storage, local) => {
+                Self::ReadOnlyLocal(ty, components.iter().map(|i| slots[*i]).collect(), storage, local)
             }
             Self::Indexed {
                 base,
@@ -301,7 +305,7 @@ impl Builder<'_> {
                 }
                 owner
             };
-            owner.place = owner.place.read_only();
+            owner.place = owner.place.read_only(LocalRead::Value);
             self.env.insert(name, Binding::Owned(owner));
         }
     }
@@ -465,7 +469,7 @@ impl Builder<'_> {
         let locations = Position::index(place.data_positions(), ownership::ApplicationIndex::of(&index), 1);
         let [relative, _] = {
             let offsets: Cow<'_, [u32]> = match &mut place {
-                Place::Local(_, slots, storage) | Place::ReadOnlyLocal(_, slots, storage) => {
+                Place::Local(_, slots, storage) | Place::ReadOnlyLocal(_, slots, storage, _) => {
                     let layout = &self.locals[&storage.end];
                     let mut offsets: Vec<_> = slots.iter().map(|slot| layout.components[*slot - storage.start].1).collect();
                     let first = *offsets.iter().min().unwrap();
@@ -582,7 +586,7 @@ impl Builder<'_> {
         for ((scalar, _), word) in ty.components.iter().zip(words) {
             let dst = self.reg(*scalar);
             let instruction = match &**base {
-                Place::Local(_, slots, storage) | Place::ReadOnlyLocal(_, slots, storage) => {
+                Place::Local(_, slots, storage) | Place::ReadOnlyLocal(_, slots, storage, _) => {
                     Inst::new(InstKind::LoadLocalIndexed {
                         dst,
                         base: storage.start,

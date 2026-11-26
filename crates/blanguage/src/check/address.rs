@@ -1143,6 +1143,9 @@ impl Builder<'_> {
     pub(super) fn memory_effect_components(
         &self, effect: Option<&MemoryEffect>, place: &Place, outside_element: bool,
     ) -> Vec<usize> {
+        if place.immutable_local() {
+            return Vec::new();
+        }
         let Some(effect) = effect else {
             return (0..place.ty().components.len()).collect();
         };
@@ -1182,7 +1185,7 @@ impl Builder<'_> {
         for data in data {unsafe { self.world.call(self.update_application_contents(&data,&data.words(),application::ElementUpdate::Unknown)).await }?;}
         for binding in self.env.values_mut() {
             let metadata=match &*binding{Binding::OwnedValue(owner)=>resource_metadata(&owner.value.ty,view::resource_paths(&owner.value.ty).into_iter().filter(|fields|view::owned_data_at(owner,fields).is_some()).collect()),_=>Vec::new()};
-            if let Some((proof,uniform,owner))=binding.proof_storage() {
+            if let Some((proof,uniform,owner))=binding.proof_storage() && !owner.immutable_local() {
                 let components=owner.ty().components.iter().enumerate().filter_map(|(i,(_,word))|(!metadata.iter().any(|range|range.contains(word))).then_some(i)).collect::<Vec<_>>();
                 proof.forget_value(&components,owner.ty().components.len());
                 *proof=std::mem::take(proof).with_external_borrows(owner.ty());
@@ -1194,6 +1197,7 @@ impl Builder<'_> {
         unsafe { self.world.call(self.update_address_elements(&borrow,&effect)).await }?;
         let selected=self.env.iter().filter_map(|(name,binding)|{
             let place=binding.stored_place()?;
+            if place.immutable_local() { return None; }
             let(positions,index)=self.value_memory_location(&place);
             let components=positions.iter().zip(place.ty().components.iter()).enumerate().filter_map(|(component,(position,(scalar,_)))|{
                 let bytes=effect.written_bytes(position,*scalar,index);(bytes!=0).then_some((component,position.clone(),index))
@@ -1231,7 +1235,7 @@ impl Builder<'_> {
             _=>false,
         };
         let root=match place.storage() {
-            Place::Local(_,_,storage)|Place::ReadOnlyLocal(_,_,storage)=>Root::Local{base:storage.start,len:storage.len()},
+            Place::Local(_,_,storage)|Place::ReadOnlyLocal(_,_,storage,_)=>Root::Local{base:storage.start,len:storage.len()},
             Place::Reference{address:ReferenceAddress::Borrowed{borrow,layout:parent,..},..}=>{
                 base=parent.clone();words=external::reference_words(place,&self.locals).unwrap();Root::Derived(borrow.clone())
             }
@@ -1348,7 +1352,14 @@ impl Builder<'_> {
         borrow
     }
     pub(super) fn capture_address_values(&mut self,memory:usize,capture_kind:Capture)->Vec<view_contracts::ValueSnapshot> {
-        let owners=self.env.iter().filter_map(|(name,binding)|binding.stored_place().map(|place|{let(positions,index)=self.value_memory_location(&place);(name.clone(),positions,index)})).collect::<Vec<_>>();
+        let owners = self.env.iter().filter_map(|(name, binding)| {
+            let place = binding.stored_place()?;
+            if capture_kind == Capture::Write && place.immutable_local() {
+                return None;
+            }
+            let (positions, index) = self.value_memory_location(&place);
+            Some((name.clone(), positions, index))
+        }).collect::<Vec<_>>();
         let mut snapshots=Vec::new();
         let mut capture=|proof:&mut bounds::Proof,uniform:&mut bool,ty:&Ty,mut positions:Vec<(usize,Position)>,index:Option<bounds::Operand>,resources:Vec<Vec<usize>>|{
             let metadata=resource_metadata(ty,resources);
@@ -1428,7 +1439,7 @@ impl Builder<'_> {
             TakeAddressNeed::Reference=>address=Some(unsafe{self.world.call(self.external_reference(place.as_ref().unwrap(),step.access,step.access.writes(),span)).await}?),
             TakeAddressNeed::Register=>{dst=Some(self.reg(Scalar::U64));ty=Some(Ty::builtin("address").unwrap());},
             TakeAddressNeed::Storage=>facts.storage=match place.as_ref().unwrap().storage(){Place::Local(..)|Place::ReadOnlyLocal(..)=>1,Place::Reference{address:ReferenceAddress::External{..}|ReferenceAddress::Borrowed{..},..}=>2,_=>0},
-            TakeAddressNeed::LocalOrigin=>{let(Place::Local(_,_,storage)|Place::ReadOnlyLocal(_,_,storage))=place.as_ref().unwrap().storage()else{unsafe{std::hint::unreachable_unchecked()}};let ty=self.locals[&storage.end].clone();let whole=Place::Local(ty,storage.clone().collect(),storage.clone());numeric=Some(unsafe{self.world.call(self.position_origin(&whole,span)).await}?);},
+            TakeAddressNeed::LocalOrigin=>{let(Place::Local(_,_,storage)|Place::ReadOnlyLocal(_,_,storage,_))=place.as_ref().unwrap().storage()else{unsafe{std::hint::unreachable_unchecked()}};let ty=self.locals[&storage.end].clone();let whole=Place::Local(ty,storage.clone().collect(),storage.clone());numeric=Some(unsafe{self.world.call(self.position_origin(&whole,span)).await}?);},
             TakeAddressNeed::ReferenceIdentity=>{let Place::Reference{address:ReferenceAddress::External{identity:source,..}|ReferenceAddress::Borrowed{identity:source,..},..}=place.as_ref().unwrap().storage()else{unsafe{std::hint::unreachable_unchecked()}};identity=Some(source.clone());},
             TakeAddressNeed::CopyOrigin=>numeric=origin.clone(),
             TakeAddressNeed::Tail=>project_address_tail(numeric.as_mut().unwrap(),address.as_ref().unwrap().word,place.as_ref().unwrap().ty().align),

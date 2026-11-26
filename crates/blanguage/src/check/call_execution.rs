@@ -202,7 +202,7 @@ impl<'a> Builder<'a>{
      let Argument::Reference(mut owner)=(unsafe{argument.take().unwrap_unchecked()})else{unsafe{std::hint::unreachable_unchecked()}};
      let param=unsafe{param.as_ref().unwrap_unchecked()};
      match need{
-      InlineNeed::ReferenceRead=>{owner.place=owner.place.read_only();}
+      InlineNeed::ReferenceRead=>{owner.place=owner.place.read_only(LocalRead::Borrow);}
       InlineNeed::ReferenceWrite=>{
        borrowed.push((index,param.access,owner.place.clone()));self.output_scopes+=1;
        owner=OwnedBinding{initialization:Some((0..owner.place.ty().components.len()).map(|i|Position::Parameter(self.output_scopes,i)).collect()),place:owner.place,proof:bounds::Proof::default(),uniform:false};
