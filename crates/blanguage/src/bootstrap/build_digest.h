@@ -69,6 +69,12 @@ extern "C" void dependency_digest(u64 declaration_count, u32 imported, Reference
     requires nonzero(host.record) requires nonzero(host.type_set) requires nonzero(host.contract)
     requires nonzero(host.query);
 
+extern "C" bool matches_dependency_reuse(u64 declarations, u32 imported, ReferenceHost host, address expected) on cpu
+    requires nonzero(host.next_symbol) requires nonzero(host.next_declaration) requires nonzero(host.name)
+    requires nonzero(host.symbol) requires nonzero(host.requirement) requires nonzero(host.function)
+    requires nonzero(host.record) requires nonzero(host.type_set) requires nonzero(host.contract)
+    requires nonzero(host.query);
+
 struct ObjectReuse {
     address imports;
     address runtime;

@@ -295,6 +295,8 @@ struct ObjectReuse {
 }
 
 unsafe extern "C" {
+    #[link_name = "bootstrap.build_digest::matches_dependency_reuse"]
+    fn matches_dependency_reuse(declarations: usize, imported: u32, host: ReferenceHost, expected: &[u8; 32]) -> bool;
     #[link_name = "bootstrap.build_digest::matches_object_reuse"]
     fn matches_object_reuse(declarations: usize, imported: u32, host: ReferenceHost, reuse: ObjectReuse) -> u32;
 }
@@ -319,6 +321,17 @@ unsafe extern "C" fn load_runtime_digest(context: *mut c_void, digest: &mut [u8;
 }
 
 impl ReuseInputs<'_> {
+    pub(super) fn matches_entry<'symbol>(
+        &self, declarations: &crate::Declarations, imported: Option<&crate::module::Imports>,
+        symbols: impl Iterator<Item = &'symbol str>,
+    ) -> bool {
+        let sources = ReferenceSources { declarations, imported };
+        let mut symbols = symbols;
+        let mut used = self.declarations.iter();
+        let host = reference_host(&sources, &mut symbols, &mut used);
+        unsafe { matches_dependency_reuse(used.len(), u32::from(imported.is_some()), host, self.imports) }
+    }
+
     pub(super) fn matches_object<'symbol>(
         &self, declarations: &crate::Declarations, imported: Option<&crate::module::Imports>,
         symbols: impl IntoIterator<Item = &'symbol str>, mut load_runtime: impl FnMut() -> Result<[u8; 32]>,
@@ -833,9 +846,9 @@ pub(super) fn decode_json(bytes: &[u8], digest: &[u8; 32]) -> Result<Option<Stri
 }
 
 pub(super) struct ReuseInputs<'a> {
-    pub(super) imports: &'a [u8; 32],
+    imports: &'a [u8; 32],
     native: Option<&'a [u8; 32]>,
-    pub(super) declarations: Vec<Declaration>,
+    declarations: Vec<Declaration>,
 }
 
 pub(super) fn match_source<'a>(bytes: &'a [u8], source: &SourceInputs) -> Result<Option<ReuseInputs<'a>>> {

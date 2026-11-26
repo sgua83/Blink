@@ -323,16 +323,26 @@ bool digest_matches(address left, address right) on cpu {
     return true;
 }
 
+extern "C" bool matches_dependency_reuse(u64 declarations, u32 imported, ReferenceHost host, address expected) on cpu
+    requires nonzero(host.next_symbol) requires nonzero(host.next_declaration) requires nonzero(host.name)
+    requires nonzero(host.symbol) requires nonzero(host.requirement) requires nonzero(host.function)
+    requires nonzero(host.record) requires nonzero(host.type_set) requires nonzero(host.contract)
+    requires nonzero(host.query) {
+    array<u8,32> digest = array<u8,32>(u8(0));
+    address bytes = address_of(digest[0]);
+    dependency_digest(declarations, imported, host, bytes);
+    return digest_matches(bytes, expected);
+}
+
 extern "C" u32 matches_object_reuse(u64 declarations, u32 imported, ReferenceHost host, ObjectReuse reuse) on cpu
     requires nonzero(host.next_symbol) requires nonzero(host.next_declaration) requires nonzero(host.name)
     requires nonzero(host.symbol) requires nonzero(host.requirement) requires nonzero(host.function)
     requires nonzero(host.record) requires nonzero(host.type_set) requires nonzero(host.contract)
     requires nonzero(host.query) requires nonzero(reuse.load_runtime) {
+    if (!matches_dependency_reuse(declarations, imported, host, reuse.imports)) { return 0; }
+    if (address_bits(reuse.runtime) == 0u64) { return 1; }
     array<u8,32> digest = array<u8,32>(u8(0));
     address bytes = address_of(digest[0]);
-    dependency_digest(declarations, imported, host, bytes);
-    if (!digest_matches(bytes, reuse.imports)) { return 0; }
-    if (address_bits(reuse.runtime) == 0u64) { return 1; }
     if (reuse.load_runtime(reuse.context, bytes) == 0) { return 0; }
     return digest_matches(bytes, reuse.runtime) ? 1 : 0;
 }

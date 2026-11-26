@@ -123,7 +123,7 @@ fn compile_in<'object>(
                 let mut image = unsafe { resource::from_compiler_output(stored_image) }
                     .map_err(|e| std::io::Error::other(e.to_string()))?;
                 let link = entry_link(&mut image);
-                if *inputs.imports == references(&world.declarations, imported, link.as_ref(), inputs.declarations.iter()) {
+                if inputs.matches_entry(&world.declarations, imported, referenced_symbols(link.as_ref())) {
                     if imported.is_some() && let Some(link) = link
                         && link_entry(link, dependencies, borrowed, &world.declarations)?
                     {
@@ -160,7 +160,9 @@ fn compile_in<'object>(
     let direct = world.build_declarations.as_ref().unwrap().borrow();
     let declarations = used_declarations(&world, &direct);
     let link = entry_link(&mut image);
-    let imports_identity = references(&world.declarations, imported, link.as_ref(), declarations.iter().copied());
+    let imports_identity = identity::references(
+        &world.declarations, imported, referenced_symbols(link.as_ref()), declarations.iter().copied(),
+    );
     if imported.is_some() && let Some(link) = link {
         link_entry(link, dependencies, borrowed, &world.declarations)?;
     }
@@ -242,12 +244,8 @@ fn entry_link(image: &mut resource::Module) -> Option<ModuleLink<'_>> {
     })
 }
 
-fn references<'a>(
-    declarations: &crate::Declarations, imported: Option<&crate::module::Imports>,
-    link: Option<&ModuleLink<'_>>, used: impl ExactSizeIterator<Item = &'a Declaration>,
-) -> [u8; 32] {
-    let symbols = link.into_iter().flat_map(|link| link.external.iter().map(crate::names::ModuleName::as_str));
-    identity::references(declarations, imported, symbols, used)
+fn referenced_symbols<'a>(link: Option<&ModuleLink<'a>>) -> impl Iterator<Item = &'a str> {
+    link.into_iter().flat_map(|link| link.external.iter().map(crate::names::ModuleName::as_str))
 }
 
 fn link_entry<'object>(
