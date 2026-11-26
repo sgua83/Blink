@@ -1,4 +1,5 @@
 module bootstrap.condition_graph;
+import codec.scalar_ranges;
 
 extern "C" address next_fact_block(address walk,FactWalkHost host) on cpu
  requires nonzero(host.inspect) requires nonzero(host.push) requires nonzero(host.pop) {

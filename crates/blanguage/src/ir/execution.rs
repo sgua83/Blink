@@ -15,56 +15,20 @@ pub struct ElementRange {
 }
 impl ElementRange {
     pub fn within(&self, required: &Self) -> bool {
-        let allowed = required.intervals.as_slice();
-        let mut remaining = allowed;
-        let mut lower = 0;
-        self.intervals.iter().all(|&range| {
-            if range.0 < lower {
-                remaining = allowed;
-            }
-            lower = range.0;
-            while let Some((&(start, end), rest)) = remaining.split_first()
-                && end.max(start) < lower
-            {
-                remaining = rest;
-            }
-            self.scalar.covers_range(range, self.known_bits, remaining, required.known_bits)
-        })
+        scalar_ranges::within(self.scalar, &self.intervals, &required.intervals, self.known_bits, required.known_bits)
     }
+
     /// Intersect the two interval unions and fixed bits, keeping ordered, disjoint intervals.
     pub fn intersect(&mut self, other: &Self) {
-        let conflict = (self.known_bits.1 ^ other.known_bits.1) & self.known_bits.0 & other.known_bits.0;
-        self.known_bits = (self.known_bits.0 | other.known_bits.0, self.known_bits.1 | other.known_bits.1);
-        if conflict != 0 || self.intervals.is_empty() || other.intervals.is_empty() {
+        let (intervals, known_bits) = scalar_ranges::intersect(
+            &mut self.intervals, &other.intervals, self.known_bits, other.known_bits,
+        );
+        self.known_bits = known_bits;
+        if intervals.is_empty() {
             self.intervals.clear();
-            return;
+        } else {
+            self.intervals = intervals;
         }
-
-        if !self.intervals.is_sorted() {
-            self.intervals.sort_unstable();
-        }
-        let mut right = std::borrow::Cow::Borrowed(other.intervals.as_slice());
-        if !right.is_sorted() {
-            right.to_mut().sort_unstable();
-        }
-
-        let mut left = self.intervals.as_slice();
-        let mut right = right.as_ref();
-        let mut intervals: Vec<(Bits, Bits)> = Vec::new();
-        while let (Some((&(a, b), rest_left)), Some((&(c, d), rest_right))) =
-            (left.split_first(), right.split_first())
-        {
-            let (start, end) = (a.max(c), b.min(d));
-            if start <= end {
-                match intervals.last_mut() {
-                    Some((_, upper)) if start <= upper.saturating_add(1) => *upper = (*upper).max(end),
-                    _ => intervals.push((start, end)),
-                }
-            }
-            if b <= d { left = rest_left; }
-            if d <= b { right = rest_right; }
-        }
-        self.intervals = intervals;
     }
 }
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]

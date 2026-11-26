@@ -1,4 +1,5 @@
 module bootstrap.scalar_fold;
+import codec.scalar_ranges;
 
 u64 truncate(u64 bits, u32 width) on cpu {
     return bits & (18446744073709551615u64 >> u64(64 - width));
@@ -237,73 +238,6 @@ extern "C" FoldedCast cast(ScalarEncoding source, ScalarEncoding target, u64 bit
     }
     return FoldedCast(truncate(bits, target.width), 1);
 }
-
-u32 conflict_width(u64 bits) on cpu {
-    u64 value = bits;
-    u32 width = 1;
-    if (value >= 4294967296u64) { value = value >> 32u64; width += 32; }
-    if (value >= 65536u64) { value = value >> 16u64; width += 16; }
-    if (value >= 256u64) { value = value >> 8u64; width += 8; }
-    if (value >= 16u64) { value = value >> 4u64; width += 4; }
-    if (value >= 4u64) { value = value >> 2u64; width += 2; }
-    if (value >= 2u64) { width += 1; }
-    return width;
-}
-
-bool bits_intersect(BitRange range, BitPattern bits, u64 order_bias) on cpu {
-    u64 fixed = (bits.value ^ order_bias) & bits.mask;
-    u64 value = range.lower;
-    while (value <= range.upper) {
-        u64 conflict = (value ^ fixed) & bits.mask;
-        if (conflict == 0u64) { return true; }
-        u32 carry = conflict_width(conflict);
-        u64 increment = (fixed & (1u64 << u64(carry - 1))) == 0u64 ? 1u64 : 0u64;
-        // The search can move beyond the complete u64 domain. Only that
-        // carry is needed; no wide value or enumerated machine values remain.
-        if (carry == 64) {
-            if (increment != 0u64) { return false; }
-            value = fixed;
-        } else {
-            u64 high = (value >> u64(carry)) + increment;
-            if ((high >> (64u64 - u64(carry))) != 0u64) { return false; }
-            value = (high << u64(carry)) | fixed;
-        }
-    }
-    return false;
-}
-
-bool implies_bits(read RangeQuery query) on cpu {
-    u64 mask = query.required.mask;
-    while (mask != 0u64) {
-        u64 bit = mask & (0u64 - mask);
-        mask = mask ^ bit;
-        if ((query.known.mask & bit) != 0u64 && ((query.known.value ^ query.required.value) & bit) == 0u64) { continue; }
-        u64 opposite = (query.known.value & ~bit) | ((query.required.value ^ bit) & bit);
-        if (bits_intersect(query.range, BitPattern(query.known.mask | bit, opposite), query.order_bias)) { return false; }
-    }
-    return true;
-}
-
-extern "C" bool covers_range(read RangeQuery query, address intervals, u64 count,
-    cfn<BitRange,address,u64> interval) on cpu requires nonzero(interval) {
-    u64 cursor = query.range.lower;
-    u64 index = 0u64;
-    while (index < count) {
-        BitRange required = interval(intervals, index);
-        if (cursor < required.lower) {
-            u64 upper = min(query.range.upper, required.lower - 1u64);
-            if (bits_intersect(BitRange(cursor, upper), query.known, query.order_bias)) { return false; }
-        }
-        // required.upper+1 is unnecessary once the current range ends here,
-        // including MAX_U64; proceed directly to the same required-bit query.
-        if (cursor > query.range.upper || required.upper >= query.range.upper) { return implies_bits(query); }
-        cursor = max(cursor, required.upper + 1u64);
-        index += 1u64;
-    }
-    if (bits_intersect(BitRange(cursor, query.range.upper), query.known, query.order_bias)) { return false; }
-    return implies_bits(query);
-}
-
 
 u64 fp_sign(u32 width) on cpu {return 1u64<<(u64(width)-1u64);}
 f64 fp_power(i32 exponent) on cpu {return bitcast_f64(u64(exponent+1023)<<52u64);}
@@ -880,32 +814,6 @@ extern "C" IntegerWideDivision integer_wide_unsigned_divide(IntegerWide numerato
  }return IntegerWideDivision(quotient,remainder);
 }
 
-bool range_set_less(BitRange a,BitRange b) on cpu {
-    return a.lower<b.lower||(a.lower==b.lower&&a.upper<b.upper);
-}
-bool range_set_joined(BitRange a,BitRange b) on cpu {
-    return b.lower<=a.upper||(a.upper!=18446744073709551615u64&&b.lower==a.upper+1u64);
-}
-RangeSetNext range_set_accept(RangeSetNext pending,BitRange value,address output,cfn<void,address,BitRange> push) on cpu
-    requires nonzero(push) {
-    if(pending.present==0){return RangeSetNext(value,1);}
-    if(range_set_joined(pending.value,value)){
-        u64 upper=value.upper>pending.value.upper?value.upper:pending.value.upper;
-        return RangeSetNext(BitRange(pending.value.lower,upper),1);
-    }
-    push(output,pending.value);return RangeSetNext(value,1);
-}
-void range_set_sift(address output,u64 root,u64 count,RangeSetOutput host) on cpu
-    requires nonzero(host.get) requires nonzero(host.set) {
-    u64 current=root;
-    while(current<count/2u64){
-        u64 child=current+current+1u64;
-        if(child+1u64<count&&range_set_less(host.get(output,child),host.get(output,child+1u64))){child+=1u64;}
-        BitRange a=host.get(output,current);BitRange b=host.get(output,child);
-        if(!range_set_less(a,b)){return;}
-        host.set(output,current,b);host.set(output,child,a);current=child;
-    }
-}
 extern "C" u64 range_set_normalize(address output,u64 count,RangeSetOutput host) on cpu
     requires nonzero(host.get) requires nonzero(host.set) {
     u64 used=0u64;
@@ -913,13 +821,7 @@ extern "C" u64 range_set_normalize(address output,u64 count,RangeSetOutput host)
         BitRange value=host.get(output,range_index_0);
         if(value.lower<=value.upper){host.set(output,used,value);used+=1u64;}
     range_index_0+=1u64;}
-    u64 root=used/2u64;
-    while(root!=0u64){root-=1u64;range_set_sift(output,root,used,host);}
-    u64 end=used;
-    while(end>1u64){
-        end-=1u64;BitRange a=host.get(output,0u64);BitRange b=host.get(output,end);
-        host.set(output,0u64,b);host.set(output,end,a);range_set_sift(output,0u64,end,host);
-    }
+    sort_ranges(output,used,host.get,host.set);
     if(used==0u64){return 0u64;}
     BitRange pending=host.get(output,0u64);u64 result=0u64;
     u64 range_index_1=1u64;while(range_index_1<used){
@@ -968,28 +870,6 @@ extern "C" void range_set_union(address input,u64 left,u64 right,cfn<BitRange,ad
     }
     if(pending.present!=0){push(output,pending.value);}
 }
-extern "C" void range_set_intersection(address input,u64 left,u64 right,cfn<BitRange,address,u32,u64> get,
-    address output,cfn<void,address,BitRange> push) on cpu
-    requires nonzero(get) requires nonzero(push) {
-    if(left==0u64 || right==0u64){return;}
-    u64 i=0u64;
-    u64 j=0u64;
-    BitRange a=get(input,0,i);
-    BitRange b=get(input,1,j);
-    while(true){
-        u64 lower=max(a.lower,b.lower);
-        u64 upper=min(a.upper,b.upper);
-        if(lower<=upper){push(output,BitRange(lower,upper));}
-        bool move_left=a.upper<=b.upper;
-        bool move_right=b.upper<=a.upper;
-        i+=move_left ? 1u64 : 0u64;
-        j+=move_right ? 1u64 : 0u64;
-        if(i==left || j==right){return;}
-        if(move_left){a=get(input,0,i);}
-        if(move_right){b=get(input,1,j);}
-    }
-}
-
 struct RangeSetCursor { u64 index; RangeSetNext pending; };
 
 RangeSetNext range_set_next(address input,u64 count,cfn<BitRange,address,u32,u64> get,

@@ -95,6 +95,7 @@ fn native_modules() -> Result<(), Box<dyn std::error::Error>> {
         ("builtin_type", "builtin_type"),
         ("number_text", "number_text"),
         ("shared_type_layout", "type_layout"),
+        ("scalar_ranges", "scalar_ranges"),
     ] {
         for extension in ["b", "h"] {
             println!("cargo:rerun-if-changed=src/codec/{module}.{extension}");

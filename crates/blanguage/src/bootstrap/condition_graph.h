@@ -1,4 +1,5 @@
 module bootstrap.condition_graph;
+import codec.scalar_ranges;
 import bootstrap.scalar_fold;
 
 // These descriptors borrow the original Clause query and its physical buffers.

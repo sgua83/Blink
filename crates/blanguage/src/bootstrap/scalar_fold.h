@@ -1,4 +1,5 @@
 module bootstrap.scalar_fold;
+import codec.scalar_ranges;
 
 enum UnaryOperation : u32 {
     Negate = 0; LogicalNot = 1; BitNot = 2; FloatNegate = 3;
@@ -41,15 +42,6 @@ struct FoldedCast {
 };
 
 extern "C" FoldedCast cast(ScalarEncoding source, ScalarEncoding target, u64 bits) on cpu;
-
-// All records contain actual scalar values. The interval reader borrows the
-// caller's original storage only until this synchronous query returns.
-struct BitRange { u64 lower; u64 upper; };
-struct BitPattern { u64 mask; u64 value; };
-struct RangeQuery { u64 order_bias; BitRange range; BitPattern known; BitPattern required; };
-extern "C" bool covers_range(read RangeQuery query, address intervals, u64 count,
-    cfn<BitRange,address,u64> interval) on cpu requires nonzero(interval);
-
 
 // Synchronous numerical results; the caller owns the original range container.
 struct FloatInterval { f64 lower; f64 upper; u32 present; };
@@ -130,7 +122,6 @@ extern "C" IntegerWideChecked integer_wide_checked_multiply(IntegerWide a,Intege
 extern "C" IntegerWideDivision integer_wide_unsigned_divide(IntegerWide numerator,IntegerWide denominator) on cpu;
 
 // Scalar set values borrow original native storage through synchronous reads.
-struct RangeSetNext { BitRange value; u32 present; };
 struct RangeSetOutput {
     cfn<BitRange,address,u64> get;
     cfn<void,address,u64,BitRange> set;
@@ -170,9 +161,6 @@ struct RangeSetRequirement {
 extern "C" bool range_set_covers_projected(address input,u64 count,cfn<BitRange,address,u32,u64> get,
     RangeSetProjection projection,RangeSetRequirement requirement) on cpu
     requires nonzero(get) requires nonzero(requirement.interval);
-extern "C" void range_set_intersection(address input,u64 left,u64 right,cfn<BitRange,address,u32,u64> get,
-    address output,cfn<void,address,BitRange> push) on cpu
-    requires nonzero(get) requires nonzero(push);
 extern "C" void range_set_restrict(address input,u64 count,cfn<BitRange,address,u32,u64> get,address output,cfn<void,address,BitRange> push,u64 lower,u64 upper) on cpu
     requires nonzero(get) requires nonzero(push);
 extern "C" void range_set_without(address input,u64 count,cfn<BitRange,address,u32,u64> get,address output,cfn<void,address,BitRange> push,u64 value) on cpu

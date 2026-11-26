@@ -1,14 +1,9 @@
 //! B owns complete scalar-set rules; native containers retain their ownership.
 use super::{Bits,Scalar,ScalarRanges};
 use std::{ffi::c_void,ptr};
-type Pair=(Bits,Bits);
+use crate::ir::scalar_ranges::{self, BitPattern as Pattern, BitRange as Range, Pair, push};
 type Slot=*mut c_void;
 type Borrowed=*const c_void;
-#[derive(Clone,Copy,Default)]
-#[repr(C)]
-struct Range {lower:u64,upper:u64}
-impl From<Pair> for Range {fn from((lower,upper):Pair)->Self {Self{lower,upper}}}
-impl From<Range> for Pair {fn from(v:Range)->Self {(v.lower,v.upper)}}
 #[repr(C)]
 struct Next {value:Range,present:u32}
 #[repr(C)]
@@ -36,16 +31,6 @@ impl Projection {
     pub(super) fn new(lower: u64, upper: u64, excluded: Option<u64>) -> Self {
         Self { lower, upper, excluded: excluded.unwrap_or_default(), exclude: u32::from(excluded.is_some()) }
     }
-}
-
-#[repr(C)]
-struct Pattern {
-    mask: Bits,
-    value: Bits,
-}
-
-impl From<Pair> for Pattern {
-    fn from((mask, value): Pair) -> Self { Self { mask, value } }
 }
 
 #[repr(C)]
@@ -107,7 +92,6 @@ unsafe extern "C" fn read_requirement(slot: Borrowed, index: usize) -> Range {
 }
 unsafe extern "C" fn get(slot:Slot,index:usize)->Range {{let values=unsafe{&*slot.cast::<Vec<Pair>>()};values[index].into()}}
 unsafe extern "C" fn set(slot:Slot,index:usize,value:Range) {let values=unsafe{&mut *slot.cast::<Vec<Pair>>()};values[index]=value.into();}
-unsafe extern "C" fn push(slot:Slot,value:Range) {unsafe{&mut *slot.cast::<Vec<Pair>>()}.push(value.into());}
 unsafe extern "C" fn pull<I:Iterator<Item=Pair>>(slot:Slot)->Next {
     unsafe{&mut *slot.cast::<I>()}.next().map(|v|Next{value:v.into(),present:1}).unwrap_or(Next{value:Range::default(),present:0})
 }
@@ -140,8 +124,6 @@ unsafe extern "C" {
     fn member(input:Borrowed,count:usize,read:Read,value:u64)->bool;
     #[link_name="bootstrap.scalar_fold::range_set_union"]
     fn united(input:Borrowed,left:usize,right:usize,read:Read,output:Slot,push:Push);
-    #[link_name="bootstrap.scalar_fold::range_set_intersection"]
-    fn intersected(input: Borrowed, left: usize, right: usize, read: Read, output: Slot, push: Push);
     #[link_name="bootstrap.scalar_fold::range_set_restrict"]
     fn clipped(input:Borrowed,count:usize,read:Read,output:Slot,push:Push,lower:u64,upper:u64);
     #[link_name="bootstrap.scalar_fold::range_set_project"]
@@ -180,9 +162,7 @@ pub(super) fn hull(values:&[Pair])->Pair {inputs(values,&[],|s,n,_|unsafe{outer(
 pub(super) fn contains(values:&[Pair],value:u64)->bool {inputs(values,&[],|s,n,_|unsafe{member(s,n,read,value)})}
 pub(super) fn union(left:&[Pair],right:&[Pair])->ScalarRanges {inputs(left,right,|s,n,m|output(|o|unsafe{united(s,n,m,read,o,push)}))}
 pub(super) fn intersection(left: &[Pair], right: &[Pair]) -> ScalarRanges {
-    inputs(left, right, |source, left_count, right_count| {
-        output(|dest| unsafe { intersected(source, left_count, right_count, read, dest, push) })
-    })
+    ScalarRanges(scalar_ranges::intersect_sorted(left, right))
 }
 pub(super) fn restrict(values:&[Pair],lower:u64,upper:u64)->ScalarRanges {inputs(values,&[],|s,n,_|output(|o|unsafe{clipped(s,n,read,o,push,lower,upper)}))}
 pub(super) fn project(values: &[Pair], projection: Projection) -> ScalarRanges {
