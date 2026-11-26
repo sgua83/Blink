@@ -16,7 +16,7 @@ else if(value==ScalarTag::I16){word(10,output,append);}
 
 ReadStatus numeric_read_scalar(Bytes input,inout u64 position,inout ScalarTag output) on cpu {ReadScalar value=read_scalar(input,position);if(value.status!=ReadStatus::Success){return value.status;}output=value.value;return ReadStatus::Success;}
 
-extern "C" void numeric_write_identity(NumericIdentity value,address output,cfn<void,address,address,u64> append) on cpu requires nonzero(append) {
+void numeric_write_identity(NumericIdentity value,address output,cfn<void,address,address,u64> append) on cpu requires nonzero(append) {
 if(value.kind==IdentityKind::Register){word(0,output,append);
 wide(value.first,output,append);
 }
@@ -78,7 +78,7 @@ word(u32(value.second),output,append);
 }
 }
 
-extern "C" ReadStatus numeric_read_identity(Bytes input,inout u64 position,inout NumericIdentity output) on cpu {
+ReadStatus numeric_read_identity(Bytes input,inout u64 position,inout NumericIdentity output) on cpu {
 ReadValue tag=fixed_value(input,position,4);if(tag.status!=ReadStatus::Success){return tag.status;}
 if(tag.value==0u64){
 output.kind=IdentityKind::Register;
@@ -159,7 +159,7 @@ return ReadStatus::Success;}
 return ReadStatus::Identity;
 }
 
-extern "C" void numeric_write_operand(NumericOperand value,address output,cfn<void,address,address,u64> append) on cpu requires nonzero(append) {
+void numeric_write_operand(NumericOperand value,address output,cfn<void,address,address,u64> append) on cpu requires nonzero(append) {
 if(value.kind==OperandKind::Value){word(0,output,append);
 numeric_write_identity(value.identity,output,append);
 }
@@ -182,204 +182,215 @@ return ReadStatus::Success;}
 return ReadStatus::Operand;
 }
 
-extern "C" ReadStatus numeric_read_operand(Bytes input,inout u64 position,inout NumericOperand output) on cpu {
+ReadStatus numeric_read_operand(Bytes input,inout u64 position,inout NumericOperand output) on cpu {
  ReadValue tag=fixed_value(input,position,4);
  if(tag.status!=ReadStatus::Success){return tag.status;}
  return numeric_read_operand_payload(tag.value,input,position,output);
 }
 
-extern "C" void numeric_write_selection(NumericSelection value,address output,cfn<void,address,address,u64> append) on cpu requires nonzero(append) {
- if(value.affine==0){numeric_write_operand(value.operand,output,append);return;}
- word(value.affine+1,output,append);
- numeric_write_identity(value.base,output,append);
- wide(value.scale_low,output,append);
- wide(value.scale_high,output,append);
- wide(value.offset_low,output,append);
- wide(value.offset_high,output,append);
+struct OperandSelector { u32 kind; OperandKey operand; };
+struct AffineSelector { u32 kind; IdentityKey base; u64 padding; array<u64,4> coefficients; };
+struct BinaryExpression { u32 form; u8 operation; u8 scalar; OperandKey left; OperandKey right; };
+struct SelectionExpression { u32 form; array<u64,10> selection; };
+struct FloatingKey { IdentityKey source; array<u64,5> bounds; u8 scalar; u8 form; };
+
+NumericOperand empty_operand() on cpu {
+    return NumericOperand(OperandKind::Value,empty_key_identity(),ScalarTag::F32,0u64);
 }
 
-extern "C" ReadStatus numeric_read_selection(Bytes input,inout u64 position,inout NumericSelection output) on cpu {
- ReadValue tag=fixed_value(input,position,4);
- if(tag.status!=ReadStatus::Success){return tag.status;}
- if((tag.value>>1u64)!=1u64){
-  output.affine=0;
-  return numeric_read_operand_payload(tag.value,input,position,output.operand);
- }
- output.affine=u32(tag.value-1u64);
- ReadStatus identity=numeric_read_identity(input,position,output.base);
- if(identity!=ReadStatus::Success){return identity;}
- ReadValue scale_low=fixed_value(input,position,8);
- if(scale_low.status!=ReadStatus::Success){return scale_low.status;}
- ReadValue scale_high=fixed_value(input,position,8);
- if(scale_high.status!=ReadStatus::Success){return scale_high.status;}
- ReadValue offset_low=fixed_value(input,position,8);
- if(offset_low.status!=ReadStatus::Success){return offset_low.status;}
- ReadValue offset_high=fixed_value(input,position,8);
- if(offset_high.status!=ReadStatus::Success){return offset_high.status;}
- output.scale_low=scale_low.value;
- output.scale_high=scale_high.value;
- output.offset_low=offset_low.value;
- output.offset_high=offset_high.value;
- return ReadStatus::Success;
+ReadValue read_numeric_tag(Bytes input,inout u64 position,u64 limit,ReadStatus invalid) on cpu {
+    ReadValue tag = fixed_value(input,position,4);
+    if (tag.status == ReadStatus::Success && tag.value > limit) { tag.status = invalid; }
+    return tag;
 }
 
-extern "C" void numeric_write_integer(IntegerKind value,address output,cfn<void,address,address,u64> append) on cpu requires nonzero(append) {
-if(value==IntegerKind::Add){word(0,output,append);
-}
-else if(value==IntegerKind::Subtract){word(1,output,append);
-}
-else if(value==IntegerKind::Multiply){word(2,output,append);
-}
-else if(value==IntegerKind::Divide){word(3,output,append);
-}
-else if(value==IntegerKind::Remainder){word(4,output,append);
-}
-else if(value==IntegerKind::And){word(5,output,append);
-}
-else if(value==IntegerKind::Or){word(6,output,append);
-}
-else if(value==IntegerKind::Xor){word(7,output,append);
-}
-else if(value==IntegerKind::ShiftLeft){word(8,output,append);
-}
-else if(value==IntegerKind::ShiftRight){word(9,output,append);
-}
+extern "C" void numeric_write_identity_key(address source,address output,cfn<void,address,address,u64> append) on cpu requires nonzero(append) {
+    numeric_write_identity(capture_key_identity(source),output,append);
 }
 
-extern "C" ReadStatus numeric_read_integer(Bytes input,inout u64 position,inout IntegerKind output) on cpu {
-ReadValue tag=fixed_value(input,position,4);if(tag.status!=ReadStatus::Success){return tag.status;}
-if(tag.value==0u64){
-output=IntegerKind::Add;
-return ReadStatus::Success;}
-else if(tag.value==1u64){
-output=IntegerKind::Subtract;
-return ReadStatus::Success;}
-else if(tag.value==2u64){
-output=IntegerKind::Multiply;
-return ReadStatus::Success;}
-else if(tag.value==3u64){
-output=IntegerKind::Divide;
-return ReadStatus::Success;}
-else if(tag.value==4u64){
-output=IntegerKind::Remainder;
-return ReadStatus::Success;}
-else if(tag.value==5u64){
-output=IntegerKind::And;
-return ReadStatus::Success;}
-else if(tag.value==6u64){
-output=IntegerKind::Or;
-return ReadStatus::Success;}
-else if(tag.value==7u64){
-output=IntegerKind::Xor;
-return ReadStatus::Success;}
-else if(tag.value==8u64){
-output=IntegerKind::ShiftLeft;
-return ReadStatus::Success;}
-else if(tag.value==9u64){
-output=IntegerKind::ShiftRight;
-return ReadStatus::Success;}
-return ReadStatus::IntegerOperation;
+extern "C" ReadStatus numeric_read_identity_key(Bytes input,inout u64 position,address output) on cpu {
+    return read_domain_identity(input,position,output);
 }
 
-extern "C" void numeric_write_expression(NumericExpression value,address output,cfn<void,address,address,u64> append) on cpu requires nonzero(append) {
-word(value.form,output,append);
-if(value.form==1){numeric_write_selection(value.selection,output,append);return;}
-numeric_write_integer(value.operation,output,append);
-numeric_write_scalar(value.scalar,output,append);
-numeric_write_operand(value.left,output,append);
-numeric_write_operand(value.right,output,append);
+extern "C" void numeric_write_operand_key(address source,address output,cfn<void,address,address,u64> append) on cpu requires nonzero(append) {
+    numeric_write_operand(capture_key_operand(source),output,append);
 }
 
-extern "C" ReadStatus numeric_read_expression(Bytes input,inout u64 position,inout NumericExpression output) on cpu {
-ReadValue tag=fixed_value(input,position,4);if(tag.status!=ReadStatus::Success){return tag.status;}
-if(tag.value==0u64){
-output.form=0;
-ReadStatus status_29=numeric_read_integer(input,position,output.operation);if(status_29!=ReadStatus::Success){return status_29;}
-ReadStatus status_30=numeric_read_scalar(input,position,output.scalar);if(status_30!=ReadStatus::Success){return status_30;}
-ReadStatus status_31=numeric_read_operand(input,position,output.left);if(status_31!=ReadStatus::Success){return status_31;}
-ReadStatus status_32=numeric_read_operand(input,position,output.right);if(status_32!=ReadStatus::Success){return status_32;}
-return ReadStatus::Success;}
-if(tag.value==1u64){output.form=1;return numeric_read_selection(input,position,output.selection);}
-return ReadStatus::IntegerExpression;
+extern "C" ReadStatus numeric_read_operand_key(Bytes input,inout u64 position,address output) on cpu {
+    NumericOperand value = empty_operand();
+    ReadStatus status = numeric_read_operand(input,position,value);
+    if (status == ReadStatus::Success) {
+        OperandKey key = make_key_operand(value);
+        RtlMoveMemory(output,address_of(key),40u64);
+    }
+    return status;
 }
 
-extern "C" void numeric_write_comparison(ComparisonKind value,address output,cfn<void,address,address,u64> append) on cpu requires nonzero(append) {
-if(value==ComparisonKind::Equal){word(0,output,append);
-}
-else if(value==ComparisonKind::NotEqual){word(1,output,append);
-}
-else if(value==ComparisonKind::Less){word(2,output,append);
-}
-else if(value==ComparisonKind::Greater){word(3,output,append);
-}
-else if(value==ComparisonKind::LessEqual){word(4,output,append);
-}
-else if(value==ComparisonKind::GreaterEqual){word(5,output,append);
-}
-}
-
-extern "C" ReadStatus numeric_read_comparison(Bytes input,inout u64 position,inout ComparisonKind output) on cpu {
-ReadValue tag=fixed_value(input,position,4);if(tag.status!=ReadStatus::Success){return tag.status;}
-if(tag.value==0u64){
-output=ComparisonKind::Equal;
-return ReadStatus::Success;}
-else if(tag.value==1u64){
-output=ComparisonKind::NotEqual;
-return ReadStatus::Success;}
-else if(tag.value==2u64){
-output=ComparisonKind::Less;
-return ReadStatus::Success;}
-else if(tag.value==3u64){
-output=ComparisonKind::Greater;
-return ReadStatus::Success;}
-else if(tag.value==4u64){
-output=ComparisonKind::LessEqual;
-return ReadStatus::Success;}
-else if(tag.value==5u64){
-output=ComparisonKind::GreaterEqual;
-return ReadStatus::Success;}
-return ReadStatus::Comparison;
+extern "C" void numeric_write_selection_key(address source,address output,cfn<void,address,address,u64> append) on cpu requires nonzero(append) {
+    u32 kind = unsafe_position<u32>(source);
+    address operand = domain_at(source,8u64);
+    if (kind == 0) {
+        numeric_write_operand_key(operand,output,append);
+        return;
+    }
+    word(kind+1,output,append);
+    if (kind == 2) {
+        NumericOperand value = capture_key_operand(operand);
+        numeric_write_identity(value.identity,output,append);
+        wide(value.kind == OperandKind::Value ? 1u64 : 0u64,output,append);
+        wide(0u64,output,append);
+        wide(value.bits,output,append);
+        wide(0u64,output,append);
+        return;
+    }
+    numeric_write_identity_key(operand,output,append);
+    wide(unsafe_position<u64>(domain_at(source,48u64)),output,append);
+    wide(unsafe_position<u64>(domain_at(source,56u64)),output,append);
+    wide(unsafe_position<u64>(domain_at(source,64u64)),output,append);
+    wide(unsafe_position<u64>(domain_at(source,72u64)),output,append);
 }
 
-extern "C" void numeric_write_floating_form(FloatingKind value,address output,cfn<void,address,address,u64> append) on cpu requires nonzero(append) {
-if(value==FloatingKind::Cast){word(0,output,append);
-}
-else if(value==FloatingKind::Upper){word(1,output,append);
-}
+extern "C" ReadStatus numeric_read_selection_key(Bytes input,inout u64 position,address output) on cpu {
+    ReadValue tag = fixed_value(input,position,4);
+    if (tag.status != ReadStatus::Success) { return tag.status; }
+    if ((tag.value >> 1u64) != 1u64) {
+        NumericOperand value = empty_operand();
+        ReadStatus status = numeric_read_operand_payload(tag.value,input,position,value);
+        if (status == ReadStatus::Success) {
+            OperandSelector key = OperandSelector(0,make_key_operand(value));
+            RtlMoveMemory(output,address_of(key),48u64);
+        }
+        return status;
+    }
+    NumericIdentity base = empty_key_identity();
+    ReadStatus status = numeric_read_identity(input,position,base);
+    if (status != ReadStatus::Success) { return status; }
+    array<u64,4> terms = array<u64,4>(0u64,0u64,0u64,0u64);
+    u32 index = 0;
+    while (index < 4) {
+        ReadValue part = fixed_value(input,position,8);
+        if (part.status != ReadStatus::Success) { return part.status; }
+        terms[index] = part.value;
+        index += 1;
+    }
+    if (tag.value == 3u64) {
+        NumericOperand value = empty_operand();
+        if (terms[0] == 0u64 && terms[1] == 0u64) {
+            value.kind = OperandKind::Constant;
+            value.scalar = ScalarTag::U32;
+            value.bits = terms[2];
+        } else {
+            value.identity = base;
+        }
+        OperandSelector key = OperandSelector(2,make_key_operand(value));
+        RtlMoveMemory(output,address_of(key),48u64);
+    } else {
+        AffineSelector key = AffineSelector(1,make_key_identity(base),0u64,terms);
+        RtlMoveMemory(output,address_of(key),80u64);
+    }
+    return ReadStatus::Success;
 }
 
-extern "C" ReadStatus numeric_read_floating_form(Bytes input,inout u64 position,inout FloatingKind output) on cpu {
-ReadValue tag=fixed_value(input,position,4);if(tag.status!=ReadStatus::Success){return tag.status;}
-if(tag.value==0u64){
-output=FloatingKind::Cast;
-return ReadStatus::Success;}
-else if(tag.value==1u64){
-output=FloatingKind::Upper;
-return ReadStatus::Success;}
-return ReadStatus::FloatingForm;
+extern "C" void numeric_write_integer_key(address source,address output,cfn<void,address,address,u64> append) on cpu requires nonzero(append) {
+    word(u32(unsafe_position<u8>(source)),output,append);
 }
 
-extern "C" void numeric_write_floating(NumericFloating value,address output,cfn<void,address,address,u64> append) on cpu requires nonzero(append) {
-numeric_write_identity(value.source,output,append);
-wide(value.lower,output,append);
-wide(value.upper,output,append);
-wide(value.terms[0],output,append);
-wide(value.terms[1],output,append);
-wide(value.terms[2],output,append);
-numeric_write_scalar(value.scalar,output,append);
-numeric_write_floating_form(value.form,output,append);
+ReadStatus read_numeric_byte(Bytes input,inout u64 position,address output,u64 limit,ReadStatus invalid) on cpu {
+    ReadValue tag = read_numeric_tag(input,position,limit,invalid);
+    if (tag.status == ReadStatus::Success) { unsafe_position<u8>(output) = u8(tag.value); }
+    return tag.status;
 }
 
-extern "C" ReadStatus numeric_read_floating(Bytes input,inout u64 position,inout NumericFloating output) on cpu {
-ReadStatus status_33=numeric_read_identity(input,position,output.source);if(status_33!=ReadStatus::Success){return status_33;}
-ReadValue part_34=fixed_value(input,position,8);if(part_34.status!=ReadStatus::Success){return part_34.status;}output.lower=part_34.value;
-ReadValue part_35=fixed_value(input,position,8);if(part_35.status!=ReadStatus::Success){return part_35.status;}output.upper=part_35.value;
-ReadValue part_36=fixed_value(input,position,8);if(part_36.status!=ReadStatus::Success){return part_36.status;}output.terms[0]=part_36.value;
-ReadValue part_37=fixed_value(input,position,8);if(part_37.status!=ReadStatus::Success){return part_37.status;}output.terms[1]=part_37.value;
-ReadValue part_38=fixed_value(input,position,8);if(part_38.status!=ReadStatus::Success){return part_38.status;}output.terms[2]=part_38.value;
-ReadStatus status_39=numeric_read_scalar(input,position,output.scalar);if(status_39!=ReadStatus::Success){return status_39;}
-ReadStatus status_40=numeric_read_floating_form(input,position,output.form);if(status_40!=ReadStatus::Success){return status_40;}
-return ReadStatus::Success;
+extern "C" ReadStatus numeric_read_integer_key(Bytes input,inout u64 position,address output) on cpu {
+    return read_numeric_byte(input,position,output,9u64,ReadStatus::IntegerOperation);
+}
+
+extern "C" void numeric_write_expression_key(address source,address output,cfn<void,address,address,u64> append) on cpu requires nonzero(append) {
+    u32 form = unsafe_position<u32>(source);
+    word(form,output,append);
+    if (form == 1) {
+        numeric_write_selection_key(domain_at(source,8u64),output,append);
+        return;
+    }
+    numeric_write_integer_key(domain_at(source,4u64),output,append);
+    numeric_write_scalar(fact_scalar_tag(domain_at(source,5u64)),output,append);
+    numeric_write_operand_key(domain_at(source,8u64),output,append);
+    numeric_write_operand_key(domain_at(source,48u64),output,append);
+}
+
+extern "C" ReadStatus numeric_read_expression_key(Bytes input,inout u64 position,address output) on cpu {
+    ReadValue form = read_numeric_tag(input,position,1u64,ReadStatus::IntegerExpression);
+    if (form.status != ReadStatus::Success) { return form.status; }
+    if (form.value == 1u64) {
+        SelectionExpression key = SelectionExpression(1,
+            array<u64,10>(0u64,0u64,0u64,0u64,0u64,0u64,0u64,0u64,0u64,0u64));
+        ReadStatus status = numeric_read_selection_key(input,position,address_of(key.selection[0]));
+        if (status == ReadStatus::Success) { RtlMoveMemory(output,address_of(key),88u64); }
+        return status;
+    }
+    ReadValue operation = read_numeric_tag(input,position,9u64,ReadStatus::IntegerOperation);
+    if (operation.status != ReadStatus::Success) { return operation.status; }
+    ScalarTag scalar = ScalarTag::F32;
+    ReadStatus status = numeric_read_scalar(input,position,scalar);
+    if (status != ReadStatus::Success) { return status; }
+    NumericOperand left = empty_operand();
+    status = numeric_read_operand(input,position,left);
+    if (status != ReadStatus::Success) { return status; }
+    NumericOperand right = empty_operand();
+    status = numeric_read_operand(input,position,right);
+    if (status != ReadStatus::Success) { return status; }
+    BinaryExpression key = BinaryExpression(0,u8(operation.value),u8(u32(scalar)),make_key_operand(left),make_key_operand(right));
+    RtlMoveMemory(output,address_of(key),88u64);
+    return ReadStatus::Success;
+}
+
+extern "C" void numeric_write_comparison_key(address source,address output,cfn<void,address,address,u64> append) on cpu requires nonzero(append) {
+    numeric_write_integer_key(source,output,append);
+}
+
+extern "C" ReadStatus numeric_read_comparison_key(Bytes input,inout u64 position,address output) on cpu {
+    return read_numeric_byte(input,position,output,5u64,ReadStatus::Comparison);
+}
+
+extern "C" void numeric_write_floating_form_key(address source,address output,cfn<void,address,address,u64> append) on cpu requires nonzero(append) {
+    numeric_write_integer_key(source,output,append);
+}
+
+extern "C" ReadStatus numeric_read_floating_form_key(Bytes input,inout u64 position,address output) on cpu {
+    return read_numeric_byte(input,position,output,1u64,ReadStatus::FloatingForm);
+}
+
+extern "C" void numeric_write_floating_key(address source,address output,cfn<void,address,address,u64> append) on cpu requires nonzero(append) {
+    numeric_write_identity_key(source,output,append);
+    u64 offset = 32u64;
+    while (offset < 72u64) {
+        wide(unsafe_position<u64>(domain_at(source,offset)),output,append);
+        offset += 8u64;
+    }
+    numeric_write_scalar(fact_scalar_tag(domain_at(source,72u64)),output,append);
+    numeric_write_floating_form_key(domain_at(source,73u64),output,append);
+}
+
+extern "C" ReadStatus numeric_read_floating_key(Bytes input,inout u64 position,address output) on cpu {
+    NumericIdentity source = empty_key_identity();
+    ReadStatus status = numeric_read_identity(input,position,source);
+    if (status != ReadStatus::Success) { return status; }
+    array<u64,5> bounds = array<u64,5>(0u64,0u64,0u64,0u64,0u64);
+    u32 index = 0;
+    while (index < 5) {
+        ReadValue bits = fixed_value(input,position,8);
+        if (bits.status != ReadStatus::Success) { return bits.status; }
+        bounds[index] = bits.value;
+        index += 1;
+    }
+    ScalarTag scalar = ScalarTag::F32;
+    status = numeric_read_scalar(input,position,scalar);
+    if (status != ReadStatus::Success) { return status; }
+    ReadValue form = read_numeric_tag(input,position,1u64,ReadStatus::FloatingForm);
+    if (form.status != ReadStatus::Success) { return form.status; }
+    FloatingKey key = FloatingKey(make_key_identity(source),bounds,u8(u32(scalar)),u8(form.value));
+    RtlMoveMemory(output,address_of(key),80u64);
+    return ReadStatus::Success;
 }
 
 struct DomainKey { DomainKind kind; u32 compact; array<u64,12> payload; };
@@ -408,51 +419,51 @@ DomainKind domain_physical_tag(u32 tag) on cpu {
     return unsafe_position<DomainKind>(address_of(tag));
 }
 
-extern "C" void numeric_write_domain(address source,address output,NumericWriter host) on cpu
-    requires nonzero(host.append) requires nonzero(host.expression) requires nonzero(host.floating) {
+extern "C" void numeric_write_domain(address source,address output,cfn<void,address,address,u64> append) on cpu
+    requires nonzero(append) {
     DomainKind kind = unsafe_position<DomainKind>(source);
-    word(domain_wire_tag(kind),output,host.append);
+    word(domain_wire_tag(kind),output,append);
     address first = domain_at(source,8u64);
     if (kind == DomainKind::Tile || kind == DomainKind::TileLength) { return; }
     if (kind == DomainKind::Data || kind == DomainKind::DataLength) {
-        wide(unsafe_position<u64>(first),output,host.append);
+        wide(unsafe_position<u64>(first),output,append);
         return;
     }
     if (kind == DomainKind::Fixed) {
-        word(unsafe_position<u32>(domain_at(source,4u64)),output,host.append);
+        word(unsafe_position<u32>(domain_at(source,4u64)),output,append);
         return;
     }
     if (kind == DomainKind::Computed) {
-        numeric_write_expression(host.expression(first),output,host.append);
+        numeric_write_expression_key(first,output,append);
         return;
     }
     if (kind == DomainKind::Floating) {
-        numeric_write_floating(host.floating(first),output,host.append);
+        numeric_write_floating_key(first,output,append);
         return;
     }
     if (kind == DomainKind::KnownBits) {
-        numeric_write_scalar(fact_scalar_tag(domain_at(source,4u64)),output,host.append);
-        wide(unsafe_position<u64>(first),output,host.append);
-        wide(unsafe_position<u64>(domain_at(source,16u64)),output,host.append);
+        numeric_write_scalar(fact_scalar_tag(domain_at(source,4u64)),output,append);
+        wide(unsafe_position<u64>(first),output,append);
+        wide(unsafe_position<u64>(domain_at(source,16u64)),output,append);
         return;
     }
 
-    numeric_write_identity(capture_key_identity(first),output,host.append);
+    numeric_write_identity(capture_key_identity(first),output,append);
     if (kind == DomainKind::View || kind == DomainKind::ViewLength) {
-        numeric_write_identity(capture_key_identity(domain_at(source,40u64)),output,host.append);
-        numeric_write_identity(capture_key_identity(domain_at(source,72u64)),output,host.append);
+        numeric_write_identity(capture_key_identity(domain_at(source,40u64)),output,append);
+        numeric_write_identity(capture_key_identity(domain_at(source,72u64)),output,append);
     } else if (kind == DomainKind::Sum || kind == DomainKind::Shifted) {
-        numeric_write_identity(capture_key_identity(domain_at(source,40u64)),output,host.append);
+        numeric_write_identity(capture_key_identity(domain_at(source,40u64)),output,append);
         if (kind == DomainKind::Shifted) {
-            word(unsafe_position<u32>(domain_at(source,72u64)),output,host.append);
+            word(unsafe_position<u32>(domain_at(source,72u64)),output,append);
         }
     } else if (kind == DomainKind::Upper || kind == DomainKind::Lower || kind == DomainKind::Offset) {
-        word(unsafe_position<u32>(domain_at(source,40u64)),output,host.append);
+        word(unsafe_position<u32>(domain_at(source,40u64)),output,append);
     } else if (kind == DomainKind::CommonRange) {
-        numeric_write_scalar(fact_scalar_tag(domain_at(source,40u64)),output,host.append);
-        numeric_write_scalar(fact_scalar_tag(domain_at(source,41u64)),output,host.append);
-        numeric_write_scalar(fact_scalar_tag(domain_at(source,42u64)),output,host.append);
-        numeric_write_scalar(fact_scalar_tag(domain_at(source,43u64)),output,host.append);
+        numeric_write_scalar(fact_scalar_tag(domain_at(source,40u64)),output,append);
+        numeric_write_scalar(fact_scalar_tag(domain_at(source,41u64)),output,append);
+        numeric_write_scalar(fact_scalar_tag(domain_at(source,42u64)),output,append);
+        numeric_write_scalar(fact_scalar_tag(domain_at(source,43u64)),output,append);
     }
 }
 
@@ -475,28 +486,7 @@ ReadStatus read_domain_identity(Bytes input, inout u64 position, address output)
     return status;
 }
 
-ReadStatus read_domain_expression(Bytes input, inout u64 position, address output, NumericReader host) on cpu
-    requires nonzero(host.expression) {
-    NumericIdentity identity = empty_key_identity();
-    NumericOperand operand = NumericOperand(OperandKind::Value,identity,ScalarTag::F32,0u64);
-    NumericSelection selector = NumericSelection(0,operand,identity,0u64,0u64,0u64,0u64);
-    NumericExpression expression = NumericExpression(0,IntegerKind::Add,ScalarTag::F32,operand,operand,selector);
-    ReadStatus status = numeric_read_expression(input,position,expression);
-    if (status == ReadStatus::Success) { host.expression(expression,output); }
-    return status;
-}
-
-ReadStatus read_domain_floating(Bytes input, inout u64 position, address output, NumericReader host) on cpu
-    requires nonzero(host.floating) {
-    NumericFloating floating = NumericFloating(empty_key_identity(),0u64,0u64,
-        array<u64,3>(0u64,0u64,0u64),ScalarTag::F32,FloatingKind::Cast);
-    ReadStatus status = numeric_read_floating(input,position,floating);
-    if (status == ReadStatus::Success) { host.floating(floating,output); }
-    return status;
-}
-
-ReadStatus read_domain_key(Bytes input,inout u64 position,inout DomainKey output,NumericReader host) on cpu
-    requires nonzero(host.expression) requires nonzero(host.floating) {
+ReadStatus read_domain_key(Bytes input,inout u64 position,inout DomainKey output) on cpu {
     ReadValue tag = fixed_value(input,position,4);
     if (tag.status != ReadStatus::Success) { return tag.status; }
     if (tag.value > 18u64) { return ReadStatus::IndexDomain; }
@@ -517,10 +507,10 @@ ReadStatus read_domain_key(Bytes input,inout u64 position,inout DomainKey output
         return ReadStatus::Success;
     }
     if (kind == DomainKind::Computed) {
-        return read_domain_expression(input,position,address_of(output.payload[0]),host);
+        return numeric_read_expression_key(input,position,address_of(output.payload[0]));
     }
     if (kind == DomainKind::Floating) {
-        return read_domain_floating(input,position,address_of(output.payload[0]),host);
+        return numeric_read_floating_key(input,position,address_of(output.payload[0]));
     }
     if (kind == DomainKind::KnownBits) {
         ScalarTag scalar = ScalarTag::F32;
@@ -570,54 +560,70 @@ ReadStatus read_domain_key(Bytes input,inout u64 position,inout DomainKey output
     return ReadStatus::Success;
 }
 
-extern "C" ReadStatus numeric_read_domain(Bytes input,inout u64 position,address output,NumericReader host) on cpu
-    requires nonzero(host.expression) requires nonzero(host.floating) {
+extern "C" ReadStatus numeric_read_domain(Bytes input,inout u64 position,address output) on cpu {
     DomainKey key = empty_domain_key();
-    ReadStatus status = read_domain_key(input,position,key,host);
+    ReadStatus status = read_domain_key(input,position,key);
     if (status == ReadStatus::Success) { RtlMoveMemory(output,address_of(key),104u64); }
     return status;
 }
 
-extern "C" void numeric_write_predicate(NumericPredicate value,address output,cfn<void,address,address,u64> append) on cpu requires nonzero(append) {
-numeric_write_comparison(value.operation,output,append);
+void numeric_write_predicate(NumericPredicate value,address output,cfn<void,address,address,u64> append) on cpu requires nonzero(append) {
+word(u32(value.operation),output,append);
 numeric_write_scalar(value.scalar,output,append);
 numeric_write_operand(value.left,output,append);
 numeric_write_operand(value.right,output,append);
 }
 
-extern "C" ReadStatus numeric_read_predicate(Bytes input,inout u64 position,inout NumericPredicate output) on cpu {
-ReadStatus status_74=numeric_read_comparison(input,position,output.operation);if(status_74!=ReadStatus::Success){return status_74;}
+ReadStatus numeric_read_predicate(Bytes input,inout u64 position,inout NumericPredicate output) on cpu {
+ReadValue comparison = read_numeric_tag(input,position,5u64,ReadStatus::Comparison);
+if (comparison.status != ReadStatus::Success) { return comparison.status; }
+u32 op_code = u32(comparison.value);
+output.operation = unsafe_position<ComparisonKind>(address_of(op_code));
 ReadStatus status_75=numeric_read_scalar(input,position,output.scalar);if(status_75!=ReadStatus::Success){return status_75;}
 ReadStatus status_76=numeric_read_operand(input,position,output.left);if(status_76!=ReadStatus::Success){return status_76;}
 ReadStatus status_77=numeric_read_operand(input,position,output.right);if(status_77!=ReadStatus::Success){return status_77;}
 return ReadStatus::Success;
 }
 
-extern "C" void numeric_write_fact(address source,address output,NumericWriter host) on cpu
-    requires nonzero(host.append) requires nonzero(host.expression)
-    requires nonzero(host.floating) {
+extern "C" void numeric_write_predicate_key(address source,address output,cfn<void,address,address,u64> append) on cpu requires nonzero(append) {
+    numeric_write_predicate(capture_key_predicate(source),output,append);
+}
+
+extern "C" ReadStatus numeric_read_predicate_key(Bytes input,inout u64 position,address output) on cpu {
+    NumericOperand operand = empty_operand();
+    NumericPredicate value = NumericPredicate(ComparisonKind::Equal,ScalarTag::F32,operand,operand);
+    ReadStatus status = numeric_read_predicate(input,position,value);
+    if (status == ReadStatus::Success) {
+        PredicateKey key = make_key_predicate(value);
+        RtlMoveMemory(output,address_of(key),88u64);
+    }
+    return status;
+}
+
+extern "C" void numeric_write_fact(address source,address output,cfn<void,address,address,u64> append) on cpu
+    requires nonzero(append) {
     FactView value = read_fact_fields(source);
-    word(u32(value.kind),output,host.append);
+    word(u32(value.kind),output,append);
     if (value.kind == FactKind::Predicate) {
-        numeric_write_predicate(capture_key_predicate(value.payload),output,host.append);
-        byte(u8(value.flag),output,host.append);
+        numeric_write_predicate(capture_key_predicate(value.payload),output,append);
+        byte(u8(value.flag),output,append);
         return;
     }
 
-    numeric_write_identity(capture_key_identity(value.first),output,host.append);
+    numeric_write_identity(capture_key_identity(value.first),output,append);
     if (value.kind == FactKind::Equal || value.kind == FactKind::NotEqual || value.kind == FactKind::Below) {
-        numeric_write_identity(capture_key_identity(value.second),output,host.append);
+        numeric_write_identity(capture_key_identity(value.second),output,append);
         if (value.kind == FactKind::Below) {
-            byte(u8(value.flag),output,host.append);
-            numeric_write_scalar(fact_scalar_tag(value.scalar),output,host.append);
+            byte(u8(value.flag),output,append);
+            numeric_write_scalar(fact_scalar_tag(value.scalar),output,append);
         }
     } else if (value.kind == FactKind::Index || value.kind == FactKind::Outside) {
-        numeric_write_domain(value.payload,output,host);
+        numeric_write_domain(value.payload,output,append);
     } else if (value.kind == FactKind::Minimum || value.kind == FactKind::Maximum) {
-        numeric_write_scalar(fact_scalar_tag(value.scalar),output,host.append);
-        wide(value.value,output,host.append);
+        numeric_write_scalar(fact_scalar_tag(value.scalar),output,append);
+        wide(value.value,output,append);
     } else if (value.kind == FactKind::Boolean) {
-        byte(u8(value.flag),output,host.append);
+        byte(u8(value.flag),output,append);
     }
 }
 
@@ -636,8 +642,7 @@ ReadStatus read_fact_predicate(Bytes input, inout u64 position, address output) 
     return ReadStatus::Success;
 }
 
-extern "C" ReadStatus numeric_read_fact(Bytes input,inout u64 position,address output,NumericReader host) on cpu
-    requires nonzero(host.expression) requires nonzero(host.floating) {
+extern "C" ReadStatus numeric_read_fact(Bytes input,inout u64 position,address output) on cpu {
     ReadValue tag = fixed_value(input,position,4);
     if (tag.status != ReadStatus::Success) { return tag.status; }
     if (tag.value > u64(u32(FactKind::Predicate))) { return ReadStatus::Fact; }
@@ -655,7 +660,7 @@ extern "C" ReadStatus numeric_read_fact(Bytes input,inout u64 position,address o
     if (kind == FactKind::Index || kind == FactKind::Outside) {
         DomainKey domain = empty_domain_key();
         view.payload = address_of(domain);
-        status = read_domain_key(input,position,domain,host);
+        status = read_domain_key(input,position,domain);
         if (status != ReadStatus::Success) { return status; }
         materialize_fact(view,output);
         return ReadStatus::Success;
@@ -699,18 +704,30 @@ extern "C" ReadStatus numeric_read_fact(Bytes input,inout u64 position,address o
     return ReadStatus::Success;
 }
 
-extern "C" void numeric_write_ranges(Span values,address output,RangeWriter host) on cpu requires nonzero(host.append) requires nonzero(host.interval) {
- wide(values.count,output,host.append);u64 index=0u64;
- while(index<values.count){NumericInterval value=host.interval(item(values,index));wide(value.lower,output,host.append);wide(value.upper,output,host.append);index+=1u64;}
+extern "C" void numeric_write_ranges(address intervals,u64 count,address output,cfn<void,address,address,u64> append) on cpu requires nonzero(append) {
+    wide(count,output,append);
+    u64 index = 0u64;
+    while (index < count) {
+        BitRange value = proof_range_record(intervals,index);
+        wide(value.lower,output,append);
+        wide(value.upper,output,append);
+        index += 1u64;
+    }
 }
 
-extern "C" ReadStatus numeric_read_ranges(Bytes input,inout u64 position,address output,cfn<void,address,u64,u64> push) on cpu requires nonzero(push) {
- ReadValue count=fixed_value(input,position,8);if(count.status!=ReadStatus::Success){return count.status;}
- u64 index=0u64;while(index<count.value){
-  ReadValue lower=fixed_value(input,position,8);if(lower.status!=ReadStatus::Success){return lower.status;}
-  ReadValue upper=fixed_value(input,position,8);if(upper.status!=ReadStatus::Success){return upper.status;}
-  push(output,lower.value,upper.value);index+=1u64;
- }return ReadStatus::Success;
+extern "C" ReadStatus numeric_read_ranges(Bytes input,inout u64 position,address output) on cpu {
+    ReadValue count = fixed_value(input,position,8);
+    if (count.status != ReadStatus::Success) { return count.status; }
+    u64 index = 0u64;
+    while (index < count.value) {
+        ReadValue lower = fixed_value(input,position,8);
+        if (lower.status != ReadStatus::Success) { return lower.status; }
+        ReadValue upper = fixed_value(input,position,8);
+        if (upper.status != ReadStatus::Success) { return upper.status; }
+        proof_range_push_ends(output,lower.value,upper.value);
+        index += 1u64;
+    }
+    return ReadStatus::Success;
 }
 
 extern "C" void condition_node_ids(address context,CanonicalHost host,u32 keep_pairs) on cpu requires nonzero(host.next) requires nonzero(host.index) requires nonzero(host.len) requires nonzero(host.intern) requires nonzero(host.record) requires nonzero(host.bind) {
@@ -793,9 +810,9 @@ extern "C" i32 compare_proof_condition(address left,address right,u64 left_count
  return compare_condition_index(index(left,a.second),index(right,b.second));
 }
 
-extern "C" void write_fact_sequence(u64 count,address iterator,address output,NumericWriter host,cfn<address,address> next) on cpu requires nonzero(host.append) requires nonzero(host.expression) requires nonzero(host.floating) requires nonzero(next) {
- wide(count,output,host.append);u64 index=0u64;
- while(index<count){numeric_write_fact(next(iterator),output,host);index+=1u64;}
+extern "C" void write_fact_sequence(u64 count,address iterator,address output,cfn<void,address,address,u64> append,cfn<address,address> next) on cpu requires nonzero(append) requires nonzero(next) {
+ wide(count,output,append);u64 index=0u64;
+ while(index<count){numeric_write_fact(next(iterator),output,append);index+=1u64;}
 }
 
 extern "C" ReadStatus read_fact_sequence(Bytes input,inout u64 position,address context,address output,cfn<ReadStatus,address,address> push) on cpu requires nonzero(push) {

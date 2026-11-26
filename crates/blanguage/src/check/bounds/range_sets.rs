@@ -359,8 +359,6 @@ unsafe extern "C" {
     fn set(storage: Slot, index: usize, value: Range);
     #[link_name="bootstrap.scalar_fold::proof_range_push"]
     fn push(storage: Slot, value: Range);
-    #[link_name="bootstrap.scalar_fold::proof_range_push_ends"]
-    pub(super) fn push_ends(storage: Slot, lower: u64, upper: u64);
     #[link_name="bootstrap.scalar_fold::proof_range_truncate"]
     fn truncate(storage: Slot, count: usize);
     #[link_name="bootstrap.scalar_fold::proof_range_clone"]

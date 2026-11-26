@@ -309,10 +309,6 @@ IdentityKey make_key_identity(NumericIdentity source) on cpu {
     return IdentityKey(source.kind,0,source.first,source.second,source.third);
 }
 
-extern "C" void materialize_key_identity(NumericIdentity source, address output) on cpu {
-    unsafe_position<IdentityKey>(output) = make_key_identity(source);
-}
-
 extern "C" NumericOperand capture_key_operand(address source) on cpu {
     OperandKind kind = unsafe_position<OperandKind>(source);
     if (kind == OperandKind::Value) {
@@ -331,10 +327,6 @@ OperandKey make_key_operand(NumericOperand source) on cpu {
     return OperandKey(source.kind,u8(u32(source.scalar)),source.bits,0u64,0u64,0u64);
 }
 
-extern "C" void materialize_key_operand(NumericOperand source, address output) on cpu {
-    unsafe_position<OperandKey>(output) = make_key_operand(source);
-}
-
 extern "C" NumericPredicate capture_key_predicate(address source) on cpu {
     u32 code = u32(unsafe_position<u8>(source));
     return NumericPredicate(unsafe_position<ComparisonKind>(address_of(code)),fact_scalar_tag(field(source,1u64)),
@@ -346,6 +338,3 @@ PredicateKey make_key_predicate(NumericPredicate source) on cpu {
         make_key_operand(source.left),make_key_operand(source.right));
 }
 
-extern "C" void materialize_key_predicate(NumericPredicate source, address output) on cpu {
-    unsafe_position<PredicateKey>(output) = make_key_predicate(source);
-}

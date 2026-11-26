@@ -2,6 +2,8 @@
 //! B owns canonical node IDs and the existing conditions wire grammar.
 use super::super::facts;
 use super::*;
+use crate::codec::{Result, Writer};
+use std::{ffi::c_void, ptr};
 
 #[repr(u32)]
 #[derive(Clone, Copy, Default)]
@@ -266,7 +268,7 @@ unsafe extern "C" fn write_facts(source: *const c_void, output: Slot) {
             facts.len(),
             slot(&mut iter),
             output,
-            writer_host(),
+            append,
             next_fact,
         )
     };
@@ -299,7 +301,7 @@ unsafe extern "C" {
         count: usize,
         iterator: Slot,
         output: Slot,
-        host: NumericWriter,
+        append: Append,
         next: unsafe extern "C" fn(Slot) -> *const c_void,
     );
     #[link_name = "bootstrap.contract_codec::compare_proof_condition"]
@@ -370,7 +372,7 @@ unsafe extern "C" fn push_either(output: Slot, a: usize, b: usize) {
 unsafe extern "C" fn push_fact(context: Slot, output: Slot) -> ReadStatus {
     let (bytes, position) = unsafe { input(context) };
     let mut value = Fact::NonZero(ValueIdentity::TileLength);
-    let status = unsafe { read_fact(bytes, position, slot(&mut value), reader_host()) };
+    let status = unsafe { read_fact(bytes, position, slot(&mut value)) };
     if status == ReadStatus::Success {
         unsafe { &mut *output.cast::<Facts>() }.insert(value);
     }

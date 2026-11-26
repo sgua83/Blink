@@ -28,6 +28,7 @@ struct OperandKey { OperandKind kind; u8 scalar; u64 first; u64 second; u64 thir
 struct PredicateKey { u8 operation; u8 scalar; OperandKey left; OperandKey right; };
 
 IdentityKey make_key_identity(NumericIdentity source) on cpu;
+OperandKey make_key_operand(NumericOperand source) on cpu;
 PredicateKey make_key_predicate(NumericPredicate source) on cpu;
 
 struct FactScalarView { u32 kind; u32 width; u64 mask; u64 bias; };
@@ -38,8 +39,5 @@ extern "C" FactView inspect_fact(address source) on cpu;
 extern "C" FactView fact_bound(address identity, address scalar, u64 value, u32 minimum) on cpu;
 extern "C" void materialize_fact(FactView source, address output) on cpu;
 extern "C" NumericIdentity capture_key_identity(address source) on cpu;
-extern "C" void materialize_key_identity(NumericIdentity source, address output) on cpu;
 extern "C" NumericOperand capture_key_operand(address source) on cpu;
-extern "C" void materialize_key_operand(NumericOperand source, address output) on cpu;
 extern "C" NumericPredicate capture_key_predicate(address source) on cpu;
-extern "C" void materialize_key_predicate(NumericPredicate source, address output) on cpu;

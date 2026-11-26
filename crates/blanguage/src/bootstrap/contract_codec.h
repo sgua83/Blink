@@ -2,30 +2,8 @@ module bootstrap.contract_codec;
 import codec.value_format;
 import bootstrap.fact_key;
 
-enum IntegerKind:u32 { Add=0; Subtract=1; Multiply=2; Divide=3; Remainder=4; And=5; Or=6; Xor=7; ShiftLeft=8; ShiftRight=9; };
-
-enum FloatingKind:u32 { Cast=0; Upper=1; };
-
-struct NumericSelection { u32 affine; NumericOperand operand; NumericIdentity base; u64 scale_low; u64 scale_high; u64 offset_low; u64 offset_high; };
-
-struct NumericExpression { u32 form; IntegerKind operation; ScalarTag scalar; NumericOperand left; NumericOperand right; NumericSelection selection; };
-
-struct NumericFloating { NumericIdentity source; u64 lower; u64 upper; array<u64,3> terms; ScalarTag scalar; FloatingKind form; };
-
-struct NumericInterval { u64 lower; u64 upper; };
-
-struct RangeWriter { cfn<void,address,address,u64> append; cfn<NumericInterval,address> ensures memory(read) interval; };
-
-struct NumericWriter {
-    cfn<void,address,address,u64> append;
-    cfn<NumericExpression,address> ensures memory(read) expression;
-    cfn<NumericFloating,address> ensures memory(read) floating;
-};
-
-struct NumericReader {
-    cfn<void,NumericExpression,address> expression;
-    cfn<void,NumericFloating,address> floating;
-};
+import codec.scalar_ranges;
+import bootstrap.scalar_fold;
 
 enum NodeKind:u32 { Impossible=0; Facts=1; Both=2; Either=3; };
 
@@ -540,57 +518,41 @@ struct ContractAddressIdentityVariants{cfn<ReadStatus,address,address> constant;
 
 struct ContractBorrowSourceVariants{cfn<ReadStatus,address,address> data;cfn<ReadStatus,address,address> parameter;cfn<ReadStatus,address,address> unresolved;cfn<ReadStatus,address,address> inactive;cfn<ReadStatus,address,address> external;cfn<ReadStatus,address,address> position;cfn<ReadStatus,address,address> element;cfn<ReadStatus,address,address> projection;cfn<ReadStatus,address,address> contents;cfn<ReadStatus,address,address> relation;cfn<ReadStatus,address,address> task;cfn<ReadStatus,address,address> task_output;};
 
-extern "C" void numeric_write_identity(NumericIdentity value,address output,cfn<void,address,address,u64> append) on cpu requires nonzero(append);
+extern "C" void numeric_write_identity_key(address source,address output,cfn<void,address,address,u64> append) on cpu requires nonzero(append);
+extern "C" ReadStatus numeric_read_identity_key(Bytes input,inout u64 position,address output) on cpu;
 
-extern "C" ReadStatus numeric_read_identity(Bytes input,inout u64 position,inout NumericIdentity output) on cpu;
+extern "C" void numeric_write_operand_key(address source,address output,cfn<void,address,address,u64> append) on cpu requires nonzero(append);
+extern "C" ReadStatus numeric_read_operand_key(Bytes input,inout u64 position,address output) on cpu;
 
-extern "C" void numeric_write_operand(NumericOperand value,address output,cfn<void,address,address,u64> append) on cpu requires nonzero(append);
+extern "C" void numeric_write_selection_key(address source,address output,cfn<void,address,address,u64> append) on cpu requires nonzero(append);
+extern "C" ReadStatus numeric_read_selection_key(Bytes input,inout u64 position,address output) on cpu;
 
-extern "C" ReadStatus numeric_read_operand(Bytes input,inout u64 position,inout NumericOperand output) on cpu;
+extern "C" void numeric_write_integer_key(address source,address output,cfn<void,address,address,u64> append) on cpu requires nonzero(append);
+extern "C" ReadStatus numeric_read_integer_key(Bytes input,inout u64 position,address output) on cpu;
 
-extern "C" void numeric_write_selection(NumericSelection value,address output,cfn<void,address,address,u64> append) on cpu requires nonzero(append);
-extern "C" ReadStatus numeric_read_selection(Bytes input,inout u64 position,inout NumericSelection output) on cpu;
+extern "C" void numeric_write_expression_key(address source,address output,cfn<void,address,address,u64> append) on cpu requires nonzero(append);
+extern "C" ReadStatus numeric_read_expression_key(Bytes input,inout u64 position,address output) on cpu;
 
-extern "C" void numeric_write_integer(IntegerKind value,address output,cfn<void,address,address,u64> append) on cpu requires nonzero(append);
+extern "C" void numeric_write_comparison_key(address source,address output,cfn<void,address,address,u64> append) on cpu requires nonzero(append);
+extern "C" ReadStatus numeric_read_comparison_key(Bytes input,inout u64 position,address output) on cpu;
 
-extern "C" ReadStatus numeric_read_integer(Bytes input,inout u64 position,inout IntegerKind output) on cpu;
+extern "C" void numeric_write_floating_form_key(address source,address output,cfn<void,address,address,u64> append) on cpu requires nonzero(append);
+extern "C" ReadStatus numeric_read_floating_form_key(Bytes input,inout u64 position,address output) on cpu;
 
-extern "C" void numeric_write_expression(NumericExpression value,address output,cfn<void,address,address,u64> append) on cpu requires nonzero(append);
+extern "C" void numeric_write_floating_key(address source,address output,cfn<void,address,address,u64> append) on cpu requires nonzero(append);
+extern "C" ReadStatus numeric_read_floating_key(Bytes input,inout u64 position,address output) on cpu;
 
-extern "C" ReadStatus numeric_read_expression(Bytes input,inout u64 position,inout NumericExpression output) on cpu;
+extern "C" void numeric_write_predicate_key(address source,address output,cfn<void,address,address,u64> append) on cpu requires nonzero(append);
+extern "C" ReadStatus numeric_read_predicate_key(Bytes input,inout u64 position,address output) on cpu;
 
-extern "C" void numeric_write_comparison(ComparisonKind value,address output,cfn<void,address,address,u64> append) on cpu requires nonzero(append);
+extern "C" void numeric_write_domain(address source,address output,cfn<void,address,address,u64> append) on cpu requires nonzero(append);
+extern "C" ReadStatus numeric_read_domain(Bytes input,inout u64 position,address output) on cpu;
 
-extern "C" ReadStatus numeric_read_comparison(Bytes input,inout u64 position,inout ComparisonKind output) on cpu;
+extern "C" void numeric_write_fact(address source,address output,cfn<void,address,address,u64> append) on cpu requires nonzero(append);
+extern "C" ReadStatus numeric_read_fact(Bytes input,inout u64 position,address output) on cpu;
 
-extern "C" void numeric_write_floating_form(FloatingKind value,address output,cfn<void,address,address,u64> append) on cpu requires nonzero(append);
-
-extern "C" ReadStatus numeric_read_floating_form(Bytes input,inout u64 position,inout FloatingKind output) on cpu;
-
-extern "C" void numeric_write_floating(NumericFloating value,address output,cfn<void,address,address,u64> append) on cpu requires nonzero(append);
-
-extern "C" ReadStatus numeric_read_floating(Bytes input,inout u64 position,inout NumericFloating output) on cpu;
-
-extern "C" void numeric_write_predicate(NumericPredicate value,address output,cfn<void,address,address,u64> append) on cpu requires nonzero(append);
-
-extern "C" ReadStatus numeric_read_predicate(Bytes input,inout u64 position,inout NumericPredicate output) on cpu;
-
-extern "C" void numeric_write_ranges(Span values,address output,RangeWriter host) on cpu requires nonzero(host.append) requires nonzero(host.interval);
-
-extern "C" ReadStatus numeric_read_ranges(Bytes input,inout u64 position,address output,cfn<void,address,u64,u64> push) on cpu requires nonzero(push);
-
-extern "C" void numeric_write_domain(address source,address output,NumericWriter host) on cpu requires nonzero(host.append) requires nonzero(host.expression) requires nonzero(host.floating);
-
-extern "C" ReadStatus numeric_read_domain(Bytes input,inout u64 position,address output,NumericReader host) on cpu requires nonzero(host.expression) requires nonzero(host.floating);
-
-extern "C" void numeric_write_fact(address source,address output,NumericWriter host) on cpu requires nonzero(host.append) requires nonzero(host.expression) requires nonzero(host.floating);
-
-extern "C" ReadStatus numeric_read_fact(Bytes input,inout u64 position,address output,NumericReader host) on cpu requires nonzero(host.expression) requires nonzero(host.floating);
-
-
-
-
-
+extern "C" void numeric_write_ranges(address intervals,u64 count,address output,cfn<void,address,address,u64> append) on cpu requires nonzero(append);
+extern "C" ReadStatus numeric_read_ranges(Bytes input,inout u64 position,address output) on cpu;
 
 extern "C" void condition_node_ids(address context,CanonicalHost host,u32 keep_pairs) on cpu requires nonzero(host.next) requires nonzero(host.index) requires nonzero(host.len) requires nonzero(host.intern) requires nonzero(host.record) requires nonzero(host.bind);
 
@@ -601,7 +563,7 @@ extern "C" i32 compare_proof_condition(address left,address right,u64 left_count
  cfn<i32,address,address> compare_facts) on cpu
  requires nonzero(node) requires nonzero(root) requires nonzero(index) requires nonzero(compare_facts);
 
-extern "C" void write_fact_sequence(u64 count,address iterator,address output,NumericWriter host,cfn<address,address> next) on cpu requires nonzero(host.append) requires nonzero(host.expression) requires nonzero(host.floating) requires nonzero(next);
+extern "C" void write_fact_sequence(u64 count,address iterator,address output,cfn<void,address,address,u64> append,cfn<address,address> next) on cpu requires nonzero(append) requires nonzero(next);
 
 extern "C" ReadStatus read_condition_nodes(Bytes input,inout u64 position,inout u32 present,address output,ConditionReader host) on cpu requires nonzero(host.impossible) requires nonzero(host.facts) requires nonzero(host.both) requires nonzero(host.either);
 
