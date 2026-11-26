@@ -345,20 +345,131 @@ impl Residency {
         let names=self.index_names().into_iter().filter_map(|id|match id{ValueIdentity::ElementIndex(index)if index>=bound=>Some((id,ValueIdentity::ElementIndex(index+depth))),_=>None}).collect();
         self.output_bound(&names)
     }
-    pub(super) fn bind(&self,arguments:&Arguments)->Option<Self>{
-        if let Self::Selected(when,a,b)=self{return Some(Self::conditional(when.as_ref().clone(),a.bind(arguments).unwrap_or(Self::Absent),b.bind(arguments).unwrap_or(Self::Absent))).filter(|value|!value.absent());}
-        let Self::Origins(origins)=self else{return None};
-        if origins.is_empty(){return Some(Self::default());}
-        let mut result=Self::Absent;
-        for origin in origins{match origin{
-            Origin::Input(input)=>{if let Some(value)=argument_value(arguments,input,&input.selection()){result.join(&value);}},
-            Origin::Output(output)=>{let output=Output{function:output.function.clone(),kind:output.kind.clone(),fields:output.fields.clone(),arguments:output.arguments.iter().filter_map(|(input,value)|value.bind(arguments).map(|value|(input.clone(),value))).collect(),bindings:output.bindings.clone()};result.join(&Self::Origins(BTreeSet::from([Origin::Output(output)])));},
-            origin=>result.join(&Self::Origins(BTreeSet::from([origin.clone()]))),
-        }}
-        (!result.absent()).then_some(result)
+    fn bind_into(&self, arguments: &Arguments, result: &mut Self, materialize: bool) -> bool {
+        let visit = ResidencyBinding {
+            arguments: ptr::from_ref(arguments).cast(),
+            result: ptr::from_mut(result).cast(),
+            materialize: u32::from(materialize),
+        };
+        unsafe { bind_residency(visit, ptr::from_ref(self).cast(), RESIDENCY_BINDING_HOST) != 0 }
+    }
+
+    pub(super) fn bind(&self, arguments: &Arguments) -> Option<Self> {
+        let mut result = Self::Absent;
+        self.bind_into(arguments, &mut result, true).then_some(result)
     }
 }
 pub(super) type Requirements=BTreeMap<(Input,Target),BTreeSet<bounds::Condition>>;
+
+#[repr(C)]
+struct ResidencyBinding {
+    arguments: Borrowed,
+    result: Context,
+    materialize: u32,
+}
+
+#[repr(C)]
+struct ResidencyBindingHost {
+    inspect: unsafe extern "C" fn(Borrowed) -> ResidencyCheckNode,
+    choice: unsafe extern "C" fn(ResidencyBinding, ResidencyBranch) -> u32,
+    origins: unsafe extern "C" fn(ResidencyBinding, Borrowed) -> u32,
+}
+
+#[repr(C)]
+struct ResidencyBindingOriginsHost {
+    next: unsafe extern "C" fn(Context) -> ResidencyOriginItem,
+    bound: unsafe extern "C" fn(Context) -> u32,
+    unknown: unsafe extern "C" fn(Context),
+    input: unsafe extern "C" fn(ResidencyBinding, Borrowed) -> u32,
+    output: unsafe extern "C" fn(ResidencyBinding, Borrowed),
+    concrete: unsafe extern "C" fn(Context, Borrowed),
+}
+
+unsafe extern "C" {
+    #[link_name = "bootstrap.ownership_path::bind_residency"]
+    fn bind_residency(visit: ResidencyBinding, value: Borrowed, host: ResidencyBindingHost) -> u32;
+    #[link_name = "bootstrap.ownership_path::bind_residency_origins"]
+    fn bind_residency_origins(visit: ResidencyBinding, iterator: Context, count: usize, host: ResidencyBindingOriginsHost) -> u32;
+}
+
+const RESIDENCY_BINDING_HOST: ResidencyBindingHost = ResidencyBindingHost {
+    inspect: inspect_residency_visit,
+    choice: bound_choice,
+    origins: bound_origins,
+};
+
+unsafe extern "C" fn bound_choice(visit: ResidencyBinding, branch: ResidencyBranch) -> u32 {
+    let arguments = unsafe { &*visit.arguments.cast::<Arguments>() };
+    let when = unsafe { &*branch.condition.cast::<bounds::Condition>() };
+    let yes = unsafe { &*branch.yes.cast::<Residency>() }.bind(arguments);
+    let no = unsafe { &*branch.no.cast::<Residency>() }.bind(arguments);
+    let value = Residency::conditional(
+        when.clone(), yes.unwrap_or(Residency::Absent), no.unwrap_or(Residency::Absent),
+    );
+    let bound = u32::from(!value.absent());
+    if visit.materialize != 0 {
+        unsafe { *visit.result.cast::<Residency>() = value };
+    }
+    bound
+}
+
+unsafe extern "C" fn bound_origins(visit: ResidencyBinding, origins: Borrowed) -> u32 {
+    let origins = unsafe { &*origins.cast::<BTreeSet<Origin>>() };
+    let mut iterator = origins.iter();
+    let host = ResidencyBindingOriginsHost {
+        next: visit_next_origin, bound: bound_result, unknown: set_bound_unknown,
+        input: bind_input_origin, output: bind_output_origin, concrete: bind_concrete_origin,
+    };
+    unsafe { bind_residency_origins(visit, ptr::from_mut(&mut iterator).cast(), origins.len(), host) }
+}
+
+unsafe extern "C" fn bound_result(result: Context) -> u32 {
+    let result = unsafe { &*result.cast::<Residency>() };
+    u32::from(!result.absent())
+}
+
+unsafe extern "C" fn set_bound_unknown(result: Context) {
+    unsafe { *result.cast::<Residency>() = Residency::default() };
+}
+
+fn merge_bound_source(result: &mut Residency, value: Residency) {
+    if result.absent() {
+        *result = value;
+    } else {
+        result.join(&value);
+    }
+}
+
+unsafe extern "C" fn bind_input_origin(visit: ResidencyBinding, input: Borrowed) -> u32 {
+    let arguments = unsafe { &*visit.arguments.cast::<Arguments>() };
+    let input = unsafe { &*input.cast::<Input>() };
+    let Some(value) = argument_value(arguments, input, &input.selection()) else { return 0; };
+    let present = u32::from(!value.absent());
+    merge_bound_source(unsafe { &mut *visit.result.cast::<Residency>() }, value);
+    present
+}
+
+unsafe extern "C" fn bind_output_origin(visit: ResidencyBinding, output: Borrowed) {
+    let arguments = unsafe { &*visit.arguments.cast::<Arguments>() };
+    let output = unsafe { &*output.cast::<Output>() };
+    let projected = Output {
+        function: output.function.clone(),
+        kind: output.kind.clone(),
+        fields: output.fields.clone(),
+        arguments: output.arguments.iter().filter_map(|(input, value)| {
+            value.bind(arguments).map(|value| (input.clone(), value))
+        }).collect(),
+        bindings: output.bindings.clone(),
+    };
+    let value = Residency::Origins(BTreeSet::from([Origin::Output(projected)]));
+    merge_bound_source(unsafe { &mut *visit.result.cast::<Residency>() }, value);
+}
+
+unsafe extern "C" fn bind_concrete_origin(result: Context, origin: Borrowed) {
+    let origin = unsafe { &*origin.cast::<Origin>() };
+    let value = Residency::Origins(BTreeSet::from([origin.clone()]));
+    merge_bound_source(unsafe { &mut *result.cast::<Residency>() }, value);
+}
 
 pub(super) type Arguments=BTreeMap<Input,Residency>;
 fn argument_value(arguments:&Arguments,input:&Input,selection:&BTreeMap<ValueIdentity,bounds::Proof>)->Option<Residency>{
@@ -1461,38 +1572,21 @@ pub(super) fn owned_argument(
     });
 }
 // 这里只交接载荷存在性。位置继续由同一调用的输出路径消费，不能先折成父位置。
-fn bind_returned(value: &mut Returned, arguments: &Arguments) -> bool {
-    match value {
-        Returned::Dataset(data) => match data.residency.bind(arguments) {
-            Some(_) => {
-                if data.length.maximum()!=0 && let Some(elements)=data.elements.known_mut(){bind_returned(elements,arguments);}
-                true
-            }
-            None => {
-                data.residency = Residency::default();
-                false
-            }
-        },
-        Returned::OwnedValue(value) => {
-            let mut present = true;
-            for payload in &mut value.payloads {
-                if let Some(item) = payload {
-                    if !bind_returned(item, arguments) {
-                        if value.value.ty.has_variants() {
-                            *payload = None;
-                        } else {
-                            present = false;
-                        }
-                    }
-                }
-            }
-            present
-        }
-        _ => true,
+unsafe extern "C" fn bound_dataset_available(arguments: Borrowed, model: Context) -> u32 {
+    let arguments = unsafe { &*arguments.cast::<Arguments>() };
+    let data = unsafe { &mut *model.cast::<application::Data>() };
+    let mut scratch = Residency::Absent;
+    if data.residency.bind_into(arguments, &mut scratch, false) {
+        1
+    } else {
+        data.residency = Residency::default();
+        0
     }
 }
+
 pub(super) fn returned(value: &mut Returned, arguments: &Arguments) {
-    bind_returned(value, arguments);
+    let host = OutputAvailabilityHost { present: bound_dataset_available, ..OUTPUT_AVAILABILITY_HOST };
+    unsafe { resolve_output_availability(ptr::from_ref(arguments).cast(), ptr::from_mut(value).cast(), host); }
 }
 
 
@@ -2031,7 +2125,7 @@ struct OutputAvailabilityHost {
 
 unsafe extern "C" {
     #[link_name = "bootstrap.ownership_path::resolve_output_availability"]
-    fn resolve_output_availability(outputs: Borrowed, value: Context, host: OutputAvailabilityHost) -> u32;
+    fn resolve_output_availability(source: Borrowed, value: Context, host: OutputAvailabilityHost) -> u32;
 }
 
 unsafe extern "C" fn inspect_availability(value: Context) -> AvailabilityNode {

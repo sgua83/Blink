@@ -485,16 +485,16 @@ extern "C" OutputPrefix find_output_prefix(address context,u64 fields,cfn<addres
     return OutputPrefix(residency,count);
 }
 
-extern "C" u32 resolve_output_availability(address outputs,address value,OutputAvailabilityHost host) on cpu
+extern "C" u32 resolve_output_availability(address source,address value,OutputAvailabilityHost host) on cpu
     requires nonzero(host.inspect) requires nonzero(host.present)
     requires nonzero(host.maximum) requires nonzero(host.element)
     requires nonzero(host.field) requires nonzero(host.discard) {
     AvailabilityNode node=host.inspect(value);
     if(node.kind==AvailabilityKind::Dataset){
-        if(host.present(outputs,node.model)==0){return 0;}
+        if(host.present(source,node.model)==0){return 0;}
         if(host.maximum(node.model)!=0){
             address element=host.element(node.model);
-            if(address_bits(element)!=0u64){resolve_output_availability(outputs,element,host);}
+            if(address_bits(element)!=0u64){resolve_output_availability(source,element,host);}
         }
         return 1;
     }
@@ -503,11 +503,40 @@ extern "C" u32 resolve_output_availability(address outputs,address value,OutputA
     u64 index=0u64;
     while(index<node.fields){
         address field=host.field(node.model,index);
-        if(address_bits(field)!=0u64 && resolve_output_availability(outputs,field,host)==0){
+        if(address_bits(field)!=0u64 && resolve_output_availability(source,field,host)==0){
             if(node.kind==AvailabilityKind::Variant){host.discard(node.model,index);}
             else{available=0;}
         }
         index+=1u64;
     }
     return available;
+}
+
+extern "C" u32 bind_residency(ResidencyBinding visit,address value,ResidencyBindingHost host) on cpu
+    requires nonzero(host.inspect) requires nonzero(host.choice) requires nonzero(host.origins) {
+    ResidencyCheckNode node=host.inspect(value);
+    if(address_bits(node.branch.condition)!=0u64){return host.choice(visit,node.branch);}
+    if(address_bits(node.origins)!=0u64){return host.origins(visit,node.origins);}
+    return 0;
+}
+
+extern "C" u32 bind_residency_origins(ResidencyBinding visit,address iterator,u64 count,ResidencyBindingOriginsHost host) on cpu
+    requires nonzero(host.next) requires nonzero(host.bound) requires nonzero(host.unknown)
+    requires nonzero(host.input) requires nonzero(host.output) requires nonzero(host.concrete) {
+    if(count==0u64){
+        if(visit.materialize!=0){host.unknown(visit.result);}
+        return 1;
+    }
+    ResidencyOriginItem origin=host.next(iterator);
+    if(visit.materialize==0 && count==1u64){
+        if(origin.kind==ResidencyOriginKind::Input){return host.input(visit,origin.value);}
+        return 1;
+    }
+    while(origin.kind!=ResidencyOriginKind::End){
+        if(origin.kind==ResidencyOriginKind::Input){host.input(visit,origin.value);}
+        else if(origin.kind==ResidencyOriginKind::Output){host.output(visit,origin.value);}
+        else{host.concrete(visit.result,origin.value);}
+        origin=host.next(iterator);
+    }
+    return host.bound(visit.result);
 }

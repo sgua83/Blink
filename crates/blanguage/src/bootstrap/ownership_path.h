@@ -219,7 +219,27 @@ struct OutputAvailabilityHost {
     cfn<address,address,u64> field;
     cfn<void,address,u64> discard;
 };
-extern "C" u32 resolve_output_availability(address outputs,address value,OutputAvailabilityHost host) on cpu
+extern "C" u32 resolve_output_availability(address source,address value,OutputAvailabilityHost host) on cpu
     requires nonzero(host.inspect) requires nonzero(host.present)
     requires nonzero(host.maximum) requires nonzero(host.element)
     requires nonzero(host.field) requires nonzero(host.discard);
+
+struct ResidencyBinding { address arguments; address result; u32 materialize; };
+struct ResidencyBindingHost {
+    cfn<ResidencyCheckNode,address> inspect;
+    cfn<u32,ResidencyBinding,ResidencyBranch> choice;
+    cfn<u32,ResidencyBinding,address> origins;
+};
+struct ResidencyBindingOriginsHost {
+    cfn<ResidencyOriginItem,address> next;
+    cfn<u32,address> bound;
+    cfn<void,address> unknown;
+    cfn<u32,ResidencyBinding,address> input;
+    cfn<void,ResidencyBinding,address> output;
+    cfn<void,address,address> concrete;
+};
+extern "C" u32 bind_residency(ResidencyBinding visit,address value,ResidencyBindingHost host) on cpu
+    requires nonzero(host.inspect) requires nonzero(host.choice) requires nonzero(host.origins);
+extern "C" u32 bind_residency_origins(ResidencyBinding visit,address iterator,u64 count,ResidencyBindingOriginsHost host) on cpu
+    requires nonzero(host.next) requires nonzero(host.bound) requires nonzero(host.unknown)
+    requires nonzero(host.input) requires nonzero(host.output) requires nonzero(host.concrete);
